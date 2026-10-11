@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+Games:
+- **Breakwater** (examples/breakwater), a first-person shooter in one file: hold a platform at
+  sea against waves of robots, with a shield that recharges, two weapons at a time (a pistol, a
+  rifle, a shotgun, rockets, the robots' casters), grenades and melee; animated glTF robots and
+  weapons by Quaternius (CC0). Play it at sloppy-lang.org/breakwater, or change it in the
+  playground.
+- A third tutorial, **Make a 3D shooter**: a small Breakwater in eight steps
+  (docs/TUTORIAL_BREAKWATER.md): mouse look, cover, shots as rays, drones that fire back, waves.
+- **Lowline** (examples/lowline): a glider down an endless valley, scoring for flying low.
+- The playground keeps each game's files (icon, models) apart, and fetches large ones only when
+  that game is chosen.
+
+Library and language:
 - **Controls players can change**: `action("jump", [.key(.space), .button(.a)])`, then
   `action_pressed("jump")`, `action_axis("left", "right")`...; `ui_controls()` in a menu lets the
   player rebind each action (press the new key or button), and the bindings are saved. Rebound

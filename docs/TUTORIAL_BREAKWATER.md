@@ -171,15 +171,18 @@ update = (dt: f64):
     wish = right * move.x - ahead * move.y
     vel.x = wish.x * f32(SPEED)
     vel.z = wish.z * f32(SPEED)
-    # falling, and jumping from the ground
+    # falling (half the frame's gravity before the move, half after), and jumping from the ground
     if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt)
-    pos = collide(pos + vel * f32(dt), f32(RADIUS))
+    vel.y -= f32(GRAVITY * dt / 2.0)
+    pos.y += vel.y * f32(dt)
+    vel.y -= f32(GRAVITY * dt / 2.0)
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
+    # then across, round the cover
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
 
 cube = cube_mesh(1.0)
 
@@ -207,9 +210,13 @@ it is exactly `RADIUS` away. You slide along walls instead of stopping dead, bec
 of the move that goes into the wall is taken away. Boxes whose top is below your feet are left out:
 you are standing on them.
 
-Gravity is a velocity: each frame `vel.y` drops by `GRAVITY * dt`, and the position moves by
-`vel * dt`. `ground_under` is what you would stand on: the deck at 0, or the top of a box you are
-over. Reaching it, you stop falling and are `grounded`; only then does Space jump. The low boxes are
+Gravity is an acceleration: it changes the velocity, by `GRAVITY * dt` a frame, and the velocity
+changes the position, by `vel * dt`. Half the frame's change to the velocity comes before the move
+and half after, so the move uses the velocity halfway through the frame: then a jump goes exactly
+as high whatever the frame rate. `ground_under` is what you would stand on: the deck at 0, or the
+top of a box you are over. Reaching it, you stop falling and are `grounded`; only then does Space
+jump. Up and down are settled first, then the move across, so a box you have just landed on is
+under you, not in your way. The low boxes are
 1.1 m tall and a jump reaches about 1.2 m: try climbing onto one.
 
 ## 3. A rifle
@@ -236,7 +243,9 @@ yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
 flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
-    side = normalize(cross(d, vec3(0, 1, 0)))
+    side = cross(d, vec3(0, 1, 0))
+    if length(side) < 0.01: side = vec3(1, 0, 0)     # (d is straight up or down)
+    side = normalize(side)
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
@@ -369,15 +378,18 @@ step_player = (dt: f64):
     wish = right * move.x - ahead * move.y
     vel.x = wish.x * f32(SPEED)
     vel.z = wish.z * f32(SPEED)
-    # falling, and jumping from the ground
+    # falling (half the frame's gravity before the move, half after), and jumping from the ground
     if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt)
-    pos = collide(pos + vel * f32(dt), f32(RADIUS))
+    vel.y -= f32(GRAVITY * dt / 2.0)
+    pos.y += vel.y * f32(dt)
+    vel.y -= f32(GRAVITY * dt / 2.0)
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
+    # then across, round the cover
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
     # the rifle: fires while the button is held; R reloads (and so does an empty magazine)
     wait -= dt
     kick = max(0.0, kick - dt * 0.4)
@@ -486,7 +498,9 @@ yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
 flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
-    side = normalize(cross(d, vec3(0, 1, 0)))
+    side = cross(d, vec3(0, 1, 0))
+    if length(side) < 0.01: side = vec3(1, 0, 0)     # (d is straight up or down)
+    side = normalize(side)
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
@@ -569,6 +583,7 @@ ray_sphere = (o: vec3, d: vec3, c: vec3, r: f32) -> f32:
     oc = o - c
     b = dot(oc, d)
     q = dot(oc, oc) - r * r
+    if q <= 0.0: return 0                               # (o is inside it)
     if b * b - q < 0.0: return -1
     t = -b - f32(sqrt(f64(b * b - q)))
     if t < 0.0: return -1
@@ -643,6 +658,11 @@ step_drones = (dt: f64):
     if drones.len() == 0:
         loop i in [0..4): drones.push(Drone(v3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, strafe = f32(random_int(0, 2) * 2 - 1)))
     loop mut d in drones:
+        # (shot down: it bursts, and does nothing more)
+        if d.health <= 0.0:
+            burst(d.pos, 24)
+            score += 100
+            continue
         to = flat(eye() - d.pos)
         dist = length(to)
         dir = to * (1.0 / max(dist, 0.01))
@@ -657,9 +677,6 @@ step_drones = (dt: f64):
         d.pos = p + vec3(0, f32(DRONE_R), 0)
         if random() < dt * 0.3: d.strafe = -d.strafe
         d.flash -= dt
-        if d.health <= 0.0:
-            burst(d.pos, 24)
-            score += 100
     drones = drones.filter((d): d.health > 0.0)
 
 step_player = (dt: f64):
@@ -676,15 +693,18 @@ step_player = (dt: f64):
     wish = right * move.x - ahead * move.y
     vel.x = wish.x * f32(SPEED)
     vel.z = wish.z * f32(SPEED)
-    # falling, and jumping from the ground
+    # falling (half the frame's gravity before the move, half after), and jumping from the ground
     if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt)
-    pos = collide(pos + vel * f32(dt), f32(RADIUS))
+    vel.y -= f32(GRAVITY * dt / 2.0)
+    pos.y += vel.y * f32(dt)
+    vel.y -= f32(GRAVITY * dt / 2.0)
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
+    # then across, round the cover
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
     # the rifle: fires while the button is held; R reloads (and so does an empty magazine)
     wait -= dt
     kick = max(0.0, kick - dt * 0.4)
@@ -767,7 +787,7 @@ window("Little Breakwater", 1280, 720)
 A drone is a ball you can hit, so it needs one more ray test: `ray_sphere`. The point of a ray
 nearest the sphere's center is `-b` along it (`b` is how far the center is behind the start, along
 the ray); the ray meets the sphere if that point is closer to the center than the radius, and enters
-it a little before. A shot checks every drone and keeps the nearest hit, but only if it is nearer
+it a little before. A ray that starts inside the sphere (your eye inside a drone) hits it at 0. A shot checks every drone and keeps the nearest hit, but only if it is nearer
 than the cover the ray would hit: drones behind a box are safe.
 
 Drones steer by wanting a velocity and easing toward it. `want` circles you (`side` is a quarter
@@ -810,7 +830,9 @@ yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
 flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
-    side = normalize(cross(d, vec3(0, 1, 0)))
+    side = cross(d, vec3(0, 1, 0))
+    if length(side) < 0.01: side = vec3(1, 0, 0)     # (d is straight up or down)
+    side = normalize(side)
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
@@ -893,6 +915,7 @@ ray_sphere = (o: vec3, d: vec3, c: vec3, r: f32) -> f32:
     oc = o - c
     b = dot(oc, d)
     q = dot(oc, oc) - r * r
+    if q <= 0.0: return 0                               # (o is inside it)
     if b * b - q < 0.0: return -1
     t = -b - f32(sqrt(f64(b * b - q)))
     if t < 0.0: return -1
@@ -1006,6 +1029,11 @@ step_drones = (dt: f64):
     if drones.len() == 0:
         loop i in [0..4): drones.push(Drone(v3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = f32(random_int(0, 2) * 2 - 1)))
     loop mut d in drones:
+        # (shot down: it bursts, and does nothing more)
+        if d.health <= 0.0:
+            burst(d.pos, 24)
+            score += 100
+            continue
         to = flat(eye() - d.pos)
         dist = length(to)
         dir = to * (1.0 / max(dist, 0.01))
@@ -1030,19 +1058,22 @@ step_drones = (dt: f64):
         else:
             d.cool -= dt
             if d.cool <= 0.0 and clear_line(d.pos, eye()): d.windup = 0.6
-        if d.health <= 0.0:
-            burst(d.pos, 24)
-            score += 100
     drones = drones.filter((d): d.health > 0.0)
-    # bolts: stopped by cover; the player is hit within half a meter of the body
+    # bolts: stopped by cover; the player is hit within half a meter of the body (they move
+    # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
     loop mut b in bolts:
-        b.pos += b.vel * f32(dt)
         b.life -= dt
-        if in_cover(b.pos) or b.pos.y <= 0.0: b.life = 0
-        q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
-        if length(b.pos - q) < 0.5:
-            b.life = 0
-            hurt(10)
+        n = int(ceil(f64(length(b.vel)) * dt / 0.2))
+        loop k in [0..n):
+            b.pos += b.vel * f32(dt / f64(n))
+            if in_cover(b.pos) or b.pos.y <= 0.0:
+                b.life = 0
+                break
+            q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
+            if length(b.pos - q) < 0.5:
+                b.life = 0
+                hurt(10)
+                break
     bolts = bolts.filter((b): b.life > 0.0)
 
 step_player = (dt: f64):
@@ -1059,15 +1090,18 @@ step_player = (dt: f64):
     wish = right * move.x - ahead * move.y
     vel.x = wish.x * f32(SPEED)
     vel.z = wish.z * f32(SPEED)
-    # falling, and jumping from the ground
+    # falling (half the frame's gravity before the move, half after), and jumping from the ground
     if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt)
-    pos = collide(pos + vel * f32(dt), f32(RADIUS))
+    vel.y -= f32(GRAVITY * dt / 2.0)
+    pos.y += vel.y * f32(dt)
+    vel.y -= f32(GRAVITY * dt / 2.0)
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
+    # then across, round the cover
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
     # the shield comes back out of fire
     calm += dt
     if calm > RECHARGE_WAIT: shield = min(SHIELD, shield + 30.0 * dt)
@@ -1162,7 +1196,8 @@ window("Little Breakwater", 1280, 720)
 The drones' shots are not rays but bolts you can see coming and step away from: each has a velocity
 and moves every frame, and is gone when it flies into cover (`in_cover`) or the deck.
 You are hit by a bolt within half a meter of your body, the line from just above your feet to your
-eyes.
+eyes. A bolt moves in steps of at most 20 cm: in one slow frame it could otherwise jump from one
+side of a wall (or of you) to the other without ever being inside.
 
 Before a drone fires, its eye glows for 0.6 seconds: a warning you can act on, the most useful
 thing an enemy can do for the player. It only winds up if it can see you: `clear_line` asks whether
@@ -1196,7 +1231,9 @@ yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
 flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
-    side = normalize(cross(d, vec3(0, 1, 0)))
+    side = cross(d, vec3(0, 1, 0))
+    if length(side) < 0.01: side = vec3(1, 0, 0)     # (d is straight up or down)
+    side = normalize(side)
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
@@ -1279,6 +1316,7 @@ ray_sphere = (o: vec3, d: vec3, c: vec3, r: f32) -> f32:
     oc = o - c
     b = dot(oc, d)
     q = dot(oc, oc) - r * r
+    if q <= 0.0: return 0                               # (o is inside it)
     if b * b - q < 0.0: return -1
     t = -b - f32(sqrt(f64(b * b - q)))
     if t < 0.0: return -1
@@ -1316,7 +1354,7 @@ struct Gun:
 
 guns = [Gun("RIFLE", 30, 0.1, true, 1, 0.012, 12, 1.5), Gun("SHOTGUN", 6, 0.7, false, 14, 0.1, 9, 2.0)]
 held = 0                                # the one in hand
-ammo = [30, 6]                          # each one's rounds
+ammo = [loop g in guns: g.mag]          # each one's rounds
 wait = 0.0                              # until the next shot
 reloading = 0.0                         # seconds left
 kick = 0.0                              # the weapon's recoil, easing back
@@ -1359,7 +1397,7 @@ new_run = ():
     pitch = 0
     shield = SHIELD
     health = HEALTH
-    ammo = [30, 6]
+    ammo = [loop g in guns: g.mag]
     held = 0
     reloading = 0
     drones = []
@@ -1407,6 +1445,11 @@ step_drones = (dt: f64):
     if drones.len() == 0:
         loop i in [0..4): drones.push(Drone(v3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = f32(random_int(0, 2) * 2 - 1)))
     loop mut d in drones:
+        # (shot down: it bursts, and does nothing more)
+        if d.health <= 0.0:
+            burst(d.pos, 24)
+            score += 100
+            continue
         to = flat(eye() - d.pos)
         dist = length(to)
         dir = to * (1.0 / max(dist, 0.01))
@@ -1431,19 +1474,22 @@ step_drones = (dt: f64):
         else:
             d.cool -= dt
             if d.cool <= 0.0 and clear_line(d.pos, eye()): d.windup = 0.6
-        if d.health <= 0.0:
-            burst(d.pos, 24)
-            score += 100
     drones = drones.filter((d): d.health > 0.0)
-    # bolts: stopped by cover; the player is hit within half a meter of the body
+    # bolts: stopped by cover; the player is hit within half a meter of the body (they move
+    # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
     loop mut b in bolts:
-        b.pos += b.vel * f32(dt)
         b.life -= dt
-        if in_cover(b.pos) or b.pos.y <= 0.0: b.life = 0
-        q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
-        if length(b.pos - q) < 0.5:
-            b.life = 0
-            hurt(10)
+        n = int(ceil(f64(length(b.vel)) * dt / 0.2))
+        loop k in [0..n):
+            b.pos += b.vel * f32(dt / f64(n))
+            if in_cover(b.pos) or b.pos.y <= 0.0:
+                b.life = 0
+                break
+            q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
+            if length(b.pos - q) < 0.5:
+                b.life = 0
+                hurt(10)
+                break
     bolts = bolts.filter((b): b.life > 0.0)
 
 step_player = (dt: f64):
@@ -1460,25 +1506,28 @@ step_player = (dt: f64):
     wish = right * move.x - ahead * move.y
     vel.x = wish.x * f32(SPEED)
     vel.z = wish.z * f32(SPEED)
-    # falling, and jumping from the ground
+    # falling (half the frame's gravity before the move, half after), and jumping from the ground
     if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt)
-    pos = collide(pos + vel * f32(dt), f32(RADIUS))
+    vel.y -= f32(GRAVITY * dt / 2.0)
+    pos.y += vel.y * f32(dt)
+    vel.y -= f32(GRAVITY * dt / 2.0)
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
+    # then across, round the cover
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
     # the shield comes back out of fire
     calm += dt
     if calm > RECHARGE_WAIT: shield = min(SHIELD, shield + 30.0 * dt)
-    # weapons: 1 and 2 (or Q) swap; R reloads (and so does an empty magazine)
+    # weapons: 1 and 2 choose (Q, the next); R reloads (and so does an empty magazine)
     wait -= dt
     kick = max(0.0, kick - dt * 0.4)
     swap = -1
     if key_pressed(.n1): swap = 0
     if key_pressed(.n2): swap = 1
-    if key_pressed(.q): swap = 1 - held
+    if key_pressed(.q): swap = (held + 1) % guns.len()
     if swap >= 0 and swap != held:
         held = swap
         reloading = 0
@@ -1581,11 +1630,11 @@ window("Little Breakwater", 1280, 720)
 The weapons are now data: a `Gun` says what each does, and the code reads it. A shotgun is a
 `Gun` like the rifle with different numbers: it fires 14 pellets a shot, each a ray, spread over a
 wide cone; it fires once a click instead of while held, and has six shells. Everything else, from
-reloading to the streaks, is the same code. A third weapon is one more line in `guns` and one more
-mesh.
+reloading to the streaks, is the same code. A third weapon is one more line in `guns`, one more
+mesh, and a number key to choose it (Q already goes through all of them).
 
-1 and 2 pick a weapon, and Q swaps. Each keeps its own rounds (`ammo` is an array with one number
-per weapon), and swapping cancels a reload.
+1 and 2 pick a weapon, and Q goes to the next. Each keeps its own rounds (`ammo` is an array with one number
+per weapon, made from `guns`: `[loop g in guns: g.mag]` is each one's magazine), and swapping cancels a reload.
 
 ## 7. Waves, a title and a best score
 
@@ -1611,7 +1660,9 @@ yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
 flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
-    side = normalize(cross(d, vec3(0, 1, 0)))
+    side = cross(d, vec3(0, 1, 0))
+    if length(side) < 0.01: side = vec3(1, 0, 0)     # (d is straight up or down)
+    side = normalize(side)
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
@@ -1694,6 +1745,7 @@ ray_sphere = (o: vec3, d: vec3, c: vec3, r: f32) -> f32:
     oc = o - c
     b = dot(oc, d)
     q = dot(oc, oc) - r * r
+    if q <= 0.0: return 0                               # (o is inside it)
     if b * b - q < 0.0: return -1
     t = -b - f32(sqrt(f64(b * b - q)))
     if t < 0.0: return -1
@@ -1731,7 +1783,7 @@ struct Gun:
 
 guns = [Gun("RIFLE", 30, 0.1, true, 1, 0.012, 12, 1.5), Gun("SHOTGUN", 6, 0.7, false, 14, 0.1, 9, 2.0)]
 held = 0                                # the one in hand
-ammo = [30, 6]                          # each one's rounds
+ammo = [loop g in guns: g.mag]          # each one's rounds
 wait = 0.0                              # until the next shot
 reloading = 0.0                         # seconds left
 kick = 0.0                              # the weapon's recoil, easing back
@@ -1782,7 +1834,7 @@ new_run = ():
     pitch = 0
     shield = SHIELD
     health = HEALTH
-    ammo = [30, 6]
+    ammo = [loop g in guns: g.mag]
     held = 0
     reloading = 0
     drones = []
@@ -1845,6 +1897,11 @@ step_drones = (dt: f64):
         to_spawn -= 1
         spawn_wait = 1.2
     loop mut d in drones:
+        # (shot down: it bursts, and does nothing more)
+        if d.health <= 0.0:
+            burst(d.pos, 24)
+            score += 100
+            continue
         to = flat(eye() - d.pos)
         dist = length(to)
         dir = to * (1.0 / max(dist, 0.01))
@@ -1869,19 +1926,22 @@ step_drones = (dt: f64):
         else:
             d.cool -= dt
             if d.cool <= 0.0 and clear_line(d.pos, eye()): d.windup = 0.6
-        if d.health <= 0.0:
-            burst(d.pos, 24)
-            score += 100
     drones = drones.filter((d): d.health > 0.0)
-    # bolts: stopped by cover; the player is hit within half a meter of the body
+    # bolts: stopped by cover; the player is hit within half a meter of the body (they move
+    # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
     loop mut b in bolts:
-        b.pos += b.vel * f32(dt)
         b.life -= dt
-        if in_cover(b.pos) or b.pos.y <= 0.0: b.life = 0
-        q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
-        if length(b.pos - q) < 0.5:
-            b.life = 0
-            hurt(10)
+        n = int(ceil(f64(length(b.vel)) * dt / 0.2))
+        loop k in [0..n):
+            b.pos += b.vel * f32(dt / f64(n))
+            if in_cover(b.pos) or b.pos.y <= 0.0:
+                b.life = 0
+                break
+            q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
+            if length(b.pos - q) < 0.5:
+                b.life = 0
+                hurt(10)
+                break
     bolts = bolts.filter((b): b.life > 0.0)
 
 step_player = (dt: f64):
@@ -1898,25 +1958,28 @@ step_player = (dt: f64):
     wish = right * move.x - ahead * move.y
     vel.x = wish.x * f32(SPEED)
     vel.z = wish.z * f32(SPEED)
-    # falling, and jumping from the ground
+    # falling (half the frame's gravity before the move, half after), and jumping from the ground
     if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt)
-    pos = collide(pos + vel * f32(dt), f32(RADIUS))
+    vel.y -= f32(GRAVITY * dt / 2.0)
+    pos.y += vel.y * f32(dt)
+    vel.y -= f32(GRAVITY * dt / 2.0)
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
+    # then across, round the cover
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
     # the shield comes back out of fire
     calm += dt
     if calm > RECHARGE_WAIT: shield = min(SHIELD, shield + 30.0 * dt)
-    # weapons: 1 and 2 (or Q) swap; R reloads (and so does an empty magazine)
+    # weapons: 1 and 2 choose (Q, the next); R reloads (and so does an empty magazine)
     wait -= dt
     kick = max(0.0, kick - dt * 0.4)
     swap = -1
     if key_pressed(.n1): swap = 0
     if key_pressed(.n2): swap = 1
-    if key_pressed(.q): swap = 1 - held
+    if key_pressed(.q): swap = (held + 1) % guns.len()
     if swap >= 0 and swap != held:
         held = swap
         reloading = 0
@@ -2075,7 +2138,9 @@ yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
 flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
-    side = normalize(cross(d, vec3(0, 1, 0)))
+    side = cross(d, vec3(0, 1, 0))
+    if length(side) < 0.01: side = vec3(1, 0, 0)     # (d is straight up or down)
+    side = normalize(side)
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
@@ -2158,6 +2223,7 @@ ray_sphere = (o: vec3, d: vec3, c: vec3, r: f32) -> f32:
     oc = o - c
     b = dot(oc, d)
     q = dot(oc, oc) - r * r
+    if q <= 0.0: return 0                               # (o is inside it)
     if b * b - q < 0.0: return -1
     t = -b - f32(sqrt(f64(b * b - q)))
     if t < 0.0: return -1
@@ -2195,7 +2261,7 @@ struct Gun:
 
 guns = [Gun("RIFLE", 30, 0.1, true, 1, 0.012, 12, 1.5), Gun("SHOTGUN", 6, 0.7, false, 14, 0.1, 9, 2.0)]
 held = 0                                # the one in hand
-ammo = [30, 6]                          # each one's rounds
+ammo = [loop g in guns: g.mag]          # each one's rounds
 wait = 0.0                              # until the next shot
 reloading = 0.0                         # seconds left
 kick = 0.0                              # the weapon's recoil, easing back
@@ -2256,7 +2322,7 @@ new_run = ():
     pitch = 0
     shield = SHIELD
     health = HEALTH
-    ammo = [30, 6]
+    ammo = [loop g in guns: g.mag]
     held = 0
     reloading = 0
     drones = []
@@ -2327,6 +2393,12 @@ step_drones = (dt: f64):
         to_spawn -= 1
         spawn_wait = 1.2
     loop mut d in drones:
+        # (shot down: it bursts, and does nothing more)
+        if d.health <= 0.0:
+            burst(d.pos, 24)
+            play(snd_boom, 0.6)
+            score += 100
+            continue
         to = flat(eye() - d.pos)
         dist = length(to)
         dir = to * (1.0 / max(dist, 0.01))
@@ -2352,20 +2424,22 @@ step_drones = (dt: f64):
         else:
             d.cool -= dt
             if d.cool <= 0.0 and clear_line(d.pos, eye()): d.windup = 0.6
-        if d.health <= 0.0:
-            burst(d.pos, 24)
-            play(snd_boom, 0.6)
-            score += 100
     drones = drones.filter((d): d.health > 0.0)
-    # bolts: stopped by cover; the player is hit within half a meter of the body
+    # bolts: stopped by cover; the player is hit within half a meter of the body (they move
+    # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
     loop mut b in bolts:
-        b.pos += b.vel * f32(dt)
         b.life -= dt
-        if in_cover(b.pos) or b.pos.y <= 0.0: b.life = 0
-        q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
-        if length(b.pos - q) < 0.5:
-            b.life = 0
-            hurt(10)
+        n = int(ceil(f64(length(b.vel)) * dt / 0.2))
+        loop k in [0..n):
+            b.pos += b.vel * f32(dt / f64(n))
+            if in_cover(b.pos) or b.pos.y <= 0.0:
+                b.life = 0
+                break
+            q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
+            if length(b.pos - q) < 0.5:
+                b.life = 0
+                hurt(10)
+                break
     bolts = bolts.filter((b): b.life > 0.0)
 
 step_player = (dt: f64):
@@ -2382,26 +2456,29 @@ step_player = (dt: f64):
     wish = right * move.x - ahead * move.y
     vel.x = wish.x * f32(SPEED)
     vel.z = wish.z * f32(SPEED)
-    # falling, and jumping from the ground
+    # falling (half the frame's gravity before the move, half after), and jumping from the ground
     if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt)
-    pos = collide(pos + vel * f32(dt), f32(RADIUS))
+    vel.y -= f32(GRAVITY * dt / 2.0)
+    pos.y += vel.y * f32(dt)
+    vel.y -= f32(GRAVITY * dt / 2.0)
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
+    # then across, round the cover
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
     # the shield comes back out of fire
     calm += dt
     if calm > RECHARGE_WAIT: shield = min(SHIELD, shield + 30.0 * dt)
-    # weapons: 1 and 2 (or Q) swap; R reloads (and so does an empty magazine)
+    # weapons: 1 and 2 choose (Q, the next); R reloads (and so does an empty magazine)
     wait -= dt
     kick = max(0.0, kick - dt * 0.4)
     hit_mark -= dt
     swap = -1
     if key_pressed(.n1): swap = 0
     if key_pressed(.n2): swap = 1
-    if key_pressed(.q): swap = 1 - held
+    if key_pressed(.q): swap = (held + 1) % guns.len()
     if swap >= 0 and swap != held:
         held = swap
         reloading = 0
