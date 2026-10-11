@@ -2,7 +2,7 @@
 """Render regression test: draw frame 60 of the example games with the software renderer (no
 GPU, no display) and compare with the reference frames in tests/render. The small scenes in
 tests/render/*.jo check shader semantics: their references were rendered by a GPU.
-With a display (or --gpu), each frame is also rendered on the GPU and compared with the same
+With a display (or --gpu), each frame is also rendered on the GPU with OpenGL and compared with the same
 references, which catches shader code that only the GPU driver compiles.
 With --vulkan, each frame is also drawn through Vulkan (SLOPPY_VULKAN=1) and compared the same way
 (--vulkan-only: just that; SLOPPY_VK_DEVICE picks the device, e.g. Mesa's software one).
@@ -62,7 +62,7 @@ for name, src in games.items():
                 print(f"skipped {name} (needs a display)")
                 continue
             gpu = os.path.join(out, f"{name}_gpu.png")
-            genv = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_FRAMES="60", SLOPPY_SCREENSHOT=gpu, SLOPPY_SCALE="1")
+            genv = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_FRAMES="60", SLOPPY_SCREENSHOT=gpu, SLOPPY_SCALE="1", SLOPPY_VULKAN="0")
             subprocess.run([exe], env=genv, capture_output=True, timeout=120)
             w, h, got = downsample(gpu, 4)
         write_png(ref, w, h, got)
@@ -78,7 +78,7 @@ for name, src in games.items():
     limit = GPU_LIMIT if name in scenes else LIMIT
     print(f"{'ok  ' if d <= limit else 'FAIL'} {name}: mean abs difference {d:.3f}")
     failed += d > limit
-    for label, extra in ([("GPU", {})] if gpu_too else []) + ([("Vulkan", {"SLOPPY_VULKAN": "1"})] if vulkan else []):
+    for label, extra in ([("GPU", {"SLOPPY_VULKAN": "0"})] if gpu_too else []) + ([("Vulkan", {"SLOPPY_VULKAN": "1"})] if vulkan else []):
         runs += 1
         gpng = os.path.join(out, f"{name}_{label.lower()}.png")
         if os.path.exists(gpng): os.remove(gpng)

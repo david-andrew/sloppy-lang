@@ -1462,12 +1462,10 @@ GPU arrays: numbers kept in GPU memory and computed on by GPU programs.
 g = gpu(xs)                       # upload (up to 4 dimensions)
 h = g .* 2.0 .+ sin.(g)           # one GPU program, made from the expression at compile time
 ys = cpu(h)                       # download: an array of the same shape
-total = sum(h)                    # reductions run on the GPU too
+total = sum(h)                    # reductions too
 ```
 
-Values are f32, or i32 for arrays made from integers (gpu(int_array)): integer arithmetic keeps integer semantics (7 / 2 is 3), and mixing with floats gives floats. A dotted expression whose arrays are GPU arrays runs on the GPU as one fragment program (the functions applied with f.(g) are translated to GLSL, like shader functions; numbers in the expression become uniforms). Shapes broadcast as on the CPU. Native programs use OpenGL ES (without a window, through a windowless EGL context), web builds WebGL 2. Where neither can render to float textures (no driver, SLOPPY_SOFTWARE=1, an old browser, node) the same expressions run on the CPU, so programs work everywhere; gpu_available() tells which.
-
-Textures hold four values per texel (RGBA), as wide as the GPU allows: up to about a billion values on a typical desktop GPU (64 million where textures are at most 4096 wide).
+Values are f32, or i32 for arrays made from integers (gpu(int_array)): integer arithmetic keeps integer semantics (7 / 2 is 3), and mixing with floats gives floats. A dotted expression whose arrays are GPU arrays runs on the GPU as one program (the functions applied with f.(g) are translated like shader functions; numbers in the expression become its parameters). Shapes broadcast as on the CPU. Native programs use Vulkan where they can: an array is a buffer, the program a compute program (compiler/spirv.jo, spirv_kernel), with or without a window. Otherwise they use OpenGL ES (without a window, through a windowless EGL context), and web builds WebGL 2: an array is a float texture holding four values per texel, the program a fragment program drawn over it. Where none of these can (no driver, SLOPPY_SOFTWARE=1, an old browser, node) the same expressions run on the CPU, so programs work everywhere; gpu_available() tells which.
 
 - `struct GpuArray[T]`
 - `gpu_available = () -> bool`

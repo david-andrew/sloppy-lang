@@ -558,9 +558,10 @@ ps.age = ps.age .+ dt
 ```
 
 **GPU arrays.** `gpu(xs)` copies an array to GPU memory and `cpu(g)` copies it back. A dotted
-expression whose arrays are GPU arrays runs on the GPU as one fragment program, generated from
-the expression at compile time — functions applied with `f.(g)` are translated to GLSL like
-shader functions, and the numbers in the expression become uniforms:
+expression whose arrays are GPU arrays runs on the GPU as one program, generated from the
+expression at compile time (a compute program with Vulkan, a fragment program with OpenGL and
+WebGL) — functions applied with `f.(g)` are translated like shader functions, and the numbers in
+the expression become its parameters:
 
 ```gdscript
 g = gpu(rand(4_000_000))
@@ -572,11 +573,11 @@ GPU arrays have the shape of the array they were made from (up to 4 dimensions) 
 like arrays on the CPU; `cpu(g)` gives an array of that shape. Values on the GPU are `f32`, or `i32`
 for arrays made from integers: integer arithmetic keeps integer semantics (`7 / 2` is 3, `%` keeps
 the dividend's sign, as on the CPU), and mixing integers with floats gives floats. `sum`, `mean`,
-`min` and `max` run on the GPU (float sums add in `f32`, pairwise: about 1e-7 relative error).
-Arrays may hold as many values as the GPU's largest texture times four (a billion on a typical
-desktop GPU). GPU memory is reused automatically once no copy of a GPU array is left. Native programs use OpenGL
-ES (no window needed), web builds WebGL 2. Where neither can render to float textures (no
-driver, `SLOPPY_SOFTWARE=1`, an old browser) the same expressions run on the CPU, so programs work
+`min` and `max` are computed on the GPU with OpenGL (float sums add in `f32`, pairwise: about
+1e-7 relative error); with Vulkan the values are added up on the CPU, in `f64`. GPU memory is
+reused automatically once no copy of a GPU array is left. Native programs use Vulkan (no window
+needed), else OpenGL ES; web builds WebGL 2. Where none of them can (no driver,
+`SLOPPY_SOFTWARE=1`, an old browser) the same expressions run on the CPU, so programs work
 everywhere; `gpu_available()` tells which.
 
 ## 9. Modules
@@ -748,8 +749,9 @@ are drawn by libdecor (with GTK, as other apps' title bars are), elsewhere by th
 program draws a plain title bar itself. A window's title is the program's name unless
 `window(title)` gives one. Everything a game loads at run time is optional: without
 libwayland-client (or with `SLOPPY_WAYLAND=protocol`) it speaks the Wayland protocol itself, and
-without libX11 the X11 protocol. They use the system's OpenGL ES driver when there is
-one. Without it (or with `SLOPPY_SOFTWARE=1`) the same program draws with the built-in software
+without libX11 the X11 protocol. They draw with Vulkan where the system has a Vulkan 1.3
+driver (as current drivers for Intel, AMD and NVIDIA GPUs do), else with OpenGL ES;
+`SLOPPY_VULKAN=0` chooses OpenGL. Without either (or with `SLOPPY_SOFTWARE=1`) the same program draws with the built-in software
 renderer, which runs your shader functions (see `make_shader`) on the CPU; `soft_rendering()`
 tells the program which is in use, e.g. to draw fewer particles. Frames are rendered at half
 resolution (`SLOPPY_SOFT_SCALE=1` for full resolution) and paced to 60 per second.

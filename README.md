@@ -92,8 +92,8 @@ browser](https://sloppy-lang.org/breakwater/).
 - **Predictable.** Plain value semantics: arrays, strings and maps are reference counted with
   copy-on-write, so there is no garbage collector, no reference cycles and no hidden aliasing.
 - **Batteries for games.** Windows and input, 2D drawing with SDF text, a 3D renderer with
-  sun/sky lighting, shadows, fog and bloom (glTF models, orbit and fly cameras), GPU programs written in Sloppy itself (translated to
-  GLSL), PNG, JPEG, WAV, Ogg Vorbis and TrueType loading, sprite sheets and tilemaps (Aseprite,
+  sun/sky lighting, shadows, fog and bloom (glTF models, orbit and fly cameras), GPU programs written in Sloppy itself (compiled to
+  SPIR-V for Vulkan and to GLSL for OpenGL and WebGL), PNG, JPEG, WAV, Ogg Vorbis and TrueType loading, sprite sheets and tilemaps (Aseprite,
   Tiled), a software audio mixer and synthesizer.
 - **Programs keep working.** Native executables are static (they talk to the kernel directly);
   the GPU driver is loaded at run time when present, and without one games still run on a
@@ -203,13 +203,14 @@ compiler/      the Sloppy compiler, in Sloppy
   opt, inline            release builds: folding, CSE, check elimination, inlining
   x64, elf               IR -> x86-64 machine code -> static ELF executable
   wasm                   IR -> WebAssembly, packaged into one HTML file
-  glsl                   shader functions written in Sloppy -> GLSL ES 3.00
+  spirv                  shader functions written in Sloppy -> SPIR-V (Vulkan)
+  glsl                   shader functions written in Sloppy -> GLSL ES 3.00 (OpenGL, WebGL)
   ide, lsp               the language server (sloppy lsp): what the checker learns, for editors
   repl                   the interactive prompt: compiles each input against a live session
 stage0/        bootstrap compiler in C (compiles compiler/ once)
 lib/core/      runtime, strings, arrays, maps, math, files, formatting
 lib/std/       thread pool and parallel helpers, numeric arrays (nd.jo)
-lib/game/      windows (Wayland, X11), input, OpenGL ES / WebGL, 2D, 3D, images, audio
+lib/game/      windows (Wayland, X11, Win32), input, Vulkan, OpenGL ES / WebGL, 2D, 3D, images, audio
 lib/web/       JavaScript glue embedded into web builds
 editors/       the VS Code extension (tools/vsix.py packages it)
 examples/      rebound (a complete 2D game), breakwater (a complete 3D game), dunes and lowline (3D), tiles (a tilemap and sprites), shapes, cube, scene3d
@@ -239,23 +240,33 @@ array indexing into x86 addressing modes.
 Windows programs (`--target windows`, the default on Windows) are PE executables that import
 only what finds everything else (LoadLibraryA, GetProcAddress and three more from kernel32.dll):
 the rest of Windows is looked up as it is first used, as C libraries are on Linux. Games open a
-Win32 window and draw with OpenGL through WGL (the same shaders: a core 4.3 context accepts them),
-or with the software renderer; gamepads are XInput's, sound goes through waveOut.
+Win32 window and draw with Vulkan, or with OpenGL through WGL (a core 4.3 context takes the
+GLSL shaders), or with the software renderer; gamepads are XInput's, sound goes through waveOut.
 
 On Linux, native programs are static executables that make system calls directly. Programs that
 open a window load the system's libraries for it at run time with a tiny in-process loader (the
 static binary maps the system dynamic linker and asks it for the libraries): libwayland-client
 and libdecor in a Wayland session (so windows get the desktop's own decorations; frames are
-rendered with EGL into an offscreen buffer shared with the compositor), otherwise X11; and EGL
-and OpenGL ES. Nothing is loaded at all by programs that do not use graphics, and a missing
-library is a run-time decision instead of a load-time failure: without an OpenGL ES driver
-(or with `SLOPPY_SOFTWARE=1`) games draw with a software renderer (`lib/game/softgl.jo`) that
+rendered with EGL into an offscreen buffer shared with the compositor), otherwise X11; and
+Vulkan, or EGL and OpenGL ES. Nothing is loaded at all by programs that do not use graphics, and a missing
+library is a run-time decision instead of a load-time failure: without a Vulkan 1.3 driver games
+draw with OpenGL ES, and without that either (or with `SLOPPY_SOFTWARE=1`) they draw with a software renderer (`lib/game/softgl.jo`) that
 runs the Sloppy shader functions on the CPU in parallel, at half resolution; without
 libwayland-client or libX11 the window is opened by speaking the Wayland or X11 protocol over
 the socket (`lib/game/wayland.jo`, `lib/game/x11.jo`), and without libdecor the program
 draws its own title bar. The
 software frames match the GPU's within about 1/255 per channel (`tools/rendertest.py` checks
 them against references, with no GPU or display needed).
+
+With Vulkan (`lib/game/vk.jo`, in the style of [mr_gpu](https://codeberg.org/games-by-Mason/mr_gpu))
+the GPU work is laid out the way current GPUs like it: one device with dynamic rendering and
+synchronization2, every texture in one bindless array, buffers read by their device addresses
+(vertices are fetched by the vertex shader; there is no vertex input state), a frame's data
+written into per-frame upload memory, device memory in a few large blocks. The compiler
+translates the same shader functions to SPIR-V itself (`compiler/spirv.jo`), so no shader
+compiler is needed either. The library's GL calls become Vulkan calls (`lib/game/vkgl.jo`):
+frames come out the same through either (`tools/vkcompare.py`, and the render tests through
+Vulkan, in CI too on Mesa's software driver). `SLOPPY_VULKAN=0` uses OpenGL.
 
 The web backend emits WebAssembly from the same IR; the HTML file contains the module (base64)
 and a small JavaScript runtime for WebGL 2, input and audio.

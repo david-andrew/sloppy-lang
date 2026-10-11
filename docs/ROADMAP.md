@@ -154,6 +154,19 @@ target bug came from two copies of it), and document invariants per phase.
 - Then the remaining gap to C -O2 in release builds (fannkuch 1.5x, spectral 1.4x, nbody 1.3x).
 - Compile speed stays first: debug builds are the default; track compile time in CI.
 
+## 9b. Vulkan
+
+Done: the library draws through Vulkan 1.3 by default on Linux and Windows, in the style of
+mr_gpu (bindless textures, buffer device addresses, dynamic rendering, synchronization2, upload
+memory per frame, memory in large blocks); shaders compiled to SPIR-V by the compiler; GPU
+arrays as compute programs. Left:
+- An explicit API for those who want the hardware's whole power: buffers by address, compute
+  programs written in Sloppy, indirect draws, barriers (what mr_gpu offers), alongside draw2d and
+  draw3d.
+- GPU arrays' reductions on the GPU (they finish on the CPU with Vulkan).
+- Real hardware beyond NVIDIA and Mesa's software driver: Intel, AMD, Windows drivers.
+- A pipeline cache on disk; pipelines made before they are first drawn with.
+
 ## 10. More platforms (L each, later)
 
 - arm64: a new encoder and calling conventions, register reservations that are x86-specific

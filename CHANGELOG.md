@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+Graphics:
+- **Vulkan.** Games draw through Vulkan 1.3 on Linux and Windows where the driver has it
+  (OpenGL otherwise, or with `SLOPPY_VULKAN=0`), set up as current GPUs work best (after Mason
+  Remaley's mr_gpu): every texture in one bindless array, buffers read by address, vertices
+  fetched by the shader, dynamic rendering, per-frame upload memory, memory in large blocks.
+  Frames are the same as with OpenGL; the CPU's time per frame is lower (Breakwater: 2.0 ms
+  instead of 2.8).
+- The compiler turns shader functions into SPIR-V itself (as well as GLSL), so no shader
+  compiler is needed; tools/spirvtest.py checks every module.
+- GPU arrays run as Vulkan compute programs (with no window too).
+- `fwidth()` in fragment shaders.
+- `SLOPPY_VK_VALIDATE=1` turns on the Khronos validation layer, where it is installed.
+
 Website and install:
 - The website works on phones: the top links fold into a menu, and a docs page's contents into
   a bar under the title. The pages are grouped (start, tutorials, reference), with previous and
