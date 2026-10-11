@@ -12,7 +12,7 @@ enum IN:
     none_, len, push, pop, insert, remove, clear, reserve, slice, syscall, memcpy, memset, sizeof,
     arrdata, panic, assert, print, embed, from_bytes, to_bytes, argv, setlen, truncate, resize,
     hash, alignof, unreachable, arrcap, fmt_struct, sqrt, vec_ctor, cfn_cast, wasm_call, callc, floor_,
-    ceil_, fabs, fmin, fmax, setjmp, longjmp, jump, shader, extend, clone_thread, atomic_add, atomic_cas, stack_ptr, fill, fmt_elem, gpu_kernel, cpu_features
+    ceil_, fabs, fmin, fmax, setjmp, longjmp, jump, shader, extend, clone_thread, atomic_add, atomic_cas, stack_ptr, fill, fmt_elem, gpu_kernel, cpu_features, compute, compute_spirv
 
 # (fixed2arr: T[N] -> T[], a new array holding a copy of the elements)
 enum CV: none_, int_, int2float, float2int, float_, opt, ptr, bits, fn2clos, union_, fixed2arr
@@ -37,7 +37,7 @@ intrinsics = [
     Intrinsic("shader", .shader, false), Intrinsic("__setjmp", .setjmp, false), Intrinsic("__longjmp", .longjmp, false), Intrinsic("__jump", .jump, false),
     Intrinsic("__clone_thread", .clone_thread, false), Intrinsic("__atomic_add", .atomic_add, false),
     Intrinsic("__atomic_cas", .atomic_cas, false), Intrinsic("__stack_ptr", .stack_ptr, false),
-    Intrinsic("__cpu_features", .cpu_features, false),
+    Intrinsic("__cpu_features", .cpu_features, false), Intrinsic("compute", .compute, false), Intrinsic("__compute_spirv", .compute_spirv, false),
 ]
 
 last_checked = 0
@@ -1628,6 +1628,36 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         nargs_check(n, nargs, 2, 2, "__gpu_kernel")
         if nodes[args[0]].kind != .lambda or nodes[args[1]].kind != .str_lit: fatal(nodes[n].pos, "__gpu_kernel takes a function literal and a string")
         check_expr(args[0], 0)
+        r = T_STR
+    else if id == .compute:
+        # compute(f): a GPU program run once per element, f(id: int, params: P) (lib/game/gpubuffer.jo);
+        # becomes __compute(__compute_spirv(f), f): the program for Vulkan, and f itself for the CPU
+        nargs_check(n, nargs, 1, 1, "compute")
+        a = args[0]
+        if nodes[a].kind != .ident: fatal(nodes[a].pos, "compute() takes the name of a function (id: int, params: P)")
+        # (of the functions with that name, the one shaped like a compute function)
+        want = 0
+        decls: int[]
+        collect_fns(int(nodes[a].name), decls)
+        loop d in decls:
+            sig = fn_sig(d)
+            if not sig.generic and sig.params.len() == 2 and prune(sig.params[0]) == T_INT and tkind(sig.params[1]) == .struct_ and tkind(int(sig.ret)) == .void_:
+                want = mk_fn(sig.params, T_VOID, 0)
+        check_expr(a, want)
+        if nodes[a].kind != .fnref: fatal(nodes[a].pos, "expected a function name")
+        f = int(nodes[a].sym)
+        if fns[f].ptypes.len() != 2 or prune(fns[f].ptypes[0]) != T_INT or tkind(fns[f].ptypes[1]) != .struct_:
+            fatal(nodes[a].pos, "a compute function takes (id: int, params: P), P a struct")
+        if tkind(int(fns[f].ret)) != .void_: fatal(nodes[a].pos, "a compute function returns nothing: it writes its results into GPU buffers")
+        ref = mk(.fnref, nodes[a].pos)
+        nodes[ref].sym = nodes[a].sym
+        nodes[ref].type = nodes[a].type
+        call = bc_call("__compute", [bc_call("__compute_spirv", [ref], nodes[n].pos), a], nodes[n].pos)
+        nodes[n] = nodes[call]
+        return check_expr(n, expected)
+    else if id == .compute_spirv:
+        nargs_check(n, nargs, 1, 1, "__compute_spirv")
+        if nodes[args[0]].kind != .fnref: fatal(nodes[n].pos, "__compute_spirv takes a function")
         r = T_STR
     else if id == .fmt_elem:
         # __fmt_elem_value(buf, x): x inside a container (strings quoted): a union formats its
@@ -3374,6 +3404,18 @@ bc_body1 = (tmpl: int, arrs: str[], pre: str, epre: str, out: str, stretched: bo
     nodes[asg].op = i32(int(Tok.assign))
     body.push(asg)
     body
+
+# a GpuBuffer[T] (lib/game/gpubuffer.jo), and its element type T (that of the field `host: *T`)
+is_gpu_buffer = (t0: int) -> bool:
+    t = prune(t0)
+    types[t].kind == .struct_ and structs[int(types[t].st)].decl != 0 and name_of(int(nodes[int(structs[int(types[t].st)].decl)].name)) == "GpuBuffer"
+gpu_buffer_elem = (t0: int) -> int:
+    si = int(types[prune(t0)].st)
+    check_struct_fields(si)
+    loop i in [0..int(structs[si].nfields)):
+        f = int(structs[si].fields) + i
+        if name_of(int(fields[f].name)) == "host": return int(types[prune(int(fields[f].type))].elem)
+    0
 
 is_gpu_array = (t0: int) -> bool:
     t = prune(t0)

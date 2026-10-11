@@ -1,0 +1,113 @@
+# GPU buffers: read by shaders (bytes, f64, ints), written by compute functions (vertices of a mesh,
+# instances, the counts of indirect draws: indexed and not, several, with first and base_vertex)
+struct Corner:
+    at: vec2
+struct Dot:
+    pos: vec2
+    vel: vec2
+    shade: u8
+    big: bool
+    hue: f64
+struct Sim:
+    dots: GpuBuffer[Dot]
+    dt: f32
+struct Look:
+    dots: GpuBuffer[Dot]
+    size: f32
+struct Out:
+    pos: vec4
+    color: vec4
+
+move = (id: int, u: Sim):
+    d = u.dots[id]
+    d.pos += d.vel * u.dt
+    if d.pos.x < -0.9 or d.pos.x > 0.9: d.vel.x = -d.vel.x
+    if d.pos.y < 0.1 or d.pos.y > 0.9: d.vel.y = -d.vel.y
+    u.dots[id] = d
+
+vs = (c: Corner, u: Look) -> Out:
+    d = u.dots[instance_id()]
+    s = u.size
+    if d.big: s = s * 2.0
+    g = f32(d.shade) / 255.0
+    Out(vec4(d.pos + c.at * s, 0, 1), vec4(f32(d.hue), g, 1.0 - g, 1))
+fs = (i: Out, u: Look) -> vec4: i.color
+
+# a fan of triangles a compute function lays out each frame
+struct V:
+    pos: vec2
+    color: vec4
+struct Fan:
+    verts: GpuBuffer[V]
+    turn: f32
+struct Plain:
+    tint: vec4
+fan = (id: int, u: Fan):
+    seg = id / 3
+    k = id % 3
+    a = (f32(seg) + f32(min(k, 1)) + f32(k / 2)) / 24.0 * 6.2831853 + u.turn
+    r = 0.3
+    if k == 0: r = 0.0
+    u.verts[id] = V(vec2(-0.5 + r * cosf(a) * 0.5625, -0.45 + r * sinf(a)), vec4(f32(seg) / 24.0, 0.4, 1.0 - f32(seg) / 24.0, 1))
+vs2 = (v: V, u: Plain) -> Out: Out(vec4(v.pos, 0, 1), v.color * u.tint)
+fs2 = (i: Out, u: Plain) -> vec4: i.color
+
+# the dots in the right half, gathered and counted by a compute function, drawn below them
+struct Gather:
+    dots: GpuBuffer[Dot]
+    kept: GpuBuffer[Inst]
+    argw: GpuBuffer[u32]
+struct Inst:
+    pos: vec2
+gather = (id: int, u: Gather):
+    d = u.dots[id]
+    if d.pos.x > 0.0:
+        slot = atomic_add(u.argw, 1, u32(1))
+        u.kept[int(slot)] = Inst(vec2(d.pos.x, d.pos.y - 1.0))
+vs3 = (c: Corner, i: Inst, u: Plain) -> Out: Out(vec4(i.pos + c.at * 0.03, 0, 1), u.tint)
+
+dots: Dot[]
+loop i in [0..60):
+    x = f64(i)
+    dots.push(Dot(vec2(f32(sin(x * 1.7) * 0.8), f32(0.5 + cos(x * 2.3) * 0.35)), vec2(f32(sin(x * 0.31) * 0.5), f32(cos(x * 0.53) * 0.5)), u8(i * 37 % 256), i % 5 == 0, 0.5 + 0.5 * sin(x)))
+buf = gpu_buffer(dots)
+kept: GpuBuffer[Inst] = gpu_buffer(60)
+args = gpu_buffer([DrawArgs(), DrawArgs()])
+verts: GpuBuffer[V] = gpu_buffer(24 * 3)
+fan_mesh = gpu_mesh(verts)
+quad = mesh([Corner(vec2(-1, -1)), Corner(vec2(1, -1)), Corner(vec2(1, 1)), Corner(vec2(-1, 1))], [u32(0), 1, 2, 0, 2, 3])
+# (two squares in one vertex buffer: the second one's vertices follow the first's)
+squares = mesh([Corner(vec2(-1, -1)), Corner(vec2(1, -1)), Corner(vec2(1, 1)), Corner(vec2(-1, 1)),
+                Corner(vec2(-0.5, -0.5)), Corner(vec2(0.5, -0.5)), Corner(vec2(0.5, 0.5)), Corner(vec2(-0.5, 0.5))], [u32(0), 1, 2, 0, 2, 3])
+strip_args = gpu_buffer([DrawArgs(count = 6, first = 0, base_vertex = 4, first_instance = 2)])
+struct Spot:
+    pos: vec2
+spots = gpu_buffer([Spot(vec2(0.3, -0.8)), Spot(vec2(0.4, -0.8)), Spot(vec2(0.5, -0.8)), Spot(vec2(0.6, -0.8)), Spot(vec2(0.7, -0.8))])
+vs4 = (c: Corner, s: Spot, u: Plain) -> Out: Out(vec4(s.pos + c.at * 0.04, 0, 1), u.tint)
+plain_tri = mesh([Corner(vec2(-0.95, -0.95)), Corner(vec2(-0.85, -0.95)), Corner(vec2(-0.9, -0.85)), Corner(vec2(-0.8, -0.95)), Corner(vec2(-0.7, -0.95)), Corner(vec2(-0.75, -0.85))])
+tri_args = gpu_buffer([DrawArgs(count = 3, first = 3)])
+mover = compute(move)
+fanner = compute(fan)
+gatherer = compute(gather)
+sh = make_shader(shader(vs, fs))
+sh2 = make_shader(shader(vs2, fs2))
+sh3 = make_shader(shader(vs3, fs2))
+sh4 = make_shader(shader(vs4, fs2))
+sh5 = make_shader(shader(vs2b, fs2))
+vs2b = (c: Corner, u: Plain) -> Out: Out(vec4(c.at, 0, 1), u.tint)
+frame = 0
+
+update = (dt: f64):
+    frame += 1
+    dispatch(mover, len(buf), Sim(buf, 1.0 / 60.0))
+
+draw = ():
+    clear(rgb(0.05, 0.05, 0.08))
+    draw_instanced(sh, quad, len(buf), Look(buf, 0.02))
+    dispatch(fanner, len(verts), Fan(verts, f32(frame) * 0.02))
+    draw(sh2, fan_mesh, Plain(vec4(1, 1, 1, 1)))
+    upload(args, [DrawArgs(count = 6, instances = 0), DrawArgs(count = 3, instances = 1, first = 3, first_instance = 1)])
+    dispatch(gatherer, len(buf), Gather(buf, kept, words(args)))
+    draw_indirect(sh3, quad, kept, args, Plain(vec4(1, 0.8, 0.2, 1)), 0, 2)
+    draw_indirect(sh4, squares, spots, strip_args, Plain(vec4(0.3, 1, 0.4, 1)))
+    draw_indirect(sh5, plain_tri, tri_args, Plain(vec4(1, 0.3, 0.3, 1)))

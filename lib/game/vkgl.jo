@@ -547,21 +547,54 @@ when TARGET != "wasm":
     # a mesh drawn with program prog (as __sw_draw_mesh: the GL names of its buffers; uni: the
     # uniforms' bytes, usize of them)
     __vk_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo: int, nidx: int, uni: *u8, usize: int, ibuf: int, istride: int, ninst: int, ioff: int):
+        insts = 0
+        if ibuf > 0: insts = __vg_buffer_addr(ibuf) + ioff
+        __vk_draw_at(prog, mode, __vg_buffer_addr(vbo), stride, nverts, ibo, nidx, uni, usize, insts, istride, ninst)
+
+    # the same with the vertices and instances at addresses (GPU buffers: lib/game/gpubuffer.jo);
+    # with ind (a buffer) the draws' counts are read from there instead: ndraws of them from byte
+    # ind_off, shaped as VkDrawIndexedIndirectCommand (DrawArgs), also for meshes without indices
+    # (drawn through indices 0, 1, 2...)
+    __vk_draw_at = (prog: int, mode: int, verts: int, stride: int, nverts: int, ibo: int, nidx: int, uni: *u8, usize: int, insts: int, istride: int, ninst: int, ind: int = 0, ind_off: int = 0, ndraws: int = 0):
         if prog <= 0: return
+        if verts == 0 and nverts > 0: return
+        indexed = nidx > 0 and ibo > 0 and ibo < __vgb.len()
+        seq = 0
+        if ind != 0 and not indexed: seq = __vg_sequence(nverts)
         blk, off = __vk_upload(uni, usize)
-        pc = __VgPush(params = __vk_addr(blk, off), verts = __vg_buffer_addr(vbo), vstride = i32(stride), istride = i32(istride))
-        if ibuf > 0: pc.insts = __vg_buffer_addr(ibuf) + ioff
-        if pc.verts == 0 and nverts > 0: return
+        pc = __VgPush(params = __vk_addr(blk, off), verts = verts, insts = insts, vstride = i32(stride), istride = i32(istride))
         __vg_prepare(prog, mode)
         cb = __vk_cb()
         vkCmdPushConstants(cb, __vk_layout, 0x7FFFFFFF, 0, u32(__VK_PUSH_SIZE), (&pc) as *u8)
-        n = max(ninst, 1)
-        if nidx > 0 and ibo > 0 and ibo < __vgb.len():
+        if indexed:
             ib = __vgb[ibo]
             if ib.frame >= 0: vkCmdBindIndexBuffer(cb, __vk_blocks[ib.block].buffer, u64(ib.off), 1)
             else: vkCmdBindIndexBuffer(cb, ib.buf.buffer, 0, 1)
-            vkCmdDrawIndexed(cb, u32(nidx), u32(n), 0, 0, 0)
+        if ind != 0:
+            if ndraws <= 0: return
+            if not indexed: vkCmdBindIndexBuffer(cb, seq, 0, 1)
+            if ndraws == 1 or __vk_multi_draw: vkCmdDrawIndexedIndirect(cb, ind, u64(ind_off), u32(ndraws), 20)
+            else:
+                loop d in [0..ndraws): vkCmdDrawIndexedIndirect(cb, ind, u64(ind_off + 20 * d), 1, 20)
+            return
+        n = max(ninst, 1)
+        if indexed: vkCmdDrawIndexed(cb, u32(nidx), u32(n), 0, 0, 0)
         else: vkCmdDraw(cb, u32(nverts), u32(n), 0, 0)
+
+    # a buffer of the indices 0, 1, 2... (at least n of them), for indirect draws of meshes without
+    # indices; made again, larger, when more are needed
+    __vg_seq = __VkBuffer()
+    __vg_seq_n = 0
+    __vg_sequence = (n: int) -> int:
+        if n > __vg_seq_n:
+            m = max(max(n, __vg_seq_n * 2), 1024)
+            __vk_defer_buffer(__vg_seq)
+            __vg_seq = __vk_buffer(m * 4, u32(0x1 | 0x2 | 0x40), u32(VK_MEM_DEVICE_LOCAL), 0)
+            __vg_seq_n = m
+            idx: u32[]
+            loop i in [0..m): idx.push(u32(i))
+            __vg_copy_to_buffer(__vg_seq.buffer, 0, data(idx) as *u8, m * 4)
+        __vg_seq.buffer
 
     # vertices already in upload memory (at address verts): the 2D batch
     __vk_draw_batch = (prog: int, verts: int, stride: int, nverts: int, uni: *u8, usize: int):

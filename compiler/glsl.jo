@@ -5,7 +5,9 @@
 #   sh := shader(vs, fs)
 #
 # Vertex fields become vertex attributes (in declaration order), Params fields become
-# uniforms, Varying fields (after the first) are interpolated between the stages.
+# uniforms, Varying fields (after the first) are interpolated between the stages. A GpuBuffer
+# among the uniforms is an integer texture (RGBA32I) holding its bytes (four words to a texel, 1024 texels to
+# a row; see lib/game/gpubuffer.jo) and its length; shaders read its elements from there.
 
 use 'util.jo'
 use 'lex.jo'
@@ -36,6 +38,9 @@ gl_type = (t0: int, pos: int) -> str:
     if k == .struct_:
         si = int(types[t].st)
         if structs[si].name == "Texture": return "sampler2D"
+        if is_gpu_buffer(t):
+            gl_gbuf_decls()
+            return "S_GB"
         gl_struct(t, pos)
         return "S_{gl_name(structs[si].name)}_{si}"
     if k == .void_: return "void"
@@ -133,6 +138,7 @@ gl_stmt = (s: int, depth: int):
     if k == .vardecl:
         if nodes[s].nlist > 0: gl_err(nodes[s].pos, "tuple destructuring is not supported in shaders")
         l = int(nodes[s].sym)
+        if is_gpu_buffer(int(locals[l].type)): gl_err(nodes[s].pos, "a GpuBuffer cannot be kept in a variable in shaders (use it where it is, e.g. u.particles[i])")
         t = gl_type(int(locals[l].type), nodes[s].pos)
         if nodes[s].b != 0: gl_out.push("{pre}{t} {gl_local(l)} = {gl_expr(int(nodes[s].b))};\n")
         else: gl_out.push("{pre}{t} {gl_local(l)} = {gl_zero(int(locals[l].type), nodes[s].pos)};\n")
@@ -326,10 +332,15 @@ gl_expr = (e: int) -> str:
                 return "discard"
             if nm == "instance_id" or nm == "vertex_id":
                 if gl_stage != "vertex": gl_err(nodes[e].pos, "{nm}() can only be used in the vertex shader")
-                if nm == "instance_id": return "gl_InstanceID"
+                # (sl_ibase: the first instance of an indirect draw, as Vulkan counts them)
+                if nm == "instance_id": return "(gl_InstanceID + sl_ibase)"
                 return "gl_VertexID"
             if nm == "texel": return "texelFetch({args[0]}, {args[1]}, 0)"
             if nm == "texture_size": return "textureSize({args[0]}, 0)"
+            if nkids(e) > 0 and is_gpu_buffer(ntype(kid(e, 0))):
+                if nm == "len": return "{args[0]}.n_"
+                if nm == "[]": return "{gl_gbuf_reader(gpu_buffer_elem(ntype(kid(e, 0))), nodes[e].pos)}({args[0]}, {args[1]})"
+                if nm == "[]=" or starts_with(nm, "atomic_"): gl_err(nodes[e].pos, "GPU buffers are written by compute programs only")
             # prelude helpers written in Sloppy (e.g. vector math) are translated like user code
         gl_function(f)
         return "{gl_fn_name(f)}({join(args, ", ")})"
@@ -345,6 +356,71 @@ gl_expr = (e: int) -> str:
         return "{gl_type(t, nodes[e].pos)}({join(parts, ", ")})"
     if k == .array: gl_err(nodes[e].pos, "growable arrays (T[]) cannot be used in shaders; use a fixed-size array T[N]")
     gl_err(nodes[e].pos, "unsupported expression in shader")
+    ""
+
+# ---------------- GPU buffers ----------------
+gl_gbuf_decls = ():
+    if gl_done_structs.get(-1) != none: return
+    gl_done_structs[-1] = true
+    gl_decls.push("struct S_GB \{\n    highp isampler2D t_;\n    int n_;\n};\n")
+    gl_decls.push("uint gb_w(highp isampler2D t, int i) \{\n    return uint(texelFetch(t, ivec2((i >> 2) & 1023, i >> 12), 0)[i & 3]);\n}\n")
+    # (bits of the word holding byte a, from bit 8 * (a & 3); sign-extended if sgn)
+    gl_decls.push("int gb_sub(highp isampler2D t, int a, int bits, bool sgn) \{\n    uint w = gb_w(t, a >> 2) >> uint((a & 3) * 8);\n    int sh = 32 - bits;\n    if (sgn) return int(w << uint(sh)) >> sh;\n    return int((w << uint(sh)) >> uint(sh));\n}\n")
+    # (an f64 from its two words, rounded to an f32 as compiler/spirv.jo does)
+    gl_decls.push("float gb_f64(uint lo, uint hi) \{\n    uint e = (hi >> 20) & 0x7FFu;\n    uint m = ((hi & 0xFFFFFu) << 3) | (lo >> 29);\n    uint bits = (((e - 896u) << 23) | m) + ((lo >> 28) & 1u);\n    if (e >= 1151u || bits >= 0x7F800000u) bits = 0x7F800000u;\n    if (e <= 896u) bits = 0u;\n    if (e == 0x7FFu && (m | lo) != 0u) bits = 0x7FC00000u;\n    return uintBitsToFloat(bits | (hi & 0x80000000u));\n}\n")
+
+# the name of a function reading element i of a buffer of t (made once per type and stage); past
+# either end it reads the nearest element, as with Vulkan
+gl_gbuf_reader = (t: int, pos: int) -> str:
+    key = -2 - prune(t)
+    nm = "gbr_{prune(t)}"
+    if gl_done_structs.get(key) != none: return nm
+    gl_done_structs[key] = true
+    layout(t)
+    ty = gl_type(t, pos)
+    gl_decls.push("{ty} {nm}(S_GB b, int i) \{\n    int o = clamp(i, 0, max(b.n_ - 1, 0)) * {tsize(t)};\n    return {gl_read(t, "o", 0, pos)};\n}\n")
+    nm
+
+# a value of type t at byte o + c of buffer b (laid out as the CPU lays it out)
+gl_read = (t0: int, o: str, c: int, pos: int) -> str:
+    t = prune(t0)
+    k = types[t].kind
+    a = "{o} + {c}"
+    w = "gb_w(b.t_, ({a}) >> 2)"
+    if k == .float_:
+        if int(types[t].bits) == 64: return "gb_f64({w}, gb_w(b.t_, ({o} + {c + 4}) >> 2))"
+        return "uintBitsToFloat({w})"
+    if k == .int_:
+        bits = int(types[t].bits)
+        if bits >= 32: return "int({w})"
+        sg = "false"
+        if types[t].sign: sg = "true"
+        return "gb_sub(b.t_, {a}, {bits}, {sg})"
+    if k == .bool_: return "(gb_sub(b.t_, {a}, 8, false) != 0)"
+    parts: str[]
+    if k == .vec:
+        if t == T_MAT4:
+            loop col in [0..4): parts.push(gl_read(T_VEC4, o, c + 16 * col, pos))
+        else:
+            loop i in [0..int(types[t].bits)):
+                wi = "gb_w(b.t_, ({o} + {c + 4 * i}) >> 2)"
+                if types[t].sign: parts.push("int({wi})")
+                else: parts.push("uintBitsToFloat({wi})")
+        return "{gl_type(t, pos)}({join(parts, ", ")})"
+    if k == .struct_:
+        si = int(types[t].st)
+        if structs[si].name == "Texture" or is_gpu_buffer(t): gl_err(pos, "a {structs[si].name} cannot be read from a GPU buffer")
+        layout(t)
+        loop i in [0..int(structs[si].nfields)):
+            f = int(structs[si].fields) + i
+            parts.push(gl_read(int(fields[f].type), o, c + int(fields[f].offset), pos))
+        return "{gl_type(t, pos)}({join(parts, ", ")})"
+    if k == .fixed:
+        el = int(types[t].elem)
+        layout(el)
+        loop i in [0..fixed_len(t)): parts.push(gl_read(el, o, c + i * tsize(el), pos))
+        return "{gl_type(t, pos)}({join(parts, ", ")})"
+    gl_err(pos, "type {type_str(t)} cannot be read from a GPU buffer")
     ""
 
 # ---------------- stage wrappers ----------------
@@ -377,6 +453,7 @@ uniform_kind = (t0: int, pos: int) -> str:
         if types[t].sign: return "I"
         return "v{types[t].bits}"
     if k == .struct_ and structs[int(types[t].st)].name == "Texture": return "t"
+    if is_gpu_buffer(t): return "B"
     gl_err(pos, "uniform fields must be numbers, vectors, mat4 or Texture, or fixed-size arrays of them (found {type_str(t)})")
     ""
 
@@ -414,6 +491,7 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str):
         if types[ft].kind == .fixed:
             # an array: its element kind, then the count and the bytes per element
             et = int(types[ft].elem)
+            if is_gpu_buffer(et): gl_err(vpos, "uniforms cannot hold arrays of GPU buffers")
             udesc += ";{f.0},{uniform_kind(et, vpos)},{fo},{fixed_len(ft)},{tsize(et)}"
         else: udesc += ";{f.0},{uniform_kind(f.1, vpos)},{fo}"
     # vertex attributes
@@ -451,7 +529,7 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str):
                 loc += 1
     ofields = gl_struct_fields(otype)
     if ofields.len() == 0 or prune(ofields[0].1) != T_VEC4: gl_err(vpos, "the vertex shader must return a struct whose first field is the clip position (vec4)")
-    vs += "uniform {ustruct} u;\n"
+    vs += "uniform {ustruct} u;\nuniform int sl_ibase;\n"
     loop i in 0.. and f in ofields:
         if i == 0: continue
         q = ""

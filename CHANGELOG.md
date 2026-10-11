@@ -12,6 +12,14 @@ Graphics:
 - The compiler turns shader functions into SPIR-V itself (as well as GLSL), so no shader
   compiler is needed; tools/spirvtest.py checks every module.
 - GPU arrays run as Vulkan compute programs (with no window too).
+- **GPU buffers and compute functions** (lib/game/gpubuffer.jo): `gpu_buffer(xs)` keeps an array
+  of any struct on the GPU; a compute function `f(id: int, params)`, written in Sloppy, runs once
+  per element on the GPU with `dispatch(compute(f), n, params)`, reading and writing buffers by
+  index (`u.bugs[id] = b`), with atomics (`atomic_add`, `atomic_min`, `atomic_compare_exchange`...).
+  Shaders read buffers among their uniforms; buffers can be a mesh's vertices (`gpu_mesh`) or a
+  draw's instances; `draw_indirect` draws as many as a compute function decided (`DrawArgs`).
+  Barriers are automatic. Without Vulkan, buffers are CPU memory and compute functions run on
+  every core, so the same program works with OpenGL, the software renderer and on the web.
 - `fwidth()` in fragment shaders.
 - `SLOPPY_VK_VALIDATE=1` turns on the Khronos validation layer, where it is installed.
 

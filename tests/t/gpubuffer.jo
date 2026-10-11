@@ -1,0 +1,58 @@
+# GPU buffers and compute functions: element layout (bytes, bools, f64, ints, vectors, arrays),
+# atomics, reads and writes past the ends, helpers taking buffers; the same through Vulkan and on the CPU
+# requires: sloppy
+struct Item:
+    a: f32
+    flag: bool
+    small: u8
+    k: int
+    d: f64
+    v: vec3
+    iv: ivec2
+    arr: f32[3]
+
+struct P:
+    items: GpuBuffer[Item]
+    count: GpuBuffer[i32]
+    hist: GpuBuffer[u32]
+    mins: GpuBuffer[i32]
+    seen: GpuBuffer[u32]
+    scale: f32
+
+twice = (b: GpuBuffer[Item], i: int) -> f32: b[i].a * 2.0
+
+kern = (id: int, u: P):
+    it = u.items[id]
+    it.a = twice(u.items, id) + u.scale
+    it.flag = id % 3 == 0
+    it.small = u8(id * 7 % 256)
+    it.k = id * -3
+    it.d = f64(id) * 0.25
+    it.v = vec3(f32(id), 1, 2) * 0.5
+    it.iv = ivec2(i32(id), i32(-id))
+    it.arr = [f32(id), 2.0, 3.0]
+    u.items[id] = it
+    atomic_add(u.count, 0, 1)
+    atomic_add(u.hist, id % 4, u32(1))
+    atomic_min(u.mins, 0, i32(-id))
+    atomic_max(u.mins, 1, i32(id))
+    atomic_or(u.seen, id / 32, u32(1) << u32(id % 32))
+    # (past the end: nothing happens)
+    atomic_add(u.count, 5, 1)
+    u.items[len(u.items) + 3] = it
+    x = u.items[-5].a
+
+items: Item[]
+loop i in [0..100): items.push(Item(a = f32(i)))
+p = P(gpu_buffer(items), gpu_buffer([i32(0)]), gpu_buffer([u32(0), 0, 0, 0]), gpu_buffer([i32(0), 0]), gpu_buffer([u32(0), 0, 0, 0]), 0.5)
+dispatch(compute(kern), 100, p)
+r = cpu(p.items)
+print(r[0])
+print(r[7])
+print(r[99])
+print(cpu(p.count), cpu(p.hist), cpu(p.mins), cpu(p.seen))
+print(p.items[3].k, len(p.items))
+p.items[3] = Item(a = 42.0)
+print(p.items[3].a)
+upload(p.count, [i32(9)])
+print(p.count)

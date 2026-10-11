@@ -9,7 +9,8 @@
 # vertex_id() (and the instance's at instance_id()). The uniforms are read in place from the bytes
 # of the CPU's struct, so a value of the uniforms' type is an address, not a copy: a large array
 # (bones: vec4[192]) is read an element at a time. Clip space is OpenGL's: z goes from -1 to 1 (made
-# 0 to 1 here), and a frame drawn to a texture has row 0 at y = -1.
+# 0 to 1 here), and a frame drawn to a texture has row 0 at y = -1. A GpuBuffer is its address and
+# length; its elements are laid out as the CPU lays them out, read and written a word at a time.
 
 use 'util.jo'
 use 'lex.jo'
@@ -180,6 +181,7 @@ sv_type = (t0: int, pos: int) -> int:
     if k == .struct_:
         si = int(types[t].st)
         if structs[si].name == "Texture": return sv_u32()
+        if is_gpu_buffer(t): return sv_gbuf_type()
         key = "s{si}"
         if let id = sv_cache.get(key): return id
         check_struct_fields(si)
@@ -381,6 +383,10 @@ sv_read = (t0: int, base: int, c: int, d: int, pos: int) -> int:
         si = int(types[t].st)
         layout(t)
         if structs[si].name == "Texture": return sv_word(base, c + sv_field_offset(si, "id"), d)
+        if is_gpu_buffer(t):
+            ao = c + sv_field_offset(si, "addr")
+            a = sv_val(80, sv_uv2(), [sv_word(base, ao, d), sv_word(base, ao + 4, d)])
+            return sv_val(80, sv_gbuf_type(), [a, sv_val(124, sv_i32(), [sv_word(base, c + sv_field_offset(si, "n"), d)])])
         loop i in [0..int(structs[si].nfields)):
             f = int(structs[si].fields) + i
             parts.push(sv_read(int(fields[f].type), base, c + int(fields[f].offset), d, pos))
@@ -431,6 +437,7 @@ sv_ref = (e: int) -> SvRef:
         off = sv_val(132, sv_i32(), [sv_expr(b), sv_ci(stride)])
         if r.d != 0: off = sv_val(128, sv_i32(), [r.d, off])
         return SvRef(r.base, r.c, off, ntype(e))
+    if sv_is_gbuf_op(e, "[]"): return sv_gbuf_elem(e)
     SvRef()
 
 # ---------------- functions ----------------
@@ -470,6 +477,7 @@ sv_start_fn = ():
 sv_function = (f: int):
     decl = int(fns[f].decl)
     if decl == 0 or (nodes[decl].kind != .fn_ and nodes[decl].kind != .lambda): sv_err(0, "only named functions can be used in shaders")
+    if fns[f].caps.len() > 0: sv_err(nodes[decl].pos, "a function that captures variables cannot run on the GPU")
     rt = int(fns[f].ret)
     ret = sv_type(rt, nodes[decl].pos)
     ptys: int[]
@@ -851,7 +859,7 @@ sv_expr = (e: int) -> int:
     t = prune(ntype(e))
     pos = nodes[e].pos
     # (the uniforms, or a part of them: read from memory)
-    if k == .ident or k == .field or k == .index:
+    if k == .ident or k == .field or k == .index or sv_is_gbuf_op(e, "[]"):
         r = sv_ref(e)
         if r.base != 0:
             if prune(r.t) == sv_utype: sv_err(pos, "the uniforms ({type_str(t)}) can only be read in shader code")
@@ -1108,6 +1116,12 @@ sv_call = (e: int) -> int:
             if nm == "texture_size": return sv_val(103, sv_veci(2), [img, sv_ci(0)])
             return sv_val(95, sv_vecf(4), [img, sv_expr(kid(e, 1)), 2, sv_ci(0)])
         if builtin_map.get(nm) != none: return sv_math(nm, e)
+        if nkids(e) > 0 and is_gpu_buffer(ntype(kid(e, 0))):
+            if nm == "len": return sv_gbuf_len(sv_expr(kid(e, 0)))
+            if nm == "[]=":
+                sv_gbuf_store(e)
+                return 0
+            if let op = sv_atomic_ops.get(nm): return sv_atomic(e, nm, op)
         # (prelude helpers written in Sloppy are translated like user code)
     args: int[]
     back: (int, int)[]        # mut arguments: (argument, the variable passed for it)
@@ -1168,6 +1182,185 @@ sv_math = (nm: str, e: int) -> int:
     w: int[] = [sv_std, op]
     loop a in args: w.push(a)
     sv_val(12, ty, w)
+
+# ---------------- GPU buffers (lib/game/gpubuffer.jo) ----------------
+# A GpuBuffer here is (its address, its length): struct { uvec2, i32 }. Reads past either end read
+# the nearest element; writes (and atomics) past them do nothing. Only compute programs write.
+sv_uv2 = () -> int: sv_type_key("uv2", 23, [sv_u32(), 2])
+sv_gbuf_type = () -> int: sv_type_key("gbuf", 30, [sv_uv2(), sv_i32()])
+sv_gbuf_ptr = (b: int) -> int: sv_val(124, sv_rawptr_w(), [sv_val(81, sv_uv2(), [b, 0])])
+sv_gbuf_len = (b: int) -> int: sv_val(81, sv_i32(), [b, 1])
+
+# e is a call of the library's operation `name` on a GpuBuffer (its first argument)
+sv_is_gbuf_op = (e: int, name: str) -> bool:
+    if nodes[e].kind != .call or nodes[e].aux != 0 or nkids(e) == 0: return false
+    decl = int(fns[int(nodes[e].sym)].decl)
+    decl != 0 and modules[int(nodes[decl].mod)].is_prelude and name_of(int(nodes[decl].name)) == name and is_gpu_buffer(ntype(kid(e, 0)))
+
+# b[i]: where the element is
+sv_gbuf_elem = (e: int) -> SvRef:
+    i32_ = sv_i32()
+    b = sv_expr(kid(e, 0))
+    i = sv_expr(kid(e, 1))
+    hi = sv_val(12, i32_, [sv_std, 42, sv_val(130, i32_, [sv_gbuf_len(b), sv_ci(1)]), sv_ci(0)])
+    i = sv_val(12, i32_, [sv_std, 45, i, sv_ci(0), hi])
+    et = gpu_buffer_elem(ntype(kid(e, 0)))
+    layout(et)
+    SvRef(sv_gbuf_ptr(b), 0, sv_val(132, i32_, [i, sv_ci(tsize(et))]), et)
+
+# the block that runs only when index i is inside buffer b: (the block left, the merge block)
+sv_gbuf_inside = (b: int, i: int) -> (int, int):
+    u = sv_u32()
+    inside = sv_val(176, sv_bool(), [sv_val(124, u, [i]), sv_val(124, u, [sv_gbuf_len(b)])])
+    from_ = sv_label
+    then = sv_new()
+    merge = sv_new()
+    sv_code(247, [merge, 0])
+    sv_cond_branch(inside, then, merge)
+    sv_begin(then)
+    (from_, merge)
+
+# b[i] = v
+sv_gbuf_store = (e: int):
+    pos = nodes[e].pos
+    if sv_stage != "compute": sv_err(pos, "GPU buffers are written by compute programs only")
+    bt = ntype(kid(e, 0))
+    b = sv_expr(kid(e, 0))
+    i = sv_expr(kid(e, 1))
+    v = sv_expr(kid(e, 2))
+    et = gpu_buffer_elem(bt)
+    layout(et)
+    _, merge = sv_gbuf_inside(b, i)
+    sv_write(et, sv_gbuf_ptr(b), 0, sv_val(132, sv_i32(), [i, sv_ci(tsize(et))]), v, pos)
+    sv_branch(merge)
+    sv_begin(merge)
+
+# a pointer to the word at byte offset (c + d) of buffer memory base
+sv_word_ptr = (base: int, c: int, d: int) -> int:
+    idx = sv_ci(c >> 2)
+    if d != 0:
+        off = d
+        if c != 0: off = sv_val(128, sv_i32(), [d, sv_ci(c)])
+        idx = sv_val(195, sv_i32(), [off, sv_ci(2)])
+    sv_val(65, sv_ptr(SC_PSB, sv_u32()), [base, sv_ci(0), idx])
+
+sv_store_word = (base: int, c: int, d: int, w: int): sv_code(62, [sv_word_ptr(base, c, d), w, 2, 4])
+
+# the low `bits` bits of v (an i32) to bits [8 * ((c + d) & 3), ...) of their word: cleared, then
+# set, each atomically, so that the bytes beside them, which other invocations may write, stay
+sv_store_sub = (base: int, c: int, d: int, bits: int, v: int):
+    u = sv_u32()
+    p = 0
+    shift = 0
+    if d == 0:
+        p = sv_word_ptr(base, c & -4, 0)
+        shift = sv_cu((c & 3) * 8)
+    else:
+        off = d
+        if c != 0: off = sv_val(128, sv_i32(), [d, sv_ci(c)])
+        p = sv_word_ptr(base, 0, sv_val(199, sv_i32(), [off, sv_ci(-4)]))
+        shift = sv_val(124, u, [sv_val(132, sv_i32(), [sv_val(199, sv_i32(), [off, sv_ci(3)]), sv_ci(8)])])
+    ones = sv_cu((1 << bits) - 1)
+    mask = sv_val(196, u, [ones, shift])
+    val = sv_val(196, u, [sv_val(199, u, [sv_val(124, u, [v]), ones]), shift])
+    sv_val(240, u, [p, sv_cu(1), sv_cu(0), sv_val(200, u, [mask])])
+    sv_val(241, u, [p, sv_cu(1), sv_cu(0), val])
+
+# an f32 as an f64's two words (low, high); numbers too small for an f32's normal range become 0
+sv_to_f64 = (v: int) -> (int, int):
+    u = sv_u32()
+    b = sv_bool()
+    bits = sv_val(124, u, [v])
+    sign = sv_val(199, u, [bits, sv_cu(0x80000000)])
+    e = sv_val(199, u, [sv_val(194, u, [bits, sv_cu(23)]), sv_cu(0xFF)])
+    m = sv_val(199, u, [bits, sv_cu(0x7FFFFF)])
+    mhi = sv_val(194, u, [m, sv_cu(3)])
+    lo = sv_val(196, u, [m, sv_cu(29)])
+    hi = sv_val(197, u, [sign, sv_val(197, u, [sv_val(196, u, [sv_val(128, u, [e, sv_cu(896)]), sv_cu(20)]), mhi])])
+    hi = sv_val(169, u, [sv_val(170, b, [e, sv_cu(0xFF)]), sv_val(197, u, [sign, sv_val(197, u, [sv_cu(0x7FF00000), mhi])]), hi])
+    zero = sv_val(170, b, [e, sv_cu(0)])
+    (sv_val(169, u, [zero, sv_cu(0), lo]), sv_val(169, u, [zero, sign, hi]))
+
+# value v of type t written at byte offset (c + d) of buffer memory base, laid out as the CPU does
+sv_write = (t0: int, base: int, c: int, d: int, v: int, pos: int):
+    t = prune(t0)
+    k = types[t].kind
+    u = sv_u32()
+    if k == .float_:
+        if int(types[t].bits) == 64:
+            lo, hi = sv_to_f64(v)
+            sv_store_word(base, c, d, lo)
+            sv_store_word(base, c + 4, d, hi)
+        else: sv_store_word(base, c, d, sv_val(124, u, [v]))
+        return
+    if k == .int_:
+        bits = int(types[t].bits)
+        if bits < 32:
+            sv_store_sub(base, c, d, bits, v)
+            return
+        sv_store_word(base, c, d, sv_val(124, u, [v]))
+        if bits == 64:
+            hi = sv_cu(0)
+            if types[t].sign: hi = sv_val(124, u, [sv_val(195, sv_i32(), [v, sv_ci(31)])])
+            sv_store_word(base, c + 4, d, hi)
+        return
+    if k == .bool_:
+        sv_store_sub(base, c, d, 8, sv_val(169, sv_i32(), [v, sv_ci(1), sv_ci(0)]))
+        return
+    if k == .vec:
+        if t == T_MAT4:
+            loop col in [0..4): sv_write(T_VEC4, base, c + 16 * col, d, sv_val(81, sv_vecf(4), [v, col]), pos)
+            return
+        ct = sv_f32()
+        if types[t].sign: ct = sv_i32()
+        loop i in [0..int(types[t].bits)): sv_store_word(base, c + 4 * i, d, sv_val(124, u, [sv_val(81, ct, [v, i])]))
+        return
+    if k == .struct_:
+        si = int(types[t].st)
+        if structs[si].name == "Texture" or is_gpu_buffer(t): sv_err(pos, "a {structs[si].name} cannot be written into a GPU buffer")
+        layout(t)
+        loop i in [0..int(structs[si].nfields)):
+            f = int(structs[si].fields) + i
+            ft = int(fields[f].type)
+            sv_write(ft, base, c + int(fields[f].offset), d, sv_val(81, sv_type(ft, pos), [v, i]), pos)
+        return
+    if k == .fixed:
+        el = int(types[t].elem)
+        layout(el)
+        loop i in [0..fixed_len(t)): sv_write(el, base, c + i * tsize(el), d, sv_val(81, sv_type(el, pos), [v, i]), pos)
+        return
+    sv_err(pos, "type {type_str(t)} cannot be written into a GPU buffer")
+
+# atomic operations on an element of a GpuBuffer[i32] or GpuBuffer[u32]: (signed, unsigned) opcode
+sv_atomic_ops: {str: (int, int)} = {
+    "atomic_add": (234, 234), "atomic_sub": (235, 235), "atomic_min": (236, 237), "atomic_max": (238, 239),
+    "atomic_and": (240, 240), "atomic_or": (241, 241), "atomic_xor": (242, 242), "atomic_exchange": (229, 229),
+    "atomic_compare_exchange": (230, 230),
+}
+
+# atomic_op(b, i, v...): the element's old value (0 past the ends, where nothing is done)
+sv_atomic = (e: int, nm: str, ops: (int, int)) -> int:
+    pos = nodes[e].pos
+    if sv_stage != "compute": sv_err(pos, "{nm}() can be used in compute programs only")
+    et = prune(gpu_buffer_elem(ntype(kid(e, 0))))
+    if types[et].kind != .int_ or int(types[et].bits) != 32: sv_err(pos, "atomic operations work on GpuBuffer[i32] and GpuBuffer[u32]")
+    u = sv_u32()
+    b = sv_expr(kid(e, 0))
+    i = sv_expr(kid(e, 1))
+    vals: int[]
+    loop j in [2..nkids(e)): vals.push(sv_val(124, u, [sv_expr(kid(e, j))]))
+    from_, merge = sv_gbuf_inside(b, i)
+    p = sv_word_ptr(sv_gbuf_ptr(b), 0, sv_val(132, sv_i32(), [i, sv_ci(4)]))
+    op = ops.0
+    if not types[et].sign: op = ops.1
+    r = 0
+    # (compare_exchange(b, i, expected, desired): the value is the desired one)
+    if op == 230: r = sv_val(op, u, [p, sv_cu(1), sv_cu(0), sv_cu(0), vals[1], vals[0]])
+    else: r = sv_val(op, u, [p, sv_cu(1), sv_cu(0), vals[0]])
+    then_end = sv_label
+    sv_branch(merge)
+    sv_begin(merge)
+    sv_val(124, sv_i32(), [sv_val(245, u, [r, then_end, sv_cu(0), from_])])
 
 # ---------------- the stages ----------------
 sv_reset = (stage: str):
@@ -1415,6 +1608,18 @@ sv_rawptr_w = () -> int:
     sv_cache["rawptrw"] = p
     p
 
+# this invocation's index: they are laid out in rows of all the x groups (as many as there may be,
+# 65535, then more rows)
+sv_invocation = () -> int:
+    i = sv_i32()
+    uv3 = sv_type_key("uv3", 23, [sv_u32(), 3])
+    gid = sv_load(uv3, sv_builtin_var(uv3, SC_INPUT, 28))
+    ng = sv_load(uv3, sv_builtin_var(uv3, SC_INPUT, 24))
+    gx = sv_val(124, i, [sv_val(81, sv_u32(), [gid, 0])])
+    gy = sv_val(124, i, [sv_val(81, sv_u32(), [gid, 1])])
+    nx = sv_val(124, i, [sv_val(81, sv_u32(), [ng, 0])])
+    sv_val(128, i, [gx, sv_val(132, i, [gy, sv_val(132, i, [nx, sv_ci(SV_KERNEL_GROUP)])])])
+
 spirv_kernel = (f: int, desc: str) -> str:
     sv_translated = {}
     sv_reset("kernel")
@@ -1428,17 +1633,8 @@ spirv_kernel = (f: int, desc: str) -> str:
     sv_start_fn()
     i = sv_i32()
     bo = sv_bool()
-    uv3 = sv_type_key("uv3", 23, [sv_u32(), 3])
-    gid_var = sv_builtin_var(uv3, SC_INPUT, 28)
-    ngroups_var = sv_builtin_var(uv3, SC_INPUT, 24)
     params = sv_pc_get(SV_PC_PARAMS)
-    # (the element: invocations are laid out in rows of all the x groups)
-    gid = sv_load(uv3, gid_var)
-    ng = sv_load(uv3, ngroups_var)
-    gx = sv_val(124, i, [sv_val(81, sv_u32(), [gid, 0])])
-    gy = sv_val(124, i, [sv_val(81, sv_u32(), [gid, 1])])
-    nx = sv_val(124, i, [sv_val(81, sv_u32(), [ng, 0])])
-    idx = sv_val(128, i, [gx, sv_val(132, i, [gy, sv_val(132, i, [nx, sv_ci(SV_KERNEL_GROUP)])])])
+    idx = sv_invocation()
     total = sv_val(124, i, [sv_word(params, 24, 0)])
     done = sv_new()
     body = sv_new()
@@ -1494,6 +1690,41 @@ spirv_kernel = (f: int, desc: str) -> str:
     out = sv_addr_at(params, 0, sv_rawptr_w())
     dst = sv_val(65, sv_ptr(SC_PSB, sv_u32()), [out, sv_ci(0), idx])
     sv_code(62, [dst, bits, 2, 4])
+    sv_branch(done)
+    sv_begin(done)
+    sv_code(253, [])
+    sv_dead = true
+    sv_finish_fn(head)
+    sv_drain()
+    m = sv_module(5, main)
+    if let dir = env("SLOPPY_SPIRV_DUMP"):
+        write_file("{dir}/{sv_dumped}.comp.spv", m)
+        sv_dumped += 1
+    m
+
+# ---------------- compute programs ----------------
+# compute(f) (lib/game/gpubuffer.jo): f(id, params) for each id in [0, n). The push constants hold
+# the parameters' address (as for the stages) and n (where the vertex stride is).
+spirv_compute = (f: int) -> str:
+    sv_translated = {}
+    sv_reset("compute")
+    pos = nodes[int(fns[f].decl)].pos
+    sv_utype = prune(int(fns[f].ptypes[1]))
+    sv_fn_id(f)
+    sv_drain()
+    main = sv_new()
+    head: int[]
+    sv_ins(head, 54, [sv_void(), main, 0, sv_fntype(sv_void(), [])])
+    sv_start_fn()
+    params = sv_pc_get(SV_PC_PARAMS)
+    idx = sv_invocation()
+    inside = sv_val(177, sv_bool(), [idx, sv_pc_get(SV_PC_VSTRIDE)])
+    done = sv_new()
+    body = sv_new()
+    sv_code(247, [done, 0])
+    sv_cond_branch(inside, body, done)
+    sv_begin(body)
+    sv_val(57, sv_void(), [sv_fn_id(f), idx, params])
     sv_branch(done)
     sv_begin(done)
     sv_code(253, [])

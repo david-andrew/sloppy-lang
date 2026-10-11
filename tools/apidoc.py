@@ -44,6 +44,10 @@ TOPICS = [
     ("Games", "sound", "Sound and music", ["game/audio", "game/vorbis"], "sound", ""),
     ("Games", "gpu", "GPU programs", ["game/gpu"], "gpu", ""),
     ("Games", "gpuarray", "GPU arrays", ["game/gpuarray"], "gpuarray", ""),
+    ("Games", "gpubuffer", "GPU buffers and compute", ["game/gpubuffer"], "gpubuffer",
+     "For programs that keep their data on the GPU: buffers of any struct, functions run once per element "
+     "(`compute`, `dispatch`) and draws the GPU decides (`draw_indirect`). Through Vulkan these run on the GPU; "
+     "elsewhere on the CPU, so programs work everywhere."),
     ("Games", "menus", "Menus", ["game/ui"], "menus", ""),
     ("Games", "paths", "Paths", ["game/paths"], "paths", ""),
     ("Games", "helpers", "Particles, noise, easing and collisions", ["game/gameutil"], "helpers", ""),

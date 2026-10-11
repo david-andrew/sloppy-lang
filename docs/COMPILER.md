@@ -26,7 +26,7 @@ rebuild.
 | check | `check.jo`, `expr.jo`, `types.jo` | modules and scopes, type inference, overloads, generic instances; rewrites nodes in place |
 | lower | `lower.jo`, `ir.jo` | typed AST to IR: reference counting, copy-on-write, closures, formatting |
 | optimize | `opt.jo`; release only: `inline.jo`, `loops.jo` | folding, copy propagation, dead code; inlining, loop versioning and vectorizing |
-| code | `x64.jo`, `wasm.jo`, `spirv.jo`, `glsl.jo` | register allocation and x86-64 encoding; WebAssembly; shaders as SPIR-V and as GLSL |
+| code | `x64.jo`, `wasm.jo`, `spirv.jo`, `glsl.jo` | register allocation and x86-64 encoding; WebAssembly; shaders and compute functions as SPIR-V, shaders as GLSL |
 | write | `elf.jo`, `pe.jo`, `dwarf.jo` | Linux and Windows executables, debug information |
 | drive | `main.jo` | the command line, targets and the build block, the order of the above |
 | editors | `ide.jo`, `lsp.jo` | what a check learned, as lines; the language server |

@@ -88,7 +88,9 @@ browser](https://sloppy-lang.org/breakwater/).
 - **Numeric arrays.** numpy-style elementwise operators that broadcast (`a .* b .+ 1`,
   `f.(xs)`) and compile to one fused loop, 2-D arrays (`[1 2; 3 4]`, matrix products),
   `zeros`/`linspace`/`rand`..., struct-of-arrays storage (`soa Particle[]`), and GPU arrays
-  (`gpu(xs)`): the same dotted expressions on them compile to a GPU program.
+  (`gpu(xs)`): the same dotted expressions on them compile to a GPU program. For more control,
+  buffers of any struct on the GPU and compute functions written in Sloppy (`dispatch`, atomics,
+  indirect draws).
 - **Predictable.** Plain value semantics: arrays, strings and maps are reference counted with
   copy-on-write, so there is no garbage collector, no reference cycles and no hidden aliasing.
 - **Batteries for games.** Windows and input, 2D drawing with SDF text, a 3D renderer with
@@ -266,7 +268,11 @@ written into per-frame upload memory, device memory in a few large blocks. The c
 translates the same shader functions to SPIR-V itself (`compiler/spirv.jo`), so no shader
 compiler is needed either. The library's GL calls become Vulkan calls (`lib/game/vkgl.jo`):
 frames come out the same through either (`tools/vkcompare.py`, and the render tests through
-Vulkan, in CI too on Mesa's software driver). `SLOPPY_VULKAN=0` uses OpenGL.
+Vulkan, in CI too on Mesa's software driver). `SLOPPY_VULKAN=0` uses OpenGL. Programs can use
+that machinery directly (`lib/game/gpubuffer.jo`): a `GpuBuffer[T]` is a buffer read by its
+address, a compute function a compute program, `draw_indirect` an indirect draw, with the
+barriers between them made automatically. Without Vulkan the same buffers are CPU memory and
+compute functions run on the CPU, so such programs run everywhere.
 
 The web backend emits WebAssembly from the same IR; the HTML file contains the module (base64)
 and a small JavaScript runtime for WebGL 2, input and audio.

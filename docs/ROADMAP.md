@@ -159,10 +159,14 @@ target bug came from two copies of it), and document invariants per phase.
 Done: the library draws through Vulkan 1.3 by default on Linux and Windows, in the style of
 mr_gpu (bindless textures, buffer device addresses, dynamic rendering, synchronization2, upload
 memory per frame, memory in large blocks); shaders compiled to SPIR-V by the compiler; GPU
-arrays as compute programs. Left:
-- An explicit API for those who want the hardware's whole power: buffers by address, compute
-  programs written in Sloppy, indirect draws, barriers (what mr_gpu offers), alongside draw2d and
-  draw3d.
+arrays as compute programs; GPU buffers and compute functions written in Sloppy (buffers read by
+address, atomics, indirect draws, automatic barriers; on the CPU without Vulkan). Left:
+- More of the explicit API: barriers by hand (independent dispatches without one between them),
+  draw counts read from a buffer (vkCmdDrawIndexedIndirectCount), 2D and 3D dispatch ids,
+  workgroup shared memory and subgroup operations, textures by index in buffers, writes and
+  atomics from fragment shaders.
+- `b[i].field = v` for types with `[]=` (now: read the element, change it, write it back), and
+  type arguments at calls (`gpu_buffer[T](n)`; now: `b: GpuBuffer[T] = gpu_buffer(n)`).
 - GPU arrays' reductions on the GPU (they finish on the CPU with Vulkan).
 - Real hardware beyond NVIDIA and Mesa's software driver: Intel, AMD, Windows drivers.
 - A pipeline cache on disk; pipelines made before they are first drawn with.

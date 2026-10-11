@@ -580,6 +580,29 @@ needed), else OpenGL ES; web builds WebGL 2. Where none of them can (no driver,
 `SLOPPY_SOFTWARE=1`, an old browser) the same expressions run on the CPU, so programs work
 everywhere; `gpu_available()` tells which.
 
+**GPU buffers and compute functions.** For data that lives on the GPU: `gpu_buffer(xs)` holds
+an array of any struct there, and a *compute function* `f(id: int, params: P)`, written like a
+shader function, runs once for each `id` — on the GPU — when `dispatch(compute(f), n, params)`
+is called. It reads and writes the buffers among its parameters by index:
+
+```gdscript
+step = (id: int, u: Step):           # struct Step: bugs: GpuBuffer[Bug]; dt: f32
+    b = u.bugs[id]
+    b.pos += b.vel * u.dt
+    u.bugs[id] = b
+
+dispatch(compute(step), len(bugs), Step(bugs, dt))
+```
+
+Shaders read buffers among their uniforms too (`u.bugs[instance_id()]`), a buffer can be a
+mesh's vertices (`gpu_mesh`) or a draw's instances, and `draw_indirect` takes the counts of its
+draws from a buffer that compute functions fill (GPU-driven drawing). `atomic_add` and the other
+atomics change an element that many invocations change at once; what a dispatch writes is
+seen by every dispatch and draw after it. Through Vulkan buffers are GPU memory read by
+address and compute functions compute programs (SPIR-V made by the compiler); elsewhere
+(OpenGL, the software renderer, the web) they are CPU memory and the same functions run on the
+CPU's cores, so the program behaves the same. `gpu_compute()` tells which.
+
 ## 9. Modules
 
 A module is a file: `'physics.jo'` (relative to the importing file) or a standard-library
