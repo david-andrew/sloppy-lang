@@ -831,6 +831,8 @@ when TARGET != "wasm":
     __vk_sc_images: int[]
     __vk_sc_w = 0
     __vk_sc_h = 0
+    __vk_sc_req_w = 0              # the size asked for (the surface may differ)
+    __vk_sc_req_h = 0
     __vk_sc_rendered: int[]        # per swapchain image: signaled when its frame is drawn
     __vk_sc_layout_fresh: bool[]   # per swapchain image: not presented yet (layout undefined)
 
@@ -1082,15 +1084,112 @@ when TARGET != "wasm":
             if found < 0: found = i
         found
 
-    __vk_alloc = (req: VkMemoryRequirements, want: u32, like: u32, address: bool) -> int:
-        t = __vk_memory_type(req.type_bits, want, like)
-        if t < 0: panic("Vulkan: no suitable memory")
+    # Device memory comes in large blocks (64 MiB), each resource a range of one (what does not fit
+    # in half a block gets a block of its own, as do host-visible buffers, which are mapped); buffers
+    # and images keep to blocks of their own kind (bufferImageGranularity). A resource's memory is
+    # the id of its range.
+    const __VK_MEM_BLOCK = 64 << 20
+
+    struct __VkMemBlock:
+        mem: int
+        type: int
+        kind: int                  # 0 buffers, 1 images
+        size: int
+        dedicated: bool
+        free_off: int[]            # free ranges, in order
+        free_size: int[]
+        ptr: *u8                   # mapped (host-visible), or null
+
+    struct __VkRange:
+        block: int
+        off: int
+        size: int
+
+    __vk_mblocks: __VkMemBlock[]
+    __vk_ranges: __VkRange[] = [__VkRange()]
+    __vk_free_ranges: int[]
+
+    __vk_new_block = (t: int, kind: int, size: int, dedicated: bool, host: bool) -> int:
         flags = VkMemoryAllocateFlagsInfo(stype = 1000060000, flags = 2)    # device address
-        info = VkMemoryAllocateInfo(stype = 5, size = req.size, type_index = u32(t))
-        if address: info.next = (&flags) as *u8
+        info = VkMemoryAllocateInfo(stype = 5, next = (&flags) as *u8, size = u64(size), type_index = u32(t))
         mem = 0
         __vk_check(vkAllocateMemory(__vk_dev, (&info) as *u8, null, &mem), "vkAllocateMemory")
-        mem
+        b = __VkMemBlock(mem = mem, type = t, kind = kind, size = size, dedicated = dedicated)
+        b.free_off.push(0)
+        b.free_size.push(size)
+        if host: __vk_check(vkMapMemory(__vk_dev, mem, 0, u64(0) - u64(1), 0, &b.ptr), "vkMapMemory")
+        __vk_mblocks.push(b)
+        __vk_mblocks.len() - 1
+
+    # a range of n bytes (aligned) in block bi, or -1
+    __vk_fit = (bi: int, n: int, align: int) -> int:
+        loop i in [0..__vk_mblocks[bi].free_off.len()):
+            o = __vk_mblocks[bi].free_off[i]
+            z = __vk_mblocks[bi].free_size[i]
+            start = (o + align - 1) / align * align
+            if start + n > o + z: continue
+            # (what is left before and after it stays free)
+            __vk_mblocks[bi].free_off.remove(i)
+            __vk_mblocks[bi].free_size.remove(i)
+            k = i
+            if start > o:
+                __vk_mblocks[bi].free_off.insert(k, o)
+                __vk_mblocks[bi].free_size.insert(k, start - o)
+                k += 1
+            if start + n < o + z:
+                __vk_mblocks[bi].free_off.insert(k, start + n)
+                __vk_mblocks[bi].free_size.insert(k, o + z - start - n)
+            r = __VkRange(bi, start, n)
+            if __vk_free_ranges.len() > 0:
+                id = __vk_free_ranges.pop()
+                __vk_ranges[id] = r
+                return id
+            __vk_ranges.push(r)
+            return __vk_ranges.len() - 1
+        -1
+
+    __vk_alloc = (req: VkMemoryRequirements, want: u32, like: u32, kind: int) -> int:
+        t = __vk_memory_type(req.type_bits, want, like)
+        if t < 0: panic("Vulkan: no suitable memory")
+        n = int(req.size)
+        align = max(int(req.alignment), 1)
+        host = want & u32(VK_MEM_HOST_VISIBLE) != 0
+        if host or n > __VK_MEM_BLOCK / 2: return __vk_fit(__vk_new_block(t, kind, n, true, host), n, 1)
+        loop bi in [0..__vk_mblocks.len()):
+            if __vk_mblocks[bi].type != t or __vk_mblocks[bi].kind != kind or __vk_mblocks[bi].dedicated: continue
+            r = __vk_fit(bi, n, align)
+            if r >= 0: return r
+        __vk_fit(__vk_new_block(t, kind, __VK_MEM_BLOCK, false, false), n, align)
+
+    __vk_range_mem = (r: int) -> int: __vk_mblocks[__vk_ranges[r].block].mem
+    __vk_range_off = (r: int) -> int: __vk_ranges[r].off
+
+    # give a range back (a block of its own is freed whole)
+    __vk_mem_free = (r: int):
+        if r <= 0: return
+        rg = __vk_ranges[r]
+        bi = rg.block
+        __vk_free_ranges.push(r)
+        __vk_ranges[r] = __VkRange()
+        if __vk_mblocks[bi].dedicated:
+            vkFreeMemory(__vk_dev, __vk_mblocks[bi].mem, null)
+            __vk_mblocks[bi].type = -1
+            __vk_mblocks[bi].mem = 0
+            return
+        offs = __vk_mblocks[bi].free_off
+        k = 0
+        loop k < offs.len() and offs[k] < rg.off: k += 1
+        __vk_mblocks[bi].free_off.insert(k, rg.off)
+        __vk_mblocks[bi].free_size.insert(k, rg.size)
+        # (joined with the free ranges next to it)
+        if k + 1 < __vk_mblocks[bi].free_off.len() and __vk_mblocks[bi].free_off[k] + __vk_mblocks[bi].free_size[k] == __vk_mblocks[bi].free_off[k + 1]:
+            __vk_mblocks[bi].free_size[k] += __vk_mblocks[bi].free_size[k + 1]
+            __vk_mblocks[bi].free_off.remove(k + 1)
+            __vk_mblocks[bi].free_size.remove(k + 1)
+        if k > 0 and __vk_mblocks[bi].free_off[k - 1] + __vk_mblocks[bi].free_size[k - 1] == __vk_mblocks[bi].free_off[k]:
+            __vk_mblocks[bi].free_size[k - 1] += __vk_mblocks[bi].free_size[k]
+            __vk_mblocks[bi].free_off.remove(k)
+            __vk_mblocks[bi].free_size.remove(k)
 
     # ---------------- buffers ----------------
     struct __VkBuffer:
@@ -1107,9 +1206,10 @@ when TARGET != "wasm":
         req = VkMemoryRequirements()
         vkGetBufferMemoryRequirements(__vk_dev, b.buffer, (&req) as *u8)
         address = usage & 0x20000 != 0
-        b.mem = __vk_alloc(req, want, like, address)
-        __vk_check(vkBindBufferMemory(__vk_dev, b.buffer, b.mem, 0), "vkBindBufferMemory")
-        if want & u32(VK_MEM_HOST_VISIBLE) != 0: __vk_check(vkMapMemory(__vk_dev, b.mem, 0, u64(0) - u64(1), 0, &b.ptr), "vkMapMemory")
+        b.mem = __vk_alloc(req, want, like, 0)
+        __vk_check(vkBindBufferMemory(__vk_dev, b.buffer, __vk_range_mem(b.mem), u64(__vk_range_off(b.mem))), "vkBindBufferMemory")
+        p = __vk_mblocks[__vk_ranges[b.mem].block].ptr
+        if p != null: b.ptr = p + __vk_range_off(b.mem)
         if address:
             ai = VkBufferDeviceAddressInfo(stype = 1000244001, buffer = b.buffer)
             b.addr = int(vkGetBufferDeviceAddress(__vk_dev, (&ai) as *u8))
@@ -1118,7 +1218,7 @@ when TARGET != "wasm":
     __vk_free_buffer = (b: __VkBuffer):
         if b.buffer == 0: return
         vkDestroyBuffer(__vk_dev, b.buffer, null)
-        vkFreeMemory(__vk_dev, b.mem, null)
+        __vk_mem_free(b.mem)
 
     # a memory dependency (no layouts): e.g. a transfer's writes before the host reads them
     __vk_memory_barrier = (cb: *u8, src_stages: int, src_access: int, dst_stages: int, dst_access: int):
@@ -1133,8 +1233,8 @@ when TARGET != "wasm":
         __vk_check(vkCreateImage(__vk_dev, (&info) as *u8, null, &img.image), "vkCreateImage")
         req = VkMemoryRequirements()
         vkGetImageMemoryRequirements(__vk_dev, img.image, (&req) as *u8)
-        img.mem = __vk_alloc(req, u32(VK_MEM_DEVICE_LOCAL), 0, false)
-        __vk_check(vkBindImageMemory(__vk_dev, img.image, img.mem, 0), "vkBindImageMemory")
+        img.mem = __vk_alloc(req, u32(VK_MEM_DEVICE_LOCAL), 0, 1)
+        __vk_check(vkBindImageMemory(__vk_dev, img.image, __vk_range_mem(img.mem), u64(__vk_range_off(img.mem))), "vkBindImageMemory")
         img.view = __vk_view(img.image, format, aspect)
         img
 
@@ -1148,7 +1248,7 @@ when TARGET != "wasm":
         if img.image == 0: return
         vkDestroyImageView(__vk_dev, img.view, null)
         vkDestroyImage(__vk_dev, img.image, null)
-        vkFreeMemory(__vk_dev, img.mem, null)
+        __vk_mem_free(img.mem)
 
     # a layout transition (and the memory dependency that goes with it) for an image
     __vk_barrier = (cb: *u8, img: mut __VkImage, layout: u32, src_stages: int, src_access: int, dst_stages: int, dst_access: int):
@@ -1163,6 +1263,8 @@ when TARGET != "wasm":
 
     # ---------------- the swapchain ----------------
     __vk_make_swapchain = (w: int, h: int):
+        __vk_sc_req_w = w
+        __vk_sc_req_h = h
         caps = fill(u8(0), 64)
         __vk_check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(__vk_pd, __vk_surface, data(caps)), "vkGetPhysicalDeviceSurfaceCapabilitiesKHR")
         cu = data(caps) as *u32
@@ -1176,6 +1278,10 @@ when TARGET != "wasm":
             height = int(cu[3])
         width = clamp(width, int(cu[4]), int(cu[6]))
         height = clamp(height, int(cu[5]), int(cu[7]))
+        if width <= 0 or height <= 0:
+            __vk_sc_w = 0
+            __vk_sc_h = 0
+            return
         transform = cu[10]
         alpha_ok = cu[11]
         images = min_images + 1
@@ -1232,12 +1338,12 @@ when TARGET != "wasm":
 
     # the screen image (and its depth) at the window's size
     __vk_resize_screen = (w: int, h: int):
-        if __vk_screen.width == w and __vk_screen.height == h: return
+        if __vk_screen.width == max(w, 1) and __vk_screen.height == max(h, 1): return
         vkDeviceWaitIdle(__vk_dev)
         __vk_free_image(__vk_screen)
         __vk_free_image(__vk_screen_depth)
-        __vk_screen = __vk_image(w, h, u32(VK_FORMAT_R8G8B8A8_UNORM), u32(VK_USAGE_COLOR | VK_USAGE_TRANSFER_SRC | VK_USAGE_TRANSFER_DST | VK_USAGE_SAMPLED), 1)
-        __vk_screen_depth = __vk_image(w, h, u32(VK_FORMAT_D32_SFLOAT), u32(VK_USAGE_DEPTH), 2)
+        __vk_screen = __vk_image(max(w, 1), max(h, 1), u32(VK_FORMAT_R8G8B8A8_UNORM), u32(VK_USAGE_COLOR | VK_USAGE_TRANSFER_SRC | VK_USAGE_TRANSFER_DST | VK_USAGE_SAMPLED), 1)
+        __vk_screen_depth = __vk_image(max(w, 1), max(h, 1), u32(VK_FORMAT_D32_SFLOAT), u32(VK_USAGE_DEPTH), 2)
 
     # ---------------- frames ----------------
     __vk_cb = () -> *u8: __vk_frames[__vk_frame].cb
@@ -1257,6 +1363,11 @@ when TARGET != "wasm":
         __vk_recording = true
         __vk_resize_screen(__win_w, __win_h)
 
+    # (Wayland, when the window draws its own title bar: its pixels, BGRX rows top first, shown
+    # above the frame)
+    __vk_bar: u8[]
+    __vk_bar_h = 0
+
     # show the frame: copy the screen into the next swapchain image (turned over: the screen's
     # row 0 is the bottom), submit, present
     __vk_present = ():
@@ -1268,7 +1379,17 @@ when TARGET != "wasm":
             return
         f = __vk_frames[__vk_frame]
         cb = f.cb
-        if __vk_swapchain == 0 or __vk_sc_w != __win_w or __vk_sc_h != __win_h: __vk_make_swapchain(__win_w, __win_h)
+        if __win_w <= 0 or __win_h <= 0:
+            # (minimized: the frame is drawn but not shown)
+            __vk_submit_and_wait()
+            __vk_frame = (__vk_frame + 1) % __VK_FRAMES
+            return
+        win_h = __win_h + __vk_bar_h
+        if __vk_swapchain == 0 or __vk_sc_req_w != __win_w or __vk_sc_req_h != win_h: __vk_make_swapchain(__win_w, win_h)
+        if __vk_sc_w <= 0 or __vk_sc_h <= 0:
+            __vk_submit_and_wait()
+            __vk_frame = (__vk_frame + 1) % __VK_FRAMES
+            return
         idx: u32 = 0
         r = vkAcquireNextImageKHR(__vk_dev, __vk_swapchain, u64(0) - u64(1), f.acquired, 0, &idx)
         if r == VK_OUT_OF_DATE:
@@ -1279,10 +1400,23 @@ when TARGET != "wasm":
         sc_img = __vk_sc_images[int(idx)]
         __vk_barrier(cb, __vk_screen, u32(VK_LAYOUT_TRANSFER_SRC), VK_STAGE_ALL, VK_ACCESS_MEMORY_WRITE, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_READ)
         __vk_barrier_raw(cb, sc_img, 1, u32(VK_LAYOUT_UNDEFINED), u32(VK_LAYOUT_TRANSFER_DST), VK_STAGE_TRANSFER, 0, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_WRITE)
+        bar = min(__vk_bar_h, __vk_sc_h)
+        if bar > 0 and __vk_bar.len() >= __vk_sc_w * bar * 4:
+            px = __vk_bar
+            # (drawn as BGRX)
+            if __vk_sc_format == u32(VK_FORMAT_R8G8B8A8_UNORM):
+                loop i in [0..__vk_sc_w * bar):
+                    t = px[i * 4]
+                    px[i * 4] = px[i * 4 + 2]
+                    px[i * 4 + 2] = t
+            blk, off = __vk_upload(data(px), __vk_sc_w * bar * 4)
+            creg = VkBufferImageCopy(offset = u64(off), aspect = 1, layers = 1, width = u32(__vk_sc_w), height = u32(bar), depth = 1)
+            vkCmdCopyBufferToImage(cb, __vk_blocks[blk].buffer, sc_img, u32(VK_LAYOUT_TRANSFER_DST), 1, (&creg) as *u8)
         reg = VkImageBlit2(stype = 1000337008, src_aspect = 1, src_layers = 1, dst_aspect = 1, dst_layers = 1)
         reg.src0[1] = i32(__vk_screen.height)
         reg.src1[0] = i32(__vk_screen.width)
         reg.src1[2] = 1
+        reg.dst0[1] = i32(bar)
         reg.dst1[0] = i32(__vk_sc_w)
         reg.dst1[1] = i32(__vk_sc_h)
         reg.dst1[2] = 1
@@ -1379,11 +1513,11 @@ when TARGET != "wasm":
     __vk_destroy = (d: __VkDead):
         if d.kind == 0:
             vkDestroyBuffer(__vk_dev, d.a, null)
-            vkFreeMemory(__vk_dev, d.b, null)
+            __vk_mem_free(d.b)
         else if d.kind == 1:
             vkDestroyImageView(__vk_dev, d.b, null)
             vkDestroyImage(__vk_dev, d.a, null)
-        else if d.kind == 2: vkFreeMemory(__vk_dev, d.a, null)
+        else if d.kind == 2: __vk_mem_free(d.a)
         else if d.kind == 3: vkDestroyPipeline(__vk_dev, d.a, null)
 
     __vk_defer_image = (img: __VkImage):
