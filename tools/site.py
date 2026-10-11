@@ -304,7 +304,7 @@ draw = ():
     A shield that recharges, two weapons at a time from racks and fallen robots, grenades and melee.
     Animated glTF models (robots and weapons by Quaternius), shadows, bloom and synthesized sound;
     mouse, keyboard alone, or a gamepad.</p>
-    <div class="buttons"><a class="btn primary" href="breakwater/">Play it</a>
+    <div class="buttons"><a class="btn primary" href="breakwater/">Play it</a><a class="btn" href="playground/#example=breakwater">Change it in the playground</a>
     <a class="btn" href="https://github.com/david-andrew/sloppy-lang/blob/master/examples/breakwater/breakwater.jo">Read the source</a></div>
   </div>
 </section>

@@ -82,6 +82,8 @@ a { color: var(--accent); }
 const SLOPPY_COMPILER = "/*SLOPPY_COMPILER*/";
 const SLOPPY_LIB = "/*SLOPPY_LIB*/";
 const SLOPPY_EXAMPLES = /*SLOPPY_EXAMPLES*/;
+// (a game's other files: {inline: {name: base64}} or {fetch: "files/game/", names: [...]})
+const SLOPPY_GAME_FILES = /*SLOPPY_GAME_FILES*/;
 </script>
 <script>
 /*SLOPPY_HIGHLIGHT*/
@@ -178,11 +180,33 @@ for (const name of Object.keys(SLOPPY_EXAMPLES)) {
   o.textContent = name;
   exSel.appendChild(o);
 }
-exSel.addEventListener("change", () => {
+// the files beside the program (a game's icon, models): the last example chosen's, kept with
+// the source so an edited game still finds them
+let playFiles = {};
+async function useExample(name) {
+  localStorage.setItem("sloppy-playground-example", name);
+  const g = SLOPPY_GAME_FILES[name];
+  playFiles = {};
+  if (!g) return;
+  const fromB64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  if (g.inline) for (const n of Object.keys(g.inline)) playFiles[n] = fromB64(g.inline[n]);
+  else {
+    setStatus("loading the game's files…");
+    try {
+      for (const n of g.names) {
+        const r = await fetch(g.fetch + n);
+        if (!r.ok) throw new Error(n + ": " + r.status);
+        playFiles[n] = new Uint8Array(await r.arrayBuffer());
+      }
+    } catch (e) { setStatus("this game's files load only when the playground is served: " + (e && e.message || e), true); }
+  }
+}
+exSel.addEventListener("change", async () => {
   src.value = SLOPPY_EXAMPLES[exSel.value];
   errLine = 0;
   refresh();
   localStorage.setItem("sloppy-playground-source", src.value);
+  await useExample(exSel.value);
   run();
 });
 
@@ -235,11 +259,11 @@ async function startCompiler() {
   ready = true;
 }
 function compile(source) {
-  if (!worker) return Promise.resolve(sloppyHost.compile(source));
+  if (!worker) return Promise.resolve(sloppyHost.compile(source, playFiles));
   const id = nextId++;
   return new Promise((resolve) => {
     waiting.set(id, resolve);
-    worker.postMessage({ id, source });
+    worker.postMessage({ id, source, files: playFiles });
   });
 }
 async function run() {
@@ -297,9 +321,13 @@ $("stop").addEventListener("click", () => { out.srcdoc = "<body style='backgroun
   const ex = location.hash.match(/#example=([A-Za-z0-9_-]+)/);
   if (ex && text === null) {
     const name = Object.keys(SLOPPY_EXAMPLES).find((k) => k.split(" ")[0] === ex[1]);
-    if (name) { text = SLOPPY_EXAMPLES[name]; exSel.value = name; }
+    if (name) { text = SLOPPY_EXAMPLES[name]; exSel.value = name; await useExample(name); }
   }
-  if (text === null) text = localStorage.getItem("sloppy-playground-source");
+  if (text === null) {
+    text = localStorage.getItem("sloppy-playground-source");
+    const last = localStorage.getItem("sloppy-playground-example");
+    if (text !== null && last && SLOPPY_EXAMPLES[last] !== undefined) { exSel.value = last; await useExample(last); }
+  }
   if (text === null) text = SLOPPY_EXAMPLES[Object.keys(SLOPPY_EXAMPLES)[0]];
   src.value = text;
   refresh();

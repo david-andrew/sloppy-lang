@@ -42,7 +42,8 @@ every few turrets, a saved best score), chosen over a platformer (Lumen, retired
 quick to pick up and worth replaying. It plays itself behind its title; with a reaction delay
 the same autopilot measured the difficulty curve (0.45 s: about 80 s survived, 0.3 s: 3 to 5
 minutes). It runs on Linux, Windows and the web, on the website (sloppy-lang.org/rebound/) and in
-the playground (#example=rebound, with its icon: the playground carries examples' other files).
+the playground (#example=rebound, with its icon: the playground carries examples' other files,
+in the page when small, else fetched when the game is chosen, as Breakwater's models are).
 The website has two tutorials, each eight steps that run, with links into the playground (the
 tests build every step): docs/TUTORIAL.md (Firefly, a platformer) and docs/TUTORIAL_REBOUND.md
 (Little Rebound, a small version of Rebound). The 3D flagship is Breakwater
@@ -102,8 +103,9 @@ tiles (examples/tiles.jo), JSON (parse_json/to_json), base64. Missing:
   outlines (.otf), kerning, characters beyond the ones made up front (made when first drawn).
 - Assets: done: JPEG (baseline and progressive; within 3 of libjpeg-turbo's decoding, fuzzed
   with damaged files), glTF 2.0 models (.glb/.gltf: meshes, nodes, base color, textures, vertex
-  colors; checked on Khronos' sample models). Left: glTF skins and animations, PBR materials
-  (metal, roughness, normal maps), Tiled's external tilesets (.tsj; embedded ones work).
+  colors; checked on Khronos' sample models), glTF skins (up to 64 joints, bent on the GPU)
+  and animations (posed, blended, joints turned by the game). Left: PBR materials (metal,
+  roughness, normal maps), morph targets, Tiled's external tilesets (.tsj; embedded ones work).
 - 2D: slopes and one-way platforms in tilemaps, tweening, camera follow/shake helpers.
 - 3D: done: orbit and fly cameras (lib/game/camera3d.jo), frustum culling (a mesh's bounding
   sphere: draws the camera or the sun's shadow cannot see are left out). Left: skyboxes, culling

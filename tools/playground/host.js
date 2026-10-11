@@ -1,7 +1,8 @@
 // The Sloppy compiler, compiled to WebAssembly, run on files kept in memory: the standard library
 // (embedded in the page) and the program being edited. It runs in a worker (or, where a page
 // cannot start one, on the page itself): each compile gets a fresh instance of the compiler.
-//   compile(source) -> { ok, html, log, ms }   html: the program, a complete web page
+//   compile(source, files) -> { ok, html, log, ms }   html: the program, a complete web page
+//   (files: name -> Uint8Array, beside the program: a game's icon, its models)
 "use strict";
 const sloppyHost = (() => {
   let compiler = null;          // WebAssembly.Module
@@ -24,9 +25,10 @@ const sloppyHost = (() => {
 
   class Exit extends Error { constructor(code) { super("exit " + code); this.code = code; } }
 
-  function compile(source) {
+  function compile(source, extra) {
     const t0 = performance.now();
     const files = Object.assign({}, lib);
+    for (const n of Object.keys(extra || {})) files["/play/" + n] = extra[n];
     files["/play/main.jo"] = enc.encode(source);
     const args = ["/sloppy/bin/sloppy", "build", "/play/main.jo", "--target", "wasm", "-o", "/play/main"];
     const envVars = { SLOPPY_LIB: "/sloppy/lib" };
@@ -91,7 +93,7 @@ if (typeof window === "undefined" && typeof self !== "undefined") {
       if (m.init) {
         await sloppyHost.init(m.init[0], m.init[1]);
         self.postMessage({ ready: true });
-      } else self.postMessage(Object.assign({ id: m.id }, sloppyHost.compile(m.source)));
+      } else self.postMessage(Object.assign({ id: m.id }, sloppyHost.compile(m.source, m.files)));
     } catch (e) {
       self.postMessage({ id: m.id, ok: false, html: "", log: "playground error: " + (e && e.message || e) + "\n", ms: 0 });
     }
