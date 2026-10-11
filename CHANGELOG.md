@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+Website and install:
+- The website works on phones: the top links fold into a menu, and a docs page's contents into
+  a bar under the title. The pages are grouped (start, tutorials, reference), with previous and
+  next links at the bottom.
+- The install command shown is the one for your system (Linux, Windows; on a Mac, the
+  playground), with a copy button. A new **Getting started** page (docs/START.md): installing, a
+  first program and game, sharing it, editors.
+- The Linux installer links `sloppy` into `~/.local/bin` when that is on the PATH (as on most
+  systems), so the command works in the same terminal at once.
+- **The library page, by topic** (arrays, strings, the window and input, 2D, 3D, sound...),
+  each with a whole program to run in the playground (docs/api/; the tests build them), every
+  function with its description, a search box (`?q=` links to a search), and the built-in
+  functions (`print`, `push`, `pop`, `fill`, `embed`...), which were missing.
+
 ## 0.5.0
 
 Games:

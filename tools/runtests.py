@@ -140,6 +140,23 @@ if compiler != "sloppy0" and target == "native":
             else:
                 print(f"FAIL {name}: does not build\n{r.stderr}")
                 failed += 1
+    # the library page's examples (docs/api/*.jo) must build, and docs/API.md be what tools/apidoc.py makes now
+    for src in sorted(glob.glob(os.path.join(root, "docs", "api", "*.jo"))):
+        name = "api/" + os.path.basename(src)[:-3]
+        if pattern not in name: continue
+        r = subprocess.run([sloppy, "build", src, "-o", os.path.join(tmp, "api_example")], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")), timeout=60)
+        if r.returncode == 0: passed += 1
+        else:
+            print(f"FAIL {name}: does not build\n{r.stderr}")
+            failed += 1
+    if pattern in "api/API.md":
+        sys.path.insert(0, os.path.join(root, "tools"))
+        import apidoc
+        if apidoc.markdown(apidoc.collect()) == open(os.path.join(root, "docs", "API.md"), encoding="utf-8").read(): passed += 1
+        else:
+            print("FAIL api/API.md: out of date (run tools/apidoc.py)")
+            failed += 1
     # programs the compiler must reject: tests/errors/*.jo start with `# error: <part of the message>`
     for t in sorted(glob.glob(os.path.join(root, "tests", "errors", "*.jo"))):
         name = "errors/" + os.path.basename(t)[:-3]

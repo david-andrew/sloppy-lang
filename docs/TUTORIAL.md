@@ -604,7 +604,7 @@ Each is a single file with nothing to install: send it, or upload it. In the `bu
 
 From here:
 - [Make an arcade game](TUTORIAL_REBOUND.md): the second tutorial, a small version of Rebound.
-- [The language](language.html): everything Sloppy has, with examples.
-- [The library](api.html): drawing, sound, input, 3D, GPU programs and the rest.
+- [The language](LANGUAGE.md): everything Sloppy has, with examples.
+- [The library](API.md): drawing, sound, input, 3D, GPU programs and the rest.
 - `sloppy watch firefly.jo` keeps the game running while you edit it: save, and the change
   appears without restarting.

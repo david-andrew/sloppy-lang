@@ -103,7 +103,7 @@ browser](https://sloppy-lang.org/breakwater/).
 
 ## Getting started
 
-Install on Linux (x86-64; into `~/.sloppy`, added to your PATH; `sloppy update` installs newer releases):
+Install on Linux (x86-64; into `~/.sloppy`, with the command on your PATH, in most setups at once; `sloppy update` installs newer releases):
 
 ```sh
 curl -fsSL https://sloppy-lang.org/install | bash
@@ -188,8 +188,9 @@ language-servers = ["sloppy"]
 The website (built by `tools/site.py`, published by `.github/workflows/site.yml`) has these
 pages and the playground.
 
+- [docs/START.md](docs/START.md) — getting started: installing, a first program and game, sharing it
 - [docs/LANGUAGE.md](docs/LANGUAGE.md) — the language
-- [docs/API.md](docs/API.md) — the standard library (generated from `lib/`)
+- [docs/API.md](docs/API.md) — the library, by topic, each with an example (generated from `lib/` and `docs/api/`)
 - [docs/REPORT.md](docs/REPORT.md) — measured results for the design goals (`tools/report.py`)
 
 ## Repository layout

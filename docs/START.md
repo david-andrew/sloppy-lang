@@ -1,0 +1,110 @@
+# Getting started
+
+## Install
+
+<!-- install -->
+On **Linux** (x86-64), in a terminal:
+
+```sh
+curl -fsSL https://sloppy-lang.org/install | bash
+```
+
+On **Windows** (10 or 11, x64), in PowerShell:
+
+```powershell
+irm https://sloppy-lang.org/install.ps1 | iex
+```
+<!-- /install -->
+
+The installer puts Sloppy in your home directory (`~/.sloppy`, or `%LOCALAPPDATA%\sloppy` on
+Windows) and the `sloppy` command on your PATH, ready in the same terminal (on Linux, when
+`~/.local/bin` is on your PATH, as on most systems; if not, the installer shows the line that
+makes it so). Nothing else is needed: no C compiler, no linker, no SDK. `sloppy update` installs newer releases.
+
+macOS is not supported yet. Sloppy's programs do run in any browser, so on a Mac (or a phone)
+you can write and run them in [the playground](https://sloppy-lang.org/playground/).
+
+## A first program
+
+Save this as `hello.jo`:
+
+```gdscript
+print("hello, world")
+
+fib = (n: int) -> int:
+    if n < 2: return n
+    fib(n - 1) + fib(n - 2)
+
+loop i in [0..10):
+    print("fib({i}) = {fib(i)}")
+```
+
+and run it:
+
+```sh
+sloppy hello.jo
+```
+
+Each run compiles the whole program, in a few milliseconds, and runs it. `sloppy` alone is an
+interactive prompt, for trying things a line at a time.
+
+## A first game
+
+A program with `update` and `draw` functions is a game: it opens a window and calls them every
+frame, `update` with the seconds since the last frame.
+
+```gdscript
+pos = vec2(400, 300)
+
+update = (dt: f64):
+    pos += input_axis() * f32(300 * dt)
+
+draw = ():
+    clear(rgb(0.08, 0.08, 0.12))
+    circle(pos, 24, rgb(1.0, 0.6, 0.2))
+    text("arrow keys or W A S D", vec2(20, 20), 24, WHITE)
+```
+
+Save it as `game.jo`, then:
+
+```sh
+sloppy game.jo           # in a window
+sloppy watch game.jo     # the same, reloaded each time you save: change a color and look
+sloppy --web game.jo     # in your browser
+```
+
+## Sharing it
+
+```sh
+sloppy build game.jo                       # game (game.exe on Windows): a program for this system
+sloppy build game.jo --target windows      # game.exe, from any system
+sloppy build game.jo --target wasm         # game.html: one file that runs in any browser
+sloppy build game.jo --target wasm -o game.zip   # the same, ready for itch.io
+```
+
+Each is one file with nothing to install alongside it.
+
+## Editors
+
+The [Sloppy extension](https://marketplace.visualstudio.com/items?itemName=RedFoxLabs.sloppy)
+for VS Code, Cursor and VSCodium (also [on Open VSX](https://open-vsx.org/extension/RedFoxLabs/sloppy))
+has highlighting, errors as you type, completion, hover, go to definition and rename, and
+commands to run a file:
+
+```sh
+code --install-extension RedFoxLabs.sloppy
+```
+
+For other editors, `sloppy lsp` is a language server: the
+[README](https://github.com/david-andrew/sloppy-lang#editors) shows Neovim and Helix.
+
+## Where next
+
+- [Make a game](TUTORIAL.md): a small platformer, built step by step. Then
+  [an arcade game](TUTORIAL_REBOUND.md) and [a 3D shooter](TUTORIAL_BREAKWATER.md).
+- [The language](LANGUAGE.md): everything Sloppy has, with examples.
+- [The library](API.md): windows, input, drawing in 2D and 3D, sound, files and the rest.
+- [The playground](https://sloppy-lang.org/playground/) has more examples, including two
+  complete games.
+- Building Sloppy from source, and working on the compiler: the
+  [README](https://github.com/david-andrew/sloppy-lang#getting-started).

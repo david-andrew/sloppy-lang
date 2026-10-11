@@ -3,7 +3,8 @@
 #   curl -fsSL https://sloppy-lang.org/install | bash
 #   curl -fsSL https://sloppy-lang.org/install | bash -s v0.2.0     (a version)
 # Installs to ~/.sloppy (or $SLOPPY_INSTALL): bin/sloppy and the standard library beside it, and puts
-# ~/.sloppy/bin on your PATH (in your shell's startup file). Running it again updates.
+# the command on your PATH (a link in ~/.local/bin if that is on the PATH, else a line in your
+# shell's startup file). Running it again updates.
 # (`sloppy update` runs it with SLOPPY_CURRENT, the version installed: nothing to do if it is the latest)
 set -euo pipefail
 
@@ -94,11 +95,27 @@ rm -rf "$INSTALL.old"
 installed="$("$INSTALL/bin/sloppy" --version 2>/dev/null)" || fail "$INSTALL/bin/sloppy does not run on this machine"
 
 # ---- on the PATH ----
+# (a link in ~/.local/bin, when that is on the PATH already, as on most systems: then the command
+# works at once, in this terminal too; else a line in the shell's startup file, for new terminals)
 bin="$INSTALL/bin"
 shown="${bin/#$HOME/\~}"
 home_shown="${INSTALL/#$HOME/\~}"
+local_bin="$HOME/.local/bin"
 on_path=false
 case ":$PATH:" in *":$bin:"*) on_path=true ;; esac
+linked=false
+if ! $on_path; then
+    case ":$PATH:" in
+        *":$local_bin:"*|*":$local_bin/:"*)
+            if [ ! -e "$local_bin/sloppy" ] || [ -L "$local_bin/sloppy" ]; then
+                mkdir -p "$local_bin"
+                ln -sfn "$bin/sloppy" "$local_bin/sloppy"
+                on_path=true
+                linked=true
+            fi
+            ;;
+    esac
+fi
 note=""
 if ! $on_path; then
     shell_name="$(basename "${SHELL:-bash}")"
@@ -121,6 +138,9 @@ if ! $on_path; then
         note="added $shown to your PATH in ${rc/#$HOME/\~}"
     fi
 fi
+$linked && note="linked ~/.local/bin/sloppy to it"
+uninstall="rm -rf $home_shown"
+[ -L "$local_bin/sloppy" ] && uninstall="$uninstall ~/.local/bin/sloppy"
 
 # ---- done ----
 say ""
@@ -133,7 +153,7 @@ say "${GREEN}${BOLD}${installed}${RESET}${GREEN} was installed to ${home_shown}$
 [ -n "$note" ] && say "${DIM}${note}${RESET}"
 say ""
 if ! $on_path; then
-    say "To use it in this terminal, start a new one or run:"
+    say "New terminals have it. To use it in this one, run:"
     say "  ${CYAN}export PATH=\"$bin:\$PATH\"${RESET}"
     say ""
 fi
@@ -150,4 +170,4 @@ if [ -n "$editor" ]; then
     say "  ${CYAN}$editor --install-extension RedFoxLabs.sloppy${RESET}"
 fi
 say ""
-say "${DIM}Docs: https://sloppy-lang.org  ·  update: sloppy update  ·  uninstall: rm -rf $home_shown${RESET}"
+say "${DIM}Docs: https://sloppy-lang.org  ·  update: sloppy update  ·  uninstall: $uninstall${RESET}"
