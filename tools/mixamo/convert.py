@@ -2,8 +2,8 @@
 # Python module (uv run --python 3.11 --with bpy python convert.py -- ...):
 #   convert.py -- out.glb character.fbx Name=anim.fbx[:inplace] ...
 # ":inplace" takes the walk out of a moving animation (its hips stay over the spot), and prints
-# how fast it went. Breakwater's vanguard.glb: Vanguard with these, from the Pro Rifle Pack (R)
-# and Basic Shooter Pack (B):
+# how fast it went. Vanguard (arms.py takes Breakwater's arms.glb from it) with these, from the
+# Pro Rifle Pack (R) and Basic Shooter Pack (B):
 #   Idle=R/idle aiming  Walk, WalkBack, WalkLeft, WalkRight=R/walk forward, backward, left, right
 #   Run, RunBack, RunLeft, RunRight=R/run forward, backward, left, right (all :inplace)
 #   DieBack=R/death from the front  DieForward=R/death from the back  DieHead=R/death from front

@@ -887,7 +887,7 @@ struct ModelData
 model = (d: ModelData) -> Model    # the model on the GPU: a mesh and a texture for each part
 draw_model = (m: Model, transform: mat4 = mat4(), tint: vec4 = vec4(1, 1, 1, 1), cast_shadow: bool = true, pose: Pose = Pose([], [], []), in_front: bool = false)    # Draw each part (see draw_mesh), the model placed by transform and its colors times tint. An animated model is drawn in the pose given (pose_at, blend_poses), or as it rests.
 rest_pose = (m: Model) -> Pose    # every node as it rests
-find_animation = (m: Model, name: str) -> int    # the animation with this name (-1: none)
+find_animation = (m: Model, name: str) -> int    # the animation with this name (or whose name ends "|name", as Blender's "Armature|Run"); -1: none
 animation_length = (m: Model, anim: int) -> f64
 pose_at = (m: Model, anim: int, time: f64, looped: bool = true) -> Pose    # ModelAnimation anim at a time (seconds): looped, or held at its end. Nodes it does not move rest.
 blend_poses = (a: Pose, b: Pose, k: f64) -> Pose    # between two poses of the same model: k = 0 is a, 1 is b (to fade from one animation to the next)

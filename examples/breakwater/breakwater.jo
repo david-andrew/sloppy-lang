@@ -10,8 +10,8 @@
 # melee. Keys alone: I J K L or the arrows look (Settings > Keyboard only: Space fires and
 # Shift jumps). A gamepad works too.
 #
-# The raiders are Vanguard by T. Choonyung, animated, from Adobe Mixamo; the weapons are
-# Quaternius' (CC0).
+# The raiders and the weapons are Quaternius' (CC0); the arms holding your weapon are
+# Vanguard's, by T. Choonyung, from Adobe Mixamo.
 
 build:
     output = "breakwater"
@@ -487,12 +487,11 @@ struct Foe:
     shield_flash: f64 = 0.0
     shield_pop: f64 = 0.0       # (the ring when the shield breaks)
     dead: f64 = -1.0            # seconds since it fell (-1: alive)
-    fall: int = 0               # how it falls (0 back, 1 forward, 2 from a head shot)
     gait: f64 = 0.0             # meters walked (its stride)
     recoil: f64 = 1.0           # seconds since it fired
     blip: f64 = 9.0             # seconds since it moved fast or fired (the tracker shows it)
 
-# (size: the model's scale, 1 being 1.83 m tall; drop: the charge of the caster it leaves)
+# (size: its robot's scale; drop: the charge of the caster it leaves)
 struct KindInfo:
     health: f64
     shield: f64
@@ -503,25 +502,40 @@ struct KindInfo:
     size: f32
     drop: int
 
-kinds = [KindInfo(45, 0, 4.0, 0.45, 100, "skitter", 0.86, 20), KindInfo(70, 70, 3.3, 0.5, 250, "warden", 1.1, 40),
-         KindInfo(280, 0, 2.2, 0.6, 400, "lobber", 1.3, 0)]
+kinds = [KindInfo(45, 0, 4.0, 0.45, 100, "skitter", 1.5, 20), KindInfo(70, 70, 3.3, 0.55, 250, "warden", 1.7, 40),
+         KindInfo(280, 0, 2.2, 0.7, 400, "lobber", 2.0, 0)]
 info = (f: Foe) -> KindInfo: kinds[int(f.kind)]
+
+# each kind's robot at size 1 (x to its left, y up, z ahead): its middle, what it sees from,
+# where its shots leave, and the spheres a shot hits (x, y, z, radius; the last `eyes` of them
+# its eyes: head shots)
+struct Hull:
+    center: vec3
+    eye: vec3
+    muzzle: vec3
+    hits: vec4[]
+    eyes: int
+
+hulls = [Hull(vec3(0, 0.47, 0), vec3(0, 0.75, 0.2), vec3(0, 0.8, 0.66),
+              [vec4(0, 0.47, 0, 0.25), vec4(0, 0.78, 0.2, 0.17), vec4(0, 0.47, 0.2, 0.08)], 1),
+         Hull(vec3(0, 0.59, 0.05), vec3(0, 0.75, 0.25), vec3(0, 0.67, 0.4),
+              [vec4(0, 0.59, 0.05, 0.39), vec4(0.24, 0.67, 0.24, 0.09), vec4(-0.24, 0.67, 0.24, 0.09)], 2),
+         Hull(vec3(0, 0.59, 0.05), vec3(0, 1.0, 0.1), vec3(0, 1.05, 0.5),
+              [vec4(0, 0.59, 0.05, 0.39), vec4(0, 1.02, -0.04, 0.3), vec4(0.24, 0.67, 0.24, 0.09), vec4(-0.24, 0.67, 0.24, 0.09)], 2)]
+hull = (f: Foe) -> Hull: hulls[int(f.kind)]
+
+# a point on a raider's robot (at size 1) where it stands now
+on_foe = (f: Foe, at: vec3) -> vec3:
+    z = info(f).size
+    f.body.pos + vec3(0, at.y * z, 0) + look_dir(f.yaw, 0.0) * (at.z * z) - right_of(f.yaw) * (at.x * z)
 
 foes: Foe[]
 
 alive = (f: Foe) -> bool: f.dead < 0.0
-foe_eye = (f: Foe) -> vec3: f.body.pos + vec3(0, 1.62 * info(f).size, 0)
-foe_center = (f: Foe) -> vec3: f.body.pos + vec3(0, 1.1 * info(f).size, 0)
-# where its shots come from: the weapon in its hands (a lobber's launcher points up)
-muzzle = (f: Foe) -> vec3:
-    s = info(f).size
-    fw = look_dir(f.yaw, 0.0)
-    side = right_of(f.yaw)
-    if f.kind == .lobber: return f.body.pos + vec3(0, 1.75 * s, 0) + fw * (0.5 * s) + side * (0.15 * s)
-    f.body.pos + vec3(0, 1.38 * s, 0) + fw * (0.75 * s) + side * (0.08 * s)
-
-# a sphere h up from p, and whether it is the head
-ball_at = (p: vec3, h: f32, r: f32, head: bool) -> (vec3, f32, bool): (p + vec3(0, h, 0), r, head)
+foe_eye = (f: Foe) -> vec3: on_foe(f, hull(f).eye)
+foe_center = (f: Foe) -> vec3: on_foe(f, hull(f).center)
+# where its shots come from: its gun (a warden's eye; a lobber's cannon, on its back)
+muzzle = (f: Foe) -> vec3: on_foe(f, hull(f).muzzle)
 
 # where a shot along the ray hits a raider: its index (-1: none), the distance, and a head shot
 # (slack widens every sphere; assist widens it by so much a meter away, up to 0.22 m: aim assist)
@@ -531,17 +545,16 @@ ray_foes = (o: vec3, d: vec3, far: f32, slack: f32, assist: f32 = 0) -> (int, f3
     head = false
     loop i in 0.. and f in foes:
         if not alive(f): continue
-        p = f.body.pos
         z = info(f).size
-        # (legs, hips, chest and shoulders, the head)
-        spheres = [ball_at(p, 0.45 * z, 0.3 * z, false), ball_at(p, 0.95 * z, 0.3 * z, false), ball_at(p, 1.32 * z, 0.34 * z, false),
-                   ball_at(p, 1.68 * z, 0.13 * z, true)]
-        loop s in spheres:
-            t = ray_sphere(o, d, s.0, s.1 + slack + min(f32(0.22), assist * max(dot(s.0 - o, d), f32(0))))
+        spheres = hull(f).hits
+        eyes = spheres.len() - hull(f).eyes
+        loop k in 0.. and h in spheres:
+            c = on_foe(f, h.xyz)
+            t = ray_sphere(o, d, c, h.w * z + slack + min(f32(0.22), assist * max(dot(c - o, d), f32(0))))
             if t >= 0.0 and t < near_t:
                 near_t = t
                 who = i
-                head = s.2
+                head = k >= eyes
     (who, near_t, head)
 
 # ---------------- shots, grenades and effects ----------------
@@ -725,7 +738,7 @@ count_alive = () -> int:
 
 spawn = (k: Kind, at: vec3):
     ki = kinds[int(k)]
-    if k == .warden: hint("warden", "Wardens are shielded: break the shield (a caster does it fast), then aim for the head")
+    if k == .warden: hint("warden", "Wardens are shielded: break the shield (a caster does it fast), then shoot its eye")
     if k == .lobber: hint("lobber", "Lobbers' shells land in the rings on the ground: get out of them")
     f = Foe(k, Body(at, vec3(0, 0, 0), ki.radius))
     f.health = ki.health
@@ -792,8 +805,6 @@ killed = (i: int, how: str):
                 o.burst = 0
                 sfx_at(snd_squeal, o.body.pos, 0.7, random(0.9, 1.2))
     foes[i].dead = 0.0
-    foes[i].fall = random_int(0, 2)
-    if how == "head": foes[i].fall = 2
     burst(foe_center(f), 18, 5.0, vec4(1.0, 0.55, 0.2, 1), 0.8, 0.06)
     # its caster, dropped (with what charge it has)
     if ki.drop > 0:
@@ -1774,24 +1785,42 @@ nade_mesh = Mesh()
 rocket_mesh = Mesh()
 meshes_made = false
 
-# the raiders' model and its animations, and the weapons'
-vanguard = Model([], vec3(0, 0, 0), vec3(0, 0, 0))
+# each kind's robot: its model, its animations, and the joints turned to aim (its head, its
+# eye and its gun)
+struct Rig:
+    model: Model
+    idle: int
+    walk: int
+    run: int
+    shoot: int
+    attack: int
+    die: int
+    aim: int[]
+
+rigs: Rig[]
 arm_models: Model[]
 arm_fit: mat4[]                 # (each weapon's model: its barrel along -z, centered, its true size)
 arm_length = [0.26, 0.85, 1.35, 1.15, 0.62]
-a_idle = -1
-a_walk: int[]                   # forward, back, left, right
-a_run: int[]
-a_die: int[]                    # falling back, forward, from a head shot
-a_hit = -1
-j_spine = -1                    # (joints: bent to aim, and the hands that hold a weapon)
-j_chest = -1
-j_right = -1
-j_left = -1
 fp_arms = Model([], vec3(0, 0, 0), vec3(0, 0, 0))     # (the forearms and hands alone, for the view)
 fp_right = -1
 fp_left = -1
 fp_left_arm = -1
+
+# the robots' colors (to change one: from, to)
+const TRIM = vec4(0.8, 0.366, 0.071, 1)
+const DOME = vec4(0.037, 0.037, 0.037, 1)
+const SHELL = vec4(0.57, 0.57, 0.57, 1)
+const EYE_RED = vec4(0.8, 0.004, 0, 1)
+
+rig = (m0: Model, colors: (vec4, vec4)[]) -> Rig:
+    m = m0
+    loop i in 0.. and pt in m.parts:
+        loop c in colors:
+            if length(pt.color - c.0) < 0.01: m.parts[i].color = c.1
+        # (its eyes glow)
+        if length(pt.color - EYE_RED) < 0.01: m.parts[i].emissive = 1.5
+    Rig(m, find_animation(m, "Idle"), find_animation(m, "Walk"), find_animation(m, "Run"), find_animation(m, "Shoot"),
+        find_animation(m, "Attack"), find_animation(m, "Death"), [loop n in ["Head", "Eye", "Gun"]: find_node(m, n)])
 
 make_meshes = ():
     meshes_made = true
@@ -1903,16 +1932,10 @@ make_meshes = ():
     sh: Vertex3D[]
     add_sphere(sh, vec3(0, 0, 0), 1.0, vec4(1, 1, 1, 1), 14, 8)
     shield_mesh = custom_mesh(sh)
-    vanguard = load_model(embed("vanguard.glb"))
-    a_idle = find_animation(vanguard, "Idle")
-    a_walk = [loop n in ["Walk", "WalkBack", "WalkLeft", "WalkRight"]: find_animation(vanguard, n)]
-    a_run = [loop n in ["Run", "RunBack", "RunLeft", "RunRight"]: find_animation(vanguard, n)]
-    a_die = [loop n in ["DieBack", "DieForward", "DieHead"]: find_animation(vanguard, n)]
-    a_hit = find_animation(vanguard, "Hit")
-    j_spine = find_node(vanguard, "Spine")
-    j_chest = find_node(vanguard, "Spine2")
-    j_right = find_node(vanguard, "RightHand")
-    j_left = find_node(vanguard, "LeftHand")
+    # (a warden's dome navy and its trim teal; a lobber's shell gunmetal and its trim red)
+    rigs = [rig(load_model(embed("skitter.glb")), []),
+            rig(load_model(embed("warden.glb")), [(TRIM, vec4(0.15, 0.6, 0.65, 1)), (DOME, vec4(0.04, 0.09, 0.26, 1))]),
+            rig(load_model(embed("lobber.glb")), [(TRIM, vec4(0.75, 0.1, 0.06, 1)), (SHELL, vec4(0.3, 0.31, 0.33, 1))])]
     fp_arms = load_model(embed("arms.glb"))
     fp_right = find_node(fp_arms, "RightHand")
     fp_left = find_node(fp_arms, "LeftHand")
@@ -2052,53 +2075,43 @@ draw_world = ():
             inst.push(instance(translation(s.pos) * scaling(vec3(s.size, s.size, s.size) * (0.4 + 0.6 * k)), s.color))
         draw_mesh_instanced(cube, inst, emissive = 2.0, cast_shadow = false)
 
-# a raider's pose: walking or running (blended by its speed, and between the ways it goes), or
-# standing; flinching, bent to aim at the player, kicked back by its shots; or falling
+# a raider's pose: standing, or walking or running (in step with how far it has gone), its head
+# and gun turned to aim at the player (a lobber's cannon raised to lob); kicked by its shots,
+# striking (rearing up, then lunging), or falling
 foe_pose = (f: Foe) -> Pose:
-    if f.dead >= 0.0: return pose_at(vanguard, a_die[f.fall], f.dead, false)
+    r = rigs[int(f.kind)]
+    m = r.model
+    if f.dead >= 0.0: return pose_at(m, r.die, f.dead, false)
+    z = f64(info(f).size)
     v = flat(f.body.vel)
     sp = f64(length(v))
-    fwd = f64(dot(v, look_dir(f.yaw, 0.0)))
-    side = f64(dot(v, right_of(f.yaw)))
-    p = pose_at(vanguard, a_idle, elapsed() + f64(f.strafe) * 0.7)
+    p = pose_at(m, r.idle, elapsed() + f64(f.strafe) * 0.7)
     if sp > 0.15:
-        ahead = 0
-        if fwd < 0.0: ahead = 1
-        aside = 3
-        if side < 0.0: aside = 2
-        ks = abs(side) / max(abs(fwd) + abs(side), 0.001)
-        run = clamp((sp - 2.0) / 2.9, 0.0, 1.0)
-        # (one stride: 2 m walking, 2.6 running; the walk and the run keep step)
-        u = f.gait / mix(2.04, 2.63, run)
-        walk = blend_poses(pose_at(vanguard, a_walk[ahead], u * animation_length(vanguard, a_walk[ahead])),
-                           pose_at(vanguard, a_walk[aside], u * animation_length(vanguard, a_walk[aside])), ks)
-        moving = walk
-        if run > 0.0:
-            runs_p = blend_poses(pose_at(vanguard, a_run[ahead], u * animation_length(vanguard, a_run[ahead])),
-                                 pose_at(vanguard, a_run[aside], u * animation_length(vanguard, a_run[aside])), ks)
-            moving = blend_poses(walk, runs_p, run)
-        p = blend_poses(p, moving, clamp(sp / 1.2, 0.0, 1.0))
-    if f.flinch > 0.0: p = blend_poses(p, pose_at(vanguard, a_hit, 0.3 - f.flinch, false), 0.75)
-    # aiming: the spine bent toward the player's height (a lobber's back further, to lob)
+        # (at size 1, a stride: 1.4 m walking at 0.84 m/s, 1.9 running at 3; backing off, back)
+        run = clamp((sp - 0.84 * z) / (2.16 * z), 0.0, 1.0)
+        u = f.gait / (mix(1.4, 1.88, run) * z)
+        u = u - floor(u)
+        if dot(v, look_dir(f.yaw, 0.0)) < 0.0: u = 1.0 - u
+        moving = pose_at(m, r.walk, u * animation_length(m, r.walk))
+        if run > 0.0: moving = blend_poses(moving, pose_at(m, r.run, u * animation_length(m, r.run)), run)
+        p = blend_poses(p, moving, clamp(sp / 0.8, 0.0, 1.0))
+    if f.recoil < animation_length(m, r.shoot): p = blend_poses(p, pose_at(m, r.shoot, f.recoil, false), 0.7)
+    # a strike: its animation up to the lunge (0.45 s in) while it winds up, then on through it
+    if f.swing > 0.0: p = pose_at(m, r.attack, 0.45 - f.swing, false)
+    else if f.melee_wait > 0.8:
+        p = blend_poses(p, pose_at(m, r.attack, 0.45 + 1.3 - f.melee_wait, false), clamp((f.melee_wait - 0.8) / 0.2, 0.0, 1.0))
     tilt = 0.0
     if f.sees or f.burst > 0:
         to = chest() - foe_eye(f)
         tilt = atan2(f64(to.y), f64(length(flat(to))))
     if f.windup > 0.0: tilt = 0.6
-    kick = max(0.0, 1.0 - f.recoil / 0.12) * 0.18
-    turn_node(vanguard, p, j_spine, vec3(1, 0, 0), -tilt * 0.5)
-    turn_node(vanguard, p, j_chest, vec3(1, 0, 0), -tilt * 0.5 - kick)
-    # a melee strike: wound up (turned and leaning back), then swung through
-    if f.swing > 0.0:
-        k = 1.0 - f.swing / 0.45
-        turn_node(vanguard, p, j_spine, vec3(0, 1, 0), 0.8 * k)
-        turn_node(vanguard, p, j_chest, vec3(1, 0, 0), -0.3 * k)
-    else if f.melee_wait > 1.05:
-        turn_node(vanguard, p, j_spine, vec3(0, 1, 0), -0.7 * (f.melee_wait - 1.05) / 0.25)
+    if f.flinch > 0.0: tilt += f.flinch * 1.5
+    loop n in r.aim:
+        if n >= 0: turn_node(m, p, n, vec3(1, 0, 0), -tilt)
     p
 
-# a weapon in a raider's hands: from the right hand toward the left (which holds it further up)
-in_hands = (p: Pose, m: Model = vanguard, right: int = j_right, left: int = j_left) -> mat4:
+# a weapon in hands: from the right hand toward the left (which holds it further up)
+in_hands = (p: Pose, m: Model, right: int, left: int) -> mat4:
     rp = (node_transform(m, p, right) * vec4(0, 0, 0, 1)).xyz
     lp = (node_transform(m, p, left) * vec4(0, 0, 0, 1)).xyz
     fw = normalize(lp - rp)
@@ -2111,29 +2124,19 @@ in_hands = (p: Pose, m: Model = vanguard, right: int = j_right, left: int = j_le
     out[3] = vec4(rp, 1)
     out
 
-const FOE_TINT = [vec4(1.3, 0.82, 0.55, 1), vec4(0.95, 1.0, 1.06, 1), vec4(0.48, 0.48, 0.54, 1)]
-
 draw_foe = (f: Foe):
-    ki = info(f)
-    z = ki.size
+    z = info(f).size
     sink = 0.0
     if f.dead >= 3.0: sink = (f.dead - 3.0) * 0.8
     xf = translation(f.body.pos - v3(0, sink, 0)) * rotation_y(f.yaw + PI) * scaling(vec3(z, z, z))
     if f.dodge > 0.35: xf = xf * scaling(vec3(1.05, 0.9, 1.05))
-    p = foe_pose(f)
-    tint = FOE_TINT[int(f.kind)]
+    tint = vec4(1, 1, 1, 1)
     if f.shield_flash > 0.0: tint = mix(tint, vec4(1.6, 1.3, 0.9, 1), f32(f.shield_flash / 0.25) * 0.4)
-    draw_model(vanguard, xf, tint, pose = p)
-    # its weapon (a caster; a lobber's launcher, its chamber brightening as it lobs)
-    if f.dead < 0.0 or f.kind == .lobber:
-        h = xf * in_hands(p)
-        if f.kind == .lobber:
-            glow = 0.0
-            if f.windup > 0.0: glow = (0.9 - f.windup) * 2.0
-            draw_model(arm_models[int(Arm.rockets)], h * translation(vec3(0.0, 0.08, -0.2)) * scaling(vec3(1.3, 1.3, 1.3)) * arm_fit[int(Arm.rockets)], vec4(1.0 + f32(glow), 0.8 + f32(glow) * 0.3, 0.7, 1))
-        else: draw_model(arm_models[int(Arm.caster)], h * translation(vec3(0.0, 0.04, -0.12)) * arm_fit[int(Arm.caster)])
+    draw_model(rigs[int(f.kind)].model, xf, tint, pose = foe_pose(f))
+    # (a lobber's cannon glowing as it lobs)
+    if f.windup > 0.0: point_light(muzzle(f), vec3(1.0, 0.45, 0.15), 3.0, f32((0.9 - f.windup) * 2.5))
     # a warden's shield: faint while it holds, bright when hit, a ring flying out when it breaks
-    shell = translation(f.body.pos + vec3(0, 1.0 * z, 0)) * rotation_y(f.yaw) * scaling(vec3(0.62 * z, 1.05 * z, 0.5 * z))
+    shell = translation(foe_center(f)) * rotation_y(f.yaw) * scaling(vec3(0.75 * z, 0.5 * z, 0.75 * z))
     if f.kind == .warden and f.dead < 0.0 and (f.shield > 0.0 or f.shield_flash > 0.0):
         a = 0.07 + f32(max(f.shield_flash, 0.0) / 0.25) * 0.45
         draw_mesh(shield_mesh, shell, vec4(1.0, 0.7, 0.3, a), emissive = 1.5, cast_shadow = false)

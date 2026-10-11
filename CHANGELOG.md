@@ -14,10 +14,11 @@
   the scene's nodes, base colors, PNG and JPEG textures, vertex colors; `draw_model` draws one.
   `read_gltf` gives the model's data without the GPU (for collision, or to change it).
 - **Animated models**: glTF skins (up to 64 joints, bent on the GPU) and their animations.
-  `pose_at(model, find_animation(model, "Run"), time)` gives a pose, `blend_poses` fades from
-  one to another, `turn_node` bends a joint (a spine aiming up), `node_transform` says where a
-  joint is (to put a weapon in a hand); `draw_model(m, transform, pose = p)`. `draw_model` also
-  takes `in_front` (a first-person weapon model).
+  `pose_at(model, find_animation(model, "Run"), time)` gives a pose (Blender's "Armature|Run"
+  is found as "Run"), `blend_poses` fades from one to another, `turn_node` bends a joint (a
+  spine aiming up), `node_transform` says where a joint is (to put a weapon in a hand);
+  `draw_model(m, transform, pose = p)`. `draw_model` also takes `in_front` (a first-person
+  weapon model).
 - **JPEG**: `load_jpeg`, and `load_image`/`load_texture` read JPEG as well as PNG (baseline and
   progressive, any color sampling, grayscale, CMYK).
 - 3D draws the camera cannot see are left out (meshes know their bounding sphere).

@@ -5,7 +5,7 @@
 #             (KHR_mesh_quantization) and vertex colors, under a matrix node; a second mesh in
 #             another buffer named by URI ("more.bin", given to the loader)
 #   arm.gltf  a skin of two joints ("rig:Root", "rig:Elbow" 1 up, under a node turned by a
-#             matrix) bending a triangle (u8 joints, float weights); an animation "Bend": the
+#             matrix) bending a triangle (u8 joints, float weights); an animation "rig|Bend": the
 #             elbow turning 90 degrees round z over a second, the root stepping 2 along x
 import base64, json, struct, zlib
 
@@ -88,7 +88,7 @@ doc = {
               {"name": "Turn", "matrix": [0, 0, -2, 0, 0, 2, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1], "children": [1]}],
     "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}}]}],
     "skins": [{"joints": [1, 2], "inverseBindMatrices": 3}],
-    "animations": [{"name": "Bend", "channels": [{"sampler": 0, "target": {"node": 2, "path": "rotation"}},
+    "animations": [{"name": "rig|Bend", "channels": [{"sampler": 0, "target": {"node": 2, "path": "rotation"}},
                                                  {"sampler": 1, "target": {"node": 1, "path": "translation"}}],
                     "samplers": [{"input": 4, "output": 5}, {"input": 4, "output": 6, "interpolation": "STEP"}]}],
     "buffers": [{"byteLength": len(buf), "uri": "data:application/octet-stream;base64," + base64.b64encode(buf).decode()}],
