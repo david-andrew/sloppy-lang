@@ -90,7 +90,7 @@ for name, src in games.items():
             failed += 1
             continue
         if "software renderer" in r.stderr or (label == "Vulkan" and "using OpenGL" in r.stderr):
-            print(f"skip {name} ({label}): no driver\n{r.stderr[-500:]}")
+            print(f"skip {name} ({label}): no driver\n{r.stderr[-3000:]}")
             continue
         w2, h2, got2 = downsample(gpng, 4)
         if (w2, h2) != (rw, rh):
