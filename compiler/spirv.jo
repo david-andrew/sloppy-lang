@@ -782,7 +782,13 @@ sv_arith = (op: Tok, ta0: int, a0: int, tb0: int, b0: int, rt: int, pos: int) ->
         minus: return sv_val(sv_pick(fl, 131, 130), ty, [a, b])
         star: return sv_val(sv_pick(fl, 133, 132), ty, [a, b])
         slash: return sv_val(sv_pick(fl, 136, 135), ty, [a, b])
-        percent: return sv_val(sv_pick(fl, 140, 138), ty, [a, b])
+        percent:
+            # (the dividend's sign, as on the CPU: x - y * trunc(x / y), the way glsl.jo does it,
+            # rather than OpSRem / OpFRem, which drivers get wrong for negative numbers)
+            if fl:
+                t = sv_val(12, ty, [sv_std, 3, sv_val(136, ty, [a, b])])
+                return sv_val(131, ty, [a, sv_val(133, ty, [b, t])])
+            return sv_val(130, ty, [a, sv_val(132, ty, [sv_val(135, ty, [a, b]), b])])
         amp: return sv_val(199, ty, [a, b])
         pipe: return sv_val(197, ty, [a, b])
         caret: return sv_val(198, ty, [a, b])
@@ -1206,6 +1212,7 @@ sv_module = (model: int, main: int) -> str:
     loop v in sv_iface: ep.push(v)
     sv_ins(w, 15, ep)
     if model == 4: sv_ins(w, 16, [main, 7])
+    if model == 5: sv_ins(w, 16, [main, 17, SV_KERNEL_GROUP, 1, 1])
     loop x in sv_dec: w.push(x)
     loop x in sv_glob: w.push(x)
     loop x in sv_fns: w.push(x)
@@ -1380,3 +1387,121 @@ spirv_build = (vsf: int, fsf: int) -> (str, str):
         write_file("{dir}/{sv_dumped}.frag.spv", fs)
         sv_dumped += 1
     (vs, fs)
+
+# ---------------- GPU array kernels ----------------
+# The compute program of a dotted expression on GPU arrays (see glsl_kernel for the GLSL one, and
+# __gpu_run in lib/game/gpuarray.jo): each invocation computes one element of the result. Its
+# parameters are at the push constants' params address, as 32-bit words:
+#   0: the result's address (2 words)   2..5: its shape, padded in front to 4 dimensions
+#   6: its number of elements
+#   8 + 6k: input k's address (2 words), then its steps per dimension (4: 0 where it stretches)
+#   then the f32 numbers, then the i32 ones (desc says which operand is which: see glsl_kernel)
+const SV_KERNEL_GROUP = 64
+
+# a buffer address from two words (low, high) of the parameters
+sv_addr_at = (params: int, word: int, ptrty: int) -> int:
+    v = sv_val(80, sv_type_key("uv2", 23, [sv_u32(), 2]), [sv_word(params, word * 4, 0), sv_word(params, word * 4 + 4, 0)])
+    sv_val(124, ptrty, [v])
+
+# a buffer of 32-bit words that can be written
+sv_rawptr_w = () -> int:
+    if let id = sv_cache.get("rawptrw"): return id
+    rt = sv_type_key("rawrtw", 29, [sv_u32()])
+    sv_deco(rt, 6, [4])
+    st = sv_type_key("rawstw", 30, [rt])
+    sv_deco(st, 2, [])
+    sv_mdeco(st, 0, 35, [0])
+    p = sv_ptr(SC_PSB, st)
+    sv_cache["rawptrw"] = p
+    p
+
+spirv_kernel = (f: int, desc: str) -> str:
+    sv_translated = {}
+    sv_reset("kernel")
+    sv_utype = 0
+    pos = nodes[int(fns[f].decl)].pos
+    sv_fn_id(f)
+    sv_drain()
+    main = sv_new()
+    head: int[]
+    sv_ins(head, 54, [sv_void(), main, 0, sv_fntype(sv_void(), [])])
+    sv_start_fn()
+    i = sv_i32()
+    bo = sv_bool()
+    uv3 = sv_type_key("uv3", 23, [sv_u32(), 3])
+    gid_var = sv_builtin_var(uv3, SC_INPUT, 28)
+    ngroups_var = sv_builtin_var(uv3, SC_INPUT, 24)
+    params = sv_pc_get(SV_PC_PARAMS)
+    # (the element: invocations are laid out in rows of all the x groups)
+    gid = sv_load(uv3, gid_var)
+    ng = sv_load(uv3, ngroups_var)
+    gx = sv_val(124, i, [sv_val(81, sv_u32(), [gid, 0])])
+    gy = sv_val(124, i, [sv_val(81, sv_u32(), [gid, 1])])
+    nx = sv_val(124, i, [sv_val(81, sv_u32(), [ng, 0])])
+    idx = sv_val(128, i, [gx, sv_val(132, i, [gy, sv_val(132, i, [nx, sv_ci(SV_KERNEL_GROUP)])])])
+    total = sv_val(124, i, [sv_word(params, 24, 0)])
+    done = sv_new()
+    body = sv_new()
+    past = sv_val(175, bo, [idx, total])
+    sv_code(247, [done, 0])
+    sv_cond_branch(past, done, body)
+    sv_begin(body)
+    od: int[]
+    loop k in [0..4): od.push(sv_val(124, i, [sv_word(params, 8 + 4 * k, 0)]))
+    i3 = sv_val(138, i, [idx, od[3]])
+    q = sv_val(135, i, [idx, od[3]])
+    i2 = sv_val(138, i, [q, od[2]])
+    q = sv_val(135, i, [q, od[2]])
+    i1 = sv_val(138, i, [q, od[1]])
+    i0 = sv_val(135, i, [q, od[1]])
+    nt = 0
+    loop c in desc:
+        if c == 't' or c == 'i': nt += 1
+    sbase = 32 + 24 * nt
+    nf = 0
+    loop c in desc:
+        if c == 's': nf += 1
+    args: int[]
+    kt = 0
+    kf = 0
+    ki = 0
+    loop c in desc:
+        if c == 't' or c == 'i':
+            w0 = 8 + 6 * kt
+            p = sv_addr_at(params, w0, sv_rawptr())
+            o = sv_val(132, i, [i0, sv_val(124, i, [sv_word(params, (w0 + 2) * 4, 0)])])
+            o = sv_val(128, i, [o, sv_val(132, i, [i1, sv_val(124, i, [sv_word(params, (w0 + 3) * 4, 0)])])])
+            o = sv_val(128, i, [o, sv_val(132, i, [i2, sv_val(124, i, [sv_word(params, (w0 + 4) * 4, 0)])])])
+            o = sv_val(128, i, [o, sv_val(132, i, [i3, sv_val(124, i, [sv_word(params, (w0 + 5) * 4, 0)])])])
+            v = sv_word(p, 0, sv_val(132, i, [o, sv_ci(4)]))
+            if c == 'i': args.push(sv_val(124, i, [v]))
+            else: args.push(sv_val(124, sv_f32(), [v]))
+            kt += 1
+        else if c == 's':
+            args.push(sv_val(124, sv_f32(), [sv_word(params, sbase + 4 * kf, 0)]))
+            kf += 1
+        else:
+            args.push(sv_val(124, i, [sv_word(params, sbase + 4 * (nf + ki), 0)]))
+            ki += 1
+    rt = prune(int(fns[f].ret))
+    call: int[] = [sv_fn_id(f)]
+    loop a in args: call.push(a)
+    r = sv_val(57, sv_type(rt, pos), call)
+    bits = 0
+    if types[rt].kind == .int_: bits = sv_val(124, sv_u32(), [r])
+    else if types[rt].kind == .bool_: bits = sv_val(124, sv_u32(), [sv_val(169, sv_f32(), [r, sv_cf(1.0), sv_cf(0.0)])])
+    else: bits = sv_val(124, sv_u32(), [r])
+    out = sv_addr_at(params, 0, sv_rawptr_w())
+    dst = sv_val(65, sv_ptr(SC_PSB, sv_u32()), [out, sv_ci(0), idx])
+    sv_code(62, [dst, bits, 2, 4])
+    sv_branch(done)
+    sv_begin(done)
+    sv_code(253, [])
+    sv_dead = true
+    sv_finish_fn(head)
+    sv_drain()
+    m = sv_module(5, main)
+    if let dir = env("SLOPPY_SPIRV_DUMP"):
+        write_file("{dir}/{sv_dumped}.comp.spv", m)
+        sv_dumped += 1
+    m

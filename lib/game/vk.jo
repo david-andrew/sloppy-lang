@@ -728,6 +728,15 @@ when TARGET != "wasm":
         base: int
         base_index: i32
 
+    struct VkComputePipelineCreateInfo:
+        stype: u32
+        next: *u8
+        flags: u32
+        stage: VkPipelineShaderStageCreateInfo
+        layout: int
+        base: int
+        base_index: i32
+
     struct VkViewport:
         x: f32
         y: f32
@@ -948,7 +957,7 @@ when TARGET != "wasm":
             if f12[4 + i] == 0: return "a Vulkan 1.2 feature is missing ({i})"
         loop i in __VK13_NEEDED:
             if f13[4 + i] == 0: return "a Vulkan 1.3 feature is missing ({i})"
-        has_sc = __vk_headless
+        has_sc = __vk_surface == 0
         loop e in __vk_device_exts(pd):
             if e == "VK_KHR_swapchain": has_sc = true
         if not has_sc: return "no swapchain"
@@ -964,7 +973,7 @@ when TARGET != "wasm":
         loop i in [0..int(n)):
             flags = (data(props) as *u32)[i * 6]
             if flags & 3 != 3: continue
-            if __vk_headless: return i
+            if __vk_surface == 0: return i
             ok: u32 = 0
             vkGetPhysicalDeviceSurfaceSupportKHR(pd, u32(i), __vk_surface, &ok)
             if ok != 0: return i
@@ -972,24 +981,66 @@ when TARGET != "wasm":
 
     # set up Vulkan on the window: the instance, its surface, a device; returns why that is
     # impossible, or "". make_surface makes the surface for the window system.
+    # the instance extensions there are
+    __vk_instance_exts = () -> str[]:
+        n: u32 = 0
+        vkEnumerateInstanceExtensionProperties(null, &n, null)
+        props = fill(u8(0), int(n) * 260)
+        vkEnumerateInstanceExtensionProperties(null, &n, data(props))
+        out: str[]
+        loop i in [0..int(n)): out.push(__vk_cstr(data(props) + i * 260))
+        out
+
+    # set up Vulkan for a window (surface_ext: the window system's surface extension, make_surface
+    # makes the window's surface), or with no window (surface_ext ""); returns why that is
+    # impossible, or "". GPU arrays may have made the instance and device already (with no window).
     __vk_open = (surface_ext: str, make_surface: () -> int) -> str:
-        if not lib_available("libvulkan.so.1"): return "no Vulkan loader (libvulkan) found"
-        app = VkApplicationInfo(stype = 0, app_name = data(__zstr(__win_title)), engine_name = data("Sloppy"), api_version = u32(VK_API_1_3))
-        exts: *u8[]
+        if __vk_inst == null:
+            why = __vk_make_instance()
+            if len(why) > 0: return why
         __vk_headless = len(surface_ext) == 0
         if not __vk_headless:
-            exts.push(data("VK_KHR_surface"))
-            exts.push(data(__zstr(surface_ext)))
+            has = false
+            loop e in __vk_inst_exts:
+                if e == surface_ext: has = true
+            if not has: return "the Vulkan driver cannot show windows here ({surface_ext})"
+            __vk_surface = make_surface()
+            if __vk_surface == 0: return "the window's Vulkan surface could not be made"
+        if __vk_dev != null:
+            if __vk_headless: return ""
+            ok: u32 = 0
+            vkGetPhysicalDeviceSurfaceSupportKHR(__vk_pd, __vk_family, __vk_surface, &ok)
+            if ok == 0 or not __vk_has_swapchain: return "the Vulkan device in use cannot show this window"
+            return ""
+        __vk_make_device()
+
+    __vk_inst_exts: str[]          # the instance's extensions
+    __vk_has_swapchain = false
+
+    __vk_make_instance = () -> str:
+        if not lib_available("libvulkan.so.1"): return "no Vulkan loader (libvulkan) found"
+        app = VkApplicationInfo(stype = 0, app_name = data(__zstr(__win_title)), engine_name = data("Sloppy"), api_version = u32(VK_API_1_3))
+        # (every window system's surface extension the loader has: a window may come later)
+        have = __vk_instance_exts()
+        names: str[]
+        loop want in ["VK_KHR_surface", "VK_KHR_xlib_surface", "VK_KHR_wayland_surface", "VK_KHR_win32_surface"]:
+            loop e in have:
+                if e == want: names.push(want)
+        exts: *u8[]
+        loop nm in names: exts.push(data(nm))
         layers: *u8[]
         if (env("SLOPPY_VK_VALIDATE") ?? "") == "1":
             if __vk_has_layer("VK_LAYER_KHRONOS_validation"): layers.push(data("VK_LAYER_KHRONOS_validation"))
             else: eprint("note: the Vulkan validation layer is not installed")
         info = VkInstanceCreateInfo(stype = 1, app = (&app) as *u8, nlayers = u32(layers.len()), layers = data(layers) as *u8, nexts = u32(exts.len()), exts = data(exts) as *u8)
         r = vkCreateInstance((&info) as *u8, null, &__vk_inst)
-        if r != 0: return "vkCreateInstance failed ({r}: no Vulkan driver?)"
-        if not __vk_headless:
-            __vk_surface = make_surface()
-            if __vk_surface == 0: return "the window's Vulkan surface could not be made"
+        if r != 0:
+            __vk_inst = null
+            return "vkCreateInstance failed ({r}: no Vulkan driver?)"
+        __vk_inst_exts = names
+        ""
+
+    __vk_make_device = () -> str:
         # the device: a discrete GPU before an integrated one before anything else
         n: u32 = 0
         vkEnumeratePhysicalDevices(__vk_inst, &n, null)
@@ -1030,7 +1081,9 @@ when TARGET != "wasm":
         q = VkDeviceQueueCreateInfo(stype = 2, family = __vk_family, count = 1, priorities = &prio)
         f2, f12, f13 = __vk_features(true)
         dexts: *u8[]
-        if not __vk_headless: dexts.push(data("VK_KHR_swapchain"))
+        loop e in __vk_device_exts(__vk_pd):
+            if e == "VK_KHR_swapchain": __vk_has_swapchain = true
+        if __vk_has_swapchain and __vk_inst_exts.len() > 0: dexts.push(data("VK_KHR_swapchain"))
         # (flat outputs from a triangle's last vertex, as in OpenGL, where the device can)
         pv = fill(u32(0), 6)
         pv[0] = 1000254000
@@ -1576,3 +1629,41 @@ when TARGET != "wasm":
         m = 0
         __vk_check(vkCreateShaderModule(__vk_dev, (&info) as *u8, null, &m), "vkCreateShaderModule")
         m
+
+    # ---------------- compute ----------------
+    # a compute pipeline from SPIR-V bytes (entry point main)
+    __vk_compute_pipeline = (code: str) -> int:
+        m = __vk_module(code)
+        info = VkComputePipelineCreateInfo(stype = 29, stage = VkPipelineShaderStageCreateInfo(stype = 18, stage = 0x20, module = m, name = data("main")), layout = __vk_layout, base_index = -1)
+        pl = 0
+        __vk_check(vkCreateComputePipelines(__vk_dev, 0, 1, (&info) as *u8, null, &pl), "vkCreateComputePipelines")
+        pl
+
+    # run compute pipeline pl over groups (x, y), its parameters the n bytes at p (their address in
+    # the push constants); what ran before it is done, and what runs after sees its writes
+    __vk_dispatch = (pl: int, p: *u8, n: int, gx: int, gy: int):
+        blk, off = __vk_upload(p, n)
+        __vg_end_pass()
+        cb = __vk_cb()
+        __vk_memory_barrier(cb, VK_STAGE_ALL, VK_ACCESS_MEMORY_WRITE, VK_STAGE_COMPUTE, VK_ACCESS_MEMORY_READ | VK_ACCESS_MEMORY_WRITE)
+        vkCmdBindPipeline(cb, 1, pl)
+        pc = fill(0, __VK_PUSH_SIZE / 8)
+        pc[0] = __vk_addr(blk, off)
+        vkCmdPushConstants(cb, __vk_layout, 0x7FFFFFFF, 0, u32(__VK_PUSH_SIZE), data(pc) as *u8)
+        vkCmdDispatch(cb, u32(gx), u32(gy), 1)
+        __vk_memory_barrier(cb, VK_STAGE_COMPUTE, VK_ACCESS_MEMORY_WRITE, VK_STAGE_ALL, VK_ACCESS_MEMORY_READ | VK_ACCESS_MEMORY_WRITE)
+
+    # the first n bytes of a buffer, after everything recorded so far has run
+    __vk_read_buffer = (b: int, n: int, out: *u8):
+        __vk_begin_frame()
+        __vg_end_pass()
+        if __vk_readback.size < n:
+            __vk_free_buffer(__vk_readback)
+            __vk_readback = __vk_buffer(max(n, 16), u32(0x2), u32(VK_MEM_HOST_VISIBLE | VK_MEM_HOST_COHERENT), u32(VK_MEM_HOST_CACHED))
+        cb = __vk_cb()
+        __vk_memory_barrier(cb, VK_STAGE_ALL, VK_ACCESS_MEMORY_WRITE, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_READ)
+        r = VkBufferCopy(size = u64(n))
+        vkCmdCopyBuffer(cb, b, __vk_readback.buffer, 1, (&r) as *u8)
+        __vk_memory_barrier(cb, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_WRITE, VK_STAGE_HOST, VK_ACCESS_HOST_READ)
+        __vk_submit_and_wait()
+        mem_copy(out, __vk_readback.ptr, n)
