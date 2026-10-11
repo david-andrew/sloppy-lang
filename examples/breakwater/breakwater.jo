@@ -489,6 +489,7 @@ struct Foe:
     dead: f64 = -1.0            # seconds since it fell (-1: alive)
     gait: f64 = 0.0             # meters walked (its stride)
     recoil: f64 = 1.0           # seconds since it fired
+    aiming: f64 = 0.0           # how far its head and gun have turned from looking about to aiming
     blip: f64 = 9.0             # seconds since it moved fast or fired (the tracker shows it)
 
 # (size: its robot's scale; drop: the charge of the caster it leaves)
@@ -1299,6 +1300,8 @@ think = (f: mut Foe, dt: f64):
         move_body(f.body, dt)
         return
     f.calm += dt
+    if f.sees or f.burst > 0 or f.windup > 0.0: f.aiming = min(1.0, f.aiming + dt * 4.0)
+    else: f.aiming = max(0.0, f.aiming - dt * 2.0)
     f.flinch -= dt
     f.dodge -= dt
     f.dodge_wait -= dt
@@ -1796,6 +1799,7 @@ struct Rig:
     attack: int
     die: int
     aim: int[]
+    rest: Pose
 
 rigs: Rig[]
 arm_models: Model[]
@@ -1820,7 +1824,7 @@ rig = (m0: Model, colors: (vec4, vec4)[]) -> Rig:
         # (its eyes glow)
         if length(pt.color - EYE_RED) < 0.01: m.parts[i].emissive = 1.5
     Rig(m, find_animation(m, "Idle"), find_animation(m, "Walk"), find_animation(m, "Run"), find_animation(m, "Shoot"),
-        find_animation(m, "Attack"), find_animation(m, "Death"), [loop n in ["Head", "Eye", "Gun"]: find_node(m, n)])
+        find_animation(m, "Attack"), find_animation(m, "Death"), [loop n in ["Head", "Eye", "Gun"]: find_node(m, n)], rest_pose(m))
 
 make_meshes = ():
     meshes_made = true
@@ -2100,6 +2104,7 @@ foe_pose = (f: Foe) -> Pose:
     if f.swing > 0.0: p = pose_at(m, r.attack, 0.45 - f.swing, false)
     else if f.melee_wait > 0.8:
         p = blend_poses(p, pose_at(m, r.attack, 0.45 + 1.3 - f.melee_wait, false), clamp((f.melee_wait - 0.8) / 0.2, 0.0, 1.0))
+    # (looking about, its head and gun turn; aiming, they face ahead, tilted at the player)
     tilt = 0.0
     if f.sees or f.burst > 0:
         to = chest() - foe_eye(f)
@@ -2107,7 +2112,11 @@ foe_pose = (f: Foe) -> Pose:
     if f.windup > 0.0: tilt = 0.6
     if f.flinch > 0.0: tilt += f.flinch * 1.5
     loop n in r.aim:
-        if n >= 0: turn_node(m, p, n, vec3(1, 0, 0), -tilt)
+        if n < 0: continue
+        q = r.rest.r[n]
+        if dot(p.r[n], q) < 0.0: q = q * -1.0
+        p.r[n] = normalize(mix(p.r[n], q, f32(f.aiming)))
+        turn_node(m, p, n, vec3(1, 0, 0), -tilt)
     p
 
 # a weapon in hands: from the right hand toward the left (which holds it further up)
