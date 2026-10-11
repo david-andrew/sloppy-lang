@@ -17,7 +17,7 @@ def slug(text):
     return re.sub(r"-+", "-", s) or "section"
 
 LINKS = {"docs/TUTORIAL.md": "tutorial.html", "TUTORIAL.md": "tutorial.html",
-         "docs/TUTORIAL_REBOUND.md": "tutorial-rebound.html", "TUTORIAL_REBOUND.md": "tutorial-rebound.html", "docs/LANGUAGE.md": "language.html", "LANGUAGE.md": "language.html", "docs/API.md": "api.html",
+         "docs/TUTORIAL_REBOUND.md": "tutorial-rebound.html", "TUTORIAL_REBOUND.md": "tutorial-rebound.html", "docs/TUTORIAL_BREAKWATER.md": "tutorial-breakwater.html", "TUTORIAL_BREAKWATER.md": "tutorial-breakwater.html", "docs/LANGUAGE.md": "language.html", "LANGUAGE.md": "language.html", "docs/API.md": "api.html",
          "API.md": "api.html", "docs/REPORT.md": "report.html", "REPORT.md": "report.html", "README.md": "start.html",
          "../README.md": "start.html"}
 
@@ -231,12 +231,14 @@ def page(title, body, here_page, prefix, extra_head="", description=DESCRIPTION)
 
 DOCS = [("start.html", "README.md", "Getting started"), ("tutorial.html", "docs/TUTORIAL.md", "Make a game"),
         ("tutorial-rebound.html", "docs/TUTORIAL_REBOUND.md", "Make an arcade game"),
+        ("tutorial-breakwater.html", "docs/TUTORIAL_BREAKWATER.md", "Make a 3D shooter"),
         ("language.html", "docs/LANGUAGE.md", "The language"),
         ("api.html", "docs/API.md", "Standard library"), ("report.html", "docs/REPORT.md", "Report")]
 DOC_DESCRIPTIONS = {
     "start.html": "Install Sloppy, a simple game dev language, and write your first program and game.",
     "tutorial.html": "Make a small platformer in Sloppy, step by step: moving, jumping, platforms, a camera, menus, saving, glow and music.",
     "tutorial-rebound.html": "Make a small arcade game in Sloppy, step by step: angles, many things at once, chain reactions, upgrades and synthesized sound.",
+    "tutorial-breakwater.html": "Make a small 3D first-person shooter in Sloppy, step by step: mouse look, walls, shots as rays, enemies that fire back, waves, light and sound.",
     "language.html": "The Sloppy language: types, functions, structs and unions, numeric arrays, modules, parallelism, the game loop and calling C.",
     "api.html": "Everything in Sloppy's standard library: strings, maps, math, files, threads, windows, input, 2D and 3D drawing, shaders and audio.",
     "report.html": "Measured results for Sloppy's design goals: compile speed, program speed against C, and executable size."}

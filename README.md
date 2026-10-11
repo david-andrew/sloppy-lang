@@ -117,7 +117,8 @@ irm https://sloppy-lang.org/install.ps1 | iex
 
 Or try it in the browser: [the playground](https://sloppy-lang.org/playground/). Then
 [make a game](docs/TUTORIAL.md): a small platformer, built step by step; then
-[an arcade game](docs/TUTORIAL_REBOUND.md), a small version of Rebound.
+[an arcade game](docs/TUTORIAL_REBOUND.md), a small version of Rebound; then
+[a 3D shooter](docs/TUTORIAL_BREAKWATER.md), a small version of Breakwater.
 
 From source:
 

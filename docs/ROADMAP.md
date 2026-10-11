@@ -7,7 +7,8 @@ library (window, input, gamepads, 2D/3D drawing with a 2D camera, sprite sheets,
 collision and particle helpers, shadows, shaders written in Sloppy that run on the GPU or a
 software renderer, an audio mixer and synthesizer, PNG/JPEG/WAV/Ogg Vorbis, JSON, saving), hot
 reloading (`sloppy watch`), a REPL (Linux), a language server and VS Code extension, a
-playground, backtraces, DWARF, modules, two tutorials and a showcase game (Rebound).
+playground, backtraces, DWARF, modules, three tutorials and two showcase games (Rebound in 2D,
+Breakwater in 3D).
 
 The aim stays the same: a small language that feels like Python and runs like C, for making
 games, with the shortest path from an idea to something running and shippable.
@@ -44,12 +45,13 @@ the same autopilot measured the difficulty curve (0.45 s: about 80 s survived, 0
 minutes). It runs on Linux, Windows and the web, on the website (sloppy-lang.org/rebound/) and in
 the playground (#example=rebound, with its icon: the playground carries examples' other files,
 in the page when small, else fetched when the game is chosen, as Breakwater's models are).
-The website has two tutorials, each eight steps that run, with links into the playground (the
-tests build every step): docs/TUTORIAL.md (Firefly, a platformer) and docs/TUTORIAL_REBOUND.md
-(Little Rebound, a small version of Rebound). The 3D flagship is Breakwater
+The website has three tutorials, each eight steps that run, with links into the playground (the
+tests build every step): docs/TUTORIAL.md (Firefly, a platformer), docs/TUTORIAL_REBOUND.md
+(Little Rebound, a small version of Rebound) and docs/TUTORIAL_BREAKWATER.md (Little Breakwater,
+a first-person shooter in 3D, from boxes and spheres). The 3D flagship is Breakwater
 (examples/breakwater, sloppy-lang.org/breakwater/): a first-person shooter, waves of robots on a
 platform at sea, with animated glTF models (Quaternius' robots and weapons, CC0; the first-person
-arms are Mixamo's Vanguard, made with tools/mixamo). A 3D tutorial could follow, built on it.
+arms are Mixamo's Vanguard, made with tools/mixamo).
 
 Left: upload Rebound to itch.io (needs an account: the zip is `sloppy build --target wasm -o
 rebound.zip`), play it on real machines (people, not the autopilot, for the difficulty), and
