@@ -1,6 +1,6 @@
 # Sloppy roadmap
 
-Where Sloppy is (v0.4.0, October 2026): a self-hosted compiler (~24k lines of Sloppy, plus a C
+Where Sloppy is (v0.5.0, October 2026): a self-hosted compiler (~24k lines of Sloppy, plus a C
 bootstrap) that compiles a 50k-line program in 0.18 s, runs programs at ~1.24x the time of C -O2
 (release), and targets Linux x86-64, Windows x64 and the web (one .html file). It has a game
 library (window, input, gamepads, 2D/3D drawing with a 2D camera, sprite sheets, tilemaps, menus,

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 Games:
 - **Breakwater** (examples/breakwater), a first-person shooter in one file: hold a platform at
