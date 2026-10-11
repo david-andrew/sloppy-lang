@@ -117,7 +117,7 @@ def header_of(lines):
 
 def entries_of(path, only=None):
     """[(section, name, signature, what it does)] of a module's public declarations"""
-    lines = open(path).read().splitlines()
+    lines = open(path, encoding="utf-8").read().splitlines()
     out, comment, seen = [], [], set()
     section = ""
     in_when = False        # (declarations one level into a top-level `when` count too)
@@ -170,7 +170,7 @@ def collect():
     for group, tid, title, mods, example, intro in TOPICS:
         t = {"id": tid, "group": group, "title": title, "intro": intro, "example": None, "modules": []}
         if example:
-            t["example"] = open(os.path.join(ROOT, "docs", "api", example + ".jo")).read().rstrip("\n")
+            t["example"] = open(os.path.join(ROOT, "docs", "api", example + ".jo"), encoding="utf-8").read().rstrip("\n")
             t["example_file"] = f"docs/api/{example}.jo"
         built = [b for b in BUILTINS if b[0] == tid]
         if built:
@@ -181,7 +181,7 @@ def collect():
             mod, only = (mod if isinstance(mod, tuple) else (mod, None))
             covered.add(mod)
             path = os.path.join(ROOT, "lib", mod + ".jo")
-            lines = open(path).read().splitlines()
+            lines = open(path, encoding="utf-8").read().splitlines()
             sections = []
             for sec, name, sig, doc in entries_of(path, only):
                 title_ = section_title(sec)
@@ -244,5 +244,5 @@ def slug(text):
     return re.sub(r"-+", "-", s)
 
 if __name__ == "__main__":
-    open(os.path.join(ROOT, "docs", "API.md"), "w").write(markdown(collect()))
+    open(os.path.join(ROOT, "docs", "API.md"), "w", encoding="utf-8", newline="\n").write(markdown(collect()))
     print("wrote docs/API.md")
