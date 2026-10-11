@@ -45,7 +45,10 @@ minutes). It runs on Linux, Windows and the web, on the website (sloppy-lang.org
 the playground (#example=rebound, with its icon: the playground carries examples' other files).
 The website has two tutorials, each eight steps that run, with links into the playground (the
 tests build every step): docs/TUTORIAL.md (Firefly, a platformer) and docs/TUTORIAL_REBOUND.md
-(Little Rebound, a small version of Rebound). A 3D one could follow, built on dunes.
+(Little Rebound, a small version of Rebound). The 3D flagship is Breakwater
+(examples/breakwater, sloppy-lang.org/breakwater/): a first-person shooter, waves of robots on a
+platform at sea, with animated glTF models (Quaternius' robots and weapons, CC0; the first-person
+arms are Mixamo's Vanguard, made with tools/mixamo). A 3D tutorial could follow, built on it.
 
 Left: upload Rebound to itch.io (needs an account: the zip is `sloppy build --target wasm -o
 rebound.zip`), play it on real machines (people, not the autopilot, for the difficulty), and

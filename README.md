@@ -63,6 +63,13 @@ change it there in [the playground](https://sloppy-lang.org/playground/#example=
 
 <p align="center"><a href="https://sloppy-lang.org/rebound/"><img src="assets/rebound.png" alt="Rebound: a shield arcs around a glowing core; a chain of blasts runs through a line of turrets" width="720"></a></p>
 
+In 3D: [Breakwater](examples/breakwater/breakwater.jo), a first-person shooter in one file. Hold a
+platform at sea against waves of robots, with a shield that recharges, two weapons at a time,
+grenades and melee; animated glTF models, shadows and bloom. [Play it in the
+browser](https://sloppy-lang.org/breakwater/).
+
+<p align="center"><a href="https://sloppy-lang.org/breakwater/"><img src="assets/breakwater.png" alt="Breakwater: robots advance across a platform at sea; a shielded warden is in the shotgun's sights" width="720"></a></p>
+
 ## Highlights
 
 - **Fast compiles.** About 250,000 lines per second on one core (debug builds), roughly 20x
@@ -121,7 +128,8 @@ tools/bootstrap.sh            # stage0 (C) -> sloppy1 -> sloppy2 -> sloppy3, che
 bin/sloppy                       # an interactive prompt
 bin/sloppy examples/shapes.jo   # compile and run
 bin/sloppy examples/rebound/rebound.jo      # a complete 2D arcade game (menus, upgrades, a saved best)
-bin/sloppy examples/dunes/dunes.jo          # the 3D demo game
+bin/sloppy examples/breakwater/breakwater.jo   # a complete 3D first-person shooter
+bin/sloppy examples/dunes/dunes.jo          # a smaller 3D game
 bin/sloppy watch examples/rebound/rebound.jo    # ... reloaded as you edit it (try its tuning constants)
 bin/sloppy --web examples/dunes/dunes.jo    # the same game in the browser
 bin/sloppy build examples/dunes/dunes.jo --target wasm -o dunes.html   # a page to keep or share
@@ -202,7 +210,7 @@ lib/std/       thread pool and parallel helpers, numeric arrays (nd.jo)
 lib/game/      windows (Wayland, X11), input, OpenGL ES / WebGL, 2D, 3D, images, audio
 lib/web/       JavaScript glue embedded into web builds
 editors/       the VS Code extension (tools/vsix.py packages it)
-examples/      rebound (a complete 2D game), dunes (3D), tiles (a tilemap and sprites), shapes, cube, scene3d
+examples/      rebound (a complete 2D game), breakwater (a complete 3D game), dunes and lowline (3D), tiles (a tilemap and sprites), shapes, cube, scene3d
 tests/         test programs with expected output (tools/runtests.py), render references
 bench/         benchmarks (Sloppy and equivalent C)
 tools/         bootstrap, test runner, render test, differential fuzzer, language server test,

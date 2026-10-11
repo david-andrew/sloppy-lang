@@ -296,6 +296,18 @@ draw = ():
     <a class="btn" href="https://github.com/david-andrew/sloppy-lang/blob/master/examples/rebound/rebound.jo">Read the source</a></div>
   </div>
 </section>
+<section class="showcase flip">
+  <a href="breakwater/"><img src="assets/breakwater.png" alt="Breakwater: robots advance across a platform at sea; a shielded warden is in the shotgun's sights"></a>
+  <div>
+    <h2>Breakwater</h2>
+    <p>A first-person shooter in one file of Sloppy: hold a platform at sea against waves of robots.
+    A shield that recharges, two weapons at a time from racks and fallen robots, grenades and melee.
+    Animated glTF models (robots and weapons by Quaternius), shadows, bloom and synthesized sound;
+    mouse, keyboard alone, or a gamepad.</p>
+    <div class="buttons"><a class="btn primary" href="breakwater/">Play it</a>
+    <a class="btn" href="https://github.com/david-andrew/sloppy-lang/blob/master/examples/breakwater/breakwater.jo">Read the source</a></div>
+  </div>
+</section>
 <section class="strip">
   <h2>Numbers, arrays, and the rest</h2>
   <pre><code class="sloppy">fib = (n: int) -> int:
@@ -332,6 +344,10 @@ def main():
     os.makedirs(os.path.join(out, "rebound"))
     subprocess.run([os.path.join(root, "bin", "sloppy"), "build", os.path.join(root, "examples", "rebound", "rebound.jo"), "--target", "wasm",
                     "-o", os.path.join(out, "rebound", "index.html")], check=True, env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")))
+    # Breakwater (sloppy-lang.org/breakwater/)
+    os.makedirs(os.path.join(out, "breakwater"))
+    subprocess.run([os.path.join(root, "bin", "sloppy"), "build", os.path.join(root, "examples", "breakwater", "breakwater.jo"), "--target", "wasm",
+                    "-o", os.path.join(out, "breakwater", "index.html")], check=True, env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")))
     # curl -fsSL .../install | bash
     shutil.copy(os.path.join(root, "tools", "install.sh"), os.path.join(out, "install"))
     # irm https://sloppy-lang.org/install.ps1 | iex
