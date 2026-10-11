@@ -299,29 +299,29 @@ INSTALL_SYSTEMS = [
      "In a terminal, on x86-64. Installs to <code>~/.sloppy</code>; the command works at once."),
     ("windows", "Windows", "irm https://sloppy-lang.org/install.ps1 | iex",
      "In PowerShell, on Windows 10 or 11 (x64). Installs to <code>%LOCALAPPDATA%\\sloppy</code>; the command works at once."),
-    ("mac", "macOS", None,
-     "Sloppy does not run on macOS yet. Its programs run in any browser, though: write and run them in "
-     '<a href="{prefix}playground/">the playground</a>.'),
 ]
 
 def install_box(prefix):
     tabs = "".join(f'<button data-os="{k}">{n}</button>' for k, n, _, _ in INSTALL_SYSTEMS)
     panes = ""
     for k, n, cmd, note in INSTALL_SYSTEMS:
-        code = (f'<div class="cmd"><pre><code>{html.escape(cmd)}</code></pre><button class="copy" title="Copy">Copy</button></div>' if cmd else "")
+        code = f'<div class="cmd"><pre><code>{html.escape(cmd)}</code></pre><button class="copy" title="Copy">Copy</button></div>'
         panes += f'<div class="pane" data-os="{k}">{code}<p>{note.format(prefix=prefix)}</p></div>'
     return f'''<div class="install-box" data-os="linux"><div class="tabs">{tabs}</div>{panes}
-<p class="phone">On a phone or tablet? Sloppy installs on a computer; here, <a href="{prefix}playground/">try it in the browser</a>.</p></div>'''
+<p class="phone">On a phone or tablet? Sloppy installs on a computer; here, <a href="{prefix}playground/">try it in the browser</a>.</p>
+<p class="mac">Sloppy does not run on macOS yet. Its programs run in any browser, though: write and run them in <a href="{prefix}playground/">the playground</a>.</p></div>'''
 
 INSTALL_SCRIPT = """<script>
 (() => {
   const ua = navigator.userAgent, p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
   const phone = /Android|iPhone|iPad|iPod/.test(ua) || (/Mac/.test(p) && navigator.maxTouchPoints > 1);
-  const os = /Win/.test(p) || /Windows/.test(ua) ? "windows" : /Mac|iPhone|iPad/.test(p) || /Mac OS X/.test(ua) ? "mac" : "linux";
+  const mac = !phone && (/Mac/.test(p) || /Mac OS X/.test(ua));
+  const os = /Win/.test(p) || /Windows/.test(ua) ? "windows" : "linux";
   for (const box of document.querySelectorAll(".install-box")) {
     box.classList.add("js");
     box.dataset.os = os;
     if (phone) box.classList.add("on-phone");
+    if (mac) box.classList.add("on-mac");
     for (const b of box.querySelectorAll(".tabs button")) b.onclick = () => { box.dataset.os = b.dataset.os; };
     for (const b of box.querySelectorAll("button.copy")) b.onclick = () => {
       navigator.clipboard.writeText(b.parentNode.querySelector("code").textContent).then(() => {
