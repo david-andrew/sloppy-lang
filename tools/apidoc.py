@@ -49,7 +49,7 @@ TOPICS = [
     ("Games", "helpers", "Particles, noise, easing and collisions", ["game/gameutil"], "helpers", ""),
 ]
 # the library's own machinery (the runtime, the OS and graphics layers, the prompt...): not listed
-INTERNAL = {"core/rt", "core/fmt", "core/windows", "game/dl", "game/x11", "game/wayland", "game/wlclient", "game/dmabuf",
+INTERNAL = {"core/rt", "core/fmt", "core/windows", "game/dl", "game/x11", "game/wayland", "game/wlclient", "game/dmabuf", "game/vk",
             "game/gl", "game/softgl", "std/backtrace", "std/snapshot", "std/repl", "std/watch"}
 
 # what the compiler itself provides: (topic, section, name, signatures, what it does)

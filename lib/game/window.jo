@@ -888,7 +888,11 @@ else:
             why = __wl_open(__win_title, __win_w, __win_h)
             if len(why) == 0:
                 __wayland = true
-                if not __soft:
+                if not __soft and __lw_on and __vk_wanted():
+                    why2 = __vk_open("VK_KHR_wayland_surface", __vk_wayland_surface)
+                    if len(why2) == 0: __vk = true
+                    else: eprint("note: {why2}; using OpenGL")
+                if not __soft and not __vk:
                     # (GPU arrays may have made the context already: keep it, their data lives there)
                     why2 = ""
                     if __egl_dpy == null: why2 = __egl_open_surfaceless()
@@ -935,7 +939,11 @@ else:
         XMapWindow(__xdpy, __xwin)
         XFlush(__xdpy)
         __xev = __alloc(256)
-        if not __soft:
+        if not __soft and __vk_wanted():
+            why = __vk_open("VK_KHR_xlib_surface", __vk_xlib_surface)
+            if len(why) == 0: __vk = true
+            else: eprint("note: {why}; using OpenGL")
+        if not __soft and not __vk:
             why = __egl_open()
             if len(why) > 0:
                 eprint("note: {why}; using the software renderer")
@@ -1268,7 +1276,27 @@ else:
         else if __xdpy != null: __x_set_clipboard(s)
         else: __local_clip = s
 
+    # (Vulkan surfaces for the window: the libX11 window, or the libwayland surface)
+    __vk_xlib_surface = () -> int:
+        info = VkXlibSurfaceCreateInfo(stype = 1000004000, dpy = __xdpy, window = __xwin)
+        s = 0
+        if vkCreateXlibSurfaceKHR(__vk_inst, (&info) as *u8, null, &s) != 0: return 0
+        s
+
+    __vk_wayland_surface = () -> int:
+        info = VkWaylandSurfaceCreateInfo(stype = 1000006000, display = __lw_display, surface = __lw_proxy(__wl_surface))
+        s = 0
+        if vkCreateWaylandSurfaceKHR(__vk_inst, (&info) as *u8, null, &s) != 0: return 0
+        s
+
     __platform_present = ():
+        if __vk:
+            if __wayland:
+                # (the viewport's size goes with the frame the swapchain commits)
+                __wl_set_size()
+                __wl_flush()
+            __vk_present()
+            return
         if __wayland:
             if __soft: __wl_present((out: *u8, w: int, h: int): __sw_present_pixels(out, w, h))
             else if not __wl_present_gpu(): __wl_present((out: *u8, w: int, h: int): __gl_screen_copy(out, w, h))
@@ -1290,7 +1318,7 @@ else:
             last = now
             if __fixed_step: dt = 1.0 / 60.0
             if __soft: __sw_init_window(__win_w, __win_h)
-            else if __wayland: __gl_screen_resize(__win_w, __win_h)
+            else if __wayland and not __vk: __gl_screen_resize(__win_w, __win_h)
             __run_frame(dt, update, draw)
             t0 = time()
             __platform_present()
@@ -1363,6 +1391,7 @@ __present_how = () -> str:
         return "wgl"
     else:
         if __soft: return "software renderer"
+        if __vk: return "vulkan ({__vk_device_name})"
         if __wayland:
             how = "wayland"
             if not __lw_on: how = "wayland protocol"
