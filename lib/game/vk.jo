@@ -821,6 +821,7 @@ when TARGET != "wasm":
     __vk_queue: *u8 = null
     __vk_family: u32 = 0
     __vk_surface = 0
+    __vk_headless = false          # no window: frames are drawn, not shown (screenshot runs)
     __vk_device_name = ""
     __vk_provoking_last = false    # VK_EXT_provoking_vertex is on: flat values from the last vertex
     __vk_mem_props: u8[]           # VkPhysicalDeviceMemoryProperties
@@ -945,7 +946,7 @@ when TARGET != "wasm":
             if f12[4 + i] == 0: return "a Vulkan 1.2 feature is missing ({i})"
         loop i in __VK13_NEEDED:
             if f13[4 + i] == 0: return "a Vulkan 1.3 feature is missing ({i})"
-        has_sc = false
+        has_sc = __vk_headless
         loop e in __vk_device_exts(pd):
             if e == "VK_KHR_swapchain": has_sc = true
         if not has_sc: return "no swapchain"
@@ -961,6 +962,7 @@ when TARGET != "wasm":
         loop i in [0..int(n)):
             flags = (data(props) as *u32)[i * 6]
             if flags & 3 != 3: continue
+            if __vk_headless: return i
             ok: u32 = 0
             vkGetPhysicalDeviceSurfaceSupportKHR(pd, u32(i), __vk_surface, &ok)
             if ok != 0: return i
@@ -971,15 +973,20 @@ when TARGET != "wasm":
     __vk_open = (surface_ext: str, make_surface: () -> int) -> str:
         if not lib_available("libvulkan.so.1"): return "no Vulkan loader (libvulkan) found"
         app = VkApplicationInfo(stype = 0, app_name = data(__zstr(__win_title)), engine_name = data("Sloppy"), api_version = u32(VK_API_1_3))
-        exts: *u8[] = [data("VK_KHR_surface"), data(__zstr(surface_ext))]
+        exts: *u8[]
+        __vk_headless = len(surface_ext) == 0
+        if not __vk_headless:
+            exts.push(data("VK_KHR_surface"))
+            exts.push(data(__zstr(surface_ext)))
         layers: *u8[]
         if (env("SLOPPY_VK_VALIDATE") ?? "") == "1":
             if __vk_has_layer("VK_LAYER_KHRONOS_validation"): layers.push(data("VK_LAYER_KHRONOS_validation"))
             else: eprint("note: the Vulkan validation layer is not installed")
         info = VkInstanceCreateInfo(stype = 1, app = (&app) as *u8, nlayers = u32(layers.len()), layers = data(layers) as *u8, nexts = u32(exts.len()), exts = data(exts) as *u8)
         if vkCreateInstance((&info) as *u8, null, &__vk_inst) != 0: return "vkCreateInstance failed (no Vulkan driver?)"
-        __vk_surface = make_surface()
-        if __vk_surface == 0: return "the window's Vulkan surface could not be made"
+        if not __vk_headless:
+            __vk_surface = make_surface()
+            if __vk_surface == 0: return "the window's Vulkan surface could not be made"
         # the device: a discrete GPU before an integrated one before anything else
         n: u32 = 0
         vkEnumeratePhysicalDevices(__vk_inst, &n, null)
@@ -1019,7 +1026,8 @@ when TARGET != "wasm":
         prio: f32 = 1.0
         q = VkDeviceQueueCreateInfo(stype = 2, family = __vk_family, count = 1, priorities = &prio)
         f2, f12, f13 = __vk_features(true)
-        dexts: *u8[] = [data("VK_KHR_swapchain")]
+        dexts: *u8[]
+        if not __vk_headless: dexts.push(data("VK_KHR_swapchain"))
         # (flat outputs from a triangle's last vertex, as in OpenGL, where the device can)
         pv = fill(u32(0), 6)
         pv[0] = 1000254000
@@ -1253,6 +1261,10 @@ when TARGET != "wasm":
     __vk_present = ():
         __vk_begin_frame()
         __vg_end_frame()
+        if __vk_headless:
+            __vk_submit_and_wait()
+            __vk_frame = (__vk_frame + 1) % __VK_FRAMES
+            return
         f = __vk_frames[__vk_frame]
         cb = f.cb
         if __vk_swapchain == 0 or __vk_sc_w != __win_w or __vk_sc_h != __win_h: __vk_make_swapchain(__win_w, __win_h)
