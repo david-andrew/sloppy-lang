@@ -78,6 +78,45 @@ void main() {
 }
 """
 
+# the same as Sloppy shader functions, for Vulkan (which takes SPIR-V)
+struct __Vert2D:
+    pos: vec2
+    uv: vec2
+    color: vec4
+    mode: f32
+
+struct __Params2D:
+    proj: mat4
+    tex: Texture
+
+struct __Out2D:
+    pos: vec4
+    uv: vec2
+    color: vec4
+    mode: f32
+
+__vs2d = (v: __Vert2D, u: __Params2D) -> __Out2D: __Out2D(u.proj * vec4(v.pos, 0, 1), v.uv, v.color, v.mode)
+
+__fs2d = (i: __Out2D, u: __Params2D) -> vec4:
+    t = sample(u.tex, i.uv)
+    if i.mode > 0.5:
+        w = max(fwidth(t.x), 0.02)
+        a = smoothstep(0.5 - w, 0.5 + w, t.x)
+        return vec4(i.color.xyz, i.color.w * a)
+    t * i.color
+
+__b_vk_prog = 0
+
+when TARGET != "wasm":
+    # the batch drawn through Vulkan: its vertices into this frame's upload memory
+    __vk_draw2d = ():
+        if __b_vk_prog == 0: __b_vk_prog = __vk_program(shader(__vs2d, __fs2d))
+        n = __b_count * __VFLOATS * 4
+        blk, off = __vk_upload(__b_buf as *u8, n)
+        p = __Params2D(__proj, Texture(__b_tex, 1, 1))
+        __vk_draw_batch(__b_vk_prog, __vk_addr(blk, off), __VFLOATS * 4, __b_count, (&p) as *u8, size_of(__Params2D))
+        __b_count = 0
+
 __gfx_init = ():
     if __g_init: return
     __g_init = true
@@ -248,10 +287,6 @@ draw_to_screen = ():
 
 # ---------------- state ----------------
 clear = (c: vec4 = vec4(0, 0, 0, 1)):
-    when TARGET != "wasm":
-        if __vk:
-            __vk_clear_screen(c)
-            return
     flush()
     glClearColor(c.x, c.y, c.z, c.w)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
@@ -298,6 +333,9 @@ flush = ():
         if __soft:
             __sw_draw2d(__b_buf, __b_count, __proj, __b_tex)
             __b_count = 0
+            return
+        if __vk:
+            __vk_draw2d()
             return
     glUseProgram(u32(__b_prog))
     glUniformMatrix4fv(i32(__b_loc_proj), 1, 0, (&__proj) as *u8)

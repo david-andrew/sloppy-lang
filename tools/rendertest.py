@@ -4,7 +4,10 @@ GPU, no display) and compare with the reference frames in tests/render. The smal
 tests/render/*.jo check shader semantics: their references were rendered by a GPU.
 With a display (or --gpu), each frame is also rendered on the GPU and compared with the same
 references, which catches shader code that only the GPU driver compiles.
-usage: rendertest.py [--update] [--gpu | --no-gpu]   (--update rewrites the references; scenes need a display)"""
+With --vulkan, each frame is also drawn through Vulkan (SLOPPY_VULKAN=1) and compared the same way
+(--vulkan-only: just that; SLOPPY_VK_DEVICE picks the device, e.g. Mesa's software one).
+usage: rendertest.py [--update] [--gpu | --no-gpu] [--vulkan | --vulkan-only] [name...]
+(--update rewrites the references; scenes need a display)"""
 import os, subprocess, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pngutil import downsample, png_rows, write_png
@@ -15,13 +18,17 @@ out = os.path.join(tempfile.gettempdir(), "sloppy-render")
 refdir = os.path.join(root, "tests", "render")
 update = "--update" in sys.argv
 has_display = bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
-gpu_too = ("--gpu" in sys.argv or has_display) and "--no-gpu" not in sys.argv and not update
+vulkan_only = "--vulkan-only" in sys.argv
+vulkan = ("--vulkan" in sys.argv or vulkan_only) and not update
+gpu_too = ("--gpu" in sys.argv or has_display) and "--no-gpu" not in sys.argv and not update and not vulkan_only
+only = [a for a in sys.argv[1:] if not a.startswith("--")]
 GPU_FRAME_LIMIT = 4.0   # a whole game frame on a GPU (different rasterization and precision)
 os.makedirs(out, exist_ok=True)
 games = {"cube": "examples/cube.jo", "rebound": "examples/rebound/rebound.jo", "dunes": "examples/dunes/dunes.jo", "lowline": "examples/lowline/lowline.jo"}
 scenes = sorted(f[:-3] for f in os.listdir(refdir) if f.endswith(".jo"))
 for sc in scenes:
     games[sc] = f"tests/render/{sc}.jo"
+if only: games = {k: v for k, v in games.items() if k in only}
 env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
 # (games that save progress start with nothing saved, so their frames do not depend on it)
 import shutil
@@ -30,7 +37,9 @@ env.update(SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_SOFTWARE="1", SLOPPY_FRA
 LIMIT = 1.0           # mean absolute difference allowed (0..255), for other CPUs' rounding
 GPU_LIMIT = 2.0       # against a GPU's frame: the software renderer works at half resolution
 failed = 0
+runs = 0
 for name, src in games.items():
+    runs += 1
     exe = os.path.join(out, name)
     r = subprocess.run([sloppy, "build", "--release", os.path.join(root, src), "-o", exe], capture_output=True, text=True)
     if os.name == "nt": exe += ".exe"
@@ -69,26 +78,27 @@ for name, src in games.items():
     limit = GPU_LIMIT if name in scenes else LIMIT
     print(f"{'ok  ' if d <= limit else 'FAIL'} {name}: mean abs difference {d:.3f}")
     failed += d > limit
-    if gpu_too:
-        gpng = os.path.join(out, f"{name}_gpu.png")
+    for label, extra in ([("GPU", {})] if gpu_too else []) + ([("Vulkan", {"SLOPPY_VULKAN": "1"})] if vulkan else []):
+        runs += 1
+        gpng = os.path.join(out, f"{name}_{label.lower()}.png")
         if os.path.exists(gpng): os.remove(gpng)
-        genv = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_FRAMES="60", SLOPPY_SCREENSHOT=gpng, SLOPPY_SCALE="1")
+        genv = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_FRAMES="60", SLOPPY_SCREENSHOT=gpng, SLOPPY_SCALE="1", **extra)
         genv.pop("SLOPPY_SOFTWARE", None)
         r = subprocess.run([exe], env=genv, capture_output=True, text=True, timeout=300)
         if r.returncode != 0 or not os.path.exists(gpng):
-            print(f"FAIL {name} (GPU): render failed\n{r.stderr[-2000:]}")
+            print(f"FAIL {name} ({label}): render failed\n{r.stderr[-2000:]}")
             failed += 1
             continue
-        if "software renderer" in r.stderr:
-            print(f"skip {name} (GPU): no GPU driver")
+        if "software renderer" in r.stderr or (label == "Vulkan" and "using OpenGL" in r.stderr):
+            print(f"skip {name} ({label}): no driver\n{r.stderr[-500:]}")
             continue
         w2, h2, got2 = downsample(gpng, 4)
         if (w2, h2) != (rw, rh):
-            print(f"FAIL {name} (GPU): size {w2}x{h2}, reference {rw}x{rh}")
+            print(f"FAIL {name} ({label}): size {w2}x{h2}, reference {rw}x{rh}")
             failed += 1
             continue
         d2 = sum(abs(a - b) for a, b in zip(got2, want)) / len(want)
-        print(f"{'ok  ' if d2 <= GPU_FRAME_LIMIT else 'FAIL'} {name} (GPU): mean abs difference {d2:.3f}")
+        print(f"{'ok  ' if d2 <= GPU_FRAME_LIMIT else 'FAIL'} {name} ({label}): mean abs difference {d2:.3f}")
         failed += d2 > GPU_FRAME_LIMIT
-print(f"{len(games) * (2 if gpu_too else 1) - failed} passed, {failed} failed")
+print(f"{runs - failed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

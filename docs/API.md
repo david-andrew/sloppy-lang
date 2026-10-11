@@ -1442,6 +1442,7 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
 - `discard = ()`: in a fragment shader: drop this fragment (no color, no depth), e.g. for alpha-tested leaves: `if c.a < 0.5: discard()`. The rest of the function still runs on the CPU; its result is unused.
 - `vertex_id = () -> int`: in a vertex shader: the index of the vertex being shaded (GLSL gl_VertexID) and of the instance (gl_InstanceID: 0 for draw, the index into the instances for draw_instanced)
 - `instance_id = () -> int`
+- `fwidth = (x: f32) -> f32`: in a fragment shader: how much x changes from one pixel to the next (GLSL fwidth), e.g. for edges that stay sharp at any size; 0 on the CPU
 - `fract = (v: vec2) -> vec2`
 - `step = (edge: f32, x: f32) -> f32`
 

@@ -62,7 +62,11 @@ struct Mesh:
 
 make_shader = (src: ShaderSource) -> Shader:
     __gfx_init_gl_only()
-    prog = gl_create_program(src.vs, src.fs)
+    prog = 0
+    when TARGET != "wasm":
+        if __vk: prog = __vk_program(src)
+        else: prog = gl_create_program(src.vs, src.fs)
+    else: prog = gl_create_program(src.vs, src.fs)
     sh = Shader(prog = prog)
     halves = split(src.layout, "|")
     loop part in split(halves[0], ";"):
@@ -189,6 +193,9 @@ draw[U] = (sh: Shader, m: Mesh, params: U):
         if __soft:
             __sw_draw_mesh(sh.prog, m.mode, m.vbo, m.stride, m.count, m.ibo, m.index_count, (&p) as *u8, 0, 0, 0, 0)
             return
+        if __vk:
+            __vk_draw_mesh(sh.prog, m.mode, m.vbo, m.stride, m.count, m.ibo, m.index_count, (&p) as *u8, size_of(U), 0, 0, 0, 0)
+            return
     glUseProgram(u32(sh.prog))
     __bind_uniforms_sized(sh, (&p) as *u8)
     __bind_attribs(sh, m)
@@ -210,7 +217,7 @@ draw_instanced[U, I] = (sh: Shader, m: mut Mesh, instances: I[], params: U):
     if m.instance_vbo == 0: m.instance_vbo = gl_create_buffer()
     glBindBuffer(GL_ARRAY_BUFFER, u32(m.instance_vbo))
     glBufferData(GL_ARRAY_BUFFER, instances.len() * size_of(I), data(instances) as *u8, GL_STREAM_DRAW)
-    __draw_inst(sh, m, m.instance_vbo, size_of(I), 0, instances.len(), (&p) as *u8)
+    __draw_inst(sh, m, m.instance_vbo, size_of(I), 0, instances.len(), (&p) as *u8, size_of(U))
 
 # per-instance shader input kept on the GPU: uploaded once (and again by set_instances),
 # drawn any number of times with draw_instanced
@@ -237,12 +244,15 @@ draw_instanced[U, I] = (sh: Shader, m: Mesh, b: InstanceBuffer[I], params: U, fi
     if n <= 0 or first < 0 or first + n > b.count: return
     flush()
     p = params
-    __draw_inst(sh, m, b.vbo, size_of(I), first, n, (&p) as *u8)
+    __draw_inst(sh, m, b.vbo, size_of(I), first, n, (&p) as *u8, size_of(U))
 
-__draw_inst = (sh: Shader, m: Mesh, vbo: int, istride: int, first: int, n: int, p: *u8):
+__draw_inst = (sh: Shader, m: Mesh, vbo: int, istride: int, first: int, n: int, p: *u8, usize: int):
     when TARGET != "wasm":
         if __soft:
             __sw_draw_mesh(sh.prog, m.mode, m.vbo, m.stride, m.count, m.ibo, m.index_count, p, vbo, istride, n, first * istride)
+            return
+        if __vk:
+            __vk_draw_mesh(sh.prog, m.mode, m.vbo, m.stride, m.count, m.ibo, m.index_count, p, usize, vbo, istride, n, first * istride)
             return
     glUseProgram(u32(sh.prog))
     __bind_uniforms(sh, p)
@@ -304,6 +314,10 @@ instance_id = () -> int:
     when TARGET != "wasm":
         if __sw_tls != null: return __sw_tls[__tid() * 8 + 1]
     0
+
+# in a fragment shader: how much x changes from one pixel to the next (GLSL fwidth), e.g. for
+# edges that stay sharp at any size; 0 on the CPU
+fwidth = (x: f32) -> f32: 0.0
 
 fract = (v: vec2) -> vec2: v - floor(v)
 step = (edge: f32, x: f32) -> f32:
