@@ -3,6 +3,10 @@
 ## Unreleased
 
 Graphics:
+- Shaders: `-(-1.5)` no longer breaks GLSL (it read `--`); unsigned `min`/`max`/`clamp`
+  compare as unsigned, and `abs` of a narrow integer wraps, as on the CPU.
+- tools/gpufuzz.py: random compute functions run on the CPU, the GPU and lavapipe, and random
+  fragment shaders drawn by the software renderer, OpenGL and Vulkan, must agree.
 - Vulkan pipelines are kept between runs (a pipeline cache per program in `~/.cache/sloppy`,
   checked against the device and a hash): Breakwater's take 1-10 ms to make at start instead of
   70 on NVIDIA. `SLOPPY_VK_PIPELINE_CACHE=0` leaves it out.
@@ -62,6 +66,13 @@ Website and install:
   functions (`print`, `push`, `pop`, `fill`, `embed`...), which were missing.
 
 Language:
+- `min`, `max`, `clamp` (and `abs` for signed ones) keep an integer type: `min(x, 5)` with
+  `x: i32` is an `i32`, `max(a, b)` of two `u8` a `u8` (mixed types still take `int`'s). Ties
+  between the library's overloads go to the one more arguments match exactly.
+- Negating an integer vector (`-ivec2(...)`) gave wrong components (it went through floats).
+- Swizzles out of order (`v.zx`, `w.wy`) as operands or assigned to read and wrote the wrong
+  components on the CPU (assigning one wrote past the vector); a swizzle naming a component
+  twice cannot be assigned to (`v.xx = ...`), and only one in order can be a `mut` argument.
 - A `mut` element of a global array or map, given to a function that may call a function value
   (which could resize the array), is passed as a copy and written back after the call; the
   change was lost before, written to memory the resize had freed.

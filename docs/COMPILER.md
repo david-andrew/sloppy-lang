@@ -70,6 +70,7 @@ the copy back.
 | `python3 tools/rendertest.py --no-gpu` | games rendered by the software renderer against reference frames |
 | `python3 tools/watchtest.py` | hot reloading |
 | `python3 tools/fuzz.py 100` | random valid programs, built four ways, must agree |
+| `python3 tools/gpufuzz.py 100 [--shaders]` | random compute functions on the CPU, the GPU and lavapipe (or fragment shaders: software, OpenGL, Vulkan) must agree; `--reduce` shrinks a failure |
 | `python3 tools/fuzz_errors.py 2000` | real programs broken at random: the compiler must give an error, never crash |
 
 Adding a test:

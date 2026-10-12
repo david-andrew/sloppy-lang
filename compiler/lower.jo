@@ -594,10 +594,15 @@ gen_place = (e: int, write: bool) -> Place:
             layout(bt)
             v = int(structs[si].variants) + int(nodes[e].aux2)
             return Place(true, e_addi(place_addr(base, bt), int(fields[int(variants[v].fields) + nodes[e].ival].offset)))
-        if nodes[e].aux == -4:
+        if nodes[e].aux == -4 and swizzle_run(e):
             base = gen_place(a, write)
             ci = swizzle_index(name_of(int(nodes[e].name))[0])
             return Place(true, e_addi(place_addr(base, bt), ci * 4))
+        # (.zx and the like are no place: read into a temporary, and assign_to writes them a
+        # component at a time)
+        if nodes[e].aux == -4:
+            if write: ice("a swizzle out of order as a place at {pos_str(nodes[e].pos)}")
+            return Place(true, gen_expr(e).v)
         addr = 0
         if types[bt].kind == .ptr:
             ir.raw_mem = true
@@ -2489,6 +2494,11 @@ gen_expr = (e: int) -> Val:
             m1 = mk(.float_lit, nodes[e].pos)
             nodes[m1].fval = -1.0
             nodes[m1].type = i32(T_F32)
+            if types[prune(t)].sign:
+                # (an integer vector: times the integer -1, which wraps as the CPU's integers do)
+                nodes[m1].kind = .int_lit
+                nodes[m1].ival = -1
+                nodes[m1].type = i32(T_I32)
             nodes[neg].b = i32(m1)
             nodes[neg].aux = 10
             nodes[neg].type = i32(t)
@@ -2935,6 +2945,19 @@ gen_return = (s: int):
     else: e_ret(rv)
 
 assign_to = (target: int, t: int, v: int):
+    if nodes[target].kind == .field and nodes[target].aux == -4 and not swizzle_run(target):
+        # v.zx = w: each component where it goes
+        a = int(nodes[target].a)
+        bt = ntype(a)
+        ty = VS
+        mode = 4 | M_FLOAT
+        if types[prune(bt)].sign:
+            ty = VI
+            mode = 4 | M_SIGNED
+        pa = place_addr(gen_place(a, true), bt)
+        nm = name_of(int(nodes[target].name))
+        loop i in [0..len(nm)): e_store(pa, 4 * swizzle_index(nm[i]), e_load(ty, v, 4 * i, mode), mode)
+        return
     pl = gen_place(target, true)
     if is_managed(t):
         if pl.mem: drop_at(pl.v, t)

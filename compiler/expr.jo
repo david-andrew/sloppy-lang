@@ -455,6 +455,12 @@ check_place = (n: int, for_mut: bool):
     if k == .field:
         bt = prune(ntype(int(nodes[n].a)))
         if types[bt].kind == .ptr: return
+        if nodes[n].aux == -4:
+            s = name_of(int(nodes[n].name))
+            loop i in [0..len(s)):
+                loop j in [0..i):
+                    if s[i] == s[j]: fatal(nodes[n].pos, "cannot assign to '.{s}': it names a component twice")
+            if for_mut and not swizzle_run(n): fatal(nodes[n].pos, "'.{s}' is not a run of components in order (as .xy or .yzw are), so it cannot be passed as a `mut` argument")
         cp_inner += 1
         check_place(int(nodes[n].a), for_mut)
         cp_inner -= 1
@@ -540,6 +546,15 @@ ctx_dependent = (a: int) -> bool:
 unnamed = (a: int) -> int:
     if nodes[a].kind == .namedarg: return int(nodes[a].a)
     a
+
+# how many of a candidate's arguments (not literals) have exactly their parameter's type
+exact_args = (cd: Cand) -> int:
+    k = 0
+    loop i in 0.. and a in cd.args:
+        if i >= cd.sig.params.len(): break
+        if a == 0 or is_lit(a) or nodes[a].type == 0: continue
+        if type_eq(prune(ntype(a)), prune(subst(cd.sig.params[i], cd.binds))): k += 1
+    k
 
 # map call args to parameter slots; returns error message ("" on success)
 map_args = (pnames: int[], has_default: bool[], args: int[], out: mut int[]) -> str:
@@ -856,8 +871,28 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
     cands: Cand[]
     last_err = ""
     best = -1
+    # (an argument that is a number of a known type, the first such, rules out before anything is
+    # made for them the overloads whose parameter there is a number type it cannot become: abs(x)
+    # with x: f64 looks at abs(f64) alone, max(0.0, x) at the float ones)
+    a0t = 0
+    a0i = 0
+    if decls.len() > 1:
+        loop i in 0.. and a in args:
+            if nodes[a].kind == .namedarg: break
+            if nodes[a].type == 0 or is_lit(a) or ctx_dependent(a): continue
+            k = tkind(ntype(a))
+            if k == .int_ or k == .float_:
+                a0t = prune(ntype(a))
+                a0i = i
+            break
     loop d in decls:
-        cd = Cand(decl = d, sig = fn_sig(d))
+        sig0 = fn_sig(d)
+        if a0t != 0 and not sig0.generic and sig0.params.len() > a0i:
+            p0 = prune(sig0.params[a0i])
+            pk0 = tkind(p0)
+            # (last_err is for a name with one function only)
+            if p0 != a0t and (pk0 == .int_ or pk0 == .float_) and not can_coerce(0, a0t, p0): continue
+        cd = Cand(decl = d, sig = sig0)
         np = nkids(d)
         pnames: int[]
         hasdef: bool[]
@@ -912,14 +947,17 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
         cd.cost = cost
         cands.push(cd)
     # pick the cheapest candidate; prefer non-generic ones, then the program's own definitions
-    # over the standard library's; report real ties
+    # over the standard library's; report real ties (the library's are settled by how many
+    # arguments have exactly a parameter's type, then which comes first: min(x, 5) with x: i32
+    # takes min(i32, i32), and min(a, b) with a: i8 and b: u8 still takes min(int, int))
     loop ci in 0.. and cd in cands:
         if best < 0 or cd.cost < cands[best].cost: best = ci
         else if cd.cost == cands[best].cost:
             bc = cands[best]
             if bc.sig.generic and not cd.sig.generic: best = ci
             else if bc.sig.generic == cd.sig.generic and decl_in_prelude(bc.decl) and not decl_in_prelude(cd.decl): best = ci
-    if best >= 0:
+            else if bc.sig.generic == cd.sig.generic and decl_in_prelude(bc.decl) and decl_in_prelude(cd.decl) and exact_args(cd) > exact_args(bc): best = ci
+    if best >= 0 and not decl_in_prelude(cands[best].decl):
         loop ci in 0.. and cd in cands:
             if ci != best and cd.cost == cands[best].cost and cd.sig.generic == cands[best].sig.generic and decl_in_prelude(cd.decl) == decl_in_prelude(cands[best].decl):
                 ats = ""
@@ -2887,6 +2925,13 @@ check_expr = (n: int, expected: int) -> int:
     add_flag(n, NF_CHECKED)
     last_checked = n
     t
+
+# a swizzle whose components follow each other in memory (.x, .xy, .yzw): a place of its own
+swizzle_run = (n: int) -> bool:
+    s = name_of(int(nodes[n].name))
+    loop i in [1..len(s)):
+        if swizzle_index(s[i]) != swizzle_index(s[i - 1]) + 1: return false
+    true
 
 check_swizzle = (n: int, bt: int) -> int:
     s = name_of(int(nodes[n].name))

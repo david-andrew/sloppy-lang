@@ -227,7 +227,8 @@ Testing: `tools/runtests.py` runs the test programs in each mode (native/web, de
 and with the C bootstrap compiler); `tools/rendertest.py` checks software-rendered frames
 against references; `tools/fuzz.py` generates random programs and compares five builds of
 each — native and web, debug and release, and the independent C bootstrap compiler, which
-catches mistakes the four self-hosted builds would share.
+catches mistakes the four self-hosted builds would share; `tools/gpufuzz.py` does the same for
+code that runs on the GPU (the CPU, SPIR-V on two drivers, and GLSL must agree).
 
 ## How it works
 
