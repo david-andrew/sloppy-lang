@@ -23,6 +23,8 @@ when TARGET != "wasm":
     @lib("libvulkan.so.1")
     extern vkGetPhysicalDeviceProperties = (pd: *u8, props: *u8)
     @lib("libvulkan.so.1")
+    extern vkGetPhysicalDeviceProperties2 = (pd: *u8, props: *u8)
+    @lib("libvulkan.so.1")
     extern vkGetPhysicalDeviceFeatures2 = (pd: *u8, features: *u8)
     @lib("libvulkan.so.1")
     extern vkGetPhysicalDeviceQueueFamilyProperties = (pd: *u8, count: *u32, props: *u8)
@@ -1029,6 +1031,7 @@ when TARGET != "wasm":
     __vk_multi_draw = false        # optional features the device has (see __vk_make_device)
     __vk_first_instance = false
     __vk_draw_count = false        # (draws whose number is in a buffer)
+    __vk_subgroups = false         # (subgroup operations in compute programs)
     __vk_has_swapchain = false
 
     __vk_make_instance = () -> str:
@@ -1101,6 +1104,15 @@ when TARGET != "wasm":
         __vk_multi_draw = h2[4 + 9] != 0
         __vk_first_instance = h2[4 + 10] != 0
         __vk_draw_count = h12[4 + 1] != 0 and __vk_multi_draw
+        # (VkPhysicalDeviceSubgroupProperties: compute among its stages, and the basic, vote,
+        # arithmetic and ballot operations)
+        sgp = fill(u32(0), 8)
+        sgp[0] = 1000094000
+        pp = fill(u8(0), 16 + 1024)
+        (data(pp) as *u32)[0] = 1000059001
+        (data(pp) as *int)[1] = data(sgp) as int
+        vkGetPhysicalDeviceProperties2(__vk_pd, data(pp))
+        __vk_subgroups = sgp[5] & 0x20 != 0 and sgp[6] & 0xF == 0xF
         f2[4 + 9] = h2[4 + 9]
         f2[4 + 10] = h2[4 + 10]
         if __vk_draw_count: f12[4 + 1] = 1
@@ -1677,6 +1689,12 @@ when TARGET != "wasm":
     # ---------------- compute ----------------
     # a compute pipeline from SPIR-V bytes (entry point main)
     __vk_compute_pipeline = (code: str) -> int:
+        # (OpCapability GroupNonUniform: the program uses subgroup operations)
+        if not __vk_subgroups:
+            w = data(code) as *u32
+            loop i in [5..len(code) / 4 - 1):
+                if w[i] != u32(0x20011): break
+                if w[i + 1] == u32(61): panic("this GPU ({__vk_device_name}) lacks the subgroup operations a compute function uses (SLOPPY_VULKAN=0 runs it on the CPU)")
         m = __vk_module(code)
         info = VkComputePipelineCreateInfo(stype = 29, stage = VkPipelineShaderStageCreateInfo(stype = 18, stage = 0x20, module = m, name = data("main")), layout = __vk_layout, base_index = -1)
         pl = 0

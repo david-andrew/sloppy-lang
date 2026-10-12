@@ -3,6 +3,11 @@
 ## Unreleased
 
 Graphics:
+- Subgroup operations in compute functions (`subgroup_add`, `subgroup_inclusive_add`,
+  `subgroup_exclusive_add`, `subgroup_min`, `subgroup_max`, `subgroup_and/or/xor`,
+  `subgroup_any/all`, `subgroup_elect`, `subgroup_broadcast_first`, `subgroup_size`): across the
+  invocations the GPU runs together, 1 at a time on the CPU, so programs written for any size
+  give the same results everywhere.
 - Compute functions over a grid: `f(id: ivec2, params)` with `dispatch(compute(f), ivec2(w, h),
   params)` (groups of 8 by 8 on the GPU; rows on every core without Vulkan).
 - `draw_indirect_count`: the number of indirect draws read from a buffer a compute function

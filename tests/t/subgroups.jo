@@ -1,0 +1,60 @@
+# subgroup operations in compute functions: the invocations run together combine values (1 at a
+# time on the CPU, 32 or so on a GPU); the results are the same either way
+# requires: sloppy
+struct P:
+    xs: GpuBuffer[i32]
+    kept: GpuBuffer[i32]
+    count: GpuBuffer[u32]
+    sum: GpuBuffer[i32]
+    lo: GpuBuffer[i32]
+    errs: GpuBuffer[u32]
+    fsum: GpuBuffer[f32]
+
+fail = (u: P, bit: int):
+    atomic_or(u.errs, 0, u32(1) << u32(bit))
+    pass
+
+kern = (id: int, u: P):
+    x = u.xs[id]
+    keep = x % i32(3) == i32(0)
+    # compaction: one atomic per subgroup
+    n = subgroup_add(i32(keep))
+    base = 0
+    if subgroup_elect(): base = int(atomic_add(u.count, 0, u32(n)))
+    slot = subgroup_broadcast_first(base) + int(subgroup_exclusive_add(i32(keep)))
+    if keep: u.kept[slot] = x
+    # a sum and a minimum, one atomic per subgroup
+    s = subgroup_add(x)
+    m = subgroup_min(x)
+    if subgroup_elect():
+        atomic_add(u.sum, 0, s)
+        atomic_min(u.lo, 0, m)
+    # what must hold for any subgroup size
+    if subgroup_inclusive_add(x) - subgroup_exclusive_add(x) != x: fail(u, 0)
+    if subgroup_size() < 1 or subgroup_invocation_id() < 0 or subgroup_invocation_id() >= subgroup_size(): fail(u, 1)
+    w = id / 64 * 64 + 7
+    if subgroup_broadcast_first(w) != w: fail(u, 2)
+    if not subgroup_any(true) or subgroup_all(false): fail(u, 3)
+    if subgroup_max(x) < x or subgroup_min(x) > x: fail(u, 4)
+    if subgroup_and(u32(0xFF)) != u32(0xFF) or subgroup_or(u8(0)) != u8(0) or subgroup_xor(i32(0)) != i32(0): fail(u, 5)
+    if subgroup_and(keep) and not keep: fail(u, 6)
+    v = subgroup_add(ivec2(i32(1), i32(2)))
+    if v.y != v.x * i32(2): fail(u, 7)
+    f = subgroup_add(f32(1))
+    if f < 1.0 or f > 128.0: fail(u, 8)
+    if subgroup_elect(): u.fsum[0] = 0.0
+    q = subgroup_add(u8(200))
+    if subgroup_size() == 1 and q != u8(200): fail(u, 9)
+    if subgroup_size() == 2 and q != u8(144): fail(u, 10)
+
+xs: i32[]
+loop i in [0..1000): xs.push(i32((i * 7919) % 1000 - 300))
+p = P(gpu_buffer(xs), gpu_buffer[i32](1000), gpu_buffer[u32](1), gpu_buffer[i32](1), gpu_buffer([i32(1000000)]), gpu_buffer[u32](1), gpu_buffer[f32](1))
+dispatch(compute(kern), 1000, p)
+c = int(cpu(p.count)[0])
+kept = cpu(p.kept, 0, c)
+kept.sort()
+sum = 0
+loop k in kept: sum += int(k)
+print(c, sum, kept[0], kept[c - 1])
+print(cpu(p.sum)[0], cpu(p.lo)[0], cpu(p.errs)[0])

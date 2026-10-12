@@ -1608,6 +1608,23 @@ Through Vulkan a buffer is GPU memory read by its address and a compute function
 - `atomic_compare_exchange = (b: GpuBuffer[i32], i: int, expected: i32, desired: i32) -> i32`: (the element becomes `desired` if it was `expected`)
 - `atomic_compare_exchange = (b: GpuBuffer[u32], i: int, expected: u32, desired: u32) -> u32`
 
+#### Subgroups
+
+- `subgroup_size = () -> int`: In a compute function, the invocations the GPU runs together (a subgroup: 32 of them on NVIDIA, 64 on AMD, fewer on some; 1 on the CPU) combine values without going through memory: subgroup_add(x) is the sum of x over those of them that reach the call together. A program written for any size runs the same everywhere, e.g. one atomic for a subgroup's elements instead of one each: n = subgroup_add(i32(keep))                       # how many of them keep theirs base = 0 if subgroup_elect(): base = int(atomic_add(u.count, 0, n)) slot = subgroup_broadcast_first(base) + int(subgroup_exclusive_add(i32(keep))) These take numbers and vectors (and, or and xor integers and bools too).
+- `subgroup_invocation_id = () -> int`
+- `subgroup_elect = () -> bool`
+- `subgroup_all = (b: bool) -> bool`
+- `subgroup_any = (b: bool) -> bool`
+- `subgroup_broadcast_first[T] = (x: T) -> T`
+- `subgroup_add[T] = (x: T) -> T`
+- `subgroup_inclusive_add[T] = (x: T) -> T`
+- `subgroup_exclusive_add[T] = (x: T) -> T`
+- `subgroup_min[T] = (x: T) -> T`
+- `subgroup_max[T] = (x: T) -> T`
+- `subgroup_and[T] = (x: T) -> T`
+- `subgroup_or[T] = (x: T) -> T`
+- `subgroup_xor[T] = (x: T) -> T`
+
 #### Drawing with buffers
 
 - `gpu_mesh[V] = (vertices: GpuBuffer[V], mode: int = GL_TRIANGLES) -> Mesh`: a mesh whose vertices are a buffer's (a compute function may change them between draws)

@@ -1220,6 +1220,7 @@ sv_call = (e: int) -> int:
                 sv_gbuf_store(e)
                 return 0
             if let op = sv_atomic_ops.get(nm): return sv_atomic(e, nm, op)
+        if starts_with(nm, "subgroup_"): return sv_subgroup(e, nm)
         # (prelude helpers written in Sloppy are translated like user code)
     args: int[]
     back: (int, int)[]        # mut arguments: (argument, the variable passed for it)
@@ -1459,6 +1460,65 @@ sv_atomic = (e: int, nm: str, ops: (int, int)) -> int:
     sv_branch(merge)
     sv_begin(merge)
     sv_val(124, sv_i32(), [sv_val(245, u, [r, then_end, sv_cu(0), from_])])
+
+# ---------------- subgroups ----------------
+sv_cap = (c: int):
+    if sv_cache.get("cap{c}") != none: return
+    sv_cache["cap{c}"] = 1
+    sv_ins(sv_caps, 17, [c])
+
+sv_subgroup_builtin = (b: int) -> int:
+    key = "sgb{b}"
+    if let v = sv_cache.get(key): return sv_val(124, sv_i32(), [sv_load(sv_u32(), v)])
+    v = sv_builtin_var(sv_u32(), SC_INPUT, b)
+    sv_cache[key] = v
+    sv_val(124, sv_i32(), [sv_load(sv_u32(), v)])
+
+# subgroup_add(x) and the others (lib/game/gpubuffer.jo): OpGroupNonUniform* over the subgroup
+sv_subgroup = (e: int, nm: str) -> int:
+    pos = nodes[e].pos
+    if sv_stage != "compute": sv_err(pos, "{nm}() can be used in compute functions only")
+    sv_cap(61)
+    sc = sv_ci(3)
+    if nm == "subgroup_size": return sv_subgroup_builtin(36)
+    if nm == "subgroup_invocation_id": return sv_subgroup_builtin(41)
+    if nm == "subgroup_elect": return sv_val(333, sv_bool(), [sc])
+    if nm == "subgroup_all" or nm == "subgroup_any":
+        sv_cap(62)
+        return sv_val(sv_pick(nm == "subgroup_all", 334, 335), sv_bool(), [sc, sv_expr(kid(e, 0))])
+    t = prune(ntype(e))
+    ty = sv_type(t, pos)
+    x = sv_expr(kid(e, 0))
+    if nm == "subgroup_broadcast_first":
+        sv_cap(64)
+        return sv_val(338, ty, [sc, x])
+    sv_cap(63)
+    k = types[t].kind
+    fl = k == .float_ or (k == .vec and not types[t].sign and t != T_MAT4)
+    it = k == .int_ or (k == .vec and types[t].sign)
+    un = sv_unsigned(t)
+    op = 0
+    grp = 0
+    if nm == "subgroup_add" or nm == "subgroup_inclusive_add" or nm == "subgroup_exclusive_add":
+        if fl: op = 350
+        else if it: op = 349
+        if nm == "subgroup_inclusive_add": grp = 1
+        if nm == "subgroup_exclusive_add": grp = 2
+    else if nm == "subgroup_min":
+        if fl: op = 355
+        else if it: op = sv_pick(un, 354, 353)
+    else if nm == "subgroup_max":
+        if fl: op = 358
+        else if it: op = sv_pick(un, 357, 356)
+    else if nm == "subgroup_and" or nm == "subgroup_or" or nm == "subgroup_xor":
+        b = sv_pick(nm == "subgroup_and", 0, sv_pick(nm == "subgroup_or", 1, 2))
+        if it: op = 359 + b
+        else if k == .bool_: op = 362 + b
+    else: sv_err(pos, "{nm}() is not available in compute functions")
+    if op == 0: sv_err(pos, "{nm}() takes numbers or vectors here (found {type_str(t)})")
+    r = sv_val(op, ty, [sc, grp, x])
+    if op == 349: return sv_narrow(r, t)
+    r
 
 # ---------------- the stages ----------------
 sv_reset = (stage: str):

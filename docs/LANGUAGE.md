@@ -615,7 +615,10 @@ buffer of n elements is `gpu_buffer[Bug](n)`. A compute function over a grid tak
 Shaders read buffers among their uniforms too (`u.bugs[instance_id()]`), a buffer can be a
 mesh's vertices (`gpu_mesh`) or a draw's instances, and `draw_indirect` takes the counts of its
 draws from a buffer that compute functions fill (GPU-driven drawing); `draw_indirect_count`
-takes how many draws there are from a buffer too. `atomic_add` and the other
+takes how many draws there are from a buffer too. Subgroup operations combine values across
+the invocations a GPU runs together (`subgroup_add`, `subgroup_exclusive_add`, `subgroup_min`,
+`subgroup_elect`, `subgroup_broadcast_first`...: 32 at a time on NVIDIA, 1 on the CPU), e.g. one
+atomic per subgroup rather than one per element. `atomic_add` and the other
 atomics change an element that many invocations change at once; what a dispatch writes is
 seen by every dispatch and draw after it. Through Vulkan buffers are GPU memory read by
 address and compute functions compute programs (SPIR-V made by the compiler); elsewhere
