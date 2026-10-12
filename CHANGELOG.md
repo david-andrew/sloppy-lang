@@ -49,6 +49,9 @@ Website and install:
   functions (`print`, `push`, `pop`, `fill`, `embed`...), which were missing.
 
 Language:
+- A `mut` element of a global array or map, given to a function that may call a function value
+  (which could resize the array), is passed as a copy and written back after the call; the
+  change was lost before, written to memory the resize had freed.
 - Integer literals: `x: u64 = -1` is an error like `x: u32 = -1`, a literal above 64 bits is an
   error, and overloads rank integer types before `f64` before `f32` (`choose(-1)` with `u64`
   and `f64` overloads takes `f64`; it was ambiguous).

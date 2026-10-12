@@ -182,7 +182,10 @@ call runs, nothing else may hold or change that array, so the same call cannot a
 the array (`attach(nodes[0], nodes)`), and a global array cannot be one the function changes,
 itself or in a function it calls. The compiler says so; pass the index instead. Other elements
 of the array are fine: `swap(xs[i], xs[j])`, `hit(d.mesh, d.instances)`; an element and one
-inside it (`xs[0]` and `xs[0][0]`) are not.
+inside it (`xs[0]` and `xs[0][0]`) are not. When the function may call a function value (which
+the compiler cannot see into), an element of a global array (or of a `mut` parameter's) is given
+to it as a copy that is written back to `xs[i]` when it returns, since that code could resize
+the array.
 
 To modify array elements in a loop, use `loop mut`:
 
