@@ -167,7 +167,7 @@ ids, automatic barriers; on the CPU without Vulkan). Left:
   in step), textures by index in buffers, writes and atomics from fragment shaders.
 - GPU arrays' reductions on the GPU (they finish on the CPU with Vulkan).
 - Real hardware beyond NVIDIA and Mesa's software driver: Intel, AMD, Windows drivers.
-- A pipeline cache on disk; pipelines made before they are first drawn with.
+- Pipelines made before they are first drawn with (they are kept on disk between runs).
 
 ## 10. More platforms (L each, later)
 

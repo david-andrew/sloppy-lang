@@ -191,6 +191,10 @@ when TARGET != "wasm":
     @lib("libvulkan.so.1")
     extern vkCreateComputePipelines = (dev: *u8, cache: int, n: u32, infos: *u8, alloc: *u8, out: *int) -> i32
     @lib("libvulkan.so.1")
+    extern vkCreatePipelineCache = (dev: *u8, info: *u8, alloc: *u8, out: *int) -> i32
+    @lib("libvulkan.so.1")
+    extern vkGetPipelineCacheData = (dev: *u8, cache: int, size: *int, out: *u8) -> i32
+    @lib("libvulkan.so.1")
     extern vkCmdDispatch = (cb: *u8, x: u32, y: u32, z: u32)
 
     # ---------------- structures (laid out as C lays them out) ----------------
@@ -1143,8 +1147,88 @@ when TARGET != "wasm":
         vkGetDeviceQueue(__vk_dev, __vk_family, 0, &__vk_queue)
         __vk_make_frames()
         __vk_make_bindless()
+        __vk_load_pipeline_cache()
         if (env("SLOPPY_VK_VALIDATE") ?? "") == "1": eprint("vulkan: {__vk_device_name}")
         ""
+
+    # ---------------- the pipeline cache ----------------
+    # Pipelines (made the first time a shader is drawn with some state, or a compute function
+    # dispatched) are kept in a VkPipelineCache, saved between runs: making one again takes the
+    # driver a fraction of the time (on NVIDIA, Breakwater's take 10 ms instead of 70). The file
+    # is the program's in ~/.cache/sloppy ($XDG_CACHE_HOME; %LOCALAPPDATA%\sloppy on Windows),
+    # saved after a frame that made pipelines; SLOPPY_VK_PIPELINE_CACHE=0 leaves it out.
+    __vk_pcache = 0
+    __vk_pcache_dirty = false
+
+    __vk_pcache_path = () -> str:
+        if (env("SLOPPY_VK_PIPELINE_CACHE") ?? "") == "0": return ""
+        dir = ""
+        when TARGET == "windows":
+            dir = env("LOCALAPPDATA") ?? ""
+            if len(dir) == 0: return ""
+            dir = "{dir}\\sloppy"
+        else:
+            if let x = env("XDG_CACHE_HOME"): dir = x
+            if len(dir) == 0:
+                home = env("HOME") ?? ""
+                if len(home) == 0: return ""
+                dir = "{home}/.cache"
+                mkdir(dir)
+            dir = "{dir}/sloppy"
+        if not mkdir(dir): return ""
+        exe = exe_path()
+        name = exe[max(rfind(exe, "/"), rfind(exe, "\\")) + 1..]
+        if ends_with(name, ".exe"): name = name[..len(name) - 4)
+        if len(name) == 0: name = "program"
+        when TARGET == "windows":
+            return "{dir}\\{name}.vkpipelines"
+        "{dir}/{name}.vkpipelines"
+
+    # (the file: "SLPC", the data's length and a hash of it, then the data VkPipelineCache gave)
+    __vk_pcache_hash = (b: *u8, n: int) -> int:
+        h = -3750763034362895579
+        loop i in [0..n): h = (h xor int(b[i])) * 1099511628211
+        h
+
+    __vk_load_pipeline_cache = ():
+        info = fill(0, 5)
+        info[0] = 17
+        path = __vk_pcache_path()
+        bs: u8[]
+        if len(path) > 0:
+            if let f = read_bytes(path): bs = f
+        if bs.len() >= 20 and bs[0] == u8('S') and bs[1] == u8('L') and bs[2] == u8('P') and bs[3] == u8('C'):
+            q = data(bs) + 4
+            n = (q as *int)[0]
+            # (and made by this device and driver: its vendor, device and cache UUID, which the
+            # driver checks too)
+            props = fill(u8(0), 1024)
+            vkGetPhysicalDeviceProperties(__vk_pd, data(props))
+            h = data(bs) + 20
+            same = n >= 32 and __mem_eq(h + 8, data(props) + 8, 8) and __mem_eq(h + 16, data(props) + 276, 16)
+            if same and n == bs.len() - 20 and (q as *int)[1] == __vk_pcache_hash(h, n):
+                info[3] = n
+                info[4] = h as int
+        if vkCreatePipelineCache(__vk_dev, data(info) as *u8, null, &__vk_pcache) != 0: __vk_pcache = 0
+
+    __vk_save_pipeline_cache = ():
+        __vk_pcache_dirty = false
+        if __vk_pcache == 0: return
+        path = __vk_pcache_path()
+        if len(path) == 0: return
+        n = 0
+        if vkGetPipelineCacheData(__vk_dev, __vk_pcache, &n, null) != 0 or n <= 0: return
+        bs = fill(u8(0), 20 + n)
+        if vkGetPipelineCacheData(__vk_dev, __vk_pcache, &n, data(bs) + 20) != 0: return
+        bs.truncate(20 + n)
+        bs[0] = u8('S')
+        bs[1] = u8('L')
+        bs[2] = u8('P')
+        bs[3] = u8('C')
+        q = (data(bs) + 4) as *int
+        q[0] = n
+        q[1] = __vk_pcache_hash(data(bs) + 20, n)
+        write_bytes(path, bs)
 
     __vk_make_frames = ():
         __vk_frames = []
@@ -1462,6 +1546,7 @@ when TARGET != "wasm":
     __vk_present = ():
         __vk_begin_frame()
         __vg_end_frame()
+        if __vk_pcache_dirty: __vk_save_pipeline_cache()
         if __vk_headless:
             __vk_submit_and_wait()
             __vk_frame = (__vk_frame + 1) % __VK_FRAMES
@@ -1698,7 +1783,8 @@ when TARGET != "wasm":
         m = __vk_module(code)
         info = VkComputePipelineCreateInfo(stype = 29, stage = VkPipelineShaderStageCreateInfo(stype = 18, stage = 0x20, module = m, name = data("main")), layout = __vk_layout, base_index = -1)
         pl = 0
-        __vk_check(vkCreateComputePipelines(__vk_dev, 0, 1, (&info) as *u8, null, &pl), "vkCreateComputePipelines")
+        __vk_check(vkCreateComputePipelines(__vk_dev, __vk_pcache, 1, (&info) as *u8, null, &pl), "vkCreateComputePipelines")
+        __vk_save_pipeline_cache()
         pl
 
     # run compute pipeline pl over groups (x, y), its parameters the n bytes at p (their address in

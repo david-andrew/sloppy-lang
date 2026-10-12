@@ -814,7 +814,9 @@ program draws a plain title bar itself. A window's title is the program's name u
 libwayland-client (or with `SLOPPY_WAYLAND=protocol`) it speaks the Wayland protocol itself, and
 without libX11 the X11 protocol. They draw with Vulkan where the system has a Vulkan 1.3
 driver (as current drivers for Intel, AMD and NVIDIA GPUs do), else with OpenGL ES;
-`SLOPPY_VULKAN=0` chooses OpenGL. Without either (or with `SLOPPY_SOFTWARE=1`) the same program draws with the built-in software
+`SLOPPY_VULKAN=0` chooses OpenGL. With Vulkan, the pipelines the driver makes for shaders are
+kept between runs in `~/.cache/sloppy` (`%LOCALAPPDATA%\sloppy` on Windows), so later runs start
+drawing sooner. Without either (or with `SLOPPY_SOFTWARE=1`) the same program draws with the built-in software
 renderer, which runs your shader functions (see `make_shader`) on the CPU; `soft_rendering()`
 tells the program which is in use, e.g. to draw fewer particles. Frames are rendered at half
 resolution (`SLOPPY_SOFT_SCALE=1` for full resolution) and paced to 60 per second.

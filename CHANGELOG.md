@@ -3,6 +3,9 @@
 ## Unreleased
 
 Graphics:
+- Vulkan pipelines are kept between runs (a pipeline cache per program in `~/.cache/sloppy`,
+  checked against the device and a hash): Breakwater's take 1-10 ms to make at start instead of
+  70 on NVIDIA. `SLOPPY_VK_PIPELINE_CACHE=0` leaves it out.
 - Subgroup operations in compute functions (`subgroup_add`, `subgroup_inclusive_add`,
   `subgroup_exclusive_add`, `subgroup_min`, `subgroup_max`, `subgroup_and/or/xor`,
   `subgroup_any/all`, `subgroup_elect`, `subgroup_broadcast_first`, `subgroup_size`): across the
