@@ -43,8 +43,7 @@ __backtrace_from = (fp0: int, pc: int):
         when TARGET == "windows":
             __backtrace_print_pe(rets, counts)
         else when TARGET == "macos":
-            # (no backtraces on macOS yet: the program's symbols and lines are not read)
-            rets.clear()
+            __backtrace_print_macho(rets, counts)
         else:
             if let exe = read_bytes("/proc/self/exe"): __backtrace_print(rets, counts, exe)
         __in_backtrace = false
@@ -248,6 +247,38 @@ __backtrace_print_pe = (rets: int[], counts: int[]):
         else if nm == ".sloppy":
             info = fill(u8(0), size)
             mem_copy(data(info), base + rva, size)
+    __backtrace_print_info(rets, counts, info, text_addr)
+
+# (macOS: the same in __TEXT's __sloppy section, found through the program's Mach-O header
+# where dyld put it: compiler/macho.jo)
+__backtrace_print_macho = (rets: int[], counts: int[]):
+    when TARGET == "macos":
+        mh = __c_dyld_get_image_header(0)
+        if mh == null: return
+        ncmds = int(((mh + 16) as *u32)[0])
+        lc = mh + 32
+        text_addr = 0
+        info: u8[]
+        loop k in [0..ncmds):
+            cmd = int((lc as *u32)[0])
+            if cmd == 0x19 and __cstr(lc + 8) == "__TEXT":
+                vm = ((lc + 24) as *int)[0]
+                nsect = int(((lc + 64) as *u32)[0])
+                loop j in [0..nsect):
+                    sc = lc + 72 + 80 * j
+                    nm = __cstr(sc)
+                    if len(nm) > 16: nm = nm[..16)
+                    at = mh + (((sc + 32) as *int)[0] - vm)
+                    size = ((sc + 40) as *int)[0]
+                    if nm == "__text": text_addr = at as int
+                    else if nm == "__sloppy":
+                        info = fill(u8(0), size)
+                        mem_copy(data(info), at, size)
+            lc = lc + int(((lc + 4) as *u32)[0])
+        __backtrace_print_info(rets, counts, info, text_addr)
+
+# (the functions' names and places, then the line table: compiler/x64.jo, pe_backtrace_info)
+__backtrace_print_info = (rets: int[], counts: int[], info: u8[], text_addr: int):
     if info.len() < 8 or info[0] != 'S' or info[3] != '1': return
     n = __u32_at(info, 4)
     p = 8
@@ -307,7 +338,7 @@ __backtrace_report = (rets: int[], counts: int[], fnames: str[], b: u8[], lines_
     loop ri in 0.. and ret in rets:
         fname = fnames[ri]
         # (runtime and library internals are left out)
-        if len(fname) == 0 or starts_with(fname, "__") or fname == "_start": continue
+        if len(fname) == 0 or starts_with(fname, "__") or fname == "_start" or fname == "_main": continue
         lo = 0
         hi = ne - 1
         found = -1
