@@ -1,6 +1,8 @@
 # macOS windows (window.jo's platform functions): an NSWindow, made and run through the
 # Objective-C runtime's C functions (objc_msgSend, declared once per kind of call). Frames are
-# drawn by the software renderer and shown as the contents of the window view's layer.
+# drawn with OpenGL 4.1 (an NSOpenGLContext on the window's view; gl.jo's functions come from
+# OpenGL.framework, its shaders' GLSL ES 3.00 becomes GLSL 4.10), or else by the software
+# renderer and shown as the contents of the view's layer.
 #
 # Events are taken from the application's queue each frame (the program keeps its own loop, so
 # NSApplication's run is never called). Struct results (a view's frame, the pointer's place)
@@ -66,6 +68,9 @@ when TARGET == "macos":
     extern CFRelease = (x: *u8)
 
     __ns_app: *u8 = null
+    __ns_gl: *u8 = null
+    __ns_gl_w = 0
+    __ns_gl_h = 0
     __ns_win: *u8 = null
     __ns_view: *u8 = null
     __ns_mode: *u8 = null
@@ -102,7 +107,7 @@ when TARGET == "macos":
             exit(1)
 
     __platform_open = ():
-        __soft = true
+        __soft = (env("SLOPPY_SOFTWARE") ?? "") == "1"
         pool = objc_autoreleasePoolPush()
         __need(dl_open("/System/Library/Frameworks/AppKit.framework/AppKit") != null, "AppKit is missing")
         __ns_app = __oc(__cls("NSApplication"), __sel("sharedApplication"))
@@ -116,16 +121,40 @@ when TARGET == "macos":
         __oc_i(__ns_win, __sel("setAcceptsMouseMovedEvents:"), 1)
         __oc(__ns_win, __sel("center"))
         __ns_view = __oc(__ns_win, __sel("contentView"))
-        __oc_i(__ns_view, __sel("setWantsLayer:"), 1)
         __oc_p(__ns_win, __sel("makeKeyAndOrderFront:"), null)
         __oc(__ns_app, __sel("finishLaunching"))
         __oc_i(__ns_app, __sel("activateIgnoringOtherApps:"), 1)
         __ns_mode = __nsstr("kCFRunLoopDefaultMode")
         __ns_cs = CGColorSpaceCreateDeviceRGB()
-        objc_autoreleasePoolPop(pool)
         # (screenshot runs keep the size asked for)
         if env("SLOPPY_SCREENSHOT") == none: __ns_size()
-        __sw_init_window(__win_w, __win_h)
+        if not __soft:
+            why = __ns_gl_open()
+            if len(why) > 0:
+                eprint("note: {why}; using the software renderer")
+                __soft = true
+        if __soft:
+            __oc_i(__ns_view, __sel("setWantsLayer:"), 1)
+            __sw_init_window(__win_w, __win_h)
+        objc_autoreleasePoolPop(pool)
+
+    # an OpenGL 4.1 core context drawing into the view, with vsync; "" or why not
+    __ns_gl_open = () -> str:
+        if dl_open("libGLESv2.so.2") == null: return "OpenGL is missing"
+        # core profile 4.1, double buffered, 24-bit color, 8-bit alpha, 24-bit depth, 8-bit stencil, accelerated
+        attrs: u32[] = [99, 0x4100, 5, 8, 24, 11, 8, 12, 24, 13, 8, 73, 0]
+        pf = __oc_p(__oc(__cls("NSOpenGLPixelFormat"), __sel("alloc")), __sel("initWithAttributes:"), data(attrs) as *u8)
+        if pf == null: return "no OpenGL 4.1 pixel format"
+        ctx = __oc_pp(__oc(__cls("NSOpenGLContext"), __sel("alloc")), __sel("initWithFormat:shareContext:"), pf, null)
+        if ctx == null: return "no OpenGL context"
+        __oc_p(ctx, __sel("setView:"), __ns_view)
+        __oc(ctx, __sel("makeCurrentContext"))
+        one: i32[] = [1]
+        __oc_pi(ctx, __sel("setValues:forParameter:"), data(one) as *u8, 222)        # swap interval
+        __ns_gl = ctx
+        __ns_gl_w = __win_w
+        __ns_gl_h = __win_h
+        ""
 
     # the view's size, in points
     __ns_size = ():
@@ -292,6 +321,14 @@ when TARGET == "macos":
     # the software renderer's frame, as the view layer's contents (CGImage of BGRA pixels)
     __platform_present = ():
         if __ns_view == null: return
+        if not __soft:
+            __oc(__ns_gl, __sel("flushBuffer"))
+            # (the drawable follows the view's size)
+            if __win_w != __ns_gl_w or __win_h != __ns_gl_h:
+                __oc(__ns_gl, __sel("update"))
+                __ns_gl_w = __win_w
+                __ns_gl_h = __win_h
+            return
         w = __win_w
         h = __win_h
         if __ns_pixels.len() != w * h * 4: __ns_pixels = fill(u8(0), w * h * 4)
@@ -353,14 +390,14 @@ when TARGET == "macos":
             dt = clamp(now - last, 0.0, 0.1)
             last = now
             if __fixed_step: dt = 1.0 / 60.0
-            __sw_init_window(__win_w, __win_h)
+            if __soft: __sw_init_window(__win_w, __win_h)
             __run_frame(dt, update, draw)
             t0 = time()
             __platform_present()
             __last_present = time() - t0
             __frame_present += __last_present
-            # (software frames are paced to 60 per second)
-            if not __fixed_step:
+            # (without vsync, software frames are paced to 60 per second)
+            if __soft and not __fixed_step:
                 left = 1.0 / 60.0 - (time() - now)
                 if left > 0.0: sleep(left)
         exit(0)
