@@ -70,6 +70,58 @@ jobs:
           python3 tools/runtests.py --compiler sloppy
           python3 tools/runtests.py --compiler sloppy --release
 
+  # the compiler for macOS on Apple Silicon (made on Linux), a program it made run on a Mac, and
+  # there the compiler compiling itself (the same bytes) and its tests
+  macos-compiler:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the compiler, then the compiler for macOS
+        run: |
+          tools/bootstrap.sh
+          mkdir -p out && bin/sloppy build --target macos compiler/main.jo -o out/sloppy
+          printf 'main = ():\n    print("hello from macOS")\n' > /tmp/hello.jo
+          bin/sloppy build --target macos /tmp/hello.jo -o out/hello
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sloppy-macos
+          path: out
+  macos:
+    needs: macos-compiler
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: sloppy-macos
+          path: out
+      - name: A program made on Linux
+        timeout-minutes: 3
+        run: |
+          chmod +x out/hello out/sloppy
+          codesign -v out/hello
+          # (where it is, if it has not finished in 10 seconds)
+          run() {
+            "$@" & pid=$!
+            for i in $(seq 1 20); do kill -0 $pid 2>/dev/null || break; sleep 0.5; done
+            if kill -0 $pid 2>/dev/null; then sample $pid 1 -mayDie 2>&1 | head -60; kill -9 $pid; return 1; fi
+            wait $pid
+          }
+          SLOPPY_NO_CRASH_HANDLER=1 run out/hello
+          run out/hello
+      - name: The compiler
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          mkdir -p bin /tmp/self && cp out/sloppy bin/sloppy
+          export SLOPPY_LIB=$PWD/lib
+          bin/sloppy --version
+          bin/sloppy build compiler/main.jo -o /tmp/self/sloppy
+          cmp /tmp/self/sloppy bin/sloppy
+          python3 tools/runtests.py --compiler sloppy
+          python3 tools/runtests.py --compiler sloppy --release
+          python3 tools/lsptest.py
+
   # the compiler for Windows (made on Linux) and its tests on Windows itself
   windows-compiler:
     runs-on: ubuntu-latest

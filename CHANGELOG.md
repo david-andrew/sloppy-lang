@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **macOS on Apple Silicon** (`--target macos`, the default when the compiler runs on a Mac):
+  Mach-O executables written by the compiler itself, with dyld binding the C functions they use
+  and an ad hoc code signature (no Xcode or linker needed, and they can be made on Linux). The
+  library's system calls go through libSystem. Every test passes on a Mac, the compiler
+  compiles itself there to the same bytes, and the language server works; CI runs them on a
+  GitHub macOS runner. Not yet: games (window, graphics, sound), threads, the interactive prompt
+  and `sloppy watch`.
+- `@variadic(n)` on an `extern`: a C function with n fixed parameters, then C's `...` (macOS
+  passes the others on the stack).
 - **Linux on arm64** (`--target linux-arm64`, the default when the compiler runs on arm64): a
   new code generator (compiler/arm64.jo), x86-64 system call numbers translated for arm64, C
   libraries loaded through arm64's ld.so, crash backtraces from arm64's registers. Every test
