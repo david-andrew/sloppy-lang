@@ -730,11 +730,8 @@ call_args = (args: int[], ptypes: int[], mutmask: int, out: mut int[], callee: i
 # Release builds leave out the reference to a global that neither the callee nor the later
 # arguments can change.
 borrow_may_change = (a: int, args: int[], i: int, callee: int) -> bool:
-    n = a
-    loop nodes[n].kind == .field or nodes[n].kind == .index:
-        if tkind(ntype(int(nodes[n].a))) == .ptr: return false
-        n = int(nodes[n].a)
-    if nodes[n].kind != .ident: return false
+    n = place_var(a)
+    if n == 0: return false
     if nodes[n].aux == i32(int(SK.global)):
         if not opt_release or callee <= 0: return true
         w = fn_writes(callee)
@@ -754,22 +751,36 @@ mut_alias_check = (args: int[], mutmask: int, callee: int):
         if mutmask & (1 << i) == 0: continue
         r = elem_root(a)
         if r == 0: continue
+        sa = place_steps(a)
         nm = name_of(int(nodes[r].name))
         loop j in 0.. and b in args:
             if j == i: continue
-            # (another element given as `mut` is fine; reading numbers out of the array too)
-            if mutmask & (1 << j) != 0 and elem_root(b) != 0: continue
-            w = write_root(b)
-            if (w != 0 and same_var(w, r) and is_managed(ntype(b))) or may_write_root(b, r):
+            bmut = mutmask & (1 << j) != 0
+            w = place_var(b)
+            # (another place that holds this one or is inside it: xs and xs[0], xs[0] and
+            # xs[0][0]; other elements and fields are fine, as in swap(xs[i], xs[j]), and so is
+            # reading numbers out of the array)
+            nested = false
+            if w != 0 and same_var(w, r) and (bmut or is_managed(ntype(b))):
+                sb = place_steps(b)
+                nested = steps_overlap(sa, sb) and not (bmut and sa.len() == sb.len())
+            if nested or may_write_root(b, r):
                 fatal(nodes[b].pos, "{place_text(a)} is passed as a `mut` argument, so this argument cannot also hold or change '{nm}' (pass the index instead)")
         glob = nodes[r].aux == i32(int(SK.global))
-        mutparam = not glob and int(locals[int(nodes[r].sym)].flags) & LF_MUTPARAM != 0
+        lf = 0
+        if not glob: lf = int(locals[int(nodes[r].sym)].flags)
+        mutparam = lf & LF_MUTPARAM != 0
+        # (a variable a closure changes: the callee may be that closure, or call it)
+        if lf & LF_SHARED != 0 and (callee <= 0 or fn_writes(callee).all):
+            fatal(nodes[a].pos, "'{nm}' is changed by a closure, which this call may run, so {place_text(a)} cannot be passed as a `mut` argument (pass the index instead)")
         if glob or mutparam:
             who = "the function called"
             if callee > 0: who = "'{name_of(int(nodes[int(fns[callee].decl)].name))}'"
-            fw = FnWrites(true, [], [], [])
-            if callee > 0: fw = fn_writes(callee)
-            if fw.all or (glob and fw.globals.contains(int(nodes[r].sym))):
+            # (what the callee changes, as far as it names it; a call of a function value it
+            # makes is not counted, or nearly every call into a library would be refused)
+            fw = FnWrites(false, [], [], [])
+            if callee > 0: fw = fn_writes_named(callee)
+            if glob and fw.globals.contains(int(nodes[r].sym)):
                 fatal(nodes[a].pos, "{who} may change the global '{nm}' (or call something that does), so {place_text(a)} cannot be passed to it as a `mut` argument (pass the index instead)")
             if mutparam and fw.globals.len() > 0:
                 fatal(nodes[a].pos, "{who} changes globals, and '{nm}' (a `mut` parameter) may be one of them, so {place_text(a)} cannot be passed to it as a `mut` argument (pass the index instead)")
@@ -777,7 +788,12 @@ mut_alias_check = (args: int[], mutmask: int, callee: int):
 # a place as written (xs[i].pos), for messages
 place_text = (n: int) -> str:
     k = nodes[n].kind
-    if k == .ident: return name_of(int(nodes[n].name))
+    if k == .ident:
+        nm = name_of(int(nodes[n].name))
+        # (a narrowed field or global: the place it stands for)
+        if starts_with(nm, "#") and nodes[n].aux == i32(int(SK.local)) and locals[int(nodes[n].sym)].alias != 0: return place_text(int(locals[int(nodes[n].sym)].alias))
+        return nm
+    if k == .narrow or k == .conv: return place_text(int(nodes[n].a))
     if k == .field: return "{place_text(int(nodes[n].a))}.{name_of(int(nodes[n].name))}"
     if k == .unwrap: return "{place_text(int(nodes[n].a))}!"
     if k == .index:
@@ -788,17 +804,64 @@ place_text = (n: int) -> str:
         return "{place_text(int(nodes[n].a))}[{i}]"
     "..."
 
-# the variable (ident node) whose array or map holds the element place n is in, or 0
-elem_root = (n0: int) -> int:
+# The variable a place belongs to: through fields, indexing, `!`, narrowing and the names that
+# stand for a place (a narrowed variable or field, `loop mut`'s element). pw_heap: some step
+# indexes an array or map; pw_depth: how many fields and indexes. 0 (no variable) for a place
+# reached through a raw pointer, or a value that is no place.
+pw_heap = false
+pw_depth = 0
+place_var = (n0: int) -> int:
     n = n0
-    heap = false
-    loop nodes[n].kind == .field or nodes[n].kind == .index or nodes[n].kind == .unwrap:
-        if nodes[n].kind == .index:
-            k = tkind(ntype(int(nodes[n].a)))
-            if k == .ptr: return 0
-            if k != .fixed and k != .vec: heap = true
-        n = int(nodes[n].a)
-    if heap and nodes[n].kind == .ident: return n
+    pw_heap = false
+    pw_depth = 0
+    loop true:
+        k = nodes[n].kind
+        if k == .field or k == .index:
+            bk = tkind(ntype(int(nodes[n].a)))
+            if bk == .ptr: return 0
+            if k == .index and bk != .fixed and bk != .vec: pw_heap = true
+            pw_depth += 1
+            n = int(nodes[n].a)
+        else if k == .unwrap or k == .narrow or (k == .conv and nodes[n].aux == i32(int(CV.union_))): n = int(nodes[n].a)
+        else if k == .ident and nodes[n].aux == i32(int(SK.local)) and int(locals[int(nodes[n].sym)].flags) & LF_ALIAS != 0 and locals[int(nodes[n].sym)].alias != 0:
+            n = int(locals[int(nodes[n].sym)].alias)
+        else: break
+    if nodes[n].kind == .ident: return n
+    0
+
+# the fields and indexes of a place, from its variable on (as place_var follows them)
+place_steps = (n0: int) -> int[]:
+    out: int[]
+    n = n0
+    loop true:
+        k = nodes[n].kind
+        if k == .field or k == .index:
+            out.insert(0, n)
+            n = int(nodes[n].a)
+        else if k == .unwrap or k == .narrow or (k == .conv and nodes[n].aux == i32(int(CV.union_))): n = int(nodes[n].a)
+        else if k == .ident and nodes[n].aux == i32(int(SK.local)) and int(locals[int(nodes[n].sym)].flags) & LF_ALIAS != 0 and locals[int(nodes[n].sym)].alias != 0:
+            n = int(locals[int(nodes[n].sym)].alias)
+        else: break
+    out
+
+# could one of two places (steps from the same variable) hold the other: is the shorter a
+# prefix of the longer, as far as the compiler can tell (xs[i] and xs[j] may be the same)?
+steps_overlap = (a: int[], b: int[]) -> bool:
+    loop k in [0..min(a.len(), b.len())):
+        x = a[k]
+        y = b[k]
+        if nodes[x].kind != nodes[y].kind: return false
+        if nodes[x].kind == .field and nodes[x].aux != nodes[y].aux: return false
+        if nodes[x].kind == .index:
+            bx = int(nodes[x].b)
+            by = int(nodes[y].b)
+            if nodes[bx].kind == .int_lit and nodes[by].kind == .int_lit and nodes[bx].ival != nodes[by].ival: return false
+    true
+
+# the variable (ident node) whose array or map holds the element place n is in, or 0
+elem_root = (n: int) -> int:
+    r = place_var(n)
+    if pw_heap: return r
     0
 
 # does expression n name the variable of ident node r?
@@ -866,6 +929,11 @@ race_arg = (a: int, who: str):
         if param: hint = ", or mark '{name_of(int(nodes[int(fns[cur_fn].decl)].name))}' @parallel so that the functions given to it are checked"
         fatal(nodes[a].pos, "{who} runs this function on many threads at once, so the compiler checks it for data races, which it can only do for a function it can see: pass a function by name or a lambda{hint}")
 
+# a @parallel function is checked at its calls: it cannot be used as a value
+parallel_direct = (f: int, pos: int):
+    if f > 0 and fns[f].parallel and not in_lib(pos):
+        fatal(pos, "'{name_of(int(nodes[int(fns[f].decl)].name))}' runs the function it is given on many threads at once, so it can only be called directly (where the compiler checks that function), not used as a value or partially applied")
+
 # is position pos in the library (lib_dir)?
 in_lib = (pos: int) -> bool:
     fi = pos_file(pos)
@@ -882,12 +950,9 @@ race_named = (f: int, who: str):
 
 # a place that changes: the variable it belongs to, if that is shared with other threads
 race_target = (t: int, f: int, who: str, captures: bool, pos: int):
-    n = t
-    loop nodes[n].kind == .field or nodes[n].kind == .index:
-        # (writing through a pointer changes memory the program manages itself, not the variable)
-        if tkind(ntype(int(nodes[n].a))) == .ptr: return
-        n = int(nodes[n].a)
-    if nodes[n].kind != .ident: return
+    # (writing through a pointer changes memory the program manages itself, not the variable)
+    n = place_var(t)
+    if n == 0: return
     nm = name_of(int(nodes[n].name))
     if nodes[n].aux == i32(int(SK.global)):
         fatal(pos, "{who} runs this function on many threads at once, so it must not change the global '{nm}' (a data race): return values instead")
@@ -914,6 +979,8 @@ race_scan = (n: int, f: int, who: str, captures: bool):
         else if aux == 1 and not in_lib(nodes[n].pos):
             fatal(nodes[n].pos, "{who} runs this code on many threads at once, so the compiler checks it for data races, which it cannot do through a call of a function value: call a function by name")
     else if k == .for_ and has_flag(n, NF_MUT): race_target(int(nodes[n].a), f, who, captures, nodes[n].pos)
+    # (a part of "...{x}...": formatted by a __fmt function, which may be the program's)
+    else if k == .pair and nodes[n].sym > 0: race_named(int(nodes[n].sym), who)
     race_scan(int(nodes[n].a), f, who, captures)
     race_scan(int(nodes[n].b), f, who, captures)
     if k != .for_:
@@ -936,7 +1003,12 @@ gen_direct_call = (f: int, args: int[]) -> Val:
 gen_closure_call = (callee: int, args: int[]) -> Val:
     ft = prune(ntype(callee))
     ret = int(types[ft].elem)
-    cv = gen_borrowed(callee).v
+    # (a closure kept where it may be replaced while it runs, by itself or an argument)
+    cval = gen_borrowed(callee)
+    if not cval.owned and borrow_may_change(callee, [], 0, 0):
+        cval = own(cval, ft)
+        borrow(cval, ft)
+    cv = cval.v
     fp = e_load(VI, cv, 0, ptr_size)
     env = e_load(VI, cv, ptr_size, ptr_size)
     rslot = -1
@@ -1011,6 +1083,7 @@ gen_lambda = (e: int) -> Val:
 
 gen_fnref = (e: int) -> Val:
     f = int(nodes[e].sym)
+    parallel_direct(f, nodes[e].pos)
     if nodes[e].aux == 1:
         # C function pointer: the raw function
         return V(e_faddr(lf_of_inst(f)), false)
@@ -1051,6 +1124,7 @@ gen_partial = (e: int) -> Val:
     hdr_store(env, 0, e_iconst(1))
     hdr_store(env, 8, e_faddr(lf_helper(.envdrop, 0, th)))
     target = int(nodes[e].sym)
+    if target != 0: parallel_direct(target, nodes[e].pos)
     if nodes[e].aux == 1:
         cv = gen_owned(int(nodes[e].a))
         e_copy(e_addi(env, 16), cv.v, closure_size())
@@ -1080,6 +1154,8 @@ gen_interp = (e: int) -> Val:
         f = int(nodes[p].sym)
         x = int(nodes[p].a)
         val = gen_expr(x)
+        # (a __fmt of the program's may change where the value came from)
+        if not val.owned and is_managed(ntype(x)) and not in_lib(nodes[int(fns[f].decl)].pos) and borrow_may_change(x, [], 0, f): val = own(val, ntype(x))
         borrow(val, ntype(x))
         argv = [e_slot(bs), val.v]
         if nodes[p].sval >= 0: argv.push(e_daddr(str_data(name_of(int(nodes[p].sval)))))
@@ -1350,12 +1426,21 @@ gen_binary = (e: int) -> Val:
     op = nodes[e].op as Tok
     aux = int(nodes[e].aux)
     is_cmp = op == .eq or op == .ne or op == .lt or op == .le or op == .gt or op == .ge
+    # (the left operand read from a variable that a call on the right may change: kept as it was)
+    keep_left = is_managed(lt) and has_call(b) and borrow_may_change(a, [], 0, 0)
     if aux == 1:
-        pa = gen_place(a, false)
+        ad = 0
+        if keep_left:
+            kv = own(gen_expr(a), lt)
+            borrow(kv, lt)
+            ad = kv.v
+            if vc(lt) != VC_AGG:
+                ks = new_slot(8, 8)
+                e_store(e_slot(ks), 0, kv.v, 8)
+                ad = e_slot(ks)
+        else: ad = place_addr(gen_place(a, false), lt)
         pb = gen_place(b, false)
-        r = 0
-        if vc(lt) == VC_AGG or types[lt].kind == .array: r = gen_eq(lt, place_addr(pa, lt), place_addr(pb, lt))
-        else: r = gen_eq(lt, place_addr(pa, lt), place_addr(pb, lt))
+        r = gen_eq(lt, ad, place_addr(pb, lt))
         if op == .ne: r = e_bin(.xor, VI, r, e_iconst(1))
         return V(r, false)
     if aux == 6:
@@ -1364,7 +1449,7 @@ gen_binary = (e: int) -> Val:
         if op == .eq: return V(e_bin(.eq, VI, has, e_iconst(0)), false)
         return V(e_bin(.ne, VI, has, e_iconst(0)), false)
     if aux == 2:
-        va = gen_borrowed(a).v
+        va = gen_left(a, lt, keep_left)
         vb = gen_borrowed(b).v
         if op == .plus: return V(e_call(rt("__str_concat"), [va, vb], VI), true)
         if op == .eq or op == .ne:
@@ -1374,7 +1459,7 @@ gen_binary = (e: int) -> Val:
         c = e_call(rt("__str_cmp"), [va, vb], VI)
         return V(e_bin(int_op(op, true), VI, c, e_iconst(0)), false)
     if aux == 3:
-        va = gen_borrowed(a).v
+        va = gen_left(a, lt, keep_left)
         vb = gen_borrowed(b).v
         et = int(types[lt].elem)
         r = e_call(rt("__arr_concat"), [va, vb, e_iconst(tsize(et))], VI)
@@ -1436,6 +1521,42 @@ sdiv_wrap = (op: Tok, va: int, vb: int, t: int) -> int:
     e_mov(d, e_bin(int_op(op, true), VI, va, vb))
     endc()
     d
+
+gen_left = (a: int, t: int, keep: bool) -> int:
+    v = gen_expr(a)
+    if keep: v = own(v, t)
+    borrow(v, t)
+    v.v
+
+# the offsets of the Textures in a value of type t (at offset base), into out
+texture_offsets = (t0: int, base: int, out: mut int[]):
+    t = prune(t0)
+    k = types[t].kind
+    if k == .fixed:
+        et = int(types[t].elem)
+        loop i in [0..fixed_len(t)): texture_offsets(et, base + i * tsize(et), out)
+    else if k == .struct_ and not is_union(t):
+        si = int(types[t].st)
+        if structs[si].name == "Texture":
+            out.push(base)
+            return
+        loop fo in field_list(t): texture_offsets(fo.0, base + fo.1, out)
+
+# does expression n call a function (directly, or formatting a part of a string)?
+has_call = (n: int) -> bool:
+    if n <= 0: return false
+    k = nodes[n].kind
+    if k == .call or (k == .pair and nodes[n].sym > 0): return true
+    if k == .lambda: return false
+    fs = [int(nodes[n].a), int(nodes[n].b), int(nodes[n].c), int(nodes[n].d)]
+    if k == .for_: fs = [int(nodes[n].a), int(nodes[n].b)]
+    loop c in fs:
+        if has_call(c): return true
+    loop i in [0..nkids(n)):
+        if has_call(kid(n, i)): return true
+    loop i in [0..nkids2(n)):
+        if has_call(kid2(n, i)): return true
+    false
 
 retain_elems = (arr: int, et: int):
     # retain every element of a freshly copied array
@@ -1920,6 +2041,15 @@ gen_intrinsic = (e: int) -> Val:
         cs = ""
         if not target_wasm: cs = spirv_compute(int(nodes[args[0]].sym))
         return V(e_daddr(str_data(cs)), false)
+    if id == .compute_textures:
+        # where the parameters hold Textures (their GL names, given slots when dispatched): "8,40"
+        offs: int[]
+        texture_offsets(fns[int(nodes[args[0]].sym)].ptypes[1], 0, offs)
+        ts = ""
+        loop i in 0.. and o in offs:
+            if i > 0: ts += ","
+            ts += "{o}"
+        return V(e_daddr(str_data(ts)), false)
     if id == .shader:
         vsf = int(nodes[args[0]].sym)
         fsf = int(nodes[args[1]].sym)
@@ -2986,6 +3116,25 @@ struct FnWrites:
     mentions: int[]             # the globals it names at all
 fw_direct: {int: FnWrites}      # by function: what its own body does
 fw_total: {int: FnWrites}       # ... and with everything it calls
+
+# the globals f and the functions it calls by name write, also past calls of function values
+# (fn_writes stops at the first of those: `all`)
+fw_named: {int: FnWrites}
+fn_writes_named = (f: int) -> FnWrites:
+    if let w = fw_named.get(f): return w
+    total = FnWrites(false, [], [], [])
+    seen: {int: bool}
+    todo = [f]
+    loop todo.len() > 0:
+        g = todo.pop()
+        if seen.get(g, false): continue
+        seen[g] = true
+        d = fn_writes_direct(g)
+        loop x in d.globals:
+            if not total.globals.contains(x): total.globals.push(x)
+        loop c in d.calls: todo.push(c)
+    fw_named[f] = total
+    total
 
 fn_writes = (f: int) -> FnWrites:
     if let w = fw_total.get(f): return w

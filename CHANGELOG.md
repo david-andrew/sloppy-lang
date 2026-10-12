@@ -77,6 +77,15 @@ Language:
 - Editor: an unsaved change to a file is seen at once in the other open files that use it.
 - Windows: a float given to a C function among its first four arguments also goes in the
   integer register, as C functions taking varargs (`sprintf`) read it.
+- More of the same, from a fourth review: operands of `+` and `==` on strings and arrays, the
+  parts of `"...{x}..."` given to a `__fmt` of the program's, `g!` and a closure called from a
+  global also stay alive while a call changes where they came from; a `mut` element may not
+  share a call with an element inside it (`f(xs[0][0], xs[0])`), a `loop mut` element with its
+  array, nor an element of a variable a closure changes with a call that may run it; and
+  `parallel_range` and the other @parallel functions can only be called directly, while the
+  race check also follows `__fmt` functions and narrowed globals.
+- Compute functions can read textures (Vulkan binds the texture array for them, and a texture's
+  name in their parameters becomes its slot); `gpu_buffer` refuses Textures as elements.
 - Float to integer conversions saturate at the range of the type converted to (`u8(300.0)` is
   255, `i8(-200.0)` is -128, `u64(-1.0)` is 0); before, only `int` did.
 - Signed division wraps like the rest of integer arithmetic: the smallest integer `/ -1` is

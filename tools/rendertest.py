@@ -55,6 +55,8 @@ for name, src in games.items():
         continue
     w, h, got = downsample(png, 4)
     ref = os.path.join(refdir, f"{name}.png")
+    # (a scene marked "# not with OpenGL" uses what only Vulkan and the software renderer do)
+    no_gl = "# not with OpenGL" in open(os.path.join(root, src), encoding="utf-8").read(2000)
     if update:
         if name in scenes:
             # the truth for these is the GPU's frame
@@ -62,7 +64,7 @@ for name, src in games.items():
                 print(f"skipped {name} (needs a display)")
                 continue
             gpu = os.path.join(out, f"{name}_gpu.png")
-            genv = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_FRAMES="60", SLOPPY_SCREENSHOT=gpu, SLOPPY_SCALE="1", SLOPPY_VULKAN="0")
+            genv = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_FRAMES="60", SLOPPY_SCREENSHOT=gpu, SLOPPY_SCALE="1", SLOPPY_VULKAN="1" if no_gl else "0")
             subprocess.run([exe], env=genv, capture_output=True, timeout=120)
             w, h, got = downsample(gpu, 4)
         write_png(ref, w, h, got)
@@ -78,7 +80,7 @@ for name, src in games.items():
     limit = GPU_LIMIT if name in scenes else LIMIT
     print(f"{'ok  ' if d <= limit else 'FAIL'} {name}: mean abs difference {d:.3f}")
     failed += d > limit
-    for label, extra in ([("GPU", {"SLOPPY_VULKAN": "0"})] if gpu_too else []) + ([("Vulkan", {"SLOPPY_VULKAN": "1"})] if vulkan else []):
+    for label, extra in ([("GPU", {"SLOPPY_VULKAN": "0"})] if gpu_too and not no_gl else []) + ([("Vulkan", {"SLOPPY_VULKAN": "1"})] if vulkan else []):
         runs += 1
         gpng = os.path.join(out, f"{name}_{label.lower()}.png")
         if os.path.exists(gpng): os.remove(gpng)

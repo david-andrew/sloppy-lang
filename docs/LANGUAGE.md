@@ -180,7 +180,8 @@ An element passed as `mut` (`hit(enemies[i])`) is changed where it is, in the ar
 call runs, nothing else may hold or change that array, so the same call cannot also be given
 the array (`attach(nodes[0], nodes)`), and a global array cannot be one the function changes,
 itself or in a function it calls. The compiler says so; pass the index instead. Other elements
-of the array are fine: `swap(xs[i], xs[j])`.
+of the array are fine: `swap(xs[i], xs[j])`, `hit(d.mesh, d.instances)`; an element and one
+inside it (`xs[0]` and `xs[0][0]`) are not.
 
 To modify array elements in a loop, use `loop mut`:
 
@@ -611,7 +612,9 @@ Numbers follow the CPU's rules on the GPU too (unsigned division, comparisons an
 narrow types wrapping, float to integer conversions saturating), with one difference, as in
 shaders: GPU arithmetic is 32-bit, so there an `int`, `i64` or `u64` wraps at 32 bits and an
 `f64` is computed as an `f32`. Compute functions that use `i32`, `u32` and `f32` give the same
-results everywhere.
+results everywhere. A compute function can read a texture among its parameters (`texel`,
+`sample`) through Vulkan and the software renderer; run on the CPU beside OpenGL or WebGL, those
+give white.
 
 ## 9. Modules
 
@@ -705,9 +708,10 @@ The function runs on many threads at once: it may read anything, but it must not
 globals or the variables it captured (that would be a data race). Return results instead. The
 compiler checks this, also in the functions it calls, and names the variable, so it must see
 which function runs: give a function by name, a lambda or a partial application (`f(k, _)`), not
-a function kept in a variable, and call functions by name inside it. A function of your own
-that hands the function it is given on to these helpers is marked `@parallel`, and then what its
-callers give it is checked:
+a function kept in a variable, and call functions by name inside it. These helpers are only called
+directly, not kept in a variable or partially applied. A function of your own that hands the
+function it is given on to them is marked `@parallel`, and then what its callers give it is
+checked:
 
 ```gdscript
 @parallel
