@@ -1,57 +1,109 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 Graphics:
-- GPU arrays' `sum`, `min` and `max` run on the GPU with Vulkan too (a compute function in the
-  library; they read every value back before), giving the same sums as with OpenGL.
-- Shaders: `-(-1.5)` no longer breaks GLSL (it read `--`); unsigned `min`/`max`/`clamp`
-  compare as unsigned, and `abs` of a narrow integer wraps, as on the CPU.
-- tools/gpufuzz.py: random compute functions run on the CPU, the GPU and lavapipe, and random
-  fragment shaders drawn by the software renderer, OpenGL and Vulkan, must agree.
-- Vulkan pipelines are kept between runs (a pipeline cache per program in `~/.cache/sloppy`,
-  checked against the device and a hash): Breakwater's take 1-10 ms to make at start instead of
-  70 on NVIDIA. `SLOPPY_VK_PIPELINE_CACHE=0` leaves it out.
-- Subgroup operations in compute functions (`subgroup_add`, `subgroup_inclusive_add`,
-  `subgroup_exclusive_add`, `subgroup_min`, `subgroup_max`, `subgroup_and/or/xor`,
-  `subgroup_any/all`, `subgroup_elect`, `subgroup_broadcast_first`, `subgroup_size`): across the
-  invocations the GPU runs together, 1 at a time on the CPU, so programs written for any size
-  give the same results everywhere.
-- Compute functions over a grid: `f(id: ivec2, params)` with `dispatch(compute(f), ivec2(w, h),
-  params)` (groups of 8 by 8 on the GPU; rows on every core without Vulkan).
-- `draw_indirect_count`: the number of indirect draws read from a buffer a compute function
-  fills (vkCmdDrawIndexedIndirectCount; read back where the device lacks it, and on the CPU
-  without Vulkan).
-- Arrays of arrays (`f32[2][3]`) work in shaders on OpenGL and the web too (GLSL ES has none: they
-  are kept in structs there).
 - **Vulkan.** Games draw through Vulkan 1.3 on Linux and Windows where the driver has it
   (OpenGL otherwise, or with `SLOPPY_VULKAN=0`), set up as current GPUs work best (after Mason
   Remaley's mr_gpu): every texture in one bindless array, buffers read by address, vertices
   fetched by the shader, dynamic rendering, per-frame upload memory, memory in large blocks.
   Frames are the same as with OpenGL; the CPU's time per frame is lower (Breakwater: 2.0 ms
-  instead of 2.8).
+  instead of 2.8). `SLOPPY_VK_VALIDATE=1` turns on the Khronos validation layer.
 - The compiler turns shader functions into SPIR-V itself (as well as GLSL), so no shader
   compiler is needed; tools/spirvtest.py checks every module.
-- GPU arrays run as Vulkan compute programs (with no window too).
+- Pipelines are kept between runs (a cache per program in `~/.cache/sloppy`, checked against
+  the device and a hash): Breakwater's take 1-10 ms to make at start instead of 70 on NVIDIA.
+  `SLOPPY_VK_PIPELINE_CACHE=0` leaves it out.
 - **GPU buffers and compute functions** (lib/game/gpubuffer.jo): `gpu_buffer(xs)` keeps an array
-  of any struct on the GPU; a compute function `f(id: int, params)`, written in Sloppy, runs once
-  per element on the GPU with `dispatch(compute(f), n, params)`, reading and writing buffers by
-  index (`u.bugs[id] = b`), with atomics (`atomic_add`, `atomic_min`, `atomic_compare_exchange`...).
+  of plain data (numbers, bools, vectors and structs of them) on the GPU; a compute function
+  `f(id: int, params)`, written in Sloppy, runs once per element with
+  `dispatch(compute(f), n, params)`, reading and writing buffers by index (`u.bugs[id] = b`,
+  `u.bugs[id].pos += v`), with atomics (`atomic_add`, `atomic_min`, `atomic_compare_exchange`...).
+  Over a grid, `f(id: ivec2, params)` runs once per cell: `dispatch(k, ivec2(w, h), params)`.
   Shaders read buffers among their uniforms; buffers can be a mesh's vertices (`gpu_mesh`) or a
-  draw's instances; `draw_indirect` draws as many as a compute function decided (`DrawArgs`).
-  Barriers are automatic. Without Vulkan, buffers are CPU memory and compute functions run on
-  every core, so the same program works with OpenGL, the software renderer and on the web.
-  Their elements are plain data (numbers, bools, vectors and structs of them): a buffer of
-  strings or arrays is a compile error.
-- `fwidth()` in fragment shaders.
+  draw's instances; `draw_indirect` draws as many as a compute function decided (`DrawArgs`),
+  and `draw_indirect_count` takes how many draws there are from a buffer too. Compute
+  functions can read textures. Barriers are automatic. Without Vulkan, buffers are CPU memory
+  and compute functions run on every core, so the same program works with OpenGL, the software
+  renderer and on the web.
+- Subgroup operations in compute functions (`subgroup_add`, `subgroup_inclusive_add`,
+  `subgroup_exclusive_add`, `subgroup_min`, `subgroup_max`, `subgroup_and/or/xor`,
+  `subgroup_any/all`, `subgroup_elect`, `subgroup_broadcast_first`, `subgroup_size`): across the
+  invocations the GPU runs together (32 on NVIDIA), 1 at a time on the CPU, so programs written
+  for any size give the same results everywhere.
+- GPU arrays run as Vulkan compute programs (with no window too), their `sum`, `min` and `max`
+  on the GPU as with OpenGL.
 - Shaders and compute functions follow the CPU's rules for numbers: unsigned division,
-  remainders, shifts and comparisons, narrow integer types wrapping, float to integer
-  conversions saturating, `i32(bool)`. (GPU arithmetic stays 32-bit.)
-- Vulkan: a texture deleted, made again or given other sampling after a draw that uses it no
-  longer changes that draw (each change takes a new slot of the bindless array; the old one is
-  freed once the GPU is done with it), and things released between frames wait for the frame
-  that may still use them.
-- `SLOPPY_VK_VALIDATE=1` turns on the Khronos validation layer, where it is installed.
+  remainders, shifts, comparisons, `min`, `max` and `clamp`; narrow integer types wrapping (`abs`
+  too); float to integer conversions saturating; shifts by 32 or more; every compound
+  assignment (`%=`, `>>=`, `and=`...) with its target and indexes computed once, before the
+  right side; `ivec2(vec2(...))` converting each component; `i32(bool)`. (GPU arithmetic stays
+  32-bit.)
+- Arrays of arrays (`f32[2][3]`) work in shaders on OpenGL and the web (GLSL ES has none: they
+  are kept in structs there). `fwidth()` in fragment shaders.
+- Fixes: `-(-1.5)` in a shader broke GLSL (it read `--`); `mat4` takes integer vectors among
+  its parts; a texture deleted, made again or given other sampling after a draw that uses it no
+  longer changes that draw, and things released between frames wait for the frame that may
+  still use them; a user struct named Texture is plain data.
+
+Language:
+- Type arguments at a call: `zero[int]()`, `gpu_buffer[Bug](100)`, `empty[str[]]()` (`T[]`
+  written inside the brackets is the array type).
+- `b[i].f = v` and `b[i].f += v` for types defining `[]` and `[]=` (a GpuBuffer, in compute
+  functions too): the element is read, changed and written back. `b[f(x)] += v` computes the
+  index once.
+- `min`, `max`, `clamp` (and `abs` for signed ones) keep an integer type: `min(x, 5)` with
+  `x: i32` is an `i32`, `max(a, b)` of two `u8` a `u8` (mixed types still take `int`'s). Ties
+  between the library's overloads go to the one more arguments match exactly.
+- Integer literals must fit: `x: u64 = -1` is an error like `x: u32 = -1`, as is a literal
+  above 64 bits. Overloads rank integer types before `f64` before `f32` (`choose(-1)` with
+  `u64` and `f64` overloads takes `f64`; it was ambiguous), and leave out what a call cannot
+  match (`f(300)` with `f(x: i8)` and `f(x: i16)` is the `i16` one).
+- Float to integer conversions saturate at the range of the type converted to (`u8(300.0)` is
+  255, `i8(-200.0)` is -128, `u64(-1.0)` is 0); before, only `int` did. Signed division wraps
+  like the rest of integer arithmetic (the smallest integer `/ -1` is itself, `% -1` is 0;
+  native programs used to stop). `x %= y` on floats is `x % y`.
+- Generic types are also worked out from what the result must be: `x: int = make((v): v + 1)`
+  types the lambda's `v`, `f: () -> int = zero` picks `zero[int]`, and a lambda returning a
+  member of a generic union makes that member. A generic function that expands without end
+  stops with an error (found by its chain of instantiations: deep finite types and many
+  instances are fine).
+- `match` narrows a field (`match b.x:`) or a global in each arm, as it does a local variable;
+  a closure using a name narrowed by `is` captures the variable itself, so it sees later
+  changes and may assign it.
+
+Memory safety and data races (from reviews of the compiler):
+- An argument read from a global, a variable closures share, a capture, a `g!`, an operand of
+  string or array `+` and `==`, or a part of `"...{x}..."` stays alive through the call, even
+  if the callee (or a later argument) gives its variable another value; it used to be freed
+  under the callee. (Where the callee cannot change that global, no reference is taken.)
+- An element passed as `mut` (`hit(enemies[i])`) is written where it is, so while the call runs
+  nothing may move or share its array: the same call can no longer also be given the array
+  (`attach(nodes[0], nodes)`) or an element inside it, nor can a global array the function
+  changes; the compiler says so. Where the function may call a function value that could
+  resize the array, the element is passed as a copy and written back after the call.
+- The data race check of `parallel_map` and the others covers partial applications
+  (`f(k, _)`), calls of function values inside the function, `__fmt` functions and narrowed
+  globals; a function kept in a variable is refused, since the compiler cannot see which it is.
+  A function handing the function it is given on to them is marked `@parallel`, and such
+  functions can only be called directly.
+- On the CPU, negating an integer vector gave wrong components (it went through floats), and
+  swizzles out of order (`v.zx`) read and wrote the wrong components (assigning one wrote past
+  the vector). A swizzle naming a component twice cannot be assigned to (`v.xx = ...`).
+
+Other fixes:
+- Maps: keys that are unions, optionals or arrays work (they hashed wrongly), `-0.0` and `0.0`
+  are one key as they are equal, and `remove` keeps the other entries in insertion order.
+- Windows: a float given to a C function among its first four arguments also goes in the
+  integer register (as varargs functions like `sprintf` read it); a @cabi function called from
+  C may take more than four arguments; @cabi functions sign-extend narrow integers C passes.
+- Editor: an unsaved change to a file is seen at once in the other open files that use it, and
+  references across files follow a used file as it is opened and closed.
+
+Tools:
+- tools/gpufuzz.py: random compute functions run on the CPU, the GPU and lavapipe, and random
+  fragment shaders drawn by the software renderer, OpenGL and Vulkan, must agree (`--reduce`
+  shrinks a failure).
 
 Website and install:
 - The website works on phones: the top links fold into a menu, and a docs page's contents into
@@ -66,84 +118,6 @@ Website and install:
   each with a whole program to run in the playground (docs/api/; the tests build them), every
   function with its description, a search box (`?q=` links to a search), and the built-in
   functions (`print`, `push`, `pop`, `fill`, `embed`...), which were missing.
-
-Language:
-- `min`, `max`, `clamp` (and `abs` for signed ones) keep an integer type: `min(x, 5)` with
-  `x: i32` is an `i32`, `max(a, b)` of two `u8` a `u8` (mixed types still take `int`'s). Ties
-  between the library's overloads go to the one more arguments match exactly.
-- Negating an integer vector (`-ivec2(...)`) gave wrong components (it went through floats).
-- Swizzles out of order (`v.zx`, `w.wy`) as operands or assigned to read and wrote the wrong
-  components on the CPU (assigning one wrote past the vector); a swizzle naming a component
-  twice cannot be assigned to (`v.xx = ...`), and only one in order can be a `mut` argument.
-- A `mut` element of a global array or map, given to a function that may call a function value
-  (which could resize the array), is passed as a copy and written back after the call; the
-  change was lost before, written to memory the resize had freed.
-- Integer literals: `x: u64 = -1` is an error like `x: u32 = -1`, a literal above 64 bits is an
-  error, and overloads rank integer types before `f64` before `f32` (`choose(-1)` with `u64`
-  and `f64` overloads takes `f64`; it was ambiguous).
-- Type arguments at a call: `zero[int]()`, `gpu_buffer[Bug](100)`, `empty[str[]]()` (`T[]`
-  written inside the brackets is the array type).
-- `b[i].f = v` and `b[i].f += v` for types defining `[]` and `[]=` (a GpuBuffer, in compute
-  functions too): the element is read, changed and written back. `b[f(x)] += v` computes the
-  index once.
-- An argument read from a global, a variable closures share or a capture stays alive through
-  the call, even if the callee (or a later argument) gives that variable another value; it
-  used to be freed under the callee. (Release builds leave the reference out where the callee
-  cannot change that global.)
-- An element passed as `mut` (`hit(enemies[i])`) is written where it is, so while the call runs
-  nothing may move or share its array: the same call can no longer also be given the array
-  (`attach(nodes[0], nodes)`), and a global array cannot be passed this way to a function that
-  may change it. The compiler says so; before, the write could be lost or land in a copy.
-- The data race check of `parallel_map` and the others now also covers partial applications
-  (`f(k, _)`), calls of function values inside the function, and `__parallel_run`; a function
-  kept in a variable is refused, since the compiler cannot see which it is. A function that
-  hands the function it is given on to them is marked `@parallel`, and its callers are checked.
-- Maps: keys that are unions, optionals or arrays work (they hashed wrongly: unions and
-  optionals without end, arrays all alike), `-0.0` and `0.0` are one key as they are equal,
-  and `remove` keeps the other entries in insertion order.
-- A lambda returning a member of a generic union (`apply((): 42)` for `() -> T | E`) makes
-  that member, whatever order inference puts the union's members in.
-- A generic function calling itself with ever bigger types stops with an error instead of
-  compiling forever.
-- Overloads a call cannot match are left out before the choice: `f(300)` with `f(x: i8)` and
-  `f(x: i16)` is the `i16` one, and a lambda's parameter types pick among `(int) -> int` and
-  `(f64) -> f64`.
-- `match` narrows a field (`match b.x:`) or a global in each arm, as it does a local variable.
-- A closure using a name narrowed by `is` captures the variable itself, so it sees later
-  changes and the variable may still be assigned (it was an error).
-- Generic types are also worked out from what the result must be: `x: int = make((v): v + 1)`
-  types the lambda's `v`, and `f: () -> int = zero` picks `zero[int]`.
-- Editor: an unsaved change to a file is seen at once in the other open files that use it.
-- Windows: a float given to a C function among its first four arguments also goes in the
-  integer register, as C functions taking varargs (`sprintf`) read it.
-- More of the same, from a fourth review: operands of `+` and `==` on strings and arrays, the
-  parts of `"...{x}..."` given to a `__fmt` of the program's, `g!` and a closure called from a
-  global also stay alive while a call changes where they came from; a `mut` element may not
-  share a call with an element inside it (`f(xs[0][0], xs[0])`), a `loop mut` element with its
-  array, nor an element of a variable a closure changes with a call that may run it; and
-  `parallel_range` and the other @parallel functions can only be called directly, while the
-  race check also follows `__fmt` functions and narrowed globals.
-- From a sixth review: compound assignments in shaders compute their target first and its
-  indexes once (as the CPU), `and=`/`or=` compute both sides, `ivec2(f(x))` calls f once,
-  `mat4` takes integer vectors among its parts; `x %= y` on floats is `x % y` on the CPU too;
-  a @cabi function sign-extends narrow integers C passes it; a user struct named Texture is
-  plain data; a generic function that expands without end is found by its chain of
-  instantiations (deep finite types and many instances are fine, and checking is linear).
-- Shaders and compute functions: every compound assignment (`%=`, `>>=`, `<<=`, `and=`, `xor=`...)
-  works (they all added before), a target's index is computed once, shifts by 32 or more give
-  what the CPU gives, and `ivec2(vec2(...))` converts each component (saturating; the CPU copied
-  the bits).
-- A closure assigning a variable narrowed by `is` changes the variable itself.
-- Generic code over big types compiles in time again (the depth check is remembered per type and
-  runs only for functions with many instances), and deep but finite types are accepted.
-- Windows: a @cabi function called from C may take more than four arguments.
-- Editor: references across files follow a used file as it is opened and closed.
-- Compute functions can read textures (Vulkan binds the texture array for them, and a texture's
-  name in their parameters becomes its slot); `gpu_buffer` refuses Textures as elements.
-- Float to integer conversions saturate at the range of the type converted to (`u8(300.0)` is
-  255, `i8(-200.0)` is -128, `u64(-1.0)` is 0); before, only `int` did.
-- Signed division wraps like the rest of integer arithmetic: the smallest integer `/ -1` is
-  itself and `% -1` is 0 (native programs used to stop with an arithmetic error).
 
 ## 0.5.0
 
