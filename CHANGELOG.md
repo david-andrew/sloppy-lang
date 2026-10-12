@@ -3,6 +3,11 @@
 ## Unreleased
 
 Graphics:
+- Compute functions over a grid: `f(id: ivec2, params)` with `dispatch(compute(f), ivec2(w, h),
+  params)` (groups of 8 by 8 on the GPU; rows on every core without Vulkan).
+- `draw_indirect_count`: the number of indirect draws read from a buffer a compute function
+  fills (vkCmdDrawIndexedIndirectCount; read back where the device lacks it, and on the CPU
+  without Vulkan).
 - Arrays of arrays (`f32[2][3]`) work in shaders on OpenGL and the web too (GLSL ES has none: they
   are kept in structs there).
 - **Vulkan.** Games draw through Vulkan 1.3 on Linux and Windows where the driver has it

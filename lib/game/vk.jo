@@ -181,6 +181,8 @@ when TARGET != "wasm":
     @lib("libvulkan.so.1")
     extern vkCmdDrawIndexedIndirect = (cb: *u8, buf: int, off: u64, count: u32, stride: u32)
     @lib("libvulkan.so.1")
+    extern vkCmdDrawIndexedIndirectCount = (cb: *u8, buf: int, off: u64, cbuf: int, coff: u64, most: u32, stride: u32)
+    @lib("libvulkan.so.1")
     extern vkDestroySampler = (dev: *u8, s: int, alloc: *u8)
     @lib("libvulkan.so.1")
     extern vkDestroyPipeline = (dev: *u8, p: int, alloc: *u8)
@@ -1026,6 +1028,7 @@ when TARGET != "wasm":
     __vk_inst_exts: str[]          # the instance's extensions
     __vk_multi_draw = false        # optional features the device has (see __vk_make_device)
     __vk_first_instance = false
+    __vk_draw_count = false        # (draws whose number is in a buffer)
     __vk_has_swapchain = false
 
     __vk_make_instance = () -> str:
@@ -1091,14 +1094,16 @@ when TARGET != "wasm":
         prio: f32 = 1.0
         q = VkDeviceQueueCreateInfo(stype = 2, family = __vk_family, count = 1, priorities = &prio)
         f2, f12, f13 = __vk_features(true)
-        # (wanted where the device has them: several draws in one indirect draw, and indirect
-        # draws with a first instance)
-        h2, _, _ = __vk_features(false)
+        # (wanted where the device has them: several draws in one indirect draw, indirect draws
+        # with a first instance, and their number read from a buffer)
+        h2, h12, _ = __vk_features(false)
         vkGetPhysicalDeviceFeatures2(__vk_pd, data(h2) as *u8)
         __vk_multi_draw = h2[4 + 9] != 0
         __vk_first_instance = h2[4 + 10] != 0
+        __vk_draw_count = h12[4 + 1] != 0 and __vk_multi_draw
         f2[4 + 9] = h2[4 + 9]
         f2[4 + 10] = h2[4 + 10]
+        if __vk_draw_count: f12[4 + 1] = 1
         dexts: *u8[]
         loop e in __vk_device_exts(__vk_pd):
             if e == "VK_KHR_swapchain": __vk_has_swapchain = true
@@ -1680,7 +1685,7 @@ when TARGET != "wasm":
 
     # run compute pipeline pl over groups (x, y), its parameters the n bytes at p (their address in
     # the push constants); what ran before it is done, and what runs after sees its writes
-    __vk_dispatch = (pl: int, p: *u8, n: int, gx: int, gy: int, count: int = 0):
+    __vk_dispatch = (pl: int, p: *u8, n: int, gx: int, gy: int, count: int = 0, count2: int = 0):
         blk, off = __vk_upload(p, n)
         __vg_end_pass()
         cb = __vk_cb()
@@ -1690,7 +1695,8 @@ when TARGET != "wasm":
         if __vk_set != 0: vkCmdBindDescriptorSets(cb, 1, __vk_layout, 0, 1, &__vk_set, 0, null)
         pc = fill(0, __VK_PUSH_SIZE / 8)
         pc[0] = __vk_addr(blk, off)
-        pc[3] = count                  # (where the vertex stride is: compute programs' element count)
+        # (where the strides are: compute programs' element count, or grid's width and height)
+        pc[3] = (count & 0xFFFFFFFF) | (count2 << 32)
         vkCmdPushConstants(cb, __vk_layout, 0x7FFFFFFF, 0, u32(__VK_PUSH_SIZE), data(pc) as *u8)
         vkCmdDispatch(cb, u32(gx), u32(gy), 1)
         __vk_memory_barrier(cb, VK_STAGE_COMPUTE, VK_ACCESS_MEMORY_WRITE, VK_STAGE_ALL, VK_ACCESS_MEMORY_READ | VK_ACCESS_MEMORY_WRITE)

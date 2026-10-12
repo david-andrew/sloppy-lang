@@ -608,11 +608,14 @@ dispatch(compute(step), len(bugs), Step(bugs, dt))
 
 (`u.bugs[id].pos = v` reads the element, changes it and writes it back, as for any type
 defining `[]` and `[]=`; changing several fields, `b = u.bugs[id]` first is shorter.) An empty
-buffer of n elements is `gpu_buffer[Bug](n)`.
+buffer of n elements is `gpu_buffer[Bug](n)`. A compute function over a grid takes
+`id: ivec2` and runs once per cell: `dispatch(compute(blur), ivec2(w, h), params)` (in groups of
+8 by 8 on the GPU).
 
 Shaders read buffers among their uniforms too (`u.bugs[instance_id()]`), a buffer can be a
 mesh's vertices (`gpu_mesh`) or a draw's instances, and `draw_indirect` takes the counts of its
-draws from a buffer that compute functions fill (GPU-driven drawing). `atomic_add` and the other
+draws from a buffer that compute functions fill (GPU-driven drawing); `draw_indirect_count`
+takes how many draws there are from a buffer too. `atomic_add` and the other
 atomics change an element that many invocations change at once; what a dispatch writes is
 seen by every dispatch and draw after it. Through Vulkan buffers are GPU memory read by
 address and compute functions compute programs (SPIR-V made by the compiler); elsewhere

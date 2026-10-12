@@ -1562,7 +1562,9 @@ dispatch(stepper, len(parts), Step(parts, dt))    # step(id, ...) for each id in
 ps = cpu(parts)                               # download
 ```
 
-Shaders read buffers among their uniforms (`u.parts[instance_id()]`); a buffer can also be a mesh's vertices (gpu_mesh), a draw's instances (draw_instanced) and the counts of draws the GPU decides (draw_indirect with DrawArgs). Only compute functions write buffers; atomic_add() and the others change an element of a GpuBuffer[i32] or GpuBuffer[u32] that many invocations change at once. What a dispatch writes is seen by every dispatch and draw after it.
+A compute function over a grid takes id: ivec2 (dispatch(k, ivec2(w, h), params)).
+
+Shaders read buffers among their uniforms (`u.parts[instance_id()]`); a buffer can also be a mesh's vertices (gpu_mesh), a draw's instances (draw_instanced) and the counts of draws the GPU decides (draw_indirect with DrawArgs; draw_indirect_count: how many draws, too). Only compute functions write buffers; atomic_add() and the others change an element of a GpuBuffer[i32] or GpuBuffer[u32] that many invocations change at once. What a dispatch writes is seen by every dispatch and draw after it.
 
 Through Vulkan a buffer is GPU memory read by its address and a compute function a compute program (compiler/spirv.jo); elements are laid out as the CPU lays them out. Elsewhere (OpenGL, the software renderer, the web) buffers are in CPU memory and compute functions run on the CPU, on every core; shaders read buffers through a copy in an integer texture. So programs run everywhere: gpu_compute() tells which way.
 
@@ -1584,7 +1586,9 @@ Through Vulkan a buffer is GPU memory read by its address and a compute function
 #### Compute programs
 
 - `struct Compute[P]`: what compute(f) makes of a compute function f(id: int, params: P)
+- `struct Compute2[P]`: what compute(f) makes of a compute function over a grid, f(id: ivec2, params: P)
 - `dispatch[P] = (k: Compute[P], n: int, params: P)`: k's function run for each id in [0, n) with these parameters, in any order and many at once; the dispatches and draws after it see what it wrote
+- `dispatch[P] = (k: Compute2[P], size: ivec2, params: P)`: k's function run for each cell of a size.x by size.y grid, id from ivec2(0, 0) to size - 1 (in groups of 8 by 8 on the GPU), as dispatch(k, n, params) runs it for each id in [0, n)
 - `atomic_add = (b: GpuBuffer[i32], i: int, v: i32) -> i32`: Atomic operations on element i of a buffer, for compute functions whose invocations change the same element: each returns the element's old value (past the ends: does nothing, returns 0).
 - `atomic_add = (b: GpuBuffer[u32], i: int, v: u32) -> u32`
 - `atomic_sub = (b: GpuBuffer[i32], i: int, v: i32) -> i32`
@@ -1612,6 +1616,8 @@ Through Vulkan a buffer is GPU memory read by its address and a compute function
 - `struct DrawArgs`: what one draw of draw_indirect draws (as Vulkan's VkDrawIndexedIndirectCommand)
 - `draw_indirect[U] = (sh: Shader, m: Mesh, args: GpuBuffer[DrawArgs], params: U, at: int = 0, draws: int = 1)`: draws whose counts are in a buffer, where a compute function can decide them (GPU-driven drawing): `draws` draws of mesh m, each as args[at + k] says
 - `draw_indirect[U, I] = (sh: Shader, m: Mesh, instances: GpuBuffer[I], args: GpuBuffer[DrawArgs], params: U, at: int = 0, draws: int = 1)`: the same with instance data in a buffer
+- `draw_indirect_count[U] = (sh: Shader, m: Mesh, args: GpuBuffer[DrawArgs], count: GpuBuffer[u32], params: U, at: int = 0, max_draws: int = -1, count_at: int = 0)`: draws whose number is in a buffer too: as many as count[count_at] says (at most max_draws, -1: all of args from at on), so a compute function can decide it, e.g. counting the draws it writes with atomic_add(u.count, 0, u32(1))
+- `draw_indirect_count[U, I] = (sh: Shader, m: Mesh, instances: GpuBuffer[I], args: GpuBuffer[DrawArgs], count: GpuBuffer[u32], params: U, at: int = 0, max_draws: int = -1, count_at: int = 0)`: the same with instance data in a buffer
 
 ## Menus
 

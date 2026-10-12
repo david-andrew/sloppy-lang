@@ -1,0 +1,67 @@
+# a compute function over a grid colors cells (dispatch over ivec2); another keeps some objects and
+# counts them, and draw_indirect_count draws as many as it counted
+struct Corner:
+    at: vec2
+struct Out:
+    pos: vec4
+    color: vec4
+struct Cells:
+    color: GpuBuffer[vec4]
+    w: int
+    h: int
+paint = (id: ivec2, u: Cells):
+    c = vec4(f32(id.x) / f32(u.w - 1), f32(id.y) / f32(u.h - 1), 0.5, 1)
+    if (id.x + id.y) % i32(2) == i32(0): c = c * 0.6
+    u.color[int(id.y) * u.w + int(id.x)] = c
+struct Grid:
+    color: GpuBuffer[vec4]
+    w: int
+    h: int
+vs = (c: Corner, u: Grid) -> Out:
+    i = instance_id()
+    x = f32(i % u.w)
+    y = f32(i / u.w)
+    p = vec2(-0.947 + (x + 0.5 + c.at.x * 0.437) * 1.9 / f32(u.w), -0.043 + (y + 0.5 + c.at.y * 0.437) * 1.0 / f32(u.h))
+    Out(vec4(p, 0, 1), u.color[i])
+fs = (i: Out, u: Grid) -> vec4: i.color
+
+struct Obj:
+    pos: vec2
+    tint: vec4
+struct Cull:
+    objs: GpuBuffer[Obj]
+    args: GpuBuffer[DrawArgs]
+    count: GpuBuffer[u32]
+    limit: f32
+cull = (id: int, u: Cull):
+    o = u.objs[id]
+    if o.pos.x < u.limit:
+        k = atomic_add(u.count, 1, u32(1))
+        u.args[int(k)] = DrawArgs(count = 6, first_instance = u32(id))
+struct Plain:
+    scale: f32
+vs2 = (c: Corner, o: Obj, u: Plain) -> Out: Out(vec4(o.pos + c.at * u.scale, 0, 1), o.tint)
+fs2 = (i: Out, u: Plain) -> vec4: i.color
+
+w = 11
+h = 6
+colors: GpuBuffer[vec4] = gpu_buffer(w * h)
+objs: Obj[]
+loop i in [0..12): objs.push(Obj(vec2(-0.903 + f32(i) * 0.16, -0.507), vec4(f32(i) / 12.0, 1.0 - f32(i) / 12.0, 0.3, 1)))
+ob = gpu_buffer(objs)
+args: GpuBuffer[DrawArgs] = gpu_buffer(12)
+count = gpu_buffer([u32(0), u32(0)])
+quad = mesh([Corner(vec2(-1, -1)), Corner(vec2(1, -1)), Corner(vec2(1, 1)), Corner(vec2(-1, 1))], [u32(0), 1, 2, 0, 2, 3])
+painter = compute(paint)
+culler = compute(cull)
+sh = make_shader(shader(vs, fs))
+sh2 = make_shader(shader(vs2, fs2))
+
+draw = ():
+    clear(rgb(0.05, 0.05, 0.08))
+    dispatch(painter, ivec2(i32(w), i32(h)), Cells(colors, w, h))
+    draw_instanced(sh, quad, w * h, Grid(colors, w, h))
+    upload(count, [u32(0), u32(0)])
+    # (8 of the 12 objects are left of 0.25; count_at 1: the second counter)
+    dispatch(culler, len(ob), Cull(ob, args, count, 0.25))
+    draw_indirect_count(sh2, quad, ob, args, count, Plain(0.0513), count_at = 1)
