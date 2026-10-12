@@ -29,6 +29,8 @@ cpu_count = () -> int:
         return 1
     else when TARGET == "windows":
         return max(int(GetActiveProcessorCount(u16(0xFFFF))), 1)
+    else when TARGET == "macos":
+        return max(int(__mac_sysconf(i32(58))), 1)                  # _SC_NPROCESSORS_ONLN
     else:
         mask = fill(0, 16)
         r = syscall(204, 0, 128, data(mask))           # sched_getaffinity
@@ -70,6 +72,34 @@ when TARGET == "windows":
 
     @cabi
     __w32_worker = (): __worker_main(__tid())
+else when TARGET == "macos":
+    @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("sysconf")
+    extern __mac_sysconf = (name: i32) -> int
+    @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("pthread_create")
+    extern __mac_pthread_create = (t: *u8, attr: *u8, start: *u8, arg: *u8) -> i32
+    # (macOS's futex: UL_COMPARE_AND_WAIT64, waking all with ULF_WAKE_ALL)
+    @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("__ulock_wait")
+    extern __mac_ulock_wait = (op: u32, p: *u8, v: int, us: u32) -> i32
+    @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("__ulock_wake")
+    extern __mac_ulock_wake = (op: u32, p: *u8, v: int) -> i32
+
+    __futex_wait = (p: *int, v: int): __mac_ulock_wait(u32(5), p as *u8, v, u32(0))
+    __futex_wake = (p: *int): __mac_ulock_wake(u32(5 | 0x100), p as *u8, 0)
+
+    # as on Windows: a worker starts on a stack of the system's and moves to its own
+    @cabi
+    __mac_thread_start = (id: *u8) -> *u8:
+        top = __tstack_base + ((id as int) << __TSTACK_SHIFT) - 16
+        entry: cfn() = __mac_worker
+        __jump(entry as *u8, top)
+        null
+
+    @cabi
+    __mac_worker = (): __worker_main(__tid())
 else:
     __futex_wait = (p: *int, v: int): syscall(202, p, 128, v, 0)      # FUTEX_WAIT_PRIVATE
     __futex_wake = (p: *int): syscall(202, p, 129, 0x7FFFFFFF)        # FUTEX_WAKE_PRIVATE (all)
@@ -123,6 +153,15 @@ __pool_start = ():
                 # (a worker's stack is committed whole: no guard pages to grow it)
                 if VirtualAlloc(base + (i << __TSTACK_SHIFT), 1 << __TSTACK_SHIFT, u32(0x1000), 4) == null: break
                 if CreateThread(null, 65536, start as *u8, (i + 1) as *u8, 0, null) == null: break
+                __pool_workers += 1
+        else when TARGET == "macos":
+            base = syscall(9, 0, size, 3, 0x22 | 0x4000, -1, 0)
+            if base < 0 and base > -4096: return
+            __tstack_base = base as *u8
+            start: cfn(*u8) -> *u8 = __mac_thread_start
+            th = [0]
+            loop i in [0..n):
+                if __mac_pthread_create(data(th) as *u8, null, start as *u8, (i + 1) as *u8) != 0: break
                 __pool_workers += 1
         else:
             base = syscall(9, 0, size, 3, 0x22 | 0x4000, -1, 0)       # MAP_PRIVATE|ANON|NORESERVE
