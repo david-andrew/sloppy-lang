@@ -70,6 +70,7 @@ struct Global:
     is_const: bool
     init: i32
     addr: i32
+    fn_written: bool    # some function (not top-level code) changes it
 
 struct Capture:
     outer: i32
@@ -855,7 +856,7 @@ get_fn_inst = (decl: int, targs: int[], use_pos: int) -> int:
         z = zonk(t)
         if has_var(prune(z)): fatal(use_pos, "cannot infer the type of an argument to '{name_of(int(nodes[decl].name))}' ({type_str(z)}); add a type annotation")
         # (a generic function that calls itself with bigger type arguments would expand without end)
-        if type_nesting(z, 2 * MAX_TYPE_NESTING + 1) > 2 * MAX_TYPE_NESTING: fatal(use_pos, "the generic function '{name_of(int(nodes[decl].name))}' expands without end: it is called with ever bigger types (nesting more than {2 * MAX_TYPE_NESTING} deep)")
+        if decl_infos[di].insts.len() >= 16 and type_nesting(z, 2 * MAX_TYPE_NESTING + 1) > 2 * MAX_TYPE_NESTING: fatal(use_pos, "the generic function '{name_of(int(nodes[decl].name))}' expands without end: it is called with ever bigger types (nesting more than {2 * MAX_TYPE_NESTING} deep)")
         zt.push(z)
     fns[f].targs = zt
     loop i in [0..nkids(decl)): fns[f].ptypes.push(subst(sig.params[i], zt))
@@ -967,6 +968,18 @@ check_shareable = (r: int, pos: int):
     fatal(pos, "'{nm}' is captured by a closure and modified: only variables declared with `=` can be shared like that (copy it first: `let v = {nm}`)")
 
 module_ctx: int[]
+
+# global g is changed here: in a function, that is something a call may do
+note_global_write = (g: int):
+    if not module_ctx.contains(cx): globals[g].fn_written = true
+
+# the global a narrowed name's place (g.f narrowed by `is`) belongs to, or -1
+alias_global = (l: int) -> int:
+    if int(locals[l].flags) & LF_ALIAS == 0 or locals[l].alias == 0: return -1
+    n = int(locals[l].alias)
+    loop nodes[n].kind == .field or nodes[n].kind == .index or nodes[n].kind == .narrow or nodes[n].kind == .unwrap or nodes[n].kind == .conv: n = int(nodes[n].a)
+    if nodes[n].kind == .ident and nodes[n].aux == i32(int(SK.global)): return int(nodes[n].sym)
+    -1
 
 ensure_global = (g: int, use_pos: int):
     if globals[g].state == 2: return

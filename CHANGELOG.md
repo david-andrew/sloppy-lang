@@ -84,6 +84,15 @@ Language:
   array, nor an element of a variable a closure changes with a call that may run it; and
   `parallel_range` and the other @parallel functions can only be called directly, while the
   race check also follows `__fmt` functions and narrowed globals.
+- Shaders and compute functions: every compound assignment (`%=`, `>>=`, `<<=`, `and=`, `xor=`...)
+  works (they all added before), a target's index is computed once, shifts by 32 or more give
+  what the CPU gives, and `ivec2(vec2(...))` converts each component (saturating; the CPU copied
+  the bits).
+- A closure assigning a variable narrowed by `is` changes the variable itself.
+- Generic code over big types compiles in time again (the depth check is remembered per type and
+  runs only for functions with many instances), and deep but finite types are accepted.
+- Windows: a @cabi function called from C may take more than four arguments.
+- Editor: references across files follow a used file as it is opened and closed.
 - Compute functions can read textures (Vulkan binds the texture array for them, and a texture's
   name in their parameters becomes its slot); `gpu_buffer` refuses Textures as elements.
 - Float to integer conversions saturate at the range of the type converted to (`u8(300.0)` is

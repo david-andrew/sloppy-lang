@@ -311,6 +311,24 @@ c.set_text(duri, 'foo: str = "s"\n')
 h = c.request("textDocument/hover", bar_at)
 check("unsaved dependency: after the edit", h and h["contents"]["value"], "```sloppy\n(global) bar: str\n```")
 
+# ---- references across files, as a used file is opened, changed and closed ----
+rdep = os.path.join(tmp, "rdep.jo")
+open(rdep, "w", encoding="utf-8").write("foo = (x: int): x\nfoo(2)\n")
+rdu = to_uri(rdep)
+rsrc = "use 'rdep.jo'\nprint(foo(1))\n"
+rpath = os.path.join(tmp, "ruser.jo")
+open(rpath, "w", encoding="utf-8").write(rsrc)
+ru = to_uri(rpath)
+c.set_text(ru, rsrc)
+c.diagnostics(ru)
+rpos = {"textDocument": {"uri": ru}, "position": lc(rsrc, rsrc.index("foo(1")), "context": {"includeDeclaration": True}}
+counts = [len(c.request("textDocument/references", rpos))]
+c.set_text(rdu, "foo = (x: int): x\nfoo(2)\nfoo(3)\n")
+counts.append(len(c.request("textDocument/references", rpos)))
+c.notify("textDocument/didClose", {"textDocument": {"uri": rdu}})
+counts.append(len(c.request("textDocument/references", rpos)))
+check("references follow an opened, changed and closed file", counts, [3, 4, 3])
+
 # ---- a library file ----
 lpath = os.path.join(root, "lib", "game", "stats.jo")
 luri = to_uri(lpath)

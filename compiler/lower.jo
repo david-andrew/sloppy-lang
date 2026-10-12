@@ -733,6 +733,8 @@ borrow_may_change = (a: int, args: int[], i: int, callee: int) -> bool:
     n = place_var(a)
     if n == 0: return false
     if nodes[n].aux == i32(int(SK.global)):
+        # (a global only top-level code changes cannot change during a call)
+        if not globals[int(nodes[n].sym)].fn_written: return false
         if not opt_release or callee <= 0: return true
         w = fn_writes(callee)
         if w.all or w.globals.contains(int(nodes[n].sym)): return true
@@ -1537,7 +1539,7 @@ texture_offsets = (t0: int, base: int, out: mut int[]):
         loop i in [0..fixed_len(t)): texture_offsets(et, base + i * tsize(et), out)
     else if k == .struct_ and not is_union(t):
         si = int(types[t].st)
-        if structs[si].name == "Texture":
+        if is_lib_texture(si):
             out.push(base)
             return
         loop fo in field_list(t): texture_offsets(fo.0, base + fo.1, out)
@@ -1680,15 +1682,32 @@ gen_vec_ctor = (e: int) -> Val:
         at = ntype(a)
         if vc(at) == VC_AGG:
             pa = gen_expr(a).v
+            # (from a vector of the other kind: each component converted, as a scalar would be)
+            from_int = types[prune(at)].sign
             loop j in [0..vec_comps(at)):
-                ty = VS
-                if integer: ty = VI
-                e_store(d, 4 * k, e_load(ty, pa, 4 * j, mode), mode)
+                x = 0
+                if from_int: x = e_load(VI, pa, 4 * j, 4 | M_SIGNED)
+                else: x = e_load(VS, pa, 4 * j, 4 | M_FLOAT)
+                if from_int and not integer: x = e_un(.i2f, VS, x)
+                else if integer and not from_int: x = f2i_i32(x)
+                e_store(d, 4 * k, x, mode)
                 k += 1
         else:
             e_store(d, 4 * k, gen_expr(a).v, mode)
             k += 1
     Val(d, true, s)
+
+# f32 x as an i32: toward zero, saturating, NaN to 0
+f2i_i32 = (x: int) -> int:
+    d = vreg(VI)
+    emit(.f2i, VS, d, x, 0, 0, 0)
+    iff(e_bin(.lts, VI, d, e_iconst(-2147483647 - 1)))
+    e_mov(d, e_iconst(-2147483647 - 1))
+    endc()
+    iff(e_bin(.gts, VI, d, e_iconst(2147483647)))
+    e_mov(d, e_iconst(2147483647))
+    endc()
+    d
 
 gen_swizzle = (e: int) -> Val:
     a = int(nodes[e].a)

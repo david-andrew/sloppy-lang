@@ -725,7 +725,12 @@ sv_assign = (target: int, op: Tok, rhs: int, pos: int):
     if p == 0: sv_err(pos, "unsupported assignment in shader")
     if op != .assign:
         ty = sv_type(tt, pos)
-        v = sv_arith(sv_assign_op(op), tt, sv_load(ty, p), ntype(rhs), v, tt, pos)
+        bop = sv_assign_op(op)
+        cur = sv_load(ty, p)
+        if types[prune(tt)].kind == .bool_:
+            # (and= or= xor= on bools: logical)
+            v = sv_val(sv_pick(bop == .amp, 167, sv_pick(bop == .pipe, 166, 165)), sv_bool(), [cur, v])
+        else: v = sv_arith(bop, tt, cur, ntype(rhs), v, tt, pos)
     sv_store(p, v)
 
 sv_assign_op = (op: Tok) -> Tok:
@@ -734,6 +739,12 @@ sv_assign_op = (op: Tok) -> Tok:
         minuseq: .minus
         stareq: .star
         slasheq: .slash
+        percenteq: .percent
+        ampeq: .amp
+        pipeeq: .pipe
+        careteq: .caret
+        shleq: .shl
+        shreq: .shr
         _: .plus
 
 # ---------------- expressions ----------------
@@ -810,11 +821,22 @@ sv_arith = (op: Tok, ta0: int, a0: int, tb0: int, b0: int, rt: int, pos: int) ->
         amp: return sv_val(199, ty, [a, b])
         pipe: return sv_val(197, ty, [a, b])
         caret: return sv_val(198, ty, [a, b])
-        shl: return sv_narrow(sv_val(196, ty, [a, b]), rt)
-        shr: return sv_val(sv_pick(us, 194, 195), ty, [a, b])
+        shl: return sv_narrow(sv_shift(196, ty, a, b, rt), rt)
+        shr: return sv_shift(sv_pick(us, 194, 195), ty, a, b, rt)
         _: pass
     sv_err(pos, "unsupported operator in shader")
     0
+
+# a << b, a >> b as on the CPU, where values shift in 64 bits by the count's low 6 bits: by 32
+# or more, nothing is left (or the sign, shifting a signed value right)
+sv_shift = (code: int, ty: int, a: int, b: int, rt: int) -> int:
+    if sv_is_vector(rt): return sv_val(code, ty, [a, b])
+    i = sv_i32()
+    c = sv_val(199, i, [b, sv_ci(63)])
+    r = sv_val(code, ty, [a, sv_val(199, i, [c, sv_ci(31)])])
+    far = sv_ci(0)
+    if code == 195: far = sv_val(195, ty, [a, sv_ci(31)])
+    sv_val(169, ty, [sv_val(175, sv_bool(), [c, sv_ci(32)]), far, r])
 
 # integers are 32 bits in shaders; an unsigned one (u8 u16 u32 u64) is held in the same bits
 sv_unsigned = (t0: int) -> bool:
@@ -1106,7 +1128,16 @@ sv_vec_ctor = (e: int) -> int:
     parts: int[]
     loop i in [0..n):
         a = kid(e, i)
-        parts.push(sv_as(a, sv_expr(a), t, pos))
+        at = prune(ntype(a))
+        v = sv_expr(a)
+        if is_vec(at) and types[at].sign != integer:
+            # (a vector of the other kind: each component converted as a scalar is)
+            loop j in [0..sv_ncomp(at)):
+                c = sv_val(81, sv_pick(integer, sv_f32(), sv_i32()), [v, j])
+                if integer: parts.push(sv_float_to_int(c, T_I32))
+                else: parts.push(sv_val(111, sv_f32(), [c]))
+        else if is_vec(at) and n == 1: return v
+        else: parts.push(sv_as(a, v, t, pos))
     sv_val(80, ty, parts)
 
 # a matrix constructor's arguments: four vec4 columns as they are, or else every component

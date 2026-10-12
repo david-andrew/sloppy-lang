@@ -362,7 +362,7 @@ plain_problem = (t0: int) -> str:
     layout(t)
     si = int(types[t].st)
     # (a Texture is the GL name of a GPU resource, not data the GPU can use from a buffer)
-    if structs[si].name == "Texture": return "Texture"
+    if is_lib_texture(si): return "Texture"
     if structs[si].union_:
         loop i in [0..int(structs[si].ntargs)):
             p = plain_problem(struct_targ(si, i))
@@ -376,6 +376,12 @@ plain_problem = (t0: int) -> str:
             p = plain_problem(int(fields[int(variants[vi].fields) + i].type))
             if p != "": return p
     ""
+
+# is struct si the library's Texture (lib/game/draw2d.jo), not one of the program's?
+is_lib_texture = (si: int) -> bool:
+    if structs[si].name != "Texture" or structs[si].decl == 0: return false
+    fi = pos_file(nodes[int(structs[si].decl)].pos)
+    fi >= 0 and fi < files.len() and ends_with(files[fi].path, "/game/draw2d.jo")
 
 # can a value of this type hold a function value (a closure)? (through arrays, optionals, tuples,
 # struct and enum fields, and union members)
@@ -712,16 +718,20 @@ soa_inst = (p: int) -> int:
     structs[idx].type = i32(types.len() - 1)
     types.len() - 1
 
-# how deeply a type nests (counted up to lim)
+# how deeply a type nests (counted up to lim; remembered per type once known exactly, so a type
+# sharing parts, (F, F) -> int, is not walked once per path)
+nesting_memo: {int: int} = {}
 type_nesting = (t0: int, lim: int) -> int:
     if lim <= 0 or t0 <= 0: return 0
     t = prune(t0)
+    if let m = nesting_memo.get(t): return min(m, lim)
     d = 0
     if int(types[t].elem) > 0: d = type_nesting(int(types[t].elem), lim - 1)
     loop i in [0..int(types[t].nargs)): d = max(d, type_nesting(targ(t, i), lim - 1))
     if (types[t].kind == .struct_ or types[t].kind == .enum_) and int(types[t].st) < structs.len():
         si = int(types[t].st)
         loop i in [0..int(structs[si].ntargs)): d = max(d, type_nesting(struct_targ(si, i), lim - 1))
+    if d + 1 < lim and int(types[t].flags) & TF_HAS_VAR == 0: nesting_memo[t] = d + 1
     d + 1
 
 const MAX_TYPE_NESTING = 48

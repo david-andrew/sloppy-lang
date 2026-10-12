@@ -137,7 +137,28 @@ gl_compound_op = (op: Tok) -> Tok:
         minuseq: .minus
         stareq: .star
         slasheq: .slash
+        percenteq: .percent
+        ampeq: .amp
+        pipeeq: .pipe
+        careteq: .caret
+        shleq: .shl
+        shreq: .shr
         _: .plus
+
+# an assignment's target as GLSL, its indexes computed once beforehand (into temporaries
+# declared at pre) when they are more than a name or a number
+gl_temps = 0
+gl_target = (n: int, pre: str) -> str:
+    k = nodes[n].kind
+    if k == .index:
+        base = gl_target(int(nodes[n].a), pre)
+        ix = int(nodes[n].b)
+        if nodes[ix].kind == .ident or nodes[ix].kind == .int_lit: return "{base}[{gl_expr(ix)}]"
+        gl_temps += 1
+        gl_out.push("{pre}int sl_t{gl_temps} = {gl_expr(ix)};\n")
+        return "{base}[sl_t{gl_temps}]"
+    if k == .field and nodes[n].aux >= 0: return "{gl_target(int(nodes[n].a), pre)}.{name_of(int(nodes[n].name))}_"
+    gl_expr(n)
 
 gl_stmt = (s: int, depth: int):
     k = nodes[s].kind
@@ -154,10 +175,12 @@ gl_stmt = (s: int, depth: int):
         a = int(nodes[s].a)
         op = int(nodes[s].op)
         ta = prune(ntype(a))
-        if op != int(Tok.assign) and types[ta].kind == .int_ and (gl_unsigned(ta) or int(types[ta].bits) < 32):
-            # (x op= y as x = x op y: unsigned operations, wrapping to the type's range)
-            x = gl_expr(a)
-            gl_out.push("{pre}{x} = {gl_arith(gl_compound_op(op as Tok), x, gl_expr(int(nodes[s].b)), ta, ta)};\n")
+        bop = gl_compound_op(op as Tok)
+        native = (bop == .plus or bop == .minus or bop == .star or bop == .slash) and not (types[ta].kind == .int_ and (gl_unsigned(ta) or int(types[ta].bits) < 32))
+        if op != int(Tok.assign) and not native:
+            # (x op= y as x = x op y, x's indexes computed once: the operators the CPU's way)
+            x = gl_target(a, pre)
+            gl_out.push("{pre}{x} = {gl_arith(bop, x, gl_expr(int(nodes[s].b)), ta, ta)};\n")
         else: gl_out.push("{pre}{gl_expr(a)} {gl_assign_op(op)} {gl_expr(int(nodes[s].b))};\n")
     else if k == .exprstmt:
         e = int(nodes[s].a)
@@ -320,7 +343,18 @@ gl_expr = (e: int) -> str:
         id = nodes[e].aux as IN
         if id == .vec_ctor:
             parts: str[]
-            loop i in [0..nkids(e)): parts.push(gl_expr(kid(e, i)))
+            loop i in [0..nkids(e)):
+                a = kid(e, i)
+                at = prune(ntype(a))
+                if is_vec(at) and at != T_MAT4 and t != T_MAT4 and types[at].sign != types[t].sign:
+                    # (a vector of the other kind: each component converted as a scalar is)
+                    x = gl_expr(a)
+                    loop j in [0..int(types[at].bits)):
+                        sw = ["x", "y", "z", "w"]
+                        c = "{x}.{sw[j]}"
+                        if types[t].sign: parts.push(gl_float_to_int(c, T_I32))
+                        else: parts.push("float({c})")
+                else: parts.push(gl_expr(a))
             if t == T_MAT4 and nkids(e) == 0: return "mat4(1.0)"
             return "{gl_type(t, nodes[e].pos)}({join(parts, ", ")})"
         if id == .sqrt: return "sqrt({gl_expr(kid(e, 0))})"
@@ -378,6 +412,16 @@ gl_expr = (e: int) -> str:
 # x op y for operands of type ta, giving type t: unsigned integers divide, take remainders,
 # shift and compare as unsigned numbers; narrow ones wrap to their range, as on the CPU
 gl_arith = (op: Tok, x: str, y: str, ta: int, t: int) -> str:
+    if types[prune(ta)].kind == .bool_:
+        if op == .amp: return "({x} && {y})"
+        if op == .pipe: return "({x} || {y})"
+        if op == .caret: return "({x} != {y})"
+    if (op == .shl or op == .shr) and types[prune(ta)].kind == .int_:
+        # (as on the CPU: by the count's low 6 bits, and by 32 or more nothing is left)
+        gl_shift_decls()
+        if op == .shl: return gl_narrow("sl_shl({x}, {y})", t)
+        if gl_unsigned(ta): return "sl_shru({x}, {y})"
+        return "sl_shr({x}, {y})"
     # (% keeps the dividend's sign, as on the CPU: GLSL's mod() takes the divisor's, and its %
     # is undefined for negative numbers)
     if op == .percent and (is_float(ta) or is_vec(ta)): return "({x} - {y} * trunc({x} / {y}))"
@@ -391,6 +435,13 @@ gl_arith = (op: Tok, x: str, y: str, ta: int, t: int) -> str:
 gl_unsigned = (t0: int) -> bool:
     t = prune(t0)
     types[t].kind == .int_ and not types[t].sign
+
+gl_shift_decls = ():
+    if gl_done_structs.get(-3) != none: return
+    gl_done_structs[-3] = true
+    gl_decls.push("int sl_shl(int x, int c) \{\n    c &= 63;\n    return c >= 32 ? 0 : x << c;\n}\n")
+    gl_decls.push("int sl_shr(int x, int c) \{\n    c &= 63;\n    return c >= 32 ? x >> 31 : x >> c;\n}\n")
+    gl_decls.push("int sl_shru(int x, int c) \{\n    c &= 63;\n    return c >= 32 ? 0 : int(uint(x) >> uint(c));\n}\n")
 
 # x (32 bits) wrapped to the range of a narrower integer type t
 gl_narrow = (x: str, t0: int) -> str:
