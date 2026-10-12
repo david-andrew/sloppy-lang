@@ -708,8 +708,9 @@ tuple_off = (t: int, idx: int) -> int:
     off
 
 # ---------------- calls ----------------
-call_args = (args: int[], ptypes: int[], mutmask: int, out: mut int[]):
+call_args = (args: int[], ptypes: int[], mutmask: int, out: mut int[], callee: int = 0):
     any_mut = mutmask != 0
+    if any_mut: mut_alias_check(args, mutmask, callee)
     loop i in 0.. and a in args:
         if mutmask & (1 << i) != 0:
             p = gen_place(a, true)
@@ -718,9 +719,102 @@ call_args = (args: int[], ptypes: int[], mutmask: int, out: mut int[]):
         pt = ntype(a)
         if i < ptypes.len(): pt = ptypes[i]
         val = gen_expr(a)
-        if any_mut and not val.owned and is_managed(pt): val = own(val, pt)
+        if not val.owned and is_managed(pt) and (any_mut or borrow_may_change(a, args, i, callee)): val = own(val, pt)
         borrow(val, pt)
         out.push(val.v)
+
+# could the place argument i was read from (without a reference of its own) be given another
+# value before the call returns, by the callee or a later argument, freeing what was read? It
+# can for globals, variables closures share, captures and mut parameters; a plain local or
+# parameter cannot be reached from elsewhere (and a parameter's caller keeps its value alive).
+# Release builds leave out the reference to a global that neither the callee nor the later
+# arguments can change.
+borrow_may_change = (a: int, args: int[], i: int, callee: int) -> bool:
+    n = a
+    loop nodes[n].kind == .field or nodes[n].kind == .index:
+        if tkind(ntype(int(nodes[n].a))) == .ptr: return false
+        n = int(nodes[n].a)
+    if nodes[n].kind != .ident: return false
+    if nodes[n].aux == i32(int(SK.global)):
+        if not opt_release or callee <= 0: return true
+        w = fn_writes(callee)
+        if w.all or w.globals.contains(int(nodes[n].sym)): return true
+        loop j in [i + 1..args.len()):
+            if not calls_leave(args[j], n, false): return true
+        return false
+    if nodes[n].aux != i32(int(SK.local)): return false
+    int(locals[int(nodes[n].sym)].flags) & (LF_SHARED | LF_CAPTURE | LF_MUTPARAM | LF_BYREF | LF_ALIAS) != 0
+
+# A `mut` argument that is an element of an array or map (xs[i], xs[i].f) is written through
+# its address in the array's memory, which must not move or be shared while the call runs: the
+# same call may not be given the array itself, and a global array may not be one the callee
+# (or a later argument) can change. (Other elements, as in swap(xs[i], xs[j]), are fine.)
+mut_alias_check = (args: int[], mutmask: int, callee: int):
+    loop i in 0.. and a in args:
+        if mutmask & (1 << i) == 0: continue
+        r = elem_root(a)
+        if r == 0: continue
+        nm = name_of(int(nodes[r].name))
+        loop j in 0.. and b in args:
+            if j == i: continue
+            # (another element given as `mut` is fine; reading numbers out of the array too)
+            if mutmask & (1 << j) != 0 and elem_root(b) != 0: continue
+            w = write_root(b)
+            if (w != 0 and same_var(w, r) and is_managed(ntype(b))) or may_write_root(b, r):
+                fatal(nodes[b].pos, "{place_text(a)} is passed as a `mut` argument, so this argument cannot also hold or change '{nm}' (pass the index instead)")
+        glob = nodes[r].aux == i32(int(SK.global))
+        mutparam = not glob and int(locals[int(nodes[r].sym)].flags) & LF_MUTPARAM != 0
+        if glob or mutparam:
+            who = "the function called"
+            if callee > 0: who = "'{name_of(int(nodes[int(fns[callee].decl)].name))}'"
+            fw = FnWrites(true, [], [], [])
+            if callee > 0: fw = fn_writes(callee)
+            if fw.all or (glob and fw.globals.contains(int(nodes[r].sym))):
+                fatal(nodes[a].pos, "{who} may change the global '{nm}' (or call something that does), so {place_text(a)} cannot be passed to it as a `mut` argument (pass the index instead)")
+            if mutparam and fw.globals.len() > 0:
+                fatal(nodes[a].pos, "{who} changes globals, and '{nm}' (a `mut` parameter) may be one of them, so {place_text(a)} cannot be passed to it as a `mut` argument (pass the index instead)")
+
+# a place as written (xs[i].pos), for messages
+place_text = (n: int) -> str:
+    k = nodes[n].kind
+    if k == .ident: return name_of(int(nodes[n].name))
+    if k == .field: return "{place_text(int(nodes[n].a))}.{name_of(int(nodes[n].name))}"
+    if k == .unwrap: return "{place_text(int(nodes[n].a))}!"
+    if k == .index:
+        b = int(nodes[n].b)
+        i = "..."
+        if nodes[b].kind == .ident: i = name_of(int(nodes[b].name))
+        else if nodes[b].kind == .int_lit: i = "{nodes[b].ival}"
+        return "{place_text(int(nodes[n].a))}[{i}]"
+    "..."
+
+# the variable (ident node) whose array or map holds the element place n is in, or 0
+elem_root = (n0: int) -> int:
+    n = n0
+    heap = false
+    loop nodes[n].kind == .field or nodes[n].kind == .index or nodes[n].kind == .unwrap:
+        if nodes[n].kind == .index:
+            k = tkind(ntype(int(nodes[n].a)))
+            if k == .ptr: return 0
+            if k != .fixed and k != .vec: heap = true
+        n = int(nodes[n].a)
+    if heap and nodes[n].kind == .ident: return n
+    0
+
+# does expression n name the variable of ident node r?
+mentions_var = (n: int, r: int) -> bool:
+    if n <= 0: return false
+    if nodes[n].kind == .ident and same_var(n, r): return true
+    if nodes[n].kind == .lambda: return false
+    fs = [int(nodes[n].a), int(nodes[n].b), int(nodes[n].c), int(nodes[n].d)]
+    if nodes[n].kind == .for_: fs = [int(nodes[n].a), int(nodes[n].b)]
+    loop c in fs:
+        if mentions_var(c, r): return true
+    loop i in [0..nkids(n)):
+        if mentions_var(kid(n, i), r): return true
+    loop i in [0..nkids2(n)):
+        if mentions_var(kid2(n, i), r): return true
+    false
 
 ret_vt = (t: int) -> int:
     c = vc(t)
@@ -748,13 +842,34 @@ inst_mutmask = (f: int) -> int:
 # must not change the variables it captured, or globals -- also not in the functions it calls.
 race_done: {int: bool} = {}     # named functions known not to change globals
 
-race_check = (callee: int, args: int[]):
+race_check = (callee: int, args: int[], pos: int):
+    # (the library's own calls take care of threads themselves)
+    if in_lib(pos): return
     who = name_of(int(nodes[int(fns[callee].decl)].name))
     loop a in args:
-        if tkind(ntype(a)) != .fn_: continue
-        k = nodes[a].kind
-        if k == .lambda: race_scan(int(fns[int(nodes[a].sym)].body), int(nodes[a].sym), who, true)
-        else if k == .fnref: race_named(int(nodes[a].sym), who)
+        if tkind(ntype(a)) == .fn_: race_arg(a, who)
+
+# the function value a: the compiler must see which function it is, to check it
+race_arg = (a: int, who: str):
+    k = nodes[a].kind
+    if k == .conv: race_arg(int(nodes[a].a), who)
+    else if k == .lambda: race_scan(int(fns[int(nodes[a].sym)].body), int(nodes[a].sym), who, true)
+    else if k == .fnref: race_named(int(nodes[a].sym), who)
+    else if k == .partial:
+        if nodes[a].aux == 1: race_arg(int(nodes[a].a), who)
+        else: race_named(int(nodes[a].sym), who)
+    else:
+        # (a @parallel function may pass on the functions it is given: its callers are checked)
+        param = k == .ident and nodes[a].aux == i32(int(SK.local)) and int(locals[int(nodes[a].sym)].owner) == cur_fn and int(locals[int(nodes[a].sym)].flags) & LF_PARAM != 0
+        if param and fns[cur_fn].parallel: return
+        hint = ""
+        if param: hint = ", or mark '{name_of(int(nodes[int(fns[cur_fn].decl)].name))}' @parallel so that the functions given to it are checked"
+        fatal(nodes[a].pos, "{who} runs this function on many threads at once, so the compiler checks it for data races, which it can only do for a function it can see: pass a function by name or a lambda{hint}")
+
+# is position pos in the library (lib_dir)?
+in_lib = (pos: int) -> bool:
+    fi = pos_file(pos)
+    fi >= 0 and fi < files.len() and starts_with(files[fi].path, lib_dir + "/")
 
 race_named = (f: int, who: str):
     if race_done.contains(f) or fns[f].body == 0: return
@@ -762,7 +877,7 @@ race_named = (f: int, who: str):
     # (the core and standard libraries take care of threads themselves)
     if fns[f].decl != 0:
         fi = pos_file(int(nodes[int(fns[f].decl)].pos))
-        if fi >= 0 and fi < files.len() and (find(files[fi].path, "/lib/core/") >= 0 or find(files[fi].path, "/lib/std/") >= 0): return
+        if fi >= 0 and fi < files.len() and starts_with(files[fi].path, lib_dir + "/") and (find(files[fi].path, "/core/") >= 0 or find(files[fi].path, "/std/") >= 0): return
     race_scan(int(fns[f].body), f, who, false)
 
 # a place that changes: the variable it belongs to, if that is shared with other threads
@@ -793,7 +908,11 @@ race_scan = (n: int, f: int, who: str, captures: bool):
     else if k == .call:
         loop i in [0..nkids(n)):
             if has_flag(kid(n, i), NF_MUT): race_target(kid(n, i), f, who, captures, nodes[kid(n, i)].pos)
-        if nodes[n].aux == 0 and nodes[n].sym > 0: race_named(int(nodes[n].sym), who)
+        aux = int(nodes[n].aux)
+        if aux == 0 and nodes[n].sym > 0: race_named(int(nodes[n].sym), who)
+        # (calling a function value: which one, the compiler cannot tell; the library's are its own)
+        else if aux == 1 and not in_lib(nodes[n].pos):
+            fatal(nodes[n].pos, "{who} runs this code on many threads at once, so the compiler checks it for data races, which it cannot do through a call of a function value: call a function by name")
     else if k == .for_ and has_flag(n, NF_MUT): race_target(int(nodes[n].a), f, who, captures, nodes[n].pos)
     race_scan(int(nodes[n].a), f, who, captures)
     race_scan(int(nodes[n].b), f, who, captures)
@@ -810,7 +929,7 @@ gen_direct_call = (f: int, args: int[]) -> Val:
     if vc(ret) == VC_AGG:
         rslot = new_temp(ret)
         argv.push(e_slot(rslot))
-    call_args(args, fns[f].ptypes, inst_mutmask(f), argv)
+    call_args(args, fns[f].ptypes, inst_mutmask(f), argv, f)
     rv = e_call(lf_of_inst(f), argv, ret_vt(ret))
     finish_call(ret, rv, rslot)
 
@@ -2098,7 +2217,7 @@ gen_expr = (e: int) -> Val:
         ir_set_pos(nodes[e].pos)
         aux = int(nodes[e].aux)
         if aux == 0:
-            if fns[int(nodes[e].sym)].parallel: race_check(int(nodes[e].sym), kids(e))
+            if fns[int(nodes[e].sym)].parallel: race_check(int(nodes[e].sym), kids(e), nodes[e].pos)
             r = gen_direct_call(int(nodes[e].sym), kids(e))
             if vc(t) == VC_VOID: return V(-1, false)
             return r

@@ -158,10 +158,8 @@ precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests mem
 Every type in Sloppy is a *value*: assignment copies. Arrays, strings and maps are
 reference counted with copy-on-write, so copies are O(1) and a real copy only
 happens when you mutate something that is shared. There are no reference types,
-so reference cycles (and leaks) do not happen, and there is no garbage collector. (Two ways
-around that remain: raw pointers, and a function that stores a copy of an array into an element
-of that same array which it is changing through a `mut` parameter, as in
-`attach(nodes[0], nodes)` with `attach = (n: mut Node, all: Node[]): n.children = all`.)
+so reference cycles (and leaks) do not happen, and there is no garbage collector (raw pointers
+are the way around that).
 
 ```gdscript
 a = [1, 2, 3]
@@ -177,6 +175,12 @@ Mark a parameter `mut` to let the function modify the caller's variable:
 grow = (xs: mut int[]): xs.push(0)
 grow(nums)
 ```
+
+An element passed as `mut` (`hit(enemies[i])`) is changed where it is, in the array: while the
+call runs, nothing else may hold or change that array, so the same call cannot also be given
+the array (`attach(nodes[0], nodes)`), and a global array cannot be one the function changes,
+itself or in a function it calls. The compiler says so; pass the index instead. Other elements
+of the array are fine: `swap(xs[i], xs[j])`.
 
 To modify array elements in a loop, use `loop mut`:
 
@@ -699,9 +703,19 @@ rows = parallel_range(height, (y): render_row(y))     # [loop i in [0..n): f(i)]
 
 The function runs on many threads at once: it may read anything, but it must not change
 globals or the variables it captured (that would be a data race). Return results instead. The
-compiler checks this, also in the functions it calls, and names the variable. (Writing through a
-raw pointer is left to the program: it is how disjoint parts of one buffer are filled in parallel.)
-Web builds run the same code on one thread.
+compiler checks this, also in the functions it calls, and names the variable, so it must see
+which function runs: give a function by name, a lambda or a partial application (`f(k, _)`), not
+a function kept in a variable, and call functions by name inside it. A function of your own
+that hands the function it is given on to these helpers is marked `@parallel`, and then what its
+callers give it is checked:
+
+```gdscript
+@parallel
+each_row = (f: (int) -> Row) -> Row[]: parallel_range(height, f)
+```
+
+(Writing through a raw pointer is left to the program: it is how disjoint parts of one buffer are
+filled in parallel.) Web builds run the same code on one thread.
 
 ## 12. Programs and the game loop
 

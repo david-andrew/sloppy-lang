@@ -47,6 +47,18 @@ Website and install:
   functions (`print`, `push`, `pop`, `fill`, `embed`...), which were missing.
 
 Language:
+- An argument read from a global, a variable closures share or a capture stays alive through
+  the call, even if the callee (or a later argument) gives that variable another value; it
+  used to be freed under the callee. (Release builds leave the reference out where the callee
+  cannot change that global.)
+- An element passed as `mut` (`hit(enemies[i])`) is written where it is, so while the call runs
+  nothing may move or share its array: the same call can no longer also be given the array
+  (`attach(nodes[0], nodes)`), and a global array cannot be passed this way to a function that
+  may change it. The compiler says so; before, the write could be lost or land in a copy.
+- The data race check of `parallel_map` and the others now also covers partial applications
+  (`f(k, _)`), calls of function values inside the function, and `__parallel_run`; a function
+  kept in a variable is refused, since the compiler cannot see which it is. A function that
+  hands the function it is given on to them is marked `@parallel`, and its callers are checked.
 - Float to integer conversions saturate at the range of the type converted to (`u8(300.0)` is
   255, `i8(-200.0)` is -128, `u64(-1.0)` is 0); before, only `int` did.
 - Signed division wraps like the rest of integer arithmetic: the smallest integer `/ -1` is
