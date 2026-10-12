@@ -1,0 +1,366 @@
+# macOS windows (window.jo's platform functions): an NSWindow, made and run through the
+# Objective-C runtime's C functions (objc_msgSend, declared once per kind of call). Frames are
+# drawn by the software renderer and shown as the contents of the window view's layer.
+#
+# Events are taken from the application's queue each frame (the program keeps its own loop, so
+# NSApplication's run is never called). Struct results (a view's frame, the pointer's place)
+# come through key-value coding, which boxes them in an NSValue: objc_msgSend's struct results
+# are not C functions' scalars.
+
+when TARGET == "macos":
+    @lib("/usr/lib/libobjc.A.dylib")
+    extern objc_getClass = (name: *u8) -> *u8
+    @lib("/usr/lib/libobjc.A.dylib")
+    extern sel_registerName = (name: *u8) -> *u8
+    @lib("/usr/lib/libobjc.A.dylib")
+    extern objc_autoreleasePoolPush = () -> *u8
+    @lib("/usr/lib/libobjc.A.dylib")
+    extern objc_autoreleasePoolPop = (pool: *u8)
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __oc = (o: *u8, s: *u8) -> *u8
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __oc_p = (o: *u8, s: *u8, a: *u8) -> *u8
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __oc_pp = (o: *u8, s: *u8, a: *u8, b: *u8) -> *u8
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __oc_i = (o: *u8, s: *u8, a: int) -> *u8
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __oc_int = (o: *u8, s: *u8) -> int
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __oc_f = (o: *u8, s: *u8) -> f64
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __oc_pi = (o: *u8, s: *u8, a: *u8, n: int)
+    # (initWithContentRect:styleMask:backing:defer:, the rectangle as four doubles)
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __oc_rect = (o: *u8, s: *u8, x: f64, y: f64, w: f64, h: f64, style: int, backing: int, later: int) -> *u8
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __oc_size = (o: *u8, s: *u8, w: f64, h: f64)
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __oc_event = (o: *u8, s: *u8, mask: int, until: *u8, mode: *u8, dequeue: int) -> *u8
+
+    @lib("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    extern CGColorSpaceCreateDeviceRGB = () -> *u8
+    @lib("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    extern CGDataProviderCreateWithCFData = (d: *u8) -> *u8
+    @lib("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    extern CGDataProviderRelease = (p: *u8)
+    @lib("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    extern CGImageCreate = (w: int, h: int, bpc: int, bpp: int, stride: int, cs: *u8, info: u32, provider: *u8, decode: *u8, interpolate: int, intent: int) -> *u8
+    @lib("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    extern CGImageRelease = (img: *u8)
+    @lib("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    extern CGAssociateMouseAndMouseCursorPosition = (on: i32) -> i32
+    @lib("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    extern CFDataCreate = (alloc: *u8, p: *u8, n: int) -> *u8
+    @lib("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    extern CFRelease = (x: *u8)
+
+    __ns_app: *u8 = null
+    __ns_win: *u8 = null
+    __ns_view: *u8 = null
+    __ns_mode: *u8 = null
+    __ns_cs: *u8 = null
+    __ns_pixels: u8[]
+    __ns_locked = false
+    __ns_flags = 0
+    __ns_val = fill(0.0, 4)
+    __ns_sels: {str: *u8} = {}
+    __ns_strs: {str: *u8} = {}
+
+    __cls = (name: str) -> *u8: objc_getClass(data(__zstr(name)))
+    __sel = (name: str) -> *u8:
+        if let s = __ns_sels.get(name): return s
+        s = sel_registerName(data(__zstr(name)))
+        __ns_sels[name] = s
+        s
+
+    # an NSString (kept: made once for each text)
+    __nsstr = (s: str) -> *u8:
+        if let p = __ns_strs.get(s): return p
+        p = __oc_p(__oc(__cls("NSString"), __sel("alloc")), __sel("initWithUTF8String:"), data(__zstr(s)))
+        __ns_strs[s] = p
+        p
+
+    # a struct property (NSRect, NSPoint) of o, through key-value coding: into __ns_val
+    __ns_struct = (o: *u8, key: str, size: int):
+        v = __oc_p(o, __sel("valueForKey:"), __nsstr(key))
+        if v != null: __oc_pi(v, __sel("getValue:size:"), data(__ns_val) as *u8, size)
+
+    __need = (ok: bool, what: str):
+        if not ok:
+            eprint("error: cannot open a window: {what}")
+            exit(1)
+
+    __platform_open = ():
+        __soft = true
+        pool = objc_autoreleasePoolPush()
+        __need(dl_open("/System/Library/Frameworks/AppKit.framework/AppKit") != null, "AppKit is missing")
+        __ns_app = __oc(__cls("NSApplication"), __sel("sharedApplication"))
+        __oc_i(__ns_app, __sel("setActivationPolicy:"), 0)                  # regular: a Dock icon, a menu bar
+        # titled, closable, miniaturizable, resizable; buffered
+        w = __oc(__cls("NSWindow"), __sel("alloc"))
+        __ns_win = __oc_rect(w, __sel("initWithContentRect:styleMask:backing:defer:"), 0.0, 0.0, f64(__win_w), f64(__win_h), 15, 2, 0)
+        __need(__ns_win != null, "NSWindow failed")
+        __oc_i(__ns_win, __sel("setReleasedWhenClosed:"), 0)
+        __oc_p(__ns_win, __sel("setTitle:"), __nsstr(__win_title))
+        __oc_i(__ns_win, __sel("setAcceptsMouseMovedEvents:"), 1)
+        __oc(__ns_win, __sel("center"))
+        __ns_view = __oc(__ns_win, __sel("contentView"))
+        __oc_i(__ns_view, __sel("setWantsLayer:"), 1)
+        __oc_p(__ns_win, __sel("makeKeyAndOrderFront:"), null)
+        __oc(__ns_app, __sel("finishLaunching"))
+        __oc_i(__ns_app, __sel("activateIgnoringOtherApps:"), 1)
+        __ns_mode = __nsstr("kCFRunLoopDefaultMode")
+        __ns_cs = CGColorSpaceCreateDeviceRGB()
+        objc_autoreleasePoolPop(pool)
+        # (screenshot runs keep the size asked for)
+        if env("SLOPPY_SCREENSHOT") == none: __ns_size()
+        __sw_init_window(__win_w, __win_h)
+
+    # the view's size, in points
+    __ns_size = ():
+        __ns_struct(__ns_view, "frame", 32)
+        w = int(__ns_val[2])
+        h = int(__ns_val[3])
+        if w > 0 and h > 0:
+            __win_w = w
+            __win_h = h
+
+    __platform_title = ():
+        if __ns_win != null: __oc_p(__ns_win, __sel("setTitle:"), __nsstr(__win_title))
+
+    __platform_poll = ():
+        if __ns_win == null: return
+        pool = objc_autoreleasePoolPush()
+        past = __oc(__cls("NSDate"), __sel("distantPast"))
+        loop true:
+            ev = __oc_event(__ns_app, __sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), -1, past, __ns_mode, 1)
+            if ev == null: break
+            if not __ns_event(ev): __oc_p(__ns_app, __sel("sendEvent:"), ev)
+        __oc(__ns_app, __sel("updateWindows"))
+        # (closed with its button; a window in the Dock is still the game's)
+        if __oc_int(__ns_win, __sel("isVisible")) & 255 == 0 and __oc_int(__ns_win, __sel("isMiniaturized")) & 255 == 0: __win_close = true
+        if env("SLOPPY_SCREENSHOT") == none: __ns_size()
+        # the pointer, from the bottom left of the view in points
+        __ns_struct(__ns_win, "mouseLocationOutsideOfEventStream", 16)
+        x = __ns_val[0]
+        y = f64(__win_h) - __ns_val[1]
+        if not __ns_locked:
+            __mouse_dx += x - __mouse_x
+            __mouse_dy += y - __mouse_y
+        __mouse_x = x
+        __mouse_y = y
+        objc_autoreleasePoolPop(pool)
+
+    # an event the game takes (true), or one for the application (its window's buttons, moving
+    # and resizing it)
+    __ns_event = (ev: *u8) -> bool:
+        t = __oc_int(ev, __sel("type")) & 0xFFFFFFFF
+        if t == 10 or t == 11:                                          # key down, up
+            code = __oc_int(ev, __sel("keyCode")) & 0xFFFF
+            flags = __oc_int(ev, __sel("modifierFlags"))
+            # (command-Q quits; other command keys are the system's)
+            if flags & (1 << 20) != 0:
+                if t == 10 and code == 0x0C: __win_close = true
+                return false
+            down = t == 10
+            k = __ns_key(code)
+            if k > 0: __key_event(k, down, down and __oc_int(ev, __sel("isARepeat")) & 255 != 0)
+            if down:
+                cs = __oc(ev, __sel("characters"))
+                if cs != null:
+                    s = __cstr(__oc(cs, __sel("UTF8String")))
+                    # (no control characters, nor the private-use ones of function keys)
+                    if len(s) > 0 and s[0] >= 32 and s[0] != 127 and not (s[0] == 0xEF and len(s) > 1 and s[1] >= 0x9C and s[1] <= 0xA3): __text_input += s
+            return true
+        if t == 12:                                                     # modifier keys
+            flags = __oc_int(ev, __sel("modifierFlags"))
+            loop bit in 0.. and k in [Key.shift, Key.ctrl, Key.alt, Key.super]:
+                m = 1 << (17 + bit)
+                if (flags & m != 0) != (__ns_flags & m != 0): __key_event(int(k), flags & m != 0)
+            __ns_flags = flags
+            return true
+        # mouse buttons, in the view only (the title bar is the window's)
+        if t == 1 or t == 2 or t == 3 or t == 4 or t == 25 or t == 26:
+            if __mouse_y < 0.0 and (t == 1 or t == 3 or t == 25): return false
+            b = 0
+            if t == 3 or t == 4: b = 2
+            if t == 25 or t == 26: b = 1
+            __mouse_event(b, t == 1 or t == 3 or t == 25)
+            return t != 1 and t != 2
+        if t == 5 or t == 6 or t == 7 or t == 27:                       # pointer motion
+            if __ns_locked:
+                __mouse_dx += __oc_f(ev, __sel("deltaX"))
+                __mouse_dy += __oc_f(ev, __sel("deltaY"))
+            return false
+        if t == 22:                                                     # scroll wheel
+            d = __oc_f(ev, __sel("scrollingDeltaY"))
+            # (trackpads give points, wheels lines)
+            if __oc_int(ev, __sel("hasPreciseScrollingDeltas")) & 255 != 0: d = d / 10.0
+            __mouse_wheel += d
+            return true
+        false
+
+    __ns_key = (c: int) -> int:
+        match c:
+            0x00: int(Key.a)
+            0x0B: int(Key.b)
+            0x08: int(Key.c)
+            0x02: int(Key.d)
+            0x0E: int(Key.e)
+            0x03: int(Key.f)
+            0x05: int(Key.g)
+            0x04: int(Key.h)
+            0x22: int(Key.i)
+            0x26: int(Key.j)
+            0x28: int(Key.k)
+            0x25: int(Key.l)
+            0x2E: int(Key.m)
+            0x2D: int(Key.n)
+            0x1F: int(Key.o)
+            0x23: int(Key.p)
+            0x0C: int(Key.q)
+            0x0F: int(Key.r)
+            0x01: int(Key.s)
+            0x11: int(Key.t)
+            0x20: int(Key.u)
+            0x09: int(Key.v)
+            0x0D: int(Key.w)
+            0x07: int(Key.x)
+            0x10: int(Key.y)
+            0x06: int(Key.z)
+            0x1D: int(Key.n0)
+            0x12: int(Key.n1)
+            0x13: int(Key.n2)
+            0x14: int(Key.n3)
+            0x15: int(Key.n4)
+            0x17: int(Key.n5)
+            0x16: int(Key.n6)
+            0x1A: int(Key.n7)
+            0x1C: int(Key.n8)
+            0x19: int(Key.n9)
+            0x31: int(Key.space)
+            0x24, 0x4C: int(Key.enter)
+            0x35: int(Key.escape)
+            0x30: int(Key.tab)
+            0x33: int(Key.backspace)
+            0x75: int(Key.delete)
+            0x72: int(Key.insert)
+            0x73: int(Key.home)
+            0x77: int(Key.end)
+            0x74: int(Key.page_up)
+            0x79: int(Key.page_down)
+            0x7B: int(Key.left)
+            0x7C: int(Key.right)
+            0x7E: int(Key.up)
+            0x7D: int(Key.down)
+            0x7A: int(Key.f1)
+            0x78: int(Key.f2)
+            0x63: int(Key.f3)
+            0x76: int(Key.f4)
+            0x60: int(Key.f5)
+            0x61: int(Key.f6)
+            0x62: int(Key.f7)
+            0x64: int(Key.f8)
+            0x65: int(Key.f9)
+            0x6D: int(Key.f10)
+            0x67: int(Key.f11)
+            0x6F: int(Key.f12)
+            0x1B: int(Key.minus)
+            0x18: int(Key.equals)
+            0x2B: int(Key.comma)
+            0x2F: int(Key.period)
+            0x2C: int(Key.slash)
+            0x29: int(Key.semicolon)
+            0x27: int(Key.quote)
+            0x21: int(Key.lbracket)
+            0x1E: int(Key.rbracket)
+            0x2A: int(Key.backslash)
+            0x32: int(Key.grave)
+            _: 0
+
+    # the software renderer's frame, as the view layer's contents (CGImage of BGRA pixels)
+    __platform_present = ():
+        if __ns_view == null: return
+        w = __win_w
+        h = __win_h
+        if __ns_pixels.len() != w * h * 4: __ns_pixels = fill(u8(0), w * h * 4)
+        __sw_present_pixels(data(__ns_pixels), w, h)
+        pool = objc_autoreleasePoolPush()
+        d = CFDataCreate(null, data(__ns_pixels), w * h * 4)
+        prov = CGDataProviderCreateWithCFData(d)
+        img = CGImageCreate(w, h, 8, 32, w * 4, __ns_cs, u32(0x2006), prov, null, 0, 0)    # little-endian, no alpha first: BGRX
+        layer = __oc(__ns_view, __sel("layer"))
+        if layer != null and img != null: __oc_p(layer, __sel("setContents:"), img)
+        __oc(__cls("CATransaction"), __sel("flush"))
+        if img != null: CGImageRelease(img)
+        CGDataProviderRelease(prov)
+        CFRelease(d)
+        objc_autoreleasePoolPop(pool)
+
+    __platform_fullscreen = (on: bool):
+        if __ns_win == null: return
+        full = __oc_int(__ns_win, __sel("styleMask")) & (1 << 14) != 0
+        if full != on: __oc_p(__ns_win, __sel("toggleFullScreen:"), null)
+
+    # mouse look: the pointer hidden and held still, motion from the events' deltas
+    __platform_mouse_lock = (on: bool) -> bool:
+        if __ns_win == null: return false
+        if on == __ns_locked: return true
+        CGAssociateMouseAndMouseCursorPosition(i32(int(not on)))
+        if on: __oc(__cls("NSCursor"), __sel("hide"))
+        else: __oc(__cls("NSCursor"), __sel("unhide"))
+        __ns_locked = on
+        true
+
+    __platform_mouse_locked = () -> bool: __ns_locked
+
+    __platform_clipboard = () -> str:
+        pool = objc_autoreleasePoolPush()
+        pb = __oc(__cls("NSPasteboard"), __sel("generalPasteboard"))
+        s = __oc_p(pb, __sel("stringForType:"), __nsstr("public.utf8-plain-text"))
+        out = ""
+        if s != null: out = __cstr(__oc(s, __sel("UTF8String")))
+        objc_autoreleasePoolPop(pool)
+        out
+
+    __platform_set_clipboard = (s: str):
+        pool = objc_autoreleasePoolPush()
+        pb = __oc(__cls("NSPasteboard"), __sel("generalPasteboard"))
+        __oc(pb, __sel("clearContents"))
+        ns = __oc_p(__oc(__cls("NSString"), __sel("alloc")), __sel("initWithUTF8String:"), data(__zstr(s)))
+        __oc_pp(pb, __sel("setString:forType:"), ns, __nsstr("public.utf8-plain-text"))
+        __oc(ns, __sel("release"))
+        objc_autoreleasePoolPop(pool)
+
+    __game_run = (update: (f64) -> void, draw: () -> void):
+        window(__win_title, __win_w, __win_h)
+        __fixed_step = env("SLOPPY_SCREENSHOT") != none
+        last = time()
+        loop not __win_close:
+            __platform_poll()
+            now = time()
+            dt = clamp(now - last, 0.0, 0.1)
+            last = now
+            if __fixed_step: dt = 1.0 / 60.0
+            __sw_init_window(__win_w, __win_h)
+            __run_frame(dt, update, draw)
+            t0 = time()
+            __platform_present()
+            __last_present = time() - t0
+            __frame_present += __last_present
+            # (software frames are paced to 60 per second)
+            if not __fixed_step:
+                left = 1.0 / 60.0 - (time() - now)
+                if left > 0.0: sleep(left)
+        exit(0)

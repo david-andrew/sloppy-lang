@@ -378,6 +378,70 @@ else when TARGET == "windows":
             mem_copy((data(__wo_data) + i * __WO_FRAMES * 2) as *u8, data(__mix_buf) as *u8, __WO_FRAMES * 8)
             ((hd + 24) as *u32)[0] = ((hd + 24) as *u32)[0] & ~1
             waveOutWrite(__wo, hd, 48)
+else when TARGET == "macos":
+    # an AudioQueue of a few float buffers: its callback (on the queue's own thread) only marks a
+    # buffer played; the game's thread mixes into it and queues it again
+    @lib("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")
+    extern AudioQueueNewOutput = (fmt: *u8, cb: *u8, user: *u8, runloop: *u8, mode: *u8, flags: u32, q: **u8) -> i32
+    @lib("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")
+    extern AudioQueueAllocateBuffer = (q: *u8, size: u32, buf: **u8) -> i32
+    @lib("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")
+    extern AudioQueueEnqueueBuffer = (q: *u8, buf: *u8, n: u32, descs: *u8) -> i32
+    @lib("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")
+    extern AudioQueueStart = (q: *u8, at: *u8) -> i32
+
+    const __AQ_BUFS = 4
+    const __AQ_FRAMES = 1024          # (21 ms each)
+    __aq: *u8 = null
+    __aq_bufs: *u8[]
+    __aq_free: *int = null            # (1: played, to be filled; written by the callback)
+
+    # (AudioQueueBuffer: the samples at 8, their size at 16, user data -- its number -- at 24)
+    @cabi
+    __aq_done = (user: *u8, q: *u8, buf: *u8):
+        k = ((buf + 24) as *int)[0]
+        if k >= 0 and k < __AQ_BUFS: __atomic_add(__aq_free + k, 1)
+
+    __audio_start = ():
+        if __audio_state != 0: return
+        __audio_state = 2
+        if env("SLOPPY_NO_AUDIO") != none: return
+        # (AudioStreamBasicDescription: 48 kHz linear PCM, packed float, stereo)
+        fmt = fill(u8(0), 40)
+        p = data(fmt)
+        (p as *f64)[0] = f64(MIX_RATE)
+        ((p + 8) as *u32)[0] = u32(0x6C70636D)               # 'lpcm'
+        ((p + 12) as *u32)[0] = 9                           # float, packed
+        ((p + 16) as *u32)[0] = 8                           # bytes per packet
+        ((p + 20) as *u32)[0] = 1                           # frames per packet
+        ((p + 24) as *u32)[0] = 8                           # bytes per frame
+        ((p + 28) as *u32)[0] = 2                           # channels
+        ((p + 32) as *u32)[0] = 32                          # bits per channel
+        cb: cfn(*u8, *u8, *u8) = __aq_done
+        q: *u8 = null
+        if AudioQueueNewOutput(p, cb as *u8, null, null, null, 0, &q) != 0 or q == null: return
+        __aq = q
+        __aq_free = __alloc(8 * __AQ_BUFS) as *int
+        loop i in [0..__AQ_BUFS):
+            b: *u8 = null
+            if AudioQueueAllocateBuffer(q, u32(__AQ_FRAMES * 8), &b) != 0: return
+            ((b + 24) as *int)[0] = i
+            __aq_bufs.push(b)
+            __aq_free[i] = 1
+        __audio_state = 1
+        __audio_update()
+        AudioQueueStart(q, null)
+
+    __audio_update = ():
+        if __audio_state != 1: return
+        loop i in [0..__AQ_BUFS):
+            if __atomic_add(__aq_free + i, 0) == 0: continue          # still queued
+            __aq_free[i] = 0
+            b = __aq_bufs[i]
+            __mix(__AQ_FRAMES)
+            mem_copy(((b + 8) as **u8)[0], data(__mix_buf) as *u8, __AQ_FRAMES * 8)
+            ((b + 16) as *u32)[0] = u32(__AQ_FRAMES * 8)
+            AudioQueueEnqueueBuffer(__aq, b, 0, null)
 else:
     @lib("libasound.so.2")
     extern snd_pcm_open = (pcm: **u8, name: *u8, stream: i32, mode: i32) -> i32
