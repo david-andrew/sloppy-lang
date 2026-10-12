@@ -461,6 +461,7 @@ a_syscall = (ins: Ins):
     n = int(ins.b)
     nv = int(ir.args[a])
     if vloc[nv] != LOC_CONST: ice("arm64: a system call number must be a constant")
+    if target_macos: ice("macOS: {lfuncs[ir.fn_index].name} makes Linux system call {vcval[nv]} (the library has no macOS version of it yet)")
     sn, how = a_sys(vcval[nv])
     if sn < 0: ice("arm64: system call {vcval[nv]} is not translated (see a_sys in compiler/arm64.jo)")
     regs: int[]
@@ -972,6 +973,31 @@ arm64_entry = (inits: int[], main_lf: int) -> int:
     a_mov_imm(8, 94)                                            # exit_group
     a_svc()
     elf_syms.push(("_start", start, code.len() - start))
+    start
+
+# macOS: dyld calls the entry point as main(argc, argv, envp), with argv just after argc on the
+# stack, so data's first word gets argv - 8 (what the library reads as Linux's stack pointer)
+arm64_entry_mac = (inits: int[], main_lf: int) -> int:
+    start = code.len()
+    line_rows.push(code.len())
+    line_rows.push(0)
+    row_pos = 0
+    row_line = 0
+    w32(0xA9BF7BFD)                                             # stp x29, x30, [sp, #-16]!
+    w32(0x910003FD)                                             # mov x29, sp
+    a_sub_imm(9, 1, 8)
+    a_adr_data(10, 1, 0)
+    a_str(9, 10, 0)
+    loop f in inits:
+        a_call_fix.push((code.len(), f))
+        a_bl()
+    if main_lf >= 0:
+        a_call_fix.push((code.len(), main_lf))
+        a_bl()
+    a_movz(0, 0, 0)
+    w32(0xA8C17BFD)                                             # ldp x29, x30, [sp], #16
+    a_ret()
+    elf_syms.push(("_main", start, code.len() - start))
     start
 
 arm64_resolve = (text_addr: int, ro_addr: int, data_addr: int):

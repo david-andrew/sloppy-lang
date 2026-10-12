@@ -2048,6 +2048,10 @@ gen_intrinsic = (e: int) -> Val:
         if target_windows: fatal(nodes[e].pos, "syscall() is Linux's: a Windows program calls the system's DLL functions (lib/core/windows.jo)")
         vs: int[]
         loop a in args: vs.push(gen_expr(a).v)
+        # (macOS: done with libSystem's functions, lib/core/macos.jo)
+        if target_macos:
+            loop vs.len() < 7: vs.push(e_iconst(0))
+            return V(e_call(rt("__mac_syscall"), vs, VI), false)
         start = ir.args.len()
         loop v in vs: ir.args.push(i32(v))
         d = vreg(VI)
@@ -2100,6 +2104,10 @@ gen_intrinsic = (e: int) -> Val:
     if id == .setjmp or id == .longjmp or id == .jump or id == .clone_thread or id == .atomic_add or id == .atomic_cas or id == .stack_ptr or id == .cpu_features:
         vs: int[]
         loop a in args: vs.push(gen_expr(a).v)
+        # (macOS: done with libSystem's functions, lib/core/macos.jo)
+        if target_macos:
+            loop vs.len() < 7: vs.push(e_iconst(0))
+            return V(e_call(rt("__mac_syscall"), vs, VI), false)
         start = ir.args.len()
         loop v in vs: ir.args.push(i32(v))
         d = vreg(VI)
@@ -4579,6 +4587,10 @@ lower_helper = (lf: int):
         envdrop: helper_envdrop(h.inst)
 
 # native FFI: a thunk that resolves the C function on first use and calls it
+# macOS: the C functions dyld puts in their slots when the program starts: (slot's offset in the
+# data, library, symbol) -- compiler/macho.jo writes them as binds
+mac_imports: (int, str, str)[]
+
 lower_extern_thunk = (lf: int, f: int):
     begin_fn(fns[f].sym, lf)
     lib = fns[f].clib
@@ -4604,6 +4616,13 @@ lower_extern_thunk = (lf: int, f: int):
     if imp >= 0:
         # (one of the functions the program imports: from the import table, compiler/pe.jo)
         emit(.intr, VI, fp, 0, 0, i32(imp), 10)
+    else if target_macos:
+        # (dyld has put it in the slot, or null where its library is missing)
+        mac_imports.push((slot, lib, nm))
+        e_mov(fp, e_load(VI, e_gaddr(slot), 0, 8))
+        iff(e_bin(.eq, VI, fp, e_iconst(0)))
+        e_call(rt("__ffi_missing"), [e_daddr(str_data(lib)), e_daddr(str_data(nm))], -1)
+        endc()
     else:
         e_mov(fp, e_load(VI, e_gaddr(slot), 0, 8))
         iff(e_bin(.eq, VI, fp, e_iconst(0)))
