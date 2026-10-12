@@ -102,6 +102,7 @@ struct FnInst:
     fntype: i32
     cabi: bool
     parallel: bool      # @parallel: the functions it is given run on many threads at once
+    gdepth: i32         # generic instances: how many were being checked, one inside the other, when it was made
     export_name: str
     aux_void: bool
     clib: str
@@ -856,9 +857,13 @@ get_fn_inst = (decl: int, targs: int[], use_pos: int) -> int:
         z = zonk(t)
         if has_var(prune(z)): fatal(use_pos, "cannot infer the type of an argument to '{name_of(int(nodes[decl].name))}' ({type_str(z)}); add a type annotation")
         # (a generic function that calls itself with bigger type arguments would expand without end)
-        if decl_infos[di].insts.len() >= 16 and type_nesting(z, 2 * MAX_TYPE_NESTING + 1) > 2 * MAX_TYPE_NESTING: fatal(use_pos, "the generic function '{name_of(int(nodes[decl].name))}' expands without end: it is called with ever bigger types (nesting more than {2 * MAX_TYPE_NESTING} deep)")
         zt.push(z)
     fns[f].targs = zt
+    # (made while checking another generic instance: one more link of a chain of them, which a
+    # function calling itself with ever bigger types makes without end)
+    if cx >= 0 and int(ctxs[cx].inst) > 0 and fns[int(ctxs[cx].inst)].targs.len() > 0:
+        fns[f].gdepth = fns[int(ctxs[cx].inst)].gdepth + 1
+        if fns[f].gdepth > 500: fatal(use_pos, "the generic function '{name_of(int(nodes[decl].name))}' expands without end: generic functions call each other with ever new types (more than 500 deep)")
     loop i in [0..nkids(decl)): fns[f].ptypes.push(subst(sig.params[i], zt))
     if sig.ret != 0: fns[f].ret = i32(subst(int(sig.ret), zt))
     else if nodes[decl].b != 0 and syntactic_void(int(nodes[decl].b)): fns[f].ret = i32(T_VOID)
@@ -971,7 +976,8 @@ module_ctx: int[]
 
 # global g is changed here: in a function, that is something a call may do
 note_global_write = (g: int):
-    if not module_ctx.contains(cx): globals[g].fn_written = true
+    if globals[g].fn_written or cx < 0: return
+    if fns[int(ctxs[cx].inst)].kind != i32(FK_INIT): globals[g].fn_written = true
 
 # the global a narrowed name's place (g.f narrowed by `is`) belongs to, or -1
 alias_global = (l: int) -> int:
@@ -1452,11 +1458,12 @@ elem_field_assign = (s: int) -> int:
     if nodes[ix].kind != .index or nodes[ix].b == 0: return 0
     recv = int(nodes[ix].a)
     if has_flag(recv, NF_CHECKED): return 0
-    r0 = clone(recv)
-    r1 = clone(recv)
     bt = prune(check_expr(recv, 0))
     nodes[ix].a = i32(last_checked)
     if types[bt].kind != .struct_ or is_map_type(bt) or is_soa(bt) or is_part_index(ix): return 0
+    # (the receiver again, unchecked, for reading and for writing back)
+    r0 = clone(int(nodes[ix].a))
+    r1 = clone(int(nodes[ix].a))
     pos = nodes[s].pos
     elem_tmp_n += 1
     stmts: int[]

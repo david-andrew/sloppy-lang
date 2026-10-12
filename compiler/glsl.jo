@@ -37,7 +37,7 @@ gl_type = (t0: int, pos: int) -> str:
         return "vec{types[t].bits}"
     if k == .struct_:
         si = int(types[t].st)
-        if structs[si].name == "Texture": return "sampler2D"
+        if is_lib_texture(si): return "sampler2D"
         if is_gpu_buffer(t):
             gl_gbuf_decls()
             return "S_GB"
@@ -153,10 +153,14 @@ gl_target = (n: int, pre: str) -> str:
     if k == .index:
         base = gl_target(int(nodes[n].a), pre)
         ix = int(nodes[n].b)
-        if nodes[ix].kind == .ident or nodes[ix].kind == .int_lit: return "{base}[{gl_expr(ix)}]"
+        if nodes[ix].kind == .int_lit: return "{base}[{gl_expr(ix)}]"
+        # (a variable too: the right side may change it)
+        x = gl_expr(ix)
         gl_temps += 1
-        gl_out.push("{pre}int sl_t{gl_temps} = {gl_expr(ix)};\n")
-        return "{base}[sl_t{gl_temps}]"
+        t = gl_temps
+        gl_out.push("{pre}int sl_t{t} = {x};\n")
+        return "{base}[sl_t{t}]"
+    if k == .field and nodes[n].aux == -4: return "{gl_target(int(nodes[n].a), pre)}.{name_of(int(nodes[n].name))}"
     if k == .field and nodes[n].aux >= 0: return "{gl_target(int(nodes[n].a), pre)}.{name_of(int(nodes[n].name))}_"
     gl_expr(n)
 
@@ -348,12 +352,16 @@ gl_expr = (e: int) -> str:
                 at = prune(ntype(a))
                 if is_vec(at) and at != T_MAT4 and t != T_MAT4 and types[at].sign != types[t].sign:
                     # (a vector of the other kind: each component converted as a scalar is)
-                    x = gl_expr(a)
-                    loop j in [0..int(types[at].bits)):
+                    m = int(types[at].bits)
+                    if types[t].sign: parts.push("sl_f2iv{m}({gl_expr(a)})")
+                    else: parts.push("vec{m}({gl_expr(a)})")
+                    if types[t].sign and gl_done_structs.get(-10 - m) == none:
+                        gl_done_structs[-10 - m] = true
+                        gl_float_to_int("0.0", T_I32)
                         sw = ["x", "y", "z", "w"]
-                        c = "{x}.{sw[j]}"
-                        if types[t].sign: parts.push(gl_float_to_int(c, T_I32))
-                        else: parts.push("float({c})")
+                        cs: str[]
+                        loop j in [0..m): cs.push(gl_float_to_int("v.{sw[j]}", T_I32))
+                        gl_decls.push("ivec{m} sl_f2iv{m}(vec{m} v) \{\n    return ivec{m}({join(cs, ", ")});\n}\n")
                 else: parts.push(gl_expr(a))
             if t == T_MAT4 and nkids(e) == 0: return "mat4(1.0)"
             return "{gl_type(t, nodes[e].pos)}({join(parts, ", ")})"
@@ -413,8 +421,9 @@ gl_expr = (e: int) -> str:
 # shift and compare as unsigned numbers; narrow ones wrap to their range, as on the CPU
 gl_arith = (op: Tok, x: str, y: str, ta: int, t: int) -> str:
     if types[prune(ta)].kind == .bool_:
-        if op == .amp: return "({x} && {y})"
-        if op == .pipe: return "({x} || {y})"
+        # (both sides, as and= and or= compute them: not && and ||, which may skip the right)
+        if op == .amp: return "bool(int({x}) & int({y}))"
+        if op == .pipe: return "bool(int({x}) | int({y}))"
         if op == .caret: return "({x} != {y})"
     if (op == .shl or op == .shr) and types[prune(ta)].kind == .int_:
         # (as on the CPU: by the count's low 6 bits, and by 32 or more nothing is left)
@@ -525,7 +534,7 @@ gl_read = (t0: int, o: str, c: int, pos: int) -> str:
         return "{gl_type(t, pos)}({join(parts, ", ")})"
     if k == .struct_:
         si = int(types[t].st)
-        if structs[si].name == "Texture" or is_gpu_buffer(t): gl_err(pos, "a {structs[si].name} cannot be read from a GPU buffer")
+        if is_lib_texture(si) or is_gpu_buffer(t): gl_err(pos, "a {structs[si].name} cannot be read from a GPU buffer")
         layout(t)
         loop i in [0..int(structs[si].nfields)):
             f = int(structs[si].fields) + i
@@ -568,7 +577,7 @@ uniform_kind = (t0: int, pos: int) -> str:
         if t == T_MAT4: return "m"
         if types[t].sign: return "I"
         return "v{types[t].bits}"
-    if k == .struct_ and structs[int(types[t].st)].name == "Texture": return "t"
+    if k == .struct_ and is_lib_texture(int(types[t].st)): return "t"
     if is_gpu_buffer(t): return "B"
     gl_err(pos, "uniform fields must be numbers, vectors, mat4 or Texture, or fixed-size arrays of them (found {type_str(t)})")
     ""

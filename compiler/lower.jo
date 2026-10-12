@@ -723,6 +723,8 @@ call_args = (args: int[], ptypes: int[], mutmask: int, out: mut int[], callee: i
         borrow(val, pt)
         out.push(val.v)
 
+mwr_direct = false             # (may_write_root: only what the code itself does, not its calls)
+
 # could the place argument i was read from (without a reference of its own) be given another
 # value before the call returns, by the callee or a later argument, freeing what was read? It
 # can for globals, variables closures share, captures and mut parameters; a plain local or
@@ -733,8 +735,15 @@ borrow_may_change = (a: int, args: int[], i: int, callee: int) -> bool:
     n = place_var(a)
     if n == 0: return false
     if nodes[n].aux == i32(int(SK.global)):
-        # (a global only top-level code changes cannot change during a call)
-        if not globals[int(nodes[n].sym)].fn_written: return false
+        # (a global only top-level code changes cannot change during a call, only in the
+        # arguments after this one)
+        if not globals[int(nodes[n].sym)].fn_written:
+            mwr_direct = true
+            w = false
+            loop j in [i + 1..args.len()):
+                if may_write_root(args[j], n): w = true
+            mwr_direct = false
+            return w
         if not opt_release or callee <= 0: return true
         w = fn_writes(callee)
         if w.all or w.globals.contains(int(nodes[n].sym)): return true
@@ -2916,7 +2925,12 @@ gen_assign = (s: int):
         tmp = mk(.binary, nodes[s].pos)
         ident = mk(.block, nodes[s].pos)
         ice("compound assignment on vectors should be desugared")
-    if vc(t) == VC_FLT: r = e_bin(float_op(op), vt_of(t), cur, rhs)
+    if vc(t) == VC_FLT and op == .percent:
+        # (x - y * trunc(x / y): the dividend's sign, as % does)
+        ty = vt_of(t)
+        q = e_un(.ftrunc, ty, e_bin(.fdiv, ty, cur, rhs))
+        r = e_bin(.fsub, ty, cur, e_bin(.fmul, ty, q, rhs))
+    else if vc(t) == VC_FLT: r = e_bin(float_op(op), vt_of(t), cur, rhs)
     else:
         sg = types[t].kind == .int_ and types[t].sign
         if op == .slash or op == .percent:
@@ -3081,7 +3095,8 @@ may_write_root = (n: int, rn: int) -> bool:
                 w = write_root(kid(n, i))
                 if w != 0 and same_var(w, rn): return true
         aux = int(nodes[n].aux)
-        if aux == 1 or aux == 4:
+        if mwr_direct: pass
+        else if aux == 1 or aux == 4:
             if glob or mutparam: return true
         else if aux == 0 and (glob or mutparam):
             # (what the function and everything it calls may write; a mut parameter may be the
@@ -4024,6 +4039,12 @@ lower_inst = (lf: int, f: int):
         locals[l].offset = -1
     ir.nparams = ir.vtypes.len()
     ir.ret = ret_vt(cur_ret)
+    # (called from C, whose callers leave the upper bits of narrow integers undefined: made
+    # what Sloppy code expects of them)
+    if fns[f].cabi:
+        loop l in fns[f].params:
+            t = prune(int(locals[l].type))
+            if types[t].kind == .int_ and tsize(t) < 8 and int(locals[l].flags) & LF_MUTPARAM == 0: e_mov(int(locals[l].vreg), norm(int(locals[l].vreg), t))
     # locals
     loop l in fns[f].locals:
         fl = int(locals[l].flags)

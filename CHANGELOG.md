@@ -89,6 +89,12 @@ Language:
   array, nor an element of a variable a closure changes with a call that may run it; and
   `parallel_range` and the other @parallel functions can only be called directly, while the
   race check also follows `__fmt` functions and narrowed globals.
+- From a sixth review: compound assignments in shaders compute their target first and its
+  indexes once (as the CPU), `and=`/`or=` compute both sides, `ivec2(f(x))` calls f once,
+  `mat4` takes integer vectors among its parts; `x %= y` on floats is `x % y` on the CPU too;
+  a @cabi function sign-extends narrow integers C passes it; a user struct named Texture is
+  plain data; a generic function that expands without end is found by its chain of
+  instantiations (deep finite types and many instances are fine, and checking is linear).
 - Shaders and compute functions: every compound assignment (`%=`, `>>=`, `<<=`, `and=`, `xor=`...)
   works (they all added before), a target's index is computed once, shifts by 32 or more give
   what the CPU gives, and `ivec2(vec2(...))` converts each component (saturating; the CPU copied

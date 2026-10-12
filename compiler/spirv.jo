@@ -180,7 +180,7 @@ sv_type = (t0: int, pos: int) -> int:
         return sv_vecf(int(types[t].bits))
     if k == .struct_:
         si = int(types[t].st)
-        if structs[si].name == "Texture": return sv_u32()
+        if is_lib_texture(si): return sv_u32()
         if is_gpu_buffer(t): return sv_gbuf_type()
         key = "s{si}"
         if let id = sv_cache.get(key): return id
@@ -382,7 +382,7 @@ sv_read = (t0: int, base: int, c: int, d: int, pos: int) -> int:
     if k == .struct_:
         si = int(types[t].st)
         layout(t)
-        if structs[si].name == "Texture": return sv_word(base, c + sv_field_offset(si, "id"), d)
+        if is_lib_texture(si): return sv_word(base, c + sv_field_offset(si, "id"), d)
         if is_gpu_buffer(t):
             ao = c + sv_field_offset(si, "addr")
             a = sv_val(80, sv_uv2(), [sv_word(base, ao, d), sv_word(base, ao + 4, d)])
@@ -701,9 +701,12 @@ sv_place = (e: int) -> int:
 
 sv_assign = (target: int, op: Tok, rhs: int, pos: int):
     tt = ntype(target)
-    v = sv_expr(rhs)
+    swz = nodes[target].kind == .field and nodes[target].aux == -4 and len(name_of(int(nodes[target].name))) > 1
+    # (as on the CPU: x = v computes v first; x op= v finds x and reads it first)
+    v = 0
+    if op == .assign or swz: v = sv_expr(rhs)
     # v.xy = ...: the vector with those components replaced
-    if nodes[target].kind == .field and nodes[target].aux == -4 and len(name_of(int(nodes[target].name))) > 1:
+    if swz:
         a = int(nodes[target].a)
         p = sv_place(a)
         if p == 0: sv_err(pos, "unsupported assignment in shader")
@@ -727,6 +730,7 @@ sv_assign = (target: int, op: Tok, rhs: int, pos: int):
         ty = sv_type(tt, pos)
         bop = sv_assign_op(op)
         cur = sv_load(ty, p)
+        v = sv_expr(rhs)
         if types[prune(tt)].kind == .bool_:
             # (and= or= xor= on bools: logical)
             v = sv_val(sv_pick(bop == .amp, 167, sv_pick(bop == .pipe, 166, 165)), sv_bool(), [cur, v])
@@ -1150,7 +1154,11 @@ sv_components = (e: int) -> int[]:
         a = kid(e, i)
         v = sv_expr(a)
         at = prune(ntype(a))
-        if all_cols or not is_vec(at): out.push(v)
+        if all_cols: out.push(v)
+        else if not is_vec(at): out.push(sv_as(a, v, T_FLOAT, nodes[e].pos))
+        else if types[at].sign:
+            # (an integer vector's components, as floats)
+            loop j in [0..sv_ncomp(at)): out.push(sv_val(111, sv_f32(), [sv_val(81, sv_i32(), [v, j])]))
         else:
             loop j in [0..sv_ncomp(at)): out.push(sv_val(81, sv_f32(), [v, j]))
     out
@@ -1405,7 +1413,7 @@ sv_write = (t0: int, base: int, c: int, d: int, v: int, pos: int):
         return
     if k == .struct_:
         si = int(types[t].st)
-        if structs[si].name == "Texture" or is_gpu_buffer(t): sv_err(pos, "a {structs[si].name} cannot be written into a GPU buffer")
+        if is_lib_texture(si) or is_gpu_buffer(t): sv_err(pos, "a {structs[si].name} cannot be written into a GPU buffer")
         layout(t)
         loop i in [0..int(structs[si].nfields)):
             f = int(structs[si].fields) + i
@@ -1506,7 +1514,7 @@ sv_module = (model: int, main: int) -> str:
 # path of field indices to it, its type)
 sv_leaves = (t0: int, path: int[], out: mut (int[], int)[]):
     t = prune(t0)
-    if types[t].kind == .struct_ and structs[int(types[t].st)].name != "Texture":
+    if types[t].kind == .struct_ and not is_lib_texture(int(types[t].st)):
         si = int(types[t].st)
         check_struct_fields(si)
         loop i in [0..int(structs[si].nfields)):
@@ -1527,7 +1535,7 @@ sv_slots = (t0: int) -> int:
 sv_is_int_leaf = (t0: int) -> bool:
     t = prune(t0)
     if types[t].kind == .fixed: return sv_is_int_leaf(int(types[t].elem))
-    types[t].kind == .int_ or (types[t].kind == .vec and types[t].sign) or (types[t].kind == .struct_ and structs[int(types[t].st)].name == "Texture")
+    types[t].kind == .int_ or (types[t].kind == .vec and types[t].sign) or (types[t].kind == .struct_ and is_lib_texture(int(types[t].st)))
 
 # the varyings: one variable per part of the vertex function's result after the first (the
 # clip position), at consecutive locations; integers are not interpolated
