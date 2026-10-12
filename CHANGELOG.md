@@ -7,8 +7,10 @@
   and an ad hoc code signature (no Xcode or linker needed, and they can be made on Linux). The
   library's system calls go through libSystem. Every test passes on a Mac, the compiler
   compiles itself there to the same bytes, and the language server works; CI runs them on a
-  GitHub macOS runner. Not yet: games (window, graphics, sound), threads, the interactive prompt
-  and `sloppy watch`.
+  GitHub macOS runner. Threads (`parallel_map` and the rest) run on pthreads. Games open a Cocoa
+  window (keyboard, mouse, wheel, mouse look, clipboard, fullscreen) and play sound through
+  AudioQueue; they draw with the software renderer for now (GPU drawing through Metal is next).
+  Not yet: the interactive prompt and `sloppy watch`.
 - `@variadic(n)` on an `extern`: a C function with n fixed parameters, then C's `...` (macOS
   passes the others on the stack).
 - **Linux on arm64** (`--target linux-arm64`, the default when the compiler runs on arm64): a
