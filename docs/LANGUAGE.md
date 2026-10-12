@@ -899,9 +899,16 @@ extern cbrt = (x: f64) -> f64
 @lib("libGLESv2.so.2")
 @symbol("glClear")                 # the C name, when the Sloppy name differs
 extern gl_clear_native = (mask: u32)
+
+@lib("libc.so.6")
+@variadic(2)                       # C's `...` after the first two parameters
+extern snprintf = (buf: *u8, n: int, fmt: *u8, x: f64) -> i32
 ```
 
 Arguments and results must be scalars or pointers; `cfn(...) -> T` is the type of a C function
 pointer, and `@cabi` makes a Sloppy function callable from C. Windows programs name DLLs
 (`@lib("user32.dll")`) and are called with the Windows x64 convention; the same code can serve
-both systems under `when TARGET == "windows":`.
+both systems under `when TARGET == "windows":`. A variadic C function (`printf(fmt, ...)`) is
+declared with the arguments a call gives it and `@variadic(n)`, n being its fixed parameters:
+macOS passes the others differently. macOS programs find C functions in the system's libraries
+(libSystem holds what Linux's libc and libm do) when they start.

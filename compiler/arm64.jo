@@ -239,7 +239,8 @@ a_layout = ():
             ns = 0
             loop k in [0..int(ins.b)):
                 v = int(ir.args[int(ins.a) + k])
-                if vtype(v) == VI:
+                if a_on_stack(ins, k): ns += 1
+                else if vtype(v) == VI:
                     if ni < 8: ni += 1
                     else: ns += 1
                 else:
@@ -331,14 +332,29 @@ a_epilogue = ():
     a_ret()
 
 # arguments into x0-x7 / v0-v7 and the stack (from memory: no register is a source)
-a_call_args = (start: int, n: int):
+# (macOS: a C function's variadic arguments are on the stack, @variadic: callc's imm is the
+# number of fixed ones + 1)
+a_on_stack = (ins: Ins, k: int) -> bool: target_macos and ins.op == .callc and ins.imm > 0 and k >= ins.imm - 1
+
+a_call_args = (ins: Ins):
+    start = int(ins.a)
+    n = int(ins.b)
     ni = 0
     nf = 0
     ns = 0
     loop k in [0..n):
         v = int(ir.args[start + k])
         ty = vtype(v)
-        if ty == VI:
+        if a_on_stack(ins, k):
+            if ty == VI: a_ld(9, v)
+            else:
+                a_lds(16, v, ty)
+                # (a float32 is passed as a double)
+                if ty == VS: w32(0x1E22C210)                    # fcvt d16, s16
+                w32(0x9E660209)                                 # fmov x9, d16
+            a_str(9, A_SP, 8 * ns)
+            ns += 1
+        else if ty == VI:
             if ni < 8:
                 a_ld(ni, v)
                 ni += 1
@@ -791,13 +807,13 @@ arm64_ins = (pos: int, ins: Ins):
                 a_fop(fo, VS, 18, 16, 17)
                 a_mem(false, 18, 9, 4 * i, 4, false, true)
         call:
-            a_call_args(a, bb)
+            a_call_args(ins)
             a_call_fix.push((code.len(), int(ins.imm)))
             a_bl()
             call_site(ins)
             a_result(ins)
         calli, callc:
-            a_call_args(a, bb)
+            a_call_args(ins)
             a_ld(15, int(ins.c))
             a_blr(15)
             call_site(ins)
@@ -810,7 +826,7 @@ arm64_ins = (pos: int, ins: Ins):
                 a_ldr(9, 9, 0)
                 a_st(d, 9)
             else if ins.imm >= 2 and ins.imm <= 9:
-                a_call_args(a, bb)
+                a_call_args(ins)
                 a_stub_fix.push((code.len(), int(ins.imm)))
                 a_bl()
                 if d >= 0 and vloc[d] != LOC_NONE: a_st(d, 0)

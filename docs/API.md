@@ -438,7 +438,7 @@ save_data("progress", "{level}\n{coins}")
 if let s = load_data("progress"): ...
 ```
 
-Each program has its own place, named after it (PROGRAM_NAME: the build block's `name`, else the main file's name): on Linux ~/.local/share/<name>/ (or $XDG_DATA_HOME), on Windows %APPDATA%\<name>\, in a web page the browser's storage for the page (it survives reloads and restarts of the browser). SLOPPY_SAVE_DIR puts it somewhere else (tests).
+Each program has its own place, named after it (PROGRAM_NAME: the build block's `name`, else the main file's name): on Linux ~/.local/share/<name>/ (or $XDG_DATA_HOME), on Windows %APPDATA%\<name>\, on macOS ~/Library/Application Support/<name>/, in a web page the browser's storage for the page (it survives reloads and restarts of the browser). SLOPPY_SAVE_DIR puts it somewhere else (tests).
 
 - `save_dir = () -> str`: the directory a program's data goes to (made when first written; "" in a web page)
 - `save_data = (name: str, contents: str) -> bool`: keep contents under name (a file name: no / or \); false if it could not be written
