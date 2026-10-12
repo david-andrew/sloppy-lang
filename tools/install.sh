@@ -9,7 +9,6 @@
 set -euo pipefail
 
 REPO="david-andrew/sloppy-lang"
-ASSET="sloppy-linux-x86_64.tar.gz"
 VERSION="${1:-latest}"
 INSTALL="${SLOPPY_INSTALL:-$HOME/.sloppy}"
 CURRENT="${SLOPPY_CURRENT:-}"
@@ -26,13 +25,19 @@ fail() { printf '%serror%s: %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
-    Linux) ;;
+    Linux)
+        case "$arch" in
+            x86_64|amd64) ASSET="sloppy-linux-x86_64.tar.gz" ;;
+            aarch64|arm64) ASSET="sloppy-linux-arm64.tar.gz" ;;
+            *) fail "Sloppy runs on x86-64 and arm64 (this machine is $arch)" ;;
+        esac ;;
+    Darwin)
+        case "$arch" in
+            arm64) ASSET="sloppy-macos-arm64.tar.gz" ;;
+            *) fail "on macOS, Sloppy runs on Apple Silicon (M1 and later; this Mac is $arch). Its programs also run in any browser: see https://sloppy-lang.org/playground/" ;;
+        esac ;;
     MINGW*|MSYS*|CYGWIN*) fail "on Windows, install Sloppy from PowerShell: irm https://sloppy-lang.org/install.ps1 | iex" ;;
-    *) fail "Sloppy runs on Linux and Windows (this is $os). Its programs also run in any browser: see https://sloppy-lang.org/playground/" ;;
-esac
-case "$arch" in
-    x86_64|amd64) ;;
-    *) fail "Sloppy's compiler makes x86-64 programs and runs on x86-64 (this machine is $arch)" ;;
+    *) fail "Sloppy runs on Linux, macOS and Windows (this is $os). Its programs also run in any browser: see https://sloppy-lang.org/playground/" ;;
 esac
 command -v tar >/dev/null || fail "tar is needed"
 if command -v curl >/dev/null; then

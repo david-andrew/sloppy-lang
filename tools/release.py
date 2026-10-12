@@ -2,6 +2,8 @@
 """Package a release of Sloppy (needs bin/sloppy, built by tools/bootstrap.sh) into build/release:
   sloppy-linux-x86_64.tar.gz          sloppy-<version>/{bin/sloppy, lib/, editors/sloppy.vsix, README.md}
   sloppy-linux-x86_64.tar.gz.sha256   its checksum (tools/install.sh checks it)
+  sloppy-linux-arm64.tar.gz           the same with the compiler compiled for Linux on arm64
+  sloppy-macos-arm64.tar.gz           ... and for macOS on Apple Silicon (each with its .sha256)
   sloppy-windows-x86_64.zip           sloppy-<version>/{bin/sloppy.exe, lib/, ...} (tools/install.ps1)
   sloppy-windows-x86_64.zip.sha256
   sloppy-<version>.vsix               the VS Code / Cursor extension
@@ -26,7 +28,6 @@ vsix = os.path.join(out, f"sloppy-{ext_version}.vsix")
 subprocess.run([sys.executable, os.path.join(root, "tools", "vsix.py"), vsix], check=True, capture_output=True)
 
 top = f"sloppy-{version}"
-tgz = os.path.join(out, "sloppy-linux-x86_64.tar.gz")
 def add(tar, path, arc, mode=None):
     info = tar.gettarinfo(path, arc)
     info.uid = info.gid = 0
@@ -36,17 +37,32 @@ def add(tar, path, arc, mode=None):
     if info.isfile():
         with open(path, "rb") as f: tar.addfile(info, f)
     else: tar.addfile(info)
-with tarfile.open(tgz, "w:gz", format=tarfile.PAX_FORMAT) as tar:
-    add(tar, sloppy, f"{top}/bin/sloppy", 0o755)
-    for d, dirs, names in os.walk(os.path.join(root, "lib")):
-        dirs.sort()
-        for n in sorted(names):
-            full = os.path.join(d, n)
-            add(tar, full, f"{top}/lib/" + os.path.relpath(full, os.path.join(root, "lib")), 0o644)
-    add(tar, vsix, f"{top}/editors/sloppy.vsix", 0o644)
-    add(tar, os.path.join(root, "README.md"), f"{top}/README.md", 0o644)
-    add(tar, os.path.join(root, "LICENSE"), f"{top}/LICENSE", 0o644)
-    add(tar, os.path.join(root, "NOTICE"), f"{top}/NOTICE", 0o644)
+def package_tar(system, compiler):
+    tgz = os.path.join(out, f"sloppy-{system}.tar.gz")
+    with tarfile.open(tgz, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+        add(tar, compiler, f"{top}/bin/sloppy", 0o755)
+        for d, dirs, names in os.walk(os.path.join(root, "lib")):
+            dirs.sort()
+            for n in sorted(names):
+                full = os.path.join(d, n)
+                add(tar, full, f"{top}/lib/" + os.path.relpath(full, os.path.join(root, "lib")), 0o644)
+        add(tar, vsix, f"{top}/editors/sloppy.vsix", 0o644)
+        add(tar, os.path.join(root, "README.md"), f"{top}/README.md", 0o644)
+        add(tar, os.path.join(root, "LICENSE"), f"{top}/LICENSE", 0o644)
+        add(tar, os.path.join(root, "NOTICE"), f"{top}/NOTICE", 0o644)
+    return tgz
+
+tgz = package_tar("linux-x86_64", sloppy)
+# Linux on arm64 and macOS: the compiler compiled for them
+tars = [tgz]
+for system, target in [("linux-arm64", "linux-arm64"), ("macos-arm64", "macos")]:
+    d = os.path.join(out, system)
+    os.makedirs(d)
+    exe = os.path.join(d, "sloppy")
+    subprocess.run([sloppy, "build", "--target", target, os.path.join(root, "compiler", "main.jo"), "-o", exe], check=True,
+                   env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")))
+    tars.append(package_tar(system, exe))
+    shutil.rmtree(d)
 
 # Windows: the compiler compiled for it, the same files beside it
 exe = os.path.join(out, "sloppy.exe")
@@ -70,7 +86,7 @@ with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
 os.remove(exe)
 if os.path.exists(exe[:-4] + ".pdb"): os.remove(exe[:-4] + ".pdb")      # (its debugging database)
 
-for p in [tgz, zpath]:
+for p in tars + [zpath]:
     digest = hashlib.sha256(open(p, "rb").read()).hexdigest()
     open(p + ".sha256", "w").write(f"{digest}  {os.path.basename(p)}\n")
-print(f"sloppy {version}: {tgz} ({os.path.getsize(tgz) // 1024} KB), {zpath} ({os.path.getsize(zpath) // 1024} KB), {vsix}")
+print(f"sloppy {version}: " + ", ".join(f"{os.path.basename(p)} ({os.path.getsize(p) // 1024} KB)" for p in tars + [zpath]) + f", {os.path.basename(vsix)}")
