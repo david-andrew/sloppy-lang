@@ -853,7 +853,9 @@ sloppy update             install the latest release (when this is not it)
 
 On Windows, `sloppy` is `sloppy.exe` and programs are Windows executables (`sloppy build game.jo`
 writes `game.exe`); `sloppy build --target windows` makes them on Linux too, and `--target linux`
-Linux ones on Windows.
+Linux ones on Windows. `--target linux-arm64` makes programs for Linux on 64-bit ARM (a Raspberry
+Pi, ARM laptops and servers), the default when the compiler itself runs there. (On arm64 the
+interactive prompt and `sloppy watch` are not there yet, and the code is not yet as fast.)
 
 **Reloading while it runs.** `sloppy watch game.jo` runs the game and keeps watching the files it
 is built from. Each time one is saved the game is rebuilt and the running game takes the new

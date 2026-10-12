@@ -204,6 +204,7 @@ compiler/      the Sloppy compiler, in Sloppy
   lower                  syntax tree -> IR (register based, structured control flow)
   opt, inline            release builds: folding, CSE, check elimination, inlining
   x64, elf               IR -> x86-64 machine code -> static ELF executable
+  arm64                  IR -> arm64 machine code (Linux on 64-bit ARM; the start of macOS)
   wasm                   IR -> WebAssembly, packaged into one HTML file
   spirv                  shader functions written in Sloppy -> SPIR-V (Vulkan)
   glsl                   shader functions written in Sloppy -> GLSL ES 3.00 (OpenGL, WebGL)

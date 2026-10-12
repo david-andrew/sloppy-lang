@@ -134,11 +134,12 @@ Fill the gaps real programs hit, nothing speculative:
 ## Platforms (L each)
 
 - **macOS on Apple Silicon** is the largest group of developers Sloppy cannot reach (the
-  playground is their only way in). It needs arm64 code generation, Mach-O with ad hoc
-  signatures, a Cocoa window and Metal (or MoltenVK, which would reuse the Vulkan path), and
-  CoreAudio. It was put off for its cost; two things lower it: GitHub's macOS runners are Apple
-  Silicon (CI and tests without owning a Mac), and arm64 code generation serves Linux on arm64
-  (Raspberry Pi, ARM laptops and servers) too, which can come first.
+  playground is their only way in). Under way: arm64 code generation works (Linux on arm64,
+  `--target linux-arm64`: every test passes there, also on an arm64 machine in CI, and the
+  compiler compiles itself there to the same bytes). Next: arm64 register allocation (values all
+  live in the frame for now), the prompt and `sloppy watch` on arm64, then Mach-O with ad hoc
+  signatures and calls through libSystem, a Cocoa window, Metal (or MoltenVK, which would reuse
+  the Vulkan path) and CoreAudio, tested on GitHub's Apple Silicon runners.
 - Phones (Android, iOS): not before the above; the web build already runs there.
 
 ## Compiler maintainability (ongoing, never a rewrite)

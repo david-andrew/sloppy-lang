@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Linux on arm64** (`--target linux-arm64`, the default when the compiler runs on arm64): a
+  new code generator (compiler/arm64.jo), x86-64 system call numbers translated for arm64, C
+  libraries loaded through arm64's ld.so, crash backtraces from arm64's registers. Every test
+  passes there, and the compiler compiles itself on arm64 to the same bytes; CI runs the tests on
+  an arm64 machine. Not yet: register allocation (values live in the frame, so the code is
+  slower), the interactive prompt and `sloppy watch`. This is the first step toward macOS.
+- `ARCH` (`"x86_64"`, `"arm64"` or `"wasm32"`) beside `TARGET`, for `when`.
 - Shaders: the smallest integer `/ -1` (and `% -1`) and `abs` of the smallest integer give
   what the CPU gives (itself, 0, itself); GLSL and SPIR-V leave them undefined, and Intel's
   OpenGL driver gave other values. Found by tools/gpufuzz.py on an Intel UHD 620, where every

@@ -19,6 +19,7 @@ use 'opt.jo'
 use 'inline.jo'
 use 'loops.jo'
 use 'x64.jo'
+use 'arm64.jo'
 use 'dwarf.jo'
 use 'elf.jo'
 use 'pe.jo'
@@ -95,18 +96,38 @@ cli_target = ""
 
 # the target, from the command line or else the build block: for building, checking and the
 # language server alike
+# the machine field of an ELF file's header (0 if unreadable): 20 bytes, not the whole file
+elf_machine_of = (path: str) -> int:
+    when TARGET == "windows":
+        return 0
+    else:
+        fd = syscall(2, data(__zstr(path)), 0, 0)
+        if fd < 0: return 0
+        hdr = fill(u8(0), 20)
+        n = syscall(17, fd, data(hdr), 20, 0)
+        syscall(3, fd)
+        if n < 20: return 0
+        return int(hdr[18]) | (int(hdr[19]) << 8)
+
 setup_target = ():
     tgt = build_target
     # (one the build block names wrongly: the checker says where)
-    if tgt != "linux" and tgt != "windows" and tgt != "wasm": tgt = ""
+    if tgt != "linux" and tgt != "linux-arm64" and tgt != "windows" and tgt != "wasm": tgt = ""
     if len(cli_target) > 0: tgt = cli_target
     if tgt == "" or tgt == "native":
         # (the system this compiler runs on)
         tgt = "linux"
         when TARGET == "windows":
             tgt = "windows"
+        # (the compiler's own processor: its executable's ELF machine, 183 for arm64)
+        when TARGET != "windows":
+            if elf_machine_of(exe_path()) == 183: tgt = "linux-arm64"
+    # (linux-arm64: Linux on 64-bit ARM, TARGET "linux" and ARCH "arm64")
+    if tgt == "linux-arm64":
+        target_arm64 = true
+        tgt = "linux"
     if tgt != "linux" and tgt != "windows" and tgt != "wasm":
-        eprint("sloppy: unknown target '{tgt}' (native, linux, windows or wasm)")
+        eprint("sloppy: unknown target '{tgt}' (native, linux, linux-arm64, windows or wasm)")
         exit(2)
     target_wasm = tgt == "wasm"
     target_windows = tgt == "windows"
@@ -157,6 +178,7 @@ emit_function = ():
     if lower_only: return
     if dump: dump_ir()
     if target_wasm: wasm_collect()
+    else if target_arm64: arm64_function()
     else: x64_function()
 
 # release builds: optimize everything, inline small functions, optimize callers again, emit
@@ -239,7 +261,7 @@ compile = (path: str, out0: str) -> str:
         if ends_with(out, ".bin"): out = out[..len(out) - 4)
         if not ends_with(out, ".exe"): out = out + ".exe"
     init_types()
-    want_cpu_flag = opt_release and not target_wasm and not lower_only
+    want_cpu_flag = opt_release and not target_wasm and not target_arm64 and not lower_only
     check_program(path)
     # (functions left unchecked after errors in them cannot be lowered)
     if lower_only and ide_skip.len() > 0: return ""
@@ -259,7 +281,7 @@ compile = (path: str, out0: str) -> str:
     pinit = init_fns[0]
     pinit_lf = roots[0]
     # (vectorized loops ask whether the processor has AVX2: the runtime finds out at start)
-    lx_vec_on = opt_release and not target_wasm and not lower_only
+    lx_vec_on = opt_release and not target_wasm and not target_arm64 and not lower_only
     if lx_vec_on:
         cs = prelude.get(intern("__cpu_avx2")) ?? 0
         if cs != 0 and syms[cs].kind == .global: global_addr_off(int(syms[cs].ref))
@@ -288,7 +310,8 @@ compile = (path: str, out0: str) -> str:
                 if len(fns[fi].clib) == 0: fatal(nodes[int(fns[fi].decl)].pos, "extern functions need @lib(\"library.so\") on native targets")
                 lower_extern_thunk(i, fi)
                 if dump: dump_ir()
-                x64_function()
+                if target_arm64: arm64_function()
+                else: x64_function()
                 i += 1
                 continue
             lower_function(i)
@@ -343,6 +366,19 @@ compile = (path: str, out0: str) -> str:
             if ok and len(pdb) > 0: ok = write_pdb(pdb, guid, code.len(), pe_section_headers, path, "sloppy {SLOPPY_VERSION}")
             if ok and watch_build: watch_record_image()
         size = code.len()
+    else if target_arm64:
+        elf_machine = 183
+        elf_page = 0x10000
+        arm64_stubs()
+        entry = arm64_entry(roots, main_lf)
+        text_off, ro_off, data_off = elf_layout(code.len(), rodata.len())
+        img_text_addr = ELF_BASE + text_off
+        img_ro_addr = ELF_BASE + ro_off
+        img_data_addr = ELF_BASE + data_off
+        arm64_resolve(img_text_addr, img_ro_addr, img_data_addr)
+        elf_extra = [(".sloppy_lines", x64_line_table())]
+        ok = write_elf(out, code, entry, rodata, data_size + 8 + bss_reserve)
+        size = code.len()
     else:
         x64_stubs()
         entry = x64_entry(roots, main_lf)
@@ -394,6 +430,10 @@ main = ():
             return
     # no file: the interactive prompt
     if a.len() < 2 or a[1] == "repl":
+        # (the prompt makes x86-64 code: not yet on arm64)
+        if elf_machine_of(exe_path()) == 183:
+            eprint("sloppy: the interactive prompt is not available on arm64 yet; run a file: sloppy file.jo")
+            exit(2)
         repl_main()
         return
     if a[1] == "build":
@@ -454,6 +494,9 @@ main = ():
         else: usage()
         first += 1
     if first >= a.len(): usage()
+    if a[first] == "watch" and elf_machine_of(exe_path()) == 183:
+        eprint("sloppy: watch is not available on arm64 yet")
+        exit(2)
     if a[first] == "watch":
         if a.len() < first + 2: usage()
         if cli_target == "wasm": fatal(0, "sloppy watch runs programs natively (for the web, use sloppy build --target wasm)")

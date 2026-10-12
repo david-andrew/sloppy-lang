@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run Sloppy test programs and compare output with .out files.
-usage: runtests.py [--compiler sloppy0|sloppy|path] [--release] [--target native|wasm|windows] [pattern]
+usage: runtests.py [--compiler sloppy0|sloppy|path] [--release] [--target native|wasm|windows|linux-arm64] [pattern]
+(linux-arm64: run under qemu-aarch64, or SLOPPY_ARM64_RUN)
 (on Windows itself: the compiler is bin/sloppy.exe, and programs are native Windows ones)"""
 import os, re, subprocess, sys, glob, tempfile, time
 
@@ -61,6 +62,8 @@ for t in tests:
         run = ["node", os.path.join(root, "tools", "runwasm.js"), exe + ".html"]
     elif target == "windows":
         run = os.environ.get("SLOPPY_WINE", "podman exec sloppy-win /w/run.sh").split() + ["tests/" + name + ".exe"]
+    elif target == "linux-arm64":
+        run = os.environ.get("SLOPPY_ARM64_RUN", "qemu-aarch64-static").split() + [exe]
     elif on_windows:
         run = [exe + ".exe"]
     else:
@@ -174,7 +177,10 @@ if compiler != "sloppy0" and target == "native":
             print(f"FAIL {name}: expected an error containing {want!r}\n{r.stderr}")
             failed += 1
     # the interactive prompt: tests/repl/*.in typed at `sloppy` (stdout and stderr) against .out
-    for t in sorted(glob.glob(os.path.join(root, "tests", "repl", "*.in"))):
+    # (not on arm64 yet: the prompt makes x86-64 code)
+    import platform
+    repl_tests = [] if platform.machine() in ("aarch64", "arm64") else sorted(glob.glob(os.path.join(root, "tests", "repl", "*.in")))
+    for t in repl_tests:
         name = "repl/" + os.path.basename(t)[:-3]
         if pattern not in name: continue
         exp_path = t[:-3] + ".out"
