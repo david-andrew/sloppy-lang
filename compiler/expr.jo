@@ -417,6 +417,9 @@ check_place = (n: int, for_mut: bool):
             # a closure modifying a variable it captured modifies the variable itself
             r = l
             loop int(locals[r].flags) & LF_CAPTURE != 0: r = int(locals[r].outer)
+            via_closure = r != l
+            # (and a narrowed name stands for its variable)
+            loop narrowed_var(r) != 0: r = narrowed_var(r)
             rf = int(locals[r].flags)
             if rf & LF_PARAM != 0 and rf & LF_MUTPARAM == 0: fatal(nodes[n].pos, "cannot modify parameter '{nm}' (parameters are read-only; mark it `mut` or copy it with `let {nm} = {nm}`)")
             if rf & LF_BYREF != 0: fatal(nodes[n].pos, "cannot modify loop variable '{nm}' (use `loop mut` to modify elements)")
@@ -428,7 +431,7 @@ check_place = (n: int, for_mut: bool):
                 rf |= LF_ASSIGNED
                 if cp_inner == 0: rf |= LF_RESIZED
                 locals[r].flags = i32(rf)
-            note_write(r, r != l, nodes[n].pos)
+            note_write(r, via_closure, nodes[n].pos)
             return
         if nodes[n].aux == i32(int(SK.global)): return
         fatal(nodes[n].pos, "cannot assign to '{name_of(int(nodes[n].name))}'")
@@ -924,6 +927,13 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
         a = cd.args[i]
         if a == 0 or not ctx_dependent(a) or nodes[a].kind == .hole: continue
         pt = subst_partial(cd.sig.params[i], cd.binds)
+        if has_var(pt) and expected != 0 and cd.sig.ret != 0:
+            # (a lambda whose parameter types are still open: what the result must be may
+            # settle them, as in `x: int = make((v): v + 1)`)
+            rb = cd.binds
+            if match_type(int(cd.sig.ret), expected, rb, 0) >= 0:
+                cd.binds = rb
+                pt = subst_partial(cd.sig.params[i], cd.binds)
         check_expr(a, pt)
         add_flag(a, NF_CHECKED)
         match_type(cd.sig.params[i], ntype(a), cd.binds, 0)
@@ -2069,6 +2079,9 @@ check_match = (m: int, expected: int) -> int:
         seen = fill(false, int(structs[int(types[st].st)].nvariants))
     sc = int(nodes[m].a)
     narrows = is_union(st) and nodes[sc].kind == .ident and nodes[sc].aux == i32(int(SK.local))
+    # (a field path or a global: narrowed like `if x.f is T`)
+    pkey = ""
+    if is_union(st) and not narrows: pkey = path_key(sc)
     loop i in [0..nkids(m)):
         arm = kid(m, i)
         amark = scope_mark()
@@ -2139,6 +2152,13 @@ check_match = (m: int, expected: int) -> int:
                 loop vi in 0.. and um in union_members(st):
                     if not seen_before[vi]: arm_members.push(um)
             narrow_local(int(nodes[sc].sym), arm_members, nodes[arm].pos)
+        else if len(pkey) > 0:
+            if arm_wild:
+                arm_members.clear()
+                loop vi in 0.. and um in union_members(st):
+                    if not seen_before[vi]: arm_members.push(um)
+            path_narrows += 1
+            narrow_expr(copy_path(sc), arm_members, nodes[arm].pos, intern(pkey))
         body = int(nodes[arm].b)
         if is_stmt: check_block(body, 0, false)
         else:
@@ -2244,6 +2264,10 @@ fn_value = (n: int, expected: int) -> int:
                     ok = false
                     break
             if not ok: continue
+            # (type parameters only in the result: from the expected result, zero = () -> T)
+            if sig.ret != 0 and types[et].kind == .fn_ and int(types[et].elem) != 0:
+                rb = binds
+                if match_type(int(sig.ret), int(types[et].elem), rb, 0) >= 0: binds = rb
             loop b in binds:
                 if b == 0: ok = false
             if not ok: continue
@@ -2341,7 +2365,9 @@ check_expr = (n: int, expected: int) -> int:
             l0 = int(syms[s].ref)
             # (assigned another type after being narrowed: the variable itself)
             loop int(locals[l0].flags) & LF_UNNARROWED != 0: l0 = narrowed_var(l0)
-            l = capture_local(l0)
+            l = 0
+            if int(locals[l0].owner) != int(ctxs[cx].inst) and narrowed_var(l0) != 0: l = capture_narrowed(l0, nodes[n].pos)
+            else: l = capture_local(l0)
             nodes[n].sym = i32(l)
             t = int(locals[l].type)
         else if sk == .global:

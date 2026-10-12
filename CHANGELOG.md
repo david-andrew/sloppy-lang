@@ -69,6 +69,12 @@ Language:
 - Overloads a call cannot match are left out before the choice: `f(300)` with `f(x: i8)` and
   `f(x: i16)` is the `i16` one, and a lambda's parameter types pick among `(int) -> int` and
   `(f64) -> f64`.
+- `match` narrows a field (`match b.x:`) or a global in each arm, as it does a local variable.
+- A closure using a name narrowed by `is` captures the variable itself, so it sees later
+  changes and the variable may still be assigned (it was an error).
+- Generic types are also worked out from what the result must be: `x: int = make((v): v + 1)`
+  types the lambda's `v`, and `f: () -> int = zero` picks `zero[int]`.
+- Editor: an unsaved change to a file is seen at once in the other open files that use it.
 - Windows: a float given to a C function among its first four arguments also goes in the
   integer register, as C functions taking varargs (`sprintf`) read it.
 - Float to integer conversions saturate at the range of the type converted to (`u8(300.0)` is

@@ -293,6 +293,24 @@ check("from-import: completion", sorted(x["label"] for x in r["items"]), ["_secr
 c.set_text(muri, msrc)
 c.diagnostics(muri)
 
+# ---- an unsaved edit of a file another open file uses ----
+dpath = os.path.join(tmp, "dep.jo")
+open(dpath, "w", encoding="utf-8").write("foo: int = 7\n")
+duri = to_uri(dpath)
+bpath = os.path.join(tmp, "user.jo")
+bsrc = "use 'dep.jo'\nbar = foo\nprint(bar)\n"
+open(bpath, "w", encoding="utf-8").write(bsrc)
+buri = to_uri(bpath)
+c.set_text(duri, "foo: int = 7\n")
+c.set_text(buri, bsrc)
+c.diagnostics(buri)
+bar_at = {"textDocument": {"uri": buri}, "position": lc(bsrc, bsrc.index("bar ="))}
+h = c.request("textDocument/hover", bar_at)
+check("unsaved dependency: before", h and h["contents"]["value"], "```sloppy\n(global) bar: int\n```")
+c.set_text(duri, 'foo: str = "s"\n')
+h = c.request("textDocument/hover", bar_at)
+check("unsaved dependency: after the edit", h and h["contents"]["value"], "```sloppy\n(global) bar: str\n```")
+
 # ---- a library file ----
 lpath = os.path.join(root, "lib", "game", "stats.jo")
 luri = to_uri(lpath)
