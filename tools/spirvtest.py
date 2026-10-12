@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""SPIR-V test: build every program with shaders (the examples, the render scenes, the library's
-examples), keeping the SPIR-V the compiler makes for Vulkan (SLOPPY_SPIRV_DUMP), and check each
+"""SPIR-V test: build every program with shaders or compute functions (the examples, the render
+scenes, the library's examples, the tests that use them), keeping the SPIR-V the compiler makes for Vulkan (SLOPPY_SPIRV_DUMP), and check each
 module with spirv-val (from SPIRV-Tools) as a Vulkan 1.3 driver with scalar block layout sees it.
 usage: spirvtest.py   (skips, and passes, when spirv-val is not installed)"""
 import glob, os, shutil, subprocess, sys, tempfile
@@ -12,7 +12,8 @@ if not val:
     print("spirv-val not found: skipped")
     sys.exit(0)
 programs = sorted(glob.glob(os.path.join(root, "examples", "*.jo")) + glob.glob(os.path.join(root, "examples", "*", "*.jo"))
-                  + glob.glob(os.path.join(root, "tests", "render", "*.jo")) + glob.glob(os.path.join(root, "docs", "api", "*.jo")))
+                  + glob.glob(os.path.join(root, "tests", "render", "*.jo")) + glob.glob(os.path.join(root, "docs", "api", "*.jo"))
+                  + [t for t in glob.glob(os.path.join(root, "tests", "t", "*.jo")) if any(w in open(t, encoding="utf-8").read() for w in ("compute(", "shader(", ".gpu"))])
 out = tempfile.mkdtemp(prefix="sloppy-spirv-")
 env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"))
 failed = 0

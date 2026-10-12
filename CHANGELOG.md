@@ -20,7 +20,16 @@ Graphics:
   draw's instances; `draw_indirect` draws as many as a compute function decided (`DrawArgs`).
   Barriers are automatic. Without Vulkan, buffers are CPU memory and compute functions run on
   every core, so the same program works with OpenGL, the software renderer and on the web.
+  Their elements are plain data (numbers, bools, vectors and structs of them): a buffer of
+  strings or arrays is a compile error.
 - `fwidth()` in fragment shaders.
+- Shaders and compute functions follow the CPU's rules for numbers: unsigned division,
+  remainders, shifts and comparisons, narrow integer types wrapping, float to integer
+  conversions saturating, `i32(bool)`. (GPU arithmetic stays 32-bit.)
+- Vulkan: a texture deleted, made again or given other sampling after a draw that uses it no
+  longer changes that draw (each change takes a new slot of the bindless array; the old one is
+  freed once the GPU is done with it), and things released between frames wait for the frame
+  that may still use them.
 - `SLOPPY_VK_VALIDATE=1` turns on the Khronos validation layer, where it is installed.
 
 Website and install:
@@ -36,6 +45,12 @@ Website and install:
   each with a whole program to run in the playground (docs/api/; the tests build them), every
   function with its description, a search box (`?q=` links to a search), and the built-in
   functions (`print`, `push`, `pop`, `fill`, `embed`...), which were missing.
+
+Language:
+- Float to integer conversions saturate at the range of the type converted to (`u8(300.0)` is
+  255, `i8(-200.0)` is -128, `u64(-1.0)` is 0); before, only `int` did.
+- Signed division wraps like the rest of integer arithmetic: the smallest integer `/ -1` is
+  itself and `% -1` is 0 (native programs used to stop with an arithmetic error).
 
 ## 0.5.0
 

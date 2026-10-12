@@ -785,26 +785,77 @@ sv_arith = (op: Tok, ta0: int, a0: int, tb0: int, b0: int, rt: int, pos: int) ->
         if not is_vec(tb):
             if fl and op == .star: return sv_val(142, ty, [a, b])
             b = sv_splat(rt, b, pos)
+    # (unsigned integers divide, take remainders and shift right as unsigned numbers)
+    us = sv_unsigned(rt)
+    q = 0
+    if op == .slash or op == .percent:
+        if fl: q = sv_val(136, ty, [a, b])
+        else if us:
+            # (OpUDiv works on an unsigned type: the same bits)
+            u = sv_u32()
+            q = sv_val(124, ty, [sv_val(134, u, [sv_val(124, u, [a]), sv_val(124, u, [b])])])
+        else: q = sv_val(135, ty, [a, b])
     match op:
-        plus: return sv_val(sv_pick(fl, 129, 128), ty, [a, b])
-        minus: return sv_val(sv_pick(fl, 131, 130), ty, [a, b])
-        star: return sv_val(sv_pick(fl, 133, 132), ty, [a, b])
-        slash: return sv_val(sv_pick(fl, 136, 135), ty, [a, b])
+        plus: return sv_narrow(sv_val(sv_pick(fl, 129, 128), ty, [a, b]), rt)
+        minus: return sv_narrow(sv_val(sv_pick(fl, 131, 130), ty, [a, b]), rt)
+        star: return sv_narrow(sv_val(sv_pick(fl, 133, 132), ty, [a, b]), rt)
+        slash: return sv_narrow(q, rt)
         percent:
             # (the dividend's sign, as on the CPU: x - y * trunc(x / y), the way glsl.jo does it,
             # rather than OpSRem / OpFRem, which drivers get wrong for negative numbers)
             if fl:
-                t = sv_val(12, ty, [sv_std, 3, sv_val(136, ty, [a, b])])
+                t = sv_val(12, ty, [sv_std, 3, q])
                 return sv_val(131, ty, [a, sv_val(133, ty, [b, t])])
-            return sv_val(130, ty, [a, sv_val(132, ty, [sv_val(135, ty, [a, b]), b])])
+            return sv_narrow(sv_val(130, ty, [a, sv_val(132, ty, [q, b])]), rt)
         amp: return sv_val(199, ty, [a, b])
         pipe: return sv_val(197, ty, [a, b])
         caret: return sv_val(198, ty, [a, b])
-        shl: return sv_val(196, ty, [a, b])
-        shr: return sv_val(195, ty, [a, b])
+        shl: return sv_narrow(sv_val(196, ty, [a, b]), rt)
+        shr: return sv_val(sv_pick(us, 194, 195), ty, [a, b])
         _: pass
     sv_err(pos, "unsupported operator in shader")
     0
+
+# integers are 32 bits in shaders; an unsigned one (u8 u16 u32 u64) is held in the same bits
+sv_unsigned = (t0: int) -> bool:
+    t = prune(t0)
+    types[t].kind == .int_ and not types[t].sign
+
+# v (32 bits) wrapped to the range of a narrower integer type t, as on the CPU
+sv_narrow = (v: int, t0: int) -> int:
+    t = prune(t0)
+    if types[t].kind != .int_: return v
+    bits = int(types[t].bits)
+    if bits >= 32: return v
+    if not types[t].sign: return sv_val(199, sv_i32(), [v, sv_ci((1 << bits) - 1)])
+    sh = sv_ci(32 - bits)
+    sv_val(195, sv_i32(), [sv_val(196, sv_i32(), [v, sh]), sh])
+
+# float v to integer type t, as on the CPU: toward zero, saturating at t's range (32 bits at
+# most here), NaN to 0
+sv_float_to_int = (v: int, t0: int) -> int:
+    t = prune(t0)
+    bits = int(types[t].bits)
+    if bits > 32: bits = 32
+    sg = types[t].sign
+    lo = 0.0
+    hi = f64((1 << bits) - 1)
+    if sg:
+        lo = -f64(1 << (bits - 1))
+        hi = f64((1 << (bits - 1)) - 1)
+    f = sv_f32()
+    i = sv_i32()
+    bo = sv_bool()
+    # (2^31 - 1 and 2^32 - 1 are not f32s: the largest f32 below them, and the top above it)
+    top = hi
+    if bits == 32 and sg: top = 2147483520.0
+    else if bits == 32: top = 4294967040.0
+    c = sv_val(12, f, [sv_std, 43, v, sv_cf(lo), sv_cf(top)])
+    r = 0
+    if sg: r = sv_val(110, i, [c])
+    else: r = sv_val(124, i, [sv_val(109, sv_u32(), [c])])
+    if bits == 32: r = sv_val(169, i, [sv_val(190, bo, [v, sv_cf(hi + 1.0)]), sv_ci(int(hi)), r])
+    sv_val(169, i, [sv_val(156, bo, [v]), sv_ci(0), r])
 
 # a == b, a < b...: a bool
 sv_compare = (op: Tok, t0: int, a: int, b: int, pos: int) -> int:
@@ -824,14 +875,15 @@ sv_compare = (op: Tok, t0: int, a: int, b: int, pos: int) -> int:
             else: r = sv_val(166, bo, [r, x])
         return r
     fl = sv_is_floaty(t)
+    us = sv_unsigned(t)
     code = 0
     match op:
         eq: code = sv_pick(fl, 180, 170)
         ne: code = sv_pick(fl, 183, 171)
-        lt: code = sv_pick(fl, 184, 177)
-        le: code = sv_pick(fl, 188, 179)
-        gt: code = sv_pick(fl, 186, 173)
-        ge: code = sv_pick(fl, 190, 175)
+        lt: code = sv_pick(fl, 184, sv_pick(us, 176, 177))
+        le: code = sv_pick(fl, 188, sv_pick(us, 178, 179))
+        gt: code = sv_pick(fl, 186, sv_pick(us, 172, 173))
+        ge: code = sv_pick(fl, 190, sv_pick(us, 174, 175))
         _: sv_err(pos, "unsupported comparison in shader")
     if sv_is_vector(t):
         v = sv_val(code, sv_vecb(sv_ncomp(t)), [a, b])
@@ -846,7 +898,7 @@ sv_as = (e: int, v: int, t: int, pos: int) -> int:
         n = sv_ncomp(from_)
         ty = sv_f32()
         if n > 1: ty = sv_vecf(n)
-        return sv_val(111, ty, [v])
+        return sv_val(sv_pick(sv_unsigned(from_), 112, 111), ty, [v])
     if not sv_is_floaty(t) and sv_is_floaty(from_) and types[prune(t)].kind != .bool_:
         n = sv_ncomp(from_)
         ty = sv_i32()
@@ -931,17 +983,22 @@ sv_expr = (e: int) -> int:
         if nodes[e].op == i32(int(Tok.minus)):
             if t == T_MAT4: return sv_val(143, ty, [v, sv_cf(-1.0)])
             if sv_is_floaty(t): return sv_val(127, ty, [v])
-            return sv_val(126, ty, [v])
-        return sv_val(200, ty, [v])
+            return sv_narrow(sv_val(126, ty, [v]), t)
+        return sv_narrow(sv_val(200, ty, [v]), t)
     if k == .not_: return sv_val(168, sv_bool(), [sv_expr(int(nodes[e].a))])
     if k == .and_ or k == .or_: return sv_logic(e, k == .and_)
     if k == .conv:
         cv = nodes[e].aux as CV
         a = int(nodes[e].a)
         v = sv_expr(a)
-        if cv == .int2float: return sv_val(111, sv_type(t, pos), [v])
-        if cv == .float2int: return sv_val(110, sv_type(t, pos), [v])
-        if cv == .int_ and types[t].kind == .int_: return v
+        from_ = prune(ntype(a))
+        if cv == .int2float: return sv_val(sv_pick(sv_unsigned(from_), 112, 111), sv_type(t, pos), [v])
+        if cv == .float2int:
+            if types[t].kind == .int_: return sv_float_to_int(v, t)
+            return sv_val(110, sv_type(t, pos), [v])
+        if cv == .int_ and types[t].kind == .int_:
+            if types[from_].kind == .bool_: return sv_val(169, sv_i32(), [v, sv_ci(1), sv_ci(0)])
+            return sv_narrow(v, t)
         if cv == .float_ or cv == .none_: return v
         sv_err(pos, "unsupported conversion in shader")
     if k == .if_: return sv_if_expr(e)

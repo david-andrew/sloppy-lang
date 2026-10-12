@@ -1578,9 +1578,14 @@ when TARGET != "wasm":
     __vk_addr = (b: int, off: int) -> int: __vk_blocks[b].addr + off
 
     # ---------------- destroying what the GPU may still use ----------------
+    # (with the frame being recorded, destroyed once it has run; between frames, with the last
+    # one: the frame to come begins by emptying its own list, which only waits for the frame
+    # before the last)
     __vk_defer = (kind: int, a: int, b: int):
         if a == 0: return
-        __vk_frames[__vk_frame].dead.push(__VkDead(kind, a, b))
+        f = __vk_frame
+        if not __vk_recording: f = (__vk_frame + __VK_FRAMES - 1) % __VK_FRAMES
+        __vk_frames[f].dead.push(__VkDead(kind, a, b))
 
     __vk_destroy = (d: __VkDead):
         if d.kind == 0:
@@ -1591,6 +1596,10 @@ when TARGET != "wasm":
             vkDestroyImage(__vk_dev, d.a, null)
         else if d.kind == 2: __vk_mem_free(d.a)
         else if d.kind == 3: vkDestroyPipeline(__vk_dev, d.a, null)
+        else if d.kind == 4:
+            # (a texture slot: free again, pointing at the white texture until reused)
+            __vk_set_texture(d.a, __vgt[0].img.view, false, false)
+            __vk_slot_free.push(d.a)
 
     __vk_defer_image = (img: __VkImage):
         __vk_defer(1, img.image, img.view)
@@ -1632,6 +1641,17 @@ when TARGET != "wasm":
                 smp = 0
                 __vk_check(vkCreateSampler(__vk_dev, (&si) as *u8, null, &smp), "vkCreateSampler")
                 __vk_samplers.push(smp)
+
+    # slots of the bindless array: 0 is the white texture's; a texture takes a new one whenever
+    # its image or sampling changes, and the old one is free again once the GPU is done with
+    # the frames that may use it, so draws already recorded keep what they were given
+    __vk_slot_free: int[]
+    __vk_slot_next = 1
+    __vk_slot_new = () -> int:
+        if __vk_slot_free.len() > 0: return __vk_slot_free.pop()
+        if __vk_slot_next >= __VK_MAX_TEXTURES: panic("too many textures (at most {__VK_MAX_TEXTURES})")
+        __vk_slot_next += 1
+        __vk_slot_next - 1
 
     # point texture slot `slot` at an image view (sampled with the given filter and wrapping)
     __vk_set_texture = (slot: int, view: int, linear: bool, repeat: bool):

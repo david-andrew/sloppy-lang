@@ -1571,8 +1571,8 @@ Through Vulkan a buffer is GPU memory read by its address and a compute function
 
 #### Making, reading and writing buffers
 
-- `gpu_buffer[T] = (n: int) -> GpuBuffer[T]`: a buffer of n elements, all zero: gpu_buffer[Particle](1000)
-- `gpu_buffer[T] = (xs: T[]) -> GpuBuffer[T]`: a buffer holding a copy of xs
+- `gpu_buffer[T] = (n: int) -> GpuBuffer[T]`
+- `gpu_buffer[T] = (xs: T[]) -> GpuBuffer[T]`
 - `len[T] = (b: GpuBuffer[T]) -> int`
 - `cpu[T] = (b: GpuBuffer[T]) -> T[]`: all the elements, or count of them from first (after what the GPU was given to do has run)
 - `cpu[T] = (b: GpuBuffer[T], first: int, count: int) -> T[]`

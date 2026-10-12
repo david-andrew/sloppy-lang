@@ -581,7 +581,8 @@ needed), else OpenGL ES; web builds WebGL 2. Where none of them can (no driver,
 everywhere; `gpu_available()` tells which.
 
 **GPU buffers and compute functions.** For data that lives on the GPU: `gpu_buffer(xs)` holds
-an array of any struct there, and a *compute function* `f(id: int, params: P)`, written like a
+an array of plain data there (numbers, bools, vectors and structs of them; no strings, arrays
+or functions), and a *compute function* `f(id: int, params: P)`, written like a
 shader function, runs once for each `id` — on the GPU — when `dispatch(compute(f), n, params)`
 is called. It reads and writes the buffers among its parameters by index:
 
@@ -602,6 +603,11 @@ seen by every dispatch and draw after it. Through Vulkan buffers are GPU memory 
 address and compute functions compute programs (SPIR-V made by the compiler); elsewhere
 (OpenGL, the software renderer, the web) they are CPU memory and the same functions run on the
 CPU's cores, so the program behaves the same. `gpu_compute()` tells which.
+Numbers follow the CPU's rules on the GPU too (unsigned division, comparisons and shifts,
+narrow types wrapping, float to integer conversions saturating), with one difference, as in
+shaders: GPU arithmetic is 32-bit, so there an `int`, `i64` or `u64` wraps at 32 bits and an
+`f64` is computed as an `f32`. Compute functions that use `i32`, `u32` and `f32` give the same
+results everywhere.
 
 ## 9. Modules
 

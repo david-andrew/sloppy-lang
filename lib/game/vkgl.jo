@@ -1,7 +1,8 @@
 # The part of OpenGL ES the library uses, on Vulkan (vk.jo): what softgl.jo is for the software
 # renderer. gl.jo's entry points come here when the library draws through Vulkan. GL's objects
-# become Vulkan's: a texture is an image in a slot of the bindless array (its GL name is the
-# slot), a framebuffer a set of attachments rendered with dynamic rendering, a buffer a Vulkan
+# become Vulkan's: a texture is an image in a slot of the bindless array (a new slot whenever
+# the image or its sampling changes; draws are given the slot their textures have when they
+# are recorded, in place of the GL name in their uniforms), a framebuffer a set of attachments rendered with dynamic rendering, a buffer a Vulkan
 # buffer read by address. GL's state (blending, depth, culling, color mask, viewport, scissor)
 # is kept here and chooses the pipeline and the dynamic state of each draw. Draws themselves come
 # from gpu.jo and draw2d.jo (__vk_draw_mesh, __vk_draw2d), which know the shader and its data.
@@ -17,8 +18,10 @@ when TARGET != "wasm":
         live: bool
         linear: bool
         repeat: bool
+        slot: int                  # in the bindless array
+        drawn: bool                # (a draw was given the slot)
 
-    __vgt: __VgTex[]               # by GL name = slot in the bindless array (0: white, 1x1)
+    __vgt: __VgTex[]               # by GL name (0: white, 1x1, in slot 0)
     __vgt_free: int[]
     __vg_bound: int[] = fill(0, 16)       # texture bound to each unit
     __vg_unit = 0
@@ -263,9 +266,24 @@ when TARGET != "wasm":
     vgl_delete_texture = (t: int):
         if t <= 0 or t >= __vgt.len() or not __vgt[t].live: return
         __vk_defer_image(__vgt[t].img)
+        __vk_defer(4, __vgt[t].slot, 0)
         __vgt[t] = __VgTex()
         __vgt_free.push(t)
-        __vk_set_texture(t, __vgt[0].img.view, false, false)
+
+    # texture t sampled from a new slot (the old one free once the GPU is done with it)
+    __vg_tex_slot = (t: int):
+        if t > 0 and (__vgt[t].slot == 0 or __vgt[t].drawn):
+            __vk_defer(4, __vgt[t].slot, 0)
+            __vgt[t].slot = __vk_slot_new()
+            __vgt[t].drawn = false
+        depth = __vgt[t].img.aspect != 1
+        __vk_set_texture(__vgt[t].slot, __vgt[t].img.view, __vgt[t].linear and not depth, __vgt[t].repeat)
+
+    # the slot a draw samples texture t from (white for no texture)
+    __vg_slot_of = (t: int) -> int:
+        if t <= 0 or t >= __vgt.len() or __vgt[t].img.image == 0: return 0
+        __vgt[t].drawn = true
+        __vgt[t].slot
 
     vgl_active_texture = (unit: u32): __vg_unit = clamp(int(unit) - GL_TEXTURE0, 0, 15)
     vgl_bind_texture = (t: u32): __vg_bound[__vg_unit] = int(t)
@@ -296,7 +314,7 @@ when TARGET != "wasm":
         __vk_barrier(__vk_cb(), img, u32(VK_LAYOUT_SHADER_READ), VK_STAGE_TOP, 0, VK_STAGE_ALL, VK_ACCESS_SHADER_READ)
         __vgt[t].img = img
         __vgt[t].live = true
-        __vk_set_texture(t, img.view, __vgt[t].linear and not depth, __vgt[t].repeat)
+        __vg_tex_slot(t)
 
     # copy pixels into part of texture t (bytes_per_pixel: of the data given)
     __vg_tex_upload = (t: int, x: int, y: int, w: int, h: int, pixels: *u8, bpp: int):
@@ -353,7 +371,7 @@ when TARGET != "wasm":
         if p == GL_TEXTURE_MAG_FILTER: __vgt[t].linear = int(v) != GL_NEAREST
         else if p == GL_TEXTURE_WRAP_S or p == GL_TEXTURE_WRAP_T: __vgt[t].repeat = int(v) == GL_REPEAT or int(v) == GL_MIRRORED_REPEAT
         else: return
-        if __vgt[t].img.image != 0: __vk_set_texture(t, __vgt[t].img.view, __vgt[t].linear and __vgt[t].img.aspect == 1, __vgt[t].repeat)
+        if __vgt[t].img.image != 0: __vg_tex_slot(t)
 
     # framebuffers
     vgl_create_framebuffer = () -> int:
@@ -403,12 +421,32 @@ when TARGET != "wasm":
         vs: int
         fs: int
         pipelines: {int: int}      # state key -> pipeline
+        tex_offs: int[]            # where its uniforms hold a Texture's id (GL name)
 
     __vgp: __VgProg[] = [__VgProg()]
 
+    # uniforms uploaded to address p for program prog, its textures' GL names made their slots
+    __vg_tex_slots = (prog: int, p: *u8):
+        loop o in __vgp[prog].tex_offs:
+            q = (p + o) as *int
+            q[0] = __vg_slot_of(q[0])
+
     # a program from a ShaderSource's SPIR-V (its GL name)
     __vk_program = (src: ShaderSource) -> int:
-        __vgp.push(__VgProg(__vk_module(src.vs_spirv), __vk_module(src.fs_spirv), {}))
+        offs: int[]
+        halves = split(src.layout, "|")
+        if halves.len() > 1:
+            loop part in split(halves[1], ";"):
+                f = split(part, ",")
+                if f.len() < 3 or f[1] != "t": continue
+                o = to_int(f[2]) ?? 0
+                n = 1
+                stride = 0
+                if f.len() > 4:
+                    n = to_int(f[3]) ?? 0
+                    stride = to_int(f[4]) ?? 0
+                loop i in [0..n): offs.push(o + i * stride)
+        __vgp.push(__VgProg(__vk_module(src.vs_spirv), __vk_module(src.fs_spirv), {}, offs))
         __vgp.len() - 1
 
     # GL blend factors as Vulkan's
@@ -562,6 +600,7 @@ when TARGET != "wasm":
         seq = 0
         if ind != 0 and not indexed: seq = __vg_sequence(nverts)
         blk, off = __vk_upload(uni, usize)
+        __vg_tex_slots(prog, __vk_blocks[blk].ptr + off)
         pc = __VgPush(params = __vk_addr(blk, off), verts = verts, insts = insts, vstride = i32(stride), istride = i32(istride))
         __vg_prepare(prog, mode)
         cb = __vk_cb()
@@ -599,6 +638,7 @@ when TARGET != "wasm":
     # vertices already in upload memory (at address verts): the 2D batch
     __vk_draw_batch = (prog: int, verts: int, stride: int, nverts: int, uni: *u8, usize: int):
         blk, off = __vk_upload(uni, usize)
+        __vg_tex_slots(prog, __vk_blocks[blk].ptr + off)
         pc = __VgPush(params = __vk_addr(blk, off), verts = verts, vstride = i32(stride))
         __vg_prepare(prog, GL_TRIANGLES)
         cb = __vk_cb()

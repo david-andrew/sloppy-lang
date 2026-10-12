@@ -132,6 +132,13 @@ gl_assign_op = (op: int) -> str:
         slasheq: "/="
         _: "="
 
+gl_compound_op = (op: Tok) -> Tok:
+    match op:
+        minuseq: .minus
+        stareq: .star
+        slasheq: .slash
+        _: .plus
+
 gl_stmt = (s: int, depth: int):
     k = nodes[s].kind
     pre = ind(depth)
@@ -144,7 +151,14 @@ gl_stmt = (s: int, depth: int):
         else: gl_out.push("{pre}{t} {gl_local(l)} = {gl_zero(int(locals[l].type), nodes[s].pos)};\n")
     else if k == .assign:
         if nodes[s].aux != 0: gl_err(nodes[s].pos, "unsupported assignment in shader")
-        gl_out.push("{pre}{gl_expr(int(nodes[s].a))} {gl_assign_op(int(nodes[s].op))} {gl_expr(int(nodes[s].b))};\n")
+        a = int(nodes[s].a)
+        op = int(nodes[s].op)
+        ta = prune(ntype(a))
+        if op != int(Tok.assign) and types[ta].kind == .int_ and (gl_unsigned(ta) or int(types[ta].bits) < 32):
+            # (x op= y as x = x op y: unsigned operations, wrapping to the type's range)
+            x = gl_expr(a)
+            gl_out.push("{pre}{x} = {gl_arith(gl_compound_op(op as Tok), x, gl_expr(int(nodes[s].b)), ta, ta)};\n")
+        else: gl_out.push("{pre}{gl_expr(a)} {gl_assign_op(op)} {gl_expr(int(nodes[s].b))};\n")
     else if k == .exprstmt:
         e = int(nodes[s].a)
         if nodes[e].kind == .if_ or nodes[e].kind == .match_:
@@ -275,23 +289,26 @@ gl_expr = (e: int) -> str:
             x = gl_expr(a)
             y = gl_expr(b)
             return "({x} - {y} * trunc({x} / {y}))"
-        if op == .percent and is_int(ntype(a)):
-            x = gl_expr(a)
-            y = gl_expr(b)
-            return "({x} - ({x} / {y}) * {y})"
-        return "({gl_expr(a)} {gl_binop(op)} {gl_expr(b)})"
+        return gl_arith(op, gl_expr(a), gl_expr(b), ntype(a), t)
     if k == .unary:
-        if nodes[e].op == i32(int(Tok.minus)): return "(-{gl_expr(int(nodes[e].a))})"
-        return "(~{gl_expr(int(nodes[e].a))})"
+        if nodes[e].op == i32(int(Tok.minus)): return gl_narrow("(-{gl_expr(int(nodes[e].a))})", t)
+        return gl_narrow("(~{gl_expr(int(nodes[e].a))})", t)
     if k == .not_: return "(!{gl_expr(int(nodes[e].a))})"
     if k == .and_: return "({gl_expr(int(nodes[e].a))} && {gl_expr(int(nodes[e].b))})"
     if k == .or_: return "({gl_expr(int(nodes[e].a))} || {gl_expr(int(nodes[e].b))})"
     if k == .conv:
         cv = nodes[e].aux as CV
         a = gl_expr(int(nodes[e].a))
-        if cv == .int2float: return "float({a})"
-        if cv == .float2int: return "int({a})"
-        if cv == .int_ and types[t].kind == .int_: return a
+        from_ = prune(ntype(int(nodes[e].a)))
+        if cv == .int2float:
+            if gl_unsigned(from_): return "float(uint({a}))"
+            return "float({a})"
+        if cv == .float2int:
+            if types[t].kind != .int_: return "int({a})"
+            return gl_float_to_int(a, t)
+        if cv == .int_ and types[t].kind == .int_:
+            if types[from_].kind == .bool_: return "int({a})"
+            return gl_narrow(a, t)
         if cv == .float_ or cv == .none_: return a
         gl_err(nodes[e].pos, "unsupported conversion in shader")
     if k == .if_:
@@ -357,6 +374,54 @@ gl_expr = (e: int) -> str:
     if k == .array: gl_err(nodes[e].pos, "growable arrays (T[]) cannot be used in shaders; use a fixed-size array T[N]")
     gl_err(nodes[e].pos, "unsupported expression in shader")
     ""
+
+# x op y for operands of type ta, giving type t: unsigned integers divide, take remainders,
+# shift and compare as unsigned numbers; narrow ones wrap to their range, as on the CPU
+gl_arith = (op: Tok, x: str, y: str, ta: int, t: int) -> str:
+    # (% keeps the dividend's sign, as on the CPU: GLSL's mod() takes the divisor's, and its %
+    # is undefined for negative numbers)
+    if op == .percent and (is_float(ta) or is_vec(ta)): return "({x} - {y} * trunc({x} / {y}))"
+    if gl_unsigned(ta):
+        if op == .slash or op == .percent or op == .shr: return gl_narrow("int(uint({x}) {gl_binop(op)} uint({y}))", t)
+        if op == .lt or op == .le or op == .gt or op == .ge: return "(uint({x}) {gl_binop(op)} uint({y}))"
+    if op == .percent and is_int(ta): return gl_narrow("({x} - ({x} / {y}) * {y})", t)
+    if op == .plus or op == .minus or op == .star or op == .slash or op == .shl: return gl_narrow("({x} {gl_binop(op)} {y})", t)
+    "({x} {gl_binop(op)} {y})"
+
+gl_unsigned = (t0: int) -> bool:
+    t = prune(t0)
+    types[t].kind == .int_ and not types[t].sign
+
+# x (32 bits) wrapped to the range of a narrower integer type t
+gl_narrow = (x: str, t0: int) -> str:
+    t = prune(t0)
+    if types[t].kind != .int_: return x
+    bits = int(types[t].bits)
+    if bits >= 32: return x
+    if not types[t].sign: return "({x} & {(1 << bits) - 1})"
+    "(({x} << {32 - bits}) >> {32 - bits})"
+
+# float x to integer type t, as on the CPU: toward zero, saturating at t's range (32 bits at
+# most), NaN to 0
+gl_float_to_int = (x: str, t0: int) -> str:
+    t = prune(t0)
+    bits = int(types[t].bits)
+    if bits > 32: bits = 32
+    sg = types[t].sign
+    lo = 0
+    hi = (1 << bits) - 1
+    if sg:
+        lo = -(1 << (bits - 1))
+        hi = (1 << (bits - 1)) - 1
+    if gl_done_structs.get(-2) == none:
+        gl_done_structs[-2] = true
+        # (2^31 - 1 and 2^32 - 1 are not floats: clamped to the largest float below, the top tested apart)
+        gl_decls.push("int sl_f2i(float x, float lo, float top, float hi1, int him) \{\n    if (isnan(x)) return 0;\n    if (x >= hi1) return him;\n    return int(clamp(x, lo, top));\n}\n")
+        gl_decls.push("int sl_f2u(float x, float top) \{\n    if (isnan(x)) return 0;\n    if (x >= 4294967296.0) return -1;\n    return int(uint(clamp(x, 0.0, top)));\n}\n")
+    if bits == 32 and not sg: return "sl_f2u({x}, 4294967040.0)"
+    top = f64(hi)
+    if bits == 32: top = 2147483520.0
+    "sl_f2i({x}, {gl_float(f64(lo))}, {gl_float(top)}, {gl_float(f64(hi) + 1.0)}, {hi})"
 
 # ---------------- GPU buffers ----------------
 gl_gbuf_decls = ():
