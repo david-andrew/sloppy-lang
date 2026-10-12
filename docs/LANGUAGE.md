@@ -73,7 +73,8 @@ piped in (`sloppy < script.txt`).
   and a `:` at the end of a line opens an indented block (this is how multi-line lambdas work).
 * `;` may separate statements on one line.
 * Integer literals: `42`, `1_000_000`, `0xff`, `0b1010`. Float literals: `1.5`, `2.0e-3`.
-  Literals take the type their context expects.
+  Literals take the type their context expects, and must fit it (`x: u8 = 300` and
+  `x: u64 = -1` are errors; a literal above the i64 range is a `u64`, or `int`'s bits).
 * Strings: `"text {expr} more {value:.2}"` and `'the same'` — the two quotes are
   interchangeable, and both may span lines. `{}` interpolates any expression, `{{` and `}}`
   are literal braces. Escapes: `\n \t \r \0 \\ \" \' \xNN`. Format specs follow Python:
@@ -256,7 +257,8 @@ written inside an expression is a lambda.
 * **Uniform call syntax**: `x.f(a)` is the same as `f(x, a)`. There are no methods,
   only functions; any function can be called with dot syntax on its first argument.
 * Functions may be **overloaded** by parameter types. A program's own definitions take
-  precedence over standard-library functions with the same signature.
+  precedence over standard-library functions with the same signature. An integer literal
+  prefers `int`, then another integer type it fits, then `f64`, then `f32`.
 * **Operators** can be overloaded: `(+) = (a: Money, b: Money) -> Money: ...`, also
   `([])` and `([]=)` for indexing.
 

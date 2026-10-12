@@ -138,9 +138,15 @@ wrap_union = (n: int, vi: int, to: int):
 # can integer type t hold v?
 int_fits = (v: int, t: int) -> bool:
     bits = int(types[t].bits)
-    if bits >= 64: return true
+    if bits >= 64: return types[t].sign or v >= 0
     if types[t].sign: return v >= -(1 << (bits - 1)) and v <= (1 << (bits - 1)) - 1
     v >= 0 and v <= (1 << bits) - 1
+
+# can integer type t hold literal n? (one above the i64 range fits u64, and the 64-bit signed
+# types as its bits, e.g. hash constants)
+lit_fits = (n: int, t: int) -> bool:
+    if has_flag(n, NF_U64): return int(types[t].bits) >= 64
+    int_fits(nodes[n].ival, t)
 
 # coerce node n to `target` (rewrites n in place); returns n
 coerce = (n: int, target: int) -> int:
@@ -158,13 +164,16 @@ coerce = (n: int, target: int) -> int:
         k = nodes[n].kind
         if k == .int_lit and tk == .int_:
             v = nodes[n].ival
-            if not int_fits(v, to): fatal(nodes[n].pos, "value {v} does not fit in {type_str(to)}")
+            if not lit_fits(n, to):
+                if has_flag(n, NF_U64): fatal(nodes[n].pos, "value {u64(v)} does not fit in {type_str(to)}")
+                fatal(nodes[n].pos, "value {v} does not fit in {type_str(to)}")
             nodes[n].type = i32(to)
             clear_flag(n, NF_LITERAL)
             return n
         if k == .int_lit and tk == .float_:
             nodes[n].kind = .float_lit
             nodes[n].fval = f64(nodes[n].ival)
+            if has_flag(n, NF_U64): nodes[n].fval = f64(u64(nodes[n].ival))
             nodes[n].type = i32(to)
             clear_flag(n, NF_LITERAL)
             return n
@@ -743,23 +752,24 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
         if union_target(a, ntype(a), p) >= 0: return 1
         return -1
     if is_lit(a):
+        # an integer literal goes to int, then another integer type, then f64, then f32
         if pk == .param:
             b = binds[int(types[p].id)]
-            if b == 0: return 2
+            if b == 0: return 3
             if can_coerce(a, ntype(a), b): return 0
             return -1
         if is_union(p) and has_var(p): return match_type(pat, lit_default(a), binds, 0)
         if pk == .int_:
             if nodes[a].kind == .int_lit:
                 if p == T_INT: return 0
-                if not int_fits(nodes[a].ival, p): return -1
+                if not lit_fits(a, p): return -1
                 return 1
             return -1
         if pk == .float_:
             if p == T_FLOAT:
-                if nodes[a].kind == .int_lit: return 1
+                if nodes[a].kind == .int_lit: return 2
                 return 0
-            if nodes[a].kind == .int_lit: return 2
+            if nodes[a].kind == .int_lit: return 3
             return 1
         if pk == .opt and is_numeric(int(types[p].elem)): return 2
         if pk == .vec: return -1
@@ -2035,7 +2045,9 @@ check_binary = (n: int, expected: int) -> int:
             else if op == .shr: v = x >> y
             else: ok = false
             if ok:
+                big = v < 0 and (has_flag(a, NF_U64) or has_flag(b, NF_U64) or (op == .shl and x >= 0))
                 nodes[n] = Node(kind = .int_lit, pos = nodes[n].pos, ival = v, flags = i32(NF_LITERAL | NF_CHECKED), type = i32(T_INT))
+                if big: add_flag(n, NF_U64)
                 return T_INT
         else if (op == .plus or op == .minus or op == .star or op == .slash) and (nodes[a].kind == .int_lit or nodes[a].kind == .float_lit) and (nodes[b].kind == .int_lit or nodes[b].kind == .float_lit):
             x = nodes[a].fval

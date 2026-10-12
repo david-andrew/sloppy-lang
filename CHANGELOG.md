@@ -3,6 +3,8 @@
 ## Unreleased
 
 Graphics:
+- Arrays of arrays (`f32[2][3]`) work in shaders on OpenGL and the web too (GLSL ES has none: they
+  are kept in structs there).
 - **Vulkan.** Games draw through Vulkan 1.3 on Linux and Windows where the driver has it
   (OpenGL otherwise, or with `SLOPPY_VULKAN=0`), set up as current GPUs work best (after Mason
   Remaley's mr_gpu): every texture in one bindless array, buffers read by address, vertices
@@ -47,6 +49,9 @@ Website and install:
   functions (`print`, `push`, `pop`, `fill`, `embed`...), which were missing.
 
 Language:
+- Integer literals: `x: u64 = -1` is an error like `x: u32 = -1`, a literal above 64 bits is an
+  error, and overloads rank integer types before `f64` before `f32` (`choose(-1)` with `u64`
+  and `f64` overloads takes `f64`; it was ambiguous).
 - Type arguments at a call: `zero[int]()`, `gpu_buffer[Bug](100)`, `empty[str[]]()` (`T[]`
   written inside the brackets is the array type).
 - `b[i].f = v` and `b[i].f += v` for types defining `[]` and `[]=` (a GpuBuffer, in compute
