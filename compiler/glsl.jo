@@ -419,6 +419,13 @@ gl_expr = (e: int) -> str:
         loop i in [0..nkids(e)): args.push(gl_expr(kid(e, i)))
         if modules[int(nodes[decl].mod)].is_prelude:
             if let g = builtin_map.get(nm):
+                # (abs of the smallest integer is itself, as on the CPU: GLSL's is undefined)
+                if nm == "abs" and (types[t].kind == .int_ or (is_vec(t) and types[t].sign)):
+                    tn = gl_type(t, nodes[e].pos)
+                    un = "uint"
+                    if is_vec(t): un = "uvec{types[t].bits}"
+                    if gl_first("abs_{tn}"): gl_decls.push("{tn} sl_abs_{tn}({tn} x) \{\n    return {tn}({sl_abs_body(t, un)});\n}\n")
+                    return gl_narrow("sl_abs_{tn}({args[0]})", t)
                 # (unsigned numbers compared as such; abs(i8(-128)) is -128, as on the CPU)
                 if gl_unsigned(t) and (nm == "min" or nm == "max" or nm == "clamp"):
                     us: str[]
@@ -492,9 +499,42 @@ gl_arith = (op: Tok, x: str, y: str, ta: int, t: int, tb: int = 0) -> str:
     if gl_unsigned(ta):
         if op == .slash or op == .percent or op == .shr: return gl_narrow("int(uint({x}) {gl_binop(op)} uint({y}))", t)
         if op == .lt or op == .le or op == .gt or op == .ge: return "(uint({x}) {gl_binop(op)} uint({y}))"
-    if op == .percent and is_int(ta): return gl_narrow("int(uint({x}) - uint({x} / {y}) * uint({y}))", t)
+    if (op == .slash or op == .percent) and (types[prune(ta)].kind == .int_ or (is_vec(ta) and types[prune(ta)].sign)):
+        # (the smallest integer / -1 wraps, as on the CPU; GLSL leaves it undefined)
+        d = gl_sdiv(prune(ta), tb)
+        if op == .slash: return gl_narrow("{d}({x}, {y})", t)
+        return gl_narrow("int(uint({x}) - uint({d}({x}, {y})) * uint({y}))", t)
     if op == .plus or op == .minus or op == .star or op == .slash or op == .shl: return gl_narrow("({x} {gl_binop(op)} {y})", t)
     "({x} {gl_binop(op)} {y})"
+
+# the name of a helper dividing signed integers (or integer vectors, by a vector or a number)
+# that by -1 divides by 1 and negates: the smallest integer / -1 is itself, as on the CPU
+gl_sdiv = (ta: int, tb: int) -> str:
+    if gl_first("sdiv"): gl_decls.push("int sl_sdiv(int a, int b) \{\n    int q = a / (b == -1 ? 1 : b);\n    return b == -1 ? int(-uint(a)) : q;\n}\n")
+    if types[ta].kind == .int_: return "sl_sdiv"
+    n = int(types[ta].bits)
+    sc = tb != 0 and not is_vec(tb)
+    nm = "sl_sdiv{n}"
+    bty = "ivec{n}"
+    if sc:
+        nm = "sl_sdiv{n}s"
+        bty = "int"
+    if gl_first(nm):
+        sw = ["x", "y", "z", "w"]
+        cs: str[]
+        loop j in [0..n):
+            if sc: cs.push("sl_sdiv(a.{sw[j]}, b)")
+            else: cs.push("sl_sdiv(a.{sw[j]}, b.{sw[j]})")
+        gl_decls.push("ivec{n} {nm}(ivec{n} a, {bty} b) \{\n    return ivec{n}({join(cs, ", ")});\n}\n")
+    nm
+
+# (the body of sl_abs: x below 0 negated through unsigned numbers, which wrap; by component)
+sl_abs_body = (t: int, un: str) -> str:
+    if not is_vec(t): return "x < 0 ? -uint(x) : uint(x)"
+    sw = ["x", "y", "z", "w"]
+    cs: str[]
+    loop j in [0..int(types[t].bits)): cs.push("x.{sw[j]} < 0 ? -uint(x.{sw[j]}) : uint(x.{sw[j]})")
+    "{un}({join(cs, ", ")})"
 
 gl_unsigned = (t0: int) -> bool:
     t = prune(t0)

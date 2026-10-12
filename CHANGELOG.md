@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Shaders: the smallest integer `/ -1` (and `% -1`) and `abs` of the smallest integer give
+  what the CPU gives (itself, 0, itself); GLSL and SPIR-V leave them undefined, and Intel's
+  OpenGL driver gave other values. Found by tools/gpufuzz.py on an Intel UHD 620, where every
+  test and render test now passes with Vulkan and OpenGL.
 - Web games take touch: the first finger is the mouse with its left button held, so dragging
   moves it (Rebound's shield follows a finger; before, only the first touch registered), and the
   page no longer scrolls or zooms under the game.
