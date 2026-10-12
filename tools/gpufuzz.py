@@ -55,7 +55,7 @@ class Gen:
     def __init__(self, rnd):
         self.r = rnd
         self.lines = []
-        self.vars = {t: [] for t in INTS + ["f32", "bool", "ivec2", "vec2", "vec3", "vec4"]}
+        self.vars = {t: [] for t in INTS + ["f32", "bool", "ivec2", "vec2", "vec3", "vec4", "ivec3"]}
         self.grids = []          # (name, elem type) of 2 x 2 arrays of arrays
         self.ts = []             # T variables
         self.sarrs = []          # S[2] variables
@@ -88,6 +88,7 @@ class Gen:
         if t in INTS or t == "f32" or t == "bool":
             if c < 0.55 and self.vars[t]: return r.choice(self.vars[t])
             if c < 0.65 and t == "i32" and self.vars["ivec2"]: return f"{r.choice(self.vars['ivec2'])}.{r.choice('xy')}"
+            if c < 0.68 and t == "i32" and self.vars["ivec3"]: return f"{r.choice(self.vars['ivec3'])}.{r.choice('xyz')}"
             if c < 0.65 and t == "f32":
                 vs = [(v, k) for k in ("vec2", "vec3", "vec4") for v in self.vars[k]]
                 if vs:
@@ -111,7 +112,10 @@ class Gen:
                 return f"{r.choice(self.sarrs)}[{self.index(2)}].{ {'i32': 'a', 'f32': 'b', 'u8': 'c'}[t] }"
             return self.lit(t)
         if self.vars[t] and c < 0.6: return r.choice(self.vars[t])
-        if t == "ivec2": return f"ivec2({self.expr('i32', 3)}, {self.expr('i32', 3)})"
+        if t == "ivec2":
+            if self.vars["ivec3"] and c < 0.75: return f"{r.choice(self.vars['ivec3'])}.{r.choice(['xy', 'zx', 'yz'])}"
+            return f"ivec2({self.expr('i32', 3)}, {self.expr('i32', 3)})"
+        if t == "ivec3": return f"ivec3({self.expr('i32', 3)}, {self.expr('i32', 3)}, {self.expr('i32', 3)})"
         if t == "vec3":
             if self.vars["vec4"] and c < 0.8: return f"{r.choice(self.vars['vec4'])}.{r.choice(['xyz', 'yzw', 'zyx', 'xxy'])}"
             return f"vec3({self.expr('f32', 3)}, {self.expr('f32', 3)}, {self.expr('f32', 3)})"
@@ -137,6 +141,13 @@ class Gen:
             if op == "if": return f"(if {self.expr('bool', d + 1)}: {self.expr(t, d + 1)} else: {self.expr(t, d + 1)})"
             if op == "conv": return f"ivec2({self.expr('vec2', d + 1)})"
             if op == "ctor": return f"ivec2({self.expr('i32', d + 1)}, {self.expr('i32', d + 1)})"
+            return f"({self.expr(t, d + 1)} {op} {self.expr(t, d + 1)})"
+        if t == "ivec3":
+            op = r.choice(["+", "-", "*", "neg", "conv", "leaf", "*s"])
+            if op == "neg": return f"(-{self.expr(t, d + 1)})"
+            if op == "conv": return f"ivec3({self.expr('vec3', d + 1)})"
+            if op == "*s": return f"({self.expr(t, d + 1)} * {self.expr('i32', d + 2)})"
+            if op == "leaf": return self.leaf(t)
             return f"({self.expr(t, d + 1)} {op} {self.expr(t, d + 1)})"
         if t in ("vec3", "vec4"):
             op = r.choice(["+", "-", "*s", "neg", "leaf", "if"])
@@ -225,7 +236,7 @@ class Gen:
     def stmt(self, budget):
         r = self.r
         c = r.random()
-        t = r.choice(INTS + ["f32", "bool", "ivec2", "vec2", "vec3", "vec4"])
+        t = r.choice(INTS + ["f32", "bool", "ivec2", "vec2", "vec3", "vec4", "ivec3"])
         if c < 0.25 or not any(self.assignable(x) for x in self.vars):
             v = self.fresh("v")
             self.emit(f"{v}: {t} = {self.expr(t)}")
@@ -392,6 +403,7 @@ class Gen:
             for v in self.vars[t]: ints.append(f"i32({v})")
         for v in self.vars["bool"]: ints.append(f"i32({v})")
         for v in self.vars["ivec2"]: ints += [f"{v}.x", f"{v}.y"]
+        for v in self.vars["ivec3"]: ints += [f"{v}.x", f"{v}.y", f"{v}.z"]
         for v in self.vars["f32"]: floats.append(v)
         for k in ("vec2", "vec3", "vec4"):
             for v in self.vars[k]: floats += [f"{v}.{c}" for c in "xyzw"[:int(k[3])]]
@@ -459,6 +471,7 @@ def shader_program(g):
         for v in g.vars[t]: ints.append(f"u32(i32({v}))")
     for v in g.vars["bool"]: ints.append(f"u32({v})")
     for v in g.vars["ivec2"]: ints += [f"u32({v}.x)", f"u32({v}.y)"]
+    for v in g.vars["ivec3"]: ints += [f"u32({v}.x)", f"u32({v}.y)", f"u32({v}.z)"]
     for a, et, n in g.arrays:
         if et != "f32":
             for k in range(n): ints.append(f"u32(i32({a}[{k}]))")
