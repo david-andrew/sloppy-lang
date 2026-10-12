@@ -6,7 +6,7 @@
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 `.github/workflows/release.yml` then builds and tests everything, makes the GitHub release
-(Linux tarball, Windows zip, checksums, the editor extension's .vsix), and publishes the
+(tarballs for Linux on x86-64 and arm64 and for macOS, the Windows zip, checksums, the editor extension's .vsix), and publishes the
 extension to the VS Code Marketplace and Open VSX.
 
 Publishing the extension needs no stored tokens: the workflow's GitHub OIDC token is exchanged

@@ -1,25 +1,35 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
-- **macOS on Apple Silicon** (`--target macos`, the default when the compiler runs on a Mac):
-  Mach-O executables written by the compiler itself, with dyld binding the C functions they use
-  and an ad hoc code signature (no Xcode or linker needed, and they can be made on Linux). The
-  library's system calls go through libSystem. Every test passes on a Mac, the compiler
-  compiles itself there to the same bytes, and the language server works; CI runs them on a
-  GitHub macOS runner. Threads (`parallel_map` and the rest) run on pthreads. Games open a Cocoa
-  window (keyboard, mouse, wheel, mouse look, clipboard, fullscreen) and play sound through
-  AudioQueue; they draw with the software renderer for now (GPU drawing through Metal is next).
-  Not yet: the interactive prompt and `sloppy watch`.
+Platforms:
+- **macOS on Apple Silicon** (`--target macos`, the default when the compiler runs on a Mac;
+  the installer sets it up as on Linux, with no Xcode): Mach-O executables written by the
+  compiler itself, with dyld binding the C functions they use and an ad hoc code signature, so
+  they can be made on Linux too. The library's system calls go through libSystem; threads
+  (`parallel_map` and the rest) are pthreads. Games open a Cocoa window (keyboard, mouse, wheel,
+  mouse look, clipboard, fullscreen), draw with OpenGL 4.1 (or the software renderer) and play
+  sound through AudioQueue. Every test and render test passes on a Mac, the compiler compiles
+  itself there to the same bytes, and the language server works; CI runs all of it on a GitHub
+  macOS runner, with a game on its screen. Not yet: Metal, Retina resolution (windows are drawn
+  at one pixel per point), the interactive prompt and `sloppy watch`.
+- **Linux on arm64** (`--target linux-arm64`, the default when the compiler runs on arm64; the
+  installer has it too): a new code generator (compiler/arm64.jo), x86-64 system call numbers
+  translated for arm64, C libraries loaded through arm64's ld.so, crash backtraces from arm64's
+  registers. Every test passes there, and the compiler compiles itself on arm64 to the same
+  bytes; CI runs the tests on an arm64 machine. Not yet: register allocation (values live in the
+  frame, so the code is slower), the interactive prompt and `sloppy watch`.
+- `ARCH` (`"x86_64"`, `"arm64"` or `"wasm32"`) beside `TARGET` (now also `"macos"`), for `when`.
 - `@variadic(n)` on an `extern`: a C function with n fixed parameters, then C's `...` (macOS
   passes the others on the stack).
-- **Linux on arm64** (`--target linux-arm64`, the default when the compiler runs on arm64): a
-  new code generator (compiler/arm64.jo), x86-64 system call numbers translated for arm64, C
-  libraries loaded through arm64's ld.so, crash backtraces from arm64's registers. Every test
-  passes there, and the compiler compiles itself on arm64 to the same bytes; CI runs the tests on
-  an arm64 machine. Not yet: register allocation (values live in the frame, so the code is
-  slower), the interactive prompt and `sloppy watch`. This is the first step toward macOS.
-- `ARCH` (`"x86_64"`, `"arm64"` or `"wasm32"`) beside `TARGET`, for `when`.
+
+Graphics:
+- `ivec3` and `ivec4` (i32 vectors, as `ivec2`), and compute functions over a 3D grid:
+  `f(id: ivec3, params)` with `dispatch(compute(f), ivec3(w, h, d), params)` (groups of 4 by 4 by
+  4 on the GPU).
+- Shaders on OpenGL and the web: integer `+ - *` wrap on overflow as on the CPU (they are
+  written through unsigned numbers; NVIDIA's GLSL compiler assumed signed results never
+  overflow and simplified hash-like code wrongly). Found by tools/gpufuzz.py.
 - Shaders: the smallest integer `/ -1` (and `% -1`) and `abs` of the smallest integer give
   what the CPU gives (itself, 0, itself); GLSL and SPIR-V leave them undefined, and Intel's
   OpenGL driver gave other values. Found by tools/gpufuzz.py on an Intel UHD 620, where every
@@ -27,15 +37,11 @@
 - Web games take touch: the first finger is the mouse with its left button held, so dragging
   moves it (Rebound's shield follows a finger; before, only the first touch registered), and the
   page no longer scrolls or zooms under the game.
-- A new docs page, **Graphics and the GPU** (docs/GRAPHICS.md): the four renderers and when each
+
+Docs:
+- A new page, **Graphics and the GPU** (docs/GRAPHICS.md): the four renderers and when each
   runs, how shader functions reach each of them, what is the same and what differs, the three
   ways of computing on the GPU, and the switches for choosing and troubleshooting.
-- `ivec3` and `ivec4` (i32 vectors, as `ivec2`), and compute functions over a 3D grid:
-  `f(id: ivec3, params)` with `dispatch(compute(f), ivec3(w, h, d), params)` (groups of 4 by 4 by
-  4 on the GPU).
-- Shaders on OpenGL and the web: integer `+ - *` wrap on overflow as on the CPU (they are
-  written through unsigned numbers; NVIDIA's GLSL compiler assumed signed results never
-  overflow and simplified hash-like code wrongly). Found by tools/gpufuzz.py.
 
 ## 0.6.0
 

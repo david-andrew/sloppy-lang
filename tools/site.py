@@ -296,7 +296,9 @@ def nav(here_page, prefix):
 # the install command for the system the page is seen on (all of them without JavaScript)
 INSTALL_SYSTEMS = [
     ("linux", "Linux", "curl -fsSL https://sloppy-lang.org/install | bash",
-     "In a terminal, on x86-64. Installs to <code>~/.sloppy</code>; the command works at once."),
+     "In a terminal, on x86-64 or arm64. Installs to <code>~/.sloppy</code>; the command works at once."),
+    ("macos", "macOS", "curl -fsSL https://sloppy-lang.org/install | bash",
+     "In Terminal, on a Mac with Apple Silicon (M1 or later). Installs to <code>~/.sloppy</code>; no Xcode needed."),
     ("windows", "Windows", "irm https://sloppy-lang.org/install.ps1 | iex",
      "In PowerShell, on Windows 10 or 11 (x64). Installs to <code>%LOCALAPPDATA%\\sloppy</code>; the command works at once."),
 ]
@@ -309,19 +311,18 @@ def install_box(prefix):
         panes += f'<div class="pane" data-os="{k}">{code}<p>{note.format(prefix=prefix)}</p></div>'
     return f'''<div class="install-box" data-os="linux"><div class="tabs">{tabs}</div>{panes}
 <p class="phone">On a phone or tablet? Sloppy installs on a computer; here, <a href="{prefix}playground/">try it in the browser</a>.</p>
-<p class="mac">Sloppy does not run on macOS yet. Its programs run in any browser, though: write and run them in <a href="{prefix}playground/">the playground</a>.</p></div>'''
+</div>'''
 
 INSTALL_SCRIPT = """<script>
 (() => {
   const ua = navigator.userAgent, p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
   const phone = /Android|iPhone|iPad|iPod/.test(ua) || (/Mac/.test(p) && navigator.maxTouchPoints > 1);
   const mac = !phone && (/Mac/.test(p) || /Mac OS X/.test(ua));
-  const os = /Win/.test(p) || /Windows/.test(ua) ? "windows" : "linux";
+  const os = /Win/.test(p) || /Windows/.test(ua) ? "windows" : mac ? "macos" : "linux";
   for (const box of document.querySelectorAll(".install-box")) {
     box.classList.add("js");
     box.dataset.os = os;
     if (phone) box.classList.add("on-phone");
-    if (mac) box.classList.add("on-mac");
     for (const b of box.querySelectorAll(".tabs button")) b.onclick = () => { box.dataset.os = b.dataset.os; };
     for (const b of box.querySelectorAll("button.copy")) b.onclick = () => {
       navigator.clipboard.writeText(b.parentNode.querySelector("code").textContent).then(() => {
@@ -334,7 +335,7 @@ INSTALL_SCRIPT = """<script>
 
 SITE = "https://sloppy-lang.org"
 DESCRIPTION = ("A small, statically typed language for making games that feels like Python and runs like C. "
-               "It compiles in milliseconds, to a native Linux or Windows executable or a single web page.")
+               "It compiles in milliseconds, to a native Linux, macOS or Windows executable or a single web page.")
 
 # what chat apps and social sites show for a link (Open Graph, and Twitter's cards); the
 # image is assets/social.png (1200x630)

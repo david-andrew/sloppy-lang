@@ -103,8 +103,10 @@ installed="$("$INSTALL/bin/sloppy" --version 2>/dev/null)" || fail "$INSTALL/bin
 # (a link in ~/.local/bin, when that is on the PATH already, as on most systems: then the command
 # works at once, in this terminal too; else a line in the shell's startup file, for new terminals)
 bin="$INSTALL/bin"
-shown="${bin/#$HOME/\~}"
-home_shown="${INSTALL/#$HOME/\~}"
+# (a variable: bash 3.2, macOS's, would keep the backslash of an escaped ~)
+tilde="~"
+shown="${bin/#$HOME/$tilde}"
+home_shown="${INSTALL/#$HOME/$tilde}"
 local_bin="$HOME/.local/bin"
 on_path=false
 case ":$PATH:" in *":$bin:"*) on_path=true ;; esac
@@ -140,7 +142,7 @@ if ! $on_path; then
     esac
     if ! grep -qsF "$bin" "$rc"; then
         printf '\n# sloppy\n%s\n' "$line" >> "$rc"
-        note="added $shown to your PATH in ${rc/#$HOME/\~}"
+        note="added $shown to your PATH in ${rc/#$HOME/$tilde}"
     fi
 fi
 $linked && note="linked ~/.local/bin/sloppy to it"

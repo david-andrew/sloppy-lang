@@ -11,13 +11,13 @@
   <a href="https://github.com/david-andrew/sloppy-lang/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/david-andrew/sloppy-lang/test.yml?label=tests"></a>
   <a href="https://sloppy-lang.org/"><img alt="Website" src="https://img.shields.io/github/actions/workflow/status/david-andrew/sloppy-lang/site.yml?label=website"></a>
   <a href="https://sloppy-lang.org/playground/"><img alt="Try it in the browser" src="https://img.shields.io/badge/playground-try%20it%20in%20the%20browser-2f6a7a"></a>
-  <img alt="Platform: Linux and Windows on x86-64, and the web" src="https://img.shields.io/badge/platform-linux%20%7C%20windows%20%7C%20web-555">
+  <img alt="Platform: Linux, macOS, Windows and the web" src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows%20%7C%20web-555">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-555"></a>
 </p>
 
 Sloppy is a small, compiled, statically typed language that feels like a scripting language,
 built for making games. `sloppy game.jo` compiles the whole program and runs it in a blink;
-`sloppy build game.jo` writes a standalone executable for Linux or Windows, and with
+`sloppy build game.jo` writes a standalone executable for Linux, macOS or Windows, and with
 `target = wasm` a single self-contained `.html` file that runs in a browser straight from disk.
 
 ```gdscript
@@ -105,7 +105,7 @@ browser](https://sloppy-lang.org/breakwater/).
 
 ## Getting started
 
-Install on Linux (x86-64; into `~/.sloppy`, with the command on your PATH, in most setups at once; `sloppy update` installs newer releases):
+Install on Linux (x86-64 or arm64) or macOS (Apple Silicon), in a terminal (into `~/.sloppy`, with the command on your PATH, in most setups at once; `sloppy update` installs newer releases):
 
 ```sh
 curl -fsSL https://sloppy-lang.org/install | bash
@@ -204,7 +204,8 @@ compiler/      the Sloppy compiler, in Sloppy
   lower                  syntax tree -> IR (register based, structured control flow)
   opt, inline            release builds: folding, CSE, check elimination, inlining
   x64, elf               IR -> x86-64 machine code -> static ELF executable
-  arm64                  IR -> arm64 machine code (Linux on 64-bit ARM; the start of macOS)
+  arm64                  IR -> arm64 machine code (Linux on 64-bit ARM, macOS)
+  macho                  Mach-O executables for macOS: dyld's binds, an ad hoc code signature
   wasm                   IR -> WebAssembly, packaged into one HTML file
   spirv                  shader functions written in Sloppy -> SPIR-V (Vulkan)
   glsl                   shader functions written in Sloppy -> GLSL ES 3.00 (OpenGL, WebGL)
@@ -213,7 +214,7 @@ compiler/      the Sloppy compiler, in Sloppy
 stage0/        bootstrap compiler in C (compiles compiler/ once)
 lib/core/      runtime, strings, arrays, maps, math, files, formatting
 lib/std/       thread pool and parallel helpers, numeric arrays (nd.jo)
-lib/game/      windows (Wayland, X11, Win32), input, Vulkan, OpenGL ES / WebGL, 2D, 3D, images, audio
+lib/game/      windows (Wayland, X11, Win32, Cocoa), input, Vulkan, OpenGL ES / WebGL, 2D, 3D, images, audio
 lib/web/       JavaScript glue embedded into web builds
 editors/       the VS Code extension (tools/vsix.py packages it)
 examples/      rebound (a complete 2D game), breakwater (a complete 3D game), dunes and lowline (3D), tiles (a tilemap and sprites), shapes, cube, scene3d
@@ -246,6 +247,13 @@ only what finds everything else (LoadLibraryA, GetProcAddress and three more fro
 the rest of Windows is looked up as it is first used, as C libraries are on Linux. Games open a
 Win32 window and draw with Vulkan, or with OpenGL through WGL (a core 4.3 context takes the
 GLSL shaders), or with the software renderer; gamepads are XInput's, sound goes through waveOut.
+
+macOS programs (`--target macos`, the default on a Mac; Apple Silicon) are Mach-O executables
+the compiler writes itself, with an ad hoc code signature, so they can be made on Linux too.
+They are dynamically linked, as macOS requires: dyld binds the C functions they use when they
+start, and the library's system calls are made through libSystem's functions. Games open a
+Cocoa window through the Objective-C runtime and draw with OpenGL 4.1 (the shaders as GLSL
+4.10) or with the software renderer; sound goes through AudioQueue.
 
 On Linux, native programs are static executables that make system calls directly. Programs that
 open a window load the system's libraries for it at run time with a tiny in-process loader (the

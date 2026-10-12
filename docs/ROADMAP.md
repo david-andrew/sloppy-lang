@@ -1,8 +1,9 @@
 # Sloppy roadmap
 
-Where Sloppy is (v0.6.0, October 2026): a self-hosted compiler (~30k lines of Sloppy, plus a C
+Where Sloppy is (v0.7.0, October 2026): a self-hosted compiler (~30k lines of Sloppy, plus a C
 bootstrap) that compiles a 50k-line program in 0.18 s, runs programs at ~1.24x the time of C -O2
-(release), and targets Linux x86-64, Windows x64 and the web (one .html file). It has a game
+(release), and targets Linux (x86-64 and arm64), macOS (Apple Silicon), Windows x64 and the web
+(one .html file). It has a game
 library (window, input, gamepads, 2D/3D drawing with a 2D camera, sprite sheets, tilemaps, menus,
 collision and particle helpers, shadows, shaders written in Sloppy that run on the GPU through
 Vulkan or OpenGL or on a software renderer, GPU buffers and compute functions, an audio mixer
@@ -133,13 +134,13 @@ Fill the gaps real programs hit, nothing speculative:
 
 ## Platforms (L each)
 
-- **macOS on Apple Silicon** is the largest group of developers Sloppy cannot reach (the
-  playground is their only way in). Under way: arm64 code generation works (Linux on arm64,
-  `--target linux-arm64`: every test passes there, also on an arm64 machine in CI, and the
-  compiler compiles itself there to the same bytes). Next: arm64 register allocation (values all
-  live in the frame for now), the prompt and `sloppy watch` on arm64, then Mach-O with ad hoc
-  signatures and calls through libSystem, a Cocoa window, Metal (or MoltenVK, which would reuse
-  the Vulkan path) and CoreAudio, tested on GitHub's Apple Silicon runners.
+- **macOS on Apple Silicon** works since v0.7.0 (Mach-O written by the compiler, ad hoc
+  signatures, libSystem, a Cocoa window, OpenGL 4.1, AudioQueue; everything tested on GitHub's
+  Apple Silicon runners, whose GPU is a paravirtual one: OpenGL there is Apple's software
+  renderer). Next: Retina resolution, Metal (shaders as MSL; OpenGL is deprecated on macOS),
+  gamepads (GameController), and testing on a real Mac's GPU; arm64 register allocation
+  (values all live in the frame for now, on Linux arm64 too), the prompt and `sloppy watch` on
+  arm64.
 - Phones (Android, iOS): not before the above; the web build already runs there.
 
 ## Compiler maintainability (ongoing, never a rewrite)

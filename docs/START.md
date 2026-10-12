@@ -3,7 +3,7 @@
 ## Install
 
 <!-- install -->
-On **Linux** (x86-64), in a terminal:
+On **Linux** (x86-64 or arm64) or **macOS** (Apple Silicon), in a terminal:
 
 ```sh
 curl -fsSL https://sloppy-lang.org/install | bash
@@ -17,12 +17,12 @@ irm https://sloppy-lang.org/install.ps1 | iex
 <!-- /install -->
 
 The installer puts Sloppy in your home directory (`~/.sloppy`, or `%LOCALAPPDATA%\sloppy` on
-Windows) and the `sloppy` command on your PATH, ready in the same terminal (on Linux, when
-`~/.local/bin` is on your PATH, as on most systems; if not, the installer shows the line that
-makes it so). Nothing else is needed: no C compiler, no linker, no SDK. `sloppy update` installs newer releases.
+Windows) and the `sloppy` command on your PATH, ready in the same terminal (when `~/.local/bin`
+is on your PATH, as on most Linux systems; if not, the installer shows the line that makes it
+so). Nothing else is needed: no C compiler, no linker, no SDK or Xcode. `sloppy update` installs newer releases.
 
-macOS is not supported yet. Sloppy's programs do run in any browser, so on a Mac (or a phone)
-you can write and run them in [the playground](https://sloppy-lang.org/playground/).
+On a phone, or an Intel Mac, Sloppy's programs run in any browser: write and run them in
+[the playground](https://sloppy-lang.org/playground/).
 
 ## A first program
 
