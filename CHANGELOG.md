@@ -59,6 +59,18 @@ Language:
   (`f(k, _)`), calls of function values inside the function, and `__parallel_run`; a function
   kept in a variable is refused, since the compiler cannot see which it is. A function that
   hands the function it is given on to them is marked `@parallel`, and its callers are checked.
+- Maps: keys that are unions, optionals or arrays work (they hashed wrongly: unions and
+  optionals without end, arrays all alike), `-0.0` and `0.0` are one key as they are equal,
+  and `remove` keeps the other entries in insertion order.
+- A lambda returning a member of a generic union (`apply((): 42)` for `() -> T | E`) makes
+  that member, whatever order inference puts the union's members in.
+- A generic function calling itself with ever bigger types stops with an error instead of
+  compiling forever.
+- Overloads a call cannot match are left out before the choice: `f(300)` with `f(x: i8)` and
+  `f(x: i16)` is the `i16` one, and a lambda's parameter types pick among `(int) -> int` and
+  `(f64) -> f64`.
+- Windows: a float given to a C function among its first four arguments also goes in the
+  integer register, as C functions taking varargs (`sprintf`) read it.
 - Float to integer conversions saturate at the range of the type converted to (`u8(300.0)` is
   255, `i8(-200.0)` is -128, `u64(-1.0)` is 0); before, only `int` did.
 - Signed division wraps like the rest of integer arithmetic: the smallest integer `/ -1` is

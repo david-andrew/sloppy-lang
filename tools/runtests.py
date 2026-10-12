@@ -35,7 +35,10 @@ for t in tests:
         # (run under Wine: SLOPPY_WINE_DIR is shared with the container SLOPPY_WINE runs in)
         exe = os.path.join(os.environ.get("SLOPPY_WINE_DIR", "/tmp/winshare"), "tests", name)
         os.makedirs(os.path.dirname(exe), exist_ok=True)
-    if compiler == "sloppy0" and "# requires: sloppy" in open(t, encoding="utf-8").read(2000):
+    head = open(t, encoding="utf-8").read(2000)
+    if compiler == "sloppy0" and "# requires: sloppy" in head:
+        continue
+    if target == "wasm" and "# requires: native" in head:
         continue
     if compiler == "sloppy0":
         cmd = [os.path.join(root, "stage0", "sloppy0"), t, "-o", exe]

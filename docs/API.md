@@ -211,7 +211,7 @@ Hash map {K: V}: insertion ordered, open addressing over a dense entry list. The
 - `keys[K, V] = (m: Map[K, V]) -> K[]`
 - `values[K, V] = (m: Map[K, V]) -> V[]`
 - `clear[K, V] = (m: mut Map[K, V])`
-- `remove[K, V] = (m: mut Map[K, V], k: K) -> bool`: remove a key; returns true if it was present. The last entry moves into the hole.
+- `remove[K, V] = (m: mut Map[K, V], k: K) -> bool`: remove a key; returns true if it was present. The entries after it move up (the rest keep their order).
 
 ## Math and random numbers
 

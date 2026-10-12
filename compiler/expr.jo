@@ -135,6 +135,13 @@ wrap_union = (n: int, vi: int, to: int):
     nodes[n] = Node(kind = .call, pos = nodes[inner].pos, aux = 3, aux2 = i32(vi), type = i32(to), flags = i32(NF_CHECKED))
     set_list(n, [inner])
 
+# can integer type t hold v?
+int_fits = (v: int, t: int) -> bool:
+    bits = int(types[t].bits)
+    if bits >= 64: return true
+    if types[t].sign: return v >= -(1 << (bits - 1)) and v <= (1 << (bits - 1)) - 1
+    v >= 0 and v <= (1 << bits) - 1
+
 # coerce node n to `target` (rewrites n in place); returns n
 coerce = (n: int, target: int) -> int:
     if target == 0: return n
@@ -151,15 +158,7 @@ coerce = (n: int, target: int) -> int:
         k = nodes[n].kind
         if k == .int_lit and tk == .int_:
             v = nodes[n].ival
-            bits = int(types[to].bits)
-            if bits < 64:
-                lo = 0
-                hi = 0
-                if types[to].sign:
-                    lo = -(1 << (bits - 1))
-                    hi = (1 << (bits - 1)) - 1
-                else: hi = (1 << bits) - 1
-                if v < lo or v > hi: fatal(nodes[n].pos, "value {v} does not fit in {type_str(to)}")
+            if not int_fits(v, to): fatal(nodes[n].pos, "value {v} does not fit in {type_str(to)}")
             nodes[n].type = i32(to)
             clear_flag(n, NF_LITERAL)
             return n
@@ -698,6 +697,13 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
                 if nkids(a) > 0 and nodes[kid(a, 0)].a != 0: return 3
                 return -1
             if pk != .fn_ or int(types[p].nargs) != nkids(a): return -1
+            # (a parameter the lambda gives a type must have that type)
+            loop i in [0..nkids(a)):
+                pn = kid(a, i)
+                if nodes[pn].a == 0: continue
+                at = prune(resolve_type(int(nodes[pn].a)))
+                pt = prune(targ(p, i))
+                if not has_var(at) and not has_var(pt) and not type_eq(at, pt): return -1
             return 0
         if k == .dotname or k == .call:
             name = int(nodes[a].name)
@@ -735,6 +741,7 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
         if pk == .int_:
             if nodes[a].kind == .int_lit:
                 if p == T_INT: return 0
+                if not int_fits(nodes[a].ival, p): return -1
                 return 1
             return -1
         if pk == .float_:
