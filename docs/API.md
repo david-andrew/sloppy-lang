@@ -1510,7 +1510,7 @@ Values are f32, or i32 for arrays made from integers (gpu(int_array)): integer a
 
 #### Reductions
 
-- `sum = (g: GpuArray[f32]) -> f64`: Floats are reduced on the GPU (64 values at a time, until few are left), then added up in f64; integers are added up exactly, in 64 bits, on the CPU.
+- `sum = (g: GpuArray[f32]) -> f64`: Floats are reduced on the GPU (64 values at a time, until few are left), then added up in f64; integers are added up exactly, in 64 bits, on the CPU (their min and max are found on the GPU with Vulkan).
 - `sum = (g: GpuArray[i32]) -> int`
 - `mean = (g: GpuArray[f32]) -> f64`
 - `mean = (g: GpuArray[i32]) -> f64`

@@ -37,12 +37,28 @@ def fits(v, t):
     return 0 <= v < (1 << b)
 
 
+# what every program has: structs, and helpers with mut parameters, early returns, loops, and
+# arrays and structs as parameters and results
+COMMON = ["struct S:", "    a: i32", "    b: f32", "    c: u8",
+          "struct T:", "    v: vec2", "    arr: i16[2]", "    s: S", "    f: bool",
+          "struct B:", "    a: u8", "    b: i16", "    c: bool", "    d: u32", "    e: ivec2", "    f: i8",
+          "bump = (v: mut i32, k: i32):", "    v = v * i32(3) + k", "    pass",
+          "grow = (s: mut S, k: u8):", "    s.c += k", "    s.a -= i32(k)", "    pass",
+          "mks = (a: i32, b: f32) -> S: S(a * i32(2), b, u8(a))",
+          "hret = (x: i32) -> i32:", "    if x < i32(0): return -x / i32(3)",
+          "    loop k in [0..3):", "        if x > i32(k * 100): return x - i32(k)", "    x xor i32(5)",
+          "sum4 = (a: i32[4]) -> i32: a[0] + a[1] * i32(3) + a[2] * i32(5) + a[3] * i32(7)",
+          "rev = (a: i32[4]) -> i32[4]: [a[3], a[2], a[1], a[0]]"]
+
+
 class Gen:
     def __init__(self, rnd):
         self.r = rnd
         self.lines = []
         self.vars = {t: [] for t in INTS + ["f32", "bool", "ivec2", "vec2", "vec3", "vec4"]}
         self.grids = []          # (name, elem type) of 2 x 2 arrays of arrays
+        self.ts = []             # T variables
+        self.sarrs = []          # S[2] variables
         self.ro = set()          # names that cannot be assigned (loop variables)
         self.arrays = []         # (name, elem type, length) of fixed-size arrays
         self.structs = []        # names of S variables (a: i32, b: f32, c: u8)
@@ -85,6 +101,14 @@ class Gen:
                 return f"{a}[{self.index(n)}]"
             if c < 0.8 and self.structs and t in ("i32", "f32", "u8"):
                 return f"{r.choice(self.structs)}.{ {'i32': 'a', 'f32': 'b', 'u8': 'c'}[t] }"
+            if c < 0.85 and self.ts:
+                tv = r.choice(self.ts)
+                if t == "i16": return f"{tv}.arr[{self.index(2)}]"
+                if t == "bool": return f"{tv}.f"
+                if t == "f32": return f"{tv}.v.{r.choice('xy')}"
+                if t in ("i32", "u8"): return f"{tv}.s.{ {'i32': 'a', 'u8': 'c'}[t] }"
+            if c < 0.88 and self.sarrs and t in ("i32", "f32", "u8"):
+                return f"{r.choice(self.sarrs)}[{self.index(2)}].{ {'i32': 'a', 'f32': 'b', 'u8': 'c'}[t] }"
             return self.lit(t)
         if self.vars[t] and c < 0.6: return r.choice(self.vars[t])
         if t == "ivec2": return f"ivec2({self.expr('i32', 3)}, {self.expr('i32', 3)})"
@@ -146,6 +170,13 @@ class Gen:
             lo, hi = sorted([int(self.lit(t)[len(t) + 1:-1]), int(self.lit(t)[len(t) + 1:-1])])
             return f"clamp({a()}, {t}({lo}), {t}({hi}))"
         if op == "if": return f"(if {self.expr('bool', d + 1)}: {a()} else: {a()})"
+        if op == "call" and t == "i32" and r.random() < 0.5:
+            k = r.random()
+            if k < 0.4: return f"hret({a()})"
+            arrs = [x for x in self.arrays if x[1] == "i32" and x[2] == 4]
+            if k < 0.7 and arrs: return f"sum4({r.choice(arrs)[0]})"
+            if k < 0.85 and arrs: return f"rev({r.choice(arrs)[0]})[{self.index(4)}]"
+            return f"mks({a()}, {self.expr('f32', d + 1)}).a"
         if op == "call":
             hs = [h for h in self.helpers if h[2] == t]
             if hs:
@@ -256,11 +287,36 @@ class Gen:
             et = r.choice(["i32", "u8", "f32"])
             self.emit(f"{g}: {et}[2][2] = [[{self.expr(et, 2)}, {self.expr(et, 2)}], [{self.expr(et, 2)}, {self.expr(et, 2)}]]")
             self.grids.append((g, et))
-        elif c < 0.92 and self.grids:
+        elif c < 0.905 and self.grids:
             g, et = r.choice(self.grids)
             if r.random() < 0.3: self.emit(f"{g}[{self.index(2)}] = [{self.expr(et, 2)}, {self.expr(et, 2)}]")
             else: self.emit(f"{g}[{self.index(2)}][{self.index(2)}] {'+=' if et != 'u8' else '='} {self.expr(et, 1)}")
-        elif c < 0.92 and len(self.arrays) < 3:
+        elif c < 0.915 and len(self.ts) < 2:
+            tv = self.fresh("t")
+            self.emit(f"{tv} = T({self.expr('vec2', 2)}, [{self.expr('i16', 2)}, {self.expr('i16', 2)}], {'mks(' + self.expr('i32', 2) + ', ' + self.expr('f32', 2) + ')' if r.random() < 0.5 else 'S(' + self.expr('i32', 2) + ', ' + self.expr('f32', 2) + ', ' + self.expr('u8', 2) + ')'}, {self.expr('bool', 2)})")
+            self.ts.append(tv)
+        elif c < 0.93 and self.ts:
+            tv = r.choice(self.ts)
+            k = r.random()
+            if k < 0.25: self.emit(f"{tv}.arr[{self.index(2)}] {r.choice(['+=', '*=', '-=', '='])} {self.expr('i16', 1)}")
+            elif k < 0.45: self.emit(f"{tv}.s.c {r.choice(['+=', '*=', '='])} {self.expr('u8', 1)}")
+            elif k < 0.6:
+                sw = r.choice(["yx", "x", "xy"])
+                self.emit(f"{tv}.v.{sw} {r.choice(['+=', '='])} {self.expr('f32' if len(sw) == 1 else 'vec2', 1)}")
+            elif k < 0.75: self.emit(f"grow({tv}.s, {self.expr('u8', 2)})")
+            elif k < 0.85: self.emit(f"{tv}.f = {self.expr('bool', 1)}")
+            else: self.emit(f"{tv}.s = mks({self.expr('i32', 2)}, {self.expr('f32', 2)})")
+        elif c < 0.94 and len(self.sarrs) < 2:
+            sa_ = self.fresh("sa")
+            self.emit(f"{sa_}: S[2] = [mks({self.expr('i32', 2)}, {self.expr('f32', 2)}), S({self.expr('i32', 2)}, {self.expr('f32', 2)}, {self.expr('u8', 2)})]")
+            self.sarrs.append(sa_)
+        elif c < 0.95 and self.sarrs:
+            sa_ = r.choice(self.sarrs)
+            k = r.random()
+            if k < 0.4: self.emit(f"{sa_}[{self.index(2)}].c {r.choice(['+=', '*=', '-='])} {self.expr('u8', 1)}")
+            elif k < 0.7: self.emit(f"grow({sa_}[{self.index(2)}], {self.expr('u8', 2)})")
+            else: self.emit(f"{sa_}[{self.index(2)}] = mks({self.expr('i32', 2)}, {self.expr('f32', 2)})")
+        elif c < 0.97 and len(self.arrays) < 3:
             a = self.fresh("arr")
             et = r.choice(["i32", "u8", "f32", "i16"])
             n = r.choice([2, 4])
@@ -274,14 +330,14 @@ class Gen:
     def block(self, budget, keep=()):
         # (what a block declares is gone after it)
         saved = {t: list(vs) for t, vs in self.vars.items()}
-        sa, ss, sg = list(self.arrays), list(self.structs), list(self.grids)
+        sa, ss, sg, st, sr = list(self.arrays), list(self.structs), list(self.grids), list(self.ts), list(self.sarrs)
         self.depth += 1
         n0 = len(self.lines)
         for _ in range(max(1, self.r.randint(1, max(1, budget)))): self.stmt(budget - 1)
         if len(self.lines) == n0: self.emit("pass")
         self.depth -= 1
         for t in self.vars: self.vars[t] = saved[t] + [v for v in keep if v in self.vars[t] and v not in saved[t]]
-        self.arrays, self.structs, self.grids = sa, ss, sg
+        self.arrays, self.structs, self.grids, self.ts, self.sarrs = sa, ss, sg, st, sr
 
     def helper(self):
         name = self.fresh("h")
@@ -302,9 +358,7 @@ class Gen:
 
     def program(self):
         r = self.r
-        out = ["struct S:", "    a: i32", "    b: f32", "    c: u8",
-               "struct P:", "    inp: GpuBuffer[i32]", "    oi: GpuBuffer[i32]", "    of: GpuBuffer[f32]",
-               "bump = (v: mut i32, k: i32):", "    v = v * i32(3) + k", "    pass"]
+        out = COMMON + ["struct P:", "    inp: GpuBuffer[i32]", "    oi: GpuBuffer[i32]", "    of: GpuBuffer[f32]", "    bs: GpuBuffer[B]"]
         for _ in range(r.randint(0, 3)): out.append(self.helper())
         self.lines = []
         for j, t in enumerate(["i32", "u32", "i16", "u8", "i8", "u16"]):
@@ -315,6 +369,13 @@ class Gen:
         self.emit(f"{f}: f32 = f32(i16(u.inp[id * 6 + 2])) * 0.25")
         self.vars["f32"].append(f)
         for _ in range(r.randint(4, 14)): self.stmt(4)
+        # an element of a buffer of narrow fields, changed and written back
+        self.emit("bb = u.bs[id]")
+        for f, t in [("a", "u8"), ("b", "i16"), ("d", "u32"), ("f", "i8")]:
+            if r.random() < 0.7: self.emit(f"bb.{f} {r.choice(['+=', '*=', '=', '-='])} {self.expr(t, 2)}")
+        if r.random() < 0.5: self.emit(f"bb.c = {self.expr('bool', 2)}")
+        if r.random() < 0.5: self.emit(f"bb.e {r.choice(['+=', '='])} {self.expr('ivec2', 2)}")
+        self.emit("u.bs[id] = bb")
         # the results
         ints, floats = [], []
         for t in INTS:
@@ -329,9 +390,12 @@ class Gen:
                 for j in range(2): (floats if et == "f32" else ints).append(f"{'' if et == 'f32' else 'i32'}({g}[{i}][{j}])")
         for a, et, n in self.arrays:
             for i in range(n): (floats if et == "f32" else ints).append(f"{'' if et == 'f32' else 'i32'}({a}[{i}])")
-        for s in self.structs:
-            ints += [f"{s}.a", f"i32({s}.c)"]
-            floats.append(f"{s}.b")
+        for s_ in self.structs + [f"{x}[{i}]" for x in self.sarrs for i in range(2)] + [f"{x}.s" for x in self.ts]:
+            ints += [f"{s_}.a", f"i32({s_}.c)"]
+            floats.append(f"{s_}.b")
+        for x in self.ts:
+            ints += [f"i32({x}.arr[0])", f"i32({x}.arr[1])", f"i32({x}.f)"]
+            floats += [f"{x}.v.x", f"{x}.v.y"]
         ni, nf = max(len(ints), 1), max(len(floats), 1)
         for i, e in enumerate(ints): self.emit(f"u.oi[id * {ni} + {i}] = {e}")
         for i, e in enumerate(floats): self.emit(f"u.of[id * {nf} + {i}] = {e}")
@@ -342,8 +406,13 @@ class Gen:
         for _ in range(NIDS * 6):
             vals.append(r.choice([r.randint(-2**31, 2**31 - 1), r.randint(-300, 300), r.choice([0, 1, -1, 2**31 - 1, -2**31, 255, 65535, 32767, -32768, 128])]))
         out.append(f"inp: i32[] = [{', '.join(f'i32({v})' for v in vals)}]")
-        out.append(f"p = P(gpu_buffer(inp), gpu_buffer[i32]({NIDS * ni}), gpu_buffer[f32]({NIDS * nf}))")
+        bs = []
+        for _ in range(NIDS):
+            bs.append(f"B(u8({r.randint(0, 255)}), i16({r.randint(-32768, 32767)}), {r.choice(['true', 'false'])}, u32({r.randint(0, 2**32 - 1)}), ivec2(i32({r.randint(-2**31, 2**31 - 1)}), i32({r.randint(-1000, 1000)})), i8({r.randint(-128, 127)}))")
+        out.append(f"bs0: B[] = [{', '.join(bs)}]")
+        out.append(f"p = P(gpu_buffer(inp), gpu_buffer[i32]({NIDS * ni}), gpu_buffer[f32]({NIDS * nf}), gpu_buffer(bs0))")
         out.append(f"dispatch(compute(kern), {NIDS}, p)")
+        out.append("print(cpu(p.bs))")
         out.append("print(cpu(p.oi))")
         out.append("print(cpu(p.of))")
         return "\n".join(out) + "\n"
@@ -353,9 +422,7 @@ def shader_program(g):
     """the same kind of code in a fragment shader: each pixel makes its inputs from its position,
     and its color is a hash of the integer results (exact in 8-bit channels)"""
     r = g.r
-    out = ["struct S:", "    a: i32", "    b: f32", "    c: u8",
-           "struct V:", "    pos: vec2", "struct U:", "    k: f32", "struct O:", "    pos: vec4",
-           "bump = (v: mut i32, k: i32):", "    v = v * i32(3) + k", "    pass",
+    out = COMMON + ["struct V:", "    pos: vec2", "struct U:", "    k: f32", "struct O:", "    pos: vec4",
            "mix32 = (h: u32, x: u32) -> u32: (h xor x) * u32(16777619)",
            "pick = (s: u32, k: u32) -> u32:",
            "    x = (s xor k) * u32(747796405)",
@@ -389,7 +456,8 @@ def shader_program(g):
         if et != "f32":
             for i_ in range(2):
                 for j_ in range(2): ints.append(f"u32(i32({gd}[{i_}][{j_}]))")
-    for s_ in g.structs: ints += [f"u32({s_}.a)", f"u32({s_}.c)"]
+    for s_ in g.structs + [f"{x}[{i_}]" for x in g.sarrs for i_ in range(2)] + [f"{x}.s" for x in g.ts]: ints += [f"u32({s_}.a)", f"u32({s_}.c)"]
+    for x in g.ts: ints += [f"u32(i32({x}.arr[0]))", f"u32(i32({x}.arr[1]))", f"u32({x}.f)"]
     g.emit("h = u32(2166136261)")
     for e in ints: g.emit(f"h = mix32(h, {e})")
     g.emit("vec4(f32(h & u32(255)) / 255.0, f32((h >> u32(8)) & u32(255)) / 255.0, f32((h >> u32(16)) & u32(255)) / 255.0, 1)")
@@ -450,8 +518,8 @@ def run(prog, extra_env, timeout=60):
 
 def parse(out):
     lines = out.strip().split("\n")
-    if len(lines) < 2: return None, None
-    ints = lines[-2].strip("[]").split(", ")
+    if len(lines) < 3: return None, None
+    ints = [lines[-3]] + lines[-2].strip("[]").split(", ")     # (the buffer of B first, as written)
     floats = lines[-1].strip("[]").split(", ")
     return ints, floats
 

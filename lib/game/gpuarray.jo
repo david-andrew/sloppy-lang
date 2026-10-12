@@ -160,7 +160,8 @@ __gpu_in[T] = (g: GpuArray[T]) -> __GpuIn: __GpuIn(g.tex, g.w, g.shape)
 
 # ---------------- reductions ----------------
 # Floats are reduced on the GPU (64 values at a time, until few are left), then added up in f64;
-# integers are added up exactly, in 64 bits, on the CPU.
+# integers are added up exactly, in 64 bits, on the CPU (their min and max are found on the GPU
+# with Vulkan).
 sum = (g: GpuArray[f32]) -> f64:
     s = 0.0
     loop x in __gpu_reduced(g, 0): s += f64(x)
@@ -173,8 +174,8 @@ mean = (g: GpuArray[f32]) -> f64: sum(g) / f64(max(g.n, 1))
 mean = (g: GpuArray[i32]) -> f64: f64(sum(g)) / f64(max(g.n, 1))
 min = (g: GpuArray[f32]) -> f32: min(__gpu_reduced(g, 1))
 max = (g: GpuArray[f32]) -> f32: max(__gpu_reduced(g, 2))
-min = (g: GpuArray[i32]) -> i32: min(__gpu_values(g))
-max = (g: GpuArray[i32]) -> i32: max(__gpu_values(g))
+min = (g: GpuArray[i32]) -> i32: min(__gpu_reduced_i(g, 1))
+max = (g: GpuArray[i32]) -> i32: max(__gpu_reduced_i(g, 2))
 
 __GPU_REDUCE = "#version 300 es
 precision highp float;
@@ -204,9 +205,19 @@ void main() \{
 }
 "
 
-# the values of g reduced by op (0 sum, 1 min, 2 max) to a few (at most 64), for the CPU to finish
+# the values of g reduced by op (0 sum, 1 min, 2 max) to a few (at most 256), for the CPU to finish
 __gpu_reduced = (g: GpuArray[f32], op: int) -> f32[]:
-    if g.tex == 0 or g.n <= 256 or __gpu_vk: return __gpu_values(g)
+    if g.tex == 0 or g.n <= 256: return __gpu_values(g)
+    when TARGET != "wasm":
+        if __gpu_vk:
+            # (a compute function, 64 values to an invocation, over a view of the array's buffer)
+            k = compute(__gvk_reduce)
+            src = GpuBuffer[f32](__gvk[g.tex].addr, g.n, 0, null, fill(u8(0), 1))
+            loop src.n > 256:
+                dst: GpuBuffer[f32] = gpu_buffer((src.n + 63) / 64)
+                dispatch(k, dst.n, __GvkRed(src, dst, op))
+                src = dst
+            return cpu(src)
     cur = g
     loop cur.n > 256:
         m = (cur.n + 63) / 64
@@ -224,6 +235,54 @@ __gpu_reduced = (g: GpuArray[f32], op: int) -> f32[]:
         __gpu_draw()
         cur = nxt
     __gpu_values(cur)
+
+# the same for integers (min and max; their sums are made exactly on the CPU): on the GPU with
+# Vulkan, else all of the values
+__gpu_reduced_i = (g: GpuArray[i32], op: int) -> i32[]:
+    when TARGET != "wasm":
+        if g.tex != 0 and g.n > 256 and __gpu_vk:
+            k = compute(__gvk_reduce_i)
+            src = GpuBuffer[i32](__gvk[g.tex].addr, g.n, 0, null, fill(u8(0), 1))
+            loop src.n > 256:
+                dst: GpuBuffer[i32] = gpu_buffer((src.n + 63) / 64)
+                dispatch(k, dst.n, __GvkRedI(src, dst, op))
+                src = dst
+            return cpu(src)
+    __gpu_values(g)
+
+struct __GvkRedI:
+    src: GpuBuffer[i32]
+    dst: GpuBuffer[i32]
+    op: int
+__gvk_reduce_i = (id: int, u: __GvkRedI):
+    acc = i32(0x7FFFFFFF)
+    if u.op == 2: acc = i32(-0x80000000)
+    n = len(u.src)
+    loop k in [0..64):
+        i = id * 64 + k
+        if i < n:
+            if u.op == 1: acc = min(acc, u.src[i])
+            else: acc = max(acc, u.src[i])
+    u.dst[id] = acc
+
+# (Vulkan) a step of a reduction: element id of dst combines 64 values of src
+struct __GvkRed:
+    src: GpuBuffer[f32]
+    dst: GpuBuffer[f32]
+    op: int
+__gvk_reduce = (id: int, u: __GvkRed):
+    acc = f32(0)
+    if u.op == 1: acc = f32(3.4e38)
+    if u.op == 2: acc = f32(-3.4e38)
+    n = len(u.src)
+    loop k in [0..64):
+        i = id * 64 + k
+        if i < n:
+            x = u.src[i]
+            if u.op == 0: acc += x
+            else if u.op == 1: acc = min(acc, x)
+            else: acc = max(acc, x)
+    u.dst[id] = acc
 
 # ---------------- the CPU's result as a GPU array (no GPU: see check_dotted) ----------------
 __gpu_from = (m: NDArray[f32]) -> GpuArray[f32]: gpu(m)

@@ -3,6 +3,8 @@
 ## Unreleased
 
 Graphics:
+- GPU arrays' `sum`, `min` and `max` run on the GPU with Vulkan too (a compute function in the
+  library; they read every value back before), giving the same sums as with OpenGL.
 - Shaders: `-(-1.5)` no longer breaks GLSL (it read `--`); unsigned `min`/`max`/`clamp`
   compare as unsigned, and `abs` of a narrow integer wraps, as on the CPU.
 - tools/gpufuzz.py: random compute functions run on the CPU, the GPU and lavapipe, and random

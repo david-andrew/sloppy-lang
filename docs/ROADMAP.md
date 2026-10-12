@@ -165,7 +165,6 @@ ids, automatic barriers; on the CPU without Vulkan). Left:
 - More of the explicit API: barriers by hand (independent dispatches without one between them),
   3D dispatch ids, workgroup shared memory (with barriers, which the CPU path would have to run
   in step), textures by index in buffers, writes and atomics from fragment shaders.
-- GPU arrays' reductions on the GPU (they finish on the CPU with Vulkan).
 - Real hardware beyond NVIDIA and Mesa's software driver: Intel, AMD, Windows drivers.
 - Pipelines made before they are first drawn with (they are kept on disk between runs).
 
