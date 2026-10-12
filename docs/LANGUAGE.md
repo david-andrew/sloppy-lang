@@ -587,8 +587,8 @@ GPU arrays have the shape of the array they were made from (up to 4 dimensions) 
 like arrays on the CPU; `cpu(g)` gives an array of that shape. Values on the GPU are `f32`, or `i32`
 for arrays made from integers: integer arithmetic keeps integer semantics (`7 / 2` is 3, `%` keeps
 the dividend's sign, as on the CPU), and mixing integers with floats gives floats. `sum`, `mean`,
-`min` and `max` are computed on the GPU with OpenGL (float sums add in `f32`, pairwise: about
-1e-7 relative error); with Vulkan the values are added up on the CPU, in `f64`. GPU memory is
+`min` and `max` are computed on the GPU (float sums add 64 values at a time in `f32`, then the
+partial sums in `f64`; integer sums are exact, on the CPU). GPU memory is
 reused automatically once no copy of a GPU array is left. Native programs use Vulkan (no window
 needed), else OpenGL ES; web builds WebGL 2. Where none of them can (no driver,
 `SLOPPY_SOFTWARE=1`, an old browser) the same expressions run on the CPU, so programs work
@@ -815,7 +815,8 @@ program draws a plain title bar itself. A window's title is the program's name u
 libwayland-client (or with `SLOPPY_WAYLAND=protocol`) it speaks the Wayland protocol itself, and
 without libX11 the X11 protocol. They draw with Vulkan where the system has a Vulkan 1.3
 driver (as current drivers for Intel, AMD and NVIDIA GPUs do), else with OpenGL ES;
-`SLOPPY_VULKAN=0` chooses OpenGL. With Vulkan, the pipelines the driver makes for shaders are
+`SLOPPY_VULKAN=0` chooses OpenGL (see [Graphics and the GPU](GRAPHICS.md) for how the renderers
+compare). With Vulkan, the pipelines the driver makes for shaders are
 kept between runs in `~/.cache/sloppy` (`%LOCALAPPDATA%\sloppy` on Windows), so later runs start
 drawing sooner. Without either (or with `SLOPPY_SOFTWARE=1`) the same program draws with the built-in software
 renderer, which runs your shader functions (see `make_shader`) on the CPU; `soft_rendering()`

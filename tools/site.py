@@ -21,7 +21,7 @@ def slug(text):
 LINKS = {"docs/TUTORIAL.md": "tutorial.html", "TUTORIAL.md": "tutorial.html",
          "docs/TUTORIAL_REBOUND.md": "tutorial-rebound.html", "TUTORIAL_REBOUND.md": "tutorial-rebound.html", "docs/TUTORIAL_BREAKWATER.md": "tutorial-breakwater.html", "TUTORIAL_BREAKWATER.md": "tutorial-breakwater.html", "docs/LANGUAGE.md": "language.html", "LANGUAGE.md": "language.html", "docs/API.md": "api.html",
          "API.md": "api.html", "docs/REPORT.md": "report.html", "REPORT.md": "report.html", "docs/START.md": "start.html",
-         "START.md": "start.html"}
+         "START.md": "start.html", "docs/GRAPHICS.md": "graphics.html", "GRAPHICS.md": "graphics.html"}
 
 # a table row's cells, as GitHub splits them: at each | that is not escaped (\|, which stands
 # for a | in the cell, code included)
@@ -370,6 +370,7 @@ DOCS = [("start.html", "docs/START.md", "Getting started", "Start"),
         ("tutorial-breakwater.html", "docs/TUTORIAL_BREAKWATER.md", "Make a 3D shooter", "Tutorials"),
         ("language.html", "docs/LANGUAGE.md", "The language", "Reference"),
         ("api.html", "docs/API.md", "The library", "Reference"),
+        ("graphics.html", "docs/GRAPHICS.md", "Graphics and the GPU", "Reference"),
         ("report.html", "docs/REPORT.md", "Measured results", "More")]
 DOC_DESCRIPTIONS = {
     "start.html": "Install Sloppy, a simple game dev language, and write your first program and game.",
@@ -378,6 +379,7 @@ DOC_DESCRIPTIONS = {
     "tutorial-breakwater.html": "Make a small 3D first-person shooter in Sloppy, step by step: mouse look, walls, shots as rays, enemies that fire back, waves, light and sound.",
     "language.html": "The Sloppy language: types, functions, structs and unions, numeric arrays, modules, parallelism, the game loop and calling C.",
     "api.html": "Everything in Sloppy's standard library: strings, maps, math, files, threads, windows, input, 2D and 3D drawing, shaders and audio.",
+    "graphics.html": "How Sloppy draws through Vulkan, OpenGL, WebGL or a software renderer, how shaders written in Sloppy reach each, and computing on the GPU.",
     "report.html": "Measured results for Sloppy's design goals: compile speed, program speed against C, and executable size."}
 
 def build_docs():

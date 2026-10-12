@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Web games take touch: the first finger is the mouse with its left button held, so dragging
+  moves it (Rebound's shield follows a finger; before, only the first touch registered), and the
+  page no longer scrolls or zooms under the game.
+- A new docs page, **Graphics and the GPU** (docs/GRAPHICS.md): the four renderers and when each
+  runs, how shader functions reach each of them, what is the same and what differs, the three
+  ways of computing on the GPU, and the switches for choosing and troubleshooting.
 - `ivec3` and `ivec4` (i32 vectors, as `ivec2`), and compute functions over a 3D grid:
   `f(id: ivec3, params)` with `dispatch(compute(f), ivec3(w, h, d), params)` (groups of 4 by 4 by
   4 on the GPU).
