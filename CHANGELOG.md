@@ -47,6 +47,11 @@ Website and install:
   functions (`print`, `push`, `pop`, `fill`, `embed`...), which were missing.
 
 Language:
+- Type arguments at a call: `zero[int]()`, `gpu_buffer[Bug](100)`, `empty[str[]]()` (`T[]`
+  written inside the brackets is the array type).
+- `b[i].f = v` and `b[i].f += v` for types defining `[]` and `[]=` (a GpuBuffer, in compute
+  functions too): the element is read, changed and written back. `b[f(x)] += v` computes the
+  index once.
 - An argument read from a global, a variable closures share or a capture stays alive through
   the call, even if the callee (or a later argument) gives that variable another value; it
   used to be freed under the callee. (Release builds leave the reference out where the callee

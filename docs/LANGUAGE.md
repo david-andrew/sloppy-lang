@@ -249,7 +249,10 @@ written inside an expression is a lambda.
   must declare it). `-> void` says explicitly that nothing is returned.
 * **Untyped parameters make a function generic**: `twice = (f, x): f(f(x))` is
   instantiated for each distinct set of argument types (like a template).
-* Explicit type parameters: `first[T] = (xs: T[]) -> T: xs[0]`.
+* Explicit type parameters: `first[T] = (xs: T[]) -> T: xs[0]`. A call can give them when the
+  arguments do not say (`zero[int]()`, `gpu_buffer[Bug](100)`, `empty[str[]]()`).
+* Through `[]` and `[]=` overloads, `b[i].f = v` and `b[i].f += v` work as for arrays: the
+  element is read, changed and written back (its index computed once).
 * **Uniform call syntax**: `x.f(a)` is the same as `f(x, a)`. There are no methods,
   only functions; any function can be called with dot syntax on its first argument.
 * Functions may be **overloaded** by parameter types. A program's own definitions take
@@ -593,12 +596,14 @@ is called. It reads and writes the buffers among its parameters by index:
 
 ```gdscript
 step = (id: int, u: Step):           # struct Step: bugs: GpuBuffer[Bug]; dt: f32
-    b = u.bugs[id]
-    b.pos += b.vel * u.dt
-    u.bugs[id] = b
+    u.bugs[id].pos += u.bugs[id].vel * u.dt
 
 dispatch(compute(step), len(bugs), Step(bugs, dt))
 ```
+
+(`u.bugs[id].pos = v` reads the element, changes it and writes it back, as for any type
+defining `[]` and `[]=`; changing several fields, `b = u.bugs[id]` first is shorter.) An empty
+buffer of n elements is `gpu_buffer[Bug](n)`.
 
 Shaders read buffers among their uniforms too (`u.bugs[instance_id()]`), a buffer can be a
 mesh's vertices (`gpu_mesh`) or a draw's instances, and `draw_indirect` takes the counts of its

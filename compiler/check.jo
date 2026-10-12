@@ -1438,6 +1438,72 @@ check_late_global = (s: int):
     late_warned[key] = true
     warn(nodes[lhs].pos, "'{name_of(nm)}' is the global variable declared below this function (at {pos_str(gpos)}), so this changes it: for a variable of the function's own, write `let {name_of(nm)} = ...` (or use another name); to mean the global, declare it above the function")
 
+# b[i].f = v (also b[i].f.g += v...) where b's type defines [] and []= (a GpuBuffer...): there
+# is no place b[i] to change in, so the element is read, changed and written back,
+#     e = b[i]; e.f = v; b[i] = e
+# with the index computed once. 0 when the assignment is not of that kind.
+elem_tmp_n = 0
+elem_field_assign = (s: int) -> int:
+    lhs = int(nodes[s].a)
+    ix = lhs
+    loop nodes[ix].kind == .field: ix = int(nodes[ix].a)
+    # (b[f(x)] += v alone: the index once, b[i] = b[i] + v then does the rest)
+    whole = ix == lhs
+    if nodes[ix].kind != .index or nodes[ix].b == 0: return 0
+    recv = int(nodes[ix].a)
+    if has_flag(recv, NF_CHECKED): return 0
+    r0 = clone(recv)
+    r1 = clone(recv)
+    bt = prune(check_expr(recv, 0))
+    nodes[ix].a = i32(last_checked)
+    if types[bt].kind != .struct_ or is_map_type(bt) or is_soa(bt) or is_part_index(ix): return 0
+    pos = nodes[s].pos
+    elem_tmp_n += 1
+    stmts: int[]
+    # (the index, once)
+    iname = intern("__index{elem_tmp_n}")
+    di = mk(.vardecl, pos)
+    nodes[di].name = i32(iname)
+    nodes[di].b = nodes[ix].b
+    stmts.push(di)
+    if whole:
+        nodes[lhs].b = i32(comp_ident(iname, pos))
+        c0 = nodes.len()
+        nodes.push(nodes[s])
+        blk0 = mk(.block, pos)
+        set_list(blk0, [di, c0])
+        check_stmt(blk0)
+        return blk0
+    ename = intern("__elem{elem_tmp_n}")
+    rd = mk(.index, pos)
+    nodes[rd].a = i32(r0)
+    nodes[rd].b = i32(comp_ident(iname, pos))
+    de = mk(.vardecl, pos)
+    nodes[de].name = i32(ename)
+    nodes[de].b = i32(rd)
+    stmts.push(de)
+    # (the field path, from the element instead)
+    f = lhs
+    loop int(nodes[f].a) != ix: f = int(nodes[f].a)
+    nodes[f].a = i32(comp_ident(ename, pos))
+    stmts.push(s)
+    wr = mk(.index, pos)
+    nodes[wr].a = i32(r1)
+    nodes[wr].b = i32(comp_ident(iname, pos))
+    back = mk(.assign, pos)
+    nodes[back].op = i32(int(Tok.assign))
+    nodes[back].a = i32(wr)
+    nodes[back].b = i32(comp_ident(ename, pos))
+    stmts.push(back)
+    blk = mk(.block, pos)
+    # (the original statement, now e.f = v, is checked inside the block)
+    c = nodes.len()
+    nodes.push(nodes[s])
+    stmts[2] = c
+    set_list(blk, stmts)
+    check_stmt(blk)
+    blk
+
 check_assign = (s: int) -> int:
     if nodes[s].op == i32(int(Tok.assign)): unnarrow_assign(s)
     sl = soa_alias_of(int(nodes[s].a))
@@ -1461,6 +1527,9 @@ check_assign = (s: int) -> int:
             if not can_coerce(0, targ(t, i), tt) and not type_eq(targ(t, i), tt): fatal(nodes[tp].pos, "cannot assign {type_str(targ(t, i))} to {type_str(tt)}")
         nodes[s].aux = 1
         return s
+    if nodes[lhs].kind == .field or (nodes[lhs].kind == .index and op != int(Tok.assign) and nodes[lhs].b != 0 and nodes[int(nodes[lhs].b)].kind != .ident and nodes[int(nodes[lhs].b)].kind != .int_lit):
+        r = elem_field_assign(s)
+        if r != 0: return r
     if nodes[lhs].kind == .index:
         bt = prune(check_expr(int(nodes[lhs].a), 0))
         nodes[lhs].a = i32(last_checked)

@@ -165,8 +165,6 @@ address, atomics, indirect draws, automatic barriers; on the CPU without Vulkan)
   draw counts read from a buffer (vkCmdDrawIndexedIndirectCount), 2D and 3D dispatch ids,
   workgroup shared memory and subgroup operations, textures by index in buffers, writes and
   atomics from fragment shaders.
-- `b[i].field = v` for types with `[]=` (now: read the element, change it, write it back), and
-  type arguments at calls (`gpu_buffer[T](n)`; now: `b: GpuBuffer[T] = gpu_buffer(n)`).
 - GPU arrays' reductions on the GPU (they finish on the CPU with Vulkan).
 - Real hardware beyond NVIDIA and Mesa's software driver: Intel, AMD, Windows drivers.
 - A pipeline cache on disk; pipelines made before they are first drawn with.

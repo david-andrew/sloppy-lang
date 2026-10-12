@@ -839,6 +839,8 @@ finish_partial = (n: int, ptypes: int[], mutmask: int, ret: int) -> int:
     nodes[n].d = i32(th)
     t
 
+call_targs: int[]              # type arguments written at the call being resolved (f[T](...))
+
 resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) -> int:
     check_args_untyped(args)
     cands: Cand[]
@@ -857,6 +859,12 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
             last_err = err
             continue
         cd.binds = fill(0, int(cd.sig.ntp))
+        if call_targs.len() > 0:
+            # f[T](...): the declared type parameters, given
+            if nkids2(d) != call_targs.len():
+                last_err = "'{name_of(name)}' takes {nkids2(d)} type argument(s), given {call_targs.len()}"
+                continue
+            loop i in 0.. and t in call_targs: cd.binds[i] = t
         cost = 0
         ok = true
         loop phase in [0..3):
@@ -1344,6 +1352,17 @@ check_call = (n: int, expected: int) -> int:
         if s != 0 and syms[s].kind == .struct_:
             t = expr_as_type(callee)
             return struct_ctor(n, t, int(syms[s].ref), args, expected)
+        if s != 0 and syms[s].kind == .fns:
+            # f[T](args): a generic function with its type arguments given
+            targs: int[]
+            if nodes[callee].b != 0: targs.push(expr_as_type(int(nodes[callee].b)))
+            else:
+                loop i in [0..nkids(callee)): targs.push(expr_as_type(kid(callee, i)))
+            saved = call_targs
+            call_targs = targs
+            r = call_by_name(n, int(nodes[int(nodes[callee].a)].name), -1, args, expected, false)
+            call_targs = saved
+            return r
     check_expr(callee, 0)
     value_call(n, callee, args)
 
@@ -2666,6 +2685,7 @@ check_expr = (n: int, expected: int) -> int:
         if types[at].kind != .opt: fatal(nodes[n].pos, "'!' needs an optional value, found {type_str(at)}")
         t = int(types[at].elem)
     else if k == .lambda: t = check_lambda(n, expected)
+    else if k == .array and has_flag(n, NF_TYPE_EXPR): fatal(nodes[n].pos, "this is a type (an array of that); a value is needed here (an empty array: [])")
     else if k == .array and nodes[n].b == 0 and array_has_spread(n):
         # [a... b c...] builds the array: t = []; t.extend(a); t.push(b); t.extend(c); t
         spread_count += 1
