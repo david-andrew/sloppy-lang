@@ -6,180 +6,162 @@ bootstrap) that compiles a 50k-line program in 0.18 s, runs programs at ~1.24x t
 library (window, input, gamepads, 2D/3D drawing with a 2D camera, sprite sheets, tilemaps, menus,
 collision and particle helpers, shadows, shaders written in Sloppy that run on the GPU through
 Vulkan or OpenGL or on a software renderer, GPU buffers and compute functions, an audio mixer
-and synthesizer, PNG/JPEG/WAV/Ogg Vorbis, JSON, saving), hot reloading (`sloppy watch`), a REPL
-(Linux), a language server and VS Code extension, a playground, backtraces, DWARF, modules,
-three tutorials and two showcase games (Rebound in 2D, Breakwater in 3D).
+and synthesizer, PNG/JPEG/WAV/Ogg Vorbis, glTF, JSON, saving), hot reloading (`sloppy watch`), a
+REPL (Linux), a language server and VS Code extension, a playground, backtraces, DWARF and PDB,
+modules, three tutorials and two showcase games (Rebound in 2D, Breakwater in 3D).
 
 The aim stays the same: a small language that feels like Python and runs like C, for making
 games, with the shortest path from an idea to something running and shippable.
 
-Items are in priority order. Sizes: S = days, M = a week or two, L = several weeks. (This order
-was revised after an outside review of the project; its verified findings are in item 1.)
+How the order below is decided:
+1. Correctness and compile speed are never traded away (they are checked on every change).
+2. Then what makes a person who tries Sloppy stay: installing, a first game, sharing it, and
+   finding what went wrong when it misbehaves.
+3. Then what lets people build bigger things, and build them together: packages, tools,
+   debugging, networking.
+4. Then reach: more machines and platforms.
 
-## 1. Correctness first, and kept that way (ongoing)
+Sizes: S = days, M = a week or two, L = several weeks.
 
-Done in 0.3.1, from the outside review: closures can no longer form reference cycles (a local
-variable that can hold functions cannot be shared with closures); a generic type that expands
-without end is an error, not a compiler crash; `sloppy check` and the language server follow the
-build block's target; the build block's `output` works and its mistakes are errors; `load_wav`
-reads 24/32-bit and float64 files and rejects what it cannot read; `reverse(str)` keeps
-characters whole; `to_int` is none for numbers that do not fit. Gates: error tests reject
-compiler crashes, compiles time out, CI runs the web target in release mode and a mutation
-fuzzer (`tools/fuzz_errors.py`: real programs broken at random must get an error, never a crash);
-docs/COMPILER.md describes the compiler for contributors.
+## Now
 
-Left:
-- An element changed through a `mut` parameter while the function also holds a copy of its
-  array can be made to contain that copy (`attach(nodes[0], nodes)` storing `nodes` into the
-  node): a cycle, and a write the copy sees. Copy-in/copy-out for such arguments would close it,
-  at a cost to the common `update(players[i])`; decide with real game code in hand.
-- Keep each bug found as a test; run the fuzzers before releases.
+### 1. Real GPUs beyond NVIDIA (S, then repeated each release)
 
-## 2. Finish one small game, with its tutorial (ongoing)
+Vulkan is the default renderer, but it has only run on one NVIDIA card and Mesa's software
+driver (lavapipe); OpenGL on Windows only in CI's virtual machines. Most players' machines have
+Intel or AMD graphics. What can be done before hardware is at hand:
+- **AMD, now, by the hour:** AWS's g4ad instances have an AMD Radeon Pro V520 (RDNA): a real
+  graphics GPU, on Linux (Mesa's RADV, the driver most AMD Linux players use) and on Windows
+  (AMD's driver). An hour or two per round, for a few dollars.
+- **NVIDIA's Windows driver:** AWS's g4dn instances (a T4) on Windows.
+- **Intel:** there is no practical rentable Intel GPU with Vulkan graphics. The cheapest way is a
+  small Intel mini PC (N100/N150, around $150) or a used laptop with Iris Xe graphics, which also
+  covers Intel's Windows driver; Intel graphics are the most common in laptops, so it is worth
+  it.
+- **Not useful for this:** DigitalOcean's AMD MI300X droplets are compute accelerators without
+  graphics (ROCm only); its NVIDIA droplets repeat what is already tested.
+- Make the check one script (tools/gpucheck.sh): install, run the render tests through Vulkan
+  and OpenGL, `tools/vkcompare.py`, `tools/gpufuzz.py`, and Breakwater's frame statistics, and
+  write one report. Then any machine can run it, a rented one or a volunteer's.
+- Windows on real hardware beyond graphics: DPI scaling, fullscreen, raw mouse, XInput, sound
+  (never heard yet), alt-tab, minimize.
 
-Done: Rebound (examples/rebound) is the flagship game: a one-file arcade game (turn a shield
-around a core to catch turrets' bolts and send them back; chain blasts, bank shots, upgrades
-every few turrets, a saved best score), chosen over a platformer (Lumen, retired) for being
-quick to pick up and worth replaying. It plays itself behind its title; with a reaction delay
-the same autopilot measured the difficulty curve (0.45 s: about 80 s survived, 0.3 s: 3 to 5
-minutes). It runs on Linux, Windows and the web, on the website (sloppy-lang.org/rebound/) and in
-the playground (#example=rebound, with its icon: the playground carries examples' other files,
-in the page when small, else fetched when the game is chosen, as Breakwater's models are).
-The website has three tutorials, each eight steps that run, with links into the playground (the
-tests build every step): docs/TUTORIAL.md (Firefly, a platformer), docs/TUTORIAL_REBOUND.md
-(Little Rebound, a small version of Rebound) and docs/TUTORIAL_BREAKWATER.md (Little Breakwater,
-a first-person shooter in 3D, from boxes and spheres). The 3D flagship is Breakwater
-(examples/breakwater, sloppy-lang.org/breakwater/): a first-person shooter, waves of robots on a
-platform at sea, with animated glTF models (Quaternius' robots and weapons, CC0; the first-person
-arms are Mixamo's Vanguard, made with tools/mixamo).
+### 2. Keep it honest automatically (S)
 
-Left: upload Rebound to itch.io (needs an account: the zip is `sloppy build --target wasm -o
-rebound.zip`), play it on real machines (people, not the autopilot, for the difficulty), and
-write down what was awkward. What the games showed so far: menus were missing (now
-lib/game/ui.jo), saving was missing (save_data), the key that opens a menu must not also work
-it (ui.jo now ignores input in a menu's first frame; `ui_ready()` for a game's own keys), and a top-level assignment to a used module's variable made a new one (fixed). A
-local variable in a function with a global's name and type changes the global (as designed,
-but easy to trip over in a big file: a lint that flags it may be worth having). The larger
-jotw/botw-clone projects come after, as the 3D test.
+- **Compile speed in CI:** count the instructions (`tools/icount`, which is exact, unlike time)
+  that compiling bench/big.jo, the compiler and the games takes, against the previous commit;
+  fail above 1%. Compile speed is the property users would notice losing first.
+- **GPU fuzzing in CI:** `tools/gpufuzz.py` on Mesa (lavapipe, llvmpipe's OpenGL and the
+  software renderer), nightly; the CPU fuzzers too (`tools/fuzz.py`, `tools/fuzz_errors.py`).
+- Keep each bug found as a test.
 
-## 3. Shipping essentials (alongside 2)
+### 3. The games in people's hands (S, ongoing)
 
-Done (0.3.1): `save_data`/`load_data` (a per-user place on desktop, the browser's storage on the
-web; PROGRAM_NAME and the build block's `name`); `load_wav` rejects what it cannot read; web
-builds as an itch.io-ready zip (`-o game.zip`); program icons (`icon = "icon.png"`: the Windows
-.exe's icon and window icon, the page's favicon); the error convention (`T | SomeError`, passed on
-with `if r is SomeError: return r`) in the language reference.
+Upload Rebound and Breakwater to itch.io (the zip is `sloppy build --target wasm -o game.zip`),
+watch people play them (the autopilot measured the difficulty curve, not fun), and write down
+what was awkward to build. What the games taught so far went into the library (menus, saving,
+rebindable controls, touch on the web).
 
-Left:
-- Linux window icons: done on X11 (_NET_WM_ICON, from PROGRAM_ICON). Wayland: KDE takes them
-  through xdg-toplevel-icon-v1 (not done); GNOME only from a .desktop file matching the app id.
-- A whole asset directory embedded at once (`embed` takes one file).
-- A serializer (structs <-> text) for saves and settings, if hand-written formats keep recurring.
-- Sugar for passing errors on (a `try`), if code shows the two-line pattern is too much.
+## Next: what makes people stay
 
-## 4. Windows, in separate steps
+### 4. Finding what went wrong (M)
 
-- a. Check on real hardware (S): window, OpenGL on Intel/AMD/NVIDIA drivers, DPI scaling,
-  fullscreen, raw mouse, XInput, sound (never heard yet), alt-tab, minimize.
-- b. Done (0.3.1): `sloppy watch` on Windows (each build in a process of its own given the link
-  map; the program's pipes passed as handles; files watched by their write times). Left: a
-  panic in reloaded code names the wrong function in its backtrace.
-- c. Done: the interactive prompt on Windows. Without fork, a program's memory is copied before
-  an input and put back if it fails (lib/std/snapshot.jo): in the compiler (errors) and, on
-  Windows, in the session (panics, crashes, ctrl-c).
-- d. Done: debugging. Unwind tables (.pdata/.xdata), so Windows itself (debuggers, crash dumps,
-  RtlCaptureStackBackTrace) walks the stack (tests/t/unwind.jo); a PDB with the functions and
-  lines (compiler/pdb.jo), which CI checks with Microsoft's cdb. Left (with DWARF): variables.
-- Code signing is out of reach for now; document what SmartScreen shows and how to get past it.
+- **Debugging:** variables in DWARF and PDB (functions and lines are there), a VS Code launch
+  configuration for gdb/lldb and Visual Studio's debugger, pretty-printers for arrays, strings,
+  maps and optionals, and stopping in the debugger at a panic.
+- **Profiling:** Sloppy function names in `perf` and Windows' profilers, and a frame profiler in
+  the stats overlay: named CPU zones per frame and, with Vulkan, GPU timestamps per pass.
+- **Error messages:** collect the commonest mistakes (from the tutorials, the playground and
+  `tools/fuzz_errors.py`), make each message say what to do, and offer the fix in the editor
+  (language server quick fixes).
 
-## 5. Game library gaps (L, in pieces, as the game needs them)
+### 5. Sharing code: packages (M)
 
-Already there: a 2D camera, AABB/circle collision helpers, particles, a sun with shadows,
-instancing, SDF text with a built-in font, menus (ui.jo). Done: sprite sheets and animations
-(grids, or Aseprite's JSON with its tags), tilemaps (from text, or Tiled's JSON with groups,
-objects and compressed layers) with drawing of what is on screen and box movement that stops at
-tiles (examples/tiles.jo), JSON (parse_json/to_json), base64. Missing:
-- Done: Ogg Vorbis (load_ogg; checked sample for sample against ffmpeg's decoder, and fuzzed with
-  damaged files), and music decoded while it plays (load_music, play_music).
-- Done: TrueType fonts (load_font, set_font; text is UTF-8). Left: OpenType fonts with CFF
-  outlines (.otf), kerning, characters beyond the ones made up front (made when first drawn).
-- Assets: done: JPEG (baseline and progressive; within 3 of libjpeg-turbo's decoding, fuzzed
-  with damaged files), glTF 2.0 models (.glb/.gltf: meshes, nodes, base color, textures, vertex
-  colors; checked on Khronos' sample models), glTF skins (up to 64 joints, bent on the GPU)
-  and animations (posed, blended, joints turned by the game). Left: PBR materials (metal,
-  roughness, normal maps), morph targets, Tiled's external tilesets (.tsj; embedded ones work).
-- 2D: slopes and one-way platforms in tilemaps, tweening, camera follow/shake helpers.
-- 3D: done: orbit and fly cameras (lib/game/camera3d.jo), frustum culling (a mesh's bounding
-  sphere: draws the camera or the sun's shadow cannot see are left out). Left: skyboxes, culling
-  instances one by one.
-- Input:
-  - Done: controls players can change (lib/game/controls.jo): the game names its actions with
-    their default keys, buttons and stick directions and asks for them (`action_pressed`,
-    `action_axis`, `action_vec`); `ui_controls()` is a drop-in rebinding screen for a ui.jo
-    menu, and the bindings are saved. Rebound uses it (Settings, Controls).
-  - Done: several gamepads and joysticks (up to eight, each by its number: `gamepad_down(1, .a)`,
-    `gamepads()`; a device's own buttons and axes: `joystick_button`, `joystick_axis`). Left:
-    non-XInput devices on Windows (DirectInput/Raw Input), and actions bound per player.
-- Debug panels (ui.jo has menus).
-- Networking (UDP; WebSocket/WebRTC on the web) — later.
+Another person's Sloppy code by git URL (or path) in the `build:` block, pinned by commit in a
+lock file, fetched into a cache; `sloppy add <url>`. No central registry: a list of packages on
+the website instead. Games are built from pieces (a physics module, a dialogue system, a
+shader); without this each project copies files.
 
-## 6. Everyday tools (M)
+### 6. Everyday tools (S each)
 
 - `sloppy fmt`, and format on save in the extension.
-- Debugging recipes: a VS Code launch configuration for gdb/lldb with the DWARF already emitted,
-  and pretty-printers for arrays, strings and optionals.
-- Profiling: name Sloppy functions and lines in `perf` (and a frame-time view for games).
-- Packages, minimally: another person's Sloppy code by git URL or path in the `build:` block,
-  pinned by commit; no registry.
-- Language server: quick fixes for common errors, workspace symbols, semantic highlighting.
+- `sloppy new` with a few templates (empty game, 2D arcade, 3D first person), each running at
+  once.
+- Language server: workspace symbols, semantic highlighting, rename across files.
+- An examples gallery on the website, each runnable in the browser.
 
-## 7. Language (M, ongoing)
+### 7. Networking (M, then L)
 
-Keep it small; fill the gaps real programs hit:
-- Constraints for generic code (today errors appear only where a generic is used).
-- Fixed-size array lengths as generic parameters (`T[N]`).
-- Text: bytes vs code points vs what is displayed, made clear in the API; formatting polish.
+Multiplayer is one of the commonest reasons to pick a tool. First UDP sockets and a small
+reliable channel on native, WebSockets on the web, and a two-player example; then rollback or
+snapshot helpers if the examples show the need. (WebRTC for browser-to-browser later.)
+
+### 8. Game library gaps (in pieces, as games need them)
+
+- 2D: slopes and one-way platforms in tilemaps, tweening, camera follow and shake.
+- 3D: PBR materials (metal, roughness, normal maps), skyboxes, morph targets, culling instances
+  one by one.
+- Physics: 2D rigid bodies with joints (a common need beyond the collision helpers).
+- Audio: sounds placed in 2D/3D (panning and distance).
+- Assets: a whole directory embedded at once (`embed` takes one file), OpenType fonts with CFF
+  outlines and kerning, Tiled's external tilesets.
+- Input: non-XInput gamepads on Windows, actions bound per player.
+- Linux window icons on Wayland (KDE's xdg-toplevel-icon; GNOME needs a .desktop file).
+- A serializer (structs to text and back) for saves and settings.
+
+## Language (ongoing, kept small)
+
+Fill the gaps real programs hit, nothing speculative:
+- Constraints for generic code (today errors appear only where a generic is used), and
+  fixed-size array lengths as generic parameters (`T[N]`).
+- Sugar for passing errors on (a `try`), if code shows the two-line pattern is too much.
+- What a function may change, worked out once and carried on function values (from the audit):
+  it would replace several special cases in the checks for `mut` elements and borrowed
+  arguments, and let release builds leave out more reference counting and bounds checks.
+- Lints: a local variable that has a global's name and type (it changes the global), results
+  left unused.
+- Text: bytes vs code points vs what is displayed, made clear in the API.
 - A consistency review, then a written list of what is stable, before any 1.0.
 
-## 8. Compiler maintainability (ongoing, never a rewrite)
+## GPU (after item 1)
 
-expr.jo and lower.jo are ~4k lines each, much state is global, and AST nodes reuse generic fields.
-Split large files by feature when touching them, keep configuration in one place (item 1's
-target bug came from two copies of it), and document invariants per phase.
+- Pipelines made before they are first drawn with (they are kept on disk between runs already).
+- Barriers by hand, for independent dispatches; textures by index in buffers; writes and atomics
+  from fragment shaders.
+- Workgroup shared memory with barriers: on the CPU (and the web), a workgroup's invocations
+  must run in step, which means splitting a compute function at its barriers; designed first.
 
-## 9. Performance (ongoing)
+## Platforms (L each)
 
-- Measure the finished game first: allocation churn and frame-time spikes matter more than the
+- **macOS on Apple Silicon** is the largest group of developers Sloppy cannot reach (the
+  playground is their only way in). It needs arm64 code generation, Mach-O with ad hoc
+  signatures, a Cocoa window and Metal (or MoltenVK, which would reuse the Vulkan path), and
+  CoreAudio. It was put off for its cost; two things lower it: GitHub's macOS runners are Apple
+  Silicon (CI and tests without owning a Mac), and arm64 code generation serves Linux on arm64
+  (Raspberry Pi, ARM laptops and servers) too, which can come first.
+- Phones (Android, iOS): not before the above; the web build already runs there.
+
+## Compiler maintainability (ongoing, never a rewrite)
+
+expr.jo and lower.jo are ~4k lines each, much state is global, and AST nodes reuse generic
+fields. Split large files by feature when touching them, keep configuration in one place, and
+document invariants per phase (docs/COMPILER.md). The fuzzers (CPU, errors, GPU) are the
+safety net for changes here.
+
+## Performance (ongoing)
+
+- Measure the finished games first: allocation churn and frame-time spikes matter more than
   synthetic benchmarks.
 - Then the remaining gap to C -O2 in release builds (fannkuch 1.5x, spectral 1.4x, nbody 1.3x).
-- Compile speed stays first: debug builds are the default; track compile time in CI.
+- Debug builds stay the default; compile speed comes first (item 2 tracks it).
 
-## 9b. Vulkan
+## Community (S, ongoing)
 
-Done: the library draws through Vulkan 1.3 by default on Linux and Windows, in the style of
-mr_gpu (bindless textures, buffer device addresses, dynamic rendering, synchronization2, upload
-memory per frame, memory in large blocks); shaders compiled to SPIR-V by the compiler; GPU
-arrays as compute programs; GPU buffers and compute functions written in Sloppy (buffers read by
-address, atomics, subgroup operations, indirect draws and their number in a buffer, 2D and 3D
-grids, automatic barriers; on the CPU without Vulkan). Left:
-- More of the explicit API: barriers by hand (independent dispatches without one between them),
-  workgroup shared memory (with barriers, which the CPU path would have to run in step),
-  textures by index in buffers, writes and atomics from fragment shaders.
-- Real hardware beyond NVIDIA and Mesa's software driver: Intel, AMD, Windows drivers.
-- Pipelines made before they are first drawn with (they are kept on disk between runs).
-
-## 10. More platforms (L each, later)
-
-- arm64: a new encoder and calling conventions, register reservations that are x86-specific
-  today, and per-OS system call numbers in the runtime. Linux on arm64 first.
-- macOS after that: Mach-O with ad hoc code signatures, a Cocoa window, Metal (or OpenGL 4.1),
-  CoreAudio, GameController.
-
-## 11. Community (S, ongoing)
-
-An examples gallery (each runnable in the browser), a changelog per release, issue templates.
+A changelog per release (done), issue templates, a contributing guide, and a place to show
+games made with Sloppy.
 
 ## Not planned for now
 
-Tracing garbage collection (item 1 still has to settle closure cycles), exceptions, inheritance,
-a JIT, a central package registry, consoles (their SDKs are under NDA).
+Tracing garbage collection, exceptions, inheritance, a JIT, a central package registry,
+consoles (their SDKs are under NDA). Code signing on Windows is out of reach for now; the docs
+should say what SmartScreen shows for an unsigned game and how players get past it.
