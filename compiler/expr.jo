@@ -1723,8 +1723,9 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         r = T_STR
     else if id == .compute:
         # compute(f): a GPU program run once per element, f(id: int, params: P) (lib/game/gpubuffer.jo),
-        # or once per cell of a grid, f(id: ivec2, params: P); becomes __compute(__compute_spirv(f),
-        # f) (__compute2 for a grid): the program for Vulkan, and f itself for the CPU
+        # or once per cell of a grid, f(id: ivec2 or ivec3, params: P); becomes
+        # __compute(__compute_spirv(f), f) (__compute2 or __compute3 for a grid): the program for
+        # Vulkan, and f itself for the CPU
         nargs_check(n, nargs, 1, 1, "compute")
         a = args[0]
         if nodes[a].kind != .ident: fatal(nodes[a].pos, "compute() takes the name of a function (id: int, params: P)")
@@ -1734,13 +1735,14 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         collect_fns(int(nodes[a].name), decls)
         loop d in decls:
             sig = fn_sig(d)
-            if not sig.generic and sig.params.len() == 2 and (prune(sig.params[0]) == T_INT or prune(sig.params[0]) == T_IVEC2) and tkind(sig.params[1]) == .struct_ and tkind(int(sig.ret)) == .void_:
+            if not sig.generic and sig.params.len() == 2 and (prune(sig.params[0]) == T_INT or prune(sig.params[0]) == T_IVEC2 or prune(sig.params[0]) == T_IVEC3) and tkind(sig.params[1]) == .struct_ and tkind(int(sig.ret)) == .void_:
                 want = mk_fn(sig.params, T_VOID, 0)
         check_expr(a, want)
         if nodes[a].kind != .fnref: fatal(nodes[a].pos, "expected a function name")
         f = int(nodes[a].sym)
-        if fns[f].ptypes.len() != 2 or (prune(fns[f].ptypes[0]) != T_INT and prune(fns[f].ptypes[0]) != T_IVEC2) or tkind(fns[f].ptypes[1]) != .struct_:
-            fatal(nodes[a].pos, "a compute function takes (id: int, params: P) or (id: ivec2, params: P), P a struct")
+        it0 = prune(fns[f].ptypes[0])
+        if fns[f].ptypes.len() != 2 or (it0 != T_INT and it0 != T_IVEC2 and it0 != T_IVEC3) or tkind(fns[f].ptypes[1]) != .struct_:
+            fatal(nodes[a].pos, "a compute function takes (id: int, params: P), P a struct (or id: ivec2 or ivec3, over a grid)")
         if tkind(int(fns[f].ret)) != .void_: fatal(nodes[a].pos, "a compute function returns nothing: it writes its results into GPU buffers")
         ref = mk(.fnref, nodes[a].pos)
         nodes[ref].sym = nodes[a].sym
@@ -1750,6 +1752,7 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         nodes[ref2].type = nodes[a].type
         mkname = "__compute"
         if prune(fns[f].ptypes[0]) == T_IVEC2: mkname = "__compute2"
+        if prune(fns[f].ptypes[0]) == T_IVEC3: mkname = "__compute3"
         call = bc_call(mkname, [bc_call("__compute_spirv", [ref], nodes[n].pos), bc_call("__compute_textures", [ref2], nodes[n].pos), a], nodes[n].pos)
         nodes[n] = nodes[call]
         return check_expr(n, expected)
@@ -2945,7 +2948,8 @@ check_swizzle = (n: int, bt: int) -> int:
     if len(s) == 1: return vec_comp_type(bt)
     if types[bt].sign:
         if len(s) == 2: return T_IVEC2
-        fatal(nodes[n].pos, "only ivec2 swizzles are supported")
+        if len(s) == 3: return T_IVEC3
+        return T_IVEC4
     if len(s) == 2: return T_VEC2
     if len(s) == 3: return T_VEC3
     T_VEC4

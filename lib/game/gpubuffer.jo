@@ -200,6 +200,14 @@ struct Compute2[P]:
 
 __compute2[P] = (spirv: str, textures: str, run: (ivec2, P) -> void) -> Compute2[P]: Compute2[P](spirv, textures, run)
 
+# ... and over a 3D grid, f(id: ivec3, params: P)
+struct Compute3[P]:
+    spirv: str
+    textures: str
+    run: (ivec3, P) -> void
+
+__compute3[P] = (spirv: str, textures: str, run: (ivec3, P) -> void) -> Compute3[P]: Compute3[P](spirv, textures, run)
+
 # k's function run for each id in [0, n) with these parameters, in any order and many at once;
 # the dispatches and draws after it see what it wrote
 dispatch[P] = (k: Compute[P], n: int, params: P):
@@ -241,10 +249,32 @@ dispatch[P] = (k: Compute2[P], size: ivec2, params: P):
     __gb_in_dispatch = false
     __gb_writes += 1
 
+# k's function run for each cell of a size.x by size.y by size.z grid (in groups of 4 by 4 by 4
+# on the GPU)
+dispatch[P] = (k: Compute3[P], size: ivec3, params: P):
+    w = int(size.x)
+    h = int(size.y)
+    d = int(size.z)
+    if w < 0 or h < 0 or d < 0 or w > 65535 * 4 or h > 65535 * 4 or d > 65535 * 4: panic("dispatch over a grid of {w} by {h} by {d}")
+    if w == 0 or h == 0 or d == 0: return
+    p = params
+    if gpu_compute():
+        when TARGET != "wasm":
+            __gb_dispatch(k.spirv, k.textures, (&p) as *u8, size_of(P), (w + 3) / 4, (h + 3) / 4, w, h, (d + 3) / 4, d)
+            return
+    run = k.run
+    __gb_in_dispatch = true
+    __parallel_run(h * d, (lo: int, hi: int):
+        loop r in [lo..hi):
+            loop x in [0..w): run(ivec3(i32(x), i32(r % h), i32(r / h)), p)
+    )
+    __gb_in_dispatch = false
+    __gb_writes += 1
+
 when TARGET != "wasm":
-    # (Vulkan) a compute program run in gx by gy groups, its parameters at p; a and b are the
-    # count of ids (or the grid's width and height)
-    __gb_dispatch = (spirv: str, textures: str, p: *u8, psize: int, gx: int, gy: int, a: int, b: int):
+    # (Vulkan) a compute program run in gx by gy (by gz) groups, its parameters at p; a, b and c
+    # are the count of ids (or the grid's width, height and depth)
+    __gb_dispatch = (spirv: str, textures: str, p: *u8, psize: int, gx: int, gy: int, a: int, b: int, gz: int = 1, c: int = 0):
         key = data(spirv) as int
         pl = __gb_pipelines.get(key) ?? 0
         if pl == 0:
@@ -255,7 +285,7 @@ when TARGET != "wasm":
             loop o in split(textures, ","):
                 q = (p + (to_int(o) ?? 0)) as *int
                 q[0] = __vg_slot_of(q[0])
-        __vk_dispatch(pl, p, psize, gx, gy, a, b)
+        __vk_dispatch(pl, p, psize, gx, gy, a, b, gz, c)
 
 # Atomic operations on element i of a buffer, for compute functions whose invocations change the
 # same element: each returns the element's old value (past the ends: does nothing, returns 0).

@@ -27,8 +27,9 @@ const SV_PC_INSTS = 2
 const SV_PC_VSTRIDE = 3
 const SV_PC_ISTRIDE = 4
 const SV_PC_FLIP = 5
+const SV_PC_DEPTH = 6        # (compute programs over a 3D grid: its depth, in the padding)
 
-sv_group = [64, 1]           # the workgroup's size (x, y) of the compute program being made
+sv_group = [64, 1, 1]        # the workgroup's size (x, y, z) of the compute program being made
 
 # storage classes
 const SC_UCONST = 0
@@ -262,14 +263,14 @@ sv_rawptr = () -> int:
 
 sv_pc_types = () -> int[]:
     r = sv_rawptr()
-    [r, r, r, sv_i32(), sv_i32(), sv_f32()]
+    [r, r, r, sv_i32(), sv_i32(), sv_f32(), sv_i32()]
 
 sv_pc_var = () -> int:
     if sv_pc != 0: return sv_pc
     ms = sv_pc_types()
     st = sv_type_key("pcst", 30, ms)
     sv_deco(st, 2, [])
-    offs = [0, 8, 16, 24, 28, 32]
+    offs = [0, 8, 16, 24, 28, 32, 36]
     loop i in [0..ms.len()): sv_mdeco(st, i, 35, [offs[i]])
     sv_pc = sv_global(sv_ptr(SC_PUSH, st), SC_PUSH)
     sv_pc
@@ -1539,7 +1540,7 @@ sv_reset = (stage: str):
     sv_vid = 0
     sv_iid = 0
     sv_stage = stage
-    sv_group = [SV_KERNEL_GROUP, 1]
+    sv_group = [SV_KERNEL_GROUP, 1, 1]
     sv_std = sv_new()
     # Shader, ImageQuery, ShaderNonUniform, RuntimeDescriptorArray,
     # SampledImageArrayNonUniformIndexing, PhysicalStorageBufferAddresses
@@ -1567,7 +1568,7 @@ sv_module = (model: int, main: int) -> str:
     loop v in sv_iface: ep.push(v)
     sv_ins(w, 15, ep)
     if model == 4: sv_ins(w, 16, [main, 7])
-    if model == 5: sv_ins(w, 16, [main, 17, sv_group[0], sv_group[1], 1])
+    if model == 5: sv_ins(w, 16, [main, 17, sv_group[0], sv_group[1], sv_group[2]])
     loop x in sv_dec: w.push(x)
     loop x in sv_glob: w.push(x)
     loop x in sv_fns: w.push(x)
@@ -1868,13 +1869,15 @@ spirv_kernel = (f: int, desc: str) -> str:
 # compute(f) (lib/game/gpubuffer.jo): f(id, params) for each id in [0, n). The push constants hold
 # the parameters' address (as for the stages) and n (where the vertex stride is).
 # A grid's (f(id: ivec2, params)) are in groups of 8 x 8, its width and height in the push
-# constants where the strides are.
+# constants where the strides are; a 3D grid's (f(id: ivec3, params)) in groups of 4 x 4 x 4,
+# its depth in the push constants' padding.
 spirv_compute = (f: int) -> str:
     sv_translated = {}
     sv_reset("compute")
     pos = nodes[int(fns[f].decl)].pos
     sv_utype = prune(int(fns[f].ptypes[1]))
-    grid = prune(fns[f].ptypes[0]) == T_IVEC2
+    grid = prune(fns[f].ptypes[0]) == T_IVEC2 or prune(fns[f].ptypes[0]) == T_IVEC3
+    grid3 = prune(fns[f].ptypes[0]) == T_IVEC3
     sv_fn_id(f)
     sv_drain()
     main = sv_new()
@@ -1885,7 +1888,8 @@ spirv_compute = (f: int) -> str:
     idx = 0
     inside = 0
     if grid:
-        sv_group = [8, 8]
+        sv_group = [8, 8, 1]
+        if grid3: sv_group = [4, 4, 4]
         i = sv_i32()
         uv3 = sv_type_key("uv3", 23, [sv_u32(), 3])
         gid = sv_load(uv3, sv_builtin_var(uv3, SC_INPUT, 28))
@@ -1893,6 +1897,10 @@ spirv_compute = (f: int) -> str:
         y = sv_val(124, i, [sv_val(81, sv_u32(), [gid, 1])])
         idx = sv_val(80, sv_veci(2), [x, y])
         inside = sv_val(167, sv_bool(), [sv_val(177, sv_bool(), [x, sv_pc_get(SV_PC_VSTRIDE)]), sv_val(177, sv_bool(), [y, sv_pc_get(SV_PC_ISTRIDE)])])
+        if grid3:
+            z = sv_val(124, i, [sv_val(81, sv_u32(), [gid, 2])])
+            idx = sv_val(80, sv_veci(3), [x, y, z])
+            inside = sv_val(167, sv_bool(), [inside, sv_val(177, sv_bool(), [z, sv_pc_get(SV_PC_DEPTH)])])
     else:
         idx = sv_invocation()
         inside = sv_val(177, sv_bool(), [idx, sv_pc_get(SV_PC_VSTRIDE)])

@@ -206,11 +206,12 @@ gl_stmt = (s: int, depth: int):
         op = int(nodes[s].op)
         ta = prune(ntype(a))
         bop = gl_compound_op(op as Tok)
-        native = (bop == .plus or bop == .minus or bop == .star or bop == .slash) and not (types[ta].kind == .int_ and (gl_unsigned(ta) or int(types[ta].bits) < 32))
+        # (integers through gl_arith: their + - * wrap through unsigned numbers)
+        native = (bop == .plus or bop == .minus or bop == .star or bop == .slash) and (types[ta].kind == .float_ or (is_vec(ta) and not types[ta].sign))
         if op != int(Tok.assign) and not native:
             # (x op= y as x = x op y, x's indexes computed once: the operators the CPU's way)
             x = gl_target(a, pre)
-            gl_out.push("{pre}{x} = {gl_arith(bop, x, gl_expr(int(nodes[s].b)), ta, ta)};\n")
+            gl_out.push("{pre}{x} = {gl_arith(bop, x, gl_expr(int(nodes[s].b)), ta, ta, ntype(int(nodes[s].b)))};\n")
         else: gl_out.push("{pre}{gl_expr(a)} {gl_assign_op(op)} {gl_expr(int(nodes[s].b))};\n")
     else if k == .exprstmt:
         e = int(nodes[s].a)
@@ -345,10 +346,14 @@ gl_expr = (e: int) -> str:
             x = gl_expr(a)
             y = gl_expr(b)
             return "({x} - {y} * trunc({x} / {y}))"
-        return gl_arith(op, gl_expr(a), gl_expr(b), ntype(a), t)
+        return gl_arith(op, gl_expr(a), gl_expr(b), ntype(a), t, ntype(b))
     if k == .unary:
         # (a space: `- -1.5`, not the decrement `--1.5`)
-        if nodes[e].op == i32(int(Tok.minus)): return gl_narrow("(- {gl_expr(int(nodes[e].a))})", t)
+        if nodes[e].op == i32(int(Tok.minus)):
+            # (integers through unsigned ones, which wrap: see gl_arith)
+            if types[t].kind == .int_: return gl_narrow("int(-uint({gl_expr(int(nodes[e].a))}))", t)
+            if is_vec(t) and types[t].sign: return "ivec{types[t].bits}(-uvec{types[t].bits}({gl_expr(int(nodes[e].a))}))"
+            return gl_narrow("(- {gl_expr(int(nodes[e].a))})", t)
         return gl_narrow("(~{gl_expr(int(nodes[e].a))})", t)
     if k == .not_: return "(!{gl_expr(int(nodes[e].a))})"
     if k == .and_: return "({gl_expr(int(nodes[e].a))} && {gl_expr(int(nodes[e].b))})"
@@ -456,7 +461,20 @@ gl_expr = (e: int) -> str:
 
 # x op y for operands of type ta, giving type t: unsigned integers divide, take remainders,
 # shift and compare as unsigned numbers; narrow ones wrap to their range, as on the CPU
-gl_arith = (op: Tok, x: str, y: str, ta: int, t: int) -> str:
+# (Integer + - * go through unsigned numbers, whose overflow wraps by definition: NVIDIA's GLSL
+# compiler assumes signed results do not overflow, and then abs(a * a) - abs(a * a) / 1 need not
+# be 0. tb: the right operand's type, where it may be a scalar beside a vector.)
+gl_arith = (op: Tok, x: str, y: str, ta: int, t: int, tb: int = 0) -> str:
+    if op == .plus or op == .minus or op == .star:
+        if types[prune(ta)].kind == .int_ and types[prune(t)].kind == .int_: return gl_narrow("int(uint({x}) {gl_binop(op)} uint({y}))", t)
+        if is_vec(t) and types[prune(t)].sign:
+            n = int(types[prune(t)].bits)
+            ux = "uint({x})"
+            if is_vec(ta): ux = "uvec{n}({x})"
+            uy = "uint({y})"
+            if tb == 0 or is_vec(tb): uy = "uvec{n}({y})"
+            return "ivec{n}({ux} {gl_binop(op)} {uy})"
+
     if types[prune(ta)].kind == .bool_:
         # (both sides, as and= and or= compute them: not && and ||, which may skip the right)
         if op == .amp: return "bool(int({x}) & int({y}))"
@@ -474,7 +492,7 @@ gl_arith = (op: Tok, x: str, y: str, ta: int, t: int) -> str:
     if gl_unsigned(ta):
         if op == .slash or op == .percent or op == .shr: return gl_narrow("int(uint({x}) {gl_binop(op)} uint({y}))", t)
         if op == .lt or op == .le or op == .gt or op == .ge: return "(uint({x}) {gl_binop(op)} uint({y}))"
-    if op == .percent and is_int(ta): return gl_narrow("({x} - ({x} / {y}) * {y})", t)
+    if op == .percent and is_int(ta): return gl_narrow("int(uint({x}) - uint({x} / {y}) * uint({y}))", t)
     if op == .plus or op == .minus or op == .star or op == .slash or op == .shl: return gl_narrow("({x} {gl_binop(op)} {y})", t)
     "({x} {gl_binop(op)} {y})"
 

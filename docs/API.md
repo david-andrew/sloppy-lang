@@ -1611,8 +1611,10 @@ Through Vulkan a buffer is GPU memory read by its address and a compute function
 
 - `struct Compute[P]`: what compute(f) makes of a compute function f(id: int, params: P)
 - `struct Compute2[P]`: what compute(f) makes of a compute function over a grid, f(id: ivec2, params: P)
+- `struct Compute3[P]`: ... and over a 3D grid, f(id: ivec3, params: P)
 - `dispatch[P] = (k: Compute[P], n: int, params: P)`: k's function run for each id in [0, n) with these parameters, in any order and many at once; the dispatches and draws after it see what it wrote
 - `dispatch[P] = (k: Compute2[P], size: ivec2, params: P)`: k's function run for each cell of a size.x by size.y grid, id from ivec2(0, 0) to size - 1 (in groups of 8 by 8 on the GPU), as dispatch(k, n, params) runs it for each id in [0, n)
+- `dispatch[P] = (k: Compute3[P], size: ivec3, params: P)`: k's function run for each cell of a size.x by size.y by size.z grid (in groups of 4 by 4 by 4 on the GPU)
 - `atomic_add = (b: GpuBuffer[i32], i: int, v: i32) -> i32`: Atomic operations on element i of a buffer, for compute functions whose invocations change the same element: each returns the element's old value (past the ends: does nothing, returns 0).
 - `atomic_add = (b: GpuBuffer[u32], i: int, v: u32) -> u32`
 - `atomic_sub = (b: GpuBuffer[i32], i: int, v: i32) -> i32`

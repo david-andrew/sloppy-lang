@@ -137,6 +137,7 @@ Top-level statements in the main file run in order, like a script.
 | `A \| B` | union: an `A` or a `B` (see section 7) |
 | `(A, B) -> R` | function value (may be a closure); `() -> void` returns nothing |
 | `vec2 vec3 vec4 mat4` | f32 vector/matrix math types (GPU-compatible) |
+| `ivec2 ivec3 ivec4` | i32 vectors (`+ - * /` by component, swizzles, `ivec3(v)` from a `vec3`) |
 | `*T` | raw pointer (low-level code only) |
 
 `type Name = ...` names a type: `type Shape = Circle | Rect`, `type Result[T, E] = T | E`.
@@ -610,7 +611,7 @@ dispatch(compute(step), len(bugs), Step(bugs, dt))
 defining `[]` and `[]=`; changing several fields, `b = u.bugs[id]` first is shorter.) An empty
 buffer of n elements is `gpu_buffer[Bug](n)`. A compute function over a grid takes
 `id: ivec2` and runs once per cell: `dispatch(compute(blur), ivec2(w, h), params)` (in groups of
-8 by 8 on the GPU).
+8 by 8 on the GPU; with `id: ivec3`, `ivec3(w, h, d)` and 4 by 4 by 4).
 
 Shaders read buffers among their uniforms too (`u.bugs[instance_id()]`), a buffer can be a
 mesh's vertices (`gpu_mesh`) or a draw's instances, and `draw_indirect` takes the counts of its

@@ -160,11 +160,11 @@ Done: the library draws through Vulkan 1.3 by default on Linux and Windows, in t
 mr_gpu (bindless textures, buffer device addresses, dynamic rendering, synchronization2, upload
 memory per frame, memory in large blocks); shaders compiled to SPIR-V by the compiler; GPU
 arrays as compute programs; GPU buffers and compute functions written in Sloppy (buffers read by
-address, atomics, subgroup operations, indirect draws and their number in a buffer, grids of 2D
-ids, automatic barriers; on the CPU without Vulkan). Left:
+address, atomics, subgroup operations, indirect draws and their number in a buffer, 2D and 3D
+grids, automatic barriers; on the CPU without Vulkan). Left:
 - More of the explicit API: barriers by hand (independent dispatches without one between them),
-  3D dispatch ids, workgroup shared memory (with barriers, which the CPU path would have to run
-  in step), textures by index in buffers, writes and atomics from fragment shaders.
+  workgroup shared memory (with barriers, which the CPU path would have to run in step),
+  textures by index in buffers, writes and atomics from fragment shaders.
 - Real hardware beyond NVIDIA and Mesa's software driver: Intel, AMD, Windows drivers.
 - Pipelines made before they are first drawn with (they are kept on disk between runs).
 

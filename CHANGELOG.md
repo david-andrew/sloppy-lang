@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `ivec3` and `ivec4` (i32 vectors, as `ivec2`), and compute functions over a 3D grid:
+  `f(id: ivec3, params)` with `dispatch(compute(f), ivec3(w, h, d), params)` (groups of 4 by 4 by
+  4 on the GPU).
+- Shaders on OpenGL and the web: integer `+ - *` wrap on overflow as on the CPU (they are
+  written through unsigned numbers; NVIDIA's GLSL compiler assumed signed results never
+  overflow and simplified hash-like code wrongly). Found by tools/gpufuzz.py.
+
 ## 0.6.0
 
 Graphics:

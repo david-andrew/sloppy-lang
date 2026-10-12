@@ -130,13 +130,17 @@ class Gen:
         if t == "f32": return self.fexpr(d)
         if t == "bool": return self.bexpr(d)
         if t == "ivec2":
-            op = r.choice(["+", "-", "*", "neg", "conv", "ctor"])
+            op = r.choice(["+", "-", "*", "neg", "conv", "ctor", "/", "*s", "if"])
             if op == "neg": return f"(-{self.expr(t, d + 1)})"
+            if op == "/": return f"({self.expr(t, d + 1)} / ivec2({self.expr('i32', d + 2)} | i32(1), {self.expr('i32', d + 2)} | i32(1)))"
+            if op == "*s": return f"({self.expr(t, d + 1)} * {self.expr('i32', d + 2)})"
+            if op == "if": return f"(if {self.expr('bool', d + 1)}: {self.expr(t, d + 1)} else: {self.expr(t, d + 1)})"
             if op == "conv": return f"ivec2({self.expr('vec2', d + 1)})"
             if op == "ctor": return f"ivec2({self.expr('i32', d + 1)}, {self.expr('i32', d + 1)})"
             return f"({self.expr(t, d + 1)} {op} {self.expr(t, d + 1)})"
         if t in ("vec3", "vec4"):
-            op = r.choice(["+", "-", "*s", "neg", "leaf"])
+            op = r.choice(["+", "-", "*s", "neg", "leaf", "if"])
+            if op == "if": return f"(if {self.expr('bool', d + 1)}: {self.expr(t, d + 1)} else: {self.expr(t, d + 1)})"
             if op == "neg": return f"(-{self.expr(t, d + 1)})"
             if op == "*s": return f"({self.expr(t, d + 1)} * {self.lit('f32')})"
             if op == "leaf": return self.leaf(t)
@@ -186,7 +190,13 @@ class Gen:
 
     def fexpr(self, d):
         r = self.r
-        op = r.choice(["+", "-", "*", "neg", "conv", "abs", "floor", "min", "max", "if", "trunc"])
+        op = r.choice(["+", "-", "*", "neg", "conv", "abs", "floor", "min", "max", "if", "trunc", "ceil", "fract", "sign", "step", "mix", "mat"])
+        if op in ("ceil", "fract", "sign"): return f"{op}({self.expr('f32', d + 1)})"
+        if op == "step": return f"step({self.expr('f32', d + 1)}, {self.expr('f32', d + 1)})"
+        if op == "mix": return f"mix({self.expr('f32', d + 1)}, {self.expr('f32', d + 1)}, f32({r.choice(['0.0', '0.5', '1.0', '0.25'])}))"
+        if op == "mat" and d <= 1:
+            cols = ", ".join(f"vec4({', '.join(self.lit('f32') for _ in range(4))})" for _ in range(4))
+            return f"(mat4({cols}) * {self.expr('vec4', d + 1)}).{r.choice('xyzw')}"
         a = lambda: self.expr("f32", d + 1)
         if op == "*": return f"({a()} * {self.lit('f32')})"
         if op in ("+", "-"): return f"({a()} {op} {a()})"
