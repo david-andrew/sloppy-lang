@@ -1320,6 +1320,14 @@ Vector and matrix math for the built-in vec2/vec3/vec4/mat4 types (f32 component
 - `sinf = (x: f32) -> f32`
 - `cosf = (x: f32) -> f32`
 
+#### Random points, directions and colors
+
+- `random_direction = () -> vec2`: a direction at a random angle (length 1)
+- `random_direction_3d = () -> vec3`: a direction in 3D, all equally likely (length 1)
+- `random_point = (low: vec2, high: vec2) -> vec2`: a point in the rectangle between corners low and high
+- `random_in_circle = (center: vec2, radius: f64) -> vec2`: a point inside the circle around center (spread evenly over it)
+- `random_color = (saturation: f64 = 0.7, value: f64 = 1.0) -> vec4`: a color of a random hue (less saturation: paler; less value: darker)
+
 #### Colors
 
 - `rgb = (r: f32, g: f32, b: f32) -> vec4`

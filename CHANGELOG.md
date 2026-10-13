@@ -72,6 +72,8 @@ More for games:
 - `ui_choice("Level", ["forest", "cave", "tower"], level)`: one of several, in a menu.
 - `draw_line3d(a, b, color)` and `draw_grid3d()`: lines and a ground grid in 3D, for seeing paths,
   rays and distances while making a game.
+- `random_direction()` (and `random_direction_3d()`), `random_point(low, high)`,
+  `random_in_circle(center, radius)` and `random_color()`.
 - `first(xs, n)` and `last(xs, n)`: the first or last n, or all when there are fewer.
 - `SLOPPY_INPUT` scripts the mouse too: `3:mouse_left+`, `2:mouse=400x300`; an item it cannot
   read is reported instead of ignored.
