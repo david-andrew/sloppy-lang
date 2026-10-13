@@ -14,81 +14,6 @@ Games:
   says so.
 - 3D physics: `w.sphere_cast(a, b, radius)`, a ray with thickness: where a ball moved from a to b
   first touches something (thick bullets, a camera kept out of walls, the ground under feet).
-
-Language:
-- `random()` differs from run to run: it starts from the clock (it always started from the same
-  seed). `seed_random(n)` makes the numbers the same every run, as do `SLOPPY_SEED=n` and screenshot
-  runs (`SLOPPY_SCREENSHOT`).
-- Fixed: `xs[f(i)].v += d`, a vector (or a type with its own operators) at an index that is a
-  call, failed to compile ("invalid expression"); the index is now computed once.
-- A warning for `s[0] + "!"`: it adds a byte and a character's code, not text.
-- `chr(c)` is the character with code point c, as in Python (`chr(233)` is "é"; it was one byte,
-  which made text typed into a web page or a Windows console wrong past ASCII); `byte_str(b)` is a
-  one-byte string. `split(s, "")` gives characters, not bytes. The language reference has a part on
-  text: bytes, characters, and how wide text is drawn.
-- `mut` in combined loops: `loop i in 0.. and mut e in enemies: e.hp -= i` changes the elements
-  themselves while counting.
-- Comparing an optional with `none` narrows it, as `is` does: after `if x == none: return`, or
-  inside `if x != none:` (and `x != none and x > 0`), `x` is its value. `x is not T` is
-  `not (x is T)`. `x!` on a variable known to have its value is that value.
-- `read_line()` reads a line typed in (or piped in), none when the input has ended, and
-  `read_stdin()` all of it; `read_file("/dev/stdin")` reads a pipe. `input`, `raw_input` and
-  `readline` point to `read_line`.
-- `random_item(xs)` and `shuffle(xs)` (and `r.next_item(xs)`, `r.shuffle(xs)` with an `Rng`);
-  `choice`, `randint` and `uniform` point to them. `draw_cube`, `draw_sphere` and `light` point to
-  what draws them.
-- `to_json(value)` and `from_json[T](text)` for any value: structs as objects by field name
-  (fields left out keep their defaults, unknown ones are skipped), arrays, tuples and vectors as
-  lists, maps, optionals as null, enums by name. `csv_rows(text)` and `to_csv(rows)` read and
-  write CSV (quoted fields too). `median`, `std_dev`, `mean` of ints, `unique` and `group_by`.
-- `round` is right for 0.49999999999999994 (it gave 1.0) and says how it rounds halves (away
-  from zero; Python's goes to the even one).
-- `pow` is within an ulp (fdlibm's; it was exp(y * log(x)), several ulps off for big results):
-  `pow(2.0, 0.5) == sqrt(2.0)`.
-- Raw strings take either quote: `r'{"a": 1}'`. A string whose braces hold only a string
-  (`'{"a": 1}'`, meant as JSON) is an error that says how to write braces; an unterminated
-  interpolation and a bad one say so too.
-- `int("5")` is an error (it was 53, the character's code): `to_int("5")` reads the number.
-  (`int('5')` in single quotes, as character arithmetic writes it, is still the code.)
-- A function that calls itself without its result type written (`fact = (n: int): ... fact(n - 1)`)
-  says to write it, instead of "operator * is not defined for int and void".
-- Assigning a global declared below the function is an error (it was a warning): a global
-  added further down the file would quietly change what the function does.
-- Hints for `x if c else y` in arguments, `n // 2`, `xs.map(str)`, `sort(key = ...)`,
-  `circle(100, 100, ...)` (a position is one vec2), `draw_text`, `draw_rect`, `.copy()`; the
-  panic for `xs[-1]` mentions `xs[end]`; `max`, `min`, `first` and `last` of an empty array say so.
-- Sorting keeps equal elements in their order (sort by name, then by score, and the names stay in
-  order within a score), and takes `descending = true`; `sorted_by(xs, key)` is a sorted copy.
-- Tuples compare element by element (`sorted` of `(score, name)` pairs; `max`, `<`). `>`, `<=`
-  and `>=` come from a struct's `<` (they were errors without their own definitions).
-- `loop x in xs: if x > 0: n += 1` on one line: an `if` after a colon on the same line is the
-  statement (it was an if expression, wanting an else).
-- A warning for `hits / shots * 100.0` and other divisions of whole numbers that become floats
-  (the fraction is gone before: 3 / 4 is 0).
-- `split(s)` splits at spaces, as `words(s)` does; `tween(0, 10, 0.5)` goes through the
-  fractions (with whole numbers it gave an int tween).
-- Hints for Python's `xs[:2]`, `a if c else b`, `if xs:` and `if n:`, for `score += 0.5` with an
-  int score (make it `score = 0.0`), and for a color (vec4) given where a vec3 is wanted (`.rgb`).
-- The REPL's `:type f` of a function shows its versions and their notes.
-- A struct's function field taking `self` says that structs have no methods and how to write one;
-  an indentation error in a file that mixes tabs and spaces says so.
-
-Editor:
-- The language server reads what has arrived before answering: a request the editor cancelled
-  since is answered "cancelled", and one about a document changed since "content modified", so
-  typing fast in a big program no longer queues up checks of old text.
-
-Docs:
-- The tutorial, the templates (`sloppy new`) and the library's examples leave out the `f32(...)`
-  they did not need: f32 and f64 mix by themselves (`pos += input_axis() * 400 * dt`).
-- The library reference lists each struct's fields and each enum's variants (`Key`'s names), and
-  its headings are where they belong; `tanh` is with the math.
-- `SLOPPY_INPUT` is described in full; enum matches, and that `loop c in s` gives bytes, are in
-  the language reference; examples are linked on GitHub (the release does not include them).
-- Key names from other libraries (`.esc`, `.return`, `.left_ctrl`, `.left_arrow`) say which variant is
-  meant (`.escape`, `.enter`, `.ctrl`, `.left`).
-
-More for games:
 - Netplay: web pages in a rollback room connect straight to each other with WebRTC; their
   packets then go as over UDP (unordered, never resent, never held up behind a lost one) instead
   of through the relay's WebSockets. The relay passes on how they connect; a STUN server
@@ -109,12 +34,87 @@ More for games:
   rays and distances while making a game.
 - `random_direction()` (and `random_direction_3d()`), `random_point(low, high)`,
   `random_in_circle(center, radius)` and `random_color()`.
-- `first(xs, n)` and `last(xs, n)`: the first or last n, or all when there are fewer.
 - `SLOPPY_INPUT` scripts the mouse too: `3:mouse_left+`, `2:mouse=400x300`; an item it cannot
   read is reported instead of ignored.
 - Physics (2D and 3D): bodies at rest go to sleep, with all they touch, and are left out of each
   step until something touches, pushes or moves them, or what they rest on goes (`w.sleeping(b)`;
   `World(sleep = false)` keeps all awake). A settled pile of 200 boxes steps 15 times faster.
+
+Language and library:
+- `random()` differs from run to run: it starts from the clock (it always started from the same
+  seed). `seed_random(n)` makes the numbers the same every run, as do `SLOPPY_SEED=n` and screenshot
+  runs (`SLOPPY_SCREENSHOT`).
+- Fixed: `xs[f(i)].v += d`, a vector (or a type with its own operators) at an index that is a
+  call, failed to compile ("invalid expression"); the index is now computed once.
+- `chr(c)` is the character with code point c, as in Python (`chr(233)` is "é"; it was one byte,
+  which made text typed into a web page or a Windows console wrong past ASCII); `byte_str(b)` is a
+  one-byte string. `split(s, "")` gives characters, not bytes. The language reference has a part on
+  text: bytes, characters, and how wide text is drawn.
+- `mut` in combined loops: `loop i in 0.. and mut e in enemies: e.hp -= i` changes the elements
+  themselves while counting.
+- `read_line()` reads a line typed in (or piped in), none when the input has ended, and
+  `read_stdin()` all of it; `read_file("/dev/stdin")` reads a pipe. `input`, `raw_input` and
+  `readline` point to `read_line`.
+- `random_item(xs)` and `shuffle(xs)` (and `r.next_item(xs)`, `r.shuffle(xs)` with an `Rng`);
+  `choice`, `randint` and `uniform` point to them. `draw_cube`, `draw_sphere` and `light` point to
+  what draws them.
+- `to_json(value)` and `from_json[T](text)` for any value: structs as objects by field name
+  (fields left out keep their defaults, unknown ones are skipped), arrays, tuples and vectors as
+  lists, maps, optionals as null, enums by name. `csv_rows(text)` and `to_csv(rows)` read and
+  write CSV (quoted fields too). `median`, `std_dev`, `mean` of ints, `unique` and `group_by`.
+- `round` is right for 0.49999999999999994 (it gave 1.0) and says how it rounds halves (away
+  from zero; Python's goes to the even one).
+- `pow` is within an ulp (fdlibm's; it was exp(y * log(x)), several ulps off for big results):
+  `pow(2.0, 0.5) == sqrt(2.0)`.
+- Sorting keeps equal elements in their order (sort by name, then by score, and the names stay in
+  order within a score), and takes `descending = true`; `sorted_by(xs, key)` is a sorted copy.
+- Tuples compare element by element (`sorted` of `(score, name)` pairs; `max`, `<`). `>`, `<=`
+  and `>=` come from a struct's `<` (they were errors without their own definitions).
+- `loop x in xs: if x > 0: n += 1` on one line: an `if` after a colon on the same line is the
+  statement (it was an if expression, wanting an else).
+- `split(s)` splits at spaces, as `words(s)` does; `tween(0, 10, 0.5)` goes through the
+  fractions (with whole numbers it gave an int tween).
+- `first(xs, n)` and `last(xs, n)`: the first or last n, or all when there are fewer.
+
+Errors and hints:
+- A warning for `s[0] + "!"`: it adds a byte and a character's code, not text.
+- Comparing an optional with `none` narrows it, as `is` does: after `if x == none: return`, or
+  inside `if x != none:` (and `x != none and x > 0`), `x` is its value. `x is not T` is
+  `not (x is T)`. `x!` on a variable known to have its value is that value.
+- Raw strings take either quote: `r'{"a": 1}'`. A string whose braces hold only a string
+  (`'{"a": 1}'`, meant as JSON) is an error that says how to write braces; an unterminated
+  interpolation and a bad one say so too.
+- `int("5")` is an error (it was 53, the character's code): `to_int("5")` reads the number.
+  (`int('5')` in single quotes, as character arithmetic writes it, is still the code.)
+- A function that calls itself without its result type written (`fact = (n: int): ... fact(n - 1)`)
+  says to write it, instead of "operator * is not defined for int and void".
+- Assigning a global declared below the function is an error (it was a warning): a global
+  added further down the file would quietly change what the function does.
+- Hints for `x if c else y` in arguments, `n // 2`, `xs.map(str)`, `sort(key = ...)`,
+  `circle(100, 100, ...)` (a position is one vec2), `draw_text`, `draw_rect`, `.copy()`; the
+  panic for `xs[-1]` mentions `xs[end]`; `max`, `min`, `first` and `last` of an empty array say so.
+- A warning for `hits / shots * 100.0` and other divisions of whole numbers that become floats
+  (the fraction is gone before: 3 / 4 is 0).
+- Hints for Python's `xs[:2]`, `a if c else b`, `if xs:` and `if n:`, for `score += 0.5` with an
+  int score (make it `score = 0.0`), and for a color (vec4) given where a vec3 is wanted (`.rgb`).
+- The REPL's `:type f` of a function shows its versions and their notes.
+- A struct's function field taking `self` says that structs have no methods and how to write one;
+  an indentation error in a file that mixes tabs and spaces says so.
+- Key names from other libraries (`.esc`, `.return`, `.left_ctrl`, `.left_arrow`) say which variant is
+  meant (`.escape`, `.enter`, `.ctrl`, `.left`).
+
+Editor:
+- The language server reads what has arrived before answering: a request the editor cancelled
+  since is answered "cancelled", and one about a document changed since "content modified", so
+  typing fast in a big program no longer queues up checks of old text.
+
+Docs:
+- The tutorial, the templates (`sloppy new`) and the library's examples leave out the `f32(...)`
+  they did not need: f32 and f64 mix by themselves (`pos += input_axis() * 400 * dt`).
+- The library reference lists each struct's fields and each enum's variants (`Key`'s names), and
+  its headings are where they belong; `tanh` is with the math.
+- `SLOPPY_INPUT` is described in full; enum matches, and that `loop c in s` gives bytes, are in
+  the language reference; examples are linked on GitHub (the release does not include them).
 
 ## 0.10.0
 

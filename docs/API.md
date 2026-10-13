@@ -465,7 +465,7 @@ loop l in j.get("layers").as_list(): print(l.get("name").as_str() ?? "")
 #### Writing
 
 - `to_json = (j: Json, indent: int = 0) -> str`: JSON text for a value (indent > 0: on several lines, indented by that many spaces)
-- `to_json[T] = (x: T, indent: int = 0) -> str`: any value as JSON: a struct as an object (by field name), an array, tuple or vector as a list, a map as an object (its keys as text), none as null, an enum's variant as its name (one with fields as {"name": [fields]}); from_json[T] reads it back
+- `to_json[T] = (x: T, indent: int = 0) -> str`: any value as JSON: a struct as an object (by field name), an array, tuple or vector as a list, a map as an object (its keys as text), none as null, an enum's variant as its name (one with fields as {"name": [fields]}), and a Json inside it as itself; from_json[T] reads it back
 - `json_value[T] = (x: T) -> Json`: any value as a Json (what to_json writes for it)
 
 ### csv.jo
