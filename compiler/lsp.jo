@@ -306,6 +306,41 @@ lsp_read = () -> str?:
         if in_eof or not lsp_fill(): return none
     none
 
+# the next message to act on. What has arrived already is read first: a request the editor has
+# cancelled since is answered "cancelled", and one about a document changed since "content
+# modified" (its answer would be about old text), so a backlog of checks is not worked through
+lsp_queue: str[]
+
+lsp_next = () -> str?:
+    loop true:
+        if lsp_queue.len() == 0:
+            if let m = lsp_read(): lsp_queue.push(m)
+            else: return none
+        loop lsp_input_ready():
+            if let m = lsp_read(): lsp_queue.push(m)
+            else: break
+        m = lsp_queue.remove(0)
+        root = json_parse(m)
+        method = jstr(jget(root, "method"))
+        if method == "$/cancelRequest": continue
+        id = jget(root, "id")
+        if id == 0 or method == "initialize" or method == "shutdown": return m
+        key = jn_raw(id)
+        uri = jstr(jget(jget(jget(root, "params"), "textDocument"), "uri"))
+        stale = 0
+        loop later in lsp_queue:
+            r = json_parse(later)
+            lm = jstr(jget(r, "method"))
+            if lm == "$/cancelRequest" and jn_raw(jget(jget(r, "params"), "id")) == key:
+                stale = -32800
+                break
+            if lm == "textDocument/didChange" and len(uri) > 0 and jstr(jget(jget(jget(r, "params"), "textDocument"), "uri")) == uri: stale = -32801
+        # (json_parse starts its nodes afresh: the id is answered as text)
+        if stale == -32800: lsp_send("\{\"jsonrpc\":\"2.0\",\"id\":{key},\"error\":\{\"code\":-32800,\"message\":\"cancelled\"\}\}")
+        else if stale == -32801: lsp_send("\{\"jsonrpc\":\"2.0\",\"id\":{key},\"error\":\{\"code\":-32801,\"message\":\"the document changed\"\}\}")
+        else: return m
+    none
+
 lsp_send = (body: str):
     msg = "Content-Length: {len(body)}\r\n\r\n{body}"
     __write_fd(1, data(msg), len(msg))
@@ -2144,7 +2179,7 @@ lsp_main = ():
             if docs[i].open and not docs[i].dirty and not docs[i].lowered:
                 if lsp_wait_input(300): break
                 refresh_lowered(i)
-        m = lsp_read()
+        m = lsp_next()
         if m == none: exit(0)
         root = json_parse(m!)
         method = jstr(jget(root, "method"))

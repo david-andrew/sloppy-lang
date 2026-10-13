@@ -564,6 +564,25 @@ check("library file: no errors", c.diagnostics(luri), [])
 h = c.request("textDocument/hover", {"textDocument": {"uri": luri}, "position": lc(lsrc, lsrc.index("__stats_summary(120)"))})
 check("library file: hover", h and h["contents"]["value"].split("\n")[1], "__stats_summary = (count: int) -> (str, str, str)")
 
+# ---- what the editor no longer needs: a cancelled request, and one about text changed since ----
+csrc = "k = 1\nprint(k)\n"
+cu, _ = doc("cancel.jo", csrc)
+def frame(obj):
+    b = json.dumps(obj).encode()
+    return b"Content-Length: %d\r\n\r\n" % len(b) + b
+hov = lambda i: {"jsonrpc": "2.0", "id": i, "method": "textDocument/hover", "params": tp(cu, csrc, "k)")}
+c.versions[cu] += 1
+c.p.stdin.write(frame(hov(9001)) + frame({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": 9001}}) +
+                frame(hov(9002)) + frame({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": cu, "version": c.versions[cu]}, "contentChanges": [{"text": csrc}]}}) +
+                frame(hov(9003)))
+c.p.stdin.flush()
+answers = {}
+while len(answers) < 3:
+    m = c.recv()
+    if m.get("id") in (9001, 9002, 9003) and "method" not in m: answers[m["id"]] = m
+    else: c.notes.append(m)
+check("cancelled, changed since, answered", [answers[9001].get("error", {}).get("code"), answers[9002].get("error", {}).get("code"), "result" in answers[9003]], [-32800, -32801, True])
+
 c.request("shutdown", None)
 c.notify("exit", None)
 c.p.wait(timeout=5)

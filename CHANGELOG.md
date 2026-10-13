@@ -53,6 +53,11 @@ Language:
 - A struct's function field taking `self` says that structs have no methods and how to write one;
   an indentation error in a file that mixes tabs and spaces says so.
 
+Editor:
+- The language server reads what has arrived before answering: a request the editor cancelled
+  since is answered "cancelled", and one about a document changed since "content modified", so
+  typing fast in a big program no longer queues up checks of old text.
+
 Docs:
 - The tutorial, the templates (`sloppy new`) and the library's examples leave out the `f32(...)`
   they did not need: f32 and f64 mix by themselves (`pos += input_axis() * 400 * dt`).
