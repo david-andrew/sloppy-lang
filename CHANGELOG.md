@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+Games:
+- Physics (2D and 3D): bodies at rest go to sleep, with all they touch, and are left out of each
+  step until something touches, pushes or moves them, or what they rest on goes (`w.sleeping(b)`;
+  `World(sleep = false)` keeps all awake). A settled pile of 200 boxes steps 15 times faster.
+
 ## 0.10.0
 
 Language:
