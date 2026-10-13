@@ -54,6 +54,13 @@ Language:
   meant (`.escape`, `.enter`, `.ctrl`, `.left`).
 
 More for games:
+- `world_to_screen(p)`: where a 3D point appears on the screen (none behind the camera), for names
+  and health bars over heads; in 2D, where a world position appears under the camera.
+- Fixed: 3D drawn after 2D in the same frame (a label drawn after each enemy) covered what was
+  drawn before with the sky; only the last 3D drawn showed. Each later batch now goes over the
+  earlier ones, and their shadows stay.
+- `ui_choice("Level", ["forest", "cave", "tower"], level)`: one of several, in a menu.
+- `first(xs, n)` and `last(xs, n)`: the first or last n, or all when there are fewer.
 - `SLOPPY_INPUT` scripts the mouse too: `3:mouse_left+`, `2:mouse=400x300`; an item it cannot
   read is reported instead of ignored.
 - Physics (2D and 3D): bodies at rest go to sleep, with all they touch, and are left out of each

@@ -84,6 +84,8 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `is_empty[T] = (xs: T[]) -> bool`
 - `first[T] = (xs: T[]) -> T`
 - `last[T] = (xs: T[]) -> T`
+- `first[T] = (xs: T[], n: int) -> T[]`: the first n elements (all of them when there are fewer: xs[..n) would panic)
+- `last[T] = (xs: T[], n: int) -> T[]`: the last n elements (all of them when there are fewer)
 - `contains[T] = (xs: T[], x: T) -> bool`
 - `index_of[T] = (xs: T[], x: T) -> int`
 - `map[T, U] = (xs: T[], f: (T) -> U) -> U[]`
@@ -869,6 +871,7 @@ draw = ():
 - `reset_transform = ()`
 - `camera2d = (target: vec2, zoom: f64 = 1.0, angle: f64 = 0.0)`: 2D camera: `target` appears at the screen center, scaled by zoom
 - `screen_to_world = (p: vec2) -> vec2`: convert a screen position to world coordinates under the current transform
+- `world_to_screen = (p: vec2) -> vec2`: where a world position appears on the screen under the current transform (the other way)
 
 #### Textures
 
@@ -1264,6 +1267,7 @@ draw = ():
 - `lit_fs = (i: LitOut, u: LitParams) -> vec4`
 - `struct Draw3D`
 - `camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`: place the camera; call once per frame before drawing 3D objects
+- `world_to_screen = (p: vec3) -> vec2?`: where a point in 3D appears on the screen, in 2D drawing units (for a name or a health bar over someone's head); none when it is behind the camera. As the camera was last placed.
 - `sun = (direction: vec3, color: vec3 = vec3(1, 0.95, 0.85))`: the sunlight: direction points toward the sun (y > 0: above the horizon), color is its light
 - `sky = (top: vec3, horizon: vec3, ground: vec3 = vec3(0.3, 0.27, 0.24))`
 - `hide_sky = ()`
@@ -1755,7 +1759,7 @@ draw = ():
     if fullscreen != is_fullscreen(): set_fullscreen(fullscreen)
 ```
 
-Menus: a column of buttons, sliders and switches, worked with the keyboard, a gamepad or the mouse. Immediate mode: describe the menu every frame (in draw), and each item says what was done to it then.
+Menus: a column of buttons, sliders, switches and choices, worked with the keyboard, a gamepad or the mouse. Immediate mode: describe the menu every frame (in draw), and each item says what was done to it then.
 
 ```gdscript
 draw = ():
@@ -1764,11 +1768,12 @@ draw = ():
     if ui_button("Play"): start()
     music = ui_slider("Music", music)
     fullscreen = ui_switch("Fullscreen", fullscreen)
+    level = ui_choice("Level", ["forest", "cave", "tower"], level)
     if ui_button("Quit"): quit()
     ui_end()
 ```
 
-Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a click choose, left/right change sliders and switches; ui_back() is true when escape or B was pressed. A menu ignores input in the frame it opens (the key that opened it is still pressed then); ui_ready() says whether that frame is over, for a game's own keys in a menu.
+Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a click choose, left/right change sliders, switches and choices; ui_back() is true when escape or B was pressed. A menu ignores input in the frame it opens (the key that opened it is still pressed then); ui_ready() says whether that frame is over, for a game's own keys in a menu.
 
 - `struct UiStyle`
 - `ui_begin = (name: str, top_center: vec2)`: start a menu: items go in a column centered on x, from y down. A new name starts with the first item chosen.
@@ -1778,6 +1783,7 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
 - `ui_button = (label: str, enabled: bool = true) -> bool`: a button: true in the frame it is chosen
 - `ui_slider = (label: str, value: f64, step: f64 = 0.1) -> f64`: a value from 0 to 1, changed in steps of `step` (left/right, or dragging with the mouse)
 - `ui_switch = (label: str, on: bool) -> bool`: on or off (left/right, enter, or a click)
+- `ui_choice = (label: str, options: str[], index: int) -> int`: one of several (left/right, or a click on either side, goes to the one before or after): `difficulty = ui_choice("Difficulty", ["easy", "normal", "hard"], difficulty)`
 - `ui_text = (s: str, size: f64 = 24.0, color: vec4 = vec4(1, 1, 1, 0.6))`: a line of text in the column (not an item: it cannot be chosen)
 
 ## Paths

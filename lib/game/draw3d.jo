@@ -325,6 +325,15 @@ camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, f
     __near = near
     __far = far
 
+# where a point in 3D appears on the screen, in 2D drawing units (for a name or a health bar
+# over someone's head); none when it is behind the camera. As the camera was last placed.
+world_to_screen = (p: vec3) -> vec2?:
+    aspect = f64(__target_w) / f64(max(__target_h, 1))
+    vp = perspective(__fov, aspect, __near, __far) * look_at(__cam_pos, __cam_target, vec3(0, 1, 0))
+    c = vp * vec4(p, 1)
+    if c.w <= 0.0: return none
+    vec2(f32((f64(c.x / c.w) + 1.0) * 0.5 * __view_w), f32((1.0 - f64(c.y / c.w)) * 0.5 * __view_h))
+
 # the sunlight: direction points toward the sun (y > 0: above the horizon), color is its light
 sun = (direction: vec3, color: vec3 = vec3(1, 0.95, 0.85)):
     __sun_dir = normalize(direction)
@@ -441,6 +450,21 @@ __params_for = (d: Draw3D, vp: mat4) -> LitParams:
 
 __no_bones: vec4[192]
 
+# (3D drawn after 2D in the same frame goes over it: a second pass into the same target keeps
+# the depth of the first, draws no sky, and the first pass's objects still cast shadows)
+__pass_frame = -1
+__pass_target = -2
+__casters: Draw3D[]
+
+__cast_shadow = (d: mut Draw3D, sv: vec4[], vp: mat4):
+    if not d.shadow or d.has_custom: return
+    if not __in_view(d, sv): return
+    p = __params_for(d, vp)
+    p.shadow_map = Texture(0, 1, 1)          # never sample the target being rendered
+    if d.instanced: draw_instanced(__shadow_sh_inst, d.mesh, d.instances, p)
+    else if d.bones.len() > 0: draw(__shadow_sh_skin, d.mesh, p)
+    else: draw(__shadow_sh, d.mesh, p)
+
 __render3d = ():
     if __draws.len() == 0:
         __point_lights.clear()
@@ -449,6 +473,10 @@ __render3d = ():
     __3d_init()
     flush()
     zone("3d")
+    again = __pass_frame == __frame_count and __pass_target == __cur_target
+    if not again: __casters.clear()
+    __pass_frame = __frame_count
+    __pass_target = __cur_target
     w = __target_w
     h = __target_h
     aspect = f64(w) / f64(max(h, 1))
@@ -475,21 +503,15 @@ __render3d = ():
         glDisable(GL_BLEND)
         glColorMask(0, 0, 0, 0)
         sv = __frustum(__shadow_vp)
-        loop mut d in __draws:
-            if not d.shadow or d.has_custom: continue
-            if not __in_view(d, sv): continue
-            p = __params_for(d, vp)
-            p.shadow_map = Texture(0, 1, 1)          # never sample the target being rendered
-            if d.instanced: draw_instanced(__shadow_sh_inst, d.mesh, d.instances, p)
-            else if d.bones.len() > 0: draw(__shadow_sh_skin, d.mesh, p)
-            else: draw(__shadow_sh, d.mesh, p)
+        loop mut d in __casters: __cast_shadow(d, sv, vp)
+        loop mut d in __draws: __cast_shadow(d, sv, vp)
         glColorMask(1, 1, 1, 1)
         __rebind_target()
         zone_end()
     glEnable(GL_DEPTH_TEST)
     glDepthFunc(GL_LEQUAL)
     glDepthMask(1)
-    glClear(GL_DEPTH_BUFFER_BIT)
+    if not again: glClear(GL_DEPTH_BUFFER_BIT)
     glEnable(GL_CULL_FACE)
     glCullFace(GL_BACK)
     glDisable(GL_BLEND)
@@ -509,7 +531,7 @@ __render3d = ():
         if d.instanced: draw_instanced(__lit_inst, d.mesh, d.instances, p)
         else if d.bones.len() > 0: draw(__lit_skin, d.mesh, p)
         else: draw(__lit, d.mesh, p)
-    if __sky_on:
+    if __sky_on and not again:
         glDisable(GL_CULL_FACE)
         sp = _SkyParams(inverse(vp), __sky_top, __sky_horizon, __ground_color, __sun_dir, __sun_color, f32(elapsed()), f32(__stars))
         draw(__sky_sh, __fs_tri, sp)
@@ -550,6 +572,8 @@ __render3d = ():
     glDisable(GL_CULL_FACE)
     glDisable(GL_DEPTH_TEST)
     __apply_blend(__blend)
+    loop d in __draws:
+        if d.shadow and not d.has_custom: __casters.push(d)
     __draws.clear()
     zone_end()
 
