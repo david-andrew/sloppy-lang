@@ -419,29 +419,18 @@ HOME = """
     <a class="btn" href="docs/start.html">Get started</a><a class="btn" href="docs/tutorial.html">Make a game</a><a class="btn" href="docs/language.html">The language</a></div>
   </div>
   <div class="art"><img class="logo" src="logo-512.png" alt="a white clover blossom">
-  <pre><code class="sloppy">pos = vec2(400, 300)
-
-update = (dt: f64):
-    pos += input_axis() * f32(300 * dt)
-
-draw = ():
-    clear(rgb(0.08, 0.08, 0.12))
-    circle(pos, 24, rgb(1.0, 0.6, 0.2))
-    text("arrow keys", vec2(20, 20), 24, WHITE)</code></pre></div>
+  <div class="snippet"><pre><code class="sloppy">{hero_code}</code></pre>
+  <p class="caption">A whole program: a window, and a ball the arrow keys move. <a href="{hero_play}">Run it in the playground</a></p></div></div>
 </section>
-<section class="features">
-  <div class="feature"><h3>Instant compiles</h3><p>About 250,000 lines a second. Hello world compiles and runs in about 10 ms; there is no build system, options live in the source.</p></div>
-  <div class="feature"><h3>Fast programs</h3><p>Release builds run within about 1.5&times; of gcc -O2, with bounds checks on. <code>parallel_map</code> uses every core; GPU arrays run on the GPU.</p></div>
-  <div class="feature"><h3>Easy</h3><p>Type inference everywhere, indentation syntax, closures, partial application, generics without ceremony, unions, value semantics with no garbage collector.</p></div>
-  <div class="feature"><h3>Made for games</h3><p>Windows, input, 2D drawing, a 3D renderer with shadows and bloom, shaders written in Sloppy, audio, pixel art and any screen shape, all built in.</p></div>
-  <div class="feature"><h3>Runs anywhere it lands</h3><p>Native programs are static executables with no dependencies; web builds are one HTML file. Graphics drivers are optional: there is a software renderer.</p></div>
-  <div class="feature"><h3>Self-hosted</h3><p>The compiler is written in Sloppy and compiles itself, even in this site's playground, where it runs as WebAssembly.</p></div>
+<section class="strip intro">
+  <h2>Made with Sloppy</h2>
+  <p>Two complete games, each one file of Sloppy, playing here in your browser.</p>
 </section>
 <section class="showcase">
   <a href="rebound/"><img src="assets/rebound.png" alt="Rebound: a shield arcs around a glowing core; a chain of blasts runs through a line of turrets"></a>
   <div>
-    <h2>Rebound</h2>
-    <p>A complete arcade game in one file of Sloppy. Turn the shield to catch the turrets' bolts and send
+    <h3>Rebound</h3>
+    <p>An arcade game. Turn the shield to catch the turrets' bolts and send
     them back: blasts set off the turrets beside them, catches near the shield's edge bank off to other
     turrets, and every few turrets you choose an upgrade. Menus, settings, a saved best score, and sound
     made by the built-in synthesizer.</p>
@@ -452,8 +441,8 @@ draw = ():
 <section class="showcase flip">
   <a href="breakwater/"><img src="assets/breakwater.png" alt="Breakwater: robots advance across a platform at sea; a shielded warden is in the shotgun's sights"></a>
   <div>
-    <h2>Breakwater</h2>
-    <p>A first-person shooter in one file of Sloppy: hold a platform at sea against waves of robots.
+    <h3>Breakwater</h3>
+    <p>A first-person shooter: hold a platform at sea against waves of robots.
     A shield that recharges, two weapons at a time from racks and fallen robots, grenades and melee.
     Animated glTF models (robots and weapons by Quaternius), shadows, bloom and synthesized sound;
     mouse, keyboard alone, or a gamepad.</p>
@@ -461,21 +450,85 @@ draw = ():
     <a class="btn" href="https://github.com/david-andrew/sloppy-lang/blob/master/examples/breakwater/breakwater.jo">Read the source</a></div>
   </div>
 </section>
-<section class="strip"><p><a class="btn" href="examples/">More examples, to play and change</a></p></section>
+<section class="strip"><p><a class="btn" href="examples/">More examples and templates, to play and change</a></p></section>
+<section class="strip intro"><h2>Why Sloppy</h2></section>
+<section class="features">
+  <div class="feature"><h3>Instant compiles</h3><p>About 250,000 lines a second. Hello world compiles and runs in about 10 ms; there is no build system, options live in the source.</p></div>
+  <div class="feature"><h3>Fast programs</h3><p>Release builds run within about 1.5&times; of gcc -O2, with bounds checks on. <code>parallel_map</code> uses every core; GPU arrays run on the GPU.</p></div>
+  <div class="feature"><h3>Easy</h3><p>Type inference everywhere, indentation syntax, closures, partial application, generics without ceremony, unions, value semantics with no garbage collector.</p></div>
+  <div class="feature"><h3>Made for games</h3><p>Windows, input, 2D drawing, a 3D renderer with shadows and bloom, shaders written in Sloppy, audio, pixel art and any screen shape, all built in.</p></div>
+  <div class="feature"><h3>Runs anywhere it lands</h3><p>Native programs are static executables with no dependencies; web builds are one HTML file. Graphics drivers are optional: there is a software renderer.</p></div>
+  <div class="feature"><h3>Self-hosted</h3><p>The compiler is written in Sloppy and compiles itself, even in this site's playground, where it runs as WebAssembly.</p></div>
+</section>
 <section class="strip">
-  <h2>Numbers, arrays, and the rest</h2>
-  <pre><code class="sloppy">fib = (n: int) -> int:
-    if n < 2: return n
-    fib(n - 1) + fib(n - 2)
-
-nums = [5 3 9 1]
-nums.sort()
-add = (a: int, b: int): a + b
-print(nums.map((x): x * x), add(1, _)(41), fib(30))
-print(nums .* 2.5 .+ 1, sqrt.([4.0 9.0]), [1 2; 3 4] * [1 0; 0 1])</code></pre>
+  <h2>What the code looks like</h2>
+  <div class="snippets">{snippets}</div>
   <p>Editors: <code>sloppy lsp</code> is a language server (and there is a <a href="https://marketplace.visualstudio.com/items?itemName=RedFoxLabs.sloppy">VS Code / Cursor extension</a>). An interactive prompt: run <code>sloppy</code> with no file.</p>
 </section>
 """
+
+HERO_CODE = """pos = vec2(400, 300)
+
+update = (dt: f64):
+    pos += input_axis() * f32(300 * dt)
+
+draw = ():
+    clear(rgb(0.08, 0.08, 0.12))
+    circle(pos, 24, rgb(1.0, 0.6, 0.2))
+    text("arrow keys", vec2(20, 20), 24, WHITE)
+"""
+
+# (title, what it shows, the program: each runs as it is, in the playground too)
+SNIPPETS = [
+    ("Structs, changed in place", "Values are copied, never shared; <code>loop mut</code> changes the elements themselves.", r"""struct Ball:
+    pos: vec2
+    vel: vec2
+    bounces = 0
+
+balls = [Ball(vec2(0, 90), vec2(80, 40))]
+balls.push(Ball(vec2(0, 20), vec2(60, 10)))
+loop mut b in balls:
+    b.pos += b.vel * 0.5
+    if b.pos.y > 100:
+        b.vel.y = -b.vel.y
+        b.bounces += 1
+print(balls)
+"""),
+    ("Errors are values", "A function returns its result or what went wrong; after the check, <code>n</code> is an <code>int</code>.", r"""struct BadLine:
+    line: int
+    text: str
+
+total = (text: str) -> int | BadLine:
+    sum = 0
+    loop i in 1.. and l in lines(text):
+        n = to_int(l)
+        if n is none: return BadLine(i, l)
+        sum += n
+    sum
+
+print(total("4\n5\n6"))
+print(total("4\nfive\n6"))
+"""),
+    ("Saving a game", "Any value is kept as text and read back by field name, so old saves still load after new fields.", r"""struct Progress:
+    level = 1
+    coins = 0
+    unlocked: str[]
+
+# (the defaults the first time)
+p = load_value("progress", Progress())
+p.coins += 25
+p.unlocked.push("double jump")
+save_value("progress", p)
+print(p)
+"""),
+]
+
+def home():
+    cards = "".join(f'<div class="snippet"><h3>{t}</h3><p>{say}</p><pre><code class="sloppy">{html.escape(code.rstrip())}</code></pre>'
+                    f'<p class="caption"><a href="{play_link(code)[3:]}">Run it in the playground</a></p></div>' for t, say, code in SNIPPETS)
+    return (HOME.replace("{install}", install_box("")).replace("{hero_code}", html.escape(HERO_CODE.rstrip()))
+            .replace("{hero_play}", play_link(HERO_CODE)[3:]).replace("{snippets}", cards))
+
 
 # ---- the examples gallery: each one's picture (drawn by the software renderer while the site is
 # built), a web build to play, the playground, the source ----
@@ -567,7 +620,7 @@ def main():
     for f in ["icon-32.png", "icon-64.png", "logo-512.png", "social.png"]: shutil.copy(os.path.join(root, "assets", f), out)
     shutil.copytree(os.path.join(root, "assets"), os.path.join(out, "assets"))
     shutil.copy(os.path.join(root, "tools", "playground", "highlight.js"), out)
-    open(os.path.join(out, "index.html"), "w").write(page("Sloppy: a simple game dev language", HOME.replace("{install}", install_box("")), "index.html", ""))
+    open(os.path.join(out, "index.html"), "w").write(page("Sloppy: a simple game dev language", home(), "index.html", ""))
     build_docs()
     os.makedirs(os.path.join(out, "playground"))
     subprocess.run([sys.executable, os.path.join(root, "tools", "playground.py"), os.path.join(out, "playground", "index.html")], check=True)
