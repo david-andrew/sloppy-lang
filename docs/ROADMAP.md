@@ -105,11 +105,11 @@ WebRTC for browser-to-browser later.
 
 ### 8. Game library gaps (in pieces, as games need them)
 
-- 2D: slopes and one-way platforms in tilemaps, tweening, camera follow and shake.
+- 2D: slopes and one-way platforms in tilemaps, tweening (camera follow and shake: done).
 - 3D: PBR materials (metal, roughness, normal maps), skyboxes, morph targets, culling instances
   one by one.
 - Physics: 2D rigid bodies with joints (a common need beyond the collision helpers).
-- Audio: sounds placed in 2D/3D (panning and distance).
+- Audio: sounds placed in 2D/3D (panning and distance): done (`play_at`, `move_sound`).
 - Assets: a whole directory embedded at once (`embed` takes one file), OpenType fonts with CFF
   outlines and kerning, Tiled's external tilesets.
 - Input: non-XInput gamepads on Windows, actions bound per player.

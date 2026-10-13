@@ -31,6 +31,9 @@ Games:
   play together, a native program being the server; on Linux, macOS, Windows and in browsers.
   examples/netpong: Pong for two over the network. `tools/nettest.py` checks a server and
   clients (and a web page's client, in a browser) in CI.
+- A camera that follows (`follow(cam, target, dt, speed, deadzone)`) and a screen shake
+  (`Shake`: `add` trauma, `update`, `offset`); sounds from a place (`play_at` in 2D, from a
+  listener, and in 3D, from the camera; `move_sound` for one playing; `set_pan`).
 - **Zones in the frame statistics**: `zone("physics")` ... `zone_end()` (or `zone("physics", f)`)
   times a part of the frame; the overlay (`show_stats()`, SLOPPY_STATS=1) lists each zone,
   nested, with its average and longest time over the last frames, and SLOPPY_STATS=log prints

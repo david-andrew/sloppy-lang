@@ -1347,10 +1347,12 @@ update = (dt: f64):
     if key_pressed(.d): play(chord)
     if key_pressed(.f): play(sfx_coin())
     if key_pressed(.m): set_volume(music, 0.0)
+    # (from where the mouse is, heard from the middle: to the left or right, fainter further away)
+    if mouse_pressed(.left): play_at(beep, mouse_pos(), vec2(480, 270), reach = 600)
 
 draw = ():
     clear(rgb(0.1, 0.1, 0.14))
-    text("A: beep   S: zap   D: chord   F: coin   M: quiet", vec2(20, 20), 24)
+    text("A: beep   S: zap   D: chord   F: coin   M: quiet   click: a beep from there", vec2(20, 20), 24)
     text("(in a browser, click the page first: pages may not play sound before)", vec2(20, 60), 18, GRAY)
 ```
 
@@ -1370,6 +1372,13 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
 - `is_playing = (id: int) -> bool`
 - `set_volume = (id: int, volume: f64)`
 - `set_pitch = (id: int, pitch: f64)`
+- `set_pan = (id: int, pan: f64)`
+
+#### Sounds in a place
+
+- `play_at = (s: Sound, pos: vec2, listener: vec2, volume: f64 = 1.0, reach: f64 = 1200.0, pitch: f64 = 1.0) -> int`: play a sound from a place in 2D: to the left or right of listener (who hears it: the player, or the camera's target), and quieter further away, silent beyond reach (2D units)
+- `play_at = (s: Sound, pos: vec3, volume: f64 = 1.0, reach: f64 = 40.0, pitch: f64 = 1.0) -> int`: play a sound from a place in 3D: heard from the camera (camera3d), to its left or right, and quieter further away, silent beyond reach (meters)
+- `move_sound = (id: int, pos: vec3, volume: f64 = 1.0, reach: f64 = 40.0)`: a sound already playing (play_at's voice) moved to another place in 3D: a looping engine, a fire that the player walks past (call it every frame)
 - `master_volume = (v: f64)`
 - `tanh = (x: f64) -> f64`
 
@@ -1769,30 +1778,39 @@ Positions are vec2: x and y in a 2D game; on the ground of a 3D one, x and z. or
 ## Particles, noise, easing and collisions
 
 ```gdscript
-# example: helpers: particles, noise, easing, collisions
+# example: helpers: particles, noise, easing, collisions, a camera that follows and shakes
 window("Helpers", 960, 540)
 
 sparks = Particles(gravity = vec2(0, 300))
 player = Rect(100, 400, 40, 40)
 wall = Rect(500, 380, 60, 120)
 t = 0.0
+cam = vec2(480, 270)
+shake = Shake()
 
 update = (dt: f64):
     t += dt
-    if mouse_pressed(.left): sparks.emit(mouse_pos(), 40, 250, ORANGE)
+    if mouse_pressed(.left):
+        sparks.emit(screen_to_world(mouse_pos()), 40, 250, ORANGE)
+        shake.add(0.5)
     player.x = f32(100 + 700 * ease_in_out((sin(t) + 1.0) / 2.0))
     if every(1, 0.5) and overlaps(player, wall): sparks.emit(center(player), 10, 120, RED)
     sparks.update(dt)
+    shake.update(dt)
+    # (the camera keeps the player in view: it moves once the player is 200 units off center)
+    cam = follow(cam, center(player), dt, 4.0, vec2(200, 1000))
 
 draw = ():
     clear(rgb(0.08, 0.08, 0.1))
+    camera2d(cam + shake.offset())
     loop x in [0..48):                    # a row of smooth noise
         h = fbm(f64(x) * 0.15, t * 0.3)
         rect(f64(x) * 20, 300 - 100 * h, 18, 100 * h + 4, rgb(0.3, 0.5, 0.4))
     rect(f64(wall.x), f64(wall.y), f64(wall.w), f64(wall.h), GRAY)
     rect(f64(player.x), f64(player.y), f64(player.w), f64(player.h), if overlaps(player, wall): RED else: CYAN)
     sparks.draw()
-    text("click for sparks", vec2(20, 20), 20)
+    camera2d(vec2(480, 270))
+    text("click for sparks (and a shake)", vec2(20, 20), 20)
 ```
 
 Common game helpers: noise, collision shapes, easing, timers and 2D particles.
@@ -1810,6 +1828,14 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
 - `approach = (current: f64, target: f64, speed: f64, dt: f64) -> f64`: frame-rate independent smoothing toward a target (higher speed = snappier)
 - `approach = (current: vec2, target: vec2, speed: f64, dt: f64) -> vec2`
 - `approach = (current: vec3, target: vec3, speed: f64, dt: f64) -> vec3`
+
+#### The camera: following and shaking
+
+- `follow = (cam: vec2, target: vec2, dt: f64, speed: f64 = 8.0, deadzone: vec2 = vec2(0, 0)) -> vec2`: where a camera that follows target is next: it waits while target stays inside deadzone (half its size, in 2D units, around the camera's center), then catches up smoothly (higher speed: snappier). For camera2d(follow(...)).
+- `struct Shake`: A screen shake: add(trauma) on a hit or a blast (0 to 1; more adds up), update(dt) every frame, and move the camera by offset(): it shakes hard at first, fading as the trauma wears off.
+- `add = (s: mut Shake, trauma: f64)`
+- `update = (s: mut Shake, dt: f64)`
+- `offset = (s: Shake) -> vec2`
 
 #### Collision
 
