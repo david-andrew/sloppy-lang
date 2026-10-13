@@ -80,6 +80,7 @@ sloppy --web game.jo     # in your browser
 ```sh
 sloppy new my_game            # the smallest game: a window, update and draw
 sloppy new my_game arcade     # a 2D arcade game: a title menu, a score, a best score kept, sounds
+sloppy new my_game platformer # a 2D platformer: a level written as text, slopes, platforms, coins
 sloppy new my_game 3d         # a first-person 3D game: mouse look, walking, jumping, shooting
 sloppy new my_tool program    # a program for the terminal, with a test
 sloppy watch my_game/my_game.jo

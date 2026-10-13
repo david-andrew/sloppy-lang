@@ -511,6 +511,7 @@ async function newProject() {
     const kinds = [
         { label: 'game', description: 'the smallest game: a window, update and draw' },
         { label: 'arcade', description: 'a 2D arcade game: a title menu, a score, a best score kept, sounds' },
+        { label: 'platformer', description: 'a 2D platformer: a level written as text, slopes, platforms to jump through, coins' },
         { label: '3d', description: 'a first-person 3D game: mouse look, walking, jumping, shooting' },
         { label: 'program', description: 'a program for the terminal, with a test' },
     ];

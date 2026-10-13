@@ -1,6 +1,9 @@
 # Tilemaps: layers of tiles drawn from a tileset image. Make one from text (tile_layer: each
 # character is a tile), or load a map made in Tiled (load_tiled: a .tmj/.json map). Draw it with
 # draw_tilemap, and move boxes through it with tilemap_move, which stops them at solid tiles.
+# Every tile is solid unless set_tile_shape says otherwise: a one-way platform (landed on from
+# above, passed through from below and the sides), a slope (a floor that rises or falls across the
+# tile), or empty (scenery).
 #
 #   tiles = tileset(load_texture(embed("tiles.png"), false), 16, 16)
 #   level = tilemap(tiles, [tile_layer("walls", WALLS, "#=")])     # '#': tile 1, '=': tile 2
@@ -35,6 +38,17 @@ struct MapObject:
     rect: Rect                  # where (a point: width and height 0)
     props: {str: str}           # its custom properties, as text
 
+# how a tile stops what moves through the map (tilemap_move): solid; empty (scenery); platform
+# (one-way: landed on from above, passed through from below and the sides); slope(left, right), a
+# floor whose height (0: the tile's bottom, 1: its top) goes from left at the tile's left side to
+# right at its right side: slope(0, 1) rises to the right, slope(0, 0.5) then slope(0.5, 1) gently
+# over two tiles (passed through from below)
+enum TileShape:
+    solid
+    empty
+    platform
+    slope(left: f64, right: f64)
+
 struct Tilemap:
     tile_w: int
     tile_h: int
@@ -43,6 +57,7 @@ struct Tilemap:
     tilesets: Tileset[]
     layers: TileLayer[]
     objects: MapObject[]
+    shapes: TileShape[]         # by tile id (set_tile_shape); solid past its end
 
 struct TileMove:
     rect: Rect                  # where the box ended up
@@ -78,7 +93,7 @@ tilemap = (ts: Tileset, layers: TileLayer[]) -> Tilemap:
     loop l in layers:
         w = max(w, l.width)
         h = max(h, l.height)
-    Tilemap(ts.tile_w, ts.tile_h, w, h, [ts], layers, [])
+    Tilemap(ts.tile_w, ts.tile_h, w, h, [ts], layers, [], [])
 
 # the index of the layer with this name (-1: none)
 layer_index = (m: Tilemap, name: str) -> int:
@@ -101,6 +116,17 @@ set_tile = (m: mut Tilemap, layer: int, x: int, y: int, id: int):
     if layer < 0 or layer >= m.layers.len(): return
     if x < 0 or y < 0 or x >= m.layers[layer].width or y >= m.layers[layer].height: return
     m.layers[layer].tiles[y * m.layers[layer].width + x] = id
+
+# how tile id stops what moves (every tile is solid until this says otherwise)
+set_tile_shape = (m: mut Tilemap, id: int, shape: TileShape):
+    if id <= 0: return
+    loop m.shapes.len() <= id: m.shapes.push(.solid)
+    m.shapes[id] = shape
+
+tile_shape = (m: Tilemap, id: int) -> TileShape:
+    if id == 0: return .empty
+    if id < m.shapes.len(): return m.shapes[id]
+    .solid
 
 # the map's size in pixels
 tilemap_size = (m: Tilemap) -> vec2: vec2(f32(m.width * m.tile_w), f32(m.height * m.tile_h))
@@ -154,17 +180,26 @@ tilemap_hits = (m: Tilemap, layer: int, r: Rect) -> bool:
             if tile_at(m, layer, x, y) != 0: return true
     false
 
-# move a box by d, stopping it against the layer's tiles (every tile in the layer is solid):
-# sideways first, then up or down, so it slides along walls and floors. However far it moves in
-# one step, it does not pass through a tile.
-tilemap_move = (m: Tilemap, layer: int, r: Rect, d: vec2) -> TileMove:
+# move a box by d, stopping it against the layer's tiles: sideways first, then up or down, so it
+# slides along walls and floors. However far it moves in one step, it does not pass through a
+# solid tile. Platforms stop it only coming down onto them (drop: not even then, to drop through
+# one); on a slope it walks up and down the slope's floor, staying on it going down.
+tilemap_move = (m: Tilemap, layer: int, r: Rect, d: vec2, drop: bool = false) -> TileMove:
     out = TileMove(r, false, false)
     tw = f64(m.tile_w)
     th = f64(m.tile_h)
-    # rows the box covers, then columns it crosses
+    # (on the ground at the start, in a map with slopes: the box may climb what is below
+    # lift going sideways, and follows the floor down as far going down; on a slope, its front
+    # is above the floor under its middle by as much as the slope rises in half its width)
+    lift = 0.0
+    if m.shapes.len() > 0 and d.y >= 0.0 and __floor_below(m, layer, r, 1.0, drop) < 1e30:
+        lift = abs(f64(d.x)) + 1.0
+        g = __slope_under(m, layer, r)
+        if g > 0.0: lift += g * f64(r.w) / 2.0
+    # rows the box covers (above lift), then columns it crosses
     if d.x != 0.0:
         y0 = int(floor(f64(r.y) / th))
-        y1 = int(ceil(f64(r.y + r.h) / th)) - 1
+        y1 = int(ceil((f64(r.y + r.h) - lift) / th)) - 1
         nx = f64(r.x) + f64(d.x)
         if d.x > 0.0:
             c0 = int(ceil(f64(r.x + r.w) / tw))             # the first column to the right
@@ -185,40 +220,100 @@ tilemap_move = (m: Tilemap, layer: int, r: Rect, d: vec2) -> TileMove:
                     break
                 c -= 1
         out.rect.x = f32(nx)
-    if d.y != 0.0:
+    if d.y > 0.0 or (d.y == 0.0 and lift > 0.0):
+        # down: onto the highest floor between where the box's bottom is (less lift) and where it
+        # goes (more lift: following a slope down)
+        bottom = f64(r.y + r.h)
+        want = bottom + f64(d.y)
+        f = __floor_in(m, layer, out.rect, bottom - lift, want + lift, drop)
+        if f < 1e30 and (f <= want or lift > 0.0):
+            out.rect.y = f32(f - f64(r.h))
+            out.hit_y = true
+        else: out.rect.y = f32(want - f64(r.h))
+    else if d.y < 0.0:
         x0 = int(floor(f64(out.rect.x) / tw))
         x1 = int(ceil(f64(out.rect.x + r.w) / tw)) - 1
         ny = f64(r.y) + f64(d.y)
-        if d.y > 0.0:
-            r0 = int(ceil(f64(r.y + r.h) / th))
-            r1 = int(ceil((ny + f64(r.h)) / th)) - 1
-            loop row in [r0..r1]:
-                if __row_solid(m, layer, row, x0, x1):
-                    ny = f64(row) * th - f64(r.h)
-                    out.hit_y = true
-                    break
-        else:
-            r0 = int(floor(f64(r.y) / th)) - 1
-            r1 = int(floor(ny / th))
-            row = r0
-            loop row >= r1:
-                if __row_solid(m, layer, row, x0, x1):
-                    ny = f64(row + 1) * th
-                    out.hit_y = true
-                    break
-                row -= 1
+        r0 = int(floor(f64(r.y) / th)) - 1
+        r1 = int(floor(ny / th))
+        row = r0
+        loop row >= r1:
+            if __row_solid(m, layer, row, x0, x1):
+                ny = f64(row + 1) * th
+                out.hit_y = true
+                break
+            row -= 1
         out.rect.y = f32(ny)
     out
 
+__solid = (m: Tilemap, layer: int, x: int, y: int) -> bool:
+    id = tile_at(m, layer, x, y)
+    id != 0 and (id >= m.shapes.len() or m.shapes[id] == .solid)
+
 __column_solid = (m: Tilemap, layer: int, c: int, y0: int, y1: int) -> bool:
     loop y in [y0..y1]:
-        if tile_at(m, layer, c, y) != 0: return true
+        if __solid(m, layer, c, y): return true
     false
 
 __row_solid = (m: Tilemap, layer: int, row: int, x0: int, x1: int) -> bool:
     loop x in [x0..x1]:
-        if tile_at(m, layer, x, row) != 0: return true
+        if __solid(m, layer, x, row): return true
     false
+
+# the highest floor under box r with its top from lo to hi (in pixels; 1e30: none): solid tiles
+# and platforms under any of its columns, slopes under its middle. A slope's row wins over solid
+# tiles in the same row (they carry its floor on).
+__floor_in = (m: Tilemap, layer: int, r: Rect, lo: f64, hi: f64, drop: bool) -> f64:
+    tw = f64(m.tile_w)
+    th = f64(m.tile_h)
+    x0 = int(floor(f64(r.x) / tw))
+    x1 = int(ceil(f64(r.x + r.w) / tw)) - 1
+    cx = f64(r.x) + f64(r.w) / 2.0
+    cc = int(floor(cx / tw))
+    best = 1e30
+    slope_row = -1
+    if m.shapes.len() > 0:
+        row = int(floor(lo / th))
+        loop row <= int(floor(hi / th)):
+            id = tile_at(m, layer, cc, row)
+            if id > 0 and id < m.shapes.len():
+                match m.shapes[id]:
+                    slope(a, b):
+                        fx = clamp((cx - f64(cc) * tw) / tw, 0.0, 1.0)
+                        y = (f64(row) + 1.0 - (a + (b - a) * fx)) * th
+                        if y >= lo and y <= hi:
+                            best = y
+                            slope_row = row
+                            break
+                    else: pass
+            row += 1
+    row = int(ceil(lo / th))
+    loop row <= int(floor(hi / th)) and f64(row) * th < best:
+        if row != slope_row:
+            loop x in [x0..x1]:
+                id = tile_at(m, layer, x, row)
+                if id == 0: continue
+                if id >= m.shapes.len() or m.shapes[id] == .solid or (m.shapes[id] == .platform and not drop):
+                    return f64(row) * th
+        row += 1
+    best
+
+# how steep the slope under box r's middle is (height over width; 0: no slope there)
+__slope_under = (m: Tilemap, layer: int, r: Rect) -> f64:
+    cx = f64(r.x) + f64(r.w) / 2.0
+    b = f64(r.y + r.h)
+    loop y in [b - 1.0, b + 1.0]:
+        id = tile_at(m, layer, vec2(f32(cx), f32(y)))
+        if id > 0 and id < m.shapes.len():
+            match m.shapes[id]:
+                slope(lo, hi): return abs(hi - lo) * f64(m.tile_h) / f64(m.tile_w)
+                else: 0.0
+    0.0
+
+# the floor within reach below box r's bottom (1e30: none)
+__floor_below = (m: Tilemap, layer: int, r: Rect, reach: f64, drop: bool) -> f64:
+    bottom = f64(r.y + r.h)
+    __floor_in(m, layer, r, bottom - reach, bottom + reach, drop)
 
 # ---------------- Tiled ----------------
 # a map saved by Tiled as JSON (.tmj), with its tilesets embedded in it (Tiled: in the Tilesets
@@ -230,7 +325,7 @@ load_tiled = (json: str, textures: Texture[]) -> Tilemap | JsonError:
     if j is JsonError: return j
     if j.get("infinite").as_bool() ?? false: return JsonError("infinite maps are not supported (Tiled: Map > Map Properties, Infinite off)", 1, 1)
     if (j.get("orientation").as_str() ?? "orthogonal") != "orthogonal": return JsonError("only orthogonal maps are supported", 1, 1)
-    m = Tilemap(j.get("tilewidth").as_int() ?? 16, j.get("tileheight").as_int() ?? 16, j.get("width").as_int() ?? 0, j.get("height").as_int() ?? 0, [], [], [])
+    m = Tilemap(j.get("tilewidth").as_int() ?? 16, j.get("tileheight").as_int() ?? 16, j.get("width").as_int() ?? 0, j.get("height").as_int() ?? 0, [], [], [], [])
     sets = j.get("tilesets").as_list()
     loop i in 0.. and ts in sets:
         if ts.get("source").as_str() != none:
@@ -241,7 +336,21 @@ load_tiled = (json: str, textures: Texture[]) -> Tilemap | JsonError:
         sp = ts.get("spacing").as_int() ?? 0
         mg = ts.get("margin").as_int() ?? 0
         cols = ts.get("columns").as_int() ?? max((textures[i].width - 2 * mg + sp) / (tw + sp), 1)
-        m.tilesets.push(Tileset(textures[i], tw, th, max(cols, 1), ts.get("firstgid").as_int() ?? 1, ts.get("tilecount").as_int() ?? 0, sp, mg))
+        first = ts.get("firstgid").as_int() ?? 1
+        m.tilesets.push(Tileset(textures[i], tw, th, max(cols, 1), first, ts.get("tilecount").as_int() ?? 0, sp, mg))
+        # (a tile's custom property "shape": solid, empty, platform, or "slope 0 1": set_tile_shape)
+        loop t in ts.get("tiles").as_list():
+            loop p in t.get("properties").as_list():
+                if (p.get("name").as_str() ?? "") != "shape": continue
+                v = p.get("value").as_str() ?? ""
+                w = split(trim(v), " ")
+                id = first + (t.get("id").as_int() ?? 0)
+                if v == "solid": set_tile_shape(m, id, .solid)
+                else if v == "empty": set_tile_shape(m, id, .empty)
+                else if v == "platform": set_tile_shape(m, id, .platform)
+                else if w.len() == 3 and w[0] == "slope" and to_float(w[1]) != none and to_float(w[2]) != none:
+                    set_tile_shape(m, id, .slope(to_float(w[1])!, to_float(w[2])!))
+                else: return JsonError("tile {id}: shape '{v}' is not solid, empty, platform or 'slope <left> <right>' (heights from 0 to 1)", 1, 1)
     r = __tiled_layers(m, j.get("layers").as_list())
     if r is JsonError: return r
     m

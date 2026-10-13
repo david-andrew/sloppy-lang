@@ -888,7 +888,7 @@ sloppy --web file.jo      compile for the web and open it in the browser
 sloppy build file.jo      write the executable / .html (-o game.zip: the page as index.html in a
                           zip, ready to upload to itch.io)
 sloppy test file.jo       run `test` blocks
-sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, 3d, program)
+sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, platformer, 3d, program)
 sloppy check file.jo      type check only
 sloppy add <git URL>      a package, in the build block (and sloppy.lock)
 sloppy fmt file.jo        lay out the code one way (directories too; --check: only list what

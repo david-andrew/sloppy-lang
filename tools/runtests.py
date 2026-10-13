@@ -167,7 +167,7 @@ if compiler != "sloppy0" and target == "native":
             print(f"FAIL fmt/repository: not laid out by sloppy fmt (run it on these):\n{r.stdout}{r.stderr}")
             failed += 1
     # `sloppy new`: each template, made into a project, must build (and the program's tests pass)
-    for kind in ["game", "arcade", "3d", "program"]:
+    for kind in ["game", "arcade", "platformer", "3d", "program"]:
         name = "new/" + kind
         if pattern not in name: continue
         d = os.path.join(tmp, "new_" + kind)

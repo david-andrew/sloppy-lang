@@ -11,6 +11,20 @@ Tools:
   now says where in its unwind codes (`.pdata`), so callers' variables held in them are right
   too. A program that panics with a debugger attached stops there. `tools/dbgtest.py` checks
   what cdb shows on Windows.
+- `sloppy new <dir> platformer`: a 2D platformer to start from (a level written as text,
+  slopes, platforms to jump up through, coins, a camera that follows), also in the gallery and
+  the playground.
+
+Games:
+- **Slopes and one-way platforms in tilemaps**: `set_tile_shape(map, id, shape)` with
+  `.platform` (landed on from above, passed through from below and the sides), `.slope(left,
+  right)` (a floor rising or falling across the tile: `.slope(0, 1)`, gentle ones over two
+  tiles), `.empty` or `.solid` (every tile, until set). `tilemap_move` walks a box up and down
+  slopes, keeping it on the floor going down, and drops it through platforms with `drop =
+  true`. In Tiled, a tile's custom property `shape` (`platform`, `slope 0 1`...).
+- **Tweens**: `tween(from, to, seconds, ease)` for numbers, positions and colors, with `delay`
+  and `once`, `repeat` or `pingpong`; `update`, `value`, `done`, `restart`, `retarget`. More
+  easing curves: `linear`, `ease_in`, cubic, sine, back, `ease_out_elastic`, `ease_out_bounce`.
 
 ## 0.9.0
 

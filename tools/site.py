@@ -487,6 +487,7 @@ GALLERY = [
     ("lowline", "examples/lowline/lowline.jo", "Lowline", "lowline", ""),
     ("netpong", "examples/netpong/netpong.jo", "Netpong", "netpong", ""),
     ("arcade", "lib/new/arcade.jo", "sloppy new: arcade", "arcade", ""),
+    ("platformer", "lib/new/platformer.jo", "sloppy new: platformer", "platformer", ""),
     ("firstperson", "lib/new/3d.jo", "sloppy new: 3d", "firstperson", ""),
     ("tiles", "examples/tiles.jo", "Tiles and sprites", "tiles", ""),
     ("shapes", "examples/shapes.jo", "2D shapes", "shapes", ""),

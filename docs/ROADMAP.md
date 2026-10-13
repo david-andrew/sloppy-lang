@@ -92,7 +92,7 @@ packages on the website instead.
 ### 6. Everyday tools (S each)
 
 - `sloppy fmt`, and format on save in the extension (done).
-- `sloppy new` with a few templates (done: game, arcade, 3d, program; lib/new/*.jo, each
+- `sloppy new` with a few templates (done: game, arcade, platformer, 3d, program; lib/new/*.jo, each
   built and its first frames drawn in the tests).
 - Language server: workspace symbols, semantic highlighting, rename across files (done).
 - An examples gallery on the website, each runnable in the browser (done: sloppy-lang.org/examples).
@@ -106,7 +106,7 @@ WebRTC for browser-to-browser later.
 
 ### 8. Game library gaps (in pieces, as games need them)
 
-- 2D: slopes and one-way platforms in tilemaps, tweening (camera follow and shake: done).
+- 2D: slopes and one-way platforms in tilemaps, tweening, camera follow and shake: done.
 - 3D: PBR materials (metal, roughness, normal maps), skyboxes, morph targets, culling instances
   one by one.
 - Physics: 2D rigid bodies with joints (a common need beyond the collision helpers).

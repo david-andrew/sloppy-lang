@@ -1020,7 +1020,7 @@ draw = ():
 
 ### tilemap.jo
 
-Tilemaps: layers of tiles drawn from a tileset image. Make one from text (tile_layer: each character is a tile), or load a map made in Tiled (load_tiled: a .tmj/.json map). Draw it with draw_tilemap, and move boxes through it with tilemap_move, which stops them at solid tiles.
+Tilemaps: layers of tiles drawn from a tileset image. Make one from text (tile_layer: each character is a tile), or load a map made in Tiled (load_tiled: a .tmj/.json map). Draw it with draw_tilemap, and move boxes through it with tilemap_move, which stops them at solid tiles. Every tile is solid unless set_tile_shape says otherwise: a one-way platform (landed on from above, passed through from below and the sides), a slope (a floor that rises or falls across the tile), or empty (scenery).
 
 ```gdscript
 tiles = tileset(load_texture(embed("tiles.png"), false), 16, 16)
@@ -1035,6 +1035,7 @@ draw = (): draw_tilemap(level)
 - `struct Tileset`
 - `struct TileLayer`
 - `struct MapObject`: an object placed in Tiled (an object layer's): a spawn point, a door, a coin...
+- `enum TileShape:`: how a tile stops what moves through the map (tilemap_move): solid; empty (scenery); platform (one-way: landed on from above, passed through from below and the sides); slope(left, right), a floor whose height (0: the tile's bottom, 1: its top) goes from left at the tile's left side to right at its right side: slope(0, 1) rises to the right, slope(0, 0.5) then slope(0.5, 1) gently over two tiles (passed through from below)
 - `struct Tilemap`
 - `struct TileMove`
 - `tileset = (t: Texture, tile_w: int, tile_h: int, spacing: int = 0, margin: int = 0) -> Tileset`: a tileset: an image of equal tiles in a grid, numbered from `first` (1) left to right, then down
@@ -1044,10 +1045,12 @@ draw = (): draw_tilemap(level)
 - `tile_at = (m: Tilemap, layer: int, x: int, y: int) -> int`: the tile at column x, row y of a layer (0 outside the map)
 - `tile_at = (m: Tilemap, layer: int, p: vec2) -> int`: the tile under a point (in pixels)
 - `set_tile = (m: mut Tilemap, layer: int, x: int, y: int, id: int)`
+- `set_tile_shape = (m: mut Tilemap, id: int, shape: TileShape)`: how tile id stops what moves (every tile is solid until this says otherwise)
+- `tile_shape = (m: Tilemap, id: int) -> TileShape`
 - `tilemap_size = (m: Tilemap) -> vec2`: the map's size in pixels
 - `draw_tilemap = (m: Tilemap, layer: int = -1, at: vec2 = vec2(0, 0), tint: vec4 = vec4(1, 1, 1, 1))`: draw a layer (-1: every visible layer, bottom first), with the map's top left corner at `at`. Only the tiles on the screen are drawn, wherever the camera is.
 - `tilemap_hits = (m: Tilemap, layer: int, r: Rect) -> bool`: does a box (in pixels) touch a tile of the layer?
-- `tilemap_move = (m: Tilemap, layer: int, r: Rect, d: vec2) -> TileMove`: move a box by d, stopping it against the layer's tiles (every tile in the layer is solid): sideways first, then up or down, so it slides along walls and floors. However far it moves in one step, it does not pass through a tile.
+- `tilemap_move = (m: Tilemap, layer: int, r: Rect, d: vec2, drop: bool = false) -> TileMove`: move a box by d, stopping it against the layer's tiles: sideways first, then up or down, so it slides along walls and floors. However far it moves in one step, it does not pass through a solid tile. Platforms stop it only coming down onto them (drop: not even then, to drop through one); on a slope it walks up and down the slope's floor, staying on it going down.
 
 #### Tiled
 
@@ -1822,12 +1825,35 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
 
 #### Easing
 
-- `ease_in_out = (t: f64) -> f64`
+- `linear = (t: f64) -> f64`: curves from 0 (t = 0) to 1 (t = 1): in = slow at the start, out = slow at the end; back goes a little past, elastic springs, bounce bounces (easings.net shows each)
+- `ease_in = (t: f64) -> f64`
 - `ease_out = (t: f64) -> f64`
+- `ease_in_out = (t: f64) -> f64`
+- `ease_in_cubic = (t: f64) -> f64`
+- `ease_out_cubic = (t: f64) -> f64`
+- `ease_in_out_cubic = (t: f64) -> f64`
+- `ease_in_sine = (t: f64) -> f64`
+- `ease_out_sine = (t: f64) -> f64`
+- `ease_in_out_sine = (t: f64) -> f64`
+- `ease_in_back = (t: f64) -> f64`
 - `ease_out_back = (t: f64) -> f64`
+- `ease_out_elastic = (t: f64) -> f64`
+- `ease_out_bounce = (t: f64) -> f64`
 - `approach = (current: f64, target: f64, speed: f64, dt: f64) -> f64`: frame-rate independent smoothing toward a target (higher speed = snappier)
 - `approach = (current: vec2, target: vec2, speed: f64, dt: f64) -> vec2`
 - `approach = (current: vec3, target: vec3, speed: f64, dt: f64) -> vec3`
+
+#### Tweens
+
+- `enum TweenMode: once, repeat, pingpong`: once (then it stays at `to`), repeat (from the start again), pingpong (to and back, again and again)
+- `struct Tween[T]`
+- `tween[T] = (from: T, to: T, duration: f64, ease: (f64) -> f64 = ease_in_out, delay: f64 = 0.0, mode: TweenMode = .once) -> Tween[T]`: a value going from `from` to `to` over `duration` seconds along an easing curve: a number, a position (vec2, vec3) or a color (vec4); delay: seconds before it starts. For example `pop = tween(0.0, 1.0, 0.4, ease_out_back)`, then `pop.update(dt)` each frame and `pop.value()` where it is (grown in 0.4 s, a little past the end, then back).
+- `update[T] = (tw: mut Tween[T], dt: f64)`
+- `progress[T] = (tw: Tween[T]) -> f64`: where along the curve it is, from 0 to 1 (before the easing)
+- `value[T] = (tw: Tween[T]) -> T`
+- `done[T] = (tw: Tween[T]) -> bool`: finished (a tween that repeats never is)
+- `restart[T] = (tw: mut Tween[T])`: start again from the start
+- `retarget[T] = (tw: mut Tween[T], to: T)`: go on from where it is now to a new target, taking duration again
 
 #### The camera: following and shaking
 

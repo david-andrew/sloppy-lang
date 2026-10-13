@@ -35,18 +35,95 @@ fbm = (x: f64, y: f64, octaves: int = 4) -> f64:
     s / total
 
 # ---------------- easing ----------------
+# curves from 0 (t = 0) to 1 (t = 1): in = slow at the start, out = slow at the end; back goes a
+# little past, elastic springs, bounce bounces (easings.net shows each)
+linear = (t: f64) -> f64: t
+ease_in = (t: f64) -> f64: t * t
+ease_out = (t: f64) -> f64: 1.0 - (1.0 - t) * (1.0 - t)
 ease_in_out = (t: f64) -> f64:
     if t < 0.5: return 2.0 * t * t
     1.0 - pow(-2.0 * t + 2.0, 2.0) / 2.0
-ease_out = (t: f64) -> f64: 1.0 - (1.0 - t) * (1.0 - t)
+ease_in_cubic = (t: f64) -> f64: t * t * t
+ease_out_cubic = (t: f64) -> f64: 1.0 - pow(1.0 - t, 3.0)
+ease_in_out_cubic = (t: f64) -> f64:
+    if t < 0.5: return 4.0 * t * t * t
+    1.0 - pow(-2.0 * t + 2.0, 3.0) / 2.0
+ease_in_sine = (t: f64) -> f64: 1.0 - cos(t * PI / 2.0)
+ease_out_sine = (t: f64) -> f64: sin(t * PI / 2.0)
+ease_in_out_sine = (t: f64) -> f64: (1.0 - cos(t * PI)) / 2.0
+ease_in_back = (t: f64) -> f64:
+    c1 = 1.70158
+    (c1 + 1.0) * t * t * t - c1 * t * t
 ease_out_back = (t: f64) -> f64:
     c1 = 1.70158
     c3 = c1 + 1.0
     1.0 + c3 * pow(t - 1.0, 3.0) + c1 * pow(t - 1.0, 2.0)
+ease_out_elastic = (t: f64) -> f64:
+    if t <= 0.0 or t >= 1.0: return t
+    pow(2.0, -10.0 * t) * sin((t * 10.0 - 0.75) * (2.0 * PI / 3.0)) + 1.0
+ease_out_bounce = (t: f64) -> f64:
+    n = 7.5625
+    d = 2.75
+    if t < 1.0 / d: return n * t * t
+    if t < 2.0 / d: return n * (t - 1.5 / d) * (t - 1.5 / d) + 0.75
+    if t < 2.5 / d: return n * (t - 2.25 / d) * (t - 2.25 / d) + 0.9375
+    n * (t - 2.625 / d) * (t - 2.625 / d) + 0.984375
 # frame-rate independent smoothing toward a target (higher speed = snappier)
 approach = (current: f64, target: f64, speed: f64, dt: f64) -> f64: target + (current - target) * exp(-speed * dt)
 approach = (current: vec2, target: vec2, speed: f64, dt: f64) -> vec2: target + (current - target) * f32(exp(-speed * dt))
 approach = (current: vec3, target: vec3, speed: f64, dt: f64) -> vec3: target + (current - target) * f32(exp(-speed * dt))
+
+# ---------------- tweens ----------------
+# once (then it stays at `to`), repeat (from the start again), pingpong (to and back, again and again)
+enum TweenMode: once, repeat, pingpong
+
+struct Tween[T]:
+    from: T
+    to: T
+    duration: f64
+    ease: (f64) -> f64
+    mode: TweenMode
+    t = 0.0                     # seconds since it started (below 0: still waiting)
+
+# a value going from `from` to `to` over `duration` seconds along an easing curve: a number, a
+# position (vec2, vec3) or a color (vec4); delay: seconds before it starts. For example
+# `pop = tween(0.0, 1.0, 0.4, ease_out_back)`, then `pop.update(dt)` each frame and `pop.value()`
+# where it is (grown in 0.4 s, a little past the end, then back).
+tween[T] = (from: T, to: T, duration: f64, ease: (f64) -> f64 = ease_in_out, delay: f64 = 0.0, mode: TweenMode = .once) -> Tween[T]:
+    Tween(from, to, duration, ease, mode, -delay)
+
+update[T] = (tw: mut Tween[T], dt: f64): tw.t += dt
+
+# where along the curve it is, from 0 to 1 (before the easing)
+progress[T] = (tw: Tween[T]) -> f64:
+    if tw.duration <= 0.0: return 1.0
+    k = max(tw.t, 0.0) / tw.duration
+    if tw.mode == .repeat: return k - floor(k)
+    if tw.mode == .pingpong:
+        k = k - 2.0 * floor(k / 2.0)
+        if k > 1.0: return 2.0 - k
+        return k
+    min(k, 1.0)
+
+value[T] = (tw: Tween[T]) -> T: __tween_mix(tw.from, tw.to, tw.ease(progress(tw)))
+
+# finished (a tween that repeats never is)
+done[T] = (tw: Tween[T]) -> bool: tw.mode == .once and tw.t >= tw.duration
+
+# start again from the start
+restart[T] = (tw: mut Tween[T]): tw.t = 0.0
+
+# go on from where it is now to a new target, taking duration again
+retarget[T] = (tw: mut Tween[T], to: T):
+    tw.from = value(tw)
+    tw.to = to
+    tw.t = 0.0
+
+__tween_mix = (a: f64, b: f64, t: f64) -> f64: a + (b - a) * t
+__tween_mix = (a: f32, b: f32, t: f64) -> f32: a + (b - a) * f32(t)
+__tween_mix = (a: vec2, b: vec2, t: f64) -> vec2: a + (b - a) * f32(t)
+__tween_mix = (a: vec3, b: vec3, t: f64) -> vec3: a + (b - a) * f32(t)
+__tween_mix = (a: vec4, b: vec4, t: f64) -> vec4: a + (b - a) * f32(t)
 
 # ---------------- the camera: following and shaking ----------------
 # where a camera that follows target is next: it waits while target stays inside deadzone (half
