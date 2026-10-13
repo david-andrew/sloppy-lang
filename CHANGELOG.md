@@ -44,6 +44,14 @@ Tools:
   the playground.
 
 Games:
+- **2D physics** (`import physics`): rigid bodies (circles, boxes, convex polygons) that
+  collide, bounce, slide and stack, with friction, bounciness, density, damping and collision
+  layers; `.fixed` and `.moving` bodies (floors, platforms); joints: pins, rods, ropes and
+  springs, and dragging with the mouse; contacts after each step (new ones, how hard), sensors,
+  raycasts, bodies at a point, a debug drawing. Pixels with y down, as drawing. Stepping is
+  deterministic (a fixed internal step and order), for replays and rollback. examples/physics.jo
+  (in the gallery and the playground): a pyramid, a bridge of planks, a wrecking ball.
+- `import name` in a file called name.jo is the library's module, not the file itself.
 - **Saving any value**: `save_value("settings", settings)` and `load_value("settings",
   Settings())` keep a value as text; `to_text(x)` and `from_text[T](text)` (a `T` or a
   `TextError` with the line and column) do it with a string. The text is what print shows

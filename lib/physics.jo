@@ -1,0 +1,838 @@
+# 2D physics: rigid bodies that fall, collide, bounce, slide and stack, held together by pins,
+# rods, ropes and springs. `import physics`, then:
+#
+#   w = physics.World()                                     # gravity down, in pixels (as drawing)
+#   floor = w.add_box(vec2(640, 700), vec2(1280, 40), kind = .fixed)
+#   ball = w.add_circle(vec2(640, 100), 24, bounce = 0.6)
+#   update = (dt: f64): w.step(dt)
+#   draw = ():
+#       circle(w.pos(ball), 24, WHITE)                      # (or physics.draw_debug(w))
+#
+# Bodies are `.dynamic` (moved by forces and collisions), `.fixed` (never move: floors, walls) or
+# `.moving` (moved only by the velocity the game gives them: platforms, doors). Each has one
+# shape: a circle, a box or a convex polygon. A Body is a handle; ask the world about it
+# (`w.pos(b)`, `w.angle(b)`, `w.velocity(b)`) and change it (`w.push(b, impulse)`).
+#
+# Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fixed distance;
+# `spring = 4.0` makes it a spring of that many oscillations a second, `rope = true` lets it go
+# slack), `w.drag(b, at)` and `w.drag_to(j, target)` (pulling a body by a point: the mouse).
+# `physics.ground` is a fixed body to attach things to the world.
+#
+# Each step is the same for the same inputs (a fixed internal step, a fixed order), so a game
+# that steps it with a fixed dt can replay or roll back. Contacts: `w.contacts()` lists the
+# pairs touching after the step (`.new` on the step they met, `.impulse` how hard), and sensors
+# (`sensor = true`) report contacts without colliding: pickups, triggers. Collision layers:
+# bodies a and b collide when a.layer & b.mask and b.layer & a.mask are not 0.
+
+enum BodyKind: dynamic, fixed, moving
+
+struct Body:
+    id: int
+
+struct Joint:
+    id: int
+
+# a pair of bodies touching after the last step
+struct Contact:
+    a: Body
+    b: Body
+    point: vec2
+    normal: vec2            # from a toward b
+    impulse: f32            # how hard they pushed on each other in the last step (0 for sensors)
+    new: bool               # they started touching in the last step
+
+struct Hit:
+    body: Body
+    point: vec2
+    normal: vec2
+    fraction: f32           # how far along the ray, 0 to 1
+
+ground = Body(0)
+
+struct __PBody:
+    kind = BodyKind.dynamic
+    pos: vec2
+    angle: f32
+    vel: vec2
+    spin: f32               # radians a second
+    inv_mass: f32
+    inv_inertia: f32
+    radius: f32 = -1        # a circle's (-1: not a circle)
+    verts: vec2[]           # a polygon's corners, around its center of mass, counterclockwise
+    normals: vec2[]
+    friction = 0.5
+    bounce = 0.0
+    force: vec2
+    torque: f32
+    layer = 1
+    mask = -1
+    sensor = false
+    alive = true
+    fixed_rotation = false
+    damping: f32
+    lo: vec2                # bounds (after the last step)
+    hi: vec2
+    rot = vec2(1, 0)        # (cos, sin) of angle
+    wv: vec2[]              # the corners and edge normals in the world (after the last step)
+    wn: vec2[]
+    tag: int
+
+struct __PContact:
+    point: vec2
+    normal: vec2
+    sep: f32
+    feature: int
+    pn: f32                 # impulses so far (kept from step to step: warm starting)
+    pt: f32
+    mass_n: f32
+    mass_t: f32
+    bias: f32
+    ra: vec2
+    rb: vec2
+
+struct __Arb:
+    a: int
+    b: int
+    contacts: __PContact[]
+    friction: f32
+    bounce: f32
+    sensor: bool
+    new: bool
+
+struct __PJoint:
+    kind: int               # 0 pin, 1 rod, 2 drag
+    a: int
+    b: int
+    la: vec2                # the anchors, in each body's own frame
+    lb: vec2
+    length: f32
+    hz: f32                 # spring (0: rigid)
+    damping: f32
+    rope: bool
+    alive = true
+    target: vec2            # drag
+    max_force: f32
+    acc: vec2               # impulses so far
+    acc1: f32
+    # (per step)
+    ra: vec2
+    rb: vec2
+    m11: f32
+    m12: f32
+    m22: f32
+    bias: vec2
+    gamma: f32
+    u: vec2
+    mass: f32
+    bias1: f32
+
+struct World:
+    gravity = vec2(0, 980)
+    iterations = 8          # solver passes each step (more: stiffer stacks and chains)
+    substep = 1.0 / 120.0   # the longest internal step, in seconds
+    bodies: __PBody[] = [__PBody(kind = .fixed, radius = -1)]
+    joints: __PJoint[]
+    arbs: __Arb[]
+    arb_index: {int: int}
+    free: int[]
+    events: Contact[]
+
+# ---------------- making bodies ----------------
+add_circle = (w: mut World, pos: vec2, radius: f64, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body:
+    b = __PBody(kind = kind, pos = pos, radius = f32(radius), friction = f32(friction), bounce = f32(bounce), sensor = sensor)
+    m = f32(density) * f32(PI * radius * radius) / 100.0
+    __set_mass(b, m, m * f32(radius * radius) / 2.0)
+    __add(w, b)
+
+add_box = (w: mut World, pos: vec2, size: vec2, angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body:
+    h = size * 0.5
+    w.add_polygon(pos, [vec2(-h.x, -h.y), vec2(h.x, -h.y), vec2(h.x, h.y), vec2(-h.x, h.y)], angle, kind, density, friction, bounce, sensor)
+
+# points around pos (their convex hull, if they are not convex)
+add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body:
+    vs = __hull(points)
+    if vs.len() < 3: panic("a polygon needs 3 points not all in a line")
+    # (the body's position is its center of mass)
+    area = 0.0
+    c = vec2(0, 0)
+    inertia = 0.0
+    loop i in [0..vs.len()):
+        p = vs[i]
+        q = vs[(i + 1) % vs.len()]
+        cr = f64(cross(p, q))
+        area += cr / 2.0
+        c += (p + q) * f32(cr / 6.0)
+    c = c * f32(1.0 / area)
+    loop mut v in vs: v -= c
+    loop i in [0..vs.len()):
+        p = vs[i]
+        q = vs[(i + 1) % vs.len()]
+        inertia += f64(cross(p, q)) * f64(dot(p, p) + dot(p, q) + dot(q, q)) / 12.0
+    ns: vec2[]
+    loop i in [0..vs.len()): ns.push(normalize(perp(vs[i] - vs[(i + 1) % vs.len()])))
+    b = __PBody(kind = kind, pos = pos + rotate(c, angle), angle = f32(angle), verts = vs, normals = ns, friction = f32(friction), bounce = f32(bounce), sensor = sensor)
+    m = f32(density * area / 100.0)
+    __set_mass(b, m, f32(density * inertia / 100.0))
+    __add(w, b)
+
+__set_mass = (b: mut __PBody, m: f32, i: f32):
+    if b.kind != .dynamic or m <= 0.0: return
+    b.inv_mass = 1.0 / m
+    b.inv_inertia = 1.0 / i
+
+__add = (w: mut World, b: __PBody) -> Body:
+    if w.free.len() > 0:
+        id = w.free.pop()
+        w.bodies[id] = b
+        __bounds(w.bodies[id])
+        return Body(id)
+    w.bodies.push(b)
+    __bounds(w.bodies[w.bodies.len() - 1])
+    Body(w.bodies.len() - 1)
+
+# points' convex hull, counterclockwise (Andrew's monotone chain)
+__hull = (points: vec2[]) -> vec2[]:
+    ps = points
+    ps.sort_with((p, q): p.x < q.x or p.x == q.x and p.y < q.y)
+    out: vec2[]
+    loop pass_ in [0..2):
+        start = out.len()
+        loop p in ps:
+            loop out.len() >= start + 2 and cross(out[end] - out[out.len() - 2], p - out[end]) <= 0.0: out.pop()
+            out.push(p)
+        out.pop()
+        ps = reversed(ps)
+    out
+
+remove = (w: mut World, b: Body):
+    if b.id <= 0 or not w.bodies[b.id].alive: return
+    w.bodies[b.id].alive = false
+    w.bodies[b.id].radius = -1
+    w.free.push(b.id)
+    loop mut j in w.joints:
+        if j.a == b.id or j.b == b.id: j.alive = false
+
+remove = (w: mut World, j: Joint):
+    w.joints[j.id].alive = false
+
+# ---------------- asking and changing ----------------
+pos = (w: World, b: Body) -> vec2: w.bodies[b.id].pos
+angle = (w: World, b: Body) -> f64: f64(w.bodies[b.id].angle)
+velocity = (w: World, b: Body) -> vec2: w.bodies[b.id].vel
+spin = (w: World, b: Body) -> f64: f64(w.bodies[b.id].spin)
+mass = (w: World, b: Body) -> f64:
+    im = w.bodies[b.id].inv_mass
+    if im == 0.0: return 0.0
+    1.0 / f64(im)
+kind = (w: World, b: Body) -> BodyKind: w.bodies[b.id].kind
+alive = (w: World, b: Body) -> bool: b.id > 0 and b.id < w.bodies.len() and w.bodies[b.id].alive
+# a number of the game's own, kept with the body (what it is: a coin, an enemy's index...)
+tag = (w: World, b: Body) -> int: w.bodies[b.id].tag
+set_tag = (w: mut World, b: Body, t: int): w.bodies[b.id].tag = t
+
+# every body there is (not ground)
+bodies = (w: World) -> Body[]:
+    out: Body[]
+    loop i in [1..w.bodies.len()):
+        if __shaped(w.bodies[i]): out.push(Body(i))
+    out
+
+# a circle's radius (0 for a polygon)
+radius = (w: World, b: Body) -> f64: max(f64(w.bodies[b.id].radius), 0.0)
+
+# a point of the body, in the world (from the body's own frame), and back
+to_world = (w: World, b: Body, local: vec2) -> vec2: w.bodies[b.id].pos + rotate(local, f64(w.bodies[b.id].angle))
+to_local = (w: World, b: Body, p: vec2) -> vec2: rotate(p - w.bodies[b.id].pos, -f64(w.bodies[b.id].angle))
+
+set_pos = (w: mut World, b: Body, p: vec2):
+    w.bodies[b.id].pos = p
+    __bounds(w.bodies[b.id])
+set_angle = (w: mut World, b: Body, a: f64):
+    w.bodies[b.id].angle = f32(a)
+    __bounds(w.bodies[b.id])
+set_velocity = (w: mut World, b: Body, v: vec2): w.bodies[b.id].vel = v
+set_spin = (w: mut World, b: Body, s: f64): w.bodies[b.id].spin = f32(s)
+# slowing down by itself (as through air or water): the share of its speed lost each second
+set_damping = (w: mut World, b: Body, d: f64): w.bodies[b.id].damping = f32(d)
+# it never turns (a character's body)
+set_fixed_rotation = (w: mut World, b: Body, on: bool):
+    w.bodies[b.id].fixed_rotation = on
+    if on: w.bodies[b.id].spin = 0
+set_friction = (w: mut World, b: Body, f: f64): w.bodies[b.id].friction = f32(f)
+set_bounce = (w: mut World, b: Body, f: f64): w.bodies[b.id].bounce = f32(f)
+set_layers = (w: mut World, b: Body, layer: int, mask: int = -1):
+    w.bodies[b.id].layer = layer
+    w.bodies[b.id].mask = mask
+
+# a sudden change of motion (a jump, a hit), at a point of the world (its center: no turning)
+push = (w: mut World, b: Body, impulse: vec2):
+    w.bodies[b.id].vel += impulse * w.bodies[b.id].inv_mass
+push = (w: mut World, b: Body, impulse: vec2, at: vec2):
+    w.bodies[b.id].vel += impulse * w.bodies[b.id].inv_mass
+    w.bodies[b.id].spin += cross(at - w.bodies[b.id].pos, impulse) * w.bodies[b.id].inv_inertia
+# a steady force for the next step (thrust, wind): give it every frame it acts
+apply_force = (w: mut World, b: Body, f: vec2): w.bodies[b.id].force += f
+apply_torque = (w: mut World, b: Body, t: f64): w.bodies[b.id].torque += f32(t)
+
+# ---------------- joints ----------------
+# a hinge: a and b turn about the point at (in the world, now)
+pin = (w: mut World, a: Body, b: Body, at: vec2) -> Joint:
+    __joint(w, __PJoint(kind = 0, a = a.id, b = b.id, la = w.to_local(a, at), lb = w.to_local(b, at)))
+
+# the points at_a of a and at_b of b (in the world, now) kept as far apart as they are; with
+# spring > 0 a spring of that many oscillations a second (damping: 0 bounces on, 1 settles at
+# once); with rope, only as far apart at most
+rod = (w: mut World, a: Body, b: Body, at_a: vec2, at_b: vec2, spring: f64 = 0, damping: f64 = 0.5, rope: bool = false) -> Joint:
+    __joint(w, __PJoint(kind = 1, a = a.id, b = b.id, la = w.to_local(a, at_a), lb = w.to_local(b, at_b), length = length(at_b - at_a),
+                        hz = f32(spring), damping = f32(damping), rope = rope))
+
+# pulls the point at of b toward a target (drag_to), as a stiff spring: grabbing with the mouse
+drag = (w: mut World, b: Body, at: vec2, strength: f64 = 1000) -> Joint:
+    m = f32(w.mass(b))
+    __joint(w, __PJoint(kind = 2, a = 0, b = b.id, lb = w.to_local(b, at), target = at, hz = 5, damping = 0.7, max_force = f32(strength) * m * max(length(w.gravity), 100)))
+
+drag_to = (w: mut World, j: Joint, target: vec2): w.joints[j.id].target = target
+
+# where a joint's two ends are now (a drag's: its target, and the point it pulls)
+ends = (w: World, j: Joint) -> (vec2, vec2):
+    jd = w.joints[j.id]
+    pa = w.bodies[jd.a].pos + __rot(w.bodies[jd.a].rot, jd.la)
+    if jd.kind == 2: pa = jd.target
+    (pa, w.bodies[jd.b].pos + __rot(w.bodies[jd.b].rot, jd.lb))
+
+# set a rod's length (a winch)
+set_length = (w: mut World, j: Joint, l: f64): w.joints[j.id].length = f32(l)
+
+__joint = (w: mut World, j: __PJoint) -> Joint:
+    loop i in [0..w.joints.len()):
+        if not w.joints[i].alive:
+            w.joints[i] = j
+            return Joint(i)
+    w.joints.push(j)
+    Joint(w.joints.len() - 1)
+
+# ---------------- stepping ----------------
+# move the world on by dt seconds (in steps of at most w.substep)
+step = (w: mut World, dt: f64):
+    if dt <= 0.0: return
+    n = int(ceil(dt / w.substep - 1e-9))
+    n = clamp(n, 1, 16)
+    h = f32(dt / f64(n))
+    was: {int: bool}
+    loop a in w.arbs: was[a.a * 1000003 + a.b] = true
+    loop _ in [0..n): __step(w, h)
+    w.events.clear()
+    loop a in w.arbs:
+        if a.contacts.len() == 0: continue
+        imp: f32 = 0
+        loop c in a.contacts: imp += c.pn
+        c0 = a.contacts[0]
+        w.events.push(Contact(Body(a.a), Body(a.b), c0.point, c0.normal, imp, not was.has(a.a * 1000003 + a.b)))
+    loop mut b in w.bodies:
+        b.force = vec2(0, 0)
+        b.torque = 0
+
+# the pairs touching after the last step
+contacts = (w: World) -> Contact[]: w.events
+# those that b is one of (each turned so that .a is b)
+contacts = (w: World, b: Body) -> Contact[]:
+    out: Contact[]
+    loop c in w.events:
+        if c.a == b: out.push(c)
+        else if c.b == b: out.push(Contact(c.b, c.a, c.point, -c.normal, c.impulse, c.new))
+    out
+
+__rot = (r: vec2, v: vec2) -> vec2: vec2(r.x * v.x - r.y * v.y, r.y * v.x + r.x * v.y)
+__unrot = (r: vec2, v: vec2) -> vec2: vec2(r.x * v.x + r.y * v.y, r.x * v.y - r.y * v.x)
+
+# the bounds, and the shape where it is now
+__bounds = (b: mut __PBody):
+    b.rot = vec2(f32(cos(f64(b.angle))), f32(sin(f64(b.angle))))
+    if b.radius >= 0.0:
+        r = vec2(b.radius, b.radius)
+        b.lo = b.pos - r
+        b.hi = b.pos + r
+        return
+    if b.verts.len() == 0:
+        b.lo = b.pos
+        b.hi = b.pos
+        return
+    n = b.verts.len()
+    if b.wv.len() != n:
+        b.wv.resize(n)
+        b.wn.resize(n)
+    lo = vec2(1e30, 1e30)
+    hi = vec2(-1e30, -1e30)
+    loop i in [0..n):
+        p = b.pos + __rot(b.rot, b.verts[i])
+        b.wv[i] = p
+        b.wn[i] = __rot(b.rot, b.normals[i])
+        lo = min(lo, p)
+        hi = max(hi, p)
+    b.lo = lo
+    b.hi = hi
+
+__shaped = (b: __PBody) -> bool: b.alive and (b.radius >= 0.0 or b.verts.len() > 0)
+
+__step = (w: mut World, h: f32):
+    # forces
+    g = w.gravity
+    loop mut b in w.bodies:
+        if b.kind != .dynamic or not b.alive: continue
+        b.vel += (g + b.force * b.inv_mass) * h
+        b.spin += b.torque * b.inv_inertia * h
+        if b.damping > 0.0:
+            k = max(1.0 - b.damping * h, 0.0)
+            b.vel *= k
+            b.spin *= k
+        if b.fixed_rotation: b.spin = 0
+    __collide_all(w)
+    inv_h = 1.0 / h
+    loop mut a in w.arbs:
+        if not a.sensor: __arb_prepare(a, w.bodies, inv_h)
+    loop mut j in w.joints:
+        if j.alive: __joint_prepare(j, w.bodies, h)
+    loop _ in [0..w.iterations):
+        loop mut a in w.arbs:
+            if not a.sensor: __arb_solve(a, w.bodies)
+        loop mut j in w.joints:
+            if j.alive: __joint_solve(j, w.bodies, h)
+    loop mut b in w.bodies:
+        if b.kind == .fixed or not b.alive: continue
+        b.pos += b.vel * h
+        b.angle += b.spin * h
+        __bounds(b)
+
+# ---------------- finding contacts ----------------
+__collide_all = (w: mut World):
+    # the bodies by the left edges of their bounds, then a sweep: pairs whose bounds overlap
+    order: int[]
+    loop i in [1..w.bodies.len()):
+        if __shaped(w.bodies[i]): order.push(i)
+    bs = w.bodies
+    order.sort_with((i, j): bs[i].lo.x < bs[j].lo.x or bs[i].lo.x == bs[j].lo.x and i < j)
+    pairs: int[]
+    loop k in [0..order.len()):
+        i = order[k]
+        ilo = bs[i].lo
+        ihi = bs[i].hi
+        loop m in [k + 1..order.len()):
+            j = order[m]
+            if bs[j].lo.x > ihi.x: break
+            if bs[j].lo.y > ihi.y or bs[j].hi.y < ilo.y: continue
+            if bs[i].kind != .dynamic and bs[j].kind != .dynamic: continue
+            if bs[i].layer & bs[j].mask == 0 or bs[j].layer & bs[i].mask == 0: continue
+            pairs.push(min(i, j) * 1000003 + max(i, j))
+    pairs.sort()                # (the same order each time: a fixed solving order)
+    arbs: __Arb[]
+    index: {int: int}
+    loop key in pairs:
+        a = key / 1000003
+        b = key % 1000003
+        cs = __collide(bs[a], bs[b])
+        if cs.len() == 0: continue
+        arb = __Arb(a, b, cs, sqrt(bs[a].friction * bs[b].friction), max(bs[a].bounce, bs[b].bounce), bs[a].sensor or bs[b].sensor, true)
+        if let old = w.arb_index.get(key):
+            arb.new = false
+            # the same features as before keep their impulses (warm starting)
+            loop mut c in arb.contacts:
+                loop oc in w.arbs[old].contacts:
+                    if oc.feature == c.feature:
+                        c.pn = oc.pn
+                        c.pt = oc.pt
+        index[key] = arbs.len()
+        arbs.push(arb)
+    w.arbs = arbs
+    w.arb_index = index
+
+__contact = (p: vec2, n: vec2, sep: f32, feature: int) -> __PContact: __PContact(point = p, normal = n, sep = sep, feature = feature)
+
+__collide = (a: __PBody, b: __PBody) -> __PContact[]:
+    out: __PContact[]
+    if a.radius >= 0.0 and b.radius >= 0.0:
+        d = b.pos - a.pos
+        dist = length(d)
+        if dist >= a.radius + b.radius: return out
+        n = vec2(0, 1)
+        if dist > 1e-6: n = d * (1.0 / dist)
+        out.push(__contact(a.pos + n * (a.radius - (a.radius + b.radius - dist) * 0.5), n, dist - a.radius - b.radius, 0))
+        return out
+    if a.radius < 0.0 and b.radius >= 0.0: return __poly_circle(a, b, false)
+    if a.radius >= 0.0 and b.radius < 0.0: return __poly_circle(b, a, true)
+    __poly_poly(a, b)
+
+# a polygon p and a circle c (flip: the circle is the first body: normals turned around)
+__poly_circle = (p: __PBody, c: __PBody, flip: bool) -> __PContact[]:
+    out: __PContact[]
+    cl = __unrot(p.rot, c.pos - p.pos)
+    best = -1e30
+    bi = 0
+    loop i in [0..p.verts.len()):
+        s = dot(p.normals[i], cl - p.verts[i])
+        if s > c.radius: return out
+        if s > best:
+            best = s
+            bi = i
+    v1 = p.verts[bi]
+    v2 = p.verts[(bi + 1) % p.verts.len()]
+    n = p.normals[bi]
+    sep = best - c.radius
+    if best > 1e-6:
+        # outside the edge: the nearest point may be a corner
+        if dot(cl - v1, v2 - v1) <= 0.0:
+            d = cl - v1
+            if length_sq(d) > c.radius * c.radius: return out
+            n = normalize(d)
+            sep = length(d) - c.radius
+        else if dot(cl - v2, v1 - v2) <= 0.0:
+            d = cl - v2
+            if length_sq(d) > c.radius * c.radius: return out
+            n = normalize(d)
+            sep = length(d) - c.radius
+    nw = __rot(p.rot, n)
+    pt = c.pos - nw * (c.radius + sep * 0.5)
+    if flip: nw = -nw
+    out.push(__contact(pt, nw, sep, 0))
+    out
+
+# the edge of a whose normal separates most from b's corners: (edge, separation)
+__max_sep = (a: __PBody, b: __PBody) -> (int, f32):
+    best = -1e30
+    bi = 0
+    loop i in [0..a.wv.len()):
+        n = a.wn[i]
+        v = a.wv[i]
+        s: f32 = 1e30
+        loop u in b.wv: s = min(s, dot(n, u - v))
+        if s > best:
+            best = s
+            bi = i
+    (bi, best)
+
+__poly_poly = (a: __PBody, b: __PBody) -> __PContact[]:
+    out: __PContact[]
+    ea, sa = __max_sep(a, b)
+    if sa > 0.0: return out
+    eb, sb = __max_sep(b, a)
+    if sb > 0.0: return out
+    # the reference face: the one separating most (a, unless b's clearly more)
+    ref = a
+    inc = b
+    edge = ea
+    flip = false
+    if sb > sa * 0.98 + 0.1:
+        ref = b
+        inc = a
+        edge = eb
+        flip = true
+    n = ref.wn[edge]
+    v1 = ref.wv[edge]
+    v2 = ref.wv[(edge + 1) % ref.wv.len()]
+    # the incident edge: the other's most against n
+    ie = 0
+    lowest = 1e30
+    loop i in [0..inc.wn.len()):
+        d = dot(inc.wn[i], n)
+        if d < lowest:
+            lowest = d
+            ie = i
+    ie2 = (ie + 1) % inc.verts.len()
+    p1 = inc.wv[ie]
+    p2 = inc.wv[ie2]
+    # clipped to the reference edge's sides
+    t = normalize(v2 - v1)
+    c1, c2, k = __clip(p1, p2, ie, ie2, -t, -dot(t, v1))
+    if k < 2: return out
+    c1, c2, k = __clip(c1.0, c2.0, c1.1, c2.1, t, dot(t, v2))
+    if k < 2: return out
+    nn = n
+    if flip: nn = -n
+    loop cp in [c1, c2]:
+        s = dot(n, cp.0) - dot(n, v1)
+        if s <= 0.0:
+            fl = 0
+            if flip: fl = 1
+            out.push(__contact(cp.0 - n * (s * 0.5), nn, s, (edge * 64 + cp.1) * 2 + fl))
+    out
+
+# the segment p1 p2 (corners f1, f2) clipped to dot(n, x) <= off: the two ends and how many there are
+__clip = (p1: vec2, p2: vec2, f1: int, f2: int, n: vec2, off: f32) -> ((vec2, int), (vec2, int), int):
+    d1 = dot(n, p1) - off
+    d2 = dot(n, p2) - off
+    out: (vec2, int)[]
+    if d1 <= 0.0: out.push((p1, f1))
+    if d2 <= 0.0: out.push((p2, f2))
+    if d1 * d2 < 0.0:
+        t = d1 / (d1 - d2)
+        f = f2
+        if d1 > 0.0: f = f1
+        out.push((p1 + (p2 - p1) * t, f))
+    if out.len() < 2: return ((p1, f1), (p2, f2), out.len())
+    (out[0], out[1], 2)
+
+# ---------------- solving ----------------
+# (bodies' velocities are read into locals and written back: copying a body would copy its arrays)
+__cr = (w: f32, r: vec2) -> vec2: vec2(-w * r.y, w * r.x)
+
+__arb_prepare = (a: mut __Arb, bs: mut __PBody[], inv_h: f32):
+    pa = bs[a.a].pos
+    pb = bs[a.b].pos
+    va = bs[a.a].vel
+    vb = bs[a.b].vel
+    wa = bs[a.a].spin
+    wb = bs[a.b].spin
+    ma = bs[a.a].inv_mass
+    mb = bs[a.b].inv_mass
+    ia = bs[a.a].inv_inertia
+    ib = bs[a.b].inv_inertia
+    loop mut c in a.contacts:
+        c.ra = c.point - pa
+        c.rb = c.point - pb
+        rna = cross(c.ra, c.normal)
+        rnb = cross(c.rb, c.normal)
+        kn = ma + mb + ia * rna * rna + ib * rnb * rnb
+        c.mass_n = 0
+        if kn > 0.0: c.mass_n = 1.0 / kn
+        t = vec2(-c.normal.y, c.normal.x)
+        rta = cross(c.ra, t)
+        rtb = cross(c.rb, t)
+        kt = ma + mb + ia * rta * rta + ib * rtb * rtb
+        c.mass_t = 0
+        if kt > 0.0: c.mass_t = 1.0 / kt
+        # (overlap is pushed out a little each step; bouncing keeps the speed of approach)
+        c.bias = -0.2 * inv_h * min(0.0, c.sep + 0.5)
+        vn = dot(vb + __cr(wb, c.rb) - va - __cr(wa, c.ra), c.normal)
+        if vn < -40.0: c.bias = max(c.bias, -a.bounce * vn)
+        p = c.normal * c.pn + t * c.pt
+        va -= p * ma
+        wa -= cross(c.ra, p) * ia
+        vb += p * mb
+        wb += cross(c.rb, p) * ib
+    bs[a.a].vel = va
+    bs[a.a].spin = wa
+    bs[a.b].vel = vb
+    bs[a.b].spin = wb
+
+__arb_solve = (a: mut __Arb, bs: mut __PBody[]):
+    va = bs[a.a].vel
+    vb = bs[a.b].vel
+    wa = bs[a.a].spin
+    wb = bs[a.b].spin
+    ma = bs[a.a].inv_mass
+    mb = bs[a.b].inv_mass
+    ia = bs[a.a].inv_inertia
+    ib = bs[a.b].inv_inertia
+    loop mut c in a.contacts:
+        dv = vb + __cr(wb, c.rb) - va - __cr(wa, c.ra)
+        dpn = c.mass_n * (c.bias - dot(dv, c.normal))
+        pn0 = c.pn
+        c.pn = max(pn0 + dpn, 0.0)
+        p = c.normal * (c.pn - pn0)
+        va -= p * ma
+        wa -= cross(c.ra, p) * ia
+        vb += p * mb
+        wb += cross(c.rb, p) * ib
+        # friction, up to friction times the push
+        t = vec2(-c.normal.y, c.normal.x)
+        dv = vb + __cr(wb, c.rb) - va - __cr(wa, c.ra)
+        dpt = -c.mass_t * dot(dv, t)
+        lim = a.friction * c.pn
+        pt0 = c.pt
+        c.pt = clamp(pt0 + dpt, -lim, lim)
+        p = t * (c.pt - pt0)
+        va -= p * ma
+        wa -= cross(c.ra, p) * ia
+        vb += p * mb
+        wb += cross(c.rb, p) * ib
+    bs[a.a].vel = va
+    bs[a.a].spin = wa
+    bs[a.b].vel = vb
+    bs[a.b].spin = wb
+
+__apply = (bs: mut __PBody[], a: int, b: int, ra: vec2, rb: vec2, p: vec2):
+    bs[a].vel -= p * bs[a].inv_mass
+    bs[a].spin -= cross(ra, p) * bs[a].inv_inertia
+    bs[b].vel += p * bs[b].inv_mass
+    bs[b].spin += cross(rb, p) * bs[b].inv_inertia
+
+__rel_vel = (bs: __PBody[], j: __PJoint) -> vec2:
+    bs[j.b].vel + __cr(bs[j.b].spin, j.rb) - bs[j.a].vel - __cr(bs[j.a].spin, j.ra)
+
+__joint_prepare = (j: mut __PJoint, bs: mut __PBody[], h: f32):
+    ma = bs[j.a].inv_mass
+    mb = bs[j.b].inv_mass
+    ia = bs[j.a].inv_inertia
+    ib = bs[j.b].inv_inertia
+    j.ra = __rot(bs[j.a].rot, j.la)
+    j.rb = __rot(bs[j.b].rot, j.lb)
+    if j.kind == 1:
+        d = bs[j.b].pos + j.rb - bs[j.a].pos - j.ra
+        l = length(d)
+        j.u = vec2(0, 0)
+        if l > 1e-4: j.u = d * (1.0 / l)
+        cra = cross(j.ra, j.u)
+        crb = cross(j.rb, j.u)
+        k = ma + mb + ia * cra * cra + ib * crb * crb
+        j.mass = 0
+        if k > 0.0: j.mass = 1.0 / k
+        cc = l - j.length
+        j.gamma = 0
+        j.bias1 = 0.2 / h * cc
+        if j.hz > 0.0 and j.mass > 0.0:
+            om = 2.0 * f32(PI) * j.hz
+            sk = j.mass * om * om
+            sd = 2.0 * j.mass * j.damping * om
+            j.gamma = 1.0 / (h * (sd + h * sk))
+            j.bias1 = cc * h * sk * j.gamma
+            j.mass = 1.0 / (k + j.gamma)
+        if j.rope and cc < 0.0:
+            # (slack: free to come closer, only kept from passing its length within the step)
+            j.gamma = 0
+            j.bias1 = cc / h
+            if k > 0.0: j.mass = 1.0 / k
+        __apply(bs, j.a, j.b, j.ra, j.rb, j.u * j.acc1)
+        return
+    # a point: pin (two bodies) or drag (one, toward the target)
+    k11 = ma + mb + ia * j.ra.y * j.ra.y + ib * j.rb.y * j.rb.y
+    k12 = -ia * j.ra.x * j.ra.y - ib * j.rb.x * j.rb.y
+    k22 = ma + mb + ia * j.ra.x * j.ra.x + ib * j.rb.x * j.rb.x
+    j.gamma = 0
+    if j.kind == 2:
+        m: f32 = 0
+        if mb > 0.0: m = 1.0 / mb
+        om = 2.0 * f32(PI) * j.hz
+        sk = m * om * om
+        sd = 2.0 * m * j.damping * om
+        g = h * (sd + h * sk)
+        if g > 0.0: j.gamma = 1.0 / g
+        k11 += j.gamma
+        k22 += j.gamma
+        j.bias = (bs[j.b].pos + j.rb - j.target) * (h * sk * j.gamma)
+    else: j.bias = (bs[j.b].pos + j.rb - bs[j.a].pos - j.ra) * (0.2 / h)
+    det = k11 * k22 - k12 * k12
+    if det != 0.0: det = 1.0 / det
+    j.m11 = det * k22
+    j.m12 = -det * k12
+    j.m22 = det * k11
+    __apply(bs, j.a, j.b, j.ra, j.rb, j.acc)
+
+__joint_solve = (j: mut __PJoint, bs: mut __PBody[], h: f32):
+    if j.kind == 1:
+        if j.mass == 0.0: return
+        cdot = dot(__rel_vel(bs, j), j.u)
+        imp = -j.mass * (cdot + j.bias1 + j.gamma * j.acc1)
+        if j.rope:
+            # (it only pulls)
+            a0 = j.acc1
+            j.acc1 = min(a0 + imp, 0.0)
+            imp = j.acc1 - a0
+        else: j.acc1 += imp
+        __apply(bs, j.a, j.b, j.ra, j.rb, j.u * imp)
+        return
+    r = -(__rel_vel(bs, j) + j.bias + j.acc * j.gamma)
+    imp = vec2(j.m11 * r.x + j.m12 * r.y, j.m12 * r.x + j.m22 * r.y)
+    if j.kind == 2:
+        a0 = j.acc
+        j.acc += imp
+        lim = j.max_force * h
+        if length(j.acc) > lim: j.acc = j.acc * (lim / length(j.acc))
+        imp = j.acc - a0
+    else: j.acc += imp
+    __apply(bs, j.a, j.b, j.ra, j.rb, imp)
+
+# ---------------- queries ----------------
+# the first body a ray from a to b meets (only those whose layer & mask is not 0)
+raycast = (w: World, a: vec2, b: vec2, mask: int = -1) -> Hit?:
+    best: Hit? = none
+    bf: f32 = 1
+    d = b - a
+    loop i in [1..w.bodies.len()):
+        bd = w.bodies[i]
+        if not __shaped(bd) or bd.layer & mask == 0 or bd.sensor: continue
+        if bd.radius >= 0.0:
+            m = a - bd.pos
+            qa = dot(d, d)
+            if qa == 0.0: continue
+            qb = dot(m, d)
+            qc = dot(m, m) - bd.radius * bd.radius
+            disc = qb * qb - qa * qc
+            if disc < 0.0: continue
+            t = (-qb - sqrt(disc)) / qa
+            if t < 0.0 or t > bf: continue
+            bf = t
+            p = a + d * t
+            best = Hit(Body(i), p, normalize(p - bd.pos), t)
+            continue
+        # (a polygon: the ray clipped to each edge's side, in the body's frame)
+        la = rotate(a - bd.pos, -f64(bd.angle))
+        ld = rotate(d, -f64(bd.angle))
+        lo: f32 = 0
+        hi = bf
+        ni = -1
+        ok = true
+        loop k in [0..bd.verts.len()):
+            num = dot(bd.normals[k], bd.verts[k] - la)
+            den = dot(bd.normals[k], ld)
+            if den == 0.0:
+                if num < 0.0:
+                    ok = false
+                    break
+            else if den < 0.0 and num < lo * den:
+                lo = num / den
+                ni = k
+            else if den > 0.0 and num < hi * den: hi = num / den
+            if hi < lo:
+                ok = false
+                break
+        if ok and ni >= 0:
+            bf = lo
+            best = Hit(Body(i), a + d * lo, rotate(bd.normals[ni], f64(bd.angle)), lo)
+    best
+
+# the bodies at the point p (the topmost first: the last made)
+bodies_at = (w: World, p: vec2) -> Body[]:
+    out: Body[]
+    i = w.bodies.len() - 1
+    loop i >= 1:
+        bd = w.bodies[i]
+        i -= 1
+        if not __shaped(bd) or p.x < bd.lo.x or p.y < bd.lo.y or p.x > bd.hi.x or p.y > bd.hi.y: continue
+        if bd.radius >= 0.0:
+            if length(p - bd.pos) <= bd.radius: out.push(Body(i + 1))
+            continue
+        l = rotate(p - bd.pos, -f64(bd.angle))
+        inside = true
+        loop k in [0..bd.verts.len()):
+            if dot(bd.normals[k], l - bd.verts[k]) > 0.0: inside = false
+        if inside: out.push(Body(i + 1))
+    out
+
+# a body's outline in the world (a circle's as 24 points)
+outline = (w: World, b: Body) -> vec2[]:
+    bd = w.bodies[b.id]
+    out: vec2[]
+    if bd.radius >= 0.0:
+        loop k in [0..24): out.push(bd.pos + rotate(vec2(bd.radius, 0), f64(bd.angle) + f64(k) * PI / 12.0))
+        return out
+    loop v in bd.verts: out.push(bd.pos + rotate(v, f64(bd.angle)))
+    out
+
+# every body's outline and every joint, for seeing what the physics does
+draw_debug = (w: World, thickness: f64 = 2):
+    loop i in [1..w.bodies.len()):
+        bd = w.bodies[i]
+        if not __shaped(bd): continue
+        c = rgb(0.4, 0.85, 0.5)
+        if bd.kind == .fixed: c = rgb(0.55, 0.6, 0.7)
+        else if bd.kind == .moving: c = rgb(0.4, 0.6, 1.0)
+        if bd.sensor: c = rgba(1.0, 0.85, 0.3, 0.7)
+        pts = w.outline(Body(i))
+        polyline(pts, thickness, c, closed = true)
+        if bd.radius >= 0.0: line(bd.pos, pts[0], thickness, c)
+    loop j in w.joints:
+        if not j.alive: continue
+        pa = w.bodies[j.a].pos + rotate(j.la, f64(w.bodies[j.a].angle))
+        pb = w.bodies[j.b].pos + rotate(j.lb, f64(w.bodies[j.b].angle))
+        if j.kind == 2: pa = j.target
+        line(pa, pb, thickness, rgb(0.95, 0.5, 0.4))
+        circle(pb, thickness * 1.5, rgb(0.95, 0.5, 0.4))

@@ -53,6 +53,9 @@ TOPICS = [
     ("Games", "menus", "Menus", ["game/ui"], "menus", ""),
     ("Games", "paths", "Paths", ["game/paths"], "paths", ""),
     ("Games", "helpers", "Particles, noise, easing and collisions", ["game/gameutil"], "helpers", ""),
+    ("Games", "physics", "2D physics", ["physics"], "physics",
+     "A module (`import physics`): rigid bodies (circles, boxes, convex polygons) that collide, bounce, slide and stack, "
+     "joined by pins, rods, ropes and springs. Distances are in pixels with y down, as in drawing. See examples/physics.jo."),
     ("Games", "net", "Networking", ["net"], "networking",
      "A module (`import net`): messages between programs over WebSockets, so a native build and a web page "
      "can play together. A server is a native program; a web page connects to one. See examples/netpong."),

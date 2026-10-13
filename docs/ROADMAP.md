@@ -127,8 +127,10 @@ pieces a game picks from (and an example of each):
 - 2D: slopes and one-way platforms in tilemaps, tweening, camera follow and shake: done.
 - 3D: PBR materials (metal, roughness, normal maps), skyboxes, morph targets, culling instances
   one by one.
-- Physics: 2D rigid bodies with joints (a common need beyond the collision helpers), as `import
-  physics` (in progress). Then 3D: rigid bodies (spheres, boxes, capsules, convex hulls,
+- Physics: 2D rigid bodies with joints, as `import physics` (done: circles, boxes, convex
+  polygons, pins, rods, ropes, springs, sensors, raycasts; next as games need them: several
+  shapes per body, sleeping, motors and limits on pins, continuous collision for fast bullets,
+  a character controller). Then 3D: rigid bodies (spheres, boxes, capsules, convex hulls,
   triangle meshes from glTF for the level), joints, raycasts and shape casts, and a character
   controller (walking on slopes and steps), the usual needs of a 3D game; deterministic stepping
   in both, so rollback netplay can use them.
