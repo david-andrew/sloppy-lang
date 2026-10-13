@@ -55,6 +55,8 @@ struct Session[S, I]:
     __their_tick: int[]             # the tick each said it was at
     __their_adv: int[]              # how far ahead of me each said it was
     __heard: f64[]                  # when each was last heard from
+    __rtt: f64[]                    # each one's round trip, in ms (smoothed)
+    __stamp: f64[]                  # the clock each sent with its latest packet (its `sent`)
     __wrong = -1                    # the first tick played with a prediction that was wrong
     __hashes: {int: u64}            # my game's hash at some confirmed ticks
     __their_hashes: {int: u64}
@@ -87,6 +89,9 @@ struct __NpPacket[I]:
     inputs: I[]                     # the sender's inputs from first on
     check: int                      # a tick of the sender's game, and its hash (-1: none)
     hash: u64
+    sent = 0.0                      # the sender's clock (ms)
+    echo = -1.0                     # the receiver's clock in the latest packet from it, and how
+    held = 0.0                      # long ago that came (ms): the round trip is now - echo - held
 
 # a session of `players` players, this machine's being player `me` (from 0)
 session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: int = 2) -> Session[S, I]:
@@ -102,6 +107,8 @@ session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: in
     s.__their_tick = fill(0, players)
     s.__their_adv = fill(0, players)
     s.__heard = fill(elapsed(), players)
+    s.__rtt = fill(0.0, players)
+    s.__stamp = fill(-1.0, players)
     # (the first ticks, before anyone's input can take effect: no input)
     loop t in [0..delay):
         loop p in [0..players): s.__known[t * players + p] = true
@@ -116,6 +123,14 @@ confirmed[S, I] = (s: Session[S, I]) -> int:
 
 # player p has not been heard from for this many seconds
 silent[S, I] = (s: Session[S, I], p: int) -> f64: elapsed() - s.__heard[p]
+
+# the round trip to player p and back, in milliseconds (smoothed; 0 before it is known)
+ping[S, I] = (s: Session[S, I], p: int) -> f64: s.__rtt[p]
+
+__np_smooth = (old: f64, sample: f64) -> f64:
+    if sample < 0.0: return old
+    if old <= 0.0: return sample
+    old * 0.875 + sample * 0.125
 
 # this frame's input from this machine's player; the game moves on a tick (unless waiting)
 play[S, I] = (s: mut Session[S, I], input: I):
@@ -158,6 +173,8 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
     p = pk.from
     if p < 0 or p >= s.players or p == s.me or pk.to != s.me: return
     s.__heard[p] = elapsed()
+    s.__stamp[p] = pk.sent
+    if pk.echo >= 0.0: s.__rtt[p] = __np_smooth(s.__rtt[p], elapsed() * 1000.0 - pk.echo - pk.held)
     s.__acked[p] = max(s.__acked[p], pk.ack)
     s.__their_tick[p] = max(s.__their_tick[p], pk.tick)
     s.__their_adv[p] = pk.adv
@@ -232,7 +249,8 @@ __np_send[S, I] = (s: mut Session[S, I]):
         loop t in [first..s.__recv[s.me]): ins.push(s.__inputs[t % __NP_HIST * s.players + s.me])
         h: u64 = 0
         if s.__check >= 0: h = s.__hashes.get(s.__check) ?? 0
-        pk = __NpPacket[I](s.me, p, s.tick, s.tick - s.__their_tick[p], s.__recv[p], first, ins, s.__check, h)
+        now = elapsed() * 1000.0
+        pk = __NpPacket[I](s.me, p, s.tick, s.tick - s.__their_tick[p], s.__recv[p], first, ins, s.__check, h, now, s.__stamp[p], now - s.__heard[p] * 1000.0)
         __np_out(s, p, bytes(to_text(pk)))
 
 __np_out[S, I] = (s: mut Session[S, I], p: int, b: u8[]):
@@ -566,8 +584,10 @@ struct Client[W, I]:
     me = -1                         # this player's number (once the server has said)
     server_tick = -1                # the tick of server
     interpolation = 6               # how far in the past others are drawn (view), in ticks
+    ping = 0.0                      # milliseconds from an input sent to the world that answers it (smoothed)
     __seq = 0
     __pending: (int, I)[]           # inputs the server has not answered yet
+    __sent: (int, f64)[]            # (when each of those was sent)
     __worlds: (int, W)[]            # the latest worlds, with their ticks
     __clock = 0                     # this client's ticks
     __got_at = 0                    # (its clock when the latest world came)
@@ -592,6 +612,7 @@ play[W, I] = (c: mut Client[W, I], input: I):
     if c.me < 0: return
     c.__seq += 1
     c.__pending.push((c.__seq, input))
+    c.__sent.push((c.__seq, elapsed()))
     seen = int(floor(view_tick(c)))
     b = bytes(to_text(__CsInput[I](c.__seq, seen, input)))
     if c.__peer >= 0: net.send(c.__peer, b)
@@ -614,6 +635,12 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
     loop p in c.__pending:
         if p.0 > r.ack: keep.push(p)
     c.__pending = keep
+    # (the round trip of the newest input answered)
+    k = 0
+    loop k < c.__sent.len() and c.__sent[k].0 <= r.ack: k += 1
+    if k > 0:
+        c.ping = __np_smooth(c.ping, (elapsed() - c.__sent[k - 1].1) * 1000.0)
+        c.__sent = c.__sent[k..]
     c.state = r.world
     loop p in c.__pending: c.state = c.apply(c.state, c.me, p.1, c.state)
 

@@ -54,6 +54,9 @@ machines:
 - anything outside the game: the window's size, the mouse in pixels (turn it into the input
   first), files, the order of a map filled from the network.
 
+`s.ping(p)` is the round trip to player p and back, in milliseconds, to show players (a
+client's is `c.ping`).
+
 When it does break, the session finds out: each machine sends a hash of its game at ticks that
 everyone's inputs are in for, and `s.desync` says the first tick at which two differed.
 

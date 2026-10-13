@@ -2944,6 +2944,7 @@ draw = ():
 - `session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: int = 2) -> Session[S, I]`: a session of `players` players, this machine's being player `me` (from 0)
 - `confirmed[S, I] = (s: Session[S, I]) -> int`: ticks below this have every player's input: they will not change again (some may not have been played here yet: those from s.tick on)
 - `silent[S, I] = (s: Session[S, I], p: int) -> f64`: player p has not been heard from for this many seconds
+- `ping[S, I] = (s: Session[S, I], p: int) -> f64`: the round trip to player p and back, in milliseconds (smoothed; 0 before it is known)
 - `play[S, I] = (s: mut Session[S, I], input: I)`: this frame's input from this machine's player; the game moves on a tick (unless waiting)
 - `outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]`: what to send to whom since the last call: (player, bytes) (without s.udp)
 - `receive[S, I] = (s: mut Session[S, I], data: u8[])`: bytes that arrived from player p (or anyone: the packet says who sent it)
@@ -3003,6 +3004,7 @@ draw = ():
       me = -1                         # this player's number (once the server has said)
       server_tick = -1                # the tick of server
       interpolation = 6               # how far in the past others are drawn (view), in ticks
+      ping = 0.0                      # milliseconds from an input sent to the world that answers it (smoothed)
   ```
 - `client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]`
 - `connect[W, I] = (c: mut Client[W, I], host: str, port: int)`

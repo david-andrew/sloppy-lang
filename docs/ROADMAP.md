@@ -113,8 +113,8 @@ game picks from (and an example of each):
   desync; simulated latency, jitter and loss. Sloppy's math is its own, so ticks agree across
   operating systems and the web. UDP in `net`, a relay over WebSockets for web pages, and WebRTC
   data channels between pages (unordered and never resent, as UDP; the relay passes on only how
-  they connect) (done). Next: spectators, more than one local player per machine, measured
-  round-trip time shown to the player, WebRTC between a page and a native program.
+  they connect) (done). Next: spectators, more than one local player per machine,
+  WebRTC between a page and a native program. (Measured round-trip time, `s.ping(p)`: done.)
 - **Client-server (done: `netplay.server`/`client`, examples/arena):** an authoritative server;
   client-side prediction with reconciliation; snapshot interpolation; lag compensation. Next:
   delta-compressed snapshots (only what changed, and per player what is near), UDP for native
