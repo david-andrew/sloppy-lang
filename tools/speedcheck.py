@@ -20,8 +20,7 @@ env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"))
 if not os.path.exists(os.path.join(root, "tools", "icount")):
     run("cc", "-O2", "-o", "tools/icount", "tools/icount.c")
 if not os.path.exists(os.path.join(root, "bench", "big.jo")):
-    with open(os.path.join(root, "bench", "big.jo"), "w") as f:
-        run(sys.executable, "tools/genbench.py", stdout=f)
+    run(sys.executable, "tools/genbench.py", "2000", "bench/big")
 
 # the earlier compiler: its sources, built by this one (with its own library)
 base = out("git", "rev-parse", "--short", args.base)

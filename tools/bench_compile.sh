@@ -2,7 +2,7 @@
 # usage: tools/bench_compile.sh [compiler] [file] -- best of 9 compiles, CPU time (user+sys)
 SLOPPY=${1:-bin/sloppy}
 F=${2:-bench/big.jo}
-[ -f bench/big.jo ] || python3 tools/genbench.py
+[ -f bench/big.jo ] || python3 tools/genbench.py 2000 bench/big
 export SLOPPY_LIB=${SLOPPY_LIB:-$PWD/lib}
 best=999
 for i in 1 2 3 4 5 6 7 8 9; do
