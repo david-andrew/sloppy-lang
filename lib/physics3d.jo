@@ -1195,8 +1195,9 @@ __ray_tri = (a: vec3, d: vec3, p0: vec3, p1: vec3, p2: vec3) -> f32:
 # ---------------- a character ----------------
 # A capsule that walks: it stands on what it can (slopes up to max_slope, steps up to step high),
 # slides down steeper slopes, stops at walls, and keeps to the ground going down slopes and
-# steps. It is not a body: the level and fixed and moving bodies stop it; dynamic ones neither
-# stop it nor are pushed.
+# steps. It is not a body: the level and fixed and moving bodies stop it, and it shoves dynamic
+# ones out of its way (as hard as its mass against theirs, times push), which stops it as much
+# as they do not give way.
 struct Character:
     feet: vec3                      # the bottom of the capsule
     radius = 0.3
@@ -1208,13 +1209,15 @@ struct Character:
     step = 0.35
     layer = 1
     mask = -1
+    mass = 80.0                     # (kilograms: what it shoves)
+    push = 1.0
 
 character = (w: World, feet: vec3, radius: f64 = 0.3, height: f64 = 1.8) -> Character:
     Character(feet = feet, radius = f32(radius), height = f32(height))
 
 # move c for dt seconds, at the velocity `move` along the ground (its y is not used), and
 # jumping at `jump` meters a second when on the ground and jump > 0
-walk = (w: World, c: mut Character, move: vec3, dt: f64, jump: f64 = 0):
+walk = (w: mut World, c: mut Character, move: vec3, dt: f64, jump: f64 = 0):
     h = f32(dt)
     vy = c.velocity.y
     if c.on_ground and jump > 0.0: vy = f32(jump)
@@ -1258,7 +1261,7 @@ walk = (w: World, c: mut Character, move: vec3, dt: f64, jump: f64 = 0):
     c.velocity = vec3(move.x, vy, move.z)
 
 # pushed out of what it overlaps; on the ground when something under it can be stood on
-__char_resolve = (w: World, c: mut Character, vy0: f32) -> f32:
+__char_resolve = (w: mut World, c: mut Character, vy0: f32) -> f32:
     vy = vy0
     cos_slope = f32(cos(c.max_slope))
     loop _ in [0..4):
@@ -1266,7 +1269,7 @@ __char_resolve = (w: World, c: mut Character, vy0: f32) -> f32:
         moved = false
         loop i in [1..w.bodies.len()):
             bd = w.bodies[i]
-            if not bd.alive or bd.shape < 0 or bd.kind == .dynamic or bd.sensor: continue
+            if not bd.alive or bd.shape < 0 or bd.sensor: continue
             if bd.layer & c.mask == 0 or c.layer & bd.mask == 0: continue
             if bd.lo.x > cap.hi.x or bd.hi.x < cap.lo.x or bd.lo.y > cap.hi.y or bd.hi.y < cap.lo.y or bd.lo.z > cap.hi.z or bd.hi.z < cap.lo.z: continue
             cs = __collide_pair_ordered(cap, bd, w.meshes)
@@ -1274,6 +1277,16 @@ __char_resolve = (w: World, c: mut Character, vy0: f32) -> f32:
             loop ct in cs:
                 if ct.sep >= -1e-4: continue
                 up = -ct.normal             # (pointing from what it stands on toward the character)
+                if bd.kind == .dynamic and bd.inv_mass > 0.0:
+                    # (shoved along the ground, as fast as the character comes, less as it is heavier)
+                    n = vec3(ct.normal.x, 0, ct.normal.z)
+                    if length(n) > 1e-4:
+                        n = normalize(n)
+                        into = dot(vec3(c.velocity.x, 0, c.velocity.z), n)
+                        m = 1.0 / bd.inv_mass
+                        want = into * c.push * c.mass / (c.mass + m)
+                        gain = want - dot(w.bodies[i].vel, n)
+                        if into > 0.0 and gain > 0.0: w.bodies[i].vel += n * gain
                 low = ct.point.y < c.feet.y + c.step
                 if up.y >= cos_slope or low and up.y > 0.05 and c.velocity.y <= 0.0:
                     # (stood on, or a step: lifted straight up, so it does not slide)
@@ -1291,7 +1304,7 @@ __char_resolve = (w: World, c: mut Character, vy0: f32) -> f32:
     vy
 
 # down by up to `by`, a little at a time, until it stands on something
-__char_down = (w: World, c: mut Character, by: f32):
+__char_down = (w: mut World, c: mut Character, by: f32):
     k = clamp(int(ceil(f64(by / (c.radius * 0.25)))), 1, 16)
     loop _ in [0..k):
         c.feet.y -= by / f32(k)
@@ -1303,7 +1316,7 @@ __char_hits = (w: World, c: Character) -> bool:
     cap = __char_body(c)
     loop i in [1..w.bodies.len()):
         bd = w.bodies[i]
-        if not bd.alive or bd.shape < 0 or bd.kind == .dynamic or bd.sensor: continue
+        if not bd.alive or bd.shape < 0 or bd.sensor: continue
         if bd.layer & c.mask == 0 or c.layer & bd.mask == 0: continue
         if bd.lo.x > cap.hi.x or bd.hi.x < cap.lo.x or bd.lo.y > cap.hi.y or bd.hi.y < cap.lo.y or bd.lo.z > cap.hi.z or bd.hi.z < cap.lo.z: continue
         cs = __collide_pair_ordered(cap, bd, w.meshes)

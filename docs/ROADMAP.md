@@ -131,8 +131,8 @@ game picks from (and an example of each):
   shapes per body, sleeping, motors and limits on pins, continuous collision for fast bullets,
   a character controller). 3D, as `import physics3d` (done: spheres, boxes, capsules, a level's
   triangles, ball and hinge joints, rods, ropes, springs, rays, a character controller,
-  deterministic stepping; next: convex hulls, shape casts, sleeping, motors and limits, the
-  character pushing dynamic bodies, continuous collision).
+  deterministic stepping; next: convex hulls, shape casts, sleeping, motors and limits, continuous
+  collision).
 - Audio: sounds placed in 2D/3D (panning and distance): done (`play_at`, `move_sound`).
 - Assets: a whole directory embedded at once (`embed` takes one file), OpenType fonts with CFF
   outlines and kerning, Tiled's external tilesets.

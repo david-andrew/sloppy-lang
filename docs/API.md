@@ -2142,9 +2142,9 @@ Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the gam
 
 #### A character
 
-- `struct Character`: A capsule that walks: it stands on what it can (slopes up to max_slope, steps up to step high), slides down steeper slopes, stops at walls, and keeps to the ground going down slopes and steps. It is not a body: the level and fixed and moving bodies stop it; dynamic ones neither stop it nor are pushed.
+- `struct Character`: A capsule that walks: it stands on what it can (slopes up to max_slope, steps up to step high), slides down steeper slopes, stops at walls, and keeps to the ground going down slopes and steps. It is not a body: the level and fixed and moving bodies stop it, and it shoves dynamic ones out of its way (as hard as its mass against theirs, times push), which stops it as much as they do not give way.
 - `character = (w: World, feet: vec3, radius: f64 = 0.3, height: f64 = 1.8) -> Character`
-- `walk = (w: World, c: mut Character, move: vec3, dt: f64, jump: f64 = 0)`: move c for dt seconds, at the velocity `move` along the ground (its y is not used), and jumping at `jump` meters a second when on the ground and jump > 0
+- `walk = (w: mut World, c: mut Character, move: vec3, dt: f64, jump: f64 = 0)`: move c for dt seconds, at the velocity `move` along the ground (its y is not used), and jumping at `jump` meters a second when on the ground and jump > 0
 
 ## Networking
 

@@ -54,7 +54,8 @@ Games:
   stand), a level's triangles (`add_mesh`, `physics3d.triangles(model_data)`, kept in a tree of
   boxes), joints (ball, hinge, rod, rope, spring), contacts, rays (bodies and triangles), and a
   character controller (`w.character`, `w.walk`): a capsule that walks up slopes and steps,
-  slides down steeper slopes, stops at walls, keeps to the ground going down and jumps.
+  slides down steeper slopes, stops at walls, keeps to the ground going down, jumps, and
+  shoves dynamic bodies out of its way (a heavy one stops it).
   Deterministic stepping. examples/physics3d.jo: a yard to walk around and throw balls in.
   `sloppy new <dir> 3d` walks with it (steps, slopes, jumping), and its crates are knocked about
   by shots.
