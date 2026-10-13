@@ -99,19 +99,39 @@ packages on the website instead.
 - Language server: workspace symbols, semantic highlighting, rename across files (done).
 - An examples gallery on the website, each runnable in the browser (done: sloppy-lang.org/examples).
 
-### 7. Networking (M, then L)
+### 7. Networking and netplay (M, then L)
 
 Done: `import net`, messages over WebSockets between native programs and web pages (a native
-server; Linux, macOS, Windows, the browser), and a two-player example (examples/netpong). Next:
-UDP for fast native games, rollback or snapshot helpers if the examples show the need, and
-WebRTC for browser-to-browser later.
+server; Linux, macOS, Windows, the browser), and a two-player example (examples/netpong).
+
+Next, netplay that feels local despite latency, with the established techniques as library
+pieces a game picks from (and an example of each):
+- **Transport:** UDP for native games (unreliable and unordered, with a thin reliable channel
+  for what must arrive), WebRTC data channels for browsers (unreliable too); a fixed tick rate;
+  measured round-trip time, jitter and loss; a way to simulate latency and loss while testing.
+- **Rollback (peer to peer, for fighting and action games):** the game's state saved each tick
+  (`save_value`-style copies of structs, cheap since values are copied), remote inputs predicted
+  (the last one repeated), and on a late input the state rolled back and re-simulated; a small
+  input delay to trade for fewer rollbacks; a check that simulations stay identical (a checksum of
+  the state per tick), which needs deterministic stepping (fixed timestep, no wall-clock reads).
+- **Client-server (for more players and shooters):** an authoritative server; client-side
+  prediction of the player's own movement with reconciliation when the server's answer
+  differs; snapshot interpolation of other players (rendered a little in the past, from
+  buffered snapshots); delta-compressed snapshots; server-side lag compensation (rewinding hit
+  checks to what the shooter saw).
+- Lobbies and connecting players: a small relay/matchmaking server program, and NAT traversal
+  through WebRTC's ICE for browsers.
 
 ### 8. Game library gaps (in pieces, as games need them)
 
 - 2D: slopes and one-way platforms in tilemaps, tweening, camera follow and shake: done.
 - 3D: PBR materials (metal, roughness, normal maps), skyboxes, morph targets, culling instances
   one by one.
-- Physics: 2D rigid bodies with joints (a common need beyond the collision helpers).
+- Physics: 2D rigid bodies with joints (a common need beyond the collision helpers), as `import
+  physics` (in progress). Then 3D: rigid bodies (spheres, boxes, capsules, convex hulls,
+  triangle meshes from glTF for the level), joints, raycasts and shape casts, and a character
+  controller (walking on slopes and steps), the usual needs of a 3D game; deterministic stepping
+  in both, so rollback netplay can use them.
 - Audio: sounds placed in 2D/3D (panning and distance): done (`play_at`, `move_sound`).
 - Assets: a whole directory embedded at once (`embed` takes one file), OpenType fonts with CFF
   outlines and kerning, Tiled's external tilesets.
