@@ -1,0 +1,130 @@
+# DUEL - two ships in an arena, over the network with rollback (lib/netplay.jo): each machine
+# runs the whole game, only the players' inputs travel, and a late input is made up for by
+# playing the last few ticks again, so neither player waits for the other's moves.
+# Start player 1 with PLAYER=0 and player 2 with PLAYER=1 (on the same machine, or on two:
+# PEER=<the other's address>). LAG=100 adds 100 ms to what this one sends, to try a slow network;
+# BOT=1 lets the computer play this side.
+# Move with the arrows, WASD or a stick; fire with Space or the gamepad's A. First to 10 wins.
+
+build:
+    name = "Duel"
+
+import netplay
+
+const W = 1280.0
+const H = 720.0
+const SPEED = 5.0               # pixels a tick
+const SHOT_SPEED = 11.0
+const RADIUS = 18.0
+const WIN = 10
+
+me = to_int(env("PLAYER") ?? "0") ?? 0
+peer = env("PEER") ?? "127.0.0.1"
+window("Duel (player {me + 1})", 1280, 720)
+action("Fire", [.key(.space), .button(.a)])
+
+# ---------------- the game: everything a tick depends on ----------------
+struct Ship:
+    pos: vec2
+    face: vec2
+    cooldown = 0
+    score = 0
+    flash = 0                   # (ticks to show a hit)
+
+struct Shot:
+    pos: vec2
+    vel: vec2
+    owner: int
+    bounces = 0
+
+struct Game:
+    ships: Ship[] = [Ship(vec2(200, 360), vec2(1, 0)), Ship(vec2(1080, 360), vec2(-1, 0))]
+    shots: Shot[]
+    winner = -1
+
+struct Pad:
+    x = 0                       # -1, 0, 1
+    y = 0
+    fire = false
+
+# one tick (1/60 s) of play: the same game and pads give the same result on every machine
+tick = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    if g.winner >= 0: return g
+    loop i in [0..2):
+        p = pads[i]
+        mv = vec2(f32(p.x), f32(p.y))
+        if p.x != 0 or p.y != 0:
+            mv = normalize(mv)
+            g.ships[i].face = mv
+        g.ships[i].pos = clamp(g.ships[i].pos + mv * SPEED, vec2(RADIUS, RADIUS), vec2(W - RADIUS, H - RADIUS))
+        if g.ships[i].cooldown > 0: g.ships[i].cooldown -= 1
+        if g.ships[i].flash > 0: g.ships[i].flash -= 1
+        if p.fire and g.ships[i].cooldown == 0:
+            g.shots.push(Shot(g.ships[i].pos + g.ships[i].face * (RADIUS + 6), g.ships[i].face * SHOT_SPEED, i))
+            g.ships[i].cooldown = 20
+    kept: Shot[]
+    loop s in g.shots:
+        let s = s
+        s.pos += s.vel
+        # (a shot bounces off the walls once)
+        if s.pos.x < 0 or s.pos.x > W:
+            s.vel.x = -s.vel.x
+            s.bounces += 1
+        if s.pos.y < 0 or s.pos.y > H:
+            s.vel.y = -s.vel.y
+            s.bounces += 1
+        if s.bounces > 1: continue
+        o = 1 - s.owner
+        if length(s.pos - g.ships[o].pos) < RADIUS + 4:
+            g.ships[s.owner].score += 1
+            g.ships[o].flash = 20
+            if g.ships[s.owner].score >= WIN: g.winner = s.owner
+            continue
+        kept.push(s)
+    g.shots = kept
+    g
+
+# ---------------- the session ----------------
+s = netplay.session(Game(), tick, players = 2, me = me)
+s.udp(4400 + me, [(peer, 4400), (peer, 4401)])
+if let lag = env("LAG"): s.lag(to_float(lag) ?? 0, 10, 0.02)
+spare = 0.0
+bot = env("BOT") != none
+
+# (BOT=1: keeps its distance, circles, and fires when facing the other ship)
+bot_pad = (g: Game) -> Pad:
+    mine = g.ships[me]
+    d = g.ships[1 - me].pos - mine.pos
+    if length(d) < 1.0: d = vec2(1, 0)
+    n = normalize(d)
+    want = n * f32(length(d) - 320.0) + perp(n) * 150.0
+    Pad(int(sign(round(f64(want.x) / 60.0))), int(sign(round(f64(want.y) / 60.0))), dot(n, mine.face) > 0.8)
+
+update = (dt: f64):
+    if key_pressed(.escape): quit()
+    # (ticks at 60 a second, whatever the frame rate)
+    spare = min(spare + dt, 0.1)
+    loop spare >= 1.0 / 60.0:
+        spare -= 1.0 / 60.0
+        a = input_axis()
+        if bot: s.play(bot_pad(s.state))
+        else: s.play(Pad(int(round(f64(a.x))), int(round(f64(a.y))), action_down("Fire")))
+
+draw = ():
+    clear(rgb(0.07, 0.08, 0.11))
+    g = s.state
+    colors = [rgb(0.35, 0.7, 1.0), rgb(1.0, 0.6, 0.3)]
+    loop sh in g.shots: circle(sh.pos, 5, colors[sh.owner])
+    loop i in 0.. and ship in g.ships:
+        c = colors[i]
+        if ship.flash > 0 and ship.flash % 4 < 2: c = WHITE
+        circle(ship.pos, RADIUS, c)
+        line(ship.pos, ship.pos + ship.face * (RADIUS + 8), 4, c)
+    text("{g.ships[0].score}", vec2(40, 30), 48, colors[0])
+    text_centered("{g.ships[1].score}", vec2(W - 60, 54), 48, colors[1])
+    if g.winner >= 0: text_centered("player {g.winner + 1} wins", vec2(W / 2, H / 2), 64, WHITE)
+    other = 1 - me
+    if s.waiting and s.silent(other) > 1.0: text_centered("waiting for player {other + 1} (port {4400 + other} at {peer})", vec2(W / 2, H - 60), 28, gray(0.7))
+    if s.desync >= 0: text_centered("the two games differ since tick {s.desync}", vec2(W / 2, 40), 28, rgb(1, 0.4, 0.4))
+    text("rollbacks {s.rollbacks}", vec2(20, H - 36), 20, gray(0.5))

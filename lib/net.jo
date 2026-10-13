@@ -384,9 +384,58 @@ __sha1 = (msg: u8[]) -> u8[]:
         loop k in [0..4): out.push(u8((x >> (24 - 8 * k)) & 255))
     out
 
+# ---------------- UDP (native programs) ----------------
+# Datagrams: no connection, each one arrives whole or not at all, maybe out of order. Faster
+# than messages over WebSockets for what is sent often and soon stale (positions, inputs); a
+# web page cannot use UDP.
+#
+#   s = net.udp(4000)                          # a socket on port 4000 (0: any port)
+#   net.udp_send(s, "192.168.1.20", 4000, bytes("hello"))
+#   loop d in net.udp_receive(s): print(d.host, d.port, str_from_bytes(d.data))
+
+struct Datagram:
+    host: str               # where it came from: an address, "1.2.3.4"
+    port: int
+    data: u8[]
+
+__net_hosts: {str: int}
+
+# a UDP socket on port (0: one the system picks), or -1 (in use, or in a web page)
+udp = (port: int = 0) -> int: __n_udp(port)
+
+# false if host is not known or it could not be sent (a datagram may also be lost on the way)
+udp_send = (sock: int, host: str, port: int, data: u8[]) -> bool:
+    ip = -1
+    if let known = __net_hosts.get(host): ip = known
+    else:
+        ip = __n_resolve(host)
+        __net_hosts[host] = ip
+    if ip < 0 or data.len() == 0: return false
+    __n_sendto(sock, data(data), data.len(), ip, port) == data.len()
+udp_send = (sock: int, host: str, port: int, text: str) -> bool: udp_send(sock, host, port, bytes(text))
+
+# the datagrams that have arrived since the last call
+udp_receive = (sock: int) -> Datagram[]:
+    out: Datagram[]
+    if sock < 0: return out
+    buf = fill(u8(0), 65536)
+    from = fill(u8(0), 16)
+    loop:
+        n = __n_recvfrom(sock, data(buf), buf.len(), from)
+        if n < 0: break
+        ip = "{from[4]}.{from[5]}.{from[6]}.{from[7]}"
+        out.push(Datagram(ip, (int(from[2]) << 8) | int(from[3]), buf[..n)))
+    out
+
+udp_close = (sock: int):
+    if sock >= 0: __n_close(sock)
+
+
 # ---------------- sockets: each system's ----------------
 # __n_listen(port) -> fd (-1: failed); __n_connect(ip, port) -> fd, connecting (-1: failed);
 # __n_connected(fd) -> 1 connected, 0 not yet, -1 failed; __n_accept(fd) -> fd (-1: none now);
+# __n_udp(port) -> a datagram socket bound to port, not blocking; __n_sendto(fd, p, n, ip, port)
+# and __n_recvfrom(fd, p, n, from) -> bytes (or < 0: nothing, failed);
 # __n_send / __n_recv -> bytes (recv: 0 closed), -1 not now, -2 failed; __n_close(fd);
 # __n_resolve(host) -> an IPv4 address as an int (a.b.c.d: a << 24 ...), -1 if unknown
 
@@ -470,6 +519,24 @@ when TARGET == "linux":
         r
 
     __n_close = (fd: int): syscall(3, fd)
+
+    __n_udp = (port: int) -> int:
+        fd = syscall(41, 2, 2 | 0x800 | 0x80000, 0)                 # socket(AF_INET, SOCK_DGRAM | NONBLOCK | CLOEXEC)
+        if fd < 0: return -1
+        a = __n_addr(0, port)
+        if syscall(49, fd, data(a), 16) != 0:
+            syscall(3, fd)
+            return -1
+        fd
+
+    __n_sendto = (fd: int, p: *u8, n: int, ip: int, port: int) -> int:
+        a = __n_addr(ip, port)
+        syscall(44, fd, p, n, 0x4000, data(a), 16)
+
+    # (from: the sender's 16-byte address)
+    __n_recvfrom = (fd: int, p: *u8, n: int, from: mut u8[]) -> int:
+        l = [16]
+        syscall(45, fd, p, n, 0, data(from), data(l))
 
     # a name: an address, localhost, /etc/hosts, then the name server of /etc/resolv.conf
     __n_resolve = (host: str) -> int:
@@ -570,6 +637,30 @@ when TARGET == "macos":
     @lib("/usr/lib/libSystem.B.dylib")
     @symbol("gethostbyname")
     extern __m_gethostbyname = (name: *u8) -> *u8
+    @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("sendto")
+    extern __m_sendto = (fd: i32, p: *u8, n: int, flags: i32, addr: *u8, len: u32) -> int
+    @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("recvfrom")
+    extern __m_recvfrom = (fd: i32, p: *u8, n: int, flags: i32, addr: *u8, len: *u32) -> int
+
+    __n_udp = (port: int) -> int:
+        fd = int(__m_socket(i32(2), i32(2), i32(0)))
+        if fd < 0: return -1
+        a = __n_addr(0, port)
+        if int(__m_bind(i32(fd), data(a), u32(16))) != 0:
+            syscall(3, fd)
+            return -1
+        __c_fcntl(i32(fd), i32(4), 0, 0, 0, 0, 0, 0, 4)            # F_SETFL O_NONBLOCK
+        fd
+
+    __n_sendto = (fd: int, p: *u8, n: int, ip: int, port: int) -> int:
+        a = __n_addr(ip, port)
+        __m_sendto(i32(fd), p, n, i32(0), data(a), u32(16))
+
+    __n_recvfrom = (fd: int, p: *u8, n: int, from: mut u8[]) -> int:
+        l: u32[] = [16]
+        __m_recvfrom(i32(fd), p, n, i32(0), data(from), data(l))
 
     # (non-blocking, and no SIGPIPE when the other end has gone: SO_NOSIGPIPE)
     __n_setup = (fd: int):
@@ -685,6 +776,36 @@ when TARGET == "windows":
     @lib("ws2_32.dll")
     @symbol("gethostbyname")
     extern __w_gethostbyname = (name: *u8) -> *u8
+    @lib("ws2_32.dll")
+    @symbol("sendto")
+    extern __w_sendto = (s: int, p: *u8, n: i32, flags: i32, addr: *u8, len: i32) -> i32
+    @lib("ws2_32.dll")
+    @symbol("recvfrom")
+    extern __w_recvfrom = (s: int, p: *u8, n: i32, flags: i32, addr: *u8, len: *i32) -> i32
+
+    __n_udp = (port: int) -> int:
+        __n_start()
+        s = __w_socket(i32(2), i32(2), i32(17))
+        if s == -1: return -1
+        a = __n_addr(0, port)
+        if int(__w_bind(s, data(a), i32(16))) != 0:
+            __w_closesocket(s)
+            return -1
+        one: u32[] = [1]
+        __w_ioctlsocket(s, i32(-2147195266), data(one))             # FIONBIO
+        s
+
+    __n_sendto = (s: int, p: *u8, n: int, ip: int, port: int) -> int:
+        a = __n_addr(ip, port)
+        int(__w_sendto(s, p, i32(n), i32(0), data(a), i32(16)))
+
+    __n_recvfrom = (s: int, p: *u8, n: int, from: mut u8[]) -> int:
+        # (a datagram sent earlier to a port nothing listens on fails a later receive: WSAECONNRESET)
+        loop _ in [0..16):
+            l: i32[] = [16]
+            r = int(__w_recvfrom(s, p, i32(n), i32(0), data(from), data(l)))
+            if r >= 0 or int(WSAGetLastError()) != 10054: return r
+        -1
 
     __n_started = false
     __n_start = ():
@@ -778,3 +899,6 @@ when TARGET == "wasm":
     __n_recv = (fd: int, p: *u8, n: int) -> int: -2
     __n_close = (fd: int): pass
     __n_resolve = (host: str) -> int: -1
+    __n_udp = (port: int) -> int: -1
+    __n_sendto = (fd: int, p: *u8, n: int, ip: int, port: int) -> int: -1
+    __n_recvfrom = (fd: int, p: *u8, n: int, from: mut u8[]) -> int: -1

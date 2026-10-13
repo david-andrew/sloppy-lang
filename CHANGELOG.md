@@ -44,6 +44,15 @@ Tools:
   the playground.
 
 Games:
+- **Rollback netplay** (`import netplay`): players on different machines play one game as if it
+  ran on each alone. Only inputs travel; a missing remote input is predicted (the last one,
+  repeated), and when the real one differs the game goes back and plays the ticks since again.
+  Input delay, waiting when too far ahead, slowing down when ahead of the other's clock,
+  inputs resent until acknowledged (loss is fine), hashes of confirmed ticks to catch
+  machines whose games differ (`s.desync`), simulated latency, jitter and loss (`s.lag`, and
+  `netplay.Link` for two sessions in one program). Over UDP (`s.udp`) or any transport
+  (`s.outgoing()`, `s.receive(bytes)`). examples/duel: two ships, over a LAN or in two windows.
+- **UDP** in `net`: `net.udp(port)`, `net.udp_send`, `net.udp_receive` (Linux, macOS, Windows).
 - **2D physics** (`import physics`): rigid bodies (circles, boxes, convex polygons) that
   collide, bounce, slide and stack, with friction, bounciness, density, damping and collision
   layers; `.fixed` and `.moving` bodies (floors, platforms); joints: pins, rods, ropes and

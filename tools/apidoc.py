@@ -58,7 +58,12 @@ TOPICS = [
      "joined by pins, rods, ropes and springs. Distances are in pixels with y down, as in drawing. See examples/physics.jo."),
     ("Games", "net", "Networking", ["net"], "networking",
      "A module (`import net`): messages between programs over WebSockets, so a native build and a web page "
-     "can play together. A server is a native program; a web page connects to one. See examples/netpong."),
+     "can play together (a server is a native program; a web page connects to one: examples/netpong), "
+     "and UDP datagrams between native programs."),
+    ("Games", "netplay", "Netplay (rollback)", ["netplay"], "netplay",
+     "A module (`import netplay`): two or more players on different machines in one game, with rollback: only inputs "
+     "travel, and a late one is made up for by playing the last ticks again. Sloppy's math is its own (no system math "
+     "library, no fused multiply-add), so a tick comes out the same on Linux, Windows, macOS and the web. See examples/duel."),
 ]
 # the library's own machinery (the runtime, the OS and graphics layers, the prompt...): not listed
 INTERNAL = {"core/rt", "core/fmt", "core/windows", "core/macos", "game/dl", "game/cocoa", "game/x11", "game/wayland", "game/wlclient", "game/dmabuf", "game/vk", "game/vkgl",

@@ -1,0 +1,295 @@
+import net
+
+# Rollback netplay: two or more players on different machines play one game as if it ran on
+# each of them alone. Every machine runs the whole game; only the players' inputs travel. A
+# remote input that has not arrived yet is predicted (the player's last one, repeated), and
+# when it arrives and was different, the game goes back to the tick it changes and plays the
+# ticks since again: a remote player's moves show up at once, corrected a few frames later at
+# worst. `import netplay`, then:
+#
+#   struct Game: ...                    # everything play depends on (copied for each tick kept)
+#   struct Pad:                         # one player's input for one tick
+#       x = 0
+#       jump = false
+#   tick = (g: Game, pads: Pad[]) -> Game: ...     # one tick of play, from everyone's input
+#
+#   s = netplay.session(Game(), tick, players = 2, me = 0)
+#   s.udp(4000, [("192.168.1.20", 4000), ("192.168.1.21", 4000)])   # each player's address, by number
+#   update = (dt: f64): s.play(Pad(x = int(input_axis().x), jump = action_pressed("Jump")))
+#   draw = (): ... s.state ...
+#
+# The tick function must give the same result for the same game and inputs on every machine:
+# no random() without a seed kept in the game, no reading the clock, no dt (a tick is
+# 1/60 s: call play once a frame, at 60 frames a second). Inputs take effect `delay` ticks
+# after they are made (2: about 33 ms), which hides that much latency without any rollback;
+# more delay, fewer rollbacks. A session may run at most `max_ahead` ticks ahead of the inputs
+# it has from everyone, then it waits (s.waiting).
+#
+# Without s.udp, the session only says what to send (s.outgoing()) and is told what arrived
+# (s.receive(player, bytes)): any transport works (net's WebSockets, a relay server), and two
+# sessions in one program can play each other over netplay.Link, a simulated network with
+# latency, jitter and loss. s.lag(ms, jitter_ms, loss) simulates the same on a real one.
+
+const __NP_HIST = 128               # ticks kept: states and inputs
+
+struct Session[S, I]:
+    step: (S, I[]) -> S
+    players: int
+    me: int
+    delay = 2
+    max_ahead = 10                  # (no more than __NP_HIST / 2)
+    tick = 0                        # the tick state is at
+    state: S
+    waiting = false                 # play could not move on (too far ahead of someone's inputs)
+    rollbacks = 0                   # how many times a tick was played again, so far
+    longest_rollback = 0
+    desync = -1                     # the first tick at which two machines' games differed (-1: none)
+    __states: S[]
+    __inputs: I[]                   # [tick % HIST * players + player]
+    __known: bool[]
+    __last: I[]                     # each player's latest input (what is predicted for them)
+    __recv: int[]                   # each player's inputs below this tick have arrived (mine: are made)
+    __acked: int[]                  # each player has my inputs below this tick
+    __their_tick: int[]             # the tick each said it was at
+    __their_adv: int[]              # how far ahead of me each said it was
+    __heard: f64[]                  # when each was last heard from
+    __wrong = -1                    # the first tick played with a prediction that was wrong
+    __hashes: {int: u64}            # my game's hash at some confirmed ticks
+    __their_hashes: {int: u64}
+    __check = -1                    # the latest tick hashed
+    __out: (int, u8[])[]
+    __frames = 0
+    # (a UDP transport: s.udp)
+    __sock = -1
+    __addrs: (str, int)[]
+    # (simulated lag on sending: s.lag)
+    __lag = 0.0
+    __jitter = 0.0
+    __loss = 0.0
+    __held: (f64, int, u8[])[]
+    __rand: u64 = 12345
+
+struct __NpPacket[I]:
+    from: int
+    tick: int                       # the sender's tick
+    adv: int                        # how far ahead of the receiver it is, as it sees it
+    ack: int                        # the receiver's inputs below this have arrived
+    first: int                      # the tick of inputs[0]
+    inputs: I[]                     # the sender's inputs from first on
+    check: int                      # a tick of the sender's game, and its hash (-1: none)
+    hash: u64
+
+# a session of `players` players, this machine's being player `me` (from 0)
+session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: int = 2) -> Session[S, I]:
+    s = Session[S, I](step = step, players = players, me = me, delay = delay, state = start)
+    zero: I
+    __default_init(zero)
+    s.__states = fill(start, __NP_HIST)
+    s.__inputs = fill(zero, __NP_HIST * players)
+    s.__known = fill(false, __NP_HIST * players)
+    s.__last = fill(zero, players)
+    s.__recv = fill(delay, players)
+    s.__acked = fill(delay, players)
+    s.__their_tick = fill(0, players)
+    s.__their_adv = fill(0, players)
+    s.__heard = fill(elapsed(), players)
+    # (the first ticks, before anyone's input can take effect: no input)
+    loop t in [0..delay):
+        loop p in [0..players): s.__known[t * players + p] = true
+    s
+
+# ticks below this have every player's input: they will not change again
+confirmed[S, I] = (s: Session[S, I]) -> int:
+    c = s.__recv[0]
+    loop r in s.__recv: c = min(c, r)
+    c
+
+# player p has not been heard from for this many seconds
+silent[S, I] = (s: Session[S, I], p: int) -> f64: elapsed() - s.__heard[p]
+
+# this frame's input from this machine's player; the game moves on a tick (unless waiting)
+play[S, I] = (s: mut Session[S, I], input: I):
+    s.__frames += 1
+    if s.__sock >= 0: __np_udp_receive(s)
+    # (my input for the tick it takes effect: once per tick, as others may have it already)
+    t = s.tick + s.delay
+    if s.__recv[s.me] == t:
+        __np_set(s, s.me, t, input)
+    if s.__wrong >= 0 and s.__wrong < s.tick: __np_replay(s, s.__wrong)
+    s.__wrong = -1
+    # wait when too far ahead of someone's inputs, or a tick at times when ahead of their clock
+    s.waiting = false
+    loop p in [0..s.players):
+        if p == s.me: continue
+        if s.tick - s.__recv[p] >= s.max_ahead: s.waiting = true
+        lead = (s.tick - s.__their_tick[p] - s.__their_adv[p]) / 2
+        if lead >= 2 and s.__frames % 4 == 0: s.waiting = true
+    if not s.waiting: __np_advance(s)
+    __np_hash_confirmed(s)
+    __np_send(s)
+    if s.__sock >= 0: __np_udp_send(s)
+
+# what to send to whom since the last call: (player, bytes) (without s.udp)
+outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]:
+    if s.__held.len() > 0: __np_due(s)
+    o = s.__out
+    s.__out.clear()
+    o
+
+# bytes that arrived from player p (or anyone: the packet says who sent it)
+receive[S, I] = (s: mut Session[S, I], data: u8[]):
+    r = from_text[__NpPacket[I]](str_from_bytes(data))
+    if r is TextError: return
+    pk = r
+    p = pk.from
+    if p < 0 or p >= s.players or p == s.me: return
+    s.__heard[p] = elapsed()
+    s.__acked[p] = max(s.__acked[p], pk.ack)
+    s.__their_tick[p] = max(s.__their_tick[p], pk.tick)
+    s.__their_adv[p] = pk.adv
+    loop k in 0.. and inp in pk.inputs:
+        t = pk.first + k
+        if t < s.__recv[p]: continue
+        if t > s.__recv[p] or t - confirmed(s) >= __NP_HIST - 1: break
+        if t < s.tick and s.__inputs[t % __NP_HIST * s.players + p] != inp:
+            if s.__wrong < 0 or t < s.__wrong: s.__wrong = t
+        __np_set(s, p, t, inp)
+    if pk.check >= 0:
+        s.__their_hashes[pk.check] = pk.hash
+        __np_compare(s, pk.check)
+
+__np_set[S, I] = (s: mut Session[S, I], p: int, t: int, inp: I):
+    k = t % __NP_HIST * s.players + p
+    s.__inputs[k] = inp
+    s.__known[k] = true
+    s.__last[p] = inp
+    s.__recv[p] = t + 1
+
+# one tick: everyone's input (or a prediction), the state kept, the game moved on
+__np_advance[S, I] = (s: mut Session[S, I]):
+    t = s.tick
+    base = t % __NP_HIST * s.players
+    ins: I[]
+    loop p in [0..s.players):
+        if not s.__known[base + p] or t >= s.__recv[p]:
+            s.__known[base + p] = false
+            s.__inputs[base + p] = s.__last[p]
+        ins.push(s.__inputs[base + p])
+    s.__states[t % __NP_HIST] = s.state
+    s.state = s.step(s.state, ins)
+    s.tick = t + 1
+    # (the slot of the tick HIST ahead: not known yet)
+    nb = (t + 1) % __NP_HIST * s.players
+    if t + 1 >= s.delay:
+        loop p in [0..s.players):
+            if t + 1 >= s.__recv[p]: s.__known[nb + p] = false
+
+# back to tick `from` and every tick since played again
+__np_replay[S, I] = (s: mut Session[S, I], from: int):
+    now = s.tick
+    s.state = s.__states[from % __NP_HIST]
+    s.tick = from
+    loop _ in [from..now): __np_advance(s)
+    s.rollbacks += 1
+    s.longest_rollback = max(s.longest_rollback, now - from)
+
+# every half second, the hash of the game at a tick everyone's inputs are in for, to compare
+__np_hash_confirmed[S, I] = (s: mut Session[S, I]):
+    c = min(confirmed(s), s.tick - 1)
+    c = c - c % 30
+    if c <= s.__check or c <= 0 or s.tick - c >= __NP_HIST: return
+    s.__check = c
+    s.__hashes[c] = hash(s.__states[c % __NP_HIST])
+    __np_compare(s, c)
+    # (only recent ones are kept)
+    if s.__hashes.len() > 8: s.__hashes.remove(s.__hashes.keys()[0])
+    if s.__their_hashes.len() > 8: s.__their_hashes.remove(s.__their_hashes.keys()[0])
+
+__np_compare[S, I] = (s: mut Session[S, I], c: int):
+    if let mine = s.__hashes.get(c):
+        if let theirs = s.__their_hashes.get(c):
+            if mine != theirs and (s.desync < 0 or c < s.desync): s.desync = c
+
+__np_send[S, I] = (s: mut Session[S, I]):
+    loop p in [0..s.players):
+        if p == s.me: continue
+        first = max(s.__acked[p], s.__recv[s.me] - 64)
+        ins: I[]
+        loop t in [first..s.__recv[s.me]): ins.push(s.__inputs[t % __NP_HIST * s.players + s.me])
+        h: u64 = 0
+        if s.__check >= 0: h = s.__hashes.get(s.__check) ?? 0
+        pk = __NpPacket[I](s.me, s.tick, s.tick - s.__their_tick[p], s.__recv[p], first, ins, s.__check, h)
+        __np_out(s, p, bytes(to_text(pk)))
+
+__np_out[S, I] = (s: mut Session[S, I], p: int, b: u8[]):
+    if s.__lag <= 0.0 and s.__loss <= 0.0 and s.__jitter <= 0.0:
+        s.__out.push((p, b))
+        return
+    if __np_rand(s) < s.__loss: return
+    s.__held.push((elapsed() + s.__lag + s.__jitter * __np_rand(s), p, b))
+
+__np_rand[S, I] = (s: mut Session[S, I]) -> f64:
+    s.__rand = s.__rand * 6364136223846793005 + 1442695040888963407
+    f64(s.__rand >> 11) / 9007199254740992.0
+
+# simulate a slow network on what this session sends: ms more latency, up to jitter_ms more at
+# random, and a share of packets lost (0 to 1)
+lag[S, I] = (s: mut Session[S, I], ms: f64, jitter_ms: f64 = 0, loss: f64 = 0):
+    s.__lag = ms / 1000.0
+    s.__jitter = jitter_ms / 1000.0
+    s.__loss = loss
+
+# held packets whose time has come
+__np_due[S, I] = (s: mut Session[S, I]):
+    now = elapsed()
+    keep: (f64, int, u8[])[]
+    loop h in s.__held:
+        if h.0 <= now: s.__out.push((h.1, h.2))
+        else: keep.push(h)
+    s.__held = keep
+
+# ---------------- over UDP (native programs) ----------------
+# play over UDP: this machine listens on port, and each player p is at addrs[p] (this one's own
+# entry is not used)
+udp[S, I] = (s: mut Session[S, I], port: int, addrs: (str, int)[]):
+    s.__sock = net.udp(port)
+    if s.__sock < 0: panic("cannot use UDP port {port}")
+    s.__addrs = addrs
+
+__np_udp_receive[S, I] = (s: mut Session[S, I]):
+    loop d in net.udp_receive(s.__sock): s.receive(d.data)
+
+__np_udp_send[S, I] = (s: mut Session[S, I]):
+    loop o in s.outgoing():
+        if o.0 < s.__addrs.len(): net.udp_send(s.__sock, s.__addrs[o.0].0, s.__addrs[o.0].1, o.1)
+
+# ---------------- a simulated network, for trying netplay in one program ----------------
+# packets between numbered ends, each arriving after latency (plus up to jitter at random),
+# some lost; time is the caller's (seconds), so a test runs the same every time
+struct Link:
+    latency = 0.05
+    jitter = 0.0
+    loss = 0.0
+    seed: u64 = 1
+    __queue: (f64, int, u8[])[]
+
+send = (l: mut Link, to: int, data: u8[], now: f64):
+    l.seed = l.seed * 6364136223846793005 + 1442695040888963407
+    r = f64(l.seed >> 11) / 9007199254740992.0
+    if r < l.loss: return
+    l.seed = l.seed * 6364136223846793005 + 1442695040888963407
+    j = f64(l.seed >> 11) / 9007199254740992.0
+    l.__queue.push((now + l.latency + l.jitter * j, to, data))
+
+# what has arrived by now: (to, data), in the order it arrives
+deliver = (l: mut Link, now: f64) -> (int, u8[])[]:
+    out: (int, u8[])[]
+    keep: (f64, int, u8[])[]
+    due: (f64, int, u8[])[]
+    loop q in l.__queue:
+        if q.0 <= now: due.push(q)
+        else: keep.push(q)
+    due.sort_with((a, b): a.0 < b.0)
+    loop q in due: out.push((q.1, q.2))
+    l.__queue = keep
+    out

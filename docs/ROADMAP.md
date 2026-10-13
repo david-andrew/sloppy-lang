@@ -104,16 +104,16 @@ packages on the website instead.
 Done: `import net`, messages over WebSockets between native programs and web pages (a native
 server; Linux, macOS, Windows, the browser), and a two-player example (examples/netpong).
 
-Next, netplay that feels local despite latency, with the established techniques as library
-pieces a game picks from (and an example of each):
-- **Transport:** UDP for native games (unreliable and unordered, with a thin reliable channel
-  for what must arrive), WebRTC data channels for browsers (unreliable too); a fixed tick rate;
-  measured round-trip time, jitter and loss; a way to simulate latency and loss while testing.
-- **Rollback (peer to peer, for fighting and action games):** the game's state saved each tick
-  (`save_value`-style copies of structs, cheap since values are copied), remote inputs predicted
-  (the last one repeated), and on a late input the state rolled back and re-simulated; a small
-  input delay to trade for fewer rollbacks; a check that simulations stay identical (a checksum of
-  the state per tick), which needs deterministic stepping (fixed timestep, no wall-clock reads).
+Netplay that feels local despite latency, with the established techniques as library pieces a
+game picks from (and an example of each):
+- **Rollback (done, `import netplay`, examples/duel):** every machine runs the game, only inputs
+  travel; remote inputs predicted, and on a late one the state (a copied value) rolled back and
+  the ticks since played again; input delay; waiting when too far ahead and slowing when ahead
+  of the other's clock; inputs resent until acknowledged; hashes of confirmed ticks to catch a
+  desync; simulated latency, jitter and loss. Sloppy's math is its own, so ticks agree across
+  operating systems and the web. UDP in `net` (done). Next: a transport for web pages (WebRTC
+  data channels, or WebSockets through a relay), spectators, more than one local player per
+  machine, measured round-trip time shown to the player.
 - **Client-server (for more players and shooters):** an authoritative server; client-side
   prediction of the player's own movement with reconciliation when the server's answer
   differs; snapshot interpolation of other players (rendered a little in the past, from

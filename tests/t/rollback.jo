@@ -1,0 +1,85 @@
+# requires: sloppy (rollback netplay: lib/netplay.jo, over a simulated network)
+import netplay
+
+struct Pad:
+    dx = 0
+    fire = false
+struct Game:
+    pos: int[] = [0, 0]
+    score: int[] = [0, 0]
+    hits = 0
+
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..2):
+        g.pos[p] += pads[p].dx
+        if pads[p].fire and abs(g.pos[p] - g.pos[1 - p]) < 5:
+            g.score[p] += 1
+            g.hits += 1
+    g
+
+# each player's input for a tick: the same however the network behaves
+pad = (p: int, t: int) -> Pad:
+    h = hash(t * 7 + p * 1000003)
+    Pad(int(h % 3) - 1, h % 5 == 0)
+
+a = netplay.session(Game(), step, players = 2, me = 0)
+b = netplay.session(Game(), step, players = 2, me = 1)
+link = netplay.Link(latency = 0.12, jitter = 0.03, loss = 0.1)
+loop f in [0..900):
+    now = f64(f) / 60.0
+    a.play(pad(0, a.tick + a.delay))
+    b.play(pad(1, b.tick + b.delay))
+    loop o in a.outgoing(): link.send(o.0 + 10, o.1, now)        # (ends 10 + player)
+    loop o in b.outgoing(): link.send(o.0 + 10, o.1, now)
+    loop d in link.deliver(now):
+        if d.0 == 10: a.receive(d.1)
+        else: b.receive(d.1)
+# the game as it would be with every input known at once
+c = min(a.confirmed(), b.confirmed()) - 1
+ref = Game()
+loop t in [0..c):
+    pads: Pad[]
+    loop p in [0..2):
+        if t < 2: pads.push(Pad())
+        else: pads.push(pad(p, t))
+    ref = step(ref, pads)
+print("ticks", a.tick > 700, b.tick > 700, "confirmed", c > 600)
+print("same game:", a.__states[c % 128] == b.__states[c % 128], a.__states[c % 128] == ref, "hits", ref.hits > 10)
+print("rolled back", a.rollbacks > 50, b.rollbacks > 50, "desync", a.desync, b.desync)
+
+# a machine whose game goes differently is found out
+bad = (g: Game, pads: Pad[]) -> Game:
+    let g = step(g, pads)
+    if g.hits > 3: g.score[0] += 100
+    g
+x = netplay.session(Game(), step, players = 2, me = 0)
+y = netplay.session(Game(), bad, players = 2, me = 1)
+l2 = netplay.Link(latency = 0.03)
+loop f in [0..600):
+    now = f64(f) / 60.0
+    x.play(pad(0, x.tick + x.delay))
+    y.play(pad(1, y.tick + y.delay))
+    loop o in x.outgoing(): l2.send(o.0, o.1, now)
+    loop o in y.outgoing(): l2.send(o.0, o.1, now)
+    loop d in l2.deliver(now):
+        if d.0 == 0: x.receive(d.1)
+        else: y.receive(d.1)
+print("desync found:", x.desync > 0, y.desync > 0)
+
+# one machine starts a second late: the other waits for it, and they keep pace after
+m = netplay.session(Game(), step, players = 2, me = 0)
+n = netplay.session(Game(), step, players = 2, me = 1)
+l3 = netplay.Link(latency = 0.05)
+waits = 0
+loop f in [0..600):
+    now = f64(f) / 60.0
+    m.play(pad(0, m.tick + m.delay))
+    if m.waiting: waits += 1
+    if f >= 60: n.play(pad(1, n.tick + n.delay))
+    loop o in m.outgoing(): l3.send(o.0, o.1, now)
+    loop o in n.outgoing(): l3.send(o.0, o.1, now)
+    loop d in l3.deliver(now):
+        if d.0 == 0: m.receive(d.1)
+        else: n.receive(d.1)
+print("waited", waits >= 50, "in step:", abs(m.tick - n.tick) <= 3)
