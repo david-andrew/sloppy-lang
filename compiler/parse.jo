@@ -10,6 +10,7 @@ p_file = 0
 p_src = ""
 p_no_tuple = false
 p_when_top = false
+p_base = 0               # where p_src starts in the file (an interpolation's source is part of it)
 
 pk = () -> Tok: toks[ti].kind
 pkn = (k: int) -> Tok:
@@ -34,8 +35,62 @@ prev_end = () -> int:
     if ti == 0: return cur_pos()
     toks[ti - 1].pos + int(toks[ti - 1].len)
 
+word_in = (w: str, words: str[]) -> bool:
+    loop x in words:
+        if x == w: return true
+    false
+
+# a mistake carried over from another language where parsing stopped at token i (wanting
+# `want`, or .eof for an expression): says what Sloppy writes instead, and stops
+habit = (i: int, want: Tok):
+    k = toks[i].kind
+    p = Tok.eof
+    pw = ""
+    if i > 0:
+        p = toks[i - 1].kind
+        if p == .ident: pw = tok_src(i - 1)
+    glued = i > 0 and not space_before(i)
+    at = cur_pos()
+    if i > 0: at = toks[i - 1].pos
+    if word_in(pw, ["def", "fn", "func", "function", "fun"]):
+        name = "add"
+        if k == .ident: name = tok_src(i)
+        fatal(at, "a function is written `{name} = (a: int, b: int) -> int: ...` (there is no `{pw}`)")
+    if word_in(pw, ["class", "interface", "trait", "impl"]):
+        fatal(at, "a type with fields is `struct Name:` and its fields below it; functions are written apart and called with a dot (`p.move(dt)` calls `move(p, dt)`)")
+    if pw == "for" or pw == "foreach": fatal(at, "loops are `loop x in xs:` (and `loop i in [0..10):` counts from 0 to 9)")
+    if pw == "while": fatal(at, "`loop condition:` repeats while the condition holds")
+    if word_in(pw, ["elif", "elsif", "elseif"]): fatal(at, "use `else if`")
+    if pw == "var" or pw == "val": fatal(at, "`x = 5` declares x (`let x = 5` always makes a new variable)")
+    if pw == "lambda": fatal(at, "a function value is written `(x): x * 2`")
+    if pw == "print" and (k == .str_lit or k == .ident or k == .int_lit): fatal(at, "print is a function: `print(...)`")
+    if (pw == "f" or pw == "F") and k == .str_lit and glued: fatal(at, "strings put values in by themselves: \"n is {{n}}\" (no f before the quote)")
+    if k == .kw_mut and p == .kw_let: fatal(toks[i].pos, "a `let` variable can change already: `let x = 5`")
+    if k == .assign and p == .colon and glued: fatal(toks[i - 1].pos, "`x = 5` declares x (there is no `:=`)")
+    if k == .assign and want == .colon: fatal(toks[i].pos, "compare with `==` (`=` assigns)")
+    if k == .lbrace and want != .eof: fatal(toks[i].pos, "blocks are a `:` and the indented lines after it, not braces")
+    if k == .ident and want != .eof and (tok_src(i) == "then" or tok_src(i) == "do"): fatal(toks[i].pos, "use `:` (as in `if x > 0: ...`)")
+    if k == .question and want != .eof: fatal(toks[i].pos, "a choice between two values is `if c: a else: b`")
+    nk = Tok.eof
+    if i + 1 < toks.len(): nk = toks[i + 1].kind
+    if k == .slash and (p == .slash and glued or nk == .slash or nk == .star): fatal(toks[i].pos, "comments start with `#`")
+    if k == .bang: fatal(toks[i].pos, "use `not` (as in `if not done:`)")
+    if k == .pipe and p == .pipe and glued: fatal(toks[i - 1].pos, "use `or`")
+    if k == .amp and p == .amp and glued: fatal(toks[i - 1].pos, "use `and`")
+    if (k == .plus and p == .plus or k == .minus and p == .minus) and glued:
+        v = "x"
+        if i > 1 and toks[i - 2].kind == .ident: v = tok_src(i - 2)
+        fatal(toks[i - 1].pos, "use `{v} {tok_src(i)}= 1`")
+    if k == .gt and p == .assign and glued: fatal(toks[i - 1].pos, "a function value is written `(x): x * 2`")
+    if k == .starstar: fatal(toks[i].pos, "`x ^ y` is x to the power y")
+    value_start = k == .ident or k == .int_lit or k == .float_lit or k == .str_lit
+    if want == .newline and p == .ident and value_start and not glued: fatal(at, "to call '{pw}', write `{pw}({tok_src(i)})`")
+    if want == .rparen and value_start and (p == .ident or p == .int_lit or p == .float_lit or p == .str_lit or p == .rparen or p == .rbrack):
+        fatal(toks[i].pos, "a ',' is missing before this")
+
 expect = (k: Tok, what: str) -> int:
     if toks[ti].kind != k:
+        habit(ti, k)
         w = what
         if len(w) == 0: w = tok_name(k)
         tk = toks[ti].kind
@@ -179,6 +234,7 @@ parse_type_primary = () -> int:
         n = mk(.tname, pos)
         nodes[n].name = i32(intern("none"))
         return n
+    habit(ti, .eof)
     fatal(pos, "expected a type, found {tok_name(k)}")
     0
 
@@ -351,7 +407,10 @@ parse_string_token = (t: int) -> int:
             saved_ti = ti
             saved_src = p_src
             saved_file = p_file
-            lx_base = int(toks[t].start) + i + 1
+            saved_base = p_base
+            # (a string inside an interpolation: its tokens' starts are within that one's source)
+            p_base = p_base + int(toks[t].start) + i + 1
+            lx_base = p_base
             toks = lex(p_file, expr_src)
             lx_base = 0
             ti = 0
@@ -363,6 +422,7 @@ parse_string_token = (t: int) -> int:
             ti = saved_ti
             p_src = saved_src
             p_file = saved_file
+            p_base = saved_base
             part = mk(.pair, pos)
             nodes[part].a = i32(e)
             if colon >= 0: nodes[part].sval = i32(intern(s[colon + 1..j)))
@@ -514,8 +574,11 @@ parse_primary = () -> int:
         return n
     if k == .kw_if: return parse_if_expr()
     if k == .kw_match: return parse_match()
+    habit(t, .eof)
     if k == .ident or k == .int_lit: fatal(pos, "unexpected '{tok_src(t)}'")
-    if k == .indent: fatal(pos, "unexpected indentation (this line is indented deeper than the lines around it)")
+    if k == .indent:
+        if t > 1 and toks[t - 1].kind == .newline and toks[t - 2].kind != .colon: fatal(pos, "unexpected indentation (does the line above need a `:` at its end?)")
+        fatal(pos, "unexpected indentation (this line is indented deeper than the lines around it)")
     if k == .newline or k == .eof: fatal(prev_end(), "expected an expression here")
     fatal(pos, "expected an expression, found {tok_name(k)}")
     0
@@ -841,6 +904,9 @@ parse_prefix = () -> int:
     pos = cur_pos()
     k = pk()
     if k == .minus or k == .tilde or k == .amp:
+        # (a && b, i--)
+        if k == .amp: habit(ti, .eof)
+        if k == .minus and ti > 0 and toks[ti - 1].kind == .minus and not space_before(ti) and (pkn(1) == .newline or pkn(1) == .eof or pkn(1) == .semi): habit(ti, .eof)
         advance()
         operand = parse_prefix()
         ok = nodes[operand].kind
@@ -1232,7 +1298,9 @@ parse_fn_literal = (kind: NK, name: int, pos: int) -> int:
     lambda = kind == .lambda
     parse_params(f)
     if accept(.arrow):
-        if pk() == .ident and toks[ti].ival == id_void: advance()
+        if pk() == .ident and toks[ti].ival == id_void:
+            advance()
+            add_flag(f, NF_VOID)
         else: nodes[f].a = i32(parse_type())
     if pk() == .colon:
         advance()

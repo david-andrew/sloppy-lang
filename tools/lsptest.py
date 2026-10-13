@@ -236,6 +236,14 @@ check("quick fix: a conversion", fixes("qf4", "twice = (k: int) -> int: k * 2\nm
       ("Convert it: int(x)", "twice = (k: int) -> int: k * 2\nmain = ():\n    x = 2.5\n    print(twice(int(x)))\n"))
 check("quick fix: 2.0 as 2", fixes("qf5", "main = ():\n    n: int = 2.0\n    print(n)\n"),
       ("Write it as 2", "main = ():\n    n: int = 2\n    print(n)\n"))
+check("quick fix: a name from Python", fixes("qf6", "main = ():\n    ok = True\n    print(ok)\n"),
+      ("Change 'True' to 'true'", "main = ():\n    ok = true\n    print(ok)\n"))
+check("quick fix: append", fixes("qf7", "main = ():\n    xs = [1]\n    xs.append(2)\n"),
+      ("Change 'append' to 'push'", "main = ():\n    xs = [1]\n    xs.push(2)\n"))
+check("quick fix: &&", fixes("qf8", "main = ():\n    a = true\n    if a && a: print(1)\n"),
+      ("Change '&&' to 'and'", "main = ():\n    a = true\n    if a and a: print(1)\n"))
+check("quick fix: elif", fixes("qf9", "main = ():\n    a = 1\n    if a > 1: print(1)\n    elif a > 0: print(0)\n"),
+      ("Change 'elif' to 'else if'", "main = ():\n    a = 1\n    if a > 1: print(1)\n    else if a > 0: print(0)\n"))
 ws = c.request("workspace/symbol", {"query": "px"})
 check("workspace symbols: members", [(w["name"], w.get("containerName"), w["location"]["range"]["start"]) for w in ws], [("px", "Pointy", {"line": 1, "character": 4})])
 

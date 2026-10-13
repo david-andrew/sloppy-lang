@@ -78,10 +78,11 @@ rebindable controls, touch on the web).
   PDB), and a frame profiler in the stats overlay: named zones per frame with their CPU time and,
   through Vulkan, their GPU time (done: `zone()`; the 3D scene, its shadows and post-processing
   are zones).
-- **Error messages:** collect the commonest mistakes (from the tutorials, the playground and
-  `tools/fuzz_errors.py`) and make each message say what to do. Quick fixes in the editor (the
-  language server's code actions) exist for misspelled names, `loop mut`, `mut` parameters and
-  numbers of another type; more as the messages say what to change.
+- **Error messages:** the commonest mistakes (130 written the way newcomers from Python, C,
+  JavaScript, Go and Rust write them, tests/errors/habit_* and hint_*) each say what to write
+  instead (done); quick fixes in the editor for misspelled names, names and operators from
+  other languages, `loop mut`, `mut` parameters and numbers of another type. Next: watch what
+  people get wrong in the playground and add those.
 
 ### 5. Sharing code: packages (M, done)
 

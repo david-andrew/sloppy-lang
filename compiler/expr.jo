@@ -254,7 +254,10 @@ coerce = (n: int, target: int) -> int:
         wrap_conv(n, .ptr, to)
         return n
     if fk == .typeval: fatal(nodes[n].pos, "expected a value of type {type_str(to)}, found a type name")
-    fatal(nodes[n].pos, "type mismatch: expected {type_str(to)}, found {type_str(from)}")
+    why = variant_hint(n, to)
+    if fk == .opt and tk == .bool_: why = " (an optional is not true or false: `if let v = x:` runs when there is a value and names it, `x != none` asks)"
+    if fk == .float_ and tk == .int_: why = " (int(x) makes it a whole number, dropping the fraction)"
+    fatal(nodes[n].pos, "type mismatch: expected {type_str(to)}, found {type_str(from)}{why}")
     n
 
 # an array literal that can be the fixed-size array type `to` (its elements are checked later)
@@ -567,7 +570,7 @@ map_args = (pnames: int[], has_default: bool[], args: int[], out: mut int[]) -> 
             k = -1
             loop j in [0..np):
                 if pnames[j] == int(nodes[a].name): k = j
-            if k < 0: return "no parameter named '{name_of(int(nodes[a].name))}'"
+            if k < 0: return "no parameter named '{name_of(int(nodes[a].name))}'{suggestion(name_of(int(nodes[a].name)), pnames)}"
             if out[k] != 0: return "parameter '{name_of(int(nodes[a].name))}' given twice"
             out[k] = int(nodes[a].a)
         else:
@@ -865,12 +868,15 @@ finish_partial = (n: int, ptypes: int[], mutmask: int, ret: int) -> int:
     t
 
 call_targs: int[]              # type arguments written at the call being resolved (f[T](...))
+cur_assign = 0                 # the assignment whose target is being checked (`x = ...`, `x += ...`)
+early_set: {int: bool} = {}    # globals top-level code assigns above their own line
 
 resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) -> int:
     check_args_untyped(args)
     cands: Cand[]
     last_err = ""
     last_err_pos = 0          # (where the argument it is about is: the error points there)
+    last_err_arg = 0          # (which argument, from 1)
     best = -1
     # (an argument that is a number of a known type, the first such, rules out before anything is
     # made for them the overloads whose parameter there is a number type it cannot become: abs(x)
@@ -902,13 +908,13 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
             hasdef.push(nodes[kid(d, i)].b != 0)
         err = map_args(pnames, hasdef, args, cd.args)
         if len(err) > 0:
-            last_err = err
+            if last_err_arg == 0: last_err = err
             continue
         cd.binds = fill(0, int(cd.sig.ntp))
         if call_targs.len() > 0:
             # f[T](...): the declared type parameters, given
             if nkids2(d) != call_targs.len():
-                last_err = "'{name_of(name)}' takes {nkids2(d)} type argument(s), given {call_targs.len()}"
+                if last_err_arg == 0: last_err = "'{name_of(name)}' takes {nkids2(d)} type argument(s), given {call_targs.len()}"
                 continue
             loop i in 0.. and t in call_targs: cd.binds[i] = t
         cost = 0
@@ -931,6 +937,8 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                         if not has_var(prune(ptx)) and not has_var(prune(ntype(a))) and not type_eq(ptx, ntype(a)): ok2 = false
                     if not ok2:
                         ok = false
+                        if i + 1 < last_err_arg: break
+                        last_err_arg = i + 1
                         last_err = "argument {i + 1} must have type {type_str(subst(pt, cd.binds))} (mut parameters need an exact match)"
                         break
                     cost += r
@@ -938,9 +946,27 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 r = arg_cost(a, pt, cd.binds)
                 if r < 0:
                     ok = false
-                    ptx = subst(pt, cd.binds)
-                    if nodes[a].type != 0: last_err = "argument '{name_of(pnames[i])}' expects {type_str(ptx)}, found {type_str(ntype(a))}"
-                    else: last_err = "argument '{name_of(pnames[i])}' has the wrong type (expects {type_str(ptx)})"
+                    # (of the overloads, the one that got furthest is the one meant: m[k] = v
+                    # with the wrong v is about the map's, not a GPU buffer's)
+                    if i + 1 < last_err_arg: break
+                    # (literals are tried after the rest: a literal written before this argument
+                    # that does not fit either is the first mistake, as 100 in circle(100, 100, 20, RED))
+                    fi = i
+                    if not cd.sig.generic:
+                        loop j in [0..i):
+                            aj = cd.args[j]
+                            if aj == 0 or not is_lit(aj) or ctx_dependent(aj): continue
+                            if arg_cost(aj, cd.sig.params[j], cd.binds) < 0:
+                                fi = j
+                                break
+                    a = cd.args[fi]
+                    last_err_arg = i + 1
+                    ptx = subst(cd.sig.params[fi], cd.binds)
+                    if nodes[a].type != 0: last_err = "argument '{name_of(pnames[fi])}' expects {type_str(ptx)}, found {type_str(ntype(a))}{variant_hint(a, ptx)}"
+                    else if nodes[a].kind == .dotname and tkind(ptx) == .enum_:
+                        vn = int(nodes[a].name)
+                        last_err = "{type_str(ptx)} has no variant '{name_of(vn)}'{suggestion(name_of(vn), variant_names(ptx))}"
+                    else: last_err = "argument '{name_of(pnames[fi])}' has the wrong type (expects {type_str(ptx)})"
                     last_err_pos = nodes[a].pos
                     break
                 cost += r
@@ -968,11 +994,17 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                     if nodes[unnamed(a0)].type != 0: ats += type_str(ntype(unnamed(a0)))
                 fatal(nodes[n].pos, "ambiguous call to '{name_of(name)}({ats})': candidates at {pos_str(nodes[cands[best].decl].pos)} and {pos_str(nodes[cd.decl].pos)}")
     if best < 0:
+        if decls.len() > 1:
+            # (when none fits, the program's own function is the one meant: its error is the one shown)
+            own: int[]
+            loop d in decls:
+                if not decl_in_prelude(d): own.push(d)
+            if own.len() == 1: resolve_fn_call(n, name, own, args, expected)
         if decls.len() == 1:
             if len(last_err) == 0: last_err = "arguments do not match"
             ep = nodes[n].pos
             if last_err_pos > 0: ep = last_err_pos
-            fatal(ep, "in call to '{name_of(name)}': {last_err}")
+            fatal(ep, "in call to {call_text(decls[0])}: {last_err}")
         ts = ""
         loop i in 0.. and a0 in args:
             a = unnamed(a0)
@@ -985,6 +1017,7 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
     cd = cands[best]
     decl = cd.decl
     np = nkids(decl)
+    if (name == id_rgb or name == id_rgba) and np >= 3 and decl_in_prelude(decl): rgb_check(n, cd.args)
     partial = has_hole(args)
     loop i in [0..np):
         a = cd.args[i]
@@ -1202,7 +1235,11 @@ conversion = (n: int, to0: int, args: int[]) -> int:
         else if fk == .float_: cv = int(CV.float_)
     else if tk == .bool_:
         if fk == .bool_: cv = int(CV.none_)
-    if cv < 0: fatal(nodes[n].pos, "cannot convert {type_str(ft)} to {type_str(to)}")
+    if cv < 0:
+        hint = ""
+        if fk == .str_ and tk == .int_: hint = " (`to_int(s)` reads a number from text: it gives an int?, none when the text is not one)"
+        if fk == .str_ and tk == .float_: hint = " (`to_float(s)` reads a number from text: it gives an f64?, none when the text is not one)"
+        fatal(nodes[n].pos, "cannot convert {type_str(ft)} to {type_str(to)}{hint}")
     if type_eq(ft, to):
         nodes[n] = nodes[a]
         return to
@@ -1308,22 +1345,79 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
         if ii >= 0 and intrinsics[ii].arr and args.len() > 0: fatal(nodes[n].pos, "'{name_of(name)}' expects an array or string, found {type_str(ntype(args[0]))}")
         if ufcs:
             t0 = prune(ntype(args[0]))
-            cands = method_names(t0)
+            cands = fn_names_for(t0)
             if types[t0].kind == .struct_:
                 si = int(types[t0].st)
                 loop i in [0..int(structs[si].nfields)): cands.push(int(fields[int(structs[si].fields) + i].name))
-            tk = types[t0].kind
-            loop it in intrinsics:
-                if it.arr == (tk == .array or tk == .str_): cands.push(intern(it.name))
             fatal(nodes[n].pos, "no field or function '{name_of(name)}' for type {type_str(ntype(args[0]))}{suggestion(name_of(name), cands)}")
         # a variable of the same name hides the function or type
         hs = lookup(name)
         if hs != 0 and syms[hs].kind == .local:
             fatal(nodes[n].pos, "'{name_of(name)}' is a variable of type {type_str(int(locals[int(syms[hs].ref)].type))} here (it hides the function or type of that name); rename the variable")
+        if hs != 0 and syms[hs].kind == .global:
+            g = int(syms[hs].ref)
+            ensure_global(g, nodes[n].pos)
+            fatal(nodes[n].pos, "'{name_of(name)}' is a variable of type {type_str(int(globals[g].type))}, not a function")
         all = visible_names()
         loop it in intrinsics: all.push(intern(it.name))
         fatal(nodes[n].pos, "unknown function '{name_of(name)}'{private_hint(name)}{suggestion(name_of(name), all)}")
     resolve_fn_call(n, name, decls, args, expected)
+
+id_rgb = intern("rgb")
+id_rgba = intern("rgba")
+
+# rgb(255, 128, 0): colors go from 0 to 1 (more is brighter than white, for glow)
+rgb_check = (n: int, args: int[]):
+    big = false
+    loop i in [0..3):
+        a = args[i]
+        if a == 0 or nodes[a].kind != .int_lit or not has_flag(a, NF_LITERAL): return
+        if nodes[a].ival > 1: big = true
+    if big: warn(nodes[n].pos, "the parts of a color go from 0 to 1: for 0 to 255, divide by 255 or write hex(0xff8000)")
+
+# a function's name and parameters as written: circle(center: vec2, radius: f64, c: vec4, segments: int = 0)
+call_text = (d: int) -> str:
+    s = "{name_of(int(nodes[d].name))}("
+    loop i in [0..nkids(d)):
+        if i > 0: s += ", "
+        s += ide_param_text(nodes[kid(d, i)].pos)
+    s + ")"
+
+variant_names = (t: int) -> int[]:
+    out: int[]
+    si = int(types[prune(t)].st)
+    check_struct_fields(si)
+    loop vi in [0..int(structs[si].nvariants)): out.push(int(variants[int(structs[si].variants) + vi].name))
+    out
+
+# a == b, a < b with types that do not compare
+cmp_error = (n: int, ta: int, tb: int):
+    why = variant_hint(int(nodes[n].b), ta)
+    a = int(nodes[n].a)
+    if tkind(ta) == .bool_ and is_numeric(tb) and nodes[a].kind == .binary:
+        aop = nodes[a].op as Tok
+        if aop == .lt or aop == .le or aop == .gt or aop == .ge: why = " (`a < x < b` is written `a < x and x < b`, or `x in a..b`)"
+    fatal(nodes[n].pos, "cannot compare {type_str(ta)} with {type_str(tb)}{why}")
+
+# "space" given where a Key goes: " (write `.space`)"
+variant_hint = (a: int, t0: int) -> str:
+    t = prune(t0)
+    if types[t].kind != .enum_ or nodes[a].kind != .str_lit or nodes[a].nlist > 0: return ""
+    w = name_of(int(nodes[a].sval))
+    si = int(types[t].st)
+    check_struct_fields(si)
+    loop vi in [0..int(structs[si].nvariants)):
+        vn = name_of(int(variants[int(structs[si].variants) + vi].name))
+        if vn == w or vn == lower(w): return " (write `.{vn}`)"
+    ""
+
+# the functions that may be called with a dot on a value of type t (for messages)
+fn_names_for = (t: int) -> int[]:
+    out = method_names(t)
+    tk = types[t].kind
+    loop it in intrinsics:
+        if it.arr == (tk == .array or tk == .str_): out.push(intern(it.name))
+    out
 
 check_expr_in_module = (n: int, m: int) -> int:
     saved = cx
@@ -1380,7 +1474,11 @@ check_call = (n: int, expected: int) -> int:
                 if vi < 0: fatal(nodes[callee].pos, "{type_str(tt)} has no variant '{name_of(fname)}'")
                 if ide_on: ide_variant_ref(nodes[callee].pos, fname, tt, vi)
                 return variant_ctor(n, tt, vi, args)
-            fatal(nodes[callee].pos, "type {type_str(tt)} has no member '{name_of(fname)}'")
+            why = ""
+            fd: int[]
+            collect_fns(fname, fd)
+            if fd.len() > 0: why = " (functions are not kept in types: call it as `{name_of(fname)}(x)` or `x.{name_of(fname)}()`)"
+            fatal(nodes[callee].pos, "type {type_str(tt)} has no member '{name_of(fname)}'{why}")
         if is_soa(rt): return check_soa_method(n, recv, fname, args, expected)
         st = rt
         if rk == .ptr: st = prune(int(types[rt].elem))
@@ -1992,11 +2090,13 @@ check_binary = (n: int, expected: int) -> int:
                 nodes[n] = Node(kind = .not_, pos = nodes[n].pos, a = i32(eqn), type = i32(T_BOOL))
                 return T_BOOL
         if op == .eq or op == .ne:
-            if not type_eq(ta, tb): fatal(nodes[n].pos, "cannot compare {type_str(ta)} with {type_str(tb)}")
+            if not type_eq(ta, tb): cmp_error(n, ta, tb)
             nodes[n].aux = 1
             nodes[n].type = i32(T_BOOL)
             return T_BOOL
-        fatal(nodes[n].pos, "operator {opn} is not defined for {type_str(ta)} and {type_str(tb)}")
+        why = ""
+        if is_union(ta) or is_union(tb): why = " (find out which it holds first: `if x is int: ...` or a `match`)"
+        fatal(nodes[n].pos, "operator {opn} is not defined for {type_str(ta)} and {type_str(tb)}{why}")
     if is_shift and not (is_lit(a) and is_lit(b)):
         finalize_literal(a)
         finalize_literal(b)
@@ -2008,6 +2108,7 @@ check_binary = (n: int, expected: int) -> int:
     tka = types[ta].kind
     tkb = types[tb].kind
     if op == .plus and tka == .str_:
+        if is_numeric(tb) or tkb == .bool_: fatal(nodes[b].pos, "cannot add this {type_str(tb)} to text: put the value inside the string (\"...\{x}\") or convert it (str(x))")
         coerce(b, T_STR)
         nodes[n].aux = 2
         nodes[n].type = i32(T_STR)
@@ -2028,7 +2129,7 @@ check_binary = (n: int, expected: int) -> int:
         return T_INT
     if is_cmp:
         if tka == .str_ or tkb == .str_:
-            if not type_eq(ta, tb): fatal(nodes[n].pos, "cannot compare {type_str(ta)} with {type_str(tb)}")
+            if not type_eq(ta, tb): cmp_error(n, ta, tb)
             nodes[n].aux = 2
             nodes[n].type = i32(T_BOOL)
             return T_BOOL
@@ -2048,7 +2149,7 @@ check_binary = (n: int, expected: int) -> int:
             return T_BOOL
         if tka == .array or tkb == .array:
             if op != .eq and op != .ne: fatal(nodes[n].pos, "arrays can only be compared with == and !=")
-            if not can_coerce(b, tb, ta): fatal(nodes[n].pos, "cannot compare {type_str(ta)} with {type_str(tb)}")
+            if not can_coerce(b, tb, ta): cmp_error(n, ta, tb)
             coerce(b, ta)
             nodes[n].aux = 1
             nodes[n].type = i32(T_BOOL)
@@ -2062,7 +2163,7 @@ check_binary = (n: int, expected: int) -> int:
                 x = ta
                 ta = tb
                 tb = x
-            if not can_coerce(b, tb, ta) and not type_eq(ta, tb): fatal(nodes[n].pos, "cannot compare {type_str(ta)} with {type_str(tb)}")
+            if not can_coerce(b, tb, ta) and not type_eq(ta, tb): cmp_error(n, ta, tb)
             if types[ta].kind == .fn_: fatal(nodes[n].pos, "functions cannot be compared")
             coerce(b, ta)
             nodes[n].type = i32(T_BOOL)
@@ -2075,7 +2176,10 @@ check_binary = (n: int, expected: int) -> int:
         r = op_overload(n, tok_text(op))
         if r != 0: return r
         if tka == .opt and is_numeric(int(types[ta].elem)): fatal(nodes[n].pos, "operator {tok_text(op)} on an optional value: unwrap it first with `x!` or `x ?? default`")
-        fatal(nodes[n].pos, "operator {tok_text(op)} is not defined for {type_str(ta)} and {type_str(tb)}")
+        why = ""
+        if is_union(ta) or is_union(tb): why = " (find out which it holds first: `if x is int: ...` or a `match`)"
+        if tka == .array and is_int(tb) and op == .star: why = " (fill(x, n) makes an array of n copies of x)"
+        fatal(nodes[n].pos, "operator {tok_text(op)} is not defined for {type_str(ta)} and {type_str(tb)}{why}")
     if is_lit(a) and is_lit(b) and not is_cmp:
         # fold literal arithmetic, keeping the result an untyped literal
         if nodes[a].kind == .int_lit and nodes[b].kind == .int_lit:
@@ -2130,7 +2234,7 @@ check_vec_binary = (n: int, op: Tok, ta: int, tb: int) -> int:
     a = int(nodes[n].a)
     b = int(nodes[n].b)
     if op == .eq or op == .ne:
-        if not type_eq(ta, tb): fatal(nodes[n].pos, "cannot compare {type_str(ta)} with {type_str(tb)}")
+        if not type_eq(ta, tb): cmp_error(n, ta, tb)
         nodes[n].aux = 1
         nodes[n].type = i32(T_BOOL)
         return T_BOOL
@@ -2289,7 +2393,16 @@ check_match = (m: int, expected: int) -> int:
     if is_stmt:
         nodes[m].type = i32(T_VOID)
         return T_VOID
-    if not exhaustive: fatal(nodes[m].pos, "match expression is not exhaustive (add a `_:` arm)")
+    if not exhaustive:
+        if types[st].kind == .enum_:
+            miss = ""
+            si = int(types[st].st)
+            loop vi in 0.. and s in seen:
+                if s: continue
+                if len(miss) > 0: miss += ", "
+                miss += ".{name_of(int(variants[int(structs[si].variants) + vi].name))}"
+            fatal(nodes[m].pos, "this match has no arm for {miss} (add one, or a `_:` arm for the rest)")
+        fatal(nodes[m].pos, "match expression is not exhaustive (add a `_:` arm)")
     if result == 0: result = T_NEVER
     if expected != 0 and result != T_NEVER:
         loop i in [0..nkids(m)):
@@ -2376,7 +2489,12 @@ fn_value = (n: int, expected: int) -> int:
             break
         else if not sig.generic and decls.len() == 1: f = get_fn_inst(d, [], nodes[n].pos)
     if f == 0:
-        if et != 0 and types[et].kind == .fn_: fatal(nodes[n].pos, "no version of '{name_of(int(nodes[n].name))}' matches {type_str(et)}")
+        if et != 0 and types[et].kind == .fn_:
+            nm = name_of(int(nodes[n].name))
+            hint = ""
+            if nm == "update": hint = " (the game calls update each frame with the seconds since the last one: `update = (dt: f64): ...`)"
+            if nm == "draw": hint = " (the game calls draw with nothing: `draw = (): ...`)"
+            fatal(nodes[n].pos, "no version of '{nm}' matches {type_str(et)}{hint}")
         fatal(nodes[n].pos, "cannot use overloaded or generic function '{name_of(int(nodes[n].name))}' as a value without a known type")
     mm = 0
     d = int(fns[f].decl)
@@ -2458,7 +2576,12 @@ check_expr = (n: int, expected: int) -> int:
         nm = int(nodes[n].name)
         if ide_sentinel != 0 and nm == ide_sentinel: ide_complete_names()
         s = lookup(nm)
-        if s == 0: fatal(nodes[n].pos, "unknown name '{name_of(nm)}'{private_hint(nm)}{suggestion(name_of(nm), visible_names())}")
+        if s == 0:
+            if ex != 0 and exk == .enum_:
+                loop v in variant_names(ex):
+                    if v == nm: fatal(nodes[n].pos, "unknown name '{name_of(nm)}' (the {type_str(ex)} is written `.{name_of(nm)}`)")
+            if cur_assign != 0 and nodes[cur_assign].a == i32(n) and nodes[cur_assign].op != i32(int(Tok.assign)): fatal(nodes[n].pos, "unknown name '{name_of(nm)}' (to change it, it needs a value first: `{name_of(nm)} = 0`, at the top of the file to keep it from one frame to the next)")
+            fatal(nodes[n].pos, "unknown name '{name_of(nm)}'{private_hint(nm)}{gone_local_hint(nm, nodes[n].pos)}{suggestion(name_of(nm), visible_names())}")
         sk = syms[s].kind
         if ide_on and sk != .fns: ide_sym_ref(n, s)
         nodes[n].aux = i32(int(sk))
@@ -2474,6 +2597,15 @@ check_expr = (n: int, expected: int) -> int:
         else if sk == .global:
             g = int(syms[s].ref)
             ensure_global(g, nodes[n].pos)
+            # (top-level code runs in order: above the line that sets it, a global is still zero)
+            if globals[g].decl != 0 and nodes[int(globals[g].decl)].pos > nodes[n].pos and ctxs[cx].parent < 0 and fns[int(ctxs[cx].inst)].kind == FK_INIT and not test_mode:
+                dp = nodes[int(globals[g].decl)].pos
+                if pos_file(dp) == pos_file(nodes[n].pos) and not early_set.has(g):
+                    # (set above its line, as `runs = 3` in a block before `runs = 0`: read after that)
+                    if cur_assign != 0 and nodes[cur_assign].a == i32(n) and nodes[cur_assign].op == i32(int(Tok.assign)): early_set[g] = true
+                    else:
+                        ln, c = line_col(dp)
+                        fatal(nodes[n].pos, "'{name_of(nm)}' is used before line {ln} gives it its value (the program runs from the top down)")
             nodes[n].sym = i32(g)
             t = int(globals[g].type)
             if path_narrows > 0 and not no_path_narrow:
@@ -2572,7 +2704,19 @@ check_expr = (n: int, expected: int) -> int:
                             nodes[n] = nodes[mk_ident_local(al, nodes[n].pos)]
                             t = int(locals[al].type)
             if t == 0:
-                cands: int[]
+                if bk == .opt:
+                    et = prune(int(types[bt].elem))
+                    has = false
+                    if types[et].kind == .struct_:
+                        esi = int(types[et].st)
+                        check_struct_fields(esi)
+                        loop i in [0..int(structs[esi].nfields)):
+                            if int(fields[int(structs[esi].fields) + i].name) == fname: has = true
+                    if has:
+                        fatal(nodes[n].pos, "the {type_str(bt)} may be none: unwrap it first (`x!.{name_of(fname)}`, or `if let v = x: v.{name_of(fname)}`)")
+                cands = fn_names_for(bt)
+                loop c in cands:
+                    if c == fname: fatal(nodes[n].pos, "'{name_of(fname)}' is a function: call it, `x.{name_of(fname)}()`")
                 if types[bt].kind == .struct_:
                     si = int(types[bt].st)
                     loop i in [0..int(structs[si].nfields)): cands.push(int(fields[int(structs[si].fields) + i].name))

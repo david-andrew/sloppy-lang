@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+Language:
+- **Error messages that say what to write.** Habits from other languages get Sloppy's way
+  instead of "expected end of statement": `def`, `fn`, `class`, `for`, `while`, `elif`, `var`,
+  `let mut`, `:=`, `&&`, `||`, `!`, `i++`, `**`, `x => ...`, `lambda`, `c ? a : b`, braces, `//`
+  comments, f-strings, `print "x"`, `len xs`, a missing `,` or `:`. Names from them get Sloppy's
+  (`True`, `None`, `float`, `string`, `.append`, `.length`, `strip`, `parseInt`...), and the
+  editor's quick fixes change them. A call that does not fit shows the function's parameters
+  and the first argument that is wrong (`circle(100, 100, 20, RED)` is about `center`); with the
+  program's own function and the library's of the same name, the program's is the one meant. A
+  name used after its block ended says where it was made; `x(1)` with a variable `x`, `xs.len`
+  without `()`, `p.hp` on a `P?`, `"n=" + n`, `0 < x < 10`, `[0] * 5`, `[0.0..1.0)`, `if v:` on
+  an optional, `int("42")`, `key_down("space")` and `.left_arrow`, `x = "one"` after `x = 1`, a
+  match without some variants (they are named), a wrong `update` or `draw` (reported there, not
+  in the library) each say what to do.
+- New errors: `-> void` is kept (a function that says so and returns a value is an error; it
+  used to return the value); assigning a constant (inside a function this made a variable that
+  hid it); top-level code reading a global above the line that gives it its value (it was
+  zero); a function named as a statement without being called (`update` for `update()`).
+- A warning for colors written from 0 to 255 (`rgb(255, 128, 0)`; colors go from 0 to 1).
+- Errors in an interpolation inside a string inside an interpolation point at the right place.
+
 Tools:
 - **Variables in debuggers on Windows**: `sloppy build -g` puts the variables and their types in
   the PDB (CodeView: S_LOCAL records with where each is, type records with their hashes), so

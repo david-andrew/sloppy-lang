@@ -166,6 +166,8 @@ new_sym = (name: int, kind: SK, r: int, decl: int) -> int:
     syms.push(Sym(i32(name), kind, i32(r), i32(decl), 0))
     syms.len() - 1
 
+own_consts: bool[]            # by name: a constant of the program's own (not the library's)
+
 scope_add_module = (m: int, name: int, kind: SK, r: int, decl: int) -> int:
     # (look the name up in place: holding a copy of the table would make the insert below copy it)
     found: int? = none
@@ -179,10 +181,15 @@ scope_add_module = (m: int, name: int, kind: SK, r: int, decl: int) -> int:
             syms[e].next = i32(s)
             return ex
         if decl != 0 and syms[ex].decl != 0:
+            if syms[ex].kind == .const_ and kind == .global: fatal(nodes[decl].pos, "'{name_of(name)}' is a constant ({pos_str(nodes[int(syms[ex].decl)].pos)}): it cannot change")
             fatal(nodes[decl].pos, "'{name_of(name)}' is already defined at {pos_str(nodes[int(syms[ex].decl)].pos)}")
     s = new_sym(name, kind, r, decl)
     if modules[m].is_prelude: prelude[name] = s
-    else: modules[m].names[name] = s
+    else:
+        modules[m].names[name] = s
+        if kind == .const_:
+            loop own_consts.len() <= name: own_consts.push(false)
+            own_consts[name] = true
     s
 
 # Scopes are one stack of (name, symbol); each name also links its bindings, newest first, so
@@ -320,8 +327,20 @@ edit_distance = (a: str, b: str, limit: int) -> int:
 # the closest of the candidate names (" (did you mean 'x'?)"), or ""; ties go to the longest
 # common prefix, and a short name that starts the misspelling (len / lenght) counts as close
 suggestion = (name: str, candidates: int[]) -> str:
+    h = habit_name(name)
+    if len(h) > 0:
+        # (`push` only where there is one: a texture's size is not its len)
+        w = h
+        if w[0] == '`': w = w[1..len(w) - 1)
+        known = w == "true" or w == "false" or w == "none" or find(w, " ") >= 0 or find(w, "`") >= 0
+        loop c in candidates:
+            if known: break
+            if name_of(c) == w: known = true
+        if known: return " (use {h})"
     limit = 1
     if len(name) > 4: limit = 2
+    # (a one- or two-letter name is close to too many: only another case of it)
+    if len(name) <= 2: limit = 0
     best = ""
     bs = 1000000
     loop c in candidates:
@@ -337,6 +356,50 @@ suggestion = (name: str, candidates: int[]) -> str:
             bs = score
             best = cn
     if len(best) > 0: return " (did you mean '{best}'?)"
+    ""
+
+# what Sloppy calls a name from another language ("`push`"), or ""
+HABITS = ["True", "`true`", "False", "`false`", "None", "`none`", "nil", "`none`", "undefined", "`none`",
+    "self", "a parameter: functions take what they work on first (`move = (p: mut Player, dt: f64): ...`, called as `p.move(dt)`)",
+    "this", "a parameter: functions take what they work on first (`move = (p: mut Player, dt: f64): ...`, called as `p.move(dt)`)",
+    "float", "`f64`", "double", "`f64`", "float64", "`f64`", "float32", "`f32`", "number", "`f64`",
+    "string", "`str`", "String", "`str`", "boolean", "`bool`", "Boolean", "`bool`", "char", "`u8` (a character is its code: 'a' == 97)",
+    "Int", "`int`", "integer", "`int`", "long", "`int`", "int64", "`int`", "int32", "`i32`",
+    "list", "`T[]` (an array: `int[]`)", "List", "`T[]` (an array: `int[]`)", "vector", "`T[]` (an array: `int[]`)", "Vec", "`T[]` (an array: `int[]`)",
+    "dict", "`\{K: V}` (a map: `\{str: int}`)", "Dict", "`\{K: V}` (a map: `\{str: int}`)", "HashMap", "`\{K: V}` (a map: `\{str: int}`)",
+    "append", "`push`", "push_back", "`push`", "length", "`len`", "size", "`len`",
+    "strip", "`trim`", "lstrip", "`trim_start`", "rstrip", "`trim_end`", "startswith", "`starts_with`", "startsWith", "`starts_with`",
+    "endswith", "`ends_with`", "endsWith", "`ends_with`", "indexOf", "`index_of` or `find`", "toUpperCase", "`upper`", "toLowerCase", "`lower`",
+    "to_upper", "`upper`", "to_lower", "`lower`", "includes", "`contains` or `x in xs`", "isEmpty", "`is_empty`",
+    "toString", "`str(x)`", "to_string", "`str(x)`", "substring", "a slice: `s[a..b)`", "substr", "a slice: `s[a..b)`",
+    "parseInt", "`to_int` (it gives an `int?`: none when the text is not a number)", "parse_int", "`to_int` (it gives an `int?`: none when the text is not a number)",
+    "atoi", "`to_int`", "parseFloat", "`to_float`", "forEach", "`each` or `loop x in xs:`", "items", "`loop k, v in m:`", "entries", "`loop k, v in m:`",
+    "range", "a range: `[0..n)` counts from 0 to n - 1"]
+
+habit_name = (name: str) -> str:
+    i = 0
+    loop i < HABITS.len():
+        if HABITS[i] == name: return HABITS[i + 1]
+        i += 2
+    ""
+
+# an example of the annotation for an empty array or map
+empty_hint = (nm: str, t0: int) -> str:
+    t = prune(t0)
+    if types[t].kind == .array: return " (`{nm}: int[] = []` for an array of ints)"
+    if is_map_type(t): return " (`{nm}: \{str: int} = \{}` for a map from text to ints)"
+    ""
+
+# a variable of this name was declared earlier in the function, in a block that has ended
+gone_local_hint = (nm: int, at: int) -> str:
+    if cx < 0: return ""
+    inst = int(ctxs[cx].inst)
+    l = locals.len() - 1
+    loop l > 0:
+        if int(locals[l].name) == nm and int(locals[l].owner) == inst and locals[l].pos < at and pos_file(locals[l].pos) == pos_file(at):
+            ln, c = line_col(locals[l].pos)
+            return " (the '{name_of(nm)}' made on line {ln} is inside a block that has ended; give it a value before that block to use it here)"
+        l -= 1
     ""
 
 fold_case = (c: u8) -> u8:
@@ -446,6 +509,11 @@ name_assignable = (nm: int, m: int) -> bool:
 
 assign_to_decl = (s: int):
     lhs = int(nodes[s].a)
+    if nodes[lhs].kind == .ident and cx >= 0 and int(nodes[lhs].name) < own_consts.len() and own_consts[int(nodes[lhs].name)]:
+        # (MAX = 4 would make a variable hiding the program's constant MAX)
+        cs = lookup(int(nodes[lhs].name))
+        if cs != 0 and syms[cs].kind == .const_ and syms[cs].decl != 0 and not decl_in_prelude(int(syms[cs].decl)):
+            fatal(nodes[lhs].pos, "'{name_of(int(nodes[lhs].name))}' is a constant ({pos_str(nodes[int(syms[cs].decl)].pos)}): it cannot change (`let {name_of(int(nodes[lhs].name))} = ...` makes a variable of that name)")
     nodes[s].kind = .vardecl
     nodes[s].a = 0
     if nodes[lhs].kind == .ident:
@@ -815,6 +883,7 @@ fn_sig = (decl: int) -> FnSig:
     sig.ntp = i32(ntp)
     sig.generic = ntp > 0
     if nodes[decl].a != 0: sig.ret = i32(resolve_type(int(nodes[decl].a)))
+    else if has_flag(decl, NF_VOID): sig.ret = i32(T_VOID)
     scope_reset(mark)
     ctxs.pop()
     cx = saved
@@ -1057,7 +1126,7 @@ ensure_global = (g: int, use_pos: int):
                     nodes[d].b = i32(coerce(int(nodes[d].b), t))
         t = zonk(t)
         if t == 0: fatal(nodes[d].pos, "global needs a type or a value")
-        if has_var(prune(t)): fatal(nodes[d].pos, "cannot infer the type of '{name_of(int(globals[g].name))}'; add a type annotation")
+        if has_var(prune(t)): fatal(nodes[d].pos, "cannot infer the type of '{name_of(int(globals[g].name))}'; add a type annotation{empty_hint(name_of(int(globals[g].name)), t)}")
         if tkind(t) == .void_: fatal(nodes[d].pos, "cannot assign a value of type void")
         globals[g].type = i32(t)
         add_flag(d, NF_CHECKED)
@@ -1280,12 +1349,14 @@ check_for = (s: int):
             nodes[it].c = i32(last_checked)
             if la and lb and not has_flag(int(nodes[it].c), NF_LITERAL): t = int(nodes[int(nodes[it].c)].type)
         if la and lb and (not has_flag(it, NF_STEP) or has_flag(int(nodes[it].c), NF_LITERAL)): t = T_INT
-        if not is_int(t): fatal(nodes[it].pos, "range bounds must be integers, found {type_str(t)}")
+        if not is_int(t) or nodes[int(nodes[it].a)].kind == .float_lit or nodes[int(nodes[it].b)].kind == .float_lit:
+            if is_int(t): t = T_FLOAT
+            fatal(nodes[it].pos, "a range counts in whole numbers, not {type_str(t)} (for 0.0 to 1.0 in tenths, count to 10 and divide: `loop i in [0..10): x = f64(i) / 10.0`)")
         nodes[it].a = i32(coerce(int(nodes[it].a), t))
         if nodes[it].b != 0: nodes[it].b = i32(coerce(int(nodes[it].b), t))
         if has_flag(it, NF_STEP): nodes[it].c = i32(coerce(int(nodes[it].c), t))
         if nv != 1: fatal(pos, "a range loop has one loop variable")
-        if is_mut: fatal(pos, "'for mut' needs an array")
+        if is_mut: fatal(pos, "`loop mut` needs an array (a range's numbers are not stored anywhere)")
         l = new_local(n1, t, pos)
         nodes[s].sym = i32(l)
         nodes[s].aux = 0
@@ -1609,13 +1680,16 @@ check_assign = (s: int) -> int:
     # (assigning a narrowed field or global assigns the whole of it)
     plain = op == int(Tok.assign) and nodes[lhs].kind != .ident or op == int(Tok.assign) and path_narrows > 0
     if plain: no_path_narrow = true
+    cur_assign = s
     lt = check_expr(lhs, 0)
+    cur_assign = 0
     no_path_narrow = false
     lhs = last_checked
     nodes[s].a = i32(lhs)
     check_place(lhs, false)
     if op == int(Tok.assign):
         rt = prune(check_expr(int(nodes[s].b), lt))
+        if rt != lt and nodes[lhs].kind == .ident and (nodes[lhs].aux == i32(int(SK.local)) or nodes[lhs].aux == i32(int(SK.global))) and not can_coerce(last_checked, rt, lt): var_type_error(lhs, lt, rt, nodes[last_checked].pos)
         nodes[s].b = i32(coerce(last_checked, lt))
         if path_narrows > 0 and nodes[lhs].kind != .ident or path_narrows > 0 and nodes[lhs].aux == i32(int(SK.global)):
             key = path_key(lhs)
@@ -1658,6 +1732,20 @@ check_assign = (s: int) -> int:
         if is_int(l) and is_float(rt): fatal(nodes[s].pos, "cannot apply {tok_text(op as Tok)} to {type_str(l)} and {type_str(rt)} (use int(...) to convert)")
         nodes[s].b = i32(coerce(int(nodes[s].b), l))
     s
+
+# x = value where x is a variable of another type: where x was made, and the ways out
+var_type_error = (lhs: int, lt: int, rt: int, at: int):
+    nm = name_of(int(nodes[lhs].name))
+    made = ""
+    p = 0
+    if nodes[lhs].aux == i32(int(SK.local)) and nodes[lhs].sym > 0: p = locals[int(nodes[lhs].sym)].pos
+    else if nodes[lhs].sym > 0 and globals[int(nodes[lhs].sym)].decl > 0: p = nodes[int(globals[int(nodes[lhs].sym)].decl)].pos
+    if p > 0 and pos_file(p) == pos_file(at):
+        ln, c = line_col(p)
+        made = " (made on line {ln})"
+    how = "`let {nm} = ...` makes a new variable"
+    if is_int(lt) and is_float(rt): how = "int(...) makes the value an int, or give '{nm}' a float to start with ({nm} = 0.0)"
+    fatal(at, "'{nm}' has type {type_str(lt)}{made} and cannot hold this {type_str(rt)}: {how}")
 
 check_vardecl = (s: int):
     if has_flag(s, NF_SOA):
@@ -1738,7 +1826,11 @@ check_stmt = (s: int):
         if has_flag(s, NF_CHECKED): return
         e = int(nodes[s].a)
         if nodes[e].kind == .match_: add_flag(e, NF_STMT)
-        check_expr(e, 0)
+        named = nodes[e].kind == .ident or nodes[e].kind == .field
+        t = check_expr(e, 0)
+        if named and (tkind(t) == .fn_ or tkind(t) == .cfn):
+            nm = name_of(int(nodes[e].name))
+            fatal(nodes[e].pos, "'{nm}' is a function and is not called here: `{nm}()` calls it")
         nodes[s].a = i32(last_checked)
     else if k == .if_ or k == .iflet:
         add_flag(s, NF_STMT)
@@ -1873,7 +1965,7 @@ check_fn_body = (f: int):
     zonk_tree(body)
     loop l in fns[f].locals:
         locals[l].type = i32(zonk(int(locals[l].type)))
-        if has_var(prune(int(locals[l].type))): fatal(locals[l].pos, "cannot infer the type of '{name_of(int(locals[l].name))}' ({type_str(int(locals[l].type))}); add a type annotation")
+        if has_var(prune(int(locals[l].type))): fatal(locals[l].pos, "cannot infer the type of '{name_of(int(locals[l].name))}' ({type_str(int(locals[l].type))}); add a type annotation{empty_hint(name_of(int(locals[l].name)), int(locals[l].type))}")
     fns[f].state = 2
     scope_reset(mark)
     ctxs.pop()
@@ -1894,6 +1986,7 @@ check_lambda_body = (f: int, lam: int, ret_hint: int):
         fns[f].params.push(l)
     declared = 0
     if nodes[lam].a != 0: declared = resolve_type(int(nodes[lam].a))
+    else if has_flag(lam, NF_VOID): declared = T_VOID
     if declared != 0: ctxs[cx].ret = i32(declared)
     else if ret_hint != 0 and not has_var(prune(ret_hint)): ctxs[cx].ret = i32(ret_hint)
     else:
@@ -2196,11 +2289,16 @@ check_program = (main_path: str):
         gid = mk(.ident, 0)
         nodes[gid].name = i32(intern("__game_run"))
         nodes[gc].a = i32(gid)
+        # (at the program's update and draw: a mismatch is reported there)
         ua = mk(.ident, 0)
-        if has_upd: nodes[ua].name = i32(intern("update"))
+        if has_upd:
+            nodes[ua].name = i32(intern("update"))
+            nodes[ua].pos = nodes[int(syms[modules[mainm].names[intern("update")]].decl)].pos
         else: nodes[ua].name = i32(intern("__no_update"))
         da = mk(.ident, 0)
-        if has_drw: nodes[da].name = i32(intern("draw"))
+        if has_drw:
+            nodes[da].name = i32(intern("draw"))
+            nodes[da].pos = nodes[int(syms[modules[mainm].names[intern("draw")]].decl)].pos
         else: nodes[da].name = i32(intern("__no_draw"))
         set_list(gc, [ua, da])
         st2 = mk(.exprstmt, 0)
