@@ -662,6 +662,22 @@ function activate(context) {
                 return (r || []).map((e) => vscode.TextEdit.replace(toRange(e.range), e.newText));
             },
         }),
+        L.registerCodeActionsProvider(selector, {
+            async provideCodeActions(doc, range, context, token) {
+                const diags = context.diagnostics.filter((d) => d.source === 'sloppy').map((d) => ({
+                    range: { start: fromPosition(d.range.start), end: fromPosition(d.range.end) }, message: d.message, severity: d.severity + 1, source: 'sloppy',
+                }));
+                if (diags.length === 0) return [];
+                const r = await ask('textDocument/codeAction', { textDocument: textDocument(doc), range: { start: fromPosition(range.start), end: fromPosition(range.end) }, context: { diagnostics: diags } }, token);
+                return (r || []).map((a) => {
+                    const action = new vscode.CodeAction(a.title, vscode.CodeActionKind.QuickFix);
+                    action.edit = toWorkspaceEdit(a.edit);
+                    action.isPreferred = !!a.isPreferred;
+                    action.diagnostics = context.diagnostics.filter((d) => d.message === (a.diagnostics[0] || {}).message);
+                    return action;
+                });
+            },
+        }, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }),
         L.registerWorkspaceSymbolProvider({
             async provideWorkspaceSymbols(query, token) {
                 const r = await ask('workspace/symbol', { query }, token);

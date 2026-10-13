@@ -4,7 +4,9 @@ Support for [Sloppy](https://sloppy-lang.org), a small compiled language for mak
 feels like a scripting language:
 
 - highlighting, with names coloured by what they are (semantic tokens from the compiler)
-- errors as you type (several at once, when they are in different functions)
+- errors as you type (several at once, when they are in different functions), with quick fixes
+  where an error says what to change (a misspelled name, `loop mut`, a `mut` parameter, a
+  number of another type)
 - hover: types, signatures and doc comments
 - go to definition (also into the standard library), find references, highlight uses, rename
 - completion: names in scope, fields and functions after `.`, enum variants after a bare `.`

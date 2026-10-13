@@ -75,8 +75,9 @@ rebindable controls, touch on the web).
 - **Profiling:** Sloppy function names in `perf` and Windows' profilers, and a frame profiler in
   the stats overlay: named CPU zones per frame and, with Vulkan, GPU timestamps per pass.
 - **Error messages:** collect the commonest mistakes (from the tutorials, the playground and
-  `tools/fuzz_errors.py`), make each message say what to do, and offer the fix in the editor
-  (language server quick fixes).
+  `tools/fuzz_errors.py`) and make each message say what to do. Quick fixes in the editor (the
+  language server's code actions) exist for misspelled names, `loop mut`, `mut` parameters and
+  numbers of another type; more as the messages say what to change.
 
 ### 5. Sharing code: packages (M)
 

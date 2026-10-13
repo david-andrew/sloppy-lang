@@ -83,7 +83,7 @@ def lc(text, off):
 tmp = tempfile.mkdtemp(prefix="sloppy-lsptest-")
 c = Client()
 caps = c.request("initialize", {"capabilities": {}, "rootUri": to_uri(tmp)})["capabilities"]
-check("capabilities", sorted(k for k, v in caps.items() if v), sorted(["textDocumentSync", "hoverProvider", "definitionProvider", "referencesProvider", "documentHighlightProvider", "documentSymbolProvider", "workspaceSymbolProvider", "documentFormattingProvider", "renameProvider", "completionProvider", "signatureHelpProvider", "inlayHintProvider", "semanticTokensProvider"]))
+check("capabilities", sorted(k for k, v in caps.items() if v), sorted(["textDocumentSync", "hoverProvider", "definitionProvider", "referencesProvider", "documentHighlightProvider", "documentSymbolProvider", "workspaceSymbolProvider", "documentFormattingProvider", "codeActionProvider", "renameProvider", "completionProvider", "signatureHelpProvider", "inlayHintProvider", "semanticTokensProvider"]))
 c.notify("initialized", {})
 
 # ---- a program: names, types, declarations ----
@@ -211,6 +211,31 @@ c.set_text(furi, "f = (a: int) -> int:\n    a + 1\n")
 check("formatting: laid out already", c.request("textDocument/formatting", {"textDocument": {"uri": furi}, "options": {}}), [])
 c.set_text(furi, "x = (1\n")
 check("formatting: does not lex", c.request("textDocument/formatting", {"textDocument": {"uri": furi}, "options": {}}), [])
+# quick fixes: the edits errors suggest
+def fixes(name, text):
+    p = os.path.join(tmp, name + ".jo")
+    u = to_uri(p)
+    c.set_text(u, text)
+    ds = c.diagnostics(u)
+    if not ds: return ("no error", text)
+    acts = c.request("textDocument/codeAction", {"textDocument": {"uri": u}, "range": ds[0]["range"], "context": {"diagnostics": ds[:1]}})
+    if not acts: return ("no fix", ds[0]["message"])
+    a = acts[0]
+    e = a["edit"]["changes"][u][0]
+    lines = text.split("\n")
+    st, en = e["range"]["start"], e["range"]["end"]
+    def off(pos): return sum(len(l) + 1 for l in lines[:pos["line"]]) + pos["character"]
+    return (a["title"], text[:off(st)] + e["newText"] + text[off(en):])
+check("quick fix: a misspelled name", fixes("qf1", "main = ():\n    total = 3\n    print(totl + 1)\n"),
+      ("Change 'totl' to 'total'", "main = ():\n    total = 3\n    print(total + 1)\n"))
+check("quick fix: loop mut", fixes("qf2", "main = ():\n    xs = [1, 2]\n    loop x in xs:\n        x += 1\n    print(xs)\n"),
+      ("Make it `loop mut`", "main = ():\n    xs = [1, 2]\n    loop mut x in xs:\n        x += 1\n    print(xs)\n"))
+check("quick fix: a mut parameter", fixes("qf3", "grow = (xs: int[], k: int):\n    xs.push(k)\nmain = ():\n    a = [1]\n    grow(a, 2)\n"),
+      ("Mark 'xs' `mut` (changes reach the caller)", "grow = (xs: mut int[], k: int):\n    xs.push(k)\nmain = ():\n    a = [1]\n    grow(a, 2)\n"))
+check("quick fix: a conversion", fixes("qf4", "twice = (k: int) -> int: k * 2\nmain = ():\n    x = 2.5\n    print(twice(x))\n"),
+      ("Convert it: int(x)", "twice = (k: int) -> int: k * 2\nmain = ():\n    x = 2.5\n    print(twice(int(x)))\n"))
+check("quick fix: 2.0 as 2", fixes("qf5", "main = ():\n    n: int = 2.0\n    print(n)\n"),
+      ("Write it as 2", "main = ():\n    n: int = 2\n    print(n)\n"))
 ws = c.request("workspace/symbol", {"query": "px"})
 check("workspace symbols: members", [(w["name"], w.get("containerName"), w["location"]["range"]["start"]) for w in ws], [("px", "Pointy", {"line": 1, "character": 4})])
 

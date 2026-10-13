@@ -12,6 +12,12 @@ Tools:
   F5 (**Sloppy: Debug File**) builds with `-g` and debugs through CodeLLDB or the C/C++
   extension, stopping where the program panics. `tools/dbgtest.py` checks what gdb and lldb
   show; the fuzzer also compares `-g` builds.
+- **Quick fixes** (the language server's code actions, Ctrl+. in VS Code) for errors that say
+  what to change: a misspelled name ("did you mean"), `loop mut` for a loop variable changed, a
+  parameter changed made `mut`, a number of another type converted (or `2.0` written `2`).
+
+Errors:
+- An argument of the wrong type is pointed at, not the call.
 
 ## 0.8.1
 
