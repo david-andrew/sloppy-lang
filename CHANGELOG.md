@@ -37,6 +37,26 @@ Language:
 - `random_item(xs)` and `shuffle(xs)` (and `r.next_item(xs)`, `r.shuffle(xs)` with an `Rng`);
   `choice`, `randint` and `uniform` point to them. `draw_cube`, `draw_sphere` and `light` point to
   what draws them.
+- `to_json(value)` and `from_json[T](text)` for any value: structs as objects by field name
+  (fields left out keep their defaults, unknown ones are skipped), arrays, tuples and vectors as
+  lists, maps, optionals as null, enums by name. `csv_rows(text)` and `to_csv(rows)` read and
+  write CSV (quoted fields too). `median`, `std_dev`, `mean` of ints, `unique` and `group_by`.
+- `round` is right for 0.49999999999999994 (it gave 1.0) and says how it rounds halves (away
+  from zero; Python's goes to the even one).
+- `pow` is within an ulp (fdlibm's; it was exp(y * log(x)), several ulps off for big results):
+  `pow(2.0, 0.5) == sqrt(2.0)`.
+- Raw strings take either quote: `r'{"a": 1}'`. A string whose braces hold only a string
+  (`'{"a": 1}'`, meant as JSON) is an error that says how to write braces; an unterminated
+  interpolation and a bad one say so too.
+- `int("5")` is an error (it was 53, the character's code): `to_int("5")` reads the number.
+  (`int('5')` in single quotes, as character arithmetic writes it, is still the code.)
+- A function that calls itself without its result type written (`fact = (n: int): ... fact(n - 1)`)
+  says to write it, instead of "operator * is not defined for int and void".
+- Assigning a global declared below the function is an error (it was a warning): a global
+  added further down the file would quietly change what the function does.
+- Hints for `x if c else y` in arguments, `n // 2`, `xs.map(str)`, `sort(key = ...)`,
+  `circle(100, 100, ...)` (a position is one vec2), `draw_text`, `draw_rect`, `.copy()`; the
+  panic for `xs[-1]` mentions `xs[end]`; `max`, `min`, `first` and `last` of an empty array say so.
 - Sorting keeps equal elements in their order (sort by name, then by score, and the names stay in
   order within a score), and takes `descending = true`; `sorted_by(xs, key)` is a sorted copy.
 - Tuples compare element by element (`sorted` of `(score, name)` pairs; `max`, `<`). `>`, `<=`
@@ -82,6 +102,7 @@ More for games:
   drawn before with the sky; only the last 3D drawn showed. Each later batch now goes over the
   earlier ones, and their shadows stay.
 - `ui_choice("Level", ["forest", "cave", "tower"], level)`: one of several, in a menu.
+- `capsule_mesh(radius, height)`: the shape of physics3d's capsules and characters.
 - `draw_line3d(a, b, color)` and `draw_grid3d()`: lines and a ground grid in 3D, for seeing paths,
   rays and distances while making a game.
 - `random_direction()` (and `random_direction_3d()`), `random_point(low, high)`,

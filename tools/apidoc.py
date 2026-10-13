@@ -24,7 +24,9 @@ TOPICS = [
      "For vectors and matrices, see [colors, vectors and matrices](#colors-vectors-and-matrices)."),
     ("Basics", "system", "Files, time and the system", ["core/os"], "system",
      "In a web page, files are the ones the page was given, and `env` reads its address's parameters."),
-    ("Data", "json", "JSON and base64", ["std/json", "std/base64"], "json", ""),
+    ("Data", "json", "JSON, CSV and base64", ["std/json", "std/csv", "std/base64"], "json",
+     "`to_json(value)` and `from_json[T](text)` turn any value (a struct, an array, a map...) into JSON and back; "
+     "`parse_json` reads JSON of any shape as a `Json` to look inside."),
     ("Data", "saving", "Saving, and values as text", ["std/save", "std/text"], "saving",
      "`save_value` and `load_value` keep any value (settings, a saved game) as text that reads back even "
      "after its structs gain or lose fields."),
@@ -85,8 +87,10 @@ BUILTINS = [
     ("builtins", "", "bytes", ["bytes(s: str) -> u8[]"], "a string's bytes (UTF-8)"),
     ("builtins", "", "str_from_bytes", ["str_from_bytes(b: u8[]) -> str"], "a string of these bytes"),
     ("builtins", "", "size_of", ["size_of(T) -> int", "align_of(T) -> int"], "how many bytes a value of type T takes, and its alignment"),
-    ("builtins", "", "conversions", ["int(x)", "f64(x)", "f32(x)", "u8(x)", "str(x)"],
-     "a number as another type (float to integer truncates toward zero), or any value as text, as `print` shows it"),
+    ("builtins", "", "int", ["int(x)", "i32(x)", "u8(x)"], "a number as a whole number of that type (a float is cut toward zero: int(3.7) is 3); "
+     "text is read with `to_int(s)`, and a one-character string in single quotes is its code (`u8('A')` is 65)"),
+    ("builtins", "", "f64", ["f64(x)", "f32(x)"], "a number as a float of that size (f32 and f64 also mix by themselves)"),
+    ("builtins", "", "str", ["str(x)"], "any value as text, as `print` shows it"),
     ("arrays", "Built in", "len", ["len(xs: T[]) -> int"], "how many elements"),
     ("arrays", "Built in", "push", ["push(xs: mut T[], x: T)"], "adds `x` at the end"),
     ("arrays", "Built in", "pop", ["pop(xs: mut T[]) -> T"], "removes the last element and gives it back"),
@@ -103,8 +107,8 @@ def signature(line):
     """the declaration up to the ':' that starts the body (depth-aware)"""
     depth = 0
     for i, c in enumerate(line):
-        if c in "([": depth += 1
-        elif c in ")]": depth -= 1
+        if c in "([{": depth += 1
+        elif c in ")]}": depth -= 1
         elif c == ":" and depth == 0 and i > 0:
             return line[:i]
     return line

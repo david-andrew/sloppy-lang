@@ -19,7 +19,7 @@ depends on the game:
 program, `net.connect(host, port)` from a native program or a web page, `net.receive()` each
 frame for what happened. Messages arrive whole and in order. Native programs can also send UDP
 datagrams (`net.udp`), which may be lost or come out of order but never wait for each other. See
-[the library](api.html#networking).
+[the library](API.md#networking).
 
 ## Rollback
 

@@ -92,9 +92,14 @@ ceil = (x: f64) -> f64:
     i = f64(int(x))
     if i < x: return i + 1.0
     i
+# the nearest whole number; halves go away from zero (round(2.5) is 3.0, round(-2.5) is -3.0;
+# Python's round goes to the even one, 2)
 round = (x: f64) -> f64:
-    if x < 0.0: return -floor(-x + 0.5)
-    floor(x + 0.5)
+    t = trunc(x)
+    if abs(x - t) >= 0.5:
+        if x < 0.0: return t - 1.0
+        return t + 1.0
+    t
 trunc = (x: f64) -> f64:
     if x != x or x >= 4503599627370496.0 or x <= -4503599627370496.0: return x
     f64(int(x))
@@ -338,23 +343,179 @@ log = (x: f64) -> f64:
 log2 = (x: f64) -> f64: log(x) / 0.6931471805599453
 log10 = (x: f64) -> f64: log(x) / 2.302585092994046
 
+# x to the power y, within an ulp (fdlibm's: log2(x) in extra precision, times y, then 2 to that)
 pow = (x: f64, y: f64) -> f64:
-    if y == 0.0: return 1.0
-    if x == 0.0: return 0.0
-    yi = int(y)
-    if f64(yi) == y and yi >= -64 and yi <= 64:
-        r = 1.0
-        b = x
-        n = yi
-        if n < 0: n = -n
-        loop n > 0:
-            if n & 1 == 1: r = r * b
-            b = b * b
-            n = n >> 1
-        if yi < 0: return 1.0 / r
-        return r
-    if x < 0.0: return 0.0 / 0.0
-    exp(y * log(x))
+    hx = __hi(x)
+    lx = __lo(x)
+    hy = __hi(y)
+    ly = __lo(y)
+    ix = hx & 0x7FFFFFFF
+    iy = hy & 0x7FFFFFFF
+    if iy | ly == 0: return 1.0
+    if hx == 0x3FF00000 and lx == 0: return 1.0
+    if ix > 0x7FF00000 or (ix == 0x7FF00000 and lx != 0) or iy > 0x7FF00000 or (iy == 0x7FF00000 and ly != 0): return x + y
+    # y an odd whole number (1), an even one (2), or neither (0), when x < 0
+    yisint = 0
+    if hx < 0:
+        if iy >= 0x43400000: yisint = 2
+        else if iy >= 0x3FF00000:
+            k = (iy >> 20) - 0x3FF
+            if k > 20:
+                j = ly >> (52 - k)
+                if (j << (52 - k)) & 0xFFFFFFFF == ly: yisint = 2 - (j & 1)
+            else if ly == 0:
+                j = iy >> (20 - k)
+                if (j << (20 - k)) == iy: yisint = 2 - (j & 1)
+    if ly == 0:
+        if iy == 0x7FF00000:
+            # y is +-inf
+            if (ix - 0x3FF00000) | lx == 0: return 1.0
+            if ix >= 0x3FF00000:
+                if hy >= 0: return y
+                return 0.0
+            if hy < 0: return -y
+            return 0.0
+        if iy == 0x3FF00000:
+            if hy < 0: return 1.0 / x
+            return x
+        if hy == 0x40000000: return x * x
+        if hy == 0x3FE00000 and hx >= 0: return sqrt(x)
+    ax = abs(x)
+    if lx == 0 and (ix == 0x7FF00000 or ix == 0 or ix == 0x3FF00000):
+        # x is +-0, +-inf, +-1
+        z = ax
+        if hy < 0: z = 1.0 / z
+        if hx < 0:
+            if (ix - 0x3FF00000) | yisint == 0: z = (z - z) / (z - z)
+            else if yisint == 1: z = -z
+        return z
+    n = -1
+    if hx < 0: n = 0
+    if n | yisint == 0: return (x - x) / (x - x)
+    sgn = 1.0
+    if n | (yisint - 1) == 0: sgn = -1.0
+    t1 = 0.0
+    t2 = 0.0
+    if iy > 0x41E00000:
+        # |y| > 2^31
+        if iy > 0x43F00000:
+            if ix <= 0x3FEFFFFF:
+                if hy < 0: return INF
+                return 0.0
+            if ix >= 0x3FF00000:
+                if hy > 0: return INF
+                return 0.0
+        if ix < 0x3FEFFFFF:
+            if hy < 0: return sgn * INF
+            return sgn * 0.0
+        if ix > 0x3FF00000:
+            if hy > 0: return sgn * INF
+            return sgn * 0.0
+        # |1 - x| <= 2^-20: log(x) by x - x^2/2 + x^3/3 - x^4/4
+        t = ax - 1.0
+        w = (t * t) * (0.5 - t * (3.3333333333333331e-01 - t * 0.25))
+        u = 1.44269502162933349609e+00 * t
+        v = t * 1.92596299112661746887e-08 - w * 1.44269504088896338700e+00
+        t1 = __lo0(u + v)
+        t2 = v - (t1 - u)
+    else:
+        n = 0
+        if ix < 0x00100000:
+            ax = ax * 9007199254740992.0
+            n -= 53
+            ix = __hi(ax)
+        n += (ix >> 20) - 0x3FF
+        j = ix & 0x000FFFFF
+        ix = j | 0x3FF00000
+        k = 0
+        if j <= 0x3988E: k = 0
+        else if j < 0xBB67A: k = 1
+        else:
+            k = 0
+            n += 1
+            ix -= 0x00100000
+        ax = __set_hi(ax, ix)
+        bp = 1.0
+        dp_h = 0.0
+        dp_l = 0.0
+        if k == 1:
+            bp = 1.5
+            dp_h = 5.84962487220764160156e-01
+            dp_l = 1.35003920212974897128e-08
+        # ss = s_h + s_l = (x - bp) / (x + bp)
+        u = ax - bp
+        v = 1.0 / (ax + bp)
+        ss = u * v
+        s_h = __lo0(ss)
+        t_h = __words(((ix >> 1) | 0x20000000) + 0x00080000 + (k << 18), 0)
+        t_l = ax - (t_h - bp)
+        s_l = v * ((u - s_h * t_h) - s_h * t_l)
+        # log(ax)
+        s2 = ss * ss
+        r = s2 * s2 * (5.99999999999994648725e-01 + s2 * (4.28571428578550184252e-01 + s2 * (3.33333329818377432918e-01 + s2 * (2.72728123808534006489e-01 + s2 * (2.30660745775561754067e-01 + s2 * 2.06975017800338417784e-01)))))
+        r += s_l * (s_h + ss)
+        s2 = s_h * s_h
+        t_h = __lo0(3.0 + s2 + r)
+        t_l = r - ((t_h - 3.0) - s2)
+        u = s_h * t_h
+        v = s_l * t_h + t_l * ss
+        p_h = __lo0(u + v)
+        p_l = v - (p_h - u)
+        z_h = 9.61796700954437255859e-01 * p_h
+        z_l = -7.02846165095275826516e-09 * p_h + p_l * 9.61796693925975554329e-01 + dp_l
+        t = f64(n)
+        t1 = __lo0(((z_h + z_l) + dp_h) + t)
+        t2 = z_l - (((t1 - t) - dp_h) - z_h)
+    # (y1 + y2) * (t1 + t2)
+    y1 = __lo0(y)
+    p_l = (y - y1) * t1 + y * t2
+    p_h = y1 * t1
+    z = p_l + p_h
+    j = __hi(z)
+    i = __lo(z)
+    if j >= 0x40900000:
+        if (j - 0x40900000) | i != 0: return sgn * INF
+        if p_l + 8.0085662595372944372e-17 > z - p_h: return sgn * INF
+    else if j & 0x7FFFFFFF >= 0x4090CC00:
+        if (j - 0xC090CC00 + 0x100000000) & 0xFFFFFFFF | i != 0: return sgn * 0.0
+        if p_l <= z - p_h: return sgn * 0.0
+    # 2^(p_h + p_l)
+    i = j & 0x7FFFFFFF
+    k = (i >> 20) - 0x3FF
+    n = 0
+    if i > 0x3FE00000:
+        n = j + (0x00100000 >> (k + 1))
+        k = ((n & 0x7FFFFFFF) >> 20) - 0x3FF
+        tt = __words(n & ~(0x000FFFFF >> k), 0)
+        n = ((n & 0x000FFFFF) | 0x00100000) >> (20 - k)
+        if j < 0: n = -n
+        p_h -= tt
+    t = __lo0(p_l + p_h)
+    u = t * 6.93147182464599609375e-01
+    v = (p_l - (t - p_h)) * 6.93147180559945286227e-01 + t * -1.90465429995776804525e-09
+    z = u + v
+    w = v - (z - u)
+    t = z * z
+    t1 = z - t * (1.66666666666666019037e-01 + t * (-2.77777777770155933842e-03 + t * (6.61375632143793436117e-05 + t * (-1.65339022054652515390e-06 + t * 4.13813679705723846039e-08))))
+    r = (z * t1) / (t1 - 2.0) - (w + z * w)
+    z = 1.0 - (r - z)
+    j = __hi(z) + (n << 20)
+    if (j >> 20) <= 0:
+        # (a subnormal result)
+        if n < -1022: z = z * __pow2(-1022) * __pow2(n + 1022)
+        else: z = z * __pow2(n)
+    else: z = __set_hi(z, j)
+    sgn * z
+
+# (the high and low 32 bits of a double, as fdlibm takes them: the high one signed)
+__hi = (x: f64) -> int:
+    h = int((x as u64) >> 32)
+    if h >= 0x80000000: return h - 0x100000000
+    h
+__lo = (x: f64) -> int: int((x as u64) & 0xFFFFFFFF)
+__lo0 = (x: f64) -> f64: ((x as u64) & 0xFFFFFFFF00000000) as f64
+__words = (hi: int, lo: int) -> f64: ((u64(hi & 0xFFFFFFFF) << 32) | u64(lo & 0xFFFFFFFF)) as f64
+__set_hi = (x: f64, hi: int) -> f64: __words(hi, __lo(x))
 
 # f32 versions (shader code, games): computed in double with shorter polynomials, so they are
 # within an ulp of the f32 result at a fraction of the cost of the full-precision ones

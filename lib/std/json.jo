@@ -244,6 +244,84 @@ to_json = (j: Json, indent: int = 0) -> str:
     __json_write(b, j, indent, 0)
     str_from_bytes(b)
 
+# any value as JSON: a struct as an object (by field name), an array, tuple or vector as a list,
+# a map as an object (its keys as text), none as null, an enum's variant as its name (one with
+# fields as {"name": [fields]}); from_json[T] reads it back
+to_json[T] = (x: T, indent: int = 0) -> str: to_json(json_value(x), indent)
+
+# any value as a Json (what to_json writes for it)
+json_value[T] = (x: T) -> Json:
+    r = __TextIn(to_text(x))
+    __json_of_text(r)
+
+# (to_text's text of a value, as a Json)
+__json_of_text = (r: mut __TextIn) -> Json:
+    k = __tx_kind(r)
+    if k == 1:
+        s = ""
+        __read(r, s)
+        return Json.text(s)
+    if k == 2 or k == 3:
+        v = 0.0
+        __read(r, v)
+        if v != v or v - v != 0.0: return Json.null_         # (JSON has no inf or nan)
+        return Json.number(v)
+    if k == 4:
+        __tx_word(r, false)
+        return Json.null_
+    if k == 5:
+        b = false
+        __read(r, b)
+        return Json.boolean(b)
+    if k == 8 or k == 10:
+        close: u8 = ']'
+        if k == 10: close = ')'
+        r.i += 1
+        items: Json[]
+        loop len(r.err) == 0:
+            __tx_eat(r, ',')
+            if __tx_eat(r, close): break
+            items.push(__json_of_text(r))
+        return Json.list(items)
+    if k == 9:
+        r.i += 1
+        keys: str[]
+        vals: Json[]
+        loop len(r.err) == 0:
+            __tx_eat(r, ',')
+            if __tx_eat(r, '}}'): break
+            kv = __json_of_text(r)
+            match kv:
+                .text(t): keys.push(t)
+                _: keys.push(to_json(kv))
+            __tx_want(r, ':')
+            vals.push(__json_of_text(r))
+        return Json.object(keys, vals)
+    if k == 6:
+        name = r.name
+        __tx_word(r, false)
+        __tx_want(r, '(')
+        # (a struct names its fields: Name(a=1); a vector or an enum's variant does not)
+        at = r.i
+        w = __tx_word(r, false)
+        named = len(w) > 0 and __tx_eat(r, '=')
+        r.i = at
+        keys: str[]
+        vals: Json[]
+        loop len(r.err) == 0:
+            __tx_eat(r, ',')
+            if __tx_eat(r, ')'): break
+            if named:
+                keys.push(__tx_word(r, false))
+                __tx_want(r, '=')
+            vals.push(__json_of_text(r))
+        if named: return Json.object(keys, vals)
+        if starts_with(name, "vec") or starts_with(name, "ivec") or name == "mat4": return Json.list(vals)
+        return Json.object([name], [Json.list(vals)])
+    if k == 7: return Json.text(__tx_word(r, false))
+    __tx_fail(r, "a value that is not JSON")
+    Json.null_
+
 __json_put = (b: mut u8[], s: str):
     loop k in [0..len(s)): b.push(s[k])
 

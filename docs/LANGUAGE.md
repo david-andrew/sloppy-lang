@@ -76,11 +76,12 @@ piped in (`sloppy < script.txt`).
   Literals take the type their context expects, and must fit it (`x: u8 = 300` and
   `x: u64 = -1` are errors; a literal above the i64 range is a `u64`, or `int`'s bits).
 * Strings: `"text {expr} more {value:.2}"` and `'the same'` — the two quotes are
-  interchangeable, and both may span lines. `{}` interpolates any expression, `{{` and `}}`
-  are literal braces. Escapes: `\n \t \r \0 \\ \" \' \xNN`. Format specs follow Python:
+  interchangeable, and both may span lines. `{}` interpolates any expression in either kind
+  (so text with braces, such as JSON, needs `{{` and `}}` for literal braces, or a raw string). Escapes: `\n \t \r \0 \\ \" \' \xNN`. Format specs follow Python:
   `[[fill]align][+][0][width][,][.precision][type]` with align `<` `>` `^` and type `x` `X`
   `b` `o` `f` `%` — `{price:>8.2}`, `{n:,}`, `{ratio:.1%}`, `{name:<12}`, `{bits:08b}`.
-  Raw strings `r"no {interp} \here"`. Triple quoted `"""docstrings"""` are dedented.
+  Raw strings `r"no {interp} \here"` (or `r'...'`: JSON in code is `r'{"a": 1}'`). Triple
+  quoted `"""docstrings"""` are dedented.
 * **Characters.** A one-character string where an integer is expected stands for its
   character code: `c == 'a'`, `'0'..'9'` in a match, `u8('A')`.
 * **Units.** A unit right after a number (no space) converts to the SI base unit at compile
@@ -736,7 +737,7 @@ block come along. There is no registry: a package is any repository with Sloppy 
 
 ```gdscript
 build:                          # build options live in the source
-    target = wasm               # native (default: this machine) | linux | windows | wasm
+    target = wasm               # native (default: this machine) | linux | linux-arm64 | windows | macos | wasm
     opt = release               # debug | release
     output = "mygame"           # the file `sloppy build` writes (beside the program)
     name = "My Game"            # PROGRAM_NAME: window title, and where save_data keeps data
@@ -745,7 +746,7 @@ build:                          # build options live in the source
 
 when TARGET == "wasm":          # compile-time conditional; the dead branch is not compiled
     ...
-else when TARGET == "windows":  # (TARGET is "linux", "windows" or "wasm"; also DEBUG,
+else when TARGET == "windows":  # (TARGET is "linux", "windows", "macos" or "wasm"; also DEBUG,
                                 #  and PROGRAM_NAME: the build block's name, else the file's)
     ...
 else:
@@ -911,7 +912,9 @@ reproducible, and with `SLOPPY_SOFTWARE=1` no display is needed at all; `SLOPPY_
 presses and releases keys at given frames (keys as `Key` names them: `a`, `n1`, `space`, `escape`,
 `left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons, and
 `12:mouse=400x300` moves the mouse there, in the screen's units; an item it cannot read is
-reported); `SLOPPY_SEED=n` makes `random()` the same each run; `SLOPPY_THREADS=n` caps the threads used by the
+reported); `SLOPPY_SEED=n` makes `random()` the same each run; `SLOPPY_WINDOW=800x600` opens the window at
+that size; `SLOPPY_NO_AUDIO=1` plays no sound (for tests and machines without a sound card);
+`SLOPPY_THREADS=n` caps the threads used by the
 parallel functions; `SLOPPY_SCALE=1` renders at the logical size and lets the compositor scale
 it up; `SLOPPY_FRAME_STATS=1` (with `SLOPPY_SCREENSHOT`) reports frame times and how frames reach the
 screen.
