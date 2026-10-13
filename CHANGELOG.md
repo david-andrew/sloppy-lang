@@ -9,7 +9,8 @@ Tools:
   `lib/debug/sloppy.natvis` shows strings as text, arrays and maps as their elements and
   optionals as their value or `none`; VS Code's F5 loads it. A function that saves registers
   now says where in its unwind codes (`.pdata`), so callers' variables held in them are right
-  too. `tools/dbgtest.py` checks what cdb shows on Windows.
+  too. A program that panics with a debugger attached stops there. `tools/dbgtest.py` checks
+  what cdb shows on Windows.
 
 ## 0.9.0
 
