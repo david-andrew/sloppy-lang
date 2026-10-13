@@ -19,6 +19,8 @@ Tools:
   smallest: a window, update and draw), `arcade` (a 2D arcade game: a title menu, a score, a best
   score kept, sounds, particles, a pause menu), `3d` (first person: mouse look, walking and
   jumping among crates, shooting orbs) or `program` (for the terminal, with a test).
+- Language server: symbols across the workspace's files (VS Code's Ctrl+T). The extension:
+  **Sloppy: New Project** (`sloppy new` from the command palette).
 - `tools/fuzz.py --arm64`: each random program also built for arm64 and run under qemu (each
   night in CI).
 

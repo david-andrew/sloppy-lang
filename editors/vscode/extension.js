@@ -118,6 +118,12 @@ function toSymbol(s) {
     return sym;
 }
 
+const toFolder = (f) => ({ uri: f.uri.toString(), name: f.name });
+
+function toSymbolInformation(s) {
+    return new vscode.SymbolInformation(s.name, s.kind - 1, s.containerName || '', toLocation(s.location));
+}
+
 function toWorkspaceEdit(we) {
     const edit = new vscode.WorkspaceEdit();
     for (const uri of Object.keys(we.changes || {})) {
@@ -338,6 +344,7 @@ function start() {
     conn.request('initialize', {
         processId: process.pid,
         rootUri: vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.toString() : null,
+        workspaceFolders: (vscode.workspace.workspaceFolders || []).map(toFolder),
         capabilities: {},
     }).then((r) => {
         if (client !== conn || !r) return;
@@ -396,6 +403,38 @@ function runInTerminal(args) {
         } else {
             term.sendText(words.map((s) => `'${s.replace(/'/g, `'\\''`)}'`).join(' '));
         }
+    });
+}
+
+// sloppy new: a project to start from, in a new folder, opened
+async function newProject() {
+    if (!findSloppy()) {
+        offerInstall();
+        return;
+    }
+    const kinds = [
+        { label: 'game', description: 'the smallest game: a window, update and draw' },
+        { label: 'arcade', description: 'a 2D arcade game: a title menu, a score, a best score kept, sounds' },
+        { label: '3d', description: 'a first-person 3D game: mouse look, walking, jumping, shooting' },
+        { label: 'program', description: 'a program for the terminal, with a test' },
+    ];
+    const kind = await vscode.window.showQuickPick(kinds, { title: 'New Sloppy project', placeHolder: 'What to start from' });
+    if (!kind) return;
+    const name = await vscode.window.showInputBox({
+        title: 'New Sloppy project', prompt: 'Its name (the folder, and its main file)', value: kind.label === 'program' ? 'my_program' : 'my_game',
+        validateInput: (v) => (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(v) ? null : 'letters, digits, _ and -'),
+    });
+    if (!name) return;
+    const where = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false, openLabel: 'Make it here', title: `Where to make the folder ${name}` });
+    if (!where || where.length === 0) return;
+    const dir = path.join(where[0].fsPath, name);
+    cp.execFile(sloppyCommand(), ['new', dir, kind.label], (err, stdout, stderr) => {
+        if (err) {
+            vscode.window.showErrorMessage(`sloppy new: ${(stderr || err.message).trim()}`);
+            return;
+        }
+        // (the folder opened: in this window, or a new one when a folder is open here)
+        vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(dir), { forceNewWindow: !!vscode.workspace.workspaceFolders });
     });
 }
 
@@ -528,10 +567,20 @@ function activate(context) {
                 return (r || []).map(toSymbol);
             },
         }),
+        L.registerWorkspaceSymbolProvider({
+            async provideWorkspaceSymbols(query, token) {
+                const r = await ask('workspace/symbol', { query }, token);
+                return (r || []).map(toSymbolInformation);
+            },
+        }),
+        vscode.workspace.onDidChangeWorkspaceFolders((e) => {
+            if (ready()) client.notify('workspace/didChangeWorkspaceFolders', { event: { added: e.added.map(toFolder), removed: e.removed.map(toFolder) } });
+        }),
 
         vscode.commands.registerCommand('sloppy.run', () => runInTerminal([])),
         vscode.commands.registerCommand('sloppy.runWeb', () => runInTerminal(['--web'])),
         vscode.commands.registerCommand('sloppy.test', () => runInTerminal(['test'])),
+        vscode.commands.registerCommand('sloppy.newProject', newProject),
         vscode.commands.registerCommand('sloppy.install', async () => {
             if (await installSloppy()) vscode.commands.executeCommand('sloppy.restartServer');
         }),

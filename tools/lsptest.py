@@ -82,8 +82,8 @@ def lc(text, off):
 
 tmp = tempfile.mkdtemp(prefix="sloppy-lsptest-")
 c = Client()
-caps = c.request("initialize", {"capabilities": {}})["capabilities"]
-check("capabilities", sorted(k for k, v in caps.items() if v), sorted(["textDocumentSync", "hoverProvider", "definitionProvider", "referencesProvider", "documentHighlightProvider", "documentSymbolProvider", "renameProvider", "completionProvider", "signatureHelpProvider", "inlayHintProvider", "semanticTokensProvider"]))
+caps = c.request("initialize", {"capabilities": {}, "rootUri": to_uri(tmp)})["capabilities"]
+check("capabilities", sorted(k for k, v in caps.items() if v), sorted(["textDocumentSync", "hoverProvider", "definitionProvider", "referencesProvider", "documentHighlightProvider", "documentSymbolProvider", "workspaceSymbolProvider", "renameProvider", "completionProvider", "signatureHelpProvider", "inlayHintProvider", "semanticTokensProvider"]))
 c.notify("initialized", {})
 
 # ---- a program: names, types, declarations ----
@@ -195,6 +195,14 @@ check("signature help", (sig["signatures"][0]["label"], sig["activeParameter"]),
 syms = c.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
 check("symbols", [(s["name"], s["kind"], [k["name"] for k in s.get("children", [])]) for s in syms],
       [("Point", 23, ["x", "y"]), ("Dir", 10, ["left", "right"]), ("dist", 12, []), ("add", 12, []), ("twice", 12, []), ("main", 12, [])])
+# workspace symbols: in the open file and in files on disk under the workspace's folder
+os.makedirs(os.path.join(tmp, "more"), exist_ok=True)
+open(os.path.join(tmp, "more", "extra.jo"), "w").write("struct Pointy:\n    px: int\n\nhelper = () -> int: 1\n")
+ws = c.request("workspace/symbol", {"query": "poi"})
+check("workspace symbols", sorted((w["name"], w["kind"], os.path.basename(urllib.parse.unquote(w["location"]["uri"]))) for w in ws),
+      [("Point", 23, os.path.basename(path)), ("Pointy", 23, "extra.jo")])
+ws = c.request("workspace/symbol", {"query": "px"})
+check("workspace symbols: members", [(w["name"], w.get("containerName"), w["location"]["range"]["start"]) for w in ws], [("px", "Pointy", {"line": 1, "character": 4})])
 
 # ---- completion ----
 cpath = os.path.join(tmp, "comp.jo")

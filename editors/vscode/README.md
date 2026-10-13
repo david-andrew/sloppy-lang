@@ -10,8 +10,9 @@ feels like a scripting language:
 - completion: names in scope, fields and functions after `.`, enum variants after a bare `.`
 - signature help while typing arguments
 - inlay hints: the inferred types of variables and function results
-- outline (document symbols)
+- outline (document symbols), and symbols across the workspace's files (Ctrl+T)
 - run the file in a terminal (Ctrl+F5, or the run button), in the browser, or its tests
+- **Sloppy: New Project**: a folder with a game (or a program) to start from, which runs as it is
 
 The language features come from the compiler itself: `sloppy lsp` is a language server that any
 editor with LSP support can use.

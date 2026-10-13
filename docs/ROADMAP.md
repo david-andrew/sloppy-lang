@@ -90,7 +90,7 @@ shader); without this each project copies files.
 - `sloppy fmt`, and format on save in the extension.
 - `sloppy new` with a few templates (done: game, arcade, 3d, program; lib/new/*.jo, each
   built and its first frames drawn in the tests).
-- Language server: workspace symbols (semantic highlighting and rename across files are done).
+- Language server: workspace symbols, semantic highlighting, rename across files (done).
 - An examples gallery on the website, each runnable in the browser.
 
 ### 7. Networking (M, then L)
