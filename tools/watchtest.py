@@ -110,7 +110,8 @@ def test_game(d):
         # a panic pauses the game; fixing it goes on
         g4 = g3.replace("xs[1] + extra()", "xs[7] + extra()")
         write(d, "g.jo", g4)
-        w.expect(r"panic: g.jo:\d+: index 7 out of bounds")
+        # (the panic and the watcher's own messages come from two processes: they may interleave)
+        w.expect(r"index 7 out of bounds")
         w.expect(r"paused")
         # an error keeps the game as it was
         write(d, "g.jo", g4.replace('"two"', '"two" +'))
