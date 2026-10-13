@@ -461,6 +461,7 @@ __sw_raster = (sv: *f32, stride: int, idx: *i32, ntri: int, shade: (int, int, in
     bounds = fill(0, ntri * 4)
     bp = data(bounds)
     counts = fill(0, bands + 1)
+    pixels = 0                      # (how many the triangles' boxes cover: few, and one thread does them)
     loop t in [0..ntri):
         a = sv + int(idx[t * 3]) * stride
         b = sv + int(idx[t * 3 + 1]) * stride
@@ -504,6 +505,7 @@ __sw_raster = (sv: *f32, stride: int, idx: *i32, ntri: int, shade: (int, int, in
         bp[t * 4 + 1] = maxx
         bp[t * 4 + 2] = miny
         bp[t * 4 + 3] = maxy
+        pixels += (maxx - minx + 1) * (maxy - miny + 1)
         loop k in [(miny - y0c) / band_h..(maxy - y0c) / band_h + 1): counts[k + 1] += 1
     loop k in [0..bands): counts[k + 1] += counts[k]
     # bin the triangles by band (a counting sort keeps submission order)
@@ -518,6 +520,7 @@ __sw_raster = (sv: *f32, stride: int, idx: *i32, ntri: int, shade: (int, int, in
             fill[k] += 1
     lp = data(list)
     cp = data(counts)
+    __par_serial = pixels < 32768
     parallel_range(bands, (band: int):
         by0 = y0c + band * band_h
         by1 = min(by0 + band_h, y1c) - 1
@@ -574,6 +577,7 @@ __sw_raster = (sv: *f32, stride: int, idx: *i32, ntri: int, shade: (int, int, in
                 if flip: shade(band, y, minx + klo, minx + khi, t, l0, l2, l1, d0, d2, d1)
                 else: shade(band, y, minx + klo, minx + khi, t, l0, l1, l2, d0, d1, d2)
     )
+    __par_serial = false
 
 # draw a mesh with a Sloppy shader (called by gpu.jo's draw / draw_instanced in software mode)
 __sw_warned_lines = false
@@ -645,6 +649,7 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     chunk = 256
     ids = __sp_ids[prog]
     tls = __sw_tls
+    __par_serial = total < 2048
     parallel_range((total + chunk - 1) / chunk, (k: int):
         mine = tls + __tid() * 8
         loop g in [k * chunk..min((k + 1) * chunk, total)):
@@ -662,6 +667,7 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
                 else: vs2(o as *u8, vb + v * stride, uni)
             __sw_project(o, pvp + g * pstride, nf, vx, vy, vw, vh, fp)
     )
+    __par_serial = false
     # triangles, clipped against the near plane z >= -w where needed
     tris: i32[]
     loop inst in [0..reps):

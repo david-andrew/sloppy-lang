@@ -102,6 +102,8 @@ More for games:
   drawn before with the sky; only the last 3D drawn showed. Each later batch now goes over the
   earlier ones, and their shadows stay.
 - `ui_choice("Level", ["forest", "cave", "tower"], level)`: one of several, in a menu.
+- The software renderer draws small meshes on one thread: waking the others for each
+  `draw_mesh` cost more than it saved (40 small cubes a frame: 10 times faster; Breakwater: twice).
 - `capsule_mesh(radius, height)`: the shape of physics3d's capsules and characters.
 - `draw_line3d(a, b, color)` and `draw_grid3d()`: lines and a ground grid in 3D, for seeing paths,
   rays and distances while making a game.
