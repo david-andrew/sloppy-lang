@@ -54,6 +54,8 @@ Language:
   an indentation error in a file that mixes tabs and spaces says so.
 
 Docs:
+- The tutorial, the templates (`sloppy new`) and the library's examples leave out the `f32(...)`
+  they did not need: f32 and f64 mix by themselves (`pos += input_axis() * 400 * dt`).
 - The library reference lists each struct's fields and each enum's variants (`Key`'s names), and
   its headings are where they belong; `tanh` is with the math.
 - `SLOPPY_INPUT` is described in full; enum matches, and that `loop c in s` gives bytes, are in
