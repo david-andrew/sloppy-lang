@@ -107,10 +107,13 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 
 #### Sorting
 
-- `sort[T] = (xs: mut T[])`: sort in place (ascending, using <)
-- `sort_with[T] = (xs: mut T[], less: (T, T) -> bool)`: sort in place with a custom "less than" function
-- `sort_by[T, K] = (xs: mut T[], key: (T) -> K)`: sort in place by a key
-- `sorted[T] = (xs: T[]) -> T[]`
+- `(<)[A, B] = (a: (A, B), b: (A, B)) -> bool`: tuples compare element by element, the first that differs deciding (sorting (score, name) pairs sorts by score, then name)
+- `(<)[A, B, C] = (a: (A, B, C), b: (A, B, C)) -> bool`
+- `sort[T] = (xs: mut T[], descending: bool = false)`: sort in place, smallest first (using <), or largest first; equal elements keep their order
+- `sort_with[T] = (xs: mut T[], less: (T, T) -> bool)`: sort in place with a custom "less than" function (equal elements keep their order)
+- `sort_by[T, K] = (xs: mut T[], key: (T) -> K, descending: bool = false)`: sort in place by a key, smallest first or largest first (equal keys keep their order: sort by name, then by score, for the scores in order of name)
+- `sorted[T] = (xs: T[], descending: bool = false) -> T[]`: a sorted copy of xs
+- `sorted_by[T, K] = (xs: T[], key: (T) -> K, descending: bool = false) -> T[]`: a copy of xs sorted by a key
 
 ## Strings
 
@@ -154,7 +157,8 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `trim = (s: str, chars: str) -> str`
 - `trim_start = (s: str) -> str`
 - `trim_end = (s: str) -> str`
-- `split = (s: str, sep: str) -> str[]`
+- `split = (s: str, sep: str) -> str[]`: the parts of s between the separators (split("a,b", ",") is ["a", "b"]; with "", the characters)
+- `split = (s: str) -> str[]`: split on runs of whitespace (the same as words(s))
 - `words = (s: str) -> str[]`: split on runs of whitespace
 - `lines = (s: str) -> str[]`
 - `join = (parts: str[], sep: str = "") -> str`: sep.join(parts), as in Python
@@ -1892,6 +1896,7 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
 - `enum TweenMode: once, repeat, pingpong`: once (then it stays at `to`), repeat (from the start again), pingpong (to and back, again and again)
 - `struct Tween[T]`
 - `tween[T] = (from: T, to: T, duration: f64, ease: (f64) -> f64 = ease_in_out, delay: f64 = 0.0, mode: TweenMode = .once) -> Tween[T]`: a value going from `from` to `to` over `duration` seconds along an easing curve: a number, a position (vec2, vec3) or a color (vec4); delay: seconds before it starts. For example `pop = tween(0.0, 1.0, 0.4, ease_out_back)`, then `pop.update(dt)` each frame and `pop.value()` where it is (grown in 0.4 s, a little past the end, then back).
+- `tween = (from: f64, to: f64, duration: f64, ease: (f64) -> f64 = ease_in_out, delay: f64 = 0.0, mode: TweenMode = .once) -> Tween[f64]`: (numbers: tween(0, 10, 0.5) goes through the fractions between)
 - `update[T] = (tw: mut Tween[T], dt: f64)`
 - `progress[T] = (tw: Tween[T]) -> f64`: where along the curve it is, from 0 to 1 (before the easing)
 - `value[T] = (tw: Tween[T]) -> T`

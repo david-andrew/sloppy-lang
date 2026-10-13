@@ -217,6 +217,17 @@ if compiler != "sloppy0" and target == "native":
         else:
             print(f"FAIL {name}: expected an error containing {want!r}\n{r.stderr}")
             failed += 1
+    # programs that build with a warning: tests/warnings/*.jo start with `# warning: <part of it>`
+    for t in sorted(glob.glob(os.path.join(root, "tests", "warnings", "*.jo"))):
+        name = "warnings/" + os.path.basename(t)[:-3]
+        if pattern not in name: continue
+        want = open(t, encoding="utf-8").readline().split("# warning:", 1)[-1].strip()
+        r = subprocess.run([sloppy, "build", t, "-o", os.path.join(tmp, "warning_case")], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")), timeout=60)
+        if r.returncode == 0 and "warning: " + want in r.stderr: passed += 1
+        else:
+            print(f"FAIL {name}: expected a warning containing {want!r}\n{r.stderr}")
+            failed += 1
     # the interactive prompt: tests/repl/*.in typed at `sloppy` (stdout and stderr) against .out
     repl_tests = sorted(glob.glob(os.path.join(root, "tests", "repl", "*.in")))
     for t in repl_tests:

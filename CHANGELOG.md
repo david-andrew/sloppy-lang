@@ -37,6 +37,19 @@ Language:
 - `random_item(xs)` and `shuffle(xs)` (and `r.next_item(xs)`, `r.shuffle(xs)` with an `Rng`);
   `choice`, `randint` and `uniform` point to them. `draw_cube`, `draw_sphere` and `light` point to
   what draws them.
+- Sorting keeps equal elements in their order (sort by name, then by score, and the names stay in
+  order within a score), and takes `descending = true`; `sorted_by(xs, key)` is a sorted copy.
+- Tuples compare element by element (`sorted` of `(score, name)` pairs; `max`, `<`). `>`, `<=`
+  and `>=` come from a struct's `<` (they were errors without their own definitions).
+- `loop x in xs: if x > 0: n += 1` on one line: an `if` after a colon on the same line is the
+  statement (it was an if expression, wanting an else).
+- A warning for `hits / shots * 100.0` and other divisions of whole numbers that become floats
+  (the fraction is gone before: 3 / 4 is 0).
+- `split(s)` splits at spaces, as `words(s)` does; `tween(0, 10, 0.5)` goes through the
+  fractions (with whole numbers it gave an int tween).
+- Hints for Python's `xs[:2]`, `a if c else b`, `if xs:` and `if n:`, for `score += 0.5` with an
+  int score (make it `score = 0.0`), and for a color (vec4) given where a vec3 is wanted (`.rgb`).
+- The REPL's `:type f` of a function shows its versions and their notes.
 - Key names from other libraries (`.esc`, `.return`, `.left_ctrl`, `.left_arrow`) say which variant is
   meant (`.escape`, `.enter`, `.ctrl`, `.left`).
 

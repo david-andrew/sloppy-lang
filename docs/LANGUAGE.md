@@ -281,7 +281,8 @@ written inside an expression is a lambda.
   precedence over standard-library functions with the same signature. An integer literal
   prefers `int`, then another integer type it fits, then `f64`, then `f32`.
 * **Operators** can be overloaded: `(+) = (a: Money, b: Money) -> Money: ...`, also
-  `([])` and `([]=)` for indexing.
+  `([])` and `([]=)` for indexing. `!=` comes from `==`, and `>`, `<=` and `>=` from `<`
+  (which is also what `sort`, `min` and `max` use).
 
 ### Functions as values, closures, partial application
 
@@ -530,6 +531,9 @@ pair = (1, "one")
 a, b = pair
 print(pair.0)
 ```
+
+Tuples compare element by element, the first that differs deciding: `(1, "z") < (2, "a")`, and
+sorting `(score, name)` pairs sorts by score, then by name.
 
 (Enums whose variants carry fields, `enum Shape: circle(r: f64), rect(w: f64, h: f64)`, also
 exist; unions are usually simpler.)
