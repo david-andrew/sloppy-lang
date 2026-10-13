@@ -30,7 +30,7 @@ Once (an Azure account is needed; the free tier is enough, nothing here costs an
    repository's variables (Settings → Secrets and variables → Actions → Variables):
    `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`. (They are not secrets.)
 4. Actions → Release → Run workflow with **only print the Azure identity's Marketplace id**
-   checked. In the log of "The identity's Marketplace id", copy the `id` value.
+   checked. The log of "The identity's Marketplace id" prints the id; copy it.
 5. https://marketplace.visualstudio.com/manage → the RedFoxLabs publisher → **Members** → **Add**:
    paste that id, role **Contributor**.
 
