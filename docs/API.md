@@ -1967,7 +1967,7 @@ Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fix
 Each step is the same for the same inputs (a fixed internal step, a fixed order), so a game that steps it with a fixed dt can replay or roll back. Contacts: `w.contacts()` lists the pairs touching after the step (`.new` on the step they met, `.impulse` how hard), and sensors (`sensor = true`) report contacts without colliding: pickups, triggers. Collision layers: bodies a and b collide when a.layer & b.mask and b.layer & a.mask are not 0.
 
 - `enum BodyKind: dynamic, fixed, moving`
-- `struct Body`
+- `struct Body`: (a handle: a body's place, and which body has had it: a removed body's handle is not taken for the next one put there)
 - `struct Joint`
 - `struct Contact`: a pair of bodies touching after the last step
 - `struct Hit`
@@ -1978,8 +1978,9 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 - `add_circle = (w: mut World, pos: vec2, radius: f64, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`
 - `add_box = (w: mut World, pos: vec2, size: vec2, angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`
 - `add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`: points around pos (their convex hull, if they are not convex)
-- `remove = (w: mut World, b: Body)`
+- `remove = (w: mut World, b: Body)`: take b out of the world (and the joints it is in); its handle then means nothing (a handle used after this panics; removing twice does nothing)
 - `remove = (w: mut World, j: Joint)`
+- `joint_alive = (w: World, j: Joint) -> bool`: the joint is still there (not removed, nor one of its bodies)
 
 #### Asking and changing
 
@@ -2078,7 +2079,7 @@ Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the gam
 
 - `enum BodyKind: dynamic, fixed, moving`
 - `enum Shape: none, sphere, box, capsule, triangles`
-- `struct Body`
+- `struct Body`: (a handle: a body's place, and which body has had it: a removed body's handle is not taken for the next one put there)
 - `struct Joint`
 - `struct Contact`
 - `struct Hit`
@@ -2094,8 +2095,9 @@ Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the gam
 - `add_capsule = (w: mut World, pos: vec3, radius: f64, height: f64, rot: vec4 = vec4(0, 0, 0, 1), kind: BodyKind = .dynamic, density: f64 = 1000, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`: a capsule standing up: height from the bottom to the top of its round ends
 - `add_mesh = (w: mut World, triangles: vec3[], friction: f64 = 0.6) -> Body`: fixed triangles (three corners each, in the world): a level, the ground
 - `triangles = (md: ModelData) -> vec3[]`: a model's triangles, where its parts are (for add_mesh)
-- `remove = (w: mut World, b: Body)`
+- `remove = (w: mut World, b: Body)`: take b out of the world (and the joints it is in); its handle then means nothing (a handle used after this panics; removing twice does nothing)
 - `remove = (w: mut World, j: Joint)`
+- `joint_alive = (w: World, j: Joint) -> bool`: the joint is still there (not removed, nor one of its bodies)
 
 #### Asking and changing
 

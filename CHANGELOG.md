@@ -8,6 +8,10 @@ Games:
   elbows that bend one way. Joints are solved more times each step, so chains and limits hold
   stiffer.
 - 2D physics: `w.circle_cast(a, b, radius)`, the same in 2D.
+- Physics: a body's handle is not the next body's when one is removed and another takes its place
+  (it was: a stale handle moved the new body). Using a removed body's handle panics, `w.alive(b)`
+  says false; a removed joint's (or one whose body went) does nothing, and `w.joint_alive(j)`
+  says so.
 - 3D physics: `w.sphere_cast(a, b, radius)`, a ray with thickness: where a ball moved from a to b
   first touches something (thick bullets, a camera kept out of walls, the ground under feet).
 
@@ -15,6 +19,8 @@ Language:
 - `random()` differs from run to run: it starts from the clock (it always started from the same
   seed). `seed_random(n)` makes the numbers the same every run, as do `SLOPPY_SEED=n` and screenshot
   runs (`SLOPPY_SCREENSHOT`).
+- Fixed: `xs[f(i)].v += d`, a vector (or a type with its own operators) at an index that is a
+  call, failed to compile ("invalid expression"); the index is now computed once.
 - A warning for `s[0] + "!"`: it adds a byte and a character's code, not text.
 - `chr(c)` is the character with code point c, as in Python (`chr(233)` is "é"; it was one byte,
   which made text typed into a web page or a Windows console wrong past ASCII); `byte_str(b)` is a

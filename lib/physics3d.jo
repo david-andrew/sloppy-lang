@@ -20,11 +20,15 @@
 enum BodyKind: dynamic, fixed, moving
 enum Shape: none, sphere, box, capsule, triangles
 
+# (a handle: a body's place, and which body has had it: a removed body's handle is not taken
+# for the next one put there)
 struct Body:
     id: int
+    gen: int
 
 struct Joint:
     id: int
+    gen: int
 
 struct Contact:
     a: Body
@@ -74,6 +78,7 @@ __comp = (v: vec3, i: int) -> f32:
 
 # ---------------- the world ----------------
 struct __B3:
+    gen: int                # (bumped when it is removed)
     kind = BodyKind.dynamic
     shape = -1              # 0 sphere, 1 box, 2 capsule, 3 triangles (-1: none)
     pos: vec3
@@ -129,6 +134,7 @@ struct __Arb3:
     sensor: bool
 
 struct __J3:
+    gen: int
     kind: int               # 0 ball, 1 hinge, 2 rod
     a: int
     b: int
@@ -243,148 +249,181 @@ __add3 = (w: mut World, b: __B3) -> Body:
     id = w.bodies.len()
     if w.free.len() > 0:
         id = w.free.pop()
+        g = w.bodies[id].gen
         w.bodies[id] = b
+        w.bodies[id].gen = g
     else: w.bodies.push(b)
     __update3(w.bodies[id], w.meshes)
-    Body(id)
+    __body(w, id)
 
+# take b out of the world (and the joints it is in); its handle then means nothing (a handle
+# used after this panics; removing twice does nothing)
 remove = (w: mut World, b: Body):
-    if b.id <= 0 or not w.bodies[b.id].alive: return
+    if b.id <= 0 or b.id >= w.bodies.len() or w.bodies[b.id].gen != b.gen or not w.bodies[b.id].alive: return
+    id = b.id
     # (what rested on it, or hung from it, wakes up: near it, asleep, they keep no contacts)
-    lo = w.bodies[b.id].lo - vec3(0.05, 0.05, 0.05)
-    hi = w.bodies[b.id].hi + vec3(0.05, 0.05, 0.05)
+    lo = w.bodies[id].lo - vec3(0.05, 0.05, 0.05)
+    hi = w.bodies[id].hi + vec3(0.05, 0.05, 0.05)
     near: int[]
     loop i in 0.. and o in w.bodies:
         if o.asleep and o.lo.x <= hi.x and o.hi.x >= lo.x and o.lo.y <= hi.y and o.hi.y >= lo.y and o.lo.z <= hi.z and o.hi.z >= lo.z: near.push(i)
     loop i in near: __wake(w, i)
     loop j in w.joints:
-        if j.alive and j.a == b.id: __wake(w, j.b)
-        else if j.alive and j.b == b.id: __wake(w, j.a)
-    w.bodies[b.id].alive = false
-    w.bodies[b.id].shape = -1
-    w.free.push(b.id)
+        if j.alive and j.a == id: __wake(w, j.b)
+        else if j.alive and j.b == id: __wake(w, j.a)
+    w.bodies[id].alive = false
+    w.bodies[id].gen += 1
+    __unshape(w.bodies[id])
+    w.free.push(id)
     loop mut j in w.joints:
-        if j.a == b.id or j.b == b.id: j.alive = false
+        if j.alive and (j.a == id or j.b == id):
+            j.alive = false
+            j.gen += 1
 
-remove = (w: mut World, j: Joint): w.joints[j.id].alive = false
+remove = (w: mut World, j: Joint):
+    if j.id < 0 or j.id >= w.joints.len() or w.joints[j.id].gen != j.gen or not w.joints[j.id].alive: return
+    w.joints[j.id].alive = false
+    w.joints[j.id].gen += 1
+
+# (a body's place, from its handle: one removed since panics)
+__id = (w: World, b: Body) -> int:
+    if b.id < 0 or b.id >= w.bodies.len() or w.bodies[b.id].gen != b.gen:
+        panic("this body was removed from its world (or is from another world)")
+    b.id
+__body = (w: World, id: int) -> Body: Body(id, w.bodies[id].gen)
+# (a joint's place, -1 for one removed: what is asked of it does nothing)
+__jid = (w: World, j: Joint) -> int:
+    if j.id < 0 or j.id >= w.joints.len() or w.joints[j.id].gen != j.gen or not w.joints[j.id].alive: return -1
+    j.id
+__joint_h = (w: World, id: int) -> Joint: Joint(id, w.joints[id].gen)
+
+# the joint is still there (not removed, nor one of its bodies)
+joint_alive = (w: World, j: Joint) -> bool: __jid(w, j) >= 0
 
 # ---------------- asking and changing ----------------
 bodies = (w: World) -> Body[]:
     out: Body[]
     loop i in [1..w.bodies.len()):
-        if w.bodies[i].alive and w.bodies[i].shape >= 0: out.push(Body(i))
+        if w.bodies[i].alive and w.bodies[i].shape >= 0: out.push(__body(w, i))
     out
 # its shape, and (for drawing it) its size: a box's full width, height and depth, a sphere's or
 # a capsule's width (and a capsule's height, end to end, in y)
 shape = (w: World, b: Body) -> Shape:
-    s = w.bodies[b.id].shape
+    s = w.bodies[__id(w, b)].shape
     if s == 0: return .sphere
     if s == 1: return .box
     if s == 2: return .capsule
     if s == 3: return .triangles
     .none
 size = (w: World, b: Body) -> vec3:
-    bd = w.bodies[b.id]
+    bd = w.bodies[__id(w, b)]
     if bd.shape == 0: return vec3(bd.radius, bd.radius, bd.radius) * 2.0
     if bd.shape == 1: return bd.half * 2.0
     if bd.shape == 2: return vec3(bd.radius * 2.0, (bd.half.y + bd.radius) * 2.0, bd.radius * 2.0)
     vec3(0, 0, 0)
-radius = (w: World, b: Body) -> f64: f64(w.bodies[b.id].radius)
-pos = (w: World, b: Body) -> vec3: w.bodies[b.id].pos
-rotation = (w: World, b: Body) -> vec4: w.bodies[b.id].rot
-velocity = (w: World, b: Body) -> vec3: w.bodies[b.id].vel
-spin = (w: World, b: Body) -> vec3: w.bodies[b.id].spin
+radius = (w: World, b: Body) -> f64: f64(w.bodies[__id(w, b)].radius)
+pos = (w: World, b: Body) -> vec3: w.bodies[__id(w, b)].pos
+rotation = (w: World, b: Body) -> vec4: w.bodies[__id(w, b)].rot
+velocity = (w: World, b: Body) -> vec3: w.bodies[__id(w, b)].vel
+spin = (w: World, b: Body) -> vec3: w.bodies[__id(w, b)].spin
 mass = (w: World, b: Body) -> f64:
-    im = w.bodies[b.id].inv_mass
+    im = w.bodies[__id(w, b)].inv_mass
     if im == 0.0: return 0.0
     1.0 / f64(im)
-kind = (w: World, b: Body) -> BodyKind: w.bodies[b.id].kind
-alive = (w: World, b: Body) -> bool: b.id > 0 and b.id < w.bodies.len() and w.bodies[b.id].alive
-tag = (w: World, b: Body) -> int: w.bodies[b.id].tag
-set_tag = (w: mut World, b: Body, t: int): w.bodies[b.id].tag = t
+kind = (w: World, b: Body) -> BodyKind: w.bodies[__id(w, b)].kind
+alive = (w: World, b: Body) -> bool: b.id > 0 and b.id < w.bodies.len() and w.bodies[b.id].gen == b.gen and w.bodies[b.id].alive
+tag = (w: World, b: Body) -> int: w.bodies[__id(w, b)].tag
+set_tag = (w: mut World, b: Body, t: int): w.bodies[__id(w, b)].tag = t
 # where and how it is turned, as a matrix for drawing (a box's or capsule's size not included)
-transform = (w: World, b: Body) -> mat4: translation(w.bodies[b.id].pos) * quat_to_mat4(w.bodies[b.id].rot)
-to_world = (w: World, b: Body, local: vec3) -> vec3: w.bodies[b.id].pos + quat_rotate(w.bodies[b.id].rot, local)
+transform = (w: World, b: Body) -> mat4: translation(w.bodies[__id(w, b)].pos) * quat_to_mat4(w.bodies[__id(w, b)].rot)
+to_world = (w: World, b: Body, local: vec3) -> vec3: w.bodies[__id(w, b)].pos + quat_rotate(w.bodies[__id(w, b)].rot, local)
 to_local = (w: World, b: Body, p: vec3) -> vec3:
-    q = w.bodies[b.id].rot
-    quat_rotate(vec4(-q.x, -q.y, -q.z, q.w), p - w.bodies[b.id].pos)
+    q = w.bodies[__id(w, b)].rot
+    quat_rotate(vec4(-q.x, -q.y, -q.z, q.w), p - w.bodies[__id(w, b)].pos)
 
 set_pos = (w: mut World, b: Body, p: vec3):
-    w.bodies[b.id].pos = p
-    __update3(w.bodies[b.id], w.meshes)
-    __wake(w, b.id)
+    w.bodies[__id(w, b)].pos = p
+    __update3(w.bodies[__id(w, b)], w.meshes)
+    __wake(w, __id(w, b))
 set_rotation = (w: mut World, b: Body, q: vec4):
-    w.bodies[b.id].rot = normalize(q)
-    __update3(w.bodies[b.id], w.meshes)
-    __wake(w, b.id)
+    w.bodies[__id(w, b)].rot = normalize(q)
+    __update3(w.bodies[__id(w, b)], w.meshes)
+    __wake(w, __id(w, b))
 set_velocity = (w: mut World, b: Body, v: vec3):
-    w.bodies[b.id].vel = v
-    __wake(w, b.id)
+    w.bodies[__id(w, b)].vel = v
+    __wake(w, __id(w, b))
 set_spin = (w: mut World, b: Body, s: vec3):
-    w.bodies[b.id].spin = s
-    __wake(w, b.id)
+    w.bodies[__id(w, b)].spin = s
+    __wake(w, __id(w, b))
 # it is asleep: at rest with all it touches, left out of each step until something touches it
-sleeping = (w: World, b: Body) -> bool: w.bodies[b.id].asleep
+sleeping = (w: World, b: Body) -> bool: w.bodies[__id(w, b)].asleep
 
 __wake = (w: mut World, id: int):
     if w.bodies[id].asleep:
         w.bodies[id].asleep = false
         w.bodies[id].still = 0
-set_damping = (w: mut World, b: Body, d: f64): w.bodies[b.id].damping = f32(d)
+set_damping = (w: mut World, b: Body, d: f64): w.bodies[__id(w, b)].damping = f32(d)
 set_fixed_rotation = (w: mut World, b: Body, on: bool):
-    w.bodies[b.id].fixed_rotation = on
-    if on: w.bodies[b.id].spin = vec3(0, 0, 0)
-set_friction = (w: mut World, b: Body, f: f64): w.bodies[b.id].friction = f32(f)
-set_bounce = (w: mut World, b: Body, f: f64): w.bodies[b.id].bounce = f32(f)
+    w.bodies[__id(w, b)].fixed_rotation = on
+    if on: w.bodies[__id(w, b)].spin = vec3(0, 0, 0)
+set_friction = (w: mut World, b: Body, f: f64): w.bodies[__id(w, b)].friction = f32(f)
+set_bounce = (w: mut World, b: Body, f: f64): w.bodies[__id(w, b)].bounce = f32(f)
 set_layers = (w: mut World, b: Body, layer: int, mask: int = -1):
-    w.bodies[b.id].layer = layer
-    w.bodies[b.id].mask = mask
+    w.bodies[__id(w, b)].layer = layer
+    w.bodies[__id(w, b)].mask = mask
 
 push = (w: mut World, b: Body, impulse: vec3):
-    w.bodies[b.id].vel += impulse * w.bodies[b.id].inv_mass
-    __wake(w, b.id)
+    w.bodies[__id(w, b)].vel += impulse * w.bodies[__id(w, b)].inv_mass
+    __wake(w, __id(w, b))
 push = (w: mut World, b: Body, impulse: vec3, at: vec3):
-    w.bodies[b.id].vel += impulse * w.bodies[b.id].inv_mass
-    w.bodies[b.id].spin += __mv(w.bodies[b.id].iw, cross(at - w.bodies[b.id].pos, impulse))
-    __wake(w, b.id)
+    w.bodies[__id(w, b)].vel += impulse * w.bodies[__id(w, b)].inv_mass
+    w.bodies[__id(w, b)].spin += __mv(w.bodies[__id(w, b)].iw, cross(at - w.bodies[__id(w, b)].pos, impulse))
+    __wake(w, __id(w, b))
 apply_force = (w: mut World, b: Body, f: vec3):
-    w.bodies[b.id].force += f
-    __wake(w, b.id)
+    w.bodies[__id(w, b)].force += f
+    __wake(w, __id(w, b))
 apply_torque = (w: mut World, b: Body, t: vec3):
-    w.bodies[b.id].torque += t
-    __wake(w, b.id)
+    w.bodies[__id(w, b)].torque += t
+    __wake(w, __id(w, b))
 
 # ---------------- joints ----------------
 # a ball and socket at the point at (in the world, now)
 ball = (w: mut World, a: Body, b: Body, at: vec3) -> Joint:
-    __joint3(w, __J3(kind = 0, a = a.id, b = b.id, la = w.to_local(a, at), lb = w.to_local(b, at)))
+    __joint3(w, __J3(kind = 0, a = __id(w, a), b = __id(w, b), la = w.to_local(a, at), lb = w.to_local(b, at)))
 
 # a hinge at at, turning about axis (in the world, now); lower, upper: how far b may turn
 # against a (radians, from how they are now; about axis, by the right hand); motor_speed: b
 # turned against a at that many radians a second, with up to max_torque (0: no motor)
 hinge = (w: mut World, a: Body, b: Body, at: vec3, axis: vec3, lower: f64 = -1e9, upper: f64 = 1e9, motor_speed: f64 = 0, max_torque: f64 = 0) -> Joint:
     qa = w.bodies[a.id].rot
-    qb = w.bodies[b.id].rot
+    qb = w.bodies[__id(w, b)].rot
     n = normalize(axis)
     ia = vec4(-qa.x, -qa.y, -qa.z, qa.w)
     ib = vec4(-qb.x, -qb.y, -qb.z, qb.w)
     r, r2 = __tangents(n)
-    __joint3(w, __J3(kind = 1, a = a.id, b = b.id, la = w.to_local(a, at), lb = w.to_local(b, at),
+    __joint3(w, __J3(kind = 1, a = __id(w, a), b = __id(w, b), la = w.to_local(a, at), lb = w.to_local(b, at),
                      axis_a = quat_rotate(ia, n), axis_b = quat_rotate(ib, n), ref_a = quat_rotate(ia, r), ref_b = quat_rotate(ib, r),
                      lower = f32(lower), upper = f32(upper), motor_speed = f32(motor_speed), max_torque = f32(max_torque)))
 
 # a hinge's motor (max_torque 0: none) and limits, changed; and how far b has turned against a
 set_motor = (w: mut World, j: Joint, speed: f64, max_torque: f64):
-    w.joints[j.id].motor_speed = f32(speed)
-    w.joints[j.id].max_torque = f32(max_torque)
-    __wake(w, w.joints[j.id].a)
-    __wake(w, w.joints[j.id].b)
+    k = __jid(w, j)
+    if k < 0: return
+    w.joints[k].motor_speed = f32(speed)
+    w.joints[k].max_torque = f32(max_torque)
+    __wake(w, w.joints[k].a)
+    __wake(w, w.joints[k].b)
 set_limits = (w: mut World, j: Joint, lower: f64, upper: f64):
-    w.joints[j.id].lower = f32(lower)
-    w.joints[j.id].upper = f32(upper)
-    __wake(w, w.joints[j.id].a)
-    __wake(w, w.joints[j.id].b)
-joint_angle = (w: World, j: Joint) -> f64: f64(__hinge_angle(w.joints[j.id], w.bodies))
+    k = __jid(w, j)
+    if k < 0: return
+    w.joints[k].lower = f32(lower)
+    w.joints[k].upper = f32(upper)
+    __wake(w, w.joints[k].a)
+    __wake(w, w.joints[k].b)
+joint_angle = (w: World, j: Joint) -> f64:
+    k = __jid(w, j)
+    if k < 0: return 0
+    f64(__hinge_angle(w.joints[k], w.bodies))
 
 __hinge_angle = (j: __J3, bs: __B3[]) -> f32:
     ax = quat_rotate(bs[j.a].rot, j.axis_a)
@@ -395,20 +434,24 @@ __hinge_angle = (j: __J3, bs: __B3[]) -> f32:
 # the points at_a of a and at_b of b kept as far apart as they are (spring: a spring of that
 # many oscillations a second; rope: only as far at most)
 rod = (w: mut World, a: Body, b: Body, at_a: vec3, at_b: vec3, spring: f64 = 0, damping: f64 = 0.5, rope: bool = false) -> Joint:
-    __joint3(w, __J3(kind = 2, a = a.id, b = b.id, la = w.to_local(a, at_a), lb = w.to_local(b, at_b), length = length(at_b - at_a),
+    __joint3(w, __J3(kind = 2, a = __id(w, a), b = __id(w, b), la = w.to_local(a, at_a), lb = w.to_local(b, at_b), length = length(at_b - at_a),
                      hz = f32(spring), damping = f32(damping), rope = rope))
 
 ends = (w: World, j: Joint) -> (vec3, vec3):
-    jd = w.joints[j.id]
+    k = __jid(w, j)
+    if k < 0: return (vec3(0, 0, 0), vec3(0, 0, 0))
+    jd = w.joints[k]
     (w.bodies[jd.a].pos + quat_rotate(w.bodies[jd.a].rot, jd.la), w.bodies[jd.b].pos + quat_rotate(w.bodies[jd.b].rot, jd.lb))
 
 __joint3 = (w: mut World, j: __J3) -> Joint:
     loop i in [0..w.joints.len()):
         if not w.joints[i].alive:
+            g = w.joints[i].gen
             w.joints[i] = j
-            return Joint(i)
+            w.joints[i].gen = g
+            return __joint_h(w, i)
     w.joints.push(j)
-    Joint(w.joints.len() - 1)
+    __joint_h(w, w.joints.len() - 1)
 
 # ---------------- stepping ----------------
 step = (w: mut World, dt: f64):
@@ -423,7 +466,7 @@ step = (w: mut World, dt: f64):
         if a.contacts.len() == 0: continue
         imp: f32 = 0
         loop c in a.contacts: imp += c.pn
-        w.events.push(Contact(Body(a.a), Body(a.b), a.contacts[0].point, a.contacts[0].normal, imp, not was.has(a.a * 1000003 + a.b)))
+        w.events.push(Contact(__body(w, a.a), __body(w, a.b), a.contacts[0].point, a.contacts[0].normal, imp, not was.has(a.a * 1000003 + a.b)))
     loop mut b in w.bodies:
         b.force = vec3(0, 0, 0)
         b.torque = vec3(0, 0, 0)
@@ -435,6 +478,8 @@ contacts = (w: World, b: Body) -> Contact[]:
         if c.a == b: out.push(c)
         else if c.b == b: out.push(Contact(c.b, c.a, c.point, -c.normal, c.impulse, c.new))
     out
+
+__unshape = (b: mut __B3): b.shape = -1
 
 # its rotation matrix, inertia in the world and bounds
 __update3 = (b: mut __B3, meshes: __Mesh3[]):
@@ -1278,12 +1323,12 @@ raycast = (w: World, a: vec3, b: vec3, mask: int = -1) -> Hit?:
                     bf = f
                     n = normalize(cross(p1 - p0, p2 - p0))
                     if dot(n, d) > 0.0: n = -n
-                    best = Hit(Body(i), a + d * f, n, f)
+                    best = Hit(__body(w, i), a + d * f, n, f)
             continue
         f, n = __ray_shape(bd, a, d)
         if f >= 0.0 and f < bf:
             bf = f
-            best = Hit(Body(i), a + d * f, n, f)
+            best = Hit(__body(w, i), a + d * f, n, f)
     best
 
 # a ray against a sphere, box or capsule: how far along (-1: not) and the normal there
@@ -1375,7 +1420,7 @@ sphere_cast = (w: World, a: vec3, b: vec3, r: f64, mask: int = -1) -> Hit?:
                 f, n = __sweep_tri(a, d, rr, m.tris[t * 3], m.tris[t * 3 + 1], m.tris[t * 3 + 2])
                 if f >= 0.0 and f < bf:
                     bf = f
-                    best = Hit(Body(i), a + d * f - n * rr, n, f)
+                    best = Hit(__body(w, i), a + d * f - n * rr, n, f)
             continue
         # (the shape grown by r: a ray against that)
         g = bd
@@ -1384,7 +1429,7 @@ sphere_cast = (w: World, a: vec3, b: vec3, r: f64, mask: int = -1) -> Hit?:
         f, n = __ray_shape(g, a, d)
         if f >= 0.0 and f < bf:
             bf = f
-            best = Hit(Body(i), a + d * f - n * rr, n, f)
+            best = Hit(__body(w, i), a + d * f - n * rr, n, f)
     best
 
 # a ball of radius r moved along d from a, against a triangle: its face pushed out by r, its
