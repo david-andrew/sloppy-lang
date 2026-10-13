@@ -666,6 +666,11 @@ def run(cmd, timeout=15):
         return -1, "", "timeout"
 
 
+# what a failed run said: its first line (native builds go on with a backtrace, the others do not)
+def panic_line(e):
+    return (e.splitlines() or [""])[0][:200]
+
+
 def check(seed, wasm=True, keep=False):
     src = Gen(random.Random(seed)).program()
     path = os.path.join(OUT, f"p{seed}.jo")
@@ -683,7 +688,7 @@ def check(seed, wasm=True, keep=False):
             code, o, e = run(["node", os.path.join(ROOT, "tools", "runwasm.js"), exe + ".html"])
         else:
             code, o, e = run([exe])
-        outs[name] = o + (f"[exit {code}] {e[:200]}" if code != 0 else "")
+        outs[name] = o + (f"[exit {code}] {panic_line(e)}" if code != 0 else "")
     # the bootstrap compiler shares no code with the self-hosted one, so it catches mistakes all
     # of the self-hosted builds make alike (when the program stays within its language subset)
     if os.path.exists(SLOPPY0) and "vec" not in src:
@@ -691,7 +696,7 @@ def check(seed, wasm=True, keep=False):
         code, _, err = run([SLOPPY0, path, "-o", exe])
         if code == 0:
             code, o, e = run([exe])
-            outs["sloppy0"] = o + (f"[exit {code}] {e[:200]}" if code != 0 else "")
+            outs["sloppy0"] = o + (f"[exit {code}] {panic_line(e)}" if code != 0 else "")
     vals = list(outs.values())
     # programs printing megabytes can time out on the slower builds: inconclusive, not a failure
     if len(outs.get("debug", "")) > 1000000 and any(v.endswith("timeout") for v in vals):
