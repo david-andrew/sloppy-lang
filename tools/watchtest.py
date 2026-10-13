@@ -294,7 +294,37 @@ def test_program(d):
         w.quit()
 
 
-tests = [test_game, test_modules_release, test_migrate, test_migrate_fixed, test_assets, test_restarts, test_program]
+PHYS = """\
+import physics
+w = physics.World()
+floor = w.add_box(vec2(400, 600), vec2(800, 40), kind = .fixed)
+ball = w.add_circle(vec2(400, 100), 20)
+w.set_velocity(ball, vec2(30, 0))
+update = (dt: f64):
+    w.step(1.0 / 60.0)
+    if frame_number() % 10 == 0: print("tick x={w.pos(ball).x:.0} note={note()}")
+    sleep(0.005)
+note = () -> str: "a"
+draw = (): clear(BLACK)
+"""
+
+
+# a library module's world (struct of arrays of structs) kept across reloads
+def test_physics_state(d):
+    write(d, "p.jo", PHYS)
+    w = Watch(d, "p.jo")
+    try:
+        w.expect(r"tick .* note=a")
+        x0 = float(w.expect(r"tick x=([0-9.]+)").group(1))
+        write(d, "p.jo", PHYS.replace('"a"', '"b"'))
+        w.expect(r"reloaded in \d+ ms: note")
+        m = w.expect(r"tick x=([0-9.]+) note=b")
+        assert float(m.group(1)) >= x0, "the world was lost"
+    finally:
+        w.quit()
+
+
+tests = [test_game, test_modules_release, test_migrate, test_migrate_fixed, test_assets, test_restarts, test_program, test_physics_state]
 passed = failed = 0
 for t in tests:
     with tempfile.TemporaryDirectory() as d:
