@@ -15,6 +15,13 @@ Faster:
   compiles itself in 8.5 s instead of 13.2 s, and is 4.4 MB instead of 6.6 MB.
 
 Tools:
+- **`sloppy fmt`**: code laid out one way: blocks indented by four spaces, one space around
+  binary operators and after commas and colons, none inside brackets; line breaks, strings and
+  comments stay (a comment after code keeps its column). Only spaces change, and only where
+  the compiler reads the same tokens afterwards (the spaces it pays attention to, as in
+  `[a -b]` and `x xor= 1`, included), else the file is left alone. `--check` lists what would
+  change; `-` formats standard input. The language server formats (`textDocument/formatting`),
+  and the VS Code extension formats on save.
 - **`sloppy new <directory> [kind]`**: a project to start from, which runs as it is: `game` (the
   smallest: a window, update and draw), `arcade` (a 2D arcade game: a title menu, a score, a best
   score kept, sounds, particles, a pause menu), `3d` (first person: mouse look, walking and

@@ -849,6 +849,8 @@ sloppy build file.jo      write the executable / .html (-o game.zip: the page as
 sloppy test file.jo       run `test` blocks
 sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, 3d, program)
 sloppy check file.jo      type check only
+sloppy fmt file.jo        lay out the code one way (directories too; --check: only list what
+                          would change; -: standard input to standard output)
 sloppy update             install the latest release (when this is not it)
 ```
 

@@ -146,6 +146,26 @@ if compiler != "sloppy0" and target == "native":
             else:
                 print(f"FAIL {name}: does not build\n{r.stderr}")
                 failed += 1
+    # sloppy fmt: tests/fmt/*.jo laid out must be their .out (which stays as it is), and the
+    # compiler, the library and the examples must be laid out so already
+    for t in sorted(glob.glob(os.path.join(root, "tests", "fmt", "*.jo"))):
+        name = "fmt/" + os.path.basename(t)[:-3]
+        if pattern not in name: continue
+        want = open(t[:-3] + ".out", encoding="utf-8").read()
+        env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"))
+        got = subprocess.run([sloppy, "fmt", "-"], stdin=open(t, "rb"), capture_output=True, env=env, timeout=60).stdout.decode()
+        again = subprocess.run([sloppy, "fmt", "-"], input=want.encode(), capture_output=True, env=env, timeout=60).stdout.decode()
+        if got == want and again == want: passed += 1
+        else:
+            print(f"FAIL {name}:\n{got}")
+            failed += 1
+    if pattern in "fmt/repository":
+        r = subprocess.run([sloppy, "fmt", "--check", "compiler", "lib", "examples", "docs/api"], capture_output=True, text=True, cwd=root,
+                           env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")), timeout=120)
+        if r.returncode == 0: passed += 1
+        else:
+            print(f"FAIL fmt/repository: not laid out by sloppy fmt (run it on these):\n{r.stdout}{r.stderr}")
+            failed += 1
     # `sloppy new`: each template, made into a project, must build (and the program's tests pass)
     for kind in ["game", "arcade", "3d", "program"]:
         name = "new/" + kind

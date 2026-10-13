@@ -11,6 +11,8 @@ feels like a scripting language:
 - signature help while typing arguments
 - inlay hints: the inferred types of variables and function results
 - outline (document symbols), and symbols across the workspace's files (Ctrl+T)
+- formatting (`sloppy fmt`), on save by default (`"[sloppy]": {"editor.formatOnSave": false}` turns
+  that off)
 - run the file in a terminal (Ctrl+F5, or the run button), in the browser, or its tests
 - **Sloppy: New Project**: a folder with a game (or a program) to start from, which runs as it is
 

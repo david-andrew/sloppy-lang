@@ -87,7 +87,7 @@ shader); without this each project copies files.
 
 ### 6. Everyday tools (S each)
 
-- `sloppy fmt`, and format on save in the extension.
+- `sloppy fmt`, and format on save in the extension (done).
 - `sloppy new` with a few templates (done: game, arcade, 3d, program; lib/new/*.jo, each
   built and its first frames drawn in the tests).
 - Language server: workspace symbols, semantic highlighting, rename across files (done).

@@ -28,7 +28,7 @@ rebuild.
 | optimize | `opt.jo`; release only: `inline.jo`, `loops.jo` | folding, copy propagation, dead code; inlining, loop versioning and vectorizing |
 | code | `x64.jo`, `arm64.jo`, `wasm.jo`, `spirv.jo`, `glsl.jo` | register allocation and x86-64 encoding; arm64 (linear-scan register allocation, the same analysis); WebAssembly; shaders and compute functions as SPIR-V, shaders as GLSL |
 | write | `elf.jo`, `pe.jo`, `macho.jo`, `dwarf.jo`, `pdb.jo` | Linux, Windows and macOS executables, debug information |
-| drive | `main.jo`, `new.jo` | the command line, targets and the build block, the order of the above; `sloppy new` (its templates: `lib/new/*.jo`) |
+| drive | `main.jo`, `new.jo`, `fmt.jo` | the command line, targets and the build block, the order of the above; `sloppy new` (its templates: `lib/new/*.jo`); `sloppy fmt` |
 | editors | `ide.jo`, `lsp.jo` | what a check learned, as lines; the language server |
 | live | `repl.jo`, `watch.jo` | the interactive prompt; hot reloading |
 
@@ -64,7 +64,7 @@ the copy back.
 
 | command | what |
 |---|---|
-| `python3 tools/runtests.py --compiler sloppy [--release] [--target wasm\|windows] [pattern]` | programs in `tests/t` against their `.out`; then `tests/backtrace`, `tests/unit` (`sloppy test`), `tests/errors`, `tests/repl` |
+| `python3 tools/runtests.py --compiler sloppy [--release] [--target wasm\|windows] [pattern]` | programs in `tests/t` against their `.out`; then `tests/backtrace`, `tests/unit` (`sloppy test`), `tests/fmt` (and that the compiler and library are laid out by `sloppy fmt`), `tests/errors`, `tests/repl` |
 | `python3 tools/runtests.py` | the same programs through the C bootstrap compiler |
 | `python3 tools/lsptest.py` | the language server, driven as an editor does |
 | `python3 tools/rendertest.py --no-gpu` | games rendered by the software renderer against reference frames |

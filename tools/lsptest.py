@@ -83,7 +83,7 @@ def lc(text, off):
 tmp = tempfile.mkdtemp(prefix="sloppy-lsptest-")
 c = Client()
 caps = c.request("initialize", {"capabilities": {}, "rootUri": to_uri(tmp)})["capabilities"]
-check("capabilities", sorted(k for k, v in caps.items() if v), sorted(["textDocumentSync", "hoverProvider", "definitionProvider", "referencesProvider", "documentHighlightProvider", "documentSymbolProvider", "workspaceSymbolProvider", "renameProvider", "completionProvider", "signatureHelpProvider", "inlayHintProvider", "semanticTokensProvider"]))
+check("capabilities", sorted(k for k, v in caps.items() if v), sorted(["textDocumentSync", "hoverProvider", "definitionProvider", "referencesProvider", "documentHighlightProvider", "documentSymbolProvider", "workspaceSymbolProvider", "documentFormattingProvider", "renameProvider", "completionProvider", "signatureHelpProvider", "inlayHintProvider", "semanticTokensProvider"]))
 c.notify("initialized", {})
 
 # ---- a program: names, types, declarations ----
@@ -201,6 +201,16 @@ open(os.path.join(tmp, "more", "extra.jo"), "w").write("struct Pointy:\n    px: 
 ws = c.request("workspace/symbol", {"query": "poi"})
 check("workspace symbols", sorted((w["name"], w["kind"], os.path.basename(urllib.parse.unquote(w["location"]["uri"]))) for w in ws),
       [("Point", 23, os.path.basename(path)), ("Pointy", 23, "extra.jo")])
+# formatting: one edit of the whole text, none when it is laid out already or does not lex
+fpath = os.path.join(tmp, "fmt.jo")
+furi = to_uri(fpath)
+c.set_text(furi, "f=(a:int)->int:\n  a+1\n")
+fe = c.request("textDocument/formatting", {"textDocument": {"uri": furi}, "options": {"tabSize": 4, "insertSpaces": True}})
+check("formatting", [e["newText"] for e in fe], ["f = (a: int) -> int:\n    a + 1\n"])
+c.set_text(furi, "f = (a: int) -> int:\n    a + 1\n")
+check("formatting: laid out already", c.request("textDocument/formatting", {"textDocument": {"uri": furi}, "options": {}}), [])
+c.set_text(furi, "x = (1\n")
+check("formatting: does not lex", c.request("textDocument/formatting", {"textDocument": {"uri": furi}, "options": {}}), [])
 ws = c.request("workspace/symbol", {"query": "px"})
 check("workspace symbols: members", [(w["name"], w.get("containerName"), w["location"]["range"]["start"]) for w in ws], [("px", "Pointy", {"line": 1, "character": 4})])
 

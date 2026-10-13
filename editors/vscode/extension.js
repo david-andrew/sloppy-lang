@@ -567,6 +567,12 @@ function activate(context) {
                 return (r || []).map(toSymbol);
             },
         }),
+        L.registerDocumentFormattingEditProvider(selector, {
+            async provideDocumentFormattingEdits(doc, options, token) {
+                const r = await ask('textDocument/formatting', { textDocument: textDocument(doc), options: { tabSize: options.tabSize, insertSpaces: options.insertSpaces } }, token);
+                return (r || []).map((e) => vscode.TextEdit.replace(toRange(e.range), e.newText));
+            },
+        }),
         L.registerWorkspaceSymbolProvider({
             async provideWorkspaceSymbols(query, token) {
                 const r = await ask('workspace/symbol', { query }, token);

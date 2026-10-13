@@ -138,6 +138,7 @@ bin/sloppy --web examples/dunes/dunes.jo    # the same game in the browser
 bin/sloppy build examples/dunes/dunes.jo --target wasm -o dunes.html   # a page to keep or share
 bin/sloppy test tests/unit/sample_test.jo  # run `test` blocks
 bin/sloppy check file.jo        # type check only
+bin/sloppy fmt compiler lib     # lay out the code (the tests check these are laid out so)
 ```
 
 `bin/sloppy` finds the standard library in `lib/` next to its own directory (or `$SLOPPY_LIB`).
