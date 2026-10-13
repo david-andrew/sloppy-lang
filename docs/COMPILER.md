@@ -72,6 +72,7 @@ the copy back.
 | `python3 tools/fuzz.py 100` | random valid programs, built four ways, must agree |
 | `python3 tools/gpufuzz.py 100 [--shaders]` | random compute functions on the CPU, the GPU and lavapipe (or fragment shaders: software, OpenGL, Vulkan) must agree; `--reduce` shrinks a failure |
 | `python3 tools/fuzz_errors.py 2000` | real programs broken at random: the compiler must give an error, never crash |
+| `python3 tools/speedcheck.py [--base REV] [--release]` | compile speed against an earlier commit (default the one before): the instructions compiling bench/big.jo, the compiler and the games takes; fails above 1% (CI runs it on every push) |
 
 Adding a test:
 - a program: `tests/t/name.jo` and its expected output `tests/t/name.out` (output after a
