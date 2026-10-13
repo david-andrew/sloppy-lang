@@ -126,11 +126,55 @@ when TARGET == "macos":
     @lib("/usr/lib/libSystem.B.dylib")
     @symbol("sigaction")
     extern __c_sigaction = (sig: i32, act: *u8, old: *u8) -> i32
+    @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("tcgetattr")
+    extern __c_tcgetattr = (fd: i32, t: *u8) -> i32
+    @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("tcsetattr")
+    extern __c_tcsetattr = (fd: i32, how: i32, t: *u8) -> i32
+    @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("pthread_jit_write_protect_np")
+    extern __c_jit_write_protect = (on: i32)
 
     # a C function whose library is missing (dyld left its slot empty)
     __ffi_missing = (lib: str, name: str):
         __write_err("panic: function {name} not found ({lib} is missing)\n")
         __c_exit(101)
+
+    # TCGETS / TCSETS: Linux's struct termios (u32 iflag, oflag, cflag, lflag, line, cc[19]) to
+    # and from macOS's (u64 flags, cc[20], speeds), for the bits the library changes (raw mode)
+    __mac_termios = (fd: i32, set: bool, lt: *u8) -> int:
+        mt = fill(0, 9)
+        m = data(mt) as *u8
+        if __c_tcgetattr(fd, m) != 0: return __mac_r(-1)
+        li = lt as *u32
+        mcc = m + 32
+        if not set:
+            loop k in [0..36): lt[k] = 0
+            ifl = 0
+            if mt[0] & 0x100 != 0: ifl |= 0x100                 # ICRNL
+            if mt[0] & 0x200 != 0: ifl |= 0x400                 # IXON
+            lfl = 0
+            if mt[3] & 0x100 != 0: lfl |= 0x2                   # ICANON
+            if mt[3] & 0x8 != 0: lfl |= 0x8                     # ECHO
+            if mt[3] & 0x80 != 0: lfl |= 0x1                    # ISIG
+            li[0] = u32(ifl)
+            li[3] = u32(lfl)
+            lt[17 + 6] = mcc[16]                                # VMIN
+            lt[17 + 5] = mcc[17]                                # VTIME
+            return 0
+        ifl = int(li[0])
+        lfl = int(li[3])
+        mt[0] = mt[0] & ~(0x100 | 0x200)
+        if ifl & 0x100 != 0: mt[0] |= 0x100
+        if ifl & 0x400 != 0: mt[0] |= 0x200
+        mt[3] = mt[3] & ~(0x100 | 0x8 | 0x80)
+        if lfl & 0x2 != 0: mt[3] |= 0x100
+        if lfl & 0x8 != 0: mt[3] |= 0x8
+        if lfl & 0x1 != 0: mt[3] |= 0x80
+        mcc[16] = lt[17 + 6]
+        mcc[17] = lt[17 + 5]
+        __mac_r(int(__c_tcsetattr(fd, 0, m)))
 
     # (a C function's result: r, or -errno where it failed, with Linux's numbers)
     __mac_r = (r: int) -> int:
@@ -210,6 +254,18 @@ when TARGET == "macos":
                 __c_fcntl(fds[1], 2, 0, 0, 0, 0, 0, 0, 1)
             return r
         if n == 228: return __mac_r(int(__c_clock_gettime(i32(__mac_clock_id(a)), b)))
+        if n == 13:
+            # rt_sigaction: the handler and the flags the library uses (SA_SIGINFO, SA_ONSTACK,
+            # SA_RESTART), into macOS's struct sigaction (handler, mask, flags)
+            if b == 0: return 0
+            la = b as *int
+            fl = 0
+            if la[1] & 4 != 0: fl |= 0x40
+            if la[1] & 0x08000000 != 0: fl |= 1
+            if la[1] & 0x10000000 != 0: fl |= 2
+            act = [la[0], fl << 32]
+            return __mac_r(int(__c_sigaction(i32(a), data(act) as *u8, null)))
+        if n == 16 and (b == 0x5401 or b == 0x5402): return __mac_termios(i32(a), b == 0x5402, c as *u8)
         # (ioctl's terminal calls: no terminal; inotify, futexes, signal handlers, getdents64,
         # mremap, sched_getaffinity: what macOS lacks or does differently)
         if n == 16: return -25                              # ENOTTY

@@ -58,7 +58,13 @@ __repl_serve = (region: int, size: int):
     else when TARGET != "wasm":
         __repl_sigint(true)
         # the code of later inputs goes here (read, write, execute; pages are touched as needed)
-        r = syscall(9, region, size, 7, 0x22 | 0x4000 | 0x100000, -1, 0)     # MAP_FIXED_NOREPLACE
+        r = 0
+        when TARGET == "macos":
+            # (Apple silicon: code written at run time only in MAP_JIT memory, which each thread
+            # sees either writable or runnable)
+            r = __c_mmap(region, size, 7, 0x1000 | 0x800 | 0x2 | 0x40, -1, 0)      # ANON, JIT, PRIVATE, NORESERVE
+        else:
+            r = syscall(9, region, size, 7, 0x22 | 0x4000 | 0x100000, -1, 0)     # MAP_FIXED_NOREPLACE
         if r != region:
             __repl_reply(-1)
             exit(1)
@@ -68,7 +74,14 @@ __repl_serve = (region: int, size: int):
             if not __repl_read_all(__REPL_IN, data(hdr) as *u8, 24): exit(0)
             op = hdr[0]
             if op == 1:
-                if not __repl_read_all(__REPL_IN, hdr[1] as *u8, hdr[2]): exit(0)
+                when TARGET == "macos":
+                    b = fill(u8(0), hdr[2])
+                    if not __repl_read_all(__REPL_IN, data(b), hdr[2]): exit(0)
+                    __c_jit_write_protect(0)
+                    __mem_move(hdr[1] as *u8, data(b), hdr[2])
+                    __c_jit_write_protect(1)
+                else:
+                    if not __repl_read_all(__REPL_IN, hdr[1] as *u8, hdr[2]): exit(0)
                 __code_sync(hdr[1] as *u8, hdr[2])
             else if op == 2:
                 # run it in a copy; the copy tells us (through a pipe) when it finished
