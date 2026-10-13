@@ -6,10 +6,11 @@ usage: tools/pkgtest.py [path/to/sloppy]"""
 import os, shutil, subprocess, sys, tempfile
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sloppy = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(root, "bin", "sloppy")
+sloppy = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(root, "bin", "sloppy.exe" if os.name == "nt" else "sloppy")
 tmp = tempfile.mkdtemp(prefix="sloppy-pkgtest-")
 env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_PACKAGES=os.path.join(tmp, "cache"))
-url = lambda p: "file://" + os.path.join(tmp, p).replace(os.sep, "/")
+# (file:///C:/... on Windows)
+url = lambda p: "file://" + ("/" if os.name == "nt" else "") + os.path.join(tmp, p).replace(os.sep, "/")
 passed = failed = 0
 
 
