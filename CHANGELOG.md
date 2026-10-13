@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.2 (unreleased)
+
+Tools:
+- **Variables in debuggers**: `sloppy build -g` (Linux on x86-64) adds every function's
+  parameters and locals with their types and where they are while it runs, and how each frame
+  is made (`.debug_frame`), so gdb and lldb show the variables of every frame on the stack. A
+  variable of a `-g` build lives on to the end of its function and stays where calls keep it.
+  `lib/debug` has printers for gdb and lldb: strings as text, arrays and maps as their
+  elements, optionals as their value or `none`, an enum with fields as its variant. In VS Code,
+  F5 (**Sloppy: Debug File**) builds with `-g` and debugs through CodeLLDB or the C/C++
+  extension, stopping where the program panics. `tools/dbgtest.py` checks what gdb and lldb
+  show; the fuzzer also compares `-g` builds.
+
 ## 0.8.1
 
 Fixed:

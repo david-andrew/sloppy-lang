@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Differential fuzzing: generate random (well-defined) Sloppy programs and check that debug,
-release and web builds print the same thing, as does the program laid out by sloppy fmt. Half
-the programs also use the newer features
-(unions with narrowing, closures that change captured variables, struct-of-arrays checked
-against a plain array, n-dimensional arrays and broadcasting); the others stay within the
-C bootstrap compiler's subset, which is then a fifth, independent build.
+release, -g (variables for debuggers) and web builds print the same thing, as does the program
+laid out by sloppy fmt. Half the programs also use the newer features (unions with narrowing,
+closures that change captured variables, struct-of-arrays checked against a plain array,
+n-dimensional arrays and broadcasting); the others stay within the C bootstrap compiler's
+subset, which is then another, independent build.
 
 usage: tools/fuzz.py [count] [--seed N] [--no-wasm] [--arm64] [--keep]
 --arm64: also built for Linux on arm64 (debug and release), run under qemu-aarch64-static (or
@@ -682,7 +682,7 @@ def check(seed, wasm=True, keep=False, arm64=False):
     path = os.path.join(OUT, f"p{seed}.jo")
     open(path, "w").write(src)
     outs = {}
-    modes = [("debug", []), ("release", ["--release"])]
+    modes = [("debug", []), ("release", ["--release"]), ("debug-g", ["-g"])]
     if wasm: modes += [("wasm", ["--target", "wasm"]), ("wasm-release", ["--target", "wasm", "--release"])]
     if arm64: modes += [("arm64", ["--target", "linux-arm64"]), ("arm64-release", ["--target", "linux-arm64", "--release"])]
     for name, flags in modes:

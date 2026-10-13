@@ -356,11 +356,28 @@ pointers or C are reported the same way. (Release builds inline small functions:
 show as the line of the call. In a web page the browser's console has the JavaScript stack.)
 
 **Debuggers and profilers.** Executables written by `sloppy build` carry DWARF line tables and
-function names, so gdb works with the `.jo` source (`break game.jo:31`, `bt`, `next`, `list`)
-and perf and other profilers report functions and lines. On Windows, `sloppy build game.jo`
-also writes `game.pdb` beside `game.exe`, with the functions and lines, and the program has
-unwind tables: Visual Studio, WinDbg and RemedyBG stop at functions and lines, step through the
-source and show the call stack. (Neither has variables yet.)
+function names, so gdb and lldb work with the `.jo` source (`break game.jo:31`, `bt`, `next`,
+`list`) and perf and other profilers report functions and lines. `sloppy build -g` adds the
+variables (Linux on x86-64, for now): every parameter and local with its type and where it is
+while its function runs, and how each frame is made, so a debugger reads the variables of the
+functions further up the stack too. In a `-g` build a variable lives on to the end of its
+function (it can be read anywhere after it is set) and stays in memory or a register calls keep;
+the program does the same as without `-g`. `lib/debug` has printers that show strings as text,
+arrays and maps as their elements, optionals as their value or `none`, and an enum with fields
+as its variant:
+
+```sh
+sloppy build -g game.jo
+gdb -x ~/.sloppy/lib/debug/sloppy_gdb.py ./game        # break game.jo:31, run, info locals
+lldb -o "command script import ~/.sloppy/lib/debug/sloppy_lldb.py" ./game
+```
+
+`break __panic` stops a program where it panics, with its variables still there. In VS Code,
+**Sloppy: Debug File** (F5) does all of this, through CodeLLDB or Microsoft's C/C++ extension. On
+Windows, `sloppy build game.jo` also writes `game.pdb` beside `game.exe`, with the functions and
+lines, and the program has unwind tables: Visual Studio, WinDbg and RemedyBG stop at functions
+and lines, step through the source and show the call stack (no variables yet on Windows or
+macOS).
 
 **Combined loops.** Bindings and conditions join with `and` / `or` in one loop header:
 

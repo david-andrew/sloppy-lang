@@ -69,9 +69,9 @@ rebindable controls, touch on the web).
 
 ### 4. Finding what went wrong (M)
 
-- **Debugging:** variables in DWARF and PDB (functions and lines are there), a VS Code launch
-  configuration for gdb/lldb and Visual Studio's debugger, pretty-printers for arrays, strings,
-  maps and optionals, and stopping in the debugger at a panic.
+- **Debugging:** variables in DWARF (`sloppy build -g`, Linux x86-64), printers for gdb and
+  lldb, F5 in VS Code (CodeLLDB or the C/C++ extension), stopping at a panic: done. Next: the
+  same on arm64 Linux and macOS (DWARF in Mach-O, for lldb), and variables in PDB on Windows.
 - **Profiling:** Sloppy function names in `perf` and Windows' profilers, and a frame profiler in
   the stats overlay: named CPU zones per frame and, with Vulkan, GPU timestamps per pass.
 - **Error messages:** collect the commonest mistakes (from the tutorials, the playground and

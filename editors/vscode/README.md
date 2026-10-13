@@ -11,6 +11,10 @@ feels like a scripting language:
 - signature help while typing arguments
 - inlay hints: the inferred types of variables and function results
 - outline (document symbols), and symbols across the workspace's files (Ctrl+T)
+- debugging (F5, or **Sloppy: Debug File**): breakpoints, stepping, the call stack and the
+  variables (strings, arrays, maps and optionals shown as values), stopping where a program
+  panics; through [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb)
+  or Microsoft's C/C++ extension (Linux on x86-64 for now: elsewhere without variables)
 - formatting (`sloppy fmt`), on save by default (`"[sloppy]": {"editor.formatOnSave": false}` turns
   that off)
 - run the file in a terminal (Ctrl+F5, or the run button), in the browser, or its tests

@@ -406,6 +406,95 @@ function runInTerminal(args) {
     });
 }
 
+// ---- debugging: the program built with variables (sloppy build -g), run by CodeLLDB or the C/C++
+// extension's gdb, with the printers in Sloppy's lib/debug (strings, arrays, maps, optionals) ----
+
+// the standard library beside the compiler (where its printers are)
+function libDir() {
+    if (process.env.SLOPPY_LIB) return process.env.SLOPPY_LIB;
+    const exe = findSloppy();
+    if (!exe) return null;
+    let real = exe;
+    try { real = fs.realpathSync(exe); } catch (e) { /* as it is */ }
+    return path.join(path.dirname(path.dirname(real)), 'lib');
+}
+
+// build program (a .jo file) for debugging; the executable's path, or null (the errors shown)
+function buildForDebug(program) {
+    return new Promise((resolve) => {
+        const dir = path.join(os.tmpdir(), 'sloppy-debug');
+        try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { /* the build says */ }
+        const exe = path.join(dir, path.basename(program).replace(/\.[^.]*$/, '') + (windows ? '.exe' : ''));
+        cp.execFile(sloppyCommand(), ['build', '-g', program, '-o', exe], { cwd: path.dirname(program) }, (err, stdout, stderr) => {
+            if (err) {
+                output.appendLine(`sloppy build -g ${program}:\n${stderr || err.message}`);
+                output.show(true);
+                vscode.window.showErrorMessage(`Sloppy: ${program} does not build (see the output)`);
+                resolve(null);
+            } else resolve(exe);
+        });
+    });
+}
+
+const debugConfiguration = (program) => ({ type: 'sloppy', request: 'launch', name: `Debug ${path.basename(program)}`, program });
+
+const debugProvider = {
+    provideDebugConfigurations() {
+        return [{ type: 'sloppy', request: 'launch', name: 'Debug the current file', program: '${file}' }];
+    },
+    // (F5 without a launch.json: the file in the editor)
+    resolveDebugConfiguration(folder, config) {
+        if (!config.type && !config.request) {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor || editor.document.languageId !== 'sloppy') return config;
+            return debugConfiguration(editor.document.uri.fsPath);
+        }
+        return config;
+    },
+    async resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
+        if (!findSloppy()) {
+            offerInstall();
+            return undefined;
+        }
+        const program = config.program;
+        if (!program || !program.endsWith('.jo')) {
+            vscode.window.showErrorMessage('Sloppy: "program" must be a .jo file');
+            return undefined;
+        }
+        const exe = await buildForDebug(program);
+        if (!exe) return undefined;
+        const lib = libDir();
+        const cwd = config.cwd || path.dirname(program);
+        const args = config.args || [];
+        const panics = config.stopOnPanic !== false;
+        if (vscode.extensions.getExtension('vadimcn.vscode-lldb')) {
+            const init = [`command script import "${path.join(lib, 'debug', 'sloppy_lldb.py')}"`];
+            if (panics) init.push('breakpoint set -n __panic');
+            return { type: 'lldb', request: 'launch', name: config.name, program: exe, args, cwd, initCommands: init, env: config.env };
+        }
+        if (vscode.extensions.getExtension('ms-vscode.cpptools')) {
+            if (windows) return { type: 'cppvsdbg', request: 'launch', name: config.name, program: exe, args, cwd };
+            const setup = [{ text: '-enable-pretty-printing', ignoreFailures: true }];
+            if (process.platform !== 'darwin') setup.push({ text: `source ${path.join(lib, 'debug', 'sloppy_gdb.py')}`, ignoreFailures: true });
+            if (panics) setup.push({ text: 'break __panic', ignoreFailures: true });
+            return { type: 'cppdbg', request: 'launch', name: config.name, program: exe, args, cwd, MIMode: process.platform === 'darwin' ? 'lldb' : 'gdb', setupCommands: setup };
+        }
+        const pick = await vscode.window.showInformationMessage('Debugging Sloppy programs needs a debugger extension: CodeLLDB (or Microsoft\'s C/C++).', 'Install CodeLLDB');
+        if (pick) vscode.commands.executeCommand('workbench.extensions.installExtension', 'vadimcn.vscode-lldb');
+        return undefined;
+    },
+};
+
+function debugFile() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== 'sloppy') return;
+    editor.document.save().then((saved) => {
+        if (!saved || editor.document.uri.scheme !== 'file') return;
+        const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+        vscode.debug.startDebugging(folder, debugConfiguration(editor.document.uri.fsPath));
+    });
+}
+
 // sloppy new: a project to start from, in a new folder, opened
 async function newProject() {
     if (!findSloppy()) {
@@ -587,6 +676,8 @@ function activate(context) {
         vscode.commands.registerCommand('sloppy.runWeb', () => runInTerminal(['--web'])),
         vscode.commands.registerCommand('sloppy.test', () => runInTerminal(['test'])),
         vscode.commands.registerCommand('sloppy.newProject', newProject),
+        vscode.commands.registerCommand('sloppy.debug', debugFile),
+        vscode.debug.registerDebugConfigurationProvider('sloppy', debugProvider),
         vscode.commands.registerCommand('sloppy.install', async () => {
             if (await installSloppy()) vscode.commands.executeCommand('sloppy.restartServer');
         }),

@@ -27,7 +27,7 @@ rebuild.
 | lower | `lower.jo`, `ir.jo` | typed AST to IR: reference counting, copy-on-write, closures, formatting |
 | optimize | `opt.jo`; release only: `inline.jo`, `loops.jo` | folding, copy propagation, dead code; inlining, loop versioning and vectorizing |
 | code | `x64.jo`, `arm64.jo`, `wasm.jo`, `spirv.jo`, `glsl.jo` | register allocation and x86-64 encoding; arm64 (linear-scan register allocation, the same analysis); WebAssembly; shaders and compute functions as SPIR-V, shaders as GLSL |
-| write | `elf.jo`, `pe.jo`, `macho.jo`, `dwarf.jo`, `pdb.jo` | Linux, Windows and macOS executables, debug information |
+| write | `elf.jo`, `pe.jo`, `macho.jo`, `dwarf.jo`, `pdb.jo` | Linux, Windows and macOS executables, debug information (`-g`: variables and frames, from x64.jo's `dbg_function`; printers in `lib/debug`, tested by `tools/dbgtest.py`) |
 | drive | `main.jo`, `new.jo`, `fmt.jo` | the command line, targets and the build block, the order of the above; `sloppy new` (its templates: `lib/new/*.jo`); `sloppy fmt` |
 | editors | `ide.jo`, `lsp.jo` | what a check learned, as lines; the language server |
 | live | `repl.jo`, `watch.jo` | the interactive prompt; hot reloading |
