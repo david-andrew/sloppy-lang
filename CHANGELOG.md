@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.1
+
+Editor (the extension is 0.4.0, now on the VS Code Marketplace and Open VSX both, published by
+each release):
+- Names are coloured by what they are: the language server sends semantic tokens (variables,
+  parameters, fields, functions, structs, enums and their members, modules, constants as
+  read-only, the standard library's names), and the grammar colours names before it answers.
+- Fixed: inlay hints repeated (`x: int: int: int`) in a file whose program had errors; the
+  brackets of `[a..b)` and `(a..b]` marked as unmatched; `(a..b]` running on into the next lines.
+- Rename: an alias (`from m import x as y`) renames its binding and its uses; renaming to a
+  keyword, or to a name that would change what other names mean, is refused; uses in open files
+  that import the file are renamed too (and found by Find References).
+- Names with non-ASCII letters work in every feature; signature help, hover and completion read
+  strings as the compiler does; the outline finds `f=(x: int)` and multi-line signatures, and
+  nothing inside strings; doc comments above `@attributes` show on hover; a generic function's
+  hints only where all its instances agree.
+- Files changed on disk (not in the editor) are checked again; closing a file keeps the errors
+  other open files have for the files they share; new unsaved files get the language features.
+- The extension: a server that fails to start no longer leaves requests waiting; restarting
+  cannot start two servers; errors from an older version of a file are dropped; Run and Test stop
+  when saving fails; Install Sloppy works on Linux arm64 and macOS too.
+- Highlighting: octal numbers, `<<` and `<<=`, `ivec3`/`ivec4`, `f[int](x)`, interpolations as
+  code; indentation after a line ending in `:` with a `#` in a string.
+
+macOS: OpenGL at a Retina screen's full resolution (window sizes and the pointer in pixels, the
+scale followed as the window moves between screens).
+
 ## 0.7.0
 
 Platforms:
