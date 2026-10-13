@@ -173,12 +173,19 @@ def _is_map(t, internal_dict):
 
 def __lldb_init_module(debugger, internal_dict):
     m = __name__
-    debugger.HandleCommand("type summary add -w sloppy -v -F %s.str_summary str" % m)
-    debugger.HandleCommand("type synthetic add -w sloppy -l %s.NoChildren str" % m)
-    debugger.HandleCommand('type synthetic add -w sloppy -x "\\[\\]$" -l %s.ArrayChildren' % m)
-    debugger.HandleCommand('type summary add -w sloppy -v -x "\\[\\]$" -F %s.array_summary' % m)
-    debugger.HandleCommand('type summary add -w sloppy -x "\\?$" -F %s.opt_summary' % m)
-    debugger.HandleCommand("type synthetic add -w sloppy --recognizer-function %s._is_map -l %s.MapChildren" % (m, m))
-    debugger.HandleCommand("type synthetic add -w sloppy --recognizer-function %s._is_enum_with_fields -l %s.EnumChildren" % (m, m))
-    debugger.HandleCommand("type summary add -w sloppy --recognizer-function %s._is_enum_with_fields -F %s.enum_summary" % (m, m))
-    debugger.HandleCommand("type category enable sloppy")
+    run = debugger.HandleCommand
+    run("type summary add -w sloppy -v -F %s.str_summary str" % m)
+    run("type synthetic add -w sloppy -l %s.NoChildren str" % m)
+    run('type synthetic add -w sloppy -x "\\[\\]$" -l %s.ArrayChildren' % m)
+    run('type summary add -w sloppy -v -x "\\[\\]$" -F %s.array_summary' % m)
+    run('type summary add -w sloppy -x "\\?$" -F %s.opt_summary' % m)
+    # (maps by their type's name, {K: V})
+    run('type synthetic add -w sloppy -x "^\\{.+: .+\\}$" -l %s.MapChildren' % m)
+    # enums with fields by what they hold: an lldb with recognizer functions (else they show as
+    # their tag and each variant's fields)
+    ci = debugger.GetCommandInterpreter()
+    res = lldb.SBCommandReturnObject()
+    ci.HandleCommand("type synthetic add -w sloppy --recognizer-function %s._is_enum_with_fields -l %s.EnumChildren" % (m, m), res)
+    if res.Succeeded():
+        run("type summary add -w sloppy --recognizer-function %s._is_enum_with_fields -F %s.enum_summary" % (m, m))
+    run("type category enable sloppy")
