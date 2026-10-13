@@ -424,7 +424,6 @@ HOME = """
 </section>
 <section class="strip intro">
   <h2>Made with Sloppy</h2>
-  <p>Two complete games, each one file of Sloppy, playing here in your browser.</p>
 </section>
 <section class="showcase">
   <a href="rebound/"><img src="assets/rebound.png" alt="Rebound: a shield arcs around a glowing core; a chain of blasts runs through a line of turrets"></a>
