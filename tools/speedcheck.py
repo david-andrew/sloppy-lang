@@ -35,13 +35,28 @@ finally:
 new = os.path.join(root, "bin", "sloppy")
 
 
+# instructions in G: tools/icount (the CPU's counters), else valgrind's count (virtual machines,
+# CI's among them, often have no counters; slower, but as exact)
+counter = None
+
+
 def icount(compiler, src, extra):
-    r = subprocess.run([os.path.join(root, "tools", "icount"), compiler, "build", src, "-o", os.path.join(tmp, "out"), *extra],
-                       cwd=root, env=env, capture_output=True, text=True)
-    line = (r.stderr.strip().splitlines() or [""])[-1]
-    if r.returncode != 0 or "G instructions" not in line:
-        sys.exit(f"speedcheck: cannot count {os.path.basename(compiler)} build {src}: {r.stderr.strip()[-500:]}")
-    return float(line.split()[0])
+    global counter
+    cmd = [compiler, "build", src, "-o", os.path.join(tmp, "out"), *extra]
+    if counter is None:
+        r = subprocess.run([os.path.join(root, "tools", "icount"), *cmd], cwd=root, env=env, capture_output=True, text=True)
+        counter = "valgrind" if "perf_event_open" in r.stderr else "icount"
+        if counter == "valgrind": print("(no instruction counters here: counting with valgrind)")
+    if counter == "icount":
+        r = subprocess.run([os.path.join(root, "tools", "icount"), *cmd], cwd=root, env=env, capture_output=True, text=True)
+        line = (r.stderr.strip().splitlines() or [""])[-1]
+        if r.returncode == 0 and "G instructions" in line: return float(line.split()[0])
+    else:
+        r = subprocess.run(["valgrind", "--tool=cachegrind", "--cache-sim=no", "--cachegrind-out-file=/dev/null", *cmd],
+                           cwd=root, env=env, capture_output=True, text=True)
+        refs = [l for l in r.stderr.splitlines() if "I refs:" in l or "I   refs:" in l]
+        if r.returncode == 0 and refs: return int(refs[-1].split(":")[1].replace(",", "")) / 1e9
+    sys.exit(f"speedcheck: cannot count {os.path.basename(compiler)} build {src}: {r.stderr.strip()[-500:]}")
 
 
 inputs = ["bench/big.jo", "compiler/main.jo", "examples/rebound/rebound.jo", "examples/breakwater/breakwater.jo"]
