@@ -117,7 +117,8 @@ WebRTC for browser-to-browser later.
   outlines and kerning, Tiled's external tilesets.
 - Input: non-XInput gamepads on Windows, actions bound per player.
 - Linux window icons on Wayland (KDE's xdg-toplevel-icon; GNOME needs a .desktop file).
-- A serializer (structs to text and back) for saves and settings.
+- A serializer (structs to text and back) for saves and settings: done (`save_value`,
+  `load_value`, `to_text`, `from_text`).
 
 ## Language (ongoing, kept small)
 

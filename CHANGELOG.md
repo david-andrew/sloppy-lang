@@ -20,6 +20,9 @@ Language:
   used to return the value); assigning a constant (inside a function this made a variable that
   hid it); top-level code reading a global above the line that gives it its value (it was
   zero); a function named as a statement without being called (`update` for `update()`).
+- Fixed: `a[f()]` where `f` grows the global array `a` read freed memory (the index is now
+  evaluated first); an `if let` whose branches are statements, at the end of a function, was
+  taken for the function's value.
 - A warning for colors written from 0 to 255 (`rgb(255, 128, 0)`; colors go from 0 to 1).
 - Errors in an interpolation inside a string inside an interpolation point at the right place.
 
@@ -41,6 +44,12 @@ Tools:
   the playground.
 
 Games:
+- **Saving any value**: `save_value("settings", settings)` and `load_value("settings",
+  Settings())` keep a value as text; `to_text(x)` and `from_text[T](text)` (a `T` or a
+  `TextError` with the line and column) do it with a string. The text is what print shows
+  (`Settings(volume=0.8, keys={"jump": 32}, mode=hard)`); fields go by name, so a field added
+  since keeps its default and one removed is skipped, and saves from an older version still
+  load. Numbers, strings, arrays, maps, optionals, tuples, structs, enums, unions and vectors.
 - **GPU time in the frame statistics**: through Vulkan, the overlay (`show_stats()`,
   `SLOPPY_STATS=1` or `log`) shows the GPU's time for the frame and for each zone, from
   timestamps among the frame's commands; the 3D scene, its shadows and post-processing are zones

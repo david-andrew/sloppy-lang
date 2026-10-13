@@ -25,7 +25,9 @@ TOPICS = [
     ("Basics", "system", "Files, time and the system", ["core/os"], "system",
      "In a web page, files are the ones the page was given, and `env` reads its address's parameters."),
     ("Data", "json", "JSON and base64", ["std/json", "std/base64"], "json", ""),
-    ("Data", "saving", "Saving", ["std/save"], "saving", ""),
+    ("Data", "saving", "Saving, and values as text", ["std/save", "std/text"], "saving",
+     "`save_value` and `load_value` keep any value (settings, a saved game) as text that reads back even "
+     "after its structs gain or lose fields."),
     ("Data", "threads", "Threads", ["std/thread"], "threads", ""),
     ("Data", "numeric", "Numeric arrays", ["std/nd"], "numeric",
      "Elementwise operators (`.+ .* .^`...), `f.(xs)` and n-dimensional arrays are part of the language: "

@@ -12,7 +12,8 @@ enum IN:
     none_, len, push, pop, insert, remove, clear, reserve, slice, syscall, memcpy, memset, sizeof,
     arrdata, panic, assert, print, embed, from_bytes, to_bytes, argv, setlen, truncate, resize,
     hash, alignof, unreachable, arrcap, fmt_struct, sqrt, vec_ctor, cfn_cast, wasm_call, callc, floor_,
-    ceil_, fabs, fmin, fmax, setjmp, longjmp, jump, shader, extend, clone_thread, atomic_add, atomic_cas, stack_ptr, fill, fmt_elem, gpu_kernel, cpu_features, code_sync, compute, compute_spirv, compute_textures
+    ceil_, fabs, fmin, fmax, setjmp, longjmp, jump, shader, extend, clone_thread, atomic_add, atomic_cas, stack_ptr, fill, fmt_elem, gpu_kernel, cpu_features, code_sync, compute, compute_spirv, compute_textures,
+    read_fields, default_init
 
 # (fixed2arr: T[N] -> T[], a new array holding a copy of the elements)
 enum CV: none_, int_, int2float, float2int, float_, opt, ptr, bits, fn2clos, union_, fixed2arr
@@ -38,6 +39,7 @@ intrinsics = [
     Intrinsic("__clone_thread", .clone_thread, false), Intrinsic("__atomic_add", .atomic_add, false),
     Intrinsic("__atomic_cas", .atomic_cas, false), Intrinsic("__stack_ptr", .stack_ptr, false),
     Intrinsic("__cpu_features", .cpu_features, false), Intrinsic("__code_sync", .code_sync, false), Intrinsic("compute", .compute, false), Intrinsic("__compute_spirv", .compute_spirv, false), Intrinsic("__compute_textures", .compute_textures, false),
+    Intrinsic("__read_fields", .read_fields, false), Intrinsic("__default_init", .default_init, false),
 ]
 
 last_checked = 0
@@ -1383,6 +1385,148 @@ call_text = (d: int) -> str:
         s += ide_param_text(nodes[kid(d, i)].pos)
     s + ")"
 
+# ---------------- reading values from text (lib/std/text.jo) ----------------
+# __read_fields(r, x) for a value of type t: statements that read it with r (a __TextIn)
+read_code = (t: int, rn: str, xn: str, pos: int) -> int[]:
+    k = types[t].kind
+    st: int[]
+    if k == .struct_:
+        # Name(field=value, ...): by name, in any order; others skipped, missing ones left as they are
+        si = int(types[t].st)
+        check_struct_fields(si)
+        st.push(rcall("__tx_open", rn, [], pos))
+        chain = rcall("__tx_skip", rn, [], pos)
+        i = int(structs[si].nfields) - 1
+        loop i >= 0:
+            f = fields[int(structs[si].fields) + i]
+            i -= 1
+            fk = tkind(int(f.type))
+            if fk == .fn_ or fk == .cfn or fk == .ptr: continue        # (left as they are)
+            fname = name_of(int(f.name))
+            rd = rcall("__read", rn, [bc_field(bc_ident(xn, pos), fname, pos)], pos)
+            chain = bc_if(bc_bin(.eq, bc_field(bc_ident(rn, pos), "name", pos), bc_str(fname, pos), pos), [rd], [chain], pos)
+        w = mk(.while_, pos)
+        nodes[w].a = i32(bc_call("__tx_field", [bc_ident(rn, pos)], pos))
+        nodes[w].b = i32(bc_block([chain], pos))
+        st.push(w)
+    else if k == .tuple:
+        st.push(rcall("__tx_want", rn, [bc_int('(', pos)], pos))
+        loop i in [0..int(types[t].nargs)):
+            st.push(rcall("__tx_sep", rn, [bc_int(i, pos)], pos))
+            el = mk(.field, pos)
+            nodes[el].a = i32(bc_ident(xn, pos))
+            nodes[el].aux = -2
+            nodes[el].ival = i
+            st.push(rcall("__read", rn, [el], pos))
+        st.push(rcall("__tx_eat", rn, [bc_int(',', pos)], pos))
+        st.push(rcall("__tx_want", rn, [bc_int(')', pos)], pos))
+    else if k == .vec and t != T_MAT4:
+        # vec2(1.5, 2.0)
+        st.push(rcall("__tx_open", rn, [], pos))
+        ct = T_F32
+        if types[t].sign: ct = T_I32
+        loop i in [0..int(types[t].bits)):
+            st.push(rcall("__tx_sep", rn, [bc_int(i, pos)], pos))
+            v = "__c{i}"
+            st.push(bc_decl(v, ct, pos))
+            st.push(rcall("__read", rn, [bc_ident(v, pos)], pos))
+            st.push(bc_assign(bc_field(bc_ident(xn, pos), ["x", "y", "z", "w"][i], pos), bc_ident(v, pos), pos))
+        st.push(rcall("__tx_eat", rn, [bc_int(',', pos)], pos))
+        st.push(rcall("__tx_want", rn, [bc_int(')', pos)], pos))
+    else if k == .fixed:
+        st.push(rcall("__tx_want", rn, [bc_int('[', pos)], pos))
+        el = mk(.index, pos)
+        nodes[el].a = i32(bc_ident(xn, pos))
+        nodes[el].b = i32(bc_ident("__i", pos))
+        st.push(bc_loop("__i", bc_int(fixed_len(t), pos), [rcall("__tx_sep", rn, [bc_ident("__i", pos)], pos), rcall("__read", rn, [el], pos)], pos))
+        st.push(rcall("__tx_eat", rn, [bc_int(',', pos)], pos))
+        st.push(rcall("__tx_want", rn, [bc_int(']', pos)], pos))
+    else if k == .enum_ and is_union(t):
+        # the member's value as it is written: told apart by how it starts (a struct by its name)
+        st.push(bc_let("__k", bc_call("__tx_kind", [bc_ident(rn, pos)], pos), pos))
+        ms = union_members(t)
+        has_int = false
+        loop m in ms:
+            if is_int(m): has_int = true
+        chain = rcall("__tx_fail", rn, [bc_str("expected a {type_str(t)}", pos)], pos)
+        # (enums last: a bare name could be one of them, Name(...) a struct)
+        loop pass_ in [0..2):
+            i = ms.len() - 1
+            loop i >= 0:
+                m = prune(ms[i])
+                i -= 1
+                mk_ = types[m].kind
+                if (mk_ == .enum_) != (pass_ == 0): continue
+                c = 0
+                if mk_ == .str_: c = kind_is(1, pos)
+                else if is_int(m): c = kind_is(2, pos)
+                else if is_float(m):
+                    c = kind_is(3, pos)
+                    if not has_int: c = bc_logic(.or_, c, kind_is(2, pos), pos)
+                else if mk_ == .bool_: c = kind_is(5, pos)
+                else if mk_ == .array or mk_ == .fixed: c = kind_is(8, pos)
+                else if is_map_type(m): c = kind_is(9, pos)
+                else if mk_ == .tuple: c = kind_is(10, pos)
+                else if mk_ == .struct_ or mk_ == .vec:
+                    nm = type_str(m)
+                    if mk_ == .struct_: nm = structs[int(types[m].st)].name
+                    c = bc_logic(.and_, kind_is(6, pos), bc_bin(.eq, bc_field(bc_ident(rn, pos), "name", pos), bc_str(nm, pos), pos), pos)
+                else if mk_ == .enum_: c = bc_logic(.or_, kind_is(6, pos), kind_is(7, pos), pos)
+                if c == 0: continue
+                v = "__u{i + 1}"
+                body = [bc_decl(v, m, pos), bc_stmt(bc_call("__default_init", [bc_ident(v, pos)], pos), pos), rcall("__read", rn, [bc_ident(v, pos)], pos), bc_assign(bc_ident(xn, pos), bc_ident(v, pos), pos)]
+                chain = bc_if(c, body, [chain], pos)
+        st.push(chain)
+    else if k == .enum_:
+        # a variant by name: hard, or rect(1.0, 2.0)
+        si = int(types[t].st)
+        check_struct_fields(si)
+        st.push(bc_let("__w", bc_call("__tx_word", [bc_ident(rn, pos), mk(.bool_lit, pos)], pos), pos))
+        vs = ""
+        loop vi in [0..int(structs[si].nvariants)):
+            if vi > 0: vs += ", "
+            vs += name_of(int(variants[int(structs[si].variants) + vi].name))
+        chain = rcall("__tx_bad", rn, [bc_str("expected a {type_str(t)} ({vs})", pos)], pos)
+        v = int(structs[si].nvariants) - 1
+        loop v >= 0:
+            vi = int(structs[si].variants) + v
+            v -= 1
+            vn = name_of(int(variants[vi].name))
+            dn = mk(.dotname, pos)
+            nodes[dn].name = variants[vi].name
+            nf = int(variants[vi].nfields)
+            body: int[]
+            if nf == 0: body.push(bc_assign(bc_ident(xn, pos), dn, pos))
+            else:
+                body.push(rcall("__tx_want", rn, [bc_int('(', pos)], pos))
+                vargs: int[]
+                loop j in [0..nf):
+                    a = "__a{j}"
+                    body.push(rcall("__tx_sep", rn, [bc_int(j, pos)], pos))
+                    body.push(bc_decl(a, int(fields[int(variants[vi].fields) + j].type), pos))
+                    body.push(bc_stmt(bc_call("__default_init", [bc_ident(a, pos)], pos), pos))
+                    body.push(rcall("__read", rn, [bc_ident(a, pos)], pos))
+                    vargs.push(bc_ident(a, pos))
+                body.push(rcall("__tx_eat", rn, [bc_int(',', pos)], pos))
+                body.push(rcall("__tx_want", rn, [bc_int(')', pos)], pos))
+                c = mk(.call, pos)
+                nodes[c].a = i32(dn)
+                set_list(c, vargs)
+                body.push(bc_assign(bc_ident(xn, pos), c, pos))
+            chain = bc_if(bc_bin(.eq, bc_ident("__w", pos), bc_str(vn, pos), pos), body, [chain], pos)
+        st.push(chain)
+    else: fatal(pos, "a value of type {type_str(t)} cannot be read from text")
+    st
+
+# f(r, args...) as a statement
+rcall = (f: str, rn: str, args: int[], pos: int) -> int: bc_stmt(bc_call(f, [bc_ident(rn, pos)] + args, pos), pos)
+bc_logic = (k: NK, a: int, b: int, pos: int) -> int:
+    n = mk(k, pos)
+    nodes[n].a = i32(a)
+    nodes[n].b = i32(b)
+    n
+kind_is = (c: int, pos: int) -> int: bc_bin(.eq, bc_ident("__k", pos), bc_int(c, pos), pos)
+
 variant_names = (t: int) -> int[]:
     out: int[]
     si = int(types[prune(t)].st)
@@ -1862,6 +2006,35 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         nargs_check(n, nargs, 1, 1, "__compute_spirv")
         if nodes[args[0]].kind != .fnref: fatal(nodes[n].pos, "__compute_spirv takes a function")
         r = T_STR
+    else if id == .default_init:
+        # __default_init(x): a struct gets its fields' default values (anything else is zero already)
+        nargs_check(n, nargs, 1, 1, "__default_init")
+        t = prune(arg_type(args, 0, 0))
+        pos = nodes[n].pos
+        stmts: int[]
+        if types[t].kind == .struct_ and not is_map_type(t):
+            si = int(types[t].st)
+            check_struct_fields(si)
+            has_def = false
+            loop i in [0..int(structs[si].nfields)):
+                if fields[int(structs[si].fields) + i].defval != 0: has_def = true
+            if has_def:
+                d = mk(.call, pos)
+                struct_ctor(d, t, int(structs[si].decl), [], t)
+                add_flag(d, NF_CHECKED)
+                stmts.push(bc_assign(bc_ident(name_of(int(nodes[args[0]].name)), pos), d, pos))
+        nodes[n] = nodes[bc_block(stmts, pos)]
+        return check_expr(n, expected)
+    else if id == .read_fields:
+        # __read_fields(r, x): the code that reads a struct, tuple, enum, union, vector or fixed-size
+        # array from text, field by field (lib/std/text.jo)
+        nargs_check(n, nargs, 2, 2, "__read_fields")
+        arg_type(args, 0, 0)
+        t = prune(arg_type(args, 1, 0))
+        pos = nodes[n].pos
+        stmts = read_code(t, name_of(int(nodes[args[0]].name)), name_of(int(nodes[args[1]].name)), pos)
+        nodes[n] = nodes[bc_block(stmts, pos)]
+        return check_expr(n, expected)
     else if id == .fmt_elem:
         # __fmt_elem_value(buf, x): x inside a container (strings quoted): a union formats its
         # member that way; anything else is __fmt(buf, x)
@@ -3515,6 +3688,36 @@ bc_block = (stmts: int[], pos: int) -> int:
     set_list(b, stmts)
     b
 
+bc_str = (s: str, pos: int) -> int:
+    n = mk(.str_lit, pos)
+    nodes[n].sval = i32(intern(s))
+    n
+
+bc_assign = (target: int, v: int, pos: int) -> int:
+    a = mk(.assign, pos)
+    nodes[a].op = i32(int(Tok.assign))
+    nodes[a].a = i32(target)
+    nodes[a].b = i32(v)
+    a
+
+bc_if = (c: int, then: int[], else_: int[], pos: int) -> int:
+    n = mk(.if_, pos)
+    nodes[n].a = i32(c)
+    nodes[n].b = i32(bc_block(then, pos))
+    if else_.len() > 0: nodes[n].c = i32(bc_block(else_, pos))
+    add_flag(n, NF_STMT)
+    n
+
+# name: t (its zero value)
+bc_decl = (name: str, t: int, pos: int) -> int:
+    d = mk(.vardecl, pos)
+    nodes[d].name = i32(intern(name))
+    ty = mk(.tname, pos)
+    nodes[ty].aux = -7
+    nodes[ty].ival = t
+    nodes[d].a = i32(ty)
+    d
+
 # loop name in [0..n): body
 bc_loop = (name: str, n: int, body: int[], pos: int) -> int:
     f = mk(.for_, pos)
@@ -4037,8 +4240,13 @@ check_iflet = (n: int, ex: int) -> int:
         t2 = check_block(c, e2, not is_stmt)
     if is_stmt: return T_VOID
     if c == 0: fatal(nodes[n].pos, "an if expression needs an else branch")
+    # (branches that are statements, as at the end of a function: no value, as check_if)
+    if t1 == T_NEVER and t2 == T_NEVER: return T_NEVER
+    if t1 != T_NEVER and nodes[b].aux == 0 and tkind(t1) == .void_: return T_VOID
+    if t2 != T_NEVER and nodes[c].aux == 0 and tkind(t2) == .void_ and ex == 0: return T_VOID
     if t1 == T_NEVER: return t2
     if t2 == T_NEVER: return t1
+    if nodes[b].aux == 0 or nodes[c].aux == 0: fatal(nodes[n].pos, "both branches of an if expression need a value")
     va = block_value(b)
     vb = block_value(c)
     if ex != 0:

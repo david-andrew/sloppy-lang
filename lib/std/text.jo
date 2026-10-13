@@ -1,0 +1,271 @@
+# Values as text and back, for saved games and settings. to_text(value) writes a value the
+# way print shows one inside a list (strings in quotes):
+#
+#   Settings(volume=0.8, keys={"jump": 32}, mode=hard, pos=vec2(1.5, 2.0), best=none)
+#
+# from_text[T](text) reads such text back as a T, or says where it is not one (a TextError).
+# Fields go by name, in any order: one the text leaves out keeps its default value, and one the
+# struct does not have (any more) is skipped, so what an older version of a program wrote
+# still reads after its structs change.
+#
+#   save_value("settings", settings)
+#   settings = load_value("settings", Settings())     # (the default when there is none yet)
+#
+# Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs, enums (with
+# fields too), unions and vectors can be read; function values and pointers cannot.
+
+struct TextError:
+    msg: str
+    line: int
+    col: int
+
+to_text[T] = (x: T) -> str:
+    buf: u8[]
+    __fmt_elem(buf, x)
+    __buf_finish_val(buf)
+
+from_text[T] = (text: str) -> T | TextError:
+    x: T
+    __default_init(x)
+    if let e = __from_text_into(text, x): return e
+    x
+
+# keep value under name (save_data) as text; false if it could not be written
+save_value[T] = (name: str, x: T) -> bool: save_data(name, to_text(x))
+
+# the value kept under name, or default if there is none or it does not read as one
+load_value[T] = (name: str, default: T) -> T:
+    x = default
+    if let s = load_data(name):
+        if __from_text_into(s, x) == none: return x
+    default
+
+# read text into x (whatever it leaves out stays as it is)
+__from_text_into[T] = (text: str, x: mut T) -> TextError?:
+    r = __TextIn(text)
+    __read(r, x)
+    __tx_space(r)
+    if len(r.err) == 0 and r.i < len(text): __tx_fail(r, "more text after the value")
+    if len(r.err) == 0: return none
+    line = 1
+    col = 1
+    loop i in [0..min(r.at, len(text))):
+        col += 1
+        if text[i] == '\n':
+            line += 1
+            col = 1
+    TextError(r.err, line, col)
+
+# ---------------- the reader ----------------
+struct __TextIn:
+    s: str
+    i = 0
+    err = ""
+    at = 0          # where err is
+    name = ""       # the field name just read (__tx_field), or the type name ahead (__tx_kind)
+    w0 = 0          # where the last word read starts
+
+__tx_space = (r: mut __TextIn):
+    loop r.i < len(r.s) and (r.s[r.i] == ' ' or r.s[r.i] == '\n' or r.s[r.i] == '\t' or r.s[r.i] == '\r'): r.i += 1
+
+# a word just read is not what it should be: the mistake is there
+__tx_bad = (r: mut __TextIn, msg: str):
+    r.i = r.w0
+    __tx_fail(r, msg)
+
+# (the first mistake is the one reported; reading stops there)
+__tx_fail = (r: mut __TextIn, msg: str):
+    if len(r.err) == 0:
+        r.err = msg
+        r.at = r.i
+    r.i = len(r.s)
+
+__tx_eat = (r: mut __TextIn, c: u8) -> bool:
+    __tx_space(r)
+    if r.i < len(r.s) and r.s[r.i] == c:
+        r.i += 1
+        return true
+    false
+
+__tx_want = (r: mut __TextIn, c: u8):
+    if not __tx_eat(r, c): __tx_fail(r, "expected '{chr(c)}'")
+
+# a ',' before every item but the first
+__tx_sep = (r: mut __TextIn, i: int):
+    if i > 0: __tx_want(r, ',')
+
+# a name (letters, digits, _), or a number's text (also . + -)
+__tx_word = (r: mut __TextIn, number: bool) -> str:
+    __tx_space(r)
+    a = r.i
+    r.w0 = a
+    loop r.i < len(r.s):
+        c = r.s[r.i]
+        if not (is_alnum(c) or c == '_' or number and (c == '.' or c == '+' or c == '-')): break
+        r.i += 1
+    r.s[a..r.i)
+
+# Name( or ( : the start of a struct, the name (any: a renamed type still reads) left out
+__tx_open = (r: mut __TextIn):
+    __tx_word(r, false)
+    __tx_want(r, '(')
+
+# the next field's name= (in r.name), or false at the closing ')'
+__tx_field = (r: mut __TextIn) -> bool:
+    if len(r.err) > 0: return false
+    __tx_eat(r, ',')
+    if __tx_eat(r, ')'): return false
+    if r.i >= len(r.s):
+        __tx_fail(r, "expected ')'")
+        return false
+    r.name = __tx_word(r, false)
+    if len(r.name) == 0:
+        __tx_fail(r, "expected a field's name")
+        return false
+    __tx_want(r, '=')
+    true
+
+# what the next value looks like: 1 a string, 2 a whole number, 3 another number, 4 none,
+# 5 true or false, 6 Name(...) (the name in r.name), 7 a name alone, 8 [, 9 {, 10 (
+__tx_kind = (r: mut __TextIn) -> int:
+    __tx_space(r)
+    if r.i >= len(r.s): return 0
+    c = r.s[r.i]
+    if c == '"': return 1
+    if c == '[': return 8
+    if c == '{{': return 9
+    if c == '(': return 10
+    at = r.i
+    if is_digit(c) or c == '-' or c == '+':
+        w = __tx_word(r, true)
+        r.i = at
+        loop d in w:
+            if d == '.' or d == 'e' or d == 'n': return 3
+        return 2
+    w = __tx_word(r, false)
+    k = 7
+    if w == "none": k = 4
+    else if w == "true" or w == "false": k = 5
+    else if w == "inf" or w == "nan": k = 3
+    else if __tx_eat(r, '('): k = 6
+    r.name = w
+    r.i = at
+    k
+
+# past one value of any kind (a field the struct does not have)
+__tx_skip = (r: mut __TextIn):
+    __tx_space(r)
+    depth = 0
+    loop r.i < len(r.s):
+        c = r.s[r.i]
+        if c == '"':
+            s = ""
+            __read(r, s)
+            continue
+        if c == '(' or c == '[' or c == '{{': depth += 1
+        else if c == ')' or c == ']' or c == '}}':
+            if depth == 0: return
+            depth -= 1
+        else if c == ',' and depth == 0: return
+        r.i += 1
+
+__tx_int = (r: mut __TextIn, lo: int, hi: int) -> int:
+    w = __tx_word(r, true)
+    if let v = to_int(w):
+        if v < lo or v > hi: __tx_bad(r, "{v} is out of range ({lo} to {hi})")
+        return v
+    __tx_bad(r, "expected a whole number")
+    0
+
+# ---------------- each type ----------------
+__read = (r: mut __TextIn, x: mut int): x = __tx_int(r, -0x7FFFFFFFFFFFFFFF - 1, 0x7FFFFFFFFFFFFFFF)
+__read = (r: mut __TextIn, x: mut i32): x = i32(__tx_int(r, -0x80000000, 0x7FFFFFFF))
+__read = (r: mut __TextIn, x: mut i16): x = i16(__tx_int(r, -0x8000, 0x7FFF))
+__read = (r: mut __TextIn, x: mut i8): x = i8(__tx_int(r, -0x80, 0x7F))
+__read = (r: mut __TextIn, x: mut u32): x = u32(__tx_int(r, 0, 0xFFFFFFFF))
+__read = (r: mut __TextIn, x: mut u16): x = u16(__tx_int(r, 0, 0xFFFF))
+__read = (r: mut __TextIn, x: mut u8): x = u8(__tx_int(r, 0, 0xFF))
+__read = (r: mut __TextIn, x: mut u64):
+    w = __tx_word(r, true)
+    v: u64 = 0
+    loop c in w:
+        if not is_digit(c) or v > 1844674407370955161 or v == 1844674407370955161 and c > '5':
+            __tx_bad(r, "expected a whole number from 0 to 18446744073709551615")
+            return
+        v = v * 10 + u64(c - '0')
+    if len(w) == 0: __tx_fail(r, "expected a whole number")
+    x = v
+
+__read = (r: mut __TextIn, x: mut f64):
+    if let v = to_float(__tx_word(r, true)): x = v
+    else: __tx_bad(r, "expected a number")
+__read = (r: mut __TextIn, x: mut f32):
+    v = 0.0
+    __read(r, v)
+    x = f32(v)
+
+__read = (r: mut __TextIn, x: mut bool):
+    w = __tx_word(r, false)
+    if w == "true": x = true
+    else if w == "false": x = false
+    else: __tx_bad(r, "expected true or false")
+
+__read = (r: mut __TextIn, x: mut str):
+    if not __tx_eat(r, '"'):
+        __tx_fail(r, "expected a string (in \"quotes\")")
+        return
+    buf: u8[]
+    loop r.i < len(r.s) and r.s[r.i] != '"':
+        c = r.s[r.i]
+        r.i += 1
+        if c == '\\' and r.i < len(r.s):
+            e = r.s[r.i]
+            r.i += 1
+            if e == 'n': c = '\n'
+            else if e == 't': c = '\t'
+            else if e == 'r': c = '\r'
+            else if e == '0': c = 0
+            else: c = e
+        buf.push(c)
+    if not __tx_eat(r, '"'): __tx_fail(r, "this string has no closing quote")
+    x = __buf_finish_val(buf)
+
+__read[T] = (r: mut __TextIn, xs: mut T[]):
+    xs.clear()
+    __tx_want(r, '[')
+    loop len(r.err) == 0:
+        __tx_eat(r, ',')
+        if __tx_eat(r, ']'): return
+        v: T
+        __default_init(v)
+        __read(r, v)
+        xs.push(v)
+
+__read[K, V] = (r: mut __TextIn, m: mut Map[K, V]):
+    m.clear()
+    __tx_want(r, '{{')
+    loop len(r.err) == 0:
+        __tx_eat(r, ',')
+        if __tx_eat(r, '}}'): return
+        k: K
+        __default_init(k)
+        __read(r, k)
+        __tx_want(r, ':')
+        v: V
+        __default_init(v)
+        __read(r, v)
+        m[k] = v
+
+__read[T] = (r: mut __TextIn, x: mut T?):
+    if __tx_kind(r) == 4:
+        __tx_word(r, false)
+        x = none
+        return
+    v: T
+    __default_init(v)
+    __read(r, v)
+    x = v
+
+# structs, tuples, enums, unions, vectors, fixed-size arrays: read field by field (the compiler
+# writes the code for each type)
+__read[T] = (r: mut __TextIn, x: mut T): __read_fields(r, x)
