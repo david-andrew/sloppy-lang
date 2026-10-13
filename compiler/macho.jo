@@ -96,13 +96,18 @@ mstrcmd = (b: mut u8[], cmd: int, fixed: int, s: str, extra: int[]):
     loop c in s: b.push(c)
     loop k in [0..size - fixed - len(s)): b.push(0)
 
-write_macho = (path: str, text: u8[], entry_off: int, ro: u8[], info: u8[], data_size: int, name: str) -> bool:
+write_macho = (path: str, text: u8[], entry_off: int, ro: u8[], info: u8[], data_size: int, name: str, watch: bool) -> bool:
     ident = name
     if len(ident) == 0: ident = strip_ext(path[rfind(path, "/") + 1..])
     text_off, ro_off, info_off, text_size = macho_layout(text.len(), ro.len(), info.len())
     data_addr = MACHO_BASE + text_size
     data_vm = macho_page_up(max(data_size, 16))
     link_addr = data_addr + data_vm
+    # (sloppy watch: the region for the game's code kept free by a segment of nothing, which the
+    # loader replaces; __LINKEDIT, which dyld wants last, after it)
+    if watch:
+        if link_addr > MACHO_WATCH_AT: ice("sloppy watch on macOS: the program is too big for the region at {MACHO_WATCH_AT:x}")
+        link_addr = MACHO_WATCH_AT + MACHO_WATCH_SIZE
     # the libraries (dylib ordinals from 1) and the binds into the data segment (index 2)
     libs: str[] = ["/usr/lib/libSystem.B.dylib"]
     binds: u8[]
@@ -162,6 +167,9 @@ write_macho = (path: str, text: u8[], entry_off: int, ro: u8[], info: u8[], data
     mseg(cmds, "__DATA", data_addr, data_vm, text_size, 0, 3, 1)
     msect(cmds, "__bss", "__DATA", data_addr, data_size, 0, 4, 1)       # S_ZEROFILL
     ncmds += 1
+    if watch:
+        mseg(cmds, "__SLOPPYJIT", MACHO_WATCH_AT, MACHO_WATCH_SIZE, 0, 0, 0, 0)
+        ncmds += 1
     mseg(cmds, "__LINKEDIT", link_addr, macho_page_up(link_size), text_size, link_size, 1, 0)
     ncmds += 1
     mp32(cmds, 0x80000022)                       # LC_DYLD_INFO_ONLY
@@ -360,16 +368,19 @@ sha256 = (b: u8[], off: int, n: int) -> u8[]:
 # run at MACHO_WATCH_CODE, and starts with this loader: it takes the region (MAP_JIT memory, which
 # each thread sees either writable or runnable), copies the code there, marks the region's first
 # word as x64.jo's entry does on Linux, and calls the code's entry. Later builds' code goes into
-# the region after it (lib/std/watch.jo). (The program is started where it was linked, without
-# address space randomization: lib/core/os.jo, __exec_unslid.)
+# the region after it (lib/std/watch.jo). The executable keeps the region free with a segment of
+# nothing there (write_macho), and is started where it was linked, without address space
+# randomization (lib/core/os.jo, __exec_unslid).
 
 # a 64-bit constant in 4 instructions (the loader has the same size whatever its numbers are)
 mw_mov64 = (rd: int, v: int):
     a_movz(rd, v & 0xFFFF, 0)
     loop k in [1..4): a_movk(rd, (v >> (16 * k)) & 0xFFFF, k)
 
-# the slot (in __DATA) of a C function the program uses
-mw_slot = (name: str) -> int:
+# the slot (in __DATA) of a C function the program uses (data_addr 0: only the loader's size is
+# wanted)
+mw_slot = (name: str, data_addr: int) -> int:
+    if data_addr == 0: return 0
     loop imp in mac_imports:
         if imp.2 == name: return imp.0
     ice("sloppy watch on macOS: the program does not use {name}")
@@ -381,14 +392,15 @@ macho_watch_loader = (data_addr: int, blob_addr: int, blob_len: int, entry: int)
     w32(0xA9BE7BFD)                                             # stp x29, x30, [sp, #-32]!
     w32(0x910003FD)                                             # mov x29, sp
     w32(0xA90107E0)                                             # stp x0, x1, [sp, #16]
-    # mmap(region, size, read/write/run, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0)
+    # mmap(region, size, read/write/run, MAP_PRIVATE | MAP_FIXED | MAP_ANON | MAP_JIT, -1, 0): over
+    # the segment keeping it
     mw_mov64(0, MACHO_WATCH_AT)
     mw_mov64(1, MACHO_WATCH_SIZE)
     a_movz(2, 7, 0)
-    a_movz(3, 0x1802, 0)
+    a_movz(3, 0x1812, 0)
     a_movn(4, 0, 0)
     a_movz(5, 0, 0)
-    mw_mov64(16, data_addr + mw_slot("mmap"))
+    mw_mov64(16, data_addr + mw_slot("mmap", data_addr))
     a_ldr(16, 16, 0)
     a_blr(16)
     mw_mov64(9, MACHO_WATCH_AT)
@@ -396,7 +408,7 @@ macho_watch_loader = (data_addr: int, blob_addr: int, blob_len: int, entry: int)
     fail = code.len()
     w32(0x54000000 | AC_NE)                                     # b.ne fail
     # writable: the code copied in, 8 bytes at a time; the mark
-    jit = data_addr + mw_slot("pthread_jit_write_protect_np")
+    jit = data_addr + mw_slot("pthread_jit_write_protect_np", data_addr)
     a_movz(0, 0, 0)
     mw_mov64(16, jit)
     a_ldr(16, 16, 0)
