@@ -37,10 +37,13 @@ for n in sorted(os.listdir(exdir)):
 game_files = {}
 for name, path in [("rebound (2D game)", "examples/rebound/rebound.jo"), ("breakwater (3D game)", "examples/breakwater/breakwater.jo"),
                    ("shapes (2D)", "examples/shapes.jo"), ("tiles (2D)", "examples/tiles.jo"),
-                   ("cube (3D)", "examples/cube.jo"), ("scene (3D)", "examples/scene3d.jo"), ("dunes (3D game)", "examples/dunes/dunes.jo")]:
+                   ("cube (3D)", "examples/cube.jo"), ("scene (3D)", "examples/scene3d.jo"), ("dunes (3D game)", "examples/dunes/dunes.jo"),
+                   ("lowline (3D game)", "examples/lowline/lowline.jo"),
+                   ("arcade (sloppy new template)", "lib/new/arcade.jo"), ("firstperson (sloppy new template)", "lib/new/3d.jo")]:
     full = os.path.join(root, path)
     if not os.path.exists(full): continue
-    examples[name] = open(full).read()
+    examples[name] = open(full).read().replace("__TITLE__", name.split(" ")[0].title()).replace("__NAME__", name.split(" ")[0])
+    if path.startswith("lib/"): continue
     d = os.path.dirname(full)
     if d == os.path.join(root, "examples"): continue
     names = [n for n in sorted(os.listdir(d)) if not n.endswith(".jo")]

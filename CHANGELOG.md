@@ -8,6 +8,8 @@ Tools:
   first build pins each to a commit in `sloppy.lock` beside the program and fetches it once,
   with git, into a cache, so builds after are the same and need no network. `sloppy add <url>`
   writes the line and fetches it. A package's own packages come along.
+- **An examples gallery** on the website (sloppy-lang.org/examples): each game, example and
+  `sloppy new` template, with its picture, to play in the browser or change in the playground.
 - `run_program(program, args)`: run a program, wait for it, its exit code and output.
 - **Variables in debuggers**: `sloppy build -g` (Linux on x86-64 and arm64, macOS) adds every function's
   parameters and locals with their types and where they are while it runs, and how each frame

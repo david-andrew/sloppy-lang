@@ -283,7 +283,7 @@ API_SCRIPT = """<script>
 
 def nav(here_page, prefix):
     items = [("Get started", "docs/start.html"), ("Tutorials", "docs/tutorial.html"), ("Language", "docs/language.html"),
-             ("Library", "docs/api.html"), ("Playground", "playground/")]
+             ("Library", "docs/api.html"), ("Examples", "examples/"), ("Playground", "playground/")]
     tutorials = {"docs/tutorial.html", "docs/tutorial-rebound.html", "docs/tutorial-breakwater.html"}
     on = lambda p: p == here_page or (p == "docs/tutorial.html" and here_page in tutorials)
     links = "".join(f'<a class="{"on" if on(p) else ""}" href="{prefix}{p}">{n}</a>' for n, p in items)
@@ -461,6 +461,7 @@ draw = ():
     <a class="btn" href="https://github.com/david-andrew/sloppy-lang/blob/master/examples/breakwater/breakwater.jo">Read the source</a></div>
   </div>
 </section>
+<section class="strip"><p><a class="btn" href="examples/">More examples, to play and change</a></p></section>
 <section class="strip">
   <h2>Numbers, arrays, and the rest</h2>
   <pre><code class="sloppy">fib = (n: int) -> int:
@@ -475,6 +476,87 @@ print(nums .* 2.5 .+ 1, sqrt.([4.0 9.0]), [1 2; 3 4] * [1 0; 0 1])</code></pre>
   <p>Editors: <code>sloppy lsp</code> is a language server (and there is a <a href="https://marketplace.visualstudio.com/items?itemName=RedFoxLabs.sloppy">VS Code / Cursor extension</a>). An interactive prompt: run <code>sloppy</code> with no file.</p>
 </section>
 """
+
+# ---- the examples gallery: each one's picture (drawn by the software renderer while the site is
+# built), a web build to play, the playground, the source ----
+# (page name, source, title, its playground example, the web build: "" for one of its own)
+GALLERY = [
+    ("rebound", "examples/rebound/rebound.jo", "Rebound", "rebound", "../rebound/"),
+    ("breakwater", "examples/breakwater/breakwater.jo", "Breakwater", "breakwater", "../breakwater/"),
+    ("dunes", "examples/dunes/dunes.jo", "Dunes", "dunes", ""),
+    ("lowline", "examples/lowline/lowline.jo", "Lowline", "lowline", ""),
+    ("arcade", "lib/new/arcade.jo", "sloppy new: arcade", "arcade", ""),
+    ("firstperson", "lib/new/3d.jo", "sloppy new: 3d", "firstperson", ""),
+    ("tiles", "examples/tiles.jo", "Tiles and sprites", "tiles", ""),
+    ("shapes", "examples/shapes.jo", "2D shapes", "shapes", ""),
+    ("scene3d", "examples/scene3d.jo", "A 3D scene", "scene", ""),
+    ("cube", "examples/cube.jo", "Shaders in Sloppy", "cube", ""),
+]
+
+# a program's opening comment, as a sentence or two (its first paragraph, without the title)
+def about(src):
+    lines = []
+    for l in src.splitlines():
+        if not l.startswith("#"): break
+        t = l[1:].strip()
+        if not t:
+            if lines: break
+            continue
+        lines.append(t)
+    text = " ".join(lines).replace("__TITLE__", "This game").replace("__NAME__", "game")
+    text = re.sub(r"^[A-Z]+ - ", "", text)
+    m = re.match(r"(.+?[.!?])( |$)", text)
+    if m: text = m.group(1)
+    return text[:1].upper() + text[1:]
+
+def build_gallery():
+    d = os.path.join(out, "examples")
+    os.makedirs(d, exist_ok=True)
+    sloppy = os.path.join(root, "bin", "sloppy")
+    env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"))
+    cards = []
+    for name, path, title, pg, play in GALLERY:
+        full = os.path.join(root, path)
+        src = open(full).read()
+        if path.startswith("lib/new/"):
+            # (a template: filled in, as sloppy new does)
+            src = src.replace("__TITLE__", name.title()).replace("__NAME__", name)
+            full = os.path.join(d, name + ".jo")
+            open(full, "w").write(src)
+        if not play:
+            os.makedirs(os.path.join(d, name), exist_ok=True)
+            subprocess.run([sloppy, "build", full, "--target", "wasm", "-o", os.path.join(d, name, "index.html")], check=True, env=env)
+            play = f"{name}/"
+        # the picture: frame 150, by the software renderer (no GPU, no display)
+        exe = os.path.join(d, name + ".bin")
+        png = os.path.join(d, name + ".png")
+        img = ""
+        r = subprocess.run([sloppy, "build", full, "-o", exe], env=env, capture_output=True)
+        if r.returncode == 0:
+            shot = {k: v for k, v in env.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
+            shot.update(SLOPPY_SOFTWARE="1", SLOPPY_NO_AUDIO="1", SLOPPY_FRAMES="150", SLOPPY_WINDOW="640x360", SLOPPY_SCALE="1",
+                        SLOPPY_SCREENSHOT=png, SLOPPY_SAVE_DIR=os.path.join(d, ".saves"))
+            try: subprocess.run([exe], env=shot, cwd=os.path.dirname(full), capture_output=True, timeout=180)
+            except subprocess.TimeoutExpired: pass
+            os.remove(exe)
+            if os.path.exists(png): img = f'<a href="{play}"><img src="{name}.png" alt="{html.escape(title)}" loading="lazy"></a>'
+        src_url = f"{REPO}/blob/master/{path}"
+        say = about(src)
+        if path.startswith("lib/new/"):
+            say = say.split(": ", 1)[-1]
+            say = say[:1].upper() + say[1:]
+        cards.append(f'<div class="card">{img}<h3>{html.escape(title)}</h3><p>{html.escape(say)}</p>'
+                     f'<div class="buttons"><a class="btn primary" href="{play}">Play</a><a class="btn" href="../playground/#example={pg}">Change it</a>'
+                     f'<a class="btn" href="{src_url}">Source</a></div></div>')
+    shutil.rmtree(os.path.join(d, ".saves"), ignore_errors=True)
+    for name, path, _, _, _ in GALLERY:
+        if path.startswith("lib/new/"): os.remove(os.path.join(d, name + ".jo"))
+    body = ('<main class="gallery-page"><h1>Examples</h1><p class="lead">Games and smaller programs, each one file of Sloppy (with its pictures and models, '
+            'for some), running here in the browser. <b>Change it</b> opens it in the playground, where the compiler runs in the page; '
+            '<code>sloppy new</code> starts a program from the templates among them.</p>'
+            f'<div class="gallery">{"".join(cards)}</div></main>')
+    open(os.path.join(d, "index.html"), "w").write(page("Examples | Sloppy", body, "examples/", "../",
+                                                       description="Games and examples written in Sloppy, each playable in the browser and editable in the playground."))
 
 def main():
     if os.path.exists(out): shutil.rmtree(out)
@@ -501,6 +583,7 @@ def main():
     os.makedirs(os.path.join(out, "breakwater"))
     subprocess.run([os.path.join(root, "bin", "sloppy"), "build", os.path.join(root, "examples", "breakwater", "breakwater.jo"), "--target", "wasm",
                     "-o", os.path.join(out, "breakwater", "index.html")], check=True, env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")))
+    build_gallery()
     # curl -fsSL .../install | bash
     shutil.copy(os.path.join(root, "tools", "install.sh"), os.path.join(out, "install"))
     # irm https://sloppy-lang.org/install.ps1 | iex

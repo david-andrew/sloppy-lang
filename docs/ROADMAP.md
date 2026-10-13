@@ -94,7 +94,7 @@ packages on the website instead.
 - `sloppy new` with a few templates (done: game, arcade, 3d, program; lib/new/*.jo, each
   built and its first frames drawn in the tests).
 - Language server: workspace symbols, semantic highlighting, rename across files (done).
-- An examples gallery on the website, each runnable in the browser.
+- An examples gallery on the website, each runnable in the browser (done: sloppy-lang.org/examples).
 
 ### 7. Networking (M, then L)
 
