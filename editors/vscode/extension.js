@@ -467,17 +467,24 @@ const debugProvider = {
         const cwd = config.cwd || path.dirname(program);
         const args = config.args || [];
         const panics = config.stopOnPanic !== false;
+        // (Windows: Microsoft's debugger first, with lib/debug/sloppy.natvis)
+        if (windows && vscode.extensions.getExtension('ms-vscode.cpptools'))
+            return { type: 'cppvsdbg', request: 'launch', name: config.name, program: exe, args, cwd, visualizerFile: path.join(lib, 'debug', 'sloppy.natvis') };
         if (vscode.extensions.getExtension('vadimcn.vscode-lldb')) {
             const init = [`command script import "${path.join(lib, 'debug', 'sloppy_lldb.py')}"`];
             if (panics) init.push('breakpoint set -n __panic');
             return { type: 'lldb', request: 'launch', name: config.name, program: exe, args, cwd, initCommands: init, env: config.env };
         }
         if (vscode.extensions.getExtension('ms-vscode.cpptools')) {
-            if (windows) return { type: 'cppvsdbg', request: 'launch', name: config.name, program: exe, args, cwd };
             const setup = [{ text: '-enable-pretty-printing', ignoreFailures: true }];
             if (process.platform !== 'darwin') setup.push({ text: `source ${path.join(lib, 'debug', 'sloppy_gdb.py')}`, ignoreFailures: true });
             if (panics) setup.push({ text: 'break __panic', ignoreFailures: true });
             return { type: 'cppdbg', request: 'launch', name: config.name, program: exe, args, cwd, MIMode: process.platform === 'darwin' ? 'lldb' : 'gdb', setupCommands: setup };
+        }
+        if (windows) {
+            const pick = await vscode.window.showInformationMessage('Debugging Sloppy programs needs Microsoft\'s C/C++ extension.', 'Install C/C++');
+            if (pick) vscode.commands.executeCommand('workbench.extensions.installExtension', 'ms-vscode.cpptools');
+            return undefined;
         }
         const pick = await vscode.window.showInformationMessage('Debugging Sloppy programs needs a debugger extension: CodeLLDB (or Microsoft\'s C/C++).', 'Install CodeLLDB');
         if (pick) vscode.commands.executeCommand('workbench.extensions.installExtension', 'vadimcn.vscode-lldb');

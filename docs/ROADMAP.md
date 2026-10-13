@@ -71,8 +71,9 @@ rebindable controls, touch on the web).
 
 - **Debugging:** variables in DWARF (`sloppy build -g`: Linux x86-64 and arm64, macOS, where
   the executable carries a __DWARF segment), printers for gdb and lldb, F5 in VS Code
-  (CodeLLDB or the C/C++ extension), stopping at a panic: done. Next: variables in PDB on
-  Windows.
+  (CodeLLDB or the C/C++ extension), stopping at a panic, and on Windows the same in the PDB
+  (types, variables, natvis for Visual Studio and WinDbg; unwind codes for saved registers):
+  done.
 - **Profiling:** Sloppy function names in `perf` and Windows' profilers (there: symbols, DWARF,
   PDB), and a frame profiler in the stats overlay: named CPU zones per frame (done: `zone()`);
   next, with Vulkan, GPU timestamps per pass.

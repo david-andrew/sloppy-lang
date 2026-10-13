@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+Tools:
+- **Variables in debuggers on Windows**: `sloppy build -g` puts the variables and their types in
+  the PDB (CodeView: S_LOCAL records with where each is, type records with their hashes), so
+  Visual Studio, WinDbg, cdb and VS Code's C/C++ debugger show every frame's variables.
+  `lib/debug/sloppy.natvis` shows strings as text, arrays and maps as their elements and
+  optionals as their value or `none`; VS Code's F5 loads it. A function that saves registers
+  now says where in its unwind codes (`.pdata`), so callers' variables held in them are right
+  too. `tools/dbgtest.py` checks what cdb shows on Windows.
+
 ## 0.9.0
 
 Tools:

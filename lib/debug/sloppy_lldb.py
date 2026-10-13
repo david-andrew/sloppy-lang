@@ -181,6 +181,14 @@ def __lldb_init_module(debugger, internal_dict):
     run('type summary add -w sloppy -x "\\?$" -F %s.opt_summary' % m)
     # (maps by their type's name, {K: V})
     run('type synthetic add -w sloppy -x "^\\{.+: .+\\}$" -l %s.MapChildren' % m)
+    # (Windows: the names in a PDB, compiler/pdb.jo: str *, array<T> *, optional<T>, Map<K, V>;
+    # not checked by tools/dbgtest.py, which uses cdb there)
+    run('type summary add -w sloppy -v -x "^str \\*$" -F %s.str_summary' % m)
+    run('type synthetic add -w sloppy -x "^str \\*$" -l %s.NoChildren' % m)
+    run('type synthetic add -w sloppy -x "^array<.+> \\*$" -l %s.ArrayChildren' % m)
+    run('type summary add -w sloppy -v -x "^array<.+> \\*$" -F %s.array_summary' % m)
+    run('type summary add -w sloppy -x "^optional<.+>$" -F %s.opt_summary' % m)
+    run('type synthetic add -w sloppy -x "^Map<.+>$" -l %s.MapChildren' % m)
     # enums with fields by what they hold: an lldb with recognizer functions (else they show as
     # their tag and each variant's fields)
     ci = debugger.GetCommandInterpreter()

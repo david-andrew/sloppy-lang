@@ -6,9 +6,10 @@
 # A PDB is an MSF file: fixed-size blocks, a directory of streams (each a list of blocks). The
 # streams written here:
 #   1 PDB info: version, GUID, age, the named streams ("/names": 9)
-#   2 TPI, 4 IPI: type records (none: functions are described by name and place only)
+#   2 TPI: type records (sloppy build -g: the variables' types; 11 their hashes), 4 IPI: none
 #   3 DBI: one module (all the code), the section contribution and map, the source files
-#   5 the module's symbols (a procedure per function) and C13 line tables
+#   5 the module's symbols (a procedure per function, with its variables for -g) and C13 line
+#     tables
 #   6 globals, 7 publics: hash tables of the records in 8, the symbol records
 #   9 /names: the source files' names, 10 the PE section headers
 # (The formats as LLVM documents and writes them: llvm.org/docs/PDB.)
@@ -17,8 +18,20 @@ use 'util.jo'
 use 'ir.jo'
 use 'elf.jo'
 use 'x64.jo'
+use 'types.jo'
+use 'check.jo'
+use 'lower.jo'
+use 'dwarf.jo'
 
 const PDB_BLOCK = 4096
+
+# (sloppy build -g: the type records, below)
+cv_tpi: u8[]
+cv_hash: int[]                  # each record's hash, into 0x3FFFF buckets
+cv_offs: int[]                  # where each starts in cv_tpi
+cv_memo: {int: int} = {}        # a type -> its index
+cv_busy: {int: int} = {}        # structs being written -> their forward reference (0: none yet)
+cv_crc_table: int[]
 
 # hashStringV1 (Microsoft's LHashPbCb): the hash of names in /names and of symbols
 pdb_hash = (s: str) -> int:
@@ -190,15 +203,41 @@ write_pdb = (path: str, guid: u8[], text_len: int, sections: u8[], main_path: st
     pdb_cstr(ob, abs(main_path))
     pdb_record(msyms, 0x1101, ob)                   # S_OBJNAME
     cp: u8[]
-    put32(cp, 0)                                   # language: C (the closest a debugger knows)
+    put32(cp, 1)                                   # language: C++ (the closest a debugger knows)
     put16(cp, 0xD0)                                # x64
     loop i in [0..8): put16(cp, 0)                 # front and back end versions
     pdb_cstr(cp, producer)
     pdb_record(msyms, 0x113C, cp)                   # S_COMPILE3
-    pfns = elf_syms
-    pfns.sort_by((s: (str, int, int)): s.1)
+    order: int[]
+    loop i in [0..elf_syms.len()): order.push(i)
+    order.sort_by((i: int): elf_syms[i].1)
+    pfns: (str, int, int)[]
+    loop i in order: pfns.push(elf_syms[i])
+    # (sloppy build -g: each function's variables, dbg_raw)
+    cv_tpi = []
+    cv_hash = []
+    cv_offs = []
+    cv_memo = {}
+    cv_busy = {}
+    dbg_at = fill(-1, elf_syms.len())
+    k = 0
+    loop k < dbg_raw.len():
+        dbg_at[dbg_raw[k]] = k
+        k += 5 + 6 * dbg_raw[k + 4]
+    # (a function's type, for debuggers that want one: void (), its parameters are its S_LOCALs)
+    proc_type = 0
+    if dbg_raw.len() > 0:
+        al: u8[]
+        put32(al, 0)
+        pt: u8[]
+        put32(pt, 0x0003)
+        pt.push(0)                                 # near C
+        pt.push(0)
+        put16(pt, 0)
+        put32(pt, cv_rec(0x1201, al, ""))          # LF_ARGLIST
+        proc_type = cv_rec(0x1008, pt, "")         # LF_PROCEDURE
     proc_at: int[]
-    loop s in pfns:
+    loop j in 0.. and s in pfns:
         at = msyms.len()
         proc_at.push(at)
         body: u8[]
@@ -209,12 +248,13 @@ write_pdb = (path: str, guid: u8[], text_len: int, sections: u8[], main_path: st
         put32(body, s.2)                           # code size
         put32(body, 0)                             # debug start, end
         put32(body, s.2)
-        put32(body, 0)                             # type: none
+        put32(body, proc_type)                     # type (-g)
         put32(body, s.1)                           # offset in .text
         put16(body, 1)                             # section
         body.push(1)                               # flags: a frame pointer
         pdb_cstr(body, s.0)
         pdb_record(msyms, 0x1110, body)             # S_GPROC32
+        if dbg_at[order[j]] >= 0: cv_locals(msyms, dbg_at[order[j]])
         e = msyms.len()
         put32_at(msyms, at + 4 + end_at, e)
         pdb_record(msyms, 0x0006, [])               # S_END
@@ -411,6 +451,9 @@ write_pdb = (path: str, guid: u8[], text_len: int, sections: u8[], main_path: st
     put32(info, 9)
     put32(info, 20140508)                          # VC140
     streams: u8[][] = [[], info, pdb_types(), dbi, pdb_types(), module, gsi, publics, recs, pdb_string_table(strtab), sections]
+    if cv_hash.len() > 0:
+        streams[2] = cv_tpi_stream(11)
+        streams.push(cv_hash_stream())
     write_bytes(path, msf(streams))
 
 put32_at = (b: mut u8[], at: int, v: int):
@@ -494,3 +537,427 @@ msf = (streams: u8[][]) -> u8[]:
         mem_copy(data(out) + x * PDB_BLOCK, data(dir) + j * PDB_BLOCK, m)
     loop j in 0.. and x in dir_blocks: put32_at(out, map_block * PDB_BLOCK + 4 * j, x)
     out
+
+# ---------------- types and variables (sloppy build -g) ----------------
+# The TPI stream's records, as CodeView has them: a type refers to types written before it; a
+# struct that holds itself (through an array) refers to a forward reference, which debuggers
+# match to the struct by its unique name, through the hash of each record (the TPI hash stream).
+# Types are keyed as in dwarf.jo (made-up ones: DW_* below 0). Names are C++-like, for natvis
+# (lib/debug/sloppy.natvis): a string points to `str`, an array to `array<int>`, an optional is
+# `optional<int>`, a tuple `tuple<int, str>`, a variant of an enum `Shape::rect`.
+
+const CV_BUCKETS = 0x3FFFF
+const CV_VOIDP = 0x0603
+const CV_CHAR = 0x0070
+const CV_LONG = 0x0076
+
+# CRC-32 as LLVM's JamCRC: no final inversion, starting from 0 (hashBufferV8)
+cv_crc = (b: u8[], from: int, to: int) -> int:
+    if cv_crc_table.len() == 0:
+        loop n in [0..256):
+            c = n
+            loop _ in [0..8):
+                if c & 1 != 0: c = 0xEDB88320 xor (c >> 1)
+                else: c = c >> 1
+            cv_crc_table.push(c)
+    c = 0
+    loop i in [from..to): c = cv_crc_table[(c xor int(b[i])) & 255] xor (c >> 8)
+    c
+
+# a numeric leaf: small values as they are, others after their kind
+cv_num = (out: mut u8[], v: int):
+    if v >= 0 and v < 0x8000: put16(out, v)
+    else if v >= -0x80000000 and v < 0x80000000:
+        put16(out, 0x8003)                         # LF_LONG
+        put32(out, v)
+    else:
+        put16(out, 0x8009)                         # LF_QUADWORD
+        put64(out, v)
+
+# padding to 4 bytes, as type records have it (LF_PAD1..3)
+cv_pad = (b: mut u8[]):
+    loop b.len() % 4 != 0: b.push(u8(0xF0 + 4 - b.len() % 4))
+
+# a type record: its index (name: a struct's or enum's, which its hash is of; "": the record's)
+cv_rec = (kind: int, body0: u8[], name: str) -> int:
+    body = body0
+    cv_pad(body)
+    at = cv_tpi.len()
+    cv_offs.push(at)
+    put16(cv_tpi, body.len() + 2)
+    put16(cv_tpi, kind)
+    append_bytes(cv_tpi, body)
+    h = 0
+    if len(name) > 0: h = pdb_hash(name)
+    else: h = cv_crc(cv_tpi, at, cv_tpi.len())
+    cv_hash.push(h % CV_BUCKETS)
+    0x1000 + cv_hash.len() - 1
+
+cv_pointer = (ti: int, ref: bool) -> int:
+    b: u8[]
+    put32(b, ti)
+    if ref: put32(b, 0x1002C)                      # 64-bit, an lvalue reference, 8 bytes
+    else: put32(b, 0x1000C)                        # 64-bit, a pointer, 8 bytes
+    cv_rec(0x1002, b, "")                          # LF_POINTER
+
+cv_array = (ti: int, size: int) -> int:
+    b: u8[]
+    put32(b, ti)
+    put32(b, 0x23)                                 # indexed by u64
+    cv_num(b, size)
+    b.push(0)
+    cv_rec(0x1503, b, "")                          # LF_ARRAY
+
+# a struct record (and its fields' list) for key: fields' names, types (keys) and offsets
+cv_struct = (key: int, name: str, size: int, fnames: str[], ftypes: int[], foffs: int[]) -> int:
+    cv_busy[key] = 0
+    tis: int[]
+    loop t in ftypes: tis.push(cv_type(t))
+    fl: u8[]
+    loop i in 0.. and nm in fnames:
+        put16(fl, 0x150D)                          # LF_MEMBER, public
+        put16(fl, 3)
+        put32(fl, tis[i])
+        cv_num(fl, foffs[i])
+        pdb_cstr(fl, nm)
+        cv_pad(fl)
+    fli = cv_rec(0x1203, fl, "")                   # LF_FIELDLIST
+    cv_busy.remove(key)
+    b: u8[]
+    put16(b, fnames.len())
+    put16(b, 0x200)                                # a unique name
+    put32(b, fli)
+    put32(b, 0)                                    # derived from, vtable shape: none
+    put32(b, 0)
+    cv_num(b, size)
+    pdb_cstr(b, name)
+    pdb_cstr(b, "{name}@{key}")
+    cv_rec(0x1505, b, name)                        # LF_STRUCTURE
+
+# the forward reference to the struct key is (for a struct that holds itself)
+cv_forward = (key: int) -> int:
+    nm = cv_struct_name(key)
+    b: u8[]
+    put16(b, 0)
+    put16(b, 0x280)                                # a forward reference, a unique name
+    put32(b, 0)
+    put32(b, 0)
+    put32(b, 0)
+    cv_num(b, 0)
+    pdb_cstr(b, nm)
+    pdb_cstr(b, "{nm}@{key}")
+    cv_rec(0x1505, b, "")
+
+cv_enum = (key: int, name: str, under: int, vnames: str[], values: int[]) -> int:
+    fl: u8[]
+    loop i in 0.. and nm in vnames:
+        put16(fl, 0x1502)                          # LF_ENUMERATE, public
+        put16(fl, 3)
+        cv_num(fl, values[i])
+        pdb_cstr(fl, nm)
+        cv_pad(fl)
+    fli = cv_rec(0x1203, fl, "")
+    b: u8[]
+    put16(b, vnames.len())
+    put16(b, 0x200)
+    put32(b, under)
+    put32(b, fli)
+    pdb_cstr(b, name)
+    pdb_cstr(b, "{name}@{key}")
+    cv_rec(0x1507, b, name)                        # LF_ENUM
+
+# a type's name as a C++ debugger (and natvis) can read it
+cv_name = (t0: int) -> str:
+    t = prune(t0)
+    k = types[t].kind
+    if k == .array: return "array<{cv_name(int(types[t].elem))}>"
+    if k == .opt: return "optional<{cv_name(int(types[t].elem))}>"
+    if k == .ptr: return "{cv_name(int(types[t].elem))}*"
+    if k == .fn_ or k == .cfn: return "fn"
+    if k == .tuple:
+        s = "tuple<"
+        loop i in [0..int(types[t].nargs)):
+            if i > 0: s += ", "
+            s += cv_name(targ(t, i))
+        return s + ">"
+    if k == .struct_ or k == .enum_:
+        si = int(types[t].st)
+        s = structs[si].name
+        if int(structs[si].ntargs) == 0: return s
+        s += "<"
+        loop i in [0..int(structs[si].ntargs)):
+            if i > 0: s += ", "
+            s += cv_name(struct_targ(si, i))
+        return s + ">"
+    type_str(t)
+
+# the name of a struct-like key (for its forward reference)
+cv_struct_name = (key: int) -> str:
+    if key == DW_STRHDR: return "str"
+    if key <= DW_VARIANT:
+        t = (DW_VARIANT - key) >> 8
+        vi = int(structs[int(types[t].st)].variants) + ((DW_VARIANT - key) & 255)
+        return "{cv_name(t)}::{names[int(variants[vi].name)]}"
+    if key <= DW_TAGS: return "{cv_name(DW_TAGS - key)}::tag"
+    if key <= DW_PTR: return ""
+    if key <= DW_FLEX: return ""
+    if key <= DW_HDR: return "array<{cv_name(DW_HDR - key)}>"
+    cv_name(key)
+
+# the index of type t (a key: dwarf.jo's)
+cv_type = (t: int) -> int:
+    if let x = cv_memo.get(t): return x
+    if let f = cv_busy.get(t):
+        if f != 0: return f
+        f2 = cv_forward(t)
+        cv_busy[t] = f2
+        return f2
+    x = cv_type_new(t)
+    cv_memo[t] = x
+    x
+
+# the header a string or an array points to: [rc][len][cap][data...]
+cv_header = (key: int, data: int) -> int:
+    cv_struct(key, cv_struct_name(key), 24, ["rc", "len", "cap", "data"], [DW_LONG, DW_LONG, DW_LONG, data], [0, 8, 16, 24])
+
+cv_type_new = (t0: int) -> int:
+    if t0 < 0:
+        if t0 == DW_LONG: return CV_LONG
+        if t0 == DW_BYTE: return 0x69
+        if t0 == DW_VOIDP: return CV_VOIDP
+        if t0 == DW_STRHDR: return cv_header(t0, DW_FLEX - T_VOID)
+        if t0 == DW_STRPTR: return cv_pointer(cv_type(DW_STRHDR), false)
+        if t0 <= DW_VARIANT:
+            t = (DW_VARIANT - t0) >> 8
+            si = int(types[t].st)
+            vi = int(structs[si].variants) + ((DW_VARIANT - t0) & 255)
+            poff = int(structs[si].payload_off)
+            fnm: str[]
+            ft: int[]
+            fo: int[]
+            loop i in [0..int(variants[vi].nfields)):
+                fi = int(variants[vi].fields) + i
+                fnm.push(names[int(fields[fi].name)])
+                ft.push(int(fields[fi].type))
+                fo.push(int(fields[fi].offset) - poff)
+            return cv_struct(t0, cv_struct_name(t0), tsize(t) - poff, fnm, ft, fo)
+        if t0 <= DW_TAGS:
+            t = DW_TAGS - t0
+            si = int(types[t].st)
+            vn: str[]
+            vv: int[]
+            loop v in [0..int(structs[si].nvariants)):
+                vi = int(structs[si].variants) + v
+                vn.push(names[int(variants[vi].name)])
+                if structs[si].simple_enum: vv.push(variants[vi].value)
+                else: vv.push(int(variants[vi].tag))
+            return cv_enum(t0, cv_struct_name(t0), 0x74, vn, vv)
+        if t0 <= DW_PTR: return cv_pointer(cv_type(DW_HDR - (DW_PTR - t0)), false)
+        if t0 <= DW_FLEX:
+            e = DW_FLEX - t0
+            if e == T_VOID: return cv_array(CV_CHAR, 0)        # (a string's bytes)
+            if e == T_U8: return cv_array(0x69, 0)
+            return cv_array(cv_type(e), 0)
+        return cv_header(t0, DW_FLEX - (DW_HDR - t0))
+    t = prune(t0)
+    k = types[t].kind
+    size = tsize(t)
+    if k == .int_:
+        b = int(types[t].bits)
+        if b == 8:
+            if types[t].sign: return 0x68
+            return 0x69
+        if b == 16:
+            if types[t].sign: return 0x72
+            return 0x73
+        if b == 32:
+            if types[t].sign: return 0x74
+            return 0x75
+        if types[t].sign: return 0x76
+        return 0x77
+    if k == .bool_: return 0x30
+    if k == .float_:
+        if size == 4: return 0x40
+        return 0x41
+    if k == .str_: return cv_type(DW_STRPTR)
+    if k == .array: return cv_type(DW_PTR - int(types[t].elem))
+    if k == .ptr:
+        e = int(types[t].elem)
+        if e == T_VOID or tkind(e) == .void_: return CV_VOIDP
+        return cv_pointer(cv_type(e), false)
+    if k == .cfn or k == .null_: return CV_VOIDP
+    if k == .fixed:
+        return cv_array(cv_type(int(types[t].elem)), size)
+    fnm: str[]
+    ft: int[]
+    fo: int[]
+    if k == .struct_:
+        si = int(types[t].st)
+        loop i in [0..int(structs[si].nfields)):
+            fi = int(structs[si].fields) + i
+            fnm.push(names[int(fields[fi].name)])
+            ft.push(int(fields[fi].type))
+            fo.push(int(fields[fi].offset))
+    else if k == .enum_:
+        si = int(types[t].st)
+        if structs[si].simple_enum:
+            vn: str[]
+            vv: int[]
+            loop v in [0..int(structs[si].nvariants)):
+                vi = int(structs[si].variants) + v
+                vn.push(names[int(variants[vi].name)])
+                vv.push(variants[vi].value)
+            under = 0x74
+            if size == 1: under = 0x68
+            else if size == 2: under = 0x72
+            else if size == 8: under = 0x76
+            return cv_enum(t, cv_name(t), under, vn, vv)
+        fnm.push("tag")
+        ft.push(DW_TAGS - t)
+        fo.push(0)
+        loop v in [0..min(int(structs[si].nvariants), 256)):
+            vi = int(structs[si].variants) + v
+            if int(variants[vi].nfields) > 0:
+                fnm.push(names[int(variants[vi].name)])
+                ft.push(DW_VARIANT - (256 * t + v))
+                fo.push(int(structs[si].payload_off))
+    else if k == .tuple:
+        off = 0
+        loop i in [0..int(types[t].nargs)):
+            e = targ(t, i)
+            off = align_up(off, talign(e))
+            fnm.push("{i}")
+            ft.push(e)
+            fo.push(off)
+            off += tsize(e)
+    else if k == .vec:
+        n = int(types[t].bits)
+        e = T_F32
+        if types[t].sign: e = T_I32
+        loop i in [0..n):
+            if n <= 4: fnm.push(["x", "y", "z", "w"][i])
+            else: fnm.push("m{i}")
+            ft.push(e)
+            fo.push(4 * i)
+    else if k == .opt:
+        e = int(types[t].elem)
+        fnm = ["value", "has"]
+        ft = [e, T_BOOL]
+        fo = [0, tsize(e)]
+    else if k == .fn_:
+        fnm = ["code", "env"]
+        ft = [DW_VOIDP, DW_VOIDP]
+        fo = [0, 8]
+    cv_struct(t, cv_name(t), size, fnm, ft, fo)
+
+# the TPI stream (its header and records), and its hash stream (stream hs): each record's hash,
+# then where every 8 KB of records starts
+cv_tpi_stream = (hs: int) -> u8[]:
+    n = cv_hash.len()
+    offs: u8[]
+    last = -8192
+    loop i in [0..n):
+        if cv_offs[i] >= last + 8192:
+            put32(offs, 0x1000 + i)
+            put32(offs, cv_offs[i])
+            last = cv_offs[i]
+    out: u8[]
+    put32(out, 20040203)                           # V80
+    put32(out, 56)
+    put32(out, 0x1000)
+    put32(out, 0x1000 + n)
+    put32(out, cv_tpi.len())
+    put16(out, hs)
+    put16(out, 0xFFFF)
+    put32(out, 4)
+    put32(out, CV_BUCKETS)
+    put32(out, 0)                                  # the hashes
+    put32(out, 4 * n)
+    put32(out, 4 * n)                              # the index offsets
+    put32(out, offs.len())
+    put32(out, 4 * n + offs.len())                 # adjustments: none
+    put32(out, 0)
+    append_bytes(out, cv_tpi)
+    out
+
+cv_hash_stream = () -> u8[]:
+    out: u8[]
+    loop h in cv_hash: put32(out, h)
+    last = -8192
+    loop i in [0..cv_hash.len()):
+        if cv_offs[i] >= last + 8192:
+            put32(out, 0x1000 + i)
+            put32(out, cv_offs[i])
+            last = cv_offs[i]
+    out
+
+# CodeView's numbers of the registers DWARF numbers r (x86-64)
+cv_reg = (r: int) -> int:
+    if r < 8: return [328, 331, 330, 329, 332, 333, 334, 335][r]     # rax rdx rcx rbx rsi rdi rbp rsp
+    if r < 16: return 336 + r - 8                  # r8..r15
+    if r < 25: return 154 + r - 17                 # xmm0..xmm7
+    252 + r - 25                                   # xmm8..xmm15
+
+# where a variable is from lo to hi (a record per 64 KB): in register reg (base < 0), or in
+# memory at base + off
+cv_ranges = (out: mut u8[], reg: int, base: int, off: int, lo: int, hi: int):
+    a = lo
+    loop a < hi:
+        n = min(hi - a, 0xFFFF)
+        b: u8[]
+        if base < 0:
+            put16(b, reg)
+            put16(b, 0)
+        else:
+            put16(b, base)
+            put16(b, 0)
+            put32(b, off)
+        put32(b, a)
+        put16(b, 1)
+        put16(b, n)
+        if base < 0: pdb_record(out, 0x1141, b)    # S_DEFRANGE_REGISTER
+        else: pdb_record(out, 0x1145, b)           # S_DEFRANGE_REGISTER_REL
+        a += n
+
+# the variables of the function whose entry in dbg_raw starts at k (x64.jo's dbg_function), as
+# S_LOCAL records each followed by where it is
+cv_locals = (out: mut u8[], k0: int):
+    fr: u8[]
+    loop i in [0..5): put32(fr, 0)                 # frame, padding, saved registers' size...
+    put16(fr, 0)
+    put32(fr, (2 << 14) | (2 << 16))               # locals and parameters from rbp
+    pdb_record(out, 0x1012, fr)                    # S_FRAMEPROC
+    frame = cv_reg(dbg_raw[k0 + 3])
+    nv = dbg_raw[k0 + 4]
+    k = k0 + 5
+    loop _ in [0..nv):
+        l = dbg_raw[k]
+        kind = dbg_raw[k + 1]
+        r = dbg_raw[k + 2]
+        off = dbg_raw[k + 3]
+        lo = dbg_raw[k + 4]
+        hi = dbg_raw[k + 5]
+        k += 6
+        ti = cv_type(store_type(l))
+        nm = names[int(locals[l].name)]
+        if kind == DL_CONST and lo < hi:
+            b: u8[]
+            put32(b, ti)
+            cv_num(b, off)
+            pdb_cstr(b, nm)
+            pdb_record(out, 0x1107, b)             # S_CONSTANT
+            continue
+        fl = 0
+        if int(locals[l].flags) & LF_PARAM != 0: fl = 1
+        where = lo < hi and (kind == DL_REG or kind == DL_MEM or kind == DL_MEMAT)
+        if not where: fl = fl | 0x100              # optimized out
+        if kind == DL_MEMAT: ti = cv_pointer(ti, true)
+        b: u8[]
+        put32(b, ti)
+        put16(b, fl)
+        pdb_cstr(b, nm)
+        pdb_record(out, 0x113E, b)                 # S_LOCAL
+        if not where: continue
+        if kind == DL_REG: cv_ranges(out, cv_reg(r), -1, 0, lo, hi)
+        else if kind == DL_MEM and r != dbg_raw[k0 + 3]: cv_ranges(out, 0, cv_reg(r), off, lo, hi)
+        else: cv_ranges(out, 0, frame, off, lo, hi)

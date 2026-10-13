@@ -377,7 +377,10 @@ lldb -o "command script import ~/.sloppy/lib/debug/sloppy_lldb.py" ./game
 **Sloppy: Debug File** (F5) does all of this, through CodeLLDB or Microsoft's C/C++ extension. On
 Windows, `sloppy build game.jo` also writes `game.pdb` beside `game.exe`, with the functions and
 lines, and the program has unwind tables: Visual Studio, WinDbg and RemedyBG stop at functions
-and lines, step through the source and show the call stack (no variables yet on Windows).
+and lines, step through the source and show the call stack; with `-g` the PDB also has the
+variables and their types. `lib/debug/sloppy.natvis` shows strings, arrays, maps and optionals
+as values in Visual Studio and WinDbg (`.nvload <sloppy>\lib\debug\sloppy.natvis`); VS Code
+loads it.
 
 **Combined loops.** Bindings and conditions join with `and` / `or` in one loop header:
 

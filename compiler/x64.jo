@@ -1184,16 +1184,52 @@ struct XCtl:
 xctl: XCtl[]
 call_stack_bytes = 0
 
+uw_fo = 0                   # (Windows: the function's rbp is rsp + 16 uw_fo, its unwind codes at uw_at)
+uw_at = 0
+
 emit_prologue = ():
     b(0x55)                        # push rbp
-    mov_rr(RBP, RSP)
-    if frame_size > 0:
-        rex(true, 0, 0, RSP, false)
-        b(0x81)
-        modrr(5, RSP)
-        b32(frame_size)            # sub rsp, frame
+    nsave = 0
     loop r in [0..16):
-        if callee_off[r] != 0: mov_mr(RBP, callee_off[r], r)
+        if callee_off[r] != 0: nsave += 1
+    uw_fo = 0
+    if target_windows and nsave > 0: uw_fo = (8 * nsave + 15) / 16
+    if uw_fo > 0:
+        # (Windows: rbp is set as rsp + 16 fo, as its unwind codes can say, so the registers
+        # saved below rbp are above where unwinding starts and the codes can say where: pe.jo)
+        start = fn_addr[ir.fn_index]
+        uw_at = uw_data.len()
+        uw_data.push(frame_size)
+        uw_data.push(uw_fo)
+        rex(true, 0, 0, RSP, false)
+        b(0x83)
+        modrr(5, RSP)
+        b(16 * uw_fo)              # sub rsp, 16 fo
+        uw_data.push(code.len() - start)
+        lea(RBP, RSP, 16 * uw_fo)
+        uw_data.push(code.len() - start)
+        if frame_size > 16 * uw_fo:
+            rex(true, 0, 0, RSP, false)
+            b(0x81)
+            modrr(5, RSP)
+            b32(frame_size - 16 * uw_fo)
+        uw_data.push(code.len() - start)
+        uw_data.push(nsave)
+        loop r in [0..16):
+            if callee_off[r] != 0:
+                mov_mr(RBP, callee_off[r], r)
+                uw_data.push(code.len() - start)
+                uw_data.push(r)
+                uw_data.push(callee_off[r] + 16 * uw_fo)
+    else:
+        mov_rr(RBP, RSP)
+        if frame_size > 0:
+            rex(true, 0, 0, RSP, false)
+            b(0x81)
+            modrr(5, RSP)
+            b32(frame_size)        # sub rsp, frame
+        loop r in [0..16):
+            if callee_off[r] != 0: mov_mr(RBP, callee_off[r], r)
     # incoming parameters
     ni = 0
     nf = 0
@@ -2285,7 +2321,8 @@ x64_function = ():
     elf_syms.push((sym_name(ir.name), fn_start, code.len() - fn_start))
     fn_len[ir.fn_index] = code.len() - fn_start
     if target_windows:
-        unwind_fns.push((fn_start, code.len(), UW_FRAME, frame_size))
+        if uw_fo > 0: unwind_fns.push((fn_start, code.len(), UW_SAVES, uw_at))
+        else: unwind_fns.push((fn_start, code.len(), UW_FRAME, frame_size))
         if ir.cabi:
             pts: int[]
             loop p in [0..ir.nparams): pts.push(vtype(p))

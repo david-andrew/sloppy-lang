@@ -16,7 +16,7 @@ feels like a scripting language:
 - debugging (F5, or **Sloppy: Debug File**): breakpoints, stepping, the call stack and the
   variables (strings, arrays, maps and optionals shown as values), stopping where a program
   panics; through [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb)
-  or Microsoft's C/C++ extension (on Windows without variables, for now)
+  or Microsoft's C/C++ extension (on Windows the C/C++ extension, with `lib/debug/sloppy.natvis`)
 - formatting (`sloppy fmt`), on save by default (`"[sloppy]": {"editor.formatOnSave": false}` turns
   that off)
 - run the file in a terminal (Ctrl+F5, or the run button), in the browser, or its tests
