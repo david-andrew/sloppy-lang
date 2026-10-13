@@ -10,7 +10,7 @@
 extension to the VS Code Marketplace and Open VSX.
 
 Publishing the extension needs no stored tokens: the workflow's GitHub OIDC token is exchanged
-for short-lived ones. The Marketplace is skipped until it is set up as below. The publishing job runs
+for short-lived ones. Both are set up (as below). The publishing job runs
 in the GitHub environment `marketplace-publish` (Settings → Environments: it can be limited to
 `v*` tags there, so nothing else can publish).
 
@@ -24,8 +24,12 @@ Once (an Azure account is needed; the free tier is enough, nothing here costs an
 1. Azure portal → **Managed Identities** → **Create**: any subscription, resource group and
    region; name it e.g. `sloppy-marketplace`.
 2. On the new identity: **Settings → Federated credentials → Add credential**:
-   scenario **GitHub Actions deploying Azure resources**, organization `david-andrew`,
-   repository `sloppy-lang`, entity **Environment**, environment `marketplace-publish`, any name.
+   scenario **GitHub Actions deploying Azure resources**, organization `david-andrew`
+   (organization ID `41205753`), repository `sloppy-lang` (repository ID `1410110127`), entity
+   **Environment**, environment `marketplace-publish`, any name. Keep the generated subject: the
+   repository's OIDC tokens use the form with IDs,
+   `repo:david-andrew@41205753/sloppy-lang@1410110127:environment:marketplace-publish`. (IDs from
+   `gh api repos/david-andrew/sloppy-lang --jq '.owner.id, .id'`.)
 3. On the identity: **Settings → Properties**: copy the Client ID and Tenant ID into the
    repository's variables (Settings → Secrets and variables → Actions → Variables):
    `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`. (They are not secrets.)
@@ -34,7 +38,7 @@ Once (an Azure account is needed; the free tier is enough, nothing here costs an
 5. https://marketplace.visualstudio.com/manage → the RedFoxLabs publisher → **Members** → **Add**:
    paste that id, role **Contributor**.
 
-From then on, releases publish to the Marketplace. (Personal access tokens stop working for
+From then on, releases publish to the Marketplace. (Done.) (Personal access tokens stop working for
 the Marketplace on 1 December 2026; this does not use one.)
 
 ## Open VSX (trusted publishing)
