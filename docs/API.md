@@ -2219,7 +2219,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 
 ## Netplay (rollback)
 
-A module (`import netplay`): two or more players on different machines in one game, with rollback: only inputs travel, and a late one is made up for by playing the last ticks again. Sloppy's math is its own (no system math library, no fused multiply-add), so a tick comes out the same on Linux, Windows, macOS and the web. See examples/duel.
+A module (`import netplay`): two or more players on different machines in one game, with rollback: only inputs travel, and a late one is made up for by playing the last ticks again. Sloppy's math is its own (no system math library, no fused multiply-add), so a tick comes out the same on Linux, Windows, macOS and the web. See examples/duel, and [playing over a network](multiplayer.html) for choosing between rollback and a server.
 
 ```gdscript
 # example: netplay
@@ -2264,7 +2264,7 @@ draw = ():
 
 - `struct Session[S, I]`
 - `session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: int = 2) -> Session[S, I]`: a session of `players` players, this machine's being player `me` (from 0)
-- `confirmed[S, I] = (s: Session[S, I]) -> int`: ticks below this have every player's input: they will not change again
+- `confirmed[S, I] = (s: Session[S, I]) -> int`: ticks below this have every player's input: they will not change again (some may not have been played here yet: those from s.tick on)
 - `silent[S, I] = (s: Session[S, I], p: int) -> f64`: player p has not been heard from for this many seconds
 - `play[S, I] = (s: mut Session[S, I], input: I)`: this frame's input from this machine's player; the game moves on a tick (unless waiting)
 - `outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]`: what to send to whom since the last call: (player, bytes) (without s.udp)

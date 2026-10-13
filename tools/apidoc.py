@@ -66,7 +66,8 @@ TOPICS = [
     ("Games", "netplay", "Netplay (rollback)", ["netplay"], "netplay",
      "A module (`import netplay`): two or more players on different machines in one game, with rollback: only inputs "
      "travel, and a late one is made up for by playing the last ticks again. Sloppy's math is its own (no system math "
-     "library, no fused multiply-add), so a tick comes out the same on Linux, Windows, macOS and the web. See examples/duel."),
+     "library, no fused multiply-add), so a tick comes out the same on Linux, Windows, macOS and the web. See examples/duel, "
+     "and [playing over a network](multiplayer.html) for choosing between rollback and a server."),
 ]
 # the library's own machinery (the runtime, the OS and graphics layers, the prompt...): not listed
 INTERNAL = {"core/rt", "core/fmt", "core/windows", "core/macos", "game/dl", "game/cocoa", "game/x11", "game/wayland", "game/wlclient", "game/dmabuf", "game/vk", "game/vkgl",
