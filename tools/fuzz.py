@@ -5,7 +5,9 @@ release and web builds print the same thing. Half the programs also use the newe
 against a plain array, n-dimensional arrays and broadcasting); the others stay within the
 C bootstrap compiler's subset, which is then a fifth, independent build.
 
-usage: tools/fuzz.py [count] [--seed N] [--no-wasm] [--keep]
+usage: tools/fuzz.py [count] [--seed N] [--no-wasm] [--arm64] [--keep]
+--arm64: also built for Linux on arm64 (debug and release), run under qemu-aarch64-static (or
+SLOPPY_ARM64_RUN).
 Failing programs are saved to build/fuzz/fail_<seed>.jo.
 """
 import os, random, subprocess, sys
@@ -671,13 +673,17 @@ def panic_line(e):
     return (e.splitlines() or [""])[0][:200]
 
 
-def check(seed, wasm=True, keep=False):
+ARM64_RUN = os.environ.get("SLOPPY_ARM64_RUN", "qemu-aarch64-static").split()
+
+
+def check(seed, wasm=True, keep=False, arm64=False):
     src = Gen(random.Random(seed)).program()
     path = os.path.join(OUT, f"p{seed}.jo")
     open(path, "w").write(src)
     outs = {}
     modes = [("debug", []), ("release", ["--release"])]
     if wasm: modes += [("wasm", ["--target", "wasm"]), ("wasm-release", ["--target", "wasm", "--release"])]
+    if arm64: modes += [("arm64", ["--target", "linux-arm64"]), ("arm64-release", ["--target", "linux-arm64", "--release"])]
     for name, flags in modes:
         exe = os.path.join(OUT, f"p{seed}_{name}")
         code, _, err = run([SLOPPY, "build", path, "-o", exe] + flags)
@@ -686,6 +692,8 @@ def check(seed, wasm=True, keep=False):
             continue
         if name.startswith("wasm"):
             code, o, e = run(["node", os.path.join(ROOT, "tools", "runwasm.js"), exe + ".html"])
+        elif name.startswith("arm64"):
+            code, o, e = run(ARM64_RUN + [exe], timeout=60)
         else:
             code, o, e = run([exe])
         outs[name] = o + (f"[exit {code}] {panic_line(e)}" if code != 0 else "")
@@ -720,6 +728,6 @@ if __name__ == "__main__":
     wasm = "--no-wasm" not in args
     bad = 0
     for i in range(count):
-        if not check(seed + i, wasm, "--keep" in args): bad += 1
+        if not check(seed + i, wasm, "--keep" in args, "--arm64" in args): bad += 1
     print(f"{count} programs, {bad} mismatches (seeds {seed}..{seed + count - 1})")
     sys.exit(1 if bad else 0)

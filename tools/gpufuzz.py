@@ -44,6 +44,11 @@ def fits(v, t):
     return 0 <= v < (1 << b)
 
 
+# integers are made from floats through these (shader frames that differ are made again with
+# them giving 0: a hash of the results cannot tell an integer off by one from any other mistake)
+FI = ["fi = (x: f32) -> f32: x", "fi2 = (x: vec2) -> vec2: x", "fi3 = (x: vec3) -> vec3: x"]
+FI0 = ["fi = (x: f32) -> f32: 0.0", "fi2 = (x: vec2) -> vec2: vec2(0.0, 0.0)", "fi3 = (x: vec3) -> vec3: vec3(0.0, 0.0, 0.0)"]
+
 # what every program has: structs, and helpers with mut parameters, early returns, loops, and
 # arrays and structs as parameters and results
 COMMON = ["struct S:", "    a: i32", "    b: f32", "    c: u8",
@@ -55,7 +60,7 @@ COMMON = ["struct S:", "    a: i32", "    b: f32", "    c: u8",
           "hret = (x: i32) -> i32:", "    if x < i32(0): return -x / i32(3)",
           "    loop k in [0..3):", "        if x > i32(k * 100): return x - i32(k)", "    x xor i32(5)",
           "sum4 = (a: i32[4]) -> i32: a[0] + a[1] * i32(3) + a[2] * i32(5) + a[3] * i32(7)",
-          "rev = (a: i32[4]) -> i32[4]: [a[3], a[2], a[1], a[0]]"]
+          "rev = (a: i32[4]) -> i32[4]: [a[3], a[2], a[1], a[0]]"] + FI
 
 
 class Gen:
@@ -149,7 +154,7 @@ class Gen:
             if op == "if": return f"(if {self.expr('bool', d + 1)}: {self.expr(t, d + 1)} else: {self.expr(t, d + 1)})"
             if op == "conv":
                 self.f2i = True
-                return f"ivec2({self.expr('vec2', d + 1)})"
+                return f"ivec2(fi2({self.expr('vec2', d + 1)}))"
             if op == "ctor": return f"ivec2({self.expr('i32', d + 1)}, {self.expr('i32', d + 1)})"
             return f"({self.expr(t, d + 1)} {op} {self.expr(t, d + 1)})"
         if t == "ivec3":
@@ -157,7 +162,7 @@ class Gen:
             if op == "neg": return f"(-{self.expr(t, d + 1)})"
             if op == "conv":
                 self.f2i = True
-                return f"ivec3({self.expr('vec3', d + 1)})"
+                return f"ivec3(fi3({self.expr('vec3', d + 1)}))"
             if op == "*s": return f"({self.expr(t, d + 1)} * {self.expr('i32', d + 2)})"
             if op == "leaf": return self.leaf(t)
             return f"({self.expr(t, d + 1)} {op} {self.expr(t, d + 1)})"
@@ -191,7 +196,7 @@ class Gen:
         if op == "conv": return f"{t}({self.expr(r.choice(INTS), d + 1)})"
         if op == "fconv":
             self.f2i = True
-            return f"{t}({self.expr('f32', d + 1)})"
+            return f"{t}(fi({self.expr('f32', d + 1)}))"
         if op == "bconv": return f"{t}({self.expr('bool', d + 1)})"
         if op in ("min", "max"): return f"{op}({a()}, {a()})"
         if op == "abs" and t in SIGNED: return f"abs({a()})"
@@ -634,9 +639,20 @@ def main():
         s = base + k
         if shaders:
             prog = os.path.join(OUT, f"p_{s}.jo")
-            with open(prog, "w") as f: f.write(shader_program(Gen(random.Random(s))))
+            g = Gen(random.Random(s))
+            src = shader_program(g)
+            with open(prog, "w") as f: f.write(src)
             frames, err = shader_frames(prog)
             msg = err if frames is None else shader_diff(frames)
+            if msg and frames is not None and g.f2i:
+                # (integers made from floats can be off by one: the floats may be too, as a GPU
+                # may fuse a * b + c; the same program without them must agree)
+                with open(prog, "w") as f: f.write(src.replace("\n".join(FI), "\n".join(FI0)))
+                frames0, err0 = shader_frames(prog)
+                if frames0 is not None and not shader_diff(frames0):
+                    print(f"(inexact {s}: {msg}; the same without integers made from floats agrees)")
+                    msg = ""
+                with open(prog, "w") as f: f.write(src)
             if not msg:
                 if not keep: os.remove(prog)
                 print(f"ok {s}")

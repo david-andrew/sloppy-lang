@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.1 (unreleased)
+
+Faster:
+- **arm64 code keeps values in registers** (macOS and Linux arm64): linear-scan allocation over
+  the same lifetimes as on x86-64, callee-saved registers for values living across calls, x0-x7
+  for those that live between calls; comparisons branch on the flags, constant operands are
+  immediates, float constants are read from a literal pool. Under emulation, the compiler
+  compiles itself in 8.5 s instead of 13.2 s, and is 4.4 MB instead of 6.6 MB.
+
+Tools:
+- `tools/fuzz.py --arm64`: each random program also built for arm64 and run under qemu (each
+  night in CI).
+
 ## 0.8.0
 
 Platforms:

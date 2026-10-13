@@ -26,7 +26,7 @@ rebuild.
 | check | `check.jo`, `expr.jo`, `types.jo` | modules and scopes, type inference, overloads, generic instances; rewrites nodes in place |
 | lower | `lower.jo`, `ir.jo` | typed AST to IR: reference counting, copy-on-write, closures, formatting |
 | optimize | `opt.jo`; release only: `inline.jo`, `loops.jo` | folding, copy propagation, dead code; inlining, loop versioning and vectorizing |
-| code | `x64.jo`, `arm64.jo`, `wasm.jo`, `spirv.jo`, `glsl.jo` | register allocation and x86-64 encoding; arm64 (every value in the frame, for now); WebAssembly; shaders and compute functions as SPIR-V, shaders as GLSL |
+| code | `x64.jo`, `arm64.jo`, `wasm.jo`, `spirv.jo`, `glsl.jo` | register allocation and x86-64 encoding; arm64 (linear-scan register allocation, the same analysis); WebAssembly; shaders and compute functions as SPIR-V, shaders as GLSL |
 | write | `elf.jo`, `pe.jo`, `dwarf.jo` | Linux and Windows executables, debug information |
 | drive | `main.jo` | the command line, targets and the build block, the order of the above |
 | editors | `ide.jo`, `lsp.jo` | what a check learned, as lines; the language server |
@@ -87,6 +87,8 @@ Windows itself in CI. Linux arm64 programs (`--target linux-arm64`) run under qe
 uses `qemu-aarch64-static` (static programs only), or an arm64 container with a whole system
 (C libraries, Mesa) through `SLOPPY_ARM64_RUN="podman exec <container>"`; CI runs the tests on
 an arm64 machine, and the compiler compiling itself there must give the same bytes.
+`tools/fuzz.py --arm64` also builds each random program for arm64 (debug and release) and runs
+it under qemu (each night in CI).
 
 ## Looking inside
 

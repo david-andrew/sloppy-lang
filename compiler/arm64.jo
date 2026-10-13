@@ -1,15 +1,17 @@
 # arm64 (AArch64) code generator: Linux on 64-bit ARM (`--target linux-arm64`).
 #
-# The same IR as x64.jo, the same analysis (analyze), and for now every value in the frame
-# (ra_on = false: no register allocation), so each instruction loads its operands into scratch
-# registers, computes, and stores its result. Calls follow AAPCS64 (x0-x7 and v0-v7, the rest on
-# the stack), for Sloppy functions and C functions alike.
+# The same IR as x64.jo and the same analysis (analyze: lifetimes, loops, calls); registers are
+# given by linear scan (a_allocate), a value without one lives in the frame and is loaded into a
+# scratch register where used. Calls follow AAPCS64 (x0-x7 and v0-v7, the rest on the stack), for
+# Sloppy functions and C functions alike.
 #
 # The frame, addressed from sp (which does not move inside a function):
 #   [sp, sp + out)        arguments of calls that do not fit in registers
 #   [sp + out, + 16)      scratch (ppoll's timespec)
-#   then spilled values (8 bytes each) and the slots; x29/x30 are saved above, x29 points at them.
-# Scratch registers: x9-x15 and x16/x17 (addresses, large offsets), d16-d18.
+#   then spilled values (8 bytes each), the slots, and the callee-saved registers this function
+#   uses; x29/x30 are saved above, x29 points at them.
+# Scratch registers: x9-x12 and x16/x17 (addresses, large offsets, indirect calls), d16-d18.
+# Float constants are read from after the function's code (ldr literal), or are fmov immediates.
 
 use 'util.jo'
 use 'ir.jo'
@@ -184,9 +186,144 @@ a_fmov_to = (ty: int, rd: int, fr: int):
     if ty == VS: w32(0x1E260000 | (fr << 5) | rd)
     else: w32(0x9E660000 | (fr << 5) | rd)
 
-# ---------------- operands ----------------
-a_spill = (v: int) -> int: vspill[v]
+# ---------------- registers ----------------
+# A value in a register has vloc x0-x30 as themselves, v0-v31 as A_V + n. Values living across
+# a call get the callee-saved registers (x19-x28, d8-d15; those used are saved in the prologue)
+# or stay in the frame; the others take x8, x13-x15 and v19-v31, or x0-x7 and v0-v7 when no
+# call is anywhere in their lifetime (calls put their arguments there) and they are not
+# parameters (which arrive there). Linear scan over the intervals analyze makes (as x64.jo's
+# allocate, which also decides which value gives up its register when there are too few).
+const A_V = 32
+a_saved: int[]              # callee-saved registers used here
+a_save_off = 0
+a_lits: (int, int)[]        # (position of an ldr, the bits it loads): float constants, put after the function
 
+# the function's float constants after its code (8 bytes each, a float's bits in the low 4), and
+# the ldr instructions reading them pointed at them
+a_put_lits = ():
+    if a_lits.len() == 0: return
+    if code.len() % 8 != 0: w32(0xD503201F)                       # (nop)
+    at: {int: int}
+    loop l in a_lits:
+        p = at.get(l.1) ?? -1
+        if p < 0:
+            p = code.len()
+            at[l.1] = p
+            w32(l.1 & 0xFFFFFFFF)
+            w32((l.1 >> 32) & 0xFFFFFFFF)
+        wr32(l.0, rd32(l.0) | ((((p - l.0) / 4) & 0x7FFFF) << 5))
+    a_lits = []
+
+a_kind = (r: int) -> int:        # 0 caller-saved, 1 argument register, 2 callee-saved
+    n = r
+    if r >= A_V: n = r - A_V
+    if n < 8: return 1
+    if r < A_V and n >= 19 and n <= 28: return 2
+    if r >= A_V and n >= 8 and n <= 15: return 2
+    0
+
+# is there a call at any of the instructions s..e?
+a_call_in = (s: int, e: int) -> bool:
+    lo = 0
+    hi = call_pos.len()
+    loop lo < hi:
+        mid = (lo + hi) / 2
+        if call_pos[mid] < s: lo = mid + 1
+        else: hi = mid
+    lo < call_pos.len() and call_pos[lo] <= e
+
+a_int_pool = [8, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+a_fp_pool = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+
+a_allocate = ():
+    nv = ir.vtypes.len()
+    a_saved = []
+    n = ir.code.len() + 1
+    head = fill(-1, n)
+    nxt = fill(-1, nv)
+    loop v in [0..nv):
+        if vloc[v] == LOC_CONST or vloc[v] == LOC_FCONST or vloc[v] == LOC_SLOT or vloc[v] == LOC_GLOBAL: continue
+        if v_last[v] < 0 or (v_nuse[v] == 0 and v >= ir.nparams):
+            vloc[v] = LOC_NONE
+            continue
+        f = v_first[v]
+        nxt[v] = head[f]
+        head[f] = v
+    # (a parameter may keep the register it arrives in)
+    arrive = fill(-1, ir.nparams)
+    ni = 0
+    nf = 0
+    loop p in [0..ir.nparams):
+        if vtype(p) == VI:
+            if ni < 8: arrive[p] = ni
+            ni += 1
+        else:
+            if nf < 8: arrive[p] = A_V + nf
+            nf += 1
+    free = fill(true, 2 * A_V)
+    used = fill(false, 2 * A_V)
+    active: int[]
+    min_end = INF_POS
+    loop pos in [0..n):
+        v = head[pos]
+        if v >= 0 and min_end < pos:
+            min_end = INF_POS
+            k = 0
+            loop k < active.len():
+                u = active[k]
+                if v_last[u] < pos:
+                    free[vloc[u]] = true
+                    active[k] = active[active.len() - 1]
+                    active.pop()
+                else:
+                    if v_last[u] < min_end: min_end = v_last[u]
+                    k += 1
+        loop v >= 0:
+            s = live_start(v)
+            # the registers v may have: 0 any, 1 not an argument register, 2 callee-saved ones
+            w = 0
+            if crosses_call(s, v_last[v]): w = 2
+            else if v < ir.nparams or a_call_in(s, v_last[v]): w = 1
+            fp = vtype(v) != VI
+            base = 0
+            pool = a_int_pool
+            if fp:
+                base = A_V
+                pool = a_fp_pool
+            reg = -1
+            if v < ir.nparams and w == 1 and arrive[v] >= 0 and free[arrive[v]] and not a_call_in(s, v_last[v]): reg = arrive[v]
+            loop r in pool:
+                if reg >= 0: break
+                k = a_kind(base + r)
+                if free[base + r] and (w == 0 or (w == 1 and k != 1) or k == 2):
+                    reg = base + r
+                    break
+            if reg < 0:
+                # take the register of the active value cheapest to spill, if it is cheaper than v
+                best = -1
+                loop u in active:
+                    ru = vloc[u]
+                    if (ru >= A_V) != fp: continue
+                    k = a_kind(ru)
+                    if not (w == 0 or (w == 1 and k != 1) or k == 2): continue
+                    if not spills_before(u, v): continue
+                    if best < 0 or spills_before(u, best): best = u
+                if best >= 0:
+                    reg = vloc[best]
+                    vloc[best] = LOC_SPILL
+                    active.remove(active.index_of(best))
+            if reg >= 0:
+                vloc[v] = reg
+                free[reg] = false
+                active.push(v)
+                if v_last[v] < min_end: min_end = v_last[v]
+                if a_kind(reg) == 2 and not used[reg]:
+                    used[reg] = true
+                    a_saved.push(reg)
+            else: vloc[v] = LOC_SPILL
+            v = nxt[v]
+
+# ---------------- operands ----------------
 # int vreg v into register r
 a_ld = (r: int, v: int):
     l = vloc[v]
@@ -194,11 +331,29 @@ a_ld = (r: int, v: int):
     else if l == LOC_CONST or l == LOC_FCONST: a_mov_imm(r, vcval[v])
     else if l == LOC_SLOT: a_add_imm(r, A_SP, slot_disp(v))
     else if l == LOC_GLOBAL: a_adr_data(r, vgkind[v], vgoff[v])
+    else if l >= A_V: a_fmov_to(vtype(v), r, l - A_V)
     else if l >= 0: a_mov(r, l)
     else: a_movz(r, 0, 0)
 
+# int register r into vreg v (or the bits of a float)
 a_st = (v: int, r: int):
-    if vloc[v] == LOC_SPILL: a_str(r, A_SP, vspill[v])
+    l = vloc[v]
+    if l == LOC_SPILL: a_str(r, A_SP, vspill[v])
+    else if l >= A_V: a_fmov_from(vtype(v), l - A_V, r)
+    else if l >= 0: a_mov(l, r)
+
+# the register int vreg v is read from: its own, else r (loaded)
+a_src = (v: int, r: int) -> int:
+    l = vloc[v]
+    if l >= 0 and l < A_V: return l
+    a_ld(r, v)
+    r
+
+# the register int vreg v's new value is made in: its own, else r (then a_st)
+a_dst = (v: int, r: int) -> int:
+    l = vloc[v]
+    if l >= 0 and l < A_V: return l
+    r
 
 # float vreg v into fp register f
 a_lds = (f: int, v: int, ty: int):
@@ -206,14 +361,38 @@ a_lds = (f: int, v: int, ty: int):
     sz = 8
     if ty == VS: sz = 4
     if l == LOC_SPILL: a_mem(true, f, A_SP, vspill[v], sz, false, true)
+    else if l >= A_V:
+        if l - A_V != f: a_fun(AF_MOV, ty, f, l - A_V)
+    else if l == LOC_FCONST and vcval[v] == 0: a_fmov_from(ty, f, A_ZR)
+    else if l == LOC_FCONST and a_fimm8(vcval[v], ty) >= 0: w32(0x1E201000 | (fty(ty) << 22) | (a_fimm8(vcval[v], ty) << 13) | f)
+    else if l == LOC_FCONST:
+        # ldr from the literals after the function
+        a_lits.push((code.len(), vcval[v]))
+        if ty == VS: w32(0x1C000000 | f)
+        else: w32(0x5C000000 | f)
     else:
         a_ld(17, v)
         a_fmov_from(ty, f, 17)
 
 a_sts = (v: int, f: int, ty: int):
+    l = vloc[v]
     sz = 8
     if ty == VS: sz = 4
-    if vloc[v] == LOC_SPILL: a_mem(false, f, A_SP, vspill[v], sz, false, true)
+    if l == LOC_SPILL: a_mem(false, f, A_SP, vspill[v], sz, false, true)
+    else if l >= A_V:
+        if l - A_V != f: a_fun(AF_MOV, ty, l - A_V, f)
+    else if l >= 0: a_fmov_to(ty, l, f)
+
+a_fsrc = (v: int, f: int, ty: int) -> int:
+    l = vloc[v]
+    if l >= A_V: return l - A_V
+    a_lds(f, v, ty)
+    f
+
+a_fdst = (v: int, f: int) -> int:
+    l = vloc[v]
+    if l >= A_V: return l - A_V
+    f
 
 # rodata (kind 0) or data (kind 1) + off into r: adrp + add, patched by arm64_resolve
 a_adr_data = (r: int, kind: int, off: int):
@@ -224,8 +403,7 @@ a_adr_data = (r: int, kind: int, off: int):
 # the address a memory access through vreg v goes to: (base register, offset)
 a_addr = (v: int, scratch: int) -> (int, int):
     if vloc[v] == LOC_SLOT: return (A_SP, slot_disp(v))
-    a_ld(scratch, v)
-    (scratch, 0)
+    (a_src(v, scratch), 0)
 
 # ---------------- frame ----------------
 a_layout = ():
@@ -293,12 +471,21 @@ a_layout = ():
         off = align_up(off, al)
         slot_off[s] = off
         off += sz
+    off = align_up(off, 8)
+    a_save_off = off
+    off += 8 * a_saved.len()
     frame_size = align_up(off, 16)
+
+a_save = (load: bool):
+    loop i in 0.. and r in a_saved:
+        if r >= A_V: a_mem(load, r - A_V, A_SP, a_save_off + 8 * i, 8, false, true)
+        else: a_mem(load, r, A_SP, a_save_off + 8 * i, 8, false, false)
 
 a_prologue = ():
     w32(0xA9BF7BFD)                       # stp x29, x30, [sp, #-16]!
     w32(0x910003FD)                       # mov x29, sp
     if frame_size > 0: a_sub_imm(A_SP, A_SP, frame_size)
+    a_save(false)
     ni = 0
     nf = 0
     stack_k = 0
@@ -327,6 +514,7 @@ a_prologue = ():
         stack_k += 1
 
 a_epilogue = ():
+    a_save(true)
     w32(0x910003BF)                       # mov sp, x29
     w32(0xA8C17BFD)                       # ldp x29, x30, [sp], #16
     a_ret()
@@ -571,23 +759,133 @@ a_fill_loop = ():
 a_int_bin = (base: int, ins: Ins):
     d = int(ins.dst)
     if vloc[d] == LOC_NONE: return
-    a_ld(9, int(ins.a))
-    a_ld(10, int(ins.b))
-    a_rrr(base, 11, 9, 10)
-    a_st(d, 11)
+    rn = a_src(int(ins.a), 9)
+    rm = a_src(int(ins.b), 10)
+    rd = a_dst(d, 11)
+    a_rrr(base, rd, rn, rm)
+    a_st(d, rd)
+
+# a small constant operand (add, sub, compare as an immediate): its value, else -1
+a_imm12 = (v: int) -> int:
+    if vloc[v] == LOC_CONST and vcval[v] >= 0 and vcval[v] < 4096: return vcval[v]
+    -1
 
 a_fbin = (base: int, ins: Ins):
     ty = int(ins.ty)
-    a_lds(16, int(ins.a), ty)
-    a_lds(17, int(ins.b), ty)
-    a_fop(base, ty, 18, 16, 17)
-    a_sts(int(ins.dst), 18, ty)
+    d = int(ins.dst)
+    if vloc[d] == LOC_NONE: return
+    fn = a_fsrc(int(ins.a), 16, ty)
+    fm = a_fsrc(int(ins.b), 17, ty)
+    fd = a_fdst(d, 18)
+    a_fop(base, ty, fd, fn, fm)
+    a_sts(d, fd, ty)
 
 a_funary = (base: int, ins: Ins):
     ty = int(ins.ty)
-    a_lds(16, int(ins.a), ty)
-    a_fun(base, ty, 18, 16)
-    a_sts(int(ins.dst), 18, ty)
+    d = int(ins.dst)
+    if vloc[d] == LOC_NONE: return
+    fn = a_fsrc(int(ins.a), 16, ty)
+    fd = a_fdst(d, 18)
+    a_fun(base, ty, fd, fn)
+    a_sts(d, fd, ty)
+
+# load or store through register rn + (rm << sh): sh 0 or log2(size) (else -1: not encodable)
+a_mem_idx = (load: bool, rt: int, rn: int, rm: int, sh: int, size: int, signed: bool, fp: bool) -> bool:
+    sz = 3
+    if size == 1: sz = 0
+    else if size == 2: sz = 1
+    else if size == 4: sz = 2
+    else if size != 8: return false
+    s = 0
+    if sh != 0:
+        if sh != sz: return false
+        s = 1
+    opc = 0
+    if load:
+        opc = 1
+        if signed and size < 8: opc = 2
+    vbit = 0
+    if fp: vbit = 1
+    w32((sz << 30) | (7 << 27) | (vbit << 26) | (opc << 22) | (1 << 21) | (rm << 16) | (3 << 13) | (s << 12) | (2 << 10) | (rn << 5) | rt)
+    true
+
+# a load's or store's address: (base register, offset), or with an index (base, index register, scale)
+a_mem_op = (load: bool, rt: int, ins: Ins, idx_v: int, size: int, signed: bool, fp: bool):
+    mode = int(ins.c)
+    base, off = a_addr(int(ins.a), 9)
+    off += int(ins.imm)
+    if mode & M_INDEX != 0:
+        ri = a_src(idx_v, 10)
+        sh = mem_scale(ins)
+        if off == 0 and a_mem_idx(load, rt, base, ri, sh, size, signed, fp): return
+        if base == A_SP:
+            a_add_imm(9, A_SP, 0)
+            base = 9
+        a_add_lsl(9, base, ri, sh)
+        base = 9
+    a_mem(load, rt, base, off, size, signed, fp)
+
+# A comparison whose result only the next instruction uses, as an if's or a branch's condition
+# (or compared with 0 again), leaves it in the flags: a_pend is that value, a_pend_cc the
+# condition (cmp; b.lt rather than cmp; cset; cbnz)
+a_pend = -1
+a_pend_cc = 0
+
+a_fuses = (v: int, pos: int) -> bool:
+    if v_nuse[v] != 1 or pos + 1 >= ir.code.len(): return false
+    n = ir.code[pos + 1]
+    if int(n.a) != v: return false
+    if n.op == .if_ or n.op == .brif: return true
+    (n.op == .eq or n.op == .ne) and vloc[int(n.b)] == LOC_CONST and vcval[int(n.b)] == 0
+
+# the result of a comparison (condition cc in the flags) into d, or left there
+a_set_cc = (d: int, cc: int, pos: int):
+    if a_fuses(d, pos):
+        a_pend = d
+        a_pend_cc = cc
+        return
+    rd = a_dst(d, 11)
+    a_cset(rd, cc)
+    a_st(d, rd)
+
+# the N:immr:imms of a 64-bit logical immediate (and, orr, eor), or -1 when x has none
+a_logimm = (x: int) -> int:
+    if x == 0 or x == -1: return -1
+    size = 64
+    loop size > 2:
+        h = size / 2
+        m = (1 << h) - 1
+        if x & m != (x >> h) & m: break
+        size = h
+    mask = -1
+    if size < 64: mask = (1 << size) - 1
+    v = x & mask
+    ones = 0
+    loop i in [0..size):
+        if (v >> i) & 1 == 1: ones += 1
+    want = (1 << ones) - 1
+    loop r in [0..size):
+        rot = v
+        if r > 0: rot = ((v >> r) & ((1 << (size - r)) - 1)) | ((v << (size - r)) & mask)
+        if rot == want:
+            n = 0
+            if size == 64: n = 1
+            immr = (size - r) % size
+            imms = ((~(size - 1) << 1) & 0x3F) | (ones - 1)
+            return (n << 12) | (immr << 6) | imms
+    -1
+
+# a float constant as fmov's 8-bit immediate (bits: a double's, or a float's for VS), or -1
+a_fimm8 = (bits: int, ty: int) -> int:
+    if ty == VS:
+        if bits & 0x7FFFF != 0: return -1
+        e = (bits >> 25) & 0x3F
+        if e != 0x20 and e != 0x1F: return -1
+        return (((bits >> 31) & 1) << 7) | ((bits >> 19) & 0x7F)
+    if bits & 0xFFFFFFFFFFFF != 0: return -1
+    e = (bits >> 54) & 0x1FF
+    if e != 0x100 and e != 0xFF: return -1
+    (((bits >> 63) & 1) << 7) | ((bits >> 48) & 0x7F)
 
 arm64_ins = (pos: int, ins: Ins):
     op = ins.op
@@ -595,60 +893,103 @@ arm64_ins = (pos: int, ins: Ins):
     a = int(ins.a)
     bb = int(ins.b)
     if a_icc(op) >= 0:
-        a_ld(9, a)
-        a_ld(10, bb)
-        a_cmp(9, 10)
-        a_cset(11, a_icc(op))
-        a_st(d, 11)
+        if a == a_pend:
+            # (a comparison's result compared with 0: the same condition, or its opposite)
+            cc = a_pend_cc
+            if op == .eq: cc = cc xor 1
+            a_pend = -1
+            a_set_cc(d, cc, pos)
+            return
+        rn = a_src(a, 9)
+        k = a_imm12(bb)
+        if k >= 0: a_cmp_imm(rn, k)
+        else: a_cmp(rn, a_src(bb, 10))
+        a_set_cc(d, a_icc(op), pos)
         return
     if a_fcc(op) >= 0:
         ty = int(ins.ty)
-        a_lds(16, a, ty)
-        a_lds(17, bb, ty)
-        a_fcmp(ty, 16, 17)
-        a_cset(11, a_fcc(op))
-        a_st(d, 11)
+        fn = a_fsrc(a, 16, ty)
+        fm = a_fsrc(bb, 17, ty)
+        a_fcmp(ty, fn, fm)
+        a_set_cc(d, a_fcc(op), pos)
         return
     match op:
         nop, assume: pass
         iconst, fconst:
             if vloc[d] == LOC_CONST or vloc[d] == LOC_FCONST or vloc[d] == LOC_NONE: return
-            a_mov_imm(9, ins.imm)
-            a_st(d, 9)
+            rd = a_dst(d, 9)
+            a_mov_imm(rd, ins.imm)
+            a_st(d, rd)
         mov:
             if vloc[d] == LOC_NONE: return
-            a_ld(9, a)
-            a_st(d, 9)
-        add:
+            ty = vtype(d)
+            if ty != VI and vtype(a) == ty: a_sts(d, a_fsrc(a, 16, ty), ty)
+            else if ty == VI and vtype(a) == VI: a_st(d, a_src(a, 9))
+            else:
+                a_ld(9, a)
+                a_st(d, 9)
+        add, sub:
             if vloc[d] == LOC_NONE or vloc[d] == LOC_SLOT: return
-            a_int_bin(A_ADD, ins)
-        sub: a_int_bin(A_SUB, ins)
-        and_: a_int_bin(A_AND, ins)
-        or_: a_int_bin(A_ORR, ins)
-        xor: a_int_bin(A_EOR, ins)
-        shl: a_int_bin(A_LSLV, ins)
-        shrs: a_int_bin(A_ASRV, ins)
-        shru: a_int_bin(A_LSRV, ins)
+            if vloc[bb] == LOC_CONST and vcval[bb] > -4096 and vcval[bb] < 4096:
+                k = vcval[bb]
+                if op == .sub: k = -k
+                rn = a_src(a, 9)
+                rd = a_dst(d, 11)
+                a_add_imm(rd, rn, k)
+                a_st(d, rd)
+            else if op == .add: a_int_bin(A_ADD, ins)
+            else: a_int_bin(A_SUB, ins)
+        and_, or_, xor:
+            if vloc[d] == LOC_NONE: return
+            li = -1
+            if vloc[bb] == LOC_CONST: li = a_logimm(vcval[bb])
+            if li >= 0:
+                rn = a_src(a, 9)
+                rd = a_dst(d, 11)
+                x = 0x92000000
+                if op == .or_: x = 0xB2000000
+                else if op == .xor: x = 0xD2000000
+                w32(x | (li << 10) | (rn << 5) | rd)
+                a_st(d, rd)
+            else if op == .and_: a_int_bin(A_AND, ins)
+            else if op == .or_: a_int_bin(A_ORR, ins)
+            else: a_int_bin(A_EOR, ins)
+        shl, shrs, shru:
+            if vloc[d] == LOC_NONE: return
+            if vloc[bb] == LOC_CONST:
+                k = vcval[bb] & 63
+                rn = a_src(a, 9)
+                rd = a_dst(d, 11)
+                if op == .shl: a_ubfm(rd, rn, (64 - k) & 63, 63 - k)
+                else if op == .shrs: a_sbfm(rd, rn, k, 63)
+                else: a_ubfm(rd, rn, k, 63)
+                a_st(d, rd)
+            else if op == .shl: a_int_bin(A_LSLV, ins)
+            else if op == .shrs: a_int_bin(A_ASRV, ins)
+            else: a_int_bin(A_LSRV, ins)
         divs: a_int_bin(A_SDIV, ins)
         divu: a_int_bin(A_UDIV, ins)
         mul:
             if vloc[d] == LOC_NONE: return
-            a_ld(9, a)
-            a_ld(10, bb)
-            a_mul(11, 9, 10)
-            a_st(d, 11)
+            rn = a_src(a, 9)
+            rm = a_src(bb, 10)
+            rd = a_dst(d, 11)
+            a_mul(rd, rn, rm)
+            a_st(d, rd)
         rems, remu:
-            a_ld(9, a)
-            a_ld(10, bb)
-            if op == .rems: a_rrr(A_SDIV, 11, 9, 10)
-            else: a_rrr(A_UDIV, 11, 9, 10)
-            a_msub(11, 11, 10, 9)
-            a_st(d, 11)
+            rn = a_src(a, 9)
+            rm = a_src(bb, 10)
+            if op == .rems: a_rrr(A_SDIV, 11, rn, rm)
+            else: a_rrr(A_UDIV, 11, rn, rm)
+            rd = a_dst(d, 11)
+            a_msub(rd, 11, rm, rn)
+            a_st(d, rd)
         neg, not_:
-            a_ld(9, a)
-            if op == .neg: a_rrr(A_SUB, 11, A_ZR, 9)
-            else: w32(0xAA200000 | (9 << 16) | (A_ZR << 5) | 11)      # orn x11, xzr, x9
-            a_st(d, 11)
+            rn = a_src(a, 9)
+            rd = a_dst(d, 11)
+            if op == .neg: a_rrr(A_SUB, rd, A_ZR, rn)
+            else: w32(0xAA200000 | (rn << 16) | (A_ZR << 5) | rd)      # orn rd, xzr, rn
+            a_st(d, rd)
         fadd: a_fbin(AF_ADD, ins)
         fsub: a_fbin(AF_SUB, ins)
         fmul: a_fbin(AF_MUL, ins)
@@ -656,12 +997,13 @@ arm64_ins = (pos: int, ins: Ins):
         fmin, fmax:
             # as x86's minsd/maxsd: a < b ? a : b (b when either is NaN)
             ty = int(ins.ty)
-            a_lds(16, a, ty)
-            a_lds(17, bb, ty)
-            a_fcmp(ty, 16, 17)
-            if op == .fmin: a_fcsel(ty, 18, 16, 17, AC_MI)
-            else: a_fcsel(ty, 18, 16, 17, AC_GT)
-            a_sts(d, 18, ty)
+            fn = a_fsrc(a, 16, ty)
+            fm = a_fsrc(bb, 17, ty)
+            a_fcmp(ty, fn, fm)
+            fd = a_fdst(d, 18)
+            if op == .fmin: a_fcsel(ty, fd, fn, fm, AC_MI)
+            else: a_fcsel(ty, fd, fn, fm, AC_GT)
+            a_sts(d, fd, ty)
         fsqrt: a_funary(AF_SQRT, ins)
         fneg: a_funary(AF_NEG, ins)
         fabs: a_funary(AF_ABS, ins)
@@ -669,99 +1011,88 @@ arm64_ins = (pos: int, ins: Ins):
         fceil: a_funary(AF_CEIL, ins)
         ftrunc: a_funary(AF_TRUNC, ins)
         sext8, sext16, sext32, zext8, zext16, zext32:
-            a_ld(9, a)
-            if op == .sext8: a_sbfm(11, 9, 0, 7)
-            else if op == .sext16: a_sbfm(11, 9, 0, 15)
-            else if op == .sext32: a_sbfm(11, 9, 0, 31)
-            else if op == .zext8: a_ubfm(11, 9, 0, 7)
-            else if op == .zext16: a_ubfm(11, 9, 0, 15)
-            else: a_ubfm(11, 9, 0, 31)
-            a_st(d, 11)
+            rn = a_src(a, 9)
+            rd = a_dst(d, 11)
+            if op == .sext8: a_sbfm(rd, rn, 0, 7)
+            else if op == .sext16: a_sbfm(rd, rn, 0, 15)
+            else if op == .sext32: a_sbfm(rd, rn, 0, 31)
+            else if op == .zext8: a_ubfm(rd, rn, 0, 7)
+            else if op == .zext16: a_ubfm(rd, rn, 0, 15)
+            else: a_ubfm(rd, rn, 0, 31)
+            a_st(d, rd)
         i2f, u2f:
             ty = int(ins.ty)
-            a_ld(9, a)
+            rn = a_src(a, 9)
+            fd = a_fdst(d, 18)
             x = 0x9E220000
             if op == .u2f: x = 0x9E230000
-            w32(x | (fty(ty) << 22) | (9 << 5) | 18)                  # scvtf / ucvtf
-            a_sts(d, 18, ty)
+            w32(x | (fty(ty) << 22) | (rn << 5) | fd)                 # scvtf / ucvtf
+            a_sts(d, fd, ty)
         f2i:
             # fcvtzs saturates and makes NaN 0, as the IR wants
             ty = int(ins.ty)
-            a_lds(16, a, ty)
-            w32(0x9E380000 | (fty(ty) << 22) | (16 << 5) | 11)
-            a_st(d, 11)
+            fn = a_fsrc(a, 16, ty)
+            rd = a_dst(d, 11)
+            w32(0x9E380000 | (fty(ty) << 22) | (fn << 5) | rd)
+            a_st(d, rd)
         f2f:
             # ins.ty is the destination type
+            fd = a_fdst(d, 18)
             if int(ins.ty) == VF:
-                a_lds(16, a, VS)
-                w32(0x1E22C000 | (16 << 5) | 18)                       # fcvt d18, s16
-                a_sts(d, 18, VF)
+                fn = a_fsrc(a, 16, VS)
+                w32(0x1E22C000 | (fn << 5) | fd)                       # fcvt d, s
+                a_sts(d, fd, VF)
             else:
-                a_lds(16, a, VF)
-                w32(0x1E624000 | (16 << 5) | 18)                       # fcvt s18, d16
-                a_sts(d, 18, VS)
+                fn = a_fsrc(a, 16, VF)
+                w32(0x1E624000 | (fn << 5) | fd)                       # fcvt s, d
+                a_sts(d, fd, VS)
         bits2f:
             ty = int(ins.ty)
-            a_ld(9, a)
-            a_fmov_from(ty, 18, 9)
-            a_sts(d, 18, ty)
+            rn = a_src(a, 9)
+            fd = a_fdst(d, 18)
+            a_fmov_from(ty, fd, rn)
+            a_sts(d, fd, ty)
         f2bits:
             ty = int(ins.ty)
-            a_lds(16, a, ty)
-            a_fmov_to(ty, 11, 16)
-            a_st(d, 11)
+            fn = a_fsrc(a, 16, ty)
+            rd = a_dst(d, 11)
+            a_fmov_to(ty, rd, fn)
+            a_st(d, rd)
         load:
             if vloc[d] == LOC_NONE: return
             mode = int(ins.c)
             size = mode & 15
-            base, off = a_addr(a, 9)
-            off += int(ins.imm)
-            if mode & M_INDEX != 0:
-                if base == A_SP:
-                    a_add_imm(9, A_SP, 0)
-                    base = 9
-                a_ld(10, bb)
-                a_add_lsl(9, base, 10, mem_scale(ins))
-                base = 9
             if mode & M_FLOAT != 0:
-                a_mem(true, 16, base, off, size, false, true)
-                a_sts(d, 16, vtype(d))
+                fd = a_fdst(d, 16)
+                a_mem_op(true, fd, ins, bb, size, false, true)
+                a_sts(d, fd, vtype(d))
             else:
-                a_mem(true, 11, base, off, size, mode & M_SIGNED != 0, false)
-                a_st(d, 11)
+                rd = a_dst(d, 11)
+                a_mem_op(true, rd, ins, bb, size, mode & M_SIGNED != 0, false)
+                a_st(d, rd)
         store:
-            mode = int(ins.c)
-            size = mode & 15
-            base, off = a_addr(a, 9)
-            off += int(ins.imm)
-            if mode & M_INDEX != 0:
-                if base == A_SP:
-                    a_add_imm(9, A_SP, 0)
-                    base = 9
-                a_ld(10, d)
-                a_add_lsl(9, base, 10, mem_scale(ins))
-                base = 9
-            if vtype(bb) != VI:
-                a_lds(16, bb, vtype(bb))
-                a_mem(false, 16, base, off, size, false, true)
-            else:
-                a_ld(11, bb)
-                a_mem(false, 11, base, off, size, false, false)
+            size = int(ins.c) & 15
+            if vtype(bb) != VI: a_mem_op(false, a_fsrc(bb, 16, vtype(bb)), ins, d, size, false, true)
+            else if vloc[bb] == LOC_CONST and vcval[bb] == 0: a_mem_op(false, A_ZR, ins, d, size, false, false)
+            else: a_mem_op(false, a_src(bb, 11), ins, d, size, false, false)
         slot:
             if vloc[d] == LOC_SLOT or vloc[d] == LOC_NONE: return
-            a_add_imm(9, A_SP, slot_off[a])
-            a_st(d, 9)
+            rd = a_dst(d, 9)
+            a_add_imm(rd, A_SP, slot_off[a])
+            a_st(d, rd)
         gaddr, daddr:
             if vloc[d] == LOC_GLOBAL or vloc[d] == LOC_NONE: return
             kind = 1
             if op == .daddr: kind = 0
-            a_adr_data(9, kind, int(ins.imm))
-            a_st(d, 9)
+            rd = a_dst(d, 9)
+            a_adr_data(rd, kind, int(ins.imm))
+            a_st(d, rd)
         faddr:
+            rd = a_dst(d, 9)
             a_faddr_fix.push((code.len(), int(ins.imm)))
-            w32(0x90000000 | 9)
-            w32(0x91000000 | (9 << 5) | 9)
-            a_st(d, 9)
+            w32(0x90000000 | rd)
+            w32(0x91000000 | (rd << 5) | rd)
+            a_st(d, rd)
         copy, memcpy:
             a_ld(9, a)
             a_ld(10, bb)
@@ -814,8 +1145,8 @@ arm64_ins = (pos: int, ins: Ins):
             a_result(ins)
         calli, callc:
             a_call_args(ins)
-            a_ld(15, int(ins.c))
-            a_blr(15)
+            a_ld(16, int(ins.c))
+            a_blr(16)
             call_site(ins)
             a_result(ins)
         syscall: a_syscall(ins)
@@ -834,10 +1165,15 @@ arm64_ins = (pos: int, ins: Ins):
         block: actl.push(ACtl(0, code.len(), [], []))
         loop: actl.push(ACtl(1, code.len(), [], []))
         if_:
-            a_ld(9, a)
             fx: (int, int)[]
-            fx.push((code.len(), 1))
-            w32(0xB4000000 | 9)                                         # cbz x9, else
+            if a == a_pend:
+                fx.push((code.len(), 1))
+                w32(0x54000000 | (a_pend_cc xor 1))                     # b.(not cc) else
+                a_pend = -1
+            else:
+                r = a_src(a, 9)
+                fx.push((code.len(), 1))
+                w32(0xB4000000 | r)                                     # cbz r, else
             actl.push(ACtl(2, code.len(), [], fx))
         else_:
             c = actl.len() - 1
@@ -851,15 +1187,17 @@ arm64_ins = (pos: int, ins: Ins):
             loop f in c.ifx: a_patch_here(f)
         br: a_branch(int(ins.imm))
         brif:
-            a_ld(9, a)
-            a_branch_nz(9, int(ins.imm))
+            if a == a_pend:
+                a_branch_cc(a_pend_cc, int(ins.imm))
+                a_pend = -1
+            else: a_branch_nz(a_src(a, 9), int(ins.imm))
         brtable:
-            a_ld(9, a)
+            r = a_src(a, 9)
             a_mov_imm(10, bb)
-            a_cmp(9, 10)
+            a_cmp(r, 10)
             a_branch_cc(AC_HS, int(ins.imm))
             w32(0x10000000 | (3 << 5) | 10)                             # adr x10, table (+12)
-            a_add_lsl(10, 10, 9, 2)
+            a_add_lsl(10, 10, r, 2)
             a_br(10)
             loop k in [0..bb): a_branch(int(ir.args[int(ins.c) + k]))
         ret:
@@ -877,8 +1215,7 @@ arm64_function = ():
     fn_addr[ir.fn_index] = code.len()
     fn_start = code.len()
     analyze()
-    ra_on = false
-    allocate()
+    a_allocate()
     a_layout()
     actl = []
     row_pos = -1
@@ -888,6 +1225,7 @@ arm64_function = ():
     loop pos in 0.. and ins in ir.code:
         line_row(int(ins.pos))
         arm64_ins(pos, ins)
+    a_put_lits()
     elf_syms.push((sym_name(ir.name), fn_start, code.len() - fn_start))
     fn_len[ir.fn_index] = code.len() - fn_start
 

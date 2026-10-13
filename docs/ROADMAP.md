@@ -143,7 +143,8 @@ Fill the gaps real programs hit, nothing speculative:
   arm64 too; on macOS the code made at run time lives in MAP_JIT memory, and a watched game's
   code all runs from there, put there by a loader in its executable). Next: Metal (shaders as
   MSL; OpenGL is deprecated on macOS), gamepads (GameController), and testing on a real Mac's
-  GPU; arm64 register allocation (values all live in the frame for now, on Linux arm64 too).
+  GPU. arm64 code keeps values in registers since 0.8.1 (linear scan; release builds could
+  use x86-64's second, priority-based pass too).
 - Phones (Android, iOS): not before the above; the web build already runs there.
 
 ## Compiler maintainability (ongoing, never a rewrite)
