@@ -1,0 +1,85 @@
+# requires: sloppy (3D physics: import physics3d, lib/physics3d.jo)
+import physics3d
+
+near = (a: f64, b: f64, tol: f64) -> bool: abs(a - b) <= tol
+
+w = physics3d.World()
+floor = w.add_box(vec3(0, -0.5, 0), vec3(40, 1, 40), kind = .fixed)
+
+# a ball comes to rest; a stack stands; a capsule stands, another lies
+ball = w.add_sphere(vec3(-5, 3, 0), 0.5, bounce = 0.5)
+stack: physics3d.Body[]
+loop i in [0..6): stack.push(w.add_box(vec3(0, 0.5 + 1.01 * f64(i), 0), vec3(1, 1, 1)))
+standing = w.add_capsule(vec3(3, 2, 0), 0.3, 1.6)
+lying = w.add_capsule(vec3(5, 1, 0), 0.3, 1.6, rot = quat_axis_angle(vec3(0, 0, 1), PI / 2))
+# a box dropped turned lands flat on a face
+tumbler = w.add_box(vec3(-3, 3, 3), vec3(1, 0.5, 2), rot = quat_axis_angle(normalize(vec3(1, 2, 0.5)), 0.7))
+loop _ in [0..600): w.step(1.0 / 60.0)
+print("ball rests:", near(f64(w.pos(ball).y), 0.5, 0.02), length(w.velocity(ball)) < 0.05)
+top = w.pos(stack[5])
+print("stack stands:", near(f64(top.x), 0, 0.05), near(f64(top.y), 5.5, 0.08), near(f64(top.z), 0, 0.05))
+print("capsules: standing", near(f64(w.pos(standing).y), 0.8, 0.02), "lying", near(f64(w.pos(lying).y), 0.3, 0.02))
+up = quat_rotate(w.rotation(tumbler), vec3(0, 1, 0))
+print("tumbler lands on a face:", near(f64(w.pos(tumbler).y), 0.25, 0.03) or near(f64(w.pos(tumbler).y), 0.5, 0.03) or near(f64(w.pos(tumbler).y), 1.0, 0.03), length(w.velocity(tumbler)) < 0.05)
+
+# a ramp of triangles: a ball rolls down it and onto the floor beyond
+w2 = physics3d.World()
+ramp = [vec3(-5, 3, -2), vec3(-5, 3, 2), vec3(5, 0, 2), vec3(-5, 3, -2), vec3(5, 0, 2), vec3(5, 0, -2),
+        vec3(5, 0, -2), vec3(5, 0, 2), vec3(15, 0, 2), vec3(5, 0, -2), vec3(15, 0, 2), vec3(15, 0, -2)]
+level = w2.add_mesh(ramp)
+roller = w2.add_sphere(vec3(-4, 3.6, 0), 0.4)
+loop _ in [0..240): w2.step(1.0 / 60.0)
+p = w2.pos(roller)
+print("rolled down the ramp:", p.x > 5.0, near(f64(p.y), 0.4, 0.05), near(f64(p.z), 0, 0.05), "spinning", length(w2.spin(roller)) > 1.0)
+
+# a pendulum on a ball joint swings with the speed energy says; a door on a hinge turns about its axis only
+bob = w2.add_sphere(vec3(2, 8, 5), 0.2)
+w2.ball(physics3d.ground, bob, vec3(0, 8, 5))
+fastest = 0.0
+loop _ in [0..120):
+    w2.step(1.0 / 60.0)
+    fastest = max(fastest, f64(length(w2.velocity(bob))))
+print("pendulum: length kept", near(f64(length(w2.pos(bob) - vec3(0, 8, 5))), 2, 0.03), "speed", near(fastest, sqrt(2.0 * 9.81 * 2.0), 0.3))
+door = w2.add_box(vec3(0.5, 5, -10), vec3(1, 2, 0.1))
+w2.hinge(physics3d.ground, door, vec3(0, 5, -10), vec3(0, 1, 0))
+w2.push(door, vec3(0, 0, 400), vec3(1, 5, -10))
+loop _ in [0..60): w2.step(1.0 / 60.0)
+dp = w2.pos(door)
+print("door: turned", abs(dp.z + 10.0) > 0.1, "stays on its hinge", near(f64(length(vec2(dp.x, dp.z + 10.0))), 0.5, 0.03), near(f64(dp.y), 5, 0.03))
+
+# rays
+if let h = w.raycast(vec3(0, 20, 0), vec3(0, -20, 0)): print("ray hits the top box:", h.body == stack[5], near(f64(h.point.y), 6, 0.1), h.normal.y > 0.99)
+if let h = w2.raycast(vec3(10, 5, 0), vec3(10, -5, 0)): print("ray hits the level:", h.body == level, near(f64(h.point.y), 0, 0.001))
+print("ray misses:", w.raycast(vec3(30, 5, 30), vec3(31, 5, 30)) == none)
+
+# a character walks up a slope and a step, stops at a wall, and keeps to the ground going down
+w3 = physics3d.World()
+w3.add_box(vec3(0, -0.5, 0), vec3(60, 1, 60), kind = .fixed)
+w3.add_mesh([vec3(2, 0, -2), vec3(2, 0, 2), vec3(8, 2, 2), vec3(2, 0, -2), vec3(8, 2, 2), vec3(8, 2, -2)])  # (18 degrees up)
+w3.add_box(vec3(10, 1, 0), vec3(4, 2, 4), kind = .fixed)        # the top, level with the slope
+w3.add_box(vec3(13.75, 2.15, 0), vec3(3.5, 0.3, 4), kind = .fixed)  # a step, up to the wall
+w3.add_box(vec3(16, 3, 0), vec3(1, 6, 4), kind = .fixed)         # a wall
+c = w3.character(vec3(0, 0, 0))
+loop _ in [0..400): w3.walk(c, vec3(3, 0, 0), 1.0 / 60.0)
+print("walked up the slope and the step:", near(f64(c.feet.y), 2.3, 0.05), "stopped at the wall:", near(f64(c.feet.x), 15.2, 0.05), c.on_ground)
+loop _ in [0..200): w3.walk(c, vec3(-3, 0, 0), 1.0 / 60.0)
+print("down the slope on the ground:", c.on_ground, c.feet.x < 8.0, near(f64(c.feet.y), f64(max(0.0, (c.feet.x - 2.0) / 3.0)), 0.06))
+c.feet = vec3(-5, 0, 0)
+c.velocity = vec3(0, 0, 0)
+jumped = 0.0
+loop k in [0..90):
+    j = 0.0
+    if k == 0: j = 5.0
+    w3.walk(c, vec3(0, 0, 0), 1.0 / 60.0, jump = j)
+    jumped = max(jumped, f64(c.feet.y))
+print("jump:", near(jumped, 5.0 * 5.0 / (2.0 * 9.81), 0.06), "landed", c.on_ground)
+
+# the same steps give the same world
+run = () -> vec3:
+    v = physics3d.World()
+    v.add_box(vec3(0, -0.5, 0), vec3(40, 1, 40), kind = .fixed)
+    bs: physics3d.Body[]
+    loop i in [0..12): bs.push(v.add_box(vec3(f64(i % 3) * 0.3, 1 + f64(i), 0), vec3(0.8, 0.5, 1.2), rot = quat_axis_angle(vec3(1, 1, 0), f64(i))))
+    loop _ in [0..180): v.step(1.0 / 60.0)
+    v.pos(bs[11])
+print("deterministic:", run() == run())

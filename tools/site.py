@@ -542,6 +542,7 @@ GALLERY = [
     ("platformer", "lib/new/platformer.jo", "sloppy new: platformer", "platformer", ""),
     ("firstperson", "lib/new/3d.jo", "sloppy new: 3d", "firstperson", ""),
     ("physics", "examples/physics.jo", "2D physics", "physics", ""),
+    ("physics3d", "examples/physics3d.jo", "3D physics", "physics3d", ""),
     ("tiles", "examples/tiles.jo", "Tiles and sprites", "tiles", ""),
     ("shapes", "examples/shapes.jo", "2D shapes", "shapes", ""),
     ("scene3d", "examples/scene3d.jo", "A 3D scene", "scene", ""),

@@ -56,6 +56,9 @@ TOPICS = [
     ("Games", "physics", "2D physics", ["physics"], "physics",
      "A module (`import physics`): rigid bodies (circles, boxes, convex polygons) that collide, bounce, slide and stack, "
      "joined by pins, rods, ropes and springs. Distances are in pixels with y down, as in drawing. See examples/physics.jo."),
+    ("Games", "physics3d", "3D physics", ["physics3d"], "physics3d",
+     "A module (`import physics3d`): rigid bodies (spheres, boxes, capsules) and a level's triangles, joints (ball, hinge, "
+     "rod, rope, spring), rays, and a character controller that walks slopes and steps. Meters, y up. See examples/physics3d.jo."),
     ("Games", "net", "Networking", ["net"], "networking",
      "A module (`import net`): messages between programs over WebSockets, so a native build and a web page "
      "can play together (a server is a native program; a web page connects to one: examples/netpong), "

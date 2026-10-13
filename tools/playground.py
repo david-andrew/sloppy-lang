@@ -36,7 +36,7 @@ for n in sorted(os.listdir(exdir)):
 # in the page if they are small, else in files/<game>/ beside it, fetched when the game is chosen)
 game_files = {}
 for name, path in [("rebound (2D game)", "examples/rebound/rebound.jo"), ("breakwater (3D game)", "examples/breakwater/breakwater.jo"),
-                   ("shapes (2D)", "examples/shapes.jo"), ("tiles (2D)", "examples/tiles.jo"), ("physics (2D)", "examples/physics.jo"),
+                   ("shapes (2D)", "examples/shapes.jo"), ("tiles (2D)", "examples/tiles.jo"), ("physics (2D)", "examples/physics.jo"), ("physics3d (3D)", "examples/physics3d.jo"),
                    ("cube (3D)", "examples/cube.jo"), ("scene (3D)", "examples/scene3d.jo"), ("dunes (3D game)", "examples/dunes/dunes.jo"),
                    ("lowline (3D game)", "examples/lowline/lowline.jo"), ("netpong (network game)", "examples/netpong/netpong.jo"),
                    ("arcade (sloppy new template)", "lib/new/arcade.jo"), ("platformer (sloppy new template)", "lib/new/platformer.jo"), ("firstperson (sloppy new template)", "lib/new/3d.jo")]:

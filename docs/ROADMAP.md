@@ -129,10 +129,10 @@ game picks from (and an example of each):
 - Physics: 2D rigid bodies with joints, as `import physics` (done: circles, boxes, convex
   polygons, pins, rods, ropes, springs, sensors, raycasts; next as games need them: several
   shapes per body, sleeping, motors and limits on pins, continuous collision for fast bullets,
-  a character controller). Then 3D: rigid bodies (spheres, boxes, capsules, convex hulls,
-  triangle meshes from glTF for the level), joints, raycasts and shape casts, and a character
-  controller (walking on slopes and steps), the usual needs of a 3D game; deterministic stepping
-  in both, so rollback netplay can use them.
+  a character controller). 3D, as `import physics3d` (done: spheres, boxes, capsules, a level's
+  triangles, ball and hinge joints, rods, ropes, springs, rays, a character controller,
+  deterministic stepping; next: convex hulls, shape casts, sleeping, motors and limits, the
+  character pushing dynamic bodies, continuous collision).
 - Audio: sounds placed in 2D/3D (panning and distance): done (`play_at`, `move_sound`).
 - Assets: a whole directory embedded at once (`embed` takes one file), OpenType fonts with CFF
   outlines and kerning, Tiled's external tilesets.

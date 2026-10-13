@@ -44,6 +44,13 @@ Tools:
   the playground.
 
 Games:
+- **3D physics** (`import physics3d`): rigid bodies (spheres, boxes, capsules) that collide,
+  roll, slide and stack (box against box by separating axes and clipping, so piles and pyramids
+  stand), a level's triangles (`add_mesh`, `physics3d.triangles(model_data)`, kept in a tree of
+  boxes), joints (ball, hinge, rod, rope, spring), contacts, rays (bodies and triangles), and a
+  character controller (`w.character`, `w.walk`): a capsule that walks up slopes and steps,
+  slides down steeper slopes, stops at walls, keeps to the ground going down and jumps.
+  Deterministic stepping. examples/physics3d.jo: a yard to walk around and throw balls in.
 - **Rollback netplay** (`import netplay`): players on different machines play one game as if it
   ran on each alone. Only inputs travel; a missing remote input is predicted (the last one,
   repeated), and when the real one differs the game goes back and plays the ticks since again.
