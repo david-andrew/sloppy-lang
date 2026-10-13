@@ -45,7 +45,7 @@ and run it:
 sloppy hello.jo
 ```
 
-Each run compiles the whole program, in a few milliseconds, and runs it. `sloppy` alone is an
+(`sloppy run hello.jo` is the same.) Each run compiles the whole program, in a few milliseconds, and runs it. `sloppy` alone is an
 interactive prompt, for trying things a line at a time.
 
 ## A first game

@@ -24,6 +24,10 @@ Language:
 - Errors in an interpolation inside a string inside an interpolation point at the right place.
 
 Tools:
+- `sloppy run game.jo` runs a program, as `sloppy game.jo` does; a mistyped command says which
+  one was meant (`sloppy bulid`). Panics name operators in the call stack (`[] (indexing)`, not
+  `XX`), a missing map key says how to ask for one that may be missing, and a slice out of
+  bounds shows the range as `[a..b)`.
 - **Variables in debuggers on Windows**: `sloppy build -g` puts the variables and their types in
   the PDB (CodeView: S_LOCAL records with where each is, type records with their hashes), so
   Visual Studio, WinDbg, cdb and VS Code's C/C++ debugger show every frame's variables.
