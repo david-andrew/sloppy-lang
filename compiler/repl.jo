@@ -27,7 +27,7 @@ use 'main.jo'
 use 'ide.jo'
 
 const REPL_REGION = 0x10000000          # where inputs' code goes in the session (within 2 GB of
-const REPL_REGION_SIZE = 0x20000000     # its globals: code reaches them by 32-bit offsets; arm64's
+const REPL_REGION_SIZE = 0x10000000     # its globals: code reaches them by 32-bit offsets; arm64's
                                         # ADRP reaches 4 GB, and calls further than BL's 128 MB
                                         # go through veneers)
 const REPL_DATA_RESERVE = 64 << 20      # room for globals declared by inputs
@@ -55,11 +55,19 @@ repl_set_main = ():
 
 # ---- the session ----
 
-# (macOS: above the image, which starts at 4 GB with nothing mapped below it)
+# (macOS: where the session is asked to put it, above the program, which starts at 4 GB with
+# nothing below it; the session says where it is, within 4 GB of its globals)
 repl_region = () -> int:
     when TARGET == "macos":
-        return MACHO_BASE + 0x40000000
+        return MACHO_BASE + 0x20000000
     REPL_REGION
+
+# the session's first reply: where the region for inputs' code is (0: where it was asked to be)
+repl_started = () -> bool:
+    r = repl_wait_reply()
+    if r < 0: return false
+    if r > 0: repl_next = r
+    true
 
 repl_start = () -> str:
     repl_next = repl_region()
@@ -80,10 +88,6 @@ repl_start = () -> str:
     ide_texts[main_src] = src
     repl_image = true
     bss_reserve = REPL_DATA_RESERVE
-    # (macOS: the session takes the region for inputs' code at its start, arm64.jo)
-    when TARGET == "macos":
-        mac_entry_jit_at = repl_next
-        mac_entry_jit_size = REPL_REGION_SIZE
     # (the session's module is the one the inputs add to)
     built = compile(main_src, path)
     if len(built) == 0: return "could not build the session program"
@@ -131,7 +135,7 @@ repl_start = () -> str:
         repl_to = to_w[0] as int
         repl_from = from_r[0] as int
         repl_exe = path
-        if repl_wait_reply() != 0: return "the session program did not start"
+        if not repl_started(): return "the session program did not start"
     else:
         # start it, with its end of two pipes as fds 3 and 4
         a: i32[] = [-1, -1]
@@ -148,7 +152,7 @@ repl_start = () -> str:
         syscall(3, int(b[1]))
         repl_to = int(a[1])
         repl_from = int(b[0])
-        if repl_wait_reply() != 0: return "the session program did not start"
+        if not repl_started(): return "the session program did not start"
         delete_file(path)
     repl_jbuf = __alloc(192)                    # (arm64's __setjmp keeps 168 bytes)
     ""
