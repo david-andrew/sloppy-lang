@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0
 
 Language:
 - **Error messages that say what to write.** Habits from other languages get Sloppy's way
@@ -30,6 +30,7 @@ Language:
   that give a new value, called as a statement (it does nothing; `s = s.trim()` keeps it).
 - A warning for colors written from 0 to 255 (`rgb(255, 128, 0)`; colors go from 0 to 1).
 - Errors in an interpolation inside a string inside an interpolation point at the right place.
+- `import name` in a file called name.jo is the library's module, not the file itself.
 
 Tools:
 - `sloppy run game.jo` runs a program, as `sloppy game.jo` does; a mistyped command says which
@@ -49,6 +50,13 @@ Tools:
   the playground.
 
 Games:
+- **2D physics** (`import physics`): rigid bodies (circles, boxes, convex polygons) that
+  collide, bounce, slide and stack, with friction, bounciness, density, damping and collision
+  layers; `.fixed` and `.moving` bodies (floors, platforms); joints: pins, rods, ropes and
+  springs, and dragging with the mouse; contacts after each step (new ones, how hard), sensors,
+  raycasts, bodies at a point, a debug drawing. Pixels with y down, as drawing. Stepping is
+  deterministic (a fixed internal step and order), for replays and rollback. examples/physics.jo
+  (in the gallery and the playground): a pyramid, a bridge of planks, a wrecking ball.
 - **3D physics** (`import physics3d`): rigid bodies (spheres, boxes, capsules) that collide,
   roll, slide and stack (box against box by separating axes and clipping, so piles and pyramids
   stand), a level's triangles (`add_mesh`, `physics3d.triangles(model_data)`, kept in a tree of
@@ -76,17 +84,9 @@ Games:
   (reconciliation); others drawn between two worlds a few ticks in the past (`c.view()`);
   lag compensation (`apply` gets the world the player was seeing). examples/arena: any number
   of players with lasers; tested with a web page's client in Chromium.
+- **UDP** in `net`: `net.udp(port)`, `net.udp_send`, `net.udp_receive` (Linux, macOS, Windows).
 - `net.receive(peers)` and `net.receive_server()`: the events of some peers only, for parts of a
   program that each have peers of their own.
-- **UDP** in `net`: `net.udp(port)`, `net.udp_send`, `net.udp_receive` (Linux, macOS, Windows).
-- **2D physics** (`import physics`): rigid bodies (circles, boxes, convex polygons) that
-  collide, bounce, slide and stack, with friction, bounciness, density, damping and collision
-  layers; `.fixed` and `.moving` bodies (floors, platforms); joints: pins, rods, ropes and
-  springs, and dragging with the mouse; contacts after each step (new ones, how hard), sensors,
-  raycasts, bodies at a point, a debug drawing. Pixels with y down, as drawing. Stepping is
-  deterministic (a fixed internal step and order), for replays and rollback. examples/physics.jo
-  (in the gallery and the playground): a pyramid, a bridge of planks, a wrecking ball.
-- `import name` in a file called name.jo is the library's module, not the file itself.
 - **Saving any value**: `save_value("settings", settings)` and `load_value("settings",
   Settings())` keep a value as text; `to_text(x)` and `from_text[T](text)` (a `T` or a
   `TextError` with the line and column) do it with a string. The text is what print shows
@@ -106,6 +106,11 @@ Games:
 - **Tweens**: `tween(from, to, seconds, ease)` for numbers, positions and colors, with `delay`
   and `once`, `repeat` or `pingpong`; `update`, `value`, `done`, `restart`, `retarget`. More
   easing curves: `linear`, `ease_in`, cubic, sine, back, `ease_out_elastic`, `ease_out_bounce`.
+
+Docs:
+- **Playing over a network** (docs/MULTIPLAYER.md, on the site): messages, rollback or a
+  server and which fits a game, keeping a tick the same on every machine, ticks apart from
+  frames, trying it on one machine, web pages.
 
 ## 0.9.0
 
