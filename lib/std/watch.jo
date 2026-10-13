@@ -42,8 +42,11 @@ __watch_init = ():
             reg = __WATCH_REGION
             when TARGET == "macos":
                 reg = __WATCH_REGION_MAC
-                # (what finds C functions later builds use first, bound when the game starts)
-                if reg == 0: __ffi_resolve("", "")
+                # (what finds C functions later builds use first, and what the loader's copier
+                # uses, bound when the game starts)
+                if reg == 0:
+                    __ffi_resolve("", "")
+                    __c_jit_write_protect(1)
             ok = syscall(27, reg, 4096, data(v)) == 0 and (reg as *int)[0] == __WATCH_MARK
         if not ok:
             eprint("sloppy watch: no room for new code in this process; changes restart it")
@@ -105,12 +108,9 @@ __watch_frame = ():
                     if hdr[1] >= __WATCH_REGION and hdr[1] < __WATCH_REGION + 0x20000000:
                         VirtualAlloc(hdr[1] as *u8, hdr[2], u32(0x1000), u32(0x40))      # MEM_COMMIT, read/write/run
                 when TARGET == "macos":
-                    # (the region is MAP_JIT memory: writable only while this thread says so)
                     b = fill(u8(0), hdr[2])
                     if not __watch_read(data(b), hdr[2]): return
-                    __c_jit_write_protect(0)
-                    __mem_move(hdr[1] as *u8, data(b), hdr[2])
-                    __c_jit_write_protect(1)
+                    __watch_jit_copy(hdr[1] as *u8, data(b), hdr[2])
                 else:
                     if not __watch_read(hdr[1] as *u8, hdr[2]): return
                 __code_sync(hdr[1] as *u8, hdr[2])
@@ -133,7 +133,7 @@ __watch_frame = ():
                 old: u32[] = [0]
                 VirtualProtect((at & ~4095) as *u8, 8192, u32(0x40), data(old))
             else when TARGET == "macos":
-                __c_jit_write_protect(0)                           # (all the code is in the region)
+                pass                                               # (all the code is in the region)
             else when ARCH == "arm64":
                 syscall(10, at & ~0xFFFF, 0x20000, 7)              # (pages may be 64 KB)
             else:
@@ -142,9 +142,10 @@ __watch_frame = ():
             when ARCH == "arm64":
                 # ldr x16, #8; br x16; the address (functions are longer than these 16 bytes)
                 w = [0xD61F020058000050, to]
-                loop q in [0..16): p[q] = (data(w) as *u8)[q]
                 when TARGET == "macos":
-                    __c_jit_write_protect(1)
+                    __watch_jit_copy(p, data(w) as *u8, 16)
+                else:
+                    loop q in [0..16): p[q] = (data(w) as *u8)[q]
                 __code_sync(p, 16)
             else:
                 d = to - (at + 5)
@@ -163,6 +164,13 @@ __watch_frame = ():
             if __watch_paused: eprint("sloppy watch: going on")
             __watch_paused = false
         __watch_answer(0)
+
+# (macOS: bytes written into the region holding the game's code, by the loader's copier: code
+# running from the region cannot run while the region is writable, compiler/macho.jo)
+__watch_jit_copy = (to: *u8, from: *u8, n: int):
+    when TARGET == "macos":
+        f = ((__WATCH_REGION_MAC + 8) as *int)[0] as *u8 as cfn(*u8, *u8, int)
+        f(to, from, n)
 
 # a panic (on the main thread) while the game's code runs: back to the frame, which pauses
 __watch_panic = (msg: str):

@@ -367,7 +367,8 @@ sha256 = (b: u8[], off: int, n: int) -> u8[]:
 # read-only data, which the code reaches relative to itself) in __TEXT as data instead, linked to
 # run at MACHO_WATCH_CODE, and starts with this loader: it takes the region (MAP_JIT memory, which
 # each thread sees either writable or runnable), copies the code there, marks the region's first
-# word as x64.jo's entry does on Linux, and calls the code's entry. Later builds' code goes into
+# word as x64.jo's entry does on Linux (and the next with where its copier for patches is), and
+# calls the code's entry. Later builds' code goes into
 # the region after it (lib/std/watch.jo). The executable keeps the region free with a segment of
 # nothing there (write_macho), and is started where it was linked, without address space
 # randomization (lib/core/os.jo, __exec_unslid).
@@ -428,6 +429,10 @@ macho_watch_loader = (data_addr: int, blob_addr: int, blob_len: int, entry: int)
     mw_mov64(9, MACHO_WATCH_AT)
     mw_mov64(10, 0x6A6F74776174636B)
     a_str(10, 9, 0)
+    # (and after it, where the copier below is)
+    copier_at = code.len()
+    mw_mov64(10, 0)
+    a_str(10, 9, 8)
     # runnable, through the caches
     a_movz(0, 1, 0)
     mw_mov64(16, jit)
@@ -448,6 +453,34 @@ macho_watch_loader = (data_addr: int, blob_addr: int, blob_len: int, entry: int)
     a_movz(0, 70, 0)
     w32(0xA8C27BFD)                                             # ldp x29, x30, [sp], #32
     a_ret()
+    # the copier, copy(x0 = to, x1 = from, x2 = bytes): writes into the region for the game's
+    # patches (lib/std/watch.jo). While the region is writable for a thread it cannot run code
+    # from it, and all the game's code is there: this runs from __TEXT.
+    copier = code.len()
+    w32(0xA9BD7BFD)                                             # stp x29, x30, [sp, #-48]!
+    w32(0x910003FD)                                             # mov x29, sp
+    w32(0xA90107E0)                                             # stp x0, x1, [sp, #16]
+    a_str(2, A_SP, 32)
+    a_movz(0, 0, 0)
+    mw_mov64(16, jit)
+    a_ldr(16, 16, 0)
+    a_blr(16)
+    w32(0xA9412BE9)                                             # ldp x9, x10, [sp, #16]
+    a_ldr(11, A_SP, 32)
+    w32(0xB4000000 | (5 << 5) | 11)                             # cbz x11, done
+    w32(0x3840154C)                                             # ldrb w12, [x10], #1
+    w32(0x3800152C)                                             # strb w12, [x9], #1
+    w32(0xF100056B)                                             # subs x11, x11, #1
+    w32(0x54000000 | (((-3) & 0x7FFFF) << 5) | AC_NE)           # b.ne
+    a_movz(0, 1, 0)
+    mw_mov64(16, jit)
+    a_ldr(16, 16, 0)
+    a_blr(16)
+    w32(0xA8C37BFD)                                             # ldp x29, x30, [sp], #48
+    a_ret()
+    # (its address, in the instructions storing it after the mark)
+    ca = MACHO_BASE + MACHO_TEXT_OFF + copier
+    loop k in [0..4): wr32(copier_at + 4 * k, (rd32(copier_at + 4 * k) & ~(0xFFFF << 5)) | (((ca >> (16 * k)) & 0xFFFF) << 5))
     out = code
     code = saved
     out
