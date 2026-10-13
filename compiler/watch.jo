@@ -827,7 +827,7 @@ watch_main = (path: str, args: str[]):
         w_out = "{w_cache}/watch-{w_self_id()}.exe"
     w_args = args
     w_ext = path[len(strip_ext(path))..]
-    ino = 0
+    ino = -1
     when TARGET == "linux":
         ino = syscall(294, 0x800 | 0x80000)          # inotify_init1(IN_NONBLOCK | IN_CLOEXEC)
     dirs: {str: bool} = {}
@@ -854,7 +854,13 @@ watch_main = (path: str, args: str[]):
                     dirs[d] = true
                     w32_dir_count[d] = w32_sources_in(d)
             else:
-                if dirs.get(d) == none:
+                # (macOS: files watched by when they were last written, as on Windows)
+                if ino < 0:
+                    w32_note_file("{d}/{w_base(f)}")
+                    if dirs.get(d) == none:
+                        dirs[d] = true
+                        w32_dir_count[d] = w32_sources_in(d)
+                else if dirs.get(d) == none:
                     dirs[d] = true
                     wd = syscall(254, ino, data(__zstr(d)), 0x8 | 0x80 | 0x100)  # CLOSE_WRITE, MOVED_TO, CREATE
                     if wd >= 0: w_wds[wd] = d
@@ -923,14 +929,18 @@ watch_status_str = (st: int) -> str:
 # poll: 1 a file changed, 2 the program ended, 3 restart, 4 quit
 watch_wait = (ino: int) -> int:
     loop true:
+        # (no inotify, ino < 0: files are looked at four times a second)
         pf = [ino | (1 << 32), 0 | (1 << 32), -1]
         n = 2
         if w_from >= 0:
             pf[2] = w_from | (1 << 32)
             n = 3
-        r = syscall(7, data(pf), n, -1)
+        wait = -1
+        if ino < 0: wait = 250
+        r = syscall(7, data(pf), n, wait)
         if r < 0: continue
-        if (pf[0] >> 48) & 0xFFFF != 0:
+        if ino < 0 and w32_files_changed(): return 1
+        if ino >= 0 and (pf[0] >> 48) & 0xFFFF != 0:
             if watch_drain(ino): return 1
         if (pf[1] >> 48) & 0xFFFF != 0:
             buf = fill(u8(0), 256)
@@ -953,6 +963,7 @@ watch_wait = (ino: int) -> int:
 
 # read pending file events: was a source file written?
 watch_drain = (ino: int) -> bool:
+    if ino < 0: return false
     any = false
     buf = fill(u8(0), 8192)
     loop true:
@@ -1231,6 +1242,11 @@ w32_mtime = (f: str) -> int:
         info = fill(u8(0), 40)                        # WIN32_FILE_ATTRIBUTE_DATA
         if GetFileAttributesExW(data(wf), 0, data(info)) == 0: return -1
         return int(((data(info) + 20) as *u32)[0]) | (int(((data(info) + 24) as *u32)[0]) << 32)
+    else when TARGET == "macos":
+        # (struct stat: st_mtimespec at 48)
+        st = fill(0, 18)
+        if __c_stat(data(__zstr(f)), data(st) as *u8) != 0: return -1
+        return st[6] * 1000000000 + st[7]
     else:
         return -1
 
