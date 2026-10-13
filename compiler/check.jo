@@ -109,6 +109,8 @@ struct FnInst:
     clib: str
     csym: str
     cvariadic: i32      # @variadic(n): a C function with n fixed parameters, then C's `...` (0: none)
+    use_pos: int        # generic instances: the call that made it (for errors inside it) ...
+    made_in: i32        # ... in the body of this instance (0: none)
 
 struct FnSig:
     ntp: i32
@@ -949,6 +951,8 @@ get_fn_inst = (decl: int, targs: int[], use_pos: int) -> int:
             return f
     f = new_inst(FK_NORMAL, int(nodes[decl].mod), sanitize(name_of(int(nodes[decl].name))))
     fns[f].decl = i32(decl)
+    fns[f].use_pos = use_pos
+    if cx >= 0: fns[f].made_in = ctxs[cx].inst
     zt: int[]
     loop t in targs:
         z = zonk(t)
@@ -1913,7 +1917,27 @@ check_stmt = (s: int):
     else if k == .test_ or k == .build_: pass
     else: fatal(nodes[s].pos, "invalid statement")
 
+# (a generic instance's body: an error in the library's code is reported at the program's call)
 check_fn_body = (f: int):
+    if fns[f].state != 0: return
+    if fns[f].targs.len() == 0 or fns[f].decl == 0:
+        __check_fn_body(f)
+        return
+    # (the calls that led here, outermost first, even when this body is checked later)
+    chain: int[]
+    g = f
+    loop g > 0 and chain.len() < 32 and fns[g].targs.len() > 0 and fns[g].decl != 0:
+        chain.insert(0, g)
+        g = int(fns[g].made_in)
+    loop g2 in chain:
+        err_trail.push(fns[g2].use_pos)
+        err_trail_names.push(name_of(int(nodes[int(fns[g2].decl)].name)))
+    __check_fn_body(f)
+    loop _ in chain:
+        err_trail.pop()
+        err_trail_names.pop()
+
+__check_fn_body = (f: int):
     if fns[f].state != 0: return
     fns[f].state = 1
     decl = int(fns[f].decl)

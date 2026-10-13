@@ -16,6 +16,9 @@ Language:
   an optional, `int("42")`, `key_down("space")` and `.left_arrow`, `x = "one"` after `x = 1`, a
   match without some variants (they are named), a wrong `update` or `draw` (reported there, not
   in the library) each say what to do.
+- An error inside a library function made for the program's types (`sort` of structs without
+  `<`, `max` of them) is reported at the program's call, with the library's line in parentheses
+  and, for a struct without the operator, how to define it.
 - New errors: `-> void` is kept (a function that says so and returns a value is an error; it
   used to return the value); assigning a constant (inside a function this made a variable that
   hid it); top-level code reading a global above the line that gives it its value (it was
