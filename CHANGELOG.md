@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.1 (unreleased)
+## 0.8.1
 
 Fixed:
 - The library's 3D example called `sun()` with the direction its light goes; it takes the
