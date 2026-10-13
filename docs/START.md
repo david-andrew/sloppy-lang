@@ -57,7 +57,7 @@ frame, `update` with the seconds since the last frame.
 pos = vec2(400, 300)
 
 update = (dt: f64):
-    pos += input_axis() * f32(300 * dt)
+    pos += input_axis() * 300 * dt
 
 draw = ():
     clear(rgb(0.08, 0.08, 0.12))

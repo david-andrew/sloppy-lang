@@ -47,7 +47,7 @@ update = (dt: f64):
     if key_down(.right): dir.x += 1
     if key_down(.up): dir.y -= 1
     if key_down(.down): dir.y += 1
-    pos += dir * f32(300 * dt)
+    pos += dir * 300 * dt
 
 draw = ():
     clear(rgb(0.08, 0.08, 0.12))

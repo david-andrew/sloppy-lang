@@ -29,7 +29,7 @@ and size) and calls `draw` 60 times a second (or as often as the screen refreshe
 pos = vec2(640, 360)
 
 update = (dt: f64):
-    pos += input_axis() * f32(400 * dt)
+    pos += input_axis() * 400 * dt
 
 draw = ():
     clear(rgb(0.1, 0.1, 0.18))
@@ -42,8 +42,10 @@ window("Firefly", 1280, 720)
 `speed * dt` makes the speed the same on every computer. `input_axis()` is the direction the
 arrow keys, WASD or a gamepad's stick point in, as a `vec2` from -1 to 1.
 
-(`f32(...)`: positions are `vec2`s of 32-bit floats, while `dt` and most numbers are 64-bit
-`f64`s. Sloppy converts between number types only when you ask; `f32(x)` asks.)
+(Positions are `vec2`s of 32-bit floats (`f32`), while `dt` and most numbers are 64-bit
+`f64`s. The two mix freely, and whole numbers work as floats too, so a position can be
+multiplied by `dt` directly. The one conversion you have to ask for is a float to a whole
+number: `int(x)`.)
 
 ## 3. Gravity and jumping
 
@@ -58,10 +60,10 @@ vel = vec2(0, 0)
 
 update = (dt: f64):
     vel.x = input_axis().x * 400.0
-    vel.y += f32(GRAVITY * dt)
+    vel.y += GRAVITY * dt
     on_ground = pos.y >= GROUND
-    if on_ground and key_pressed(.space): vel.y = f32(-JUMP)
-    pos += vel * f32(dt)
+    if on_ground and key_pressed(.space): vel.y = -JUMP
+    pos += vel * dt
     if pos.y > GROUND:
         pos.y = GROUND
         vel.y = 0.0
@@ -106,12 +108,12 @@ blocked = (p: vec2) -> bool:
 
 update = (dt: f64):
     vel.x = input_axis().x * 400.0
-    vel.y += f32(GRAVITY * dt)
-    if on_ground and key_pressed(.space): vel.y = f32(-JUMP)
+    vel.y += GRAVITY * dt
+    if on_ground and key_pressed(.space): vel.y = -JUMP
     # move across, then up or down, each only as far as nothing is in the way
-    next = pos + vec2(vel.x * f32(dt), 0)
+    next = pos + vec2(vel.x * dt, 0)
     if not blocked(next): pos = next
-    next = pos + vec2(0, vel.y * f32(dt))
+    next = pos + vec2(0, vel.y * dt)
     on_ground = false
     if blocked(next):
         if vel.y > 0.0: on_ground = true
@@ -163,12 +165,12 @@ blocked = (p: vec2) -> bool:
 
 update = (dt: f64):
     vel.x = input_axis().x * 400.0
-    vel.y += f32(GRAVITY * dt)
-    if on_ground and key_pressed(.space): vel.y = f32(-JUMP)
+    vel.y += GRAVITY * dt
+    if on_ground and key_pressed(.space): vel.y = -JUMP
     # move across, then up or down, each only as far as nothing is in the way
-    next = pos + vec2(vel.x * f32(dt), 0)
+    next = pos + vec2(vel.x * dt, 0)
     if not blocked(next): pos = next
-    next = pos + vec2(0, vel.y * f32(dt))
+    next = pos + vec2(0, vel.y * dt)
     on_ground = false
     if blocked(next):
         if vel.y > 0.0: on_ground = true
@@ -226,14 +228,14 @@ make_world = ():
     loop x < WORLD_W:
         w = random(400.0, 900.0)
         y = 616.0 + random(-50.0, 50.0)
-        platforms.push(Rect(f32(x), f32(y), f32(w), 400))
-        lights.push(vec2(f32(x + w / 2.0), f32(y - 40.0)))
+        platforms.push(Rect(x, y, w, 400))
+        lights.push(vec2(x + w / 2.0, y - 40.0))
         if random() < 0.7:
             lx = x + random(50.0, w - 250.0)
-            platforms.push(Rect(f32(lx), f32(y - 150.0), 200, 24))
-            lights.push(vec2(f32(lx + 100.0), f32(y - 190.0)))
+            platforms.push(Rect(lx, y - 150.0, 200, 24))
+            lights.push(vec2(lx + 100.0, y - 190.0))
         if x > 500.0 and random() < 0.5:
-            thorns.push(Rect(f32(x + w - 160.0), f32(y - 14.0), 80, 14))
+            thorns.push(Rect(x + w - 160.0, y - 14.0, 80, 14))
         x += w + random(80.0, 200.0)
 
 box = (p: vec2) -> Rect: Rect(p.x - SIZE, p.y - SIZE, SIZE * 2.0, SIZE * 2.0)
@@ -251,11 +253,11 @@ restart = ():
 
 update = (dt: f64):
     vel.x = input_axis().x * 400.0
-    vel.y += f32(GRAVITY * dt)
-    if on_ground and key_pressed(.space): vel.y = f32(-JUMP)
-    next = pos + vec2(vel.x * f32(dt), 0)
+    vel.y += GRAVITY * dt
+    if on_ground and key_pressed(.space): vel.y = -JUMP
+    next = pos + vec2(vel.x * dt, 0)
     if not blocked(next): pos = next
-    next = pos + vec2(0, vel.y * f32(dt))
+    next = pos + vec2(0, vel.y * dt)
     on_ground = false
     if blocked(next):
         if vel.y > 0.0: on_ground = true
@@ -277,7 +279,7 @@ update = (dt: f64):
 draw = ():
     clear(rgb(0.1, 0.1, 0.18))
     push_transform()
-    translate(f64(-cam.x), f64(-cam.y))        # draw the world as the camera sees it
+    translate(-cam.x, -cam.y)    # draw the world as the camera sees it
     loop r in platforms: rect(r.x, r.y, r.w, r.h, rgb(0.25, 0.22, 0.32))
     loop t in thorns: rect(t.x, t.y, t.w, t.h, rgb(0.6, 0.15, 0.25))
     loop l in lights: circle(l, 8, rgb(1, 0.8, 0.4))
@@ -332,14 +334,14 @@ make_world = ():
     loop x < WORLD_W:
         w = random(400.0, 900.0)
         y = 616.0 + random(-50.0, 50.0)
-        platforms.push(Rect(f32(x), f32(y), f32(w), 400))
-        lights.push(vec2(f32(x + w / 2.0), f32(y - 40.0)))
+        platforms.push(Rect(x, y, w, 400))
+        lights.push(vec2(x + w / 2.0, y - 40.0))
         if random() < 0.7:
             lx = x + random(50.0, w - 250.0)
-            platforms.push(Rect(f32(lx), f32(y - 150.0), 200, 24))
-            lights.push(vec2(f32(lx + 100.0), f32(y - 190.0)))
+            platforms.push(Rect(lx, y - 150.0, 200, 24))
+            lights.push(vec2(lx + 100.0, y - 190.0))
         if x > 500.0 and random() < 0.5:
-            thorns.push(Rect(f32(x + w - 160.0), f32(y - 14.0), 80, 14))
+            thorns.push(Rect(x + w - 160.0, y - 14.0, 80, 14))
         x += w + random(80.0, 200.0)
 
 box = (p: vec2) -> Rect: Rect(p.x - SIZE, p.y - SIZE, SIZE * 2.0, SIZE * 2.0)
@@ -370,11 +372,11 @@ update = (dt: f64):
     if screen != .play: return
     time += dt
     vel.x = input_axis().x * 400.0
-    vel.y += f32(GRAVITY * dt)
-    if on_ground and key_pressed(.space): vel.y = f32(-JUMP)
-    next = pos + vec2(vel.x * f32(dt), 0)
+    vel.y += GRAVITY * dt
+    if on_ground and key_pressed(.space): vel.y = -JUMP
+    next = pos + vec2(vel.x * dt, 0)
     if not blocked(next): pos = next
-    next = pos + vec2(0, vel.y * f32(dt))
+    next = pos + vec2(0, vel.y * dt)
     on_ground = false
     if blocked(next):
         if vel.y > 0.0: on_ground = true
@@ -402,11 +404,11 @@ update = (dt: f64):
 draw = ():
     clear(rgb(0.1, 0.1, 0.18))
     push_transform()
-    translate(f64(-cam.x), f64(-cam.y))        # draw the world as the camera sees it
+    translate(-cam.x, -cam.y)    # draw the world as the camera sees it
     loop r in platforms: rect(r.x, r.y, r.w, r.h, rgb(0.25, 0.22, 0.32))
     loop t in thorns: rect(t.x, t.y, t.w, t.h, rgb(0.6, 0.15, 0.25))
     loop l in lights: circle(l, 8, rgb(1, 0.8, 0.4))
-    circle(vec2(f32(WORLD_W - 150.0), 520), 30, rgb(1, 0.7, 0.3))     # the lantern
+    circle(vec2(WORLD_W - 150.0, 520), 30, rgb(1, 0.7, 0.3))     # the lantern
     circle(pos, SIZE, rgb(1, 0.9, 0.5))
     pop_transform()
     if screen == .title:
@@ -473,14 +475,14 @@ make_world = ():
     loop x < WORLD_W:
         w = random(400.0, 900.0)
         y = 616.0 + random(-50.0, 50.0)
-        platforms.push(Rect(f32(x), f32(y), f32(w), 400))
-        lights.push(vec2(f32(x + w / 2.0), f32(y - 40.0)))
+        platforms.push(Rect(x, y, w, 400))
+        lights.push(vec2(x + w / 2.0, y - 40.0))
         if random() < 0.7:
             lx = x + random(50.0, w - 250.0)
-            platforms.push(Rect(f32(lx), f32(y - 150.0), 200, 24))
-            lights.push(vec2(f32(lx + 100.0), f32(y - 190.0)))
+            platforms.push(Rect(lx, y - 150.0, 200, 24))
+            lights.push(vec2(lx + 100.0, y - 190.0))
         if x > 500.0 and random() < 0.5:
-            thorns.push(Rect(f32(x + w - 160.0), f32(y - 14.0), 80, 14))
+            thorns.push(Rect(x + w - 160.0, y - 14.0, 80, 14))
         x += w + random(80.0, 200.0)
 
 box = (p: vec2) -> Rect: Rect(p.x - SIZE, p.y - SIZE, SIZE * 2.0, SIZE * 2.0)
@@ -511,13 +513,13 @@ update = (dt: f64):
     if screen != .play: return
     time += dt
     vel.x = input_axis().x * 400.0
-    vel.y += f32(GRAVITY * dt)
+    vel.y += GRAVITY * dt
     if on_ground and key_pressed(.space):
-        vel.y = f32(-JUMP)
+        vel.y = -JUMP
         play(hop, 0.5)
-    next = pos + vec2(vel.x * f32(dt), 0)
+    next = pos + vec2(vel.x * dt, 0)
     if not blocked(next): pos = next
-    next = pos + vec2(0, vel.y * f32(dt))
+    next = pos + vec2(0, vel.y * dt)
     on_ground = false
     if blocked(next):
         if vel.y > 0.0: on_ground = true
@@ -547,19 +549,19 @@ update = (dt: f64):
 draw = ():
     clear(rgb(0.1, 0.1, 0.18))
     v = visible_rect()
-    rect_gradient(f64(v.x), f64(v.y), f64(v.z), f64(v.w), rgb(0.08, 0.08, 0.2), rgb(0.35, 0.2, 0.3))    # a dusk sky
+    rect_gradient(v.x, v.y, v.z, v.w, rgb(0.08, 0.08, 0.2), rgb(0.35, 0.2, 0.3))    # a dusk sky
     push_transform()
-    translate(f64(-cam.x), f64(-cam.y))        # draw the world as the camera sees it
+    translate(-cam.x, -cam.y)    # draw the world as the camera sees it
     loop r in platforms: rect(r.x, r.y, r.w, r.h, rgb(0.25, 0.22, 0.32))
     loop t in thorns: rect(t.x, t.y, t.w, t.h, rgb(0.6, 0.15, 0.25))
     # glows: drawn with additive blending, so light adds up
     blend(.add)
     loop l in lights: circle_gradient(l, 40, rgba(1, 0.7, 0.3, 0.5), rgba(1, 0.5, 0.2, 0))
     circle_gradient(pos, 90, rgba(1, 0.9, 0.5, 0.5), rgba(1, 0.7, 0.3, 0))
-    circle_gradient(vec2(f32(WORLD_W - 150.0), 520), 200, rgba(1, 0.7, 0.3, 0.6), rgba(1, 0.5, 0.2, 0))
+    circle_gradient(vec2(WORLD_W - 150.0, 520), 200, rgba(1, 0.7, 0.3, 0.6), rgba(1, 0.5, 0.2, 0))
     blend(.alpha)
     loop l in lights: circle(l, 6, rgb(1, 0.95, 0.8))
-    circle(vec2(f32(WORLD_W - 150.0), 520), 26, rgb(1, 0.85, 0.6))     # the lantern
+    circle(vec2(WORLD_W - 150.0, 520), 26, rgb(1, 0.85, 0.6))     # the lantern
     circle(pos, SIZE, rgb(1, 0.97, 0.85))
     draw(sparks)
     pop_transform()
