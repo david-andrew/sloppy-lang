@@ -1,0 +1,62 @@
+# requires: sloppy (client and server netcode: lib/netplay.jo, over a simulated network)
+import netplay
+
+struct Pad:
+    dx = 0
+    fire = false
+struct World:
+    pos: {int: f32}
+    hits = 0
+    would_miss = 0                  # (shots that the world of now would have missed)
+
+apply = (w: World, player: int, p: Pad, seen: World) -> World:
+    let w = w
+    if not w.pos.has(player): return w
+    w.pos[player] += f32(p.dx) * 4
+    if p.fire:
+        # (a hit on another player within 10 of the shooter, where the shooter saw them)
+        loop q, x in seen.pos:
+            if q != player and abs(x - w.pos[player]) < 10.0:
+                w.hits += 1
+                if abs(w.pos[q] - w.pos[player]) >= 10.0: w.would_miss += 1
+    w
+step = (w: World) -> World: w
+
+srv = netplay.server(World(), apply, step)
+c1 = netplay.client(World(), apply)
+c2 = netplay.client(World(), apply)
+link = netplay.Link(latency = 0.1, jitter = 0.02)       # (ends: 1 and 2 the clients, 11 and 12 the server from them)
+srv.join(1)
+srv.join(2)
+moved_at = -1
+fired = false
+between = false
+loop f in [0..400):
+    now = f64(f) / 60.0
+    srv.update()
+    loop p in srv.joined: srv.world.pos[p] = f32(p) * 100
+    # client 1 moves right from tick 120 to 180 (past client 2 at 200); client 2 fires the
+    # moment it sees client 1 in front of it
+    d1 = 0
+    if f >= 120 and f < 180: d1 = 1
+    before = c1.state.pos.get(1) ?? -1.0
+    c1.play(Pad(d1, false))
+    if d1 == 1 and moved_at < 0 and (c1.state.pos.get(1) ?? -1.0) > before: moved_at = f
+    a, b, t = c2.view()
+    seen1 = mix(a.pos.get(1) ?? 0.0, b.pos.get(1) ?? 0.0, t)
+    if f == 150 and t > 0.0 and t < 1.0 and seen1 < srv.world.pos[1]: between = true
+    shoot = not fired and c2.connected() and abs(seen1 - 200.0) < 5.0
+    if shoot: fired = true
+    c2.play(Pad(0, shoot))
+    loop o in srv.outgoing(): link.send(o.0, o.1, now)
+    loop x in c1.outgoing(): link.send(11, x, now)
+    loop x in c2.outgoing(): link.send(12, x, now)
+    loop d in link.deliver(now):
+        if d.0 == 1: c1.receive(d.1)
+        else if d.0 == 2: c2.receive(d.1)
+        else: srv.receive(d.0 - 10, d.1)
+print("connected", c1.connected(), c2.connected(), c1.me, c2.me)
+print("prediction: moved on the tick the input was made", moved_at == 120)
+print("reconciled: client 1 where the server has it", c1.state.pos[1] == srv.world.pos[1], srv.world.pos[1])
+print("interpolation: client 2 saw client 1 between two worlds, behind the server", between)
+print("lag compensation: the shot hit", srv.world.hits == 1, "and would have missed without it", srv.world.would_miss == 1)

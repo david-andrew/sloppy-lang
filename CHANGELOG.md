@@ -55,6 +55,12 @@ Games:
   play (`netplay.relay(port)` in a native program, which may itself be a player;
   `s.join_relay(host, port, room)`). examples/duel: two ships, over a LAN, in two windows, or
   with a web page.
+- **Client and server netcode** (`netplay.server`, `netplay.client`): an authoritative server
+  over WebSockets (native and web clients); the client's own inputs applied at once
+  (prediction) and again on each world from the server that has not answered them yet
+  (reconciliation); others drawn between two worlds a few ticks in the past (`c.view()`);
+  lag compensation (`apply` gets the world the player was seeing). examples/arena: any number
+  of players with lasers; tested with a web page's client in Chromium.
 - `net.receive(peers)` and `net.receive_server()`: the events of some peers only, for parts of a
   program that each have peers of their own.
 - **UDP** in `net`: `net.udp(port)`, `net.udp_send`, `net.udp_receive` (Linux, macOS, Windows).

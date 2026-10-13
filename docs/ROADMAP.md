@@ -114,11 +114,10 @@ game picks from (and an example of each):
   operating systems and the web. UDP in `net`, and a relay over WebSockets for web pages (done).
   Next: WebRTC data channels (browser to browser without a relay, and unreliable), spectators, more than one local player per
   machine, measured round-trip time shown to the player.
-- **Client-server (for more players and shooters):** an authoritative server; client-side
-  prediction of the player's own movement with reconciliation when the server's answer
-  differs; snapshot interpolation of other players (rendered a little in the past, from
-  buffered snapshots); delta-compressed snapshots; server-side lag compensation (rewinding hit
-  checks to what the shooter saw).
+- **Client-server (done: `netplay.server`/`client`, examples/arena):** an authoritative server;
+  client-side prediction with reconciliation; snapshot interpolation; lag compensation. Next:
+  delta-compressed snapshots (only what changed, and per player what is near), UDP for native
+  clients, extrapolation when worlds stop arriving.
 - Lobbies and connecting players: a small relay/matchmaking server program, and NAT traversal
   through WebRTC's ICE for browsers.
 

@@ -1,0 +1,155 @@
+# ARENA - a top-down arena for any number of players, over the network with a server
+# (lib/netplay.jo): your own ship answers at once (prediction), the others move smoothly
+# (interpolation), and a hit is a hit where the shooter saw it (lag compensation).
+# SERVE=1 runs the server here and plays too; others join with JOIN=<its address> (a web page:
+# ?join=<address>). Move with the arrows, WASD or a stick; Space or the gamepad's A fires a
+# laser. A ship hit three times starts again elsewhere, and the shooter scores. BOT=1 lets the
+# computer play this ship.
+
+build:
+    name = "Arena"
+
+import netplay
+
+const W = 1280.0
+const H = 720.0
+const PORT = 4700
+const SPEED = 4.0
+const RADIUS = 16.0
+const RANGE = 600.0
+
+window("Arena", 1280, 720)
+action("Fire", [.key(.space), .button(.a)])
+
+struct Ship:
+    pos: vec2
+    face = vec2(1, 0)
+    hp = 3
+    score = 0
+    cooldown = 0
+
+struct Beam:
+    a: vec2
+    b: vec2
+    ttl = 10
+
+struct World:
+    ships: {int: Ship}
+    beams: Beam[]
+
+struct Pad:
+    x = 0
+    y = 0
+    fire = false
+
+spawn = (player: int) -> vec2:
+    h = hash(player * 7919)
+    vec2(f32(100 + h % 1080), f32(100 + (h >> 16) % 520))
+
+# a player's input: move, and fire (a hit on whoever the beam meets where the shooter saw them)
+apply = (w: World, player: int, p: Pad, seen: World) -> World:
+    let w = w
+    if not w.ships.has(player): return w
+    let s = w.ships[player]
+    if p.x != 0 or p.y != 0:
+        s.face = normalize(vec2(f32(p.x), f32(p.y)))
+        s.pos = clamp(s.pos + s.face * SPEED, vec2(RADIUS, RADIUS), vec2(W - RADIUS, H - RADIUS))
+    if p.fire and s.cooldown == 0:
+        s.cooldown = 24
+        end = s.pos + s.face * RANGE
+        hit = -1
+        best = RANGE
+        loop q, o in seen.ships:
+            if q == player: continue
+            # (the nearest ship the beam passes within RADIUS of)
+            along = dot(o.pos - s.pos, s.face)
+            if along < 0.0 or along > best: continue
+            if length(o.pos - (s.pos + s.face * along)) < RADIUS:
+                best = along
+                hit = q
+        if hit >= 0 and w.ships.has(hit):
+            end = s.pos + s.face * best
+            w.ships[hit].hp -= 1
+            if w.ships[hit].hp <= 0:
+                w.ships[hit].hp = 3
+                w.ships[hit].pos = spawn(hit + w.ships[hit].score * 31 + s.score)
+                s.score += 1
+        w.beams.push(Beam(s.pos, end))
+    w.ships[player] = s
+    w
+
+# the rest of a tick: cooldowns, beams fading
+step = (w: World) -> World:
+    let w = w
+    loop k, s in w.ships:
+        if s.cooldown > 0: w.ships[k].cooldown -= 1
+    kept: Beam[]
+    loop b in w.beams:
+        if b.ttl > 1: kept.push(Beam(b.a, b.b, b.ttl - 1))
+    w.beams = kept
+    w
+
+serving = env("SERVE") != none
+srv = netplay.server(World(), apply, step)
+if serving: srv.listen(PORT)
+c = netplay.client(World(), apply)
+host = env("JOIN") ?? "localhost"
+if serving: host = "127.0.0.1"
+c.connect(host, PORT)
+spare = 0.0
+bot = env("BOT") != none
+
+# (BOT=1: toward the nearest other ship, firing when facing it)
+bot_pad = () -> Pad:
+    if not c.state.ships.has(c.me): return Pad()
+    mine = c.state.ships[c.me]
+    best = vec2(W / 2, H / 2)
+    bd = 1e9
+    loop p, s in c.server.ships:
+        if p != c.me and length(s.pos - mine.pos) < bd:
+            bd = length(s.pos - mine.pos)
+            best = s.pos
+    d = best - mine.pos
+    want = d - normalize(d) * 250.0 + perp(normalize(d)) * 120.0
+    # (every half second: turn toward it, and fire)
+    turning = elapsed() % 0.5 < 0.08
+    if turning: want = d
+    Pad(int(sign(round(f64(want.x) / 40.0))), int(sign(round(f64(want.y) / 40.0))), turning and dot(normalize(d), mine.face) > 0.9 and length(d) < RANGE)
+
+update = (dt: f64):
+    if key_pressed(.escape): quit()
+    spare = min(spare + dt, 0.1)
+    loop spare >= 1.0 / 60.0:
+        spare -= 1.0 / 60.0
+        if serving:
+            srv.update()
+            loop p in srv.joined: srv.world.ships[p] = Ship(spawn(p))
+            loop p in srv.left: srv.world.ships.remove(p)
+        a = input_axis()
+        if bot: c.play(bot_pad())
+        else: c.play(Pad(int(round(f64(a.x))), int(round(f64(a.y))), action_down("Fire")))
+
+draw = ():
+    clear(rgb(0.06, 0.07, 0.1))
+    if not c.connected():
+        text_centered("connecting to {host}:{PORT}", vec2(W / 2, H / 2), 32, gray(0.7))
+        return
+    loop b in c.server.beams: line(b.a, b.b, 3, rgba(1.0, 0.9, 0.5, f32(b.ttl) / 10.0))
+    # the others where they were a moment ago, between two worlds from the server; this one now
+    a, b, t = c.view()
+    loop p, s in b.ships:
+        pos = s.pos
+        if a.ships.has(p): pos = mix(a.ships[p].pos, s.pos, t)
+        col = hsv(f64(hash(p) % 360) / 360.0, 0.6, 0.95)
+        if p == c.me and c.state.ships.has(p): pos = c.state.ships[p].pos
+        circle(pos, RADIUS, col)
+        f = s.face
+        if p == c.me and c.state.ships.has(p): f = c.state.ships[p].face
+        line(pos, pos + f * (RADIUS + 8), 4, col)
+        loop k in [0..s.hp): circle(pos + vec2(f32(k - 1) * 9, -RADIUS - 10), 3, col)
+    y = 24
+    loop p, s in c.server.ships:
+        who = "player {p}"
+        if p == c.me: who = "you"
+        text("{who}: {s.score}", vec2(20, f32(y)), 22, gray(0.8))
+        y += 26

@@ -2171,3 +2171,24 @@ draw = ():
 - `send = (l: mut Link, to: int, data: u8[], now: f64)`
 - `deliver = (l: mut Link, now: f64) -> (int, u8[])[]`: what has arrived by now: (to, data), in the order it arrives
 
+#### Client and server
+
+- `struct Server[W, I]`
+- `server[W, I] = (world: W, apply: (W, int, I, W) -> W, step: (W) -> W) -> Server[W, I]`
+- `join[W, I] = (s: mut Server[W, I], player: int)`: a player connected (as the player number, any int); a player left
+- `leave[W, I] = (s: mut Server[W, I], player: int)`
+- `receive[W, I] = (s: mut Server[W, I], player: int, data: u8[])`: bytes from a player
+- `outgoing[W, I] = (s: mut Server[W, I]) -> (int, u8[])[]`: what to send to whom since the last call (without listen)
+- `listen[W, I] = (s: mut Server[W, I], port: int)`: serve over WebSockets on port: native and web clients connect (players are net's peers)
+- `update[W, I] = (s: mut Server[W, I])`: one tick: each player's next input applied, the rest of the tick, and the world sent out
+- `world_at[W, I] = (s: Server[W, I], tick: int) -> W`: the world as it was at an earlier tick (the latest kept, if that one is gone)
+- `struct Client[W, I]`
+- `client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]`
+- `connect[W, I] = (c: mut Client[W, I], host: str, port: int)`
+- `connected[W, I] = (c: Client[W, I]) -> bool`: connected, and the server has sent a world
+- `play[W, I] = (c: mut Client[W, I], input: I)`: this tick's input: applied here at once (prediction) and sent
+- `receive[W, I] = (c: mut Client[W, I], data: u8[])`: bytes from the server
+- `outgoing[W, I] = (c: mut Client[W, I]) -> u8[][]`: what to send since the last call (without connect)
+- `view_tick[W, I] = (c: Client[W, I]) -> f64`: the server's tick being drawn for the others: some ticks in the past (fractional)
+- `view[W, I] = (c: Client[W, I]) -> (W, W, f32)`: the two worlds around view_tick and how far between them (0 to 1): draw the others at mix(a's, b's, f)
+

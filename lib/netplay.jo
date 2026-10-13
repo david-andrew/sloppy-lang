@@ -338,3 +338,208 @@ deliver = (l: mut Link, now: f64) -> (int, u8[])[]:
     loop q in due: out.push((q.1, q.2))
     l.__queue = keep
     out
+
+# ---------------- client and server ----------------
+# For more players, and games where one machine must decide (shooters, anything with cheating to
+# keep out): a server runs the game; clients send it their inputs and draw what it sends back.
+# What hides the latency:
+# - prediction: a client applies its own inputs at once, to the latest world from the server
+#   with every input the server has not answered yet applied again (reconciliation), so its own
+#   player moves without delay and ends up where the server puts it;
+# - interpolation: the others are drawn a little in the past, between two worlds the server sent
+#   (c.view()), so they move smoothly however unevenly the worlds arrive;
+# - lag compensation: each input says which tick its player was seeing, and the server hands the
+#   game's apply that world too (`seen`), so a shot hits what the shooter saw.
+#
+#   apply = (w: World, player: int, input: Pad, seen: World) -> World: ...   # a player's input
+#   step = (w: World) -> World: ...                                          # the rest of a tick
+#
+#   srv = netplay.server(World(), apply, step)          # (a native program)
+#   srv.listen(4600)
+#   every tick: srv.update()      (srv.joined, srv.left: the players who came and went: add and
+#                                  remove what they play in srv.world)
+#
+#   c = netplay.client(World(), apply)
+#   c.connect("game.example.com", 4600)                 # (web pages too)
+#   every tick: c.play(pad); draw c.state for one's own player, c.view() for the others
+#
+# Ticks are 1/60 s on both sides; the server sends its world every send_every ticks.
+
+struct Server[W, I]:
+    world: W
+    apply: (W, int, I, W) -> W
+    step: (W) -> W
+    tick = 0
+    send_every = 2                  # (30 worlds a second)
+    joined: int[]                   # the players who came, and went, in the last update
+    left: int[]
+    __came: int[]
+    __went: int[]
+    __hist: W[]                     # the last __CS_HIST worlds, by tick
+    __clients: {int: __CsClient[I]}
+    __out: (int, u8[])[]
+    __port = -1
+
+const __CS_HIST = 64
+
+struct __CsClient[I]:
+    queue: (int, int, I)[]          # inputs not applied yet: sequence number, the tick seen, input
+    acked = 0                       # the last applied
+
+struct __CsInput[I]:
+    seq: int
+    seen: int
+    input: I
+
+struct __CsWorld[W]:
+    you: int
+    tick: int
+    ack: int
+    world: W
+
+server[W, I] = (world: W, apply: (W, int, I, W) -> W, step: (W) -> W) -> Server[W, I]:
+    s = Server[W, I](world = world, apply = apply, step = step)
+    s.__hist = fill(world, __CS_HIST)
+    s
+
+# a player connected (as the player number, any int); a player left
+join[W, I] = (s: mut Server[W, I], player: int):
+    s.__clients[player] = __CsClient[I]()
+    s.__came.push(player)
+leave[W, I] = (s: mut Server[W, I], player: int):
+    s.__clients.remove(player)
+    s.__went.push(player)
+
+# bytes from a player
+receive[W, I] = (s: mut Server[W, I], player: int, data: u8[]):
+    r = from_text[__CsInput[I]](str_from_bytes(data))
+    if r is TextError: return
+    if not s.__clients.has(player): return
+    s.__clients[player].queue.push((r.seq, r.seen, r.input))
+
+# what to send to whom since the last call (without listen)
+outgoing[W, I] = (s: mut Server[W, I]) -> (int, u8[])[]:
+    o = s.__out
+    s.__out.clear()
+    o
+
+# serve over WebSockets on port: native and web clients connect (players are net's peers)
+listen[W, I] = (s: mut Server[W, I], port: int):
+    if not net.listen(port): panic("cannot listen on port {port}")
+    s.__port = port
+
+# one tick: each player's next input applied, the rest of the tick, and the world sent out
+update[W, I] = (s: mut Server[W, I]):
+    if s.__port >= 0:
+        loop e in net.receive_server():
+            if e.kind == .joined: s.join(e.peer)
+            else if e.kind == .left: s.leave(e.peer)
+            else: s.receive(e.peer, e.data)
+    s.joined = s.__came
+    s.left = s.__went
+    s.__came.clear()
+    s.__went.clear()
+    loop p, c in s.__clients:
+        # (one input a tick, as they are made; more when some have piled up, to catch up)
+        n = min(c.queue.len(), 1)
+        if c.queue.len() > 3: n = c.queue.len() - 2
+        loop k in [0..n):
+            q = c.queue[k]
+            seen = s.world
+            if q.1 >= 0 and q.1 < s.tick and s.tick - q.1 < __CS_HIST: seen = s.__hist[q.1 % __CS_HIST]
+            s.world = s.apply(s.world, p, q.2, seen)
+            s.__clients[p].acked = q.0
+        if n > 0: s.__clients[p].queue = c.queue[n..]
+    s.world = s.step(s.world)
+    s.tick += 1
+    s.__hist[s.tick % __CS_HIST] = s.world
+    if s.tick % s.send_every == 0:
+        loop p, c in s.__clients:
+            b = bytes(to_text(__CsWorld[W](p, s.tick, c.acked, s.world)))
+            if s.__port >= 0: net.send(p, b)
+            else: s.__out.push((p, b))
+
+# the world as it was at an earlier tick (the latest kept, if that one is gone)
+world_at[W, I] = (s: Server[W, I], tick: int) -> W:
+    if tick < 0 or tick >= s.tick or s.tick - tick >= __CS_HIST: return s.world
+    s.__hist[tick % __CS_HIST]
+
+struct Client[W, I]:
+    apply: (W, int, I, W) -> W
+    state: W                        # the latest world from the server, with this player's newer inputs applied
+    server: W                       # the latest world from the server, as it sent it
+    me = -1                         # this player's number (once the server has said)
+    server_tick = -1                # the tick of server
+    interpolation = 6               # how far in the past others are drawn (view), in ticks
+    __seq = 0
+    __pending: (int, I)[]           # inputs the server has not answered yet
+    __worlds: (int, W)[]            # the latest worlds, with their ticks
+    __clock = 0                     # this client's ticks
+    __got_at = 0                    # (its clock when the latest world came)
+    __out: u8[][]
+    __peer = -1
+
+client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]:
+    Client[W, I](apply = apply, state = start, server = start)
+
+connect[W, I] = (c: mut Client[W, I], host: str, port: int):
+    c.__peer = net.connect(host, port)
+
+# connected, and the server has sent a world
+connected[W, I] = (c: Client[W, I]) -> bool: c.me >= 0
+
+# this tick's input: applied here at once (prediction) and sent
+play[W, I] = (c: mut Client[W, I], input: I):
+    if c.__peer >= 0:
+        loop e in net.receive([c.__peer]):
+            if e.kind == .message: c.receive(e.data)
+    c.__clock += 1
+    if c.me < 0: return
+    c.__seq += 1
+    c.__pending.push((c.__seq, input))
+    seen = int(floor(view_tick(c)))
+    b = bytes(to_text(__CsInput[I](c.__seq, seen, input)))
+    if c.__peer >= 0: net.send(c.__peer, b)
+    else: c.__out.push(b)
+    c.state = c.apply(c.state, c.me, input, c.state)
+
+# bytes from the server
+receive[W, I] = (c: mut Client[W, I], data: u8[]):
+    r = from_text[__CsWorld[W]](str_from_bytes(data))
+    if r is TextError: return
+    if r.tick <= c.server_tick: return
+    c.me = r.you
+    c.server_tick = r.tick
+    c.server = r.world
+    c.__got_at = c.__clock
+    c.__worlds.push((r.tick, r.world))
+    if c.__worlds.len() > 32: c.__worlds.remove(0)
+    # (what the server has done of mine is in its world; the rest applied again)
+    keep: (int, I)[]
+    loop p in c.__pending:
+        if p.0 > r.ack: keep.push(p)
+    c.__pending = keep
+    c.state = r.world
+    loop p in c.__pending: c.state = c.apply(c.state, c.me, p.1, c.state)
+
+# what to send since the last call (without connect)
+outgoing[W, I] = (c: mut Client[W, I]) -> u8[][]:
+    o = c.__out
+    c.__out.clear()
+    o
+
+# the server's tick being drawn for the others: some ticks in the past (fractional)
+view_tick[W, I] = (c: Client[W, I]) -> f64: f64(c.server_tick + (c.__clock - c.__got_at) - c.interpolation)
+
+# the two worlds around view_tick and how far between them (0 to 1): draw the others at
+# mix(a's, b's, f)
+view[W, I] = (c: Client[W, I]) -> (W, W, f32):
+    t = view_tick(c)
+    n = c.__worlds.len()
+    if n == 0: return (c.server, c.server, 0)
+    if t <= f64(c.__worlds[0].0): return (c.__worlds[0].1, c.__worlds[0].1, 0)
+    loop k in [0..n - 1):
+        a = c.__worlds[k]
+        b = c.__worlds[k + 1]
+        if t >= f64(a.0) and t < f64(b.0): return (a.1, b.1, f32((t - f64(a.0)) / f64(b.0 - a.0)))
+    (c.__worlds[n - 1].1, c.__worlds[n - 1].1, 0)
