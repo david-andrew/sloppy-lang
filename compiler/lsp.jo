@@ -10,6 +10,7 @@ use 'ast.jo'
 use 'types.jo'
 use 'check.jo'
 use 'ide.jo'
+use 'lex.jo'
 use 'main.jo'
 
 # ---------------- JSON ----------------
@@ -387,6 +388,7 @@ struct Ref:
     len: int
     decl: str       # "file:offset" of the declaration ("" if none)
     info: str
+    alias: str      # a name imported as another (from m import x as y): "file:offset" of y there
 
 struct Decl:
     file: int
@@ -443,7 +445,10 @@ empty_main = "/.sloppy-lsp-empty-main.jo"
 
 uri_to_path = (uri: str) -> str:
     s = uri
-    if starts_with(s, "file://"): s = s[7..]
+    if starts_with(s, "file://"):
+        s = s[7..]
+        # (file://server/share/x: the UNC path //server/share/x)
+        if len(s) > 0 and s[0] != '/': s = "//" + s
     out: u8[]
     i = 0
     loop i < len(s):
@@ -462,8 +467,10 @@ uri_to_path = (uri: str) -> str:
 path_to_uri = (path: str) -> str:
     hexd = "0123456789ABCDEF"
     out: u8[]
-    loop b in "file://": out.push(b)
-    if not starts_with(path, "/"): out.push('/')
+    loop b in "file:": out.push(b)
+    if not starts_with(path, "//"):
+        loop b in "//": out.push(b)
+        if not starts_with(path, "/"): out.push('/')
     loop c in path:
         if is_alnum(c) or c == '/' or c == '-' or c == '.' or c == '_' or c == '~':
             out.push(c)
@@ -740,7 +747,9 @@ take_lines = (r: mut Result, lines_: str[]):
             key = "R{p.0}:{p.1}:{d}"
             if r.seen.get(key) != none: continue
             r.seen[key] = true
-            r.refs.push(Ref(p.0, p.1, to_int(f[2]) ?? 0, d, f[4]))
+            al = ""
+            if f.len() >= 6 and len(f[5]) > 0: al = remap_key(fmap, f[5])
+            r.refs.push(Ref(p.0, p.1, to_int(f[2]) ?? 0, d, f[4], al))
         else if k == "D" and f.len() >= 7:
             p = remap(fmap, f[1])
             key = "{p.0}:{p.1}"
@@ -936,7 +945,7 @@ publish = (d: int):
         ls = line_starts_of(text)
         a = x.off
         b = a
-        loop b < len(text) and (is_alnum(text[b]) or text[b] == '_'): b += 1
+        loop b < len(text) and is_ident_char(text[b]): b += 1
         if b == a and a < len(text) and text[a] != '\n': b = a + 1
         sev = 1
         if x.warning: sev = 2
@@ -1116,45 +1125,56 @@ use_target = (d: int, off: int) -> str:
         if file_exists(cand): return ide_norm(cand)
     ""
 
-struct Uses:
-    found: bool
+struct Use:
     res: Result
     decl: str           # the declaration's key in res
 
-# the declaration under the cursor, and a result with all its uses: when the program has more
-# files than the document, one that indexed them all
-uses_of = (d: int, off: int) -> Uses:
-    h = ref_at(d, off)
-    if not h.found or len(h.ref.decl) == 0: return Uses(false, Result(), "")
+# document i's result with all the uses in its program (r: its result, when that is the
+# document's only file; else one that indexed them all)
+wide_of = (i: int, r: Result) -> Result:
     n = 0
-    loop p in h.res.paths:
+    loop p in r.paths:
         if not starts_with(p, root_lib + "/") and p != empty_main: n += 1
-    if n <= 1 and not starts_with(docs[d].path, root_lib + "/"): return Uses(true, h.res, h.ref.decl)
-    if not docs[d].has_wide:
-        w = check_doc(docs[d].path, -1, false, true)
+    if n <= 1 and not starts_with(docs[i].path, root_lib + "/"): return r
+    if not docs[i].has_wide:
+        w = check_doc(docs[i].path, -1, false, true)
         w.texts = ide_texts
-        docs[d].wide = w
-        docs[d].has_wide = true
-    w = docs[d].wide
+        docs[i].wide = w
+        docs[i].has_wide = true
+    docs[i].wide
+
+# results with all the uses of what reference h (in document d) is to: d's, and those of the
+# other open documents whose programs include the declaration's file
+uses_of = (d: int, h: Hit) -> Use[]:
+    out: Use[]
     p = split_pos(h.ref.decl)
-    if p.0 < 0 or p.0 >= h.res.paths.len(): return Uses(false, Result(), "")
-    f = file_in(w, h.res.paths[p.0])
-    if f < 0: return Uses(false, Result(), "")
-    Uses(true, w, "{f}:{p.1}")
+    if p.0 < 0 or p.0 >= h.res.paths.len(): return out
+    path = h.res.paths[p.0]
+    loop i in [0..docs.len()):
+        r = h.res
+        if i != d:
+            if not docs[i].open or not docs[i].res.paths.contains(path): continue
+            ensure_checked(i)
+            r = docs[i].res
+        w = wide_of(i, r)
+        f = file_in(w, path)
+        if f >= 0: out.push(Use(w, "{f}:{p.1}"))
+    out
 
 # every reference to the declaration under the cursor
 refs_of = (d: int, off: int, with_decl: bool) -> str[]:
     out: str[]
-    u = uses_of(d, off)
-    if not u.found: return out
+    h = ref_at(d, off)
+    if not h.found or len(h.ref.decl) == 0: return out
     seen: {str: bool} = {}
-    loop x in u.res.refs:
-        if x.decl != u.decl: continue
-        k = "{x.file}:{x.off}"
-        if not with_decl and k == x.decl: continue
-        if seen.get(k) != none: continue
-        seen[k] = true
-        out.push(loc_json(u.res, x.file, x.off, x.len))
+    loop u in uses_of(d, h):
+        loop x in u.res.refs:
+            if x.decl != u.decl or x.file < 0: continue
+            if not with_decl and "{x.file}:{x.off}" == x.decl: continue
+            k = "{u.res.paths[x.file]}:{x.off}"
+            if seen.get(k) != none: continue
+            seen[k] = true
+            out.push(loc_json(u.res, x.file, x.off, x.len))
     out
 
 on_references = (id: int, params: int) -> int:
@@ -1183,14 +1203,24 @@ on_highlight = (id: int, params: int) -> int:
         out.push("\{\"range\":\{\"start\":{jpos(lpos_of(text, ls, o))},\"end\":{jpos(lpos_of(text, ls, o + x.len))}\}\}")
     lsp_reply(id, "[{join(out, ",")}]")
 
+# why the name at h cannot be renamed ("" if it can)
+no_rename = (d: int, h: Hit) -> str:
+    if not h.found or len(h.ref.decl) == 0: return "nothing to rename here"
+    if let dc = h.res.decls.get(h.ref.decl):
+        if dc.kind == IK_MODULE: return "nothing to rename here: this is a module"
+    # (a name imported as another is this file's)
+    if len(h.ref.alias) > 0: return ""
+    p = split_pos(h.ref.decl)
+    if p.0 >= 0 and starts_with(h.res.paths[p.0], root_lib + "/") and h.res.paths[p.0] != docs[d].path: return "this is declared in the standard library"
+    ""
+
 on_prepare_rename = (id: int, params: int) -> int:
     d = text_params_doc(params)
     if d < 0: return lsp_reply(id, "null")
     ensure_checked(d)
     h = ref_at(d, req_off(d, params))
-    if not h.found or len(h.ref.decl) == 0: return lsp_error(id, -32803, "nothing to rename here")
-    p = split_pos(h.ref.decl)
-    if p.0 >= 0 and starts_with(h.res.paths[p.0], root_lib + "/") and h.res.paths[p.0] != docs[d].path: return lsp_error(id, -32803, "this is declared in the standard library")
+    why = no_rename(d, h)
+    if len(why) > 0: return lsp_error(id, -32803, why)
     text = docs[d].text
     ls = line_starts_of(text)
     o = unmap_off(h.res, docs[d].path, h.ref.off)
@@ -1201,66 +1231,130 @@ on_rename = (id: int, params: int) -> int:
     if d < 0: return lsp_reply(id, "null")
     refresh(d)
     nn = jstr(jget(params, "newName"))
-    if len(nn) == 0 or not is_alpha(nn[0]): return lsp_error(id, -32602, "'{nn}' is not a name")
+    if len(nn) == 0 or not is_ident_start(nn[0]): return lsp_error(id, -32602, "'{nn}' is not a name")
     loop c in nn:
-        if not is_alnum(c): return lsp_error(id, -32602, "'{nn}' is not a name")
+        if not is_ident_char(c): return lsp_error(id, -32602, "'{nn}' is not a name")
+    if keywords.get(nn) != none: return lsp_error(id, -32602, "'{nn}' is a keyword")
     if docs[d].res.diags.len() > 0:
         loop x in docs[d].res.diags:
             if not x.warning: return lsp_error(id, -32803, "the program has errors; fix them first (a rename might miss uses)")
-    us = uses_of(d, req_off(d, params))
-    if not us.found: return lsp_error(id, -32803, "nothing to rename here")
+    h = ref_at(d, req_off(d, params))
+    why = no_rename(d, h)
+    if len(why) > 0: return lsp_error(id, -32803, why)
+    # a name imported as another: its binding and uses (in this file); else the declaration and
+    # its uses (not those through another name)
+    us: Use[]
+    if len(h.ref.alias) > 0: us.push(Use(h.res, h.ref.decl))
+    else: us = uses_of(d, h)
     by_uri: {str: str[]} = {}
     seen: {str: bool} = {}
-    loop x in us.res.refs:
-        if x.decl != us.decl: continue
-        k = "{x.file}:{x.off}"
-        if seen.get(k) != none: continue
-        seen[k] = true
-        u = uri_of(us.res.paths[x.file])
-        loc = loc_json(us.res, x.file, x.off, x.len)
-        rg = loc[find(loc, "\"range\":") + 8..len(loc) - 1)
-        lst = by_uri.get(u) ?? []
-        lst.push("\{\"range\":{rg},\"newText\":{jq(nn)}\}")
-        by_uri[u] = lst
+    touched: {str: bool} = {}
+    loop u in us:
+        loop x in u.res.refs:
+            if x.file < 0: continue
+            if len(h.ref.alias) > 0:
+                if x.alias != h.ref.alias: continue
+            else if x.decl != u.decl or len(x.alias) > 0: continue
+            path = u.res.paths[x.file]
+            k = "{path}:{x.off}"
+            if seen.get(k) != none: continue
+            seen[k] = true
+            touched[path] = true
+            u2 = uri_of(path)
+            loc = loc_json(u.res, x.file, x.off, x.len)
+            rg = loc[find(loc, "\"range\":") + 8..len(loc) - 1)
+            lst = by_uri.get(u2) ?? []
+            lst.push("\{\"range\":{rg},\"newText\":{jq(nn)}\}")
+            by_uri[u2] = lst
+    if by_uri.len() == 0: return lsp_error(id, -32803, "nothing to rename here")
+    kind = 0
+    if let dc = h.res.decls.get(h.ref.decl): kind = dc.kind
+    clash = rename_clash(us, h, kind, touched, nn)
+    if len(clash) > 0: return lsp_error(id, -32803, clash)
     parts: str[]
     loop u, edits in by_uri: parts.push("{jq(u)}:[{join(edits, ",")}]")
     lsp_reply(id, "\{\"changes\":\{{join(parts, ",")}\}\}")
 
+# why renaming what h is to as nn could change what names mean ("" if it cannot): nn is declared
+# already, or names something used, in a file the rename changes (for a local: in its function;
+# for a field or variant: another of its struct or enum)
+rename_clash = (us: Use[], h: Hit, kind: int, touched: {str: bool}, nn: str) -> str:
+    local = kind == IK_LOCAL or kind == IK_PARAM
+    member = kind == IK_FIELD or kind == IK_VARIANT
+    dp = split_pos(h.ref.decl)
+    dpath = h.res.paths[dp.0]
+    it = Item(-1, -1, "")
+    if local or member: it = top_item(h.res.texts.get(dpath) ?? text_of(dpath), dp.1)
+    loop u in us:
+        loop key, dc in u.res.decls:
+            if dc.name != nn or dc.file < 0 or dc.file >= u.res.paths.len(): continue
+            path = u.res.paths[dc.file]
+            if touched.get(path) == none or path == dpath and dc.off == dp.1: continue
+            inside = path == dpath and dc.off >= it.a and dc.off < it.b
+            dm = dc.kind == IK_FIELD or dc.kind == IK_VARIANT
+            if member and not (dm and inside) or not member and dm: continue
+            if local and not inside and (dc.kind == IK_LOCAL or dc.kind == IK_PARAM): continue
+            return "'{nn}' is declared already ({where_str(u.res, dc.file, dc.off)})"
+        if member: continue
+        loop x in u.res.refs:
+            if x.file < 0 or x.len != len(nn) or x.decl == u.decl: continue
+            path = u.res.paths[x.file]
+            if touched.get(path) == none: continue
+            if local and (path != dpath or x.off < it.a or x.off >= it.b): continue
+            t = u.res.texts.get(path) ?? text_of(path)
+            if x.off + x.len > len(t) or t[x.off..x.off + x.len) != nn: continue
+            if let dc = u.res.decls.get(x.decl):
+                if dc.kind == IK_FIELD or dc.kind == IK_VARIANT: continue
+            return "'{nn}' names something used already ({where_str(u.res, x.file, x.off)})"
+    ""
+
+# file:line, for messages
+where_str = (r: Result, f: int, off: int) -> str:
+    path = r.paths[f]
+    t = r.texts.get(path) ?? text_of(path)
+    "{path[rfind(path, "/") + 1..]}:{line_of(line_starts_of(t), off) + 1}"
+
 # where a name ends / starts around off
 name_start = (text: str, off: int) -> int:
     a = off
-    loop a > 0 and (is_alnum(text[a - 1]) or text[a - 1] >= 0x80): a -= 1
+    loop a > 0 and is_ident_char(text[a - 1]): a -= 1
     a
 
 name_end = (text: str, off: int) -> int:
     b = off
-    loop b < len(text) and (is_alnum(text[b]) or text[b] >= 0x80): b += 1
+    loop b < len(text) and is_ident_char(text[b]): b += 1
     b
+
+# for each cursor position in text up to b: 1 if it is inside a string or a comment (not in a
+# string's {interpolations}), the text read from its start as the lexer reads it
+str_mask = (text: str, b0: int) -> u8[]:
+    b = max(0, min(b0, len(text)))
+    m: u8[]
+    m.resize(b + 1)
+    i = 0
+    loop i < b:
+        if text[i] == '#':
+            e = i
+            loop e < len(text) and text[e] != '\n': e += 1
+            loop k in [i + 1..min(e, b) + 1): m[k] = 1
+            i = e
+        else if ide_str_start(text, i): i = ide_str_end(text, i, m)
+        else: i += 1
+    m
 
 # is off inside a comment or a string (outside its {interpolations})?
 in_comment_or_str = (text: str, off: int) -> bool:
-    a = off
-    loop a > 0 and text[a - 1] != '\n': a -= 1
-    q: u8 = 0
-    brace = 0
-    i = a
-    loop i < off:
-        c = text[i]
-        if q != 0 and brace == 0:
-            if c == '\\': i += 1
-            else if c == q: q = 0
-            else if c == '{{' and q == '"': brace = 1
-        else if brace > 0:
-            if c == '{{': brace += 1
-            else if c == '}}': brace -= 1
-        else if c == '"' or c == '\'': q = c
-        else if c == '#': return true
-        i += 1
-    q != 0 and brace == 0
+    m = str_mask(text, off)
+    m[m.len() - 1] != 0
 
 no_items = "\{\"isIncomplete\":false,\"items\":[]\}"
 
-keywords = ["if", "else", "loop", "in", "break", "continue", "return", "match", "struct", "enum", "const", "use", "import", "as", "and", "or", "not", "xor", "is", "mut", "when", "defer", "extern", "test", "build", "true", "false", "none", "null", "type", "pass"]
+# the keywords to complete: the lexer's, and the words that are keywords where they start something
+comp_words = () -> str[]:
+    out: str[]
+    loop k, _ in keywords: out.push(k)
+    loop k in ["type", "from", "soa"]: out.push(k)
+    out
 
 comp_kind = (k: int) -> int:
     if k == IK_LOCAL or k == IK_PARAM or k == IK_GLOBAL: return 6
@@ -1325,7 +1419,7 @@ on_completion = (id: int, params: int) -> int:
         if k == IK_LOCAL or k == IK_PARAM or k == IK_FIELD or k == IK_VARIANT: so = "0"
         items.push("\{\"label\":{jq(label)},\"kind\":{comp_kind(k)},\"detail\":{jq(c[2])},\"sortText\":{jq(so + label)}\}")
     if not member and r.comps.len() > 0 or not member and items.len() == 0:
-        loop kw in keywords:
+        loop kw in comp_words():
             if seen.get(kw) == none: items.push("\{\"label\":{jq(kw)},\"kind\":14,\"sortText\":{jq("2" + kw)}\}")
     lsp_reply(id, "\{\"isIncomplete\":false,\"items\":[{join(items, ",")}]\}")
 
@@ -1334,13 +1428,15 @@ on_signature = (id: int, params: int) -> int:
     if d < 0: return lsp_reply(id, "null")
     text = docs[d].text
     off = req_off(d, params)
-    # the call the cursor is in: back to its unmatched (
+    # the call the cursor is in: back to its unmatched ( (past strings and comments)
+    m = str_mask(text, off)
     i = off
     depth = 0
     commas = 0
     stop = max(0, off - 4000)
     loop i > stop:
         i -= 1
+        if m[i] != 0 or m[i + 1] != 0: continue
         c = text[i]
         if c == ')' or c == ']' or c == '}}': depth += 1
         else if c == '(' or c == '[' or c == '{{':
@@ -1363,12 +1459,16 @@ on_signature = (id: int, params: int) -> int:
     # the parameters: label offsets of each
     a = find_byte(label, '(')
     if a < 0: return lsp_reply(id, "null")
+    lm = str_mask(label, len(label))
     ps: str[]
     k = a + 1
     dep = 0
     st = k
     loop k < len(label):
         c = label[k]
+        if lm[k] != 0 or lm[k + 1] != 0:
+            k += 1
+            continue
         if c == '(' or c == '[' or c == '{{': dep += 1
         else if c == ')' or c == ']' or c == '}}':
             if dep == 0:
@@ -1379,9 +1479,14 @@ on_signature = (id: int, params: int) -> int:
             ps.push("[{utf16_units(label, 0, st + count_lead(label, st))},{utf16_units(label, 0, k)}]")
             st = k + 1
         k += 1
-    # x.f(a): the receiver is the first argument
+    # x.f(a): the receiver is the first argument (m.f(a) of a module m is not)
     active = commas
-    if s > 0 and text[s - 1] == '.': active += 1
+    if s > 0 and text[s - 1] == '.':
+        active += 1
+        rs = name_start(text, s - 1)
+        if rs < s - 1:
+            rh = ref_at(d, rs)
+            if rh.found and starts_with(rh.ref.info, "module "): active -= 1
     pj: str[]
     loop p in ps: pj.push("\{\"label\":{p}\}")
     sig = "\{\"label\":{jq(label)},\"parameters\":[{join(pj, ",")}]"
@@ -1503,13 +1608,54 @@ struct Sym2:
     end: int        # last line
     kids: int[]
 
+sy_text = ""
+sy_lines: str[]
+sy_ls: int[]
+sy_ok: bool[]       # by line: it starts a statement (is not inside brackets or a string)
+
 on_symbols = (id: int, params: int) -> int:
     d = text_params_doc(params)
     if d < 0: return lsp_reply(id, "null")
-    text = docs[d].text
-    lines_ = split(text, "\n")
-    out = symbols_in(lines_, 0, lines_.len(), 0)
+    sy_text = docs[d].text
+    sy_lines = split(sy_text, "\n")
+    sy_ls = line_starts_of(sy_text)
+    sy_ok = stmt_lines(sy_text, sy_ls)
+    out = symbols_in(sy_lines, 0, sy_lines.len(), 0)
     lsp_reply(id, "[{join(out, ",")}]")
+
+# which lines start a statement: not inside brackets or a string, the text read from its start as
+# the lexer reads it (a bracket left open is given up at a line indented no further than its own)
+stmt_lines = (text: str, ls: int[]) -> bool[]:
+    ok: bool[]
+    loop _ in ls: ok.push(true)
+    depth = 0
+    ind = 0             # the indentation of the line
+    oind = 0            # of the line that opened the outermost bracket
+    l = 0
+    i = 0
+    loop true:
+        loop l < ls.len() and ls[l] <= i:
+            if ls[l] < i: ok[l] = false
+            else:
+                ind = indent_of(text[i..min(i + 200, len(text))))
+                k = i + ind
+                if depth > 0 and k < len(text) and text[k] != '\n' and ind <= oind and text[k] != ')' and text[k] != ']' and text[k] != '}}': depth = 0
+                ok[l] = depth == 0
+            l += 1
+        if i >= len(text): break
+        c = text[i]
+        if c == '#':
+            loop i < len(text) and text[i] != '\n': i += 1
+            continue
+        if ide_str_start(text, i):
+            i = ide_skip_str(text, i)
+            continue
+        if c == '(' or c == '[' or c == '{{':
+            if depth == 0: oind = ind
+            depth += 1
+        else if (c == ')' or c == ']' or c == '}}') and depth > 0: depth -= 1
+        i += 1
+    ok
 
 indent_of = (s: str) -> int:
     n = 0
@@ -1523,19 +1669,43 @@ block_end = (lines_: str[], i: int, ind: int) -> int:
     loop j < lines_.len():
         t = trim(lines_[j])
         if len(t) > 0:
-            if indent_of(lines_[j]) <= ind: break
+            if sy_ok[j] and indent_of(lines_[j]) <= ind: break
             e = j
         j += 1
     e
 
 ident_prefix = (s: str) -> str:
     n = 0
-    loop n < len(s) and is_alnum(s[n]): n += 1
+    loop n < len(s) and is_ident_char(s[n]): n += 1
     s[..n)
 
-sym_json = (name: str, kind: int, line: int, col: int, endl: int, endc: int, kids: str[]) -> str:
-    rg = "\{\"start\":\{\"line\":{line},\"character\":0\},\"end\":\{\"line\":{endl},\"character\":{endc}\}\}"
-    sel = "\{\"start\":\{\"line\":{line},\"character\":{col}\},\"end\":\{\"line\":{line},\"character\":{col + len(name)}\}\}"
+skip_blanks = (t: str, k0: int) -> int:
+    k = k0
+    loop k < len(t) and (t[k] == ' ' or t[k] == '\t'): k += 1
+    k
+
+# name = (params): or name[T] = (params) -> ret: a function (c: the byte after the name on line i)
+fn_decl_at = (i: int, c: int) -> bool:
+    t = sy_text
+    k = sy_ls[i] + c
+    if k < len(t) and t[k] == '[':
+        loop k < len(t) and t[k] != ']' and t[k] != '\n': k += 1
+        k += 1
+    k = skip_blanks(t, k)
+    if k >= len(t) or t[k] != '=' or k + 1 < len(t) and t[k + 1] == '=': return false
+    k = skip_blanks(t, k + 1)
+    if k >= len(t) or t[k] != '(': return false
+    e = ide_params_end(t, k)
+    if e < 0: return false
+    k = skip_blanks(t, e)
+    k < len(t) and (t[k] == ':' or t[k] == '-' and k + 1 < len(t) and t[k + 1] == '>')
+
+# (columns are bytes of sy_lines, sent as UTF-16 units; the range ends with line endl)
+sym_json = (name: str, kind: int, line: int, col: int, endl: int, kids: str[]) -> str:
+    c = utf16_units(sy_lines[line], 0, col)
+    ec = utf16_units(sy_lines[endl], 0, len(sy_lines[endl]))
+    rg = "\{\"start\":\{\"line\":{line},\"character\":0\},\"end\":\{\"line\":{endl},\"character\":{ec}\}\}"
+    sel = "\{\"start\":\{\"line\":{line},\"character\":{c}\},\"end\":\{\"line\":{line},\"character\":{c + utf16_units(name, 0, len(name))}\}\}"
     s = "\{\"name\":{jq(name)},\"kind\":{kind},\"range\":{rg},\"selectionRange\":{sel}"
     if kids.len() > 0: s += ",\"children\":[{join(kids, ",")}]"
     s + "\}"
@@ -1546,12 +1716,11 @@ symbols_in = (lines_: str[], from: int, to: int, ind: int) -> str[]:
     loop i < to:
         raw = lines_[i]
         t = trim(raw)
-        if len(t) == 0 or t[0] == '#' or indent_of(raw) != ind:
+        if len(t) == 0 or t[0] == '#' or indent_of(raw) != ind or not sy_ok[i]:
             i += 1
             continue
         col = indent_of(raw)
         e = block_end(lines_, i, ind)
-        ec = len(lines_[e])
         if starts_with(t, "@"):
             i += 1
             continue
@@ -1579,43 +1748,42 @@ symbols_in = (lines_: str[], from: int, to: int, ind: int) -> str[]:
             if not isst and colon >= 0 and len(trim(t[colon + 1..])) > 0:
                 loop part in split(t[colon + 1..], ","):
                     pn = ident_prefix(trim(part))
-                    if len(pn) > 0: kids.push(sym_json(pn, 22, i, col + max(0, find(t, pn, colon)), i, len(raw), []))
+                    if len(pn) > 0: kids.push(sym_json(pn, 22, i, col + max(0, find(t, pn, colon)), i, []))
             loop j in [i + 1..e + 1):
                 ft = trim(lines_[j])
-                if len(ft) == 0 or ft[0] == '#': continue
+                if len(ft) == 0 or ft[0] == '#' or not sy_ok[j]: continue
                 fc = indent_of(lines_[j])
                 if isst:
                     fnm = ident_prefix(ft)
-                    if len(fnm) > 0: kids.push(sym_json(fnm, 8, j, fc, j, len(lines_[j]), []))
+                    if len(fnm) > 0: kids.push(sym_json(fnm, 8, j, fc, j, []))
                 else:
                     loop part in split(ft, ","):
                         pn = ident_prefix(trim(part))
-                        if len(pn) > 0: kids.push(sym_json(pn, 22, j, fc + max(0, find(ft, pn)), j, len(lines_[j]), []))
+                        if len(pn) > 0: kids.push(sym_json(pn, 22, j, fc + max(0, find(ft, pn)), j, []))
             k = 23
             if not isst: k = 10
-            out.push(sym_json(nm, k, i, col + find(t, nm), e, ec, kids))
+            out.push(sym_json(nm, k, i, col + find(t, nm), e, kids))
         else if starts_with(t, "const "):
             nm = ident_prefix(t[6..])
-            if len(nm) > 0: out.push(sym_json(nm, 14, i, col + 6, e, ec, []))
+            if len(nm) > 0: out.push(sym_json(nm, 14, i, col + 6, e, []))
         else if starts_with(t, "type "):
             nm = ident_prefix(t[5..])
-            if len(nm) > 0: out.push(sym_json(nm, 5, i, col + 5, e, ec, []))
+            if len(nm) > 0: out.push(sym_json(nm, 5, i, col + 5, e, []))
         else if starts_with(t, "test "):
             q = trim(t[5..])
             if ends_with(q, ":"): q = q[..len(q) - 1)
-            out.push(sym_json("test " + q, 24, i, col, e, ec, []))
+            out.push(sym_json("test " + q, 24, i, col, e, []))
         else if starts_with(t, "extern "):
             nm = ident_prefix(t[7..])
-            if len(nm) > 0: out.push(sym_json(nm, 12, i, col + 7, e, ec, []))
+            if len(nm) > 0: out.push(sym_json(nm, 12, i, col + 7, e, []))
         else:
             nm = ident_prefix(t)
             rest = trim(t[len(nm)..])
-            if len(nm) > 0 and not keywords.contains(nm):
+            if len(nm) > 0 and keywords.get(nm) == none:
                 # name = (params) ...: a function; name = value or name: T: a variable
-                if starts_with(rest, "[") and find(rest, "= (") >= 0 or starts_with(rest, "= ("):
-                    out.push(sym_json(nm, 12, i, col, e, ec, []))
+                if fn_decl_at(i, col + len(nm)): out.push(sym_json(nm, 12, i, col, e, []))
                 else if starts_with(rest, "=") and not starts_with(rest, "==") or starts_with(rest, ":") and not ends_with(rest, ":"):
-                    out.push(sym_json(nm, 13, i, col, e, ec, []))
+                    out.push(sym_json(nm, 13, i, col, e, []))
         i = e + 1
     out
 
@@ -1671,12 +1839,24 @@ on_close = (params: int):
     docs[d].dirty = false
     ide_texts.remove(docs[d].path)
     users_dirty(d)
-    loop u in docs[d].diag_uris: lsp_notify("textDocument/publishDiagnostics", "\{\"uri\":{jq(u)},\"diagnostics\":[]\}")
+    # (its errors are cleared, but for files another open document published errors to: that
+    # one's are published again)
+    owners: int[]
+    loop u in docs[d].diag_uris:
+        o = -1
+        loop i in [0..docs.len()):
+            if i != d and docs[i].open and docs[i].diag_uris.contains(u): o = i
+        if o < 0: lsp_notify("textDocument/publishDiagnostics", "\{\"uri\":{jq(u)},\"diagnostics\":[]\}")
+        else if not owners.contains(o): owners.push(o)
     docs[d].diag_uris = []
+    loop o in owners: publish(o)
 
 capabilities = "\{\"textDocumentSync\":\{\"openClose\":true,\"change\":1,\"save\":\{\"includeText\":false\}\},\"hoverProvider\":true,\"definitionProvider\":true,\"referencesProvider\":true,\"documentHighlightProvider\":true,\"documentSymbolProvider\":true,\"renameProvider\":\{\"prepareProvider\":true\},\"completionProvider\":\{\"triggerCharacters\":[\".\"]\},\"signatureHelpProvider\":\{\"triggerCharacters\":[\"(\",\",\"],\"retriggerCharacters\":[\",\"]\},\"inlayHintProvider\":true,\"semanticTokensProvider\":\{\"legend\":\{\"tokenTypes\":{sem_legend(sem_types)},\"tokenModifiers\":{sem_legend(sem_mods)}\},\"full\":true\}\}"
 
-sem_legend = (xs: str[]) -> str: "[{join(xs.map((x): jq(x)), ",")}]"
+sem_legend = (xs: str[]) -> str:
+    out: str[]
+    loop x in xs: out.push(jq(x))
+    "[{join(out, ",")}]"
 
 lsp_main = ():
     root_lib = ide_norm(lib_dir)
@@ -1727,8 +1907,8 @@ lsp_main = ():
         else if method == "textDocument/didOpen": on_open(params)
         else if method == "textDocument/didChange": on_change(params)
         else if method == "textDocument/didClose": on_close(params)
-        else if method == "textDocument/didSave":
-            # other open files may use this one
+        else if method == "textDocument/didSave" or method == "workspace/didChangeWatchedFiles":
+            # other open files may use this one (or files changed on disk)
             loop i in [0..docs.len()):
                 if docs[i].open: docs[i].dirty = true
                 docs[i].has_wide = false

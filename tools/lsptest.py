@@ -365,6 +365,145 @@ check("file with errors: each hint once", [(h["position"]["line"], h["label"]) f
 erefs = c.request("textDocument/references", {"textDocument": {"uri": eu}, "position": lc(esrc, esrc.index("a\n\n")), "context": {"includeDeclaration": True}})
 check("file with errors: each reference once", sorted(where(erefs)), [("errs.jo", 1, 4), ("errs.jo", 2, 4)])
 
+def doc(name, text, disk=True):
+    """open a document (written to disk too) and wait for its errors"""
+    p = os.path.join(tmp, name)
+    if disk: open(p, "w", encoding="utf-8").write(text)
+    u = to_uri(p)
+    c.set_text(u, text)
+    return u, c.diagnostics(u)
+
+
+def tp(u, text, s, k=0, nth=0):
+    i = -1
+    for _ in range(nth + 1):
+        i = text.index(s, i + 1)
+    return {"textDocument": {"uri": u}, "position": lc(text, i + k)}
+
+
+def edits(ren):
+    if "changes" not in ren: return ren.get("message")
+    return sorted((os.path.basename(u), e["range"]["start"]["line"], e["range"]["start"]["character"], e["newText"]) for u, es in ren["changes"].items() for e in es)
+
+
+# ---- renaming a name imported as another, or the original ----
+open(os.path.join(tmp, "adep.jo"), "w", encoding="utf-8").write("double = (x: int): x * 2\n")
+asrc = "from 'adep.jo' import double as twice\nprint(twice(2))\n"
+au, _ = doc("auser.jo", asrc)
+check("rename an alias", edits(c.request("textDocument/rename", dict(tp(au, asrc, "twice("), newName="triple"))),
+      [("auser.jo", 0, 32, "triple"), ("auser.jo", 1, 6, "triple")])
+check("rename the original of an alias", edits(c.request("textDocument/rename", dict(tp(au, asrc, "double"), newName="dbl"))),
+      [("adep.jo", 0, 0, "dbl"), ("auser.jo", 0, 22, "dbl")])
+
+# ---- references and rename from a used file reach the open files using it ----
+bdsrc = "foo = (): 1\n"
+bdu, _ = doc("bdep.jo", bdsrc)
+bmsrc = "use 'bdep.jo'\nprint(foo())\n"
+bmu, _ = doc("bmain.jo", bmsrc)
+refs = c.request("textDocument/references", dict(tp(bdu, bdsrc, "foo"), context={"includeDeclaration": True}))
+check("references from a used file", sorted(where(refs)), [("bdep.jo", 0, 0), ("bmain.jo", 1, 6)])
+check("rename from a used file", edits(c.request("textDocument/rename", dict(tp(bdu, bdsrc, "foo"), newName="foo2"))),
+      [("bdep.jo", 0, 0, "foo2"), ("bmain.jo", 1, 6, "foo2")])
+
+# ---- rename: keywords and names that would change meaning ----
+csrc = "foo = (): 1\nbar = 2\nf = ():\n    a = 1\n    b = 2\n    a + b\ng = ():\n    c = 3\n    c\nprint(foo() + bar, f(), g())\n"
+cu, _ = doc("crename.jo", csrc)
+ren = lambda s, nn: edits(c.request("textDocument/rename", dict(tp(cu, csrc, s), newName=nn)))
+check("rename to a keyword", ren("foo", "loop"), "'loop' is a keyword")
+check("rename to a declared name", ren("foo", "bar"), "'bar' is declared already (crename.jo:2)")
+check("rename to a used name", ren("foo", "print"), "'print' names something used already (crename.jo:10)")
+check("rename a local to another of its function's", ren("a = 1", "b"), "'b' is declared already (crename.jo:5)")
+check("rename a local to another function's", ren("a = 1", "c"), [("crename.jo", 3, 4, "c"), ("crename.jo", 5, 4, "c")])
+
+# ---- names that are not ASCII ----
+usrc = "数量 = 3\nprint(数量)\n"
+uu, _ = doc("unicode.jo", usrc)
+refs = c.request("textDocument/references", dict(tp(uu, usrc, "数量)"), context={"includeDeclaration": True}))
+check("non-ASCII: references", sorted((r["range"]["start"]["line"], r["range"]["end"]["character"] - r["range"]["start"]["character"]) for r in refs), [(0, 2), (1, 2)])
+h = c.request("textDocument/hover", tp(uu, usrc, "数量)", 1))
+check("non-ASCII: hover on the second character", h and h["contents"]["value"], "```sloppy\n(global) 数量: int\n```")
+check("non-ASCII: rename", edits(c.request("textDocument/rename", dict(tp(uu, usrc, "数量)"), newName="计数"))), [("unicode.jo", 0, 0, "计数"), ("unicode.jo", 1, 6, "计数")])
+usrc2 = "数量 = 3\nprint(数"
+c.set_text(uu, usrc2)
+r = c.request("textDocument/completion", {"textDocument": {"uri": uu}, "position": lc(usrc2, len(usrc2))})
+check("non-ASCII: completion", "数量" in [x["label"] for x in r["items"]], True)
+
+# ---- closing a document keeps the errors another open document has ----
+edu, _ = doc("edep.jo", "foo = (): missing\n")
+eusrc = "use 'edep.jo'\nprint(foo())\n"
+euu, _ = doc("euser.jo", eusrc)
+c.notify("textDocument/didClose", {"textDocument": {"uri": euu}})
+c.request("textDocument/hover", tp(edu, "foo", "foo"))
+errs = [m["params"]["diagnostics"] for m in c.notes if m.get("method") == "textDocument/publishDiagnostics" and m["params"]["uri"] == edu]
+check("closing a user keeps a used file's errors", [[d["message"] for d in e] for e in errs][-1:], [["unknown name 'missing'"]])
+
+# ---- files changed on disk ----
+open(os.path.join(tmp, "wdep.jo"), "w", encoding="utf-8").write("val: int = 1\n")
+wsrc = "use 'wdep.jo'\nx = val\nprint(x)\n"
+wu, errs = doc("wuser.jo", wsrc)
+open(os.path.join(tmp, "wdep.jo"), "w", encoding="utf-8").write('val: str = "s"\n')
+c.notify("workspace/didChangeWatchedFiles", {"changes": [{"uri": to_uri(os.path.join(tmp, "wdep.jo")), "type": 2}]})
+h = c.request("textDocument/hover", tp(wu, wsrc, "x ="))
+check("a used file changed on disk", (errs, h and h["contents"]["value"]), ([], "```sloppy\n(global) x: str\n```"))
+
+# ---- completion in strings ----
+def complete_in(text):
+    i = text.index("|")
+    text = text.replace("|", "")
+    gu = to_uri(os.path.join(tmp, "strs.jo"))
+    c.set_text(gu, text)
+    r = c.request("textDocument/completion", {"textDocument": {"uri": gu}, "position": lc(text, i)})
+    return "sx" in [x["label"] for x in r["items"]]
+
+
+check("completion in strings", [complete_in('sx = 1\nt = """\nab s|\n"""\n'), complete_in('sx = 1\nt = "a\nb s|"\n'), complete_in('sx = 1\nt = r"{s|}"\n'),
+                                complete_in('sx = 1\nt = "{{s|"\n'), complete_in("sx = 1\nt = '{s|}'\n"), complete_in('sx = 1\nt = "{s|}"\n'), complete_in('sx = 1\nt = """a\n"""\nprint(s|)\n')],
+      [False, False, False, False, True, True, True])
+
+# ---- signature help: strings, module calls ----
+open(os.path.join(tmp, "hmod.jo"), "w", encoding="utf-8").write("g = (a: int, b: int) -> int: a + b\n")
+hsrc = 'import \'hmod.jo\'\nf = (x: str, y: int): print(x, y)\nk = (x: str = ",", y: int = 0): print(x, y)\nf(",", 2)\nf("(", 2)\nprint(hmod.g(1, 2))\nk()\n'
+hu, _ = doc("sighelp.jo", hsrc)
+sh = lambda s, k: c.request("textDocument/signatureHelp", tp(hu, hsrc, s, k))
+s1, s2, s3, s4 = sh('f(",", 2', 6), sh('f("(", 2', 6), sh("g(1, 2", 5), sh("k()", 2)
+check("signature help: strings and module calls", [s and s["activeParameter"] for s in (s1, s2, s3)] + [s4 and len(s4["signatures"][0]["parameters"])], [1, 1, 1, 2])
+
+# ---- function headers with strings and braces ----
+isrc = 'f = (x: int) -> {str: int}: {"x": x}\ng = (s: str = ")"): s + "!"\nh = (s: str = "("): s\nprint(f(1), g(), h())\n'
+iu, _ = doc("headers.jo", isrc)
+hv = lambda s: (c.request("textDocument/hover", tp(iu, isrc, s)) or {}).get("contents", {}).get("value", "").split("\n")[1]
+check("hover headers with strings and braces", [hv("f("), hv("h(")], ["f = (x: int) -> {str: int}", 'h = (s: str = "(")'])
+ih = c.request("textDocument/inlayHint", {"textDocument": {"uri": iu}, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 99, "character": 0}}})
+check("result hint after a string default", [(h["position"]["line"], h["position"]["character"], h["label"]) for h in ih if h["position"]["line"] == 1], [(1, 18, "-> str")])
+
+# ---- document symbols ----
+jsrc = 'a = (1, 2)\nf=(x: int): x\ng = (\n    x: int,\n    y: int\n):\n    x + y\ns = """\nfake = (): 1\n"""\ntest "é😀":\n    pass\n'
+ju, _ = doc("syms.jo", jsrc)
+js = c.request("textDocument/documentSymbol", {"textDocument": {"uri": ju}})
+check("symbols: kinds, extents, strings, UTF-16", [(s["name"], s["kind"], s["range"]["end"]["line"], s["selectionRange"]["end"]["character"]) for s in js],
+      [("a", 13, 0, 1), ("f", 12, 1, 1), ("g", 12, 6, 1), ("s", 13, 9, 1), ('test "é😀"', 24, 11, 10)])
+
+# ---- a UNC path ----
+unc = "file://server/share/unc.jo"
+c.set_text(unc, 'x: int = "no"\n')
+check("UNC path", [d["message"] for d in c.diagnostics(unc)], ["type mismatch: expected int, found str"])
+c.set_text(unc, "use 'dep.jo'\n")
+d = c.request("textDocument/definition", {"textDocument": {"uri": unc}, "position": {"line": 0, "character": 6}})
+check("UNC path: a used file's URI", d and d["uri"], "file://server/share/dep.jo")
+
+# ---- a generic function's hints: only where its instances agree ----
+lsrc = 'twice = (x):\n    y = x + x\n    y\none = (x):\n    z = x\n    z\nprint(twice(1), twice("s"), one(1))\n'
+lu, _ = doc("generic.jo", lsrc)
+lh = c.request("textDocument/inlayHint", {"textDocument": {"uri": lu}, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 99, "character": 0}}})
+check("generic hints", sorted((h["position"]["line"], h["label"]) for h in lh), [(3, "-> int"), (4, ": int")])
+
+# ---- keywords and hover docs past attributes ----
+check("keyword completion", all(k in complete("le|") for k in ["let", "from", "soa", "type", "loop"]), True)
+nsrc = "# adds one\n@cabi\ninc = (x: int) -> int: x + 1\nprint(inc(1))\n"
+nu, _ = doc("attrs.jo", nsrc)
+h = c.request("textDocument/hover", tp(nu, nsrc, "inc(1"))
+check("hover doc above an attribute", h and h["contents"]["value"], "```sloppy\ninc = (x: int) -> int\n```\n---\nadds one")
+
 # ---- a library file ----
 lpath = os.path.join(root, "lib", "game", "stats.jo")
 luri = to_uri(lpath)

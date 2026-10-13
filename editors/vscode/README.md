@@ -3,7 +3,7 @@
 Support for [Sloppy](https://sloppy-lang.org), a small compiled language for making games that
 feels like a scripting language:
 
-- highlighting
+- highlighting, with names coloured by what they are (semantic tokens from the compiler)
 - errors as you type (several at once, when they are in different functions)
 - hover: types, signatures and doc comments
 - go to definition (also into the standard library), find references, highlight uses, rename
@@ -18,9 +18,10 @@ editor with LSP support can use.
 
 ## The compiler
 
-The extension needs the `sloppy` compiler (Linux or Windows, x86-64). If it cannot find one, it
-offers to install the latest release (into `~/.sloppy`, or `%LOCALAPPDATA%\sloppy` on Windows); or
-install it from a terminal, which also puts it on your PATH:
+The extension needs the `sloppy` compiler (Linux on x86-64 or arm64, macOS on Apple silicon, or
+Windows on x86-64). If it cannot find one, it offers to install the latest release (into
+`~/.sloppy`, or `%LOCALAPPDATA%\sloppy` on Windows); or install it from a terminal, which also puts
+it on your PATH:
 
 ```sh
 curl -fsSL https://sloppy-lang.org/install | bash

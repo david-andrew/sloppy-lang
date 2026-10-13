@@ -10,6 +10,8 @@ let client = null;
 let output = null;
 let diagnostics = null;
 let restarts = 0;
+let restartTimer = null;
+let deactivated = false;
 
 // ---- the server connection (JSON-RPC with Content-Length framing) ----
 
@@ -19,18 +21,30 @@ class Connection {
         this.pending = new Map();
         this.buffer = Buffer.alloc(0);
         this.onNotification = onNotification;
-        this.proc = cp.spawn(command, ['lsp'], { stdio: ['pipe', 'pipe', 'pipe'] });
+        this.onExit = onExit;
+        this.closed = false;
+        this.ready = false;         // (initialized: documents can be sent)
+        // (in the first workspace folder: new unsaved files' imports are relative to it)
+        const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0].uri.scheme === 'file' ? vscode.workspace.workspaceFolders[0].uri.fsPath : undefined;
+        this.proc = cp.spawn(command, ['lsp'], { stdio: ['pipe', 'pipe', 'pipe'], cwd: folder });
         this.proc.stdout.on('data', (chunk) => this.receive(chunk));
         this.proc.stderr.on('data', (chunk) => output.append(chunk.toString()));
+        this.proc.stdin.on('error', (err) => output.appendLine(`sloppy lsp: ${err.message}`));
         this.proc.on('error', (err) => {
             output.appendLine(`sloppy: cannot start '${command} lsp': ${err.message}`);
             vscode.window.showErrorMessage(`Sloppy: cannot start the language server (${command}). Set sloppy.path to the sloppy compiler.`);
+            this.close(null, null, false);
         });
-        this.proc.on('exit', (code, signal) => {
-            for (const [, p] of this.pending) p.resolve(null);
-            this.pending.clear();
-            onExit(code, signal);
-        });
+        this.proc.on('exit', (code, signal) => this.close(code, signal, true));
+    }
+
+    // (once, however it ended: a failed start has no exit)
+    close(code, signal, ran) {
+        if (this.closed) return;
+        this.closed = true;
+        for (const [, p] of this.pending) p.resolve(null);
+        this.pending.clear();
+        this.onExit(code, signal, ran);
     }
 
     receive(chunk) {
@@ -59,17 +73,23 @@ class Connection {
     }
 
     send(msg) {
+        if (this.closed || !this.proc.stdin.writable) return;
         const body = Buffer.from(JSON.stringify(msg), 'utf8');
         this.proc.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
         this.proc.stdin.write(body);
     }
 
     request(method, params, token) {
+        if (this.closed) return Promise.resolve(null);
         const id = this.nextId++;
         return new Promise((resolve, reject) => {
-            this.pending.set(id, { resolve, reject });
+            let sub = null;
+            const done = (f) => (v) => { if (sub) sub.dispose(); f(v); };
+            this.pending.set(id, { resolve: done(resolve), reject: done(reject) });
             this.send({ jsonrpc: '2.0', id, method, params });
-            if (token) token.onCancellationRequested(() => this.send({ jsonrpc: '2.0', method: '$/cancelRequest', params: { id } }));
+            if (token) sub = token.onCancellationRequested(() => {
+                if (this.pending.has(id)) this.send({ jsonrpc: '2.0', method: '$/cancelRequest', params: { id } });
+            });
         });
     }
 
@@ -116,6 +136,9 @@ const semanticLegend = new vscode.SemanticTokensLegend(
 
 function onNotification(method, params) {
     if (method === 'textDocument/publishDiagnostics') {
+        // (not for an older version of an open document)
+        const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === params.uri);
+        if (doc && typeof params.version === 'number' && params.version < doc.version) return;
         resultsChanged.fire();
         const ds = params.diagnostics.map((d) => {
             const diag = new vscode.Diagnostic(toRange(d.range), d.message, (d.severity || 1) - 1);
@@ -289,20 +312,26 @@ async function offerInstall() {
 
 // ---- starting, stopping ----
 
-function isSloppy(doc) { return doc.languageId === 'sloppy' && doc.uri.scheme === 'file'; }
+// (new unsaved files too: they are checked like files, their imports relative to the first workspace folder)
+function isSloppy(doc) { return doc.languageId === 'sloppy' && (doc.uri.scheme === 'file' || doc.uri.scheme === 'untitled'); }
 
 function start() {
+    clearTimeout(restartTimer);
+    restartTimer = null;
+    if (deactivated || client) return;
     if (!findSloppy()) {
         offerInstall();
         return;
     }
-    const conn = new Connection(sloppyCommand(), onNotification, (code, signal) => {
+    const conn = new Connection(sloppyCommand(), (method, params) => {
+        if (client === conn) onNotification(method, params);
+    }, (code, signal, ran) => {
         if (client !== conn) return;
         client = null;
-        output.appendLine(`sloppy lsp exited (${signal || code})`);
-        if (restarts < 5) {
+        if (ran) output.appendLine(`sloppy lsp exited (${signal || code})`);
+        if (ran && restarts < 5 && !deactivated) {
             restarts++;
-            setTimeout(start, 500 * restarts);
+            restartTimer = setTimeout(start, 500 * restarts);
         }
     });
     client = conn;
@@ -310,14 +339,20 @@ function start() {
         processId: process.pid,
         rootUri: vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.toString() : null,
         capabilities: {},
-    }).then(() => {
+    }).then((r) => {
+        if (client !== conn || !r) return;
         conn.notify('initialized', {});
+        conn.ready = true;
         for (const doc of vscode.workspace.textDocuments) open(doc);
+        resultsChanged.fire();
     }, (err) => output.appendLine(`initialize failed: ${err.message}`));
 }
 
+// the server, when it is ready for documents
+function ready() { return client && client.ready ? client : null; }
+
 function open(doc) {
-    if (!client || !isSloppy(doc)) return;
+    if (!ready() || !isSloppy(doc)) return;
     client.notify('textDocument/didOpen', {
         textDocument: { uri: doc.uri.toString(), languageId: 'sloppy', version: doc.version, text: doc.getText() },
     });
@@ -325,7 +360,7 @@ function open(doc) {
 
 // a request, or null when there is no server (or it failed)
 async function ask(method, params, token) {
-    if (!client) return null;
+    if (!ready()) return null;
     try {
         return await client.request(method, params, token);
     } catch (e) {
@@ -343,11 +378,15 @@ function runInTerminal(args) {
         offerInstall();
         return;
     }
-    doc.save().then(() => {
+    doc.save().then((saved) => {
+        // (a new file is saved as another document: the active one)
+        if (!saved) return;
+        const file = doc.isUntitled ? vscode.window.activeTextEditor && vscode.window.activeTextEditor.document : doc;
+        if (!file || file.uri.scheme !== 'file') return;
         let term = vscode.window.terminals.find((t) => t.name === 'Sloppy');
         if (!term) term = vscode.window.createTerminal('Sloppy');
         term.show(true);
-        const words = [sloppyCommand(), ...args, doc.uri.fsPath];
+        const words = [sloppyCommand(), ...args, file.uri.fsPath];
         const shell = (vscode.env.shell || '').toLowerCase();
         if (/cmd(\.exe)?$/.test(shell)) {
             term.sendText(words.map((s) => `"${s}"`).join(' '));
@@ -366,25 +405,35 @@ function activate(context) {
     output = vscode.window.createOutputChannel('Sloppy');
     diagnostics = vscode.languages.createDiagnosticCollection('sloppy');
     context.subscriptions.push(output, diagnostics, resultsChanged);
-    const selector = { language: 'sloppy', scheme: 'file' };
+    const selector = [{ language: 'sloppy', scheme: 'file' }, { language: 'sloppy', scheme: 'untitled' }];
+    // (files changed on disk, not in an editor: the programs using them are checked again)
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*.jo');
+    const changed = (type) => (uri) => {
+        if (!ready() || vscode.workspace.textDocuments.some((d) => d.uri.toString() === uri.toString())) return;
+        client.notify('workspace/didChangeWatchedFiles', { changes: [{ uri: uri.toString(), type }] });
+    };
     const L = vscode.languages;
 
     context.subscriptions.push(
+        watcher,
+        watcher.onDidCreate(changed(1)),
+        watcher.onDidChange(changed(2)),
+        watcher.onDidDelete(changed(3)),
         vscode.workspace.onDidOpenTextDocument(open),
         vscode.workspace.onDidChangeTextDocument((e) => {
-            if (!client || !isSloppy(e.document) || e.contentChanges.length === 0) return;
+            if (!ready() || !isSloppy(e.document) || e.contentChanges.length === 0) return;
             client.notify('textDocument/didChange', {
                 textDocument: { uri: e.document.uri.toString(), version: e.document.version },
                 contentChanges: [{ text: e.document.getText() }],
             });
         }),
         vscode.workspace.onDidSaveTextDocument((doc) => {
-            if (client && isSloppy(doc)) client.notify('textDocument/didSave', { textDocument: textDocument(doc) });
+            if (ready() && isSloppy(doc)) client.notify('textDocument/didSave', { textDocument: textDocument(doc) });
         }),
         vscode.workspace.onDidCloseTextDocument((doc) => {
-            if (!client || !isSloppy(doc)) return;
+            if (isSloppy(doc)) diagnostics.delete(doc.uri);
+            if (!ready() || !isSloppy(doc)) return;
             client.notify('textDocument/didClose', { textDocument: textDocument(doc) });
-            diagnostics.delete(doc.uri);
         }),
 
         L.registerHoverProvider(selector, {
@@ -491,6 +540,7 @@ function activate(context) {
             const old = client;
             client = null;
             if (old) old.stop();
+            diagnostics.clear();
             start();
         }),
         vscode.workspace.onDidChangeConfiguration((e) => {
@@ -501,6 +551,8 @@ function activate(context) {
 }
 
 function deactivate() {
+    deactivated = true;
+    clearTimeout(restartTimer);
     if (client) client.stop();
     client = null;
 }
