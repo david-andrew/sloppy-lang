@@ -56,6 +56,8 @@ Games:
   character controller (`w.character`, `w.walk`): a capsule that walks up slopes and steps,
   slides down steeper slopes, stops at walls, keeps to the ground going down and jumps.
   Deterministic stepping. examples/physics3d.jo: a yard to walk around and throw balls in.
+  `sloppy new <dir> 3d` walks with it (steps, slopes, jumping), and its crates are knocked about
+  by shots.
 - **Rollback netplay** (`import netplay`): players on different machines play one game as if it
   ran on each alone. Only inputs travel; a missing remote input is predicted (the last one,
   repeated), and when the real one differs the game goes back and plays the ticks since again.

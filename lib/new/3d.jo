@@ -1,4 +1,5 @@
-# __TITLE__: a first-person game in 3D. Walk around the yard and shoot the glowing orbs.
+# __TITLE__: a first-person game in 3D. Walk around the yard and shoot the glowing orbs (shots
+# knock the crates about: lib/physics3d.jo).
 # Click to take the mouse (Escape gives it back), move with W A S D, jump with Space, shoot with
 # the left button. A gamepad works too: the sticks, A to jump, the right trigger to shoot.
 # Run it with `sloppy watch __NAME__.jo` and change it while it runs: each save reloads the code.
@@ -11,27 +12,23 @@ const WALK = 6.0                # meters a second
 const JUMP = 6.5                # the speed a jump starts with, upward
 const GRAVITY = 18.0
 const EYE = 1.6                 # the eyes' height above the feet
-const BODY_R = 0.35             # how close the player comes to a wall
 const LOOK = 0.0025             # radians per pixel the mouse moves
 const ORBS = 8
 
-window("__TITLE__", 1280, 720)
+import physics3d                # (the yard's crates and walls, and the player walking among them)
 
-struct Box:                     # something solid: its center and half its size along x, y, z
-    c: vec3
-    h: vec3
+window("__TITLE__", 1280, 720)
 
 struct Orb:
     pos: vec3
     phase: f64
     pop = 0.0                   # shot: it fades out over a moment
 
-pos = vec3(0, 0, 8)             # the player's feet
-vy = 0.0                        # the speed up (or down)
+w = physics3d.World(gravity = vec3(0, f32(-GRAVITY), 0))
+player = w.character(vec3(0, 0, 8), radius = 0.35)
 yaw = 0.0                       # where the player looks: turned from -z (radians) ...
 pitch = 0.0                     # ... and up or down
-on_ground = true
-boxes: Box[]
+crates: physics3d.Body[]
 orbs: Orb[]
 flash = 0.0                     # the shot's light, fading
 hits = 0
@@ -42,31 +39,34 @@ snd_shot = sfx_laser()
 snd_pop = sfx_chime()
 snd_jump = sfx_jump()
 
-# ---------------- the yard: crates, walls and orbs, made once ----------------
-seed_random(3)
-yard: Vertex3D[]
-add_wall = (c: vec3, h: vec3, color: vec4):
-    boxes.push(Box(c, h))
-    add_box(yard, c, h * 2.0, color)
-loop i in [0..18):
-    s = f32(random(0.6, 1.4))
-    c = vec3(f32(random(-16.0, 16.0)), s, f32(random(-16.0, 16.0)))
-    if length(vec2(c.x, c.z) - vec2(0, 8)) < 3.0: continue      # (none where the player starts)
-    add_wall(c, vec3(s, s, s), rgb(0.62, 0.45, 0.3))
-add_wall(vec3(0, 1.5, -20), vec3(20, 1.5, 0.5), rgb(0.55, 0.55, 0.6))
-add_wall(vec3(0, 1.5, 20), vec3(20, 1.5, 0.5), rgb(0.55, 0.55, 0.6))
-add_wall(vec3(-20, 1.5, 0), vec3(0.5, 1.5, 20), rgb(0.55, 0.55, 0.6))
-add_wall(vec3(20, 1.5, 0), vec3(0.5, 1.5, 20), rgb(0.55, 0.55, 0.6))
-yard_mesh = custom_mesh(yard)
+# ---------------- the yard: walls (fixed) and crates (that shots push) ----------------
+walls: Vertex3D[]
+add_wall = (c: vec3, size: vec3, color: vec4):
+    w.add_box(c, size, kind = .fixed)
+    add_box(walls, c, size, color)
+w.add_box(vec3(0, -0.5, 0), vec3(40, 1, 40), kind = .fixed)          # the ground
+add_wall(vec3(0, 1.5, -20), vec3(40, 3, 1), rgb(0.55, 0.55, 0.6))
+add_wall(vec3(0, 1.5, 20), vec3(40, 3, 1), rgb(0.55, 0.55, 0.6))
+add_wall(vec3(-20, 1.5, 0), vec3(1, 3, 40), rgb(0.55, 0.55, 0.6))
+add_wall(vec3(20, 1.5, 0), vec3(1, 3, 40), rgb(0.55, 0.55, 0.6))
+walls_mesh = custom_mesh(walls)
 ground = plane_mesh(40.0)
+crate = cube_mesh(1.0)
 ball = sphere_mesh(0.4)
 gun = cube_mesh(1.0)
 
 start = ():
-    pos = vec3(0, 0, 8)
-    vy = 0.0
+    player = w.character(vec3(0, 0, 8), radius = 0.35)
     yaw = 0.0
     pitch = 0.0
+    seed_random(3)
+    loop c in crates: w.remove(c)
+    crates.clear()
+    loop i in [0..18):
+        s = random(1.2, 2.8)
+        c = vec3(f32(random(-16.0, 16.0)), f32(s / 2.0), f32(random(-16.0, 16.0)))
+        if length(vec2(c.x, c.z) - vec2(0, 8)) < 3.0: continue      # (none where the player starts)
+        crates.push(w.add_box(c, vec3(f32(s), f32(s), f32(s)), density = 150))
     orbs.clear()
     loop i in [0..ORBS):
         a = f64(i) / f64(ORBS) * TAU
@@ -77,41 +77,19 @@ start = ():
 start()
 
 forward = () -> vec3: vec3(f32(sin(yaw) * cos(pitch)), f32(sin(pitch)), f32(-cos(yaw) * cos(pitch)))
-eye = () -> vec3: pos + vec3(0, f32(EYE), 0)
+eye = () -> vec3: player.feet + vec3(0, f32(EYE), 0)
 orb_at = (o: Orb) -> vec3: o.pos + vec3(0, f32(0.25 * sin(run_time * 2.0 + o.phase)), 0)
-
-# keep the player out of the boxes: pushed back out along the side they came in from
-collide = ():
-    on_ground = pos.y <= 0.0
-    if on_ground:
-        pos.y = 0.0
-        vy = max(vy, 0.0)
-    loop b in boxes:
-        lo = b.c - b.h
-        hi = b.c + b.h
-        if pos.y >= hi.y or pos.y + f32(EYE) <= lo.y: continue
-        dx = min(pos.x - (lo.x - f32(BODY_R)), (hi.x + f32(BODY_R)) - pos.x)
-        dz = min(pos.z - (lo.z - f32(BODY_R)), (hi.z + f32(BODY_R)) - pos.z)
-        if dx <= 0 or dz <= 0: continue
-        if pos.y > hi.y - 0.4 and vy <= 0.0:
-            # (landing on top)
-            pos.y = hi.y
-            vy = 0.0
-            on_ground = true
-        else if dx < dz:
-            if pos.x < b.c.x: pos.x = lo.x - f32(BODY_R)
-            else: pos.x = hi.x + f32(BODY_R)
-        else:
-            if pos.z < b.c.z: pos.z = lo.z - f32(BODY_R)
-            else: pos.z = hi.z + f32(BODY_R)
 
 shoot = ():
     play(snd_shot, 0.4)
     flash = 1.0
     o0 = eye()
     d = forward()
-    best = -1
+    # (what the shot meets first: a crate or wall, which stops it, or an orb before that)
     best_t = 1000.0
+    hit = w.raycast(o0, o0 + d * 1000.0)
+    if let h = hit: best_t = f64(h.fraction) * 1000.0
+    best = -1
     loop i in 0.. and o in orbs:
         if o.pop > 0.0: continue
         # (the ray o0 + d * t passes the orb's center closest at t)
@@ -124,6 +102,9 @@ shoot = ():
         hits += 1
         play(snd_pop, 0.6, pitch = 1.0 + 0.1 * f64(hits))
         if hits == ORBS: done = true
+    else if let h = hit:
+        # (a crate is knocked where it is hit)
+        if w.kind(h.body) == .dynamic: w.push(h.body, d * 400.0, h.point)
 
 update = (dt: f64):
     if not done: run_time += dt
@@ -145,13 +126,12 @@ update = (dt: f64):
     side = vec3(f32(cos(yaw)), 0, f32(sin(yaw)))
     move = ahead * -axis.y + side * axis.x
     if length(move) > 1.0: move = normalize(move)
-    pos += move * f32(WALK * dt)
-    if on_ground and (key_pressed(.space) or gamepad_pressed(.a)):
-        vy = JUMP
+    jump = 0.0
+    if player.on_ground and (key_pressed(.space) or gamepad_pressed(.a)):
+        jump = JUMP
         play(snd_jump, 0.3)
-    vy -= GRAVITY * dt
-    pos.y += f32(vy * dt)
-    collide()
+    w.walk(player, move * f32(WALK), dt, jump = jump)
+    w.step(dt)
 
 draw = ():
     sky(vec3(0.3, 0.5, 0.85), vec3(0.8, 0.85, 0.9))
@@ -161,7 +141,8 @@ draw = ():
     e = eye()
     camera3d(e, e + forward(), 70.0)
     draw_mesh(ground, mat4(), rgb(0.42, 0.5, 0.36))
-    draw_mesh(yard_mesh)
+    draw_mesh(walls_mesh)
+    loop c in crates: draw_mesh(crate, w.transform(c) * scaling(w.size(c)), rgb(0.62, 0.45, 0.3))
     loop o in orbs:
         if o.pop > 0.4: continue
         s = f32(1.0 + o.pop * 4.0)
