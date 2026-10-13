@@ -100,6 +100,8 @@ struct __B3:
     lo: vec3
     hi: vec3
     m: __M3                 # (its rotation as a matrix, each step)
+    asleep = false          # still for a while, with all it touches: left out until woken
+    still: f32              # (how long it has been nearly still)
 
 struct __C3:
     point: vec3
@@ -139,6 +141,7 @@ struct __J3:
     damping: f32
     rope: bool
     alive = true
+    on = false              # (this step: one of its bodies is awake)
     acc: vec3
     acc_ang: vec3
     acc1: f32
@@ -165,6 +168,7 @@ struct __Node3:
 struct World:
     gravity = vec3(0, -9.81, 0)
     iterations = 10
+    sleep = true            # bodies that have come to rest are left out until something touches them
     substep = 1.0 / 120.0
     bodies: __B3[] = [__B3(kind = .fixed)]
     joints: __J3[]
@@ -232,6 +236,16 @@ __add3 = (w: mut World, b: __B3) -> Body:
 
 remove = (w: mut World, b: Body):
     if b.id <= 0 or not w.bodies[b.id].alive: return
+    # (what rested on it, or hung from it, wakes up: near it, asleep, they keep no contacts)
+    lo = w.bodies[b.id].lo - vec3(0.05, 0.05, 0.05)
+    hi = w.bodies[b.id].hi + vec3(0.05, 0.05, 0.05)
+    near: int[]
+    loop i in 0.. and o in w.bodies:
+        if o.asleep and o.lo.x <= hi.x and o.hi.x >= lo.x and o.lo.y <= hi.y and o.hi.y >= lo.y and o.lo.z <= hi.z and o.hi.z >= lo.z: near.push(i)
+    loop i in near: __wake(w, i)
+    loop j in w.joints:
+        if j.alive and j.a == b.id: __wake(w, j.b)
+        else if j.alive and j.b == b.id: __wake(w, j.a)
     w.bodies[b.id].alive = false
     w.bodies[b.id].shape = -1
     w.free.push(b.id)
@@ -284,11 +298,24 @@ to_local = (w: World, b: Body, p: vec3) -> vec3:
 set_pos = (w: mut World, b: Body, p: vec3):
     w.bodies[b.id].pos = p
     __update3(w.bodies[b.id], w.meshes)
+    __wake(w, b.id)
 set_rotation = (w: mut World, b: Body, q: vec4):
     w.bodies[b.id].rot = normalize(q)
     __update3(w.bodies[b.id], w.meshes)
-set_velocity = (w: mut World, b: Body, v: vec3): w.bodies[b.id].vel = v
-set_spin = (w: mut World, b: Body, s: vec3): w.bodies[b.id].spin = s
+    __wake(w, b.id)
+set_velocity = (w: mut World, b: Body, v: vec3):
+    w.bodies[b.id].vel = v
+    __wake(w, b.id)
+set_spin = (w: mut World, b: Body, s: vec3):
+    w.bodies[b.id].spin = s
+    __wake(w, b.id)
+# it is asleep: at rest with all it touches, left out of each step until something touches it
+sleeping = (w: World, b: Body) -> bool: w.bodies[b.id].asleep
+
+__wake = (w: mut World, id: int):
+    if w.bodies[id].asleep:
+        w.bodies[id].asleep = false
+        w.bodies[id].still = 0
 set_damping = (w: mut World, b: Body, d: f64): w.bodies[b.id].damping = f32(d)
 set_fixed_rotation = (w: mut World, b: Body, on: bool):
     w.bodies[b.id].fixed_rotation = on
@@ -301,11 +328,17 @@ set_layers = (w: mut World, b: Body, layer: int, mask: int = -1):
 
 push = (w: mut World, b: Body, impulse: vec3):
     w.bodies[b.id].vel += impulse * w.bodies[b.id].inv_mass
+    __wake(w, b.id)
 push = (w: mut World, b: Body, impulse: vec3, at: vec3):
     w.bodies[b.id].vel += impulse * w.bodies[b.id].inv_mass
     w.bodies[b.id].spin += __mv(w.bodies[b.id].iw, cross(at - w.bodies[b.id].pos, impulse))
-apply_force = (w: mut World, b: Body, f: vec3): w.bodies[b.id].force += f
-apply_torque = (w: mut World, b: Body, t: vec3): w.bodies[b.id].torque += t
+    __wake(w, b.id)
+apply_force = (w: mut World, b: Body, f: vec3):
+    w.bodies[b.id].force += f
+    __wake(w, b.id)
+apply_torque = (w: mut World, b: Body, t: vec3):
+    w.bodies[b.id].torque += t
+    __wake(w, b.id)
 
 # ---------------- joints ----------------
 # a ball and socket at the point at (in the world, now)
@@ -390,7 +423,7 @@ __update3 = (b: mut __B3, meshes: __Mesh3[]):
 __step3 = (w: mut World, h: f32):
     g = w.gravity
     loop mut b in w.bodies:
-        if b.kind != .dynamic or not b.alive: continue
+        if b.kind != .dynamic or not b.alive or b.asleep: continue
         b.vel += (g + b.force * b.inv_mass) * h
         b.spin += __mv(b.iw, b.torque) * h
         if b.damping > 0.0:
@@ -402,21 +435,78 @@ __step3 = (w: mut World, h: f32):
     inv_h = 1.0 / h
     loop mut a in w.arbs:
         if not a.sensor: __arb3_prepare(a, w.bodies, inv_h)
+    # (a joint with one end awake wakes the other; one with neither is left out)
+    wake: int[]
     loop mut j in w.joints:
-        if j.alive: __j3_prepare(j, w.bodies, h)
+        j.on = j.alive and (__active(w.bodies[j.a]) or __active(w.bodies[j.b]))
+        if j.on:
+            wake.push(j.a)
+            wake.push(j.b)
+    loop i in wake: __wake(w, i)
+    loop mut j in w.joints:
+        if j.on: __j3_prepare(j, w.bodies, h)
     loop _ in [0..w.iterations):
         loop mut j in w.joints:
-            if j.alive: __j3_solve(j, w.bodies)
+            if j.on: __j3_solve(j, w.bodies)
         loop mut a in w.arbs:
             if not a.sensor: __arb3_solve(a, w.bodies)
     loop mut b in w.bodies:
-        if b.kind == .fixed or not b.alive or b.shape < 0: continue
+        if b.kind == .fixed or not b.alive or b.shape < 0 or b.asleep: continue
         b.pos += b.vel * h
         s = b.spin * (0.5 * h)
         q = b.rot
         dq = quat_mul(vec4(s.x, s.y, s.z, 0), q)
         b.rot = normalize(q + dq)
         __update3(b, w.meshes)
+    if w.sleep: __sleep3(w, h)
+
+# moving: awake and dynamic, or moving and given a velocity
+__active = (b: __B3) -> bool: b.alive and (b.kind == .dynamic and not b.asleep or b.kind == .moving and (length_sq(b.vel) > 0.0 or length_sq(b.spin) > 0.0))
+
+# bodies still for half a second, with all they touch (an island: through contacts and joints),
+# go to sleep together
+__sleep3 = (w: mut World, h: f32):
+    n = w.bodies.len()
+    loop mut b in w.bodies:
+        if b.kind != .dynamic or not b.alive or b.asleep: continue
+        if length_sq(b.vel) < 0.0025 and length_sq(b.spin) < 0.0025: b.still += h
+        else: b.still = 0
+    root = [loop i in [0..n): i]
+    loop a in w.arbs:
+        if not a.sensor and w.bodies[a.a].kind == .dynamic and w.bodies[a.b].kind == .dynamic: __union(root, a.a, a.b)
+        # (on something moving: awake)
+        if w.bodies[a.a].kind == .moving: w.bodies[a.b].still = 0
+        if w.bodies[a.b].kind == .moving: w.bodies[a.a].still = 0
+    loop j in w.joints:
+        if j.alive and w.bodies[j.a].kind == .dynamic and w.bodies[j.b].kind == .dynamic: __union(root, j.a, j.b)
+    least = fill(f32(1e9), n)
+    loop i in [1..n):
+        b = w.bodies[i].still
+        if w.bodies[i].kind == .dynamic and w.bodies[i].alive and not w.bodies[i].asleep:
+            r = __find(root, i)
+            least[r] = min(least[r], b)
+    loop i in [1..n):
+        if w.bodies[i].kind != .dynamic or not w.bodies[i].alive or w.bodies[i].asleep: continue
+        if least[__find(root, i)] >= 0.5:
+            w.bodies[i].asleep = true
+            w.bodies[i].vel = vec3(0, 0, 0)
+            w.bodies[i].spin = vec3(0, 0, 0)
+
+__find = (root: mut int[], i0: int) -> int:
+    r = i0
+    loop root[r] != r: r = root[r]
+    i = i0
+    loop root[i] != r:
+        nx = root[i]
+        root[i] = r
+        i = nx
+    r
+
+__union = (root: mut int[], a: int, b: int):
+    ra = __find(root, a)
+    rb = __find(root, b)
+    if ra < rb: root[rb] = ra
+    else if rb < ra: root[ra] = rb
 
 # ---------------- finding contacts ----------------
 __collide3 = (w: mut World):
@@ -426,6 +516,7 @@ __collide3 = (w: mut World):
         if bs[i].alive and bs[i].shape >= 0: order.push(i)
     order.sort_with((i, j): bs[i].lo.x < bs[j].lo.x or bs[i].lo.x == bs[j].lo.x and i < j)
     pairs: int[]
+    wake: int[]
     loop k in [0..order.len()):
         i = order[k]
         ilo = bs[i].lo
@@ -435,8 +526,15 @@ __collide3 = (w: mut World):
             if bs[j].lo.x > ihi.x: break
             if bs[j].lo.y > ihi.y or bs[j].hi.y < ilo.y or bs[j].lo.z > ihi.z or bs[j].hi.z < ilo.z: continue
             if bs[i].kind != .dynamic and bs[j].kind != .dynamic: continue
+            # (two at rest, or at rest against something fixed: nothing to do)
+            ai = __active(bs[i])
+            aj = __active(bs[j])
+            if not ai and not aj: continue
             if bs[i].layer & bs[j].mask == 0 or bs[j].layer & bs[i].mask == 0: continue
+            if bs[i].asleep: wake.push(i)
+            if bs[j].asleep: wake.push(j)
             pairs.push(min(i, j) * 1000003 + max(i, j))
+    loop i in wake: __wake(w, i)
     pairs.sort()
     arbs: __Arb3[]
     index: {int: int}
@@ -1286,7 +1384,9 @@ __char_resolve = (w: mut World, c: mut Character, vy0: f32) -> f32:
                         m = 1.0 / bd.inv_mass
                         want = into * c.push * c.mass / (c.mass + m)
                         gain = want - dot(w.bodies[i].vel, n)
-                        if into > 0.0 and gain > 0.0: w.bodies[i].vel += n * gain
+                        if into > 0.0 and gain > 0.0:
+                            w.bodies[i].vel += n * gain
+                            __wake(w, i)
                 low = ct.point.y < c.feet.y + c.step
                 if up.y >= cos_slope or low and up.y > 0.05 and c.velocity.y <= 0.0:
                     # (stood on, or a step: lifted straight up, so it does not slide)

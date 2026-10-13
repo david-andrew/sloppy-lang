@@ -1999,6 +1999,7 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 - `set_angle = (w: mut World, b: Body, a: f64)`
 - `set_velocity = (w: mut World, b: Body, v: vec2)`
 - `set_spin = (w: mut World, b: Body, s: f64)`
+- `sleeping = (w: World, b: Body) -> bool`: it is asleep: at rest with all it touches, left out of each step until something touches it
 - `set_damping = (w: mut World, b: Body, d: f64)`: slowing down by itself (as through air or water): the share of its speed lost each second
 - `set_fixed_rotation = (w: mut World, b: Body, on: bool)`: it never turns (a character's body)
 - `set_friction = (w: mut World, b: Body, f: f64)`
@@ -2113,6 +2114,7 @@ Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the gam
 - `set_rotation = (w: mut World, b: Body, q: vec4)`
 - `set_velocity = (w: mut World, b: Body, v: vec3)`
 - `set_spin = (w: mut World, b: Body, s: vec3)`
+- `sleeping = (w: World, b: Body) -> bool`: it is asleep: at rest with all it touches, left out of each step until something touches it
 - `set_damping = (w: mut World, b: Body, d: f64)`
 - `set_fixed_rotation = (w: mut World, b: Body, on: bool)`
 - `set_friction = (w: mut World, b: Body, f: f64)`
