@@ -3,7 +3,7 @@
 usage: runtests.py [--compiler sloppy0|sloppy|path] [--release] [--target native|wasm|windows|linux-arm64] [pattern]
 (linux-arm64: run under qemu-aarch64, or SLOPPY_ARM64_RUN)
 (on Windows itself: the compiler is bin/sloppy.exe, and programs are native Windows ones)"""
-import os, re, subprocess, sys, glob, tempfile, time
+import os, re, shutil, subprocess, sys, glob, tempfile, time
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 args = sys.argv[1:]
@@ -146,6 +146,22 @@ if compiler != "sloppy0" and target == "native":
             else:
                 print(f"FAIL {name}: does not build\n{r.stderr}")
                 failed += 1
+    # `sloppy new`: each template, made into a project, must build (and the program's tests pass)
+    for kind in ["game", "arcade", "3d", "program"]:
+        name = "new/" + kind
+        if pattern not in name: continue
+        d = os.path.join(tmp, "new_" + kind)
+        shutil.rmtree(d, ignore_errors=True)
+        env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"))
+        r = subprocess.run([sloppy, "new", d, kind], capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=60)
+        src = os.path.join(d, "new_" + kind + ".jo")
+        if r.returncode == 0:
+            cmd = [sloppy, "test", src] if kind == "program" else [sloppy, "build", src, "-o", os.path.join(tmp, "new_project")]
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=60)
+        if r.returncode == 0: passed += 1
+        else:
+            print(f"FAIL {name}\n{r.stdout}{r.stderr}")
+            failed += 1
     # the library page's examples (docs/api/*.jo) must build, and docs/API.md be what tools/apidoc.py makes now
     for src in sorted(glob.glob(os.path.join(root, "docs", "api", "*.jo"))):
         name = "api/" + os.path.basename(src)[:-3]

@@ -2,6 +2,10 @@
 
 ## 0.8.1 (unreleased)
 
+Fixed:
+- The library's 3D example called `sun()` with the direction its light goes; it takes the
+  direction toward the sun (now said where it is defined).
+
 Faster:
 - **arm64 code keeps values in registers** (macOS and Linux arm64): linear-scan allocation over
   the same lifetimes as on x86-64, callee-saved registers for values living across calls, x0-x7
@@ -10,6 +14,10 @@ Faster:
   compiles itself in 8.5 s instead of 13.2 s, and is 4.4 MB instead of 6.6 MB.
 
 Tools:
+- **`sloppy new <directory> [kind]`**: a project to start from, which runs as it is: `game` (the
+  smallest: a window, update and draw), `arcade` (a 2D arcade game: a title menu, a score, a best
+  score kept, sounds, particles, a pause menu), `3d` (first person: mouse look, walking and
+  jumping among crates, shooting orbs) or `program` (for the terminal, with a test).
 - `tools/fuzz.py --arm64`: each random program also built for arm64 and run under qemu (each
   night in CI).
 

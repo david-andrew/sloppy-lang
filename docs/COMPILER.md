@@ -27,10 +27,10 @@ rebuild.
 | lower | `lower.jo`, `ir.jo` | typed AST to IR: reference counting, copy-on-write, closures, formatting |
 | optimize | `opt.jo`; release only: `inline.jo`, `loops.jo` | folding, copy propagation, dead code; inlining, loop versioning and vectorizing |
 | code | `x64.jo`, `arm64.jo`, `wasm.jo`, `spirv.jo`, `glsl.jo` | register allocation and x86-64 encoding; arm64 (linear-scan register allocation, the same analysis); WebAssembly; shaders and compute functions as SPIR-V, shaders as GLSL |
-| write | `elf.jo`, `pe.jo`, `dwarf.jo` | Linux and Windows executables, debug information |
-| drive | `main.jo` | the command line, targets and the build block, the order of the above |
+| write | `elf.jo`, `pe.jo`, `macho.jo`, `dwarf.jo`, `pdb.jo` | Linux, Windows and macOS executables, debug information |
+| drive | `main.jo`, `new.jo` | the command line, targets and the build block, the order of the above; `sloppy new` (its templates: `lib/new/*.jo`) |
 | editors | `ide.jo`, `lsp.jo` | what a check learned, as lines; the language server |
-| live | `repl.jo`, `watch.jo` | the interactive prompt; hot reloading (Linux) |
+| live | `repl.jo`, `watch.jo` | the interactive prompt; hot reloading |
 
 Functions are compiled one at a time from the roots (`main`, top-level code, exports): lowering a
 call queues its callee (`lf_of_inst`), so only what is used is compiled, the standard library

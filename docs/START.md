@@ -73,6 +73,18 @@ sloppy watch game.jo     # the same, reloaded each time you save: change a color
 sloppy --web game.jo     # in your browser
 ```
 
+## Starting from a template
+
+`sloppy new` makes a directory with a program to start from, which runs as it is:
+
+```sh
+sloppy new my_game            # the smallest game: a window, update and draw
+sloppy new my_game arcade     # a 2D arcade game: a title menu, a score, a best score kept, sounds
+sloppy new my_game 3d         # a first-person 3D game: mouse look, walking, jumping, shooting
+sloppy new my_tool program    # a program for the terminal, with a test
+sloppy watch my_game/my_game.jo
+```
+
 ## Sharing it
 
 ```sh

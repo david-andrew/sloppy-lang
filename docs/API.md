@@ -1173,7 +1173,7 @@ update = (dt: f64):
 
 draw = ():
     sky(vec3(0.25, 0.45, 0.8), vec3(0.75, 0.82, 0.9))
-    sun(vec3(-0.5, -1.0, -0.3))               # the way its light goes
+    sun(vec3(-0.5, 1.0, -0.3))                # where the sun is: up and to the left, behind
     shadows(true)
     camera3d(cam)
     draw_mesh(ground, mat4(), rgb(0.45, 0.5, 0.4))
@@ -1202,7 +1202,7 @@ draw = ():
 - `lit_fs = (i: LitOut, u: LitParams) -> vec4`
 - `struct Draw3D`
 - `camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`: place the camera; call once per frame before drawing 3D objects
-- `sun = (direction: vec3, color: vec3 = vec3(1, 0.95, 0.85))`
+- `sun = (direction: vec3, color: vec3 = vec3(1, 0.95, 0.85))`: the sunlight: direction points toward the sun (y > 0: above the horizon), color is its light
 - `sky = (top: vec3, horizon: vec3, ground: vec3 = vec3(0.3, 0.27, 0.24))`
 - `hide_sky = ()`
 - `night_stars = (amount: f64)`
