@@ -476,7 +476,7 @@ if r is ParseError: return r
 print(r + 1)                            # r is an int
 ```
 
-Ruling a member out narrows to the others: after `if s is Circle: return` in a function taking
+`x is not T` is `not (x is T)`. Ruling a member out narrows to the others: after `if s is Circle: return` in a function taking
 `Circle | Rect | Tri`, `s` is a `Rect | Tri`, and in an `if`/`else if`/`else` chain each branch
 knows what the earlier tests excluded. A `match` arm listing several types (`int, str: ...`)
 sees their union, and `_:` the members no earlier arm matched. Fields and globals narrow the same
@@ -494,6 +494,7 @@ the value it holds. `T | none` is `T?`.
 best: int? = none
 if let v = lookup(key): print(v)        # bind when present
 if best is int: print(best + 1)         # `is` works on optionals too
+if best != none: print(best + 1)        # and so does comparing with none (`is not none` too)
 n = lookup(key) ?? 0                    # default
 k = lookup(key)!                        # unwrap or panic
 ```

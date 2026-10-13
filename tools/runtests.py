@@ -42,6 +42,10 @@ for t in tests:
         continue
     if target == "wasm" and "# requires: native" in head:
         continue
+    # (name.in, when there is one, is the test's standard input; Wine's container is not given it)
+    stdin_data = open(t[:-3] + ".in", encoding="utf-8").read() if os.path.exists(t[:-3] + ".in") else ""
+    if stdin_data and target in ("wasm", "windows"):
+        continue
     if compiler == "sloppy0":
         cmd = [os.path.join(root, "stage0", "sloppy0"), t, "-o", exe]
     else:
@@ -70,7 +74,7 @@ for t in tests:
     else:
         run = [exe]
     try:
-        r = subprocess.run(run, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+        r = subprocess.run(run, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, input=stdin_data,
                            env=dict(os.environ, SLOPPY_SAVE_DIR=os.path.join(tmp, "saved-data")))
     except subprocess.TimeoutExpired:
         print(f"FAIL {name}: timed out")

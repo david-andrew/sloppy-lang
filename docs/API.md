@@ -316,10 +316,14 @@ Math basics.
 - `next_u64 = (r: mut Rng) -> u64`
 - `next_float = (r: mut Rng) -> f64`: uniform f64 in [0, 1)
 - `next_int = (r: mut Rng, lo: int, hi: int) -> int`: uniform int in [lo, hi)
+- `next_item[T] = (r: mut Rng, xs: T[]) -> T`: an element of xs (not empty), from r
+- `shuffle[T] = (r: mut Rng, xs: mut T[])`: put xs in a random order from r
 - `seed_random = (seed: int)`
 - `random = () -> f64`: random f64 in [0, 1)
 - `random = (lo: f64, hi: f64) -> f64`: random f64 in [lo, hi)
 - `random_int = (lo: int, hi: int) -> int`: random int in [lo, hi)
+- `random_item[T] = (xs: T[]) -> T`: a random element of xs (which must not be empty)
+- `shuffle[T] = (xs: mut T[])`: put xs in a random order
 
 ## Files, time and the system
 
@@ -344,6 +348,8 @@ Operating system access: files, arguments, environment, time.
 - `args = () -> str[]`: command line arguments (args()[0] is the program path)
 - `env = (name: str) -> str?`: an environment variable (in a web page: the page's URL parameter of that name, where `SLOPPY_X` may also be written `x`, and a bare `?x` is "1")
 - `read_file = (path: str) -> str?`: read a whole file; none if it cannot be read
+- `read_line = () -> str?`: a line typed in (or piped in), without its end; none when the input has ended
+- `read_stdin = () -> str`: all of standard input (what is piped in), until it ends
 - `read_bytes = (path: str) -> u8[]?`
 - `write_file = (path: str, contents: str) -> bool`
 - `write_bytes = (path: str, b: u8[]) -> bool`

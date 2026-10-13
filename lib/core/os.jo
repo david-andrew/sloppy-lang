@@ -85,7 +85,15 @@ read_file = (path: str) -> str?:
         if fd < 0: return none
         defer syscall(3, fd)
         size = syscall(8, fd, 0, 2)
-        if size < 0: return none
+        if size < 0:
+            # (no size: a pipe, /dev/stdin: read until it ends)
+            out: u8[]
+            chunk = fill(u8(0), 65536)
+            loop:
+                r = syscall(0, fd, data(chunk), chunk.len())
+                if r <= 0: break
+                loop i in [0..r): out.push(chunk[i])      # (not extend: the C bootstrap compiles this)
+            return str_from_bytes(out)
         syscall(8, fd, 0, 0)
         p = __str_new(size)
         got = 0
@@ -95,6 +103,45 @@ read_file = (path: str) -> str?:
             got += r
         (p as *int)[1] = got
         p as str
+
+__stdin_buf: u8[]
+__stdin_pos = 0
+
+# a line typed in (or piped in), without its end; none when the input has ended
+read_line = () -> str?:
+    line: u8[]
+    got = false
+    loop:
+        if __stdin_pos >= __stdin_buf.len():
+            __stdin_buf = fill(u8(0), 4096)
+            r = __read_fd(0, data(__stdin_buf), __stdin_buf.len())
+            if r <= 0:
+                __stdin_buf.clear()
+                __stdin_pos = 0
+                if not got: return none
+                break
+            __stdin_buf.truncate(r)
+            __stdin_pos = 0
+        c = __stdin_buf[__stdin_pos]
+        __stdin_pos += 1
+        got = true
+        if c == '\n': break
+        line.push(c)
+    if line.len() > 0 and line[line.len() - 1] == '\r': line.pop()
+    str_from_bytes(line)
+
+# all of standard input (what is piped in), until it ends
+read_stdin = () -> str:
+    out: u8[]
+    loop i in [__stdin_pos..__stdin_buf.len()): out.push(__stdin_buf[i])
+    __stdin_buf.clear()
+    __stdin_pos = 0
+    chunk = fill(u8(0), 65536)
+    loop:
+        r = __read_fd(0, data(chunk), chunk.len())
+        if r <= 0: break
+        loop i in [0..r): out.push(chunk[i])
+    str_from_bytes(out)
 
 read_bytes = (path: str) -> u8[]?:
     if let s = read_file(path): return bytes(s)

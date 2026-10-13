@@ -28,8 +28,21 @@ Language:
   text: bytes, characters, and how wide text is drawn.
 - `mut` in combined loops: `loop i in 0.. and mut e in enemies: e.hp -= i` changes the elements
   themselves while counting.
+- Comparing an optional with `none` narrows it, as `is` does: after `if x == none: return`, or
+  inside `if x != none:` (and `x != none and x > 0`), `x` is its value. `x is not T` is
+  `not (x is T)`. `x!` on a variable known to have its value is that value.
+- `read_line()` reads a line typed in (or piped in), none when the input has ended, and
+  `read_stdin()` all of it; `read_file("/dev/stdin")` reads a pipe. `input`, `raw_input` and
+  `readline` point to `read_line`.
+- `random_item(xs)` and `shuffle(xs)` (and `r.next_item(xs)`, `r.shuffle(xs)` with an `Rng`);
+  `choice`, `randint` and `uniform` point to them. `draw_cube`, `draw_sphere` and `light` point to
+  what draws them.
+- Key names from other libraries (`.esc`, `.return`, `.left_ctrl`, `.left_arrow`) say which variant is
+  meant (`.escape`, `.enter`, `.ctrl`, `.left`).
 
 More for games:
+- `SLOPPY_INPUT` scripts the mouse too: `3:mouse_left+`, `2:mouse=400x300`; an item it cannot
+  read is reported instead of ignored.
 - Physics (2D and 3D): bodies at rest go to sleep, with all they touch, and are left out of each
   step until something touches, pushes or moves them, or what they rest on goes (`w.sleeping(b)`;
   `World(sleep = false)` keeps all awake). A settled pile of 200 boxes steps 15 times faster.
