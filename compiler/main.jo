@@ -383,12 +383,34 @@ compile = (path: str, out0: str) -> str:
         arm64_stubs()
         entry = arm64_entry_mac(roots, main_lf)
         info = pe_backtrace_info()
-        text_off, ro_off, info_off, text_size = macho_layout(code.len(), rodata.len(), info.len())
-        img_text_addr = MACHO_BASE + text_off
-        img_ro_addr = MACHO_BASE + ro_off
-        img_data_addr = MACHO_BASE + text_size
-        arm64_resolve(img_text_addr, img_ro_addr, img_data_addr)
-        ok = write_macho(out, code, entry, rodata, info, data_size + 8 + bss_reserve, program_name)
+        if watch_build:
+            # (sloppy watch: the code and read-only data run from a region of their own, copied
+            # there by a loader, macho.jo; after the first build, a patch for the program running)
+            ro_at = (code.len() + 15) & ~15
+            blob_len = (ro_at + rodata.len() + 7) & ~7
+            loader_len = macho_watch_loader(0, 0, 0, 0).len()
+            text_off, ro_off, info_off, text_size = macho_layout(loader_len, blob_len, info.len())
+            img_text_addr = MACHO_WATCH_CODE
+            img_ro_addr = MACHO_WATCH_CODE + ro_at
+            img_data_addr = MACHO_BASE + text_size
+            arm64_resolve(img_text_addr, img_ro_addr, img_data_addr)
+            if not watch_first: ok = watch_make_patch()
+            else:
+                blob = code
+                loop blob.len() < ro_at: blob.push(0)
+                loop b in rodata: blob.push(b)
+                loop blob.len() < blob_len: blob.push(0)
+                loader = macho_watch_loader(img_data_addr, MACHO_BASE + ro_off, blob_len, entry)
+                elf_syms = []
+                ok = write_macho(out, loader, 0, blob, info, data_size + 8 + bss_reserve, program_name)
+                if ok: watch_record_image()
+        else:
+            text_off, ro_off, info_off, text_size = macho_layout(code.len(), rodata.len(), info.len())
+            img_text_addr = MACHO_BASE + text_off
+            img_ro_addr = MACHO_BASE + ro_off
+            img_data_addr = MACHO_BASE + text_size
+            arm64_resolve(img_text_addr, img_ro_addr, img_data_addr)
+            ok = write_macho(out, code, entry, rodata, info, data_size + 8 + bss_reserve, program_name)
         size = code.len()
     else if target_arm64:
         elf_machine = 183
@@ -518,10 +540,6 @@ main = ():
         else: usage()
         first += 1
     if first >= a.len(): usage()
-    when TARGET == "macos":
-        if a[first] == "watch":
-            eprint("sloppy: watch is not available on macOS yet")
-            exit(2)
     if a[first] == "watch":
         if a.len() < first + 2: usage()
         if cli_target == "wasm": fatal(0, "sloppy watch runs programs natively (for the web, use sloppy build --target wasm)")

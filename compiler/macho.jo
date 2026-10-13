@@ -13,10 +13,15 @@
 use 'util.jo'
 use 'elf.jo'
 use 'lower.jo'
+use 'x64.jo'
+use 'arm64.jo'
 
 const MACHO_BASE = 0x100000000
 const MACHO_PAGE = 0x4000
 const MACHO_TEXT_OFF = 0x4000
+const MACHO_WATCH_AT = MACHO_BASE + 0x40000000      # sloppy watch: all the game's code (see below)
+const MACHO_WATCH_SIZE = 0x20000000
+const MACHO_WATCH_CODE = MACHO_WATCH_AT + 0x4000    # (after the page with the region's mark)
 
 macho_page_up = (x: int) -> int: (x + MACHO_PAGE - 1) & ~(MACHO_PAGE - 1)
 
@@ -346,4 +351,86 @@ sha256 = (b: u8[], off: int, n: int) -> u8[]:
     out: u8[]
     loop x in hs:
         loop k in [0..4): out.push(u8((x >> (24 - 8 * k)) & 255))
+    out
+
+# ---- sloppy watch ----
+# Apple silicon runs code from a signed page only as signed, so the game's functions cannot be
+# patched where the executable has them. A game built by sloppy watch keeps its code (and
+# read-only data, which the code reaches relative to itself) in __TEXT as data instead, linked to
+# run at MACHO_WATCH_CODE, and starts with this loader: it takes the region (MAP_JIT memory, which
+# each thread sees either writable or runnable), copies the code there, marks the region's first
+# word as x64.jo's entry does on Linux, and calls the code's entry. Later builds' code goes into
+# the region after it (lib/std/watch.jo). (The program is started where it was linked, without
+# address space randomization: lib/core/os.jo, __exec_unslid.)
+
+# a 64-bit constant in 4 instructions (the loader has the same size whatever its numbers are)
+mw_mov64 = (rd: int, v: int):
+    a_movz(rd, v & 0xFFFF, 0)
+    loop k in [1..4): a_movk(rd, (v >> (16 * k)) & 0xFFFF, k)
+
+# the slot (in __DATA) of a C function the program uses
+mw_slot = (name: str) -> int:
+    loop imp in mac_imports:
+        if imp.2 == name: return imp.0
+    ice("sloppy watch on macOS: the program does not use {name}")
+    0
+
+macho_watch_loader = (data_addr: int, blob_addr: int, blob_len: int, entry: int) -> u8[]:
+    saved = code
+    code = []
+    w32(0xA9BE7BFD)                                             # stp x29, x30, [sp, #-32]!
+    w32(0x910003FD)                                             # mov x29, sp
+    w32(0xA90107E0)                                             # stp x0, x1, [sp, #16]
+    # mmap(region, size, read/write/run, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0)
+    mw_mov64(0, MACHO_WATCH_AT)
+    mw_mov64(1, MACHO_WATCH_SIZE)
+    a_movz(2, 7, 0)
+    a_movz(3, 0x1802, 0)
+    a_movn(4, 0, 0)
+    a_movz(5, 0, 0)
+    mw_mov64(16, data_addr + mw_slot("mmap"))
+    a_ldr(16, 16, 0)
+    a_blr(16)
+    mw_mov64(9, MACHO_WATCH_AT)
+    a_cmp(0, 9)
+    fail = code.len()
+    w32(0x54000000 | AC_NE)                                     # b.ne fail
+    # writable: the code copied in, 8 bytes at a time; the mark
+    jit = data_addr + mw_slot("pthread_jit_write_protect_np")
+    a_movz(0, 0, 0)
+    mw_mov64(16, jit)
+    a_ldr(16, 16, 0)
+    a_blr(16)
+    mw_mov64(9, blob_addr)
+    mw_mov64(10, MACHO_WATCH_CODE)
+    mw_mov64(11, blob_len)
+    w32(0xF840852C)                                             # ldr x12, [x9], #8
+    w32(0xF800854C)                                             # str x12, [x10], #8
+    w32(0xF100216B)                                             # subs x11, x11, #8
+    w32(0x54000000 | (((-3) & 0x7FFFF) << 5) | AC_NE)           # b.ne
+    mw_mov64(9, MACHO_WATCH_AT)
+    mw_mov64(10, 0x6A6F74776174636B)
+    a_str(10, 9, 0)
+    # runnable, through the caches
+    a_movz(0, 1, 0)
+    mw_mov64(16, jit)
+    a_ldr(16, 16, 0)
+    a_blr(16)
+    mw_mov64(0, MACHO_WATCH_AT)
+    mw_mov64(1, MACHO_WATCH_CODE - MACHO_WATCH_AT + blob_len)
+    mw_mov64(16, MACHO_WATCH_CODE + stub_addr[11])              # code_sync
+    a_blr(16)
+    # the program
+    w32(0xA94107E0)                                             # ldp x0, x1, [sp, #16]
+    mw_mov64(16, MACHO_WATCH_CODE + entry)
+    a_blr(16)
+    w32(0xA8C27BFD)                                             # ldp x29, x30, [sp], #32
+    a_ret()
+    # (no region: the code cannot run)
+    wr32(fail, rd32(fail) | ((((code.len() - fail) / 4) & 0x7FFFF) << 5))
+    a_movz(0, 70, 0)
+    w32(0xA8C27BFD)                                             # ldp x29, x30, [sp], #32
+    a_ret()
+    out = code
+    code = saved
     out
