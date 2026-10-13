@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.2 (unreleased)
+## 0.9.0
 
 Tools:
 - **Packages**: `name = package("git URL" [, "tag, branch or commit"])` (or a directory) in the
