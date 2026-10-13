@@ -131,7 +131,7 @@ game picks from (and an example of each):
   shapes per body, sleeping, motors and limits on pins, continuous collision for fast bullets,
   a character controller). 3D, as `import physics3d` (done: spheres, boxes, capsules, a level's
   triangles, ball and hinge joints, rods, ropes, springs, rays, a character controller,
-  deterministic stepping; next: convex hulls, shape casts, continuous collision; motors and limits are done). Sleeping in both (done:
+  deterministic stepping; next: convex hulls, continuous collision; motors, limits and sphere casts are done). Sleeping in both (done:
   bodies at rest, with all they touch, are left out until something touches them).
 - Audio: sounds placed in 2D/3D (panning and distance): done (`play_at`, `move_sound`).
 - Assets: a whole directory embedded at once (`embed` takes one file), OpenType fonts with CFF

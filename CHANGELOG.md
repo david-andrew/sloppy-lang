@@ -7,6 +7,8 @@ Games:
   `max_torque`; `set_motor`, `set_limits`, `joint_angle`): doors that stop, wheels that drive,
   elbows that bend one way. Joints are solved more times each step, so chains and limits hold
   stiffer.
+- 3D physics: `w.sphere_cast(a, b, radius)`, a ray with thickness: where a ball moved from a to b
+  first touches something (thick bullets, a camera kept out of walls, the ground under feet).
 
 Language:
 - `mut` in combined loops: `loop i in 0.. and mut e in enemies: e.hp -= i` changes the elements

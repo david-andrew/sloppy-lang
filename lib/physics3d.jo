@@ -1355,6 +1355,92 @@ __ray_sphere = (a: vec3, d: vec3, c: vec3, r: f32) -> (f32, vec3):
     p = a + d * t
     (t, normalize(p - c))
 
+# the first body a ball of radius r, moved from a to b, would touch: the hit's point is where it
+# touches, and fraction how far along the ball's center is then (a thick ray: bullets that are
+# not points, a camera kept out of walls, what is under a character's feet)
+sphere_cast = (w: World, a: vec3, b: vec3, r: f64, mask: int = -1) -> Hit?:
+    rr = f32(r)
+    best: Hit? = none
+    bf: f32 = 1
+    d = b - a
+    lo = min(a, b) - vec3(rr, rr, rr)
+    hi = max(a, b) + vec3(rr, rr, rr)
+    loop i in [1..w.bodies.len()):
+        bd = w.bodies[i]
+        if not bd.alive or bd.shape < 0 or bd.layer & mask == 0 or bd.sensor: continue
+        if bd.lo.x > hi.x or bd.hi.x < lo.x or bd.lo.y > hi.y or bd.hi.y < lo.y or bd.lo.z > hi.z or bd.hi.z < lo.z: continue
+        if bd.shape == 3:
+            m = w.meshes[bd.mesh]
+            loop t in __tris_in(m, lo, hi):
+                f, n = __sweep_tri(a, d, rr, m.tris[t * 3], m.tris[t * 3 + 1], m.tris[t * 3 + 2])
+                if f >= 0.0 and f < bf:
+                    bf = f
+                    best = Hit(Body(i), a + d * f - n * rr, n, f)
+            continue
+        # (the shape grown by r: a ray against that)
+        g = bd
+        if g.shape == 1: g.half = g.half + vec3(rr, rr, rr)
+        else: g.radius = g.radius + rr
+        f, n = __ray_shape(g, a, d)
+        if f >= 0.0 and f < bf:
+            bf = f
+            best = Hit(Body(i), a + d * f - n * rr, n, f)
+    best
+
+# a ball of radius r moved along d from a, against a triangle: its face pushed out by r, its
+# edges grown into capsules, its corners into balls
+__sweep_tri = (a: vec3, d: vec3, r: f32, p0: vec3, p1: vec3, p2: vec3) -> (f32, vec3):
+    n = normalize(cross(p1 - p0, p2 - p0))
+    if dot(n, d) > 0.0: n = -n
+    off = n * r
+    best: f32 = -1
+    bn = vec3(0, 0, 0)
+    f = __ray_tri(a, d, p0 + off, p1 + off, p2 + off)
+    if f >= 0.0:
+        best = f
+        bn = n
+    loop k in [0..3):
+        e0 = [p0, p1, p2][k]
+        e1 = [p1, p2, p0][k]
+        g, gn = __ray_capsule_seg(a, d, e0, e1, r)
+        if g >= 0.0 and (best < 0.0 or g < best):
+            best = g
+            bn = gn
+    (best, bn)
+
+# a ray against the points within r of the segment e0 e1
+__ray_capsule_seg = (a: vec3, d: vec3, e0: vec3, e1: vec3, r: f32) -> (f32, vec3):
+    best: f32 = -1
+    bn = vec3(0, 0, 0)
+    loop p in [e0, e1]:
+        f, n = __ray_sphere(a, d, p, r)
+        if f >= 0.0 and (best < 0.0 or f < best):
+            best = f
+            bn = n
+    # (the side: the ray's closest approach to the line, on the segment)
+    ax = e1 - e0
+    l = length(ax)
+    if l < 1e-6: return (best, bn)
+    u = ax * (1.0 / l)
+    ao = a - e0
+    dp = d - u * dot(d, u)
+    op = ao - u * dot(ao, u)
+    qa = dot(dp, dp)
+    if qa < 1e-12: return (best, bn)
+    qb = dot(op, dp)
+    qc = dot(op, op) - r * r
+    disc = qb * qb - qa * qc
+    if disc < 0.0: return (best, bn)
+    t = (-qb - sqrt(disc)) / qa
+    if t < 0.0 or t > 1.0: return (best, bn)
+    p = a + d * t
+    s = dot(p - e0, u)
+    if s < 0.0 or s > l: return (best, bn)
+    if best < 0.0 or t < best:
+        best = t
+        bn = normalize(p - (e0 + u * s))
+    (best, bn)
+
 # Möller–Trumbore: how far along d the ray from a meets the triangle (-1: not)
 __ray_tri = (a: vec3, d: vec3, p0: vec3, p1: vec3, p2: vec3) -> f32:
     e1 = p1 - p0

@@ -2147,6 +2147,7 @@ Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the gam
 #### Rays
 
 - `raycast = (w: World, a: vec3, b: vec3, mask: int = -1) -> Hit?`: the first body a ray from a to b meets (only those whose layer & mask is not 0)
+- `sphere_cast = (w: World, a: vec3, b: vec3, r: f64, mask: int = -1) -> Hit?`: the first body a ball of radius r, moved from a to b, would touch: the hit's point is where it touches, and fraction how far along the ball's center is then (a thick ray: bullets that are not points, a camera kept out of walls, what is under a character's feet)
 
 #### A character
 
