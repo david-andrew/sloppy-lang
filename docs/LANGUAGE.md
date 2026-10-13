@@ -389,6 +389,7 @@ loop i in 0.. and v in values: ...             # counts alongside: stops when va
 loop i in 0.. and v in values and v ^ 2 < limit: ...   # also stops at the first false condition
 loop a in xs or b in ys: ...                   # until both run out; a finished one gives none
 loop (a in xs or b in ys) and ok(): ...
+loop i in 0.. and mut e in enemies: e.hp -= i      # the elements themselves, counted
 ```
 
 Iterators joined with `and` advance together until one runs out; joined with `or` they advance

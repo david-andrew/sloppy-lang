@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Language:
+- `mut` in combined loops: `loop i in 0.. and mut e in enemies: e.hp -= i` changes the elements
+  themselves while counting.
+
 Games:
 - Physics (2D and 3D): bodies at rest go to sleep, with all they touch, and are left out of each
   step until something touches, pushes or moves them, or what they rest on goes (`w.sleeping(b)`;
