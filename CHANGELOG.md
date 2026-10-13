@@ -5,6 +5,7 @@
 Fixed:
 - The library's 3D example called `sun()` with the direction its light goes; it takes the
   direction toward the sun (now said where it is defined).
+- The software renderer drew a faint box behind small text (16 px and less).
 
 Faster:
 - **arm64 code keeps values in registers** (macOS and Linux arm64): linear-scan allocation over
