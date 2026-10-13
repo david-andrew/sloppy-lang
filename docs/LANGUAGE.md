@@ -112,9 +112,10 @@ function, assigning to a global changes the global. At the top level of a file, 
 declares a global of that file, or assigns one the file `use`s (an `import`ed file's names are
 apart: `physics.x`).
 
-A function that assigns a global declared further down the file gets a warning: that changes
-the global, which a short name (`i`, `best`) does by accident. `let x = ...` makes a variable of
-the function's own; declaring the global above the function says the function means it.
+A function may not assign (with `=`) a global declared further down the file: a global added
+there later (`i`, `best`) would quietly change what the function does. `let x = ...` makes a
+variable of the function's own; declaring the global above the function says the function
+means it.
 
 Top-level variables are globals, initialized in order before `main` runs (each where its line
 is, even `x = 0`).
