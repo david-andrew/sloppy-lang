@@ -825,7 +825,7 @@ arm64_ins = (pos: int, ins: Ins):
                 a_adr_data(9, 1, 0)
                 a_ldr(9, 9, 0)
                 a_st(d, 9)
-            else if ins.imm >= 2 and ins.imm <= 9:
+            else if ins.imm >= 2 and ins.imm <= 9 or ins.imm == 11:
                 a_call_args(ins)
                 a_stub_fix.push((code.len(), int(ins.imm)))
                 a_bl()
@@ -967,6 +967,28 @@ arm64_stubs = ():
     stub_addr[9] = code.len()
     a_movz(0, 0, 0)
     a_ret()
+    # code_sync(x0 = p, x1 = n): machine code written there made ready to run: the data cache
+    # cleaned to where instructions are fetched from, then the instruction cache invalidated, by
+    # 16 bytes (no cache line is smaller)
+    stub_addr[11] = code.len()
+    w32(0xD344FC09)                                             # lsr x9, x0, #4
+    w32(0xD37CED29)                                             # lsl x9, x9, #4
+    a_rrr(A_ADD, 10, 0, 1)                                      # x10 = end
+    a_mov(11, 9)
+    w32(0xD50B7B20 | 11)                                        # dc cvau, x11
+    a_add_imm(11, 11, 16)
+    a_cmp(11, 10)
+    w32(0x54000000 | (((-3) & 0x7FFFF) << 5) | AC_LO)           # b.lo
+    w32(0xD5033B9F)                                             # dsb ish
+    a_mov(11, 9)
+    w32(0xD50B7520 | 11)                                        # ic ivau, x11
+    a_add_imm(11, 11, 16)
+    a_cmp(11, 10)
+    w32(0x54000000 | (((-3) & 0x7FFFF) << 5) | AC_LO)           # b.lo
+    w32(0xD5033B9F)                                             # dsb ish
+    w32(0xD5033FDF)                                             # isb
+    a_movz(0, 0, 0)
+    a_ret()
 
 # the entry point: save the initial stack pointer (argc, argv) in data's first word, run the
 # initializers and main, exit
@@ -979,6 +1001,24 @@ arm64_entry = (inits: int[], main_lf: int) -> int:
     w32(0x910003E9)                                             # mov x9, sp
     a_adr_data(10, 1, 0)
     a_str(9, 10, 0)
+    if watch_build:
+        # (sloppy watch: room for the code of later builds, taken before anything else can be put
+        # there; its first word tells lib/std/watch.jo it is there)
+        a_mov_imm(0, WATCH_CODE_AT)
+        a_mov_imm(1, WATCH_CODE_SIZE)
+        a_movz(2, 7, 0)
+        a_mov_imm(3, 0x104022)                                  # private, anonymous, no reserve, fixed (no replace)
+        a_mov_imm(4, -1)
+        a_movz(5, 0, 0)
+        a_mov_imm(8, 222)                                       # mmap
+        a_svc()
+        a_mov_imm(9, WATCH_CODE_AT)
+        a_cmp(0, 9)
+        j = code.len()
+        w32(0x54000000 | AC_NE)                                 # b.ne over the mark
+        a_mov_imm(10, 0x6A6F74776174636B)
+        a_str(10, 9, 0)
+        wr32(j, rd32(j) | ((((code.len() - j) / 4) & 0x7FFFF) << 5))
     loop f in inits:
         a_call_fix.push((code.len(), f))
         a_bl()

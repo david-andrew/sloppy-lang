@@ -20,17 +20,21 @@ use 'expr.jo'
 use 'ir.jo'
 use 'lower.jo'
 use 'x64.jo'
+use 'arm64.jo'
 use 'elf.jo'
+use 'macho.jo'
 use 'main.jo'
 use 'ide.jo'
 
 const REPL_REGION = 0x10000000          # where inputs' code goes in the session (within 2 GB of
-const REPL_REGION_SIZE = 0x20000000     # its globals: code reaches them by 32-bit offsets)
+const REPL_REGION_SIZE = 0x20000000     # its globals: code reaches them by 32-bit offsets; arm64's
+                                        # ADRP reaches 4 GB, and calls further than BL's 128 MB
+                                        # go through veneers)
 const REPL_DATA_RESERVE = 64 << 20      # room for globals declared by inputs
 
 repl_mainm = -1
 repl_inputs = 0
-repl_next = REPL_REGION                 # where the next input's code goes
+repl_next = 0                           # where the next input's code goes
 lf_abs: int[]                           # function (lfunc) -> its address in the session
 ro_segs: (int, int, int)[]              # read-only data: (from, to) offsets and their address
 ro_shipped = 0
@@ -51,8 +55,14 @@ repl_set_main = ():
 
 # ---- the session ----
 
+# (macOS: above the image, which starts at 4 GB with nothing mapped below it)
+repl_region = () -> int:
+    if target_macos: return MACHO_BASE + 0x40000000
+    REPL_REGION
+
 repl_start = () -> str:
-    src = "__repl_main = (): __repl_serve({REPL_REGION}, {REPL_REGION_SIZE})\n"
+    repl_next = repl_region()
+    src = "__repl_main = (): __repl_serve({repl_next}, {REPL_REGION_SIZE})\n"
     cache = "/tmp/sloppy-cache"
     when TARGET == "windows":
         cache = os_path(temp_dir()) + "/sloppy-cache"
@@ -255,6 +265,10 @@ repl_compile = (text: str, n: int) -> ReplOut:
     data_fix = []
     stub_fix = []
     cabi_fix = []
+    a_call_fix = []
+    a_stub_fix = []
+    a_faddr_fix = []
+    a_data_fix = []
     elf_syms = []
     pinits: int[]
     i = lf0
@@ -264,10 +278,10 @@ repl_compile = (text: str, n: int) -> ReplOut:
                 fx = lfuncs[i].inst
                 if len(fns[fx].clib) == 0: fatal(nodes[int(fns[fx].decl)].pos, "extern functions need @lib(\"library.so\") on native targets")
                 lower_extern_thunk(i, fx)
-                x64_function()
+                emit_function()
             else:
                 lower_function(i)
-                x64_function()
+                emit_function()
             i += 1
         # library globals used for the first time: initialized before the input runs
         decls2: int[]
@@ -285,6 +299,7 @@ repl_compile = (text: str, n: int) -> ReplOut:
         fns[pi].state = 2
         zonk_tree(pb)
         pinits.push(lf_of_inst(pi))
+    if target_arm64: return repl_place_arm64(out, pinits, init_lf, lf0)
     # the entry: library globals first (in the order they were found), then the input
     loop code.len() % 16 != 0: b(0xCC)
     out.entry = code.len()
@@ -327,6 +342,63 @@ repl_compile = (text: str, n: int) -> ReplOut:
         patch32(f.0, t - (addr + f.0 + 4))
     out.code = code
     repl_next = (addr + code.len() + 4095) & ~4095
+    out
+
+# arm64: the entry, then the code placed at repl_next and linked to the session (calls beyond
+# BL's reach through veneers after the code), then the new read-only data
+repl_place_arm64 = (out0: ReplOut, pinits: int[], init_lf: int, lf0: int) -> ReplOut:
+    out = out0
+    out.entry = code.len()
+    w32(0xA9BF7BFD)                                             # stp x29, x30, [sp, #-16]!
+    w32(0x910003FD)                                             # mov x29, sp
+    loop f in pinits:
+        a_call_fix.push((code.len(), f))
+        a_bl()
+    a_call_fix.push((code.len(), init_lf))
+    a_bl()
+    w32(0xA8C17BFD)                                             # ldp x29, x30, [sp], #16
+    a_ret()
+    addr = repl_next
+    out.addr = addr
+    loop lf in [lf0..lfuncs.len()):
+        loop lf_abs.len() <= lf: lf_abs.push(0)
+        if lf < fn_addr.len() and fn_addr[lf] >= 0: lf_abs[lf] = addr + fn_addr[lf]
+    bls: (int, int)[]
+    loop f in a_call_fix:
+        t = lf_abs[f.1]
+        if t == 0: ice("unresolved function {lfuncs[f.1].name}")
+        bls.push((f.0, t))
+    loop f in a_stub_fix: bls.push((f.0, img_text_addr + stub_addr[f.1]))
+    veneers: {int: int} = {}
+    loop f in bls:
+        t = f.1
+        if t - (addr + f.0) >= 1 << 27 or t - (addr + f.0) < -(1 << 27):
+            v = veneers.get(t) ?? -1
+            if v < 0:
+                v = code.len()
+                veneers[t] = v
+                w32(0x58000050)                                 # ldr x16, #8
+                a_br(16)
+                w32(t & 0xFFFFFFFF)
+                w32((t >> 32) & 0xFFFFFFFF)
+            t = addr + v
+        wr32(f.0, rd32(f.0) | (((t - (addr + f.0)) / 4) & 0x3FFFFFF))
+    loop f in a_faddr_fix:
+        t = lf_abs[f.1]
+        if t == 0: ice("unresolved function {lfuncs[f.1].name}")
+        a_patch_adrp(f.0, addr, t)
+    loop code.len() % 16 != 0: w32(0)
+    ro_at = addr + code.len()
+    if rodata.len() > ro_shipped:
+        ro_segs.push((ro_shipped, rodata.len(), ro_at))
+        loop j in [ro_shipped..rodata.len()): code.push(rodata[j])
+        ro_shipped = rodata.len()
+    loop f in a_data_fix:
+        t = img_data_addr + f.2
+        if f.1 == 0: t = repl_ro_addr(f.2)
+        a_patch_adrp(f.0, addr, t)
+    out.code = code
+    repl_next = (addr + code.len() + 0x3FFF) & ~0x3FFF
     out
 
 # the address of read-only data at offset off

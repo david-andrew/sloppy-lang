@@ -28,6 +28,7 @@ use 'lower.jo'
 use 'opt.jo'
 use 'inline.jo'
 use 'x64.jo'
+use 'arm64.jo'
 use 'elf.jo'
 use 'repl.jo'
 use 'main.jo'
@@ -362,14 +363,20 @@ gsize = (g: int) -> int:
     if sz < 8: sz = 8
     sz
 
-# ---- references in code: (position, kind, target, offset within it) ----
+# ---- references in code: (position, kind, target, offset within it, form) ----
 # kinds: 0 a function (target: lfunc), 1 read-only data (target: item), 2 a global (target:
 # global, -1 for the initial stack pointer's word), 3 a stub (target: its number), 4 the word
 # keeping a C function found (target: its offset)
+# forms: 0 x86-64's 32-bit offset (4 bytes); arm64: 1 BL (4 bytes), 2 ADRP + ADD (8 bytes)
 rl_pos: int[]
 rl_kind: int[]
 rl_tgt: int[]
 rl_off: int[]
+rl_form: int[]
+
+rl_len = (r: int) -> int:
+    if rl_form[r] == 2: return 8
+    4
 g_offs: int[]               # globals by offset
 g_ids: int[]
 
@@ -383,27 +390,43 @@ relocs_collect = ():
         g_offs.push(global_off[g])
         g_ids.push(g)
     order: int[]
-    n = call_fix.len() + data_fix.len() + stub_fix.len()
+    # (arm64: calls by BL, function addresses by ADRP + ADD, as x86-64's calls and data)
+    cf = call_fix
+    df = data_fix
+    sf = stub_fix
+    forms: int[]
+    if target_arm64:
+        cf = a_call_fix + a_faddr_fix
+        df = a_data_fix
+        sf = a_stub_fix
+        loop f in a_call_fix: forms.push(1)
+        loop f in a_faddr_fix: forms.push(2)
+        loop f in a_data_fix: forms.push(2)
+        loop f in a_stub_fix: forms.push(1)
+    n = cf.len() + df.len() + sf.len()
     pos_all: int[]
-    loop f in call_fix: pos_all.push(f.0)
-    loop f in data_fix: pos_all.push(f.0)
-    loop f in stub_fix: pos_all.push(f.0)
+    loop f in cf: pos_all.push(f.0)
+    loop f in df: pos_all.push(f.0)
+    loop f in sf: pos_all.push(f.0)
     loop i in [0..n): order.push(i)
     order.sort_by((i: int): pos_all[i])
     rl_pos = []
     rl_kind = []
     rl_tgt = []
     rl_off = []
-    nc = call_fix.len()
-    nd = data_fix.len()
+    rl_form = []
+    nc = cf.len()
+    nd = df.len()
     loop i in order:
         rl_pos.push(pos_all[i])
+        if target_arm64: rl_form.push(forms[i])
+        else: rl_form.push(0)
         if i < nc:
             rl_kind.push(0)
-            rl_tgt.push(call_fix[i].1)
+            rl_tgt.push(cf[i].1)
             rl_off.push(0)
         else if i < nc + nd:
-            f = data_fix[i - nc]
+            f = df[i - nc]
             if f.1 == 0:
                 it = ro_item_of(f.2)
                 rl_kind.push(1)
@@ -421,7 +444,7 @@ relocs_collect = ():
                 else: rl_off.push(f.2 - global_off[g])
         else:
             rl_kind.push(3)
-            rl_tgt.push(stub_fix[i - nc - nd].1)
+            rl_tgt.push(sf[i - nc - nd].1)
             rl_off.push(0)
 
 ro_item_of = (off: int) -> int:
@@ -480,7 +503,12 @@ fn_hash = (lf: int, keys: str[]) -> int:
             h = wh_int(h, p - s)
             h = wh_str(h, rl_name(r, keys))
             h = wh_int(h, rl_off[r])
-            p += 4
+            # (arm64: the instructions without their offsets)
+            if rl_form[r] == 1: h = wh_int(h, rd32(p) & 0xFC000000)
+            else if rl_form[r] == 2:
+                h = wh_int(h, rd32(p) & 0x9F00001F)
+                h = wh_int(h, rd32(p + 4) & 0xFFC003FF)
+            p += rl_len(r)
             r += 1
         else:
             h = wh_byte(h, int(code[p]))
@@ -695,8 +723,18 @@ watch_make_patch = () -> bool:
                 else: target = gaddr[t] + rl_off[r]
             else if k == 4: target = ffi_addr[t]
             else: target = wm_stubs[t]
-            d = target - (a + p + 4)
-            loop q in [0..4): b[p + q] = u8((d >> (8 * q)) & 255)
+            f = rl_form[r]
+            if f == 0:
+                d = target - (a + p + 4)
+                loop q in [0..4): b[p + q] = u8((d >> (8 * q)) & 255)
+            else if f == 1:
+                # (BL reaches 128 MB: further, through a veneer in the region)
+                if target - (a + p) >= 1 << 27 or target - (a + p) < -(1 << 27): target = w_veneer(target)
+                put32(b, p, (get32(b, p) & 0xFC000000) | (((target - (a + p)) / 4) & 0x3FFFFFF))
+            else:
+                pages = (target >> 12) - ((a + p) >> 12)
+                put32(b, p, (get32(b, p) & 0x9F00001F) | ((pages & 3) << 29) | (((pages >> 2) & 0x7FFFF) << 5))
+                put32(b, p + 4, (get32(b, p + 4) & 0xFFC003FF) | ((target & 0xFFF) << 10))
             r += 1
         wp_put(1, a, b)
     # replaced functions: a jump from their first address
@@ -715,8 +753,34 @@ watch_make_patch = () -> bool:
     wm_files_collect()
     true
 
+get32 = (b: u8[], p: int) -> int: int(b[p]) | (int(b[p + 1]) << 8) | (int(b[p + 2]) << 16) | (int(b[p + 3]) << 24)
+
+put32 = (b: mut u8[], p: int, x: int):
+    loop q in [0..4): b[p + q] = u8((x >> (8 * q)) & 255)
+
+# arm64: code in the region that jumps to target (anywhere)
+w_veneers: {int: int} = {}
+w_veneer = (target: int) -> int:
+    if let v = w_veneers.get(target): return v
+    v = w_place(16)
+    b: u8[]
+    loop x in [0x58000050, 0xD61F0200, target & 0xFFFFFFFF, (target >> 32) & 0xFFFFFFFF]:     # ldr x16, #8; br x16
+        loop q in [0..4): b.push(u8((x >> (8 * q)) & 255))
+    wp_put(1, v, b)
+    w_veneers[target] = v
+    v
+
 # run a function in the program (through an entry that keeps the stack aligned as calls expect)
 w_run_fn = (a: int):
+    if target_arm64:
+        # stp x29, x30, [sp, #-16]!; mov x29, sp; ldr x16, a; blr x16; ldp x29, x30, [sp], #16; ret
+        e = w_place(32)
+        st: u8[]
+        loop x in [0xA9BF7BFD, 0x910003FD, 0x58000090, 0xD63F0200, 0xA8C17BFD, 0xD65F03C0, a & 0xFFFFFFFF, (a >> 32) & 0xFFFFFFFF]:
+            loop q in [0..4): st.push(u8((x >> (8 * q)) & 255))
+        wp_put(1, e, st)
+        wp_run(e)
+        return
     e = w_place(16)
     stub: u8[] = [0x48, 0x83, 0xEC, 0x08, 0xE8, 0, 0, 0, 0, 0x48, 0x83, 0xC4, 0x08, 0xC3]
     d = a - (e + 9)
