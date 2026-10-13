@@ -144,7 +144,7 @@ Top-level statements in the main file run in order, like a script.
 
 **Numeric conversions.** Integers widen implicitly to larger integer types of the same
 signedness and to floats; `f32` and `f64` convert implicitly in both directions.
-Narrowing is explicit: `int(3.7)`, `u8(x)`, `f32(x)`. `as` reinterprets bits/pointers.
+Narrowing is explicit: `int(3.7)`, `u8(x)`, `i32(n)`. `as` reinterprets bits/pointers.
 Float to integer conversion truncates toward zero and saturates: NaN becomes 0 and values
 beyond the integer range become its minimum or maximum (the same on every target).
 
