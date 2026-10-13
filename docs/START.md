@@ -95,7 +95,11 @@ sloppy build game.jo --target wasm         # game.html: one file that runs in an
 sloppy build game.jo --target wasm -o game.zip   # the same, ready for itch.io
 ```
 
-Each is one file with nothing to install alongside it.
+Each is one file with nothing to install alongside it (`--target macos` and `--target linux`
+make the same from any system too; a Windows build's `.pdb` beside it is for debuggers only).
+A macOS build is a plain program, not an `.app`, and not signed by an Apple developer account:
+a Mac runs a downloaded one after `xattr -d com.apple.quarantine game` in the Terminal (or
+System Settings, Privacy & Security, Open Anyway).
 
 ## Editors
 

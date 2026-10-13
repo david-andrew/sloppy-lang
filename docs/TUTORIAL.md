@@ -602,7 +602,9 @@ sloppy build firefly.jo --target wasm -o firefly.zip   # the same, ready to uplo
 ```
 
 Each is a single file with nothing to install: send it, or upload it. In the `build:` block,
-`icon = "icon.png"` gives the Windows program and the web page an icon.
+`icon = "icon.png"` gives the program an icon (the Windows program's, the window's, the web
+page's). A Windows build also writes a `.pdb` beside the `.exe`: what debuggers read, not needed
+to play.
 
 From here:
 - [Make an arcade game](TUTORIAL_REBOUND.md): the second tutorial, a small version of Rebound.

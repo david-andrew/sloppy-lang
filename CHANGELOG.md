@@ -29,6 +29,8 @@ Games:
 - `ui_choice("Level", ["forest", "cave", "tower"], level)`: one of several, in a menu.
 - The software renderer draws small meshes on one thread: waking the others for each
   `draw_mesh` cost more than it saved (40 small cubes a frame: 10 times faster; Breakwater: twice).
+- `ui_slider` moves by whole steps (0.8, less two steps, is 0.6, not 0.6000000000000001).
+  `master_volume()` says what it was set to.
 - `capsule_mesh(radius, height)`: the shape of physics3d's capsules and characters.
 - `draw_line3d(a, b, color)` and `draw_grid3d()`: lines and a ground grid in 3D, for seeing paths,
   rays and distances while making a game.
@@ -97,11 +99,28 @@ Errors and hints:
   (the fraction is gone before: 3 / 4 is 0).
 - Hints for Python's `xs[:2]`, `a if c else b`, `if xs:` and `if n:`, for `score += 0.5` with an
   int score (make it `score = 0.0`), and for a color (vec4) given where a vec3 is wanted (`.rgb`).
+- Comparing an optional with a value (`env("X") != ""`) says how: `(x ?? default) == value`
+  or `if let`.
 - The REPL's `:type f` of a function shows its versions and their notes.
 - A struct's function field taking `self` says that structs have no methods and how to write one;
   an indentation error in a file that mixes tabs and spaces says so.
 - Key names from other libraries (`.esc`, `.return`, `.left_ctrl`, `.left_arrow`) say which variant is
   meant (`.escape`, `.enter`, `.ctrl`, `.left`).
+
+Compiling:
+- The library's functions are read only when a program uses them (the lexer passes over their
+  bodies): building an empty program takes 37% less work, small games 2 to 5% less, which more
+  than pays for the library's growth in this release.
+
+Shipping:
+- `--target wasm -o game.zip` (for itch.io) deflates the page: a third of the size.
+- `can_quit()` is false in a web page, where `quit()` cannot close anything; the arcade
+  template's title menu leaves its Quit button out there.
+- A macOS build shows the build block's icon in the Dock.
+- `SLOPPY_INPUT` works in web pages too (`page.html?SLOPPY_INPUT=5:space+`), types letters,
+  digits and spaces it presses into `text_input()`, and takes `9:text=ACE`.
+- `--help`, `sloppy new` and START.md name every target; START.md says what a macOS build needs
+  on a Mac, and what a Windows build's `.pdb` is.
 
 Editor:
 - The language server reads what has arrived before answering: a request the editor cancelled

@@ -518,7 +518,7 @@ save_data("progress", "{level}\n{coins}")
 if let s = load_data("progress"): ...
 ```
 
-Each program has its own place, named after it (PROGRAM_NAME: the build block's `name`, else the main file's name): on Linux ~/.local/share/<name>/ (or $XDG_DATA_HOME), on Windows %APPDATA%\<name>\, on macOS ~/Library/Application Support/<name>/, in a web page the browser's storage for the page (it survives reloads and restarts of the browser). SLOPPY_SAVE_DIR puts it somewhere else (tests).
+Each program has its own place, named after it (PROGRAM_NAME: the build block's `name`, else the main file's name): on Linux ~/.local/share/<name>/ (or $XDG_DATA_HOME), on Windows %APPDATA%\<name>\, on macOS ~/Library/Application Support/<name>/, in a web page the browser's storage for the page (it survives reloads and restarts of the browser). SLOPPY_SAVE_DIR=/tmp/x puts it in /tmp/x/<name>/ instead (tests).
 
 - `save_dir = () -> str`: the directory a program's data goes to (made when first written; "" in a web page)
 - `save_data = (name: str, contents: str) -> bool`: keep contents under name (a file name: no / or \); false if it could not be written
@@ -764,7 +764,8 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `fps = () -> f64`
 - `elapsed = () -> f64`
 - `frame_number = () -> int`
-- `quit = ()`
+- `quit = ()`: end the game (the window closes once this frame is done). A web page cannot close itself: there it does nothing (can_quit() is false, so a menu can leave its Quit button out)
+- `can_quit = () -> bool`
 - `set_fullscreen = (on: bool = true)`
 - `toggle_fullscreen = ()`
 - `is_fullscreen = () -> bool`
@@ -878,7 +879,7 @@ loop pad in gamepads():                    # (local multiplayer: one player per 
     players[pad].move = left_stick(pad)
 ```
 
-A controller keeps its number while it is plugged in (players stay who they are); one plugged in later takes a free number. input_axis() also follows the sticks and d-pads, so keyboard games work with a pad. Linux builds read the joystick devices (/dev/input/js0..7), Windows builds XInput (four controllers: what Windows maps to the Xbox layout), web builds the browser's Gamepad API.
+A controller keeps its number while it is plugged in (players stay who they are); one plugged in later takes a free number. input_axis() also follows the sticks and d-pads, so keyboard games work with a pad. Linux builds read the joystick devices (/dev/input/js0..7), Windows builds XInput (four controllers: what Windows maps to the Xbox layout), web builds the browser's Gamepad API. (macOS builds do not read gamepads yet.)
 
 - `enum PadButton: a, b, x, y, lb, rb, back, start, home, lstick, rstick, up, down, left, right`
 - `const MAX_GAMEPADS = 8`
@@ -1788,7 +1789,7 @@ draw = ():
 
 ### audio.jo
 
-Audio: a software mixer written in Sloppy. Sounds are float sample buffers (stereo, interleaved, at the mixer rate). Each frame the mixer renders just enough samples to keep the output device fed. Native: ALSA (loaded at runtime; silent if unavailable). Web: WebAudio.
+Audio: a software mixer written in Sloppy. Sounds are float sample buffers (stereo, interleaved, at the mixer rate). Each frame the mixer renders just enough samples to keep the output device fed: on Linux through ALSA, on Windows waveOut, on macOS AudioQueue, in a web page Web Audio (silent where there is none, or with SLOPPY_NO_AUDIO=1). Web: WebAudio.
 
 - `struct Sound`
   ```gdscript
@@ -1828,6 +1829,7 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
 #### Volume
 
 - `master_volume = (v: f64)`: the volume of everything played, from 0 (silent) to 1
+- `master_volume = () -> f64`: the volume set with master_volume (0.8 to start with)
 
 #### Making sounds
 

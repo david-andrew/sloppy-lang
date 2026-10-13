@@ -743,7 +743,8 @@ build:                          # build options live in the source
     output = "mygame"           # the file `sloppy build` writes (beside the program)
     name = "My Game"            # PROGRAM_NAME: window title, and where save_data keeps data
     icon = "icon.png"           # a square PNG (up to 256 px): the .exe's icon, the window's (on
-                                # Windows and X11), the web page's; PROGRAM_ICON has its bytes
+                                # Windows and X11), the Dock's on macOS, the web page's;
+                                # PROGRAM_ICON has its bytes
 
 when TARGET == "wasm":          # compile-time conditional; the dead branch is not compiled
     ...

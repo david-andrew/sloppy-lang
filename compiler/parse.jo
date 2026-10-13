@@ -11,6 +11,11 @@ p_src = ""
 p_no_tuple = false
 p_when_top = false
 p_base = 0               # where p_src starts in the file (an interpolation's source is part of it)
+# A library file's top-level functions keep their bodies as text until a program uses them
+# (ensure_body): the lexer gives each one as a .lazy token. Most of the library is never called,
+# and lexing and parsing all of it was a quarter of building a small game.
+p_lazy = false           # (parsing a library file, outside the editor)
+p_top_decl = false       # (the function being parsed is a top-level one)
 
 pk = () -> Tok: toks[ti].kind
 pkn = (k: int) -> Tok:
@@ -1094,15 +1099,7 @@ parse_block = () -> int:
     stmts: int[]
     if pk() == .newline:
         advance()
-        if pk() != .indent: fatal(cur_pos(), "expected an indented block")
-        advance()
-        loop pk() != .dedent and pk() != .eof:
-            s = parse_stmt()
-            if s != 0: stmts.push(s)
-        expect(.dedent, "end of block")
-        add_flag(b, NF_TERMINATED)
-        set_list(b, stmts)
-        return b
+        return parse_indented_block(b)
     # (`loop x in xs: if x > 0: n += 1`: an if after the colon is the statement, which needs no else)
     if pk() == .kw_if:
         stmts.push(parse_if())
@@ -1112,6 +1109,19 @@ parse_block = () -> int:
     loop pk() == .semi and pkn(1) != .newline:
         advance()
         stmts.push(parse_simple_stmt())
+    set_list(b, stmts)
+    b
+
+# the statements of an indented block, from its indent token on, into block b
+parse_indented_block = (b: int) -> int:
+    if pk() != .indent: fatal(cur_pos(), "expected an indented block")
+    advance()
+    stmts: int[]
+    loop pk() != .dedent and pk() != .eof:
+        s = parse_stmt()
+        if s != 0: stmts.push(s)
+    expect(.dedent, "end of block")
+    add_flag(b, NF_TERMINATED)
     set_list(b, stmts)
     b
 
@@ -1323,7 +1333,19 @@ parse_fn_literal = (kind: NK, name: int, pos: int) -> int:
             advance()
             add_flag(f, NF_VOID)
         else: nodes[f].a = i32(parse_type())
-    if pk() == .colon:
+    if pk() == .colon and pkn(1) == .newline and pkn(2) == .lazy and p_top_decl and kind == .fn_:
+        # (its text, parsed when used: ensure_body)
+        advance()
+        advance()
+        lz = advance()
+        b = mk(.block, pos)
+        add_flag(b, NF_LAZY)
+        add_flag(b, NF_TERMINATED)
+        nodes[b].ival = int(toks[lz].start)
+        nodes[b].aux = toks[lz].len
+        nodes[f].b = i32(b)
+        add_flag(f, NF_TERMINATED)
+    else if pk() == .colon:
         advance()
         saved = p_no_tuple
         saved_m = p_matrix
@@ -2159,7 +2181,10 @@ parse_toplevel = () -> int:
     k = pk()
     d = 0
     if k == .ident and toks[ti].ival == id_type and pkn(1) == .ident and (pkn(2) == .assign or pkn(2) == .lbrack): d = parse_type_alias()
-    else if (k == .lparen or (k == .ident and (pkn(1) == .assign or pkn(1) == .lbrack))) and fn_decl_ahead(): d = parse_fn_decl(false)
+    else if (k == .lparen or (k == .ident and (pkn(1) == .assign or pkn(1) == .lbrack))) and fn_decl_ahead():
+        p_top_decl = true
+        d = parse_fn_decl(false)
+        p_top_decl = false
     else if k == .kw_extern:
         advance()
         d = parse_fn_decl(true)
@@ -2233,7 +2258,9 @@ parse_file = (file: int) -> int[]:
         id_type = intern("type")
         id_soa = intern("soa")
         id_from = intern("from")
+    lx_lazy = p_lazy
     toks = lex(file, files[file].src)
+    lx_lazy = false
     if stop_after == "lex":
         toks = []
         return []
@@ -2248,3 +2275,42 @@ parse_file = (file: int) -> int[]:
         skip_newlines()
     toks = []
     decls
+
+# the body of function declaration d, parsed now if it was left for later
+ensure_body = (d: int):
+    b = int(nodes[d].b)
+    if b == 0 or not has_flag(b, NF_LAZY): return
+    saved_toks = toks
+    saved_ti = ti
+    saved_file = p_file
+    saved_src = p_src
+    saved_base = p_base
+    saved_nt = p_no_tuple
+    saved_m = p_matrix
+    saved_h = p_header
+    saved_lazy = p_lazy
+    saved_top = p_top_decl
+    # (the body's lines alone, lexed where they are in the file: the indented block)
+    p_file = pos_file(nodes[d].pos)
+    start = int(nodes[b].ival)
+    p_src = files[p_file].src
+    toks = lex(p_file, p_src, start, start + int(nodes[b].aux))
+    ti = 0
+    p_base = 0
+    p_no_tuple = false
+    p_matrix = 0
+    p_header = false
+    p_lazy = false
+    p_top_decl = false
+    body = parse_indented_block(mk(.block, cur_pos()))
+    nodes[d].b = i32(body)
+    toks = saved_toks
+    ti = saved_ti
+    p_file = saved_file
+    p_src = saved_src
+    p_base = saved_base
+    p_no_tuple = saved_nt
+    p_matrix = saved_m
+    p_header = saved_h
+    p_lazy = saved_lazy
+    p_top_decl = saved_top
