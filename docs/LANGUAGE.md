@@ -676,6 +676,27 @@ module's `volume`, not a new one.
 The core standard library (strings, arrays, maps, math, vectors, files, numeric arrays, and
 the game/graphics/audio API) is always available without importing.
 
+**Packages.** Other people's code comes by git URL (or from a directory), named in the build
+block:
+
+```gdscript
+build:
+    physics = package("https://github.com/ann/sloppy-physics")
+    tween = package("https://github.com/bob/tween", "v1.2")     # a tag, a branch or a commit
+    shared = package("../shared")                               # a directory
+
+import physics                      # the package's main file: physics.jo at its root (or its only file there)
+import 'physics/world.jo' as world  # any other file of it
+```
+
+`sloppy add https://github.com/ann/sloppy-physics` writes that line (into the `.jo` file in the
+current directory, or the one given) and fetches it. The first build pins each git package to a
+commit in `sloppy.lock` beside the program: keep that file with the program, and every build
+uses the same code, whoever builds it (delete a package's line to take its newest commit). Git
+fetches each commit once, into a cache (`~/.cache/sloppy/packages`; `SLOPPY_PACKAGES` puts it
+elsewhere), so later builds need no network. The packages a package names in its own build
+block come along. There is no registry: a package is any repository with Sloppy files.
+
 ## 10. Compile-time features
 
 ```gdscript
@@ -866,6 +887,7 @@ sloppy build file.jo      write the executable / .html (-o game.zip: the page as
 sloppy test file.jo       run `test` blocks
 sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, 3d, program)
 sloppy check file.jo      type check only
+sloppy add <git URL>      a package, in the build block (and sloppy.lock)
 sloppy fmt file.jo        lay out the code one way (directories too; --check: only list what
                           would change; -: standard input to standard output)
 sloppy update             install the latest release (when this is not it)

@@ -358,6 +358,7 @@ Operating system access: files, arguments, environment, time.
 - `exe_path = () -> str`: absolute path of the running executable
 - `exec = (path: str, argv: str[]) -> bool`: replace the current process with another program (returns only on failure)
 - `spawn_detached = (path: str, argv: str[]) -> bool`: start a program in the background, detached from this one: its own session, no terminal (input and output go to /dev/null); returns whether it was started
+- `run_program = (program: str, args: str[] = []) -> (int, str)`: run a program and wait for it to end: its exit code (-1: it could not be started) and what it wrote to its standard output (its errors go where this program's go). A program named without a / is looked for on the PATH. args are its arguments, after its name.
 - `chmod = (path: str, mode: int) -> bool`
 - `mkdir = (path: str) -> bool`
 - `cwd = () -> str`: the current directory

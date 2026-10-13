@@ -1,6 +1,7 @@
 # Semantic analysis: modules, scopes, declarations, function instances, statements.
 
 use 'util.jo'
+use 'pkg.jo'
 use 'lex.jo'
 use 'ast.jo'
 use 'parse.jo'
@@ -488,7 +489,19 @@ register_decls = (m: int, decls: int[]):
                 path = rel
                 if not is_abs_path(rel): path = "{modules[m].dir}/{rel}"
                 if len(modules[m].dir) == 0: path = rel
+                # ('package/file.jo': a file of a package)
+                sl = find(rel, "/")
+                if not file_exists(path) and sl > 0:
+                    pn = rel[..sl)
+                    if let why = pkg_errs.get(pn): fatal(nodes[d].pos, why)
+                    if let pd = pkg_dirs.get(pn): path = "{pd}/{rel[sl + 1..]}"
                 if not file_exists(path): fatal(nodes[d].pos, "cannot find '{rel}' (looked for {path})")
+            else if pkg_dirs.get(rel) != none or pkg_errs.get(rel) != none:
+                # a package (pkg.jo): its main file
+                if let why = pkg_errs.get(rel): fatal(nodes[d].pos, why)
+                pd = pkg_dirs[rel]
+                path = pkg_main(rel, pd) ?? ""
+                if len(path) == 0: fatal(nodes[d].pos, "package '{rel}' has no main file ({rel}.jo, or only one .jo file at its root): import one of its files, as import '{rel}/file.jo'")
             else:
                 # a standard-library module by name: lib/NAME.jo or lib/{std,game,core}/NAME.jo
                 if not file_exists(path): path = "{lib_dir}/{rel}.jo"
@@ -2003,6 +2016,12 @@ check_build_block = ():
         else if nodes[v].kind == .str_lit and nodes[v].aux == 0: word = name_of(int(nodes[v].sval))
         if seen.contains(key): fatal(nodes[s].pos, "build option '{key}' is set twice")
         seen.push(key)
+        if nodes[v].kind == .call and nodes[int(nodes[v].a)].kind == .ident and name_of(int(nodes[int(nodes[v].a)].name)) == "package":
+            # name = package("git URL or directory"[, "tag, branch or commit"]): pkg.jo
+            if nkids(v) < 1 or nkids(v) > 2: fatal(nodes[v].pos, "a package is package(\"git URL or directory\") or package(\"git URL\", \"tag, branch or commit\")")
+            loop k in [0..nkids(v)):
+                if nodes[kid(v, k)].kind != .str_lit or nodes[kid(v, k)].aux != 0: fatal(nodes[kid(v, k)].pos, "package() takes strings in quotes")
+            continue
         if key == "target":
             if word != "native" and word != "linux" and word != "linux-arm64" and word != "macos" and word != "windows" and word != "wasm":
                 fatal(nodes[v].pos, "build option 'target' is native, linux, linux-arm64, macos, windows or wasm")
@@ -2029,7 +2048,7 @@ check_build_block = ():
             loop c in word:
                 if c == '/' or c == '\\' or c == ':' or c < ' ': fatal(nodes[v].pos, "the program's name is also its save folder's: it cannot contain / \\ or :")
         else:
-            fatal(nodes[int(nodes[s].a)].pos, "unknown build option '{key}' (the options are target, opt, output, name and icon)")
+            fatal(nodes[int(nodes[s].a)].pos, "unknown build option '{key}' (the options are target, opt, output, name and icon, and packages: name = package(\"git URL\"))")
 
 # ---------------- program ----------------
 want_cpu_flag = false           # (release builds for x86-64: the vectorizer may use __cpu_avx2)

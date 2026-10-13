@@ -81,12 +81,12 @@ rebindable controls, touch on the web).
   language server's code actions) exist for misspelled names, `loop mut`, `mut` parameters and
   numbers of another type; more as the messages say what to change.
 
-### 5. Sharing code: packages (M)
+### 5. Sharing code: packages (M, done)
 
-Another person's Sloppy code by git URL (or path) in the `build:` block, pinned by commit in a
-lock file, fetched into a cache; `sloppy add <url>`. No central registry: a list of packages on
-the website instead. Games are built from pieces (a physics module, a dialogue system, a
-shader); without this each project copies files.
+Another person's Sloppy code by git URL (or path) in the `build:` block
+(`name = package("url")`), pinned by commit in `sloppy.lock`, fetched once into a cache;
+`sloppy add <url>`; a package's own packages come along. No central registry: next, a list of
+packages on the website instead.
 
 ### 6. Everyday tools (S each)
 

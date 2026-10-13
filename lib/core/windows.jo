@@ -355,6 +355,51 @@ when TARGET == "windows":
         cmd
 
     # run a program and wait for it: its exit code (-1: it could not be started)
+    # run a program (looked for on the PATH by Windows when path is ""), its output collected:
+    # its exit code (-1: not started) and what it wrote
+    __w32_run_output = (path: str, argv: str[]) -> (int, str):
+        sa = fill(0, 3)
+        sa[0] = 24
+        sa[2] = 1                                       # bInheritHandle
+        out_r: *u8[] = [null]
+        out_w: *u8[] = [null]
+        if CreatePipe(data(out_r), data(out_w), data(sa) as *u8, u32(1 << 16)) == 0: return (-1, "")
+        SetHandleInformation(out_r[0], 1, 0)
+        si = fill(0, 13)                                # STARTUPINFOW
+        si[0] = 104
+        (data(si) as *u32)[15] = u32(0x100)             # STARTF_USESTDHANDLES
+        si[10] = GetStdHandle(u32(0xFFFFFFF6)) as int   # (its input: this program's)
+        si[11] = out_w[0] as int
+        si[12] = GetStdHandle(u32(0xFFFFFFF4)) as int   # (its errors: this program's)
+        pi = fill(0, 3)
+        wcmd = __wide(__w32_cmdline(argv))
+        started = false
+        if len(path) == 0: started = CreateProcessW(null, data(wcmd), null, null, 1, u32(0x08000000), null, null, data(si) as *u8, data(pi) as *u8) != 0
+        else:
+            wpath = __wide(path)
+            started = CreateProcessW(data(wpath), data(wcmd), null, null, 1, u32(0x08000000), null, null, data(si) as *u8, data(pi) as *u8) != 0
+        CloseHandle(out_w[0])
+        if not started:
+            CloseHandle(out_r[0])
+            return (-1, "")
+        proc = pi[0] as *u8
+        CloseHandle(pi[1] as *u8)
+        out: u8[]
+        got: u32[] = [0]
+        loop true:
+            n = out.len()
+            out.resize(n + 65536)
+            if ReadFile(out_r[0], data(out) + n, u32(65536), data(got), null) == 0 or got[0] == 0:
+                out.resize(n)
+                break
+            out.resize(n + int(got[0]))
+        CloseHandle(out_r[0])
+        WaitForSingleObject(proc, u32(0xFFFFFFFF))
+        code: u32[] = [0]
+        GetExitCodeProcess(proc, data(code))
+        CloseHandle(proc)
+        (int(code[0]), str_from_bytes(out))
+
     __w32_run = (path: str, argv: str[], wait: bool) -> int:
         wcmd = __wide(__w32_cmdline(argv))
         wpath = __wide(path)

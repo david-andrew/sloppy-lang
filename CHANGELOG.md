@@ -3,6 +3,12 @@
 ## 0.8.2 (unreleased)
 
 Tools:
+- **Packages**: `name = package("git URL" [, "tag, branch or commit"])` (or a directory) in the
+  build block; `import name` loads the package's main file, `import 'name/file.jo'` another. The
+  first build pins each to a commit in `sloppy.lock` beside the program and fetches it once,
+  with git, into a cache, so builds after are the same and need no network. `sloppy add <url>`
+  writes the line and fetches it. A package's own packages come along.
+- `run_program(program, args)`: run a program, wait for it, its exit code and output.
 - **Variables in debuggers**: `sloppy build -g` (Linux on x86-64 and arm64, macOS) adds every function's
   parameters and locals with their types and where they are while it runs, and how each frame
   is made (`.debug_frame`), so gdb and lldb show the variables of every frame on the stack. A

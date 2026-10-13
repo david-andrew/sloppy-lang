@@ -297,6 +297,56 @@ spawn_detached = (path: str, argv: str[]) -> bool:
             syscall(60, 127)                         # exit: exec failed
         true
 
+# run a program and wait for it to end: its exit code (-1: it could not be started) and what it
+# wrote to its standard output (its errors go where this program's go). A program named without
+# a / is looked for on the PATH. args are its arguments, after its name.
+run_program = (program: str, args: str[] = []) -> (int, str):
+    argv = [program] + args
+    when TARGET == "wasm":
+        return (-1, "")
+    else when TARGET == "windows":
+        if find(program, "/") < 0 and find(program, "\\") < 0: return __w32_run_output("", argv)
+        return __w32_run_output(program, argv)
+    else:
+        path = program
+        if find(program, "/") < 0:
+            path = ""
+            loop d in split(env("PATH") ?? "/usr/bin:/bin", ":"):
+                if len(d) > 0 and file_exists("{d}/{program}"):
+                    path = "{d}/{program}"
+                    break
+            if len(path) == 0: return (-1, "")
+        fds = [0]
+        if syscall(293, data(fds), 0x80000) != 0: return (-1, "")       # pipe2(O_CLOEXEC)
+        rfd = fds[0] & 0xFFFFFFFF
+        wfd = fds[0] >> 32
+        pid = syscall(57)                            # fork
+        if pid < 0:
+            syscall(3, rfd)
+            syscall(3, wfd)
+            return (-1, "")
+        if pid == 0:
+            syscall(33, wfd, 1)                      # dup2: its output into the pipe
+            exec(path, argv)
+            syscall(60, 127)                         # exit: exec failed
+        syscall(3, wfd)
+        out: u8[]
+        loop true:
+            n = out.len()
+            out.resize(n + 65536)
+            r = syscall(0, rfd, data(out) + n, 65536)
+            out.resize(n + max(r, 0))
+            if r == -4: continue                     # (EINTR: again)
+            if r <= 0: break
+        syscall(3, rfd)
+        status = [0]
+        syscall(61, pid, data(status), 0, 0)         # wait4
+        st = status[0] & 0xFFFF
+        code = (st >> 8) & 255
+        if st & 127 != 0: code = 128 + (st & 127)    # (ended by a signal)
+        if code == 127: return (-1, str_from_bytes(out))
+        (code, str_from_bytes(out))
+
 chmod = (path: str, mode: int) -> bool:
     when TARGET == "wasm":
         return false
