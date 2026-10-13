@@ -25,6 +25,7 @@ tests = sorted(glob.glob(os.path.join(root, "tests", "t", "*.jo")))
 tests = [t for t in tests if pattern in os.path.basename(t)]
 passed = failed = 0
 os.makedirs(tmp, exist_ok=True)
+os.environ["SLOPPY_SEED"] = "12345"         # (random() starts from the clock; tests print the same each time)
 import shutil
 shutil.rmtree(os.path.join(tmp, "saved-data"), ignore_errors=True)     # (save_data: tests start with nothing saved)
 for t in tests:

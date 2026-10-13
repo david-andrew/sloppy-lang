@@ -12,6 +12,10 @@ Games:
   first touches something (thick bullets, a camera kept out of walls, the ground under feet).
 
 Language:
+- `random()` differs from run to run: it starts from the clock (it always started from the same
+  seed). `seed_random(n)` makes the numbers the same every run, as do `SLOPPY_SEED=n` and screenshot
+  runs (`SLOPPY_SCREENSHOT`).
+- A warning for `s[0] + "!"`: it adds a byte and a character's code, not text.
 - `chr(c)` is the character with code point c, as in Python (`chr(233)` is "é"; it was one byte,
   which made text typed into a web page or a Windows console wrong past ASCII); `byte_str(b)` is a
   one-byte string. `split(s, "")` gives characters, not bytes. The language reference has a part on
