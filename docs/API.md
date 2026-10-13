@@ -2955,7 +2955,8 @@ draw = ():
 
 #### Through a relay (web pages too)
 
-- `join_relay[S, I] = (s: mut Session[S, I], host: str, port: int, room: str)`: play through the relay at host and port (or a ws:// or wss:// URL), with the players who name the same room
+- `join_relay[S, I] = (s: mut Session[S, I], host: str, port: int, room: str, stun: str = "stun:stun.l.google.com:19302")`: play through the relay at host and port (or a ws:// or wss:// URL), with the players who name the same room
+- `direct[S, I] = (s: Session[S, I], p: int) -> bool`: player p's packets come and go straight (WebRTC between web pages), not through the relay
 - `relay = (port: int)`: a relay on port: call it every frame (in a game that hosts others), or relay_forever
 - `relay_forever = (port: int)`: a program that is only a relay
 

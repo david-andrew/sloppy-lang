@@ -111,15 +111,17 @@ game picks from (and an example of each):
   the ticks since played again; input delay; waiting when too far ahead and slowing when ahead
   of the other's clock; inputs resent until acknowledged; hashes of confirmed ticks to catch a
   desync; simulated latency, jitter and loss. Sloppy's math is its own, so ticks agree across
-  operating systems and the web. UDP in `net`, and a relay over WebSockets for web pages (done).
-  Next: WebRTC data channels (browser to browser without a relay, and unreliable), spectators, more than one local player per
-  machine, measured round-trip time shown to the player.
+  operating systems and the web. UDP in `net`, a relay over WebSockets for web pages, and WebRTC
+  data channels between pages (unordered and never resent, as UDP; the relay passes on only how
+  they connect) (done). Next: spectators, more than one local player per machine, measured
+  round-trip time shown to the player, WebRTC between a page and a native program.
 - **Client-server (done: `netplay.server`/`client`, examples/arena):** an authoritative server;
   client-side prediction with reconciliation; snapshot interpolation; lag compensation. Next:
   delta-compressed snapshots (only what changed, and per player what is near), UDP for native
   clients, extrapolation when worlds stop arriving.
-- Lobbies and connecting players: a small relay/matchmaking server program, and NAT traversal
-  through WebRTC's ICE for browsers.
+- Lobbies and connecting players: a small relay/matchmaking server program (NAT traversal for
+  pages: WebRTC's ICE with a STUN server, done; a TURN server for pages that cannot reach each
+  other is the relay for now).
 
 ### 8. Game library gaps (in pieces, as games need them)
 

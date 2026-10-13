@@ -92,6 +92,22 @@ if shell:
         h_out = h.communicate()[0]
     b.kill()
     check("client and server with a web page (in Chromium)", h_out, ["server: walked true"])
+    # two web pages, straight to each other (WebRTC): the relay passes on only how they connect
+    port += 1
+    env["NET_PORT"] = str(port)
+    relay = build("rtc_relay") + exe
+    page = build("rtc_page", "--target", "wasm") + ".html"
+    r = subprocess.Popen([relay], stdout=subprocess.PIPE, text=True, env=env)
+    time.sleep(0.5)
+    pages = [subprocess.Popen([shell, "--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0",
+                               f"--user-data-dir={tmp}/browser{p}", "file://" + page + f"?NET_PORT={port}&PLAYER={p}"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for p in range(2)]
+    try: r_out = r.communicate(timeout=70)[0]
+    except subprocess.TimeoutExpired:
+        r.kill()
+        r_out = r.communicate()[0]
+    for b in pages: b.kill()
+    check("two web pages over WebRTC (in Chromium)", r_out, [f"player {p}: played true, direct true, desync -1" for p in range(2)])
 else: print("(no browser: the web client is not tried)")
 shutil.rmtree(tmp, ignore_errors=True)
 sys.exit(1 if failed else 0)

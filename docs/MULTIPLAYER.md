@@ -11,7 +11,7 @@ depends on the game:
 | Players | any | 2 to 4 | many |
 | Good for | turn-based games, chat, lobbies, simple games | fighting, sports, action games for a few | shooters, many players, keeping cheating out |
 | Example | examples/netpong | examples/duel | examples/arena |
-| Web pages | connect to a native server | through a relay | connect to a native server |
+| Web pages | connect to a native server | through a relay, then straight to each other (WebRTC) | connect to a native server |
 
 ## Messages
 
@@ -123,6 +123,13 @@ native program: a client-server game's server, or for rollback, a relay
 (`netplay.relay(port)`, which a native player can run while playing) that passes packets
 between the players in a room (`s.join_relay(host, port, room)`). A page served over https
 can only reach `wss://` servers: put a proxy with a certificate (Caddy, for one) in front of
-the server. WebSockets run over TCP, where a lost packet holds up those after it, so a page's
-connection is not as smooth as UDP on a bad network; WebRTC, which browsers can use without
-that, is on the [roadmap](https://github.com/david-andrew/sloppy-lang/blob/master/docs/ROADMAP.md).
+the server.
+
+WebSockets run over TCP, where a lost packet holds up those after it. So pages in a rollback
+room also connect straight to each other with WebRTC: they tell each other how to through the
+relay, and from then on their packets go between them as over UDP (unordered, never resent,
+never held up), not through the relay (`s.direct(p)` says whether player p's do). A STUN
+server tells each page its address as others see it: `join_relay` uses Google's public one,
+and takes `stun = "stun:..."` for another or `""` for none (then only pages on the same
+network reach each other). Pages that cannot reach each other (some company and phone
+networks) keep playing through the relay; so does a native player with a page.

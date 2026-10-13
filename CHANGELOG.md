@@ -64,6 +64,11 @@ Docs:
   meant (`.escape`, `.enter`, `.ctrl`, `.left`).
 
 More for games:
+- Netplay: web pages in a rollback room connect straight to each other with WebRTC; their
+  packets then go as over UDP (unordered, never resent, never held up behind a lost one) instead
+  of through the relay's WebSockets. The relay passes on how they connect; a STUN server
+  (`join_relay(..., stun = ...)`) finds their addresses; `s.direct(p)` says which players are
+  reached straight. Pages that cannot reach each other keep to the relay.
 - `world_to_screen(p)`: where a 3D point appears on the screen (none behind the camera), for names
   and health bars over heads; in 2D, where a world position appears under the camera.
 - Fixed: 3D drawn after 2D in the same frame (a label drawn after each enemy) covered what was

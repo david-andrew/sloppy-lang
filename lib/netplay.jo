@@ -25,7 +25,8 @@ import net
 # more delay, fewer rollbacks. A session may run at most `max_ahead` ticks ahead of the inputs
 # it has from everyone, then it waits (s.waiting).
 #
-# A web page plays through a relay (netplay.relay in a native program; s.join_relay). Without
+# A web page plays through a relay (netplay.relay in a native program; s.join_relay), and pages
+# then connect straight to each other (WebRTC) when they can. Without
 # s.udp or a relay, the session only says what to send (s.outgoing()) and is told what arrived
 # (s.receive(player, bytes)): any transport works (net's WebSockets, a relay server), and two
 # sessions in one program can play each other over netplay.Link, a simulated network with
@@ -63,9 +64,12 @@ struct Session[S, I]:
     # (a UDP transport: s.udp)
     __sock = -1
     __addrs: (str, int)[]
-    # (through a relay: s.join_relay)
+    # (through a relay: s.join_relay; web pages also connect straight to each other with WebRTC)
     __relay = -1
     __room = ""
+    __stun = ""
+    __rtc: int[]                    # each player's WebRTC connection (-1: none)
+    __rtc_open: bool[]
     # (simulated lag on sending: s.lag)
     __lag = 0.0
     __jitter = 0.0
@@ -136,7 +140,8 @@ play[S, I] = (s: mut Session[S, I], input: I):
     __np_send(s)
     if s.__sock >= 0: __np_udp_send(s)
     if s.__relay >= 0:
-        loop o in s.outgoing(): net.send(s.__relay, o.1)
+        loop o in s.outgoing():
+            if not __np_rtc_send(s, o.0, o.1): net.send(s.__relay, o.1)
 
 # what to send to whom since the last call: (player, bytes) (without s.udp)
 outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]:
@@ -277,16 +282,105 @@ __np_udp_send[S, I] = (s: mut Session[S, I]):
 # program (netplay.relay) that passes each packet on to the other players in the same room.
 # (Its WebSockets go over TCP: a lost packet holds up those after it, unlike UDP.)
 
+# Web pages in a room also connect to each other straight, with WebRTC: once they have, their
+# packets go between them as over UDP (unordered, never resent, never held up), not through the
+# relay. The relay passes on what they say to find each other; a STUN server (stun: its URLs,
+# separated by spaces; "" for none, which reaches only pages on the same network) tells each
+# page its address as others see it. Pages that cannot reach each other keep to the relay.
+
 # play through the relay at host and port (or a ws:// or wss:// URL), with the players who name
 # the same room
-join_relay[S, I] = (s: mut Session[S, I], host: str, port: int, room: str):
+join_relay[S, I] = (s: mut Session[S, I], host: str, port: int, room: str, stun: str = "stun:stun.l.google.com:19302"):
     s.__relay = net.connect(host, port)
     s.__room = room
+    s.__stun = stun
+    s.__rtc = fill(-1, s.players)
+    s.__rtc_open = fill(false, s.players)
+
+# player p's packets come and go straight (WebRTC between web pages), not through the relay
+direct[S, I] = (s: Session[S, I], p: int) -> bool: p >= 0 and p < s.__rtc_open.len() and s.__rtc_open[p]
 
 __np_relay_receive[S, I] = (s: mut Session[S, I]):
     loop e in net.receive([s.__relay]):
-        if e.kind == .joined: net.send(s.__relay, "join {s.__room}")
-        else if e.kind == .message: s.receive(e.data)
+        if e.kind == .joined:
+            net.send(s.__relay, "join {s.__room}")
+            # (pages say they are here: the one with the lower number offers a connection)
+            when TARGET == "wasm": __np_rtc_say(s, -1, "hello", "")
+        else if e.kind == .message:
+            if e.data.len() > 4 and e.data[0] == 'r' and e.data[1] == 't' and e.data[2] == 'c' and e.data[3] == ' ': __np_rtc_message(s, str_from_bytes(e.data))
+            else: s.receive(e.data)
+    when TARGET == "wasm": __np_rtc_poll(s)
+
+# ("rtc <from> <to> <what> <data>", through the relay; to -1: everyone)
+__np_rtc_say[S, I] = (s: mut Session[S, I], to: int, what: str, data: str):
+    net.send(s.__relay, "rtc {s.me} {to} {what} {data}")
+
+__np_rtc_message[S, I] = (s: mut Session[S, I], m: str):
+    when TARGET == "wasm":
+        parts = split(m, " ")
+        if parts.len() < 4: return
+        from = to_int(parts[1]) ?? -1
+        to = to_int(parts[2]) ?? -2
+        if from < 0 or from >= s.players or from == s.me or (to != s.me and to != -1): return
+        what = parts[3]
+        rest = ""
+        at = len(parts[0]) + len(parts[1]) + len(parts[2]) + len(parts[3]) + 4
+        if at < len(m): rest = m[at..]
+        if what == "hello":
+            if s.__rtc_open[from]: return
+            if s.me < from:
+                # (a fresh offer: the other page may have come back)
+                if s.__rtc[from] >= 0: __wasm_rtc_close(s.__rtc[from])
+                s.__rtc[from] = __wasm_rtc_new(1, data(s.__stun), len(s.__stun))
+            else: __np_rtc_say(s, from, "hello", "")
+        else if what == "signal":
+            if s.__rtc[from] < 0:
+                if s.me < from: return
+                s.__rtc[from] = __wasm_rtc_new(0, data(s.__stun), len(s.__stun))
+            if s.__rtc[from] >= 0: __wasm_rtc_signal_in(s.__rtc[from], data(rest), len(rest))
+
+# what the connections have to say and what came through them
+__np_rtc_poll[S, I] = (s: mut Session[S, I]):
+    when TARGET == "wasm":
+        buf = fill(u8(0), 4096)
+        loop p in [0..s.players):
+            id = s.__rtc[p]
+            if id < 0: continue
+            loop:
+                n = __wasm_rtc_signal_out(id, data(buf), buf.len())
+                if n < 0: break
+                if n > buf.len():
+                    buf = fill(u8(0), n)
+                    continue
+                __np_rtc_say(s, p, "signal", str_from_bytes(buf[..n)))
+            loop:
+                n = __wasm_rtc_poll(id, data(buf), buf.len())
+                if n == -1: break
+                if n == -2: s.__rtc_open[p] = true
+                else if n == -3:
+                    # (closed: back to the relay until it connects again)
+                    s.__rtc_open[p] = false
+                    __wasm_rtc_close(id)
+                    s.__rtc[p] = -1
+                    break
+                else if n > buf.len(): buf = fill(u8(0), n)
+                else: s.receive(buf[..n))
+
+# true when it went straight to player p
+__np_rtc_send[S, I] = (s: mut Session[S, I], p: int, b: u8[]) -> bool:
+    when TARGET == "wasm":
+        if p < 0 or p >= s.__rtc_open.len() or not s.__rtc_open[p]: return false
+        __wasm_rtc_send(s.__rtc[p], data(b), b.len())
+        return true
+    else: return false
+
+when TARGET == "wasm":
+    extern __wasm_rtc_new = (init: int, stun: *u8, n: int) -> int
+    extern __wasm_rtc_signal_in = (id: int, p: *u8, n: int)
+    extern __wasm_rtc_signal_out = (id: int, out: *u8, cap: int) -> int
+    extern __wasm_rtc_send = (id: int, p: *u8, n: int)
+    extern __wasm_rtc_poll = (id: int, out: *u8, cap: int) -> int
+    extern __wasm_rtc_close = (id: int)
 
 __np_rooms: {int: str}
 
