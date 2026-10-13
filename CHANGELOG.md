@@ -16,8 +16,15 @@ Tools:
   what to change: a misspelled name ("did you mean"), `loop mut` for a loop variable changed, a
   parameter changed made `mut`, a number of another type converted (or `2.0` written `2`).
 
+Games:
+- **Zones in the frame statistics**: `zone("physics")` ... `zone_end()` (or `zone("physics", f)`)
+  times a part of the frame; the overlay (`show_stats()`, SLOPPY_STATS=1) lists each zone,
+  nested, with its average and longest time over the last frames, and SLOPPY_STATS=log prints
+  them. `update` and `draw` are zones already. Off, a zone costs a check.
+
 Errors:
 - An argument of the wrong type is pointed at, not the call.
+- A function's final expression has its own line in backtraces and debuggers.
 
 ## 0.8.1
 

@@ -593,14 +593,17 @@ update = (dt: f64):                      # every frame; dt: the seconds since th
     if mouse_down(.left): pos = mouse_pos()
     if key_pressed(.space): trail.clear()
     if key_pressed(.f): toggle_fullscreen()
+    if key_pressed(.tab): show_stats(not stats_shown())     # frame times, and the zones' below
+    zone("trail")                         # a part of the frame, timed in the statistics
     trail.push(pos)
     if trail.len() > 60: trail.remove(0)
+    zone_end()
 
 draw = ():                               # every frame, after update
     clear(rgb(0.08, 0.09, 0.12))
     loop i in 0.. and p in trail: circle(p, 4, rgba(0.3, 0.7, 0.9, f64(i) / 60.0))
     circle(pos, 18, ORANGE)
-    text("move: arrows, W A S D or click   space: clear   F: fullscreen", vec2(20, 20), 20)
+    text("move: arrows, W A S D or click   space: clear   F: fullscreen   Tab: statistics", vec2(20, 20), 20)
     text("{fps():.0} fps, {elapsed():.1} s", vec2(20, 500), 18, GRAY)
 ```
 
@@ -644,9 +647,16 @@ Windows, the frame loop and input. Native: X11 + EGL (OpenGL ES 3) loaded from t
 
 ### stats.jo
 
-A frame statistics overlay: frame times as a graph, CPU time, time handing frames to the screen, and frames that took much longer than usual (stutter). show_stats() turns it on, as do SLOPPY_STATS=1 and, in a web page, ?stats in the URL. SLOPPY_STATS=log (?stats=log) prints the same numbers every two seconds instead, and each long frame as it happens.
+A frame statistics overlay: frame times as a graph, CPU time, time handing frames to the screen, frames that took much longer than usual (stutter), and the time each zone of the frame takes (zone("physics") ... zone_end(): update and draw are zones already). show_stats() turns it on, as do SLOPPY_STATS=1 and, in a web page, ?stats in the URL. SLOPPY_STATS=log (?stats=log) prints the same numbers every two seconds instead, and each long frame as it happens.
 
 - `show_stats = (on: bool = true)`
+- `stats_shown = () -> bool`
+
+#### Zones: named parts of a frame, timed
+
+- `zone = (name: str)`: start timing a part of the frame, until zone_end() (zones nest; their times show in the overlay); costs a check when the statistics are off
+- `zone_end = ()`
+- `zone = (name: str, f: () -> void)`: f, timed as a zone
 
 ## Controls and gamepads
 

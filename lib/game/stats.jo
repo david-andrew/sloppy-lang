@@ -1,7 +1,8 @@
 # A frame statistics overlay: frame times as a graph, CPU time, time handing frames to the
-# screen, and frames that took much longer than usual (stutter). show_stats() turns it on, as do
-# SLOPPY_STATS=1 and, in a web page, ?stats in the URL. SLOPPY_STATS=log (?stats=log) prints the same
-# numbers every two seconds instead, and each long frame as it happens.
+# screen, frames that took much longer than usual (stutter), and the time each zone of the frame
+# takes (zone("physics") ... zone_end(): update and draw are zones already). show_stats() turns it
+# on, as do SLOPPY_STATS=1 and, in a web page, ?stats in the URL. SLOPPY_STATS=log (?stats=log)
+# prints the same numbers every two seconds instead, and each long frame as it happens.
 
 const __STATS_N = 240
 __stats_on = false
@@ -15,6 +16,61 @@ __stats_last = -1.0
 __last_present = 0.0
 
 show_stats = (on: bool = true): __stats_on = on
+stats_shown = () -> bool: __stats_on
+
+# ---------------- zones: named parts of a frame, timed ----------------
+const __ZONES_MAX = 32
+__zone_names: str[]
+__zone_ids: {str: int} = {}
+__zone_depth: int[]             # (how deep in other zones each was first: for indenting)
+__zone_t: f64[]                 # this frame's time in each zone
+__zone_hist: f64[]              # each zone's time in the last __STATS_N frames (zone * __STATS_N + frame)
+__zone_open: int[]              # the zones open now, innermost last (-1: one past __ZONES_MAX)
+__zone_start: f64[]
+
+# start timing a part of the frame, until zone_end() (zones nest; their times show in the
+# overlay); costs a check when the statistics are off
+zone = (name: str):
+    if not __stats_on and not __stats_log: return
+    id = __zone_ids.get(name) ?? -1
+    if id < 0 and __zone_names.len() < __ZONES_MAX:
+        id = __zone_names.len()
+        __zone_ids[name] = id
+        __zone_names.push(name)
+        __zone_depth.push(__zone_open.len())
+        __zone_t.push(0.0)
+        __zone_hist.resize((id + 1) * __STATS_N)
+    __zone_open.push(id)
+    __zone_start.push(time())
+
+zone_end = ():
+    if __zone_open.len() == 0: return
+    id = __zone_open.pop()
+    t0 = __zone_start.pop()
+    if id >= 0: __zone_t[id] += time() - t0
+
+# f, timed as a zone
+zone = (name: str, f: () -> void):
+    zone(name)
+    f()
+    zone_end()
+
+# (at the end of a frame: zones left open end, and the frame's times go into the history)
+__zones_frame_end = (k: int):
+    loop __zone_open.len() > 0: zone_end()
+    loop id in [0..__zone_names.len()):
+        __zone_hist[id * __STATS_N + k] = __zone_t[id]
+        __zone_t[id] = 0.0
+
+# a zone's average and longest time over the last n frames
+__zone_stat = (id: int, n: int) -> (f64, f64):
+    sum = 0.0
+    most = 0.0
+    loop j in [0..n):
+        t = __zone_hist[id * __STATS_N + (__stats_i - 1 - j) % __STATS_N]
+        sum += t
+        most = max(most, t)
+    (sum / f64(max(n, 1)), most)
 
 __stats_record = (cpu: f64):
     if not __stats_checked:
@@ -32,12 +88,17 @@ __stats_record = (cpu: f64):
         __stats_interval[k] = now - __stats_last
         __stats_cpu[k] = cpu
         __stats_present[k] = __last_present
+        __zones_frame_end(k)
         __stats_i += 1
         if __stats_log and __stats_i > 1 and now - __stats_last > __stats_typical(min(__stats_i, __STATS_N)) * 1.5 + 0.001:
             eprint("long frame: {(now - __stats_last) * 1000.0:.1} ms (cpu {cpu * 1000.0:.1} ms, present {__last_present * 1000.0:.1} ms)")
         if __stats_log and __stats_i % 120 == 0:
             st = __stats_summary(120)
             eprint("stats: {st.0}; {st.1}; {st.2}")
+            if __zone_names.len() > 0:
+                zs: str[]
+                loop id in 0.. and nm in __zone_names: zs.push("{nm} {__zone_stat(id, 120).0 * 1000.0:.2} ms")
+                eprint("zones: {zs.join(", ")}")
     __stats_last = now
 
 # three lines about the last n frames (at most __STATS_N)
@@ -88,7 +149,10 @@ __stats_draw = ():
     gh = 70.0 * u
     x0 = 10.0 * u
     y0 = 10.0 * u
-    rect(x0 - 6.0 * u, y0 - 6.0 * u, gw + 12.0 * u, gh + 4.0 * size + 22.0 * u, vec4(0, 0, 0, 0.65))
+    nz = __zone_names.len()
+    zh = 0.0
+    if nz > 0: zh = f64(nz) * size * 1.15 + 8.0 * u
+    rect(x0 - 6.0 * u, y0 - 6.0 * u, gw + 12.0 * u, gh + 4.0 * size + 22.0 * u + zh, vec4(0, 0, 0, 0.65))
     white = vec4(1, 1, 1, 1)
     grey = vec4(0.75, 0.75, 0.8, 1)
     text(st.0, vec2(f32(x0), f32(y0)), size, white)
@@ -111,6 +175,16 @@ __stats_draw = ():
         rect(x, gy + gh - cb, 2.0 * u, cb, vec4(0.35, 0.55, 1.0, 1))
     loop t in [1.0 / 60.0, 1.0 / 30.0]:
         rect(x0, gy + gh - t * scale, gw, max(1.0, u), vec4(1, 1, 1, 0.35))
+    # the zones: each one's average over the last 60 frames (a bar: of 1/60 s) and its longest
+    zy = gy + gh + 8.0 * u
+    zn = min(n, 60)
+    loop id in 0.. and nm in __zone_names:
+        avg, most = __zone_stat(id, zn)
+        y = zy + f64(id) * size * 1.15
+        ind = f64(__zone_depth[id]) * size
+        text("{nm}", vec2(f32(x0 + ind), f32(y)), size, white)
+        text("{avg * 1000.0:.2} ms  (most {most * 1000.0:.1})", vec2(f32(x0 + gw * 0.4), f32(y)), size, grey)
+        rect(x0 + gw * 0.76, y + size * 0.25, min(avg * 60.0, 1.0) * gw * 0.24, size * 0.6, vec4(0.35, 0.55, 1.0, 0.85))
     flush()
     __proj = saved_proj
     __xform = saved_xform

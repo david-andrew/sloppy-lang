@@ -73,8 +73,9 @@ rebindable controls, touch on the web).
   the executable carries a __DWARF segment), printers for gdb and lldb, F5 in VS Code
   (CodeLLDB or the C/C++ extension), stopping at a panic: done. Next: variables in PDB on
   Windows.
-- **Profiling:** Sloppy function names in `perf` and Windows' profilers, and a frame profiler in
-  the stats overlay: named CPU zones per frame and, with Vulkan, GPU timestamps per pass.
+- **Profiling:** Sloppy function names in `perf` and Windows' profilers (there: symbols, DWARF,
+  PDB), and a frame profiler in the stats overlay: named CPU zones per frame (done: `zone()`);
+  next, with Vulkan, GPU timestamps per pass.
 - **Error messages:** collect the commonest mistakes (from the tutorials, the playground and
   `tools/fuzz_errors.py`) and make each message say what to do. Quick fixes in the editor (the
   language server's code actions) exist for misspelled names, `loop mut`, `mut` parameters and
