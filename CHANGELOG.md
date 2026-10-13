@@ -2,11 +2,17 @@
 
 ## Unreleased
 
+Games:
+- Physics: limits and motors on 2D pins and 3D hinges (`lower`, `upper`, `motor_speed`,
+  `max_torque`; `set_motor`, `set_limits`, `joint_angle`): doors that stop, wheels that drive,
+  elbows that bend one way. Joints are solved more times each step, so chains and limits hold
+  stiffer.
+
 Language:
 - `mut` in combined loops: `loop i in 0.. and mut e in enemies: e.hp -= i` changes the elements
   themselves while counting.
 
-Games:
+More for games:
 - Physics (2D and 3D): bodies at rest go to sleep, with all they touch, and are left out of each
   step until something touches, pushes or moves them, or what they rest on goes (`w.sleeping(b)`;
   `World(sleep = false)` keeps all awake). A settled pile of 200 boxes steps 15 times faster.

@@ -117,6 +117,17 @@ struct __PJoint:
     max_force: f32
     acc: vec2               # impulses so far
     acc1: f32
+    # (a pin's limits and motor: angles of b against a, from where they were when pinned)
+    ref_angle: f32
+    lower = -1e9
+    upper = 1e9
+    motor_speed: f32
+    max_torque: f32
+    acc_motor: f32
+    acc_lower: f32
+    acc_upper: f32
+    angle: f32              # (per step)
+    axial: f32
     # (per step)
     ra: vec2
     rb: vec2
@@ -309,8 +320,27 @@ apply_torque = (w: mut World, b: Body, t: f64):
 
 # ---------------- joints ----------------
 # a hinge: a and b turn about the point at (in the world, now)
-pin = (w: mut World, a: Body, b: Body, at: vec2) -> Joint:
-    __joint(w, __PJoint(kind = 0, a = a.id, b = b.id, la = w.to_local(a, at), lb = w.to_local(b, at)))
+# lower, upper: how far b may turn against a (radians, from how they are now); motor_speed: b
+# turned against a at that many radians a second, with up to max_torque (0: no motor)
+pin = (w: mut World, a: Body, b: Body, at: vec2, lower: f64 = -1e9, upper: f64 = 1e9, motor_speed: f64 = 0, max_torque: f64 = 0) -> Joint:
+    __joint(w, __PJoint(kind = 0, a = a.id, b = b.id, la = w.to_local(a, at), lb = w.to_local(b, at),
+                        ref_angle = w.bodies[b.id].angle - w.bodies[a.id].angle, lower = f32(lower), upper = f32(upper),
+                        motor_speed = f32(motor_speed), max_torque = f32(max_torque)))
+
+# a pin's motor (max_torque 0: none) and limits, changed; and how far b has turned against a
+set_motor = (w: mut World, j: Joint, speed: f64, max_torque: f64):
+    w.joints[j.id].motor_speed = f32(speed)
+    w.joints[j.id].max_torque = f32(max_torque)
+    __wake(w, w.joints[j.id].a)
+    __wake(w, w.joints[j.id].b)
+set_limits = (w: mut World, j: Joint, lower: f64, upper: f64):
+    w.joints[j.id].lower = f32(lower)
+    w.joints[j.id].upper = f32(upper)
+    __wake(w, w.joints[j.id].a)
+    __wake(w, w.joints[j.id].b)
+joint_angle = (w: World, j: Joint) -> f64:
+    jd = w.joints[j.id]
+    f64(w.bodies[jd.b].angle - w.bodies[jd.a].angle - jd.ref_angle)
 
 # the points at_a of a and at_b of b (in the world, now) kept as far apart as they are; with
 # spring > 0 a spring of that many oscillations a second (damping: 0 bounces on, 1 settles at
@@ -438,8 +468,10 @@ __step = (w: mut World, h: f32):
     loop _ in [0..w.iterations):
         loop mut a in w.arbs:
             if not a.sensor: __arb_solve(a, w.bodies)
-        loop mut j in w.joints:
-            if j.on: __joint_solve(j, w.bodies, h)
+        # (joints are few, and pull on each other through the bodies: solved a few times each pass)
+        loop _ in [0..3):
+            loop mut j in w.joints:
+                if j.on: __joint_solve(j, w.bodies, h)
     loop mut b in w.bodies:
         if b.kind == .fixed or not b.alive or b.asleep: continue
         b.pos += b.vel * h
@@ -813,6 +845,49 @@ __joint_prepare = (j: mut __PJoint, bs: mut __PBody[], h: f32):
     j.m12 = -det * k12
     j.m22 = det * k11
     __apply(bs, j.a, j.b, j.ra, j.rb, j.acc)
+    if j.kind == 0:
+        # (the turning: motor and limits, warm started)
+        j.axial = 0
+        if ia + ib > 0.0: j.axial = 1.0 / (ia + ib)
+        j.angle = bs[j.b].angle - bs[j.a].angle - j.ref_angle
+        if j.max_torque <= 0.0: j.acc_motor = 0
+        if j.lower < -1e8: j.acc_lower = 0
+        if j.upper > 1e8: j.acc_upper = 0
+        t = j.acc_motor + j.acc_lower - j.acc_upper
+        bs[j.a].spin -= ia * t
+        bs[j.b].spin += ib * t
+
+# a pin's motor and limits: on the turning of b against a
+__pin_turning = (j: mut __PJoint, bs: mut __PBody[], h: f32):
+    ia = bs[j.a].inv_inertia
+    ib = bs[j.b].inv_inertia
+    if j.max_torque > 0.0:
+        cdot = bs[j.b].spin - bs[j.a].spin - j.motor_speed
+        old = j.acc_motor
+        j.acc_motor = clamp(old - j.axial * cdot, -j.max_torque * h, j.max_torque * h)
+        imp = j.acc_motor - old
+        bs[j.a].spin -= ia * imp
+        bs[j.b].spin += ib * imp
+    if j.lower > -1e8:
+        c = j.angle - j.lower
+        bias = c / h
+        if c < 0.0: bias = 0.2 * c / h
+        imp = -j.axial * (bs[j.b].spin - bs[j.a].spin + bias)
+        old = j.acc_lower
+        j.acc_lower = max(old + imp, 0.0)
+        imp = j.acc_lower - old
+        bs[j.a].spin -= ia * imp
+        bs[j.b].spin += ib * imp
+    if j.upper < 1e8:
+        c = j.upper - j.angle
+        bias = c / h
+        if c < 0.0: bias = 0.2 * c / h
+        imp = -j.axial * (bs[j.a].spin - bs[j.b].spin + bias)
+        old = j.acc_upper
+        j.acc_upper = max(old + imp, 0.0)
+        imp = j.acc_upper - old
+        bs[j.a].spin += ia * imp
+        bs[j.b].spin -= ib * imp
 
 __joint_solve = (j: mut __PJoint, bs: mut __PBody[], h: f32):
     if j.kind == 1:
@@ -827,6 +902,7 @@ __joint_solve = (j: mut __PJoint, bs: mut __PBody[], h: f32):
         else: j.acc1 += imp
         __apply(bs, j.a, j.b, j.ra, j.rb, j.u * imp)
         return
+    if j.kind == 0 and j.axial > 0.0: __pin_turning(j, bs, h)
     r = -(__rel_vel(bs, j) + j.bias + j.acc * j.gamma)
     imp = vec2(j.m11 * r.x + j.m12 * r.y, j.m12 * r.x + j.m22 * r.y)
     if j.kind == 2:

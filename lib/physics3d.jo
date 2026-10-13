@@ -145,6 +145,20 @@ struct __J3:
     acc: vec3
     acc_ang: vec3
     acc1: f32
+    # (a hinge's limits and motor: the angle about its axis, from where it was when made; ref_a and
+    # ref_b, at right angles to the axis in each body's frame, show it)
+    ref_a: vec3
+    ref_b: vec3
+    lower = -1e9
+    upper = 1e9
+    motor_speed: f32
+    max_torque: f32
+    acc_motor: f32
+    acc_lower: f32
+    acc_upper: f32
+    angle: f32
+    axial: f32
+    axis_w: vec3
     ra: vec3
     rb: vec3
     u: vec3
@@ -345,13 +359,38 @@ apply_torque = (w: mut World, b: Body, t: vec3):
 ball = (w: mut World, a: Body, b: Body, at: vec3) -> Joint:
     __joint3(w, __J3(kind = 0, a = a.id, b = b.id, la = w.to_local(a, at), lb = w.to_local(b, at)))
 
-# a hinge at at, turning about axis (in the world, now)
-hinge = (w: mut World, a: Body, b: Body, at: vec3, axis: vec3) -> Joint:
+# a hinge at at, turning about axis (in the world, now); lower, upper: how far b may turn
+# against a (radians, from how they are now; about axis, by the right hand); motor_speed: b
+# turned against a at that many radians a second, with up to max_torque (0: no motor)
+hinge = (w: mut World, a: Body, b: Body, at: vec3, axis: vec3, lower: f64 = -1e9, upper: f64 = 1e9, motor_speed: f64 = 0, max_torque: f64 = 0) -> Joint:
     qa = w.bodies[a.id].rot
     qb = w.bodies[b.id].rot
     n = normalize(axis)
+    ia = vec4(-qa.x, -qa.y, -qa.z, qa.w)
+    ib = vec4(-qb.x, -qb.y, -qb.z, qb.w)
+    r, r2 = __tangents(n)
     __joint3(w, __J3(kind = 1, a = a.id, b = b.id, la = w.to_local(a, at), lb = w.to_local(b, at),
-                     axis_a = quat_rotate(vec4(-qa.x, -qa.y, -qa.z, qa.w), n), axis_b = quat_rotate(vec4(-qb.x, -qb.y, -qb.z, qb.w), n)))
+                     axis_a = quat_rotate(ia, n), axis_b = quat_rotate(ib, n), ref_a = quat_rotate(ia, r), ref_b = quat_rotate(ib, r),
+                     lower = f32(lower), upper = f32(upper), motor_speed = f32(motor_speed), max_torque = f32(max_torque)))
+
+# a hinge's motor (max_torque 0: none) and limits, changed; and how far b has turned against a
+set_motor = (w: mut World, j: Joint, speed: f64, max_torque: f64):
+    w.joints[j.id].motor_speed = f32(speed)
+    w.joints[j.id].max_torque = f32(max_torque)
+    __wake(w, w.joints[j.id].a)
+    __wake(w, w.joints[j.id].b)
+set_limits = (w: mut World, j: Joint, lower: f64, upper: f64):
+    w.joints[j.id].lower = f32(lower)
+    w.joints[j.id].upper = f32(upper)
+    __wake(w, w.joints[j.id].a)
+    __wake(w, w.joints[j.id].b)
+joint_angle = (w: World, j: Joint) -> f64: f64(__hinge_angle(w.joints[j.id], w.bodies))
+
+__hinge_angle = (j: __J3, bs: __B3[]) -> f32:
+    ax = quat_rotate(bs[j.a].rot, j.axis_a)
+    ra = quat_rotate(bs[j.a].rot, j.ref_a)
+    rb = quat_rotate(bs[j.b].rot, j.ref_b)
+    f32(atan2(f64(dot(cross(ra, rb), ax)), f64(dot(ra, rb))))
 
 # the points at_a of a and at_b of b kept as far apart as they are (spring: a spring of that
 # many oscillations a second; rope: only as far at most)
@@ -446,8 +485,11 @@ __step3 = (w: mut World, h: f32):
     loop mut j in w.joints:
         if j.on: __j3_prepare(j, w.bodies, h)
     loop _ in [0..w.iterations):
-        loop mut j in w.joints:
-            if j.on: __j3_solve(j, w.bodies)
+        # (joints are few, and pull on each other through the bodies: solved a few times each pass)
+        loop _ in [0..3):
+            loop mut j in w.joints:
+                if j.on and j.kind == 1 and j.axial > 0.0: __hinge_turning(j, w.bodies, h)
+                if j.on: __j3_solve(j, w.bodies)
         loop mut a in w.arbs:
             if not a.sensor: __arb3_solve(a, w.bodies)
     loop mut b in w.bodies:
@@ -1141,6 +1183,47 @@ __j3_prepare = (j: mut __J3, bs: mut __B3[], h: f32):
     if j.kind == 1:
         bs[j.a].spin -= __mv(bs[j.a].iw, j.acc_ang)
         bs[j.b].spin += __mv(bs[j.b].iw, j.acc_ang)
+        # (turning about the axis: motor and limits, warm started)
+        j.axis_w = quat_rotate(bs[j.a].rot, j.axis_a)
+        k = dot(j.axis_w, __mv(bs[j.a].iw, j.axis_w)) + dot(j.axis_w, __mv(bs[j.b].iw, j.axis_w))
+        j.axial = 0
+        if k > 0.0: j.axial = 1.0 / k
+        j.angle = __hinge_angle(j, bs)
+        if j.max_torque <= 0.0: j.acc_motor = 0
+        if j.lower < -1e8: j.acc_lower = 0
+        if j.upper > 1e8: j.acc_upper = 0
+        t = j.axis_w * (j.acc_motor + j.acc_lower - j.acc_upper)
+        bs[j.a].spin -= __mv(bs[j.a].iw, t)
+        bs[j.b].spin += __mv(bs[j.b].iw, t)
+
+# a hinge's motor and limits: on the turning of b against a about the axis
+__hinge_turning = (j: mut __J3, bs: mut __B3[], h: f32):
+    ax = j.axis_w
+    if j.max_torque > 0.0:
+        cdot = dot(bs[j.b].spin - bs[j.a].spin, ax) - j.motor_speed
+        old = j.acc_motor
+        j.acc_motor = clamp(old - j.axial * cdot, -j.max_torque * h, j.max_torque * h)
+        __turn3(bs, j, ax * (j.acc_motor - old))
+    if j.lower > -1e8:
+        c = j.angle - j.lower
+        bias = c / h
+        if c < 0.0: bias = 0.2 * c / h
+        imp = -j.axial * (dot(bs[j.b].spin - bs[j.a].spin, ax) + bias)
+        old = j.acc_lower
+        j.acc_lower = max(old + imp, 0.0)
+        __turn3(bs, j, ax * (j.acc_lower - old))
+    if j.upper < 1e8:
+        c = j.upper - j.angle
+        bias = c / h
+        if c < 0.0: bias = 0.2 * c / h
+        imp = -j.axial * (dot(bs[j.a].spin - bs[j.b].spin, ax) + bias)
+        old = j.acc_upper
+        j.acc_upper = max(old + imp, 0.0)
+        __turn3(bs, j, ax * -(j.acc_upper - old))
+
+__turn3 = (bs: mut __B3[], j: __J3, t: vec3):
+    bs[j.a].spin -= __mv(bs[j.a].iw, t)
+    bs[j.b].spin += __mv(bs[j.b].iw, t)
 
 __j3_solve = (j: mut __J3, bs: mut __B3[]):
     if j.kind == 2:

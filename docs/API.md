@@ -2012,7 +2012,10 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 
 #### Joints
 
-- `pin = (w: mut World, a: Body, b: Body, at: vec2) -> Joint`: a hinge: a and b turn about the point at (in the world, now)
+- `pin = (w: mut World, a: Body, b: Body, at: vec2, lower: f64 = -1e9, upper: f64 = 1e9, motor_speed: f64 = 0, max_torque: f64 = 0) -> Joint`: a hinge: a and b turn about the point at (in the world, now) lower, upper: how far b may turn against a (radians, from how they are now); motor_speed: b turned against a at that many radians a second, with up to max_torque (0: no motor)
+- `set_motor = (w: mut World, j: Joint, speed: f64, max_torque: f64)`: a pin's motor (max_torque 0: none) and limits, changed; and how far b has turned against a
+- `set_limits = (w: mut World, j: Joint, lower: f64, upper: f64)`
+- `joint_angle = (w: World, j: Joint) -> f64`
 - `rod = (w: mut World, a: Body, b: Body, at_a: vec2, at_b: vec2, spring: f64 = 0, damping: f64 = 0.5, rope: bool = false) -> Joint`: the points at_a of a and at_b of b (in the world, now) kept as far apart as they are; with spring > 0 a spring of that many oscillations a second (damping: 0 bounces on, 1 settles at once); with rope, only as far apart at most
 - `drag = (w: mut World, b: Body, at: vec2, strength: f64 = 1000) -> Joint`: pulls the point at of b toward a target (drag_to), as a stiff spring: grabbing with the mouse
 - `drag_to = (w: mut World, j: Joint, target: vec2)`
@@ -2128,7 +2131,10 @@ Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the gam
 #### Joints
 
 - `ball = (w: mut World, a: Body, b: Body, at: vec3) -> Joint`: a ball and socket at the point at (in the world, now)
-- `hinge = (w: mut World, a: Body, b: Body, at: vec3, axis: vec3) -> Joint`: a hinge at at, turning about axis (in the world, now)
+- `hinge = (w: mut World, a: Body, b: Body, at: vec3, axis: vec3, lower: f64 = -1e9, upper: f64 = 1e9, motor_speed: f64 = 0, max_torque: f64 = 0) -> Joint`: a hinge at at, turning about axis (in the world, now); lower, upper: how far b may turn against a (radians, from how they are now; about axis, by the right hand); motor_speed: b turned against a at that many radians a second, with up to max_torque (0: no motor)
+- `set_motor = (w: mut World, j: Joint, speed: f64, max_torque: f64)`: a hinge's motor (max_torque 0: none) and limits, changed; and how far b has turned against a
+- `set_limits = (w: mut World, j: Joint, lower: f64, upper: f64)`
+- `joint_angle = (w: World, j: Joint) -> f64`
 - `rod = (w: mut World, a: Body, b: Body, at_a: vec3, at_b: vec3, spring: f64 = 0, damping: f64 = 0.5, rope: bool = false) -> Joint`: the points at_a of a and at_b of b kept as far apart as they are (spring: a spring of that many oscillations a second; rope: only as far at most)
 - `ends = (w: World, j: Joint) -> (vec3, vec3)`
 

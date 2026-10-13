@@ -7,7 +7,7 @@ import os, random, shutil, subprocess, sys, tempfile, time
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sloppy = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(root, "bin", "sloppy.exe" if os.name == "nt" else "sloppy")
 tmp = tempfile.mkdtemp(prefix="sloppy-nettest-")
-port = random.randrange(40000, 50000)
+port = random.randrange(20000, 30000)        # (below the ports the system gives out for connections: 32768 up)
 env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), NET_PORT=str(port))
 exe = ".exe" if os.name == "nt" else ""
 failed = 0
