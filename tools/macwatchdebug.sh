@@ -9,5 +9,5 @@ sed -i '' 's/"one"/"two"/' g.jo
 sleep 6
 grep -v '^tick' out.txt | head -20
 echo "--- ticks:"; grep '^tick' out.txt | tail -3
-for p in $(pgrep -f 'sloppy|watch-'); do echo "=== $p: $(ps -o command= -p $p | cut -c1-80)"; sample $p 1 2>/dev/null | grep -E '^ +[0-9]+ ' | head -25; done
+for p in $(pgrep -f 'sloppy|watch-'); do echo "=== $p: $(ps -o command= -p $p | cut -c1-80)"; sample $p 1 2>/dev/null | awk '/main-thread/,/^ *[0-9]+ Thread_[0-9]+ *$/' | head -60; done
 pkill -f 'sloppy watch'; true
