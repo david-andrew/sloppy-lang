@@ -7,6 +7,7 @@ Games:
   `max_torque`; `set_motor`, `set_limits`, `joint_angle`): doors that stop, wheels that drive,
   elbows that bend one way. Joints are solved more times each step, so chains and limits hold
   stiffer.
+- 2D physics: `w.circle_cast(a, b, radius)`, the same in 2D.
 - 3D physics: `w.sphere_cast(a, b, radius)`, a ray with thickness: where a ball moved from a to b
   first touches something (thick bullets, a camera kept out of walls, the ground under feet).
 
