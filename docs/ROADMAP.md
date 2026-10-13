@@ -98,9 +98,10 @@ packages on the website instead.
 
 ### 7. Networking (M, then L)
 
-Multiplayer is one of the commonest reasons to pick a tool. First UDP sockets and a small
-reliable channel on native, WebSockets on the web, and a two-player example; then rollback or
-snapshot helpers if the examples show the need. (WebRTC for browser-to-browser later.)
+Done: `import net`, messages over WebSockets between native programs and web pages (a native
+server; Linux, macOS, Windows, the browser), and a two-player example (examples/netpong). Next:
+UDP for fast native games, rollback or snapshot helpers if the examples show the need, and
+WebRTC for browser-to-browser later.
 
 ### 8. Game library gaps (in pieces, as games need them)
 

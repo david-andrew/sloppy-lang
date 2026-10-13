@@ -485,6 +485,7 @@ GALLERY = [
     ("breakwater", "examples/breakwater/breakwater.jo", "Breakwater", "breakwater", "../breakwater/"),
     ("dunes", "examples/dunes/dunes.jo", "Dunes", "dunes", ""),
     ("lowline", "examples/lowline/lowline.jo", "Lowline", "lowline", ""),
+    ("netpong", "examples/netpong/netpong.jo", "Netpong", "netpong", ""),
     ("arcade", "lib/new/arcade.jo", "sloppy new: arcade", "arcade", ""),
     ("firstperson", "lib/new/3d.jo", "sloppy new: 3d", "firstperson", ""),
     ("tiles", "examples/tiles.jo", "Tiles and sprites", "tiles", ""),

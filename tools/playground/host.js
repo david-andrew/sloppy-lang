@@ -45,8 +45,39 @@ const sloppyHost = (() => {
       for (const f of Object.keys(files)) if (f.startsWith(path + "/")) seen.add(f.slice(path.length + 1).split("/")[0]);
       return seen.size > 0 ? [...seen] : null;
     }
+    const sockets = [];
     const env = {
       __wasm_write: (fd, p, n) => { log += str(p, n); },
+      // WebSockets (lib/net.jo): poll gives -1 (nothing now), -2 (opened), -3 (closed), or a
+      // message's length (written at out when it fits in cap)
+      __wasm_ws_open: (p, n) => {
+        try {
+          const ws = new WebSocket(str(p, n));
+          ws.binaryType = "arraybuffer";
+          const s = { ws, q: [] };
+          ws.onopen = () => s.q.push("open");
+          ws.onmessage = (e) => s.q.push(typeof e.data === "string" ? new TextEncoder().encode(e.data) : new Uint8Array(e.data));
+          ws.onclose = ws.onerror = () => s.q.push("close");
+          sockets.push(s);
+          return BigInt(sockets.length - 1);
+        } catch (e) { return -1n; }
+      },
+      __wasm_ws_send: (id, p, n) => {
+        const s = sockets[Number(id)];
+        if (s && s.ws.readyState === 1) s.ws.send(u8().slice(Number(p), Number(p) + Number(n)));
+      },
+      __wasm_ws_poll: (id, op, cap) => {
+        const s = sockets[Number(id)];
+        if (!s || s.q.length === 0) return -1n;
+        const x = s.q[0];
+        if (x === "open") { s.q.shift(); return -2n; }
+        if (x === "close") return -3n;
+        if (x.length > Number(cap)) return BigInt(x.length);
+        s.q.shift();
+        u8().set(x, Number(op));
+        return BigInt(x.length);
+      },
+      __wasm_ws_close: (id) => { const s = sockets[Number(id)]; if (s) s.ws.close(); },
       __wasm_exit: (code) => { throw new Exit(Number(code)); },
       __wasm_now: () => performance.now(),
       __wasm_grow: (n) => BigInt(mem.grow(Number(n))),

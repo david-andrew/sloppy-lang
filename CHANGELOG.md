@@ -25,6 +25,12 @@ Tools:
   parameter changed made `mut`, a number of another type converted (or `2.0` written `2`).
 
 Games:
+- **Networking**: `import net`, then `net.listen(port)` (a server), `net.connect(host, port)`,
+  `net.send(peer, msg)`, `net.send_all(msg)` and `net.receive()` each frame (peers joining and
+  leaving, their messages, whole and in order). Over WebSockets: a web page and native programs
+  play together, a native program being the server; on Linux, macOS, Windows and in browsers.
+  examples/netpong: Pong for two over the network. `tools/nettest.py` checks a server and
+  clients (and a web page's client, in a browser) in CI.
 - **Zones in the frame statistics**: `zone("physics")` ... `zone_end()` (or `zone("physics", f)`)
   times a part of the frame; the overlay (`show_stats()`, SLOPPY_STATS=1) lists each zone,
   nested, with its average and longest time over the last frames, and SLOPPY_STATS=log prints

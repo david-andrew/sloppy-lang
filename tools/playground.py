@@ -38,7 +38,7 @@ game_files = {}
 for name, path in [("rebound (2D game)", "examples/rebound/rebound.jo"), ("breakwater (3D game)", "examples/breakwater/breakwater.jo"),
                    ("shapes (2D)", "examples/shapes.jo"), ("tiles (2D)", "examples/tiles.jo"),
                    ("cube (3D)", "examples/cube.jo"), ("scene (3D)", "examples/scene3d.jo"), ("dunes (3D game)", "examples/dunes/dunes.jo"),
-                   ("lowline (3D game)", "examples/lowline/lowline.jo"),
+                   ("lowline (3D game)", "examples/lowline/lowline.jo"), ("netpong (network game)", "examples/netpong/netpong.jo"),
                    ("arcade (sloppy new template)", "lib/new/arcade.jo"), ("firstperson (sloppy new template)", "lib/new/3d.jo")]:
     full = os.path.join(root, path)
     if not os.path.exists(full): continue

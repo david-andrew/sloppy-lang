@@ -1,0 +1,167 @@
+# NETPONG - Pong for two, over the network (lib/net.jo).
+# One player hosts (a native build: the game runs there); the other joins with the host's
+# address, from a native build or a web page. The host moves the ball and both paddles and sends
+# what it sees 30 times a second; the one who joined sends only its paddle's moves.
+# Up/down (W/S, or a gamepad's stick) move your paddle; first to 7 wins. Escape leaves.
+
+build:
+    name = "Netpong"
+
+import net
+
+window("Netpong", 1280, 720)
+
+const PORT = 47200
+const PADDLE_H = 120.0
+const PADDLE_SPEED = 620.0
+const BALL_SPEED = 520.0
+const WIN = 7
+
+enum Screen: title, joining, waiting, playing, over
+
+screen = Screen.title
+hosting = false
+other = -1                      # the other player (a peer)
+address = env("JOIN") ?? "localhost"        # (a web page: ?join=address)
+left_y = 360.0                  # the host's paddle (left), the other's (right)
+right_y = 360.0
+right_move = 0.0                # (the host: what the other player last asked for)
+ball = vec2(640, 360)
+vel = vec2(0, 0)
+score_l = 0
+score_r = 0
+send_wait = 0.0
+status = ""
+
+serve = (dir: f64):
+    ball = vec2(640, 360)
+    a = random(-0.5, 0.5)
+    vel = vec2(f32(cos(a) * dir), f32(sin(a))) * f32(BALL_SPEED)
+
+host = ():
+    if not net.listen(PORT):
+        status = "port {PORT} is taken (another game hosting here?)"
+        return
+    hosting = true
+    screen = .waiting
+    status = "waiting for the other player: join this machine's address, port {PORT}"
+
+join = ():
+    other = net.connect(address, PORT)
+    hosting = false
+    screen = .waiting
+    status = "connecting to {address}..."
+
+start = ():
+    score_l = 0
+    score_r = 0
+    left_y = 360.0
+    right_y = 360.0
+    serve(1.0)
+    screen = .playing
+
+# the host's view of the game, as a message: "s ball.x ball.y left right score_l score_r screen"
+state = () -> str: "s {ball.x:.1} {ball.y:.1} {left_y:.1} {right_y:.1} {score_l} {score_r} {int(screen)}"
+
+read_state = (t: str):
+    w = split(t, " ")
+    if w.len() < 8: return
+    ball = vec2(f32(to_float(w[1]) ?? 0.0), f32(to_float(w[2]) ?? 0.0))
+    left_y = to_float(w[3]) ?? left_y
+    right_y = to_float(w[4]) ?? right_y
+    score_l = to_int(w[5]) ?? score_l
+    score_r = to_int(w[6]) ?? score_r
+    k = to_int(w[7]) ?? 3
+    if k == 4: screen = .over
+    else if k == 3: screen = .playing
+
+network = ():
+    loop e in net.receive():
+        if e.kind == .joined:
+            other = e.peer
+            if hosting: start()
+            else: status = "connected: waiting for the host"
+        else if e.kind == .left:
+            if e.peer == other:
+                status = "the other player left"
+                if not hosting and screen == .waiting: status = "could not reach {address}:{PORT}"
+                screen = .title
+                other = -1
+        else if hosting:
+            if starts_with(e.text, "m "): right_move = to_float(e.text[2..]) ?? 0.0
+        else if starts_with(e.text, "s "): read_state(e.text)
+
+# (HOST=1: host at once; JOIN=address, or ?join=address in a web page: join at once)
+if env("HOST") != none: host()
+else if env("JOIN") != none: join()
+
+update = (dt: f64):
+    network()
+    if key_pressed(.escape) and screen != .title and screen != .joining:
+        if other >= 0: net.close(other)
+        screen = .title
+        return
+    if screen == .joining:
+        address += text_input()
+        if key_typed(.backspace) and len(address) > 0: address = address[..len(address) - 1)
+        if key_pressed(.enter): join()
+        if key_pressed(.escape): screen = .title
+        return
+    if screen != .playing: return
+    move = f64(-input_axis().y)
+    if hosting:
+        left_y = clamp(left_y - move * PADDLE_SPEED * dt, PADDLE_H / 2.0, 720.0 - PADDLE_H / 2.0)
+        right_y = clamp(right_y - right_move * PADDLE_SPEED * dt, PADDLE_H / 2.0, 720.0 - PADDLE_H / 2.0)
+        ball += vel * f32(dt)
+        if ball.y < 10 or ball.y > 710:
+            vel.y = -vel.y
+            ball.y = clamp(ball.y, 10.0, 710.0)
+        if ball.x < 60 and ball.x > 30 and abs(f64(ball.y) - left_y) < PADDLE_H / 2.0 and vel.x < 0:
+            vel.x = -vel.x * 1.05
+            vel.y += f32((f64(ball.y) - left_y) * 4.0)
+        if ball.x > 1220 and ball.x < 1250 and abs(f64(ball.y) - right_y) < PADDLE_H / 2.0 and vel.x > 0:
+            vel.x = -vel.x * 1.05
+            vel.y += f32((f64(ball.y) - right_y) * 4.0)
+        if ball.x < -20:
+            score_r += 1
+            serve(1.0)
+        if ball.x > 1300:
+            score_l += 1
+            serve(-1.0)
+        if score_l >= WIN or score_r >= WIN: screen = .over
+        send_wait -= dt
+        if send_wait <= 0.0 and other >= 0:
+            net.send(other, state())
+            send_wait = 1.0 / 30.0
+    else if other >= 0: net.send(other, "m {move:.2}")
+
+draw = ():
+    clear(rgb(0.05, 0.06, 0.09))
+    loop y in [0..18): rect(638, f64(y) * 40 + 10, 4, 20, rgba(1, 1, 1, 0.15))
+    if screen == .playing or screen == .over:
+        rect(36, left_y - PADDLE_H / 2.0, 16, PADDLE_H, rgb(0.4, 0.8, 1.0))
+        rect(1228, right_y - PADDLE_H / 2.0, 16, PADDLE_H, rgb(1.0, 0.6, 0.3))
+        circle(ball, 10, WHITE)
+        text_centered("{score_l}", vec2(560, 60), 64)
+        text_centered("{score_r}", vec2(720, 60), 64)
+        you = "you are the right paddle"
+        if hosting: you = "you are the left paddle"
+        text_centered(you, vec2(640, 690), 20, rgba(1, 1, 1, 0.5))
+    if screen == .over:
+        won = score_l > score_r
+        if not hosting: won = not won
+        text_centered(if won: "you won" else: "you lost", vec2(640, 300), 72)
+        text_centered("Escape: back to the title", vec2(640, 380), 24, GRAY)
+    if screen == .title:
+        text_centered("NETPONG", vec2(640, 200), 96, rgb(0.4, 0.8, 1.0))
+        ui_begin("title", vec2(640, 330))
+        when TARGET != "wasm":
+            if ui_button("Host a game"): host()
+        if ui_button("Join a game"): screen = .joining
+        if ui_button("Quit"): quit()
+        ui_end()
+        if len(status) > 0: text_centered(status, vec2(640, 560), 22, GRAY)
+    if screen == .joining:
+        text_centered("the host's address (a name or 1.2.3.4), then Enter", vec2(640, 280), 26)
+        text_centered("{address}_", vec2(640, 350), 40, rgb(1.0, 0.85, 0.3))
+    if screen == .waiting: text_centered(status, vec2(640, 360), 26)

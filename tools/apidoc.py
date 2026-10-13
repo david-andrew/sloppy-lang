@@ -51,6 +51,9 @@ TOPICS = [
     ("Games", "menus", "Menus", ["game/ui"], "menus", ""),
     ("Games", "paths", "Paths", ["game/paths"], "paths", ""),
     ("Games", "helpers", "Particles, noise, easing and collisions", ["game/gameutil"], "helpers", ""),
+    ("Games", "net", "Networking", ["net"], "networking",
+     "A module (`import net`): messages between programs over WebSockets, so a native build and a web page "
+     "can play together. A server is a native program; a web page connects to one. See examples/netpong."),
 ]
 # the library's own machinery (the runtime, the OS and graphics layers, the prompt...): not listed
 INTERNAL = {"core/rt", "core/fmt", "core/windows", "core/macos", "game/dl", "game/cocoa", "game/x11", "game/wayland", "game/wlclient", "game/dmabuf", "game/vk", "game/vkgl",
