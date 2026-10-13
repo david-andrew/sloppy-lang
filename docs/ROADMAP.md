@@ -75,8 +75,9 @@ rebindable controls, touch on the web).
   (types, variables, natvis for Visual Studio and WinDbg; unwind codes for saved registers):
   done.
 - **Profiling:** Sloppy function names in `perf` and Windows' profilers (there: symbols, DWARF,
-  PDB), and a frame profiler in the stats overlay: named CPU zones per frame (done: `zone()`);
-  next, with Vulkan, GPU timestamps per pass.
+  PDB), and a frame profiler in the stats overlay: named zones per frame with their CPU time and,
+  through Vulkan, their GPU time (done: `zone()`; the 3D scene, its shadows and post-processing
+  are zones).
 - **Error messages:** collect the commonest mistakes (from the tutorials, the playground and
   `tools/fuzz_errors.py`) and make each message say what to do. Quick fixes in the editor (the
   language server's code actions) exist for misspelled names, `loop mut`, `mut` parameters and

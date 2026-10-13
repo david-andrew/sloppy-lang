@@ -648,7 +648,7 @@ Windows, the frame loop and input. Native: X11 + EGL (OpenGL ES 3) loaded from t
 
 ### stats.jo
 
-A frame statistics overlay: frame times as a graph, CPU time, time handing frames to the screen, frames that took much longer than usual (stutter), and the time each zone of the frame takes (zone("physics") ... zone_end(): update and draw are zones already). show_stats() turns it on, as do SLOPPY_STATS=1 and, in a web page, ?stats in the URL. SLOPPY_STATS=log (?stats=log) prints the same numbers every two seconds instead, and each long frame as it happens.
+A frame statistics overlay: frame times as a graph, CPU time, time handing frames to the screen, frames that took much longer than usual (stutter), and the time each zone of the frame takes (zone("physics") ... zone_end(): update and draw are zones already, as are the 3D scene, its shadows and post-processing), on the CPU and, through Vulkan, on the GPU. show_stats() turns it on, as do SLOPPY_STATS=1 and, in a web page, ?stats in the URL. SLOPPY_STATS=log (?stats=log) prints the same numbers every two seconds instead, and each long frame as it happens.
 
 - `show_stats = (on: bool = true)`
 - `stats_shown = () -> bool`

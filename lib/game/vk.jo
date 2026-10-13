@@ -137,6 +137,14 @@ when TARGET != "wasm":
     @lib("libvulkan.so.1")
     extern vkCmdBeginRendering = (cb: *u8, info: *u8)
     @lib("libvulkan.so.1")
+    extern vkCreateQueryPool = (dev: *u8, info: *u8, alloc: *u8, out: *int) -> i32
+    @lib("libvulkan.so.1")
+    extern vkCmdResetQueryPool = (cb: *u8, pool: int, first: u32, count: u32)
+    @lib("libvulkan.so.1")
+    extern vkCmdWriteTimestamp2 = (cb: *u8, stage: u64, pool: int, query: u32)
+    @lib("libvulkan.so.1")
+    extern vkGetQueryPoolResults = (dev: *u8, pool: int, first: u32, count: u32, size: int, out: *u8, stride: u64, flags: u32) -> i32
+    @lib("libvulkan.so.1")
     extern vkCmdEndRendering = (cb: *u8)
     @lib("libvulkan.so.1")
     extern vkCmdBlitImage2 = (cb: *u8, info: *u8)
@@ -1244,6 +1252,87 @@ when TARGET != "wasm":
             __vk_check(vkCreateSemaphore(__vk_dev, (&sinfo) as *u8, null, &f.acquired), "vkCreateSemaphore")
             __vk_frames.push(f)
 
+    # ---------------- GPU time (the statistics overlay, stats.jo) ----------------
+    # Timestamps written among a frame's commands, in pairs around what is timed, read back when
+    # the frame comes round again (its fence has passed): __VK_TS queries per frame in flight.
+    const __VK_TS = 128
+    __vk_ts_tried = false
+    __vk_ts_pool = 0
+    __vk_ts_period = 0.0           # seconds per tick
+    __vk_ts_mask = 0
+    __vk_ts_used: int[]            # per frame in flight: its queries written
+    __vk_ts_pairs: int[][]         # per frame in flight: what each pair timed, its two queries
+    __vk_ts_session = 0            # (each recording: a pair begun in an earlier one is dropped)
+    __vk_ts_first = -1             # (the recording's first timestamp: the whole of it is timed)
+
+    # time the GPU's work from now on, if the device can (a query pool, made the first time)
+    __vk_ts_want = ():
+        if __vk_ts_tried: return
+        __vk_ts_tried = true
+        props = fill(u8(0), 1024)
+        vkGetPhysicalDeviceProperties(__vk_pd, data(props))
+        period = f64(((data(props) + 720) as *f32)[0])     # VkPhysicalDeviceLimits.timestampPeriod (ns)
+        n: u32 = 0
+        vkGetPhysicalDeviceQueueFamilyProperties(__vk_pd, &n, null)
+        qf = fill(u8(0), int(n) * 24)
+        vkGetPhysicalDeviceQueueFamilyProperties(__vk_pd, &n, data(qf))
+        bits = int((data(qf) as *u32)[int(__vk_family) * 6 + 2])    # timestampValidBits
+        if bits == 0 or period <= 0.0: return
+        info = fill(u32(0), 8)
+        info[0] = 11
+        info[5] = 2                                        # VK_QUERY_TYPE_TIMESTAMP
+        info[6] = u32(__VK_TS * __VK_FRAMES)
+        if vkCreateQueryPool(__vk_dev, data(info) as *u8, null, &__vk_ts_pool) != 0:
+            __vk_ts_pool = 0
+            return
+        __vk_ts_period = period * 1e-9
+        __vk_ts_mask = -1
+        if bits < 64: __vk_ts_mask = (1 << bits) - 1
+        __vk_ts_used = fill(0, __VK_FRAMES)
+        __vk_ts_pairs = []
+        loop _ in [0..__VK_FRAMES): __vk_ts_pairs.push([])
+        # (this frame's queries are not reset yet: its recording times nothing)
+        __vk_ts_used[__vk_frame] = __VK_TS
+        __vk_ts_first = -1
+
+    # (a recording begins: what this frame timed the last time round comes back, its queries are
+    # reset, and the recording's start is marked)
+    __vk_ts_begin = (cb: *u8):
+        base = __vk_frame * __VK_TS
+        u = __vk_ts_used[__vk_frame]
+        p = __vk_ts_pairs[__vk_frame]
+        if u > 0 and u <= __VK_TS and p.len() > 0:
+            res = fill(0, u)
+            if vkGetQueryPoolResults(__vk_dev, __vk_ts_pool, u32(base), u32(u), 8 * u, data(res) as *u8, u64(8), u32(1)) == 0:
+                k = 0
+                loop k < p.len():
+                    __gpu_time(p[k], f64((res[p[k + 2]] - res[p[k + 1]]) & __vk_ts_mask) * __vk_ts_period)
+                    k += 3
+        __vk_ts_pairs[__vk_frame].clear()
+        vkCmdResetQueryPool(cb, __vk_ts_pool, u32(base), u32(__VK_TS))
+        __vk_ts_used[__vk_frame] = 0
+        __vk_ts_session += 1
+        __vk_ts_first = __vk_ts_mark()
+
+    # a timestamp now, in the commands (its query, counted from the frame's first; -1: none)
+    __vk_ts_mark = () -> int:
+        if __vk_ts_pool == 0 or not __vk_recording: return -1
+        u = __vk_ts_used[__vk_frame]
+        if u >= __VK_TS: return -1
+        vkCmdWriteTimestamp2(__vk_cb(), u64(VK_STAGE_ALL), __vk_ts_pool, u32(__vk_frame * __VK_TS + u))
+        __vk_ts_used[__vk_frame] = u + 1
+        u
+
+    # what (a zone; -1: the whole recording) took the GPU from the timestamp q0 (made in recording
+    # session) until now
+    __vk_ts_pair = (what: int, q0: int, session: int):
+        if q0 < 0 or session != __vk_ts_session: return
+        q1 = __vk_ts_mark()
+        if q1 < 0: return
+        __vk_ts_pairs[__vk_frame].push(what)
+        __vk_ts_pairs[__vk_frame].push(q0)
+        __vk_ts_pairs[__vk_frame].push(q1)
+
     # ---------------- memory ----------------
     # a memory type allowed by bits with all of the flags in want (and, preferably, those in like)
     __vk_memory_type = (bits: u32, want: u32, like: u32) -> int:
@@ -1534,6 +1623,7 @@ when TARGET != "wasm":
         bi = VkCommandBufferBeginInfo(stype = 42, flags = 1)
         __vk_check(vkBeginCommandBuffer(f.cb, (&bi) as *u8), "vkBeginCommandBuffer")
         __vk_recording = true
+        if __vk_ts_pool != 0: __vk_ts_begin(f.cb)
         __vk_resize_screen(__win_w, __win_h)
 
     # (Wayland, when the window draws its own title bar: its pixels, BGRX rows top first, shown
@@ -1597,6 +1687,7 @@ when TARGET != "wasm":
         bi = VkBlitImageInfo2(stype = 1000337004, src = __vk_screen.image, src_layout = u32(VK_LAYOUT_TRANSFER_SRC), dst = sc_img, dst_layout = u32(VK_LAYOUT_TRANSFER_DST), nregions = 1, regions = (&reg) as *u8, filter = 0)
         vkCmdBlitImage2(cb, (&bi) as *u8)
         __vk_barrier_raw(cb, sc_img, 1, u32(VK_LAYOUT_TRANSFER_DST), u32(VK_LAYOUT_PRESENT), VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_WRITE, VK_STAGE_ALL, 0)
+        __vk_ts_pair(-1, __vk_ts_first, __vk_ts_session)
         __vk_check(vkEndCommandBuffer(cb), "vkEndCommandBuffer")
         __vk_recording = false
         wait = VkSemaphoreSubmitInfo(stype = 1000314005, semaphore = f.acquired, stages = VK_STAGE_TRANSFER)
@@ -1617,6 +1708,7 @@ when TARGET != "wasm":
     # frame goes on recording afresh
     __vk_submit_and_wait = ():
         f = __vk_frames[__vk_frame]
+        __vk_ts_pair(-1, __vk_ts_first, __vk_ts_session)
         __vk_check(vkEndCommandBuffer(f.cb), "vkEndCommandBuffer")
         __vk_recording = false
         cbi = VkCommandBufferSubmitInfo(stype = 1000314006, cb = f.cb)

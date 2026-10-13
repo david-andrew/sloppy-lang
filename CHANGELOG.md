@@ -16,6 +16,10 @@ Tools:
   the playground.
 
 Games:
+- **GPU time in the frame statistics**: through Vulkan, the overlay (`show_stats()`,
+  `SLOPPY_STATS=1` or `log`) shows the GPU's time for the frame and for each zone, from
+  timestamps among the frame's commands; the 3D scene, its shadows and post-processing are zones
+  of their own.
 - **Slopes and one-way platforms in tilemaps**: `set_tile_shape(map, id, shape)` with
   `.platform` (landed on from above, passed through from below and the sides), `.slope(left,
   right)` (a floor rising or falling across the tile: `.slope(0, 1)`, gentle ones over two
