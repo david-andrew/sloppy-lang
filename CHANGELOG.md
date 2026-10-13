@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+Shipping:
+- `sloppy build --target macos -o Game.app` makes an app bundle: the program, an Info.plist
+  (its name in the Dock and the menu bar) and the build block's icon.
+
 ## 0.11.0
 
 Games:

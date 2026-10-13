@@ -97,9 +97,10 @@ sloppy build game.jo --target wasm -o game.zip   # the same, ready for itch.io
 
 Each is one file with nothing to install alongside it (`--target macos` and `--target linux`
 make the same from any system too; a Windows build's `.pdb` beside it is for debuggers only).
-A macOS build is a plain program, not an `.app`, and not signed by an Apple developer account:
-a Mac runs a downloaded one after `xattr -d com.apple.quarantine game` in the Terminal (or
-System Settings, Privacy & Security, Open Anyway).
+`sloppy build game.jo --target macos -o Game.app` makes a Mac app (its icon, its name in the
+Dock and the menu bar); `zip -r Game.zip Game.app` to share it. It is not signed by an Apple
+developer account, so a Mac opens a downloaded one after a right click, Open (or System
+Settings, Privacy & Security, Open Anyway).
 
 ## Editors
 
