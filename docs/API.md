@@ -2089,6 +2089,8 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `peers = () -> int[]`: the peers connected now
 - `close = (peer: int)`: end a connection (a left event follows)
 - `receive = () -> NetEvent[]`: what happened since the last call: peers joining and leaving, and their messages, in order
+- `receive = (only: int[]) -> NetEvent[]`: the same, for the given peers only (the others' events wait for another call): parts of a program that each have peers of their own, as a game hosting a relay and playing through it
+- `receive_server = () -> NetEvent[]`: the same, for the peers that connected to this program's server (listen) only
 
 #### UDP (native programs)
 
@@ -2156,6 +2158,12 @@ draw = ():
 #### Over UDP (native programs)
 
 - `udp[S, I] = (s: mut Session[S, I], port: int, addrs: (str, int)[])`: play over UDP: this machine listens on port, and each player p is at addrs[p] (this one's own entry is not used)
+
+#### Through a relay (web pages too)
+
+- `join_relay[S, I] = (s: mut Session[S, I], host: str, port: int, room: str)`: play through the relay at host and port (or a ws:// or wss:// URL), with the players who name the same room
+- `relay = (port: int)`: a relay on port: call it every frame (in a game that hosts others), or relay_forever
+- `relay_forever = (port: int)`: a program that is only a relay
 
 #### A simulated network, for trying netplay in one program
 

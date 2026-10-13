@@ -51,7 +51,12 @@ Games:
   inputs resent until acknowledged (loss is fine), hashes of confirmed ticks to catch
   machines whose games differ (`s.desync`), simulated latency, jitter and loss (`s.lag`, and
   `netplay.Link` for two sessions in one program). Over UDP (`s.udp`) or any transport
-  (`s.outgoing()`, `s.receive(bytes)`). examples/duel: two ships, over a LAN or in two windows.
+  (`s.outgoing()`, `s.receive(bytes)`), and through a relay over WebSockets, the way web pages
+  play (`netplay.relay(port)` in a native program, which may itself be a player;
+  `s.join_relay(host, port, room)`). examples/duel: two ships, over a LAN, in two windows, or
+  with a web page.
+- `net.receive(peers)` and `net.receive_server()`: the events of some peers only, for parts of a
+  program that each have peers of their own.
 - **UDP** in `net`: `net.udp(port)`, `net.udp_send`, `net.udp_receive` (Linux, macOS, Windows).
 - **2D physics** (`import physics`): rigid bodies (circles, boxes, convex polygons) that
   collide, bounce, slide and stack, with friction, bounciness, density, damping and collision

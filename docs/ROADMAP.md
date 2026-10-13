@@ -111,8 +111,8 @@ game picks from (and an example of each):
   the ticks since played again; input delay; waiting when too far ahead and slowing when ahead
   of the other's clock; inputs resent until acknowledged; hashes of confirmed ticks to catch a
   desync; simulated latency, jitter and loss. Sloppy's math is its own, so ticks agree across
-  operating systems and the web. UDP in `net` (done). Next: a transport for web pages (WebRTC
-  data channels, or WebSockets through a relay), spectators, more than one local player per
+  operating systems and the web. UDP in `net`, and a relay over WebSockets for web pages (done).
+  Next: WebRTC data channels (browser to browser without a relay, and unreliable), spectators, more than one local player per
   machine, measured round-trip time shown to the player.
 - **Client-server (for more players and shooters):** an authoritative server; client-side
   prediction of the player's own movement with reconciliation when the server's answer

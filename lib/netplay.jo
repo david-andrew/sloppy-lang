@@ -25,7 +25,8 @@ import net
 # more delay, fewer rollbacks. A session may run at most `max_ahead` ticks ahead of the inputs
 # it has from everyone, then it waits (s.waiting).
 #
-# Without s.udp, the session only says what to send (s.outgoing()) and is told what arrived
+# A web page plays through a relay (netplay.relay in a native program; s.join_relay). Without
+# s.udp or a relay, the session only says what to send (s.outgoing()) and is told what arrived
 # (s.receive(player, bytes)): any transport works (net's WebSockets, a relay server), and two
 # sessions in one program can play each other over netplay.Link, a simulated network with
 # latency, jitter and loss. s.lag(ms, jitter_ms, loss) simulates the same on a real one.
@@ -62,6 +63,9 @@ struct Session[S, I]:
     # (a UDP transport: s.udp)
     __sock = -1
     __addrs: (str, int)[]
+    # (through a relay: s.join_relay)
+    __relay = -1
+    __room = ""
     # (simulated lag on sending: s.lag)
     __lag = 0.0
     __jitter = 0.0
@@ -71,6 +75,7 @@ struct Session[S, I]:
 
 struct __NpPacket[I]:
     from: int
+    to: int
     tick: int                       # the sender's tick
     adv: int                        # how far ahead of the receiver it is, as it sees it
     ack: int                        # the receiver's inputs below this have arrived
@@ -111,6 +116,7 @@ silent[S, I] = (s: Session[S, I], p: int) -> f64: elapsed() - s.__heard[p]
 play[S, I] = (s: mut Session[S, I], input: I):
     s.__frames += 1
     if s.__sock >= 0: __np_udp_receive(s)
+    if s.__relay >= 0: __np_relay_receive(s)
     # (my input for the tick it takes effect: once per tick, as others may have it already)
     t = s.tick + s.delay
     if s.__recv[s.me] == t:
@@ -128,6 +134,8 @@ play[S, I] = (s: mut Session[S, I], input: I):
     __np_hash_confirmed(s)
     __np_send(s)
     if s.__sock >= 0: __np_udp_send(s)
+    if s.__relay >= 0:
+        loop o in s.outgoing(): net.send(s.__relay, o.1)
 
 # what to send to whom since the last call: (player, bytes) (without s.udp)
 outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]:
@@ -142,7 +150,7 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
     if r is TextError: return
     pk = r
     p = pk.from
-    if p < 0 or p >= s.players or p == s.me: return
+    if p < 0 or p >= s.players or p == s.me or pk.to != s.me: return
     s.__heard[p] = elapsed()
     s.__acked[p] = max(s.__acked[p], pk.ack)
     s.__their_tick[p] = max(s.__their_tick[p], pk.tick)
@@ -218,7 +226,7 @@ __np_send[S, I] = (s: mut Session[S, I]):
         loop t in [first..s.__recv[s.me]): ins.push(s.__inputs[t % __NP_HIST * s.players + s.me])
         h: u64 = 0
         if s.__check >= 0: h = s.__hashes.get(s.__check) ?? 0
-        pk = __NpPacket[I](s.me, s.tick, s.tick - s.__their_tick[p], s.__recv[p], first, ins, s.__check, h)
+        pk = __NpPacket[I](s.me, p, s.tick, s.tick - s.__their_tick[p], s.__recv[p], first, ins, s.__check, h)
         __np_out(s, p, bytes(to_text(pk)))
 
 __np_out[S, I] = (s: mut Session[S, I], p: int, b: u8[]):
@@ -262,6 +270,43 @@ __np_udp_receive[S, I] = (s: mut Session[S, I]):
 __np_udp_send[S, I] = (s: mut Session[S, I]):
     loop o in s.outgoing():
         if o.0 < s.__addrs.len(): net.udp_send(s.__sock, s.__addrs[o.0].0, s.__addrs[o.0].1, o.1)
+
+# ---------------- through a relay (web pages too) ----------------
+# A web page cannot use UDP or wait for others to connect, so players meet at a relay: a native
+# program (netplay.relay) that passes each packet on to the other players in the same room.
+# (Its WebSockets go over TCP: a lost packet holds up those after it, unlike UDP.)
+
+# play through the relay at host and port (or a ws:// or wss:// URL), with the players who name
+# the same room
+join_relay[S, I] = (s: mut Session[S, I], host: str, port: int, room: str):
+    s.__relay = net.connect(host, port)
+    s.__room = room
+
+__np_relay_receive[S, I] = (s: mut Session[S, I]):
+    loop e in net.receive([s.__relay]):
+        if e.kind == .joined: net.send(s.__relay, "join {s.__room}")
+        else if e.kind == .message: s.receive(e.data)
+
+__np_rooms: {int: str}
+
+# a relay on port: call it every frame (in a game that hosts others), or relay_forever
+relay = (port: int):
+    net.listen(port)
+    loop e in net.receive_server():
+        if e.kind == .left: __np_rooms.remove(e.peer)
+        else if e.kind != .message: continue
+        else if let r = __np_rooms.get(e.peer):
+            loop k, v in __np_rooms:
+                if v == r and k != e.peer: net.send(k, e.data)
+        else if starts_with(e.text, "join "): __np_rooms[e.peer] = e.text[5..]
+
+# a program that is only a relay
+relay_forever = (port: int):
+    if not net.listen(port): panic("cannot listen on port {port}")
+    print("netplay relay on port {port}")
+    loop:
+        relay(port)
+        sleep(0.001)
 
 # ---------------- a simulated network, for trying netplay in one program ----------------
 # packets between numbered ends, each arriving after latency (plus up to jitter at random),

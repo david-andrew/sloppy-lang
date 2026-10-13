@@ -40,6 +40,7 @@ __net_peers: __NetPeer[]
 __net_next = 1
 __net_listen_fd = -1
 __net_events: NetEvent[]
+__net_accepted: {int: bool}     # the peers that connected to this program's server
 __net_key = ""              # (a client's handshake key)
 const __NET_MAX = 16 << 20  # the biggest message taken (bigger: the connection ends)
 
@@ -145,6 +146,37 @@ __net_gone = (i: int):
 
 # what happened since the last call: peers joining and leaving, and their messages, in order
 receive = () -> NetEvent[]:
+    __net_poll()
+    out = __net_events
+    __net_events = []
+    out
+
+# the same, for the given peers only (the others' events wait for another call): parts of a
+# program that each have peers of their own, as a game hosting a relay and playing through it
+receive = (only: int[]) -> NetEvent[]:
+    __net_poll()
+    out: NetEvent[]
+    keep: NetEvent[]
+    loop e in __net_events:
+        if e.peer in only: out.push(e)
+        else: keep.push(e)
+    __net_events = keep
+    out
+
+# the same, for the peers that connected to this program's server (listen) only
+receive_server = () -> NetEvent[]:
+    __net_poll()
+    out: NetEvent[]
+    keep: NetEvent[]
+    loop e in __net_events:
+        if __net_accepted.has(e.peer): out.push(e)
+        else: keep.push(e)
+    __net_events = keep
+    loop e in out:
+        if e.kind == .left: __net_accepted.remove(e.peer)
+    out
+
+__net_poll = ():
     when TARGET == "wasm":
         buf = fill(u8(0), 1 << 16)
         loop i in [0..__net_peers.len()):
@@ -170,6 +202,7 @@ receive = () -> NetEvent[]:
                 fd = __n_accept(__net_listen_fd)
                 if fd < 0: break
                 __net_peers.push(__NetPeer(id = __net_next, fd = fd, state = 1, client = false, since = time()))
+                __net_accepted[__net_next] = true
                 __net_next += 1
         loop i in [0..__net_peers.len()):
             st = __net_peers[i].state
@@ -208,9 +241,6 @@ receive = () -> NetEvent[]:
                 __net_peers.remove(k)
                 continue
             k += 1
-    out = __net_events
-    __net_events = []
-    out
 
 # write what is waiting to go out (as much as the socket takes now)
 __net_flush = (i: int):

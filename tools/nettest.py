@@ -62,6 +62,21 @@ if shell:
         s_out = s.communicate()[0]
     b.kill()
     check("web client (in Chromium)", s_out, WANT_SERVER[:5] + ["server: got big ok", "server: left"])
+    # rollback netplay through a relay: a native player and a web page's
+    port += 1
+    env["NET_PORT"] = str(port)
+    host = build("np_host") + exe
+    page = build("np_page", "--target", "wasm") + ".html"
+    h = subprocess.Popen([host], stdout=subprocess.PIPE, text=True, env=env)
+    time.sleep(0.5)
+    b = subprocess.Popen([shell, "--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0",
+                          "file://" + page + f"?NET_PORT={port}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try: h_out = h.communicate(timeout=60)[0]
+    except subprocess.TimeoutExpired:
+        h.kill()
+        h_out = h.communicate()[0]
+    b.kill()
+    check("netplay with a web page (in Chromium)", h_out, ["host: played true", "host: compared true, desync -1"])
 else: print("(no browser: the web client is not tried)")
 shutil.rmtree(tmp, ignore_errors=True)
 sys.exit(1 if failed else 0)

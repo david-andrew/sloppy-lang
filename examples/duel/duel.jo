@@ -2,8 +2,10 @@
 # runs the whole game, only the players' inputs travel, and a late input is made up for by
 # playing the last few ticks again, so neither player waits for the other's moves.
 # Start player 1 with PLAYER=0 and player 2 with PLAYER=1 (on the same machine, or on two:
-# PEER=<the other's address>). LAG=100 adds 100 ms to what this one sends, to try a slow network;
-# BOT=1 lets the computer play this side.
+# PEER=<the other's address>): they play over UDP. A web page plays through a relay instead:
+# SERVE=1 makes a native player one as well, and a page joins it with ?player=1&relay=<its address>
+# (a native player can too, with RELAY=<address>). LAG=100 adds 100 ms to what this one sends, to
+# try a slow network; BOT=1 lets the computer play this side.
 # Move with the arrows, WASD or a stick; fire with Space or the gamepad's A. First to 10 wins.
 
 build:
@@ -87,7 +89,15 @@ tick = (g: Game, pads: Pad[]) -> Game:
 
 # ---------------- the session ----------------
 s = netplay.session(Game(), tick, players = 2, me = me)
-s.udp(4400 + me, [(peer, 4400), (peer, 4401)])
+serving = env("SERVE") != none
+relay = env("RELAY") ?? ""
+when TARGET == "wasm":
+    if len(relay) == 0: relay = "localhost"
+if serving:
+    netplay.relay(4500)
+    relay = "127.0.0.1"
+if len(relay) > 0: s.join_relay(relay, 4500, "duel")
+else: s.udp(4400 + me, [(peer, 4400), (peer, 4401)])
 if let lag = env("LAG"): s.lag(to_float(lag) ?? 0, 10, 0.02)
 spare = 0.0
 bot = env("BOT") != none
@@ -103,6 +113,7 @@ bot_pad = (g: Game) -> Pad:
 
 update = (dt: f64):
     if key_pressed(.escape): quit()
+    if serving: netplay.relay(4500)
     # (ticks at 60 a second, whatever the frame rate)
     spare = min(spare + dt, 0.1)
     loop spare >= 1.0 / 60.0:
@@ -125,6 +136,9 @@ draw = ():
     text_centered("{g.ships[1].score}", vec2(W - 60, 54), 48, colors[1])
     if g.winner >= 0: text_centered("player {g.winner + 1} wins", vec2(W / 2, H / 2), 64, WHITE)
     other = 1 - me
-    if s.waiting and s.silent(other) > 1.0: text_centered("waiting for player {other + 1} (port {4400 + other} at {peer})", vec2(W / 2, H - 60), 28, gray(0.7))
+    if s.waiting and s.silent(other) > 1.0:
+        where = "port {4400 + other} at {peer}"
+        if len(relay) > 0: where = "the relay at {relay}"
+        text_centered("waiting for player {other + 1} ({where})", vec2(W / 2, H - 60), 28, gray(0.7))
     if s.desync >= 0: text_centered("the two games differ since tick {s.desync}", vec2(W / 2, 40), 28, rgb(1, 0.4, 0.4))
     text("rollbacks {s.rollbacks}", vec2(20, H - 36), 20, gray(0.5))
