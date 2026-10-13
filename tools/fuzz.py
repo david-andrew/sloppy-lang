@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Differential fuzzing: generate random (well-defined) Sloppy programs and check that debug,
-release and web builds print the same thing. Half the programs also use the newer features
+release and web builds print the same thing, as does the program laid out by sloppy fmt. Half
+the programs also use the newer features
 (unions with narrowing, closures that change captured variables, struct-of-arrays checked
 against a plain array, n-dimensional arrays and broadcasting); the others stay within the
 C bootstrap compiler's subset, which is then a fifth, independent build.
@@ -697,6 +698,20 @@ def check(seed, wasm=True, keep=False, arm64=False):
         else:
             code, o, e = run([exe])
         outs[name] = o + (f"[exit {code}] {panic_line(e)}" if code != 0 else "")
+    # sloppy fmt must not change what a program does: laid out, it must print the same
+    r = subprocess.run([SLOPPY, "fmt", "-"], input=src, capture_output=True, text=True, env=ENV, timeout=30)
+    if r.returncode == 0 and r.stdout != src:
+        # (the same name: panics say it)
+        os.makedirs(os.path.join(OUT, "fmt"), exist_ok=True)
+        fpath = os.path.join(OUT, "fmt", f"p{seed}.jo")
+        open(fpath, "w").write(r.stdout)
+        exe = os.path.join(OUT, f"p{seed}_fmt")
+        code, _, err = run([SLOPPY, "build", fpath, "-o", exe])
+        if code != 0: outs["fmt"] = f"COMPILE ERROR {err[:300]}"
+        else:
+            code, o, e = run([exe])
+            outs["fmt"] = o + (f"[exit {code}] {panic_line(e)}" if code != 0 else "")
+    elif r.returncode != 0: outs["fmt"] = f"FMT FAILED {r.stderr[:300]}"
     # the bootstrap compiler shares no code with the self-hosted one, so it catches mistakes all
     # of the self-hosted builds make alike (when the program stays within its language subset)
     if os.path.exists(SLOPPY0) and "vec" not in src:
