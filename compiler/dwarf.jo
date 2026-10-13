@@ -226,11 +226,14 @@ dwarf_sections = (text_addr: int, text_len: int, main_path: str, version: str) -
     if dbg_cfi.len() > 0: out.push((".debug_frame", dw_frames(text_addr)))
     out
 
-# .debug_frame (x86-64): one CIE, then an FDE for each function. At its start the CFA (the stack
-# pointer before the call) is rsp + 8 with the return address below it; after push rbp, rsp +
-# 16 with rbp below the return address; after mov rbp, rsp, rbp + 16 until the epilogue pops rbp
-# (then rsp + 8 again, for the ret); the callee-saved registers are kept at fixed offsets from rbp.
+# .debug_frame: one CIE, then an FDE for each function. x86-64: at its start the CFA (the stack
+# pointer before the call) is rsp + 8 with the return address below it; after push rbp, rsp + 16
+# with rbp below the return address; after mov rbp, rsp, rbp + 16 until the epilogue pops rbp
+# (then rsp + 8 again, for the ret). arm64: the CFA is sp at the start; after stp x29, x30,
+# [sp, -16]! it is sp + 16 with x29 and x30 below it; after mov x29, sp, x29 + 16 until the
+# epilogue's ldp (then sp, for the ret). The callee-saved registers are at fixed offsets from it.
 dw_frames = (text_addr: int) -> u8[]:
+    arm = target_arm64
     f: u8[]
     cie: u8[]
     put32(cie, -1)                  # CIE id
@@ -238,17 +241,27 @@ dw_frames = (text_addr: int) -> u8[]:
     cie.push(0)                     # augmentation ""
     cie.push(8)                     # address size
     cie.push(0)                     # segment selector size
-    uleb(cie, 1)                    # code alignment
-    sleb(cie, -8)                   # data alignment
-    uleb(cie, 16)                   # the return address: "register" 16
-    cie.push(0x0c)                  # DW_CFA_def_cfa rsp, 8
-    uleb(cie, 7)
-    uleb(cie, 8)
-    cie.push(0x80 | 16)             # DW_CFA_offset: the return address at CFA - 8
-    uleb(cie, 1)
+    if arm:
+        uleb(cie, 4)                # code alignment (instructions)
+        sleb(cie, -8)
+        uleb(cie, 30)               # the return address: x30
+        cie.push(0x0c)              # DW_CFA_def_cfa sp, 0
+        uleb(cie, 31)
+        uleb(cie, 0)
+    else:
+        uleb(cie, 1)                # code alignment
+        sleb(cie, -8)               # data alignment
+        uleb(cie, 16)               # the return address: "register" 16
+        cie.push(0x0c)              # DW_CFA_def_cfa rsp, 8
+        uleb(cie, 7)
+        uleb(cie, 8)
+        cie.push(0x80 | 16)         # DW_CFA_offset: the return address at CFA - 8
+        uleb(cie, 1)
     loop (cie.len() + 4) % 8 != 0: cie.push(0)
     put32(f, cie.len())
     append_bytes(f, cie)
+    unit = 1                        # (bytes per advance)
+    if arm: unit = 4
     k = 0
     loop k < dbg_cfi.len():
         start = dbg_cfi[k]
@@ -260,36 +273,63 @@ dw_frames = (text_addr: int) -> u8[]:
         put32(x, 0)                 # the CIE, at 0
         put64(x, text_addr + start)
         put64(x, len_)
-        x.push(0x40 | 1)            # after push rbp
-        x.push(0x0e)                # DW_CFA_def_cfa_offset 16
-        uleb(x, 16)
-        x.push(0x80 | 6)            # rbp at CFA - 16
-        uleb(x, 2)
-        x.push(0x40 | 3)            # after mov rbp, rsp
-        x.push(0x0d)                # DW_CFA_def_cfa_register rbp
-        uleb(x, 6)
-        at = 4
-        dw_advance(x, body - at)
+        at = 0
+        if arm:
+            x.push(0x40 | 1)        # after stp x29, x30, [sp, -16]!
+            x.push(0x0e)            # DW_CFA_def_cfa_offset 16
+            uleb(x, 16)
+            x.push(0x80 | 29)       # x29 at CFA - 16, x30 at CFA - 8
+            uleb(x, 2)
+            x.push(0x80 | 30)
+            uleb(x, 1)
+            x.push(0x40 | 1)        # after mov x29, sp
+            x.push(0x0d)            # DW_CFA_def_cfa_register x29
+            uleb(x, 29)
+            at = 8
+        else:
+            x.push(0x40 | 1)        # after push rbp
+            x.push(0x0e)            # DW_CFA_def_cfa_offset 16
+            uleb(x, 16)
+            x.push(0x80 | 6)        # rbp at CFA - 16
+            uleb(x, 2)
+            x.push(0x40 | 3)        # after mov rbp, rsp
+            x.push(0x0d)            # DW_CFA_def_cfa_register rbp
+            uleb(x, 6)
+            at = 4
+        dw_advance(x, (body - at) / unit)
         at = body
         loop _ in [0..ns):
-            x.push(u8(0x80 | dbg_cfi[k]))
-            uleb(x, (16 - dbg_cfi[k + 1]) / 8)
+            r = dbg_cfi[k]
+            o = -dbg_cfi[k + 1] / 8
+            if r < 64:
+                x.push(u8(0x80 | r))
+                uleb(x, o)
+            else:
+                x.push(0x05)        # DW_CFA_offset_extended
+                uleb(x, r)
+                uleb(x, o)
             k += 2
         ne = dbg_cfi[k]
         k += 1
         loop _ in [0..ne):
             e = dbg_cfi[k]
             k += 1
-            dw_advance(x, e - at)
+            dw_advance(x, (e - at) / unit)
             x.push(0x0a)            # DW_CFA_remember_state
-            x.push(0x0c)            # DW_CFA_def_cfa rsp, 8
-            uleb(x, 7)
-            uleb(x, 8)
-            x.push(0x08)            # DW_CFA_same_value rbp
-            uleb(x, 6)
+            x.push(0x0c)            # DW_CFA_def_cfa: the stack pointer, where it was at the start
+            if arm:
+                uleb(x, 31)
+                uleb(x, 0)
+                x.push(0x08)        # DW_CFA_same_value x29
+                uleb(x, 29)
+            else:
+                uleb(x, 7)
+                uleb(x, 8)
+                x.push(0x08)        # DW_CFA_same_value rbp
+                uleb(x, 6)
             x.push(0x40 | 1)        # after the ret
             x.push(0x0b)            # DW_CFA_restore_state
-            at = e + 1
+            at = e + unit
         loop (x.len() + 4) % 8 != 0: x.push(0)
         put32(f, x.len())
         append_bytes(f, x)
