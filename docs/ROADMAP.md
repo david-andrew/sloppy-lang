@@ -150,8 +150,8 @@ Fill the gaps real programs hit, nothing speculative:
 - What a function may change, worked out once and carried on function values (from the audit):
   it would replace several special cases in the checks for `mut` elements and borrowed
   arguments, and let release builds leave out more reference counting and bounds checks.
-- Lints: a local variable that has a global's name and type (it changes the global), results
-  left unused.
+- Lints: a local variable that has a global's name and type (it changes the global); results
+  left unused (done for the library's functions that give a new value: `s.trim()`).
 - Text: bytes vs code points vs what is displayed, made clear in the API.
 - A consistency review, then a written list of what is stable, before any 1.0.
 

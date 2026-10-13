@@ -26,6 +26,8 @@ Language:
 - Fixed: `a[f()]` where `f` grows the global array `a` read freed memory (the index is now
   evaluated first); an `if let` whose branches are statements, at the end of a function, was
   taken for the function's value.
+- A warning for `s.trim()`, `xs.sorted()`, `normalize(v)` and the library's other functions
+  that give a new value, called as a statement (it does nothing; `s = s.trim()` keeps it).
 - A warning for colors written from 0 to 255 (`rgb(255, 128, 0)`; colors go from 0 to 1).
 - Errors in an interpolation inside a string inside an interpolation point at the right place.
 
