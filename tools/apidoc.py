@@ -55,19 +55,20 @@ TOPICS = [
     ("Games", "helpers", "Particles, noise, easing and collisions", ["game/gameutil"], "helpers", ""),
     ("Games", "physics", "2D physics", ["physics"], "physics",
      "A module (`import physics`): rigid bodies (circles, boxes, convex polygons) that collide, bounce, slide and stack, "
-     "joined by pins, rods, ropes and springs. Distances are in pixels with y down, as in drawing. See examples/physics.jo."),
+     "joined by pins, rods, ropes and springs. Distances are in the screen's units with y down, as in drawing. See [examples/physics.jo](https://github.com/david-andrew/sloppy-lang/blob/master/examples/physics.jo)."),
     ("Games", "physics3d", "3D physics", ["physics3d"], "physics3d",
      "A module (`import physics3d`): rigid bodies (spheres, boxes, capsules) and a level's triangles, joints (ball, hinge, "
-     "rod, rope, spring), rays, and a character controller that walks slopes and steps. Meters, y up. See examples/physics3d.jo."),
+     "rod, rope, spring), rays, and a character controller that walks slopes and steps. Meters, y up. See [examples/physics3d.jo](https://github.com/david-andrew/sloppy-lang/blob/master/examples/physics3d.jo)."),
     ("Games", "net", "Networking", ["net"], "networking",
      "A module (`import net`): messages between programs over WebSockets, so a native build and a web page "
-     "can play together (a server is a native program; a web page connects to one: examples/netpong), "
+     "can play together (a server is a native program; a web page connects to one: [examples/netpong](https://github.com/david-andrew/sloppy-lang/tree/master/examples/netpong)), "
      "and UDP datagrams between native programs."),
-    ("Games", "netplay", "Netplay (rollback)", ["netplay"], "netplay",
-     "A module (`import netplay`): two or more players on different machines in one game, with rollback: only inputs "
-     "travel, and a late one is made up for by playing the last ticks again. Sloppy's math is its own (no system math "
-     "library, no fused multiply-add), so a tick comes out the same on Linux, Windows, macOS and the web. See examples/duel, "
-     "and [playing over a network](multiplayer.html) for choosing between rollback and a server."),
+    ("Games", "netplay", "Netplay", ["netplay"], "netplay",
+     "A module (`import netplay`): players on different machines in one game. With rollback (`session`), only inputs "
+     "travel, and a late one is made up for by playing the last ticks again; with a server (`server`, `client`), the "
+     "server runs the game and clients predict their own moves and draw others a little in the past. Sloppy's math is its own (no system math "
+     "library, no fused multiply-add), so a tick comes out the same on Linux, Windows, macOS and the web. See [examples/duel](https://github.com/david-andrew/sloppy-lang/tree/master/examples/duel) and [examples/arena](https://github.com/david-andrew/sloppy-lang/tree/master/examples/arena), "
+     "and [playing over a network](MULTIPLAYER.md) for choosing between them."),
 ]
 # the library's own machinery (the runtime, the OS and graphics layers, the prompt...): not listed
 INTERNAL = {"core/rt", "core/fmt", "core/windows", "core/macos", "game/dl", "game/cocoa", "game/x11", "game/wayland", "game/wlclient", "game/dmabuf", "game/vk", "game/vkgl",
@@ -142,8 +143,15 @@ def entries_of(path, only=None):
     out, comment, seen = [], [], set()
     section = ""
     in_when = False        # (declarations one level into a top-level `when` count too)
+    body = None            # (a struct's fields or an enum's variants, as written: the lines under it)
     for l in lines:
         s = l.rstrip()
+        if body is not None:
+            if s.startswith("    ") and not s.startswith("     "):
+                t = s[4:]
+                if not t.startswith(("#", "_")): body.append(t)
+                continue
+            body = None
         if s and not s.startswith((" ", "#")):
             in_when = s.startswith(("when ", "else"))
             if in_when: continue
@@ -169,7 +177,8 @@ def entries_of(path, only=None):
                 elif m.group(1) == "const": sig = re.sub(r"\s+#.*$", "", s)
                 if sig.strip() not in seen:
                     seen.add(sig.strip())
-                    out.append((section, name, sig.strip(), " ".join(c for c in comment if c)))
+                    out.append((section, name, sig.strip(), " ".join(c for c in comment if c), []))
+                    if m and m.group(1) in ("struct", "enum") and s.endswith(":"): body = out[-1][4]
         if not s.startswith("#"):
             comment = []
     return out
@@ -204,7 +213,7 @@ def collect():
             path = os.path.join(ROOT, "lib", mod + ".jo")
             lines = open(path, encoding="utf-8").read().splitlines()
             sections = []
-            for sec, name, sig, doc in entries_of(path, only):
+            for sec, name, sig, doc, body in entries_of(path, only):
                 title_ = section_title(sec)
                 if not sections or sections[-1][0] != title_: sections.append((title_, []))
                 items = sections[-1][1]
@@ -213,7 +222,7 @@ def collect():
                     items[-1]["sigs"].append(sig)
                     items[-1]["doc"] = items[-1]["doc"] or doc
                 else:
-                    items.append({"name": name, "sigs": [sig], "doc": doc})
+                    items.append({"name": name, "sigs": [sig], "doc": doc, "body": body})
             # (sections of the same name further on join the first)
             merged = []
             for st, items in sections:
@@ -257,6 +266,8 @@ def markdown(topics):
                     for k, sig in enumerate(e["sigs"]):
                         doc = f": {e['doc']}" if e["doc"] and k == 0 else ""
                         out.append(f"- `{sig.replace('|', '\\|')}`{doc}")
+                    if e.get("body"):
+                        out += ["  ```gdscript", f"  {e['sigs'][0].rstrip(':')}:"] + [f"      {b}" for b in e["body"]] + ["  ```"]
                 out.append("")
     return "\n".join(out) + "\n"
 

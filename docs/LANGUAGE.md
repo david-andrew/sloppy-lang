@@ -170,7 +170,8 @@ four for others (`é`, `ж`, `中`, `😀`). Its bytes are what the basic operat
 
 `find`, `replace`, `split`, `trim`, `starts_with` and the other functions on text work on any
 text, since a character's bytes never look like another's. For text from players or files, count
-characters with `char_count`, and to step through them, `loop c in chars(s)`.
+characters with `char_count`, and to step through them, `loop c in chars(s)` (`loop c in s` gives
+bytes, which print as numbers: `str(c)` of an `a` is `"97"`).
 
 ### Value semantics
 
@@ -431,6 +432,14 @@ match value:
     3..9: print("medium")
     'a'..'z': print("a letter code")
     _: print("big")
+
+enum Screen: menu, playing, paused
+match screen:                          # an enum's variants (the dot may be left out: `menu:`)
+    .menu: draw_menu()
+    .playing, .paused: draw_game()     # (a match that leaves some out is an error, unless `_:`)
+label = match screen:                  # a match is an expression too
+    .menu: "title"
+    _: "play"
 ```
 
 ## 7. Structs, unions, enums, optionals, tuples
@@ -899,7 +908,10 @@ run under node (`tools/runwasm.js page.html args...`) uses the real ones and get
 Environment variables for testing and tuning: `SLOPPY_SCREENSHOT=out.png` (with `SLOPPY_FRAMES=n`)
 saves frame n and exits — the clock then advances exactly 1/60 s per frame, so the image is
 reproducible, and with `SLOPPY_SOFTWARE=1` no display is needed at all; `SLOPPY_INPUT="5:space+,9:space-"`
-presses and releases keys at given frames; `SLOPPY_THREADS=n` caps the threads used by the
+presses and releases keys at given frames (keys as `Key` names them: `a`, `n1`, `space`, `escape`,
+`left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons, and
+`12:mouse=400x300` moves the mouse there, in the screen's units; an item it cannot read is
+reported); `SLOPPY_SEED=n` makes `random()` the same each run; `SLOPPY_THREADS=n` caps the threads used by the
 parallel functions; `SLOPPY_SCALE=1` renders at the logical size and lets the compositor scale
 it up; `SLOPPY_FRAME_STATS=1` (with `SLOPPY_SCREENSHOT`) reports frame times and how frames reach the
 screen.

@@ -50,6 +50,14 @@ Language:
 - Hints for Python's `xs[:2]`, `a if c else b`, `if xs:` and `if n:`, for `score += 0.5` with an
   int score (make it `score = 0.0`), and for a color (vec4) given where a vec3 is wanted (`.rgb`).
 - The REPL's `:type f` of a function shows its versions and their notes.
+- A struct's function field taking `self` says that structs have no methods and how to write one;
+  an indentation error in a file that mixes tabs and spaces says so.
+
+Docs:
+- The library reference lists each struct's fields and each enum's variants (`Key`'s names), and
+  its headings are where they belong; `tanh` is with the math.
+- `SLOPPY_INPUT` is described in full; enum matches, and that `loop c in s` gives bytes, are in
+  the language reference; examples are linked on GitHub (the release does not include them).
 - Key names from other libraries (`.esc`, `.return`, `.left_ctrl`, `.left_arrow`) say which variant is
   meant (`.escape`, `.enter`, `.ctrl`, `.left`).
 
@@ -60,6 +68,8 @@ More for games:
   drawn before with the sky; only the last 3D drawn showed. Each later batch now goes over the
   earlier ones, and their shadows stay.
 - `ui_choice("Level", ["forest", "cave", "tower"], level)`: one of several, in a menu.
+- `draw_line3d(a, b, color)` and `draw_grid3d()`: lines and a ground grid in 3D, for seeing paths,
+  rays and distances while making a game.
 - `first(xs, n)` and `last(xs, n)`: the first or last n, or all when there are fewer.
 - `SLOPPY_INPUT` scripts the mouse too: `3:mouse_left+`, `2:mouse=400x300`; an item it cannot
   read is reported instead of ignored.

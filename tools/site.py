@@ -239,6 +239,7 @@ def api_page():
                     attr = f' id="{eid}"' if eid not in ids and eid != "fn-" else ""
                     ids.add(eid)
                     sigs = "\n".join(e["sigs"])
+                    if e.get("body"): sigs = e["sigs"][0].rstrip(":") + ":\n" + "\n".join("    " + b for b in e["body"])
                     doc = f'<p>{inline(e["doc"])}</p>' if e["doc"] else ""
                     out.append(f'<div class="entry"{attr}><pre><code class="sloppy">{html.escape(sigs)}</code></pre>{doc}</div>')
                 out.append('</div>')
