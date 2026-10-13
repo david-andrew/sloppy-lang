@@ -10,7 +10,7 @@
 extension to the VS Code Marketplace and Open VSX.
 
 Publishing the extension needs no stored tokens: the workflow's GitHub OIDC token is exchanged
-for short-lived ones. Each store is skipped until it is set up as below. The publishing job runs
+for short-lived ones. The Marketplace is skipped until it is set up as below. The publishing job runs
 in the GitHub environment `marketplace-publish` (Settings → Environments: it can be limited to
 `v*` tags there, so nothing else can publish).
 
@@ -42,9 +42,6 @@ the Marketplace on 1 December 2026; this does not use one.)
 Needs ownership of the RedFoxLabs namespace (being a contributor is not enough), a signed
 publisher agreement, and the extension already there with at least one version.
 
-1. https://open-vsx.org → Settings → **Trusted Publishers** → namespace RedFoxLabs →
-   **GitHub Actions**: owner `david-andrew`, repository `sloppy-lang`, workflow `release.yml`,
-   environment `marketplace-publish`.
-2. Repository variable `OPENVSX_TRUSTED` = `true`.
-
-From then on, releases publish to Open VSX.
+https://open-vsx.org → Settings → **Trusted Publishers** → namespace RedFoxLabs →
+**GitHub Actions**: owner `david-andrew`, repository `sloppy-lang`, workflow `release.yml`,
+environment `marketplace-publish`. (Done: releases publish to Open VSX.)
