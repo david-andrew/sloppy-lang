@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0
 
 Games:
 - Physics: limits and motors on 2D pins and 3D hinges (`lower`, `upper`, `motor_speed`,
