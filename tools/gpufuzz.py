@@ -18,6 +18,13 @@ while the results still differ (into fail_<seed>_min.jo).
 """
 import os, random, subprocess, sys
 
+F2I_MARK = "# (integers made from floats)"
+
+
+def off_by_one(a, b):
+    try: return abs(int(a) - int(b)) <= 1
+    except ValueError: return a == b
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SLOPPY = os.environ.get("SLOPPY_FUZZ_COMPILER") or os.path.join(ROOT, "bin", "sloppy")
 ENV = dict(os.environ, SLOPPY_LIB=os.path.join(ROOT, "lib"))
@@ -56,6 +63,7 @@ class Gen:
         self.r = rnd
         self.lines = []
         self.vars = {t: [] for t in INTS + ["f32", "bool", "ivec2", "vec2", "vec3", "vec4", "ivec3"]}
+        self.f2i = False        # (integers made from floats)
         self.grids = []          # (name, elem type) of 2 x 2 arrays of arrays
         self.ts = []             # T variables
         self.sarrs = []          # S[2] variables
@@ -139,13 +147,17 @@ class Gen:
             if op == "/": return f"({self.expr(t, d + 1)} / ivec2({self.expr('i32', d + 2)} | i32(1), {self.expr('i32', d + 2)} | i32(1)))"
             if op == "*s": return f"({self.expr(t, d + 1)} * {self.expr('i32', d + 2)})"
             if op == "if": return f"(if {self.expr('bool', d + 1)}: {self.expr(t, d + 1)} else: {self.expr(t, d + 1)})"
-            if op == "conv": return f"ivec2({self.expr('vec2', d + 1)})"
+            if op == "conv":
+                self.f2i = True
+                return f"ivec2({self.expr('vec2', d + 1)})"
             if op == "ctor": return f"ivec2({self.expr('i32', d + 1)}, {self.expr('i32', d + 1)})"
             return f"({self.expr(t, d + 1)} {op} {self.expr(t, d + 1)})"
         if t == "ivec3":
             op = r.choice(["+", "-", "*", "neg", "conv", "leaf", "*s"])
             if op == "neg": return f"(-{self.expr(t, d + 1)})"
-            if op == "conv": return f"ivec3({self.expr('vec3', d + 1)})"
+            if op == "conv":
+                self.f2i = True
+                return f"ivec3({self.expr('vec3', d + 1)})"
             if op == "*s": return f"({self.expr(t, d + 1)} * {self.expr('i32', d + 2)})"
             if op == "leaf": return self.leaf(t)
             return f"({self.expr(t, d + 1)} {op} {self.expr(t, d + 1)})"
@@ -177,7 +189,9 @@ class Gen:
         if op == "neg": return f"(-{a()})"
         if op == "not": return f"(~{a()})"
         if op == "conv": return f"{t}({self.expr(r.choice(INTS), d + 1)})"
-        if op == "fconv": return f"{t}({self.expr('f32', d + 1)})"
+        if op == "fconv":
+            self.f2i = True
+            return f"{t}({self.expr('f32', d + 1)})"
         if op == "bconv": return f"{t}({self.expr('bool', d + 1)})"
         if op in ("min", "max"): return f"{op}({a()}, {a()})"
         if op == "abs" and t in SIGNED: return f"abs({a()})"
@@ -437,6 +451,7 @@ class Gen:
         out.append("print(cpu(p.bs))")
         out.append("print(cpu(p.oi))")
         out.append("print(cpu(p.of))")
+        if self.f2i: out.insert(0, F2I_MARK)
         return "\n".join(out) + "\n"
 
 
@@ -653,6 +668,12 @@ def main():
                     ok, msg = False, f"{name} failed ({code}):\n{out[-2000:]}"
                     break
                 i1, f1 = parse(out)
+                # (integers made from floats, f32 -> i32 and vec -> ivec, can be off by one: the
+                # floats may be too, as a GPU may fuse a * b + c, and land on either side of a
+                # whole number)
+                if i1 != i0 and len(i1) == len(i0) and all(off_by_one(a, b) for a, b in zip(i0, i1)) and F2I_MARK in src:
+                    print(f"(inexact {s}: integers made from floats are off by one on {name})")
+                    i1 = i0
                 if i1 != i0:
                     j = next((j for j in range(min(len(i0), len(i1))) if i0[j] != i1[j]), -1)
                     ok, msg = False, f"{name}: integer result {j} differs: cpu {i0[j] if j >= 0 else len(i0)} vs {i1[j] if j >= 0 else len(i1)}"
