@@ -83,7 +83,7 @@ def lc(text, off):
 tmp = tempfile.mkdtemp(prefix="sloppy-lsptest-")
 c = Client()
 caps = c.request("initialize", {"capabilities": {}})["capabilities"]
-check("capabilities", sorted(k for k, v in caps.items() if v), sorted(["textDocumentSync", "hoverProvider", "definitionProvider", "referencesProvider", "documentHighlightProvider", "documentSymbolProvider", "renameProvider", "completionProvider", "signatureHelpProvider", "inlayHintProvider"]))
+check("capabilities", sorted(k for k, v in caps.items() if v), sorted(["textDocumentSync", "hoverProvider", "definitionProvider", "referencesProvider", "documentHighlightProvider", "documentSymbolProvider", "renameProvider", "completionProvider", "signatureHelpProvider", "inlayHintProvider", "semanticTokensProvider"]))
 c.notify("initialized", {})
 
 # ---- a program: names, types, declarations ----
@@ -166,6 +166,30 @@ ren = c.request("textDocument/rename", dict(at("dist(p"), newName="distance"))
 check("rename", sorted((e["range"]["start"]["line"], e["newText"]) for e in ren["changes"][uri]), [(8, "distance"), (20, "distance"), (25, "distance")])
 hints = c.request("textDocument/inlayHint", {"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 99, "character": 0}}})
 check("inlay hints", sorted((h["position"]["line"], h["label"]) for h in hints), [(9, ": f64"), (10, ": f64"), (13, "-> int"), (15, "-> int"), (20, ": f64"), (21, ": int"), (22, ": int"), (24, ": int[]")])
+legend = caps["semanticTokensProvider"]["legend"]
+
+
+def semantic(u, text):
+    """the semantic tokens of a document: (line, name, type, modifiers)"""
+    data = c.request("textDocument/semanticTokens/full", {"textDocument": {"uri": u}})["data"]
+    lines, out, line, ch = text.split("\n"), [], 0, 0
+    for i in range(0, len(data), 5):
+        dl, dc, n, t, m = data[i:i + 5]
+        line, ch = line + dl, dc if dl else ch + dc
+        out.append((line, lines[line][ch:ch + n], legend["tokenTypes"][t], ",".join(x for b, x in enumerate(legend["tokenModifiers"]) if m >> b & 1)))
+    return out
+
+
+sem = semantic(uri, prog)
+check("semantic tokens", [x for x in sem if x[0] in (1, 2, 5, 8, 9, 13, 20, 23)], [
+    (1, "Point", "struct", "declaration"), (2, "x", "property", "declaration"), (5, "Dir", "enum", "declaration"),
+    (5, "left", "enumMember", "declaration"), (5, "right", "enumMember", "declaration"),
+    (8, "dist", "function", "declaration"), (8, "a", "parameter", "declaration"), (8, "Point", "struct", ""),
+    (8, "b", "parameter", "declaration"), (8, "Point", "struct", ""),
+    (9, "dx", "variable", "declaration"), (9, "a", "parameter", ""), (9, "x", "property", ""), (9, "b", "parameter", ""), (9, "x", "property", ""),
+    (13, "add", "function", "declaration"), (13, "a", "parameter", "declaration"), (13, "b", "parameter", "declaration"), (13, "a", "parameter", ""), (13, "b", "parameter", ""),
+    (20, "d", "variable", "declaration"), (20, "dist", "function", ""), (20, "p", "variable", ""), (20, "q", "variable", ""),
+    (23, "dir", "variable", "declaration"), (23, "Dir", "enum", ""), (23, "left", "enumMember", "")])
 sig = c.request("textDocument/signatureHelp", {"textDocument": {"uri": uri}, "position": lc(prog, prog.index("add(1, ") + 7)})
 check("signature help", (sig["signatures"][0]["label"], sig["activeParameter"]), ("add = (a: int, b: int)", 1))
 syms = c.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
@@ -328,6 +352,18 @@ counts.append(len(c.request("textDocument/references", rpos)))
 c.notify("textDocument/didClose", {"textDocument": {"uri": rdu}})
 counts.append(len(c.request("textDocument/references", rpos)))
 check("references follow an opened, changed and closed file", counts, [3, 4, 3])
+
+# ---- a file with errors is checked in rounds (leaving out what failed): hints and references once ----
+epath = os.path.join(tmp, "errs.jo")
+esrc = "f = (n: int) -> int:\n    a = n + 1\n    a\n\ng = () -> int:\n    x: int = \"no\"\n    x\n\nh = () -> int:\n    y: str = 5\n    0\n\nprint(f(2))\n"
+open(epath, "w", encoding="utf-8").write(esrc)
+eu = to_uri(epath)
+c.set_text(eu, esrc)
+check("file with errors: errors", len(c.diagnostics(eu)), 2)
+eh = c.request("textDocument/inlayHint", {"textDocument": {"uri": eu}, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 99, "character": 0}}})
+check("file with errors: each hint once", [(h["position"]["line"], h["label"]) for h in eh], [(1, ": int")])
+erefs = c.request("textDocument/references", {"textDocument": {"uri": eu}, "position": lc(esrc, esrc.index("a\n\n")), "context": {"includeDeclaration": True}})
+check("file with errors: each reference once", sorted(where(erefs)), [("errs.jo", 1, 4), ("errs.jo", 2, 4)])
 
 # ---- a library file ----
 lpath = os.path.join(root, "lib", "game", "stats.jo")

@@ -106,8 +106,17 @@ function toWorkspaceEdit(we) {
     return edit;
 }
 
+// (fired when the server has checked something again: names' kinds and the type hints may have changed)
+const resultsChanged = new vscode.EventEmitter();
+
+// semantic tokens: the server's legend (its capabilities say the same)
+const semanticLegend = new vscode.SemanticTokensLegend(
+    ['namespace', 'type', 'struct', 'enum', 'parameter', 'variable', 'property', 'enumMember', 'function'],
+    ['declaration', 'readonly', 'defaultLibrary']);
+
 function onNotification(method, params) {
     if (method === 'textDocument/publishDiagnostics') {
+        resultsChanged.fire();
         const ds = params.diagnostics.map((d) => {
             const diag = new vscode.Diagnostic(toRange(d.range), d.message, (d.severity || 1) - 1);
             diag.source = d.source || 'sloppy';
@@ -218,17 +227,26 @@ function installSloppyWindows() {
     }));
 }
 
+// the release's archive for this system (as tools/install.sh picks it), or null
+function releaseAsset() {
+    if (process.platform === 'linux' && process.arch === 'x64') return 'sloppy-linux-x86_64.tar.gz';
+    if (process.platform === 'linux' && process.arch === 'arm64') return 'sloppy-linux-arm64.tar.gz';
+    if (process.platform === 'darwin' && process.arch === 'arm64') return 'sloppy-macos-arm64.tar.gz';
+    return null;
+}
+
 async function installSloppy() {
-    if (process.arch !== 'x64' || (process.platform !== 'linux' && !windows)) {
-        vscode.window.showErrorMessage('Sloppy runs on Linux and Windows, on x86-64. (Its programs run in any browser: try the playground.)');
+    if (windows && process.arch === 'x64') return installSloppyWindows();
+    const asset = releaseAsset();
+    if (!asset) {
+        vscode.window.showErrorMessage('Sloppy runs on Linux (x86-64, arm64), macOS (Apple silicon) and Windows (x86-64). (Its programs run in any browser: try the playground.)');
         return false;
     }
-    if (windows) return installSloppyWindows();
     try {
         await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing Sloppy' }, async (progress) => {
             progress.report({ message: 'downloading the latest release\u2026' });
-            const tgz = await download(RELEASES + 'sloppy-linux-x86_64.tar.gz');
-            const sum = (await download(RELEASES + 'sloppy-linux-x86_64.tar.gz.sha256')).toString().split(/\s+/)[0];
+            const tgz = await download(RELEASES + asset);
+            const sum = (await download(RELEASES + asset + '.sha256')).toString().split(/\s+/)[0];
             if (crypto.createHash('sha256').update(tgz).digest('hex') !== sum) throw new Error('the download is damaged (checksum)');
             progress.report({ message: 'unpacking\u2026' });
             const files = untar(zlib.gunzipSync(tgz));
@@ -347,7 +365,7 @@ function runInTerminal(args) {
 function activate(context) {
     output = vscode.window.createOutputChannel('Sloppy');
     diagnostics = vscode.languages.createDiagnosticCollection('sloppy');
-    context.subscriptions.push(output, diagnostics);
+    context.subscriptions.push(output, diagnostics, resultsChanged);
     const selector = { language: 'sloppy', scheme: 'file' };
     const L = vscode.languages;
 
@@ -438,6 +456,7 @@ function activate(context) {
             },
         }, { triggerCharacters: ['(', ','], retriggerCharacters: [','] }),
         L.registerInlayHintsProvider(selector, {
+            onDidChangeInlayHints: resultsChanged.event,
             async provideInlayHints(doc, range, token) {
                 const r = await ask('textDocument/inlayHint', { textDocument: textDocument(doc), range: { start: fromPosition(range.start), end: fromPosition(range.end) } }, token);
                 return (r || []).map((h) => {
@@ -447,6 +466,13 @@ function activate(context) {
                 });
             },
         }),
+        L.registerDocumentSemanticTokensProvider(selector, {
+            onDidChangeSemanticTokens: resultsChanged.event,
+            async provideDocumentSemanticTokens(doc, token) {
+                const r = await ask('textDocument/semanticTokens/full', { textDocument: textDocument(doc) }, token);
+                return r && r.data ? new vscode.SemanticTokens(new Uint32Array(r.data)) : null;
+            },
+        }, semanticLegend),
         L.registerDocumentSymbolProvider(selector, {
             async provideDocumentSymbols(doc, token) {
                 const r = await ask('textDocument/documentSymbol', { textDocument: textDocument(doc) }, token);

@@ -418,6 +418,7 @@ struct Result:
     comps: str[][]              # completions: label, kind, detail
     texts: {str: str}           # the text of the edited files when checked
     skips: str[]                # functions with errors (child positions), skipped in later rounds
+    seen: {str: bool}           # refs and hints already taken (later rounds find them again)
 
 struct Doc:
     uri: str
@@ -736,6 +737,9 @@ take_lines = (r: mut Result, lines_: str[]):
             p = remap(fmap, f[1])
             d = ""
             if len(f[3]) > 0: d = remap_key(fmap, f[3])
+            key = "R{p.0}:{p.1}:{d}"
+            if r.seen.get(key) != none: continue
+            r.seen[key] = true
             r.refs.push(Ref(p.0, p.1, to_int(f[2]) ?? 0, d, f[4]))
         else if k == "D" and f.len() >= 7:
             p = remap(fmap, f[1])
@@ -743,6 +747,9 @@ take_lines = (r: mut Result, lines_: str[]):
             if r.decls.get(key) == none: r.decls[key] = Decl(p.0, p.1, to_int(f[2]) ?? 0, to_int(f[3]) ?? 0, f[4], f[5], f[6])
         else if k == "H" and f.len() >= 3:
             p = remap(fmap, f[1])
+            key = "H{p.0}:{p.1}"
+            if r.seen.get(key) != none: continue
+            r.seen[key] = true
             r.hints.push(Hint(p.0, p.1, f[2]))
         else if k == "C" and f.len() >= 4:
             r.comps.push([f[1], f[2], f[3]])
@@ -1417,6 +1424,75 @@ on_inlay = (id: int, params: int) -> int:
             out.push("\{\"position\":{jpos(lpos_of(text, ls, o))},\"label\":{jq(lbl)},\"kind\":1,\"paddingLeft\":{pad}\}")
     lsp_reply(id, "[{join(out, ",")}]")
 
+# ---------------- semantic tokens (what each name is: the references a check found) ----------------
+
+# token types and modifiers, by index (the legend in the capabilities)
+sem_types = ["namespace", "type", "struct", "enum", "parameter", "variable", "property", "enumMember", "function"]
+sem_mods = ["declaration", "readonly", "defaultLibrary"]
+
+sem_type = (k: int) -> int:
+    if k == IK_MODULE: return 0
+    if k == IK_TYPE: return 1
+    if k == IK_STRUCT: return 2
+    if k == IK_ENUM: return 3
+    if k == IK_PARAM: return 4
+    if k == IK_LOCAL or k == IK_GLOBAL or k == IK_CONST: return 5
+    if k == IK_FIELD: return 6
+    if k == IK_VARIANT: return 7
+    if k == IK_FN: return 8
+    -1
+
+struct SemTok:
+    len: int
+    type: int
+    mods: int
+
+on_semantic = (id: int, params: int) -> int:
+    d = text_params_doc(params)
+    if d < 0: return lsp_reply(id, "null")
+    if docs[d].dirty and not lsp_input_ready(): refresh(d)
+    text = docs[d].text
+    ls = line_starts_of(text)
+    toks: {int: SemTok} = {}
+    # (the latest result; then the last good one, for what the latest left out after an error)
+    loop which in [0..2):
+        r = docs[d].res
+        if which == 1:
+            if not docs[d].has_good: break
+            r = docs[d].good
+        f = file_in(r, docs[d].path)
+        if f < 0: continue
+        loop x in r.refs:
+            if x.file != f or len(x.decl) == 0: continue
+            dco = r.decls.get(x.decl)
+            if dco == none: continue
+            dc = dco!
+            t = sem_type(dc.kind)
+            if t < 0: continue
+            o = unmap_off(r, docs[d].path, x.off)
+            if o < 0 or o + x.len > len(text) or toks.get(o) != none: continue
+            mods = 0
+            if dc.file == f and dc.off == x.off: mods |= 1
+            if dc.kind == IK_CONST: mods |= 2
+            # (the library's own top-level names)
+            top = dc.kind != IK_LOCAL and dc.kind != IK_PARAM and dc.kind != IK_FIELD
+            if top and dc.file >= 0 and dc.file < r.paths.len() and starts_with(r.paths[dc.file], root_lib + "/"): mods |= 4
+            toks[o] = SemTok(x.len, t, mods)
+    offs: int[]
+    loop o, _ in toks: offs.push(o)
+    offs.sort()
+    out: str[]
+    line = 0
+    ch = 0
+    loop o in offs:
+        tk = toks[o]
+        p = lpos_of(text, ls, o)
+        if p.line != line: ch = 0
+        out.push("{p.line - line},{p.ch - ch},{utf16_units(text, o, o + tk.len)},{tk.type},{tk.mods}")
+        line = p.line
+        ch = p.ch
+    lsp_reply(id, "\{\"data\":[{join(out, ",")}]\}")
+
 # ---------------- document symbols (from the text: they work while it does not parse) ----------------
 
 struct Sym2:
@@ -1598,7 +1674,9 @@ on_close = (params: int):
     loop u in docs[d].diag_uris: lsp_notify("textDocument/publishDiagnostics", "\{\"uri\":{jq(u)},\"diagnostics\":[]\}")
     docs[d].diag_uris = []
 
-capabilities = "\{\"textDocumentSync\":\{\"openClose\":true,\"change\":1,\"save\":\{\"includeText\":false\}\},\"hoverProvider\":true,\"definitionProvider\":true,\"referencesProvider\":true,\"documentHighlightProvider\":true,\"documentSymbolProvider\":true,\"renameProvider\":\{\"prepareProvider\":true\},\"completionProvider\":\{\"triggerCharacters\":[\".\"]\},\"signatureHelpProvider\":\{\"triggerCharacters\":[\"(\",\",\"],\"retriggerCharacters\":[\",\"]\},\"inlayHintProvider\":true\}"
+capabilities = "\{\"textDocumentSync\":\{\"openClose\":true,\"change\":1,\"save\":\{\"includeText\":false\}\},\"hoverProvider\":true,\"definitionProvider\":true,\"referencesProvider\":true,\"documentHighlightProvider\":true,\"documentSymbolProvider\":true,\"renameProvider\":\{\"prepareProvider\":true\},\"completionProvider\":\{\"triggerCharacters\":[\".\"]\},\"signatureHelpProvider\":\{\"triggerCharacters\":[\"(\",\",\"],\"retriggerCharacters\":[\",\"]\},\"inlayHintProvider\":true,\"semanticTokensProvider\":\{\"legend\":\{\"tokenTypes\":{sem_legend(sem_types)},\"tokenModifiers\":{sem_legend(sem_mods)}\},\"full\":true\}\}"
+
+sem_legend = (xs: str[]) -> str: "[{join(xs.map((x): jq(x)), ",")}]"
 
 lsp_main = ():
     root_lib = ide_norm(lib_dir)
@@ -1663,5 +1741,6 @@ lsp_main = ():
         else if method == "textDocument/completion": on_completion(id, params)
         else if method == "textDocument/signatureHelp": on_signature(id, params)
         else if method == "textDocument/inlayHint": on_inlay(id, params)
+        else if method == "textDocument/semanticTokens/full": on_semantic(id, params)
         else if method == "textDocument/documentSymbol": on_symbols(id, params)
         else if id != 0: lsp_error(id, -32601, "unsupported: {method}")
