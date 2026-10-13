@@ -155,6 +155,23 @@ with low precedence (below comparisons); `& | ~ << >>` are the bitwise operators
 precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests membership
 (`x in 1..10` compares, no array is made). `a ?? b` is `a` unless it is `none`.
 
+### Text
+
+A `str` is text in UTF-8: one byte for each of the characters of plain English text, two to
+four for others (`é`, `ж`, `中`, `😀`). Its bytes are what the basic operations count:
+
+| | |
+|---|---|
+| `len(s)`, `s[i]`, `s[a..b)`, `loop b in s` | bytes: `s[i]` is a `u8`, a slice is a range of bytes |
+| `char_count(s)`, `chars(s)` | characters (Unicode code points): how many, and each as its number |
+| `chr(233)` | the character with that number, as a `str`: `"é"` (`byte_str(b)`: a one-byte `str`) |
+| `split(s, "")` | each character, as a `str` |
+| `text_width(s, size)` | how wide it is drawn, in pixels (what a text box needs) |
+
+`find`, `replace`, `split`, `trim`, `starts_with` and the other functions on text work on any
+text, since a character's bytes never look like another's. For text from players or files, count
+characters with `char_count`, and to step through them, `loop c in chars(s)`.
+
 ### Value semantics
 
 Every type in Sloppy is a *value*: assignment copies. Arrays, strings and maps are

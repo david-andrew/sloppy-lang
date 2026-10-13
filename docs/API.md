@@ -142,7 +142,8 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `is_space = (c: u8) -> bool`
 - `is_upper = (c: u8) -> bool`
 - `is_lower = (c: u8) -> bool`
-- `chr = (c: int) -> str`: string made of a single byte
+- `chr = (c: int) -> str`: the character with code point c, as text (UTF-8: one to four bytes); chr(233) is "é"
+- `byte_str = (b: int) -> str`: a string of the one byte b (0 to 255; text in UTF-8 is made of these)
 - `find = (s: str, sub: str, start: int = 0) -> int`
 - `rfind = (s: str, sub: str) -> int`
 - `find_byte = (s: str, c: u8, start: int = 0) -> int`

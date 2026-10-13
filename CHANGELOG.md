@@ -11,6 +11,10 @@ Games:
   first touches something (thick bullets, a camera kept out of walls, the ground under feet).
 
 Language:
+- `chr(c)` is the character with code point c, as in Python (`chr(233)` is "é"; it was one byte,
+  which made text typed into a web page or a Windows console wrong past ASCII); `byte_str(b)` is a
+  one-byte string. `split(s, "")` gives characters, not bytes. The language reference has a part on
+  text: bytes, characters, and how wide text is drawn.
 - `mut` in combined loops: `loop i in 0.. and mut e in enemies: e.hp -= i` changes the elements
   themselves while counting.
 

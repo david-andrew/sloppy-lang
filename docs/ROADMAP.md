@@ -152,7 +152,8 @@ Fill the gaps real programs hit, nothing speculative:
   arguments, and let release builds leave out more reference counting and bounds checks.
 - Lints: a local variable that has a global's name and type (it changes the global); results
   left unused (done for the library's functions that give a new value: `s.trim()`).
-- Text: bytes vs code points vs what is displayed, made clear in the API.
+- Text: bytes vs code points vs what is displayed, made clear in the API (done: LANGUAGE.md's
+  Text, `chr` by code point).
 - A consistency review, then a written list of what is stable, before any 1.0.
 
 ## GPU (after item 1)
