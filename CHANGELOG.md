@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.8.0
+
+Platforms:
+- **The interactive prompt and `sloppy watch` on macOS and Linux arm64.** The prompt compiles
+  each input with the arm64 code generator, linked to the running session (far calls through
+  veneers). On macOS the inputs' code goes into MAP_JIT memory (Apple silicon runs code made at
+  run time only from there), the session starts without address space randomization (as
+  debuggers start programs) so it is where its code was linked, and C functions an input uses
+  for the first time are found when first called. A game run by `sloppy watch` on macOS keeps all
+  its code in such a region, put there at start by a loader in its executable (a signed page
+  cannot be patched), and takes patches through a copier outside it; files are watched by when
+  they were last written. Every test of both runs on GitHub's arm64 Linux and macOS runners.
+- `__code_sync(p, n)` for machine code written at run time (arm64: the caches).
+
+Fixed:
+- arm64: the prompt's jump buffer was too small for arm64's `__setjmp` (168 bytes), which wrote
+  past it into the heap.
+- macOS: a stack overflow in the prompt's input, or in anything running in a copy made by fork,
+  killed it without a word (the copy's thread had no alternate signal stack).
+- An error message about a type made of aliases of aliases (`(F, F) -> int` with
+  `F = (G, G) -> int`...) took exponential time: type names are cut short past 150 parts.
+
+Tools:
+- CI checks compile speed against the commit before (`tools/speedcheck.py`: instructions
+  counted, debug and release, the compiler, bench/big.jo and the games; above 1% fails).
+- The fuzzers run each night with new seeds (.github/workflows/nightly.yml): programs built four
+  ways, broken programs, GPU compute functions and fragment shaders on Mesa.
+
 ## 0.7.1
 
 Editor (the extension is 0.4.0, now on the VS Code Marketplace and Open VSX both, published by

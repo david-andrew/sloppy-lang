@@ -8,7 +8,7 @@ library (window, input, gamepads, 2D/3D drawing with a 2D camera, sprite sheets,
 collision and particle helpers, shadows, shaders written in Sloppy that run on the GPU through
 Vulkan or OpenGL or on a software renderer, GPU buffers and compute functions, an audio mixer
 and synthesizer, PNG/JPEG/WAV/Ogg Vorbis, glTF, JSON, saving), hot reloading (`sloppy watch`), a
-REPL (Linux), a language server and VS Code extension, a playground, backtraces, DWARF and PDB,
+REPL, a language server and VS Code extension, a playground, backtraces, DWARF and PDB,
 modules, three tutorials and two showcase games (Rebound in 2D, Breakwater in 3D).
 
 The aim stays the same: a small language that feels like Python and runs like C, for making
@@ -47,13 +47,15 @@ Intel or AMD graphics. What can be done before hardware is at hand:
 - Windows on real hardware beyond graphics: DPI scaling, fullscreen, raw mouse, XInput, sound
   (never heard yet), alt-tab, minimize.
 
-### 2. Keep it honest automatically (S)
+### 2. Keep it honest automatically (S, done)
 
-- **Compile speed in CI:** count the instructions (`tools/icount`, which is exact, unlike time)
-  that compiling bench/big.jo, the compiler and the games takes, against the previous commit;
-  fail above 1%. Compile speed is the property users would notice losing first.
-- **GPU fuzzing in CI:** `tools/gpufuzz.py` on Mesa (lavapipe, llvmpipe's OpenGL and the
-  software renderer), nightly; the CPU fuzzers too (`tools/fuzz.py`, `tools/fuzz_errors.py`).
+- **Compile speed in CI** (done): `tools/speedcheck.py` counts the instructions that compiling
+  bench/big.jo, the compiler and the games takes (debug and release), against the commit before;
+  above 1% fails. (CI's virtual machines have no instruction counters: valgrind counts there.)
+- **Fuzzing each night** (done, .github/workflows/nightly.yml): `tools/fuzz.py`,
+  `tools/fuzz_errors.py`, and `tools/gpufuzz.py` (compute on lavapipe; fragment shaders on the
+  software renderer, llvmpipe's OpenGL and lavapipe), new seeds each night. Its first night
+  found a compiler hang (types spelled out exponentially in an error message), now a test.
 - Keep each bug found as a test.
 
 ### 3. The games in people's hands (S, ongoing)
@@ -137,10 +139,11 @@ Fill the gaps real programs hit, nothing speculative:
 - **macOS on Apple Silicon** works since v0.7.0 (Mach-O written by the compiler, ad hoc
   signatures, libSystem, a Cocoa window, OpenGL 4.1, AudioQueue; everything tested on GitHub's
   Apple Silicon runners, whose GPU is a paravirtual one: OpenGL there is Apple's software
-  renderer). Next: Retina resolution, Metal (shaders as MSL; OpenGL is deprecated on macOS),
-  gamepads (GameController), and testing on a real Mac's GPU; arm64 register allocation
-  (values all live in the frame for now, on Linux arm64 too), the prompt and `sloppy watch` on
-  arm64.
+  renderer). Since then: Retina resolution, the interactive prompt and `sloppy watch` (on Linux
+  arm64 too; on macOS the code made at run time lives in MAP_JIT memory, and a watched game's
+  code all runs from there, put there by a loader in its executable). Next: Metal (shaders as
+  MSL; OpenGL is deprecated on macOS), gamepads (GameController), and testing on a real Mac's
+  GPU; arm64 register allocation (values all live in the frame for now, on Linux arm64 too).
 - Phones (Android, iOS): not before the above; the web build already runs there.
 
 ## Compiler maintainability (ongoing, never a rewrite)
