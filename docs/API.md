@@ -3257,7 +3257,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 
 - `listen = (port: int) -> bool`: start a server on port (native programs); false if the port cannot be had
 - `connect = (host: str, port: int = 0) -> int`: connect to a server: a peer, connecting in the background (joined or left arrive by receive); host is a name or address and port its port, or host is a ws:// or wss:// URL (port then unused)
-- `send = (peer: int, msg: u8[])`: send a message to a peer (nothing if it is not connected, or has gone)
+- `send = (peer: int, msg: u8[])`: send a message to a peer (nothing if it is not connected, or has gone): text goes as a text message (a string to a page's WebSocket), bytes as a binary one
 - `send = (peer: int, msg: str)`
 - `send_all = (msg: u8[])`: send a message to every connected peer
 - `send_all = (msg: str)`
