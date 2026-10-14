@@ -2,9 +2,7 @@
 
 ## Unreleased
 
-- Tiled maps as Tiled saves them by default: `load_tiled("maps/level1.tmx", embed_dir("assets"))`
-  reads XML maps (.tmx) as well as JSON ones, with tilesets in files of their own (.tsx, .tsj)
-  and their images, each found next to the file that names it. CSV and XML layer data too.
+## 0.12.0
 
 For newcomers (from a first-time programmer working through the tutorial):
 - New warnings: a value made and dropped on a line of its own (`x == 6` for `x = 6`, `speed +
@@ -36,8 +34,6 @@ For newcomers (from a first-time programmer working through the tutorial):
 - A menu (ui_begin) no longer gives the focus to the item the pointer happens to rest on when
   it opens; only a move onto an item takes it.
 
-## 0.12.0
-
 Compiling:
 - Up to five errors are reported at once: after an error in a function, the compiler checks the
   program again without that function's body for the next one (only when there are errors:
@@ -49,6 +45,9 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- Tiled maps as Tiled saves them by default: `load_tiled("maps/level1.tmx", embed_dir("assets"))`
+  reads XML maps (.tmx) as well as JSON ones, with tilesets in files of their own (.tsx, .tsj)
+  and their images, each found next to the file that names it. CSV and XML layer data too.
 - 2D physics: a body moving more than half its size in a step is swept along its path, so a
   fast bullet no longer passes through a thin wall between two steps.
 - `embed_dir("assets")`: every file under a directory built into the program, as a map from
