@@ -627,6 +627,32 @@ hero = load_texture(embed("firefly.png"))      # at the top: embed builds the fi
     sprite(hero, pos - vec2(SIZE, SIZE), vec2(SIZE * 2.0, SIZE * 2.0))
 ```
 
+### Many things that move
+
+The firefly's lights are positions, but a game with many things that each have several values
+(falling stars with their own speeds) keeps each in a struct, and the stars in an array:
+
+```gdscript
+struct Star:
+    pos: vec2
+    speed: f64
+
+stars: Star[]
+
+update = (dt: f64):
+    if every(1, 0.5): stars.push(Star(vec2(random(0.0, 1280.0), -10), random(100.0, 300.0)))
+    loop mut s in stars: s.pos.y += s.speed * dt         # `mut`: change each one in the array
+    stars.retain((s): s.pos.y < 740)                      # keep the ones still on the screen
+
+draw = ():
+    clear(rgb(0.05, 0.05, 0.12))
+    loop s in stars: circle(s.pos, 6, rgb(1, 0.9, 0.5))
+```
+
+`loop mut s in stars:` changes the stars themselves (without `mut`, `s` is a copy, and the
+compiler says so). `retain` keeps the elements the function says yes to, which is how things
+are taken out of an array as they go off the screen or get caught.
+
 ## 9. Sharing it
 
 ```sh

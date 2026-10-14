@@ -270,7 +270,7 @@ ESSENTIALS = [
     ("Random", "`random()` (0 to 1), `random(lo, hi)`, `random_int(lo, hi)` (hi left out), `random_item(xs)`"),
     ("Sound", "`s = sfx_coin()` (also `sfx_jump`, `sfx_hit`, `sfx_chime`...) once, then `play(s)`; `melody(\"C4 E4 G4\", 120.0)` for music"),
     ("Menus", "`ui_begin(\"title\", pos)`, then `if ui_button(\"Play\"): ...`, then `ui_end()`"),
-    ("Timers", "`every(1, 2.0)` is true once every 2 seconds; or count down a number yourself: `wait -= dt`"),
+    ("Timers", "`every(1, 2.0)` is true once every 2 seconds (the 1 names the timer: another timer is `every(2, 0.5)`); or count down a number yourself: `wait -= dt`"),
     ("Collisions", "`circles_overlap(a, ra, b, rb)`, `overlaps(rect_a, rect_b)`, `Rect(x, y, w, h)`"),
     ("Keeping data", "`save_data(\"best\", \"{score}\")`, `load_data(\"best\") ?? \"\"`"),
 ]

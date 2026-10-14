@@ -45,6 +45,7 @@ const LF_SOAELEM = 4096     # loop p in ps (ps a soa array): p stands for ps[i] 
 const LF_SOAMUT = 8192      # ... and the loop is `loop mut`
 const LF_ELEMALIAS = 16384  # `mut x in xs` in a combined loop: x stands for xs[k] (writes to x write xs)
 const LF_READ = 32768       # its value is read somewhere (not only the base of a write: v.f = 1)
+const LF_QUIET = 65536      # a loop counter or part of `a, b = f()`: not warned about when unused
 assign_root = 0                 # (the variable an assignment being checked writes through)
 copy_writes: {int: int} = {}    # local -> where its fields or elements are first written
 gcopy_writes: {int: int} = {}   # the same for globals
@@ -431,7 +432,7 @@ HABITS = ["True", "`true`", "False", "`false`", "None", "`none`", "nil", "`none`
     "GetComponent", "the field itself, `player.health` (there are no components: a struct holds what it has)",
     "Collision", "`w.contacts(b)`, read each frame (`c.new`: it just began); nothing is called when bodies touch",
     "Time", "the `dt` update is given (the seconds since the last frame), or `time()` (since the start)",
-    "Add", "`push`", "Remove", "`remove(i)` (by position)", "Insert", "`insert(i, x)`", "Contains", "`contains`",
+    "wait", "a timer counted down in update (`wait -= dt`, then act when it is below 0), or `every(1, 2.0)`", "Add", "`push`", "Remove", "`remove(i)` (by position)", "Insert", "`insert(i, x)`", "Contains", "`contains`",
     "Clear", "`clear`", "IndexOf", "`index_of`",
     "Counter", "`counts: \{str: int} = \{}`, then `counts[w] += 1` (a map: a missing key starts at 0)",
     "defaultdict", "a plain map: a missing key starts at its type's zero (`m[k] += 1`, `m[k].push(x)`)",
@@ -2112,6 +2113,11 @@ check_assign = (s: int) -> int:
     is_shift = bop == int(Tok.shl) or bop == int(Tok.shr)
     hint = l
     if is_int(l) and is_shift: hint = 0
+    # (score += "1": a one-character text is that character's code, 49)
+    rb = int(nodes[s].b)
+    if is_int(l) and nodes[rb].kind == .str_lit and nodes[rb].aux == 0 and len(name_of(int(nodes[rb].sval))) == 1 and not pos_in_lib(nodes[s].pos):
+        ch = name_of(int(nodes[rb].sval))
+        warn(nodes[rb].pos, "\"{ch}\" here is the character code of {ch}, not the number: write {ch} without quotes for the number")
     rt = check_expr(int(nodes[s].b), hint)
     nodes[s].b = i32(last_checked)
     if is_shift:
@@ -2175,7 +2181,7 @@ check_vardecl = (s: int):
             id = kid(s, i)
             if nodes[id].kind == .hole: continue
             l = new_local(int(nodes[id].name), targ(t, i), nodes[id].pos)
-            locals[l].flags = i32(LF_DECL)
+            locals[l].flags = i32(LF_DECL | LF_QUIET)
             nodes[id].sym = i32(l)
         nodes[s].type = i32(t)
         return
@@ -2204,6 +2210,7 @@ check_vardecl = (s: int):
     if tk == .typeval or tk == .module: fatal(nodes[s].pos, "'{nm}' cannot hold a type or module (a value of a type is made by calling it: `T()`)")
     l = new_local(int(nodes[s].name), t, nodes[s].pos)
     locals[l].flags = i32(LF_DECL)
+    if has_flag(s, NF_LOOPCOUNT): locals[l].flags = i32(LF_DECL | LF_QUIET)
     nodes[s].sym = i32(l)
     if ide_on and nodes[s].a == 0: ide_hint_local(s, l)
 
@@ -2466,6 +2473,7 @@ place_root = (n: int) -> int:
 # a function's variables whose fields or elements it changes but whose value it never reads: a
 # copy changed for nothing (`if let e = enemies.find(...): e.hp -= 5` leaves the enemy as it was)
 copy_write_warnings = (f: int):
+    unused_local_warnings(f)
     if copy_writes.len() == 0: return
     skip = LF_READ | LF_PARAM | LF_MUTPARAM | LF_CAPTURE | LF_CAPTURED | LF_ADDR | LF_ALIAS | LF_BYREF | LF_ELEMALIAS | LF_SOAELEM | LF_SHARED
     loop l in fns[f].locals:
@@ -2473,6 +2481,46 @@ copy_write_warnings = (f: int):
         nm = name_of(int(locals[l].name))
         if starts_with(nm, "#") or starts_with(nm, "__") or pos_in_lib(locals[l].pos): continue
         warn(copy_writes[l], "'{nm}' is changed here but never read: it holds a copy (structs and arrays are values), so what it was copied from stays as it was; change that instead (`xs[i].hp -= 5`, `loop mut e in xs`)")
+
+# how many times w appears in src as a whole word
+word_count = (src: str, w: str) -> int:
+    n = 0
+    i = find(src, w)
+    loop i >= 0:
+        before = i == 0 or not (is_alnum(src[i - 1]) or src[i - 1] == '_')
+        e = i + len(w)
+        after = e >= len(src) or not (is_alnum(src[e]) or src[e] == '_')
+        if before and after and not in_comment(src, i): n += 1
+        i = find(src, w, i + 1)
+    n
+
+# (a `#` before i on its line, outside quotes)
+in_comment = (src: str, i: int) -> bool:
+    s = i
+    loop s > 0 and src[s - 1] != '\n': s -= 1
+    quoted = false
+    loop k in [s..i):
+        if src[k] == '"': quoted = not quoted
+        else if src[k] == '#' and not quoted: return true
+    false
+
+# (scor = 1 in a function, for the global score: a variable of its own, made and never read)
+unused_local_warnings = (f: int):
+    skip = LF_READ | LF_PARAM | LF_MUTPARAM | LF_CAPTURE | LF_CAPTURED | LF_ADDR | LF_ALIAS | LF_BYREF | LF_ELEMALIAS | LF_SOAELEM | LF_SHARED | LF_QUIET
+    loop l in fns[f].locals:
+        fl = int(locals[l].flags)
+        if fl & LF_DECL == 0 or fl & skip != 0 or copy_writes.has(l): continue
+        nm = name_of(int(locals[l].name))
+        if len(nm) == 0 or starts_with(nm, "_") or starts_with(nm, "#") or pos_in_lib(locals[l].pos): continue
+        near = ""
+        loop gi in [0..globals.len()):
+            gn = name_of(int(globals[gi].name))
+            lim = 1
+            if len(nm) >= 6: lim = 2
+            if gn != nm and len(nm) >= 3 and len(gn) > 0 and gn[0] == nm[0] and not globals[gi].is_const and not modules[int(globals[gi].mod)].is_prelude and gn != upper(gn) and lower(gn) != lower(nm) and edit_distance(gn, nm, lim) <= lim:
+                near = " (did you mean the variable '{gn}'? that one is changed by writing its name exactly)"
+                break
+        warn(locals[l].pos, "'{nm}' is given a value here but never used{near}")
 
 check_lambda_body = (f: int, lam: int, ret_hint: int):
     fns[f].state = 1
@@ -3043,6 +3091,18 @@ check_program = (main_path: str):
                 more = true
         if not more: break
     if open_globals.len() > 0: settle_open_globals()
+    # (make_world written and never called: nothing runs it)
+    if not ide_on and (not test_mode or check_all):
+        loop d in modules[mainm].decls:
+            if nodes[d].kind != .fn_ or fn_used.has(d) or has_flag(d, NF_EXTERN) or nodes[d].c != 0: continue
+            dn = name_of(int(nodes[d].name))
+            if dn == "main" or dn == "update" or dn == "draw" or starts_with(dn, "_") or starts_with(dn, "(") or starts_with(dn, "op_"): continue
+            # (its name written anywhere else in the file: an overload used under it, or a use in
+            # code for another target, as in `when TARGET == "windows":`)
+            if word_count(files[pos_file(nodes[d].pos)].src, dn) > 1: continue
+            how = "`{dn}()`"
+            if nkids(d) > 0: how = "`{dn}(...)`"
+            warn(nodes[d].pos, "'{dn}' is never called: nothing runs it (call it, as {how} where it should run)")
     # (globals of the program whose fields or elements are changed and that are never read)
     loop g, wp in gcopy_writes:
         if g < global_read.len() and global_read[g]: continue

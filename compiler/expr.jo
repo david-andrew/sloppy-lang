@@ -298,6 +298,7 @@ coerce = (n: int, target: int) -> int:
     if fk == .float_ and tk == .int_: why = " (int(x) makes it a whole number, dropping the fraction)"
     if tk == .bool_ and (fk == .array or fk == .str_ or is_map_type(from)): why = " (not true or false: `xs.len() > 0` asks if it has anything)"
     if tk == .bool_ and (fk == .int_ or fk == .float_): why = " (a number is not true or false: `x != 0` asks)"
+    if tk == .bool_ and fk == .int_ and nodes[n].kind == .int_lit: why = " (to do something {nodes[n].ival} times: `loop i in [1..{nodes[n].ival}]:`)"
     fatal(nodes[n].pos, "type mismatch: expected {type_str(to)}, found {type_str(from)}{why}{coerce_hint}")
     n
 
@@ -1195,10 +1196,16 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
             fatal(nodes[n].pos, "{name_of(name)} calls itself here, which repeats without end: the game calls {name_of(name)} by itself, each frame")
     np = nkids(decl)
     if (name == id_rgb or name == id_rgba) and np >= 3 and decl_in_prelude(decl): rgb_check(n, cd.args)
+    if not decl_in_prelude(decl) and cx >= 0:
+        # (make_world never called: a function of the program's, used from somewhere else)
+        ci0 = int(ctxs[cx].inst)
+        if ci0 <= 0 or int(fns[ci0].decl) != decl: fn_used[decl] = true
     if decl_in_prelude(decl) and not pos_in_lib(nodes[n].pos):
+        frame_call_check(n, decl)
         angle_check(decl, cd.args)
         # (random_int(1, 6) for a die: its upper end is left out, as in [1..6))
-        if name_of(int(nodes[decl].name)) == "random_int" and cd.args.len() == 2 and cd.args[0] != 0 and cd.args[1] != 0 and nodes[cd.args[0]].kind == .int_lit and nodes[cd.args[1]].kind == .int_lit and nodes[cd.args[0]].ival == 1 and nodes[cd.args[1]].ival >= 2:
+        if name_of(int(nodes[decl].name)) == "random_int" and cd.args.len() == 2 and cd.args[0] != 0 and cd.args[1] != 0 and nodes[cd.args[0]].kind == .int_lit and nodes[cd.args[1]].kind == .int_lit and nodes[cd.args[0]].ival == 1 and (nodes[cd.args[1]].ival == 6 or nodes[cd.args[1]].ival == 10 or nodes[cd.args[1]].ival == 12 or nodes[cd.args[1]].ival == 20 or nodes[cd.args[1]].ival == 100):
+            # (a die's, or a percent's, upper end, as people write it: random_int(1, 7) is quiet)
             hi = nodes[cd.args[1]].ival
             warn(nodes[n].pos, "random_int(1, {hi}) gives 1 to {hi - 1}: its upper end is left out, as in [1..{hi}); random_int(1, {hi + 1}) gives 1 to {hi}")
         # (read_bytes("assets/hero.png") in a web page: it has no disk to read the file from)
@@ -1346,7 +1353,6 @@ struct_ctor = (n: int, st_type: int, decl: int, args: int[], expected: int) -> i
                 if a == 0 or ctx_dependent(a): continue
                 f = kid(decl, i)
                 if nodes[f].a == 0: continue
-                saved = cx
                 pat = resolve_type(int(nodes[f].a))
                 if is_lit(a): finalize_literal(a)
                 match_type(pat, ntype(a), binds, 0)
@@ -1556,7 +1562,6 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
                     callee = mk(.ident, nodes[n].pos)
                     nodes[callee].name = i32(name)
                     if mod_scope >= 0:
-                        saved = cx
                         check_expr_in_module(callee, mod_scope)
                     else: check_expr(callee, 0)
                     return value_call(n, callee, args)
@@ -1630,6 +1635,45 @@ rgb_check = (n: int, args: int[]):
         if nodes[a].ival > 1: big = true
     if big: warn(nodes[n].pos, "the parts of a color go from 0 to 1: for 0 to 255, divide by 255 or write hex(0xff8000)")
 
+# (is p among the arguments of print, text, window and the like, on its line?)
+in_text_call = (p: int) -> bool:
+    f = pos_file(p)
+    if f < 0 or f >= files.len(): return false
+    src = files[f].src
+    o = pos_off(p) - 1
+    loop o >= 0 and src[o] != '(' and src[o] != '\n' and src[o] != '"': o -= 1
+    if o < 0 or src[o] != '(': return false
+    e = o
+    o -= 1
+    loop o >= 0 and (is_alnum(src[o]) or src[o] == '_'): o -= 1
+    w = src[o + 1..e)
+    w == "print" or w == "text" or w == "text_centered" or w == "window" or w == "write" or w == "ui_button" or w == "ui_text" or w == "eprint"
+
+# (the word w at p is all of an argument, made of letters only: print(hello), not print(totl + 1))
+is_word_arg = (p: int, w: str) -> bool:
+    loop c in w:
+        if not is_alpha(c) or c == u8(95): return false
+    src = files[pos_file(p)].src
+    e = pos_off(p) + len(w)
+    loop e < len(src) and src[e] == ' ': e += 1
+    e < len(src) and (src[e] == ')' or src[e] == ',')
+
+# (`thorns = Rect[]`: the name before the `=` on the line of p, "" when there is none)
+name_before_eq = (p: int) -> str:
+    f = pos_file(p)
+    if f < 0 or f >= files.len(): return ""
+    src = files[f].src
+    o = pos_off(p) - 1
+    # (p may be at the `[` after the type's name: that name first)
+    loop o >= 0 and (is_alnum(src[o]) or src[o] == '_'): o -= 1
+    loop o >= 0 and src[o] == ' ': o -= 1
+    if o < 0 or src[o] != '=': return ""
+    o -= 1
+    loop o >= 0 and src[o] == ' ': o -= 1
+    e = o + 1
+    loop o >= 0 and (is_alnum(src[o]) or src[o] == '_'): o -= 1
+    src[o + 1..e)
+
 # (written in braces in the source: "{4}", not print(4) made into text)
 brace_before = (p: int) -> bool:
     f = pos_file(p)
@@ -1645,6 +1689,34 @@ a_type = (t: int) -> str:
     "a {s}"
 
 coerce_hint = ""     # (said after a type mismatch, by what asked for the type)
+
+fn_used: {int: bool}            # the program's functions called or used as a value (by decl)
+drew_in: {int: bool}            # (functions, by instance, that have drawn something so far)
+
+DRAWING_FNS = ["circle", "rect", "line", "text", "text_centered", "text_wrapped", "sprite", "polygon", "polyline",
+    "circle_gradient", "rect_gradient", "quad_gradient", "triangle", "arc", "draw_mesh", "draw_tilemap", "draw_anim",
+    "draw_model", "draw_sprite", "image_draw"]
+
+# drawing in update, clearing after drawing, sleeping in a frame: done where it shows nothing,
+# covers what was drawn, or stops the game
+frame_call_check = (n: int, decl: int):
+    if cx < 0: return
+    ci = int(ctxs[cx].inst)
+    if ci <= 0 or fns[ci].decl == 0: return
+    fd = int(fns[ci].decl)
+    if not modules[int(nodes[fd].mod)].is_main: return
+    here = name_of(int(nodes[fd].name))
+    fnm = name_of(int(nodes[decl].name))
+    drawing = false
+    loop d in DRAWING_FNS:
+        if d == fnm: drawing = true
+    if drawing:
+        if here == "update": warn(nodes[n].pos, "{fnm} draws, and update is for changing things: what it draws here is covered when draw clears the screen; draw it in `draw`")
+        drew_in[ci] = true
+    # (into a render target, then the screen: clearing that is the start of another picture)
+    if fnm == "draw_to" or fnm == "draw_to_screen" or starts_with(fnm, "begin_") or fnm == "camera3d": drew_in.remove(ci)
+    if fnm == "clear" and drew_in.get(ci) != none and here == "draw": warn(nodes[n].pos, "clear covers everything drawn before it in this frame: clear the screen first, at the top of draw")
+    if fnm == "sleep" and (here == "update" or here == "draw"): warn(nodes[n].pos, "sleep stops the whole game, every frame: to wait, count down a timer (`wait -= dt`, act when it is below 0), or `every(1, 2.0)`")
 
 # rotation_y(45): an angle in degrees given where radians go
 angle_check = (decl: int, args: int[]):
@@ -2026,6 +2098,8 @@ cmp_error = (n: int, ta: int, tb: int):
         why = " (it may be none: `(x ?? default) == value` compares its value, or a default when there is none; `if let v = x:` names the value)"
     if len(why) == 0 and ((type_eq(prune(ta), T_U8) and tkind(tb) == .str_) or (tkind(ta) == .str_ and type_eq(prune(tb), T_U8))):
         why = " (`s[i]` is a character's code, a number: the character as text is `s[i..i]`)"
+    if len(why) == 0 and ((tkind(ta) == .str_ and is_numeric(tb)) or (is_numeric(ta) and tkind(tb) == .str_)):
+        why = " (text is not a number, even with digits in it: `to_int(s) ?? 0` or `to_float(s) ?? 0.0` reads one, and `input_int(...)` asks for one)"
     fatal(nodes[n].pos, "cannot compare {type_str(ta)} with {type_str(tb)}{why}")
 
 # "space" given where a Key goes: " (write `.space`)"
@@ -2044,6 +2118,14 @@ variant_hint = (a: int, t0: int) -> str:
                 f = name_of(int(nodes[a].sval))
                 return " (a file's bytes: `embed(\"{f}\")` builds the file into the program, `read_bytes(\"{f}\")!` reads it when the program runs; the `!` stops the program if the file is not there)"
             return " (`bytes(s)` is a string's bytes; `embed(\"file\")` a file's)"
+        # (chime = sfx_chime, then play(chime): the function kept, not what it makes)
+        if types[ft].kind == .fn_ and int(types[ft].nargs) == 0 and type_eq(prune(int(types[ft].elem)), t) and nodes[a].kind == .ident:
+            vn = name_of(int(nodes[a].name))
+            return " ('{vn}' holds a function that makes {a_type(t)}, not {a_type(t)}: where it is given its value, call the function, `{vn} = ...()`)"
+        # (circle(p, 8, (1, 0.9, 0.5)): a tuple of numbers for a color or a position)
+        if types[ft].kind == .tuple and is_vec(t):
+            if type_eq(t, T_VEC4) or type_eq(t, T_VEC3): return " (a color is `rgb(1, 0.9, 0.5)`, a position `vec3(x, y, z)`)"
+            return " (a position or size is `vec2(x, y)`)"
         # (circle(p, 8, "yellow"): a color is made of numbers)
         if type_eq(t, T_VEC4) and types[ft].kind == .str_:
             if nodes[a].kind == .str_lit and nodes[a].aux == 0:
@@ -3400,6 +3482,7 @@ fn_value = (n: int, expected: int) -> int:
         fatal(nodes[n].pos, "cannot use overloaded or generic function '{name_of(int(nodes[n].name))}' as a value without a known type{bare_variant_hint(int(nodes[n].name))}")
     mm = 0
     d = int(fns[f].decl)
+    if d != 0: fn_used[d] = true
     loop i in [0..fns[f].ptypes.len()):
         if has_flag(kid(d, i), NF_MUT): mm |= 1 << i
     nodes[n].kind = .fnref
@@ -3490,10 +3573,13 @@ check_expr = (n: int, expected: int) -> int:
             if len(lib_root) > 0 and name_of(nm) == lower(name_of(nm)) and file_exists("{lib_root}/{name_of(nm)}.jo"): fatal(nodes[n].pos, "unknown name '{name_of(nm)}' (a module of the library: `import {name_of(nm)}` at the top of the file)")
             gl = gone_local_hint(nm, nodes[n].pos)
             if len(gl) > 0: fatal(nodes[n].pos, "unknown name '{name_of(nm)}'{gl}")
+            sug = suggestion(name_of(nm), visible_names())
+            # (print(hello), window(Firefly, ...): words meant as text, a whole argument)
+            if in_text_call(nodes[n].pos) and is_word_arg(nodes[n].pos, name_of(nm)): fatal(nodes[n].pos, "unknown name '{name_of(nm)}' (text goes in quotes: `\"{name_of(nm)}\"`){sug}")
             if len(name_of(nm)) > 1:
                 vh = bare_variant_hint(nm)
                 if len(vh) > 0: fatal(nodes[n].pos, "unknown name '{name_of(nm)}'{vh}")
-            fatal(nodes[n].pos, "unknown name '{name_of(nm)}'{private_hint(nm)}{suggestion(name_of(nm), visible_names())}")
+            fatal(nodes[n].pos, "unknown name '{name_of(nm)}'{private_hint(nm)}{sug}")
         sk = syms[s].kind
         if ide_on and sk != .fns: ide_sym_ref(n, s)
         nodes[n].aux = i32(int(sk))
@@ -3538,7 +3624,7 @@ check_expr = (n: int, expected: int) -> int:
             p = nodes[n].pos
             nodes[n] = nodes[v]
             nodes[n].pos = p
-            vt = check_expr(n, expected)
+            check_expr(n, expected)
             if not is_lit(n) and globals[g].type != 0 and globals[g].decl != 0 and nodes[int(globals[g].decl)].a != 0 and not has_var(prune(int(globals[g].type))): coerce(n, int(globals[g].type))
             last_checked = n
             return ntype(n)
@@ -3691,7 +3777,7 @@ check_expr = (n: int, expected: int) -> int:
                     if tkind(gt) == .array and prune(int(types[gt].elem)) == bt:
                         gn = name_of(int(globals[g].name))
                         et = pushed_type(gn)
-                        if len(et) == 0: et = "Enemy"
+                        if len(et) == 0: et = "Thing"
                         fatal(nodes[n].pos, "the type of what '{gn}' holds is not known here (it starts empty): write it where '{gn}' is made, as `{gn}: {et}[] = []`")
                 fatal(nodes[n].pos, "{type_str(bt)} has no field '{name_of(fname)}'{suggestion(name_of(fname), cands)}")
     else if k == .dotname:
@@ -3902,7 +3988,14 @@ check_expr = (n: int, expected: int) -> int:
         if types[at].kind != .opt: fatal(nodes[n].pos, "'!' needs an optional value, found {type_str(at)}")
         t = int(types[at].elem)
     else if k == .lambda: t = check_lambda(n, expected)
-    else if k == .array and has_flag(n, NF_TYPE_EXPR): fatal(nodes[n].pos, "this is a type (an array of that); a value is needed here (an empty array: [])")
+    else if k == .array and has_flag(n, NF_TYPE_EXPR):
+        # (thorns = Rect[]: an empty array of Rects is declared with a colon)
+        vn = name_before_eq(nodes[n].pos)
+        if len(vn) > 0:
+            tt = "Rect[]"
+            if nkids(n) == 1 and nodes[kid(n, 0)].kind == .ident: tt = "{name_of(int(nodes[kid(n, 0)].name))}[]"
+            fatal(nodes[n].pos, "an empty array of a type is written with a colon: `{vn}: {tt}` (`=` gives a value, `:` a type)")
+        fatal(nodes[n].pos, "this is a type (an array of that); a value is needed here (an empty array: [])")
     else if k == .array and nodes[n].b == 0 and array_has_spread(n):
         # [a... b c...] builds the array: t = []; t.extend(a); t.push(b); t.extend(c); t
         spread_count += 1
@@ -4858,8 +4951,6 @@ check_dotted = (n: int, expected: int) -> int:
         stmts.push(bc_stmt(tmpl, pos))
         nodes[n] = nodes[bc_block(stmts, pos)]
         return check_expr(n, expected)
-    out = "{pre}o"
-    body: int[]
     result = 0
     if gpu:
         # GPU arrays: one fragment program, or the same loop on the CPU where there is no GPU

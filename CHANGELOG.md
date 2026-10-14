@@ -5,6 +5,19 @@
 - `sloppy test`: a failing test says FAILED under its name, with why indented below it and
   "in this test" for the test's own line (it said "panic:" and "the top level of").
 
+From a second pass with someone who had not programmed before:
+- Warnings: a variable given a value and never used (`scor = score + n` in a function, with the
+  global it was likely meant to be); a function nothing calls; drawing in `update` (the screen is
+  cleared before `draw`); `clear` after drawing in `draw`; `sleep` in `update` or `draw`;
+  `score += "1"` (the character code, not 1). The `random_int` warning only for the usual dice
+  and percent ranges (`random_int(1, 6)`, `(1, 100)`), not for every range.
+- Clearer errors: `print(hello)` (text goes in quotes); `enum Mode = ...`; `draw:` and
+  `draw = :` without `()`; `repeat 5:`; `thorns = Rect[]` for an empty typed array; a text
+  compared with a number; a string with no closing quote followed by more code, at its line.
+- `polygon` draws concave shapes (a star, an L) correctly; it filled them as if convex.
+- Docs: the timer number in `every(1, 2.0)`; a tutorial section on many moving things (a
+  struct, `loop mut`, `retain`).
+
 ## 0.13.0
 
 From a teacher preparing a first programming class:
