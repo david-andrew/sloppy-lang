@@ -41,9 +41,10 @@ Intel or AMD graphics. What can be done before hardware is at hand:
   it.
 - **Not useful for this:** DigitalOcean's AMD MI300X droplets are compute accelerators without
   graphics (ROCm only); its NVIDIA droplets repeat what is already tested.
-- Make the check one script (tools/gpucheck.sh): install, run the render tests through Vulkan
-  and OpenGL, `tools/vkcompare.py`, `tools/gpufuzz.py`, and Breakwater's frame statistics, and
-  write one report. Then any machine can run it, a rented one or a volunteer's.
+- The check is one script (done: `tools/gpucheck.sh [--install]`): the render tests through
+  Vulkan on the machine's GPU, spirv-val, `tools/gpufuzz.py`, the games' frame times, and with a
+  display `tools/vkcompare.py`, in one report. Any machine can run it, a rented one or a
+  volunteer's. AWS's g4ad needs the "G and VT instances" quota raised first (it is 0).
 - Windows on real hardware beyond graphics: DPI scaling, fullscreen, raw mouse, XInput, sound
   (never heard yet), alt-tab, minimize.
 

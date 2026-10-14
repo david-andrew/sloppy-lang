@@ -556,6 +556,8 @@ def run(prog, extra_env, timeout=60):
         r = subprocess.run([SLOPPY, prog], capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return None, "timeout"
+    # (what it prints, without warnings: they go to stderr, and would come after it)
+    if r.returncode == 0: return 0, r.stdout
     return r.returncode, r.stdout + r.stderr
 
 
