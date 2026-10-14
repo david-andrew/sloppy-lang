@@ -29,8 +29,21 @@ wt = os.path.join(tmp, "base")
 run("git", "worktree", "add", "-q", "--detach", wt, base)
 try:
     old = os.path.join(tmp, "sloppy-old")
-    subprocess.run([os.path.join(root, "bin", "sloppy"), "build", os.path.join(wt, "compiler", "main.jo"), "-o", old],
-                   check=True, env=dict(os.environ, SLOPPY_LIB=os.path.join(wt, "lib")))
+    # (with its own library; when this compiler needs runtime functions that one lacks, with this one's)
+    r = subprocess.run([os.path.join(root, "bin", "sloppy"), "build", os.path.join(wt, "compiler", "main.jo"), "-o", old],
+                       env=dict(os.environ, SLOPPY_LIB=os.path.join(wt, "lib")), capture_output=True, text=True)
+    if r.returncode != 0:
+        r = subprocess.run([os.path.join(root, "bin", "sloppy"), "build", os.path.join(wt, "compiler", "main.jo"), "-o", old],
+                           env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")), capture_output=True, text=True)
+        if r.returncode == 0: print("(the earlier compiler built with this commit's library)")
+    if r.returncode != 0:
+        # (its sources take what this compiler no longer does: made from its own C bootstrap)
+        print("(the earlier compiler made from its own bootstrap)")
+        wenv = dict(os.environ, SLOPPY_LIB=os.path.join(wt, "lib"))
+        subprocess.run(["make", "-s", "-C", os.path.join(wt, "stage0")], check=True)
+        s1 = os.path.join(tmp, "sloppy-old1")
+        subprocess.run([os.path.join(wt, "stage0", "sloppy0"), os.path.join(wt, "compiler", "main.jo"), "-o", s1], check=True, env=wenv)
+        subprocess.run([s1, "build", os.path.join(wt, "compiler", "main.jo"), "-o", old], check=True, env=wenv)
 finally:
     run("git", "worktree", "remove", "--force", wt)
 new = os.path.join(root, "bin", "sloppy")
