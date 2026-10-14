@@ -1453,6 +1453,8 @@ draw = ():
 
 3D rendering: camera, sun + sky lighting, fog, shadows, instancing and post effects. Draw calls made during draw() are recorded and rendered (shadow pass, then the lit pass) before any 2D drawing that follows them, so a HUD can be drawn on top.
 
+Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rotation_y(a)`) turns +z toward +x, so something turned by `a` faces vec3(sin(a), 0, cos(a)); glTF models face +z unturned. OrbitCamera's yaw 0 looks from +z toward -z.
+
 - `struct Vertex3D`
   ```gdscript
   struct Vertex3D:
@@ -2791,7 +2793,7 @@ Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the gam
 - `set_spin = (w: mut World, b: Body, s: vec3)`
 - `sleeping = (w: World, b: Body) -> bool`: it is asleep: at rest with all it touches, left out of each step until something touches it
 - `set_damping = (w: mut World, b: Body, d: f64)`
-- `set_fixed_rotation = (w: mut World, b: Body, on: bool)`
+- `set_fixed_rotation = (w: mut World, b: Body, on: bool)`: it never turns, whatever hits it (an upright enemy, a character's body)
 - `set_friction = (w: mut World, b: Body, f: f64)`
 - `set_bounce = (w: mut World, b: Body, f: f64)`
 - `set_layers = (w: mut World, b: Body, layer: int, mask: int = -1)`

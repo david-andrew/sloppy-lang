@@ -22,8 +22,17 @@ Language and library:
   `s as *u8` on a string or an array (it gave the header's address; `data(s)` is what C wants);
   hints for comparing a union with one of its members.
 - `@noinline`: release builds call the function rather than copy it into its callers.
+- A `match` statement on an enum or a union names each variant or has `_:`, as a match giving
+  a value did (the language reference said so; a state added later is not left out quietly).
+- Messages for habits from Unity and C#: `new T(...)`, `switch`, `yield`, `x?.f`,
+  `struct B(A)`, a field read from a union of structs, a library module used without `import`.
 
 Games:
+- Fixed: `set_fixed_rotation` did not keep spheres, capsules (3D) and circles (2D) from turning
+  when they slid with friction; such a body now never turns, whatever hits it.
+- `SLOPPY_INPUT`'s mouse moves count as the pointer moving (`mouse_delta`, drags, mouse look).
+- The 3D reference says which way things face (y up; a turn about y takes +z toward +x; glTF
+  models face +z), and START.md how Unity's and Godot's ideas map to Sloppy's.
 - Gamepads on macOS, through Apple's GameController framework (Xbox, PlayStation, Switch Pro
   and MFi controllers), with the same layout and functions as elsewhere.
 

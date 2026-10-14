@@ -116,6 +116,20 @@ code --install-extension RedFoxLabs.sloppy
 For other editors, `sloppy lsp` is a language server: the
 [README](https://github.com/david-andrew/sloppy-lang#editors) shows Neovim and Helix.
 
+## Coming from Unity or Godot
+
+| There | Here |
+|---|---|
+| a GameObject with components, a scene tree | a struct for each kind of thing, kept in arrays; `update` and `draw` go through them |
+| a prefab | a function that makes the struct (`spawn_enemy(pos) -> Enemy`) |
+| methods, `this` | functions taking the thing first: `e.hit(5)` calls `hit(e, 5)`; `mut` lets one change it |
+| inheritance | a struct holding another (`base: Body`), or a union of kinds (`type Enemy = Walker \| Flyer`) with `match` |
+| coroutines, `yield` | a timer in a field, counted down each frame (`e.wait -= dt`) |
+| `OnTriggerEnter`, events | look each frame (`w.contacts()`, a distance check) and act |
+| `Time.timeScale`, pausing | the game's own clock: add `dt` only while not paused |
+| the Animator | `pose_at` for a clip at a time, `blend_poses` to mix two, the time and weights kept in the struct |
+| the inspector | `print(x)` shows any value, and `sloppy watch` reloads the code as it changes |
+
 ## Where next
 
 - [Make a game](TUTORIAL.md): a small platformer, built step by step. Then
