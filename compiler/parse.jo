@@ -128,6 +128,16 @@ habit = (i: int, want: Tok):
         fatal(toks[i - 1].pos, "use `{v} {tok_src(i)}= 1`")
     if k == .gt and p == .assign and glued: fatal(toks[i - 1].pos, "a function value is written `(x): x * 2`")
     if k == .starstar: fatal(toks[i].pos, "`x ^ y` is x to the power y")
+    if k == .semi:
+        # (for (i = 0; i < n; i++): C's loop)
+        j = i - 1
+        loop j > 0 and not nl_before(j): j -= 1
+        if j >= 0 and toks[j].kind == .ident and (tok_src(j) == "for" or tok_src(j) == "while"): fatal(toks[j].pos, "loops are `loop i in [0..n):` (i from 0 to n - 1), or `loop condition:` (while it holds)")
+    if k == .ellipsis and want == .eof: fatal(toks[i].pos, "an array is spread with `...` after it: `[xs... 4 5]`, `f(args...)`")
+    if pw == "throw" or pw == "raise": fatal(at, "there are no exceptions: a function gives back what went wrong as a value (`-> Level | LoadError`), or `panic(\"...\")` stops the program")
+    if word_in(pw, ["export", "pub", "public"]): fatal(at, "every top-level name can be imported already (`from 'file.jo' import name`); a name starting with `_` stays private to its file")
+    if pw == "delete" or pw == "del": fatal(at, "`xs.remove(i)` takes an element out of an array, `m.remove(k)` a key out of a map")
+    if pw == "typeof" or (k == .ident and tok_src(i) == "instanceof"): fatal(at, "`x is T` asks which member of a union x holds (the other types are known when compiling)")
     value_start = k == .ident or k == .int_lit or k == .float_lit or k == .str_lit
     if want == .newline and p == .ident and value_start and not glued: fatal(at, "to call '{pw}', write `{pw}({tok_src(i)})`")
     if want == .rparen and value_start and (p == .ident or p == .int_lit or p == .float_lit or p == .str_lit or p == .rparen or p == .rbrack):
@@ -145,7 +155,7 @@ expect = (k: Tok, what: str) -> int:
     advance()
 # identifier tokens carry their interned name in ival
 expect_ident = (what: str) -> int:
-    if is_keyword_tok(pk()) and pk() != .kw_mut: keyword_name_error(ti)
+    if toks[ti].kind != .ident and is_keyword_tok(toks[ti].kind) and toks[ti].kind != .kw_mut: keyword_name_error(ti)
     int(toks[expect(.ident, what)].ival)
 
 is_keyword_tok = (k: Tok) -> bool: int(k) < kw_kinds.len() and kw_kinds[int(k)]
@@ -335,6 +345,15 @@ parse_type_postfix = (t0: int) -> int:
     t
 
 parse_type = () -> int:
+    # (Array<int>, Map<str, int>, List<T>: angle brackets from TypeScript, Java, C#)
+    if pk() == .ident and pkn(1) == .lt and not space_before(ti + 1):
+        w = tok_src(ti)
+        hint = "a type's arguments go in brackets: `{w}[T]`"
+        if word_in(w, ["Array", "List", "Vec", "Vector", "ReadonlyArray", "ArrayList"]): hint = "an array type is `T[]` (`int[]`)"
+        else if word_in(w, ["Map", "Record", "Dictionary", "HashMap", "Dict"]): hint = "a map type is `\{K: V}` (`\{str: int}`)"
+        else if word_in(w, ["Set", "HashSet"]): hint = "a set is a map to bool: `\{str: bool}`"
+        else if word_in(w, ["Promise", "Optional", "Option", "Maybe"]): hint = "a value that may be missing is `T?`"
+        fatal(toks[ti + 1].pos, hint)
     t = parse_type_postfix(parse_type_primary())
     if pk() != .pipe: return t
     u = mk(.tunion, nodes[t].pos)
@@ -782,8 +801,9 @@ is_fn_literal = (i: int) -> bool:
     loop j < close:
         if toks[j].kind == .kw_mut: j += 1
         # ((test: int): a keyword as a parameter's name)
-        if is_keyword_tok(toks[j].kind) and j + 1 < close and toks[j + 1].kind == .colon and toks[j].kind != .kw_mut: keyword_name_error(j)
-        if toks[j].kind != .ident: return false
+        if toks[j].kind != .ident:
+            if is_keyword_tok(toks[j].kind) and j + 1 < close and toks[j + 1].kind == .colon: keyword_name_error(j)
+            return false
         j += 1
         nk = toks[j].kind
         if nk != .comma and nk != .colon and nk != .assign and j != close: return false
@@ -2092,6 +2112,10 @@ parse_stmt = () -> int:
     if k == .newline:
         advance()
         return 0
+    # ([a, b] = xs, {x, y} = p: destructuring from JavaScript)
+    if (k == .lbrack or k == .lbrace) and partner(ti) > ti and partner(ti) + 1 < toks.len() and toks[partner(ti) + 1].kind == .assign:
+        if k == .lbrack: fatal(pos, "an array is unpacked without brackets: `a, b = xs` (it must have exactly that many elements)")
+        fatal(pos, "a struct's fields are read one by one: `x, y = p.x, p.y`")
     # (a keyword declared as a variable, function or field: build = ..., when: str)
     if is_keyword_tok(k) and k != .kw_else and k != .kw_loop and k != .kw_not and k != .kw_true and k != .kw_false and k != .kw_none and k != .kw_null:
         if pkn(1) == .assign or (pkn(1) == .colon and pkn(2) != .newline and pkn(2) != .indent and k != .kw_build): keyword_name_error(ti)
@@ -2311,6 +2335,7 @@ parse_toplevel = () -> int:
             expect(.rparen, "")
         set_list(d, names)
     else if k == .kw_import or k == .kw_use:
+        if pkn(1) == .lbrace: fatal(cur_pos(), "names are picked with `from 'file.jo' import f, g` (and `import 'file.jo'` gives them as file.f)")
         is_use = toks[advance()].kind == .kw_use
         d = mk(.import_, pos)
         if is_use: nodes[d].aux = 1

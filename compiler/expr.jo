@@ -1008,6 +1008,8 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                         vn = int(nodes[a].name)
                         last_err = "{type_str(ptx)} has no variant '{name_of(vn)}'{variant_hint_for(ptx, name_of(vn))}"
                     else: last_err = "argument '{name_of(pnames[fi])}' has the wrong type (expects {type_str(ptx)})"
+                    # (xs.sort((a, b): ...): a comparison, as JavaScript sorts)
+                    if nodes[a].kind == .lambda and nkids(a) == 2 and name_of(int(nodes[int(cd.decl)].name)) == "sort": last_err += " (`sort_with(xs, (a, b): a.hp > b.hp)` sorts by a comparison, `sort_by(xs, (x): x.hp)` by a key)"
                     if tkind(ptx) == .cfn and (nodes[a].kind == .lambda or (nodes[a].type != 0 and tkind(ntype(a)) == .fn_)):
                         last_err = "argument '{name_of(pnames[fi])}' is called from C: give it a top-level function marked @cabi (a function value made in the program cannot be)"
                     last_err_pos = nodes[a].pos
@@ -1710,6 +1712,12 @@ variant_hint = (a: int, t0: int) -> str:
         if nodes[a].kind == .ident: c = name_of(int(nodes[a].name))
         if type_eq(ft, T_VEC4) and type_eq(t, T_VEC3): return " (`{c}.rgb` is a color without its alpha)"
         if type_eq(t, T_VEC2) and (nodes[a].kind == .int_lit or nodes[a].kind == .float_lit): return " (a position or size is one vec2: `vec2(x, y)`)"
+        # (load_texture("hero.png"): a file's bytes, not its name)
+        if types[t].kind == .array and prune(int(types[t].elem)) == T_U8 and types[ft].kind == .str_:
+            if nodes[a].kind == .str_lit and nodes[a].aux == 0:
+                f = name_of(int(nodes[a].sval))
+                return " (a file's bytes: `embed(\"{f}\")` builds the file into the program, `read_bytes(\"{f}\")` reads it when the program runs)"
+            return " (`bytes(s)` is a string's bytes; `embed(\"file\")` a file's)"
         if types[ft].kind == .typeval and types[t].kind == .fn_ and nodes[a].kind == .ident:
             c2 = name_of(int(nodes[a].name))
             return " (`{c2}` is a type; for a function that converts each one, write `(x): {c2}(x)`)"
@@ -1798,7 +1806,12 @@ check_call = (n: int, expected: int) -> int:
             why = ""
             fd: int[]
             collect_fns(fname, fd)
-            if fd.len() > 0: why = " (functions are not kept in types: call it as `{name_of(fname)}(x)` or `x.{name_of(fname)}()`)"
+            if fd.len() > 0:
+                why = " (functions are not kept in types: call it as `{name_of(fname)}(x)` or `x.{name_of(fname)}()`)"
+                # (Date.now(): a function of nothing is called by itself)
+                loop d in fd:
+                    if nkids(d) == 0: why = " (functions are not kept in types: call it by itself, `{name_of(fname)}()`)"
+                if name_of(fname) == "now" and type_str(tt) == "Date": why = " (`now()` gives today's Date; `time()` the seconds, for timing)"
             fatal(nodes[callee].pos, "type {type_str(tt)} has no member '{name_of(fname)}'{why}")
         if is_soa(rt): return check_soa_method(n, recv, fname, args, expected)
         st = rt
@@ -1947,7 +1960,9 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
     else if id == .clear:
         nargs_check(n, nargs, 1, 1, "clear")
         t = arg_type(args, 0, 0)
-        if types[t].kind != .array: fatal(nodes[n].pos, "clear() needs an array")
+        if types[t].kind != .array:
+            if types[t].kind == .str_ or is_int(t): fatal(nodes[n].pos, "clear() of the screen takes a color: `clear(rgb(1, 0, 0))`, or from hex digits `clear(hex(\"#ff0000\"))`")
+            fatal(nodes[n].pos, "clear() needs an array")
         check_place(args[0], false)
     else if id == .extend:
         nargs_check(n, nargs, 2, 2, "extend")

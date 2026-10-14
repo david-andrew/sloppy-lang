@@ -13,6 +13,14 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- From a JavaScript web-game developer pass: `net.send` of text sends a WebSocket text message;
+  a panic in a web game shows over the canvas; a web build warns about `sleep`; a multi-line
+  lambda followed by more arguments (`f(():\n    a(), 5)`) works; `hex("#ff8000")` (CSS colors,
+  with alpha as `#rrggbbaa`); `find_index`; messages for a keyword as a name (`build = ...`),
+  `throw`, `export`, `delete`, `typeof`, `import {...} from`, `[a, b] = xs`, `[...xs]`,
+  `Array<int>`, C's `for (;;)`, `x = null`, `Date.now()`, `clear("#ff0000")`, a file name where
+  its bytes go (`load_texture("hero.png")`: `embed`), `sort` with a comparison (`sort_with`), and
+  JavaScript's array and map methods (`every`, `some`, `at`, `shift`, `m.set`, `m.size`...).
 - `loop mut x in xs` whose body adds, removes or replaces elements of xs is an error (they were
   visited or skipped as the array changed under the loop); `xs.retain((x): keep)` keeps some in
   place. Assigning to a field of a narrowed optional or union (`x.hp = 7` after `if x is Enemy`,

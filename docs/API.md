@@ -1633,7 +1633,8 @@ Vector and matrix math for the built-in vec2/vec3/vec4/mat4 types (f32 component
 - `rgb = (r: f32, g: f32, b: f32) -> vec4`
 - `rgba = (r: f32, g: f32, b: f32, a: f32) -> vec4`
 - `gray = (v: f32) -> vec4`
-- `hex = (c: int) -> vec4`
+- `hex = (c: int) -> vec4`: a color from CSS's hex digits: "#ff8000", "#f80", "#ff800080" (with alpha); white if it is not one
+- `hex = (s: str) -> vec4`
 - `hsv = (h: f64, s: f64, v: f64) -> vec4`
 - `with_alpha = (c: vec4, a: f32) -> vec4`
 - `lighten = (c: vec4, k: f32) -> vec4`
