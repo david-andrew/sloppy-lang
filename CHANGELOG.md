@@ -46,6 +46,8 @@ Language and library:
   `struct B(A)`, a field read from a union of structs, a library module used without `import`.
 
 Games:
+- `time_scale(s)`: update gets dt times s (slow motion, 0 pauses the game while it still
+  draws and takes input); `frame_time()` is the scaled dt.
 - Audio fades: `fade_volume(id, v, seconds)`, `fade_out(id, seconds)` (stops at the end) and
   `crossfade(old, sound_or_music, seconds)` from one loop or song to the next.
 - Fixed: `set_fixed_rotation` did not keep spheres, capsules (3D) and circles (2D) from turning
