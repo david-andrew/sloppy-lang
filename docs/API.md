@@ -374,6 +374,8 @@ print(home, cpu_count())
 print("took {(time() - start) * 1000.0:.2} ms")
 ```
 
+### os.jo
+
 Operating system access: files, arguments, environment, time.
 
 - `exit = (code: int)`
@@ -386,6 +388,7 @@ Operating system access: files, arguments, environment, time.
 - `write_file = (path: str, contents: str) -> bool`
 - `write_bytes = (path: str, b: u8[]) -> bool`
 - `is_dir = (path: str) -> bool`: a directory (and not a file)
+- `is_symlink = (path: str) -> bool`: the path is a symbolic link (to anything, or to nothing); is_dir and the rest follow links, so a walk through directories that should not go round in circles asks this first
 - `file_size = (path: str) -> int?`: a file's size in bytes; none if it cannot be opened (or is a directory)
 - `file_exists = (path: str) -> bool`
 - `make_executable = (path: str) -> bool`
@@ -406,6 +409,55 @@ Operating system access: files, arguments, environment, time.
 - `mkdir = (path: str) -> bool`
 - `cwd = () -> str`: the current directory
 - `temp_dir = () -> str`: a directory for temporary files (TMPDIR, else /tmp; on Windows, the user's temporary directory)
+
+### path.jo
+
+Paths as text: their parts, and joining them (nothing is looked up on the disk). Both / and \ separate (Windows takes either).
+
+```gdscript
+file_name("art/hero.png") is "hero.png", dir_name(...) "art", extension(...) ".png",
+without_extension(...) "art/hero", join_path("art", "hero.png") "art/hero.png"
+```
+
+- `file_name = (path: str) -> str`: the last part: the file's name ("" for a path ending in a separator)
+- `dir_name = (path: str) -> str`: all but the last part ("." for a bare name; "/" for one at the root)
+- `extension = (path: str) -> str`: the file name's extension with its dot (".png"; "" when it has none, or is like ".bashrc")
+- `without_extension = (path: str) -> str`: the path without its file name's extension ("art/hero.png" -> "art/hero")
+- `join_path = (a: str, b: str) -> str`: a then b, with one separator between them (b as it is when it starts at the root)
+
+### date.jo
+
+Dates and the wall clock: what time it is (unix_time), and the calendar date and time of day of a moment, where the computer is (its time zone) or in UTC.
+
+```gdscript
+d = now()
+print("{d.year}-{d.month:02}-{d.day:02} {d.hour:02}:{d.minute:02}")   # 2026-10-14 08:15
+print(date_text(now()))                                               # 2026-10-14 08:15:03
+started = unix_time()  ...  print("took {unix_time() - started:.1} s")
+```
+
+(time() is the clock to measure with in a game: it never jumps, as the wall clock may)
+
+- `struct Date`
+  ```gdscript
+  struct Date:
+      year: int
+      month: int          # 1 (January) to 12
+      day: int            # 1 to 31
+      hour: int           # 0 to 23
+      minute: int         # 0 to 59
+      second: int         # 0 to 59
+      weekday: int        # 0 (Monday) to 6 (Sunday)
+      offset: int         # its time zone: seconds east of UTC (0: UTC; New York in winter: -18000)
+  ```
+- `unix_time = () -> f64`: seconds since 1970-01-01 00:00 UTC, now (the wall clock: it can jump when it is set)
+- `date = (t: f64, utc: bool = false) -> Date`: the date and time of day of moment t (unix seconds), in the computer's time zone, or in UTC
+- `now = () -> Date`: the date and time of day it is now, where the computer is
+- `unix_time = (d: Date) -> f64`: the moment (unix seconds) a date stands for (its offset says where it was: from date(), or 0 for a Date made as UTC); fields past their range carry over (month 13 is January of the next year)
+- `date_text = (d: Date) -> str`: "2026-10-14 08:15:03"
+- `month_name = (d: Date) -> str`: the names of a date's month and weekday, in English ("October", "Wednesday")
+- `weekday_name = (d: Date) -> str`
+- `utc_offset = (t: int) -> int`: how many seconds east of UTC the computer's clock is at moment t (unix seconds): its time zone and daylight saving time then (the TZ variable, or the system's zone)
 
 ## JSON, CSV and base64
 
