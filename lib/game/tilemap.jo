@@ -1,5 +1,6 @@
 # Tilemaps: layers of tiles drawn from a tileset image. Make one from text (tile_layer: each
-# character is a tile), or load a map made in Tiled (load_tiled: a .tmj/.json map). Draw it with
+# character is a tile), or load a map made in Tiled (`load_tiled("level.tmx", embed_dir("assets"))`:
+# .tmx or .tmj, with its tilesets and their images found by their paths). Draw it with
 # draw_tilemap, and move boxes through it with tilemap_move, which stops them at solid tiles.
 # Every tile is solid unless set_tile_shape says otherwise: a one-way platform (landed on from
 # above, passed through from below and the sides), a slope (a floor that rises or falls across the
@@ -318,20 +319,57 @@ __floor_below = (m: Tilemap, layer: int, r: Rect, reach: f64, drop: bool) -> f64
     __floor_in(m, layer, r, bottom - reach, bottom + reach, drop)
 
 # ---------------- Tiled ----------------
-# a map saved by Tiled as JSON (.tmj), with its tilesets embedded in it (Tiled: in the Tilesets
-# view, "Embed Tileset"), and a texture for each tileset, in the map's order. Tile layers (also
-# inside groups) become layers, object layers become `objects`. Layer data can be plain, or
-# base64 (uncompressed, zlib or gzip).
-load_tiled = (json: str, textures: Texture[]) -> Tilemap | JsonError:
-    j = parse_json(json)
+# a map made in Tiled, with its tilesets and their images, from files built into the program:
+#   assets = embed_dir("assets")
+#   level = load_tiled("maps/level1.tmx", assets)
+# The map may be Tiled's XML (.tmx) or JSON (.tmj), its tilesets inside it or in files of their
+# own (.tsx, .tsj), found as Tiled does: next to the file that names them. Tile layers (also
+# inside groups) become layers, object layers become `objects`; tiles stay sharp (no smoothing).
+load_tiled = (path: str, files: {str: u8[]}) -> Tilemap | JsonError:
+    mb = files.get(path)
+    if mb == none: return JsonError("no file '{path}' among the files given{__tiled_names(files)}", 1, 1)
+    j = __tiled_doc(str_from_bytes(mb!))
+    if j is JsonError: return __tiled_in(j, path)
+    dir = dir_name(path)
+    full: Json[]
+    textures: Texture[]
+    loop i in 0.. and ts in j.get("tilesets").as_list():
+        t = ts
+        tdir = dir
+        if let src = ts.get("source").as_str():
+            tp = __tiled_path(dir, src)
+            tb = files.get(tp)
+            if tb == none: return JsonError("{path}: its tileset file '{tp}' is not among the files given", 1, 1)
+            tj = __tiled_doc(str_from_bytes(tb!))
+            if tj is JsonError: return __tiled_in(tj, tp)
+            t = __json_set(tj, "firstgid", ts.get("firstgid") ?? Json.number(1.0))
+            tdir = dir_name(tp)
+        img = t.get("image").as_str() ?? ""
+        if len(img) == 0: return JsonError("{path}: tileset {i + 1} has no image (a tileset made of separate images is not supported)", 1, 1)
+        ip = __tiled_path(tdir, img)
+        ib = files.get(ip)
+        if ib == none: return JsonError("{path}: the image '{ip}' is not among the files given", 1, 1)
+        textures.push(load_texture(ib!, false))
+        full.push(t)
+    __tiled_build(__json_set(j, "tilesets", Json.list(full)), textures)
+
+# a map saved by Tiled (its text: XML, .tmx, or JSON, .tmj), with its tilesets embedded in it
+# (Tiled: in the Tilesets view, "Embed Tileset"), and a texture for each tileset, in the map's
+# order (load_tiled(path, files) finds tileset files and images by itself). Layer data can be
+# plain, CSV or base64 (uncompressed, zlib or gzip).
+load_tiled = (text: str, textures: Texture[]) -> Tilemap | JsonError:
+    j = __tiled_doc(text)
     if j is JsonError: return j
+    __tiled_build(j, textures)
+
+__tiled_build = (j: Json, textures: Texture[]) -> Tilemap | JsonError:
     if j.get("infinite").as_bool() ?? false: return JsonError("infinite maps are not supported (Tiled: Map > Map Properties, Infinite off)", 1, 1)
     if (j.get("orientation").as_str() ?? "orthogonal") != "orthogonal": return JsonError("only orthogonal maps are supported", 1, 1)
     m = Tilemap(j.get("tilewidth").as_int() ?? 16, j.get("tileheight").as_int() ?? 16, j.get("width").as_int() ?? 0, j.get("height").as_int() ?? 0, [], [], [], [])
     sets = j.get("tilesets").as_list()
     loop i in 0.. and ts in sets:
         if ts.get("source").as_str() != none:
-            return JsonError("tileset {i + 1} is in a file of its own: embed it in the map (Tiled: the Tilesets view, Embed Tileset)", 1, 1)
+            return JsonError("tileset {i + 1} is in a file of its own: load the map with `load_tiled(path, embed_dir(\"assets\"))`, which finds it, or embed it in the map (Tiled: the Tilesets view, Embed Tileset)", 1, 1)
         if i >= textures.len(): return JsonError("the map has {sets.len()} tilesets: give a texture for each", 1, 1)
         tw = ts.get("tilewidth").as_int() ?? m.tile_w
         th = ts.get("tileheight").as_int() ?? m.tile_h
@@ -398,6 +436,239 @@ __tiled_layers = (m: mut Tilemap, layers: Json[]) -> bool | JsonError:
                 rect = Rect(f32(o.get("x").as_num() ?? 0.0), f32(o.get("y").as_num() ?? 0.0), f32(o.get("width").as_num() ?? 0.0), f32(o.get("height").as_num() ?? 0.0))
                 m.objects.push(MapObject(o.get("name").as_str() ?? "", kind_, name, rect, props))
     true
+
+# (dir, "../tiles/forest.tsx": the path among the files, with . and .. gone)
+__tiled_path = (dir: str, rel: str) -> str:
+    parts: str[]
+    loop p in split(replace(join_path(dir, rel), "\\", "/"), "/"):
+        if p == "" or p == ".": continue
+        if p == ".." and parts.len() > 0 and parts[parts.len() - 1] != "..": parts.pop()
+        else: parts.push(p)
+    join(parts, "/")
+
+__tiled_names = (files: {str: u8[]}) -> str:
+    names: str[]
+    loop k, v in files:
+        e = extension(k)
+        if e == ".tmx" or e == ".tmj" or e == ".json": names.push(k)
+    if names.len() == 0: return ""
+    sep = ", "
+    " (there are {join(sorted(names), sep)})"
+
+__tiled_in = (e: JsonError, path: str) -> JsonError: JsonError("{path}: {e.message}", e.line, e.column)
+
+# an object with a field set (added, or replaced)
+__json_set = (j: Json, key: str, v: Json) -> Json:
+    match j:
+        .object(keys, values):
+            ks = keys
+            vs = values
+            loop i in 0.. and k in ks:
+                if k == key:
+                    vs[i] = v
+                    return Json.object(ks, vs)
+            ks.push(key)
+            vs.push(v)
+            return Json.object(ks, vs)
+        _: return j
+
+# a Tiled file's text as JSON: XML (.tmx, .tsx) becomes what Tiled's JSON (.tmj, .tsj) would be
+__tiled_doc = (text: str) -> Json | JsonError:
+    t = trim(text)
+    if len(t) == 0 or t[0] != '<': return parse_json(text)
+    x = __xml_parse(t)
+    if x is JsonError: return x
+    if x.name == "map":
+        ks, vs = __tmx_attrs(x)
+        sets: Json[]
+        loop c in x.kids:
+            if c.name == "tileset": sets.push(__tmx_tileset(c))
+        ks.push("tilesets")
+        vs.push(Json.list(sets))
+        ks.push("layers")
+        vs.push(Json.list(__tmx_layers(x)))
+        return Json.object(ks, vs)
+    if x.name == "tileset": return __tmx_tileset(x)
+    JsonError("a Tiled file holds a <map> or a <tileset>, not <{x.name}>", 1, 1)
+
+# (the attributes Tiled's JSON has as numbers, and as true or false)
+__TMX_NUMS = ["width", "height", "tilewidth", "tileheight", "firstgid", "spacing", "margin", "tilecount", "columns", "id", "x", "y", "rotation", "gid", "imagewidth", "imageheight", "opacity"]
+
+__tmx_attrs = (e: __XmlEl) -> (str[], Json[]):
+    ks: str[]
+    vs: Json[]
+    loop i in 0.. and k in e.keys:
+        v = e.vals[i]
+        ks.push(k)
+        if k == "visible" or k == "infinite": vs.push(Json.boolean(v != "0"))
+        else if k in __TMX_NUMS and to_float(v) != none: vs.push(Json.number(to_float(v)!))
+        else: vs.push(Json.text(v))
+    (ks, vs)
+
+__tmx_tileset = (e: __XmlEl) -> Json:
+    ks, vs = __tmx_attrs(e)
+    tiles: Json[]
+    loop c in e.kids:
+        if c.name == "image":
+            ks.push("image")
+            vs.push(Json.text(__xml_attr(c, "source") ?? ""))
+        else if c.name == "tile":
+            tk, tv = __tmx_attrs(c)
+            tk.push("properties")
+            tv.push(Json.list(__tmx_props(c)))
+            tiles.push(Json.object(tk, tv))
+    ks.push("tiles")
+    vs.push(Json.list(tiles))
+    Json.object(ks, vs)
+
+__tmx_props = (e: __XmlEl) -> Json[]:
+    out: Json[]
+    loop c in e.kids:
+        if c.name != "properties": continue
+        loop p in c.kids:
+            if p.name != "property": continue
+            ty = __xml_attr(p, "type") ?? "string"
+            raw = __xml_attr(p, "value") ?? p.text
+            v = Json.text(raw)
+            if (ty == "int" or ty == "float") and to_float(raw) != none: v = Json.number(to_float(raw)!)
+            if ty == "bool": v = Json.boolean(raw == "true")
+            out.push(Json.object(["name", "type", "value"], [Json.text(__xml_attr(p, "name") ?? ""), Json.text(ty), v]))
+    out
+
+__tmx_layers = (e: __XmlEl) -> Json[]:
+    out: Json[]
+    loop c in e.kids:
+        ks, vs = __tmx_attrs(c)
+        if c.name == "layer":
+            ks.push("type")
+            vs.push(Json.text("tilelayer"))
+            loop d in c.kids:
+                if d.name != "data": continue
+                enc = __xml_attr(d, "encoding") ?? ""
+                if enc == "base64":
+                    ks.push("encoding")
+                    vs.push(Json.text("base64"))
+                    if let comp = __xml_attr(d, "compression"):
+                        ks.push("compression")
+                        vs.push(Json.text(comp))
+                    ks.push("data")
+                    vs.push(Json.text(trim(d.text)))
+                else:
+                    gids: Json[]
+                    if enc == "csv":
+                        loop w in split(d.text, ","):
+                            if len(trim(w)) > 0: gids.push(Json.number(to_float(trim(w)) ?? 0.0))
+                    else:
+                        loop tl in d.kids:
+                            if tl.name == "tile": gids.push(Json.number(to_float(__xml_attr(tl, "gid") ?? "0") ?? 0.0))
+                    ks.push("data")
+                    vs.push(Json.list(gids))
+            out.push(Json.object(ks, vs))
+        else if c.name == "objectgroup":
+            ks.push("type")
+            vs.push(Json.text("objectgroup"))
+            objs: Json[]
+            loop o in c.kids:
+                if o.name != "object": continue
+                ok, ov = __tmx_attrs(o)
+                ok.push("properties")
+                ov.push(Json.list(__tmx_props(o)))
+                objs.push(Json.object(ok, ov))
+            ks.push("objects")
+            vs.push(Json.list(objs))
+            out.push(Json.object(ks, vs))
+        else if c.name == "group":
+            ks.push("type")
+            vs.push(Json.text("group"))
+            ks.push("layers")
+            vs.push(Json.list(__tmx_layers(c)))
+            out.push(Json.object(ks, vs))
+    out
+
+# ---------------- XML (as much as Tiled's files use) ----------------
+struct __XmlEl:
+    name: str
+    keys: str[]
+    vals: str[]
+    kids: __XmlEl[]
+    text: str
+
+__xml_attr = (e: __XmlEl, k: str) -> str?:
+    loop i in 0.. and x in e.keys:
+        if x == k: return e.vals[i]
+    none
+
+__xml_unescape = (s: str) -> str:
+    if find(s, "&") < 0: return s
+    replace(replace(replace(replace(replace(s, "&lt;", "<"), "&gt;", ">"), "&quot;", "\""), "&apos;", "'"), "&amp;", "&")
+
+# the document's element (its first): elements, attributes and text; comments, <?...?> and
+# <!...> are passed over
+__xml_parse = (s: str) -> __XmlEl | JsonError:
+    stack = [__XmlEl()]
+    n = len(s)
+    i = 0
+    line = 1
+    loop i < n:
+        if s[i] != '<':
+            j = find(s, "<", i)
+            if j < 0: j = n
+            stack[stack.len() - 1].text += __xml_unescape(s[i..j))
+            loop k in [i..j):
+                if s[k] == '\n': line += 1
+            i = j
+            continue
+        if i + 3 < n and s[i + 1] == '!' and s[i + 2] == '-' and s[i + 3] == '-':
+            j = find(s, "-->", i)
+            if j < 0: return JsonError("a comment is not closed", line, 1)
+            i = j + 3
+            continue
+        if i + 1 < n and (s[i + 1] == '?' or s[i + 1] == '!'):
+            j = find(s, ">", i)
+            if j < 0: return JsonError("a <{s[i + 1..i + 2)} is not closed", line, 1)
+            i = j + 1
+            continue
+        if i + 1 < n and s[i + 1] == '/':
+            j = find(s, ">", i)
+            if j < 0 or stack.len() < 2: return JsonError("a closing tag with nothing open", line, 1)
+            cn = trim(s[i + 2..j))
+            if cn != stack[stack.len() - 1].name: return JsonError("</{cn}> where <{stack[stack.len() - 1].name}> is to be closed", line, 1)
+            e = stack.pop()
+            stack[stack.len() - 1].kids.push(e)
+            i = j + 1
+            continue
+        i += 1
+        st = i
+        loop i < n and not is_space(s[i]) and s[i] != '>' and s[i] != '/': i += 1
+        e = __XmlEl(name = s[st..i))
+        loop true:
+            loop i < n and is_space(s[i]):
+                if s[i] == '\n': line += 1
+                i += 1
+            if i >= n: return JsonError("<{e.name}> is not closed", line, 1)
+            if s[i] == '>':
+                i += 1
+                stack.push(e)
+                break
+            if s[i] == '/':
+                i += 2
+                stack[stack.len() - 1].kids.push(e)
+                break
+            ks = i
+            loop i < n and s[i] != '=' and not is_space(s[i]) and s[i] != '>': i += 1
+            k = s[ks..i)
+            loop i < n and s[i] != '"' and s[i] != '\'' and s[i] != '>': i += 1
+            if i >= n or s[i] == '>': return JsonError("<{e.name}>: the attribute {k} has no quoted value", line, 1)
+            q = s[i]
+            i += 1
+            vs = i
+            loop i < n and s[i] != q: i += 1
+            e.keys.push(k)
+            e.vals.push(__xml_unescape(s[vs..i)))
+            i += 1
+    if stack.len() != 1: return JsonError("<{stack[stack.len() - 1].name}> is not closed", line, 1)
+    if stack[0].kids.len() == 0: return JsonError("no element in the file", 1, 1)
+    stack[0].kids[0]
 
 # where the deflate data starts in a gzip file (after its header)
 __gzip_start = (b: u8[]) -> int:

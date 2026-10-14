@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Tiled maps as Tiled saves them by default: `load_tiled("maps/level1.tmx", embed_dir("assets"))`
+  reads XML maps (.tmx) as well as JSON ones, with tilesets in files of their own (.tsx, .tsj)
+  and their images, each found next to the file that names it. CSV and XML layer data too.
+
 For newcomers (from a first-time programmer working through the tutorial):
 - New warnings: a value made and dropped on a line of its own (`x == 6` for `x = 6`, `speed +
   1`, `if hit: true` for `return true`); `got / total * 100` with whole numbers (0 for 3 of 4);

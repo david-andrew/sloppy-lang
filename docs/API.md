@@ -1513,7 +1513,7 @@ draw = ():
 
 ### tilemap.jo
 
-Tilemaps: layers of tiles drawn from a tileset image. Make one from text (tile_layer: each character is a tile), or load a map made in Tiled (load_tiled: a .tmj/.json map). Draw it with draw_tilemap, and move boxes through it with tilemap_move, which stops them at solid tiles. Every tile is solid unless set_tile_shape says otherwise: a one-way platform (landed on from above, passed through from below and the sides), a slope (a floor that rises or falls across the tile), or empty (scenery).
+Tilemaps: layers of tiles drawn from a tileset image. Make one from text (tile_layer: each character is a tile), or load a map made in Tiled (`load_tiled("level.tmx", embed_dir("assets"))`: .tmx or .tmj, with its tilesets and their images found by their paths). Draw it with draw_tilemap, and move boxes through it with tilemap_move, which stops them at solid tiles. Every tile is solid unless set_tile_shape says otherwise: a one-way platform (landed on from above, passed through from below and the sides), a slope (a floor that rises or falls across the tile), or empty (scenery).
 
 ```gdscript
 tiles = tileset(load_texture(embed("tiles.png"), false), 16, 16)
@@ -1598,7 +1598,12 @@ draw = (): draw_tilemap(level)
 
 #### Tiled
 
-- `load_tiled = (json: str, textures: Texture[]) -> Tilemap \| JsonError`: a map saved by Tiled as JSON (.tmj), with its tilesets embedded in it (Tiled: in the Tilesets view, "Embed Tileset"), and a texture for each tileset, in the map's order. Tile layers (also inside groups) become layers, object layers become `objects`. Layer data can be plain, or base64 (uncompressed, zlib or gzip).
+- `load_tiled = (path: str, files: {str: u8[]}) -> Tilemap \| JsonError`: a map made in Tiled, with its tilesets and their images, from files built into the program: The map may be Tiled's XML (.tmx) or JSON (.tmj), its tilesets inside it or in files of their own (.tsx, .tsj), found as Tiled does: next to the file that names them. Tile layers (also inside groups) become layers, object layers become `objects`; tiles stay sharp (no smoothing).
+  ```gdscript
+  assets = embed_dir("assets")
+  level = load_tiled("maps/level1.tmx", assets)
+  ```
+- `load_tiled = (text: str, textures: Texture[]) -> Tilemap \| JsonError`: a map saved by Tiled (its text: XML, .tmx, or JSON, .tmj), with its tilesets embedded in it (Tiled: in the Tilesets view, "Embed Tileset"), and a texture for each tileset, in the map's order (load_tiled(path, files) finds tileset files and images by itself). Layer data can be plain, CSV or base64 (uncompressed, zlib or gzip).
 
 ## Colors, vectors and matrices
 
