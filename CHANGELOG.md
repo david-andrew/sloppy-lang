@@ -18,6 +18,12 @@ For newcomers (from a first-time programmer working through the tutorial):
   `draw`; `x = []` at the top level (the type of what is pushed later is suggested); a call
   that may give none (`to_float(load_data("best"))`: `?? ""` says what to use then) and an
   optional compared with `<` (said with the line that made it).
+- `melody("H4 ...")` stops with what a note is, instead of leaving the note out; a note without
+  its octave (`"C"`) is in octave 4.
+- The tutorial explains what it uses as it comes (functions giving back a value, arrays, `loop
+  i < n`, enums and `.play`, `??`, where variables live) and shows a picture drawn with
+  `sprite`; START's first program is simpler; the library's page starts with what a first
+  game needs.
 - A menu (ui_begin) no longer gives the focus to the item the pointer happens to rest on when
   it opens; only a move onto an item takes it.
 

@@ -42,10 +42,14 @@ window("Firefly", 1280, 720)
 `speed * dt` makes the speed the same on every computer. `input_axis()` is the direction the
 arrow keys, WASD or a gamepad's stick point in, as a `vec2` from -1 to 1.
 
-(Positions are `vec2`s of 32-bit floats (`f32`), while `dt` and most numbers are 64-bit
-`f64`s. The two mix freely, and whole numbers work as floats too, so a position can be
-multiplied by `dt` directly. The one conversion you have to ask for is a float to a whole
-number: `int(x)`.)
+`pos` is made at the top of the file, outside any function, so it is kept from one frame to the
+next, and `update` and `draw` both use it. (A variable first given a value inside a function
+belongs to that function and starts again each time it runs.)
+
+Whole numbers (`400`) and numbers with a decimal point (`0.5`, `dt`) mix freely. Two things to
+know: dividing two whole numbers gives a whole number (`7 / 2` is 3 and `3 / 4` is 0; write
+`7.0 / 2` for 3.5), and a number with a decimal point becomes a whole one only when you ask:
+`int(x)`.
 
 ## 3. Gravity and jumping
 
@@ -128,7 +132,14 @@ draw = ():
 window("Firefly", 1280, 720)
 ```
 
-`Rect(x, y, width, height)` is a rectangle, and `overlaps` says whether two touch. The firefly
+`platforms` is a list (an *array*) written between `[` and `]`, and `loop r in platforms:` runs
+its lines once for each one, with `r` standing for it. `Rect(x, y, width, height)` is a
+rectangle (with a capital R; `rect(...)` draws one), and `overlaps` says whether two touch.
+
+`box` and `blocked` are functions of our own. `(p: vec2)` is what each one is given, and `-> Rect`
+or `-> bool` is what it gives back (a `bool` is `true` or `false`). A function gives back the
+value on its last line, so `blocked` ends with `false`: nothing was in the way. `return true`
+gives back `true` at once, from the middle of the loop. The firefly
 moves across and then up or down, each only if nothing is in the way, so it slides along walls
 and lands on top of platforms. Landing is what makes `on_ground` true, so jumps only start from
 the ground.
@@ -196,7 +207,9 @@ window("Firefly", 1280, 720)
 ```
 
 `circles_overlap` checks whether the firefly touches a light; taken lights are removed from the
-array (the index only moves on when nothing was removed). `sfx_chime()` makes a sound once, at
+array. `loop i < lights.len():` repeats as long as `i < lights.len()` is true, and
+`lights[i]` is the light at position `i` (counting from 0); the position only moves on when
+nothing was removed, since removing one moves the next into its place. `sfx_chime()` makes a sound once, at
 the start; `play` plays it. `text` draws on the screen, and `{collected}` puts a value into a
 string.
 
@@ -291,7 +304,9 @@ window("Firefly", 1280, 720)
 make_world()
 ```
 
-The world is made by code now: stretches of ground of random widths with gaps between them,
+`platforms: Rect[]` makes an empty array that will hold `Rect`s (`Rect[]` is "an array of
+Rects"), and `platforms.push(...)` adds one at its end. The world is made by code now: stretches
+of ground of random widths with gaps between them,
 ledges above, thorns and lights. `seed_random(7)` makes the random numbers the same each run,
 so the world is too (change the 7 for another). A camera follows the firefly: `translate`
 shifts everything drawn after it, and `approach` eases the camera toward where it should be, so
@@ -430,7 +445,17 @@ window("Firefly", 1280, 720)
 make_world()
 ```
 
-An `enum` says which screen the game is on. The menus come from `ui_begin` and `ui_button`:
+An `enum` is a type with a few named values: `screen` is one of `Screen.title`, `Screen.play`
+and `Screen.won`. Where the type is already known, as when comparing with `screen` or giving it
+a new value, `.play` is enough. `!=` means "is not equal to", and `return` on its own leaves
+`update` early: nothing moves on the title screen.
+
+`load_data("best")` gives back the saved text, or `none` when nothing was saved yet. `??` says
+what to use then: `load_data("best") ?? ""` is the text or nothing, and `to_float` turns text
+into a number (or `none` again, when it is not one: hence the second `?? 0.0`). In text,
+`{best:.1}` shows the number with one digit after the point.
+
+The menus come from `ui_begin` and `ui_button`:
 each button is drawn every frame, and is true in the frame it is chosen (with the arrow keys and
 enter, a gamepad, or a click). `save_data` and `load_data` keep the best time between runs:
 in a file in your user folder, or in the browser's storage on the web. `build: name = "Firefly"`
@@ -587,9 +612,20 @@ play(music, 0.6, looping = true)
 
 Light that glows: `blend(.add)` makes colors add up instead of covering each other, and
 `circle_gradient` fades from a color in the middle to nothing at the edge. `Particles` are
-sparks that fly, slow down and fade (`emit` makes some, `update` and `draw` run them). `melody`
+sparks that fly, slow down and fade: `emit` makes some, and `update(sparks, dt)` and
+`draw(sparks)` move and draw them (the particles' own `update` and `draw`, given the sparks;
+the game's are the ones with nothing before the `dt` or `()`). `melody`
 writes music from note names, `looping = true` keeps it playing, and a dusk sky behind it all
 is one `rect_gradient`.
+
+Shapes can be swapped for pictures. Put `firefly.png` next to the program, then:
+
+```gdscript
+hero = load_texture(embed("firefly.png"))      # at the top: embed builds the file into the program
+
+# in draw, instead of the circle (sprite draws with its top left corner at the position):
+    sprite(hero, pos - vec2(SIZE, SIZE), vec2(SIZE * 2.0, SIZE * 2.0))
+```
 
 ## 9. Sharing it
 
@@ -603,7 +639,9 @@ sloppy build firefly.jo --target wasm -o firefly.zip   # the same, ready to uplo
 
 Each is a single file with nothing to install: send it, or upload it. In the `build:` block,
 `icon = "icon.png"` gives the program an icon (the Windows program's, the window's, the web
-page's). A Windows build also writes a `.pdb` beside the `.exe`: what debuggers read, not needed
+page's). What `save_data` keeps is in your user folder (on Linux `~/.local/share/Firefly`, on
+Windows `%APPDATA%\Firefly`, on macOS `~/Library/Application Support/Firefly`), and in the
+browser's storage for a web build. A Windows build also writes a `.pdb` beside the `.exe`: what debuggers read, not needed
 to play.
 
 From here:

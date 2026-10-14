@@ -31,12 +31,12 @@ Save this as `hello.jo`:
 ```gdscript
 print("hello, world")
 
-fib = (n: int) -> int:
-    if n < 2: return n
-    fib(n - 1) + fib(n - 2)
+coins = 3
+price = 1.5
+print("{coins} coins at {price} each cost {coins * price}")
 
-loop i in [0..10):
-    print("fib({i}) = {fib(i)}")
+loop i in [1..4]:
+    print("round {i}")
 ```
 
 and run it:
@@ -47,6 +47,13 @@ sloppy hello.jo
 
 (`sloppy run hello.jo` is the same.) Each run compiles the whole program, in a few milliseconds, and runs it. `sloppy` alone is an
 interactive prompt, for trying things a line at a time.
+
+A name is given a value with `=`, and `{...}` inside text puts a value there. `loop i in [1..4]:`
+runs the indented line once for each number from 1 to 4.
+
+New to programming? [Make a game](TUTORIAL.md) starts from an empty window and explains each
+thing as it comes up; the rest of the documentation is written for people who have programmed
+before.
 
 ## A first game
 
