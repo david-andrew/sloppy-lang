@@ -13,6 +13,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- Web builds can call JavaScript: the build block's `js = "glue.js"` goes into the page and sets
+  the program's `extern` functions on `sloppy.env` (`sloppy.text(p, n)` reads text).
 - A union passed where a function has an overload for each of its members calls the one for
   what it holds (`loop mut m in mobs: m.step(dt)` with `step` for `Walker` and for `Flyer`; `mut`
   ones change it in place), and a field every member has is read from whichever it is (`m.pos`).

@@ -838,6 +838,7 @@ build:                          # build options live in the source
     icon = "icon.png"           # a square PNG (up to 256 px): the .exe's icon, the window's (on
                                 # Windows and X11), the Dock's on macOS, the web page's;
                                 # PROGRAM_ICON has its bytes
+    js = "glue.js"              # web builds: JavaScript put in the page; it gives `extern`s
 
 when TARGET == "wasm":          # compile-time conditional; the dead branch is not compiled
     ...
@@ -851,6 +852,27 @@ logo = embed("logo.png")        # file contents baked into the program as u8[]
 
 test "math works":
     assert(1 + 1 == 2)
+```
+
+**JavaScript in a web build.** A web build's `extern` functions are JavaScript ones: the build
+block's `js` file goes into the page before the program starts, and sets them on `sloppy.env`
+(a site's analytics, a leaderboard, the page around the game). Text goes as a pointer and a
+length, read with `sloppy.text(p, n)`; an `int` arrives as a BigInt, an `f64` as a number:
+
+```gdscript
+build:
+    js = "glue.js"
+
+when TARGET == "wasm":
+    extern js_report = (p: *u8, n: int, score: int)
+    report = (name: str, score: int): js_report(data(name), len(name), score)
+else:
+    report = (name: str, score: int): pass
+```
+
+```js
+// glue.js
+sloppy.env.js_report = (p, n, score) => console.log(sloppy.text(p, n), Number(score));
 ```
 
 `sloppy test file.jo` runs the file's top-level code, then each `test` block in order,
