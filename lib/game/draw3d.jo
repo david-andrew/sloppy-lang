@@ -800,10 +800,140 @@ __post_begin = ():
     __set_screen_target()          # (it stands in for the screen)
     __post_active = true
 
-__post_pass = (sh: Shader, dst: RenderTarget, p: _PostParams):
+__post_pass = (sh: Shader, fs: (_PostOut, _PostParams) -> vec4, dst: RenderTarget, p: _PostParams):
     glBindFramebuffer(GL_FRAMEBUFFER, u32(dst.fbo))
     glViewport(0, 0, i32(dst.texture.width), i32(dst.texture.height))
+    __post_draw(sh, fs, p)
+
+__post_blur = (dst: RenderTarget, p: _PostParams):
+    when TARGET != "wasm":
+        if __soft and __sw_post_blur(dst, p): return
+    __post_pass(__blur_sh, _blur_fs, dst, p)
+
+# (the software renderer calls the fragment function for each pixel itself: no triangle to
+# rasterize, nothing to interpolate)
+__post_draw = (sh: Shader, fs: (_PostOut, _PostParams) -> vec4, p: _PostParams):
+    when TARGET != "wasm":
+        if __soft:
+            __sw_fullscreen((uv: vec2) -> vec4: fs(_PostOut(vec4(0, 0, 0, 1), uv), p))
+            return
     draw(sh, __fs_tri, p)
+
+when TARGET != "wasm":
+    # The software renderer's blur and composite: _blur_fs's and _composite_fs's arithmetic done
+    # on its pixels directly (most of a frame's time was theirs, a call for every sample). A
+    # blur's five samples fall at the same offsets from every pixel, along a row or a column, so
+    # each is two neighbours with fixed weights.
+    __sw_post_blur = (dst: RenderTarget, p: _PostParams) -> bool:
+        s = __st[p.src.id]
+        d = __st[dst.texture.id]
+        if s.p == null or d.p == null or s.w != d.w or s.h != d.h or not s.linear or s.rep: return false
+        horiz = p.dir.x != 0.0
+        # (offsets in this texture's pixels: the shader's are in texels of the size it was made at)
+        k = f32(s.w) * p.texel.x
+        if not horiz: k = f32(s.h) * p.texel.y
+        offs: int[]
+        ws: f32[]
+        at = [0.0, 1.385, -1.385, 3.231, -3.231]
+        wt = [0.227, 0.316, 0.316, 0.070, 0.070]
+        loop i in [0..5):
+            u = f32(at[i]) * k
+            i0 = __floor_i(u)
+            f = u - f32(i0)
+            offs.push(i0)
+            ws.push(f32(wt[i]) * (1.0 - f))
+            offs.push(i0 + 1)
+            ws.push(f32(wt[i]) * f)
+        sp = s.p
+        dp = d.p
+        w = s.w
+        h = s.h
+        op = data(offs)
+        wp = data(ws)
+        n = offs.len()
+        __par_serial = w * h < 4096
+        parallel_range(h, (y: int):
+            row = dp + y * w * 4
+            loop x in [0..w):
+                r: f32 = 0
+                g: f32 = 0
+                b: f32 = 0
+                loop t in [0..n):
+                    q = sp
+                    if horiz: q = sp + (y * w + clamp(x + op[t], 0, w - 1)) * 4
+                    else: q = sp + (clamp(y + op[t], 0, h - 1) * w + x) * 4
+                    r += q[0] * wp[t]
+                    g += q[1] * wp[t]
+                    b += q[2] * wp[t]
+                o = row + x * 4
+                o[0] = r
+                o[1] = g
+                o[2] = b
+                o[3] = 1.0
+        )
+        __par_serial = false
+        true
+
+    __sw_post_composite = (p: _PostParams) -> bool:
+        c, _ = __sw_target()
+        if c <= 0: return false
+        t = __st[c]
+        s = __st[p.src.id]
+        bl = __st[p.bloom.id]
+        if t.p == null or s.p == null or bl.p == null or not bl.linear or bl.rep: return false
+        x0, y0, x1, y1 = __sw_clip_rect()
+        if x1 <= x0 or y1 <= y0: return true
+        vp = __s_vp
+        vw = f32(vp.2)
+        vh = f32(vp.3)
+        # (the scene at the screen's pixels: each pixel's own, not a blend of four)
+        exact = s.w == vp.2 and s.h == vp.3
+        tp = t.p
+        tw = t.w
+        sp = s.p
+        bp = bl.p
+        bw = bl.w
+        bh = bl.h
+        __par_serial = (x1 - x0) * (y1 - y0) < 4096
+        parallel_range(y1 - y0, (k: int):
+            y = y0 + k
+            v = (f32(y - vp.1) + 0.5) / vh
+            by = v * f32(bh) - 0.5
+            byi = __floor_i(by)
+            fy = by - f32(byi)
+            ra = bp + clamp(byi, 0, bh - 1) * bw * 4
+            rb = bp + clamp(byi + 1, 0, bh - 1) * bw * 4
+            row = tp + y * tw * 4
+            loop x in [x0..x1):
+                u = (f32(x - vp.0) + 0.5) / vw
+                sc = vec3(0, 0, 0)
+                if exact:
+                    q = sp + ((y - vp.1) * s.w + (x - vp.0)) * 4
+                    sc = vec3(q[0], q[1], q[2])
+                else: sc = __sw_sample(p.src.id, vec2(u, v)).xyz
+                bx = u * f32(bw) - 0.5
+                bxi = __floor_i(bx)
+                fx = bx - f32(bxi)
+                xa = clamp(bxi, 0, bw - 1) * 4
+                xb = clamp(bxi + 1, 0, bw - 1) * 4
+                gx = 1.0 - fx
+                gy = 1.0 - fy
+                bc = vec3(ra[xa] * gx * gy + ra[xb] * fx * gy + rb[xa] * gx * fy + rb[xb] * fx * fy,
+                          ra[xa + 1] * gx * gy + ra[xb + 1] * fx * gy + rb[xa + 1] * gx * fy + rb[xb + 1] * fx * fy,
+                          ra[xa + 2] * gx * gy + ra[xb + 2] * fx * gy + rb[xa + 2] * gx * fy + rb[xb + 2] * fx * fy)
+                col = sc + bc * p.strength
+                gray = dot(col, vec3(0.299, 0.587, 0.114))
+                col = mix(vec3(gray, gray, gray), col, p.saturation) * p.tint
+                qv = vec2(u, v) - vec2(0.5, 0.5)
+                col = col * (1.0 - p.vignette * dot(qv, qv) * 1.6)
+                o = row + x * 4
+                o[0] = col.x
+                o[1] = col.y
+                o[2] = col.z
+                o[3] = 1.0
+        )
+        __par_serial = false
+        true
 
 __post_end = ():
     if not __post_active: return
@@ -817,19 +947,22 @@ __post_end = ():
     texel = vec2(1.0 / f32(bw), 1.0 / f32(bh))
     # (`bloom` must not alias a pass's render target: WebGL rejects feedback loops)
     p = _PostParams(__scene_rt.texture, __scene_rt.texture, texel, f32(__bloom_threshold), f32(__bloom_strength), f32(__vignette), vec2(1, 0), f32(__saturation), __tint)
-    __post_pass(__bright_sh, __bloom_a, p)
+    __post_pass(__bright_sh, _bright_fs, __bloom_a, p)
     loop k in [0..2):
         p.src = __bloom_a.texture
         p.dir = vec2(1, 0)
-        __post_pass(__blur_sh, __bloom_b, p)
+        __post_blur(__bloom_b, p)
         p.src = __bloom_b.texture
         p.dir = vec2(0, 1)
-        __post_pass(__blur_sh, __bloom_a, p)
+        __post_blur(__bloom_a, p)
     draw_to_screen()
     glDisable(GL_BLEND)
     p.src = __scene_rt.texture
     p.bloom = __bloom_a.texture
-    draw(__comp_sh, __fs_tri, p)
+    done = false
+    when TARGET != "wasm":
+        if __soft: done = __sw_post_composite(p)
+    if not done: __post_draw(__comp_sh, _composite_fs, p)
     __apply_blend(__blend)
     __post_active = false
     zone_end()

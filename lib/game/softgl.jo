@@ -171,19 +171,23 @@ sgl_clear_color = (r: f32, g: f32, b: f32, a: f32): __s_clear = vec4(r, g, b, a)
 sgl_clear = (mask: u32):
     c, d = __sw_target()
     if mask & u32(GL_COLOR_BUFFER_BIT) != 0 and c > 0:
-        p = __st[c].p
-        n = __st[c].w * __st[c].h
         cc = __s_clear
-        loop i in [0..n):
-            q = p + i * 4
-            q[0] = cc.x
-            q[1] = cc.y
-            q[2] = cc.z
-            q[3] = cc.w
+        __sw_fill(__st[c].p, __st[c].w * __st[c].h, cc)
     if mask & u32(GL_DEPTH_BUFFER_BIT) != 0 and d > 0:
-        p = __st[d].p
-        n = __st[d].w * __st[d].h
-        loop i in [0..n): p[i * 4] = 1.0
+        __sw_fill(__st[d].p, __st[d].w * __st[d].h, vec4(1, 0, 0, 0))
+
+# n pixels at p set to c (the first one, then copies of what is set, doubling)
+__sw_fill = (p: *f32, n: int, c: vec4):
+    if p == null or n <= 0: return
+    p[0] = c.x
+    p[1] = c.y
+    p[2] = c.z
+    p[3] = c.w
+    done = 1
+    loop done < n:
+        k = min(done, n - done)
+        mem_copy((p + done * 4) as *u8, p as *u8, k * 16)
+        done += k
 
 sgl_viewport = (x: i32, y: i32, w: i32, h: i32):
     s = __s_fb_scale[__s_fb]
@@ -418,6 +422,36 @@ __depth_ok = (z: f32, cur: f32) -> bool:
     if f == GL_LESS: return z < cur
     if f == GL_LEQUAL: return z <= cur
     true
+
+# A full-screen pass: f(uv) for the center of every pixel of the viewport (uv 0..1 across it),
+# written over what is there (no blending): what a full-screen triangle with a fragment function
+# of uv gives, without rasterizing it (post effects)
+__sw_fullscreen = (f: (vec2) -> vec4):
+    c, _ = __sw_target()
+    if c <= 0: return
+    t = __st[c]
+    if t.p == null: return
+    x0, y0, x1, y1 = __sw_clip_rect()
+    if x1 <= x0 or y1 <= y0: return
+    vp = __s_vp
+    vw = f32(vp.2)
+    vh = f32(vp.3)
+    p = t.p
+    w = t.w
+    __par_serial = (x1 - x0) * (y1 - y0) < 4096
+    parallel_range(y1 - y0, (k: int):
+        y = y0 + k
+        v = (f32(y - vp.1) + 0.5) / vh
+        row = p + y * w * 4
+        loop x in [x0..x1):
+            col = f(vec2((f32(x - vp.0) + 0.5) / vw, v))
+            q = row + x * 4
+            q[0] = col.x
+            q[1] = col.y
+            q[2] = col.z
+            q[3] = col.w
+    )
+    __par_serial = false
 
 # bounds of the drawable area: viewport, target and scissor
 __sw_clip_rect = () -> (int, int, int, int):

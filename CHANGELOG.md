@@ -13,6 +13,10 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- The software renderer is about 3 times faster in games with post effects (Rebound: 45 to 14
+  ms a frame in a debug build, 29 to 9 in a release one): bloom's blur and the final composite
+  work on its pixels directly, other full-screen passes call their fragment function per pixel
+  without rasterizing a triangle, and clears copy instead of looping.
 - 2D physics: `weld` (two bodies as one), `slider` (along a line, with limits and a motor: a
   piston, a lift) and `wheel` (a car's: sprung along its suspension, turning, with a motor);
   `joint_translation`; `set_motor` and `set_limits` work on sliders too.
