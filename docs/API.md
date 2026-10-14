@@ -773,9 +773,9 @@ rows = parallel_range(height, (y): render_row(y))
 The function runs on several threads at once: it may read anything, but it must not change globals or the variables it captured (that would be a data race); return results instead. On the web target everything runs on the calling thread.
 
 - `cpu_count = () -> int`: number of hardware threads available to this process
-- `parallel_map[T, U] = (xs: T[], f: (T) -> U) -> U[]`
-- `parallel_update[T] = (xs: mut T[], f: (T) -> T)`
-- `parallel_range[U] = (n: int, f: (int) -> U) -> U[]`
+- `parallel_map[T, U] = (xs: T[], f: (T) -> U) -> U[]`: [loop x in xs: f(x)], computed in parallel (f must not change globals or what it captured)
+- `parallel_update[T] = (xs: mut T[], f: (T) -> T)`: xs[i] = f(xs[i]) for every element, in parallel
+- `parallel_range[U] = (n: int, f: (int) -> U) -> U[]`: [loop i in [0..n): f(i)], computed in parallel
 
 ## Numeric arrays
 
@@ -2468,8 +2468,8 @@ Through Vulkan a buffer is GPU memory read by its address and a compute function
 
 #### Making, reading and writing buffers
 
-- `gpu_buffer[T] = (n: int) -> GpuBuffer[T]`
-- `gpu_buffer[T] = (xs: T[]) -> GpuBuffer[T]`
+- `gpu_buffer[T] = (n: int) -> GpuBuffer[T]`: a buffer of n elements, all zero: gpu_buffer[Particle](1000). Elements are plain data (numbers, bools, vectors and structs of them; no strings, arrays or functions)
+- `gpu_buffer[T] = (xs: T[]) -> GpuBuffer[T]`: a buffer holding a copy of xs
 - `len[T] = (b: GpuBuffer[T]) -> int`
 - `cpu[T] = (b: GpuBuffer[T]) -> T[]`: all the elements, or count of them from first (after what the GPU was given to do has run)
 - `cpu[T] = (b: GpuBuffer[T], first: int, count: int) -> T[]`
@@ -2965,7 +2965,7 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 - `rod = (w: mut World, a: Body, b: Body, at_a: vec2, at_b: vec2, spring: f64 = 0, damping: f64 = 0.5, rope: bool = false) -> Joint`: the points at_a of a and at_b of b (in the world, now) kept as far apart as they are; with spring > 0 a spring of that many oscillations a second (damping: 0 bounces on, 1 settles at once); with rope, only as far apart at most
 - `drag = (w: mut World, b: Body, at: vec2, strength: f64 = 1000) -> Joint`: pulls the point at of b toward a target (drag_to), as a stiff spring: grabbing with the mouse
 - `drag_to = (w: mut World, j: Joint, target: vec2)`
-- `ends = (w: World, j: Joint) -> (vec2, vec2)`: where a joint's two ends are now (a drag's: its target, and the point it pulls)
+- `ends = (w: World, j: Joint) -> (vec2, vec2)`: where a joint's two ends are now: on a and on b (a rope or rod is drawn between them; a pin's are its hinge as each body has it, one point unless it is stretched; a drag's: its target, and the point it pulls)
 - `set_length = (w: mut World, j: Joint, l: f64)`: set a rod's length (a winch)
 
 #### Stepping

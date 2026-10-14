@@ -168,6 +168,7 @@ def entries_of(path, only=None):
         if in_when and s.startswith("    ") and not s.startswith("     "):
             s = s[4:]
             if s.startswith("extern"): s = "    " + s
+        if s.startswith("@"): continue      # (an attribute between a comment and its function)
         if s.startswith("#"):
             # (lines indented 3 or more after the # are an example: kept as code)
             if s.startswith("#   ") and s.strip("# "):

@@ -82,7 +82,9 @@ piped in (`sloppy < script.txt`).
   `b` `o` `f` `e` `g` `%` — `{price:>8.2}`, `{n:,}`, `{ratio:.1%}`, `{name:<12}`, `{bits:08b}`,
   `{addr:#x}` (with `0x`). `{x=}` shows the expression before its value (`x=5`), for debugging.
   Raw strings `r"no {interp} \here"` (or `r'...'`: JSON in code is `r'{"a": 1}'`). Triple
-  quoted `"""docstrings"""` are dedented.
+  quoted strings run over lines: when the text starts on the line after the opening `"""`, that
+  line break, the indentation all its lines share and the last line break (before the closing
+  `"""` on a line of its own) are left out, so the text can be indented with the code.
 * **Characters.** A one-character string where an integer is expected stands for its
   character code: `c == 'a'`, `'0'..'9'` in a match, `u8('A')`.
 * **Units.** A unit right after a number (no space) converts to the SI base unit at compile
@@ -986,7 +988,8 @@ run under node (`tools/runwasm.js page.html args...`) uses the real ones and get
 
 Environment variables for testing and tuning: `SLOPPY_SCREENSHOT=out.png` (with `SLOPPY_FRAMES=n`)
 saves frame n and exits — the clock then advances exactly 1/60 s per frame, so the image is
-reproducible (the desktop's keys and mouse are ignored), and with `SLOPPY_SOFTWARE=1` no display is needed at all; `SLOPPY_INPUT="5:space+,9:space-"`
+reproducible (the desktop's keys and mouse are ignored); it has the window's pixels, more than
+the size asked for on a scaled (high-DPI) display unless `SLOPPY_SCALE=1` is set too; and with `SLOPPY_SOFTWARE=1` no display is needed at all; `SLOPPY_INPUT="5:space+,9:space-"`
 presses and releases keys at given frames (keys as `Key` names them: `a`, `n1`, `space`, `escape`,
 `left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons, and
 `12:mouse=400x300` moves the mouse there, in the screen's units, `7:text=hi` types; an item it
