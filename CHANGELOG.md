@@ -10,6 +10,9 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- An error inside a generic function the program defines is followed by notes for the calls
+  that made it, innermost first, with the types it was made for
+  (`a.jo:13:20: note: in summarize(xs: P[]), called here`).
 - Fixed: `assert(ok, "x is {x}")` (a message with something in it) crashed in debug builds when
   `ok` was true.
 - `print` and `write` to a file or a pipe are collected and written in large pieces (a million
