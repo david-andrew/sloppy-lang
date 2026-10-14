@@ -16,7 +16,8 @@
 # Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fixed distance;
 # `spring = 4.0` makes it a spring of that many oscillations a second, `rope = true` lets it go
 # slack), `w.drag(b, at)` and `w.drag_to(j, target)` (pulling a body by a point: the mouse).
-# `physics.ground` is a fixed body to attach things to the world.
+# `physics.ground` is a fixed body to attach things to the world. Two bodies joined by a joint do
+# not collide with each other (the links of a chain overlap where they are pinned).
 #
 # Each step is the same for the same inputs (a fixed internal step, a fixed order), so a game
 # that steps it with a fixed dt can replay or roll back. Contacts: `w.contacts()` lists the
@@ -533,6 +534,16 @@ __step = (w: mut World, h: f32):
         b.pos += b.vel * h
         b.angle += b.spin * h
         __bounds(b)
+    # (then the joints' remaining stretch taken out of the positions themselves, as Box2D does:
+    # chains and long hangings stay their length without the speeds pushing it back)
+    if w.joints.len() > 0:
+        loop _ in [0..max(w.iterations / 2, 1)):
+            loop mut j in w.joints:
+                if j.on: __joint_position(j, w.bodies)
+        loop mut j in w.joints:
+            if j.on:
+                __bounds(w.bodies[j.a])
+                __bounds(w.bodies[j.b])
     if w.sleep: __sleep2(w, h)
 
 # moving: awake and dynamic, or moving and given a velocity
@@ -593,6 +604,11 @@ __collide_all = (w: mut World):
     order.sort_with((i, j): bs[i].lo.x < bs[j].lo.x or bs[i].lo.x == bs[j].lo.x and i < j)
     pairs: int[]
     wake: int[]
+    # (bodies joined by a joint do not collide with each other: a chain's links overlap where
+    # they are pinned, and pushing apart there would fight the pin)
+    joined: {int: bool}
+    loop jt in w.joints:
+        if jt.alive and jt.a != jt.b: joined[min(jt.a, jt.b) * 1000003 + max(jt.a, jt.b)] = true
     loop k in [0..order.len()):
         i = order[k]
         ilo = bs[i].lo
@@ -602,6 +618,7 @@ __collide_all = (w: mut World):
             if bs[j].lo.x > ihi.x: break
             if bs[j].lo.y > ihi.y or bs[j].hi.y < ilo.y: continue
             if bs[i].kind != .dynamic and bs[j].kind != .dynamic: continue
+            if joined.len() > 0 and joined.has(min(i, j) * 1000003 + max(i, j)): continue
             # (two at rest, or at rest against something fixed: nothing to do)
             # (a sensor keeps seeing what sleeps in it, and does not wake it)
             sensor = bs[i].sensor or bs[j].sensor
@@ -866,7 +883,7 @@ __joint_prepare = (j: mut __PJoint, bs: mut __PBody[], h: f32):
         if k > 0.0: j.mass = 1.0 / k
         cc = l - j.length
         j.gamma = 0
-        j.bias1 = 0.2 / h * cc
+        j.bias1 = 0
         if j.hz > 0.0 and j.mass > 0.0:
             om = 2.0 * f32(PI) * j.hz
             sk = j.mass * om * om
@@ -897,7 +914,8 @@ __joint_prepare = (j: mut __PJoint, bs: mut __PBody[], h: f32):
         k11 += j.gamma
         k22 += j.gamma
         j.bias = (bs[j.b].pos + j.rb - j.target) * (h * sk * j.gamma)
-    else: j.bias = (bs[j.b].pos + j.rb - bs[j.a].pos - j.ra) * (0.2 / h)
+    # (a pin's stretch is taken out of the positions, after the speeds: __joint_position)
+    else: j.bias = vec2(0, 0)
     det = k11 * k22 - k12 * k12
     if det != 0.0: det = 1.0 / det
     j.m11 = det * k22
@@ -915,6 +933,43 @@ __joint_prepare = (j: mut __PJoint, bs: mut __PBody[], h: f32):
         t = j.acc_motor + j.acc_lower - j.acc_upper
         bs[j.a].spin -= ia * t
         bs[j.b].spin += ib * t
+
+# a pin's two points brought together, a rigid rod's to its length, by moving the bodies (as
+# much as their masses say)
+__joint_position = (j: mut __PJoint, bs: mut __PBody[]):
+    if j.kind == 2 or (j.kind == 1 and (j.hz > 0.0 or j.rope)): return
+    ma = bs[j.a].inv_mass
+    mb = bs[j.b].inv_mass
+    ia = bs[j.a].inv_inertia
+    ib = bs[j.b].inv_inertia
+    if ma + mb + ia + ib == 0.0: return
+    ra = __rot(vec2(f32(cos(f64(bs[j.a].angle))), f32(sin(f64(bs[j.a].angle)))), j.la)
+    rb = __rot(vec2(f32(cos(f64(bs[j.b].angle))), f32(sin(f64(bs[j.b].angle)))), j.lb)
+    d = bs[j.b].pos + rb - bs[j.a].pos - ra
+    p = vec2(0, 0)
+    if j.kind == 1:
+        l = length(d)
+        if l < 1e-4: return
+        u = d * (1.0 / l)
+        c = clamp(l - j.length, -20.0, 20.0)
+        cra = cross(ra, u)
+        crb = cross(rb, u)
+        k = ma + mb + ia * cra * cra + ib * crb * crb
+        if k <= 0.0: return
+        p = u * (-c / k)
+    else:
+        if length_sq(d) < 1e-8: return
+        k11 = ma + mb + ia * ra.y * ra.y + ib * rb.y * rb.y
+        k12 = -ia * ra.x * ra.y - ib * rb.x * rb.y
+        k22 = ma + mb + ia * ra.x * ra.x + ib * rb.x * rb.x
+        det = k11 * k22 - k12 * k12
+        if det == 0.0: return
+        det = 1.0 / det
+        p = -vec2(det * (k22 * d.x - k12 * d.y), det * (k11 * d.y - k12 * d.x))
+    bs[j.a].pos -= p * ma
+    bs[j.a].angle -= cross(ra, p) * ia
+    bs[j.b].pos += p * mb
+    bs[j.b].angle += cross(rb, p) * ib
 
 # a pin's motor and limits: on the turning of b against a
 __pin_turning = (j: mut __PJoint, bs: mut __PBody[], h: f32):

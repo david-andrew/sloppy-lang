@@ -2853,7 +2853,7 @@ draw = ():
 
 Bodies are `.dynamic` (moved by forces and collisions), `.fixed` (never move: floors, walls) or `.moving` (moved only by the velocity the game gives them: platforms, doors). Each has one shape: a circle, a box or a convex polygon. A Body is a handle; ask the world about it (`w.pos(b)`, `w.angle(b)`, `w.velocity(b)`) and change it (`w.push(b, impulse)`).
 
-Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fixed distance; `spring = 4.0` makes it a spring of that many oscillations a second, `rope = true` lets it go slack), `w.drag(b, at)` and `w.drag_to(j, target)` (pulling a body by a point: the mouse). `physics.ground` is a fixed body to attach things to the world.
+Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fixed distance; `spring = 4.0` makes it a spring of that many oscillations a second, `rope = true` lets it go slack), `w.drag(b, at)` and `w.drag_to(j, target)` (pulling a body by a point: the mouse). `physics.ground` is a fixed body to attach things to the world. Two bodies joined by a joint do not collide with each other (the links of a chain overlap where they are pinned).
 
 Each step is the same for the same inputs (a fixed internal step, a fixed order), so a game that steps it with a fixed dt can replay or roll back. Contacts: `w.contacts()` lists the pairs touching after the step (`.new` on the step they met, `.impulse` how hard), and sensors (`sensor = true`) report contacts without colliding: pickups, triggers. Collision layers: bodies a and b collide when a.layer & b.mask and b.layer & a.mask are not 0.
 

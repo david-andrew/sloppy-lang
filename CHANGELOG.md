@@ -139,6 +139,10 @@ Language and library:
   `struct B(A)`, a field read from a union of structs, a library module used without `import`.
 
 Games:
+- Physics: bodies joined by a joint no longer collide with each other (2D and 3D, as in Box2D),
+  and 2D pins and rods take out their stretch from the positions after each step instead of by
+  extra speed: a heavy weight on a chain of light links swings and stays on it (the last link,
+  overlapping the weight, pushed it away and the chain flew apart, up to 1e13 px).
 - `Animator`: plays a model's animations by name (`anim.play(robot, "Run")`, again: it goes
   on), fades from one to the next, plays one once (`finished`), `passed(t)` for events such as
   footsteps, and `pose(...)` to draw with.
