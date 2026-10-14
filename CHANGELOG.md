@@ -17,6 +17,8 @@ From a second pass with someone who had not programmed before:
 - `polygon` draws concave shapes (a star, an L) correctly; it filled them as if convex.
 - The built-in font has accented letters (é, ñ, ü, ß, Æ: all of Latin-1) and common punctuation
   (curly quotes, dashes, …, •, €, ™); they showed as `?`.
+- An index past the end says when it is the length (the last is index n - 1) or the array is
+  empty.
 - The playground keeps more than one program: a menu of your programs (new, rename, delete),
   each saved as it is edited. Choosing an example no longer replaces what you wrote: an example
   becomes a program of yours when you edit it.
