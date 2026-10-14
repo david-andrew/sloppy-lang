@@ -102,15 +102,24 @@ class MapChildren:
         v = self.valobj.GetNonSyntheticValue()
         self.keys = ArrayChildren(v.GetChildMemberWithName("keys"), None)
         self.vals = ArrayChildren(v.GetChildMemberWithName("vals"), None)
+        # (entries removed since the map was last compacted: still there, marked gone)
+        gone = ArrayChildren(v.GetChildMemberWithName("gone"), None)
+        ng = gone.num_children()
+        dead = set(i for i in range(ng) if (gone.get_child_at_index(i).GetValueAsUnsigned(0) or 0) != 0)
+        n = min(self.keys.num_children(), self.vals.num_children())
+        self.live = [i for i in range(n) if i not in dead]
         return False
 
     def num_children(self):
-        return min(self.keys.num_children(), self.vals.num_children())
+        return len(self.live)
 
     def get_child_index(self, name):
         return -1
 
-    def get_child_at_index(self, i):
+    def get_child_at_index(self, j):
+        if j < 0 or j >= len(self.live):
+            return None
+        i = self.live[j]
         k = self.keys.get_child_at_index(i)
         v = self.vals.get_child_at_index(i)
         if k is None or v is None:
@@ -168,7 +177,7 @@ def _is_enum_with_fields(t, internal_dict):
 
 def _is_map(t, internal_dict):
     t = t.GetCanonicalType()
-    return [t.GetFieldAtIndex(i).GetName() for i in range(t.GetNumberOfFields())] == ["keys", "vals", "slots", "hashes"]
+    return [t.GetFieldAtIndex(i).GetName() for i in range(t.GetNumberOfFields())] == ["keys", "vals", "slots", "hashes", "gone", "ngone"]
 
 
 def __lldb_init_module(debugger, internal_dict):

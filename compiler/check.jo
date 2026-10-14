@@ -1423,9 +1423,35 @@ unpack_loop = (s: int):
     set_list(body, stmts)
     set_list(s, [bc_ident(tn, pos)])
 
+# `loop mut k, v in m` over a map: { __map_tidy(m); the loop } (nothing in it gone, so that the
+# loop's indexes are its entries'); true when s was made that block, and checked
+map_tidy_first = (s: int) -> bool:
+    if not has_flag(s, NF_MUT) or map_tidied.has(s): return false
+    it = int(nodes[s].a)
+    if nodes[it].kind == .range: return false
+    t = prune(check_expr(it, 0))
+    nodes[s].a = i32(last_checked)
+    if not is_map_type(t): return false
+    pos = nodes[s].pos
+    l = nodes.len()
+    nodes.push(nodes[s])
+    map_tidied[l] = true
+    mc = copy_place(int(nodes[s].a))
+    add_flag(mc, NF_MUT)
+    tidy = synth_call("__map_tidy", [mc], pos)
+    b = mk(.block, pos)
+    set_list(b, [tidy, l])
+    nodes[s] = nodes[b]
+    check_stmt(s)
+    true
+
+# (loops made by map_tidy_first: the map is tidied already)
+map_tidied: {int: bool} = {}
+
 check_for = (s: int):
     soa_loop(s)
     unpack_loop(s)
+    if map_tidy_first(s): return
     mark = scope_mark()
     enter_loop()
     it = int(nodes[s].a)
@@ -1466,6 +1492,14 @@ check_for = (s: int):
         t = prune(check_expr(it, 0))
         it = last_checked
         nodes[s].a = i32(it)
+        # (a map with entries removed has them still in place, marked gone: the loop goes over a
+        # copy without them; a `loop mut` had the map itself made so, by map_tidy_first)
+        if is_map_type(t) and not is_mut:
+            add_flag(it, NF_CHECKED)
+            lv = int(nodes[synth_call("__map_live", [it], pos)].a)
+            check_expr(lv, 0)
+            it = last_checked
+            nodes[s].a = i32(it)
         k = types[t].kind
         if k == .range:
             l = new_local(n1, T_INT, pos)

@@ -1,11 +1,17 @@
 # Hash map {K: V}: insertion ordered, open addressing over a dense entry list.
-# The first two fields must stay `keys` and `vals` (the compiler iterates them in for loops).
+# The first two fields must stay `keys` and `vals` (the compiler iterates them in for loops, of
+# a map with nothing gone: __map_live, __map_tidy).
+# A removed entry stays in place, marked gone (so the others keep theirs), its slot a tombstone
+# (1 << 32: probes go on past it); when half of them are gone, they are taken out at once.
 
 struct Map[K, V]:
     keys: K[]
     vals: V[]
     slots: u64[]      # 0 = empty, otherwise the entry's hash's upper 32 bits | entry index + 1
     hashes: u64[]
+    gone: bool[]      # (entries removed since the last compaction: true; shorter than keys when
+                      # entries were added after the last removal)
+    ngone: int
 
 # full 64-bit avalanche (murmur3 finalizer): every key bit affects the low bits used for slots,
 # so keys like multiples of 4096 or float bit patterns spread out
@@ -42,7 +48,7 @@ __map_probe[K, V] = (m: Map[K, V], k: K, h: u64) -> int:
     loop true:
         s = __at(m.slots, i)
         if s == 0: return -2 - i
-        if s & 0xFFFFFFFF00000000 == hi:
+        if s & 0xFFFFFFFF00000000 == hi and s & 0xFFFFFFFF != 0:
             e = int(s & 0xFFFFFFFF) - 1
             if __at(m.keys, e) == k: return e
         i = (i + 1) & mask
@@ -56,7 +62,7 @@ __map_find[K, V] = (m: Map[K, V], k: K, h: u64) -> int:
     loop true:
         s = __at(m.slots, i)
         if s == 0: return -1
-        if s & 0xFFFFFFFF00000000 == hi:
+        if s & 0xFFFFFFFF00000000 == hi and s & 0xFFFFFFFF != 0:
             e = int(s & 0xFFFFFFFF) - 1
             if __at(m.keys, e) == k: return e
         i = (i + 1) & mask
@@ -65,7 +71,9 @@ __map_rehash[K, V] = (m: mut Map[K, V], ns: int):
     m.slots.clear()
     m.slots.resize(ns)
     mask = ns - 1
+    ng = m.gone.len()
     loop e in 0.. and h in m.hashes:
+        if e < ng and __at(m.gone, e): continue
         i = int(h) & mask
         loop m.slots[i] != 0: i = (i + 1) & mask
         m.slots[i] = (h & 0xFFFFFFFF00000000) | u64(e + 1)
@@ -106,8 +114,14 @@ reserve[K, V] = (m: mut Map[K, V], n: int):
     if ns > m.slots.len(): __map_rehash(m, ns)
 
 # a new entry (k is not in m; slot: the empty slot a probe for it ended at, or -1)
-__map_add[K, V] = (m: mut Map[K, V], k: K, v: V, h: u64, slot: int = -1):
+__map_add[K, V] = (m: mut Map[K, V], k: K, v: V, h: u64, slot0: int = -1):
     n = m.keys.len()
+    slot = slot0
+    if (n + 1) * 4 > m.slots.len() * 3 and m.ngone > 0:
+        # (what is gone taken out first: there may be room then)
+        __map_compact(m)
+        n = m.keys.len()
+        slot = -1
     if (n + 1) * 4 > m.slots.len() * 3:
         ns = m.slots.len() * 2
         if ns < 8: ns = 8
@@ -143,33 +157,88 @@ get[K, V] = (m: Map[K, V], k: K, default: V) -> V:
 
 contains[K, V] = (m: Map[K, V], k: K) -> bool: __map_find(m, k, hash(k)) >= 0
 has[K, V] = (m: Map[K, V], k: K) -> bool: __map_find(m, k, hash(k)) >= 0
-len[K, V] = (m: Map[K, V]) -> int: m.keys.len()
-is_empty[K, V] = (m: Map[K, V]) -> bool: m.keys.len() == 0
-keys[K, V] = (m: Map[K, V]) -> K[]: m.keys
-values[K, V] = (m: Map[K, V]) -> V[]: m.vals
+len[K, V] = (m: Map[K, V]) -> int: m.keys.len() - m.ngone
+is_empty[K, V] = (m: Map[K, V]) -> bool: m.keys.len() == m.ngone
+keys[K, V] = (m: Map[K, V]) -> K[]:
+    if m.ngone == 0: return m.keys
+    __map_live(m).keys
+values[K, V] = (m: Map[K, V]) -> V[]:
+    if m.ngone == 0: return m.vals
+    __map_live(m).vals
 
 clear[K, V] = (m: mut Map[K, V]):
     m.keys.clear()
     m.vals.clear()
     m.slots.clear()
     m.hashes.clear()
+    m.gone.clear()
+    m.ngone = 0
 
-# remove a key; returns true if it was present. The entries after it move up (the rest keep
-# their order).
+# remove a key; returns true if it was present. The others keep their order.
 remove[K, V] = (m: mut Map[K, V], k: K) -> bool:
+    ns = m.slots.len()
+    if ns == 0: return false
     h = hash(k)
-    e = __map_find(m, k, h)
-    if e < 0: return false
-    m.keys.remove(e)
-    m.vals.remove(e)
-    m.hashes.remove(e)
+    mask = ns - 1
+    i = int(h) & mask
+    hi = h & 0xFFFFFFFF00000000
+    loop true:
+        s = m.slots[i]
+        if s == 0: return false
+        if s & 0xFFFFFFFF00000000 == hi and s & 0xFFFFFFFF != 0:
+            e = int(s & 0xFFFFFFFF) - 1
+            if m.keys[e] == k:
+                # (a tombstone where its slot was; the entry gone, letting go of what it held)
+                m.slots[i] = 0x100000000
+                if m.gone.len() < m.keys.len(): m.gone.resize(m.keys.len())
+                m.gone[e] = true
+                zk: K
+                zv: V
+                m.keys[e] = zk
+                m.vals[e] = zv
+                m.ngone += 1
+                if m.ngone * 2 > m.keys.len(): __map_compact(m)
+                return true
+        i = (i + 1) & mask
+    false
+
+# the gone entries taken out, and the slots made again
+__map_compact[K, V] = (m: mut Map[K, V]):
+    if m.ngone == 0: return
+    ng = m.gone.len()
+    w = 0
+    loop e in [0..m.keys.len()):
+        if e < ng and m.gone[e]: continue
+        if w != e:
+            m.keys[w] = m.keys[e]
+            m.vals[w] = m.vals[e]
+            m.hashes[w] = m.hashes[e]
+        w += 1
+    m.keys.resize(w)
+    m.vals.resize(w)
+    m.hashes.resize(w)
+    m.gone.clear()
+    m.ngone = 0
     __map_rehash(m, m.slots.len())
-    true
+
+# (a loop over a map goes over one with nothing gone: this one, or a copy without them)
+__map_live[K, V] = (m: Map[K, V]) -> Map[K, V]:
+    if m.ngone == 0: return m
+    c = m
+    __map_compact(c)
+    c
+
+# (a `loop mut` over a map: the map itself made so first)
+__map_tidy[K, V] = (m: mut Map[K, V]): __map_compact(m)
 
 __fmt[K, V] = (buf: mut u8[], m: Map[K, V]):
     __buf_byte(buf, '{{')
+    ng = m.gone.len()
+    first = true
     loop i in 0.. and k in m.keys:
-        if i > 0: __buf_append_str(buf, ", ")
+        if i < ng and m.gone[i]: continue
+        if not first: __buf_append_str(buf, ", ")
+        first = false
         __fmt_elem(buf, k)
         __buf_append_str(buf, ": ")
         __fmt_elem(buf, m.vals[i])

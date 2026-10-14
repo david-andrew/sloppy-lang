@@ -87,12 +87,16 @@ class MapPrinter:
     def __init__(self, val):
         self.keys = ArrayPrinter(val["keys"])
         self.vals = ArrayPrinter(val["vals"])
+        # (entries removed since the map was last compacted: still there, marked gone)
+        self.gone = [bool(int(g)) for _, g in ArrayPrinter(val["gone"]).children()]
 
     def to_string(self):
-        return "{}" if self.keys._len() == 0 else None
+        return "{}" if self.keys._len() == len([g for g in self.gone if g]) else None
 
     def children(self):
-        for (_, k), (_, v) in zip(self.keys.children(), self.vals.children()):
+        for i, ((_, k), (_, v)) in enumerate(zip(self.keys.children(), self.vals.children())):
+            if i < len(self.gone) and self.gone[i]:
+                continue
             yield "key", k
             yield "value", v
 
@@ -130,7 +134,7 @@ def lookup(val):
     if name.endswith("?"):
         return OptPrinter(val)
     fields = [f.name for f in t.fields()]
-    if fields == ["keys", "vals", "slots", "hashes"]:
+    if fields == ["keys", "vals", "slots", "hashes", "gone", "ngone"]:
         return MapPrinter(val)
     if fields[:1] == ["tag"] and t.fields()[0].type.strip_typedefs().code == gdb.TYPE_CODE_ENUM:
         return EnumPrinter(val)

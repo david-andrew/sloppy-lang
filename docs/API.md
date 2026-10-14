@@ -273,7 +273,7 @@ counts.remove("is")
 print(counts.keys(), counts.values())
 ```
 
-Hash map {K: V}: insertion ordered, open addressing over a dense entry list. The first two fields must stay `keys` and `vals` (the compiler iterates them in for loops).
+Hash map {K: V}: insertion ordered, open addressing over a dense entry list. The first two fields must stay `keys` and `vals` (the compiler iterates them in for loops, of a map with nothing gone: __map_live, __map_tidy). A removed entry stays in place, marked gone (so the others keep theirs), its slot a tombstone (1 << 32: probes go on past it); when half of them are gone, they are taken out at once.
 
 - `struct Map[K, V]`
   ```gdscript
@@ -282,6 +282,7 @@ Hash map {K: V}: insertion ordered, open addressing over a dense entry list. The
       vals: V[]
       slots: u64[]      # 0 = empty, otherwise the entry's hash's upper 32 bits | entry index + 1
       hashes: u64[]
+      gone: bool[]      # (entries removed since the last compaction: true; shorter than keys when
   ```
 - `hash = (x: int) -> u64`: full 64-bit avalanche (murmur3 finalizer): every key bit affects the low bits used for slots, so keys like multiples of 4096 or float bit patterns spread out
 - `hash = (x: u64) -> u64`
@@ -299,7 +300,7 @@ Hash map {K: V}: insertion ordered, open addressing over a dense entry list. The
 - `keys[K, V] = (m: Map[K, V]) -> K[]`
 - `values[K, V] = (m: Map[K, V]) -> V[]`
 - `clear[K, V] = (m: mut Map[K, V])`
-- `remove[K, V] = (m: mut Map[K, V], k: K) -> bool`: remove a key; returns true if it was present. The entries after it move up (the rest keep their order).
+- `remove[K, V] = (m: mut Map[K, V], k: K) -> bool`: remove a key; returns true if it was present. The others keep their order.
 
 ## Math and random numbers
 

@@ -13,6 +13,10 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- Removing from a map takes constant time (it rebuilt the map: 10,000 removals from 100,000
+  entries took 10 s; now under 1 ms): a removed entry stays in place, marked gone, until half
+  are gone. Loops, `keys`, `values`, `len` and printing see only what is there; the debuggers'
+  printers (gdb, lldb, Visual Studio) too.
 - `@cabi` functions called on threads C made (pthreads, a library's callbacks) can allocate:
   once one is called, the allocator tells threads apart by their stacks and gives C's a state
   of their own, taken in turns (several at once crashed).
