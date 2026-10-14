@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""Bake the default SDF font atlas (ASCII 32..126) used by Sloppy's text rendering.
-Output: lib/game/assets/font.png (grayscale SDF atlas) + font.txt (metrics)."""
+"""Bake the default SDF font atlas used by Sloppy's text rendering: ASCII 32..126 in its first
+cells, then Latin-1 (accented letters: é, ñ, ü, ...) and common punctuation (€, curly quotes,
+dashes, ...).
+Output: lib/game/assets/font.png (grayscale SDF atlas) + font.txt (metrics; its third line is
+the code point of each cell after the ASCII ones)."""
 import sys, math
 from PIL import Image, ImageDraw, ImageFont
 
@@ -39,11 +42,16 @@ def edt(inside, w, h):
         for x in range(w): cmp(g, x, y, -1, 0)
     return [[math.sqrt(d2(g[y][x])) for x in range(w)] for y in range(h)]
 
-cols, rows = 16, 6
+# (ASCII first: the cells of 32..126 are their code - 32, as wayland.jo's title bar assumes)
+CODES = list(range(32, 127)) + list(range(161, 256)) + [0x2018, 0x2019, 0x201C, 0x201D, 0x2013, 0x2014,
+    0x2026, 0x2022, 0x20AC, 0x2122]
+CODES = list(dict.fromkeys(CODES))
+cols = 16
+rows = (len(CODES) + cols - 1) // cols
 atlas = Image.new("L", (cols * CELL, rows * CELL), 0)
 metrics = []
 baseline = int(CELL * 0.76)
-for i, code in enumerate(range(32, 127)):
+for i, code in enumerate(CODES):
     ch = chr(code)
     img = Image.new("L", (H, H), 0)
     d = ImageDraw.Draw(img)
@@ -66,9 +74,10 @@ for i, code in enumerate(range(32, 127)):
             cp[x, y] = max(0, min(255, int(round(v))))
     atlas.paste(cell, ((i % cols) * CELL, (i // cols) * CELL))
     metrics.append(adv)
-    print(f"\rglyph {i + 1}/95", end="", file=sys.stderr)
+    print(f"\rglyph {i + 1}/{len(CODES)}", end="", file=sys.stderr)
 atlas.save(OUT + ".png", optimize=True)
 with open(OUT + ".txt", "w") as f:
     f.write(f"{CELL} {cols} {rows} {baseline} {SPREAD} {PX} {ascent / SCALE:.2f} {descent / SCALE:.2f}\n")
     f.write(" ".join(f"{a:.3f}" for a in metrics) + "\n")
+    f.write(" ".join(str(c) for c in CODES[95:]) + "\n")
 print("\ndone", file=sys.stderr)

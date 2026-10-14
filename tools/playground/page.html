@@ -59,6 +59,7 @@ a { color: var(--accent); }
 <body>
 <header>
   <h1><span>Sloppy</span> playground</h1>
+  <select id="programs" title="Your programs, kept in this browser"></select>
   <select id="examples" title="Examples"></select>
   <button class="run" id="run" title="Run (ctrl+enter)">&#9654; Run</button>
   <button id="stop" title="Stop the program">&#9632; Stop</button>
@@ -119,7 +120,103 @@ src.addEventListener("input", () => {
   if (errLine) errLine = 0;
   refresh();
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => localStorage.setItem("sloppy-playground-source", src.value), 400);
+  saveTimer = setTimeout(saveCurrent, 400);
+});
+
+// ---- your programs: each kept in this browser under its name ----
+// (an example is not one until it is edited: then it is kept as a copy, and choosing an example
+// never replaces a program)
+const progSel = $("programs");
+let programs = {}, current = null;
+try { programs = JSON.parse(localStorage.getItem("sloppy-playground-programs") || "{}") || {}; } catch (e) { programs = {}; }
+function storePrograms() {
+  localStorage.setItem("sloppy-playground-programs", JSON.stringify(programs));
+  if (current !== null) localStorage.setItem("sloppy-playground-current", current);
+  else localStorage.removeItem("sloppy-playground-current");
+}
+function freeName(base) {
+  if (programs[base] === undefined) return base;
+  for (let i = 2; ; i++) if (programs[`${base} ${i}`] === undefined) return `${base} ${i}`;
+}
+function saveCurrent() {
+  if (current === null) {
+    // (the first edit of an example or a shared program: kept as a program of its own)
+    if (src.value === shownText) return;
+    current = freeName(shownName || "my program");
+  }
+  programs[current] = src.value;
+  storePrograms();
+  listPrograms();
+}
+function listPrograms() {
+  progSel.innerHTML = "";
+  const add = (value, text) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = text;
+    progSel.appendChild(o);
+    return o;
+  };
+  if (current === null) add("", "(not saved: edit to keep it)");
+  for (const name of Object.keys(programs).sort()) add("p:" + name, name);
+  add("new", "+ new program");
+  if (current !== null) { add("rename", "rename this one…"); add("delete", "delete this one…"); }
+  progSel.value = current === null ? "" : "p:" + current;
+}
+// what the editor shows when it is not a program: its name, and its text as it was opened
+let shownName = null, shownText = null;
+function openProgram(name) {
+  current = name;
+  shownName = null;
+  shownText = null;
+  src.value = programs[name];
+  errLine = 0;
+  refresh();
+  storePrograms();
+  listPrograms();
+}
+function openUnsaved(name, text) {
+  current = null;
+  shownName = name;
+  shownText = text;
+  src.value = text;
+  errLine = 0;
+  refresh();
+  storePrograms();
+  listPrograms();
+}
+progSel.addEventListener("change", () => {
+  const v = progSel.value;
+  if (v.startsWith("p:")) { saveCurrent(); openProgram(v.slice(2)); run(); return; }
+  if (v === "new") {
+    saveCurrent();
+    const name = prompt("A name for the new program:", freeName("my program"));
+    if (name && name.trim()) {
+      const n = freeName(name.trim());
+      programs[n] = 'print("Hello!")\n';
+      openProgram(n);
+      run();
+      return;
+    }
+  } else if (v === "rename" && current !== null) {
+    const name = prompt("A new name for it:", current);
+    if (name && name.trim() && name.trim() !== current) {
+      const n = freeName(name.trim());
+      programs[n] = programs[current];
+      delete programs[current];
+      current = n;
+      storePrograms();
+    }
+  } else if (v === "delete" && current !== null) {
+    if (confirm(`Delete "${current}"? It cannot be brought back.`)) {
+      delete programs[current];
+      const rest = Object.keys(programs).sort();
+      if (rest.length) openProgram(rest[0]);
+      else openUnsaved(Object.keys(SLOPPY_EXAMPLES)[0], SLOPPY_EXAMPLES[Object.keys(SLOPPY_EXAMPLES)[0]]);
+      return;
+    }
+  }
+  listPrograms();
 });
 
 // ---- editing: indentation ----
@@ -202,10 +299,8 @@ async function useExample(name) {
   }
 }
 exSel.addEventListener("change", async () => {
-  src.value = SLOPPY_EXAMPLES[exSel.value];
-  errLine = 0;
-  refresh();
-  localStorage.setItem("sloppy-playground-source", src.value);
+  saveCurrent();
+  openUnsaved(exSel.value.split(" ")[0], SLOPPY_EXAMPLES[exSel.value]);
   await useExample(exSel.value);
   run();
 });
@@ -323,14 +418,18 @@ $("stop").addEventListener("click", () => { out.srcdoc = "<body style='backgroun
     const name = Object.keys(SLOPPY_EXAMPLES).find((k) => k.split(" ")[0] === ex[1]);
     if (name) { text = SLOPPY_EXAMPLES[name]; exSel.value = name; await useExample(name); }
   }
-  if (text === null) {
-    text = localStorage.getItem("sloppy-playground-source");
-    const last = localStorage.getItem("sloppy-playground-example");
-    if (text !== null && last && SLOPPY_EXAMPLES[last] !== undefined) { exSel.value = last; await useExample(last); }
+  if (m && text !== null) openUnsaved("shared", text);
+  else if (text !== null) openUnsaved(ex[1], text);
+  else {
+    const last = localStorage.getItem("sloppy-playground-current");
+    const lastEx = localStorage.getItem("sloppy-playground-example");
+    if (lastEx && SLOPPY_EXAMPLES[lastEx] !== undefined) { exSel.value = lastEx; await useExample(lastEx); }
+    if (last !== null && programs[last] !== undefined) openProgram(last);
+    else {
+      const first = Object.keys(SLOPPY_EXAMPLES)[0];
+      openUnsaved(first.split(" ")[0], SLOPPY_EXAMPLES[first]);
+    }
   }
-  if (text === null) text = SLOPPY_EXAMPLES[Object.keys(SLOPPY_EXAMPLES)[0]];
-  src.value = text;
-  refresh();
   try {
     await startCompiler();
     setStatus("ready");

@@ -15,6 +15,11 @@ From a second pass with someone who had not programmed before:
   `draw = :` without `()`; `repeat 5:`; `thorns = Rect[]` for an empty typed array; a text
   compared with a number; a string with no closing quote followed by more code, at its line.
 - `polygon` draws concave shapes (a star, an L) correctly; it filled them as if convex.
+- The built-in font has accented letters (é, ñ, ü, ß, Æ: all of Latin-1) and common punctuation
+  (curly quotes, dashes, …, •, €, ™); they showed as `?`.
+- The playground keeps more than one program: a menu of your programs (new, rename, delete),
+  each saved as it is edited. Choosing an example no longer replaces what you wrote: an example
+  becomes a program of yours when you edit it.
 - Docs: the timer number in `every(1, 2.0)`; a tutorial section on many moving things (a
   struct, `loop mut`, `retain`).
 
