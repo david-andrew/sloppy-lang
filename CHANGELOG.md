@@ -12,6 +12,8 @@ From a game jam entry shipped to the browser:
   frame left the player walking), and try to start the sound at every key until it runs (Safari).
 - Warnings: a web page that saves without a name of its own (pages on one site share their
   storage); `read_file("...")`/`read_bytes("...")` in a web page (it has no disk: `embed`).
+- `window_focused()`: false while the player is in another window or tab (a game may pause),
+  on every system and in web pages.
 - `load_wav` given an Ogg file says to use `load_ogg` or `load_music`; a missing map key says
   which key it was nearly (`assets["playr.png"]`: did you mean player.png?).
 - START: shipping to itch.io, and what to leave out of a Windows download.

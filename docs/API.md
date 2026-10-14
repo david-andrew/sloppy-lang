@@ -1043,6 +1043,7 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `set_clipboard = (s: str)`
 - `mouse_lock = (on: bool = true) -> bool`: lock the mouse pointer to the window and hide it, for mouse look: the pointer stays put and its motion keeps arriving through mouse_delta(). false where the platform cannot. (A web page gets the lock at the next click into it, as browsers require; Escape releases it there.)
 - `is_mouse_locked = () -> bool`: (in a screenshot run, what the game asked for: the desktop's focus coming and going would make the run differ from one time to the next)
+- `window_focused = () -> bool`: the window (or the web page) has the keyboard's focus: false while the player is in another window or tab, as after a click outside an itch.io frame (a game may pause then)
 - `show_cursor = (on: bool)`: show or hide the mouse pointer over the window (hidden: a game drawing its own crosshair or cursor); unlike mouse_lock, it still moves and mouse_pos() follows it
 - `window = (title: str = "", width: int = 1280, height: int = 720)`: Open the game window (called automatically when the program defines update/draw).
 
