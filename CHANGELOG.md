@@ -71,6 +71,9 @@ Language and library:
   `struct B(A)`, a field read from a union of structs, a library module used without `import`.
 
 Games:
+- `show_cursor(false)` hides the mouse pointer over the window while it still moves (a
+  crosshair drawn by the game); with `mouse_lock` the two keep track of each other (Linux X11
+  and Wayland, Windows, macOS, the web).
 - `tile_layer` keeps rows of spaces (open sky above a level); only the empty line after the
   opening quote and the closing quote's line are left out. Rows of spaces at the top were
   dropped, moving the tiles up against positions read from the same text.

@@ -839,6 +839,7 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `set_clipboard = (s: str)`
 - `mouse_lock = (on: bool = true) -> bool`: lock the mouse pointer to the window and hide it, for mouse look: the pointer stays put and its motion keeps arriving through mouse_delta(). false where the platform cannot. (A web page gets the lock at the next click into it, as browsers require; Escape releases it there.)
 - `is_mouse_locked = () -> bool`
+- `show_cursor = (on: bool)`: show or hide the mouse pointer over the window (hidden: a game drawing its own crosshair or cursor); unlike mouse_lock, it still moves and mouse_pos() follows it
 - `window = (title: str = "", width: int = 1280, height: int = 720)`: Open the game window (called automatically when the program defines update/draw).
 
 ### stats.jo

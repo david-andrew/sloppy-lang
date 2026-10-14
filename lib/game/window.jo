@@ -224,6 +224,13 @@ mouse_lock = (on: bool = true) -> bool:
 is_mouse_locked = () -> bool: __mouse_lock_want and __platform_mouse_locked()
 
 __mouse_lock_want = false
+__cursor_hidden = false
+
+# show or hide the mouse pointer over the window (hidden: a game drawing its own crosshair or
+# cursor); unlike mouse_lock, it still moves and mouse_pos() follows it
+show_cursor = (on: bool):
+    __cursor_hidden = not on
+    if __win_open: __platform_show_cursor(on)
 
 # the program's name (shapes for shapes.jo, or the build block's name), for a window without a
 # title of its own
@@ -302,6 +309,7 @@ window = (title: str = "", width: int = 1280, height: int = 720):
     __win_open = true
     __time0 = time()
     if __mouse_lock_want: __platform_mouse_lock(true)
+    if __cursor_hidden: __platform_show_cursor(false)
 
 when TARGET == "wasm":
     extern __web_canvas_open = (title: *u8, title_len: i32, w: i32, h: i32)
@@ -312,12 +320,14 @@ when TARGET == "wasm":
     extern __web_is_fullscreen = () -> i32
     extern __web_pointer_lock = (on: i32) -> i32
     extern __web_pointer_locked = () -> i32
+    extern __web_show_cursor = (on: i32)
     extern __web_clipboard_get = (out: *u8, cap: i32) -> i32
     extern __web_clipboard_set = (p: *u8, n: i32)
 
     __platform_fullscreen = (on: bool): __web_fullscreen(i32(int(on)))
     __platform_mouse_lock = (on: bool) -> bool: __web_pointer_lock(i32(int(on))) != 0
     __platform_mouse_locked = () -> bool: __web_pointer_locked() != 0
+    __platform_show_cursor = (on: bool): __web_show_cursor(i32(int(on)))
     __platform_clipboard = () -> str:
         buf = fill(u8(0), 4096)
         n = int(__web_clipboard_get(data(buf), 4096))
@@ -769,15 +779,22 @@ else when TARGET == "windows":
             ClientToScreen(__w32_hwnd, data(cr))
             ClientToScreen(__w32_hwnd, data(cr) + 2)
             ClipCursor(data(cr))
-            ShowCursor(0)
-        else:
-            ClipCursor(null)
-            ShowCursor(1)
+        else: ClipCursor(null)
         __w32_locked = on
+        __w32_cursor_update()
         true
+
+    # (ShowCursor counts: called only when what is wanted changes)
+    __w32_cursor_shown = true
+    __w32_cursor_update = ():
+        v = not __w32_locked and not __cursor_hidden
+        if v == __w32_cursor_shown: return
+        ShowCursor(i32(int(v)))
+        __w32_cursor_shown = v
 
     __platform_mouse_lock = (on: bool) -> bool: __w32_lock(on)
     __platform_mouse_locked = () -> bool: __w32_locked
+    __platform_show_cursor = (on: bool): __w32_cursor_update()
 
     __platform_clipboard = () -> str:
         if OpenClipboard(__w32_hwnd) == 0: return ""
@@ -1285,6 +1302,9 @@ else when TARGET == "linux":
     __platform_mouse_locked = () -> bool:
         if __wayland: return __wl_locked != 0
         __x_locked
+    __platform_show_cursor = (on: bool):
+        if __wayland: __wl_show_cursor(on)
+        else if __xdpy != null and not __xproto: __x_show_cursor(on)
 
     # ---- mouse lock (libX11): the pointer grabbed, hidden and put back in the middle ----
     @lib("libX11.so.6")
@@ -1308,21 +1328,32 @@ else when TARGET == "linux":
     __x_mouse_lock = (on: bool) -> bool:
         if not on:
             if __x_locked: XUngrabPointer(__xdpy, 0)
-            XUndefineCursor(__xdpy, __xwin)
-            XFlush(__xdpy)
             __x_locked = false
+            __x_show_cursor(not __cursor_hidden)
             return true
-        if __x_blank == 0:
-            bits = fill(u8(0), 8)
-            color = fill(u8(0), 16)
-            bm = XCreateBitmapFromData(__xdpy, __xwin, data(bits), 1, 1)
-            __x_blank = XCreatePixmapCursor(__xdpy, bm, bm, data(color), data(color), 0, 0)
+        __x_make_blank()
         XDefineCursor(__xdpy, __xwin, __x_blank)
         # (pointer motion and buttons, both async, confined to the window)
         __x_locked = XGrabPointer(__xdpy, __xwin, 1, 0x4 | 0x8 | 0x40, 1, 1, __xwin, __x_blank, 0) == 0
         if __x_locked: __x_recenter()
         XFlush(__xdpy)
         __x_locked
+
+    # (an invisible cursor: a 1x1 bitmap with nothing in its mask)
+    __x_make_blank = ():
+        if __x_blank != 0: return
+        bits = fill(u8(0), 8)
+        color = fill(u8(0), 16)
+        bm = XCreateBitmapFromData(__xdpy, __xwin, data(bits), 1, 1)
+        __x_blank = XCreatePixmapCursor(__xdpy, bm, bm, data(color), data(color), 0, 0)
+
+    __x_show_cursor = (on: bool):
+        if __x_locked: return
+        if on: XUndefineCursor(__xdpy, __xwin)
+        else:
+            __x_make_blank()
+            XDefineCursor(__xdpy, __xwin, __x_blank)
+        XFlush(__xdpy)
 
     __x_recenter = ():
         XWarpPointer(__xdpy, 0, __xwin, 0, 0, 0, 0, i32(__win_w / 2), i32(__win_h / 2))
