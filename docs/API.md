@@ -811,76 +811,76 @@ The dotted operators work element by element on arrays of any shape, and broadca
 
 #### Shapes
 
-- `ndarray[T] = (data: T[], shape: int[]) -> NDArray[T]`
-- `ndim[T] = (m: NDArray[T]) -> int`
-- `size[T] = (m: NDArray[T]) -> int`
-- `len[T] = (m: NDArray[T]) -> int`
-- `rows[T] = (m: NDArray[T]) -> int`
-- `cols[T] = (m: NDArray[T]) -> int`
-- `flatten[T] = (m: NDArray[T]) -> T[]`
+- `ndarray[T] = (data: T[], shape: int[]) -> T[,]`
+- `ndim[T] = (m: T[,]) -> int`
+- `size[T] = (m: T[,]) -> int`
+- `len[T] = (m: T[,]) -> int`
+- `rows[T] = (m: T[,]) -> int`
+- `cols[T] = (m: T[,]) -> int`
+- `flatten[T] = (m: T[,]) -> T[]`
 
 #### Indexing
 
-- `([])[T] = (m: NDArray[T], i: int) -> T`
-- `([])[T] = (m: NDArray[T], i: int, j: int) -> T`
-- `([])[T] = (m: NDArray[T], i: int, j: int, k: int) -> T`
-- `([])[T] = (m: NDArray[T], i: int, j: int, k: int, l: int) -> T`
-- `([]=)[T] = (m: mut NDArray[T], i: int, v: T)`
-- `([]=)[T] = (m: mut NDArray[T], i: int, j: int, v: T)`
-- `([]=)[T] = (m: mut NDArray[T], i: int, j: int, k: int, v: T)`
-- `([]=)[T] = (m: mut NDArray[T], i: int, j: int, k: int, l: int, v: T)`
+- `([])[T] = (m: T[,], i: int) -> T`
+- `([])[T] = (m: T[,], i: int, j: int) -> T`
+- `([])[T] = (m: T[,], i: int, j: int, k: int) -> T`
+- `([])[T] = (m: T[,], i: int, j: int, k: int, l: int) -> T`
+- `([]=)[T] = (m: mut T[,], i: int, v: T)`
+- `([]=)[T] = (m: mut T[,], i: int, j: int, v: T)`
+- `([]=)[T] = (m: mut T[,], i: int, j: int, k: int, v: T)`
+- `([]=)[T] = (m: mut T[,], i: int, j: int, k: int, l: int, v: T)`
 
 #### Making arrays
 
 - `zeros = (n: int) -> f64[]`
-- `zeros = (a: int, b: int) -> NDArray[f64]`
-- `zeros = (a: int, b: int, c: int) -> NDArray[f64]`
-- `zeros = (a: int, b: int, c: int, d: int) -> NDArray[f64]`
+- `zeros = (a: int, b: int) -> f64[,]`
+- `zeros = (a: int, b: int, c: int) -> f64[,]`
+- `zeros = (a: int, b: int, c: int, d: int) -> f64[,]`
 - `ones = (n: int) -> f64[]`
-- `ones = (a: int, b: int) -> NDArray[f64]`
-- `ones = (a: int, b: int, c: int) -> NDArray[f64]`
-- `ones = (a: int, b: int, c: int, d: int) -> NDArray[f64]`
-- `eye = (n: int) -> NDArray[f64]`: the identity matrix
+- `ones = (a: int, b: int) -> f64[,]`
+- `ones = (a: int, b: int, c: int) -> f64[,]`
+- `ones = (a: int, b: int, c: int, d: int) -> f64[,]`
+- `eye = (n: int) -> f64[,]`: the identity matrix
 - `rand = (n: int) -> f64[]`: uniformly random in [0, 1)
-- `rand = (a: int, b: int) -> NDArray[f64]`
-- `rand = (a: int, b: int, c: int) -> NDArray[f64]`
-- `rand = (a: int, b: int, c: int, d: int) -> NDArray[f64]`
+- `rand = (a: int, b: int) -> f64[,]`
+- `rand = (a: int, b: int, c: int) -> f64[,]`
+- `rand = (a: int, b: int, c: int, d: int) -> f64[,]`
 - `randn = () -> f64`: normally distributed (mean 0, standard deviation 1)
 - `randn = (n: int) -> f64[]`
-- `randn = (a: int, b: int) -> NDArray[f64]`
-- `randn = (a: int, b: int, c: int) -> NDArray[f64]`
-- `randn = (a: int, b: int, c: int, d: int) -> NDArray[f64]`
+- `randn = (a: int, b: int) -> f64[,]`
+- `randn = (a: int, b: int, c: int) -> f64[,]`
+- `randn = (a: int, b: int, c: int, d: int) -> f64[,]`
 - `linspace = (a: f64, b: f64, n: int) -> f64[]`: n evenly spaced values from a to b (both included)
-- `reshape[T] = (xs: T[], shape: int[]) -> NDArray[T]`
-- `reshape[T] = (xs: T[], a: int, b: int) -> NDArray[T]`
-- `reshape[T] = (xs: T[], a: int, b: int, c: int) -> NDArray[T]`
-- `reshape[T] = (m: NDArray[T], shape: int[]) -> NDArray[T]`
-- `reshape[T] = (m: NDArray[T], a: int, b: int) -> NDArray[T]`
-- `reshape[T] = (m: NDArray[T], a: int, b: int, c: int) -> NDArray[T]`
-- `transpose[T] = (m: NDArray[T]) -> NDArray[T]`: the axes in reverse order (rows and columns swapped, for a 2-D array)
-- `row[T] = (m: NDArray[T], i: int) -> T[]`
-- `col[T] = (m: NDArray[T], j: int) -> T[]`
+- `reshape[T] = (xs: T[], shape: int[]) -> T[,]`
+- `reshape[T] = (xs: T[], a: int, b: int) -> T[,]`
+- `reshape[T] = (xs: T[], a: int, b: int, c: int) -> T[,]`
+- `reshape[T] = (m: T[,], shape: int[]) -> T[,]`
+- `reshape[T] = (m: T[,], a: int, b: int) -> T[,]`
+- `reshape[T] = (m: T[,], a: int, b: int, c: int) -> T[,]`
+- `transpose[T] = (m: T[,]) -> T[,]`: the axes in reverse order (rows and columns swapped, for a 2-D array)
+- `row[T] = (m: T[,], i: int) -> T[]`
+- `col[T] = (m: T[,], j: int) -> T[]`
 
 #### Reductions
 
-- `sum[T] = (m: NDArray[T]) -> T`
-- `min[T] = (m: NDArray[T]) -> T`
-- `max[T] = (m: NDArray[T]) -> T`
+- `sum[T] = (m: T[,]) -> T`
+- `min[T] = (m: T[,]) -> T`
+- `max[T] = (m: T[,]) -> T`
 - `sum = (xs: f64[]) -> f64`: the average (0 for none) (floats: added in pairs of halves, so the rounding errors stay small however long the array is: a million 0.1s make 100000.0, as NumPy's sum does)
 - `max = (xs: f64[]) -> f64`: (floats: NaN, not a number, wins: one NaN makes the answer NaN, as in NumPy)
 - `min = (xs: f64[]) -> f64`
 - `sort = (xs: mut f64[], descending: bool = false)`: (floats: NaN after every number, in either order; the numbers in order, equal ones as they were)
 - `mean = (xs: f64[]) -> f64`
 - `mean = (xs: int[]) -> f64`
-- `mean = (m: NDArray[f64]) -> f64`
+- `mean = (m: f64[,]) -> f64`
 - `median = (xs: f64[]) -> f64`: the middle value once sorted (the mean of the two middle ones for an even count; 0 for none)
 - `median = (xs: int[]) -> f64`
 - `std_dev = (xs: f64[]) -> f64`: how far the values are from their mean, on average (the standard deviation of these values: the population's, as numpy's std; Python's statistics.stdev divides by n - 1 instead)
 - `std_dev = (xs: int[]) -> f64`
-- `sum[T] = (m: NDArray[T], axis: int) -> NDArray[T]`: along one axis: the array without that axis, each element combining the ones along it (sum(m, 0) adds up the rows of a 2-D array: one sum per column)
-- `min[T] = (m: NDArray[T], axis: int) -> NDArray[T]`
-- `max[T] = (m: NDArray[T], axis: int) -> NDArray[T]`
-- `mean = (m: NDArray[f64], axis: int) -> NDArray[f64]`
+- `sum[T] = (m: T[,], axis: int) -> T[,]`: along one axis: the array without that axis, each element combining the ones along it (sum(m, 0) adds up the rows of a 2-D array: one sum per column)
+- `min[T] = (m: T[,], axis: int) -> T[,]`
+- `max[T] = (m: T[,], axis: int) -> T[,]`
+- `mean = (m: f64[,], axis: int) -> f64[,]`
 - `dot = (a: f64[], b: f64[]) -> f64`: the sum of a[i] * b[i] (kept in four running sums, about twice as fast: rounded a little differently from adding in order, the same for the same input every time)
 - `norm = (a: f64[]) -> f64`
 - `variance = (xs: f64[]) -> f64`: the variance: the mean of the squared distances from the mean (NumPy's var; std_dev squared)
@@ -902,22 +902,22 @@ The dotted operators work element by element on arrays of any shape, and broadca
 
 #### Linear algebra
 
-- `outer = (a: f64[], b: f64[]) -> NDArray[f64]`: the matrix of every a[i] * b[j]
-- `diag = (m: NDArray[f64]) -> f64[]`: the diagonal of a square (or any 2-D) matrix, and its sum
-- `trace = (m: NDArray[f64]) -> f64`
-- `solve = (a: NDArray[f64], b: f64[]) -> f64[]`: x with a * x = b, a square (Gaussian elimination, choosing the largest pivot); a matrix with no inverse panics
-- `inverse = (a: NDArray[f64]) -> NDArray[f64]`: the inverse (a * inverse(a) is eye(n)); a matrix with none panics
-- `det = (a: NDArray[f64]) -> f64`: the determinant (0 for a matrix with no inverse)
+- `outer = (a: f64[], b: f64[]) -> f64[,]`: the matrix of every a[i] * b[j]
+- `diag = (m: f64[,]) -> f64[]`: the diagonal of a square (or any 2-D) matrix, and its sum
+- `trace = (m: f64[,]) -> f64`
+- `solve = (a: f64[,], b: f64[]) -> f64[]`: x with a * x = b, a square (Gaussian elimination, choosing the largest pivot); a matrix with no inverse panics
+- `inverse = (a: f64[,]) -> f64[,]`: the inverse (a * inverse(a) is eye(n)); a matrix with none panics
+- `det = (a: f64[,]) -> f64`: the determinant (0 for a matrix with no inverse)
 
 #### Matrix products
 
-- `(*)[T] = (a: NDArray[T], b: NDArray[T]) -> NDArray[T]`: matrix product
-- `(*)[T] = (a: NDArray[T], v: T[]) -> T[]`: matrix times column vector
-- `(*)[T] = (k: T, m: NDArray[T]) -> NDArray[T]`
-- `(*)[T] = (m: NDArray[T], k: T) -> NDArray[T]`
-- `(/)[T] = (m: NDArray[T], k: T) -> NDArray[T]`
-- `(+)[T] = (a: NDArray[T], b: NDArray[T]) -> NDArray[T]`
-- `(-)[T] = (a: NDArray[T], b: NDArray[T]) -> NDArray[T]`
+- `(*)[T] = (a: T[,], b: T[,]) -> T[,]`: matrix product
+- `(*)[T] = (a: T[,], v: T[]) -> T[]`: matrix times column vector
+- `(*)[T] = (k: T, m: T[,]) -> T[,]`
+- `(*)[T] = (m: T[,], k: T) -> T[,]`
+- `(/)[T] = (m: T[,], k: T) -> T[,]`
+- `(+)[T] = (a: T[,], b: T[,]) -> T[,]`
+- `(-)[T] = (a: T[,], b: T[,]) -> T[,]`
 
 ## The window, the game loop and input
 
@@ -2364,11 +2364,11 @@ Values are f32, or i32 for arrays made from integers (gpu(int_array)): integer a
 - `gpu = (xs: i32[]) -> GpuArray[i32]`
 - `gpu = (xs: int[]) -> GpuArray[i32]`
 - `gpu = (xs: bool[]) -> GpuArray[f32]`
-- `gpu = (m: NDArray[f32]) -> GpuArray[f32]`
-- `gpu = (m: NDArray[f64]) -> GpuArray[f32]`
-- `gpu = (m: NDArray[i32]) -> GpuArray[i32]`
-- `gpu = (m: NDArray[int]) -> GpuArray[i32]`
-- `cpu[T] = (g: GpuArray[T]) -> NDArray[T]`: the values (an array of the GPU array's shape)
+- `gpu = (m: f32[,]) -> GpuArray[f32]`
+- `gpu = (m: f64[,]) -> GpuArray[f32]`
+- `gpu = (m: i32[,]) -> GpuArray[i32]`
+- `gpu = (m: int[,]) -> GpuArray[i32]`
+- `cpu[T] = (g: GpuArray[T]) -> T[,]`: the values (an array of the GPU array's shape)
 - `len[T] = (g: GpuArray[T]) -> int`
 
 #### Reductions
