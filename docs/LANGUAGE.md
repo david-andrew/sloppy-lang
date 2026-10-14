@@ -103,7 +103,8 @@ let x = "text"       # always a new variable (shadows the outer x)
 y: f32 = 2           # explicit type (always declares)
 z: str[]             # zero value: empty array
 x += 1               # compound assignment (also -= *= /= %= ^= <<= >>= and= or= xor=)
-a, b = 1, 2          # several at once
+a, b = 1, 2          # several at once (from a tuple, or an array of exactly that many:
+k, v = line.split("=", 1)   # another length panics)
 const SPEED = 300.0  # compile-time constant
 ```
 

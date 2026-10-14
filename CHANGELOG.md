@@ -13,6 +13,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `a, b = xs` unpacks an array of exactly that many elements (2 to 4; another length panics):
+  `key, value = line.split("=", 1)`.
 - `words` and `split` with a one-byte separator are about twice as fast (44 MB of text: 8 million
   words in 0.41 s, was 0.78; Python's split takes 0.44).
 - Dates: `now()` and `date(t)` give a `Date` (year, month, day, hour, minute, second,
