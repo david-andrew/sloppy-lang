@@ -639,7 +639,9 @@ layers = cube .* reshape([1.0, 2.0, 3.0, 4.0], 4, 1, 1)   # broadcasting along t
 Ranges among the indexes select parts: `m[i, ..]` is row `i`, `m[.., j]` column `j`,
 `m[1..2, 3..]` a block (ranges include both ends; `a..` runs to the end of the axis, and indexes
 left out at the end mean whole axes). A part is an array of its own; assigning to one writes into
-the array: `m[.., 0] = xs`, `m[0, ..] = 0.0`. `sum(m, axis)`, `mean`, `min` and `max` reduce along
+the array: `m[.., 0] = xs`, `m[0, ..] = 0.0`. A 1-D one (a row, a column) goes where a `T[]` is
+expected, as in `argmax(m[0, ..])` or a function of your own (one with more dimensions there
+stops the program: `m.data` has all the elements). `sum(m, axis)`, `mean`, `min` and `max` reduce along
 one axis (`sum(m, 0)` adds up the rows: one sum per column).
 
 ```gdscript
