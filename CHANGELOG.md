@@ -7,6 +7,8 @@
   free to turn, before the bolts move on.
 
 From a performance-minded C programmer:
+- `sort_by`/`sorted_by` work out each element's key once (it was twice a comparison): 1.5x
+  faster with a cheap key, much more with a costly one.
 - `sloppy check` lowers the program too (without making code), so it finds what a build would:
   a `loop mut` that resizes its array, data races, shader errors (it passed such programs).
 - `s = s + x` on text or an array is written `s += x` by the compiler: it adds to the end in
