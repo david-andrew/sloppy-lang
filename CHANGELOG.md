@@ -9,7 +9,8 @@ From a Python programmer's scripts:
   week are removed. `args()[0]` is the program as it was named (`tool.jo`).
 - `main()` called by the file itself (at its end, or in an `if`) runs once, there.
 - Files: `make_dirs`, `delete_dir`, `rename_file`, `copy_file`, `append_file`, `file_time`,
-  `walk_dir` (every file under a directory) and `glob("src/**/*.jo")`, on every system.
+  `walk_dir` (every file under a directory) and `glob("src/**/*.jo")`, on every system;
+  `run_shell("ls *.jo | wc -l")` runs a command line through the shell.
 - A warning for `{4}` in text (a regular expression's repeat puts the number 4 there instead:
   `{{4}}` or `r"..."`); `sloppy test` on a file without tests, or with pytest's `test_` functions,
   says how a test is written instead of "0 tests passed".

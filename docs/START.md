@@ -141,7 +141,7 @@ the file calls it).
 | `with open(p) as f: f.read()` | `read_file(p)` (a `str?`: none when it cannot be read), `write_file`, `append_file`, `read_bytes` |
 | `sys.argv`, `sys.exit(1)` | `args()`, `exit(1)` |
 | `os.path.join`, `os.listdir`, `os.walk`, `glob.glob` | `join_path`, `list_dir`, `walk_dir`, `glob("src/**/*.jo")`; `make_dirs`, `rename_file`, `copy_file`, `delete_file`, `file_time` |
-| `subprocess.run(["ls", "-l"])` | `run_program("ls", ["-l"])` (its exit code and output) |
+| `subprocess.run(["ls", "-l"])`, `os.system("ls *.jo")` | `run_program("ls", ["-l"])`, `run_shell("ls *.jo")` (each gives its exit code and output) |
 | `json.loads(s)`, `json.dumps(x)` | `parse_json(s)` (a Json), `from_json[Config](s)` (into a struct), `to_json(x)` |
 | `re.search(r"\d+", s)` | `s.find(regex(r"\d+"))` (a `Match?`: `m.text`, `m.groups`) |
 | `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero (`counts[w] += 1`, `groups[k].push(x)`) |

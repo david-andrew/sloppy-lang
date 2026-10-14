@@ -492,6 +492,7 @@ Operating system access: files, arguments, environment, time.
 - `exec = (path: str, argv: str[]) -> bool`: replace the current process with another program (returns only on failure)
 - `spawn_detached = (path: str, argv: str[]) -> bool`: start a program in the background, detached from this one: its own session, no terminal (input and output go to /dev/null); returns whether it was started
 - `run_program = (program: str, args: str[] = []) -> (int, str)`: run a program and wait for it to end: its exit code (-1: it could not be started) and what it wrote to its standard output (its errors go where this program's go). A program named without a / is looked for on the PATH. args are its arguments, after its name.
+- `run_shell = (command: str) -> (int, str)`: run a command line through the system's shell (sh; cmd on Windows): pipes, `*.jo`, `&&` work as typed. Its exit code and what it wrote to its standard output, as run_program's
 - `chmod = (path: str, mode: int) -> bool`
 - `mkdir = (path: str) -> bool`
 - `make_dirs = (path: str) -> bool`: make a directory and the ones it is in ("out/maps/2"); true if it is there after
@@ -1041,7 +1042,7 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `clipboard = () -> str`: the text on the system clipboard ("" if none, or not text). In a web page the browser lets a page read it only as it is pasted: this is the text last pasted (ctrl+V) into the page.
 - `set_clipboard = (s: str)`
 - `mouse_lock = (on: bool = true) -> bool`: lock the mouse pointer to the window and hide it, for mouse look: the pointer stays put and its motion keeps arriving through mouse_delta(). false where the platform cannot. (A web page gets the lock at the next click into it, as browsers require; Escape releases it there.)
-- `is_mouse_locked = () -> bool`
+- `is_mouse_locked = () -> bool`: (in a screenshot run, what the game asked for: the desktop's focus coming and going would make the run differ from one time to the next)
 - `show_cursor = (on: bool)`: show or hide the mouse pointer over the window (hidden: a game drawing its own crosshair or cursor); unlike mouse_lock, it still moves and mouse_pos() follows it
 - `window = (title: str = "", width: int = 1280, height: int = 720)`: Open the game window (called automatically when the program defines update/draw).
 
