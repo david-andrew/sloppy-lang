@@ -3,6 +3,9 @@
 ## Unreleased
 
 Compiling:
+- Up to five errors are reported at once: after an error in a function, the compiler checks the
+  program again without that function's body for the next one (only when there are errors:
+  a program that compiles is checked once, as before).
 - Machine code is made on several processors (on Linux and macOS, for x86-64): after a program
   is lowered, forked workers each make the code of a run of its functions, release builds'
   loop versioning and hoisting with it, and the compiler joins them in order. The program is
