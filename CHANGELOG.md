@@ -13,6 +13,11 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- Regular expressions: `regex(pattern)`, then `s.find(r)`, `find_all`, `matches` (all of the
+  text), `contains`, `replace` (with `$1`, or a function of the match), `split`. Groups,
+  classes, `\d \w \s \b`, `^ $` at lines, counted, greedy and lazy repeats, `(?i)`; matching
+  takes time in proportion to the text (no runaway backtracking), works on characters, and
+  skips ahead to where a match can start (a search for a word in 4 MB: 37 ms; Python's: 95).
 - A warning for `{hits / shots:.1%}` with whole numbers (the fraction is dropped before it is
   formatted).
 - Map comprehensions: `{loop w in words: w: len(w)}` (with `if` filters and nested loops, as in

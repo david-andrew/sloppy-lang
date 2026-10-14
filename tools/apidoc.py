@@ -18,6 +18,9 @@ TOPICS = [
     ("Basics", "strings", "Strings", ["core/str"], "strings",
      "`str` is text, in UTF-8. `\"{x}\"` puts a value in a string; `\"{x:.2}\"` rounds it to two decimals "
      "(more ways: [the language](LANGUAGE.md#2-lexical-structure)). Strings are values, like arrays."),
+    ("Basics", "regex", "Regular expressions", ["std/regex"], "regex",
+     "`regex(r\"...\")` makes a pattern once; `s.find(r)`, `s.find_all(r)`, `s.matches(r)`, `s.replace(r, \"$1\")` "
+     "and `s.split(r)` use it. Raw strings (`r\"\\d+\"`) keep the backslashes as they are."),
     ("Basics", "maps", "Maps", ["core/map"], "maps",
      "`{K: V}` maps keys to values, in the order they were added."),
     ("Basics", "math", "Math and random numbers", ["core/math"], "math",
