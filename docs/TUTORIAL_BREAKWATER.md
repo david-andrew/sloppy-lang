@@ -19,9 +19,8 @@ const LOOK = 0.0025                     # radians turned per pixel the mouse mov
 const HALF_X = 20.0                     # the deck: 40 by 30 m
 const HALF_Z = 15.0
 
-v3 = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))
 # the way a yaw and pitch look (yaw 0: along -z; turning left is a bigger yaw)
-look_dir = (yaw: f64, pitch: f64) -> vec3: v3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
+look_dir = (yaw: f64, pitch: f64) -> vec3: vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
 
 struct Box:
     lo: vec3                            # its lowest corner
@@ -36,7 +35,7 @@ pos = vec3(0, 0, 12)                    # the player's feet
 yaw = 0.0
 pitch = 0.0
 
-eye = () -> vec3: pos + vec3(0, f32(EYE), 0)
+eye = () -> vec3: pos + vec3(0, EYE, 0)
 aim = () -> vec3: look_dir(yaw, pitch)
 
 update = (dt: f64):
@@ -44,13 +43,13 @@ update = (dt: f64):
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
         m = mouse_delta()
-        yaw -= f64(m.x) * LOOK
-        pitch = clamp(pitch - f64(m.y) * LOOK, -1.4, 1.4)
+        yaw -= m.x * LOOK
+        pitch = clamp(pitch - m.y * LOOK, -1.4, 1.4)
     # walking: the keys, turned the way the player faces
     ahead = look_dir(yaw, 0.0)
     right = look_dir(yaw - PI / 2.0, 0.0)
     move = input_axis()
-    pos += (right * move.x - ahead * move.y) * f32(SPEED * dt)
+    pos += (right * move.x - ahead * move.y) * SPEED * dt
 
 cube = cube_mesh(1.0)
 
@@ -61,7 +60,7 @@ draw = ():
     camera3d(eye(), eye() + aim(), 70.0)
     # the sea, the deck, the cover on it
     draw_mesh(cube, translation(vec3(0, -3, 0)) * scaling(vec3(400, 1, 400)), rgb(0.1, 0.3, 0.45))
-    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(v3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
+    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(vec3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
     loop b in boxes: draw_mesh(cube, translation((b.lo + b.hi) * 0.5) * scaling(b.hi - b.lo), rgb(0.85, 0.82, 0.75))
     text("click, then the mouse looks around and W A S D walk", vec2(30, 30), 24)
 
@@ -101,9 +100,8 @@ const RADIUS = 0.4                      # the player's, bumping into cover
 const HALF_X = 20.0                     # the deck: 40 by 30 m
 const HALF_Z = 15.0
 
-v3 = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))
 # the way a yaw and pitch look (yaw 0: along -z; turning left is a bigger yaw)
-look_dir = (yaw: f64, pitch: f64) -> vec3: v3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
+look_dir = (yaw: f64, pitch: f64) -> vec3: vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
 
 struct Box:
     lo: vec3                            # its lowest corner
@@ -136,13 +134,13 @@ collide = (p0: vec3, r: f32) -> vec3:
             else if m == right: p.x = b.hi.x + r
             else if m == near: p.z = b.lo.z - r
             else: p.z = b.hi.z + r
-    p.x = clamp(p.x, f32(-HALF_X) + r, f32(HALF_X) - r)
-    p.z = clamp(p.z, f32(-HALF_Z) + r, f32(HALF_Z) - r)
+    p.x = clamp(p.x, -HALF_X + r, HALF_X - r)
+    p.z = clamp(p.z, -HALF_Z + r, HALF_Z - r)
     p
 
 # what is under p: the deck, or the top of a box it is over
 ground_under = (p: vec3) -> f32:
-    g = f32(0)
+    g = 0.0
     loop b in boxes:
         over = p.x >= b.lo.x and p.x <= b.hi.x and p.z >= b.lo.z and p.z <= b.hi.z
         if over and p.y >= b.hi.y - 0.3: g = max(g, b.hi.y)
@@ -154,7 +152,7 @@ grounded = true
 yaw = 0.0
 pitch = 0.0
 
-eye = () -> vec3: pos + vec3(0, f32(EYE), 0)
+eye = () -> vec3: pos + vec3(0, EYE, 0)
 aim = () -> vec3: look_dir(yaw, pitch)
 
 update = (dt: f64):
@@ -162,27 +160,27 @@ update = (dt: f64):
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
         m = mouse_delta()
-        yaw -= f64(m.x) * LOOK
-        pitch = clamp(pitch - f64(m.y) * LOOK, -1.4, 1.4)
+        yaw -= m.x * LOOK
+        pitch = clamp(pitch - m.y * LOOK, -1.4, 1.4)
     # walking: the keys, turned the way the player faces
     ahead = look_dir(yaw, 0.0)
     right = look_dir(yaw - PI / 2.0, 0.0)
     move = input_axis()
     wish = right * move.x - ahead * move.y
-    vel.x = wish.x * f32(SPEED)
-    vel.z = wish.z * f32(SPEED)
+    vel.x = wish.x * SPEED
+    vel.z = wish.z * SPEED
     # falling (half the frame's gravity before the move, half after), and jumping from the ground
-    if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt / 2.0)
-    pos.y += vel.y * f32(dt)
-    vel.y -= f32(GRAVITY * dt / 2.0)
+    if grounded and key_pressed(.space): vel.y = JUMP
+    vel.y -= GRAVITY * dt / 2.0
+    pos.y += vel.y * dt
+    vel.y -= GRAVITY * dt / 2.0
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
     # then across, round the cover
-    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * dt, RADIUS)
 
 cube = cube_mesh(1.0)
 
@@ -193,10 +191,10 @@ draw = ():
     camera3d(eye(), eye() + aim(), 70.0)
     # the sea, the deck, its rails, the cover on it
     draw_mesh(cube, translation(vec3(0, -3, 0)) * scaling(vec3(400, 1, 400)), rgb(0.1, 0.3, 0.45))
-    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(v3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
+    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(vec3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
     loop s in [-1.0, 1.0]:
-        draw_mesh(cube, translation(v3(0, 0.5, s * HALF_Z)) * scaling(v3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
-        draw_mesh(cube, translation(v3(s * HALF_X, 0.5, 0)) * scaling(v3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(0, 0.5, s * HALF_Z)) * scaling(vec3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(s * HALF_X, 0.5, 0)) * scaling(vec3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
     loop b in boxes: draw_mesh(cube, translation((b.lo + b.hi) * 0.5) * scaling(b.hi - b.lo), rgb(0.85, 0.82, 0.75))
     text("Space jumps", vec2(30, 30), 24)
 
@@ -208,7 +206,9 @@ move and pushes you out of every box you overlap: the nearest point of a box's f
 position clamped into the box's x and z) is less than `RADIUS` away, so you move away from it until
 it is exactly `RADIUS` away. You slide along walls instead of stopping dead, because only the part
 of the move that goes into the wall is taken away. Boxes whose top is below your feet are left out:
-you are standing on them.
+you are standing on them. This tutorial writes its own simple collision so you can see how it
+works; a bigger game can use `import physics3d`, with rigid bodies, `w.raycast`, and
+`w.character(...)` and `w.walk(...)` for a walking capsule.
 
 Gravity is an acceleration: it changes the velocity, by `GRAVITY * dt` a frame, and the velocity
 changes the position, by `vel * dt`. Half the frame's change to the velocity comes before the move
@@ -236,11 +236,8 @@ const GAP = 0.1                         # seconds between shots
 const SPREAD = 0.012                    # how far a shot strays (radians)
 const RELOAD = 1.5                      # seconds
 
-v3 = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))
 # the way a yaw and pitch look (yaw 0: along -z; turning left is a bigger yaw)
-look_dir = (yaw: f64, pitch: f64) -> vec3: v3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
-yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
-flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
+look_dir = (yaw: f64, pitch: f64) -> vec3: vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
     side = cross(d, vec3(0, 1, 0))
@@ -249,12 +246,11 @@ scatter = (d: vec3, spread: f64) -> vec3:
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
-    normalize(d + side * f32(cos(a) * r) + up * f32(sin(a) * r))
+    normalize(d + side * cos(a) * r + up * sin(a) * r)
 # a box stretched from a to b, w wide (a tracer)
 beam = (a: vec3, b: vec3, w: f32) -> mat4:
     d = b - a
-    rise = atan2(f64(d.y), f64(length(flat(d))))
-    translation((a + b) * 0.5) * rotation_y(yaw_of(d)) * rotation_x(rise) * scaling(vec3(w, w, length(d)))
+    translation((a + b) * 0.5) * facing(d) * scaling(vec3(w, w, length(d)))
 
 struct Box:
     lo: vec3                            # its lowest corner
@@ -287,13 +283,13 @@ collide = (p0: vec3, r: f32) -> vec3:
             else if m == right: p.x = b.hi.x + r
             else if m == near: p.z = b.lo.z - r
             else: p.z = b.hi.z + r
-    p.x = clamp(p.x, f32(-HALF_X) + r, f32(HALF_X) - r)
-    p.z = clamp(p.z, f32(-HALF_Z) + r, f32(HALF_Z) - r)
+    p.x = clamp(p.x, -HALF_X + r, HALF_X - r)
+    p.z = clamp(p.z, -HALF_Z + r, HALF_Z - r)
     p
 
 # what is under p: the deck, or the top of a box it is over
 ground_under = (p: vec3) -> f32:
-    g = f32(0)
+    g = 0.0
     loop b in boxes:
         over = p.x >= b.lo.x and p.x <= b.hi.x and p.z >= b.lo.z and p.z <= b.hi.z
         if over and p.y >= b.hi.y - 0.3: g = max(g, b.hi.y)
@@ -301,8 +297,8 @@ ground_under = (p: vec3) -> f32:
 
 # how far along d (a unit vector) a ray from o goes into box b (-1: it misses)
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
-    t0 = f32(0)
-    t1 = f32(1000)
+    t0 = 0.0
+    t1 = 1000.0
     loop i in [0..3):
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
@@ -329,7 +325,7 @@ grounded = true
 yaw = 0.0
 pitch = 0.0
 
-eye = () -> vec3: pos + vec3(0, f32(EYE), 0)
+eye = () -> vec3: pos + vec3(0, EYE, 0)
 aim = () -> vec3: look_dir(yaw, pitch)
 
 ammo = MAG
@@ -369,27 +365,27 @@ step_player = (dt: f64):
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
         m = mouse_delta()
-        yaw -= f64(m.x) * LOOK
-        pitch = clamp(pitch - f64(m.y) * LOOK, -1.4, 1.4)
+        yaw -= m.x * LOOK
+        pitch = clamp(pitch - m.y * LOOK, -1.4, 1.4)
     # walking: the keys, turned the way the player faces
     ahead = look_dir(yaw, 0.0)
     right = look_dir(yaw - PI / 2.0, 0.0)
     move = input_axis()
     wish = right * move.x - ahead * move.y
-    vel.x = wish.x * f32(SPEED)
-    vel.z = wish.z * f32(SPEED)
+    vel.x = wish.x * SPEED
+    vel.z = wish.z * SPEED
     # falling (half the frame's gravity before the move, half after), and jumping from the ground
-    if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt / 2.0)
-    pos.y += vel.y * f32(dt)
-    vel.y -= f32(GRAVITY * dt / 2.0)
+    if grounded and key_pressed(.space): vel.y = JUMP
+    vel.y -= GRAVITY * dt / 2.0
+    pos.y += vel.y * dt
+    vel.y -= GRAVITY * dt / 2.0
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
     # then across, round the cover
-    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * dt, RADIUS)
     # the rifle: fires while the button is held; R reloads (and so does an empty magazine)
     wait -= dt
     kick = max(0.0, kick - dt * 0.4)
@@ -404,8 +400,8 @@ update = (dt: f64):
     loop mut t in tracers: t.life -= dt
     tracers = tracers.filter((t): t.life > 0.0)
     loop mut s in sparks:
-        s.vel.y -= f32(GRAVITY * dt)
-        s.pos += s.vel * f32(dt)
+        s.vel.y -= GRAVITY * dt
+        s.pos += s.vel * dt
         s.life -= dt
     sparks = sparks.filter((s): s.life > 0.0)
 
@@ -430,10 +426,10 @@ draw = ():
     camera3d(eye(), eye() + aim(), 70.0)
     # the sea, the deck, its rails, the cover on it
     draw_mesh(cube, translation(vec3(0, -3, 0)) * scaling(vec3(400, 1, 400)), rgb(0.1, 0.3, 0.45))
-    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(v3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
+    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(vec3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
     loop s in [-1.0, 1.0]:
-        draw_mesh(cube, translation(v3(0, 0.5, s * HALF_Z)) * scaling(v3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
-        draw_mesh(cube, translation(v3(s * HALF_X, 0.5, 0)) * scaling(v3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(0, 0.5, s * HALF_Z)) * scaling(vec3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(s * HALF_X, 0.5, 0)) * scaling(vec3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
     loop b in boxes: draw_mesh(cube, translation((b.lo + b.hi) * 0.5) * scaling(b.hi - b.lo), rgb(0.85, 0.82, 0.75))
     loop t in tracers: draw_mesh(cube, beam(t.a, t.b, 0.015), rgb(1.0, 0.9, 0.6), emissive = 2.0, cast_shadow = false)
     loop s in sparks: draw_mesh(cube, translation(s.pos) * scaling(vec3(0.07, 0.07, 0.07)), rgb(1.0, 0.7, 0.3), emissive = 2.0, cast_shadow = false)
@@ -441,7 +437,7 @@ draw = ():
     view = inverse(look_at(eye(), eye() + aim(), vec3(0, 1, 0)))
     dip = 0.0
     if reloading > 0.0: dip = 0.15
-    hold = view * translation(v3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
+    hold = view * translation(vec3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
     draw_mesh(rifle, hold, cast_shadow = false, in_front = true)
     # the reticle, and the rounds left
     circle(vec2(640, 360), 3, rgba(1, 1, 1, 0.8))
@@ -461,7 +457,8 @@ of a vector, so one loop does x, y and z. `ray_world` is the nearest of the deck
 
 `scatter` turns the aim a little at random (up to `SPREAD` radians), so shots spread. A `Tracer` is
 the shot's streak for a twentieth of a second: `beam` stretches the cube from the muzzle to where
-the shot landed, turned to point along it. Sparks are the cube again, small, flying and falling.
+the shot landed, turned to point along it: `facing(d)` is the turn that points a model's front (-z)
+along `d`. Sparks are the cube again, small, flying and falling.
 
 The rifle is drawn in front of you, wherever you look. `look_at` is the camera's view (the world as
 the camera sees it), and its inverse takes points the other way, from in front of the camera into
@@ -491,10 +488,8 @@ const RELOAD = 1.5                      # seconds
 const DAMAGE = 12.0                     # a shot's
 const DRONE_R = 0.5                     # a drone's size (the radius shots hit)
 
-v3 = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))
 # the way a yaw and pitch look (yaw 0: along -z; turning left is a bigger yaw)
-look_dir = (yaw: f64, pitch: f64) -> vec3: v3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
-yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
+look_dir = (yaw: f64, pitch: f64) -> vec3: vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
 flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
@@ -504,12 +499,11 @@ scatter = (d: vec3, spread: f64) -> vec3:
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
-    normalize(d + side * f32(cos(a) * r) + up * f32(sin(a) * r))
+    normalize(d + side * cos(a) * r + up * sin(a) * r)
 # a box stretched from a to b, w wide (a tracer)
 beam = (a: vec3, b: vec3, w: f32) -> mat4:
     d = b - a
-    rise = atan2(f64(d.y), f64(length(flat(d))))
-    translation((a + b) * 0.5) * rotation_y(yaw_of(d)) * rotation_x(rise) * scaling(vec3(w, w, length(d)))
+    translation((a + b) * 0.5) * facing(d) * scaling(vec3(w, w, length(d)))
 
 struct Box:
     lo: vec3                            # its lowest corner
@@ -542,13 +536,13 @@ collide = (p0: vec3, r: f32) -> vec3:
             else if m == right: p.x = b.hi.x + r
             else if m == near: p.z = b.lo.z - r
             else: p.z = b.hi.z + r
-    p.x = clamp(p.x, f32(-HALF_X) + r, f32(HALF_X) - r)
-    p.z = clamp(p.z, f32(-HALF_Z) + r, f32(HALF_Z) - r)
+    p.x = clamp(p.x, -HALF_X + r, HALF_X - r)
+    p.z = clamp(p.z, -HALF_Z + r, HALF_Z - r)
     p
 
 # what is under p: the deck, or the top of a box it is over
 ground_under = (p: vec3) -> f32:
-    g = f32(0)
+    g = 0.0
     loop b in boxes:
         over = p.x >= b.lo.x and p.x <= b.hi.x and p.z >= b.lo.z and p.z <= b.hi.z
         if over and p.y >= b.hi.y - 0.3: g = max(g, b.hi.y)
@@ -556,8 +550,8 @@ ground_under = (p: vec3) -> f32:
 
 # how far along d (a unit vector) a ray from o goes into box b (-1: it misses)
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
-    t0 = f32(0)
-    t1 = f32(1000)
+    t0 = 0.0
+    t1 = 1000.0
     loop i in [0..3):
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
@@ -585,7 +579,7 @@ ray_sphere = (o: vec3, d: vec3, c: vec3, r: f32) -> f32:
     q = dot(oc, oc) - r * r
     if q <= 0.0: return 0                               # (o is inside it)
     if b * b - q < 0.0: return -1
-    t = -b - f32(sqrt(f64(b * b - q)))
+    t = -b - sqrt(b * b - q)
     if t < 0.0: return -1
     t
 
@@ -595,7 +589,7 @@ grounded = true
 yaw = 0.0
 pitch = 0.0
 
-eye = () -> vec3: pos + vec3(0, f32(EYE), 0)
+eye = () -> vec3: pos + vec3(0, EYE, 0)
 aim = () -> vec3: look_dir(yaw, pitch)
 
 ammo = MAG
@@ -627,7 +621,7 @@ drones: Drone[]
 score = 0
 
 burst = (at: vec3, n: int):
-    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * f32(random(3.0, 9.0)), random(0.3, 0.7)))
+    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
     ammo -= 1
@@ -639,7 +633,7 @@ fire = ():
     far = ray_world(o, d, 100)
     who = -1
     loop i in 0.. and dr in drones:
-        t = ray_sphere(o, d, dr.pos, f32(DRONE_R))
+        t = ray_sphere(o, d, dr.pos, DRONE_R)
         if t >= 0.0 and t < far:
             far = t
             who = i
@@ -656,7 +650,7 @@ fire = ():
 step_drones = (dt: f64):
     # (all down: four more, from the far side)
     if drones.len() == 0:
-        loop i in [0..4): drones.push(Drone(v3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, strafe = f32(random_int(0, 2) * 2 - 1)))
+        loop i in [0..4): drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, strafe = random_int(0, 2) * 2 - 1))
     loop mut d in drones:
         # (shot down: it bursts, and does nothing more)
         if d.health <= 0.0:
@@ -671,10 +665,10 @@ step_drones = (dt: f64):
         want = side * d.strafe * 2.0
         if dist > 14.0: want += dir * 4.0
         if dist < 7.0: want -= dir * 4.0
-        want.y = f32(2.2 + sin(elapsed() * 1.3 + f64(d.strafe)) * 0.7) - d.pos.y
-        d.vel += (want - d.vel) * f32(min(1.0, 2.0 * dt))
-        p = collide(d.pos + d.vel * f32(dt) - vec3(0, f32(DRONE_R), 0), f32(DRONE_R))
-        d.pos = p + vec3(0, f32(DRONE_R), 0)
+        want.y = 2.2 + sin(elapsed() * 1.3 + d.strafe) * 0.7 - d.pos.y
+        d.vel += (want - d.vel) * min(1.0, 2.0 * dt)
+        p = collide(d.pos + d.vel * dt - vec3(0, DRONE_R, 0), DRONE_R)
+        d.pos = p + vec3(0, DRONE_R, 0)
         if random() < dt * 0.3: d.strafe = -d.strafe
         d.flash -= dt
     drones = drones.filter((d): d.health > 0.0)
@@ -684,27 +678,27 @@ step_player = (dt: f64):
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
         m = mouse_delta()
-        yaw -= f64(m.x) * LOOK
-        pitch = clamp(pitch - f64(m.y) * LOOK, -1.4, 1.4)
+        yaw -= m.x * LOOK
+        pitch = clamp(pitch - m.y * LOOK, -1.4, 1.4)
     # walking: the keys, turned the way the player faces
     ahead = look_dir(yaw, 0.0)
     right = look_dir(yaw - PI / 2.0, 0.0)
     move = input_axis()
     wish = right * move.x - ahead * move.y
-    vel.x = wish.x * f32(SPEED)
-    vel.z = wish.z * f32(SPEED)
+    vel.x = wish.x * SPEED
+    vel.z = wish.z * SPEED
     # falling (half the frame's gravity before the move, half after), and jumping from the ground
-    if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt / 2.0)
-    pos.y += vel.y * f32(dt)
-    vel.y -= f32(GRAVITY * dt / 2.0)
+    if grounded and key_pressed(.space): vel.y = JUMP
+    vel.y -= GRAVITY * dt / 2.0
+    pos.y += vel.y * dt
+    vel.y -= GRAVITY * dt / 2.0
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
     # then across, round the cover
-    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * dt, RADIUS)
     # the rifle: fires while the button is held; R reloads (and so does an empty magazine)
     wait -= dt
     kick = max(0.0, kick - dt * 0.4)
@@ -720,8 +714,8 @@ update = (dt: f64):
     loop mut t in tracers: t.life -= dt
     tracers = tracers.filter((t): t.life > 0.0)
     loop mut s in sparks:
-        s.vel.y -= f32(GRAVITY * dt)
-        s.pos += s.vel * f32(dt)
+        s.vel.y -= GRAVITY * dt
+        s.pos += s.vel * dt
         s.life -= dt
     sparks = sparks.filter((s): s.life > 0.0)
 
@@ -733,7 +727,7 @@ eye_mesh = sphere_mesh(0.14, 12, 8)
 # a drone: a ball with a band and two fins; the rifle, from boxes (its barrel along -z)
 make_meshes = ():
     v: Vertex3D[]
-    add_sphere(v, vec3(0, 0, 0), f64(DRONE_R), rgb(0.8, 0.8, 0.82), 16, 10)
+    add_sphere(v, vec3(0, 0, 0), DRONE_R, rgb(0.8, 0.8, 0.82), 16, 10)
     add_cylinder(v, vec3(0, -0.08, 0), 0.53, 0.16, rgb(0.9, 0.45, 0.1), 20)
     add_box(v, vec3(0.6, 0, 0.1), vec3(0.25, 0.08, 0.5), rgb(0.25, 0.27, 0.3))
     add_box(v, vec3(-0.6, 0, 0.1), vec3(0.25, 0.08, 0.5), rgb(0.25, 0.27, 0.3))
@@ -754,25 +748,25 @@ draw = ():
     camera3d(eye(), eye() + aim(), 70.0)
     # the sea, the deck, its rails, the cover on it
     draw_mesh(cube, translation(vec3(0, -3, 0)) * scaling(vec3(400, 1, 400)), rgb(0.1, 0.3, 0.45))
-    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(v3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
+    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(vec3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
     loop s in [-1.0, 1.0]:
-        draw_mesh(cube, translation(v3(0, 0.5, s * HALF_Z)) * scaling(v3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
-        draw_mesh(cube, translation(v3(s * HALF_X, 0.5, 0)) * scaling(v3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(0, 0.5, s * HALF_Z)) * scaling(vec3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(s * HALF_X, 0.5, 0)) * scaling(vec3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
     loop b in boxes: draw_mesh(cube, translation((b.lo + b.hi) * 0.5) * scaling(b.hi - b.lo), rgb(0.85, 0.82, 0.75))
     # drones, facing the player, their eyes glowing; white for a moment when hit
     loop d in drones:
-        face = yaw_of(eye() - d.pos)
+        to_me = normalize(flat(eye() - d.pos))
         tint = vec4(1, 1, 1, 1)
         if d.flash > 0.0: tint = vec4(2, 2, 2, 1)
-        draw_mesh(drone_mesh, translation(d.pos) * rotation_y(face), tint)
-        draw_mesh(eye_mesh, translation(d.pos + look_dir(face, 0.0) * f32(DRONE_R - 0.06)), rgb(1, 0.15, 0.1), emissive = 0.6)
+        draw_mesh(drone_mesh, translation(d.pos) * facing(to_me), tint)
+        draw_mesh(eye_mesh, translation(d.pos + to_me * (DRONE_R - 0.06)), rgb(1, 0.15, 0.1), emissive = 0.6)
     loop t in tracers: draw_mesh(cube, beam(t.a, t.b, 0.015), rgb(1.0, 0.9, 0.6), emissive = 2.0, cast_shadow = false)
     loop s in sparks: draw_mesh(cube, translation(s.pos) * scaling(vec3(0.07, 0.07, 0.07)), rgb(1.0, 0.7, 0.3), emissive = 2.0, cast_shadow = false)
     # the rifle in hand, in front of everything (kicked back by each shot, lowered to reload)
     view = inverse(look_at(eye(), eye() + aim(), vec3(0, 1, 0)))
     dip = 0.0
     if reloading > 0.0: dip = 0.15
-    hold = view * translation(v3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
+    hold = view * translation(vec3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
     draw_mesh(rifle, hold, cast_shadow = false, in_front = true)
     # the reticle, and the rounds left
     circle(vec2(640, 360), 3, rgba(1, 1, 1, 0.8))
@@ -792,7 +786,7 @@ than the cover the ray would hit: drones behind a box are safe.
 
 Drones steer by wanting a velocity and easing toward it. `want` circles you (`side` is a quarter
 turn from the way to you, and `strafe` picks which way), comes closer from far away and backs off
-when you are near, and bobs up and down. `d.vel += (want - d.vel) * f32(min(1.0, 2.0 * dt))` closes
+when you are near, and bobs up and down. `d.vel += (want - d.vel) * min(1.0, 2.0 * dt)` closes
 part of the gap each frame, so they drift into turns instead of snapping. They bump into cover
 with the same `collide` as you, and now and then change which way they circle.
 
@@ -823,10 +817,8 @@ const SHIELD = 60.0
 const HEALTH = 60.0
 const RECHARGE_WAIT = 3.0               # seconds out of fire before the shield comes back
 
-v3 = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))
 # the way a yaw and pitch look (yaw 0: along -z; turning left is a bigger yaw)
-look_dir = (yaw: f64, pitch: f64) -> vec3: v3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
-yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
+look_dir = (yaw: f64, pitch: f64) -> vec3: vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
 flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
@@ -836,12 +828,11 @@ scatter = (d: vec3, spread: f64) -> vec3:
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
-    normalize(d + side * f32(cos(a) * r) + up * f32(sin(a) * r))
+    normalize(d + side * cos(a) * r + up * sin(a) * r)
 # a box stretched from a to b, w wide (a tracer, a bolt)
 beam = (a: vec3, b: vec3, w: f32) -> mat4:
     d = b - a
-    rise = atan2(f64(d.y), f64(length(flat(d))))
-    translation((a + b) * 0.5) * rotation_y(yaw_of(d)) * rotation_x(rise) * scaling(vec3(w, w, length(d)))
+    translation((a + b) * 0.5) * facing(d) * scaling(vec3(w, w, length(d)))
 
 struct Box:
     lo: vec3                            # its lowest corner
@@ -874,13 +865,13 @@ collide = (p0: vec3, r: f32) -> vec3:
             else if m == right: p.x = b.hi.x + r
             else if m == near: p.z = b.lo.z - r
             else: p.z = b.hi.z + r
-    p.x = clamp(p.x, f32(-HALF_X) + r, f32(HALF_X) - r)
-    p.z = clamp(p.z, f32(-HALF_Z) + r, f32(HALF_Z) - r)
+    p.x = clamp(p.x, -HALF_X + r, HALF_X - r)
+    p.z = clamp(p.z, -HALF_Z + r, HALF_Z - r)
     p
 
 # what is under p: the deck, or the top of a box it is over
 ground_under = (p: vec3) -> f32:
-    g = f32(0)
+    g = 0.0
     loop b in boxes:
         over = p.x >= b.lo.x and p.x <= b.hi.x and p.z >= b.lo.z and p.z <= b.hi.z
         if over and p.y >= b.hi.y - 0.3: g = max(g, b.hi.y)
@@ -888,8 +879,8 @@ ground_under = (p: vec3) -> f32:
 
 # how far along d (a unit vector) a ray from o goes into box b (-1: it misses)
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
-    t0 = f32(0)
-    t1 = f32(1000)
+    t0 = 0.0
+    t1 = 1000.0
     loop i in [0..3):
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
@@ -917,7 +908,7 @@ ray_sphere = (o: vec3, d: vec3, c: vec3, r: f32) -> f32:
     q = dot(oc, oc) - r * r
     if q <= 0.0: return 0                               # (o is inside it)
     if b * b - q < 0.0: return -1
-    t = -b - f32(sqrt(f64(b * b - q)))
+    t = -b - sqrt(b * b - q)
     if t < 0.0: return -1
     t
 
@@ -937,7 +928,7 @@ shield = SHIELD
 health = HEALTH
 calm = 0.0                              # seconds since a hit
 
-eye = () -> vec3: pos + vec3(0, f32(EYE), 0)
+eye = () -> vec3: pos + vec3(0, EYE, 0)
 aim = () -> vec3: look_dir(yaw, pitch)
 
 ammo = MAG
@@ -998,7 +989,7 @@ hurt = (dmg: f64):
     if health <= 0.0: new_run()
 
 burst = (at: vec3, n: int):
-    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * f32(random(3.0, 9.0)), random(0.3, 0.7)))
+    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
     ammo -= 1
@@ -1010,7 +1001,7 @@ fire = ():
     far = ray_world(o, d, 100)
     who = -1
     loop i in 0.. and dr in drones:
-        t = ray_sphere(o, d, dr.pos, f32(DRONE_R))
+        t = ray_sphere(o, d, dr.pos, DRONE_R)
         if t >= 0.0 and t < far:
             far = t
             who = i
@@ -1027,7 +1018,7 @@ fire = ():
 step_drones = (dt: f64):
     # (all down: four more, from the far side)
     if drones.len() == 0:
-        loop i in [0..4): drones.push(Drone(v3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = f32(random_int(0, 2) * 2 - 1)))
+        loop i in [0..4): drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = random_int(0, 2) * 2 - 1))
     loop mut d in drones:
         # (shot down: it bursts, and does nothing more)
         if d.health <= 0.0:
@@ -1042,10 +1033,10 @@ step_drones = (dt: f64):
         want = side * d.strafe * 2.0
         if dist > 14.0: want += dir * 4.0
         if dist < 7.0: want -= dir * 4.0
-        want.y = f32(2.2 + sin(elapsed() * 1.3 + f64(d.strafe)) * 0.7) - d.pos.y
-        d.vel += (want - d.vel) * f32(min(1.0, 2.0 * dt))
-        p = collide(d.pos + d.vel * f32(dt) - vec3(0, f32(DRONE_R), 0), f32(DRONE_R))
-        d.pos = p + vec3(0, f32(DRONE_R), 0)
+        want.y = 2.2 + sin(elapsed() * 1.3 + d.strafe) * 0.7 - d.pos.y
+        d.vel += (want - d.vel) * min(1.0, 2.0 * dt)
+        p = collide(d.pos + d.vel * dt - vec3(0, DRONE_R, 0), DRONE_R)
+        d.pos = p + vec3(0, DRONE_R, 0)
         if random() < dt * 0.3: d.strafe = -d.strafe
         d.flash -= dt
         # firing: a glowing eye for 0.6 s, then a bolt at the player's chest
@@ -1063,9 +1054,9 @@ step_drones = (dt: f64):
     # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
     loop mut b in bolts:
         b.life -= dt
-        n = int(ceil(f64(length(b.vel)) * dt / 0.2))
+        n = int(ceil(length(b.vel) * dt / 0.2))
         loop k in [0..n):
-            b.pos += b.vel * f32(dt / f64(n))
+            b.pos += b.vel * (dt / n)
             if in_cover(b.pos) or b.pos.y <= 0.0:
                 b.life = 0
                 break
@@ -1081,27 +1072,27 @@ step_player = (dt: f64):
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
         m = mouse_delta()
-        yaw -= f64(m.x) * LOOK
-        pitch = clamp(pitch - f64(m.y) * LOOK, -1.4, 1.4)
+        yaw -= m.x * LOOK
+        pitch = clamp(pitch - m.y * LOOK, -1.4, 1.4)
     # walking: the keys, turned the way the player faces
     ahead = look_dir(yaw, 0.0)
     right = look_dir(yaw - PI / 2.0, 0.0)
     move = input_axis()
     wish = right * move.x - ahead * move.y
-    vel.x = wish.x * f32(SPEED)
-    vel.z = wish.z * f32(SPEED)
+    vel.x = wish.x * SPEED
+    vel.z = wish.z * SPEED
     # falling (half the frame's gravity before the move, half after), and jumping from the ground
-    if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt / 2.0)
-    pos.y += vel.y * f32(dt)
-    vel.y -= f32(GRAVITY * dt / 2.0)
+    if grounded and key_pressed(.space): vel.y = JUMP
+    vel.y -= GRAVITY * dt / 2.0
+    pos.y += vel.y * dt
+    vel.y -= GRAVITY * dt / 2.0
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
     # then across, round the cover
-    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * dt, RADIUS)
     # the shield comes back out of fire
     calm += dt
     if calm > RECHARGE_WAIT: shield = min(SHIELD, shield + 30.0 * dt)
@@ -1120,8 +1111,8 @@ update = (dt: f64):
     loop mut t in tracers: t.life -= dt
     tracers = tracers.filter((t): t.life > 0.0)
     loop mut s in sparks:
-        s.vel.y -= f32(GRAVITY * dt)
-        s.pos += s.vel * f32(dt)
+        s.vel.y -= GRAVITY * dt
+        s.pos += s.vel * dt
         s.life -= dt
     sparks = sparks.filter((s): s.life > 0.0)
 
@@ -1133,7 +1124,7 @@ eye_mesh = sphere_mesh(0.14, 12, 8)
 # a drone: a ball with a band and two fins; the rifle, from boxes (its barrel along -z)
 make_meshes = ():
     v: Vertex3D[]
-    add_sphere(v, vec3(0, 0, 0), f64(DRONE_R), rgb(0.8, 0.8, 0.82), 16, 10)
+    add_sphere(v, vec3(0, 0, 0), DRONE_R, rgb(0.8, 0.8, 0.82), 16, 10)
     add_cylinder(v, vec3(0, -0.08, 0), 0.53, 0.16, rgb(0.9, 0.45, 0.1), 20)
     add_box(v, vec3(0.6, 0, 0.1), vec3(0.25, 0.08, 0.5), rgb(0.25, 0.27, 0.3))
     add_box(v, vec3(-0.6, 0, 0.1), vec3(0.25, 0.08, 0.5), rgb(0.25, 0.27, 0.3))
@@ -1154,20 +1145,20 @@ draw = ():
     camera3d(eye(), eye() + aim(), 70.0)
     # the sea, the deck, its rails, the cover on it
     draw_mesh(cube, translation(vec3(0, -3, 0)) * scaling(vec3(400, 1, 400)), rgb(0.1, 0.3, 0.45))
-    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(v3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
+    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(vec3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
     loop s in [-1.0, 1.0]:
-        draw_mesh(cube, translation(v3(0, 0.5, s * HALF_Z)) * scaling(v3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
-        draw_mesh(cube, translation(v3(s * HALF_X, 0.5, 0)) * scaling(v3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(0, 0.5, s * HALF_Z)) * scaling(vec3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(s * HALF_X, 0.5, 0)) * scaling(vec3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
     loop b in boxes: draw_mesh(cube, translation((b.lo + b.hi) * 0.5) * scaling(b.hi - b.lo), rgb(0.85, 0.82, 0.75))
     # drones, facing the player, their eyes glowing; white for a moment when hit
     loop d in drones:
-        face = yaw_of(eye() - d.pos)
+        to_me = normalize(flat(eye() - d.pos))
         tint = vec4(1, 1, 1, 1)
         if d.flash > 0.0: tint = vec4(2, 2, 2, 1)
-        draw_mesh(drone_mesh, translation(d.pos) * rotation_y(face), tint)
+        draw_mesh(drone_mesh, translation(d.pos) * facing(to_me), tint)
         glow = 0.6
         if d.windup > 0.0: glow = 0.6 + (0.6 - d.windup) * 5.0
-        draw_mesh(eye_mesh, translation(d.pos + look_dir(face, 0.0) * f32(DRONE_R - 0.06)), rgb(1, 0.15, 0.1), emissive = glow)
+        draw_mesh(eye_mesh, translation(d.pos + to_me * (DRONE_R - 0.06)), rgb(1, 0.15, 0.1), emissive = glow)
     loop b in bolts: draw_mesh(cube, beam(b.pos - normalize(b.vel) * 0.6, b.pos, 0.08), rgb(1.0, 0.45, 0.15), emissive = 2.0, cast_shadow = false)
     loop t in tracers: draw_mesh(cube, beam(t.a, t.b, 0.015), rgb(1.0, 0.9, 0.6), emissive = 2.0, cast_shadow = false)
     loop s in sparks: draw_mesh(cube, translation(s.pos) * scaling(vec3(0.07, 0.07, 0.07)), rgb(1.0, 0.7, 0.3), emissive = 2.0, cast_shadow = false)
@@ -1175,7 +1166,7 @@ draw = ():
     view = inverse(look_at(eye(), eye() + aim(), vec3(0, 1, 0)))
     dip = 0.0
     if reloading > 0.0: dip = 0.15
-    hold = view * translation(v3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
+    hold = view * translation(vec3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
     draw_mesh(rifle, hold, cast_shadow = false, in_front = true)
     # the reticle, and the rounds left
     circle(vec2(640, 360), 3, rgba(1, 1, 1, 0.8))
@@ -1187,7 +1178,7 @@ draw = ():
     rect(40, 650, 300.0 * shield / SHIELD, 10, rgb(0.4, 0.85, 1))
     rect(40, 666, 300, 6, rgba(0, 0, 0, 0.4))
     rect(40, 666, 300.0 * health / HEALTH, 6, rgb(1, 0.4, 0.35))
-    if calm < 0.25: rect(0, 0, 1280, 720, rgba(1, 0, 0, f32(0.25 - calm)))
+    if calm < 0.25: rect(0, 0, 1280, 720, rgba(1, 0, 0, 0.25 - calm))
 
 make_meshes()
 window("Little Breakwater", 1280, 720)
@@ -1224,10 +1215,8 @@ const SHIELD = 60.0
 const HEALTH = 60.0
 const RECHARGE_WAIT = 3.0               # seconds out of fire before the shield comes back
 
-v3 = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))
 # the way a yaw and pitch look (yaw 0: along -z; turning left is a bigger yaw)
-look_dir = (yaw: f64, pitch: f64) -> vec3: v3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
-yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
+look_dir = (yaw: f64, pitch: f64) -> vec3: vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
 flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
@@ -1237,12 +1226,11 @@ scatter = (d: vec3, spread: f64) -> vec3:
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
-    normalize(d + side * f32(cos(a) * r) + up * f32(sin(a) * r))
+    normalize(d + side * cos(a) * r + up * sin(a) * r)
 # a box stretched from a to b, w wide (a tracer, a bolt)
 beam = (a: vec3, b: vec3, w: f32) -> mat4:
     d = b - a
-    rise = atan2(f64(d.y), f64(length(flat(d))))
-    translation((a + b) * 0.5) * rotation_y(yaw_of(d)) * rotation_x(rise) * scaling(vec3(w, w, length(d)))
+    translation((a + b) * 0.5) * facing(d) * scaling(vec3(w, w, length(d)))
 
 struct Box:
     lo: vec3                            # its lowest corner
@@ -1275,13 +1263,13 @@ collide = (p0: vec3, r: f32) -> vec3:
             else if m == right: p.x = b.hi.x + r
             else if m == near: p.z = b.lo.z - r
             else: p.z = b.hi.z + r
-    p.x = clamp(p.x, f32(-HALF_X) + r, f32(HALF_X) - r)
-    p.z = clamp(p.z, f32(-HALF_Z) + r, f32(HALF_Z) - r)
+    p.x = clamp(p.x, -HALF_X + r, HALF_X - r)
+    p.z = clamp(p.z, -HALF_Z + r, HALF_Z - r)
     p
 
 # what is under p: the deck, or the top of a box it is over
 ground_under = (p: vec3) -> f32:
-    g = f32(0)
+    g = 0.0
     loop b in boxes:
         over = p.x >= b.lo.x and p.x <= b.hi.x and p.z >= b.lo.z and p.z <= b.hi.z
         if over and p.y >= b.hi.y - 0.3: g = max(g, b.hi.y)
@@ -1289,8 +1277,8 @@ ground_under = (p: vec3) -> f32:
 
 # how far along d (a unit vector) a ray from o goes into box b (-1: it misses)
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
-    t0 = f32(0)
-    t1 = f32(1000)
+    t0 = 0.0
+    t1 = 1000.0
     loop i in [0..3):
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
@@ -1318,7 +1306,7 @@ ray_sphere = (o: vec3, d: vec3, c: vec3, r: f32) -> f32:
     q = dot(oc, oc) - r * r
     if q <= 0.0: return 0                               # (o is inside it)
     if b * b - q < 0.0: return -1
-    t = -b - f32(sqrt(f64(b * b - q)))
+    t = -b - sqrt(b * b - q)
     if t < 0.0: return -1
     t
 
@@ -1338,7 +1326,7 @@ shield = SHIELD
 health = HEALTH
 calm = 0.0                              # seconds since a hit
 
-eye = () -> vec3: pos + vec3(0, f32(EYE), 0)
+eye = () -> vec3: pos + vec3(0, EYE, 0)
 aim = () -> vec3: look_dir(yaw, pitch)
 
 # the weapons: what each does
@@ -1413,7 +1401,7 @@ hurt = (dmg: f64):
     if health <= 0.0: new_run()
 
 burst = (at: vec3, n: int):
-    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * f32(random(3.0, 9.0)), random(0.3, 0.7)))
+    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
     g = guns[held]
@@ -1427,7 +1415,7 @@ fire = ():
         far = ray_world(o, d, 100)
         who = -1
         loop i in 0.. and dr in drones:
-            t = ray_sphere(o, d, dr.pos, f32(DRONE_R))
+            t = ray_sphere(o, d, dr.pos, DRONE_R)
             if t >= 0.0 and t < far:
                 far = t
                 who = i
@@ -1443,7 +1431,7 @@ fire = ():
 step_drones = (dt: f64):
     # (all down: four more, from the far side)
     if drones.len() == 0:
-        loop i in [0..4): drones.push(Drone(v3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = f32(random_int(0, 2) * 2 - 1)))
+        loop i in [0..4): drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = random_int(0, 2) * 2 - 1))
     loop mut d in drones:
         # (shot down: it bursts, and does nothing more)
         if d.health <= 0.0:
@@ -1458,10 +1446,10 @@ step_drones = (dt: f64):
         want = side * d.strafe * 2.0
         if dist > 14.0: want += dir * 4.0
         if dist < 7.0: want -= dir * 4.0
-        want.y = f32(2.2 + sin(elapsed() * 1.3 + f64(d.strafe)) * 0.7) - d.pos.y
-        d.vel += (want - d.vel) * f32(min(1.0, 2.0 * dt))
-        p = collide(d.pos + d.vel * f32(dt) - vec3(0, f32(DRONE_R), 0), f32(DRONE_R))
-        d.pos = p + vec3(0, f32(DRONE_R), 0)
+        want.y = 2.2 + sin(elapsed() * 1.3 + d.strafe) * 0.7 - d.pos.y
+        d.vel += (want - d.vel) * min(1.0, 2.0 * dt)
+        p = collide(d.pos + d.vel * dt - vec3(0, DRONE_R, 0), DRONE_R)
+        d.pos = p + vec3(0, DRONE_R, 0)
         if random() < dt * 0.3: d.strafe = -d.strafe
         d.flash -= dt
         # firing: a glowing eye for 0.6 s, then a bolt at the player's chest
@@ -1479,9 +1467,9 @@ step_drones = (dt: f64):
     # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
     loop mut b in bolts:
         b.life -= dt
-        n = int(ceil(f64(length(b.vel)) * dt / 0.2))
+        n = int(ceil(length(b.vel) * dt / 0.2))
         loop k in [0..n):
-            b.pos += b.vel * f32(dt / f64(n))
+            b.pos += b.vel * (dt / n)
             if in_cover(b.pos) or b.pos.y <= 0.0:
                 b.life = 0
                 break
@@ -1497,27 +1485,27 @@ step_player = (dt: f64):
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
         m = mouse_delta()
-        yaw -= f64(m.x) * LOOK
-        pitch = clamp(pitch - f64(m.y) * LOOK, -1.4, 1.4)
+        yaw -= m.x * LOOK
+        pitch = clamp(pitch - m.y * LOOK, -1.4, 1.4)
     # walking: the keys, turned the way the player faces
     ahead = look_dir(yaw, 0.0)
     right = look_dir(yaw - PI / 2.0, 0.0)
     move = input_axis()
     wish = right * move.x - ahead * move.y
-    vel.x = wish.x * f32(SPEED)
-    vel.z = wish.z * f32(SPEED)
+    vel.x = wish.x * SPEED
+    vel.z = wish.z * SPEED
     # falling (half the frame's gravity before the move, half after), and jumping from the ground
-    if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt / 2.0)
-    pos.y += vel.y * f32(dt)
-    vel.y -= f32(GRAVITY * dt / 2.0)
+    if grounded and key_pressed(.space): vel.y = JUMP
+    vel.y -= GRAVITY * dt / 2.0
+    pos.y += vel.y * dt
+    vel.y -= GRAVITY * dt / 2.0
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
     # then across, round the cover
-    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * dt, RADIUS)
     # the shield comes back out of fire
     calm += dt
     if calm > RECHARGE_WAIT: shield = min(SHIELD, shield + 30.0 * dt)
@@ -1548,8 +1536,8 @@ update = (dt: f64):
     loop mut t in tracers: t.life -= dt
     tracers = tracers.filter((t): t.life > 0.0)
     loop mut s in sparks:
-        s.vel.y -= f32(GRAVITY * dt)
-        s.pos += s.vel * f32(dt)
+        s.vel.y -= GRAVITY * dt
+        s.pos += s.vel * dt
         s.life -= dt
     sparks = sparks.filter((s): s.life > 0.0)
 
@@ -1561,7 +1549,7 @@ eye_mesh = sphere_mesh(0.14, 12, 8)
 # a drone: a ball with a band and two fins; the weapons, from boxes (their barrels along -z)
 make_meshes = ():
     v: Vertex3D[]
-    add_sphere(v, vec3(0, 0, 0), f64(DRONE_R), rgb(0.8, 0.8, 0.82), 16, 10)
+    add_sphere(v, vec3(0, 0, 0), DRONE_R, rgb(0.8, 0.8, 0.82), 16, 10)
     add_cylinder(v, vec3(0, -0.08, 0), 0.53, 0.16, rgb(0.9, 0.45, 0.1), 20)
     add_box(v, vec3(0.6, 0, 0.1), vec3(0.25, 0.08, 0.5), rgb(0.25, 0.27, 0.3))
     add_box(v, vec3(-0.6, 0, 0.1), vec3(0.25, 0.08, 0.5), rgb(0.25, 0.27, 0.3))
@@ -1587,20 +1575,20 @@ draw = ():
     camera3d(eye(), eye() + aim(), 70.0)
     # the sea, the deck, its rails, the cover on it
     draw_mesh(cube, translation(vec3(0, -3, 0)) * scaling(vec3(400, 1, 400)), rgb(0.1, 0.3, 0.45))
-    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(v3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
+    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(vec3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
     loop s in [-1.0, 1.0]:
-        draw_mesh(cube, translation(v3(0, 0.5, s * HALF_Z)) * scaling(v3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
-        draw_mesh(cube, translation(v3(s * HALF_X, 0.5, 0)) * scaling(v3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(0, 0.5, s * HALF_Z)) * scaling(vec3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(s * HALF_X, 0.5, 0)) * scaling(vec3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
     loop b in boxes: draw_mesh(cube, translation((b.lo + b.hi) * 0.5) * scaling(b.hi - b.lo), rgb(0.85, 0.82, 0.75))
     # drones, facing the player, their eyes glowing; white for a moment when hit
     loop d in drones:
-        face = yaw_of(eye() - d.pos)
+        to_me = normalize(flat(eye() - d.pos))
         tint = vec4(1, 1, 1, 1)
         if d.flash > 0.0: tint = vec4(2, 2, 2, 1)
-        draw_mesh(drone_mesh, translation(d.pos) * rotation_y(face), tint)
+        draw_mesh(drone_mesh, translation(d.pos) * facing(to_me), tint)
         glow = 0.6
         if d.windup > 0.0: glow = 0.6 + (0.6 - d.windup) * 5.0
-        draw_mesh(eye_mesh, translation(d.pos + look_dir(face, 0.0) * f32(DRONE_R - 0.06)), rgb(1, 0.15, 0.1), emissive = glow)
+        draw_mesh(eye_mesh, translation(d.pos + to_me * (DRONE_R - 0.06)), rgb(1, 0.15, 0.1), emissive = glow)
     loop b in bolts: draw_mesh(cube, beam(b.pos - normalize(b.vel) * 0.6, b.pos, 0.08), rgb(1.0, 0.45, 0.15), emissive = 2.0, cast_shadow = false)
     loop t in tracers: draw_mesh(cube, beam(t.a, t.b, 0.015), rgb(1.0, 0.9, 0.6), emissive = 2.0, cast_shadow = false)
     loop s in sparks: draw_mesh(cube, translation(s.pos) * scaling(vec3(0.07, 0.07, 0.07)), rgb(1.0, 0.7, 0.3), emissive = 2.0, cast_shadow = false)
@@ -1608,7 +1596,7 @@ draw = ():
     view = inverse(look_at(eye(), eye() + aim(), vec3(0, 1, 0)))
     dip = 0.0
     if reloading > 0.0: dip = 0.15
-    hold = view * translation(v3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
+    hold = view * translation(vec3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
     draw_mesh(gun_meshes[held], hold, cast_shadow = false, in_front = true)
     # the reticle (for the shotgun, a ring as wide as its spread), and the rounds left
     if held == 0: circle(vec2(640, 360), 3, rgba(1, 1, 1, 0.8))
@@ -1621,7 +1609,7 @@ draw = ():
     rect(40, 650, 300.0 * shield / SHIELD, 10, rgb(0.4, 0.85, 1))
     rect(40, 666, 300, 6, rgba(0, 0, 0, 0.4))
     rect(40, 666, 300.0 * health / HEALTH, 6, rgb(1, 0.4, 0.35))
-    if calm < 0.25: rect(0, 0, 1280, 720, rgba(1, 0, 0, f32(0.25 - calm)))
+    if calm < 0.25: rect(0, 0, 1280, 720, rgba(1, 0, 0, 0.25 - calm))
 
 make_meshes()
 window("Little Breakwater", 1280, 720)
@@ -1653,10 +1641,8 @@ const SHIELD = 60.0
 const HEALTH = 60.0
 const RECHARGE_WAIT = 3.0               # seconds out of fire before the shield comes back
 
-v3 = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))
 # the way a yaw and pitch look (yaw 0: along -z; turning left is a bigger yaw)
-look_dir = (yaw: f64, pitch: f64) -> vec3: v3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
-yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
+look_dir = (yaw: f64, pitch: f64) -> vec3: vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
 flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
@@ -1666,12 +1652,11 @@ scatter = (d: vec3, spread: f64) -> vec3:
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
-    normalize(d + side * f32(cos(a) * r) + up * f32(sin(a) * r))
+    normalize(d + side * cos(a) * r + up * sin(a) * r)
 # a box stretched from a to b, w wide (a tracer, a bolt)
 beam = (a: vec3, b: vec3, w: f32) -> mat4:
     d = b - a
-    rise = atan2(f64(d.y), f64(length(flat(d))))
-    translation((a + b) * 0.5) * rotation_y(yaw_of(d)) * rotation_x(rise) * scaling(vec3(w, w, length(d)))
+    translation((a + b) * 0.5) * facing(d) * scaling(vec3(w, w, length(d)))
 
 struct Box:
     lo: vec3                            # its lowest corner
@@ -1704,13 +1689,13 @@ collide = (p0: vec3, r: f32) -> vec3:
             else if m == right: p.x = b.hi.x + r
             else if m == near: p.z = b.lo.z - r
             else: p.z = b.hi.z + r
-    p.x = clamp(p.x, f32(-HALF_X) + r, f32(HALF_X) - r)
-    p.z = clamp(p.z, f32(-HALF_Z) + r, f32(HALF_Z) - r)
+    p.x = clamp(p.x, -HALF_X + r, HALF_X - r)
+    p.z = clamp(p.z, -HALF_Z + r, HALF_Z - r)
     p
 
 # what is under p: the deck, or the top of a box it is over
 ground_under = (p: vec3) -> f32:
-    g = f32(0)
+    g = 0.0
     loop b in boxes:
         over = p.x >= b.lo.x and p.x <= b.hi.x and p.z >= b.lo.z and p.z <= b.hi.z
         if over and p.y >= b.hi.y - 0.3: g = max(g, b.hi.y)
@@ -1718,8 +1703,8 @@ ground_under = (p: vec3) -> f32:
 
 # how far along d (a unit vector) a ray from o goes into box b (-1: it misses)
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
-    t0 = f32(0)
-    t1 = f32(1000)
+    t0 = 0.0
+    t1 = 1000.0
     loop i in [0..3):
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
@@ -1747,7 +1732,7 @@ ray_sphere = (o: vec3, d: vec3, c: vec3, r: f32) -> f32:
     q = dot(oc, oc) - r * r
     if q <= 0.0: return 0                               # (o is inside it)
     if b * b - q < 0.0: return -1
-    t = -b - f32(sqrt(f64(b * b - q)))
+    t = -b - sqrt(b * b - q)
     if t < 0.0: return -1
     t
 
@@ -1767,7 +1752,7 @@ shield = SHIELD
 health = HEALTH
 calm = 0.0                              # seconds since a hit
 
-eye = () -> vec3: pos + vec3(0, f32(EYE), 0)
+eye = () -> vec3: pos + vec3(0, EYE, 0)
 aim = () -> vec3: look_dir(yaw, pitch)
 
 # the weapons: what each does
@@ -1857,7 +1842,7 @@ hurt = (dmg: f64):
             save_data("best", "{best}")
 
 burst = (at: vec3, n: int):
-    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * f32(random(3.0, 9.0)), random(0.3, 0.7)))
+    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
     g = guns[held]
@@ -1871,7 +1856,7 @@ fire = ():
         far = ray_world(o, d, 100)
         who = -1
         loop i in 0.. and dr in drones:
-            t = ray_sphere(o, d, dr.pos, f32(DRONE_R))
+            t = ray_sphere(o, d, dr.pos, DRONE_R)
             if t >= 0.0 and t < far:
                 far = t
                 who = i
@@ -1893,7 +1878,7 @@ step_drones = (dt: f64):
         spawn_wait = 2.5
     spawn_wait -= dt
     if to_spawn > 0 and spawn_wait <= 0.0:
-        drones.push(Drone(v3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30.0 + f64(wave) * 5.0, random(1.0, 3.0), strafe = f32(random_int(0, 2) * 2 - 1)))
+        drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30.0 + wave * 5.0, random(1.0, 3.0), strafe = random_int(0, 2) * 2 - 1))
         to_spawn -= 1
         spawn_wait = 1.2
     loop mut d in drones:
@@ -1910,10 +1895,10 @@ step_drones = (dt: f64):
         want = side * d.strafe * 2.0
         if dist > 14.0: want += dir * 4.0
         if dist < 7.0: want -= dir * 4.0
-        want.y = f32(2.2 + sin(elapsed() * 1.3 + f64(d.strafe)) * 0.7) - d.pos.y
-        d.vel += (want - d.vel) * f32(min(1.0, 2.0 * dt))
-        p = collide(d.pos + d.vel * f32(dt) - vec3(0, f32(DRONE_R), 0), f32(DRONE_R))
-        d.pos = p + vec3(0, f32(DRONE_R), 0)
+        want.y = 2.2 + sin(elapsed() * 1.3 + d.strafe) * 0.7 - d.pos.y
+        d.vel += (want - d.vel) * min(1.0, 2.0 * dt)
+        p = collide(d.pos + d.vel * dt - vec3(0, DRONE_R, 0), DRONE_R)
+        d.pos = p + vec3(0, DRONE_R, 0)
         if random() < dt * 0.3: d.strafe = -d.strafe
         d.flash -= dt
         # firing: a glowing eye for 0.6 s, then a bolt at the player's chest
@@ -1922,7 +1907,7 @@ step_drones = (dt: f64):
             if d.windup <= 0.0:
                 at = eye() - vec3(0, 0.3, 0)
                 bolts.push(Bolt(d.pos, scatter(normalize(at - d.pos), 0.03) * 16.0, 4.0))
-                d.cool = max(0.8, random(2.0, 3.5) - f64(wave) * 0.15)
+                d.cool = max(0.8, random(2.0, 3.5) - wave * 0.15)
         else:
             d.cool -= dt
             if d.cool <= 0.0 and clear_line(d.pos, eye()): d.windup = 0.6
@@ -1931,9 +1916,9 @@ step_drones = (dt: f64):
     # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
     loop mut b in bolts:
         b.life -= dt
-        n = int(ceil(f64(length(b.vel)) * dt / 0.2))
+        n = int(ceil(length(b.vel) * dt / 0.2))
         loop k in [0..n):
-            b.pos += b.vel * f32(dt / f64(n))
+            b.pos += b.vel * (dt / n)
             if in_cover(b.pos) or b.pos.y <= 0.0:
                 b.life = 0
                 break
@@ -1949,27 +1934,27 @@ step_player = (dt: f64):
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
         m = mouse_delta()
-        yaw -= f64(m.x) * LOOK
-        pitch = clamp(pitch - f64(m.y) * LOOK, -1.4, 1.4)
+        yaw -= m.x * LOOK
+        pitch = clamp(pitch - m.y * LOOK, -1.4, 1.4)
     # walking: the keys, turned the way the player faces
     ahead = look_dir(yaw, 0.0)
     right = look_dir(yaw - PI / 2.0, 0.0)
     move = input_axis()
     wish = right * move.x - ahead * move.y
-    vel.x = wish.x * f32(SPEED)
-    vel.z = wish.z * f32(SPEED)
+    vel.x = wish.x * SPEED
+    vel.z = wish.z * SPEED
     # falling (half the frame's gravity before the move, half after), and jumping from the ground
-    if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt / 2.0)
-    pos.y += vel.y * f32(dt)
-    vel.y -= f32(GRAVITY * dt / 2.0)
+    if grounded and key_pressed(.space): vel.y = JUMP
+    vel.y -= GRAVITY * dt / 2.0
+    pos.y += vel.y * dt
+    vel.y -= GRAVITY * dt / 2.0
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
     # then across, round the cover
-    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * dt, RADIUS)
     # the shield comes back out of fire
     calm += dt
     if calm > RECHARGE_WAIT: shield = min(SHIELD, shield + 30.0 * dt)
@@ -1998,8 +1983,8 @@ update = (dt: f64):
     loop mut t in tracers: t.life -= dt
     tracers = tracers.filter((t): t.life > 0.0)
     loop mut s in sparks:
-        s.vel.y -= f32(GRAVITY * dt)
-        s.pos += s.vel * f32(dt)
+        s.vel.y -= GRAVITY * dt
+        s.pos += s.vel * dt
         s.life -= dt
     sparks = sparks.filter((s): s.life > 0.0)
     # (on the title or after a run, a click starts one)
@@ -2019,7 +2004,7 @@ eye_mesh = sphere_mesh(0.14, 12, 8)
 # a drone: a ball with a band and two fins; the weapons, from boxes (their barrels along -z)
 make_meshes = ():
     v: Vertex3D[]
-    add_sphere(v, vec3(0, 0, 0), f64(DRONE_R), rgb(0.8, 0.8, 0.82), 16, 10)
+    add_sphere(v, vec3(0, 0, 0), DRONE_R, rgb(0.8, 0.8, 0.82), 16, 10)
     add_cylinder(v, vec3(0, -0.08, 0), 0.53, 0.16, rgb(0.9, 0.45, 0.1), 20)
     add_box(v, vec3(0.6, 0, 0.1), vec3(0.25, 0.08, 0.5), rgb(0.25, 0.27, 0.3))
     add_box(v, vec3(-0.6, 0, 0.1), vec3(0.25, 0.08, 0.5), rgb(0.25, 0.27, 0.3))
@@ -2043,20 +2028,20 @@ draw_world = ():
     sun(vec3(0.6, 0.45, 0.4), vec3(1.25, 1.05, 0.82))
     # the sea, the deck, its rails, the cover on it
     draw_mesh(cube, translation(vec3(0, -3, 0)) * scaling(vec3(400, 1, 400)), rgb(0.1, 0.3, 0.45))
-    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(v3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
+    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(vec3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
     loop s in [-1.0, 1.0]:
-        draw_mesh(cube, translation(v3(0, 0.5, s * HALF_Z)) * scaling(v3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
-        draw_mesh(cube, translation(v3(s * HALF_X, 0.5, 0)) * scaling(v3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(0, 0.5, s * HALF_Z)) * scaling(vec3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(s * HALF_X, 0.5, 0)) * scaling(vec3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
     loop b in boxes: draw_mesh(cube, translation((b.lo + b.hi) * 0.5) * scaling(b.hi - b.lo), rgb(0.85, 0.82, 0.75))
     # drones, facing the player, their eyes glowing; white for a moment when hit
     loop d in drones:
-        face = yaw_of(eye() - d.pos)
+        to_me = normalize(flat(eye() - d.pos))
         tint = vec4(1, 1, 1, 1)
         if d.flash > 0.0: tint = vec4(2, 2, 2, 1)
-        draw_mesh(drone_mesh, translation(d.pos) * rotation_y(face), tint)
+        draw_mesh(drone_mesh, translation(d.pos) * facing(to_me), tint)
         glow = 0.6
         if d.windup > 0.0: glow = 0.6 + (0.6 - d.windup) * 5.0
-        draw_mesh(eye_mesh, translation(d.pos + look_dir(face, 0.0) * f32(DRONE_R - 0.06)), rgb(1, 0.15, 0.1), emissive = glow)
+        draw_mesh(eye_mesh, translation(d.pos + to_me * (DRONE_R - 0.06)), rgb(1, 0.15, 0.1), emissive = glow)
     loop b in bolts: draw_mesh(cube, beam(b.pos - normalize(b.vel) * 0.6, b.pos, 0.08), rgb(1.0, 0.45, 0.15), emissive = 2.0, cast_shadow = false)
     loop t in tracers: draw_mesh(cube, beam(t.a, t.b, 0.015), rgb(1.0, 0.9, 0.6), emissive = 2.0, cast_shadow = false)
     loop s in sparks: draw_mesh(cube, translation(s.pos) * scaling(vec3(0.07, 0.07, 0.07)), rgb(1.0, 0.7, 0.3), emissive = 2.0, cast_shadow = false)
@@ -2066,7 +2051,7 @@ draw = ():
     if screen == .title:
         # (circling the deck)
         t = elapsed() * 0.1
-        camera3d(v3(sin(t) * 26.0, 12, cos(t) * 20.0), vec3(0, 0, 0), 60.0)
+        camera3d(vec3(sin(t) * 26.0, 12, cos(t) * 20.0), vec3(0, 0, 0), 60.0)
     else: camera3d(eye(), eye() + aim(), 70.0)
     draw_world()
     if screen == .title:
@@ -2078,7 +2063,7 @@ draw = ():
     view = inverse(look_at(eye(), eye() + aim(), vec3(0, 1, 0)))
     dip = 0.0
     if reloading > 0.0: dip = 0.15
-    hold = view * translation(v3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
+    hold = view * translation(vec3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
     draw_mesh(gun_meshes[held], hold, cast_shadow = false, in_front = true)
     # the reticle (for the shotgun, a ring as wide as its spread), and the rounds left
     if held == 0: circle(vec2(640, 360), 3, rgba(1, 1, 1, 0.8))
@@ -2091,7 +2076,7 @@ draw = ():
     rect(40, 650, 300.0 * shield / SHIELD, 10, rgb(0.4, 0.85, 1))
     rect(40, 666, 300, 6, rgba(0, 0, 0, 0.4))
     rect(40, 666, 300.0 * health / HEALTH, 6, rgb(1, 0.4, 0.35))
-    if calm < 0.25: rect(0, 0, 1280, 720, rgba(1, 0, 0, f32(0.25 - calm)))
+    if calm < 0.25: rect(0, 0, 1280, 720, rgba(1, 0, 0, 0.25 - calm))
     if screen == .over:
         rect(0, 0, 1280, 720, rgba(0, 0, 0, 0.5))
         text_centered("{score}", vec2(640, 300), 72)
@@ -2131,10 +2116,8 @@ const SHIELD = 60.0
 const HEALTH = 60.0
 const RECHARGE_WAIT = 3.0               # seconds out of fire before the shield comes back
 
-v3 = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))
 # the way a yaw and pitch look (yaw 0: along -z; turning left is a bigger yaw)
-look_dir = (yaw: f64, pitch: f64) -> vec3: v3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
-yaw_of = (d: vec3) -> f64: atan2(-f64(d.x), -f64(d.z))
+look_dir = (yaw: f64, pitch: f64) -> vec3: vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
 flat = (v: vec3) -> vec3: vec3(v.x, 0, v.z)
 # a random direction within `spread` radians of d
 scatter = (d: vec3, spread: f64) -> vec3:
@@ -2144,12 +2127,11 @@ scatter = (d: vec3, spread: f64) -> vec3:
     up = cross(side, d)
     a = random(0.0, TAU)
     r = spread * sqrt(random())
-    normalize(d + side * f32(cos(a) * r) + up * f32(sin(a) * r))
+    normalize(d + side * cos(a) * r + up * sin(a) * r)
 # a box stretched from a to b, w wide (a tracer, a bolt)
 beam = (a: vec3, b: vec3, w: f32) -> mat4:
     d = b - a
-    rise = atan2(f64(d.y), f64(length(flat(d))))
-    translation((a + b) * 0.5) * rotation_y(yaw_of(d)) * rotation_x(rise) * scaling(vec3(w, w, length(d)))
+    translation((a + b) * 0.5) * facing(d) * scaling(vec3(w, w, length(d)))
 
 struct Box:
     lo: vec3                            # its lowest corner
@@ -2182,13 +2164,13 @@ collide = (p0: vec3, r: f32) -> vec3:
             else if m == right: p.x = b.hi.x + r
             else if m == near: p.z = b.lo.z - r
             else: p.z = b.hi.z + r
-    p.x = clamp(p.x, f32(-HALF_X) + r, f32(HALF_X) - r)
-    p.z = clamp(p.z, f32(-HALF_Z) + r, f32(HALF_Z) - r)
+    p.x = clamp(p.x, -HALF_X + r, HALF_X - r)
+    p.z = clamp(p.z, -HALF_Z + r, HALF_Z - r)
     p
 
 # what is under p: the deck, or the top of a box it is over
 ground_under = (p: vec3) -> f32:
-    g = f32(0)
+    g = 0.0
     loop b in boxes:
         over = p.x >= b.lo.x and p.x <= b.hi.x and p.z >= b.lo.z and p.z <= b.hi.z
         if over and p.y >= b.hi.y - 0.3: g = max(g, b.hi.y)
@@ -2196,8 +2178,8 @@ ground_under = (p: vec3) -> f32:
 
 # how far along d (a unit vector) a ray from o goes into box b (-1: it misses)
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
-    t0 = f32(0)
-    t1 = f32(1000)
+    t0 = 0.0
+    t1 = 1000.0
     loop i in [0..3):
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
@@ -2225,7 +2207,7 @@ ray_sphere = (o: vec3, d: vec3, c: vec3, r: f32) -> f32:
     q = dot(oc, oc) - r * r
     if q <= 0.0: return 0                               # (o is inside it)
     if b * b - q < 0.0: return -1
-    t = -b - f32(sqrt(f64(b * b - q)))
+    t = -b - sqrt(b * b - q)
     if t < 0.0: return -1
     t
 
@@ -2245,7 +2227,7 @@ shield = SHIELD
 health = HEALTH
 calm = 0.0                              # seconds since a hit
 
-eye = () -> vec3: pos + vec3(0, f32(EYE), 0)
+eye = () -> vec3: pos + vec3(0, EYE, 0)
 aim = () -> vec3: look_dir(yaw, pitch)
 
 # the weapons: what each does
@@ -2346,7 +2328,7 @@ hurt = (dmg: f64):
             save_data("best", "{best}")
 
 burst = (at: vec3, n: int):
-    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * f32(random(3.0, 9.0)), random(0.3, 0.7)))
+    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
     g = guns[held]
@@ -2361,7 +2343,7 @@ fire = ():
         far = ray_world(o, d, 100)
         who = -1
         loop i in 0.. and dr in drones:
-            t = ray_sphere(o, d, dr.pos, f32(DRONE_R))
+            t = ray_sphere(o, d, dr.pos, DRONE_R)
             if t >= 0.0 and t < far:
                 far = t
                 who = i
@@ -2389,7 +2371,7 @@ step_drones = (dt: f64):
         spawn_wait = 2.5
     spawn_wait -= dt
     if to_spawn > 0 and spawn_wait <= 0.0:
-        drones.push(Drone(v3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30.0 + f64(wave) * 5.0, random(1.0, 3.0), strafe = f32(random_int(0, 2) * 2 - 1)))
+        drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30.0 + wave * 5.0, random(1.0, 3.0), strafe = random_int(0, 2) * 2 - 1))
         to_spawn -= 1
         spawn_wait = 1.2
     loop mut d in drones:
@@ -2407,10 +2389,10 @@ step_drones = (dt: f64):
         want = side * d.strafe * 2.0
         if dist > 14.0: want += dir * 4.0
         if dist < 7.0: want -= dir * 4.0
-        want.y = f32(2.2 + sin(elapsed() * 1.3 + f64(d.strafe)) * 0.7) - d.pos.y
-        d.vel += (want - d.vel) * f32(min(1.0, 2.0 * dt))
-        p = collide(d.pos + d.vel * f32(dt) - vec3(0, f32(DRONE_R), 0), f32(DRONE_R))
-        d.pos = p + vec3(0, f32(DRONE_R), 0)
+        want.y = 2.2 + sin(elapsed() * 1.3 + d.strafe) * 0.7 - d.pos.y
+        d.vel += (want - d.vel) * min(1.0, 2.0 * dt)
+        p = collide(d.pos + d.vel * dt - vec3(0, DRONE_R, 0), DRONE_R)
+        d.pos = p + vec3(0, DRONE_R, 0)
         if random() < dt * 0.3: d.strafe = -d.strafe
         d.flash -= dt
         # firing: a glowing eye for 0.6 s, then a bolt at the player's chest
@@ -2420,7 +2402,7 @@ step_drones = (dt: f64):
                 at = eye() - vec3(0, 0.3, 0)
                 bolts.push(Bolt(d.pos, scatter(normalize(at - d.pos), 0.03) * 16.0, 4.0))
                 play(snd_bolt, 0.3)
-                d.cool = max(0.8, random(2.0, 3.5) - f64(wave) * 0.15)
+                d.cool = max(0.8, random(2.0, 3.5) - wave * 0.15)
         else:
             d.cool -= dt
             if d.cool <= 0.0 and clear_line(d.pos, eye()): d.windup = 0.6
@@ -2429,9 +2411,9 @@ step_drones = (dt: f64):
     # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
     loop mut b in bolts:
         b.life -= dt
-        n = int(ceil(f64(length(b.vel)) * dt / 0.2))
+        n = int(ceil(length(b.vel) * dt / 0.2))
         loop k in [0..n):
-            b.pos += b.vel * f32(dt / f64(n))
+            b.pos += b.vel * (dt / n)
             if in_cover(b.pos) or b.pos.y <= 0.0:
                 b.life = 0
                 break
@@ -2447,27 +2429,27 @@ step_player = (dt: f64):
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
         m = mouse_delta()
-        yaw -= f64(m.x) * LOOK
-        pitch = clamp(pitch - f64(m.y) * LOOK, -1.4, 1.4)
+        yaw -= m.x * LOOK
+        pitch = clamp(pitch - m.y * LOOK, -1.4, 1.4)
     # walking: the keys, turned the way the player faces
     ahead = look_dir(yaw, 0.0)
     right = look_dir(yaw - PI / 2.0, 0.0)
     move = input_axis()
     wish = right * move.x - ahead * move.y
-    vel.x = wish.x * f32(SPEED)
-    vel.z = wish.z * f32(SPEED)
+    vel.x = wish.x * SPEED
+    vel.z = wish.z * SPEED
     # falling (half the frame's gravity before the move, half after), and jumping from the ground
-    if grounded and key_pressed(.space): vel.y = f32(JUMP)
-    vel.y -= f32(GRAVITY * dt / 2.0)
-    pos.y += vel.y * f32(dt)
-    vel.y -= f32(GRAVITY * dt / 2.0)
+    if grounded and key_pressed(.space): vel.y = JUMP
+    vel.y -= GRAVITY * dt / 2.0
+    pos.y += vel.y * dt
+    vel.y -= GRAVITY * dt / 2.0
     floor_y = ground_under(pos)
     grounded = pos.y <= floor_y
     if grounded:
         pos.y = floor_y
         vel.y = 0
     # then across, round the cover
-    pos = collide(pos + vec3(vel.x, 0, vel.z) * f32(dt), f32(RADIUS))
+    pos = collide(pos + vec3(vel.x, 0, vel.z) * dt, RADIUS)
     # the shield comes back out of fire
     calm += dt
     if calm > RECHARGE_WAIT: shield = min(SHIELD, shield + 30.0 * dt)
@@ -2499,8 +2481,8 @@ update = (dt: f64):
     loop mut t in tracers: t.life -= dt
     tracers = tracers.filter((t): t.life > 0.0)
     loop mut s in sparks:
-        s.vel.y -= f32(GRAVITY * dt)
-        s.pos += s.vel * f32(dt)
+        s.vel.y -= GRAVITY * dt
+        s.pos += s.vel * dt
         s.life -= dt
     sparks = sparks.filter((s): s.life > 0.0)
     # (on the title or after a run, a click starts one)
@@ -2520,7 +2502,7 @@ eye_mesh = sphere_mesh(0.14, 12, 8)
 # a drone: a ball with a band and two fins; the weapons, from boxes (their barrels along -z)
 make_meshes = ():
     v: Vertex3D[]
-    add_sphere(v, vec3(0, 0, 0), f64(DRONE_R), rgb(0.8, 0.8, 0.82), 16, 10)
+    add_sphere(v, vec3(0, 0, 0), DRONE_R, rgb(0.8, 0.8, 0.82), 16, 10)
     add_cylinder(v, vec3(0, -0.08, 0), 0.53, 0.16, rgb(0.9, 0.45, 0.1), 20)
     add_box(v, vec3(0.6, 0, 0.1), vec3(0.25, 0.08, 0.5), rgb(0.25, 0.27, 0.3))
     add_box(v, vec3(-0.6, 0, 0.1), vec3(0.25, 0.08, 0.5), rgb(0.25, 0.27, 0.3))
@@ -2547,21 +2529,21 @@ draw_world = ():
     post_effects(0.5, 0.75, 0.3)
     # the sea, the deck, its rails, the cover on it
     draw_mesh(cube, translation(vec3(0, -3, 0)) * scaling(vec3(400, 1, 400)), rgb(0.1, 0.3, 0.45), cast_shadow = false)
-    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(v3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
+    draw_mesh(cube, translation(vec3(0, -1.5, 0)) * scaling(vec3(HALF_X * 2.0, 3, HALF_Z * 2.0)), rgb(0.33, 0.38, 0.46))
     loop s in [-1.0, 1.0]:
-        draw_mesh(cube, translation(v3(0, 0.5, s * HALF_Z)) * scaling(v3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
-        draw_mesh(cube, translation(v3(s * HALF_X, 0.5, 0)) * scaling(v3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(0, 0.5, s * HALF_Z)) * scaling(vec3(HALF_X * 2.0, 0.08, 0.08)), rgb(0.2, 0.25, 0.3))
+        draw_mesh(cube, translation(vec3(s * HALF_X, 0.5, 0)) * scaling(vec3(0.08, 0.08, HALF_Z * 2.0)), rgb(0.2, 0.25, 0.3))
     loop b in boxes: draw_mesh(cube, translation((b.lo + b.hi) * 0.5) * scaling(b.hi - b.lo), rgb(0.85, 0.82, 0.75))
     # drones, facing the player, their eyes glowing (lighting what is near as they wind up);
     # white for a moment when hit
     loop d in drones:
-        face = yaw_of(eye() - d.pos)
+        to_me = normalize(flat(eye() - d.pos))
         tint = vec4(1, 1, 1, 1)
         if d.flash > 0.0: tint = vec4(2, 2, 2, 1)
-        draw_mesh(drone_mesh, translation(d.pos) * rotation_y(face), tint)
+        draw_mesh(drone_mesh, translation(d.pos) * facing(to_me), tint)
         glow = 0.6
         if d.windup > 0.0: glow = 0.6 + (0.6 - d.windup) * 5.0
-        e = d.pos + look_dir(face, 0.0) * f32(DRONE_R - 0.06)
+        e = d.pos + to_me * (DRONE_R - 0.06)
         draw_mesh(eye_mesh, translation(e), rgb(1, 0.15, 0.1), emissive = glow)
         if d.windup > 0.0: point_light(e, vec3(1, 0.3, 0.2), 3.0, glow * 0.5)
     loop b in bolts:
@@ -2575,7 +2557,7 @@ draw = ():
     if screen == .title:
         # (circling the deck)
         t = elapsed() * 0.1
-        camera3d(v3(sin(t) * 26.0, 12, cos(t) * 20.0), vec3(0, 0, 0), 60.0)
+        camera3d(vec3(sin(t) * 26.0, 12, cos(t) * 20.0), vec3(0, 0, 0), 60.0)
     else: camera3d(eye(), eye() + aim(), 70.0)
     draw_world()
     if screen == .title:
@@ -2587,7 +2569,7 @@ draw = ():
     view = inverse(look_at(eye(), eye() + aim(), vec3(0, 1, 0)))
     dip = 0.0
     if reloading > 0.0: dip = 0.15
-    hold = view * translation(v3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
+    hold = view * translation(vec3(0.2, -0.19 - dip, -0.5 + kick)) * rotation_y(0.05) * rotation_x(kick * 3.0)
     draw_mesh(gun_meshes[held], hold, cast_shadow = false, in_front = true)
     # (a flash at the muzzle as it fires)
     if wait > guns[held].gap - 0.04: point_light(transform_point(hold, vec3(0, 0, -0.5)), vec3(1, 0.8, 0.5), 4.0, 1.5)
@@ -2604,7 +2586,7 @@ draw = ():
     rect(40, 650, 300.0 * shield / SHIELD, 10, rgb(0.4, 0.85, 1))
     rect(40, 666, 300, 6, rgba(0, 0, 0, 0.4))
     rect(40, 666, 300.0 * health / HEALTH, 6, rgb(1, 0.4, 0.35))
-    if calm < 0.25: rect(0, 0, 1280, 720, rgba(1, 0, 0, f32(0.25 - calm)))
+    if calm < 0.25: rect(0, 0, 1280, 720, rgba(1, 0, 0, 0.25 - calm))
     if screen == .over:
         rect(0, 0, 1280, 720, rgba(0, 0, 0, 0.5))
         text_centered("{score}", vec2(640, 300), 72)
@@ -2640,6 +2622,10 @@ sun's shadows, and `fog` fades what is far into the horizon.
 - **Controls the player can change** (`action`, and a Controls screen from `ui_controls()`),
   keyboard-only play, and gamepads.
 - An autopilot that plays it, which is how its difficulty was tested.
+
+The collision and rays here are written by hand, so you can see how they work. A bigger game can
+use `import physics3d`: rigid bodies, `w.raycast` for shots, and `w.character(...)` and
+`w.walk(...)` for a walking capsule.
 
 Play it at [sloppy-lang.org/breakwater](https://sloppy-lang.org/breakwater/), or change it in
 [the playground](https://sloppy-lang.org/playground/#example=breakwater). To share your own game,
