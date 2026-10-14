@@ -13,6 +13,9 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- A warning for a variable whose fields or elements are changed but whose value is never read:
+  a copy changed for nothing (`if let e = enemies.find(...): e.hp -= 5`, `first = xs[0]` then
+  `first.hp = 9`), the habit of languages where objects are shared.
 - From a JavaScript web-game developer pass: `net.send` of text sends a WebSocket text message;
   a panic in a web game shows over the canvas; a web build warns about `sleep`; a multi-line
   lambda followed by more arguments (`f(():\n    a(), 5)`) works; `hex("#ff8000")` (CSS colors,

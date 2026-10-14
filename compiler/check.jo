@@ -44,6 +44,12 @@ const LF_UNNARROWED = 2048  # a narrowed name (alias) whose variable was assigne
 const LF_SOAELEM = 4096     # loop p in ps (ps a soa array): p stands for ps[i] (see soa_loop)
 const LF_SOAMUT = 8192      # ... and the loop is `loop mut`
 const LF_ELEMALIAS = 16384  # `mut x in xs` in a combined loop: x stands for xs[k] (writes to x write xs)
+const LF_READ = 32768       # its value is read somewhere (not only the base of a write: v.f = 1)
+assign_root = 0                 # (the variable an assignment being checked writes through)
+copy_writes: {int: int} = {}    # local -> where its fields or elements are first written
+gcopy_writes: {int: int} = {}   # the same for globals
+global_read: bool[]             # by global: its value is read somewhere
+
 const LF_SHARED = 1024  # modified after a closure captured it, or by the closure: closures and
                         # the function share it by reference (it lives in a heap cell, see lower.jo)
 
@@ -1865,12 +1871,25 @@ check_assign = (s: int) -> int:
     plain = op == int(Tok.assign) and nodes[lhs].kind != .ident or op == int(Tok.assign) and path_narrows > 0
     if plain: no_narrow_at = lhs
     cur_assign = s
+    # (the variable at the bottom of v.f = 1 or v[i] += 1 is written, not read)
+    saved_root = assign_root
+    assign_root = place_root(lhs)
     lt = check_expr(lhs, 0)
+    assign_root = saved_root
     cur_assign = 0
     no_narrow_at = 0
     lhs = last_checked
     nodes[s].a = i32(lhs)
     check_place(lhs, false)
+    # (a local written through and never read: see copy_write_warnings)
+    if nodes[lhs].kind == .field or nodes[lhs].kind == .index:
+        r = place_root(lhs)
+        if r != 0 and nodes[r].kind == .ident and nodes[r].aux == i32(int(SK.local)):
+            wl = int(nodes[r].sym)
+            if not copy_writes.has(wl): copy_writes[wl] = nodes[s].pos
+        else if r != 0 and nodes[r].kind == .ident and nodes[r].aux == i32(int(SK.global)):
+            wg = int(nodes[r].sym)
+            if not gcopy_writes.has(wg): gcopy_writes[wg] = nodes[s].pos
     if op == int(Tok.assign):
         rt = prune(check_expr(int(nodes[s].b), lt))
         if rt != lt and nodes[lhs].kind == .ident and (nodes[lhs].aux == i32(int(SK.local)) or nodes[lhs].aux == i32(int(SK.global))) and not can_coerce(last_checked, rt, lt): var_type_error(lhs, lt, rt, nodes[last_checked].pos)
@@ -2248,10 +2267,30 @@ __check_fn_body = (f: int):
     loop l in fns[f].locals:
         locals[l].type = i32(zonk(int(locals[l].type)))
         if has_var(prune(int(locals[l].type))): fatal(locals[l].pos, "cannot infer the type of '{name_of(int(locals[l].name))}' ({type_str(int(locals[l].type))}); add a type annotation{empty_hint(name_of(int(locals[l].name)), int(locals[l].type))}")
+    copy_write_warnings(f)
     fns[f].state = 2
     scope_reset(mark)
     ctxs.pop()
     cx = saved
+
+
+# the variable at the bottom of a place (v in v.f[2].g), or 0
+place_root = (n: int) -> int:
+    r = n
+    loop r != 0 and (nodes[r].kind == .field or nodes[r].kind == .index): r = int(nodes[r].a)
+    if r != 0 and nodes[r].kind == .ident: return r
+    0
+
+# a function's variables whose fields or elements it changes but whose value it never reads: a
+# copy changed for nothing (`if let e = enemies.find(...): e.hp -= 5` leaves the enemy as it was)
+copy_write_warnings = (f: int):
+    if copy_writes.len() == 0: return
+    skip = LF_READ | LF_PARAM | LF_MUTPARAM | LF_CAPTURE | LF_CAPTURED | LF_ADDR | LF_ALIAS | LF_BYREF | LF_ELEMALIAS | LF_SOAELEM | LF_SHARED
+    loop l in fns[f].locals:
+        if not copy_writes.has(l) or int(locals[l].flags) & skip != 0: continue
+        nm = name_of(int(locals[l].name))
+        if starts_with(nm, "#") or starts_with(nm, "__") or pos_in_lib(locals[l].pos): continue
+        warn(copy_writes[l], "'{nm}' is changed here but never read: it holds a copy (structs and arrays are values), so what it was copied from stays as it was; change that instead (`xs[i].hp -= 5`, `loop mut e in xs`)")
 
 check_lambda_body = (f: int, lam: int, ret_hint: int):
     fns[f].state = 1
@@ -2681,6 +2720,7 @@ check_program = (main_path: str):
                     scope_reset(mark)
                     zonk_tree(body)
                     loop l in fns[k].locals: locals[l].type = i32(zonk(int(locals[l].type)))
+                    copy_write_warnings(k)
                     fns[k].ret = i32(T_VOID)
                     fns[k].state = 2
                     cx = -1
@@ -2698,6 +2738,12 @@ check_program = (main_path: str):
                 export_fns.push(get_fn_inst(d, [], nodes[d].pos))
                 more = true
         if not more: break
+    # (globals of the program whose fields or elements are changed and that are never read)
+    loop g, wp in gcopy_writes:
+        if g < global_read.len() and global_read[g]: continue
+        if modules[int(globals[g].mod)].is_prelude or pos_in_lib(wp): continue
+        nm = name_of(int(globals[g].name))
+        warn(wp, "'{nm}' is changed here but never read: it holds a copy (structs and arrays are values), so what it was copied from stays as it was; change that instead (`xs[i].hp -= 5`, `loop mut e in xs`)")
     # prelude init: referenced prelude globals in declaration order
     pl: int[]
     loop g in global_ids:
