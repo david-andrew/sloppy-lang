@@ -166,6 +166,10 @@ def entries_of(path, only=None):
             s = s[4:]
             if s.startswith("extern"): s = "    " + s
         if s.startswith("#"):
+            # (lines indented 3 or more after the # are an example: kept as code)
+            if s.startswith("#   ") and s.strip("# "):
+                comment.append("\0" + s[4:].rstrip())
+                continue
             c = s.lstrip("# ").rstrip()
             m = re.fullmatch(r"-{3,}\s*(.*?)\s*-{3,}", c)
             if m:
@@ -184,7 +188,9 @@ def entries_of(path, only=None):
                 elif m.group(1) == "const": sig = re.sub(r"\s+#.*$", "", s)
                 if sig.strip() not in seen:
                     seen.add(sig.strip())
-                    out.append((section, name, sig.strip(), " ".join(c for c in comment if c), []))
+                    prose = " ".join(c for c in comment if c and not c.startswith("\0"))
+                    code = [c[1:] for c in comment if c.startswith("\0")]
+                    out.append((section, name, sig.strip(), prose, [], code))
                     if m and m.group(1) in ("struct", "enum") and s.endswith(":"): body = out[-1][4]
         if not s.startswith("#"):
             comment = []
@@ -220,7 +226,7 @@ def collect():
             path = os.path.join(ROOT, "lib", mod + ".jo")
             lines = open(path, encoding="utf-8").read().splitlines()
             sections = []
-            for sec, name, sig, doc, body in entries_of(path, only):
+            for sec, name, sig, doc, body, code in entries_of(path, only):
                 title_ = section_title(sec)
                 if not sections or sections[-1][0] != title_: sections.append((title_, []))
                 items = sections[-1][1]
@@ -229,7 +235,7 @@ def collect():
                     items[-1]["sigs"].append(sig)
                     items[-1]["doc"] = items[-1]["doc"] or doc
                 else:
-                    items.append({"name": name, "sigs": [sig], "doc": doc, "body": body})
+                    items.append({"name": name, "sigs": [sig], "doc": doc, "body": body, "code": code})
             # (sections of the same name further on join the first)
             merged = []
             for st, items in sections:
@@ -273,6 +279,8 @@ def markdown(topics):
                     for k, sig in enumerate(e["sigs"]):
                         doc = f": {e['doc']}" if e["doc"] and k == 0 else ""
                         out.append(f"- `{sig.replace('|', '\\|')}`{doc}")
+                    if e.get("code"):
+                        out += ["  ```gdscript"] + [f"  {c}" for c in e["code"]] + ["  ```"]
                     if e.get("body"):
                         out += ["  ```gdscript", f"  {e['sigs'][0].rstrip(':')}:"] + [f"      {b}" for b in e["body"]] + ["  ```"]
                 out.append("")

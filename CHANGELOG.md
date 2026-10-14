@@ -13,6 +13,12 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `x == v` with `x: T?` and `v: T` for any T with `==` (it was int only; none is never equal).
+- `ivec2(x, y)` and `ivec3` take ints (as `i32(x)` makes them).
+- Messages for Godot habits: `extends`, `signal`, a function written inside a struct, `randf`,
+  `Color`, `Vector3`, `deg2rad`, `Basis`, `xs.size()`; a warning when `_process`/`_ready` are
+  defined and nothing calls them; a function of the wrong type names the parameter that differs.
+- `sloppy check` checks `update` and `draw` against what the game loop calls.
 - A program's own `insert`, `push`, `len` (and the other built-in array and string functions)
   with an array or string first are used for its calls, where they were ignored.
 - `x as f64` between a whole number and a float is an error that says `f64(x)` converts
@@ -97,6 +103,10 @@ Language and library:
   `struct B(A)`, a field read from a union of structs, a library module used without `import`.
 
 Games:
+- `move_toward` for numbers and vec3 (it was vec2 only); `OrbitCamera.drag_left = false` leaves
+  the left button to the game; `?stats` in a page's address shows the overlay (only
+  `?SLOPPY_STATS` did); docs: cylinder_mesh stands on its base, physics3d's `ground`, rays pass
+  through sensors, fast bodies can pass through thin walls (no continuous collision yet).
 - `show_cursor(false)` hides the mouse pointer over the window while it still moves (a
   crosshair drawn by the game); with `mouse_lock` the two keep track of each other (Linux X11
   and Wayland, Windows, macOS, the web).

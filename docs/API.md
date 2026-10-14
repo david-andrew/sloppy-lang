@@ -390,7 +390,7 @@ Math basics.
 - `pow = (x: f64, y: f64) -> f64`: x to the power y, within an ulp (fdlibm's: log2(x) in extra precision, times y, then 2 to that)
 - `exp = (x: f32) -> f32`: f32 versions (shader code, games): computed in double with shorter polynomials, so they are within an ulp of the f32 result at a fraction of the cost of the full-precision ones
 - `log = (x: f32) -> f32`
-- `pow = (x: f32, y: f32) -> f32`: (a negative power is 1 / x ^ -n, truncated as integer division is: 0 unless x is 1 or -1)
+- `pow = (x: f32, y: f32) -> f32`
 - `pow = (x: int, n: int) -> int`
 - `f64_bits = (x: f64) -> u64`: a float's bits as an integer, and back (IEEE 754: f64_bits(1.0) is 0x3FF0000000000000)
 - `f64_from_bits = (b: u64) -> f64`
@@ -1490,7 +1490,9 @@ Vector and matrix math for the built-in vec2/vec3/vec4/mat4 types (f32 component
 - `angle = (v: vec2) -> f64`
 - `from_angle = (a: f64) -> vec2`
 - `rotate = (v: vec2, a: f64) -> vec2`
-- `move_toward = (a: vec2, b: vec2, step: f32) -> vec2`
+- `move_toward = (a: vec2, b: vec2, step: f32) -> vec2`: a moved toward b by at most step (reaching it, not passing it): a steady speed, where approach eases in
+- `move_toward = (a: vec3, b: vec3, step: f64) -> vec3`
+- `move_toward = (a: f64, b: f64, step: f64) -> f64`
 - `sinf = (x: f32) -> f32`
 - `cosf = (x: f32) -> f32`
 
@@ -1696,7 +1698,14 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 
 #### 3D particles
 
-- `struct Particle3D`: sparks, smoke, dust and magic: soft dots that always face the camera ps: Particles3D ps.gravity = vec3(0, -9.8, 0) emit(ps, hit_point, 30, 4.0, rgb(1, 0.6, 0.2))     # in update, when something happens ps.update(dt)                                      # in update, every frame ps.draw()                                          # in draw, with the 3D scene
+- `struct Particle3D`: sparks, smoke, dust and magic: soft dots that always face the camera
+  ```gdscript
+  ps: Particles3D
+  ps.gravity = vec3(0, -9.8, 0)
+  emit(ps, hit_point, 30, 4.0, rgb(1, 0.6, 0.2))     # in update, when something happens
+  ps.update(dt)                                      # in update, every frame
+  ps.draw()                                          # in draw, with the 3D scene
+  ```
   ```gdscript
   struct Particle3D:
       pos: vec3
@@ -1740,7 +1749,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `capsule_mesh = (radius: f64 = 0.5, height: f64 = 2.0, segments: int = 24, rings: int = 16) -> Mesh`: a capsule standing on end: `height` from end to end, centered (physics3d's add_capsule and a character are this shape)
 - `terrain_mesh = (size: f64, divisions: int, height: (f64, f64) -> f64, color: (f64, f64, f64) -> vec4) -> Mesh`: a flat grid in the XZ plane; `height` gives the terrain elevation at (x, z)
 - `plane_mesh = (size: f64 = 10.0) -> Mesh`
-- `cylinder_mesh = (radius: f64 = 0.5, height: f64 = 1.0, segments: int = 24, top_radius: f64 = -1.0) -> Mesh`
+- `cylinder_mesh = (radius: f64 = 0.5, height: f64 = 1.0, segments: int = 24, top_radius: f64 = -1.0) -> Mesh`: a cylinder standing on its base at y = 0 (the cube, sphere and capsule meshes are centered instead), up to y = height; top_radius 0 makes a cone
 - `cone_mesh = (radius: f64 = 0.5, height: f64 = 1.0, segments: int = 24) -> Mesh`
 - `custom_mesh = (vertices: Vertex3D[], indices: u32[] = []) -> Mesh`: custom mesh from vertex/index arrays
 
@@ -1767,9 +1776,7 @@ draw = ():
       max_distance: f64 = 200.0
       turn_speed: f64 = 0.006        # radians per pixel the mouse moves
       smooth: f64 = 14.0             # how quickly it follows (0: at once)
-      shown_yaw: f64 = 0.0           # (where it is now, on its way to yaw, pitch and distance)
-      shown_pitch: f64 = 0.4
-      shown_distance: f64 = 10.0
+      drag_left = true               # a drag with the left button turns it (false: only the right
   ```
 - `orbit_camera = (target: vec3 = vec3(0, 0, 0), distance: f64 = 10.0, yaw: f64 = 0.0, pitch: f64 = 0.4) -> OrbitCamera`
 - `update = (c: mut OrbitCamera, dt: f64)`
@@ -2032,7 +2039,11 @@ play(music, 0.6, looping = true)
 
 #### Music: decoded while it plays
 
-- `struct Music`: A long piece of music played as it is decoded, a little ahead of where it is playing: no wait when it loads and little memory (a three-minute song decoded whole is about 70 MB). song = load_music(embed("song.ogg")) id = play_music(song, 0.6)          # looping; stop(id), set_volume(id, v) as for sounds
+- `struct Music`: A long piece of music played as it is decoded, a little ahead of where it is playing: no wait when it loads and little memory (a three-minute song decoded whole is about 70 MB).
+  ```gdscript
+  song = load_music(embed("song.ogg"))
+  id = play_music(song, 0.6)          # looping; stop(id), set_volume(id, v) as for sounds
+  ```
   ```gdscript
   struct Music:
       file: u8[]
@@ -2382,7 +2393,13 @@ Through Vulkan a buffer is GPU memory read by its address and a compute function
 
 #### Subgroups
 
-- `subgroup_size = () -> int`: In a compute function, the invocations the GPU runs together (a subgroup: 32 of them on NVIDIA, 64 on AMD, fewer on some; 1 on the CPU) combine values without going through memory: subgroup_add(x) is the sum of x over those of them that reach the call together. A program written for any size runs the same everywhere, e.g. one atomic for a subgroup's elements instead of one each: n = subgroup_add(i32(keep))                       # how many of them keep theirs base = 0 if subgroup_elect(): base = int(atomic_add(u.count, 0, n)) slot = subgroup_broadcast_first(base) + int(subgroup_exclusive_add(i32(keep))) These take numbers and vectors (and, or and xor integers and bools too).
+- `subgroup_size = () -> int`: In a compute function, the invocations the GPU runs together (a subgroup: 32 of them on NVIDIA, 64 on AMD, fewer on some; 1 on the CPU) combine values without going through memory: subgroup_add(x) is the sum of x over those of them that reach the call together. A program written for any size runs the same everywhere, e.g. one atomic for a subgroup's elements instead of one each: These take numbers and vectors (and, or and xor integers and bools too).
+  ```gdscript
+  n = subgroup_add(i32(keep))                       # how many of them keep theirs
+  base = 0
+  if subgroup_elect(): base = int(atomic_add(u.count, 0, n))
+  slot = subgroup_broadcast_first(base) + int(subgroup_exclusive_add(i32(keep)))
+  ```
 - `subgroup_invocation_id = () -> int`
 - `subgroup_elect = () -> bool`
 - `subgroup_all = (b: bool) -> bool`
@@ -2870,7 +2887,7 @@ update = (dt: f64): w.step(dt)
 draw = (): draw_mesh(cube, w.transform(crate))         # (position and turn, as a mat4)
 ```
 
-Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the game gives them), with one shape each; `w.add_mesh(triangles)` adds fixed triangles (a level, from a model: physics3d.triangles(model_data)). Joints: `w.ball(a, b, at)` (a ball and socket), `w.hinge(a, b, at, axis)`, `w.rod(a, b, at_a, at_b)` (a distance, or a spring, or a rope). Rays: `w.raycast`. A character: `w.character(pos, radius, height)` and `w.walk(c, velocity, dt)`, a capsule that walks up slopes and steps, slides down steeper ones, and is pushed by nothing but the level. As in 2D, stepping is the same for the same inputs (for replays and rollback).
+Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the game gives them), with one shape each; `w.add_mesh(triangles)` adds fixed triangles (a level, from a model: physics3d.triangles(model_data)). Joints: `w.ball(a, b, at)` (a ball and socket), `w.hinge(a, b, at, axis)`, `w.rod(a, b, at_a, at_b)` (a distance, or a spring, or a rope). Rays: `w.raycast`. A character: `w.character(pos, radius, height)` and `w.walk(c, velocity, dt)`, a capsule that walks up slopes and steps, slides down steeper ones, and is pushed by nothing but the level. As in 2D, stepping is the same for the same inputs (for replays and rollback). A small, fast body can pass through a thin wall in one step (there is no continuous collision yet): for bullets, use w.raycast from where they were to where they are.
 
 - `enum BodyKind: dynamic, fixed, moving`
 - `enum Shape: none, sphere, box, capsule, triangles`
@@ -2985,7 +3002,7 @@ Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the gam
 
 #### Rays
 
-- `raycast = (w: World, a: vec3, b: vec3, mask: int = -1) -> Hit?`: the first body a ray from a to b meets (only those whose layer & mask is not 0)
+- `raycast = (w: World, a: vec3, b: vec3, mask: int = -1) -> Hit?`: the first body a ray from a to b meets (only those whose layer & mask is not 0; sensors are passed through)
 - `sphere_cast = (w: World, a: vec3, b: vec3, r: f64, mask: int = -1) -> Hit?`: the first body a ball of radius r, moved from a to b, would touch: the hit's point is where it touches, and fraction how far along the ball's center is then (a thick ray: bullets that are not points, a camera kept out of walls, what is under a character's feet)
 
 #### A character
