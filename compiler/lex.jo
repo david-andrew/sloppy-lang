@@ -314,6 +314,33 @@ lx_line_start = ():
         lx_line_tok0 = lx_toks.len()
         return
 
+# whether the rest of the line from `from` closes a bracket it did not open, or is another
+# lambda's header (its indented body follows)
+lx_line_closes = (from: int) -> bool:
+    p = lx_p
+    j = from
+    depth = 0
+    last = u8(0)
+    loop j < lx_n and p[j] != '\n':
+        c = p[j]
+        if c == '#': break
+        if c == '"' or c == '\'':
+            raw = j > 0 and p[j - 1] == 'r'
+            j = lx_skip_str(j, raw)
+            if j < 0: return false
+            last = u8('"')
+            continue
+        if c == '(' or c == '[' or c == '{{': depth += 1
+        else if c == ')' or c == ']' or c == '}}':
+            depth -= 1
+            if depth < 0: return true
+        if c != ' ' and c != '\t' and c != '\r': last = c
+        j += 1
+    # (a lambda's header: `(x):` or `(x) -> T:`, not the rest of `loop k, v in m:`)
+    k = from
+    loop k < lx_n and (p[k] == ' ' or p[k] == '\t'): k += 1
+    depth == 0 and last == ':' and k < lx_n and p[k] == '('
+
 lx_close_block_ctx = (at: int):
     loop lx_ctx.len() > 1 and lx_top_block():
         base = lx_top_base()
@@ -730,6 +757,9 @@ lex = (file: int, src: str, from: int = 0, to: int = -1) -> Token[]:
                 if c == 0: lx_err(lx_i, "this is not a source file: it holds binary data (a program built from one?)")
                 lx_err(lx_i, "unexpected character '{byte_str(int(c))}'")
         if k == .pluseq or k == .stareq or k == .slasheq or k == .percenteq or k == .ampeq or k == .pipeeq or k == .careteq or k == .eq or k == .ne: n = 2
+        # (a lambda's indented body inside brackets ends at a comma whose line goes on to close the
+        # bracket: f(():\n    a(), 5) gives f a lambda and 5; a, b = b, a alone on a line is a tuple)
+        if k == .comma and lx_ctx.len() > 1 and lx_top_block() and lx_line_closes(lx_i + 1): lx_close_block_ctx(lx_i)
         if k == .rparen or k == .rbrack or k == .rbrace:
             lx_close_block_ctx(lx_i)
             if lx_ctx.len() <= 1: lx_err(lx_i, "unmatched '{byte_str(int(c))}'")
