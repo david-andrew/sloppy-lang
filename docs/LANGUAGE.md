@@ -764,8 +764,10 @@ test "math works":
 ```
 
 `sloppy test file.jo` runs the file's top-level code, then each `test` block in order,
-reporting `test name ... ok` per block; the first failing `assert` stops the run with its
-message and location.
+reporting `test name ... ok` per block. On Linux and macOS each test runs in a process of its
+own: one that fails (an `assert` with its message and location, or a panic) is reported
+`FAILED`, the others still run (and do not see what it changed), and the run ends with how many
+passed and failed and exit status 1. On Windows and the web the first failure stops the run.
 
 **Release builds.** `opt = release` (or `sloppy build --release`) inlines refcount, uniqueness
 and bounds-check fast paths and runs the optimizer (constant folding, copy propagation,

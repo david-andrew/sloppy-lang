@@ -136,6 +136,16 @@ if compiler != "sloppy0" and target == "native":
         else:
             print(f"FAIL {name}\n{r.stdout}{r.stderr}")
             failed += 1
+    # failing tests are reported and the rest still run (each in a process of its own)
+    if os.name != "nt" and pattern in "unit/failing":
+        t = os.path.join(root, "tests", "unit_failing", "mixed.jo")
+        r = subprocess.run([sloppy, "test", t], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")), timeout=60)
+        want = ["test adds ... ok", "test fails ... FAILED", "test panics ... FAILED", "in the last test", "2 passed, 2 failed"]
+        if r.returncode == 1 and all(w in r.stdout for w in want): passed += 1
+        else:
+            print(f"FAIL unit/failing (exit {r.returncode})\n{r.stdout}{r.stderr}")
+            failed += 1
     # the tutorials' programs (docs/TUTORIAL*.md: code blocks starting "# step") must build
     for tf in sorted(glob.glob(os.path.join(root, "docs", "TUTORIAL*.md"))):
         tname = os.path.basename(tf)[:-3].lower()

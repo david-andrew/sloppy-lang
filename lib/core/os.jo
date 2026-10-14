@@ -484,15 +484,43 @@ temp_dir = () -> str:
         "/tmp"
 
 # ---------------- `sloppy test` support ----------------
+# Each test runs in a process of its own where there is fork (Linux, macOS): one that fails (a
+# failed assert, a panic) is reported, and the rest still run; elsewhere they run here in turn
 __tests_run = 0
+__tests_failed = 0
 __test_t0 = 0.0
+__test_child = false
 
-__test_begin = (name: str):
+# true where the test's code is to run (the child; or here)
+__test_begin = (name: str) -> bool:
     write("test {name} ... ")
     __test_t0 = time()
+    when TARGET == "linux" or TARGET == "macos":
+        __out_flush()
+        pid = syscall(57)
+        if pid == 0:
+            __test_child = true
+            return true
+        if pid > 0:
+            st = [0]
+            syscall(61, pid, data(st), 0, 0)
+            __tests_run += 1
+            if st[0] & 0xFFFF == 0: print("ok ({(time() - __test_t0) * 1000:.1} ms)")
+            else:
+                print("FAILED")
+                __tests_failed += 1
+            return false
+    true
 
 __test_end = ():
+    if __test_child:
+        __out_flush()
+        __exit(0)
     __tests_run += 1
     print("ok ({(time() - __test_t0) * 1000:.1} ms)")
 
-__test_done = (n: int): print("{n} tests passed")
+__test_done = (n: int):
+    if __tests_failed > 0:
+        print("{n - __tests_failed} passed, {__tests_failed} failed")
+        exit(1)
+    print("{n} tests passed")
