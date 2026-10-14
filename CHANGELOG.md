@@ -13,6 +13,9 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `clip(pos, size)` shows 2D drawing only inside a rectangle until `no_clip()` (LÖVE's
+  scissor; screen units, not moved by `translate` or `camera2d`; per render target and frame;
+  3D is not clipped), on every renderer.
 - `text_wrapped(s, pos, width, size, color, align)` draws text broken into lines at spaces, each
   to the left, centered or to the right (LÖVE's `printf`), and gives the height it took;
   `wrap_text` gives the lines and `text_height` how tall text is. `text_centered` centers each

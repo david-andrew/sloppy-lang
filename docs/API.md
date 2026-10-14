@@ -1178,6 +1178,8 @@ draw = ():
 - `enum Blend: alpha, add, multiply, premultiplied`
 - `clear = (c: vec4 = vec4(0, 0, 0, 1))`
 - `blend = (b: Blend)`
+- `clip = (pos: vec2, size: vec2)`: 2D drawing after this shows only inside the rectangle (in screen units, or a render target's pixels: translate and camera2d do not move it), until no_clip(), the next frame or another target (draw_to); for a scrolling list, a panel, a minimap
+- `no_clip = ()`
 - `push_transform = ()`
 - `pop_transform = ()`
 - `translate = (x: f64, y: f64)`
