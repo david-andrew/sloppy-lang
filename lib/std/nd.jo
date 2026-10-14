@@ -371,6 +371,75 @@ sum[T] = (m: NDArray[T]) -> T: sum(m.data)
 min[T] = (m: NDArray[T]) -> T: min(m.data)
 max[T] = (m: NDArray[T]) -> T: max(m.data)
 # the average (0 for none)
+# (floats: added in pairs of halves, so the rounding errors stay small however long the array is:
+# a million 0.1s make 100000.0, as NumPy's sum does)
+sum = (xs: f64[]) -> f64: __pairwise_sum(xs, 0, xs.len())
+__pairwise_sum = (xs: f64[], lo: int, hi: int) -> f64:
+    n = hi - lo
+    if n < 8:
+        t = 0.0
+        loop i in [lo..hi): t += __at(xs, i)
+        return t
+    if n <= 128:
+        r0 = __at(xs, lo)
+        r1 = __at(xs, lo + 1)
+        r2 = __at(xs, lo + 2)
+        r3 = __at(xs, lo + 3)
+        r4 = __at(xs, lo + 4)
+        r5 = __at(xs, lo + 5)
+        r6 = __at(xs, lo + 6)
+        r7 = __at(xs, lo + 7)
+        i = lo + 8
+        loop i + 8 <= hi:
+            r0 += __at(xs, i)
+            r1 += __at(xs, i + 1)
+            r2 += __at(xs, i + 2)
+            r3 += __at(xs, i + 3)
+            r4 += __at(xs, i + 4)
+            r5 += __at(xs, i + 5)
+            r6 += __at(xs, i + 6)
+            r7 += __at(xs, i + 7)
+            i += 8
+        t = ((r0 + r1) + (r2 + r3)) + ((r4 + r5) + (r6 + r7))
+        loop i < hi:
+            t += __at(xs, i)
+            i += 1
+        return t
+    mid = lo + (n / 2) / 8 * 8
+    __pairwise_sum(xs, lo, mid) + __pairwise_sum(xs, mid, hi)
+
+# (floats: NaN, not a number, wins: one NaN makes the answer NaN, as in NumPy)
+max = (xs: f64[]) -> f64:
+    if xs.len() == 0: panic("max of an empty array")
+    m = xs[0]
+    loop x in xs:
+        if x != x: return x
+        if x > m: m = x
+    m
+min = (xs: f64[]) -> f64:
+    if xs.len() == 0: panic("min of an empty array")
+    m = xs[0]
+    loop x in xs:
+        if x != x: return x
+        if x < m: m = x
+    m
+
+# (floats: NaN after every number, in either order; the numbers in order, equal ones as they were)
+sort = (xs: mut f64[], descending: bool = false):
+    nan = 0
+    loop x in xs:
+        if x != x: nan += 1
+    if nan == 0:
+        sort[f64](xs, descending)
+        return
+    nums: f64[]
+    nans: f64[]
+    loop x in xs:
+        if x != x: nans.push(x)
+        else: nums.push(x)
+    sort[f64](nums, descending)
+    xs = nums + nans
+
 mean = (xs: f64[]) -> f64: sum(xs) / f64(max(xs.len(), 1))
 mean = (xs: int[]) -> f64: f64(sum(xs)) / f64(max(xs.len(), 1))
 mean = (m: NDArray[f64]) -> f64: mean(m.data)
@@ -379,6 +448,8 @@ mean = (m: NDArray[f64]) -> f64: mean(m.data)
 median = (xs: f64[]) -> f64:
     n = xs.len()
     if n == 0: return 0.0
+    loop x in xs:
+        if x != x: return x
     s = sorted(xs)
     if n % 2 == 1: return s[n / 2]
     (s[n / 2 - 1] + s[n / 2]) / 2.0
@@ -452,7 +523,207 @@ dot = (a: f64[], b: f64[]) -> f64:
 
 norm = (a: f64[]) -> f64: sqrt(dot(a, a))
 
+# the variance: the mean of the squared distances from the mean (NumPy's var; std_dev squared)
+variance = (xs: f64[]) -> f64:
+    if xs.len() == 0: return 0.0
+    m = mean(xs)
+    t = 0.0
+    loop x in xs: t += (x - m) * (x - m)
+    t / f64(xs.len())
+
+# the value p percent of the way through the sorted values (0: the smallest, 50: the median,
+# 100: the largest), between two of them where it falls between (NumPy's percentile)
+percentile = (xs: f64[], p: f64) -> f64: quantile(xs, p / 100.0)
+# the same with q from 0 to 1
+quantile = (xs: f64[], q: f64) -> f64:
+    n = xs.len()
+    if n == 0: return 0.0
+    loop x in xs:
+        if x != x: return x
+    s = sorted(xs)
+    at = clamp(q, 0.0, 1.0) * f64(n - 1)
+    i = int(floor(at))
+    if i >= n - 1: return s[n - 1]
+    s[i] + (s[i + 1] - s[i]) * (at - f64(i))
+percentile = (xs: int[], p: f64) -> f64: percentile(xs.map((x: int): f64(x)), p)
+
+# where the largest (smallest) value is: its index, the first of equal ones (-1: empty)
+argmax[T] = (xs: T[]) -> int:
+    if xs.len() == 0: return -1
+    best = 0
+    loop i in [1..xs.len()):
+        if xs[best] < xs[i]: best = i
+    best
+argmin[T] = (xs: T[]) -> int:
+    if xs.len() == 0: return -1
+    best = 0
+    loop i in [1..xs.len()):
+        if xs[i] < xs[best]: best = i
+    best
+# the indexes of xs in the order that sorts it (equal values keep their order)
+argsort[T] = (xs: T[]) -> int[]:
+    idx = [loop i in [0..xs.len()): i]
+    idx.sort_by((i: int): xs[i])
+    idx
+
+# running totals: [a, a + b, a + b + c ...]
+cumsum = (xs: f64[]) -> f64[]:
+    out: f64[]
+    t = 0.0
+    loop x in xs:
+        t += x
+        out.push(t)
+    out
+cumsum = (xs: int[]) -> int[]:
+    out: int[]
+    t = 0
+    loop x in xs:
+        t += x
+        out.push(t)
+    out
+# the differences of neighbors: [b - a, c - b ...] (one fewer)
+diff = (xs: f64[]) -> f64[]: [loop i in [1..xs.len()): xs[i] - xs[i - 1]]
+diff = (xs: int[]) -> int[]: [loop i in [1..xs.len()): xs[i] - xs[i - 1]]
+# all of them multiplied
+prod = (xs: f64[]) -> f64:
+    t = 1.0
+    loop x in xs: t *= x
+    t
+prod = (xs: int[]) -> int:
+    t = 1
+    loop x in xs: t *= x
+    t
+
+# how many values fall in each of `bins` equal parts of lo..hi (the values' range when lo and hi
+# are equal), and where the parts begin and end (bins + 1 edges; the last part takes hi itself)
+histogram = (xs: f64[], bins: int, lo: f64 = 0.0, hi: f64 = 0.0) -> (int[], f64[]):
+    a = lo
+    b = hi
+    if a == b and xs.len() > 0:
+        a = min(xs)
+        b = max(xs)
+    if b <= a: b = a + 1.0
+    counts = fill(0, max(bins, 1))
+    w = (b - a) / f64(counts.len())
+    loop x in xs:
+        if x < a or x > b or x != x: continue
+        k = min(int((x - a) / w), counts.len() - 1)
+        counts[k] += 1
+    (counts, linspace(a, b, counts.len() + 1))
+
+# how a and b vary together: the covariance (divided by n - 1, as NumPy's cov), and the
+# correlation, from -1 to 1 (Pearson's r: NumPy's corrcoef)
+covariance = (a: f64[], b: f64[]) -> f64:
+    if a.len() != b.len(): panic("covariance: lengths {a.len()} and {b.len()} differ")
+    n = a.len()
+    if n < 2: return 0.0
+    ma = mean(a)
+    mb = mean(b)
+    t = 0.0
+    loop i in [0..n): t += (a[i] - ma) * (b[i] - mb)
+    t / f64(n - 1)
+correlation = (a: f64[], b: f64[]) -> f64:
+    sa = sqrt(covariance(a, a))
+    sb = sqrt(covariance(b, b))
+    if sa == 0.0 or sb == 0.0: return 0.0 / 0.0
+    covariance(a, b) / (sa * sb)
+
 # ---------------- linear algebra ----------------
+# the matrix of every a[i] * b[j]
+outer = (a: f64[], b: f64[]) -> NDArray[f64]:
+    out = zeros(a.len(), b.len())
+    loop i in [0..a.len()):
+        loop j in [0..b.len()): out.data[i * b.len() + j] = a[i] * b[j]
+    out
+
+# the diagonal of a square (or any 2-D) matrix, and its sum
+diag = (m: NDArray[f64]) -> f64[]: [loop i in [0..min(rows(m), cols(m))): m.data[i * cols(m) + i]]
+trace = (m: NDArray[f64]) -> f64: sum(diag(m))
+
+# x with a * x = b, a square (Gaussian elimination, choosing the largest pivot); a matrix with
+# no inverse panics
+solve = (a: NDArray[f64], b: f64[]) -> f64[]:
+    n = __square(a, "solve")
+    if b.len() != n: panic("solve: a is {n}x{n} and b has {b.len()} values")
+    m = a.data
+    x = b
+    loop c in [0..n):
+        p = __pivot(m, n, c)
+        if p != c:
+            __swap_rows(m, n, p, c)
+            t = x[p]
+            x[p] = x[c]
+            x[c] = t
+        d = m[c * n + c]
+        loop r in [c + 1..n):
+            f = m[r * n + c] / d
+            if f == 0.0: continue
+            loop k in [c..n): m[r * n + k] -= f * m[c * n + k]
+            x[r] -= f * x[c]
+    loop c in [n - 1, n - 2..0]:
+        t = x[c]
+        loop k in [c + 1..n): t -= m[c * n + k] * x[k]
+        x[c] = t / m[c * n + c]
+    x
+
+# the inverse (a * inverse(a) is eye(n)); a matrix with none panics
+inverse = (a: NDArray[f64]) -> NDArray[f64]:
+    n = __square(a, "inverse")
+    m = a.data
+    inv = eye(n).data
+    loop c in [0..n):
+        p = __pivot(m, n, c)
+        if p != c:
+            __swap_rows(m, n, p, c)
+            __swap_rows(inv, n, p, c)
+        d = m[c * n + c]
+        loop k in [0..n):
+            m[c * n + k] /= d
+            inv[c * n + k] /= d
+        loop r in [0..n):
+            if r == c: continue
+            f = m[r * n + c]
+            if f == 0.0: continue
+            loop k in [0..n):
+                m[r * n + k] -= f * m[c * n + k]
+                inv[r * n + k] -= f * inv[c * n + k]
+    NDArray(inv, [n, n])
+
+# the determinant (0 for a matrix with no inverse)
+det = (a: NDArray[f64]) -> f64:
+    n = __square(a, "det")
+    m = a.data
+    d = 1.0
+    loop c in [0..n):
+        p = c
+        loop r in [c + 1..n):
+            if abs(m[r * n + c]) > abs(m[p * n + c]): p = r
+        if m[p * n + c] == 0.0: return 0.0
+        if p != c:
+            __swap_rows(m, n, p, c)
+            d = -d
+        d *= m[c * n + c]
+        loop r in [c + 1..n):
+            f = m[r * n + c] / m[c * n + c]
+            loop k in [c..n): m[r * n + k] -= f * m[c * n + k]
+    d
+
+__square = (a: NDArray[f64], what: str) -> int:
+    if a.shape.len() != 2 or a.shape[0] != a.shape[1]: panic("{what}: a square matrix is needed, not {__shape_str(a.shape)}")
+    a.shape[0]
+__pivot = (m: f64[], n: int, c: int) -> int:
+    p = c
+    loop r in [c + 1..n):
+        if abs(m[r * n + c]) > abs(m[p * n + c]): p = r
+    if abs(m[p * n + c]) < 1e-300: panic("the matrix has no inverse (its rows are not independent)")
+    p
+__swap_rows = (m: mut f64[], n: int, a: int, b: int):
+    loop k in [0..n):
+        t = m[a * n + k]
+        m[a * n + k] = m[b * n + k]
+        m[b * n + k] = t
+
+# ---------------- matrix products ----------------
 # matrix product
 (*)[T] = (a: NDArray[T], b: NDArray[T]) -> NDArray[T]:
     ar = rows(a)

@@ -864,7 +864,11 @@ The dotted operators work element by element on arrays of any shape, and broadca
 - `sum[T] = (m: NDArray[T]) -> T`
 - `min[T] = (m: NDArray[T]) -> T`
 - `max[T] = (m: NDArray[T]) -> T`
-- `mean = (xs: f64[]) -> f64`: the average (0 for none)
+- `sum = (xs: f64[]) -> f64`: the average (0 for none) (floats: added in pairs of halves, so the rounding errors stay small however long the array is: a million 0.1s make 100000.0, as NumPy's sum does)
+- `max = (xs: f64[]) -> f64`: (floats: NaN, not a number, wins: one NaN makes the answer NaN, as in NumPy)
+- `min = (xs: f64[]) -> f64`
+- `sort = (xs: mut f64[], descending: bool = false)`: (floats: NaN after every number, in either order; the numbers in order, equal ones as they were)
+- `mean = (xs: f64[]) -> f64`
 - `mean = (xs: int[]) -> f64`
 - `mean = (m: NDArray[f64]) -> f64`
 - `median = (xs: f64[]) -> f64`: the middle value once sorted (the mean of the two middle ones for an even count; 0 for none)
@@ -877,8 +881,33 @@ The dotted operators work element by element on arrays of any shape, and broadca
 - `mean = (m: NDArray[f64], axis: int) -> NDArray[f64]`
 - `dot = (a: f64[], b: f64[]) -> f64`: the sum of a[i] * b[i] (kept in four running sums, about twice as fast: rounded a little differently from adding in order, the same for the same input every time)
 - `norm = (a: f64[]) -> f64`
+- `variance = (xs: f64[]) -> f64`: the variance: the mean of the squared distances from the mean (NumPy's var; std_dev squared)
+- `percentile = (xs: f64[], p: f64) -> f64`: the value p percent of the way through the sorted values (0: the smallest, 50: the median, 100: the largest), between two of them where it falls between (NumPy's percentile)
+- `quantile = (xs: f64[], q: f64) -> f64`: the same with q from 0 to 1
+- `percentile = (xs: int[], p: f64) -> f64`
+- `argmax[T] = (xs: T[]) -> int`: where the largest (smallest) value is: its index, the first of equal ones (-1: empty)
+- `argmin[T] = (xs: T[]) -> int`
+- `argsort[T] = (xs: T[]) -> int[]`: the indexes of xs in the order that sorts it (equal values keep their order)
+- `cumsum = (xs: f64[]) -> f64[]`: running totals: [a, a + b, a + b + c ...]
+- `cumsum = (xs: int[]) -> int[]`
+- `diff = (xs: f64[]) -> f64[]`: the differences of neighbors: [b - a, c - b ...] (one fewer)
+- `diff = (xs: int[]) -> int[]`
+- `prod = (xs: f64[]) -> f64`: all of them multiplied
+- `prod = (xs: int[]) -> int`
+- `histogram = (xs: f64[], bins: int, lo: f64 = 0.0, hi: f64 = 0.0) -> (int[], f64[])`: how many values fall in each of `bins` equal parts of lo..hi (the values' range when lo and hi are equal), and where the parts begin and end (bins + 1 edges; the last part takes hi itself)
+- `covariance = (a: f64[], b: f64[]) -> f64`: how a and b vary together: the covariance (divided by n - 1, as NumPy's cov), and the correlation, from -1 to 1 (Pearson's r: NumPy's corrcoef)
+- `correlation = (a: f64[], b: f64[]) -> f64`
 
 #### Linear algebra
+
+- `outer = (a: f64[], b: f64[]) -> NDArray[f64]`: the matrix of every a[i] * b[j]
+- `diag = (m: NDArray[f64]) -> f64[]`: the diagonal of a square (or any 2-D) matrix, and its sum
+- `trace = (m: NDArray[f64]) -> f64`
+- `solve = (a: NDArray[f64], b: f64[]) -> f64[]`: x with a * x = b, a square (Gaussian elimination, choosing the largest pivot); a matrix with no inverse panics
+- `inverse = (a: NDArray[f64]) -> NDArray[f64]`: the inverse (a * inverse(a) is eye(n)); a matrix with none panics
+- `det = (a: NDArray[f64]) -> f64`: the determinant (0 for a matrix with no inverse)
+
+#### Matrix products
 
 - `(*)[T] = (a: NDArray[T], b: NDArray[T]) -> NDArray[T]`: matrix product
 - `(*)[T] = (a: NDArray[T], v: T[]) -> T[]`: matrix times column vector

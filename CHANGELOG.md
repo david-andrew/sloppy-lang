@@ -13,6 +13,12 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- From a NumPy-user pass: `random()` in parallel code no longer races on one generator (each
+  worker thread has its own; `rng(seed + k)` for the same numbers each run); `sum` of floats is
+  pairwise (ten million 0.1s make 1000000.0, as NumPy's do); NaN sorts last and makes `max`,
+  `min` and `median` NaN; `variance`, `percentile`, `quantile`, `argmax`, `argmin`, `argsort`,
+  `cumsum`, `diff`, `prod`, `histogram`, `covariance`, `correlation`, `solve`, `inverse`, `det`,
+  `trace`, `diag`, `outer`.
 - Removing from a map takes constant time (it rebuilt the map: 10,000 removals from 100,000
   entries took 10 s; now under 1 ms): a removed entry stays in place, marked gone, until half
   are gone. Loops, `keys`, `values`, `len` and printing see only what is there; the debuggers'

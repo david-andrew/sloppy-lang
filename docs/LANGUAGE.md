@@ -836,7 +836,10 @@ rows = parallel_range(height, (y): render_row(y))     # [loop i in [0..n): f(i)]
 ```
 
 The function runs on many threads at once: it may read anything, but it must not change
-globals or the variables it captured (that would be a data race). Return results instead. The
+globals or the variables it captured (that would be a data race). Return results instead.
+`random()` may be called there: each thread draws from a generator of its own, so the numbers
+differ from run to run even after `seed_random`; for the same ones every run (and faster), give
+each piece of work its own generator, `g = rng(seed + k)` and `g.next_float()`. The
 compiler checks this, also in the functions it calls, and names the variable, so it must see
 which function runs: give a function by name, a lambda or a partial application (`f(k, _)`), not
 a function kept in a variable, and call functions by name inside it. These helpers are only called
