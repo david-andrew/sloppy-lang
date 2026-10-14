@@ -154,11 +154,12 @@ game picks from (and an example of each):
 
 ## Tools that make things without code (later)
 
-If there is ever a visual editor (a UI builder, a level or scene editor), what it makes is a
-program file and nothing else: dragging a button in the editor writes the code that makes that
-button, editing the code moves it in the editor, and running the file alone makes the same
-thing (as MATLAB's App Designer works from a class file). Nothing it knows is kept anywhere the
-code does not show.
+Any way of making things other than writing code (a UI builder, a node graph, an inspector of
+components and their properties, a level or scene editor) is a view of a program file, both
+ways: what is done in the editor writes the code that does it, what is written in the code
+shows in the editor, and running the file alone makes the same thing (as MATLAB's App Designer
+works from a class file). A graph can be made by code as well as drawn. Nothing the editor
+knows is kept anywhere the code does not show.
 
 ## Language (ongoing, kept small)
 

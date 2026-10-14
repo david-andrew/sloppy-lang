@@ -209,9 +209,13 @@ lx_copy = (code: Ins[], s: int, e: int, checks: LCheck[], ren: int[], out: mut I
 # arithmetic of + - * / min max on floats or + - and or xor on integers, with values from
 # outside the loop used in every lane, runs 8 (or 4) elements at a time with AVX2 where the
 # processor has it, else 4 (or 2) with SSE2, then the rest one at a time. Each element gets
-# exactly the operations it got before (no reordering across elements: sums over the loop are
-# left alone), so the results are the same everywhere.
+# exactly the operations it got before (no reordering across elements: float sums over the loop
+# are left alone), so the results are the same everywhere. An integer sum over the loop (and
+# `and`, `or`, `xor`), which comes out the same in any order, is kept in a vector of partial
+# sums, added together after.
 lx_vec_on = true            # (off for wasm)
+lx_reds: int[]              # (the plan's integer sums: their scalar vregs ...)
+lx_red_ops: Op[]            # (... and operations)
 
 struct VPlan:
     ok: bool
@@ -237,6 +241,8 @@ lx_in_check = (p: int, checks: LCheck[]) -> bool:
 lx_vec_plan = (code: Ins[], L: CLoop, checks: LCheck[], first: int[], last: int[]) -> VPlan:
     no = VPlan(false, 0, false, [], [], [])
     plan = VPlan(true, 0, false, [], [], [])
+    lx_reds.clear()
+    lx_red_ops.clear()
     kinds: {int: int}           # vreg made in the body -> element kind of its lanes
     loop p in [L.pl + 1..L.inc):
         if lx_in_check(p, checks): continue
@@ -282,6 +288,16 @@ lx_vec_plan = (code: Ins[], L: CLoop, checks: LCheck[], first: int[], last: int[
                     kinds[d] = 2
                     continue
             return no
+        # (s = s + x: an integer sum over the loop, s used nowhere else in it)
+        if (op == .add or op == .xor or op == .or_ or op == .and_) and int(ins.ty) == VI and (int(ins.a) == d or int(ins.b) == d) and int(ins.a) != int(ins.b):
+            x = int(ins.b)
+            if int(ins.a) != d: x = int(ins.a)
+            if let xk = kinds.get(x):
+                if xk == 3 and lx_appears(code, d, L.pl, L.pe) == 1:
+                    lx_reds.push(d)
+                    lx_red_ops.push(op)
+                    continue
+            return no
         fl = op == .fadd or op == .fsub or op == .fmul or op == .fdiv or op == .fmin or op == .fmax
         il = op == .add or op == .sub or op == .mul or op == .and_ or op == .or_ or op == .xor
         if not fl and not il: return no
@@ -316,6 +332,20 @@ lx_vec_plan = (code: Ins[], L: CLoop, checks: LCheck[], first: int[], last: int[
             if i < j and bi == bj and (plan.stores[i] or plan.stores[j]) and plan.offs[i] != plan.offs[j]: return no
     plan
 
+# how many instructions in [lo, hi] name v (define or use it)
+lx_appears = (code: Ins[], v: int, lo: int, hi: int) -> int:
+    n = 0
+    loop p in [lo..hi + 1):
+        d = o_operands(code[p])
+        if d == v:
+            n += 1
+            continue
+        loop u in o_buf:
+            if u == v:
+                n += 1
+                break
+    n
+
 # the vector of u: its own if made in the loop, else u in every lane (made once, in front)
 lx_splat = (pre: mut Ins[], vmap: mut {int: int}, u: int, k: int, ty: int) -> int:
     if let v = vmap.get(u): return v
@@ -345,6 +375,7 @@ lx_vloop = (code: Ins[], L: CLoop, checks: LCheck[], plan: VPlan, ty: int, out: 
     kind: {int: int}
     pre: Ins[]
     body: Ins[]
+    racc = fill(-1, lx_reds.len())
     loop p in [L.pl + 1..L.inc):
         if lx_in_check(p, checks): continue
         ins = code[p]
@@ -379,6 +410,24 @@ lx_vloop = (code: Ins[], L: CLoop, checks: LCheck[], plan: VPlan, ty: int, out: 
             vmap[d] = vmap[int(ins.a)]
             kind[d] = 2
             continue
+        ri = lx_reds.index_of(d)
+        if ri >= 0 and int(ins.ty) == VI:
+            # (an integer sum: partial sums in a vector, which starts at the identity)
+            if racc[ri] < 0:
+                z = vreg(VI)
+                iden = 0
+                if lx_red_ops[ri] == .and_: iden = -1
+                pre.push(Ins(.iconst, VI, i32(z), 0, 0, 0, iden))
+                racc[ri] = vreg(ty)
+                pre.push(Ins(.vsplat, i32(ty), i32(racc[ri]), i32(z), 0, 0, 3))
+            x = int(ins.b)
+            if int(ins.a) != d: x = int(ins.a)
+            ro = 0
+            if lx_red_ops[ri] == .and_: ro = 6
+            else if lx_red_ops[ri] == .or_: ro = 7
+            else if lx_red_ops[ri] == .xor: ro = 8
+            body.push(Ins(.vbin, i32(ty), i32(racc[ri]), i32(racc[ri]), i32(vmap[x]), i32(ro), 3))
+            continue
         # arithmetic: the element kind from an operand with lanes
         k = -1
         loop u in [int(ins.a), int(ins.b)]:
@@ -409,6 +458,19 @@ lx_vloop = (code: Ins[], L: CLoop, checks: LCheck[], plan: VPlan, ty: int, out: 
     t2 = lx_bin(out, .add, L.ctr, k_vreg(lanes - 1))
     out.push(Ins(.brif, 0, 0, i32(lx_bin(out, lt, t2, L.endv)), 0, 0, 0))
     out.push(Ins(.end, 0, 0, 0, 0, 0, 0))
+    # (the partial sums added into the sum, through memory: the rest of the loop goes on from there)
+    loop ri in 0.. and acc in lx_reds:
+        if racc[ri] < 0: continue
+        sl = new_slot(32, 32)
+        sa = vreg(VI)
+        out.push(Ins(.slot, VI, i32(sa), i32(sl), 0, 0, 0))
+        z = vreg(VI)
+        out.push(Ins(.iconst, VI, i32(z), 0, 0, 0, 0))
+        out.push(Ins(.vst, i32(ty), i32(z), i32(sa), i32(racc[ri]), 3, 0))
+        loop j in [0..lanes):
+            t = vreg(VI)
+            out.push(Ins(.load, VI, i32(t), i32(sa), 0, 8, j * 8))
+            out.push(Ins(lx_red_ops[ri], VI, i32(acc), i32(acc), i32(t), 0, 0))
     out.push(Ins(.end, 0, 0, 0, 0, 0, 0))
 
 # the vectorized part of L, in front of what finishes it one element at a time

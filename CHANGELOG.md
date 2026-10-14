@@ -7,6 +7,8 @@
   free to turn, before the bolts move on.
 
 From a performance-minded C programmer:
+- Release builds vectorize integer sums over a loop (and `&`, `|`, `xor`), with partial sums in
+  a vector added together after: 5x faster with AVX2, 3x with SSE2.
 - `sort_by`/`sorted_by` work out each element's key once (it was twice a comparison): 1.5x
   faster with a cheap key, much more with a costly one.
 - `sloppy check` lowers the program too (without making code), so it finds what a build would:

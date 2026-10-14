@@ -1201,7 +1201,8 @@ frame to frame and emptied with `clear()` keeps its memory. A closure made insid
 allocated each time round; make it once outside.
 
 **Loops the compiler can speed up.** `loop mut p in ps:` and `loop i in [0..n): a[i] ...`
-lose their bounds checks and vectorize in release builds. An index the compiler cannot follow
+lose their bounds checks and vectorize in release builds, as do integer sums over a loop
+(float sums keep their order, so that every machine gets the same result). An index the compiler cannot follow
 (`c[i * n + j]` in a matrix) keeps its check on each access: a row array per row (`c[i][j]`),
 `soa` arrays (section 8), or a pointer from `data(xs)` (section 13) let it go. Calls through
 function values (`reduce`, `sort_by`, a lambda) are not inlined: in a hot loop, write the loop.
