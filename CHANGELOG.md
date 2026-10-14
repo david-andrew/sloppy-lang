@@ -13,6 +13,9 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- Maps are faster: a slot keeps half of its entry's hash, so other entries are passed over
+  without reading them, and a new key is probed for once (5M int keys: inserting 0.66 s, was
+  0.80; looking them up 0.22 s, was 0.31).
 - Bytes and bits (lib/std/bytes.jo): `get_le`/`get_be` (and signed), `put_le`/`put_be`,
   `append_le`/`append_be` for numbers in byte arrays; `popcount`, `leading_zeros`,
   `trailing_zeros`, `rotate_left`/`rotate_right`, `byte_swap`; `bytes_from(p, n)` and

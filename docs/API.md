@@ -280,7 +280,7 @@ Hash map {K: V}: insertion ordered, open addressing over a dense entry list. The
   struct Map[K, V]:
       keys: K[]
       vals: V[]
-      slots: i32[]      # 0 = empty, otherwise entry index + 1
+      slots: u64[]      # 0 = empty, otherwise the entry's hash's upper 32 bits | entry index + 1
       hashes: u64[]
   ```
 - `hash = (x: int) -> u64`: full 64-bit avalanche (murmur3 finalizer): every key bit affects the low bits used for slots, so keys like multiples of 4096 or float bit patterns spread out
