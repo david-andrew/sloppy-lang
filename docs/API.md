@@ -388,8 +388,8 @@ Operating system access: files, arguments, environment, time.
 - `write = (s: str)`: print without a trailing newline
 - `flush_output = ()`: what print and write gave so far, written out now (output to a file or a pipe is collected and written in large pieces; to a terminal it goes at once anyway)
 - `is_terminal = () -> bool`: standard output is a terminal (not a file or a pipe)
-- `eprint = (s: str)`
-- `list_dir = (path: str) -> str[]`: names of the entries in a directory (excluding . and ..)
+- `eprint = (s: str)`: print to standard error (for messages about the program, kept apart from its output), and a line break
+- `list_dir = (path: str) -> str[]`: names of the entries in a directory (excluding . and ..); [] for a file or a path that is not there too (is_dir tells them apart)
 - `exe_path = () -> str`: absolute path of the running executable
 - `exec = (path: str, argv: str[]) -> bool`: replace the current process with another program (returns only on failure)
 - `spawn_detached = (path: str, argv: str[]) -> bool`: start a program in the background, detached from this one: its own session, no terminal (input and output go to /dev/null); returns whether it was started

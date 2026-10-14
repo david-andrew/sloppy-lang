@@ -15,7 +15,8 @@ args = ap.parse_args()
 run = lambda *a, **k: subprocess.run(a, check=True, cwd=root, **k)
 out = lambda *a: subprocess.run(a, check=True, cwd=root, capture_output=True, text=True).stdout.strip()
 tmp = tempfile.mkdtemp(prefix="sloppy-speed-")
-env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"))
+# (one process: the counters see the compiler's process only, not code-generation workers)
+env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_EMIT_WORKERS="1")
 
 if not os.path.exists(os.path.join(root, "tools", "icount")):
     run("cc", "-O2", "-o", "tools/icount", "tools/icount.c")

@@ -987,7 +987,7 @@ extern cbrt = (x: f64) -> f64
 extern gl_clear_native = (mask: u32)
 
 @lib("libc.so.6")
-@variadic(2)                       # C's `...` after the first two parameters
+@variadic(3)                       # C's `...` after the first three parameters
 extern snprintf = (buf: *u8, n: int, fmt: *u8, x: f64) -> i32
 ```
 

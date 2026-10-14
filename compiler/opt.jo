@@ -127,7 +127,7 @@ o_rewrite = (ins: mut Ins):
 o_pure = (op: Op) -> bool:
     match op:
         iconst, fconst, mov, slot, gaddr, daddr, faddr, load: true
-        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_: true
+        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_, mulhs: true
         eq, ne, lts, les, gts, ges, ltu, leu, gtu, geu: true
         fadd, fsub, fmul, fdiv, fneg, fsqrt, fmin, fmax, ffloor, fceil, fabs, ftrunc: true
         feq, fne, flt, fle, fgt, fge: true
@@ -440,7 +440,7 @@ stable = (v: int) -> bool: o_ndef[v] == 1 and o_first[v] > o_defpos[v]
 cse_op = (op: Op) -> bool:
     match op:
         iconst, fconst, slot, gaddr, daddr, faddr, load: true
-        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_: true
+        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_, mulhs: true
         eq, ne, lts, les, gts, ges, ltu, leu, gtu, geu: true
         fadd, fsub, fmul, fdiv, fneg, fsqrt, fmin, fmax, ffloor, fceil, fabs, ftrunc: true
         feq, fne, flt, fle, fgt, fge: true
@@ -662,7 +662,50 @@ o_simplify = (ins0: Ins, pos: int):
                 t4 = o_bin(.and_, o_tmp(), t3, o_kconst(-k))
                 o_bin(.sub, d, a, t4)
             return
+    if (op == .divs or op == .rems) and k > 1 and sh <= 0 and mulh_ok:
+        # by any other constant: a multiply by a "magic" number, its high half, a shift, and a
+        # one added to negative dividends (Hacker's Delight 10-1), as C compilers do
+        mag, s = div_magic(k)
+        q = o_bin(.mulhs, o_tmp(), a, o_kconst(mag))
+        if mag < 0: q = o_bin(.add, o_tmp(), q, a)
+        if s > 0: q = o_bin(.shrs, o_tmp(), q, o_kconst(s))
+        neg = o_bin(.shru, o_tmp(), a, o_kconst(63))
+        if op == .divs:
+            o_bin(.add, d, q, neg)
+        else:
+            qq = o_bin(.add, o_tmp(), q, neg)
+            t = o_bin(.mul, o_tmp(), qq, o_kconst(k))
+            o_bin(.sub, d, a, t)
+        return
     o_emit(ins)
+
+# the magic number and shift for dividing a signed 64-bit integer by d (d >= 2): q = mulhs(n, m)
+# (+ n when m < 0) >> s, plus 1 when n < 0
+div_magic = (d: int) -> (int, int):
+    two63: u64 = 0x8000000000000000
+    ad = u64(d)
+    t = two63
+    anc = t - 1 - t % ad
+    p = 63
+    q1 = two63 / anc
+    r1 = two63 - q1 * anc
+    q2 = two63 / ad
+    r2 = two63 - q2 * ad
+    loop true:
+        p += 1
+        q1 = q1 * 2
+        r1 = r1 * 2
+        if r1 >= anc:
+            q1 += 1
+            r1 -= anc
+        q2 = q2 * 2
+        r2 = r2 * 2
+        if r2 >= ad:
+            q2 += 1
+            r2 -= ad
+        delta = ad - r2
+        if not (q1 < delta or (q1 == delta and r1 == 0)): break
+    (int(q2 + 1), p - 64)
 
 # ---------------- small slots to registers ----------------
 # Vectors (vec2..vec4) are values in memory: each operation writes a temporary in the frame and
@@ -1343,7 +1386,7 @@ o_negate = (op: Op) -> Op:
 # instructions whose result register may be renamed
 o_retargetable = (op: Op) -> bool:
     match op:
-        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_, load, mov: true
+        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_, load, mov, mulhs: true
         eq, ne, lts, les, gts, ges, ltu, leu, gtu, geu: true
         fadd, fsub, fmul, fdiv, fneg, fsqrt, fmin, fmax, ffloor, fceil, fabs, ftrunc: true
         sext8, sext16, sext32, zext8, zext16, zext32, i2f, u2f, f2i, f2f, bits2f, f2bits, fconst, iconst: true

@@ -22,6 +22,11 @@ Language and library:
   `s as *u8` on a string or an array (it gave the header's address; `data(s)` is what C wants);
   hints for comparing a union with one of its members.
 - `@noinline`: release builds call the function rather than copy it into its callers.
+- Formats `{x:e}`, `{x:.3E}`, `{x:g}` (as Python's), and `d` and `s` accepted; a format the
+  library does not know is an error (`{x:.3z}` printed the number as if it were not there).
+- A `@cabi` function can be given straight to a C function's callback parameter.
+- Release builds divide by a constant with a multiply (6.6 times faster histogram binning), and
+  a loop over a string's bytes by index has no bounds checks, as one over an array has.
 - A `match` statement on an enum or a union names each variant or has `_:`, as a match giving
   a value did (the language reference said so; a state added later is not left out quietly).
 - Messages for habits from Unity and C#: `new T(...)`, `switch`, `yield`, `x?.f`,
