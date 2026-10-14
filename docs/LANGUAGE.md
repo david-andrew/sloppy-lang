@@ -197,6 +197,7 @@ four for others (`é`, `ж`, `中`, `😀`). Its bytes are what the basic operat
 | `chr(233)` | the character with that number, as a `str`: `"é"` (`byte_str(b)`: a one-byte `str`) |
 | `split(s, "")` | each character, as a `str` |
 | `text_width(s, size)` | how wide it is drawn, in pixels (what a text box needs) |
+| `wrap_text(s, width, size)` | its lines, broken at spaces to fit a width (`text_wrapped` draws them) |
 
 `find`, `replace`, `split`, `trim`, `starts_with` and the other functions on text work on any
 text, since a character's bytes never look like another's. For text from players or files, count

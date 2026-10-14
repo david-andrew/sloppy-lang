@@ -144,10 +144,19 @@ __gfx_init = ():
     white = image(1, 1, vec4(1, 1, 1, 1))
     __white = texture(white)
     # default font (signed distance field atlas)
-    font_img = load_image(embed("assets/font.png"))
+    __font_init()
+    same = __font.texture.id == __default_font.texture.id
+    __default_font.texture = texture(load_image(embed("assets/font.png")), true)
+    if same: __font = __default_font
+
+# the built-in font's sizes (text_width works before there is a window)
+__font_ready = false
+__font_init = ():
+    if __font_ready: return
+    __font_ready = true
     meta = lines(str_from_bytes(embed("assets/font.txt")))
     head = words(meta[0])
-    f = Font(texture(font_img, true), {}, fill(-1, 128), [], to_int(head[1]) ?? 16, to_float(head[0]) ?? 48.0, to_float(head[5]) ?? 34.0, to_float(head[3]) ?? 36.0, to_float(head[4]) ?? 6.0)
+    f = Font(Texture(0, 1, 1), {}, fill(-1, 128), [], to_int(head[1]) ?? 16, to_float(head[0]) ?? 48.0, to_float(head[5]) ?? 34.0, to_float(head[3]) ?? 36.0, to_float(head[4]) ?? 6.0)
     loop i in 0.. and a in words(meta[1]):
         f.adv.push(to_float(a) ?? 10.0)
         f.slots[32 + i] = i
@@ -586,18 +595,68 @@ __glyph = (f: Font, c: int) -> int:
     if c < 128: return f.ascii[c]
     f.slots.get(c, -1)
 
+# how wide text is drawn (the widest of its lines)
 text_width = (s: str, size: f64 = 20.0) -> f64:
-    __gfx_init()
+    __font_init()
     k = size / __font.px
     w = 0.0
+    widest = 0.0
     i = 0
     loop i < len(s):
         r = __next_char(s, i)
         i = r.1
+        if r.0 == '\n':
+            widest = max(widest, w)
+            w = 0.0
+            continue
         g = __glyph(__font, r.0)
         if g < 0 and r.0 >= 32: g = __glyph(__font, '?')
         if g >= 0: w += __font.adv[g] * k
-    w
+    max(widest, w)
+
+# how tall text is drawn: its lines, each size * 1.25 below the one before
+text_height = (s: str, size: f64 = 20.0) -> f64: size + f64(s.count("\n")) * size * 1.25
+
+enum Align:
+    left
+    center
+    right
+
+# s broken into lines no wider than width, at spaces (a word wider than that has a line of its
+# own; a line break in s starts a new line)
+wrap_text = (s: str, width: f64, size: f64 = 20.0) -> str[]:
+    out: str[]
+    space = text_width(" ", size)
+    loop para in s.split("\n"):
+        line = ""
+        w = 0.0
+        loop word in para.split(" "):
+            if len(word) == 0: continue
+            ww = text_width(word, size)
+            if len(line) > 0 and w + space + ww > width:
+                out.push(line)
+                line = ""
+                w = 0.0
+            if len(line) > 0:
+                line += " "
+                w += space
+            line += word
+            w += ww
+        out.push(line)
+    out
+
+# text in a column `width` wide from pos (its top-left corner), broken into lines at spaces,
+# each line to the left, centered or to the right; the height it took (LÖVE's printf)
+text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), align: Align = .left) -> f64:
+    lines = wrap_text(s, width, size)
+    y = f64(pos.y)
+    loop line in lines:
+        x = f64(pos.x)
+        if align == .center: x += (width - text_width(line, size)) / 2.0
+        else if align == .right: x += width - text_width(line, size)
+        text(line, vec2(x, y), size, color)
+        y += size * 1.25
+    f64(lines.len()) * size * 1.25
 
 # draw text with its top-left corner at `pos` (characters the font does not have show as ?)
 text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1)):
@@ -637,6 +696,12 @@ text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1)):
             __quad(vec2(x0, y0), vec2(x0 + s_, y0), vec2(x0 + s_, y0 + s_), vec2(x0, y0 + s_), vec2(u0, v0), vec2(u1, v0), vec2(u1, v1), vec2(u0, v1), color, 1)
         x += f32(f.adv[g]) * k
 
-# text centered on `center` (horizontally and vertically)
+# text centered on `center` (horizontally and vertically; each of its lines centered)
 text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1)):
-    text(s, center - vec2(f32(text_width(s, size) / 2.0), f32(size / 2.0)), size, color)
+    if s.count("\n") == 0:
+        text(s, center - vec2(f32(text_width(s, size) / 2.0), f32(size / 2.0)), size, color)
+        return
+    y = f64(center.y) - text_height(s, size) / 2.0
+    loop line in s.split("\n"):
+        text(line, vec2(f64(center.x) - text_width(line, size) / 2.0, y), size, color)
+        y += size * 1.25

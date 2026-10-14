@@ -1233,9 +1233,19 @@ draw = ():
 
 - `set_font = (f: Font)`: the font text() and text_width() use (load_font makes one); set_font() goes back to the built-in
 - `set_font = ()`
-- `text_width = (s: str, size: f64 = 20.0) -> f64`
+- `text_width = (s: str, size: f64 = 20.0) -> f64`: how wide text is drawn (the widest of its lines)
+- `text_height = (s: str, size: f64 = 20.0) -> f64`: how tall text is drawn: its lines, each size * 1.25 below the one before
+- `enum Align:`
+  ```gdscript
+  enum Align:
+      left
+      center
+      right
+  ```
+- `wrap_text = (s: str, width: f64, size: f64 = 20.0) -> str[]`: s broken into lines no wider than width, at spaces (a word wider than that has a line of its own; a line break in s starts a new line)
+- `text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), align: Align = .left) -> f64`: text in a column `width` wide from pos (its top-left corner), broken into lines at spaces, each line to the left, centered or to the right; the height it took (LÖVE's printf)
 - `text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1))`: draw text with its top-left corner at `pos` (characters the font does not have show as ?)
-- `text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1))`: text centered on `center` (horizontally and vertically)
+- `text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1))`: text centered on `center` (horizontally and vertically; each of its lines centered)
 
 ### font.jo
 

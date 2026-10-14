@@ -13,6 +13,11 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `text_wrapped(s, pos, width, size, color, align)` draws text broken into lines at spaces, each
+  to the left, centered or to the right (LÖVE's `printf`), and gives the height it took;
+  `wrap_text` gives the lines and `text_height` how tall text is. `text_centered` centers each
+  line of text with line breaks, `text_width` is that of the widest line, and it works before
+  there is a window (it stopped the program with a shader error).
 - A row or column of a `T[,]` goes where a `T[]` is expected (`argmax(m[0, ..])`, a function of
   the program's own).
 - Matrix products are 6 to 7 times faster (no bounds checks inside; big ones are shared among
