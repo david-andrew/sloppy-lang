@@ -1815,6 +1815,9 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
       looping: bool
       id: int
       stream = false      # music, decoded as it plays (play_music): its __Stream has this id
+      fade_to: f32 = 0.0  # (fade_volume: the volume it is going to, in fade_time seconds)
+      fade_time = 0.0
+      fade_stop = false   # (fade_out: stopped when the fade ends)
   ```
 - `enum Wave: sine, square, triangle, saw, noise`
 - `const MIX_RATE = 48000`
@@ -1825,6 +1828,9 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
 - `stop_all = ()`
 - `is_playing = (id: int) -> bool`
 - `set_volume = (id: int, volume: f64)`
+- `fade_volume = (id: int, volume: f64, seconds: f64)`: change a voice's volume gradually, over `seconds`
+- `fade_out = (id: int, seconds: f64 = 1.0)`: fade a voice to silence over `seconds`, then stop it
+- `crossfade = (old: int, s: Sound, seconds: f64 = 1.0, volume: f64 = 1.0, looping: bool = true) -> int`: fade out the voice `old` while `s` starts silent and fades in to `volume`: from one music or ambience loop to the next (returns the new voice; old may be 0 or already stopped)
 - `set_pitch = (id: int, pitch: f64)`
 - `set_pan = (id: int, pan: f64)`
 
@@ -1883,6 +1889,7 @@ play(music, 0.6, looping = true)
   ```
 - `load_music = (file: u8[]) -> Music`
 - `play_music = (m: Music, volume: f64 = 1.0, looping: bool = true, pan: f64 = 0.0) -> int`: play music from its start; returns a voice id for stop(), set_volume() and is_playing()
+- `crossfade = (old: int, m: Music, seconds: f64 = 1.0, volume: f64 = 1.0, looping: bool = true) -> int`: fade out the voice `old` while music m starts silent and fades in to `volume` (returns the music's voice; old may be 0 or already stopped)
 - `struct OggAudio`: the samples as the file has them (interleaved, d.channels of them, at d.rate)
   ```gdscript
   struct OggAudio:

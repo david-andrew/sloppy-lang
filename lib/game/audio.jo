@@ -16,6 +16,9 @@ struct Voice:
     looping: bool
     id: int
     stream = false      # music, decoded as it plays (play_music): its __Stream has this id
+    fade_to: f32 = 0.0  # (fade_volume: the volume it is going to, in fade_time seconds)
+    fade_time = 0.0
+    fade_stop = false   # (fade_out: stopped when the fade ends)
 
 enum Wave: sine, square, triangle, saw, noise
 
@@ -55,7 +58,31 @@ is_playing = (id: int) -> bool:
     false
 set_volume = (id: int, volume: f64):
     loop mut v in __voices:
-        if v.id == id: v.volume = f32(volume)
+        if v.id == id:
+            v.volume = f32(volume)
+            v.fade_time = 0.0
+            v.fade_stop = false
+# change a voice's volume gradually, over `seconds`
+fade_volume = (id: int, volume: f64, seconds: f64):
+    loop mut v in __voices:
+        if v.id == id:
+            v.fade_to = f32(volume)
+            v.fade_time = max(seconds, 0.001)
+            v.fade_stop = false
+# fade a voice to silence over `seconds`, then stop it
+fade_out = (id: int, seconds: f64 = 1.0):
+    loop mut v in __voices:
+        if v.id == id:
+            v.fade_to = 0.0
+            v.fade_time = max(seconds, 0.001)
+            v.fade_stop = true
+# fade out the voice `old` while `s` starts silent and fades in to `volume`: from one music or
+# ambience loop to the next (returns the new voice; old may be 0 or already stopped)
+crossfade = (old: int, s: Sound, seconds: f64 = 1.0, volume: f64 = 1.0, looping: bool = true) -> int:
+    fade_out(old, seconds)
+    id = play(s, 0.0, looping = looping)
+    fade_volume(id, volume, seconds)
+    id
 set_pitch = (id: int, pitch: f64):
     loop mut v in __voices:
         if v.id == id: v.pitch = pitch
@@ -111,6 +138,16 @@ __mix = (n: int):
     i = 0
     loop i < __voices.len():
         v = __voices[i]
+        # (a fade: the volume moves once per call, about once a frame)
+        if v.fade_time > 0.0:
+            step = f64(n) / f64(MIX_RATE)
+            k = f32(min(step / v.fade_time, 1.0))
+            __voices[i].volume = v.volume + k * (v.fade_to - v.volume)
+            __voices[i].fade_time = max(v.fade_time - step, 0.0)
+            if __voices[i].fade_time == 0.0 and v.fade_stop:
+                stop(v.id)
+                continue
+            v = __voices[i]
         if v.stream:
             if __mix_stream(i, out, n): i += 1
             else: __voices.remove(i)
