@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+From a teacher preparing a first programming class:
+- `input(prompt)`, `input_int(prompt)` and `input_float(prompt)`: a line typed by the user, and
+  numbers, asked again until what was typed is one.
+- Web pages read standard input: in a browser, a box asks for each line (showing what the
+  program printed last), so programs that ask questions work in the playground; under node,
+  the real standard input.
+- A warning for `random_int(1, 6)` (a die): the upper end is left out.
+- Clearer errors: printing an empty `[]`; text and a number added (`age + 1` with age read as
+  text); a character's code compared with text, or added to text; `print(hello world)`; a
+  function that only prints used for its value; `(x: int) x * 2` without its `:`; a function
+  whose last line makes a variable instead of giving it back; a line indented to no level
+  above; an array of mixed kinds; a string without its closing quote; `!` on none at run time;
+  "an int" for "a int".
+- The REPL: `:type print` (and the other built-ins, `len` of an array) says what they are;
+  `:quit`, `:exit` and `:doc` work.
+- docs/TEACHING.md: running it in a class, programs that ask questions, an order to teach things
+  in, the usual mistakes, and grading with `sloppy test`.
+
 - Rebound: choosing an upgrade with the mouse no longer turns the shield toward the card (it
   stays where it was until the pointer moves), and the arena waits half a second, the shield
   free to turn, before the bolts move on.

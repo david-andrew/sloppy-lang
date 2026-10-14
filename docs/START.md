@@ -191,6 +191,7 @@ the file calls it).
 - [Make a game](TUTORIAL.md): a small platformer, built step by step. Then
   [an arcade game](TUTORIAL_REBOUND.md) and [a 3D shooter](TUTORIAL_BREAKWATER.md).
 - [The language](LANGUAGE.md): everything Sloppy has, with examples.
+- [Teaching with Sloppy](TEACHING.md): for a class, an order to teach things in, and grading.
 - [The library](API.md): windows, input, drawing in 2D and 3D, sound, files and the rest.
 - [The playground](https://sloppy-lang.org/playground/) has more examples, including two
   complete games.

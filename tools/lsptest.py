@@ -309,7 +309,7 @@ use_helper = ():
 check("several errors", [(d["range"]["start"]["line"], d["message"]) for d in c.diagnostics(euri)],
       [(1, "expected an expression here"), (5, "type mismatch: expected int, found str"), (9, "int has no field 'nope'")])
 c.set_text(euri, "x = 1.5\ny = x + \"s\"\n")
-check("operator error", [d["message"] for d in c.diagnostics(euri)], ["operator + is not defined for f64 and str"])
+check("operator error", [d["message"] for d in c.diagnostics(euri)], ["operator + is not defined for f64 and str (text is not a number, even when it holds digits: `to_int(s)` or `input_int(...)` makes a number, and `\"{x}\"` puts a number in text)"])
 c.set_text(euri, "x = 1\n")
 check("errors cleared", c.diagnostics(euri), [])
 # (the build block's target decides which `when` branch is checked, as in a build)

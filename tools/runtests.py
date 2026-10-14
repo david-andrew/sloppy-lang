@@ -44,7 +44,7 @@ for t in tests:
         continue
     # (name.in, when there is one, is the test's standard input; Wine's container is not given it)
     stdin_data = open(t[:-3] + ".in", encoding="utf-8").read() if os.path.exists(t[:-3] + ".in") else ""
-    if stdin_data and target in ("wasm", "windows"):
+    if stdin_data and target == "windows":
         continue
     if compiler == "sloppy0":
         cmd = [os.path.join(root, "stage0", "sloppy0"), t, "-o", exe]

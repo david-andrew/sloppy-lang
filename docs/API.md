@@ -440,7 +440,7 @@ Math basics.
 - `seed_random = (seed: int)`
 - `random = () -> f64`: random f64 in [0, 1)
 - `random = (lo: f64, hi: f64) -> f64`: random f64 in [lo, hi)
-- `random_int = (lo: int, hi: int) -> int`: random int in [lo, hi)
+- `random_int = (lo: int, hi: int) -> int`: a random whole number from lo up to hi, hi left out (as in [lo..hi)): random_int(0, xs.len()) picks a position, and a die is random_int(1, 7)
 - `random_item[T] = (xs: T[]) -> T`: a random element of xs (which must not be empty)
 - `shuffle[T] = (xs: mut T[])`: put xs in a random order
 
@@ -470,7 +470,10 @@ Operating system access: files, arguments, environment, time.
 - `env = (name: str) -> str?`: an environment variable (in a web page: the page's URL parameter of that name, where `SLOPPY_X` may also be written `x`, and a bare `?x` is "1")
 - `read_file = (path: str) -> str?`: read a whole file; none if it cannot be read (or is a directory)
 - `read_line = () -> str?`: a line typed in (or piped in), without its end; none when the input has ended
-- `read_stdin = () -> str`: all of standard input (what is piped in), until it ends
+- `input = (prompt: str = "") -> str`: all of standard input (what is piped in), until it ends a line typed by the user, after showing the prompt (Python's input): "" once the input ends. In a web page, a box asks for it.
+- `input_int = (prompt: str = "") -> int`: a whole number typed by the user, asked again until it is one
+- `input_float = (prompt: str = "") -> f64`: a number (12, 2.5) typed by the user, asked again until it is one
+- `read_stdin = () -> str`
 - `read_bytes = (path: str) -> u8[]?`
 - `write_file = (path: str, contents: str) -> bool`
 - `write_bytes = (path: str, b: u8[]) -> bool`

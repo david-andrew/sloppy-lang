@@ -284,6 +284,8 @@ coerce = (n: int, target: int) -> int:
         return n
     if fk == .typeval: fatal(nodes[n].pos, "expected a value of type {type_str(to)}, found a type name")
     why = variant_hint(n, to)
+    # (shown += c with c from a loop over a string: a character's code)
+    if len(why) == 0 and tkind(to) == .str_ and type_eq(prune(from), T_U8): why = " (a string's elements are character codes, numbers: `chr(c)` is the character as text)"
     if fk == .void_: why = void_rec_hint(n)
     if fk == .null_: why = " (`null` is for C's pointers; a value that may be missing is `none`)"
     if fk == .fn_ and tk == .fn_ and int(types[prune(from)].nargs) == int(types[prune(to)].nargs):
@@ -1195,6 +1197,10 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
     if (name == id_rgb or name == id_rgba) and np >= 3 and decl_in_prelude(decl): rgb_check(n, cd.args)
     if decl_in_prelude(decl) and not pos_in_lib(nodes[n].pos):
         angle_check(decl, cd.args)
+        # (random_int(1, 6) for a die: its upper end is left out, as in [1..6))
+        if name_of(int(nodes[decl].name)) == "random_int" and cd.args.len() == 2 and cd.args[0] != 0 and cd.args[1] != 0 and nodes[cd.args[0]].kind == .int_lit and nodes[cd.args[1]].kind == .int_lit and nodes[cd.args[0]].ival == 1 and nodes[cd.args[1]].ival >= 2:
+            hi = nodes[cd.args[1]].ival
+            warn(nodes[n].pos, "random_int(1, {hi}) gives 1 to {hi - 1}: its upper end is left out, as in [1..{hi}); random_int(1, {hi + 1}) gives 1 to {hi}")
         # (read_bytes("assets/hero.png") in a web page: it has no disk to read the file from)
         if target_wasm and cd.args.len() > 0 and cd.args[0] != 0 and nodes[cd.args[0]].kind == .str_lit and nodes[cd.args[0]].aux == 0:
             fnm = name_of(int(nodes[decl].name))
@@ -1632,6 +1638,12 @@ brace_before = (p: int) -> bool:
     src = files[f].src
     o > 0 and o <= len(src) and src[o - 1] == u8(123)          # ('{')
 
+# "a str", "an int", "an f64": a type named with its article
+a_type = (t: int) -> str:
+    s = type_str(t)
+    if len(s) > 0 and (s[0] == 'a' or s[0] == 'e' or s[0] == 'i' or s[0] == 'o' or s[0] == 'f' or s[0] == 'A' or s[0] == 'E' or s[0] == 'I' or s[0] == 'O'): return "an {s}"
+    "a {s}"
+
 coerce_hint = ""     # (said after a type mismatch, by what asked for the type)
 
 # rotation_y(45): an angle in degrees given where radians go
@@ -2012,6 +2024,8 @@ cmp_error = (n: int, ta: int, tb: int):
     if len(why) == 0 and tkind(ta) == .opt and type_eq(prune(int(types[prune(ta)].elem)), prune(tb)):
         # (env("X") != "": the optional may be none)
         why = " (it may be none: `(x ?? default) == value` compares its value, or a default when there is none; `if let v = x:` names the value)"
+    if len(why) == 0 and ((type_eq(prune(ta), T_U8) and tkind(tb) == .str_) or (tkind(ta) == .str_ and type_eq(prune(tb), T_U8))):
+        why = " (`s[i]` is a character's code, a number: the character as text is `s[i..i]`)"
     fatal(nodes[n].pos, "cannot compare {type_str(ta)} with {type_str(tb)}{why}")
 
 # "space" given where a Key goes: " (write `.space`)"
@@ -2078,7 +2092,7 @@ opt_cmp_error = (n: int, a: int, b: int, ta: int, tb: int):
         if at > 0:
             ln, c = line_col(at)
             where = " where line {ln} makes it"
-        fatal(nodes[n].pos, "'{nm}' may be none (it is a {type_str(tx)}), so it cannot be compared with <, >: say what to use then{where} (`... ?? {dv}`), or `if let v = {nm}: ...`")
+        fatal(nodes[n].pos, "'{nm}' may be none (it is {a_type(tx)}), so it cannot be compared with <, >: say what to use then{where} (`... ?? {dv}`), or `if let v = {nm}: ...`")
     fatal(nodes[n].pos, "optionals can only be compared with == and !=")
 
 # (play(sfx_chime), input_axis * 400: a function's name where its result was meant)
@@ -2881,7 +2895,11 @@ check_binary = (n: int, expected: int) -> int:
         tb = prune(check_expr(b, h))
     # (s[0] + "!": a byte and a character's code added, which reads like text joined)
     if b_char and is_int(ta) and not is_lit(a) and is_int(tb):
-        warn(nodes[n].pos, "this adds the character code of {name_of(int(nodes[b].sval))} to a number (s[i] is a byte): for text, chr(x) + ... or \"\{chr(x)}...\"")
+        ch = name_of(int(nodes[b].sval))
+        if nodes[a].kind == .ident:
+            an = name_of(int(nodes[a].name))
+            warn(nodes[n].pos, "this adds the character code of {ch} to a number, not text to text: for text, write `\"\{{an}}{ch}\"` (and when {an} is a character from s[i], `chr({an}) + \"{ch}\"`)")
+        else: warn(nodes[n].pos, "this adds the character code of {ch} to a number, not text to text (s[i] is a character's code): `chr(s[i]) + \"{ch}\"` joins text")
     if a_char and is_int(tb) and not is_lit(b) and is_int(ta):
         warn(nodes[n].pos, "this adds a character code and a number: for text, ... + chr(x)")
     if types[ta].kind == .typeval or types[tb].kind == .typeval: fatal(nodes[n].pos, "a type name cannot be used as a value here")
@@ -3036,7 +3054,19 @@ check_binary = (n: int, expected: int) -> int:
         else if (tka == .array and is_numeric(int(types[ta].elem))) or (tkb == .array and is_numeric(int(types[tb].elem))):
             if op == .plus or op == .minus or op == .star or op == .slash or op == .percent: why = " (for each element: .{tok_text(op)}, as in xs .{tok_text(op)} 2.0)"
         if len(why) == 0 and op == .percent and tka == .str_: why = " (a value goes into text inside braces, with its format: \"\{x:.2f}\")"
+        # (age + 1 with age from read_line: text, not a number)
+        if len(why) == 0:
+            sa = tka == .str_ or (tka == .opt and tkind(int(types[ta].elem)) == .str_)
+            sb = tkb == .str_ or (tkb == .opt and tkind(int(types[tb].elem)) == .str_)
+            if (sa and is_numeric(tb)) or (sb and is_numeric(ta)): why = " (text is not a number, even when it holds digits: `to_int(s)` or `input_int(...)` makes a number, and `\"\{x}\"` puts a number in text)"
         if len(why) == 0: why = void_rec_hint(a) + void_rec_hint(b) + uncalled_hint(a, 0) + uncalled_hint(b, 0)
+        # (square(4) + 1 with a square that prints: it gives nothing back)
+        if len(why) == 0:
+            loop x in [a, b]:
+                if tkind(ntype(x)) == .void_ and nodes[x].kind == .call and nodes[x].sym > 0 and int(nodes[x].sym) < fns.len() and fns[int(nodes[x].sym)].decl != 0:
+                    fnm = name_of(int(nodes[int(fns[int(nodes[x].sym)].decl)].name))
+                    why = " ('{fnm}' gives nothing back (printing is not giving back): end it with the value it should give, and write `-> int` after its parameters)"
+                    break
         fatal(nodes[n].pos, "operator {tok_text(op)} is not defined for {type_str(ta)} and {type_str(tb)}{why}")
     if is_lit(a) and is_lit(b) and not is_cmp:
         # fold literal arithmetic, keeping the result an untyped literal
@@ -3961,10 +3991,13 @@ check_expr = (n: int, expected: int) -> int:
                 if allchar: elt = T_STR
                 else if anyfloat: elt = T_FLOAT
                 else: elt = T_INT
+            # ([1, "two", 3]: an array holds one kind of value)
+            coerce_hint = " (an array holds one kind of value, here {type_str(elt)}; for values of several kinds, make a struct or a union)"
             loop i in [0..nkids(n)):
                 c = kid(n, i)
                 if has_flag(c, NF_SPREAD): coerce(c, mk_array(elt))
                 else: coerce(c, elt)
+            coerce_hint = ""
             if spread: nodes[n].aux = 2
             if et != 0 and tkind(prune(et)) != .var: t = ex
             else: t = mk_array(elt)
