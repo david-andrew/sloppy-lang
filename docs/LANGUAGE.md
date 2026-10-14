@@ -78,8 +78,9 @@ piped in (`sloppy < script.txt`).
 * Strings: `"text {expr} more {value:.2}"` and `'the same'` — the two quotes are
   interchangeable, and both may span lines. `{}` interpolates any expression in either kind
   (so text with braces, such as JSON, needs `{{` and `}}` for literal braces, or a raw string). Escapes: `\n \t \r \0 \\ \" \' \xNN`. Format specs follow Python:
-  `[[fill]align][+][0][width][,][.precision][type]` with align `<` `>` `^` and type `x` `X`
-  `b` `o` `f` `%` — `{price:>8.2}`, `{n:,}`, `{ratio:.1%}`, `{name:<12}`, `{bits:08b}`.
+  `[[fill]align][+][#][0][width][,][.precision][type]` with align `<` `>` `^` and type `x` `X`
+  `b` `o` `f` `e` `g` `%` — `{price:>8.2}`, `{n:,}`, `{ratio:.1%}`, `{name:<12}`, `{bits:08b}`,
+  `{addr:#x}` (with `0x`). `{x=}` shows the expression before its value (`x=5`), for debugging.
   Raw strings `r"no {interp} \here"` (or `r'...'`: JSON in code is `r'{"a": 1}'`). Triple
   quoted `"""docstrings"""` are dedented.
 * **Characters.** A one-character string where an integer is expected stands for its

@@ -13,6 +13,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `{x=}` in a string shows `x=` and then the value (Python's debugging form); a `#` in a format
+  puts `0x`, `0b` or `0o` before the digits (`{255:#06x}` is `0x00ff`).
 - `a, b = xs` unpacks an array of exactly that many elements (2 to 4; another length panics):
   `key, value = line.split("=", 1)`.
 - `words` and `split` with a one-byte separator are about twice as fast (44 MB of text: 8 million
