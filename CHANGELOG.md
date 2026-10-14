@@ -10,6 +10,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `words` and `split` with a one-byte separator are about twice as fast (44 MB of text: 8 million
+  words in 0.41 s, was 0.78; Python's split takes 0.44).
 - Dates: `now()` and `date(t)` give a `Date` (year, month, day, hour, minute, second,
   weekday, offset) in the computer's time zone or UTC, `unix_time()` is the wall clock,
   `unix_time(d)` goes back, `date_text`, `month_name`, `weekday_name`, `utc_offset`. Time zones
