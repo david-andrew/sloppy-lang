@@ -46,6 +46,9 @@ struct Session[S, I]:
     rollbacks = 0                   # how many times a tick was played again, so far
     longest_rollback = 0
     desync = -1                     # the first tick at which two machines' games differed (-1: none)
+    problem = ""                    # what is wrong, said once on stderr too: packets that cannot be
+                                    # read (another build?), two players with one number, a
+                                    # player not heard from for 5 s, the games differing
     __states: S[]
     __inputs: I[]                   # [tick % HIST * players + player]
     __known: bool[]
@@ -151,6 +154,9 @@ play[S, I] = (s: mut Session[S, I], input: I):
         lead = (s.tick - s.__their_tick[p] - s.__their_adv[p]) / 2
         if lead >= 2 and s.__frames % 4 == 0: s.waiting = true
     if not s.waiting: __np_advance(s)
+    # (a player who was there and has gone quiet)
+    loop p in [0..s.players):
+        if p != s.me and s.__their_tick[p] > 0 and silent(s, p) > 5.0: __np_problem(s, "player {p} has not been heard from for 5 seconds (gone?)")
     __np_hash_confirmed(s)
     __np_send(s)
     if s.__sock >= 0: __np_udp_send(s)
@@ -168,9 +174,12 @@ outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]:
 # bytes that arrived from another player (the packet says which)
 receive[S, I] = (s: mut Session[S, I], data: u8[]):
     r = from_text[__NpPacket[I]](str_from_bytes(data))
-    if r is TextError: return
+    if r is TextError:
+        __np_problem(s, "a packet from another player could not be read as this game's input: does the other player run another build of the game? ({r.message})")
+        return
     pk = r
     p = pk.from
+    if p == s.me and pk.to != s.me: __np_problem(s, "two players are both player {p}: give each machine its own number (`me`)")
     if p < 0 or p >= s.players or p == s.me or pk.to != s.me: return
     s.__heard[p] = elapsed()
     s.__stamp[p] = pk.sent
@@ -188,6 +197,11 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
     if pk.check >= 0:
         s.__their_hashes[pk.check] = pk.hash
         __np_compare(s, pk.check)
+
+__np_problem[S, I] = (s: mut Session[S, I], what: str):
+    if len(s.problem) > 0: return
+    s.problem = what
+    eprint("netplay: {what}")
 
 __np_set[S, I] = (s: mut Session[S, I], p: int, t: int, inp: I):
     k = t % __NP_HIST * s.players + p
@@ -239,7 +253,9 @@ __np_hash_confirmed[S, I] = (s: mut Session[S, I]):
 __np_compare[S, I] = (s: mut Session[S, I], c: int):
     if let mine = s.__hashes.get(c):
         if let theirs = s.__their_hashes.get(c):
-            if mine != theirs and (s.desync < 0 or c < s.desync): s.desync = c
+            if mine != theirs and (s.desync < 0 or c < s.desync):
+                if s.desync < 0: __np_problem(s, "the games differ from tick {c} on: tick must give the same game for the same inputs on every machine (no random() without a seed in the game, no clock, no dt, no globals it changes)")
+                s.desync = c
 
 __np_send[S, I] = (s: mut Session[S, I]):
     loop p in [0..s.players):
@@ -283,9 +299,12 @@ __np_due[S, I] = (s: mut Session[S, I]):
 # ---------------- over UDP (native programs) ----------------
 # play over UDP: this machine listens on port, and each player p is at addrs[p] (this one's own
 # entry is not used)
+@no_web("does not work in a web page, which has no UDP: s.join_relay(host, port, room) plays through a relay (pages then connect straight to each other)")
 udp[S, I] = (s: mut Session[S, I], port: int, addrs: (str, int)[]):
+    when TARGET == "wasm":
+        panic("netplay: a web page has no UDP: s.join_relay(host, port, room) plays through a relay")
     s.__sock = net.udp(port)
-    if s.__sock < 0: panic("cannot use UDP port {port}")
+    if s.__sock < 0: panic("cannot use UDP port {port} (another program has it? each player on one machine needs its own)")
     s.__addrs = addrs
 
 __np_udp_receive[S, I] = (s: mut Session[S, I]):
@@ -498,6 +517,9 @@ const __CS_HIST = 64
 struct __CsClient[I]:
     queue: (int, int, I)[]          # inputs not applied yet: sequence number, the tick seen, input
     acked = 0                       # the last applied
+    credit = 1                      # inputs it may have applied now: one more each tick, a few kept
+                                    # (no faster than one a tick: sending two a tick moves no faster)
+    warned = false
 
 struct __CsInput[I]:
     seq: int
@@ -526,8 +548,11 @@ leave[W, I] = (s: mut Server[W, I], player: int):
 # bytes from a player
 receive[W, I] = (s: mut Server[W, I], player: int, data: u8[]):
     r = from_text[__CsInput[I]](str_from_bytes(data))
-    if r is TextError: return
     if not s.__clients.has(player): return
+    if r is TextError:
+        if not s.__clients[player].warned: eprint("netplay: an input from player {player} could not be read: does it run another build of the game? ({r.message})")
+        s.__clients[player].warned = true
+        return
     s.__clients[player].queue.push((r.seq, r.seen, r.input))
 
 # what to send to whom since the last call (without listen)
@@ -553,16 +578,21 @@ update[W, I] = (s: mut Server[W, I]):
     s.__came.clear()
     s.__went.clear()
     loop p, c in s.__clients:
-        # (one input a tick, as they are made; more when some have piled up, to catch up)
-        n = min(c.queue.len(), 1)
-        if c.queue.len() > 3: n = c.queue.len() - 2
+        # (one input a tick, as they are made; a few more after a pause, to catch up, but never
+        # more than one a tick over time: a client sending two a tick moves no faster)
+        cr = min(c.credit + 1, 4)
+        n = min(c.queue.len(), cr)
+        s.__clients[p].credit = cr - n
+        # (what piles up beyond that is dropped, the oldest first)
+        queue = c.queue
+        if queue.len() - n > 8: queue = queue[queue.len() - n - 8..]
         loop k in [0..n):
-            q = c.queue[k]
+            q = queue[k]
             seen = s.world
             if q.1 >= 0 and q.1 < s.tick and s.tick - q.1 < __CS_HIST: seen = s.__hist[q.1 % __CS_HIST]
             s.world = s.apply(s.world, p, q.2, seen)
             s.__clients[p].acked = q.0
-        if n > 0: s.__clients[p].queue = c.queue[n..]
+        if n > 0 or queue.len() != c.queue.len(): s.__clients[p].queue = queue[n..]
     s.world = s.step(s.world)
     s.tick += 1
     s.__hist[s.tick % __CS_HIST] = s.world
@@ -593,6 +623,9 @@ struct Client[W, I]:
     __got_at = 0                    # (its clock when the latest world came)
     __out: u8[][]
     __peer = -1
+    problem = ""                    # what is wrong, said once on stderr too: could not connect, the
+                                    # server gone or not heard from for 5 s, worlds that cannot be read
+    __heard = -1.0
 
 client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]:
     Client[W, I](apply = apply, state = start, server = start)
@@ -600,14 +633,23 @@ client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]:
 connect[W, I] = (c: mut Client[W, I], host: str, port: int):
     c.__peer = net.connect(host, port)
 
-# connected, and the server has sent a world
-connected[W, I] = (c: Client[W, I]) -> bool: c.me >= 0
+# connected, and the server has sent a world (and is still heard from)
+connected[W, I] = (c: Client[W, I]) -> bool: c.me >= 0 and len(c.problem) == 0
+
+__cs_problem[W, I] = (c: mut Client[W, I], what: str):
+    if len(c.problem) > 0: return
+    c.problem = what
+    eprint("netplay: {what}")
 
 # this tick's input: applied here at once (prediction) and sent
 play[W, I] = (c: mut Client[W, I], input: I):
     if c.__peer >= 0:
         loop e in net.receive([c.__peer]):
             if e.kind == .message: c.receive(e.data)
+            else if e.kind == .left:
+                if c.me < 0: __cs_problem(c, "could not connect to the server")
+                else: __cs_problem(c, "the server closed the connection")
+    if c.me >= 0 and c.__heard >= 0.0 and elapsed() - c.__heard > 5.0: __cs_problem(c, "the server has not been heard from for 5 seconds (gone?)")
     c.__clock += 1
     if c.me < 0: return
     c.__seq += 1
@@ -622,7 +664,10 @@ play[W, I] = (c: mut Client[W, I], input: I):
 # bytes from the server
 receive[W, I] = (c: mut Client[W, I], data: u8[]):
     r = from_text[__CsWorld[W]](str_from_bytes(data))
-    if r is TextError: return
+    if r is TextError:
+        __cs_problem(c, "a world from the server could not be read: does it run another build of the game? ({r.message})")
+        return
+    c.__heard = elapsed()
     if r.tick <= c.server_tick: return
     c.me = r.you
     c.server_tick = r.tick

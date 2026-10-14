@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+From a first try at multiplayer:
+- A client-server game's server applies at most one input of each player a tick over time (a
+  few more after a pause): a client that sent two a tick moved twice as fast.
+- `s.problem` (rollback) and `c.problem` (client) say what is wrong, once on stderr too:
+  packets that cannot be read (another build of the game), two machines with one player number,
+  a player or the server not heard from for 5 seconds, the games differing (`s.desync`), no
+  connection; `c.connected()` turns false when the server is gone.
+- A module's function named as a library one (`cm.step`) can be given where a function goes.
+- `s.udp` in a web page: a warning when building, and a message that says to use a relay.
+  `?STUN=` in a page's address is the empty text (it was "1"; `?stats` alone is still on).
+- MULTIPLAYER: what a tick must not do (globals, sounds: a rollback plays it again), testing with
+  different seeds, what a client predicts with, a server without a window, losing the server.
+
 From a game jam entry shipped to the browser:
 - Web pages bigger than 4 MB are compiled off the main thread: above 8 MB (a few music tracks
   embedded) Chrome and Edge refused to start them.

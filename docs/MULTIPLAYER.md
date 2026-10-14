@@ -52,13 +52,24 @@ machines:
 - `random()`: keep a seed in the game and draw from that (`hash(g.tick * 7 + i)` is one way);
 - the clock (`time()`, `elapsed()`) or `dt`: a tick is always 1/60 s;
 - anything outside the game: the window's size, the mouse in pixels (turn it into the input
-  first), files, the order of a map filled from the network.
+  first), files, the order of a map filled from the network;
+- a global the tick changes: it is not part of the game, so a rollback does not put it back
+  (keep it in the game's struct).
+
+A tick may be played several times (each rollback plays it again), so it must do nothing but
+compute the game: a sound or particles started in it would start again. Start them in `update`
+from what changed in `s.state` since the last frame.
 
 `s.ping(p)` is the round trip to player p and back, in milliseconds, to show players (a
 client's is `c.ping`).
 
 When it does break, the session finds out: each machine sends a hash of its game at ticks that
-everyone's inputs are in for, and `s.desync` says the first tick at which two differed.
+everyone's inputs are in for, and `s.desync` says the first tick at which two differed. That,
+and other trouble (packets from another build of the game that cannot be read, two machines
+with the same `me`, a player not heard from for 5 seconds), is in `s.problem` and said once on
+stderr. Test with a different `SLOPPY_SEED` for each machine: screenshot runs
+(`SLOPPY_SCREENSHOT`) seed `random()` alike and step by exactly 1/60 s, which hides those two
+mistakes.
 
 **Input delay.** An input takes effect `delay` ticks after it is made (2 by default, about
 33 ms), which hides that much latency with no rollback at all. More delay means fewer and
@@ -94,7 +105,22 @@ c.connect("game.example.com", 4600)             # once a tick: c.play(pad); draw
 ```
 
 The server's world is the truth: a client cannot move its player anywhere its inputs would not
-take it there. The game need not be deterministic.
+take it there, and the server applies at most one input of each player a tick (a few more after
+a pause, to catch up), so sending more moves no faster. The game need not be deterministic.
+
+A client predicts with `apply` only: what moves a player belongs in `apply` (in `step`, the
+client's own player would wait for the server). `random()` in `apply` makes the client's guess
+and the server's differ, which shows as flicker: draw it from something both have. Add each
+player to the world when `srv.joined` names them, and take them out on `srv.left`.
+`c.connected()` turns false, and `c.problem` says why, when the client cannot connect, the
+server closes the connection, or nothing comes from it for 5 seconds. A server without a
+window is a program that calls `srv.update()` 60 times a second:
+
+```gdscript
+loop true:
+    srv.update()
+    sleep(1.0 / 60.0)
+```
 
 ## Ticks, not frames
 
@@ -115,7 +141,7 @@ update = (dt: f64):
 Run the game twice (two windows), as two players on this machine's addresses: examples/duel
 takes `PLAYER=0` and `PLAYER=1`. A real network is slower and loses things: `s.lag(100, 20,
 0.05)` adds 100 ms (and up to 20 more) to what this session sends and drops 5% of it, and
-examples/duel and examples/arena take `LAG=100`. For tests, `netplay.Link` is a network
+examples/duel takes `LAG=100`. For tests, `netplay.Link` is a network
 simulated in one program, with its own clock: two sessions over it play the same way every
 time (tests/t/rollback.jo, tests/t/clientserver.jo).
 
@@ -124,7 +150,8 @@ time (tests/t/rollback.jo, tests/t/clientserver.jo).
 A web page cannot use UDP or wait for others to connect. It connects over WebSockets to a
 native program: a client-server game's server, or for rollback, a relay
 (`netplay.relay(port)`, which a native player can run while playing) that passes packets
-between the players in a room (`s.join_relay(host, port, room)`). A page served over https
+between the players in a room (`s.join_relay(host, port, room)`; each still gives its own
+`me`: the relay does not hand out numbers, and two with the same one are told so). A page served over https
 can only reach `wss://` servers: put a proxy with a certificate (Caddy, for one) in front of
 the server.
 

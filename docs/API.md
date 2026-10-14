@@ -3430,6 +3430,7 @@ draw = ():
       rollbacks = 0                   # how many times a tick was played again, so far
       longest_rollback = 0
       desync = -1                     # the first tick at which two machines' games differed (-1: none)
+      problem = ""                    # what is wrong, said once on stderr too: packets that cannot be
   ```
 - `session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: int = 2) -> Session[S, I]`: a session of `players` players, this machine's being player `me` (from 0)
 - `confirmed[S, I] = (s: Session[S, I]) -> int`: ticks below this have every player's input: they will not change again (some may not have been played here yet: those from s.tick on)
@@ -3495,10 +3496,11 @@ draw = ():
       server_tick = -1                # the tick of server
       interpolation = 6               # how far in the past others are drawn (view), in ticks
       ping = 0.0                      # milliseconds from an input sent to the world that answers it (smoothed)
+      problem = ""                    # what is wrong, said once on stderr too: could not connect, the
   ```
 - `client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]`
 - `connect[W, I] = (c: mut Client[W, I], host: str, port: int)`
-- `connected[W, I] = (c: Client[W, I]) -> bool`: connected, and the server has sent a world
+- `connected[W, I] = (c: Client[W, I]) -> bool`: connected, and the server has sent a world (and is still heard from)
 - `play[W, I] = (c: mut Client[W, I], input: I)`: this tick's input: applied here at once (prediction) and sent
 - `receive[W, I] = (c: mut Client[W, I], data: u8[])`: bytes from the server
 - `outgoing[W, I] = (c: mut Client[W, I]) -> u8[][]`: what to send since the last call (without connect)
