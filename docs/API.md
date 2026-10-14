@@ -189,7 +189,8 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 #### Characters
 
 - `reverse = (s: str) -> str`: the characters (code points) in reverse order
-- `char_count = (s: str) -> int`: number of unicode code points
+- `without_last_char = (s: str) -> str`: number of unicode code points s without its last character (all its bytes: backspace in a text field)
+- `char_count = (s: str) -> int`
 - `chars = (s: str) -> int[]`: unicode code points of s
 - `hash = (s: str) -> u64`: a number made from the text: the same for the same text (for maps, and to pick by name)
 
@@ -2646,6 +2647,7 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
 - `ui_slider = (label: str, value: f64, step: f64 = 0.1) -> f64`: a value from 0 to 1, changed in steps of `step` (left/right, or dragging with the mouse)
 - `ui_switch = (label: str, on: bool) -> bool`: on or off (left/right, enter, or a click)
 - `ui_choice = (label: str, options: str[], index: int) -> int`: one of several (left/right, or a click on either side, goes to the one before or after): `difficulty = ui_choice("Difficulty", ["easy", "normal", "hard"], difficulty)`
+- `ui_text_field = (label: str, value: str, max_chars: int = 24) -> str`: a line of text typed in, up to max_chars characters: what is typed while it has the focus is added, backspace takes the last character away, enter (like down) goes on to the next item; `name = ui_text_field("Name", name)`
 - `ui_text = (s: str, size: f64 = 24.0, color: vec4 = vec4(1, 1, 1, 0.6))`: a line of text in the column (not an item: it cannot be chosen)
 
 ## Paths

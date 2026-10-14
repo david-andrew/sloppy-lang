@@ -13,6 +13,9 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `ui_text_field("Name", name)`: a line of text typed into a menu (letters and space type
+  there instead of moving through the menu; long text shows its end); `without_last_char(s)`
+  (a backspace that takes a whole UTF-8 character).
 - A parameter's default value may use earlier parameters (`h: f64 = w`, `label = "w={w}"`).
 - `loop k, mut v in m` (as `loop mut k, v in m`); `name = (...): ...` at the top level for a
   variable of a function type declared above gives it a new value (it was a second definition);
