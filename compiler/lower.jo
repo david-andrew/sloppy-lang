@@ -2716,7 +2716,7 @@ gen_array = (e: int, t: int) -> Val:
         z = kid(e, 0)
         if nodes[z].kind == .conv: z = int(nodes[z].a)
         zk = nodes[z].kind
-        if (zk == .int_lit and nodes[z].ival == 0) or (zk == .bool_lit and nodes[z].ival == 0) or zk == .null_lit or (zk == .float_lit and nodes[z].fval == 0.0 and (nodes[z].fval as int) == 0):
+        if (zk == .int_lit and nodes[z].ival == 0) or (zk == .bool_lit and nodes[z].ival == 0) or zk == .null_lit or (zk == .float_lit and nodes[z].fval == 0.0 and f64_bits(nodes[z].fval) == 0):
             n = gen_expr(int(nodes[e].b)).v
             return V(e_call(rt("__arr_repeat"), [n, e_iconst(esz)], VI), true)
         val = gen_owned(kid(e, 0))
@@ -2792,8 +2792,8 @@ const_array = (e: int, et: int) -> int:
         c = kid(e, i)
         bits = 0
         if nodes[c].kind == .float_lit:
-            if sz == 4: bits = int((f32(nodes[c].fval) as i32) as u32)
-            else: bits = nodes[c].fval as int
+            if sz == 4: bits = int(f32_bits(f32(nodes[c].fval)))
+            else: bits = int(f64_bits(nodes[c].fval))
         else: bits = nodes[c].ival
         loop b in [0..sz): rodata.push(u8((bits >> (8 * b)) & 255))
     o
@@ -4654,8 +4654,14 @@ lower_extern_thunk = (lf: int, f: int):
     ps: int[]
     loop t in fns[f].ptypes:
         if vc(t) == VC_AGG: fatal(nodes[int(fns[f].decl)].pos, "C functions can only take scalar or pointer arguments")
+        if tkind(t) == .array: fatal(nodes[int(fns[f].decl)].pos, "a C function cannot take an array: declare the parameter as a pointer (*f32) and pass data(xs)")
         ps.push(vreg(vt_of(t)))
     ir.nparams = ps.len()
+    # (a str goes to C as its bytes, ending in a zero byte: a char *)
+    cps: int[]
+    loop i in 0.. and t in fns[f].ptypes:
+        if tkind(t) == .str_: cps.push(e_call(rt("__c_str"), [ps[i]], VI))
+        else: cps.push(ps[i])
     ret = int(fns[f].ret)
     if vc(ret) == VC_AGG: fatal(nodes[int(fns[f].decl)].pos, "C functions can only return scalars or pointers")
     ir.ret = ret_vt(ret)
@@ -4686,7 +4692,7 @@ lower_extern_thunk = (lf: int, f: int):
         e_mov(fp, e_call(rt("__ffi_resolve"), [e_daddr(str_data(rlib)), e_daddr(str_data(nm))], VI))
         e_store(e_gaddr(slot), 0, fp, 8)
         endc()
-    r = e_calli(fp, ps, ret_vt(ret), true)
+    r = e_calli(fp, cps, ret_vt(ret), true)
     # (C's variadic arguments: on Apple's arm64 they go on the stack)
     if fns[f].cvariadic > 0: ir.code[ir.code.len() - 1].imm = int(fns[f].cvariadic)
     if vc(ret) == VC_INT: r = norm(r, ret)

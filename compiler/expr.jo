@@ -1323,6 +1323,14 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
             add_flag(a0, NF_CHECKED)
         t0 = prune(ntype(a0))
         if types[t0].kind == .array or types[t0].kind == .str_:
+            # (the program's own insert(t: mut T[], k) and the like, taking that many arguments: its)
+            own: int[]
+            if not ufcs or mod_scope < 0:
+                all_d: int[]
+                collect_fns(name, all_d)
+                loop d in all_d:
+                    if not decl_in_prelude(d) and args_fit(d, args.len()) and takes_seq(d): own.push(d)
+            if own.len() > 0: return resolve_fn_call(n, name, own, args, expected)
             if ide_on: ide_builtin_ref(n, name)
             return check_intrinsic(n, intrinsics[ii].id, args, expected)
         if types[t0].kind == .fixed:
@@ -2204,6 +2212,21 @@ swizzle_index = (c: u8) -> int:
     i % 4
 
 # ---------------- operators ----------------
+# a call with n arguments can go to declaration d (as many parameters, or fewer with defaults)
+args_fit = (d: int, n: int) -> bool:
+    np = nkids(d)
+    if n > np: return false
+    loop i in [n..np):
+        if nodes[kid(d, i)].b == 0: return false
+    true
+
+# d's first parameter is an array or a string as written (or has no type: generic)
+takes_seq = (d: int) -> bool:
+    if nkids(d) == 0: return false
+    tn = int(nodes[kid(d, 0)].a)
+    if tn == 0: return true
+    nodes[tn].kind == .tarray or (nodes[tn].kind == .tname and name_of(int(nodes[tn].name)) == "str")
+
 decl_in_prelude = (d: int) -> bool: d != 0 and modules[int(nodes[d].mod)].is_prelude
 
 op_overload = (n: int, opname: str) -> int:
@@ -2515,7 +2538,7 @@ check_binary = (n: int, expected: int) -> int:
             if v != v:
                 # (a NaN as the target's processor makes it, whatever the compiler runs on:
                 # x86-64's has the sign bit set, arm64's and wasm's do not; negating flips it)
-                neg = (v as int) < 0
+                neg = int(f64_bits(v)) < 0
                 if neg == (target_arm64 or target_wasm): v = -v
             nodes[n] = Node(kind = .float_lit, pos = nodes[n].pos, fval = v, flags = i32(NF_LITERAL | NF_CHECKED), type = i32(T_FLOAT))
             return T_FLOAT
@@ -3377,6 +3400,12 @@ check_expr = (n: int, expected: int) -> int:
         if (fk == .ptr or fk == .int_ or fk == .null_ or fk == .cfn) and (tk == .ptr or tk == .int_ or tk == .cfn): ok = true
         if (fk == .int_ or fk == .float_) and (tk == .int_ or tk == .float_):
             ok = tsize(ft) == tsize(tt) or (fk == .int_ and tk == .int_)
+            # (Rust's `x as f64` converts: here it would keep the bits)
+            if fk != tk and not pos_in_lib(nodes[n].pos):
+                conv = "{type_str(tt)}(x)"
+                bits = "f64_bits(x) / f64_from_bits(b)"
+                if tsize(ft) == 4 or tsize(tt) == 4: bits = "f32_bits(x) / f32_from_bits(b)"
+                fatal(nodes[n].pos, "`as` between a whole number and a float keeps the bits, not the number: {conv} converts the value ({bits} for the bits themselves)")
         if fk == .enum_ and not is_union(ft) and tk == .int_: ok = true
         if fk == .int_ and tk == .enum_ and not is_union(tt): ok = true
         if fk == .bool_ and tk == .int_: ok = true

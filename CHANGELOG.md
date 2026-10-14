@@ -13,6 +13,13 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- A program's own `insert`, `push`, `len` (and the other built-in array and string functions)
+  with an array or string first are used for its calls, where they were ignored.
+- `x as f64` between a whole number and a float is an error that says `f64(x)` converts
+  (`as` kept the bits); `f64_bits`, `f64_from_bits`, `f32_bits`, `f32_from_bits` for the bits.
+- C functions: a `str` parameter is passed as C's `char *` (the bytes, ending in a zero; it
+  passed the string's header); an array parameter is an error pointing to `data(xs)`. What C's
+  stdio holds (`printf`) is written out when the program ends (it was lost in a pipe or file).
 - Regular expressions: `regex(pattern)`, then `s.find(r)`, `find_all`, `matches` (all of the
   text), `contains`, `replace` (with `$1`, or a function of the match), `split`. Groups,
   classes, `\d \w \s \b`, `^ $` at lines, counted, greedy and lazy repeats, `(?i)`; matching

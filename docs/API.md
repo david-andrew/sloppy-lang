@@ -392,6 +392,10 @@ Math basics.
 - `log = (x: f32) -> f32`
 - `pow = (x: f32, y: f32) -> f32`: (a negative power is 1 / x ^ -n, truncated as integer division is: 0 unless x is 1 or -1)
 - `pow = (x: int, n: int) -> int`
+- `f64_bits = (x: f64) -> u64`: a float's bits as an integer, and back (IEEE 754: f64_bits(1.0) is 0x3FF0000000000000)
+- `f64_from_bits = (b: u64) -> f64`
+- `f32_bits = (x: f32) -> u32`
+- `f32_from_bits = (b: u32) -> f32`
 - `hypot = (x: f64, y: f64) -> f64`
 - `radians = (deg: f64) -> f64`
 - `degrees = (rad: f64) -> f64`
