@@ -102,8 +102,19 @@ sloppy build game.jo --target wasm         # game.html: one file that runs in an
 sloppy build game.jo --target wasm -o game.zip   # the same, ready for itch.io
 ```
 
+On itch.io: make a project of kind HTML, upload `game.zip`, tick "This file will be played in
+the browser", and give the viewport the size of your `window(...)` (1280 x 720 if it has none);
+"Fullscreen button" lets players make it bigger. Give the game a name in its build block
+(`build:` and `name = "Drone Arena"` below it): what `save_data` keeps is stored under it, and
+games on one site share the browser's storage. Sound starts after the player's first click or
+key, as browsers require. A file the game reads is built in with `embed("x.png")` or
+`embed_dir("assets")`: a page has no disk. Debug builds are the smaller ones; `--release`
+makes the code faster and larger.
+
 Each is one file with nothing to install alongside it (`--target macos` and `--target linux`
-make the same from any system too; a Windows build's `.pdb` beside it is for debuggers only).
+make the same from any system too; a Windows build's `.pdb` beside it is for debuggers only, so
+leave it out of what you share; Windows warns about a program it has not seen signed before,
+"More info", then "Run anyway").
 `sloppy build game.jo --target macos -o Game.app` makes a Mac app (its icon, its name in the
 Dock and the menu bar); `zip -r Game.zip Game.app` to share it. It is not signed by an Apple
 developer account, so a Mac opens a downloaded one after a right click, Open (or System

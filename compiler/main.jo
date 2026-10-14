@@ -137,6 +137,7 @@ setup_target = ():
             m = elf_machine_of(exe_path())
             if m == 183: tgt = "linux-arm64"
             else if m == 0x100000C: tgt = "macos"
+    if tgt == "web": tgt = "wasm"            # (as --web says it)
     # (linux-arm64: Linux on 64-bit ARM, TARGET "linux" and ARCH "arm64")
     if tgt == "linux-arm64":
         target_arm64 = true
@@ -332,6 +333,7 @@ compile = (path: str, out0: str) -> str:
     check_program(path)
     # (a run for the errors after the first: no more to find, and nothing is built)
     if errors_only: exit(1)
+    if target_wasm and not program_named: web_save_name_check()
     # (functions left unchecked after errors in them cannot be lowered)
     if lower_only and ide_skip.len() > 0: return ""
     if repl_image: repl_set_main()
@@ -598,6 +600,13 @@ main = ():
             out = path
             out = strip_ext(out)
             if out == path: out = path + ".bin"     # (no extension: not over the source)
+        # (-o game.zip, -o game.html, -o game.exe: what is asked for, without --target too)
+        if len(cli_target) == 0:
+            if ends_with(out, ".html") or ends_with(out, ".zip"): cli_target = "wasm"
+            else if ends_with(out, ".exe"): cli_target = "windows"
+        # (-o dist/game.zip: the directory made if it is not there)
+        sl = max(rfind(out, "/"), rfind(out, "\\"))
+        if sl > 0: make_dirs(out[..sl))
         if len(compile(path, out)) == 0: exit(1)
         return
     if a[1] == "lsp":
@@ -681,7 +690,7 @@ main = ():
     # (made beside it, then put in its place: a copy of the program still running is not
     # written over; Windows cannot replace a running program, so there it is written in place)
     tmp = out
-    if not target_windows: tmp = "{cache}/{base}.{time_ns()}.new"
+    if not target_windows and not target_wasm: tmp = "{cache}/{base}.{time_ns()}.new"
     built = compile(path, tmp)
     if len(built) == 0: exit(1)
     if built == tmp and tmp != out and not target_wasm:
@@ -719,3 +728,17 @@ clean_cache = (cache: str):
         p = cache + "/" + f
         if let t = file_time(p):
             if now - t > 7.0 * 86400.0 or (ends_with(f, ".new") and now - t > 3600.0): delete_file(p)
+
+# (a web page that saves, with no name in its build block: pages on one site, as itch.io's,
+# share their browser's storage, and every game.jo would read and write the others' saves)
+web_save_name_check = ():
+    loop fi in [1..fns.len()):
+        d = int(fns[fi].decl)
+        if fns[fi].state != 2 or d == 0 or not pos_in_lib(nodes[d].pos): continue
+        nm = name_of(int(nodes[d].name))
+        if nm == "save_data" or nm == "save_value":
+            at = -1
+            loop m in modules:
+                if m.is_main: at = mkpos(int(m.file), 0)
+            warn(at, "this web page saves under the name '{program_name}' (its file's): pages on one site, as itch.io's, share their storage, so give it a name of its own: `build:` and `name = \"Drone Arena\"` below it")
+            return

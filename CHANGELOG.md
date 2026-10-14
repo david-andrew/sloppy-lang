@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+From a game jam entry shipped to the browser:
+- Web pages bigger than 4 MB are compiled off the main thread: above 8 MB (a few music tracks
+  embedded) Chrome and Edge refused to start them.
+- `-o game.zip` or `-o game.html` builds the web page, and `-o game.exe` the Windows program,
+  without `--target` (it wrote a Linux program under that name); `--target web` is `wasm`; the
+  output's directory is made if it is not there.
+- Web pages let go of the keys held when the page loses the focus (a click outside an itch.io
+  frame left the player walking), and try to start the sound at every key until it runs (Safari).
+- Warnings: a web page that saves without a name of its own (pages on one site share their
+  storage); `read_file("...")`/`read_bytes("...")` in a web page (it has no disk: `embed`).
+- `load_wav` given an Ogg file says to use `load_ogg` or `load_music`; a missing map key says
+  which key it was nearly (`assets["playr.png"]`: did you mean player.png?).
+- START: shipping to itch.io, and what to leave out of a Windows download.
+
 From a Python programmer's scripts:
 - `sloppy file.jo` keeps each program's build apart by its path: two `main.jo` in two
   directories, run at once, no longer run each other (or fail to write); the build is written
