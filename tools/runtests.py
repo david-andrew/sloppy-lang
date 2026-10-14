@@ -234,10 +234,13 @@ if compiler != "sloppy0" and target == "native":
             outs = []
             for envs in [{"SLOPPY_EMIT_WORKERS": "1"}, {"SLOPPY_EMIT_FORCE": "1"}]:
                 o = os.path.join(tmp, "par_" + str(len(outs)))
-                subprocess.run([sloppy, "build", os.path.join(root, "bench", "big.jo"), "-o", o] + flags, capture_output=True,
-                               env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), **envs), timeout=120)
-                outs.append(open(o, "rb").read() if os.path.exists(o) else b"")
-            if not outs[0] or outs[0] != outs[1]:
+                # (the compiler itself: a large program that is always there)
+                r = subprocess.run([sloppy, "build", os.path.join(root, "compiler", "main.jo"), "-o", o] + flags, capture_output=True,
+                                   text=True, env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), **envs), timeout=300)
+                outs.append(open(o, "rb").read() if r.returncode == 0 and os.path.exists(o) else b"")
+                if not outs[-1]: print(f"FAIL parallel/emit: {flags} {envs} did not build\n{r.stderr}")
+            if not outs[0] or not outs[1]: same = False
+            elif outs[0] != outs[1]:
                 print(f"FAIL parallel/emit: {flags} differs from one processor's code")
                 same = False
         if same: passed += 1
