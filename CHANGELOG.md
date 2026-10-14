@@ -13,6 +13,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- Map comprehensions: `{loop w in words: w: len(w)}` (with `if` filters and nested loops, as in
+  brackets).
 - `TextError`'s fields are `message`, `line` and `column`, as `JsonError`'s are.
 - `{x=}` in a string shows `x=` and then the value (Python's debugging form); a `#` in a format
   puts `0x`, `0b` or `0o` before the digits (`{255:#06x}` is `0x00ff`).

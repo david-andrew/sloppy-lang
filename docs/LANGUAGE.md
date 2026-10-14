@@ -454,6 +454,7 @@ until all have run out (the variables of finished ones are `none`, so they are o
 squares = [loop i in [1..5]: i ^ 2]
 evens = [loop n in [0..10): if n % 2 == 0: n]
 pairs = [loop i in [0..3): loop j in [0..3): (i, j)]
+lengths = {loop w in words: w: len(w)}         # in braces, key: value makes a map
 ```
 
 **Match:**
