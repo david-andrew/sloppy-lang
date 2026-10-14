@@ -28,6 +28,8 @@ for name in sorted(f[:-3] for f in os.listdir(os.path.join(root, "tests", "debug
         continue
     lines = open(src).read().split("\n")
     stop = next((i + 1 for i, l in enumerate(lines) if l.rstrip().endswith("# stop")), 0)
+    # (`# show: a b`: globals, top-level variables included, printed by name too)
+    shown = next((l.split("# show:", 1)[1].split() for l in lines if "# show:" in l), [])
     where = f"{name}.jo:{stop}" if stop else "__panic"
     expect = [l.split(": ", 1) for l in open(os.path.join(root, "tests", "debug", name + ".expect")).read().splitlines() if ": " in l]
     for dbg in debuggers:
@@ -39,11 +41,11 @@ for name in sorted(f[:-3] for f in os.listdir(os.path.join(root, "tests", "debug
             cmd = [cdb, "-lines", "-y", tmp, "-c", f".nvload {natvis}; {bp}; g; dx -r2 @$curframe.LocalVariables; kP{frames}; q", exe]
         elif dbg == "gdb":
             cmd = ["gdb", "-q", "-batch", "-nx", "-x", os.path.join(root, "lib", "debug", "sloppy_gdb.py"),
-                   "-ex", f"break {where}", "-ex", "run", "-ex", "info locals", "-ex", "bt", exe]
+                   "-ex", f"break {where}", "-ex", "run", "-ex", "info locals", "-ex", "bt"] + [x for v in shown for x in ("-ex", f"print {v}")] + [exe]
         else:
             bp = f"breakpoint set -f {name}.jo -l {stop}" if stop else "breakpoint set -n __panic"
             cmd = ["lldb", "-b", "--no-lldbinit", "-o", f"command script import {os.path.join(root, 'lib', 'debug', 'sloppy_lldb.py')}",
-                   "-o", bp, "-o", "run", "-o", "frame variable -P 1", "-o", "bt", exe]
+                   "-o", bp, "-o", "run", "-o", "frame variable -P 1", "-o", "bt"] + [x for v in shown for x in ("-o", f"target variable {v}")] + [exe]
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env, cwd=tmp).stdout
         except subprocess.TimeoutExpired:

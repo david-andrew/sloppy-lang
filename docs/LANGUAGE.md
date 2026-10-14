@@ -384,9 +384,10 @@ function names, so gdb and lldb work with the `.jo` source (`break game.jo:31`, 
 variables (Linux on x86-64 and arm64, macOS; there also the lines, which macOS and arm64
 executables otherwise leave out): every parameter and local with its type and where it is
 while its function runs, and how each frame is made, so a debugger reads the variables of the
-functions further up the stack too. In a `-g` build a variable lives on to the end of its
-function (it can be read anywhere after it is set) and stays in memory or a register calls keep;
-the program does the same as without `-g`. `lib/debug` has printers that show strings as text,
+functions further up the stack too; the program's globals (top-level variables) are there by
+name. In a debug `-g` build a variable lives on to the end of its function (it can be read
+anywhere after it is set) and stays in memory or a register calls keep; in a release one it may
+be gone (`<optimized out>`) after its last use. The program does the same as without `-g`. `lib/debug` has printers that show strings as text,
 arrays and maps as their elements, optionals as their value or `none`, and an enum with fields
 as its variant:
 

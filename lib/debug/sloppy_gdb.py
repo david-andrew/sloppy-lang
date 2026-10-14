@@ -11,6 +11,17 @@ LIMIT = 200         # elements shown of a long array
 TEXT_LIMIT = 10000  # bytes shown of a long string
 
 
+def _limit(default):
+    """gdb's `print elements` (0 or None: no limit), else the default"""
+    try:
+        n = gdb.parameter("print elements")
+    except gdb.error:
+        return default
+    if n is None or n == 0:
+        return 1 << 30
+    return int(n)
+
+
 def _header(val):
     """the header a string or array value points to, or None (empty)"""
     p = val.cast(val.type.strip_typedefs())
@@ -28,10 +39,13 @@ class StrPrinter:
         if h is None:
             return '""'
         n = int(h["len"])
+        if n <= 0:
+            return '""'
+        limit = min(_limit(TEXT_LIMIT), TEXT_LIMIT)
         data = int(h["data"].address)
-        raw = gdb.selected_inferior().read_memory(data, min(n, TEXT_LIMIT)).tobytes()
+        raw = gdb.selected_inferior().read_memory(data, min(n, limit)).tobytes()
         text = raw.decode("utf-8", "replace").replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        return '"' + text + ('..."' if n > TEXT_LIMIT else '"')
+        return '"' + text + ('..."' if n > limit else '"')
 
 
 class ArrayPrinter:
@@ -50,7 +64,7 @@ class ArrayPrinter:
             return
         elem = self.h["data"].type.strip_typedefs().target()
         first = self.h["data"].address.cast(elem.pointer())
-        for i in range(min(self._len(), LIMIT)):
+        for i in range(min(self._len(), _limit(LIMIT))):
             yield "[%d]" % i, (first + i).dereference()
 
     def display_hint(self):

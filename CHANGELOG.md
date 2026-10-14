@@ -25,6 +25,8 @@ Language and library:
 - Formats `{x:e}`, `{x:.3E}`, `{x:g}` (as Python's), and `d` and `s` accepted; a format the
   library does not know is an error (`{x:.3z}` printed the number as if it were not there).
 - A `@cabi` function can be given straight to a C function's callback parameter.
+- Debuggers (`-g`) show the program's globals, top-level variables included; gdb's printer shows
+  an empty string as `""` (it failed with a Python error) and keeps to `print elements`.
 - Release builds divide by a constant with a multiply (6.6 times faster histogram binning), and
   a loop over a string's bytes by index has no bounds checks, as one over an array has.
 - A `match` statement on an enum or a union names each variant or has `_:`, as a match giving
