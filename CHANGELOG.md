@@ -13,6 +13,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `xs[mask]` and `xs[idxs]` pick elements, as in NumPy (a `bool[]` mask, an `int[]` of
+  indexes: `xs[xs .> 0.5]`, `xs[argsort(xs)]`); `xs[mask] = v` and `xs[idxs] = vs` set them.
 - `random()` outside parallel code gives the same numbers whether or not a parallel job ran
   (the threads' generators come from the seed, and the main thread uses its own while it helps
   with a job; the software renderer's jobs had moved Rebound's turrets). `x ^ 2.0` is `x * x`

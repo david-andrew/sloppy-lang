@@ -606,6 +606,16 @@ roots = sqrt.(xs)
 
 (Plain `+` on 1-D arrays concatenates, as for lists.)
 
+**Picking elements.** An array of indexes or a mask picks elements, as in numpy: `xs[mask]`
+(a `bool[]` as long as `xs`) gives the elements where it is true, `xs[[3, 0]]` (an `int[]`) the
+ones at those indexes, in that order. Assigning to them sets them: `xs[xs .< 0.0] = 0.0`,
+`xs[idxs] = values`.
+
+```gdscript
+big = xs[xs .> 0.5]
+sorted = xs[argsort(xs)]
+```
+
 **n-dimensional arrays** (`T[,]`). How many dimensions an array has is part of its value, as
 in numpy: `T[,]`, `T[,,]` ... all name the same type (the commas are for the reader), and
 `m.shape` holds the dimensions. Rows are separated by `;` or line breaks; `[a; b]` stacks arrays
