@@ -912,11 +912,11 @@ The dotted operators work element by element on arrays of any shape, and broadca
 - `sum[T] = (m: T[,]) -> T`
 - `min[T] = (m: T[,]) -> T`
 - `max[T] = (m: T[,]) -> T`
-- `sum = (xs: f64[]) -> f64`: the average (0 for none) (floats: added in pairs of halves, so the rounding errors stay small however long the array is: a million 0.1s make 100000.0, as NumPy's sum does)
+- `sum = (xs: f64[]) -> f64`: the sum of the elements (floats: added in pairs of halves, so the rounding errors stay small however long the array is: a million 0.1s make 100000.0, as NumPy's sum does)
 - `max = (xs: f64[]) -> f64`: (floats: NaN, not a number, wins: one NaN makes the answer NaN, as in NumPy)
 - `min = (xs: f64[]) -> f64`
 - `sort = (xs: mut f64[], descending: bool = false)`: (floats: NaN after every number, in either order; the numbers in order, equal ones as they were)
-- `mean = (xs: f64[]) -> f64`
+- `mean = (xs: f64[]) -> f64`: the average (0 for none)
 - `mean = (xs: int[]) -> f64`
 - `mean = (m: f64[,]) -> f64`
 - `median = (xs: f64[]) -> f64`: the middle value once sorted (the mean of the two middle ones for an even count; 0 for none)

@@ -1178,3 +1178,41 @@ print(xs, q[0], size_of(i32))
 take turns at memory of their own. What they share with the rest of the program is theirs to
 guard (reference counts change without atomics there); for work on several threads, use
 `parallel_map` and the rest of [Parallelism](#11-parallelism).
+
+## 14. Performance
+
+Debug builds (the default) compile fastest; `--release` builds inline, keep values in
+registers, remove bounds checks a loop cannot fail, and vectorize simple loops over arrays (on
+x86-64, with AVX2 when the processor has it). Most of what makes a program slow is the same in
+both:
+
+**Copies.** Arrays, strings and structs are values that share their storage until one of them
+changes. Assigning or passing one costs nothing; the first change to a shared one copies it
+whole:
+- `ys = xs`, then `ys[0] = 1` copies all of xs (once: ys is its own after that);
+- `e = es[i]; e.hp -= 1; es[i] = e` copies e's arrays each time: change it in place instead,
+  `es[i].hp -= 1` or `loop mut e in es`;
+- a slice (`xs[a..b)`) is a new array;
+- `s = s + x` and `s += x` both add to the end in place (the compiler writes the first as the
+  second); `t = s + x` makes a new one, as it must.
+
+**Allocation.** Making arrays and strings each frame is cheap, but not free: an array kept from
+frame to frame and emptied with `clear()` keeps its memory. A closure made inside a loop is
+allocated each time round; make it once outside.
+
+**Loops the compiler can speed up.** `loop mut p in ps:` and `loop i in [0..n): a[i] ...`
+lose their bounds checks and vectorize in release builds. An index the compiler cannot follow
+(`c[i * n + j]` in a matrix) keeps its check on each access: a row array per row (`c[i][j]`),
+`soa` arrays (section 8), or a pointer from `data(xs)` (section 13) let it go. Calls through
+function values (`reduce`, `sort_by`, a lambda) are not inlined: in a hot loop, write the loop.
+`soa T[]` keeps each field together, which is what loops over one or two fields want.
+
+**Numbers.** `int` is 64 bits and wraps around. Arithmetic on narrow types stays in them: two
+`u8`s add as a `u8` (200 + 200 is 144), so widen first, `int(a) + b` (the compiler warns when the
+narrow result is widened right after). Vectors (`vec2`..`vec4`, `mat4`) are plain floats in a
+row: their math is scalar, the same as a struct of floats in C.
+
+**Seeing where the time goes.** In a game, `show_stats()` (or `SLOPPY_STATS=1`) draws frame
+times, long frames and the time of each `zone("physics") ... zone_end()`, on the CPU and the GPU.
+For any program, `sloppy build -g` keeps names for gdb and `perf` (Linux), lldb (macOS) and
+Windows' debuggers; `sloppy build --ir` writes the code the compiler made before machine code.

@@ -1172,6 +1172,10 @@ get_fn_inst = (decl: int, targs: int[], use_pos: int) -> int:
                 fns[f].cabi = true
                 if nodes[at].a != 0: fns[f].export_name = name_of(int(nodes[int(nodes[at].a)].sval))
                 else: fns[f].export_name = name_of(int(nodes[decl].name))
+            else if an != "no_web":
+                why = ""
+                if an == "inline" or an == "always_inline" or an == "forceinline": why = " (release builds put small functions inline by themselves; @noinline keeps one out)"
+                fatal(nodes[at].pos, "unknown attribute @{an}{why}: there are @noinline, @parallel, @plain, @cabi, @export, @no_web(\"why\"), and for externs @lib, @symbol, @variadic")
     decl_infos[di].insts.push(f)
     ensure_ret(f, use_pos)
     f
@@ -1339,6 +1343,7 @@ ensure_global = (g: int, use_pos: int, in_flow: bool = false):
 # xs.sorted(), s.trim() as a statement: a library function that gives a new value of its first
 # argument's type, changing none of its arguments, called for nothing (it changes nothing)
 unused_result = (x: int, pos: int):
+    if discarding: return
     if nodes[x].kind != .call or nodes[x].a != 0 or nodes[x].sym <= 0 or nkids(x) == 0: return
     f = int(nodes[x].sym)
     d = int(fns[f].decl)
@@ -1365,7 +1370,10 @@ unused_result = (x: int, pos: int):
 
 # `x == 6`, `speed + 1`, `true` as a statement: a value made and dropped, which changes nothing
 # (written for `=`, `+=` or `return true`)
+discarding = false        # (checking `_ = value`: dropped on purpose, no warning)
+
 unused_value = (raw: Node, t: int):
+    if discarding: return
     if pos_in_lib(raw.pos) or files[pos_file(raw.pos)].path == "<input>": return
     if tkind(prune(t)) == .void_ or t == T_NEVER: return
     k = raw.kind
@@ -1900,8 +1908,31 @@ elem_field_assign = (s: int) -> int:
     check_stmt(blk)
     blk
 
+# s = s + x on text or an array: s += x, which adds to the end in place; the other copies all of
+# s each time, and a loop of them takes time growing with the square of the length
+append_assign = (s: int):
+    lhs = int(nodes[s].a)
+    if nodes[lhs].kind != .ident: return
+    spine: int[]
+    n = int(nodes[s].b)
+    loop nodes[n].kind == .binary and nodes[n].op == i32(int(Tok.plus)):
+        spine.push(n)
+        n = int(nodes[n].a)
+    if spine.len() == 0 or nodes[n].kind != .ident or nodes[n].name != nodes[lhs].name: return
+    sy = lookup(int(nodes[lhs].name))
+    if sy == 0 or (syms[sy].kind != .local and syms[sy].kind != .global): return
+    t = prune(check_expr(clone(lhs), 0))
+    if tkind(t) != .str_ and tkind(t) != .array: return
+    # (s + a + b is (s + a) + b: s, then the rest in order, appended)
+    rest = int(nodes[spine[spine.len() - 1]].b)
+    if spine.len() == 1: nodes[s].b = i32(rest)
+    else: nodes[spine[spine.len() - 2]].a = i32(rest)
+    nodes[s].op = i32(int(Tok.pluseq))
+
 check_assign = (s: int) -> int:
-    if nodes[s].op == i32(int(Tok.assign)): unnarrow_assign(s)
+    if nodes[s].op == i32(int(Tok.assign)):
+        unnarrow_assign(s)
+        append_assign(s)
     sl = soa_alias_of(int(nodes[s].a))
     if sl != 0:
         # p = value in `loop mut p in ps`: ps[i] = value
@@ -2195,6 +2226,13 @@ check_stmt = (s: int):
         push_scope_sym(int(nodes[s].name), new_sym(int(nodes[s].name), .const_, globals.len() - 1, 0))
         nodes[s].kind = .block
         nodes[s].nlist = 0
+    else if k == .assign and nodes[int(nodes[s].a)].kind == .hole and nodes[s].op == i32(int(Tok.assign)):
+        # (_ = f(): the value made, and dropped on purpose)
+        e = int(nodes[s].b)
+        nodes[s] = Node(kind = .exprstmt, pos = nodes[s].pos, a = i32(e))
+        discarding = true
+        check_stmt(s)
+        discarding = false
     else if k == .assign and assign_declares(s, -1):
         assign_to_decl(s)
         check_vardecl(s)

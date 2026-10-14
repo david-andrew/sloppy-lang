@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+From a performance-minded C programmer:
+- `sloppy check` lowers the program too (without making code), so it finds what a build would:
+  a `loop mut` that resizes its array, data races, shader errors (it passed such programs).
+- `s = s + x` on text or an array is written `s += x` by the compiler: it adds to the end in
+  place instead of copying all of s (a loop of them took time growing with the square).
+- Release builds divide unsigned integers by a constant with a multiply (6x faster; `str(i)`
+  and `"{i}"` 2.6x faster, as fast as C's snprintf).
+- The CPU path of compute functions (OpenGL, the web, no GPU) copies its parameters once per
+  run of ids instead of once per id: 9x faster, and no longer slower with more threads.
+- A warning when arithmetic on a narrow type is widened right after (`n: int = a + a` with
+  `a: u8` is worked out as a u8, so 200 + 200 is 144); an unknown attribute (`@inline`) is an
+  error; `_ = f()` drops a value on purpose; `q->x`, `*p` and a loop after a loop's colon say what
+  to write instead.
+- LANGUAGE: a Performance section (copies, allocation, the loops release builds speed up,
+  narrow numbers, profiling).
+
 From a first try at multiplayer:
 - A client-server game's server applies at most one input of each player a tick over time (a
   few more after a pause): a client that sent two a tick moved twice as fast.

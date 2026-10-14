@@ -127,7 +127,7 @@ o_rewrite = (ins: mut Ins):
 o_pure = (op: Op) -> bool:
     match op:
         iconst, fconst, mov, slot, gaddr, daddr, faddr, load: true
-        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_, mulhs: true
+        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_, mulhs, mulhu: true
         eq, ne, lts, les, gts, ges, ltu, leu, gtu, geu: true
         fadd, fsub, fmul, fdiv, fneg, fsqrt, fmin, fmax, ffloor, fceil, fabs, ftrunc: true
         feq, fne, flt, fle, fgt, fge: true
@@ -440,7 +440,7 @@ stable = (v: int) -> bool: o_ndef[v] == 1 and o_first[v] > o_defpos[v]
 cse_op = (op: Op) -> bool:
     match op:
         iconst, fconst, slot, gaddr, daddr, faddr, load: true
-        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_, mulhs: true
+        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_, mulhs, mulhu: true
         eq, ne, lts, les, gts, ges, ltu, leu, gtu, geu: true
         fadd, fsub, fmul, fdiv, fneg, fsqrt, fmin, fmax, ffloor, fceil, fabs, ftrunc: true
         feq, fne, flt, fle, fgt, fge: true
@@ -677,7 +677,64 @@ o_simplify = (ins0: Ins, pos: int):
             t = o_bin(.mul, o_tmp(), qq, o_kconst(k))
             o_bin(.sub, d, a, t)
         return
+    if (op == .divu or op == .remu) and k > 1 and sh <= 0 and mulh_ok:
+        # unsigned: the high half of a multiply by a magic number, and a shift (with an add when
+        # the number needs 65 bits: Hacker's Delight 10-8)
+        mag, s, add = divu_magic(u64(k))
+        # (the last step writes the quotient straight into d, as the signed one does)
+        qd = d
+        if op == .remu: qd = o_tmp()
+        saved_cse = o_cse
+        o_cse = false
+        t = o_bin(.mulhu, o_tmp(), a, o_kconst(int(mag)))
+        if add:
+            q1 = o_bin(.sub, o_tmp(), a, t)
+            q2 = o_bin(.shru, o_tmp(), q1, o_kconst(1))
+            if s > 1:
+                q3 = o_bin(.add, o_tmp(), q2, t)
+                o_bin(.shru, qd, q3, o_kconst(s - 1))
+            else: o_bin(.add, qd, q2, t)
+        else:
+            o_bin(.shru, qd, t, o_kconst(s))
+        if op == .remu:
+            q = int(o_repl[qd])
+            m = o_bin(.mul, o_tmp(), q, o_kconst(k))
+            o_bin(.sub, d, a, m)
+        o_cse = saved_cse
+        return
     o_emit(ins)
+
+# the magic number, shift and whether an add is needed, for dividing an unsigned 64-bit integer
+# by d (d >= 2) (Hacker's Delight 10-2)
+divu_magic = (d: u64) -> (u64, int, bool):
+    two63: u64 = 0x8000000000000000
+    max63: u64 = 0x7FFFFFFFFFFFFFFF
+    add = false
+    nc = (u64(0) - 1) - (u64(0) - d) % d
+    p = 63
+    q1 = two63 / nc
+    r1 = two63 - q1 * nc
+    q2 = max63 / d
+    r2 = max63 - q2 * d
+    loop true:
+        p += 1
+        if r1 >= nc - r1:
+            q1 = q1 * 2 + 1
+            r1 = r1 * 2 - nc
+        else:
+            q1 = q1 * 2
+            r1 = r1 * 2
+        if r2 + 1 >= d - r2:
+            if q2 >= max63: add = true
+            q2 = q2 * 2 + 1
+            r2 = r2 * 2 + 1 - d
+        else:
+            if q2 >= two63: add = true
+            q2 = q2 * 2
+            r2 = r2 * 2 + 1
+        delta = d - 1 - r2
+        if not (p < 128 and (q1 < delta or (q1 == delta and r1 == 0))): break
+    (q2 + 1, p - 64, add)
 
 # the magic number and shift for dividing a signed 64-bit integer by d (d >= 2): q = mulhs(n, m)
 # (+ n when m < 0) >> s, plus 1 when n < 0
@@ -1386,7 +1443,7 @@ o_negate = (op: Op) -> Op:
 # instructions whose result register may be renamed
 o_retargetable = (op: Op) -> bool:
     match op:
-        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_, load, mov, mulhs: true
+        add, sub, mul, divs, divu, rems, remu, and_, or_, xor, shl, shrs, shru, neg, not_, load, mov, mulhs, mulhu: true
         eq, ne, lts, les, gts, ges, ltu, leu, gtu, geu: true
         fadd, fsub, fmul, fdiv, fneg, fsqrt, fmin, fmax, ffloor, fceil, fabs, ftrunc: true
         sext8, sext16, sext32, zext8, zext16, zext32, i2f, u2f, f2i, f2f, bits2f, f2bits, fconst, iconst: true
