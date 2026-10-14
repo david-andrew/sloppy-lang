@@ -7,7 +7,7 @@ exit = (code: int):
         __end_flush()
     __exit(code)
 
-# command line arguments (args()[0] is the program path)
+# command line arguments (args()[0] is the program as it was started: `sloppy tool.jo` gives "tool.jo")
 args = () -> str[]:
     out: str[]
     when TARGET == "wasm":
@@ -479,6 +479,142 @@ mkdir = (path: str) -> bool:
     else:
         r = syscall(83, data(__zstr(path)), 0x1ED)
         r == 0 or r == -17
+
+# make a directory and the ones it is in ("out/maps/2"); true if it is there after
+make_dirs = (path: str) -> bool:
+    if len(path) == 0 or is_dir(path): return true
+    i = len(path) - 1
+    loop i > 0 and path[i] != '/' and path[i] != '\\': i -= 1
+    if i > 0: make_dirs(path[..i))
+    mkdir(path)
+
+# remove a directory, which must be empty (delete_file for a file)
+delete_dir = (path: str) -> bool:
+    when TARGET == "wasm":
+        return false
+    else when TARGET == "windows":
+        return RemoveDirectoryW(data(__wide(path))) != 0
+    else:
+        return syscall(84, data(__zstr(path))) == 0
+
+# move or rename a file or directory (one already at `to` is replaced: a file, or an empty
+# directory)
+rename_file = (from: str, to: str) -> bool:
+    when TARGET == "wasm":
+        return false
+    else when TARGET == "windows":
+        return MoveFileExW(data(__wide(from)), data(__wide(to)), u32(1)) != 0     # MOVEFILE_REPLACE_EXISTING
+    else:
+        return syscall(82, data(__zstr(from)), data(__zstr(to))) == 0
+
+# copy a file's contents to another (made, or replaced)
+copy_file = (from: str, to: str) -> bool:
+    if let s = read_file(from): return write_file(to, s)
+    false
+
+# add to the end of a file (made if it is not there): a log
+append_file = (path: str, contents: str) -> bool:
+    when TARGET == "wasm" or TARGET == "windows":
+        old = read_file(path) ?? ""
+        return write_file(path, old + contents)
+    else:
+        fd = syscall(2, data(__zstr(path)), 0x441, 0x1A4)
+        if fd < 0: return false
+        off = 0
+        n = len(contents)
+        ok = true
+        loop off < n:
+            r = syscall(1, fd, data(contents) + off, n - off)
+            if r <= 0:
+                ok = false
+                break
+            off += r
+        syscall(3, fd)
+        ok
+
+# when a file or directory was last changed, in seconds since 1970 (as unix_time()); none if it
+# is not there
+file_time = (path: str) -> f64?:
+    when TARGET == "wasm":
+        return none
+    else when TARGET == "windows":
+        info = fill(u8(0), 40)                        # WIN32_FILE_ATTRIBUTE_DATA
+        if GetFileAttributesExW(data(__wide(path)), 0, data(info)) == 0: return none
+        ft = int(((data(info) + 20) as *u32)[0]) | (int(((data(info) + 24) as *u32)[0]) << 32)
+        return f64(ft) / 10000000.0 - 11644473600.0   # (100 ns steps since 1601)
+    else when TARGET == "macos":
+        st = fill(0, 18)                              # (struct stat: st_mtimespec at 48)
+        if __c_stat(data(__zstr(path)), data(st) as *u8) != 0: return none
+        return f64(st[6]) + f64(st[7]) * 1e-9
+    else:
+        fd = syscall(2, data(__zstr(path)), 0, 0)
+        if fd < 0: return none
+        st = fill(0, 18)                              # (struct stat: st_mtime at 88, on x86-64 and arm64)
+        r = syscall(5, fd, data(st))
+        syscall(3, fd)
+        if r != 0: return none
+        f64(st[11]) + f64(st[12]) * 1e-9
+
+# every file under a directory, at any depth, as paths from it ("maps/level1.tmx"), sorted;
+# links to directories are not followed
+walk_dir = (path: str) -> str[]:
+    out: str[]
+    __walk(path, "", out)
+    out.sort()
+    out
+
+__walk = (base: str, rel: str, out: mut str[]):
+    dir = base
+    if len(rel) > 0: dir = base + "/" + rel
+    loop name in list_dir(dir):
+        r = name
+        if len(rel) > 0: r = rel + "/" + name
+        full = dir + "/" + name
+        if is_dir(full):
+            if not is_symlink(full): __walk(base, r, out)
+        else: out.push(r)
+
+# the files whose paths match a pattern: `*` is any part of a name, `?` one character, and `**`
+# any number of directories ("src/*.jo", "assets/**/*.png"), sorted
+glob = (pattern: str) -> str[]:
+    # (the directory to start from: the part before the first * or ?)
+    k = 0
+    loop k < len(pattern) and pattern[k] != '*' and pattern[k] != '?': k += 1
+    loop k > 0 and pattern[k - 1] != '/': k -= 1
+    base = "."
+    rest = pattern
+    if k > 0:
+        base = pattern[..k - 1)
+        if len(base) == 0: base = "/"
+        rest = pattern[k..]
+    out: str[]
+    loop f in walk_dir(base):
+        if __glob_match(f, 0, rest, 0):
+            if k > 0: out.push(pattern[..k) + f)
+            else: out.push(f)
+    out
+
+__glob_match = (s: str, i: int, p: str, j: int) -> bool:
+    if j == len(p): return i == len(s)
+    if j + 2 < len(p) + 1 and p[j] == '*' and j + 1 < len(p) and p[j + 1] == '*':
+        # ** (and **/): any number of whole directories
+        nj = j + 2
+        if nj < len(p) and p[nj] == '/': nj += 1
+        if __glob_match(s, i, p, nj): return true
+        k = i
+        loop k < len(s):
+            if s[k] == '/' and __glob_match(s, k + 1, p, nj): return true
+            k += 1
+        return false
+    if p[j] == '*':
+        k = i
+        loop true:
+            if __glob_match(s, k, p, j + 1): return true
+            if k >= len(s) or s[k] == '/': return false
+            k += 1
+    if i >= len(s): return false
+    if p[j] == '?': return s[i] != '/' and __glob_match(s, i + 1, p, j + 1)
+    s[i] == p[j] and __glob_match(s, i + 1, p, j + 1)
 
 # the current directory
 cwd = () -> str:

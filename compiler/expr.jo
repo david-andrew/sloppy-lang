@@ -627,7 +627,7 @@ map_args = (pnames: int[], has_default: bool[], args: int[], out: mut int[]) -> 
                 if pnames[j] == int(nodes[a].name): k = j
             if k < 0:
                 an = name_of(int(nodes[a].name))
-                if an == "key" or an == "reverse": return "no parameter named '{an}' (`sort_by(xs, (x): key)` and `sorted_by` sort by a key; `descending = true` sorts largest first)"
+                if an == "key" or an == "reverse": return "no parameter named '{an}' (by a key: `max_by(xs, (x): len(x))`, `min_by`, `sorted_by(xs, (x): x.age)`, `sort_by`; `descending = true` sorts largest first)"
                 return "no parameter named '{an}'{suggestion(an, pnames)}"
             if out[k] != 0: return "parameter '{name_of(int(nodes[a].name))}' given twice"
             out[k] = int(nodes[a].a)
@@ -1128,6 +1128,11 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
             if cs != 0 and syms[cs].kind == .struct_ and nums:
                 ot = overloads_text(decls, "")
                 fatal(nodes[n].pos, "no version of '{fnm}' takes these arguments (`{cap}(...)` makes a {cap}){ot}")
+        # (range(3), set(): Python's, which mean other things here)
+        if name_of(name) == "range" and args.len() == 1: fatal(nodes[n].pos, "the numbers from 0 to n - 1 are `[0..n)` (`loop i in [0..3):`); range(a, b) is [a..b)")
+        if name_of(name) == "set" and args.len() == 0: fatal(nodes[n].pos, "there is no set type: a map to bool (`seen: \{str: bool} = \{}`, `seen[x] = true`, `x in seen`), or `unique(xs)`")
+        if name_of(name) == "join" and args.len() == 2 and nodes[unnamed(args[1])].type != 0 and tkind(prune(ntype(unnamed(args[1])))) == .array:
+            fatal(nodes[n].pos, "join puts text together: `[loop x in xs: str(x)]` makes text of each first")
         # (xs.size() and the like: a name that means something else here)
         hh = habit_name(name_of(name))
         if args.len() > 0 and nodes[unnamed(args[0])].type != 0:
@@ -1553,7 +1558,18 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
                 si = int(types[t0].st)
                 loop i in [0..int(structs[si].nfields)): cands.push(int(fields[int(structs[si].fields) + i].name))
             if is_map_type(t0) and len(map_habit_name(name_of(name))) > 0: fatal(nodes[n].pos, "no field or function '{name_of(name)}' for type {type_str(t0)} (use {map_habit_name(name_of(name))})")
-            fatal(nodes[n].pos, "no field or function '{name_of(name)}' for type {type_str(ntype(args[0]))}{suggestion(name_of(name), cands)}")
+            # (m.groups(): a field, called as a method)
+            if types[t0].kind == .struct_:
+                si = int(types[t0].st)
+                loop i in [0..int(structs[si].nfields)):
+                    if int(fields[int(structs[si].fields) + i].name) == name: fatal(nodes[n].pos, "'{name_of(name)}' is a field, not a function: `x.{name_of(name)}`, without ()")
+            tsh = type_str(ntype(args[0]))
+            # (xs = [] with nothing in it yet: its type is not known, and its name for it means nothing)
+            if has_var(prune(ntype(args[0]))):
+                tsh = "this value (its type is not known yet)"
+                if types[t0].kind == .array: tsh = "an array"
+                fatal(nodes[n].pos, "no field or function '{name_of(name)}' for {tsh}{suggestion(name_of(name), cands)}")
+            fatal(nodes[n].pos, "no field or function '{name_of(name)}' for type {tsh}{suggestion(name_of(name), cands)}")
         # a variable of the same name hides the function or type
         hs = lookup(name)
         if hs != 0 and syms[hs].kind == .local:
@@ -1564,6 +1580,11 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
             fatal(nodes[n].pos, "'{name_of(name)}' is a variable of type {type_str(int(globals[g].type))}, not a function")
         all = visible_names()
         loop it in intrinsics: all.push(intern(it.name))
+        # (import net, then tcp_connect(...): the module's, written with its name)
+        loop mi in [0..modules.len()):
+            if modules[mi].is_prelude or modules[mi].names.get(name) == none: continue
+            mn = name_of(int(modules[mi].name))
+            if lookup(intern(mn)) != 0: fatal(nodes[n].pos, "unknown function '{name_of(name)}' (it is {mn}'s: `{mn}.{name_of(name)}(...)`)")
         fatal(nodes[n].pos, "unknown function '{name_of(name)}'{private_hint(name)}{suggestion(name_of(name), all)}")
     resolve_fn_call(n, name, decls, args, expected)
 
@@ -1580,6 +1601,14 @@ rgb_check = (n: int, args: int[]):
         if a == 0 or nodes[a].kind != .int_lit or not has_flag(a, NF_LITERAL): return
         if nodes[a].ival > 1: big = true
     if big: warn(nodes[n].pos, "the parts of a color go from 0 to 1: for 0 to 255, divide by 255 or write hex(0xff8000)")
+
+# (written in braces in the source: "{4}", not print(4) made into text)
+brace_before = (p: int) -> bool:
+    f = pos_file(p)
+    if f < 0 or f >= files.len(): return false
+    o = pos_off(p)
+    src = files[f].src
+    o > 0 and o <= len(src) and src[o - 1] == u8(123)          # ('{')
 
 coerce_hint = ""     # (said after a type mismatch, by what asked for the type)
 
@@ -2346,7 +2375,7 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         nodes[s].aux = 1
         parts: int[]
         loop i in 0.. and a in args:
-            if nodes[a].kind == .namedarg: fatal(nodes[a].pos, "print() does not take named arguments")
+            if nodes[a].kind == .namedarg: fatal(nodes[a].pos, "print() does not take named arguments (`write(s)` prints without a line break; print puts a space between its values)")
             if i > 0:
                 sp = mk(.str_lit, nodes[n].pos)
                 nodes[sp].sval = i32(intern(" "))
@@ -2984,6 +3013,7 @@ check_binary = (n: int, expected: int) -> int:
             if is_numeric(int(types[ta].elem)): why = " (fill(x, n) makes an array of n copies of x; xs .* n multiplies each element)"
         else if (tka == .array and is_numeric(int(types[ta].elem))) or (tkb == .array and is_numeric(int(types[tb].elem))):
             if op == .plus or op == .minus or op == .star or op == .slash or op == .percent: why = " (for each element: .{tok_text(op)}, as in xs .{tok_text(op)} 2.0)"
+        if len(why) == 0 and op == .percent and tka == .str_: why = " (a value goes into text inside braces, with its format: \"\{x:.2f}\")"
         if len(why) == 0: why = void_rec_hint(a) + void_rec_hint(b) + uncalled_hint(a, 0) + uncalled_hint(b, 0)
         fatal(nodes[n].pos, "operator {tok_text(op)} is not defined for {type_str(ta)} and {type_str(tb)}{why}")
     if is_lit(a) and is_lit(b) and not is_cmp:
@@ -3381,6 +3411,9 @@ check_expr = (n: int, expected: int) -> int:
                 part = kid(n, i)
                 if nodes[part].kind != .pair: continue
                 e = int(nodes[part].a)
+                # ("[0-9]{4}" for a regular expression: {4} puts the number 4 in the text)
+                if (nodes[e].kind == .int_lit or (nodes[e].kind == .tuple and nkids(e) > 0 and nodes[kid(e, 0)].kind == .int_lit)) and not pos_in_lib(nodes[e].pos) and brace_before(nodes[e].pos):
+                    warn(nodes[e].pos, "`\{...}` with a number in it puts that number in the text: for the characters themselves (a regular expression's repeat), write `\{\{4}}}}`, or a raw string `r\"[0-9]\{4}\"`")
                 check_expr(e, 0)
                 finalize_literal(e)
                 fmt_part(part, nodes[part].pos)
@@ -3494,7 +3527,9 @@ check_expr = (n: int, expected: int) -> int:
         if bk == .module:
             m = int(types[bt].mod)
             s = module_lookup(m, fname)
-            if s == 0: fatal(nodes[n].pos, "module '{name_of(int(modules[m].name))}' has no member '{name_of(fname)}'")
+            if s == 0:
+                if name_of(fname) == "path": fatal(nodes[n].pos, "paths are plain functions: `join_path(a, b)`, `file_name(p)`, `dir_name(p)`, `extension(p)`, `file_exists(p)`")
+                fatal(nodes[n].pos, "module '{name_of(int(modules[m].name))}' has no member '{name_of(fname)}'")
             nodes[n] = Node(kind = .ident, pos = nodes[n].pos, name = i32(fname))
             t = check_expr_in_module(n, m)
             last_checked = n
@@ -3714,7 +3749,9 @@ check_expr = (n: int, expected: int) -> int:
                 t = check_expr(n, expected)
                 last_checked = n
                 return t
-            else: fatal(nodes[n].pos, "cannot index a value of type {type_str(bt)}")
+            else:
+                if tkind(bt) == .tuple: fatal(nodes[n].pos, "a tuple's parts are `t.0`, `t.1` (an index in brackets is for arrays)")
+                fatal(nodes[n].pos, "cannot index a value of type {type_str(bt)}")
     else if k == .unary:
         hint = 0
         if ex != 0 and (is_numeric(ex) or is_vec(ex)): hint = ex

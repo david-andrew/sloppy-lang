@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+From a Python programmer's scripts:
+- `sloppy file.jo` keeps each program's build apart by its path: two `main.jo` in two
+  directories, run at once, no longer run each other (or fail to write); the build is written
+  beside and put in place, so a copy still running is not written over; builds not run for a
+  week are removed. `args()[0]` is the program as it was named (`tool.jo`).
+- `main()` called by the file itself (at its end, or in an `if`) runs once, there.
+- Files: `make_dirs`, `delete_dir`, `rename_file`, `copy_file`, `append_file`, `file_time`,
+  `walk_dir` (every file under a directory) and `glob("src/**/*.jo")`, on every system.
+- A warning for `{4}` in text (a regular expression's repeat puts the number 4 there instead:
+  `{{4}}` or `r"..."`); `sloppy test` on a file without tests, or with pytest's `test_` functions,
+  says how a test is written instead of "0 tests passed".
+- Errors for Python's habits: `with open(...)`, `global`, `assert x, "msg"`, comprehensions and
+  generators, `import re`/`sys`/`os`/`json`/..., `os.path.join`, `Counter`, `defaultdict`,
+  `open`, `sys.argv`, `t[0]` on a tuple, `m.groups()`, `"{:.2f}".format(x)`, `"%.2f" % x`,
+  `{x!r}`, a ternary in braces, `range(3)`, `set()`, `", ".join(ints)`, `regex("\d+")`, a
+  module's function without its name, `isinstance`, `xs.index`, `isdigit`, `partition`,
+  `splitlines`; no `?T16` in messages. The "nothing calls load" warning is gone, and
+  `updated()` is no longer taken for a misspelled `update`.
+- START: Scripts and tools, and a Coming from Python table.
+- The 3D tutorial (Breakwater) without casts that are not needed (`f32(...)`, its `v3`), with
+  `facing` for aiming, and a note on `import physics3d` for a bigger game.
+
 From a Unity developer's first 3D game:
 - Physics: `mass =` on every `add_...` (instead of the density's), `w.set_mass(b, m)`, in 2D
   and 3D; physics3d's header says what a density of 1000 weighs. `w.contacts()` forgets a body

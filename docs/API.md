@@ -466,7 +466,7 @@ print("took {(time() - start) * 1000.0:.2} ms")
 Operating system access: files, arguments, environment, time.
 
 - `exit = (code: int)`
-- `args = () -> str[]`: command line arguments (args()[0] is the program path)
+- `args = () -> str[]`: command line arguments (args()[0] is the program as it was started: `sloppy tool.jo` gives "tool.jo")
 - `env = (name: str) -> str?`: an environment variable (in a web page: the page's URL parameter of that name, where `SLOPPY_X` may also be written `x`, and a bare `?x` is "1")
 - `read_file = (path: str) -> str?`: read a whole file; none if it cannot be read (or is a directory)
 - `read_line = () -> str?`: a line typed in (or piped in), without its end; none when the input has ended
@@ -494,6 +494,14 @@ Operating system access: files, arguments, environment, time.
 - `run_program = (program: str, args: str[] = []) -> (int, str)`: run a program and wait for it to end: its exit code (-1: it could not be started) and what it wrote to its standard output (its errors go where this program's go). A program named without a / is looked for on the PATH. args are its arguments, after its name.
 - `chmod = (path: str, mode: int) -> bool`
 - `mkdir = (path: str) -> bool`
+- `make_dirs = (path: str) -> bool`: make a directory and the ones it is in ("out/maps/2"); true if it is there after
+- `delete_dir = (path: str) -> bool`: remove a directory, which must be empty (delete_file for a file)
+- `rename_file = (from: str, to: str) -> bool`: move or rename a file or directory (one already at `to` is replaced: a file, or an empty directory)
+- `copy_file = (from: str, to: str) -> bool`: copy a file's contents to another (made, or replaced)
+- `append_file = (path: str, contents: str) -> bool`: add to the end of a file (made if it is not there): a log
+- `file_time = (path: str) -> f64?`: when a file or directory was last changed, in seconds since 1970 (as unix_time()); none if it is not there
+- `walk_dir = (path: str) -> str[]`: every file under a directory, at any depth, as paths from it ("maps/level1.tmx"), sorted; links to directories are not followed
+- `glob = (pattern: str) -> str[]`: the files whose paths match a pattern: `*` is any part of a name, `?` one character, and `**` any number of directories ("src/*.jo", "assets/**/*.png"), sorted
 - `cwd = () -> str`: the current directory
 - `temp_dir = () -> str`: a directory for temporary files (TMPDIR, else /tmp; on Windows, the user's temporary directory)
 

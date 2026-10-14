@@ -123,6 +123,36 @@ code --install-extension RedFoxLabs.sloppy
 For other editors, `sloppy lsp` is a language server: the
 [README](https://github.com/david-andrew/sloppy-lang#editors) shows Neovim and Helix.
 
+## Scripts and tools
+
+Sloppy is for programs without a window too: `sloppy new my_tool program` makes a command-line
+program with a test to start from, and `sloppy my_tool.jo a b` runs it with `args()` being
+`["my_tool.jo", "a", "b"]`. A function named `main` runs after the top-level code (or where
+the file calls it).
+
+## Coming from Python
+
+| Python | Sloppy |
+|---|---|
+| `def f(a, b):` | `f = (a: int, b: int) -> int: ...` |
+| `[w.upper() for w in ws if w]` | `[loop w in ws: if w != "": w.upper()]` |
+| `f"{x:.2f}"`, `"{:.2f}".format(x)` | `"{x:.2f}"`: every string puts values in; `r"..."` does not (a regular expression's `{4}`) |
+| `7 // 2`, `7 / 2` | `7 / 2` is 3 with whole numbers (`-7 / 2` is -3, and `-7 % 3` is -1, as in C); `7.0 / 2` is 3.5 |
+| `with open(p) as f: f.read()` | `read_file(p)` (a `str?`: none when it cannot be read), `write_file`, `append_file`, `read_bytes` |
+| `sys.argv`, `sys.exit(1)` | `args()`, `exit(1)` |
+| `os.path.join`, `os.listdir`, `os.walk`, `glob.glob` | `join_path`, `list_dir`, `walk_dir`, `glob("src/**/*.jo")`; `make_dirs`, `rename_file`, `copy_file`, `delete_file`, `file_time` |
+| `subprocess.run(["ls", "-l"])` | `run_program("ls", ["-l"])` (its exit code and output) |
+| `json.loads(s)`, `json.dumps(x)` | `parse_json(s)` (a Json), `from_json[Config](s)` (into a struct), `to_json(x)` |
+| `re.search(r"\d+", s)` | `s.find(regex(r"\d+"))` (a `Match?`: `m.text`, `m.groups`) |
+| `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero (`counts[w] += 1`, `groups[k].push(x)`) |
+| `set()` | a map to `bool`, or `unique(xs)` |
+| `None`, `if x is None:` | `none`, `if x == none:`; `if let v = x:` gets what is inside |
+| `t[0]` (a tuple) | `t.0` |
+| `max(xs, key=len)`, `sorted(xs, key=...)` | `max_by(xs, (x): len(x))`, `sorted_by(xs, (x): x.age)` |
+| `try: ... except: ...` | a function gives back what went wrong as a value (`-> Config \| JsonError`), checked with `if r is JsonError:` |
+| `def test_x(): assert ...` (pytest) | `test "x": assert(...)`, run with `sloppy test file.jo` |
+| big integers | `int` is 64 bits and wraps around |
+
 ## Coming from Unity or Godot
 
 | There | Here |

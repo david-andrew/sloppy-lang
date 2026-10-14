@@ -155,10 +155,16 @@ habit = (i: int, want: Tok):
     if pw == "delete" or pw == "del": fatal(at, "`xs.remove(i)` takes an element out of an array, `m.remove(k)` a key out of a map")
     if pw == "typeof" or (k == .ident and tok_src(i) == "instanceof"): fatal(at, "`x is T` asks which member of a union x holds (the other types are known when compiling)")
     value_start = k == .ident or k == .int_lit or k == .float_lit or k == .str_lit
+    # (Python's statements that are functions or nothing here)
+    if pw == "with" and value_start: fatal(at, "there is no `with`: `text = read_file(path)` (a `str?`: none when it cannot be read), `write_file(path, s)`, `append_file(path, s)`")
+    if (pw == "global" or pw == "nonlocal") and k == .ident: fatal(at, "no `{pw}` is needed: a function that gives a top-level variable a value changes it (`let x = ...` makes one of its own)")
+    if pw == "assert" and value_start: fatal(at, "assert is a function: `assert(x == 2, \"why\")`")
+    if pw == "print" and value_start: fatal(at, "print is a function: `print(x)`")
     if want == .newline and p == .ident and value_start and not glued: fatal(at, "to call '{pw}', write `{pw}({tok_src(i)})`")
     # ("she said "hi"": the second " ended the text)
     if p == .str_lit and k == .ident and glued and i + 1 < toks.len() and toks[i + 1].kind == .str_lit and not space_before(i + 1):
         fatal(toks[i].pos, "the `\"` before this ends the text: to put a `\"` inside text, write `\\\"`")
+    if want == .rparen and k == .ident and tok_src(i) == "for": fatal(toks[i].pos, "an array made by a loop is `[loop x in xs: x * x]` (and `sum([loop x in xs: x * x])`; there are no generators)")
     if want == .rparen and value_start and (p == .ident or p == .int_lit or p == .float_lit or p == .str_lit or p == .rparen or p == .rbrack):
         fatal(toks[i].pos, "a ',' is missing before this")
 
@@ -188,6 +194,7 @@ keyword_name_error = (i: int):
     else if w == "test": role = " (it starts a test)"
     else if w == "when": role = " (it chooses code by the target, `when TARGET == ...:`)"
     else if w == "use": role = " (it brings in a file's names)"
+    else if w == "match" and i > 0 and toks[i - 1].kind == .dot: role = " (for a regular expression: `s.find(r)`, a Match?, or `s.matches(r)` for all of s)"
     else if w == "match" or w == "is" or w == "in" or w == "pass": role = ""
     fatal(toks[i].pos, "'{w}' is a keyword{role}, so it cannot be a name: pick another, such as '{w}_info' or 'my_{w}'")
 # spacing comes from the gap between a token and the previous one (only asked about in a few places)
@@ -411,7 +418,10 @@ decode_str = (s: str, pos: int, raw: bool) -> str:
                 i += 2
             else if e == '\n':
                 loop i + 1 < n and (s[i + 1] == ' ' or s[i + 1] == '\t'): i += 1
-            else: fatal(pos, "unknown escape \\{byte_str(int(e))}")
+            else:
+                why = ""
+                if e == 'd' or e == 'w' or e == 's' or e == 'b' or e == 'D' or e == 'W' or e == 'S' or e == '.': why = " (for a regular expression, a raw string keeps the backslash: r\"\\d+\")"
+                fatal(pos, "unknown escape \\{byte_str(int(e))}{why}")
         else if (c == '{{' or c == '}}') and i + 1 < n and s[i + 1] == c:
             buf.push(c)
             i += 1
@@ -506,6 +516,7 @@ parse_string_token = (t: int) -> int:
                 shown = expr_src
                 expr_src = te[..len(te) - 1)
             if len(trim(expr_src)) == 0:
+                if colon >= 0: fatal(pos, "the value goes inside the braces, with its format after a colon: \"{{x:.2f}}\" (there is no .format)")
                 fatal(pos, "'{{' in a string starts an interpolation like \"{{x}}\"; write {{{{ and }}}} for literal braces")
             # lex and parse the embedded expression; its tokens keep their places in the file
             saved_toks = toks
@@ -522,7 +533,10 @@ parse_string_token = (t: int) -> int:
             p_src = expr_src
             e = parse_expr()
             skip_newlines()
-            if pk() != .eof: fatal(pos, "invalid expression in string interpolation (a `{{` in a string starts one; for a brace in the text, write {{{{ or }}}})")
+            if pk() != .eof:
+                if find(expr_src, "!r") > 0 or find(expr_src, "!s") > 0: fatal(pos, "there are no conversions: \"{{x}}\" shows x, and \"{{x=}}\" its name too")
+                if find(expr_src, " if ") > 0 and find(expr_src, " else ") > 0: fatal(pos, "a choice is written `if c: a else: b`, as \"{{if done: \"yes\" else: \"no\"}}\"")
+                fatal(pos, "invalid expression in string interpolation (a `{{` in a string starts one; for a brace in the text, write {{{{ or }}}})")
             if nodes[e].kind == .str_lit and nodes[e].nlist == 0 and colon >= 0 and colon + 1 < j and s[colon + 1] == ' ' and not (colon + 2 < j and (s[colon + 2] == '<' or s[colon + 2] == '>' or s[colon + 2] == '^')):
                 # ('{"a": 1}' is the text "a", formatted " 1")
                 fatal(pos, "`{{{trim(s[i + 1..j))}}}` in a string puts in the value of what is inside the braces; for braces in the text, write {{{{ and }}}}, or make it a raw string, r'...' (JSON: r'{{\"a\": 1}}', or to_json(value))")
@@ -684,6 +698,7 @@ parse_primary = () -> int:
             if pk() == .assign: fatal(cur_pos(), "a map is `\{\"x\": 1, \"y\": 2}` (keys are values); for named fields, declare a struct and make one with `Point(x = 1, y = 2)`")
             expect(.colon, "")
             nodes[pr].b = i32(parse_expr())
+            if pk() == .ident and tok_src(ti) == "for": fatal(cur_pos(), "a map made by a loop is `\{loop w in ws: w: len(w)}`")
             pairs.push(pr)
             if not accept(.comma): break
         p_matrix = saved_m
@@ -760,6 +775,7 @@ parse_bracket = () -> int:
     first_break = 0
     p_matrix += 1
     loop pk() != .rbrack and pk() != .rparen:
+        if pk() == .ident and tok_src(ti) == "for" and elems.len() > 0: fatal(cur_pos(), "an array made by a loop is `[loop w in ws: w.upper()]` (and with a condition, `[loop w in ws: if w != \"\": w]`)")
         el = parse_expr()
         k = pk()
         if k == .ellipsis:

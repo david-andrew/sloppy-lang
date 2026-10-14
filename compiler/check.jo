@@ -382,7 +382,7 @@ repl_sig = ""
 HABITS = ["True", "`true`", "False", "`false`", "None", "`none`", "nil", "`none`", "undefined", "`none`",
     "self", "a parameter: functions take what they work on first (`move = (p: mut Player, dt: f64): ...`, called as `p.move(dt)`)",
     "this", "a parameter: functions take what they work on first (`move = (p: mut Player, dt: f64): ...`, called as `p.move(dt)`)",
-    "float", "`f64`", "double", "`f64`", "float64", "`f64`", "float32", "`f32`", "number", "`f64`",
+    "float", "`f64` (and `to_float(s)` for text)", "double", "`f64`", "float64", "`f64`", "float32", "`f32`", "number", "`f64`",
     "string", "`str`", "String", "`str`", "boolean", "`bool`", "Boolean", "`bool`", "char", "`u8` (a character is its code: 'a' == 97)",
     "Int", "`int`", "integer", "`int`", "long", "`int`", "int64", "`int`", "int32", "`i32`",
     "list", "`T[]` (an array: `int[]`)", "List", "`T[]` (an array: `int[]`)", "vector", "`T[]` (an array: `int[]`)", "Vec", "`T[]` (an array: `int[]`)",
@@ -432,7 +432,14 @@ HABITS = ["True", "`true`", "False", "`false`", "None", "`none`", "nil", "`none`
     "Collision", "`w.contacts(b)`, read each frame (`c.new`: it just began); nothing is called when bodies touch",
     "Time", "the `dt` update is given (the seconds since the last frame), or `time()` (since the start)",
     "Add", "`push`", "Remove", "`remove(i)` (by position)", "Insert", "`insert(i, x)`", "Contains", "`contains`",
-    "Clear", "`clear`", "IndexOf", "`index_of`", "normalized", "`normalize(v)`", "magnitude", "`length(v)`", "sqrMagnitude", "`length_sq(v)`"]
+    "Clear", "`clear`", "IndexOf", "`index_of`",
+    "Counter", "`counts: \{str: int} = \{}`, then `counts[w] += 1` (a map: a missing key starts at 0)",
+    "defaultdict", "a plain map: a missing key starts at its type's zero (`m[k] += 1`, `m[k].push(x)`)",
+    "open", "`read_file(path)` (a `str?`: none when it cannot be read), `write_file(path, s)`, `append_file(path, s)`",
+    "sys", "`args()` (the command line), `exit(code)`, `eprint(s)`", "isinstance", "`x is T` (which member of a union x holds)",
+    "index", "`index_of`", "isdigit", "`to_int(s) != none`, or `is_digit(c)` for one character", "partition", "`split(s, \"=\", 1)` (at most two parts)",
+    "splitlines", "`lines(s)`", "loads", "`parse_json(s)` (a Json), or `from_json[T](s)` into a struct", "dumps", "`to_json(x)`",
+    "json", "`parse_json(s)` and `to_json(x)` (there, without an import)", "os", "the plain functions: `read_file`, `list_dir`, `join_path`, `run_program`, `env`", "normalized", "`normalize(v)`", "magnitude", "`length(v)`", "sqrMagnitude", "`length_sq(v)`"]
 
 # names from other languages for maps' operations
 MAP_HABITS = ["set", "`m[k] = v`", "size", "`m.len()`", "length", "`m.len()`", "delete", "`m.remove(k)`", "has_key", "`m.has(k)` or `k in m`",
@@ -701,7 +708,18 @@ register_decls = (m: int, decls: int[]):
                 if not file_exists(path): path = "{lib_dir}/std/{rel}.jo"
                 if not file_exists(path): path = "{lib_dir}/game/{rel}.jo"
                 if not file_exists(path): path = "{lib_dir}/core/{rel}.jo"
-                if not file_exists(path): fatal(nodes[d].pos, "cannot find module '{rel}'")
+                if not file_exists(path):
+                    pym = ""
+                    if rel == "re": pym = ": regular expressions are there without an import, `regex(r\"\\d+\")`"
+                    else if rel == "sys": pym = ": `args()` is the command line, `exit(code)` ends the program"
+                    else if rel == "json": pym = ": `parse_json(s)` and `to_json(x)` are there without an import"
+                    else if rel == "os" or rel == "shutil" or rel == "pathlib" or rel == "glob": pym = ": files are there without an import: `read_file`, `list_dir`, `walk_dir`, `glob`, `make_dirs`, `rename_file`, `join_path`"
+                    else if rel == "time" or rel == "datetime": pym = ": `time()`, `unix_time()`, `now()` (a Date) and `sleep(s)` are there without an import"
+                    else if rel == "random" or rel == "math": pym = ": `random()`, `random_int(lo, hi)`, `sqrt`, `floor`, `PI` are there without an import"
+                    else if rel == "csv": pym = ": `csv_rows(text)` is there without an import"
+                    else if rel == "collections": pym = ": maps start missing keys at zero (`counts[w] += 1`); `sorted_by`, `unique`, `group_by`"
+                    else if rel == "subprocess": pym = ": `run_program(\"ls\", [\"-l\"])` (its exit code and output)"
+                    fatal(nodes[d].pos, "cannot find module '{rel}'{pym}")
             im = load_module(path, false, nodes[d].pos)
             if nodes[d].aux == 1:
                 modules[m].uses.push(im)
@@ -2459,6 +2477,18 @@ check_lambda_body = (f: int, lam: int, ret_hint: int):
     ctxs.pop()
     cx = parent
 
+# a call of the function `name` with no arguments, anywhere in n but inside function literals
+calls_named = (n: int, name: str) -> bool:
+    if n == 0: return false
+    k = nodes[n].kind
+    if k == .lambda or k == .fn_: return false
+    if k == .call and nkids(n) == 0 and nodes[n].a != 0 and nodes[int(nodes[n].a)].kind == .ident and name_of(int(nodes[int(nodes[n].a)].name)) == name: return true
+    if calls_named(int(nodes[n].a), name) or calls_named(int(nodes[n].b), name): return true
+    if k != .for_ and calls_named(int(nodes[n].c), name): return true
+    loop i in [0..nkids(n)):
+        if calls_named(kid(n, i), name): return true
+    false
+
 # (enemies = [] at the top level, filled by a function: that function is checked first, so the
 # type of what it pushes is known where enemies is read)
 check_pushers_first = ():
@@ -2776,7 +2806,7 @@ check_program = (main_path: str):
             if syms[gs].kind == .fns and gd != 0 and nodes[gd].kind == .fn_ and nodes[gd].a == 0: add_flag(gd, NF_VOID)
     # (Godot's callbacks, which nothing here calls)
     if not has_upd and not has_drw:
-        loop gn in ["_process", "_physics_process", "_ready", "_draw", "_input", "load", "Awake", "FixedUpdate", "LateUpdate", "OnGUI"]:
+        loop gn in ["_process", "_physics_process", "_ready", "_draw", "_input", "Awake", "FixedUpdate", "LateUpdate", "OnGUI"]:
             if let gs = modules[mainm].names.get(intern(gn)):
                 if syms[gs].decl != 0: warn(nodes[int(syms[gs].decl)].pos, "nothing calls {gn}: a game is `update = (dt: f64): ...`, called each frame, and `draw = (): ...` after it; what runs once goes at the top level")
     # (Draw = ():, updte = (dt: f64): a near miss of the name the game calls, and nothing runs)
@@ -2787,6 +2817,11 @@ check_program = (main_path: str):
         loop nm, gs in modules[mainm].names:
             if syms[gs].kind != .fns or syms[gs].decl == 0: continue
             s = name_of(nm)
+            # (a game's: no main, and the parameters the game would give it)
+            gd = int(syms[gs].decl)
+            np = 0
+            if want == "update": np = 1
+            if modules[mainm].names.get(intern("main")) != none or nodes[gd].kind != .fn_ or nkids(gd) != np: continue
             if abs(len(s) - len(want)) <= 1 and edit_distance(s, want, lim) <= lim:
                 warn(nodes[int(syms[gs].decl)].pos, "nothing calls {s}: the game calls `{want}` each frame (did you mean `{want}`?)")
     # (Unity's collision callbacks: contacts are read, each frame)
@@ -2797,6 +2832,13 @@ check_program = (main_path: str):
     loop gn in ["keypressed", "keyreleased", "mousepressed", "mousereleased", "textinput", "wheelmoved"]:
         if let gs = modules[mainm].names.get(intern(gn)):
             if syms[gs].kind == .fns and syms[gs].decl != 0: warn(nodes[int(syms[gs].decl)].pos, "nothing calls {gn}: in update, ask each frame (`key_pressed(.space)`, `mouse_pressed(.left)`, `text_input()`, `mouse_wheel()`)")
+    if test_mode and test_decls.len() == 0 and not check_all and not ide_on:
+        # (pytest's test_ functions, or no tests at all: "0 tests passed" would say all is well)
+        pyt = ""
+        loop nm, gs in modules[mainm].names:
+            if starts_with(name_of(nm), "test_") and syms[gs].kind == .fns and len(pyt) == 0: pyt = name_of(nm)
+        if len(pyt) > 0: fatal(nodes[int(syms[modules[mainm].names[intern(pyt)]].decl)].pos, "'{pyt}' is a function, not a test: a test is written `test \"{pyt[5..]}\":` with its lines below it (`assert(...)` in them)")
+        fatal(-1, "no tests in {main_path}: a test is written `test \"adds\":` with its lines below it, as `assert(add(1, 2) == 3)`")
     if test_mode:
         # top-level code runs first (it may set up globals), then each test in order
         skip_main = true
@@ -2819,7 +2861,11 @@ check_program = (main_path: str):
         modules[mainm].inits.push(synth_call("__test_done", [cnt], 0))
     # (sloppy check: the tests, and the game loop's update and draw too)
     if (not test_mode or check_all) and (has_upd or has_drw):
-        if let s = modules[mainm].names.get(intern("main")):
+        user_main = false
+        loop st0 in modules[mainm].inits:
+            if calls_named(st0, "main"): user_main = true
+        if user_main: skip_main = true
+        else if let s = modules[mainm].names.get(intern("main")):
             mc = mk(.call, 0)
             mid = mk(.ident, 0)
             nodes[mid].name = i32(intern("main"))
@@ -2871,7 +2917,11 @@ check_program = (main_path: str):
     cx = -1
     check_pushers_first()
     if let s = modules[mainm].names.get(intern("main")):
-        if syms[s].kind == .fns and not skip_main: main_fn = get_fn_inst(int(syms[s].decl), [], 0)
+        # (main() at the end of the file, as in Python: it runs once, there)
+        calls_main = false
+        loop st in modules[mainm].inits:
+            if calls_named(st, "main"): calls_main = true
+        if syms[s].kind == .fns and not skip_main and not calls_main: main_fn = get_fn_inst(int(syms[s].decl), [], 0)
     if let s = modules[mainm].names.get(intern("update")):
         if syms[s].kind == .fns:
             # (update = (dt): ..., its parameter untyped: the seconds the game loop gives it)

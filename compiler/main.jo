@@ -672,16 +672,50 @@ main = ():
     if s >= 0: base = base[s + 1..]
     base = strip_ext(base)
     if test_mode: base = base + ".test"
-    built = compile(path, "{cache}/{base}.bin")
+    # (one program per path: two main.jo in two directories, run at once, are two programs)
+    full = path
+    if len(full) == 0 or (full[0] != '/' and find(full, ":") < 0): full = os_path(cwd()) + "/" + path
+    base = "{base}-{path_hash(full)}"
+    if (time_ns() / 1000) % 64 == 0: clean_cache(cache)
+    out = "{cache}/{base}.bin"
+    # (made beside it, then put in its place: a copy of the program still running is not
+    # written over; Windows cannot replace a running program, so there it is written in place)
+    tmp = out
+    if not target_windows: tmp = "{cache}/{base}.{time_ns()}.new"
+    built = compile(path, tmp)
     if len(built) == 0: exit(1)
+    if built == tmp and tmp != out and not target_wasm:
+        if rename_file(tmp, out): built = out
     if target_wasm:
         # open the page in the default browser, detached (the browser's output does not
         # reach this terminal, and sloppy returns at once)
         if open_in_browser(built): eprint("sloppy: opened {built} in the browser")
         else: eprint("sloppy: built {built}; open it in a browser")
         exit(0)
-    run_args = [built]
+    # (args()[0] is the program as it was named: the source file)
+    run_args = [path]
     loop i in [first + 1..a.len()): run_args.push(a[i])
     exec(built, run_args)
     eprint("sloppy: failed to run {built}")
     exit(1)
+
+# (an FNV-1a hash of a path, as 8 hex digits)
+path_hash = (p: str) -> str:
+    h = 2166136261
+    loop c in p: h = ((h xor int(c)) * 16777619) & 0xFFFFFFFF
+    d = "0123456789abcdef"
+    out = ""
+    loop k in [0..8): out = out + byte_str(int(d[(h >> (k * 4)) & 15]))
+    out
+
+# programs left in the run cache: those not run for a week go (and half-made ones of crashed
+# builds)
+clean_cache = (cache: str):
+    # (now, as the file system tells time: a file just written)
+    write_file(cache + "/.now", "")
+    now = file_time(cache + "/.now") ?? 0.0
+    if now == 0.0: return
+    loop f in list_dir(cache):
+        p = cache + "/" + f
+        if let t = file_time(p):
+            if now - t > 7.0 * 86400.0 or (ends_with(f, ".new") and now - t > 3600.0): delete_file(p)
