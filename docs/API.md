@@ -873,7 +873,7 @@ The dotted operators work element by element on arrays of any shape, and broadca
 - `min[T] = (m: NDArray[T], axis: int) -> NDArray[T]`
 - `max[T] = (m: NDArray[T], axis: int) -> NDArray[T]`
 - `mean = (m: NDArray[f64], axis: int) -> NDArray[f64]`
-- `dot = (a: f64[], b: f64[]) -> f64`
+- `dot = (a: f64[], b: f64[]) -> f64`: the sum of a[i] * b[i] (kept in four running sums, about twice as fast: rounded a little differently from adding in order, the same for the same input every time)
 - `norm = (a: f64[]) -> f64`
 
 #### Linear algebra
