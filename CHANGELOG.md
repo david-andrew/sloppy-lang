@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+For newcomers (from a first-time programmer working through the tutorial):
+- New warnings: a value made and dropped on a line of its own (`x == 6` for `x = 6`, `speed +
+  1`, `if hit: true` for `return true`); `got / total * 100` with whole numbers (0 for 3 of 4);
+  `Draw = ():` or `updte = (dt: f64):` near the name the game calls, which then never runs.
+- `update` and `draw` give nothing back: their last line is a statement (a value there was a
+  type mismatch reported at `update =`).
+- Drawing outside a frame (`circle(...)` on a line of the top level) says to draw in `draw`
+  instead of crashing on a null pointer.
+- Clearer errors: an enum's variant without its dot (`if screen == title`, `key_pressed(space)`,
+  `screen = play`, `screen = .title` with no type to go by); a function where its result was
+  meant (`play(sfx_coin)`, `input_axis * 400`); a missing `,` at the end of a line in a list; a
+  quote inside text; a line one space too deep; `rect(...)` where `Rect(...)` was meant; an
+  Image given for a Texture; `xs.add`/`xs.delete`; a variable made in `update` used in
+  `draw`; `x = []` at the top level (the type of what is pushed later is suggested); a call
+  that may give none (`to_float(load_data("best"))`: `?? ""` says what to use then) and an
+  optional compared with `<` (said with the line that made it).
+- A menu (ui_begin) no longer gives the focus to the item the pointer happens to rest on when
+  it opens; only a move onto an item takes it.
+
 ## 0.12.0
 
 Compiling:

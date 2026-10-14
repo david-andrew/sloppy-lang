@@ -140,6 +140,9 @@ habit = (i: int, want: Tok):
     if pw == "typeof" or (k == .ident and tok_src(i) == "instanceof"): fatal(at, "`x is T` asks which member of a union x holds (the other types are known when compiling)")
     value_start = k == .ident or k == .int_lit or k == .float_lit or k == .str_lit
     if want == .newline and p == .ident and value_start and not glued: fatal(at, "to call '{pw}', write `{pw}({tok_src(i)})`")
+    # ("she said "hi"": the second " ended the text)
+    if p == .str_lit and k == .ident and glued and i + 1 < toks.len() and toks[i + 1].kind == .str_lit and not space_before(i + 1):
+        fatal(toks[i].pos, "the `\"` before this ends the text: to put a `\"` inside text, write `\\\"`")
     if want == .rparen and value_start and (p == .ident or p == .int_lit or p == .float_lit or p == .str_lit or p == .rparen or p == .rbrack):
         fatal(toks[i].pos, "a ',' is missing before this")
 
@@ -677,7 +680,12 @@ parse_primary = () -> int:
     if k == .ident or k == .int_lit: fatal(pos, "unexpected '{tok_src(t)}'")
     if k == .indent:
         if len(mixed_indent_note()) > 0: fatal(pos, "unexpected indentation{mixed_indent_note()}")
-        if t > 1 and toks[t - 1].kind == .newline and toks[t - 2].kind != .colon: fatal(pos, "unexpected indentation (does the line above need a `:` at its end?)")
+        if t > 1 and toks[t - 1].kind == .newline and toks[t - 2].kind != .colon:
+            # (one space too many: a slip, not a missing `:`)
+            here = line_indent(toks[t + 1].pos)
+            above = line_indent(toks[t - 2].pos)
+            if here > above and here - above <= 2: fatal(pos, "this line is indented more than the line above ({here} spaces, the line above has {above})")
+            fatal(pos, "unexpected indentation (does the line above need a `:` at its end?)")
         fatal(pos, "unexpected indentation (this line is indented deeper than the lines around it)")
     if k == .newline or k == .eof: fatal(prev_end(), "expected an expression here")
     fatal(pos, "expected an expression, found {tok_name(k)}")
@@ -733,6 +741,7 @@ parse_bracket = () -> int:
     elems: int[]
     ncols = -1          # 2-D literal: elements per row (rows end at ';' or a line break)
     row_start = 0
+    first_break = 0
     p_matrix += 1
     loop pk() != .rbrack and pk() != .rparen:
         el = parse_expr()
@@ -763,9 +772,12 @@ parse_bracket = () -> int:
         semi = k == .semi
         if semi or (nl_before(ti) and toks[ti - 1].kind != .comma):
             if semi: advance()
+            else if first_break == 0: first_break = el
             w = elems.len() - row_start
             if ncols < 0: ncols = w
-            else if w != ncols: fatal(nodes[el].pos, "the rows of a 2-D array must have the same length (this row has {w} elements, the first has {ncols})")
+            else if w != ncols:
+                if first_break != 0: fatal(nodes[first_break].pos, "a `,` is missing after this (a line break without one starts a new row of a 2-D array)")
+                fatal(nodes[el].pos, "the rows of a 2-D array must have the same length (this row has {w} elements, the first has {ncols})")
             row_start = elems.len()
             continue
         # a space separates elements
@@ -775,13 +787,24 @@ parse_bracket = () -> int:
     expect(.rbrack, "")
     if ncols >= 0:
         w = elems.len() - row_start
-        if w > 0 and w != ncols: fatal(pos, "the rows of a 2-D array must have the same length (the last row has {w} elements, the first has {ncols})")
+        if w > 0 and w != ncols:
+            if first_break != 0: fatal(nodes[first_break].pos, "a `,` is missing after this (a line break without one starts a new row of a 2-D array)")
+            fatal(pos, "the rows of a 2-D array must have the same length (the last row has {w} elements, the first has {ncols})")
         m = mk(.matrix, pos)
         set_list(m, elems)
         nodes[m].ival = ncols
         return m
     n = mk(.array, pos)
     set_list(n, elems)
+    n
+
+# the spaces before the first character of the line that p is on
+line_indent = (p: int) -> int:
+    ln, c = line_col(p)
+    src = files[pos_file(p)].src
+    i = pos_off(p) - (c - 1)
+    n = 0
+    loop i + n < len(src) and (src[i + n] == ' ' or src[i + n] == '\t'): n += 1
     n
 
 # does the '(' at i start a function literal: (params) -> R: ... or (params): ...?

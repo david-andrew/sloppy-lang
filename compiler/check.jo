@@ -386,7 +386,7 @@ HABITS = ["True", "`true`", "False", "`false`", "None", "`none`", "nil", "`none`
     "Int", "`int`", "integer", "`int`", "long", "`int`", "int64", "`int`", "int32", "`i32`",
     "list", "`T[]` (an array: `int[]`)", "List", "`T[]` (an array: `int[]`)", "vector", "`T[]` (an array: `int[]`)", "Vec", "`T[]` (an array: `int[]`)",
     "dict", "`\{K: V}` (a map: `\{str: int}`)", "Dict", "`\{K: V}` (a map: `\{str: int}`)", "HashMap", "`\{K: V}` (a map: `\{str: int}`)",
-    "append", "`push`", "push_back", "`push`", "length", "`len`", "size", "`len`",
+    "append", "`push`", "push_back", "`push`", "add", "`push`", "delete", "`remove(i)`", "remove_at", "`remove(i)`", "length", "`len`", "size", "`len`",
     "strip", "`trim`", "lstrip", "`trim_start`", "rstrip", "`trim_end`", "startswith", "`starts_with`", "startsWith", "`starts_with`",
     "endswith", "`ends_with`", "endsWith", "`ends_with`", "indexOf", "`index_of` or `find`", "toUpperCase", "`upper`", "toLowerCase", "`lower`",
     "to_upper", "`upper`", "to_lower", "`lower`", "includes", "`contains` or `x in xs`", "isEmpty", "`is_empty`",
@@ -442,8 +442,31 @@ habit_name = (name: str) -> str:
 # an example of the annotation for an empty array or map
 empty_hint = (nm: str, t0: int) -> str:
     t = prune(t0)
-    if types[t].kind == .array: return " (`{nm}: int[] = []` for an array of ints)"
+    if types[t].kind == .array:
+        et = pushed_type(nm)
+        if len(et) > 0: return " (`{nm}: {et}[] = []`: an array of {et}s, as pushed later)"
+        return " (`{nm}: int[] = []` for an array of ints)"
     if is_map_type(t): return " (`{nm}: \{str: int} = \{}` for a map from text to ints)"
+    ""
+
+# enemies = [] and later enemies.push(vec2(...)): the type of what goes in, as written
+pushed_type = (nm: str) -> str:
+    id = intern(nm)
+    loop i in [1..nodes.len()):
+        if nodes[i].kind != .call or nkids(i) != 1: continue
+        f = int(nodes[i].a)
+        if f == 0 or nodes[f].kind != .field or name_of(int(nodes[f].name)) != "push": continue
+        r = int(nodes[f].a)
+        if r == 0 or nodes[r].kind != .ident or int(nodes[r].name) != id: continue
+        x = kid(i, 0)
+        xk = nodes[x].kind
+        if xk == .str_lit: return "str"
+        if xk == .int_lit: return "int"
+        if xk == .float_lit: return "f64"
+        if xk == .call and nodes[int(nodes[x].a)].kind == .ident:
+            cn = name_of(int(nodes[int(nodes[x].a)].name))
+            if cn == "rgb" or cn == "rgba" or cn == "hex": return "vec4"
+            if cn == "vec2" or cn == "vec3" or cn == "vec4" or cn == "ivec2" or cn == "ivec3" or (len(cn) > 0 and cn[0] >= 'A' and cn[0] <= 'Z'): return cn
     ""
 
 # a variable of this name was declared earlier in the function, in a block that has ended
@@ -455,6 +478,15 @@ gone_local_hint = (nm: int, at: int) -> str:
         if int(locals[l].name) == nm and int(locals[l].owner) == inst and locals[l].pos < at and pos_file(locals[l].pos) == pos_file(at):
             ln, c = line_col(locals[l].pos)
             return " (the '{name_of(nm)}' made on line {ln} is inside a block that has ended; give it a value before that block to use it here)"
+        l -= 1
+    # (pos made in update, used in draw: each function's variables are its own)
+    l = locals.len() - 1
+    loop l > 0:
+        o = int(locals[l].owner)
+        if int(locals[l].name) == nm and o != inst and int(locals[l].flags) & LF_DECL != 0 and o > 0 and o < fns.len() and fns[o].decl != 0 and not pos_in_lib(locals[l].pos):
+            fname = name_of(int(nodes[int(fns[o].decl)].name))
+            ln, c = line_col(locals[l].pos)
+            return " (the '{name_of(nm)}' made on line {ln} belongs to {fname}; for both to use it, give it its first value at the top level, outside the functions)"
         l -= 1
     ""
 
@@ -1291,6 +1323,37 @@ unused_result = (x: int, pos: int):
         how = " (`{v} = {v}.{fname}(...)` keeps it)"
     warn(pos, "{fname} gives a new {type_str(r)} and leaves its argument as it was: this does nothing{how}")
 
+# `x == 6`, `speed + 1`, `true` as a statement: a value made and dropped, which changes nothing
+# (written for `=`, `+=` or `return true`)
+unused_value = (raw: Node, t: int):
+    if pos_in_lib(raw.pos) or files[pos_file(raw.pos)].path == "<input>": return
+    if tkind(prune(t)) == .void_ or t == T_NEVER: return
+    k = raw.kind
+    name = ""
+    if (k == .binary or k == .and_ or k == .or_) and nodes[int(raw.a)].kind == .ident: name = name_of(int(nodes[int(raw.a)].name))
+    if k == .binary:
+        op = raw.op as Tok
+        if op == .eq:
+            if len(name) > 0: warn(raw.pos, "`==` compares, and the answer is not used: to change '{name}', write `{name} = ...`")
+            else: warn(raw.pos, "`==` compares, and the answer is not used (`=` changes a value)")
+            return
+        if op == .ne or op == .lt or op == .gt or op == .le or op == .ge:
+            warn(raw.pos, "this comparison's answer is not used (`if ...:` acts on it)")
+            return
+        if op == .plus or op == .minus or op == .star or op == .slash or op == .percent:
+            if len(name) > 0: warn(raw.pos, "this value is not used: to change '{name}', write `{name} = ...` (or `{name} {tok_text(op)}= ...`)")
+            else: warn(raw.pos, "this value is not used: it changes nothing")
+            return
+        return
+    if k == .and_ or k == .or_ or k == .not_:
+        warn(raw.pos, "this condition's answer is not used (`if ...:` acts on it)")
+        return
+    if k == .bool_lit or k == .int_lit or k == .float_lit or k == .ident or k == .none_lit:
+        if tkind(prune(int(ctxs[cx].ret))) != .void_:
+            warn(raw.pos, "this value is not used: `return` gives it back from the function")
+        else:
+            warn(raw.pos, "this value is not used: it changes nothing")
+
 # ---------------- statements ----------------
 stmt_terminates = (s: int) -> bool:
     if s == 0: return false
@@ -2111,12 +2174,14 @@ check_stmt = (s: int):
                 nodes[e] = Node(kind = .int_lit, pos = nodes[e].pos)
         if nodes[e].kind == .match_: add_flag(e, NF_STMT)
         named = nodes[e].kind == .ident or nodes[e].kind == .field
+        raw = nodes[e]
         t = check_expr(e, 0)
         if named and (tkind(t) == .fn_ or tkind(t) == .cfn):
             nm = name_of(int(nodes[e].name))
             fatal(nodes[e].pos, "'{nm}' is a function and is not called here: `{nm}()` calls it")
         nodes[s].a = i32(last_checked)
         unused_result(last_checked, nodes[e].pos)
+        unused_value(raw, t)
     else if k == .if_ or k == .iflet:
         add_flag(s, NF_STMT)
         check_expr(s, 0)
@@ -2619,11 +2684,27 @@ check_program = (main_path: str):
     # programs with update()/draw() run the game loop after main()
     has_upd = modules[mainm].names.get(intern("update")) != none
     has_drw = modules[mainm].names.get(intern("draw")) != none
+    # (the game ignores what update and draw give back: their last line is a statement, as
+    # `world.step(dt)` or a mistaken `pos == pos + v`, which then gets its warning)
+    loop gn in ["update", "draw"]:
+        if let gs = modules[mainm].names.get(intern(gn)):
+            gd = int(syms[gs].decl)
+            if syms[gs].kind == .fns and gd != 0 and nodes[gd].kind == .fn_ and nodes[gd].a == 0: add_flag(gd, NF_VOID)
     # (Godot's callbacks, which nothing here calls)
     if not has_upd and not has_drw:
         loop gn in ["_process", "_physics_process", "_ready", "_draw", "_input", "load"]:
             if let gs = modules[mainm].names.get(intern(gn)):
                 if syms[gs].decl != 0: warn(nodes[int(syms[gs].decl)].pos, "nothing calls {gn}: a game is `update = (dt: f64): ...`, called each frame, and `draw = (): ...` after it; what runs once goes at the top level")
+    # (Draw = ():, updte = (dt: f64): a near miss of the name the game calls, and nothing runs)
+    loop want in ["draw", "update"]:
+        if modules[mainm].names.get(intern(want)) != none: continue
+        lim = 1
+        if want == "update": lim = 2
+        loop nm, gs in modules[mainm].names:
+            if syms[gs].kind != .fns or syms[gs].decl == 0: continue
+            s = name_of(nm)
+            if abs(len(s) - len(want)) <= 1 and edit_distance(s, want, lim) <= lim:
+                warn(nodes[int(syms[gs].decl)].pos, "nothing calls {s}: the game calls `{want}` each frame (did you mean `{want}`?)")
     # (LÖVE's input callbacks: input is asked for, each frame)
     loop gn in ["keypressed", "keyreleased", "mousepressed", "mousereleased", "textinput", "wheelmoved"]:
         if let gs = modules[mainm].names.get(intern(gn)):
