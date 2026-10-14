@@ -25,6 +25,9 @@ Language and library:
 - Formats `{x:e}`, `{x:.3E}`, `{x:g}` (as Python's), and `d` and `s` accepted; a format the
   library does not know is an error (`{x:.3z}` printed the number as if it were not there).
 - A `@cabi` function can be given straight to a C function's callback parameter.
+- `"-" * 40` is forty dashes (it was the character code of `-` times 40), and `3 * "="` works
+  as in Python. `find` and `find_byte` look at eight bytes at a time (about 4 times faster on
+  long text).
 - `sloppy test` runs each test in a process of its own (Linux, macOS): a failing one is reported
   and the rest still run, then "N passed, M failed" and exit status 1.
 - Debuggers (`-g`) show the program's globals, top-level variables included; gdb's printer shows

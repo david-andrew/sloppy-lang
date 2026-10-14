@@ -171,6 +171,7 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `replace = (s: str, old: str, new: str) -> str`
 - `repeat = (s: str, n: int) -> str`
 - `(*) = (s: str, n: int) -> str`
+- `(*) = (n: int, s: str) -> str`
 - `upper = (s: str) -> str`
 - `lower = (s: str) -> str`
 - `to_int = (s: str) -> int?`: parse an integer (decimal, or hex after 0x; _ may separate digits); none if it is not one or does not fit in an int
