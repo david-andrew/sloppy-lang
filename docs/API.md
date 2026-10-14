@@ -3182,6 +3182,17 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `udp_receive = (sock: int) -> Datagram[]`: the datagrams that have arrived since the last call
 - `udp_close = (sock: int)`
 
+#### TCP: a stream of bytes to one other program
+
+- `tcp_connect = (host: str, port: int, timeout: f64 = 5.0) -> int`: a connection to host's port, waiting up to `timeout` seconds for it; -1 if it cannot be made
+- `tcp_listen = (port: int) -> int`: a server on port: connections come from tcp_accept; -1 if the port cannot be had
+- `tcp_accept = (server: int, wait: f64 = 0.0) -> int`: a connection made to the server (waiting up to `wait` seconds for one), or -1 if none came
+- `tcp_send = (c: int, data: u8[]) -> bool`: all of data sent (waiting while the other side is slow to take it); false if the connection has failed or closed
+- `tcp_send = (c: int, text: str) -> bool`
+- `tcp_receive = (c: int, wait: f64 = 0.0) -> u8[]`: the bytes that have arrived (waiting up to `wait` seconds for the first); empty when none has (or the connection has ended: tcp_closed says)
+- `tcp_closed = (c: int) -> bool`: the other side has closed the connection (or it failed), and everything sent has been received
+- `tcp_close = (c: int)`
+
 ## Netplay
 
 A module (`import netplay`): players on different machines in one game. With rollback (`session`), only inputs travel, and a late one is made up for by playing the last ticks again; with a server (`server`, `client`), the server runs the game and clients predict their own moves and draw others a little in the past. Sloppy's math is its own (no system math library, no fused multiply-add), so a tick comes out the same on Linux, Windows, macOS and the web. See [examples/duel](https://github.com/david-andrew/sloppy-lang/tree/master/examples/duel) and [examples/arena](https://github.com/david-andrew/sloppy-lang/tree/master/examples/arena), and [playing over a network](MULTIPLAYER.md) for choosing between them.
