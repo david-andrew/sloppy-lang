@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0
+
 From a teacher preparing a first programming class:
 - `input(prompt)`, `input_int(prompt)` and `input_float(prompt)`: a line typed by the user, and
   numbers, asked again until what was typed is one.
