@@ -160,8 +160,14 @@ write_macho = (path: str, text: u8[], entry_off: int, ro: u8[], info: u8[], data
     # the code signature's size: a SuperBlob holding one CodeDirectory with a hash per 4 KB page
     nslots = (sig_off + 4095) / 4096
     id_len = len(ident) + 1
-    cd_len = 88 + id_len + 32 * nslots
+    # (in an app bundle: also the hashes of Info.plist, of the requirements (an empty set) and of
+    # _CodeSignature/CodeResources, before the pages', and the requirements as a second blob)
+    bundled = macho_plist.len() > 0
+    nspecial = 0
+    if bundled: nspecial = 3
+    cd_len = 88 + id_len + 32 * (nspecial + nslots)
     sig_len = 20 + cd_len
+    if bundled: sig_len += 8 + 12
     sig_len = (sig_len + 15) & ~15
     link_size = sig_off + sig_len - bind_off
     # ---- header and load commands ----
@@ -270,18 +276,30 @@ write_macho = (path: str, text: u8[], entry_off: int, ro: u8[], info: u8[], data
     out.resize(sig_off)
     # ---- the code signature (big-endian) ----
     sig: u8[]
+    req: u8[]                                    # an empty requirement set
+    mpbe32(req, 0xFADE0C01)
+    mpbe32(req, 12)
+    mpbe32(req, 0)
     mpbe32(sig, 0xFADE0CC0)                      # CSMAGIC_EMBEDDED_SIGNATURE
     mpbe32(sig, sig_len)
-    mpbe32(sig, 1)
-    mpbe32(sig, 0)                               # CSSLOT_CODEDIRECTORY
-    mpbe32(sig, 20)
+    if bundled:
+        mpbe32(sig, 2)
+        mpbe32(sig, 0)                           # CSSLOT_CODEDIRECTORY
+        mpbe32(sig, 28)
+        mpbe32(sig, 2)                           # CSSLOT_REQUIREMENTS
+        mpbe32(sig, 28 + cd_len)
+    else:
+        mpbe32(sig, 1)
+        mpbe32(sig, 0)                           # CSSLOT_CODEDIRECTORY
+        mpbe32(sig, 20)
     mpbe32(sig, 0xFADE0C02)                      # CSMAGIC_CODEDIRECTORY
     mpbe32(sig, cd_len)
     mpbe32(sig, 0x20400)                         # version
-    mpbe32(sig, 0x20002)                         # CS_ADHOC | CS_LINKER_SIGNED
-    mpbe32(sig, 88 + id_len)                     # hashOffset
+    if bundled: mpbe32(sig, 0x2)                 # CS_ADHOC
+    else: mpbe32(sig, 0x20002)                   # CS_ADHOC | CS_LINKER_SIGNED
+    mpbe32(sig, 88 + id_len + 32 * nspecial)     # hashOffset
     mpbe32(sig, 88)                              # identOffset
-    mpbe32(sig, 0)                               # nSpecialSlots
+    mpbe32(sig, nspecial)                        # nSpecialSlots
     mpbe32(sig, nslots)
     mpbe32(sig, sig_off)                         # codeLimit
     sig.push(32)                                 # hashSize
@@ -298,10 +316,16 @@ write_macho = (path: str, text: u8[], entry_off: int, ro: u8[], info: u8[], data
     mpbe64(sig, 1)                               # CS_EXECSEG_MAIN_BINARY
     loop c in ident: sig.push(c)
     sig.push(0)
+    if bundled:
+        # slots -3 (CodeResources), -2 (requirements), -1 (Info.plist), in that order
+        loop c in sha256(macho_resources, 0, macho_resources.len()): sig.push(c)
+        loop c in sha256(req, 0, req.len()): sig.push(c)
+        loop c in sha256(macho_plist, 0, macho_plist.len()): sig.push(c)
     loop k in [0..nslots):
         e = min((k + 1) * 4096, sig_off)
         d = sha256(out, k * 4096, e - k * 4096)
         loop c in d: sig.push(c)
+    if bundled: append_bytes(sig, req)
     loop sig.len() < sig_len: sig.push(0)
     append_bytes(out, sig)
     delete_file(path)
@@ -507,6 +531,9 @@ macho_watch_loader = (data_addr: int, blob_addr: int, blob_len: int, entry: int)
     code = saved
     out
 
+macho_plist: u8[] = []          # (an app bundle's Info.plist and CodeResources, which its program's signature hashes)
+macho_resources: u8[] = []
+
 # ---------------- an app bundle: `sloppy build --target macos -o Game.app` ----------------
 # Game.app/Contents/MacOS/<name> (the program), Info.plist (what the Finder and the Dock read)
 # and Resources/icon.icns (the build block's icon). Returns where the program goes, "" if the
@@ -554,7 +581,200 @@ macos_bundle = (app: str, name: str, icon: u8[]) -> str:
 </plist>
 """
     if not write_file("{app}/Contents/Info.plist", plist): return ""
+    # the resources, sealed: what the signature's hash of CodeResources stands for
+    sealed = ""
+    sealed2 = ""
+    if len(icon_key) > 0:
+        ic = icns(icon)
+        sealed = "\n\t\t<key>Resources/icon.icns</key>\n\t\t<data>{b64(sha1(ic))}</data>"
+        sealed2 = "\n\t\t<key>Resources/icon.icns</key>\n\t\t<dict>\n\t\t\t<key>hash2</key>\n\t\t\t<data>{b64(sha256(ic, 0, ic.len()))}</data>\n\t\t</dict>"
+    res = CODE_RESOURCES_HEAD + "<key>files</key>\n\t<dict>{sealed}\n\t</dict>\n\t<key>files2</key>\n\t<dict>{sealed2}\n\t</dict>\n\t" + CODE_RESOURCES_RULES
+    if not mkdir("{app}/Contents/_CodeSignature") or not write_file("{app}/Contents/_CodeSignature/CodeResources", res): return ""
+    macho_plist = bytes(plist)
+    macho_resources = bytes(res)
     "{app}/Contents/MacOS/{exe}"
+
+
+CODE_RESOURCES_HEAD = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	"""
+
+# (codesign's default rules)
+CODE_RESOURCES_RULES = """<key>rules</key>
+	<dict>
+		<key>^Resources/</key>
+		<true/>
+		<key>^Resources/.*\\.lproj/</key>
+		<dict>
+			<key>optional</key>
+			<true/>
+			<key>weight</key>
+			<real>1000</real>
+		</dict>
+		<key>^Resources/.*\\.lproj/locversion.plist$</key>
+		<dict>
+			<key>omit</key>
+			<true/>
+			<key>weight</key>
+			<real>1100</real>
+		</dict>
+		<key>^Resources/Base\\.lproj/</key>
+		<dict>
+			<key>weight</key>
+			<real>1010</real>
+		</dict>
+		<key>^version.plist$</key>
+		<true/>
+	</dict>
+	<key>rules2</key>
+	<dict>
+		<key>.*\\.dSYM($|/)</key>
+		<dict>
+			<key>weight</key>
+			<real>11</real>
+		</dict>
+		<key>^(.*/)?\\.DS_Store$</key>
+		<dict>
+			<key>omit</key>
+			<true/>
+			<key>weight</key>
+			<real>2000</real>
+		</dict>
+		<key>^.*</key>
+		<true/>
+		<key>^Info\\.plist$</key>
+		<dict>
+			<key>omit</key>
+			<true/>
+			<key>weight</key>
+			<real>20</real>
+		</dict>
+		<key>^PkgInfo$</key>
+		<dict>
+			<key>omit</key>
+			<true/>
+			<key>weight</key>
+			<real>20</real>
+		</dict>
+		<key>^Resources/</key>
+		<dict>
+			<key>weight</key>
+			<real>20</real>
+		</dict>
+		<key>^Resources/.*\\.lproj/</key>
+		<dict>
+			<key>optional</key>
+			<true/>
+			<key>weight</key>
+			<real>1000</real>
+		</dict>
+		<key>^Resources/.*\\.lproj/locversion.plist$</key>
+		<dict>
+			<key>omit</key>
+			<true/>
+			<key>weight</key>
+			<real>1100</real>
+		</dict>
+		<key>^Resources/Base\\.lproj/</key>
+		<dict>
+			<key>weight</key>
+			<real>1010</real>
+		</dict>
+		<key>^[^/]+$</key>
+		<dict>
+			<key>nested</key>
+			<true/>
+			<key>weight</key>
+			<real>10</real>
+		</dict>
+		<key>^embedded\\.provisionprofile$</key>
+		<dict>
+			<key>weight</key>
+			<real>20</real>
+		</dict>
+		<key>^version\\.plist$</key>
+		<dict>
+			<key>weight</key>
+			<real>20</real>
+		</dict>
+	</dict>
+</dict>
+</plist>
+"""
+
+# (base64, for plist <data>; the C bootstrap's compiler has no library one)
+b64 = (b: u8[]) -> str:
+    al = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    out: u8[]
+    i = 0
+    loop i < b.len():
+        n = int(b[i]) << 16
+        if i + 1 < b.len(): n = n | (int(b[i + 1]) << 8)
+        if i + 2 < b.len(): n = n | int(b[i + 2])
+        out.push(al[(n >> 18) & 63])
+        out.push(al[(n >> 12) & 63])
+        if i + 1 < b.len(): out.push(al[(n >> 6) & 63])
+        else: out.push('=')
+        if i + 2 < b.len(): out.push(al[n & 63])
+        else: out.push('=')
+        i += 3
+    str_from_bytes(out)
+
+# ---------------- SHA-1 (CodeResources' "files": the older hash it keeps beside SHA-256) ----------------
+sha1 = (b: u8[]) -> u8[]:
+    h0 = 0x67452301
+    h1 = 0xEFCDAB89
+    h2 = 0x98BADCFE
+    h3 = 0x10325476
+    h4 = 0xC3D2E1F0
+    m = b
+    bits = b.len() * 8
+    m.push(0x80)
+    loop m.len() % 64 != 56: m.push(0)
+    loop k in [0..8): m.push(u8((bits >> (56 - 8 * k)) & 255))
+    w = fill(0, 80)
+    rotl = (x: int, n: int) -> int: ((x << n) | (x >> (32 - n))) & 0xFFFFFFFF
+    loop blk in [0..m.len() / 64):
+        loop i in [0..16):
+            o = blk * 64 + i * 4
+            w[i] = (int(m[o]) << 24) | (int(m[o + 1]) << 16) | (int(m[o + 2]) << 8) | int(m[o + 3])
+        loop i in [16..80): w[i] = rotl(w[i - 3] xor w[i - 8] xor w[i - 14] xor w[i - 16], 1)
+        a = h0
+        bb = h1
+        c = h2
+        d = h3
+        e = h4
+        loop i in [0..80):
+            f = 0
+            k = 0
+            if i < 20:
+                f = (bb & c) | ((bb xor 0xFFFFFFFF) & d)
+                k = 0x5A827999
+            else if i < 40:
+                f = bb xor c xor d
+                k = 0x6ED9EBA1
+            else if i < 60:
+                f = (bb & c) | (bb & d) | (c & d)
+                k = 0x8F1BBCDC
+            else:
+                f = bb xor c xor d
+                k = 0xCA62C1D6
+            t = (rotl(a, 5) + f + e + k + w[i]) & 0xFFFFFFFF
+            e = d
+            d = c
+            c = rotl(bb, 30)
+            bb = a
+            a = t
+        h0 = (h0 + a) & 0xFFFFFFFF
+        h1 = (h1 + bb) & 0xFFFFFFFF
+        h2 = (h2 + c) & 0xFFFFFFFF
+        h3 = (h3 + d) & 0xFFFFFFFF
+        h4 = (h4 + e) & 0xFFFFFFFF
+    out: u8[]
+    loop h in [h0, h1, h2, h3, h4]: mpbe32(out, h)
+    out
 
 xml_text = (s: str) -> str: replace(replace(replace(s, "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
 

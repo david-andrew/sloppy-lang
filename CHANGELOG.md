@@ -4,7 +4,7 @@
 
 Shipping:
 - `sloppy build --target macos -o Game.app` makes an app bundle: the program, an Info.plist
-  (its name in the Dock and the menu bar) and the build block's icon.
+  (its name in the Dock and the menu bar) and the build block's icon, signed (ad hoc) as a whole.
 
 ## 0.11.0
 
