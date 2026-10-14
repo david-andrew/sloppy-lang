@@ -1196,6 +1196,10 @@ whole:
 - `s = s + x` and `s += x` both add to the end in place (the compiler writes the first as the
   second); `t = s + x` makes a new one, as it must.
 
+`SLOPPY_COPIES=1 sloppy game.jo` tells each copy of an array of 64 KB or more that was made
+because it was shared when it changed, with the line that changed it (`SLOPPY_COPIES=4096`:
+from 4 KB): where a frame spends time copying, or a frame's spike comes from.
+
 **Allocation.** Making arrays and strings each frame is cheap, but not free: an array kept from
 frame to frame and emptied with `clear()` keeps its memory. A closure made inside a loop is
 allocated each time round; make it once outside.

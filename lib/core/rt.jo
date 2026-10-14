@@ -551,9 +551,17 @@ __arr_filled = (n: int, es: int) -> *u8:
     p
 
 # copy a shared array (caller retains elements); drops one reference to the original
+# SLOPPY_COPIES=1 (or a number of bytes, 65536 by default): each copy of an array that size or
+# bigger made because it was shared when it changed, told with where it was made (the first 50)
+__copies_min = -1
+__copies_told = 0
+
 __arr_clone = (p: *u8, es: int) -> *u8:
     h = p as *int
     n = h[1]
+    if n * es >= 65536 and __copies_min != 0:
+        when not BOOTSTRAP:
+            __copy_report(n, es)
     q = __arr_new_raw(n, es)
     (q as *int)[1] = n
     mem_copy(q + 24, p + 24, n * es)
@@ -561,6 +569,19 @@ __arr_clone = (p: *u8, es: int) -> *u8:
         if __mt_active: __atomic_add(h, -1)
         else: h[0] -= 1
     q
+
+__copy_report = (n: int, es: int):
+    when not BOOTSTRAP:
+        if __copies_min < 0:
+            __copies_min = 0
+            if let v = env("SLOPPY_COPIES"):
+                __copies_min = 65536
+                if let b = to_int(v):
+                    if b > 1: __copies_min = b
+        if __copies_min == 0 or n * es < __copies_min or __copies_told >= 50: return
+        __copies_told += 1
+        __write_err("copied an array of {n} elements ({n * es / 1024} KB): it was shared (assigned or passed on) and then changed\n")
+        __backtrace()
 
 __arr_make_unique = (slot: **u8, es: int):
     p = slot[0]
