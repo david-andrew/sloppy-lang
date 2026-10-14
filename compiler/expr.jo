@@ -264,6 +264,7 @@ coerce = (n: int, target: int) -> int:
     if fk == .typeval: fatal(nodes[n].pos, "expected a value of type {type_str(to)}, found a type name")
     why = variant_hint(n, to)
     if fk == .void_: why = void_rec_hint(n)
+    if fk == .null_: why = " (`null` is for C's pointers; a value that may be missing is `none`)"
     if fk == .opt and tk == .bool_: why = " (an optional is not true or false: `if let v = x:` runs when there is a value and names it, `x != none` asks)"
     if fk == .float_ and tk == .int_: why = " (int(x) makes it a whole number, dropping the fraction)"
     if tk == .bool_ and (fk == .array or fk == .str_ or is_map_type(from)): why = " (not true or false: `xs.len() > 0` asks if it has anything)"
@@ -1009,6 +1010,10 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                     if nodes[unnamed(a0)].type != 0: ats += type_str(ntype(unnamed(a0)))
                 fatal(nodes[n].pos, "ambiguous call to '{name_of(name)}({ats})': candidates at {pos_str(nodes[cands[best].decl].pos)} and {pos_str(nodes[cd.decl].pos)}")
     if best < 0:
+        # (x.f() with an x that may be none: the function is there for its value)
+        if args.len() > 0 and nodes[unnamed(args[0])].type != 0 and types[prune(ntype(unnamed(args[0])))].kind == .opt:
+            at = prune(ntype(unnamed(args[0])))
+            fatal(nodes[unnamed(args[0])].pos, "this {type_str(at)} may be none: unwrap it before calling '{name_of(name)}' (`x!` when it cannot be none, `x ?? default`, or `if let v = x: ...`)")
         if decls.len() > 1:
             # (when none fits, the program's own function is the one meant: its error is the one shown)
             own: int[]
@@ -3013,6 +3018,7 @@ check_expr = (n: int, expected: int) -> int:
                     loop i in [0..int(structs[si].nfields)): cands.push(int(fields[int(structs[si].fields) + i].name))
                 if is_union(bt):
                     fatal(nodes[n].pos, "{type_str(bt)} has no field '{name_of(fname)}' (it is one of its members: find out which first, with `match x:` and an arm for each, or `if x is ...:`)")
+                if is_map_type(bt): fatal(nodes[n].pos, "{type_str(bt)} has no field '{name_of(fname)}' (a map's entries are `m[\"{name_of(fname)}\"]`; for fields by name, make a struct)")
                 fatal(nodes[n].pos, "{type_str(bt)} has no field '{name_of(fname)}'{suggestion(name_of(fname), cands)}")
     else if k == .dotname:
         if ide_sentinel != 0 and int(nodes[n].name) == ide_sentinel: ide_complete_variants(ex)
@@ -3293,6 +3299,12 @@ check_expr = (n: int, expected: int) -> int:
             if et != 0: t = ex
             else: t = mk_array(elt)
     else if k == .map_lit:
+        # ({x: 1, y: 2}: JavaScript's object, with names the program does not have)
+        loop i in [0..nkids(n)):
+            key = int(nodes[kid(n, i)].a)
+            if nodes[key].kind == .ident and lookup(int(nodes[key].name)) == 0:
+                kn = name_of(int(nodes[key].name))
+                fatal(nodes[key].pos, "unknown name '{kn}' (a map's keys are values: `\{\"{kn}\": ...}`; for named fields, declare `struct Name:` with them and make one with `Name({kn} = ...)`)")
         ms = prelude.get(intern("Map")) ?? 0
         if ms == 0: fatal(nodes[n].pos, "Map is not available")
         md = int(syms[ms].ref)

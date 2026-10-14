@@ -10,6 +10,16 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- Messages for more habits from other languages: `(x) => x * 2`, `===`/`!==`, a C-style
+  `loop i = 0; ...`, backtick strings, `try:`/`except:`, `null` for a missing value, `{x: 1}`
+  as an object, `m.key` on a map, `console.log`, `Math.random()`, `set[str]`, `ljust`/`zfill`;
+  calling a function on a value that may be none says to unwrap it; a binary file given as
+  source says so.
+- `assert(x + 1 == 4)` fails with its condition: `assertion failed: x + 1 == 4`.
+- `split(s, sep, max)` (Python's maxsplit), `count(s, sub)`, `pad_start`/`pad_end`,
+  `capitalize`, `max_by`/`min_by`.
+- LANGUAGE.md: an operator precedence table; narrowing after panic and exit; loops over an
+  array that changes inside them.
 - `is` with a member of an optional union (`f() is A` where f gives `A | B | none`), and with a
   union of some of a union's members (`r is AB`, `type AB = A | B`), narrowing too; `x is A or
   x is B` narrows x to `A | B`.

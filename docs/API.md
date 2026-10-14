@@ -100,6 +100,8 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `sum[T] = (xs: T[]) -> T`
 - `min[T] = (xs: T[]) -> T`
 - `max[T] = (xs: T[]) -> T`
+- `min_by[T, K] = (xs: T[], key: (T) -> K) -> T`: the element with the smallest key, or the largest (the first of equal ones): the cheapest item, the nearest enemy (min_by(enemies, (e): distance(e.pos, me)))
+- `max_by[T, K] = (xs: T[], key: (T) -> K) -> T`
 - `unique[T] = (xs: T[]) -> T[]`: each different element once, in the order they first come
 - `group_by[T, K] = (xs: T[], key: (T) -> K) -> {K: T[]}`: the elements by a key: each key with the elements that have it, in order (keys in the order they first come)
 - `reverse[T] = (xs: mut T[])`
@@ -163,7 +165,12 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `trim_start = (s: str) -> str`
 - `trim_end = (s: str) -> str`
 - `split = (s: str, sep: str) -> str[]`: the parts of s between the separators (split("a,b", ",") is ["a", "b"]; with "", the characters)
+- `split = (s: str, sep: str, max: int) -> str[]`: split at the first `max` separators only: the rest stays in the last part (split("k=v=w", "=", 1) is ["k", "v=w"])
 - `split = (s: str) -> str[]`: split on runs of whitespace (the same as words(s))
+- `count = (s: str, sub: str) -> int`: how many times sub is in s, not overlapping ("banana".count("an") is 2)
+- `pad_start = (s: str, width: int, fill: str = " ") -> str`: s made `width` bytes long with `fill` before it (pad_start("7", 3, "0") is "007"), or after it; a longer s stays as it is ("{s:>10}" and "{s:<10}" in a string do the same with spaces)
+- `pad_end = (s: str, width: int, fill: str = " ") -> str`
+- `capitalize = (s: str) -> str`: the first letter in upper case ("hello world" -> "Hello world")
 - `words = (s: str) -> str[]`: split on runs of whitespace
 - `lines = (s: str) -> str[]`
 - `join = (parts: str[], sep: str = "") -> str`: sep.join(parts), as in Python
@@ -2539,16 +2546,16 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
   ```gdscript
   struct Particles:
       items: Particle[]
-      gravity: vec2
-      drag: f32 = 1.0
+      gravity: vec2           # added to their velocity each second (vec2(0, 400): they fall)
+      drag: f32 = 1.0         # how fast they slow down: their speed shrinks by e^-drag a second (0: never)
   ```
-- `emit = (ps: mut Particles, pos: vec2, count: int, speed: f64, color: vec4, life: f64 = 1.0, size: f64 = 4.0, spread: f64 = TAU, direction: f64 = 0.0)`
+- `emit = (ps: mut Particles, pos: vec2, count: int, speed: f64, color: vec4, life: f64 = 1.0, size: f64 = 4.0, spread: f64 = TAU, direction: f64 = 0.0)`: count particles from pos, at up to speed (pixels a second), lasting up to `life` seconds, of up to `size` pixels' radius; `spread` is the angle they go out in (radians, TAU: every way) around `direction` (radians, 0: right, as from_angle)
 - `update = (ps: mut Particles, dt: f64)`
 - `draw = (ps: Particles, glow: bool = true)`: draw particles as soft glowing dots (additive blending)
 
 #### Timing
 
-- `every = (id: int, period: f64) -> bool`
+- `every = (id: int, period: f64) -> bool`: true once every `period` seconds, the first time on the first call: each timer is told apart by its id, any number of the game's own (every(1, 0.5) and every(2, 3.0) run apart)
 
 ## 2D physics
 

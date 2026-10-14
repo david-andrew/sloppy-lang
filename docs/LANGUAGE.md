@@ -161,6 +161,25 @@ with low precedence (below comparisons); `& | ~ << >>` are the bitwise operators
 precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests membership
 (`x in 1..10` compares, no array is made). `a ?? b` is `a` unless it is `none`.
 
+From tightest to loosest (operators on one line bind alike, left to right but for `^`):
+
+| Operators | |
+|---|---|
+| `x.f`, `f(x)`, `xs[i]`, `x!` | field, call, index, unwrap |
+| `^` | power (right to left) |
+| `-x`, `~x` | negation, bitwise not |
+| `*` `/` `%` | |
+| `+` `-` | |
+| `<<` `>>` | |
+| `&` | bitwise and |
+| `|` | bitwise or |
+| `..` | range |
+| `??` | default for `none` (`a + b ?? 0` is `(a + b) ?? 0`) |
+| `==` `!=` `<` `<=` `>` `>=` `in` `is` | comparisons |
+| `not` | |
+| `and` | |
+| `or` `xor` | |
+
 ### Text
 
 A `str` is text in UTF-8: one byte for each of the characters of plain English text, two to
@@ -418,6 +437,11 @@ loop (a in xs or b in ys) and ok(): ...
 loop i in 0.. and mut e in enemies: e.hp -= i      # the elements themselves, counted
 ```
 
+A loop over an array goes over the array as it was when the loop started: removing or adding
+elements inside the loop changes the array, not the elements the loop visits (arrays are values).
+To remove as you go, count down by index (`loop i in [xs.len() - 1, xs.len() - 2..0]`) or keep
+what stays: `xs = [loop x in xs if x.alive: x]`.
+
 Iterators joined with `and` advance together until one runs out; joined with `or` they advance
 until all have run out (the variables of finished ones are `none`, so they are optionals).
 `loop i, x in xs` does not count: two names before `in` always unpack.
@@ -493,7 +517,8 @@ if r is ParseError: return r
 print(r + 1)                            # r is an int
 ```
 
-`x is not T` is `not (x is T)`. Ruling a member out narrows to the others: after `if s is Circle: return` in a function taking
+`x is not T` is `not (x is T)`. A branch that cannot go on (it returns, breaks, continues,
+panics or exits) narrows what follows it, in functions and at the top level alike. Ruling a member out narrows to the others: after `if s is Circle: return` in a function taking
 `Circle | Rect | Tri`, `s` is a `Rect | Tri`, and in an `if`/`else if`/`else` chain each branch
 knows what the earlier tests excluded. A `match` arm listing several types (`int, str: ...`)
 sees their union, and `_:` the members no earlier arm matched. Fields and globals narrow the same
@@ -917,11 +942,12 @@ run under node (`tools/runwasm.js page.html args...`) uses the real ones and get
 
 Environment variables for testing and tuning: `SLOPPY_SCREENSHOT=out.png` (with `SLOPPY_FRAMES=n`)
 saves frame n and exits — the clock then advances exactly 1/60 s per frame, so the image is
-reproducible, and with `SLOPPY_SOFTWARE=1` no display is needed at all; `SLOPPY_INPUT="5:space+,9:space-"`
+reproducible (the desktop's keys and mouse are ignored), and with `SLOPPY_SOFTWARE=1` no display is needed at all; `SLOPPY_INPUT="5:space+,9:space-"`
 presses and releases keys at given frames (keys as `Key` names them: `a`, `n1`, `space`, `escape`,
 `left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons, and
-`12:mouse=400x300` moves the mouse there, in the screen's units; an item it cannot read is
-reported); `SLOPPY_SEED=n` makes `random()` the same each run; `SLOPPY_WINDOW=800x600` opens the window at
+`12:mouse=400x300` moves the mouse there, in the screen's units, `7:text=hi` types; an item it
+cannot read is reported; a web build takes it in the page's address, `page.html?SLOPPY_INPUT=5:space%2B`,
+with `+` written `%2B`); `SLOPPY_SEED=n` makes `random()` the same each run; `SLOPPY_WINDOW=800x600` opens the window at
 that size; `SLOPPY_NO_AUDIO=1` plays no sound (for tests and machines without a sound card);
 `SLOPPY_THREADS=n` caps the threads used by the
 parallel functions; `SLOPPY_SCALE=1` renders at the logical size and lets the compositor scale
