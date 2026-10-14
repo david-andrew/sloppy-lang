@@ -304,7 +304,7 @@ written inside an expression is a lambda.
 * **Untyped parameters make a function generic**: `twice = (f, x): f(f(x))` is
   instantiated for each distinct set of argument types (like a template).
 * Explicit type parameters: `first[T] = (xs: T[]) -> T: xs[0]`. A call can give them when the
-  arguments do not say (`zero[int]()`, `gpu_buffer[Bug](100)`, `empty[str[]]()`).
+  arguments do not say (`from_json[Settings](text)`, `gpu_buffer[Bug](100)`).
 * Through `[]` and `[]=` overloads, `b[i].f = v` and `b[i].f += v` work as for arrays: the
   element is read, changed and written back (its index computed once).
 * **Uniform call syntax**: `x.f(a)` is the same as `f(x, a)`. There are no methods,
@@ -659,6 +659,28 @@ one, they make a plain `f64[]`); also `eye(n)`, `linspace(a, b, n)`, `reshape(xs
 `max`, `dot`, `norm`. On 2-D arrays `+ -` work elementwise on equal shapes and `*` is the matrix product.
 Indexing with the wrong number of indexes, and shapes that do not broadcast, are errors when
 the program runs, with the shapes in the message.
+
+**From NumPy.** The library has most of what numeric code reaches for (the API reference lists
+the rest under Arrays):
+
+| NumPy | Sloppy |
+|---|---|
+| `np.zeros((3, 4))`, `np.ones(5)`, `np.eye(3)`, `np.full(3, 7.0)` | `zeros(3, 4)`, `ones(5)`, `eye(3)`, `fill(7.0, 3)` |
+| `np.arange(5)`, `np.arange(0, 2.5, 0.5)` | `[0..5)`, `[loop i in [0..5): f64(i) * 0.5]` |
+| `np.linspace(0, 1, 5)`, `np.random.rand(3, 4)`, `np.random.randn(100)` | `linspace(0, 1, 5)`, `rand(3, 4)`, `randn(100)` |
+| `a * 2`, `a + b`, `a ** 2`, `a > 0.5` (elementwise) | `a .* 2.0`, `a .+ b`, `a .^ 2`, `a .> 0.5` |
+| `np.sqrt(a)`, `np.clip(a, 2, 4)` | `sqrt.(a)`, `clamp.(a, 2.0, 4.0)` |
+| `a @ b`, `a.T`, `a.reshape(2, 2)`, `a.shape` | `a * b`, `transpose(a)`, `reshape(a, [2, 2])`, `a.shape` |
+| `a[0, :]`, `a[:, 1]`, `a[1:3]` | `a[0, ..]`, `a[.., 1]`, `a[1..2]` (ranges include both ends) |
+| `a[a > 0.5]`, `a[a < 0] = 0`, `a[np.argsort(a)]` | `a[a .> 0.5]`, `a[a .< 0.0] = 0.0`, `a[argsort(a)]` |
+| `np.where(a > 2, a, 0)` | `[loop x in a: (if x > 2.0: x else: 0.0)]` |
+| `a.sum(axis=0)`, `a.mean()`, `a.std()`, `a.var()` | `sum(a, 0)`, `mean(a)`, `std_dev(a)`, `variance(a)` |
+| `np.percentile(a, 90)`, `np.median(a)`, `a.argmax()`, `np.cumsum(a)` | `percentile(a, 90.0)`, `median(a)`, `argmax(a)`, `cumsum(a)` |
+| `np.concatenate([a, b])`, `np.vstack([a, b])`, `np.dot(a, b)` | `a + b`, `[a; b]`, `dot(a, b)` |
+| `np.linalg.solve(m, v)`, `np.linalg.inv(m)`, `np.linalg.det(m)` | `solve(m, v)`, `inverse(m)`, `det(m)` |
+
+Two differences catch NumPy hands: `+` on 1-D arrays joins them (`.+` adds), and a whole
+dotted expression is one loop, so `a .* 2.0 .+ b` makes no array in between.
 
 **Struct-of-arrays.** `ps: soa Particle[]` is used exactly like `Particle[]` — `push`, `pop`,
 `remove`, `len`, `ps[i]`, `ps[i].x += 1`, `loop p in ps`, `loop mut p in ps`, conversion from

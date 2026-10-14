@@ -844,10 +844,12 @@ The dotted operators work element by element on arrays of any shape, and broadca
 - `rand = (n: int) -> f64[]`: uniformly random in [0, 1)
 - `rand = (a: int, b: int) -> NDArray[f64]`
 - `rand = (a: int, b: int, c: int) -> NDArray[f64]`
+- `rand = (a: int, b: int, c: int, d: int) -> NDArray[f64]`
 - `randn = () -> f64`: normally distributed (mean 0, standard deviation 1)
 - `randn = (n: int) -> f64[]`
 - `randn = (a: int, b: int) -> NDArray[f64]`
 - `randn = (a: int, b: int, c: int) -> NDArray[f64]`
+- `randn = (a: int, b: int, c: int, d: int) -> NDArray[f64]`
 - `linspace = (a: f64, b: f64, n: int) -> f64[]`: n evenly spaced values from a to b (both included)
 - `reshape[T] = (xs: T[], shape: int[]) -> NDArray[T]`
 - `reshape[T] = (xs: T[], a: int, b: int) -> NDArray[T]`
