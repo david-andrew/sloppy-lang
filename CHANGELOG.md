@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Errors: a color written as text (`"yellow"`: `YELLOW`, `rgb(...)` or `hex("#ff8800")`); an
+  int variable given a fraction (`time_left = 30`, then `-= dt`: write `30.0`); a constant
+  changed (make it a variable, rather than `let`); no compiler-made names or `?T` in
+  "cannot infer" errors.
+
 - `enemies = []` at the top level takes its type from what a function pushes into it, as a
   local array does (it needed `enemies: Enemy[] = []`).
 
