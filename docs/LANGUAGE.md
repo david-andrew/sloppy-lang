@@ -105,6 +105,8 @@ x = x + 1            # assigns (x exists)
 let x = "text"       # always a new variable (shadows the outer x)
 y: f32 = 2           # explicit type (always declares)
 z: str[]             # zero value: empty array
+w = []               # an empty array whose type comes from what is pushed into it later
+                     # (w.push("hi"): a str[]), at the top level too
 x += 1               # compound assignment (also -= *= /= %= ^= <<= >>= and= or= xor=)
 a, b = 1, 2          # several at once (from a tuple, or an array of exactly that many:
 k, v = line.split("=", 1)   # another length panics)

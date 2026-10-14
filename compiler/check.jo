@@ -49,6 +49,7 @@ assign_root = 0                 # (the variable an assignment being checked writ
 copy_writes: {int: int} = {}    # local -> where its fields or elements are first written
 gcopy_writes: {int: int} = {}   # the same for globals
 global_read: bool[]             # by global: its value is read somewhere
+open_globals: int[]             # globals made empty (`xs = []`) whose element type is still open
 
 const LF_SHARED = 1024  # modified after a closure captured it, or by the closure: closures and
                         # the function share it by reference (it lives in a heap cell, see lower.jo)
@@ -1286,7 +1287,12 @@ ensure_global = (g: int, use_pos: int, in_flow: bool = false):
                     nodes[d].b = i32(coerce(int(nodes[d].b), t))
         t = zonk(t)
         if t == 0: fatal(nodes[d].pos, "global needs a type or a value")
-        if has_var(prune(t)): fatal(nodes[d].pos, "cannot infer the type of '{name_of(int(globals[g].name))}'; add a type annotation{empty_hint(name_of(int(globals[g].name)), t)}")
+        if has_var(prune(t)):
+            # (enemies = [] at the top level: its elements' type comes from a function that pushes
+            # one, as a local's does; settled once everything is checked)
+            vk = nodes[int(nodes[d].b)].kind
+            if nodes[d].a == 0 and vk == .array and nkids(int(nodes[d].b)) == 0 and tkind(t) == .array: open_globals.push(g)
+            else: fatal(nodes[d].pos, "cannot infer the type of '{name_of(int(globals[g].name))}'; add a type annotation{empty_hint(name_of(int(globals[g].name)), t)}")
         if tkind(t) == .void_: fatal(nodes[d].pos, "cannot assign a value of type void")
         if tkind(t) == .null_: fatal(nodes[d].pos, "`null` is for C's pointers; a value that may be missing is `none`, with its type written: `{name_of(int(globals[g].name))}: Enemy? = none`")
         if tkind(t) == .typeval or tkind(t) == .module: fatal(nodes[d].pos, "'{name_of(int(globals[g].name))}' cannot hold a type or module (a value of a type is made by calling it: `T()`)")
@@ -2427,6 +2433,58 @@ check_lambda_body = (f: int, lam: int, ret_hint: int):
     ctxs.pop()
     cx = parent
 
+# (enemies = [] at the top level, filled by a function: that function is checked first, so the
+# type of what it pushes is known where enemies is read)
+check_pushers_first = ():
+    names: {int: bool}
+    loop m in modules:
+        if m.is_prelude: continue
+        loop d in m.decls:
+            if nodes[d].kind == .vardecl and nodes[d].nlist == 0 and nodes[d].a == 0 and nodes[d].b != 0 and nodes[int(nodes[d].b)].kind == .array and nkids(int(nodes[d].b)) == 0: names[int(nodes[d].name)] = true
+    if names.len() == 0: return
+    loop m in modules:
+        if m.is_prelude: continue
+        loop d in m.decls:
+            if nodes[d].kind == .fn_ and not has_flag(d, NF_EXTERN) and nodes[d].b != 0 and pushes_into(int(nodes[d].b), names) and not fn_sig(d).generic:
+                f = get_fn_inst(d, [], nodes[d].pos)
+                # (before the top level's code, too, which may read it)
+                if fns[f].state == 0: check_fn_body(f)
+
+pushes_into = (n: int, names: {int: bool}) -> bool:
+    if n == 0: return false
+    k = nodes[n].kind
+    if k == .call and nkids(n) == 1:
+        f = int(nodes[n].a)
+        if f != 0 and nodes[f].kind == .field and name_of(int(nodes[f].name)) == "push":
+            r = int(nodes[f].a)
+            if r != 0 and nodes[r].kind == .ident and names.has(int(nodes[r].name)): return true
+    if pushes_into(int(nodes[n].a), names) or pushes_into(int(nodes[n].b), names): return true
+    if k != .for_ and pushes_into(int(nodes[n].c), names): return true
+    loop i in [0..nkids(n)):
+        if pushes_into(kid(n, i), names): return true
+    false
+
+# the open globals' types, now that every function is checked: each is settled, or an error;
+# what was checked before it was settled sees its type now
+settle_open_globals = ():
+    loop g in open_globals:
+        t = zonk(int(globals[g].type))
+        if has_var(t):
+            nm = name_of(int(globals[g].name))
+            fatal(nodes[int(globals[g].decl)].pos, "cannot infer the type of '{nm}' (nothing is put in it); add a type annotation{empty_hint(nm, t)}")
+        globals[g].type = i32(t)
+    loop fi in [1..fns.len()):
+        if fns[fi].state != 2: continue
+        zonk_tree(int(fns[fi].body))
+        loop l in fns[fi].locals: locals[l].type = i32(zonk(int(locals[l].type)))
+        loop mut x in fns[fi].ptypes: x = zonk(x)
+        loop mut x in fns[fi].targs: x = zonk(x)
+        if fns[fi].ret != 0: fns[fi].ret = i32(zonk(int(fns[fi].ret)))
+        if fns[fi].fntype != 0: fns[fi].fntype = i32(zonk(int(fns[fi].fntype)))
+    loop g in [0..globals.len()):
+        if globals[g].type != 0: globals[g].type = i32(zonk(int(globals[g].type)))
+        if globals[g].decl != 0: zonk_tree(int(globals[g].decl))
+
 zonk_tree = (n: int):
     if n == 0: return
     if nodes[n].type != 0: nodes[n].type = i32(zonk(int(nodes[n].type)))
@@ -2781,6 +2839,7 @@ check_program = (main_path: str):
     loop m in order:
         if not modules[m].is_prelude: init_fns.push(int(modules[m].init_fn))
     cx = -1
+    check_pushers_first()
     if let s = modules[mainm].names.get(intern("main")):
         if syms[s].kind == .fns and not skip_main: main_fn = get_fn_inst(int(syms[s].decl), [], 0)
     if let s = modules[mainm].names.get(intern("update")):
@@ -2845,6 +2904,7 @@ check_program = (main_path: str):
                 export_fns.push(get_fn_inst(d, [], nodes[d].pos))
                 more = true
         if not more: break
+    if open_globals.len() > 0: settle_open_globals()
     # (globals of the program whose fields or elements are changed and that are never read)
     loop g, wp in gcopy_writes:
         if g < global_read.len() and global_read[g]: continue

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `enemies = []` at the top level takes its type from what a function pushes into it, as a
+  local array does (it needed `enemies: Enemy[] = []`).
+
 ## 0.12.0
 
 For newcomers (from a first-time programmer working through the tutorial):
