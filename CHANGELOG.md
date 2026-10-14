@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.0
+
 Compiling:
 - Up to five errors are reported at once: after an error in a function, the compiler checks the
   program again without that function's body for the next one (only when there are errors:
