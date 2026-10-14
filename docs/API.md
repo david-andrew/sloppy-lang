@@ -879,7 +879,7 @@ loop pad in gamepads():                    # (local multiplayer: one player per 
     players[pad].move = left_stick(pad)
 ```
 
-A controller keeps its number while it is plugged in (players stay who they are); one plugged in later takes a free number. input_axis() also follows the sticks and d-pads, so keyboard games work with a pad. Linux builds read the joystick devices (/dev/input/js0..7), Windows builds XInput (four controllers: what Windows maps to the Xbox layout), web builds the browser's Gamepad API. (macOS builds do not read gamepads yet.)
+A controller keeps its number while it is plugged in (players stay who they are); one plugged in later takes a free number. input_axis() also follows the sticks and d-pads, so keyboard games work with a pad. Linux builds read the joystick devices (/dev/input/js0..7), Windows builds XInput (four controllers: what Windows maps to the Xbox layout), web builds the browser's Gamepad API, macOS builds Apple's GameController framework.
 
 - `enum PadButton: a, b, x, y, lb, rb, back, start, home, lstick, rstick, up, down, left, right`
 - `const MAX_GAMEPADS = 8`

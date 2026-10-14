@@ -9,6 +9,10 @@ Compiling:
   the same bytes as before. 10% off building bench/big.jo and the compiler on a busy 8-core
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
+Games:
+- Gamepads on macOS, through Apple's GameController framework (Xbox, PlayStation, Switch Pro
+  and MFi controllers), with the same layout and functions as elsewhere.
+
 Shipping:
 - `sloppy build --target macos -o Game.app` makes an app bundle: the program, an Info.plist
   (its name in the Dock and the menu bar) and the build block's icon, signed (ad hoc) as a whole.

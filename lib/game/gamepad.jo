@@ -10,7 +10,7 @@
 # in later takes a free number. input_axis() also follows the sticks and d-pads, so keyboard
 # games work with a pad. Linux builds read the joystick devices (/dev/input/js0..7), Windows
 # builds XInput (four controllers: what Windows maps to the Xbox layout), web builds the
-# browser's Gamepad API. (macOS builds do not read gamepads yet.)
+# browser's Gamepad API, macOS builds Apple's GameController framework.
 
 enum PadButton: a, b, x, y, lb, rb, back, start, home, lstick, rstick, up, down, left, right
 
@@ -195,6 +195,72 @@ else when TARGET == "windows":
                 __pad_down[u * 15 + i] = bt & m != 0
                 __pad_raw_down[u * 32 + i] = bt & m != 0
             loop i in [0..6): __pad_raw_axes[u * 16 + i] = __pad_axes[a + i]
+else when TARGET == "macos":
+    # Apple's GameController framework (Xbox, PlayStation, Switch Pro and MFi controllers):
+    # GCController.controllers each frame, each one keeping the pad number it was first given
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __gc_f = (o: *u8, s: *u8) -> f32
+    __gc_ready = 0                  # 0: not looked for, 1: there, -1: not
+    __gc_slot: int[] = fill(0, 8)   # each pad's controller (its address; 0: none)
+    __gc_seen: bool[] = fill(false, 8)
+    __gc_names = ["buttonA", "buttonB", "buttonX", "buttonY", "leftShoulder", "rightShoulder", "buttonOptions", "buttonMenu", "buttonHome", "leftThumbstickButton", "rightThumbstickButton"]
+
+    __pad_poll = ():
+        if __fixed_step: return
+        if __gc_ready == 0:
+            __gc_ready = -1
+            if dl_open("/System/Library/Frameworks/GameController.framework/GameController") != null and __cls("GCController") != null: __gc_ready = 1
+        if __gc_ready < 0: return
+        all = __oc(__cls("GCController"), __sel("controllers"))
+        n = 0
+        if all != null: n = __oc_int(all, __sel("count"))
+        loop k in [0..8): __gc_seen[k] = false
+        loop i in [0..min(n, 16)):
+            c = __oc_i(all, __sel("objectAtIndex:"), i)
+            g = __oc(c, __sel("extendedGamepad"))
+            if c == null or g == null: continue
+            # (its pad: the one it had, else a free one)
+            p = -1
+            loop k in [0..8):
+                if __gc_slot[k] == c as int: p = k
+            if p < 0:
+                loop k in [0..8):
+                    if p < 0 and __gc_slot[k] == 0: p = k
+                if p < 0: continue
+                __gc_slot[p] = c as int
+                __pad_clear(p)
+                __pad_on[p] = true
+                nm = __oc(c, __sel("vendorName"))
+                __pad_names[p] = "game controller"
+                if nm != null: __pad_names[p] = __cstr(__oc(nm, __sel("UTF8String")))
+                __pad_naxes[p] = 6
+                __pad_nbuttons[p] = 15
+            __gc_seen[p] = true
+            a = p * 6
+            ls = __oc(g, __sel("leftThumbstick"))
+            rs = __oc(g, __sel("rightThumbstick"))
+            axis = (pad: *u8, name: str) -> f64: f64(__gc_f(__oc(pad, __sel(name)), __sel("value")))
+            # (y down, as on the other systems)
+            __pad_axes[a] = axis(ls, "xAxis")
+            __pad_axes[a + 1] = -axis(ls, "yAxis")
+            __pad_axes[a + 2] = axis(rs, "xAxis")
+            __pad_axes[a + 3] = -axis(rs, "yAxis")
+            __pad_axes[a + 4] = f64(__gc_f(__oc(g, __sel("leftTrigger")), __sel("value")))
+            __pad_axes[a + 5] = f64(__gc_f(__oc(g, __sel("rightTrigger")), __sel("value")))
+            # a b x y lb rb back start home ls rs, then the d-pad: up down left right
+            loop j in 0.. and bn in __gc_names:
+                __pad_down[p * 15 + j] = __oc_int(__oc(g, __sel(bn)), __sel("isPressed")) & 0xFF != 0
+            dp = __oc(g, __sel("dpad"))
+            loop j in 0.. and d in ["up", "down", "left", "right"]:
+                __pad_down[p * 15 + 11 + j] = __oc_int(__oc(dp, __sel(d)), __sel("isPressed")) & 0xFF != 0
+            loop j in [0..15): __pad_raw_down[p * 32 + j] = __pad_down[p * 15 + j]
+            loop j in [0..6): __pad_raw_axes[p * 16 + j] = __pad_axes[a + j]
+        # (the ones gone)
+        loop k in [0..8):
+            if __gc_slot[k] != 0 and not __gc_seen[k]:
+                __gc_slot[k] = 0
+                __pad_clear(k)
 else:
     # the joystick devices: /dev/input/js0 to js7 are pads 0 to 7 (SLOPPY_JOYSTICK: one device
     # instead, as pad 0), each looked for again every two seconds while not there
