@@ -10,6 +10,9 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `sort` and `sorted` compare with `<` directly instead of through a function value, copy runs
+  already in order as they are, and sort largest-first by reversing around the ascending sort
+  (still stable): 2 million ints sort in 295 ms in a release build (was 430; C's qsort: 295).
 - An error inside a generic function the program defines is followed by notes for the calls
   that made it, innermost first, with the types it was made for
   (`a.jo:13:20: note: in summarize(xs: P[]), called here`).
