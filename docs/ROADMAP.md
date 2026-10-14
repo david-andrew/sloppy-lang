@@ -176,7 +176,9 @@ Fill the gaps real programs hit, nothing speculative:
   code all runs from there, put there by a loader in its executable). Gamepads through
   GameController (done; not yet tried with a controller). Next: Metal (shaders as MSL; OpenGL
   is deprecated on macOS), and testing on a real Mac's GPU. arm64 code keeps values in registers since 0.8.1 (linear scan; release builds could
-  use x86-64's second, priority-based pass too).
+  use x86-64's second, priority-based pass too). `sloppy watch` on arm64 counts a function as
+  changed when only the constants it loads moved (examples/cube.jo: make_cube with cube_fs),
+  so it patches more than it needs to.
 - Phones (Android, iOS): not before the above; the web build already runs there.
 
 ## Compiler maintainability (ongoing, never a rewrite)

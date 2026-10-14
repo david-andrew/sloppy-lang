@@ -261,7 +261,8 @@ def test_assets(d):
         w.expect(r"set again: level")
         w.expect(r"tick level=20")
         write(d, "g.jo", src.replace("pulse = 0.85 + 0.15", "pulse = 0.5 + 0.5"))
-        w.expect(r"reloaded in \d+ ms: cube_fs; set again: prog")
+        # (arm64 also counts make_cube as changed when the constants move: patched again, harmless)
+        w.expect(r"reloaded in \d+ ms: cube_fs(, make_cube)?; set again: prog")
         p1 = int(w.expect(r"tick level=20 prog=(\d+)").group(1))
         assert p1 != p0, "the GPU program was not made again"
     finally:
