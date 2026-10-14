@@ -235,7 +235,7 @@ ml_function = (f: int):
     loop l in fns[f].params:
         ps.push(ml_param(l))
         if prune(int(locals[l].type)) == ml_utype: ml_lref[l] = ml_local(l)
-    sig = "{ret} {ml_fn_name(f)}({ml_ctx_params()}{join(ps, ", ")})"
+    sig = "{ret} {ml_fn_name(f)}({ml_with_ctx(ml_ctx_params(), ps)})"
     saved = ml_out
     ml_out = []
     body = int(fns[f].body)
@@ -477,9 +477,9 @@ ml_expr = (e: int) -> str:
         x = ml_as(a, ml_expr(a), t)
         y = ml_as(b, ml_expr(b), t)
         if types[t].kind == .bool_:
-            if op == .amp: return "bool(({x}) & ({y}))"
-            if op == .pipe: return "bool(({x}) | ({y}))"
-            if op == .caret: return "(({x}) != ({y}))"
+            if op == .amp: return "bool({x} & {y})"
+            if op == .pipe: return "bool({x} | {y})"
+            if op == .caret: return "({x} != {y})"
         return ml_arith(op, x, y, ta, t, tb)
     if k == .unary:
         x = ml_expr(int(nodes[e].a))
@@ -533,7 +533,7 @@ ml_compare = (op: Tok, t0: int, x: str, y: str, pos: int) -> str:
     o = gl_binop(op)
     if types[t].kind == .bool_:
         if op != .eq and op != .ne: ml_err(pos, "bools can only be compared with == and !=")
-        return "(({x}) {o} ({y}))"
+        return "({x} {o} {y})"
     if t == T_MAT4:
         r: str[]
         loop c in [0..4): r.push("all(({x})[{c}] == ({y})[{c}])")
@@ -541,10 +541,12 @@ ml_compare = (op: Tok, t0: int, x: str, y: str, pos: int) -> str:
         return "(!({join(r, " && ")}))"
     if gl_unsigned(t) and op != .eq and op != .ne: return "(as_type<uint>(int({x})) {o} as_type<uint>(int({y})))"
     if ml_is_vector(t):
-        if op == .ne: return "any(({x}) != ({y}))"
-        return "all(({x}) {o} ({y}))"
-    "(({x}) {o} ({y}))"
+        if op == .ne: return "any({x} != {y})"
+        return "all({x} {o} {y})"
+    "({x} {o} {y})"
 
+# (operands are already a name, a call or in parentheses: an extra pair around one that looks
+# like a type, float2(float(a), float(b)), makes C++ read a cast)
 # x op y for operands of type ta, giving type t, the CPU's way: integer + - * through unsigned
 # numbers (which wrap), unsigned ones divide, take remainders, shift and compare as such, narrow
 # ones wrap to their range (tb: the right operand's type, where it may be a scalar beside a vector)
@@ -555,8 +557,8 @@ ml_arith = (op: Tok, x: str, y: str, ta0: int, t0: int, tb0: int = 0) -> str:
     o = gl_binop(op)
     if ta == T_MAT4 or tb == T_MAT4:
         if (op == .plus or op == .minus) and (tb == 0 or not (tb == T_MAT4)) and ta == T_MAT4 and not is_vec(tb):
-            return "(({x}) {o} float4x4(float4({y}), float4({y}), float4({y}), float4({y})))"
-        return "(({x}) {o} ({y}))"
+            return "({x} {o} float4x4(float4({y}), float4({y}), float4({y}), float4({y})))"
+        return "({x} {o} {y})"
     if op == .plus or op == .minus or op == .star:
         if types[ta].kind == .int_ and types[t].kind == .int_: return gl_narrow("as_type<int>(as_type<uint>(int({x})) {o} as_type<uint>(int({y})))", t)
         if is_vec(t) and types[t].sign:
@@ -572,7 +574,7 @@ ml_arith = (op: Tok, x: str, y: str, ta0: int, t0: int, tb0: int = 0) -> str:
         if gl_unsigned(ta): return "sl_shru({x}, {y})"
         return "sl_shr({x}, {y})"
     # (% keeps the dividend's sign, as on the CPU)
-    if op == .percent and (ml_is_floaty(ta) or ml_is_floaty(t)): return "(({x}) - ({y}) * trunc(({x}) / ({y})))"
+    if op == .percent and (ml_is_floaty(ta) or ml_is_floaty(t)): return "({x} - {y} * trunc({x} / {y}))"
     if gl_unsigned(ta):
         if op == .slash or op == .percent or op == .shr: return gl_narrow("as_type<int>(as_type<uint>(int({x})) {o} as_type<uint>(int({y})))", t)
     if (op == .slash or op == .percent) and (types[ta].kind == .int_ or (is_vec(ta) and types[ta].sign)):
@@ -580,8 +582,8 @@ ml_arith = (op: Tok, x: str, y: str, ta0: int, t0: int, tb0: int = 0) -> str:
         d = ml_sdiv(ta, tb)
         if op == .slash: return gl_narrow("{d}({x}, {y})", t)
         return gl_narrow("as_type<int>(as_type<uint>(int({x})) - as_type<uint>(int({d}({x}, {y}))) * as_type<uint>(int({y})))", t)
-    if op == .plus or op == .minus or op == .star or op == .slash or op == .shl: return gl_narrow("(({x}) {o} ({y}))", t)
-    "(({x}) {o} ({y}))"
+    if op == .plus or op == .minus or op == .star or op == .slash or op == .shl: return gl_narrow("({x} {o} {y})", t)
+    "({x} {o} {y})"
 
 ml_sdiv = (ta: int, tb: int) -> str:
     if ml_first("sdiv"): ml_decls.push("int sl_sdiv(int a, int b) \{\n    int q = a / (b == -1 ? 1 : b);\n    return b == -1 ? as_type<int>(-as_type<uint>(a)) : q;\n}\n")
@@ -766,18 +768,21 @@ ml_call = (e: int) -> str:
             args.push(r.base)
         else if int(locals[l].flags) & LF_MUTPARAM != 0: args.push(ml_target(a, ""))
         else: args.push(ml_expr(a))
-    "{ml_fn(f)}({ml_ctx_args()}{join(args, ", ")})"
+    "{ml_fn(f)}({ml_with_ctx(ml_ctx_args(), args)})"
 
 # (what every function is given besides its parameters: the textures, and in the vertex stage
 # the vertex and instance, in compute ones the SIMD group's size and place in it)
 ml_ctx_params = () -> str:
-    if ml_stage == "vertex": return "constant SlTex* tx, uint sl_vid, uint sl_iid, "
-    if ml_stage == "compute": return "constant SlTex* tx, uint sl_sg_size, uint sl_sg_id, "
-    "constant SlTex* tx, "
+    if ml_stage == "vertex": return "constant SlTex* tx, uint sl_vid, uint sl_iid"
+    if ml_stage == "compute": return "constant SlTex* tx, uint sl_sg_size, uint sl_sg_id"
+    "constant SlTex* tx"
 ml_ctx_args = () -> str:
-    if ml_stage == "vertex": return "tx, sl_vid, sl_iid, "
-    if ml_stage == "compute": return "tx, sl_sg_size, sl_sg_id, "
-    "tx, "
+    if ml_stage == "vertex": return "tx, sl_vid, sl_iid"
+    if ml_stage == "compute": return "tx, sl_sg_size, sl_sg_id"
+    "tx"
+ml_with_ctx = (ctx: str, rest: str[]) -> str:
+    if rest.len() == 0: return ctx
+    ctx + ", " + join(rest, ", ")
 
 # the math functions, scalars spread to vectors where the result is a vector (min(v, 0.0),
 # mix(a, b, t), step(edge, v))
@@ -794,14 +799,14 @@ ml_math = (nm: str, e: int) -> str:
             x = "{ml_type(t, pos)}({ml_as(a, x, t)})"
         else if ml_is_floaty(t) and not ml_is_floaty(at) and types[at].kind != .bool_: x = ml_as(a, x, t)
         args.push(x)
-    if nm == "dot" and not is_vec(ntype(kid(e, 0))): return "(({args[0]}) * ({args[1]}))"
+    if nm == "dot" and not is_vec(ntype(kid(e, 0))): return "({args[0]} * {args[1]})"
     if nm == "fwidth" and ml_stage != "fragment": ml_err(pos, "fwidth() can only be used in the fragment shader")
     if nm == "atan" and n == 2: return "atan2({args[0]}, {args[1]})"
     if nm == "inverse":
         if ml_first("inverse"): ml_decls.push(ML_INVERSE())
     if nm == "mod":
         if ml_first("mod"): ml_decls.push("template <typename T, typename U> T sl_mod(T x, U y) \{ return x - y * floor(x / y); }\n")
-        if not ml_is_floaty(t): return "(({args[0]}) % ({args[1]}))"
+        if not ml_is_floaty(t): return "({args[0]} % {args[1]})"
     if nm == "abs" and not ml_is_floaty(t) and types[t].kind != .bool_:
         # (x below 0 negated through unsigned numbers, which wrap: abs of the smallest integer is itself)
         if ml_is_vector(t):
