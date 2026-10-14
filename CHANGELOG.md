@@ -54,6 +54,11 @@ Language and library:
   `struct B(A)`, a field read from a union of structs, a library module used without `import`.
 
 Games:
+- `tile_layer` keeps rows of spaces (open sky above a level); only the empty line after the
+  opening quote and the closing quote's line are left out. Rows of spaces at the top were
+  dropped, moving the tiles up against positions read from the same text.
+- Screenshot runs (`SLOPPY_SCREENSHOT`) ignore the desktop's keys, mouse and typing, so they
+  are the same each time on a machine with a display; only `SLOPPY_INPUT` gives them input.
 - 3D particles: `Particles3D` with `emit` (in a cone around a direction), `update` and `draw`
   (glowing sparks that add up, or blended smoke and dust), soft dots facing the camera.
 - `time_scale(s)`: update gets dt times s (slow motion, 0 pauses the game while it still

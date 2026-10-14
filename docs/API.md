@@ -1283,7 +1283,7 @@ draw = (): draw_tilemap(level)
       hit_y: bool                 # ... or up or down (moving down: it landed)
   ```
 - `tileset = (t: Texture, tile_w: int, tile_h: int, spacing: int = 0, margin: int = 0) -> Tileset`: a tileset: an image of equal tiles in a grid, numbered from `first` (1) left to right, then down
-- `tile_layer = (name: str, rows: str, chars: str) -> TileLayer`: a layer from rows of text: the character at position i of `chars` is tile i + 1, and any other character (a space, a dot) is no tile; a character the rows never use skips a number ("_#": '#' is tile 2). Blank lines at the start and the end are left out.
+- `tile_layer = (name: str, rows: str, chars: str) -> TileLayer`: a layer from rows of text: the character at position i of `chars` is tile i + 1, and any other character (a space, a dot) is no tile; a character the rows never use skips a number ("_#": '#' is tile 2). Rows of spaces are rows of the map (open sky); only an empty first line (the line break after the opening quote) and a last line of spaces (before the closing quote) are left out.
 - `tilemap = (ts: Tileset, layers: TileLayer[]) -> Tilemap`: a map of these layers, drawn with one tileset
 - `layer_index = (m: Tilemap, name: str) -> int`: the index of the layer with this name (-1: none)
 - `tile_at = (m: Tilemap, layer: int, x: int, y: int) -> int`: the tile at column x, row y of a layer (0 outside the map)

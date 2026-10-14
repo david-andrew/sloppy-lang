@@ -74,8 +74,14 @@ for t in tests:
     else:
         run = [exe]
     try:
+        # (`# env: NAME=value` lines at the top: set for the run, a headless game's SLOPPY_SCREENSHOT say)
+        test_env = dict(os.environ, SLOPPY_SAVE_DIR=os.path.join(tmp, "saved-data"))
+        for l in head.splitlines():
+            if l.startswith("# env: ") and "=" in l:
+                k, v = l[7:].split("=", 1)
+                test_env[k.strip()] = v.strip().replace("$TMP", tmp)
         r = subprocess.run(run, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, input=stdin_data,
-                           env=dict(os.environ, SLOPPY_SAVE_DIR=os.path.join(tmp, "saved-data")))
+                           env=test_env)
     except subprocess.TimeoutExpired:
         print(f"FAIL {name}: timed out")
         failed += 1
