@@ -18,6 +18,7 @@ struct TextError:
     message: str
     line: int
     column: int
+    path = ""       # where in the value: items[2].count (the message starts with it too)
 
 to_text[T] = (x: T) -> str:
     buf: u8[]
@@ -63,7 +64,9 @@ __from_text_into[T] = (text: str, x: mut T, json: bool = false) -> TextError?:
         if text[i] == '\n':
             line += 1
             col = 1
-    TextError(r.err, line, col)
+    msg = r.err
+    if len(r.err_path) > 0: msg = "{r.err_path}: {r.err}"
+    TextError(msg, line, col, r.err_path)
 
 # ---------------- the reader ----------------
 struct __TextIn:
@@ -74,6 +77,8 @@ struct __TextIn:
     name = ""       # the field name just read (__tx_field), or the type name ahead (__tx_kind)
     w0 = 0          # where the last word read starts
     json = false    # reading JSON (from_json): {"field": value}, [a, b] for tuples and vectors, null
+    path: str[]     # the fields and elements being read (items, [2], count)
+    err_path = ""   # where err is, as items[2].count
 
 __tx_space = (r: mut __TextIn):
     loop r.i < len(r.s) and (r.s[r.i] == ' ' or r.s[r.i] == '\n' or r.s[r.i] == '\t' or r.s[r.i] == '\r'): r.i += 1
@@ -88,7 +93,17 @@ __tx_fail = (r: mut __TextIn, msg: str):
     if len(r.err) == 0:
         r.err = msg
         r.at = r.i
+        p = ""
+        loop part in r.path:
+            if len(p) > 0 and part[0] != '[': p += "."
+            p += part
+        r.err_path = p
     r.i = len(r.s)
+
+# (reading the field or element `part` of what is being read: for messages)
+__tx_in = (r: mut __TextIn, part: str): r.path.push(part)
+__tx_out = (r: mut __TextIn):
+    if r.path.len() > 0: r.path.pop()
 
 __tx_eat = (r: mut __TextIn, c: u8) -> bool:
     __tx_space(r)
@@ -285,7 +300,9 @@ __read[T] = (r: mut __TextIn, xs: mut T[]):
         if __tx_eat(r, ']'): return
         v: T
         __default_init(v)
+        __tx_in(r, "[{xs.len()}]")
         __read(r, v)
+        __tx_out(r)
         xs.push(v)
 
 __read[K, V] = (r: mut __TextIn, m: mut Map[K, V]):
@@ -300,7 +317,9 @@ __read[K, V] = (r: mut __TextIn, m: mut Map[K, V]):
         __tx_want(r, ':')
         v: V
         __default_init(v)
+        __tx_in(r, "[{k}]")
         __read(r, v)
+        __tx_out(r)
         m[k] = v
 
 __read[T] = (r: mut __TextIn, x: mut T?):

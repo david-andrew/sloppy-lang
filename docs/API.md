@@ -742,6 +742,7 @@ Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs, enu
       message: str
       line: int
       column: int
+      path = ""       # where in the value: items[2].count (the message starts with it too)
   ```
 - `to_text[T] = (x: T) -> str`
 - `from_text[T] = (text: str) -> T \| TextError`
