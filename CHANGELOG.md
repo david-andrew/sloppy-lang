@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+Compiling:
+- Machine code is made on several processors (on Linux and macOS, for x86-64): after a program
+  is lowered, forked workers each make the code of a run of its functions, release builds'
+  loop versioning and hoisting with it, and the compiler joins them in order. The program is
+  the same bytes as before. 10% off building bench/big.jo and the compiler on a busy 8-core
+  machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
+
 Shipping:
 - `sloppy build --target macos -o Game.app` makes an app bundle: the program, an Info.plist
   (its name in the Dock and the menu bar) and the build block's icon, signed (ad hoc) as a whole.

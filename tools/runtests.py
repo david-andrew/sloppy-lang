@@ -217,6 +217,21 @@ if compiler != "sloppy0" and target == "native":
         else:
             print(f"FAIL {name}: expected an error containing {want!r}\n{r.stderr}")
             failed += 1
+    # code made on several processors is the same as code made on one (compiler/par.jo)
+    if pattern in "parallel/emit" and os.name != "nt" and target == "native" and not release:
+        same = True
+        for flags in [[], ["--release"], ["-g"]]:
+            outs = []
+            for envs in [{"SLOPPY_EMIT_WORKERS": "1"}, {"SLOPPY_EMIT_FORCE": "1"}]:
+                o = os.path.join(tmp, "par_" + str(len(outs)))
+                subprocess.run([sloppy, "build", os.path.join(root, "bench", "big.jo"), "-o", o] + flags, capture_output=True,
+                               env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), **envs), timeout=120)
+                outs.append(open(o, "rb").read() if os.path.exists(o) else b"")
+            if not outs[0] or outs[0] != outs[1]:
+                print(f"FAIL parallel/emit: {flags} differs from one processor's code")
+                same = False
+        if same: passed += 1
+        else: failed += 1
     # programs that build with a warning: tests/warnings/*.jo start with `# warning: <part of it>`
     for t in sorted(glob.glob(os.path.join(root, "tests", "warnings", "*.jo"))):
         name = "warnings/" + os.path.basename(t)[:-3]

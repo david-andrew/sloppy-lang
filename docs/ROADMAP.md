@@ -193,6 +193,13 @@ safety net for changes here.
 - Then the remaining gap to C -O2 in release builds (fannkuch 1.5x, spectral 1.4x, nbody 1.3x).
 - Debug builds stay the default; compile speed comes first (item 2 tracks it).
 
+## Compile speed for large programs
+
+- Lowering and code generation in parallel (forked workers on Linux and macOS, each making the
+  code of a share of the functions), and less allocation in the compiler.
+- No caching of the library between builds: it is a small part of a large program, and caching
+  it would add complexity for small programs only.
+
 ## Community (S, ongoing)
 
 A changelog per release (done), issue templates, a contributing guide, and a place to show
@@ -203,3 +210,8 @@ games made with Sloppy.
 Tracing garbage collection, exceptions, inheritance, a JIT, a central package registry,
 consoles (their SDKs are under NDA). Code signing on Windows is out of reach for now; the docs
 should say what SmartScreen shows for an unsigned game and how players get past it.
+
+## An aspiration, last of all
+
+A million lines a second (Jai's target). Nice if it happens, behind everything above: past
+parallel code generation it needs type checking in parallel, or a much faster checker.

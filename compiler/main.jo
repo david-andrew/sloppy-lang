@@ -33,6 +33,7 @@ use 'repl.jo'
 use 'watch.jo'
 use 'new.jo'
 use 'fmt.jo'
+use 'par.jo'
 use 'pkg.jo'
 
 # (a release is tagged v<SLOPPY_VERSION>: .github/workflows/release.yml checks)
@@ -193,8 +194,28 @@ img_text_addr = 0
 img_ro_addr = 0
 img_data_addr = 0
 
+# (functions lowered, waiting for their machine code: emit_queued, after all are lowered, so
+# that the code can be made on several processors)
+emit_queue: IrFn[]
+emit_queue_rel: bool[]          # (a release function still to version and LICM: rel_finish)
+queue_emit = false
+
 emit_function = ():
     if lower_only: return
+    if queue_emit:
+        emit_queue.push(ir)
+        emit_queue_rel.push(false)
+        return
+    emit_now(false)
+
+# a release build's last passes over a function, before its code is made
+rel_finish = ():
+    kc_fn += 1
+    loop_versioning()
+    ir.code = o_licm(ir.code)
+
+emit_now = (finish: bool):
+    if finish: rel_finish()
     if dump: dump_ir()
     if target_wasm: wasm_collect()
     else if target_arm64: arm64_function()
@@ -202,11 +223,13 @@ emit_function = ():
 
 # release builds: optimize everything, inline small functions, optimize callers again, emit
 release_pipeline = ():
+    rt0 = time()
     loop k in [0..rel_fns.len()):
         ir = rel_fns[k]
         kc_fn += 1
         optimize()
         rel_fns[k] = ir
+    rt1 = time()
     snap = rel_fns
     can = fill(0, snap.len())
     loop k in 0.. and f in snap: can[k] = inlinable(f)
@@ -219,13 +242,32 @@ release_pipeline = ():
             optimize()
             snap[k] = ir
             can[k] = inlinable(ir)
+    rt2 = time()
     loop k in [0..snap.len()):
         ir = snap[k]
-        kc_fn += 1
-        loop_versioning()
-        ir.code = o_licm(ir.code)
+        if queue_emit:
+            # (versioned and LICM'd with its code: where code is made in parallel, there too)
+            emit_queue.push(ir)
+            emit_queue_rel.push(true)
+            continue
+        rel_finish()
         emit_function()
     rel_fns = []
+    if env("SLOPPY_PAR_TIME") != none: eprint("release: optimize {(rt1 - rt0) * 1000.0:.1} ms, inline {(rt2 - rt1) * 1000.0:.1} ms, versioning and licm {(time() - rt2) * 1000.0:.1} ms")
+
+# the machine code of the queued functions, in order
+emit_queued = ():
+    q = emit_queue
+    fin = emit_queue_rel
+    emit_queue = []
+    emit_queue_rel = []
+    queue_emit = false
+    if emit_parallel(q, fin): return
+    t0 = time()
+    loop k in 0.. and f in q:
+        ir = f
+        emit_now(fin[k])
+    if env("SLOPPY_PAR_TIME") != none: eprint("emit: here, {(time() - t0) * 1000.0:.1} ms")
 
 # the functions in an order where each comes after the ones it calls (but in cycles)
 callee_order = (fs: IrFn[]) -> int[]:
@@ -284,6 +326,8 @@ compile = (path: str, out0: str) -> str:
         if not ends_with(out, ".exe"): out = out + ".exe"
     init_types()
     want_cpu_flag = opt_release and not target_wasm and not target_arm64 and not lower_only
+    # (code made after lowering everything, except where code is patched in place as it is made)
+    queue_emit = not watch_build and not repl_image and not lower_only
     check_program(path)
     # (functions left unchecked after errors in them cannot be lowered)
     if lower_only and ide_skip.len() > 0: return ""
@@ -331,9 +375,7 @@ compile = (path: str, out0: str) -> str:
                     continue
                 if len(fns[fi].clib) == 0: fatal(nodes[int(fns[fi].decl)].pos, "extern functions need @lib(\"library.so\") on native targets")
                 lower_extern_thunk(i, fi)
-                if dump: dump_ir()
-                if target_arm64: arm64_function()
-                else: x64_function()
+                emit_function()
                 i += 1
                 continue
             lower_function(i)
@@ -360,6 +402,7 @@ compile = (path: str, out0: str) -> str:
         watch_lower_inits()
         watch_lower_migrate()
     if opt_release: release_pipeline()
+    if queue_emit: emit_queued()
     t2 = time()
     ok = false
     size = 0
