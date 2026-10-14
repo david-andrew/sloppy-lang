@@ -18,6 +18,9 @@ For newcomers (from a first-time programmer working through the tutorial):
   `draw`; `x = []` at the top level (the type of what is pushed later is suggested); a call
   that may give none (`to_float(load_data("best"))`: `?? ""` says what to use then) and an
   optional compared with `<` (said with the line that made it).
+- Fewer words from compilers in errors: "no version of 'rect' takes 4 arguments" (said of all
+  of them, not of the last one tried) for "no matching overload"; a value that may be none says
+  what to do instead of "unwrap it".
 - `draw()` inside `draw` (or `update(dt)` inside `update`) is an error: the game calls them.
   A menu left without `ui_end()` frame after frame stops with a message saying so.
 - `melody("H4 ...")` stops with what a note is, instead of leaving the note out; a note without
