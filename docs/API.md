@@ -394,6 +394,8 @@ Math basics.
 - `exp = (x: f32) -> f32`: f32 versions (shader code, games): computed in double with shorter polynomials, so they are within an ulp of the f32 result at a fraction of the cost of the full-precision ones
 - `log = (x: f32) -> f32`
 - `pow = (x: f32, y: f32) -> f32`
+- `sin = (x: f32) -> f32`
+- `cos = (x: f32) -> f32`
 - `pow = (x: int, n: int) -> int`
 - `f64_bits = (x: f64) -> u64`: a float's bits as an integer, and back (IEEE 754: f64_bits(1.0) is 0x3FF0000000000000)
 - `f64_from_bits = (b: u64) -> f64`

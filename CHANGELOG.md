@@ -13,6 +13,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `sin` and `cos` of an `f32` (shader code) give an `f32`, computed with shorter polynomials
+  (30% faster; the same f32 but for a last-bit difference in 1 of 10000).
 - The software renderer is about 3 times faster in games with post effects (Rebound: 45 to 14
   ms a frame in a debug build, 29 to 9 in a release one): bloom's blur and the final composite
   work on its pixels directly, other full-screen passes call their fragment function per pixel
