@@ -504,6 +504,8 @@ name = j.get("layers").at(0).get("name").as_str() ?? "?"
 loop l in j.get("layers").as_list(): print(l.get("name").as_str() ?? "")
 ```
 
+For JSON straight into your own structs and back, from_json[Config](text) and to_json(value) are in "Saving, and values as text" (they give a TextError, with the same message, line, column).
+
 - `enum Json: null_, boolean(b: bool), number(n: f64), text(s: str), list(items: Json[]), object(keys: str[], values: Json[])`
 - `struct JsonError`
   ```gdscript
@@ -608,9 +610,9 @@ Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs, enu
 - `struct TextError`
   ```gdscript
   struct TextError:
-      msg: str
+      message: str
       line: int
-      col: int
+      column: int
   ```
 - `to_text[T] = (x: T) -> str`
 - `from_text[T] = (text: str) -> T \| TextError`
