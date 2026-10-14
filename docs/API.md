@@ -1867,7 +1867,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `night_stars = (amount: f64)`
 - `fog = (color: vec3, density: f64 = 0.01, height_falloff: f64 = 0.05)`
 - `shadows = (on: bool, strength: f64 = 0.8, area: f64 = 30.0)`
-- `post_effects = (bloom: f64 = 0.6, threshold: f64 = 0.7, vignette: f64 = 0.35, saturation: f64 = 1.0, tint: vec3 = vec3(1, 1, 1))`: bloom + color grading for the whole frame (2D and 3D)
+- `post_effects = (bloom: f64 = 0.6, threshold: f64 = 0.7, vignette: f64 = 0.35, saturation: f64 = 1.0, tint: vec3 = vec3(1, 1, 1), include_hud: bool = false)`: bloom + color grading for the frame: all of a 2D game; in a 3D one, the 3D and the 2D drawn before it, while 2D drawn after the 3D (a HUD, text) stays as drawn, unless include_hud
 - `no_post_effects = ()`
 - `point_light = (pos: vec3, color: vec3, radius: f64 = 6.0, intensity: f64 = 1.0)`: a light at a point for this frame (muzzle flashes, glowing shots, lamps): it reaches radius meters, fading out on the way. Up to 8 light a frame (the ones nearest the camera); they cast no shadows.
 - `draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false)`: in_front = true: drawn after everything else and over it, casting no shadow (a first-person weapon, which would otherwise poke into walls the player stands against)

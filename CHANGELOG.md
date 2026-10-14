@@ -8,6 +8,9 @@ From a Unity developer's first 3D game:
   removed after the step, so reading the rest of them no longer stops the game.
 - Rotations: `quat_euler(pitch, yaw, roll)`, `facing(dir)` and `quat_facing(dir)` (turn a
   model's front, -z, toward a direction), `quat_inverse`, `quat_from_mat4`, `scaling(2.0)`.
+- Post effects (bloom, grading) leave the 2D drawn after the 3D (a HUD, text) as drawn, as
+  Unity's overlay UI; a 2D game's are on all of it as before (`include_hud = true` for a 3D
+  game's HUD too).
 - A warning for an angle in degrees where radians go (`rotation_y(45)`: `45deg`).
 - Errors for Unity's and C#'s habits: `transform.position`, `Input.GetKey`, `Mathf.Clamp`,
   `Debug.Log`, `GameObject`, `Instantiate`/`Destroy`, `GetComponent`, `Physics.Raycast`,
