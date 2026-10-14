@@ -120,6 +120,11 @@ game picks from (and an example of each):
   client-side prediction with reconciliation; snapshot interpolation; lag compensation. Next:
   delta-compressed snapshots (only what changed, and per player what is near), UDP for native
   clients, extrapolation when worlds stop arriving.
+- From a first try at multiplayer: reconnecting (a rollback player who restarts; a client
+  rejoining), a version handshake (two builds that differ say so at once), the relay handing
+  out player numbers and a lobby (who is here, ready), the game's own messages alongside netplay
+  (names, chat, rematch), lag simulation for client-server, spectators and replays (rollback's
+  inputs are small), and worlds sent as what changed rather than whole, as text.
 - Lobbies and connecting players: a small relay/matchmaking server program (NAT traversal for
   pages: WebRTC's ICE with a STUN server, done; a TURN server for pages that cannot reach each
   other is the relay for now).
