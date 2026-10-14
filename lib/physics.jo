@@ -578,11 +578,26 @@ __step = (w: mut World, h: f32):
         loop _ in [0..3):
             loop mut j in w.joints:
                 if j.on: __joint_solve(j, w.bodies, h)
+    # (bodies that move more than half their size in a step: swept, so that a fast bullet does
+    # not pass through a wall between two steps)
+    fast: (int, vec2, f32)[]
+    loop i in [1..w.bodies.len()):
+        bd = w.bodies[i]
+        if bd.kind != .dynamic or not bd.alive or bd.asleep or bd.sensor or not __shaped(bd): continue
+        size = bd.radius
+        if size < 0.0: size = min(bd.hi.x - bd.lo.x, bd.hi.y - bd.lo.y) * 0.5
+        if length(bd.vel) * h > size * 0.5: fast.push((i, bd.pos, size))
     loop mut b in w.bodies:
         if b.kind == .fixed or not b.alive or b.asleep: continue
         b.pos += b.vel * h
         b.angle += b.spin * h
         __bounds(b)
+    loop fb in fast:
+        i, from, size = fb
+        if let hit = __raycast(w, from, w.bodies[i].pos, w.bodies[i].mask, i, w.bodies[i].layer):
+            # (stopped at the surface it would have crossed: the contact is solved next step)
+            w.bodies[i].pos = hit.point + hit.normal * (size * 1.01)
+            __bounds(w.bodies[i])
     # (then the joints' remaining stretch taken out of the positions themselves, as Box2D does:
     # chains and long hangings stay their length without the speeds pushing it back)
     if w.joints.len() > 0:
@@ -1239,13 +1254,17 @@ __joint_solve = (j: mut __PJoint, bs: mut __PBody[], h: f32):
 
 # ---------------- queries ----------------
 # the first body a ray from a to b meets (only those whose layer & mask is not 0)
-raycast = (w: World, a: vec2, b: vec2, mask: int = -1) -> Hit?:
+raycast = (w: World, a: vec2, b: vec2, mask: int = -1) -> Hit?: __raycast(w, a, b, mask, -1, -1)
+
+# (skip: a body left out, the one moving; layer >= 0: only bodies whose mask takes it, as collisions)
+__raycast = (w: World, a: vec2, b: vec2, mask: int, skip: int, layer: int) -> Hit?:
     best: Hit? = none
     bf: f32 = 1
     d = b - a
     loop i in [1..w.bodies.len()):
         bd = w.bodies[i]
-        if not __shaped(bd) or bd.layer & mask == 0 or bd.sensor: continue
+        if i == skip or not __shaped(bd) or bd.layer & mask == 0 or bd.sensor: continue
+        if layer >= 0 and bd.mask & layer == 0: continue
         if bd.radius >= 0.0:
             m = a - bd.pos
             qa = dot(d, d)

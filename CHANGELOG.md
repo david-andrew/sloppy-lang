@@ -13,6 +13,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- 2D physics: a body moving more than half its size in a step is swept along its path, so a
+  fast bullet no longer passes through a thin wall between two steps.
 - `embed_dir("assets")`: every file under a directory built into the program, as a map from
   its path there (`assets["sfx/hit.wav"]`).
 - Effects on 2D drawing (LÖVE's `setShader`): `use_effect(fx, params)` runs a fragment function
