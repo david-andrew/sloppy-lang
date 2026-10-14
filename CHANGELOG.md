@@ -13,6 +13,7 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- A parameter's default value may use earlier parameters (`h: f64 = w`, `label = "w={w}"`).
 - `loop k, mut v in m` (as `loop mut k, v in m`); `name = (...): ...` at the top level for a
   variable of a function type declared above gives it a new value (it was a second definition);
   `xs[-1]` and `s[-3..]` are errors pointing to `end` (they panicked when run); a warning for a

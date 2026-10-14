@@ -303,6 +303,8 @@ written inside an expression is a lambda.
 
 * The return type may be omitted; it is inferred from the body (recursive functions
   must declare it). `-> void` says explicitly that nothing is returned.
+* A default value may use earlier parameters: `rect_at = (p: vec2, w: f64, h: f64 = w)` (the
+  argument given for them is used again, so it is a value or a variable).
 * **Untyped parameters make a function generic**: `twice = (f, x): f(f(x))` is
   instantiated for each distinct set of argument types (like a template).
 * Explicit type parameters: `first[T] = (xs: T[]) -> T: xs[0]`. A call can give them when the
