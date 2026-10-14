@@ -118,7 +118,7 @@ Games:
 - Physics: a sensor keeps reporting a body that falls asleep inside it, and does not wake it
   (2D and 3D; its contact vanished, and came back as new when it woke). `overlap_sphere`,
   `overlap_box` and `w.overlaps(character)`: the bodies, sensors too, in a shape or around a
-  character (trigger zones, pickups). A character on a moving platform is carried along and
+  character (trigger zones, pickups); in 2D `overlap_circle` and `overlap_box`. A character on a moving platform is carried along and
   turned with it (`standing_on`); only lifts carried it.
 - `move_toward` for numbers and vec3 (it was vec2 only); `OrbitCamera.drag_left = false` leaves
   the left button to the game; `?stats` in a page's address shows the overlay (only

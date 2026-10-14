@@ -2902,7 +2902,12 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 #### Queries
 
 - `raycast = (w: World, a: vec2, b: vec2, mask: int = -1) -> Hit?`: the first body a ray from a to b meets (only those whose layer & mask is not 0)
-- `circle_cast = (w: World, a: vec2, b: vec2, r: f64, mask: int = -1) -> Hit?`: the first body a circle of radius r, moved from a to b, would touch: the hit's point is where it touches, and fraction how far along the circle's center is then (a ray with thickness)
+
+#### Overlaps
+
+- `overlap_circle = (w: World, center: vec2, radius: f64, mask: int = -1) -> Body[]`: the bodies (sensors too) a circle or a box overlaps: what an explosion reaches, the zones something stands in (bodies_at(p): those at a point)
+- `overlap_box = (w: World, center: vec2, size: vec2, angle: f64 = 0, mask: int = -1) -> Body[]`
+- `circle_cast = (w: World, a: vec2, b: vec2, r: f64, mask: int = -1) -> Hit?`
 - `bodies_at = (w: World, p: vec2) -> Body[]`: the bodies at the point p (the topmost first: the last made)
 - `outline = (w: World, b: Body) -> vec2[]`: a body's outline in the world (a circle's as 24 points)
 - `draw_debug = (w: World, thickness: f64 = 2)`: every body's outline and every joint, for seeing what the physics does
