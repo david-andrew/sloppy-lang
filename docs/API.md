@@ -321,7 +321,7 @@ Math basics.
 - `pow = (x: f64, y: f64) -> f64`: x to the power y, within an ulp (fdlibm's: log2(x) in extra precision, times y, then 2 to that)
 - `exp = (x: f32) -> f32`: f32 versions (shader code, games): computed in double with shorter polynomials, so they are within an ulp of the f32 result at a fraction of the cost of the full-precision ones
 - `log = (x: f32) -> f32`
-- `pow = (x: f32, y: f32) -> f32`
+- `pow = (x: f32, y: f32) -> f32`: (a negative power is 1 / x ^ -n, truncated as integer division is: 0 unless x is 1 or -1)
 - `pow = (x: int, n: int) -> int`
 - `hypot = (x: f64, y: f64) -> f64`
 - `radians = (deg: f64) -> f64`

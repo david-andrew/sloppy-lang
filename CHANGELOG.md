@@ -10,6 +10,14 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `is` with a member of an optional union (`f() is A` where f gives `A | B | none`), and with a
+  union of some of a union's members (`r is AB`, `type AB = A | B`), narrowing too; `x is A or
+  x is B` narrows x to `A | B`.
+- At the top level, a global declared after `if r == none: panic(...)` sees r narrowed
+  (`s: str = r`), as a function's variables do.
+- `sloppy check` checks the test blocks too (only `sloppy test` did).
+- `x ^ -n` on integers truncates like `/` (`2 ^ -1 == 0`; `0 ^ -1` panics), where it gave 1.
+- `{7:>05}` pads with zeros, as Python does (an alignment ignored the 0).
 - `sort` and `sorted` compare with `<` directly instead of through a function value, copy runs
   already in order as they are, and sort largest-first by reversing around the ascending sort
   (still stable): 2 million ints sort in 295 ms in a release build (was 430; C's qsort: 295).

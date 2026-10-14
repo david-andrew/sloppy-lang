@@ -153,7 +153,9 @@ Float to integer conversion truncates toward zero and saturates: NaN becomes 0 a
 beyond the integer range become its minimum or maximum (the same on every target).
 
 **Operators.** Integer `/` truncates, `%` is remainder, integer overflow wraps. `x ^ y` is
-`pow(x, y)` (right-associative and tighter than unary minus: `-2 ^ 2 == -4`).
+`pow(x, y)` (right-associative and tighter than unary minus: `-2 ^ 2 == -4`). On integers it
+is an integer: a negative power truncates as `/` does (`2 ^ -1 == 0`), and it wraps on overflow
+(`2 ^ 64 == 0`); `2.0 ^ -1` is 0.5.
 `and or xor not` are logical on bools (`and`/`or` short-circuit) and bitwise on integers,
 with low precedence (below comparisons); `& | ~ << >>` are the bitwise operators with high
 precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests membership

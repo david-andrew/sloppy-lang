@@ -4189,11 +4189,29 @@ check_dotted = (n: int, expected: int) -> int:
 # ---------------- unions: `is` and narrowing ----------------
 # x is T: aux = the member's index for a union; -1 (is none) or -2 (has a value) for an optional
 check_istype = (n: int) -> int:
+    # (a variable or field path, copied before it is checked: the rewrites below test it again)
+    orig = 0
+    if plain_path(int(nodes[n].a)): orig = copy_path(int(nodes[n].a))
     at = prune(check_expr(int(nodes[n].a), 0))
     nodes[n].a = i32(last_checked)
     finalize_literal(int(nodes[n].a))
     at = prune(ntype(int(nodes[n].a)))
     tt = resolve_type(int(nodes[n].b))
+    pos = nodes[n].pos
+    # x is A, x is A | B, where x: (A | B | C)?: x != none and (x is A or x is B)
+    if types[at].kind == .opt and is_union(prune(int(types[at].elem))) and types[tt].kind != .none_lit:
+        u = prune(int(types[at].elem))
+        ms = sub_members(u, tt)
+        if ms.len() > 0:
+            subj = is_subject(n, orig)
+            c = bc_logic(.and_, bc_bin(.ne, copy_path(subj), mk(.none_lit, pos), pos), members_test(subj, ms, pos), pos)
+            return is_rewritten(n, orig, c)
+    # x is A | B, where x: A | B | C: x is A or x is B
+    if is_union(at) and is_union(tt) and union_index(at, tt) < 0:
+        ms = sub_members(at, tt)
+        if ms.len() > 0:
+            subj = is_subject(n, orig)
+            return is_rewritten(n, orig, members_test(subj, ms, pos))
     if is_union(at):
         vi = union_index(at, tt)
         if vi < 0: fatal(nodes[int(nodes[n].b)].pos, "{type_str(tt)} is not one of the types of {type_str(at)}")
@@ -4205,6 +4223,51 @@ check_istype = (n: int) -> int:
     else if type_eq(at, tt): nodes[n].aux = -3      # (already narrowed to it, say): always true
     else: fatal(nodes[n].pos, "`is` tests which type a union (A | B) or optional value holds; this is always a {type_str(at)}")
     T_BOOL
+
+# what `x is ...` tests again: x itself (a variable or field path), or else its value put in a
+# variable of its own (computed once)
+is_subject = (n: int, orig: int) -> int:
+    if orig != 0: return orig
+    add_flag(int(nodes[n].a), NF_CHECKED)
+    bc_ident("__is{n}", nodes[n].pos)
+
+# node n is now test c (after setting is_subject's variable, when there is one)
+is_rewritten = (n: int, orig: int, c: int) -> int:
+    pos = nodes[n].pos
+    if orig != 0: nodes[n] = nodes[c]
+    else:
+        set_v = bc_assign(bc_ident("__is{n}", pos), int(nodes[n].a), pos)
+        nodes[n] = nodes[bc_block([set_v, bc_stmt(c, pos)], pos)]
+    check_expr(n, 0)
+
+# the members of union u that t is (t one of them, or a union of some of them); none: it is not
+sub_members = (u: int, t: int) -> int[]:
+    out: int[]
+    if union_index(u, t) >= 0:
+        out.push(t)
+        return out
+    if not is_union(t): return out
+    loop m in union_members(t):
+        if union_index(u, m) < 0: return []
+        out.push(m)
+    out
+
+# subj is ms[0] or subj is ms[1] ... (subj: a variable or field path, copied for each test)
+members_test = (subj: int, ms: int[], pos: int) -> int:
+    c = 0
+    loop m in ms:
+        t = mk(.istype, pos)
+        nodes[t].a = i32(copy_path(subj))
+        nodes[t].b = i32(type_node_of(m, pos))
+        if c == 0: c = t
+        else: c = bc_logic(.or_, c, t, pos)
+    c
+
+# a variable, or fields of one (a.b.c): what `is` can narrow
+plain_path = (e: int) -> bool:
+    k = nodes[e].kind
+    if k == .ident: return true
+    k == .field and plain_path(int(nodes[e].a))
 
 # where condition c is `holds` (true or false), variables it tests with `is` stand for the member
 narrow_by = (c: int, holds: bool):
@@ -4223,6 +4286,10 @@ narrow_by = (c: int, holds: bool):
     else if k == .or_ and not holds:
         narrow_by(int(nodes[c].a), false)
         narrow_by(int(nodes[c].b), false)
+    else if k == .or_ and holds:
+        # x is A or x is B: x is an A | B
+        tests: int[]
+        if or_tests(c, tests): narrow_some(tests)
 
 narrow_var = (isn: int, holds: bool):
     a = int(nodes[isn].a)
@@ -4343,6 +4410,39 @@ narrow_path = (a: int, vi: int, holds: bool):
         nl = new_local(intern(key), int(types[ut].elem), pos)
         locals[nl].flags = i32(LF_ALIAS)
         locals[nl].alias = i32(e)
+
+# the `x is M` tests (of members) an or-chain is made of; false: it has something else too
+or_tests = (c: int, out: mut int[]) -> bool:
+    k = nodes[c].kind
+    if k == .or_: return or_tests(int(nodes[c].a), out) and or_tests(int(nodes[c].b), out)
+    if k == .istype and nodes[c].aux >= 0:
+        out.push(c)
+        return true
+    false
+
+# x is A or x is B ... holding: x is one of those members (when all test the same x)
+narrow_some = (tests: int[]):
+    a0 = int(nodes[tests[0]].a)
+    ut = prune(ntype(a0))
+    if not is_union(ut): return
+    local = nodes[a0].kind == .ident and nodes[a0].aux == i32(int(SK.local))
+    key = ""
+    if not local:
+        key = path_key(a0)
+        if len(key) == 0: return
+    ms = union_members(ut)
+    sel: int[]
+    loop t in tests:
+        a = int(nodes[t].a)
+        if local:
+            if nodes[a].kind != .ident or nodes[a].sym != nodes[a0].sym: return
+        else if path_key(a) != key: return
+        m = ms[int(nodes[t].aux)]
+        if not sel.contains(m): sel.push(m)
+    if local: narrow_local(int(nodes[a0].sym), sel, nodes[a0].pos)
+    else:
+        path_narrows += 1
+        narrow_expr(copy_path(a0), sel, nodes[a0].pos, intern(key))
 
 # the path (and paths inside it) may hold another value from here on: forget their narrowing
 path_forget = (key: str):
