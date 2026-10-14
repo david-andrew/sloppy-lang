@@ -13,6 +13,9 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- A union passed where a function has an overload for each of its members calls the one for
+  what it holds (`loop mut m in mobs: m.step(dt)` with `step` for `Walker` and for `Flyer`; `mut`
+  ones change it in place), and a field every member has is read from whichever it is (`m.pos`).
 - A warning for a variable whose fields or elements are changed but whose value is never read:
   a copy changed for nothing (`if let e = enemies.find(...): e.hp -= 5`, `first = xs[0]` then
   `first.hp = 9`), the habit of languages where objects are shared.

@@ -1043,6 +1043,9 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                     if nodes[unnamed(a0)].type != 0: ats += type_str(ntype(unnamed(a0)))
                 fatal(nodes[n].pos, "ambiguous call to '{name_of(name)}({ats})': candidates at {pos_str(nodes[cands[best].decl].pos)} and {pos_str(nodes[cd.decl].pos)}")
     if best < 0:
+        # (f(e) with e a union and an overload of f for each of its members: chosen by what e holds)
+        ud = union_dispatch(n, name, decls, args, expected)
+        if ud >= 0: return ud
         # (x.f() with an x that may be none: the function is there for its value)
         if args.len() > 0 and nodes[unnamed(args[0])].type != 0 and types[prune(ntype(unnamed(args[0])))].kind == .opt:
             at = prune(ntype(unnamed(args[0])))
@@ -1492,6 +1495,126 @@ rgb_check = (n: int, args: int[]):
     if big: warn(nodes[n].pos, "the parts of a color go from 0 to 1: for 0 to 255, divide by 255 or write hex(0xff8000)")
 
 # a function's name and parameters as written: circle(center: vec2, radius: f64, c: vec4, segments: int = 0)
+# f(..., e, ...) where e is a union (Walker | Flyer) and f has an overload taking each of its
+# members there: `let u = e; if u is Walker: f(..., u, ...) else ...` (the type it gives back), or
+# -1 when there is no such argument
+union_dispatch = (n: int, name: int, decls: int[], args: int[], expected: int) -> int:
+    loop i in 0.. and a0 in args:
+        a = unnamed(a0)
+        if nodes[a].type == 0: continue
+        ut = prune(ntype(a))
+        if not is_union(ut): continue
+        ms = union_members(ut)
+        every = true
+        loop m in ms:
+            found = false
+            loop d in decls:
+                sig = fn_sig(d)
+                if i < sig.params.len() and not has_var(prune(sig.params[i])) and type_eq(sig.params[i], m): found = true
+            if not found: every = false
+        if not every: continue
+        pos = nodes[n].pos
+        un = "__ud{bc_count}"
+        bc_count += 1
+        # (a variable or field is tested and passed itself, narrowed: a `mut` parameter changes it)
+        place = nodes[a].kind == .ident or (nodes[a].kind == .field and len(path_key(a)) > 0)
+        # (from the last member, which needs no test, back to the first)
+        chain = 0
+        j = ms.len() - 1
+        loop j >= 0:
+            arm: int[]
+            loop k in 0.. and x in args:
+                if k == i:
+                    v = 0
+                    if place: v = ud_path(a)
+                    else: v = bc_ident(un, pos)
+                    if nodes[x].kind == .namedarg:
+                        na = mk(.namedarg, nodes[x].pos)
+                        nodes[na].name = nodes[x].name
+                        nodes[na].a = i32(v)
+                        arm.push(na)
+                    else: arm.push(v)
+                else: arm.push(clone(x))
+            body = bc_block([bc_stmt(bc_call(name_of(name), arm, pos), pos)], pos)
+            if chain == 0: chain = body
+            else:
+                it = mk(.istype, pos)
+                if place: nodes[it].a = i32(ud_path(a))
+                else: nodes[it].a = i32(bc_ident(un, pos))
+                ty = mk(.tname, pos)
+                nodes[ty].aux = -7
+                nodes[ty].ival = ms[j]
+                nodes[it].b = i32(ty)
+                f = mk(.if_, pos)
+                nodes[f].a = i32(it)
+                nodes[f].b = i32(body)
+                if nodes[chain].kind == .block: nodes[f].c = i32(chain)
+                else: nodes[f].c = i32(bc_block([chain], pos))
+                chain = f
+            j -= 1
+        blk = 0
+        if place: blk = bc_block([chain], pos)
+        else: blk = bc_block([bc_let(un, a, pos), chain], pos)
+        nodes[n] = nodes[blk]
+        return check_expr(n, expected)
+    -1
+
+# x.f where x is a union whose members are all structs with a field f of one type: n becomes
+# `let u = x; if u is A: u.f else ...` (x itself when it is a variable or field); -1 if not
+union_field = (n: int, ut: int, fname: int) -> int:
+    ms = union_members(ut)
+    ft = 0
+    loop m in ms:
+        pm = prune(m)
+        if types[pm].kind != .struct_: return -1
+        si = int(types[pm].st)
+        check_struct_fields(si)
+        found = 0
+        loop i in [0..int(structs[si].nfields)):
+            f = int(structs[si].fields) + i
+            if int(fields[f].name) == fname: found = int(fields[f].type)
+        if found == 0: return -1
+        if ft == 0: ft = found
+        else if not type_eq(ft, found): return -1
+    a = int(nodes[n].a)
+    pos = nodes[n].pos
+    place = nodes[a].kind == .ident or (nodes[a].kind == .field and len(path_key(a)) > 0)
+    un = "__uf{bc_count}"
+    bc_count += 1
+    chain = 0
+    j = ms.len() - 1
+    loop j >= 0:
+        base = 0
+        if place: base = ud_path(a)
+        else: base = bc_ident(un, pos)
+        body = bc_block([bc_stmt(bc_field(base, name_of(fname), pos), pos)], pos)
+        if chain == 0: chain = body
+        else:
+            it = mk(.istype, pos)
+            if place: nodes[it].a = i32(ud_path(a))
+            else: nodes[it].a = i32(bc_ident(un, pos))
+            ty = mk(.tname, pos)
+            nodes[ty].aux = -7
+            nodes[ty].ival = ms[j]
+            nodes[it].b = i32(ty)
+            f = mk(.if_, pos)
+            nodes[f].a = i32(it)
+            nodes[f].b = i32(body)
+            if nodes[chain].kind == .block: nodes[f].c = i32(chain)
+            else: nodes[f].c = i32(bc_block([chain], pos))
+            chain = f
+        j -= 1
+    blk = 0
+    if place: blk = bc_block([chain], pos)
+    else: blk = bc_block([bc_let(un, a, pos), chain], pos)
+    nodes[n] = nodes[blk]
+    n
+
+# an unchecked copy of a variable or field path (each arm tests and narrows it afresh)
+ud_path = (a: int) -> int:
+    if nodes[a].kind == .ident: return bc_ident(name_of(int(nodes[a].name)), nodes[a].pos)
+    bc_field(ud_path(int(nodes[a].a)), name_of(int(nodes[a].name)), nodes[a].pos)
+
 # (the ones a call with the wrong number of arguments could have meant: "; there are f(a: int),
 # f(a: int, b: int)")
 overloads_text = (decls: int[], err: str) -> str:
@@ -3193,6 +3316,12 @@ check_expr = (n: int, expected: int) -> int:
                     si = int(types[bt].st)
                     loop i in [0..int(structs[si].nfields)): cands.push(int(fields[int(structs[si].fields) + i].name))
                 if is_union(bt):
+                    # (a field every member has, of one type: read from whichever it holds)
+                    if not (cur_assign != 0 and int(nodes[cur_assign].a) == n):
+                        uf = union_field(n, bt, fname)
+                        if uf >= 0:
+                            last_checked = n
+                            return check_expr(n, expected)
                     fatal(nodes[n].pos, "{type_str(bt)} has no field '{name_of(fname)}' (it is one of its members: find out which first, with `match x:` and an arm for each, or `if x is ...:`)")
                 if is_map_type(bt): fatal(nodes[n].pos, "{type_str(bt)} has no field '{name_of(fname)}' (a map's entries are `m[\"{name_of(fname)}\"]`; for fields by name, make a struct)")
                 fatal(nodes[n].pos, "{type_str(bt)} has no field '{name_of(fname)}'{suggestion(name_of(fname), cands)}")

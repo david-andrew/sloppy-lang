@@ -541,6 +541,24 @@ parameter inside a union stands for the members the union does not name: `value_
 Err, d: T) -> T` called with an `int | str | Err` has `T = int | str`. A union value prints as
 the value it holds. `T | none` is `T?`.
 
+A union does the work of a base class. Passing one where a function has an overload for each
+of its members calls the overload for what it holds (a `mut` parameter changes it in place), and
+a field every member has, of one type, is read from whichever it is:
+
+```gdscript
+struct Walker: pos: vec2; speed: f64
+struct Flyer: pos: vec2; height: f64
+type Mob = Walker | Flyer
+
+step = (w: mut Walker, dt: f64): w.pos.x += f32(w.speed * dt)
+step = (f: mut Flyer, dt: f64): f.height += dt
+
+loop mut m in mobs: m.step(dt)          # Walker's or Flyer's step
+loop m in mobs: circle(m.pos, 8, RED)   # both have pos
+```
+
+(Assigning such a field still needs the member: `if m is Walker: m.pos = p`, or a `match`.)
+
 **Optionals:**
 
 ```gdscript
