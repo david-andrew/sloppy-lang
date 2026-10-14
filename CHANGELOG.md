@@ -42,6 +42,10 @@ Language and library:
 Games:
 - Fixed: `set_fixed_rotation` did not keep spheres, capsules (3D) and circles (2D) from turning
   when they slid with friction; such a body now never turns, whatever hits it.
+- `screen_ray(mouse_pos())`: the ray from the 3D camera through a point on the screen, for
+  picking with a raycast. `angle_difference`, `turn_toward` and `approach_angle` turn the
+  short way round. `find_animation` says (once) when a model has no clip of that name, and
+  which it has.
 - `SLOPPY_INPUT`'s mouse moves count as the pointer moving (`mouse_delta`, drags, mouse look).
 - The 3D reference says which way things face (y up; a turn about y takes +z toward +x; glTF
   models face +z), and START.md how Unity's and Godot's ideas map to Sloppy's.

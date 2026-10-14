@@ -1544,6 +1544,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
   ```
 - `camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`: place the camera; call once per frame before drawing 3D objects
 - `world_to_screen = (p: vec3) -> vec2?`: where a point in 3D appears on the screen, in 2D drawing units (for a name or a health bar over someone's head); none when it is behind the camera. As the camera was last placed.
+- `screen_ray = (p: vec2) -> (vec3, vec3)`: the ray from the camera through a point on the screen (2D units, as mouse_pos): where it starts and its direction (length 1), for picking what the mouse is on (with a physics3d raycast)
 - `sun = (direction: vec3, color: vec3 = vec3(1, 0.95, 0.85))`: the sunlight: direction points toward the sun (y > 0: above the horizon), color is its light
 - `sky = (top: vec3, horizon: vec3, ground: vec3 = vec3(0.3, 0.27, 0.24))`
 - `hide_sky = ()`
@@ -2430,6 +2431,9 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
 - `ease_out_back = (t: f64) -> f64`
 - `ease_out_elastic = (t: f64) -> f64`
 - `ease_out_bounce = (t: f64) -> f64`
+- `angle_difference = (a: f64, b: f64) -> f64`: how far to turn from angle a to angle b the short way, in radians (from -PI to PI)
+- `turn_toward = (angle: f64, target: f64, max_step: f64) -> f64`: turn an angle toward another the short way, at most max_step (radians) this time
+- `approach_angle = (current: f64, target: f64, speed: f64, dt: f64) -> f64`: frame-rate independent smoothing of an angle toward another, the short way round (as approach)
 - `approach = (current: f64, target: f64, speed: f64, dt: f64) -> f64`: frame-rate independent smoothing toward a target (higher speed = snappier)
 - `approach = (current: vec2, target: vec2, speed: f64, dt: f64) -> vec2`
 - `approach = (current: vec3, target: vec3, speed: f64, dt: f64) -> vec3`
