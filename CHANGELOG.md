@@ -13,6 +13,15 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- Bytes and bits (lib/std/bytes.jo): `get_le`/`get_be` (and signed), `put_le`/`put_be`,
+  `append_le`/`append_be` for numbers in byte arrays; `popcount`, `leading_zeros`,
+  `trailing_zeros`, `rotate_left`/`rotate_right`, `byte_swap`; `bytes_from(p, n)` and
+  `str_from_c(p)` for C's memory. `reserve` for maps.
+- C: `@lib(NAME)` takes a constant; a function value given where C wants a callback says it
+  must be a top-level `@cabi` function; `malloc`/`free`/`memcpy` get hints. LANGUAGE.md gains a
+  Pointers part with a worked example (qsort with a callback, an out-parameter), what threads C
+  makes may run, and how shifts count.
+- A warning when `import x` takes a file beside the program while the library has a module x.
 - `x == v` with `x: T?` and `v: T` for any T with `==` (it was int only; none is never equal).
 - `ivec2(x, y)` and `ivec3` take ints (as `i32(x)` makes them).
 - Messages for Godot habits: `extends`, `signal`, a function written inside a struct, `randf`,

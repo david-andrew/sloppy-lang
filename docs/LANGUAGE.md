@@ -156,7 +156,8 @@ string's bytes end with a 0. A union is not cast but tested with `is`.
 Float to integer conversion truncates toward zero and saturates: NaN becomes 0 and values
 beyond the integer range become its minimum or maximum (the same on every target).
 
-**Operators.** Integer `/` truncates, `%` is remainder, integer overflow wraps. `x ^ y` is
+**Operators.** Integer `/` truncates, `%` is remainder, integer overflow wraps, and a shift
+counts modulo the width (`1 << 64` is 1, as x86-64 and arm64 shift). `x ^ y` is
 `pow(x, y)` (right-associative and tighter than unary minus: `-2 ^ 2 == -4`). On integers it
 is an integer: a negative power truncates as `/` does (`2 ^ -1 == 0`), and it wraps on overflow
 (`2 ^ 64 == 0`); `2.0 ^ -1` is 0.5.
@@ -1034,3 +1035,45 @@ both systems under `when TARGET == "windows":`. A variadic C function (`printf(f
 declared with the arguments a call gives it and `@variadic(n)`, n being its fixed parameters:
 macOS passes the others differently. macOS programs find C functions in the system's libraries
 (libSystem holds what Linux's libc and libm do) when they start.
+
+A `str` argument goes to C as its bytes, which end in a zero byte (C's `char *`); an array is
+passed as `data(xs)`, a pointer to its first element (which unshares an array shared with a
+copy first, so C's writes go to this one only). `@lib(NAME)` takes a constant naming the
+library, too. What C's stdio holds (`printf`) is written out when the program ends.
+
+**Pointers.** `*T` is a pointer to T: `&x`, `&xs[i]` and `&s.field` take an address, `p[i]`
+reads and writes the i-th T from p, `p + n` is n elements on (not n bytes), `null` is none,
+`p as *u8` and `int(p)` reinterpret it, and `**u8` is a pointer to a pointer (C's
+out-parameters). A struct is laid out as C lays it out (`size_of(T)`, fields in order and
+aligned), so a C struct is declared as a struct of the same fields; `data(bytes) as *Header`
+reads one in place. A C callback is a top-level function marked `@cabi` (a function value made
+in the program, a lambda or closure, cannot be called from C), and `cfn(A, B) -> R` is its type.
+`str_from_c(p)` copies C's text, `bytes_from(p, n)` C's bytes.
+
+```gdscript
+@lib("libc.so.6")
+extern qsort = (base: *u8, n: int, size: int, cmp: cfn(*i32, *i32) -> i32)
+@lib("libc.so.6")
+extern strtol = (s: str, end: **u8, base: i32) -> int
+
+@cabi
+by_value = (a: *i32, b: *i32) -> i32: a[0] - b[0]
+
+xs: i32[] = [30, 10, 20]
+qsort(data(xs) as *u8, xs.len(), size_of(i32), by_value)
+print(xs)                                    # [10, 20, 30]
+
+end: *u8 = null
+n = strtol("42 apples", &end, 10)            # an out-parameter: &end
+print(n, str_from_c(end))                    # 42  apples
+
+p = data(xs)                                 # *i32: the first element
+p[1] = 99                                    # writes xs[1]
+q = p + 2                                    # two elements on, not two bytes
+print(xs, q[0], size_of(i32))
+```
+
+`@cabi` functions run on threads C makes (pthreads, a library's callbacks) only if they do not
+allocate (make strings, arrays or maps): the memory allocator is the program's own and is not
+shared with threads it did not start. For work on several threads, use `parallel_map` and the
+rest of [Parallelism](#11-parallelism).

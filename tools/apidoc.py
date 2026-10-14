@@ -30,6 +30,9 @@ TOPICS = [
     ("Data", "json", "JSON, CSV and base64", ["std/json", "std/csv", "std/base64"], "json",
      "`to_json(value)` and `from_json[T](text)` turn any value (a struct, an array, a map...) into JSON and back; "
      "`parse_json` reads JSON of any shape as a `Json` to look inside."),
+    ("Data", "bytes", "Bytes and bits", ["std/bytes"], "bytes",
+     "Whole numbers in byte arrays in either byte order (file formats, network messages), counting and "
+     "turning bits, and bytes from C. A float's bits: `f64_bits` and `f64_from_bits` (math)."),
     ("Data", "saving", "Saving, and values as text", ["std/save", "std/text"], "saving",
      "`save_value` and `load_value` keep any value (settings, a saved game) as text that reads back even "
      "after its structs gain or lose fields."),
