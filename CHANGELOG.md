@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `sloppy test`: a failing test says FAILED under its name, with why indented below it and
+  "in this test" for the test's own line (it said "panic:" and "the top level of").
+
 ## 0.13.0
 
 From a teacher preparing a first programming class:
