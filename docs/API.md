@@ -2854,7 +2854,7 @@ draw = ():
     physics.draw_debug(w)
 ```
 
-2D physics: rigid bodies that fall, collide, bounce, slide and stack, held together by pins, rods, ropes and springs. `import physics`, then:
+2D physics: rigid bodies that fall, collide, bounce, slide and stack, held together by pins, rods, ropes, springs, welds, sliders and wheels. `import physics`, then:
 
 ```gdscript
 w = physics.World()                                     # gravity down, in pixels (as drawing)
@@ -2867,7 +2867,7 @@ draw = ():
 
 Bodies are `.dynamic` (moved by forces and collisions), `.fixed` (never move: floors, walls) or `.moving` (moved only by the velocity the game gives them: platforms, doors). Each has one shape: a circle, a box or a convex polygon. A Body is a handle; ask the world about it (`w.pos(b)`, `w.angle(b)`, `w.velocity(b)`) and change it (`w.push(b, impulse)`).
 
-Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fixed distance; `spring = 4.0` makes it a spring of that many oscillations a second, `rope = true` lets it go slack), `w.drag(b, at)` and `w.drag_to(j, target)` (pulling a body by a point: the mouse). `physics.ground` is a fixed body to attach things to the world. Two bodies joined by a joint do not collide with each other (the links of a chain overlap where they are pinned).
+Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fixed distance; `spring = 4.0` makes it a spring of that many oscillations a second, `rope = true` lets it go slack), `w.weld(a, b, at)` (one piece), `w.slider(a, b, at, axis)` (along a line: a piston, a lift), `w.wheel(car, wheel, at)` (sprung, turning, with a motor), `w.drag(b, at)` and `w.drag_to(j, target)` (pulling a body by a point: the mouse). `physics.ground` is a fixed body to attach things to the world. Two bodies joined by a joint do not collide with each other (the links of a chain overlap where they are pinned).
 
 Each step is the same for the same inputs (a fixed internal step, a fixed order), so a game that steps it with a fixed dt can replay or roll back. Contacts: `w.contacts()` lists the pairs touching after the step (`.new` on the step they met, `.impulse` how hard), and sensors (`sensor = true`) report contacts without colliding: pickups, triggers. Collision layers: bodies a and b collide when a.layer & b.mask and b.layer & a.mask are not 0.
 
@@ -2959,8 +2959,12 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 #### Joints
 
 - `pin = (w: mut World, a: Body, b: Body, at: vec2, lower: f64 = -1e9, upper: f64 = 1e9, motor_speed: f64 = 0, max_torque: f64 = 0) -> Joint`: a hinge: a and b turn about the point at (in the world, now) lower, upper: how far b may turn against a (radians, from how they are now); motor_speed: b turned against a at that many radians a second, with up to max_torque (0: no motor)
-- `set_motor = (w: mut World, j: Joint, speed: f64, max_torque: f64)`: change a pin's motor: b turns against a at speed radians a second, with up to max_torque (0: no motor)
-- `set_limits = (w: mut World, j: Joint, lower: f64, upper: f64)`: change how far a pin lets b turn against a: from lower to upper radians
+- `weld = (w: mut World, a: Body, b: Body, at: vec2) -> Joint`: a and b held together at at, as one: neither moves or turns against the other (a joint that can be undone, unlike one body of both shapes)
+- `slider = (w: mut World, a: Body, b: Body, at: vec2, axis: vec2, lower: f64 = -1e9, upper: f64 = 1e9, motor_speed: f64 = 0, max_force: f64 = 0) -> Joint`: b slides against a along a line through at in the direction axis (in the world, now) and does not turn against it: a piston, a sliding door, a lift. lower, upper: how far b may go along the line from where it is now; motor_speed: driven along it at that many units a second, with up to max_force (0: no motor)
+- `wheel = (w: mut World, a: Body, b: Body, at: vec2, axis: vec2 = vec2(0, 1), spring: f64 = 4, damping: f64 = 0.7, motor_speed: f64 = 0, max_torque: f64 = 0) -> Joint`: a car's wheel: b (the wheel) held to a (the car) at at, free to move only along axis (the suspension, in the world, now: up and down by default) on a spring of that many oscillations a second (damping: 0 bounces on, 1 settles at once), and free to turn; motor_speed turns it at that many radians a second, with up to max_torque (0: it rolls freely)
+- `joint_translation = (w: World, j: Joint) -> f64`: how far b is along a slider's or wheel's line from where it started
+- `set_motor = (w: mut World, j: Joint, speed: f64, max_torque: f64)`: change a pin's or wheel's motor (b turns against a at speed radians a second, with up to max_torque), or a slider's (b moves along it at speed units a second, with up to max_torque as a force); 0: no motor
+- `set_limits = (w: mut World, j: Joint, lower: f64, upper: f64)`: change how far a pin lets b turn against a (from lower to upper radians), or a slider lets it move along its line
 - `joint_angle = (w: World, j: Joint) -> f64`: how far b has turned against a since the joint was made, in radians
 - `rod = (w: mut World, a: Body, b: Body, at_a: vec2, at_b: vec2, spring: f64 = 0, damping: f64 = 0.5, rope: bool = false) -> Joint`: the points at_a of a and at_b of b (in the world, now) kept as far apart as they are; with spring > 0 a spring of that many oscillations a second (damping: 0 bounces on, 1 settles at once); with rope, only as far apart at most
 - `drag = (w: mut World, b: Body, at: vec2, strength: f64 = 1000) -> Joint`: pulls the point at of b toward a target (drag_to), as a stiff spring: grabbing with the mouse

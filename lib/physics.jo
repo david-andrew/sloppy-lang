@@ -1,5 +1,5 @@
 # 2D physics: rigid bodies that fall, collide, bounce, slide and stack, held together by pins,
-# rods, ropes and springs. `import physics`, then:
+# rods, ropes, springs, welds, sliders and wheels. `import physics`, then:
 #
 #   w = physics.World()                                     # gravity down, in pixels (as drawing)
 #   floor = w.add_box(vec2(640, 700), vec2(1280, 40), kind = .fixed)
@@ -15,7 +15,9 @@
 #
 # Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fixed distance;
 # `spring = 4.0` makes it a spring of that many oscillations a second, `rope = true` lets it go
-# slack), `w.drag(b, at)` and `w.drag_to(j, target)` (pulling a body by a point: the mouse).
+# slack), `w.weld(a, b, at)` (one piece), `w.slider(a, b, at, axis)` (along a line: a piston, a
+# lift), `w.wheel(car, wheel, at)` (sprung, turning, with a motor), `w.drag(b, at)` and
+# `w.drag_to(j, target)` (pulling a body by a point: the mouse).
 # `physics.ground` is a fixed body to attach things to the world. Two bodies joined by a joint do
 # not collide with each other (the links of a chain overlap where they are pinned).
 #
@@ -110,7 +112,7 @@ struct __Arb:
 
 struct __PJoint:
     gen: int
-    kind: int               # 0 pin, 1 rod, 2 drag
+    kind: int               # 0 pin (or weld), 1 rod, 2 drag, 3 slider, 4 wheel
     a: int
     b: int
     la: vec2                # the anchors, in each body's own frame
@@ -134,7 +136,9 @@ struct __PJoint:
     acc_motor: f32
     acc_lower: f32
     acc_upper: f32
-    angle: f32              # (per step)
+    weld = false            # (a pin that does not turn either)
+    axis: vec2              # (a slider's or wheel's line, in a's frame)
+    angle: f32              # (per step; a slider's or wheel's: how far b is along the line)
     axial: f32
     # (per step)
     ra: vec2
@@ -147,6 +151,11 @@ struct __PJoint:
     u: vec2
     mass: f32
     bias1: f32
+    n: vec2                 # (a slider's or wheel's line across, and its turning arms)
+    s1: f32
+    s2: f32
+    a1: f32
+    a2: f32
 
 struct World:
     gravity = vec2(0, 980)
@@ -366,15 +375,53 @@ pin = (w: mut World, a: Body, b: Body, at: vec2, lower: f64 = -1e9, upper: f64 =
                         ref_angle = w.bodies[__id(w, b)].angle - w.bodies[a.id].angle, lower = f32(lower), upper = f32(upper),
                         motor_speed = f32(motor_speed), max_torque = f32(max_torque)))
 
-# change a pin's motor: b turns against a at speed radians a second, with up to max_torque (0: no motor)
+# a and b held together at at, as one: neither moves or turns against the other (a joint that
+# can be undone, unlike one body of both shapes)
+weld = (w: mut World, a: Body, b: Body, at: vec2) -> Joint:
+    __joint(w, __PJoint(kind = 0, weld = true, a = __id(w, a), b = __id(w, b), la = w.to_local(a, at), lb = w.to_local(b, at),
+                        ref_angle = w.bodies[__id(w, b)].angle - w.bodies[a.id].angle))
+
+# b slides against a along a line through at in the direction axis (in the world, now) and does
+# not turn against it: a piston, a sliding door, a lift. lower, upper: how far b may go along the
+# line from where it is now; motor_speed: driven along it at that many units a second, with up
+# to max_force (0: no motor)
+slider = (w: mut World, a: Body, b: Body, at: vec2, axis: vec2, lower: f64 = -1e9, upper: f64 = 1e9, motor_speed: f64 = 0, max_force: f64 = 0) -> Joint:
+    __joint(w, __PJoint(kind = 3, a = __id(w, a), b = __id(w, b), la = w.to_local(a, at), lb = w.to_local(b, at),
+                        axis = rotate(normalize(axis), -f64(w.bodies[a.id].angle)), ref_angle = w.bodies[__id(w, b)].angle - w.bodies[a.id].angle,
+                        lower = f32(lower), upper = f32(upper), motor_speed = f32(motor_speed), max_force = f32(max_force)))
+
+# a car's wheel: b (the wheel) held to a (the car) at at, free to move only along axis (the
+# suspension, in the world, now: up and down by default) on a spring of that many oscillations a
+# second (damping: 0 bounces on, 1 settles at once), and free to turn; motor_speed turns it at
+# that many radians a second, with up to max_torque (0: it rolls freely)
+wheel = (w: mut World, a: Body, b: Body, at: vec2, axis: vec2 = vec2(0, 1), spring: f64 = 4, damping: f64 = 0.7, motor_speed: f64 = 0, max_torque: f64 = 0) -> Joint:
+    __joint(w, __PJoint(kind = 4, a = __id(w, a), b = __id(w, b), la = w.to_local(a, at), lb = w.to_local(b, at),
+                        axis = rotate(normalize(axis), -f64(w.bodies[a.id].angle)), hz = f32(spring), damping = f32(damping),
+                        motor_speed = f32(motor_speed), max_torque = f32(max_torque)))
+
+# how far b is along a slider's or wheel's line from where it started
+joint_translation = (w: World, j: Joint) -> f64:
+    k = __jid(w, j)
+    if k < 0: return 0
+    jd = w.joints[k]
+    ba = w.bodies[jd.a]
+    bb = w.bodies[jd.b]
+    d = bb.pos + rotate(jd.lb, f64(bb.angle)) - ba.pos - rotate(jd.la, f64(ba.angle))
+    f64(dot(rotate(jd.axis, f64(ba.angle)), d))
+
+# change a pin's or wheel's motor (b turns against a at speed radians a second, with up to
+# max_torque), or a slider's (b moves along it at speed units a second, with up to max_torque
+# as a force); 0: no motor
 set_motor = (w: mut World, j: Joint, speed: f64, max_torque: f64):
     k = __jid(w, j)
     if k < 0: return
     w.joints[k].motor_speed = f32(speed)
-    w.joints[k].max_torque = f32(max_torque)
+    if w.joints[k].kind == 3: w.joints[k].max_force = f32(max_torque)
+    else: w.joints[k].max_torque = f32(max_torque)
     __wake(w, w.joints[k].a)
     __wake(w, w.joints[k].b)
-# change how far a pin lets b turn against a: from lower to upper radians
+# change how far a pin lets b turn against a (from lower to upper radians), or a slider lets it
+# move along its line
 set_limits = (w: mut World, j: Joint, lower: f64, upper: f64):
     k = __jid(w, j)
     if k < 0: return
@@ -900,6 +947,9 @@ __joint_prepare = (j: mut __PJoint, bs: mut __PBody[], h: f32):
             if k > 0.0: j.mass = 1.0 / k
         __apply(bs, j.a, j.b, j.ra, j.rb, j.u * j.acc1)
         return
+    if j.kind >= 3:
+        __line_prepare(j, bs, h)
+        return
     # a point: pin (two bodies) or drag (one, toward the target)
     k11 = ma + mb + ia * j.ra.y * j.ra.y + ib * j.rb.y * j.rb.y
     k12 = -ia * j.ra.x * j.ra.y - ib * j.rb.x * j.rb.y
@@ -932,14 +982,158 @@ __joint_prepare = (j: mut __PJoint, bs: mut __PBody[], h: f32):
         if j.max_torque <= 0.0: j.acc_motor = 0
         if j.lower < -1e8: j.acc_lower = 0
         if j.upper > 1e8: j.acc_upper = 0
-        t = j.acc_motor + j.acc_lower - j.acc_upper
+        if not j.weld: j.acc1 = 0
+        t = j.acc_motor + j.acc_lower - j.acc_upper + j.acc1
         bs[j.a].spin -= ia * t
         bs[j.b].spin += ib * t
+
+# a slider or wheel: b's anchor kept on the line through a's (across: n; along: u)
+__line_prepare = (j: mut __PJoint, bs: mut __PBody[], h: f32):
+    ma = bs[j.a].inv_mass
+    mb = bs[j.b].inv_mass
+    ia = bs[j.a].inv_inertia
+    ib = bs[j.b].inv_inertia
+    d = bs[j.b].pos + j.rb - bs[j.a].pos - j.ra
+    j.u = __rot(bs[j.a].rot, j.axis)
+    j.n = vec2(-j.u.y, j.u.x)
+    j.s1 = cross(d + j.ra, j.n)
+    j.s2 = cross(j.rb, j.n)
+    j.a1 = cross(d + j.ra, j.u)
+    j.a2 = cross(j.rb, j.u)
+    k = ma + mb + ia * j.s1 * j.s1 + ib * j.s2 * j.s2
+    j.mass = 0
+    if k > 0.0: j.mass = 1.0 / k
+    ka = ma + mb + ia * j.a1 * j.a1 + ib * j.a2 * j.a2
+    j.m11 = 0
+    if ka > 0.0: j.m11 = 1.0 / ka
+    j.axial = 0
+    if ia + ib > 0.0: j.axial = 1.0 / (ia + ib)
+    j.angle = dot(j.u, d)
+    # (a wheel's spring, along the line)
+    j.gamma = 0
+    j.bias1 = 0
+    j.m22 = 0
+    if j.kind == 4 and j.hz > 0.0 and j.m11 > 0.0:
+        om = 2.0 * f32(PI) * j.hz
+        sk = j.m11 * om * om
+        sd = 2.0 * j.m11 * j.damping * om
+        j.gamma = 1.0 / (h * (sd + h * sk))
+        j.bias1 = j.angle * h * sk * j.gamma
+        j.m22 = 1.0 / (ka + j.gamma)
+    else: j.acc.x = 0
+    if j.kind == 3:
+        if j.max_force <= 0.0: j.acc_motor = 0
+        if j.lower < -1e8: j.acc_lower = 0
+        if j.upper > 1e8: j.acc_upper = 0
+    else:
+        if j.max_torque <= 0.0: j.acc_motor = 0
+        j.acc_lower = 0
+        j.acc_upper = 0
+        j.acc.y = 0
+    # (warm started)
+    along = j.acc.x + j.acc_lower - j.acc_upper
+    if j.kind == 3: along += j.acc_motor
+    __line_apply(bs, j, j.n, j.s1, j.s2, j.acc1)
+    __line_apply(bs, j, j.u, j.a1, j.a2, along)
+    turn = j.acc.y
+    if j.kind == 4: turn = j.acc_motor
+    bs[j.a].spin -= ia * turn
+    bs[j.b].spin += ib * turn
+
+# an impulse imp along dir (with its turning arms on a and b)
+__line_apply = (bs: mut __PBody[], j: __PJoint, dir: vec2, la: f32, lb: f32, imp: f32):
+    bs[j.a].vel -= dir * (imp * bs[j.a].inv_mass)
+    bs[j.a].spin -= la * imp * bs[j.a].inv_inertia
+    bs[j.b].vel += dir * (imp * bs[j.b].inv_mass)
+    bs[j.b].spin += lb * imp * bs[j.b].inv_inertia
+
+# how fast b moves along dir against a
+__line_speed = (bs: __PBody[], j: __PJoint, dir: vec2, la: f32, lb: f32) -> f32:
+    dot(dir, bs[j.b].vel - bs[j.a].vel) + lb * bs[j.b].spin - la * bs[j.a].spin
+
+__line_solve = (j: mut __PJoint, bs: mut __PBody[], h: f32):
+    ia = bs[j.a].inv_inertia
+    ib = bs[j.b].inv_inertia
+    if j.kind == 4:
+        if j.m22 > 0.0:
+            imp = -j.m22 * (__line_speed(bs, j, j.u, j.a1, j.a2) + j.bias1 + j.gamma * j.acc.x)
+            j.acc.x += imp
+            __line_apply(bs, j, j.u, j.a1, j.a2, imp)
+        if j.max_torque > 0.0:
+            old = j.acc_motor
+            j.acc_motor = clamp(old - j.axial * (bs[j.b].spin - bs[j.a].spin - j.motor_speed), -j.max_torque * h, j.max_torque * h)
+            imp = j.acc_motor - old
+            bs[j.a].spin -= ia * imp
+            bs[j.b].spin += ib * imp
+    else:
+        if j.max_force > 0.0:
+            old = j.acc_motor
+            j.acc_motor = clamp(old - j.m11 * (__line_speed(bs, j, j.u, j.a1, j.a2) - j.motor_speed), -j.max_force * h, j.max_force * h)
+            __line_apply(bs, j, j.u, j.a1, j.a2, j.acc_motor - old)
+        if j.lower > -1e8:
+            c = j.angle - j.lower
+            bias = c / h
+            if c < 0.0: bias = 0
+            old = j.acc_lower
+            j.acc_lower = max(old - j.m11 * (__line_speed(bs, j, j.u, j.a1, j.a2) + bias), 0.0)
+            __line_apply(bs, j, j.u, j.a1, j.a2, j.acc_lower - old)
+        if j.upper < 1e8:
+            c = j.upper - j.angle
+            bias = c / h
+            if c < 0.0: bias = 0
+            old = j.acc_upper
+            j.acc_upper = max(old - j.m11 * (-__line_speed(bs, j, j.u, j.a1, j.a2) + bias), 0.0)
+            __line_apply(bs, j, j.u, j.a1, j.a2, -(j.acc_upper - old))
+        if j.axial > 0.0:
+            imp = -j.axial * (bs[j.b].spin - bs[j.a].spin)
+            j.acc.y += imp
+            bs[j.a].spin -= ia * imp
+            bs[j.b].spin += ib * imp
+    if j.mass > 0.0:
+        imp = -j.mass * __line_speed(bs, j, j.n, j.s1, j.s2)
+        j.acc1 += imp
+        __line_apply(bs, j, j.n, j.s1, j.s2, imp)
+
+# a slider's or wheel's anchor moved back onto its line (and a slider's turning and limits)
+__line_position = (j: mut __PJoint, bs: mut __PBody[]):
+    ma = bs[j.a].inv_mass
+    mb = bs[j.b].inv_mass
+    ia = bs[j.a].inv_inertia
+    ib = bs[j.b].inv_inertia
+    if j.kind == 3 and ia + ib > 0.0:
+        c = bs[j.b].angle - bs[j.a].angle - j.ref_angle
+        imp = -c / (ia + ib)
+        bs[j.a].angle -= ia * imp
+        bs[j.b].angle += ib * imp
+    rta = vec2(f32(cos(f64(bs[j.a].angle))), f32(sin(f64(bs[j.a].angle))))
+    ra = __rot(rta, j.la)
+    rb = __rot(vec2(f32(cos(f64(bs[j.b].angle))), f32(sin(f64(bs[j.b].angle)))), j.lb)
+    d = bs[j.b].pos + rb - bs[j.a].pos - ra
+    u = __rot(rta, j.axis)
+    n = vec2(-u.y, u.x)
+    __line_push(bs, j, n, cross(d + ra, n), cross(rb, n), clamp(dot(n, d), -20.0, 20.0))
+    if j.kind == 3:
+        t = dot(u, d)
+        if t < j.lower: __line_push(bs, j, u, cross(d + ra, u), cross(rb, u), max(t - j.lower, -20.0))
+        else if t > j.upper: __line_push(bs, j, u, cross(d + ra, u), cross(rb, u), min(t - j.upper, 20.0))
+
+# move the bodies (as much as their masses say) to take c out of b's place along dir
+__line_push = (bs: mut __PBody[], j: __PJoint, dir: vec2, la: f32, lb: f32, c: f32):
+    k = bs[j.a].inv_mass + bs[j.b].inv_mass + bs[j.a].inv_inertia * la * la + bs[j.b].inv_inertia * lb * lb
+    if k <= 0.0 or c == 0.0: return
+    imp = -c / k
+    bs[j.a].pos -= dir * (imp * bs[j.a].inv_mass)
+    bs[j.a].angle -= la * imp * bs[j.a].inv_inertia
+    bs[j.b].pos += dir * (imp * bs[j.b].inv_mass)
+    bs[j.b].angle += lb * imp * bs[j.b].inv_inertia
 
 # a pin's two points brought together, a rigid rod's to its length, by moving the bodies (as
 # much as their masses say)
 __joint_position = (j: mut __PJoint, bs: mut __PBody[]):
     if j.kind == 2 or (j.kind == 1 and (j.hz > 0.0 or j.rope)): return
+    if j.kind >= 3:
+        __line_position(j, bs)
+        return
     ma = bs[j.a].inv_mass
     mb = bs[j.b].inv_mass
     ia = bs[j.a].inv_inertia
@@ -972,11 +1166,21 @@ __joint_position = (j: mut __PJoint, bs: mut __PBody[]):
     bs[j.a].angle -= cross(ra, p) * ia
     bs[j.b].pos += p * mb
     bs[j.b].angle += cross(rb, p) * ib
+    if j.weld and ia + ib > 0.0:
+        c = bs[j.b].angle - bs[j.a].angle - j.ref_angle
+        bs[j.a].angle += ia * c / (ia + ib)
+        bs[j.b].angle -= ib * c / (ia + ib)
 
 # a pin's motor and limits: on the turning of b against a
 __pin_turning = (j: mut __PJoint, bs: mut __PBody[], h: f32):
     ia = bs[j.a].inv_inertia
     ib = bs[j.b].inv_inertia
+    if j.weld:
+        imp = -j.axial * (bs[j.b].spin - bs[j.a].spin)
+        j.acc1 += imp
+        bs[j.a].spin -= ia * imp
+        bs[j.b].spin += ib * imp
+        return
     if j.max_torque > 0.0:
         cdot = bs[j.b].spin - bs[j.a].spin - j.motor_speed
         old = j.acc_motor
@@ -1017,6 +1221,9 @@ __joint_solve = (j: mut __PJoint, bs: mut __PBody[], h: f32):
             imp = j.acc1 - a0
         else: j.acc1 += imp
         __apply(bs, j.a, j.b, j.ra, j.rb, j.u * imp)
+        return
+    if j.kind >= 3:
+        __line_solve(j, bs, h)
         return
     if j.kind == 0 and j.axial > 0.0: __pin_turning(j, bs, h)
     r = -(__rel_vel(bs, j) + j.bias + j.acc * j.gamma)

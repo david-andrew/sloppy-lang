@@ -13,6 +13,9 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- 2D physics: `weld` (two bodies as one), `slider` (along a line, with limits and a motor: a
+  piston, a lift) and `wheel` (a car's: sprung along its suspension, turning, with a motor);
+  `joint_translation`; `set_motor` and `set_limits` work on sliders too.
 - A web build warns where the program calls what does nothing in a browser (`net.udp`,
   `net.listen`, `tcp_connect`, `tcp_listen`: library functions marked `@no_web("why")`).
 - `clip(pos, size)` shows 2D drawing only inside a rectangle until `no_clip()` (LÖVE's
