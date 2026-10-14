@@ -13,6 +13,11 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `random()` outside parallel code gives the same numbers whether or not a parallel job ran
+  (the threads' generators come from the seed, and the main thread uses its own while it helps
+  with a job; the software renderer's jobs had moved Rebound's turrets). `x ^ 2.0` is `x * x`
+  (3x faster for `xs .^ 2`). `xs * 2.0`, `xs + 1.0`, `xs < 2.0` and `xs ^ 2` on number arrays
+  point to `.*`, `.+`, `.<` and `.^`.
 - From a LÖVE-developer pass: `update = (dt):` with dt untyped works (the compiler panicked);
   `[Kind.a, .b]` takes the enum from its first element (also as a generic function's argument);
   an `if` choice in a string's braces (`"{if w: 'x' else: 'y'}"`); messages for `#xs`, `..` on

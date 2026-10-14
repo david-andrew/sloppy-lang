@@ -1025,6 +1025,10 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
         # (atomic_add(&x, 1): the atomics are for GPU buffers)
         if starts_with(name_of(name), "atomic_") and args.len() > 0 and nodes[unnamed(args[0])].type != 0 and tkind(ntype(unnamed(args[0]))) == .ptr:
             fatal(nodes[n].pos, "{name_of(name)} changes an element of a GpuBuffer in a compute function; threads on the CPU do not share variables: parallel_map gives each one's result back")
+        # (xs ^ 2 on an array: the power of each element is .^)
+        if name_of(name) == "pow" and args.len() == 2 and nodes[unnamed(args[0])].type != 0:
+            t0 = prune(ntype(unnamed(args[0])))
+            if types[t0].kind == .array and is_numeric(int(types[t0].elem)): fatal(nodes[n].pos, "^ is not defined for {type_str(t0)} (for each element: .^, as in xs .^ 2)")
         # (xs.size() and the like: a name that means something else here)
         hh = habit_name(name_of(name))
         if len(hh) > 0 and args.len() > 0 and nodes[unnamed(args[0])].type != 0:
@@ -2497,6 +2501,8 @@ check_binary = (n: int, expected: int) -> int:
         nodes[n].type = i32(T_STR)
         return T_STR
     if op == .plus and tka == .array:
+        if tkb != .array and is_numeric(int(types[ta].elem)) and (is_numeric(tb) or is_lit(b)):
+            fatal(nodes[n].pos, "+ joins two arrays; to add {type_str(tb)} to each element, use .+ (xs .+ 1.0)")
         coerce(b, ta)
         nodes[n].aux = 3
         nodes[n].type = i32(ta)
@@ -2531,7 +2537,12 @@ check_binary = (n: int, expected: int) -> int:
             nodes[n].type = i32(T_BOOL)
             return T_BOOL
         if tka == .array or tkb == .array:
-            if op != .eq and op != .ne: fatal(nodes[n].pos, "arrays can only be compared with == and !=")
+            if op != .eq and op != .ne:
+                why = ""
+                if (tka == .array and is_numeric(int(types[ta].elem))) or (tkb == .array and is_numeric(int(types[tb].elem))): why = " (for each element: .{tok_text(op)}, as in xs .{tok_text(op)} 2.0, gives bool[])"
+                fatal(nodes[n].pos, "arrays can only be compared with == and !={why}")
+            if not can_coerce(b, tb, ta) and tkb != .array and tka == .array and is_numeric(int(types[ta].elem)) and (is_numeric(tb) or is_lit(b)):
+                fatal(nodes[n].pos, "an array compared with {type_str(tb)}: for each element use .{tok_text(op)} (xs .{tok_text(op)} 2.0 gives bool[])")
             if not can_coerce(b, tb, ta): cmp_error(n, ta, tb)
             coerce(b, ta)
             nodes[n].aux = 1
@@ -2561,7 +2572,11 @@ check_binary = (n: int, expected: int) -> int:
         if tka == .opt and is_numeric(int(types[ta].elem)): fatal(nodes[n].pos, "operator {tok_text(op)} on an optional value: unwrap it first with `x!` or `x ?? default`")
         why = ""
         if is_union(ta) or is_union(tb): why = " (find out which it holds first: `if x is int: ...` or a `match`)"
-        if tka == .array and is_int(tb) and op == .star: why = " (fill(x, n) makes an array of n copies of x)"
+        if tka == .array and is_int(tb) and op == .star:
+            why = " (fill(x, n) makes an array of n copies of x)"
+            if is_numeric(int(types[ta].elem)): why = " (fill(x, n) makes an array of n copies of x; xs .* n multiplies each element)"
+        else if (tka == .array and is_numeric(int(types[ta].elem))) or (tkb == .array and is_numeric(int(types[tb].elem))):
+            if op == .plus or op == .minus or op == .star or op == .slash or op == .percent: why = " (for each element: .{tok_text(op)}, as in xs .{tok_text(op)} 2.0)"
         if len(why) == 0: why = void_rec_hint(a) + void_rec_hint(b)
         fatal(nodes[n].pos, "operator {tok_text(op)} is not defined for {type_str(ta)} and {type_str(tb)}{why}")
     if is_lit(a) and is_lit(b) and not is_cmp:

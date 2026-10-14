@@ -345,6 +345,7 @@ log10 = (x: f64) -> f64: log(x) / 2.302585092994046
 
 # x to the power y, within an ulp (fdlibm's: log2(x) in extra precision, times y, then 2 to that)
 pow = (x: f64, y: f64) -> f64:
+    if y == 2.0: return x * x           # (the common square, as exact and much faster)
     hx = __hi(x)
     lx = __lo(x)
     hy = __hi(y)
@@ -683,11 +684,12 @@ seed_random = (seed: int):
     __global_rng = rng(seed)
     __thread_rngs.clear()
 
-# (parallel code: each worker thread draws from a generator of its own, made from the seed when
-# a parallel job first starts, so the main thread's numbers stay the same whatever runs in
-# parallel; theirs depend on which thread does what, so for the same ones each run, give each
-# piece of work its own: rng(seed + k))
+# (parallel code: each thread draws from a generator of its own, made from the seed when a
+# parallel job first starts, so the numbers outside parallel code stay the same whatever ran in
+# it; the ones inside depend on which thread does what, so for the same ones each run, give
+# each piece of work its own: rng(seed + k))
 __thread_rngs: Rng[]
+__rng_in_job = false
 __rng_threads = ():
     if __thread_rngs.len() > 0: return
     if not __rng_ready: __rng_start()
@@ -698,7 +700,7 @@ __rng_threads = ():
 # random f64 in [0, 1)
 random = () -> f64:
     t = __tid()
-    if t != 0 and t * 4 < __thread_rngs.len(): return next_float(__thread_rngs[t * 4])
+    if (t != 0 or __rng_in_job) and t * 4 < __thread_rngs.len(): return next_float(__thread_rngs[t * 4])
     if not __rng_ready: __rng_start()
     next_float(__global_rng)
 # random f64 in [lo, hi)
@@ -706,7 +708,7 @@ random = (lo: f64, hi: f64) -> f64: lo + (hi - lo) * random()
 # random int in [lo, hi)
 random_int = (lo: int, hi: int) -> int:
     t = __tid()
-    if t != 0 and t * 4 < __thread_rngs.len(): return next_int(__thread_rngs[t * 4], lo, hi)
+    if (t != 0 or __rng_in_job) and t * 4 < __thread_rngs.len(): return next_int(__thread_rngs[t * 4], lo, hi)
     if not __rng_ready: __rng_start()
     next_int(__global_rng, lo, hi)
 # a random element of xs (which must not be empty)
