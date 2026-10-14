@@ -355,8 +355,64 @@ __read_fd = (fd: int, p: *u8, n: int) -> int:
     else:
         syscall(0, fd, p, n)
 
-__write_err = (s: str): __write_fd(2, data(s), len(s))
+# Standard output: straight to a terminal (each print at once, one write), collected in a buffer
+# when it goes to a file or a pipe (much faster for many lines). The buffer is emptied before
+# anything goes to standard error (so the two keep their order), before reading input, once a
+# frame in a game, when a program sleeps or ends, and when it fills.
+__obuf: *u8 = null
+__olen = 0
+__omode = 0                     # 0: not known yet, 1: a terminal (or the web), 2: buffered
+__out_direct = false            # (threads running: each print written at once)
+const __OCAP = 65536
 
+@noinline
+__out = (p: *u8, n: int, line_end: bool):
+    # (the web's console takes lines itself; the C bootstrap's programs end without a flush)
+    when TARGET == "wasm" or BOOTSTRAP:
+        __write_fd(1, p, n)
+        return
+    else:
+        if __omode == 0:
+            __omode = 2
+            if __stdout_tty(): __omode = 1
+        if __out_direct:
+            __write_fd(1, p, n)
+            return
+        if __obuf == null: __obuf = __os_raw_pages(__OCAP)          # (outside what alloc_count counts)
+        if __olen + n > __OCAP: __out_flush()
+        if n >= __OCAP:
+            __write_fd(1, p, n)
+            return
+        mem_copy(__obuf + __olen, p, n)
+        __olen += n
+        if __omode == 1 and line_end: __out_flush()
+
+@noinline
+__out_flush = ():
+    when TARGET != "wasm":
+        if __olen > 0:
+            n = __olen
+            __olen = 0
+            __write_fd(1, __obuf, n)
+
+__stdout_tty = () -> bool:
+    when TARGET == "windows":
+        return __w32_stdout_console()
+    else when TARGET == "macos":
+        return __mac_isatty(i32(1)) == 1
+    else when TARGET == "wasm":
+        return true
+    else:
+        # (TCGETS writes what it knows of the terminal: into the buffer, not wanted yet)
+        if __obuf == null: __obuf = __os_raw_pages(__OCAP)
+        syscall(16, 1, 0x5401, __obuf) == 0
+
+@noinline
+__write_err = (s: str):
+    __out_flush()
+    __write_fd(2, data(s), len(s))
+
+# (a leaf, which inlining counts on: exit() and panics write out what print collected first)
 __exit = (code: int):
     when TARGET == "wasm":
         __wasm_exit(code)
@@ -398,8 +454,8 @@ __assert_fail = (msg: str, loc: str):
     __panic("{loc}: {msg}")
 
 __print_str = (s: str):
-    __write_fd(1, data(s), len(s))
-    __write_fd(1, data("\n"), 1)
+    __out(data(s), len(s), false)
+    __out(data("\n"), 1, true)
 
 # ---------------- arrays ----------------
 # (an array's elements past its length are not zeroed: whatever makes the array longer writes

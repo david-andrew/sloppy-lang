@@ -1588,6 +1588,8 @@ cmp_error = (n: int, ta: int, tb: int):
     if tkind(ta) == .bool_ and is_numeric(tb) and nodes[a].kind == .binary:
         aop = nodes[a].op as Tok
         if aop == .lt or aop == .le or aop == .gt or aop == .ge: why = " (`a < x < b` is written `a < x and x < b`, or `x in a..b`)"
+    if len(why) == 0 and is_union(prune(ta)) and union_index(prune(ta), prune(tb)) >= 0:
+        why = " (find out which it holds first: `x is {type_str(tb)} and x == value`)"
     if len(why) == 0 and tkind(ta) == .opt and type_eq(prune(int(types[prune(ta)].elem)), prune(tb)):
         # (env("X") != "": the optional may be none)
         why = " (it may be none: `(x ?? default) == value` compares its value, or a default when there is none; `if let v = x:` names the value)"
@@ -3346,13 +3348,18 @@ check_expr = (n: int, expected: int) -> int:
         if (fk == .ptr or fk == .int_ or fk == .null_ or fk == .cfn) and (tk == .ptr or tk == .int_ or tk == .cfn): ok = true
         if (fk == .int_ or fk == .float_) and (tk == .int_ or tk == .float_):
             ok = tsize(ft) == tsize(tt) or (fk == .int_ and tk == .int_)
-        if fk == .enum_ and tk == .int_: ok = true
-        if fk == .int_ and tk == .enum_: ok = true
+        if fk == .enum_ and not is_union(ft) and tk == .int_: ok = true
+        if fk == .int_ and tk == .enum_ and not is_union(tt): ok = true
         if fk == .bool_ and tk == .int_: ok = true
-        if fk == .str_ and tk == .ptr: ok = true
-        if fk == .array and tk == .ptr: ok = true
+        if (fk == .str_ or fk == .array) and tk == .ptr:
+            # (the runtime's: the header; a program means the bytes, which data(x) gives)
+            if not pos_in_lib(nodes[n].pos): fatal(nodes[n].pos, "`x as {type_str(tt)}` would be where the {type_str(ft)}'s header is, not its contents: `data(x)` is a pointer to its first element (what C wants; a str's bytes end with a 0)")
+            ok = true
         if fk == .ptr and (tk == .str_ or tk == .array): ok = true
-        if not ok: fatal(nodes[n].pos, "cannot cast {type_str(ft)} to {type_str(tt)}")
+        if not ok:
+            why = ""
+            if is_union(ft) and union_index(ft, tt) >= 0: why = " (a union is not cast: after `if x is {type_str(tt)}:` (or in `x is {type_str(tt)} and ...`), x is one)"
+            fatal(nodes[n].pos, "cannot cast {type_str(ft)} to {type_str(tt)}{why}")
         t = tt
     else if k == .range: return check_range_value(n, expected)
     else if k == .addr:

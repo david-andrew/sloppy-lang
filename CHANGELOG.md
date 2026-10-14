@@ -9,6 +9,20 @@ Compiling:
   the same bytes as before. 10% off building bench/big.jo and the compiler on a busy 8-core
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
+Language and library:
+- Fixed: `assert(ok, "x is {x}")` (a message with something in it) crashed in debug builds when
+  `ok` was true.
+- `print` and `write` to a file or a pipe are collected and written in large pieces (a million
+  lines: 0.25 s, 12 times faster); to a terminal each line goes at once, in one write. Standard
+  error, reading input, each frame of a game, `sleep` and the program's end write out what was
+  collected first; `flush_output()` does it by hand. `is_terminal()` says where output goes.
+- `is_dir(path)` and `file_size(path)`; `read_file` of a directory is none (it was "").
+- `exit(code)` ends narrowing as `return` does (`if r is int: exit(r)`, then `r` is the rest).
+- Errors: casting a union (`x as int` on an `int | str` gave its bits; `is` narrows), and
+  `s as *u8` on a string or an array (it gave the header's address; `data(s)` is what C wants);
+  hints for comparing a union with one of its members.
+- `@noinline`: release builds call the function rather than copy it into its callers.
+
 Games:
 - Gamepads on macOS, through Apple's GameController framework (Xbox, PlayStation, Switch Pro
   and MFi controllers), with the same layout and functions as elsewhere.

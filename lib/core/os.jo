@@ -1,6 +1,8 @@
 # Operating system access: files, arguments, environment, time.
 
-exit = (code: int): __exit(code)
+exit = (code: int):
+    __out_flush()
+    __exit(code)
 
 # command line arguments (args()[0] is the program path)
 args = () -> str[]:
@@ -73,7 +75,7 @@ __zstr = (s: str) -> str:
     if len(s) == 0: return "\0"
     s
 
-# read a whole file; none if it cannot be read
+# read a whole file; none if it cannot be read (or is a directory)
 read_file = (path: str) -> str?:
     when TARGET == "wasm":
         if not __wasm_has(path): return none
@@ -91,6 +93,7 @@ read_file = (path: str) -> str?:
             chunk = fill(u8(0), 65536)
             loop:
                 r = syscall(0, fd, data(chunk), chunk.len())
+                if r == -21: return none
                 if r <= 0: break
                 loop i in [0..r): out.push(chunk[i])      # (not extend: the C bootstrap compiles this)
             return str_from_bytes(out)
@@ -99,6 +102,7 @@ read_file = (path: str) -> str?:
         got = 0
         loop got < size:
             r = syscall(0, fd, p + 24 + got, size - got)
+            if r == -21: return none                  # (EISDIR: a directory)
             if r <= 0: break
             got += r
         (p as *int)[1] = got
@@ -109,6 +113,7 @@ __stdin_pos = 0
 
 # a line typed in (or piped in), without its end; none when the input has ended
 read_line = () -> str?:
+    __out_flush()                   # (a prompt printed before, shown first)
     line: u8[]
     got = false
     loop:
@@ -132,6 +137,7 @@ read_line = () -> str?:
 
 # all of standard input (what is piped in), until it ends
 read_stdin = () -> str:
+    __out_flush()
     out: u8[]
     loop i in [__stdin_pos..__stdin_buf.len()): out.push(__stdin_buf[i])
     __stdin_buf.clear()
@@ -165,6 +171,39 @@ write_file = (path: str, contents: str) -> bool:
         true
 
 write_bytes = (path: str, b: u8[]) -> bool: write_file(path, str_from_bytes(b))
+
+# a directory (and not a file)
+is_dir = (path: str) -> bool:
+    when TARGET == "wasm":
+        return false
+    else when TARGET == "windows":
+        return __w32_is_dir(path)
+    else:
+        fd = syscall(2, data(__zstr(path)), 0, 0)
+        if fd < 0: return false
+        b = [u8(0)]
+        r = syscall(0, fd, data(b), 0)
+        if r == 0: r = syscall(0, fd, data(b), 1)
+        syscall(3, fd)
+        r == -21                                      # (EISDIR)
+
+# a file's size in bytes; none if it cannot be opened (or is a directory)
+file_size = (path: str) -> int?:
+    when TARGET == "wasm":
+        if let s = read_file(path): return len(s)
+        return none
+    else when TARGET == "windows":
+        if __w32_is_dir(path): return none
+        if let s = read_file(path): return len(s)
+        return none
+    else:
+        if is_dir(path): return none
+        fd = syscall(2, data(__zstr(path)), 0, 0)
+        if fd < 0: return none
+        n = syscall(8, fd, 0, 2)
+        syscall(3, fd)
+        if n < 0: return none
+        n
 
 file_exists = (path: str) -> bool:
     when TARGET == "wasm":
@@ -213,6 +252,7 @@ time_ns = () -> int:
         ts.0 * 1000000000 + ts.1
 
 sleep = (seconds: f64):
+    __out_flush()
     when TARGET == "windows":
         __w32_sleep(seconds)
     else when TARGET != "wasm":
@@ -220,8 +260,16 @@ sleep = (seconds: f64):
         syscall(35, &ts, 0)
 
 # print without a trailing newline
-write = (s: str): __write_fd(1, data(s), len(s))
+write = (s: str): __out(data(s), len(s), true)
+
+# what print and write gave so far, written out now (output to a file or a pipe is collected
+# and written in large pieces; to a terminal it goes at once anyway)
+flush_output = (): __out_flush()
+
+# standard output is a terminal (not a file or a pipe)
+is_terminal = () -> bool: __stdout_tty()
 eprint = (s: str):
+    __out_flush()
     __write_fd(2, data(s), len(s))
     __write_fd(2, data("\n"), 1)
 

@@ -371,12 +371,14 @@ Operating system access: files, arguments, environment, time.
 - `exit = (code: int)`
 - `args = () -> str[]`: command line arguments (args()[0] is the program path)
 - `env = (name: str) -> str?`: an environment variable (in a web page: the page's URL parameter of that name, where `SLOPPY_X` may also be written `x`, and a bare `?x` is "1")
-- `read_file = (path: str) -> str?`: read a whole file; none if it cannot be read
+- `read_file = (path: str) -> str?`: read a whole file; none if it cannot be read (or is a directory)
 - `read_line = () -> str?`: a line typed in (or piped in), without its end; none when the input has ended
 - `read_stdin = () -> str`: all of standard input (what is piped in), until it ends
 - `read_bytes = (path: str) -> u8[]?`
 - `write_file = (path: str, contents: str) -> bool`
 - `write_bytes = (path: str, b: u8[]) -> bool`
+- `is_dir = (path: str) -> bool`: a directory (and not a file)
+- `file_size = (path: str) -> int?`: a file's size in bytes; none if it cannot be opened (or is a directory)
 - `file_exists = (path: str) -> bool`
 - `make_executable = (path: str) -> bool`
 - `delete_file = (path: str) -> bool`
@@ -384,6 +386,8 @@ Operating system access: files, arguments, environment, time.
 - `time_ns = () -> int`: nanoseconds since an arbitrary point (monotonic clock)
 - `sleep = (seconds: f64)`
 - `write = (s: str)`: print without a trailing newline
+- `flush_output = ()`: what print and write gave so far, written out now (output to a file or a pipe is collected and written in large pieces; to a terminal it goes at once anyway)
+- `is_terminal = () -> bool`: standard output is a terminal (not a file or a pipe)
 - `eprint = (s: str)`
 - `list_dir = (path: str) -> str[]`: names of the entries in a directory (excluding . and ..)
 - `exe_path = () -> str`: absolute path of the running executable
