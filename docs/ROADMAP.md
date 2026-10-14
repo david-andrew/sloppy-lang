@@ -152,6 +152,14 @@ game picks from (and an example of each):
 - A serializer (structs to text and back) for saves and settings: done (`save_value`,
   `load_value`, `to_text`, `from_text`).
 
+## Tools that make things without code (later)
+
+If there is ever a visual editor (a UI builder, a level or scene editor), what it makes is a
+program file and nothing else: dragging a button in the editor writes the code that makes that
+button, editing the code moves it in the editor, and running the file alone makes the same
+thing (as MATLAB's App Designer works from a class file). Nothing it knows is kept anywhere the
+code does not show.
+
 ## Language (ongoing, kept small)
 
 Fill the gaps real programs hit, nothing speculative:

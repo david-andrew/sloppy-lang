@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Rebound: choosing an upgrade with the mouse no longer turns the shield toward the card (it
+  stays where it was until the pointer moves), and the arena waits half a second, the shield
+  free to turn, before the bolts move on.
+
 From a performance-minded C programmer:
 - `sloppy check` lowers the program too (without making code), so it finds what a build would:
   a `loop mut` that resizes its array, data races, shader errors (it passed such programs).
