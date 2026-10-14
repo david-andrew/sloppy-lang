@@ -3000,6 +3000,15 @@ Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the gam
 - `contacts = (w: World) -> Contact[]`
 - `contacts = (w: World, b: Body) -> Contact[]`
 
+#### Overlaps
+
+- `overlap_sphere = (w: World, center: vec3, radius: f64, mask: int = -1) -> Body[]`: the bodies (sensors too) a sphere, a box or a character overlaps: the trigger zones and pickups a character is in (it is not a body, so it makes no contacts), what an explosion reaches
+  ```gdscript
+  loop b in w.overlaps(hero): if w.tag(b) == COIN: w.remove(b)
+  ```
+- `overlap_box = (w: World, center: vec3, size: vec3, rot: vec4 = vec4(0, 0, 0, 1), mask: int = -1) -> Body[]`
+- `overlaps = (w: World, c: Character) -> Body[]`
+
 #### Rays
 
 - `raycast = (w: World, a: vec3, b: vec3, mask: int = -1) -> Hit?`: the first body a ray from a to b meets (only those whose layer & mask is not 0; sensors are passed through)
@@ -3016,6 +3025,7 @@ Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the gam
       velocity: vec3                  # as it moves (falling builds up here)
       on_ground = false
       ground_normal = vec3(0, 1, 0)
+      standing_on = Body(0, 0)        # the body it stands on (a moving platform carries it)
       max_slope = 50deg
       step = 0.35
       layer = 1

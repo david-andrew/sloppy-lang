@@ -624,10 +624,13 @@ __collide3 = (w: mut World):
             # (two at rest, or at rest against something fixed: nothing to do)
             ai = __active(bs[i])
             aj = __active(bs[j])
-            if not ai and not aj: continue
+            # (a sensor keeps seeing what sleeps in it, and does not wake it)
+            sensor = bs[i].sensor or bs[j].sensor
+            if not ai and not aj and not sensor: continue
             if bs[i].layer & bs[j].mask == 0 or bs[j].layer & bs[i].mask == 0: continue
-            if bs[i].asleep: wake.push(i)
-            if bs[j].asleep: wake.push(j)
+            if not sensor:
+                if bs[i].asleep: wake.push(i)
+                if bs[j].asleep: wake.push(j)
             pairs.push(min(i, j) * 1000003 + max(i, j))
     loop i in wake: __wake(w, i)
     pairs.sort()
@@ -1311,6 +1314,32 @@ __j3_solve = (j: mut __J3, bs: mut __B3[]):
             bs[j.a].spin -= __mv(bs[j.a].iw, d * imp)
             bs[j.b].spin += __mv(bs[j.b].iw, d * imp)
 
+# ---------------- overlaps ----------------
+# the bodies (sensors too) a sphere, a box or a character overlaps: the trigger zones and pickups
+# a character is in (it is not a body, so it makes no contacts), what an explosion reaches
+#   loop b in w.overlaps(hero): if w.tag(b) == COIN: w.remove(b)
+overlap_sphere = (w: World, center: vec3, radius: f64, mask: int = -1) -> Body[]:
+    __overlap(w, __B3(shape = 0, pos = center, radius = f32(radius)), mask)
+overlap_box = (w: World, center: vec3, size: vec3, rot: vec4 = vec4(0, 0, 0, 1), mask: int = -1) -> Body[]:
+    __overlap(w, __B3(shape = 1, pos = center, rot = normalize(rot), half = size * 0.5), mask)
+overlaps = (w: World, c: Character) -> Body[]:
+    hh = max(c.height / 2.0 - c.radius, 0.0)
+    __overlap(w, __B3(shape = 2, pos = c.feet + vec3(0, f32(c.height / 2.0), 0), radius = f32(c.radius), half = vec3(0, f32(hh), 0)), c.mask)
+
+__overlap = (w: World, probe0: __B3, mask: int) -> Body[]:
+    probe = probe0
+    __update3(probe, w.meshes)
+    out: Body[]
+    loop i in [1..w.bodies.len()):
+        bd = w.bodies[i]
+        if not bd.alive or bd.shape < 0 or bd.layer & mask == 0: continue
+        if bd.lo.x > probe.hi.x or bd.hi.x < probe.lo.x or bd.lo.y > probe.hi.y or bd.hi.y < probe.lo.y or bd.lo.z > probe.hi.z or bd.hi.z < probe.lo.z: continue
+        loop c in __collide_pair(probe, bd, w.meshes):
+            if c.sep <= 0.0:
+                out.push(__body(w, i))
+                break
+    out
+
 # ---------------- rays ----------------
 # the first body a ray from a to b meets (only those whose layer & mask is not 0; sensors are
 # passed through)
@@ -1526,6 +1555,7 @@ struct Character:
     velocity: vec3                  # as it moves (falling builds up here)
     on_ground = false
     ground_normal = vec3(0, 1, 0)
+    standing_on = Body(0, 0)        # the body it stands on (a moving platform carries it)
     max_slope = 50deg
     step = 0.35
     layer = 1
@@ -1540,6 +1570,11 @@ character = (w: World, feet: vec3, radius: f64 = 0.3, height: f64 = 1.8) -> Char
 # jumping at `jump` meters a second when on the ground and jump > 0
 walk = (w: mut World, c: mut Character, move: vec3, dt: f64, jump: f64 = 0):
     h = f32(dt)
+    # (on something that moves, a platform or a lift: carried along, and turned with it)
+    if c.on_ground and alive(w, c.standing_on):
+        pb = w.bodies[c.standing_on.id]
+        if pb.kind != .fixed:
+            c.feet += (pb.vel + cross(pb.spin, c.feet - pb.pos)) * h
     vy = c.velocity.y
     if c.on_ground and jump > 0.0: vy = f32(jump)
     else if c.on_ground and vy <= 0.0: vy = 0
@@ -1616,6 +1651,7 @@ __char_resolve = (w: mut World, c: mut Character, vy0: f32) -> f32:
                     c.feet.y += -ct.sep / max(up.y, 0.3)
                     c.on_ground = true
                     c.ground_normal = up
+                    c.standing_on = __body(w, i)
                     if vy < 0.0: vy = 0
                 else:
                     c.feet += up * (-ct.sep)
