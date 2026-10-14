@@ -9,8 +9,10 @@
 #       circle(w.pos(ball), 24, WHITE)                      # (or physics.draw_debug(w))
 #
 # Bodies are `.dynamic` (moved by forces and collisions), `.fixed` (never move: floors, walls) or
-# `.moving` (moved only by the velocity the game gives them: platforms, doors). Each has one
-# shape: a circle, a box or a convex polygon. A Body is a handle; ask the world about it
+# `.moving` (moved only by the velocity the game gives them: platforms, doors). Each has a
+# shape: a circle, a box or a polygon (a concave one is cut into convex parts), or several of
+# them held together (`w.add_body(pos, [.circle(vec2(0, -30), 12), box_part(vec2(0, 0), vec2(40,
+# 20))])`). A Body is a handle; ask the world about it
 # (`w.pos(b)`, `w.angle(b)`, `w.velocity(b)`) and change it (`w.push(b, impulse)`).
 #
 # Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fixed distance;
@@ -87,6 +89,19 @@ struct __PBody:
     asleep = false          # still for a while, with all it touches: left out until woken
     still: f32
     tag: int
+    parts: __PBody[]        # a body of several shapes: each a body of one, in the body's frame
+    off: vec2               # (a circle part: its center from the body's)
+    shape_outline: vec2[]   # (a body cut from a concave polygon: that polygon, for outline)
+
+# one of the shapes a body of several is made of (add_body), placed around the body's position
+enum Part: circle(center: vec2, radius: f64), polygon(points: vec2[])
+
+# a box among a body's parts
+box_part = (center: vec2, size: vec2, angle: f64 = 0) -> Part:
+    h = size * 0.5
+    ps: vec2[]
+    loop c in [vec2(-h.x, -h.y), vec2(h.x, -h.y), vec2(h.x, h.y), vec2(-h.x, h.y)]: ps.push(center + rotate(c, angle))
+    Part.polygon(ps)
 
 struct __PContact:
     point: vec2
@@ -180,8 +195,14 @@ add_box = (w: mut World, pos: vec2, size: vec2, angle: f64 = 0, kind: BodyKind =
     h = size * 0.5
     w.add_polygon(pos, [vec2(-h.x, -h.y), vec2(h.x, -h.y), vec2(h.x, h.y), vec2(-h.x, h.y)], angle, kind, density, friction, bounce, sensor)
 
-# points around pos (their convex hull, if they are not convex)
+# points around pos, in order: a concave polygon is cut into convex parts (points not in order,
+# or crossing themselves: their convex hull)
 add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body:
+    pieces = __convex_pieces(points)
+    if pieces.len() > 1:
+        parts: Part[]
+        loop pc in pieces: parts.push(Part.polygon(pc))
+        return __add_parts(w, pos, parts, angle, kind, density, friction, bounce, sensor, points)
     vs = __hull(points)
     if vs.len() < 3: panic("a polygon needs 3 points not all in a line")
     # (the body's position is its center of mass)
@@ -206,6 +227,178 @@ add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: Bo
     m = f32(density * area / 100.0)
     __set_mass(b, m, f32(density * inertia / 100.0))
     __add(w, b)
+
+# a body made of several shapes, held together as one: `.circle(center, radius)`,
+# `.polygon(points)` and `box_part(center, size)`, placed around pos (turned by angle)
+add_body = (w: mut World, pos: vec2, parts: Part[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body:
+    __add_parts(w, pos, parts, angle, kind, density, friction, bounce, sensor, [])
+
+__add_parts = (w: mut World, pos: vec2, parts0: Part[], angle: f64, kind: BodyKind, density: f64, friction: f64, bounce: f64, sensor: bool, shape_outline: vec2[]) -> Body:
+    if parts0.len() == 0: panic("a body needs at least one part")
+    # (polygons as convex pieces: each its corners, its area, its centroid)
+    shapes: __PBody[]
+    areas: f64[]
+    cents: vec2[]
+    inertias: f64[]         # (each about its own centroid, per unit of density)
+    loop pt in parts0:
+        match pt:
+            .circle(c, r):
+                shapes.push(__PBody(radius = f32(r), off = c))
+                a = PI * r * r
+                areas.push(a)
+                cents.push(c)
+                inertias.push(a * r * r / 2.0)
+            .polygon(ps):
+                loop pc in __convex_pieces(ps):
+                    vs = __hull(pc)
+                    if vs.len() < 3: panic("a polygon part needs 3 points not all in a line")
+                    a, c, i0 = __poly_mass(vs)
+                    shapes.push(__PBody(radius = -1, verts = vs))
+                    areas.push(a)
+                    cents.push(c)
+                    inertias.push(i0)
+    total = 0.0
+    com = vec2(0, 0)
+    loop i in [0..shapes.len()):
+        total += areas[i]
+        com += cents[i] * f32(areas[i])
+    com = com * f32(1.0 / total)
+    inertia = 0.0
+    loop i in [0..shapes.len()):
+        inertia += inertias[i] + areas[i] * f64(length_sq(cents[i] - com))
+    # (the parts around the body's center of mass)
+    loop mut sh in shapes:
+        if sh.radius >= 0.0: sh.off -= com
+        else:
+            loop mut v in sh.verts: v -= com
+            ns: vec2[]
+            loop k in [0..sh.verts.len()): ns.push(normalize(perp(sh.verts[k] - sh.verts[(k + 1) % sh.verts.len()])))
+            sh.normals = ns
+    ol: vec2[]
+    loop p in shape_outline: ol.push(p - com)
+    b = __PBody(kind = kind, pos = pos + rotate(com, angle), angle = f32(angle), radius = -1, parts = shapes, shape_outline = ol, friction = f32(friction), bounce = f32(bounce), sensor = sensor)
+    __set_mass(b, f32(density * total / 100.0), f32(density * inertia / 100.0))
+    __add(w, b)
+
+# a convex polygon's area, centroid, and turning inertia about its centroid (per unit of density)
+__poly_mass = (vs: vec2[]) -> (f64, vec2, f64):
+    area = 0.0
+    c = vec2(0, 0)
+    loop i in [0..vs.len()):
+        p = vs[i]
+        q = vs[(i + 1) % vs.len()]
+        cr = f64(cross(p, q))
+        area += cr / 2.0
+        c += (p + q) * f32(cr / 6.0)
+    c = c * f32(1.0 / area)
+    inertia = 0.0
+    loop i in [0..vs.len()):
+        p = vs[i] - c
+        q = vs[(i + 1) % vs.len()] - c
+        inertia += f64(cross(p, q)) * f64(dot(p, p) + dot(p, q) + dot(q, q)) / 12.0
+    (area, c, inertia)
+
+# a polygon's points as convex pieces: itself when convex (or not a simple polygon: its hull),
+# else cut into triangles, joined back while they stay convex (Hertel and Mehlhorn)
+__convex_pieces = (points: vec2[]) -> vec2[][]:
+    # (in order, counterclockwise, without repeated or in-line points)
+    ps: vec2[]
+    loop p in points:
+        if ps.len() == 0 or length_sq(p - ps[end]) > 1e-8: ps.push(p)
+    if ps.len() > 1 and length_sq(ps[0] - ps[end]) <= 1e-8: ps.pop()
+    if ps.len() < 4: return [points]
+    a2 = 0.0
+    loop i in [0..ps.len()): a2 += f64(cross(ps[i], ps[(i + 1) % ps.len()]))
+    if a2 < 0.0: ps = reversed(ps)
+    k = 0
+    loop k < ps.len() and ps.len() > 3:
+        n = ps.len()
+        if abs(cross(ps[k] - ps[(k + n - 1) % n], ps[(k + 1) % n] - ps[k])) < 1e-6: ps.remove(k)
+        else: k += 1
+    n = ps.len()
+    convex = true
+    loop i in [0..n):
+        if cross(ps[i] - ps[(i + n - 1) % n], ps[(i + 1) % n] - ps[i]) < 0.0: convex = false
+    if convex or not __simple(ps): return [points]
+    # triangles, by cutting off ears
+    idx = [loop i in [0..n): i]
+    tris: int[][]
+    guard = 0
+    loop idx.len() > 3 and guard < n * n:
+        guard += 1
+        m = idx.len()
+        cut = false
+        loop j in [0..m):
+            i0 = idx[(j + m - 1) % m]
+            i1 = idx[j]
+            i2 = idx[(j + 1) % m]
+            if cross(ps[i1] - ps[i0], ps[i2] - ps[i1]) <= 0.0: continue
+            inside = false
+            loop q in idx:
+                if q == i0 or q == i1 or q == i2: continue
+                if __in_triangle(ps[q], ps[i0], ps[i1], ps[i2]):
+                    inside = true
+                    break
+            if inside: continue
+            tris.push([i0, i1, i2])
+            idx.remove(j)
+            cut = true
+            break
+        if not cut: return [points]
+    tris.push(idx)
+    # joined across shared edges while the result stays convex
+    merged = true
+    loop merged:
+        merged = false
+        loop a in [0..tris.len()):
+            if merged: break
+            loop b in [a + 1..tris.len()):
+                j = __join_convex(ps, tris[a], tris[b])
+                if j.len() > 0:
+                    tris[a] = j
+                    tris.remove(b)
+                    merged = true
+                    break
+    out: vec2[][]
+    loop t in tris:
+        pc: vec2[]
+        loop i in t: pc.push(ps[i])
+        out.push(pc)
+    out
+
+__in_triangle = (p: vec2, a: vec2, b: vec2, c: vec2) -> bool:
+    cross(b - a, p - a) >= 0.0 and cross(c - b, p - b) >= 0.0 and cross(a - c, p - c) >= 0.0
+
+# no two edges cross (edges next to each other share only their corner)
+__simple = (ps: vec2[]) -> bool:
+    n = ps.len()
+    loop i in [0..n):
+        a = ps[i]
+        b = ps[(i + 1) % n]
+        loop j in [i + 2..n):
+            if i == 0 and j == n - 1: continue
+            c = ps[j]
+            d = ps[(j + 1) % n]
+            if cross(b - a, c - a) * cross(b - a, d - a) < 0.0 and cross(d - c, a - c) * cross(d - c, b - c) < 0.0: return false
+    true
+
+# two convex pieces (corner indices, counterclockwise) sharing an edge, as one if that is
+# convex (else [])
+__join_convex = (ps: vec2[], p: int[], q: int[]) -> int[]:
+    loop i in [0..p.len()):
+        u = p[i]
+        v = p[(i + 1) % p.len()]
+        loop j in [0..q.len()):
+            if q[j] != v or q[(j + 1) % q.len()] != u: continue
+            # p from v round to u, then q's corners after u up to before v
+            out: int[]
+            loop k in [0..p.len()): out.push(p[(i + 1 + k) % p.len()])
+            loop k in [2..q.len()): out.push(q[(j + k) % q.len()])
+            n = out.len()
+            loop k in [0..n):
+                if cross(ps[out[k]] - ps[out[(k + n - 1) % n]], ps[out[(k + 1) % n]] - ps[out[k]]) < -1e-6: return []
+            return out
+    []
 
 __set_mass = (b: mut __PBody, m: f32, i: f32):
     if b.kind != .dynamic or m <= 0.0: return
@@ -517,6 +710,18 @@ __unrot = (r: vec2, v: vec2) -> vec2: vec2(r.x * v.x + r.y * v.y, r.x * v.y - r.
 # the bounds, and the shape where it is now
 __bounds = (b: mut __PBody):
     b.rot = vec2(f32(cos(f64(b.angle))), f32(sin(f64(b.angle))))
+    if b.parts.len() > 0:
+        lo = vec2(1e30, 1e30)
+        hi = vec2(-1e30, -1e30)
+        loop mut pt in b.parts:
+            pt.pos = b.pos + __rot(b.rot, pt.off)
+            pt.angle = b.angle
+            __bounds(pt)
+            lo = min(lo, pt.lo)
+            hi = max(hi, pt.hi)
+        b.lo = lo
+        b.hi = hi
+        return
     if b.radius >= 0.0:
         r = vec2(b.radius, b.radius)
         b.lo = b.pos - r
@@ -541,9 +746,11 @@ __bounds = (b: mut __PBody):
     b.lo = lo
     b.hi = hi
 
-__unshape = (b: mut __PBody): b.radius = -1
+__unshape = (b: mut __PBody):
+    b.radius = -1
+    b.parts = []
 
-__shaped = (b: __PBody) -> bool: b.alive and (b.radius >= 0.0 or b.verts.len() > 0)
+__shaped = (b: __PBody) -> bool: b.alive and (b.radius >= 0.0 or b.verts.len() > 0 or b.parts.len() > 0)
 
 __step = (w: mut World, h: f32):
     # forces
@@ -699,7 +906,7 @@ __collide_all = (w: mut World):
     loop key in pairs:
         a = key / 1000003
         b = key % 1000003
-        cs = __collide(bs[a], bs[b])
+        cs = __collide_parts(bs[a], bs[b])
         if cs.len() == 0: continue
         arb = __Arb(a, b, cs, sqrt(bs[a].friction * bs[b].friction), max(bs[a].bounce, bs[b].bounce), bs[a].sensor or bs[b].sensor, true)
         if let old = w.arb_index.get(key):
@@ -714,6 +921,24 @@ __collide_all = (w: mut World):
         arbs.push(arb)
     w.arbs = arbs
     w.arb_index = index
+
+# (bodies of several parts: each pair of parts whose bounds meet, their contacts told apart by
+# which parts they are of)
+__collide_parts = (a: __PBody, b: __PBody) -> __PContact[]:
+    if a.parts.len() == 0 and b.parts.len() == 0: return __collide(a, b)
+    out: __PContact[]
+    loop i in [0..max(a.parts.len(), 1)):
+        pa = __part(a, i)
+        loop j in [0..max(b.parts.len(), 1)):
+            pb = __part(b, j)
+            if pa.lo.x > pb.hi.x or pa.hi.x < pb.lo.x or pa.lo.y > pb.hi.y or pa.hi.y < pb.lo.y: continue
+            loop c in __collide(pa, pb):
+                out.push(__contact(c.point, c.normal, c.sep, (c.feature * 64 + i) * 64 + j))
+    out
+
+__part = (b: __PBody, i: int) -> __PBody:
+    if b.parts.len() == 0: return b
+    b.parts[i]
 
 __contact = (p: vec2, n: vec2, sep: f32, feature: int) -> __PContact: __PContact(point = p, normal = n, sep = sep, feature = feature)
 
@@ -1261,49 +1486,58 @@ __raycast = (w: World, a: vec2, b: vec2, mask: int, skip: int, layer: int) -> Hi
     best: Hit? = none
     bf: f32 = 1
     d = b - a
+    rlo = min(a, b)
+    rhi = max(a, b)
     loop i in [1..w.bodies.len()):
-        bd = w.bodies[i]
-        if i == skip or not __shaped(bd) or bd.layer & mask == 0 or bd.sensor: continue
-        if layer >= 0 and bd.mask & layer == 0: continue
-        if bd.radius >= 0.0:
-            m = a - bd.pos
-            qa = dot(d, d)
-            if qa == 0.0: continue
-            qb = dot(m, d)
-            qc = dot(m, m) - bd.radius * bd.radius
-            disc = qb * qb - qa * qc
-            if disc < 0.0: continue
-            t = (-qb - sqrt(disc)) / qa
-            if t < 0.0 or t > bf: continue
-            bf = t
-            p = a + d * t
-            best = Hit(__body(w, i), p, normalize(p - bd.pos), t)
+        # (bounds first: most bodies are nowhere near the ray)
+        if w.bodies[i].lo.x > rhi.x or w.bodies[i].hi.x < rlo.x or w.bodies[i].lo.y > rhi.y or w.bodies[i].hi.y < rlo.y: continue
+        if i == skip or not __shaped(w.bodies[i]) or w.bodies[i].layer & mask == 0 or w.bodies[i].sensor: continue
+        if layer >= 0 and w.bodies[i].mask & layer == 0: continue
+        if w.bodies[i].parts.len() == 0:
+            t, n = __ray_shape(w.bodies[i], a, d, bf)
+            if t >= 0.0:
+                bf = t
+                best = Hit(__body(w, i), a + d * t, n, t)
             continue
-        # (a polygon: the ray clipped to each edge's side, in the body's frame)
-        la = rotate(a - bd.pos, -f64(bd.angle))
-        ld = rotate(d, -f64(bd.angle))
-        lo: f32 = 0
-        hi = bf
-        ni = -1
-        ok = true
-        loop k in [0..bd.verts.len()):
-            num = dot(bd.normals[k], bd.verts[k] - la)
-            den = dot(bd.normals[k], ld)
-            if den == 0.0:
-                if num < 0.0:
-                    ok = false
-                    break
-            else if den < 0.0 and num < lo * den:
-                lo = num / den
-                ni = k
-            else if den > 0.0 and num < hi * den: hi = num / den
-            if hi < lo:
-                ok = false
-                break
-        if ok and ni >= 0:
-            bf = lo
-            best = Hit(__body(w, i), a + d * lo, rotate(bd.normals[ni], f64(bd.angle)), lo)
+        loop k in [0..w.bodies[i].parts.len()):
+            t, n = __ray_shape(w.bodies[i].parts[k], a, d, bf)
+            if t >= 0.0:
+                bf = t
+                best = Hit(__body(w, i), a + d * t, n, t)
     best
+
+# a ray from a along d against one shape, no further than bf: how far along, and the normal
+# there (-1: it misses)
+__ray_shape = (bd: __PBody, a: vec2, d: vec2, bf: f32) -> (f32, vec2):
+    if bd.radius >= 0.0:
+        m = a - bd.pos
+        qa = dot(d, d)
+        if qa == 0.0: return (-1, vec2(0, 0))
+        qb = dot(m, d)
+        qc = dot(m, m) - bd.radius * bd.radius
+        disc = qb * qb - qa * qc
+        if disc < 0.0: return (-1, vec2(0, 0))
+        t = (-qb - sqrt(disc)) / qa
+        if t < 0.0 or t > bf: return (-1, vec2(0, 0))
+        return (t, normalize(a + d * t - bd.pos))
+    # (a polygon: the ray clipped to each edge's side, in the shape's frame)
+    la = rotate(a - bd.pos, -f64(bd.angle))
+    ld = rotate(d, -f64(bd.angle))
+    lo: f32 = 0
+    hi = bf
+    ni = -1
+    loop k in [0..bd.verts.len()):
+        num = dot(bd.normals[k], bd.verts[k] - la)
+        den = dot(bd.normals[k], ld)
+        if den == 0.0:
+            if num < 0.0: return (-1, vec2(0, 0))
+        else if den < 0.0 and num < lo * den:
+            lo = num / den
+            ni = k
+        else if den > 0.0 and num < hi * den: hi = num / den
+        if hi < lo: return (-1, vec2(0, 0))
+    if ni < 0: return (-1, vec2(0, 0))
+    (lo, rotate(bd.normals[ni], f64(bd.angle)))
 
 # the first body a circle of radius r, moved from a to b, would touch: the hit's point is where
 # it touches, and fraction how far along the circle's center is then (a ray with thickness)
@@ -1327,7 +1561,7 @@ __overlap2 = (w: World, probe0: __PBody, mask: int) -> Body[]:
         bd = w.bodies[i]
         if not __shaped(bd) or bd.layer & mask == 0: continue
         if bd.lo.x > probe.hi.x or bd.hi.x < probe.lo.x or bd.lo.y > probe.hi.y or bd.hi.y < probe.lo.y: continue
-        loop c in __collide(probe, bd):
+        loop c in __collide_parts(probe, bd):
             if c.sep <= 0.0:
                 out.push(__body(w, i))
                 break
@@ -1346,25 +1580,37 @@ circle_cast = (w: World, a: vec2, b: vec2, r: f64, mask: int = -1) -> Hit?:
         if bd.lo.x > hi.x or bd.hi.x < lo.x or bd.lo.y > hi.y or bd.hi.y < lo.y: continue
         f: f32 = -1
         n = vec2(0, 0)
-        if bd.radius >= 0.0: f, n = __ray_circle(a, d, bd.pos, bd.radius + rr)
-        else:
-            # (the polygon grown by r: its edges pushed out, and circles at its corners)
-            nv = bd.wv.len()
-            loop k in [0..nv):
-                p0 = bd.wv[k] + bd.wn[k] * rr
-                p1 = bd.wv[(k + 1) % nv] + bd.wn[k] * rr
-                g = __ray_seg(a, d, p0, p1, bd.wn[k])
-                if g >= 0.0 and (f < 0.0 or g < f):
-                    f = g
-                    n = bd.wn[k]
-                gc, gn = __ray_circle(a, d, bd.wv[k], rr)
-                if gc >= 0.0 and (f < 0.0 or gc < f):
-                    f = gc
-                    n = gn
+        if bd.parts.len() == 0: f, n = __cast_shape(bd, a, d, rr)
+        loop k in [0..bd.parts.len()):
+            g, gn = __cast_shape(bd.parts[k], a, d, rr)
+            if g >= 0.0 and (f < 0.0 or g < f):
+                f = g
+                n = gn
         if f >= 0.0 and f < bf:
             bf = f
             best = Hit(__body(w, i), a + d * f - n * rr, n, f)
     best
+
+# a circle of radius rr moved from a along d against one shape: how far along it first touches,
+# and the normal there (-1: it does not)
+__cast_shape = (bd: __PBody, a: vec2, d: vec2, rr: f32) -> (f32, vec2):
+    if bd.radius >= 0.0: return __ray_circle(a, d, bd.pos, bd.radius + rr)
+    f: f32 = -1
+    n = vec2(0, 0)
+    # (the polygon grown by r: its edges pushed out, and circles at its corners)
+    nv = bd.wv.len()
+    loop k in [0..nv):
+        p0 = bd.wv[k] + bd.wn[k] * rr
+        p1 = bd.wv[(k + 1) % nv] + bd.wn[k] * rr
+        g = __ray_seg(a, d, p0, p1, bd.wn[k])
+        if g >= 0.0 and (f < 0.0 or g < f):
+            f = g
+            n = bd.wn[k]
+        gc, gn = __ray_circle(a, d, bd.wv[k], rr)
+        if gc >= 0.0 and (f < 0.0 or gc < f):
+            f = gc
+            n = gn
+    (f, n)
 
 __ray_circle = (a: vec2, d: vec2, c: vec2, r: f32) -> (f32, vec2):
     m = a - c
@@ -1398,19 +1644,44 @@ bodies_at = (w: World, p: vec2) -> Body[]:
         bd = w.bodies[i]
         i -= 1
         if not __shaped(bd) or p.x < bd.lo.x or p.y < bd.lo.y or p.x > bd.hi.x or p.y > bd.hi.y: continue
-        if bd.radius >= 0.0:
-            if length(p - bd.pos) <= bd.radius: out.push(__body(w, i + 1))
+        if bd.parts.len() == 0:
+            if __contains(bd, p): out.push(__body(w, i + 1))
             continue
-        l = rotate(p - bd.pos, -f64(bd.angle))
-        inside = true
-        loop k in [0..bd.verts.len()):
-            if dot(bd.normals[k], l - bd.verts[k]) > 0.0: inside = false
-        if inside: out.push(__body(w, i + 1))
+        loop k in [0..bd.parts.len()):
+            if __contains(bd.parts[k], p):
+                out.push(__body(w, i + 1))
+                break
     out
 
-# a body's outline in the world (a circle's as 24 points)
+__contains = (bd: __PBody, p: vec2) -> bool:
+    if bd.radius >= 0.0: return length(p - bd.pos) <= bd.radius
+    l = rotate(p - bd.pos, -f64(bd.angle))
+    loop k in [0..bd.verts.len()):
+        if dot(bd.normals[k], l - bd.verts[k]) > 0.0: return false
+    true
+
+# a body's outline in the world (a circle's as 24 points; a body of several parts: the polygon
+# it was cut from, or else around all of them)
 outline = (w: World, b: Body) -> vec2[]:
     bd = w.bodies[__id(w, b)]
+    if bd.parts.len() == 0: return __outline(bd)
+    out: vec2[]
+    if bd.shape_outline.len() > 0:
+        loop v in bd.shape_outline: out.push(bd.pos + rotate(v, f64(bd.angle)))
+        return out
+    all: vec2[]
+    loop pt in bd.parts: all += __outline(pt)
+    __hull(all)
+
+# the outline of each of a body's parts (one, for a body of one shape)
+outlines = (w: World, b: Body) -> vec2[][]:
+    bd = w.bodies[__id(w, b)]
+    if bd.parts.len() == 0: return [__outline(bd)]
+    out: vec2[][]
+    loop pt in bd.parts: out.push(__outline(pt))
+    out
+
+__outline = (bd: __PBody) -> vec2[]:
     out: vec2[]
     if bd.radius >= 0.0:
         loop k in [0..24): out.push(bd.pos + rotate(vec2(bd.radius, 0), f64(bd.angle) + f64(k) * PI / 12.0))
@@ -1427,9 +1698,11 @@ draw_debug = (w: World, thickness: f64 = 2):
         if bd.kind == .fixed: c = rgb(0.55, 0.6, 0.7)
         else if bd.kind == .moving: c = rgb(0.4, 0.6, 1.0)
         if bd.sensor: c = rgba(1.0, 0.85, 0.3, 0.7)
-        pts = w.outline(__body(w, i))
-        polyline(pts, thickness, c, closed = true)
-        if bd.radius >= 0.0: line(bd.pos, pts[0], thickness, c)
+        loop k in [0..max(bd.parts.len(), 1)):
+            pt = __part(bd, k)
+            pts = __outline(pt)
+            polyline(pts, thickness, c, closed = true)
+            if pt.radius >= 0.0: line(pt.pos, pts[0], thickness, c)
     loop j in w.joints:
         if not j.alive: continue
         pa = w.bodies[j.a].pos + rotate(j.la, f64(w.bodies[j.a].angle))

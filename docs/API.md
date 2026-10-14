@@ -2942,7 +2942,7 @@ draw = ():
     circle(w.pos(ball), 24, WHITE)                      # (or physics.draw_debug(w))
 ```
 
-Bodies are `.dynamic` (moved by forces and collisions), `.fixed` (never move: floors, walls) or `.moving` (moved only by the velocity the game gives them: platforms, doors). Each has one shape: a circle, a box or a convex polygon. A Body is a handle; ask the world about it (`w.pos(b)`, `w.angle(b)`, `w.velocity(b)`) and change it (`w.push(b, impulse)`).
+Bodies are `.dynamic` (moved by forces and collisions), `.fixed` (never move: floors, walls) or `.moving` (moved only by the velocity the game gives them: platforms, doors). Each has a shape: a circle, a box or a polygon (a concave one is cut into convex parts), or several of them held together (`w.add_body(pos, [.circle(vec2(0, -30), 12), box_part(vec2(0, 0), vec2(40, 20))])`). A Body is a handle; ask the world about it (`w.pos(b)`, `w.angle(b)`, `w.velocity(b)`) and change it (`w.push(b, impulse)`).
 
 Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fixed distance; `spring = 4.0` makes it a spring of that many oscillations a second, `rope = true` lets it go slack), `w.weld(a, b, at)` (one piece), `w.slider(a, b, at, axis)` (along a line: a piston, a lift), `w.wheel(car, wheel, at)` (sprung, turning, with a motor), `w.drag(b, at)` and `w.drag_to(j, target)` (pulling a body by a point: the mouse). `physics.ground` is a fixed body to attach things to the world. Two bodies joined by a joint do not collide with each other (the links of a chain overlap where they are pinned).
 
@@ -2979,6 +2979,8 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
       normal: vec2
       fraction: f32           # how far along the ray, 0 to 1
   ```
+- `enum Part: circle(center: vec2, radius: f64), polygon(points: vec2[])`: one of the shapes a body of several is made of (add_body), placed around the body's position
+- `box_part = (center: vec2, size: vec2, angle: f64 = 0) -> Part`: a box among a body's parts
 - `struct World`
   ```gdscript
   struct World:
@@ -2998,7 +3000,8 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 
 - `add_circle = (w: mut World, pos: vec2, radius: f64, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`
 - `add_box = (w: mut World, pos: vec2, size: vec2, angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`
-- `add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`: points around pos (their convex hull, if they are not convex)
+- `add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`: points around pos, in order: a concave polygon is cut into convex parts (points not in order, or crossing themselves: their convex hull)
+- `add_body = (w: mut World, pos: vec2, parts: Part[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`: a body made of several shapes, held together as one: `.circle(center, radius)`, `.polygon(points)` and `box_part(center, size)`, placed around pos (turned by angle)
 - `remove = (w: mut World, b: Body)`: take b out of the world (and the joints it is in); its handle then means nothing (a handle used after this panics; removing twice does nothing)
 - `remove = (w: mut World, j: Joint)`
 - `joint_alive = (w: World, j: Joint) -> bool`: the joint is still there (not removed, nor one of its bodies)
@@ -3065,7 +3068,8 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 - `overlap_box = (w: World, center: vec2, size: vec2, angle: f64 = 0, mask: int = -1) -> Body[]`
 - `circle_cast = (w: World, a: vec2, b: vec2, r: f64, mask: int = -1) -> Hit?`
 - `bodies_at = (w: World, p: vec2) -> Body[]`: the bodies at the point p (the topmost first: the last made)
-- `outline = (w: World, b: Body) -> vec2[]`: a body's outline in the world (a circle's as 24 points)
+- `outline = (w: World, b: Body) -> vec2[]`: a body's outline in the world (a circle's as 24 points; a body of several parts: the polygon it was cut from, or else around all of them)
+- `outlines = (w: World, b: Body) -> vec2[][]`: the outline of each of a body's parts (one, for a body of one shape)
 - `draw_debug = (w: World, thickness: f64 = 2)`: every body's outline and every joint, for seeing what the physics does
 
 ## 3D physics

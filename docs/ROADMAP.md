@@ -130,14 +130,14 @@ game picks from (and an example of each):
   one by one.
 - Physics: 2D rigid bodies with joints, as `import physics` (done: circles, boxes, convex
   polygons, pins, rods, ropes, springs, sensors, raycasts; next as games need them: several
-  shapes per body, sleeping, motors and limits on pins, continuous collision for fast bullets (done: swept), welds, sliders and wheels (done),
+  shapes per body (done, with concave polygons cut into convex parts), sleeping, motors and limits on pins, continuous collision for fast bullets (done: swept), welds, sliders and wheels (done),
   a character controller). 3D, as `import physics3d` (done: spheres, boxes, capsules, a level's
   triangles, ball and hinge joints, rods, ropes, springs, rays, a character controller,
   deterministic stepping; next: convex hulls, continuous collision; motors, limits and sphere casts are done). Sleeping in both (done:
   bodies at rest, with all they touch, are left out until something touches them).
 - Audio: sounds placed in 2D/3D (panning and distance): done (`play_at`, `move_sound`).
-- Assets: a whole directory embedded at once (done: `embed_dir`), OpenType fonts with CFF
-  outlines and kerning, Tiled's external tilesets.
+- Assets: a whole directory embedded at once (done: `embed_dir`), Tiled's XML maps and external
+  tilesets (done), OpenType fonts with CFF outlines and kerning.
 - Input: non-XInput gamepads on Windows, actions bound per player.
 - Linux window icons on Wayland (KDE's xdg-toplevel-icon; GNOME needs a .desktop file).
 - A serializer (structs to text and back) for saves and settings: done (`save_value`,

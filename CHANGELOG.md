@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- 2D physics: bodies of several shapes, `w.add_body(pos, [.circle(vec2(-40, 0), 15),
+  physics.box_part(vec2(0, 0), vec2(80, 8))])`, held together as one (mass, center and turning
+  inertia from all of them); `add_polygon` with a concave outline (an L, a U, a star) cuts it
+  into convex parts instead of taking its convex hull; `w.outlines(b)` gives each part's.
+- 2D physics: rays (and the sweep of fast bodies, which uses one) look only at bodies whose
+  bounds the ray crosses: a scene of 300 bodies steps 1.7x faster.
+
 - Errors: a color written as text (`"yellow"`: `YELLOW`, `rgb(...)` or `hex("#ff8800")`); an
   int variable given a fraction (`time_left = 30`, then `-= dt`: write `30.0`); a constant
   changed (make it a variable, rather than `let`); no compiler-made names or `?T` in
