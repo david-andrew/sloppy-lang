@@ -136,6 +136,14 @@ For other editors, `sloppy lsp` is a language server: the
 | `Time.timeScale`, pausing | the game's own clock: add `dt` only while not paused |
 | the Animator | `pose_at` for a clip at a time, `blend_poses` to mix two, the time and weights kept in the struct |
 | the inspector | `print(x)` shows any value, and `sloppy watch` reloads the code as it changes |
+| `Time.deltaTime` | `dt`, what `update = (dt: f64):` is given |
+| `Input.GetKey(KeyCode.W)`, `GetKeyDown`, `GetAxis` | `key_down(.w)`, `key_pressed(.space)`, `input_axis()` |
+| `Mathf.Clamp`, `Mathf.Sin`, `Debug.Log` | plain functions: `clamp`, `sin`, `lerp`, `PI`; `print` |
+| `Instantiate`, `Destroy` | a function that makes the struct, pushed onto its array; `xs.remove(i)` or `xs.retain(...)` |
+| `List<T>`, `Dictionary<K, V>`, `null` | `T[]`, `{K: V}`, `none` (a `T?` may be none: `if let v = x:`) |
+| `Rigidbody`, `Physics.Raycast`, a CharacterController | `import physics3d`: `w.add_sphere(...)`, `w.raycast(a, b)`, `w.character(...)` and `w.walk(...)` |
+| `Quaternion.Euler(0, 45, 0)`, `LookRotation` | `quat_euler(0, 45deg, 0)`, `facing(dir)`; or matrices: `rotation_y(45deg)` (angles are radians: `45deg` is 45 degrees) |
+| `transform.forward` | `-z`, turned as the thing is: `transform_dir(m, vec3(0, 0, -1))` (a camera looks along -z too) |
 
 ## Where next
 

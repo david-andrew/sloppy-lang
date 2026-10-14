@@ -1715,7 +1715,7 @@ Vector and matrix math for the built-in vec2/vec3/vec4/mat4 types (f32 component
 - `rotation_x = (a: f64) -> mat4`
 - `rotation_y = (a: f64) -> mat4`
 - `rotation_z = (a: f64) -> mat4`
-- `facing = (dir: vec3, up: vec3 = vec3(0, 1, 0)) -> mat4`: the turn that points a model's front (-z, as look_dir's) along dir, its top toward up: a turret aimed at its target, a beam from a to b (`translation(a) * facing(b - a)`)
+- `facing = (dir: vec3, up: vec3 = vec3(0, 1, 0)) -> mat4`: the turn that points a model's front (-z, the way a camera looks) along dir, its top toward up: a turret aimed at its target, a beam from a to b (`translation(a) * facing(b - a)`)
 - `perspective = (fov_y: f64, aspect: f64, near: f64, far: f64) -> mat4`
 - `orthographic = (left: f64, right: f64, bottom: f64, top: f64, near: f64, far: f64) -> mat4`
 - `look_at = (eye: vec3, target: vec3, up: vec3) -> mat4`
@@ -3116,7 +3116,7 @@ update = (dt: f64): w.step(dt)
 draw = (): draw_mesh(cube, w.transform(crate))         # (position and turn, as a mat4)
 ```
 
-Masses come from sizes and `density` (kilograms per cubic meter: 1000 is water's, so a ball of radius 0.5 weighs 524 kg), or are given: `w.add_sphere(pos, 0.5, mass = 1)`, `w.set_mass(b, 2)`. Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the game gives them), with one shape each; `w.add_mesh(triangles)` adds fixed triangles (a level, from a model: physics3d.triangles(model_data)). Joints: `w.ball(a, b, at)` (a ball and socket), `w.hinge(a, b, at, axis)`, `w.rod(a, b, at_a, at_b)` (a distance, or a spring, or a rope). Rays: `w.raycast`. A character: `w.character(pos, radius, height)` and `w.walk(c, velocity, dt)`, a capsule that walks up slopes and steps, slides down steeper ones, and is pushed by nothing but the level. As in 2D, stepping is the same for the same inputs (for replays and rollback). A small, fast body can pass through a thin wall in one step (there is no continuous collision yet): for bullets, use w.raycast from where they were to where they are.
+Masses come from sizes and `density` (kilograms per cubic meter: 1000 is water's, so a ball of radius 0.5 weighs 524 kg), or are given: `w.add_sphere(pos, 0.5, mass = 1)`, `w.set_mass(b, 2)`. Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the game gives them), with one shape each; `w.add_mesh(triangles)` adds fixed triangles (a level, from a model: physics3d.triangles(model_data)). Joints: `w.ball(a, b, at)` (a ball and socket), `w.hinge(a, b, at, axis)`, `w.rod(a, b, at_a, at_b)` (a distance, or a spring, or a rope). Rays: `w.raycast`. A character: `w.character(pos, radius, height)` and `w.walk(c, velocity, dt)`, a capsule that walks up slopes and steps, slides down steeper ones, and is pushed by nothing but the level. Contacts: `w.contacts(b)` after a step, each with `.new` on the step they met; a sensor (`sensor = true`: a pickup, a trigger zone) collides with nothing but is in them too. As in 2D, stepping is the same for the same inputs (for replays and rollback). A small, fast body can pass through a thin wall in one step (there is no continuous collision yet): for bullets, use w.raycast from where they were to where they are.
 
 - `enum BodyKind: dynamic, fixed, moving`
 - `enum Shape: none, sphere, box, capsule, triangles`
