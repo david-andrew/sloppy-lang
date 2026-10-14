@@ -1239,8 +1239,8 @@ draw = ():
 - `scale = (sx: f64, sy: f64)`
 - `reset_transform = ()`
 - `camera2d = (target: vec2, zoom: f64 = 1.0, angle: f64 = 0.0)`: 2D camera: `target` appears at the screen center, scaled by zoom
-- `screen_to_world = (p: vec2) -> vec2`: convert a screen position to world coordinates under the current transform
-- `world_to_screen = (p: vec2) -> vec2`: where a world position appears on the screen under the current transform (the other way)
+- `screen_to_world = (p: vec2) -> vec2`: convert a screen position to world coordinates under the current transform; in update (before draw sets one), under the last camera2d: screen_to_world(mouse_pos()) is where the mouse points
+- `world_to_screen = (p: vec2) -> vec2`: where a world position appears on the screen under the current transform (the other way; in update, the last camera2d's)
 
 #### Effects: a shader of your own on 2D drawing
 
@@ -1596,7 +1596,7 @@ draw = (): draw_tilemap(level)
       hit_y: bool                 # ... or up or down (moving down: it landed)
   ```
 - `tileset = (t: Texture, tile_w: int, tile_h: int, spacing: int = 0, margin: int = 0) -> Tileset`: a tileset: an image of equal tiles in a grid, numbered from `first` (1) left to right, then down
-- `tile_layer = (name: str, rows: str, chars: str) -> TileLayer`: a layer from rows of text: the character at position i of `chars` is tile i + 1, and any other character (a space, a dot) is no tile; a character the rows never use skips a number ("_#": '#' is tile 2). Rows of spaces are rows of the map (open sky); only an empty first line (the line break after the opening quote) and a last line of spaces (before the closing quote) are left out.
+- `tile_layer = (name: str, rows: str, chars: str) -> TileLayer`: a layer from rows of text: the character at position i of `chars` is tile i + 1, and any other character (a space, a dot) is no tile; a character the rows never use skips a number ("_#": '#' is tile 2). Rows of spaces are rows of the map (open sky); only an empty first line (the line break after the opening quote) and a last line of spaces (before the closing quote) are left out. For tilemap_move every tile is solid, floor tiles too: a tile walked over is `set_tile_shape(map, id, .empty)`, or a character left out of `chars` (no tile).
 - `tilemap = (ts: Tileset, layers: TileLayer[]) -> Tilemap`: a map of these layers, drawn with one tileset
 - `layer_index = (m: Tilemap, name: str) -> int`: the index of the layer with this name (-1: none)
 - `tile_at = (m: Tilemap, layer: int, x: int, y: int) -> int`: the tile at column x, row y of a layer (0 outside the map)

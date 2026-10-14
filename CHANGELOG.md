@@ -5,6 +5,22 @@
 - `sloppy test`: a failing test says FAILED under its name, with why indented below it and
   "in this test" for the test's own line (it said "panic:" and "the top level of").
 
+From a game jam (a twin-stick shooter built from the docs alone):
+- `screen_to_world` and `world_to_screen` in `update` use the last `camera2d` (the transform is
+  reset at the start of each frame, so in `update` they ignored the camera): aiming at the mouse
+  works where it is read.
+- `tilemap_move` says once when a box starts inside a solid tile (most often a floor tile left
+  solid), and `tile_layer`'s doc says every tile is solid until `set_tile_shape` says otherwise.
+- A warning when values given in order stop one or two fields short of a struct's number, text
+  or struct field without a default (`P(1)` for `P(x, y)`: y would be zero unnoticed).
+- A warning for `random(1, 6)` (a number with a fraction: `random_int(1, 7)` is a die).
+- `def move(self):` inside a struct says structs have no methods, and how the function is
+  written instead.
+- `SLOPPY_INPUT` takes spaces between items as well as commas, and reports a mouse position it
+  cannot read (`mouse=900x2zz` was the mouse at y 0).
+- The same warning at the same place is printed once (a generic function checked for several
+  types printed it for each).
+
 From a second pass with someone who had not programmed before:
 - Warnings: a variable given a value and never used (`scor = score + n` in a function, with the
   global it was likely meant to be); a function nothing calls; drawing in `update` (the screen is

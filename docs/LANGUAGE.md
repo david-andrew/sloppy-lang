@@ -121,7 +121,8 @@ apart: `physics.x`).
 A function may not assign (with `=`) a global declared further down the file: a global added
 there later (`i`, `best`) would quietly change what the function does. `let x = ...` makes a
 variable of the function's own; declaring the global above the function says the function
-means it.
+means it. `score += 1` (and the other compound assignments) cannot declare anything, so it
+always means the global, wherever in the file it is declared.
 
 Top-level variables are globals, initialized in order before `main` runs (each where its line
 is, even `x = 0`).
@@ -499,6 +500,7 @@ struct Player:
 p = Player("ann", vec2(0, 0))
 q = Player(name = "bob", pos = vec2(1, 2), hp = 50)
 p.pos.x += 1
+r = Player()                   # every field at its default, or zero ("", vec2(0, 0), 100)
 
 struct Stack[T]:               # generic struct
     items: T[]
@@ -507,6 +509,11 @@ enum Dir: north, east, south, west     # simple enum
 d = Dir.north
 if d == .north: ...                     # `.name` when the type is known
 ```
+
+A field left out starts at its default, or at zero (0, "", an empty array, `none`, false).
+Leave fields out by naming the ones given (`Player(name = "cy")`); values given in order that
+stop one or two fields short of a number, text or struct without a default get a warning, as
+that is usually a value forgotten.
 
 **Unions** hold a value of one of several types. `is` tests which, and a variable that has
 been tested *is* that type where the test holds — in the `if`, after an `if` that returns or
@@ -1050,7 +1057,7 @@ Environment variables for testing and tuning: `SLOPPY_SCREENSHOT=out.png` (with 
 saves frame n and exits — the clock then advances exactly 1/60 s per frame, so the image is
 reproducible (the desktop's keys and mouse are ignored); it has the window's pixels, more than
 the size asked for on a scaled (high-DPI) display unless `SLOPPY_SCALE=1` is set too; and with `SLOPPY_SOFTWARE=1` no display is needed at all; `SLOPPY_INPUT="5:space+,9:space-"`
-presses and releases keys at given frames (keys as `Key` names them: `a`, `n1`, `space`, `escape`,
+(commas or spaces between items) presses and releases keys at given frames (keys as `Key` names them: `a`, `n1`, `space`, `escape`,
 `left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons, and
 `12:mouse=400x300` moves the mouse there, in the screen's units, `7:text=hi` types; an item it
 cannot read is reported; a web build takes it in the page's address, `page.html?SLOPPY_INPUT=5:space%2B`,

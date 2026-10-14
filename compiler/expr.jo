@@ -1208,6 +1208,10 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
             # (a die's, or a percent's, upper end, as people write it: random_int(1, 7) is quiet)
             hi = nodes[cd.args[1]].ival
             warn(nodes[n].pos, "random_int(1, {hi}) gives 1 to {hi - 1}: its upper end is left out, as in [1..{hi}); random_int(1, {hi + 1}) gives 1 to {hi}")
+        # (random(1, 6) for a die, as Python's randint: a number with a fraction)
+        if name_of(int(nodes[decl].name)) == "random" and cd.args.len() == 2 and written_int(cd.args[0]) == 1:
+            hi = written_int(cd.args[1])
+            if hi == 6 or hi == 10 or hi == 12 or hi == 20 or hi == 100: warn(nodes[n].pos, "random(1, {hi}) gives a number with a fraction (such as 3.7); a whole number from 1 to {hi} is random_int(1, {hi + 1})")
         # (read_bytes("assets/hero.png") in a web page: it has no disk to read the file from)
         if target_wasm and cd.args.len() > 0 and cd.args[0] != 0 and nodes[cd.args[0]].kind == .str_lit and nodes[cd.args[0]].aux == 0:
             fnm = name_of(int(nodes[decl].name))
@@ -1371,6 +1375,7 @@ struct_ctor = (n: int, st_type: int, decl: int, args: int[], expected: int) -> i
     mapped: int[]
     err = map_args(pnames, hasdef, args, mapped)
     if len(err) > 0: fatal(nodes[n].pos, "in {name_of(int(nodes[decl].name))}(...): {err}")
+    missing_field_check(n, decl, si, args, mapped)
     if ide_on:
         fts: int[]
         loop i in [0..nf): fts.push(int(fields[int(structs[si].fields) + i].type))
@@ -1402,6 +1407,30 @@ struct_ctor = (n: int, st_type: int, decl: int, args: int[], expected: int) -> i
     nodes[n].type = i32(t)
     nodes[n].a = 0
     t
+
+# (P(1) for struct P: x: f64; y: f64: values given in order stop short of a field without a
+# default, which would be zero unnoticed; T() and names only, T(x = 1), leave fields out on purpose)
+missing_field_check = (n: int, decl: int, si: int, args: int[], mapped: int[]):
+    npos = 0
+    loop a in args:
+        if nodes[a].kind != .namedarg: npos += 1
+    if npos == 0 or pos_in_lib(nodes[n].pos): return
+    nf = int(structs[si].nfields)
+    # (one or two left out: more, as Enemy(pos, kind) of a struct of many fields, is on purpose)
+    left = 0
+    loop i in [0..nf):
+        if mapped[i] == 0 and int(fields[int(structs[si].fields) + i].defval) == 0: left += 1
+    if left > 2: return
+    loop i in [0..nf):
+        fi = int(structs[si].fields) + i
+        if mapped[i] != 0 or int(fields[fi].defval) != 0: continue
+        # (an empty array or map, false, none: as likely meant as not)
+        fk = tkind(int(fields[fi].type))
+        if fk != .int_ and fk != .float_ and fk != .vec and fk != .str_ and fk != .struct_: continue
+        sn = name_of(int(nodes[decl].name))
+        fname = name_of(int(fields[fi].name))
+        warn(nodes[n].pos, "{sn}(...) leaves its field '{fname}' at zero ({npos} of its {nf} fields given in order): give it, give it a default in the struct (`{fname}: {type_str(int(fields[fi].type))} = ...`), or name the fields given (`{sn}({name_of(int(fields[int(structs[si].fields)].name))} = ...)`)")
+        return
 
 variant_ctor = (n: int, et: int, vi: int, args: int[]) -> int:
     si = int(types[prune(et)].st)
@@ -2905,6 +2934,20 @@ type_node_of = (t: int, pos: int) -> int:
 
 # a one-character string literal standing for its character code
 # the character of the source at position p (0 past its end)
+# (the value of a literal written as a whole number, 6 and not 6.0, even where it became a float;
+# -1 for anything else)
+written_int = (a: int) -> int:
+    if a == 0 or not is_lit(a): return -1
+    if nodes[a].kind == .int_lit: return nodes[a].ival
+    if nodes[a].kind != .float_lit: return -1
+    f = pos_file(nodes[a].pos)
+    if f < 0 or f >= files.len(): return -1
+    src = files[f].src
+    o = pos_off(nodes[a].pos)
+    loop o < len(src) and is_digit(src[o]): o += 1
+    if o < len(src) and (src[o] == '.' or src[o] == 'e' or src[o] == 'E'): return -1
+    int(nodes[a].fval)
+
 src_char = (p: int) -> u8:
     f = pos_file(p)
     if p <= 0 or f < 0 or f >= files.len(): return 0
