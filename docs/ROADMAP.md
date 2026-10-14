@@ -195,8 +195,20 @@ safety net for changes here.
 
 ## Compile speed for large programs
 
-- Lowering and code generation in parallel (forked workers on Linux and macOS, each making the
-  code of a share of the functions), and less allocation in the compiler.
+Measured October 2026 on bench/big.jo (50k lines, debug, 8 cores, a busy machine): checking 46%
+(parsing included), lowering 20%, code generation 30%; about 0.19 s in all.
+- Code generation in parallel (done for x86-64 on Linux and macOS hosts: compiler/par.jo,
+  forked workers, the same bytes as one processor makes): about 10% off here, more on an idle
+  machine. Next: the same for arm64 code (native builds on Macs).
+- Allocation in the compiler: about 5% of the time, the allocator already doubling arrays and
+  remapping large blocks in place; nothing big there.
+- Lowering in parallel (the next lever, about 1.4x on big.jo with code generation in the same
+  workers): lowering discovers the functions and globals it needs as it goes, so that would come
+  first (the instances are known after checking; globals given places up front), with each
+  worker's string constants and source positions renumbered when joined. Days of work; worth it
+  when programs this large exist.
+- The optimizer's first pass in parallel (release builds: about 20% of building the compiler),
+  its results returned through shared memory.
 - No caching of the library between builds: it is a small part of a large program, and caching
   it would add complexity for small programs only.
 
