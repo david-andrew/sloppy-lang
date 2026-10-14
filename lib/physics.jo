@@ -185,24 +185,29 @@ struct World:
     events: Contact[]
 
 # ---------------- making bodies ----------------
-add_circle = (w: mut World, pos: vec2, radius: f64, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body:
+add_circle = (w: mut World, pos: vec2, radius: f64, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body:
     b = __PBody(kind = kind, pos = pos, radius = f32(radius), friction = f32(friction), bounce = f32(bounce), sensor = sensor)
     m = f32(density) * f32(PI * radius * radius) / 100.0
     __set_mass(b, m, m * f32(radius * radius) / 2.0)
-    __add(w, b)
+    __given_mass(w, __add(w, b), mass)
 
-add_box = (w: mut World, pos: vec2, size: vec2, angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body:
+# (mass = ...: that instead of the density's)
+__given_mass = (w: mut World, b: Body, mass: f64) -> Body:
+    if mass > 0.0: w.set_mass(b, mass)
+    b
+
+add_box = (w: mut World, pos: vec2, size: vec2, angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body:
     h = size * 0.5
-    w.add_polygon(pos, [vec2(-h.x, -h.y), vec2(h.x, -h.y), vec2(h.x, h.y), vec2(-h.x, h.y)], angle, kind, density, friction, bounce, sensor)
+    w.add_polygon(pos, [vec2(-h.x, -h.y), vec2(h.x, -h.y), vec2(h.x, h.y), vec2(-h.x, h.y)], angle, kind, density, friction, bounce, sensor, mass)
 
 # points around pos, in order: a concave polygon is cut into convex parts (points not in order,
 # or crossing themselves: their convex hull)
-add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body:
+add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body:
     pieces = __convex_pieces(points)
     if pieces.len() > 1:
         parts: Part[]
         loop pc in pieces: parts.push(Part.polygon(pc))
-        return __add_parts(w, pos, parts, angle, kind, density, friction, bounce, sensor, points)
+        return __given_mass(w, __add_parts(w, pos, parts, angle, kind, density, friction, bounce, sensor, points), mass)
     vs = __hull(points)
     if vs.len() < 3: panic("a polygon needs 3 points not all in a line")
     # (the body's position is its center of mass)
@@ -226,12 +231,12 @@ add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: Bo
     b = __PBody(kind = kind, pos = pos + rotate(c, angle), angle = f32(angle), verts = vs, normals = ns, friction = f32(friction), bounce = f32(bounce), sensor = sensor)
     m = f32(density * area / 100.0)
     __set_mass(b, m, f32(density * inertia / 100.0))
-    __add(w, b)
+    __given_mass(w, __add(w, b), mass)
 
 # a body made of several shapes, held together as one: `.circle(center, radius)`,
 # `.polygon(points)` and `box_part(center, size)`, placed around pos (turned by angle)
-add_body = (w: mut World, pos: vec2, parts: Part[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body:
-    __add_parts(w, pos, parts, angle, kind, density, friction, bounce, sensor, [])
+add_body = (w: mut World, pos: vec2, parts: Part[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body:
+    __given_mass(w, __add_parts(w, pos, parts, angle, kind, density, friction, bounce, sensor, []), mass)
 
 __add_parts = (w: mut World, pos: vec2, parts0: Part[], angle: f64, kind: BodyKind, density: f64, friction: f64, bounce: f64, sensor: bool, shape_outline: vec2[]) -> Body:
     if parts0.len() == 0: panic("a body needs at least one part")
@@ -400,6 +405,16 @@ __join_convex = (ps: vec2[], p: int[], q: int[]) -> int[]:
             return out
     []
 
+# give a dynamic body another mass (its turning inertia changes with it)
+set_mass = (w: mut World, b: Body, m: f64):
+    if m <= 0.0: panic("a mass must be more than 0 (a body that never moves is `kind = .fixed`)")
+    i = __id(w, b)
+    if w.bodies[i].kind != .dynamic or w.bodies[i].inv_mass == 0.0: return
+    k = f32(1.0 / (f64(w.bodies[i].inv_mass) * m))
+    w.bodies[i].inv_mass = f32(1.0 / m)
+    w.bodies[i].inv_inertia *= k
+    w.bodies[i].free_inv_inertia *= k
+
 __set_mass = (b: mut __PBody, m: f32, i: f32):
     if b.kind != .dynamic or m <= 0.0: return
     b.inv_mass = 1.0 / m
@@ -452,6 +467,8 @@ remove = (w: mut World, b: Body):
     w.bodies[id].gen += 1
     __unshape(w.bodies[id])
     w.free.push(id)
+    # (the contacts from the last step forget it: what is read from them is still there)
+    w.events.retain((c): c.a.id != id and c.b.id != id)
     loop mut j in w.joints:
         if j.alive and (j.a == id or j.b == id):
             j.alive = false

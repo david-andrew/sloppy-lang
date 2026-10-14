@@ -94,7 +94,13 @@ habit = (i: int, want: Tok):
     if word_in(pw, ["class", "interface", "trait", "impl"]):
         fatal(at, "a type with fields is `struct Name:` and its fields below it; functions are written apart and called with a dot (`p.move(dt)` calls `move(p, dt)`)")
     if pw == "for" or pw == "foreach": fatal(at, "loops are `loop x in xs:` (and `loop i in [0..10):` counts from 0 to 9)")
-    if pw == "new" and k == .ident: fatal(at, "a value is made by calling its type: `{tok_src(i)}(...)` (there is no `new`)")
+    if pw == "new" and k == .ident:
+        tn = tok_src(i)
+        if word_in(tn, ["List", "ArrayList", "Array"]): fatal(at, "there is no `new`: an array is `xs: Enemy[]` (empty), or `[a, b]`")
+        if word_in(tn, ["Dictionary", "HashMap", "Map"]): fatal(at, "there is no `new`: a map is `m: \{str: int}` (empty), or `\{\"a\": 1}`")
+        if tn == "Color": fatal(at, "there is no `new`: a color is `rgb(1, 0, 0)` (each part from 0 to 1)")
+        if word_in(tn, ["Vector2", "Vector3", "Vector4"]): fatal(at, "there is no `new`: `vec{tn[6..]}(...)`")
+        fatal(at, "a value is made by calling its type: `{tn}(...)` (there is no `new`)")
     if pw == "switch": fatal(at, "use `match` (`match x:` and an arm for each case below it)")
     if pw == "yield" or pw == "await" or pw == "async": fatal(at, "there are no coroutines: keep a timer in a field and count it down each frame (`e.wait -= dt`, then act when it is below 0)")
     if pw == "while": fatal(at, "`loop condition:` repeats while the condition holds")
@@ -135,7 +141,17 @@ habit = (i: int, want: Tok):
         if j >= 0 and toks[j].kind == .ident and (tok_src(j) == "for" or tok_src(j) == "while"): fatal(toks[j].pos, "loops are `loop i in [0..n):` (i from 0 to n - 1), or `loop condition:` (while it holds)")
     if k == .ellipsis and want == .eof: fatal(toks[i].pos, "an array is spread with `...` after it: `[xs... 4 5]`, `f(args...)`")
     if pw == "throw" or pw == "raise": fatal(at, "there are no exceptions: a function gives back what went wrong as a value (`-> Level | LoadError`), or `panic(\"...\")` stops the program")
-    if word_in(pw, ["export", "pub", "public"]): fatal(at, "every top-level name can be imported already (`from 'file.jo' import name`); a name starting with `_` stays private to its file")
+    if word_in(pw, ["public", "private", "protected", "static", "override", "virtual"]): fatal(at, "there is no `{pw}`: every name can be used from other files (one starting with `_` stays in its own), and a variable or field is written `speed: f64 = 5.0`")
+    if word_in(pw, ["export", "pub"]): fatal(at, "every top-level name can be imported already (`from 'file.jo' import name`); a name starting with `_` stays private to its file")
+    # (C#'s and Java's `void Start()`, `float speed = 5`: the type before the name)
+    if word_in(pw, ["void", "float", "double", "string", "int", "long", "char"]) and k == .ident:
+        nm = tok_src(i)
+        if nk_is(i, .lparen): fatal(at, "a function is written `{nm} = (): ...`, its type after it (`(x: f64) -> f64: ...`); the game calls `update` and `draw` by itself")
+        st = "f64"
+        if pw == "string": st = "str"
+        else if pw == "int" or pw == "long": st = "int"
+        else if pw == "char": st = "u8"
+        if pw != "void": fatal(at, "a variable is written `{nm} = ...`, or with its type after the name: `{nm}: {st} = ...`")
     if pw == "delete" or pw == "del": fatal(at, "`xs.remove(i)` takes an element out of an array, `m.remove(k)` a key out of a map")
     if pw == "typeof" or (k == .ident and tok_src(i) == "instanceof"): fatal(at, "`x is T` asks which member of a union x holds (the other types are known when compiling)")
     value_start = k == .ident or k == .int_lit or k == .float_lit or k == .str_lit
@@ -817,6 +833,13 @@ is_fn_literal = (i: int) -> bool:
     # ((x) => x * 2: JavaScript's arrow)
     if after == .assign and close + 2 < toks.len() and toks[close + 2].kind == .gt and not space_before(close + 2):
         fatal(toks[close + 1].pos, "a function value is written `(x): x * 2` (a colon, not `=>`)")
+    # (update = (dt: f64) {: braces for a block)
+    if after == .lbrace and not p_header and (i + 1 == close or (toks[i + 1].kind == .ident and i + 2 < close and toks[i + 2].kind == .colon)):
+        fatal(toks[close + 1].pos, "a block is a `:` and the lines below it, indented (no braces): `(dt: f64):`")
+    # (f = (): int: a return type after a colon)
+    if after == .colon and close + 3 < toks.len() and toks[close + 2].kind == .ident and toks[close + 3].kind == .colon:
+        tn = tok_src(close + 2)
+        if word_in(tn, ["int", "f64", "f32", "str", "bool", "void", "vec2", "vec3", "vec4", "float", "string", "double"]): fatal(toks[close + 1].pos, "a function's result type is written after `->`: `() -> {tn}:`")
     if after != .colon or p_header: return false
     # the contents must look like parameters: [mut] name [: Type] [= default], ...
     j = i + 1
@@ -1673,6 +1696,12 @@ parse_simple_stmt = () -> int:
     s
 
 end_stmt = (s: int):
+    # (foreach (x in xs):, switch (a):, while (x < 3) { ...: other languages' statements, which
+    # parse as a call up to there)
+    if pk() == .colon or pk() == .lbrace:
+        j = ti
+        loop j > 0 and toks[j - 1].kind != .newline and toks[j - 1].kind != .indent and toks[j - 1].kind != .dedent: j -= 1
+        if toks[j].kind == .ident and j + 1 < toks.len(): habit(j + 1, .newline)
     if s != 0 and has_flag(s, NF_TERMINATED):
         accept(.newline)
         return

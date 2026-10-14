@@ -287,7 +287,7 @@ coerce = (n: int, target: int) -> int:
     if fk == .float_ and tk == .int_: why = " (int(x) makes it a whole number, dropping the fraction)"
     if tk == .bool_ and (fk == .array or fk == .str_ or is_map_type(from)): why = " (not true or false: `xs.len() > 0` asks if it has anything)"
     if tk == .bool_ and (fk == .int_ or fk == .float_): why = " (a number is not true or false: `x != 0` asks)"
-    fatal(nodes[n].pos, "type mismatch: expected {type_str(to)}, found {type_str(from)}{why}")
+    fatal(nodes[n].pos, "type mismatch: expected {type_str(to)}, found {type_str(from)}{why}{coerce_hint}")
     n
 
 # an array literal that can be the fixed-size array type `to` (its elements are checked later)
@@ -521,6 +521,20 @@ check_place = (n: int, for_mut: bool):
         cp_inner -= 1
         return
     if for_mut: fatal(nodes[n].pos, "a `mut` argument must be a variable, field or element")
+    # (w.pos(b).y = 3: a value a function gave back, changed where nothing keeps it)
+    if k == .call:
+        fnm = ""
+        fm = -1
+        cal = int(nodes[n].a)
+        if cal != 0 and (nodes[cal].kind == .ident or nodes[cal].kind == .field): fnm = name_of(int(nodes[cal].name))
+        if nodes[n].sym > 0 and int(nodes[n].sym) < fns.len() and fns[int(nodes[n].sym)].decl != 0:
+            fd = int(fns[int(nodes[n].sym)].decl)
+            fnm = name_of(int(nodes[fd].name))
+            fm = int(nodes[fd].mod)
+        if len(fnm) > 0:
+            setter = ""
+            if lookup(intern("set_{fnm}")) != 0 or (fm >= 0 and modules[fm].names.get(intern("set_{fnm}")) != none): setter = ": `set_{fnm}(...)` changes it"
+            fatal(nodes[n].pos, "this is a copy that {fnm}(...) gave back, so changing it changes nothing{setter}")
     fatal(nodes[n].pos, "cannot assign to this expression")
 
 # ---------------- type expressions written as expressions ----------------
@@ -1159,6 +1173,7 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
             fatal(nodes[n].pos, "{name_of(name)} calls itself here, which repeats without end: the game calls {name_of(name)} by itself, each frame")
     np = nkids(decl)
     if (name == id_rgb or name == id_rgba) and np >= 3 and decl_in_prelude(decl): rgb_check(n, cd.args)
+    if decl_in_prelude(decl) and not pos_in_lib(nodes[n].pos): angle_check(decl, cd.args)
     partial = has_hole(args)
     loop i in [0..np):
         a = cd.args[i]
@@ -1566,6 +1581,28 @@ rgb_check = (n: int, args: int[]):
         if nodes[a].ival > 1: big = true
     if big: warn(nodes[n].pos, "the parts of a color go from 0 to 1: for 0 to 255, divide by 255 or write hex(0xff8000)")
 
+coerce_hint = ""     # (said after a type mismatch, by what asked for the type)
+
+# rotation_y(45): an angle in degrees given where radians go
+angle_check = (decl: int, args: int[]):
+    fnm = name_of(int(nodes[decl].name))
+    loop i in [0..min(args.len(), nkids(decl))):
+        a = args[i]
+        if a == 0 or not has_flag(a, NF_LITERAL): continue
+        txt = ""
+        v = 0.0
+        if nodes[a].kind == .int_lit:
+            v = f64(nodes[a].ival)
+            txt = "{nodes[a].ival}"
+        else if nodes[a].kind == .float_lit:
+            v = nodes[a].fval
+            txt = "{v}"
+        else: continue
+        if abs(v) <= 6.3: continue
+        pn = name_of(int(nodes[kid(decl, i)].name))
+        if pn == "angle" or pn == "yaw" or pn == "pitch" or pn == "roll" or (pn == "a" and (starts_with(fnm, "rotation") or starts_with(fnm, "quat_"))):
+            warn(nodes[a].pos, "{txt} radians is more than a whole turn: angles are in radians (a turn is TAU, 6.28); `{txt}deg` is {txt} degrees")
+
 # a function's name and parameters as written: circle(center: vec2, radius: f64, c: vec4, segments: int = 0)
 # f(..., e, ...) where e is a union (Walker | Flyer) and f has an overload taking each of its
 # members there: `let u = e; if u is Walker: f(..., u, ...) else ...` (the type it gives back), or
@@ -1867,6 +1904,15 @@ KEY_NAMES = ["esc", "escape", "return", "enter", "spacebar", "space", "del", "de
 
 variant_hint_for = (t: int, name: str) -> str:
     tn = type_str(prune(t))
+    # (Unity's Input.GetKey and the like: functions here)
+    if tn == "Input" and starts_with(name, "Get"):
+        if name == "GetKey": return " (a key held is `key_down(.w)`)"
+        if name == "GetKeyDown": return " (a key pressed this frame is `key_pressed(.space)`)"
+        if name == "GetKeyUp": return " (a key let go this frame is `key_released(.space)`)"
+        if name == "GetAxis" or name == "GetAxisRaw": return " (the arrows', WASD's and a stick's direction is `input_axis()`, a vec2)"
+        if name == "GetMouseButton": return " (a mouse button held is `mouse_down(.left)`)"
+        if name == "GetMouseButtonDown": return " (a mouse button pressed this frame is `mouse_pressed(.left)`)"
+        return " (input is asked for with functions: `key_down(.w)`, `key_pressed(.space)`, `input_axis()`, `mouse_pos()`)"
     if tn == "Key":
         w = name
         # (num1, digit1, key_1: n1)
@@ -2224,7 +2270,10 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         t = arg_type(args, 0, 0)
         if types[t].kind != .array: fatal(nodes[n].pos, "remove() needs an array")
         check_place(args[0], false)
+        # (gems.remove(g): by value, as C#'s List.Remove; here by position)
+        coerce_hint = " (remove takes a position: `xs.remove(xs.index_of(x))`, or `xs.retain((y): y != x)` to take out what is equal to x)"
         arg_type(args, 1, T_INT)
+        coerce_hint = ""
         r = int(types[t].elem)
     else if id == .clear:
         nargs_check(n, nargs, 1, 1, "clear")
@@ -3460,7 +3509,32 @@ check_expr = (n: int, expected: int) -> int:
                 nodes[n].aux = i32(vi)
                 nodes[n].a = 0
                 t = tt
-            else: fatal(nodes[n].pos, "type has no member '{name_of(fname)}'")
+            else:
+                # (vec3.up, Vector3.zero: written out here)
+                if tt != 0 and is_vec(tt):
+                    vn = name_of(fname)
+                    dims = vec_n(tt)
+                    lit = ""
+                    if vn == "zero": lit = "0"
+                    else if vn == "one": lit = "1"
+                    else if dims == 3:
+                        if vn == "up": lit = "0, 1, 0"
+                        else if vn == "down": lit = "0, -1, 0"
+                        else if vn == "left": lit = "-1, 0, 0"
+                        else if vn == "right": lit = "1, 0, 0"
+                        else if vn == "forward": lit = "0, 0, -1"
+                        else if vn == "back": lit = "0, 0, 1"
+                    else if dims == 2:
+                        if vn == "up": lit = "0, -1"
+                        else if vn == "down": lit = "0, 1"
+                        else if vn == "left": lit = "-1, 0"
+                        else if vn == "right": lit = "1, 0"
+                    if len(lit) > 0:
+                        why = ""
+                        if vn == "forward": why = " (forward is -z, as look_dir's)"
+                        if dims == 2 and (vn == "up" or vn == "down"): why = " (y goes down the screen)"
+                        fatal(nodes[n].pos, "write it out: `{type_str(tt)}({lit})`{why}")
+                fatal(nodes[n].pos, "type has no member '{name_of(fname)}'")
         else if nodes[n].aux == -2:
             if bk != .tuple: fatal(nodes[n].pos, "'.{nodes[n].ival}' needs a tuple, found {type_str(bt)}")
             if nodes[n].ival < 0 or nodes[n].ival >= int(types[bt].nargs): fatal(nodes[n].pos, "tuple index out of range")
@@ -3497,6 +3571,17 @@ check_expr = (n: int, expected: int) -> int:
                             if int(fields[int(structs[esi].fields) + i].name) == fname: has = true
                     if has:
                         fatal(nodes[n].pos, "this {type_str(bt)} may be none (nothing), which has no {name_of(fname)}: `x!.{name_of(fname)}` when it cannot be none, or `if let v = x: v.{name_of(fname)}`")
+                # (transform.position: a function's name, with a field after it)
+                if tkind(bt) == .fn_:
+                    bn = int(nodes[n].a)
+                    fnn = ""
+                    if nodes[bn].kind == .ident: fnn = name_of(int(nodes[bn].name))
+                    else if nodes[bn].kind == .fnref and nodes[bn].sym > 0 and fns[int(nodes[bn].sym)].decl != 0: fnn = name_of(int(nodes[int(fns[int(nodes[bn].sym)].decl)].name))
+                    if fnn == "transform": fatal(nodes[n].pos, "there are no GameObjects or transforms: where a thing is, is a field of your struct (`pos: vec3`), drawn with `draw_mesh(mesh, translation(pos))`")
+                    if len(fnn) > 0: fatal(nodes[n].pos, "'{fnn}' is a function, which has no field '{name_of(fname)}': `{fnn}(...)` gives what it makes")
+                # (b.velocity, b.position on a physics Body: a handle, asked of its world)
+                if types[bt].kind == .struct_ and type_str(bt) == "Body" and pos_in_lib(nodes[int(structs[int(types[bt].st)].decl)].pos):
+                    fatal(nodes[n].pos, "a Body is a handle into its world: ask the world, `w.pos(b)`, `w.velocity(b)`, `w.rotation(b)`, and change it there, `w.set_pos(b, p)`, `w.set_velocity(b, v)`, `w.push(b, impulse)`")
                 cands = fn_names_for(bt)
                 loop c in cands:
                     if c == fname: fatal(nodes[n].pos, "'{name_of(fname)}' is a function: call it, `x.{name_of(fname)}()`")
@@ -3947,7 +4032,11 @@ check_swizzle = (n: int, bt: int) -> int:
     s = name_of(int(nodes[n].name))
     nb = vec_n(bt)
     if bt == T_MAT4: fatal(nodes[n].pos, "use m[i] to access matrix columns")
-    if len(s) < 1 or len(s) > 4: fatal(nodes[n].pos, "invalid vector component '{s}'")
+    # (v.normalized, v.magnitude: Unity's properties, functions here)
+    if s == "normalized": fatal(nodes[n].pos, "a vector's direction is `normalize(v)`")
+    if s == "magnitude" or s == "length" or s == "Length": fatal(nodes[n].pos, "a vector's length is `length(v)`")
+    if s == "sqrMagnitude" or s == "lengthSquared": fatal(nodes[n].pos, "a vector's length squared is `length_sq(v)`")
+    if len(s) < 1 or len(s) > 4: fatal(nodes[n].pos, "invalid vector component '{s}' (a vector has x, y, z and w; `length(v)`, `normalize(v)`, `dot(a, b)` and the like are functions)")
     loop i in [0..len(s)):
         ci = swizzle_index(s[i])
         if ci < 0 or ci >= nb: fatal(nodes[n].pos, "{type_str(bt)} has no component '{byte_str(int(s[i]))}'")

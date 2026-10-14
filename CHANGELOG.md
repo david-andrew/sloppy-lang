@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+From a Unity developer's first 3D game:
+- Physics: `mass =` on every `add_...` (instead of the density's), `w.set_mass(b, m)`, in 2D
+  and 3D; physics3d's header says what a density of 1000 weighs. `w.contacts()` forgets a body
+  removed after the step, so reading the rest of them no longer stops the game.
+- Rotations: `quat_euler(pitch, yaw, roll)`, `facing(dir)` and `quat_facing(dir)` (turn a
+  model's front, -z, toward a direction), `quat_inverse`, `quat_from_mat4`, `scaling(2.0)`.
+- A warning for an angle in degrees where radians go (`rotation_y(45)`: `45deg`).
+- Errors for Unity's and C#'s habits: `transform.position`, `Input.GetKey`, `Mathf.Clamp`,
+  `Debug.Log`, `GameObject`, `Instantiate`/`Destroy`, `GetComponent`, `Physics.Raycast`,
+  `SceneManager`, `Quaternion`, `new List<T>()`/`new Color(...)`, `foreach (...)`/`switch
+  (...)`/`while (...) {`, `void Start()`, `float speed = 5`, `public` fields, braces for a block,
+  `(): int:`, `$"..."`, `v.normalized`/`v.magnitude`, `vec3.up`, `xs.Add`/`Remove`, a field of a
+  physics Body (`b.velocity`: ask the world), `w.pos(b).y = 3` (a copy: `set_pos`),
+  `gems.remove(g)` (remove takes a position), and Unity's collision callbacks (a warning).
+
 - 2D physics: bodies of several shapes, `w.add_body(pos, [.circle(vec2(-40, 0), 15),
   physics.box_part(vec2(0, 0), vec2(80, 8))])`, held together as one (mass, center and turning
   inertia from all of them); `add_polygon` with a concave outline (an L, a U, a star) cuts it

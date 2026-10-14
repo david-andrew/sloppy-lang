@@ -1709,11 +1709,13 @@ Vector and matrix math for the built-in vec2/vec3/vec4/mat4 types (f32 component
 
 - `mat4_identity = () -> mat4`
 - `translation = (t: vec3) -> mat4`
-- `scaling = (s: vec3) -> mat4`
+- `scaling = (s: vec3) -> mat4`: the same in every direction
+- `scaling = (s: f64) -> mat4`
 - `rotation = (axis0: vec3, a: f64) -> mat4`
 - `rotation_x = (a: f64) -> mat4`
 - `rotation_y = (a: f64) -> mat4`
 - `rotation_z = (a: f64) -> mat4`
+- `facing = (dir: vec3, up: vec3 = vec3(0, 1, 0)) -> mat4`: the turn that points a model's front (-z, as look_dir's) along dir, its top toward up: a turret aimed at its target, a beam from a to b (`translation(a) * facing(b - a)`)
 - `perspective = (fov_y: f64, aspect: f64, near: f64, far: f64) -> mat4`
 - `orthographic = (left: f64, right: f64, bottom: f64, top: f64, near: f64, far: f64) -> mat4`
 - `look_at = (eye: vec3, target: vec3, up: vec3) -> mat4`
@@ -1725,6 +1727,10 @@ Vector and matrix math for the built-in vec2/vec3/vec4/mat4 types (f32 component
 #### Quaternions
 
 - `quat_axis_angle = (axis: vec3, a: f64) -> vec4`
+- `quat_euler = (pitch: f64, yaw: f64, roll: f64) -> vec4`: turned by pitch about x, then yaw about y, roll about z (as Unity's Euler angles: roll first, then pitch, then yaw), in radians (`quat_euler(0, 90deg, 0)`)
+- `quat_facing = (dir: vec3, up: vec3 = vec3(0, 1, 0)) -> vec4`: the turn that points -z along dir (facing's, as a quaternion)
+- `quat_inverse = (q: vec4) -> vec4`: the turn back
+- `quat_from_mat4 = (m0: mat4) -> vec4`: a rotation matrix's turn (its scaling left out)
 - `quat_mul = (a: vec4, b: vec4) -> vec4`
 - `quat_rotate = (q: vec4, v: vec3) -> vec3`
 - `quat_to_mat4 = (q: vec4) -> mat4`
@@ -2998,10 +3004,11 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 
 #### Making bodies
 
-- `add_circle = (w: mut World, pos: vec2, radius: f64, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`
-- `add_box = (w: mut World, pos: vec2, size: vec2, angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`
-- `add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`: points around pos, in order: a concave polygon is cut into convex parts (points not in order, or crossing themselves: their convex hull)
-- `add_body = (w: mut World, pos: vec2, parts: Part[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`: a body made of several shapes, held together as one: `.circle(center, radius)`, `.polygon(points)` and `box_part(center, size)`, placed around pos (turned by angle)
+- `add_circle = (w: mut World, pos: vec2, radius: f64, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`
+- `add_box = (w: mut World, pos: vec2, size: vec2, angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`
+- `add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`: points around pos, in order: a concave polygon is cut into convex parts (points not in order, or crossing themselves: their convex hull)
+- `add_body = (w: mut World, pos: vec2, parts: Part[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`: a body made of several shapes, held together as one: `.circle(center, radius)`, `.polygon(points)` and `box_part(center, size)`, placed around pos (turned by angle)
+- `set_mass = (w: mut World, b: Body, m: f64)`: give a dynamic body another mass (its turning inertia changes with it)
 - `remove = (w: mut World, b: Body)`: take b out of the world (and the joints it is in); its handle then means nothing (a handle used after this panics; removing twice does nothing)
 - `remove = (w: mut World, j: Joint)`
 - `joint_alive = (w: World, j: Joint) -> bool`: the joint is still there (not removed, nor one of its bodies)
@@ -3109,7 +3116,7 @@ update = (dt: f64): w.step(dt)
 draw = (): draw_mesh(cube, w.transform(crate))         # (position and turn, as a mat4)
 ```
 
-Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the game gives them), with one shape each; `w.add_mesh(triangles)` adds fixed triangles (a level, from a model: physics3d.triangles(model_data)). Joints: `w.ball(a, b, at)` (a ball and socket), `w.hinge(a, b, at, axis)`, `w.rod(a, b, at_a, at_b)` (a distance, or a spring, or a rope). Rays: `w.raycast`. A character: `w.character(pos, radius, height)` and `w.walk(c, velocity, dt)`, a capsule that walks up slopes and steps, slides down steeper ones, and is pushed by nothing but the level. As in 2D, stepping is the same for the same inputs (for replays and rollback). A small, fast body can pass through a thin wall in one step (there is no continuous collision yet): for bullets, use w.raycast from where they were to where they are.
+Masses come from sizes and `density` (kilograms per cubic meter: 1000 is water's, so a ball of radius 0.5 weighs 524 kg), or are given: `w.add_sphere(pos, 0.5, mass = 1)`, `w.set_mass(b, 2)`. Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the game gives them), with one shape each; `w.add_mesh(triangles)` adds fixed triangles (a level, from a model: physics3d.triangles(model_data)). Joints: `w.ball(a, b, at)` (a ball and socket), `w.hinge(a, b, at, axis)`, `w.rod(a, b, at_a, at_b)` (a distance, or a spring, or a rope). Rays: `w.raycast`. A character: `w.character(pos, radius, height)` and `w.walk(c, velocity, dt)`, a capsule that walks up slopes and steps, slides down steeper ones, and is pushed by nothing but the level. As in 2D, stepping is the same for the same inputs (for replays and rollback). A small, fast body can pass through a thin wall in one step (there is no continuous collision yet): for bullets, use w.raycast from where they were to where they are.
 
 - `enum BodyKind: dynamic, fixed, moving`
 - `enum Shape: none, sphere, box, capsule, triangles`
@@ -3164,11 +3171,12 @@ Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the gam
 
 #### Making bodies
 
-- `add_sphere = (w: mut World, pos: vec3, radius: f64, kind: BodyKind = .dynamic, density: f64 = 1000, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`
-- `add_box = (w: mut World, pos: vec3, size: vec3, rot: vec4 = vec4(0, 0, 0, 1), kind: BodyKind = .dynamic, density: f64 = 1000, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`: size: the box's full width, height and depth
-- `add_capsule = (w: mut World, pos: vec3, radius: f64, height: f64, rot: vec4 = vec4(0, 0, 0, 1), kind: BodyKind = .dynamic, density: f64 = 1000, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false) -> Body`: a capsule standing up: height from the bottom to the top of its round ends
+- `add_sphere = (w: mut World, pos: vec3, radius: f64, kind: BodyKind = .dynamic, density: f64 = 1000, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`
+- `add_box = (w: mut World, pos: vec3, size: vec3, rot: vec4 = vec4(0, 0, 0, 1), kind: BodyKind = .dynamic, density: f64 = 1000, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`: size: the box's full width, height and depth
+- `add_capsule = (w: mut World, pos: vec3, radius: f64, height: f64, rot: vec4 = vec4(0, 0, 0, 1), kind: BodyKind = .dynamic, density: f64 = 1000, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`: a capsule standing up: height from the bottom to the top of its round ends
 - `add_mesh = (w: mut World, triangles: vec3[], friction: f64 = 0.6) -> Body`: fixed triangles (three corners each, in the world): a level, the ground
 - `triangles = (md: ModelData) -> vec3[]`: a model's triangles, where its parts are (for add_mesh)
+- `set_mass = (w: mut World, b: Body, m: f64)`: give a dynamic body another mass, in kilograms (its turning inertia changes with it)
 - `remove = (w: mut World, b: Body)`: take b out of the world (and the joints it is in); its handle then means nothing (a handle used after this panics; removing twice does nothing)
 - `remove = (w: mut World, j: Joint)`
 - `joint_alive = (w: World, j: Joint) -> bool`: the joint is still there (not removed, nor one of its bodies)
