@@ -1216,6 +1216,39 @@ draw = ():
 - `screen_to_world = (p: vec2) -> vec2`: convert a screen position to world coordinates under the current transform
 - `world_to_screen = (p: vec2) -> vec2`: where a world position appears on the screen under the current transform (the other way)
 
+#### Effects: a shader of your own on 2D drawing
+
+- `struct Pixel2D`: An effect is a fragment function run for each pixel of what is drawn while it is on (sprites, shapes, text): it gets the pixel (where it is, its place in the texture, the color it is drawn with) and the uniforms, Effect2D[P] holding your parameters P; base_color gives what drawing would have made of the pixel without it.
+  ```gdscript
+  struct Glow: strength: f32
+  glow_fs = (p: Pixel2D, u: Effect2D[Glow]) -> vec4:
+      c = base_color(p, u)
+      vec4(c.rgb * u.params.strength, c.a)
+  glow = make_shader(shader(effect_vs, glow_fs))      # once
+  ...
+  use_effect(glow, Glow(1.5))                         # in draw: what is drawn now glows
+  sprite(ship, pos)
+  no_effect()
+  ```
+  ```gdscript
+  struct Pixel2D:
+      pos: vec4               # where on the screen, in pixels from the bottom left (z, w: 0 and 1)
+      uv: vec2                # where in the texture (0 to 1)
+      color: vec4             # the color it is drawn with
+      mode: f32               # (1 for text: its texture holds distances to the letters' edges)
+  ```
+- `struct Effect2D[P]`
+  ```gdscript
+  struct Effect2D[P]:
+      proj: mat4
+      texture: Texture        # what is being drawn (white for shapes)
+      params: P
+  ```
+- `effect_vs[P] = (v: __Vert2D, u: Effect2D[P]) -> Pixel2D`: the vertex function of every effect: shader(effect_vs, your_fragment_function)
+- `base_color[P] = (p: Pixel2D, u: Effect2D[P]) -> vec4`: the pixel's color as 2D drawing makes it without an effect
+- `use_effect[P] = (sh: Shader, params: P)`: 2D drawing from here on goes through effect sh (made with shader(effect_vs, ...)), with params, until no_effect() or the end of the frame
+- `no_effect = ()`: back to drawing without an effect
+
 #### Textures
 
 - `texture = (img: Image, smooth: bool = true) -> Texture`: upload an image to the GPU

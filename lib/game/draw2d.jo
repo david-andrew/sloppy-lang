@@ -99,6 +99,77 @@ struct __Out2D:
 
 __vs2d = (v: __Vert2D, u: __Params2D) -> __Out2D: __Out2D(u.proj * vec4(v.pos, 0, 1), v.uv, v.color, v.mode)
 
+# ---------------- effects: a shader of your own on 2D drawing ----------------
+# An effect is a fragment function run for each pixel of what is drawn while it is on (sprites,
+# shapes, text): it gets the pixel (where it is, its place in the texture, the color it is drawn
+# with) and the uniforms, Effect2D[P] holding your parameters P; base_color gives what drawing
+# would have made of the pixel without it.
+#
+#   struct Glow: strength: f32
+#   glow_fs = (p: Pixel2D, u: Effect2D[Glow]) -> vec4:
+#       c = base_color(p, u)
+#       vec4(c.rgb * u.params.strength, c.a)
+#   glow = make_shader(shader(effect_vs, glow_fs))      # once
+#   ...
+#   use_effect(glow, Glow(1.5))                         # in draw: what is drawn now glows
+#   sprite(ship, pos)
+#   no_effect()
+struct Pixel2D:
+    pos: vec4               # where on the screen, in pixels from the bottom left (z, w: 0 and 1)
+    uv: vec2                # where in the texture (0 to 1)
+    color: vec4             # the color it is drawn with
+    mode: f32               # (1 for text: its texture holds distances to the letters' edges)
+
+struct Effect2D[P]:
+    proj: mat4
+    texture: Texture        # what is being drawn (white for shapes)
+    params: P
+
+# the vertex function of every effect: shader(effect_vs, your_fragment_function)
+effect_vs[P] = (v: __Vert2D, u: Effect2D[P]) -> Pixel2D: Pixel2D(u.proj * vec4(v.pos, 0, 1), v.uv, v.color, v.mode)
+
+# the pixel's color as 2D drawing makes it without an effect
+base_color[P] = (p: Pixel2D, u: Effect2D[P]) -> vec4:
+    t = sample(u.texture, p.uv)
+    if p.mode > 0.5:
+        w = max(fwidth(t.x), 0.02)
+        a = smoothstep(0.5 - w, 0.5 + w, t.x)
+        return vec4(p.color.xyz, p.color.w * a)
+    t * p.color
+
+__fx_on = false
+__fx_draw: () -> void = (): pass
+__fx_mesh = Mesh()
+__fx_has_mesh = false
+
+# 2D drawing from here on goes through effect sh (made with shader(effect_vs, ...)), with params,
+# until no_effect() or the end of the frame
+use_effect[P] = (sh: Shader, params: P):
+    flush()
+    __fx_on = true
+    __fx_draw = ():
+        vs: __Vert2D[]
+        vs.reserve(__b_count)
+        loop i in [0..__b_count):
+            q = __b_buf + i * __VFLOATS
+            vs.push(__Vert2D(vec2(q[0], q[1]), vec2(q[2], q[3]), vec4(q[4], q[5], q[6], q[7]), q[8]))
+        if not __fx_has_mesh:
+            __fx_mesh = mesh(vs)
+            __fx_has_mesh = true
+        else: update_mesh(__fx_mesh, vs)
+        __fx_mesh.count = vs.len()
+        # (draw flushes 2D drawing first: the batch is in the mesh now)
+        __b_count = 0
+        __fx_on = false
+        draw(sh, __fx_mesh, Effect2D[P](__proj, Texture(__b_tex, 1, 1), params))
+        __fx_on = true
+
+# back to drawing without an effect
+no_effect = ():
+    if not __fx_on: return
+    flush()
+    __fx_on = false
+
 __fs2d = (i: __Out2D, u: __Params2D) -> vec4:
     t = sample(u.tex, i.uv)
     if i.mode > 0.5:
@@ -167,6 +238,7 @@ __font_init = ():
 
 __gfx_begin_frame = ():
     __gfx_init()
+    __fx_on = false
     __screen_layout()
     __canvas_begin()
     __cur_target = -1
@@ -388,6 +460,10 @@ world_to_screen = (p: vec2) -> vec2:
 # ---------------- batching ----------------
 flush = ():
     if __b_count == 0: return
+    if __fx_on:
+        __fx_draw()
+        __b_count = 0
+        return
     when TARGET != "wasm":
         if __soft:
             __sw_draw2d(__b_buf, __b_count, __proj, __b_tex)

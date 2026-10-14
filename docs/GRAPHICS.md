@@ -77,6 +77,25 @@ at 32 bits and an `f64` is an `f32`. Use `i32`, `u32` and `f32` in shaders and t
 software renderer) gives the same answers. Functions such as `sin`, `exp` and `pow` may differ
 in the last bits between GPUs, as they do in every graphics API.
 
+**Effects on 2D drawing.** A fragment function of your own can run for everything 2D drawing
+draws (sprites, shapes, text), as LÖVE's `setShader`: make it with the library's vertex
+function, `fx = make_shader(shader(effect_vs, my_fs))`, then `use_effect(fx, params)` before
+the drawing and `no_effect()` after (effects end with the frame). The fragment function takes a
+`Pixel2D` (`pos`, `uv`, `color`) and an `Effect2D[P]` whose `params` are yours; `base_color(p, u)`
+is the color the pixel would have had:
+
+```gdscript
+gray_fs = (p: Pixel2D, u: Effect2D[f32]) -> vec4:
+    c = base_color(p, u)
+    g = dot(c.xyz, vec3(0.3, 0.59, 0.11))
+    vec4(mix(c.xyz, vec3(g, g, g), u.params), c.w)
+gray = make_shader(shader(effect_vs, gray_fs))
+...
+use_effect(gray, f32(1.0))
+sprite(enemy, pos)
+no_effect()
+```
+
 ## Computing on the GPU
 
 There are three levels, from the simplest to the most control. All three also run without a

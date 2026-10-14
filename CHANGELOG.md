@@ -13,6 +13,10 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- Effects on 2D drawing (LÖVE's `setShader`): `use_effect(fx, params)` runs a fragment function
+  of your own for what is drawn until `no_effect()`, with `fx = make_shader(shader(effect_vs,
+  my_fs))`; `base_color(p, u)` gives what the pixel would have been. On every renderer. Uniform
+  structs may hold structs on OpenGL too, and `shader()` takes a generic vertex function.
 - `ui_text_field("Name", name)`: a line of text typed into a menu (letters and space type
   there instead of moving through the menu; long text shows its end); `without_last_char(s)`
   (a backspace that takes a whole UTF-8 character).
