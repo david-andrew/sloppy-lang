@@ -405,6 +405,8 @@ HABITS = ["True", "`true`", "False", "`false`", "None", "`none`", "nil", "`none`
     "lerp_angle", "`approach_angle` or `turn_toward`",
     "free", "nothing: memory is given back when the last use of it is gone", "malloc", "an array (`fill(u8(0), n)`, given back by itself)",
     "memcpy", "`mem_copy(dst, src, n)`", "memmove", "`mem_copy(dst, src, n)`", "memset", "`fill(u8(0), n)` for a new array, or a loop",
+    "tostring", "`str(x)`", "tonumber", "`to_int(s)` or `to_float(s)` (an optional: none when it is not a number)", "ipairs", "`loop i in 0.. and x in xs:`", "pairs", "`loop k, v in m:`",
+    "math", "the plain functions: `floor(x)`, `sqrt(x)`, `random()`", "table", "an array (`T[]`) or a map (`\{K: V}`)", "require", "`import name` (a library module) or `use 'file.jo'`",
     "set", "a map to `bool` (`\{str: bool}`) or `unique(xs)`", "Set", "a map to `bool` (`\{str: bool}`) or `unique(xs)`"]
 
 habit_name = (name: str) -> str:
@@ -977,8 +979,9 @@ get_fn_inst = (decl: int, targs: int[], use_pos: int) -> int:
     di = decl_info(decl)
     sig = fn_sig(decl)
     loop f in decl_infos[di].insts:
-        same = true
+        same = fns[f].targs.len() == targs.len()
         loop k in [0..targs.len()):
+            if not same: break
             if not type_eq(fns[f].targs[k], targs[k]):
                 same = false
                 break
@@ -1477,6 +1480,7 @@ check_for = (s: int):
             nodes[it].c = i32(last_checked)
             if la and lb and not has_flag(int(nodes[it].c), NF_LITERAL): t = int(nodes[int(nodes[it].c)].type)
         if la and lb and (not has_flag(it, NF_STEP) or has_flag(int(nodes[it].c), NF_LITERAL)): t = T_INT
+        if tkind(t) == .str_: fatal(nodes[it].pos, "text is joined with `+` (or put in a string: \"\{a}\{b}\"); `..` makes a range of numbers")
         if not is_int(t) or nodes[int(nodes[it].a)].kind == .float_lit or nodes[int(nodes[it].b)].kind == .float_lit:
             if is_int(t): t = T_FLOAT
             fatal(nodes[it].pos, "a range counts in whole numbers, not {type_str(t)} (for 0.0 to 1.0 in tenths, count to 10 and divide: `loop i in [0..10): x = f64(i) / 10.0`)")
@@ -2506,9 +2510,13 @@ check_program = (main_path: str):
     has_drw = modules[mainm].names.get(intern("draw")) != none
     # (Godot's callbacks, which nothing here calls)
     if not has_upd and not has_drw:
-        loop gn in ["_process", "_physics_process", "_ready", "_draw", "_input"]:
+        loop gn in ["_process", "_physics_process", "_ready", "_draw", "_input", "load"]:
             if let gs = modules[mainm].names.get(intern(gn)):
                 if syms[gs].decl != 0: warn(nodes[int(syms[gs].decl)].pos, "nothing calls {gn}: a game is `update = (dt: f64): ...`, called each frame, and `draw = (): ...` after it; what runs once goes at the top level")
+    # (LÖVE's input callbacks: input is asked for, each frame)
+    loop gn in ["keypressed", "keyreleased", "mousepressed", "mousereleased", "textinput", "wheelmoved"]:
+        if let gs = modules[mainm].names.get(intern(gn)):
+            if syms[gs].kind == .fns and syms[gs].decl != 0: warn(nodes[int(syms[gs].decl)].pos, "nothing calls {gn}: in update, ask each frame (`key_pressed(.space)`, `mouse_pressed(.left)`, `text_input()`, `mouse_wheel()`)")
     if test_mode:
         # top-level code runs first (it may set up globals), then each test in order
         skip_main = true
@@ -2584,7 +2592,11 @@ check_program = (main_path: str):
     if let s = modules[mainm].names.get(intern("main")):
         if syms[s].kind == .fns and not skip_main: main_fn = get_fn_inst(int(syms[s].decl), [], 0)
     if let s = modules[mainm].names.get(intern("update")):
-        if syms[s].kind == .fns: update_fn = get_fn_inst(int(syms[s].decl), [], 0)
+        if syms[s].kind == .fns:
+            # (update = (dt): ..., its parameter untyped: the seconds the game loop gives it)
+            ud = int(syms[s].decl)
+            if fn_sig(ud).generic and int(fn_sig(ud).ntp) == 1 and nkids(ud) == 1: update_fn = get_fn_inst(ud, [T_FLOAT], 0)
+            else: update_fn = get_fn_inst(ud, [], 0)
     if let s = modules[mainm].names.get(intern("draw")):
         if syms[s].kind == .fns: draw_fn = get_fn_inst(int(syms[s].decl), [], 0)
     loop d in export_decls:

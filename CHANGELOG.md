@@ -13,6 +13,11 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- From a LÖVE-developer pass: `update = (dt):` with dt untyped works (the compiler panicked);
+  `[Kind.a, .b]` takes the enum from its first element (also as a generic function's argument);
+  an `if` choice in a string's braces (`"{if w: 'x' else: 'y'}"`); messages for `#xs`, `..` on
+  text, `local`, `{x = 1}`, `~=`, `tostring`, `pairs`, `require`, an `if ... else` right after a
+  comprehension's colon; a warning for `keypressed` and the other callbacks nothing calls.
 - From a NumPy-user pass: `random()` in parallel code no longer races on one generator (each
   worker thread has its own; `rng(seed + k)` for the same numbers each run); `sum` of floats is
   pairwise (ten million 0.1s make 1000000.0, as NumPy's do); NaN sorts last and makes `max`,
