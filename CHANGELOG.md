@@ -13,6 +13,10 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `loop mut x in xs` whose body adds, removes or replaces elements of xs is an error (they were
+  visited or skipped as the array changed under the loop); `xs.retain((x): keep)` keeps some in
+  place. Assigning to a field of a narrowed optional or union (`x.hp = 7` after `if x is Enemy`,
+  for globals and fields) works (only `-=` and the like did), as does `x!.f = v`.
 - `Atomic`: a number parallel code changes together (`atomic(0)`, `add`, `get`, `set`,
   `compare_swap`, `set_max`): counts of work done, a flag that stops the other threads.
 - `sin` and `cos` of an `f32` (shader code) give an `f32`, computed with shorter polynomials

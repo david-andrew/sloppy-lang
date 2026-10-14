@@ -91,6 +91,7 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `index_of[T] = (xs: T[], x: T) -> int`
 - `map[T, U] = (xs: T[], f: (T) -> U) -> U[]`
 - `filter[T] = (xs: T[], f: (T) -> bool) -> T[]`
+- `retain[T] = (xs: mut T[], keep: (T) -> bool)`: keep only the elements for which keep is true, in their order (in place: bullets.retain((b): b.alive))
 - `each[T] = (xs: T[], f: (T) -> void)`
 - `reduce[T, A] = (xs: T[], init: A, f: (A, T) -> A) -> A`
 - `any[T] = (xs: T[], f: (T) -> bool) -> bool`

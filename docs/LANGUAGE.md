@@ -447,8 +447,10 @@ loop i in 0.. and mut e in enemies: e.hp -= i      # the elements themselves, co
 
 A loop over an array goes over the array as it was when the loop started: removing or adding
 elements inside the loop changes the array, not the elements the loop visits (arrays are values).
-To remove as you go, count down by index (`loop i in [xs.len() - 1, xs.len() - 2..0]`) or keep
-what stays: `xs = [loop x in xs if x.alive: x]`.
+`loop mut` writes the elements in place, so its body may not add, remove or replace elements of
+the array it goes over (the compiler says so); do that after the loop. To keep what stays,
+`xs.retain((x): x.alive)` (in place) or `xs = [loop x in xs if x.alive: x]`; to remove as you go,
+count down by index (`loop i in [xs.len() - 1, xs.len() - 2..0]`).
 
 Iterators joined with `and` advance together until one runs out; joined with `or` they advance
 until all have run out (the variables of finished ones are `none`, so they are optionals).

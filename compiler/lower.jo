@@ -3636,6 +3636,13 @@ gen_for = (s: int):
         else:
             n_snap = arr_len(sv)
             base_snap = e_addi(sv, 24)
+    if aux == 2 and types[ct].kind == .array:
+        key = lpath_key(int(nodes[s].a))
+        if len(key) > 0:
+            at = lm_change_at(int(nodes[s].b), key)
+            if at != 0:
+                p = place_text(int(nodes[s].a))
+                fatal(at, "`loop mut` changes the elements of {p} in place, so its body cannot add, remove or replace elements of {p}: do that after the loop ({p}.retain((x): keep) keeps some; push new ones to another array first), or loop over its indexes")
     # (the array of a `loop mut` that the loop cannot replace or resize: its length is read once)
     nfp = 0
     n_fixed = 0
@@ -3812,6 +3819,37 @@ fp_scan = (n: int, ctx: int):
         if k != .partial: fp_scan(int(nodes[n].d), 0)
     loop i in [0..nkids(n)): fp_scan(kid(n, i), 0)
     loop i in [0..nkids2(n)): fp_scan(kid2(n, i), 0)
+
+# where loop body n changes how many elements path `key` has, or replaces it, by itself (not
+# through what it calls): 0 if it does not. (`loop mut` writes the elements in place: a body
+# adding or removing them would skip or repeat elements.)
+lm_change_at = (n: int, key: str) -> int:
+    if n == 0: return 0
+    k = nodes[n].kind
+    if k == .lambda: return 0
+    if k == .assign:
+        tk = lpath_key(int(nodes[n].a))
+        if len(tk) > 0 and path_within(key, tk): return nodes[n].pos
+    if k == .intrinsic and nkids(n) > 0:
+        id = nodes[n].aux as IN
+        if id == .push or id == .pop or id == .insert or id == .remove or id == .clear or id == .resize or id == .truncate or id == .extend:
+            tk = lpath_key(kid(n, 0))
+            if len(tk) > 0 and path_within(key, tk): return nodes[n].pos
+    if k == .call:
+        loop i in [0..nkids(n)):
+            if has_flag(kid(n, i), NF_MUT):
+                tk = lpath_key(kid(n, i))
+                if len(tk) > 0 and path_within(key, tk): return nodes[kid(n, i)].pos
+    r = lm_change_at(int(nodes[n].a), key)
+    if r == 0: r = lm_change_at(int(nodes[n].b), key)
+    if r == 0 and k != .for_:
+        r = lm_change_at(int(nodes[n].c), key)
+        if r == 0 and k != .partial: r = lm_change_at(int(nodes[n].d), key)
+    loop i in [0..nkids(n)):
+        if r == 0: r = lm_change_at(kid(n, i), key)
+    loop i in [0..nkids2(n)):
+        if r == 0: r = lm_change_at(kid2(n, i), key)
+    r
 
 # an assignment target: the arrays along it have elements written; a path itself is replaced
 fp_target = (t: int):
