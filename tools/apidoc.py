@@ -79,7 +79,7 @@ TOPICS = [
      "and [playing over a network](MULTIPLAYER.md) for choosing between them."),
 ]
 # the library's own machinery (the runtime, the OS and graphics layers, the prompt...): not listed
-INTERNAL = {"core/rt", "core/fmt", "core/windows", "core/macos", "game/dl", "game/cocoa", "game/x11", "game/wayland", "game/wlclient", "game/dmabuf", "game/vk", "game/vkgl",
+INTERNAL = {"core/rt", "core/fmt", "core/windows", "core/macos", "game/dl", "game/cocoa", "game/x11", "game/wayland", "game/wlclient", "game/dmabuf", "game/vk", "game/vkgl", "game/metal",
             "game/gl", "game/softgl", "std/backtrace", "std/snapshot", "std/repl", "std/watch"}
 
 # what the compiler itself provides: (topic, section, name, signatures, what it does)
