@@ -13,6 +13,9 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `@cabi` functions called on threads C made (pthreads, a library's callbacks) can allocate:
+  once one is called, the allocator tells threads apart by their stacks and gives C's a state
+  of their own, taken in turns (several at once crashed).
 - `x: T` for a struct with default field values starts with them (as `T()` would), and so does
   a field left out whose own struct has defaults; they were zero, unlike a map's new entries.
 - TCP in `import net`: `tcp_connect` (waiting up to a timeout), `tcp_listen`, `tcp_accept`,

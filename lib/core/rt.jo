@@ -47,12 +47,36 @@ const __TS_WORDS = 72
 const __TS_BIG = 67
 const __BIG_KEEP = 64 << 20            # (native: at most this much is kept; a web page keeps all)
 __tstate: *int = null
+# (threads C made, which call @cabi functions: one more state, which they take turns at, by
+# __ts_lock; told apart by their stacks, which are neither the main thread's nor the workers')
+__ts_foreign: *int = null
+__ts_lock = 0
+__main_sp = 0
+__c_threads = false             # (a @cabi function has been called: from then on, by stack)
 
 __ts = () -> *int:
     if __tstate == null: __ts_init()
+    if __c_threads: return __ts_by_stack()
     __tstate + __tid() * __TS_WORDS
 
-__ts_init = (): __tstate = __os_pages((__MAX_THREADS + 1) * __TS_WORDS * 8) as *int
+@noinline
+__ts_by_stack = () -> *int:
+    when TARGET == "wasm":
+        return __tstate
+    else:
+        sp = __stack_ptr()
+        if __tstack_base != null and sp >= __tstack_base and sp < __tstack_base + (__MAX_THREADS << __TSTACK_SHIFT):
+            return __tstate + (((sp - __tstack_base) >> __TSTACK_SHIFT) + 1) * __TS_WORDS
+        a = sp as int
+        # (the main thread's stack: from where it was when the program began, down by up to 120 MB)
+        if a <= __main_sp + 65536 and a > __main_sp - (120 << 20): return __tstate
+        __ts_foreign
+
+__ts_init = ():
+    __tstate = __os_pages((__MAX_THREADS + 2) * __TS_WORDS * 8) as *int
+    __ts_foreign = __tstate + (__MAX_THREADS + 1) * __TS_WORDS
+    when TARGET != "wasm":
+        __main_sp = __stack_ptr() as int
 
 # number of live heap allocations (useful for leak tests)
 alloc_count = () -> int:
@@ -167,8 +191,9 @@ __alloc_raw = (size: int) -> *u8: __alloc_z(size, false)
 # freed before; the rest out of line)
 __alloc_z = (size: int, zero: bool) -> *u8:
     n = size + 16
+    t = __ts()
+    if t == __ts_foreign: return __alloc_foreign(size, zero)
     if n <= 262144:
-        t = __ts()
         c = __size_class(n)
         lists = (t + 3) as **u8
         head = lists[c]
@@ -179,6 +204,28 @@ __alloc_z = (size: int, zero: bool) -> *u8:
             (head as *int)[0] = c
             return head + 16
     __alloc_slow(size, zero)
+
+# (a thread C made: the shared state, one thread at a time)
+@noinline
+__alloc_foreign = (size: int, zero: bool) -> *u8:
+    lk = &__ts_lock
+    loop __atomic_cas(lk, 0, 1) != 0: pass
+    t = __ts_foreign
+    n = size + 16
+    r: *u8 = null
+    if n <= 262144:
+        c = __size_class(n)
+        lists = (t + 3) as **u8
+        head = lists[c]
+        if head != null:
+            t[2] += 1
+            lists[c] = (head as **u8)[0]
+            if zero: mem_set(head + 16, 0, size)
+            (head as *int)[0] = c
+            r = head + 16
+    if r == null: r = __alloc_slow(size, zero)
+    __atomic_cas(lk, 1, 0)
+    r
 
 __alloc_slow = (size: int, zero: bool) -> *u8:
     t = __ts()
@@ -208,15 +255,34 @@ __alloc_slow = (size: int, zero: bool) -> *u8:
 __free = (p: *u8):
     if p == null: return
     h = (p - 16) as *int
+    t = __ts()
+    if t == __ts_foreign:
+        __free_foreign(h)
+        return
     if h[1] == -1:
         __free_big(h)
         return
-    t = __ts()
     t[2] -= 1
     c = h[0]
     lists = (t + 3) as **u8
     (h as **u8)[0] = lists[c]
     lists[c] = h as *u8
+
+@noinline
+__free_foreign = (h: *int):
+    lk = &__ts_lock
+    loop __atomic_cas(lk, 0, 1) != 0: pass
+    if h[1] == -1:
+        __free_big(h)
+        __atomic_cas(lk, 1, 0)
+        return
+    t = __ts_foreign
+    t[2] -= 1
+    c = h[0]
+    lists = (t + 3) as **u8
+    (h as **u8)[0] = lists[c]
+    lists[c] = h as *u8
+    __atomic_cas(lk, 1, 0)
 
 __free_big = (h: *int):
     t = __ts()
@@ -309,7 +375,8 @@ __rc_dec_test = (p: *u8) -> bool:
     h[0] -= 1
     h[0] == 0
 
-# release a plain object (string or array of plain values)
+# release a plain object (string or array of plain values; one call at each place, not two)
+@noinline
 __rc_dec = (p: *u8):
     if __rc_dec_test(p): __free(p)
 

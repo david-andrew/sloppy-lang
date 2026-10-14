@@ -1073,7 +1073,7 @@ q = p + 2                                    # two elements on, not two bytes
 print(xs, q[0], size_of(i32))
 ```
 
-`@cabi` functions run on threads C makes (pthreads, a library's callbacks) only if they do not
-allocate (make strings, arrays or maps): the memory allocator is the program's own and is not
-shared with threads it did not start. For work on several threads, use `parallel_map` and the
-rest of [Parallelism](#11-parallelism).
+`@cabi` functions may run on threads C makes (pthreads, a library's callbacks): such threads
+take turns at memory of their own. What they share with the rest of the program is theirs to
+guard (reference counts change without atomics there); for work on several threads, use
+`parallel_map` and the rest of [Parallelism](#11-parallelism).
