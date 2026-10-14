@@ -193,6 +193,74 @@ pose_at = (m: Model, anim: int, time: f64, looped: bool = true) -> Pose:
             else: p.s[c.node] = x
     p
 
+# ---------------- an animation player ----------------
+# plays a model's animations by name, fading from one to the next:
+#   anim: Animator
+#   anim.play(robot, "Run")                          # in update: what it does now (again: no restart)
+#   anim.play(robot, "Jump", looped = false)          # once, then anim.finished
+#   anim.update(robot, dt)
+#   if anim.passed(0.3): play_at(step_sound, pos)     # the frame it goes past 0.3 s (footsteps)
+#   draw_model(robot, transform(pos), pose = anim.pose(robot))
+struct Animator:
+    current = -1            # the animation playing (find_animation's number; -1: none)
+    time = 0.0              # how far into it, in seconds
+    looped = true
+    speed = 1.0
+    finished = false        # one played once has come to its end (it holds its last pose)
+    last_time = 0.0         # (time before the last update)
+    prev = -1               # (the one fading out, where it was, and how far the fade has come)
+    prev_time = 0.0
+    prev_looped = true
+    fade = 0.0
+    faded = 0.0
+
+# play the animation named `name` (already playing: it goes on; restart = true starts it over),
+# fading in over `fade` seconds
+play = (a: mut Animator, m: Model, name: str, looped: bool = true, fade: f64 = 0.2, speed: f64 = 1.0, restart: bool = false):
+    k = find_animation(m, name)
+    if k == a.current and not restart and not a.finished:
+        a.speed = speed
+        return
+    if a.current >= 0 and fade > 0.0:
+        a.prev = a.current
+        a.prev_time = a.time
+        a.prev_looped = a.looped
+        a.fade = fade
+        a.faded = 0.0
+    else: a.prev = -1
+    a.current = k
+    a.time = 0.0
+    a.last_time = 0.0
+    a.looped = looped
+    a.speed = speed
+    a.finished = false
+
+update = (a: mut Animator, m: Model, dt: f64):
+    a.last_time = a.time
+    a.time += dt * a.speed
+    n = animation_length(m, a.current)
+    if not a.looped and a.time >= n:
+        a.time = n
+        a.finished = true
+    if a.prev >= 0:
+        a.prev_time += dt
+        a.faded += dt
+        if a.faded >= a.fade: a.prev = -1
+
+# the last update went past time t of the animation (once per loop, for a looped one)
+passed = (a: Animator, m: Model, t: f64) -> bool:
+    n = animation_length(m, a.current)
+    if not a.looped or n <= 0.0: return a.last_time < t and a.time >= t
+    k0 = floor((a.last_time - t) / n)
+    k1 = floor((a.time - t) / n)
+    k1 > k0
+
+# the pose to draw (the fade from the one before, while it lasts)
+pose = (a: Animator, m: Model) -> Pose:
+    p = pose_at(m, a.current, a.time, a.looped)
+    if a.prev < 0 or a.fade <= 0.0: return p
+    blend_poses(pose_at(m, a.prev, a.prev_time, a.prev_looped), p, a.faded / a.fade)
+
 # between two poses of the same model: k = 0 is a, 1 is b (to fade from one animation to the next)
 blend_poses = (a: Pose, b: Pose, k: f64) -> Pose:
     if a.t.len() != b.t.len(): return b

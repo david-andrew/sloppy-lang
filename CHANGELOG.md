@@ -13,6 +13,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `x: T` for a struct with default field values starts with them (as `T()` would), and so does
+  a field left out whose own struct has defaults; they were zero, unlike a map's new entries.
 - TCP in `import net`: `tcp_connect` (waiting up to a timeout), `tcp_listen`, `tcp_accept`,
   `tcp_send`, `tcp_receive` (waiting up to `wait` for the first bytes), `tcp_closed`,
   `tcp_close`: for tools and servers speaking other programs' protocols (HTTP and the like).
@@ -118,6 +120,9 @@ Language and library:
   `struct B(A)`, a field read from a union of structs, a library module used without `import`.
 
 Games:
+- `Animator`: plays a model's animations by name (`anim.play(robot, "Run")`, again: it goes
+  on), fades from one to the next, plays one once (`finished`), `passed(t)` for events such as
+  footsteps, and `pose(...)` to draw with.
 - Physics: a sensor keeps reporting a body that falls asleep inside it, and does not wake it
   (2D and 3D; its contact vanished, and came back as new when it woke). `overlap_sphere`,
   `overlap_box` and `w.overlaps(character)`: the bodies, sensors too, in a shape or around a
