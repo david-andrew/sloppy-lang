@@ -13,6 +13,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- A warning for `{hits / shots:.1%}` with whole numbers (the fraction is dropped before it is
+  formatted).
 - Map comprehensions: `{loop w in words: w: len(w)}` (with `if` filters and nested loops, as in
   brackets).
 - `TextError`'s fields are `message`, `line` and `column`, as `JsonError`'s are.
