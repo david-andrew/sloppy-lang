@@ -8,6 +8,8 @@ From a teacher preparing a first programming class:
 - Web pages read standard input: in a browser, a box asks for each line (showing what the
   program printed last), so programs that ask questions work in the playground; under node,
   the real standard input.
+- A web page (a debug build: the playground's) stops a loop that runs 5 seconds without a break,
+  with a message, and shows what the program printed before it; the page hung.
 - A warning for `random_int(1, 6)` (a die): the upper end is left out.
 - Clearer errors: printing an empty `[]`; text and a number added (`age + 1` with age read as
   text); a character's code compared with text, or added to text; `print(hello world)`; a
