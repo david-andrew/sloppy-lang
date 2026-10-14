@@ -13,6 +13,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `embed_dir("assets")`: every file under a directory built into the program, as a map from
+  its path there (`assets["sfx/hit.wav"]`).
 - Effects on 2D drawing (LÖVE's `setShader`): `use_effect(fx, params)` runs a fragment function
   of your own for what is drawn until `no_effect()`, with `fx = make_shader(shader(effect_vs,
   my_fs))`; `base_color(p, u)` gives what the pixel would have been. On every renderer. Uniform

@@ -13,7 +13,7 @@ enum IN:
     arrdata, panic, assert, print, embed, from_bytes, to_bytes, argv, setlen, truncate, resize,
     hash, alignof, unreachable, arrcap, fmt_struct, sqrt, vec_ctor, cfn_cast, wasm_call, callc, floor_,
     ceil_, fabs, fmin, fmax, setjmp, longjmp, jump, shader, extend, clone_thread, atomic_add, atomic_cas, stack_ptr, fill, fmt_elem, gpu_kernel, cpu_features, code_sync, compute, compute_spirv, compute_textures,
-    read_fields, default_init
+    read_fields, default_init, embed_dir
 
 # (fixed2arr: T[N] -> T[], a new array holding a copy of the elements)
 enum CV: none_, int_, int2float, float2int, float_, opt, ptr, bits, fn2clos, union_, fixed2arr
@@ -31,7 +31,7 @@ intrinsics = [
     Intrinsic("truncate", .truncate, true), Intrinsic("data", .arrdata, true),
     Intrinsic("fill", .fill, false), Intrinsic("syscall", .syscall, false), Intrinsic("mem_copy", .memcpy, false), Intrinsic("mem_set", .memset, false),
     Intrinsic("size_of", .sizeof, false), Intrinsic("align_of", .alignof, false), Intrinsic("panic", .panic, false),
-    Intrinsic("assert", .assert, false), Intrinsic("print", .print, false), Intrinsic("embed", .embed, false),
+    Intrinsic("assert", .assert, false), Intrinsic("print", .print, false), Intrinsic("embed", .embed, false), Intrinsic("embed_dir", .embed_dir, false),
     Intrinsic("str_from_bytes", .from_bytes, false), Intrinsic("bytes", .to_bytes, false), Intrinsic("__argv", .argv, false),
     Intrinsic("unreachable", .unreachable, false), Intrinsic("sqrt", .sqrt, false), Intrinsic("__fmt_fields", .fmt_struct, false), Intrinsic("__fmt_elem_value", .fmt_elem, false), Intrinsic("__gpu_kernel", .gpu_kernel, false),
     Intrinsic("__hash_value", .hash, false), Intrinsic("__set_len", .setlen, false), Intrinsic("__call_raw", .callc, false),
@@ -2219,6 +2219,30 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         if d == none: fatal(nodes[n].pos, "embed: cannot read '{path}'")
         nodes[n].sval = i32(intern(d!))
         r = mk_array(T_U8)
+    else if id == .embed_dir:
+        # embed_dir("assets"): {"a.png": embed("assets/a.png"), "sfx/hit.wav": ...}, every file under
+        # it (sub-directories' with their path; hidden ones left out)
+        nargs_check(n, nargs, 1, 1, "embed_dir")
+        a = args[0]
+        if nodes[a].kind != .str_lit or nodes[a].aux != 0: fatal(nodes[n].pos, "embed_dir() needs a string literal path")
+        rel = name_of(int(nodes[a].sval))
+        path = rel
+        if not is_abs_path(rel): path = "{files[pos_file(nodes[n].pos)].dir}/{rel}"
+        if not is_dir(path): fatal(nodes[n].pos, "embed_dir: '{path}' is not a directory")
+        names: str[]
+        embed_dir_walk(path, "", names)
+        pos = nodes[n].pos
+        pairs: int[]
+        loop nm in names:
+            pr = mk(.pair, pos)
+            nodes[pr].a = i32(bc_str(nm, pos))
+            nodes[pr].b = i32(bc_call("embed", [bc_str("{rel}/{nm}", pos)], pos))
+            pairs.push(pr)
+        if pairs.len() == 0: fatal(nodes[n].pos, "embed_dir: '{path}' has no files")
+        m = mk(.map_lit, pos)
+        set_list(m, pairs)
+        nodes[n] = nodes[m]
+        return check_expr(n, expected)
     else if id == .from_bytes:
         nargs_check(n, nargs, 1, 1, "str_from_bytes")
         arg_type(args, 0, mk_array(T_U8))
@@ -4170,6 +4194,16 @@ bc_bin = (op: Tok, a: int, b: int, pos: int) -> int:
     nodes[n].a = i32(a)
     nodes[n].b = i32(b)
     n
+
+# the files under directory dir (paths from it, sorted), sub-directories' too; hidden ones left out
+embed_dir_walk = (dir: str, prefix: str, out: mut str[]):
+    entries = list_dir(dir)
+    entries.sort()
+    loop e in entries:
+        if starts_with(e, "."): continue
+        full = "{dir}/{e}"
+        if is_dir(full): embed_dir_walk(full, "{prefix}{e}/", out)
+        else: out.push("{prefix}{e}")
 
 # (xs[-1], s[-3..]: counting from the end, as Python and JavaScript do)
 neg_index_check = (b: int):

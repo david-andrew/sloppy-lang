@@ -851,6 +851,7 @@ else:
     ...
 
 logo = embed("logo.png")        # file contents baked into the program as u8[]
+assets = embed_dir("assets")    # every file under a directory: {"hero.png": ..., "sfx/hit.wav": ...}
 
 test "math works":
     assert(1 + 1 == 2)
