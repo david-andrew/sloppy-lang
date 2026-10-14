@@ -889,6 +889,19 @@ checked:
 each_row = (f: (int) -> Row) -> Row[]: parallel_range(height, f)
 ```
 
+A number the threads change together is an `Atomic`: `done = atomic(0)`, then `done.add(1)`,
+`done.get()`, `done.set_max(v)` and `done.compare_swap(old, new)` from parallel code (copies
+of it are the same number). It counts work done, or flags that the answer is found so the other
+threads skip the rest:
+
+```gdscript
+found = atomic(-1)
+parallel_range(n, (i: int) -> int:
+    if found.get() < 0 and is_answer(i): found.compare_swap(-1, i)
+    0
+)
+```
+
 (Writing through a raw pointer is left to the program: it is how disjoint parts of one buffer are
 filled in parallel.) Web builds run the same code on one thread.
 

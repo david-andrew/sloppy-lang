@@ -13,6 +13,8 @@ Compiling:
   machine; more on an idle one. `SLOPPY_EMIT_WORKERS=1` makes it all here.
 
 Language and library:
+- `Atomic`: a number parallel code changes together (`atomic(0)`, `add`, `get`, `set`,
+  `compare_swap`, `set_max`): counts of work done, a flag that stops the other threads.
 - `sin` and `cos` of an `f32` (shader code) give an `f32`, computed with shorter polynomials
   (30% faster; the same f32 but for a last-bit difference in 1 of 10000).
 - The software renderer is about 3 times faster in games with post effects (Rebound: 45 to 14

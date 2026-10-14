@@ -262,3 +262,55 @@ parallel_range[U] = (n: int, f: (int) -> U) -> U[]:
         loop i in [lo..hi): op[i] = f(i)
     )
     out
+
+# ---------------- atomics ----------------
+# A whole number threads change together: parallel code may change it (and no other variable),
+# as a count of work done or a flag that tells the other threads to stop. Copies of an Atomic
+# are the same number.
+#   found = atomic(-1)
+#   parallel_range(n, (i: int) -> int:
+#       if found.get() >= 0: return 0          # another thread found it: skip the rest
+#       if is_answer(i): found.compare_swap(-1, i)
+#       0
+#   )
+struct Atomic:
+    __cell: int[]
+    __p: *int
+
+atomic = (v: int = 0) -> Atomic:
+    cell = fill(v, 1)
+    # (the pointer is taken while the array is this one's alone: copies share it from then on)
+    p = data(cell)
+    Atomic(cell, p)
+
+# its value now
+get = (a: Atomic) -> int:
+    when TARGET == "wasm": return a.__p[0]
+    else: return __atomic_add(a.__p, 0)
+
+# add v (negative: subtract) and give the value after
+add = (a: Atomic, v: int) -> int:
+    when TARGET == "wasm":
+        a.__p[0] += v
+        return a.__p[0]
+    else: return __atomic_add(a.__p, v) + v
+
+# set it to v
+set = (a: Atomic, v: int):
+    loop:
+        old = get(a)
+        if compare_swap(a, old, v): return
+
+# set it to v if it is `expected` (true), or leave it (false): one thread wins
+compare_swap = (a: Atomic, expected: int, v: int) -> bool:
+    when TARGET == "wasm":
+        if a.__p[0] != expected: return false
+        a.__p[0] = v
+        return true
+    else: return __atomic_cas(a.__p, expected, v) == expected
+
+# make it at least v (the largest of what the threads give)
+set_max = (a: Atomic, v: int):
+    loop:
+        old = get(a)
+        if old >= v or compare_swap(a, old, v): return

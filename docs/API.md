@@ -779,6 +779,24 @@ The function runs on several threads at once: it may read anything, but it must 
 - `parallel_update[T] = (xs: mut T[], f: (T) -> T)`: xs[i] = f(xs[i]) for every element, in parallel
 - `parallel_range[U] = (n: int, f: (int) -> U) -> U[]`: [loop i in [0..n): f(i)], computed in parallel
 
+#### Atomics
+
+- `struct Atomic`: A whole number threads change together: parallel code may change it (and no other variable), as a count of work done or a flag that tells the other threads to stop. Copies of an Atomic are the same number.
+  ```gdscript
+  found = atomic(-1)
+  parallel_range(n, (i: int) -> int:
+      if found.get() >= 0: return 0          # another thread found it: skip the rest
+      if is_answer(i): found.compare_swap(-1, i)
+      0
+  )
+  ```
+- `atomic = (v: int = 0) -> Atomic`
+- `get = (a: Atomic) -> int`: its value now
+- `add = (a: Atomic, v: int) -> int`: add v (negative: subtract) and give the value after
+- `set = (a: Atomic, v: int)`: set it to v
+- `compare_swap = (a: Atomic, expected: int, v: int) -> bool`: set it to v if it is `expected` (true), or leave it (false): one thread wins
+- `set_max = (a: Atomic, v: int)`: make it at least v (the largest of what the threads give)
+
 ## Numeric arrays
 
 Elementwise operators (`.+ .* .^`...), `f.(xs)` and n-dimensional arrays are part of the language: see [arrays for numeric work](LANGUAGE.md#8-arrays-for-numeric-work). These are the functions on them.
