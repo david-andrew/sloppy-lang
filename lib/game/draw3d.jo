@@ -268,6 +268,11 @@ __blur_sh: Shader
 __comp_sh: Shader
 __fs_tri: Mesh
 __draws: Draw3D[]
+# (3D particles: their shader, and a mesh for each set drawn in a frame)
+__pt_sh = Shader()
+__pt_ready = false
+__pt_meshes: Mesh[]
+__pt_used = 0
 __view = mat4()
 __proj3 = mat4()
 __cam_pos = vec3(0, 2, 5)
@@ -466,6 +471,108 @@ draw_custom = (render: () -> void, transparent: bool = false, additive: bool = f
     __draws.push(Draw3D(__dummy_mesh(), mat4(), vec4(1, 1, 1, a), 0, em, 0, [], false, false, 0, render, true))
 
 __noop3d = (): pass
+
+# ---------------- 3D particles ----------------
+# sparks, smoke, dust and magic: soft dots that always face the camera
+#   ps: Particles3D
+#   ps.gravity = vec3(0, -9.8, 0)
+#   emit(ps, hit_point, 30, 4.0, rgb(1, 0.6, 0.2))     # in update, when something happens
+#   ps.update(dt)                                      # in update, every frame
+#   ps.draw()                                          # in draw, with the 3D scene
+struct Particle3D:
+    pos: vec3
+    vel: vec3
+    life: f32
+    max_life: f32
+    size: f32
+    color: vec4
+
+struct Particles3D:
+    items: Particle3D[]
+    gravity: vec3
+    drag: f32 = 1.0
+
+# count particles from pos, at up to speed (m/s), within `spread` radians of `direction` (PI:
+# every way), lasting up to `life` seconds, up to `size` meters across
+emit = (ps: mut Particles3D, pos: vec3, count: int, speed: f64, color: vec4, life: f64 = 1.0, size: f64 = 0.15, spread: f64 = PI, direction: vec3 = vec3(0, 1, 0)):
+    d = normalize(direction)
+    side = vec3(1, 0, 0)
+    if abs(d.x) > 0.9: side = vec3(0, 0, 1)
+    a = normalize(cross(d, side))
+    b = cross(d, a)
+    c0 = cos(min(spread, PI))
+    loop i in [0..count):
+        # (a direction in the cone, evenly over its area)
+        z = random(c0, 1.0)
+        r = sqrt(max(1.0 - z * z, 0.0))
+        t = random(0.0, TAU)
+        dir = d * f32(z) + a * f32(r * cos(t)) + b * f32(r * sin(t))
+        l = f32(random(life * 0.6, life))
+        ps.items.push(Particle3D(pos, dir * f32(random(speed * 0.3, speed)), l, l, f32(random(size * 0.5, size)), color))
+
+update = (ps: mut Particles3D, dt: f64):
+    k = 0
+    loop k < ps.items.len():
+        if ps.items[k].life <= 0.0:
+            ps.items[k] = ps.items[ps.items.len() - 1]
+            ps.items.pop()
+        else: k += 1
+    damp = f32(exp(-f64(ps.drag) * dt))
+    loop mut p in ps.items:
+        p.vel = (p.vel + ps.gravity * f32(dt)) * damp
+        p.pos += p.vel * f32(dt)
+        p.life -= f32(dt)
+
+# draw them with the 3D scene: glowing (colors add up: sparks, fire, magic) or not (blended:
+# smoke, dust); they fade and shrink as they age
+draw = (ps: Particles3D, glow: bool = true):
+    if ps.items.len() == 0: return
+    if not __pt_ready:
+        __pt_sh = make_shader(shader(_pt_vs, _pt_fs))
+        __pt_ready = true
+    fwd = normalize(__cam_target - __cam_pos)
+    up0 = vec3(0, 1, 0)
+    if abs(fwd.y) > 0.99: up0 = vec3(0, 0, 1)
+    right = normalize(cross(fwd, up0))
+    up = cross(right, fwd)
+    vs: Vertex3D[]
+    vs.reserve(ps.items.len() * 6)
+    n = -fwd
+    loop p in ps.items:
+        t = clamp(p.life / p.max_life, 0.0, 1.0)
+        c = p.color
+        c.w = c.w * t
+        h = p.size * (0.5 + 0.5 * t) * 0.5
+        rx = right * h
+        uy = up * h
+        q0 = Vertex3D(p.pos - rx - uy, n, vec2(0, 0), c)
+        q1 = Vertex3D(p.pos + rx - uy, n, vec2(1, 0), c)
+        q2 = Vertex3D(p.pos + rx + uy, n, vec2(1, 1), c)
+        q3 = Vertex3D(p.pos - rx + uy, n, vec2(0, 1), c)
+        vs.push(q0)
+        vs.push(q1)
+        vs.push(q2)
+        vs.push(q0)
+        vs.push(q2)
+        vs.push(q3)
+    # (a mesh of its own for each set drawn this frame: they are drawn later, all at once)
+    k = __pt_used
+    __pt_used += 1
+    if k >= __pt_meshes.len(): __pt_meshes.push(mesh(vs))
+    else: update_mesh(__pt_meshes[k], vs)
+    draw_custom((): draw(__pt_sh, __pt_meshes[k], _PtParams(scene_view_proj())), transparent = not glow, additive = glow)
+
+struct _PtParams:
+    view_proj: mat4
+struct _PtOut:
+    pos: vec4
+    uv: vec2
+    color: vec4
+_pt_vs = (v: Vertex3D, u: _PtParams) -> _PtOut: _PtOut(u.view_proj * vec4(v.pos, 1), v.uv, v.color)
+_pt_fs = (i: _PtOut, u: _PtParams) -> vec4:
+    d = length(i.uv * 2.0 - vec2(1, 1))
+    a = clamp(1.0 - d, 0.0, 1.0)
+    vec4(i.color.xyz, i.color.w * a * a)
 __dummy_mesh = () -> Mesh: Mesh()
 
 scene_view_proj = () -> mat4: __proj3 * __view
@@ -628,6 +735,7 @@ __render3d = ():
     loop d in __draws:
         if d.shadow and not d.has_custom: __casters.push(d)
     __draws.clear()
+    __pt_used = 0
     zone_end()
 
 __rebind_target = (): __bind_current()

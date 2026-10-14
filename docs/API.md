@@ -1561,6 +1561,33 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `draw_grid3d = (size: f64 = 10.0, step: f64 = 1.0, height: f64 = 0.0, color: vec4 = vec4(1, 1, 1, 0.35))`: lines on the ground (y = height), `step` apart out to `size` from the center: to see distances
 - `draw_mesh_instanced = (m: Mesh, instances: Instance3D[], color: vec4 = vec4(1, 1, 1, 1), emissive: f64 = 0.0, specular: f64 = 0.2, cast_shadow: bool = true, wind: f64 = 0.0)`: many copies of a mesh in one draw call (crowds, forests, particles...)
 - `draw_custom = (render: () -> void, transparent: bool = false, additive: bool = false)`: draw with your own shader inside the 3D pass; `render` runs with depth testing on. Use scene_view_proj(), scene_camera(), scene_sun(), scene_shadow_vp(), scene_shadow_map()... transparent = true: run after the sky with alpha blending on and depth writes off; additive = true: like transparent, but colors add up (glows, beams, light shafts)
+
+#### For shaders
+
+- `hash21 = (p: vec2) -> f32`: a number in [0, 1) that looks random, made from a 2D point (noise, stars, sparkle in a shader)
+
+#### 3D particles
+
+- `struct Particle3D`: sparks, smoke, dust and magic: soft dots that always face the camera ps: Particles3D ps.gravity = vec3(0, -9.8, 0) emit(ps, hit_point, 30, 4.0, rgb(1, 0.6, 0.2))     # in update, when something happens ps.update(dt)                                      # in update, every frame ps.draw()                                          # in draw, with the 3D scene
+  ```gdscript
+  struct Particle3D:
+      pos: vec3
+      vel: vec3
+      life: f32
+      max_life: f32
+      size: f32
+      color: vec4
+  ```
+- `struct Particles3D`
+  ```gdscript
+  struct Particles3D:
+      items: Particle3D[]
+      gravity: vec3
+      drag: f32 = 1.0
+  ```
+- `emit = (ps: mut Particles3D, pos: vec3, count: int, speed: f64, color: vec4, life: f64 = 1.0, size: f64 = 0.15, spread: f64 = PI, direction: vec3 = vec3(0, 1, 0))`: count particles from pos, at up to speed (m/s), within `spread` radians of `direction` (PI: every way), lasting up to `life` seconds, up to `size` meters across
+- `update = (ps: mut Particles3D, dt: f64)`
+- `draw = (ps: Particles3D, glow: bool = true)`: draw them with the 3D scene: glowing (colors add up: sparks, fire, magic) or not (blended: smoke, dust); they fade and shrink as they age
 - `scene_view_proj = () -> mat4`
 - `scene_camera = () -> vec3`
 - `scene_sun = () -> vec3`
@@ -1574,10 +1601,6 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `scene_shadow_strength = () -> f32`
 - `instance = (transform: mat4, color: vec4 = vec4(1, 1, 1, 1)) -> Instance3D`
 - `transform = (pos: vec3, rot_y: f64 = 0.0, scale: f64 = 1.0) -> mat4`: transform helpers
-
-#### For shaders
-
-- `hash21 = (p: vec2) -> f32`: a number in [0, 1) that looks random, made from a 2D point (noise, stars, sparkle in a shader)
 
 #### Meshes
 

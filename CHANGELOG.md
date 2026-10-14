@@ -46,6 +46,8 @@ Language and library:
   `struct B(A)`, a field read from a union of structs, a library module used without `import`.
 
 Games:
+- 3D particles: `Particles3D` with `emit` (in a cone around a direction), `update` and `draw`
+  (glowing sparks that add up, or blended smoke and dust), soft dots facing the camera.
 - `time_scale(s)`: update gets dt times s (slow motion, 0 pauses the game while it still
   draws and takes input); `frame_time()` is the scaled dt.
 - Audio fades: `fade_volume(id, v, seconds)`, `fade_out(id, seconds)` (stops at the end) and
