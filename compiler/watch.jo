@@ -870,6 +870,7 @@ watch_main = (path: str, args: str[]):
             ev = w32_wait()
         else:
             ev = watch_wait(ino)
+        w_log("event {ev}")
         if ev == 1:
             # a file changed: wait a moment for the editor to finish, then build
             sleep(0.03)
@@ -878,12 +879,15 @@ watch_main = (path: str, args: str[]):
             else:
                 watch_drain(ino)
             if w_pid < 0 or not wm_game or not w_ready:
+                w_log("starting again (pid {w_pid}, game {wm_game}, ready {w_ready})")
                 fresh = true
                 continue
             t0 = time()
             loop0 = wm_loop
             top0 = wm_top
+            w_log("building")
             if watch_compile(path, false):
+                w_log("built")
                 if wm_loop != loop0:
                     # (the game loop runs with the update and draw it started with)
                     eprint("sloppy watch: update or draw was added or removed: starting the program again")
@@ -1028,7 +1032,9 @@ watch_compile = (path: str, first: bool) -> bool:
         syscall(3, int(ep[0]))
         st = [0]
         syscall(61, pid, data(st), 0, 0)
-        if st[0] != 0: return false
+        if st[0] != 0:
+            w_log("the build ended with status {st[0]}")
+            return false
         ok = watch_read_result(res)
         delete_file(res)
         ok
@@ -1167,7 +1173,11 @@ watch_reap = () -> int:
 # send a patch; the program applies it at its next frame and answers
 watch_send = (t0: f64):
     if let dp = env("SLOPPY_WATCH_DUMP"): write_bytes(dp, w_patch)
-    if not __write_all(w_to, w_patch): return
+    w_log("sending a patch of {w_patch.len()} bytes")
+    if not __write_all(w_to, w_patch):
+        eprint("sloppy watch: the program did not take the new code (writing to it failed: {w_write_err}); r + enter starts it again")
+        return
+    w_log("sent; waiting for the program")
     if w_read8() < 0:
         st = watch_reap()
         eprint("sloppy watch: the program ended ({watch_status_str(st)}); waiting for changes")
@@ -1192,6 +1202,8 @@ watch_send_note = ():
         st = watch_reap()
         eprint("sloppy watch: the program ended ({watch_status_str(st)}); waiting for changes")
 
+w_write_err = ""           # (why __write_all failed)
+
 __write_all = (fd: int, b: u8[]) -> bool:
     got = 0
     loop got < b.len():
@@ -1201,9 +1213,16 @@ __write_all = (fd: int, b: u8[]) -> bool:
             if WriteFile(fd as *u8, data(b) + got, u32(min(b.len() - got, 1 << 30)), data(n), null) != 0: r = int(n[0])
         else:
             r = syscall(1, fd, data(b) + got, b.len() - got)
-        if r <= 0: return false
+            if r == -4: continue                    # (EINTR: again)
+        if r <= 0:
+            w_write_err = "{r} after {got} of {b.len()} bytes"
+            return false
         got += r
     true
+
+# (SLOPPY_WATCH_LOG=1: each step of a reload, to standard error)
+w_log = (msg: str):
+    if env("SLOPPY_WATCH_LOG") != none: eprint("sloppy watch log: {msg}")
 
 # the program's answer (a word); -1: it is gone
 w_read8 = () -> int:

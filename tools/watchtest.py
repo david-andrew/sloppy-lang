@@ -6,7 +6,7 @@ import os, re, subprocess, sys, tempfile, threading, time
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sloppy = sys.argv[1] if len(sys.argv) > 1 else os.path.join(root, "bin", "sloppy.exe" if os.name == "nt" else "sloppy")
-env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_SOFTWARE="1", SLOPPY_FRAMES="1000000")
+env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_SOFTWARE="1", SLOPPY_FRAMES="1000000", SLOPPY_WATCH_LOG="1")
 
 
 class Watch:
@@ -39,7 +39,10 @@ class Watch:
                     if m:
                         return m
             time.sleep(0.02)
-        raise AssertionError(f"no line matching {pattern!r}; output:\n" + "\n".join(self.lines[-40:]))
+        # (what the watcher said, without the program's ticks, then the last lines)
+        said = [l for l in self.lines if not l.startswith("tick")]
+        raise AssertionError(f"no line matching {pattern!r}; watcher:\n" + "\n".join(said[-40:]) +
+                             f"\nlast lines (process {self.p.poll()}):\n" + "\n".join(self.lines[-5:]))
 
     def command(self, c):
         self.p.stdin.write(c + "\n")
