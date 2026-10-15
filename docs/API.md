@@ -741,7 +741,7 @@ save_data("progress", "{level}\n{coins}")
 if let s = load_data("progress"): ...
 ```
 
-Each program has its own place, named after it (PROGRAM_NAME: the build block's `name`, else the main file's name): on Linux ~/.local/share/<name>/ (or $XDG_DATA_HOME), on Windows %APPDATA%\<name>\, on macOS ~/Library/Application Support/<name>/, in a web page the browser's storage for the page (it survives reloads and restarts of the browser). SLOPPY_SAVE_DIR=/tmp/x puts it in /tmp/x/<name>/ instead (tests).
+Each program has its own place, named after it (PROGRAM_NAME: the build block's `name`, else the main file's name): on Linux ~/.local/share/<name>/ (or $XDG_DATA_HOME), on Windows %APPDATA%\<name>\, on macOS ~/Library/Application Support/<name>/, in a web page the browser's storage for the page (it survives reloads and restarts of the browser). SLOPPY_SAVE_DIR=/tmp/x puts it in /tmp/x/<name>/ instead (tests). For a file the player names (an editor's levels), write the text yourself: `write_file(path, to_text(level))` and `from_text[Level](read_file(path) ?? "")`.
 
 - `save_dir = () -> str`: the directory a program's data goes to (made when first written; "" in a web page)
 - `save_data = (name: str, contents: str) -> bool`: keep contents under name (a file name: no / or \); false if it could not be written
@@ -2819,6 +2819,7 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
 - `ui_switch = (label: str, on: bool) -> bool`: on or off (left/right, enter, or a click)
 - `ui_choice = (label: str, options: str[], index: int) -> int`: one of several (left/right, or a click on either side, goes to the one before or after): `difficulty = ui_choice("Difficulty", ["easy", "normal", "hard"], difficulty)`
 - `ui_text_field = (label: str, value: str, max_chars: int = 24) -> str`: a line of text typed in, up to max_chars characters: what is typed while it has the focus is added, backspace takes the last character away, enter (like down) goes on to the next item; `name = ui_text_field("Name", name)`
+- `ui_typing = () -> bool`: whether a text field (a menu's ui_text_field with the focus, or a hud_text_field clicked into) takes the keyboard: the game's own letter keys are better left alone then (ImGui's WantCaptureKeyboard)
 - `ui_text = (s: str, size: f64 = 24.0, color: vec4 = vec4(1, 1, 1, 0.6))`: a line of text in the column (not an item: it cannot be chosen)
 
 #### A game's own interface: boxes placed anywhere
@@ -2826,6 +2827,7 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
 - `struct HudStyle`
   ```gdscript
   struct HudStyle:
+      accent: vec4 = vec4(1, 0.82, 0.4, 1)    # a selected button's edge, a field being typed in
       panel: vec4 = vec4(0.06, 0.07, 0.09, 0.85)
       button: vec4 = vec4(0.18, 0.2, 0.24, 1)
       hover: vec4 = vec4(0.26, 0.3, 0.36, 1)
@@ -2837,8 +2839,10 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
   ```
 - `hud_hovered = () -> bool`: whether the mouse is over the interface (any hud_ box drawn in the last frame)
 - `hud_panel = (r: Rect, color: vec4 = vec4(0, 0, 0, 0))`: a box behind other parts (it also keeps clicks on it from the world)
-- `hud_button = (r: Rect, label: str, enabled: bool = true) -> bool`: a button with a label: true in the frame it is clicked (or tapped)
+- `hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false) -> bool`: a button with a label: true in the frame it is clicked (or tapped); selected: drawn as the one chosen of several (a tool, a tab)
 - `hud_bar = (r: Rect, amount: f64, color: vec4, back: vec4 = vec4(0, 0, 0, 0.5))`: a bar filled to `amount` (0 to 1): health, progress, a cooldown
+- `hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64) -> str`: a box to type text in: clicking it gives it the keyboard, Enter, Escape or a click elsewhere takes it away; returns the text as it is now. `id` tells fields with the same place apart (their rectangle names them otherwise)
+- `hud_checkbox = (r: Rect, label: str, on: bool) -> bool`: a box ticked or not, with its label to the right: the new state (flipped in the frame it is clicked)
 
 ## Paths
 

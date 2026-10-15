@@ -206,6 +206,7 @@ ui_text_field = (label: str, value: str, max_chars: int = 24) -> str:
     v = value
     if r.2:
         __ui_typing = r.0
+        __typing_frame = frame_number()
         if ui_ready() and not rebinding():
             loop ch in chars(text_input()):
                 if ch >= 32 and char_count(v) < max_chars: v += chr(ch)
@@ -229,6 +230,12 @@ ui_text_field = (label: str, value: str, max_chars: int = 24) -> str:
     no_clip()
     v
 
+# whether a text field (a menu's ui_text_field with the focus, or a hud_text_field clicked into)
+# takes the keyboard: the game's own letter keys are better left alone then (ImGui's
+# WantCaptureKeyboard)
+ui_typing = () -> bool: frame_number() - __typing_frame <= 1
+__typing_frame = -10
+
 # a line of text in the column (not an item: it cannot be chosen)
 ui_text = (s: str, size: f64 = 24.0, color: vec4 = vec4(1, 1, 1, 0.6)):
     c = __ui_pos + vec2(0, f32(f64(__ui_count) * ui_style.spacing))
@@ -249,6 +256,7 @@ ui_text = (s: str, size: f64 = 24.0, color: vec4 = vec4(1, 1, 1, 0.6)):
 # a button is not also a click on the world behind it)
 
 struct HudStyle:
+    accent: vec4 = vec4(1, 0.82, 0.4, 1)    # a selected button's edge, a field being typed in
     panel: vec4 = vec4(0.06, 0.07, 0.09, 0.85)
     button: vec4 = vec4(0.18, 0.2, 0.24, 1)
     hover: vec4 = vec4(0.26, 0.3, 0.36, 1)
@@ -285,15 +293,19 @@ hud_panel = (r: Rect, color: vec4 = vec4(0, 0, 0, 0)):
     if c.w == 0.0: c = hud_style.panel
     rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), c)
 
-# a button with a label: true in the frame it is clicked (or tapped)
-hud_button = (r: Rect, label: str, enabled: bool = true) -> bool:
+# a button with a label: true in the frame it is clicked (or tapped); selected: drawn as the
+# one chosen of several (a tool, a tab)
+hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false) -> bool:
     over = __hud_touch(r)
     c = hud_style.button
+    if selected: c = hud_style.hover
     if enabled and over:
         c = hud_style.hover
         if mouse_down(.left): c = hud_style.pressed
     rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), c)
-    rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, hud_style.border)
+    edge = hud_style.border
+    if selected: edge = hud_style.accent
+    rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, edge)
     tc = hud_style.text
     if not enabled: tc = hud_style.disabled
     size = min(hud_style.text_size, f64(r.h) * 0.6)
@@ -305,3 +317,57 @@ hud_bar = (r: Rect, amount: f64, color: vec4, back: vec4 = vec4(0, 0, 0, 0.5)):
     __hud_touch(r)
     rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), back)
     rect(f64(r.x), f64(r.y), f64(r.w) * clamp(amount, 0.0, 1.0), f64(r.h), color)
+
+# a box to type text in: clicking it gives it the keyboard, Enter, Escape or a click elsewhere
+# takes it away; returns the text as it is now. `id` tells fields with the same place apart
+# (their rectangle names them otherwise)
+hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64) -> str:
+    over = __hud_touch(r)
+    key = id
+    if len(key) == 0: key = "{r.x},{r.y}"
+    if mouse_pressed(.left):
+        if over: __hud_focus = key
+        else if __hud_focus == key: __hud_focus = ""
+    focused = __hud_focus == key
+    v = value
+    if focused:
+        __typing_frame = frame_number()
+        loop ch in chars(text_input()):
+            if ch >= 32 and char_count(v) < max_chars: v += chr(ch)
+        if key_typed(.backspace): v = without_last_char(v)
+        if key_pressed(.enter) or key_pressed(.escape): __hud_focus = ""
+    c = hud_style.button
+    if over or focused: c = hud_style.hover
+    rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), c)
+    edge = hud_style.border
+    if focused: edge = hud_style.accent
+    rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, edge)
+    size = min(hud_style.text_size, f64(r.h) * 0.6)
+    shown = v
+    if focused and int(elapsed() * 2.0) % 2 == 0: shown += "|"
+    # (a long text shows its end, cut at the box's left edge)
+    pad = 6.0
+    tw = text_width(shown, size)
+    tx = f64(r.x) + pad
+    if tw > f64(r.w) - 2.0 * pad: tx = f64(r.x + r.w) - pad - tw
+    clip(vec2(r.x, r.y), vec2(r.w, r.h))
+    text(shown, vec2(f32(tx), f32(f64(r.y) + (f64(r.h) - size) / 2.0)), size, hud_style.text)
+    no_clip()
+    v
+__hud_focus = ""
+
+# a box ticked or not, with its label to the right: the new state (flipped in the frame it is
+# clicked)
+hud_checkbox = (r: Rect, label: str, on: bool) -> bool:
+    over = __hud_touch(r)
+    v = on
+    if over and mouse_pressed(.left): v = not v
+    b = f64(r.h)
+    c = hud_style.button
+    if over: c = hud_style.hover
+    rect(f64(r.x), f64(r.y), b, b, c)
+    rect_outline(f64(r.x), f64(r.y), b, b, 1.0, hud_style.border)
+    if v: rect(f64(r.x) + b * 0.25, f64(r.y) + b * 0.25, b * 0.5, b * 0.5, hud_style.accent)
+    size = min(hud_style.text_size, b * 0.7)
+    text(label, vec2(f32(f64(r.x) + b * 1.3), f32(f64(r.y) + (b - size) / 2.0)), size, hud_style.text)
+    v

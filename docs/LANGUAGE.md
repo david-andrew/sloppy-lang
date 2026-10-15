@@ -1062,7 +1062,8 @@ kept between runs in `~/.cache/sloppy` (`%LOCALAPPDATA%\sloppy` on Windows), so 
 drawing sooner. Without either (or with `SLOPPY_SOFTWARE=1`) the same program draws with the built-in software
 renderer, which runs your shader functions (see `make_shader`) on the CPU; `soft_rendering()`
 tells the program which is in use, e.g. to draw fewer particles. Frames are rendered at half
-resolution (`SLOPPY_SOFT_SCALE=1` for full resolution) and paced to 60 per second.
+resolution (`SLOPPY_SOFT_SCALE=1` for full resolution: lines one pixel wide can drop out at
+half) and paced to 60 per second.
 
 **Frame statistics.** `show_stats()` (or `SLOPPY_STATS=1`, or `?stats` at the end of a web page's
 address) draws an overlay with the frame rate, a graph of recent frame times, the CPU time of

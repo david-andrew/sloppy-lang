@@ -26,6 +26,18 @@ From a strategy game (1000+ units, flow fields, spatial hashes, save/load):
   click on the world behind it (the `ui_*` menus are a centered column, for menus).
 - `Heap[T]`, a priority queue: `h.push(x, priority)`, `h.pop()` gives the least first (A*'s
   open list, events by time).
+From a level editor (painting, layers, objects with properties, undo, save and load):
+- `hud_text_field` (takes the keyboard when clicked, gives it back on Enter, Escape or a click
+  elsewhere), `hud_checkbox`, and `hud_button(..., selected = true)` for tools and tabs;
+  `ui_typing()` says a text field has the keyboard, so a game's letter shortcuts wait.
+- SLOPPY_INPUT: `text=` with spaces runs to the next item (it took the rest of the line), and
+  ctrl+letter or alt+letter types nothing (a scripted ctrl+z typed a "z").
+- `to_json(x, 2)` keeps arrays of numbers on one line (a level's rows were one number a line).
+- `loop mut` over `g.enemies` with `respawn(g)` in it says the call takes all of `g`; changing a
+  character of a string says how; `has_point`, `mouse_scroll`, `text_size`, `get_ticks`,
+  `str_to_int`, `list_files`, `erase`, `input_text`, `deep_copy` name what Sloppy calls them.
+- Docs: saving to a file the player names (`write_file(path, to_text(x))`), thin lines at the
+  software renderer's half resolution; examples/tiles.jo without needless `f32(...)`.
 - Docs: what soa arrays have and do not have, and that reading a whole element reads every
   field; what a parallel call costs; `time()` for measuring code.
 
