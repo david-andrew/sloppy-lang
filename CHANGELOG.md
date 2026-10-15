@@ -18,6 +18,9 @@ From a game jam (a twin-stick shooter built from the docs alone):
   written instead.
 - `SLOPPY_INPUT` takes spaces between items as well as commas, and reports a mouse position it
   cannot read (`mouse=900x2zz` was the mouse at y 0).
+- `text`, `text_centered` and `text_wrapped` take `shadow =` (a color drawn under the text, to
+  read over a busy scene); the library list's first-game section has the camera (mouse in the
+  world), particles and screen shake.
 - The same warning at the same place is printed once (a generic function checked for several
   types printed it for each).
 

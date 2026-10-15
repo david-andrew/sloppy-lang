@@ -264,7 +264,7 @@ INTRO = ("Everything here is there in every program, without imports. Functions 
 # (the few a first game needs, before the whole list)
 ESSENTIALS = [
     ("Shapes", "`clear(color)`, `circle(center, radius, color)`, `rect(x, y, w, h, color)`, `line(a, b, width, color)`; colors are `rgb(r, g, b)` from 0 to 1"),
-    ("Text", "`text(s, pos, size, color)`, `text_centered(s, center, size)`"),
+    ("Text", "`text(s, pos, size, color)`, `text_centered(s, center, size)`; `shadow = rgba(0, 0, 0, 0.7)` to read over a busy scene"),
     ("Pictures", "`hero = load_texture(embed(\"hero.png\"))` once, then `sprite(hero, pos)` in draw"),
     ("Input", "`input_axis()` (arrows, WASD, a stick), `key_pressed(.space)` (this frame), `key_down(.left)` (held), `mouse_pos()`, `mouse_pressed(.left)`"),
     ("Random", "`random()` (0 to 1), `random(lo, hi)`, `random_int(lo, hi)` (hi left out), `random_item(xs)`"),
@@ -272,6 +272,8 @@ ESSENTIALS = [
     ("Menus", "`ui_begin(\"title\", pos)`, then `if ui_button(\"Play\"): ...`, then `ui_end()`"),
     ("Timers", "`every(1, 2.0)` is true once every 2 seconds (the 1 names the timer: another timer is `every(2, 0.5)`); or count down a number yourself: `wait -= dt`"),
     ("Collisions", "`circles_overlap(a, ra, b, rb)`, `overlaps(rect_a, rect_b)`, `Rect(x, y, w, h)`"),
+    ("Camera", "`camera2d(player_pos)` at the top of draw keeps the player in the middle; `screen_to_world(mouse_pos())` is where the mouse points in the world (in update too); `reset_transform()` before drawing the score"),
+    ("Effects", "`sparks: Particles`, then `sparks.emit(pos, 20, 200.0, YELLOW, life = 0.5, size = 3.0)`, `sparks.update(dt)` and `sparks.draw()`; `shake: Shake`, `shake.add(0.5)`, `shake.update(dt)`, `camera2d(target + shake.offset())`"),
     ("Keeping data", "`save_data(\"best\", \"{score}\")`, `load_data(\"best\") ?? \"\"`"),
 ]
 
