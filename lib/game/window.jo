@@ -251,6 +251,25 @@ __touch_ids: int[]
 __touch_pos: vec2[]
 __touch_last = false
 
+# a finger (a web page's, or SLOPPY_INPUT's): kind 1 down, 0 moved, 2 up (or cancelled); 3: the
+# mouse was used (id -1); x, y in the window's pixels
+__touch_event = (id: int, kind: int, x: f32, y: f32):
+    if kind == 3:
+        __touch_last = false
+        return
+    __touch_last = true
+    k = __touch_ids.index_of(id)
+    if kind == 2:
+        if k >= 0:
+            __touch_ids.remove(k)
+            __touch_pos.remove(k)
+        return
+    if k < 0:
+        if kind != 1: return
+        __touch_ids.push(id)
+        __touch_pos.push(vec2(x, y))
+    else: __touch_pos[k] = vec2(x, y)
+
 __mouse_lock_want = false
 __cursor_hidden = false
 
@@ -423,22 +442,7 @@ when TARGET == "wasm":
 
     # a finger: kind 1 down, 0 moved, 2 up (or cancelled); 3: the mouse was used (id -1)
     @export("__touch")
-    __web_touch = (id: i32, kind: i32, x: f32, y: f32):
-        if kind == 3:
-            __touch_last = false
-            return
-        __touch_last = true
-        k = __touch_ids.index_of(int(id))
-        if kind == 2:
-            if k >= 0:
-                __touch_ids.remove(k)
-                __touch_pos.remove(k)
-            return
-        if k < 0:
-            if kind != 1: return
-            __touch_ids.push(int(id))
-            __touch_pos.push(vec2(x, y))
-        else: __touch_pos[k] = vec2(x, y)
+    __web_touch = (id: i32, kind: i32, x: f32, y: f32): __touch_event(int(id), int(kind), x, y)
 
     __game_run = (update: (f64) -> void, draw: () -> void):
         window(__win_title, __win_w, __win_h)
@@ -1592,7 +1596,8 @@ __fps_n = 0
 # frames (the names of Key: a, n1, space, escape, left, shift...); mouse_left+ (and mouse_right,
 # mouse_middle) the mouse's buttons, 3:wheel=1 turns the wheel a notch (-1: back), and
 # 12:mouse=400x300 moves the mouse there (in the screen's
-# units, as mouse_pos); a letter, digit, space or punctuation key pressed is typed (text_input; with shift, as a US keyboard does), and 9:text=ACE types text
+# units, as mouse_pos); 5:touch1=400x300 puts finger 1 down there or moves it, 9:touch1- lifts it
+# (the first finger down is the mouse too, as on a phone); a letter, digit, space or punctuation key pressed is typed (text_input; with shift, as a US keyboard does), and 9:text=ACE types text
 __script: (int, int, bool, vec2)[]          # (frame, key (-1 - button: a mouse button; -100: a move), down, where)
 __script_loaded = false
 __script_mouse_placed = false
@@ -1631,6 +1636,22 @@ __scripted_input = ():
                     if let wv = to_float(item[c + 7..]):
                         __script.push((fr, -101, false, vec2(f32(wv), 0)))
                         continue
+                # (5:touch1=400x300 puts finger 1 down there, or moves it; 9:touch1- lifts it)
+                if starts_with(item[c + 1..], "touch"):
+                    rest = item[c + 6..]
+                    eq = find(rest, "=")
+                    if eq > 0:
+                        xy = split(rest[eq + 1..], "x")
+                        if let fid = to_int(rest[..eq)):
+                            if xy.len() == 2:
+                                if let tx = to_float(xy[0]):
+                                    if let ty = to_float(xy[1]):
+                                        __script.push((fr, -200 - fid, true, vec2(f32(tx), f32(ty))))
+                                        continue
+                    else if ends_with(rest, "-"):
+                        if let fid = to_int(rest[..len(rest) - 1)):
+                            __script.push((fr, -200 - fid, false, vec2(0, 0)))
+                            continue
                 if starts_with(item[c + 1..], "mouse="):
                     xy = split(item[c + 7..], "x")
                     if xy.len() == 2:
@@ -1675,19 +1696,42 @@ __scripted_input = ():
                         if key_down(.shift): __text_input += __SCRIPT_PUNCT[j + 1..j + 2)
                         else: __text_input += __SCRIPT_PUNCT[j..j + 1)
         else if e.1 == -101: __mouse_wheel += f64(e.3.x)
-        else if e.1 == -100:
-            __screen_layout()
-            nx = f64(e.3.x) * __map_sx + __map_x0
-            ny = f64(e.3.y) * __map_sy + __map_y0
-            # (as the pointer moving there: mouse_delta, drags and mouse look see it; the first
-            # only says where it is, as a pointer that has been there all along)
-            if __script_mouse_placed:
-                __mouse_dx += nx - __mouse_x
-                __mouse_dy += ny - __mouse_y
-            __script_mouse_placed = true
-            __mouse_x = nx
-            __mouse_y = ny
+        else if e.1 == -100: __script_move_mouse(e.3)
+        else if e.1 <= -200:
+            # a finger: as on a phone, the first one down is also the mouse, its left button held
+            fid = -200 - e.1
+            if e.2:
+                __screen_layout()
+                nx = f32(f64(e.3.x) * __map_sx + __map_x0)
+                ny = f32(f64(e.3.y) * __map_sy + __map_y0)
+                kind = 0
+                if __touch_ids.index_of(fid) < 0: kind = 1
+                __touch_event(fid, kind, nx, ny)
+                if kind == 1 and __script_finger < 0:
+                    __script_finger = fid
+                    __script_move_mouse(e.3)
+                    __mouse_event(0, true)
+                else if fid == __script_finger: __script_move_mouse(e.3)
+            else:
+                __touch_event(fid, 2, 0.0, 0.0)
+                if fid == __script_finger:
+                    __mouse_event(0, false)
+                    __script_finger = -1
         else: __mouse_event(-1 - e.1, e.2)
+
+__script_finger = -1                        # (the finger that is the mouse)
+# move the mouse to p (in the screen's units), as a pointer moving there: mouse_delta, drags and
+# mouse look see it; the first move only says where it is, as a pointer that has been there all along
+__script_move_mouse = (p: vec2):
+    __screen_layout()
+    nx = f64(p.x) * __map_sx + __map_x0
+    ny = f64(p.y) * __map_sy + __map_y0
+    if __script_mouse_placed:
+        __mouse_dx += nx - __mouse_x
+        __mouse_dy += ny - __mouse_y
+    __script_mouse_placed = true
+    __mouse_x = nx
+    __mouse_y = ny
 
 __run_frame = (dt: f64, update: (f64) -> void, draw: () -> void):
     __out_flush()                   # (what the last frame printed)

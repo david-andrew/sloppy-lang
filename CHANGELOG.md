@@ -53,6 +53,9 @@ From a match-3 puzzle game (a Phaser developer: tweens, cascades, specials, leve
   `this.time`, `this.add`, `game.config`, `scene.start`, `Phaser.Math`, `Array(8)`,
   `for (let i = 0; ...)`, `for (const g of gems)`, `let [a, b] = ...`, `const {x} = g`, labelled
   loops and `break outer`, `xs.push(1, 2, 3)` (`extend`), `xs.map((x, i): ...)`.
+- `SLOPPY_INPUT` takes fingers: `5:touch1=400x300` puts finger 1 down (or moves it), `9:touch1-`
+  lifts it; the first finger is the mouse too, as on a phone, so touch controls can be tested
+  without one.
 - START's JavaScript table has Phaser's tweens, scenes and chains of animations.
 - Netpong on the website said only "could not reach": a web page cannot host, and one served
   over https reaches only a host on the same computer or a wss:// one. The game and its page say

@@ -1164,7 +1164,8 @@ asked for (on a scaled Wayland display too: `SLOPPY_SCALE=2` renders at twice it
 it: unset `WAYLAND_DISPLAY` and `DISPLAY` to keep it off the screen); `SLOPPY_INPUT="5:space+,9:space-"`
 (commas or spaces between items) presses and releases keys at given frames (keys as `Key` names them: `a`, `n1`, `space`, `escape`,
 `left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons, and
-`12:mouse=400x300` moves the mouse there, `3:wheel=1` turns the wheel a notch, in the screen's units, `7:text=hi` types; an item it
+`12:mouse=400x300` moves the mouse there, `3:wheel=1` turns the wheel a notch, in the screen's units, `7:text=hi` types,
+`5:touch1=400x300` puts finger 1 down there (or moves it) and `9:touch1-` lifts it (the first finger down is the mouse too, as on a phone); an item it
 cannot read is reported; a web build takes it in the page's address, `page.html?SLOPPY_INPUT=5:space%2B`,
 with `+` written `%2B`); `SLOPPY_SEED=n` makes `random()` the same each run; `SLOPPY_WINDOW=800x600` opens the window at
 that size; `SLOPPY_NO_AUDIO=1` plays no sound (for tests and machines without a sound card);
