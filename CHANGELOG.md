@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Lines between tiles in web pages, flickering as the camera moved (seen on a scaled laptop
+  screen): with the page's antialiasing, pixels along a tile's edge were shaded at their
+  centers, outside the tile, so the texture was read past it, from the next tile in the
+  tileset. The 2D shader reads within what each pixel covers now (centroid), and a part of a
+  texture is read a little inside its edges (half a texel for smooth textures, which blend the
+  next texel in).
+- runtests: a test that runs out of time in the Wine or arm64 container is stopped there too
+  (stopping `podman exec` left the program running inside, for hours).
+
 From a music toy (a step sequencer and rhythm game):
 - `play(s, delay = seconds)` starts a sound to the sample, and `audio_time()` is the mixer's
   clock: notes land on the beat whatever the frame rate (they started with the next frame's mix,

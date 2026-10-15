@@ -40,6 +40,9 @@ __view_h = 0.0
 __cur_target = -1
 __blend = Blend.alpha
 
+# (v_uv is centroid: with antialiasing, a pixel on a quad's edge is shaded where the quad
+# covers it, not at its center outside the quad: there the texture coordinate runs past the
+# quad's, into the next tile of a tileset, lines between tiles that flicker as they move)
 const __VS2D = r"""
 #version 300 es
 precision highp float;
@@ -48,7 +51,7 @@ layout(location=1) in vec2 a_uv;
 layout(location=2) in vec4 a_color;
 layout(location=3) in float a_mode;
 uniform mat4 u_proj;
-out vec2 v_uv;
+centroid out vec2 v_uv;
 out vec4 v_color;
 out float v_mode;
 void main() {
@@ -62,7 +65,7 @@ void main() {
 const __FS2D = r"""
 #version 300 es
 precision highp float;
-in vec2 v_uv;
+centroid in vec2 v_uv;
 in vec4 v_color;
 in float v_mode;
 uniform sampler2D u_tex;
@@ -316,7 +319,12 @@ texture = (img: Image, smooth: bool = true) -> Texture:
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, i32(f))
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, i32(GL_CLAMP_TO_EDGE))
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, i32(GL_CLAMP_TO_EDGE))
+    loop __tex_nearest.len() <= id: __tex_nearest.push(false)
+    __tex_nearest[id] = not smooth
     Texture(id, img.width, img.height)
+
+# (by texture id: made with smooth = false, sampled nearest; sprite_region insets less for those)
+__tex_nearest: bool[]
 
 __gfx_init_gl_only = ():
     if not __win_open: window(__win_title, __win_w, __win_h)
@@ -760,10 +768,20 @@ sprite_region = (t: Texture, src: vec4, center: vec2, size: vec2, tint: vec4 = v
     __use_tex(t.id, 6)
     tw = f32(t.width)
     th = f32(t.height)
-    u0 = src.x / tw
-    v0 = src.y / th
-    u1 = (src.x + src.z) / tw
-    v1 = (src.y + src.w) / th
+    # (a part of a texture, as a tile of a tileset, is sampled a little inside its edges: at a
+    # fractional position or scale, the pixels along a tile's edge otherwise take the texels of
+    # the next tile over, lines that flicker as the camera moves. Smooth textures blend in the
+    # next texel half a texel out, so half a texel in; nearest ones only need a hair)
+    ins: f32 = 0.5
+    if t.id >= 0 and t.id < __tex_nearest.len() and __tex_nearest[t.id]: ins = 0.01
+    ix: f32 = 0
+    iy: f32 = 0
+    if abs(src.z) < tw and abs(src.z) > 2.0 * ins: ix = ins * f32(sign(f64(src.z)))
+    if abs(src.w) < th and abs(src.w) > 2.0 * ins: iy = ins * f32(sign(f64(src.w)))
+    u0 = (src.x + ix) / tw
+    v0 = (src.y + iy) / th
+    u1 = (src.x + src.z - ix) / tw
+    v1 = (src.y + src.w - iy) / th
     h = size * 0.5
     a = vec2(-h.x, -h.y)
     b = vec2(h.x, -h.y)

@@ -19,6 +19,15 @@ while i < len(args):
     else: pattern = args[i]; i += 1
 
 on_windows = os.name == "nt"
+
+# (a test in a container that ran out of time: stopping `podman exec` leaves the program running
+# inside, for hours, so the container's own processes are stopped too)
+def stop_container_run(target):
+    if target == "windows" and not on_windows:
+        subprocess.run(os.environ.get("SLOPPY_WINE", "podman exec sloppy-win /w/run.sh").split()[:3] + ["sh", "-c", "wineserver -k"], capture_output=True)
+    elif target == "linux-arm64" and os.environ.get("SLOPPY_ARM64_RUN", "").startswith("podman exec"):
+        c = os.environ["SLOPPY_ARM64_RUN"].split()[2]
+        subprocess.run(["podman", "exec", c, "sh", "-c", "kill -9 $(ls /proc | grep -E '^[0-9]+$' | grep -v -x 1) 2>/dev/null"], capture_output=True)
 tmp = os.path.join(tempfile.gettempdir(), "sloppy-tests")
 sloppy_bin = os.path.join(root, "bin", "sloppy.exe" if on_windows else "sloppy")
 tests = sorted(glob.glob(os.path.join(root, "tests", "t", "*.jo")))
@@ -87,6 +96,7 @@ for t in tests:
     except subprocess.TimeoutExpired:
         print(f"FAIL {name}: timed out")
         failed += 1
+        stop_container_run(target)
         continue
     out = r.stdout
     if r.returncode != 0 and not name.startswith("panic"):
