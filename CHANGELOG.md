@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.15.0
+
 From a strategy game (1000+ units, flow fields, spatial hashes, save/load):
 - A `soa` array in a saved struct lost the whole save: it was written as its inner arrays and
   could not be read back, and `load_value` gave the default without a word. soa arrays print
