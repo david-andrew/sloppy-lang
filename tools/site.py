@@ -553,6 +553,12 @@ GALLERY = [
     ("cube", "examples/cube.jo", "Shaders in Sloppy", "cube", ""),
 ]
 
+# (what a card says besides its program's first sentence)
+GALLERY_NOTES = {
+    "netpong": "For two: one player hosts from the game built for their computer (sloppy run netpong.jo, then Host a game) "
+               "and the other joins its address. This page can only join, and, as an https page, only a host on the same computer (localhost).",
+}
+
 # a program's opening comment, as a sentence or two (its first paragraph, without the title)
 def about(src):
     lines = []
@@ -605,6 +611,7 @@ def build_gallery():
         if path.startswith("lib/new/"):
             say = say.split(": ", 1)[-1]
             say = say[:1].upper() + say[1:]
+        if name in GALLERY_NOTES: say += " " + GALLERY_NOTES[name]
         cards.append(f'<div class="card">{img}<h3>{html.escape(title)}</h3><p>{html.escape(say)}</p>'
                      f'<div class="buttons"><a class="btn primary" href="{play}">Play</a><a class="btn" href="../playground/#example={pg}">Change it</a>'
                      f'<a class="btn" href="{src_url}">Source</a></div></div>')
