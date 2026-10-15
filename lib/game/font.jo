@@ -331,8 +331,23 @@ __quad_segs = (segs: mut f64[], x0: f64, y0: f64, cx: f64, cy: f64, x1: f64, y1:
 # ---------------- making the atlas ----------------
 # a cell's signed distance field: 128 on the outline, more inside (segments in cell pixels, y down)
 __sdf_cell = (segs: f64[], img: mut Image, ox: int, oy: int):
+    v = __sdf_values(segs)
+    n = __FONT_CELL
+    loop y in [0..n):
+        loop x in [0..n):
+            b = v[y * n + x]
+            i = ((oy + y) * img.width + ox + x) * 4
+            img.pixels[i] = b
+            img.pixels[i + 1] = b
+            img.pixels[i + 2] = b
+            img.pixels[i + 3] = 255
+
+# a glyph's distance field, a cell's values row by row (128 on the outline): what __sdf_cell puts
+# in the atlas, made apart from it so glyphs can be made at once on several threads
+__sdf_values = (segs: f64[]) -> u8[]:
     n = __FONT_CELL
     sp = __FONT_SPREAD
+    out = fill(u8(0), n * n)
     dist = fill(sp, n * n)
     k = 0
     loop k + 3 < segs.len():
@@ -399,7 +414,8 @@ __sdf_cell = (segs: f64[], img: mut Image, ox: int, oy: int):
             sd = -dist[y * n + x]
             if wind != 0: sd = dist[y * n + x]
             v = clamp((128.0 + sd / sp * 127.0) / 255.0, 0.0, 1.0)
-            set(img, ox + x, oy + y, vec4(f32(v), f32(v), f32(v), 1))
+            out[y * n + x] = u8(clamp(int(f32(v) * 255.0 + 0.5), 0, 255))
+    out
 
 # a font from a TrueType file (it stops the program with a message if it cannot read it)
 load_font = (file: u8[], extra: str = "") -> Font:
@@ -416,7 +432,7 @@ load_font = (file: u8[], extra: str = "") -> Font:
     img = image(cols * __FONT_CELL, rows * __FONT_CELL, vec4(0, 0, 0, 1))
     scale = __FONT_PX / f64(t.upem)
     f = Font(Texture(0, 1, 1), {}, fill(-1, 128), [], cols, f64(__FONT_CELL), __FONT_PX, f64(__FONT_BASE), __FONT_SPREAD)
-    segs: f64[]
+    outlines: f64[][]
     loop c in codes:
         g = __ttf_glyph_index(t, c)
         if g == 0 and c != 32: continue
@@ -424,7 +440,7 @@ load_font = (file: u8[], extra: str = "") -> Font:
         f.slots[c] = slot
         if c < 128: f.ascii[c] = slot
         f.adv.push(f64(__ttf_advance(t, g)) * scale)
-        segs.clear()
+        segs: f64[]
         __ttf_outline(t, g, segs, (1.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0)
         # (to the cell: the pen at x = spread on the baseline, y down)
         k = 0
@@ -432,6 +448,19 @@ load_font = (file: u8[], extra: str = "") -> Font:
             segs[k] = __FONT_SPREAD + segs[k] * scale
             segs[k + 1] = f64(__FONT_BASE) - segs[k + 1] * scale
             k += 2
-        __sdf_cell(segs, img, (slot % cols) * __FONT_CELL, (slot / cols) * __FONT_CELL)
+        outlines.push(segs)
+    # (each glyph's distance field on a thread of its own, then put in the atlas)
+    cells = parallel_map(outlines, __sdf_values)
+    n = __FONT_CELL
+    loop slot in 0.. and v in cells:
+        ox = (slot % cols) * n
+        oy = (slot / cols) * n
+        loop y in [0..n):
+            loop x in [0..n):
+                b = v[y * n + x]
+                i = ((oy + y) * img.width + ox + x) * 4
+                img.pixels[i] = b
+                img.pixels[i + 1] = b
+                img.pixels[i + 2] = b
     f.texture = texture(img, true)
     f

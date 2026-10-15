@@ -19,6 +19,7 @@ From a visual novel (dialogue, choices, portraits, music, save slots, Japanese t
 - Screenshot runs play no sound: the mixer keeps to the frames' clock, so fades and
   `audio_time()` are the same every run.
 - `UiStyle` and `HudStyle` (`ui_style`, `hud_style`) are in the API reference.
+- `load_font` makes its glyphs on all cores: 0.2 s to 0.08 s for a font.
 
 From an online arena (2-4 players, native and browser clients, a lobby, reconnects):
 - `srv.run()` ticks a server 60 times a second on time. The loop the docs showed (`update`,
