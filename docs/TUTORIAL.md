@@ -53,6 +53,10 @@ fractions too. Dividing two whole numbers gives a whole number (`7 / 2` is 3 and
 write `7.0 / 2` for 3.5), and a number with a decimal point becomes a whole one only when you
 ask: `int(x)`.
 
+A picture can stand in for the circle: put `firefly.png` next to the program, write
+`hero = load_texture(embed("firefly.png"))` at the top (`embed` builds the file into the
+program), and `sprite(hero, pos)` in `draw`, which puts the picture's top left corner at `pos`.
+
 ## 3. Gravity and jumping
 
 ```gdscript
