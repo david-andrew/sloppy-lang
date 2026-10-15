@@ -2,14 +2,14 @@
 
 ## Unreleased
 
-- Debug builds (the default) run array and reference-counting code faster on x86-64 and arm64
-  (macOS, Linux): making an
+- Debug builds (the default) run array and reference-counting code faster on x86-64, arm64
+  (macOS, Linux) and the web: making an
   array unique before a write and adding or dropping a reference are done inline when they can
   be (an unshared array, no threads running), and through a stub that keeps every register when
   not, so the register allocator never sees a call. nbody 1.8x, fannkuch 1.6x, sieve 1.4x and
   the swarm game benchmark 1.15-1.2x faster, with compile time unchanged (the IR stays one call
   each; release builds already inlined these). On arm64 (measured under qemu) nbody 1.8x and
-  fannkuch 3x.
+  fannkuch 3x; in web pages (node) nbody 1.4x and swarm 1.3x.
 
 - `sloppy test`: a failing test says FAILED under its name, with why indented below it and
   "in this test" for the test's own line (it said "panic:" and "the top level of").

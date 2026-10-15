@@ -165,6 +165,42 @@ waddr = (ins: Ins) -> int:
     op(0xA7)                    # i32.wrap_i64
     off
 
+# CALL_IF_SHARED, CALL_RC_INC and CALL_RC_DEC (ir.jo): the common case without the call
+w_guarded_call = (ins: Ins, lf: int):
+    a = int(ins.a)
+    d = int(ins.dst)
+    p = int(cur_wf.args[a])
+    if ins.c == CALL_IF_SHARED and d >= 0:
+        lget(p)
+        lset(d)                                 # (x itself, unless the call is made)
+    op(0x02); op(0x40)                          # block $done
+    lget(p); op(0x50); op(0x0D); uleb(wb, 0)    # br_if $done when x is 0
+    addr32(p); op(0x29); memarg(3, 0)           # its refcount
+    if ins.c == CALL_IF_SHARED:
+        i64c(1); op(0x51); op(0x0D); uleb(wb, 0)                # == 1: not shared
+    else:
+        if ins.c == CALL_RC_INC: i64c(0); op(0x57)             # <= 0: immortal
+        else: i64c(1); op(0x53)                                 # < 1: immortal
+        op(0x0D); uleb(wb, 0)
+        op(0x02); op(0x40)                                      # block $slow
+        if ins.c == CALL_RC_DEC:
+            addr32(p); op(0x29); memarg(3, 0)
+            i64c(1); op(0x51); op(0x0D); uleb(wb, 0)            # the last reference: the call frees
+        i32c(data_base + mt_active_off); op(0x2D); memarg(0, 0)  # __mt_active
+        op(0x0D); uleb(wb, 0)
+        addr32(p)
+        addr32(p); op(0x29); memarg(3, 0)
+        if ins.c == CALL_RC_INC: i64c(1)
+        else: i64c(-1)
+        op(0x7C); op(0x37); memarg(3, 0)                        # the refcount one more or less
+        op(0x0C); uleb(wb, 1)                                   # br $done
+        op(0x0B)                                                # end $slow
+    emit_call_args(a, int(ins.b), lf)
+    op(0x10)
+    uleb(wb, wfn_index[lf])
+    call_result(ins, lf)
+    op(0x0B)                                                    # end $done
+
 addr32 = (v: int):
     lget(v)
     op(0xA7)              # i32.wrap_i64
@@ -519,6 +555,9 @@ emit_wins = (ins: Ins):
                 op(0xAC)                 # i64.extend_i32_s
                 if d >= 0: lset(d)
                 else: op(0x1A)
+                return
+            if ins.c == CALL_IF_SHARED or ins.c == CALL_RC_INC or ins.c == CALL_RC_DEC:
+                w_guarded_call(ins, lf)
                 return
             emit_call_args(a, bb, lf)
             op(0x10)
