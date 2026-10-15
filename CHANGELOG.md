@@ -22,6 +22,9 @@ From a game jam (a twin-stick shooter built from the docs alone):
 - `text`, `text_centered` and `text_wrapped` take `shadow =` (a color drawn under the text, to
   read over a busy scene); the library list's first-game section has the camera (mouse in the
   world), particles and screen shake.
+- A variable given a value and never used, named as a global of a file this one does not
+  `use`, says so and which file to `use` (the assignment made a variable of its own instead of
+  changing the global).
 - The same warning at the same place is printed once (a generic function checked for several
   types printed it for each).
 
