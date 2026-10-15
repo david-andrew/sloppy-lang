@@ -44,6 +44,9 @@ TOPICS = [
     ("Data", "charts", "Charts", ["game/chart"], "charts",
      "Line charts, scatter plots, bars and histograms with axes and a legend: drawn in a game's `draw`, or "
      "made into a picture with no window (`chart_image`, then `save_png`). `render_image` draws any picture that way."),
+    ("Data", "crypto", "Cryptography", ["crypto"], None,
+     "A module (`import crypto`): SHA-1 and SHA-256, HMAC, AES-128-GCM, P-256 keys (ECDH) and signatures (ECDSA), "
+     "self-signed certificates and random bytes from the operating system; checked against the standards' test vectors."),
     ("Data", "big", "Big numbers", ["big"], None,
      "A module (`use big`): numbers past f64's 1.8e308, a mantissa and a power of ten (an idle game's currency), "
      "with arithmetic, comparison, `min`, `max`, sorting and saving as for numbers; shown as 1.23M or 4.56e+1234."),

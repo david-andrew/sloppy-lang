@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `import crypto`: SHA-1, SHA-256, HMAC, AES-128-GCM, P-256 ECDH and ECDSA, self-signed
+  certificates, and `random_bytes` from the operating system (the start of WebRTC in native
+  programs, for games that connect a desktop build and a web page with no server).
+- A slice compared with `==` (`xs[1..4) == ys`) read the wrong memory and stopped the program.
+
 From a creative coder (p5.js and Shadertoy: a flow field with trails, a shader piece with
 post-processing, a step sequencer):
 - `post_effects()` with `draw_to` and `draw_to_screen` drew a black screen: drawing back to the
