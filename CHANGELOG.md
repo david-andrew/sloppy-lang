@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `net.invite()`, `net.invite_code(p)`, `net.join_invite(code)`, `net.accept_reply(p, reply)`:
+  two games connect straight to each other with no server, the players passing two short codes
+  (a chat message): web pages and native programs alike, on one network or across the internet.
+  Native programs speak WebRTC now (lib/rtc.jo: ICE, DTLS 1.2, SCTP, data channels, in Sloppy),
+  tested against Chromium both ways, OpenSSL, and on arm64 and Windows. Netpong's Invite a friend
+  and Join a friend use them, from the website's page too.
 - `import crypto`: SHA-1, SHA-256, HMAC, AES-128-GCM, P-256 ECDH and ECDSA, self-signed
   certificates, and `random_bytes` from the operating system (the start of WebRTC in native
   programs, for games that connect a desktop build and a web page with no server).

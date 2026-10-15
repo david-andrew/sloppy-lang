@@ -555,9 +555,9 @@ GALLERY = [
 
 # (what a card says besides its program's first sentence)
 GALLERY_NOTES = {
-    "netpong": 'For two on one network: one hosts (<code>sloppy run netpong.jo</code>, then Host a game) and the other joins the address it shows. '
-               'Without Sloppy, <a href="netpong/netpong_relay.py" download>netpong_relay.py</a> (Python) serves the game to two browsers on your Wi-Fi: '
-               'run it and open the address it prints. This page (https) can only join a game hosted on the same computer.',
+    "netpong": 'For two, anywhere: choose Invite a friend, send them the code it gives, and paste back the code their Join a friend gives them. '
+               'The two games connect straight to each other, with no server: this page, a computer running <code>sloppy run netpong.jo</code>, or both. '
+               'On one network there is also the address way, and <a href="netpong/netpong_relay.py" download>netpong_relay.py</a> (Python).',
 }
 
 # a program's opening comment, as a sentence or two (its first paragraph, without the title)

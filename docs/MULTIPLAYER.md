@@ -11,7 +11,7 @@ depends on the game:
 | Players | any | 2 to 4 | many |
 | Good for | turn-based games, chat, lobbies, simple games | fighting, sports, action games for a few | shooters, many players, keeping cheating out |
 | Example | examples/netpong | examples/duel | examples/arena |
-| Web pages | connect to a native server | through a relay, then straight to each other (WebRTC) | connect to a native server |
+| Web pages | connect to a native server, or straight to another game with invite codes | through a relay, then straight to each other (WebRTC) | connect to a native server |
 
 ## Messages
 
@@ -20,6 +20,31 @@ program, `net.connect(host, port)` from a native program or a web page, `net.rec
 frame for what happened. Messages arrive whole and in order. Native programs can also send UDP
 datagrams (`net.udp`), which may be lost or come out of order but never wait for each other. See
 [the library](API.md#networking).
+
+**With no server at all: invite codes.** `net.invite()` makes a peer and `net.invite_code(p)` a
+short code (about 120 characters) for the player to send their friend any way they like: a chat
+message. The friend's game joins with it, `net.join_invite(code)`, and its `net.invite_code(p)`
+is a reply code to send back, which the first game takes with `net.accept_reply(p, reply)`. The
+two games then connect straight to each other (WebRTC: the browser's own in a web page, Sloppy's
+in a native program), web pages and native programs alike, on one Wi-Fi or across the internet;
+after that the peer is as any other. Nothing runs anywhere but the two games: a public STUN server
+(Google's, `rtc.rtc_stun_servers`) only tells each game how it looks from the internet. Most home
+networks connect so; some (mobile data, many schools' and offices') let no outside connection in,
+and need a relay server (TURN) that this does not have yet. `net.invite(reliable = false)` sends
+messages that may be lost or come in another order but never wait: a fast game's state.
+
+```gdscript
+p = net.invite()
+...
+code = net.invite_code(p)            # "" for a moment, then: show it, set_clipboard(code)
+...
+net.accept_reply(p, pasted_reply)
+loop e in net.receive():
+    if e.kind == .joined: ...         # connected
+```
+
+Netpong's Invite a friend and Join a friend show the whole of it, with the codes copied to the
+clipboard and pasted back.
 
 What players need to know, a game should show them: the host's screen gives its address,
 `net.local_address()` (as 192.168.1.20), and the one joining types it; both on the same network
