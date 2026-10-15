@@ -48,7 +48,7 @@ fi
     elif [ -x bin/sloppy ]; then echo "(no C compiler here: checking the bin/sloppy given, $(bin/sloppy --version))"
     else echo "no C compiler and no bin/sloppy: copy a release's bin/sloppy here"; exit 1
     fi
-    echo "display: ${WAYLAND_DISPLAY:-}${DISPLAY:-(none)}"
+    echo "display: ${WAYLAND_DISPLAY:-${DISPLAY:-(none)}}"
 
     section "render tests through Vulkan on this GPU"
     python3 tools/rendertest.py --vulkan-only

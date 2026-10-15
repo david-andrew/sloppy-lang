@@ -31,7 +31,13 @@ Sizes: S = days, M = a week or two, L = several weeks.
 Vulkan is the default renderer, but it has only run on one NVIDIA card and Mesa's software
 driver (lavapipe); OpenGL on Windows only in CI's virtual machines. Most players' machines have
 Intel or AMD graphics. What can be done before hardware is at hand:
-- **AMD, now, by the hour:** AWS's g4ad instances have an AMD Radeon Pro V520 (RDNA): a real
+- **AMD on Linux (done, October 2026, a Steam Deck: RADV, Mesa 26, SteamOS):** all 58 render
+  tests through Vulkan, the 73 SPIR-V modules through spirv-val, 300 random compute programs
+  the same on the CPU and the GPU, 52 programs the same through OpenGL and Vulkan, windowed
+  games at a steady 60 fps through KDE's compositor (Rebound: 2.8 ms of GPU a frame at
+  1280x800; Breakwater playing: 1.3 ms offscreen at 720p). Not yet: its controls (Steam
+  Input), AMD's Windows driver.
+- **AMD, by the hour:** AWS's g4ad instances have an AMD Radeon Pro V520 (RDNA): a real
   graphics GPU, on Linux (Mesa's RADV, the driver most AMD Linux players use) and on Windows
   (AMD's driver). An hour or two per round, for a few dollars.
 - **NVIDIA's Windows driver:** AWS's g4dn instances (a T4) on Windows.
