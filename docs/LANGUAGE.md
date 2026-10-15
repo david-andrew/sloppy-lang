@@ -972,7 +972,10 @@ filled in parallel.) Web builds run the same code on one thread.
 
 A program runs its top-level statements, then `main()` if defined.
 If the program defines `update(dt: f64)` and/or `draw()`, a window opens and they are
-called every frame (this is also how programs run in the browser).
+called every frame (this is also how programs run in the browser). `dt` is the seconds since
+the last frame, at most 0.1: after a long stall (the window dragged, a hidden tab) the game
+takes one 0.1 s step, not a jump. A clock that must keep up with real time reads `elapsed()`
+(or, for music, `audio_time()`) instead of adding up `dt`.
 
 ```gdscript
 pos = vec2(100, 100)
@@ -1063,12 +1066,14 @@ parameters, so `?SLOPPY_STATS=1` and `?stats` are the same. Files in a web page 
 run under node (`tools/runwasm.js page.html args...`) uses the real ones and gets the arguments.
 
 Environment variables for testing and tuning: `SLOPPY_SCREENSHOT=out.png` (with `SLOPPY_FRAMES=n`)
-saves frame n and exits (`SLOPPY_FRAMES=n` alone runs n frames and exits) — the clock then advances exactly 1/60 s per frame, so the image is
-reproducible (the desktop's keys and mouse are ignored); it has the window's pixels, more than
-the size asked for on a scaled (high-DPI) display unless `SLOPPY_SCALE=1` is set too; and with `SLOPPY_SOFTWARE=1` no display is needed at all; `SLOPPY_INPUT="5:space+,9:space-"`
+saves frame n and exits (`SLOPPY_FRAMES=n` alone runs n frames and exits, in real time) — with a screenshot the clock advances exactly 1/60 s per frame, so the image is
+reproducible (the desktop's keys and mouse are ignored); it has the window's pixels, the size
+asked for (on a scaled Wayland display too: `SLOPPY_SCALE=2` renders at twice it); and with
+`SLOPPY_SOFTWARE=1` no display is needed at all (where there is one, the window still opens on
+it: unset `WAYLAND_DISPLAY` and `DISPLAY` to keep it off the screen); `SLOPPY_INPUT="5:space+,9:space-"`
 (commas or spaces between items) presses and releases keys at given frames (keys as `Key` names them: `a`, `n1`, `space`, `escape`,
 `left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons, and
-`12:mouse=400x300` moves the mouse there, in the screen's units, `7:text=hi` types; an item it
+`12:mouse=400x300` moves the mouse there, `3:wheel=1` turns the wheel a notch, in the screen's units, `7:text=hi` types; an item it
 cannot read is reported; a web build takes it in the page's address, `page.html?SLOPPY_INPUT=5:space%2B`,
 with `+` written `%2B`); `SLOPPY_SEED=n` makes `random()` the same each run; `SLOPPY_WINDOW=800x600` opens the window at
 that size; `SLOPPY_NO_AUDIO=1` plays no sound (for tests and machines without a sound card);

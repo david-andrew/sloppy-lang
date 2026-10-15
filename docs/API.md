@@ -2229,7 +2229,7 @@ draw = ():
 
 Audio: a software mixer written in Sloppy. Sounds are float sample buffers (stereo, interleaved, at the mixer rate). Each frame the mixer renders just enough samples to keep the output device fed: on Linux through ALSA, on Windows waveOut, on macOS AudioQueue, in a web page Web Audio (silent where there is none, or with SLOPPY_NO_AUDIO=1). Web: WebAudio.
 
-- `struct Sound`
+- `struct Sound`: A Sound is its samples: make one from your own, `Sound(samples)`, for synthesis (left and right in turn, at MIX_RATE a second, from -1 to 1). The mix: each voice's samples times its volume, its pan taken from the other side (pan 1: the left channel silent, the right as loud as at 0), times master_volume; what goes past 0.75 is bent smoothly toward 1.
   ```gdscript
   struct Sound:
       samples: f32[]      # interleaved stereo
@@ -2248,12 +2248,14 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
       fade_to: f32 = 0.0  # (fade_volume: the volume it is going to, in fade_time seconds)
       fade_time = 0.0
       fade_stop = false   # (fade_out: stopped when the fade ends)
+      wait = 0            # (play's delay: frames of the mix before it starts)
   ```
 - `enum Wave: sine, square, triangle, saw, noise`
 - `const MIX_RATE = 48000`
 - `frames = (s: Sound) -> int`
 - `duration = (s: Sound) -> f64`
-- `play = (s: Sound, volume: f64 = 1.0, pan: f64 = 0.0, pitch: f64 = 1.0, looping: bool = false) -> int`: play a sound; returns a voice id for stop()/set_volume()
+- `play = (s: Sound, volume: f64 = 1.0, pan: f64 = 0.0, pitch: f64 = 1.0, looping: bool = false, delay: f64 = 0.0) -> int`: play a sound; returns a voice id for stop()/set_volume(). It starts with the mixer's next samples (made each frame, a little ahead of what is heard), or `delay` seconds after them, to the sample: for music, `play(kick, delay = beat_at - audio_time())` starts each note on time whatever the frame rate
+- `audio_time = () -> f64`: the audio clock: seconds of sound the mixer has made (ahead of what is heard by the output's latency, about 20-60 ms); what play's delay counts from. It runs on in step with the sound, not the frames: a beat kept by it does not drift when frames are slow or dt is capped
 - `stop = (id: int)`
 - `stop_all = ()`
 - `is_playing = (id: int) -> bool`
@@ -2289,7 +2291,8 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
 - `sfx_whoosh = () -> Sound`
 - `sfx_chime = () -> Sound`
 - `note_freq = (name: str) -> f64`: note name ("C4", "F#3", "Bb5") to frequency in Hz
-- `melody = (notes: str, bpm: f64 = 120.0, wave: Wave = .triangle, volume: f64 = 0.3, step: f64 = 0.5) -> Sound`: render a melody: notes separated by spaces, "-" holds the previous note, "." is a rest
+- `midi_freq = (n: f64) -> f64`: the frequency of a MIDI note number: 69 is A4, 440 Hz; 60 middle C
+- `melody = (notes: str, bpm: f64 = 120.0, wave: Wave = .triangle, volume: f64 = 0.3, step: f64 = 0.5) -> Sound`: render a melody: notes separated by spaces, "-" holds the previous note, "." is a rest; each lasts `step` beats (0.5: eighth notes at bpm)
 - `melody_loop = (notes: str, bpm: f64 = 120.0, wave: Wave = .triangle, volume: f64 = 0.3, step: f64 = 0.5) -> Sound`: a melody made to be played with looping = true: exactly as long as its notes, with the end of the last ones (and their release) carried round to the start, so the loop has no seam
 
 #### WAV files
