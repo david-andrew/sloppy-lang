@@ -1017,6 +1017,26 @@ WASD and the left stick. For mouse look, `mouse_lock()` hides the pointer and ke
 window while `mouse_delta()` reports how far it moved (Wayland, X11 and browsers, where the
 lock starts at the next click and Escape ends it); `mouse_lock(false)` lets it go.
 
+Dragging is a pick on `mouse_pressed`, a follow while `mouse_down`, and a drop on
+`mouse_released` (with a camera, `screen_to_world(mouse_pos())` is where the pointer is in the
+world; for a turned or scaled card, test `rotate(mouse_pos() - card.pos, -card.angle)`):
+
+```gdscript
+dragged = -1
+grab = vec2(0, 0)
+update = (dt: f64):
+    m = mouse_pos()
+    if mouse_pressed(.left):
+        loop i in 0.. and c in cards:
+            if length(m - c.pos) < 40.0:
+                dragged = i
+                grab = c.pos - m
+    if dragged >= 0 and mouse_down(.left): cards[dragged].pos = m + grab
+    if dragged >= 0 and mouse_released(.left):
+        if not drop_ok(cards[dragged]): cards[dragged].pos = cards[dragged].home   # back
+        dragged = -1
+```
+
 **Fullscreen and the clipboard.** `set_fullscreen(true)`, `toggle_fullscreen()` and
 `is_fullscreen()` (in a browser, the page asks for fullscreen; it leaves on Escape).
 `clipboard()` reads the system clipboard's text and `set_clipboard(s)` replaces it. A web page
