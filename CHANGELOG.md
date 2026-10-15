@@ -43,6 +43,8 @@ From an idle game (numbers past 1e300, a shop that scrolls, saves, offline progr
   shows: in `print`, in `"{x}"`, inside arrays and other structs; `to_text`, `to_json` and
   saves still write its fields. `str(5)` beside it is still the conversion.
 - `short_number(x)`: 999, 1.23K, 45.6M, 789B, 1.00T, then 1.23e+15.
+- `hud_scroll(r, content_height)`: a list taller than its box, scrolled by the wheel and a bar;
+  `hud_tooltip(text)`: a box of text beside the mouse, kept on the screen.
 - `download_file(path)`: in a web page, the browser downloads a file the program wrote (a
   picture from `save_png`, an exported save); elsewhere it is already on disk.
 - `loop i in 0.. and name, cost in items:` unpacks each pair (or more) while counting.

@@ -3208,6 +3208,15 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
 - `hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false) -> bool`: a button with a label: true in the frame it is clicked (or tapped); selected: drawn as the one chosen of several (a tool, a tab)
 - `hud_bar = (r: Rect, amount: f64, color: vec4, back: vec4 = vec4(0, 0, 0, 0.5))`: a bar filled to `amount` (0 to 1): health, progress, a cooldown
 - `hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: str = "") -> str`: a box to type text in: clicking it gives it the keyboard, Enter, Escape or a click elsewhere takes it away; returns the text as it is now. `id` tells fields with the same place apart (their rectangle names them otherwise); `hint` is shown dimmed while it is empty ("seed")
+- `hud_scroll = (r: Rect, content_height: f64, id: str = "") -> f64`: a list taller than its box: how far it is scrolled, from 0, moved by the wheel over the box and by dragging the bar drawn at its right edge (when there is more than fits). The rows go at their y minus that, inside clip(...) of the box: rows scrolled out of it take no clicks
+  ```gdscript
+  off = hud_scroll(r, f64(items.len()) * 44.0, "shop")
+  clip(vec2(r.x, r.y), vec2(r.w, r.h))
+  loop i in 0.. and it in items:
+      if hud_button(Rect(r.x, r.y + f32(f64(i) * 44.0 - off), r.w - 14, 40), it.name): buy(i)
+  no_clip()
+  ```
+- `hud_tooltip = (s: str)`: a box of text beside the mouse, kept on the screen: what the thing under the mouse is or does. Draw it after the rest of the interface, so nothing covers it (`if hovered: tip = "..."`, then at the end of draw, `if len(tip) > 0: hud_tooltip(tip)`); lines break at "\n"
 - `hud_checkbox = (r: Rect, label: str, on: bool) -> bool`: a box ticked or not, with its label to the right: the new state (flipped in the frame it is clicked)
 
 ## Paths
