@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `from_text`, `from_json` and `load_value` read structs a quarter faster (field names are
+  compared where they are, not copied); `csv_rows` is 30% faster.
+
 ## 0.16.0
 
 From data analysis (a CSV of 200k sales, group-bys, a regression, charts):

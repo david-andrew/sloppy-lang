@@ -33,33 +33,48 @@ __csv_start = (text: str) -> int:
 # the row starting at i, and where the next starts (a blank line: no fields)
 __csv_row = (text: str, sep: u8, start: int) -> (str[], int):
     row: str[]
-    field: u8[]
-    quoted = false              # inside a quoted field
-    started = false             # something is in this row
-    i = start
     n = len(text)
+    i = start
     loop i < n:
         c = text[i]
-        if quoted:
-            if c == '"':
-                if i + 1 < n and text[i + 1] == '"':
-                    field.push('"')
+        if c == '"':
+            # a quoted field: "" for a quote, and the separator and line breaks as they are
+            field: u8[]
+            i += 1
+            loop i < n:
+                c = text[i]
+                if c == '"':
+                    if i + 1 < n and text[i + 1] == '"':
+                        field.push('"')
+                        i += 2
+                        continue
                     i += 1
-                else: quoted = false
-            else: field.push(c)
-        else if c == '"': quoted = true
-        else if c == sep:
+                    break
+                field.push(c)
+                i += 1
+            # (what follows the closing quote, up to the separator, is the field's too)
+            loop i < n and text[i] != sep and text[i] != '\n' and text[i] != '\r':
+                field.push(text[i])
+                i += 1
             row.push(str_from_bytes(field))
-            field.clear()
-        else if c == '\n' or c == '\r':
-            if c == '\r' and i + 1 < n and text[i + 1] == '\n': i += 1
-            if not started and row.len() == 0: return (row, i + 1)
-            row.push(str_from_bytes(field))
-            return (row, i + 1)
-        else: field.push(c)
-        started = true
+        else:
+            # (a plain field: a slice of the text)
+            a = i
+            loop i < n and text[i] != sep and text[i] != '\n' and text[i] != '\r': i += 1
+            # (a blank line: no row)
+            if i == a and row.len() == 0 and (i >= n or text[i] != sep):
+                if i < n and text[i] == '\r' and i + 1 < n and text[i + 1] == '\n': i += 1
+                return (row, min(i + 1, n))
+            row.push(text[a..i))
+        if i >= n: return (row, n)
+        c = text[i]
         i += 1
-    if started or field.len() > 0 or row.len() > 0: row.push(str_from_bytes(field))
+        if c == sep:
+            # (a separator last in the text: an empty field after it)
+            if i >= n: row.push("")
+            continue
+        if c == '\r' and i < n and text[i] == '\n': i += 1
+        return (row, i)
     (row, n)
 
 # CSV text of the rows: a field with the separator, a quote or a line break is put in quotes
@@ -112,6 +127,7 @@ from_csv[T] = (text: str, sep: u8 = ',') -> T[] | TextError:
     name = head[..p)
     # (all rows as one text, read at once: [Sale(date="...", ...), ...]; a row at a time)
     buf: u8[]
+    buf.reserve(len(text) * 2)
     __buf_append_str(buf, "[")
     r = 0
     loop i < len(text):
@@ -157,8 +173,9 @@ __csv_kind = (k: u8) -> str:
 
 # (a field's value as from_text reads it; "\0": left out, keeping the default; "\x01": wrong)
 __csv_value = (f: __ArgField, s0: str) -> str:
-    s = trim(s0)
-    empty = len(s) == 0 or s == "NA" or s == "N/A" or s == "NaN" or s == "nan" or s == "null"
+    s = s0
+    if len(s) > 0 and (s[0] == ' ' or s[len(s) - 1] == ' ' or s[0] == '\t'): s = trim(s0)
+    empty = len(s) == 0 or (len(s) <= 4 and (s == "NA" or s == "N/A" or s == "NaN" or s == "nan" or s == "null"))
     if f.kind == 's': return to_text(s0)
     if f.kind == 'f':
         if empty: return "nan"
