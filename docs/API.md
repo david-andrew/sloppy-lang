@@ -118,6 +118,8 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `sum[T] = (xs: T[]) -> T`
 - `min[T] = (xs: T[]) -> T`
 - `max[T] = (xs: T[]) -> T`
+- `min[T] = (a: T, b: T) -> T`: the smaller and the larger of two values of a type with its own `<` (a big number, a version)
+- `max[T] = (a: T, b: T) -> T`
 - `min_by[T, K] = (xs: T[], key: (T) -> K) -> T`: the element with the smallest key, or the largest (the first of equal ones): the cheapest item, the nearest enemy (min_by(enemies, (e): distance(e.pos, me)))
 - `max_by[T, K] = (xs: T[], key: (T) -> K) -> T`
 - `unique[T] = (xs: T[]) -> T[]`: each different element once, in the order they first come
@@ -404,8 +406,12 @@ Math basics.
 - `mod = (x: f64, y: f64) -> f64`
 - `mod = (x: int, y: int) -> int`
 - `is_nan = (x: f64) -> bool`
+- `is_finite = (x: f64) -> bool`: an ordinary number: not infinite and not NaN
+- `is_inf = (x: f64) -> bool`
 - `lerp = (a: f64, b: f64, t: f64) -> f64`
 - `mix = (a: f64, b: f64, t: f64) -> f64`
+- `inverse_lerp = (a: f64, b: f64, x: f64) -> f64`: where x is between a and b, from 0 (at a) to 1 (at b): lerp backwards
+- `remap = (x: f64, a: f64, b: f64, c: f64, d: f64) -> f64`: x moved from the range a..b to c..d, as p5's map: remap(mouse.x, 0, 1280, -1, 1)
 - `smoothstep = (e0: f64, e1: f64, x: f64) -> f64`
 - `sin = (x: f64) -> f64`
 - `cos = (x: f64) -> f64`
@@ -1067,6 +1073,7 @@ Each series takes the next color of a palette unless it is given one. The axes f
       background = vec4(1, 1, 1, 1)
       ink = vec4(0.15, 0.15, 0.17, 1)     # text and axes
       text_size = 14.0
+      log_y = false                       # y on a log scale: each tick ten times the one below
   ```
 - `struct ChartSeries`
   ```gdscript
@@ -2224,7 +2231,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 
 #### For shaders
 
-- `hash21 = (p: vec2) -> f32`: a number in [0, 1) that looks random, made from a 2D point (noise, stars, sparkle in a shader)
+- `hash21 = (p: vec2) -> f32`: a number in [0, 1) that looks random, made from the cell a 2D point is in (its whole parts: noise, stars, sparkle in a shader). Integers, so every GPU and the CPU give the same one
 
 #### 3D particles
 
@@ -3228,6 +3235,8 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
 #### Noise
 
 - `noise = (x: f64, y: f64) -> f64`: smooth value noise in [0, 1]
+- `noise = (x: f64) -> f64`: along a line: smooth value noise in [0, 1] (a wobble, a flicker, wind)
+- `noise = (x: f64, y: f64, z: f64) -> f64`: in 3D: smooth value noise in [0, 1] (clouds, caves; or 2D noise that changes with time as z)
 - `fbm = (x: f64, y: f64, octaves: int = 4) -> f64`: fractal noise (several octaves) in roughly [0, 1]
 
 #### Easing

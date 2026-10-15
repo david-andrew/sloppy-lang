@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+From a creative coder (p5.js and Shadertoy: a flow field with trails, a shader piece with
+post-processing, a step sequencer):
+- `post_effects()` with `draw_to` and `draw_to_screen` drew a black screen: drawing back to the
+  screen now goes under the effects.
+- `noise()` in a shader drew other values than on the CPU (its hash was 64 bits, a shader's
+  integers 32): noise is 32-bit now, the same on the CPU, Vulkan, the software renderer and the
+  web. A shader with an integer that does not fit 32 bits is an error.
+- `hash21` (the shader helper) hashes integers, not `fract(sin(...))`, which drew square seams
+  on NVIDIA; it hashes the cell its point is in.
+- `draw(prog, mesh, params)` with params of another type than the shader's functions take is
+  an error, where prog is a global made by `make_shader(shader(vs, fs))`.
+- `noise(x)` and `noise(x, y, z)`, beside `noise(x, y)`; `remap(x, a, b, c, d)` (p5's map) and
+  `inverse_lerp`.
+
+From an idle game (numbers past 1e300, a shop that scrolls, saves, offline progress, a chart):
+- `log10` is exact at powers of ten (`log10(1000.0)` was 2.9999999999999996, so `floor` gave
+  2) and as precise as C's elsewhere; `log2` is exact at powers of two; `{x:g}` follows.
+- Charts label big numbers as 4B, 2T and 1e+25 (they wrote out every digit, and past about
+  1e40 drew nothing at all), and tiny ones as 2e-06; `Chart(log_y = true)` puts y on a log scale.
+- A `hud_button` (or any hud_ box) clipped out of sight with `clip` takes no clicks: rows of a
+  scrolling list out of view were bought.
+- `to_json` writes infinity and NaN as `Infinity`, `-Infinity` and `NaN` (as Python's json does),
+  and `parse_json`, `from_json` and `to_float` read them; they were written as null, which
+  `from_json` then refused.
+- `min(a, b)` and `max(a, b)` take any type with its own `<`, as `min(xs)` did.
+- A float literal too large for a float (`1e400`) is an error; it was infinity.
+- `is_finite(x)` and `is_inf(x)`, beside `is_nan`.
+
 From someone coming from Scratch (a catch game with clones, costumes, backdrops and a high-score
 list; a maze with walls by color, a key, a door and a pen trail):
 - START has a "Coming from Scratch" table: forever, clones, broadcasts, wait, touching,

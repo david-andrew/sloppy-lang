@@ -1250,6 +1250,7 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
         if ci0 <= 0 or int(fns[ci0].decl) != decl: fn_used[decl] = true
     if decl_in_prelude(decl) and not pos_in_lib(nodes[n].pos):
         frame_call_check(n, decl)
+        shader_draw_check(decl, cd.args)
         angle_check(decl, cd.args)
         qn = name_of(int(nodes[decl].name))
         if (starts_with(qn, "quat_") and qn != "quat_rotate" and qn != "quat_to_mat4") or qn == "slerp": quat_nodes[n] = true
@@ -1876,6 +1877,40 @@ frame_call_check = (n: int, decl: int):
     if (fnm == "input" or fnm == "input_int" or fnm == "input_float" or fnm == "read_line" and nkids(decl) == 0) and (here == "update" or here == "draw"):
         warn(nodes[n].pos, "{fnm} waits for a line typed in the terminal, and the game stops while it waits: in the window, `hud_text_field(rect, name)` is a box to type in (or `text_input()`, what was typed this frame)")
     if fnm == "sleep" and (here == "update" or here == "draw"): warn(nodes[n].pos, "sleep stops the whole game, every frame: to wait, count down a timer (`wait -= dt`, act when it is below 0), or `every(1, 2.0)`")
+
+# draw(prog, quad, Other(...)) where prog = make_shader(shader(vs, fs)) takes U: a Shader does not
+# carry its uniforms' type, so the one its functions take is found where the global is made
+shader_draw_check = (decl: int, args: int[]):
+    fnm = name_of(int(nodes[decl].name))
+    if fnm != "draw" and not starts_with(fnm, "draw_instanced") and not starts_with(fnm, "draw_indirect"): return
+    if args.len() < 3 or args[0] == 0: return
+    a0 = unnamed(args[0])
+    if nodes[a0].kind != .ident or nodes[a0].aux != i32(int(SK.global)) or nodes[a0].type == 0 or type_str(ntype(a0)) != "Shader": return
+    g = int(nodes[a0].sym)
+    if g <= 0 or globals[g].decl == 0: return
+    ut = shader_uniforms_in(int(nodes[int(globals[g].decl)].b))
+    if ut == 0: return
+    loop i in [0..min(args.len(), nkids(decl))):
+        if name_of(int(nodes[kid(decl, i)].name)) != "params" or args[i] == 0: continue
+        a = unnamed(args[i])
+        if nodes[a].type == 0 or type_eq(prune(ntype(a)), prune(ut)): return
+        gn = name_of(int(globals[g].name))
+        fatal(nodes[a].pos, "{gn}'s shader functions take {type_str(ut)} as their uniforms, and this is {type_str(ntype(a))}: give it a {type_str(ut)}")
+
+# the uniforms type of the shader functions named in e (make_shader(shader(vs, fs))), or 0
+shader_uniforms_in = (e: int) -> int:
+    if e == 0: return 0
+    if nodes[e].kind == .fnref:
+        f = int(nodes[e].sym)
+        if f > 0 and fns[f].ptypes.len() == 2 and type_eq(int(fns[f].ret), T_VEC4): return fns[f].ptypes[1]
+        return 0
+    if nodes[e].kind == .lambda or nodes[e].kind == .fn_: return 0
+    r = shader_uniforms_in(int(nodes[e].a))
+    if r != 0: return r
+    loop i in [0..nkids(e)):
+        r = shader_uniforms_in(kid(e, i))
+        if r != 0: return r
+    0
 
 # rotation_y(45): an angle in degrees given where radians go
 angle_check = (decl: int, args: int[]):
