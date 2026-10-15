@@ -233,7 +233,7 @@ from.
 | ask and wait | `hud_text_field(...)`, a box to type in |
 | pick random 1 to 10 | `random_int(1, 11)` (the top is left out), `random(0.0, 1.0)` for a fraction |
 | variables, lists | `score = 0` at the top; `names: str[] = []`, `names.push("Ada")` |
-| pen | a picture drawn into and never cleared: `render_target`, `draw_to` |
+| pen | a picture drawn into and never cleared: `pen = render_target(1280, 720)` at the top; in `draw`, `draw_to(pen)`, the line or dot, `draw_to_screen()`, then after `clear`, `draw_target(pen)` |
 | sounds | `meow = load_wav(embed("meow.wav"))` at the top, `play(meow)` when it should sound |
 
 ## Coming from Python
