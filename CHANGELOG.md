@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+From a visual novel (dialogue, choices, portraits, music, save slots, Japanese text):
+- A loaded font's missing characters are drawn with the built-in font (Latin and accents in a
+  Japanese font drew nothing), else as `?`.
+- `wrap_text` and `text_wrapped` break lines between Chinese, Japanese and Korean characters
+  (they only broke at spaces), keeping 。、」 at the end of a line.
+- `text(..., chars = n)` and `text_wrapped(..., chars = n)` draw the first n characters where
+  the whole text puts them: dialogue that types itself out.
+- `img.resized(w, h)` (a thumbnail), `free_texture(t)`, `xs.get(i)` (an element or none).
+- `"{i}plans"` and `"{color=#ff0}gold{/color}"`: the errors say how to write the braces as
+  text (they said "unknown name 'i'" and "`#` starts a comment").
+- `sloppy watch` with its input not a terminal (run from a script, or with `< /dev/null`)
+  restarted the game on every change, losing its state: it reloads in place now.
+- A script (no `update` or `draw`) that makes a texture or loads a font opens no window: it
+  draws with the software renderer, as `render_image` does.
+- Screenshot runs play no sound: the mixer keeps to the frames' clock, so fades and
+  `audio_time()` are the same every run.
+- `UiStyle` and `HudStyle` (`ui_style`, `hud_style`) are in the API reference.
+
 From an online arena (2-4 players, native and browser clients, a lobby, reconnects):
 - `srv.run()` ticks a server 60 times a second on time. The loop the docs showed (`update`,
   then `sleep(1/60)`) ticked a little slower than the clients, whose inputs then piled up:

@@ -327,7 +327,11 @@ texture = (img: Image, smooth: bool = true) -> Texture:
 __tex_nearest: bool[]
 
 __gfx_init_gl_only = ():
-    if not __win_open: window(__win_title, __win_w, __win_h)
+    # (a texture or font made before the window: a game's opens it; a script, with no update or
+    # draw, draws pictures with no window: render_image)
+    if not __win_open:
+        if __is_game: window(__win_title, __win_w, __win_h)
+        else: __open_offscreen()
 
 set_repeat = (t: Texture, on: bool):
     glBindTexture(GL_TEXTURE_2D, u32(t.id))
@@ -343,6 +347,13 @@ update_texture = (t: Texture, img: Image):
     gl_tex_sub_image(0, 0, img.width, img.height, GL_RGBA, GL_UNSIGNED_BYTE, data(img.pixels), img.pixels.len())
 
 load_texture = (file: u8[], smooth: bool = true) -> Texture: texture(load_image(file), smooth)
+
+# give back a texture's memory (it may not be drawn after): for textures made while the game
+# runs, a save's thumbnail, a level's tiles
+free_texture = (t: Texture):
+    if t.id == 0 or t.id == __white.id: return
+    flush()
+    gl_delete_texture(t.id)
 
 # ---------------- render targets ----------------
 __targets: RenderTarget[]
@@ -851,10 +862,15 @@ draw_target = (rt: RenderTarget, pos: vec2 = vec2(0, 0), size: vec2 = vec2(0, 0)
 
 # ---------------- text ----------------
 # the font text() and text_width() use (load_font makes one); set_font() goes back to the built-in
-set_font = (f: Font): __font = f
+set_font = (f: Font):
+    __font = f
+    __font_loaded = true
 set_font = ():
     __gfx_init()
     __font = __default_font
+    __font_loaded = false
+
+__font_loaded = false           # (set_font(f): the built-in font fills in what f lacks)
 
 # (the code point at s[i], and where the next one starts: UTF-8)
 __next_char = (s: str, i: int) -> (int, int):
@@ -908,6 +924,13 @@ text_width = (s: str, size: f64 = 20.0, mono: bool = false) -> f64:
             w = 0.0
             continue
         g = __glyph(__font, r.0)
+        if g < 0 and __font_loaded and r.0 >= 32:
+            # (drawn with the built-in font)
+            g2 = __glyph(__default_font, r.0)
+            if g2 < 0: g2 = __glyph(__default_font, '?')
+            if g2 >= 0 and __glyph(__font, r.0) < 0 and (__glyph(__default_font, r.0) >= 0 or __glyph(__font, '?') < 0):
+                w += __default_font.adv[g2] * size / __default_font.px
+                continue
         if g < 0 and r.0 >= 32: g = __glyph(__font, '?')
         if g >= 0: w += __font.adv[g] * k
     max(widest, w)
@@ -920,101 +943,162 @@ enum Align:
     center
     right
 
-# s broken into lines no wider than width, at spaces (a word wider than that has a line of its
-# own; a line break in s starts a new line)
+# s broken into lines no wider than width, at spaces, and between the characters of Chinese,
+# Japanese and Korean (a word wider than that has a line of its own; a line break in s starts a
+# new line; 。、」 and the like stay at the end of a line, not the start of the next)
 wrap_text = (s: str, width: f64, size: f64 = 20.0) -> str[]:
     out: str[]
     space = text_width(" ", size)
     loop para in s.split("\n"):
         line = ""
         w = 0.0
-        loop word in para.split(" "):
-            if len(word) == 0: continue
-            ww = text_width(word, size)
-            if len(line) > 0 and w + space + ww > width:
+        loop u in __wrap_units(para):
+            uw = text_width(u.0, size)
+            gap = 0.0
+            if len(line) > 0 and u.1: gap = space
+            if len(line) > 0 and w + gap + uw > width and not __cjk_closing(u.0):
                 out.push(line)
                 line = ""
                 w = 0.0
-            if len(line) > 0:
-                line += " "
-                w += space
-            line += word
-            w += ww
+                gap = 0.0
+            if len(line) > 0 and u.1: line += " "
+            line += u.0
+            w += gap + uw
         out.push(line)
     out
 
+# (the pieces a line may break between: words, and each CJK character; with whether a space was
+# before it)
+__wrap_units = (s: str) -> (str, bool)[]:
+    out: (str, bool)[]
+    word = ""
+    spaced = false
+    i = 0
+    loop i < len(s):
+        r = __next_char(s, i)
+        ch = s[i..r.1)
+        i = r.1
+        if r.0 == ' ':
+            if len(word) > 0:
+                out.push((word, spaced))
+                word = ""
+            spaced = true
+            continue
+        if __cjk(r.0):
+            if len(word) > 0:
+                out.push((word, spaced))
+                spaced = false
+                word = ""
+            out.push((ch, spaced))
+            spaced = false
+            continue
+        if len(word) == 0 and out.len() > 0 and not spaced and __cjk_char_last(out):
+            # (a word right after a CJK character: no space between them)
+            spaced = false
+        word += ch
+    if len(word) > 0: out.push((word, spaced))
+    out
+
+__cjk_char_last = (us: (str, bool)[]) -> bool:
+    l = us[us.len() - 1].0
+    len(l) > 0 and __cjk(__next_char(l, 0).0)
+
+__cjk = (c: int) -> bool: (c >= 0x2E80 and c <= 0x9FFF) or (c >= 0xAC00 and c <= 0xD7AF) or (c >= 0xF900 and c <= 0xFAFF) or (c >= 0xFF00 and c <= 0xFFEF)
+
+# (punctuation that closes: kept on the line before)
+__cjk_closing = (u: str) -> bool:
+    if len(u) == 0: return false
+    c = __next_char(u, 0).0
+    c == 0x3001 or c == 0x3002 or c == 0xFF0C or c == 0xFF0E or c == 0x300D or c == 0x300F or c == 0xFF09 or c == 0x3009 or c == 0x300B or c == 0x3011 or c == 0xFF01 or c == 0xFF1F or c == 0x30FC or c == 0x2026 or c == 0x30FB or c == 0x3063 or c == 0x30C3 or c == 0x3083 or c == 0x3085 or c == 0x3087
+
 # text in a column `width` wide from pos (its top-left corner), broken into lines at spaces,
-# each line to the left, centered or to the right; the height it took (LÖVE's printf)
-text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), align: Align = .left, shadow: vec4 = vec4(0, 0, 0, 0)) -> f64:
+# each line to the left, centered or to the right; the height it took (LÖVE's printf). chars:
+# only the first that many characters, laid out where the whole text puts them (dialogue that
+# types itself out does not jump to the next line midway through a word)
+text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), align: Align = .left, shadow: vec4 = vec4(0, 0, 0, 0), chars: int = -1) -> f64:
     lines = wrap_text(s, width, size)
     y = f64(pos.y)
+    left = chars
     loop line in lines:
         x = f64(pos.x)
         if align == .center: x += (width - text_width(line, size)) / 2.0
         else if align == .right: x += width - text_width(line, size)
-        text(line, vec2(x, y), size, color, shadow)
+        n = char_count(line)
+        if left < 0: text(line, vec2(x, y), size, color, shadow)
+        else if left > 0: text(line, vec2(x, y), size, color, shadow, chars = min(left, n))
+        if left > 0: left = max(left - n - 1, 0)      # (and the space or break between lines)
         y += size * 1.25
     f64(lines.len()) * size * 1.25
 
 # draw text with its top-left corner at `pos` (characters the font does not have show as ?);
 # shadow: a color drawn under it, a little down and right, to read over a busy scene
 # (`shadow = rgba(0, 0, 0, 0.7)`). mono: each character in a cell of the same width, so
-# columns made with "{name:<12} {score:>5}" line up (a scoreboard, a table, a roguelike's map)
-text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false):
+# columns made with "{name:<12} {score:>5}" line up (a scoreboard, a table, a roguelike's map).
+# chars: only the first that many characters (dialogue appearing letter by letter: where the
+# rest will be does not move); -1: all
+text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false, chars: int = -1):
     if shadow.w > 0.0:
         off = f32(max(1.0, size * 0.07))
-        text(s, pos + vec2(off, off), size, shadow, mono = mono)
+        text(s, pos + vec2(off, off), size, shadow, mono = mono, chars = chars)
     if not __win_open: __outside_draw()
     __gfx_init()
     f = __font
-    __use_tex(f.texture.id, len(s) * 6)
+    d = __default_font
+    # (a loaded font without a character: the built-in one's, as Latin in a Japanese font)
+    fill_in = __font_loaded
     k = f32(size / f.px)
-    cell = f32(f.cell)
-    pad = f32(f.spread)
-    atlas_w = f32(f.texture.width)
-    atlas_h = f32(f.texture.height)
     x = pos.x
-    y = pos.y + f32(size * 0.82) - f32(f.base) * k
+    top = pos.y + f32(size * 0.82)
     madv = f32(__mono_adv(f)) * k
     i = 0
+    left = chars
     loop i < len(s):
         r = __next_char(s, i)
         i = r.1
         c = r.0
+        if left == 0: break
+        if left > 0: left -= 1
         if c == '\n':
             x = pos.x
-            y += f32(size * 1.25)
+            top += f32(size * 1.25)
             continue
         if c < 32: continue
+        gf = f
         g = __glyph(f, c)
-        if g < 0: g = __glyph(f, '?')
+        if g < 0 and fill_in:
+            g = __glyph(d, c)
+            if g >= 0: gf = d
+        if g < 0:
+            gf = f
+            g = __glyph(f, '?')
+            if g < 0 and fill_in:
+                gf = d
+                g = __glyph(d, '?')
         if g < 0: continue
+        gw = f32(gf.adv[g] * size / gf.px)
         if mono:
             # (centered in its cell; a wider letter, M or W, narrowed to fit it)
-            gw = f32(f.adv[g]) * k
             sx = min(f32(1.0), madv / max(gw, f32(0.001)))
-            gx = x + (madv - gw * sx) / 2.0
-            if c != ' ':
-                col = f32(g % f.cols)
-                row = f32(g / f.cols)
-                s_ = cell * k
-                x0 = gx - pad * k * sx
-                x1 = x0 + s_ * sx
-                __quad(vec2(x0, y), vec2(x1, y), vec2(x1, y + s_), vec2(x0, y + s_), vec2(col * cell / atlas_w, row * cell / atlas_h), vec2((col + 1.0) * cell / atlas_w, row * cell / atlas_h), vec2((col + 1.0) * cell / atlas_w, (row + 1.0) * cell / atlas_h), vec2(col * cell / atlas_w, (row + 1.0) * cell / atlas_h), color, 1)
+            if c != ' ': __text_glyph(gf, g, x + (madv - gw * sx) / 2.0, top, size, sx, color)
             x += madv
             continue
-        if c != ' ':
-            col = f32(g % f.cols)
-            row = f32(g / f.cols)
-            u0 = col * cell / atlas_w
-            v0 = row * cell / atlas_h
-            u1 = (col + 1.0) * cell / atlas_w
-            v1 = (row + 1.0) * cell / atlas_h
-            x0 = x - pad * k
-            y0 = y
-            s_ = cell * k
-            __quad(vec2(x0, y0), vec2(x0 + s_, y0), vec2(x0 + s_, y0 + s_), vec2(x0, y0 + s_), vec2(u0, v0), vec2(u1, v0), vec2(u1, v1), vec2(u0, v1), color, 1)
-        x += f32(f.adv[g]) * k
+        if c != ' ': __text_glyph(gf, g, x, top, size, 1.0, color)
+        x += gw
+
+# (glyph g of font f, its advance starting at x, the line's top at top; sx narrows it)
+__text_glyph = (f: Font, g: int, x: f32, top: f32, size: f64, sx: f32, color: vec4):
+    __use_tex(f.texture.id, 6)
+    k = f32(size / f.px)
+    cell = f32(f.cell)
+    aw = f32(f.texture.width)
+    ah = f32(f.texture.height)
+    col = f32(g % f.cols)
+    row = f32(g / f.cols)
+    y = top - f32(f.base) * k
+    s_ = cell * k
+    x0 = x - f32(f.spread) * k * sx
+    x1 = x0 + s_ * sx
+    __quad(vec2(x0, y), vec2(x1, y), vec2(x1, y + s_), vec2(x0, y + s_), vec2(col * cell / aw, row * cell / ah), vec2((col + 1.0) * cell / aw, row * cell / ah), vec2((col + 1.0) * cell / aw, (row + 1.0) * cell / ah), vec2(col * cell / aw, (row + 1.0) * cell / ah), color, 1)
 
 # (a monospaced cell: as wide as n, the width of a monospaced font's)
 __mono_adv = (f: Font) -> f64:

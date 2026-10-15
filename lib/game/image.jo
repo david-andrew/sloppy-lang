@@ -27,6 +27,67 @@ get = (img: Image, x: int, y: int) -> vec4:
     p = img.pixels
     vec4(f32(p[i]) / 255.0, f32(p[i + 1]) / 255.0, f32(p[i + 2]) / 255.0, f32(p[i + 3]) / 255.0)
 
+# the image at another size (a save's thumbnail, an icon): each new pixel the average of the
+# pixels it covers when smaller, smoothly between them when larger
+resized = (img: Image, w: int, h: int) -> Image:
+    out = image(max(w, 1), max(h, 1))
+    if img.width == 0 or img.height == 0: return out
+    sx = f64(img.width) / f64(out.width)
+    sy = f64(img.height) / f64(out.height)
+    src = img.pixels
+    parallel_range(out.height, (y: int):
+        y0 = f64(y) * sy
+        y1 = y0 + sy
+        loop x in [0..out.width):
+            x0 = f64(x) * sx
+            x1 = x0 + sx
+            acc = vec4(0, 0, 0, 0)
+            total = 0.0
+            if sx >= 1.0 and sy >= 1.0:
+                # (smaller: the box of pixels it covers, each by how much of it is inside)
+                loop py in [int(y0)..min(int(ceil(y1)), img.height)):
+                    wy = min(y1, f64(py + 1)) - max(y0, f64(py))
+                    loop px in [int(x0)..min(int(ceil(x1)), img.width)):
+                        wgt = (min(x1, f64(px + 1)) - max(x0, f64(px))) * wy
+                        i = (py * img.width + px) * 4
+                        acc += vec4(f32(src[i]), f32(src[i + 1]), f32(src[i + 2]), f32(src[i + 3])) * f32(wgt)
+                        total += wgt
+            else:
+                # (larger: between the four nearest)
+                fx = clamp((x0 + x1) / 2.0 - 0.5, 0.0, f64(img.width - 1))
+                fy = clamp((y0 + y1) / 2.0 - 0.5, 0.0, f64(img.height - 1))
+                ax = int(fx)
+                ay = int(fy)
+                bx = min(ax + 1, img.width - 1)
+                by = min(ay + 1, img.height - 1)
+                tx = fx - f64(ax)
+                ty = fy - f64(ay)
+                loop k in [0..4):
+                    px = ax
+                    py = ay
+                    wgt = (1.0 - tx) * (1.0 - ty)
+                    if k == 1:
+                        px = bx
+                        wgt = tx * (1.0 - ty)
+                    else if k == 2:
+                        py = by
+                        wgt = (1.0 - tx) * ty
+                    else if k == 3:
+                        px = bx
+                        py = by
+                        wgt = tx * ty
+                    i = (py * img.width + px) * 4
+                    acc += vec4(f32(src[i]), f32(src[i + 1]), f32(src[i + 2]), f32(src[i + 3])) * f32(wgt)
+                    total += wgt
+            if total > 0.0: acc = acc / f32(total)
+            o = (y * out.width + x) * 4
+            out.pixels[o] = u8(clamp(int(acc.x + 0.5), 0, 255))
+            out.pixels[o + 1] = u8(clamp(int(acc.y + 0.5), 0, 255))
+            out.pixels[o + 2] = u8(clamp(int(acc.z + 0.5), 0, 255))
+            out.pixels[o + 3] = u8(clamp(int(acc.w + 0.5), 0, 255))
+    )
+    out
+
 # ---------------- inflate (RFC 1951) ----------------
 struct Inflate:
     src: u8[]
@@ -755,7 +816,9 @@ encode_png = (img: Image) -> u8[]:
 
 save_png = (img: Image, path: str) -> bool: write_bytes(path, encode_png(img))
 
-# read the current framebuffer into an image
+# read what has been drawn into an image: the window's pixels (on a scaled display more than
+# the size asked for in window(): resized(img, w, h) makes it smaller), or the render target
+# being drawn to (draw_to)
 screenshot = () -> Image:
     flush()
     w = __target_w

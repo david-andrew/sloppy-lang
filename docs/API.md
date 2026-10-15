@@ -102,6 +102,7 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `last[T] = (xs: T[]) -> T`
 - `first[T] = (xs: T[], n: int) -> T[]`: the first n elements (all of them when there are fewer: xs[..n) would panic)
 - `last[T] = (xs: T[], n: int) -> T[]`: the last n elements (all of them when there are fewer)
+- `get[T] = (xs: T[], i: int) -> T?`: element i, or none past either end (xs[i] stops the program there): xs.get(i) ?? fallback
 - `contains[T] = (xs: T[], x: T) -> bool`
 - `index_of[T] = (xs: T[], x: T) -> int`
 - `map[T, U] = (xs: T[], f: (T) -> U) -> U[]`
@@ -1494,6 +1495,7 @@ draw = ():
 - `set_repeat = (t: Texture, on: bool)`
 - `update_texture = (t: Texture, img: Image)`
 - `load_texture = (file: u8[], smooth: bool = true) -> Texture`
+- `free_texture = (t: Texture)`: give back a texture's memory (it may not be drawn after): for textures made while the game runs, a save's thumbnail, a level's tiles
 
 #### Render targets
 
@@ -1549,9 +1551,9 @@ draw = ():
       center
       right
   ```
-- `wrap_text = (s: str, width: f64, size: f64 = 20.0) -> str[]`: s broken into lines no wider than width, at spaces (a word wider than that has a line of its own; a line break in s starts a new line)
-- `text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), align: Align = .left, shadow: vec4 = vec4(0, 0, 0, 0)) -> f64`: text in a column `width` wide from pos (its top-left corner), broken into lines at spaces, each line to the left, centered or to the right; the height it took (LÖVE's printf)
-- `text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false)`: draw text with its top-left corner at `pos` (characters the font does not have show as ?); shadow: a color drawn under it, a little down and right, to read over a busy scene (`shadow = rgba(0, 0, 0, 0.7)`). mono: each character in a cell of the same width, so columns made with "{name:<12} {score:>5}" line up (a scoreboard, a table, a roguelike's map)
+- `wrap_text = (s: str, width: f64, size: f64 = 20.0) -> str[]`: s broken into lines no wider than width, at spaces, and between the characters of Chinese, Japanese and Korean (a word wider than that has a line of its own; a line break in s starts a new line; 。、」 and the like stay at the end of a line, not the start of the next)
+- `text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), align: Align = .left, shadow: vec4 = vec4(0, 0, 0, 0), chars: int = -1) -> f64`: text in a column `width` wide from pos (its top-left corner), broken into lines at spaces, each line to the left, centered or to the right; the height it took (LÖVE's printf). chars: only the first that many characters, laid out where the whole text puts them (dialogue that types itself out does not jump to the next line midway through a word)
+- `text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false, chars: int = -1)`: draw text with its top-left corner at `pos` (characters the font does not have show as ?); shadow: a color drawn under it, a little down and right, to read over a busy scene (`shadow = rgba(0, 0, 0, 0.7)`). mono: each character in a cell of the same width, so columns made with "{name:<12} {score:>5}" line up (a scoreboard, a table, a roguelike's map). chars: only the first that many characters (dialogue appearing letter by letter: where the rest will be does not move); -1: all
 - `text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false)`: text centered on `center` (horizontally and vertically; each of its lines centered). The built-in font is proportional ("i" is narrower than "@"): a grid of characters, a roguelike's map, draws each one centered in its cell
 
 ### font.jo
@@ -1566,7 +1568,9 @@ draw = ():
     set_font()
 ```
 
-It has the printable ASCII characters, Latin-1 and Latin Extended-A (accented letters), common punctuation (quotes, dashes, the euro sign), and any others listed in `extra`.
+It has the printable ASCII characters, Latin-1 and Latin Extended-A (accented letters), common punctuation (quotes, dashes, the euro sign), and any others listed in `extra`. A character the font does not have is drawn with the built-in one (Latin in a Japanese font), else as ?.
+
+Japanese, Chinese or Korean text needs a font with them, and its characters in `extra`: give it all the text that will be shown (load_font(file, extra = story)). Most of the CJK fonts a system has are OpenType with PostScript outlines (.otf, CFF), which this cannot read: a .ttf (Noto Sans JP's, Droid Sans Japanese) can. wrap_text breaks lines between their characters.
 
 - `struct Font`
   ```gdscript
@@ -1667,6 +1671,7 @@ Images: RGBA8 pixel buffers, PNG decoding (with a built-in inflate; JPEG: jpeg.j
 - `image = (w: int, h: int, fill: vec4 = vec4(0, 0, 0, 0)) -> Image`
 - `set = (img: mut Image, x: int, y: int, c: vec4)`
 - `get = (img: Image, x: int, y: int) -> vec4`
+- `resized = (img: Image, w: int, h: int) -> Image`: the image at another size (a save's thumbnail, an icon): each new pixel the average of the pixels it covers when smaller, smoothly between them when larger
 
 #### Inflate (RFC 1951)
 
@@ -1701,7 +1706,7 @@ Images: RGBA8 pixel buffers, PNG decoding (with a built-in inflate; JPEG: jpeg.j
 
 - `encode_png = (img: Image) -> u8[]`
 - `save_png = (img: Image, path: str) -> bool`
-- `screenshot = () -> Image`: read the current framebuffer into an image
+- `screenshot = () -> Image`: read what has been drawn into an image: the window's pixels (on a scaled display more than the size asked for in window(): resized(img, w, h) makes it smaller), or the render target being drawn to (draw_to)
 
 ### jpeg.jo
 
@@ -2960,7 +2965,7 @@ draw = ():
 
 Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a click choose, left/right change sliders, switches and choices; ui_back() is true when escape or B was pressed. A menu ignores input in the frame it opens (the key that opened it is still pressed then); ui_ready() says whether that frame is over, for a game's own keys in a menu.
 
-- `struct UiStyle`
+- `struct UiStyle`: how the ui_ menus look: set ui_style's fields (ui_style.size = 28.0, ui_style.focus_color = rgb(0.4, 0.8, 1)), for every menu drawn after
   ```gdscript
   struct UiStyle:
       size: f64 = 34.0                        # text size of the items
@@ -2985,7 +2990,7 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
 
 #### A game's own interface: boxes placed anywhere
 
-- `struct HudStyle`
+- `struct HudStyle`: how hud_button, hud_panel, hud_bar, hud_text_field and hud_checkbox look: set hud_style's fields (hud_style.text_size = 16.0, hud_style.button = rgb(0.2, 0.3, 0.5)); a change holds for what is drawn after it, so a game can style one button and set it back
   ```gdscript
   struct HudStyle:
       accent: vec4 = vec4(1, 0.82, 0.4, 1)    # a selected button's edge, a field being typed in

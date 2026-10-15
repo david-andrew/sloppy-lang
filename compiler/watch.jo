@@ -813,6 +813,7 @@ w_to = -1                   # pipes to and from the running program
 w_from = -1
 w_pid = -1
 w_ready = false             # it takes patches (its game loop runs, with room for new code)
+w_stdin_done = false        # standard input has ended (not a terminal, or closed)
 w_out = ""
 w_args: str[]
 
@@ -935,6 +936,8 @@ watch_wait = (ino: int) -> int:
         # (no inotify, ino < 0: files are looked at four times a second; macOS's poll does not
         # pass over a descriptor of -1, so then the terminal's takes its place)
         pf = [ino | (1 << 32), 0 | (1 << 32), -1]
+        # (input that has ended, not a terminal: not looked at again)
+        if w_stdin_done: pf[1] = -1 | (1 << 32)
         if ino < 0: pf[0] = 0 | (1 << 32)
         n = 2
         if w_from >= 0:
@@ -947,18 +950,16 @@ watch_wait = (ino: int) -> int:
         if ino < 0 and w32_files_changed(): return 1
         if ino >= 0 and (pf[0] >> 48) & 0xFFFF != 0:
             if watch_drain(ino): return 1
-        if (pf[1] >> 48) & 0xFFFF != 0:
+        if not w_stdin_done and (pf[1] >> 48) & 0xFFFF != 0:
             buf = fill(u8(0), 256)
             got = syscall(0, 0, data(buf), 256)
-            if got <= 0:
-                # (no terminal input any more: only files and the program; never in a web page,
-                # where the compiler runs without sloppy watch)
-                when TARGET != "wasm": sleep(0.2)
-                continue
-            line = trim(str_from_bytes(buf[..got)))
-            if line == "r": return 3
-            if line == "q": return 4
-            if len(line) > 0: eprint("sloppy watch: r + enter restarts the program, q + enter quits")
+            # (no input any more: only files and the program, which are still looked at below)
+            if got <= 0: w_stdin_done = true
+            else:
+                line = trim(str_from_bytes(buf[..got)))
+                if line == "r": return 3
+                if line == "q": return 4
+                if len(line) > 0: eprint("sloppy watch: r + enter restarts the program, q + enter quits")
         if n == 3 and (pf[2] >> 48) & 0xFFFF != 0:
             # the program: gone, or saying (once its game loop starts) whether it takes patches
             b = [0]
