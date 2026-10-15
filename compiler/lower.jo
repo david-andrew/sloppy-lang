@@ -215,10 +215,21 @@ V = (v: int, owned: bool) -> Val: Val(v, owned, -1)
 # checks; debug builds keep them out of line so the IR (and compile time) stays small.
 opt_release = false
 
+# (where __mt_active is among the globals, for the code generator's CALL_RC_INC and CALL_RC_DEC)
+mt_active_off = -1
+note_mt_active = ():
+    if mt_active_off >= 0: return
+    s = prelude.get(intern("__mt_active")) ?? 0
+    if s == 0 or syms[s].kind != .global: ice("missing runtime global __mt_active")
+    mt_active_off = global_addr_off(int(syms[s].ref))
+
 # rc <= 0 marks immortal objects
 retain = (v: int, t: int):
     if not opt_release:
+        # (one call in the IR, which the code generator does inline when it can: CALL_RC_INC)
         e_call(rt("__rc_inc"), [v], -1)
+        ir.code[ir.code.len() - 1].c = CALL_RC_INC
+        note_mt_active()
         return
     # during a parallel job refcounts must be updated atomically (out of line)
     blk()
@@ -244,6 +255,8 @@ release = (v: int, t0: int):
     if not opt_release:
         if managed_arr: e_call(lf_helper(.arrrel, t, 0), [v], -1)
         else: e_call(rt("__rc_dec"), [v], -1)
+        ir.code[ir.code.len() - 1].c = CALL_RC_DEC
+        note_mt_active()
         return
     blk()
     done = ctl
@@ -567,10 +580,14 @@ arr_len = (p: int) -> int:
 
 arr_unique = (slot_addr_or_place: Place, at: int):
     # ensure the array in the place is uniquely owned
-    # (fast path inline: a non-null array with refcount 1 is already unique)
+    # (fast path inline: a non-null array with refcount 1 is already unique. Debug builds keep
+    # the IR one call, which the code generator skips in those cases (CALL_IF_SHARED): out of
+    # line, every element write cost a call, half of nbody's time)
     p = read_place(slot_addr_or_place, at)
     if not opt_release:
-        write_place(slot_addr_or_place, at, e_call(lf_helper(.arruniq, at, 0), [p], VI))
+        np0 = e_call(lf_helper(.arruniq, at, 0), [p], VI)
+        ir.code[ir.code.len() - 1].c = CALL_IF_SHARED
+        write_place(slot_addr_or_place, at, np0)
         return
     iff(e_bin(.ne, VI, p, e_iconst(0)))
     iff(e_bin(.ne, VI, hdr_load(p, 0), e_iconst(1)))

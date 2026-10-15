@@ -358,6 +358,7 @@ call_like = (ins: Ins) -> bool:
     op = ins.op
     if op == .intr and ins.imm >= 2: return true
     if op == .call and ins.c == 1 and not dbg_on: return false      # never returns (a panic: with -g, where its caller's variables must be readable)
+    if op == .call and ins.c >= CALL_IF_SHARED and ins.c <= CALL_RC_DEC and not target_arm64: return false     # (through a stub keeping every register)
     if op == .call or op == .calli or op == .callc or op == .syscall or op == .memcpy or op == .memset: return true
     if op == .copy or op == .zero: return ins.imm > INLINE_COPY
     false
@@ -2099,12 +2100,70 @@ emit_ins = (pos: int, ins: Ins):
                         mov_mr(RBP, off + j, RAX)
                         j += 8
         call:
-            emit_call_args(a, bb, -1, 0)
-            b(0xE8)
-            b32(0)
-            call_fix.push((code.len() - 4, int(ins.imm)))
-            call_site(ins)
-            pop_call_stack()
+            if ins.c == CALL_IF_SHARED:
+                # x itself, in rax, when it is 0 or its refcount is 1; else f(x) through a stub
+                # that keeps every register (so this is no call to the register allocator)
+                ld(RAX, int(ir.args[a]))
+                b(0x48); b(0x85); b(0xC0)                 # test rax, rax
+                b(0x74); b(0)                             # jz done
+                skip0 = code.len() - 1
+                b(0x48); b(0x83); b(0x38); b(1)           # cmp qword [rax], 1
+                b(0x74); b(0)                             # je done
+                skip1 = code.len() - 1
+                b(0x48); b(0x8D); b(0x0D); b32(0)         # lea rcx, [rip + f]
+                call_fix.push((code.len() - 4, int(ins.imm)))
+                b(0xE8)
+                b32(0)
+                stub_fix.push((code.len() - 4, 12))
+                call_site(ins)
+                code[skip0] = u8(code.len() - skip0 - 1)
+                code[skip1] = u8(code.len() - skip1 - 1)
+            else if ins.c == CALL_RC_INC or ins.c == CALL_RC_DEC:
+                # inline: x's refcount one more, or one less while more than one is left; f(x)
+                # through the stub keeping every register when threads run (atomically there) or
+                # for the last reference (freeing)
+                ld(RAX, int(ir.args[a]))
+                b(0x48); b(0x85); b(0xC0)                 # test rax, rax
+                b(0x74); b(0)                             # jz done
+                done0 = code.len() - 1
+                b(0x48); b(0x83); b(0x38)                 # cmp qword [rax], ...
+                slow0 = -1
+                done1 = -1
+                if ins.c == CALL_RC_INC:
+                    b(0)                                  # ... 0
+                    b(0x7E); b(0)                         # jle done (immortal)
+                    done1 = code.len() - 1
+                else:
+                    b(1)                                  # ... 1
+                    b(0x7C); b(0)                         # jl done (immortal)
+                    done1 = code.len() - 1
+                    b(0x74); b(0)                         # je slow (the last)
+                    slow0 = code.len() - 1
+                rel_fixup_lea(RCX, 1, mt_active_off)      # lea rcx, [rip + __mt_active]
+                b(0x80); b(0x39); b(0)                    # cmp byte [rcx], 0
+                b(0x75); b(0)                             # jne slow
+                slow1 = code.len() - 1
+                b(0x48); b(0xFF)
+                if ins.c == CALL_RC_INC: b(0x00)          # inc qword [rax]
+                else: b(0x08)                             # dec qword [rax]
+                b(0xEB); b(0)                             # jmp done
+                done2 = code.len() - 1
+                if slow0 >= 0: code[slow0] = u8(code.len() - slow0 - 1)
+                code[slow1] = u8(code.len() - slow1 - 1)
+                b(0x48); b(0x8D); b(0x0D); b32(0)         # lea rcx, [rip + f]
+                call_fix.push((code.len() - 4, int(ins.imm)))
+                b(0xE8)
+                b32(0)
+                stub_fix.push((code.len() - 4, 12))
+                call_site(ins)
+                loop j in [done0, done1, done2]: code[j] = u8(code.len() - j - 1)
+            else:
+                emit_call_args(a, bb, -1, 0)
+                b(0xE8)
+                b32(0)
+                call_fix.push((code.len() - 4, int(ins.imm)))
+                call_site(ins)
+                pop_call_stack()
             store_result(ins)
         calli, callc:
             if op == .callc and target_windows: emit_call_args_win64(a, bb, int(ins.c), R11)
@@ -2719,7 +2778,7 @@ put_varint = (out: mut u8[], v0: int):
     out.push(u8(v))
 
 stub_fix: (int, int)[]
-stub_addr: int[] = [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+stub_addr: int[] = [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
 
 # machine code stubs for non-local control transfer
 x64_stubs = ():
@@ -2819,6 +2878,32 @@ x64_stubs = ():
     loop code.len() % 16 != 0: b(0xCC)
     stub_addr[11] = code.len()
     loop x in [0x31, 0xC0, 0xC3]: b(x)                                          # xor eax, eax; ret
+    # call rcx with rax as its argument, keeping every register but rax and rcx (a call the
+    # register allocator need not know of: CALL_IF_SHARED's when it is taken)
+    loop code.len() % 16 != 0: b(0xCC)
+    stub_addr[12] = code.len()
+    loop x in [0x55, 0x48, 0x89, 0xE5,                       # push rbp; mov rbp, rsp
+               0x57, 0x56, 0x52, 0x41, 0x50, 0x41, 0x51,     # push rdi, rsi, rdx, r8, r9
+               0x41, 0x52, 0x41, 0x53,                       # push r10, r11
+               0x48, 0x83, 0xE4, 0xF0,                       # and rsp, -16
+               0x48, 0x81, 0xEC, 0x00, 0x01, 0x00, 0x00]: b(x)  # sub rsp, 256
+    loop i in [0..16): xmm_spill(true, i)
+    loop x in [0x48, 0x89, 0xC7, 0xFF, 0xD1]: b(x)           # mov rdi, rax; call rcx
+    loop i in [0..16): xmm_spill(false, i)
+    loop x in [0x48, 0x8D, 0x65, 0xC8,                       # lea rsp, [rbp - 56]
+               0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58,  # pop r11, r10, r9, r8
+               0x5A, 0x5E, 0x5F, 0x5D, 0xC3]: b(x)           # pop rdx, rsi, rdi, rbp; ret
+
+# movdqu [rsp + 16 i], xmm i (or back)
+xmm_spill = (store: bool, i: int):
+    b(0xF3)
+    if i >= 8: b(0x44)
+    b(0x0F)
+    if store: b(0x7F)
+    else: b(0x6F)
+    b(0x84 | ((i & 7) << 3))
+    b(0x24)
+    b32(16 * i)
 
 lf_is_cabi = (lf: int) -> bool: lfuncs[lf].kind == LK_INST and fns[lfuncs[lf].inst].cabi
 
