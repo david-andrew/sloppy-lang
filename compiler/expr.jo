@@ -1221,6 +1221,8 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
     if decl_in_prelude(decl) and not pos_in_lib(nodes[n].pos):
         frame_call_check(n, decl)
         angle_check(decl, cd.args)
+        qn = name_of(int(nodes[decl].name))
+        if (starts_with(qn, "quat_") and qn != "quat_rotate" and qn != "quat_to_mat4") or qn == "slerp": quat_nodes[n] = true
         # (random_int(1, 6) for a die: its upper end is left out, as in [1..6))
         rhi = -1
         if name_of(int(nodes[decl].name)) == "random_int" and cd.args.len() == 2 and written_int(cd.args[0]) == 1: rhi = written_int(cd.args[1])
@@ -1662,6 +1664,10 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
             fatal(nodes[n].pos, "'{name_of(name)}' is a variable of type {type_str(int(globals[g].type))}, not a function")
         all = visible_names()
         loop it in intrinsics: all.push(intern(it.name))
+        # (physics3d.world(): the names of that module, World among them)
+        if mod_scope >= 0 and not ufcs and not modules[mod_scope].is_prelude:
+            all = []
+            loop k, v in modules[mod_scope].names: all.push(k)
         # (import net, then tcp_connect(...): the module's, written with its name)
         loop mi in [0..modules.len()):
             if modules[mi].is_prelude or modules[mi].names.get(name) == none: continue
@@ -1683,8 +1689,9 @@ rgb_check = (n: int, args: int[]):
     loop i in [0..3):
         a = args[i]
         if a == 0 or nodes[a].kind != .int_lit or not has_flag(a, NF_LITERAL): return
-        if nodes[a].ival > 1: big = true
-    if big: warn(nodes[n].pos, "the parts of a color go from 0 to 1: for 0 to 255, divide by 255 or write hex(0xff8000)")
+        # (a little above 1 is brighter than white, as a flash or a glow in 3D: rgb(3, 3, 3))
+        if nodes[a].ival > 8: big = true
+    if big: warn(nodes[n].pos, "the parts of a color go from 0 to 1 (above 1: brighter than white): for 0 to 255, divide by 255 or write hex(0xff8000)")
 
 # (is p among the arguments of print, text, window and the like, on its line?)
 in_text_call = (p: int) -> bool:
@@ -3275,9 +3282,25 @@ check_binary = (n: int, expected: int) -> int:
     else: nodes[n].type = i32(j)
     ntype(n)
 
+# (q1 * q2 for quaternions, which are vec4s: * multiplies their parts one by one, which is no
+# rotation; values from quat_* functions, and variables made from them, are known to be ones)
+quat_nodes: {int: bool} = {}
+quat_locals: {int: bool} = {}
+quat_globals: {int: bool} = {}
+is_quat = (e: int) -> bool:
+    if quat_nodes.has(e): return true
+    if nodes[e].kind != .ident: return false
+    if nodes[e].aux == i32(int(SK.local)): return quat_locals.has(int(nodes[e].sym))
+    nodes[e].aux == i32(int(SK.global)) and quat_globals.has(int(nodes[e].sym))
+
 check_vec_binary = (n: int, op: Tok, ta: int, tb: int) -> int:
     a = int(nodes[n].a)
     b = int(nodes[n].b)
+    if op == .star and not pos_in_lib(nodes[n].pos):
+        if type_eq(ta, T_VEC4) and type_eq(tb, T_VEC4) and (is_quat(a) or is_quat(b)):
+            warn(nodes[n].pos, "* multiplies the parts of two vec4s one by one, which for quaternions is no rotation: quat_mul(a, b) turns by b, then by a")
+        if type_eq(ta, T_VEC4) and type_eq(tb, T_VEC3): fatal(nodes[n].pos, "cannot apply * to vec4 and vec3 (a quaternion turns a vector with quat_rotate(q, v))")
+        if ta == T_MAT4 and type_eq(tb, T_VEC3): fatal(nodes[n].pos, "cannot apply * to mat4 and vec3 (transform_point(m, p) moves a point, transform_dir(m, d) turns a direction; or m * vec4(p, 1))")
     if op == .eq or op == .ne:
         if not type_eq(ta, tb): cmp_error(n, ta, tb)
         nodes[n].aux = 1

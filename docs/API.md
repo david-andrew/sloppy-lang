@@ -1785,7 +1785,7 @@ draw = ():
 
 3D rendering: camera, sun + sky lighting, fog, shadows, instancing and post effects. Draw calls made during draw() are recorded and rendered (shadow pass, then the lit pass) before any 2D drawing that follows them, so a HUD can be drawn on top.
 
-Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rotation_y(a)`) turns +z toward +x, so something turned by `a` faces vec3(sin(a), 0, cos(a)); glTF models face +z unturned. OrbitCamera's yaw 0 looks from +z toward -z.
+Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rotation_y(a)`) turns +z toward +x, so something turned by `a` faces vec3(sin(a), 0, cos(a)); glTF models face +z unturned, so a model faces a direction d turned by atan2(d.x, d.z). facing(d) turns -z, a camera's front, to d. The cameras (fly, follow, orbit) share one yaw: 0 looks along -z, more turns left, and the way ahead is vec3(-sin(yaw), 0, -cos(yaw)).
 
 - `struct Vertex3D`
   ```gdscript
@@ -1885,7 +1885,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `post_effects = (bloom: f64 = 0.6, threshold: f64 = 0.7, vignette: f64 = 0.35, saturation: f64 = 1.0, tint: vec3 = vec3(1, 1, 1), include_hud: bool = false)`: bloom + color grading for the frame: all of a 2D game; in a 3D one, the 3D and the 2D drawn before it, while 2D drawn after the 3D (a HUD, text) stays as drawn, unless include_hud
 - `no_post_effects = ()`
 - `point_light = (pos: vec3, color: vec3, radius: f64 = 6.0, intensity: f64 = 1.0)`: a light at a point for this frame (muzzle flashes, glowing shots, lamps): it reaches radius meters, fading out on the way. Up to 8 light a frame (the ones nearest the camera); they cast no shadows.
-- `draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false)`: in_front = true: drawn after everything else and over it, casting no shadow (a first-person weapon, which would otherwise poke into walls the player stands against)
+- `draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false)`: A color whose alpha is below 1 is see-through, drawn after the solid ones (rgba(1, 0, 0, 0.5); much emissive makes it near white, which hides that). in_front = true: drawn after everything else and over it, casting no shadow (a first-person weapon, which would otherwise poke into walls the player stands against)
 - `draw_line3d = (a: vec3, b: vec3, color: vec4 = vec4(1, 1, 1, 1), width: f64 = 0.03)`: a line from a to b, `width` thick: for seeing paths, rays, normals and boxes while making a game
 - `draw_grid3d = (size: f64 = 10.0, step: f64 = 1.0, height: f64 = 0.0, color: vec4 = vec4(1, 1, 1, 0.35))`: lines on the ground (y = height), `step` apart out to `size` from the center: to see distances
 - `draw_mesh_instanced = (m: Mesh, instances: Instance3D[], color: vec4 = vec4(1, 1, 1, 1), emissive: f64 = 0.0, specular: f64 = 0.2, cast_shadow: bool = true, wind: f64 = 0.0)`: many copies of a mesh in one draw call (crowds, forests, particles...)
@@ -1946,7 +1946,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `add_sphere = (vs: mut Vertex3D[], center: vec3, radius: f64, color: vec4 = vec4(1, 1, 1, 1), segments: int = 16, rings: int = 8, transform: mat4 = mat4())`: a sphere (segments around, rings from top to bottom: few of each give a faceted look)
 - `sphere_mesh = (radius: f64 = 0.5, segments: int = 32, rings: int = 16) -> Mesh`
 - `capsule_mesh = (radius: f64 = 0.5, height: f64 = 2.0, segments: int = 24, rings: int = 16) -> Mesh`: a capsule standing on end: `height` from end to end, centered (physics3d's add_capsule and a character are this shape)
-- `terrain_mesh = (size: f64, divisions: int, height: (f64, f64) -> f64, color: (f64, f64, f64) -> vec4) -> Mesh`: a flat grid in the XZ plane; `height` gives the terrain elevation at (x, z)
+- `terrain_mesh = (size: f64, divisions: int, height: (f64, f64) -> f64, color: (f64, f64, f64) -> vec4) -> Mesh`: a grid in the XZ plane, centered on the origin and `size` across (x and z from -size/2 to size/2), in divisions x divisions squares; `height` gives the elevation at (x, z), and `color` each corner's color from (x, y, z). To stand on it with import physics3d: `w.add_mesh(physics3d.terrain_triangles(size, divisions, height))`, the same triangles
 - `plane_mesh = (size: f64 = 10.0) -> Mesh`
 - `cylinder_mesh = (radius: f64 = 0.5, height: f64 = 1.0, segments: int = 24, top_radius: f64 = -1.0) -> Mesh`: a cylinder standing on its base at y = 0 (the cube, sphere and capsule meshes are centered instead), up to y = height; top_radius 0 makes a cone
 - `cone_mesh = (radius: f64 = 0.5, height: f64 = 1.0, segments: int = 24) -> Mesh`
@@ -1975,12 +1975,51 @@ draw = ():
       max_distance: f64 = 200.0
       turn_speed: f64 = 0.006        # radians per pixel the mouse moves
       smooth: f64 = 14.0             # how quickly it follows (0: at once)
-      drag_left = true               # a drag with the left button turns it (false: only the right
+      drag_left = true               # a left-button drag turns it (false: only the right, the left left to the game)
+      shown_yaw: f64 = 0.0           # (where it is now, on its way to yaw, pitch and distance)
+      shown_pitch: f64 = 0.4
+      shown_distance: f64 = 10.0
   ```
 - `orbit_camera = (target: vec3 = vec3(0, 0, 0), distance: f64 = 10.0, yaw: f64 = 0.0, pitch: f64 = 0.4) -> OrbitCamera`
 - `update = (c: mut OrbitCamera, dt: f64)`
 - `position = (c: OrbitCamera) -> vec3`: where the camera is
 - `camera3d = (c: OrbitCamera, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`
+- `struct FollowCamera`: Behind a target the game moves (a third-person camera): the mouse while it is locked (mouse_lock()) or the right button is held, or the right stick, turns it around the target, and the wheel brings it closer. Walk the player along flat_forward and flat_right, so that ahead is where the camera looks: Its yaw is the other cameras': 0 looks along -z, more turns it left.
+  ```gdscript
+  cam = follow_camera(distance = 6.0)
+  update = (dt: f64):
+      a = input_axis()
+      move = flat_forward(cam) * -a.y + flat_right(cam) * a.x     # (then move the player)
+      update(cam, player_pos, dt)
+      # kept out of walls: if let h = w.sphere_cast(aim(cam), position(cam), 0.2): pull_in(cam, h.fraction)
+  draw = (): camera3d(cam)
+  ```
+  ```gdscript
+  struct FollowCamera:
+      target: vec3                   # what it follows (update sets it)
+      distance: f64 = 6.0
+      height: f64 = 1.5              # how far above the target it aims
+      yaw: f64 = 0.0                 # 0: behind the target, looking along -z; more: turned left
+      pitch: f64 = 0.35              # looking down from above, in radians
+      min_pitch: f64 = -0.3
+      max_pitch: f64 = 1.3
+      min_distance: f64 = 2.0
+      max_distance: f64 = 20.0
+      turn_speed: f64 = 0.004        # radians per pixel the mouse moves
+      smooth: f64 = 12.0             # how quickly it follows the target (0: at once)
+      reach: f64 = 1.0               # (the share of its distance it may be out this frame: pull_in)
+      shown_target: vec3
+      shown_reach: f64 = 1.0
+      placed = false
+  ```
+- `follow_camera = (distance: f64 = 6.0, yaw: f64 = 0.0, pitch: f64 = 0.35, height: f64 = 1.5) -> FollowCamera`
+- `update = (c: mut FollowCamera, target: vec3, dt: f64)`
+- `pull_in = (c: mut FollowCamera, fraction: f64)`: a wall between aim(c) and position(c): only this share of the way out (a cast's fraction)
+- `aim = (c: FollowCamera) -> vec3`: the point it looks at (above the target), and where it is
+- `position = (c: FollowCamera) -> vec3`
+- `flat_forward = (c: FollowCamera) -> vec3`: the way it looks along the ground, and its right (for walking where it looks)
+- `flat_right = (c: FollowCamera) -> vec3`
+- `camera3d = (c: FollowCamera, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`
 - `struct FlyCamera`: Through the scene: W A S D (or the arrows, or the left stick) move, Space and Q go up and down, Shift is faster; the mouse looks around while the right button is held, or always when the mouse is locked (mouse_lock()), as does the right stick.
   ```gdscript
   struct FlyCamera:
@@ -2870,7 +2909,7 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
 #### The camera: following and shaking
 
 - `follow = (cam: vec2, target: vec2, dt: f64, speed: f64 = 8.0, deadzone: vec2 = vec2(0, 0)) -> vec2`: where a camera that follows target is next: it waits while target stays inside deadzone (half its size, in 2D units, around the camera's center), then catches up smoothly (higher speed: snappier). For camera2d(follow(...)).
-- `struct Shake`: A screen shake: add(trauma) on a hit or a blast (0 to 1; more adds up), update(dt) every frame, and move the camera by offset(): it shakes hard at first, fading as the trauma wears off.
+- `struct Shake`: A screen shake: add(trauma) on a hit or a blast (0 to 1; more adds up), update(dt) every frame, and move the camera by offset() (in 3D, offset3d(right)): it shakes hard at first, fading as the trauma wears off.
   ```gdscript
   struct Shake:
       trauma = 0.0
@@ -2881,6 +2920,7 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
 - `add = (s: mut Shake, trauma: f64)`
 - `update = (s: mut Shake, dt: f64)`
 - `offset = (s: Shake) -> vec2`
+- `offset3d = (s: Shake, right: vec3, up: vec3 = vec3(0, 1, 0), meters: f64 = 0.25) -> vec3`: the same shake for a 3D camera: up to `meters` along the camera's right and up (add it to where the camera is: `camera3d(eye + shake.offset3d(right), target)`)
 
 #### Collision
 
@@ -3131,7 +3171,7 @@ update = (dt: f64): w.step(dt)
 draw = (): draw_mesh(cube, w.transform(crate))         # (position and turn, as a mat4)
 ```
 
-Masses come from sizes and `density` (kilograms per cubic meter: 1000 is water's, so a ball of radius 0.5 weighs 524 kg), or are given: `w.add_sphere(pos, 0.5, mass = 1)`, `w.set_mass(b, 2)`. Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the game gives them), with one shape each; `w.add_mesh(triangles)` adds fixed triangles (a level, from a model: physics3d.triangles(model_data)). Joints: `w.ball(a, b, at)` (a ball and socket), `w.hinge(a, b, at, axis)`, `w.rod(a, b, at_a, at_b)` (a distance, or a spring, or a rope). Rays: `w.raycast`. A character: `w.character(pos, radius, height)` and `w.walk(c, velocity, dt)`, a capsule that walks up slopes and steps, slides down steeper ones, and is pushed by nothing but the level. Contacts: `w.contacts(b)` after a step, each with `.new` on the step they met; a sensor (`sensor = true`: a pickup, a trigger zone) collides with nothing but is in them too. As in 2D, stepping is the same for the same inputs (for replays and rollback). A small, fast body can pass through a thin wall in one step (there is no continuous collision yet): for bullets, use w.raycast from where they were to where they are.
+Masses come from sizes and `density` (kilograms per cubic meter: 1000 is water's, so a ball of radius 0.5 weighs 524 kg), or are given: `w.add_sphere(pos, 0.5, mass = 1)`, `w.set_mass(b, 2)`. Bodies are `.dynamic`, `.fixed` or `.moving` (moved only by the velocity the game gives them), with one shape each; `w.add_mesh(triangles)` adds fixed triangles (a level, from a model: physics3d.triangles(model_data); a terrain_mesh: physics3d.terrain_triangles). Joints: `w.ball(a, b, at)` (a ball and socket), `w.hinge(a, b, at, axis)`, `w.rod(a, b, at_a, at_b)` (a distance, or a spring, or a rope). Rays: `w.raycast`. A character: `w.character(pos, radius, height)` and `w.walk(c, velocity, dt)`, a capsule that walks up slopes and steps, slides down steeper ones, and is pushed by nothing but the level. Contacts: `w.contacts(b)` after a step, each with `.new` on the step they met; a sensor (`sensor = true`: a pickup, a trigger zone) collides with nothing but is in them too. As in 2D, stepping is the same for the same inputs (for replays and rollback). A small, fast body can pass through a thin wall in one step (there is no continuous collision yet): for bullets, use w.raycast from where they were to where they are.
 
 - `enum BodyKind: dynamic, fixed, moving`
 - `enum Shape: none, sphere, box, capsule, triangles`
@@ -3191,6 +3231,7 @@ Masses come from sizes and `density` (kilograms per cubic meter: 1000 is water's
 - `add_capsule = (w: mut World, pos: vec3, radius: f64, height: f64, rot: vec4 = vec4(0, 0, 0, 1), kind: BodyKind = .dynamic, density: f64 = 1000, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`: a capsule standing up: height from the bottom to the top of its round ends
 - `add_mesh = (w: mut World, triangles: vec3[], friction: f64 = 0.6) -> Body`: fixed triangles (three corners each, in the world): a level, the ground
 - `triangles = (md: ModelData) -> vec3[]`: a model's triangles, where its parts are (for add_mesh)
+- `terrain_triangles = (size: f64, divisions: int, height: (f64, f64) -> f64) -> vec3[]`: the triangles of terrain_mesh(size, divisions, height, ...), for add_mesh: the ground of the terrain drawn with the same size, divisions and height
 - `set_mass = (w: mut World, b: Body, m: f64)`: give a dynamic body another mass, in kilograms (its turning inertia changes with it)
 - `remove = (w: mut World, b: Body)`: take b out of the world (and the joints it is in); its handle then means nothing (a handle used after this panics; removing twice does nothing)
 - `remove = (w: mut World, j: Joint)`
@@ -3223,7 +3264,7 @@ Masses come from sizes and `density` (kilograms per cubic meter: 1000 is water's
 - `set_fixed_rotation = (w: mut World, b: Body, on: bool)`: it never turns, whatever hits it (an upright enemy, a character's body)
 - `set_friction = (w: mut World, b: Body, f: f64)`
 - `set_bounce = (w: mut World, b: Body, f: f64)`
-- `set_layers = (w: mut World, b: Body, layer: int, mask: int = -1)`
+- `set_layers = (w: mut World, b: Body, layer: int, mask: int = -1)`: which layer a body is on (a bit: 1, 2, 4, 8...; every body starts on 1) and which layers it touches (mask: bits or'ed together; -1, the start: all). Two bodies touch when each one's layer is in the other's mask; rays, casts and overlaps take a mask too. For a collider only the camera sees: `w.set_layers(crown, 4)` and `w.sphere_cast(a, b, r, mask = 1 | 4)`, the player kept out of it with `player.mask = 1 | 2` (a character's mask is its own)
 - `push = (w: mut World, b: Body, impulse: vec3)`
 - `push = (w: mut World, b: Body, impulse: vec3, at: vec3)`
 - `apply_force = (w: mut World, b: Body, f: vec3)`

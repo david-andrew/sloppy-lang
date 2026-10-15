@@ -5,6 +5,27 @@
 - `sloppy test`: a failing test says FAILED under its name, with why indented below it and
   "in this test" for the test's own line (it said "panic:" and "the top level of").
 
+From a first 3D game (a third-person collect-and-dodge game, built from the docs alone):
+- A warning for `q1 * q2` on quaternions (values from `quat_*` functions and variables made
+  from them): `*` multiplies the parts of the vec4s one by one; `quat_mul` turns. `q * v` and
+  `m * v` (vec3) say `quat_rotate`, `transform_point` and `transform_dir`.
+- A third-person camera: `follow_camera()`, with `flat_forward`/`flat_right` for walking where
+  it looks and `pull_in` to keep it out of walls (after a `sphere_cast`).
+- `Shake.offset3d(right)`: the screen shake for a 3D camera, in meters.
+- `physics3d.terrain_triangles(size, divisions, height)`: the ground of a `terrain_mesh`, for
+  `add_mesh`; `terrain_mesh` says where it lies (centered, `size` across).
+- One yaw for the cameras and the 3D template (0 looks along -z, more turns left), and the
+  directions written down in one place (draw3d: models face +z, `facing` turns -z).
+- Docs: `draw_mesh` with alpha below 1 is see-through; physics layers and masks
+  (`set_layers`); `OrbitCamera.drag_left`'s comment was cut off in the library list.
+- The color warning leaves values a little above 1 alone (`rgb(3, 3, 3)`, brighter than white,
+  for a flash in 3D); it is for 0-255 colors.
+- `physics3d.world()` suggests `World`, the module's own name (it suggested `words`), and a
+  name that starts a longer one suggests it (`poly`: `polygon`).
+- A `[loop ...]` with its expression on the next line says it goes on the colon's line.
+- The first scripted mouse position (`SLOPPY_INPUT`'s `mouse=`) is where the mouse is, not a
+  move from (0, 0).
+
 From a game jam (a twin-stick shooter built from the docs alone):
 - `screen_to_world` and `world_to_screen` in `update` use the last `camera2d` (the transform is
   reset at the start of each frame, so in `update` they ignored the camera): aiming at the mouse
