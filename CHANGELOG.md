@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+From a roguelike (a dungeon, field of view, monsters that chase, items, saves):
+- `field_of_view(grid, cell, radius)` (shadowcasting: what a cell sees past walls) and
+  `line_cells(a, b)`; `path_step`, `path_distance` and `path_field` (a Dijkstra map) on grid
+  cells (`ivec2`), with `taken = [...]` cells a step avoids (other monsters).
+- The number pad: `Key.kp0` to `Key.kp9`, `kp_period`, `kp_plus`, `kp_minus`, `kp_star`,
+  `kp_slash`, with NumLock on or off, on Linux (X11 and Wayland), Windows, macOS and the web.
+- Typed text (`text_input()`, `hud_text_field`) follows the keyboard's layout on Linux: on
+  Wayland it assumed a US keyboard (an AZERTY "a" typed "q"; AltGr and accented keys typed
+  nothing), and on X11 only ASCII was typed.
+- `quit = ():` runs as the game ends (its window closed, a page closed): the place to save.
+- `delete_data(name)` forgets saved data (a game over), in a web page too.
+- `if let t = e and t != "":` binds and tests at once; `'a' + i` is a character code as
+  `i + 'a'` is (single quotes: no warning); `c in "aeiou"` for a character (a byte).
+
 From command-line scripts (a build runner, a file renamer, a log reader, a duplicate finder):
 - `parse_args[Options]("what it does")` reads the command line into a struct: `bool` fields are
   flags (`--verbose`, `-v`, `-vq`), others take a value (`--out x`, `--out=x`, `-o x`; numbers

@@ -174,7 +174,8 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `find = (s: str, sub: str, start: int = 0) -> int`
 - `rfind = (s: str, sub: str) -> int`
 - `find_byte = (s: str, c: u8, start: int = 0) -> int`
-- `contains = (s: str, sub: str) -> bool`
+- `contains = (s: str, sub: str) -> bool`: whether a character (a byte: s[i]) is one of the text's: `c in "aeiou"`
+- `contains = (s: str, c: u8) -> bool`
 - `starts_with = (s: str, prefix: str) -> bool`
 - `ends_with = (s: str, suffix: str) -> bool`
 - `trim = (s: str) -> str`: remove spaces, tabs and line breaks from both ends
@@ -801,6 +802,7 @@ Each program has its own place, named after it (PROGRAM_NAME: the build block's 
 - `save_dir = () -> str`: the directory a program's data goes to (made when first written; "" in a web page)
 - `save_data = (name: str, contents: str) -> bool`: keep contents under name (a file name: no / or \); false if it could not be written
 - `load_data = (name: str) -> str?`: what was kept under name; none if nothing was
+- `delete_data = (name: str) -> bool`: forget what was kept under name (a saved game, at the player's death); false if nothing was
 
 ### text.jo
 
@@ -1122,7 +1124,8 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
       space, enter, escape, tab, backspace, delete, insert, home, end, page_up, page_down,
       left, right, up, down, shift, ctrl, alt, super,
       f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12,
-      minus, equals, comma, period, slash, semicolon, quote, lbracket, rbracket, backslash, grave
+      minus, equals, comma, period, slash, semicolon, quote, lbracket, rbracket, backslash, grave,
+      kp0, kp1, kp2, kp3, kp4, kp5, kp6, kp7, kp8, kp9, kp_period, kp_plus, kp_minus, kp_star, kp_slash
   ```
 - `enum Mouse: left, middle, right`
 - `key_down = (k: Key) -> bool`: true while the key is held
@@ -1446,7 +1449,7 @@ draw = ():
 - `wrap_text = (s: str, width: f64, size: f64 = 20.0) -> str[]`: s broken into lines no wider than width, at spaces (a word wider than that has a line of its own; a line break in s starts a new line)
 - `text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), align: Align = .left, shadow: vec4 = vec4(0, 0, 0, 0)) -> f64`: text in a column `width` wide from pos (its top-left corner), broken into lines at spaces, each line to the left, centered or to the right; the height it took (LÖVE's printf)
 - `text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0))`: draw text with its top-left corner at `pos` (characters the font does not have show as ?); shadow: a color drawn under it, a little down and right, to read over a busy scene (`shadow = rgba(0, 0, 0, 0.7)`)
-- `text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0))`: text centered on `center` (horizontally and vertically; each of its lines centered)
+- `text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0))`: text centered on `center` (horizontally and vertically; each of its lines centered). The built-in font is proportional ("i" is narrower than "@"): a grid of characters, a roguelike's map, draws each one centered in its cell
 
 ### font.jo
 
@@ -2933,7 +2936,7 @@ set_open(grid, 3, 4, false)                     # a wall there
 way = path_step(grid, enemy, player)            # walk toward this
 ```
 
-Positions are vec2: x and y in a 2D game; on the ground of a 3D one, x and z. origin is where the grid's first cell starts (its corner with the least x and y).
+Positions are vec2: x and y in a 2D game; on the ground of a 3D one, x and z. origin is where the grid's first cell starts (its corner with the least x and y). A game played on the cells themselves (a roguelike) gives them as ivec2: path_step(grid, monster, player, taken = others) is the next cell. field_of_view and line_cells are below.
 
 - `struct PathGrid`
   ```gdscript
@@ -2953,6 +2956,18 @@ Positions are vec2: x and y in a 2D game; on the ground of a 3D one, x and z. or
 - `nearest_open = (g: PathGrid, c: ivec2, reach: int = 4) -> ivec2`: the open cell nearest c, looking up to `reach` cells away (c itself when nothing is open)
 - `path_distance = (g: mut PathGrid, from: vec2, to: vec2) -> int`: how many steps from one point to another over open cells (-1: there is no way)
 - `path_step = (g: mut PathGrid, from: vec2, to: vec2) -> vec2`: Where to head from `from` on the way to `to`: the middle of the next cell, or `to` itself when it is in the same or the next cell (or cannot be reached). Off the open cells (pushed into a corner, or a goal on a crate), the nearest open cell stands in.
+
+#### In cells, for games on a grid (a roguelike's monsters)
+
+- `path_step = (g: mut PathGrid, from: ivec2, to: ivec2, taken: ivec2[] = []) -> ivec2`: the next cell on the way from one cell to another: `to` itself when it is next to `from` (a step onto it: a bump, an attack), `from` when there is no way. taken: cells it may not step to (other monsters): it takes the best of the free cells that still get closer, so a crowd goes round each other
+- `path_distance = (g: mut PathGrid, from: ivec2, to: ivec2) -> int`: how many steps from one cell to another (-1: there is no way)
+- `path_field = (g: mut PathGrid, goal: ivec2) -> int[]`: the steps to a goal cell from every cell (x + y * width), as path_step follows them: a Dijkstra map (a million where there is no way). For several goals at once, or to flee (step to where the number is larger), read it directly
+
+#### What can be seen: field of view and lines over a grid
+
+- `field_of_view = (width: int, height: int, opaque: bool[], from: ivec2, radius: int) -> bool[]`: the cells seen from a cell (x + y * width): those within radius cells that a line from it reaches past no opaque cell (the opaque cells it reaches are seen too: walls show). Shadows are cast as a roguelike's are (recursive shadowcasting)
+- `field_of_view = (g: PathGrid, from: ivec2, radius: int) -> bool[]`: the same over a path grid, its blocked cells opaque (walls block sight as they block the way)
+- `line_cells = (a: ivec2, b: ivec2) -> ivec2[]`: the cells a straight line from a to b goes through, both ends in (Bresenham's): for line of sight, a thrown item's flight, a beam
 
 ## Particles, noise, easing and collisions
 

@@ -8,7 +8,8 @@ enum Key:
     space, enter, escape, tab, backspace, delete, insert, home, end, page_up, page_down,
     left, right, up, down, shift, ctrl, alt, super,
     f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12,
-    minus, equals, comma, period, slash, semicolon, quote, lbracket, rbracket, backslash, grave
+    minus, equals, comma, period, slash, semicolon, quote, lbracket, rbracket, backslash, grave,
+    kp0, kp1, kp2, kp3, kp4, kp5, kp6, kp7, kp8, kp9, kp_period, kp_plus, kp_minus, kp_star, kp_slash
 
 enum Mouse: left, middle, right
 
@@ -389,6 +390,9 @@ when TARGET == "wasm":
     @export("__focus")
     __web_focus = (on: i32): __win_focused = on != 0
 
+    @export("__quit")
+    __web_quit = (): __game_quit()
+
     @export("__mouse")
     __web_mouse = (kind: i32, x: f32, y: f32, b: i32):
         if kind == 0:
@@ -663,6 +667,20 @@ else when TARGET == "windows":
         if m == 0x100 or m == 0x104 or m == 0x101 or m == 0x105:     # WM_(SYS)KEYDOWN / UP
             down = m == 0x100 or m == 0x104
             k = __w32_key(int(wp))
+            # (the number pad with NumLock off: Home and the arrows without the extended bit)
+            if (lp >> 24) & 1 == 0:
+                vk = int(wp)
+                if vk == 0x24: k = int(Key.kp7)
+                else if vk == 0x26: k = int(Key.kp8)
+                else if vk == 0x21: k = int(Key.kp9)
+                else if vk == 0x25: k = int(Key.kp4)
+                else if vk == 0x0C: k = int(Key.kp5)
+                else if vk == 0x27: k = int(Key.kp6)
+                else if vk == 0x23: k = int(Key.kp1)
+                else if vk == 0x28: k = int(Key.kp2)
+                else if vk == 0x22: k = int(Key.kp3)
+                else if vk == 0x2D: k = int(Key.kp0)
+                else if vk == 0x2E: k = int(Key.kp_period)
             if k > 0: __key_event(k, down, down and (lp >> 30) & 1 == 1)
             # (alt+F4 still closes; other system keys are the game's)
             if m == 0x104 and int(wp) == 0x73: return DefWindowProcW(hwnd, msg, wp, lp)
@@ -741,7 +759,13 @@ else when TARGET == "windows":
         if vk >= 0x41 and vk <= 0x5A: return int(Key.a) + vk - 0x41
         if vk >= 0x30 and vk <= 0x39: return int(Key.n0) + vk - 0x30
         if vk >= 0x70 and vk <= 0x7B: return int(Key.f1) + vk - 0x70
+        if vk >= 0x60 and vk <= 0x69: return int(Key.kp0) + vk - 0x60
         match vk:
+            0x6E: int(Key.kp_period)
+            0x6B: int(Key.kp_plus)
+            0x6D: int(Key.kp_minus)
+            0x6A: int(Key.kp_star)
+            0x6F: int(Key.kp_slash)
             0x20: int(Key.space)
             0x0D: int(Key.enter)
             0x1B: int(Key.escape)
@@ -892,6 +916,7 @@ else when TARGET == "windows":
             if __soft and not __fixed_step:
                 left = 1.0 / 60.0 - (time() - now)
                 if left > 0.0: sleep(left)
+        __game_quit()
         exit(0)
 else when TARGET == "linux":
     # (macOS: cocoa.jo)
@@ -1164,7 +1189,24 @@ else when TARGET == "linux":
         if sym >= 0x41 and sym <= 0x5a: return int(Key.a) + sym - 0x41
         if sym >= 0x30 and sym <= 0x39: return int(Key.n0) + sym - 0x30
         if sym >= 0xffbe and sym <= 0xffc9: return int(Key.f1) + sym - 0xffbe
+        if sym >= 0xffb0 and sym <= 0xffb9: return int(Key.kp0) + sym - 0xffb0
         match sym:
+            # (the number pad, its NumLock off or on: kp7 is 7 and Home)
+            0xff95: int(Key.kp7)
+            0xff96: int(Key.kp4)
+            0xff97: int(Key.kp8)
+            0xff98: int(Key.kp6)
+            0xff99: int(Key.kp2)
+            0xff9a: int(Key.kp9)
+            0xff9b: int(Key.kp3)
+            0xff9c: int(Key.kp1)
+            0xff9d: int(Key.kp5)
+            0xff9e: int(Key.kp0)
+            0xff9f, 0xffae: int(Key.kp_period)
+            0xffab: int(Key.kp_plus)
+            0xffad: int(Key.kp_minus)
+            0xffaa: int(Key.kp_star)
+            0xffaf: int(Key.kp_slash)
             0x20: int(Key.space)
             0xff0d: int(Key.enter)
             0xff8d: int(Key.enter)
@@ -1222,8 +1264,15 @@ else when TARGET == "linux":
             __key_event(k, kind == 2, kind == 2 and k > 0 and __key_down[k])
             if kind == 2 and int(ev[20]) & 4 == 0:
                 buf = __alloc(16)
-                n = XLookupString(evp, buf, 15, null, null)
-                if n == 1 and buf[0] >= 32 and buf[0] < 127: __text_input += chr(int(buf[0]))
+                ks = [0]
+                n = XLookupString(evp, buf, 15, data(ks), null)
+                # (the keysym the layout gives: Latin-1 as itself, others as 0x1000000 + Unicode)
+                c = 0
+                if (ks[0] >= 0x20 and ks[0] < 0x7F) or (ks[0] >= 0xA0 and ks[0] <= 0xFF): c = ks[0]
+                else if ks[0] >= 0x1000100 and ks[0] <= 0x110FFFF: c = ks[0] - 0x1000000
+                else if ks[0] == 0x20AC: c = 0x20AC
+                else if n == 1 and buf[0] >= 32 and buf[0] < 127: c = int(buf[0])
+                if c > 0: __text_input += chr(c)
                 __free(buf)
         else if kind == 4 or kind == 5:
             btn = int(ev[21])
@@ -1483,10 +1532,21 @@ else when TARGET == "linux":
             if __soft and not __fixed_step:
                 left = 1.0 / 60.0 - (time() - now)
                 if left > 0.0: sleep(left)
+        __game_quit()
         exit(0)
 
 __no_update = (dt: f64): pass
 __no_draw = (): pass
+
+# the game's quit = (): run once as it ends: its window closed, or a test's frames are done
+# (a page: as it is closed or left)
+__quit_fn: () -> void = __no_draw
+__quit_done = false
+__set_quit = (f: () -> void): __quit_fn = f
+__game_quit = ():
+    if __quit_done: return
+    __quit_done = true
+    __quit_fn()
 
 __fps_acc = 0.0
 __fps_n = 0
@@ -1652,7 +1712,10 @@ __maybe_screenshot = ():
                 save_png(screenshot(), path)
                 if env("SLOPPY_FRAME_STATS") != none:
                     eprint("frame cpu: {__frame_cpu * 1000.0 / f64(n + 1):.2} ms average over {n + 1} frames, present {__frame_present * 1000.0 / f64(n):.2} ms; {__win_w}x{__win_h} pixels, {__present_how()}")
+                __game_quit()
                 exit(0)
         # (SLOPPY_FRAMES alone: that many frames, then the program ends, with no picture)
         else if let fr = env("SLOPPY_FRAMES"):
-            if __frame_count == (to_int(fr) ?? -1): exit(0)
+            if __frame_count == (to_int(fr) ?? -1):
+                __game_quit()
+                exit(0)

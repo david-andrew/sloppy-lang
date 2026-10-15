@@ -590,6 +590,7 @@ loop m in mobs: circle(m.pos, 8, RED)   # both have pos
 ```gdscript
 best: int? = none
 if let v = lookup(key): print(v)        # bind when present
+if let h = env("HOME") and h != "": print(h)   # and a condition on it (else: when either fails)
 if best is int: print(best + 1)         # `is` works on optionals too
 if best != none: print(best + 1)        # and so does comparing with none (`is not none` too)
 n = lookup(key) ?? 0                    # default
@@ -990,7 +991,8 @@ If the program defines `update(dt: f64)` and/or `draw()`, a window opens and the
 called every frame (this is also how programs run in the browser). `dt` is the seconds since
 the last frame, at most 0.1: after a long stall (the window dragged, a hidden tab) the game
 takes one 0.1 s step, not a jump. A clock that must keep up with real time reads `elapsed()`
-(or, for music, `audio_time()`) instead of adding up `dt`.
+(or, for music, `audio_time()`) instead of adding up `dt`. A `quit = ():` runs once as the
+game ends (its window closed, or a web page closed or left): the place to save.
 
 ```gdscript
 pos = vec2(100, 100)

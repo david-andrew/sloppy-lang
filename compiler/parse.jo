@@ -578,7 +578,9 @@ parse_string_token = (t: int) -> int:
     if not has_interp:
         txt = decode_str(s, pos, raw)
         nodes[n].sval = i32(intern(txt))
-        if __utf8_len1(txt): add_flag(n, NF_CHARLIKE)
+        if __utf8_len1(txt):
+            add_flag(n, NF_CHARLIKE)
+            if flags & STRF_SINGLE != 0: add_flag(n, NF_SQUOTE)
         return n
     if lit_start < n_len:
         lit = mk(.str_lit, pos)
@@ -1418,6 +1420,20 @@ parse_if = () -> int:
     p_header = true
     nodes[n].a = i32(parse_expr())
     p_header = saved_h
+    # (if let t = e and t != "": e is what is bound, the rest a condition on it)
+    let_cond = 0
+    if nodes[n].kind == .iflet and nodes[int(nodes[n].a)].kind == .and_:
+        top = int(nodes[n].a)
+        p = top
+        parent = 0
+        loop nodes[int(nodes[p].a)].kind == .and_:
+            parent = p
+            p = int(nodes[p].a)
+        nodes[n].a = nodes[p].a
+        if parent == 0: let_cond = int(nodes[p].b)
+        else:
+            nodes[parent].a = nodes[p].b
+            let_cond = top
     expect(.colon, "")
     # (an indented branch is statements again, where commas make tuples)
     saved_nt = p_no_tuple
@@ -1444,6 +1460,18 @@ parse_if = () -> int:
     else:
         ti = save
         if has_flag(int(nodes[n].b), NF_TERMINATED): add_flag(n, NF_TERMINATED)
+    if let_cond != 0:
+        # if let t = e: (if cond: body else: the else) else: the else
+        inner = mk(.if_, nodes[let_cond].pos)
+        nodes[inner].a = i32(let_cond)
+        nodes[inner].b = nodes[n].b
+        if nodes[n].c != 0: nodes[inner].c = i32(clone(int(nodes[n].c)))
+        if has_flag(n, NF_STMT): add_flag(inner, NF_STMT)
+        if has_flag(int(nodes[inner].b), NF_TERMINATED) and nodes[inner].c != 0 and has_flag(int(nodes[inner].c), NF_TERMINATED): add_flag(inner, NF_TERMINATED)
+        b = mk(.block, nodes[let_cond].pos)
+        set_list(b, [inner])
+        if has_flag(inner, NF_TERMINATED): add_flag(b, NF_TERMINATED)
+        nodes[n].b = i32(b)
     n
 
 parse_pattern = () -> int:

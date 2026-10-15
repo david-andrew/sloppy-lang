@@ -10,7 +10,9 @@
 #   way = path_step(grid, enemy, player)            # walk toward this
 #
 # Positions are vec2: x and y in a 2D game; on the ground of a 3D one, x and z. origin is
-# where the grid's first cell starts (its corner with the least x and y).
+# where the grid's first cell starts (its corner with the least x and y). A game played on
+# the cells themselves (a roguelike) gives them as ivec2: path_step(grid, monster, player,
+# taken = others) is the next cell. field_of_view and line_cells are below.
 
 struct PathGrid:
     width: int
@@ -158,3 +160,121 @@ path_step = (g: mut PathGrid, from: vec2, to: vec2) -> vec2:
         if f[n] < f[best]: best = n
     if best == x + y * g.width: return to
     cell_center(g, ivec2(i32(best % g.width), i32(best / g.width)))
+
+# ---- in cells, for games on a grid (a roguelike's monsters) ----
+
+# the next cell on the way from one cell to another: `to` itself when it is next to `from` (a
+# step onto it: a bump, an attack), `from` when there is no way. taken: cells it may not step
+# to (other monsters): it takes the best of the free cells that still get closer, so a crowd
+# goes round each other
+path_step = (g: mut PathGrid, from: ivec2, to: ivec2, taken: ivec2[] = []) -> ivec2:
+    if from == to or not is_open(g, int(to.x), int(to.y)): return from
+    x = int(from.x)
+    y = int(from.y)
+    if abs(int(to.x) - x) <= 1 and abs(int(to.y) - y) <= 1 and __path_can(g, x, y, int(to.x) - x, int(to.y) - y): return to
+    f = __path_field(g, int(to.x) + int(to.y) * g.width)
+    here = 1000000
+    if is_open(g, x, y): here = f[x + y * g.width]
+    best = -1
+    loop d in __path_dirs:
+        if not __path_can(g, x, y, d.0, d.1): continue
+        n = (y + d.1) * g.width + x + d.0
+        if f[n] >= here or (best >= 0 and f[n] >= f[best]): continue
+        c = ivec2(i32(x + d.0), i32(y + d.1))
+        if taken.contains(c): continue
+        best = n
+    if best < 0: return from
+    ivec2(i32(best % g.width), i32(best / g.width))
+
+# how many steps from one cell to another (-1: there is no way)
+path_distance = (g: mut PathGrid, from: ivec2, to: ivec2) -> int:
+    if not is_open(g, int(to.x), int(to.y)) or not is_open(g, int(from.x), int(from.y)): return -1
+    d = __path_field(g, int(to.x) + int(to.y) * g.width)[int(from.x) + int(from.y) * g.width]
+    if d >= 1000000: return -1
+    d
+
+# the steps to a goal cell from every cell (x + y * width), as path_step follows them: a
+# Dijkstra map (a million where there is no way). For several goals at once, or to flee
+# (step to where the number is larger), read it directly
+path_field = (g: mut PathGrid, goal: ivec2) -> int[]:
+    if not is_open(g, int(goal.x), int(goal.y)): return fill(1000000, g.width * g.height)
+    __path_field(g, int(goal.x) + int(goal.y) * g.width)
+
+# ---- what can be seen: field of view and lines over a grid ----
+
+# the cells seen from a cell (x + y * width): those within radius cells that a line from it
+# reaches past no opaque cell (the opaque cells it reaches are seen too: walls show). Shadows
+# are cast as a roguelike's are (recursive shadowcasting)
+field_of_view = (width: int, height: int, opaque: bool[], from: ivec2, radius: int) -> bool[]:
+    vis = fill(false, width * height)
+    x = int(from.x)
+    y = int(from.y)
+    if x < 0 or y < 0 or x >= width or y >= height: return vis
+    vis[x + y * width] = true
+    loop o in [0..8):
+        __fov_cast(vis, width, height, opaque, x, y, 1, 1.0, 0.0, radius, __FOV_XX[o], __FOV_XY[o], __FOV_YX[o], __FOV_YY[o])
+    vis
+
+# the same over a path grid, its blocked cells opaque (walls block sight as they block the way)
+field_of_view = (g: PathGrid, from: ivec2, radius: int) -> bool[]:
+    field_of_view(g.width, g.height, [loop o in g.open: not o], from, radius)
+
+__FOV_XX = [1, 0, 0, -1, -1, 0, 0, 1]
+__FOV_XY = [0, 1, -1, 0, 0, -1, 1, 0]
+__FOV_YX = [0, 1, 1, 0, 0, -1, -1, 0]
+__FOV_YY = [1, 0, 0, 1, -1, 0, 0, -1]
+
+# (one octant, from row `row` out, between two slopes; xx..yy turn it into place)
+__fov_cast = (vis: mut bool[], w: int, h: int, opaque: bool[], cx: int, cy: int, row: int, start0: f64, end: f64, radius: int, xx: int, xy: int, yx: int, yy: int):
+    start = start0
+    if start < end: return
+    r2 = radius * radius + radius
+    new_start = 0.0
+    loop j in [row..radius + 1):
+        dy = -j
+        blocked = false
+        loop dx in [-j..1):
+            x = cx + dx * xx + dy * xy
+            y = cy + dx * yx + dy * yy
+            l_slope = (f64(dx) - 0.5) / (f64(dy) + 0.5)
+            r_slope = (f64(dx) + 0.5) / (f64(dy) - 0.5)
+            if start < r_slope: continue
+            if end > l_slope: break
+            inside = x >= 0 and y >= 0 and x < w and y < h
+            if inside and dx * dx + dy * dy <= r2: vis[x + y * w] = true
+            wall = not inside or opaque[x + y * w]
+            if blocked:
+                if wall: new_start = r_slope
+                else:
+                    blocked = false
+                    start = new_start
+            else if wall and j < radius:
+                blocked = true
+                __fov_cast(vis, w, h, opaque, cx, cy, j + 1, start, l_slope, radius, xx, xy, yx, yy)
+                new_start = r_slope
+        if blocked: return
+
+# the cells a straight line from a to b goes through, both ends in (Bresenham's): for line
+# of sight, a thrown item's flight, a beam
+line_cells = (a: ivec2, b: ivec2) -> ivec2[]:
+    out: ivec2[]
+    x = int(a.x)
+    y = int(a.y)
+    dx = abs(int(b.x) - x)
+    dy = -abs(int(b.y) - y)
+    sx = 1
+    if int(b.x) < x: sx = -1
+    sy = 1
+    if int(b.y) < y: sy = -1
+    err = dx + dy
+    loop true:
+        out.push(ivec2(i32(x), i32(y)))
+        if x == int(b.x) and y == int(b.y): break
+        e2 = 2 * err
+        if e2 >= dy:
+            err += dy
+            x += sx
+        if e2 <= dx:
+            err += dx
+            y += sy
+    out
