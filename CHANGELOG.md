@@ -24,6 +24,8 @@ From a strategy game (1000+ units, flow fields, spatial hashes, save/load):
 - A game's own interface, placed anywhere and worked with the mouse or a finger: `hud_button`,
   `hud_panel`, `hud_bar`, and `hud_hovered()` so that a click on the interface is not also a
   click on the world behind it (the `ui_*` menus are a centered column, for menus).
+- `Heap[T]`, a priority queue: `h.push(x, priority)`, `h.pop()` gives the least first (A*'s
+  open list, events by time).
 - Docs: what soa arrays have and do not have, and that reading a whole element reads every
   field; what a parallel call costs; `time()` for measuring code.
 

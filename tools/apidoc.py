@@ -36,6 +36,8 @@ TOPICS = [
     ("Data", "saving", "Saving, and values as text", ["std/save", "std/text"], "saving",
      "`save_value` and `load_value` keep any value (settings, a saved game) as text that reads back even "
      "after its structs gain or lose fields."),
+    ("Data", "heap", "Priority queues", ["std/heap"], "heap",
+     "`Heap[T]` gives back what it holds smallest priority first: A*'s open list, events by time."),
     ("Data", "threads", "Threads", ["std/thread"], "threads", ""),
     ("Data", "numeric", "Numeric arrays", ["std/nd"], "numeric",
      "Elementwise operators (`.+ .* .^`...), `f.(xs)` and n-dimensional arrays are part of the language: "
