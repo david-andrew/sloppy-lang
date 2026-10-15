@@ -460,6 +460,7 @@ Math basics.
 - `seed_random = (seed: int)`
 - `random = () -> f64`: random f64 in [0, 1)
 - `random = (lo: f64, hi: f64) -> f64`: random f64 in [lo, hi)
+- `random_normal = (mean: f64 = 0.0, sd: f64 = 1.0) -> f64`: a random number from a bell curve around mean: about two in three within sd of it (p5's randomGaussian; Rng's next_normal for a seeded one)
 - `random_int = (lo: int, hi: int) -> int`: a random whole number from lo up to hi, hi left out (as in [lo..hi)): random_int(0, xs.len()) picks a position, and a die is random_int(1, 7)
 - `random_item[T] = (xs: T[]) -> T`: a random element of xs (which must not be empty)
 - `shuffle[T] = (xs: mut T[])`: put xs in a random order
@@ -860,7 +861,7 @@ Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs, enu
 - `from_text[T] = (text: str) -> T \| TextError`
 - `from_json[T] = (text: str) -> T \| TextError`: a value of type T from JSON: objects for structs (by field name: a field left out keeps its default, one the struct does not have is skipped) and maps, lists for arrays, tuples and vectors, null for none, an enum's variant by its name in quotes
 - `save_value[T] = (name: str, x: T) -> bool`: keep value under name (save_data) as text; false if it could not be written
-- `load_value[T] = (name: str, default: T) -> T`: the value kept under name, or default if there is none or it does not read as one (said on stderr then: what was kept is not lost quietly)
+- `load_value[T] = (name: str, default: T) -> T`: the value kept under name, or default if there is none or it does not read as one (said on stderr then, and what was kept is copied to name + ".bad" first: the next save_value over it does not lose it)
 
 ## Priority queues
 
@@ -2014,6 +2015,41 @@ Vector and matrix math for the built-in vec2/vec3/vec4/mat4 types (f32 component
 - `clamp = (v: vec3, lo: f32, hi: f32) -> vec3`
 - `clamp = (v: vec3, lo: vec3, hi: vec3) -> vec3`
 - `floor = (v: vec2) -> vec2`
+- `sin = (v: vec2) -> vec2`: GLSL's math on each part of a vector, as a shader writes it (there, GLSL's own)
+- `cos = (v: vec2) -> vec2`
+- `ceil = (v: vec2) -> vec2`
+- `pow = (v: vec2, e: vec2) -> vec2`
+- `step = (edge: vec2, x: vec2) -> vec2`
+- `step = (edge: f32, x: vec2) -> vec2`
+- `smoothstep = (e0: vec2, e1: vec2, x: vec2) -> vec2`
+- `smoothstep = (e0: f32, e1: f32, x: vec2) -> vec2`
+- `mix = (a: vec2, b: vec2, t: vec2) -> vec2`
+- `sin = (v: vec3) -> vec3`
+- `cos = (v: vec3) -> vec3`
+- `floor = (v: vec3) -> vec3`
+- `fract = (v: vec3) -> vec3`
+- `ceil = (v: vec3) -> vec3`
+- `pow = (v: vec3, e: vec3) -> vec3`
+- `step = (edge: vec3, x: vec3) -> vec3`
+- `step = (edge: f32, x: vec3) -> vec3`
+- `smoothstep = (e0: vec3, e1: vec3, x: vec3) -> vec3`
+- `smoothstep = (e0: f32, e1: f32, x: vec3) -> vec3`
+- `mix = (a: vec3, b: vec3, t: vec3) -> vec3`
+- `sin = (v: vec4) -> vec4`
+- `cos = (v: vec4) -> vec4`
+- `floor = (v: vec4) -> vec4`
+- `fract = (v: vec4) -> vec4`
+- `ceil = (v: vec4) -> vec4`
+- `abs = (v: vec4) -> vec4`
+- `min = (a: vec4, b: vec4) -> vec4`
+- `max = (a: vec4, b: vec4) -> vec4`
+- `pow = (v: vec4, e: vec4) -> vec4`
+- `step = (edge: vec4, x: vec4) -> vec4`
+- `step = (edge: f32, x: vec4) -> vec4`
+- `smoothstep = (e0: vec4, e1: vec4, x: vec4) -> vec4`
+- `smoothstep = (e0: f32, e1: f32, x: vec4) -> vec4`
+- `mix = (a: vec4, b: vec4, t: vec4) -> vec4`
+- `smoothstep = (e0: f32, e1: f32, x: f32) -> f32`
 - `reflect = (d: vec3, n: vec3) -> vec3`
 - `reflect = (d: vec2, n: vec2) -> vec2`
 - `perp = (v: vec2) -> vec2`
@@ -2592,6 +2628,7 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
 - `duration = (s: Sound) -> f64`
 - `play = (s: Sound, volume: f64 = 1.0, pan: f64 = 0.0, pitch: f64 = 1.0, looping: bool = false, delay: f64 = 0.0) -> int`: play a sound; returns a voice id for stop()/set_volume(). It starts with the mixer's next samples (made each frame, a little ahead of what is heard), or `delay` seconds after them, to the sample: for music, `play(kick, delay = beat_at - audio_time())` starts each note on time whatever the frame rate
 - `audio_time = () -> f64`: the audio clock: seconds of sound the mixer has made (ahead of what is heard by the output's latency, about 20-60 ms); what play's delay counts from. It runs on in step with the sound, not the frames: a beat kept by it does not drift when frames are slow or dt is capped
+- `audio_started = () -> bool`: whether sound has started: a web page's waits for the first click or key (browsers allow no sound before), and audio_time stays at 0 until then; a "click to start" screen asks this
 - `stop = (id: int)`
 - `stop_all = ()`
 - `is_playing = (id: int) -> bool`

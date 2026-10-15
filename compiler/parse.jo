@@ -536,6 +536,10 @@ parse_string_token = (t: int) -> int:
             eend = j
             if colon >= 0: eend = colon
             expr_src = s[i + 1..eend)
+            # (C, GLSL or CSS in a string, "void main() { x = 1; }": braces of the text)
+            if find(s[i + 1..j), ";") >= 0 and find(s[i + 1..j), "\"") < 0: fatal(pos, "`{{` in a string puts in a value, and this text is not one: for braces in the text, write {{{{ and }}}}, or make it a raw string, r\"...\" (a shader's or a page's code)")
+            # ({n == 1 ? "" : "s"}: C's choice, as outside a string)
+            if find(expr_src, " ? ") > 0: fatal(pos, "a choice between two values is `if c: a else: b`, as \"{{if n == 1: \"\" else: \"s\"}}\"")
             # ({x=}: the text "x=" and then x's value, as Python's f-strings)
             shown = ""
             te = trim_end(expr_src)
@@ -556,8 +560,11 @@ parse_string_token = (t: int) -> int:
             eq = find(es, "=")
             if len(es) > 0 and (es[0] == '/' or (eq > 0 and eq + 1 < len(es) and es[eq + 1] != '=' and es[eq - 1] != '!' and es[eq - 1] != '<' and es[eq - 1] != '>' and es[eq - 1] != '=' and is_ident_plain(es[..eq)))):
                 fatal(pos, "`{{{es}}}` in a string puts in the value of what is inside the braces, and this is not one; for the braces in the text (a tag, as Ren'Py's), write `{{{{{es}}}}}`, or make it a raw string, r\"...\"")
-            # (a string inside an interpolation: its tokens' starts are within that one's source)
-            p_base = p_base + int(toks[t].start) + i + 1
+            # (a string inside an interpolation: its tokens' starts are within that one's source;
+            # spaces before the value are not an indented line)
+            ws = len(expr_src) - len(trim_start(expr_src))
+            expr_src = expr_src[ws..]
+            p_base = p_base + int(toks[t].start) + i + 1 + ws
             lx_base = p_base
             toks = lex(p_file, expr_src)
             lx_base = 0
@@ -757,7 +764,7 @@ parse_primary = () -> int:
     if k == .newline or k == .eof: fatal(prev_end(), "expected an expression here")
     if k == .colon and t >= 2 and toks[t - 1].kind == .assign and toks[t - 2].kind == .ident: fatal(pos, "a function is written `{tok_src(t - 2)} = ():` (its parameters, maybe none, in brackets before the colon)")
     if k == .star: fatal(pos, "what a pointer points at is `p[0]` (its fields: `p.x`); there is no `*` before a value")
-    if k == .kw_loop: fatal(pos, "a loop inside a line's loop goes on a line of its own, indented below it")
+    if k == .kw_loop: fatal(pos, "a loop cannot follow a `:` on the same line: put it on a line of its own, indented below")
     # (score > 10 and < 20: the comparison's left side left out)
     if (k == .lt or k == .gt or k == .le or k == .ge or k == .eq or k == .ne) and t >= 1 and (toks[t - 1].kind == .kw_and or toks[t - 1].kind == .kw_or):
         fatal(pos, "after `{tok_src(t - 1)}`, write the whole comparison again: `score > 10 and score < 20`")
@@ -792,11 +799,21 @@ parse_index_item = () -> int:
     if pk() != .comma and pk() != .rbrack: nodes[r].b = i32(parse_expr())
     r
 
+# xs.len() or len(xs)
+is_len_call = (e: int) -> bool:
+    if e == 0 or nodes[e].kind != .call: return false
+    c = int(nodes[e].a)
+    if nodes[c].kind == .field and name_of(int(nodes[c].name)) == "len" and nodes[e].nlist == 0: return true
+    nodes[c].kind == .ident and name_of(int(nodes[c].name)) == "len" and nodes[e].nlist == 1
+
 # a range's closing bracket: ] keeps the end, ) excludes it; lo_open: the range began with (
 range_close = (r: int, pos: int, lo_closed: bool):
     clear_flag(r, NF_BARE)
     if pk() == .rparen: clear_flag(r, NF_INCLUSIVE)
     else if pk() != .rbrack: fatal(cur_pos(), "expected ']' or ')' to close the range")
+    else if lo_closed and is_len_call(int(nodes[r].b)) and nodes[r].a != 0 and nodes[int(nodes[r].a)].kind == .int_lit and nodes[int(nodes[r].a)].ival == 0 and not pos_in_lib(pos):
+        # ([0..xs.len()]: one past the last element, which counts from 0)
+        warn(cur_pos(), "`]` keeps the end, and xs.len() is one past the last element (they count from 0): `[0..xs.len())` leaves it out")
     advance()
     if not lo_closed:
         one = mk(.int_lit, pos)
@@ -1870,6 +1887,20 @@ parse_when = () -> int:
 parse_loop_head = () -> int:
     pos = cur_pos()
     expect(.kw_loop, "")
+    # (loop (k, v) in pairs: Python's and Rust's brackets around the names)
+    if pk() == .lparen and toks[ti + 1].kind == .ident and toks[ti + 2].kind == .comma:
+        j = ti + 1
+        loop toks[j].kind == .ident and (toks[j + 1].kind == .comma or toks[j + 1].kind == .rparen):
+            if toks[j + 1].kind == .rparen:
+                if toks[j + 2].kind == .kw_in:
+                    nm: str[]
+                    k = ti + 1
+                    loop k <= j:
+                        nm.push(tok_src(k))
+                        k += 2
+                    fatal(toks[ti].pos, "the names before `in` are written without brackets: `loop {join(nm, ", ")} in ...:`")
+                break
+            j += 2
     if pk() == .colon:
         # loop: forever
         w = mk(.while_, pos)

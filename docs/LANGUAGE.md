@@ -212,6 +212,19 @@ text, since a character's bytes never look like another's. For text from players
 characters with `char_count`, and to step through them, `loop c in chars(s)` (`loop c in s` gives
 bytes, which print as numbers: `str(c)` of an `a` is `"97"`).
 
+`print(x)` and `"{x}"` show any value: a struct as `Big(m=1.5, e=300)`. A type of the program's
+own shows as its own text when a `str` for it is written beside it, everywhere it is shown (in
+arrays and other structs too); `to_text`, `to_json` and saving still write its fields, which
+read back:
+
+```gdscript
+struct Big:
+    m: f64
+    e: int
+str = (b: Big) -> str: "{b.m:.2f}e{b.e}"
+print(Big(1.5, 300))          # 1.50e300
+```
+
 ### Value semantics
 
 Every type in Sloppy is a *value*: assignment copies. Arrays, strings and maps are
@@ -1006,6 +1019,36 @@ update = (dt: f64):
 draw = ():
     clear(rgb(0.1, 0.1, 0.15))
     circle(pos, 20, rgb(1, 0.5, 0.2))
+```
+
+Each frame starts black, on every platform: a picture kept from frame to frame (a trail, a
+pen, a painting) is a render target, drawn into and never cleared (`draw_to`, then
+`draw_to_screen()` and `draw_target(rt)`). `window("x", 480, 270)` asks for 480 x 270 units:
+the window may be bigger, its picture scaled to fit (on a HiDPI display, twice the pixels).
+
+Time away, as an idle game counts it: save the moment with the rest (`unix_time()`, seconds
+since 1970), and on loading, the seconds since then are what was missed; the same catches up
+after a hidden tab or a stall, which `dt` (at most 0.1) does not:
+
+```gdscript
+struct Save:
+    dust = 0.0
+    rate = 1.0
+    saved_at = 0.0
+state = load_value("save", Save())
+if state.saved_at > 0.0: state.dust += state.rate * min(unix_time() - state.saved_at, 8.0 * 3600.0)
+last = unix_time()
+
+update = (dt: f64):
+    now = unix_time()
+    state.dust += state.rate * (now - last)          # (real time, hidden tab or not)
+    last = now
+    if every(1, 30.0): keep()
+
+keep = ():
+    state.saved_at = unix_time()
+    save_value("save", state)
+on_quit = (): keep()
 ```
 
 **Input.** `key_down(k)` is true while a key is held, `key_pressed(k)` / `key_released(k)` in

@@ -565,6 +565,9 @@ check_place = (n: int, for_mut: bool):
             setter = ""
             if lookup(intern("set_{fnm}")) != 0 or (fm >= 0 and modules[fm].names.get(intern("set_{fnm}")) != none): setter = ": `set_{fnm}(...)` changes it"
             fatal(nodes[n].pos, "this is a copy that {fnm}(...) gave back, so changing it changes nothing{setter}")
+    # (const gens = [1, 2], then gens.push(3): a const is its value, written where it is used)
+    if k == .array or k == .int_lit or k == .float_lit or k == .str_lit or k == .map_lit or (k == .ident and nodes[n].aux == i32(int(SK.const_))):
+        fatal(nodes[n].pos, "this is a const, which never changes: made without `const`, it is a variable, which can")
     fatal(nodes[n].pos, "cannot assign to this expression")
 
 # ---------------- type expressions written as expressions ----------------
@@ -1023,18 +1026,20 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
             if nodes[a].kind == .namedarg: break
             if nodes[a].type == 0 or is_lit(a) or ctx_dependent(a): continue
             k = tkind(ntype(a))
-            if k == .int_ or k == .float_:
+            if k == .int_ or k == .float_ or k == .vec:
                 a0t = prune(ntype(a))
                 a0i = i
             break
     loop d in decls:
-        sig0 = fn_sig(d)
-        if a0t != 0 and not sig0.generic and sig0.params.len() > a0i:
-            p0 = prune(sig0.params[a0i])
+        di = decl_info(d)
+        if not decl_infos[di].sig.done: fn_sig(d)
+        if a0t != 0 and not decl_infos[di].sig.generic and decl_infos[di].sig.params.len() > a0i:
+            p0 = prune(decl_infos[di].sig.params[a0i])
             pk0 = tkind(p0)
-            # (last_err is for a name with one function only)
-            if p0 != a0t and (pk0 == .int_ or pk0 == .float_) and not can_coerce(0, a0t, p0): continue
-        cd = Cand(decl = d, sig = sig0)
+            # (last_err is for a name with one function only; sin(v) with v: vec3 looks at
+            # sin(vec3) alone)
+            if p0 != a0t and (pk0 == .vec or pk0 == .int_ or pk0 == .float_) and not can_coerce(0, a0t, p0): continue
+        cd = Cand(decl = d, sig = decl_infos[di].sig)
         np = nkids(d)
         pnames: int[]
         hasdef: bool[]
@@ -1115,6 +1120,9 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                         fln = "name.png"
                         if nodes[a].kind == .str_lit and nodes[a].aux == 0: fln = name_of(int(nodes[a].sval))
                         last_err = "{fnm} takes the file's contents: `{fnm}(embed(\"{fln}\"))` builds the file into the program (read_bytes(path) reads one at run time)"
+                    # (xs.reduce((a, b): a + b, 0): JavaScript's order)
+                    if fnm == "reduce" and cd.args.len() == 3 and cd.args[1] != 0 and nodes[unnamed(cd.args[1])].kind == .lambda:
+                        last_err = "reduce takes the start value first, then the function: `xs.reduce(0, (a, b): a + b)` (or `sum(xs)`)"
                     # (overlaps(apple, cat_picture): a picture or a thing where a box goes)
                     if nodes[a].type != 0 and tkind(ptx) == .struct_ and type_str(ptx) == "Rect" and not pos_in_lib(nodes[a].pos):
                         at = prune(ntype(a))
@@ -1244,6 +1252,7 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
             fatal(nodes[n].pos, "{name_of(name)} calls itself here, which repeats without end: the game calls {name_of(name)} by itself, each frame")
     np = nkids(decl)
     if (name == id_rgb or name == id_rgba) and np >= 3 and decl_in_prelude(decl): rgb_check(n, cd.args)
+    if name == id_hsv and np >= 3 and decl_in_prelude(decl): hsv_check(n, cd.args)
     if not decl_in_prelude(decl) and cx >= 0:
         # (make_world never called: a function of the program's, used from somewhere else)
         ci0 = int(ctxs[cx].inst)
@@ -1682,6 +1691,18 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
                     if simple_enum(et): return enum_from_int(n, et, args[0])
                 fatal(nodes[n].pos, "use {name_of(name)}.variant(...) to construct an enum")
             else if sk == .type_: return conversion(n, int(syms[s].ref), args)
+            else if sk == .fns and args.len() == 1 and nodes[args[0]].kind != .namedarg and universe.get(name) != none:
+                # (str(5) beside the program's str = (b: Big) -> str: the type's conversion, when
+                # no function of the name takes the value)
+                at = prune(check_expr(args[0], 0))
+                add_flag(args[0], NF_CHECKED)
+                fd: int[]
+                collect_fns(name, fd)
+                takes = false
+                loop d in fd:
+                    sig = fn_sig(d)
+                    if sig.params.len() >= 1 and (sig.generic or type_eq(prune(sig.params[0]), at)): takes = true
+                if not takes: return conversion(n, int(syms[universe[name]].ref), args)
             else if sk == .const_ or sk == .module: fatal(nodes[n].pos, "'{name_of(name)}' is not a function")
             else if sk == .builtin:
                 collect_fns(name, decls)
@@ -1755,6 +1776,7 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
 
 id_rgb = intern("rgb")
 id_rgba = intern("rgba")
+id_hsv = intern("hsv")
 id_draw = intern("draw")
 id_update = intern("update")
 
@@ -1762,11 +1784,30 @@ id_update = intern("update")
 rgb_check = (n: int, args: int[]):
     big = false
     loop i in [0..3):
-        a = args[i]
-        if a == 0 or nodes[a].kind != .int_lit or not has_flag(a, NF_LITERAL): return
         # (a little above 1 is brighter than white, as a flash or a glow in 3D: rgb(3, 3, 3))
-        if nodes[a].ival > 8: big = true
+        if lit_num(args[i]) > 8.0: big = true
     if big: warn(nodes[n].pos, "the parts of a color go from 0 to 1 (above 1: brighter than white): for 0 to 255, divide by 255 or write hex(0xff8000)")
+    # (rgba(0, 0, 0, 10): an alpha from 0 to 255)
+    else if args.len() >= 4 and lit_num(args[3]) > 1.0: warn(nodes[int(args[3])].pos, "alpha goes from 0 (clear) to 1 (solid): {num_text(lit_num(args[3]))} of 255 is {lit_num(args[3]) / 255.0:.2f}")
+
+# hsv(200, 0.8, 0.9): a hue in degrees, which goes around 0 to 1 here
+hsv_check = (n: int, args: int[]):
+    h = lit_num(args[0])
+    if h > 1.0: warn(nodes[n].pos, "a hue goes from 0 to 1 around the color circle (as 0 to 360 degrees): {num_text(h)} degrees is `{h} / 360.0`")
+
+num_text = (v: f64) -> str:
+    if v == floor(v) and abs(v) < 1e15: return "{i64(v)}"
+    "{v}"
+
+# a number written as it is (5, 0.5): its value, else -1
+lit_num = (a0: int) -> f64:
+    if a0 == 0: return -1.0
+    a = unnamed(a0)
+    if not has_flag(a, NF_LITERAL) and nodes[a].kind != .float_lit: return -1.0
+    if nodes[a].kind == .int_lit: return f64(nodes[a].ival)
+    if nodes[a].kind == .float_lit: return nodes[a].fval
+    if nodes[a].kind == .conv: return lit_num(int(nodes[a].a))
+    -1.0
 
 # (is p among the arguments of print, text, window and the like, on its line?)
 # (".png" after a name in the source: cat1.png written without its quotes)
@@ -1877,6 +1918,53 @@ frame_call_check = (n: int, decl: int):
     if (fnm == "input" or fnm == "input_int" or fnm == "input_float" or fnm == "read_line" and nkids(decl) == 0) and (here == "update" or here == "draw"):
         warn(nodes[n].pos, "{fnm} waits for a line typed in the terminal, and the game stops while it waits: in the window, `hud_text_field(rect, name)` is a box to type in (or `text_input()`, what was typed this frame)")
     if fnm == "sleep" and (here == "update" or here == "draw"): warn(nodes[n].pos, "sleep stops the whole game, every frame: to wait, count down a timer (`wait -= dt`, act when it is below 0), or `every(1, 2.0)`")
+
+fmt_plain: {int: bool} = {}       # (__fmt_fields nodes that format the fields, not the program's str)
+
+# the program's `str` for type t (str = (b: Big) -> str, beside the type), as an instance, or 0
+program_str_fn = (t0: int, pos: int) -> int:
+    t = prune(t0)
+    if tkind(t) != .struct_ and tkind(t) != .enum_: return 0
+    d0 = int(structs[int(types[t].st)].decl)
+    if d0 == 0 or modules[int(nodes[d0].mod)].is_prelude: return 0
+    fd: int[]
+    collect_module(int(nodes[d0].mod), intern("str"), fd)
+    loop d in fd:
+        if decl_in_prelude(d) or nkids(d) != 1: continue
+        sig = fn_sig(d)
+        if sig.generic or sig.params.len() != 1 or not type_eq(prune(sig.params[0]), t): continue
+        return get_fn_inst(d, [], pos)
+    0
+
+# a library function called as another language's of the same name is (p5's line(x1, y1, x2,
+# y2), fill(r, g, b) and push(); atan(y, x)): what it is here, before its overloads are tried
+habit_call_names: {int: bool} = {}
+habit_call_check = (n: int, name: int, args: int[]):
+    if habit_call_names.len() == 0:
+        loop w in ["line", "text", "clear", "fill", "push", "pop", "map", "atan", "random"]: habit_call_names[intern(w)] = true
+    if not habit_call_names.has(name): return
+    nm = name_of(name)
+    # (the program's own function of the name: its call)
+    own: int[]
+    collect_fns(name, own)
+    loop d in own:
+        if not decl_in_prelude(d): return
+    na = args.len()
+    num = (a: int) -> bool:
+        k = nodes[unnamed(a)].kind
+        k == .int_lit or k == .float_lit or (k == .unary and (nodes[int(nodes[unnamed(a)].a)].kind == .int_lit or nodes[int(nodes[unnamed(a)].a)].kind == .float_lit))
+    pos = nodes[n].pos
+    if nm == "line" and na >= 4 and num(args[0]) and num(args[1]): fatal(pos, "line takes two points: `line(vec2(x1, y1), vec2(x2, y2), width, color)`")
+    if nm == "text" and na >= 3 and num(args[1]) and num(args[2]): fatal(pos, "where text goes is one vec2: `text(s, vec2(x, y), size, color)`")
+    if nm == "clear" and na == 1 and nodes[unnamed(args[0])].kind == .tuple: fatal(pos, "clear takes a color: `clear(rgb(0.1, 0.1, 0.1))` (each from 0 to 1)")
+    if nm == "fill" and na >= 3 and num(args[0]) and num(args[1]) and num(args[2]): fatal(pos, "there is no fill color: each shape takes its color, `circle(pos, r, rgb(1, 0, 0))` (fill(x, n) makes an array of n copies of x)")
+    if nm == "push" and na == 0: fatal(pos, "push() here is push_transform() (and pop() is pop_transform()); xs.push(x) adds to an array")
+    if nm == "pop" and na == 0: fatal(pos, "pop() here is pop_transform(), after push_transform(); xs.pop() takes from an array")
+    if nm == "map" and na == 5: fatal(pos, "the range a..b moved to c..d is `remap(x, a, b, c, d)`; map(xs, f) is f of each element")
+    if nm == "atan" and na == 2: fatal(pos, "the angle of (x, y) is `atan2(y, x)`; atan takes one number")
+    if nm == "random" and na == 1:
+        if nodes[unnamed(args[0])].kind == .array: fatal(pos, "a random element is `random_item(xs)`")
+        if num(args[0]): fatal(pos, "random takes where it starts and ends: `random(0, 10)` (a whole number: `random_int(0, 10)`)")
 
 # draw(prog, quad, Other(...)) where prog = make_shader(shader(vs, fs)) takes U: a Shader does not
 # carry its uniforms' type, so the one its functions take is found where the global is made
@@ -2300,6 +2388,8 @@ cmp_error = (n: int, ta: int, tb: int):
         why = " (`s[i]` is a character's code, a number: the character as text is `s[i..i]`)"
     if len(why) == 0 and ((tkind(ta) == .str_ and is_numeric(tb)) or (is_numeric(ta) and tkind(tb) == .str_)):
         why = " (text is not a number, even with digits in it: `to_int(s) ?? 0` or `to_float(s) ?? 0.0` reads one, and `input_int(...)` asks for one)"
+    # (n == 1 with n an enum: C's and JavaScript's numbered names)
+    if len(why) == 0 and tkind(ta) == .enum_ and is_int(tb): why = " (`x == .name` asks which it is; `int(x)` is its number, counting from 0)"
     fatal(nodes[n].pos, "cannot compare {type_str(ta)} with {type_str(tb)}{why}")
 
 # "space" given where a Key goes: " (write `.space`)"
@@ -2444,6 +2534,7 @@ check_call = (n: int, expected: int) -> int:
             args[0] = last_checked
             set_kid(n, 0, args[0])
             if is_soa(at): return check_soa_method(n, args[0], int(nodes[callee].name), [], expected)
+        if not pos_in_lib(nodes[n].pos): habit_call_check(n, int(nodes[callee].name), args)
         return call_by_name(n, int(nodes[callee].name), -1, args, expected, false)
     if ck == .dotname:
         if ide_sentinel != 0 and int(nodes[callee].name) == ide_sentinel: ide_complete_variants(expected)
@@ -2477,7 +2568,7 @@ check_call = (n: int, expected: int) -> int:
                 # (Date.now(): a function of nothing is called by itself)
                 loop d in fd:
                     if nkids(d) == 0: why = " (functions are not kept in types: call it by itself, `{name_of(fname)}()`)"
-                if name_of(fname) == "now" and type_str(tt) == "Date": why = " (`now()` gives today's Date; `time()` the seconds, for timing)"
+                if name_of(fname) == "now" and type_str(tt) == "Date": why = " (`unix_time()` is the seconds since 1970, a moment to save and compare; `now()` gives today's Date; `time()` the seconds the program has run, for timing)"
             fatal(nodes[callee].pos, "type {type_str(tt)} has no member '{name_of(fname)}'{why}")
         if is_soa(rt): return check_soa_method(n, recv, fname, args, expected)
         st = rt
@@ -2785,6 +2876,33 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         nargs_check(n, nargs, 2, 2, "__fmt_fields")
         arg_type(args, 0, 0)
         t = arg_type(args, 1, 0)
+        # (a type with the program's own `str = (b: Big) -> str`: shown as the text it gives,
+        # and to_text, while it writes, as its fields: `if __text_exact: fields else: str(x)`)
+        sf = 0
+        if not fmt_plain.has(n): sf = program_str_fn(t, nodes[n].pos)
+        if sf != 0:
+            pos = nodes[n].pos
+            plain = nodes.len()
+            nodes.push(nodes[n])
+            fmt_plain[plain] = true
+            pt = check_intrinsic(plain, .fmt_struct, args, 0)
+            if nodes[plain].type == 0: nodes[plain].type = i32(pt)
+            add_flag(plain, NF_CHECKED)
+            inner = mk(.call, pos)
+            nodes[inner].a = i32(bc_ident("str", pos))
+            set_list(inner, [args[1]])
+            nodes[inner].sym = i32(sf)
+            nodes[inner].type = i32(T_STR)
+            add_flag(inner, NF_CHECKED)
+            b0 = clone(args[0])
+            clear_flag(b0, NF_CHECKED)
+            shown = bc_call("__buf_append_str", [b0, inner], pos)
+            iff = mk(.if_, pos)
+            nodes[iff].a = i32(bc_ident("__text_exact", pos))
+            nodes[iff].b = i32(bc_block([bc_stmt(plain, pos)], pos))
+            nodes[iff].c = i32(bc_block([bc_stmt(shown, pos)], pos))
+            nodes[n] = nodes[iff]
+            return check_expr(n, 0)
         bt = mk_array(T_U8)
         fts: int[]
         k = types[t].kind
@@ -3244,6 +3362,11 @@ check_binary = (n: int, expected: int) -> int:
             nodes[n].a = i32(coerce(a, tb))
             a = int(nodes[n].a)
             ta = tb
+    # ("v is " + v: a vector joined to text)
+    if op == .plus and (tkind(ta) == .str_ and is_vec(tb) or is_vec(ta) and tkind(tb) == .str_):
+        vt = tb
+        if is_vec(ta): vt = ta
+        fatal(nodes[n].pos, "cannot add a {type_str(vt)} to text: put the value inside the string (\"v is \{v}\")")
     if is_vec(ta) or is_vec(tb): return check_vec_binary(n, op, ta, tb)
     if types[ta].kind == .fixed or types[tb].kind == .fixed:
         if op != .eq and op != .ne: fatal(nodes[n].pos, "operator {tok_text(op)} is not defined for {type_str(ta)} and {type_str(tb)} (fixed-size arrays can be compared with == and !=)")
@@ -3853,7 +3976,7 @@ check_expr = (n: int, expected: int) -> int:
             if len(uh) > 0: fatal(nodes[n].pos, "unknown name '{name_of(nm)}'{uh}")
             sug = suggestion(name_of(nm), visible_names())
             # (print(hello), window(Firefly, ...): words meant as text, a whole argument)
-            if in_text_call(nodes[n].pos) and is_word_arg(nodes[n].pos, name_of(nm)): fatal(nodes[n].pos, "unknown name '{name_of(nm)}' (text goes in quotes: `\"{name_of(nm)}\"`){sug}")
+            if in_text_call(nodes[n].pos) and is_word_arg(nodes[n].pos, name_of(nm)) and not starts_with(sug, " (use "): fatal(nodes[n].pos, "unknown name '{name_of(nm)}' (text goes in quotes: `\"{name_of(nm)}\"`){sug}")
             if len(name_of(nm)) > 1:
                 vh = bare_variant_hint(nm)
                 if len(vh) > 0: fatal(nodes[n].pos, "unknown name '{name_of(nm)}'{vh}")
@@ -4415,7 +4538,13 @@ check_expr = (n: int, expected: int) -> int:
         loop i in [0..nkids(n)):
             p = kid(n, i)
             check_to(int(nodes[p].a), kt)
-            check_to(int(nodes[p].b), vt)
+            vb = int(nodes[p].b)
+            # ({"name": "Drone", "cost": 10.0}: JavaScript's object, values of several types)
+            if i > 0 and ex == 0:
+                bt = prune(check_expr(vb, vt))
+                if not type_eq(bt, prune(vt)) and not can_coerce(vb, bt, vt): fatal(nodes[vb].pos, "a map's values are all of one type, and the first is {a_type(vt)}, this {a_type(bt)}: for a record with named fields of their own types, declare `struct Name:` with them")
+                coerce(vb, vt)
+            else: check_to(vb, vt)
         t = get_struct_inst(md, [kt, vt])
         if nkids(n) > 0: nodes[n].sym = i32(resolve_by_types(intern("[]="), [t, kt, vt], nodes[n].pos, true))
     else if k == .tuple:

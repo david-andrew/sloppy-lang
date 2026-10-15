@@ -236,6 +236,64 @@ from.
 | pen | a picture drawn into and never cleared: `pen = render_target(1280, 720)` at the top; in `draw`, `draw_to(pen)`, the line or dot, `draw_to_screen()`, then after `clear`, `draw_target(pen)` |
 | sounds | `meow = load_wav(embed("meow.wav"))` at the top, `play(meow)` when it should sound |
 
+## Coming from p5.js, Processing or Shadertoy
+
+| p5 | Sloppy |
+|---|---|
+| `setup()`, `draw()` | the lines at the top of the file run once; `draw = ():` each frame (and `update = (dt: f64):` before it, to change things) |
+| `createCanvas(800, 600)` | `window("title", 800, 600)` |
+| `background(20)`, `fill`, `stroke`, `strokeWeight` | `clear(rgb(0.08, 0.08, 0.08))`; each shape takes its color and thickness: `circle(p, 20, RED)`, `line(a, b, 2, WHITE)`, `ring(p, 20, 2, c)` |
+| colors 0 to 255, `colorMode(HSB, 360)` | each part 0 to 1: `rgb(1, 0.5, 0)`, `hex(0xff8000)`, `hsv(200.0 / 360.0, 0.8, 0.9)` |
+| `ellipse`, `rect`, `line(x1, y1, x2, y2)` | `ellipse(center, radii, c)`, `rect(x, y, w, h, c)`, `line(vec2(x1, y1), vec2(x2, y2), width, c)` |
+| `beginShape()`, `vertex(x, y)`, `endShape()` | a list of points: `polygon(pts, c)`, `polyline(pts, width, c)` |
+| `push()`, `translate`, `rotate`, `pop()` | `push_transform()`, `translate(x, y)`, `rotate(a)`, `pop_transform()` |
+| `mouseX`, `mouseIsPressed`, `keyIsDown(LEFT_ARROW)` | `mouse_pos().x`, `mouse_down(.left)`, `key_down(.left)` |
+| `width`, `height`, `frameCount`, `millis()` | `screen_width()`, `screen_height()`, `frame_number()`, `elapsed()` (seconds) |
+| `map(x, a, b, c, d)`, `constrain`, `dist`, `lerp` | `remap(x, a, b, c, d)`, `clamp`, `distance`, `lerp` |
+| `random(a, b)`, `randomGaussian()`, `noise(x, y, z)` | `random(a, b)`, `random_normal(mean, sd)`, `noise(x)`, `noise(x, y)`, `noise(x, y, z)` (each 0 to 1), `fbm(x, y)` |
+| `TWO_PI`, `radians(45)` | `TAU`, `45deg` |
+| `background(0, 10)` for trails | each frame starts black: draw into a picture that is kept, `canvas = render_target(1280, 720)` with `draw_to(canvas)`, a see-through `rect` over it, then `draw_to_screen()` and `draw_target(canvas)` |
+| `saveCanvas()` | `save_png(screenshot(), "art.png")` |
+| a Shadertoy shader | a fragment function over a full-screen rect, as below: its `iTime`, `iResolution` and `iMouse` are fields you give it each frame |
+
+```gdscript
+struct Toy:
+    time: f32
+    res: vec2
+toy_fs = (p: Pixel2D, u: Effect2D[Toy]) -> vec4:
+    uv = p.pos.xy / u.params.res                  # 0 to 1, from the bottom left
+    t = u.params.time
+    vec4(cos(vec3(t, t, t) + vec3(uv.x, uv.y, uv.x) * 6.0 + vec3(0, 2, 4)) * 0.5 + vec3(0.5, 0.5, 0.5), 1)
+toy = make_shader(shader(effect_vs, toy_fs))
+
+draw = ():
+    use_effect(toy, Toy(f32(elapsed()), pixel_size()))
+    rect(0, 0, 1280, 720, WHITE)
+    no_effect()
+```
+
+Shader functions are Sloppy functions, and the GPU runs them (the CPU too, without one): GLSL's
+`sin`, `cos`, `fract`, `floor`, `pow`, `step`, `smoothstep`, `mix`, `abs`, `min` and `max` work on
+vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawing as well as 3D.
+
+## Coming from JavaScript
+
+| JavaScript | Sloppy |
+|---|---|
+| `let x = 0` | `x = 0` (whole numbers stay whole: `x = 0.0` for one that holds fractions) |
+| `const xs = [1, 2]` then `xs.push(3)` | `xs = [1, 2]`: a const never changes, its elements neither |
+| objects `{name: "Drone", cost: 10}` | `struct Item:` with `name: str` and `cost: f64`, made as `Item("Drone", 10)`; a map's values are all one type |
+| `` `cost: ${x}` ``, `x.toFixed(2)`, `toLocaleString()` | `"cost: {x}"`, `"{x:.2f}"`, `"{x:,}"`; `"{x:.2e}"` for 1.50e+45 |
+| `===`, `null`, `undefined` | `==`, `none` (a `T?` may be none: `x ?? default`, `if let v = x:`) |
+| `xs.map(f)`, `filter`, `reduce((a, b) => a + b, 0)` | `xs.map(f)`, `xs.filter(f)`, `xs.reduce(0, (a, b): a + b)`, `sum(xs)` |
+| `JSON.stringify`, `JSON.parse` | `to_json(x)`, `from_json[Item](s)` (into a struct), `parse_json(s)` |
+| `localStorage` | `save_value("save", state)` and `state = load_value("save", State())` |
+| `setInterval(f, 30000)`, `setTimeout` | `if every(1, 30.0): f()` in update; `Actions` for steps one after another |
+| `Date.now()` | `unix_time()` (seconds since 1970: what to save to work out time away) |
+| `btoa`, `atob` | `base64_encode(bytes(s))`, `base64_decode(s)` |
+| `window.onbeforeunload` | `on_quit = (): ...`, which the game calls as it closes |
+| `Number.isFinite`, `Infinity` | `is_finite(x)`, `INF` (floats reach about 1.8e308; past that, keep a mantissa and an exponent) |
+
 ## Coming from Python
 
 | Python | Sloppy |

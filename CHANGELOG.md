@@ -14,7 +14,17 @@ post-processing, a step sequencer):
 - `draw(prog, mesh, params)` with params of another type than the shader's functions take is
   an error, where prog is a global made by `make_shader(shader(vs, fs))`.
 - `noise(x)` and `noise(x, y, z)`, beside `noise(x, y)`; `remap(x, a, b, c, d)` (p5's map) and
-  `inverse_lerp`.
+  `inverse_lerp`; `random_normal(mean, sd)`.
+- GLSL's `sin`, `cos`, `floor`, `ceil`, `fract`, `pow`, `step`, `smoothstep` and `mix` (with a
+  vector t) on vec2, vec3 and vec4, `abs`, `min` and `max` on vec4, on the CPU and in shaders.
+- Errors for p5's and Shadertoy's habits: `TWO_PI`, `width`, `color(...)`, `stroke`,
+  `strokeWeight`, `background`, `mouseX`, `mouseIsPressed`, `frameCount`, `beginShape`,
+  `line(x1, y1, x2, y2)`, `text(s, x, y)`, `fill(r, g, b)`, `push()`, `map(x, a, b, c, d)`,
+  `atan(y, x)`, `random(xs)`, `iTime`, `gl_FragColor`; `"void main() { ... }"` says the braces
+  need doubling (it said "unexpected indentation"); a shader that reads a global says how to
+  give it the value.
+- Warnings for `hsv(200, ...)` (a hue goes from 0 to 1) and `rgba(0, 0, 0, 10)` (alpha too).
+- START has "Coming from p5.js, Processing or Shadertoy", with a Shadertoy-style shader.
 
 From an idle game (numbers past 1e300, a shop that scrolls, saves, offline progress, a chart):
 - `log10` is exact at powers of ten (`log10(1000.0)` was 2.9999999999999996, so `floor` gave
@@ -29,6 +39,25 @@ From an idle game (numbers past 1e300, a shop that scrolls, saves, offline progr
 - `min(a, b)` and `max(a, b)` take any type with its own `<`, as `min(xs)` did.
 - A float literal too large for a float (`1e400`) is an error; it was infinity.
 - `is_finite(x)` and `is_inf(x)`, beside `is_nan`.
+- A `str` of the program's own for its type (`str = (b: Big) -> str: ...`) is how the type
+  shows: in `print`, in `"{x}"`, inside arrays and other structs; `to_text`, `to_json` and
+  saves still write its fields. `str(5)` beside it is still the conversion.
+- `short_number(x)`: 999, 1.23K, 45.6M, 789B, 1.00T, then 1.23e+15.
+- `hud_text_field` pastes (ctrl+V, cmd+V), and keeps a clip it is drawn inside (a scrolling
+  list's); a `hud_button`'s label shrinks to fit.
+- `load_value` copies a save it cannot read to `name.bad` before falling back to the default,
+  so the next save does not lose it.
+- `audio_started()`: whether sound has begun (a web page's waits for a first click).
+- Errors for JavaScript's habits: `JSON`, `localStorage`, `setInterval`, `setTimeout`, `btoa`,
+  `isFinite`, `Number`, `toExponential`, `toLocaleString`; `Date.now()` points to `unix_time()`;
+  `loop (k, v) in pairs`, `const xs = [...]` then `xs.push`, `"v is " + v`, `xs.reduce(f, 0)`,
+  an `if` without `else` as a function's value, a map literal with values of several types, and
+  an enum compared with a number each say what to write; `on_close` (and the like) points to
+  `on_quit`, in one warning, not two; `[0..xs.len()]` warns that it includes xs.len().
+- START has "Coming from JavaScript"; LANGUAGE has time away for an idle game, and says each
+  frame starts black and a window may be scaled.
+- Overloads are tried faster: a vector argument rules out the others at once (games compile
+  about 1% faster).
 
 From someone coming from Scratch (a catch game with clones, costumes, backdrops and a high-score
 list; a maze with walls by color, a key, a door and a pen trail):
