@@ -69,6 +69,8 @@ for t in tests:
         run = os.environ.get("SLOPPY_WINE", "podman exec sloppy-win /w/run.sh").split() + ["tests/" + name + ".exe"]
     elif target == "linux-arm64":
         run = os.environ.get("SLOPPY_ARM64_RUN", "qemu-aarch64-static").split() + [exe]
+        # (a container is given standard input only with -i)
+        if stdin_data and run[:2] == ["podman", "exec"] and "-i" not in run: run.insert(2, "-i")
     elif on_windows:
         run = [exe + ".exe"]
     else:
