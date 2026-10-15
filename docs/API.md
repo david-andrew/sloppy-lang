@@ -1118,7 +1118,7 @@ A frame statistics overlay: frame times as a graph, CPU time, time handing frame
 
 #### Zones: named parts of a frame, timed
 
-- `zone = (name: str)`: start timing a part of the frame, until zone_end() (zones nest; their times show in the overlay); costs a check when the statistics are off
+- `zone = (name: str)`: start timing a part of the frame, until zone_end() (zones nest; their times show in the overlay; a zone entered several times in a frame shows their total); costs a check when the statistics are off
 - `zone_end = ()`
 - `zone = (name: str, f: () -> void)`: f, timed as a zone
 
