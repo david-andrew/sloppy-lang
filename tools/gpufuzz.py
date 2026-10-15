@@ -514,11 +514,14 @@ def shader_program(g):
 
 
 SHADER_RUNS = [("software", {"SLOPPY_SOFTWARE": "1", "SLOPPY_SOFT_SCALE": "1"}), ("opengl", {"SLOPPY_VULKAN": "0"}), ("vulkan", {"SLOPPY_VULKAN": "1"})]
+# (with no desktop, over ssh on Windows: no OpenGL, which needs a window)
+if os.environ.get("SLOPPY_HEADLESS"): SHADER_RUNS = [r for r in SHADER_RUNS if r[0] != "opengl"]
 
 
 def shader_frames(prog):
     """the frame each renderer draws, as bytes (None and the error where it fails)"""
     exe = prog[:-3]
+    if os.name == "nt": exe += ".exe"
     b = subprocess.run([SLOPPY, "build", prog, "-o", exe], capture_output=True, text=True, env=ENV)
     if b.returncode != 0: return None, "build failed:\n" + b.stderr[-2000:]
     sys.path.insert(0, os.path.join(ROOT, "tools"))
