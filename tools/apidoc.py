@@ -44,6 +44,9 @@ TOPICS = [
     ("Data", "charts", "Charts", ["game/chart"], "charts",
      "Line charts, scatter plots, bars and histograms with axes and a legend: drawn in a game's `draw`, or "
      "made into a picture with no window (`chart_image`, then `save_png`). `render_image` draws any picture that way."),
+    ("Data", "big", "Big numbers", ["big"], None,
+     "A module (`use big`): numbers past f64's 1.8e308, a mantissa and a power of ten (an idle game's currency), "
+     "with arithmetic, comparison, `min`, `max`, sorting and saving as for numbers; shown as 1.23M or 4.56e+1234."),
     ("Data", "threads", "Threads", ["std/thread"], "threads", ""),
     ("Data", "numeric", "Numeric arrays", ["std/nd"], "numeric",
      "Elementwise operators (`.+ .* .^`...), `f.(xs)` and n-dimensional arrays are part of the language: "

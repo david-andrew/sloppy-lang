@@ -43,6 +43,8 @@ From an idle game (numbers past 1e300, a shop that scrolls, saves, offline progr
   shows: in `print`, in `"{x}"`, inside arrays and other structs; `to_text`, `to_json` and
   saves still write its fields. `str(5)` beside it is still the conversion.
 - `short_number(x)`: 999, 1.23K, 45.6M, 789B, 1.00T, then 1.23e+15.
+- `use big`: numbers past 1.8e308 (`big(1.5, 400)`), a mantissa and a power of ten, with
+  arithmetic, comparison, `min`, `max`, `sort`, `pow`, `log10`, and saving as for numbers.
 - `hud_text_field` pastes (ctrl+V, cmd+V), and keeps a clip it is drawn inside (a scrolling
   list's); a `hud_button`'s label shrinks to fit.
 - `load_value` copies a save it cannot read to `name.bad` before falling back to the default,

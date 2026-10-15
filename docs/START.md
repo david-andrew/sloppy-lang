@@ -292,7 +292,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `Date.now()` | `unix_time()` (seconds since 1970: what to save to work out time away) |
 | `btoa`, `atob` | `base64_encode(bytes(s))`, `base64_decode(s)` |
 | `window.onbeforeunload` | `on_quit = (): ...`, which the game calls as it closes |
-| `Number.isFinite`, `Infinity` | `is_finite(x)`, `INF` (floats reach about 1.8e308; past that, keep a mantissa and an exponent) |
+| `Number.isFinite`, `Infinity`, break_infinity.js | `is_finite(x)`, `INF` (floats reach about 1.8e308); past that, `use big`: `dust = big(1.5, 400)` |
 
 ## Coming from Python
 
