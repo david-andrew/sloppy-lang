@@ -215,7 +215,13 @@ safety net for changes here.
   stores in the loop, and only where the loop surely reaches them) would let loop versioning
   drop the checks. vec4/mat4 math is scalar (2-2.8x C); packed SSE for vec4 would close it.
   Function values are not inlined (reduce, count, a lambda: 2-3x a plain loop).
-- Debug builds stay the default; compile speed comes first (item 2 tracks it).
+- Debug builds stay the default; compile speed comes first (item 2 tracks it). What they lose
+  to release builds, measured October 2026: the out-of-line uniqueness and refcount calls were
+  most of it (done: the code generator tests the common case and skips the call, through a
+  stub that keeps every register when it is taken, with the IR unchanged: nbody 1.8x, swarm
+  1.2x, no compile time). The rest (nbody 2.7x, swarm 2.5x slower than release) is the
+  optimizer and inlining; release's register allocator alone gains nothing there. Inlining the
+  fast paths as IR instead cost 12-19% more compile time.
 
 ## Compile speed for large programs
 
