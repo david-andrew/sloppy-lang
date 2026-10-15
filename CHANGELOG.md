@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0
+
 - Debug builds (the default) run array and reference-counting code faster on x86-64, arm64
   (macOS, Linux) and the web: making an
   array unique before a write and adding or dropping a reference are done inline when they can
