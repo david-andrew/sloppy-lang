@@ -3870,6 +3870,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 #### The peers
 
 - `listen = (port: int) -> bool`: start a server on port (native programs); false if the port cannot be had
+- `stop_listening = ()`: stop taking new connections (the peers connected stay); listen starts again
 - `connect = (host: str, port: int = 0) -> int`: connect to a server: a peer, connecting in the background (joined or left arrive by receive); host is a name or address and port its port, or host is a ws:// or wss:// URL (port then unused)
 - `send = (peer: int, msg: u8[])`: send a message to a peer (nothing if it is not connected, or has gone): text goes as a text message (a string to a page's WebSocket), bytes as a binary one
 - `send = (peer: int, msg: str)`
@@ -3878,6 +3879,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `peers = () -> int[]`: the peers connected now
 - `close = (peer: int)`: end a connection (a left event follows)
 - `why = (peer: int) -> str`: why a peer could not connect, once it has left ("": it did not say; a web page's browser does not tell)
+- `local_address = () -> str`: this machine's address on its network (as 192.168.1.20): what another machine there connects to, and what a host tells the players joining it; "" when it has none (no network, or a web page)
 - `receive = () -> NetEvent[]`: what happened since the last call: peers joining and leaving, and their messages, in order
 - `receive = (only: int[]) -> NetEvent[]`: the same, for the given peers only (the others' events wait for another call): parts of a program that each have peers of their own, as a game hosting a relay and playing through it
 - `receive_server = () -> NetEvent[]`: the same, for the peers that connected to this program's server (listen) only

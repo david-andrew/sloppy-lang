@@ -40,6 +40,23 @@ for host in ["localhost", "127.0.0.1"]:
     port += 1
     env["NET_PORT"] = str(port)
 
+# tools/netpong_relay.py (Python): the first player hosts, the second is the guest, messages pass
+port += 1
+env["NET_PORT"] = str(port)
+player = build("relay_player") + exe
+dummy = os.path.join(tmp, "page.html")
+open(dummy, "w").write("<html></html>")
+r = subprocess.Popen([sys.executable, "-u", os.path.join(root, "tools", "netpong_relay.py"), "--port", str(port), "--page", dummy],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+time.sleep(1.0)
+a = subprocess.Popen([player], stdout=subprocess.PIPE, text=True, env=env)
+time.sleep(0.5)
+b = subprocess.run([player], capture_output=True, text=True, env=env, timeout=40)
+a_out = a.communicate(timeout=40)[0]
+r.kill()
+check("relay: the first player hosts", a_out, ["host: connected", "host: the other came", "host: got pong"])
+check("relay: the second is the guest", b.stdout, ["guest: connected", "guest: got ping", "guest: the other left"])
+
 # a web page's client, in a browser: the same, but as a game (messages arrive between frames)
 shell = None
 pw = os.path.expanduser("~/.cache/ms-playwright")

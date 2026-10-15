@@ -57,6 +57,12 @@ From a match-3 puzzle game (a Phaser developer: tweens, cascades, specials, leve
   lifts it; the first finger is the mouse too, as on a phone, so touch controls can be tested
   without one.
 - START's JavaScript table has Phaser's tweens, scenes and chains of animations.
+- Netpong explains itself: "How to play together" (the same network, one hosts, the other joins
+  the address its screen shows, localhost on one computer); the host's screen shows this
+  computer's address in large type. `net.local_address()` gives it; `net.stop_listening()`.
+- `tools/netpong_relay.py` (Python, on Netpong's page of the website too): run it, and open the
+  address it prints in two browsers on the same Wi-Fi; the first hosts. No Sloppy needed.
+- A screenshot run of a program that uses `net` keeps to real time, as one using netplay did.
 - Netpong on the website said only "could not reach": a web page cannot host, and one served
   over https reaches only a host on the same computer or a wss:// one. The game and its page say
   so now, and `net.why(peer)` in a web page gives the reason (an https page and a ws:// address

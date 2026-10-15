@@ -21,6 +21,17 @@ frame for what happened. Messages arrive whole and in order. Native programs can
 datagrams (`net.udp`), which may be lost or come out of order but never wait for each other. See
 [the library](API.md#networking).
 
+What players need to know, a game should show them: the host's screen gives its address,
+`net.local_address()` (as 192.168.1.20), and the one joining types it; both on the same network
+(the same Wi-Fi or router), and on one computer, `localhost`. examples/netpong does this, with a
+"How to play together" screen. Over the internet, the host's router has to pass the port on to
+it (port forwarding), or both connect to a server with a public address.
+
+A web page cannot listen, and a page served over https (as from a website) may only reach `wss://`
+servers or `localhost`. For trying a game with pages alone, `tools/netpong_relay.py` (Python, no
+Sloppy needed) serves Netpong's page over plain http on the network and passes messages between
+two pages, the first of which hosts: a pattern for any game's own relay.
+
 ## Rollback
 
 Every machine runs the whole game from the same start, and only the inputs travel. A remote

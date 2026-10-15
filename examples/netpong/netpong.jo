@@ -1,11 +1,12 @@
 # NETPONG - Pong for two, over the network (lib/net.jo).
-# One player hosts, from the game built for their computer (`sloppy run netpong.jo`, then Host a
-# game); the other joins with the host's address, from another such build or from a web page. A
-# web page cannot host, and one served over https (as this website) reaches only a host on the
-# same computer (localhost) or one behind a TLS proxy (wss://).
+# One player hosts (`sloppy run netpong.jo`, then Host a game: the screen shows the address to
+# join); the other, on the same network, picks Join a game and types that address. Without Sloppy,
+# tools/netpong_relay.py (Python) serves the game to web pages on the network and passes their
+# messages: the first page to connect hosts. "How to play together" in the game says all this.
 #
 # The host moves the ball and both paddles and sends what it sees 30 times a second; the one who
-# joined sends only its paddle's moves.
+# joined sends only its paddle's moves. Through the relay, the relay says who hosts ("host" or
+# "guest"), that the other player came ("j") or left ("l"), and passes the rest on.
 # Up/down (W/S, or a gamepad's stick) move your paddle; first to 7 wins. Escape leaves.
 
 build:
@@ -21,7 +22,7 @@ const PADDLE_SPEED = 620.0
 const BALL_SPEED = 520.0
 const WIN = 7
 
-enum Screen: title, joining, waiting, playing, over
+enum Screen: title, help, joining, waiting, playing, over
 
 screen = Screen.title
 hosting = false
@@ -37,6 +38,8 @@ score_r = 0
 send_wait = 0.0
 status = ""
 why = ""                        # (why the other player could not be reached)
+via_relay = false               # (playing through tools/netpong_relay.py)
+my_address = ""                 # (the host: this machine's address on its network)
 
 serve = (dir: f64):
     ball = vec2(640, 360)
@@ -50,12 +53,14 @@ host = ():
             status = "port {PORT} is taken (another game hosting here?)"
             return
         hosting = true
+        via_relay = false
         screen = .waiting
-        status = "waiting for the other player: join this machine's address, port {PORT}"
+        my_address = net.local_address()
 
 join = ():
     other = net.connect(address, PORT)
     hosting = false
+    via_relay = false
     screen = .waiting
     status = "connecting to {address}..."
 
@@ -78,9 +83,9 @@ read_state = (t: str):
     right_y = to_float(w[4]) ?? right_y
     score_l = to_int(w[5]) ?? score_l
     score_r = to_int(w[6]) ?? score_r
-    k = to_int(w[7]) ?? 3
-    if k == 4: screen = .over
-    else if k == 3: screen = .playing
+    k = to_int(w[7]) ?? int(Screen.playing)
+    if k == int(Screen.over): screen = .over
+    else if k == int(Screen.playing): screen = .playing
 
 network = ():
     loop e in net.receive():
@@ -93,10 +98,25 @@ network = ():
                 status = "the other player left"
                 why = ""
                 if not hosting and screen == .waiting:
-                    status = "could not reach {address}:{PORT}"
+                    status = "could not reach {address}"
+                    if not starts_with(address, "ws"): status = "could not reach {address}, port {PORT}"
                     why = net.why(e.peer)
                 screen = .title
                 other = -1
+        # (the relay: who hosts, and the other player coming and going)
+        else if e.text == "host":
+            hosting = true
+            via_relay = true
+            status = "waiting for the other player: on their computer or phone, they open the same address"
+        else if e.text == "guest":
+            via_relay = true
+            status = "connected: waiting for the host"
+        else if e.text == "j" and hosting: start()
+        else if e.text == "l":
+            status = "the other player left"
+            screen = .title
+            if other >= 0: net.close(other)
+            other = -1
         else if hosting:
             if starts_with(e.text, "m "): right_move = to_float(e.text[2..]) ?? 0.0
         else if starts_with(e.text, "s "): read_state(e.text)
@@ -107,9 +127,16 @@ else if env("JOIN") != none: join()
 
 update = (dt: f64):
     network()
-    if key_pressed(.escape) and screen != .title and screen != .joining:
+    if key_pressed(.escape) and screen != .title and screen != .joining and screen != .help:
         if other >= 0: net.close(other)
+        other = -1
+        if hosting and not via_relay: net.stop_listening()
+        hosting = false
+        status = ""
         screen = .title
+        return
+    if screen == .help:
+        if key_pressed(.escape) or key_pressed(.enter) or mouse_pressed(.left): screen = .title
         return
     if screen == .joining:
         address += text_input()
@@ -147,8 +174,8 @@ update = (dt: f64):
 
 draw = ():
     clear(rgb(0.05, 0.06, 0.09))
-    loop y in [0..18): rect(638, f64(y) * 40 + 10, 4, 20, rgba(1, 1, 1, 0.15))
     if screen == .playing or screen == .over:
+        loop y in [0..18): rect(638, f64(y) * 40 + 10, 4, 20, rgba(1, 1, 1, 0.15))
         rect(36, left_y - PADDLE_H / 2.0, 16, PADDLE_H, rgb(0.4, 0.8, 1.0))
         rect(1228, right_y - PADDLE_H / 2.0, 16, PADDLE_H, rgb(1.0, 0.6, 0.3))
         circle(ball, 10, WHITE)
@@ -168,15 +195,43 @@ draw = ():
         when TARGET != "wasm":
             if ui_button("Host a game"): host()
         if ui_button("Join a game"): screen = .joining
+        if ui_button("How to play together"): screen = .help
         when TARGET != "wasm":
             if ui_button("Quit"): quit()
         ui_end()
-        if len(status) > 0: text_centered(status, vec2(640, 560), 22, GRAY)
-        if len(why) > 0: text_wrapped(why, vec2(240, 590), 800, 18, rgba(1, 1, 1, 0.45), align = .center)
-        # (a web page cannot host: the other player runs the game natively, and hosts)
-        when TARGET == "wasm":
-            text_wrapped("A web page can only join: the other player hosts from the game built for their computer (sloppy run netpong.jo, then Host a game), then gives you its address. On the same computer, that is localhost.", vec2(240, 470), 800, 18, rgba(1, 1, 1, 0.55), align = .center)
+        if len(status) > 0: text_centered(status, vec2(640, 570), 22, GRAY)
+        if len(why) > 0: text_wrapped(why, vec2(240, 600), 800, 18, rgba(1, 1, 1, 0.45), align = .center)
+    if screen == .help: draw_help()
     if screen == .joining:
-        text_centered("the host's address (as 192.168.1.20, or localhost on this computer), then Enter", vec2(640, 280), 26)
-        text_centered("{address}_", vec2(640, 350), 40, rgb(1.0, 0.85, 0.3))
-    if screen == .waiting: text_centered(status, vec2(640, 360), 26)
+        text_centered("Type the address the host's screen shows, then Enter", vec2(640, 250), 30)
+        text_centered("{address}_", vec2(640, 340), 44, rgb(1.0, 0.85, 0.3))
+        text_wrapped("It is four numbers with dots between, as 192.168.1.20. Both players must be on the same network (the same Wi-Fi or router). A game hosted on this same computer: localhost. Escape goes back.", vec2(240, 420), 800, 20, rgba(1, 1, 1, 0.55), align = .center)
+    if screen == .waiting: draw_waiting()
+
+draw_waiting = ():
+    if not hosting or via_relay:
+        text_wrapped(status, vec2(190, 330), 900, 26, WHITE, align = .center)
+        return
+    text_centered("Waiting for the other player", vec2(640, 200), 36)
+    if len(my_address) > 0:
+        text_centered("On their computer: Netpong, Join a game, and this address:", vec2(640, 280), 24, GRAY)
+        text_centered(my_address, vec2(640, 350), 64, rgb(1.0, 0.85, 0.3))
+    else:
+        text_centered("This computer seems to be on no network: connect it to the Wi-Fi first", vec2(640, 330), 24, GRAY)
+    text_wrapped("Both computers must be on the same network (the same Wi-Fi or router). If a window asks whether Netpong may use the network, allow it. Playing on this same computer: join localhost. Escape stops waiting.", vec2(240, 450), 800, 20, rgba(1, 1, 1, 0.55), align = .center)
+
+HELP = [
+    "Two players, each at their own computer (or a phone, through a web page), on the same network: the same Wi-Fi or router.",
+    "One hosts: on a computer with Sloppy, run `sloppy run netpong.jo` and choose Host a game. Its screen then shows an address, four numbers such as 192.168.1.20.",
+    "The other chooses Join a game and types that address. To try it alone, run the game twice on one computer: host in one, join localhost in the other.",
+    "Without Sloppy: on a computer with Python, run netpong_relay.py (from the Netpong page of sloppy-lang.org, or tools/ in Sloppy's source). It prints an address to open in a web browser, on that computer and on the other player's: the first to open it hosts.",
+    "A web page cannot host, and one from https:// (as on sloppy-lang.org) can only join a game hosted on the same computer: the relay's page has neither limit.",
+]
+
+draw_help = ():
+    text_centered("How to play together", vec2(640, 90), 44, rgb(0.4, 0.8, 1.0))
+    y = 160.0
+    loop i in 0.. and h in HELP:
+        text_centered("{i + 1}", vec2(150, f32(y + 12.0)), 28, rgb(1.0, 0.85, 0.3))
+        y += text_wrapped(h, vec2(190, f32(y)), 900, 22, WHITE) + 22.0
+    text_centered("Escape or a click: back", vec2(640, 680), 20, GRAY)

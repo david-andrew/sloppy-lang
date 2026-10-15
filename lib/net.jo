@@ -51,14 +51,23 @@ listen = (port: int) -> bool:
         return false
     else:
         if __net_listen_fd >= 0: return true
+        __pace_real_time = true         # (a test's screenshot run: at the other end's pace, a frame each 60th of a second)
         fd = __n_listen(port)
         if fd < 0: return false
         __net_listen_fd = fd
         true
 
+# stop taking new connections (the peers connected stay); listen starts again
+stop_listening = ():
+    when TARGET != "wasm":
+        if __net_listen_fd >= 0:
+            __n_close(__net_listen_fd)
+            __net_listen_fd = -1
+
 # connect to a server: a peer, connecting in the background (joined or left arrive by receive);
 # host is a name or address and port its port, or host is a ws:// or wss:// URL (port then unused)
 connect = (host: str, port: int = 0) -> int:
+    __pace_real_time = true             # (a test's screenshot run: at the other end's pace)
     id = __net_next
     __net_next += 1
     p = __NetPeer(id = id, fd = -1, state = 0, client = true, host = host, port = port, since = time())
@@ -163,6 +172,13 @@ __net_gone = (i: int):
 # why a peer could not connect, once it has left ("": it did not say; a web page's browser does
 # not tell)
 why = (peer: int) -> str: __net_why.get(peer) ?? ""
+
+# this machine's address on its network (as 192.168.1.20): what another machine there connects to,
+# and what a host tells the players joining it; "" when it has none (no network, or a web page)
+local_address = () -> str:
+    ip = __n_local_ip()
+    if ip <= 0 or (ip >> 24) == 127: return ""
+    "{(ip >> 24) & 255}.{(ip >> 16) & 255}.{(ip >> 8) & 255}.{ip & 255}"
 
 __net_why: {int: str}
 
@@ -678,6 +694,20 @@ when TARGET == "linux":
 
     __n_close = (fd: int): syscall(3, fd)
 
+    # this machine's address on its network: a datagram socket aimed at a public address (no
+    # packet is sent), and the address it was given to send from
+    __n_local_ip = () -> int:
+        fd = syscall(41, 2, 2 | 0x80000, 0)
+        if fd < 0: return -1
+        a = __n_addr(0x08080808, 53)
+        r = syscall(42, fd, data(a), 16)
+        b = fill(u8(0), 16)
+        l = [16]
+        g = syscall(51, fd, data(b), data(l))                       # getsockname
+        syscall(3, fd)
+        if r != 0 or g != 0: return -1
+        (int(b[4]) << 24) | (int(b[5]) << 16) | (int(b[6]) << 8) | int(b[7])
+
     __n_udp = (port: int) -> int:
         fd = syscall(41, 2, 2 | 0x800 | 0x80000, 0)                 # socket(AF_INET, SOCK_DGRAM | NONBLOCK | CLOEXEC)
         if fd < 0: return -1
@@ -801,6 +831,22 @@ when TARGET == "macos":
     @lib("/usr/lib/libSystem.B.dylib")
     @symbol("recvfrom")
     extern __m_recvfrom = (fd: i32, p: *u8, n: int, flags: i32, addr: *u8, len: *u32) -> int
+
+    @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("getsockname")
+    extern __m_getsockname = (fd: i32, addr: *u8, len: *u32) -> i32
+
+    __n_local_ip = () -> int:
+        fd = int(__m_socket(i32(2), i32(2), i32(0)))
+        if fd < 0: return -1
+        a = __n_addr(0x08080808, 53)
+        r = int(__m_connect(i32(fd), data(a), u32(16)))
+        b = fill(u8(0), 16)
+        l: u32[] = [16]
+        g = int(__m_getsockname(i32(fd), data(b), data(l)))
+        syscall(3, fd)
+        if r != 0 or g != 0: return -1
+        (int(b[4]) << 24) | (int(b[5]) << 16) | (int(b[6]) << 8) | int(b[7])
 
     __n_udp = (port: int) -> int:
         fd = int(__m_socket(i32(2), i32(2), i32(0)))
@@ -941,6 +987,23 @@ when TARGET == "windows":
     @symbol("recvfrom")
     extern __w_recvfrom = (s: int, p: *u8, n: i32, flags: i32, addr: *u8, len: *i32) -> i32
 
+    @lib("ws2_32.dll")
+    @symbol("getsockname")
+    extern __w_getsockname = (s: int, addr: *u8, len: *i32) -> i32
+
+    __n_local_ip = () -> int:
+        __n_start()
+        s = __w_socket(i32(2), i32(2), i32(17))
+        if s == -1: return -1
+        a = __n_addr(0x08080808, 53)
+        r = int(__w_connect(s, data(a), i32(16)))
+        b = fill(u8(0), 16)
+        l: i32[] = [16]
+        g = int(__w_getsockname(s, data(b), data(l)))
+        __w_closesocket(s)
+        if r != 0 or g != 0: return -1
+        (int(b[4]) << 24) | (int(b[5]) << 16) | (int(b[6]) << 8) | int(b[7])
+
     __n_udp = (port: int) -> int:
         __n_start()
         s = __w_socket(i32(2), i32(2), i32(17))
@@ -1065,5 +1128,6 @@ when TARGET == "wasm":
     __n_close = (fd: int): pass
     __n_resolve = (host: str) -> int: -1
     __n_udp = (port: int) -> int: -1
+    __n_local_ip = () -> int: -1
     __n_sendto = (fd: int, p: *u8, n: int, ip: int, port: int) -> int: -1
     __n_recvfrom = (fd: int, p: *u8, n: int, from: mut u8[]) -> int: -1

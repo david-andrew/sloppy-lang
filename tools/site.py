@@ -555,8 +555,9 @@ GALLERY = [
 
 # (what a card says besides its program's first sentence)
 GALLERY_NOTES = {
-    "netpong": "For two: one player hosts from the game built for their computer (sloppy run netpong.jo, then Host a game) "
-               "and the other joins its address. This page can only join, and, as an https page, only a host on the same computer (localhost).",
+    "netpong": 'For two on one network: one hosts (<code>sloppy run netpong.jo</code>, then Host a game) and the other joins the address it shows. '
+               'Without Sloppy, <a href="netpong/netpong_relay.py" download>netpong_relay.py</a> (Python) serves the game to two browsers on your Wi-Fi: '
+               'run it and open the address it prints. This page (https) can only join a game hosted on the same computer.',
 }
 
 # a program's opening comment, as a sentence or two (its first paragraph, without the title)
@@ -611,11 +612,13 @@ def build_gallery():
         if path.startswith("lib/new/"):
             say = say.split(": ", 1)[-1]
             say = say[:1].upper() + say[1:]
-        if name in GALLERY_NOTES: say += " " + GALLERY_NOTES[name]
-        cards.append(f'<div class="card">{img}<h3>{html.escape(title)}</h3><p>{html.escape(say)}</p>'
+        note = " " + GALLERY_NOTES[name] if name in GALLERY_NOTES else ""
+        cards.append(f'<div class="card">{img}<h3>{html.escape(title)}</h3><p>{html.escape(say)}{note}</p>'
                      f'<div class="buttons"><a class="btn primary" href="{play}">Play</a><a class="btn" href="../playground/#example={pg}">Change it</a>'
                      f'<a class="btn" href="{src_url}">Source</a></div></div>')
     shutil.rmtree(os.path.join(d, ".saves"), ignore_errors=True)
+    # (Netpong without Sloppy: the relay, beside its page)
+    shutil.copy(os.path.join(root, "tools", "netpong_relay.py"), os.path.join(d, "netpong", "netpong_relay.py"))
     for name, path, _, _, _ in GALLERY:
         if path.startswith("lib/new/"): os.remove(os.path.join(d, name + ".jo"))
     body = ('<main class="gallery-page"><h1>Examples</h1><p class="lead">Games and smaller programs, each one file of Sloppy (with its pictures and models, '
