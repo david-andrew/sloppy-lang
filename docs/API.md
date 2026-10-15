@@ -527,7 +527,7 @@ Operating system access: files, arguments, environment, time.
 - `mkdir = (path: str) -> bool`
 - `make_dirs = (path: str) -> bool`: make a directory and the ones it is in ("out/maps/2"); true if it is there after
 - `delete_dir = (path: str) -> bool`: remove a directory, which must be empty (delete_file for a file)
-- `rename_file = (from: str, to: str) -> bool`: move or rename a file or directory (one already at `to` is replaced: a file, or an empty directory)
+- `rename_file = (from: str, to: str, replace: bool = true) -> bool`: move or rename a file or directory (one already at `to` is replaced: a file, or an empty directory). replace = false: false instead when something is at `to` (file_error() says "it is already there"), checked as it moves, so no other program can put one there in between
 - `copy_file = (from: str, to: str) -> bool`: copy a file's contents to another (made, or replaced)
 - `append_file = (path: str, contents: str) -> bool`: add to the end of a file (made if it is not there): a log
 - `file_time = (path: str) -> f64?`: when a file or directory was last changed, in seconds since 1970 (as unix_time()); none if it is not there

@@ -22,6 +22,8 @@ From command-line scripts (a build runner, a file renamer, a log reader, a dupli
 - `file_error()`: why the last file operation that failed did ("permission denied", "no such
   file or directory", "the directory is not empty"), on Linux, macOS and Windows.
 - `regex_error(pattern)`: what is wrong with a pattern a user typed, without stopping.
+- `rename_file(a, b, replace = false)` fails when `b` is there, checked as it moves (no race
+  between a check and the rename).
 - `parse_date("2026-10-14T08:15:03+02:00")` reads ISO dates and times (a Date, or none).
 - `sha256(bytes or text)`, `abs_path(path)`; `if let` in a comprehension
   (`[loop s in fields: if let n = to_float(s): n]`).
