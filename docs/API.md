@@ -1540,7 +1540,7 @@ draw = ():
 
 - `set_font = (f: Font)`: the font text() and text_width() use (load_font makes one); set_font() goes back to the built-in
 - `set_font = ()`
-- `text_width = (s: str, size: f64 = 20.0) -> f64`: how wide text is drawn (the widest of its lines)
+- `text_width = (s: str, size: f64 = 20.0, mono: bool = false) -> f64`: how wide text is drawn (the widest of its lines)
 - `text_height = (s: str, size: f64 = 20.0) -> f64`: how tall text is drawn: its lines, each size * 1.25 below the one before
 - `enum Align:`
   ```gdscript
@@ -1551,8 +1551,8 @@ draw = ():
   ```
 - `wrap_text = (s: str, width: f64, size: f64 = 20.0) -> str[]`: s broken into lines no wider than width, at spaces (a word wider than that has a line of its own; a line break in s starts a new line)
 - `text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), align: Align = .left, shadow: vec4 = vec4(0, 0, 0, 0)) -> f64`: text in a column `width` wide from pos (its top-left corner), broken into lines at spaces, each line to the left, centered or to the right; the height it took (LÖVE's printf)
-- `text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0))`: draw text with its top-left corner at `pos` (characters the font does not have show as ?); shadow: a color drawn under it, a little down and right, to read over a busy scene (`shadow = rgba(0, 0, 0, 0.7)`)
-- `text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0))`: text centered on `center` (horizontally and vertically; each of its lines centered). The built-in font is proportional ("i" is narrower than "@"): a grid of characters, a roguelike's map, draws each one centered in its cell
+- `text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false)`: draw text with its top-left corner at `pos` (characters the font does not have show as ?); shadow: a color drawn under it, a little down and right, to read over a busy scene (`shadow = rgba(0, 0, 0, 0.7)`). mono: each character in a cell of the same width, so columns made with "{name:<12} {score:>5}" line up (a scoreboard, a table, a roguelike's map)
+- `text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false)`: text centered on `center` (horizontally and vertically; each of its lines centered). The built-in font is proportional ("i" is narrower than "@"): a grid of characters, a roguelike's map, draws each one centered in its cell
 
 ### font.jo
 
@@ -3647,6 +3647,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `send_all = (msg: str)`
 - `peers = () -> int[]`: the peers connected now
 - `close = (peer: int)`: end a connection (a left event follows)
+- `why = (peer: int) -> str`: why a peer could not connect, once it has left ("": it did not say; a web page's browser does not tell)
 - `receive = () -> NetEvent[]`: what happened since the last call: peers joining and leaving, and their messages, in order
 - `receive = (only: int[]) -> NetEvent[]`: the same, for the given peers only (the others' events wait for another call): parts of a program that each have peers of their own, as a game hosting a relay and playing through it
 - `receive_server = () -> NetEvent[]`: the same, for the peers that connected to this program's server (listen) only

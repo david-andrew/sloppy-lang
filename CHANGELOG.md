@@ -17,6 +17,12 @@ From an online arena (2-4 players, native and browser clients, a lobby, reconnec
 - A screenshot run of a connected client keeps to real time (as fast as possible, it sent its
   inputs faster than the server took them).
 - A warning when a program uses a library struct's own `__` field (`c.__peer`).
+- `net.why(peer)` says why a connection failed ("no machine named 'x' was found", "refused:
+  nothing is listening on port 4600 there", "no answer in 10 seconds"), and netplay's
+  "could not connect to the server" says it too.
+- `SLOPPY_INPUT` keys type punctuation as a US keyboard does (shift+period is `>`).
+- `text(..., mono = true)` (and `text_width`, `text_centered`): every character in a cell of
+  one width, so `"{name:<12} {score:>5}"` columns line up with the built-in font.
 - The game's hook as it ends is `on_quit = ():` (it was `quit`, which replaced the library's
   `quit()` that closes the window).
 

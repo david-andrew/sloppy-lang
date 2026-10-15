@@ -884,9 +884,19 @@ __glyph = (f: Font, c: int) -> int:
     f.slots.get(c, -1)
 
 # how wide text is drawn (the widest of its lines)
-text_width = (s: str, size: f64 = 20.0) -> f64:
+text_width = (s: str, size: f64 = 20.0, mono: bool = false) -> f64:
     __font_init()
     k = size / __font.px
+    if mono:
+        # (each character a cell of the same width)
+        widest_line = 0
+        n = 0
+        loop c in s:
+            if c == '\n':
+                widest_line = max(widest_line, n)
+                n = 0
+            else if c & 0xC0 != 0x80: n += 1
+        return f64(max(widest_line, n)) * __mono_adv(__font) * k
     w = 0.0
     widest = 0.0
     i = 0
@@ -948,11 +958,12 @@ text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = v
 
 # draw text with its top-left corner at `pos` (characters the font does not have show as ?);
 # shadow: a color drawn under it, a little down and right, to read over a busy scene
-# (`shadow = rgba(0, 0, 0, 0.7)`)
-text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0)):
+# (`shadow = rgba(0, 0, 0, 0.7)`). mono: each character in a cell of the same width, so
+# columns made with "{name:<12} {score:>5}" line up (a scoreboard, a table, a roguelike's map)
+text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false):
     if shadow.w > 0.0:
         off = f32(max(1.0, size * 0.07))
-        text(s, pos + vec2(off, off), size, shadow)
+        text(s, pos + vec2(off, off), size, shadow, mono = mono)
     if not __win_open: __outside_draw()
     __gfx_init()
     f = __font
@@ -964,6 +975,7 @@ text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), sha
     atlas_h = f32(f.texture.height)
     x = pos.x
     y = pos.y + f32(size * 0.82) - f32(f.base) * k
+    madv = f32(__mono_adv(f)) * k
     i = 0
     loop i < len(s):
         r = __next_char(s, i)
@@ -977,6 +989,20 @@ text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), sha
         g = __glyph(f, c)
         if g < 0: g = __glyph(f, '?')
         if g < 0: continue
+        if mono:
+            # (centered in its cell; a wider letter, M or W, narrowed to fit it)
+            gw = f32(f.adv[g]) * k
+            sx = min(f32(1.0), madv / max(gw, f32(0.001)))
+            gx = x + (madv - gw * sx) / 2.0
+            if c != ' ':
+                col = f32(g % f.cols)
+                row = f32(g / f.cols)
+                s_ = cell * k
+                x0 = gx - pad * k * sx
+                x1 = x0 + s_ * sx
+                __quad(vec2(x0, y), vec2(x1, y), vec2(x1, y + s_), vec2(x0, y + s_), vec2(col * cell / atlas_w, row * cell / atlas_h), vec2((col + 1.0) * cell / atlas_w, row * cell / atlas_h), vec2((col + 1.0) * cell / atlas_w, (row + 1.0) * cell / atlas_h), vec2(col * cell / atlas_w, (row + 1.0) * cell / atlas_h), color, 1)
+            x += madv
+            continue
         if c != ' ':
             col = f32(g % f.cols)
             row = f32(g / f.cols)
@@ -990,14 +1016,20 @@ text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), sha
             __quad(vec2(x0, y0), vec2(x0 + s_, y0), vec2(x0 + s_, y0 + s_), vec2(x0, y0 + s_), vec2(u0, v0), vec2(u1, v0), vec2(u1, v1), vec2(u0, v1), color, 1)
         x += f32(f.adv[g]) * k
 
+# (a monospaced cell: as wide as n, the width of a monospaced font's)
+__mono_adv = (f: Font) -> f64:
+    g = __glyph(f, 'n')
+    if g < 0: return f.px * 0.6
+    f.adv[g]
+
 # text centered on `center` (horizontally and vertically; each of its lines centered). The
 # built-in font is proportional ("i" is narrower than "@"): a grid of characters, a roguelike's
 # map, draws each one centered in its cell
-text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0)):
+text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false):
     if s.count("\n") == 0:
-        text(s, center - vec2(f32(text_width(s, size) / 2.0), f32(size / 2.0)), size, color, shadow)
+        text(s, center - vec2(f32(text_width(s, size, mono) / 2.0), f32(size / 2.0)), size, color, shadow, mono)
         return
     y = f64(center.y) - text_height(s, size) / 2.0
     loop line in s.split("\n"):
-        text(line, vec2(f64(center.x) - text_width(line, size) / 2.0, y), size, color, shadow)
+        text(line, vec2(f64(center.x) - text_width(line, size, mono) / 2.0, y), size, color, shadow, mono)
         y += size * 1.25
