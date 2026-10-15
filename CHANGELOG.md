@@ -9,6 +9,10 @@ From a visual novel (dialogue, choices, portraits, music, save slots, Japanese t
   (they only broke at spaces), keeping 。、」 at the end of a line.
 - `text(..., chars = n)` and `text_wrapped(..., chars = n)` draw the first n characters where
   the whole text puts them: dialogue that types itself out.
+- `story(script)`: a story written as Ren'Py writes one (`label`, `character`, lines, `menu`
+  with conditions, `$ trust += 1`, `if`/`elif`/`else`, `jump`, `call`/`return`, and commands
+  such as `show mira happy` for the game), stepped through with `st.next()` and `st.choose(i)`;
+  `st.save()` and `st.load(s)` keep its place, even after the script changes elsewhere.
 - `text_rich(s, pos, size, color, width, chars)`: `[color=yellow]...[/color]`, `[b]...[/b]` and
   `[i]...[/i]` where they are in the text, wrapped to a width, typed out with chars.
 - `img.resized(w, h)` (a thumbnail), `free_texture(t)`, `xs.get(i)` (an element or none).
