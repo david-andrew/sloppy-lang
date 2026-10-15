@@ -1085,8 +1085,9 @@ text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), sha
         if c != ' ': __text_glyph(gf, g, x, top, size, 1.0, color)
         x += gw
 
-# (glyph g of font f, its advance starting at x, the line's top at top; sx narrows it)
-__text_glyph = (f: Font, g: int, x: f32, top: f32, size: f64, sx: f32, color: vec4):
+# (glyph g of font f, its advance starting at x, the line's top at top; sx narrows it; slant
+# leans it, the top that much of its height to the right: italic)
+__text_glyph = (f: Font, g: int, x: f32, top: f32, size: f64, sx: f32, color: vec4, slant: f32 = 0):
     __use_tex(f.texture.id, 6)
     k = f32(size / f.px)
     cell = f32(f.cell)
@@ -1098,7 +1099,133 @@ __text_glyph = (f: Font, g: int, x: f32, top: f32, size: f64, sx: f32, color: ve
     s_ = cell * k
     x0 = x - f32(f.spread) * k * sx
     x1 = x0 + s_ * sx
-    __quad(vec2(x0, y), vec2(x1, y), vec2(x1, y + s_), vec2(x0, y + s_), vec2(col * cell / aw, row * cell / ah), vec2((col + 1.0) * cell / aw, row * cell / ah), vec2((col + 1.0) * cell / aw, (row + 1.0) * cell / ah), vec2(col * cell / aw, (row + 1.0) * cell / ah), color, 1)
+    lean = slant * s_ * 0.5
+    __quad(vec2(x0 + lean, y), vec2(x1 + lean, y), vec2(x1 - lean, y + s_), vec2(x0 - lean, y + s_), vec2(col * cell / aw, row * cell / ah), vec2((col + 1.0) * cell / aw, row * cell / ah), vec2((col + 1.0) * cell / aw, (row + 1.0) * cell / ah), vec2(col * cell / aw, (row + 1.0) * cell / ah), color, 1)
+
+# text with parts of it styled where they are: [color=#ff8040]...[/color] (or a name: red,
+# green, blue, yellow, orange, purple, cyan, magenta, gray, white, black), [b]...[/b] bold,
+# [i]...[/i] slanted, [[ for a [. width above 0: lines broken to fit it (as wrap_text). chars:
+# only the first that many characters (dialogue typing itself out). The height it took.
+#   text_rich("You found [color=yellow]the brass key[/color]. It is [i]warm[/i].", vec2(40, 600), 24, WHITE, width = 800)
+text_rich = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), width: f64 = 0.0, chars: int = -1, shadow: vec4 = vec4(0, 0, 0, 0)) -> f64:
+    plain, styles = __rich_parse(s, color)
+    lines = split(plain, "\n")
+    if width > 0.0: lines = wrap_text(plain, width, size)
+    if not __win_open: __outside_draw()
+    __gfx_init()
+    passes = 1
+    if shadow.w > 0.0: passes = 2
+    loop pass_ in [0..passes):
+        off = 0.0
+        if pass_ == 0 and passes == 2: off = max(1.0, size * 0.07)
+        pi = 0
+        ci = 0
+        left = chars
+        top = pos.y + f32(size * 0.82 + off)
+        loop line in lines:
+            x = pos.x + f32(off)
+            li = 0
+            loop li < len(line) and left != 0:
+                r = __next_char(line, li)
+                li = r.1
+                # (the same character in the text before it was broken into lines: spaces and
+                # line breaks the breaking took out are passed over)
+                loop pi < len(plain) and __next_char(plain, pi).0 != r.0:
+                    pi = __next_char(plain, pi).1
+                    ci += 1
+                if pi < len(plain):
+                    pi = __next_char(plain, pi).1
+                st = styles[min(ci, styles.len() - 1)]
+                ci += 1
+                if left > 0: left -= 1
+                c = st.color
+                if pass_ == 0 and passes == 2: c = shadow
+                x += __rich_char(r.0, x, top, size, c, st.bold, st.italic)
+            top += f32(size * 1.25)
+    f64(lines.len()) * size * 1.25
+
+struct __RichStyle:
+    color: vec4
+    bold = false
+    italic = false
+
+# (the text without its tags, and each of its characters' style)
+__rich_parse = (s: str, color: vec4) -> (str, __RichStyle[]):
+    plain = ""
+    styles: __RichStyle[]
+    colors = [color]
+    bold = 0
+    italic = 0
+    i = 0
+    loop i < len(s):
+        if s[i] == '[':
+            if i + 1 < len(s) and s[i + 1] == '[':
+                plain += "["
+                styles.push(__RichStyle(colors[colors.len() - 1], bold > 0, italic > 0))
+                i += 2
+                continue
+            e = find(s, "]", i)
+            if e > i:
+                tag = lower(trim(s[i + 1..e)))
+                known = true
+                if tag == "b": bold += 1
+                else if tag == "/b": bold = max(bold - 1, 0)
+                else if tag == "i": italic += 1
+                else if tag == "/i": italic = max(italic - 1, 0)
+                else if starts_with(tag, "color="): colors.push(__rich_color(tag[6..]))
+                else if tag == "/color":
+                    if colors.len() > 1: colors.pop()
+                else: known = false
+                if known:
+                    i = e + 1
+                    continue
+        r = __next_char(s, i)
+        plain += s[i..r.1)
+        styles.push(__RichStyle(colors[colors.len() - 1], bold > 0, italic > 0))
+        i = r.1
+    (plain, styles)
+
+__rich_color = (v: str) -> vec4:
+    t = trim(v)
+    if starts_with(t, "#"): return hex(t)
+    match t:
+        "red": RED
+        "green": GREEN
+        "blue": BLUE
+        "yellow": YELLOW
+        "orange": ORANGE
+        "purple": PURPLE
+        "cyan": CYAN
+        "magenta": MAGENTA
+        "gray", "grey": GRAY
+        "black": BLACK
+        _: WHITE
+
+# (one character of text_rich: drawn, as text draws it, its font's or the built-in's; its advance)
+__rich_char = (c: int, x: f32, top: f32, size: f64, color: vec4, bold: bool, italic: bool) -> f32:
+    f = __font
+    d = __default_font
+    if c < 32: return 0
+    gf = f
+    g = __glyph(f, c)
+    if g < 0 and __font_loaded:
+        g = __glyph(d, c)
+        if g >= 0: gf = d
+    if g < 0:
+        gf = f
+        g = __glyph(f, '?')
+        if g < 0 and __font_loaded:
+            gf = d
+            g = __glyph(d, '?')
+    if g < 0: return 0
+    gw = f32(gf.adv[g] * size / gf.px)
+    if c == ' ': return gw
+    slant = f32(0)
+    if italic: slant = 0.2
+    __text_glyph(gf, g, x, top, size, 1.0, color, slant)
+    # (bold: drawn again a little to the right)
+    if bold: __text_glyph(gf, g, x + f32(max(1.0, size * 0.045)), top, size, 1.0, color, slant)
+    gw
 
 # (a monospaced cell: as wide as n, the width of a monospaced font's)
 __mono_adv = (f: Font) -> f64:

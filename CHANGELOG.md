@@ -9,6 +9,8 @@ From a visual novel (dialogue, choices, portraits, music, save slots, Japanese t
   (they only broke at spaces), keeping 。、」 at the end of a line.
 - `text(..., chars = n)` and `text_wrapped(..., chars = n)` draw the first n characters where
   the whole text puts them: dialogue that types itself out.
+- `text_rich(s, pos, size, color, width, chars)`: `[color=yellow]...[/color]`, `[b]...[/b]` and
+  `[i]...[/i]` where they are in the text, wrapped to a width, typed out with chars.
 - `img.resized(w, h)` (a thumbnail), `free_texture(t)`, `xs.get(i)` (an element or none).
 - `"{i}plans"` and `"{color=#ff0}gold{/color}"`: the errors say how to write the braces as
   text (they said "unknown name 'i'" and "`#` starts a comment").
