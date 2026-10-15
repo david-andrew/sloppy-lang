@@ -3005,11 +3005,13 @@ draw = ():
     circle(w.pos(ball), 24, WHITE)                      # (or physics.draw_debug(w))
 ```
 
-Bodies are `.dynamic` (moved by forces and collisions), `.fixed` (never move: floors, walls) or `.moving` (moved only by the velocity the game gives them: platforms, doors). Each has a shape: a circle, a box or a polygon (a concave one is cut into convex parts), or several of them held together (`w.add_body(pos, [.circle(vec2(0, -30), 12), box_part(vec2(0, 0), vec2(40, 20))])`). A Body is a handle; ask the world about it (`w.pos(b)`, `w.angle(b)`, `w.velocity(b)`) and change it (`w.push(b, impulse)`).
+Bodies are `.dynamic` (moved by forces and collisions), `.fixed` (never move: floors, walls) or `.moving` (moved only by the velocity the game gives them: platforms, doors). Each has a shape: a circle, a box or a polygon (a concave one is cut into convex parts), or several of them held together (`w.add_body(pos, [.circle(vec2(0, -30), 12), physics.box_part(vec2(0, 0), vec2(40, 20))])`). A Body is a handle; ask the world about it (`w.pos(b)`, `w.angle(b)`, `w.velocity(b)`) and change it (`w.push(b, impulse)`).
+
+Units: pixels, seconds, radians. A body's mass is its density times its area / 100 (a 40 x 40 box of density 1 weighs 16; `mass =` gives it outright), an impulse is mass times pixels a second: a contact's `.impulse` divided by the lighter body's mass is the speed it took out. Two bodies touching use the square root of their frictions multiplied, and the larger bounce. A body that would cross more than half its size in a step is swept: it stops at what it would have passed through (no tunneling at any speed). Circles roll on without slowing (there is no rolling resistance): `w.set_damping(b, 1.0)` lets one come to rest.
 
 Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fixed distance; `spring = 4.0` makes it a spring of that many oscillations a second, `rope = true` lets it go slack), `w.weld(a, b, at)` (one piece), `w.slider(a, b, at, axis)` (along a line: a piston, a lift), `w.wheel(car, wheel, at)` (sprung, turning, with a motor), `w.drag(b, at)` and `w.drag_to(j, target)` (pulling a body by a point: the mouse). `physics.ground` is a fixed body to attach things to the world. Two bodies joined by a joint do not collide with each other (the links of a chain overlap where they are pinned).
 
-Each step is the same for the same inputs (a fixed internal step, a fixed order), so a game that steps it with a fixed dt can replay or roll back. Contacts: `w.contacts()` lists the pairs touching after the step (`.new` on the step they met, `.impulse` how hard), and sensors (`sensor = true`) report contacts without colliding: pickups, triggers. Collision layers: bodies a and b collide when a.layer & b.mask and b.layer & a.mask are not 0.
+Each step is the same for the same inputs (a fixed internal step, a fixed order), so a game that steps it with a fixed dt can replay or roll back. Contacts: `w.contacts()` lists the pairs touching after the step (`.new` on the step they met, `.impulse` how hard), `w.separated()` those that stopped touching, and sensors (`sensor = true`) report contacts without colliding: pickups, triggers. Collision layers: bodies a and b collide when a.layer & b.mask and b.layer & a.mask are not 0.
 
 - `enum BodyKind: dynamic, fixed, moving`
 - `struct Body`: (a handle: a body's place, and which body has had it: a removed body's handle is not taken for the next one put there)
@@ -3057,6 +3059,7 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
       arb_index: {int: int}
       free: int[]
       events: Contact[]
+      ended: (Body, Body)[]
   ```
 
 #### Making bodies
@@ -3064,7 +3067,7 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 - `add_circle = (w: mut World, pos: vec2, radius: f64, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`
 - `add_box = (w: mut World, pos: vec2, size: vec2, angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`
 - `add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`: points around pos, in order: a concave polygon is cut into convex parts (points not in order, or crossing themselves: their convex hull)
-- `add_body = (w: mut World, pos: vec2, parts: Part[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`: a body made of several shapes, held together as one: `.circle(center, radius)`, `.polygon(points)` and `box_part(center, size)`, placed around pos (turned by angle)
+- `add_body = (w: mut World, pos: vec2, parts: Part[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body`: a body made of several shapes, held together as one: `.circle(center, radius)`, `.polygon(points)` and `box_part(center, size)`, placed around pos (turned by angle). Its frame is then at its center of mass, not at pos: w.pos(b), to_world and to_local use that point (`w.to_world(b, p - (w.pos(b) - pos))` places p as given around pos, before it turns)
 - `set_mass = (w: mut World, b: Body, m: f64)`: give a dynamic body another mass (its turning inertia changes with it)
 - `remove = (w: mut World, b: Body)`: take b out of the world (and the joints it is in); its handle then means nothing (a handle used after this panics; removing twice does nothing)
 - `remove = (w: mut World, j: Joint)`
@@ -3120,6 +3123,7 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 
 - `step = (w: mut World, dt: f64)`: move the world on by dt seconds (in steps of at most w.substep)
 - `contacts = (w: World) -> Contact[]`: the pairs touching after the last step
+- `separated = (w: World) -> (Body, Body)[]`: the pairs that touched before the last step and no longer do (a ball leaving a trigger, a foot leaving the ground)
 - `contacts = (w: World, b: Body) -> Contact[]`: those that b is one of (each turned so that .a is b)
 
 #### Queries
@@ -3132,7 +3136,7 @@ Each step is the same for the same inputs (a fixed internal step, a fixed order)
 - `overlap_box = (w: World, center: vec2, size: vec2, angle: f64 = 0, mask: int = -1) -> Body[]`
 - `circle_cast = (w: World, a: vec2, b: vec2, r: f64, mask: int = -1) -> Hit?`
 - `bodies_at = (w: World, p: vec2) -> Body[]`: the bodies at the point p (the topmost first: the last made)
-- `outline = (w: World, b: Body) -> vec2[]`: a body's outline in the world (a circle's as 24 points; a body of several parts: the polygon it was cut from, or else around all of them)
+- `outline = (w: World, b: Body) -> vec2[]`: a body's outline in the world (a circle's as 24 points; a concave polygon as it was given; a body of parts from add_body: around all of them, so draw those with outlines)
 - `outlines = (w: World, b: Body) -> vec2[][]`: the outline of each of a body's parts (one, for a body of one shape)
 - `draw_debug = (w: World, thickness: f64 = 2)`: every body's outline and every joint, for seeing what the physics does
 

@@ -11,9 +11,17 @@
 # Bodies are `.dynamic` (moved by forces and collisions), `.fixed` (never move: floors, walls) or
 # `.moving` (moved only by the velocity the game gives them: platforms, doors). Each has a
 # shape: a circle, a box or a polygon (a concave one is cut into convex parts), or several of
-# them held together (`w.add_body(pos, [.circle(vec2(0, -30), 12), box_part(vec2(0, 0), vec2(40,
-# 20))])`). A Body is a handle; ask the world about it
+# them held together (`w.add_body(pos, [.circle(vec2(0, -30), 12), physics.box_part(vec2(0, 0),
+# vec2(40, 20))])`). A Body is a handle; ask the world about it
 # (`w.pos(b)`, `w.angle(b)`, `w.velocity(b)`) and change it (`w.push(b, impulse)`).
+#
+# Units: pixels, seconds, radians. A body's mass is its density times its area / 100 (a 40 x 40
+# box of density 1 weighs 16; `mass =` gives it outright), an impulse is mass times pixels a
+# second: a contact's `.impulse` divided by the lighter body's mass is the speed it took out.
+# Two bodies touching use the square root of their frictions multiplied, and the larger bounce.
+# A body that would cross more than half its size in a step is swept: it stops at what it
+# would have passed through (no tunneling at any speed). Circles roll on without slowing (there
+# is no rolling resistance): `w.set_damping(b, 1.0)` lets one come to rest.
 #
 # Joints: `w.pin(a, b, at)` (a hinge at a point), `w.rod(a, b, at_a, at_b)` (a fixed distance;
 # `spring = 4.0` makes it a spring of that many oscillations a second, `rope = true` lets it go
@@ -25,7 +33,8 @@
 #
 # Each step is the same for the same inputs (a fixed internal step, a fixed order), so a game
 # that steps it with a fixed dt can replay or roll back. Contacts: `w.contacts()` lists the
-# pairs touching after the step (`.new` on the step they met, `.impulse` how hard), and sensors
+# pairs touching after the step (`.new` on the step they met, `.impulse` how hard),
+# `w.separated()` those that stopped touching, and sensors
 # (`sensor = true`) report contacts without colliding: pickups, triggers. Collision layers:
 # bodies a and b collide when a.layer & b.mask and b.layer & a.mask are not 0.
 
@@ -113,6 +122,7 @@ struct __PContact:
     mass_n: f32
     mass_t: f32
     bias: f32
+    rest: f32               # (the speed apart a bounce asks for: all the relax pass aims at)
     ra: vec2
     rb: vec2
 
@@ -183,6 +193,7 @@ struct World:
     arb_index: {int: int}
     free: int[]
     events: Contact[]
+    ended: (Body, Body)[]
 
 # ---------------- making bodies ----------------
 add_circle = (w: mut World, pos: vec2, radius: f64, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body:
@@ -234,7 +245,9 @@ add_polygon = (w: mut World, pos: vec2, points: vec2[], angle: f64 = 0, kind: Bo
     __given_mass(w, __add(w, b), mass)
 
 # a body made of several shapes, held together as one: `.circle(center, radius)`,
-# `.polygon(points)` and `box_part(center, size)`, placed around pos (turned by angle)
+# `.polygon(points)` and `box_part(center, size)`, placed around pos (turned by angle). Its
+# frame is then at its center of mass, not at pos: w.pos(b), to_world and to_local use that
+# point (`w.to_world(b, p - (w.pos(b) - pos))` places p as given around pos, before it turns)
 add_body = (w: mut World, pos: vec2, parts: Part[], angle: f64 = 0, kind: BodyKind = .dynamic, density: f64 = 1.0, friction: f64 = 0.5, bounce: f64 = 0.0, sensor: bool = false, mass: f64 = 0) -> Body:
     __given_mass(w, __add_parts(w, pos, parts, angle, kind, density, friction, bounce, sensor, []), mass)
 
@@ -698,9 +711,16 @@ step = (w: mut World, dt: f64):
     n = clamp(n, 1, 16)
     h = f32(dt / f64(n))
     was: {int: bool}
-    loop a in w.arbs: was[a.a * 1000003 + a.b] = true
+    loop a in w.arbs:
+        if a.contacts.len() > 0: was[a.a * 1000003 + a.b] = true
     loop _ in [0..n): __step(w, h)
     w.events.clear()
+    w.ended.clear()
+    now: {int: bool}
+    loop a in w.arbs:
+        if a.contacts.len() > 0: now[a.a * 1000003 + a.b] = true
+    loop k, _ in was:
+        if not now.has(k) and k / 1000003 < w.bodies.len() and k % 1000003 < w.bodies.len(): w.ended.push((__body(w, k / 1000003), __body(w, k % 1000003)))
     loop a in w.arbs:
         if a.contacts.len() == 0: continue
         imp: f32 = 0
@@ -713,6 +733,9 @@ step = (w: mut World, dt: f64):
 
 # the pairs touching after the last step
 contacts = (w: World) -> Contact[]: w.events
+# the pairs that touched before the last step and no longer do (a ball leaving a trigger, a
+# foot leaving the ground)
+separated = (w: World) -> (Body, Body)[]: w.ended
 # those that b is one of (each turned so that .a is b)
 contacts = (w: World, b: Body) -> Contact[]:
     out: Contact[]
@@ -816,11 +839,16 @@ __step = (w: mut World, h: f32):
         b.pos += b.vel * h
         b.angle += b.spin * h
         __bounds(b)
+    loop _ in [0..2):
+        loop mut a in w.arbs:
+            if not a.sensor: __arb_solve(a, w.bodies, true)
     loop fb in fast:
         i, from, size = fb
         if let hit = __raycast(w, from, w.bodies[i].pos, w.bodies[i].mask, i, w.bodies[i].layer):
-            # (stopped at the surface it would have crossed: the contact is solved next step)
-            w.bodies[i].pos = hit.point + hit.normal * (size * 1.01)
+            # (stopped at the surface it would have crossed, a little into it: the contact is
+            # made and solved next step, taking out the speed toward it. Just off the surface,
+            # no contact came, and the speed it kept carried it back each step, held there)
+            w.bodies[i].pos = hit.point + hit.normal * (size * 0.97)
             __bounds(w.bodies[i])
     # (then the joints' remaining stretch taken out of the positions themselves, as Box2D does:
     # chains and long hangings stay their length without the speeds pushing it back)
@@ -1114,7 +1142,9 @@ __arb_prepare = (a: mut __Arb, bs: mut __PBody[], inv_h: f32):
         # (overlap is pushed out a little each step; bouncing keeps the speed of approach)
         c.bias = -0.2 * inv_h * min(0.0, c.sep + 0.5)
         vn = dot(vb + __cr(wb, c.rb) - va - __cr(wa, c.ra), c.normal)
-        if vn < -40.0: c.bias = max(c.bias, -a.bounce * vn)
+        c.rest = 0
+        if vn < -40.0: c.rest = -a.bounce * vn
+        c.bias = max(c.bias, c.rest)
         p = c.normal * c.pn + t * c.pt
         va -= p * ma
         wa -= cross(c.ra, p) * ia
@@ -1125,7 +1155,10 @@ __arb_prepare = (a: mut __Arb, bs: mut __PBody[], inv_h: f32):
     bs[a.b].vel = vb
     bs[a.b].spin = wb
 
-__arb_solve = (a: mut __Arb, bs: mut __PBody[]):
+# (relax: aiming at the bounce alone, after the positions moved: the speed that pushed overlap
+# out is taken back, as Box2D's soft step does, so that bodies do not leave what they hit with
+# it: bounce = 0 stays put)
+__arb_solve = (a: mut __Arb, bs: mut __PBody[], relax: bool = false):
     va = bs[a.a].vel
     vb = bs[a.b].vel
     wa = bs[a.a].spin
@@ -1136,7 +1169,9 @@ __arb_solve = (a: mut __Arb, bs: mut __PBody[]):
     ib = bs[a.b].inv_inertia
     loop mut c in a.contacts:
         dv = vb + __cr(wb, c.rb) - va - __cr(wa, c.ra)
-        dpn = c.mass_n * (c.bias - dot(dv, c.normal))
+        target = c.bias
+        if relax: target = c.rest
+        dpn = c.mass_n * (target - dot(dv, c.normal))
         pn0 = c.pn
         c.pn = max(pn0 + dpn, 0.0)
         p = c.normal * (c.pn - pn0)
@@ -1677,8 +1712,8 @@ __contains = (bd: __PBody, p: vec2) -> bool:
         if dot(bd.normals[k], l - bd.verts[k]) > 0.0: return false
     true
 
-# a body's outline in the world (a circle's as 24 points; a body of several parts: the polygon
-# it was cut from, or else around all of them)
+# a body's outline in the world (a circle's as 24 points; a concave polygon as it was given; a
+# body of parts from add_body: around all of them, so draw those with outlines)
 outline = (w: World, b: Body) -> vec2[]:
     bd = w.bodies[__id(w, b)]
     if bd.parts.len() == 0: return __outline(bd)

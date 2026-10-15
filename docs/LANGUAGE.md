@@ -1063,7 +1063,7 @@ parameters, so `?SLOPPY_STATS=1` and `?stats` are the same. Files in a web page 
 run under node (`tools/runwasm.js page.html args...`) uses the real ones and gets the arguments.
 
 Environment variables for testing and tuning: `SLOPPY_SCREENSHOT=out.png` (with `SLOPPY_FRAMES=n`)
-saves frame n and exits — the clock then advances exactly 1/60 s per frame, so the image is
+saves frame n and exits (`SLOPPY_FRAMES=n` alone runs n frames and exits) — the clock then advances exactly 1/60 s per frame, so the image is
 reproducible (the desktop's keys and mouse are ignored); it has the window's pixels, more than
 the size asked for on a scaled (high-DPI) display unless `SLOPPY_SCALE=1` is set too; and with `SLOPPY_SOFTWARE=1` no display is needed at all; `SLOPPY_INPUT="5:space+,9:space-"`
 (commas or spaces between items) presses and releases keys at given frames (keys as `Key` names them: `a`, `n1`, `space`, `escape`,

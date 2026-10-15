@@ -14,6 +14,25 @@
 - `sloppy test`: a failing test says FAILED under its name, with why indented below it and
   "in this test" for the test's own line (it said "panic:" and "the top level of").
 
+From a 2D physics puzzle (a slingshot and cut-the-rope game with joints and sensors):
+- A fast body met a wall at some speeds without a contact: the sweep that keeps fast bodies
+  from passing through put it just off the surface, so no contact came and the speed it kept
+  carried it back each step, held there and moving again later. It stops a little into the
+  surface now, and the contact takes its speed (or bounces it).
+- `bounce = 0` no longer rebounds (it came back at 30-150 px/s): after the positions move, the
+  contacts are solved again aiming at the bounce alone (Box2D's relax pass), so the speed that
+  pushed overlap out is not kept.
+- `w.separated()`: the pairs that stopped touching in the last step (a body leaving a sensor).
+- `m[k] = .wood` and `m.get(k, .ground)` for a map of an enum (the shorthand said the enum had
+  no such variant).
+- A function ending in a `match` whose arms give a value and none says the match is what the
+  function gives back, and how to give back nothing.
+- `SLOPPY_FRAMES=n` without a screenshot runs n frames and exits.
+- Docs: 2D units (mass is density times area / 100; what an impulse is), how friction and bounce
+  combine, that fast bodies are swept, that circles roll on (damping stops them), `add_body`'s
+  frame at the center of mass, `outlines` for bodies of parts, `physics.box_part` with its
+  module's name.
+
 From publishing a game to the web (a one-button runner, tested in a phone-sized browser):
 - `touches()`: every finger on a touch screen (the first is still the mouse), for on-screen
   buttons; `touch_input()` says the last input was a finger.
