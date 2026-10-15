@@ -397,6 +397,15 @@ defer close(f)                         # runs when the enclosing block exits
 `[0, 3..9]` is `[0, 3, 6, 9]`. In index brackets: `xs[2..5)`, `xs[2..]`, `xs[..3)`, `xs[end]`
 (the last element), `xs[1..end-1]`.
 
+| Written | Gives |
+|---|---|
+| `1..5`, `[1..5]` | 1 2 3 4 5 |
+| `[1..5)` | 1 2 3 4 |
+| `(1..5]` | 2 3 4 5 |
+| `(1..5)` | 2 3 4 |
+| `[0..len(xs))` | every index of `xs` |
+| `random_int(1, 7)` | 1 to 6, as `[1..7)` (`random(a, b)`: a number with a fraction, from a up to b) |
+
 **Panics.** An index out of bounds, `!` on `none`, a division by zero, a failed `assert` or
 `panic("message")` stops the program with the message and where each function on the way
 was called from (the frames of the runtime left out):
