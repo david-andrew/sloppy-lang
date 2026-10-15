@@ -98,6 +98,8 @@ const sloppyHost = (() => {
         return names === null ? -1n : give(enc.encode(names.join("\n")), op, cap);
       },
       __wasm_args: (op, cap) => give(enc.encode(args.join("\0")), op, cap),
+      // (the compiler reads no standard input here: it has ended)
+      __wasm_read_stdin: (p, n) => -1n,
     };
     let ok = false;
     try {

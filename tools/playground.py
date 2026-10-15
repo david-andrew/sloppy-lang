@@ -59,6 +59,23 @@ for name, path in [("rebound (2D game)", "examples/rebound/rebound.jo"), ("break
 
 html = open(os.path.join(root, "tools", "playground", "page.html")).read()
 host = open(os.path.join(root, "tools", "playground", "host.js")).read()
+# (every function the compiler's module imports must be one host.js gives it: a missing one
+# stops the compiler from starting, in every browser, with nothing else wrong)
+imports = set(re.findall(r'__wasm_\w+', host))
+mod = wasm
+need = set()
+i = 8
+while i < len(mod):
+    sid = mod[i]; i += 1
+    size = 0; sh = 0
+    while True:
+        b = mod[i]; i += 1; size |= (b & 127) << sh; sh += 7
+        if b < 128: break
+    if sid == 2:
+        need = set(n.decode() for n in re.findall(rb'__wasm_\w+', mod[i:i + size]))
+    i += size
+missing = sorted(need - imports)
+if missing: sys.exit("tools/playground.py: host.js does not give the compiler " + ", ".join(missing))
 html = html.replace('"/*SLOPPY_COMPILER*/"', json.dumps(gz(wasm)))
 html = html.replace('"/*SLOPPY_LIB*/"', json.dumps(gz(json.dumps(lib).encode())))
 html = html.replace("/*SLOPPY_EXAMPLES*/", json.dumps(examples).replace("</", "<\\/"))
