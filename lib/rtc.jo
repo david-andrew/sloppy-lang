@@ -1,0 +1,782 @@
+# WebRTC data channels in native programs, made of UDP and lib/crypto.jo, so that a desktop build
+# and a web page connect straight to each other (and two desktop builds too), with no server in
+# between: ICE finds a path (STUN asks a public server how this machine looks from outside), DTLS
+# encrypts it, SCTP carries the messages. Two short codes, which the players pass to each other,
+# hold what each side needs (lib/net.jo's invite and join_invite use them).
+#
+# Here: the connection's ICE (RFC 8445, 8489). DTLS and SCTP follow below it.
+
+import crypto
+import net
+
+# ---------------- STUN ----------------
+const __STUN_MAGIC = 0x2112A442
+const __STUN_REQUEST = 0x0001
+const __STUN_SUCCESS = 0x0101
+
+# a STUN message read: its type, transaction id and attributes (type, value)
+struct __Stun:
+    kind: int
+    tid: u8[]
+    attrs: (int, u8[])[]
+    raw: u8[]
+
+__stun_read = (b: u8[]) -> __Stun?:
+    if b.len() < 20 or b[0] >= 4: return none
+    n = (int(b[2]) << 8) | int(b[3])
+    if n + 20 != b.len() or int(__be32(b, 4)) != __STUN_MAGIC: return none
+    m = __Stun((int(b[0]) << 8) | int(b[1]), b[8..20), [], b)
+    i = 20
+    loop i + 4 <= b.len():
+        t = (int(b[i]) << 8) | int(b[i + 1])
+        l = (int(b[i + 2]) << 8) | int(b[i + 3])
+        if i + 4 + l > b.len(): return none
+        m.attrs.push((t, b[i + 4..i + 4 + l)))
+        i += 4 + ((l + 3) & ~3)
+    m
+
+__be32 = (b: u8[], i: int) -> u32: (u32(b[i]) << 24) | (u32(b[i + 1]) << 16) | (u32(b[i + 2]) << 8) | u32(b[i + 3])
+__be16 = (b: u8[], i: int) -> int: (int(b[i]) << 8) | int(b[i + 1])
+__put16 = (out: mut u8[], v: int):
+    out.push(u8((v >> 8) & 255))
+    out.push(u8(v & 255))
+__put32 = (out: mut u8[], v: int):
+    out.push(u8((v >> 24) & 255))
+    out.push(u8((v >> 16) & 255))
+    out.push(u8((v >> 8) & 255))
+    out.push(u8(v & 255))
+
+__stun_attr = (m: __Stun, t: int) -> u8[]?:
+    loop a in m.attrs:
+        if a.0 == t: return a.1
+    none
+
+# a STUN message: header, attributes; with integrity (HMAC-SHA1 under key) and the fingerprint
+# when key is not empty
+__stun_make = (kind: int, tid: u8[], attrs: (int, u8[])[], key: u8[]) -> u8[]:
+    body: u8[]
+    loop a in attrs:
+        __put16(body, a.0)
+        __put16(body, a.1.len())
+        body.extend(a.1)
+        loop body.len() % 4 != 0: body.push(0)
+    out: u8[]
+    __put16(out, kind)
+    __put16(out, 0)
+    __put32(out, __STUN_MAGIC)
+    out.extend(tid)
+    out.extend(body)
+    if key.len() > 0:
+        # MESSAGE-INTEGRITY: the length counts it, not the fingerprint after it
+        __stun_set_len(out, out.len() - 20 + 24)
+        mi = crypto.hmac_sha1(key, out)
+        __put16(out, 0x0008)
+        __put16(out, 20)
+        out.extend(mi)
+        __stun_set_len(out, out.len() - 20 + 8)
+        fp = crypto.crc32(out) xor u32(0x5354554e)
+        __put16(out, 0x8028)
+        __put16(out, 4)
+        __put32(out, int(fp))
+    __stun_set_len(out, out.len() - 20)
+    out
+
+__stun_set_len = (b: mut u8[], n: int):
+    b[2] = u8((n >> 8) & 255)
+    b[3] = u8(n & 255)
+
+# whether a message's MESSAGE-INTEGRITY is right for key
+__stun_check = (m: __Stun, key: u8[]) -> bool:
+    # (where it is: the message up to it, its length counting it)
+    i = 20
+    loop i + 4 <= m.raw.len():
+        t = __be16(m.raw, i)
+        l = __be16(m.raw, i + 2)
+        if t == 0x0008:
+            if l != 20: return false
+            b = m.raw[..i)
+            __stun_set_len(b, i - 20 + 24)
+            return crypto.hmac_sha1(key, b) == m.raw[i + 4..i + 24)
+        i += 4 + ((l + 3) & ~3)
+    false
+
+# an address as XOR-MAPPED-ADDRESS carries it
+__xor_addr = (ip: str, port: int) -> u8[]:
+    out: u8[] = [u8(0), 1]
+    __put16(out, port xor 0x2112)
+    parts = split(ip, ".")
+    loop k in [0..4): out.push(u8((to_int(parts[k]) ?? 0) xor ((__STUN_MAGIC >> (24 - k * 8)) & 255)))
+    out
+
+__xor_addr_read = (v: u8[]) -> (str, int)?:
+    if v.len() < 8 or v[1] != 1: return none
+    port = __be16(v, 2) xor 0x2112
+    ip = "{int(v[4]) xor 0x21}.{int(v[5]) xor 0x12}.{int(v[6]) xor 0xA4}.{int(v[7]) xor 0x42}"
+    (ip, port)
+
+# ---------------- a connection's description ----------------
+# what one side tells the other (the invite code holds it): its ICE name and password, its
+# certificate's fingerprint, whether it is the DTLS client, and where it may be reached
+struct RtcDesc:
+    ufrag: str
+    pwd: str
+    fingerprint: u8[]       # SHA-256 of the DTLS certificate
+    active: bool            # the DTLS client
+    candidates: RtcCand[]
+
+struct RtcCand:
+    host: str               # an address, or a browser's name.local
+    port: int
+    kind: str               # "host", "srflx" (as a STUN server saw it), "prflx", "relay"
+
+# ---------------- connections ----------------
+const __ICE_CHECKING = 0
+const __ICE_CONNECTED = 1
+const __ICE_FAILED = 2
+
+struct __Pair:
+    host: str
+    port: int
+    tid: u8[]               # the check in flight
+    sent = 0.0
+    tries = 0
+    ok = false              # a check answered
+    nominate = false        # (controlling: the check that nominates is in flight)
+
+struct __Conn:
+    sock = -1
+    port = 0
+    controlling = false
+    tiebreak: u8[]
+    ufrag = ""
+    pwd = ""
+    remote: RtcDesc? = none
+    local: RtcCand[]
+    pairs: __Pair[]
+    state = 0
+    sel_host = ""           # the path chosen
+    sel_port = 0
+    since = 0.0             # (made, for giving up)
+    stun_tid: u8[]          # (the question to the STUN server)
+    stun_host = ""
+    stun_port = 0
+    stun_sent = 0.0
+    gathered = false        # the candidates are all known (the STUN server answered, or did not in time)
+    last_heard = 0.0
+    inbox: u8[][]           # (DTLS's datagrams, for the layer above)
+    key: crypto.P256Key
+    cert: u8[]
+    # DTLS
+    d_client = false
+    d_state = 0             # 0 not begun, 1 handshaking, 2 done, 3 failed or closed
+    d_why = ""
+    d_out_seq: int[2]       # (the next record's sequence number, per epoch)
+    d_epoch = 0             # (what is sent now)
+    d_msg_out = 0           # (the next handshake message's number)
+    d_msg_in = 0            # (the next one expected)
+    d_frags: {int: u8[]}    # (handshake messages arriving in pieces, by number)
+    d_transcript: u8[]
+    d_crand: u8[]
+    d_srand: u8[]
+    d_eph: crypto.P256Key
+    d_peer_pub: u8[]        # (the other side's certificate's key)
+    d_peer_eph: u8[]
+    d_ems = false
+    d_master: u8[]
+    d_wkey: crypto.AesKey   # (this side's writing key and IV, and the other side's)
+    d_wiv: u8[]
+    d_rkey: crypto.AesKey
+    d_riv: u8[]
+    d_cert_req = false
+    d_flight: u8[][]        # (the last flight sent, to send again when nothing comes back)
+    d_flight_at = 0.0
+    d_cookie: u8[]
+    d_app: u8[][]           # (the other side's application data: SCTP packets)
+
+__conns: __Conn[]
+
+# STUN servers asked for this machine's public address ("host:port"); none: only local addresses
+rtc_stun_servers = ["stun.l.google.com:19302"]
+
+__ice_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+__ice_text = (n: int) -> str:
+    r = crypto.random_bytes(n)
+    out: u8[]
+    loop b in r: out.push(__ice_chars[int(b) & 63])
+    str_from_bytes(out)
+
+# a new connection: controlling for the side that invites
+__rtc_new = (controlling: bool) -> int:
+    c = __Conn()
+    c.sock = net.udp(0)
+    if c.sock < 0: return -1
+    c.port = net.udp_port(c.sock)
+    c.controlling = controlling
+    c.tiebreak = crypto.random_bytes(8)
+    c.ufrag = __ice_text(8)
+    c.pwd = __ice_text(24)
+    c.since = time()
+    c.key = crypto.p256_key()
+    c.cert = crypto.self_signed_certificate(c.key, "sloppy")
+    me = net.local_address()
+    if len(me) > 0: c.local.push(RtcCand(me, c.port, "host"))
+    c.local.push(RtcCand("127.0.0.1", c.port, "host"))
+    # (this machine as the internet sees it: asked of a STUN server, answered in __ice_poll)
+    if rtc_stun_servers.len() > 0:
+        hp = split(rtc_stun_servers[0], ":")
+        c.stun_host = hp[0]
+        c.stun_port = to_int(hp[hp.len() - 1]) ?? 3478
+        c.stun_tid = crypto.random_bytes(12)
+        c.stun_sent = time()
+        if not net.udp_send(c.sock, c.stun_host, c.stun_port, __stun_make(__STUN_REQUEST, c.stun_tid, [], [])): c.gathered = true
+    else: c.gathered = true
+    __conns.push(c)
+    __conns.len() - 1
+
+# this side's description (complete once gathered)
+__rtc_desc = (id: int, active: bool) -> RtcDesc:
+    c = __conns[id]
+    RtcDesc(c.ufrag, c.pwd, crypto.sha256(c.cert), active, c.local)
+
+__rtc_set_remote = (id: int, d: RtcDesc):
+    __conns[id].remote = d
+    # (the side whose code says active is the DTLS client: the one that answered)
+    __conns[id].d_client = not d.active
+    loop cd in d.candidates:
+        if ends_with(cd.host, ".local") or find(cd.host, ":") >= 0: continue      # (a hidden name, or IPv6: checks come from it instead)
+        __conns[id].pairs.push(__Pair(cd.host, cd.port, []))
+
+# ICE's part of a frame: what arrived, checks to send; DTLS's datagrams go to inbox
+__ice_poll = (id: int):
+    c = __conns[id]
+    now = time()
+    if not c.gathered and now - c.stun_sent > 1.5: c.gathered = true
+    loop dg in net.udp_receive(c.sock):
+        if dg.data.len() == 0: continue
+        b0 = dg.data[0]
+        if b0 < 4: __ice_stun(c, dg.host, dg.port, dg.data)
+        else if b0 >= 20 and b0 < 64:
+            if c.state == __ICE_CONNECTED and dg.host == c.sel_host and dg.port == c.sel_port:
+                c.inbox.push(dg.data)
+                c.last_heard = now
+    if c.remote != none and c.state == __ICE_CHECKING:
+        r = c.remote!
+        loop mut p in c.pairs:
+            if p.ok and not c.controlling: continue
+            if p.ok and c.controlling and p.nominate and now - p.sent < 0.2: continue
+            if not p.ok and now - p.sent < 0.1: continue
+            if p.tries > 60: continue
+            p.tid = crypto.random_bytes(12)
+            p.sent = now
+            p.tries += 1
+            # (controlling: once a check has been answered, the next nominates the path)
+            nom = c.controlling and p.ok
+            p.nominate = nom
+            net.udp_send(c.sock, p.host, p.port, __ice_check(c, r, p.tid, nom))
+        if now - c.since > 30.0: c.state = __ICE_FAILED
+    # (keep the path open, as browsers expect: a check now and then)
+    if c.state == __ICE_CONNECTED and now - c.stun_sent > 2.0 and c.remote != none:
+        c.stun_sent = now
+        net.udp_send(c.sock, c.sel_host, c.sel_port, __ice_check(c, c.remote!, crypto.random_bytes(12), false))
+    __conns[id] = c
+
+__ice_check = (c: __Conn, r: RtcDesc, tid: u8[], nominate: bool) -> u8[]:
+    attrs: (int, u8[])[]
+    attrs.push((0x0006, bytes("{r.ufrag}:{c.ufrag}")))
+    pr: u8[]
+    __put32(pr, (110 << 24) | (65535 << 8) | 255)            # (a peer-reflexive candidate's priority)
+    attrs.push((0x0024, pr))
+    if c.controlling:
+        attrs.push((0x802A, c.tiebreak))
+        if nominate: attrs.push((0x0025, []))
+    else: attrs.push((0x8029, c.tiebreak))
+    __stun_make(__STUN_REQUEST, tid, attrs, bytes(r.pwd))
+
+__ice_stun = (c: mut __Conn, host: str, port: int, b: u8[]):
+    mm = __stun_read(b)
+    if mm == none: return
+    m = mm!
+    if m.kind == __STUN_REQUEST:
+        # a check: ours if its name is ours and it is signed with our password
+        uu = __stun_attr(m, 0x0006)
+        if uu == none: return
+        u = uu!
+        if not starts_with(str_from_bytes(u), c.ufrag + ":") or not __stun_check(m, bytes(c.pwd)): return
+        attrs: (int, u8[])[] = [(0x0020, __xor_addr(host, port))]
+        net.udp_send(c.sock, host, port, __stun_make(__STUN_SUCCESS, m.tid, attrs, bytes(c.pwd)))
+        c.last_heard = time()
+        # (from somewhere it did not say: a peer-reflexive candidate, to check as well)
+        known = false
+        loop p in c.pairs:
+            if p.host == host and p.port == port: known = true
+        if not known: c.pairs.push(__Pair(host, port, []))
+        if not c.controlling and __stun_attr(m, 0x0025) != none and c.state == __ICE_CHECKING:
+            c.sel_host = host
+            c.sel_port = port
+            c.state = __ICE_CONNECTED
+        return
+    if m.kind == __STUN_SUCCESS:
+        # the STUN server's answer: this machine as the internet sees it
+        if m.tid == c.stun_tid and not c.gathered:
+            if let xa = __stun_attr(m, 0x0020):
+                if let a = __xor_addr_read(xa):
+                    seen = false
+                    loop l in c.local:
+                        if l.host == a.0 and l.port == a.1: seen = true
+                    if not seen: c.local.push(RtcCand(a.0, a.1, "srflx"))
+            c.gathered = true
+            return
+        # an answer to a check
+        if c.remote == none or not __stun_check(m, bytes(c.remote!.pwd)): return
+        loop mut p in c.pairs:
+            if p.tid == m.tid:
+                if p.nominate and c.state == __ICE_CHECKING:
+                    c.sel_host = p.host
+                    c.sel_port = p.port
+                    c.state = __ICE_CONNECTED
+                if not p.ok:
+                    p.ok = true
+                    p.sent = 0.0                    # (controlling: nominate at once)
+                c.last_heard = time()
+
+# ---------------- DTLS 1.2 (RFC 6347; TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256) ----------------
+# Both sides show self-signed certificates, each checked against the fingerprint the other's code
+# carried: that, not a certificate authority, is what makes it the right peer.
+const __CT_CCS = 20
+const __CT_ALERT = 21
+const __CT_HANDSHAKE = 22
+const __CT_APP = 23
+
+__put24 = (out: mut u8[], v: int):
+    out.push(u8((v >> 16) & 255))
+    out.push(u8((v >> 8) & 255))
+    out.push(u8(v & 255))
+__be24 = (b: u8[], i: int) -> int: (int(b[i]) << 16) | (int(b[i + 1]) << 8) | int(b[i + 2])
+
+# TLS 1.2's PRF (P_SHA256): n bytes from secret, label and seed
+__prf = (secret: u8[], label: str, seed: u8[], n: int) -> u8[]:
+    s = bytes(label)
+    s.extend(seed)
+    out: u8[]
+    a = s
+    loop out.len() < n:
+        a = crypto.hmac_sha256(secret, a)
+        x = a
+        x.extend(s)
+        out.extend(crypto.hmac_sha256(secret, x))
+    out[..n)
+
+# a record of content type ctype, in the epoch being sent (1: encrypted)
+__dtls_record = (c: mut __Conn, ctype: int, body: u8[], epoch: int) -> u8[]:
+    seq = c.d_out_seq[epoch]
+    c.d_out_seq[epoch] = seq + 1
+    hdr: u8[] = [u8(ctype), 0xFE, 0xFD]
+    __put16(hdr, epoch)
+    __put16(hdr, (seq >> 32) & 0xFFFF)
+    __put32(hdr, seq & 0xFFFFFFFF)
+    if epoch == 0:
+        __put16(hdr, body.len())
+        hdr.extend(body)
+        return hdr
+    explicit = hdr[3..11)
+    nonce = c.d_wiv
+    nonce.extend(explicit)
+    aad = explicit
+    aad.extend([u8(ctype), 0xFE, 0xFD])
+    __put16(aad, body.len())
+    sealed = crypto.aes_gcm_seal(c.d_wkey, nonce, aad, body)
+    __put16(hdr, 8 + sealed.len())
+    hdr.extend(explicit)
+    hdr.extend(sealed)
+    hdr
+
+# a handshake message (as the transcript holds it too)
+__dtls_hs = (c: mut __Conn, typ: int, body: u8[]) -> u8[]:
+    m: u8[] = [u8(typ)]
+    __put24(m, body.len())
+    __put16(m, c.d_msg_out)
+    __put24(m, 0)
+    __put24(m, body.len())
+    m.extend(body)
+    c.d_msg_out += 1
+    c.d_transcript.extend(m)
+    m
+
+# a flight: (content type, body, epoch) each, recorded afresh each time it is sent
+struct __FlightPart:
+    ctype: int
+    body: u8[]
+    epoch: int
+
+__dtls_flight = (c: mut __Conn, parts: __FlightPart[]):
+    c.d_flight.clear()
+    loop p in parts:
+        b: u8[] = [u8(p.ctype), u8(p.epoch)]
+        b.extend(p.body)
+        c.d_flight.push(b)
+    __dtls_resend(c)
+
+__dtls_resend = (c: mut __Conn):
+    __rtc_say(c, "sending a flight of {c.d_flight.len()} to {c.sel_host}:{c.sel_port}")
+    c.d_flight_at = time()
+    dg: u8[]
+    loop f in c.d_flight:
+        rec = __dtls_record(c, int(f[0]), f[2..], int(f[1]))
+        if dg.len() + rec.len() > 1200 and dg.len() > 0:
+            net.udp_send(c.sock, c.sel_host, c.sel_port, dg)
+            dg.clear()
+        dg.extend(rec)
+    if dg.len() > 0: net.udp_send(c.sock, c.sel_host, c.sel_port, dg)
+
+__dtls_fail = (c: mut __Conn, why: str):
+    c.d_state = 3
+    c.d_why = why
+
+# the extensions both hellos carry: extended master secret, a secure renegotiation's empty one
+__dtls_exts = (client: bool) -> u8[]:
+    e: u8[]
+    if client:
+        __put16(e, 10)                      # supported_groups: secp256r1
+        __put16(e, 4)
+        __put16(e, 2)
+        __put16(e, 23)
+        __put16(e, 13)                      # signature_algorithms: ecdsa_secp256r1_sha256
+        __put16(e, 4)
+        __put16(e, 2)
+        __put16(e, 0x0403)
+    __put16(e, 11)                          # ec_point_formats: uncompressed
+    __put16(e, 2)
+    e.extend([u8(1), 0])
+    __put16(e, 23)                          # extended_master_secret
+    __put16(e, 0)
+    __put16(e, 0xff01)                      # renegotiation_info
+    __put16(e, 1)
+    e.push(0)
+    out: u8[]
+    __put16(out, e.len())
+    out.extend(e)
+    out
+
+# start the handshake: the client says hello; the server waits for it
+__dtls_start = (c: mut __Conn):
+    c.d_state = 1
+    if not c.d_client: return
+    c.d_crand = crypto.random_bytes(32)
+    __dtls_client_hello(c)
+
+__dtls_client_hello = (c: mut __Conn):
+    b: u8[] = [u8(0xFE), 0xFD]
+    b.extend(c.d_crand)
+    b.push(0)                               # (no session id)
+    b.push(u8(c.d_cookie.len()))
+    b.extend(c.d_cookie)
+    __put16(b, 2)
+    __put16(b, 0xC02B)
+    b.extend([u8(1), 0])                    # (no compression)
+    b.extend(__dtls_exts(true))
+    __dtls_flight(c, [__FlightPart(__CT_HANDSHAKE, __dtls_hs(c, 1, b), 0)])
+
+# the server's first flight: hello, certificate, its ECDHE key (signed), a request for the
+# client's certificate, done
+__dtls_server_flight = (c: mut __Conn):
+    c.d_srand = crypto.random_bytes(32)
+    c.d_eph = crypto.p256_key()
+    sh: u8[] = [u8(0xFE), 0xFD]
+    sh.extend(c.d_srand)
+    sh.push(0)
+    __put16(sh, 0xC02B)
+    sh.push(0)
+    sh.extend(__dtls_exts(false))
+    certs: u8[]
+    __put24(certs, c.cert.len() + 3)
+    __put24(certs, c.cert.len())
+    certs.extend(c.cert)
+    params: u8[] = [u8(3), 0, 23, 65]
+    params.extend(c.d_eph.public)
+    signed = c.d_crand
+    signed.extend(c.d_srand)
+    signed.extend(params)
+    sig = crypto.der_signature(crypto.p256_sign(c.key, crypto.sha256(signed)))
+    ske = params
+    __put16(ske, 0x0403)
+    __put16(ske, sig.len())
+    ske.extend(sig)
+    cr: u8[] = [u8(1), 64]                  # (an ECDSA certificate)
+    __put16(cr, 2)
+    __put16(cr, 0x0403)
+    __put16(cr, 0)                          # (no authorities)
+    parts: __FlightPart[]
+    loop m in [__dtls_hs(c, 2, sh), __dtls_hs(c, 11, certs), __dtls_hs(c, 12, ske), __dtls_hs(c, 13, cr), __dtls_hs(c, 14, [])]:
+        parts.push(__FlightPart(__CT_HANDSHAKE, m, 0))
+    __dtls_flight(c, parts)
+
+# the master secret and the keys, once the shared ECDH secret is known (transcript: up to the
+# ClientKeyExchange)
+__dtls_keys = (c: mut __Conn, pre: u8[]):
+    if c.d_ems: c.d_master = __prf(pre, "extended master secret", crypto.sha256(c.d_transcript), 48)
+    else:
+        seed = c.d_crand
+        seed.extend(c.d_srand)
+        c.d_master = __prf(pre, "master secret", seed, 48)
+    seed = c.d_srand
+    seed.extend(c.d_crand)
+    kb = __prf(c.d_master, "key expansion", seed, 40)
+    ck = crypto.aes_key(kb[0..16))
+    sk = crypto.aes_key(kb[16..32))
+    if c.d_client:
+        c.d_wkey = ck
+        c.d_rkey = sk
+        c.d_wiv = kb[32..36)
+        c.d_riv = kb[36..40)
+    else:
+        c.d_wkey = sk
+        c.d_rkey = ck
+        c.d_wiv = kb[36..40)
+        c.d_riv = kb[32..36)
+
+__dtls_finished = (c: __Conn, client: bool) -> u8[]:
+    label = if client: "client finished" else: "server finished"
+    __prf(c.d_master, label, crypto.sha256(c.d_transcript), 12)
+
+# the certificate the other side showed: right when its fingerprint is the one its code carried
+__dtls_peer_cert = (c: mut __Conn, body: u8[]) -> bool:
+    if body.len() < 6: return false
+    n = __be24(body, 3)
+    if 6 + n > body.len(): return false
+    cert = body[6..6 + n)
+    if c.remote == none or crypto.sha256(cert) != c.remote!.fingerprint:
+        __dtls_fail(c, "the other side's certificate is not the one its code named")
+        return false
+    k = crypto.certificate_p256_key(cert)
+    if k == none:
+        __dtls_fail(c, "the other side's certificate holds no P-256 key")
+        return false
+    c.d_peer_pub = k!
+    true
+
+# one handshake message (whole), in order
+__dtls_message = (c: mut __Conn, typ: int, msg: u8[]):
+    body = msg[12..]
+    if c.d_client:
+        if typ == 3:
+            # HelloVerifyRequest: hello again, with its cookie (and a transcript started over)
+            if body.len() < 3: return
+            c.d_cookie = body[3..3 + int(body[2]))
+            c.d_transcript.clear()
+            __dtls_client_hello(c)
+            return
+        c.d_transcript.extend(msg)
+        if typ == 2:
+            # ServerHello: its random; extended master secret when it took it
+            if body.len() < 38: return
+            c.d_srand = body[2..34)
+            i = 35 + int(body[34])
+            i += 3
+            if i + 2 <= body.len():
+                n = __be16(body, i)
+                j = i + 2
+                loop j + 4 <= i + 2 + n and j + 4 <= body.len():
+                    if __be16(body, j) == 23: c.d_ems = true
+                    j += 4 + __be16(body, j + 2)
+        else if typ == 11: __dtls_peer_cert(c, body)
+        else if typ == 12:
+            # the server's ECDHE key, signed with its certificate's key
+            if body.len() < 4 + 65 + 4: return
+            plen = int(body[3])
+            params = body[..4 + plen)
+            c.d_peer_eph = body[4..4 + plen)
+            sl = __be16(body, 4 + plen + 2)
+            sig = crypto.der_signature_parts(body[4 + plen + 4..4 + plen + 4 + sl)) ?? []
+            signed = c.d_crand
+            signed.extend(c.d_srand)
+            signed.extend(params)
+            if c.d_peer_pub.len() == 0 or not crypto.p256_verify(c.d_peer_pub, crypto.sha256(signed), sig): __dtls_fail(c, "the server's key exchange is not signed by its certificate")
+        else if typ == 13: c.d_cert_req = true
+        else if typ == 14:
+            # ServerHelloDone: the client's flight
+            if c.d_state == 3: return
+            c.d_eph = crypto.p256_key()
+            parts: __FlightPart[]
+            if c.d_cert_req:
+                certs: u8[]
+                __put24(certs, c.cert.len() + 3)
+                __put24(certs, c.cert.len())
+                certs.extend(c.cert)
+                parts.push(__FlightPart(__CT_HANDSHAKE, __dtls_hs(c, 11, certs), 0))
+            cke: u8[] = [u8(65)]
+            cke.extend(c.d_eph.public)
+            parts.push(__FlightPart(__CT_HANDSHAKE, __dtls_hs(c, 16, cke), 0))
+            pre = crypto.p256_ecdh(c.d_eph, c.d_peer_eph)
+            if pre == none:
+                __dtls_fail(c, "the server's key exchange holds no P-256 point")
+                return
+            __dtls_keys(c, pre!)
+            if c.d_cert_req:
+                sig = crypto.der_signature(crypto.p256_sign(c.key, crypto.sha256(c.d_transcript)))
+                cv: u8[]
+                __put16(cv, 0x0403)
+                __put16(cv, sig.len())
+                cv.extend(sig)
+                parts.push(__FlightPart(__CT_HANDSHAKE, __dtls_hs(c, 15, cv), 0))
+            parts.push(__FlightPart(__CT_CCS, [u8(1)], 0))
+            fin = __dtls_finished(c, true)
+            parts.push(__FlightPart(__CT_HANDSHAKE, __dtls_hs(c, 20, fin), 1))
+            __dtls_flight(c, parts)
+        return
+    # the server
+    if typ == 1:
+        # ClientHello: its random, extended master secret when it offers it
+        c.d_transcript.clear()
+        c.d_transcript.extend(msg)
+        if body.len() < 39: return
+        c.d_crand = body[2..34)
+        i = 35 + int(body[34])
+        i += 1 + int(body[i])
+        ncs = __be16(body, i)
+        has = false
+        k = i + 2
+        loop k + 1 < i + 2 + ncs:
+            if __be16(body, k) == 0xC02B: has = true
+            k += 2
+        if not has:
+            __dtls_fail(c, "the client offers no cipher suite this side has (ECDHE-ECDSA with AES-128-GCM)")
+            return
+        i += 2 + ncs
+        i += 1 + int(body[i])
+        if i + 2 <= body.len():
+            n = __be16(body, i)
+            j = i + 2
+            loop j + 4 <= i + 2 + n and j + 4 <= body.len():
+                if __be16(body, j) == 23: c.d_ems = true
+                j += 4 + __be16(body, j + 2)
+        __dtls_server_flight(c)
+        return
+    if typ == 11:
+        c.d_transcript.extend(msg)
+        __dtls_peer_cert(c, body)
+    else if typ == 16:
+        c.d_transcript.extend(msg)
+        if body.len() < 1 + 65: return
+        pre = crypto.p256_ecdh(c.d_eph, body[1..1 + int(body[0])))
+        if pre == none:
+            __dtls_fail(c, "the client's key exchange holds no P-256 point")
+            return
+        __dtls_keys(c, pre!)
+    else if typ == 15:
+        # CertificateVerify: signed over the transcript before it
+        sl = __be16(body, 2)
+        sig = crypto.der_signature_parts(body[4..4 + sl)) ?? []
+        if c.d_peer_pub.len() == 0 or not crypto.p256_verify(c.d_peer_pub, crypto.sha256(c.d_transcript), sig):
+            __dtls_fail(c, "the client's certificate verify is not signed by its certificate")
+            return
+        c.d_transcript.extend(msg)
+    else if typ == 20:
+        if body != __dtls_finished(c, true):
+            __dtls_fail(c, "the client's finished message is wrong")
+            return
+        c.d_transcript.extend(msg)
+        fin = __dtls_finished(c, false)
+        __dtls_flight(c, [__FlightPart(__CT_CCS, [u8(1)], 0), __FlightPart(__CT_HANDSHAKE, __dtls_hs(c, 20, fin), 1)])
+        c.d_state = 2
+
+# the client's last step: the server's Finished
+__dtls_client_finished = (c: mut __Conn, msg: u8[]):
+    if msg[12..] != __dtls_finished(c, false):
+        __dtls_fail(c, "the server's finished message is wrong")
+        return
+    c.d_transcript.extend(msg)
+    c.d_state = 2
+    c.d_flight.clear()
+
+# (SLOPPY_RTC_DEBUG=1: what goes on, on stderr)
+__rtc_debug = env("SLOPPY_RTC_DEBUG") != none
+__rtc_say = (c: __Conn, s: str):
+    if __rtc_debug:
+        who = if c.d_client: "client" else: "server"
+        eprint("rtc {who} {time():.3f}: {s}")
+
+# a datagram's records
+__dtls_in = (c: mut __Conn, dg: u8[]):
+    i = 0
+    loop i + 13 <= dg.len():
+        ctype = int(dg[i])
+        epoch = __be16(dg, i + 3)
+        n = __be16(dg, i + 11)
+        if i + 13 + n > dg.len(): return
+        frag = dg[i + 13..i + 13 + n)
+        hdr = dg[i + 3..i + 11)
+        i += 13 + n
+        __rtc_say(c, "record type {ctype} epoch {epoch} {n} bytes")
+        if epoch == 1:
+            if c.d_master.len() == 0 or frag.len() < 24: continue
+            nonce = c.d_riv
+            nonce.extend(frag[..8))
+            aad = hdr
+            aad.extend([u8(ctype), 0xFE, 0xFD])
+            __put16(aad, frag.len() - 24)
+            opened = crypto.aes_gcm_open(c.d_rkey, nonce, aad, frag[8..])
+            if opened == none:
+                __rtc_say(c, "a record of type {ctype} did not decrypt")
+                continue
+            frag = opened!
+        else if epoch != 0: continue
+        if ctype == __CT_APP and epoch == 1: c.d_app.push(frag)
+        else if ctype == __CT_ALERT:
+            if frag.len() >= 2 and (frag[0] == 2 or frag[1] == 0): __dtls_fail(c, "the other side ended the connection (alert {frag[1]})")
+        else if ctype == __CT_HANDSHAKE: __dtls_handshake(c, frag, epoch)
+
+# a handshake record's messages, put together from pieces when they came in pieces
+__dtls_handshake = (c: mut __Conn, frag: u8[], epoch: int):
+    j = 0
+    loop j + 12 <= frag.len():
+        typ = int(frag[j])
+        len_ = __be24(frag, j + 1)
+        seq = __be16(frag, j + 4)
+        off = __be24(frag, j + 6)
+        flen = __be24(frag, j + 9)
+        if j + 12 + flen > frag.len(): return
+        piece = frag[j + 12..j + 12 + flen)
+        j += 12 + flen
+        # (the server takes the client's first hello whatever its number)
+        if not c.d_client and typ == 1 and c.d_crand.len() == 0: c.d_msg_in = seq
+        if seq != c.d_msg_in: __rtc_say(c, "handshake message {typ} number {seq}, expecting {c.d_msg_in}")
+        if seq < c.d_msg_in:
+            # (the other side sent its flight again: ours was lost)
+            if time() - c.d_flight_at > 0.25 and c.d_flight.len() > 0: __dtls_resend(c)
+            continue
+        if seq > c.d_msg_in: continue
+        whole: u8[] = []
+        if off == 0 and flen == len_: whole = piece
+        else:
+            buf = c.d_frags.get(seq) ?? []
+            if buf.len() == 0: buf = fill(u8(0), len_ + 1)                 # (the last byte: how much has come, roughly)
+            loop k in [0..flen): buf[off + k] = piece[k]
+            buf[len_] = u8(min(255, int(buf[len_]) + 1))
+            c.d_frags[seq] = buf
+            if off + flen < len_: continue
+            whole = buf[..len_)
+            c.d_frags.remove(seq)
+        msg: u8[] = [u8(typ)]
+        __put24(msg, len_)
+        __put16(msg, seq)
+        __put24(msg, 0)
+        __put24(msg, len_)
+        msg.extend(whole)
+        __rtc_say(c, "handshake message {typ} (number {seq})")
+        c.d_msg_in += 1
+        if c.d_client and typ == 20: __dtls_client_finished(c, msg)
+        else: __dtls_message(c, typ, msg)
+
+# DTLS's part of a frame: the datagrams ICE took in, and the flight again when nothing came back
+__dtls_poll = (id: int):
+    c = __conns[id]
+    if c.state == __ICE_CONNECTED and c.d_state == 0: __dtls_start(c)
+    loop dg in c.inbox: __dtls_in(c, dg)
+    c.inbox.clear()
+    if c.d_state == 1 and c.d_flight.len() > 0 and time() - c.d_flight_at > 1.0: __dtls_resend(c)
+    __conns[id] = c
+
+# application data (an SCTP packet) to the other side
+__dtls_send_app = (c: mut __Conn, data: u8[]):
+    if c.d_state != 2: return
+    net.udp_send(c.sock, c.sel_host, c.sel_port, __dtls_record(c, __CT_APP, data, 1))

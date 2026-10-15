@@ -1170,6 +1170,11 @@ ok = crypto.p256_verify(pk.public, crypto.sha256(msg), sig)
 - `self_signed_certificate = (k: P256Key, name: str) -> u8[]`: a self-signed X.509 certificate for the key (DER), named name: what DTLS (WebRTC's) shows the other side, which knows it by its SHA-256 fingerprint
 - `certificate_p256_key = (cert: u8[]) -> u8[]?`: the P-256 public point (65 bytes) a certificate holds, or none when it holds none
 
+#### CRC-32
+
+- `crc32 = (b: u8[]) -> u32`: CRC-32 (zip's, PNG's, STUN's) of the bytes
+- `crc32c = (b: u8[]) -> u32`: CRC-32C (Castagnoli: SCTP's, iSCSI's) of the bytes
+
 ## Big numbers
 
 A module (`use big`): numbers past f64's 1.8e308, a mantissa and a power of ten (an idle game's currency), with arithmetic, comparison, `min`, `max`, sorting and saving as for numbers; shown as 1.23M or 4.56e+1234.
@@ -3971,6 +3976,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `udp_send = (sock: int, host: str, port: int, data: u8[]) -> bool`: false if host is not known or it could not be sent (a datagram may also be lost on the way)
 - `udp_send = (sock: int, host: str, port: int, text: str) -> bool`
 - `udp_receive = (sock: int) -> Datagram[]`: the datagrams that have arrived since the last call
+- `udp_port = (sock: int) -> int`: the port a UDP socket is on (as one made with udp(0), which the system picked), or -1
 - `udp_close = (sock: int)`
 
 #### TCP: a stream of bytes to one other program
