@@ -184,7 +184,9 @@ the file calls it).
 | `List<T>`, `Dictionary<K, V>`, `null` | `T[]`, `{K: V}`, `none` (a `T?` may be none: `if let v = x:`) |
 | `Rigidbody`, `Physics.Raycast`, a CharacterController | `import physics3d`: `w.add_sphere(...)`, `w.raycast(a, b)`, `w.character(...)` and `w.walk(...)` |
 | `Quaternion.Euler(0, 45, 0)`, `LookRotation` | `quat_euler(0, 45deg, 0)`, `facing(dir)`; or matrices: `rotation_y(45deg)` (angles are radians: `45deg` is 45 degrees) |
-| `transform.forward` | `-z`, turned as the thing is: `transform_dir(m, vec3(0, 0, -1))` (a camera looks along -z too) |
+| `q1 * q2`, `q * v` | `quat_mul(q1, q2)`, `quat_rotate(q, v)` (quaternions are vec4s: `*` multiplies their parts one by one) |
+| `transform.forward` | a model's front is +z (glTF's), turned as it is: `transform_dir(m, vec3(0, 0, 1))`; a camera looks along -z |
+| Cinemachine, a third-person camera | `cam = follow_camera()`, then `update(cam, player_pos, dt)` and `camera3d(cam)`; walk along `flat_forward(cam)` |
 
 ## Where next
 
