@@ -1142,11 +1142,13 @@ arm64_ins = (pos: int, ins: Ins):
                 a_fop(fo, VS, 18, 16, 17)
                 a_mem(false, 18, 9, 4 * i, 4, false, true)
         call:
-            a_call_args(ins)
-            a_call_fix.push((code.len(), int(ins.imm)))
-            a_bl()
-            call_site(ins)
-            a_result(ins)
+            if ins.c == CALL_IF_SHARED or ins.c == CALL_RC_INC or ins.c == CALL_RC_DEC: a_guarded_call(ins)
+            else:
+                a_call_args(ins)
+                a_call_fix.push((code.len(), int(ins.imm)))
+                a_bl()
+                call_site(ins)
+                a_result(ins)
         calli, callc:
             a_call_args(ins)
             a_ld(16, int(ins.c))
@@ -1337,6 +1339,24 @@ arm64_stubs = ():
     stub_addr[9] = code.len()
     a_movz(0, 0, 0)
     a_ret()
+    # call x16 with x9 as its argument, its result back in x9, keeping x0-x8, x13-x15 and every
+    # vector register whole (CALL_IF_SHARED and the refcount calls when they are taken)
+    stub_addr[12] = code.len()
+    w32(0xA9BF7BFD)                                             # stp x29, x30, [sp, #-16]!
+    w32(0x910003FD)                                             # mov x29, sp
+    a_sub_imm(A_SP, A_SP, 608)
+    loop i in 0.. and pr in [(0, 1), (2, 3), (4, 5), (6, 7), (8, 13), (14, 15)]:
+        w32(0xA9000000 | ((2 * i) << 15) | (pr.1 << 10) | (A_SP << 5) | pr.0)     # stp
+    loop k in [0..16): w32(0xAD000000 | ((6 + 2 * k) << 15) | ((2 * k + 1) << 10) | (A_SP << 5) | (2 * k))  # stp q
+    a_mov(0, 9)
+    a_blr(16)
+    a_mov(9, 0)
+    loop i in 0.. and pr in [(0, 1), (2, 3), (4, 5), (6, 7), (8, 13), (14, 15)]:
+        w32(0xA9400000 | ((2 * i) << 15) | (pr.1 << 10) | (A_SP << 5) | pr.0)     # ldp
+    loop k in [0..16): w32(0xAD400000 | ((6 + 2 * k) << 15) | ((2 * k + 1) << 10) | (A_SP << 5) | (2 * k))  # ldp q
+    w32(0x910003BF)                                             # mov sp, x29
+    w32(0xA8C17BFD)                                             # ldp x29, x30, [sp], #16
+    a_ret()
     # code_sync(x0 = p, x1 = n): machine code written there made ready to run: the data cache
     # cleaned to where instructions are fetched from, then the instruction cache invalidated, by
     # 16 bytes (no cache line is smaller)
@@ -1431,6 +1451,57 @@ arm64_entry_mac = (inits: int[], main_lf: int) -> int:
     a_ret()
     elf_syms.push(("_main", start, code.len() - start))
     start
+
+# (a forward branch at p, patched to here: imm19 for CBZ/B.cond, imm26 for B)
+a_fix19 = (p: int): wr32(p, rd32(p) | ((((code.len() - p) / 4) & 0x7FFFF) << 5))
+a_fix26 = (p: int): wr32(p, rd32(p) | (((code.len() - p) / 4) & 0x3FFFFFF))
+
+# CALL_IF_SHARED, CALL_RC_INC and CALL_RC_DEC (ir.jo): the common case inline, else f(x) through
+# stub 12, which keeps every register but x9-x12, x16 and x17 (x in x9, f in x16, f's result
+# back in x9): no call to the register allocator
+a_guarded_call = (ins: Ins):
+    a_ld(9, int(ir.args[int(ins.a)]))
+    done: int[]
+    done.push(code.len())
+    w32(0xB4000000 | 9)                                  # cbz x9, done
+    a_ldr(10, 9, 0)                                      # x10 = the refcount
+    slow: int[]
+    if ins.c == CALL_IF_SHARED:
+        a_cmp_imm(10, 1)
+        done.push(code.len())
+        w32(0x54000000 | AC_EQ)                          # b.eq done (not shared)
+    else:
+        if ins.c == CALL_RC_INC:
+            a_cmp_imm(10, 0)
+            done.push(code.len())
+            w32(0x54000000 | AC_LE)                      # b.le done (immortal)
+        else:
+            a_cmp_imm(10, 1)
+            done.push(code.len())
+            w32(0x54000000 | AC_LT)                      # b.lt done (immortal)
+            slow.push(code.len())
+            w32(0x54000000 | AC_EQ)                      # b.eq slow (the last reference)
+        a_adr_data(11, 1, mt_active_off)
+        w32(0x39400000 | (11 << 5) | 11)                 # ldrb w11, [x11]
+        slow.push(code.len())
+        w32(0x35000000 | 11)                             # cbnz w11, slow (threads running)
+        if ins.c == CALL_RC_INC: a_add_imm(10, 10, 1)
+        else: a_sub_imm(10, 10, 1)
+        a_str(10, 9, 0)
+        done.push(code.len())
+        w32(0x14000000)                                  # b done
+    loop p in slow: a_fix19(p)
+    a_faddr_fix.push((code.len(), int(ins.imm)))
+    w32(0x90000000 | 16)                                 # adrp x16, f
+    w32(0x91000000 | (16 << 5) | 16)                     # add x16, x16, :lo12:f
+    a_stub_fix.push((code.len(), 12))
+    a_bl()
+    call_site(ins)
+    loop p in done:
+        if rd32(p) & 0xFC000000 == 0x14000000: a_fix26(p)
+        else: a_fix19(p)
+    d = int(ins.dst)
+    if d >= 0 and vloc[d] != LOC_NONE: a_st(d, 9)
 
 arm64_resolve = (text_addr: int, ro_addr: int, data_addr: int):
     loop f in a_call_fix:
