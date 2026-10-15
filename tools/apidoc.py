@@ -269,7 +269,7 @@ ESSENTIALS = [
     ("Input", "`input_axis()` (arrows, WASD, a stick), `key_pressed(.space)` (this frame), `key_down(.left)` (held), `mouse_pos()`, `mouse_pressed(.left)`"),
     ("Random", "`random()` (0 to 1), `random(lo, hi)`, `random_int(lo, hi)` (hi left out), `random_item(xs)`"),
     ("Sound", "`s = sfx_coin()` (also `sfx_jump`, `sfx_hit`, `sfx_chime`...) once, then `play(s)`; `melody(\"C4 E4 G4\", 120.0)` for music"),
-    ("Menus", "`ui_begin(\"title\", pos)`, then `if ui_button(\"Play\"): ...`, then `ui_end()`"),
+    ("Menus", "`ui_begin(\"title\", pos)`, then `if ui_button(\"Play\"): ...`, then `ui_end()`; a game's own buttons anywhere: `if hud_button(Rect(20, 620, 160, 44), \"Build\"): ...`, and `hud_hovered()` so the click is not an order too"),
     ("Timers", "`every(1, 2.0)` is true once every 2 seconds (the 1 names the timer: another timer is `every(2, 0.5)`); or count down a number yourself: `wait -= dt`"),
     ("Collisions", "`circles_overlap(a, ra, b, rb)`, `overlaps(rect_a, rect_b)`, `Rect(x, y, w, h)`"),
     ("Camera", "`camera2d(player_pos)` at the top of draw keeps the player in the middle; `screen_to_world(mouse_pos())` is where the mouse points in the world (in update too); `reset_transform()` before drawing the score"),
