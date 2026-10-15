@@ -57,6 +57,17 @@ r.kill()
 check("relay: the first player hosts", a_out, ["host: connected", "host: the other came", "host: got pong"])
 check("relay: the second is the guest", b.stdout, ["guest: connected", "guest: got ping", "guest: the other left"])
 
+# straight to each other (WebRTC), no server: one native program invites, another joins with its
+# code, the first accepts the reply, and messages pass
+peer = build("invite_peer") + exe
+inv = os.path.join(tmp, "invite")
+os.makedirs(inv, exist_ok=True)
+a = subprocess.Popen([peer], stdout=subprocess.PIPE, text=True, env=dict(env, DIR=inv, ROLE="invite"))
+b = subprocess.run([peer], capture_output=True, text=True, env=dict(env, DIR=inv, ROLE="join"), timeout=60)
+a_out = a.communicate(timeout=60)[0]
+check("WebRTC: a native program invites", a_out, ["accepted:true", "native:joined", "native got:ping from native", "native got:pong from native"])
+check("WebRTC: a native program joins", b.stdout, ["native:joined", "native got:ping from native", "native got:pong from native"])
+
 # a web page's client, in a browser: the same, but as a game (messages arrive between frames)
 shell = None
 pw = os.path.expanduser("~/.cache/ms-playwright")
@@ -125,6 +136,14 @@ if shell:
         r_out = r.communicate()[0]
     for b in pages: b.kill()
     check("two web pages over WebRTC (in Chromium)", r_out, [f"player {p}: played true, direct true, desync -1" for p in range(2)])
+    # WebRTC between a web page and a native program, each inviting in turn (driven by node)
+    if shutil.which("node"):
+        page = build("invite_page", "--target", "wasm") + ".html"
+        r = subprocess.run(["node", os.path.join(root, "tools", "rtc_webtest.mjs"), shell, page, peer, os.path.join(tmp, "rtcweb")],
+                           capture_output=True, text=True, timeout=180)
+        print(r.stdout.strip())
+        if r.returncode != 0: failed += 1
+    else: print("(no node: WebRTC with a web page is not tried)")
 else: print("(no browser: the web client is not tried)")
 shutil.rmtree(tmp, ignore_errors=True)
 sys.exit(1 if failed else 0)

@@ -1278,3 +1278,47 @@ __b64url_read = (s: str) -> u8[]?:
             bits -= 8
             out.push(u8((acc >> bits) & 255))
     out
+
+# ---------------- for lib/net.jo ----------------
+# a frame of a connection's work: ICE, DTLS, SCTP
+__rtc_poll = (id: int):
+    if id < 0 or id >= __conns.len() or __conns[id].sock < 0: return
+    __ice_poll(id)
+    __dtls_poll(id)
+
+# what became of it: 0 connecting, 1 open (the data channel), 2 gone; and why it went
+__rtc_status = (id: int) -> (int, str):
+    c = __conns[id]
+    if c.sock < 0: return (2, "")
+    if c.state == __ICE_FAILED: return (2, "no path was found between the two: one of you may be on a network that allows none (mobile data, a school's or an office's), where a relay server (TURN) is needed")
+    if c.d_state == 3: return (2, c.d_why)
+    if c.s_state == 3: return (2, "the other side ended the connection")
+    if c.s_chan_open: return (1, "")
+    (0, "")
+
+__rtc_send = (id: int, msg: u8[], text: bool):
+    c = __conns[id]
+    if not c.s_chan_open: return
+    ppid = if text: (if msg.len() == 0: __PPID_TEXT_EMPTY else: __PPID_TEXT) else: (if msg.len() == 0: __PPID_BYTES_EMPTY else: __PPID_BYTES)
+    m = msg
+    if m.len() == 0: m = [u8(0)]
+    __sctp_send_data(c, c.s_chan, ppid, m, c.s_reliable, c.s_reliable)
+    __conns[id] = c
+
+# the messages that came (each: 1 text or 0 bytes, then the message)
+__rtc_take = (id: int) -> u8[][]:
+    out = __conns[id].s_msgs
+    __conns[id].s_msgs.clear()
+    out
+
+__rtc_close = (id: int):
+    c = __conns[id]
+    if c.s_state == 2: __sctp_send(c, __sctp_chunk(6, 0, []))             # ABORT
+    if c.sock >= 0: net.udp_close(c.sock)
+    c.sock = -1
+    __conns[id] = c
+
+# (a native side's code, once its candidates are known: "" before)
+__rtc_code = (id: int, active: bool) -> str:
+    if not __conns[id].gathered: return ""
+    rtc_code(__rtc_desc(id, active))

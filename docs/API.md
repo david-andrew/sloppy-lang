@@ -3946,8 +3946,18 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
       text = ""               # ... and as text
   ```
 
-#### The peers
+#### Straight to another player, with no server (WebRTC)
 
+- `invite = (reliable: bool = true) -> int`: One side invites: invite_code gives a short code to send the other player any way (a chat message). They join with it, and invite_code then gives them a reply code to send back, which the first side accepts. Then the peer is as any other: joined, messages, left. Web pages and native programs connect so, each to the other too; a STUN server (Google's, rtc.rtc_stun_servers) says how each looks from the internet, and nothing else is in between. reliable = false: messages may be lost or come in another order, never late (a fast game's state)
+  ```gdscript
+  p = net.invite()                     # inviting
+  code = net.invite_code(p)            # "" for a moment, then the code to send
+  net.accept_reply(p, their_reply)
+  p = net.join_invite(their_code)      # joining: then net.invite_code(p) is the reply to send
+  ```
+- `join_invite = (code: str) -> int`: join a game with the code its host sent (a peer: invite_code(p) is then the reply to send back)
+- `invite_code = (peer: int) -> str`: this side's code for a peer from invite or join_invite: "" while it is being made (a moment, as this machine's addresses are found)
+- `accept_reply = (peer: int, reply: str) -> bool`: the other player's reply to this side's invite; false when it is not a reply code
 - `listen = (port: int) -> bool`: start a server on port (native programs); false if the port cannot be had
 - `stop_listening = ()`: stop taking new connections (the peers connected stay); listen starts again
 - `connect = (host: str, port: int = 0) -> int`: connect to a server: a peer, connecting in the background (joined or left arrive by receive); host is a name or address and port its port, or host is a ws:// or wss:// URL (port then unused)
