@@ -1663,7 +1663,7 @@ draw = ():
 
 ### font.jo
 
-Fonts: load_font reads a TrueType font (.ttf, or the first font of a .ttc) and makes the characters text() draws with, sharp at any size (signed distance fields). set_font chooses the font text() and text_width() use; set_font() goes back to the built-in one.
+Fonts: load_font reads a TrueType or OpenType font (.ttf, .otf, or the first font of a .ttc) and makes the characters text() draws with, sharp at any size (signed distance fields). set_font chooses the font text() and text_width() use; set_font() goes back to the built-in one.
 
 ```gdscript
 title_font = load_font(embed("PressStart2P.ttf"))
@@ -1675,7 +1675,7 @@ draw = ():
 
 It has the printable ASCII characters, Latin-1 and Latin Extended-A (accented letters), common punctuation (quotes, dashes, the euro sign), and any others listed in `extra`. A character the font does not have is drawn with the built-in one (Latin in a Japanese font), else as ?.
 
-Japanese, Chinese or Korean text needs a font with them, and its characters in `extra`: give it all the text that will be shown (load_font(file, extra = story)). Most of the CJK fonts a system has are OpenType with PostScript outlines (.otf, CFF), which this cannot read: a .ttf (Noto Sans JP's, Droid Sans Japanese) can. wrap_text breaks lines between their characters.
+Japanese, Chinese or Korean text needs a font with them (Noto Sans CJK, which most systems have), and its characters in `extra`: give it all the text that will be shown (load_font(file, extra = story)). wrap_text breaks lines between their characters. (Variable fonts with CFF2 outlines are not read: a static .otf or .ttf of the same font is.)
 
 - `struct Font`
   ```gdscript

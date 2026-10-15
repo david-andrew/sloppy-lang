@@ -29,6 +29,8 @@ From a visual novel (dialogue, choices, portraits, music, save slots, Japanese t
   `audio_time()` are the same every run.
 - `UiStyle` and `HudStyle` (`ui_style`, `hud_style`) are in the API reference.
 - `load_font` makes its glyphs on all cores: 0.2 s to 0.08 s for a font.
+- `load_font` reads OpenType fonts with PostScript outlines (.otf, CFF), CJK ones too (Noto Sans
+  CJK, the Japanese, Chinese and Korean font most systems have): it stopped with "not supported".
 
 From an online arena (2-4 players, native and browser clients, a lobby, reconnects):
 - `srv.run()` ticks a server 60 times a second on time. The loop the docs showed (`update`,
