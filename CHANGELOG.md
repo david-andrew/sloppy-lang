@@ -14,6 +14,26 @@
 - `sloppy test`: a failing test says FAILED under its name, with why indented below it and
   "in this test" for the test's own line (it said "panic:" and "the top level of").
 
+From publishing a game to the web (a one-button runner, tested in a phone-sized browser):
+- `touches()`: every finger on a touch screen (the first is still the mouse), for on-screen
+  buttons; `touch_input()` says the last input was a finger.
+- `toggle_fullscreen()` from a tap works: browsers allow fullscreen only as a finger lifts (or in
+  a click or key), so a request made while the finger is down is made then.
+- A page's sound stops while its tab is hidden (its game gets no frames), and starts again when
+  it is shown.
+- A panic in a page shows where, as a native program does (`in update (game.jo:12)`, `called
+  from ...`): the page reads the browser's wasm frames against a table of the program's calls
+  in the module (about 0.7% of its size).
+- The page says "loading…" while it downloads, and asks for no favicon when the game has none.
+- `sloppy new`'s arcade game pauses when the window loses the focus (a click outside an itch.io
+  frame).
+- `save(...)` and `load(...)` suggest `save_data` and `load_data`; `window_visible`, `is_mobile`
+  and other guesses name `window_focused`, `touches` and `touch_input`; a name's first word
+  suggests the names it starts.
+- `sloppy build --help` (and check, test, fmt, new, watch) shows the usage.
+- START: phones (touch, orientation, fullscreen), focus, where saved data is kept, sound in
+  hidden tabs, and that reading a missing map key is an error while `+=` starts it at zero.
+
 From a first 3D game (a third-person collect-and-dodge game, built from the docs alone):
 - A warning for `q1 * q2` on quaternions (values from `quat_*` functions and variables made
   from them): `*` multiplies the parts of the vec4s one by one; `quat_mul` turns. `q * v` and

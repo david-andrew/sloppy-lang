@@ -106,10 +106,22 @@ On itch.io: make a project of kind HTML, upload `game.zip`, tick "This file will
 the browser", and give the viewport the size of your `window(...)` (1280 x 720 if it has none);
 "Fullscreen button" lets players make it bigger. Give the game a name in its build block
 (`build:` and `name = "Drone Arena"` below it): what `save_data` keeps is stored under it, and
-games on one site share the browser's storage. Sound starts after the player's first click or
-key, as browsers require. A file the game reads is built in with `embed("x.png")` or
-`embed_dir("assets")`: a page has no disk. Debug builds are the smaller ones; `--release`
-makes the code faster and larger.
+games on one site share the browser's storage (it is the browser's localStorage, as
+`sloppy:<name>/<key>`). Sound starts after the player's first click, tap or key, as browsers
+require, and stops while the tab is hidden (the game gets no frames then). A file the game
+reads is built in with `embed("x.png")` or `embed_dir("assets")`: a page has no disk. Debug
+builds are the smaller ones; `--release` makes the code faster and larger.
+
+Pause when `window_focused()` is false: the player clicked outside the page's frame (`sloppy
+new` makes games that do). The page takes the keyboard as it loads.
+
+On phones (tick "Mobile friendly" on itch.io, and pick the orientation): the first finger is the
+mouse, its left button down while it touches, so a game made for the mouse works as it is;
+`touches()` has every finger (on-screen buttons: left, right, jump), and `touch_input()` says
+the last input was a finger (no hover then). `screen_fit(.expand)` and `visible_rect()` lay
+the game out for any shape of screen. `toggle_fullscreen()` from a tap goes fullscreen as the
+finger lifts (browsers allow it only then); iPhones' Safari has no fullscreen for a page's
+canvas.
 
 Each is one file with nothing to install alongside it (`--target macos` and `--target linux`
 make the same from any system too; a Windows build's `.pdb` beside it is for debuggers only, so
@@ -155,7 +167,7 @@ the file calls it).
 | `subprocess.run(["ls", "-l"])`, `os.system("ls *.jo")` | `run_program("ls", ["-l"])`, `run_shell("ls *.jo")` (each gives its exit code and output) |
 | `json.loads(s)`, `json.dumps(x)` | `parse_json(s)` (a Json), `from_json[Config](s)` (into a struct), `to_json(x)` |
 | `re.search(r"\d+", s)` | `s.find(regex(r"\d+"))` (a `Match?`: `m.text`, `m.groups`) |
-| `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero (`counts[w] += 1`, `groups[k].push(x)`) |
+| `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero when changed (`counts[w] += 1`, `groups[k].push(x)`); reading one, `m[k]`, is an error: `m.get(k) ?? 0` |
 | `set()` | a map to `bool`, or `unique(xs)` |
 | `None`, `if x is None:` | `none`, `if x == none:`; `if let v = x:` gets what is inside |
 | `t[0]` (a tuple) | `t.0` |

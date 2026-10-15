@@ -201,6 +201,14 @@ w_guarded_call = (ins: Ins, lf: int):
     call_result(ins, lf)
     op(0x0B)                                                    # end $done
 
+# (a call in the program's own code: where it is, for a panic's call trace in a page; the call
+# instruction's offset in the body, and its source position)
+w_sites: int[]
+w_site = (ins: Ins):
+    if ins.pos == 0 or pos_in_lib(ir_positions[int(ins.pos)]): return
+    w_sites.push(wb.len())
+    w_sites.push(int(ins.pos))
+
 addr32 = (v: int):
     lget(v)
     op(0xA7)              # i32.wrap_i64
@@ -560,6 +568,7 @@ emit_wins = (ins: Ins):
                 w_guarded_call(ins, lf)
                 return
             emit_call_args(a, bb, lf)
+            w_site(ins)
             op(0x10)
             uleb(wb, wfn_index[lf])
             call_result(ins, lf)
@@ -570,6 +579,7 @@ emit_wins = (ins: Ins):
             loop k in [0..bb): ps.push(wt(vtype_of(int(cur_wf.args[a + k]))))
             rs: int[]
             if int(ins.ty) >= 0: rs.push(wt(int(ins.ty)))
+            w_site(ins)
             op(0x11)
             uleb(wb, sig_index(ps, rs))
             op(0)
@@ -700,6 +710,7 @@ wasm_live = (f: IrFn) -> (int[], int[]):
 wasm_body = (f: IrFn) -> u8[]:
     cur_wf = f
     wb = []
+    w_sites = []
     nv = f.vtypes.len()
     loc_of = fill(0, nv)
     # locals: params keep their indices; other values share locals of their type when they are
@@ -802,7 +813,12 @@ wasm_module = (inits: int[], main_lf: int, frame_lf: int) -> u8[]:
     pages = (stack_top + 65535) / 65536 + 1
     # bodies (this also registers table entries and signatures)
     bodies: u8[][]
-    loop lf in defined: bodies.push(wasm_body(wfuncs[lf]))
+    body_sites: int[][]
+    body_names: str[]
+    loop lf in defined:
+        bodies.push(wasm_body(wfuncs[lf]))
+        body_sites.push(w_sites)
+        body_names.push(sym_name(wfuncs[lf].name))
     # entry function: initializers then main
     eb: u8[] = [0]
     loop f in inits:
@@ -902,8 +918,10 @@ wasm_module = (inits: int[], main_lf: int, frame_lf: int) -> u8[]:
     # code
     s = []
     uleb(s, defined.len() + 1 + exp_lfs.len())
+    body_at: int[]
     loop bd in bodies:
         uleb(s, bd.len())
+        body_at.push(s.len())
         append_bytes(s, bd)
     uleb(s, eb.len())
     append_bytes(s, eb)
@@ -911,6 +929,7 @@ wasm_module = (inits: int[], main_lf: int, frame_lf: int) -> u8[]:
         uleb(s, ab.len())
         loop c in ab: s.push(c)
     section(out, 10, s)
+    code_at = out.len() - s.len()
     # data: rodata
     s = [1, 0, 0x41]
     sleb(s, RO_BASE)
@@ -918,7 +937,62 @@ wasm_module = (inits: int[], main_lf: int, frame_lf: int) -> u8[]:
     uleb(s, rodata.len())
     loop c in rodata: s.push(c)
     section(out, 11, s)
+    w_line_section(out, code_at, body_at, body_sites, body_names)
     out
+
+# the custom section "sloppy_lines": where the program's own calls are, so that a page can show a
+# panic's call trace as a native program does (lib/web/runtime.js reads it). The files and the
+# functions (each a count, then a length and the bytes of each), then the calls: a count, then
+# for each the distance in the module from the one before, its file, line and function
+w_line_section = (out: mut u8[], code_at: int, body_at: int[], body_sites: int[][], body_names: str[]):
+    fidx = fill(-1, files.len())
+    fnames: str[]
+    names: str[]
+    ents: int[]
+    loop k in 0.. and sites in body_sites:
+        ni = -1
+        j = 0
+        loop j < sites.len():
+            f = pos_file(ir_positions[sites[j + 1]])
+            if f >= 0 and f < files.len():
+                if fidx[f] < 0:
+                    fidx[f] = fnames.len()
+                    path = files[f].path
+                    sl = rfind(path, "/")
+                    if sl >= 0: path = path[sl + 1..]
+                    fnames.push(path)
+                if ni < 0:
+                    ni = names.len()
+                    names.push(body_names[k])
+                ents.push(code_at + body_at[k] + sites[j])
+                ents.push(fidx[f])
+                ents.push(ir_line(sites[j + 1]))
+                ents.push(ni)
+            j += 2
+    if ents.len() == 0: return
+    s: u8[]
+    nm = "sloppy_lines"
+    uleb(s, len(nm))
+    loop c in nm: s.push(c)
+    uleb(s, fnames.len())
+    loop fname in fnames:
+        uleb(s, len(fname))
+        loop c in fname: s.push(c)
+    uleb(s, names.len())
+    loop fname in names:
+        uleb(s, len(fname))
+        loop c in fname: s.push(c)
+    uleb(s, ents.len() / 4)
+    last = 0
+    j = 0
+    loop j < ents.len():
+        uleb(s, ents[j] - last)
+        last = ents[j]
+        uleb(s, ents[j + 1])
+        uleb(s, ents[j + 2])
+        uleb(s, ents[j + 3])
+        j += 4
+    section(out, 0, s)
 
 # ---------------- HTML packaging ----------------
 base64 = (b: u8[]) -> str:
@@ -957,6 +1031,7 @@ write_html = (path: str, wasm: u8[], title: str, icon: u8[]) -> bool:
 html_page = (wasm: u8[], title: str, icon: u8[]) -> str:
     link = ""
     if icon.len() > 0: link = "<link rel=\"icon\" href=\"data:image/png;base64,{base64(icon)}\">\n"
+    else: link = "<link rel=\"icon\" href=\"data:,\">\n"      # (no icon: no request for /favicon.ico)
     js = ""
     loop part in ["runtime.js", "gfx.js", "audio.js", "boot.js"]:
         # (the program's own JavaScript, from the build block's js: before it starts)
@@ -964,5 +1039,5 @@ html_page = (wasm: u8[], title: str, icon: u8[]) -> str:
         src = read_file("{lib_dir}/web/{part}") ?? ""
         if len(src) == 0 and part != "audio.js": ice("missing {lib_dir}/web/{part}")
         js += src + "\n"
-    html = "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{title}</title>\n{link}<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<style>html,body\{margin:0;height:100%;background:#111;color:#ddd;font:14px monospace}canvas\{display:block;margin:auto;outline:none}#log\{white-space:pre-wrap;margin:8px;max-height:40vh;overflow:auto}</style>\n</head><body><canvas id=\"sloppy-canvas\" tabindex=\"1\" width=\"0\" height=\"0\"></canvas><div id=\"log\"></div>\n<script>\nconst SLOPPY_WASM = \"{base64(wasm)}\";\n{js}\n</script></body></html>\n"
+    html = "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{title}</title>\n{link}<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<style>html,body\{margin:0;height:100%;background:#111;color:#ddd;font:14px monospace}canvas\{display:block;margin:auto;outline:none}#log\{white-space:pre-wrap;margin:8px;max-height:40vh;overflow:auto}</style>\n</head><body><canvas id=\"sloppy-canvas\" tabindex=\"1\" width=\"0\" height=\"0\"></canvas><div id=\"log\"></div>\n<div id=\"sloppy-loading\" style=\"position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);color:#888\">loading…</div>\n<script>\nconst SLOPPY_WASM = \"{base64(wasm)}\";\n{js}\n</script></body></html>\n"
     html
