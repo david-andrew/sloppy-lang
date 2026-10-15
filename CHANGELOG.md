@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+From a strategy game (1000+ units, flow fields, spatial hashes, save/load):
+- A `soa` array in a saved struct lost the whole save: it was written as its inner arrays and
+  could not be read back, and `load_value` gave the default without a word. soa arrays print
+  and save as the array of their elements now, and read back; `load_value` says on stderr when
+  what is kept does not read. Generic functions can take `soa T[]`.
+- `from_text[S](f(x))` failed: the call's type arguments were taken by the call inside its
+  argument.
+- `parallel_range` and the other parallel helpers cost 0.4 ms a call on an idle machine and
+  2-4 ms on a busy one (the caller waited for every worker thread to wake, even with nothing
+  left to do): 0.004 ms now; the caller waits for the work, not the threads.
+- `path_grid`'s flood is 10x faster (2.1 ms to 0.2 ms for a 128 x 128 grid); its docs say what
+  it keeps (256 goals) and when it forgets them.
+- `SLOPPY_SOFTWARE=1` with no display runs without a window (a benchmark with SLOPPY_FRAMES and
+  SLOPPY_STATS failed to open one); a screenshot run's mouse starts in the middle of the window
+  (in the corner, a game scrolling at the screen's edge scrolled); `SLOPPY_COPIES` with
+  `sloppy game.jo` reports the game's copies, not the compiler's.
+- Clearer errors: `{int}` for a set (a map to bool), `T` in a function that does not name its
+  type parameters, a soa array's `mut` element in a combined loop; `mouse_button_pressed`,
+  `get_mouse_position`, `is_key_down`, `delta_time` and the like name what Sloppy calls them.
+- Docs: what soa arrays have and do not have, and that reading a whole element reads every
+  field; what a parallel call costs; `time()` for measuring code.
+
 - Lines between tiles in web pages, flickering as the camera moved (seen on a scaled laptop
   screen): with the page's antialiasing, pixels along a tile's edge were shaded at their
   centers, outside the tile, so the texture was read past it, from the next tile in the

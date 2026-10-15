@@ -485,7 +485,7 @@ Operating system access: files, arguments, environment, time.
 - `file_exists = (path: str) -> bool`
 - `make_executable = (path: str) -> bool`
 - `delete_file = (path: str) -> bool`
-- `time = () -> f64`: seconds since an arbitrary point (monotonic clock)
+- `time = () -> f64`: seconds since an arbitrary point (monotonic clock): the one to measure how long code takes (elapsed() is the game's clock, which a screenshot run advances 1/60 s a frame)
 - `time_ns = () -> int`: nanoseconds since an arbitrary point (monotonic clock)
 - `sleep = (seconds: f64)`
 - `write = (s: str)`: print without a trailing newline
@@ -776,7 +776,7 @@ Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs, enu
 - `from_text[T] = (text: str) -> T \| TextError`
 - `from_json[T] = (text: str) -> T \| TextError`: a value of type T from JSON: objects for structs (by field name: a field left out keeps its default, one the struct does not have is skipped) and maps, lists for arrays, tuples and vectors, null for none, an enum's variant by its name in quotes
 - `save_value[T] = (name: str, x: T) -> bool`: keep value under name (save_data) as text; false if it could not be written
-- `load_value[T] = (name: str, default: T) -> T`: the value kept under name, or default if there is none or it does not read as one
+- `load_value[T] = (name: str, default: T) -> T`: the value kept under name, or default if there is none or it does not read as one (said on stderr then: what was kept is not lost quietly)
 
 ## Threads
 
@@ -2792,7 +2792,7 @@ draw = ():
     text("the red one follows the mouse", vec2(20, 500), 20)
 ```
 
-Paths over a grid, for enemies finding their way round walls: the grid's cells are open or blocked, and path_step() gives, from anywhere, the next point to walk to on the way to a goal. The steps to each goal are worked out once (a flood over the open cells, eight ways round: diagonally only where both sides are open) and kept until the grid changes.
+Paths over a grid, for enemies finding their way round walls: the grid's cells are open or blocked, and path_step() gives, from anywhere, the next point to walk to on the way to a goal. The steps to each goal are worked out once (a flood over the open cells, eight ways round: diagonally only where both sides are open, about 1 ms for 128 x 128) and kept, for up to 256 goals, until the grid changes (any set_open forgets them all). Many units sharing a few goals is what it is for; each unit with a goal of its own floods the grid for each.
 
 ```gdscript
 grid = path_grid(40, 30, 16.0)                  # 40 by 30 cells, 16 units across

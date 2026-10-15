@@ -726,12 +726,15 @@ the rest under Arrays):
 Two differences catch NumPy hands: `+` on 1-D arrays joins them (`.+` adds), and a whole
 dotted expression is one loop, so `a .* 2.0 .+ b` makes no array in between.
 
-**Struct-of-arrays.** `ps: soa Particle[]` is used exactly like `Particle[]` — `push`, `pop`,
-`remove`, `len`, `ps[i]`, `ps[i].x += 1`, `loop p in ps`, `loop mut p in ps`, conversion from
-`Particle[]` — but keeps each field in an array of its own. A loop variable stands for the
-element itself: `p.x` reads (or, in `loop mut`, writes) only the `x` array, so a loop that looks
-at two fields of a large struct touches only those two arrays. Using `p` as a whole value reads
-every field. `ps.x` is the whole field array, for elementwise math:
+**Struct-of-arrays.** `ps: soa Particle[]` is used like `Particle[]` for `push`, `pop`,
+`remove`, `clear`, `reserve`, `truncate`, `len`, `ps[i]`, `ps[i].x += 1`, `loop p in ps`,
+`loop mut p in ps`, conversion from `Particle[]`, printing and saving (as the array of its
+elements) — but keeps each field in an array of its own. (Not there: `retain`, `filter`, `map`,
+`count`, `any` and the other functions taking an array; a combined loop's `mut` element.) A
+loop variable stands for the element itself: `p.x` reads (or, in `loop mut`, writes) only the
+`x` array, so a loop that looks at two fields of a large struct touches only those two arrays.
+Using a whole element, `o = ps[j]` or `p` as a value, reads every field: in a hot loop, read the
+fields you need, `ps[j].pos`. `ps.x` is the whole field array, for elementwise math:
 
 ```gdscript
 ps: soa Particle[] = make_particles()
@@ -939,6 +942,9 @@ rows = parallel_range(height, (y): render_row(y))     # [loop i in [0..n): f(i)]
 
 The function runs on many threads at once: it may read anything, but it must not change
 globals or the variables it captured (that would be a data race). Return results instead.
+A call costs a few microseconds beyond its work (the threads wait for jobs and take parts of
+one as they are free), so work of a few tenths of a millisecond or more is worth sharing; each
+part should do more than a handful of operations.
 `random()` may be called there: each thread draws from a generator of its own, so the numbers
 differ from run to run even after `seed_random`; for the same ones every run (and faster), give
 each piece of work its own generator, `g = rng(seed + k)` and `g.next_float()`. The

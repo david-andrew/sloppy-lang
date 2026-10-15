@@ -110,12 +110,20 @@ __run_chunks = ():
     loop true:
         k = __atomic_add(c + __C_NEXT, 1)
         if k >= c[__C_CHUNKS]: return
-        lo = k * __job_chunk
-        hi = lo + __job_chunk
-        if hi > __job_total: hi = __job_total
-        f = __job
-        f(lo, hi)
-        __atomic_add(c + __C_DONE, 1)
+        __run_chunk(k)
+        # (the last chunk wakes the caller, waiting for them all)
+        if __atomic_add(c + __C_DONE, 1) + 1 == c[__C_CHUNKS]: __futex_wake(c + __C_DONE)
+
+# (a function of its own, kept out of line: the reference to the job's function it takes is
+# dropped before the chunk is counted done, while refcounts are still atomic; after the last
+# one the caller drops its own, and two drops at once would lose one)
+@noinline
+__run_chunk = (k: int):
+    lo = k * __job_chunk
+    hi = lo + __job_chunk
+    if hi > __job_total: hi = __job_total
+    f = __job
+    f(lo, hi)
 
 @cabi
 __worker_main = (id: int):
@@ -139,6 +147,7 @@ __pool_start = ():
         if n > __MAX_THREADS: n = __MAX_THREADS
         if n < 1: return
         __pool_ctl = __alloc(64) as *int
+        loop i in [0..8): __pool_ctl[i] = 0
         # one reserved region for all worker stacks (pages are only touched as needed)
         size = __MAX_THREADS << __TSTACK_SHIFT
         when TARGET == "windows":
@@ -210,18 +219,31 @@ __parallel_run_job = (total: int, f: (int, int) -> void):
         c[__C_CHUNKS] = (total + chunk - 1) / chunk
         c[__C_DONE] = 0
         c[__C_ACK] = 0
-        c[__C_NEXT] = 0
         __out_flush()
         __out_direct = true                 # (prints from the threads: written at once)
         __mt_active = true
+        # (the chunks opened last, atomically, a barrier after everything above: a worker that
+        # wakes late and claims one sees this job's function and sizes, and __mt_active, so its
+        # refcounts are atomic and a parallel call inside runs in place. Swapped, not stored, so
+        # that a late claim on the closed count in between is not lost)
+        loop true:
+            o = __atomic_add(c + __C_NEXT, 0)
+            if __atomic_cas(c + __C_NEXT, o, 0) == o: break
         __atomic_add(c + __C_GEN, 1)
         __futex_wake(c + __C_GEN)
         __run_chunks()
-        # wait until every worker has finished this job (so none can overlap the next one)
+        # wait until every chunk is done, not for every worker: one the system has not woken
+        # yet (on a busy machine) would hold each call up by milliseconds. A worker that wakes
+        # late finds no chunk to claim (the count is closed below until the next job is set up)
+        # or helps with the next one.
+        chunks = c[__C_CHUNKS]
+        spins = 0
         loop true:
-            a = __atomic_add(c + __C_ACK, 0)
-            if a >= __pool_workers: break
-            __futex_wait(c + __C_ACK, a)
+            d = __atomic_add(c + __C_DONE, 0)
+            if d >= chunks: break
+            spins += 1
+            if spins > 2000: __futex_wait(c + __C_DONE, d)
+        __atomic_add(c + __C_NEXT, 1 << 40)
         __mt_active = false
         __out_direct = false
         __job = __job_idle_c
