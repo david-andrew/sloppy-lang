@@ -165,6 +165,11 @@ habit = (i: int, want: Tok):
     if (pw == "global" or pw == "nonlocal") and k == .ident: fatal(at, "no `{pw}` is needed: a function that gives a top-level variable a value changes it (`let x = ...` makes one of its own)")
     if pw == "assert" and value_start: fatal(at, "assert is a function: `assert(x == 2, \"why\")`")
     if pw == "print" and value_start: fatal(at, "print is a function: `print(x)`")
+    # (Scratch's blocks: set score to 0, change score by 1)
+    if (pw == "set" or pw == "change") and k == .ident and i + 1 < toks.len() and toks[i + 1].kind == .ident:
+        nm = tok_src(i)
+        fatal(at, "a variable gets a value with `=`: `{nm} = 0`; to change it by 1: `{nm} += 1`")
+    if pw == "until" and i >= 2 and toks[i - 2].kind == .kw_loop: fatal(at, "there is no `until`: a loop repeats while something holds: `loop x <= 10:` (or `loop not (x > 10):`)")
     if want == .newline and p == .ident and value_start and not glued: fatal(at, "to call '{pw}', write `{pw}({tok_src(i)})`")
     # ("she said "hi"": the second " ended the text)
     if p == .str_lit and k == .ident and glued and i + 1 < toks.len() and toks[i + 1].kind == .str_lit and not space_before(i + 1):
@@ -344,6 +349,7 @@ parse_type_primary = () -> int:
     if (k == .newline or k == .indent) and ti >= 2 and toks[ti - 1].kind == .colon and toks[ti - 2].kind == .ident:
         fname = tok_src(ti - 2)
         if fname == "update": fatal(toks[ti - 2].pos, "a function is written `update = (dt: f64):` and its lines below it")
+        if fname == "forever" or fname == "repeat": fatal(toks[ti - 2].pos, "`{fname}` is not a Sloppy word: in a game, `update = (dt: f64):` runs every frame, as a forever loop does (and `draw = ():` draws); put the lines there. To repeat something 10 times: `loop i in [1..10]:`")
         fatal(toks[ti - 2].pos, "a function is written `{fname} = ():` and its lines below it")
     fatal(pos, "expected a type, found {tok_name(k)}")
     0
@@ -683,6 +689,8 @@ parse_primary = () -> int:
         return n
     if k == .dot:
         advance()
+        # (key_pressed(.1): the number keys are .n0 to .n9)
+        if pk() == .int_lit and toks[ti].ival >= 0 and toks[ti].ival <= 9: fatal(cur_pos(), "the key {toks[ti].ival} is `.n{toks[ti].ival}` (a name cannot start with a digit)")
         n = mk(.dotname, pos)
         nodes[n].name = i32(expect_name("name after '.'"))
         return n
@@ -750,6 +758,9 @@ parse_primary = () -> int:
     if k == .colon and t >= 2 and toks[t - 1].kind == .assign and toks[t - 2].kind == .ident: fatal(pos, "a function is written `{tok_src(t - 2)} = ():` (its parameters, maybe none, in brackets before the colon)")
     if k == .star: fatal(pos, "what a pointer points at is `p[0]` (its fields: `p.x`); there is no `*` before a value")
     if k == .kw_loop: fatal(pos, "a loop inside a line's loop goes on a line of its own, indented below it")
+    # (score > 10 and < 20: the comparison's left side left out)
+    if (k == .lt or k == .gt or k == .le or k == .ge or k == .eq or k == .ne) and t >= 1 and (toks[t - 1].kind == .kw_and or toks[t - 1].kind == .kw_or):
+        fatal(pos, "after `{tok_src(t - 1)}`, write the whole comparison again: `score > 10 and score < 20`")
     # (play(s, when = 0.1): a word Sloppy keeps for itself, as an argument's or a variable's name)
     if nk_is(t, .assign) and keywords.get(tok_src(t)) != none: fatal(pos, "'{tok_src(t)}' is a word Sloppy keeps for itself, so it cannot name an argument or a variable (call it something else)")
     fatal(pos, "expected an expression, found {tok_name(k)}")
@@ -1303,9 +1314,15 @@ parse_block = () -> int:
     set_list(b, stmts)
     b
 
+# (update = (dt: f64): with nothing under it)
+__no_block = ():
+    j = ti - 1
+    loop j > 0 and toks[j].kind != .colon: j -= 1
+    fatal(toks[j].pos, "nothing is under this line: what it does goes on the lines below it, indented (or `pass` to leave it empty for now)")
+
 # the statements of an indented block, from its indent token on, into block b
 parse_indented_block = (b: int) -> int:
-    if pk() != .indent: fatal(cur_pos(), "expected an indented block")
+    if pk() != .indent: __no_block()
     advance()
     stmts: int[]
     loop pk() != .dedent and pk() != .eof:
@@ -1810,7 +1827,7 @@ end_stmt = (s: int):
 parse_top_block = () -> int:
     b = mk(.block, cur_pos())
     expect(.newline, "newline")
-    if pk() != .indent: fatal(cur_pos(), "expected an indented block")
+    if pk() != .indent: __no_block()
     advance()
     items: int[]
     loop pk() != .dedent and pk() != .eof:

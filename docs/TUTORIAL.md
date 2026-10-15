@@ -46,10 +46,12 @@ arrow keys, WASD or a gamepad's stick point in, as a `vec2` from -1 to 1.
 next, and `update` and `draw` both use it. (A variable first given a value inside a function
 belongs to that function and starts again each time it runs.)
 
-Whole numbers (`400`) and numbers with a decimal point (`0.5`, `dt`) mix freely. Two things to
-know: dividing two whole numbers gives a whole number (`7 / 2` is 3 and `3 / 4` is 0; write
-`7.0 / 2` for 3.5), and a number with a decimal point becomes a whole one only when you ask:
-`int(x)`.
+Whole numbers (`400`) and numbers with a decimal point (`0.5`, `dt`) mix freely in arithmetic:
+`400 * dt` is fine. A variable keeps the kind its first value has, though: after `x = 640`, x
+holds whole numbers, and `x += 300 * dt` is an error; write `x = 640.0` for one that holds
+fractions too. Dividing two whole numbers gives a whole number (`7 / 2` is 3 and `3 / 4` is 0;
+write `7.0 / 2` for 3.5), and a number with a decimal point becomes a whole one only when you
+ask: `int(x)`.
 
 ## 3. Gravity and jumping
 

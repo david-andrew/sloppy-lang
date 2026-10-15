@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+From someone coming from Scratch (a catch game with clones, costumes, backdrops and a high-score
+list; a maze with walls by color, a key, a door and a pen trail):
+- START has a "Coming from Scratch" table: forever, clones, broadcasts, wait, touching,
+  costumes, backdrops, the pen, say and ask, each as it is written here.
+- A second `update`, `draw` or `main` is an error: only the first ran.
+- Errors for Scratch's habits: `forever:`, `set x to 0`, `change x by 1`, `loop until`, and
+  `create_clone`, `broadcast`, `say`, `touching`, `pick_random`, `go_to`, `glide`, costumes and
+  the rest name the way it is done here.
+- Clearer errors for `score > 10 and < 20`, `key_pressed(.1)`, `key_down(right)`, a function
+  with nothing under it, `load_texture(cat1.png)`, `score = score + 1` before a first value,
+  `Score` used as `score`, a color with no name (`BROWN`), `text("Score:", score, pos)`,
+  `play("meow.wav")`, `embed("Cat1.png")` for cat1.png, `xs.add(x)` on `xs = []`, and a
+  variable of whole numbers (or of text, `"0"`) given a fraction (or a number).
+- An indented line that matches no line above it is told every place it could go.
+- New warnings: `y == 650` in update, where y moves by fractions; `input()` in update or draw;
+  a top-level `loop:` that never ends in a game; drawing in update with no draw.
+- A warning is not shown twice when the compiler goes on to the next error.
+- A frame natively starts black, as on the web: a draw with no `clear()` left a trail of the
+  frames before (a picture kept from frame to frame is a render target).
+- `sloppy build` at a terminal says what it made (`made apples.html`).
+
 ## 0.17.0
 
 From a deck-building card game (a fanned hand, drag and drop, enemies' intents, a run of fights):

@@ -206,6 +206,36 @@ a value, the last list field gets the other arguments, and `--help` lists them a
 - `sloppy test count.jo` runs its `test` blocks; `sloppy test count.jo sort` only those with
   "sort" in their names.
 
+## Coming from Scratch
+
+A Scratch project is sprites, each with its scripts running at once. In Sloppy one program
+holds them all: `update` runs every frame (Scratch's "forever" for everything at once) and
+`draw` shows what each thing looks like. `sloppy new my_game arcade` is a whole game to start
+from.
+
+| Scratch | Sloppy |
+|---|---|
+| when green flag clicked | the lines at the top of the file run first, once |
+| forever | `update = (dt: f64):`, which the game runs every frame (dt: the seconds since the last) |
+| a sprite, its x and y | a variable for where it is, `cat = vec2(240, 300)`, and `draw` drawing it there: `sprite(cat_picture, cat)` |
+| costumes | a few pictures, `load_texture(embed("cat1.png"))`, and which one is drawn |
+| backdrops | a picture drawn first in `draw`, before the sprites |
+| when key pressed, key pressed? | `if key_pressed(.space):` (just pressed) or `if key_down(.right):` (held), in `update` |
+| change x by 10 | `cat.x += 10` (each frame: `cat.x += 300 * dt` moves 300 a second) |
+| go to x: y: | `cat = vec2(100, 200)`; random position: `vec2(random(0, 1280), random(0, 720))` |
+| glide 1 secs to | `move = tween(cat, vec2(600, 300), 1.0)`, then `move.update(dt)` and `cat = move.value()` |
+| touching? | `overlaps(Rect(...), Rect(...))` or `circles_overlap(a, 20, b, 20)`; touching a color: `img.get(x, y)` of the picture |
+| clones | a list of things: `apples: Apple[]`, `apples.push(Apple(pos))`, a `loop mut a in apples:` to move them |
+| delete this clone | mark it (`a.gone = true`) in the loop, then `apples.retain((a): not a.gone)` |
+| broadcast / when I receive | a function, called where the message would be sent: `level_up()` |
+| wait 1 seconds | a timer counted down in `update`, or `Actions`: `steps.then(1.0, (): say_next())` |
+| say Hello! for 2 seconds | a variable for what is said and a timer; draw it with `text` beside the sprite |
+| ask and wait | `hud_text_field(...)`, a box to type in |
+| pick random 1 to 10 | `random_int(1, 11)` (the top is left out), `random(0.0, 1.0)` for a fraction |
+| variables, lists | `score = 0` at the top; `names: str[] = []`, `names.push("Ada")` |
+| pen | a picture drawn into and never cleared: `render_target`, `draw_to` |
+| sounds | `meow = load_wav(embed("meow.wav"))` at the top, `play(meow)` when it should sound |
+
 ## Coming from Python
 
 | Python | Sloppy |

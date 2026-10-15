@@ -355,6 +355,14 @@ suggestion = (name: str, candidates: int[]) -> str:
         if known:
             if starts_with(h, "nothing: "): return " (none is needed: {h[9..]})"
             return " (use {h})"
+    # (Score for score: the same but for its capitals)
+    loop c in candidates:
+        cn = name_of(c)
+        if cn != name and len(cn) == len(name) and lower(cn) == lower(name): return " (did you mean '{cn}'? names care about capital letters)"
+    # (BROWN, SKYBLUE: a color's name in capitals; only names in capitals are near it)
+    caps = len(name) >= 3
+    loop ch in name:
+        if ch >= 'a' and ch <= 'z': caps = false
     limit = 1
     if len(name) > 4: limit = 2
     # (a one- or two-letter name is close to too many: only another case of it)
@@ -363,6 +371,7 @@ suggestion = (name: str, candidates: int[]) -> str:
     bs = 1000000
     loop c in candidates:
         cn = name_of(c)
+        if caps and cn != upper(cn): continue
         if cn == name or len(cn) == 0 or cn[0] == '_': continue
         d = edit_distance(name, cn, limit)
         pre = 0
@@ -383,6 +392,7 @@ suggestion = (name: str, candidates: int[]) -> str:
             bs = score
             best = cn
     if len(best) > 0: return " (did you mean '{best}'?)"
+    if caps: return " (the colors with names are WHITE, BLACK, RED, GREEN, BLUE, YELLOW, ORANGE, PURPLE, CYAN, MAGENTA and GRAY; any other is rgb(0.5, 0.3, 0.1), each from 0 to 1)"
     ""
 
 # what Sloppy calls a name from another language ("`push`"), or ""
@@ -459,7 +469,17 @@ HABITS = ["index", "`find(s, x)` for text (-1 when it is not there), `index_of(x
     "GetComponent", "the field itself, `player.health` (there are no components: a struct holds what it has)",
     "Collision", "`w.contacts(b)`, read each frame (`c.new`: it just began); nothing is called when bodies touch",
     "Time", "the `dt` update is given (the seconds since the last frame), or `time()` (since the start)",
-    "wait", "a timer counted down in update (`wait -= dt`, then act when it is below 0), or `every(1, 2.0)`", "Add", "`push`", "Remove", "`remove(i)` (by position)", "Insert", "`insert(i, x)`", "Contains", "`contains`",
+    "wait", "a timer counted down in update (`wait -= dt`, then act when it is below 0), `every(1, 2.0)`, or `Actions`: `steps.then(1.0, (): ...)`",
+    "create_clone", "a list of things: `apples.push(Apple(pos))` makes one more (Scratch's clones)", "clone", "a list of things: `apples.push(Apple(pos))` makes one more (Scratch's clones)",
+    "delete_this_clone", "mark it in its loop (`a.gone = true`), then `apples.retain((a): not a.gone)`",
+    "broadcast", "a function of your own, called where the message is sent: `level_up()`",
+    "switch_costume", "a variable saying which picture to draw (`costume = 1`), and `sprite(costumes[costume], pos)` in draw", "next_costume", "a variable saying which picture to draw (`costume = (costume + 1) % costumes.len()`)",
+    "go_to", "`pos = vec2(100, 200)` (the position is a variable)", "goto", "`pos = vec2(100, 200)` (the position is a variable)",
+    "hide", "a variable saying whether it shows (`shown = false`), and `if shown:` around its drawing", "show", "a variable saying whether it shows (`shown = true`), and `if shown:` around its drawing",
+    "touching", "`overlaps(Rect(...), Rect(...))` or `circles_overlap(a, 20, b, 20)`", "pick_random", "`random_int(1, 11)` (1 to 10: the top is left out)",
+    "say", "`text(\"Hello!\", pos + vec2(30, -40))` in draw, while a timer for it is running", "think", "`text(\"Hmm...\", pos + vec2(30, -40))` in draw, while a timer for it is running",
+    "glide", "`move = tween(pos, vec2(600, 300), 1.0)`, then `move.update(dt)` and `pos = move.value()` each frame",
+    "stop_all", "`quit()`", "when_flag_clicked", "nothing: the lines at the top of the file run first, once", "Add", "`push`", "Remove", "`remove(i)` (by position)", "Insert", "`insert(i, x)`", "Contains", "`contains`",
     "Clear", "`clear`", "IndexOf", "`index_of`",
     "Counter", "`counts: \{str: int} = \{}`, then `counts[w] += 1` (a map: a missing key starts at 0)",
     "defaultdict", "a plain map: a missing key starts at its type's zero (`m[k] += 1`, `m[k].push(x)`)",
@@ -1314,7 +1334,9 @@ alias_global = (l: int) -> int:
 # `if r == none: panic(...)` say, which it then sees; elsewhere it is checked on its own)
 ensure_global = (g: int, use_pos: int, in_flow: bool = false):
     if globals[g].state == 2: return
-    if globals[g].state == 1: fatal(use_pos, "global '{name_of(int(globals[g].name))}' is used in its own initializer")
+    if globals[g].state == 1:
+        gn = name_of(int(globals[g].name))
+        fatal(use_pos, "'{gn}' is used in its own first value, before it has one: give it one first (`{gn} = 0` on a line above), then change it")
     globals[g].state = 1
     saved = cx
     m = int(globals[g].mod)
@@ -2101,7 +2123,8 @@ check_assign = (s: int) -> int:
         return s
     l = prune(lt)
     if types[l].kind == .str_ and op == int(Tok.pluseq):
-        check_expr(int(nodes[s].b), T_STR)
+        srt = prune(check_expr(int(nodes[s].b), T_STR))
+        if nodes[lhs].kind == .ident and is_numeric(srt) and not can_coerce(last_checked, srt, T_STR): var_type_error(lhs, l, srt, nodes[s].pos)
         nodes[s].b = i32(coerce(last_checked, T_STR))
         nodes[s].aux = 2
         return s
@@ -2189,6 +2212,10 @@ var_type_error = (lhs: int, lt: int, rt: int, at: int):
             gd = int(globals[int(nodes[lhs].sym)].decl)
             if nodes[gd].b != 0 and nodes[int(nodes[gd].b)].kind == .int_lit: start = "{nodes[int(nodes[gd].b)].ival}.0"
         how = "write its first value with a decimal point (`{nm} = {start}`), so it holds fractions too, or make this a whole number with int(...)"
+        fatal(at, "'{nm}' holds whole numbers{made}, and this is a number with a fraction: {how}")
+    # (score = "0", then score += 1: a number in quotes is text)
+    if tkind(lt) == .str_ and is_numeric(rt):
+        fatal(at, "'{nm}' holds text{made} (a value in quotes, \"0\", is text, even with digits): for a number, give it one without quotes (`{nm} = 0`)")
     fatal(at, "'{nm}' has type {type_str(lt)}{made} and cannot hold this {type_str(rt)}: {how}")
 
 check_vardecl = (s: int):
@@ -2956,6 +2983,25 @@ check_program = (main_path: str):
     # programs with update()/draw() run the game loop after main()
     has_upd = modules[mainm].names.get(intern("update")) != none
     has_drw = modules[mainm].names.get(intern("draw")) != none
+    # (two updates, as a Scratch project's scripts, one per sprite: only the first would run)
+    loop gname in ["update", "draw", "main"]:
+        first = 0
+        loop d in modules[mainm].decls:
+            if nodes[d].kind != .fn_ or name_of(int(nodes[d].name)) != gname: continue
+            if first == 0: first = d
+            else:
+                what = "runs every frame"
+                if gname == "draw": what = "draws every frame"
+                else if gname == "main": what = "runs once, after the top of the file"
+                fl, fc = line_col(nodes[first].pos)
+                fatal(nodes[d].pos, "a second {gname} (the first is on line {fl}): a program has one {gname}, which {what}; put the lines of both in it, or make each a function of its own that {gname} calls")
+    # (a top-level `loop:` in a game, as Scratch's forever: the frames start after the top level ends)
+    if has_upd or has_drw:
+        loop d in modules[mainm].decls:
+            if nodes[d].kind == .while_ and nodes[int(nodes[d].a)].kind == .bool_lit and nodes[int(nodes[d].a)].ival != 0 and not has_break(int(nodes[d].b)):
+                upd = "update"
+                if not has_upd: upd = "draw"
+                warn(nodes[d].pos, "this loop never ends, so the game never starts: {upd} runs after the lines at the top of the file are done. What repeats each frame goes in {upd}, which is the game's forever loop")
     # (the game ignores what update and draw give back: their last line is a statement, as
     # `world.step(dt)` or a mistaken `pos == pos + v`, which then gets its warning)
     loop gn in ["update", "draw"]:
@@ -3195,7 +3241,8 @@ check_program = (main_path: str):
     if not ide_on and not test_mode and not runs and not check_all and not ends_with(main_path, "<input>"):
         loop d in modules[mainm].decls:
             if nodes[d].kind != .fn_ or fn_used.has(d) or has_flag(d, NF_EXTERN) or nodes[d].c != 0: continue
-            warn(nodes[d].pos, "nothing in this file runs: it only defines things. A module that other files `use` is like that (its functions run from there); a program calls them at its top, or has main, update or draw")
+            fnm = name_of(int(nodes[d].name))
+            warn(nodes[d].pos, "nothing in this file runs: it only makes functions, and making {fnm} does not run it. Lines at the top of the file run when the program starts (`{fnm}()` there calls it); a game's `update = (dt: f64):` runs every frame, where `if key_pressed(.space): ...` checks a key. (A file that other files `use` is fine like this.)")
             break
     if not ide_on and (not test_mode or check_all) and runs:
         loop d in modules[mainm].decls:
