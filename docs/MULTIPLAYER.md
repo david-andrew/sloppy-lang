@@ -114,13 +114,34 @@ and the server's differ, which shows as flicker: draw it from something both hav
 player to the world when `srv.joined` names them, and take them out on `srv.left`.
 `c.connected()` turns false, and `c.problem` says why, when the client cannot connect, the
 server closes the connection, or nothing comes from it for 5 seconds. A server without a
-window is a program that calls `srv.update()` 60 times a second:
+window calls `srv.run()`: `srv.update()` 60 times a second, on time (a loop of `update` and
+`sleep(1.0 / 60.0)` ticks a little slower than the clients, and their inputs wait in a queue:
+lag).
 
 ```gdscript
-loop true:
-    srv.update()
-    sleep(1.0 / 60.0)
+srv = netplay.server(World(), apply, step)
+srv.listen(4600)
+srv.run()                       # (or each tick in a game's own update: srv.update())
 ```
+
+What a player is called, or a token to know them by when they come back, goes with the
+connection: `c.connect(host, 4600, hello = "{name} {token}")`, and the server reads
+`srv.hello(p)` (empty for a moment after `p` joins: it comes with the first world).
+`c.disconnect()` leaves; `c.connect(...)` again joins again with the same client.
+
+To try a slow network on one machine, `srv.lag(100, 20)` and `c.lag(100, 20)` hold what each
+side sends 100 ms, and up to 20 ms more at random (in order, as TCP keeps it).
+`srv.waiting(p)` says how many of p's inputs wait to be applied: 1 or 2 is right; more is lag.
+
+The world goes to every client as its text (`to_text`), compressed, every `srv.send_every`
+ticks (2: 30 a second): a few hundred bytes for a small arena. Keep what does not need to
+travel (effects, sounds) out of it, or in the client only. A screenshot run
+(`SLOPPY_SCREENSHOT`) of a connected client keeps to real time, as the server does.
+
+Bullets and other things moved in `step` are not predicted: the client sees them when the
+server's world shows them, half a round trip and the interpolation later. For a shot that
+must show at once, draw its flash in the client when the button is pressed, and let the
+server's world bring the bullet.
 
 ## Ticks, not frames
 

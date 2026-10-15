@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+From an online arena (2-4 players, native and browser clients, a lobby, reconnects):
+- `srv.run()` ticks a server 60 times a second on time. The loop the docs showed (`update`,
+  then `sleep(1/60)`) ticked a little slower than the clients, whose inputs then piled up:
+  150 ms of lag on one machine. A server also takes one extra input now and then from a client
+  that is ahead, so a slight difference in clocks cannot build up.
+- `c.connect(host, port, hello = "...")` and `srv.hello(p)`: a name or token sent with the
+  connection. `c.disconnect()`; `connect` again works with the same client.
+- `srv.lag(ms, jitter)` and `c.lag(ms, jitter)` simulate a slow network; `srv.waiting(p)` says
+  how many of a player's inputs wait.
+- Worlds travel compressed: a quarter of the bytes.
+- A web page's `env("JOIN")` reads `?join=` too (URL parameters in any letters): the arena
+  example said `?join=` and was ignored.
+- A screenshot run of a connected client keeps to real time (as fast as possible, it sent its
+  inputs faster than the server took them).
+- A warning when a program uses a library struct's own `__` field (`c.__peer`).
+- The game's hook as it ends is `on_quit = ():` (it was `quit`, which replaced the library's
+  `quit()` that closes the window).
+
 - `from_text`, `from_json` and `load_value` read structs a quarter faster (field names are
   compared where they are, not copied); `csv_rows` is 30% faster.
 

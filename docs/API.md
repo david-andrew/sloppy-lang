@@ -3788,6 +3788,10 @@ draw = ():
 - `join[W, I] = (s: mut Server[W, I], player: int)`: a player connected (as the player number, any int); a player left
 - `leave[W, I] = (s: mut Server[W, I], player: int)`
 - `receive[W, I] = (s: mut Server[W, I], player: int, data: u8[])`: bytes from a player
+- `hello[W, I] = (s: Server[W, I], p: int) -> str`: what player p's client gave connect (its name, a token to know it again by): "" until it has come, which is soon after p joined
+- `waiting[W, I] = (s: Server[W, I], p: int) -> int`: how many of player p's inputs are waiting to be applied (1 or 2 normally; more: they come faster than the server ticks, which shows as lag)
+- `lag[W, I] = (s: mut Server[W, I], ms: f64, jitter_ms: f64 = 0)`: simulate a slow network on what the server sends: ms more latency, up to jitter_ms more at random (kept in order, as over TCP); the client's lag does the same both ways
+- `run[W, I] = (s: mut Server[W, I], ticks_per_second: f64 = 60.0)`: run the server: update 60 times a second, on time (each tick's start set from the first, so a slow sleep does not make it fall behind), until the program ends
 - `outgoing[W, I] = (s: mut Server[W, I]) -> (int, u8[])[]`: what to send to whom since the last call (without listen)
 - `listen[W, I] = (s: mut Server[W, I], port: int)`: serve over WebSockets on port: native and web clients connect (players are net's peers)
 - `update[W, I] = (s: mut Server[W, I])`: one tick: each player's next input applied, the rest of the tick, and the world sent out
@@ -3805,7 +3809,9 @@ draw = ():
       problem = ""                    # what is wrong, said once on stderr too: could not connect, the
   ```
 - `client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]`
-- `connect[W, I] = (c: mut Client[W, I], host: str, port: int)`
+- `connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = "")`: connect to the server; hello: text the server gets as srv.hello(player) (a name, a token to know a player again by after a reconnect). A client that lost its connection, or called disconnect, connects again the same way
+- `disconnect[W, I] = (c: mut Client[W, I])`: close the connection (connect again later, to the same server or another)
+- `lag[W, I] = (c: mut Client[W, I], ms: f64, jitter_ms: f64 = 0)`: simulate a slow network on what the client sends and gets: ms more latency each way, up to jitter_ms more at random (kept in order, as over TCP)
 - `connected[W, I] = (c: Client[W, I]) -> bool`: connected, and the server has sent a world (and is still heard from)
 - `play[W, I] = (c: mut Client[W, I], input: I)`: this tick's input: applied here at once (prediction) and sent
 - `receive[W, I] = (c: mut Client[W, I], data: u8[])`: bytes from the server

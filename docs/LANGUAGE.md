@@ -991,8 +991,9 @@ If the program defines `update(dt: f64)` and/or `draw()`, a window opens and the
 called every frame (this is also how programs run in the browser). `dt` is the seconds since
 the last frame, at most 0.1: after a long stall (the window dragged, a hidden tab) the game
 takes one 0.1 s step, not a jump. A clock that must keep up with real time reads `elapsed()`
-(or, for music, `audio_time()`) instead of adding up `dt`. A `quit = ():` runs once as the
-game ends (its window closed, or a web page closed or left): the place to save.
+(or, for music, `audio_time()`) instead of adding up `dt`. An `on_quit = ():` runs once as
+the game ends (its window closed, `quit()` called, or a web page closed or left): the place to
+save.
 
 ```gdscript
 pos = vec2(100, 100)
@@ -1085,7 +1086,7 @@ address) draws an overlay with the frame rate, a graph of recent frame times, th
 `update` + `draw`, the time spent handing frames to the screen, and how many frames took much
 longer than usual (stutter). `SLOPPY_STATS=log` (`?stats=log`) prints the same numbers every two
 seconds, and each long frame as it happens. In a web page, `env(name)` reads the page's URL
-parameters, so `?SLOPPY_STATS=1` and `?stats` are the same. Files in a web page (`read_file`,
+parameters, in any letters (`?join=` is `env("JOIN")`'s), so `?SLOPPY_STATS=1` and `?stats` are the same. Files in a web page (`read_file`,
 `write_file`, `list_dir`) are the page's own, in memory (`sloppy.files` in JavaScript); a web build
 run under node (`tools/runwasm.js page.html args...`) uses the real ones and gets the arguments.
 

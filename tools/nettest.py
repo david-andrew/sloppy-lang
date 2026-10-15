@@ -85,13 +85,13 @@ if shell:
     h = subprocess.Popen([srv], stdout=subprocess.PIPE, text=True, env=env)
     time.sleep(0.5)
     b = subprocess.Popen([shell, "--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0",
-                          "file://" + page + f"?NET_PORT={port}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                          "file://" + page + f"?net_port={port}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try: h_out = h.communicate(timeout=60)[0]
     except subprocess.TimeoutExpired:
         h.kill()
         h_out = h.communicate()[0]
     b.kill()
-    check("client and server with a web page (in Chromium)", h_out, ["server: walked true"])
+    check("client and server with a web page (in Chromium)", h_out, ["server: hello page", "server: walked true"])
     # two web pages, straight to each other (WebRTC): the relay passes on only how they connect
     port += 1
     env["NET_PORT"] = str(port)
