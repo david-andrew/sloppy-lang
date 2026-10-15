@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+From a deck-building card game (a fanned hand, drag and drop, enemies' intents, a run of fights):
+- A function field never given one (`on_click: () -> void`, left out) stopped the program with
+  "memory access at 0x0" and sometimes no line: calling it now says which and where, and
+  building the struct without it warns.
+- `loop name, n, cost in items:` unpacks three or more names, as two did.
+- `t.1()` calls a tuple's function element.
+- `Actions`: steps one after another, each a wait after the one before
+  (`turn.then(0.4, (): enemy_attack(0))`, `turn.update(dt)`, `turn.busy()`).
+- `rect_rounded`, `rect_rounded_outline` and `ellipse`; `hud_text_field(..., hint = "seed")`.
+- A tween read back from text keeps an ease (linear): it stopped the program when updated.
+- `sloppy check` on a file of definitions alone (a module others use) no longer says each of
+  its functions is never called; run, such a file gets one warning that nothing in it runs.
+
 From a visual novel (dialogue, choices, portraits, music, save slots, Japanese text):
 - A loaded font's missing characters are drawn with the built-in font (Latin and accents in a
   Japanese font drew nothing), else as `?`.

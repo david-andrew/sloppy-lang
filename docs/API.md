@@ -1626,6 +1626,9 @@ draw = ():
 - `triangle_gradient = (a: vec2, b: vec2, c: vec2, ca: vec4, cb: vec4, cc: vec4)`: triangle with a color per corner (colors blend across it)
 - `quad_gradient = (a: vec2, b: vec2, c: vec2, d: vec2, ca: vec4, cb: vec4, cc: vec4, cd: vec4)`: quad (a, b, c, d in order around it) with a color per corner
 - `circle = (center: vec2, radius: f64, c: vec4, segments: int = 0)`
+- `ellipse = (center: vec2, radii: vec2, c: vec4, segments: int = 0)`: an ellipse: radii.x across, radii.y up and down (a shadow under a card or a character)
+- `rect_rounded = (x: f64, y: f64, w: f64, h: f64, radius: f64, c: vec4)`: a rectangle with rounded corners, each a quarter circle of this radius (a card, a button)
+- `rect_rounded_outline = (x: f64, y: f64, w: f64, h: f64, radius: f64, thickness: f64, c: vec4)`: its outline, thickness wide inside it
 - `circle_gradient = (center: vec2, radius: f64, inner: vec4, outer: vec4, segments: int = 48)`: circle that fades from `inner` color at the center to `outer` at the edge (glows, soft lights)
 - `ring = (center: vec2, radius: f64, thickness: f64, c: vec4, segments: int = 48)`
 - `arc = (center: vec2, radius: f64, thickness: f64, start: f64, stop: f64, c: vec4, segments: int = 0)`: part of a ring: from angle `start` to `stop` (radians, clockwise on screen)
@@ -3112,7 +3115,7 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
 - `hud_panel = (r: Rect, color: vec4 = vec4(0, 0, 0, 0))`: a box behind other parts (it also keeps clicks on it from the world)
 - `hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false) -> bool`: a button with a label: true in the frame it is clicked (or tapped); selected: drawn as the one chosen of several (a tool, a tab)
 - `hud_bar = (r: Rect, amount: f64, color: vec4, back: vec4 = vec4(0, 0, 0, 0.5))`: a bar filled to `amount` (0 to 1): health, progress, a cooldown
-- `hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64) -> str`: a box to type text in: clicking it gives it the keyboard, Enter, Escape or a click elsewhere takes it away; returns the text as it is now. `id` tells fields with the same place apart (their rectangle names them otherwise)
+- `hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: str = "") -> str`: a box to type text in: clicking it gives it the keyboard, Enter, Escape or a click elsewhere takes it away; returns the text as it is now. `id` tells fields with the same place apart (their rectangle names them otherwise); `hint` is shown dimmed while it is empty ("seed")
 - `hud_checkbox = (r: Rect, label: str, on: bool) -> bool`: a box ticked or not, with its label to the right: the new state (flipped in the frame it is clicked)
 
 ## Paths
@@ -3259,7 +3262,7 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
       from: T
       to: T
       duration: f64
-      ease: (f64) -> f64
+      ease: (f64) -> f64 = linear            # (read back from text: this; the text cannot hold a function)
       mode: TweenMode
       t = 0.0                     # seconds since it started (below 0: still waiting)
   ```
@@ -3330,6 +3333,20 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
 #### Timing
 
 - `every = (id: int, period: f64) -> bool`: true once every `period` seconds, the first time on the first call: each timer is told apart by its id, any number of the game's own (every(1, 0.5) and every(2, 3.0) run apart)
+- `struct Actions`: things to do one after another, each a wait after the one before: an enemy's turn, the hits of an attack, a cutscene. Steps are added with then, and update runs those whose time came.
+  ```gdscript
+  turn: Actions
+  turn.then(0.3, (): enemy_attack(0))     # 0.3 s from now
+  turn.then(0.5, (): enemy_attack(1))     # 0.5 s after that
+  turn.then(0.2, (): start_player_turn())
+  update = (dt: f64):
+      turn.update(dt)
+      if not turn.busy(): (the player's input)
+  ```
+- `then = (a: mut Actions, wait: f64, f: () -> void)`: do f, `wait` seconds after the step before it (or after now, when there is none)
+- `update = (a: mut Actions, dt: f64)`: the steps whose time has come, run in order (a step may add more)
+- `busy = (a: Actions) -> bool`: steps still to come
+- `clear = (a: mut Actions)`: drop the steps still to come
 
 ## 2D physics
 

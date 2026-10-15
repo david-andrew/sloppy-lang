@@ -471,7 +471,8 @@ count down by index (`loop i in [xs.len() - 1, xs.len() - 2..0]`).
 
 Iterators joined with `and` advance together until one runs out; joined with `or` they advance
 until all have run out (the variables of finished ones are `none`, so they are optionals).
-`loop i, x in xs` does not count: two names before `in` always unpack.
+`loop i, x in xs` does not count: names before `in` always unpack (two: a map's key and value,
+or a pair; more: a tuple's parts, `loop name, n, cost in items`).
 
 **Comprehensions** are a loop inside brackets; `if` filters, nested loops flatten:
 
@@ -525,7 +526,8 @@ n = int(Dir.west)                       # 3: a simple enum's variants are number
 d = Dir((n + 1) % 4)                    # .north: and a number gives its variant (checked)
 ```
 
-A field left out starts at its default, or at zero (0, "", an empty array, `none`, false).
+A field left out starts at its default, or at zero (0, "", an empty array, `none`, false; a
+function field has nothing to call: calling it stops the program, saying so).
 Leave fields out by naming the ones given (`Player(name = "cy")`); values given in order that
 stop one or two fields short of a number, text or struct without a default get a warning, as
 that is usually a value forgotten.
