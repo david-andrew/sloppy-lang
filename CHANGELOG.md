@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+From command-line scripts (a build runner, a file renamer, a log reader, a duplicate finder):
+- `parse_args[Options]("what it does")` reads the command line into a struct: `bool` fields are
+  flags (`--verbose`, `-v`, `-vq`), others take a value (`--out x`, `--out=x`, `-o x`; numbers
+  checked, enums by name), the last list field gets the other arguments, and `--help` is made
+  from the fields and their defaults. A mistake is said with that help, and exit code 2.
+  `read_args[T](words)` does the same without exiting, for tests.
+- `run_program` and `run_shell` take `show = true` (the program's output shows as it runs,
+  after what was printed before it) and `cwd = "dir"` (where it runs).
+- `open_file(path)`, then `loop let line = f.read_line():` reads a file of any size a line at a
+  time (96 MB in 0.5 s with 23 MB of memory); `f.read_bytes(n)`, `f.close()`.
+- `main = () -> int` gives the exit code (in a web build, one other than 0 ends the program). A function whose last line is `exit(...)` or a panic
+  (`die(msg)`) ends every path through it: `if ok: return x` then `die("...")` needs no value.
+- `sloppy test file.jo words` runs only the tests with one of the words in their names; a test
+  that calls `exit()` fails instead of passing.
+- Text past ASCII: format widths (`"{name:<12}"`) and `pad_start`/`pad_end` count characters,
+  not bytes; `upper`, `lower` and `capitalize` know accented Latin, Greek and Cyrillic letters;
+  regex `\w` and `\b` take letters of any script.
+- `file_error()`: why the last file operation that failed did ("permission denied", "no such
+  file or directory", "the directory is not empty"), on Linux, macOS and Windows.
+- `regex_error(pattern)`: what is wrong with a pattern a user typed, without stopping.
+- `parse_date("2026-10-14T08:15:03+02:00")` reads ISO dates and times (a Date, or none).
+- `sha256(bytes or text)`, `abs_path(path)`; `if let` in a comprehension
+  (`[loop s in fields: if let n = to_float(s): n]`).
+- `glob` leaves out hidden names (`.git`, `.env`) unless the pattern starts them with a dot, as
+  the shell does, and `glob("src/*.jo")` lists one directory instead of walking all below it.
+- `is_dir` is true for a directory that cannot be read; a CSV's byte order mark is not part of
+  its first column's name; printed strings show `\r` and control characters as escapes.
+- An untyped parameter with a default (`loud = false`) takes the default's type when a call
+  leaves it out (it said "cannot infer type parameter"). `'{'` is a brace.
+- The run cache (`sloppy-cache` in the temporary directory) stays under 500 MB.
+- A warning for `@lib("libc.so.6")` in a Windows build (and a DLL in a Linux or macOS one): the
+  program stopped when it called the function.
+
 ## 0.15.0
 
 From a strategy game (1000+ units, flow fields, spatial hashes, save/load):

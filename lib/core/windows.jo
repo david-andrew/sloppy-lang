@@ -239,7 +239,11 @@ when TARGET == "windows":
         h: *u8 = null
         if write: h = CreateFileW(data(wp), u32(0x40000000), 1, null, 2, 0x80, null)      # GENERIC_WRITE, CREATE_ALWAYS
         else: h = CreateFileW(data(wp), u32(0x80000000), 7, null, 3, 0x80, null)          # GENERIC_READ, OPEN_EXISTING
-        if (h as int) == -1: return null
+        if (h as int) == -1:
+            # (a directory: Windows says access is denied)
+            if __w32_is_dir(path): __ferr(-21)
+            else: __w32_ferr()
+            return null
         h
 
     __w32_read_file = (path: str) -> str?:
@@ -265,7 +269,7 @@ when TARGET == "windows":
         n = len(contents)
         w: u32[] = [0]
         loop off < n:
-            if WriteFile(h, data(contents) + off, u32(min(n - off, 1 << 30)), data(w), null) == 0: return false
+            if WriteFile(h, data(contents) + off, u32(min(n - off, 1 << 30)), data(w), null) == 0: return __w32_ferr()
             off += int(w[0])
         true
 
@@ -277,13 +281,32 @@ when TARGET == "windows":
         a = GetFileAttributesW(data(__wide(path)))
         a != u32(0xFFFFFFFF) and a & u32(0x10) != u32(0)
 
+    # (false, with why the last call failed kept for file_error: Windows' error, as Linux's)
+    __w32_ferr = () -> bool:
+        c = int(GetLastError())
+        e = 0
+        if c == 2 or c == 3: e = 2                      # (no file; no directory on the way)
+        else if c == 5: e = 13
+        else if c == 32 or c == 33: e = 16              # (in use: by another program)
+        else if c == 80 or c == 183: e = 17
+        else if c == 112 or c == 39: e = 28
+        else if c == 145: e = 39
+        else if c == 206: e = 36
+        else if c == 19: e = 30
+        else if c == 17: e = 18
+        else if c == 4: e = 24
+        if e == 0:
+            __file_err = "Windows error {c}"
+            return false
+        __ferr(-e)
+
     __w32_delete = (path: str) -> bool:
         wp = __wide(path)
-        DeleteFileW(data(wp)) != 0
+        DeleteFileW(data(wp)) != 0 or __w32_ferr()
 
     __w32_mkdir = (path: str) -> bool:
         wp = __wide(path)
-        CreateDirectoryW(data(wp), null) != 0 or __w32_exists(path)
+        CreateDirectoryW(data(wp), null) != 0 or __w32_exists(path) or __w32_ferr()
 
     # (WIN32_FIND_DATAW: the name, 260 UTF-16 units, is at 44)
     __w32_list_dir = (path: str) -> str[]:
@@ -291,7 +314,9 @@ when TARGET == "windows":
         wp = __wide(path + "\\*")
         found = fill(u8(0), 600)
         h = FindFirstFileW(data(wp), data(found))
-        if (h as int) == -1: return out
+        if (h as int) == -1:
+            __w32_ferr()
+            return out
         loop true:
             name = __narrow((data(found) + 44) as *u16, -1)
             if name != "." and name != "..": out.push(name)
@@ -375,14 +400,16 @@ when TARGET == "windows":
     # run a program and wait for it: its exit code (-1: it could not be started)
     # run a program (looked for on the PATH by Windows when path is ""), its output collected:
     # its exit code (-1: not started) and what it wrote
-    __w32_run_output = (path: str, argv: str[]) -> (int, str):
+    __w32_run_output = (path: str, argv: str[], show: bool, cwd: str) -> (int, str):
         sa = fill(0, 3)
         sa[0] = 24
         sa[2] = 1                                       # bInheritHandle
         out_r: *u8[] = [null]
         out_w: *u8[] = [null]
-        if CreatePipe(data(out_r), data(out_w), data(sa) as *u8, u32(1 << 16)) == 0: return (-1, "")
-        SetHandleInformation(out_r[0], 1, 0)
+        if show: out_w[0] = GetStdHandle(u32(0xFFFFFFF5))  # (its output: this program's)
+        else:
+            if CreatePipe(data(out_r), data(out_w), data(sa) as *u8, u32(1 << 16)) == 0: return (-1, "")
+            SetHandleInformation(out_r[0], 1, 0)
         si = fill(0, 13)                                # STARTUPINFOW
         si[0] = 104
         (data(si) as *u32)[15] = u32(0x100)             # STARTF_USESTDHANDLES
@@ -391,27 +418,30 @@ when TARGET == "windows":
         si[12] = GetStdHandle(u32(0xFFFFFFF4)) as int   # (its errors: this program's)
         pi = fill(0, 3)
         wcmd = __wide(__w32_cmdline(argv))
+        wdir = __wide(cwd)
+        dir: *u16 = null
+        if len(cwd) > 0: dir = data(wdir)
         started = false
-        if len(path) == 0: started = CreateProcessW(null, data(wcmd), null, null, 1, u32(0x08000000), null, null, data(si) as *u8, data(pi) as *u8) != 0
+        if len(path) == 0: started = CreateProcessW(null, data(wcmd), null, null, 1, u32(0x08000000), null, dir, data(si) as *u8, data(pi) as *u8) != 0
         else:
             wpath = __wide(path)
-            started = CreateProcessW(data(wpath), data(wcmd), null, null, 1, u32(0x08000000), null, null, data(si) as *u8, data(pi) as *u8) != 0
-        CloseHandle(out_w[0])
+            started = CreateProcessW(data(wpath), data(wcmd), null, null, 1, u32(0x08000000), null, dir, data(si) as *u8, data(pi) as *u8) != 0
+        if not show: CloseHandle(out_w[0])
         if not started:
-            CloseHandle(out_r[0])
+            if not show: CloseHandle(out_r[0])
             return (-1, "")
         proc = pi[0] as *u8
         CloseHandle(pi[1] as *u8)
         out: u8[]
         got: u32[] = [0]
-        loop true:
+        loop not show:
             n = out.len()
             out.resize(n + 65536)
             if ReadFile(out_r[0], data(out) + n, u32(65536), data(got), null) == 0 or got[0] == 0:
                 out.resize(n)
                 break
             out.resize(n + int(got[0]))
-        CloseHandle(out_r[0])
+        if not show: CloseHandle(out_r[0])
         WaitForSingleObject(proc, u32(0xFFFFFFFF))
         code: u32[] = [0]
         GetExitCodeProcess(proc, data(code))

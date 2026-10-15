@@ -84,9 +84,12 @@ piped in (`sloppy < script.txt`).
   Raw strings `r"no {interp} \here"` (or `r'...'`: JSON in code is `r'{"a": 1}'`). Triple
   quoted strings run over lines: when the text starts on the line after the opening `"""`, that
   line break, the indentation all its lines share and the last line break (before the closing
-  `"""` on a line of its own) are left out, so the text can be indented with the code.
+  `"""` on a line of its own) are left out, so the text can be indented with the code;
+  `r"""..."""` is both (help text with `{name}` in it). Widths in format specs count
+  characters, so `"{city:<8}"` lines up "Zürich" with "Paris".
 * **Characters.** A one-character string where an integer is expected stands for its
-  character code: `c == 'a'`, `'0'..'9'` in a match, `u8('A')`.
+  character code: `c == 'a'`, `'0'..'9'` in a match, `u8('A')`, `'{'` (a brace alone is not an
+  interpolation).
 * **Units.** A unit right after a number (no space) converts to the SI base unit at compile
   time: `120ms` is `0.12`, `90deg` is `PI / 2`, `3km` is `3000.0`, `1.2(m/s)`,
   `9.81(m/s^2)`, `[1.2 0](m/s)`. Time `s ms us ns min h`, length `m cm mm km`, mass `kg g`,
@@ -476,6 +479,7 @@ until all have run out (the variables of finished ones are `none`, so they are o
 squares = [loop i in [1..5]: i ^ 2]
 evens = [loop n in [0..10): if n % 2 == 0: n]
 pairs = [loop i in [0..3): loop j in [0..3): (i, j)]
+numbers = [loop s in fields: if let n = to_float(s): n]   # the ones that read as numbers
 lengths = {loop w in words: w: len(w)}         # in braces, key: value makes a map
 ```
 
@@ -906,6 +910,8 @@ reporting `test name ... ok` per block. On Linux and macOS each test runs in a p
 own: one that fails (an `assert` with its message and location, or a panic) is reported
 `FAILED`, the others still run (and do not see what it changed), and the run ends with how many
 passed and failed and exit status 1. On Windows and the web the first failure stops the run.
+`sloppy test file.jo parse save` runs only the tests whose names have `parse` or `save` in
+them. A test that calls `exit()` fails (it did not reach its end).
 
 **Release builds.** `opt = release` (or `sloppy build --release`) inlines refcount, uniqueness
 and bounds-check fast paths and runs the optimizer (constant folding, copy propagation,
@@ -978,7 +984,8 @@ filled in parallel.) Web builds run the same code on one thread.
 
 ## 12. Programs and the game loop
 
-A program runs its top-level statements, then `main()` if defined.
+A program runs its top-level statements, then `main()` if defined. A `main = () -> int` gives
+the program's exit code (0: all went well); `exit(code)` ends it anywhere.
 If the program defines `update(dt: f64)` and/or `draw()`, a window opens and they are
 called every frame (this is also how programs run in the browser). `dt` is the seconds since
 the last frame, at most 0.1: after a long stall (the window dragged, a hidden tab) the game
@@ -1097,7 +1104,7 @@ sloppy watch file.jo      run it, and reload it while its files change
 sloppy --web file.jo      compile for the web and open it in the browser
 sloppy build file.jo      write the executable / .html (-o game.zip: the page as index.html in a
                           zip, ready to upload to itch.io)
-sloppy test file.jo       run `test` blocks
+sloppy test file.jo       run `test` blocks (sloppy test file.jo save: those with "save" in their names)
 sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, platformer, 3d, program)
 sloppy check file.jo      type check only
 sloppy add <git URL>      a package, in the build block (and sloppy.lock)

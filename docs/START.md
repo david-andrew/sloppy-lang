@@ -153,6 +153,58 @@ program with a test to start from, and `sloppy my_tool.jo a b` runs it with `arg
 `["my_tool.jo", "a", "b"]`. A function named `main` runs after the top-level code (or where
 the file calls it).
 
+```gdscript
+#!/usr/bin/env sloppy
+# count.jo: lines and words in files, largest first
+
+struct Options:
+    words = false               # --words, or -w: count words too
+    top = 0                     # --top 5: only the largest five (0: all)
+    files: str[]                # the arguments that are not options
+
+main = () -> int:
+    opts = parse_args[Options]("lines (and words) in files, largest first")
+    if opts.files.len() == 0:
+        eprint("count.jo: which files? (count.jo --help)")
+        return 2                                  # main's int is the exit code
+    rows: (str, int, int)[]
+    loop path in opts.files:
+        if let f = open_file(path):               # line by line: any size of file
+            n_lines = 0
+            n_words = 0
+            loop let line = f.read_line():
+                n_lines += 1
+                if opts.words: n_words += words(line).len()
+            f.close()
+            rows.push((path, n_lines, n_words))
+        else: eprint("count.jo: cannot read {path}")
+    rows.sort_by((r): r.1, descending = true)
+    if opts.top > 0 and rows.len() > opts.top: rows.resize(opts.top)
+    loop r in rows:
+        if opts.words: print("{r.0:<30} {r.1:>8} {r.2:>8}")
+        else: print("{r.0:<30} {r.1:>8}")
+    0
+```
+
+With the first line `#!/usr/bin/env sloppy` and `chmod +x count.jo`, it runs as
+`./count.jo -w --top 3 *.txt` (on Linux and macOS). Everything after the file's name goes to the
+script, `--release` too; `args()[0]` is the script's own path (`exe_path()` is where its build
+is kept). `parse_args` reads the options into the struct: a `bool` field is a flag, others take
+a value, the last list field gets the other arguments, and `--help` lists them all; a mistake
+(`--top many`) is said with that help, and exit code 2.
+
+- `run_program("make", ["-j8"], show = true)` shows a program's output as it runs;
+  without `show`, it is returned as text. `cwd = "build"` runs it in another directory.
+- A file function that fails gives `none` or `false`, and `file_error()` says why ("permission
+  denied", "no such file or directory"): `if not write_file(p, s): eprint("{p}: {file_error()}")`.
+- `sha256(read_bytes(path) ?? [])` fingerprints a file; `glob("**/*.log")` finds files (hidden
+  ones, .git's, only with a pattern that names them).
+- Text widths in `"{name:<12}"` and `pad_end` count characters, so "Zürich" lines up with "Paris";
+  `upper` and `lower` know accented Latin, Greek and Cyrillic letters. `r"""..."""` is text over
+  several lines with no `{}` interpolation and no `\` escapes (help text with `{name}` in it).
+- `sloppy test count.jo` runs its `test` blocks; `sloppy test count.jo sort` only those with
+  "sort" in their names.
+
 ## Coming from Python
 
 | Python | Sloppy |
@@ -163,8 +215,11 @@ the file calls it).
 | `7 // 2`, `7 / 2` | `7 / 2` is 3 with whole numbers (`-7 / 2` is -3, and `-7 % 3` is -1, as in C); `7.0 / 2` is 3.5 |
 | `with open(p) as f: f.read()` | `read_file(p)` (a `str?`: none when it cannot be read), `write_file`, `append_file`, `read_bytes` |
 | `sys.argv`, `sys.exit(1)` | `args()`, `exit(1)` |
+| `argparse` | a struct of the options, `opts = parse_args[Options]("what it does")` |
 | `os.path.join`, `os.listdir`, `os.walk`, `glob.glob` | `join_path`, `list_dir`, `walk_dir`, `glob("src/**/*.jo")`; `make_dirs`, `rename_file`, `copy_file`, `delete_file`, `file_time` |
-| `subprocess.run(["ls", "-l"])`, `os.system("ls *.jo")` | `run_program("ls", ["-l"])`, `run_shell("ls *.jo")` (each gives its exit code and output) |
+| `subprocess.run(["ls", "-l"])`, `os.system("ls *.jo")` | `run_program("ls", ["-l"])`, `run_shell("ls *.jo")` (each gives its exit code and output; `show = true`: the output shows as it runs) |
+| `for line in open(p):` | `if let f = open_file(p):` then `loop let line = f.read_line():` (a file of any size) |
+| `hashlib.sha256(b).hexdigest()` | `sha256(b)` (bytes or text) |
 | `json.loads(s)`, `json.dumps(x)` | `parse_json(s)` (a Json), `from_json[Config](s)` (into a struct), `to_json(x)` |
 | `re.search(r"\d+", s)` | `s.find(regex(r"\d+"))` (a `Match?`: `m.text`, `m.groups`) |
 | `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero when changed (`counts[w] += 1`, `groups[k].push(x)`); reading one, `m[k]`, is an error: `m.get(k) ?? 0` |

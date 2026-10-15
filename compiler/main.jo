@@ -41,7 +41,7 @@ const SLOPPY_VERSION = "0.15.0"
 const SLOPPY_INSTALL_URL = "https://sloppy-lang.org/install"
 
 usage = ():
-    eprint("usage: sloppy   (an interactive prompt)\n       sloppy [run] [--web] [--release] file.jo [args...]   (--web: build for the browser and open it there)\n       sloppy watch file.jo [args...]   (run it, and reload it while its files change)\n       sloppy test file.jo\n       sloppy check file.jo\n       sloppy fmt [--check] file.jo or directory...   (lay out the code one way; -: standard input)\n       sloppy add <git URL or directory> [name] [file.jo]   (a package, pinned in sloppy.lock)\n       sloppy new <directory> [game|arcade|platformer|3d|program]   (a project to start from)\n       sloppy lsp   (a language server for editors, on standard input and output)\n       sloppy --version\n       sloppy update   (install the latest release, if this is not it)\n       sloppy build file.jo [-o output] [--target native|linux|linux-arm64|windows|macos|wasm] [--release] [-g: variables for debuggers] [--ir]")
+    eprint("usage: sloppy   (an interactive prompt)\n       sloppy [run] [--web] [--release] file.jo [args...]   (--web: build for the browser and open it there)\n       sloppy watch file.jo [args...]   (run it, and reload it while its files change)\n       sloppy test file.jo [words]   (only the tests whose names have one of the words)\n       sloppy check file.jo\n       sloppy fmt [--check] file.jo or directory...   (lay out the code one way; -: standard input)\n       sloppy add <git URL or directory> [name] [file.jo]   (a package, pinned in sloppy.lock)\n       sloppy new <directory> [game|arcade|platformer|3d|program]   (a project to start from)\n       sloppy lsp   (a language server for editors, on standard input and output)\n       sloppy --version\n       sloppy update   (install the latest release, if this is not it)\n       sloppy build file.jo [-o output] [--target native|linux|linux-arm64|windows|macos|wasm] [--release] [-g: variables for debuggers] [--ir]")
     exit(2)
 
 find_lib_dir = () -> str:
@@ -345,6 +345,10 @@ compile = (path: str, out0: str) -> str:
             exp_done[k] = true
     main_lf = -1
     if main_fn != 0: main_lf = lf_of_inst(main_fn)
+    # (main = () -> int: its value is the exit code)
+    main_code = main_fn != 0 and is_int(prune(int(fns[main_fn].ret)))
+    main_exit_lf = -1
+    if main_code and target_wasm: main_exit_lf = lf_of_inst(runtime_fn("exit"))
     # (after main: what print has collected, written out)
     entry_end_lf = -1
     if not target_wasm and not lower_only and not repl_image: entry_end_lf = lf_of_inst(runtime_fn("__end_flush"))
@@ -378,6 +382,7 @@ compile = (path: str, out0: str) -> str:
                     i += 1
                     continue
                 if len(fns[fi].clib) == 0: fatal(nodes[int(fns[fi].decl)].pos, "extern functions need @lib(\"library.so\") on native targets")
+                extern_lib_check(fi)
                 lower_extern_thunk(i, fi)
                 emit_function()
                 i += 1
@@ -719,6 +724,19 @@ main = ():
     eprint("sloppy: failed to run {built}")
     exit(1)
 
+# (@lib("libc.so.6") in a Windows build: the program fails when it calls the function)
+extern_lib_check = (fi: int):
+    d = int(fns[fi].decl)
+    if pos_in_lib(nodes[d].pos): return
+    cl = fns[fi].clib
+    lc = lower(cl)
+    other = ""
+    if target_windows and (find(lc, ".so") >= 0 or ends_with(lc, ".dylib")): other = "a Windows program loads DLLs (msvcrt.dll has the C library)"
+    else if not target_windows and ends_with(lc, ".dll"): other = "a Linux or macOS program loads .so or .dylib libraries"
+    else if target_macos and find(lc, ".so") >= 0: other = "a macOS program loads .dylib libraries (/usr/lib/libSystem.B.dylib has the C library)"
+    else if not target_macos and not target_windows and ends_with(lc, ".dylib"): other = "a Linux program loads .so libraries (libc.so.6 has the C library)"
+    if len(other) > 0: warn(nodes[d].pos, "@lib(\"{cl}\") is another system's library: {other}; `when TARGET == \"windows\":` gives each system its own @lib (as it is, the program stops when it calls {name_of(int(nodes[d].name))})")
+
 # (an FNV-1a hash of a path, as 8 hex digits)
 path_hash = (p: str) -> str:
     h = 2166136261
@@ -729,16 +747,27 @@ path_hash = (p: str) -> str:
     out
 
 # programs left in the run cache: those not run for a week go (and half-made ones of crashed
-# builds)
+# builds); past 500 MB, the oldest go until it is half that
 clean_cache = (cache: str):
     # (now, as the file system tells time: a file just written)
     write_file(cache + "/.now", "")
     now = file_time(cache + "/.now") ?? 0.0
     if now == 0.0: return
+    kept: (f64, str, int)[]
+    total = 0
     loop f in list_dir(cache):
         p = cache + "/" + f
         if let t = file_time(p):
             if now - t > 7.0 * 86400.0 or (ends_with(f, ".new") and now - t > 3600.0): delete_file(p)
+            else if f != ".now":
+                n = file_size(p) ?? 0
+                kept.push((t, p, n))
+                total += n
+    if total <= 500 << 20: return
+    kept.sort_by((k): k.0)
+    loop k in kept:
+        if total <= 250 << 20: break
+        if delete_file(k.1): total -= k.2
 
 # (a web page that saves, with no name in its build block: pages on one site, as itch.io's,
 # share their browser's storage, and every game.jo would read and write the others' saves)

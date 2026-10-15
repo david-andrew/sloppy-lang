@@ -8,6 +8,8 @@
 # Patterns: . (any character but a line break) [abc] [a-z] [^0-9] \d \w \s (and \D \W \S) ^ $
 # \b \B, x* x+ x? x{2} x{2,} x{2,5} (and lazy x*? x+? x?? x{2,5}?), a|b, (group) (?:group),
 # \ before any of .[]{}()*+?^$|\ for itself, \n \t \r; (?i) at the start ignores case (in ASCII).
+# \w takes letters of any script ("Zürich" is one word). A pattern a user typed is checked first
+# with regex_error(pattern) (regex(pattern) stops the program when it is wrong).
 # Matching takes time in proportion to the text's length times the pattern's (it never
 # backtracks without end), and works on characters (code points), not bytes.
 
@@ -51,7 +53,20 @@ const __RE_NWORDB = 10
 
 # ---------------- using one ----------------
 
-# a pattern made ready to match (a pattern it cannot read panics, saying where)
+# what is wrong with a pattern, or none when regex() can read it: for a pattern a user typed,
+# asked before regex(), which stops the program at one it cannot read
+#   if let why = regex_error(pat): fail("bad pattern: {why}")
+regex_error = (pattern: str) -> str?:
+    p = __ReParser(pattern, chars(pattern), soft = true)
+    p.nodes.push(__ReNode(0))         # (a node for what a failure gives back to point at)
+    if p.cs.len() >= 4 and p.cs[0] == '(' and p.cs[1] == '?' and p.cs[2] == 'i' and p.cs[3] == ')': p.i = 4
+    __re_alt(p)
+    if len(p.err) == 0 and p.i < p.cs.len(): __re_fail(p, "unexpected ')'")
+    if len(p.err) == 0: return none
+    p.err
+
+# a pattern made ready to match (a pattern it cannot read panics, saying where: regex_error
+# asks first)
 regex = (pattern: str) -> Regex:
     p = __ReParser(pattern, chars(pattern))
     r = Regex(pattern, [], [], 0)
@@ -310,7 +325,9 @@ __re_add = (r: Regex, s: str, vm: mut __ReVM, k: int, pc: int, pos: int, start: 
     vm.starts[k].push(start)
     vm.caps[k].push(caps)
 
-__re_word = (c: int) -> bool: (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_'
+# (a byte of a word, for \b: every byte of a character past ASCII counts, as \w takes letters
+# of other scripts)
+__re_word = (c: int) -> bool: (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_' or c >= 128
 
 # the code point at byte i, and how many bytes it takes
 __re_cp = (s: str, i: int) -> (int, int):
@@ -332,6 +349,8 @@ struct __ReParser:
     src: str
     cs: int[]
     i = 0
+    soft = false        # (regex_error: a failure is kept in err, not a panic)
+    err = ""
     groups = 0
     nodes: __ReNode[]
     classes: __ReClass[]
@@ -346,7 +365,12 @@ struct __ReNode:
     hi = 0
     greedy = true
 
-__re_fail = (p: __ReParser, why: str):
+__re_fail = (p: mut __ReParser, why: str):
+    if p.soft:
+        # (the first failure is what is wrong; the rest of the pattern is skipped)
+        if len(p.err) == 0: p.err = "{why} (at character {p.i + 1})"
+        p.i = p.cs.len()
+        return
     panic("regex \"{p.src}\": {why} (at character {p.i + 1})")
 
 __re_new = (p: mut __ReParser, nd: __ReNode) -> int:
@@ -412,8 +436,11 @@ __re_num = (p: mut __ReParser) -> int:
     v
 
 __re_atom = (p: mut __ReParser) -> int:
+    if p.i >= p.cs.len(): return 0
     c = p.cs[p.i]
-    if c == '*' or c == '+' or c == '?': __re_fail(p, "nothing to repeat")
+    if c == '*' or c == '+' or c == '?':
+        __re_fail(p, "nothing to repeat")
+        return 0
     p.i += 1
     if c == '.': return __re_new(p, __ReNode(1))
     if c == '^': return __re_new(p, __ReNode(7, c = __RE_BOL))
@@ -431,7 +458,9 @@ __re_atom = (p: mut __ReParser) -> int:
         return __re_new(p, __ReNode(6, c = num, kids = [inner]))
     if c == '[': return __re_class(p)
     if c == '\\':
-        if p.i >= p.cs.len(): __re_fail(p, "a \\ at the end")
+        if p.i >= p.cs.len():
+            __re_fail(p, "a \\ at the end")
+            return 0
         e = p.cs[p.i]
         p.i += 1
         if e == 'b': return __re_new(p, __ReNode(7, c = __RE_WORDB))
@@ -447,7 +476,9 @@ __re_atom = (p: mut __ReParser) -> int:
 __re_class_escape = (e: int, k: mut __ReClass) -> bool:
     lower = __re_fold(e)
     if lower == 'd': k.ranges = ['0', '9']
-    else if lower == 'w': k.ranges = ['a', 'z', 'A', 'Z', '0', '9', '_', '_']
+    # (\w: letters of other scripts too, as Python's: accented Latin, Greek, Cyrillic, kana,
+    # Chinese and Korean)
+    else if lower == 'w': k.ranges = ['a', 'z', 'A', 'Z', '0', '9', '_', '_', 0xC0, 0xD6, 0xD8, 0xF6, 0xF8, 0x2AF, 0x370, 0x3FF, 0x400, 0x52F, 0x3040, 0x30FF, 0x4E00, 0x9FFF, 0xAC00, 0xD7AF]
     else if lower == 's': k.ranges = [' ', ' ', 9, 13]
     else: return false
     k.neg = e != lower
@@ -467,7 +498,9 @@ __re_class = (p: mut __ReParser) -> int:
         p.i += 1
     first = true
     loop true:
-        if p.i >= p.cs.len(): __re_fail(p, "a [ without its ]")
+        if p.i >= p.cs.len():
+            __re_fail(p, "a [ without its ]")
+            return 0
         c = p.cs[p.i]
         if c == ']' and not first:
             p.i += 1
@@ -476,7 +509,9 @@ __re_class = (p: mut __ReParser) -> int:
         p.i += 1
         lo = c
         if c == '\\':
-            if p.i >= p.cs.len(): __re_fail(p, "a \\ at the end")
+            if p.i >= p.cs.len():
+                __re_fail(p, "a \\ at the end")
+                return 0
             e = p.cs[p.i]
             p.i += 1
             sub = __ReClass()

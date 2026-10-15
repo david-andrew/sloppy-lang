@@ -25,9 +25,9 @@ TOPICS = [
      "`{K: V}` maps keys to values, in the order they were added."),
     ("Basics", "math", "Math and random numbers", ["core/math"], "math",
      "For vectors and matrices, see [colors, vectors and matrices](#colors-vectors-and-matrices)."),
-    ("Basics", "system", "Files, time and the system", ["core/os", "std/path", "std/date"], "system",
+    ("Basics", "system", "Files, time and the system", ["core/os", "std/path", "std/date", "std/cli"], "system",
      "In a web page, files are the ones the page was given, and `env` reads its address's parameters."),
-    ("Data", "json", "JSON, CSV and base64", ["std/json", "std/csv", "std/base64"], "json",
+    ("Data", "json", "JSON, CSV, base64 and SHA-256", ["std/json", "std/csv", "std/base64", "std/hash"], "json",
      "`to_json(value)` and `from_json[T](text)` turn any value (a struct, an array, a map...) into JSON and back; "
      "`parse_json` reads JSON of any shape as a `Json` to look inside."),
     ("Data", "bytes", "Bytes and bits", ["std/bytes"], "bytes",

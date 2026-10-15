@@ -91,6 +91,11 @@ for t in tests:
             if l.startswith("# env: ") and "=" in l:
                 k, v = l[7:].split("=", 1)
                 test_env[k.strip()] = v.strip().replace("$TMP", tmp)
+                # (a container's program is not given this one's environment: Wine's, in /w)
+                if run[:2] == ["podman", "exec"]:
+                    cv = v.strip().replace("$TMP", "/w/tests" if target == "windows" else tmp)
+                    run[2:2] = ["-e", f"{k.strip()}={cv}"]
+                    if "-e" in run and "LANG=C.UTF-8" not in run: run[2:2] = ["-e", "LANG=C.UTF-8"]     # (é as UTF-8, not two Latin-1 letters)
         r = subprocess.run(run, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, input=stdin_data,
                            env=test_env)
     except subprocess.TimeoutExpired:
@@ -150,7 +155,7 @@ if compiler != "sloppy0" and target == "native":
         if pattern not in name: continue
         r = subprocess.run([sloppy, "test", t], capture_output=True, text=True, encoding="utf-8", errors="replace",
                            env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")), timeout=60)
-        if r.returncode == 0 and "tests passed" in r.stdout: passed += 1
+        if r.returncode == 0 and re.search(r"\d+ tests? passed", r.stdout): passed += 1
         else:
             print(f"FAIL {name}\n{r.stdout}{r.stderr}")
             failed += 1
@@ -159,10 +164,20 @@ if compiler != "sloppy0" and target == "native":
         t = os.path.join(root, "tests", "unit_failing", "mixed.jo")
         r = subprocess.run([sloppy, "test", t], capture_output=True, text=True, encoding="utf-8", errors="replace",
                            env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")), timeout=60)
-        want = ["test adds ... ok", "test fails ... FAILED", "test panics ... FAILED", "in the last test", "2 passed, 2 failed"]
-        if r.returncode == 1 and all(w in r.stdout for w in want): passed += 1
+        want = ["test adds ... ok", "test fails ... FAILED", "test panics ... FAILED", "in the last test", "test quits early ... FAILED",
+                "called exit(0) before its end", "2 passed, 3 failed"]
+        if r.returncode == 1 and all(w in r.stdout + r.stderr for w in want): passed += 1
         else:
             print(f"FAIL unit/failing (exit {r.returncode})\n{r.stdout}{r.stderr}")
+            failed += 1
+        # (sloppy test file.jo words: only the tests with one of the words in their names)
+        r = subprocess.run([sloppy, "test", t, "adds", "runs"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")), timeout=60)
+        r2 = subprocess.run([sloppy, "test", t, "nothing"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")), timeout=60)
+        if r.returncode == 0 and "2 tests passed (3 not run" in r.stdout and "fails" not in r.stdout and r2.returncode == 1 and "no test's name has 'nothing'" in r2.stderr: passed += 1
+        else:
+            print(f"FAIL unit/filter (exit {r.returncode}, {r2.returncode})\n{r.stdout}{r.stderr}{r2.stdout}{r2.stderr}")
             failed += 1
     # the tutorials' programs (docs/TUTORIAL*.md: code blocks starting "# step") must build
     for tf in sorted(glob.glob(os.path.join(root, "docs", "TUTORIAL*.md"))):
