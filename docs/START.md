@@ -253,7 +253,7 @@ from.
 | `random(a, b)`, `randomGaussian()`, `noise(x, y, z)` | `random(a, b)`, `random_normal(mean, sd)`, `noise(x)`, `noise(x, y)`, `noise(x, y, z)` (each 0 to 1), `fbm(x, y)` |
 | `TWO_PI`, `radians(45)` | `TAU`, `45deg` |
 | `background(0, 10)` for trails | each frame starts black: draw into a picture that is kept, `canvas = render_target(1280, 720)` with `draw_to(canvas)`, a see-through `rect` over it, then `draw_to_screen()` and `draw_target(canvas)` |
-| `saveCanvas()` | `save_png(screenshot(), "art.png")` |
+| `saveCanvas()` | `save_png(screenshot(), "art.png")`, then `download_file("art.png")`: a web page's browser downloads it |
 | a Shadertoy shader | a fragment function over a full-screen rect, as below: its `iTime`, `iResolution` and `iMouse` are fields you give it each frame |
 
 ```gdscript

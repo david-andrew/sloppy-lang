@@ -517,6 +517,7 @@ Operating system access: files, arguments, environment, time.
 - `input_float = (prompt: str = "") -> f64`: a number (12, 2.5) typed by the user, asked again until it is one
 - `read_stdin = () -> str`: all of standard input (what is piped in), until it ends
 - `read_bytes = (path: str) -> u8[]?`
+- `download_file = (path: str, name: str = "") -> bool`: a file the program wrote, given to the person using it: in a web page, the browser downloads it (a picture saved with save_png, an exported save), named `name` or as the path ends; elsewhere it is already where it was written. True if the file is there
 - `write_file = (path: str, contents: str) -> bool`
 - `write_bytes = (path: str, b: u8[]) -> bool`
 - `is_dir = (path: str) -> bool`: a directory (and not a file)
