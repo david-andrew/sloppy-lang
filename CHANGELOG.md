@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.17.0
+
 From a deck-building card game (a fanned hand, drag and drop, enemies' intents, a run of fights):
 - A function field never given one (`on_click: () -> void`, left out) stopped the program with
   "memory access at 0x0" and sometimes no line: calling it now says which and where, and
