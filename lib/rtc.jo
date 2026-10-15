@@ -192,6 +192,39 @@ struct __Conn:
     d_flight_at = 0.0
     d_cookie: u8[]
     d_app: u8[][]           # (the other side's application data: SCTP packets)
+    # SCTP
+    s_state = 0             # 0 not begun, 1 waiting (INIT sent), 2 established, 3 closed
+    s_my_tag = 0
+    s_peer_tag = 0
+    s_tsn = 0               # (the next TSN this side sends)
+    s_peer_cum = -1         # (the other side's TSNs up to here have come; -1: none yet)
+    s_got: {int: __Chunk}   # (its chunks come ahead of others: by TSN)
+    s_unacked: __Sent[]
+    s_init: u8[]            # (the INIT, sent again until answered)
+    s_init_at = 0.0
+    s_echo: u8[]            # (the COOKIE ECHO, likewise)
+    s_fwd = false           # (the other side takes FORWARD TSN)
+    s_ssn: {int: int}       # (the next stream sequence number, by stream)
+    s_partial: u8[]         # (a message arriving in pieces)
+    s_chan = -1             # the data channel's stream
+    s_chan_open = false     # (opened and acknowledged)
+    s_reliable = true       # (its messages are resent until they arrive)
+    s_rtt = 0.2
+    s_msgs: u8[][]          # (messages that came, each with a byte in front: 1 text, 0 bytes)
+    s_sack_due = false
+
+struct __Chunk:
+    flags: int
+    stream: int
+    ppid: int
+    data: u8[]
+
+struct __Sent:
+    tsn: int
+    chunk: u8[]             # (the DATA chunk, as sent)
+    at = 0.0
+    tries = 1
+    reliable = true
 
 __conns: __Conn[]
 
@@ -774,9 +807,474 @@ __dtls_poll = (id: int):
     loop dg in c.inbox: __dtls_in(c, dg)
     c.inbox.clear()
     if c.d_state == 1 and c.d_flight.len() > 0 and time() - c.d_flight_at > 1.0: __dtls_resend(c)
+    __sctp_poll(c)
     __conns[id] = c
 
 # application data (an SCTP packet) to the other side
 __dtls_send_app = (c: mut __Conn, data: u8[]):
     if c.d_state != 2: return
     net.udp_send(c.sock, c.sel_host, c.sel_port, __dtls_record(c, __CT_APP, data, 1))
+
+# ---------------- SCTP over DTLS (RFC 4960, 8261) and data channels (RFC 8831, 8832) ----------------
+const __SCTP_PORT = 5000
+const __PPID_DCEP = 50
+const __PPID_TEXT = 51
+const __PPID_BYTES = 53
+const __PPID_TEXT_EMPTY = 56
+const __PPID_BYTES_EMPTY = 57
+const __CHUNK_DATA = 1100           # (bytes of a message in one DATA chunk: a packet fits 1200)
+
+# TSN order, as serial numbers that wrap at 2^32
+__tsn_after = (a: int, b: int) -> bool:
+    d = (a - b) & 0xFFFFFFFF
+    d != 0 and d < 0x80000000
+__tsn_next = (a: int) -> int: (a + 1) & 0xFFFFFFFF
+
+# a packet of chunks for the other side
+__sctp_packet = (c: __Conn, chunks: u8[], tag: int) -> u8[]:
+    p: u8[]
+    __put16(p, __SCTP_PORT)
+    __put16(p, __SCTP_PORT)
+    __put32(p, tag)
+    __put32(p, 0)
+    p.extend(chunks)
+    crc = int(crypto.crc32c(p))
+    # (the checksum's bytes, lowest first)
+    p[8] = u8(crc & 255)
+    p[9] = u8((crc >> 8) & 255)
+    p[10] = u8((crc >> 16) & 255)
+    p[11] = u8((crc >> 24) & 255)
+    p
+
+__sctp_chunk = (typ: int, flags: int, value: u8[]) -> u8[]:
+    ch: u8[] = [u8(typ), u8(flags)]
+    __put16(ch, 4 + value.len())
+    ch.extend(value)
+    loop ch.len() % 4 != 0: ch.push(0)
+    ch
+
+__sctp_send = (c: mut __Conn, chunks: u8[]):
+    __dtls_send_app(c, __sctp_packet(c, chunks, c.s_peer_tag))
+
+# INIT and INIT ACK's fields: this side's tag, window, streams, first TSN, and that it takes
+# FORWARD TSN
+__sctp_init_fields = (c: __Conn) -> u8[]:
+    v: u8[]
+    __put32(v, c.s_my_tag)
+    __put32(v, 1 << 20)
+    __put16(v, 1024)
+    __put16(v, 1024)
+    __put32(v, c.s_tsn)
+    __put16(v, 0xC000)                      # Forward-TSN-Supported
+    __put16(v, 4)
+    __put16(v, 0x8008)                      # Supported Extensions: FORWARD TSN
+    __put16(v, 5)
+    v.extend([u8(192), 0, 0, 0])
+    v
+
+__sctp_start = (c: mut __Conn):
+    c.s_state = 1
+    c.s_my_tag = int(__be32(crypto.random_bytes(4), 0)) | 1
+    c.s_tsn = int(__be32(crypto.random_bytes(4), 0)) & 0x7FFFFFFF
+    # (the DTLS client starts the association; the server answers, or starts too when its INIT
+    # comes first: both work)
+    if c.d_client:
+        c.s_init = __sctp_packet(c, __sctp_chunk(1, 0, __sctp_init_fields(c)), 0)
+        c.s_init_at = time()
+        __dtls_send_app(c, c.s_init)
+
+# the other side's INIT or INIT ACK parameters: its tag, first TSN, whether it takes FORWARD TSN
+__sctp_peer_init = (c: mut __Conn, v: u8[]):
+    c.s_peer_tag = int(__be32(v, 0))
+    c.s_peer_cum = (int(__be32(v, 12)) - 1) & 0xFFFFFFFF
+    i = 16
+    loop i + 4 <= v.len():
+        t = __be16(v, i)
+        l = __be16(v, i + 2)
+        if t == 0xC000: c.s_fwd = true
+        if l < 4: break
+        i += (l + 3) & ~3
+
+# a packet from the other side
+__sctp_in = (c: mut __Conn, p: u8[]):
+    if p.len() < 12: return
+    q = p
+    q[8] = 0
+    q[9] = 0
+    q[10] = 0
+    q[11] = 0
+    crc = int(crypto.crc32c(q))
+    got = int(p[8]) | (int(p[9]) << 8) | (int(p[10]) << 16) | (int(p[11]) << 24)
+    if crc != got:
+        __rtc_say(c, "an SCTP packet with a wrong checksum")
+        return
+    i = 12
+    reply: u8[]
+    loop i + 4 <= p.len():
+        typ = int(p[i])
+        flags = int(p[i + 1])
+        l = __be16(p, i + 2)
+        if l < 4 or i + l > p.len(): break
+        v = p[i + 4..i + l)
+        i += (l + 3) & ~3
+        if typ == 1:
+            # INIT: an INIT ACK, with a cookie (here: just this side's tag, as nothing is kept)
+            __sctp_peer_init(c, v)
+            if c.s_state == 0:
+                c.s_state = 1
+                c.s_my_tag = int(__be32(crypto.random_bytes(4), 0)) | 1
+                c.s_tsn = int(__be32(crypto.random_bytes(4), 0)) & 0x7FFFFFFF
+            f = __sctp_init_fields(c)
+            __put16(f, 7)                   # State Cookie
+            __put16(f, 12)
+            __put32(f, c.s_my_tag)
+            __put32(f, c.s_peer_tag)
+            __dtls_send_app(c, __sctp_packet(c, __sctp_chunk(2, 0, f), c.s_peer_tag))
+        else if typ == 2:
+            # INIT ACK: echo its cookie
+            __sctp_peer_init(c, v)
+            j = 16
+            loop j + 4 <= v.len():
+                t = __be16(v, j)
+                pl = __be16(v, j + 2)
+                if pl < 4: break
+                if t == 7:
+                    c.s_echo = __sctp_packet(c, __sctp_chunk(10, 0, v[j + 4..j + pl)), c.s_peer_tag)
+                    c.s_init.clear()
+                    c.s_init_at = time()
+                    __dtls_send_app(c, c.s_echo)
+                j += (pl + 3) & ~3
+        else if typ == 10:
+            # COOKIE ECHO: established
+            reply.extend(__sctp_chunk(11, 0, []))
+            __sctp_established(c)
+        else if typ == 11:
+            c.s_echo.clear()
+            __sctp_established(c)
+        else if typ == 0: __sctp_data(c, flags, v)
+        else if typ == 3: __sctp_sack(c, v)
+        else if typ == 4: reply.extend(__sctp_chunk(5, 0, v))            # HEARTBEAT: its ACK
+        else if typ == 192 and v.len() >= 4:
+            # FORWARD TSN: what was given up on counts as come
+            n = int(__be32(v, 0))
+            if __tsn_after(n, c.s_peer_cum):
+                c.s_peer_cum = n
+                c.s_partial.clear()
+                __sctp_deliver(c)
+            c.s_sack_due = true
+        else if typ == 6 or typ == 7:
+            # ABORT, SHUTDOWN: the other side has gone
+            c.s_state = 3
+            if typ == 7: reply.extend(__sctp_chunk(8, 0, []))
+    if reply.len() > 0: __sctp_send(c, reply)
+
+__sctp_established = (c: mut __Conn):
+    if c.s_state == 2: return
+    c.s_state = 2
+    c.s_init.clear()
+    __rtc_say(c, "SCTP established")
+    # (the side that invited opens the data channel, as a browser that makes one does)
+    if c.controlling:
+        c.s_chan = if c.d_client: 0 else: 1
+        c.s_ssn[c.s_chan] = 0
+        o: u8[] = [u8(3)]
+        if c.s_reliable: o.push(0)                 # (reliable, in order)
+        else: o.push(0x81)                         # (sent once, in any order)
+        __put16(o, 256)
+        __put32(o, 0)
+        label = bytes("sloppy")
+        __put16(o, label.len())
+        __put16(o, 0)
+        o.extend(label)
+        __sctp_send_data(c, c.s_chan, __PPID_DCEP, o, true, true)
+
+# a DATA chunk: kept by TSN, delivered in order; acknowledged
+__sctp_data = (c: mut __Conn, flags: int, v: u8[]):
+    if v.len() < 12: return
+    tsn = int(__be32(v, 0))
+    c.s_sack_due = true
+    if not __tsn_after(tsn, c.s_peer_cum) or c.s_got.has(tsn): return            # (had it)
+    # (a whole message that may come in any order: given out at once, whatever is missing before it)
+    if flags & 7 == 7:
+        __sctp_message(c, __be16(v, 4), int(__be32(v, 8)), v[12..])
+        c.s_got[tsn] = __Chunk(0x80, 0, 0, [])
+    else: c.s_got[tsn] = __Chunk(flags, __be16(v, 4), int(__be32(v, 8)), v[12..])
+    __sctp_deliver(c)
+
+# the chunks that follow on from what has come: messages, put together from their pieces
+__sctp_deliver = (c: mut __Conn):
+    loop true:
+        n = __tsn_next(c.s_peer_cum)
+        got = c.s_got.get(n)
+        if got == none: break
+        ch = got!
+        c.s_got.remove(n)
+        c.s_peer_cum = n
+        if ch.flags & 0x80 != 0: continue           # (given out already: a whole message sent in any order)
+        if ch.flags & 2 != 0: c.s_partial.clear()
+        c.s_partial.extend(ch.data)
+        if ch.flags & 1 == 0: continue
+        msg = c.s_partial
+        c.s_partial.clear()
+        __sctp_message(c, ch.stream, ch.ppid, msg)
+    # (chunks far ahead of the last in order, kept no more: a peer that gave up and said nothing)
+    if c.s_got.len() > 4096: c.s_got.clear()
+
+__sctp_message = (c: mut __Conn, stream: int, ppid: int, msg: u8[]):
+    if ppid == __PPID_DCEP:
+        if msg.len() > 0 and msg[0] == 3:
+            # DATA_CHANNEL_OPEN: this side's channel too; acknowledged
+            c.s_chan = stream
+            c.s_chan_open = true
+            if msg.len() > 1: c.s_reliable = msg[1] & 0x80 == 0
+            __sctp_send_data(c, stream, __PPID_DCEP, [u8(2)], true, true)
+            __rtc_say(c, "the data channel opened (stream {stream})")
+        else if msg.len() > 0 and msg[0] == 2:
+            c.s_chan_open = true
+            __rtc_say(c, "the data channel was acknowledged")
+        return
+    if stream != c.s_chan: return
+    m: u8[] = [u8(if ppid == __PPID_TEXT or ppid == __PPID_TEXT_EMPTY: 1 else: 0)]
+    if ppid != __PPID_TEXT_EMPTY and ppid != __PPID_BYTES_EMPTY: m.extend(msg)
+    c.s_msgs.push(m)
+
+# a message on a stream, in DATA chunks of at most __CHUNK_DATA bytes
+__sctp_send_data = (c: mut __Conn, stream: int, ppid: int, msg: u8[], ordered: bool, reliable: bool):
+    ssn = c.s_ssn.get(stream) ?? 0
+    if ordered: c.s_ssn[stream] = (ssn + 1) & 0xFFFF
+    off = 0
+    out: u8[]
+    loop true:
+        n = min(__CHUNK_DATA, msg.len() - off)
+        flags = 0
+        if off == 0: flags |= 2
+        if off + n >= msg.len(): flags |= 1
+        if not ordered: flags |= 4
+        v: u8[]
+        __put32(v, c.s_tsn)
+        __put16(v, stream)
+        __put16(v, if ordered: ssn else: 0)
+        __put32(v, ppid)
+        v.extend(msg[off..off + n))
+        ch = __sctp_chunk(0, flags, v)
+        c.s_unacked.push(__Sent(c.s_tsn, ch, time(), 1, reliable))
+        c.s_tsn = __tsn_next(c.s_tsn)
+        if out.len() + ch.len() > __CHUNK_DATA + 64 and out.len() > 0:
+            __sctp_send(c, out)
+            out.clear()
+        out.extend(ch)
+        off += n
+        if off >= msg.len(): break
+    if out.len() > 0: __sctp_send(c, out)
+
+# SACK: what the other side has; the rest is sent again when its time comes
+__sctp_sack = (c: mut __Conn, v: u8[]):
+    if v.len() < 12: return
+    cum = int(__be32(v, 0))
+    ngaps = __be16(v, 8)
+    acked: {int: bool}
+    loop k in [0..ngaps):
+        if 12 + k * 4 + 4 > v.len(): break
+        a = (cum + __be16(v, 12 + k * 4)) & 0xFFFFFFFF
+        b = (cum + __be16(v, 14 + k * 4)) & 0xFFFFFFFF
+        t = a
+        loop true:
+            acked[t] = true
+            if t == b: break
+            t = __tsn_next(t)
+    keep: __Sent[]
+    now = time()
+    loop s in c.s_unacked:
+        if not __tsn_after(s.tsn, cum) or acked.has(s.tsn):
+            if s.tries == 1: c.s_rtt = c.s_rtt * 0.875 + (now - s.at) * 0.125
+            continue
+        keep.push(s)
+    c.s_unacked = keep
+
+# SCTP's part of a frame: the packets DTLS took in, a SACK when one is due, what to send again
+__sctp_poll = (c: mut __Conn):
+    if c.d_state != 2: return
+    if c.s_state == 0: __sctp_start(c)
+    loop pk in c.d_app: __sctp_in(c, pk)
+    c.d_app.clear()
+    now = time()
+    if c.s_state == 1:
+        if c.s_init.len() > 0 and now - c.s_init_at > 1.0:
+            c.s_init_at = now
+            __dtls_send_app(c, c.s_init)
+        if c.s_echo.len() > 0 and now - c.s_init_at > 1.0:
+            c.s_init_at = now
+            __dtls_send_app(c, c.s_echo)
+    if c.s_state != 2: return
+    if c.s_sack_due:
+        c.s_sack_due = false
+        v: u8[]
+        __put32(v, c.s_peer_cum)
+        __put32(v, 1 << 20)
+        __put16(v, 0)
+        __put16(v, 0)
+        __sctp_send(c, __sctp_chunk(3, 0, v))
+    # (sent again after a while: or, for messages sent once, given up on, with FORWARD TSN)
+    rto = max(0.2, min(2.0, c.s_rtt * 3.0))
+    gave_up = -1
+    again: u8[][] = [[]]
+    keep: __Sent[]
+    loop mut s in c.s_unacked:
+        if now - s.at < rto * f64(s.tries):
+            keep.push(s)
+            continue
+        if not s.reliable or s.tries > 12:
+            if gave_up < 0 or __tsn_after(s.tsn, gave_up): gave_up = s.tsn
+            continue
+        s.at = now
+        s.tries += 1
+        if again[again.len() - 1].len() + s.chunk.len() > __CHUNK_DATA + 64: again.push([])
+        again[again.len() - 1].extend(s.chunk)
+        keep.push(s)
+    c.s_unacked = keep
+    loop pk in again:
+        if pk.len() > 0: __sctp_send(c, pk)
+    if gave_up >= 0 and c.s_fwd:
+        # (everything up to the oldest still waiting has come, as far as the other side need know)
+        upto = gave_up
+        loop s in c.s_unacked:
+            if __tsn_after(upto, s.tsn): upto = (s.tsn - 1) & 0xFFFFFFFF
+        v: u8[]
+        __put32(v, upto)
+        __sctp_send(c, __sctp_chunk(192, 0, v))
+
+# ---------------- SDP (what browsers take and give) ----------------
+# a description as a browser's session description: an offer (actpass) or answer
+__rtc_sdp = (d: RtcDesc, offer: bool) -> str:
+    fp: str[]
+    loop b in d.fingerprint: fp.push(upper(crypto.hex_text([b])))
+    setup = if offer: "actpass" else: (if d.active: "active" else: "passive")
+    s = "v=0\r\no=- {int(__be32(crypto.random_bytes(4), 0)) & 0x7FFFFFFF} 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
+    s += "a=group:BUNDLE 0\r\na=msid-semantic: WMS\r\n"
+    s += "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n"
+    loop i in 0.. and cd in d.candidates:
+        prio = if cd.kind == "host": 2130706431 - i else: (if cd.kind == "srflx": 1694498815 - i else: 16777215 - i)
+        extra = if cd.kind == "host": "" else: " raddr 0.0.0.0 rport 0"
+        s += "a=candidate:{i + 1} 1 udp {prio} {cd.host} {cd.port} typ {cd.kind}{extra}\r\n"
+    s += "a=ice-ufrag:{d.ufrag}\r\na=ice-pwd:{d.pwd}\r\na=ice-options:trickle\r\n"
+    fps = join(fp, ":")
+    s += "a=fingerprint:sha-256 {fps}\r\na=setup:{setup}\r\na=mid:0\r\n"
+    s += "a=sctp-port:5000\r\na=max-message-size:262144\r\n"
+    s
+
+# a browser's session description as a description (none when it lacks what one needs)
+__rtc_parse_sdp = (sdp: str) -> RtcDesc?:
+    d = RtcDesc("", "", [], false, [])
+    loop l0 in lines(sdp):
+        l = trim(l0)
+        if starts_with(l, "a=ice-ufrag:"): d.ufrag = l[12..]
+        else if starts_with(l, "a=ice-pwd:"): d.pwd = l[10..]
+        else if starts_with(l, "a=fingerprint:sha-256 "):
+            h = replace(l[22..], ":", "")
+            d.fingerprint = crypto.hex_bytes(h) ?? []
+        else if starts_with(l, "a=setup:"): d.active = l[8..] == "active"
+        else if starts_with(l, "a=candidate:"):
+            w = words(l[12..])
+            if w.len() >= 8 and lower(w[2]) == "udp" and w[1] == "1":
+                d.candidates.push(RtcCand(w[4], to_int(w[5]) ?? 0, w[7]))
+    if len(d.ufrag) == 0 or len(d.pwd) == 0 or d.fingerprint.len() != 32: return none
+    d
+
+# ---------------- codes (what the players pass to each other) ----------------
+# A description as a short code: a version, whether its side is the DTLS client, the ICE name and
+# password, the fingerprint, and the candidates (IPv4 addresses, or a browser's name.local), all
+# in base64url
+__CAND_KINDS = ["host", "srflx", "prflx", "relay"]
+
+rtc_code = (d: RtcDesc) -> str:
+    b: u8[] = [u8(1), u8(if d.active: 1 else: 0)]
+    b.push(u8(len(d.ufrag)))
+    b.extend(bytes(d.ufrag))
+    b.push(u8(len(d.pwd)))
+    b.extend(bytes(d.pwd))
+    b.extend(d.fingerprint)
+    cs: RtcCand[]
+    loop cd in d.candidates:
+        if find(cd.host, ":") < 0 and cs.len() < 8: cs.push(cd)
+    b.push(u8(cs.len()))
+    loop cd in cs:
+        k = max(0, __CAND_KINDS.index_of(cd.kind))
+        parts = split(cd.host, ".")
+        if parts.len() == 4 and to_int(parts[0]) != none:
+            b.push(u8(k))
+            loop p in parts: b.push(u8(to_int(p) ?? 0))
+        else:
+            b.push(u8(k | 0x80))
+            b.push(u8(len(cd.host)))
+            b.extend(bytes(cd.host))
+        __put16(b, cd.port)
+    __b64url(b)
+
+# a code back as a description (none when it is not one)
+rtc_from_code = (code: str) -> RtcDesc?:
+    bb = __b64url_read(trim(code))
+    if bb == none: return none
+    b = bb!
+    if b.len() < 4 or b[0] != 1: return none
+    d = RtcDesc("", "", [], b[1] == 1, [])
+    i = 2
+    n = int(b[i])
+    if i + 1 + n > b.len(): return none
+    d.ufrag = str_from_bytes(b[i + 1..i + 1 + n))
+    i += 1 + n
+    n = int(b[i])
+    if i + 1 + n > b.len(): return none
+    d.pwd = str_from_bytes(b[i + 1..i + 1 + n))
+    i += 1 + n
+    if i + 33 > b.len(): return none
+    d.fingerprint = b[i..i + 32)
+    i += 32
+    nc = int(b[i])
+    i += 1
+    loop _ in [0..nc):
+        if i >= b.len(): return none
+        k = int(b[i])
+        i += 1
+        host = ""
+        if k & 0x80 == 0:
+            if i + 4 > b.len(): return none
+            host = "{b[i]}.{b[i + 1]}.{b[i + 2]}.{b[i + 3]}"
+            i += 4
+        else:
+            l = int(b[i])
+            if i + 1 + l > b.len(): return none
+            host = str_from_bytes(b[i + 1..i + 1 + l))
+            i += 1 + l
+        if i + 2 > b.len(): return none
+        d.candidates.push(RtcCand(host, __be16(b, i), __CAND_KINDS[min(k & 0x7f, 3)]))
+        i += 2
+    d
+
+__B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+__b64url = (b: u8[]) -> str:
+    out: u8[]
+    i = 0
+    loop i < b.len():
+        n = int(b[i]) << 16
+        if i + 1 < b.len(): n |= int(b[i + 1]) << 8
+        if i + 2 < b.len(): n |= int(b[i + 2])
+        out.push(__B64[(n >> 18) & 63])
+        out.push(__B64[(n >> 12) & 63])
+        if i + 1 < b.len(): out.push(__B64[(n >> 6) & 63])
+        if i + 2 < b.len(): out.push(__B64[n & 63])
+        i += 3
+    str_from_bytes(out)
+
+__b64url_read = (s: str) -> u8[]?:
+    out: u8[]
+    acc = 0
+    bits = 0
+    loop ch in bytes(s):
+        v = find(__B64, byte_str(ch))
+        if v < 0: return none
+        acc = (acc << 6) | v
+        bits += 6
+        if bits >= 8:
+            bits -= 8
+            out.push(u8((acc >> bits) & 255))
+    out
