@@ -517,6 +517,8 @@ struct Stack[T]:               # generic struct
 enum Dir: north, east, south, west     # simple enum
 d = Dir.north
 if d == .north: ...                     # `.name` when the type is known
+n = int(Dir.west)                       # 3: a simple enum's variants are numbered from 0
+d = Dir((n + 1) % 4)                    # .north: and a number gives its variant (checked)
 ```
 
 A field left out starts at its default, or at zero (0, "", an empty array, `none`, false).

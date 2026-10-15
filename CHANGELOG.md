@@ -14,6 +14,8 @@ From a music toy (a step sequencer and rhythm game):
 - `note_freq` stops with a message for a name that is not a note (it gave 0); `midi_freq(n)`.
 - `mtof`, `midi_to_freq`, `load_sound`, `play_sound` name `midi_freq`, `load_wav`, `play`;
   a keyword as an argument's name (`play(s, when = 0.1)`) says so.
+- `Dir(n)` gives a simple enum's variant by its number, the other way from `int(Dir.east)`,
+  checked when the program runs (`Key(int(Key.n1) + i)` for the number keys).
 - `SLOPPY_INPUT` turns the mouse wheel (`3:wheel=1`); screenshot runs are the size asked for on
   a scaled Wayland display (the compositor's scale came at a different time each run).
 - Docs: `dt` is at most 0.1 s (a clock reads `elapsed()` or `audio_time()`), `Sound(samples)`
