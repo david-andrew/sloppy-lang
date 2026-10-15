@@ -3081,7 +3081,7 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
       disabled_color: vec4 = vec4(1, 1, 1, 0.28)
       bar_color: vec4 = vec4(1, 1, 1, 0.2)
   ```
-- `ui_begin = (name: str, top_center: vec2)`: start a menu: items go in a column centered on x, from y down. A new name starts with the first item chosen.
+- `ui_begin = (name: str, top_center: vec2)`: start a menu: items go in a column centered on x, from y down. A menu starts with its first item chosen; shown again (back from its Settings), with the item it was left on.
 - `ui_end = ()`
 - `ui_back = () -> bool`: escape or the B button: go back (close the menu)
 - `ui_ready = () -> bool`: false in the frame the menu opened in: input then belongs to whatever opened it
