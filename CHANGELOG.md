@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.16.0
+
 From data analysis (a CSV of 200k sales, group-bys, a regression, charts):
 - `render_image(w, h, draw)`: a picture drawn with the 2D functions, exactly w x h pixels, from
   a script with no window or display (`save_png` it: a chart).
@@ -10,7 +12,8 @@ From data analysis (a CSV of 200k sales, group-bys, a regression, charts):
   legend. `draw_chart(c, rect)` in a game's draw, `chart_image(c, w, h)` for a picture.
 - `r.next_normal(mean, sd)`: normally distributed numbers from a seeded `Rng`.
 - `from_csv[T](text)`: each row a struct, its columns by the header's names, numbers checked
-  (an empty one or NA is NaN, or none in an optional). Blank lines no longer make rows.
+  (an empty one or NA is NaN, or none in an optional); 200,000 rows in 0.7 s with 47 MB. Blank
+  lines no longer make rows.
 - A matrix prints a row a line with its columns lined up (6 significant digits, the middle of a
   large one left out); `to_text` and lists keep the exact one-line form.
 - `not mask` works element by element (NumPy's `~mask`); `NAN`; `variance` of whole numbers;
@@ -44,8 +47,9 @@ From command-line scripts (a build runner, a file renamer, a log reader, a dupli
   after what was printed before it) and `cwd = "dir"` (where it runs).
 - `open_file(path)`, then `loop let line = f.read_line():` reads a file of any size a line at a
   time (96 MB in 0.5 s with 23 MB of memory); `f.read_bytes(n)`, `f.close()`.
-- `main = () -> int` gives the exit code (in a web build, one other than 0 ends the program). A function whose last line is `exit(...)` or a panic
-  (`die(msg)`) ends every path through it: `if ok: return x` then `die("...")` needs no value.
+- `main = () -> int` gives the exit code (in a web build, one other than 0 ends the program).
+  A function whose last line is `exit(...)` or a panic (`die(msg)`) ends every path through it:
+  `if ok: return x` then `die("...")` needs no value.
 - `sloppy test file.jo words` runs only the tests with one of the words in their names; a test
   that calls `exit()` fails instead of passing.
 - Text past ASCII: format widths (`"{name:<12}"`) and `pad_start`/`pad_end` count characters,
