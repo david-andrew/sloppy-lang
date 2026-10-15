@@ -58,8 +58,8 @@ From an online arena (2-4 players, native and browser clients, a lobby, reconnec
 - The game's hook as it ends is `on_quit = ():` (it was `quit`, which replaced the library's
   `quit()` that closes the window).
 
-- `from_text`, `from_json` and `load_value` read structs a quarter faster (field names are
-  compared where they are, not copied); `csv_rows` is 30% faster.
+- `from_text`, `from_json` and `load_value` read structs nearly twice as fast (field names and
+  numbers are read where they are, not copied first); `csv_rows` is 30% faster.
 
 ## 0.16.0
 
