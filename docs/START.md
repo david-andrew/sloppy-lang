@@ -226,10 +226,24 @@ a value, the last list field gets the other arguments, and `--help` lists them a
 | `set()` | a map to `bool`, or `unique(xs)` |
 | `None`, `if x is None:` | `none`, `if x == none:`; `if let v = x:` gets what is inside |
 | `t[0]` (a tuple) | `t.0` |
+| `x = 1` in a function makes a local | `x = 1` in a function changes a global named `x` (one declared above it); `let x = 1` makes a local of that name |
 | `max(xs, key=len)`, `sorted(xs, key=...)` | `max_by(xs, (x): len(x))`, `sorted_by(xs, (x): x.age)` |
 | `try: ... except: ...` | a function gives back what went wrong as a value (`-> Config \| JsonError`), checked with `if r is JsonError:` |
 | `def test_x(): assert ...` (pytest) | `test "x": assert(...)`, run with `sloppy test file.jo` |
 | big integers | `int` is 64 bits and wraps around |
+
+## Coming from pandas and matplotlib
+
+| pandas / NumPy / matplotlib | Sloppy |
+|---|---|
+| `pd.read_csv("sales.csv")` | `sales = from_csv[Sale](read_file("sales.csv") ?? "")`: a struct per row, its fields by the header's names (or `csv_rows(text)`: rows of text) |
+| `df["price"]`, `df[df.price > 10]` | `[loop s in sales: s.price]`, `sales.filter((s): s.price > 10.0)`; a `soa Sale[]` keeps each field as an array: `t.price`, `t[t.price .> 10.0]` |
+| `df.groupby("region").price.mean()` | `group_by(sales, (s): s.region)`, then `mean(...)` of each group's prices; or a map: `totals[s.region] += s.price` |
+| `.dropna()`, `.fillna(0)`, `~mask` | `xs[not is_nan.(xs)]`, `x ?? 0.0` for an optional, `not mask` |
+| `np.mean`, `np.median`, `np.std`, `np.percentile` | `mean`, `median`, `std_dev`, `percentile(xs, 90.0)`, `histogram`, `correlation`, `cumsum` |
+| `np.linalg.solve(A, b)`, `A @ B` | `solve(A, b)`, `A * B` (on `f64[,]` matrices) |
+| `plt.plot(...)`, `plt.savefig("c.png")` | `img = render_image(800, 500, (): ...lines, rects, text...)`, then `save_png(img, "c.png")` (no window needed) |
+| `df.to_csv(...)`, `json.dump(...)` | `to_csv(rows)`, `to_json(value)` |
 
 ## Coming from Unity or Godot
 

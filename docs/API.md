@@ -350,6 +350,7 @@ Math basics.
 - `const TAU = 6.283185307179586`
 - `const E = 2.718281828459045`
 - `const INF = 1e308 * 10.0`
+- `const NAN = INF - INF`
 - `const MAX_INT = 9223372036854775807`
 - `const MIN_INT = -9223372036854775807 - 1`
 - `abs = (x: int) -> int`
@@ -361,6 +362,10 @@ Math basics.
 - `max = (a: f64, b: f64) -> f64`
 - `min = (a: f32, b: f32) -> f32`
 - `max = (a: f32, b: f32) -> f32`
+- `min = (a: int, b: int, c: int) -> int`: (of three: max(a, b, c))
+- `max = (a: int, b: int, c: int) -> int`
+- `min = (a: f64, b: f64, c: f64) -> f64`
+- `max = (a: f64, b: f64, c: f64) -> f64`
 - `clamp = (x: int, lo: int, hi: int) -> int`
 - `clamp = (x: f64, lo: f64, hi: f64) -> f64`
 - `clamp = (x: f32, lo: f32, hi: f32) -> f32`
@@ -693,8 +698,22 @@ rows = csv_rows(read_file("sales.csv") ?? "")
 loop row in rows[1..]: total += to_float(row[2]) ?? 0.0      # (rows[0]: the header)
 ```
 
+Or each row as a struct, its fields found by the header's names:
+
+```gdscript
+struct Sale:
+    date = ""
+    region = ""
+    price = 0.0          # (a number: checked; empty or NA is NaN)
+    units = 0
+    discount: f64? = none   # (empty or NA: none)
+sales = from_csv[Sale](read_file("sales.csv") ?? "")
+if sales is TextError: fail(sales.message)
+```
+
 - `csv_rows = (text: str, sep: u8 = ',') -> str[][]`: the rows of a CSV text, each the list of its fields (a header is the first row, like the others)
 - `to_csv = (rows: str[][], sep: u8 = ',') -> str`: CSV text of the rows: a field with the separator, a quote or a line break is put in quotes
+- `from_csv[T] = (text: str, sep: u8 = ',') -> T[] \| TextError`: the rows of a CSV text with a header, each as a T: a column goes to the field of its name ("Unit Price" to unit_price; others are skipped), a field with no column keeps its default. A number is checked (a TextError says the row, after the header, and column where one is not); an empty one, or NA, is NaN in an f64 and none in an optional
 
 ### base64.jo
 
@@ -1047,6 +1066,7 @@ The dotted operators work element by element on arrays of any shape, and broadca
 - `dot = (a: f64[], b: f64[]) -> f64`: the sum of a[i] * b[i] (kept in four running sums, about twice as fast: rounded a little differently from adding in order, the same for the same input every time)
 - `norm = (a: f64[]) -> f64`
 - `variance = (xs: f64[]) -> f64`: the variance: the mean of the squared distances from the mean (NumPy's var; std_dev squared)
+- `variance = (xs: int[]) -> f64`
 - `percentile = (xs: f64[], p: f64) -> f64`: the value p percent of the way through the sorted values (0: the smallest, 50: the median, 100: the largest), between two of them where it falls between (NumPy's percentile)
 - `quantile = (xs: f64[], q: f64) -> f64`: the same with q from 0 to 1
 - `percentile = (xs: int[], p: f64) -> f64`
@@ -1402,6 +1422,13 @@ draw = ():
 #### Render targets
 
 - `render_target = (w: int, h: int, smooth: bool = true) -> RenderTarget`
+- `render_image = (w: int, h: int, draw: () -> void) -> Image`: a picture of w x h pixels drawn by draw (with what `draw = ():` uses, in pixels from its top left corner), at any time: a chart a script saves, a texture made at the start. Before any window is open it needs none: the software renderer draws it.
+  ```gdscript
+  img = render_image(600, 400, ():
+      clear(WHITE)
+      line(vec2(40, 360), vec2(560, 40), 2, BLUE))
+  save_png(img, "chart.png")
+  ```
 - `free_render_target = (rt: RenderTarget)`: give back a render target's memory (it may not be used after)
 - `draw_to = (rt: RenderTarget)`: draw into a render target until draw_to_screen() is called
 - `draw_to_screen = ()`

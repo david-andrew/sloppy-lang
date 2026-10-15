@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+From data analysis (a CSV of 200k sales, group-bys, a regression, charts):
+- `render_image(w, h, draw)`: a picture drawn with the 2D functions, exactly w x h pixels, from
+  a script with no window or display (`save_png` it: a chart).
+- `from_csv[T](text)`: each row a struct, its columns by the header's names, numbers checked
+  (an empty one or NA is NaN, or none in an optional). Blank lines no longer make rows.
+- A matrix prints a row a line with its columns lined up (6 significant digits, the middle of a
+  large one left out); `to_text` and lists keep the exact one-line form.
+- `not mask` works element by element (NumPy's `~mask`); `NAN`; `variance` of whole numbers;
+  `max(a, b, c)` and `min(a, b, c)`.
+- Fixes: a `soa` array indexed with a mask or an array of indexes gave garbage (now a soa array
+  of those elements); Vulkan stopped (`vkAllocateMemory failed`) drawing 100,000 shapes in a
+  frame on a GPU without resizable BAR; the software renderer drew text blurred (its edge twice
+  as soft as the GPU's); a `[loop ...]` with its body on the next line was reported at column 1.
+
 From a roguelike (a dungeon, field of view, monsters that chase, items, saves):
 - `field_of_view(grid, cell, radius)` (shadowcasting: what a cell sees past walls) and
   `line_cells(a, b)`; `path_step`, `path_distance` and `path_field` (a Dijkstra map) on grid

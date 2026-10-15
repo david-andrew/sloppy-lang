@@ -3,6 +3,16 @@
 #
 #   rows = csv_rows(read_file("sales.csv") ?? "")
 #   loop row in rows[1..]: total += to_float(row[2]) ?? 0.0      # (rows[0]: the header)
+#
+# Or each row as a struct, its fields found by the header's names:
+#   struct Sale:
+#       date = ""
+#       region = ""
+#       price = 0.0          # (a number: checked; empty or NA is NaN)
+#       units = 0
+#       discount: f64? = none   # (empty or NA: none)
+#   sales = from_csv[Sale](read_file("sales.csv") ?? "")
+#   if sales is TextError: fail(sales.message)
 
 # the rows of a CSV text, each the list of its fields (a header is the first row, like the others)
 csv_rows = (text: str, sep: u8 = ',') -> str[][]:
@@ -30,6 +40,10 @@ csv_rows = (text: str, sep: u8 = ',') -> str[][]:
             field.clear()
         else if c == '\n' or c == '\r':
             if c == '\r' and i + 1 < n and text[i + 1] == '\n': i += 1
+            # (a blank line: no row)
+            if not started and row.len() == 0:
+                i += 1
+                continue
             row.push(str_from_bytes(field))
             field.clear()
             rows.push(row)
@@ -66,3 +80,88 @@ to_csv = (rows: str[][], sep: u8 = ',') -> str:
                 loop c in f: out.push(c)            # (not extend: the C bootstrap compiles this)
         out.push('\n')
     str_from_bytes(out)
+
+# the rows of a CSV text with a header, each as a T: a column goes to the field of its name
+# ("Unit Price" to unit_price; others are skipped), a field with no column keeps its default.
+# A number is checked (a TextError says the row, after the header, and column where one is not); an empty one, or
+# NA, is NaN in an f64 and none in an optional
+from_csv[T] = (text: str, sep: u8 = ',') -> T[] | TextError:
+    out: T[]
+    rows = csv_rows(text, sep)
+    if rows.len() == 0: return out
+    x: T
+    __default_init(x)
+    head = to_text(x)
+    p = find(head, "(")
+    if p < 0: return TextError("from_csv: {head} is not a struct", 1, 1)
+    fs = __arg_fields(head)
+    # (each column's field, -1: none)
+    col_field: int[]
+    loop h in rows[0]:
+        nm = replace(replace(lower(trim(h)), " ", "_"), "-", "_")
+        k = -1
+        loop i in 0.. and f in fs:
+            if f.name == nm: k = i
+        col_field.push(k)
+    name = head[..p)
+    # (all rows as one text, read at once: [Sale(date="...", ...), ...])
+    buf: u8[]
+    __buf_append_str(buf, "[")
+    loop r in [1..rows.len()):
+        row = rows[r]
+        if r > 1: __buf_append_str(buf, ", ")
+        __buf_append_str(buf, name)
+        __buf_append_str(buf, "(")
+        first = true
+        loop c in [0..min(row.len(), col_field.len())):
+            k = col_field[c]
+            if k < 0: continue
+            v = __csv_value(fs[k], row[c])
+            if v == "\0": continue
+            if v == "\x01": return TextError("row {r}, column '{trim(rows[0][c])}': '{row[c]}' is not a {__csv_kind(fs[k].kind)}", r + 1, c + 1)
+            if not first: __buf_append_str(buf, ", ")
+            __buf_append_str(buf, fs[k].name)
+            __buf_append_str(buf, "=")
+            __buf_append_str(buf, v)
+            first = false
+        __buf_append_str(buf, ")")
+    __buf_append_str(buf, "]")
+    e = from_text[T[]](str_from_bytes(buf))
+    if e is TextError:
+        # ([12].region: expected a Region -> row 13: region: ...)
+        m = e.message
+        if starts_with(m, "["):
+            q = find(m, "]")
+            if q > 0:
+                if let i = to_int(m[1..q)):
+                    rest = m[q + 1..]
+                    if starts_with(rest, "."): rest = rest[1..]
+                    return TextError("row {i + 1}: {rest}", i + 2, 1, e.path)
+        return TextError(m, 1, 1, e.path)
+    e
+
+__csv_kind = (k: u8) -> str:
+    if k == 'i': return "whole number"
+    if k == 'f': return "number"
+    "value"
+
+# (a field's value as from_text reads it; "\0": left out, keeping the default; "\x01": wrong)
+__csv_value = (f: __ArgField, s0: str) -> str:
+    s = trim(s0)
+    empty = len(s) == 0 or s == "NA" or s == "N/A" or s == "NaN" or s == "nan" or s == "null"
+    if f.kind == 's': return to_text(s0)
+    if f.kind == 'f':
+        if empty: return "nan"
+        if to_float(s) == none: return "\x01"
+        return s
+    if f.kind == 'i':
+        if len(s) == 0: return "\0"
+        if to_int(s) == none: return "\x01"
+        return s
+    if f.kind == 'b':
+        l = lower(s)
+        if l == "true" or l == "yes" or l == "1": return "true"
+        if l == "false" or l == "no" or l == "0" or len(l) == 0: return "false"
+        return "\x01"
+    if f.default == "none" and empty: return "none"
+    __arg_value(f, s)

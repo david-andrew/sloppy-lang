@@ -1074,6 +1074,12 @@ tells the program which is in use, e.g. to draw fewer particles. Frames are rend
 resolution (`SLOPPY_SOFT_SCALE=1` for full resolution: lines one pixel wide can drop out at
 half) and paced to 60 per second.
 
+**Pictures without a game.** `render_image(w, h, ():` with drawing below it`)` gives an `Image`
+of exactly w x h pixels, drawn with the same functions as `draw` (pixels from its top left
+corner): a chart a script saves with `save_png(img, "chart.png")`, a texture made at the start.
+Called before any window is open, it opens none (the software renderer draws it, at full
+resolution), so it works in a script and on a machine without a display.
+
 **Frame statistics.** `show_stats()` (or `SLOPPY_STATS=1`, or `?stats` at the end of a web page's
 address) draws an overlay with the frame rate, a graph of recent frame times, the CPU time of
 `update` + `draw`, the time spent handing frames to the screen, and how many frames took much

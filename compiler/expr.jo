@@ -2421,6 +2421,7 @@ resolve_by_types = (name: int, ts: int[], pos: int, required: bool) -> int:
     best = -1
     bestcost = 1 << 30
     bestb: int[]
+    bestgen = false
     loop k in 0.. and d in decls:
         sig = fn_sig(d)
         if nkids(d) != ts.len(): continue
@@ -2434,10 +2435,12 @@ resolve_by_types = (name: int, ts: int[], pos: int, required: bool) -> int:
                 break
             cost += r
         if not ok: continue
-        if cost < bestcost:
+        # (a tie: the one without type parameters, as __fmt(m: f64[,]) over __fmt[T](m: T[,]))
+        if cost < bestcost or (cost == bestcost and sig.ntp == 0 and bestgen):
             best = k
             bestcost = cost
             bestb = binds
+            bestgen = sig.ntp > 0
     if best < 0:
         if not required: return 0
         last = "()"
@@ -4089,6 +4092,13 @@ check_expr = (n: int, expected: int) -> int:
             nodes[n].kind = .unary
             nodes[n].op = i32(int(Tok.tilde))
             return check_expr(n, expected)
+        # (not mask: each element's, as NumPy's ~mask)
+        if (types[ta].kind == .array and prune(int(types[ta].elem)) == T_BOOL) or (is_nd(ta) and prune(nd_elem(ta)) == T_BOOL):
+            add_flag(int(nodes[n].a), NF_CHECKED)
+            c = bc_call("__not", [int(nodes[n].a)], nodes[n].pos)
+            add_flag(c, NF_BROADCAST)
+            nodes[n] = nodes[c]
+            return check_expr(n, expected)
         nodes[n].a = i32(coerce(int(nodes[n].a), T_BOOL))
         t = T_BOOL
     else if k == .coalesce:
@@ -4533,7 +4543,10 @@ check_soa_index = (n: int, expected: int) -> int:
         check_expr(vals[i], 0)
         vals[i] = last_checked
     scope_reset(mark)
-    stmts.push(bc_stmt(soa_struct(pt, vals, pos), pos))
+    # (ps[mask], ps[idxs]: each field's elements picked, a soa array again)
+    it = prune(ntype(int(nodes[stmts[0]].b)))
+    if types[it].kind == .array: stmts.push(bc_stmt(soa_struct(st, vals, pos), pos))
+    else: stmts.push(bc_stmt(soa_struct(pt, vals, pos), pos))
     set_list(blk, stmts)
     nodes[n] = nodes[blk]
     check_expr(n, expected)

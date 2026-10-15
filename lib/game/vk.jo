@@ -1335,6 +1335,14 @@ when TARGET != "wasm" and TARGET != "macos":
 
     # ---------------- memory ----------------
     # a memory type allowed by bits with all of the flags in want (and, preferably, those in like)
+    # (a type with want, and without avoid: -1 when there is none)
+    __vk_memory_type_without = (bits: u32, want: u32, avoid: u32) -> int:
+        p = data(__vk_mem_props) as *u32
+        loop i in [0..int(p[0])):
+            flags = p[1 + 2 * i]
+            if bits & (u32(1) << u32(i)) != 0 and flags & want == want and flags & avoid != avoid: return i
+        -1
+
     __vk_memory_type = (bits: u32, want: u32, like: u32) -> int:
         p = data(__vk_mem_props) as *u32
         n = int(p[0])
@@ -1371,11 +1379,13 @@ when TARGET != "wasm" and TARGET != "macos":
     __vk_ranges: __VkRange[] = [__VkRange()]
     __vk_free_ranges: int[]
 
-    __vk_new_block = (t: int, kind: int, size: int, dedicated: bool, host: bool) -> int:
+    __vk_new_block = (t: int, kind: int, size: int, dedicated: bool, host: bool, may_fail: bool = false) -> int:
         flags = VkMemoryAllocateFlagsInfo(stype = 1000060000, flags = 2)    # device address
         info = VkMemoryAllocateInfo(stype = 5, next = (&flags) as *u8, size = u64(size), type_index = u32(t))
         mem = 0
-        __vk_check(vkAllocateMemory(__vk_dev, (&info) as *u8, null, &mem), "vkAllocateMemory")
+        r = vkAllocateMemory(__vk_dev, (&info) as *u8, null, &mem)
+        if r != 0 and may_fail: return -1
+        __vk_check(r, "vkAllocateMemory")
         b = __VkMemBlock(mem = mem, type = t, kind = kind, size = size, dedicated = dedicated)
         b.free_off.push(0)
         b.free_size.push(size)
@@ -1416,7 +1426,15 @@ when TARGET != "wasm" and TARGET != "macos":
         n = int(req.size)
         align = max(int(req.alignment), 1)
         host = want & u32(VK_MEM_HOST_VISIBLE) != 0
-        if host or n > __VK_MEM_BLOCK / 2: return __vk_fit(__vk_new_block(t, kind, n, true, host), n, 1)
+        if host or n > __VK_MEM_BLOCK / 2:
+            # (memory it would rather have, full: a GPU's 256 MB the CPU can write, without
+            # resizable BAR. Then memory without it: host memory the GPU reads over the bus)
+            if like != 0:
+                bi = __vk_new_block(t, kind, n, true, host, true)
+                if bi >= 0: return __vk_fit(bi, n, 1)
+                t2 = __vk_memory_type_without(req.type_bits, want, like)
+                if t2 >= 0: t = t2
+            return __vk_fit(__vk_new_block(t, kind, n, true, host), n, 1)
         loop bi in [0..__vk_mblocks.len()):
             if __vk_mblocks[bi].type != t or __vk_mblocks[bi].kind != kind or __vk_mblocks[bi].dedicated: continue
             r = __vk_fit(bi, n, align)
