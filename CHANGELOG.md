@@ -5,6 +5,10 @@
 From data analysis (a CSV of 200k sales, group-bys, a regression, charts):
 - `render_image(w, h, draw)`: a picture drawn with the 2D functions, exactly w x h pixels, from
   a script with no window or display (`save_png` it: a chart).
+- Charts: `c = Chart(title = ..., x_label = ...)`, then `c.line(xs, ys, "name")`, `c.points`,
+  `c.bars(labels, values)`, `c.histogram(values, bins)`; axes with round ticks, a grid and a
+  legend. `draw_chart(c, rect)` in a game's draw, `chart_image(c, w, h)` for a picture.
+- `r.next_normal(mean, sd)`: normally distributed numbers from a seeded `Rng`.
 - `from_csv[T](text)`: each row a struct, its columns by the header's names, numbers checked
   (an empty one or NA is NaN, or none in an optional). Blank lines no longer make rows.
 - A matrix prints a row a line with its columns lined up (6 significant digits, the middle of a

@@ -38,6 +38,9 @@ TOPICS = [
      "after its structs gain or lose fields."),
     ("Data", "heap", "Priority queues", ["std/heap"], "heap",
      "`Heap[T]` gives back what it holds smallest priority first: A*'s open list, events by time."),
+    ("Data", "charts", "Charts", ["game/chart"], "charts",
+     "Line charts, scatter plots, bars and histograms with axes and a legend: drawn in a game's `draw`, or "
+     "made into a picture with no window (`chart_image`, then `save_png`). `render_image` draws any picture that way."),
     ("Data", "threads", "Threads", ["std/thread"], "threads", ""),
     ("Data", "numeric", "Numeric arrays", ["std/nd"], "numeric",
      "Elementwise operators (`.+ .* .^`...), `f.(xs)` and n-dimensional arrays are part of the language: "
