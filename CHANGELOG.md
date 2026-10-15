@@ -25,6 +25,8 @@ From a game jam (a twin-stick shooter built from the docs alone):
 - A variable given a value and never used, named as a global of a file this one does not
   `use`, says so and which file to `use` (the assignment made a variable of its own instead of
   changing the global).
+- A name or function the program has in a file this one does not `use` (only in a file that
+  file uses) says which file to `use`; `print(limit)` said to put it in quotes.
 - The same warning at the same place is printed once (a generic function checked for several
   types printed it for each).
 
