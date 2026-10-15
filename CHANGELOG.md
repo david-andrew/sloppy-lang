@@ -13,7 +13,8 @@ From a game jam (a twin-stick shooter built from the docs alone):
   solid), and `tile_layer`'s doc says every tile is solid until `set_tile_shape` says otherwise.
 - A warning when values given in order stop one or two fields short of a struct's number, text
   or struct field without a default (`P(1)` for `P(x, y)`: y would be zero unnoticed).
-- A warning for `random(1, 6)` (a number with a fraction: `random_int(1, 7)` is a die).
+- A warning for `random(1, 6)` (a number with a fraction: `random_int(1, 7)` is a die). The
+  `random_int(1, 6)` warning has a quiet form for when 1 to 5 is meant: `random_int(1, 5 + 1)`.
 - `def move(self):` inside a struct says structs have no methods, and how the function is
   written instead.
 - `SLOPPY_INPUT` takes spaces between items as well as commas, and reports a mouse position it
