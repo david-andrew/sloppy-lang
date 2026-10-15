@@ -517,6 +517,7 @@ Operating system access: files, arguments, environment, time.
 - `input_float = (prompt: str = "") -> f64`: a number (12, 2.5) typed by the user, asked again until it is one
 - `read_stdin = () -> str`: all of standard input (what is piped in), until it ends
 - `read_bytes = (path: str) -> u8[]?`
+- `page_url = () -> str`: a web page's own address, without its ?query (to make a link to it: page_url() + "?invite=" + code); "" in a native program
 - `download_file = (path: str, name: str = "") -> bool`: a file the program wrote, given to the person using it: in a web page, the browser downloads it (a picture saved with save_png, an exported save), named `name` or as the path ends; elsewhere it is already where it was written. True if the file is there
 - `write_file = (path: str, contents: str) -> bool`
 - `write_bytes = (path: str, b: u8[]) -> bool`
@@ -3955,7 +3956,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
   net.accept_reply(p, their_reply)
   p = net.join_invite(their_code)      # joining: then net.invite_code(p) is the reply to send
   ```
-- `join_invite = (code: str) -> int`: join a game with the code its host sent (a peer: invite_code(p) is then the reply to send back)
+- `join_invite = (code0: str) -> int`: join a game with the code its host sent, or a link with the code in it (…?invite=code): a peer, whose invite_code(p) is then the reply to send back
 - `invite_code = (peer: int) -> str`: this side's code for a peer from invite or join_invite: "" while it is being made (a moment, as this machine's addresses are found)
 - `accept_reply = (peer: int, reply: str) -> bool`: the other player's reply to this side's invite; false when it is not a reply code
 - `listen = (port: int) -> bool`: start a server on port (native programs); false if the port cannot be had

@@ -8,6 +8,10 @@
   Native programs speak WebRTC now (lib/rtc.jo: ICE, DTLS 1.2, SCTP, data channels, in Sloppy),
   tested against Chromium both ways, OpenSSL, and on arm64 and Windows. Netpong's Invite a friend
   and Join a friend use them, from the website's page too.
+- `net.join_invite` takes a link with the code in it (`…?invite=code`) as well as the code;
+  `page_url()` is a web page's own address, to make one. Netpong's invite is such a link: opened,
+  the game joins by itself in a browser; from a computer, it links to the game on sloppy-lang.org,
+  so a friend plays with nothing to install.
 - `import crypto`: SHA-1, SHA-256, HMAC, AES-128-GCM, P-256 ECDH and ECDSA, self-signed
   certificates, and `random_bytes` from the operating system (the start of WebRTC in native
   programs, for games that connect a desktop build and a web page with no server).
