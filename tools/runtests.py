@@ -182,6 +182,16 @@ if compiler != "sloppy0" and target == "native":
         else:
             print(f"FAIL unit/filter (exit {r.returncode}, {r2.returncode})\n{r.stdout}{r.stderr}{r2.stdout}{r2.stderr}")
             failed += 1
+    # (sloppy test on a game that calls window(...) at its top: the tests run with no display)
+    if pattern in "unit/window":
+        t = os.path.join(root, "tests", "unit_window", "game.jo")
+        env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
+        r = subprocess.run([sloppy, "test", t], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           env=dict(env, SLOPPY_LIB=os.path.join(root, "lib")), timeout=60)
+        if r.returncode == 0 and "1 test passed" in r.stdout: passed += 1
+        else:
+            print(f"FAIL unit/window (exit {r.returncode})\n{r.stdout}{r.stderr}")
+            failed += 1
     # the tutorials' programs (docs/TUTORIAL*.md: code blocks starting "# step") must build
     for tf in sorted(glob.glob(os.path.join(root, "docs", "TUTORIAL*.md"))):
         tname = os.path.basename(tf)[:-3].lower()

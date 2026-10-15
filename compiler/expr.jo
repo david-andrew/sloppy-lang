@@ -498,6 +498,7 @@ check_place = (n: int, for_mut: bool):
                 else: break
             rf = int(locals[r].flags)
             if rf & LF_PARAM != 0 and rf & LF_MUTPARAM == 0: fatal(nodes[n].pos, "cannot modify parameter '{nm}' (parameters are read-only; mark it `mut` or copy it with `let {nm} = {nm}`)")
+            if rf & LF_BYREF != 0 and via_closure: fatal(nodes[n].pos, "cannot modify loop variable '{nm}', a copy of an element, and the function changing it runs later: change the element by its position, `loop i in 0.. and {nm} in xs:` and then `(): xs[i]...` in the function")
             if rf & LF_BYREF != 0: fatal(nodes[n].pos, "cannot modify loop variable '{nm}' (use `loop mut` to modify elements)")
             nf = f | LF_ASSIGNED
             if cp_inner == 0: nf |= LF_RESIZED
@@ -1120,6 +1121,9 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                         fln = "name.png"
                         if nodes[a].kind == .str_lit and nodes[a].aux == 0: fln = name_of(int(nodes[a].sval))
                         last_err = "{fnm} takes the file's contents: `{fnm}(embed(\"{fln}\"))` builds the file into the program (read_bytes(path) reads one at run time)"
+                    # (xs.map((x, i): ...): JavaScript's map, which passes the position too)
+                    if (fnm == "map" or fnm == "filter" or fnm == "each" or fnm == "any" or fnm == "all") and nodes[a].kind == .lambda and nkids(a) == 2:
+                        last_err = "{fnm} gives the function each element alone; with its position too: `[loop i in 0.. and x in xs: ...]`, or `loop i in 0.. and x in xs:`"
                     # (xs.reduce((a, b): a + b, 0): JavaScript's order)
                     if fnm == "reduce" and cd.args.len() == 3 and cd.args[1] != 0 and nodes[unnamed(cd.args[1])].kind == .lambda:
                         last_err = "reduce takes the start value first, then the function: `xs.reduce(0, (a, b): a + b)` (or `sum(xs)`)"
@@ -1811,6 +1815,30 @@ lit_num = (a0: int) -> f64:
 
 # (is p among the arguments of print, text, window and the like, on its line?)
 # (".png" after a name in the source: cat1.png written without its quotes)
+# the name after a dot after the n characters at p (this.tweens: "tweens"), or ""
+member_after = (p: int, n: int) -> str:
+    f = pos_file(p)
+    if f < 0 or f >= files.len(): return ""
+    src = files[f].src
+    o = pos_off(p) + n
+    if o >= len(src) or src[o] != '.': return ""
+    e = o + 1
+    loop e < len(src) and (is_alnum(src[e]) or src[e] == '_'): e += 1
+    src[o + 1..e)
+
+# (this.tweens.add, this.time.delayedCall, game.config.width: Phaser's, through its scene)
+phaser_hint = (nm: str, member: str) -> str:
+    if nm != "this" and nm != "game" and nm != "scene": return ""
+    if member == "tweens": return " (a tween is a value: `t = tween(from, to, 0.3, ease = ease_out_back)`, kept in a variable or a field, with `t.update(dt)` and `t.value()` each frame)"
+    if member == "time": return " (a wait is `Actions`: `steps.then(0.5, (): drop())` and `steps.update(dt)` in update; or `every(1, 0.5)`)"
+    if member == "config" or member == "scale": return " (the screen's size is `screen_width()` and `screen_height()`)"
+    if member == "add": return " (things are drawn each frame in draw, `circle(...)`, `sprite(...)`, `text(...)`, not added to a scene)"
+    if member == "input": return " (input is asked for in update each frame: `mouse_pressed(.left)`, `mouse_pos()`, `key_pressed(.space)`)"
+    if member == "sound": return " (`snd = load_wav(embed(\"pop.wav\"))` at the top, then `play(snd)`; or `sfx_coin()` and the other ready-made sounds)"
+    if member == "cameras": return " (`shake` for a screen shake, `camera2d(...)` to move the view)"
+    if member == "scene": return " (screens are an enum, `screen = Screen.play`, with a `match screen:` in update and in draw)"
+    ""
+
 file_ext_after = (p: int, n: int) -> str:
     f = pos_file(p)
     if f < 0 or f >= files.len(): return ""
@@ -2697,6 +2725,8 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         if types[t].kind != .array and types[t].kind != .str_: fatal(nodes[n].pos, "len() expects an array or string, found {type_str(t)}")
         r = T_INT
     else if id == .push:
+        # (xs.push(1, 2, 3): JavaScript's push of several)
+        if nargs > 2: fatal(nodes[n].pos, "push adds one value: for several, `xs.extend([1, 2, 3])`")
         nargs_check(n, nargs, 2, 2, "push")
         t = arg_type(args, 0, 0)
         if types[t].kind != .array: fatal(nodes[n].pos, "push() needs an array, found {type_str(t)}")
@@ -3970,6 +4000,8 @@ check_expr = (n: int, expected: int) -> int:
             if cur_assign != 0 and nodes[cur_assign].a == i32(n) and nodes[cur_assign].op != i32(int(Tok.assign)): fatal(nodes[n].pos, "unknown name '{name_of(nm)}' (to change it, it needs a value first: `{name_of(nm)} = 0`, at the top of the file to keep it from one frame to the next)")
             # (score = score + 1: the same, written out)
             if cur_assign != 0 and nodes[int(nodes[cur_assign].a)].kind == .ident and int(nodes[int(nodes[cur_assign].a)].name) == nm: fatal(nodes[n].pos, "unknown name '{name_of(nm)}' (to change it, it needs a value first: `{name_of(nm)} = 0`, at the top of the file to keep it from one frame to the next)")
+            ph = phaser_hint(name_of(nm), member_after(nodes[n].pos, len(name_of(nm))))
+            if len(ph) > 0: fatal(nodes[n].pos, "unknown name '{name_of(nm)}'{ph}")
             # (load_texture(cat1.png): a file's name, without its quotes)
             fx = file_ext_after(nodes[n].pos, len(name_of(nm)))
             if len(fx) > 0: fatal(nodes[n].pos, "{name_of(nm)}{fx} looks like a file's name: put it in quotes, `\"{name_of(nm)}{fx}\"`")

@@ -101,6 +101,7 @@ habit = (i: int, want: Tok):
         if word_in(tn, ["Dictionary", "HashMap", "Map"]): fatal(at, "there is no `new`: a map is `m: \{str: int}` (empty), or `\{\"a\": 1}`")
         if tn == "Color": fatal(at, "there is no `new`: a color is `rgb(1, 0, 0)` (each part from 0 to 1)")
         if word_in(tn, ["Vector2", "Vector3", "Vector4"]): fatal(at, "there is no `new`: `vec{tn[6..]}(...)`")
+        if tn == "Promise": fatal(at, "there are no promises: something that takes time is a state changed a little in update each frame, or steps in `Actions` (`steps.then(0.3, (): drop())`)")
         fatal(at, "a value is made by calling its type: `{tn}(...)` (there is no `new`)")
     if pw == "switch": fatal(at, "use `match` (`match x:` and an arm for each case below it)")
     if pw == "yield" or pw == "await" or pw == "async": fatal(at, "there are no coroutines: keep a timer in a field and count it down each frame (`e.wait -= dt`, then act when it is below 0)")
@@ -192,6 +193,9 @@ expect = (k: Tok, what: str) -> int:
 # identifier tokens carry their interned name in ival
 expect_ident = (what: str) -> int:
     if toks[ti].kind != .ident and is_keyword_tok(toks[ti].kind) and toks[ti].kind != .kw_mut: keyword_name_error(ti)
+    # (let [a, b] = pair, const {kind, x} = g: JavaScript's destructuring)
+    if toks[ti].kind == .lbrack and (what == "variable name" or what == "constant name"): fatal(toks[ti].pos, "an array is unpacked without brackets: `a, b = xs` (it must have exactly that many elements); a tuple the same way")
+    if toks[ti].kind == .lbrace and (what == "variable name" or what == "constant name"): fatal(toks[ti].pos, "a struct's fields are read one by one: `kind, x = g.kind, g.x`, or used as they are, `g.kind`")
     int(toks[expect(.ident, what)].ival)
 
 is_keyword_tok = (k: Tok) -> bool: int(k) < kw_kinds.len() and kw_kinds[int(k)]
@@ -346,6 +350,9 @@ parse_type_primary = () -> int:
         return n
     habit(ti, .eof)
     # (draw: at the top level: a function, written without its `= ()`)
+    # (outer: loop ...: a labelled loop, as JavaScript's and Java's)
+    if k == .kw_loop and ti >= 2 and toks[ti - 1].kind == .colon and toks[ti - 2].kind == .ident:
+        fatal(toks[ti - 2].pos, "loops have no labels: to leave two loops at once, put them in a function and `return` from it, or set a flag the outer loop checks")
     if (k == .newline or k == .indent) and ti >= 2 and toks[ti - 1].kind == .colon and toks[ti - 2].kind == .ident:
         fname = tok_src(ti - 2)
         if fname == "update": fatal(toks[ti - 2].pos, "a function is written `update = (dt: f64):` and its lines below it")
@@ -656,10 +663,18 @@ id_from = 0
 p_matrix = 0          # > 0 inside array brackets: a space separates elements
 p_index: int[]         # the arrays being indexed (for `end`)
 
+p_id_async = 0
+p_id_await = 0
 parse_primary = () -> int:
     t = ti
     pos = cur_pos()
     k = pk()
+    # (async (): ... and await x: JavaScript's, for a step that waits)
+    if p_id_async == 0:
+        p_id_async = intern("async")
+        p_id_await = intern("await")
+    if k == .ident and (toks[t].ival == p_id_async and toks[t + 1].kind == .lparen and partner(t + 1) > t and (toks[partner(t + 1) + 1].kind == .colon or toks[partner(t + 1) + 1].kind == .arrow) or toks[t].ival == p_id_await and toks[t + 1].kind == .ident):
+        fatal(pos, "there is no async or await: something that takes time is a state changed a little in update each frame, or steps in `Actions` (`steps.then(0.3, (): drop())`, `steps.update(dt)` in update)")
     if k == .int_lit:
         advance()
         n = mk(.int_lit, pos)
@@ -766,6 +781,9 @@ parse_primary = () -> int:
     if k == .star: fatal(pos, "what a pointer points at is `p[0]` (its fields: `p.x`); there is no `*` before a value")
     if k == .kw_loop: fatal(pos, "a loop cannot follow a `:` on the same line: put it on a line of its own, indented below")
     # (score > 10 and < 20: the comparison's left side left out)
+    # (for (let i = 0; ...), for (const g of gems): C's and JavaScript's loops)
+    if t >= 2 and toks[t - 1].kind == .lparen and toks[t - 2].kind == .ident and tok_src(t - 2) == "for":
+        fatal(toks[t - 2].pos, "loops are `loop i in [0..8):` (i from 0 to 7) and `loop g in gems:` (each element)")
     if (k == .lt or k == .gt or k == .le or k == .ge or k == .eq or k == .ne) and t >= 1 and (toks[t - 1].kind == .kw_and or toks[t - 1].kind == .kw_or):
         fatal(pos, "after `{tok_src(t - 1)}`, write the whole comparison again: `score > 10 and score < 20`")
     # (play(s, when = 0.1): a word Sloppy keeps for itself, as an argument's or a variable's name)
@@ -1721,6 +1739,7 @@ parse_simple_stmt = () -> int:
         return r
     if k == .kw_break:
         advance()
+        if pk() == .ident: fatal(cur_pos(), "loops have no labels: `break` leaves the innermost loop; to leave two at once, put them in a function and `return` from it, or set a flag the outer loop checks")
         return mk(.break_, pos)
     if k == .kw_continue:
         advance()

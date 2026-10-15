@@ -12,10 +12,11 @@ $root = (Get-Location).Path
 $out = Join-Path $root "build\gpucheck"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $rep = Join-Path $out "report.txt"
-"" | Set-Content $rep
+"" | Set-Content -Encoding utf8 $rep
 
-function Section($name) { "`n== $name" | Tee-Object -FilePath $rep -Append }
-function Note($text) { $text | Tee-Object -FilePath $rep -Append }
+# (as UTF-8: Windows PowerShell's Tee-Object writes UTF-16)
+function Section($name) { "`n== $name" | Out-Host; "`n== $name" | Out-File -Encoding utf8 -Append $rep }
+function Note($text) { $text | Out-Host; $text | Out-File -Encoding utf8 -Append $rep }
 
 # a Python: the one given, one on the PATH, or the embeddable one from python.org (no installer)
 if ($Python -eq "") {
@@ -63,10 +64,12 @@ Note ((& $Python tools\gpufuzz.py 100 --seed 1 --shaders --no-lavapipe 2>&1 | Se
 Section "games: 600 frames each through Vulkan (SLOPPY_STATS)"
 foreach ($g in @("examples\rebound\rebound.jo", "examples\breakwater\breakwater.jo", "examples\dunes\dunes.jo", "examples\lowline\lowline.jo")) {
     $exe = Join-Path $out ([IO.Path]::GetFileNameWithoutExtension($g) + ".exe")
-    & $sloppy build --release $g -o $exe 2>&1 | Out-Null
+    $b = & $sloppy build --release $g -o $exe 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { Note ("$g : the build failed: " + (($b | Select-Object -Last 5) -join " | ")); continue }
     $env:SLOPPY_VULKAN = "1"; $env:SLOPPY_STATS = "1"; $env:SLOPPY_FRAMES = "600"; $env:SLOPPY_SCREENSHOT = ($exe + ".png")
     $t = Measure-Command { $res = & $exe 2>&1 }
-    Note ("$g : " + [math]::Round($t.TotalSeconds, 2) + " s for 600 frames; " + (($res | Select-Object -Last 2) -join " | "))
+    $ok = (Test-Path ($exe + ".png")) -and $LASTEXITCODE -eq 0
+    Note ("$g : " + [math]::Round($t.TotalSeconds, 2) + " s for 600 frames (exit $LASTEXITCODE, picture saved: $ok); " + (($res | Select-Object -Last 3) -join " | "))
     Remove-Item Env:SLOPPY_VULKAN, Env:SLOPPY_STATS, Env:SLOPPY_FRAMES, Env:SLOPPY_SCREENSHOT
 }
 Section "done"

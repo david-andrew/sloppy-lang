@@ -43,6 +43,17 @@ From an idle game (numbers past 1e300, a shop that scrolls, saves, offline progr
   shows: in `print`, in `"{x}"`, inside arrays and other structs; `to_text`, `to_json` and
   saves still write its fields. `str(5)` beside it is still the conversion.
 - `short_number(x)`: 999, 1.23K, 45.6M, 789B, 1.00T, then 1.23e+15.
+From a match-3 puzzle game (a Phaser developer: tweens, cascades, specials, levels, touch):
+- `sloppy test` on a game whose top calls `window(...)` runs its tests with no window, so with
+  no display (it stopped at "cannot open a window").
+- A `const` nothing uses is checked too: `const X = no_such(3)` was accepted.
+- Changing a loop's element inside a function that runs later (`steps.then(0.1, (): g.scale =
+  0.0)`) says to change it by its position, `xs[i]`; the advice before led to changing a copy.
+- Errors for Phaser's and JavaScript's habits: `async`/`await`, `new Promise`, `this.tweens`,
+  `this.time`, `this.add`, `game.config`, `scene.start`, `Phaser.Math`, `Array(8)`,
+  `for (let i = 0; ...)`, `for (const g of gems)`, `let [a, b] = ...`, `const {x} = g`, labelled
+  loops and `break outer`, `xs.push(1, 2, 3)` (`extend`), `xs.map((x, i): ...)`.
+- START's JavaScript table has Phaser's tweens, scenes and chains of animations.
 - Netpong on the website said only "could not reach": a web page cannot host, and one served
   over https reaches only a host on the same computer or a wss:// one. The game and its page say
   so now, and `net.why(peer)` in a web page gives the reason (an https page and a ws:// address
