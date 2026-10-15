@@ -13,6 +13,9 @@ From a visual novel (dialogue, choices, portraits, music, save slots, Japanese t
   with conditions, `$ trust += 1`, `if`/`elif`/`else`, `jump`, `call`/`return`, and commands
   such as `show mira happy` for the game), stepped through with `st.next()` and `st.choose(i)`;
   `st.save()` and `st.load(s)` keep its place, even after the script changes elsewhere.
+- `sloppy new tale story`: a story game to start from (its script as Ren'Py's, a dialogue box,
+  choices, portraits, its place kept between runs). `sloppy new a/b` makes `a` too.
+- `on_quit`'s last line may give a value (`on_quit = (): save_value(...)`): it is dropped.
 - `text_rich(s, pos, size, color, width, chars)`: `[color=yellow]...[/color]`, `[b]...[/b]` and
   `[i]...[/i]` where they are in the text, wrapped to a width, typed out with chars.
 - `img.resized(w, h)` (a thumbnail), `free_texture(t)`, `xs.get(i)` (an element or none).

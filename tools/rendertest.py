@@ -25,7 +25,7 @@ only = [a for a in sys.argv[1:] if not a.startswith("--")]
 GPU_FRAME_LIMIT = 4.0   # a whole game frame on a GPU (different rasterization and precision)
 os.makedirs(out, exist_ok=True)
 games = {"cube": "examples/cube.jo", "rebound": "examples/rebound/rebound.jo", "dunes": "examples/dunes/dunes.jo", "lowline": "examples/lowline/lowline.jo",
-         "new_game": "lib/new/game.jo", "new_arcade": "lib/new/arcade.jo", "new_platformer": "lib/new/platformer.jo", "new_3d": "lib/new/3d.jo"}     # (and sloppy new's templates)
+         "new_game": "lib/new/game.jo", "new_arcade": "lib/new/arcade.jo", "new_platformer": "lib/new/platformer.jo", "new_3d": "lib/new/3d.jo", "new_story": "lib/new/story.jo"}     # (and sloppy new's templates)
 scenes = sorted(f[:-3] for f in os.listdir(refdir) if f.endswith(".jo"))
 for sc in scenes:
     games[sc] = f"tests/render/{sc}.jo"
@@ -49,6 +49,7 @@ for name, src in games.items():
         failed += 1
         continue
     png = os.path.join(out, f"{name}.png")
+    shutil.rmtree(os.path.join(out, "saved-data"), ignore_errors=True)     # (each run from nothing saved)
     r = subprocess.run([exe], env=dict(env, SLOPPY_SCREENSHOT=png), capture_output=True, text=True, timeout=300)
     if r.returncode != 0 or not os.path.exists(png):
         print(f"FAIL {name}: render failed\n{r.stderr}")
@@ -65,7 +66,8 @@ for name, src in games.items():
                 print(f"skipped {name} (needs a display)")
                 continue
             gpu = os.path.join(out, f"{name}_gpu.png")
-            genv = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_FRAMES="60", SLOPPY_SCREENSHOT=gpu, SLOPPY_SCALE="1", SLOPPY_VULKAN="1" if no_gl else "0")
+            genv = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_FRAMES="60", SLOPPY_SCREENSHOT=gpu, SLOPPY_SCALE="1", SLOPPY_SAVE_DIR=os.path.join(out, "saved-data"), SLOPPY_VULKAN="1" if no_gl else "0")
+            shutil.rmtree(os.path.join(out, "saved-data"), ignore_errors=True)
             subprocess.run([exe], env=genv, capture_output=True, timeout=120)
             w, h, got = downsample(gpu, 4)
         write_png(ref, w, h, got)
@@ -85,8 +87,9 @@ for name, src in games.items():
         runs += 1
         gpng = os.path.join(out, f"{name}_{label.lower()}.png")
         if os.path.exists(gpng): os.remove(gpng)
-        genv = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_FRAMES="60", SLOPPY_SCREENSHOT=gpng, SLOPPY_SCALE="1", **extra)
+        genv = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), SLOPPY_FRAMES="60", SLOPPY_SCREENSHOT=gpng, SLOPPY_SCALE="1", SLOPPY_SAVE_DIR=os.path.join(out, "saved-data"), **extra)
         genv.pop("SLOPPY_SOFTWARE", None)
+        shutil.rmtree(os.path.join(out, "saved-data"), ignore_errors=True)
         r = subprocess.run([exe], env=genv, capture_output=True, text=True, timeout=300)
         if r.returncode != 0 or not os.path.exists(gpng):
             print(f"FAIL {name} ({label}): render failed\n{r.stderr[-2000:]}")
