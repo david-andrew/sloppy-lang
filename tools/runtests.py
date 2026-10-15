@@ -87,6 +87,9 @@ for t in tests:
     try:
         # (`# env: NAME=value` lines at the top: set for the run, a headless game's SLOPPY_SCREENSHOT say)
         test_env = dict(os.environ, SLOPPY_SAVE_DIR=os.path.join(tmp, "saved-data"))
+        # (no display: a game in a test draws with no window, not one on the desktop)
+        test_env.pop("DISPLAY", None)
+        test_env.pop("WAYLAND_DISPLAY", None)
         for l in head.splitlines():
             if l.startswith("# env: ") and "=" in l:
                 k, v = l[7:].split("=", 1)
