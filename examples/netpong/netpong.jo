@@ -10,7 +10,8 @@
 # The host moves the ball and both paddles and sends what it sees 30 times a second; the one who
 # joined sends only its paddle's moves. Through the relay, the relay says who hosts ("host" or
 # "guest"), that the other player came ("j") or left ("l"), and passes the rest on.
-# Up/down (W/S, or a gamepad's stick) move your paddle; first to 7 wins. Escape leaves.
+# Up/down (W/S, a gamepad's stick, or a finger or the mouse held down: the paddle follows it) move
+# your paddle; first to 7 wins. Escape (or Back) leaves.
 
 build:
     name = "Netpong"
@@ -165,15 +166,22 @@ else if let code = env("INVITE"):
     their_code = code
     other = net.join_invite(code)
 
+# back to the title, leaving the other player (if any)
+go_title = ():
+    if other >= 0: net.close(other)
+    other = -1
+    if hosting and not via_relay: net.stop_listening()
+    hosting = false
+    status = ""
+    screen = .title
+
+# a Back button at the top left: for a phone, with no Escape
+back_button = () -> bool: hud_button(Rect(30, 24, 120, 44), "Back")
+
 update = (dt: f64):
     network()
     if key_pressed(.escape) and screen != .title and screen != .joining and screen != .help:
-        if other >= 0: net.close(other)
-        other = -1
-        if hosting and not via_relay: net.stop_listening()
-        hosting = false
-        status = ""
-        screen = .title
+        go_title()
         return
     if screen == .help:
         if key_pressed(.escape) or key_pressed(.enter) or mouse_pressed(.left): screen = .title
@@ -187,13 +195,14 @@ update = (dt: f64):
                 copied = true
         return
     if screen == .joining:
-        address += text_input()
-        if key_typed(.backspace) and len(address) > 0: address = address[..len(address) - 1)
-        if key_pressed(.enter): join()
         if key_pressed(.escape): screen = .by_address
         return
     if screen != .playing: return
     move = f64(-input_axis().y)
+    # (a finger, or the mouse held down: the paddle goes to it)
+    if mouse_down(.left):
+        mine = if hosting: left_y else: right_y
+        move = clamp((mine - f64(mouse_pos().y)) / 30.0, -1.0, 1.0)
     if hosting:
         left_y = clamp(left_y - move * PADDLE_SPEED * dt, PADDLE_H / 2.0, 720.0 - PADDLE_H / 2.0)
         right_y = clamp(right_y - right_move * PADDLE_SPEED * dt, PADDLE_H / 2.0, 720.0 - PADDLE_H / 2.0)
@@ -240,7 +249,7 @@ draw = ():
         won = score_l > score_r
         if not hosting: won = not won
         text_centered(if won: "you won" else: "you lost", vec2(640, 300), 72)
-        text_centered("Escape: back to the title", vec2(640, 380), 24, GRAY)
+        if hud_button(Rect(540, 360, 200, 48), "Back to the title"): go_title()
     if screen == .title:
         text_centered("NETPONG", vec2(640, 170), 96, BLUE)
         ui_begin("title", vec2(640, 300))
@@ -268,19 +277,24 @@ draw = ():
     if screen == .help: draw_help()
     if screen == .joining:
         text_centered("Type the address the host's screen shows, then Enter", vec2(640, 250), 30)
-        text_centered("{address}_", vec2(640, 340), 44, GOLD)
-        text_wrapped("It is four numbers with dots between, as 192.168.1.20. Both players must be on the same network (the same Wi-Fi or router). A game hosted on this same computer: localhost. Escape goes back.", vec2(240, 420), 800, 20, DIM, align = .center)
+        address = hud_text_field(Rect(390, 310, 500, 56), address, "address", 64)
+        if hud_button(Rect(560, 385, 160, 44), "Join") or key_pressed(.enter): join()
+        text_wrapped("It is four numbers with dots between, as 192.168.1.20. Both players must be on the same network (the same Wi-Fi or router). A game hosted on this same computer: localhost.", vec2(240, 460), 800, 20, DIM, align = .center)
+        if back_button(): screen = .by_address
     if screen == .waiting: draw_waiting()
+    if screen == .invite or screen == .join_code or screen == .waiting:
+        if back_button(): go_title()
+    # (playing: between the scores, away from the paddles' fingers)
+    if screen == .playing and hud_button(Rect(595, 22, 90, 34), "Leave"): go_title()
 
-# a code, in lines of a fixed width (it is one word, too long for one line)
+# a code, in two lines of a fixed width (it is one word, too long for one): the start of it,
+# enough to see it is there (it goes whole by Copy or Share; nobody types it)
 draw_code = (code: str, y: f64):
     n = 60
-    i = 0
-    row = 0
-    loop i < len(code):
-        text_centered(code[i..min(i + n, len(code))), vec2(640, f32(y + f64(row) * 30.0)), 22, GOLD, mono = true)
-        i += n
-        row += 1
+    shown = code
+    if len(shown) > 2 * n: shown = shown[..2 * n - 3) + "..."
+    text_centered(shown[..min(n, len(shown))), vec2(640, f32(y)), 22, GOLD, mono = true)
+    if len(shown) > n: text_centered(shown[n..], vec2(640, f32(y + 30.0)), 22, GOLD, mono = true)
 
 # the invite as a link: this page's address (or, from a computer, the game's on the web) and the
 # code; opened, the game joins by itself, and pasted into Join a friend, it works as the code
@@ -289,39 +303,54 @@ invite_link = () -> str:
     if len(base) == 0: base = WEB_PAGE
     "{base}?invite={my_code}"
 
+# where a code goes, and how it was copied: said for a phone (a finger) or a computer's keys
+paste_hint = () -> str: if touch_input(): "their code: tap here, then Paste" else: "their code (ctrl+V)"
+# (a phone's browser copies only inside a tap: there, the code is copied by the button)
+copied_note = () -> str:
+    if touch_input(): return "(then paste it into a message)"
+    "(it is copied: paste it with ctrl+V, or cmd+V on a Mac)"
+
+# Copy, and Share where the device has a menu for sending it (a phone's)
+copy_buttons = (s: str, y: f32):
+    label = if touch_input(): "Copy" else: "Copy again"
+    if can_share():
+        if hud_button(Rect(470, y, 160, 40), label): set_clipboard(s)
+        if hud_button(Rect(650, y, 160, 40), "Share"): share(s)
+    else if hud_button(Rect(560, y, 160, 40), label): set_clipboard(s)
+
 draw_invite = ():
     text_centered("Invite a friend", vec2(640, 60), 44, BLUE)
     text_centered("1. Send them this link: in a chat or a message, any way", vec2(640, 120), 24)
     if len(my_code) == 0: text_centered("(making it: a moment)", vec2(640, 170), 22, DIM)
     else:
         draw_code(invite_link(), 165)
-        if hud_button(Rect(560, 265, 160, 40), "Copy again"): set_clipboard(invite_link())
-        text_centered("(it is copied: paste it with ctrl+V, or cmd+V on a Mac)", vec2(640, 320), 18, DIM)
+        copy_buttons(invite_link(), 265)
+        text_centered(copied_note(), vec2(640, 320), 18, DIM)
         text_centered("They open it in a web browser and play there, or paste it into Join a friend in their Netpong", vec2(640, 350), 18, DIM)
     text_centered("2. Their game then shows a code for them to send back. Paste it here:", vec2(640, 405), 24)
-    their_code = hud_text_field(Rect(240, 440, 800, 44), their_code, "reply", 400, "their code (ctrl+V)")
+    their_code = hud_text_field(Rect(240, 440, 800, 44), their_code, "reply", 400, paste_hint())
     if hud_button(Rect(560, 505, 160, 44), "Connect") or key_pressed(.enter):
         if len(trim(their_code)) > 0:
             if net.accept_reply(other, trim(their_code)): status = "connecting..."
             else: status = "that is not their reply code: copied whole?"
     if len(status) > 0: text_centered(status, vec2(640, 585), 22, GRAY)
-    text_wrapped("Works across the internet as on one Wi-Fi, with no server: each game finds the other. Escape goes back.", vec2(240, 640), 800, 18, DIM, align = .center)
+    text_wrapped("Works across the internet as on one Wi-Fi, with no server: each game finds the other.", vec2(240, 640), 800, 18, DIM, align = .center)
 
 draw_join_code = ():
     text_centered("Join a friend", vec2(640, 70), 44, BLUE)
     if other < 0:
-        text_centered("Paste the link or code your friend sent you, then Enter:", vec2(640, 180), 26)
-        their_code = hud_text_field(Rect(240, 220, 800, 44), their_code, "invite", 400, "their code (ctrl+V)")
+        text_centered("Paste the link or code your friend sent you, then Next:", vec2(640, 180), 26)
+        their_code = hud_text_field(Rect(240, 220, 800, 44), their_code, "invite", 400, paste_hint())
         if hud_button(Rect(560, 285, 160, 44), "Next") or key_pressed(.enter):
             if len(trim(their_code)) > 0: other = net.join_invite(trim(their_code))
-        text_wrapped("Your friend chooses Invite a friend, and sends you the link it gives them. Escape goes back.", vec2(240, 640), 800, 18, DIM, align = .center)
+        text_wrapped("Your friend chooses Invite a friend, and sends you the link it gives them.", vec2(240, 640), 800, 18, DIM, align = .center)
         return
     text_centered("Send this code back to your friend:", vec2(640, 160), 26)
     if len(my_code) == 0: text_centered("(making it: a moment)", vec2(640, 210), 22, DIM)
     else:
         draw_code(my_code, 210)
-        if hud_button(Rect(560, 305, 160, 40), "Copy again"): set_clipboard(my_code)
-        text_centered("(it is copied: paste it with ctrl+V, or cmd+V on a Mac)", vec2(640, 365), 18, DIM)
+        copy_buttons(my_code, 305)
+        text_centered(copied_note(), vec2(640, 365), 18, DIM)
     text_centered("Waiting for them to paste it in...", vec2(640, 440), 24, GRAY)
 
 draw_waiting = ():
@@ -334,7 +363,7 @@ draw_waiting = ():
         text_centered(my_address, vec2(640, 350), 64, GOLD)
     else:
         text_centered("This computer seems to be on no network: connect it to the Wi-Fi first", vec2(640, 330), 24, GRAY)
-    text_wrapped("Both computers must be on the same network (the same Wi-Fi or router). If a window asks whether Netpong may use the network, allow it. Playing on this same computer: join localhost. Escape stops waiting.", vec2(240, 450), 800, 20, DIM, align = .center)
+    text_wrapped("Both computers must be on the same network (the same Wi-Fi or router). If a window asks whether Netpong may use the network, allow it. Playing on this same computer: join localhost.", vec2(240, 450), 800, 20, DIM, align = .center)
 
 HELP = [
     "Invite a friend: the game gives a link. Send it to them any way (a chat message). They open it in a web browser (nothing to install), or paste it into Join a friend in their Netpong, and send you back the code their game then shows; paste that in. The two games then connect straight to each other, near or far.",
@@ -349,4 +378,4 @@ draw_help = ():
     loop i in 0.. and h in HELP:
         text_centered("{i + 1}", vec2(150, f32(y + 12.0)), 28, GOLD)
         y += text_wrapped(h, vec2(190, f32(y)), 900, 22, WHITE) + 24.0
-    text_centered("Escape or a click: back", vec2(640, 680), 20, GRAY)
+    text_centered("A click or a tap: back", vec2(640, 680), 20, GRAY)

@@ -1493,6 +1493,11 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `is_fullscreen = () -> bool`
 - `clipboard = () -> str`: the text on the system clipboard ("" if none, or not text). In a web page the browser lets a page read it only as it is pasted: this is the text last pasted (ctrl+V, or a text field's Paste button on a phone) into the page.
 - `set_clipboard = (s: str)`
+- `can_share = () -> bool`: the system's menu for sending text to another app (a chat, Messages, mail), where there is one: a web page on a phone, and in some desktop browsers. In a page the menu opens as the tap or click that asked ends (browsers allow it only then)
+  ```gdscript
+  if can_share() and hud_button(r, "Share"): share(invite_link)
+  ```
+- `share = (text: str)`
 - `mouse_lock = (on: bool = true) -> bool`: lock the mouse pointer to the window and hide it, for mouse look: the pointer stays put and its motion keeps arriving through mouse_delta(). false where the platform cannot. (A web page gets the lock at the next click into it, as browsers require; Escape releases it there.)
 - `is_mouse_locked = () -> bool`: (in a screenshot run, what the game asked for: the desktop's focus coming and going would make the run differ from one time to the next)
 - `window_focused = () -> bool`: the window (or the web page) has the keyboard's focus: false while the player is in another window or tab, as after a click outside an itch.io frame (a game may pause then)

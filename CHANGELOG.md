@@ -18,6 +18,12 @@
 - On a phone, a `hud_text_field` tapped brings up the phone's keyboard (in a web page there
   was no way to type before), with a Paste button at its end while it has it; the game fits
   above the keyboard. `ui_text_field` takes pastes too.
+- `share(text)` opens the system's menu for sending text to another app (a phone's: a chat,
+  Messages, mail) where `can_share()`; in a web page. `set_clipboard` in a phone's browser,
+  refused outside a tap, is done at the end of the next one.
+- Netpong plays on a phone: the paddle follows a finger (or the mouse held down), Back and
+  Leave buttons where Escape was the only way, Share and Copy for the invite, the address typed
+  into a text field, and the long codes shown in two lines.
 - A slice compared with `==` (`xs[1..4) == ys`) read the wrong memory and stopped the program.
 
 From a creative coder (p5.js and Shadertoy: a flow field with trails, a shader piece with

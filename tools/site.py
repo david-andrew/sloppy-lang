@@ -555,7 +555,7 @@ GALLERY = [
 
 # (what a card says besides its program's first sentence)
 GALLERY_NOTES = {
-    "netpong": 'For two, anywhere: choose Invite a friend, send them the code it gives, and paste back the code their Join a friend gives them. '
+    "netpong": 'For two, anywhere: choose Invite a friend and send them the link it gives; they open it (on a phone too), and you paste back the code their game then shows. '
                'The two games connect straight to each other, with no server: this page, a computer running <code>sloppy run netpong.jo</code>, or both. '
                'On one network there is also the address way, and <a href="netpong/netpong_relay.py" download>netpong_relay.py</a> (Python).',
 }
