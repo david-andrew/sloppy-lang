@@ -26,6 +26,8 @@ with chat):
 - `struct Rematch: pass`: a struct with no fields (a message that is only its name); `pass` was
   refused. `zeros[int](rows, cols)` makes zeros of another type (`int[,]`). `rect(r, color)`
   and `rect_outline(r, thickness, color)` take a `Rect`, as the hud functions do.
+- A warning where a netplay session's tick calls `random()`, `time()`, `elapsed()` and the like:
+  each machine would get another game (a desync found only later, at run time).
 - `Msg(Move(3))` with `Msg` a union says a Move is a Msg as it is (it was "unknown function");
   `from_text` reading a union says what it found (`expected a Move | Chat, found 'Mvoe'`).
 - Native invite peers send much faster: sending n messages in a frame took time growing as n
