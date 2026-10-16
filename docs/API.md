@@ -3474,6 +3474,18 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
 - `done[T] = (tw: Tween[T]) -> bool`: finished (a tween that repeats never is)
 - `restart[T] = (tw: mut Tween[T])`: start again from the start
 - `retarget[T] = (tw: mut Tween[T], to: T)`: go on from where it is now to a new target, taking duration again
+- `done[T] = (tws: Tween[T][]) -> bool`: all of them finished (a set of tweens started together: cards dealt, then the next turn)
+- `struct Chain[T]`: tweens played one after another, as one: `hop = chain([tween(a, b, 0.2), tween(b, a, 0.3, ease_out_bounce)])`, then hop.update(dt) each frame, hop.value() where it is, hop.done() once the last has ended (each step's delay counts: a pause between two). A step that repeats keeps the chain on it
+  ```gdscript
+  struct Chain[T]:
+      steps: Tween[T][]
+      t = 0.0
+  ```
+- `chain[T] = (steps: Tween[T][]) -> Chain[T]`
+- `update[T] = (c: mut Chain[T], dt: f64)`
+- `value[T] = (c: Chain[T]) -> T`
+- `done[T] = (c: Chain[T]) -> bool`
+- `restart[T] = (c: mut Chain[T])`: start again from the first step
 
 #### The camera: following and shaking
 

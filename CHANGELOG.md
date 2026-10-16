@@ -23,6 +23,9 @@ with chat):
   screen the reason is the headline. `net.code_kind(code)`: "invite", "reply" or "".
 - Codes broken across lines (a chat app wrapping them) are read whole.
 - `s.over(peers)` with one peer short says how it goes (`[-1, friend]`).
+- `chain([tween(...), tween(...)])`: tweens one after another, as one (`value()`, `done()`); and
+  `done(tweens)` for a set started together (a match-3 persona's wish: the next move once all the
+  falling pieces have landed).
 - `struct Rematch: pass`: a struct with no fields (a message that is only its name); `pass` was
   refused. `zeros[int](rows, cols)` makes zeros of another type (`int[,]`). `rect(r, color)`
   and `rect_outline(r, thickness, color)` take a `Rect`, as the hud functions do.

@@ -292,6 +292,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `setInterval(f, 30000)`, `setTimeout` | `if every(1, 30.0): f()` in update; `Actions` for steps one after another |
 | `Date.now()` | `unix_time()` (seconds since 1970: what to save to work out time away) |
 | Phaser's `this.tweens.add({...})`, `onComplete` | `t = tween(from, to, 0.3, ease = ease_out_back)` in a variable or field; each frame `t.update(dt)`, `t.value()`, and `t.done()` for what comes next |
+| a timeline / tween chain | `hop = chain([tween(a, b, 0.2), tween(b, a, 0.3)])`: one after another, `hop.value()`, `hop.done()`; `done(tweens)` for a set started together |
 | scenes, `this.scene.start("Level")` | `enum Screen: title, play, over`, `screen = .play`, and a `match screen:` in update and in draw |
 | `async`/`await`, a chain of animations | a phase for each step (`enum Phase: idle, swapping, clearing, falling`), moved on in update when its tweens are done; or `Actions` for timed steps |
 | `btoa`, `atob` | `base64_encode(bytes(s))`, `base64_decode(s)` |
