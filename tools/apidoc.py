@@ -85,6 +85,11 @@ TOPICS = [
      "A module (`import net`): messages between programs over WebSockets, so a native build and a web page "
      "can play together (a server is a native program; a web page connects to one: [examples/netpong](https://github.com/david-andrew/sloppy-lang/tree/master/examples/netpong)), "
      "and UDP datagrams between native programs."),
+    ("Games", "invite", "Invite a friend", ["invite"], "invite",
+     "A module (`import invite`): the screens that connect two players with invite codes and no server: a link to send "
+     "in a chat (it opens the game in a browser), a code sent back, copying, sharing and pasting (on phones too), and why "
+     "when no connection was made. A game's menu calls `invite.start()` or `invite.join()`, and draw shows `invite.screen()` "
+     "until it gives the other player. See [examples/duel](https://github.com/david-andrew/sloppy-lang/tree/master/examples/duel)."),
     ("Games", "netplay", "Netplay", ["netplay"], "netplay",
      "A module (`import netplay`): players on different machines in one game. With rollback (`session`), only inputs "
      "travel, and a late one is made up for by playing the last ticks again; with a server (`server`, `client`), the "

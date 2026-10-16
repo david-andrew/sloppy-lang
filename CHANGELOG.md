@@ -12,6 +12,13 @@
   `page_url()` is a web page's own address, to make one. Netpong's invite is such a link: opened,
   the game joins by itself in a browser; from a computer, it links to the game on sloppy-lang.org,
   so a friend plays with nothing to install.
+- `import invite`: the Invite a friend and Join a friend screens for any game (a link to send,
+  a code back, copy, share and paste, on phones too, and why when nothing connected): a menu
+  calls `invite.start()` or `invite.join()`, and draw shows `invite.screen()` until it gives the
+  other player. `invite.from_link()` joins at once from an invite link.
+- Duel (the rollback example) starts on a menu: Invite a friend plays anyone, anywhere, with no
+  server (rollback over invite codes), on a phone too (steer toward a finger, a Fire button);
+  it is on the website's examples page.
 - `s.over(peers)`: rollback netplay over `net` peers, so over invite codes too: two players, in
   web pages or native programs, play a rollback game with no server.
 - `import crypto`: SHA-1, SHA-256, HMAC, AES-128-GCM, P-256 ECDH and ECDSA, self-signed

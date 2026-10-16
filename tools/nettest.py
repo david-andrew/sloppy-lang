@@ -76,6 +76,17 @@ b = subprocess.run([npi], capture_output=True, text=True, env=dict(env, DIR=npd,
 a_out = a.communicate(timeout=90)[0]
 check("netplay over invite codes: player 0", a_out, ["player 0: joined true, played true, desync -1"])
 check("netplay over invite codes: player 1", b.stdout, ["player 1: joined true, played true, desync -1"])
+# two games through lib/invite.jo's screens (run with no window: the software renderer, no display)
+ig = build("invite_game") + exe
+igd = os.path.join(tmp, "invite_codes")
+os.makedirs(igd, exist_ok=True)
+genv = {k: v for k, v in env.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
+genv.update(SLOPPY_SOFTWARE="1", SLOPPY_NO_AUDIO="1", SLOPPY_FRAMES="900", DIR=igd)
+a = subprocess.Popen([ig], stdout=subprocess.PIPE, text=True, env=dict(genv, ROLE="invite"))
+b = subprocess.run([ig], capture_output=True, text=True, env=dict(genv, ROLE="join"), timeout=90)
+a_out = a.communicate(timeout=90)[0]
+check("invite screens: the inviter", a_out, ["invite: connected, inviter true, screens up false", "invite got: hello from join"])
+check("invite screens: the friend", b.stdout, ["join: connected, inviter false, screens up false", "join got: hello from invite"])
 
 # a web page's client, in a browser: the same, but as a game (messages arrive between frames)
 shell = None

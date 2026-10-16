@@ -1,8 +1,10 @@
 # DUEL - two ships in an arena, over the network with rollback (lib/netplay.jo): each machine
 # runs the whole game, only the players' inputs travel, and a late input is made up for by
 # playing the last few ticks again, so neither player waits for the other's moves.
-# Start player 1 with PLAYER=0 and player 2 with PLAYER=1 (on the same machine, or on two:
-# PEER=<the other's address>): they play over UDP. A web page plays through a relay instead:
+# Invite a friend gives a link to send them (lib/invite.jo): they open it, the game in a web
+# browser, and the two games connect straight to each other with no server, anywhere.
+# For trying it on one network: start player 1 with PLAYER=0 and player 2 with PLAYER=1 (on the
+# same machine, or on two: PEER=<the other's address>): they play over UDP. A web page plays through a relay instead:
 # SERVE=1 makes a native player one as well, and a page joins it with ?player=1&relay=<its address>
 # (a native player can too, with RELAY=<address>). LAG=100 adds 100 ms to what this one sends, to
 # try a slow network; BOT=1 lets the computer play this side.
@@ -11,7 +13,9 @@
 build:
     name = "Duel"
 
+import net
 import netplay
+import invite
 
 const W = 1280.0
 const H = 720.0
@@ -22,7 +26,13 @@ const WIN = 10
 
 me = to_int(env("PLAYER") ?? "0") ?? 0
 peer = env("PEER") ?? "127.0.0.1"
-window("Duel (player {me + 1})", 1280, 720)
+# (none of PLAYER, PEER, RELAY or SERVE: players meet by invite codes, from a menu)
+by_invite = env("PLAYER") == none and env("PEER") == none and env("RELAY") == none and env("SERVE") == none
+playing = not by_invite
+friend = -1
+status = ""
+const WEB_PAGE = "https://sloppy-lang.org/examples/duel/"
+window(if by_invite: "Duel" else: "Duel (player {me + 1})", 1280, 720)
 action("Fire", [.key(.space), .button(.a)])
 
 # ---------------- the game: everything a tick depends on ----------------
@@ -91,14 +101,26 @@ tick = (g: Game, pads: Pad[]) -> Game:
 s = netplay.session(Game(), tick, players = 2, me = me)
 serving = env("SERVE") != none
 relay = env("RELAY") ?? ""
-when TARGET == "wasm":
-    if len(relay) == 0: relay = "localhost"
-if serving:
-    netplay.relay(4500)
-    relay = "127.0.0.1"
-if len(relay) > 0: s.join_relay(relay, 4500, "duel")
-else: s.udp(4400 + me, [(peer, 4400), (peer, 4401)])
-if let lag = env("LAG"): s.lag(to_float(lag) ?? 0, 10, 0.02)
+if not by_invite:
+    if serving:
+        netplay.relay(4500)
+        relay = "127.0.0.1"
+    if len(relay) > 0: s.join_relay(relay, 4500, "duel")
+    else: s.udp(4400 + me, [(peer, 4400), (peer, 4401)])
+    if let lag = env("LAG"): s.lag(to_float(lag) ?? 0, 10, 0.02)
+else: invite.from_link()
+
+# connected by invite: the one who invited is player 1 (me = 0)
+begin = (c: invite.Invited):
+    friend = c.peer
+    me = if c.inviter: 0 else: 1
+    s = netplay.session(Game(), tick, players = 2, me = me)
+    peers = [-1, -1]
+    peers[1 - me] = friend
+    s.over(peers)
+    if let lag = env("LAG"): s.lag(to_float(lag) ?? 0, 10, 0.02)
+    status = ""
+    playing = true
 spare = 0.0
 bot = env("BOT") != none
 
@@ -111,8 +133,33 @@ bot_pad = (g: Game) -> Pad:
     want = n * f32(length(d) - 320.0) + perp(n) * 150.0
     Pad(int(sign(round(f64(want.x) / 60.0))), int(sign(round(f64(want.y) / 60.0))), dot(n, mine.face) > 0.8)
 
+# (on a touch screen: the ship goes toward a finger; Fire is a button at the bottom right)
+const FIRE_AT = vec2(1170, 610)
+touch_pad = (g: Game) -> Pad:
+    p = Pad()
+    loop t in touches():
+        if length(t - FIRE_AT) < 80.0: p.fire = true
+        else:
+            d = t - g.ships[me].pos
+            if abs(d.x) > 24.0: p.x = int(sign(d.x))
+            if abs(d.y) > 24.0: p.y = int(sign(d.y))
+    p
+
 update = (dt: f64):
-    if key_pressed(.escape): quit()
+    if by_invite:
+        # (the friend gone: back to the menu)
+        loop e in net.receive():
+            if e.kind == .left and e.peer == friend:
+                status = "your friend left"
+                playing = false
+                friend = -1
+        if not playing: return
+        if key_pressed(.escape):
+            net.close(friend)
+            friend = -1
+            playing = false
+            return
+    else if key_pressed(.escape): quit()
     if serving: netplay.relay(4500)
     # (ticks at 60 a second, whatever the frame rate)
     spare = min(spare + dt, 0.1)
@@ -120,10 +167,14 @@ update = (dt: f64):
         spare -= 1.0 / 60.0
         a = input_axis()
         if bot: s.play(bot_pad(s.state))
+        else if touches().len() > 0: s.play(touch_pad(s.state))
         else: s.play(Pad(int(round(f64(a.x))), int(round(f64(a.y))), action_down("Fire")))
 
 draw = ():
     clear(rgb(0.07, 0.08, 0.11))
+    if not playing:
+        draw_menu()
+        return
     g = s.state
     colors = [rgb(0.35, 0.7, 1.0), rgb(1.0, 0.6, 0.3)]
     loop sh in g.shots: circle(sh.pos, 5, colors[sh.owner])
@@ -142,3 +193,28 @@ draw = ():
         text_centered("waiting for player {other + 1} ({where})", vec2(W / 2, H - 60), 28, gray(0.7))
     if s.desync >= 0: text_centered("the two games differ since tick {s.desync}", vec2(W / 2, 40), 28, rgb(1, 0.4, 0.4))
     text("ping {int(s.ping(other))} ms   rollbacks {s.rollbacks}", vec2(20, H - 36), 20, gray(0.5))
+    if touch_input():
+        circle(FIRE_AT, 60, rgba(1, 1, 1, 0.12))
+        text_centered("Fire", FIRE_AT, 26, rgba(1, 1, 1, 0.6))
+    if by_invite:
+        if touch_input():
+            if hud_button(Rect(30, 24, 100, 40), "Leave"):
+                net.close(friend)
+                friend = -1
+                playing = false
+        else: text("Escape: leave", vec2(W - 150, H - 36), 20, gray(0.5))
+
+# the menu, until a friend is connected
+draw_menu = ():
+    if invite.active():
+        if let c = invite.screen("Duel", WEB_PAGE): begin(c)
+        return
+    text_centered("DUEL", vec2(W / 2, 170), 96, rgb(0.35, 0.7, 1.0))
+    ui_begin("menu", vec2(f32(W / 2), 300))
+    if ui_button("Invite a friend"): invite.start(reliable = false)
+    if ui_button("Join a friend"): invite.join()
+    when TARGET != "wasm":
+        if ui_button("Quit"): quit()
+    ui_end()
+    if len(status) > 0: text_centered(status, vec2(W / 2, 560), 22, gray(0.7))
+    text_wrapped("Two ships, first to 10 hits. Move with the arrows, WASD or a stick; fire with Space or A. Each game runs the whole match, so neither player waits for the other's moves.", vec2(240, 620), 800, 18, gray(0.55), align = .center)

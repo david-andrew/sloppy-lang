@@ -542,6 +542,7 @@ GALLERY = [
     ("dunes", "examples/dunes/dunes.jo", "Dunes", "dunes", ""),
     ("lowline", "examples/lowline/lowline.jo", "Lowline", "lowline", ""),
     ("netpong", "examples/netpong/netpong.jo", "Netpong", "netpong", ""),
+    ("duel", "examples/duel/duel.jo", "Duel", "duel", ""),
     ("arcade", "lib/new/arcade.jo", "sloppy new: arcade", "arcade", ""),
     ("platformer", "lib/new/platformer.jo", "sloppy new: platformer", "platformer", ""),
     ("firstperson", "lib/new/3d.jo", "sloppy new: 3d", "firstperson", ""),
@@ -555,6 +556,8 @@ GALLERY = [
 
 # (what a card says besides its program's first sentence)
 GALLERY_NOTES = {
+    "duel": 'For two, anywhere: Invite a friend gives a link to send them; they open it, in a browser here or on a phone. '
+            'Rollback netplay (<code>netplay.session</code> over invite codes): each game runs the whole match, with no server between them.',
     "netpong": 'For two, anywhere: choose Invite a friend and send them the link it gives; they open it (on a phone too), and you paste back the code their game then shows. '
                'The two games connect straight to each other, with no server: this page, a computer running <code>sloppy run netpong.jo</code>, or both. '
                'On one network there is also the address way, and <a href="netpong/netpong_relay.py" download>netpong_relay.py</a> (Python).',
