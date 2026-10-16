@@ -397,8 +397,8 @@ loop: ...                              # forever (until break / return)
 loop x > 0: x -= 1                     # while
 loop i in [0..10): ...                 # 0 to 9
 loop i in 0..10: ...                   # 0 to 10: a bare range includes both ends
-loop i in 0,2..10: ...                 # 0 2 4 6 8 10
-loop i in 10,9..1: ...                 # counting down
+loop i in 0, 2..10: ...                # 0 2 4 6 8 10
+loop i in 10, 9..1: ...                # counting down
 loop x in xs: ...
 loop k, v in table: ...                # unpacks: map entries, or an array of pairs
 loop mut x in xs: x *= 2               # x is the element itself
