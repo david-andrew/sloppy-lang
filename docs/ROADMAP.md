@@ -35,8 +35,9 @@ Intel or AMD graphics. What can be done before hardware is at hand:
   tests through Vulkan, the 73 SPIR-V modules through spirv-val, 300 random compute programs
   the same on the CPU and the GPU, 52 programs the same through OpenGL and Vulkan, windowed
   games at a steady 60 fps through KDE's compositor (Rebound: 2.8 ms of GPU a frame at
-  1280x800; Breakwater playing: 1.3 ms offscreen at 720p). Not yet: its controls (Steam
-  Input), AMD's Windows driver.
+  1280x800; Breakwater playing: 1.3 ms offscreen at 720p); its built-in controls as a
+  gamepad through Steam Input, and a USB pad, every button and axis. Not yet: AMD's Windows
+  driver.
 - **AMD, by the hour:** AWS's g4ad instances have an AMD Radeon Pro V520 (RDNA): a real
   graphics GPU, on Linux (Mesa's RADV, the driver most AMD Linux players use) and on Windows
   (AMD's driver). An hour or two per round, for a few dollars.

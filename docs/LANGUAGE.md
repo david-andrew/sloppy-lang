@@ -1057,7 +1057,9 @@ the frame it goes down or up, and `key_typed(k)` when pressed and again as it re
 (at the desktop's repeat rate: for moving through text or menus). `text_input()` is the text
 typed this frame, repeats included. Likewise `mouse_down`, `mouse_pressed`, `mouse_pos()`,
 `mouse_wheel()`, and gamepads (`gamepad_down`, `left_stick()`); `input_axis()` combines arrows,
-WASD and the left stick. For mouse look, `mouse_lock()` hides the pointer and keeps it in the
+WASD and the left stick. On a Steam Deck the built-in controls are a gamepad when the game is
+started from Steam (in Desktop Mode too, after Games → Add a Non-Steam Game); started any other
+way, Steam turns them into a keyboard and mouse. For mouse look, `mouse_lock()` hides the pointer and keeps it in the
 window while `mouse_delta()` reports how far it moved (Wayland, X11 and browsers, where the
 lock starts at the next click and Escape ends it); `mouse_lock(false)` lets it go.
 
