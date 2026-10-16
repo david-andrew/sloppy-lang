@@ -34,7 +34,6 @@ __ui_menu = ""
 __ui_open_frame = -1            # the frame the menu opened in
 __ui_drawn_frame = -10          # the last frame a menu was drawn in
 __ui_focus = 0
-__ui_focus_of: {str: int}       # (each menu's focus when it was left)
 __ui_count = 0                  # items so far in this frame's menu
 __ui_last_count = 0             # in the last frame's
 __ui_pos = vec2(0, 0)
@@ -49,6 +48,17 @@ __ui_ok = false
 __ui_typing = -1                # the text field that had the focus last frame (its letters are text)
 __ui_open = false               # between ui_begin and ui_end
 __ui_unended = 0                # menus begun in a row without ui_end
+# (each menu's own: several may be drawn in a frame)
+struct __UiMenu:
+    focus = 0
+    open_frame = -1
+    drawn_frame = -10
+    last_count = 0
+__ui_menus: {str: __UiMenu}
+__ui_in_frame = -1              # (this frame's input, read once for all its menus)
+__ui_in_nav = 0
+__ui_in_side = 0
+__ui_in_ok = false
 
 # start a menu: items go in a column centered on x, from y down. A menu starts with its first
 # item chosen; shown again (back from its Settings), with the item it was left on.
@@ -60,35 +70,45 @@ ui_begin = (name: str, top_center: vec2):
         if __ui_unended >= 3: panic("the menu '{__ui_menu}' needs `ui_end()` after its items (before the next ui_begin)")
     else: __ui_unended = 0
     __ui_open = true
-    # (a different menu, or this one again after frames without it: it opens now)
-    if name != __ui_menu or __ui_drawn_frame < f - 1:
-        if len(__ui_menu) > 0: __ui_focus_of[__ui_menu] = __ui_focus
-        __ui_menu = name
-        __ui_focus = __ui_focus_of.get(name) ?? 0
-        __ui_last_count = 0
-        __ui_open_frame = f
+    # (this menu's own state; shown again after frames without it, it opens now, on the item it
+    # was left on)
+    st = __ui_menus.get(name) ?? __UiMenu()
+    if st.drawn_frame < f - 1:
+        st.open_frame = f
+        st.last_count = 0
+    st.drawn_frame = f
+    __ui_menus[name] = st
+    __ui_menu = name
+    __ui_focus = st.focus
+    __ui_last_count = st.last_count
+    __ui_open_frame = st.open_frame
     __ui_drawn_frame = f
     __ui_pos = top_center
     __ui_count = 0
-    m = mouse_pos()
-    # (where the pointer happens to be when the menu first shows is not a move onto an item)
-    __ui_mouse_moved = m != __ui_mouse_last and __ui_mouse_last != vec2(-1, -1)
-    __ui_mouse_last = m
-    # (what the player did this frame, read once)
-    sy = gamepad_axis(1)
-    sx = gamepad_axis(0)
-    __ui_nav = 0
-    # (letters and space are typed into a text field that has the focus, not menu keys)
-    letters = __ui_typing != __ui_focus
-    __ui_typing = -1
-    if key_typed(.up) or (letters and key_typed(.w)) or gamepad_pressed(.up) or (sy < -0.6 and __ui_stick_y >= -0.6): __ui_nav = -1
-    if key_typed(.down) or (letters and key_typed(.s)) or gamepad_pressed(.down) or (sy > 0.6 and __ui_stick_y <= 0.6): __ui_nav = 1
-    __ui_side = 0
-    if key_typed(.left) or (letters and key_typed(.a)) or gamepad_pressed(.left) or (sx < -0.6 and __ui_stick_x >= -0.6): __ui_side = -1
-    if key_typed(.right) or (letters and key_typed(.d)) or gamepad_pressed(.right) or (sx > 0.6 and __ui_stick_x <= 0.6): __ui_side = 1
-    __ui_stick_y = sy
-    __ui_stick_x = sx
-    __ui_ok = key_pressed(.enter) or (letters and key_pressed(.space)) or gamepad_pressed(.a)
+    # (what the player did this frame, read once for every menu drawn in it)
+    if __ui_in_frame != f:
+        __ui_in_frame = f
+        m = mouse_pos()
+        # (where the pointer happens to be when the menu first shows is not a move onto an item)
+        __ui_mouse_moved = m != __ui_mouse_last and __ui_mouse_last != vec2(-1, -1)
+        __ui_mouse_last = m
+        sy = gamepad_axis(1)
+        sx = gamepad_axis(0)
+        # (letters and space are typed into a text field that has the focus, not menu keys)
+        letters = __ui_typing != __ui_focus
+        __ui_typing = -1
+        __ui_in_nav = 0
+        if key_typed(.up) or (letters and key_typed(.w)) or gamepad_pressed(.up) or (sy < -0.6 and __ui_stick_y >= -0.6): __ui_in_nav = -1
+        if key_typed(.down) or (letters and key_typed(.s)) or gamepad_pressed(.down) or (sy > 0.6 and __ui_stick_y <= 0.6): __ui_in_nav = 1
+        __ui_in_side = 0
+        if key_typed(.left) or (letters and key_typed(.a)) or gamepad_pressed(.left) or (sx < -0.6 and __ui_stick_x >= -0.6): __ui_in_side = -1
+        if key_typed(.right) or (letters and key_typed(.d)) or gamepad_pressed(.right) or (sx > 0.6 and __ui_stick_x <= 0.6): __ui_in_side = 1
+        __ui_stick_y = sy
+        __ui_stick_x = sx
+        __ui_in_ok = key_pressed(.enter) or (letters and key_pressed(.space)) or gamepad_pressed(.a)
+    __ui_nav = __ui_in_nav
+    __ui_side = __ui_in_side
+    __ui_ok = __ui_in_ok
     # (nor while ui_controls waits for a new key: controls.jo)
     if not ui_ready() or rebinding():
         __ui_nav = 0
@@ -101,6 +121,10 @@ ui_end = ():
     __ui_open = false
     __ui_last_count = __ui_count
     if __ui_focus >= __ui_count and __ui_count > 0: __ui_focus = __ui_count - 1
+    st = __ui_menus.get(__ui_menu) ?? __UiMenu()
+    st.focus = __ui_focus
+    st.last_count = __ui_count
+    __ui_menus[__ui_menu] = st
 
 # escape or the B button: go back (close the menu)
 ui_back = () -> bool: ui_ready() and not rebinding() and (key_pressed(.escape) or gamepad_pressed(.b))
