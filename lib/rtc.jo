@@ -218,6 +218,7 @@ struct __Conn:
     s_peer_cum = -1         # (the other side's TSNs up to here have come; -1: none yet)
     s_got: {int: __Chunk}   # (its chunks come ahead of others: by TSN)
     s_unacked: __Sent[]
+    s_queue: __Sent[]       # (made, waiting for room: no more than __SCTP_WINDOW go unacknowledged)
     s_init: u8[]            # (the INIT, sent again until answered)
     s_init_at = 0.0
     s_echo: u8[]            # (the COOKIE ECHO, likewise)
@@ -997,6 +998,8 @@ const __PPID_BYTES = 53
 const __PPID_TEXT_EMPTY = 56
 const __PPID_BYTES_EMPTY = 57
 const __CHUNK_DATA = 1100           # (bytes of a message in one DATA chunk: a packet fits 1200)
+const __SCTP_WINDOW = 128           # (chunks sent and not yet acknowledged, at most: a big message all at once
+                                    # would overflow the other side's socket, and wait for the resends)
 
 # TSN order, as serial numbers that wrap at 2^32
 __tsn_after = (a: int, b: int) -> bool:
@@ -1216,8 +1219,25 @@ __sctp_message = (c: mut __Conn, stream: int, ppid: int, msg: u8[]):
 __sctp_send_data = (c: mut __Conn, stream: int, ppid: int, msg: u8[], ordered: bool, reliable: bool):
     ssn = c.s_ssn.get(stream) ?? 0
     if ordered: c.s_ssn[stream] = (ssn + 1) & 0xFFFF
-    off = 0
     out: u8[]
+    loop ch in __sctp_data_chunks(c.s_tsn, stream, ssn, ppid, msg, ordered):
+        if c.s_queue.len() > 0 or c.s_unacked.len() >= __SCTP_WINDOW:
+            # (no room: sent as acknowledgements make some)
+            c.s_queue.push(__Sent(c.s_tsn, ch, 0.0, 0, reliable))
+        else:
+            c.s_unacked.push(__Sent(c.s_tsn, ch, time(), 1, reliable))
+            if out.len() + ch.len() > __CHUNK_DATA + 64 and out.len() > 0:
+                __sctp_send(c, out)
+                out.clear()
+            out.extend(ch)
+        c.s_tsn = __tsn_next(c.s_tsn)
+    if out.len() > 0: __sctp_send(c, out)
+
+# a message as DATA chunks, numbered from tsn0 on
+__sctp_data_chunks = (tsn0: int, stream: int, ssn: int, ppid: int, msg: u8[], ordered: bool) -> u8[][]:
+    out: u8[][]
+    tsn = tsn0
+    off = 0
     loop true:
         n = min(__CHUNK_DATA, msg.len() - off)
         flags = 0
@@ -1225,21 +1245,35 @@ __sctp_send_data = (c: mut __Conn, stream: int, ppid: int, msg: u8[], ordered: b
         if off + n >= msg.len(): flags |= 1
         if not ordered: flags |= 4
         v: u8[]
-        __put32(v, c.s_tsn)
+        __put32(v, tsn)
         __put16(v, stream)
         __put16(v, if ordered: ssn else: 0)
         __put32(v, ppid)
         v.extend(msg[off..off + n))
-        ch = __sctp_chunk(0, flags, v)
-        c.s_unacked.push(__Sent(c.s_tsn, ch, time(), 1, reliable))
-        c.s_tsn = __tsn_next(c.s_tsn)
-        if out.len() + ch.len() > __CHUNK_DATA + 64 and out.len() > 0:
-            __sctp_send(c, out)
-            out.clear()
-        out.extend(ch)
+        out.push(__sctp_chunk(0, flags, v))
+        tsn = __tsn_next(tsn)
         off += n
         if off >= msg.len(): break
+    out
+
+# what waits for room, sent as far as there is room
+__sctp_send_queued = (c: mut __Conn):
+    if c.s_queue.len() == 0 or c.s_unacked.len() >= __SCTP_WINDOW: return
+    now = time()
+    out: u8[]
+    k = 0
+    loop k < c.s_queue.len() and c.s_unacked.len() < __SCTP_WINDOW:
+        s = c.s_queue[k]
+        s.at = now
+        s.tries = 1
+        c.s_unacked.push(s)
+        if out.len() + s.chunk.len() > __CHUNK_DATA + 64 and out.len() > 0:
+            __sctp_send(c, out)
+            out.clear()
+        out.extend(s.chunk)
+        k += 1
     if out.len() > 0: __sctp_send(c, out)
+    c.s_queue = c.s_queue[k..]
 
 # SACK: what the other side has; the rest is sent again when its time comes
 __sctp_sack = (c: mut __Conn, v: u8[]):
@@ -1280,6 +1314,7 @@ __sctp_poll = (c: mut __Conn):
             c.s_init_at = now
             __dtls_send_app(c, c.s_echo)
     if c.s_state != 2: return
+    __sctp_send_queued(c)
     if c.s_sack_due:
         c.s_sack_due = false
         v: u8[]
@@ -1483,14 +1518,24 @@ __rtc_status = (id: int) -> (int, str):
     if c.s_chan_open: return (1, "")
     (0, "")
 
+# (on the connection in place: a copy of it, changed, would copy what is waiting for its
+# acknowledgement, each message: sending n messages in a frame took n squared)
 __rtc_send = (id: int, msg: u8[], text: bool):
-    c = __conns[id]
-    if not c.s_chan_open: return
+    if not __conns[id].s_chan_open: return
     ppid = if text: (if msg.len() == 0: __PPID_TEXT_EMPTY else: __PPID_TEXT) else: (if msg.len() == 0: __PPID_BYTES_EMPTY else: __PPID_BYTES)
     m = msg
     if m.len() == 0: m = [u8(0)]
-    __sctp_send_data(c, c.s_chan, ppid, m, c.s_reliable, c.s_reliable)
-    __conns[id] = c
+    rel = __conns[id].s_reliable
+    if __conns[id].s_queue.len() == 0 and __conns[id].s_unacked.len() < __SCTP_WINDOW:
+        __sctp_send_data(__conns[id], __conns[id].s_chan, ppid, m, rel, rel)
+        return
+    # (others wait already: this one after them, put in the queue where it is)
+    stream = __conns[id].s_chan
+    ssn = __conns[id].s_ssn.get(stream) ?? 0
+    if rel: __conns[id].s_ssn[stream] = (ssn + 1) & 0xFFFF
+    loop ch in __sctp_data_chunks(__conns[id].s_tsn, stream, ssn, ppid, m, rel):
+        __conns[id].s_queue.push(__Sent(__conns[id].s_tsn, ch, 0.0, 0, rel))
+        __conns[id].s_tsn = __tsn_next(__conns[id].s_tsn)
 
 # the messages that came (each: 1 text or 0 bytes, then the message)
 __rtc_take = (id: int) -> u8[][]:

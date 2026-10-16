@@ -1142,10 +1142,11 @@ ok = crypto.p256_verify(pk.public, crypto.sha256(msg), sig)
 
 #### AES-128
 
-- `struct AesKey`: an AES-128 key, expanded: the 11 round keys, 176 bytes
+- `struct AesKey`: an AES-128 key, expanded: the 11 round keys, 176 bytes (and as 44 big-endian words)
   ```gdscript
   struct AesKey:
       w: u8[176]
+      rk: u32[44]
   ```
 - `aes_key = (key: u8[]) -> AesKey`
 - `aes_encrypt_block = (k: AesKey, block: u8[16]) -> u8[16]`: one 16-byte block encrypted

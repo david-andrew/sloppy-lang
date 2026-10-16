@@ -301,9 +301,10 @@ __AES_SBOX: u8[256] = [u8(0x63), 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30,
     0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
     0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16]
 
-# an AES-128 key, expanded: the 11 round keys, 176 bytes
+# an AES-128 key, expanded: the 11 round keys, 176 bytes (and as 44 big-endian words)
 struct AesKey:
     w: u8[176]
+    rk: u32[44]
 
 aes_key = (key: u8[]) -> AesKey:
     if key.len() != 16: panic("aes_key: an AES-128 key is 16 bytes, not {key.len()}")
@@ -328,7 +329,23 @@ aes_key = (key: u8[]) -> AesKey:
         k.w[i + 2] = k.w[i - 14] xor t2
         k.w[i + 3] = k.w[i - 13] xor t3
         i += 4
+    loop j in [0..44): k.rk[j] = (u32(k.w[j * 4]) << 24) | (u32(k.w[j * 4 + 1]) << 16) | (u32(k.w[j * 4 + 2]) << 8) | u32(k.w[j * 4 + 3])
     k
+
+# (SubBytes, ShiftRows and MixColumns as four tables of 256 words, made once: a round is 16
+# lookups. Not constant-time, as the bytes-wise way was not either)
+__aes_te: u32[]
+__aes_tables = ():
+    if __aes_te.len() > 0: return
+    loop t in [0..4):
+        loop x in [0..256):
+            s = __AES_SBOX[x]
+            s2 = __xtime(s)
+            s3 = s2 xor s
+            w = (u32(s2) << 24) | (u32(s) << 16) | (u32(s) << 8) | u32(s3)
+            # (table t: the word rotated right by 8 t bits)
+            if t > 0: w = (w >> u32(8 * t)) | (w << u32(32 - 8 * t))
+            __aes_te.push(w)
 
 __xtime = (x: u8) -> u8:
     if x & 0x80 != 0: return (x << 1) xor 0x1b
@@ -336,44 +353,62 @@ __xtime = (x: u8) -> u8:
 
 # one 16-byte block encrypted
 aes_encrypt_block = (k: AesKey, block: u8[16]) -> u8[16]:
-    s = block
-    loop i in [0..16): s[i] = s[i] xor k.w[i]
-    loop r in [1..11):
-        # SubBytes and ShiftRows together
-        t: u8[16]
-        loop c in [0..4):
-            loop row in [0..4): t[c * 4 + row] = __AES_SBOX[int(s[((c + row) % 4) * 4 + row])]
-        if r < 10:
-            # MixColumns
-            loop c in [0..4):
-                a0 = t[c * 4]
-                a1 = t[c * 4 + 1]
-                a2 = t[c * 4 + 2]
-                a3 = t[c * 4 + 3]
-                all = a0 xor a1 xor a2 xor a3
-                t[c * 4] = a0 xor all xor __xtime(a0 xor a1)
-                t[c * 4 + 1] = a1 xor all xor __xtime(a1 xor a2)
-                t[c * 4 + 2] = a2 xor all xor __xtime(a2 xor a3)
-                t[c * 4 + 3] = a3 xor all xor __xtime(a3 xor a0)
-        loop i in [0..16): s[i] = t[i] xor k.w[r * 16 + i]
-    s
+    __aes_tables()
+    te = __aes_te
+    rk = k.rk
+    # (the state as four big-endian columns)
+    s0 = ((u32(block[0]) << 24) | (u32(block[1]) << 16) | (u32(block[2]) << 8) | u32(block[3])) xor rk[0]
+    s1 = ((u32(block[4]) << 24) | (u32(block[5]) << 16) | (u32(block[6]) << 8) | u32(block[7])) xor rk[1]
+    s2 = ((u32(block[8]) << 24) | (u32(block[9]) << 16) | (u32(block[10]) << 8) | u32(block[11])) xor rk[2]
+    s3 = ((u32(block[12]) << 24) | (u32(block[13]) << 16) | (u32(block[14]) << 8) | u32(block[15])) xor rk[3]
+    loop r in [1..10):
+        t0 = te[int(s0 >> 24)] xor te[256 + int((s1 >> 16) & 255)] xor te[512 + int((s2 >> 8) & 255)] xor te[768 + int(s3 & 255)] xor rk[r * 4]
+        t1 = te[int(s1 >> 24)] xor te[256 + int((s2 >> 16) & 255)] xor te[512 + int((s3 >> 8) & 255)] xor te[768 + int(s0 & 255)] xor rk[r * 4 + 1]
+        t2 = te[int(s2 >> 24)] xor te[256 + int((s3 >> 16) & 255)] xor te[512 + int((s0 >> 8) & 255)] xor te[768 + int(s1 & 255)] xor rk[r * 4 + 2]
+        t3 = te[int(s3 >> 24)] xor te[256 + int((s0 >> 16) & 255)] xor te[512 + int((s1 >> 8) & 255)] xor te[768 + int(s2 & 255)] xor rk[r * 4 + 3]
+        s0 = t0
+        s1 = t1
+        s2 = t2
+        s3 = t3
+    # (the last round: no MixColumns)
+    out: u8[16]
+    cols = [s0, s1, s2, s3]
+    loop c in [0..4):
+        loop row in [0..4):
+            src = cols[(c + row) % 4]
+            b = __AES_SBOX[int((src >> u32(24 - row * 8)) & 255)]
+            out[c * 4 + row] = b xor k.w[160 + c * 4 + row]
+    out
 
 # ---------------- AES-GCM ----------------
 # GF(2^128) multiply, as GCM's GHASH does (bits in GCM's order: the first byte's high bit is x^0)
+# (on two 64-bit halves: a bit a step, 128 steps)
 __gf_mul = (x: u8[16], y: u8[16]) -> u8[16]:
-    z: u8[16]
-    v = y
+    xh = __be64(x, 0)
+    xl = __be64(x, 8)
+    vh = __be64(y, 0)
+    vl = __be64(y, 8)
+    zh = u64(0)
+    zl = u64(0)
     loop i in [0..128):
-        if (x[i >> 3] >> u8(7 - (i & 7))) & 1 != 0:
-            loop j in [0..16): z[j] = z[j] xor v[j]
-        lsb = v[15] & 1
-        j = 15
-        loop j > 0:
-            v[j] = (v[j] >> 1) | (v[j - 1] << 7)
-            j -= 1
-        v[0] = v[0] >> 1
-        if lsb != 0: v[0] = v[0] xor 0xe1
+        bit = if i < 64: (xh >> u64(63 - i)) & 1 else: (xl >> u64(127 - i)) & 1
+        if bit != 0:
+            zh = zh xor vh
+            zl = zl xor vl
+        lsb = vl & 1
+        vl = (vl >> 1) | (vh << 63)
+        vh = vh >> 1
+        if lsb != 0: vh = vh xor 0xE100000000000000
+    z: u8[16]
+    loop k in [0..8):
+        z[k] = u8((zh >> u64(56 - k * 8)) & 255)
+        z[8 + k] = u8((zl >> u64(56 - k * 8)) & 255)
     z
+
+__be64 = (b: u8[16], i: int) -> u64:
+    v = u64(0)
+    loop k in [0..8): v = (v << 8) | u64(b[i + k])
+    v
 
 __ghash = (h: u8[16], aad: u8[], c: u8[]) -> u8[16]:
     y: u8[16]

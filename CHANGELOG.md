@@ -23,6 +23,11 @@ with chat):
   screen the reason is the headline. `net.code_kind(code)`: "invite", "reply" or "".
 - Codes broken across lines (a chat app wrapping them) are read whole.
 - `s.over(peers)` with one peer short says how it goes (`[-1, friend]`).
+- Native invite peers send much faster: sending n messages in a frame took time growing as n
+  squared (20,000: 3.7 s, now 19 ms; 100,000 never all arrived, now in 5 s); at most 128 chunks
+  go unacknowledged, so a big message no longer floods the other side (5 MB: 13 s, now 1.2 s;
+  over 16 MB hung, 17 MB now arrives in 5 s). AES (tables) and GCM's GHASH (64-bit halves)
+  are 10 times faster.
 - `elapsed()` before the window opened was the machine's uptime (`s.silent(p)` was -656821);
   `s.problem`'s "not heard from" clears when the player is back.
 - `net.turn_server(url, user, password)`: invites also offer a path through a TURN relay, for
