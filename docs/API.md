@@ -3967,6 +3967,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
   ```
 - `join_invite = (code0: str) -> int`: join a game with the code its host sent, or a link with the code in it (…?invite=code): a peer, whose invite_code(p) is then the reply to send back
 - `invite_code = (peer: int) -> str`: this side's code for a peer from invite or join_invite: "" while it is being made (a moment, as this machine's addresses are found)
+- `code_kind = (code: str) -> str`: what a code is: "invite" (from net.invite: for join_invite), "reply" (from join_invite: for accept_reply), or "" (not a code: cut short, or something else pasted); a link to an invite is one
 - `accept_reply = (peer: int, reply: str) -> bool`: the other player's reply to this side's invite; false when it is not a reply code
 - `turn_server = (url: str, user: str, password: str)`: a TURN server ("turn:host:port", or "host:port") with the user name and password it gives: the invites made after this also offer a path through it, a relay, for players whose networks allow none straight to each other (some mobile data, schools, offices). Your own (coturn), or a service's (some have a free tier); its password goes into every copy of the game. UDP only
 - `listen = (port: int) -> bool`: start a server on port (native programs); false if the port cannot be had
@@ -4139,7 +4140,7 @@ draw = ():
 
 #### Over net's peers (invite codes: web pages and native programs)
 
-- `over[S, I] = (s: mut Session[S, I], peers: int[])`: play with the other players over peers from net: peers[p] is player p's (this machine's own entry is not used), from net.invite or net.join_invite (with no server: a page and a native program alike), or net.connect. Their messages go to the session; their other events (joined, left) stay for net.receive(). For two, invited with net.invite(reliable = false) (packets lost are not resent: newer ones carry the same inputs, and nothing waits for an old one):
+- `over[S, I] = (s: mut Session[S, I], peers: int[])`: play with the other players over peers from net: peers[p] is player p's (this machine's own entry is not used), from net.invite or net.join_invite (with no server: a page and a native program alike), or net.connect. The session's packets on them are its own (marked: the game's net.receive() leaves them); the game's own messages (a chat, "again?") and their joining and leaving are the game's, through net.send and net.receive as ever. For two, invited with net.invite(reliable = false) (packets lost are not resent: newer ones carry the same inputs, and nothing waits for an old one):
   ```gdscript
   player 0: friend = net.invite(reliable = false) ... s.over([-1, friend])
   player 1: host = net.join_invite(code) ...          s.over([host, -1])

@@ -29,6 +29,8 @@ import net
 # s.over plays over net's peers: invite codes connect web pages and native programs straight to
 # each other with no server. A web page also plays through a relay (netplay.relay in a native
 # program; s.join_relay), and pages then connect straight to each other (WebRTC) when they can.
+# Over net's peers, the game's own messages to the other players (a chat, "again?") go on the
+# same peers: net.send and net.receive, as ever; the session's are its own.
 # Without s.over, s.udp or a relay, the session only says what to send (s.outgoing()) and is told what arrived
 # (s.receive(player, bytes)): any transport works (net's WebSockets, a relay server), and two
 # sessions in one program can play each other over netplay.Link, a simulated network with
@@ -145,7 +147,7 @@ play[S, I] = (s: mut Session[S, I], input: I):
     if s.__sock >= 0: __np_udp_receive(s)
     if s.__relay >= 0: __np_relay_receive(s)
     if s.__peers.len() > 0:
-        loop e in net.__net_take(s.__peers, true): s.receive(e.data)
+        loop d in net.__net_take_marked(s.__peers): s.receive(d)
     # (my input for the tick it takes effect: once per tick, as others may have it already)
     t = s.tick + s.delay
     if s.__recv[s.me] == t:
@@ -168,7 +170,11 @@ play[S, I] = (s: mut Session[S, I], input: I):
     if s.__sock >= 0: __np_udp_send(s)
     if s.__peers.len() > 0:
         loop o in s.outgoing():
-            if o.0 < s.__peers.len() and s.__peers[o.0] >= 0: net.send(s.__peers[o.0], o.1)
+            if o.0 < s.__peers.len() and s.__peers[o.0] >= 0:
+                # (marked: the game's own messages on the same peer stay the game's)
+                b: u8[] = [u8(net.__NET_MARK)]
+                b.extend(o.1)
+                net.send(s.__peers[o.0], b)
     if s.__relay >= 0:
         loop o in s.outgoing():
             if not __np_rtc_send(s, o.0, o.1): net.send(s.__relay, o.1)
@@ -191,6 +197,8 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
     if p == s.me and pk.to != s.me: __np_problem(s, "two players are both player {p}: give each machine its own number (`me`)")
     if p < 0 or p >= s.players or p == s.me or pk.to != s.me: return
     s.__heard[p] = elapsed()
+    # (a player gone quiet is back: that problem is over)
+    if starts_with(s.problem, "player {p} has not been heard from"): s.problem = ""
     s.__stamp[p] = pk.sent
     if pk.echo >= 0.0: s.__rtt[p] = __np_smooth(s.__rtt[p], elapsed() * 1000.0 - pk.echo - pk.held)
     s.__acked[p] = max(s.__acked[p], pk.ack)
@@ -308,13 +316,18 @@ __np_due[S, I] = (s: mut Session[S, I]):
 # ---------------- over net's peers (invite codes: web pages and native programs) ----------------
 # play with the other players over peers from net: peers[p] is player p's (this machine's own
 # entry is not used), from net.invite or net.join_invite (with no server: a page and a native
-# program alike), or net.connect. Their messages go to the session; their other events (joined,
-# left) stay for net.receive(). For two, invited with net.invite(reliable = false) (packets lost
+# program alike), or net.connect. The session's packets on them are its own (marked: the game's
+# net.receive() leaves them); the game's own messages (a chat, "again?") and their joining and
+# leaving are the game's, through net.send and net.receive as ever. For two, invited with
+# net.invite(reliable = false) (packets lost
 # are not resent: newer ones carry the same inputs, and nothing waits for an old one):
 #   player 0: friend = net.invite(reliable = false) ... s.over([-1, friend])
 #   player 1: host = net.join_invite(code) ...          s.over([host, -1])
 over[S, I] = (s: mut Session[S, I], peers: int[]):
+    if peers.len() != s.players: panic("netplay: over takes one peer for each player, -1 for this machine's own: [-1, friend] when this is player 1 of 2, [host, -1] for player 2 (it was given {peers.len()} for {s.players} players)")
     s.__peers = peers
+    loop p in peers:
+        if p >= 0: net.__net_mark(p)
 
 # ---------------- over UDP (native programs) ----------------
 # play over UDP: this machine listens on port, and each player p is at addrs[p] (this one's own

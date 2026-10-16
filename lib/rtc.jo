@@ -308,6 +308,7 @@ __rtc_desc = (id: int, active: bool) -> RtcDesc:
 
 __rtc_set_remote = (id: int, d: RtcDesc):
     __conns[id].remote = d
+    __conns[id].since = time()             # (the checks start now: given up on from now)
     # (the side whose code says active is the DTLS client: the one that answered)
     __conns[id].d_client = not d.active
     loop cd in d.candidates:
@@ -344,7 +345,12 @@ __ice_poll = (id: int):
             p.nominate = nom
             sends.push((p.host, p.port, __ice_check(c, r, p.tid, nom), p.relay))
         loop s in sends: __rtc_out_to(c, s.0, s.1, s.2, s.3)
-        if now - c.since > 30.0: c.state = __ICE_FAILED
+        # (given up when the other game has answered nothing for 30 s; while it answers, as while
+        # its player is still pasting the reply in, for up to 10 minutes)
+        answered = false
+        loop p in c.pairs:
+            if p.ok: answered = true
+        if (now - c.since > 30.0 and not answered) or now - c.since > 600.0: c.state = __ICE_FAILED
     # (the other side gone without a word, as a machine switched off or its network lost: nothing
     # from it for a while, not even answers to the checks below)
     if c.state == __ICE_CONNECTED and c.last_heard > 0.0 and now - c.last_heard > __ICE_SILENCE: c.state = __ICE_LOST
@@ -922,7 +928,8 @@ __dtls_in = (c: mut __Conn, dg: u8[]):
         else if epoch != 0: continue
         if ctype == __CT_APP and epoch == 1: c.d_app.push(frag)
         else if ctype == __CT_ALERT:
-            if frag.len() >= 2 and (frag[0] == 2 or frag[1] == 0): __dtls_fail(c, "the other side ended the connection (alert {frag[1]})")
+            if frag.len() >= 2 and frag[1] == 0: __dtls_fail(c, "the other side ended the connection")
+            else if frag.len() >= 2 and frag[0] == 2: __dtls_fail(c, "the other side ended the connection: it found something wrong (alert {frag[1]})")
         else if ctype == __CT_HANDSHAKE: __dtls_handshake(c, frag, epoch)
 
 # a handshake record's messages, put together from pieces when they came in pieces
@@ -1379,7 +1386,11 @@ rtc_code = (d: RtcDesc) -> str:
 
 # a code back as a description (none when it is not one)
 rtc_from_code = (code: str) -> RtcDesc?:
-    bb = __b64url_read(trim(code))
+    # (spaces and line breaks in it skipped: a chat app may have broken it across lines)
+    cs: u8[]
+    loop ch in bytes(code):
+        if ch != ' ' and ch != '\n' and ch != '\r' and ch != '\t': cs.push(ch)
+    bb = __b64url_read(str_from_bytes(cs))
     if bb == none: return none
     b = bb!
     if b.len() < 4 or b[0] != 1: return none
@@ -1458,8 +1469,16 @@ __rtc_status = (id: int) -> (int, str):
     c = __conns[id]
     if c.sock < 0: return (2, "")
     if c.state == __ICE_LOST: return (2, "the other game stopped answering: closed without a word, or its network went")
+    # (never a word from it: not a network that allows no path, but a game not there)
+    if c.state == __ICE_FAILED and c.last_heard == 0.0:
+        if c.controlling: return (2, "their game never answered: is it still open, showing the reply they sent?")
+        return (2, "their game never answered: did they paste your reply in (and is their game still open)?")
     if c.state == __ICE_FAILED: return (2, "no path was found between the two: one of you may be on a network that allows none (mobile data, a school's or an office's), where a relay server (TURN) is needed")
-    if c.d_state == 3: return (2, c.d_why)
+    if c.d_state == 3:
+        # (a certificate or signature not the code's: the code changed on its way, as by a mistyped
+        # character, or someone in between)
+        if find(c.d_why, "certificate") >= 0 or find(c.d_why, "signed") >= 0 or find(c.d_why, "finished") >= 0: return (2, "that code does not match the game that made it (a character changed or lost?)")
+        return (2, c.d_why)
     if c.s_state == 3: return (2, "the other side ended the connection")
     if c.s_chan_open: return (1, "")
     (0, "")

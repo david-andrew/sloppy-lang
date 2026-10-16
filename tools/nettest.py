@@ -94,8 +94,8 @@ os.makedirs(npd, exist_ok=True)
 a = subprocess.Popen([npi], stdout=subprocess.PIPE, text=True, env=dict(env, DIR=npd, ROLE="invite"))
 b = subprocess.run([npi], capture_output=True, text=True, env=dict(env, DIR=npd, ROLE="join"), timeout=90)
 a_out = a.communicate(timeout=90)[0]
-check("netplay over invite codes: player 0", a_out, ["player 0: joined true, played true, desync -1"])
-check("netplay over invite codes: player 1", b.stdout, ["player 1: joined true, played true, desync -1"])
+check("netplay over invite codes: player 0", a_out, ["player 0: joined true, played true, desync -1, chat 'hello from player 1'"])
+check("netplay over invite codes: player 1", b.stdout, ["player 1: joined true, played true, desync -1, chat 'hello from player 0'"])
 # two games through lib/invite.jo's screens (run with no window: the software renderer, no display)
 ig = build("invite_game") + exe
 igd = os.path.join(tmp, "invite_codes")

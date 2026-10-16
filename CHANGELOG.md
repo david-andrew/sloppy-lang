@@ -8,6 +8,23 @@
   Native programs speak WebRTC now (lib/rtc.jo: ICE, DTLS 1.2, SCTP, data channels, in Sloppy),
   tested against Chromium both ways, OpenSSL, and on arm64 and Windows. Netpong's Invite a friend
   and Join a friend use them, from the website's page too.
+From a persona making online two-player games with no server (tag with rollback, Connect Four
+with chat):
+- A rollback game that read `net.receive()` itself (to see its friend leave) took the session's
+  packets over invite codes, and play stalled (Duel did): the session's packets are marked and
+  stay its own; the game's own messages on the same peer (a chat, "again?") are the game's.
+- A program's end (quit, its window closed, exit, a page closed) tells its peers at once; they
+  waited 15 s of silence.
+- A joining game waits for the inviter to paste the reply in for up to 10 minutes while that game
+  answers (it gave up after 30 s); the inviter's 30 s start when the reply comes.
+- What a failed connection says: a code with a character changed ("that code does not match the
+  game that made it", not TLS words), a game that never answered (not "a network that allows no
+  path"), an invite pasted where a reply goes, a reply pasted into Join a friend; on the Join
+  screen the reason is the headline. `net.code_kind(code)`: "invite", "reply" or "".
+- Codes broken across lines (a chat app wrapping them) are read whole.
+- `s.over(peers)` with one peer short says how it goes (`[-1, friend]`).
+- `elapsed()` before the window opened was the machine's uptime (`s.silent(p)` was -656821);
+  `s.problem`'s "not heard from" clears when the player is back.
 - `net.turn_server(url, user, password)`: invites also offer a path through a TURN relay, for
   players whose networks allow no straight path (some mobile data, schools, offices); native
   programs speak TURN too (allocations, permissions, refreshes). Tested with coturn, relay only,

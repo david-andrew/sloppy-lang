@@ -14,6 +14,7 @@
 # served over https can only reach a wss:// server (TLS: put a proxy that has a certificate, such
 # as Caddy, in front of the server); net.connect("wss://game.example.com") takes a URL as well.
 
+import crypto
 import rtc
 
 enum NetKind: joined, message, left
@@ -97,6 +98,7 @@ __net_rtc_poll = ():
 # reliable = false: messages may be lost or come in another order, never late (a fast game's state)
 invite = (reliable: bool = true) -> int:
     __pace_real_time = true
+    __net_hook()
     p = __NetPeer(id = __net_next, fd = -1, state = 0, client = true, host = "", port = 0, since = time())
     __net_next += 1
     when TARGET == "wasm":
@@ -118,6 +120,7 @@ join_invite = (code0: str) -> int:
         e = find(code, "&")
         if e >= 0: code = code[..e)
     __pace_real_time = true
+    __net_hook()
     p = __NetPeer(id = __net_next, fd = -1, state = 0, client = true, host = "", port = 0, since = time(), answering = true)
     __net_next += 1
     __net_peers.push(p)
@@ -125,6 +128,9 @@ join_invite = (code0: str) -> int:
     d = rtc.rtc_from_code(code)
     if d == none:
         __net_fail(i, "that is not an invite code (copied whole?)")
+        return p.id
+    if d!.active:
+        __net_fail(i, "that is a reply code, for the game that made the invite: it goes there (Invite a friend's box)")
         return p.id
     when TARGET == "wasm":
         sdp = rtc.__rtc_sdp(d!, true)
@@ -150,6 +156,18 @@ invite_code = (peer: int) -> str:
             rtc.__rtc_poll(__net_peers[i].rtc)
             __net_peers[i].code = rtc.__rtc_code(__net_peers[i].rtc, __net_peers[i].answering)
         return __net_peers[i].code
+    ""
+
+# what a code is: "invite" (from net.invite: for join_invite), "reply" (from join_invite: for
+# accept_reply), or "" (not a code: cut short, or something else pasted); a link to an invite is one
+code_kind = (code: str) -> str:
+    c = code
+    k = find(c, "invite=")
+    if k >= 0:
+        c = c[k + 7..]
+        e = find(c, "&")
+        if e >= 0: c = c[..e)
+    if let d = rtc.rtc_from_code(c): return if d.active: "reply" else: "invite"
     ""
 
 # the other player's reply to this side's invite; false when it is not a reply code
@@ -199,6 +217,7 @@ listen = (port: int) -> bool:
     else:
         if __net_listen_fd >= 0: return true
         __pace_real_time = true         # (a test's screenshot run: at the other end's pace, a frame each 60th of a second)
+        __net_hook()
         fd = __n_listen(port)
         if fd < 0: return false
         __net_listen_fd = fd
@@ -215,6 +234,7 @@ stop_listening = ():
 # host is a name or address and port its port, or host is a ws:// or wss:// URL (port then unused)
 connect = (host: str, port: int = 0) -> int:
     __pace_real_time = true             # (a test's screenshot run: at the other end's pace)
+    __net_hook()
     id = __net_next
     __net_next += 1
     p = __NetPeer(id = id, fd = -1, state = 0, client = true, host = host, port = port, since = time())
@@ -325,6 +345,18 @@ close = (peer: int):
                 __n_close(__net_peers[i].fd)
             __net_gone(i)
 
+# (the program ending: every peer told, as by close)
+__net_hooked = false
+__net_hook = ():
+    if __net_hooked: return
+    __net_hooked = true
+    __at_end(__net_goodbye)
+__net_goodbye = ():
+    ids: int[]
+    loop p in __net_peers:
+        if p.state != 3: ids.push(p.id)
+    loop id in ids: close(id)
+
 __net_gone = (i: int):
     if __net_peers[i].state == 3: return
     __net_peers[i].state = 3
@@ -355,14 +387,14 @@ __n_why = (e: int, port: int) -> str:
 # what happened since the last call: peers joining and leaving, and their messages, in order
 receive = () -> NetEvent[]:
     __net_poll()
-    if __net_held.len() == 0:
+    if __net_held.len() == 0 and __net_marked.len() == 0:
         out = __net_events
         __net_events = []
         return out
     out: NetEvent[]
     keep: NetEvent[]
     loop e in __net_events:
-        if e.peer in __net_held: keep.push(e)
+        if __net_kept(e): keep.push(e)
         else: out.push(e)
     __net_events = keep
     out
@@ -374,10 +406,20 @@ receive = (only: int[]) -> NetEvent[]:
     out: NetEvent[]
     keep: NetEvent[]
     loop e in __net_events:
-        if e.peer in only and not (e.peer in __net_held): out.push(e)
+        if e.peer in only and not __net_kept(e): out.push(e)
         else: keep.push(e)
     __net_events = keep
     out
+
+# (an event receive() leaves for another part of the library: an invite peer's while invite's
+# screens connect it, and netplay's packets on peers it plays over, which start with its mark)
+__net_kept = (e: NetEvent) -> bool:
+    if e.peer in __net_held: return true
+    if e.kind != .message or __net_marked.len() == 0 or not (e.peer in __net_marked): return false
+    __net_has_mark(e.data)
+__net_marked: int[]
+const __NET_MARK = 1                # (netplay's packets begin with this byte, which text does not)
+__net_has_mark = (b: u8[]) -> bool: b.len() > 0 and b[0] == u8(__NET_MARK)
 
 # (peers whose events receive() leaves for another part of the library: invite's, while its
 # screens are connecting them)
@@ -390,8 +432,7 @@ __net_hold = (p: int, on: bool):
             if h != p: keep.push(h)
         __net_held = keep
 
-# (netplay's and invite's: the messages from these peers, or (messages false) their other
-# events; the rest stay for receive())
+# (invite's: these peers' events but their messages; the rest stay for receive())
 __net_take = (only: int[], messages: bool) -> NetEvent[]:
     __net_poll()
     out: NetEvent[]
@@ -401,6 +442,22 @@ __net_take = (only: int[], messages: bool) -> NetEvent[]:
         else: keep.push(e)
     __net_events = keep
     out
+
+# (netplay's: the marked messages from these peers, which receive() leaves to it, mark taken off;
+# their other messages stay for the game)
+__net_take_marked = (only: int[]) -> u8[][]:
+    __net_poll()
+    out: u8[][]
+    keep: NetEvent[]
+    loop e in __net_events:
+        if e.kind == .message and e.peer in only and __net_has_mark(e.data): out.push(e.data[1..])
+        else: keep.push(e)
+    __net_events = keep
+    out
+
+# (netplay's: peer p's marked messages are its own from now on)
+__net_mark = (p: int):
+    if not (p in __net_marked): __net_marked.push(p)
 
 # the same, for the peers that connected to this program's server (listen) only
 receive_server = () -> NetEvent[]:
@@ -526,7 +583,7 @@ __net_parse = (i: int):
                 __n_close(__net_peers[i].fd)
                 __net_gone(i)
                 return
-            acc = base64_encode(__sha1(bytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")))
+            acc = base64_encode(crypto.sha1(bytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")))
             __net_peers[i].outbuf.extend(bytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {acc}\r\n\r\n"))
             __net_flush(i)
         __net_peers[i].state = 2
@@ -610,57 +667,6 @@ __ws_key = () -> str:
     b: u8[]
     loop _ in [0..16): b.push(u8(random_int(0, 256)))
     base64_encode(b)
-
-# SHA-1 (the WebSocket handshake's)
-__sha1 = (msg: u8[]) -> u8[]:
-    h = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0]
-    m = msg
-    bits = msg.len() * 8
-    m.push(0x80)
-    loop m.len() % 64 != 56: m.push(0)
-    loop k in [0..8): m.push(u8((bits >> (56 - 8 * k)) & 255))
-    w = fill(0, 80)
-    rot = (x: int, n: int) -> int: ((x << n) | (x >> (32 - n))) & 0xFFFFFFFF
-    loop c in [0..m.len() / 64):
-        loop t in [0..16):
-            o = c * 64 + 4 * t
-            w[t] = (int(m[o]) << 24) | (int(m[o + 1]) << 16) | (int(m[o + 2]) << 8) | int(m[o + 3])
-        loop t in [16..80): w[t] = rot(w[t - 3] xor w[t - 8] xor w[t - 14] xor w[t - 16], 1)
-        a = h[0]
-        b = h[1]
-        cc = h[2]
-        d = h[3]
-        e = h[4]
-        loop t in [0..80):
-            f = 0
-            k = 0
-            if t < 20:
-                f = (b & cc) | ((b xor 0xFFFFFFFF) & d)
-                k = 0x5A827999
-            else if t < 40:
-                f = b xor cc xor d
-                k = 0x6ED9EBA1
-            else if t < 60:
-                f = (b & cc) | (b & d) | (cc & d)
-                k = 0x8F1BBCDC
-            else:
-                f = b xor cc xor d
-                k = 0xCA62C1D6
-            tmp = (rot(a, 5) + f + e + k + w[t]) & 0xFFFFFFFF
-            e = d
-            d = cc
-            cc = rot(b, 30)
-            b = a
-            a = tmp
-        h[0] = (h[0] + a) & 0xFFFFFFFF
-        h[1] = (h[1] + b) & 0xFFFFFFFF
-        h[2] = (h[2] + cc) & 0xFFFFFFFF
-        h[3] = (h[3] + d) & 0xFFFFFFFF
-        h[4] = (h[4] + e) & 0xFFFFFFFF
-    out: u8[]
-    loop x in h:
-        loop k in [0..4): out.push(u8((x >> (24 - 8 * k)) & 255))
-    out
 
 # ---------------- UDP (native programs) ----------------
 # Datagrams: no connection, each one arrives whole or not at all, maybe out of order. Faster

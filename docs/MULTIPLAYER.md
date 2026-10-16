@@ -121,8 +121,9 @@ s.over([-1, friend])
 # player 1, with the code: host = net.join_invite(code) ... s.over([host, -1])
 ```
 
-The session takes those peers' messages; their `.joined` and `.left` stay for the game's
-`net.receive()`, to say "connected" or "your friend left". Until the other player connects,
+The session's packets on those peers are its own (marked, so the game's `net.receive()` leaves
+them); the game sends and reads its own messages on the same peers as ever (a chat, "again?"),
+and their `.joined` and `.left` are the game's, to say "connected" or "your friend left". Until the other player connects,
 the session runs `max_ahead` ticks and waits.
 
 **The tick must come out the same on every machine.** Sloppy's math is its own (no system
