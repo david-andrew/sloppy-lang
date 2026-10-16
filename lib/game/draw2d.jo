@@ -72,7 +72,11 @@ uniform sampler2D u_tex;
 out vec4 frag;
 void main() {
     vec4 t = texture(u_tex, v_uv);
-    if (v_mode > 1.5) {
+    if (v_mode > 2.5) {
+        float d = abs(v_uv.y);
+        float w = max(fwidth(d), 0.0001);
+        frag = vec4(v_color.rgb, v_color.a * clamp((1.0 - d) / w + 0.5, 0.0, 1.0));
+    } else if (v_mode > 1.5) {
         float d = length(v_uv);
         float w = max(fwidth(d), 0.0001);
         frag = vec4(v_color.rgb, v_color.a * clamp((1.0 - d) / w + 0.5, 0.0, 1.0));
@@ -138,6 +142,7 @@ effect_vs[P] = (v: __Vert2D, u: Effect2D[P]) -> Pixel2D: Pixel2D(u.proj * vec4(v
 # the pixel's color as 2D drawing makes it without an effect
 base_color[P] = (p: Pixel2D, u: Effect2D[P]) -> vec4:
     t = sample(u.texture, p.uv)
+    if p.mode > 2.5: return __band_color(p.uv, p.color)
     if p.mode > 1.5: return __circle_color(p.uv, p.color)
     if p.mode > 0.5:
         w = max(fwidth(t.x), 0.02)
@@ -185,8 +190,15 @@ __circle_color = (uv: vec2, color: vec4) -> vec4:
     w = max(fwidth(d), 0.0001)
     vec4(color.xyz, color.w * clamp((1.0 - d) / w + 0.5, 0.0, 1.0))
 
+# (a band drawn as a quad, a line's or a ring's: uv.y across it, -1 to 1 at its edges)
+__band_color = (uv: vec2, color: vec4) -> vec4:
+    d = abs(uv.y)
+    w = max(fwidth(d), 0.0001)
+    vec4(color.xyz, color.w * clamp((1.0 - d) / w + 0.5, 0.0, 1.0))
+
 __fs2d = (i: __Out2D, u: __Params2D) -> vec4:
     t = sample(u.tex, i.uv)
+    if i.mode > 2.5: return __band_color(i.uv, i.color)
     if i.mode > 1.5: return __circle_color(i.uv, i.color)
     if i.mode > 0.5:
         w = max(fwidth(t.x), 0.02)
@@ -797,37 +809,44 @@ circle_gradient = (center: vec2, radius: f64, inner: vec4, outer: vec4, segments
 ring = (center: vec2, radius: f64, thickness: f64, c: vec4, segments: int = 48):
     __use_tex(__white.id, segments * 6)
     z = vec2(0, 0)
-    r0 = radius - thickness / 2.0
-    r1 = radius + thickness / 2.0
+    # (a band around: a little wider than it is, its edges smooth over a pixel)
+    h = thickness / 2.0
+    r0 = radius - h - 1.0
+    r1 = radius + h + 1.0
+    k = f32((h + 1.0) / max(h, 0.0001))
     u = __unit_circle(max(segments, 3))
     loop i in [0..segments):
         d0 = u[i]
         d1 = u[i + 1]
-        __quad(center + d0 * f32(r0), center + d0 * f32(r1), center + d1 * f32(r1), center + d1 * f32(r0), z, z, z, z, c, 0)
+        __quad(center + d0 * f32(r0), center + d0 * f32(r1), center + d1 * f32(r1), center + d1 * f32(r0), vec2(0, -k), vec2(0, k), vec2(0, k), vec2(0, -k), c, 3)
 
 # part of a ring: from angle `start` to `stop` (radians, clockwise on screen)
 arc = (center: vec2, radius: f64, thickness: f64, start: f64, stop: f64, c: vec4, segments: int = 0):
     n = segments
     if n <= 0: n = clamp(int(abs(stop - start) * radius / 6.0) + 2, 2, 128)
     __use_tex(__white.id, n * 6)
-    z = vec2(0, 0)
-    r0 = radius - thickness / 2.0
-    r1 = radius + thickness / 2.0
+    h = thickness / 2.0
+    r0 = radius - h - 1.0
+    r1 = radius + h + 1.0
+    k = f32((h + 1.0) / max(h, 0.0001))
     loop i in [0..n):
         a0 = start + (stop - start) * f64(i) / f64(n)
         a1 = start + (stop - start) * f64(i + 1) / f64(n)
         d0 = vec2(f32(cos(a0)), f32(sin(a0)))
         d1 = vec2(f32(cos(a1)), f32(sin(a1)))
-        __quad(center + d0 * f32(r0), center + d0 * f32(r1), center + d1 * f32(r1), center + d1 * f32(r0), z, z, z, z, c, 0)
+        __quad(center + d0 * f32(r0), center + d0 * f32(r1), center + d1 * f32(r1), center + d1 * f32(r0), vec2(0, -k), vec2(0, k), vec2(0, k), vec2(0, -k), c, 3)
 
 line = (a: vec2, b: vec2, thickness: f64, c: vec4):
     d = b - a
     l = length(d)
     if l == 0.0: return
-    n = perp(d / l) * f32(thickness / 2.0)
+    # (a little wider than it is, its sides smooth over a pixel: uv.y across it, 1 at its edges)
+    h = thickness / 2.0
+    e = h + 1.0
+    n = perp(d / l) * f32(e)
+    k = f32(e / max(h, 0.0001))
     __use_tex(__white.id, 6)
-    z = vec2(0, 0)
-    __quad(a + n, b + n, b - n, a - n, z, z, z, z, c, 0)
+    __quad(a + n, b + n, b - n, a - n, vec2(0, k), vec2(0, k), vec2(0, -k), vec2(0, -k), c, 3)
 
 polyline = (points: vec2[], thickness: f64, c: vec4, closed: bool = false):
     loop i in [0..points.len() - 1): line(points[i], points[i + 1], thickness, c)

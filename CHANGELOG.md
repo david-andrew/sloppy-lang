@@ -26,7 +26,8 @@ From a tower defense for phones (a grid, waves, towers built by tapping):
   `fps()` gives the frames so far before its first half-second measure (it was 0).
 - A circle is one square whose pixels are in or out by their distance from its center: its edge
   is smooth on every renderer (the software one too), and 2000 small circles draw 50 times faster
-  there (18.6 ms, now 0.33). `segments = n` still draws a polygon. Ellipses and rings reuse
+  there (18.6 ms, now 0.33). `segments = n` still draws a polygon. Lines, rings and arcs have
+  smooth sides the same way (a band whose pixels are in or out by their distance from its middle). Ellipses and rings reuse
   their points (a circle of radius 1, made once for each number of segments).
 
 - Rollback for three or four over invite codes, with no server: the others play over the host
