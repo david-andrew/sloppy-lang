@@ -111,11 +111,20 @@ when TARGET != "wasm" and TARGET != "macos":
         w, h = __vg_fb_size(f)
         src_stages = VK_STAGE_ALL
         src_access = VK_ACCESS_MEMORY_WRITE | VK_ACCESS_MEMORY_READ
+        resolve_view = 0
         if f == 0:
             __vk_barrier(cb, __vk_screen, u32(VK_LAYOUT_COLOR), src_stages, src_access, VK_STAGE_COLOR_OUT, VK_ACCESS_COLOR_WRITE | VK_ACCESS_COLOR_READ)
-            __vk_barrier(cb, __vk_screen_depth, u32(VK_LAYOUT_DEPTH), src_stages, src_access, VK_STAGE_EARLY_TESTS | VK_STAGE_LATE_TESTS, VK_ACCESS_DEPTH_WRITE | VK_ACCESS_DEPTH_READ)
-            color_view = __vk_screen.view
-            depth_view = __vk_screen_depth.view
+            if __vk_samples > 1:
+                # (drawn with several samples a pixel, averaged into the screen as the pass ends)
+                __vk_barrier(cb, __vk_screen_ms, u32(VK_LAYOUT_COLOR), src_stages, src_access, VK_STAGE_COLOR_OUT, VK_ACCESS_COLOR_WRITE | VK_ACCESS_COLOR_READ)
+                __vk_barrier(cb, __vk_screen_ms_depth, u32(VK_LAYOUT_DEPTH), src_stages, src_access, VK_STAGE_EARLY_TESTS | VK_STAGE_LATE_TESTS, VK_ACCESS_DEPTH_WRITE | VK_ACCESS_DEPTH_READ)
+                color_view = __vk_screen_ms.view
+                depth_view = __vk_screen_ms_depth.view
+                resolve_view = __vk_screen.view
+            else:
+                __vk_barrier(cb, __vk_screen_depth, u32(VK_LAYOUT_DEPTH), src_stages, src_access, VK_STAGE_EARLY_TESTS | VK_STAGE_LATE_TESTS, VK_ACCESS_DEPTH_WRITE | VK_ACCESS_DEPTH_READ)
+                color_view = __vk_screen.view
+                depth_view = __vk_screen_depth.view
         else:
             c = __vgf[f].color
             if c > 0:
@@ -126,6 +135,10 @@ when TARGET != "wasm" and TARGET != "macos":
                 __vk_barrier(cb, __vgt[d].img, u32(VK_LAYOUT_DEPTH), src_stages, src_access, VK_STAGE_EARLY_TESTS | VK_STAGE_LATE_TESTS, VK_ACCESS_DEPTH_WRITE | VK_ACCESS_DEPTH_READ)
                 depth_view = __vgt[d].img.view
         catt = VkRenderingAttachmentInfo(stype = 1000044001, view = color_view, layout = u32(VK_LAYOUT_COLOR), load_op = 0, store_op = 0)
+        if resolve_view != 0:
+            catt.resolve_mode = 2                       # (the samples' average)
+            catt.resolve_view = resolve_view
+            catt.resolve_layout = u32(VK_LAYOUT_COLOR)
         datt = VkRenderingAttachmentInfo(stype = 1000044001, view = depth_view, layout = u32(VK_LAYOUT_DEPTH), load_op = 0, store_op = 0)
         ri = VkRenderingInfo(stype = 1000044000, width = u32(w), height = u32(h), layers = 1)
         if color_view != 0:
@@ -490,14 +503,15 @@ when TARGET != "wasm" and TARGET != "macos":
     __vg_pipeline_for = (p: int, topo: u32) -> int:
         cf, df = __vg_fb_formats(__vg_fb)
         blend_on = __vg_blend and cf != 0
-        key = __vg_class(topo) | (__vg_format_code(cf) << 2) | (int(df != 0) << 5) | (__vg_cmask << 6)
+        samples = if __vg_fb == 0: __vk_samples else: 1
+        key = __vg_class(topo) | (__vg_format_code(cf) << 2) | (int(df != 0) << 5) | (__vg_cmask << 6) | (int(samples > 1) << 60)
         if blend_on: key = key | (1 << 10) | (__vg_bf.0 << 11) | (__vg_bf.1 << 23) | (__vg_bf.2 << 35) | (__vg_bf.3 << 47)
         if let pl = __vgp[p].pipelines.get(key): return pl
-        pl = __vg_make_pipeline(p, topo, cf, df, blend_on)
+        pl = __vg_make_pipeline(p, topo, cf, df, blend_on, samples)
         __vgp[p].pipelines[key] = pl
         pl
 
-    __vg_make_pipeline = (p: int, topo: u32, cf: u32, df: u32, blend_on: bool) -> int:
+    __vg_make_pipeline = (p: int, topo: u32, cf: u32, df: u32, blend_on: bool, samples: int) -> int:
         name = "main"
         stages: VkPipelineShaderStageCreateInfo[] = [
             VkPipelineShaderStageCreateInfo(stype = 18, stage = 1, module = __vgp[p].vs, name = data(name)),
@@ -508,7 +522,7 @@ when TARGET != "wasm" and TARGET != "macos":
         rs = VkPipelineRasterizationStateCreateInfo(stype = 23, line_width = 1.0)
         pv: u32[] = [1000254001, 0, 0, 0, 1, 0]               # the last vertex provokes (as GL)
         if __vk_provoking_last: rs.next = data(pv) as *u8
-        ms = VkPipelineMultisampleStateCreateInfo(stype = 24, samples = 1)
+        ms = VkPipelineMultisampleStateCreateInfo(stype = 24, samples = u32(samples))
         ds = VkPipelineDepthStencilStateCreateInfo(stype = 25, max_bounds = 1.0)
         att = VkPipelineColorBlendAttachmentState(mask = u32(__vg_cmask))
         if blend_on:

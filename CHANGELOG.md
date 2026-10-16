@@ -27,6 +27,9 @@
 - `import crypto`: SHA-1, SHA-256, HMAC, AES-128-GCM, P-256 ECDH and ECDSA, self-signed
   certificates, and `random_bytes` from the operating system (the start of WebRTC in native
   programs, for games that connect a desktop build and a web page with no server).
+- Smooth edges natively, as in a web page: through Vulkan (Linux, Windows) the screen is drawn
+  with 4 samples a pixel (MSAA), so shapes, lines and 3D edges are no longer jagged.
+  `SLOPPY_MSAA=1` turns it off. (Not yet through Metal on macOS.)
 - On a phone, a `hud_text_field` tapped brings up the phone's keyboard (in a web page there
   was no way to type before), with a Paste button at its end while it has it; the game fits
   above the keyboard. `ui_text_field` takes pastes too.

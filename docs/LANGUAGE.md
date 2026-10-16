@@ -1174,7 +1174,8 @@ that size; `SLOPPY_NO_AUDIO=1` plays no sound (for tests and machines without a 
 `SLOPPY_THREADS=n` caps the threads used by the
 parallel functions; `SLOPPY_SCALE=1` renders at the logical size and lets the compositor scale
 it up; `SLOPPY_FRAME_STATS=1` (with `SLOPPY_SCREENSHOT`) reports frame times and how frames reach the
-screen.
+screen; `SLOPPY_MSAA=1` draws without antialiasing (through Vulkan the screen is drawn with 4
+samples a pixel, smooth edges as in a web page's canvas).
 
 ```
 sloppy file.jo [args]     compile and run (wasm target: opens the browser)
