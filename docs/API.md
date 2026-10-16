@@ -2468,6 +2468,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
       has_custom: bool
       front: bool = false
       bones: vec4[] = []          # (skinned: the joints' rows for LitParams.bones)
+      both_sides = false          # (draw_mesh's double_sided: its backs drawn too)
   ```
 - `camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`: place the camera; call once per frame before drawing 3D objects
 - `world_to_screen = (p: vec3) -> vec2?`: where a point in 3D appears on the screen, in 2D drawing units (for a name or a health bar over someone's head); none when it is behind the camera. As the camera was last placed.
@@ -2481,7 +2482,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `post_effects = (bloom: f64 = 0.6, threshold: f64 = 0.7, vignette: f64 = 0.35, saturation: f64 = 1.0, tint: vec3 = vec3(1, 1, 1), include_hud: bool = false)`: bloom + color grading for the frame: all of a 2D game; in a 3D one, the 3D and the 2D drawn before it, while 2D drawn after the 3D (a HUD, text) stays as drawn, unless include_hud
 - `no_post_effects = ()`
 - `point_light = (pos: vec3, color: vec3, radius: f64 = 6.0, intensity: f64 = 1.0)`: a light at a point for this frame (muzzle flashes, glowing shots, lamps): it reaches radius meters, fading out on the way. Up to 8 light a frame (the ones nearest the camera); they cast no shadows.
-- `draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false)`: A color whose alpha is below 1 is see-through, drawn after the solid ones (rgba(1, 0, 0, 0.5); much emissive makes it near white, which hides that). in_front = true: drawn after everything else and over it, casting no shadow (a first-person weapon, which would otherwise poke into walls the player stands against)
+- `draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false)`: A color whose alpha is below 1 is see-through, drawn after the solid ones (rgba(1, 0, 0, 0.5); much emissive makes it near white, which hides that). in_front = true: drawn after everything else and over it, casting no shadow (a first-person weapon, which would otherwise poke into walls the player stands against)
 - `draw_line3d = (a: vec3, b: vec3, color: vec4 = vec4(1, 1, 1, 1), width: f64 = 0.03)`: a line from a to b, `width` thick: for seeing paths, rays, normals and boxes while making a game
 - `draw_grid3d = (size: f64 = 10.0, step: f64 = 1.0, height: f64 = 0.0, color: vec4 = vec4(1, 1, 1, 0.35))`: lines on the ground (y = height), `step` apart out to `size` from the center: to see distances
 - `draw_mesh_instanced = (m: Mesh, instances: Instance3D[], color: vec4 = vec4(1, 1, 1, 1), emissive: f64 = 0.0, specular: f64 = 0.2, cast_shadow: bool = true, wind: f64 = 0.0)`: many copies of a mesh in one draw call (crowds, forests, particles...)
@@ -2546,7 +2547,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `plane_mesh = (size: f64 = 10.0) -> Mesh`
 - `cylinder_mesh = (radius: f64 = 0.5, height: f64 = 1.0, segments: int = 24, top_radius: f64 = -1.0) -> Mesh`: a cylinder standing on its base at y = 0 (the cube, sphere and capsule meshes are centered instead), up to y = height; top_radius 0 makes a cone
 - `cone_mesh = (radius: f64 = 0.5, height: f64 = 1.0, segments: int = 24) -> Mesh`
-- `custom_mesh = (vertices: Vertex3D[], indices: u32[] = []) -> Mesh`: custom mesh from vertex/index arrays
+- `custom_mesh = (vertices: Vertex3D[], indices: u32[] = []) -> Mesh`: a mesh of your own: triangles, three vertices each (or three indices each into vertices). A triangle's front is the side its normals point to, and only fronts are drawn (a box seen from inside is clear): a triangle wound the other way (its corners clockwise as seen from its front) is turned around to face where its normals do. With no normals (all zero), corners go counter-clockwise as seen from the front. draw_mesh(..., double_sided = true) draws both sides
 
 ### camera3d.jo
 

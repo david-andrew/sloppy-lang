@@ -6,6 +6,9 @@ From a 3D kart racer (a spline track, drifting, AI karts, a minimap, names over 
 - `world_to_screen(vec3)` and `screen_ray` were off whenever the window was not the design area's
   shape (they took the design area for the whole picture, which 3D fills): names drifted off the
   karts, and picking missed.
+- `custom_mesh` turns a triangle wound against its normals to face where they point (a road
+  wound clockwise was invisible from above, with nothing saying why); its docs say which side
+  is the front. `draw_mesh(..., double_sided = true)` draws both sides.
 - Two menus drawn in one frame (one ended, another begun) took no input in the second: each
   menu keeps its own state now, and the frame's input is read once for all of them.
 

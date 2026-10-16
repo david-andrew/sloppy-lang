@@ -262,6 +262,7 @@ struct Draw3D:
     has_custom: bool
     front: bool = false
     bones: vec4[] = []          # (skinned: the joints' rows for LitParams.bones)
+    both_sides = false          # (draw_mesh's double_sided: its backs drawn too)
 
 __3d_ready = false
 __lit: Shader
@@ -436,8 +437,8 @@ __pick_lights = ():
 # much emissive makes it near white, which hides that). in_front = true: drawn after everything
 # else and over it, casting no shadow (a first-person weapon, which would otherwise poke into
 # walls the player stands against)
-draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false):
-    __draws.push(Draw3D(m, transform, color, texture.id, f32(emissive), f32(specular), [], false, cast_shadow and not in_front, 0, __noop3d, false, in_front))
+draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false):
+    __draws.push(Draw3D(m, transform, color, texture.id, f32(emissive), f32(specular), [], false, cast_shadow and not in_front, 0, __noop3d, false, in_front, both_sides = double_sided))
 
 # a skinned mesh (of SkinVertex3D), bent by bones (3 rows per joint: see draw_model)
 __line_mesh = Mesh()
@@ -711,9 +712,11 @@ __render3d = ():
         if d.color.w < 1.0 or d.front or not __in_view(d, view): continue
         __drawn3d += 1
         p = __params_for(d, vp)
+        if d.both_sides: glDisable(GL_CULL_FACE)
         if d.instanced: draw_instanced(__lit_inst, d.mesh, d.instances, p)
         else if d.bones.len() > 0: draw(__lit_skin, d.mesh, p)
         else: draw(__lit, d.mesh, p)
+        if d.both_sides: glEnable(GL_CULL_FACE)
     if __sky_on and not again:
         glDisable(GL_CULL_FACE)
         sp = _SkyParams(inverse(vp), __sky_top, __sky_horizon, __ground_color, __sun_dir, __sun_color, f32(elapsed()), f32(__stars))
@@ -1194,5 +1197,36 @@ cylinder_mesh = (radius: f64 = 0.5, height: f64 = 1.0, segments: int = 24, top_r
 
 cone_mesh = (radius: f64 = 0.5, height: f64 = 1.0, segments: int = 24) -> Mesh: cylinder_mesh(radius, height, segments, 0.0)
 
-# custom mesh from vertex/index arrays
-custom_mesh = (vertices: Vertex3D[], indices: u32[] = []) -> Mesh: __mesh3d(vertices, indices)
+# a mesh of your own: triangles, three vertices each (or three indices each into vertices). A
+# triangle's front is the side its normals point to, and only fronts are drawn (a box seen from
+# inside is clear): a triangle wound the other way (its corners clockwise as seen from its
+# front) is turned around to face where its normals do. With no normals (all zero), corners go
+# counter-clockwise as seen from the front. draw_mesh(..., double_sided = true) draws both sides
+custom_mesh = (vertices: Vertex3D[], indices: u32[] = []) -> Mesh:
+    if indices.len() == 0:
+        vs = vertices
+        i = 0
+        loop i + 2 < vs.len():
+            if __tri_backwards(vs[i], vs[i + 1], vs[i + 2]):
+                t = vs[i + 1]
+                vs[i + 1] = vs[i + 2]
+                vs[i + 2] = t
+            i += 3
+        return __mesh3d(vs, indices)
+    ix = indices
+    i = 0
+    loop i + 2 < ix.len():
+        a = int(ix[i])
+        b = int(ix[i + 1])
+        c = int(ix[i + 2])
+        if a < vertices.len() and b < vertices.len() and c < vertices.len() and __tri_backwards(vertices[a], vertices[b], vertices[c]):
+            ix[i + 1] = u32(c)
+            ix[i + 2] = u32(b)
+        i += 3
+    __mesh3d(vertices, ix)
+
+# (its corners clockwise as seen from the side its normals point to)
+__tri_backwards = (a: Vertex3D, b: Vertex3D, c: Vertex3D) -> bool:
+    n = a.normal + b.normal + c.normal
+    if length(n) < 0.0001: return false
+    dot(cross(b.pos - a.pos, c.pos - a.pos), n) < 0.0
