@@ -24,6 +24,11 @@
 - Netpong plays on a phone: the paddle follows a finger (or the mouse held down), Back and
   Leave buttons where Escape was the only way, Share and Copy for the invite, the address typed
   into a text field, and the long codes shown in two lines.
+- A native game hosting web pages (`net.listen`) refused about half of the browsers' connections
+  since invite codes came: their base64 replaced the library's, and the WebSocket handshake's
+  answer was written in the URL alphabet.
+- A web page's error says what went wrong in Firefox and Safari too (it showed only where).
+- Invite codes tested with Firefox as well (tools/nettest.py with SLOPPY_FIREFOX).
 - A slice compared with `==` (`xs[1..4) == ys`) read the wrong memory and stopped the program.
 
 From a creative coder (p5.js and Shadertoy: a flow field with trails, a shader piece with

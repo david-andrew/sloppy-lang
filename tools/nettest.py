@@ -145,5 +145,14 @@ if shell:
         if r.returncode != 0: failed += 1
     else: print("(no node: WebRTC with a web page is not tried)")
 else: print("(no browser: the web client is not tried)")
+# the same in Firefox, where SLOPPY_FIREFOX says where one is (on a display of its own if Xvfb is
+# installed: headless, Firefox has no WebGL)
+ff = os.environ.get("SLOPPY_FIREFOX")
+if ff and shutil.which("node"):
+    page = build("invite_page", "--target", "wasm") + ".html"
+    r = subprocess.run(["node", os.path.join(root, "tools", "rtc_webtest.mjs"), ff, page, peer, os.path.join(tmp, "rtcff")],
+                       capture_output=True, text=True, timeout=240)
+    print(r.stdout.strip())
+    if r.returncode != 0: failed += 1
 shutil.rmtree(tmp, ignore_errors=True)
 sys.exit(1 if failed else 0)
