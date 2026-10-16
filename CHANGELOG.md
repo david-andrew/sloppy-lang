@@ -40,6 +40,8 @@
 - A top-level `__x = ...` (a name the library uses for its own state) makes the program's or
   module's own `__x`, where it changed the library's without a word: a game's `__B64` broke
   `base64_encode`, and lib/rtc.jo's broke WebSocket servers.
+- `when TARGET == "wasm": x = 1` on one line at the top level (as after `if`), where it was an
+  error ("expected newline").
 - A web page's error says what went wrong in Firefox and Safari too (it showed only where).
 - Invite codes tested with Firefox as well (tools/nettest.py with SLOPPY_FIREFOX).
 - A slice compared with `==` (`xs[1..4) == ys`) read the wrong memory and stopped the program.
