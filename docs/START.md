@@ -126,6 +126,29 @@ finger lifts (browsers allow it only then); iPhones' Safari has no fullscreen fo
 canvas. A `hud_text_field` tapped brings up the phone's keyboard, with a Paste button beside
 what is typed while it has it.
 
+A board and buttons, for a phone held either way: the board in the part of the screen the
+buttons leave (`camera2d_fit`), a tool picked with a button, then a tap on the board; a tap on a
+button is not one on the board (`hud_hovered()`):
+
+```gdscript
+tool = 0
+update = (dt: f64):
+    if mouse_pressed(.left) and not hud_hovered():
+        cell = screen_to_world(mouse_pos()) / 64.0          # (the board: cells of 64)
+        place(tool, int(cell.x), int(cell.y))
+draw = ():
+    clear()
+    v = visible_rect()
+    upright = v.h > v.w
+    board = if upright: Rect(v.x, v.y, v.w, v.h - 160) else: Rect(v.x, v.y, v.w - 220, v.h)
+    camera2d_fit(Rect(0, 0, COLS * 64, ROWS * 64), board)
+    draw_board()
+    reset_transform()
+    loop i in 0.. and name in ["Gun", "Frost", "Cannon"]:
+        r = if upright: Rect(v.x + 20 + f64(i) * 150, v.y + v.h - 140, 140, 120) else: Rect(v.x + v.w - 200, v.y + 20 + f64(i) * 130, 180, 120)
+        if hud_button(r, name, selected = tool == i): tool = i
+```
+
 Each is one file with nothing to install alongside it (`--target macos` and `--target linux`
 make the same from any system too; a Windows build's `.pdb` beside it is for debuggers only, so
 leave it out of what you share; Windows warns about a program it has not seen signed before,

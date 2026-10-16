@@ -1705,6 +1705,11 @@ draw = ():
 - `scale = (sx: f64, sy: f64)`
 - `reset_transform = ()`
 - `camera2d = (target: vec2, zoom: f64 = 1.0, angle: f64 = 0.0)`: 2D camera: `target` appears at the screen center, scaled by zoom
+- `camera2d_fit = (world: Rect, on: Rect)`: a 2D camera showing the area `world` (in the world's units) as large as it fits inside `on` (a part of the screen: visible_rect() for all of it), centered there, its shape kept: a board above the buttons on a phone held upright,
+  ```gdscript
+  v = visible_rect()
+  camera2d_fit(Rect(0, 0, COLS * 64, ROWS * 64), Rect(v.x, v.y, v.w, v.h - 200))
+  ```
 - `screen_to_world = (p: vec2) -> vec2`: convert a screen position to world coordinates under the current transform; in update (before draw sets one), under the last camera2d: screen_to_world(mouse_pos()) is where the mouse points
 - `world_to_screen = (p: vec2) -> vec2`: where a world position appears on the screen under the current transform (the other way; in update, the last camera2d's)
 

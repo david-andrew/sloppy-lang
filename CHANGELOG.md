@@ -11,6 +11,8 @@ From a tower defense for phones (a grid, waves, towers built by tapping):
   or replaces it (itself or through what it calls) is an error naming the function; it looped
   over what was added, or wrote to an element of an emptied array. The Breakwater tutorial had
   one (a hit that ended the run emptied the bolts being looped over).
+- `camera2d_fit(world, on)`: a world area shown as large as it fits in part of the screen (a
+  board above the buttons on a phone held upright); START.md has the recipe.
 - `visible_rect()` gives a `Rect` (`.w` is its width, `.h` its height), as the hud functions
   and `contains` take; it was a vec4 whose `.w` was the height.
 - A struct field named by a keyword (`build: Rect`, `when: f64`) says so, as other names do.
