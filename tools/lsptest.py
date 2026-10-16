@@ -561,7 +561,7 @@ luri = to_uri(lpath)
 lsrc = open(lpath, encoding="utf-8").read()
 c.set_text(luri, lsrc)
 check("library file: no errors", c.diagnostics(luri), [])
-h = c.request("textDocument/hover", {"textDocument": {"uri": luri}, "position": lc(lsrc, lsrc.index("__stats_summary(120)"))})
+h = c.request("textDocument/hover", {"textDocument": {"uri": luri}, "position": lc(lsrc, lsrc.index("__stats_summary(cnt)"))})
 check("library file: hover", h and h["contents"]["value"].split("\n")[1], "__stats_summary = (count: int) -> (str, str, str)")
 
 # ---- what the editor no longer needs: a cancelled request, and one about text changed since ----
