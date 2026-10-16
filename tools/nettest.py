@@ -184,6 +184,24 @@ if shell:
         if r.returncode != 0: failed += 1
     else: print("(no node: WebRTC with a web page is not tried)")
 else: print("(no browser: the web client is not tried)")
+# through a TURN relay only, where SLOPPY_TEST_TURN names a test server ("turn:host:port,user,password":
+# coturn, run locally): two native programs, and a native program with a web page
+turn = os.environ.get("SLOPPY_TEST_TURN")
+if turn:
+    tenv = dict(env, TURN=turn, SLOPPY_RTC_RELAY_ONLY="1")
+    td = os.path.join(tmp, "turn")
+    os.makedirs(td, exist_ok=True)
+    a = subprocess.Popen([peer], stdout=subprocess.PIPE, text=True, env=dict(tenv, DIR=td, ROLE="invite"))
+    b = subprocess.run([peer], capture_output=True, text=True, env=dict(tenv, DIR=td, ROLE="join"), timeout=60)
+    a_out = a.communicate(timeout=60)[0]
+    check("WebRTC through a TURN relay only: the inviter", a_out, ["accepted:true", "native:joined", "native got:ping from native", "native got:pong from native"])
+    check("WebRTC through a TURN relay only: the one who joined", b.stdout, ["native:joined", "native got:ping from native", "native got:pong from native"])
+    if shell and shutil.which("node"):
+        page = build("invite_page", "--target", "wasm") + ".html"
+        r = subprocess.run(["node", os.path.join(root, "tools", "rtc_webtest.mjs"), shell, page, peer, os.path.join(tmp, "rtcturn")],
+                           capture_output=True, text=True, timeout=240, env=dict(tenv, RTC_PAGE_QUERY=f"SLOPPY_RTC_RELAY_ONLY=1&TURN={turn}"))
+        print(r.stdout.strip().replace("WebRTC:", "WebRTC through a TURN relay only:"))
+        if r.returncode != 0: failed += 1
 # the same in Firefox, where SLOPPY_FIREFOX says where one is (on a display of its own if Xvfb is
 # installed: headless, Firefox has no WebGL)
 ff = os.environ.get("SLOPPY_FIREFOX")

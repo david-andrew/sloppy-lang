@@ -30,8 +30,11 @@ in a native program), web pages and native programs alike, on one Wi-Fi or acros
 after that the peer is as any other. Nothing runs anywhere but the two games: a public STUN server
 (Google's, `rtc.rtc_stun_servers`) only tells each game how it looks from the internet. Most home
 networks connect so; some (mobile data, many schools' and offices') let no outside connection in,
-and need a relay server (TURN) that this does not have yet. `net.invite(reliable = false)` sends
-messages that may be lost or come in another order but never wait: a fast game's state.
+and need a relay: a TURN server, which passes the two games' packets on. `net.turn_server("turn:host:3478",
+user, password)`, before inviting, offers a path through one (your own, coturn, or a service's: some
+have a free tier; its password goes into every copy of the game), used only when no straight path
+works. `net.invite(reliable = false)` sends messages that may be lost or come in another order but
+never wait: a fast game's state. `import invite` has the screens for all this (below).
 
 ```gdscript
 p = net.invite()
@@ -42,6 +45,31 @@ net.accept_reply(p, pasted_reply)
 loop e in net.receive():
     if e.kind == .joined: ...         # connected
 ```
+
+**The screens, ready made: `import invite`.** Invite a friend shows a link to send (it opens the
+game in a browser: the page's own address in a web page, the `web_page` given on a computer),
+with Copy and, on phones, Share; Join a friend takes a pasted link or code (a Paste button on a
+phone) and shows the reply to send back; both say why when nothing connected, and Back leaves.
+A game's menu opens them, and draw shows them until the friend is connected:
+
+```gdscript
+import net
+import invite
+
+friend = -1
+invite.from_link()                      # opened from an invite link: Join a friend, at once
+draw = ():
+    if invite.active():
+        if let c = invite.screen("My Game", "https://example.com/mygame/"):
+            friend = c.peer             # connected; c.inviter: this side invited
+        return
+    ...
+    if ui_button("Invite a friend"): invite.start()
+    if ui_button("Join a friend"): invite.join()
+```
+
+Until the friend is connected, `net.receive()` leaves their events to the screens; after that,
+everything from them is the game's. examples/duel and examples/netpong use them.
 
 Netpong's Invite a friend and Join a friend show the whole of it, with the codes copied to the
 clipboard and pasted back.

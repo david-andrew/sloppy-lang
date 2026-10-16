@@ -8,6 +8,10 @@
   Native programs speak WebRTC now (lib/rtc.jo: ICE, DTLS 1.2, SCTP, data channels, in Sloppy),
   tested against Chromium both ways, OpenSSL, and on arm64 and Windows. Netpong's Invite a friend
   and Join a friend use them, from the website's page too.
+- `net.turn_server(url, user, password)`: invites also offer a path through a TURN relay, for
+  players whose networks allow no straight path (some mobile data, schools, offices); native
+  programs speak TURN too (allocations, permissions, refreshes). Tested with coturn, relay only,
+  native to native and native to Chromium both ways. `crypto.md5`, which TURN's credentials use.
 - A native program's invite peer whose game went without a word (switched off, its network
   gone) is `.left` after 15 s of silence, with why; it waited for ever.
 - `net.join_invite` takes a link with the code in it (`…?invite=code`) as well as the code;

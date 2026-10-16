@@ -89,16 +89,18 @@ async function scenario(nativeInvites) {
     nat.stdout.on("data", (d) => { natOut += d; });
     nat.stderr.on("data", (d) => { natOut += d; });
   };
+  // (RTC_PAGE_QUERY: more of the page's settings, as TURN=...)
   const url = "file://" + path.resolve(page);
+  const more = process.env.RTC_PAGE_QUERY ? "&" + process.env.RTC_PAGE_QUERY : "";
   try {
     if (nativeInvites) {
       startNative();
       const code = await until(() => fs.existsSync(path.join(work, "code.txt")) && fs.readFileSync(path.join(work, "code.txt"), "utf8"), 15000, "the native code");
-      br.navigate(`${url}?ROLE=join&CODE=${encodeURIComponent(code)}`);
+      br.navigate(`${url}?ROLE=join&CODE=${encodeURIComponent(code)}${more}`);
       const reply = await until(() => (br.lines.find((l) => l.startsWith("code:")) || "").slice(5), 15000, "the page's reply");
       fs.writeFileSync(path.join(work, "reply.txt"), reply);
     } else {
-      br.navigate(`${url}?ROLE=invite`);
+      br.navigate(`${url}?ROLE=invite${more}`);
       const code = await until(() => (br.lines.find((l) => l.startsWith("code:")) || "").slice(5), 15000, "the page's code");
       fs.writeFileSync(path.join(work, "code.txt"), code);
       startNative();

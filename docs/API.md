@@ -1123,6 +1123,10 @@ ok = crypto.p256_verify(pk.public, crypto.sha256(msg), sig)
 - `hex_text = (b: u8[]) -> str`: bytes as lowercase hex ("a9993e...")
 - `hex_bytes = (s: str) -> u8[]?`: "a9993e..." as bytes (none when it is not hex)
 
+#### MD5
+
+- `md5 = (m: u8[]) -> u8[]`
+
 #### SHA-1
 
 - `sha1 = (m: u8[]) -> u8[]`: SHA-1 of the bytes (20 bytes); for HMAC-SHA1, which STUN uses, not for anything new
@@ -3964,6 +3968,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `join_invite = (code0: str) -> int`: join a game with the code its host sent, or a link with the code in it (…?invite=code): a peer, whose invite_code(p) is then the reply to send back
 - `invite_code = (peer: int) -> str`: this side's code for a peer from invite or join_invite: "" while it is being made (a moment, as this machine's addresses are found)
 - `accept_reply = (peer: int, reply: str) -> bool`: the other player's reply to this side's invite; false when it is not a reply code
+- `turn_server = (url: str, user: str, password: str)`: a TURN server ("turn:host:port", or "host:port") with the user name and password it gives: the invites made after this also offer a path through it, a relay, for players whose networks allow none straight to each other (some mobile data, schools, offices). Your own (coturn), or a service's (some have a free tier); its password goes into every copy of the game. UDP only
 - `listen = (port: int) -> bool`: start a server on port (native programs); false if the port cannot be had
 - `stop_listening = ()`: stop taking new connections (the peers connected stay); listen starts again
 - `connect = (host: str, port: int = 0) -> int`: connect to a server: a peer, connecting in the background (joined or left arrive by receive); host is a name or address and port its port, or host is a ws:// or wss:// URL (port then unused)

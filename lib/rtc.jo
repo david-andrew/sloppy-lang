@@ -140,6 +140,7 @@ struct __Pair:
     host: str
     port: int
     tid: u8[]               # the check in flight
+    relay = false           # (through this side's TURN relay)
     sent = 0.0
     tries = 0
     ok = false              # a check answered
@@ -165,6 +166,21 @@ struct __Conn:
     stun_sent = 0.0
     gathered = false        # the candidates are all known (the STUN server answered, or did not in time)
     last_heard = 0.0
+    sel_relay = false       # (the path chosen goes through this side's TURN relay)
+    # TURN (RFC 8656): a relay's address for this side, for when no direct path is allowed
+    t_host = ""
+    t_port = 0
+    t_user = ""
+    t_pass = ""
+    t_realm: u8[]
+    t_nonce: u8[]
+    t_key: u8[]             # (MD5 of user:realm:password: the long-term credential)
+    t_tid: u8[]             # (the Allocate or Refresh in flight)
+    t_state = 0             # 0 none, 1 allocating, 2 allocated, 3 failed
+    t_sent = 0.0
+    t_tries = 0
+    t_refresh_at = 0.0
+    t_perms: {str: f64}     # peers' addresses given a permission, and when
     inbox: u8[][]           # (DTLS's datagrams, for the layer above)
     key: crypto.P256Key
     cert: u8[]
@@ -233,6 +249,10 @@ __conns: __Conn[]
 # STUN servers asked for this machine's public address ("host:port"); none: only local addresses
 rtc_stun_servers = ["stun.l.google.com:19302"]
 
+# TURN servers ("host:port", user, password: net.turn_server sets them), which relay for players
+# whose networks allow no direct path; the first is used
+rtc_turn_servers: (str, str, str)[]
+
 __ice_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 __ice_text = (n: int) -> str:
     r = crypto.random_bytes(n)
@@ -265,8 +285,21 @@ __rtc_new = (controlling: bool) -> int:
         c.stun_sent = time()
         if not net.udp_send(c.sock, c.stun_host, c.stun_port, __stun_make(__STUN_REQUEST, c.stun_tid, [], [])): c.gathered = true
     else: c.gathered = true
+    if rtc_turn_servers.len() > 0:
+        t = rtc_turn_servers[0]
+        hp = split(t.0, ":")
+        c.t_host = hp[0]
+        c.t_port = to_int(hp[hp.len() - 1]) ?? 3478
+        c.t_user = t.1
+        c.t_pass = t.2
+        c.t_state = 1
+        __turn_allocate(c)
+    # (SLOPPY_RTC_RELAY_ONLY=1, for trying the TURN path: no direct candidates)
+    if __rtc_relay_only: c.local.clear()
     __conns.push(c)
     __conns.len() - 1
+
+__rtc_relay_only = (env("SLOPPY_RTC_RELAY_ONLY") ?? "") == "1"
 
 # this side's description (complete once gathered)
 __rtc_desc = (id: int, active: bool) -> RtcDesc:
@@ -279,7 +312,8 @@ __rtc_set_remote = (id: int, d: RtcDesc):
     __conns[id].d_client = not d.active
     loop cd in d.candidates:
         if ends_with(cd.host, ".local") or find(cd.host, ":") >= 0: continue      # (a hidden name, or IPv6: checks come from it instead)
-        __conns[id].pairs.push(__Pair(cd.host, cd.port, []))
+        if not __rtc_relay_only: __conns[id].pairs.push(__Pair(cd.host, cd.port, []))
+        if __conns[id].t_state == 2: __conns[id].pairs.push(__Pair(cd.host, cd.port, [], relay = true))
 
 # ICE's part of a frame: what arrived, checks to send; DTLS's datagrams go to inbox
 __ice_poll = (id: int):
@@ -288,14 +322,15 @@ __ice_poll = (id: int):
     if not c.gathered and now - c.stun_sent > 1.5: c.gathered = true
     loop dg in net.udp_receive(c.sock):
         if dg.data.len() == 0: continue
-        b0 = dg.data[0]
-        if b0 < 4: __ice_stun(c, dg.host, dg.port, dg.data)
-        else if b0 >= 20 and b0 < 64:
-            if c.state == __ICE_CONNECTED and dg.host == c.sel_host and dg.port == c.sel_port:
-                c.inbox.push(dg.data)
-                c.last_heard = now
+        # (from the TURN server: its answers, and what peers sent through the relay)
+        if c.t_state > 0 and dg.host == c.t_host and dg.port == c.t_port and dg.data[0] < 4:
+            __turn_in(c, dg.data)
+            continue
+        __ice_in(c, dg.host, dg.port, dg.data, false)
+    __turn_upkeep(c, now)
     if c.remote != none and c.state == __ICE_CHECKING:
         r = c.remote!
+        sends: (str, int, u8[], bool)[]
         loop mut p in c.pairs:
             if p.ok and not c.controlling: continue
             if p.ok and c.controlling and p.nominate and now - p.sent < 0.2: continue
@@ -307,7 +342,8 @@ __ice_poll = (id: int):
             # (controlling: once a check has been answered, the next nominates the path)
             nom = c.controlling and p.ok
             p.nominate = nom
-            net.udp_send(c.sock, p.host, p.port, __ice_check(c, r, p.tid, nom))
+            sends.push((p.host, p.port, __ice_check(c, r, p.tid, nom), p.relay))
+        loop s in sends: __rtc_out_to(c, s.0, s.1, s.2, s.3)
         if now - c.since > 30.0: c.state = __ICE_FAILED
     # (the other side gone without a word, as a machine switched off or its network lost: nothing
     # from it for a while, not even answers to the checks below)
@@ -315,8 +351,125 @@ __ice_poll = (id: int):
     # (keep the path open, as browsers expect: a check now and then)
     if c.state == __ICE_CONNECTED and now - c.stun_sent > 2.0 and c.remote != none:
         c.stun_sent = now
-        net.udp_send(c.sock, c.sel_host, c.sel_port, __ice_check(c, c.remote!, crypto.random_bytes(12), false))
+        __rtc_out(c, __ice_check(c, c.remote!, crypto.random_bytes(12), false))
     __conns[id] = c
+
+# a datagram from host:port (through the relay: relay), for ICE or, once connected, DTLS
+__ice_in = (c: mut __Conn, host: str, port: int, data: u8[], relay: bool):
+    if data.len() == 0: return
+    b0 = data[0]
+    if b0 < 4: __ice_stun(c, host, port, data, relay)
+    else if b0 >= 20 and b0 < 64:
+        if c.state == __ICE_CONNECTED and host == c.sel_host and port == c.sel_port and relay == c.sel_relay:
+            c.inbox.push(data)
+            c.last_heard = time()
+
+# a datagram to the other side, along the path chosen
+__rtc_out = (c: mut __Conn, data: u8[]): __rtc_out_to(c, c.sel_host, c.sel_port, data, c.sel_relay)
+
+# ---------------- TURN (RFC 8656) ----------------
+# A relay: the TURN server gives this side an address of its own, and passes on what comes to
+# it (Data indications) and what this side sends through it (Send indications), for peers given
+# a permission. Requests are signed with the long-term credential once the server has said its
+# realm and a nonce (its first answer, 401).
+
+# ask for the relay address
+__turn_allocate = (c: mut __Conn):
+    c.t_tid = crypto.random_bytes(12)
+    c.t_sent = time()
+    c.t_tries += 1
+    attrs: (int, u8[])[] = [(0x0019, [u8(17), 0, 0, 0])]           # (REQUESTED-TRANSPORT: UDP)
+    net.udp_send(c.sock, c.t_host, c.t_port, __turn_msg(c, 0x0003, c.t_tid, attrs))
+
+# a request to the TURN server, signed once its realm and nonce are known
+__turn_msg = (c: __Conn, kind: int, tid: u8[], attrs0: (int, u8[])[]) -> u8[]:
+    if c.t_key.len() == 0: return __stun_make(kind, tid, attrs0, [])
+    attrs = attrs0
+    attrs.push((0x0006, bytes(c.t_user)))
+    attrs.push((0x0014, c.t_realm))
+    attrs.push((0x0015, c.t_nonce))
+    __stun_make(kind, tid, attrs, c.t_key)
+
+# what the TURN server sent
+__turn_in = (c: mut __Conn, b: u8[]):
+    mm = __stun_read(b)
+    if mm == none: return
+    m = mm!
+    if m.kind == 0x0017:
+        # (a Data indication: what a peer sent to the relay address)
+        if let pa = __stun_attr(m, 0x0012):
+            if let a = __xor_addr_read(pa):
+                if let d = __stun_attr(m, 0x0013): __ice_in(c, a.0, a.1, d, true)
+        return
+    if m.kind & 0x0110 == 0x0110:
+        # an error: 401 (credentials wanted) and 438 (a stale nonce) say the realm and nonce to use
+        code = 0
+        if let e = __stun_attr(m, 0x0009):
+            if e.len() >= 4: code = int(e[2] & 7) * 100 + int(e[3])
+        if code == 401 or code == 438:
+            if let r = __stun_attr(m, 0x0014): c.t_realm = r
+            if let n = __stun_attr(m, 0x0015): c.t_nonce = n
+            c.t_key = crypto.md5(bytes("{c.t_user}:{str_from_bytes(c.t_realm)}:{c.t_pass}"))
+            c.t_perms.clear()
+            if m.tid == c.t_tid:
+                if c.t_state == 1 and c.t_tries < 5: __turn_allocate(c)
+                else if c.t_state == 2: c.t_refresh_at = 0.0
+            return
+        if m.tid == c.t_tid and c.t_state == 1:
+            __rtc_say(c, "the TURN server said no: {code}")
+            c.t_state = 3
+        return
+    if m.tid != c.t_tid or (c.t_key.len() > 0 and not __stun_check(m, c.t_key)): return
+    life = 600
+    if let l = __stun_attr(m, 0x000D):
+        if l.len() == 4: life = int(__be32(l, 0))
+    if m.kind == 0x0103 and c.t_state == 1:
+        # allocated: the relay address is a candidate (and the server saw this machine's address too)
+        if let ra = __stun_attr(m, 0x0016):
+            if let a = __xor_addr_read(ra):
+                c.local.push(RtcCand(a.0, a.1, "relay"))
+                c.t_state = 2
+                __rtc_say(c, "relay at {a.0}:{a.1}")
+                if c.remote != none:
+                    loop cd in c.remote!.candidates:
+                        if not ends_with(cd.host, ".local") and find(cd.host, ":") < 0: c.pairs.push(__Pair(cd.host, cd.port, [], relay = true))
+        if not __rtc_relay_only:
+            if let xa = __stun_attr(m, 0x0020):
+                if let a = __xor_addr_read(xa):
+                    seen = false
+                    loop l in c.local:
+                        if l.host == a.0 and l.port == a.1: seen = true
+                    if not seen: c.local.push(RtcCand(a.0, a.1, "srflx"))
+    c.t_refresh_at = time() + max(f64(life) - 60.0, 30.0)
+
+# allocations and permissions last minutes: refreshed before they lapse
+__turn_upkeep = (c: mut __Conn, now: f64):
+    if c.t_state == 1:
+        if now - c.since > 4.0: c.t_state = 3
+        else if now - c.t_sent > 0.5: __turn_allocate(c)
+    if c.t_state == 2 and now > c.t_refresh_at:
+        c.t_tid = crypto.random_bytes(12)
+        c.t_refresh_at = now + 20.0                 # (again then, if no answer comes)
+        lt: u8[]
+        __put32(lt, 600)
+        net.udp_send(c.sock, c.t_host, c.t_port, __turn_msg(c, 0x0004, c.t_tid, [(0x000D, lt)]))
+
+# a permission for host's datagrams through the relay (asked again every 4 minutes: they last 5)
+__turn_permit = (c: mut __Conn, host: str):
+    if let t = c.t_perms.get(host):
+        if time() - t < 240.0: return
+    c.t_perms[host] = time()
+    net.udp_send(c.sock, c.t_host, c.t_port, __turn_msg(c, 0x0008, crypto.random_bytes(12), [(0x0012, __xor_addr(host, 0))]))
+
+# a datagram to host:port, straight or through this side's relay (a Send indication)
+__rtc_out_to = (c: mut __Conn, host: str, port: int, data: u8[], relay: bool):
+    if not relay:
+        net.udp_send(c.sock, host, port, data)
+        return
+    if c.t_state != 2: return
+    __turn_permit(c, host)
+    attrs: (int, u8[])[] = [(0x0012, __xor_addr(host, port)), (0x0013, data)]
+    net.udp_send(c.sock, c.t_host, c.t_port, __stun_make(0x0016, crypto.random_bytes(12), attrs, []))
 
 __ice_check = (c: __Conn, r: RtcDesc, tid: u8[], nominate: bool) -> u8[]:
     attrs: (int, u8[])[]
@@ -330,7 +483,7 @@ __ice_check = (c: __Conn, r: RtcDesc, tid: u8[], nominate: bool) -> u8[]:
     else: attrs.push((0x8029, c.tiebreak))
     __stun_make(__STUN_REQUEST, tid, attrs, bytes(r.pwd))
 
-__ice_stun = (c: mut __Conn, host: str, port: int, b: u8[]):
+__ice_stun = (c: mut __Conn, host: str, port: int, b: u8[], relay: bool):
     mm = __stun_read(b)
     if mm == none: return
     m = mm!
@@ -339,23 +492,30 @@ __ice_stun = (c: mut __Conn, host: str, port: int, b: u8[]):
         uu = __stun_attr(m, 0x0006)
         if uu == none: return
         u = uu!
-        if not starts_with(str_from_bytes(u), c.ufrag + ":") or not __stun_check(m, bytes(c.pwd)): return
+        if not starts_with(str_from_bytes(u), c.ufrag + ":") or not __stun_check(m, bytes(c.pwd)):
+            __rtc_say(c, "a check from {host}:{port} not for this connection")
+            return
+        __rtc_say(c, "a check from {host}:{port}{if relay: " (relayed)" else: ""}")
         attrs: (int, u8[])[] = [(0x0020, __xor_addr(host, port))]
-        net.udp_send(c.sock, host, port, __stun_make(__STUN_SUCCESS, m.tid, attrs, bytes(c.pwd)))
+        __rtc_out_to(c, host, port, __stun_make(__STUN_SUCCESS, m.tid, attrs, bytes(c.pwd)), relay)
         c.last_heard = time()
         # (from somewhere it did not say: a peer-reflexive candidate, to check as well)
         known = false
         loop p in c.pairs:
-            if p.host == host and p.port == port: known = true
-        if not known: c.pairs.push(__Pair(host, port, []))
+            if p.host == host and p.port == port and p.relay == relay: known = true
+        if not known: c.pairs.push(__Pair(host, port, [], relay = relay))
         if not c.controlling and __stun_attr(m, 0x0025) != none and c.state == __ICE_CHECKING:
             c.sel_host = host
             c.sel_port = port
+            c.sel_relay = relay
             c.state = __ICE_CONNECTED
         return
     if m.kind == __STUN_SUCCESS:
         # the STUN server's answer: this machine as the internet sees it
         if m.tid == c.stun_tid and not c.gathered:
+            if __rtc_relay_only:
+                c.gathered = true
+                return
             if let xa = __stun_attr(m, 0x0020):
                 if let a = __xor_addr_read(xa):
                     seen = false
@@ -372,6 +532,7 @@ __ice_stun = (c: mut __Conn, host: str, port: int, b: u8[]):
                 if p.nominate and c.state == __ICE_CHECKING:
                     c.sel_host = p.host
                     c.sel_port = p.port
+                    c.sel_relay = p.relay
                     c.state = __ICE_CONNECTED
                 if not p.ok:
                     p.ok = true
@@ -461,11 +622,11 @@ __dtls_resend = (c: mut __Conn):
     dg: u8[]
     loop f in c.d_flight:
         rec = __dtls_record(c, int(f[0]), f[2..], int(f[1]))
-        if dg.len() + rec.len() > 1200 and dg.len() > 0:
-            net.udp_send(c.sock, c.sel_host, c.sel_port, dg)
+        if dg.len() + rec.len() > 1100 and dg.len() > 0:
+            __rtc_out(c, dg)
             dg.clear()
         dg.extend(rec)
-    if dg.len() > 0: net.udp_send(c.sock, c.sel_host, c.sel_port, dg)
+    if dg.len() > 0: __rtc_out(c, dg)
 
 __dtls_fail = (c: mut __Conn, why: str):
     c.d_state = 3
@@ -819,7 +980,7 @@ __dtls_poll = (id: int):
 # application data (an SCTP packet) to the other side
 __dtls_send_app = (c: mut __Conn, data: u8[]):
     if c.d_state != 2: return
-    net.udp_send(c.sock, c.sel_host, c.sel_port, __dtls_record(c, __CT_APP, data, 1))
+    __rtc_out(c, __dtls_record(c, __CT_APP, data, 1))
 
 # ---------------- SCTP over DTLS (RFC 4960, 8261) and data channels (RFC 8831, 8832) ----------------
 const __SCTP_PORT = 5000
@@ -1327,5 +1488,5 @@ __rtc_close = (id: int):
 
 # (a native side's code, once its candidates are known: "" before)
 __rtc_code = (id: int, active: bool) -> str:
-    if not __conns[id].gathered: return ""
+    if not __conns[id].gathered or __conns[id].t_state == 1: return ""
     rtc_code(__rtc_desc(id, active))
