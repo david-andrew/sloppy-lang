@@ -9,6 +9,11 @@ From a 3D kart racer (a spline track, drifting, AI karts, a minimap, names over 
 - `"a" + panic("x")` and `"{panic("x")}"` (what never comes back, taken as a value) crashed the
   compiler; and after the error "recursive function needs an explicit return type", a second,
   wrong one (`cannot format a value of type void`) followed at its use.
+- `SLOPPY_INPUT` presses a gamepad's buttons and moves its sticks and triggers (`5:pad_a+`,
+  `6:lstick=1x0`, `lt=1`), for testing pad controls with no pad; what it cannot read, it says
+  with every kind of item (touches were left out).
+- `play_at(..., looping = true)`: an engine heard where its kart is (with `move_sound`).
+- `vec3 + vec2` says how a ground point goes into 3D (`vec3(p.x, 0, p.y)`).
 - `custom_mesh` turns a triangle wound against its normals to face where they point (a road
   wound clockwise was invisible from above, with nothing saying why); its docs say which side
   is the front. `draw_mesh(..., double_sided = true)` draws both sides.

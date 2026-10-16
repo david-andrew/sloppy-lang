@@ -2864,9 +2864,9 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
 
 #### Sounds in a place
 
-- `play_at = (s: Sound, pos: vec2, listener: vec2, volume: f64 = 1.0, reach: f64 = 1200.0, pitch: f64 = 1.0) -> int`: play a sound from a place in 2D: to the left or right of listener (who hears it: the player, or the camera's target), and quieter further away, silent beyond reach (2D units)
-- `play_at = (s: Sound, pos: vec3, volume: f64 = 1.0, reach: f64 = 40.0, pitch: f64 = 1.0) -> int`: play a sound from a place in 3D: heard from the camera (camera3d), to its left or right, and quieter further away, silent beyond reach (meters)
-- `move_sound = (id: int, pos: vec3, volume: f64 = 1.0, reach: f64 = 40.0)`: a sound already playing (play_at's voice) moved to another place in 3D: a looping engine, a fire that the player walks past (call it every frame)
+- `play_at = (s: Sound, pos: vec2, listener: vec2, volume: f64 = 1.0, reach: f64 = 1200.0, pitch: f64 = 1.0, looping: bool = false) -> int`: play a sound from a place in 2D: to the left or right of listener (who hears it: the player, or the camera's target), and quieter further away, silent beyond reach (2D units)
+- `play_at = (s: Sound, pos: vec3, volume: f64 = 1.0, reach: f64 = 40.0, pitch: f64 = 1.0, looping: bool = false) -> int`: play a sound from a place in 3D: heard from the camera (camera3d), to its left or right, and quieter further away, silent beyond reach (meters); looping: again and again, till stop(id) (an engine: move_sound(id, kart.pos) each frame, set_pitch(id, ...) with its speed)
+- `move_sound = (id: int, pos: vec3, volume: f64 = 1.0, reach: f64 = 40.0)`: a sound already playing (play_at's voice, or any play's) moved to another place in 3D: a looping engine, a fire that the player walks past (call it every frame)
 
 #### Volume
 
