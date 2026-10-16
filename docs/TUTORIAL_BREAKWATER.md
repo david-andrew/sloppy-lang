@@ -1052,6 +1052,7 @@ step_drones = (dt: f64):
     drones = drones.filter((d): d.health > 0.0)
     # bolts: stopped by cover; the player is hit within half a meter of the body (they move
     # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
+    taken = 0.0
     loop mut b in bolts:
         b.life -= dt
         n = int(ceil(length(b.vel) * dt / 0.2))
@@ -1063,9 +1064,11 @@ step_drones = (dt: f64):
             q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
             if length(b.pos - q) < 0.5:
                 b.life = 0
-                hurt(10)
+                taken += 10.0
                 break
     bolts = bolts.filter((b): b.life > 0.0)
+    # (after the loop: a hit that ends the run starts a new one, bolts and all)
+    if taken > 0.0: hurt(taken)
 
 step_player = (dt: f64):
     # a click hands the mouse to the game: then moving it turns the view
@@ -1465,6 +1468,7 @@ step_drones = (dt: f64):
     drones = drones.filter((d): d.health > 0.0)
     # bolts: stopped by cover; the player is hit within half a meter of the body (they move
     # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
+    taken = 0.0
     loop mut b in bolts:
         b.life -= dt
         n = int(ceil(length(b.vel) * dt / 0.2))
@@ -1476,9 +1480,11 @@ step_drones = (dt: f64):
             q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
             if length(b.pos - q) < 0.5:
                 b.life = 0
-                hurt(10)
+                taken += 10.0
                 break
     bolts = bolts.filter((b): b.life > 0.0)
+    # (after the loop: a hit that ends the run starts a new one, bolts and all)
+    if taken > 0.0: hurt(taken)
 
 step_player = (dt: f64):
     # a click hands the mouse to the game: then moving it turns the view
@@ -1914,6 +1920,7 @@ step_drones = (dt: f64):
     drones = drones.filter((d): d.health > 0.0)
     # bolts: stopped by cover; the player is hit within half a meter of the body (they move
     # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
+    taken = 0.0
     loop mut b in bolts:
         b.life -= dt
         n = int(ceil(length(b.vel) * dt / 0.2))
@@ -1925,9 +1932,11 @@ step_drones = (dt: f64):
             q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
             if length(b.pos - q) < 0.5:
                 b.life = 0
-                hurt(10)
+                taken += 10.0
                 break
     bolts = bolts.filter((b): b.life > 0.0)
+    # (after the loop: a hit that ends the run starts a new one, bolts and all)
+    if taken > 0.0: hurt(taken)
 
 step_player = (dt: f64):
     # a click hands the mouse to the game: then moving it turns the view
@@ -2409,6 +2418,7 @@ step_drones = (dt: f64):
     drones = drones.filter((d): d.health > 0.0)
     # bolts: stopped by cover; the player is hit within half a meter of the body (they move
     # in steps of at most 20 cm, so a slow frame cannot carry one through a wall, or you)
+    taken = 0.0
     loop mut b in bolts:
         b.life -= dt
         n = int(ceil(length(b.vel) * dt / 0.2))
@@ -2420,9 +2430,11 @@ step_drones = (dt: f64):
             q = vec3(pos.x, clamp(b.pos.y, pos.y + 0.3, eye().y), pos.z)
             if length(b.pos - q) < 0.5:
                 b.life = 0
-                hurt(10)
+                taken += 10.0
                 break
     bolts = bolts.filter((b): b.life > 0.0)
+    # (after the loop: a hit that ends the run starts a new one, bolts and all)
+    if taken > 0.0: hurt(taken)
 
 step_player = (dt: f64):
     # a click hands the mouse to the game: then moving it turns the view

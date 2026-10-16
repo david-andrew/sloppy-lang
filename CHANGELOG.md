@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+From a tower defense for phones (a grid, waves, towers built by tapping):
+- `hud_hovered()` with a finger: the first tap on the world after one on a button was taken as
+  the button's (the lifted finger leaves the pointer there), and a tap landing on a button was
+  the world's that frame; it looks where the pointer is now. A button no longer stays lit after
+  the finger lifts.
+- A `loop mut` over a global array whose body calls a function that adds to it, removes from it
+  or replaces it (itself or through what it calls) is an error naming the function; it looped
+  over what was added, or wrote to an element of an emptied array. The Breakwater tutorial had
+  one (a hit that ended the run emptied the bolts being looped over).
+- A struct field named by a keyword (`build: Rect`, `when: f64`) says so, as other names do.
+- `SLOPPY_STATS=log` writes its summary every 2 seconds, as documented (it was every 120 frames);
+  `fps()` gives the frames so far before its first half-second measure (it was 0).
+- Circles, ellipses and rings reuse their points (a circle of radius 1, made once for each
+  number of segments): 2000 small circles draw in 25% less time.
+
 - Rollback for three or four over invite codes, with no server: the others play over the host
   alone (`s.over([host, -1, -1])`), who passes on what goes between them.
 

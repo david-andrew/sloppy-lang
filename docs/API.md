@@ -3300,7 +3300,7 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
       disabled: vec4 = vec4(1, 1, 1, 0.35)
       text_size: f64 = 20.0
   ```
-- `hud_hovered = () -> bool`: whether the mouse is over the interface (any hud_ box drawn in the last frame)
+- `hud_hovered = () -> bool`: whether the mouse (or a finger) is over the interface now: over a hud_ box drawn in the last frame or this one, where it is now (a tap on the world just after one on a button is the world's; a tap landing on a button is the button's from that frame on)
 - `hud_panel = (r: Rect, color: vec4 = vec4(0, 0, 0, 0))`: a box behind other parts (it also keeps clicks on it from the world)
 - `hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false) -> bool`: a button with a label: true in the frame it is clicked (or tapped); selected: drawn as the one chosen of several (a tool, a tab)
 - `hud_bar = (r: Rect, amount: f64, color: vec4, back: vec4 = vec4(0, 0, 0, 0.5))`: a bar filled to `amount` (0 to 1): health, progress, a cooldown
@@ -3505,7 +3505,7 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
 
 #### Collision
 
-- `struct Rect`
+- `struct Rect`: a box: its top left corner and its size, in the screen's units (any numbers go in: `Rect(x, y, 120, 40)` with x an f64 is fine, as f64 converts to f32 by itself)
   ```gdscript
   struct Rect:
       x: f32
