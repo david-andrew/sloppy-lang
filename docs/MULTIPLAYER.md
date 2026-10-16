@@ -96,7 +96,9 @@ draw = ():
 ```
 
 Until the friend is connected, `net.receive()` leaves their events to the screens; after that,
-everything from them is the game's. examples/duel and examples/netpong use them.
+everything from them is the game's. examples/duel and examples/netpong use them, and
+`sloppy new my_game online` starts from a small game that does (two players, rollback, a
+practice mode).
 
 Netpong's Invite a friend and Join a friend show the whole of it, with the codes copied to the
 clipboard and pasted back.

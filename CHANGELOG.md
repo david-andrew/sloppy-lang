@@ -23,6 +23,8 @@ with chat):
   screen the reason is the headline. `net.code_kind(code)`: "invite", "reply" or "".
 - Codes broken across lines (a chat app wrapping them) are read whole.
 - `s.over(peers)` with one peer short says how it goes (`[-1, friend]`).
+- `sloppy new my_game online`: two players anywhere with no server, from the start (invite
+  screens, rollback netplay, practice alone, touch).
 - `chain([tween(...), tween(...)])`: tweens one after another, as one (`value()`, `done()`); and
   `done(tweens)` for a set started together (a match-3 persona's wish: the next move once all the
   falling pieces have landed).

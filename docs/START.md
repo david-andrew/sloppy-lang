@@ -90,6 +90,7 @@ sloppy new my_game arcade     # a 2D arcade game: a title menu, a score, a best 
 sloppy new my_game platformer # a 2D platformer: a level written as text, slopes, platforms, coins
 sloppy new my_game 3d         # a first-person 3D game: mouse look, walking, jumping, shooting
 sloppy new my_tale story      # a story in lines and choices (a visual novel), its script as Ren'Py's
+sloppy new my_duel online     # two players anywhere, no server: invite a friend by a link (rollback)
 sloppy new my_tool program    # a program for the terminal, with a test
 sloppy watch my_game/my_game.jo
 ```
