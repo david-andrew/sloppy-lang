@@ -580,7 +580,7 @@ update = (dt: f64):
 draw = ():
     clear(rgb(0.1, 0.1, 0.18))
     v = visible_rect()
-    rect_gradient(v.x, v.y, v.z, v.w, rgb(0.08, 0.08, 0.2), rgb(0.35, 0.2, 0.3))    # a dusk sky
+    rect_gradient(v.x, v.y, v.w, v.h, rgb(0.08, 0.08, 0.2), rgb(0.35, 0.2, 0.3))    # a dusk sky
     push_transform()
     translate(-cam.x, -cam.y)    # draw the world as the camera sees it
     loop r in platforms: rect(r.x, r.y, r.w, r.h, rgb(0.25, 0.22, 0.32))

@@ -1489,7 +1489,7 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `screen_size = () -> vec2`
 - `pixel_size = () -> vec2`
 - `aspect_ratio = () -> f64`: width / height of the picture 3D draws into (for a projection: perspective(fov, aspect_ratio(), ...)): the window's, or the design area's when the screen fit shows just that (screen.jo)
-- `visible_rect = () -> vec4`: the part of the 2D plane the screen shows, as (x, y, width, height): with screen_fit(.expand) (the default) the design area centered in a window of any shape and what is around it (draw backgrounds over this to fill the window); with bars, just the design area
+- `visible_rect = () -> Rect`: the part of the 2D plane the screen shows, as a Rect (x, y, w, h): with screen_fit(.expand) (the default) the design area centered in a window of any shape and what is around it (draw backgrounds over this to fill the window); with bars, just the design area
 - `frame_time = () -> f64`
 - `time_scale = (s: f64)`: how fast the game's time runs: update gets dt times this (0.5: slow motion, 0: paused, while drawing, input and sound go on); frame_time() is the scaled dt, fps() and elapsed() are not
 - `time_scale = () -> f64`: the scale set with time_scale (1 to start with)

@@ -11,6 +11,8 @@ From a tower defense for phones (a grid, waves, towers built by tapping):
   or replaces it (itself or through what it calls) is an error naming the function; it looped
   over what was added, or wrote to an element of an emptied array. The Breakwater tutorial had
   one (a hit that ended the run emptied the bolts being looped over).
+- `visible_rect()` gives a `Rect` (`.w` is its width, `.h` its height), as the hud functions
+  and `contains` take; it was a vec4 whose `.w` was the height.
 - A struct field named by a keyword (`build: Rect`, `when: f64`) says so, as other names do.
 - `SLOPPY_STATS=log` writes its summary every 2 seconds, as documented (it was every 120 frames);
   `fps()` gives the frames so far before its first half-second measure (it was 0).
