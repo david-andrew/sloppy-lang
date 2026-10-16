@@ -2581,7 +2581,7 @@ draw = ():
 - `update = (c: mut OrbitCamera, dt: f64)`
 - `position = (c: OrbitCamera) -> vec3`: where the camera is
 - `camera3d = (c: OrbitCamera, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`
-- `struct FollowCamera`: Behind a target the game moves (a third-person camera): the mouse while it is locked (mouse_lock()) or the right button is held, or the right stick, turns it around the target, and the wheel brings it closer. Walk the player along flat_forward and flat_right, so that ahead is where the camera looks: Its yaw is the other cameras': 0 looks along -z, more turns it left.
+- `struct FollowCamera`: Behind a target the game moves (a third-person camera): the mouse while it is locked (mouse_lock()) or the right button is held, or the right stick, turns it around the target, and the wheel brings it closer. Walk the player along flat_forward and flat_right, so that ahead is where the camera looks: Its yaw is the other cameras': 0 looks along -z, more turns it left. Behind a vehicle (a chase camera), give update the way it faces, in the same terms: it swings round behind it, smoothly (chase: how quickly), `update(cam, kart.pos, dt, heading = kart.yaw)`.
   ```gdscript
   cam = follow_camera(distance = 6.0)
   update = (dt: f64):
@@ -2604,13 +2604,14 @@ draw = ():
       max_distance: f64 = 20.0
       turn_speed: f64 = 0.004        # radians per pixel the mouse moves
       smooth: f64 = 12.0             # how quickly it follows the target (0: at once)
+      chase: f64 = 4.0               # how quickly it swings round behind a heading given to update
       reach: f64 = 1.0               # (the share of its distance it may be out this frame: pull_in)
       shown_target: vec3
       shown_reach: f64 = 1.0
       placed = false
   ```
 - `follow_camera = (distance: f64 = 6.0, yaw: f64 = 0.0, pitch: f64 = 0.35, height: f64 = 1.5) -> FollowCamera`
-- `update = (c: mut FollowCamera, target: vec3, dt: f64)`
+- `update = (c: mut FollowCamera, target: vec3, dt: f64, heading: f64? = none)`
 - `pull_in = (c: mut FollowCamera, fraction: f64)`: a wall between aim(c) and position(c): only this share of the way out (a cast's fraction)
 - `aim = (c: FollowCamera) -> vec3`: the point it looks at (above the target), and where it is
 - `position = (c: FollowCamera) -> vec3`

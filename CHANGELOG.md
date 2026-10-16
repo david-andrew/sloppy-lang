@@ -12,6 +12,8 @@ From a 3D kart racer (a spline track, drifting, AI karts, a minimap, names over 
 - `SLOPPY_INPUT` presses a gamepad's buttons and moves its sticks and triggers (`5:pad_a+`,
   `6:lstick=1x0`, `lt=1`), for testing pad controls with no pad; what it cannot read, it says
   with every kind of item (touches were left out).
+- A chase camera: `update(cam, kart.pos, dt, heading = kart.yaw)` swings a follow camera round
+  behind a vehicle, smoothly (`cam.chase`: how quickly).
 - `play_at(..., looping = true)`: an engine heard where its kart is (with `move_sound`).
 - `vec3 + vec2` says how a ground point goes into 3D (`vec3(p.x, 0, p.y)`).
 - `custom_mesh` turns a triangle wound against its normals to face where they point (a road
