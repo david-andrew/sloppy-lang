@@ -96,6 +96,18 @@ b = subprocess.run([npi], capture_output=True, text=True, env=dict(env, DIR=npd,
 a_out = a.communicate(timeout=90)[0]
 check("netplay over invite codes: player 0", a_out, ["player 0: joined true, played true, desync -1, chat 'hello from player 1'"])
 check("netplay over invite codes: player 1", b.stdout, ["player 1: joined true, played true, desync -1, chat 'hello from player 0'"])
+# rollback for three, over invite codes: the host invites two, and passes on what goes between them
+n3 = build("np_three") + exe
+n3d = os.path.join(tmp, "three")
+os.makedirs(n3d, exist_ok=True)
+h = subprocess.Popen([n3], stdout=subprocess.PIPE, text=True, env=dict(env, DIR=n3d, ROLE="host"))
+f1 = subprocess.Popen([n3], stdout=subprocess.PIPE, text=True, env=dict(env, DIR=n3d, ROLE="friend", N="1"))
+f2 = subprocess.run([n3], capture_output=True, text=True, env=dict(env, DIR=n3d, ROLE="friend", N="2"), timeout=120)
+h_out = h.communicate(timeout=60)[0]
+f1_out = f1.communicate(timeout=60)[0]
+check("netplay for three through the host: the host", h_out, ["player 0: played true, desync -1"])
+check("netplay for three through the host: player 1", f1_out, ["player 1: played true, desync -1"])
+check("netplay for three through the host: player 2", f2.stdout, ["player 2: played true, desync -1"])
 # two games through lib/invite.jo's screens (run with no window: the software renderer, no display)
 ig = build("invite_game") + exe
 igd = os.path.join(tmp, "invite_codes")

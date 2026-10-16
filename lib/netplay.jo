@@ -170,11 +170,18 @@ play[S, I] = (s: mut Session[S, I], input: I):
     if s.__sock >= 0: __np_udp_send(s)
     if s.__peers.len() > 0:
         loop o in s.outgoing():
-            if o.0 < s.__peers.len() and s.__peers[o.0] >= 0:
-                # (marked: the game's own messages on the same peer stay the game's)
-                b: u8[] = [u8(net.__NET_MARK)]
-                b.extend(o.1)
-                net.send(s.__peers[o.0], b)
+            if o.0 >= s.__peers.len(): continue
+            # (a player with no peer here: through the one this machine has, the host, who passes
+            # it on)
+            to = s.__peers[o.0]
+            if to < 0 and o.0 != s.me:
+                loop q in s.__peers:
+                    if q >= 0 and to < 0: to = q
+            if to < 0: continue
+            # (marked: the game's own messages on the same peer stay the game's)
+            b: u8[] = [u8(net.__NET_MARK)]
+            b.extend(o.1)
+            net.send(to, b)
     if s.__relay >= 0:
         loop o in s.outgoing():
             if not __np_rtc_send(s, o.0, o.1): net.send(s.__relay, o.1)
@@ -195,6 +202,12 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
     pk = r
     p = pk.from
     if p == s.me and pk.to != s.me: __np_problem(s, "two players are both player {p}: give each machine its own number (`me`)")
+    # (over net's peers, for another player: from one who has no peer to them, passed on (this is the host))
+    if pk.to != s.me and pk.to >= 0 and pk.to < s.__peers.len() and s.__peers[pk.to] >= 0 and p != s.me:
+        b: u8[] = [u8(net.__NET_MARK)]
+        b.extend(data)
+        net.send(s.__peers[pk.to], b)
+        return
     if p < 0 or p >= s.players or p == s.me or pk.to != s.me: return
     s.__heard[p] = elapsed()
     # (a player gone quiet is back: that problem is over)
@@ -323,6 +336,10 @@ __np_due[S, I] = (s: mut Session[S, I]):
 # are not resent: newer ones carry the same inputs, and nothing waits for an old one):
 #   player 0: friend = net.invite(reliable = false) ... s.over([-1, friend])
 #   player 1: host = net.join_invite(code) ...          s.over([host, -1])
+# For three or four, one hosts: it invites each of the others (each an invite and a reply), tells
+# each its number (a message of the game's), and plays over all of them; the others play over the
+# host alone (the rest -1), who passes their packets on: [-1, a, b] for the host, [host, -1, -1]
+# for player 1.
 over[S, I] = (s: mut Session[S, I], peers: int[]):
     if peers.len() != s.players: panic("netplay: over takes one peer for each player, -1 for this machine's own: [-1, friend] when this is player 1 of 2, [host, -1] for player 2 (it was given {peers.len()} for {s.players} players)")
     s.__peers = peers

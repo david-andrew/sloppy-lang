@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Rollback for three or four over invite codes, with no server: the others play over the host
+  alone (`s.over([host, -1, -1])`), who passes on what goes between them.
+
 ## 0.18.0
 
 - `net.invite()`, `net.invite_code(p)`, `net.join_invite(code)`, `net.accept_reply(p, reply)`:

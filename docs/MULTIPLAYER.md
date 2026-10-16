@@ -150,6 +150,11 @@ s.over([-1, friend])
 # player 1, with the code: host = net.join_invite(code) ... s.over([host, -1])
 ```
 
+For three or four players, one hosts: it invites each of the others (an invite and a reply
+each), tells each its number in a message of the game's ("you are 2"), and plays over all of
+them, `s.over([-1, a, b])`; the others play over the host alone, `s.over([host, -1, -1])`, and the
+host passes on what goes between them (tests/net/np_three.jo does this).
+
 The session's packets on those peers are its own (marked, so the game's `net.receive()` leaves
 them); the game sends and reads its own messages on the same peers as ever (a chat, "again?"),
 and their `.joined` and `.left` are the game's, to say "connected" or "your friend left". Until the other player connects,
