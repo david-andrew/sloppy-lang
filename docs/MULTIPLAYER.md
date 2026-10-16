@@ -22,8 +22,8 @@ datagrams (`net.udp`), which may be lost or come out of order but never wait for
 [the library](API.md#networking).
 
 **With no server at all: invite codes.** `net.invite()` makes a peer and `net.invite_code(p)` a
-short code (about 120 characters) for the player to send their friend any way they like: a chat
-message. The friend's game joins with it, `net.join_invite(code)`, and its `net.invite_code(p)`
+code (120 to 250 characters: a box to paste one into needs `max_chars` of 400) for the player to
+send their friend any way they like: a chat message. The friend's game joins with it, `net.join_invite(code)`, and its `net.invite_code(p)`
 is a reply code to send back, which the first game takes with `net.accept_reply(p, reply)`. The
 two games then connect straight to each other (WebRTC: the browser's own in a web page, Sloppy's
 in a native program), web pages and native programs alike, on one Wi-Fi or across the internet;
@@ -34,7 +34,11 @@ and need a relay: a TURN server, which passes the two games' packets on. `net.tu
 user, password)`, before inviting, offers a path through one (your own, coturn, or a service's: some
 have a free tier; its password goes into every copy of the game), used only when no straight path
 works. `net.invite(reliable = false)` sends messages that may be lost or come in another order but
-never wait: a fast game's state. `import invite` has the screens for all this (below).
+never wait: a fast game's state. `net.code_kind(code)` says what a pasted code is ("invite",
+"reply", or "" for neither: cut short, or something else). A game that ends (quit, its window
+closed, a page closed) tells its peers so at once; one that vanishes (switched off, its network
+gone) is `.left` after 15 s of silence. A message may be up to 16 MB. `import invite` has the
+screens for all this (below).
 
 ```gdscript
 p = net.invite()

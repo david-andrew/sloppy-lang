@@ -173,12 +173,18 @@ def entries_of(path, only=None):
     section = ""
     in_when = False        # (declarations one level into a top-level `when` count too)
     body = None            # (a struct's fields or an enum's variants, as written: the lines under it)
+    body_skipped = False   # (the last of them was left out: a private one, or a comment)
     for l in lines:
         s = l.rstrip()
         if body is not None:
             if s.startswith("    ") and not s.startswith("     "):
                 t = s[4:]
-                if not t.startswith(("#", "_")): body.append(t)
+                body_skipped = t.startswith(("#", "_"))
+                if not body_skipped: body.append(t)
+                continue
+            # (a field's comment, continued on the lines under it: a private field's left out too)
+            if s.startswith("     ") and s.strip().startswith("#"):
+                if body and not body_skipped: body.append(s[4:])
                 continue
             body = None
         if s and not s.startswith((" ", "#")):

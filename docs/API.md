@@ -309,6 +309,8 @@ Hash map {K: V}: insertion ordered, open addressing over a dense entry list. The
       slots: u64[]      # 0 = empty, otherwise the entry's hash's upper 32 bits | entry index + 1
       hashes: u64[]
       gone: bool[]      # (entries removed since the last compaction: true; shorter than keys when
+                        # entries were added after the last removal)
+      ngone: int
   ```
 - `hash = (x: int) -> u64`: full 64-bit avalanche (murmur3 finalizer): every key bit affects the low bits used for slots, so keys like multiples of 4096 or float bit patterns spread out
 - `hash = (x: u64) -> u64`
@@ -4129,6 +4131,8 @@ draw = ():
       longest_rollback = 0
       desync = -1                     # the first tick at which two machines' games differed (-1: none)
       problem = ""                    # what is wrong, said once on stderr too: packets that cannot be
+                                      # read (another build?), two players with one number, a
+                                      # player not heard from for 5 s, the games differing
   ```
 - `session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: int = 2) -> Session[S, I]`: a session of `players` players, this machine's being player `me` (from 0)
 - `confirmed[S, I] = (s: Session[S, I]) -> int`: ticks below this have every player's input: they will not change again (some may not have been played here yet: those from s.tick on)
@@ -4207,6 +4211,7 @@ draw = ():
       interpolation = 6               # how far in the past others are drawn (view), in ticks
       ping = 0.0                      # milliseconds from an input sent to the world that answers it (smoothed)
       problem = ""                    # what is wrong, said once on stderr too: could not connect, the
+                                      # server gone or not heard from for 5 s, worlds that cannot be read
   ```
 - `client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]`
 - `connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = "")`: connect to the server; hello: text the server gets as srv.hello(player) (a name, a token to know a player again by after a reconnect). A client that lost its connection, or called disconnect, connects again the same way
