@@ -122,7 +122,8 @@ mouse, its left button down while it touches, so a game made for the mouse works
 the last input was a finger (no hover then). `screen_fit(.expand)` and `visible_rect()` lay
 the game out for any shape of screen. `toggle_fullscreen()` from a tap goes fullscreen as the
 finger lifts (browsers allow it only then); iPhones' Safari has no fullscreen for a page's
-canvas.
+canvas. A `hud_text_field` tapped brings up the phone's keyboard, with a Paste button beside
+what is typed while it has it.
 
 Each is one file with nothing to install alongside it (`--target macos` and `--target linux`
 make the same from any system too; a Windows build's `.pdb` beside it is for debuggers only, so

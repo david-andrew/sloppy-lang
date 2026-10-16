@@ -1491,7 +1491,7 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `set_fullscreen = (on: bool = true)`
 - `toggle_fullscreen = ()`
 - `is_fullscreen = () -> bool`
-- `clipboard = () -> str`: the text on the system clipboard ("" if none, or not text). In a web page the browser lets a page read it only as it is pasted: this is the text last pasted (ctrl+V) into the page.
+- `clipboard = () -> str`: the text on the system clipboard ("" if none, or not text). In a web page the browser lets a page read it only as it is pasted: this is the text last pasted (ctrl+V, or a text field's Paste button on a phone) into the page.
 - `set_clipboard = (s: str)`
 - `mouse_lock = (on: bool = true) -> bool`: lock the mouse pointer to the window and hide it, for mouse look: the pointer stays put and its motion keeps arriving through mouse_delta(). false where the platform cannot. (A web page gets the lock at the next click into it, as browsers require; Escape releases it there.)
 - `is_mouse_locked = () -> bool`: (in a screenshot run, what the game asked for: the desktop's focus coming and going would make the run differ from one time to the next)
@@ -3287,7 +3287,7 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
 - `hud_panel = (r: Rect, color: vec4 = vec4(0, 0, 0, 0))`: a box behind other parts (it also keeps clicks on it from the world)
 - `hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false) -> bool`: a button with a label: true in the frame it is clicked (or tapped); selected: drawn as the one chosen of several (a tool, a tab)
 - `hud_bar = (r: Rect, amount: f64, color: vec4, back: vec4 = vec4(0, 0, 0, 0.5))`: a bar filled to `amount` (0 to 1): health, progress, a cooldown
-- `hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: str = "") -> str`: a box to type text in: clicking it gives it the keyboard, Enter, Escape or a click elsewhere takes it away; returns the text as it is now. `id` tells fields with the same place apart (their rectangle names them otherwise); `hint` is shown dimmed while it is empty ("seed")
+- `hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: str = "") -> str`: a box to type text in: clicking it gives it the keyboard, Enter, Escape or a click elsewhere takes it away; returns the text as it is now. Tapped on a phone, it brings up the phone's keyboard, and a Paste button at its right end. `id` tells fields with the same place apart (their rectangle names them otherwise); `hint` is shown dimmed while it is empty ("seed")
 - `hud_scroll = (r: Rect, content_height: f64, id: str = "") -> f64`: a list taller than its box: how far it is scrolled, from 0, moved by the wheel over the box and by dragging the bar drawn at its right edge (when there is more than fits). The rows go at their y minus that, inside clip(...) of the box: rows scrolled out of it take no clicks
   ```gdscript
   off = hud_scroll(r, f64(items.len()) * 44.0, "shop")

@@ -1087,7 +1087,7 @@ update = (dt: f64):
 `is_fullscreen()` (in a browser, the page asks for fullscreen; it leaves on Escape).
 `clipboard()` reads the system clipboard's text and `set_clipboard(s)` replaces it. A web page
 may read the clipboard only as something is pasted, so there `clipboard()` is the text last
-pasted (ctrl+V) into the page; the X11 fallback without libX11 keeps the text within the program.
+pasted (ctrl+V, or a text field's Paste button on a phone) into the page; the X11 fallback without libX11 keeps the text within the program.
 
 **Window size.** `window("Title", 1280, 720)` (called for you with those defaults) sets the
 window's starting size and the program's 2D coordinate space: 2D drawing and `mouse_pos()` are in
