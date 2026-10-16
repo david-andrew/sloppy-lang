@@ -21,6 +21,8 @@ From a tower defense for phones (a grid, waves, towers built by tapping):
   board above the buttons on a phone held upright); START.md has the recipe.
 - `visible_rect()` gives a `Rect` (`.w` is its width, `.h` its height), as the hud functions
   and `contains` take; it was a vec4 whose `.w` was the height.
+- A struct that holds itself (`a: A`) is an error where it is declared, used or not; made with
+  its defaults (`l: A`), it crashed the compiler (found by the error fuzzer).
 - A struct field named by a keyword (`build: Rect`, `when: f64`) says so, as other names do.
 - `SLOPPY_STATS=log` writes its summary every 2 seconds, as documented (it was every 120 frames);
   `fps()` gives the frames so far before its first half-second measure (it was 0).
