@@ -23,6 +23,11 @@ with chat):
   screen the reason is the headline. `net.code_kind(code)`: "invite", "reply" or "".
 - Codes broken across lines (a chat app wrapping them) are read whole.
 - `s.over(peers)` with one peer short says how it goes (`[-1, friend]`).
+- `struct Rematch: pass`: a struct with no fields (a message that is only its name); `pass` was
+  refused. `zeros[int](rows, cols)` makes zeros of another type (`int[,]`). `rect(r, color)`
+  and `rect_outline(r, thickness, color)` take a `Rect`, as the hud functions do.
+- `Msg(Move(3))` with `Msg` a union says a Move is a Msg as it is (it was "unknown function");
+  `from_text` reading a union says what it found (`expected a Move | Chat, found 'Mvoe'`).
 - Native invite peers send much faster: sending n messages in a frame took time growing as n
   squared (20,000: 3.7 s, now 19 ms; 100,000 never all arrived, now in 5 s); at most 128 chunks
   go unacknowledged, so a big message no longer floods the other side (5 MB: 13 s, now 1.2 s;

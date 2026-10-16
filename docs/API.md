@@ -1335,10 +1335,13 @@ The dotted operators work element by element on arrays of any shape, and broadca
 
 #### Making arrays
 
-- `zeros = (n: int) -> f64[]`
+- `zeros = (n: int) -> f64[]`: of another type (NumPy's dtype): `zeros[int](rows, cols)` is an int[,] of zeros
 - `zeros = (a: int, b: int) -> f64[,]`
 - `zeros = (a: int, b: int, c: int) -> f64[,]`
 - `zeros = (a: int, b: int, c: int, d: int) -> f64[,]`
+- `zeros[T] = (n: int) -> T[]`
+- `zeros[T] = (a: int, b: int) -> T[,]`
+- `zeros[T] = (a: int, b: int, c: int) -> T[,]`
 - `ones = (n: int) -> f64[]`
 - `ones = (a: int, b: int) -> f64[,]`
 - `ones = (a: int, b: int, c: int) -> f64[,]`
@@ -1768,8 +1771,10 @@ draw = ():
 
 - `rect = (x: f64, y: f64, w: f64, h: f64, c: vec4)`
 - `rect = (pos: vec2, size: vec2, c: vec4)`
+- `rect = (r: Rect, c: vec4)`
 - `rect_gradient = (x: f64, y: f64, w: f64, h: f64, top: vec4, bottom: vec4)`: rectangle with a vertical color gradient
 - `rect_outline = (x: f64, y: f64, w: f64, h: f64, thickness: f64, c: vec4)`
+- `rect_outline = (r: Rect, thickness: f64, c: vec4)`
 - `triangle = (a: vec2, b: vec2, c: vec2, col: vec4)`
 - `triangle_gradient = (a: vec2, b: vec2, c: vec2, ca: vec4, cb: vec4, cc: vec4)`: triangle with a color per corner (colors blend across it)
 - `quad_gradient = (a: vec2, b: vec2, c: vec2, d: vec2, ca: vec4, cb: vec4, cc: vec4, cd: vec4)`: quad (a, b, c, d in order around it) with a color per corner
