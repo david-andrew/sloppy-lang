@@ -1,7 +1,8 @@
 # NETPONG - Pong for two, over the network (lib/net.jo).
-# Invite a friend: the game gives a code to send them (a chat message), they paste it into Join a
-# friend and send back the code that gives them, and the two games connect straight to each other,
-# with no server: web pages and computers alike, on the same Wi-Fi or across the internet.
+# Invite a friend (lib/invite.jo's screens): the game gives a link to send them (a chat message),
+# they open it (or paste it into Join a friend) and send back the code their game gives them, and
+# the two games connect straight to each other, with no server: web pages and computers alike, on
+# the same Wi-Fi or across the internet.
 # On one network there is also the old way, by address: one hosts (`sloppy run netpong.jo`, Host
 # on this network: the screen shows the address), the other types that address. Without Sloppy,
 # tools/netpong_relay.py (Python) serves the game to web pages on a network and passes their
@@ -17,6 +18,7 @@ build:
     name = "Netpong"
 
 import net
+import invite
 
 window("Netpong", 1280, 720)
 
@@ -28,7 +30,7 @@ const WIN = 7
 # (where the game is on the web: an invite from a computer links there, for a friend with no Sloppy)
 const WEB_PAGE = "https://sloppy-lang.org/examples/netpong/"
 
-enum Screen: title, help, invite, join_code, by_address, joining, waiting, playing, over
+enum Screen: title, help, friend, by_address, joining, waiting, playing, over
 
 screen = Screen.title
 hosting = false
@@ -46,9 +48,7 @@ status = ""
 why = ""                        # (why the other player could not be reached)
 via_relay = false               # (playing through tools/netpong_relay.py)
 my_address = ""                 # (the host: this machine's address on its network)
-my_code = ""                    # (an invite, or a reply: what this side gives the other)
-their_code = ""                 # (what the other side gave: typed or pasted in)
-copied = false
+invited = false                 # (connected by invite codes, not by address)
 
 serve = (dir: f64):
     ball = vec2(640, 360)
@@ -67,34 +67,29 @@ host = ():
         my_address = net.local_address()
 
 join = ():
+    invited = false
     other = net.connect(address, PORT)
     hosting = false
     via_relay = false
     screen = .waiting
     status = "connecting to {address}..."
 
-# straight to the other player: an invite (this side hosts the game) or joining with their code
-invite_friend = ():
-    other = net.invite()
-    hosting = true
+# straight to the other player, by invite codes (the invite screens): who invited hosts the game
+friend_screens = ():
     via_relay = false
-    my_code = ""
-    their_code = ""
-    copied = false
+    invited = true
     status = ""
     why = ""
-    screen = .invite
+    screen = .friend
 
-join_friend = ():
-    other = -1
-    hosting = false
-    via_relay = false
-    my_code = ""
-    their_code = ""
-    copied = false
-    status = ""
-    why = ""
-    screen = .join_code
+# connected by invite: the inviter starts the game, the other waits for it
+friend_joined = (c: invite.Invited):
+    other = c.peer
+    hosting = c.inviter
+    if hosting: start()
+    else:
+        status = "connected: waiting for the host"
+        screen = .waiting
 
 start = ():
     score_l = 0
@@ -130,12 +125,9 @@ network = ():
                 was = screen
                 status = "the other player left"
                 why = ""
-                if was == .waiting and not hosting:
+                if was == .waiting and not hosting and not invited:
                     status = "could not reach {address}"
                     if not starts_with(address, "ws"): status = "could not reach {address}, port {PORT}"
-                    why = net.why(e.peer)
-                else if was == .invite or was == .join_code:
-                    status = "no connection was made"
                     why = net.why(e.peer)
                 screen = .title
                 other = -1
@@ -161,10 +153,7 @@ network = ():
 # INVITE=code, or ?invite=code: join a friend with that code at once)
 if env("HOST") != none: host()
 else if env("JOIN") != none: join()
-else if let code = env("INVITE"):
-    join_friend()
-    their_code = code
-    other = net.join_invite(code)
+else if invite.from_link(): friend_screens()
 
 # back to the title, leaving the other player (if any)
 go_title = ():
@@ -180,19 +169,11 @@ back_button = () -> bool: hud_button(Rect(30, 24, 120, 44), "Back")
 
 update = (dt: f64):
     network()
-    if key_pressed(.escape) and screen != .title and screen != .joining and screen != .help:
+    if key_pressed(.escape) and screen != .title and screen != .joining and screen != .help and screen != .friend:
         go_title()
         return
     if screen == .help:
         if key_pressed(.escape) or key_pressed(.enter) or mouse_pressed(.left): screen = .title
-        return
-    if screen == .invite or screen == .join_code:
-        # (this side's code, once made: copied, to paste into a message)
-        if other >= 0 and len(my_code) == 0:
-            my_code = net.invite_code(other)
-            if len(my_code) > 0 and not copied:
-                set_clipboard(if screen == .invite: invite_link() else: my_code)
-                copied = true
         return
     if screen == .joining:
         if key_pressed(.escape): screen = .by_address
@@ -253,8 +234,12 @@ draw = ():
     if screen == .title:
         text_centered("NETPONG", vec2(640, 170), 96, BLUE)
         ui_begin("title", vec2(640, 300))
-        if ui_button("Invite a friend"): invite_friend()
-        if ui_button("Join a friend"): join_friend()
+        if ui_button("Invite a friend"):
+            invite.start()
+            friend_screens()
+        if ui_button("Join a friend"):
+            invite.join()
+            friend_screens()
         if ui_button("Same network, by address"): screen = .by_address
         if ui_button("How to play together"): screen = .help
         when TARGET != "wasm":
@@ -272,8 +257,9 @@ draw = ():
         ui_end()
         when TARGET == "wasm":
             text_wrapped("A web page cannot host by address: Invite a friend works from a web page too.", vec2(240, 480), 800, 20, DIM, align = .center)
-    if screen == .invite: draw_invite()
-    if screen == .join_code: draw_join_code()
+    if screen == .friend:
+        if let c = invite.screen("Netpong", WEB_PAGE): friend_joined(c)
+        else if not invite.active(): screen = .title
     if screen == .help: draw_help()
     if screen == .joining:
         text_centered("Type the address the host's screen shows, then Enter", vec2(640, 250), 30)
@@ -282,76 +268,10 @@ draw = ():
         text_wrapped("It is four numbers with dots between, as 192.168.1.20. Both players must be on the same network (the same Wi-Fi or router). A game hosted on this same computer: localhost.", vec2(240, 460), 800, 20, DIM, align = .center)
         if back_button(): screen = .by_address
     if screen == .waiting: draw_waiting()
-    if screen == .invite or screen == .join_code or screen == .waiting:
+    if screen == .waiting:
         if back_button(): go_title()
     # (playing: between the scores, away from the paddles' fingers)
     if screen == .playing and hud_button(Rect(595, 22, 90, 34), "Leave"): go_title()
-
-# a code, in two lines of a fixed width (it is one word, too long for one): the start of it,
-# enough to see it is there (it goes whole by Copy or Share; nobody types it)
-draw_code = (code: str, y: f64):
-    n = 60
-    shown = code
-    if len(shown) > 2 * n: shown = shown[..2 * n - 3) + "..."
-    text_centered(shown[..min(n, len(shown))), vec2(640, f32(y)), 22, GOLD, mono = true)
-    if len(shown) > n: text_centered(shown[n..], vec2(640, f32(y + 30.0)), 22, GOLD, mono = true)
-
-# the invite as a link: this page's address (or, from a computer, the game's on the web) and the
-# code; opened, the game joins by itself, and pasted into Join a friend, it works as the code
-invite_link = () -> str:
-    base = page_url()
-    if len(base) == 0: base = WEB_PAGE
-    "{base}?invite={my_code}"
-
-# where a code goes, and how it was copied: said for a phone (a finger) or a computer's keys
-paste_hint = () -> str: if touch_input(): "their code: tap here, then Paste" else: "their code (ctrl+V)"
-# (a phone's browser copies only inside a tap: there, the code is copied by the button)
-copied_note = () -> str:
-    if touch_input(): return "(then paste it into a message)"
-    "(it is copied: paste it with ctrl+V, or cmd+V on a Mac)"
-
-# Copy, and Share where the device has a menu for sending it (a phone's)
-copy_buttons = (s: str, y: f32):
-    label = if touch_input(): "Copy" else: "Copy again"
-    if can_share():
-        if hud_button(Rect(470, y, 160, 40), label): set_clipboard(s)
-        if hud_button(Rect(650, y, 160, 40), "Share"): share(s)
-    else if hud_button(Rect(560, y, 160, 40), label): set_clipboard(s)
-
-draw_invite = ():
-    text_centered("Invite a friend", vec2(640, 60), 44, BLUE)
-    text_centered("1. Send them this link: in a chat or a message, any way", vec2(640, 120), 24)
-    if len(my_code) == 0: text_centered("(making it: a moment)", vec2(640, 170), 22, DIM)
-    else:
-        draw_code(invite_link(), 165)
-        copy_buttons(invite_link(), 265)
-        text_centered(copied_note(), vec2(640, 320), 18, DIM)
-        text_centered("They open it in a web browser and play there, or paste it into Join a friend in their Netpong", vec2(640, 350), 18, DIM)
-    text_centered("2. Their game then shows a code for them to send back. Paste it here:", vec2(640, 405), 24)
-    their_code = hud_text_field(Rect(240, 440, 800, 44), their_code, "reply", 400, paste_hint())
-    if hud_button(Rect(560, 505, 160, 44), "Connect") or key_pressed(.enter):
-        if len(trim(their_code)) > 0:
-            if net.accept_reply(other, trim(their_code)): status = "connecting..."
-            else: status = "that is not their reply code: copied whole?"
-    if len(status) > 0: text_centered(status, vec2(640, 585), 22, GRAY)
-    text_wrapped("Works across the internet as on one Wi-Fi, with no server: each game finds the other.", vec2(240, 640), 800, 18, DIM, align = .center)
-
-draw_join_code = ():
-    text_centered("Join a friend", vec2(640, 70), 44, BLUE)
-    if other < 0:
-        text_centered("Paste the link or code your friend sent you, then Next:", vec2(640, 180), 26)
-        their_code = hud_text_field(Rect(240, 220, 800, 44), their_code, "invite", 400, paste_hint())
-        if hud_button(Rect(560, 285, 160, 44), "Next") or key_pressed(.enter):
-            if len(trim(their_code)) > 0: other = net.join_invite(trim(their_code))
-        text_wrapped("Your friend chooses Invite a friend, and sends you the link it gives them.", vec2(240, 640), 800, 18, DIM, align = .center)
-        return
-    text_centered("Send this code back to your friend:", vec2(640, 160), 26)
-    if len(my_code) == 0: text_centered("(making it: a moment)", vec2(640, 210), 22, DIM)
-    else:
-        draw_code(my_code, 210)
-        copy_buttons(my_code, 305)
-        text_centered(copied_note(), vec2(640, 365), 18, DIM)
-    text_centered("Waiting for them to paste it in...", vec2(640, 440), 24, GRAY)
 
 draw_waiting = ():
     if not hosting or via_relay:

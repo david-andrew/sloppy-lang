@@ -16,6 +16,7 @@
   a code back, copy, share and paste, on phones too, and why when nothing connected): a menu
   calls `invite.start()` or `invite.join()`, and draw shows `invite.screen()` until it gives the
   other player. `invite.from_link()` joins at once from an invite link.
+- Netpong uses `invite`'s screens too.
 - Duel (the rollback example) starts on a menu: Invite a friend plays anyone, anywhere, with no
   server (rollback over invite codes), on a phone too (steer toward a finger, a Fire button);
   it is on the website's examples page.

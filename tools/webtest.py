@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Web builds in a browser (Playwright's headless Chromium, when it is installed): typing into a text
-field on a phone (touches and the phone's keyboard) and on a computer (mouse, keys, ctrl+V).
+field on a phone (touches and the phone's keyboard) and on a computer (mouse, keys, ctrl+V); two
+pages connected through lib/invite.jo's screens.
 usage: tools/webtest.py [path/to/sloppy]"""
 import os, shutil, subprocess, sys, tempfile
 
@@ -22,5 +23,8 @@ env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"))
 page = os.path.join(tmp, "text_field")
 subprocess.run([sloppy, "build", os.path.join(root, "tests", "web", "text_field.jo"), "-o", page, "--target", "wasm"], check=True, env=env)
 r = subprocess.run(["node", os.path.join(root, "tools", "web_input.mjs"), shell, page + ".html", tmp], timeout=120)
+inv = os.path.join(tmp, "invite_ui")
+subprocess.run([sloppy, "build", os.path.join(root, "tests", "web", "invite_ui.jo"), "-o", inv, "--target", "wasm"], check=True, env=env)
+r2 = subprocess.run(["node", os.path.join(root, "tools", "web_invite.mjs"), shell, inv + ".html", tmp], timeout=120)
 shutil.rmtree(tmp, ignore_errors=True)
-sys.exit(r.returncode)
+sys.exit(r.returncode or r2.returncode)
