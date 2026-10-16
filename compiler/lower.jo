@@ -2155,10 +2155,10 @@ gen_intrinsic = (e: int) -> Val:
         if args.len() > 0: m = gen_borrowed(args[0]).v
         else: m = e_daddr(str_data("panic"))
         e_call_nr(rt("__panic"), [m], -1)
-        return V(-1, false)
+        return never_after(e)
     if id == .unreachable:
         e_call_nr(rt("__panic"), [e_daddr(str_data("unreachable code reached"))], -1)
-        return V(-1, false)
+        return never_after(e)
     if id == .assert:
         c = gen_expr(args[0]).v
         iff(e_bin(.eq, VI, c, e_iconst(0)))
@@ -2468,9 +2468,32 @@ gen_conv = (e: int) -> Val:
     V(-1, false)
 
 # ---------------- expressions ----------------
+# (after code that never comes back: a value of n's type when it is taken as one, "a" + panic(...))
+never_after = (n: int) -> Val:
+    t = prune(ntype(n))
+    if t == T_NEVER or vc(t) == VC_VOID: return V(-1, false)
+    never_value(t)
+
+# any value of type t, where one is wanted after code that never comes back (it is never used)
+never_value = (t: int) -> Val:
+    if vc(t) == VC_AGG:
+        s = new_temp(t)
+        d = e_slot(s)
+        e_zero(d, tsize(t))
+        return Val(d, true, s)
+    if vc(t) == VC_FLT: return V(e_fconst(0.0, vt_of(t)), false)
+    V(e_iconst(0), false)
+
 gen_expr = (e: int) -> Val:
     t = prune(ntype(e))
     k = nodes[e].kind
+    # (a call that never comes back, as panic(...), where a value is wanted: "a" + panic("x"))
+    if k == .call and t != T_NEVER and vc(t) != VC_VOID and int(nodes[e].aux) == 0 and nodes[e].sym > 0 and prune(int(fns[int(nodes[e].sym)].ret)) == T_NEVER:
+        saved_t = nodes[e].type
+        nodes[e].type = i32(T_NEVER)
+        gen_expr(e)
+        nodes[e].type = saved_t
+        return never_value(t)
     if k == .int_lit:
         if vc(t) == VC_FLT: return V(e_fconst(f64(nodes[e].ival), vt_of(t)), false)
         return V(e_iconst(nodes[e].ival), false)
@@ -2612,7 +2635,13 @@ gen_expr = (e: int) -> Val:
         endc()
         return V(r, false)
     if k == .binary: return gen_binary(e)
-    if k == .conv: return gen_conv(e)
+    if k == .conv:
+        # (something that never comes back, as panic(...), taken as a value: done, then any
+        # value of the type, never used)
+        if prune(ntype(int(nodes[e].a))) == T_NEVER and t != T_NEVER:
+            gen_expr(int(nodes[e].a))
+            return never_value(t)
+        return gen_conv(e)
     if k == .cast:
         a = int(nodes[e].a)
         from = prune(ntype(a))

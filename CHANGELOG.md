@@ -6,6 +6,9 @@ From a 3D kart racer (a spline track, drifting, AI karts, a minimap, names over 
 - `world_to_screen(vec3)` and `screen_ray` were off whenever the window was not the design area's
   shape (they took the design area for the whole picture, which 3D fills): names drifted off the
   karts, and picking missed.
+- `"a" + panic("x")` and `"{panic("x")}"` (what never comes back, taken as a value) crashed the
+  compiler; and after the error "recursive function needs an explicit return type", a second,
+  wrong one (`cannot format a value of type void`) followed at its use.
 - `custom_mesh` turns a triangle wound against its normals to face where they point (a road
   wound clockwise was invisible from above, with nothing saying why); its docs say which side
   is the front. `draw_mesh(..., double_sided = true)` draws both sides.
