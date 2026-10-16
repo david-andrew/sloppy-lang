@@ -11,6 +11,12 @@ From a tower defense for phones (a grid, waves, towers built by tapping):
   or replaces it (itself or through what it calls) is an error naming the function; it looped
   over what was added, or wrote to an element of an emptied array. The Breakwater tutorial had
   one (a hit that ended the run emptied the bolts being looped over).
+- `Pool[T]` and `Handle`: things that come and go (enemies, bullets), each found again by a
+  handle that stays its own while others are removed, and says so once its thing is gone (a
+  homing shot keeps its target); `pool[h].hp -= 1`, `pool.items` to loop over, `retain`.
+- A struct given to a function along with a `mut` argument it is part of (`f(p, p.items[0])`), or
+  part of a global the function changes, changed under the function as it wrote the other: it is
+  passed as a copy then (the value it was, as everywhere else).
 - `camera2d_fit(world, on)`: a world area shown as large as it fits in part of the screen (a
   board above the buttons on a phone held upright); START.md has the recipe.
 - `visible_rect()` gives a `Rect` (`.w` is its width, `.h` its height), as the hud functions
