@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.18.0
+
 - `net.invite()`, `net.invite_code(p)`, `net.join_invite(code)`, `net.accept_reply(p, reply)`:
   two games connect straight to each other with no server, the players passing two short codes
   (a chat message): web pages and native programs alike, on one network or across the internet.
