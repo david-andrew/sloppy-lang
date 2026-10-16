@@ -8,6 +8,8 @@
   Native programs speak WebRTC now (lib/rtc.jo: ICE, DTLS 1.2, SCTP, data channels, in Sloppy),
   tested against Chromium both ways, OpenSSL, and on arm64 and Windows. Netpong's Invite a friend
   and Join a friend use them, from the website's page too.
+- A native program's invite peer whose game went without a word (switched off, its network
+  gone) is `.left` after 15 s of silence, with why; it waited for ever.
 - `net.join_invite` takes a link with the code in it (`…?invite=code`) as well as the code;
   `page_url()` is a web page's own address, to make one. Netpong's invite is such a link: opened,
   the game joins by itself in a browser; from a computer, it links to the game on sloppy-lang.org,

@@ -67,6 +67,25 @@ b = subprocess.run([peer], capture_output=True, text=True, env=dict(env, DIR=inv
 a_out = a.communicate(timeout=60)[0]
 check("WebRTC: a native program invites", a_out, ["accepted:true", "native:joined", "native got:ping from native", "native got:pong from native"])
 check("WebRTC: a native program joins", b.stdout, ["native:joined", "native got:ping from native", "native got:pong from native"])
+# WebRTC: the other game killed (no goodbye): found gone after some seconds of silence, and why
+lost = build("rtc_lost") + exe
+ld = os.path.join(tmp, "lost")
+os.makedirs(ld, exist_ok=True)
+a = subprocess.Popen([lost], stdout=subprocess.PIPE, text=True, env=dict(env, DIR=ld, ROLE="invite"))
+b = subprocess.Popen([lost], stdout=subprocess.DEVNULL, env=dict(env, DIR=ld, ROLE="join"))
+t0 = time.time()
+while time.time() - t0 < 30 and not (os.path.exists(os.path.join(ld, "invite.joined")) and os.path.exists(os.path.join(ld, "join.joined"))): time.sleep(0.1)
+time.sleep(1)
+b.kill()
+try: a_out = a.communicate(timeout=60)[0]
+except subprocess.TimeoutExpired:
+    a.kill()
+    a_out = a.communicate()[0]
+a_lines = [l for l in a_out.splitlines() if l.strip()]
+if len(a_lines) == 2 and a_lines[0] == "invite: joined" and "stopped answering" in a_lines[1]: print("ok   WebRTC: the other game gone without a word is found gone")
+else:
+    failed += 1
+    print(f"FAIL WebRTC: the other game gone without a word: {a_lines}")
 # rollback netplay over invite codes (s.over), the same way
 npi = build("np_invite") + exe
 npd = os.path.join(tmp, "np_codes")

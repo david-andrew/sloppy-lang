@@ -133,6 +133,8 @@ struct RtcCand:
 const __ICE_CHECKING = 0
 const __ICE_CONNECTED = 1
 const __ICE_FAILED = 2
+const __ICE_LOST = 3            # (connected, then nothing came for __ICE_SILENCE seconds)
+const __ICE_SILENCE = 15.0
 
 struct __Pair:
     host: str
@@ -307,6 +309,9 @@ __ice_poll = (id: int):
             p.nominate = nom
             net.udp_send(c.sock, p.host, p.port, __ice_check(c, r, p.tid, nom))
         if now - c.since > 30.0: c.state = __ICE_FAILED
+    # (the other side gone without a word, as a machine switched off or its network lost: nothing
+    # from it for a while, not even answers to the checks below)
+    if c.state == __ICE_CONNECTED and c.last_heard > 0.0 and now - c.last_heard > __ICE_SILENCE: c.state = __ICE_LOST
     # (keep the path open, as browsers expect: a check now and then)
     if c.state == __ICE_CONNECTED and now - c.stun_sent > 2.0 and c.remote != none:
         c.stun_sent = now
@@ -359,8 +364,9 @@ __ice_stun = (c: mut __Conn, host: str, port: int, b: u8[]):
                     if not seen: c.local.push(RtcCand(a.0, a.1, "srflx"))
             c.gathered = true
             return
-        # an answer to a check
+        # an answer to a check (also those that keep the path open)
         if c.remote == none or not __stun_check(m, bytes(c.remote!.pwd)): return
+        c.last_heard = time()
         loop mut p in c.pairs:
             if p.tid == m.tid:
                 if p.nominate and c.state == __ICE_CHECKING:
@@ -1290,6 +1296,7 @@ __rtc_poll = (id: int):
 __rtc_status = (id: int) -> (int, str):
     c = __conns[id]
     if c.sock < 0: return (2, "")
+    if c.state == __ICE_LOST: return (2, "the other game stopped answering: closed without a word, or its network went")
     if c.state == __ICE_FAILED: return (2, "no path was found between the two: one of you may be on a network that allows none (mobile data, a school's or an office's), where a relay server (TURN) is needed")
     if c.d_state == 3: return (2, c.d_why)
     if c.s_state == 3: return (2, "the other side ended the connection")
