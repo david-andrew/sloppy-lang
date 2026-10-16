@@ -14,7 +14,8 @@ import net
 #   tick = (g: Game, pads: Pad[]) -> Game: ...     # one tick of play, from everyone's input
 #
 #   s = netplay.session(Game(), tick, players = 2, me = 0)
-#   s.udp(4000, [("192.168.1.20", 4000), ("192.168.1.21", 4000)])   # each player's address, by number
+#   s.over([-1, friend])               # the other player: a peer from net.invite (a code to send)
+#   s.udp(4000, [("192.168.1.20", 4000), ("192.168.1.21", 4000)])   # (or: each one's address)
 #   update = (dt: f64): s.play(Pad(x = int(input_axis().x), jump = action_pressed("Jump")))
 #   draw = (): ... s.state ...
 #
@@ -25,9 +26,10 @@ import net
 # more delay, fewer rollbacks. A session may run at most `max_ahead` ticks ahead of the inputs
 # it has from everyone, then it waits (s.waiting).
 #
-# A web page plays through a relay (netplay.relay in a native program; s.join_relay), and pages
-# then connect straight to each other (WebRTC) when they can. Without
-# s.udp or a relay, the session only says what to send (s.outgoing()) and is told what arrived
+# s.over plays over net's peers: invite codes connect web pages and native programs straight to
+# each other with no server. A web page also plays through a relay (netplay.relay in a native
+# program; s.join_relay), and pages then connect straight to each other (WebRTC) when they can.
+# Without s.over, s.udp or a relay, the session only says what to send (s.outgoing()) and is told what arrived
 # (s.receive(player, bytes)): any transport works (net's WebSockets, a relay server), and two
 # sessions in one program can play each other over netplay.Link, a simulated network with
 # latency, jitter and loss. s.lag(ms, jitter_ms, loss) simulates the same on a real one.
@@ -66,6 +68,8 @@ struct Session[S, I]:
     __check = -1                    # the latest tick hashed
     __out: (int, u8[])[]
     __frames = 0
+    # (over net's peers: s.over)
+    __peers: int[]
     # (a UDP transport: s.udp)
     __sock = -1
     __addrs: (str, int)[]
@@ -140,6 +144,8 @@ play[S, I] = (s: mut Session[S, I], input: I):
     s.__frames += 1
     if s.__sock >= 0: __np_udp_receive(s)
     if s.__relay >= 0: __np_relay_receive(s)
+    if s.__peers.len() > 0:
+        loop e in net.__net_take_messages(s.__peers): s.receive(e.data)
     # (my input for the tick it takes effect: once per tick, as others may have it already)
     t = s.tick + s.delay
     if s.__recv[s.me] == t:
@@ -160,6 +166,9 @@ play[S, I] = (s: mut Session[S, I], input: I):
     __np_hash_confirmed(s)
     __np_send(s)
     if s.__sock >= 0: __np_udp_send(s)
+    if s.__peers.len() > 0:
+        loop o in s.outgoing():
+            if o.0 < s.__peers.len() and s.__peers[o.0] >= 0: net.send(s.__peers[o.0], o.1)
     if s.__relay >= 0:
         loop o in s.outgoing():
             if not __np_rtc_send(s, o.0, o.1): net.send(s.__relay, o.1)
@@ -295,6 +304,17 @@ __np_due[S, I] = (s: mut Session[S, I]):
         if h.0 <= now: s.__out.push((h.1, h.2))
         else: keep.push(h)
     s.__held = keep
+
+# ---------------- over net's peers (invite codes: web pages and native programs) ----------------
+# play with the other players over peers from net: peers[p] is player p's (this machine's own
+# entry is not used), from net.invite or net.join_invite (with no server: a page and a native
+# program alike), or net.connect. Their messages go to the session; their other events (joined,
+# left) stay for net.receive(). For two, invited with net.invite(reliable = false) (packets lost
+# are not resent: newer ones carry the same inputs, and nothing waits for an old one):
+#   player 0: friend = net.invite(reliable = false) ... s.over([-1, friend])
+#   player 1: host = net.join_invite(code) ...          s.over([host, -1])
+over[S, I] = (s: mut Session[S, I], peers: int[]):
+    s.__peers = peers
 
 # ---------------- over UDP (native programs) ----------------
 # play over UDP: this machine listens on port, and each player p is at addrs[p] (this one's own

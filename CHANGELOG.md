@@ -12,6 +12,8 @@
   `page_url()` is a web page's own address, to make one. Netpong's invite is such a link: opened,
   the game joins by itself in a browser; from a computer, it links to the game on sloppy-lang.org,
   so a friend plays with nothing to install.
+- `s.over(peers)`: rollback netplay over `net` peers, so over invite codes too: two players, in
+  web pages or native programs, play a rollback game with no server.
 - `import crypto`: SHA-1, SHA-256, HMAC, AES-128-GCM, P-256 ECDH and ECDSA, self-signed
   certificates, and `random_bytes` from the operating system (the start of WebRTC in native
   programs, for games that connect a desktop build and a web page with no server).

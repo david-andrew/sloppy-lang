@@ -1,0 +1,48 @@
+# tools/nettest.py: rollback netplay between two native programs connected by invite codes (no
+# server), passing the codes through files in DIR; ROLE invite is player 0, join player 1
+import net
+import netplay
+
+struct Pad:
+    dx = 0
+struct Game:
+    pos: int[] = [0, 0]
+
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..2): g.pos[p] += pads[p].dx
+    g
+
+pad = (p: int, t: int) -> Pad: Pad(int(hash(t * 3 + p) % 3) - 1)
+
+dir = env("DIR") ?? "."
+role = env("ROLE") ?? "invite"
+me = if role == "invite": 0 else: 1
+other = -1
+if role == "invite":
+    other = net.invite(reliable = false)
+    loop len(net.invite_code(other)) == 0: sleep(0.02)
+    write_file("{dir}/code.tmp", net.invite_code(other))
+    rename_file("{dir}/code.tmp", "{dir}/code.txt")
+    loop not file_exists("{dir}/reply.txt"): sleep(0.05)
+    net.accept_reply(other, read_file("{dir}/reply.txt") ?? "")
+else:
+    loop not file_exists("{dir}/code.txt"): sleep(0.05)
+    other = net.join_invite(read_file("{dir}/code.txt") ?? "")
+    loop len(net.invite_code(other)) == 0: sleep(0.02)
+    write_file("{dir}/reply.tmp", net.invite_code(other))
+    rename_file("{dir}/reply.tmp", "{dir}/reply.txt")
+s = netplay.session(Game(), step, players = 2, me = me)
+peers = [-1, -1]
+peers[1 - me] = other
+s.over(peers)
+joined = false
+start = time()
+loop s.confirmed() < 400 and time() - start < 40.0:
+    s.play(pad(me, s.tick + s.delay))
+    # (the session takes the messages; the rest is the game's)
+    loop e in net.receive():
+        if e.kind == .joined: joined = true
+    sleep(1.0 / 60.0)
+print("player {me}: joined {joined}, played {s.confirmed() >= 400}, desync {s.desync}")
+sleep(1.0)

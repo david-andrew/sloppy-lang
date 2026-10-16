@@ -67,6 +67,15 @@ b = subprocess.run([peer], capture_output=True, text=True, env=dict(env, DIR=inv
 a_out = a.communicate(timeout=60)[0]
 check("WebRTC: a native program invites", a_out, ["accepted:true", "native:joined", "native got:ping from native", "native got:pong from native"])
 check("WebRTC: a native program joins", b.stdout, ["native:joined", "native got:ping from native", "native got:pong from native"])
+# rollback netplay over invite codes (s.over), the same way
+npi = build("np_invite") + exe
+npd = os.path.join(tmp, "np_codes")
+os.makedirs(npd, exist_ok=True)
+a = subprocess.Popen([npi], stdout=subprocess.PIPE, text=True, env=dict(env, DIR=npd, ROLE="invite"))
+b = subprocess.run([npi], capture_output=True, text=True, env=dict(env, DIR=npd, ROLE="join"), timeout=90)
+a_out = a.communicate(timeout=90)[0]
+check("netplay over invite codes: player 0", a_out, ["player 0: joined true, played true, desync -1"])
+check("netplay over invite codes: player 1", b.stdout, ["player 1: joined true, played true, desync -1"])
 
 # a web page's client, in a browser: the same, but as a game (messages arrive between frames)
 shell = None

@@ -11,7 +11,7 @@ depends on the game:
 | Players | any | 2 to 4 | many |
 | Good for | turn-based games, chat, lobbies, simple games | fighting, sports, action games for a few | shooters, many players, keeping cheating out |
 | Example | examples/netpong | examples/duel | examples/arena |
-| Web pages | connect to a native server, or straight to another game with invite codes | through a relay, then straight to each other (WebRTC) | connect to a native server |
+| Web pages | connect to a native server, or straight to another game with invite codes | invite codes, or through a relay, then straight to each other (WebRTC) | connect to a native server |
 
 ## Messages
 
@@ -80,6 +80,22 @@ s.udp(4400 + s.me, [("192.168.1.20", 4400), ("192.168.1.21", 4401)])
 ```
 
 Then once a tick, `s.play(pad)` with this machine's input, and draw `s.state`.
+
+**With invite codes, and no server.** `s.over(peers)` plays over peers from `net`: `peers[p]`
+is player p's, and this machine's own entry is not used. With invite codes (see Messages
+above), two players connect straight to each other from web pages and native programs alike:
+
+```gdscript
+# player 0 invites; the packets may be lost (newer ones carry the same inputs again)
+friend = net.invite(reliable = false)
+s = netplay.session(Game(), tick, players = 2, me = 0)
+s.over([-1, friend])
+# player 1, with the code: host = net.join_invite(code) ... s.over([host, -1])
+```
+
+The session takes those peers' messages; their `.joined` and `.left` stay for the game's
+`net.receive()`, to say "connected" or "your friend left". Until the other player connects,
+the session runs `max_ahead` ticks and waits.
 
 **The tick must come out the same on every machine.** Sloppy's math is its own (no system
 math library, no fused multiply-add), so the same code gives the same numbers on Linux, Windows,

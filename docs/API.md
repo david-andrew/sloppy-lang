@@ -4076,6 +4076,14 @@ draw = ():
 - `receive[S, I] = (s: mut Session[S, I], data: u8[])`: bytes that arrived from another player (the packet says which)
 - `lag[S, I] = (s: mut Session[S, I], ms: f64, jitter_ms: f64 = 0, loss: f64 = 0)`: simulate a slow network on what this session sends: ms more latency, up to jitter_ms more at random, and a share of packets lost (0 to 1)
 
+#### Over net's peers (invite codes: web pages and native programs)
+
+- `over[S, I] = (s: mut Session[S, I], peers: int[])`: play with the other players over peers from net: peers[p] is player p's (this machine's own entry is not used), from net.invite or net.join_invite (with no server: a page and a native program alike), or net.connect. Their messages go to the session; their other events (joined, left) stay for net.receive(). For two, invited with net.invite(reliable = false) (packets lost are not resent: newer ones carry the same inputs, and nothing waits for an old one):
+  ```gdscript
+  player 0: friend = net.invite(reliable = false) ... s.over([-1, friend])
+  player 1: host = net.join_invite(code) ...          s.over([host, -1])
+  ```
+
 #### Over UDP (native programs)
 
 - `udp[S, I] = (s: mut Session[S, I], port: int, addrs: (str, int)[])`: play over UDP: this machine listens on port, and each player p is at addrs[p] (this one's own entry is not used)
