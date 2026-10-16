@@ -40,14 +40,37 @@ closed, a page closed) tells its peers so at once; one that vanishes (switched o
 gone) is `.left` after 15 s of silence. A message may be up to 16 MB. `import invite` has the
 screens for all this (below).
 
+A screen of one's own, whole (the inviter's side and the friend's in one program):
+
 ```gdscript
-p = net.invite()
-...
-code = net.invite_code(p)            # "" for a moment, then: show it, set_clipboard(code)
-...
-net.accept_reply(p, pasted_reply)
-loop e in net.receive():
-    if e.kind == .joined: ...         # connected
+import net
+
+p = -1                                  # the friend, once there is an invite or a join
+mine = ""                               # this side's code, to send
+pasted = ""                             # theirs, pasted in
+connected = false
+
+update = (dt: f64):
+    if p >= 0 and len(mine) == 0: mine = net.invite_code(p)     # ("" for a moment)
+    loop e in net.receive():
+        if e.kind == .joined: connected = true
+        else if e.kind == .left: print("no: {net.why(e.peer)}")
+        else if e.kind == .message: print("they said {e.text}")
+
+draw = ():
+    clear()
+    if connected:
+        if hud_button(Rect(40, 40, 200, 44), "Say hello"): net.send(p, "hello")
+        return
+    if p < 0:
+        if hud_button(Rect(40, 40, 200, 44), "Invite"): p = net.invite()
+        pasted = hud_text_field(Rect(40, 100, 700, 44), pasted, "code", 400, "or their code here")
+        if hud_button(Rect(40, 160, 200, 44), "Join") and net.code_kind(pasted) == "invite": p = net.join_invite(pasted)
+        return
+    text("Send them: {mine}", vec2(40, 40), 16)          # (and set_clipboard(mine), or a Copy button)
+    if net.code_kind(mine) == "invite":
+        pasted = hud_text_field(Rect(40, 100, 700, 44), pasted, "reply", 400, "their reply here")
+        if hud_button(Rect(40, 160, 200, 44), "Connect"): net.accept_reply(p, pasted)
 ```
 
 **The screens, ready made: `import invite`.** Invite a friend shows a link to send (it opens the
