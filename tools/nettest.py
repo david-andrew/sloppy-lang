@@ -50,9 +50,10 @@ r = subprocess.Popen([sys.executable, "-u", os.path.join(root, "tools", "netpong
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 time.sleep(1.0)
 a = subprocess.Popen([player], stdout=subprocess.PIPE, text=True, env=env)
-time.sleep(0.5)
+# (the second starts once the first is connected: the first to connect hosts)
+first = a.stdout.readline()
 b = subprocess.run([player], capture_output=True, text=True, env=env, timeout=40)
-a_out = a.communicate(timeout=40)[0]
+a_out = first + a.communicate(timeout=40)[0]
 r.kill()
 check("relay: the first player hosts", a_out, ["host: connected", "host: the other came", "host: got pong"])
 check("relay: the second is the guest", b.stdout, ["guest: connected", "guest: got ping", "guest: the other left"])
