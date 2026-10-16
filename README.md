@@ -97,6 +97,12 @@ browser](https://sloppy-lang.org/breakwater/).
   sun/sky lighting, shadows, fog and bloom (glTF models, orbit and fly cameras), GPU programs written in Sloppy itself (compiled to
   SPIR-V for Vulkan and to GLSL for OpenGL and WebGL), PNG, JPEG, WAV, Ogg Vorbis and TrueType loading, sprite sheets and tilemaps (Aseprite,
   Tiled), a software audio mixer and synthesizer.
+- **Multiplayer with no server.** Invite a friend with a link (`import invite`, or
+  `sloppy new my_game online`): they open it, the game in their browser, and the two games
+  connect straight to each other, browser or desktop, anywhere (WebRTC: the browser's own in a
+  page, Sloppy's own in native programs; a TURN relay for strict networks if you have one).
+  Rollback netplay (`netplay.session`) for fighting and action games, client and server for
+  many players. See [playing over a network](docs/MULTIPLAYER.md) and [Duel](https://sloppy-lang.org/examples/duel/).
 - **Programs keep working.** Native executables are static (they talk to the kernel directly);
   the GPU driver is loaded at run time when present, and without one games still run on a
   multithreaded software renderer. Web builds are one HTML file with the WebAssembly embedded. The compiler needs no assembler, linker or C toolchain.
