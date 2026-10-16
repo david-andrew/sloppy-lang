@@ -12,6 +12,9 @@ From a 3D kart racer (a spline track, drifting, AI karts, a minimap, names over 
 - `SLOPPY_INPUT` presses a gamepad's buttons and moves its sticks and triggers (`5:pad_a+`,
   `6:lstick=1x0`, `lt=1`), for testing pad controls with no pad; what it cannot read, it says
   with every kind of item (touches were left out).
+- Smooth paths (lib/game/curves.jo): `spline` and `spline_points` through points (Catmull-Rom),
+  `path_length`, `point_along`, and `nearest_on_path` (how far round a track a kart is, for laps
+  and positions; a point ahead to steer for).
 - A chase camera: `update(cam, kart.pos, dt, heading = kart.yaw)` swings a follow camera round
   behind a vehicle, smoothly (`cam.chase`: how quickly).
 - `play_at(..., looping = true)`: an engine heard where its kart is (with `move_sound`).

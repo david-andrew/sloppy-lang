@@ -77,7 +77,7 @@ TOPICS = [
      "elsewhere on the CPU, so programs work everywhere."),
     ("Games", "menus", "Menus", ["game/ui"], "menus", ""),
     ("Games", "paths", "Paths", ["game/paths"], "paths", ""),
-    ("Games", "helpers", "Particles, noise, easing and collisions", ["game/gameutil"], "helpers", ""),
+    ("Games", "helpers", "Particles, noise, easing, collisions and smooth paths", ["game/gameutil", "game/curves"], "helpers", ""),
     ("Games", "physics", "2D physics", ["physics"], "physics",
      "A module (`import physics`): rigid bodies (circles, boxes, convex polygons) that collide, bounce, slide and stack, "
      "joined by pins, rods, ropes and springs. Distances are in the screen's units with y down, as in drawing. See [examples/physics.jo](https://github.com/david-andrew/sloppy-lang/blob/master/examples/physics.jo)."),
