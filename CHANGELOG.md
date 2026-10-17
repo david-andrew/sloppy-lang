@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.19.1
+
 - Invite codes between web pages work in Firefox: a page gave up while its friend was still
   pasting the reply in (Firefox's ICE stops for good after some seconds unanswered; Chrome's
   says failed and recovers, but the page closed it at once). A joining page whose ICE gave up
