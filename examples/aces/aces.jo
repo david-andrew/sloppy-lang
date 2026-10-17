@@ -1,0 +1,1125 @@
+# ACES - biplanes in a dogfight over farmland: two players over the network, or one against
+# the computer. The first to shoot the other down five times wins.
+#
+# Invite a friend gives a link to send them (lib/invite.jo): they open it, the game in a web
+# browser, and the two games connect straight to each other with no server, anywhere. Each game
+# runs the whole fight (rollback netplay, lib/netplay.jo): only the players' controls travel.
+# Practice flies against the computer.
+#
+# The mouse flies: the plane turns toward where it points, and its left button fires. Keys win
+# over it: S or Down climbs, W or Up dives, A and D (or Left and Right) roll, Q and E the rudder,
+# Shift and Ctrl the throttle, Space fires, C (held) looks at the other plane, Escape is the
+# menu. A gamepad: the left stick flies, LB and RB the rudder, the d-pad the throttle, A or RT
+# fires, LT looks. Settings changes any of them. On a phone: the left thumb flies, the right one
+# fires.
+#
+# The twin guns jam when they get too hot, until they cool. Below about 95 km/h the wings stall
+# and the nose drops until there is speed again. Turning hard costs speed; diving gains it.
+# BOT=1 lets the computer fly this plane (online too); LAG=100 adds 100 ms to what this game
+# sends. ACES_TEST=<ticks> flies the computer against itself without a window and says how it
+# went.
+
+build:
+    name = "Aces"
+
+import net
+import netplay
+import invite
+
+const WEB_PAGE = "https://sloppy-lang.org/examples/aces/"
+const DT = 1.0 / 60.0           # a tick
+const WIN = 5
+const STALL = 26.0              # m/s: slower, the wings lose their grip
+const CRUISE = 48.0
+const THRUST = 13.0             # m/s² at full throttle
+const DRAG = 0.0042             # (top speed, level: about 55 m/s)
+const GRIP = 2.4                # how fast the way the plane goes follows its nose (per second)
+const PITCH_RATE = 1.15         # radians a second, at full stick and speed
+const ROLL_RATE = 2.6
+const YAW_RATE = 0.45
+const BULLET_SPEED = 380.0
+const BULLET_LIFE = 75          # ticks (about 470 m)
+const FIRE_GAP = 4              # ticks between shots (the two guns take turns)
+const HEAT_SHOT = 9             # (and it cools 1 a tick)
+const JAM_HEAT = 300            # jammed until it is down to 120
+const DAMAGE = 7
+const HIT_RADIUS = 4.0
+const FIELD = 2200.0            # past this far from the middle, a plane turns back
+const CEILING = 1600.0          # (the engine fades above it)
+const RESPAWN = 240             # ticks from a crash to flying again
+const MAP = 6400.0              # the ground: 6.4 km square,
+const CELLS = 128               # in cells of 50 m
+const CELL = MAP / f64(CELLS)
+
+# ---------------- the ground ----------------
+# rolling hills, a river, lakes, and mountains all round the field
+height = (x: f64, z: f64) -> f64:
+    h = 55.0 + 45.0 * sin(x * 0.0021 + 1.3) * cos(z * 0.0017 - 0.4) + 22.0 * sin(x * 0.0047 - z * 0.0031 + 2.0) + 9.0 * sin(x * 0.0113 + z * 0.0087) * sin(z * 0.0131 - 1.0)
+    d = abs(x - river_x(z))
+    h = -6.0 + (h + 6.0) * smoothstep(25.0, 230.0, d)
+    m = smoothstep(2000.0, 3000.0, max(abs(x), abs(z)))
+    h + m * m * (420.0 + 120.0 * sin(x * 0.004) * sin(z * 0.0037))
+
+river_x = (z: f64) -> f64: 260.0 * sin(z * 0.0011 + 0.6) + 150.0
+
+# the heights at the cells' corners (the mesh's, and what is hit: the same everywhere)
+heights: f64[]
+loop zi in [0..CELLS + 1):
+    loop xi in [0..CELLS + 1): heights.push(height(f64(xi) * CELL - MAP / 2.0, f64(zi) * CELL - MAP / 2.0))
+
+corner = (xi: int, zi: int) -> f64: heights[clamp(zi, 0, CELLS) * (CELLS + 1) + clamp(xi, 0, CELLS)]
+
+# the ground's height at (x, z), on the mesh's triangles; water is at 0
+ground = (x: f64, z: f64) -> f64:
+    fx = (x + MAP / 2.0) / CELL
+    fz = (z + MAP / 2.0) / CELL
+    cx = floor(fx)
+    cz = floor(fz)
+    u = fx - cx
+    v = fz - cz
+    xi = int(cx)
+    zi = int(cz)
+    h00 = corner(xi, zi)
+    h10 = corner(xi + 1, zi)
+    h01 = corner(xi, zi + 1)
+    h11 = corner(xi + 1, zi + 1)
+    h = 0.0
+    if u + v <= 1.0: h = h00 + (h10 - h00) * u + (h01 - h00) * v
+    else: h = h11 + (h01 - h11) * (1.0 - u) + (h10 - h11) * (1.0 - v)
+    max(h, 0.0)
+
+# ---------------- the game: everything a tick depends on ----------------
+struct Pad:
+    pitch = 0                   # -100 (dive) .. 100 (climb)
+    roll = 0                    # -100 (left) .. 100 (right)
+    yaw = 0                     # -100 (left) .. 100 (right)
+    throttle = 0                # -1, 0, 1
+    fire = false
+
+struct Plane:
+    pos: vec3
+    vel: vec3
+    rot: vec4                   # (a quaternion: the nose is -z, the right wing +x, up +y)
+    throttle = 0.8
+    health = 100
+    heat = 0
+    jammed = false
+    cooldown = 0
+    shots = 0                   # fired so far (the guns take turns)
+    down = 0                    # ticks since it was shot down (0: flying)
+    gone = 0                    # ticks until it flies again, after it came down
+    safe = 0                    # ticks it cannot be hit (just back)
+    score = 0
+    hits = 0                    # hits it has taken
+
+struct Bullet:
+    pos: vec3
+    vel: vec3
+    owner: int
+    life: int
+
+# what happened, to show and hear: 0 a hit on a plane, 1 a bullet into the ground, 2 a plane
+# exploding, 3 a plane shot down (by `by`), 4 a plane flown into the ground
+struct Boom:
+    pos: vec3
+    kind: int
+    tick: int
+    who: int
+    by = -1
+
+struct Game:
+    planes: Plane[]
+    bullets: Bullet[]
+    booms: Boom[]               # (the last 2 s of them)
+    tick = 0
+    winner = -1
+
+spawn = (i: int) -> Plane:
+    side = if i == 0: 1.0 else: -1.0
+    dir = vec3(f32(side), 0, 0)
+    Plane(vec3(f32(-1300.0 * side), 430, f32(f64(i) * 160.0 - 80.0)), dir * f32(CRUISE), quat_facing(dir))
+
+new_game = () -> Game: Game([spawn(0), spawn(1)])
+
+fwd_of = (p: Plane) -> vec3: quat_rotate(p.rot, vec3(0, 0, -1))
+right_of = (p: Plane) -> vec3: quat_rotate(p.rot, vec3(1, 0, 0))
+flying = (p: Plane) -> bool: p.gone == 0 and p.down == 0
+
+# one tick (1/60 s): the same game and pads give the same game on every machine
+tick = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    g.tick += 1
+    loop i in [0..g.planes.len()): fly(g, i, pads[i])
+    shoot(g)
+    kept: Boom[]
+    loop b in g.booms:
+        if g.tick - b.tick < 120: kept.push(b)
+    g.booms = kept
+    g
+
+score = (g: mut Game, i: int):
+    if g.winner >= 0: return
+    g.planes[i].score += 1
+    if g.planes[i].score >= WIN: g.winner = i
+
+fly = (g: mut Game, i: int, pad: Pad):
+    p = g.planes[i]
+    if p.gone > 0:
+        p.gone -= 1
+        if p.gone == 0:
+            sc = p.score
+            p = spawn(i)
+            p.score = sc
+            p.safe = 120
+        g.planes[i] = p
+        return
+    if p.safe > 0: p.safe -= 1
+    c = pad
+    if p.down > 0:
+        # shot down: the engine dead, the controls gone, rolling over and down
+        p.down += 1
+        c = Pad(-40, if i == 0: 100 else: -100, 0, -1, false)
+    else if length(vec2(p.pos.x, p.pos.z)) > FIELD:
+        # (past the field's edge: back toward the middle)
+        home = normalize(vec3(-p.pos.x, 0, -p.pos.z) + vec3(0, f32(clamp((500.0 - f64(p.pos.y)) / 800.0, -0.3, 0.3)), 0))
+        t = steer(p, home)
+        c.pitch = t.pitch
+        c.roll = t.roll
+        c.yaw = t.yaw
+    speed = f64(length(p.vel))
+    auth = clamp(speed / 38.0, 0.25, 1.0)
+    q = p.rot
+    q = quat_mul(q, quat_axis_angle(vec3(1, 0, 0), f64(c.pitch) / 100.0 * PITCH_RATE * auth * DT))
+    q = quat_mul(q, quat_axis_angle(vec3(0, 0, 1), -f64(c.roll) / 100.0 * ROLL_RATE * auth * DT))
+    q = quat_mul(q, quat_axis_angle(vec3(0, 1, 0), -f64(c.yaw) / 100.0 * YAW_RATE * auth * DT))
+    fwd = quat_rotate(q, vec3(0, 0, -1))
+    vdir = fwd
+    if speed > 0.1: vdir = p.vel * f32(1.0 / speed)
+    # (stalled: the nose falls toward the way the plane is going, and down)
+    lift = smoothstep(STALL * 0.75, STALL * 1.15, speed)
+    if lift < 1.0:
+        axis = cross(fwd, normalize(vdir + vec3(0, -0.7, 0)))
+        if length(axis) > 0.001: q = quat_mul(quat_axis_angle(axis, (1.0 - lift) * 1.6 * DT), q)
+    p.rot = normalize(q)
+    fwd = quat_rotate(p.rot, vec3(0, 0, -1))
+    up = quat_rotate(p.rot, vec3(0, 1, 0))
+    p.throttle = clamp(p.throttle + f64(c.throttle) * 0.6 * DT, 0.0, 1.0)
+    # speed along the way it goes: the engine (fading up high), drag (more pulling hard), and
+    # gravity (diving gains speed, climbing costs it)
+    thin = clamp((CEILING + 300.0 - f64(p.pos.y)) / 600.0, 0.0, 1.0)
+    pull = abs(f64(c.pitch)) / 100.0 * auth
+    acc = THRUST * p.throttle * thin - DRAG * speed * speed * (1.0 + 0.9 * pull) - 9.8 * f64(vdir.y)
+    speed = max(speed + acc * DT, 0.0)
+    # the way it goes turns toward the nose: hardly at all when stalled
+    k = min(GRIP * lift * DT, 1.0)
+    vdir = normalize(vdir + (fwd - vdir) * f32(k))
+    p.vel = vdir * f32(speed)
+    # what the wings do not hold up falls: all of it stalled, a little banked over
+    sag = 9.8 * (1.0 - lift) + 3.0 * lift * (1.0 - max(f64(up.y), 0.0))
+    p.vel.y -= f32(sag * DT)
+    p.pos += p.vel * f32(DT)
+    # the ground
+    if f64(p.pos.y) < ground(f64(p.pos.x), f64(p.pos.z)) + 1.2 or p.down > 900:
+        g.booms.push(Boom(p.pos, 2, g.tick, i))
+        if p.down == 0:
+            g.booms.push(Boom(p.pos, 4, g.tick, i))
+            score(g, 1 - i)
+        p.down = 0
+        p.gone = RESPAWN
+        p.vel = vec3(0, 0, 0)
+    # the guns
+    if p.cooldown > 0: p.cooldown -= 1
+    if p.heat > 0: p.heat -= 1
+    if p.jammed and p.heat < 120: p.jammed = false
+    if c.fire and p.gone == 0 and p.down == 0 and not p.jammed and p.cooldown == 0:
+        right = quat_rotate(p.rot, vec3(1, 0, 0))
+        side = if p.shots % 2 == 0: 0.35 else: -0.35
+        # (a little scatter, from the tick: the same on every machine)
+        h = hash(g.tick * 4 + i)
+        sx = (f64(h & 1023) / 1023.0 - 0.5) * 0.008
+        sy = (f64((h >> 10) & 1023) / 1023.0 - 0.5) * 0.008
+        dir = normalize(fwd + right * f32(sx) + up * f32(sy))
+        g.bullets.push(Bullet(p.pos + fwd * 3.2 + right * f32(side) + up * 0.6, p.vel + dir * f32(BULLET_SPEED), i, BULLET_LIFE))
+        p.shots += 1
+        p.cooldown = FIRE_GAP
+        p.heat += HEAT_SHOT
+        if p.heat >= JAM_HEAT: p.jammed = true
+    g.planes[i] = p
+
+# the bullets: on, down a little, into a plane or the ground
+shoot = (g: mut Game):
+    kept: Bullet[]
+    loop b in g.bullets:
+        let b = b
+        a = b.pos
+        b.vel.y -= f32(9.8 * DT)
+        b.pos += b.vel * f32(DT)
+        b.life -= 1
+        hit = false
+        loop j in [0..g.planes.len()):
+            t = g.planes[j]
+            if j == b.owner or t.gone > 0 or t.safe > 0: continue
+            # (the bullet's way past the plane, as the plane sees it: it moved too)
+            if seg_near(a - (t.pos - t.vel * f32(DT)), b.pos - t.pos, HIT_RADIUS):
+                hit = true
+                g.booms.push(Boom(b.pos, 0, g.tick, j, b.owner))
+                g.planes[j].hits += 1
+                if t.down == 0:
+                    g.planes[j].health -= DAMAGE
+                    if g.planes[j].health <= 0:
+                        g.planes[j].health = 0
+                        g.planes[j].down = 1
+                        g.booms.push(Boom(t.pos, 3, g.tick, j, b.owner))
+                        score(g, b.owner)
+                break
+        if hit: continue
+        if f64(b.pos.y) < 450.0 and f64(b.pos.y) < ground(f64(b.pos.x), f64(b.pos.z)):
+            g.booms.push(Boom(b.pos, 1, g.tick, -1))
+            continue
+        if b.life > 0: kept.push(b)
+    g.bullets = kept
+
+# whether the segment a-b passes within r of the origin
+seg_near = (a: vec3, b: vec3, r: f64) -> bool:
+    d = b - a
+    l2 = f64(dot(d, d))
+    t = 0.0
+    if l2 > 0.0: t = clamp(-f64(dot(a, d)) / l2, 0.0, 1.0)
+    q = a + d * f32(t)
+    f64(dot(q, q)) < r * r
+
+# ---------------- flying toward something (the computer's pilot; the field's edge) ----------------
+# the stick and rudder that turn plane p toward the direction want: roll it overhead and pull,
+# or, nearly there, small corrections with the wings level
+steer = (p: Plane, want: vec3) -> Pad:
+    l = quat_rotate(quat_inverse(p.rot), normalize(want))     # (-z ahead, +x right, +y up)
+    ahead = f64(-l.z)
+    c = Pad()
+    if ahead > 0.985:
+        right = right_of(p)
+        c.pitch = int(clamp(f64(l.y) / ahead * 14.0, -1.0, 1.0) * 100.0)
+        c.yaw = int(clamp(f64(l.x) / ahead * 14.0, -1.0, 1.0) * 100.0)
+        c.roll = int(clamp(f64(right.y) * 2.0 + f64(l.x) / ahead * 6.0, -1.0, 1.0) * 100.0)
+        return c
+    err = atan2(f64(l.x), f64(l.y))
+    c.roll = int(clamp(err * 2.0, -1.0, 1.0) * 100.0)
+    off = acos(clamp(ahead, -1.0, 1.0))
+    if abs(err) < 1.2: c.pitch = int(clamp(off * 3.0, 0.0, 1.0) * 100.0)
+    else: c.pitch = 20
+    c
+
+# the way to aim to hit e from p: where e will be when the bullets get there (they keep p's
+# speed, and drop a little)
+lead = (p: Plane, e: Plane) -> vec3:
+    rel = e.pos - p.pos
+    rv = e.vel - p.vel
+    t = f64(length(rel)) / BULLET_SPEED
+    loop k in [0..2): t = f64(length(rel + rv * f32(t))) / BULLET_SPEED
+    rel + rv * f32(t) + vec3(0, f32(4.9 * t * t), 0)
+
+# the computer's controls for plane i: skill 0 (wobbly, slow to turn, fires early) to 1
+bot_pad = (g: Game, i: int, skill: f64) -> Pad:
+    p = g.planes[i]
+    if not flying(p): return Pad()
+    e = g.planes[1 - i]
+    fwd = fwd_of(p)
+    speed = f64(length(p.vel))
+    alt = f64(p.pos.y) - ground(f64(p.pos.x), f64(p.pos.z))
+    ahead = p.pos + p.vel * 4.0
+    low = alt < 130.0 or f64(ahead.y) < ground(f64(ahead.x), f64(ahead.z)) + 100.0
+    aim = vec3(0, 0, 0)
+    fight = flying(e) and e.safe == 0 and not low
+    want = vec3(0, 0, 0)
+    if low:
+        flat = vec3(fwd.x, 0, fwd.z)
+        if length(flat) < 0.1: flat = vec3(1, 0, 0)
+        want = normalize(flat) + vec3(0, 0.9, 0)
+    else if fight:
+        aim = lead(p, e)
+        # (less skill: aims round about, as if it misjudged)
+        w = (1.0 - skill) * 14.0
+        t = f64(g.tick)
+        want = aim + vec3(f32(sin(t * 0.013 + f64(i)) * w), f32(cos(t * 0.011) * w), f32(sin(t * 0.017 + 2.0) * w))
+    else: want = vec3(-p.pos.x, f32(500.0 - f64(p.pos.y)), -p.pos.z)
+    c = steer(p, want)
+    c.pitch = int(f64(c.pitch) * (0.55 + 0.45 * skill))
+    # (slow: no hard pulling, which would stall it)
+    if speed < 34.0: c.pitch = min(c.pitch, 15)
+    c.throttle = 1
+    if fight:
+        d = f64(length(aim))
+        within = 0.9995 - (1.0 - skill) * 0.003
+        c.fire = d < 480.0 and f64(dot(fwd, normalize(aim))) > within and p.heat < JAM_HEAT - 30
+        # (close behind it: slow down, not to fly past)
+        if d < 140.0 and f64(dot(e.pos - p.pos, fwd)) > 0.0 and f64(dot(p.vel - e.vel, fwd)) > 6.0: c.throttle = -1
+    c
+
+# ---------------- a test without a window: the computer against itself ----------------
+# ACES_TEST="ticks skill skill": each game starts a little differently
+when TARGET != "wasm":
+    if let spec = env("ACES_TEST"):
+        w = split(spec, " ")
+        ticks = to_int(w[0]) ?? 36000
+        sk = [if w.len() > 1: to_float(w[1]) ?? 1.0 else: 1.0, if w.len() > 2: to_float(w[2]) ?? 0.6 else: 0.6]
+        games = 0
+        fresh = (n: int) -> Game:
+            let g = new_game()
+            loop i in [0..2):
+                g.planes[i].pos += vec3(0, f32(f64(hash(n * 2 + i) % 200) - 100.0), f32(f64(hash(n * 2 + i + 9) % 600) - 300.0))
+                g.planes[i].rot = quat_mul(quat_axis_angle(vec3(0, 1, 0), f64(hash(n * 2 + i + 5) % 100) / 100.0 - 0.5), g.planes[i].rot)
+            g
+        g = fresh(0)
+        crashes = 0
+        kills = 0
+        slow = 0
+        flown = 0
+        low = 1e9
+        took: int[]
+        loop k in [0..ticks):
+            g = tick(g, [bot_pad(g, 0, sk[0]), bot_pad(g, 1, sk[1])])
+            loop b in g.booms:
+                if b.tick == g.tick and b.kind == 4: crashes += 1
+                if b.tick == g.tick and b.kind == 3: kills += 1
+            loop p in g.planes:
+                if not flying(p): continue
+                flown += 1
+                if length(p.vel) < STALL * 1.15: slow += 1
+                low = min(low, f64(p.pos.y) - ground(f64(p.pos.x), f64(p.pos.z)))
+            if g.winner >= 0:
+                print("game {games}: {g.tick / 60} s, {g.planes[0].score}-{g.planes[1].score}")
+                took.push(g.tick)
+                games += 1
+                g = fresh(games)
+        print("{ticks / 60} s: shot down {kills}, crashed {crashes}, slow {100 * slow / max(flown, 1)}% of the time, lowest {int(low)} m, {games} games")
+        exit(0)
+
+# ---------------- playing: with a friend, or against the computer ----------------
+enum Mode: menu, online, practice
+
+window("Aces", 1280, 720)
+action("Climb", [.key(.s), .key(.down), .stick(1, 1)])
+action("Dive", [.key(.w), .key(.up), .stick(1, -1)])
+action("Roll left", [.key(.a), .key(.left), .stick(0, -1)])
+action("Roll right", [.key(.d), .key(.right), .stick(0, 1)])
+action("Rudder left", [.key(.q), .button(.lb)])
+action("Rudder right", [.key(.e), .button(.rb)])
+action("Throttle up", [.key(.shift), .key(.r), .button(.up)])
+action("Throttle down", [.key(.ctrl), .key(.f), .button(.down)])
+action("Fire", [.key(.space), .button(.a), .stick(5, 1)])
+action("Look at them", [.key(.c), .stick(4, 1)])
+
+struct Settings:
+    invert = false              # (pitch: W climbs, S dives)
+    sound = 0.8
+    skill = 1                   # the computer: 0 easy, 1 fair, 2 hard
+    mouse = true                # the mouse steers
+
+settings = Settings()
+if let saved = load_data("settings"):
+    w = split(saved, " ")
+    if w.len() >= 4:
+        settings.invert = w[0] == "1"
+        settings.sound = to_float(w[1]) ?? 0.8
+        settings.skill = clamp(to_int(w[2]) ?? 1, 0, 2)
+        settings.mouse = w[3] == "1"
+save_settings = (): save_data("settings", "{if settings.invert: 1 else: 0} {settings.sound} {settings.skill} {if settings.mouse: 1 else: 0}")
+SKILLS = [0.3, 0.65, 1.0]
+
+mode = Mode.menu
+page = 0                        # (the menu: 0 its buttons, 1 settings)
+s = netplay.session(new_game(), tick, players = 2, me = 0)
+friend = -1
+local = new_game()              # practice, and the menu's fight in the background
+spare = 0.0
+status = ""
+bot = env("BOT") != none
+invite.from_link()
+
+begin = (c: invite.Invited):
+    friend = c.peer
+    me = if c.inviter: 0 else: 1
+    s = netplay.session(new_game(), tick, players = 2, me = me)
+    peers = [-1, -1]
+    peers[1 - me] = friend
+    s.over(peers)
+    if let lag = env("LAG"): s.lag(to_float(lag) ?? 0, 10, 0.02)
+    status = ""
+    mode = .online
+    start_view()
+
+leave = ():
+    if friend >= 0: net.close(friend)
+    friend = -1
+    mode = .menu
+    local = new_game()
+    start_view()
+
+game = () -> Game: if mode == .online: s.state else: local
+before: Plane[]                 # (the planes a tick ago: drawn between then and now, smoothly)
+
+# the game as drawn: its planes part of the way from the tick before to the latest
+view = () -> Game:
+    let g = game()
+    a = f32(clamp(spare / DT, 0.0, 1.0))
+    if before.len() != g.planes.len(): return g
+    loop i in [0..g.planes.len()):
+        b = before[i]
+        p = g.planes[i]
+        if b.gone != p.gone or length(p.pos - b.pos) > 20.0: continue
+        g.planes[i].pos = lerp(b.pos, p.pos, a)
+        g.planes[i].rot = slerp(b.rot, p.rot, a)
+    g
+me = () -> int: if mode == .online: s.me else: 0
+
+# the in-fight menu (Escape): practice waits; a fight with a friend goes on
+paused = false
+paused_at = -1.0
+had_lock = false
+
+resume = ():
+    paused = false
+    paused_at = -1.0
+    if settings.mouse: mouse_lock(true)
+
+# where the mouse points (flying with it): a way, turned by the mouse as a first-person view is
+aim_yaw = 0.0
+aim_pitch = 0.0
+aim_fresh = true                # (start from the plane's nose, when it flies again)
+
+aim_dir = () -> vec3: vec3(f32(-sin(aim_yaw) * cos(aim_pitch)), f32(sin(aim_pitch)), f32(-cos(aim_yaw) * cos(aim_pitch)))
+
+aim_from = (p: Plane, later: bool):
+    aim_fresh = later
+    if later: return
+    f = fwd_of(p)
+    aim_yaw = atan2(-f64(f.x), -f64(f.z))
+    aim_pitch = asin(clamp(f64(f.y), -1.0, 1.0))
+
+mouse_flying = () -> bool: settings.mouse and mode != .menu and not paused and is_mouse_locked() and not touch_input()
+
+# this machine's controls for a tick (keys ease in, so a tap turns a little)
+stick = vec3(0, 0, 0)           # pitch, roll, yaw
+const PAD_AT = vec2(190, 530)   # (a phone: the left thumb's stick, the right one's buttons)
+const FIRE_AT = vec2(1130, 560)
+const LOOK_AT = vec2(1180, 400)
+const THR_UP = vec2(990, 420)
+const THR_DOWN = vec2(990, 540)
+
+my_pad = () -> Pad:
+    if bot: return bot_pad(game(), me(), 1.0)
+    pitch = action_axis("Dive", "Climb")
+    if settings.invert: pitch = -pitch
+    want = vec3(f32(pitch), f32(action_axis("Roll left", "Roll right")), f32(action_axis("Rudder left", "Rudder right")))
+    c = Pad()
+    c.fire = action_down("Fire")
+    p = game().planes[me()]
+    if mouse_flying() and flying(p):
+        # (the mouse: toward where it points, as the computer's pilot flies; keys still win)
+        t = steer(p, aim_dir())
+        if abs(want.x) < 0.05: want.x = f32(f64(t.pitch) / 100.0)
+        if abs(want.y) < 0.05: want.y = f32(f64(t.roll) / 100.0)
+        if abs(want.z) < 0.05: want.z = f32(f64(t.yaw) / 100.0)
+        c.fire = c.fire or mouse_down(.left)
+    if action_down("Throttle up"): c.throttle = 1
+    if action_down("Throttle down"): c.throttle = -1
+    loop t in touches():
+        if length(t - FIRE_AT) < 90.0: c.fire = true
+        else if length(t - THR_UP) < 50.0: c.throttle = 1
+        else if length(t - THR_DOWN) < 50.0: c.throttle = -1
+        else if t.x < 640.0:
+            d = (t - PAD_AT) / 110.0
+            want = vec3(f32(clamp(f64(d.y), -1.0, 1.0)), f32(clamp(f64(d.x), -1.0, 1.0)), 0)
+    stick = approach(stick, want, if mouse_flying(): 30.0 else: 9.0, DT)
+    c.pitch = int(round(clamp(f64(stick.x), -1.0, 1.0) * 100.0))
+    c.roll = int(round(clamp(f64(stick.y), -1.0, 1.0) * 100.0))
+    c.yaw = int(round(clamp(f64(stick.z), -1.0, 1.0) * 100.0))
+    c
+
+looking = () -> bool:
+    if action_down("Look at them"): return true
+    loop t in touches():
+        if length(t - LOOK_AT) < 50.0: return true
+    false
+
+update = (dt: f64):
+    loop e in net.receive():
+        if e.kind == .left and e.peer == friend:
+            status = "your friend left"
+            friend = -1
+            mode = .menu
+    if mode != .menu:
+        if key_pressed(.escape) or gamepad_pressed(.start):
+            if not paused:
+                paused = true
+                mouse_lock(false)
+            else if elapsed() - paused_at > 0.3: resume()
+            if paused_at < 0.0: paused_at = elapsed()
+        # (a browser lets go of the mouse on Escape: the in-fight menu)
+        if is_mouse_locked(): had_lock = true
+        else if had_lock and not paused:
+            paused = true
+            paused_at = elapsed()
+        if not paused: paused_at = -1.0
+        if paused: had_lock = false
+        if paused and mode == .practice:
+            effects(0.0)
+            sounds()
+            return
+        if mouse_flying():
+            d = mouse_delta()
+            k = 0.0025
+            aim_yaw -= f64(d.x) * k
+            aim_pitch = clamp(aim_pitch - f64(d.y) * k * (if settings.invert: -1.0 else: 1.0), -1.45, 1.45)
+        p = game().planes[me()]
+        if not flying(p): aim_from(game().planes[me()], true)
+        else if aim_fresh: aim_from(p, false)
+    if mode != .menu and game().winner >= 0 and (key_pressed(.enter) or gamepad_pressed(.a)) and game().tick - won_at > 120:
+        if mode == .practice:
+            local = new_game()
+            start_view()
+        else: leave()
+        return
+    # (ticks at 60 a second, whatever the frame rate)
+    spare = min(spare + dt, 0.1)
+    loop spare >= DT:
+        spare -= DT
+        before = game().planes
+        if mode == .online: s.play(my_pad())
+        else if mode == .practice: local = tick(local, [my_pad(), bot_pad(local, 1, SKILLS[settings.skill])])
+        else:
+            local = tick(local, [bot_pad(local, 0, 0.8), bot_pad(local, 1, 0.7)])
+            if local.winner >= 0: local = new_game()
+    effects(dt)
+    sounds()
+
+# ---------------- what is seen ----------------
+# the camera: behind the plane, banking with it (smoothly), or looking past it at the other one
+cam_q = vec4(0, 0, 0, 1)
+cam_pos = vec3(0, 400, 0)
+cam_at = vec3(0, 400, -10)
+cam_up = vec3(0, 1, 0)
+look_amount = 0.0
+won_at = 0
+
+start_view = ():
+    before = []
+    p = game().planes[me()]
+    cam_q = p.rot
+    cam_pos = p.pos + quat_rotate(cam_q, vec3(0, 4.2, 15))
+    aim_from(p, false)
+    paused = false
+    had_lock = false
+    page = 0
+    mouse_lock(settings.mouse and mode != .menu and not touch_input())
+
+place_camera = (g: Game, dt: f64):
+    p = g.planes[me()]
+    e = g.planes[1 - me()]
+    if p.gone > 0:
+        # (down: watching where it fell, from above)
+        cam_at = approach(cam_at, p.pos, 3.0, dt)
+        cam_pos = approach(cam_pos, p.pos + vec3(30, 40, 30), 0.6, dt)
+        cam_up = approach(cam_up, vec3(0, 1, 0), 3.0, dt)
+        camera3d(cam_pos, cam_at, 65.0, 1.0, 7000.0, cam_up)
+        return
+    cam_q = slerp(cam_q, p.rot, f32(1.0 - exp(-6.0 * dt)))
+    look_amount = approach(look_amount, if looking() and e.gone == 0: 1.0 else: 0.0, 8.0, dt)
+    up = quat_rotate(cam_q, vec3(0, 1, 0))
+    # (the menu: the plane on the right, beside it)
+    side = if mode == .menu: f32(-7.0) else: f32(0.0)
+    behind = p.pos + quat_rotate(cam_q, vec3(side, 4.2, 15))
+    ahead = p.pos + quat_rotate(cam_q, vec3(side, 2.6, -30))
+    if mouse_flying():
+        # (flying with the mouse: the camera looks where it points, the horizon level)
+        d = aim_dir()
+        behind = p.pos - d * 15.0 + vec3(0, 4.0, 0)
+        ahead = p.pos + d * 40.0 + vec3(0, 2.5, 0)
+        up = vec3(0, 1, 0)
+    # (looking at the other plane: from behind this one, along the line between them)
+    to_e = normalize(e.pos - p.pos)
+    past = p.pos - to_e * 15.0 + up * 4.0
+    cam_pos = lerp(behind, past, f32(look_amount))
+    cam_at = lerp(ahead, e.pos, f32(look_amount))
+    cam_up = up
+    gy = f32(ground(f64(cam_pos.x), f64(cam_pos.z)) + 2.0)
+    if cam_pos.y < gy: cam_pos.y = gy
+    camera3d(cam_pos, cam_at, 65.0, 1.0, 7000.0, cam_up)
+
+# ---------------- the models ----------------
+# a body through rectangles across it, nose to tail: each (z, y of its middle, half width,
+# half height); flat sides, as the planes of the time
+loft = (vs: mut Vertex3D[], rings: vec4[], color: vec4):
+    corners = (r: vec4) -> vec3[]: [vec3(-r.z, r.y + r.w, r.x), vec3(r.z, r.y + r.w, r.x), vec3(r.z, r.y - r.w, r.x), vec3(-r.z, r.y - r.w, r.x)]
+    loop i in [0..rings.len() - 1):
+        a = corners(rings[i])
+        b = corners(rings[i + 1])
+        mid = vec3(0, (rings[i].y + rings[i + 1].y) * 0.5, (rings[i].x + rings[i + 1].x) * 0.5)
+        loop k in [0..4): quad(vs, a[k], a[(k + 1) % 4], b[(k + 1) % 4], b[k], color, mid)
+    # (and its two ends)
+    loop r in [rings[0], rings[rings.len() - 1]]:
+        c = corners(r)
+        quad(vs, c[0], c[1], c[2], c[3], color, vec3(0, r.y, (rings[0].x + rings[rings.len() - 1].x) * 0.5))
+
+# a flat four-cornered face, facing away from `inside`
+quad = (vs: mut Vertex3D[], a: vec3, b: vec3, c: vec3, d: vec3, color: vec4, inside: vec3):
+    n = normalize(cross(b - a, c - a))
+    if f64(dot(n, (a + c) * 0.5 - inside)) < 0.0: n = n * -1.0
+    loop p in [a, b, c, a, c, d]: vs.push(Vertex3D(p, n, vec2(0, 0), color))
+
+# a biplane, nose toward -z: body, wings, cream discs on them, its own color at the tail
+make_plane = (body: vec4, wings: vec4, mark: vec4) -> Mesh:
+    vs: Vertex3D[]
+    metal = rgb(0.42, 0.42, 0.4)
+    dark = rgb(0.12, 0.11, 0.1)
+    wood = rgb(0.45, 0.32, 0.2)
+    loft(vs, [vec4(-2.9, 0.05, 0.42, 0.42), vec4(-2.3, 0.05, 0.5, 0.5)], metal)
+    loft(vs, [vec4(-2.3, 0.05, 0.5, 0.5), vec4(-0.6, 0.1, 0.48, 0.52), vec4(1.2, 0.15, 0.32, 0.38), vec4(3.9, 0.25, 0.06, 0.1)], body)
+    add_box(vs, vec3(0, 0.05, -2.92), vec3(0.6, 0.6, 0.04), dark)
+    add_box(vs, vec3(0, 1.35, -0.9), vec3(8.8, 0.12, 1.5), wings)
+    add_box(vs, vec3(0, -0.45, -0.7), vec3(8.0, 0.12, 1.35), wings)
+    loop sx in [-1.0, 1.0]:
+        x = f32(sx)
+        # struts between the wings, and up to the top one from the body
+        add_box(vs, vec3(3.0 * x, 0.45, -1.3), vec3(0.07, 1.75, 0.07), wood)
+        add_box(vs, vec3(3.0 * x, 0.45, -0.4), vec3(0.07, 1.75, 0.07), wood)
+        add_box(vs, vec3(0.42 * x, 0.92, -1.35), vec3(0.06, 0.8, 0.06), wood)
+        add_box(vs, vec3(0.42 * x, 0.92, -0.55), vec3(0.06, 0.8, 0.06), wood)
+        # the wheels and their legs
+        add_box(vs, vec3(0.7 * x, -0.85, -1.4), vec3(0.07, 0.9, 0.07), dark)
+        add_cylinder(vs, vec3(-1.3, f32(-sx * 0.95 - 0.07), -1.4), 0.33, 0.14, dark, 10, transform = rotation_z(PI / 2.0))
+        # discs on the wings, top and bottom
+        add_cylinder(vs, vec3(3.1 * x, 1.41, -0.9), 0.6, 0.02, mark, 16)
+        add_cylinder(vs, vec3(3.1 * x, 1.425, -0.9), 0.3, 0.02, body, 16)
+        add_cylinder(vs, vec3(2.8 * x, -0.55, -0.7), 0.55, 0.02, mark, 16)
+        # the guns, on top of the nose
+        add_box(vs, vec3(0.17 * x, 0.6, -1.7), vec3(0.08, 0.08, 1.1), dark)
+    add_box(vs, vec3(0, -1.3, -1.4), vec3(1.5, 0.05, 0.05), dark)
+    # the cockpit and its pilot
+    add_box(vs, vec3(0, 0.58, 0.35), vec3(0.62, 0.1, 0.9), dark)
+    add_sphere(vs, vec3(0, 0.8, 0.55), 0.2, wood, 8, 5)
+    add_box(vs, vec3(0, 0.75, -0.15), vec3(0.4, 0.22, 0.03), rgb(0.6, 0.7, 0.75))
+    # the tail
+    add_box(vs, vec3(0, 0.25, 3.45), vec3(3.0, 0.07, 1.0), wings)
+    add_box(vs, vec3(0, 0.75, 3.55), vec3(0.07, 1.1, 1.0), mark)
+    add_box(vs, vec3(0, 0.75, 3.95), vec3(0.075, 1.1, 0.25), body)
+    add_box(vs, vec3(0, -0.2, 3.6), vec3(0.06, 0.5, 0.06), dark)
+    custom_mesh(vs)
+
+make_propeller = () -> Mesh:
+    vs: Vertex3D[]
+    wood = rgb(0.5, 0.36, 0.22)
+    add_box(vs, vec3(0, 0.6, 0), vec3(0.17, 1.2, 0.05), wood, rotation_y(0.3))
+    add_box(vs, vec3(0, -0.6, 0), vec3(0.17, 1.2, 0.05), wood, rotation_y(-0.3))
+    add_box(vs, vec3(0, 0, 0), vec3(0.2, 0.2, 0.2), rgb(0.3, 0.3, 0.3))
+    custom_mesh(vs)
+
+# the ground as flat triangles, each cell colored: fields, woods, the river's banks, rock, snow
+woods = (x: f64, z: f64) -> bool: sin(x * 0.006 + 0.5) * sin(z * 0.0071 + 1.0) + 0.5 * sin(x * 0.017 - z * 0.013) > 0.75
+
+field_color = (xi: int, zi: int, h: f64, n: vec3) -> vec4:
+    v = f32(0.94 + 0.06 * f64(hash(xi * 7919 + zi * 104729) % 100) / 100.0)
+    if h < 1.5: return vec4(rgb(0.6, 0.56, 0.42).xyz * v, 1)
+    if h > 380.0 and n.y > 0.7: return vec4(rgb(0.92, 0.93, 0.95).xyz * v, 1)
+    if h > 230.0 or n.y < 0.8: return vec4(rgb(0.47, 0.45, 0.4).xyz * v, 1)
+    x = f64(xi) * CELL - MAP / 2.0
+    z = f64(zi) * CELL - MAP / 2.0
+    if woods(x, z): return vec4(rgb(0.19, 0.33, 0.16).xyz * v, 1)
+    fields = [rgb(0.38, 0.55, 0.25), rgb(0.46, 0.6, 0.27), rgb(0.74, 0.66, 0.34), rgb(0.5, 0.39, 0.26), rgb(0.55, 0.64, 0.31), rgb(0.42, 0.5, 0.24)]
+    f = fields[int(hash((xi / 3) * 31 + (zi / 3) * 1009) % u64(fields.len()))]
+    vec4(f.xyz * v, 1)
+
+make_ground = () -> Mesh:
+    vs: Vertex3D[]
+    pt = (xi: int, zi: int) -> vec3: vec3(f32(f64(xi) * CELL - MAP / 2.0), f32(corner(xi, zi)), f32(f64(zi) * CELL - MAP / 2.0))
+    tri = (a: vec3, b: vec3, c: vec3, col: vec4):
+        n = normalize(cross(b - a, c - a))
+        if n.y < 0.0: n = n * -1.0
+        vs.push(Vertex3D(a, n, vec2(0, 0), col))
+        vs.push(Vertex3D(b, n, vec2(0, 0), col))
+        vs.push(Vertex3D(c, n, vec2(0, 0), col))
+    loop zi in [0..CELLS):
+        loop xi in [0..CELLS):
+            a = pt(xi, zi)
+            b = pt(xi, zi + 1)
+            c = pt(xi + 1, zi)
+            d = pt(xi + 1, zi + 1)
+            h = f64(a.y + b.y + c.y + d.y) * 0.25
+            n = normalize(cross(b - a, c - a))
+            if n.y < 0.0: n = n * -1.0
+            col = field_color(xi, zi, h, n)
+            # (split as ground() reads it)
+            tri(a, b, c, col)
+            tri(c, b, d, col)
+    custom_mesh(vs)
+
+# villages by the river: white houses with dark red roofs, a church
+make_villages = () -> Mesh:
+    vs: Vertex3D[]
+    loop v in [0..7):
+        z = -1700.0 + f64(v) * 560.0 + f64(hash(v * 3) % 200)
+        x = river_x(z) + (if v % 2 == 0: 330.0 else: -330.0)
+        loop k in [0..12):
+            hx = x + f64(hash(v * 100 + k) % 160) - 80.0
+            hz = z + f64(hash(v * 100 + k + 50) % 160) - 80.0
+            gy = ground(hx, hz)
+            if gy < 2.0: continue
+            turn = rotation_y(f64(hash(v * 100 + k + 7) % 4) * PI / 2.0)
+            at = translation(vec3(f32(hx), f32(gy), f32(hz))) * turn
+            add_box(vs, vec3(0, 2.5, 0), vec3(6, 5, 9), rgb(0.9, 0.87, 0.8), at)
+            add_box(vs, vec3(0, 5.0, 0), vec3(4.6, 4.6, 9.4), rgb(0.55, 0.2, 0.15), at * translation(vec3(0, 0.4, 0)) * rotation_z(PI / 4.0))
+        if v % 3 == 0:
+            gy = ground(x, z)
+            at = translation(vec3(f32(x), f32(gy), f32(z)))
+            add_box(vs, vec3(0, 6, 0), vec3(4, 12, 4), rgb(0.85, 0.83, 0.78), at)
+            add_cylinder(vs, vec3(0, 12, 0), 2.9, 7.0, rgb(0.35, 0.37, 0.4), 4, 0.0, at * rotation_y(PI / 4.0))
+    custom_mesh(vs)
+
+trees: Instance3D[]
+clouds: Instance3D[]
+
+plant = ():
+    loop zi in [0..CELLS):
+        loop xi in [0..CELLS):
+            x = f64(xi) * CELL - MAP / 2.0
+            z = f64(zi) * CELL - MAP / 2.0
+            if not woods(x, z): continue
+            loop k in [0..3):
+                h = hash(xi * 131 + zi * 7177 + k * 31)
+                tx = x + f64(h % 50)
+                tz = z + f64((h >> 8) % 50)
+                gy = ground(tx, tz)
+                if gy < 2.0 or gy > 230.0: continue
+                sz = 0.8 + f64((h >> 16) % 60) / 100.0
+                trees.push(instance(translation(vec3(f32(tx), f32(gy - 1.0), f32(tz))) * scaling(vec3(f32(4.0 * sz), f32(11.0 * sz), f32(4.0 * sz))), rgb(0.14, f32(0.3 + f64((h >> 24) % 10) / 100.0), 0.13)))
+    loop c in [0..55):
+        h = hash(c * 977 + 5)
+        cx = f64(h % 5000) - 2500.0
+        cz = f64((h >> 16) % 5000) - 2500.0
+        cy = 520.0 + f64((h >> 32) % 300)
+        loop k in [0..6):
+            hk = hash(c * 31 + k)
+            r = 25.0 + f64(hk % 25)
+            p = vec3(f32(cx + f64((hk >> 8) % 120) - 60.0), f32(cy + f64((hk >> 16) % 20)), f32(cz + f64((hk >> 24) % 90) - 45.0))
+            clouds.push(instance(translation(p) * scaling(vec3(f32(r * 1.4), f32(r * 0.7), f32(r))), rgb(1, 1, 1)))
+
+LIVERY = [(rgb(0.72, 0.1, 0.08), rgb(0.78, 0.15, 0.1), rgb(0.95, 0.92, 0.8)), (rgb(0.15, 0.3, 0.62), rgb(0.22, 0.42, 0.76), rgb(0.95, 0.92, 0.8))]
+COLORS = [rgb(1.0, 0.38, 0.32), rgb(0.42, 0.68, 1.0)]
+NAMES = ["Red", "Blue"]
+planes: Mesh[]
+prop = Mesh()
+ground_mesh = Mesh()
+villages = Mesh()
+water = Mesh()
+cone = Mesh()
+puff = Mesh()
+tracer = Mesh()
+made = false
+
+make_world = ():
+    if made: return
+    made = true
+    loop l in LIVERY: planes.push(make_plane(l.0, l.1, l.2))
+    prop = make_propeller()
+    ground_mesh = make_ground()
+    villages = make_villages()
+    water = plane_mesh(MAP)
+    cone = cone_mesh(1.0, 1.0, 6)
+    puff = sphere_mesh(1.0, 10, 6)
+    tracer = cube_mesh(1.0)
+    plant()
+
+prop_turn = [0.0, 0.0]
+
+plane_matrix = (p: Plane) -> mat4: translation(p.pos) * quat_to_mat4(p.rot)
+
+draw = ():
+    make_world()
+    g = view()
+    place_camera(g, frame_time())
+    clear(BLACK)
+    sun(vec3(-0.4, 0.8, 0.45), vec3(1.0, 0.95, 0.85))
+    sky(vec3(0.3, 0.5, 0.85), vec3(0.78, 0.84, 0.92), vec3(0.42, 0.45, 0.4))
+    fog(vec3(0.74, 0.8, 0.88), 0.00025, 0.0015)
+    shadows(true, 0.6, 40.0)
+    post_effects(0.4, 0.8, 0.3, 1.05)
+    draw_mesh(ground_mesh, specular = 0.02, cast_shadow = false)
+    draw_mesh(water, translation(vec3(0, 0.3, 0)), rgb(0.25, 0.42, 0.55), specular = 0.8, cast_shadow = false)
+    draw_mesh(villages, specular = 0.05)
+    draw_mesh_instanced(cone, trees, specular = 0.02, cast_shadow = false)
+    draw_mesh_instanced(puff, clouds, emissive = 0.35, specular = 0.0, cast_shadow = false)
+    loop i in 0.. and p in g.planes:
+        if p.gone > 0: continue
+        m = plane_matrix(p)
+        c = vec4(1, 1, 1, 1)
+        if p.safe > 0 and p.safe % 10 < 5: c = vec4(1.6, 1.6, 1.6, 1)
+        draw_mesh(planes[i], m, c, specular = 0.25)
+        prop_turn[i] += frame_time() * (if p.down > 0: 3.0 else: 25.0 + 30.0 * p.throttle)
+        draw_mesh(prop, m * translation(vec3(0, 0.05, -3.02)) * rotation_z(prop_turn[i]), specular = 0.1)
+    # the bullets: every one a tracer
+    if g.bullets.len() > 0:
+        tr: Instance3D[]
+        loop b in g.bullets:
+            d = normalize(b.vel)
+            tr.push(instance(translation(b.pos - d * 2.0) * facing(d) * scaling(vec3(0.12, 0.12, 4.0)), if b.owner == 0: rgb(1.0, 0.75, 0.4) else: rgb(1.0, 0.9, 0.5)))
+        draw_mesh_instanced(tracer, tr, emissive = 3.0, cast_shadow = false)
+    smoke.draw(glow = false)
+    fire.draw()
+    sparks.draw()
+    if mode == .menu:
+        draw_menu()
+        return
+    draw_hud(g)
+    if paused: draw_paused()
+
+# ---------------- effects and sounds (from the game as it is: rolled back, it shows again) ----------------
+smoke = Particles3D(gravity = vec3(0, 2, 0), drag = 0.6)
+fire = Particles3D(gravity = vec3(0, 3, 0), drag = 1.5)
+sparks = Particles3D(gravity = vec3(0, -9.8, 0), drag = 0.5)
+seen: {int: bool} = {}          # (the booms already shown: tick, kind, who)
+news: (str, f64, vec4)[]        # what to say, how long it has shown, its color
+last_shots = [0, 0]
+hit_mark = 0.0                  # (seconds left: a hit by me, on the gunsight)
+hurt = 0.0                      # (seconds left: red at the edges, hit)
+
+effects = (dt: f64):
+    g = game()
+    loop i in 0.. and p in g.planes:
+        if p.gone > 0: continue
+        tail = p.pos + fwd_of(p) * 2.0
+        # (smoke when hurt, and fire when nearly done for)
+        if p.health < 65 or p.down > 0:
+            n = if p.down > 0 or p.health < 30: 3 else: 1
+            emit(smoke, tail, n, 2.0, rgba(0.25, 0.24, 0.23, 0.7), 3.0, 4.0)
+        if p.health < 30 or p.down > 0: emit(fire, tail, 2, 2.0, rgb(1.0, 0.55, 0.15), 0.4, 1.6)
+    loop b in g.booms:
+        key = b.tick * 64 + b.kind * 8 + b.who + 1
+        if seen.has(key) or g.tick - b.tick > 30: continue
+        seen[key] = true
+        mine = b.who == me()
+        if b.kind == 0:
+            emit(sparks, b.pos, 8, 14.0, rgb(1.0, 0.8, 0.4), 0.4, 0.25)
+            emit(smoke, b.pos, 2, 3.0, rgba(0.3, 0.3, 0.3, 0.6), 1.0, 1.5)
+            if mode != .menu: play_at(if mine: snd_hurt else: snd_hit, b.pos, settings.sound, 900.0)
+            if mine: hurt = 0.35
+            if b.by == me(): hit_mark = 0.2
+        else if b.kind == 1: emit(smoke, b.pos, 3, 4.0, rgba(0.45, 0.38, 0.28, 0.7), 1.2, 3.0)
+        else if b.kind == 2:
+            emit(fire, b.pos, 60, 22.0, rgb(1.0, 0.6, 0.2), 1.0, 5.0)
+            emit(sparks, b.pos, 40, 30.0, rgb(1.0, 0.7, 0.3), 1.6, 0.5)
+            emit(smoke, b.pos, 30, 10.0, rgba(0.2, 0.19, 0.18, 0.8), 5.0, 10.0)
+            if mode != .menu: play_at(snd_boom, b.pos, settings.sound, 3000.0)
+        if mode == .menu: continue
+        if b.kind == 3:
+            if b.by == me(): say("you shot {NAMES[b.who]} down", COLORS[b.by])
+            else if mine: say("shot down by {NAMES[b.by]}", COLORS[b.by])
+        else if b.kind == 4: say(if mine: "you crashed" else: "{NAMES[b.who]} crashed", COLORS[1 - b.who])
+    if seen.len() > 400:
+        keep: {int: bool} = {}
+        loop k, v in seen:
+            if k / 64 > g.tick - 60: keep[k] = v
+        seen = keep
+    smoke.update(dt)
+    fire.update(dt)
+    sparks.update(dt)
+    hit_mark = max(hit_mark - dt, 0.0)
+    hurt = max(hurt - dt, 0.0)
+    loop mut n in news: n.1 += dt
+    kept: (str, f64, vec4)[]
+    loop n in news:
+        if n.1 < 4.0: kept.push(n)
+    news = kept
+    if g.winner >= 0 and won_at == 0: won_at = g.tick
+    if g.winner < 0: won_at = 0
+
+say = (what: str, color: vec4): news.push((what, 0.0, color))
+
+engine = mix([tone(55.0, 1.0, .saw, 0.35, 0.0, 0.0), tone(110.0, 1.0, .square, 0.12, 0.0, 0.0), tone(220.0, 1.0, .noise, 0.08, 0.0, 0.0)])
+wind = tone(400.0, 2.0, .noise, 0.4, 0.0, 0.0)
+snd_gun = mix([tone(180.0, 0.07, .noise, 0.5, 0.001, 0.06, 0.5), tone(90.0, 0.05, .square, 0.2, 0.001, 0.04, 0.6)])
+snd_hit = tone(1500.0, 0.06, .square, 0.18, 0.001, 0.05, 0.7)
+snd_hurt = mix([tone(240.0, 0.12, .noise, 0.5, 0.001, 0.1, 0.5), tone(160.0, 0.1, .square, 0.2, 0.001, 0.08, 0.7)])
+snd_boom = mix([tone(60.0, 1.6, .noise, 0.9, 0.002, 1.5, 0.4), tone(45.0, 1.0, .square, 0.3, 0.002, 0.9, 0.5)])
+engine_ids = [-1, -1]
+wind_id = -1
+
+sounds = ():
+    g = game()
+    on = mode != .menu
+    if wind_id < 0:
+        wind_id = play(wind, 0.0, looping = true)
+        loop i in [0..2): engine_ids[i] = play(engine, 0.0, looping = true)
+    loop i in 0.. and p in g.planes:
+        v = 0.0
+        if on and p.gone == 0:
+            v = settings.sound * (0.25 + 0.35 * p.throttle)
+            if p.down > 0: v *= 0.2
+        speed = f64(length(p.vel))
+        if i == me():
+            set_volume(engine_ids[i], v * 0.6)
+            set_pan(engine_ids[i], 0.0)
+        else: move_sound(engine_ids[i], p.pos, v, 900.0)
+        set_pitch(engine_ids[i], 0.75 + 0.45 * p.throttle + speed / 200.0)
+        # (each shot fired since the last frame)
+        n = min(p.shots - last_shots[i], 3)
+        if on and n > 0 and p.gone == 0:
+            if i == me(): play(snd_gun, settings.sound * 0.5, pitch = 0.9 + 0.2 * random())
+            else: play_at(snd_gun, p.pos, settings.sound * 0.5, 700.0)
+        last_shots[i] = p.shots
+    p = g.planes[me()]
+    w = 0.0
+    if on and p.gone == 0: w = settings.sound * clamp((f64(length(p.vel)) - 30.0) / 50.0, 0.0, 1.0) * 0.5
+    set_volume(wind_id, w)
+
+# ---------------- the heads-up display ----------------
+draw_hud = (g: Game):
+    i = me()
+    p = g.planes[i]
+    e = g.planes[1 - i]
+    if p.gone == 0:
+        fwd = fwd_of(p)
+        # the gunsight: where the guns point, 300 m out
+        if let at = world_to_screen(p.pos + fwd * 300.0):
+            ring(at, 16, 2, rgba(1, 1, 1, 0.75))
+            circle(at, 2, rgba(1, 1, 1, 0.9))
+            if hit_mark > 0.0:
+                loop d in [vec2(1, 1), vec2(1, -1), vec2(-1, 1), vec2(-1, -1)]: line(at + d * 9.0, at + d * 17.0, 3, rgb(1, 0.85, 0.4))
+        # (flying with the mouse: where it points, which the plane turns toward)
+        if mouse_flying():
+            if let m = world_to_screen(p.pos + aim_dir() * 400.0):
+                ring(m, 7, 2, rgba(1, 1, 1, 0.5))
+        else if settings.mouse and not touch_input() and not paused and p.down == 0: text_centered("click to fly with the mouse", vec2(640, 600), 20, gray(0.8))
+        if e.gone == 0:
+            d = f64(length(e.pos - p.pos))
+            col = COLORS[1 - i]
+            at = world_to_screen(e.pos) ?? vec2(-9999, -9999)
+            ahead = f64(dot(e.pos - cam_pos, cam_at - cam_pos)) > 0.0
+            if ahead and inside(at):
+                r = f32(clamp(1400.0 / max(d, 1.0), 14.0, 60.0))
+                brackets(at, r, col)
+                text_centered("{int(d)} m", at + vec2(0, r + 16), 18, col)
+                # where to put the gunsight to hit it
+                if d < 700.0 and e.down == 0 and p.down == 0:
+                    if let l = world_to_screen(p.pos + lead(p, e)): ring(l, 6, 2, with_alpha(col, 0.9))
+            else: arrow_to(e.pos, col)
+        # speed, height, throttle
+        speed = f64(length(p.vel)) * 3.6
+        alt = f64(p.pos.y)
+        text("{int(speed)} km/h", vec2(30, 610), 26, if f64(length(p.vel)) < STALL * 1.15: rgb(1, 0.5, 0.35) else: WHITE)
+        text("{int(alt)} m", vec2(30, 642), 26, WHITE)
+        hud_bar(Rect(30, 678, 160, 10), p.throttle, rgba(1, 1, 1, 0.8))
+        text("throttle", vec2(198, 672), 16, gray(0.75))
+        # the plane, and its guns
+        hud_bar(Rect(1090, 640, 160, 12), f64(p.health) / 100.0, COLORS[i])
+        hud_bar(Rect(1090, 664, 160, 8), f64(p.heat) / f64(JAM_HEAT), if p.jammed: rgb(1, 0.35, 0.25) else: rgb(1, 0.75, 0.35))
+        text(if p.jammed: "guns jammed" else: "guns", vec2(1090, 678), 16, if p.jammed: rgb(1, 0.4, 0.3) else: gray(0.75))
+        if p.down == 0 and f64(length(p.vel)) < STALL * 0.95: text_centered("STALL", vec2(640, 470), 30, rgb(1, 0.45, 0.3))
+        if p.down == 0 and length(vec2(p.pos.x, p.pos.z)) > FIELD: text_centered("turning back to the field", vec2(640, 510), 24, gray(0.85))
+    else: text_centered("back in {(p.gone + 59) / 60}", vec2(640, 470), 30, WHITE)
+    if hurt > 0.0:
+        r = visible_rect()
+        a = f32(hurt / 0.35 * 0.35)
+        loop k in [0..6):
+            w = f32(k) * 8.0
+            col = rgba(0.8, 0.05, 0.02, a * (1.0 - f32(k) / 6.0))
+            rect(f64(r.x + w), f64(r.y + w), 8, f64(r.h - w * 2.0), col)
+            rect(f64(r.x + r.w - w - 8.0), f64(r.y + w), 8, f64(r.h - w * 2.0), col)
+    # the score
+    text_centered("{g.planes[0].score}", vec2(590, 40), 44, COLORS[0])
+    text_centered("{g.planes[1].score}", vec2(690, 40), 44, COLORS[1])
+    text_centered("first to {WIN}", vec2(640, 76), 16, gray(0.7))
+    loop k in 0.. and n in news:
+        a = f32(clamp(4.0 - n.1, 0.0, 1.0))
+        text_centered(n.0, vec2(640, f32(150.0 + f64(k) * 34.0)), 28, with_alpha(n.2, a))
+    if g.winner >= 0:
+        text_centered(if g.winner == i: "you won" else: "{NAMES[g.winner]} won", vec2(640, 300), 72, COLORS[g.winner])
+        if g.tick - won_at > 120: text_centered(if mode == .practice: "Enter: again   Escape: the menu" else: "Enter: back to the menu", vec2(640, 370), 24, gray(0.8))
+    if mode == .online:
+        if s.waiting and s.silent(1 - s.me) > 1.0: text_centered("waiting for your friend...", vec2(640, 560), 24, gray(0.8))
+        if s.desync >= 0: text_centered("the two games differ since tick {s.desync}", vec2(640, 110), 22, rgb(1, 0.4, 0.4))
+        text("ping {int(s.ping(1 - s.me))} ms", vec2(30, 20), 16, gray(0.6))
+    if touch_input():
+        ring(PAD_AT, 110, 3, rgba(1, 1, 1, 0.25))
+        circle(PAD_AT + vec2(stick.y, stick.x) * 110.0, 34, rgba(1, 1, 1, 0.2))
+        circle(FIRE_AT, 80, rgba(1, 1, 1, 0.14))
+        text_centered("Fire", FIRE_AT, 26, rgba(1, 1, 1, 0.7))
+        loop b in [(THR_UP, "+"), (THR_DOWN, "-"), (LOOK_AT, "Look")]:
+            circle(b.0, 42, rgba(1, 1, 1, 0.12))
+            text_centered(b.1, b.0, 24, rgba(1, 1, 1, 0.7))
+        if hud_button(Rect(1150, 20, 110, 40), "Leave"): leave()
+    else: text("Escape: leave", vec2(1140, 20), 16, gray(0.55))
+
+inside = (p: vec2) -> bool:
+    r = visible_rect()
+    p.x > r.x + 20 and p.y > r.y + 20 and p.x < r.x + r.w - 20 and p.y < r.y + r.h - 20
+
+brackets = (at: vec2, r: f32, col: vec4):
+    k = r * 0.4
+    loop sx in [-1.0, 1.0]:
+        loop sy in [-1.0, 1.0]:
+            c = at + vec2(f32(sx) * r, f32(sy) * r)
+            line(c, c - vec2(f32(sx) * k, 0), 2, col)
+            line(c, c - vec2(0, f32(sy) * k), 2, col)
+
+# an arrow round the middle of the screen, pointing the way to turn to see pos
+arrow_to = (pos: vec3, col: vec4):
+    fwd = normalize(cam_at - cam_pos)
+    right = normalize(cross(fwd, cam_up))
+    up = cross(right, fwd)
+    d = pos - cam_pos
+    v = vec2(dot(d, right), -dot(d, up))
+    if length(v) < 0.001: v = vec2(0, 1)
+    v = normalize(v)
+    c = vec2(640, 360) + v * 230.0
+    side = perp(v)
+    triangle(c + v * 22.0, c + side * 12.0, c - side * 12.0, col)
+
+# ---------------- the menu ----------------
+draw_menu = ():
+    if invite.active():
+        if let c = invite.screen("Aces", WEB_PAGE): begin(c)
+        return
+    if page == 1:
+        draw_settings()
+        return
+    rect(Rect(0, 0, 520, 720), rgba(0.04, 0.05, 0.08, 0.55))
+    text_centered("ACES", vec2(260, 130), 96, WHITE)
+    ui_begin("menu", vec2(260, 240))
+    if ui_button("Invite a friend"): invite.start(reliable = false)
+    if ui_button("Join a friend"): invite.join()
+    if ui_button("Practice"):
+        local = new_game()
+        mode = .practice
+        start_view()
+    if ui_button("Settings"): page = 1
+    when TARGET != "wasm":
+        if ui_button("Quit"): quit()
+    ui_end()
+    if len(status) > 0: text_centered(status, vec2(260, 560), 22, gray(0.85))
+    text_wrapped("Two biplanes: the first to shoot the other down five times wins. The mouse steers and its button fires. Keys: S climbs, W dives, A and D roll, Q and E the rudder, Shift and Ctrl the throttle, Space fires, C looks at the other plane.", vec2(40, 590), 440, 18, gray(0.8), align = .center)
+
+draw_settings = ():
+    rect(Rect(340, 0, 600, 720), rgba(0.04, 0.05, 0.08, 0.75))
+    text_centered("Settings", vec2(640, 70), 48, WHITE)
+    ui_begin("settings", vec2(640, 140))
+    settings.mouse = ui_switch("Fly with the mouse", settings.mouse)
+    settings.invert = ui_switch("Inverted (W and the mouse forward climb)", settings.invert)
+    settings.sound = ui_slider("Sound", settings.sound)
+    settings.skill = ui_choice("The computer", ["easy", "fair", "hard"], settings.skill)
+    ui_controls()
+    if ui_button("Back") or ui_back():
+        save_settings()
+        page = 0
+    ui_end()
+
+# the in-fight menu (Escape)
+draw_paused = ():
+    if page == 1:
+        draw_settings()
+        return
+    rect(visible_rect(), rgba(0.03, 0.04, 0.06, 0.55))
+    text_centered(if mode == .practice: "Paused" else: "The fight goes on", vec2(640, 200), 48, WHITE)
+    ui_begin("paused", vec2(640, 290))
+    if ui_button("Back to the fight"): resume()
+    if ui_button("Settings"): page = 1
+    if ui_button("Leave"): leave()
+    ui_end()

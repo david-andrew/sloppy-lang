@@ -543,6 +543,7 @@ GALLERY = [
     ("lowline", "examples/lowline/lowline.jo", "Lowline", "lowline", ""),
     ("netpong", "examples/netpong/netpong.jo", "Netpong", "netpong", ""),
     ("duel", "examples/duel/duel.jo", "Duel", "duel", ""),
+    ("aces", "examples/aces/aces.jo", "Aces", "aces", ""),
     ("arcade", "lib/new/arcade.jo", "sloppy new: arcade", "arcade", ""),
     ("platformer", "lib/new/platformer.jo", "sloppy new: platformer", "platformer", ""),
     ("firstperson", "lib/new/3d.jo", "sloppy new: 3d", "firstperson", ""),
@@ -556,6 +557,8 @@ GALLERY = [
 
 # (what a card says besides its program's first sentence)
 GALLERY_NOTES = {
+    "aces": 'For two, anywhere, as Duel is (Invite a friend gives a link to send them), or alone against the computer. '
+            'Flown with keys, a gamepad or two thumbs on a phone; the planes are built from boxes in the program (<code>add_box</code>, <code>custom_mesh</code>).',
     "duel": 'For two, anywhere: Invite a friend gives a link to send them; they open it, in a browser here or on a phone. '
             'Rollback netplay (<code>netplay.session</code> over invite codes): each game runs the whole match, with no server between them.',
     "netpong": 'For two, anywhere: choose Invite a friend and send them the link it gives; they open it (on a phone too), and you paste back the code their game then shows. '

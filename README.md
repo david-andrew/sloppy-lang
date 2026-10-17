@@ -102,7 +102,8 @@ browser](https://sloppy-lang.org/breakwater/).
   connect straight to each other, browser or desktop, anywhere (WebRTC: the browser's own in a
   page, Sloppy's own in native programs; a TURN relay for strict networks if you have one).
   Rollback netplay (`netplay.session`) for fighting and action games, client and server for
-  many players. See [playing over a network](docs/MULTIPLAYER.md) and [Duel](https://sloppy-lang.org/examples/duel/).
+  many players. See [playing over a network](docs/MULTIPLAYER.md), [Duel](https://sloppy-lang.org/examples/duel/)
+  and [Aces](https://sloppy-lang.org/examples/aces/) (biplanes in a dogfight).
 - **Programs keep working.** Native executables are static (they talk to the kernel directly);
   the GPU driver is loaded at run time when present, and without one games still run on a
   multithreaded software renderer. Web builds are one HTML file with the WebAssembly embedded. The compiler needs no assembler, linker or C toolchain.
@@ -224,7 +225,7 @@ lib/std/       thread pool and parallel helpers, numeric arrays (nd.jo)
 lib/game/      windows (Wayland, X11, Win32, Cocoa), input, Vulkan, OpenGL ES / WebGL, 2D, 3D, images, audio
 lib/web/       JavaScript glue embedded into web builds
 editors/       the VS Code extension (tools/vsix.py packages it)
-examples/      rebound (a complete 2D game), breakwater (a complete 3D game), dunes and lowline (3D), tiles (a tilemap and sprites), shapes, cube, scene3d
+examples/      rebound (a complete 2D game), breakwater (a complete 3D game), dunes and lowline (3D), aces, duel and netpong (over the network), arena (a server), tiles (a tilemap and sprites), shapes, cube, scene3d
 tests/         test programs with expected output (tools/runtests.py), render references
 bench/         benchmarks (Sloppy and equivalent C)
 tools/         bootstrap, test runner, render test, differential fuzzer, language server test,
