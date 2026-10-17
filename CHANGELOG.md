@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Invite codes between web pages work in Firefox: a page gave up while its friend was still
+  pasting the reply in (Firefox's ICE stops for good after some seconds unanswered; Chrome's
+  says failed and recovers, but the page closed it at once). A joining page whose ICE gave up
+  starts again with the same certificate, ICE name and password (what its reply code holds),
+  and a failure before connecting is waited out (20 s for the inviter, 10 minutes for the
+  joiner). Tested Firefox and Chromium in every pairing with the reply pasted 0, 30 and 90 s
+  later (tools/rtc_pages.mjs, in nettest.py).
+
 ## 0.19.0
 
 From a 3D kart racer (a spline track, drifting, AI karts, a minimap, names over karts):

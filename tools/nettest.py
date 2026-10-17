@@ -215,6 +215,18 @@ if turn:
                            capture_output=True, text=True, timeout=240, env=dict(tenv, RTC_PAGE_QUERY=f"SLOPPY_RTC_RELAY_ONLY=1&TURN={turn}"))
         print(r.stdout.strip().replace("WebRTC:", "WebRTC through a TURN relay only:"))
         if r.returncode != 0: failed += 1
+# two web pages straight to each other by invite codes, the reply pasted in 20 s later (a page
+# must wait for it): Chromium to Chromium, and with Firefox where SLOPPY_FIREFOX says where one is
+if shell and shutil.which("node"):
+    page = build("invite_page", "--target", "wasm") + ".html"
+    pairs = [(shell, shell)]
+    ffp = os.environ.get("SLOPPY_FIREFOX")
+    if ffp: pairs += [(ffp, ffp), (ffp, shell), (shell, ffp)]
+    for k, (inv, joi) in enumerate(pairs):
+        r = subprocess.run(["node", os.path.join(root, "tools", "rtc_pages.mjs"), inv, joi, page, os.path.join(tmp, f"pages{k}")],
+                           capture_output=True, text=True, timeout=240, env=dict(env, REPLY_DELAY="20000"))
+        print(r.stdout.strip().split("\n")[0])
+        if not r.stdout.startswith("ok"): failed += 1
 # the same in Firefox, where SLOPPY_FIREFOX says where one is (on a display of its own if Xvfb is
 # installed: headless, Firefox has no WebGL)
 ff = os.environ.get("SLOPPY_FIREFOX")
