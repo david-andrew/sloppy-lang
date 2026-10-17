@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.19.0
+
 From a 3D kart racer (a spline track, drifting, AI karts, a minimap, names over karts):
 - `world_to_screen(vec3)` and `screen_ray` were off whenever the window was not the design area's
   shape (they took the design area for the whole picture, which 3D fills): names drifted off the
