@@ -3346,7 +3346,7 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
   struct UiStyle:
       size: f64 = 34.0                        # text size of the items
       spacing: f64 = 58.0                     # from one item to the next
-      width: f64 = 440.0                      # of a slider or switch row
+      width: f64 = 440.0                      # of a slider or switch row (wider when a label needs it)
       color: vec4 = vec4(1, 1, 1, 0.72)
       focus_color: vec4 = vec4(1, 0.9, 0.55, 1)
       disabled_color: vec4 = vec4(1, 1, 1, 0.28)

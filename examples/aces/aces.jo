@@ -290,23 +290,26 @@ seg_near = (a: vec3, b: vec3, r: f64) -> bool:
     f64(dot(q, q)) < r * r
 
 # ---------------- flying toward something (the computer's pilot; the field's edge) ----------------
-# the stick and rudder that turn plane p toward the direction want: roll it overhead and pull,
-# or, nearly there, small corrections with the wings level
+# the stick and rudder that turn plane p toward the direction want: far off, roll it overhead and
+# pull; nearly there, small corrections with the wings level (between, some of each: no
+# twitching from one to the other)
 steer = (p: Plane, want: vec3) -> Pad:
     l = quat_rotate(quat_inverse(p.rot), normalize(want))     # (-z ahead, +x right, +y up)
     ahead = f64(-l.z)
-    c = Pad()
-    if ahead > 0.985:
-        right = right_of(p)
-        c.pitch = int(clamp(f64(l.y) / ahead * 14.0, -1.0, 1.0) * 100.0)
-        c.yaw = int(clamp(f64(l.x) / ahead * 14.0, -1.0, 1.0) * 100.0)
-        c.roll = int(clamp(f64(right.y) * 2.0 + f64(l.x) / ahead * 6.0, -1.0, 1.0) * 100.0)
-        return c
+    a = max(ahead, 0.1)
+    right = right_of(p)
+    near_pitch = clamp(f64(l.y) / a * 14.0, -1.0, 1.0)
+    near_yaw = clamp(f64(l.x) / a * 14.0, -1.0, 1.0)
+    near_roll = clamp(f64(right.y) * 2.0 + f64(l.x) / a * 6.0, -1.0, 1.0)
     err = atan2(f64(l.x), f64(l.y))
-    c.roll = int(clamp(err * 2.0, -1.0, 1.0) * 100.0)
     off = acos(clamp(ahead, -1.0, 1.0))
-    if abs(err) < 1.2: c.pitch = int(clamp(off * 3.0, 0.0, 1.0) * 100.0)
-    else: c.pitch = 20
+    far_roll = clamp(err * 2.0, -1.0, 1.0)
+    far_pitch = if abs(err) < 1.2: clamp(off * 3.0, 0.0, 1.0) else: 0.2
+    k = smoothstep(0.94, 0.995, ahead)
+    c = Pad()
+    c.pitch = int((far_pitch + (near_pitch - far_pitch) * k) * 100.0)
+    c.roll = int((far_roll + (near_roll - far_roll) * k) * 100.0)
+    c.yaw = int(near_yaw * k * 100.0)
     c
 
 # the way to aim to hit e from p: where e will be when the bullets get there (they keep p's
@@ -500,6 +503,8 @@ aim_from = (p: Plane, later: bool):
     aim_pitch = asin(clamp(f64(f.y), -1.0, 1.0))
 
 mouse_flying = () -> bool: settings.mouse and mode != .menu and not paused and is_mouse_locked() and not touch_input()
+steering = true                 # (the mouse steers, until keys or a stick do)
+mouse_steering = () -> bool: mouse_flying() and steering
 
 # this machine's controls for a tick (keys ease in, so a tap turns a little)
 stick = vec3(0, 0, 0)           # pitch, roll, yaw
@@ -526,7 +531,7 @@ my_pad = () -> Pad:
     c = Pad()
     c.fire = action_down("Fire")
     p = game().planes[me()]
-    if mouse_flying() and flying(p):
+    if mouse_steering() and flying(p):
         # (the mouse: toward where it points, as the computer's pilot flies; keys still win)
         t = steer(p, aim_dir())
         if abs(want.x) < 0.05: want.x = f32(f64(t.pitch) / 100.0)
@@ -542,7 +547,7 @@ my_pad = () -> Pad:
         else if t.x < 640.0:
             d = (t - pad_at()) / 110.0
             want = vec3(f32(clamp(f64(d.y), -1.0, 1.0)), f32(clamp(f64(d.x), -1.0, 1.0)), 0)
-    stick = approach(stick, want, if mouse_flying(): 30.0 else: 9.0, DT)
+    stick = approach(stick, want, if mouse_steering(): 30.0 else: 9.0, DT)
     c.pitch = int(round(clamp(f64(stick.x), -1.0, 1.0) * 100.0))
     c.roll = int(round(clamp(f64(stick.y), -1.0, 1.0) * 100.0))
     c.yaw = int(round(clamp(f64(stick.z), -1.0, 1.0) * 100.0))
@@ -577,14 +582,19 @@ update = (dt: f64):
         if paused and mode == .practice:
             sounds()
             return
+        # (the keys or a stick take over from the mouse, the camera behind the plane again;
+        # moving the mouse gives it back, from where the nose points then)
+        if abs(action_axis("Dive", "Climb")) + abs(action_axis("Roll left", "Roll right")) + abs(action_axis("Rudder left", "Rudder right")) > 0.05: steering = false
         if mouse_flying():
             d = mouse_delta()
+            if length(d) > 2.0: steering = true
             k = 0.0025
-            aim_yaw -= f64(d.x) * k
-            aim_pitch = clamp(aim_pitch - f64(d.y) * k * (if settings.invert: -1.0 else: 1.0), -1.45, 1.45)
+            if steering:
+                aim_yaw -= f64(d.x) * k
+                aim_pitch = clamp(aim_pitch - f64(d.y) * k * (if settings.invert: -1.0 else: 1.0), -1.45, 1.45)
         p = game().planes[me()]
         if not flying(p): aim_from(game().planes[me()], true)
-        else if aim_fresh: aim_from(p, false)
+        else if aim_fresh or not mouse_steering(): aim_from(p, false)
     if mode != .menu and game().winner >= 0 and (key_pressed(.enter) or gamepad_pressed(.a)) and game().tick - won_at > 120:
         if mode == .practice:
             local = new_game()
@@ -611,6 +621,8 @@ cam_pos = vec3(0, 400, 0)
 cam_at = vec3(0, 400, -10)
 cam_up = vec3(0, 1, 0)
 look_amount = 0.0
+mouse_view = 0.0
+cam_aim = vec3(0, 0, -1)
 won_at = 0
 
 start_view = ():
@@ -619,6 +631,7 @@ start_view = ():
     cam_q = p.rot
     cam_pos = p.pos + quat_rotate(cam_q, vec3(0, 4.2, 15))
     aim_from(p, false)
+    cam_aim = fwd_of(p)
     news = []
     paused = false
     had_lock = false
@@ -642,12 +655,16 @@ place_camera = (g: Game, dt: f64):
     side = if mode == .menu: f32(-7.0) else: f32(0.0)
     behind = p.pos + quat_rotate(cam_q, vec3(side, 4.2, 15))
     ahead = p.pos + quat_rotate(cam_q, vec3(side, 2.6, -30))
-    if mouse_flying():
-        # (flying with the mouse: the camera looks where it points, the horizon level)
-        d = aim_dir()
-        behind = p.pos - d * 15.0 + vec3(0, 4.0, 0)
-        ahead = p.pos + d * 40.0 + vec3(0, 2.5, 0)
-        up = vec3(0, 1, 0)
+    # (flying with the mouse: the camera looks where it points, the horizon level)
+    mouse_view = approach(mouse_view, if mouse_steering(): 1.0 else: 0.0, 5.0, dt)
+    # (a mouse's motion comes in uneven steps, frame to frame: the camera follows it smoothly)
+    cam_aim = normalize(approach(cam_aim, aim_dir(), 25.0, dt))
+    if mouse_view > 0.001:
+        d = cam_aim
+        k = f32(mouse_view)
+        behind = lerp(behind, p.pos - d * 15.0 + vec3(0, 4.0, 0), k)
+        ahead = lerp(ahead, p.pos + d * 40.0 + vec3(0, 2.5, 0), k)
+        up = normalize(lerp(up, vec3(0, 1, 0), k))
     # (looking at the other plane: from behind this one, along the line between them)
     to_e = normalize(e.pos - p.pos)
     past = p.pos - to_e * 15.0 + up * 4.0
@@ -871,9 +888,12 @@ draw = ():
     # the bullets: every one a tracer
     if g.bullets.len() > 0:
         tr: Instance3D[]
+        # (each where it was between the last two ticks, as the planes are)
+        back = f32(DT * (clamp(spare / DT, 0.0, 1.0) - 1.0))
         loop b in g.bullets:
             d = normalize(b.vel)
-            tr.push(instance(translation(b.pos - d * 2.0) * facing(d) * scaling(vec3(0.12, 0.12, 4.0)), if b.owner == 0: rgb(1.0, 0.75, 0.4) else: rgb(1.0, 0.9, 0.5)))
+            at = if b.life < BULLET_LIFE: b.pos + b.vel * back else: b.pos
+            tr.push(instance(translation(at - d * 2.0) * facing(d) * scaling(vec3(0.12, 0.12, 4.0)), if b.owner == 0: rgb(1.0, 0.75, 0.4) else: rgb(1.0, 0.9, 0.5)))
         draw_mesh_instanced(tracer, tr, emissive = 3.0, cast_shadow = false)
     smoke.draw(glow = false)
     fire.draw()
@@ -996,7 +1016,7 @@ draw_hud = (g: Game):
             if hit_mark > 0.0:
                 loop d in [vec2(1, 1), vec2(1, -1), vec2(-1, 1), vec2(-1, -1)]: line(at + d * 9.0, at + d * 17.0, 3, rgb(1, 0.85, 0.4))
         # (flying with the mouse: where it points, which the plane turns toward)
-        if mouse_flying():
+        if mouse_steering():
             if let m = world_to_screen(p.pos + aim_dir() * 400.0):
                 ring(m, 7, 2, rgba(1, 1, 1, 0.5))
         else if settings.mouse and not bot and not touch_input() and not paused and p.down == 0: text_centered("click to fly with the mouse", vec2(640, 600), 20, gray(0.8))
@@ -1117,11 +1137,12 @@ draw_menu = ():
     text_wrapped("Two biplanes: the first to shoot the other down five times wins. {how}", vec2(40, 590), 440, 18, gray(0.8), align = .center)
 
 draw_settings = ():
-    rect(Rect(340, 0, 600, 720), rgba(0.04, 0.05, 0.08, 0.75))
+    if mode != .menu: rect(visible_rect(), rgba(0.03, 0.04, 0.06, 0.5))
+    rect(Rect(240, 0, 800, 720), rgba(0.04, 0.05, 0.08, 0.8))
     text_centered("Settings", vec2(640, 70), 48, WHITE)
     ui_begin("settings", vec2(640, 140))
     settings.mouse = ui_switch("Fly with the mouse", settings.mouse)
-    settings.invert = ui_switch("Inverted (W and the mouse forward climb)", settings.invert)
+    settings.invert = ui_switch("Invert pitch", settings.invert)
     settings.sound = ui_slider("Sound", settings.sound)
     settings.skill = ui_choice("The computer", ["easy", "fair", "hard"], settings.skill)
     ui_controls()
