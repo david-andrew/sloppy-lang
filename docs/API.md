@@ -1223,9 +1223,9 @@ Each series given no color takes the next of a palette. The axes fit what is sho
 
 ## Cryptography
 
-A module (`import crypto`): SHA-1, SHA-256, SHA-384 and SHA-512, HMAC, HKDF, AES-128-GCM, P-256 and X25519 keys (ECDH), P-256 signatures (ECDSA), P-384 and RSA signatures checked, self-signed certificates and random bytes from the operating system; checked against the standards' test vectors and Wycheproof's.
+A module (`import crypto`): SHA-1, SHA-256, SHA-384 and SHA-512, HMAC, HKDF, TLS 1.2's PRF, AES-128-GCM, P-256 and X25519 keys (ECDH), P-256 signatures (ECDSA), P-384 and RSA signatures checked, self-signed certificates and random bytes from the operating system; checked against the standards' test vectors and Wycheproof's.
 
-Cryptography: hashes (SHA-1, SHA-256, SHA-384, SHA-512), HMAC, HKDF, AES-128-GCM, the P-256 curve (ECDH keys and ECDSA signatures), X25519 keys, P-384 and RSA signatures checked, a self-signed certificate, and random bytes from the operating system. It is what the library's WebRTC (lib/rtc.jo) and TLS (lib/tls.jo) are made of, and a program may use it too: `import crypto`.
+Cryptography: hashes (SHA-1, SHA-256, SHA-384, SHA-512), HMAC, HKDF, TLS 1.2's PRF, AES-128-GCM, the P-256 curve (ECDH keys and ECDSA signatures), X25519 keys, P-384 and RSA signatures checked, a self-signed certificate, and random bytes from the operating system. It is what the library's WebRTC (lib/rtc.jo) and TLS (lib/tls.jo) are made of, and a program may use it too: `import crypto`.
 
 ```gdscript
 key = crypto.random_bytes(16)
@@ -1273,6 +1273,10 @@ ok = crypto.p256_verify(pk.public, crypto.sha256(msg), sig)
 
 - `hkdf_extract = (salt: u8[], ikm: u8[]) -> u8[]`: a key of 32 bytes made from input keying material and a salt (empty: as 32 zeros)
 - `hkdf_expand = (prk: u8[], info: u8[], n: int) -> u8[]`: n bytes of keys made from such a key, for a purpose (info)
+
+#### TLS 1.2's PRF (RFC 5246 5, P_SHA256)
+
+- `tls12_prf = (secret: u8[], label: str, seed: u8[], n: int) -> u8[]`: n bytes of keys made from a secret, for a purpose (label) and a seed
 
 #### AES-128
 
