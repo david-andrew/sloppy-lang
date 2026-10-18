@@ -288,6 +288,9 @@ check("complete names", all(n in names for n in ["ships", "s", "dt", "Ship", "up
 check("no internal names", any(n.startswith("__") for n in names), False)
 check("complete array functions", all(n in complete("ships.|") for n in ["len", "push", "map", "filter"]), True)
 check("nothing in comments", complete("x = 1  # s.|"), [])
+check("complete variants in a match arm", complete("match mode:\n            .|: pass"), ["idle", "chase"])
+check("complete variants after is", complete("if mode is .|: pass"), ["idle", "chase"])
+check("complete variants after if let", complete("if let .| = mode: pass"), ["idle", "chase"])
 
 # ---- errors ----
 epath = os.path.join(tmp, "errs.jo")
@@ -490,6 +493,14 @@ ru, rd = doc("rec.jo", rsrc)
 check("recursive: no errors", rd, [])
 h = c.request("textDocument/hover", tp(ru, rsrc, "next!", 1))
 check("recursive: hover on the boxed field", h and h["contents"]["value"], "```sloppy\n(field) next: Node?\n```")
+# ---- patterns: if let on a variant, a condition on an arm, is .variant ----
+psrc = "enum E:\n    num(v: f64)\n    bin(op: str, l: E, r: E)\ne = E.num(1)\nif let .bin(op, l, r) = e and op == \"+\": print(l)\nmatch e:\n    .num(v) if v > 0: print(v)\n    _: pass\nprint(e is .num)\n"
+pu, pd = doc("pat.jo", psrc)
+check("patterns: no errors", pd, [])
+phv = lambda s, k=0: (c.request("textDocument/hover", tp(pu, psrc, s, k)) or {}).get("contents", {}).get("value", "")
+check("patterns: hover on what if let names", [phv("l)"), phv("op ==")], ["```sloppy\n(variable) l: E\n```", "```sloppy\n(variable) op: str\n```"])
+check("patterns: hover on a name in an arm's condition", phv("v > 0"), "```sloppy\n(variable) v: f64\n```")
+check("patterns: hover on the variants", [phv(".bin(", 1), phv("num(v)"), phv("num)")], ["```sloppy\n(variant) E.bin(op: str, l: E, r: E)\n```", "```sloppy\n(variant) E.num(v: f64)\n```", "```sloppy\n(variant) E.num(v: f64)\n```"])
 
 usrc2 = "数量 = 3\nprint(数"
 c.set_text(uu, usrc2)

@@ -1286,7 +1286,14 @@ parse_binary = (minprec: int) -> int:
                 isnot = true
             n = mk(.istype, pos)
             nodes[n].a = i32(lhs)
-            nodes[n].b = i32(parse_type())
+            if pk() == .dot:
+                # x is .num: which variant an enum value is (b a dotname, not a type)
+                d = mk(.dotname, cur_pos())
+                advance()
+                nodes[d].name = i32(expect_name("variant name after '.'"))
+                if pk() == .lparen and not space_before(ti): fatal(cur_pos(), "`is` tests the variant only; to bind its fields, `if let .{name_of(int(nodes[d].name))}(...) = value:`")
+                nodes[n].b = i32(d)
+            else: nodes[n].b = i32(parse_type())
             if isnot:
                 nn = mk(.not_, pos)
                 nodes[nn].a = i32(n)
@@ -1418,8 +1425,7 @@ parse_comprehension = (pos: int, map: bool = false) -> int:
             if accept(.kw_let):
                 # (if let n = to_float(s): the elements that have one, n in them)
                 il = mk(.iflet, cur_pos())
-                nodes[il].name = i32(expect_ident("variable name"))
-                expect(.assign, "'='")
+                parse_let_target(il)
             saved_h = p_header
             p_header = true
             c = parse_expr()
@@ -1507,8 +1513,7 @@ parse_if = () -> int:
     n = mk(.if_, pos)
     if accept(.kw_let):
         nodes[n].kind = .iflet
-        nodes[n].name = i32(expect_ident("variable name"))
-        expect(.assign, "'='")
+        parse_let_target(n)
     saved_h = p_header
     p_header = true
     nodes[n].a = i32(parse_expr())
@@ -1567,21 +1572,40 @@ parse_if = () -> int:
         nodes[n].b = i32(b)
     n
 
+# after `if let` or `loop let`: a name for an optional's value, or a variant whose fields are
+# bound (if let .bin(op, l, r) = e), the pattern in d
+parse_let_target = (n: int):
+    if pk() == .dot or ((pk() == .ident or is_soft_kw(pk())) and pkn(1) == .lparen): nodes[n].d = i32(parse_pattern())
+    else: nodes[n].name = i32(expect_ident("variable name"))
+    expect(.assign, "'='")
+
 parse_pattern = () -> int:
     pos = cur_pos()
     if pk() == .ident and toks[ti].len == 1 and p_src[int(toks[ti].start)] == '_':
         advance()
         return mk(.pwild, pos)
-    if pk() == .dot or ((pk() == .ident or is_soft_kw(pk())) and (pkn(1) == .lparen or pkn(1) == .colon or pkn(1) == .comma)):
+    if pk() == .dot or ((pk() == .ident or is_soft_kw(pk())) and (pkn(1) == .lparen or pkn(1) == .colon or pkn(1) == .comma or pkn(1) == .kw_if)):
         if pk() == .dot: advance()
         v = mk(.pvariant, pos)
         nodes[v].name = i32(expect_name("variant name"))
         if accept(.lparen):
             binds: int[]
             loop pk() != .rparen:
-                b = mk(.ident, cur_pos())
-                nodes[b].name = i32(expect_ident("binding name"))
-                binds.push(b)
+                if pk() == .ident and (pkn(1) == .comma or pkn(1) == .rparen):
+                    b = mk(.ident, cur_pos())
+                    nodes[b].name = i32(expect_ident("binding name"))
+                    binds.push(b)
+                else:
+                    # (.bin("+", .num(a), _): a value or a pattern where a name goes, kept with
+                    # its text for the checker to say what to write instead)
+                    from = ti
+                    sub = parse_pattern()
+                    s0 = int(toks[from].start)
+                    s1 = int(toks[ti - 1].start) + int(toks[ti - 1].len)
+                    if toks[from].kind == .str_lit: s0 -= 1          # (the quotes)
+                    if toks[ti - 1].kind == .str_lit: s1 += 1
+                    nodes[sub].sval = i32(intern(p_src[s0..s1)))
+                    binds.push(sub)
                 if not accept(.comma): break
             expect(.rparen, "")
             set_list(v, binds)
@@ -1617,6 +1641,12 @@ parse_match = () -> int:
             loop true:
                 pats.push(parse_pattern())
                 if not accept(.comma): break
+            # (.rect(w, h) if w == h: an arm with a condition, after its names are bound)
+            if accept(.kw_if):
+                saved_h = p_header
+                p_header = true
+                nodes[arm].a = i32(parse_expr())
+                p_header = saved_h
         set_list(arm, pats)
         expect(.colon, "")
         nodes[arm].b = i32(parse_block())
@@ -1968,8 +1998,7 @@ parse_loop_head = () -> int:
     if pk() == .kw_let:
         advance()
         w = mk(.while_, pos)
-        nodes[w].name = i32(expect_ident("variable name"))
-        expect(.assign, "'='")
+        parse_let_target(w)
         nodes[w].aux = 1
         nodes[w].a = i32(parse_expr())
         return w

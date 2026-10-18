@@ -510,6 +510,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `Date.now()` | `unix_time()` (seconds since 1970: what to save to work out time away) |
 | Phaser's `this.tweens.add({...})`, `onComplete` | `t = tween(from, to, 0.3, ease = ease_out_back)` in a variable or field; each frame `t.update(dt)`, `t.value()`, and `t.done()` for what comes next |
 | a timeline / tween chain | `hop = chain([tween(a, b, 0.2), tween(b, a, 0.3)])`: one after another, `hop.value()`, `hop.done()`; `done(tweens)` for a set started together |
+| `switch (s.kind)`, `case "rect":` on a tagged union | `enum Shape:` with `circle(r: f64)` and `rect(w: f64, h: f64)`; `match s:` with `.rect(w, h):` (and a condition: `.rect(w, h) if w == h:`), `if s is .rect:`, `if let .rect(w, h) = s:` |
 | scenes, `this.scene.start("Level")` | `enum Screen: title, play, over`, `screen = .play`, and a `match screen:` in update and in draw |
 | `async`/`await`, a chain of animations | a phase for each step (`enum Phase: idle, swapping, clearing, falling`), moved on in update when its tweens are done; or `Actions` for timed steps |
 | `btoa`, `atob` | `base64_encode(bytes(s))`, `base64_decode(s)` |
@@ -542,6 +543,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero when changed (`counts[w] += 1`, `groups[k].push(x)`); reading one, `m[k]`, is an error: `m.get(k) ?? 0` |
 | `set()` | a map to `bool`, or `unique(xs)` |
 | `None`, `if x is None:` | `none`, `if x == none:`; `if let v = x:` gets what is inside |
+| `match s:` with `case Rect(w, h) if w == h:`, `case n if n > 100:` | `match s:` with `.rect(w, h) if w == h:` (a variant of an enum, its fields by position), `_ if s > 100:`; `if let .rect(w, h) = s:` for one variant |
 | `t[0]` (a tuple) | `t.0` |
 | `x = 1` in a function makes a local | `x = 1` in a function changes a global named `x` (one declared above it); `let x = 1` makes a local of that name |
 | `max(xs, key=len)`, `sorted(xs, key=...)` | `max_by(xs, (x): len(x))`, `sorted_by(xs, (x): x.age)` |

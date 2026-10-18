@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Patterns: a match arm can have a condition after its patterns, `.rect(w, h) if w == h:`,
+  `int if v < 0:`, `_ if n > 100:`; when it fails, the arms below are tried. The condition sees
+  the names the arm binds and what it narrows, and what it tests with `is` holds in the arm. An arm
+  with a condition does not count for naming each variant, and the error says so ("the arm for
+  .rect has a condition, so a .rect that fails it is not matched: add an arm without one, or
+  `_:`"), for a `bool`'s `true:` and `false:` and for `_ if ...:` too. `if let .bin(op, l, r) = e:`
+  names a variant's fields when the value is that variant (with `else:`, `else if let`, `and` for a
+  condition on them, as an expression, and in `[loop ...: if let ...]`), and `loop let .cons(head,
+  tail) = list:` goes round while it is; the fields may hold the enum itself (`l: Expr`). `x is
+  .num` and `x is not .num` test which variant a value is, for enums with or without fields, and
+  `x == .num` for a variant with fields says to write that. Nested patterns and values in a field's
+  place (`.bin("+", .num(a), _)`) are errors that give the condition to write instead
+  (`.bin(op, l, _) if op == "+" and l is .num:`), and `x if x < 0:` says that a name in a pattern is
+  a value to compare with (`_ if n < 0:`). The editor completes and hovers variants in patterns,
+  after `is` and after `if let`.
+
 - Recursive types: a struct or enum can hold itself, as an optional (`next: Node?`), in an enum's
   variant (`bin(op: str, l: Expr, r: Expr)`), through a union (`child: Branch | Leaf`) or through
   another struct that holds it (`struct A: b: B?` and `struct B: a: A?`), where it had to go in an
