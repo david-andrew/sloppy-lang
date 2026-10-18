@@ -1,7 +1,13 @@
 # Changelog
 
-## 0.22.0
+## Unreleased
 
+- Bit helpers count and turn a number's own bits: `rotate_left(x: u32, 1)` stays a u32 (it
+  turned 64 bits, giving numbers a u32 cannot hold), `leading_zeros(u8(0x80))` is 0 (it was 56),
+  `popcount(i32(-1))` 32; for u8 to u64 and i8 to i32. `get_le`/`get_be` take any size from 1 to
+  8 bytes (a 24-bit field). `to_int(s, base)` for bases 2 to 36; `to_int` reads 0b and 0o too.
+- `set_env`, `unset_env` and `env_all()`: seen by `env` and by the programs started after.
+- The thread pool makes a wake call only for threads that are asleep.
 - Text is not a number: a one-character string in double quotes is a character's code only where
   a byte (`u8`) is expected (`s[i] == "a"`, `bytes.push("\n")`); single quotes, `'a'`, still are
   wherever an integer goes. `add(1, "2")` printed 51 and `x: int = "5"` made 53; now they are
@@ -41,6 +47,8 @@
   matches need `_:`, data enums' patterns and their limits, narrowing in loops, `T??`; its example
   of two elements passed as `mut` was `swap(xs[i], xs[j])`, which is `swap(xs, i, j)`.
   `to_int(" 42")` leaving out spaces around the number is stated.
+
+## 0.22.0
 
 - Floats print 5 times as fast where they need 16 or 17 digits (0.1 + 0.2): those digits are
   worked out exactly in 128-bit whole numbers instead of the arbitrary-precision way, which stays
@@ -156,6 +164,7 @@
 - Aces: the lobby has your name and insignia (as Settings has them); the shark's mouth is bigger
   and reaches the nose, round the triplane's cowling; Lock camera roll (Settings, off at first)
   keeps the horizon level in any view, with keys or a gamepad as with the mouse.
+
 
 ## 0.21.0
 
