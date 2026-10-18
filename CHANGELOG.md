@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- netplay: the compiler warns where a session's tick, or a function of the program's it calls,
+  takes random numbers, reads the clock or the input, or changes a global (a rollback does not
+  put globals back): each is a desync found only when playing. It looked at the tick's own
+  body before, for random numbers and the clock. `@deterministic` marks a function of your own
+  whose function arguments are checked so.
+
 - A phone held upright, playing a game made wider than tall: a note over it to turn the phone
   sideways (the game goes on under it; `sideways_hint(false)` for a game laid out for both ways).
 - Thick `polyline`s (and `rect_rounded_outline`) are one band through their points: the bends

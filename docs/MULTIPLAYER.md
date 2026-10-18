@@ -180,6 +180,10 @@ machines:
 - a global the tick changes: it is not part of the game, so a rollback does not put it back
   (keep it in the game's struct).
 
+The compiler warns where the tick given to `netplay.session`, or a function of the program's it
+calls, takes random numbers, reads the clock or the input, or changes a global. (An `Rng` kept in
+the game, `g.rng.next_float()`, is the same everywhere.)
+
 A tick may be played several times (each rollback plays it again), so it must do nothing but
 compute the game: a sound or particles started in it would start again. Start them in `update`
 from what changed in `s.state` since the last frame.

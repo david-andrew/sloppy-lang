@@ -983,6 +983,11 @@ checked:
 each_row = (f: (int) -> Row) -> Row[]: parallel_range(height, f)
 ```
 
+`@deterministic` marks a function whose function arguments must give the same results on every
+machine, as netplay's tick does (`netplay.session` is marked): the compiler warns where they, or
+the program's functions they call, take random numbers (but from an `Rng` they are given), read
+the clock or the input, or change a global.
+
 A number the threads change together is an `Atomic`: `done = atomic(0)`, then `done.add(1)`,
 `done.get()`, `done.set_max(v)` and `done.compare_swap(old, new)` from parallel code (copies
 of it are the same number). It counts work done, or flags that the answer is found so the other
