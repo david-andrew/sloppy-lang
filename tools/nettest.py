@@ -20,6 +20,16 @@ def build(name, *flags):
 WANT_SERVER = ["listening", "server: joined", "server: got msg 1", "server: got msg 2", "server: got msg 3", "server: left"]
 WANT_CLIENT = ["client: joined 1", "client: echo msg 1", "client: echo msg 2", "client: echo msg 3", "client: big 300000 7 7", "client: left"]
 
+# wait (up to 15 s) until something listens on the port: a server started just before
+def wait_port(p, limit=15.0):
+    import socket
+    end = time.time() + limit
+    while time.time() < end:
+        try:
+            socket.create_connection(("127.0.0.1", p), timeout=0.5).close()
+            return
+        except OSError: time.sleep(0.1)
+
 def check(name, got, want):
     global failed
     lines = [l.strip() for l in got.splitlines() if l.strip()]
@@ -48,7 +58,7 @@ dummy = os.path.join(tmp, "page.html")
 open(dummy, "w").write("<html></html>")
 r = subprocess.Popen([sys.executable, "-u", os.path.join(root, "tools", "netpong_relay.py"), "--port", str(port), "--page", dummy],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-time.sleep(1.0)
+wait_port(port)
 a = subprocess.Popen([player], stdout=subprocess.PIPE, text=True, env=env)
 # (the second starts once the first is connected: the first to connect hosts)
 first = a.stdout.readline()
@@ -281,7 +291,13 @@ if openssl:
              ("a server of TLS 1.1 only is refused, and says why", "leaf_ec", ["-tls1_1"], "inter", "no: the secure connection failed: the server ended the connection (protocol_version: it speaks only TLS older than 1.2, which this side does not)"),
              ("a server of TLS 1.3 and 1.2: 1.3", "leaf_ec", [], "inter", "200 true, TLS 1.3"),
              ("without the test authority trusted, refused", "leaf_ec", ["-tls1_3"], "inter", "no: the secure connection failed: localhost is not who it says: it comes from Sloppy test root, an authority this computer does not trust")]
+    # (an s_server that has not got an option, as -no_ems before OpenSSL 3, starts no server)
+    shelp = subprocess.run([openssl, "s_server", "-help"], capture_output=True, text=True)
+    shelp = shelp.stdout + shelp.stderr
     for k, (what, leaf, more, chain, want) in enumerate(cases):
+        if any(o.startswith("-") and o not in shelp for o in more):
+            print(f"(this openssl's s_server has not got {' '.join(o for o in more if o.startswith('-') and o not in shelp)}: TLS: {what} is not tried)")
+            continue
         s, p = s_server(leaf, *more, chain=chain)
         url = f"https://{'127.0.0.1' if k == 1 else 'localhost'}:{p}/"
         cenv = tenv if k < len(cases) - 1 else env
