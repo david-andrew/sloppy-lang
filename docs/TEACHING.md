@@ -34,7 +34,7 @@ and ask again when what was typed is not one. Text is not a number even when it 
 1. `print`, text in quotes, numbers, `{x}` inside text.
 2. Variables, arithmetic, `input` and `input_int`.
 3. `if`, `else if`, `else`; comparing with `==`, `!=`, `<`; `and`, `or`, `not`.
-4. Loops: `loop i in [1..10]:` (1 to 10), `loop i in [0..n):` (0 to n - 1), `loop condition:`.
+4. Loops: `loop i in [1..10]:` (1 to 10), `loop i in 0..n:` (0 to n - 1), `loop condition:`.
 5. Arrays: `scores = [3, 1, 4]`, `push`, `len`, `loop s in scores:`, `scores[0]`.
 6. Functions: `area = (w: f64, h: f64) -> f64: w * h`; the last line is what it gives back.
 7. A text game: guess the number (`random_int`), hangman (text and its characters).

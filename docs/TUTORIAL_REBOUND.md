@@ -105,7 +105,7 @@ draw = ():
     arc(CENTER, ORBIT_R, 9, shield - SHIELD_HALF, shield + SHIELD_HALF, rgb(0.35, 0.95, 1))
     text("core {core}", vec2(24, 20), 32)
 
-loop i in [0..4): turrets.push(Turret(polar(random(0.0, TAU), random(200.0, 290.0)), random(1.0, 3.0)))
+loop i in 0..4: turrets.push(Turret(polar(random(0.0, TAU), random(200.0, 290.0)), random(1.0, 3.0)))
 window("Little Rebound", 1280, 720)
 ```
 
@@ -398,7 +398,7 @@ mult = () -> int: min(1 + streak / 4, 8)
 add_turrets = ():
     a = random(0.0, TAU)
     r = random(200.0, 290.0)
-    loop i in [0..random_int(1, 4)):
+    loop i in 0..random_int(1, 4):
         p = polar(a + 0.3 * f64(i), r)
         if not turrets.any((t): length(t.pos - p) < 60.0): turrets.push(Turret(p, random(1.0, 2.5)))
 
@@ -597,7 +597,7 @@ start = ():
 add_turrets = ():
     a = random(0.0, TAU)
     r = random(200.0, 290.0)
-    loop i in [0..random_int(1, 4)):
+    loop i in 0..random_int(1, 4):
         p = polar(a + 0.3 * f64(i), r)
         if not turrets.any((t): length(t.pos - p) < 60.0): turrets.push(Turret(p, random(1.0, 2.5)))
 
@@ -715,7 +715,7 @@ draw = ():
         if b.mine: circle(b.pos, 6, rgb(0.85, 1, 1))
         else: circle(b.pos, 6, rgb(1, 0.85, 0.5))
     circle(CENTER, CORE_R, rgb(0.85, 0.98, 1))
-    loop i in [0..core): ring(CENTER, CORE_R + 9.0 + 7.0 * f64(i), 3, rgba(0.35, 0.95, 1, 0.8))
+    loop i in 0..core: ring(CENTER, CORE_R + 9.0 + 7.0 * f64(i), 3, rgba(0.35, 0.95, 1, 0.8))
     if screen != .over: arc(CENTER, ORBIT_R, 9, shield - SHIELD_HALF, shield + SHIELD_HALF, rgb(0.35, 0.95, 1))
     draw(sparks)
     pop_transform()
@@ -832,7 +832,7 @@ start = ():
 add_turrets = ():
     a = random(0.0, TAU)
     r = random(200.0, 290.0)
-    loop i in [0..random_int(1, 4)):
+    loop i in 0..random_int(1, 4):
         p = polar(a + 0.3 * f64(i), r)
         if not turrets.any((t): length(t.pos - p) < 60.0): turrets.push(Turret(p, random(1.0, 2.5)))
 
@@ -960,7 +960,7 @@ draw = ():
         if b.mine: circle(b.pos, 6, rgb(0.85, 1, 1))
         else: circle(b.pos, 6, rgb(1, 0.85, 0.5))
     circle(CENTER, CORE_R, rgb(0.85, 0.98, 1))
-    loop i in [0..core): ring(CENTER, CORE_R + 9.0 + 7.0 * f64(i), 3, rgba(0.35, 0.95, 1, 0.8))
+    loop i in 0..core: ring(CENTER, CORE_R + 9.0 + 7.0 * f64(i), 3, rgba(0.35, 0.95, 1, 0.8))
     if screen != .over:
         draw_shield(shield)
         if twin: draw_shield(shield + PI)
@@ -1098,7 +1098,7 @@ start = ():
 add_turrets = ():
     a = random(0.0, TAU)
     r = random(200.0, 290.0)
-    loop i in [0..random_int(1, 4)):
+    loop i in 0..random_int(1, 4):
         p = polar(a + 0.3 * f64(i), r)
         if not turrets.any((t): length(t.pos - p) < 60.0): turrets.push(Turret(p, random(1.0, 2.5)))
 
@@ -1242,7 +1242,7 @@ draw = ():
     blend(.alpha)
     loop b in bolts: circle(b.pos, 6, rgb(1, 0.95, 0.8))
     circle(CENTER, CORE_R, rgb(0.85, 0.98, 1))
-    loop i in [0..core): ring(CENTER, CORE_R + 9.0 + 7.0 * f64(i), 3, rgba(0.35, 0.95, 1, 0.8))
+    loop i in 0..core: ring(CENTER, CORE_R + 9.0 + 7.0 * f64(i), 3, rgba(0.35, 0.95, 1, 0.8))
     if screen != .over:
         draw_shield(shield)
         if twin: draw_shield(shield + PI)

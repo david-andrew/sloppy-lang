@@ -976,7 +976,7 @@ struct Shot:
     target: Handle
 enemies: Pool[Enemy]
 shots: Shot[]
-loop i in [0..6): enemies.add(Enemy(vec2(f32(200 + i * 160), 120)))
+loop i in 0..6: enemies.add(Enemy(vec2(f32(200 + i * 160), 120)))
 
 update = (dt: f64):
     if mouse_pressed(.left) and enemies.len() > 0:
@@ -1196,7 +1196,7 @@ Line charts, scatter plots, bars and histograms with axes and a legend: drawn in
 # example: charts
 # a line chart and a histogram, made into pictures (save_png(img, "sales.png") keeps one)
 r = rng(1)
-days = [loop i in [0..60): f64(i)]
+days = [loop i in 0..60: f64(i)]
 sales = [loop d in days: 100.0 + 2.0 * d + 10.0 * r.next_normal()]
 c = Chart(title = "Sales", x_label = "day", y_label = "units")
 c.line(days, sales, "units sold")
@@ -1448,10 +1448,10 @@ to_text, to_json and saves write its fields (Big(m=4.2, e=1234)) and read them b
 # example: threads
 slow_square = (n: int) -> int:
     total = 0
-    loop i in [0..n): total += n
+    loop i in 0..n: total += n
     total
 
-nums = [loop i in [0..16): 1000000 + i]
+nums = [loop i in 0..16: 1000000 + i]
 squares = parallel_map(nums, slow_square)      # spread over every core
 print(cpu_count(), "cores", squares[0], squares[15])
 
@@ -2138,8 +2138,8 @@ window("Sprites", 960, 540)
 
 # an image made pixel by pixel (load_image(embed("hero.png")) reads one from a file)
 img = image(16, 16)
-loop y in [0..16):
-    loop x in [0..16):
+loop y in 0..16:
+    loop x in 0..16:
         d = length(vec2(x - 7.5, y - 7.5))
         if d < 7.0: img.set(x, y, hsv(y / 40.0, 0.8, 1.0))
         if d < 3.0: img.set(x, y, WHITE)
@@ -2153,7 +2153,7 @@ draw = ():
     sprite(ball, vec2(100, 100))                                   # its own size
     sprite(ball, vec2(200, 100), vec2(128, 128))                   # scaled up
     sprite(ball, vec2(400, 100), vec2(128, 128), rgb(0.4, 1, 0.6), t)   # tinted and turned
-    loop i in [0..12):
+    loop i in 0..12:
         a = i / 12.0 * TAU + t
         sprite(ball, vec2(700 + 120 * cos(a), 300 + 120 * sin(a)), vec2(32, 32))
 ```
@@ -2533,7 +2533,7 @@ draw = ():
     camera3d(cam)
     draw_mesh(ground, mat4(), rgb(0.45, 0.5, 0.4))
     draw_mesh(cube, translation(vec3(0, 0.5, 0)) * rotation_y(t), rgb(0.9, 0.4, 0.3))
-    loop i in [0..6):
+    loop i in 0..6:
         a = i / 6.0 * TAU + t * 0.5
         p = vec3(3 * cos(a), 0.5 + 0.3 * sin(t * 2.0 + i), 3 * sin(a))
         draw_mesh(ball, translation(p), hsv(i / 6.0, 0.6, 1.0), emissive = 0.4)
@@ -3324,7 +3324,7 @@ vs = (c: Corner, u: Look) -> Out:
     Out(vec4(b.pos + c.at * vec2(0.004, 0.007), 0, 1), vec4(0.3 + length(b.vel) * 3.0, 0.7, 1.0 - length(b.vel) * 2.0, 1))
 fs = (i: Out, u: Look) -> vec4: i.color
 
-bugs = gpu_buffer([loop i in [0..20000): Bug(vec2(sinf(i), cosf(i * 1.7)) * 0.9, vec2(0, 0))])
+bugs = gpu_buffer([loop i in 0..20000: Bug(vec2(sinf(i), cosf(i * 1.7)) * 0.9, vec2(0, 0))])
 stepper = compute(step)
 prog = make_shader(shader(vs, fs))
 quad = mesh([Corner(vec2(-1, -1)), Corner(vec2(1, -1)), Corner(vec2(0, 1))])
@@ -3573,8 +3573,8 @@ Menus and hud_ boxes are drawn in the units of the 2D transform drawing has (cam
 window("Paths", 960, 540)
 
 grid = path_grid(24, 13, 40.0)           # 24 by 13 cells, 40 units across
-loop y in [2..11): set_open(grid, 8, y, false)     # two walls
-loop y in [0..9): set_open(grid, 16, y, false)
+loop y in 2..11: set_open(grid, 8, y, false)     # two walls
+loop y in 0..9: set_open(grid, 16, y, false)
 chaser = vec2(60, 260)
 
 update = (dt: f64):
@@ -3584,8 +3584,8 @@ update = (dt: f64):
 
 draw = ():
     clear(rgb(0.1, 0.1, 0.13))
-    loop y in [0..13):
-        loop x in [0..24):
+    loop y in 0..13:
+        loop x in 0..24:
             if not is_open(grid, x, y): rect(x * 40, y * 40, 40, 40, GRAY)
     circle(mouse_pos(), 10, YELLOW)
     circle(chaser, 14, RED)
@@ -3661,7 +3661,7 @@ update = (dt: f64):
 draw = ():
     clear(rgb(0.08, 0.08, 0.1))
     camera2d(cam + shake.offset())
-    loop x in [0..48):                    # a row of smooth noise
+    loop x in 0..48:                    # a row of smooth noise
         h = fbm(x * 0.15, t * 0.3)
         rect(x * 20, 300 - 100 * h, 18, 100 * h + 4, rgb(0.3, 0.5, 0.4))
     rect(wall.x, wall.y, wall.w, wall.h, GRAY)
@@ -3840,7 +3840,7 @@ import physics
 w = physics.World()                                       # gravity: 980 pixels/s² down
 w.add_box(vec2(640, 700), vec2(1280, 40), kind = .fixed)  # the floor
 crates: physics.Body[]
-loop i in [0..5): crates.push(w.add_box(vec2(600 + 8 * i, 600 - 45 * i), vec2(40, 40)))
+loop i in 0..5: crates.push(w.add_box(vec2(600 + 8 * i, 600 - 45 * i), vec2(40, 40)))
 ball = w.add_circle(vec2(200, 300), 25, bounce = 0.5)
 w.push(ball, vec2(600, -200) * w.mass(ball))          # thrown at the stack
 lamp = w.add_box(vec2(1000, 220), vec2(30, 60))
@@ -4013,7 +4013,7 @@ import physics3d
 w = physics3d.World()                                          # gravity: 9.81 m/s² down
 w.add_box(vec3(0, -0.5, 0), vec3(30, 1, 30), kind = .fixed)    # the ground (a size: full lengths)
 crates: physics3d.Body[]
-loop i in [0..5): crates.push(w.add_box(vec3(0.05 * i, 0.5 + 1.01 * i, 0), vec3(1, 1, 1), density = 200))
+loop i in 0..5: crates.push(w.add_box(vec3(0.05 * i, 0.5 + 1.01 * i, 0), vec3(1, 1, 1), density = 200))
 ball = w.add_sphere(vec3(-6, 1, 0), 0.5, density = 3000)
 w.set_velocity(ball, vec3(9, 3, 0))                            # thrown at the tower
 cube = cube_mesh(1.0)
@@ -4586,7 +4586,7 @@ struct Game:
 
 tick = (g: Game, pads: Pad[]) -> Game:
     let g = g
-    loop i in [0..2): g.xs[i] = clamp(g.xs[i] + 6 * pads[i].x, 20, 1260)
+    loop i in 0..2: g.xs[i] = clamp(g.xs[i] + 6 * pads[i].x, 20, 1260)
     g
 
 a = netplay.session(Game(), tick, players = 2, me = 0)

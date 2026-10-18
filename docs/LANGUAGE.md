@@ -27,7 +27,7 @@ fib = (n: int) -> int:
     if n < 2: return n
     fib(n - 1) + fib(n - 2)
 
-loop i in [0..10):
+loop i in 0..10:
     print("fib({i}) = {fib(i)}")
 
 nums = [5 3 9 1]
@@ -207,7 +207,7 @@ four for others (`é`, `ж`, `中`, `😀`). Its bytes are what the basic operat
 
 | | |
 |---|---|
-| `len(s)`, `s[i]`, `s[a..b)`, `loop b in s` | bytes: `s[i]` is a `u8`, a slice is a range of bytes |
+| `len(s)`, `s[i]`, `s[a..b]`, `loop b in s` | bytes: `s[i]` is a `u8`, a slice is a range of bytes |
 | `char_count(s)`, `chars(s)` | characters (Unicode code points): how many, and each as its number |
 | `first(s, n)`, `last(s, n)`, `"{s:.n}"` | the first or last n characters (a slice in the middle of an `é` would cut it in two) |
 | `chr(233)` | the character with that number, as a `str`: `"é"` (`byte_str(b)`: a one-byte `str`) |
@@ -405,10 +405,10 @@ if let v = lookup(key): print(v)       # bind the value of an optional when pres
 
 loop: ...                              # forever (until break / return)
 loop x > 0: x -= 1                     # while
-loop i in [0..10): ...                 # 0 to 9
-loop i in 0..10: ...                   # 0 to 10: a bare range includes both ends
-loop i in 0, 2..10: ...                # 0 2 4 6 8 10
-loop i in 10, 9..1: ...                # counting down
+loop i in 0..10: ...                   # 0 to 9, as Python's range(10)
+loop i in [1..10]: ...                 # 1 to 10: ] keeps the end
+loop i in 0, 2..10: ...                # 0 2 4 6 8
+loop i in 10, 9..0: ...                # counting down, 10 to 1
 loop x in xs: ...
 loop k, v in table: ...                # unpacks: map entries, or an array of pairs
 loop mut x in xs: x *= 2               # x is the element itself
@@ -417,20 +417,22 @@ break / continue / return
 defer close(f)                         # runs when the enclosing block exits
 ```
 
-**Ranges.** `a..b` includes both ends. Brackets choose: `[a..b]` both, `[a..b)` without `b`,
-`(a..b]` without `a`, `(a..b)` neither. `a..` is open (counting up forever). `[a, b..c]`
-(or `a,b..c` after `in`) steps by `b - a`. A range used as a value is the array of its numbers:
-`[0, 3..9]` is `[0, 3, 6, 9]`. In index brackets: `xs[2..5)`, `xs[2..]`, `xs[..3)`, `xs[end]`
-(the last element), `xs[1..end-1]`.
+**Ranges.** `a..b` goes from `a` up to `b`, leaving `b` out, as Python's `range(a, b)`: `0..n`
+is n numbers, and `0..xs.len()` is every index of `xs`. Brackets say which ends are kept: `[a..b]`
+both, `[a..b)` without `b` (as `a..b`), `(a..b]` without `a`, `(a..b)` neither. `a..` is open
+(counting up forever). `a, b..c` steps by `b - a` (`[a, b..c]` keeps `c`). A range used as a
+value is the array of its numbers: `[0, 3..9]` is `[0, 3, 6, 9]`. In index brackets slices go as
+Python's: `xs[2..5]` is elements 2, 3 and 4 (`xs[2:5]`), `xs[2..]` to the end, `xs[..3]` the first
+three; `xs[end]` is the last element, `xs[[2..5]]` keeps element 5.
 
 | Written | Gives |
 |---|---|
-| `1..5`, `[1..5]` | 1 2 3 4 5 |
-| `[1..5)` | 1 2 3 4 |
+| `1..5`, `[1..5)` | 1 2 3 4 |
+| `[1..5]` | 1 2 3 4 5 |
 | `(1..5]` | 2 3 4 5 |
 | `(1..5)` | 2 3 4 |
-| `[0..len(xs))` | every index of `xs` |
-| `random_int(1, 7)` | 1 to 6, as `[1..7)` (`random(a, b)`: a number with a fraction, from a up to b) |
+| `0..xs.len()` | every index of `xs` |
+| `random_int(1, 7)` | 1 to 6, as `1..7` (`random(a, b)`: a number with a fraction, from a up to b) |
 
 **Panics.** An index out of bounds, `!` on `none`, a division by zero, a failed `assert` or
 `panic("message")` stops the program with the message and where each function on the way
@@ -504,8 +506,8 @@ or a pair; more: a tuple's parts, `loop name, n, cost in items`).
 
 ```gdscript
 squares = [loop i in [1..5]: i ^ 2]
-evens = [loop n in [0..10): if n % 2 == 0: n]
-pairs = [loop i in [0..3): loop j in [0..3): (i, j)]
+evens = [loop n in 0..10: if n % 2 == 0: n]
+pairs = [loop i in 0..3: loop j in 0..3: (i, j)]
 numbers = [loop s in fields: if let n = to_float(s): n]   # the ones that read as numbers
 lengths = {loop w in words: w: len(w)}         # in braces, key: value makes a map
 ```
@@ -835,7 +837,7 @@ the rest under Arrays):
 | NumPy | Sloppy |
 |---|---|
 | `np.zeros((3, 4))`, `np.ones(5)`, `np.eye(3)`, `np.full(3, 7.0)` | `zeros(3, 4)`, `ones(5)`, `eye(3)`, `fill(7.0, 3)` |
-| `np.arange(5)`, `np.arange(0, 2.5, 0.5)` | `[0..5)`, `[loop i in [0..5): f64(i) * 0.5]` |
+| `np.arange(5)`, `np.arange(0, 2.5, 0.5)` | `0..5`, `[loop i in 0..5: f64(i) * 0.5]` |
 | `np.linspace(0, 1, 5)`, `np.random.rand(3, 4)`, `np.random.randn(100)` | `linspace(0, 1, 5)`, `rand(3, 4)`, `randn(100)` |
 | `a * 2`, `a + b`, `a ** 2`, `a > 0.5` (elementwise) | `a .* 2.0`, `a .+ b`, `a .^ 2`, `a .> 0.5` |
 | `np.sqrt(a)`, `np.clip(a, 2, 4)` | `sqrt.(a)`, `clamp.(a, 2.0, 4.0)` |
@@ -1052,8 +1054,8 @@ element gets the same operations in the same order as one at a time, so the resu
 identical on every machine (sums over a loop keep their order and are not vectorized).
 
 Array indexing is always checked, except where the check cannot fail: in
-`loop i in [0..xs.len())` (or `[0..n)` with `n = xs.len()`, or `xs = fill(v, n)` and
-`[0..n)`, starting from any expression that cannot be negative) `xs[i]` has no check, as long
+`loop i in 0..xs.len()` (or `0..n` with `n = xs.len()`, or `xs = fill(v, n)` and
+`0..n`, starting from any expression that cannot be negative) `xs[i]` has no check, as long
 as the function never resizes `xs` — writing its elements is fine. So the usual index loop
 costs what it would in C.
 
@@ -1064,7 +1066,7 @@ Data-parallel helpers run a function over many elements on all CPU cores (fork-j
 ```gdscript
 lengths = parallel_map(words, (w): expensive(w))      # [loop x in xs: f(x)]
 parallel_update(particles, (p): step(p, dt))          # xs[i] = f(xs[i]) in place
-rows = parallel_range(height, (y): render_row(y))     # [loop i in [0..n): f(i)]
+rows = parallel_range(height, (y): render_row(y))     # [loop i in 0..n: f(i)]
 ```
 
 The function runs on many threads at once: it may read anything, but it must not change
@@ -1452,7 +1454,7 @@ whole:
 - `ys = xs`, then `ys[0] = 1` copies all of xs (once: ys is its own after that);
 - `e = es[i]; e.hp -= 1; es[i] = e` copies e's arrays each time: change it in place instead,
   `es[i].hp -= 1` or `loop mut e in es`;
-- a slice (`xs[a..b)`) is a new array;
+- a slice (`xs[a..b]`) is a new array;
 - `s = s + x` and `s += x` both add to the end in place (the compiler writes the first as the
   second); `t = s + x` makes a new one, as it must.
 
@@ -1464,7 +1466,7 @@ from 4 KB): where a frame spends time copying, or a frame's spike comes from.
 frame to frame and emptied with `clear()` keeps its memory. A closure made inside a loop is
 allocated each time round; make it once outside.
 
-**Loops the compiler can speed up.** `loop mut p in ps:` and `loop i in [0..n): a[i] ...`
+**Loops the compiler can speed up.** `loop mut p in ps:` and `loop i in 0..n: a[i] ...`
 lose their bounds checks and vectorize in release builds, as do integer sums over a loop
 (float sums keep their order, so that every machine gets the same result). An index the compiler cannot follow
 (`c[i * n + j]` in a matrix) keeps its check on each access: a row array per row (`c[i][j]`),

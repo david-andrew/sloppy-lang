@@ -496,7 +496,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | JavaScript | Sloppy |
 |---|---|
 | `let x = 0` | `x = 0` (whole numbers stay whole: `x = 0.0` for one that holds fractions) |
-| `for (let i = 0; i < n; i++)`, `while (x > 0)` | `loop i in [0..n):` (0 to n - 1: `0..n` alone takes n too), `loop x > 0:` |
+| `for (let i = 0; i < n; i++)`, `while (x > 0)` | `loop i in 0..n:` (0 to n - 1), `loop x > 0:` |
 | `const xs = [1, 2]` then `xs.push(3)` | `xs = [1, 2]`: a const never changes, its elements neither |
 | objects `{name: "Drone", cost: 10}` | `struct Item:` with `name: str` and `cost: f64`, made as `Item("Drone", 10)`; a map's values are all one type |
 | `` `cost: ${x}` ``, `x.toFixed(2)`, `toLocaleString()` | `"cost: {x}"`, `"{x:.2f}"`, `"{x:,}"`; `"{x:.2e}"` for 1.50e+45 |
@@ -521,7 +521,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | Python | Sloppy |
 |---|---|
 | `def f(a, b):` | `f = (a: int, b: int) -> int: ...` |
-| `for i in range(n):`, `range(1, n + 1)` | `loop i in [0..n):` (0 to n - 1: `0..n` alone takes n too), `loop i in 1..n:` |
+| `for i in range(n):`, `range(1, n + 1)`, `xs[2:5]` | `loop i in 0..n:`, `loop i in [1..n]:` (`]` keeps the end), `xs[2..5]` |
 | `while x > 0:` | `loop x > 0:` |
 | `[w.upper() for w in ws if w]` | `[loop w in ws: if w != "": w.upper()]` |
 | `f"{x:.2f}"`, `"{:.2f}".format(x)` | `"{x:.2f}"`: every string puts values in; `r"..."` does not (a regular expression's `{4}`) |
@@ -537,7 +537,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `requests.get(url)`, `urllib.request.urlopen(url)` | `import net`, then `r = net.fetch(url)`: `r.status`, `r.text`, and `from_json[T](r.text)` ([fetching from the web](#fetching-from-the-web)) |
 | `requests.post(url, json=d, headers=h)` | `net.fetch(url, method = "POST", body = to_json(d), headers = h)` |
 | `urllib.parse.quote(s)`, `urlencode(d)`, `html.unescape(s)` | `url_encode(s)`, `url_query(d)`, `html_unescape(s)` |
-| `s[:4]`, `f"{s:.4}"` | `first(s, 4)` or `"{s:.4}"` (characters; `s[..4)` counts bytes, and can cut an `é` in two) |
+| `s[:4]`, `f"{s:.4}"` | `first(s, 4)` or `"{s:.4}"` (characters; `s[..4]` counts bytes, and can cut an `é` in two) |
 | `re.search(r"\d+", s)` | `s.find(regex(r"\d+"))` (a `Match?`: `m.text`, `m.groups`) |
 | `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero when changed (`counts[w] += 1`, `groups[k].push(x)`); reading one, `m[k]`, is an error: `m.get(k) ?? 0` |
 | `set()` | a map to `bool`, or `unique(xs)` |

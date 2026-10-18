@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `a..b` leaves `b` out, as Python's `range(a, b)`: `loop i in 0..n:` is n times, `0..xs.len()`
+  every index, and slices go as Python's (`xs[2..5]` is `xs[2:5]`, `xs[..3]` the first three).
+  Brackets still say which ends are kept: `[a..b]` both, `[a..b)`, `(a..b]`, `(a..b)`;
+  `xs[[2..5]]` keeps element 5. `xs[a..end]` warns that it stops before the last element
+  (`xs[a..]` goes to the end). The docs, examples and `sloppy new`'s games use the new form
+  (`[a..b)` still works).
 - In an array an operator joins its two sides whatever the spaces: `[a -b]` is one element, a - b,
   as `[a - b]` is (it was two, as in MATLAB, so a space changed the meaning). A negative element
   goes in parentheses or after a comma: `[a (-b)]`, `[1 (-2) 3]`, `[a, -b]`; `[a -b]` warns, and

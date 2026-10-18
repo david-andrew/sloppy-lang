@@ -412,6 +412,7 @@ static Node *parse_primary(void) {
       if (n->list.len == 0 && e->kind == N_RANGE && (e->flags & NF_BARE) && (pk() == TK_RBRACK || pk() == TK_RPAREN)) {
         e->flags &= ~NF_BARE;
         if (next()->kind == TK_RPAREN) e->flags &= ~NF_INCLUSIVE;
+        else e->flags |= NF_INCLUSIVE;
         return e;
       }
       vpush(n->list, e);
@@ -464,11 +465,11 @@ static Node *parse_postfix(Node *e) {
       Node *ix = new_node(N_INDEX, pos);
       ix->a = e;
       if (pk() == TK_DOTDOT) {
-        // xs[..b] / xs[..b)
+        // xs[..b] / xs[..b): up to b, leaving it out
         next();
         Node *r = new_node(N_RANGE, pos);
-        if (pk() != TK_RBRACK && pk() != TK_RPAREN) { r->b = parse_expr(); r->flags |= NF_INCLUSIVE; }
-        if (next()->kind == TK_RPAREN) r->flags &= ~NF_INCLUSIVE;
+        if (pk() != TK_RBRACK && pk() != TK_RPAREN) r->b = parse_expr();
+        next();
         ix->b = r;
       } else {
         ix->b = parse_expr();
@@ -478,11 +479,10 @@ static Node *parse_postfix(Node *e) {
           ix->b = NULL;
           expect(TK_RBRACK, NULL);
         } else if (ix->b->kind == N_RANGE && (ix->b->flags & NF_BARE)) {
-          // xs[a..b] includes b, xs[a..b) does not, xs[a..] goes to the end
+          // xs[a..b] and xs[a..b) leave b out, xs[a..] goes to the end
           Node *r = ix->b;
           r->flags &= ~NF_BARE;
-          if (!r->b) r->flags &= ~NF_INCLUSIVE;
-          if (next()->kind == TK_RPAREN) r->flags &= ~NF_INCLUSIVE;
+          if (next()->kind == TK_RPAREN) {}
           else if (P->t[P->i - 1].kind != TK_RBRACK) fatal(pos, "expected ']' or ')' after the slice range");
         } else expect(TK_RBRACK, NULL);
       }
@@ -585,10 +585,10 @@ static Node *parse_binary(int minprec) {
     if (pk() == TK_NOT) { next(); negate = true; }
     next();
     if (k == TK_DOTDOT) {
-      // a..b includes b; brackets may change that: [a..b)
+      // a..b leaves b out; brackets may change that: [a..b]
       Node *r = new_node(N_RANGE, pos);
       r->a = lhs;
-      r->flags |= NF_INCLUSIVE | NF_BARE;
+      r->flags |= NF_BARE;
       int nk = pk();
       if (nk != TK_RBRACK && nk != TK_RPAREN && nk != TK_COMMA && nk != TK_COLON && nk != TK_NEWLINE && nk != TK_AND && nk != TK_OR && nk != TK_XOR && nk != TK_EOF && nk != TK_SEMI)
         r->b = parse_binary(prec + 1);

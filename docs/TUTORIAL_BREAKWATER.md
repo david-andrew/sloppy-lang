@@ -299,7 +299,7 @@ ground_under = (p: vec3) -> f32:
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
     t0 = 0.0
     t1 = 1000.0
-    loop i in [0..3):
+    loop i in 0..3:
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
         else:
@@ -358,7 +358,7 @@ fire = ():
     # (the streak starts at the rifle's muzzle: ahead, right and down of the eye)
     tracers.push(Tracer(o + aim() * 0.8 + look_dir(yaw - PI / 2.0, 0.0) * 0.2 - vec3(0, 0.2, 0), stop, 0.05))
     if far < 100.0:
-        loop i in [0..3): sparks.push(Spark(stop, scatter(vec3(0, 1, 0), 1.0) * 3.0, 0.3))
+        loop i in 0..3: sparks.push(Spark(stop, scatter(vec3(0, 1, 0), 1.0) * 3.0, 0.3))
 
 step_player = (dt: f64):
     # a click hands the mouse to the game: then moving it turns the view
@@ -552,7 +552,7 @@ ground_under = (p: vec3) -> f32:
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
     t0 = 0.0
     t1 = 1000.0
-    loop i in [0..3):
+    loop i in 0..3:
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
         else:
@@ -621,7 +621,7 @@ drones: Drone[]
 score = 0
 
 burst = (at: vec3, n: int):
-    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
+    loop i in 0..n: sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
     ammo -= 1
@@ -645,12 +645,12 @@ fire = ():
         drones[who].flash = 0.1
         drones[who].vel += d * 1.5
     else if far < 100.0:
-        loop i in [0..3): sparks.push(Spark(stop, scatter(vec3(0, 1, 0), 1.0) * 3.0, 0.3))
+        loop i in 0..3: sparks.push(Spark(stop, scatter(vec3(0, 1, 0), 1.0) * 3.0, 0.3))
 
 step_drones = (dt: f64):
     # (all down: four more, from the far side)
     if drones.len() == 0:
-        loop i in [0..4): drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, strafe = random_int(0, 2) * 2 - 1))
+        loop i in 0..4: drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, strafe = random_int(0, 2) * 2 - 1))
     loop mut d in drones:
         # (shot down: it bursts, and does nothing more)
         if d.health <= 0.0:
@@ -881,7 +881,7 @@ ground_under = (p: vec3) -> f32:
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
     t0 = 0.0
     t1 = 1000.0
-    loop i in [0..3):
+    loop i in 0..3:
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
         else:
@@ -989,7 +989,7 @@ hurt = (dmg: f64):
     if health <= 0.0: new_run()
 
 burst = (at: vec3, n: int):
-    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
+    loop i in 0..n: sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
     ammo -= 1
@@ -1013,12 +1013,12 @@ fire = ():
         drones[who].flash = 0.1
         drones[who].vel += d * 1.5
     else if far < 100.0:
-        loop i in [0..3): sparks.push(Spark(stop, scatter(vec3(0, 1, 0), 1.0) * 3.0, 0.3))
+        loop i in 0..3: sparks.push(Spark(stop, scatter(vec3(0, 1, 0), 1.0) * 3.0, 0.3))
 
 step_drones = (dt: f64):
     # (all down: four more, from the far side)
     if drones.len() == 0:
-        loop i in [0..4): drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = random_int(0, 2) * 2 - 1))
+        loop i in 0..4: drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = random_int(0, 2) * 2 - 1))
     loop mut d in drones:
         # (shot down: it bursts, and does nothing more)
         if d.health <= 0.0:
@@ -1056,7 +1056,7 @@ step_drones = (dt: f64):
     loop mut b in bolts:
         b.life -= dt
         n = int(ceil(length(b.vel) * dt / 0.2))
-        loop k in [0..n):
+        loop k in 0..n:
             b.pos += b.vel * (dt / n)
             if in_cover(b.pos) or b.pos.y <= 0.0:
                 b.life = 0
@@ -1282,7 +1282,7 @@ ground_under = (p: vec3) -> f32:
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
     t0 = 0.0
     t1 = 1000.0
-    loop i in [0..3):
+    loop i in 0..3:
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
         else:
@@ -1404,7 +1404,7 @@ hurt = (dmg: f64):
     if health <= 0.0: new_run()
 
 burst = (at: vec3, n: int):
-    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
+    loop i in 0..n: sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
     g = guns[held]
@@ -1412,7 +1412,7 @@ fire = ():
     wait = g.gap
     kick = 0.06
     o = eye()
-    loop k in [0..g.pellets):
+    loop k in 0..g.pellets:
         d = scatter(aim(), g.spread)
         # (the nearest of what it meets: cover, the deck, or a drone)
         far = ray_world(o, d, 100)
@@ -1434,7 +1434,7 @@ fire = ():
 step_drones = (dt: f64):
     # (all down: four more, from the far side)
     if drones.len() == 0:
-        loop i in [0..4): drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = random_int(0, 2) * 2 - 1))
+        loop i in 0..4: drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = random_int(0, 2) * 2 - 1))
     loop mut d in drones:
         # (shot down: it bursts, and does nothing more)
         if d.health <= 0.0:
@@ -1472,7 +1472,7 @@ step_drones = (dt: f64):
     loop mut b in bolts:
         b.life -= dt
         n = int(ceil(length(b.vel) * dt / 0.2))
-        loop k in [0..n):
+        loop k in 0..n:
             b.pos += b.vel * (dt / n)
             if in_cover(b.pos) or b.pos.y <= 0.0:
                 b.life = 0
@@ -1711,7 +1711,7 @@ ground_under = (p: vec3) -> f32:
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
     t0 = 0.0
     t1 = 1000.0
-    loop i in [0..3):
+    loop i in 0..3:
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
         else:
@@ -1848,7 +1848,7 @@ hurt = (dmg: f64):
             save_data("best", "{best}")
 
 burst = (at: vec3, n: int):
-    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
+    loop i in 0..n: sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
     g = guns[held]
@@ -1856,7 +1856,7 @@ fire = ():
     wait = g.gap
     kick = 0.06
     o = eye()
-    loop k in [0..g.pellets):
+    loop k in 0..g.pellets:
         d = scatter(aim(), g.spread)
         # (the nearest of what it meets: cover, the deck, or a drone)
         far = ray_world(o, d, 100)
@@ -1924,7 +1924,7 @@ step_drones = (dt: f64):
     loop mut b in bolts:
         b.life -= dt
         n = int(ceil(length(b.vel) * dt / 0.2))
-        loop k in [0..n):
+        loop k in 0..n:
             b.pos += b.vel * (dt / n)
             if in_cover(b.pos) or b.pos.y <= 0.0:
                 b.life = 0
@@ -2189,7 +2189,7 @@ ground_under = (p: vec3) -> f32:
 ray_box = (o: vec3, d: vec3, b: Box) -> f32:
     t0 = 0.0
     t1 = 1000.0
-    loop i in [0..3):
+    loop i in 0..3:
         if abs(d[i]) < 0.00001:
             if o[i] < b.lo[i] or o[i] > b.hi[i]: return -1
         else:
@@ -2337,7 +2337,7 @@ hurt = (dmg: f64):
             save_data("best", "{best}")
 
 burst = (at: vec3, n: int):
-    loop i in [0..n): sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
+    loop i in 0..n: sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
     g = guns[held]
@@ -2346,7 +2346,7 @@ fire = ():
     kick = 0.06
     o = eye()
     struck = false
-    loop k in [0..g.pellets):
+    loop k in 0..g.pellets:
         d = scatter(aim(), g.spread)
         # (the nearest of what it meets: cover, the deck, or a drone)
         far = ray_world(o, d, 100)
@@ -2422,7 +2422,7 @@ step_drones = (dt: f64):
     loop mut b in bolts:
         b.life -= dt
         n = int(ceil(length(b.vel) * dt / 0.2))
-        loop k in [0..n):
+        loop k in 0..n:
             b.pos += b.vel * (dt / n)
             if in_cover(b.pos) or b.pos.y <= 0.0:
                 b.life = 0

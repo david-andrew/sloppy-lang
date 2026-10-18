@@ -816,7 +816,6 @@ parse_index_item = () -> int:
     if pk() != .dotdot: return parse_expr()
     r = mk(.range, cur_pos())
     advance()
-    add_flag(r, NF_INCLUSIVE)
     if pk() != .comma and pk() != .rbrack: nodes[r].b = i32(parse_expr())
     r
 
@@ -827,14 +826,22 @@ is_len_call = (e: int) -> bool:
     if nodes[c].kind == .field and name_of(int(nodes[c].name)) == "len" and nodes[e].nlist == 0: return true
     nodes[c].kind == .ident and name_of(int(nodes[c].name)) == "len" and nodes[e].nlist == 1
 
+# (xs[a..end]: end is the last index, which a..b leaves out)
+end_dropped = (r: int):
+    b = int(nodes[r].b)
+    if b != 0 and nodes[b].kind == .binary and has_flag(b, NF_FROM_END) and not pos_in_lib(nodes[r].pos):
+        warn(nodes[b].pos, "a..b leaves b out, and `end` is the last index, so this stops before the last element: `xs[a..]` goes to the end")
+
 # a range's closing bracket: ] keeps the end, ) excludes it; lo_open: the range began with (
 range_close = (r: int, pos: int, lo_closed: bool):
     clear_flag(r, NF_BARE)
     if pk() == .rparen: clear_flag(r, NF_INCLUSIVE)
     else if pk() != .rbrack: fatal(cur_pos(), "expected ']' or ')' to close the range")
-    else if lo_closed and is_len_call(int(nodes[r].b)) and nodes[r].a != 0 and nodes[int(nodes[r].a)].kind == .int_lit and nodes[int(nodes[r].a)].ival == 0 and not pos_in_lib(pos):
+    else:
+        add_flag(r, NF_INCLUSIVE)
         # ([0..xs.len()]: one past the last element, which counts from 0)
-        warn(cur_pos(), "`]` keeps the end, and xs.len() is one past the last element (they count from 0): `[0..xs.len())` leaves it out")
+        if lo_closed and is_len_call(int(nodes[r].b)) and nodes[r].a != 0 and nodes[int(nodes[r].a)].kind == .int_lit and nodes[int(nodes[r].a)].ival == 0 and not pos_in_lib(pos):
+            warn(cur_pos(), "`]` keeps the end, and xs.len() is one past the last element (they count from 0): `0..xs.len()` leaves it out")
     advance()
     if not lo_closed:
         one = mk(.int_lit, pos)
@@ -1006,12 +1013,11 @@ parse_postfix = (e0: int) -> int:
             p_matrix = 0
             p_index.push(e)
             if pk() == .dotdot and pkn(1) != .comma:
-                # xs[..b] / xs[..b)
+                # xs[..b] / xs[..b): up to b, leaving it out
                 advance()
                 r = mk(.range, pos)
-                add_flag(r, NF_INCLUSIVE)
                 if pk() != .rbrack and pk() != .rparen and pk() != .comma: nodes[r].b = i32(parse_expr())
-                else: clear_flag(r, NF_INCLUSIVE)
+                end_dropped(r)
                 if pk() == .comma:
                     # m[..b, j]
                     targs = [r]
@@ -1019,7 +1025,6 @@ parse_postfix = (e0: int) -> int:
                     set_list(ix, targs)
                     expect(.rbrack, "")
                 else:
-                    if pk() == .rparen: clear_flag(r, NF_INCLUSIVE)
                     nodes[ix].b = i32(r)
                     advance()
             else:
@@ -1030,12 +1035,11 @@ parse_postfix = (e0: int) -> int:
                     set_list(ix, targs)
                     expect(.rbrack, "")
                 else if nodes[b].kind == .range and has_flag(b, NF_BARE):
-                    # xs[a..b] includes b, xs[a..b) does not, xs[a..] goes to the end
-                    if nodes[b].b == 0: clear_flag(b, NF_INCLUSIVE)
+                    # xs[a..b] leaves b out, as xs[a..b) does (Python's xs[a:b]); xs[a..] goes to
+                    # the end, and xs[[a..b]] keeps b
                     clear_flag(b, NF_BARE)
-                    if pk() == .rparen:
-                        clear_flag(b, NF_INCLUSIVE)
-                        advance()
+                    end_dropped(b)
+                    if pk() == .rparen: advance()
                     else: expect(.rbrack, "")
                     nodes[ix].b = i32(b)
                 else:
@@ -1263,9 +1267,9 @@ parse_binary = (minprec: int) -> int:
             negate = true
         optok = advance()
         if k == .dotdot:
+            # (a..b leaves b out, as Python's range; [a..b] keeps it)
             r = mk(.range, pos)
             nodes[r].a = i32(lhs)
-            add_flag(r, NF_INCLUSIVE)
             add_flag(r, NF_BARE)
             nk = pk()
             if nk != .rbrack and nk != .rparen and nk != .comma and nk != .colon and nk != .newline and nk != .kw_and and nk != .kw_or and nk != .kw_xor and nk != .eof and nk != .semi:
