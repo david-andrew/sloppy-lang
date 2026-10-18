@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `use bst` from a file with a short relative path (`foo.jo`) found no module: a name not found
+  compared equal to a path of just the right length.
 - Recursive types: a struct or enum can hold itself, as an optional (`next: Node?`), in an enum's
   variant (`bin(op: str, l: Expr, r: Expr)`), through a union (`child: Branch | Leaf`) or through
   another struct that holds it (`struct A: b: B?` and `struct B: a: A?`), where it had to go in an
