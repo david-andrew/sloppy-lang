@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.21.0
 
 - TLS 1.3 in native programs (lib/tls.jo, the library's own: no OpenSSL): `net.connect("wss://...")`
   works from native builds as from web pages, `net.fetch(url)` gets what is at an http:// or
