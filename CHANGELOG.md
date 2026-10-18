@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- netplay: a second game on the same peers froze at its start when the other machine's first
+  game still ran a moment (its packets said this one's inputs had long since arrived, so they
+  were not sent again). Packets with inputs this session never made are another session's.
+
 - netplay: the compiler warns where a session's tick, or a function of the program's it calls,
   takes random numbers, reads the clock or the input, or changes a global (a rollback does not
   put globals back): each is a desync found only when playing. It looked at the tick's own
