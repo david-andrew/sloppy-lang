@@ -211,12 +211,39 @@ __b_vk_prog = 0
 when TARGET != "wasm":
     # the batch drawn through Vulkan: its vertices into this frame's upload memory
     __vk_draw2d = ():
-        if __b_vk_prog == 0: __b_vk_prog = __vk_program(shader(__vs2d, __fs2d))
+        if __b_vk_prog == 0:
+            src = shader(__vs2d, __fs2d)
+            src.fs_spirv = __spirv_centroid(src.fs_spirv, 0)
+            __b_vk_prog = __vk_program(src)
         n = __b_count * __VFLOATS * 4
         blk, off = __vk_upload(__b_buf as *u8, n)
         p = __Params2D(__proj, Texture(__b_tex, 1, 1))
         __vk_draw_batch(__b_vk_prog, __vk_addr(blk, off), __VFLOATS * 4, __b_count, (&p) as *u8, size_of(__Params2D))
         __b_count = 0
+
+    # SPIR-V whose fragment input at location loc is interpolated at the centroid, as __FS2D's
+    # v_uv is (shader functions cannot say so): with MSAA, a pixel on a tile's edge is otherwise
+    # shaded at its center, outside the tile, where uv runs into the next tile of the tileset
+    __spirv_centroid = (code: str, loc: int) -> str:
+        w = data(code) as *u32
+        n = len(code) / 4
+        inputs: {int: bool} = {}
+        i = 5
+        loop i < n and w[i] >> 16 != u32(0):
+            # (OpVariable of the Input storage class)
+            if w[i] & u32(0xFFFF) == u32(59) and w[i] >> 16 >= u32(4) and w[i + 3] == u32(1): inputs[int(w[i + 2])] = true
+            i += int(w[i] >> 16)
+        i = 5
+        loop i < n and w[i] >> 16 != u32(0):
+            # (OpDecorate %v Location loc: OpDecorate %v Centroid after it)
+            if w[i] == u32(0x40047) and w[i + 2] == u32(30) and w[i + 3] == u32(loc) and inputs.has(int(w[i + 1])):
+                at = (i + 4) * 4
+                deco: u8[]
+                loop x in [0x30047, int(w[i + 1]), 16]:
+                    loop k in 0..4: deco.push(u8((x >> (8 * k)) & 255))
+                return code[0..at] + str_from_bytes(deco) + code[at..]
+            i += int(w[i] >> 16)
+        code
 
 __gfx_init = ():
     if __g_init: return
@@ -671,6 +698,44 @@ __quad = (a: vec2, b: vec2, c: vec2, d: vec2, ua: vec2, ub: vec2, uc: vec2, ud: 
     __v(a, ua, col, mode)
     __v(c, uc, col, mode)
     __v(d, ud, col, mode)
+
+# (a quad whose corners are already transformed, the whole texture on it: for many small
+# sprites, Particles' dots, which transform their centers once rather than each corner)
+__quad_xf = (a: vec2, b: vec2, c: vec2, d: vec2, col: vec4):
+    o = __b_buf + __b_count * __VFLOATS
+    __vx(o, a, 0, 0, col)
+    __vx(o + __VFLOATS, b, 1, 0, col)
+    __vx(o + 2 * __VFLOATS, c, 1, 1, col)
+    __vx(o + 3 * __VFLOATS, a, 0, 0, col)
+    __vx(o + 4 * __VFLOATS, c, 1, 1, col)
+    __vx(o + 5 * __VFLOATS, d, 0, 1, col)
+    __b_count += 6
+
+__vx = (o: *f32, p: vec2, u: f32, v: f32, c: vec4):
+    o[0] = p.x
+    o[1] = p.y
+    o[2] = u
+    o[3] = v
+    o[4] = c.x
+    o[5] = c.y
+    o[6] = c.z
+    o[7] = c.w
+    o[8] = 0
+
+# (a soft round dot, white, its alpha falling from 1 in the middle to 0 at the edge: what
+# Particles draw, made the first time)
+__soft_dot = Texture(-1, 0, 0)
+__soft_dot_texture = () -> Texture:
+    if __soft_dot.id >= 0: return __soft_dot
+    n = 64
+    img = image(n, n)
+    h = f64(n) / 2.0
+    loop y in 0..n:
+        loop x in 0..n:
+            d = sqrt((f64(x) + 0.5 - h) * (f64(x) + 0.5 - h) + (f64(y) + 0.5 - h) * (f64(y) + 0.5 - h)) / h
+            img.set(x, y, vec4(1, 1, 1, f32(clamp(1.0 - d, 0.0, 1.0))))
+    __soft_dot = texture(img)
+    __soft_dot
 
 # ---------------- shapes ----------------
 rect = (x: f64, y: f64, w: f64, h: f64, c: vec4):

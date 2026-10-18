@@ -549,6 +549,67 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `def test_x(): assert ...` (pytest) | `test "x": assert(...)`, run with `sloppy test file.jo` |
 | big integers | `int` is 64 bits and wraps around |
 
+## Coming from pygame
+
+A pygame program owns its main loop: it reads events, moves things, draws onto the screen
+Surface, flips it and waits for the clock. A Sloppy game has no loop of its own: `update` and
+`draw` are called each frame, and the frame is shown after `draw` by itself. `sloppy new my_game
+arcade` and `sloppy new my_game platformer` are whole games to start from (a title screen, a
+score kept between runs, a level written as text).
+
+```gdscript
+window("Dodge", 800, 600)
+player = Rect(380, 520, 40, 40)
+rocks: Rect[]
+
+update = (dt: f64):
+    if key_down(.left): player.x -= 300 * dt         # speeds are per second: times dt
+    if key_down(.right): player.x += 300 * dt
+    player = player.clamp(Rect(0, 0, 800, 600))
+    if every(1, 0.5): rocks.push(Rect(random(0, 780), -20, 20, 20))
+    loop mut r in rocks: r.y += 200 * dt
+    rocks.retain((r): r.y < 600)
+
+draw = ():
+    clear(rgb(0.1, 0.1, 0.15))
+    rect(player, hex(0x40a0ff))
+    loop r in rocks: rect(r, GRAY)
+```
+
+| pygame | Sloppy |
+|---|---|
+| `pygame.init()`, `set_mode((w, h))`, `while running:` with events, `clock.tick(60)`, `display.flip()` | `window("Title", w, h)`, then `update = (dt: f64):` and `draw = ():`: no loop, no events, no flip |
+| `QUIT` | `on_quit = ():`, which the game calls as the window closes |
+| `KEYDOWN`, `key.get_pressed()[K_LEFT]` | `key_pressed(.space)` (pressed this frame), `key_down(.left)` (held); `K_RETURN` is `.enter`, `K_ESCAPE` `.escape`, `K_a` `.a` |
+| `mouse.get_pos()`, `mouse.get_pressed()`, `mouse.set_visible(False)` | `mouse_pos()`, `mouse_down(.left)` (`mouse_pressed`: this frame), `show_cursor(false)` |
+| `display.set_caption(s)` | `set_title(s)` |
+| `image.load(p).convert_alpha()` | `load_texture(embed("p.png"), false)` at the top of the file (false: sharp pixels, for pixel art) |
+| `screen.blit(img, (x, y))` | `sprite(img, vec2(x, y))` in draw |
+| `blit(sheet, pos, area)`, `subsurface` | `sheet = sprite_sheet(img, 16, 16)` and `draw_frame(sheet, i, center)`, or `sprite_region(img, src, center, size)` |
+| `transform.flip`, `scale`, `rotate` | `draw_frame(..., flip_x = true)` (or a negative width in sprite's size), sprite's size argument, `angle =` (radians) |
+| `img.get_width()`, `set_alpha(128)` | `img.width`, the tint's alpha: `sprite(img, pos, tint = rgba(1, 1, 1, 0.5))` |
+| a `Surface((w, h))` drawn onto | `rt = render_target(w, h)`; in draw, `draw_to(rt)`, the drawing, `draw_to_screen()`, then `draw_target(rt, pos)` |
+| `screen.fill(c)` | `clear(c)` at the top of draw; colors are 0 to 1, `rgb(1, 0.5, 0)`, or `hex(0xff8000)` |
+| `draw.rect(s, c, r)`, `draw.rect(s, c, r, 2)`, `draw.circle`, `draw.line` | `rect(r, c)`, `rect_outline(r, 2, c)`, `circle(center, radius, c)` (`ring` for an outline), `line(a, b, width, c)` |
+| `Rect.colliderect`, `collidepoint`, `center` | `overlaps(a, b)`, `contains(r, p)`, `center(r)` |
+| `r.right`, `r.bottom`, `move`, `inflate`, `clamp`, `union`, `collidelist` | `right(r)`, `bottom(r)`, `r.move(v)`, `r.grow(2)` (each side out by 2), `r.clamp(bounds)`, `union(a, b)`, `first_overlap(r, rects)`; a Rect's fields are `x`, `y`, `w`, `h` |
+| `sprite.Group`, `spritecollide(..., dokill=True)` | an array of structs, changed in a `loop mut e in enemies:`, then `enemies.retain((e): not e.dead)` |
+| `math.Vector2` | `vec2`, `length(v)`, `normalize(v)`, `distance(a, b)`, `rotate(v, a)` (radians: `rotate(v, 90deg)`) |
+| `mixer.Sound(p).play()`, `mixer.music.load(p)` | `jump = load_wav(embed("jump.wav"))` at the top, `play(jump)`; `play_music(load_music(embed("song.ogg")))`, or `play(snd, looping = true)` |
+| `font.SysFont(None, 24).render(s)` and a blit | `text(s, pos, 24, color)` with the built-in font; `set_font(load_font(embed("font.ttf")))` for another |
+| `time.get_ticks()`, `time.set_timer` | `elapsed()` (seconds), `if every(1, 2.0):` in update (true once each 2 s) |
+| `random.randint(1, 6)`, `random.choice(xs)` | `random_int(1, 7)` (the top is left out), `random_item(xs)` |
+| `open("level.txt").read()` | `str_from_bytes(embed("level.txt"))`: built into the game, so it works in a web page too; `read_file(path)` reads the disk (native builds) |
+| a high score in a file | `save_value("best", best)` and `best = load_value("best", 0)` (or `save_data` / `load_data` for text): a file natively, the browser's storage on the web |
+| a small Surface scaled up | `window("Title", 320, 180)` and `pixel_art()`; `full_resolution()` in draw before the HUD keeps its text sharp |
+| `RESIZABLE`, `VIDEORESIZE`, `toggle_fullscreen()` | windows are resizable, and the game keeps its 2D units (`visible_rect()` is what shows); `toggle_fullscreen()` |
+| `joystick.Joystick(0)` | `gamepad_down(.a)`, `left_stick()` (any pad, or the pad's number first) |
+
+Also not as in Python: `xs.remove(i)` takes an index (the value 2 goes with `xs.retain((x): x !=
+2)`), `round(5.7)` is `6.0` (`int(round(x))` for a whole number), and angles are in radians.
+To look at a frame without playing, or press keys at given frames: [Testing a
+game](LANGUAGE.md#testing-a-game).
+
 ## Coming from pandas and matplotlib
 
 | pandas / NumPy / matplotlib | Sloppy |

@@ -100,7 +100,7 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `is_empty[T] = (xs: T[]) -> bool`
 - `first[T] = (xs: T[]) -> T`
 - `last[T] = (xs: T[]) -> T`
-- `first[T] = (xs: T[], n: int) -> T[]`: the first n elements (all of them when there are fewer: xs[..n) would panic)
+- `first[T] = (xs: T[], n: int) -> T[]`: the first n elements (all of them when there are fewer: xs[..n] would panic)
 - `last[T] = (xs: T[], n: int) -> T[]`: the last n elements (all of them when there are fewer)
 - `get[T] = (xs: T[], i: int) -> T?`: element i, or none past either end (xs[i] stops the program there): xs.get(i) ?? fallback
 - `contains[T] = (xs: T[], x: T) -> bool`
@@ -211,7 +211,7 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `reverse = (s: str) -> str`: the characters (code points) in reverse order
 - `without_last_char = (s: str) -> str`: number of unicode code points s without its last character (all its bytes: backspace in a text field)
 - `char_count = (s: str) -> int`
-- `first = (s: str, n: int) -> str`: the first n characters (all of it when there are fewer; s[..n) counts bytes, and can cut an é in two)
+- `first = (s: str, n: int) -> str`: the first n characters (all of it when there are fewer; s[..n] counts bytes, and can cut an é in two)
 - `last = (s: str, n: int) -> str`: the last n characters (all of it when there are fewer)
 - `chars = (s: str) -> int[]`: unicode code points of s
 - `hash = (s: str) -> u64`: a number made from the text: the same for the same text (for maps, and to pick by name)
@@ -472,7 +472,7 @@ Math basics.
 - `random = () -> f64`: random f64 in [0, 1)
 - `random = (lo: f64, hi: f64) -> f64`: random f64 in [lo, hi)
 - `random_normal = (mean: f64 = 0.0, sd: f64 = 1.0) -> f64`: a random number from a bell curve around mean: about two in three within sd of it (p5's randomGaussian; Rng's next_normal for a seeded one)
-- `random_int = (lo: int, hi: int) -> int`: a random whole number from lo up to hi, hi left out (as in [lo..hi)): random_int(0, xs.len()) picks a position, and a die is random_int(1, 7)
+- `random_int = (lo: int, hi: int) -> int`: a random whole number from lo up to hi, hi left out (as in lo..hi): random_int(0, xs.len()) picks a position, and a die is random_int(1, 7)
 - `random_item[T] = (xs: T[]) -> T`: a random element of xs (which must not be empty)
 - `shuffle[T] = (xs: mut T[])`: put xs in a random order
 
@@ -1472,7 +1472,7 @@ The function runs on several threads at once: it may read anything, but it must 
 - `cpu_count = () -> int`: number of hardware threads available to this process
 - `parallel_map[T, U] = (xs: T[], f: (T) -> U) -> U[]`: [loop x in xs: f(x)], computed in parallel (f must not change globals or what it captured)
 - `parallel_update[T] = (xs: mut T[], f: (T) -> T)`: xs[i] = f(xs[i]) for every element, in parallel
-- `parallel_range[U] = (n: int, f: (int) -> U) -> U[]`: [loop i in [0..n): f(i)], computed in parallel
+- `parallel_range[U] = (n: int, f: (int) -> U) -> U[]`: [loop i in 0..n: f(i)], computed in parallel
 
 #### Atomics
 
@@ -1749,6 +1749,7 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
   ```
 - `show_cursor = (on: bool)`: show or hide the mouse pointer over the window (hidden: a game drawing its own crosshair or cursor); unlike mouse_lock, it still moves and mouse_pos() follows it
 - `window = (title: str = "", width: int = 1280, height: int = 720)`: Open the game window (called automatically when the program defines update/draw).
+- `set_title = (title: str)`: change the window's title while the game runs (a level's name, the score); in a web page, the page's title
 
 ### stats.jo
 
@@ -2115,6 +2116,8 @@ pixel_art(): render_resolution at the design size: for a game designed at 320 x 
     times larger.)
 render_scale(s): draw at a fraction of the window's pixels (0.5: a quarter of them), scaled
     up smoothly: faster where pixels cost (3D, the software renderer).
+full_resolution(): in draw, the rest of the frame at the window's own resolution, in the same
+    2D units: a HUD over pixel art whose text stays sharp.
 ```
 
 Drawing that needs it goes to an offscreen canvas, put on the window when the frame ends; the mouse is mapped back the same way (mouse_pos() is in 2D units).
@@ -2125,6 +2128,13 @@ Drawing that needs it goes to an offscreen canvas, put on the window when the fr
 - `render_resolution = (w: int, h: int, smooth: bool = false, whole: bool = true)`
 - `pixel_art = (smooth: bool = false)`
 - `render_scale = (s: f64)`
+- `full_resolution = ()`: the rest of this frame's drawing at the window's own resolution, over what was drawn at the low one of pixel_art() (or render_resolution, render_scale), in the same 2D units: a HUD whose text stays sharp, where text a few pixels tall at 320 x 180 is unreadable. Without a low resolution it does nothing.
+  ```gdscript
+  draw = ():
+      draw_tilemap(level)          # pixel art
+      full_resolution()
+      text("Score {score}", vec2(4, 4), 8)
+  ```
 
 ### softgl.jo
 
@@ -3768,6 +3778,13 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
 - `overlaps = (a: Rect, b: Rect) -> bool`
 - `contains = (r: Rect, p: vec2) -> bool`
 - `center = (r: Rect) -> vec2`
+- `right = (r: Rect) -> f32`: its right edge, x + w, and its bottom one, y + h (the left is x, the top y)
+- `bottom = (r: Rect) -> f32`
+- `move = (r: Rect, by: vec2) -> Rect`: the same rect moved by `by`
+- `grow = (r: Rect, by: f64) -> Rect`: each side moved out by `by` (in, when it is negative: a hitbox a little smaller than its sprite is `r.grow(-2)`); it stays centered where it was
+- `clamp = (r: Rect, bounds: Rect) -> Rect`: r moved (not resized) to be inside `bounds`: a player kept on the screen, `player.rect = player.rect.clamp(Rect(0, 0, 1280, 720))`; one larger than bounds is centered on it
+- `union = (a: Rect, b: Rect) -> Rect`: the smallest rect around both
+- `first_overlap = (r: Rect, rects: Rect[]) -> int`: the first of rects that r overlaps, by its position in the array, or -1 when none does
 - `circles_overlap = (a: vec2, ra: f64, b: vec2, rb: f64) -> bool`
 - `circle_rect = (c: vec2, r: f64, rect: Rect) -> bool`
 
@@ -3792,7 +3809,7 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
   ```
 - `emit = (ps: mut Particles, pos: vec2, count: int, speed: f64, color: vec4, life: f64 = 1.0, size: f64 = 4.0, spread: f64 = TAU, direction: f64 = 0.0)`: count particles from pos, at up to speed (pixels a second), lasting up to `life` seconds, of up to `size` pixels' radius; `spread` is the angle they go out in (radians, TAU: every way) around `direction` (radians, 0: right, as from_angle)
 - `update = (ps: mut Particles, dt: f64)`
-- `draw = (ps: Particles, glow: bool = true)`: draw particles as soft glowing dots (additive blending)
+- `draw = (ps: Particles, glow: bool = true)`: draw particles as soft glowing dots (additive blending), or with glow = false as solid ones (blended as the drawing before them); each fades out and shrinks as it ages
 
 #### Timing
 

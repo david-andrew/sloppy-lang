@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- `Particles.draw` draws each particle as one quad of a soft dot texture through the sprite batch
+  (it built a 12-triangle gradient circle on the CPU): 32,000 particles in 9 ms rather than 155 ms
+  a frame (debug build, Vulkan), 6 ms rather than 73 ms in a release build, and 3 to 4 times faster
+  on the software renderer; they look the same. `draw(glow = false)` draws round dots, not
+  octagons.
+- No faint lines between tiles through Vulkan: with its 4x antialiasing, a pixel on a tile's edge
+  was shaded at its center, outside the tile, where the texture coordinate ran into the next tile
+  of the tileset. The 2D batch's texture coordinate is now interpolated at the centroid, as it was
+  with OpenGL and WebGL.
+- Rect helpers: `right(r)` and `bottom(r)` (its edges), `r.move(v)`, `r.grow(2)` (each side out by
+  2; negative shrinks), `r.clamp(bounds)` (moved to be inside another), `union(a, b)` and
+  `first_overlap(r, rects)` (the index of the first it overlaps, -1 for none).
+- `full_resolution()`: in draw, the rest of the frame is drawn at the window's own resolution, in
+  the same units, over what `pixel_art()` (or `render_resolution`) drew: a HUD whose text stays
+  sharp, where text 8 pixels tall at 320 x 180 is unreadable.
+- `set_title(s)` changes the window's title while the game runs (the page's title on the web).
+- Hints for pygame's habits: `r.colliderect(w)`, `r.collidepoint(p)`, `r.centerx`, `r.left`,
+  `r.inflate(4, 4)` and the rest of Rect's names say what Sloppy calls them; setting `r.center` or
+  `r.right` says to set x, y, w and h; `img.get_width()`, `set_alpha`, `subsurface`, `scale(img, ...)`,
+  `flip(img, ...)` say what a Texture has; `K_LEFT` says `.left` (and `K_RETURN` `.enter`), as does
+  `.return`; `random.randint` and `random.choice` get the hints `randint` and `choice` get;
+  `screen.fill`, `pygame.display.flip()`, `import pygame`, `set_mode`, `Clock`, `SysFont`, `QUIT`,
+  `KEYDOWN` say what to write instead; `text("hi", (10, 20))` says a position is `vec2(10, 20)`;
+  `rect(x, y, w, h, c, 2)` mentions `rect_outline`. A field named like a function of another struct
+  (`r.right` from `right(c: FlyCamera)`) is no longer offered for a Rect.
+- A warning for drawing in a loop at the top of the file (pygame's `while running:` main loop),
+  and for `rotate(v, 90)`: angles are radians.
+- `enumerate(row)` with a str says how to loop over its characters, and errors show a generic
+  parameter's type as written (`T[]`), not `$0[]`.
+- The program's own function passed by name (`compute(move)`, `[grow]`) where the library has
+  functions of that name too is the program's.
+- Hints and docs write ranges the new way: `loop i in 0..n:`, `xs[a..b]`, `loop k, v in m:` for
+  Python's `d.items()`; the hint for a character as text is `s[i..i + 1]`.
+- docs/START.md: Coming from pygame. docs/LANGUAGE.md: Testing a game (screenshots, SLOPPY_INPUT and
+  the other environment variables, and driving a headless browser), `full_resolution` in the
+  pixel art section, and `remove`, `round` and angles among what looks familiar but means
+  something else.
 - `a..b` leaves `b` out, as Python's `range(a, b)`: `loop i in 0..n:` is n times, `0..xs.len()`
   every index, and slices go as Python's (`xs[2..5]` is `xs[2:5]`, `xs[..3]` the first three).
   Brackets still say which ends are kept: `[a..b]` both, `[a..b)`, `(a..b]`, `(a..b)`;
