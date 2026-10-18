@@ -194,6 +194,10 @@ precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests mem
   element. `.+` always adds element by element.
 - `x = 1` in a function changes a global named `x` when there is one; `let x = 1` makes a local.
 - `a..b` leaves `b` out, as Python's `range(a, b)` does; `[a..b]` keeps it.
+- `xs.remove(2)` removes the element at index 2 (Python's `del xs[2]`); the value 2 goes with
+  `xs.retain((x): x != 2)`.
+- `round(5.7)` is `6.0`, an f64 (as `floor` and `ceil`); `int(round(x))` is the whole number.
+- Angles are in radians: `rotate(v, PI / 2)`, or `rotate(v, 90deg)` (a literal over 2π warns).
 - `'a'` and `"a"` are both text, but where a number is expected `'a'` is its character code (97).
 - `load()?.name` is not optional chaining: `?` returns from the function when `load()` fails.
 - `!` unwraps an optional, not an error: `x is ParseError`, or `?`, handle those.
@@ -1279,7 +1283,15 @@ render_resolution(640, 360)   # draw at a fixed resolution, scaled up (sharp pix
 pixel_art()                   # the same at the design size: window("game", 320, 180) + pixel_art()
                               # is a 320 x 180 pixel game (its window opens 4 times larger)
 render_scale(0.5)             # draw at half the window's resolution (fewer pixels: faster)
+full_resolution()             # in draw: the rest of the frame at the window's own resolution
 ```
+
+Text drawn at 320 x 180 is a few pixels tall, and blurs into blocks. For a HUD that stays sharp,
+call `full_resolution()` in draw after the world: what follows is drawn at the window's
+resolution, in the same units, over the pixel art (`text("Score {score}", vec2(4, 4), 8)` is 8
+units tall, 32 pixels in a window four times larger). A pixel font is a TTF like any other,
+`set_font(load_font(embed("pixel.ttf")))`; give it sizes the window's scale turns into whole
+pixels.
 
 `mouse_pos()` is in the same 2D units, and 3D follows the same picture (a letterboxed game's 3D
 view has the design area's shape). `SLOPPY_FIT=letterbox` and `SLOPPY_RESOLUTION=320x180` try a mode
@@ -1322,26 +1334,8 @@ seconds, and each long frame as it happens. In a web page, `env(name)` reads the
 parameters, in any letters (`?join=` is `env("JOIN")`'s), so `?SLOPPY_STATS=1` and `?stats` are the same. Files in a web page (`read_file`,
 `write_file`, `list_dir`) are the page's own, in memory (`sloppy.files` in JavaScript); a web build
 run under node (`tools/runwasm.js page.html args...`) uses the real ones and gets the arguments.
-
-Environment variables for testing and tuning: `SLOPPY_SCREENSHOT=out.png` (with `SLOPPY_FRAMES=n`)
-saves frame n and exits (`SLOPPY_FRAMES=n` alone runs n frames and exits, in real time) — with a screenshot the clock advances exactly 1/60 s per frame, so the image is
-reproducible (the desktop's keys and mouse are ignored); it has the window's pixels, the size
-asked for (on a scaled Wayland display too: `SLOPPY_SCALE=2` renders at twice it); and with
-`SLOPPY_SOFTWARE=1` no display is needed at all (where there is one, the window still opens on
-it: unset `WAYLAND_DISPLAY` and `DISPLAY` to keep it off the screen); `SLOPPY_INPUT="5:space+,9:space-"`
-(commas or spaces between items) presses and releases keys at given frames (keys as `Key` names them: `a`, `n1`, `space`, `escape`,
-`left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons, and
-`12:mouse=400x300` moves the mouse there, `3:wheel=1` turns the wheel a notch, in the screen's units, `7:text=hi` types,
-`5:touch1=400x300` puts finger 1 down there (or moves it) and `9:touch1-` lifts it (the first finger down is the mouse too, as on a phone),
-`5:pad_a+`/`9:pad_a-` press and let go a gamepad's button (pad 0; PadButton's names), `6:lstick=1x0` and `rstick=` set its sticks, `lt=1` and `rt=` its triggers; an item it
-cannot read is reported; a web build takes it in the page's address, `page.html?SLOPPY_INPUT=5:space%2B`,
-with `+` written `%2B`); `SLOPPY_SEED=n` makes `random()` the same each run; `SLOPPY_WINDOW=800x600` opens the window at
-that size; `SLOPPY_NO_AUDIO=1` plays no sound (for tests and machines without a sound card);
-`SLOPPY_THREADS=n` caps the threads used by the
-parallel functions; `SLOPPY_SCALE=1` renders at the logical size and lets the compositor scale
-it up; `SLOPPY_FRAME_STATS=1` (with `SLOPPY_SCREENSHOT`) reports frame times and how frames reach the
-screen; `SLOPPY_MSAA=1` draws without antialiasing (through Vulkan the screen is drawn with 4
-samples a pixel, smooth edges as in a web page's canvas).
+Screenshots, pressing keys at given frames and the other environment variables for running a
+game with no one at the keyboard are in [Testing a game](#testing-a-game) below.
 
 ```
 sloppy file.jo [args]     compile and run (wasm target: opens the browser)
@@ -1391,6 +1385,46 @@ change to how something moves or looks shows at once.
 
 `sloppy watch` runs native builds (Linux or Windows; on Windows `r` and `q` need no enter), in debug
 or release mode as the build block says.
+
+### Testing a game
+
+A game can be run with no one at the keyboard: to look at a frame, to check that a level can be
+finished, or in a test of your own. Environment variables say what happens:
+
+- `SLOPPY_SCREENSHOT=out.png` with `SLOPPY_FRAMES=n` saves frame n and exits (`SLOPPY_FRAMES=n`
+  alone runs n frames and exits, in real time). With a screenshot the clock advances exactly
+  1/60 s per frame, so the image is reproducible (the desktop's keys and mouse are ignored); it
+  has the window's pixels, the size asked for (on a scaled Wayland display too: `SLOPPY_SCALE=2`
+  renders at twice it). With `SLOPPY_SOFTWARE=1` no display is needed at all, and without it
+  and no display (unset `WAYLAND_DISPLAY` and `DISPLAY`) the frames are drawn through Vulkan
+  with no window; where there is a display, the window opens on it.
+- `SLOPPY_INPUT="5:space+,9:space-"` presses and releases keys at given frames (commas or
+  spaces between items). Keys are as `Key` names them: `a`, `n1`, `space`, `enter`, `escape`,
+  `left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons,
+  `12:mouse=400x300` moves the mouse there and `3:wheel=1` turns the wheel a notch (in the
+  screen's units), `7:text=hi` types, `5:touch1=400x300` puts finger 1 down there (or moves it)
+  and `9:touch1-` lifts it (the first finger down is the mouse too, as on a phone),
+  `5:pad_a+`/`9:pad_a-` press and let go a gamepad's button (pad 0; PadButton's names),
+  `6:lstick=1x0` and `rstick=` set its sticks, `lt=1` and `rt=` its triggers. An item it
+  cannot read is reported. A web build takes it in the page's address,
+  `page.html?SLOPPY_INPUT=5:space%2B`, with `+` written `%2B`.
+- `SLOPPY_SEED=n` makes `random()` the same each run; `SLOPPY_WINDOW=800x600` opens the window
+  at that size; `SLOPPY_NO_AUDIO=1` plays no sound (for tests and machines without a sound card).
+- `SLOPPY_THREADS=n` caps the threads used by the parallel functions; `SLOPPY_SCALE=1` renders
+  at the logical size and lets the compositor scale it up; `SLOPPY_FRAME_STATS=1` (with
+  `SLOPPY_SCREENSHOT`) reports frame times and how frames reach the screen; `SLOPPY_MSAA=1`
+  draws without antialiasing (through Vulkan the screen is drawn with 4 samples a pixel, smooth
+  edges as in a web page's canvas).
+
+```sh
+SLOPPY_SCREENSHOT=start.png SLOPPY_FRAMES=120 SLOPPY_INPUT="10:enter+ 12:enter- 30:right+" sloppy game.jo
+```
+
+A web build in a headless browser: Chromium's `--screenshot` with `--virtual-time-budget` runs
+only a few of the game's frames before it takes the picture. Drive the browser over its
+DevTools protocol instead (`--remote-debugging-port`, as Playwright and Puppeteer do): load the
+page, wait in real time, send keys with `Input.dispatchKeyEvent` and take the picture with
+`Page.captureScreenshot`.
 
 ## 13. Calling C
 

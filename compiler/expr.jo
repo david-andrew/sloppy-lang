@@ -302,7 +302,7 @@ coerce = (n: int, target: int) -> int:
     if fk == .float_ and tk == .int_: why = " (int(x) makes it a whole number, dropping the fraction)"
     if tk == .bool_ and (fk == .array or fk == .str_ or is_map_type(from)): why = " (not true or false: `xs.len() > 0` asks if it has anything)"
     if tk == .bool_ and (fk == .int_ or fk == .float_): why = " (a number is not true or false: `x != 0` asks)"
-    if tk == .bool_ and fk == .int_ and nodes[n].kind == .int_lit: why = " (to do something {nodes[n].ival} times: `loop i in [1..{nodes[n].ival}]:`)"
+    if tk == .bool_ and fk == .int_ and nodes[n].kind == .int_lit: why = " (to do something {nodes[n].ival} times: `loop i in 0..{nodes[n].ival}:`)"
     fatal(nodes[n].pos, "type mismatch: expected {type_str(to)}, found {type_str(from)}{why}{coerce_hint}")
     n
 
@@ -618,7 +618,7 @@ check_place = (n: int, for_mut: bool):
         bt = prune(ntype(int(nodes[n].a)))
         bk = types[bt].kind
         if bk == .ptr: return
-        if bk == .str_: fatal(nodes[n].pos, "a string's characters cannot be changed in place: make a new string, `s = s[..i) + \"x\" + s[i + 1..]`, or change `cs = chars(s)` and `join(cs)` it back")
+        if bk == .str_: fatal(nodes[n].pos, "a string's characters cannot be changed in place: make a new string, `s = s[..i] + \"x\" + s[i + 1..]`, or change `cs = chars(s)` and `join(cs)` it back")
         cp_inner += 1
         if bk == .vec or bk == .fixed:
             check_place(int(nodes[n].a), for_mut)
@@ -1230,7 +1230,10 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                     if not tie_types.contains(ptt): tie_types.push(ptt)
                     last_err_arg = i + 1
                     ptx = subst(cd.sig.params[fi], cd.binds)
-                    if nodes[a].type != 0: last_err = "argument '{name_of(pnames[fi])}' expects {type_str(ptx)}, found {type_str(ntype(a))}{variant_hint(a, ptx)}"
+                    # (T[] as written, not $0[], where T is not known yet)
+                    ptxs = type_str(ptx)
+                    if has_var(prune(ptx)): ptxs = param_type_text(int(cd.decl), fi)
+                    if nodes[a].type != 0: last_err = "argument '{name_of(pnames[fi])}' expects {ptxs}, found {type_str(ntype(a))}{variant_hint(a, ptx)}"
                     else if nodes[a].kind == .dotname and tkind(ptx) == .enum_:
                         vn = int(nodes[a].name)
                         last_err = "{type_str(ptx)} has no variant '{name_of(vn)}'{variant_hint_for(ptx, name_of(vn))}"
@@ -1239,8 +1242,11 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                     last_err_plain = last_err
                     fnm = name_of(int(nodes[int(cd.decl)].name))
                     # (text("Score:", score, pos): Scratch's join, or Python's print, pieces in a row)
-                    if (fnm == "text" or fnm == "text_centered") and fi == 1 and nodes[cd.args[0]].kind == .str_lit and nodes[a].type != 0 and tkind(ntype(a)) != .vec:
+                    if (fnm == "text" or fnm == "text_centered") and fi == 1 and nodes[cd.args[0]].kind == .str_lit and nodes[a].type != 0 and tkind(ntype(a)) != .vec and tkind(ntype(a)) != .tuple:
                         last_err = "text takes one piece of text, then where it goes: put the value inside it, `\"Score: \{score}\"`"
+                    # (enumerate(row) with row a str: Python's, for its characters)
+                    if fnm == "enumerate" and nodes[a].type != 0 and tkind(ntype(a)) == .str_:
+                        last_err = "enumerate takes an array; a str's characters with their places are `loop i in 0.. and c in s:` (c is a character's code, a u8), or `loop i in 0..s.len():` and `s[i]`"
                     # (play("meow.wav"): a sound's file, not loaded)
                     if (fnm == "play" or fnm == "play_music") and nodes[a].kind == .str_lit:
                         last_err = "load the sound first, at the top of the file (`meow = load_wav(embed(\"meow.wav\"))`, or load_ogg), then `play(meow)`"
@@ -1332,7 +1338,7 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 ot = overloads_text(decls, "")
                 fatal(nodes[n].pos, "no version of '{fnm}' takes these arguments (`{cap}(...)` makes {a_or_an(cap)}){ot}")
         # (range(3), set(): Python's, which mean other things here)
-        if name_of(name) == "range" and args.len() == 1: fatal(nodes[n].pos, "the numbers from 0 to n - 1 are `[0..n)` (`loop i in [0..3):`); range(a, b) is [a..b)")
+        if name_of(name) == "range" and args.len() == 1: fatal(nodes[n].pos, "the numbers from 0 to n - 1 are `0..n` (`loop i in 0..3:`); range(a, b) is a..b")
         if name_of(name) == "set" and args.len() == 0: fatal(nodes[n].pos, "there is no set type: a map to bool (`seen: \{str: bool} = \{}`, `seen[x] = true`, `x in seen`), or `unique(xs)`")
         if name_of(name) == "join" and args.len() == 2 and nodes[unnamed(args[1])].type != 0 and tkind(prune(ntype(unnamed(args[1])))) == .array:
             fatal(nodes[n].pos, "join puts text together: `[loop x in xs: str(x)]` makes text of each first")
@@ -1347,6 +1353,11 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 # (xs = [] then xs.add(5): its type, not known yet, is no help)
                 fatal(nodes[n].pos, "no '{name_of(name)}' for a list (use {hh})")
             if len(hh) > 0 and (types[t0].kind == .array or types[t0].kind == .str_): fatal(nodes[n].pos, "no '{name_of(name)}' for {type_str(t0)} (use {hh})")
+            # (r.inflate(4, 4) and scale(img, 2, 2): pygame's, where a function of the name takes other things)
+            th = type_habit_name(type_str(t0), name_of(name))
+            loop d in decls:
+                if not decl_in_prelude(d): th = ""
+            if len(th) > 0: fatal(nodes[n].pos, "no '{name_of(name)}' for {type_str(t0)} (use {th})")
         if decls.len() > 1:
             # (when none fits, the program's own function is the one meant: its error is the one shown)
             own: int[]
@@ -1371,6 +1382,8 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
         if len(ot) > 0 and (starts_with(last_err, "too many") or starts_with(last_err, "missing")):
             an = "{args.len()} arguments"
             if args.len() == 1: an = "1 argument"
+            # (rect(x, y, w, h, color, 2): pygame's outline width)
+            if name_of(name) == "rect" and args.len() == 6 and decl_in_prelude(decls[0]): ot += "; an outline is rect_outline(x, y, w, h, thickness, c) (or rect_outline(r, thickness, c))"
             fatal(nodes[n].pos, "no version of '{name_of(name)}' takes {an}{ot}")
         what = "({ts})"
         if find(ts, "?") >= 0: what = "these arguments"
@@ -1414,7 +1427,7 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
         if rhi == 6 or rhi == 10 or rhi == 12 or rhi == 20 or rhi == 100:
             # (a die's, or a percent's, upper end, as people write it: random_int(1, 7) is quiet,
             # and random_int(1, 5 + 1) says 1 to 5 is meant)
-            warn(nodes[n].pos, "random_int(1, {rhi}) gives 1 to {rhi - 1}: its upper end is left out, as in [1..{rhi}); random_int(1, {rhi + 1}) gives 1 to {rhi} (and random_int(1, {rhi - 1} + 1) says 1 to {rhi - 1} is meant)")
+            warn(nodes[n].pos, "random_int(1, {rhi}) gives 1 to {rhi - 1}: its upper end is left out, as in 1..{rhi}; random_int(1, {rhi + 1}) gives 1 to {rhi} (and random_int(1, {rhi - 1} + 1) says 1 to {rhi - 1} is meant)")
         # (random(1, 6) for a die, as Python's randint: a number with a fraction)
         if name_of(int(nodes[decl].name)) == "random" and cd.args.len() == 2 and written_int(cd.args[0]) == 1:
             hi = written_int(cd.args[1])
@@ -2074,6 +2087,18 @@ phaser_hint = (nm: str, member: str) -> str:
     if member == "scene": return " (screens are an enum, `screen = Screen.play`, with a `match screen:` in update and in draw)"
     ""
 
+# (screen.fill, screen.blit, pygame.display.flip(): pygame's, which draws onto a screen Surface)
+pygame_hint = (nm: str, member: str) -> str:
+    if nm == "pygame":
+        if member == "display": return " (each frame is shown by itself after draw: there is nothing to flip; `window(\"Title\", 800, 600)` at the top sets the window's size)"
+        return " (the game library is there without an import: `window(\"Title\", 800, 600)` at the top, then `update = (dt: f64):` and `draw = ():`, which the game calls each frame; docs/START.md, Coming from pygame)"
+    if nm != "screen" and nm != "surface" and nm != "display" and nm != "win": return ""
+    if member == "fill": return " (there is no screen Surface: draw in `draw = ():`, starting with `clear(color)`)"
+    if member == "blit": return " (there is no screen Surface: draw in `draw = ():`, with `sprite(texture, pos)`)"
+    if member == "flip" or member == "update": return " (each frame is shown by itself after draw: there is nothing to flip)"
+    if member == "get_width" or member == "get_height" or member == "get_size": return " (the screen's size: `screen_width()` and `screen_height()`)"
+    ""
+
 file_ext_after = (p: int, n: int) -> str:
     f = pos_file(p)
     if f < 0 or f >= files.len(): return ""
@@ -2155,11 +2180,20 @@ DRAWING_FNS = ["circle", "rect", "line", "text", "text_centered", "text_wrapped"
     "circle_gradient", "rect_gradient", "quad_gradient", "triangle", "arc", "draw_mesh", "draw_tilemap", "draw_anim",
     "draw_model", "draw_sprite", "image_draw"]
 
+top_loop_warned = false
+
 # drawing in update, clearing after drawing, sleeping in a frame: done where it shows nothing,
 # covers what was drawn, or stops the game
 frame_call_check = (n: int, decl: int):
     if cx < 0: return
     ci = int(ctxs[cx].inst)
+    # (a main loop of pygame's, `loop running:` at the top of the file with drawing in it: it runs
+    # once, before the first frame, and its drawing fails; said once)
+    if ci > 0 and fns[ci].kind == i32(FK_INIT) and ctxs[cx].parent < 0 and ctxs[cx].loop_depth > 0 and not top_loop_warned and modules[cur_mod()].is_main:
+        dfn = name_of(int(nodes[decl].name))
+        if DRAWING_FNS.contains(dfn) or dfn == "clear":
+            top_loop_warned = true
+            warn(nodes[n].pos, "{dfn} in a loop at the top of the file: a game has no main loop of its own, and drawing works only in `draw = ():`; the game calls `update = (dt: f64):` and `draw = ():` each frame: put the loop's lines in those")
     if ci <= 0 or fns[ci].decl == 0: return
     fd = int(fns[ci].decl)
     if not modules[int(nodes[fd].mod)].is_main: return
@@ -2314,7 +2348,7 @@ angle_check = (decl: int, args: int[]):
         else: continue
         if abs(v) <= 6.3: continue
         pn = name_of(int(nodes[kid(decl, i)].name))
-        if pn == "angle" or pn == "yaw" or pn == "pitch" or pn == "roll" or (pn == "a" and (starts_with(fnm, "rotation") or starts_with(fnm, "quat_"))):
+        if pn == "angle" or pn == "yaw" or pn == "pitch" or pn == "roll" or (pn == "a" and (starts_with(fnm, "rotation") or starts_with(fnm, "quat_") or fnm == "rotate")):
             warn(nodes[a].pos, "{txt} radians is more than a whole turn: angles are in radians (a turn is TAU, 6.28); `{txt}deg` is {txt} degrees")
 
 # a function's name and parameters as written: circle(center: vec2, radius: f64, c: vec4, segments: int = 0)
@@ -2701,7 +2735,7 @@ cmp_error = (n: int, ta: int, tb: int):
         # (env("X") != "": the optional may be none)
         why = " (it may be none: `(x ?? default) == value` compares its value, or a default when there is none; `if let v = x:` names the value)"
     if len(why) == 0 and ((type_eq(prune(ta), T_U8) and tkind(tb) == .str_) or (tkind(ta) == .str_ and type_eq(prune(tb), T_U8))):
-        why = " (`s[i]` is a character's code, a number: the character as text is `s[i..i]`)"
+        why = " (`s[i]` is a character's code, a number: the character as text is `s[i..i + 1]`)"
     # (n == "5" with n an int: "5" is text; '5' is the character's code)
     if len(why) == 0 and is_int(ta): why = text_char_hint(int(nodes[n].b), ta)
     if len(why) == 0 and is_int(tb): why = text_char_hint(a, tb)
@@ -2909,8 +2943,19 @@ check_call = (n: int, expected: int) -> int:
         return variant_ctor(n, et, vi, args)
     if ck == .field:
         recv = int(nodes[callee].a)
-        rt = prune(check_expr(recv, 0))
         fname = int(nodes[callee].name)
+        # (random.randint(1, 6), random.choice(xs): Python's module, where Sloppy has a function)
+        if nodes[recv].kind == .ident and not pos_in_lib(nodes[n].pos):
+            rs = lookup(int(nodes[recv].name))
+            if rs != 0 and syms[rs].kind == .fns:
+                mh = habit_name(name_of(fname))
+                rn = name_of(int(nodes[recv].name))
+                if starts_with(mh, "nothing: "): fatal(nodes[callee].pos, "'{rn}' is a function, not a module ({mh[9..]})")
+                if len(mh) > 0: fatal(nodes[callee].pos, "'{rn}' is a function, not a module: use {mh}")
+                fd: int[]
+                collect_fns(fname, fd)
+                if fd.len() > 0: fatal(nodes[callee].pos, "'{rn}' is a function, not a module: `{name_of(fname)}(...)` is there as it is")
+        rt = prune(check_expr(recv, 0))
         if ide_sentinel != 0 and fname == ide_sentinel: ide_complete_members(rt)
         rk = types[rt].kind
         if rk == .module: return call_by_name(n, fname, int(types[rt].mod), args, expected, false)
@@ -4364,6 +4409,15 @@ fn_value = (n: int, expected: int) -> int:
             f = get_fn_inst(d, binds, nodes[n].pos)
             break
         else if not sig.generic and decls.len() == 1: f = get_fn_inst(d, [], nodes[n].pos)
+    # (the program's own move beside the library's move(r: Rect, by): its, as a value)
+    if f == 0 and (et == 0 or types[et].kind != .fn_):
+        own_d = 0
+        own_n = 0
+        loop d in decls:
+            if not decl_in_prelude(d):
+                own_d = d
+                own_n += 1
+        if own_n == 1 and not fn_sig(own_d).generic: f = get_fn_inst(own_d, [], nodes[n].pos)
     if f == 0:
         if et != 0 and types[et].kind == .fn_:
             nm = name_of(int(nodes[n].name))
@@ -4573,6 +4627,7 @@ check_expr = (n: int, expected: int) -> int:
             # (score = score + 1: the same, written out)
             if cur_assign != 0 and nodes[int(nodes[cur_assign].a)].kind == .ident and int(nodes[int(nodes[cur_assign].a)].name) == nm: fatal(nodes[n].pos, "unknown name '{name_of(nm)}' (to change it, it needs a value first: `{name_of(nm)} = 0`, at the top of the file to keep it from one frame to the next)")
             ph = phaser_hint(name_of(nm), member_after(nodes[n].pos, len(name_of(nm))))
+            if len(ph) == 0: ph = pygame_hint(name_of(nm), member_after(nodes[n].pos, len(name_of(nm))))
             if len(ph) > 0: fatal(nodes[n].pos, "unknown name '{name_of(nm)}'{ph}")
             # (load_texture(cat1.png): a file's name, without its quotes)
             fx = file_ext_after(nodes[n].pos, len(name_of(nm)))
@@ -4812,6 +4867,14 @@ check_expr = (n: int, expected: int) -> int:
                 if types[bt].kind == .struct_ and type_str(bt) == "Body" and pos_in_lib(nodes[int(structs[int(types[bt].st)].decl)].pos):
                     fatal(nodes[n].pos, "a Body is a handle into its world: ask the world, `w.pos(b)`, `w.velocity(b)`, `w.rotation(b)`, and change it there, `w.set_pos(b, p)`, `w.set_velocity(b, v)`, `w.push(b, impulse)`")
                 cands = fn_names_for(bt)
+                # (r.center = p, r.right = 100: worked out from the fields, which are what is set)
+                if cur_assign != 0 and int(nodes[cur_assign].a) == n and types[bt].kind == .struct_ and cands.contains(fname):
+                    fl: str[]
+                    si = int(types[bt].st)
+                    loop i in [0..int(structs[si].nfields)): fl.push(name_of(int(fields[int(structs[si].fields) + i].name)))
+                    fs = join(fl, ", ")
+                    if fl.len() > 1: fs = "{join(fl[..fl.len() - 1], ", ")} and {fl[fl.len() - 1]}"
+                    fatal(nodes[n].pos, "{name_of(fname)} is worked out from {a_type(bt)}'s fields, so it cannot be set: set those, {fs}")
                 loop c in cands:
                     if c == fname: fatal(nodes[n].pos, "'{name_of(fname)}' is a function: call it, `x.{name_of(fname)}()`")
                 if types[bt].kind == .struct_:

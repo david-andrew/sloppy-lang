@@ -264,6 +264,37 @@ struct Rect:
 overlaps = (a: Rect, b: Rect) -> bool: a.x < b.x + b.w and a.x + a.w > b.x and a.y < b.y + b.h and a.y + a.h > b.y
 contains = (r: Rect, p: vec2) -> bool: p.x >= r.x and p.x < r.x + r.w and p.y >= r.y and p.y < r.y + r.h
 center = (r: Rect) -> vec2: vec2(r.x + r.w / 2.0, r.y + r.h / 2.0)
+# its right edge, x + w, and its bottom one, y + h (the left is x, the top y)
+right = (r: Rect) -> f32: r.x + r.w
+bottom = (r: Rect) -> f32: r.y + r.h
+# the same rect moved by `by`
+move = (r: Rect, by: vec2) -> Rect: Rect(r.x + by.x, r.y + by.y, r.w, r.h)
+# each side moved out by `by` (in, when it is negative: a hitbox a little smaller than its sprite
+# is `r.grow(-2)`); it stays centered where it was
+grow = (r: Rect, by: f64) -> Rect:
+    w = max(r.w + f32(2.0 * by), 0.0)
+    h = max(r.h + f32(2.0 * by), 0.0)
+    Rect(r.x + (r.w - w) / 2.0, r.y + (r.h - h) / 2.0, w, h)
+# r moved (not resized) to be inside `bounds`: a player kept on the screen,
+# `player.rect = player.rect.clamp(Rect(0, 0, 1280, 720))`; one larger than bounds is centered on it
+clamp = (r: Rect, bounds: Rect) -> Rect:
+    x = r.x
+    y = r.y
+    if r.w > bounds.w: x = bounds.x + (bounds.w - r.w) / 2.0
+    else: x = clamp(x, bounds.x, bounds.x + bounds.w - r.w)
+    if r.h > bounds.h: y = bounds.y + (bounds.h - r.h) / 2.0
+    else: y = clamp(y, bounds.y, bounds.y + bounds.h - r.h)
+    Rect(x, y, r.w, r.h)
+# the smallest rect around both
+union = (a: Rect, b: Rect) -> Rect:
+    x = min(a.x, b.x)
+    y = min(a.y, b.y)
+    Rect(x, y, max(a.x + a.w, b.x + b.w) - x, max(a.y + a.h, b.y + b.h) - y)
+# the first of rects that r overlaps, by its position in the array, or -1 when none does
+first_overlap = (r: Rect, rects: Rect[]) -> int:
+    loop i in 0.. and o in rects:
+        if overlaps(r, o): return i
+    -1
 circles_overlap = (a: vec2, ra: f64, b: vec2, rb: f64) -> bool: length_sq(a - b) < f32((ra + rb) * (ra + rb))
 circle_rect = (c: vec2, r: f64, rect: Rect) -> bool:
     q = vec2(clamp(c.x, rect.x, rect.x + rect.w), clamp(c.y, rect.y, rect.y + rect.h))
@@ -306,16 +337,33 @@ update = (ps: mut Particles, dt: f64):
         p.pos += p.vel * f32(dt)
         p.life -= f32(dt)
 
-# draw particles as soft glowing dots (additive blending)
+# draw particles as soft glowing dots (additive blending), or with glow = false as solid ones
+# (blended as the drawing before them); each fades out and shrinks as it ages
 draw = (ps: Particles, glow: bool = true):
-    if glow: blend(.add)
+    if not glow:
+        loop p in ps.items:
+            t = p.life / p.max_life
+            circle(p.pos, f64(p.size * t), with_alpha(p.color, p.color.w * t))
+        return
+    blend(.add)
+    # (each a quad of a soft dot texture, through the sprite batch: the transform's axes taken
+    # once, so a dot costs its center's transform)
+    dot = __soft_dot_texture()
+    m = __xform
+    ax = vec2(m[0].x, m[0].y)
+    ay = vec2(m[1].x, m[1].y)
+    o = vec2(m[3].x, m[3].y)
     loop p in ps.items:
         t = p.life / p.max_life
         c = p.color
         c.w = c.w * t
-        if glow: circle_gradient(p.pos, f64(p.size * (0.5 + t)), c, with_alpha(c, 0), 12)
-        else: circle(p.pos, f64(p.size * t), c, 8)
-    if glow: blend(.alpha)
+        r = p.size * (0.5 + t)
+        q = ax * p.pos.x + ay * p.pos.y + o
+        ex = ax * r
+        ey = ay * r
+        __use_tex(dot.id, 6)
+        __quad_xf(q - ex - ey, q + ex - ey, q + ex + ey, q - ex + ey, c)
+    blend(.alpha)
 
 # ---------------- timing ----------------
 __timers: {int: f64} = {}
