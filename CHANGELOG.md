@@ -7,6 +7,8 @@
   `popcount(i32(-1))` 32; for u8 to u64 and i8 to i32. `get_le`/`get_be` take any size from 1 to
   8 bytes (a 24-bit field). `to_int(s, base)` for bases 2 to 36; `to_int` reads 0b and 0o too.
 - `set_env`, `unset_env` and `env_all()`: seen by `env` and by the programs started after.
+- `get_le` of 1, 2, 4 or 8 bytes is one load (it read byte by byte): a hash over a file's words
+  about 4 times as fast.
 - The thread pool makes a wake call only for threads that are asleep.
 - An interpolated string no longer keeps the room its builder grew ahead: `"item number {i}"`
   takes 64 bytes, not 128 (2 million of them: 142 MB, not 268).
