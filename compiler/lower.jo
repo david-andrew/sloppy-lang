@@ -728,7 +728,9 @@ gen_place = (e: int, write: bool) -> Place:
         addr = place_addr(base, ot)
         has = e_load(VI, addr, tsize(int(types[ot].elem)), 1)
         iff(e_bin(.eq, VI, has, e_iconst(0)))
-        e_call_nr(rt("__panic_unwrap"), [e_daddr(loc_data(nodes[e].pos))], -1)
+        # (aux 1: an optional `x != none` found a value in, read again: checked as a narrowing)
+        if nodes[e].aux == 1: e_call_nr(rt("__panic_narrow"), [e_daddr(loc_data(nodes[e].pos)), e_daddr(str_data("{place_text(a)} is none, though the test here found a value"))], -1)
+        else: e_call_nr(rt("__panic_unwrap"), [e_daddr(loc_data(nodes[e].pos))], -1)
         endc()
         return Place(true, addr)
     else if k == .narrow:
@@ -741,7 +743,7 @@ gen_place = (e: int, write: bool) -> Place:
         addr = place_addr(base, ut)
         vi = int(nodes[e].aux)
         iff(e_bin(.ne, VI, e_load(VI, addr, 0, 4), e_iconst(vi)))
-        e_call_nr(rt("__panic_narrow"), [e_daddr(loc_data(nodes[e].pos))], -1)
+        e_call_nr(rt("__panic_narrow"), [e_daddr(loc_data(nodes[e].pos)), e_daddr(str_data("{place_text(a)} no longer holds the {type_str(ntype(e))} `is` found here"))], -1)
         endc()
         v = int(structs[int(types[ut].st)].variants) + vi
         return Place(true, e_addi(addr, int(fields[int(variants[v].fields)].offset)))
@@ -770,7 +772,7 @@ call_args = (args: int[], ptypes: int[], mutmask: int, out: mut int[], callee: i
     loop i in 0.. and a in args:
         if mutmask & (1 << i) != 0:
             if copy_through(a, callee):
-                out.push(copy_in(a))
+                out.push(copy_in(a, mut_call_text(callee, a, args.len())))
                 continue
             p = gen_place(a, true)
             out.push(place_addr(p, ntype(a)))
@@ -806,6 +808,9 @@ struct CopyBack:
     arg: int
     slot: int
     idx: (int, int)[]          # the place's index nodes and their values
+    lens: (int, int)[]         # the arrays on the way (index nodes) and their lengths before the call
+    snap: int                  # the element's bytes before the call (a slot)
+    call: str                  # the call, as text: `hit(es[0], ...)`
 copy_backs: CopyBack[]
 
 copy_through = (a: int, callee: int) -> bool:
@@ -815,29 +820,69 @@ copy_through = (a: int, callee: int) -> bool:
         if nodes[r].aux != i32(int(SK.local)) or int(locals[int(nodes[r].sym)].flags) & LF_MUTPARAM == 0: return false
     callee <= 0 or fn_writes(callee).all
 
-copy_in = (a: int) -> int:
+# (`hit(es[0], ...)`: a call given element a, for the message when it cannot be put back)
+mut_call_text = (callee: int, a: int, nargs: int) -> str:
+    f = "the function"
+    if callee > 0 and fns[callee].decl != 0: f = name_of(int(nodes[int(fns[callee].decl)].name))
+    if nargs > 1: return "{f}({place_text(a)}, ...)"
+    "{f}({place_text(a)})"
+
+copy_in = (a: int, call: str) -> int:
     t = ntype(a)
-    cb = CopyBack(a, new_temp(t), [])
-    loop st in place_steps(a):
+    cb = CopyBack(a, new_temp(t), [], [], new_temp(t), call)
+    steps = place_steps(a)
+    loop st in steps:
         if nodes[st].kind == .index: cb.idx.push((int(nodes[st].b), gen_expr(int(nodes[st].b)).v))
     loop x in cb.idx: frozen[x.0] = x.1
+    # (the arrays on the way may change size while the call runs, which moves the element: their
+    # lengths, and the element's bytes, are looked at again before it is put back)
+    loop st in steps:
+        if nodes[st].kind == .index and tkind(ntype(int(nodes[st].a))) == .array: cb.lens.push((st, place_len(int(nodes[st].a))))
     src = place_addr(gen_place(a, true), t)
     loop x in cb.idx: frozen.remove(x.0)
     tmp = e_slot(cb.slot)
+    e_copy(e_slot(cb.snap), src, tsize(t))
     store_val(t, tmp, 0, load_val(t, src, 0))
     copy_at(tmp, t)
     copy_backs.push(cb)
     tmp
 
+# the length of the array in place n
+place_len = (n: int) -> int:
+    t = ntype(n)
+    arr_len(load_val(t, place_addr(gen_place(n, false), t), 0))
+
 # after a call: the copies made since copy_backs had `mark` entries go back to their places (the
-# copy's references move there)
+# copy's references move there). The call may have run code that changed the arrays they are in:
+# elements added at the end leave the element where it was, but one gone, moved (an element
+# removed or inserted before it) or changed panics, as putting it back would write over another
 copy_back = (mark: int):
     loop copy_backs.len() > mark:
         cb = copy_backs.pop()
         t = ntype(cb.arg)
         loop x in cb.idx: frozen[x.0] = x.1
+        resized = vreg(VI)
+        e_mov(resized, e_iconst(0))
+        loop l in cb.lens:
+            arr = int(nodes[l.0].a)
+            n = place_len(arr)
+            iff(e_bin(.ne, VI, n, l.1))
+            e_mov(resized, e_iconst(1))
+            endc()
+            iff(e_bin(.geu, VI, frozen[int(nodes[l.0].b)], n))
+            e_call_nr(rt("__panic_mut_moved"), [e_daddr(loc_data(nodes[cb.arg].pos)), e_daddr(str_data("{place_text(arr)} changed size during {cb.call}"))], -1)
+            endc()
         dst = place_addr(gen_place(cb.arg, true), t)
         loop x in cb.idx: frozen.remove(x.0)
+        if tsize(t) > 0:
+            iff(e_bin(.eq, VI, e_call(rt("__mem_eq"), [e_slot(cb.snap), dst, e_iconst(tsize(t))], VI), e_iconst(0)))
+            what = "{place_text(cb.arg)} was changed by other code during {cb.call}"
+            if cb.lens.len() > 0:
+                iff(e_bin(.ne, VI, resized, e_iconst(0)))
+                e_call_nr(rt("__panic_mut_moved"), [e_daddr(loc_data(nodes[cb.arg].pos)), e_daddr(str_data("{place_text(int(nodes[cb.lens[cb.lens.len() - 1].0].a))} changed size during {cb.call}"))], -1)
+                endc()
+            e_call_nr(rt("__panic_mut_moved"), [e_daddr(loc_data(nodes[cb.arg].pos)), e_daddr(str_data(what))], -1)
+            endc()
         drop_at(dst, t)
         store_val(t, dst, 0, load_val(t, e_slot(cb.slot), 0))
 
@@ -2521,19 +2566,18 @@ gen_conv = (e: int) -> Val:
         d = e_slot(s)
         e_zero(d, tsize(to))
         src = gen_owned(a).v
-        tag = e_load(VI, src, 0, 4)
-        fsi = int(types[from].st)
-        tsi = int(types[to].st)
-        loop i in 0.. and m in union_members(from):
-            iff(e_bin(.eq, VI, tag, e_iconst(i)))
-            j = union_index(to, m)
-            if j < 0: e_call_nr(rt("__panic_narrow"), [e_daddr(loc_data(nodes[e].pos))], -1)
-            else:
-                e_store(d, 0, e_iconst(j), 4)
-                fo = int(fields[int(variants[int(structs[fsi].variants) + i].fields)].offset)
-                to_off = int(fields[int(variants[int(structs[tsi].variants) + j].fields)].offset)
-                if tsize(m) > 0: e_copy(e_addi(d, to_off), e_addi(src, fo), tsize(m))
+        if types[from].kind == .opt:
+            # ((A | B)? as a B? or (B | C)?: none stays none)
+            fu = prune(int(types[from].elem))
+            tu = prune(int(types[to].elem))
+            layout(fu)
+            layout(tu)
+            iff(e_bin(.ne, VI, e_load(VI, src, tsize(fu), 1), e_iconst(0)))
+            union_moved(src, fu, d, tu, e)
+            e_store(d, tsize(tu), e_iconst(1), 1)
             endc()
+            return Val(d, true, s)
+        union_moved(src, from, d, to, e)
         return Val(d, true, s)
     if cv == .fixed2arr:
         # a new array holding copies of the elements
@@ -2567,6 +2611,28 @@ gen_conv = (e: int) -> Val:
         return Val(d, true, s)
     fatal(nodes[e].pos, "invalid conversion")
     V(-1, false)
+
+# union value src (of union type from) moved to d as the type `to`: a union with other members
+# (the tag mapped to the member's new index), or one member alone; a member `to` lacks panics,
+# saying where the narrowing was (e)
+union_moved = (src: int, from: int, d: int, to: int, e: int):
+    tag = e_load(VI, src, 0, 4)
+    fsi = int(types[from].st)
+    to_union = is_union(to)
+    loop i in 0.. and m in union_members(from):
+        iff(e_bin(.eq, VI, tag, e_iconst(i)))
+        j = -1
+        if to_union: j = union_index(to, m)
+        else if type_eq(to, m): j = 0
+        if j < 0: e_call_nr(rt("__panic_narrow"), [e_daddr(loc_data(nodes[e].pos)), e_daddr(str_data("{place_text(int(nodes[e].a))} no longer holds what `is` found here"))], -1)
+        else:
+            fo = int(fields[int(variants[int(structs[fsi].variants) + i].fields)].offset)
+            to_off = 0
+            if to_union:
+                e_store(d, 0, e_iconst(j), 4)
+                to_off = int(fields[int(variants[int(structs[int(types[to].st)].variants) + j].fields)].offset)
+            if tsize(m) > 0: e_copy(e_addi(d, to_off), e_addi(src, fo), tsize(m))
+        endc()
 
 # ---------------- expressions ----------------
 # (after code that never comes back: a value of n's type when it is taken as one, "a" + panic(...))

@@ -1880,6 +1880,7 @@ check_for = (s: int):
             fatal(nodes[it].pos, "cannot iterate over a value of type {type_str(t)}{jh}")
     ctxs[cx].loop_depth += 1
     check_block(int(nodes[s].b), 0, false)
+    check_narrow_losses(loop_serials[loop_serials.len() - 1], int(nodes[s].b))
     loop_serials.pop()
     ctxs[cx].loop_depth -= 1
     scope_reset(mark)
@@ -1930,6 +1931,55 @@ capture_narrowed = (l: int, pos: int) -> int:
     locals[nl].alias = i32(e)
     nl
 
+# Narrowed variables given another type inside a loop: x is A, then `loop: ... x.v ... x = B(..)`
+# reads the B as an A on the loop's next round. A narrowing read in a loop (entered after the
+# narrowing) is noted, and an assignment of another type there is checked when the loop is: an
+# error unless the round cannot go on after it (a break or return follows)
+narrow_reads: {int: int} = {}          # narrowing alias local -> the loop (serial) it was read in
+struct NarrowLoss:
+    serial: int
+    stmt: int
+    msg: str
+narrow_losses: NarrowLoss[]
+
+# (the loop with serial `serial`, body `body`, is checked: the assignments in it that lose a narrowing)
+check_narrow_losses = (serial: int, body: int):
+    if narrow_losses.len() == 0: return
+    loop nl in narrow_losses:
+        if nl.serial == serial and round_after(body, nl.stmt, false) == 1: fatal(nodes[nl.stmt].pos, nl.msg)
+    keep: NarrowLoss[]
+    loop nl in narrow_losses:
+        if nl.serial != serial: keep.push(nl)
+    narrow_losses = keep
+
+# can a loop's round go on after statement s in n, to the next round (1), or not (0: a break or
+# return follows it), or is s not in n (-1)? (crossed: a loop inside, whose break ends only it)
+round_after = (n: int, s: int, crossed: bool) -> int:
+    if n == 0: return -1
+    if n == s: return 1
+    k = nodes[n].kind
+    if k == .lambda or k == .fn_: return -1
+    if k == .block:
+        loop i in [0..nkids(n)):
+            r = round_after(kid(n, i), s, crossed)
+            if r < 0: continue
+            if r == 0: return 0
+            loop j in [i + 1..nkids(n)):
+                st = kid(n, j)
+                sk = nodes[st].kind
+                if sk == .return_ or (sk == .break_ and not crossed): return 0
+                if sk != .continue_ and sk != .break_ and not crossed and stmt_terminates(st): return 0
+            return 1
+        return -1
+    inner = crossed or k == .while_ or k == .for_
+    loop c in [int(nodes[n].a), int(nodes[n].b), int(nodes[n].c)]:
+        r = round_after(c, s, inner)
+        if r >= 0: return r
+    loop i in [0..nkids(n)):
+        r = round_after(kid(n, i), s, inner)
+        if r >= 0: return r
+    -1
+
 # x = v where x is narrowed (by `is`) and v is not of the narrowed type: x is the whole variable again
 unnarrow_assign = (s: int):
     lhs = int(nodes[s].a)
@@ -1949,6 +1999,17 @@ unnarrow_assign = (s: int):
     if in_place and not is_union(rt) and types[rt].kind != .opt and can_coerce(int(nodes[s].b), rt, int(locals[l].type)): return
     locals[l].flags = i32(int(locals[l].flags) | LF_UNNARROWED)
     nm = int(nodes[lhs].name)
+    d = int(locals[l].dloops)
+    if loop_serials.len() > d and (narrow_reads.get(l) ?? 0) == loop_serials[d]:
+        ln, c = line_col(locals[l].pos)
+        nt = type_str(int(locals[l].type))
+        given = "a {type_str(rt)}"
+        again = "if {name_of(nm)} is {nt}:"
+        if tkind(rt) == .none_lit or tkind(rt) == .opt:
+            given = "none"
+            again = "if {name_of(nm)} != none:"
+        nl = NarrowLoss(loop_serials[d], s, "'{name_of(nm)}' is narrowed to {nt} (line {ln}) and read as one in this loop, so giving it {given} here makes the loop's next round read {given} as {nt}: test it again inside the loop (`{again}`), use another variable for the new value, or leave the loop after this (`break`)")
+        narrow_losses.push(nl)
     push_scope_sym(nm, new_sym(nm, .local, u, 0))
 
 # returns the (possibly replaced) statement node
@@ -2180,7 +2241,7 @@ check_assign = (s: int) -> int:
             if not gcopy_writes.has(wg): gcopy_writes[wg] = nodes[s].pos
     if op == int(Tok.assign):
         rt = prune(check_expr(int(nodes[s].b), lt))
-        if rt != lt and nodes[lhs].kind == .ident and (nodes[lhs].aux == i32(int(SK.local)) or nodes[lhs].aux == i32(int(SK.global))) and not can_coerce(last_checked, rt, lt): var_type_error(lhs, lt, rt, nodes[last_checked].pos)
+        if rt != lt and nodes[lhs].kind == .ident and (nodes[lhs].aux == i32(int(SK.local)) or nodes[lhs].aux == i32(int(SK.global))) and not can_coerce(last_checked, rt, lt): var_type_error(lhs, lt, rt, nodes[last_checked].pos, last_checked)
         nodes[s].b = i32(coerce(last_checked, lt))
         if path_narrows > 0 and nodes[lhs].kind != .ident or path_narrows > 0 and nodes[lhs].aux == i32(int(SK.global)):
             key = path_key(lhs)
@@ -2247,11 +2308,6 @@ check_assign = (s: int) -> int:
     is_shift = bop == int(Tok.shl) or bop == int(Tok.shr)
     hint = l
     if is_int(l) and is_shift: hint = 0
-    # (score += "1": a one-character text is that character's code, 49)
-    rb = int(nodes[s].b)
-    if is_int(l) and nodes[rb].kind == .str_lit and nodes[rb].aux == 0 and len(name_of(int(nodes[rb].sval))) == 1 and not pos_in_lib(nodes[s].pos):
-        ch = name_of(int(nodes[rb].sval))
-        warn(nodes[rb].pos, "\"{ch}\" here is the character code of {ch}, not the number: write {ch} without quotes for the number")
     rt = check_expr(int(nodes[s].b), hint)
     nodes[s].b = i32(last_checked)
     if is_shift:
@@ -2272,7 +2328,7 @@ callback_warn = (gs: int, msg: str):
     warn(nodes[d].pos, msg)
 
 # x = value where x is a variable of another type: where x was made, and the ways out
-var_type_error = (lhs: int, lt: int, rt: int, at: int):
+var_type_error = (lhs: int, lt: int, rt: int, at: int, rhs: int = 0):
     nm = name_of(int(nodes[lhs].name))
     made = ""
     p = 0
@@ -2293,6 +2349,8 @@ var_type_error = (lhs: int, lt: int, rt: int, at: int):
     # (score = "0", then score += 1: a number in quotes is text)
     if tkind(lt) == .str_ and is_numeric(rt):
         fatal(at, "'{nm}' holds text{made} (a value in quotes, \"0\", is text, even with digits): for a number, give it one without quotes (`{nm} = 0`)")
+    # (x = 1, then x = "s": text, which is not the character's code here)
+    if rhs != 0 and charlike(rhs) and is_int(lt): fatal(at, "'{nm}' has type {type_str(lt)}{made} and cannot hold text{text_char_hint(rhs, lt)}")
     fatal(at, "'{nm}' has type {type_str(lt)}{made} and cannot hold this {type_str(rt)}: {how}")
 
 check_vardecl = (s: int):
@@ -2442,6 +2500,7 @@ check_stmt = (s: int):
         ctxs[cx].loop_depth += 1
         check_block(int(nodes[s].b), 0, false)
         ctxs[cx].loop_depth -= 1
+        check_narrow_losses(loop_serials[loop_serials.len() - 1], int(nodes[s].b))
         loop_serials.pop()
         scope_reset(mark)
     else if k == .for_: check_for(s)

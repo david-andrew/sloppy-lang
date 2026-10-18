@@ -88,9 +88,12 @@ piped in (`sloppy < script.txt`).
   `r"""..."""` is both (help text with `{name}` in it). Widths in format specs count
   characters, so `"{city:<8}"` lines up "Zürich" with "Paris", and a precision on text cuts it to
   that many characters: `"{title:<20.20}"` is a column 20 wide.
-* **Characters.** A one-character string where an integer is expected stands for its
-  character code: `c == 'a'`, `'0'..'9'` in a match, `u8('A')`, `'{'` (a brace alone is not an
-  interpolation).
+* **Characters.** A one-character string in single quotes where an integer is expected stands
+  for its character code: `c == 'a'`, `'0'..'9'` in a match, `'a' + i`, `u8('A')`, `'{'` (a brace
+  alone is not an interpolation). In double quotes it is text, except where a byte (`u8`) is
+  expected: `s[i] == "a"`, `c in "+-"`, `bytes.push("\n")`. Elsewhere text is not a number:
+  `add(1, "2")` with `add` taking `int`s is an error (`to_int("2")` reads the number, `'2'` is
+  the character's code).
 * **Units.** A unit right after a number (no space) converts to the SI base unit at compile
   time: `120ms` is `0.12`, `90deg` is `PI / 2`, `3km` is `3000.0`, `1.2(m/s)`,
   `9.81(m/s^2)`, `[1.2 0](m/s)`. Time `s ms us ns min h`, length `m cm mm km`, mass `kg g`,
@@ -158,6 +161,9 @@ Top-level statements in the main file run in order, like a script.
 **Numeric conversions.** Integers widen implicitly to larger integer types of the same
 signedness and to floats; `f32` and `f64` convert implicitly in both directions.
 Narrowing is explicit: `int(3.7)`, `u8(x)`, `i32(n)`; `f64(n)` makes a float of an integer.
+An integer converted to a smaller integer type keeps its low bits, wrapping around as C's casts
+do: with `n = 300`, `u8(n)` is 44; `u8(n - 301)` is 255 (a literal that does not fit, as in
+`u8(300)`, is an error when compiling).
 `as` reinterprets pointers, and integers as another size or sign (`x as u8`, `p as *f32`). It
 does not go between integers and floats: `f64_bits(x)` and `f64_from_bits(b)` give and take a
 float's bits. For C, `data(xs)` is a pointer to an array's or a string's first element, and a
@@ -254,11 +260,13 @@ An element passed as `mut` (`hit(enemies[i])`) is changed where it is, in the ar
 call runs, nothing else may hold or change that array, so the same call cannot also be given
 the array (`attach(nodes[0], nodes)`), and a global array cannot be one the function changes,
 itself or in a function it calls. The compiler says so; pass the index instead. Other elements
-of the array are fine: `swap(xs[i], xs[j])`, `hit(d.mesh, d.instances)`; an element and one
+of the array are fine: `bounce(balls[i], balls[j])`, `hit(d.mesh, d.instances)`; an element and one
 inside it (`xs[0]` and `xs[0][0]`) are not. When the function may call a function value (which
 the compiler cannot see into), an element of a global array (or of a `mut` parameter's) is given
 to it as a copy that is written back to `xs[i]` when it returns, since that code could resize
-the array.
+the array. Elements that code adds at the end leave `xs[i]` where it was; if it removed or
+inserted elements before it (`xs.remove(0)`, `xs.clear()`), or changed `xs[i]` itself, the copy
+cannot be put back without writing over another element, and the program stops, saying so.
 
 To modify array elements in a loop, use `loop mut`:
 
@@ -438,6 +446,8 @@ panic: hit an enemy that was already defeated
 A stack overflow (a function that calls itself without end) and a crash in code using raw
 pointers or C are reported the same way. (Release builds inline small functions: their frames
 show as the line of the call. In a web page the browser's console has the JavaScript stack.)
+A panic ends the program where it is: `defer`red code does not run (the system closes the
+program's files).
 
 **Debuggers and profilers.** Executables written by `sloppy build` carry DWARF line tables and
 function names, so gdb and lldb work with the `.jo` source (`break game.jo:31`, `bt`, `next`,
@@ -519,6 +529,13 @@ label = match screen:                  # a match is an expression too
     _: "play"
 ```
 
+A match on an enum or a union names each variant or member, or has `_:`, also as a statement, so
+that one added later is not passed over quietly. A match statement on numbers or text needs no
+`_:`: like a `switch` without `default`, it does nothing for the values it does not name. A
+match that gives a value needs an arm for every value (`true:` and `false:` cover a `bool`).
+Where its type is known, as on a function's last line, each arm gives that type, so the arms
+of a `match` or `if` among them may give different members of a union.
+
 ## 7. Structs, unions, enums, optionals, tuples
 
 ```gdscript
@@ -547,6 +564,16 @@ function field has nothing to call: calling it stops the program, saying so).
 Leave fields out by naming the ones given (`Player(name = "cy")`); values given in order that
 stop one or two fields short of a number, text or struct without a default get a warning, as
 that is usually a value forgotten.
+
+Structs compare with `==` field by field (and so work as map keys), unless a field holds a
+function: functions cannot be compared, so neither can such a struct (the compiler names the
+field; compare the fields that can be, `a.name == b.name`).
+
+A struct holds its fields in place, so it cannot hold itself, not even as an optional
+(`next: Node?` would put a whole `Node` inside each `Node`). Recursive data goes in an array,
+which holds its elements apart: `kids: Node[]` for a tree, `next: Node[]` (empty, or one) for a
+list, or all the nodes in one array, linked by their indexes (`next: int`). The same holds for an
+enum's variants: `neg(e: Expr[])`, not `neg(e: Expr)`.
 
 **Unions** hold a value of one of several types. `is` tests which, and a variable that has
 been tested *is* that type where the test holds — in the `if`, after an `if` that returns or
@@ -579,11 +606,20 @@ knows what the earlier tests excluded. A `match` arm listing several types (`int
 sees their union, and `_:` the members no earlier arm matched. Fields and globals narrow the same
 way as variables (`if self.target is Enemy: self.target.hp -= 1`); assigning a member to a field
 narrows it to that member, and passing the value on as a `mut` argument forgets what was known.
-Assigning another member to a narrowed variable makes it the whole union again. A union fits
+Assigning another member to a narrowed variable makes it the whole union again from there on;
+inside a loop that reads it as the narrowed member, that would make the next round read the
+new value as the old member, so it is an error there unless the loop ends right after (`break`,
+`return`). A variable that code the compiler cannot follow (a closure, a function changing a
+global) changes after the test stops the program when it is read as the member, saying where
+the test was. A union fits
 any union that has all of its members (`int | str` passes for `int | str | f64`), and a generic
 parameter inside a union stands for the members the union does not name: `value_or[T] = (r: T |
-Err, d: T) -> T` called with an `int | str | Err` has `T = int | str`. A union value prints as
-the value it holds. `T | none` is `T?`.
+Err, d: T) -> T` called with an `int | str | Err` has `T = int | str`. With two parameters,
+`unwrap_or[T, E] = (r: T | E, d: T) -> T`, the other arguments decide one (`d: T`) and the other
+stands for the rest; when nothing does (`expect(r, "msg")`), the call gives them:
+`expect[int, ParseError](r, "msg")`. A union value prints as the value it holds. `T | none` is
+`T?`, so a `T??` is a `T?` too: a map of optionals' `m.get(k)` is `none` for a missing key and for
+a `none` kept alike (`m.has(k)` tells them apart).
 
 A union does the work of a base class. Passing one where a function has an overload for each
 of its members calls the overload for what it holds (a `mut` parameter changes it in place), and
@@ -650,8 +686,25 @@ print(pair.0)
 Tuples compare element by element, the first that differs deciding: `(1, "z") < (2, "a")`, and
 sorting `(score, name)` pairs sorts by score, then by name.
 
-(Enums whose variants carry fields, `enum Shape: circle(r: f64), rect(w: f64, h: f64)`, also
-exist; unions are usually simpler.)
+Enums whose variants carry fields also exist (unions are usually simpler):
+
+```gdscript
+enum Shape:
+    circle(r: f64)
+    rect(w: f64, h: f64)
+s = Shape.rect(2, 3)
+area = match s:
+    .circle(r): PI * r ^ 2             # an arm names the variant and binds its fields, in order
+    .rect(w, _): w * w                 # (`_` for a field not used)
+enum Tree[T]:                           # generic: the type arguments come from the fields given
+    leaf
+    node(v: T, kids: Tree[T][])
+t = Tree.node("a", [])                  # a Tree[str]
+```
+
+An arm binds a variant's fields by position, as plain names (or `_`), one variant to an arm;
+arms cannot test the fields' values (`.rect(w, h) if w == h`), nest patterns, or bind variants
+in `if let`: match the variant, then test its fields in the arm.
 
 ## 8. Arrays for numeric work
 
