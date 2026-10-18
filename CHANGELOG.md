@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `net.fetch` takes `method` ("POST", "PUT", "DELETE", "HEAD"...), `headers` (sent besides the
+  usual ones: "Authorization"...), a `body` (its Content-Type, unless given, JSON when it starts
+  with { or [), `save_to` (a successful answer goes to that file as it comes, not into memory)
+  and `progress(got, all)`; redirects after a POST go on as browsers do (303, 301 and 302: a GET;
+  307 and 308: the same request). The body is read as it comes (each piece was copied with all
+  before it: downloads crawled, chunked ones worst): 100 MB over HTTP here in 0.12 s.
+  `HttpReply.size` says how much came.
+- `create_file(path)` and `f.write(bytes or text)`: a file written a piece at a time.
+- AES-GCM is 2-4 times as fast (GHASH by integer multiplication, as BearSSL's ctmul64, which also
+  takes as long whatever the key; AES on four words, no arrays a block): an https download takes a
+  third of the time it did on the processor.
+- A server that closes the connection during the handshake (as some answer a TLS version they do
+  not speak) is said so; the reason was empty.
 - P-256 (WebRTC's keys and signatures, TLS's fallback key exchange) takes as long whatever the
   key: the field's arithmetic has no branch on its numbers, points add by a complete formula
   (Renes, Costello and Batina's), and a scalar is taken four bits at a time from a table read

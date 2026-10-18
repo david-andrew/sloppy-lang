@@ -463,14 +463,22 @@ __xtime = (x: u8) -> u8:
 
 # one 16-byte block encrypted
 aes_encrypt_block = (k: AesKey, block: u8[16]) -> u8[16]:
+    w = __aes_words(k, __be32(block, 0), __be32(block, 4), __be32(block, 8), __be32(block, 12))
+    out: u8[16]
+    loop c in [0..4):
+        v = if c == 0: w.0 else: if c == 1: w.1 else: if c == 2: w.2 else: w.3
+        loop row in [0..4): out[c * 4 + row] = u8((v >> u32(24 - row * 8)) & 255)
+    out
+
+# a block as four big-endian words, encrypted
+__aes_words = (k: AesKey, b0: u32, b1: u32, b2: u32, b3: u32) -> (u32, u32, u32, u32):
     __aes_tables()
     te = __aes_te
     rk = k.rk
-    # (the state as four big-endian columns)
-    s0 = ((u32(block[0]) << 24) | (u32(block[1]) << 16) | (u32(block[2]) << 8) | u32(block[3])) xor rk[0]
-    s1 = ((u32(block[4]) << 24) | (u32(block[5]) << 16) | (u32(block[6]) << 8) | u32(block[7])) xor rk[1]
-    s2 = ((u32(block[8]) << 24) | (u32(block[9]) << 16) | (u32(block[10]) << 8) | u32(block[11])) xor rk[2]
-    s3 = ((u32(block[12]) << 24) | (u32(block[13]) << 16) | (u32(block[14]) << 8) | u32(block[15])) xor rk[3]
+    s0 = b0 xor rk[0]
+    s1 = b1 xor rk[1]
+    s2 = b2 xor rk[2]
+    s3 = b3 xor rk[3]
     loop r in [1..10):
         t0 = te[int(s0 >> 24)] xor te[256 + int((s1 >> 16) & 255)] xor te[512 + int((s2 >> 8) & 255)] xor te[768 + int(s3 & 255)] xor rk[r * 4]
         t1 = te[int(s1 >> 24)] xor te[256 + int((s2 >> 16) & 255)] xor te[512 + int((s3 >> 8) & 255)] xor te[768 + int(s0 & 255)] xor rk[r * 4 + 1]
@@ -481,76 +489,132 @@ aes_encrypt_block = (k: AesKey, block: u8[16]) -> u8[16]:
         s2 = t2
         s3 = t3
     # (the last round: no MixColumns)
-    out: u8[16]
-    cols = [s0, s1, s2, s3]
-    loop c in [0..4):
-        loop row in [0..4):
-            src = cols[(c + row) % 4]
-            b = __AES_SBOX[int((src >> u32(24 - row * 8)) & 255)]
-            out[c * 4 + row] = b xor k.w[160 + c * 4 + row]
-    out
+    sb = __AES_SBOX
+    last = (a: u32, b: u32, c: u32, d: u32, key: u32) -> u32: ((u32(sb[int(a >> 24)]) << 24) | (u32(sb[int((b >> 16) & 255)]) << 16) | (u32(sb[int((c >> 8) & 255)]) << 8) | u32(sb[int(d & 255)])) xor key
+    (last(s0, s1, s2, s3, rk[40]), last(s1, s2, s3, s0, rk[41]), last(s2, s3, s0, s1, rk[42]), last(s3, s0, s1, s2, rk[43]))
 
 # ---------------- AES-GCM ----------------
-# GF(2^128) multiply, as GCM's GHASH does (bits in GCM's order: the first byte's high bit is x^0)
-# (on two 64-bit halves: a bit a step, 128 steps)
-__gf_mul = (x: u8[16], y: u8[16]) -> u8[16]:
-    xh = __be64(x, 0)
-    xl = __be64(x, 8)
-    vh = __be64(y, 0)
-    vl = __be64(y, 8)
-    zh = u64(0)
-    zl = u64(0)
-    loop i in [0..128):
-        bit = if i < 64: (xh >> u64(63 - i)) & 1 else: (xl >> u64(127 - i)) & 1
-        if bit != 0:
-            zh = zh xor vh
-            zl = zl xor vl
-        lsb = vl & 1
-        vl = (vl >> 1) | (vh << 63)
-        vh = vh >> 1
-        if lsb != 0: vh = vh xor 0xE100000000000000
-    z: u8[16]
-    loop k in [0..8):
-        z[k] = u8((zh >> u64(56 - k * 8)) & 255)
-        z[8 + k] = u8((zl >> u64(56 - k * 8)) & 255)
-    z
-
+# ---- GHASH, constant-time ----
 __be64 = (b: u8[16], i: int) -> u64:
     v = u64(0)
     loop k in [0..8): v = (v << 8) | u64(b[i + k])
     v
 
-__ghash = (h: u8[16], aad: u8[], c: u8[]) -> u8[16]:
-    y: u8[16]
-    loop part in [aad, c]:
+# (carry-less multiplication of 64-bit numbers, the low 64 bits, by integer multiplication: each
+# number's bits split four ways, so that the carries fall in the gaps between them; the same steps
+# whatever the numbers, as BearSSL's ghash_ctmul64)
+__bmul64 = (x: u64, y: u64) -> u64:
+    m0 = u64(0x1111111111111111)
+    m1 = u64(0x2222222222222222)
+    m2 = u64(0x4444444444444444)
+    m3 = u64(0x8888888888888888)
+    x0 = x & m0
+    x1 = x & m1
+    x2 = x & m2
+    x3 = x & m3
+    y0 = y & m0
+    y1 = y & m1
+    y2 = y & m2
+    y3 = y & m3
+    z0 = (x0 * y0) xor (x1 * y3) xor (x2 * y2) xor (x3 * y1)
+    z1 = (x0 * y1) xor (x1 * y0) xor (x2 * y3) xor (x3 * y2)
+    z2 = (x0 * y2) xor (x1 * y1) xor (x2 * y0) xor (x3 * y3)
+    z3 = (x0 * y3) xor (x1 * y2) xor (x2 * y1) xor (x3 * y0)
+    (z0 & m0) | (z1 & m1) | (z2 & m2) | (z3 & m3)
+
+__rev64 = (x0: u64) -> u64:
+    x = ((x0 & 0x5555555555555555) << 1) | ((x0 >> 1) & 0x5555555555555555)
+    x = ((x & 0x3333333333333333) << 2) | ((x >> 2) & 0x3333333333333333)
+    x = ((x & 0x0F0F0F0F0F0F0F0F) << 4) | ((x >> 4) & 0x0F0F0F0F0F0F0F0F)
+    x = ((x & 0x00FF00FF00FF00FF) << 8) | ((x >> 8) & 0x00FF00FF00FF00FF)
+    x = ((x & 0x0000FFFF0000FFFF) << 16) | ((x >> 16) & 0x0000FFFF0000FFFF)
+    (x << 32) | (x >> 32)
+
+__be64_at = (b: u8[], i: int) -> u64:
+    v = u64(0)
+    loop k in [0..8): v = (v << 8) | (if i + k < b.len(): u64(b[i + k]) else: u64(0))
+    v
+
+# GHASH of aad and c under h: a block at a time, y = (y xor block) * h in GF(2^128) (GCM's bit
+# order), each product from three 64-bit carry-less ones on the bits as they are and three on them
+# reversed (Karatsuba), then reduced
+__ghash = (hb: u8[16], aad: u8[], c: u8[]) -> u8[16]:
+    h1 = __be64(hb, 0)
+    h0 = __be64(hb, 8)
+    h0r = __rev64(h0)
+    h1r = __rev64(h1)
+    h2 = h0 xor h1
+    h2r = h0r xor h1r
+    y1 = u64(0)
+    y0 = u64(0)
+    lens: u8[] = []
+    loop k in [0..8): lens.push(u8(((aad.len() * 8) >> (56 - k * 8)) & 255))
+    loop k in [0..8): lens.push(u8(((c.len() * 8) >> (56 - k * 8)) & 255))
+    loop part in [aad, c, lens]:
         i = 0
         loop i < part.len():
-            loop j in [0..16):
-                if i + j < part.len(): y[j] = y[j] xor part[i + j]
-            y = __gf_mul(y, h)
+            y1 = y1 xor __be64_at(part, i)
+            y0 = y0 xor __be64_at(part, i + 8)
+            y0r = __rev64(y0)
+            y1r = __rev64(y1)
+            y2 = y0 xor y1
+            y2r = y0r xor y1r
+            z0 = __bmul64(y0, h0)
+            z1 = __bmul64(y1, h1)
+            z2 = __bmul64(y2, h2)
+            zh0 = __bmul64(y0r, h0r)
+            zh1 = __bmul64(y1r, h1r)
+            zh2 = __bmul64(y2r, h2r)
+            z2 = z2 xor z0 xor z1
+            zh2 = zh2 xor zh0 xor zh1
+            zh0 = __rev64(zh0) >> 1
+            zh1 = __rev64(zh1) >> 1
+            zh2 = __rev64(zh2) >> 1
+            v0 = z0
+            v1 = zh0 xor z2
+            v2 = z1 xor zh2
+            v3 = zh1
+            v3 = (v3 << 1) | (v2 >> 63)
+            v2 = (v2 << 1) | (v1 >> 63)
+            v1 = (v1 << 1) | (v0 >> 63)
+            v0 = v0 << 1
+            v2 = v2 xor v0 xor (v0 >> 1) xor (v0 >> 2) xor (v0 >> 7)
+            v1 = v1 xor (v0 << 63) xor (v0 << 62) xor (v0 << 57)
+            v3 = v3 xor v1 xor (v1 >> 1) xor (v1 >> 2) xor (v1 >> 7)
+            v2 = v2 xor (v1 << 63) xor (v1 << 62) xor (v1 << 57)
+            y0 = v2
+            y1 = v3
             i += 16
-    lens: u8[16]
+    out: u8[16]
     loop k in [0..8):
-        lens[k] = u8(((aad.len() * 8) >> (56 - k * 8)) & 255)
-        lens[8 + k] = u8(((c.len() * 8) >> (56 - k * 8)) & 255)
-    loop j in [0..16): y[j] = y[j] xor lens[j]
-    __gf_mul(y, h)
+        out[k] = u8((y1 >> u64(56 - k * 8)) & 255)
+        out[8 + k] = u8((y0 >> u64(56 - k * 8)) & 255)
+    out
 
 # the CTR keystream from counter block j0 + 1 on, applied to src
 __gcm_ctr = (k: AesKey, j0: u8[16], src: u8[]) -> u8[]:
     out = src
-    ctr = j0
+    c0 = __be32(j0, 0)
+    c1 = __be32(j0, 4)
+    c2 = __be32(j0, 8)
+    # (the last 4 bytes count, big-endian)
+    n = __be32(j0, 12)
     i = 0
     loop i < src.len():
-        # (the last 4 bytes count, big-endian)
-        n = (int(ctr[12]) << 24 | int(ctr[13]) << 16 | int(ctr[14]) << 8 | int(ctr[15])) + 1
-        ctr[12] = u8((n >> 24) & 255)
-        ctr[13] = u8((n >> 16) & 255)
-        ctr[14] = u8((n >> 8) & 255)
-        ctr[15] = u8(n & 255)
-        ks = aes_encrypt_block(k, ctr)
-        loop j in [0..16):
-            if i + j < src.len(): out[i + j] = out[i + j] xor ks[j]
+        n += 1
+        w = __aes_words(k, c0, c1, c2, n)
+        if i + 16 <= src.len():
+            loop c in [0..4):
+                v = if c == 0: w.0 else: if c == 1: w.1 else: if c == 2: w.2 else: w.3
+                at = i + c * 4
+                out[at] = out[at] xor u8(v >> 24)
+                out[at + 1] = out[at + 1] xor u8((v >> 16) & 255)
+                out[at + 2] = out[at + 2] xor u8((v >> 8) & 255)
+                out[at + 3] = out[at + 3] xor u8(v & 255)
+        else:
+            loop j in [0..src.len() - i):
+                v = if j < 4: w.0 else: if j < 8: w.1 else: if j < 12: w.2 else: w.3
+                out[i + j] = out[i + j] xor u8((v >> u32(24 - (j % 4) * 8)) & 255)
         i += 16
     out
 

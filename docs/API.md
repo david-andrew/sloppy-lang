@@ -509,7 +509,16 @@ Operating system access: files, arguments, environment, time.
       buf: u8[]
       pos = 0
       done = false
+      path = ""                   # (made by create_file, in a web page: where its pieces go)
   ```
+- `create_file = (path: str) -> File?`: A file made (or emptied) for writing a piece at a time (a download, a log written as it goes):
+  ```gdscript
+  if let f = create_file("out.bin"):
+      f.write(piece)
+      f.close()
+  ```
+- `write = (f: mut File, b: u8[]) -> bool`: add to a file made by create_file (false when it could not: file_error says why)
+- `write = (f: mut File, s: str) -> bool`
 - `open_file = (path: str) -> File?`
 - `read_line = (f: mut File) -> str?`: the next line of the file, without its end (none past the last)
 - `read_bytes = (f: mut File, n: int) -> u8[]`: up to n more bytes of the file (fewer at its end; none left: empty)
@@ -1248,7 +1257,7 @@ ok = crypto.p256_verify(pk.public, crypto.sha256(msg), sig)
 - `aes_key = (key: u8[]) -> AesKey`
 - `aes_encrypt_block = (k: AesKey, block: u8[16]) -> u8[16]`: one 16-byte block encrypted
 
-#### AES-GCM
+#### GHASH, constant-time
 
 - `aes_gcm_seal = (key: AesKey, nonce: u8[], aad: u8[], message: u8[]) -> u8[]`: the message encrypted, then its 16-byte tag: nonce (12 bytes) must never repeat for one key; aad is bytes the tag covers that travel unencrypted
 - `aes_gcm_open = (key: AesKey, nonce: u8[], aad: u8[], sealed: u8[]) -> u8[]?`: the message back from aes_gcm_seal's bytes, or none when they (or aad) were changed
@@ -4191,10 +4200,16 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
                               # 0 when there was none (why says why)
       data: u8[]              # what it sent ...
       text = ""               # ... as text
-      headers: {str: str}     # its headers, their names in small letters
+      headers: {str: str} = {}    # its headers, their names in small letters
       why = ""
+      size = 0                # how many bytes it sent (saved to a file: data and text are empty)
   ```
-- `fetch = (url: str, wait: f64 = 30.0) -> HttpReply`: a GET of an http:// or https:// address (following where it redirects, five times at most), waiting up to `wait` seconds in all; https is checked as a browser checks it (tls_connect)
+- `fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass) -> HttpReply`: a request to an http:// or https:// address, and its answer (following where it redirects, five times at most), waiting up to `wait` seconds in all; https is checked as a browser checks it (tls_connect). A GET unless method says otherwise; headers are sent besides the usual ones (as "Authorization": "Bearer ..."), and body after them (its Content-Type, unless given: JSON when it starts with { or [, else text). With save_to, a successful answer (2xx) goes to that file as it comes, not into data; progress(bytes so far, all of them or -1 when not said) is called as they come.
+  ```gdscript
+  r = net.fetch("https://api.example.com/items", method = "POST", body = to_json(item),
+                headers = {"Authorization": "Bearer {token}"})
+  net.fetch(url, save_to = "big.zip", progress = (got: int, all: int): print("{got} of {all}"))
+  ```
 
 ## Invite a friend
 

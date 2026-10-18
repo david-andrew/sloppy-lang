@@ -974,24 +974,38 @@ struct HttpReply:
                             # 0 when there was none (why says why)
     data: u8[]              # what it sent ...
     text = ""               # ... as text
-    headers: {str: str}     # its headers, their names in small letters
+    headers: {str: str} = {}    # its headers, their names in small letters
     why = ""
+    size = 0                # how many bytes it sent (saved to a file: data and text are empty)
 
-# a GET of an http:// or https:// address (following where it redirects, five times at most),
-# waiting up to `wait` seconds in all; https is checked as a browser checks it (tls_connect)
+# a request to an http:// or https:// address, and its answer (following where it redirects, five
+# times at most), waiting up to `wait` seconds in all; https is checked as a browser checks it
+# (tls_connect). A GET unless method says otherwise; headers are sent besides the usual ones (as
+# "Authorization": "Bearer ..."), and body after them (its Content-Type, unless given: JSON when it
+# starts with { or [, else text). With save_to, a successful answer (2xx) goes to that file as it
+# comes, not into data; progress(bytes so far, all of them or -1 when not said) is called as
+# they come.
+#   r = net.fetch("https://api.example.com/items", method = "POST", body = to_json(item),
+#                 headers = {"Authorization": "Bearer {token}"})
+#   net.fetch(url, save_to = "big.zip", progress = (got: int, all: int): print("{got} of {all}"))
 @no_web("gives status 0 in a web page: native programs only, for now")
-fetch = (url: str, wait: f64 = 30.0) -> HttpReply:
+fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass) -> HttpReply:
     end = time() + wait
     at = url
+    how = method.upper()
+    sent = body
     loop _ in [0..6):
-        r = __http_get(at, end)
+        r = __http_get(at, end, how, headers, sent, save_to, progress)
         if r.status in [301, 302, 303, 307, 308]:
             if let loc = r.headers.get("location"):
                 at = __http_join(at, trim(loc))
+                # (as browsers do: after a 303, or a POST moved by 301 or 302, a GET with no body)
+                if r.status == 303 or (how == "POST" and r.status < 303):
+                    if how != "HEAD": how = "GET"
+                    sent = ""
                 continue
         return r
     HttpReply(0, [], why = "it redirected too many times")
-
 # an http(s):// address's parts: secure, host, port, path (none when it is not one)
 __http_parts = (url: str) -> (bool, str, int, str)?:
     secure = starts_with(url, "https://")
@@ -1032,7 +1046,77 @@ __http_join = (base: str, loc: str) -> str:
         return root + dir[..s + 1) + loc
     loc
 
-__http_get = (url: str, end: f64) -> HttpReply:
+# a body as it comes: as long as it says, in chunks, or to the connection's end
+struct __HttpIn:
+    chunked = false
+    length = -1             # (as said; -1: not said)
+    got = 0                 # (the body's bytes so far)
+    raw: u8[]               # (chunked: what has come and is not read yet)
+    rem = 0                 # (chunked: what is left of this chunk; 0: its size comes next)
+    after = false           # (chunked: the line end after a chunk comes next)
+    done = false
+    bad = false
+    out: u8[]
+    file = File()
+    saving = false
+    failed = false          # (writing to the file)
+
+__http_take = (st: mut __HttpIn, piece: u8[], progress: (int, int) -> void):
+    if piece.len() == 0: return
+    if st.saving:
+        if not st.failed and not st.file.write(piece): st.failed = true
+    else: st.out.extend(piece)
+    st.got += piece.len()
+    progress(st.got, st.length)
+
+__http_feed = (st: mut __HttpIn, piece: u8[], progress: (int, int) -> void):
+    if not st.chunked:
+        if st.length < 0:
+            __http_take(st, piece, progress)
+            return
+        __http_take(st, if piece.len() > st.length - st.got: piece[..st.length - st.got) else: piece, progress)
+        if st.got >= st.length: st.done = true
+        return
+    st.raw.extend(piece)
+    at = 0
+    b = st.raw
+    loop not st.done:
+        if st.after:
+            if b.len() - at < 2: break
+            at += 2
+            st.after = false
+        if st.rem == 0:
+            e = at
+            loop e + 1 < b.len() and not (b[e] == '\r' and b[e + 1] == '\n'): e += 1
+            if e + 1 >= b.len():
+                if b.len() - at > 80: st.bad = true
+                break
+            size = trim(str_from_bytes(b[at..e)))
+            k = find(size, ";")
+            if k >= 0: size = trim(size[..k))
+            n = 0
+            loop ch in size:
+                d = crypto.__cr_hexval(ch)
+                if d < 0: st.bad = true
+                n = n * 16 + d
+            if st.bad or len(size) == 0 or len(size) > 12:
+                st.bad = true
+                break
+            at = e + 2
+            # (the last chunk: what may follow it, trailers, is not read)
+            if n == 0:
+                st.done = true
+                break
+            st.rem = n
+        k = min(st.rem, b.len() - at)
+        if k == 0: break
+        __http_take(st, b[at..at + k), progress)
+        at += k
+        st.rem -= k
+        if st.rem == 0: st.after = true
+    st.raw = if at >= b.len(): [] else: b[at..]
+
+__http_get = (url: str, end: f64, method: str, headers: {str: str}, body: str, save_to: str, progress: (int, int) -> void) -> HttpReply:
     pp = __http_parts(url)
     if pp == none: return HttpReply(0, [], why = "not an http:// or https:// address: {url}")
     p = pp!
@@ -1041,32 +1125,69 @@ __http_get = (url: str, end: f64) -> HttpReply:
     if c < 0: return HttpReply(0, [], why = __tcp_why)
     host = p.1
     if p.2 != (if p.0: 443 else: 80): host = "{host}:{p.2}"
-    tcp_send(c, "GET {p.3} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Sloppy\r\nAccept: */*\r\nConnection: close\r\n\r\n")
-    got: u8[]
+    given: {str: bool} = {}
+    req = "{method} {p.3} HTTP/1.1\r\nHost: {host}\r\n"
+    loop k, v in headers:
+        given[k.lower()] = true
+        req += "{k}: {v}\r\n"
+    if not given.has("user-agent"): req += "User-Agent: Sloppy\r\n"
+    if not given.has("accept"): req += "Accept: */*\r\n"
+    if len(body) > 0 or method == "POST" or method == "PUT" or method == "PATCH":
+        if not given.has("content-type"):
+            t = trim(body)
+            req += "Content-Type: {if starts_with(t, "{") or starts_with(t, "["): "application/json" else: "text/plain; charset=utf-8"}\r\n"
+        req += "Content-Length: {len(body)}\r\n"
+    tcp_send(c, "{req}Connection: close\r\n\r\n{body}")
+    head: u8[]
     r = HttpReply(0, [])
     head_end = -1
+    st = __HttpIn()
     loop time() < end:
-        got.extend(tcp_receive(c, wait = min(0.25, max(end - time(), 0.0))))
+        piece = tcp_receive(c, wait = min(0.25, max(end - time(), 0.0)))
         if head_end < 0:
-            head_end = __find_crlf2(got)
-            if head_end >= 0: r = __http_head(str_from_bytes(got[..head_end)))
-        if head_end >= 0 and __http_done(r, got[head_end + 4..], false): break
+            head.extend(piece)
+            head_end = __find_crlf2(head)
+            if head_end >= 0:
+                r = __http_head(str_from_bytes(head[..head_end)))
+                if r.status == 0: break
+                st.chunked = (r.headers.get("transfer-encoding") ?? "").lower() == "chunked"
+                st.length = to_int(r.headers.get("content-length") ?? "") ?? -1
+                if method == "HEAD" or r.status == 204 or r.status == 304 or r.status < 200: st.done = true
+                else if len(save_to) > 0 and r.status >= 200 and r.status < 300:
+                    if let f = create_file(save_to):
+                        st.file = f
+                        st.saving = true
+                    else:
+                        tcp_close(c)
+                        r.status = 0
+                        r.why = "could not make {save_to}: {file_error()}"
+                        return r
+                if not st.done:
+                    if st.length == 0 and not st.chunked: st.done = true
+                    else: __http_feed(st, head[head_end + 4..], progress)
+        else: __http_feed(st, piece, progress)
+        if st.done or st.bad: break
         if tcp_closed(c): break
     closed = tcp_closed(c)
     tcp_close(c)
+    if st.saving: st.file.close()
     if head_end < 0:
-        if got.len() == 0 and closed: return HttpReply(0, [], why = "the server closed the connection with no answer")
+        if head.len() == 0 and closed: return HttpReply(0, [], why = "the server closed the connection with no answer")
         return HttpReply(0, [], why = if closed: "the server's answer is not HTTP" else: "no answer in time")
     if r.status == 0: return r
-    body = got[head_end + 4..]
-    if not __http_done(r, body, closed):
+    # (neither a length nor chunks: the body is all that came before the end)
+    if not st.chunked and st.length < 0 and closed: st.done = true
+    if not st.done:
         r.status = 0
-        r.why = if closed: "the server's answer was cut short" else: "the whole answer did not come in time"
+        r.why = if st.bad: "the server's answer is not HTTP" else: if closed: "the server's answer was cut short" else: "the whole answer did not come in time"
         return r
-    if (r.headers.get("transfer-encoding") ?? "").lower() == "chunked": body = __http_unchunk(body)!
-    else if let n = to_int(r.headers.get("content-length") ?? ""): body = body[..min(n, body.len()))
-    r.data = body
-    r.text = str_from_bytes(body)
+    if st.failed:
+        r.status = 0
+        r.why = "could not write to {save_to}: {file_error()}"
+        return r
+    r.size = st.got
+    r.data = st.out
+    r.text = str_from_bytes(st.out)
     r
 
 # the status line and headers
@@ -1083,38 +1204,6 @@ __http_head = (head: str) -> HttpReply:
         k = find(line, ":")
         if k > 0: r.headers[trim(line[..k)).lower()] = trim(line[k + 1..])
     r
-
-# whether all of the body has come: as long as it says, to its last chunk, or (neither said) to
-# the connection's end
-__http_done = (r: HttpReply, body: u8[], closed: bool) -> bool:
-    if r.status == 204 or r.status == 304 or (r.status >= 100 and r.status < 200): return true
-    if (r.headers.get("transfer-encoding") ?? "").lower() == "chunked": return __http_unchunk(body) != none
-    if let n = to_int(r.headers.get("content-length") ?? ""): return body.len() >= n
-    closed
-
-# a chunked body put together (none until its last chunk has come, or when it is malformed)
-__http_unchunk = (b: u8[]) -> u8[]?:
-    out: u8[]
-    at = 0
-    loop true:
-        e = at
-        loop e + 1 < b.len() and not (b[e] == '\r' and b[e + 1] == '\n'): e += 1
-        if e + 1 >= b.len(): return none
-        size = trim(str_from_bytes(b[at..e)))
-        k = find(size, ";")
-        if k >= 0: size = trim(size[..k))
-        if len(size) == 0 or len(size) > 12: return none
-        n = 0
-        loop ch in size:
-            d = crypto.__cr_hexval(ch)
-            if d < 0: return none
-            n = n * 16 + d
-        at = e + 2
-        if n == 0: return out
-        if at + n + 2 > b.len(): return none
-        out.extend(b[at..at + n))
-        at += n + 2
-    out
 
 # ---------------- sockets: each system's ----------------
 # __n_listen(port) -> fd (-1: failed); __n_connect(ip, port) -> fd, connecting (-1: failed);

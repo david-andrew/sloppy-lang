@@ -343,6 +343,56 @@ if openssl:
     port += 1
     env["NET_PORT"] = str(port)
 else: print("(no openssl with TLS 1.3: TLS is not tried against it)")
+# net.fetch over plain HTTP, against a server here (Python's): methods, headers and a body, chunks,
+# redirects (a 303, or a 302 after a POST, become a GET; a 307 keeps it), a big answer saved to a
+# file as it comes, a 404 not saved
+import http.server, threading, hashlib
+BIG = bytes((i * 7) % 251 for i in range(3 << 20))
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *a): pass
+    def reply(self, code, body, headers=()):
+        self.send_response(code)
+        for k, v in headers: self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD": self.wfile.write(body)
+    def answer(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n).decode() if n else ""
+        if self.path == "/echo":
+            self.reply(200, f"{self.command} [{self.headers.get('X-Test', '-')}] [{self.headers.get('Content-Type', '-')}] [{body}]".encode())
+        elif self.path == "/chunked":
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for part in [b"one ", b"two ", b"three"]: self.wfile.write(b"%x\r\n%s\r\n" % (len(part), part))
+            self.wfile.write(b"0\r\n\r\n")
+        elif self.path == "/see-other": self.reply(303, b"", [("Location", "/echo")])
+        elif self.path == "/moved": self.reply(302, b"", [("Location", "/echo")])
+        elif self.path == "/again": self.reply(307, b"", [("Location", "/echo")])
+        elif self.path == "/big": self.reply(200, BIG)
+        else: self.reply(404, b"no such page")
+    do_GET = do_POST = do_PUT = do_HEAD = answer
+port += 1
+httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+threading.Thread(target=httpd.serve_forever, daemon=True).start()
+fetcher = build("http_fetch") + exe
+r = subprocess.run([fetcher], capture_output=True, text=True, env=dict(env, NET_PORT=str(port), NET_DIR=tmp), timeout=60)
+httpd.shutdown()
+check("net.fetch over HTTP", r.stdout, [
+    "post: 200 POST [yes] [application/json] [{\"a\": 1}]",
+    "put: 200 PUT [-] [text/plain; charset=utf-8] [plain words]",
+    "chunked: 200 one two three",
+    "303: 200 GET [-] [-] []",
+    "302 after a POST: 200 GET [-] [-] []",
+    "307: 200 POST [-] [text/plain; charset=utf-8] [z]",
+    f"saved: 200 {len(BIG)} 0 {len(BIG)} true {len(BIG)} {hashlib.sha256(BIG).hexdigest()[:16]}",
+    "404: 404 false no such page",
+    "head: 200 0"])
+port += 1
+env["NET_PORT"] = str(port)
+
 # the real thing, where SLOPPY_TEST_LIVE=1 (it needs the internet): https://sloppy-lang.org, and the
 # matchmaking server behind Caddy, with its Let's Encrypt certificate
 if os.environ.get("SLOPPY_TEST_LIVE") == "1":
