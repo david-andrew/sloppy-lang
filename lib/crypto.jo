@@ -656,19 +656,26 @@ __mod_new = (m: u32[8]) -> __Mod:
     md.one = __mont(md, x, [u32(1), 0, 0, 0, 0, 0, 0, 0])
     md
 
+# (the field's arithmetic takes as long whatever the numbers: no branch on them, so its time
+# says nothing of a key)
+
+# a when bit is 1, else b (bit 0 or 1), with no branch
+__u256_pick = (bit: u64, a: u32[8], b: u32[8]) -> u32[8]:
+    mask = u32(0) - u32(bit)
+    r: u32[8]
+    loop i in [0..8): r[i] = (a[i] & mask) | (b[i] & ~mask)
+    r
+
 __add_mod = (a: u32[8], b: u32[8], m: u32[8]) -> u32[8]:
     s, c = __u256_add(a, b)
-    if c != 0 or __u256_cmp(s, m) >= 0:
-        t, _ = __u256_sub(s, m)
-        return t
-    s
+    t, bw = __u256_sub(s, m)
+    # (s - m when the sum carried out, or is m or more)
+    __u256_pick(c | (bw xor 1), t, s)
 
 __sub_mod = (a: u32[8], b: u32[8], m: u32[8]) -> u32[8]:
     d, bw = __u256_sub(a, b)
-    if bw != 0:
-        t, _ = __u256_add(d, m)
-        return t
-    d
+    t, _ = __u256_add(d, m)
+    __u256_pick(bw, t, d)
 
 # a * b * 2^-256 mod m (Montgomery multiplication, operand-scanning)
 __mont = (md: __Mod, a: u32[8], b: u32[8]) -> u32[8]:
@@ -696,10 +703,8 @@ __mont = (md: __Mod, a: u32[8], b: u32[8]) -> u32[8]:
         t[9] = 0
     r: u32[8]
     loop i in [0..8): r[i] = u32(t[i])
-    if t[8] != 0 or __u256_cmp(r, md.m) >= 0:
-        r2, _ = __u256_sub(r, md.m)
-        return r2
-    r
+    r2, bw = __u256_sub(r, md.m)
+    __u256_pick(t[8] | (bw xor 1), r2, r)
 
 __to_mont = (md: __Mod, a: u32[8]) -> u32[8]: __mont(md, a, md.r2)
 __from_mont = (md: __Mod, a: u32[8]) -> u32[8]: __mont(md, a, [u32(1), 0, 0, 0, 0, 0, 0, 0])
@@ -736,8 +741,8 @@ __p256_init = ():
     __GX = __to_mont(__P, __u256_hex("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"))
     __GY = __to_mont(__P, __u256_hex("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"))
 
-# a point in Jacobian coordinates (x / z^2, y / z^3), Montgomery form; z == 0: the point at infinity
-struct __Jac:
+# a point in projective coordinates (x / z, y / z), Montgomery form; (0, 1, 0): the point at infinity
+struct __Pt:
     x: u32[8]
     y: u32[8]
     z: u32[8]
@@ -746,68 +751,78 @@ __fadd = (a: u32[8], b: u32[8]) -> u32[8]: __add_mod(a, b, __P.m)
 __fsub = (a: u32[8], b: u32[8]) -> u32[8]: __sub_mod(a, b, __P.m)
 __fmul = (a: u32[8], b: u32[8]) -> u32[8]: __mont(__P, a, b)
 
-__jac_double = (p: __Jac) -> __Jac:
-    if __u256_is_zero(p.z) or __u256_is_zero(p.y): return __Jac()
-    # (a = -3: m = 3 (x - z^2)(x + z^2))
-    zz = __fmul(p.z, p.z)
-    t = __fmul(__fsub(p.x, zz), __fadd(p.x, zz))
-    m = __fadd(__fadd(t, t), t)
-    yy = __fmul(p.y, p.y)
-    s = __fmul(p.x, yy)
-    s = __fadd(s, s)
-    s = __fadd(s, s)
-    x3 = __fsub(__fsub(__fmul(m, m), s), s)
-    y4 = __fmul(yy, yy)
-    y4 = __fadd(y4, y4)
-    y4 = __fadd(y4, y4)
-    y4 = __fadd(y4, y4)
-    y3 = __fsub(__fmul(m, __fsub(s, x3)), y4)
-    z3 = __fmul(p.y, p.z)
-    z3 = __fadd(z3, z3)
-    __Jac(x3, y3, z3)
+__pt_zero = () -> __Pt: __Pt([u32(0), 0, 0, 0, 0, 0, 0, 0], __P.one, [u32(0), 0, 0, 0, 0, 0, 0, 0])
 
-__jac_add = (p: __Jac, q: __Jac) -> __Jac:
-    if __u256_is_zero(p.z): return q
-    if __u256_is_zero(q.z): return p
-    z1z1 = __fmul(p.z, p.z)
-    z2z2 = __fmul(q.z, q.z)
-    u1 = __fmul(p.x, z2z2)
-    u2 = __fmul(q.x, z1z1)
-    s1 = __fmul(p.y, __fmul(q.z, z2z2))
-    s2 = __fmul(q.y, __fmul(p.z, z1z1))
-    if __u256_cmp(u1, u2) == 0:
-        if __u256_cmp(s1, s2) == 0: return __jac_double(p)
-        return __Jac()
-    h = __fsub(u2, u1)
-    r = __fsub(s2, s1)
-    hh = __fmul(h, h)
-    hhh = __fmul(hh, h)
-    v = __fmul(u1, hh)
-    x3 = __fsub(__fsub(__fmul(r, r), hhh), __fadd(v, v))
-    y3 = __fsub(__fmul(r, __fsub(v, x3)), __fmul(s1, hhh))
-    z3 = __fmul(__fmul(p.z, q.z), h)
-    __Jac(x3, y3, z3)
+# p + q, for any two points (the same, each other's negatives, infinity): Renes, Costello and
+# Batina's complete formula for a = -3 (2015/1060, algorithm 4), the same steps whatever they are
+__pt_add = (p: __Pt, q: __Pt) -> __Pt:
+    t0 = __fmul(p.x, q.x)
+    t1 = __fmul(p.y, q.y)
+    t2 = __fmul(p.z, q.z)
+    t3 = __fmul(__fadd(p.x, p.y), __fadd(q.x, q.y))
+    t3 = __fsub(t3, __fadd(t0, t1))
+    t4 = __fmul(__fadd(p.y, p.z), __fadd(q.y, q.z))
+    t4 = __fsub(t4, __fadd(t1, t2))
+    y3 = __fmul(__fadd(p.x, p.z), __fadd(q.x, q.z))
+    y3 = __fsub(y3, __fadd(t0, t2))
+    z3 = __fmul(__B, t2)
+    x3 = __fsub(y3, z3)
+    x3 = __fadd(x3, __fadd(x3, x3))
+    z3 = __fsub(t1, x3)
+    x3 = __fadd(t1, x3)
+    y3 = __fmul(__B, y3)
+    t1 = __fadd(t2, t2)
+    t2 = __fadd(t1, t2)
+    y3 = __fsub(__fsub(y3, t2), t0)
+    y3 = __fadd(y3, __fadd(y3, y3))
+    t1 = __fadd(t0, t0)
+    t0 = __fsub(__fadd(t1, t0), t2)
+    t1 = __fmul(t4, y3)
+    t2 = __fmul(t0, y3)
+    y3 = __fadd(__fmul(x3, z3), t2)
+    x3 = __fsub(__fmul(t3, x3), t1)
+    z3 = __fadd(__fmul(t4, z3), __fmul(t3, t0))
+    __Pt(x3, y3, z3)
 
-# k * p
-__jac_mul = (p: __Jac, k: u32[8]) -> __Jac:
-    r = __Jac()
-    i = 255
-    loop i >= 0:
-        r = __jac_double(r)
-        if (k[i >> 5] >> u32(i & 31)) & 1 != 0: r = __jac_add(r, p)
-        i -= 1
+# 0, p, 2p .. 15p: what __pt_muls takes four bits of a scalar at a time from
+__pt_table = (p: __Pt) -> __Pt[]:
+    table = [__pt_zero(), p]
+    loop i in [2..16): table.push(__pt_add(table[i - 1], p))
+    table
+
+# the sum of each k * p (each p as its table): four bits at a time, each multiple taken from its
+# table by reading all of it, so that neither the steps nor what is read depends on a k. (The
+# doublings are shared: two products cost little more than one.)
+__pt_muls = (tables: __Pt[][], ks: u32[8][]) -> __Pt:
+    r = __pt_zero()
+    w = 63
+    loop w >= 0:
+        loop _ in [0..4): r = __pt_add(r, r)
+        loop j in [0..tables.len()):
+            t = tables[j]
+            bits = (ks[j][w >> 3] >> u32((w & 7) * 4)) & 15
+            e = t[0]
+            loop i in [1..16):
+                d = u32(i) xor bits
+                same = u64(((d | (u32(0) - d)) >> 31) xor 1)
+                e = __Pt(__u256_pick(same, t[i].x, e.x), __u256_pick(same, t[i].y, e.y), __u256_pick(same, t[i].z, e.z))
+            r = __pt_add(r, e)
+        w -= 1
     r
 
+# (the generator's table, made once)
+__g_table: __Pt[] = []
+__pt_mul_g = (k: u32[8]) -> __Pt:
+    if __g_table.len() == 0: __g_table = __pt_table(__p256_g())
+    __pt_muls([__g_table], [k])
+
 # the affine x and y (not Montgomery form), or none at infinity
-__jac_affine = (p: __Jac) -> (u32[8], u32[8])?:
+__pt_affine = (p: __Pt) -> (u32[8], u32[8])?:
     if __u256_is_zero(p.z): return none
     zi = __mont_inv(__P, p.z)
-    zi2 = __fmul(zi, zi)
-    x = __from_mont(__P, __fmul(p.x, zi2))
-    y = __from_mont(__P, __fmul(p.y, __fmul(zi2, zi)))
-    (x, y)
+    (__from_mont(__P, __fmul(p.x, zi)), __from_mont(__P, __fmul(p.y, zi)))
 
-__p256_g = () -> __Jac: __Jac(__GX, __GY, __P.one)
+__p256_g = () -> __Pt: __Pt(__GX, __GY, __P.one)
 
 # a P-256 key: the private scalar and the public point (65 bytes: 0x04, x, y)
 struct P256Key:
@@ -821,17 +836,17 @@ p256_key = () -> P256Key:
         d = random_bytes(32)
         k = __u256_be(d, 0)
         if __u256_is_zero(k) or __u256_cmp(k, __N.m) >= 0: continue
-        return P256Key(d, __p256_point_bytes(__jac_mul(__p256_g(), k)))
+        return P256Key(d, __p256_point_bytes(__pt_mul_g(k)))
 
-__p256_point_bytes = (p: __Jac) -> u8[]:
+__p256_point_bytes = (p: __Pt) -> u8[]:
     out: u8[] = [u8(4)]
-    if let xy = __jac_affine(p):
+    if let xy = __pt_affine(p):
         out.extend(__u256_bytes(xy.0))
         out.extend(__u256_bytes(xy.1))
     out
 
 # a public point's 65 bytes as a point, when it is one on the curve (else none)
-__p256_point = (b: u8[]) -> __Jac?:
+__p256_point = (b: u8[]) -> __Pt?:
     __p256_init()
     if b.len() != 65 or b[0] != 4: return none
     x = __u256_be(b, 1)
@@ -844,13 +859,13 @@ __p256_point = (b: u8[]) -> __Jac?:
     x3 = __fmul(__fmul(xm, xm), xm)
     rhs = __fadd(__fsub(__fsub(__fsub(x3, xm), xm), xm), __B)
     if __u256_cmp(lhs, rhs) != 0: return none
-    __Jac(xm, ym, __P.one)
+    __Pt(xm, ym, __P.one)
 
 # the shared secret of a key and another's public point (its x, 32 bytes), or none when that is no
 # point on the curve
 p256_ecdh = (k: P256Key, other: u8[]) -> u8[]?:
     if let q = __p256_point(other):
-        if let xy = __jac_affine(__jac_mul(q, __u256_be(k.private, 0))): return __u256_bytes(xy.0)
+        if let xy = __pt_affine(__pt_muls([__pt_table(q)], [__u256_be(k.private, 0)])): return __u256_bytes(xy.0)
     none
 
 # a hash's integer, reduced mod n
@@ -869,7 +884,7 @@ p256_sign = (k: P256Key, hash: u8[]) -> u8[]:
     loop true:
         kb = __u256_be(random_bytes(32), 0)
         if __u256_is_zero(kb) or __u256_cmp(kb, __N.m) >= 0: continue
-        if let xy = __jac_affine(__jac_mul(__p256_g(), kb)):
+        if let xy = __pt_affine(__pt_mul_g(kb)):
             r = xy.0
             if __u256_cmp(r, __N.m) >= 0:
                 rr, _ = __u256_sub(r, __N.m)
@@ -896,8 +911,9 @@ p256_verify = (public: u8[], hash: u8[], sig: u8[]) -> bool:
     w = __mont_inv(__N, __to_mont(__N, s))
     u1 = __from_mont(__N, __mont(__N, __to_mont(__N, __hash_int(hash)), w))
     u2 = __from_mont(__N, __mont(__N, __to_mont(__N, r), w))
-    p = __jac_add(__jac_mul(__p256_g(), u1), __jac_mul(q, u2))
-    pa = __jac_affine(p)
+    if __g_table.len() == 0: __g_table = __pt_table(__p256_g())
+    p = __pt_muls([__g_table, __pt_table(q)], [u1, u2])
+    pa = __pt_affine(p)
     if pa == none: return false
     x = pa!.0
     if __u256_cmp(x, __N.m) >= 0:
@@ -1309,7 +1325,8 @@ __p384_init = ():
     gy = __bn_to_mont(__P384, __bn_be(hex_bytes("3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f")!, 12))
     __G384 = __BnJac(gx, gy, __P384.one)
 
-# (curves with a = -3: doubling and adding as __jac_double and __jac_add do)
+# (curves with a = -3: Jacobian coordinates, doubling and adding; only for checking signatures,
+# where every number is public, so these may branch on them)
 __bj_double = (md: __BnMod, p: __BnJac) -> __BnJac:
     if __bn_is_zero(p.z) or __bn_is_zero(p.y): return __BnJac(p.x, p.y, fill(u32(0), p.x.len()))
     zz = __bn_mont(md, p.z, p.z)

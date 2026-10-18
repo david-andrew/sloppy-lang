@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- P-256 (WebRTC's keys and signatures, TLS's fallback key exchange) takes as long whatever the
+  key: the field's arithmetic has no branch on its numbers, points add by a complete formula
+  (Renes, Costello and Batina's), and a scalar is taken four bits at a time from a table read
+  whole. Signing and checking a signature cost about what they did.
 - Aces: the lobby has your name and insignia (as Settings has them); the shark's mouth is bigger
   and reaches the nose, round the triplane's cowling; Lock camera roll (Settings, off at first)
   keeps the horizon level in any view, with keys or a gamepad as with the mouse.
