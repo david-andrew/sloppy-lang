@@ -62,7 +62,7 @@ Section "shaders: random fragment shaders, software renderer against Vulkan"
 Note ((& $Python tools\gpufuzz.py 100 --seed 1 --shaders --no-lavapipe 2>&1 | Select-Object -Last 15) -join "`n")
 
 Section "games: 600 frames each through Vulkan (SLOPPY_STATS)"
-foreach ($g in @("examples\rebound\rebound.jo", "examples\breakwater\breakwater.jo", "examples\dunes\dunes.jo", "examples\lowline\lowline.jo")) {
+foreach ($g in @("examples\rebound\rebound.jo", "examples\breakwater\breakwater.jo", "examples\dunes\dunes.jo")) {
     $exe = Join-Path $out ([IO.Path]::GetFileNameWithoutExtension($g) + ".exe")
     $b = & $sloppy build --release $g -o $exe 2>&1
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { Note ("$g : the build failed: " + (($b | Select-Object -Last 5) -join " | ")); continue }

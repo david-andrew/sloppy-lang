@@ -15,7 +15,7 @@ root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sloppy = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(root, "bin", "sloppy")
 IMAGE = "localhost/sloppy-webkit"
 TURN = "turn:127.0.0.1:3479,sloppy,secret"
-GALLERY = ["aces/aces", "breakwater/breakwater", "cube", "duel/duel", "dunes/dunes", "lowline/lowline", "netpong/netpong",
+GALLERY = ["aces/aces", "breakwater/breakwater", "cube", "duel/duel", "dunes/dunes", "netpong/netpong",
            "physics", "physics3d", "rebound/rebound", "scene3d", "shapes", "tiles"]
 tmp = tempfile.mkdtemp(prefix="sloppy-webkit-")
 failed = 0

@@ -540,7 +540,6 @@ GALLERY = [
     ("rebound", "examples/rebound/rebound.jo", "Rebound", "rebound", "../rebound/"),
     ("breakwater", "examples/breakwater/breakwater.jo", "Breakwater", "breakwater", "../breakwater/"),
     ("dunes", "examples/dunes/dunes.jo", "Dunes", "dunes", ""),
-    ("lowline", "examples/lowline/lowline.jo", "Lowline", "lowline", ""),
     ("netpong", "examples/netpong/netpong.jo", "Netpong", "netpong", ""),
     ("duel", "examples/duel/duel.jo", "Duel", "duel", ""),
     ("aces", "examples/aces/aces.jo", "Aces", "aces", ""),
