@@ -73,3 +73,50 @@ test "0 is an F": assert(letter(0) == "F")
 did. The student's file runs its top-level code first, so ask students to put what asks
 questions in `main = (): ...`, which runs only when their program is run itself. For a program
 that prints, `run_shell("printf '90\\n' | sloppy grades.jo")` gives its output to check.
+
+## A simulation for a class
+
+A demonstration students open on their own (a projectile, a pendulum) is a game with sliders
+and a chart:
+
+```gdscript
+angle = 45.0
+speed = 20.0
+
+# the flight from the ground until it lands, a point each 0.02 s
+path = (angle: f64, speed: f64) -> (f64[], f64[]):
+    a = angle * PI / 180.0
+    xs: f64[]
+    ys: f64[]
+    t = 0.0
+    loop xs.len() == 0 or ys[ys.len() - 1] >= 0.0:
+        xs.push(speed * cos(a) * t)
+        ys.push(speed * sin(a) * t - 4.9 * t * t)
+        t += 0.02
+    (xs, ys)
+
+draw = ():
+    clear(WHITE)
+    ui_style = ui_light_style()                 # (menus over a light background)
+    ui_begin("controls", vec2(300, 60))
+    angle = ui_slider("θ = {int(angle)}°", angle, 1, 5, 85)
+    speed = ui_slider("v₀ = {int(speed)} m/s", speed, 1, 5, 40)
+    ui_end()
+    c = Chart(title = "Path", x_label = "x (m)", y_label = "y (m)", equal_axes = true)
+    xs, ys = path(angle, speed)
+    c.line(xs, ys, "path")
+    draw_chart(c, Rect(620, 40, 620, 420))
+```
+
+`hud_slider(rect, value, low, high, step, label)` puts a slider anywhere. The built-in font has
+Greek letters, subscripts and superscripts, arrows and the common mathematical signs (θ ω Δ
+v₀ x² → ≈ ≤ √). A chart for a worksheet is a picture without a window:
+`save_png(chart_image(c, 800, 500), "path.png")`.
+
+To give students the link:
+- **From the playground:** *Link to play* copies a link that runs the program on the whole page,
+  without the editor (*Edit* in its corner opens the code). Nothing to host.
+- **As a file:** `sloppy build sim.jo --target wasm -o sim.html` makes one page that works offline
+  and from a file. Put it where students can open it: a school's learning system (upload the
+  file), GitHub Pages (a repository's files, published), or itch.io (an HTML game, zipped:
+  `-o sim.zip`). On a phone it is played sideways (a note says so when held upright).

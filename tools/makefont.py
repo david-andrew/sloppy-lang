@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Bake the default SDF font atlas used by Sloppy's text rendering: ASCII 32..126 in its first
-cells, then Latin-1 (accented letters: é, ñ, ü, ...) and common punctuation (€, curly quotes,
-dashes, ...).
+cells, then Latin-1 (accented letters: é, ñ, ü, ...), common punctuation (€, curly quotes,
+dashes, ...), Greek, and what science and maths write (− √ ≈ ≤ ∞ ∑ ∫ ∂, arrows, sub- and
+superscript digits, ✓ ✗). Characters Noto Sans lacks come from Noto Sans Math, then Noto Sans
+Symbols 2 (all under the SIL Open Font License, as Noto Sans).
 Output: lib/game/assets/font.png (grayscale SDF atlas) + font.txt (metrics; its third line is
 the code point of each cell after the ASCII ones)."""
 import sys, math
 from PIL import Image, ImageDraw, ImageFont
 
 FONT = sys.argv[1] if len(sys.argv) > 1 else "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf"
+FALLBACKS = ["/usr/share/fonts/google-noto/NotoSansMath-Regular.ttf", "/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf"]
 OUT = sys.argv[2] if len(sys.argv) > 2 else "lib/game/assets/font"
 CELL = 48          # output cell size
 SCALE = 4          # supersampling factor for the distance computation
@@ -17,6 +20,19 @@ PX = 34            # font size in output pixels
 font = ImageFont.truetype(FONT, PX * SCALE)
 try: font.set_variation_by_name("Medium")
 except Exception: pass
+fallbacks = [ImageFont.truetype(f, PX * SCALE) for f in FALLBACKS]
+
+# (whether a font draws the character, not its missing-glyph box)
+def has(f, ch):
+    m = f.getmask(ch)
+    n = f.getmask(chr(0x10FFFD))
+    return m.getbbox() is not None and (bytes(m) != bytes(n) or m.size != n.size)
+
+def font_for(ch):
+    if has(font, ch): return font
+    for f in fallbacks:
+        if has(f, ch): return f
+    return font
 ascent, descent = font.getmetrics()
 H = CELL * SCALE
 INF = 1e9
@@ -45,6 +61,11 @@ def edt(inside, w, h):
 # (ASCII first: the cells of 32..126 are their code - 32, as wayland.jo's title bar assumes)
 CODES = list(range(32, 127)) + list(range(161, 256)) + [0x2018, 0x2019, 0x201C, 0x201D, 0x2013, 0x2014,
     0x2026, 0x2022, 0x20AC, 0x2122]
+# Greek, capitals and small (no capital final sigma: 0x3A2)
+CODES += list(range(0x391, 0x3A2)) + list(range(0x3A3, 0x3AA)) + list(range(0x3B1, 0x3CA))
+# − √ ≈ ≠ ≤ ≥ ∞ ∑ ∫ ∂ ∝ ⋅ ∇ ∈, arrows, ⁰ ⁴-⁹ ⁺ ⁻ (¹ ² ³ are Latin-1's), ₀-₉, ′ ″, ✓ ✗
+CODES += [0x2212, 0x221A, 0x2248, 0x2260, 0x2264, 0x2265, 0x221E, 0x2211, 0x222B, 0x2202, 0x221D, 0x22C5, 0x2207, 0x2208,
+    0x2190, 0x2191, 0x2192, 0x2193, 0x2194, 0x2070] + list(range(0x2074, 0x207C)) + list(range(0x2080, 0x208A)) + [0x2032, 0x2033, 0x2713, 0x2717]
 CODES = list(dict.fromkeys(CODES))
 cols = 16
 rows = (len(CODES) + cols - 1) // cols
@@ -55,10 +76,11 @@ for i, code in enumerate(CODES):
     ch = chr(code)
     img = Image.new("L", (H, H), 0)
     d = ImageDraw.Draw(img)
-    adv = font.getlength(ch) / SCALE
+    f = font_for(ch)
+    adv = f.getlength(ch) / SCALE
     # draw so that the baseline is at `baseline` and the glyph starts at x = SPREAD
     x0 = SPREAD * SCALE
-    d.text((x0, baseline * SCALE), ch, font=font, fill=255, anchor="ls")
+    d.text((x0, baseline * SCALE), ch, font=f, fill=255, anchor="ls")
     px = img.load()
     inside = [[px[x, y] > 127 for x in range(H)] for y in range(H)]
     outside = [[not v for v in row] for row in inside]

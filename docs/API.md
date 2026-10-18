@@ -1131,7 +1131,7 @@ c3 = Chart(title = "Prices")
 c3.histogram(prices, 30)
 ```
 
-Each series takes the next color of a palette unless it is given one. The axes fit what is shown (from 0 for bars and histograms) unless x_min, x_max, y_min or y_max say otherwise.
+Each series given no color takes the next of a palette. The axes fit what is shown (from 0 for bars and histograms) unless x_min, x_max, y_min or y_max say otherwise; equal_axes keeps a unit as long across as up (a trajectory's true shape). Whole numbers and f32s (a vec2's parts) may be given as well as f64s. c.annotate(x, y, "apex") writes a word at a point.
 
 - `struct Chart`
   ```gdscript
@@ -1146,27 +1146,40 @@ Each series takes the next color of a palette unless it is given one. The axes f
       y_min: f64? = none
       y_max: f64? = none
       legend = true
+      legend_at = LegendAt.top_right      # (the corner of the plot it is in)
       grid = true
+      equal_axes = false                  # a unit as long along x as along y
       background = vec4(1, 1, 1, 1)
       ink = vec4(0.15, 0.15, 0.17, 1)     # text and axes
       text_size = 14.0
       log_y = false                       # y on a log scale: each tick ten times the one below
   ```
+- `enum LegendAt: top_right, top_left, bottom_right, bottom_left`
 - `struct ChartSeries`
   ```gdscript
   struct ChartSeries:
-      kind: int                   # 0 line, 1 points, 2 bars, 3 histogram
+      kind: int                   # 0 line, 1 points, 2 bars, 3 histogram, 4 a note (its name)
       xs: f64[]
       ys: f64[]
       name: str
       color: vec4
       size: f64                   # a line's width, a point's radius
       bin_width = 0.0             # (a histogram's)
+      dash = 0.0                  # (a line's dashes' length, in pixels; 0: solid)
   ```
-- `line = (c: mut Chart, xs: f64[], ys: f64[], name: str = "", color: vec4? = none, width: f64 = 2.0)`: a line through the points (x, y), in order
-- `line = (c: mut Chart, ys: f64[], name: str = "", color: vec4? = none, width: f64 = 2.0)`: a line through ys, at x = 0, 1, 2...
+- `line = (c: mut Chart, xs: f64[], ys: f64[], name: str = "", color: vec4? = none, width: f64 = 2.0, dash: f64 = 0.0)`: a line through the points (x, y), in order; dash: dashes this many pixels long (0: solid)
+- `line = (c: mut Chart, xs: f32[], ys: f32[], name: str = "", color: vec4? = none, width: f64 = 2.0, dash: f64 = 0.0)`
+- `line = (c: mut Chart, xs: int[], ys: int[], name: str = "", color: vec4? = none, width: f64 = 2.0, dash: f64 = 0.0)`
+- `line = (c: mut Chart, ys: f64[], name: str = "", color: vec4? = none, width: f64 = 2.0, dash: f64 = 0.0)`: a line through ys, at x = 0, 1, 2...
+- `line = (c: mut Chart, ys: f32[], name: str = "", color: vec4? = none, width: f64 = 2.0, dash: f64 = 0.0)`
+- `line = (c: mut Chart, ys: int[], name: str = "", color: vec4? = none, width: f64 = 2.0, dash: f64 = 0.0)`
 - `points = (c: mut Chart, xs: f64[], ys: f64[], name: str = "", color: vec4? = none, radius: f64 = 3.0)`: a dot at each point (a scatter plot)
+- `points = (c: mut Chart, xs: f32[], ys: f32[], name: str = "", color: vec4? = none, radius: f64 = 3.0)`
+- `points = (c: mut Chart, xs: int[], ys: int[], name: str = "", color: vec4? = none, radius: f64 = 3.0)`
 - `bars = (c: mut Chart, labels: str[], values: f64[], name: str = "", color: vec4? = none)`: a bar for each category (more bars series stand side by side)
+- `bars = (c: mut Chart, labels: str[], values: int[], name: str = "", color: vec4? = none)`
+- `bars = (c: mut Chart, labels: str[], values: f32[], name: str = "", color: vec4? = none)`
+- `annotate = (c: mut Chart, x: f64, y: f64, words: str, color: vec4? = none)`: words written at the point (x, y), in the ink's color unless given one (not in the legend)
 - `histogram = (c: mut Chart, values: f64[], bins: int = 20, name: str = "", color: vec4? = none)`: how the values spread: how many fall in each of `bins` equal ranges (NaN left out)
 - `chart_image = (c: Chart, w: int, h: int) -> Image`: a picture of the chart, w x h pixels (no window needed)
 - `draw_chart = (c: Chart, r: Rect)`: draw the chart in a rectangle (its background, axes, series, title and legend)
@@ -1888,7 +1901,7 @@ draw = ():
   ```
 - `wrap_text = (s: str, width: f64, size: f64 = 20.0) -> str[]`: s broken into lines no wider than width, at spaces, and between the characters of Chinese, Japanese and Korean (a word wider than that has a line of its own; a line break in s starts a new line; 。、」 and the like stay at the end of a line, not the start of the next)
 - `text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), align: Align = .left, shadow: vec4 = vec4(0, 0, 0, 0), chars: int = -1) -> f64`: text in a column `width` wide from pos (its top-left corner), broken into lines at spaces, each line to the left, centered or to the right; the height it took (LÖVE's printf). chars: only the first that many characters, laid out where the whole text puts them (dialogue that types itself out does not jump to the next line midway through a word)
-- `text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false, chars: int = -1)`: draw text with its top-left corner at `pos` (characters the font does not have show as ?); shadow: a color drawn under it, a little down and right, to read over a busy scene (`shadow = rgba(0, 0, 0, 0.7)`). mono: each character in a cell of the same width, so columns made with "{name:<12} {score:>5}" line up (a scoreboard, a table, a roguelike's map). chars: only the first that many characters (dialogue appearing letter by letter: where the rest will be does not move); -1: all
+- `text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false, chars: int = -1)`: draw text with its top-left corner at `pos`. The built-in font has ASCII, Latin-1's accented letters and symbols (° ² ½ ± × ÷), Greek (θ ω π Δ λ μ), − √ ≈ ≠ ≤ ≥ ∞ ∑ ∫ ∂ ∝ ⋅ ∇ ∈, arrows (→ ← ↑ ↓ ↔), sub- and superscript digits (v₀, x⁴, 10⁻⁹), ′ ″ and ✓ ✗; characters a font does not have show as ? (load_font: others); shadow: a color drawn under it, a little down and right, to read over a busy scene (`shadow = rgba(0, 0, 0, 0.7)`). mono: each character in a cell of the same width, so columns made with "{name:<12} {score:>5}" line up (a scoreboard, a table, a roguelike's map). chars: only the first that many characters (dialogue appearing letter by letter: where the rest will be does not move); -1: all
 - `text_rich = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), width: f64 = 0.0, chars: int = -1, shadow: vec4 = vec4(0, 0, 0, 0)) -> f64`: text with parts of it styled where they are: [color=#ff8040]...[/color] (or a name: red, green, blue, yellow, orange, purple, cyan, magenta, gray, white, black), [b]...[/b] bold, [i]...[/i] slanted, [[ for a [. width above 0: lines broken to fit it (as wrap_text). chars: only the first that many characters (dialogue typing itself out). The height it took.
   ```gdscript
   text_rich("You found [color=yellow]the brass key[/color]. It is [i]warm[/i].", vec2(40, 600), 24, WHITE, width = 800)
@@ -3355,12 +3368,13 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
       disabled_color: vec4 = vec4(1, 1, 1, 0.28)
       bar_color: vec4 = vec4(1, 1, 1, 0.2)
   ```
+- `ui_light_style = () -> UiStyle`: the look for menus over a light background (dark text, a dark orange for the chosen item): `ui_style = ui_light_style()`
 - `ui_begin = (name: str, top_center: vec2)`: start a menu: items go in a column centered on x, from y down. A menu starts with its first item chosen; shown again (back from its Settings), with the item it was left on.
 - `ui_end = ()`
 - `ui_back = () -> bool`: escape or the B button: go back (close the menu)
 - `ui_ready = () -> bool`: false in the frame the menu opened in: input then belongs to whatever opened it
 - `ui_button = (label: str, enabled: bool = true) -> bool`: a button: true in the frame it is chosen
-- `ui_slider = (label: str, value: f64, step: f64 = 0.1) -> f64`: a value from 0 to 1, changed in steps of `step` (left/right, or dragging with the mouse)
+- `ui_slider = (label: str, value: f64, step: f64 = 0.1, low: f64 = 0.0, high: f64 = 1.0) -> f64`: a value from low to high (0 to 1 unless given), changed in steps of `step` (left/right, or dragging with the mouse or a finger): `angle = ui_slider("Angle {int(angle)}°", angle, 1, 5, 90)`
 - `ui_switch = (label: str, on: bool) -> bool`: on or off (left/right, enter, or a click)
 - `ui_choice = (label: str, options: str[], index: int) -> int`: one of several (left/right, or a click on either side, goes to the one before or after): `difficulty = ui_choice("Difficulty", ["easy", "normal", "hard"], difficulty)`
 - `ui_text_field = (label: str, value: str, max_chars: int = 24) -> str`: a line of text typed in, up to max_chars characters: what is typed while it has the focus is added, backspace takes the last character away, enter (like down) goes on to the next item; `name = ui_text_field("Name", name)`
@@ -3396,7 +3410,8 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
   no_clip()
   ```
 - `hud_tooltip = (s: str)`: a box of text beside the mouse, kept on the screen: what the thing under the mouse is or does. Draw it after the rest of the interface, so nothing covers it (`if hovered: tip = "..."`, then at the end of draw, `if len(tip) > 0: hud_tooltip(tip)`); lines break at "\n"
-- `hud_checkbox = (r: Rect, label: str, on: bool) -> bool`: a box ticked or not, with its label to the right: the new state (flipped in the frame it is clicked)
+- `hud_slider = (r: Rect, value: f64, low: f64, high: f64, step: f64 = 0.0, label: str = "") -> f64`: a box ticked or not, with its label to the right: the new state (flipped in the frame it is clicked) a value from low to high, set by dragging along the box (a finger too: the slider pressed on keeps the drag until let go), in steps of `step` (0: any value); the label, if any, is drawn over the box's left part, so give it room: `g = hud_slider(Rect(20, 80, 300, 36), g, 1, 20, 0.1, "g {g:.1f} m/s²")`
+- `hud_checkbox = (r: Rect, label: str, on: bool) -> bool`
 
 ## Paths
 

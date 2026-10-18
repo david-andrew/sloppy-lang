@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+From a physics teacher's simulations (sliders, live charts, worksheets, links for students):
+- The built-in font has Greek (θ ω π Δ λ μ), − √ ≈ ≠ ≤ ≥ ∞ ∑ ∫ ∂ ∝ ⋅ ∇ ∈, arrows, sub- and
+  superscript digits (v₀, x⁴, 10⁻⁹), ′ ″ and ✓ ✗ (they drew as ?).
+- Sliders: `ui_slider(label, value, step, low, high)` over any range; dragging snaps to the step;
+  the slider pressed on keeps the drag until let go (a finger drifting onto the next row moved
+  that one too); `hud_slider(rect, value, low, high, step, label)` anywhere on the screen.
+- Menus: `ui_style = ui_light_style()` for a light background; a slider's track has an edge (it
+  did not show on white); with a finger, no item looks chosen until tapped; a row with a long
+  label grows no wider than the screen around the column.
+- Charts: `equal_axes` (a trajectory's true shape), `legend_at` (a corner), dashed lines
+  (`dash = 8.0`), `annotate(x, y, words)`, whole numbers and f32s accepted (a vec2's parts);
+  points and thick lines at the plot's edge are no longer cut in half; a series given a color
+  no longer shifts the others' colors.
+- Messages: an array of one kind of number given for another says how to convert it
+  (`[loop x in xs: f64(x)]`, or `[1.0, 2.0]`); `\"` inside `{...}` says quotes there need no
+  backslash.
+- The playground's *Link to play* runs a program on the whole page, without the editor (for
+  students on phones); TEACHING.md has a section on simulations and where to put them.
+
 - netplay: a second game on the same peers froze at its start when the other machine's first
   game still ran a moment (its packets said this one's inputs had long since arrived, so they
   were not sent again). Packets with inputs this session never made are another session's.
