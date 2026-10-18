@@ -2,6 +2,18 @@
 
 ## 0.23.0
 
+- Recursive types: a struct or enum can hold itself, as an optional (`next: Node?`), in an enum's
+  variant (`bin(op: str, l: Expr, r: Expr)`), through a union (`child: Branch | Leaf`) or through
+  another struct that holds it (`struct A: b: B?` and `struct B: a: A?`), where it had to go in an
+  array (`kids: Expr[]`, indexed `kids[0]`). Such a field keeps its value in a box of its own on
+  the heap, which copies share until one of them changes it (as arrays are shared): values stay
+  values, and `==`, hashing, map keys, printing, `to_text`/`from_text`, `to_json`/`from_json`,
+  `mut`, `loop mut`, `if let` and `match` work on them as on any other. Reading a boxed field is one
+  load; a million-node list is built in about 60 ms and freed in a loop (not a million calls deep)
+  in about 40 ms (release). A type with no value that ends (`struct Bad: me: Bad`) is an error that
+  says to make it optional; such structs are not plain data, so `gpu_buffer`, shaders, `@packed`
+  and C (by pointer) refuse them, saying why. gdb, lldb and natvis show a boxed field as its
+  value, and it has its declared type in the debug information and the editor's hover.
 - `a..b` leaves `b` out, as Python's `range(a, b)`: `loop i in 0..n:` is n times, `0..xs.len()`
   every index, and slices go as Python's (`xs[2..5]` is `xs[2:5]`, `xs[..3]` the first three).
   Brackets still say which ends are kept: `[a..b]` both, `[a..b)`, `(a..b]`, `(a..b)`;

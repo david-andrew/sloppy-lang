@@ -247,6 +247,37 @@ def test_migrate_fixed(d):
         w.quit()
 
 
+LIST = """\
+struct Node:
+    v: int
+    next: Node?
+list = Node(1, Node(2, Node(3)))
+update = (dt: f64):
+    list.v += 1
+    if frame_number() % 10 == 0: print("tick {show()}")
+    sleep(0.005)
+show = () -> str: "first={list.v > 3} second={list.next!.v} third={list.next!.next!.v}"
+draw = (): clear(BLACK)
+"""
+
+
+def test_migrate_boxed(d):
+    # a list (each node's next kept in a box of its own) whose nodes' layout changes: each box made
+    # again, in the new layout
+    write(d, "g.jo", LIST)
+    w = Watch(d, "g.jo")
+    try:
+        w.expect(r"tick first=true second=2 third=3")
+        write(d, "g.jo", LIST.replace("""    v: int
+    next: Node?""", """    v: f64
+    next: Node?
+    name = "n\"""").replace('show = () -> str: "', 'show = () -> str: "{list.next!.next!.name} '))
+        w.expect(r"kept, in their new layout: list")
+        w.expect(r"tick n first=true second=2.0 third=3.0")
+    finally:
+        w.quit()
+
+
 def test_assets(d):
     # a file a global's declaration names, and the functions a GPU program is made from
     src = open(os.path.join(root, "examples", "cube.jo")).read()
@@ -328,7 +359,7 @@ def test_physics_state(d):
         w.quit()
 
 
-tests = [test_game, test_modules_release, test_migrate, test_migrate_fixed, test_assets, test_restarts, test_program, test_physics_state]
+tests = [test_game, test_modules_release, test_migrate, test_migrate_fixed, test_migrate_boxed, test_assets, test_restarts, test_program, test_physics_state]
 passed = failed = 0
 for t in tests:
     with tempfile.TemporaryDirectory() as d:
