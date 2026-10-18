@@ -175,7 +175,8 @@ beyond the integer range become its minimum or maximum (the same on every target
 counts modulo the width (`1 << 64` is 1, as x86-64 and arm64 shift). `x ^ y` is
 `pow(x, y)` (right-associative and tighter than unary minus: `-2 ^ 2 == -4`). On integers it
 is an integer: a negative power truncates as `/` does (`2 ^ -1 == 0`), and it wraps on overflow
-(`2 ^ 64 == 0`); `2.0 ^ -1` is 0.5.
+(`2 ^ 64 == 0`); `2.0 ^ -1` is 0.5. C's xor is `xor`: a `^` that looks like one (on hex
+numbers, unsigned or sized integers, next to `&` or `<<`) gets a warning.
 `and or xor not` are logical on bools (`and`/`or` short-circuit) and bitwise on integers,
 with low precedence (below comparisons); `& | ~ << >>` are the bitwise operators with high
 precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests membership
@@ -337,7 +338,8 @@ written inside an expression is a lambda.
 * **Untyped parameters make a function generic**: `twice = (f, x): f(f(x))` is
   instantiated for each distinct set of argument types (like a template).
 * Explicit type parameters: `first[T] = (xs: T[]) -> T: xs[0]`. A call can give them when the
-  arguments do not say (`from_json[Settings](text)`, `gpu_buffer[Bug](100)`).
+  arguments do not say (`from_json[Settings](text)`, `gpu_buffer[Bug](100)`), also a module's
+  (`cfg.load[Settings](path)`).
 * Through `[]` and `[]=` overloads, `b[i].f = v` and `b[i].f += v` work as for arrays: the
   element is read, changed and written back (its index computed once).
 * **Uniform call syntax**: `x.f(a)` is the same as `f(x, a)`. There are no methods,
@@ -1417,6 +1419,7 @@ print(xs, q[0], size_of(i32))
 | `char *` out, or kept by C | `*u8`, copied with `str_from_c(p)` (`""` for null: check `p == null` first when that matters) |
 | `void *`, `T *`, `T **` | `*u8`, `*T`, `**T` (`p.field` reads a struct through its pointer) |
 | a struct | the same fields, in order: passed by pointer (`&s`, `data(xs)`); not by value |
+| `__attribute__((packed))` | `@packed` above the struct: no padding between its fields (it holds plain data only) |
 
 What crosses, and for how long:
 - **`str` is read-only to C.** It may share its bytes with other strings. Give C a buffer to
@@ -1427,9 +1430,11 @@ What crosses, and for how long:
 - **`data(xs)` stays valid while `xs` neither grows nor goes away.** A `push` or `resize` may
   move it.
 - **What can't cross:** an `extern` can't give back a `str` (it gives `*u8`, read with
-  `str_from_c`), and `@cabi` functions take and give scalars and pointers only.
-- **Variadic arguments are not promoted as C promotes them.** Pass `f64(x)` for a `%f` and
-  `i32(...)` for a `%d`.
+  `str_from_c`), `@cabi` functions take and give scalars and pointers only, and a struct C
+  reads through a pointer has no `str`, array or map fields (`*u8` and a pointer with a length
+  instead). The compiler says so where each is declared.
+- **Variadic arguments are promoted as C promotes them:** an `f32` goes as a double (`%f`), and
+  smaller integers and bools as an int (`%d`).
 - **`print` is buffered.** Call `flush_output()` before C writes to the same output
   (`puts`, `write`), or the lines come out of order.
 - **Names that clash.** An `extern` with the name of a library function (`abs`, `write`, `exit`)

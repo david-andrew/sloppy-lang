@@ -772,7 +772,11 @@ register_decls = (m: int, decls: int[]):
             if nodes[d].c != 0:
                 loop ai in [0..nkids(int(nodes[d].c))):
                     if name_of(int(nodes[kid(int(nodes[d].c), ai)].name)) == "export": export_decls.push(d)
-        else if k == .struct_: scope_add_module(m, nm, .struct_, d, d)
+        else if k == .struct_:
+            if nodes[d].c != 0:
+                loop at in kids(int(nodes[d].c)):
+                    if name_of(int(nodes[at].name)) != "packed" or nodes[at].a != 0: fatal(nodes[at].pos, "unknown attribute @{name_of(int(nodes[at].name))} for a struct: there is @packed (its fields with no padding between them, as C's __attribute__((packed)))")
+            scope_add_module(m, nm, .struct_, d, d)
         else if k == .enum_: scope_add_module(m, nm, .enum_, d, d)
         else if k == .typealias: scope_add_module(m, nm, .alias_, d, d)
         else if k == .const_:
@@ -1272,7 +1276,7 @@ get_fn_inst = (decl: int, targs: int[], use_pos: int) -> int:
                     p = plain_problem(z)
                     if p != "":
                         held = ""
-                        if p != type_str(z): held = " (it holds a {p})"
+                        if p != type_str(z): held = " (it holds {a_or_an(p)})"
                         fatal(use_pos, "'{name_of(int(nodes[decl].name))}' takes plain data (numbers, bools, vectors and structs of them), not {type_str(z)}{held}")
             else if an == "lib":
                 la = int(nodes[at].a)
@@ -1304,6 +1308,45 @@ get_fn_inst = (decl: int, targs: int[], use_pos: int) -> int:
     decl_infos[di].insts.push(f)
     ensure_ret(f, use_pos)
     f
+
+# what C gives and takes, said where a C function or one C calls is declared: text and arrays are
+# pointers there, not Sloppy's str and T[]
+has_attr = (decl: int, name: str) -> bool:
+    ab = int(nodes[decl].c)
+    if ab == 0: return false
+    loop i in [0..nkids(ab)):
+        if name_of(int(nodes[kid(ab, i)].name)) == name: return true
+    false
+
+c_sig_check = (d: int):
+    sig = fn_sig(d)
+    if sig.generic: return
+    rp = nodes[d].pos
+    if nodes[d].a != 0: rp = nodes[int(nodes[d].a)].pos
+    if has_flag(d, NF_EXTERN):
+        if sig.ret != 0 and tkind(int(sig.ret)) == .str_: fatal(rp, "C gives text as a pointer: declare the result `*u8` and read it with `str_from_c(p)`")
+        loop i in 0.. and t in sig.params:
+            pt = prune(t)
+            if types[pt].kind == .ptr and tkind(int(types[pt].elem)) == .struct_: c_struct_check(prune(int(types[pt].elem)), nodes[kid(d, i)].pos, 0)
+    else if has_attr(d, "cabi") or has_attr(d, "export"):
+        why = "C passes text as `*u8` (`str_from_c(p)` to read it), arrays as a pointer and a length"
+        loop i in 0.. and t in sig.params:
+            if tkind(t) == .str_ or tkind(t) == .array: fatal(nodes[kid(d, i)].pos, why)
+        if sig.ret != 0 and (tkind(int(sig.ret)) == .str_ or tkind(int(sig.ret)) == .array): fatal(rp, why)
+
+# (struct t goes to C by pointer, from an extern's parameter at p: C reads its fields as its own)
+c_struct_check = (t: int, p: int, depth: int):
+    si = int(types[t].st)
+    if structs[si].union_ or structs[si].soa_ or depth > 8: return
+    check_struct_fields(si)
+    loop i in [0..int(structs[si].nfields)):
+        fi = int(structs[si].fields) + i
+        ft = prune(int(fields[fi].type))
+        fnm = name_of(int(fields[fi].name))
+        if types[ft].kind == .str_: fatal(p, "field '{fnm}' of {type_str(t)} is a Sloppy str, not C's `char *`: use `*u8`")
+        if types[ft].kind == .array: fatal(p, "field '{fnm}' of {type_str(t)} is a Sloppy array ({type_str(ft)}), not a C array or pointer: use a pointer (`*{type_str(int(types[ft].elem))}`) and a length")
+        if is_map_type(ft): fatal(p, "field '{fnm}' of {type_str(t)} is a Sloppy map, which C cannot read")
+        if types[ft].kind == .struct_: c_struct_check(ft, p, depth + 1)
 
 ensure_ret = (f: int, use_pos: int):
     if fns[f].ret != 0: return
@@ -2015,7 +2058,7 @@ unnarrow_assign = (s: int):
     if loop_serials.len() > d and (narrow_reads.get(l) ?? 0) == loop_serials[d]:
         ln, c = line_col(locals[l].pos)
         nt = type_str(int(locals[l].type))
-        given = "a {type_str(rt)}"
+        given = a_type(rt)
         again = "if {name_of(nm)} is {nt}:"
         if tkind(rt) == .none_lit or tkind(rt) == .opt:
             given = "none"
@@ -2534,6 +2577,7 @@ check_stmt = (s: int):
                 if tkind(rt) == .void_: fatal(nodes[s].pos, "this function does not return a value")
                 check_expr(int(nodes[s].a), rt)
                 nodes[s].a = i32(coerce(last_checked, rt))
+            local_addr_check(int(nodes[s].a))
         else:
             rt = prune(ret)
             if tkind(rt) == .var: unify(rt, T_VOID)
@@ -2677,6 +2721,7 @@ __check_fn_body = (f: int):
                         fatal(nodes[ls].pos, "the function gives back {a_type(r)}, but an `if` without `else` gives nothing when it does not hold: add `else:` and the value then")
                     fatal(nodes[ls].pos, "the function gives back {a_type(r)}, but its last line gives nothing: end it with the value to give back (or `return value`)")
                 fatal(p, "missing return value: function returns {type_str(r)}")
+    if body != 0 and nodes[body].kind == .block and nodes[body].aux != 0 and nkids(body) > 0: local_addr_check(block_value(body))
     zonk_tree(body)
     loop l in fns[f].locals:
         locals[l].type = i32(zonk(int(locals[l].type)))
@@ -2691,6 +2736,22 @@ __check_fn_body = (f: int):
     ctxs.pop()
     cx = saved
 
+
+# (return &x, x a variable of the function, or a field of one: x is gone once the function returns)
+local_addr_check = (e: int):
+    if e == 0 or pos_in_lib(nodes[e].pos): return
+    a = unconv(e)
+    if nodes[a].kind != .addr: return
+    r = int(nodes[a].a)
+    loop (nodes[r].kind == .field and tkind(ntype(int(nodes[r].a))) == .struct_) or (nodes[r].kind == .index and tkind(ntype(int(nodes[r].a))) == .fixed): r = int(nodes[r].a)
+    if nodes[r].kind != .ident or nodes[r].aux != i32(int(SK.local)): return
+    l = int(nodes[r].sym)
+    inst = int(ctxs[cx].inst)
+    if int(locals[l].owner) != inst or int(locals[l].flags) & LF_CAPTURE != 0: return
+    fname = "the function"
+    if fns[inst].decl != 0 and nodes[int(fns[inst].decl)].kind == .fn_: fname = name_of(int(nodes[int(fns[inst].decl)].name))
+    xn = name_of(int(locals[l].name))
+    warn(nodes[a].pos, "{xn} lives only until {fname} returns: its address is no use after that; return the value, or memory from `alloc`")
 
 # the variable at the bottom of a place (v in v.f[2].g), or 0
 place_root = (n: int) -> int:
@@ -3356,6 +3417,7 @@ check_program = (main_path: str):
         if m.is_prelude and int(m.file) != ide_force: continue
         loop d in m.decls:
             if nodes[d].kind == .fn_ and not has_flag(d, NF_EXTERN) and not fn_sig(d).generic: get_fn_inst(d, [], nodes[d].pos)
+            if nodes[d].kind == .fn_ and (has_flag(d, NF_EXTERN) or nodes[d].c != 0) and not m.is_prelude: c_sig_check(d)
     loop nm in runtime_names: runtime_fn(nm)
     loop nm in optional_runtime:
         if prelude.get(intern(nm)) != none: runtime_fn(nm)

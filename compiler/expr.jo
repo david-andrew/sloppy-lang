@@ -250,11 +250,10 @@ coerce = (n: int, target: int) -> int:
                 if bop == .plus or bop == .minus or bop == .star or bop == .shl:
                     an = "x"
                     if nodes[int(nodes[n].a)].kind == .ident: an = name_of(int(nodes[int(nodes[n].a)].name))
-                    art = "a"
-                    if type_str(to) == "int" or type_str(to) == "i32" or type_str(to) == "i64": art = "an"
-                    warn(nodes[n].pos, "this is worked out as a {type_str(from)}, which wraps around past its range, before it becomes {art} {type_str(to)}: `{type_str(to)}({an}) {tok_text(bop)} ...` works in {type_str(to)}")
+                    warn(nodes[n].pos, "this is worked out as {a_type(from)}, which wraps around past its range, before it becomes {a_type(to)}: `{type_str(to)}({an}) {tok_text(bop)} ...` works in {type_str(to)}")
             wrap_conv(n, .int_, to)
             return n
+        if nodes[n].kind == .call and has_flag(n, NF_CARET): fatal(nodes[n].pos, "cannot implicitly convert {type_str(from)} to {type_str(to)}: {CARET_HINT}")
         fatal(nodes[n].pos, "cannot implicitly convert {type_str(from)} to {type_str(to)} (use {type_str(to)}(x) to convert explicitly)")
     if fk == .int_ and tk == .float_:
         if nodes[n].kind == .binary and nodes[n].op == i32(int(Tok.slash)):
@@ -1000,6 +999,10 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
             if nodes[a].kind == .int_lit: return 3
             return 1
         if pk == .opt and is_numeric(int(types[p].elem)): return 2
+        # (5 for an (int | E)?: the member it fits, as where a variable of that type is given it)
+        if pk == .opt and is_union(int(types[p].elem)) and not has_var(p):
+            if union_target(a, ntype(a), prune(int(types[p].elem))) >= 0: return 2
+            return -1
         if pk == .vec: return -1
         return -1
     fp = p
@@ -1308,8 +1311,8 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 else if tkind(et0) == .int_: dv = "0"
                 else if tkind(et0) == .float_: dv = "0.0"
                 else if tkind(et0) == .bool_: dv = "false"
-                fatal(nodes[a0].pos, "{gn} may give none (nothing) rather than a {type_str(et0)}: say what to use then, as `{gn}(...) ?? {dv}`, before calling '{name_of(name)}'")
-            fatal(nodes[a0].pos, "this {type_str(at)} may be none (nothing) rather than a {type_str(int(types[at].elem))}: before calling '{name_of(name)}', say what to use then (`x ?? default`), or `x!` when it cannot be none, or `if let v = x: ...`")
+                fatal(nodes[a0].pos, "{gn} may give none (nothing) rather than {a_type(et0)}: say what to use then, as `{gn}(...) ?? {dv}`, before calling '{name_of(name)}'")
+            fatal(nodes[a0].pos, "this {type_str(at)} may be none (nothing) rather than {a_type(int(types[at].elem))}: before calling '{name_of(name)}', say what to use then (`x ?? default`), or `x!` when it cannot be none, or `if let v = x: ...`")
         # (atomic_add(&x, 1): the atomics are for GPU buffers)
         if starts_with(name_of(name), "atomic_") and args.len() > 0 and nodes[unnamed(args[0])].type != 0 and tkind(ntype(unnamed(args[0]))) == .ptr:
             fatal(nodes[n].pos, "{name_of(name)} changes an element of a GpuBuffer in a compute function; threads on the CPU do not share variables: parallel_map gives each one's result back, and a count or flag they share is an Atomic (`done = atomic(0)`, `done.add(1)`)")
@@ -1327,7 +1330,7 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 if nodes[unnamed(a0)].type == 0 or not is_numeric(prune(ntype(unnamed(a0)))): nums = false
             if cs != 0 and syms[cs].kind == .struct_ and nums:
                 ot = overloads_text(decls, "")
-                fatal(nodes[n].pos, "no version of '{fnm}' takes these arguments (`{cap}(...)` makes a {cap}){ot}")
+                fatal(nodes[n].pos, "no version of '{fnm}' takes these arguments (`{cap}(...)` makes {a_or_an(cap)}){ot}")
         # (range(3), set(): Python's, which mean other things here)
         if name_of(name) == "range" and args.len() == 1: fatal(nodes[n].pos, "the numbers from 0 to n - 1 are `[0..n)` (`loop i in [0..3):`); range(a, b) is [a..b)")
         if name_of(name) == "set" and args.len() == 0: fatal(nodes[n].pos, "there is no set type: a map to bool (`seen: \{str: bool} = \{}`, `seen[x] = true`, `x in seen`), or `unique(xs)`")
@@ -1987,7 +1990,9 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
                 ms: str[]
                 loop m in union_members(at): ms.push(type_str(m))
                 un = name_of(name)
-                fatal(nodes[n].pos, "'{un}' is a union ({join(ms, " | ")}): a {ms[0]} is a {un} as it is, with nothing around it: `m: {un} = {ms[0]}(...)`")
+                eg = "{ms[0]}(...)"
+                if args.len() == 1 and len(call_args_text(nodes[n].pos)) > 0: eg = call_args_text(nodes[n].pos)
+                fatal(nodes[n].pos, "'{un}' is a union ({join(ms, " | ")}): {a_or_an(ms[0])} is {a_or_an(un)} as it is, with nothing around it: `m: {un} = {eg}`")
         all = visible_names()
         loop it in intrinsics: all.push(intern(it.name))
         # (physics3d.world(): the names of that module, World among them)
@@ -2137,10 +2142,7 @@ brace_before = (p: int) -> bool:
     o > 0 and o <= len(src) and src[o - 1] == u8(123)          # ('{')
 
 # "a str", "an int", "an f64": a type named with its article
-a_type = (t: int) -> str:
-    s = type_str(t)
-    if len(s) > 0 and (s[0] == 'a' or s[0] == 'e' or s[0] == 'i' or s[0] == 'o' or s[0] == 'f' or s[0] == 'A' or s[0] == 'E' or s[0] == 'I' or s[0] == 'O'): return "an {s}"
-    "a {s}"
+a_type = (t: int) -> str: a_or_an(type_str(t))
 
 coerce_hint = ""     # (said after a type mismatch, by what asked for the type)
 
@@ -2278,7 +2280,7 @@ shader_draw_check = (decl: int, args: int[]):
         a = unnamed(args[i])
         if nodes[a].type == 0 or type_eq(prune(ntype(a)), prune(ut)): return
         gn = name_of(int(globals[g].name))
-        fatal(nodes[a].pos, "{gn}'s shader functions take {type_str(ut)} as their uniforms, and this is {type_str(ntype(a))}: give it a {type_str(ut)}")
+        fatal(nodes[a].pos, "{gn}'s shader functions take {type_str(ut)} as their uniforms, and this is {type_str(ntype(a))}: give it {a_type(ut)}")
 
 # the uniforms type of the shader functions named in e (make_shader(shader(vs, fs))), or 0
 shader_uniforms_in = (e: int) -> int:
@@ -2522,9 +2524,13 @@ read_code = (t: int, rn: str, xn: str, pos: int) -> int[]:
         st.push(bc_let("__k", bc_call("__tx_kind", [bc_ident(rn, pos)], pos), pos))
         ms = union_members(t)
         has_int = false
+        has_str = false
+        has_map = false
         loop m in ms:
             if is_int(m): has_int = true
-        chain = rcall("__tx_fail_found", rn, [bc_str("expected a {type_str(t)}", pos)], pos)
+            if tkind(m) == .str_: has_str = true
+            if is_map_type(m): has_map = true
+        chain = rcall("__tx_fail_found", rn, [bc_str("expected {a_type(t)}", pos)], pos)
         # (enums last: a bare name could be one of them, Name(...) a struct)
         loop pass_ in [0..2):
             i = ms.len() - 1
@@ -2547,7 +2553,15 @@ read_code = (t: int, rn: str, xn: str, pos: int) -> int[]:
                     nm = type_str(m)
                     if mk_ == .struct_: nm = structs[int(types[m].st)].name
                     c = bc_logic(.and_, kind_is(6, pos), bc_bin(.eq, bc_field(bc_ident(rn, pos), "name", pos), bc_str(nm, pos), pos), pos)
-                else if mk_ == .enum_: c = bc_logic(.or_, kind_is(6, pos), kind_is(7, pos), pos)
+                else if mk_ == .enum_:
+                    c = bc_logic(.or_, kind_is(6, pos), kind_is(7, pos), pos)
+                    # (JSON: a variant is "name", or {"name": [fields]}, when no str or map is a member)
+                    jk = 0
+                    if not has_str: jk = kind_is(1, pos)
+                    if not has_map:
+                        if jk == 0: jk = kind_is(9, pos)
+                        else: jk = bc_logic(.or_, jk, kind_is(9, pos), pos)
+                    if jk != 0: c = bc_logic(.or_, c, bc_logic(.and_, bc_field(bc_ident(rn, pos), "json", pos), jk, pos), pos)
                 if c == 0: continue
                 v = "__u{i + 1}"
                 body = [bc_decl(v, m, pos), bc_stmt(bc_call("__default_init", [bc_ident(v, pos)], pos), pos), rcall("__read", rn, [bc_ident(v, pos)], pos), bc_assign(bc_ident(xn, pos), bc_ident(v, pos), pos)]
@@ -2557,12 +2571,12 @@ read_code = (t: int, rn: str, xn: str, pos: int) -> int[]:
         # a variant by name: hard, or rect(1.0, 2.0)
         si = int(types[t].st)
         check_struct_fields(si)
-        st.push(bc_let("__w", bc_call("__tx_word", [bc_ident(rn, pos), mk(.bool_lit, pos)], pos), pos))
+        st.push(bc_let("__w", bc_call("__tx_variant", [bc_ident(rn, pos)], pos), pos))
         vs = ""
         loop vi in [0..int(structs[si].nvariants)):
             if vi > 0: vs += ", "
             vs += name_of(int(variants[int(structs[si].variants) + vi].name))
-        chain = rcall("__tx_bad", rn, [bc_str("expected a {type_str(t)} ({vs})", pos)], pos)
+        chain = rcall("__tx_bad", rn, [bc_str("expected {a_type(t)} ({vs})", pos)], pos)
         v = int(structs[si].nvariants) - 1
         loop v >= 0:
             vi = int(structs[si].variants) + v
@@ -2585,6 +2599,7 @@ read_code = (t: int, rn: str, xn: str, pos: int) -> int[]:
                     vargs.push(bc_ident(a, pos))
                 body.push(rcall("__tx_eat", rn, [bc_int(',', pos)], pos))
                 body.push(rcall("__tx_want", rn, [bc_int(')', pos)], pos))
+                body.push(rcall("__tx_variant_end", rn, [], pos))
                 c = mk(.call, pos)
                 nodes[c].a = i32(dn)
                 set_list(c, vargs)
@@ -2798,7 +2813,7 @@ uncalled_hint = (n: int, want: int) -> str:
     # (key_down(right): the key, Key.right, written without its dot)
     if want != 0 and tkind(want) == .enum_:
         loop v in variant_names(want):
-            if name_of(v) == nm: return " (a {type_str(want)} is written with a dot: `.{nm}`)"
+            if name_of(v) == nm: return " ({a_type(want)} is written with a dot: `.{nm}`)"
     args = ""
     if d != 0 and nkids(d) > 0: args = "..."
     " ('{nm}' is a function and is not called here: `{nm}({args})` calls it)"
@@ -2836,6 +2851,36 @@ is_unchecked_at = (n: int) -> bool:
     if id_at == 0: id_at = intern("__at")
     int(nodes[callee].name) == id_at and modules[cur_mod()].is_prelude
 
+# (a ^ b on whole numbers is a power; in C, Rust, Go, Java and JavaScript it is an xor: said where
+# the numbers look like bits, not maths)
+CARET_HINT = "`^` is a power in Sloppy (2 ^ 10 is 1024); a bitwise xor is `xor`"
+unconv = (a0: int) -> int:
+    a = a0
+    loop nodes[a].kind == .conv: a = int(nodes[a].a)
+    a
+bitwise_looking = (a0: int) -> bool:
+    a = unconv(a0)
+    if nodes[a].kind == .int_lit:
+        c = src_char(nodes[a].pos + 1)
+        return src_char(nodes[a].pos) == '0' and (c == 'x' or c == 'X' or c == 'b' or c == 'B')
+    if nodes[a].kind != .binary: return false
+    op = nodes[a].op as Tok
+    op == .amp or op == .pipe or op == .caret or op == .shl or op == .shr or op == .kw_xor
+# (call n is `a ^ b`: its numbers are bits (written in hex, or of a sized type, or next to & | <<
+# >> xor), not x ^ 2 with x an int; in_bits: n is an operand of one of those)
+xor_meant = (n: int, in_bits: bool) -> bool:
+    if not has_flag(n, NF_CARET) or nkids(n) != 2 or pos_in_lib(nodes[n].pos): return false
+    a = unconv(kid(n, 0))
+    b = unconv(kid(n, 1))
+    ta = prune(ntype(a))
+    tb = prune(ntype(b))
+    if ta == 0 or tb == 0 or not is_int(ta) or not is_int(tb): return false
+    if in_bits or bitwise_looking(a) or bitwise_looking(b): return true
+    if not types[ta].sign or not types[tb].sign: return true
+    # (n ^ 2 with n: i32 is a square)
+    small = nodes[b].kind == .int_lit and nodes[b].ival >= 0 and nodes[b].ival <= 4
+    (ta != T_INT or tb != T_INT) and not small
+
 check_call = (n: int, expected: int) -> int:
     callee = int(nodes[n].a)
     args = kids(n)
@@ -2849,7 +2894,9 @@ check_call = (n: int, expected: int) -> int:
             set_kid(n, 0, args[0])
             if is_soa(at): return check_soa_method(n, args[0], int(nodes[callee].name), [], expected)
         if not pos_in_lib(nodes[n].pos): habit_call_check(n, int(nodes[callee].name), args)
-        return call_by_name(n, int(nodes[callee].name), -1, args, expected, false)
+        r = call_by_name(n, int(nodes[callee].name), -1, args, expected, false)
+        if has_flag(n, NF_CARET) and xor_meant(n, false): warn(nodes[n].pos, CARET_HINT)
+        return r
     if ck == .dotname:
         if ide_sentinel != 0 and int(nodes[callee].name) == ide_sentinel: ide_complete_variants(expected)
         et = prune(expected)
@@ -2920,6 +2967,20 @@ check_call = (n: int, expected: int) -> int:
             saved = call_targs
             call_targs = targs
             r = call_by_name(n, int(nodes[int(nodes[callee].a)].name), -1, args, expected, false)
+            call_targs = saved
+            return r
+    if ck == .index and nodes[int(nodes[callee].a)].kind == .field and nodes[int(nodes[int(nodes[callee].a)].a)].kind == .ident:
+        # m.f[T](args): a module's generic function with its type arguments given
+        fld = int(nodes[callee].a)
+        ms = lookup(int(nodes[int(nodes[fld].a)].name))
+        if ms != 0 and syms[ms].kind == .module:
+            targs: int[]
+            if nodes[callee].b != 0: targs.push(expr_as_type(int(nodes[callee].b)))
+            else:
+                loop i in [0..nkids(callee)): targs.push(expr_as_type(kid(callee, i)))
+            saved = call_targs
+            call_targs = targs
+            r = call_by_name(n, int(nodes[fld].name), int(syms[ms].ref), args, expected, false)
             call_targs = saved
             return r
     check_expr(callee, 0)
@@ -3786,7 +3847,7 @@ check_binary = (n: int, expected: int) -> int:
     if op == .plus and (tkind(ta) == .str_ and is_vec(tb) or is_vec(ta) and tkind(tb) == .str_):
         vt = tb
         if is_vec(ta): vt = ta
-        fatal(nodes[n].pos, "cannot add a {type_str(vt)} to text: put the value inside the string (\"v is \{v}\")")
+        fatal(nodes[n].pos, "cannot add {a_type(vt)} to text: put the value inside the string (\"v is \{v}\")")
     if is_vec(ta) or is_vec(tb): return check_vec_binary(n, op, ta, tb)
     if types[ta].kind == .fixed or types[tb].kind == .fixed:
         if op != .eq and op != .ne: fatal(nodes[n].pos, "operator {tok_text(op)} is not defined for {type_str(ta)} and {type_str(tb)} (fixed-size arrays can be compared with == and !=)")
@@ -3993,6 +4054,9 @@ check_binary = (n: int, expected: int) -> int:
             return T_FLOAT
     j = join_types(a, b, nodes[n].pos)
     if (op == .amp or op == .pipe or op == .caret) and not is_int(j): fatal(nodes[n].pos, "bitwise operators need integers")
+    if op == .amp or op == .pipe or op == .caret or is_shift:
+        loop x in [a, b]:
+            if nodes[unconv(x)].kind == .call and xor_meant(unconv(x), true): warn(nodes[unconv(x)].pos, CARET_HINT)
     # (got / total * 100 with whole numbers: 3 / 4 is 0, so the percent is 0)
     if op == .star and is_int(j) and nodes[a].kind == .binary and nodes[a].op == i32(int(Tok.slash)) and nodes[b].kind == .int_lit and nodes[b].ival == 100 and not pos_in_lib(nodes[n].pos):
         an = "a"
@@ -4349,8 +4413,11 @@ try_holds = (rt: int, m: int) -> bool:
     if is_union(r): return union_index(r, m) >= 0
     type_eq(r, m)
 
+# (an int, an f32, an (int | str)?, an Item; a u8, a Unit, a str)
 a_or_an = (s: str) -> str:
-    if len(s) > 0 and find_byte("aeiouAEIOU", s[0]) >= 0: return "an {s}"
+    i = 0
+    loop i < len(s) and s[i] == '(': i += 1
+    if i < len(s) and (find_byte("aeioAEIO", s[i]) >= 0 or s[i] == 'f' and i + 1 < len(s) and is_digit(s[i + 1])): return "an {s}"
     "a {s}"
 
 try_defers: int[]     # the function contexts whose deferred code is being checked (it cannot return)
@@ -4571,8 +4638,12 @@ check_expr = (n: int, expected: int) -> int:
             p = nodes[n].pos
             nodes[n] = nodes[v]
             nodes[n].pos = p
-            check_expr(n, expected)
-            if not is_lit(n) and globals[g].type != 0 and globals[g].decl != 0 and nodes[int(globals[g].decl)].a != 0 and not has_var(prune(int(globals[g].type))): coerce(n, int(globals[g].type))
+            typed = globals[g].type != 0 and globals[g].decl != 0 and nodes[int(globals[g].decl)].a != 0 and not has_var(prune(int(globals[g].type)))
+            # (const SIG: u8[] = [0x89, 0x50]: its elements are u8s wherever it is used; a number
+            # written alone still fits where it goes)
+            if typed and not is_numeric(int(globals[g].type)): check_expr(n, int(globals[g].type))
+            else: check_expr(n, expected)
+            if typed and (not is_lit(n) or not is_numeric(int(globals[g].type))): coerce(n, int(globals[g].type))
             last_checked = n
             return ntype(n)
         else if sk == .fns:
@@ -6115,9 +6186,9 @@ check_istype = (n: int) -> int:
     else if types[at].kind == .opt:
         if types[tt].kind == .none_lit: nodes[n].aux = -1
         else if type_eq(tt, int(types[at].elem)): nodes[n].aux = -2
-        else: fatal(nodes[int(nodes[n].b)].pos, "a {type_str(at)} is either a {type_str(int(types[at].elem))} or none, never a {type_str(tt)}")
+        else: fatal(nodes[int(nodes[n].b)].pos, "{a_type(at)} is either {a_type(int(types[at].elem))} or none, never {a_type(tt)}")
     else if type_eq(at, tt): nodes[n].aux = -3      # (already narrowed to it, say): always true
-    else: fatal(nodes[n].pos, "`is` tests which type a union (A | B) or optional value holds; this is always a {type_str(at)}")
+    else: fatal(nodes[n].pos, "`is` tests which type a union (A | B) or optional value holds; this is always {a_type(at)}")
     T_BOOL
 
 # what `x is ...` tests again: x itself (a variable or field path), or else its value put in a

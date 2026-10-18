@@ -127,6 +127,39 @@
   matches need `_:`, data enums' patterns and their limits, narrowing in loops, `T??`; its example
   of two elements passed as `mut` was `swap(xs[i], xs[j])`, which is `swap(xs, i, j)`.
   `to_int(" 42")` leaving out spaces around the number is stated.
+- `^` is a power, and a warning says so where it looks like C's xor: whole numbers where one is
+  written in hex or binary, is unsigned or sized (`a ^ b` with `a, b: u32` was 125), or sits next
+  to `&`, `|`, `<<`, `>>` or `xor` (`h ^ (h >> 16)`). `x ^ 2` with an int x is still maths. The
+  error for `c: u32 = a ^ 3` says it too.
+- Calling C: an `extern` giving back a `str` is an error (it died at run time: C gives a pointer,
+  `*u8`, read with `str_from_c`); so are `@cabi` functions taking or giving a `str` or an array
+  (they crashed when C called them), and a struct with `str`, array or map fields given to C by
+  pointer (`extern f = (e: *Entry)`: C would read Sloppy's text as its `char *`).
+- C's variadic arguments get C's promotions: an `f32` goes as a double (`printf("%.2f",
+  f32(2.5))` printed 0.00), and on x86-64 al says how many vector registers hold arguments (a
+  double given to printf was read only by luck).
+- `@packed` above a struct lays its fields out with no padding, as C's `__attribute__((packed))`
+  (`epoll_event` is 12 bytes, not 16); it holds plain data. An attribute a struct does not take
+  (`@whatever`) is an error listing the one it does; one above a variable or a `when` is an error
+  too (it was dropped).
+- A typed constant keeps its type where it is used: `const SIG: u8[] = [0x89, 0x50]` compares
+  with a `u8[]` (it said "expected u8[], found int[]").
+- A warning for returning the address of a function's own variable (`&x` as its last line or in
+  `return`): x is gone when the function returns.
+- `m.f[T](args)`: a module's generic function with its type arguments written at the call
+  (`g.parse[Point](text)` said "cannot use overloaded or generic function as a value").
+- `from_json` reads an enum's variants with fields as `to_json` writes them (`{"rect": [2, 3]}`),
+  also as a member of a union with no `str` or map member.
+- A number written as the argument for an optional union parameter (`(int | E)?`) goes to the
+  member it fits, as it does in `x: (int | E)? = 5`.
+- `break` and `continue` from inside an expression (an if-expression's or a match arm's block)
+  drop what the statement holds so far and the values being built, as `return` does; an array
+  literal of text or other references being built when one of these (or `?`) leaves is dropped
+  without touching its elements not stored yet (it could crash).
+- Messages say "an int", "an f32", "an (int | str)?" and "a Foe" (some said "a int", one "an Foe").
+- `and` and `or` as values (`is_id = (c: u8) -> bool: c >= 'a' and c <= 'z' or c == '_'`) are
+  made as branches, each comparison a jump, not 0/1 values tested again; a tokenizer's scan over
+  14 MB went from 92 to about 70 ms (release).
 
 ## 0.22.0
 
