@@ -579,7 +579,9 @@ class Gen:
             self.emit(f"print({v} .+ reshape([{', '.join(self.flit() for _ in range(a))}], {a}, 1, 1), sum({v}))")
         else:
             v = self.fresh("im")
-            self.emit(f"{v} = [{self.iexpr(3)} {r.randint(-5, 9)}; {r.randint(0, 9)} {r.randint(-3, 3)}]")
+            # (a negative number in a row goes in parentheses: [a -2] is a - 2)
+            el = lambda x: f"({x})" if x < 0 else str(x)
+            self.emit(f"{v} = [{self.iexpr(3)} {el(r.randint(-5, 9))}; {r.randint(0, 9)} {el(r.randint(-3, 3))}]")
             self.emit(f"print({v} .* {self.iexpr(3)} .+ {r.randint(-9, 9)}, {v} * {v})")
 
     def program(self):
