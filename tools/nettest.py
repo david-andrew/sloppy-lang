@@ -165,6 +165,31 @@ check("a room whose host has gone: the friend is told, and joins when it is back
 output(h)
 l = room_game(rd, "look", ROLE="look", SLOPPY_SERVER=f"ws://127.0.0.1:{rv_port + 1}")
 check("a room with the server out of reach says so", output(l), ["look: true, said it cannot be reached"])
+# play with anybody: the first to ask hosts a public room and the next two are put in it; one who
+# asks while a public room is busy hosts another; and the server's side of it, spoken to directly
+def made(path):
+    t0 = time.time()
+    while not os.path.exists(path) and time.time() - t0 < 20: time.sleep(0.05)
+rd = os.path.join(tmp, "anybody")
+os.makedirs(rd)
+h = room_game(rd, "ann", ROLE="anybody", FRIENDS="2")
+made(os.path.join(rd, "public.txt"))
+a = room_game(rd, "ben", ROLE="anybody")
+b = room_game(rd, "cat", ROLE="anybody")
+check("play with anybody: the first hosts", output(h), ["ann: hosts the public room true", "ann got: hello from ben", "ann got: hello from cat"])
+check("play with anybody: the next is put in its room", output(a), ["ben got: hello from ann"])
+check("play with anybody: and the next", output(b), ["cat got: hello from ann"])
+rd = os.path.join(tmp, "anybody_busy")
+os.makedirs(os.path.join(rd, "eve"))
+h = room_game(rd, "dot", ROLE="anybody", BUSY="1")
+made(os.path.join(rd, "public.txt"))
+time.sleep(1)
+a = room_game(os.path.join(rd, "eve"), "eve", ROLE="anybody", BUSY="1")
+check("play with anybody: one who asks while the room is busy hosts another", output(a), ["eve: hosts the public room true"])
+output(h)
+rp = build("rv_public") + exe
+check("play with anybody: the server's public rooms", subprocess.run([rp], capture_output=True, text=True, env=dict(env, SLOPPY_SERVER=f"ws://127.0.0.1:{rv_port}"), timeout=60).stdout,
+      ["a: public host", "b: true asking", "a: guest", "c: public host true", "b: true asking", "c: guest", "d: true"])
 rv.kill()
 port += 2
 env["NET_PORT"] = str(port)

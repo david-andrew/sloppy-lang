@@ -3,13 +3,16 @@
 # 5 planes for each of its own wins (15 for 3 a side). Each player has a name and an insignia on
 # their plane (Settings), besides their side's crosses or roundels.
 #
-# Invite a friend gives a link to send them (lib/invite.jo): they open it, the game in a web
-# browser, and the two games connect straight to each other with no server, anywhere. The one who
-# invites can invite more (each their own link), chooses the sides and starts the fight, and
-# passes on what goes between the others. Each game runs the whole fight (rollback netplay,
-# lib/netplay.jo): only the players' controls travel; the computer's planes are flown the same in
-# every game. One who leaves has the computer fly their plane. Practice: the same, with the
-# computer alone.
+# Make a room opens a room with a short code (and a link with it) on the matchmaking server
+# (lib/invite.jo, tools/rendezvous.jo): friends type the code into Join a room, or open the link,
+# the game in a web browser. Play with anybody puts players in a shared public room, whose fight
+# starts by itself after a short wait. Without the server, Invite a friend gives a link to send
+# and a code comes back. Either way the games connect straight to each other. The lobby shows the
+# two sides, the same on every player's screen: each player picks their own (Switch side), and
+# the one whose room it is starts the fight and passes on what goes between the others. Each game
+# runs the whole fight (rollback netplay, lib/netplay.jo): only the players' controls travel; the
+# computer's planes fill the sides, flown the same in every game. One who leaves has the computer
+# fly their plane. Practice: the same, with the computer alone.
 #
 # The mouse flies: the plane turns toward where it points, and its left button fires. Keys win
 # over it: S or Down climbs, W or Up dives, A and D (or Left and Right) roll, Q and E the rudder,
@@ -169,14 +172,21 @@ new_game = (pilots: int[], skill: f64) -> Game:
     loop i in [0..2 * n): ps.push(spawn(i, n))
     Game(ps, pilots = pilots, skill = skill, win = WIN * n)
 
-# who flies which plane: players 0.. on alternate sides (or together on Red), the computer the rest
-seats = (players: int, n: int, together: bool) -> int[]:
+# who flies which plane, n a side: each player on the side they chose (sides: each one's, by
+# number), in their order, and the computer the rest
+seats = (sides: int[], n: int) -> int[]:
     p = fill(-1, 2 * n)
-    loop k in [0..players): p[if together: 2 * k else: k] = k
+    had = [0, 0]
+    loop k in 0.. and t in sides:
+        if had[t] < n: p[2 * had[t] + t] = k
+        had[t] += 1
     p
 
-# the fewest planes a side for that many players
-fewest = (players: int, together: bool) -> int: max(if together: players else: (players + 1) / 2, 1)
+# how many players are on each side
+counts = (sides: int[]) -> int[]:
+    n = [0, 0]
+    loop t in sides: n[t] += 1
+    n
 
 TEAMS = ["Red", "Blue"]
 name = (i: int) -> str: "{TEAMS[i % 2]} {i / 2 + 1}"
@@ -498,8 +508,8 @@ struct Settings:
     sound = 0.8
     skill = 0                   # the computer: 0 easy, 1 fair, 2 hard
     mouse = true                # the mouse steers
-    sides = 3                   # planes a side
-    together = false            # friends on the same side (Red), the computer against them
+    sides = 3                   # planes a side (more if a side has more players)
+    side = 0                    # the side this one flies on (0 Red, 1 Blue): the lobby's Switch side
     name = ""                   # (as typed: clean_name makes it the one shown)
     badge = -1                  # (the insignia on this one's plane: BADGES)
 
@@ -534,12 +544,12 @@ if let saved = load_data("settings"):
         settings.mouse = w[3] == "1"
     if w.len() >= 6:
         settings.sides = clamp(to_int(w[4]) ?? 3, 1, MOST)
-        settings.together = w[5] == "1"
+        settings.side = clamp(to_int(w[5]) ?? 0, 0, 1)
     if w.len() >= 7: settings.name = clean_name(w[6])
     if w.len() >= 8: settings.badge = to_int(w[7]) ?? -1
 save_settings = ():
     settings.name = my_name()
-    save_data("settings", "{if settings.invert: 1 else: 0} {settings.sound} {settings.skill} {if settings.mouse: 1 else: 0} {settings.sides} {if settings.together: 1 else: 0} {wire(settings.name)} {settings.badge}")
+    save_data("settings", "{if settings.invert: 1 else: 0} {settings.sound} {settings.skill} {if settings.mouse: 1 else: 0} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge}")
 # (the first time: a name and an insignia, to change in Settings)
 if len(settings.name) == 0 or settings.badge < 0 or settings.badge >= BADGES.len():
     if len(settings.name) == 0: settings.name = "Pilot {random_int(100, 1000)}"
@@ -551,10 +561,11 @@ mode = Mode.menu
 # (the menu's pages)
 const MAIN = 0
 const SETTINGS = 1
-const LOBBY = 2                 # practice, or the friends invited: the sides, Start
-const JOINED = 3                # joined a friend's: waiting for them to start
+const LOBBY = 2                 # practice, or this one's room: the sides, Start
+const JOINED = 3                # in another's room: the sides, waiting for them to start
 page = MAIN
-demo = () -> Game: new_game(seats(0, 3, false), 0.75)
+const PUBLIC_WAIT = 30.0        # (s) a public room's fight starts by itself this long after its lobby opens
+demo = () -> Game: new_game(fill(-1, 6), 0.75)
 s = netplay.session(demo(), tick, players = 2, me = 0)
 local = demo()                  # practice, and the menu's fight in the background
 mine = 0                        # (this machine's plane)
@@ -564,18 +575,29 @@ bot = env("BOT") != none
 invite.server(MATCH_SERVER)
 invite.from_link()
 
-# with friends: the one who invited them has each one's peer (player k + 1's: -1 once gone); each
-# of them the inviter's
-friends: int[]
-friend_names: str[]             # (each one's name and insignia, as they said: "" until then)
-friend_badges: int[]
+# a friend who came to this one's room (or invite): their peer (-1 once gone), and their name,
+# insignia and side, as they said ("" until then)
+struct Friend:
+    peer: int
+    name = ""
+    badge = 0
+    side = 0
+
+# with friends: the host (whose room it is) has each one, player k + 1 being friends[k]; each of
+# them the host's peer
+friends: Friend[]
 host = -1
 fights = 0                      # (fights started with these friends: their numbers)
+public = false                  # (this one's room is a public one, Play with anybody's: its fight starts by itself)
+starts_at = 0.0                 # (and when, in its lobby)
 lobby_me = 0                    # (joined: this one's player, and the sides, as the host says)
 lobby_pilots: int[]
 lobby_names: str[]
 lobby_badges: int[]
+lobby_starts = -1.0             # (when the fight starts by itself: -1, when the host starts it)
+want_side = -1                  # (joined: the side asked for with Switch side; -1 none)
 told_at = 0.0
+crew_until = 0.0                # (the host, in a fight: until when everyone is told the names and insignias again)
 away: int[]                     # (the players who left this fight: the computer flies their planes)
 results: Game? = none           # (the last fight, over: its tally shown with the sides, till the next)
 results_me = 0
@@ -589,7 +611,7 @@ to_badge = (t: str) -> int: clamp(to_int(t) ?? 0, 0, BADGES.len() - 1)
 
 # the insignia on plane j: its player's (the menu's plane: this one's, to see it), or none
 badge_of = (g: Game, j: int) -> int:
-    if mode == .menu: return if j == 0: settings.badge else: 0
+    if mode == .menu: return if j == mine: settings.badge else: 0
     k = g.pilots[j]
     if k >= 0 and k < crew_badges.len(): crew_badges[k] else: 0
 
@@ -602,36 +624,69 @@ call = (g: Game, j: int) -> str:
 # player k, as the fight's names say
 player_name = (k: int) -> str: if k >= 0 and k < crew_names.len() and len(crew_names[k]) > 0: crew_names[k] else: "player {k + 1}"
 
-# the players' names as they are now (the inviter's): this one's, then each friend's
+# the players' names, insignias and sides as they are now (the host's): this one's, then each
+# friend's
 names_now = () -> str[]:
     n = [my_name()]
-    n.extend(friend_names)
+    n.extend(friends.map((f): f.name))
     n
 badges_now = () -> int[]:
     b = [settings.badge]
-    b.extend(friend_badges)
+    b.extend(friends.map((f): f.badge))
     b
+sides_now = () -> int[]:
+    t = [settings.side]
+    t.extend(friends.map((f): f.side))
+    t
 
-# (the friends still there, with their names)
-drop_gone = ():
-    names: str[]
-    badges: int[]
+# (the friends still there)
+drop_gone = (): friends = friends.filter((f): f.peer >= 0)
+
+# the friend with that peer (-1: none)
+friend_of = (peer: int) -> int:
     loop k in 0.. and f in friends:
-        if f >= 0:
-            names.push(friend_names[k])
-            badges.push(friend_badges[k])
-    friends = friends.filter((f): f >= 0)
-    friend_names = names
-    friend_badges = badges
+        if f.peer == peer: return k
+    -1
 
-# the sides as they would be now (the inviter's)
-lobby_seats = () -> int[]:
-    players = 1 + friends.len()
-    if players > MOST: settings.together = false
-    settings.sides = clamp(max(settings.sides, fewest(players, settings.together)), 1, MOST)
-    seats(players, settings.sides, settings.together)
+# a friend who came: on the side with fewer players (Red when even); in a public room, a few
+# seconds at least to choose
+came = (peer: int):
+    n = counts(sides_now())
+    friends.push(Friend(peer, side = if n[1] < n[0]: 1 else: 0))
+    told_at = 0.0
+    if public: starts_at = max(starts_at, elapsed() + 10.0)
 
-# start the fight: practice, or with the friends invited (each told its number and the sides,
+# planes a side: as chosen, and as many as the side with more players
+planes_a_side = () -> int:
+    n = counts(sides_now())
+    clamp(max(settings.sides, max(n[0], n[1])), 1, MOST)
+
+# the sides as they would be now (the host's)
+lobby_seats = () -> int[]: seats(sides_now(), planes_a_side())
+
+# (the players on side t, in the sides as the host says)
+players_on = (pilots: int[], t: int) -> int:
+    n = 0
+    loop i in 0.. and k in pilots:
+        if i % 2 == t and k >= 0: n += 1
+    n
+
+# Switch side (the lobby's button, Tab, a gamepad's X): to the other side, if it has room for
+# another player. The host's own at once; a friend asks the host, and the sides show it once it has
+switch_side = ():
+    told_at = 0.0
+    if page == LOBBY:
+        if counts(sides_now())[1 - settings.side] < MOST: settings.side = 1 - settings.side
+        return
+    i = lobby_pilots.index_of(lobby_me)
+    if i >= 0 and players_on(lobby_pilots, 1 - i % 2) < MOST: want_side = 1 - i % 2
+
+# Make a room: this one's room opens (the lobby shows its code), and friends come by it
+make_room = ():
+    invite.open_room(reliable = false)
+    page = LOBBY
+
+# start the fight: practice (alone), or with the friends (each told its number and the sides,
 # and told again a few times in its first seconds, in case it was lost)
 start_fight = ():
     pilots = lobby_seats()
@@ -642,20 +697,20 @@ start_fight = ():
     crew_badges = badges_now()
     if friends.len() == 0:
         local = new_game(pilots, skill)
-        mine = 0
+        mine = max(pilots.index_of(0), 0)
         mode = .practice
         start_view()
         return
     fights += 1
     peers = [-1]
-    peers.extend(friends)
+    peers.extend(friends.map((f): f.peer))
     begin(0, pilots, skill, peers)
     tell_start()
 
 start_text = (k: int) -> str: "start {fights} {k} {settings.skill} {join(game().pilots.map((p): "{p}"), ",")} {join(crew_names.map(wire), ",")} {join(crew_badges.map((b): "{b}"), ",")}"
 tell_start = ():
     loop k in 0.. and f in friends:
-        if f >= 0: net.send(f, start_text(k + 1))
+        if f.peer >= 0: net.send(f.peer, start_text(k + 1))
 
 begin = (who: int, pilots: int[], skill: f64, peers: int[]):
     s = netplay.session(new_game(pilots, skill), tick, players = peers.len(), me = who)
@@ -668,15 +723,15 @@ begin = (who: int, pilots: int[], skill: f64, peers: int[]):
     mode = .online
     start_view()
 
-# back to the menu, the friends let go
+# back to the menu, the friends let go (and the room closed)
 leave = ():
     loop f in friends:
-        if f >= 0: net.close(f)
+        if f.peer >= 0: net.close(f.peer)
     friends = []
-    friend_names = []
-    friend_badges = []
     if host >= 0: net.close(host)
     host = -1
+    public = false
+    want_side = -1
     status = ""
     invite.close_room()
     to_menu(MAIN)
@@ -696,27 +751,29 @@ to_menu = (to: int):
 on_net = (e: net.NetEvent):
     if e.kind == .left: gone(e.peer)
     if e.kind != .message: return
-    # (the inviter: a friend's name)
-    if e.peer != host:
-        k = friends.index_of(e.peer)
-        w = split(e.text, " ")
-        if k >= 0 and w.len() >= 3 and w[0] == "me":
-            friend_names[k] = clean_name(w[1])
-            friend_badges[k] = to_badge(w[2])
-        return
     w = split(e.text, " ")
+    # (the host: a friend's name, insignia and side)
+    if e.peer != host:
+        k = friend_of(e.peer)
+        if k >= 0 and w.len() >= 3 and w[0] == "me": heard_me(k, w)
+        return
     if w.len() >= 2 and w[0] == "gone" and mode == .online:
         loop t in split(w[1], ","):
             k = to_int(t) ?? -1
             if k > 0 and k < s.players and k != s.me: left_fight(k)
+    else if w.len() >= 4 and w[0] == "crew" and mode == .online and (to_int(w[1]) ?? 0) == fights:
+        crew_names = split(w[2], ",").map(clean_name)
+        crew_badges = split(w[3], ",").map(to_badge)
     else if w.len() >= 4 and w[0] == "lobby":
-        # (the inviter back at the sides after this fight: it is over, here too; one from before
+        # (the host back at the sides after this fight: it is over, here too; one from before
         # it started, late, is not)
         if mode == .online and (to_int(w[1]) ?? 0) >= fights: to_menu(JOINED)
         lobby_me = to_int(w[2]) ?? 0
         lobby_pilots = split(w[3], ",").map((t): to_int(t) ?? -1)
         lobby_names = if w.len() >= 5: split(w[4], ",").map(clean_name) else: []
         lobby_badges = if w.len() >= 6: split(w[5], ",").map(to_badge) else: []
+        secs = if w.len() >= 7: to_float(w[6]) ?? -1.0 else: -1.0
+        lobby_starts = if secs >= 0.0: elapsed() + secs else: -1.0
     else if w.len() >= 5 and w[0] == "start":
         r = to_int(w[1]) ?? 0
         if r <= fights: return
@@ -732,6 +789,20 @@ on_net = (e: net.NetEvent):
         crew_badges = if w.len() >= 7: split(w[6], ",").map(to_badge) else: []
         begin(who, pilots, SKILLS[clamp(to_int(w[3]) ?? 1, 0, 2)], peers)
 
+# a friend's name and insignia (changed in a fight: everyone is told), and the side they ask for,
+# in the lobby, if it has room
+heard_me = (k: int, w: str[]):
+    f = friends[k]
+    f.name = clean_name(w[1])
+    f.badge = to_badge(w[2])
+    t = if w.len() >= 4: to_int(w[3]) ?? -1 else: -1
+    if mode == .menu and t >= 0 and t <= 1 and t != f.side and counts(sides_now())[t] < MOST: f.side = t
+    friends[k] = f
+    if mode == .online and k + 1 < crew_badges.len() and (crew_names[k + 1] != f.name or crew_badges[k + 1] != f.badge):
+        crew_names[k + 1] = f.name
+        crew_badges[k + 1] = f.badge
+        crew_until = elapsed() + 3.0
+
 # a friend's game has gone (closed, or not heard from)
 gone = (peer: int):
     if peer == host:
@@ -745,9 +816,9 @@ gone = (peer: int):
             leave()
             status = "your friend left"
         return
-    k = friends.index_of(peer)
+    k = friend_of(peer)
     if k < 0: return
-    friends[k] = -1
+    friends[k].peer = -1
     if mode == .online:
         s.stand_in(k + 1, Pad(computer = true))
         left_fight(k + 1)
@@ -759,35 +830,59 @@ gone_quiet = ():
     if mode != .online or game().winner >= 0: return
     loop q in [0..s.players):
         if q == s.me or s.stands_in(q) or s.silent(q) < 8.0: continue
-        peer = if s.me == 0: friends[q - 1] else: if q == 0: host else: -1
+        peer = if s.me == 0: friends[q - 1].peer else: if q == 0: host else: -1
         if peer < 0: continue
         net.close(peer)
         gone(peer)
 
-# (the inviter: the sides as they are, and who is who, to each friend twice a second while
-# choosing; the start again, early in the fight. A friend waiting: its name, till the sides
-# show it)
+# this one's name and insignia, changed in Settings during a fight, on its plane: at once in
+# practice; the host's told to everyone (a friend's go to the host: tell)
+own_crew = ():
+    if crew_badges.len() == 0 or not (mode == .practice or (mode == .online and s.me == 0)): return
+    if crew_names[0] != my_name() or crew_badges[0] != settings.badge:
+        crew_names[0] = my_name()
+        crew_badges[0] = settings.badge
+        crew_until = elapsed() + 3.0
+
+# (the host: the sides as they are, and who is who, to each friend twice a second while
+# choosing; in a fight, the start again early in it, the names and insignias after a change, and
+# who has left. A friend: its name, insignia and the side it asks for, till the sides show them;
+# in a fight, its name and insignia till the host has them)
 tell = ():
+    own_crew()
     if elapsed() - told_at < 0.5: return
     if host >= 0 and mode == .menu and page == JOINED:
         told_at = elapsed()
-        if lobby_me <= 0 or lobby_me >= lobby_badges.len() or lobby_names[lobby_me] != my_name() or lobby_badges[lobby_me] != settings.badge: net.send(host, "me {wire(my_name())} {settings.badge}")
+        i = lobby_pilots.index_of(lobby_me)
+        shown = if i >= 0: i % 2 else: -1
+        # (the side asked for, full since: asked for no more)
+        if want_side >= 0 and want_side != shown and players_on(lobby_pilots, want_side) >= MOST: want_side = -1
+        known = lobby_me > 0 and lobby_me < lobby_badges.len() and lobby_me < lobby_names.len() and lobby_names[lobby_me] == my_name() and lobby_badges[lobby_me] == settings.badge
+        if not known or (want_side >= 0 and want_side != shown): net.send(host, "me {wire(my_name())} {settings.badge} {want_side}")
+    else if host >= 0 and mode == .online:
+        told_at = elapsed()
+        if s.me >= crew_badges.len() or s.me >= crew_names.len() or crew_names[s.me] != my_name() or crew_badges[s.me] != settings.badge: net.send(host, "me {wire(my_name())} {settings.badge} -1")
     if friends.len() == 0: return
     if mode == .menu and page == LOBBY:
         told_at = elapsed()
         p = join(lobby_seats().map((x): "{x}"), ",")
         n = join(names_now().map(wire), ",")
         b = join(badges_now().map((x): "{x}"), ",")
+        secs = if public: "{max(starts_at - elapsed(), 0.0):.1}" else: "-1"
         loop k in 0.. and f in friends:
-            if f >= 0: net.send(f, "lobby {fights} {k + 1} {p} {n} {b}")
+            if f.peer >= 0: net.send(f.peer, "lobby {fights} {k + 1} {p} {n} {b} {secs}")
     else if mode == .online and s.me == 0:
         told_at = elapsed()
         if s.tick < 300: tell_start()
+        if elapsed() < crew_until:
+            c = "crew {fights} {join(crew_names.map(wire), ",")} {join(crew_badges.map((x): "{x}"), ",")}"
+            loop f in friends:
+                if f.peer >= 0: net.send(f.peer, c)
         # (and who has left, for the others to say)
         if away.len() > 0:
             w = "gone {join(away.map((k): "{k}"), ",")}"
             loop f in friends:
-                if f >= 0: net.send(f, w)
+                if f.peer >= 0: net.send(f.peer, w)
 
 left_fight = (k: int):
     if k in away: return
@@ -798,15 +893,19 @@ left_fight = (k: int):
 # fires too, and one still firing would pass them by)
 over = () -> bool: mode != .menu and game().winner >= 0 and game().tick - won_at > 180
 
-# on from the results: again (practice); with friends, the inviter to the sides, the others to
-# wait for the next fight (both with the results still up)
+# this one's room is open (made, or Play with anybody's): friends may come to its lobby
+in_room = () -> bool: public or len(invite.room_code()) > 0
+
+# on from the results: again (practice); with friends, or in a room, the host to the sides, the
+# others to wait for the next fight (both with the results still up)
 after_fight = ():
-    if mode == .practice:
+    if mode == .practice and not in_room():
         local = new_game(local.pilots, local.skill)
         start_view()
-    else if s.me == 0:
+    else if mode == .practice or s.me == 0:
         drop_gone()
-        to_menu(if friends.len() > 0: LOBBY else: MAIN)
+        to_menu(if friends.len() > 0 or in_room(): LOBBY else: MAIN)
+        starts_at = elapsed() + PUBLIC_WAIT
     else if host >= 0: to_menu(JOINED)
     else: leave()
 
@@ -948,12 +1047,14 @@ aim_at_target = ():
 
 update = (dt: f64):
     loop e in net.receive(): on_net(e)
-    # (friends who come by the room's code: let in while the sides are chosen, made to wait in a fight)
+    # (the menu's plane: one of this one's side, in the lobby)
+    if mode == .menu: mine = if page == LOBBY: settings.side else: if page == JOINED: max(lobby_pilots.index_of(lobby_me), 0) % 2 else: 0
+    # (friends who come by the room's code: let in while the sides are chosen, made to wait in a
+    # fight; a public room's fight starts by itself)
     invite.room_busy(mode != .menu or friends.len() >= 2 * MOST - 1)
     if mode == .menu and page == LOBBY:
-        loop c in invite.arrivals():
-            friends.push(c.peer)
-            told_at = 0.0
+        loop c in invite.arrivals(): came(c.peer)
+        if public and elapsed() >= starts_at and not invite.active(): start_fight()
     gone_quiet()
     tell()
     if mode != .menu:
@@ -986,7 +1087,8 @@ update = (dt: f64):
         p = game().planes[me()]
         if not flying(p): aim_from(game().planes[me()], true)
         else if aim_fresh or not mouse_steering(): aim_from(p, false)
-    if over() and (key_pressed(.enter) or gamepad_pressed(.a)):
+    # (a public room's host: back to the sides by itself, 15 s after the end)
+    if over() and (key_pressed(.enter) or gamepad_pressed(.a) or (public and game().tick - won_at > 900)):
         after_fight()
         return
     if mode != .menu: aim_at_target()
@@ -1646,9 +1748,9 @@ draw_hud = (g: Game):
         text_centered(if g.winner == p.team: "your side won" else: "{TEAMS[g.winner]} won", vec2(640, 300), 72, COLORS[g.winner])
         if over():
             if touch_input():
-                if hud_button(Rect(540, 345, 200, 50), if mode == .practice: "Again" else: "Back"): after_fight()
+                if hud_button(Rect(540, 345, 200, 50), if mode == .practice and not in_room(): "Again" else: "Back"): after_fight()
             else:
-                again = if mode == .practice: "Enter: again   Escape: the menu" else: if s.me == 0 and friends.len() > 0: "Enter: back to the sides" else: "Enter: back"
+                again = if mode == .practice and not in_room(): "Enter: again   Escape: the menu" else: if mode == .practice or (s.me == 0 and friends.len() > 0): "Enter: back to the sides" else: "Enter: back"
                 text_centered(again, vec2(640, 370), 24, gray(0.8))
         draw_tally(g, i, 640, 500)
     if mode == .online:
@@ -1685,13 +1787,13 @@ draw_tally = (g: Game, you: int, x: f64, top: f64):
             text_centered("{who}   {o.kills}", vec2(cx, f32(top + f64(k) * 28.0)), 20, if j == you: WHITE else: with_alpha(COLORS[team], 0.9))
             k += 1
 
-# the last fight's results, beside the sides (until the next starts)
-draw_results = ():
+# the last fight's results, beside the sides (until the next starts), from top down
+draw_results = (top: f64):
     if let g = results:
         h = 100.0 + f64(g.planes.len() / 2) * 28.0
-        rect(600, 30, 640, h, rgba(0.03, 0.04, 0.06, 0.55))
-        text_centered("Last fight: {TEAMS[g.winner]} won, {g.scores[g.winner]} to {g.scores[1 - g.winner]}", vec2(920, 70), 28, COLORS[g.winner])
-        draw_tally(g, results_me, 920, 120)
+        rect(600, top, 640, h, rgba(0.03, 0.04, 0.06, 0.55))
+        text_centered("Last fight: {TEAMS[g.winner]} won, {g.scores[g.winner]} to {g.scores[1 - g.winner]}", vec2(920, f32(top + 40.0)), 28, COLORS[g.winner])
+        draw_tally(g, results_me, 920, top + 90.0)
 
 inside = (p: vec2) -> bool:
     r = visible_rect()
@@ -1722,17 +1824,21 @@ arrow_to = (pos: vec3, col: vec4):
 draw_menu = ():
     if invite.active():
         if let c = invite.screen("Aces", WEB_PAGE):
-            if c.inviter:
-                friends.push(c.peer)
-                friend_names.push("")
-                friend_badges.push(0)
+            if c.peer < 0:
+                # (Play with anybody: this one hosts the public room, others come by it)
+                public = true
+                starts_at = elapsed() + PUBLIC_WAIT
                 page = LOBBY
-                told_at = 0.0
+            else if c.inviter:
+                came(c.peer)
+                page = LOBBY
             else:
                 host = c.peer
                 lobby_pilots = []
                 lobby_names = []
                 lobby_badges = []
+                lobby_starts = -1.0
+                want_side = -1
                 page = JOINED
         return
     if page == SETTINGS:
@@ -1740,79 +1846,123 @@ draw_menu = ():
         return
     r = visible_rect()
     rect(Rect(r.x, r.y, 560 - r.x, r.h), rgba(0.04, 0.05, 0.08, 0.55))
-    if page == LOBBY:
+    if page == LOBBY or page == JOINED:
         draw_lobby()
-        return
-    if page == JOINED:
-        draw_joined()
         return
     text_centered("ACES", vec2(280, 130), 96, WHITE)
     ui_begin("menu", vec2(280, 240))
-    if ui_button("Invite a friend"): invite.start(reliable = false, players = 2 * MOST)
-    if ui_button("Join a friend"): invite.join()
+    if invite.has_server():
+        if ui_button("Make a room"): make_room()
+        if ui_button("Join a room"): invite.join()
+        if ui_button("Play with anybody"): invite.anybody(reliable = false)
+    else:
+        if ui_button("Invite a friend"): invite.start(reliable = false, players = 2 * MOST)
+        if ui_button("Join a friend"): invite.join()
     if ui_button("Practice"): page = LOBBY
     if ui_button("Settings"): page = SETTINGS
     when TARGET != "wasm":
         if ui_button("Quit"): quit()
     ui_end()
-    if len(status) > 0: text_centered(status, vec2(280, 560), 22, gray(0.85))
+    if len(status) > 0: text_centered(status, vec2(280, 580), 22, gray(0.85))
     how = "The mouse steers and its button fires. Keys: S climbs, W dives, A and D roll, Q and E the rudder, Shift and Ctrl the throttle, Space fires, C looks at the target and back, Tab picks the next."
     if touch_input(): how = "The left thumb flies (down climbs); the right one fires, and changes the throttle."
-    text_wrapped("Red's triplanes against Blue's biplanes, up to six a side. {how}", vec2(40, 590), 480, 18, gray(0.8), align = .center)
+    text_wrapped("Red's triplanes against Blue's biplanes, up to six a side. {how}", vec2(40, 610), 480, 18, gray(0.8), align = .center)
 
-# who is on each side: "you", the other players by name (by number until it is known), and the
-# computer's
-sides_text = (pilots: int[], you: int, team: int, names: str[]) -> str:
-    who: str[]
-    computers = 0
-    loop i in 0.. and k in pilots:
-        if i % 2 != team: continue
-        if k < 0: computers += 1
-        else if k == you: who.push("you")
-        else: who.push(if k < names.len() and len(names[k]) > 0: names[k] else: "player {k + 1}")
-    if computers > 0: who.push(if computers == 1: "1 computer" else: "{computers} computers")
-    "{TEAMS[team]}: {join(who, ", ")}"
+# a player's insignia, small, centered at `at` on the screen: its shape, or a mark of the color
+# it paints a part of the plane
+draw_badge = (badge: int, at: vec2, size: f64):
+    layers: (vec2[], vec4)[]
+    if badge == 1: layers = [(box2(vec2(-0.35, 0), 0.25, 1.6) + box2(vec2(0.35, 0), 0.25, 1.6), WHITE_PAINT)]
+    else if badge == 2: layers = [(disc2(vec2(0, 0), 0.7), YELLOW_PAINT)]
+    else if badge == 3: layers = [(CHEVRON, WHITE_PAINT)]
+    else if badge == 4: layers = [(star2(1.0), WHITE_PAINT)]
+    else if badge == 5: layers = SKULL
+    else if badge == 6: layers = [(BOLT, YELLOW_PAINT)]
+    else if badge == TAIL: layers = [([vec2(-0.8, -0.7), vec2(0.8, -0.7), vec2(0.4, 0.8)], YELLOW_PAINT)]
+    p = (q: vec2) -> vec2: at + vec2(q.x, -q.y) * f32(size)
+    loop l in layers:
+        loop k in [0..l.0.len() / 3): triangle(p(l.0[3 * k]), p(l.0[3 * k + 1]), p(l.0[3 * k + 2]), l.1)
 
-# (and where the next thing goes, below them: many names take more lines)
-draw_sides = (pilots: int[], you: int, names: str[], y: f64) -> f64:
-    at = y
-    loop team in [0..2): at += max(text_wrapped(sides_text(pilots, you, team, names), vec2(40, f32(at)), 480, 22, COLORS[team], align = .center), 30.0)
-    at
+# the two sides, a column each (the same on every player's screen): each plane's player, with
+# their insignia, or the computer; you: this one's player. Where the next thing goes, below them
+draw_sides = (pilots: int[], you: int, names: str[], badges: int[], top: f64) -> f64:
+    n = pilots.len() / 2
+    loop team in [0..2):
+        x = if team == 0: 30.0 else: 290.0
+        text_centered(TEAMS[team], vec2(f32(x + 120.0), f32(top)), 28, COLORS[team])
+        loop k in [0..n):
+            y = top + 22.0 + f64(k) * 30.0
+            p = pilots[2 * k + team]
+            rect(x, y, 240, 26, with_alpha(COLORS[team], if p == you: 0.4 else: 0.14))
+            if p < 0:
+                text("computer", vec2(f32(x + 34.0), f32(y + 4.0)), 18, gray(0.6))
+                continue
+            draw_badge(if p < badges.len(): badges[p] else: 0, vec2(f32(x + 16.0), f32(y + 13.0)), 9.0)
+            who = if p < names.len() and len(names[p]) > 0: names[p] else: "player {p + 1}"
+            text(if p == you: "{who} (you)" else: who, vec2(f32(x + 34.0), f32(y + 3.0)), 20, if p == you: WHITE else: gray(0.9))
+    top + 22.0 + f64(n) * 30.0
 
-# practice, or the friends invited: the sides, and Start
+# the lobby: the sides, Switch side, and for the host Start and the fight's settings (practice:
+# the same, alone); the room's code, for friends to join
 draw_lobby = ():
-    pilots = lobby_seats()
-    alone = friends.len() == 0
-    text_centered(if alone: "Practice" else: "{friends.len() + 1} players", vec2(280, 80), 56, WHITE)
-    below = draw_sides(pilots, 0, names_now(), 130)
-    ui_begin("lobby", vec2(280, max(below + 30.0, 230.0)))
-    if ui_button("Start"): start_fight()
-    least = fewest(1 + friends.len(), settings.together)
-    n = ui_choice("Planes a side", ["1", "2", "3", "4", "5", "6"], settings.sides - 1) + 1
-    settings.sides = max(n, least)
-    if not alone and friends.len() < MOST:
-        settings.together = ui_choice("Friends fly", ["against you", "with you"], if settings.together: 1 else: 0) == 1
-    settings.skill = ui_choice("The computer", ["easy", "fair", "hard"], settings.skill)
-    if friends.len() < 2 * MOST - 1 and ui_button(if alone: "Invite a friend" else: "Invite another"): invite.start(reliable = false, players = 2 * MOST)
-    if ui_button("Back") or ui_back():
+    hosting = page == LOBBY
+    pilots = if hosting: lobby_seats() else: lobby_pilots
+    players = 0
+    loop k in pilots:
+        if k >= 0: players += 1
+    title = if hosting and public: "Play with anybody" else: if hosting and friends.len() == 0 and len(invite.room_code()) == 0: "Practice" else: if players == 0: "Joined" else: if players == 1: "1 player" else: "{players} players"
+    text_centered(title, vec2(280, 50), 44, WHITE)
+    # (when the fight starts, and who starts it)
+    starts = if hosting and public: starts_at else: if hosting: -1.0 else: lobby_starts
+    what = ""
+    if starts >= 0.0: what = "The fight starts in {int(ceil(max(starts - elapsed(), 0.0)))} s"
+    else if not hosting: what = "Waiting for {if lobby_names.len() > 0 and len(lobby_names[0]) > 0: lobby_names[0] else: "player 1"} to start the fight"
+    else if friends.len() > 0: what = "You pass on what goes between your friends: if you leave, the fight ends for all."
+    text_wrapped(what, vec2(40, 84), 480, 18, gray(0.8), align = .center)
+    below = draw_sides(pilots, if hosting: 0 else: lobby_me, if hosting: names_now() else: lobby_names, if hosting: badges_now() else: lobby_badges, 150)
+    if not touch_input(): text_centered("Tab, or a gamepad's X: switch side", vec2(280, f32(below + 16.0)), 16, gray(0.6))
+    old = ui_style
+    ui_style.spacing = 50.0
+    ui_begin("lobby", vec2(280, f32(max(below + 62.0, 300.0))))
+    if hosting and ui_button("Start"): start_fight()
+    if ui_button("Switch side") or (ui_ready() and (key_pressed(.tab) or gamepad_pressed(.x))): switch_side()
+    if hosting:
+        settings.sides = ui_choice("Planes a side", ["1", "2", "3", "4", "5", "6"], planes_a_side() - 1) + 1
+        settings.skill = ui_choice("The computer", ["easy", "fair", "hard"], settings.skill)
+        if invite.has_server():
+            if len(invite.room_code()) == 0:
+                if ui_button("Make a room"): make_room()
+            else if ui_button("Invite with a code"): invite.start_codes(reliable = false)
+        else if friends.len() < 2 * MOST - 1 and ui_button(if friends.len() == 0: "Invite a friend" else: "Invite another"): invite.start(reliable = false, players = 2 * MOST)
+    if ui_button(if hosting: "Back" else: "Leave") or ui_back():
         save_settings()
         leave()
     ui_end()
-    draw_results()
-    if len(invite.room_code()) > 0: text_centered("Friends join with the code {invite.room_code()}", vec2(280, 580), 22, gray(0.85))
-    if not alone: text_wrapped("You pass on what goes between your friends: if you leave, the fight ends for all.", vec2(40, 610), 480, 18, gray(0.7), align = .center)
+    ui_style = old
+    draw_results(if hosting: draw_room() else: 30.0)
 
-# joined a friend's: waiting for them to start
-draw_joined = ():
-    text_centered("Joined", vec2(280, 80), 56, WHITE)
-    below = 200.0
-    if lobby_pilots.len() > 0: below = max(draw_sides(lobby_pilots, lobby_me, lobby_names, 130), below)
-    who = if lobby_names.len() > 0 and len(lobby_names[0]) > 0: lobby_names[0] else: "player 1"
-    below += text_wrapped("Waiting for {who} to start the fight", vec2(40, f32(below + 20.0)), 480, 24, gray(0.85), align = .center)
-    ui_begin("joined", vec2(280, max(below + 70.0, 320.0)))
-    if ui_button("Leave") or ui_back(): leave()
-    ui_end()
-    draw_results()
+# this one's room: its code, big, and a link with it, for friends to join; how it is going. Where
+# the next thing goes, below it
+draw_room = () -> f64:
+    code = invite.room_code()
+    how = invite.room_status()
+    if len(code) == 0 and len(how) == 0: return 30.0
+    if len(code) == 0:
+        rect(600, 30, 640, 110, rgba(0.03, 0.04, 0.06, 0.55))
+        text_wrapped(how, vec2(620, 50), 600, 20, gray(0.85), align = .center)
+        return 160.0
+    rect(600, 30, 640, 250, rgba(0.03, 0.04, 0.06, 0.55))
+    text_centered("Friends join with the code", vec2(920, 60), 22, gray(0.85))
+    text_centered(code, vec2(920, 110), 64, rgb(1.0, 0.85, 0.3), mono = true)
+    link = invite.room_link(WEB_PAGE)
+    if len(link) > 0:
+        text_centered(link, vec2(920, 156), min(16.0, 16.0 * 600.0 / text_width(link, 16, mono = true)), gray(0.7), mono = true)
+        if can_share():
+            if hud_button(Rect(750, 176, 160, 40), "Copy link"): set_clipboard(link)
+            if hud_button(Rect(930, 176, 160, 40), "Share"): share(link)
+        else if hud_button(Rect(840, 176, 160, 40), "Copy link"): set_clipboard(link)
+    text_wrapped(how, vec2(620, 232), 600, 18, gray(0.8), align = .center)
+    300.0
 
 draw_settings = ():
     if mode != .menu: rect(visible_rect(), rgba(0.03, 0.04, 0.06, 0.5))

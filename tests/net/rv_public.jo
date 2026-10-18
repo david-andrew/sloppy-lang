@@ -1,0 +1,58 @@
+# tools/nettest.py: the matchmaking server's public rooms (tools/rendezvous.jo, at SLOPPY_SERVER),
+# spoken to as games would: the first to ask hosts one, the next is put in it; one asking while it
+# is busy hosts another; its host gone, the one waiting in it is put in the other. Prints what
+# happened, in words that are the same each time
+import net
+
+url = env("SLOPPY_SERVER") ?? "ws://127.0.0.1:7700"
+heard: {int: str[]}
+
+# (the next message from peer that starts with what, waiting up to 5 s: "" if none came)
+said = (peer: int, what: str) -> str:
+    t0 = time()
+    loop time() - t0 < 5.0:
+        loop e in net.receive():
+            if e.kind == .message: heard[e.peer] = (heard.get(e.peer) ?? []) + [e.text]
+        q = heard.get(peer) ?? []
+        loop k in 0.. and m in q:
+            if starts_with(m, what):
+                q.remove(k)
+                heard[peer] = q
+                return m
+        sleep(0.01)
+    ""
+
+connect = () -> int:
+    p = net.connect(url)
+    t0 = time()
+    loop time() - t0 < 5.0 and not (p in net.peers()):
+        loop e in net.receive():
+            if e.kind == .message: heard[e.peer] = (heard.get(e.peer) ?? []) + [e.text]
+        sleep(0.01)
+    p
+
+a = connect()
+net.send(a, "public test")
+w = split(said(a, "public "), " ")
+print("a: {w[0]} {w[1]}")
+room = if w.len() > 2: w[2] else: ""
+b = connect()
+net.send(b, "public test")
+print("b: {said(b, "public ") == "public join {room}"} {said(b, "asking")}")
+print("a: {split(said(a, "guest"), " ")[0]}")
+# (the room busy: one who asks now hosts another)
+net.send(a, "busy")
+sleep(0.3)
+c = connect()
+net.send(c, "public test")
+w2 = split(said(c, "public "), " ")
+print("c: {w2[0]} {w2[1]} {w2.len() > 2 and w2[2] != room}")
+# (its host gone: the one waiting in it is put in c's)
+net.close(a)
+print("b: {said(b, "public ") == "public join {w2[2]}"} {said(b, "asking")}")
+print("c: {split(said(c, "guest"), " ")[0]}")
+# (a public room's host connecting again keeps its code)
+net.close(c)
+d = connect()
+net.send(d, "host test {w2[2]} {w2[3]} public")
+print("d: {said(d, "hosting") == "hosting {w2[2]}"}")
