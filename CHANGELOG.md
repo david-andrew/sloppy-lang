@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Messages: `while` says there is none and how a loop repeats; `v.pos` on a vector names the
+  field (it named its first letter) and what a vector has; an enum with no variant like the one
+  written lists its variants (`screen_fit(.fit)`: .expand, .letterbox, ...). START's Python and
+  JavaScript tables have `range(n)` and `while`.
 - `rk4(state, t, dt, rate)`: a simulation's step by the Runge-Kutta method, for a number, a
   vector, an f64[] or a struct with + and * of its own (TEACHING.md: a pendulum).
 - `net.fetch` takes `method` ("POST", "PUT", "DELETE", "HEAD"...), `headers` (sent besides the

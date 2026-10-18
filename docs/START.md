@@ -308,6 +308,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | JavaScript | Sloppy |
 |---|---|
 | `let x = 0` | `x = 0` (whole numbers stay whole: `x = 0.0` for one that holds fractions) |
+| `for (let i = 0; i < n; i++)`, `while (x > 0)` | `loop i in [0..n):` (0 to n - 1: `0..n` alone takes n too), `loop x > 0:` |
 | `const xs = [1, 2]` then `xs.push(3)` | `xs = [1, 2]`: a const never changes, its elements neither |
 | objects `{name: "Drone", cost: 10}` | `struct Item:` with `name: str` and `cost: f64`, made as `Item("Drone", 10)`; a map's values are all one type |
 | `` `cost: ${x}` ``, `x.toFixed(2)`, `toLocaleString()` | `"cost: {x}"`, `"{x:.2f}"`, `"{x:,}"`; `"{x:.2e}"` for 1.50e+45 |
@@ -330,6 +331,8 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | Python | Sloppy |
 |---|---|
 | `def f(a, b):` | `f = (a: int, b: int) -> int: ...` |
+| `for i in range(n):`, `range(1, n + 1)` | `loop i in [0..n):` (0 to n - 1: `0..n` alone takes n too), `loop i in 1..n:` |
+| `while x > 0:` | `loop x > 0:` |
 | `[w.upper() for w in ws if w]` | `[loop w in ws: if w != "": w.upper()]` |
 | `f"{x:.2f}"`, `"{:.2f}".format(x)` | `"{x:.2f}"`: every string puts values in; `r"..."` does not (a regular expression's `{4}`) |
 | `7 // 2`, `7 / 2` | `7 / 2` is 3 with whole numbers (`-7 / 2` is -3, and `-7 % 3` is -1, as in C); `7.0 / 2` is 3.5 |
