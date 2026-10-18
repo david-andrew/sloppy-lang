@@ -700,9 +700,9 @@ loop l in j.get("layers").as_list(): print(l.get("name").as_str() ?? "")
 For JSON straight into your own structs and back, from_json[Config](text) and to_json(value) are in "Saving, and values as text" (they give a TextError, with the same message, line, column).
 
 - `enum Json: null_, boolean(b: bool), integer(i: int), number(n: f64), text(s: str), list(items: Json[]), object(keys: str[], values: Json[])`: a whole number in the text is an integer, kept exactly as written while it fits in an int; any other is a number (as_num and as_int read both). print shows a Json as JSON text
-- `struct JsonError`
+- `error struct JsonError`
   ```gdscript
-  struct JsonError:
+  error struct JsonError:
       message: str
       line: int
       column: int
@@ -929,9 +929,9 @@ settings = load_value("settings", Settings())     # (the default when there is n
 
 Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs, enums (with fields too), unions and vectors can be read; function values and pointers cannot.
 
-- `struct TextError`
+- `error struct TextError`
   ```gdscript
-  struct TextError:
+  error struct TextError:
       message: str
       line: int
       column: int
@@ -2861,9 +2861,9 @@ A .gltf names its other files: give them by those names, as `files` (or put them
       skins: Skin[] = []
       animations: ModelAnimation[] = []
   ```
-- `struct ModelError`
+- `error struct ModelError`
   ```gdscript
-  struct ModelError:
+  error struct ModelError:
       message: str
   ```
 - `struct MeshData`: A model's data before it goes to the GPU (read_gltf): the vertices (in each part's own space) for collision, or to change them, and the images of its textures.

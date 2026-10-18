@@ -401,6 +401,8 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | objects `{name: "Drone", cost: 10}` | `struct Item:` with `name: str` and `cost: f64`, made as `Item("Drone", 10)`; a map's values are all one type |
 | `` `cost: ${x}` ``, `x.toFixed(2)`, `toLocaleString()` | `"cost: {x}"`, `"{x:.2f}"`, `"{x:,}"`; `"{x:.2e}"` for 1.50e+45 |
 | `===`, `null`, `undefined` | `==`, `none` (a `T?` may be none: `x ?? default`, `if let v = x:`) |
+| `x?.y` | `(x ?? default).y`, or `if let v = x: v.y` (`x?.y` is not optional chaining: `x?` returns the none from the function) |
+| `try`/`catch`, `throw` | a function gives back what went wrong as a value (`-> Item \| LoadError`, with `error struct LoadError:`); the caller checks `if r is LoadError:`, or passes it on with `item = load(p)?` |
 | `xs.map(f)`, `filter`, `reduce((a, b) => a + b, 0)` | `xs.map(f)`, `xs.filter(f)`, `xs.reduce(0, (a, b): a + b)`, `sum(xs)` |
 | `JSON.stringify`, `JSON.parse` | `to_json(x)`, `from_json[Item](s)` (into a struct), `parse_json(s)` |
 | `localStorage` | `save_value("save", state)` and `state = load_value("save", State())` |
@@ -443,7 +445,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `t[0]` (a tuple) | `t.0` |
 | `x = 1` in a function makes a local | `x = 1` in a function changes a global named `x` (one declared above it); `let x = 1` makes a local of that name |
 | `max(xs, key=len)`, `sorted(xs, key=...)` | `max_by(xs, (x): len(x))`, `sorted_by(xs, (x): x.age)` |
-| `try: ... except: ...` | a function gives back what went wrong as a value (`-> Config \| JsonError`), checked with `if r is JsonError:` |
+| `try: ... except: ...` | a function gives back what went wrong as a value (`-> Config \| JsonError`), checked with `if r is JsonError:`, or passed on to the caller with `?` (`cfg = load(p)?`) |
 | `def test_x(): assert ...` (pytest) | `test "x": assert(...)`, run with `sloppy test file.jo` |
 | big integers | `int` is 64 bits and wraps around |
 

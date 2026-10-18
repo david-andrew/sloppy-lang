@@ -474,6 +474,17 @@ check("non-ASCII: references", sorted((r["range"]["start"]["line"], r["range"]["
 h = c.request("textDocument/hover", tp(uu, usrc, "数量)", 1))
 check("non-ASCII: hover on the second character", h and h["contents"]["value"], "```sloppy\n(global) 数量: int\n```")
 check("non-ASCII: rename", edits(c.request("textDocument/rename", dict(tp(uu, usrc, "数量)"), newName="计数"))), [("unicode.jo", 0, 0, "计数"), ("unicode.jo", 1, 6, "计数")])
+# ---- `?`: what it passes on, and the value it gives ----
+qsrc = "error struct ParseError:\n    msg: str\nnum = (s: str) -> int | ParseError: ParseError(s)\nstruct P:\n    x: int\nload = (s: str) -> P?: none\ntotal = (s: str) -> (int | ParseError)?:\n    n = num(s)?\n    n + load(s)?.x\nprint(total(\"1\"))\n"
+qu, qd = doc("try.jo", qsrc)
+check("`?`: no errors", qd, [])
+h = c.request("textDocument/hover", tp(qu, qsrc, "?\n"))
+check("`?`: hover", h and h["contents"]["value"], "```sloppy\n(?) int    # ParseError returned from total\n```")
+h = c.request("textDocument/hover", tp(qu, qsrc, "?.x"))
+check("`?.`: hover", h and h["contents"]["value"], "```sloppy\n(?) P    # none returned from total (not optional chaining)\n```")
+h = c.request("textDocument/hover", tp(qu, qsrc, "n = "))
+check("`?`: the variable it gives", h and h["contents"]["value"], "```sloppy\n(variable) n: int\n```")
+
 usrc2 = "数量 = 3\nprint(数"
 c.set_text(uu, usrc2)
 r = c.request("textDocument/completion", {"textDocument": {"uri": uu}, "position": lc(usrc2, len(usrc2))})

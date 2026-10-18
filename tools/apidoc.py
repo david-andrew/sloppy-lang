@@ -211,7 +211,7 @@ def entries_of(path, only=None):
                 comment = []
             else: comment.append(c)
             continue
-        m = re.match(r"(struct|enum|const|type)\s+([A-Za-z_]\w*)(.*)", s)
+        m = re.match(r"(?:error\s+)?(struct|enum|const|type)\s+([A-Za-z_]\w*)(.*)", s)
         f = re.match(r"(?:extern\s+)?(\([^)\s]+\)|[A-Za-z_]\w*)(\[[^\]]*\])?\s*=\s*\(", s)
         if not s.startswith(" ") and (m or f):
             name = m.group(2) if m else f.group(1)

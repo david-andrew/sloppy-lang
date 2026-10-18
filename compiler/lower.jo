@@ -207,6 +207,9 @@ loops: LoopInfo[]
 tl_items: TempItem[][]
 tl_nop: int[]
 tl_cond: int[]
+# values half built (a struct, an array, a text with values put in, zeroed first) that a return
+# from inside the expression building them drops: P(name(), parse(s)?)
+building: TempItem[]
 
 V = (v: int, owned: bool) -> Val: Val(v, owned, -1)
 
@@ -368,6 +371,10 @@ stmt_end = ():
             release(it.ref, it.t)
             if it.cond: e_mov(it.ref, e_iconst(0))
         i -= 1
+
+drop_item = (it: TempItem):
+    if it.is_slot: drop_at(e_slot(it.ref), it.t)
+    else: release(it.ref, it.t)
 
 enter_cond = (): cond_depth += 1
 leave_cond = (): cond_depth -= 1
@@ -1431,6 +1438,7 @@ gen_interp = (e: int) -> Val:
     bs = new_slot(8, 8)
     ba = e_slot(bs)
     e_store(ba, 0, e_iconst(0), 8)
+    building.push(TempItem(true, bs, mk_array(T_U8), false))
     loop i in [0..nkids(e)):
         p = kid(e, i)
         if nodes[p].kind == .str_lit:
@@ -1447,6 +1455,7 @@ gen_interp = (e: int) -> Val:
         argv = [e_slot(bs), val.v]
         if nodes[p].sval >= 0: argv.push(e_daddr(str_data(name_of(int(nodes[p].sval)))))
         e_call(lf_of_inst(f), argv, -1)
+    building.pop()
     r = e_call(rt("__buf_finish"), [e_load(VI, e_slot(bs), 0, 8)], VI)
     V(r, true)
 
@@ -2736,12 +2745,14 @@ gen_expr = (e: int) -> Val:
             s = new_temp(t)
             d = e_slot(s)
             e_zero(d, tsize(t))
+            building.push(TempItem(true, s, t, false))
             loop i in [0..int(structs[si].nfields)):
                 a = kid(e, i)
                 if a == 0: continue
                 f = int(structs[si].fields) + i
                 val = gen_owned(a)
                 store_val(int(fields[f].type), d, int(fields[f].offset), val.v)
+            building.pop()
             return Val(e_slot(s), true, s)
         if aux == 3:
             si = int(types[t].st)
@@ -2758,10 +2769,12 @@ gen_expr = (e: int) -> Val:
             d = e_slot(s)
             e_zero(d, tsize(t))
             e_store(d, 0, e_iconst(v), 4)
+            building.push(TempItem(true, s, t, false))
             loop i in [0..int(variants[vi].nfields)):
                 f = int(variants[vi].fields) + i
                 val = gen_owned(kid(e, i))
                 store_val(int(fields[f].type), d, int(fields[f].offset), val.v)
+            building.pop()
             return Val(e_slot(s), true, s)
         fatal(nodes[e].pos, "invalid call")
     if k == .intrinsic: return gen_intrinsic(e)
@@ -2853,19 +2866,26 @@ gen_expr = (e: int) -> Val:
         d = e_slot(s)
         e_zero(d, tsize(t))
         f = int(nodes[e].sym)
+        building.push(TempItem(true, s, t, false))
         loop i in [0..nkids(e)):
             p = kid(e, i)
             kv = gen_borrowed(int(nodes[p].a)).v
             vv = gen_borrowed(int(nodes[p].b)).v
             e_call(lf_of_inst(f), [e_slot(s), kv, vv], -1)
+        building.pop()
         return Val(e_slot(s), true, s)
     if k == .tuple:
         if vc(t) == VC_VOID: return V(-1, false)
         s = new_temp(t)
+        managed = is_managed(t)
+        if managed:
+            e_zero(e_slot(s), tsize(t))
+            building.push(TempItem(true, s, t, false))
         loop i in [0..int(types[t].nargs)):
             el = targ(t, i)
             val = gen_owned(kid(e, i))
             store_val(el, e_slot(s), tuple_off(t, i), val.v)
+        if managed: building.pop()
         return Val(e_slot(s), true, s)
     if k == .range:
         s = new_temp(T_RANGE)
@@ -2965,9 +2985,14 @@ gen_fixed_array = (e: int, t: int) -> Val:
             endc()
     else if nkids(e) == 0: e_zero(d, tsize(t))
     else:
+        managed = is_managed(et)
+        if managed:
+            e_zero(d, tsize(t))
+            building.push(TempItem(true, s, t, false))
         loop i in [0..nkids(e)):
             val = gen_owned(kid(e, i))
             store_val(et, d, i * esz, val.v)
+        if managed: building.pop()
     Val(e_slot(s), true, s)
 
 gen_array = (e: int, t: int) -> Val:
@@ -3029,9 +3054,11 @@ gen_array = (e: int, t: int) -> Val:
     arr = e_call(rt("__arr_filled"), [e_iconst(n), e_iconst(esz)], VI)
     res = vreg(VI)
     e_mov(res, arr)
+    building.push(TempItem(false, res, t, false))
     loop i in [0..n):
         val = gen_owned(kid(e, i))
         store_val(et, res, 24 + i * esz, val.v)
+    building.pop()
     V(res, true)
 
 all_const = (e: int, et: int) -> bool:
@@ -3226,6 +3253,19 @@ gen_return = (s: int):
         val = gen_expr(a)
         borrow(val, ntype(a))
         stmt_end()
+    # (a return from inside an expression, as `?` makes: what the statements around it hold, and
+    # values half built, are dropped as their ends would drop them)
+    k = building.len() - 1
+    loop k >= 0:
+        drop_item(building[k])
+        k -= 1
+    j = tl_items.len() - 1
+    loop j >= 0:
+        k = tl_items[j].len() - 1
+        loop k >= 0:
+            drop_item(tl_items[j][k])
+            k -= 1
+        j -= 1
     i = scope_locals.len() - 1
     loop i >= 0:
         emit_scope_exit(i)
@@ -4532,6 +4572,7 @@ begin_fn = (name: str, idx: int):
     tl_items = []
     tl_nop = []
     tl_cond = []
+    building = []
     sret_v = -1
     env_v = -1
 
