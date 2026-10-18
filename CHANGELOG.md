@@ -15,6 +15,16 @@
   third of the time it did on the processor.
 - A server that closes the connection during the handshake (as some answer a TLS version they do
   not speak) is said so; the reason was empty.
+- TLS 1.2 too, for servers that do not speak 1.3 yet (httpbin.org's AWS load balancer,
+  registry.npmjs.org, many companies' APIs): one hello offers both, as browsers' does, and 1.3 is
+  used whenever the server has it (a server of 1.3 made to answer as 1.2 by something on the way
+  is found out, RFC 8446's downgrade check). ECDHE-ECDSA and ECDHE-RSA with AES-128-GCM, keys
+  agreed with X25519 or P-256, the extended master secret when the server takes it; the
+  certificate checked as for 1.3, and the key exchange's signature (ECDSA, RSA PKCS#1 or PSS). No
+  CBC suites, RSA key exchange, renegotiation, or versions older than 1.2: the reason says which
+  the server wanted. A handshake takes about what 1.3's does (30-60 ms in a debug build).
+  `crypto.tls12_prf` is TLS 1.2's PRF (WebRTC's DTLS uses it too); `SLOPPY_TLS_DEBUG=1` says
+  which version a connection speaks.
 - P-256 (WebRTC's keys and signatures, TLS's fallback key exchange) takes as long whatever the
   key: the field's arithmetic has no branch on its numbers, points add by a complete formula
   (Renes, Costello and Batina's), and a scalar is taken four bits at a time from a table read

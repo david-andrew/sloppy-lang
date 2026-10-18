@@ -197,9 +197,11 @@ env["NET_PORT"] = str(port)
 # TLS (lib/tls.jo) against OpenSSL's own server: a test authority made here (P-256, with an
 # intermediate of P-384) and another of RSA; certificates for localhost of P-256, P-384 and RSA,
 # which must be taken, and ones that must not: for another name, expired, from an authority not
-# trusted; a server that asks for a key share again (P-256), one that asks for a certificate, and
-# one that speaks only TLS 1.2. Then wss:// through a TLS proxy (Python's) in front of the
-# WebSocket server, and a room through a matchmaking server behind it
+# trusted; a server that asks for a key share again (P-256), one that asks for a certificate. Then
+# TLS 1.2 (the version used read from SLOPPY_TLS_DEBUG's lines): ECDHE-ECDSA and ECDHE-RSA, with and
+# without the extended master secret, refused when the server has only CBC suites or only TLS 1.1,
+# and 1.3 chosen when the server speaks both. Then wss:// through a TLS proxy (Python's) in front
+# of the WebSocket server, and a room through a matchmaking server behind it
 # (OpenSSL's own, 1.1.1 or later: macOS's LibreSSL makes certificates differently)
 def find_openssl():
     for o in [os.environ.get("SLOPPY_OPENSSL", ""), "/opt/homebrew/opt/openssl@3/bin/openssl", "/usr/local/opt/openssl@3/bin/openssl",
@@ -260,25 +262,36 @@ if openssl:
         s = subprocess.Popen(args, cwd=td, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(0.5)
         return s, port
-    cases = [("a P-256 certificate, through a P-384 authority", "leaf_ec", ["-tls1_3"], "inter", "200 true"),
-             ("the same at 127.0.0.1 (its address in the certificate)", "leaf_ec", ["-tls1_3"], "inter", "200 true"),
-             ("a server that asks for a P-256 key share instead (HelloRetryRequest)", "leaf_ec", ["-tls1_3", "-groups", "P-256"], "inter", "200 true"),
-             ("a server that asks for this side's certificate", "leaf_ec", ["-tls1_3", "-verify", "1"], "inter", "200 true"),
-             ("a P-384 certificate", "leaf_p384", ["-tls1_3"], None, "200 true"),
-             ("an RSA certificate (RSA-PSS handshake, PKCS#1 chain)", "leaf_rsa", ["-tls1_3"], None, "200 true"),
+    cases = [("a P-256 certificate, through a P-384 authority", "leaf_ec", ["-tls1_3"], "inter", "200 true, TLS 1.3"),
+             ("the same at 127.0.0.1 (its address in the certificate)", "leaf_ec", ["-tls1_3"], "inter", "200 true, TLS 1.3"),
+             ("a server that asks for a P-256 key share instead (HelloRetryRequest)", "leaf_ec", ["-tls1_3", "-groups", "P-256"], "inter", "200 true, TLS 1.3"),
+             ("a server that asks for this side's certificate", "leaf_ec", ["-tls1_3", "-verify", "1"], "inter", "200 true, TLS 1.3"),
+             ("a P-384 certificate", "leaf_p384", ["-tls1_3"], None, "200 true, TLS 1.3"),
+             ("an RSA certificate (RSA-PSS handshake, PKCS#1 chain)", "leaf_rsa", ["-tls1_3"], None, "200 true, TLS 1.3"),
              ("a certificate for another name is refused", "other", ["-tls1_3"], "inter", "no: the secure connection failed: localhost is not who it says: its certificate is for other names (other.test, *.other.test), not localhost"),
              ("an expired certificate is refused", "expired", ["-tls1_3"], None, "no: the secure connection failed: localhost is not who it says: its certificate has expired"),
              ("a certificate from an authority not trusted is refused", "leaf_stranger", ["-tls1_3"], None, "no: the secure connection failed: localhost is not who it says: it comes from Sloppy test stranger, an authority this computer does not trust"),
-             ("a server of TLS 1.2 only is refused, and says why", "leaf_ec", ["-tls1_2"], "inter", "no: the secure connection failed: the server ended the connection (protocol_version: it does not speak TLS 1.3, the only version here)"),
+             ("TLS 1.2: a P-256 certificate (ECDHE-ECDSA)", "leaf_ec", ["-tls1_2"], "inter", "200 true, TLS 1.2"),
+             ("TLS 1.2: an RSA certificate (ECDHE-RSA, RSA-PSS)", "leaf_rsa", ["-tls1_2"], None, "200 true, TLS 1.2"),
+             ("TLS 1.2: P-256's key exchange, signed with RSA PKCS#1", "leaf_rsa", ["-tls1_2", "-groups", "P-256", "-sigalgs", "RSA+SHA256"], None, "200 true, TLS 1.2"),
+             ("TLS 1.2 without the extended master secret", "leaf_ec", ["-tls1_2", "-no_ems"], "inter", "200 true, TLS 1.2"),
+             ("TLS 1.2: a server that asks for this side's certificate", "leaf_ec", ["-tls1_2", "-verify", "1"], "inter", "200 true, TLS 1.2"),
+             ("TLS 1.2: a certificate for another name is refused", "other", ["-tls1_2"], "inter", "no: the secure connection failed: localhost is not who it says: its certificate is for other names (other.test, *.other.test), not localhost"),
+             ("TLS 1.2 with CBC suites only is refused, and says why", "leaf_ec", ["-tls1_2", "-cipher", "ECDHE-ECDSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA"], "inter", "no: the secure connection failed: the server ended the connection (handshake_failure: it found nothing in common with this side (TLS 1.3 or 1.2, AES-128-GCM, ECDHE with X25519 or P-256))"),
+             ("a server of TLS 1.1 only is refused, and says why", "leaf_ec", ["-tls1_1"], "inter", "no: the secure connection failed: the server ended the connection (protocol_version: it speaks only TLS older than 1.2, which this side does not)"),
+             ("a server of TLS 1.3 and 1.2: 1.3", "leaf_ec", [], "inter", "200 true, TLS 1.3"),
              ("without the test authority trusted, refused", "leaf_ec", ["-tls1_3"], "inter", "no: the secure connection failed: localhost is not who it says: it comes from Sloppy test root, an authority this computer does not trust")]
     for k, (what, leaf, more, chain, want) in enumerate(cases):
         s, p = s_server(leaf, *more, chain=chain)
         url = f"https://{'127.0.0.1' if k == 1 else 'localhost'}:{p}/"
         cenv = tenv if k < len(cases) - 1 else env
-        r = subprocess.run([fetch, url], capture_output=True, text=True, env=cenv, timeout=60)
+        r = subprocess.run([fetch, url], capture_output=True, text=True, env=dict(cenv, SLOPPY_TLS_DEBUG="1"), timeout=60)
         s.kill()
         s.wait()
-        got = r.stdout.strip().split(" (")[0] if r.stdout.startswith(url + ": 200") else r.stdout.strip()
+        got = r.stdout.strip()
+        if r.stdout.startswith(url + ": 200"):
+            versions = [l.split("open (")[1].rstrip(")") for l in r.stderr.splitlines() if "open (TLS" in l]
+            got = got.split(" (")[0] + ", " + " ".join(versions)
         check("TLS: " + what, got, [f"{url}: {want}"])
     # wss:// through a TLS proxy in front of the WebSocket server (as Caddy is in front of one)
     import ssl, socket, threading
@@ -394,11 +407,13 @@ port += 1
 env["NET_PORT"] = str(port)
 
 # the real thing, where SLOPPY_TEST_LIVE=1 (it needs the internet): https://sloppy-lang.org, and the
-# matchmaking server behind Caddy, with its Let's Encrypt certificate
+# matchmaking server behind Caddy, with its Let's Encrypt certificate; servers of TLS 1.2 only
+# (an AWS load balancer's, ECDHE-RSA; npm's, ECDHE-ECDSA)
 if os.environ.get("SLOPPY_TEST_LIVE") == "1":
     fetch = build("tls_fetch") + exe
-    r = subprocess.run([fetch, "https://sloppy-lang.org/"], capture_output=True, text=True, env=env, timeout=60)
-    check("live: https://sloppy-lang.org", r.stdout.strip().split(" (")[0], ["https://sloppy-lang.org/: 200 true"])
+    for url in ["https://sloppy-lang.org/", "https://httpbin.org/json", "https://registry.npmjs.org/"]:
+        r = subprocess.run([fetch, url], capture_output=True, text=True, env=env, timeout=60)
+        check("live: " + url, r.stdout.strip().split(" (")[0], [url + ": 200 true"])
     r = subprocess.run([rv_bin + exe, "check", "wss://matchmaking.sloppy-lang.org"], capture_output=True, text=True, env=env, timeout=60)
     check("live: wss://matchmaking.sloppy-lang.org", r.stdout.strip().split("\n")[-1], ["ok: a matchmaking server answers at wss://matchmaking.sloppy-lang.org"])
 

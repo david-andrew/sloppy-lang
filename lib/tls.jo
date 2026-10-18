@@ -1,12 +1,17 @@
-# TLS 1.3 (RFC 8446), the client's side: what lib/net.jo's wss:// and https:// connections, and
-# net.tls_connect, are made of. A connection here only turns bytes into bytes: net.jo moves them
-# between it and a socket.
+# TLS 1.3 (RFC 8446), and TLS 1.2 (RFC 5246) for servers that do not speak 1.3 yet, the client's
+# side: what lib/net.jo's wss:// and https:// connections, and net.tls_connect, are made of. A
+# connection here only turns bytes into bytes: net.jo moves them between it and a socket.
 #
-# One cipher suite (TLS_AES_128_GCM_SHA256, which every TLS 1.3 server has), keys agreed with
-# X25519 (or P-256 when the server asks for it), and the server's certificate checked as browsers
-# do: its chain up to an authority this computer trusts (the system's list, and those given to
-# net.trust_certificate or named by SLOPPY_CA_FILE), each certificate's dates, signatures and
-# constraints, and the name connected to among the names it is for. There is no way to skip that.
+# TLS 1.3: one cipher suite (TLS_AES_128_GCM_SHA256, which every TLS 1.3 server has), keys agreed
+# with X25519 (or P-256 when the server asks for it). TLS 1.2: ECDHE-ECDSA and ECDHE-RSA with
+# AES-128-GCM (what every server of 1.2 has), keys agreed with X25519 or P-256, the extended master
+# secret when the server takes it; no CBC, no RSA key exchange, no renegotiation, nothing older than
+# 1.2. (In 1.2 the groups offered also say which curves a server's certificate may be on: one of
+# 1.2 only, with a P-384 certificate, finds nothing in common, as there is no P-384 key exchange
+# here.) Either way the server's certificate is checked as browsers do: its chain up to an authority
+# this computer trusts (the system's list, and those given to net.trust_certificate or named by
+# SLOPPY_CA_FILE), each certificate's dates, signatures and constraints, and the name connected to
+# among the names it is for. There is no way to skip that.
 
 import crypto
 
@@ -429,6 +434,19 @@ __tls_check_sig = (key: __TlsCert, kind: int, hsize: int, msg: u8[], sig: u8[]) 
     if kind == __TLS_SIG_RSA and key.key_kind == __TLS_KEY_RSA: return crypto.rsa_verify_pkcs1(key.key, key.rsa_e, h, sig)
     false
 
+# whether the leaf's key signed the handshake's msg, by a signature scheme this side offers; none
+# when the scheme is not one of those, or not for its key. (In TLS 1.2 an ECDSA scheme names the
+# hash only, not the curve; and RSA PKCS#1 v1.5 is TLS 1.2's only)
+__tls_scheme_sig = (k: __TlsCert, scheme: int, msg: u8[], sig: u8[], v12: bool) -> bool?:
+    ec = k.key_kind == __TLS_KEY_P256 or k.key_kind == __TLS_KEY_P384
+    if scheme == 0x0403 and (k.key_kind == __TLS_KEY_P256 or (v12 and ec)): return __tls_check_sig(k, __TLS_SIG_ECDSA, 32, msg, sig)
+    if scheme == 0x0503 and (k.key_kind == __TLS_KEY_P384 or (v12 and ec)): return __tls_check_sig(k, __TLS_SIG_ECDSA, 48, msg, sig)
+    if k.key_kind != __TLS_KEY_RSA: return none
+    # (the hash: 04 SHA-256, 05 SHA-384, 06 SHA-512, in the scheme's high byte for PKCS#1, its low for PSS)
+    if scheme >= 0x0804 and scheme <= 0x0806: return crypto.rsa_verify_pss(k.key, k.rsa_e, __tls_hash(16 * (scheme & 255) - 32, msg), sig)
+    if v12 and (scheme == 0x0401 or scheme == 0x0501 or scheme == 0x0601): return __tls_check_sig(k, __TLS_SIG_RSA, 16 * (scheme >> 8) - 32, msg, sig)
+    none
+
 # ---------------- the authorities this computer trusts ----------------
 __tls_roots: __TlsCert[]
 __tls_roots_by: {u8[]: int[]}       # (a subject's roots)
@@ -680,6 +698,12 @@ struct __TlsConn:
     cert_req = false
     cert_ctx: u8[]
     got_alpn = ""
+    v12 = false                     # TLS 1.2 (the server does not speak 1.3):
+    srand: u8[]
+    suite = 0
+    ems = false                     # (the extended master secret: the server takes it)
+    share: u8[]                     # (the server's key share, from its ServerKeyExchange)
+    master: u8[]
 
 __tls_conns: __TlsConn[]
 
@@ -725,7 +749,8 @@ __tls_client_hello = (c: __TlsConn) -> u8[]:
     b.extend(c.crand)
     b.push(32)
     b.extend(c.session)
-    b.extend([u8(0), 2, 0x13, 0x01])            # TLS_AES_128_GCM_SHA256
+    # TLS_AES_128_GCM_SHA256; TLS 1.2's ECDHE_ECDSA and ECDHE_RSA, WITH_AES_128_GCM_SHA256
+    b.extend([u8(0), 6, 0x13, 0x01, 0xc0, 0x2b, 0xc0, 0x2f])
     b.extend([u8(1), 0])                        # (no compression)
     e: u8[]
     if __tls_ip4(c.host) == none:
@@ -739,10 +764,15 @@ __tls_client_hello = (c: __TlsConn) -> u8[]:
         e.extend(name)
     # supported_groups: x25519, secp256r1
     e.extend([u8(0), 10, 0, 6, 0, 4, 0, 0x1d, 0, 0x17])
-    # signature_algorithms: ECDSA P-256 and P-384, RSA-PSS, RSA PKCS#1 (for certificates)
+    # ec_point_formats: uncompressed (TLS 1.2's)
+    e.extend([u8(0), 11, 0, 2, 1, 0])
+    # signature_algorithms: ECDSA P-256 and P-384, RSA-PSS, RSA PKCS#1 (for certificates, and
+    # TLS 1.2's key exchange)
     e.extend([u8(0), 13, 0, 18, 0, 16, 4, 3, 5, 3, 8, 4, 8, 5, 8, 6, 4, 1, 5, 1, 6, 1])
-    # supported_versions: TLS 1.3
-    e.extend([u8(0), 43, 0, 3, 2, 3, 4])
+    # extended_master_secret, and renegotiation_info (empty: a first handshake), for TLS 1.2
+    e.extend([u8(0), 23, 0, 0, 0xff, 0x01, 0, 1, 0])
+    # supported_versions: TLS 1.3, 1.2
+    e.extend([u8(0), 43, 0, 5, 4, 3, 4, 3, 3])
     # key_share
     share = if c.group == 0x1d: c.xkey.public else: c.pkey.public
     __tls_put16(e, 51)
@@ -781,6 +811,21 @@ __tls_record = (c: mut __TlsConn, typ: int, body: u8[], version: int = 0x0303):
             __tls_put16(c.out, version)
             __tls_put16(c.out, piece.len())
             c.out.extend(piece)
+        else if c.v12:
+            # (TLS 1.2: the nonce's last 8 bytes sent with the record, the sequence number; it, the
+            # type, version and length are the additional data)
+            explicit = __tls_seq(c.wseq)
+            aad = explicit
+            aad.extend([u8(typ), 3, 3])
+            __tls_put16(aad, piece.len())
+            nonce = c.wiv
+            nonce.extend(explicit)
+            sealed = crypto.aes_gcm_seal(c.wkey, nonce, aad, piece)
+            c.wseq += 1
+            c.out.extend([u8(typ), 3, 3])
+            __tls_put16(c.out, 8 + sealed.len())
+            c.out.extend(explicit)
+            c.out.extend(sealed)
         else:
             plain = piece
             plain.push(u8(typ))
@@ -796,6 +841,11 @@ __tls_nonce = (iv: u8[], seq: int) -> u8[]:
     n = iv
     loop k in [0..8): n[4 + k] = n[4 + k] xor u8((seq >> (56 - 8 * k)) & 255)
     n
+
+__tls_seq = (seq: int) -> u8[]:
+    b: u8[]
+    loop k in [0..8): b.push(u8((seq >> (56 - 8 * k)) & 255))
+    b
 
 # fail: why, and the alert told to the server (0: none)
 __tls_fail = (c: mut __TlsConn, why: str, alert: int):
@@ -856,13 +906,35 @@ __tls_in_record = (c: mut __TlsConn, typ0: int, hdr: u8[], body: u8[]):
     typ = typ0
     data = body
     if typ == 20:
-        # (ChangeCipherSpec: only for middleboxes, in the handshake; nothing to do)
-        if c.state >= __TLS_OPEN or body.len() != 1 or body[0] != 1: __tls_fail(c, "the server sent a stray change_cipher_spec", 10)
+        # ChangeCipherSpec: in TLS 1.3 only for middleboxes, in the handshake (nothing to do); in
+        # 1.2 the server's keys from here on, once this side's Finished is sent, and at a message's end
+        if c.state >= __TLS_OPEN or body.len() != 1 or body[0] != 1 or (c.v12 and (c.expect != 20 or c.keyed_r or c.hs.len() > 0)):
+            __tls_fail(c, "the server sent a stray change_cipher_spec", 10)
+        else if c.v12:
+            c.keyed_r = true
+            c.rseq = 0
         return
     if typ == 21 and not c.keyed_r:
         __tls_alert_in(c, body)
         return
-    if c.keyed_r:
+    if c.keyed_r and c.v12:
+        # (TLS 1.2: the record's type is its own; the nonce's last 8 bytes come first)
+        if body.len() < 24:
+            __tls_fail(c, "the server sent a record too short to be encrypted", 50)
+            return
+        aad = __tls_seq(c.rseq)
+        aad.push(u8(typ))
+        aad.extend(hdr[1..3))
+        __tls_put16(aad, body.len() - 24)
+        nonce = c.riv
+        nonce.extend(body[..8))
+        opened = crypto.aes_gcm_open(c.rkey, nonce, aad, body[8..])
+        c.rseq += 1
+        if opened == none:
+            __tls_fail(c, "a record from the server did not decrypt (changed on the way?)", 20)
+            return
+        data = opened!
+    else if c.keyed_r:
         if typ != 23:
             __tls_fail(c, "the server sent a record that is not encrypted", 10)
             return
@@ -881,7 +953,7 @@ __tls_in_record = (c: mut __TlsConn, typ0: int, hdr: u8[], body: u8[]):
         typ = int(data[k])
         data = data[..k)
     else if typ != 22:
-        __tls_fail(c, "the server sent something before its hello (is it a TLS server?)", 10)
+        __tls_fail(c, if c.state == __TLS_HELLO: "the server sent something before its hello (is it a TLS server?)" else: "the server sent data before the handshake was done", 10)
         return
     if typ == 21: __tls_alert_in(c, data)
     else if typ == 23:
@@ -913,17 +985,22 @@ __tls_alert_in = (c: mut __TlsConn, b: u8[]):
         __tls_fail(c, "the server sent a malformed alert", 50)
         return
     if b[1] == 0:
-        # (closed before the handshake was done: as some servers answer a version they do not speak)
+        # (closed before the handshake was done: as some servers answer a hello they cannot take)
         if c.state != __TLS_OPEN:
+            c.why = "the server closed the connection during the handshake{if c.state == __TLS_HELLO: ": it may speak only TLS older than 1.2, or want a cipher suite this side does not have" else: ""}"
             c.state = __TLS_FAILED
-            c.why = "the server closed the connection during the handshake: it may not speak TLS 1.3, the only version here"
             return
         c.state = __TLS_CLOSED
         return
     d = int(b[1])
+    # (TLS 1.2's warnings, such as unrecognized_name, which some servers say before their hello:
+    # nothing to do. In TLS 1.3 every alert ends the connection)
+    if b[0] == 1 and (c.v12 or c.state == __TLS_HELLO):
+        __tls_say(c, "warning alert {d}")
+        return
     what = "alert {d}"
-    if d == 40: what = "handshake_failure: it found nothing in common with this side{if c.state == __TLS_HELLO: ", which speaks TLS 1.3 only" else: ""}"
-    else if d == 70: what = "protocol_version: it does not speak TLS 1.3, the only version here"
+    if d == 40: what = "handshake_failure: it found nothing in common with this side{if c.state == __TLS_HELLO: " (TLS 1.3 or 1.2, AES-128-GCM, ECDHE with X25519 or P-256)" else: ""}"
+    else if d == 70: what = "protocol_version: it speaks only TLS older than 1.2, which this side does not"
     else if d == 112: what = "unrecognized_name: it has no site by that name"
     else if d == 120: what = "no_application_protocol"
     else if d == 116: what = "certificate_required"
@@ -933,8 +1010,52 @@ __tls_alert_in = (c: mut __TlsConn, b: u8[]):
 __TLS_HRR: u8[] = [u8(0xCF), 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
     0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C]
 
+# (the last 8 bytes but one of a server's random when it speaks TLS 1.3 yet chose 1.2 (then 01) or
+# older (00): a hello changed on the way to offer less is found out so, RFC 8446 4.1.3)
+__TLS_DOWNGRADE: u8[] = [u8(0x44), 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44]
+
+# extensions (two bytes of length, then each: type, length, value) from b[at..] to b's end; none
+# when they are malformed
+__tls_exts = (b: u8[], at: int) -> (int, u8[])[]?:
+    if at + 2 > b.len() or at + 2 + __tls_be16(b, at) != b.len(): return none
+    out: (int, u8[])[]
+    i = at + 2
+    loop i < b.len():
+        if i + 4 > b.len(): return none
+        n = __tls_be16(b, i + 2)
+        if i + 4 + n > b.len(): return none
+        out.push((__tls_be16(b, i), b[i + 4..i + 4 + n)))
+        i += 4 + n
+    out
+
+# the protocol the server chose (ALPN's extension); false, and failed, when it is not the one offered
+__tls_alpn = (c: mut __TlsConn, v: u8[]) -> bool:
+    if v.len() < 4: return true
+    p = str_from_bytes(v[3..])
+    if p != c.alpn:
+        __tls_fail(c, "the server chose a protocol not offered ({p})", 47)
+        return false
+    c.got_alpn = p
+    true
+
+# the server's certificates (c.chain) checked; false, and failed, when they are not good for c.host
+__tls_take_chain = (c: mut __TlsConn) -> bool:
+    why, alert = __tls_verify(c.chain, c.host, int(unix_time()))
+    if __tls_debug:
+        loop d in c.chain:
+            if let x = __tls_cert(d): __tls_say(c, "certificate of {__tls_name_text(x.subject)} (key kind {x.key_kind}), from {__tls_name_text(x.issuer)}")
+        __tls_say(c, if len(why) == 0: "the chain is good" else: "the chain is not good: {why}")
+    if len(why) > 0:
+        __tls_fail(c, "{c.host} is not who it says: {why}", alert)
+        return false
+    c.leaf = __tls_cert(c.chain[0])!
+    true
+
 # one handshake message, whole (its type and length first)
 __tls_message = (c: mut __TlsConn, msg: u8[]):
+    if c.v12:
+        __tls12_message(c, msg)
+        return
     typ = int(msg[0])
     body = msg[4..]
     if c.state == __TLS_OPEN:
@@ -956,21 +1077,12 @@ __tls_message = (c: mut __TlsConn, msg: u8[]):
         return
     if typ == 8:
         # EncryptedExtensions: the protocol it chose, if any
-        if body.len() < 2 or 2 + __tls_be16(body, 0) != body.len():
+        exts = __tls_exts(body, 0)
+        if exts == none:
             __tls_fail(c, "the server's extensions are malformed", 50)
             return
-        i = 2
-        loop i + 4 <= body.len():
-            t = __tls_be16(body, i)
-            n = __tls_be16(body, i + 2)
-            if i + 4 + n > body.len(): break
-            if t == 16 and n >= 4:
-                p = str_from_bytes(body[i + 7..i + 4 + n))
-                if p != c.alpn:
-                    __tls_fail(c, "the server chose a protocol not offered ({p})", 47)
-                    return
-                c.got_alpn = p
-            i += 4 + n
+        loop x in exts!:
+            if x.0 == 16 and not __tls_alpn(c, x.1): return
         c.transcript.extend(msg)
         c.expect = 13
         return
@@ -1001,15 +1113,7 @@ __tls_message = (c: mut __TlsConn, msg: u8[]):
         if c.chain.len() == 0 or i != body.len():
             __tls_fail(c, "the server showed no certificate", 50)
             return
-        why, alert = __tls_verify(c.chain, c.host, int(unix_time()))
-        if __tls_debug:
-            loop d in c.chain:
-                if let x = __tls_cert(d): __tls_say(c, "certificate of {__tls_name_text(x.subject)} (key kind {x.key_kind}), from {__tls_name_text(x.issuer)}")
-            __tls_say(c, if len(why) == 0: "the chain is good" else: "the chain is not good: {why}")
-        if len(why) > 0:
-            __tls_fail(c, "{c.host} is not who it says: {why}", alert)
-            return
-        c.leaf = __tls_cert(c.chain[0])!
+        if not __tls_take_chain(c): return
         c.transcript.extend(msg)
         c.expect = 15
         return
@@ -1020,22 +1124,15 @@ __tls_message = (c: mut __TlsConn, msg: u8[]):
             return
         scheme = __tls_be16(body, 0)
         __tls_say(c, "signed with scheme {scheme:x}")
-        sig = body[4..]
         signed = fill(u8(32), 64)
         signed.extend(bytes("TLS 1.3, server CertificateVerify"))
         signed.push(0)
         signed.extend(crypto.sha256(c.transcript))
-        ok = false
-        k = c.leaf
-        if scheme == 0x0403 and k.key_kind == __TLS_KEY_P256: ok = __tls_check_sig(k, __TLS_SIG_ECDSA, 32, signed, sig)
-        else if scheme == 0x0503 and k.key_kind == __TLS_KEY_P384: ok = __tls_check_sig(k, __TLS_SIG_ECDSA, 48, signed, sig)
-        else if scheme >= 0x0804 and scheme <= 0x0806 and k.key_kind == __TLS_KEY_RSA:
-            hs = if scheme == 0x0804: 32 else if scheme == 0x0805: 48 else: 64
-            ok = crypto.rsa_verify_pss(k.key, k.rsa_e, __tls_hash(hs, signed), sig)
-        else:
+        ok = __tls_scheme_sig(c.leaf, scheme, signed, body[4..], false)
+        if ok == none:
             __tls_fail(c, "the server signed in a way it was not offered (scheme {scheme:x})", 47)
             return
-        if not ok:
+        if not ok!:
             __tls_fail(c, "the server's handshake is not signed by its certificate's key", 51)
             return
         c.transcript.extend(msg)
@@ -1057,44 +1154,42 @@ __tls_server_hello = (c: mut __TlsConn, msg: u8[]):
         return
     sl = int(body[34])
     i = 35 + sl
-    if i + 5 > body.len() or body[35..35 + sl) != c.session:
+    if sl > 32 or i + 3 > body.len() or body[i + 2] != 0:
         __tls_fail(c, "the server's hello is malformed", 47)
         return
     suite = __tls_be16(body, i)
-    if body[i + 2] != 0:
-        __tls_fail(c, "the server's hello is malformed", 47)
-        return
-    i += 3
+    exts: (int, u8[])[]
+    if i + 3 < body.len():
+        e = __tls_exts(body, i + 3)
+        if e == none:
+            __tls_fail(c, "the server's hello is malformed", 50)
+            return
+        exts = e!
     version = 0
     group = -1
     share: u8[]
     cookie: u8[]
-    if i + 2 <= body.len():
-        stop = i + 2 + __tls_be16(body, i)
-        if stop != body.len():
-            __tls_fail(c, "the server's hello is malformed", 50)
-            return
-        i += 2
-        loop i + 4 <= stop:
-            t = __tls_be16(body, i)
-            n = __tls_be16(body, i + 2)
-            v = body[i + 4..min(stop, i + 4 + n))
-            if v.len() != n:
-                __tls_fail(c, "the server's hello is malformed", 50)
-                return
-            if t == 43 and n == 2: version = __tls_be16(v, 0)
-            else if t == 51 and n >= 2:
-                group = __tls_be16(v, 0)
-                if n >= 4 and n == 4 + __tls_be16(v, 2): share = v[4..]
-            else if t == 44 and n > 2: cookie = v[2..]
-            i += 4 + n
+    loop x in exts:
+        v = x.1
+        if x.0 == 43 and v.len() == 2: version = __tls_be16(v, 0)
+        else if x.0 == 51 and v.len() >= 2:
+            group = __tls_be16(v, 0)
+            if v.len() >= 4 and v.len() == 4 + __tls_be16(v, 2): share = v[4..]
+        else if x.0 == 44 and v.len() > 2: cookie = v[2..]
+    # (no supported_versions: TLS 1.2 or older, the hello's own version)
+    if version == 0:
+        __tls12_server_hello(c, msg, suite, exts)
+        return
     if version != 0x0304:
-        __tls_fail(c, "the server does not speak TLS 1.3 (this side speaks only that)", 70)
+        __tls_fail(c, "the server chose a version of TLS not offered ({version:x})", 47)
+        return
+    if body[35..35 + sl) != c.session:
+        __tls_fail(c, "the server's hello is malformed", 47)
         return
     if suite != 0x1301:
         __tls_fail(c, "the server chose a cipher suite not offered", 47)
         return
-    __tls_say(c, if body[2..34) == __TLS_HRR: "hello retry request, for group {group:x}" else: "server hello, group {group:x}")
+    __tls_say(c, if body[2..34) == __TLS_HRR: "hello retry request, for group {group:x}" else: "server hello (TLS 1.3), group {group:x}")
     if body[2..34) == __TLS_HRR:
         # (it wants another key share: P-256, once)
         if c.retried or group != 0x17:
@@ -1152,12 +1247,192 @@ __tls_client_finished = (c: mut __TlsConn):
     __tls_record(c, 22, fin)
     __tls_set_write(c, c_ap)
     __tls_set_read(c, s_ap)
+    __tls_opened(c)
+
+# the handshake is done: data both ways, what waited first
+__tls_opened = (c: mut __TlsConn):
+    __tls_say(c, "open (TLS 1.{if c.v12: 2 else: 3})")
     c.state = __TLS_OPEN
     c.transcript = []
     c.chain = []
     if c.pending.len() > 0:
         __tls_record(c, 23, c.pending)
         c.pending = []
+
+# ---------------- TLS 1.2 ----------------
+# a ServerHello of TLS 1.2 (or older, refused): a suite of ECDHE with AES-128-GCM, and what it
+# takes of this side's extensions
+__tls12_server_hello = (c: mut __TlsConn, msg: u8[], suite: int, exts: (int, u8[])[]):
+    body = msg[4..]
+    v = __tls_be16(body, 0)
+    if v < 0x0303:
+        old = if v == 0x0302: "TLS 1.1" else if v == 0x0301: "TLS 1.0" else: "SSL 3"
+        __tls_fail(c, "the server speaks only {old}, older than TLS 1.2, the oldest this side speaks", 70)
+        return
+    if v != 0x0303:
+        __tls_fail(c, "the server's hello is malformed", 47)
+        return
+    if c.retried:
+        __tls_fail(c, "the server asked for another key share, then chose TLS 1.2", 47)
+        return
+    srand = body[2..34)
+    if srand[24..31) == __TLS_DOWNGRADE and srand[31] <= 1:
+        __tls_fail(c, "the server speaks TLS 1.3, but the hello it saw offered only older versions: something on the way changed it", 47)
+        return
+    if suite != 0xc02b and suite != 0xc02f:
+        __tls_fail(c, "the server chose a cipher suite not offered ({suite:x})", 47)
+        return
+    loop x in exts:
+        t = x.0
+        if t == 23: c.ems = true
+        else if t == 0xff01:
+            # (renegotiation_info: empty, as a first handshake's is)
+            if x.1.len() != 1 or x.1[0] != 0:
+                __tls_fail(c, "the server's renegotiation_info is not a first handshake's", 40)
+                return
+        else if t == 16:
+            if not __tls_alpn(c, x.1): return
+        else if t != 0 and t != 11:
+            __tls_fail(c, "the server's hello holds an extension not asked for ({t})", 110)
+            return
+    __tls_say(c, "server hello (TLS 1.2), cipher suite {suite:x}, {if c.ems: "with" else: "without"} the extended master secret")
+    c.v12 = true
+    c.srand = srand
+    c.suite = suite
+    c.transcript.extend(msg)
+    c.state = __TLS_HANDSHAKE
+    c.expect = 11
+
+# a handshake message of TLS 1.2: Certificate, ServerKeyExchange, CertificateRequest (maybe) and
+# ServerHelloDone; then, after this side's flight and the server's change_cipher_spec, its Finished
+__tls12_message = (c: mut __TlsConn, msg: u8[]):
+    typ = int(msg[0])
+    body = msg[4..]
+    if typ == 0 and body.len() == 0:
+        # HelloRequest: no renegotiation here (said so when open; in the handshake, nothing)
+        if c.state == __TLS_OPEN: __tls_record(c, 21, [u8(1), 100])
+        return
+    if c.state == __TLS_OPEN:
+        __tls_fail(c, "the server sent handshake message {typ} after the handshake", 10)
+        return
+    if typ != c.expect and not (c.expect == 14 and typ == 13 and not c.cert_req):
+        __tls_fail(c, "the server sent handshake message {typ}, not {c.expect}", 10)
+        return
+    if typ == 11:
+        # Certificate: the chain, the server's own first
+        if body.len() < 3 or 3 + __tls_be24(body, 0) != body.len():
+            __tls_fail(c, "the server's certificates are malformed", 50)
+            return
+        i = 3
+        loop i < body.len():
+            n = if i + 3 <= body.len(): __tls_be24(body, i) else: 0
+            if n == 0 or i + 3 + n > body.len():
+                __tls_fail(c, "the server's certificates are malformed", 50)
+                return
+            c.chain.push(body[i + 3..i + 3 + n))
+            i += 3 + n
+        if c.chain.len() == 0:
+            __tls_fail(c, "the server showed no certificate", 50)
+            return
+        if not __tls_take_chain(c): return
+        # (the suite says what kind of key signs)
+        rsa = c.leaf.key_kind == __TLS_KEY_RSA
+        if rsa != (c.suite == 0xc02f):
+            __tls_fail(c, "the server's certificate holds {if rsa: "an RSA" else: "an EC"} key, not the kind its cipher suite signs with", 43)
+            return
+        c.transcript.extend(msg)
+        c.expect = 12
+        return
+    if typ == 12:
+        # ServerKeyExchange: its key share for a named group, signed with the certificate's key
+        # (both randoms signed with it)
+        pl = if body.len() >= 4: int(body[3]) else: 0
+        if body.len() < 4 + pl + 4 or 4 + pl + 4 + __tls_be16(body, 4 + pl + 2) != body.len():
+            __tls_fail(c, "the server's key exchange is malformed", 50)
+            return
+        group = __tls_be16(body, 1)
+        if body[0] != 3 or (group != 0x1d and group != 0x17):
+            __tls_fail(c, "the server chose a key exchange not offered (group {group:x})", 47)
+            return
+        scheme = __tls_be16(body, 4 + pl)
+        __tls_say(c, "key exchange with group {group:x}, signed with scheme {scheme:x}")
+        signed = c.crand
+        signed.extend(c.srand)
+        signed.extend(body[..4 + pl))
+        ok = __tls_scheme_sig(c.leaf, scheme, signed, body[4 + pl + 4..], true)
+        if ok == none:
+            __tls_fail(c, "the server signed in a way it was not offered (scheme {scheme:x})", 47)
+            return
+        if not ok!:
+            __tls_fail(c, "the server's key exchange is not signed by its certificate's key", 51)
+            return
+        c.group = group
+        c.share = body[4..4 + pl)
+        c.transcript.extend(msg)
+        c.expect = 14
+        return
+    if typ == 13:
+        # CertificateRequest: this side has none, and says so with an empty Certificate
+        c.cert_req = true
+        c.transcript.extend(msg)
+        return
+    if typ == 14:
+        if body.len() != 0:
+            __tls_fail(c, "the server's hello done is malformed", 50)
+            return
+        c.transcript.extend(msg)
+        __tls12_client_flight(c)
+        return
+    if typ == 20:
+        if not c.keyed_r:
+            __tls_fail(c, "the server sent its Finished before change_cipher_spec", 10)
+            return
+        if body != crypto.tls12_prf(c.master, "server finished", crypto.sha256(c.transcript), 12):
+            __tls_fail(c, "the server's Finished is wrong (the handshake was changed on the way?)", 51)
+            return
+        __tls_opened(c)
+
+# the server's hello is done: this side's key share (an empty Certificate first when one was asked
+# for), the keys made from the secret shared, change_cipher_spec and this side's Finished
+__tls12_client_flight = (c: mut __TlsConn):
+    if c.group == 0x17: c.pkey = crypto.p256_key()
+    mine = if c.group == 0x1d: c.xkey.public else: c.pkey.public
+    shared = if c.group == 0x1d: crypto.x25519_ecdh(c.xkey, c.share) else: crypto.p256_ecdh(c.pkey, c.share)
+    if shared == none:
+        __tls_fail(c, "the server's key share is not a key", 47)
+        return
+    if c.cert_req:
+        m: u8[] = [u8(11), 0, 0, 3, 0, 0, 0]
+        c.transcript.extend(m)
+        __tls_record(c, 22, m)
+    cke: u8[] = [u8(16)]
+    __tls_put24(cke, mine.len() + 1)
+    cke.push(u8(mine.len()))
+    cke.extend(mine)
+    c.transcript.extend(cke)
+    __tls_record(c, 22, cke)
+    # the master secret: of the handshake so far (the extended one, RFC 7627), or of the randoms
+    if c.ems: c.master = crypto.tls12_prf(shared!, "extended master secret", crypto.sha256(c.transcript), 48)
+    else:
+        rands = c.crand
+        rands.extend(c.srand)
+        c.master = crypto.tls12_prf(shared!, "master secret", rands, 48)
+    seed = c.srand
+    seed.extend(c.crand)
+    kb = crypto.tls12_prf(c.master, "key expansion", seed, 40)
+    __tls_record(c, 20, [u8(1)])
+    c.wkey = crypto.aes_key(kb[0..16))
+    c.wiv = kb[32..36)
+    c.wseq = 0
+    c.keyed_w = true
+    # (the server's: used from its change_cipher_spec)
+    c.rkey = crypto.aes_key(kb[16..32))
+    c.riv = kb[36..40)
+    fin: u8[] = [u8(20), 0, 0, 12]
+    fin.extend(crypto.tls12_prf(c.master, "client finished", crypto.sha256(c.transcript), 12))
+    c.transcript.extend(fin)
+    __tls_record(c, 22, fin)
+    c.expect = 20
 
 # ---------------- for lib/net.jo ----------------
 # the bytes to write to the socket now

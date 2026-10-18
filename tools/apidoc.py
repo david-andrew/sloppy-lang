@@ -48,7 +48,7 @@ TOPICS = [
      "Line charts, scatter plots, bars and histograms with axes and a legend: drawn in a game's `draw`, or "
      "made into a picture with no window (`chart_image`, then `save_png`). `render_image` draws any picture that way."),
     ("Data", "crypto", "Cryptography", ["crypto"], None,
-     "A module (`import crypto`): SHA-1, SHA-256, SHA-384 and SHA-512, HMAC, HKDF, AES-128-GCM, P-256 and X25519 keys (ECDH), "
+     "A module (`import crypto`): SHA-1, SHA-256, SHA-384 and SHA-512, HMAC, HKDF, TLS 1.2's PRF, AES-128-GCM, P-256 and X25519 keys (ECDH), "
      "P-256 signatures (ECDSA), P-384 and RSA signatures checked, self-signed certificates and random bytes from the operating "
      "system; checked against the standards' test vectors and Wycheproof's."),
     ("Data", "big", "Big numbers", ["big"], None,
