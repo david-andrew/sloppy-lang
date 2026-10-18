@@ -13,6 +13,9 @@
   friends a room (`invite.arrivals`, `room_busy`, `room_code`, `close_room`); Invite with a code
   instead stays, for when the server cannot be reached (the screen says so). Aces uses it
   (`MATCH_SERVER`); `SLOPPY_SERVER`, or a page's `?server=`, points any game at one.
+- Aces: six more insignias, famous ones: the 94th Aero Squadron's hat in the ring
+  (Rickenbacker's), a shark's mouth on the nose, Nungesser's black heart, Voss's face on the
+  cowling, the Cigognes' stork (Guynemer's), the ace of spades; the crash is quieter.
 - A struct field whose default makes another of the same struct (`rooms = [Room()]`) is an
   error that says so; the compiler went round without end and crashed (found by the fuzzer).
 - `net.listen(port, largest)`: the biggest message a server takes from its peers; a connection
