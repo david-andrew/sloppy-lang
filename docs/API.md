@@ -2427,6 +2427,8 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
       specular: f32
       use_tex: f32
       shadow_strength: f32
+      shadow_texel: f32           # (one texel of the shadow map, across)
+      shadow_taps: f32            # (9 on a GPU; 4 in the software renderer)
       time: f32
       wind: f32
       tex: Texture

@@ -7,6 +7,10 @@
 - Thick `polyline`s (and `rect_rounded_outline`) are one band through their points: the bends
   had gaps, which made a rounded outline's corners a fan of spikes. Bends are mitred, a sharp
   one's point cut off at three times the thickness.
+- The software renderer draws 3D faster (scene3d: about 150 ms a frame to 105-120 ms here; 26%
+  fewer instructions): a 512x512 shadow map, in proportion to its half-resolution picture, four
+  shadow taps where a GPU takes nine (`LitParams.shadow_taps`, `shadow_texel`), and triangle setup
+  on all cores.
 - Safari's engine checked: `tools/webkitcheck.py` runs Playwright's WebKit in a container. Invite
   codes work WebKit to WebKit, with Chromium both ways and with a native program (the reply
   pasted in 20 s later), and the gallery's games run as an iPhone with no errors. Real iPhones
