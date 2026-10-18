@@ -589,11 +589,45 @@ Structs compare with `==` field by field (and so work as map keys), unless a fie
 function: functions cannot be compared, so neither can such a struct (the compiler names the
 field; compare the fields that can be, `a.name == b.name`).
 
-A struct holds its fields in place, so it cannot hold itself, not even as an optional
-(`next: Node?` would put a whole `Node` inside each `Node`). Recursive data goes in an array,
-which holds its elements apart: `kids: Node[]` for a tree, `next: Node[]` (empty, or one) for a
-list, or all the nodes in one array, linked by their indexes (`next: int`). The same holds for an
-enum's variants: `neg(e: Expr[])`, not `neg(e: Expr)`.
+**Recursive data.** A struct or an enum can hold itself: as an optional, in an enum's variant,
+through a union, or through another struct that holds it.
+
+```gdscript
+struct Node:
+    value: int
+    next: Node?                        # a linked list
+
+struct Tree[K]:
+    key: K
+    left: Tree[K]?
+    right: Tree[K]?
+
+enum Expr:
+    num(v: f64)
+    bin(op: str, l: Expr, r: Expr)     # exactly two operands
+
+list = Node(1, Node(2, Node(3)))
+list.next!.next!.value = 30
+if let second = list.next: print(second.value)
+e = Expr.bin("+", Expr.num(1), Expr.bin("*", Expr.num(2), Expr.num(3)))
+```
+
+Such a field keeps its value apart from the struct, in memory of its own that copies share:
+assigning or passing a list copies a pointer, not the list. Changing a copy (`b.next!.value = 0`)
+first copies the nodes on the way to the change, as an array is copied when it is shared, so
+each copy keeps its own value. Reading `n.next!.value` follows the one pointer. A value cannot
+hold itself in a loop (`a.next = a` stores a copy of `a` as it was), so printing it, `==`,
+hashing and `to_text` end; they walk the value as a recursive function would (tens of thousands
+of nodes deep in a native program, a few thousand in a web page), while freeing a list a million
+long takes no deeper calls than freeing one node. A field not given, or in a value made zero
+(`n: Node`), is `none` when it is optional; one that is not (`l: Expr`) holds its type's zero
+value, which for an enum is its first variant (`num(0.0)` above), or the first variant without
+the type in it when the first holds one (an `Expr` whose first variant is `bin` starts as
+`bin("", num(0.0), num(0.0))`). A type whose values would hold themselves without end is an
+error: `struct Bad: me: Bad` (make it `me: Bad?`, or an array). Arrays still hold their elements
+apart too (`kids: Node[]` for a tree with any number of children). A struct holding itself is
+not plain data: it cannot go to the GPU (`gpu_buffer`, shaders), be `@packed`, or be read by C
+through a pointer.
 
 **Unions** hold a value of one of several types. `is` tests which, and a variable that has
 been tested *is* that type where the test holds — in the `if`, after an `if` that returns or

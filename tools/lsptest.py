@@ -484,6 +484,12 @@ h = c.request("textDocument/hover", tp(qu, qsrc, "?.x"))
 check("`?.`: hover", h and h["contents"]["value"], "```sloppy\n(?) P    # none returned from total (not optional chaining)\n```")
 h = c.request("textDocument/hover", tp(qu, qsrc, "n = "))
 check("`?`: the variable it gives", h and h["contents"]["value"], "```sloppy\n(variable) n: int\n```")
+# ---- a field holding the struct it is in (kept in a box): its declared type ----
+rsrc = "struct Node:\n    value: int\n    next: Node?\nn = Node(1, Node(2))\nprint(n.next!.value)\n"
+ru, rd = doc("rec.jo", rsrc)
+check("recursive: no errors", rd, [])
+h = c.request("textDocument/hover", tp(ru, rsrc, "next!", 1))
+check("recursive: hover on the boxed field", h and h["contents"]["value"], "```sloppy\n(field) next: Node?\n```")
 
 usrc2 = "数量 = 3\nprint(数"
 c.set_text(uu, usrc2)
