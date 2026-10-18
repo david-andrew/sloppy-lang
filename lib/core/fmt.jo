@@ -136,7 +136,103 @@ __shortest = (x: f64, is_f32: bool) -> (u64, int):
             else: back = d * __pow10(-sh2)
             if (is_f32 and f32(back) == f32(x)) or (not is_f32 and back == x): return (u64(d), ee)
             p += 1
+        # (16 and 17 digits, exactly, in 128-bit whole numbers: x is m 2^-s, its neighbors half a
+        # step either side; the nearest p-digit number reads back as x when it is between them)
+        if not is_f32:
+            b = x as u64
+            m = (b & 0x000FFFFFFFFFFFFF) | (u64(1) << 52)
+            sh0 = 1075 - int((b >> 52) & 0x7FF)
+            if m != u64(1) << 52 and sh0 > 0 and sh0 < 120:
+                p = 16
+                fixes = 0
+                loop p <= 17:
+                    k = p - 1 - e
+                    if k < 0 or k > 38: break
+                    # m 10^k, and the nearest whole number to it / 2^sh0 (halves to even)
+                    ph, pl = __mul_pow10(0, m, k)
+                    dh, dl = __shr128(ph, pl, sh0)
+                    rh, rl = __sub128(ph, pl, __shl128(dh, dl, sh0))
+                    hh, hl = __shl128(0, 1, sh0 - 1)
+                    c = __cmp128(rh, rl, hh, hl)
+                    if c > 0 or (c == 0 and dl & 1 == 1): dl += 1
+                    # (e, from repeated float steps, can be one off near a power of ten: p digits
+                    # or it is fixed, and the digits tried again from 16)
+                    top = u64(1)
+                    loop _ in [0..p): top = top * 10
+                    if dh == 0 and fixes < 2 and (dl < top / 10 or dl > top):
+                        if dl < top / 10: e -= 1
+                        else: e += 1
+                        fixes += 1
+                        p = 16
+                        continue
+                    # (d 2^(sh0 + 1) against (2m -+ 1) 10^k: within x's half-steps)
+                    lh, ll = __shl128(0, dl, sh0 + 1)
+                    loh, lol = __mul_pow10(0, 2 * m - 1, k)
+                    hih, hil = __mul_pow10(0, 2 * m + 1, k)
+                    even = m & 1 == 0
+                    a = __cmp128(lh, ll, loh, lol)
+                    z = __cmp128(lh, ll, hih, hil)
+                    if dh == 0 and (a > 0 or (a == 0 and even)) and (z < 0 or (z == 0 and even)):
+                        # (rounding up to 10^p: one digit more than counted; as whole numbers:
+                        # 9999999999999999 is 1e16 as an f64)
+                        if dl >= top: return (dl / 10, e + 1)
+                        return (dl, e)
+                    p += 1
     __shortest_exact(x, is_f32)
+
+# (whole numbers of 128 bits as two halves, high and low, for __shortest)
+__mul128 = (a: u64, b: u64) -> (u64, u64):
+    a0 = a & 0xFFFFFFFF
+    a1 = a >> 32
+    b0 = b & 0xFFFFFFFF
+    b1 = b >> 32
+    p00 = a0 * b0
+    p01 = a0 * b1
+    p10 = a1 * b0
+    mid = (p00 >> 32) + (p01 & 0xFFFFFFFF) + (p10 & 0xFFFFFFFF)
+    (a1 * b1 + (p01 >> 32) + (p10 >> 32) + (mid >> 32), (p00 & 0xFFFFFFFF) | (mid << 32))
+
+# h:l times 10^k (the product below 2^128)
+__mul_pow10 = (h: u64, l: u64, k: int) -> (u64, u64):
+    rh = h
+    rl = l
+    left = k
+    loop left > 0:
+        step = left
+        if step > 19: step = 19
+        f = u64(1)
+        loop _ in [0..step): f = f * 10
+        ah, al = __mul128(rl, f)
+        rh = rh * f + ah
+        rl = al
+        left -= step
+    (rh, rl)
+
+__shr128 = (h: u64, l: u64, n: int) -> (u64, u64):
+    if n >= 128: return (0, 0)
+    if n >= 64: return (0, h >> u64(n - 64))
+    if n == 0: return (h, l)
+    (h >> u64(n), (l >> u64(n)) | (h << u64(64 - n)))
+
+__shl128 = (h: u64, l: u64, n: int) -> (u64, u64):
+    if n >= 128: return (0, 0)
+    if n >= 64: return (l << u64(n - 64), 0)
+    if n == 0: return (h, l)
+    ((h << u64(n)) | (l >> u64(64 - n)), l << u64(n))
+
+__sub128 = (ah: u64, al: u64, b: (u64, u64)) -> (u64, u64):
+    lo = al - b.1
+    borrow = u64(0)
+    if lo > al: borrow = 1
+    (ah - b.0 - borrow, lo)
+
+__cmp128 = (ah: u64, al: u64, bh: u64, bl: u64) -> int:
+    if ah != bh:
+        if ah < bh: return -1
+        return 1
+    if al < bl: return -1
+    if al > bl: return 1
+    0
 
 __shortest_exact = (x: f64, is_f32: bool) -> (u64, int):
     m = 0

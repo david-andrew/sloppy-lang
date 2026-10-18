@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Floats print 5 times as fast where they need 16 or 17 digits (0.1 + 0.2): those digits are
+  worked out exactly in 128-bit whole numbers instead of the arbitrary-precision way, which stays
+  for the rest (very large and small numbers, f32s).
 - The language server gives up a check that is no longer wanted while it runs: the editor
   cancelled the request, or the document changed (it went on to the end, up to seconds on a big
   program, before reading either).
