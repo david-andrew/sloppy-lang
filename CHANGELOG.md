@@ -8,7 +8,7 @@
   8 bytes (a 24-bit field). `to_int(s, base)` for bases 2 to 36; `to_int` reads 0b and 0o too.
 - `set_env`, `unset_env` and `env_all()`: seen by `env` and by the programs started after.
 - The thread pool makes a wake call only for threads that are asleep.
-- An interpolated string no longer keeps the room its builder grew ahead: `"item number {{i}}"`
+- An interpolated string no longer keeps the room its builder grew ahead: `"item number {i}"`
   takes 64 bytes, not 128 (2 million of them: 142 MB, not 268).
 - LANGUAGE.md's Calling C: a table of C's types (Windows' 32-bit `long`), and what crosses and
   for how long (`str` read-only to C, `data(xs)` until it grows, variadic arguments, print's buffer).
