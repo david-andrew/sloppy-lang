@@ -401,6 +401,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/moved": self.reply(302, b"", [("Location", "/echo")])
         elif self.path == "/again": self.reply(307, b"", [("Location", "/echo")])
         elif self.path == "/big": self.reply(200, BIG)
+        elif self.path == "/cookies": self.reply(200, b"two", [("Set-Cookie", "a=1; Path=/"), ("Set-Cookie", "b=2; Path=/")])
+        elif self.path == "/slow":
+            time.sleep(1.0)
+            self.reply(200, b"slow answer")
         else: self.reply(404, b"no such page")
     do_GET = do_POST = do_PUT = do_HEAD = answer
 port += 1
@@ -418,7 +422,257 @@ check("net.fetch over HTTP", r.stdout, [
     "307: 200 POST [-] [text/plain; charset=utf-8] [z]",
     f"saved: 200 {len(BIG)} 0 {len(BIG)} true {len(BIG)} {hashlib.sha256(BIG).hexdigest()[:16]}",
     "404: 404 false no such page",
-    "head: 200 0"])
+    "head: 200 0",
+    "cookies: a=1; Path=/, b=2; Path=/ | a=1; Path=/ | b=2; Path=/",
+    "started: none yet true",
+    "frames while it came: true",
+    "fetch_result: 200 slow answer",
+    "two at once: 200 one two three, 200 slow answer"])
+port += 1
+env["NET_PORT"] = str(port)
+
+# an HTTP server of lib/http.jo (tests/net/http_server.jo), spoken to as browsers and curl do:
+# routes, JSON, keep-alive and HTTP/1.0's close, HEAD, chunked bodies and 100-continue, a body too
+# big, cookies, a handler that panics, clients that send or read slowly while others are answered,
+# files, server-sent events, a fetch made while it serves, WebSockets on its port (their handshake's
+# path, query, cookies and origin; the close handshake; a message too big: 1009; a reader that
+# stopped, let go), and SIGTERM, on_quit running
+import socket, struct, http.client, http.server, threading, signal
+
+def http_server_test(hs_exe, hport, upstream_port):
+    global failed
+    site = os.path.join(tmp, "http_site")
+    os.makedirs(os.path.join(site, "site", "sub"), exist_ok=True)
+    with open(os.path.join(site, "site", "index.html"), "w") as f: f.write("<p>index</p>\n")
+    with open(os.path.join(site, "site", "a.txt"), "w") as f: f.write("a file\n")
+    with open(os.path.join(site, "site", ".secret"), "w") as f: f.write("no\n")
+    with open(os.path.join(site, "site", "sub", "index.html"), "w") as f: f.write("<p>sub</p>\n")
+    with open(os.path.join(site, "site", "big.bin"), "wb") as f: f.write(bytes(20 << 20))
+    srv = subprocess.Popen([hs_exe], stdout=subprocess.PIPE, text=True,
+                           env=dict(env, NET_PORT=str(hport), NET_DIR=site, NET_UPSTREAM=f"http://127.0.0.1:{upstream_port}/slow"))
+    wait_port(hport)
+    def ok(what, cond, detail=""):
+        global failed
+        if cond: print(f"ok   http server: {what}")
+        else:
+            failed += 1
+            print(f"FAIL http server: {what} {detail}")
+    def req(method, path, body=None, headers={}):
+        c = http.client.HTTPConnection("127.0.0.1", hport, timeout=10)
+        c.request(method, path, body=body, headers=headers)
+        r = c.getresponse()
+        data = r.read()
+        c.close()
+        return r, data
+    def raw(data, wait=2.0, until=None):
+        s = socket.create_connection(("127.0.0.1", hport), timeout=wait)
+        s.sendall(data)
+        got = b""
+        try:
+            while True:
+                d = s.recv(65536)
+                if not d: break
+                got += d
+                if until and until in got: break
+        except socket.timeout: pass
+        s.close()
+        return got
+    try:
+        r, d = req("GET", "/hello?name=ann%20b")
+        ok("a route with a query", r.status == 200 and d == b"hello ann b", (r.status, d))
+        r, d = req("GET", "/items/1")
+        ok("a route's :id, answered JSON", r.status == 200 and d == b'{"id":1,"name":"first"}' and r.getheader("Content-Type") == "application/json", (r.status, d))
+        r, d = req("GET", "/items/9")
+        ok("404 as JSON from the handler", r.status == 404 and d == b'{"error":"no item 9"}', (r.status, d))
+        r, d = req("POST", "/items", body=b'{"name": "second"}', headers={"Content-Type": "application/json"})
+        ok("POST read with read_json: 201, Location", r.status == 201 and d == b'{"id":2,"name":"second"}' and r.getheader("Location") == "/items/2", (r.status, d))
+        r, d = req("POST", "/items", body=b'{"name": ')
+        ok("POST of broken JSON: 400 saying why", r.status == 400 and d == b'{"error":"the body is not what this takes: the text ends before name\'s value"}', (r.status, d))
+        r, d = req("DELETE", "/items")
+        ok("a method no route has: 405 with Allow", r.status == 405 and r.getheader("Allow") == "POST", (r.status, r.getheader("Allow")))
+        r, d = req("GET", "/rest/a/b/c.txt")
+        ok("*path: the rest of the path", d == b"rest=a/b/c.txt", d)
+        r, d = req("GET", "/nothing/here")
+        ok("no such route: 404", r.status == 404 and d == b"404 Not Found", (r.status, d))
+        # keep-alive: three requests on one connection; HTTP/1.0 without keep-alive: closed after
+        c = http.client.HTTPConnection("127.0.0.1", hport, timeout=10)
+        socks, bodies = set(), []
+        for k in range(3):
+            c.request("GET", f"/hello?name={k}")
+            r = c.getresponse()
+            bodies.append(r.read())
+            socks.add(id(c.sock))
+        c.close()
+        ok("keep-alive: three requests, one connection", bodies == [b"hello 0", b"hello 1", b"hello 2"] and len(socks) == 1, (bodies, len(socks)))
+        got = raw(b"GET /hello HTTP/1.0\r\n\r\n")
+        ok("HTTP/1.0: answered, Connection: close, closed", got.startswith(b"HTTP/1.1 200 OK\r\n") and b"Connection: close\r\n" in got and got.endswith(b"\r\n\r\nhello you"), got)
+        got = raw(b"GET /hello HTTP/1.0\r\nConnection: keep-alive\r\n\r\n", wait=1.0)
+        ok("HTTP/1.0 with keep-alive: kept", b"Connection: keep-alive\r\n" in got, got)
+        got = raw(b"GET /hello HTTP/1.1\r\nHost: x\r\n\r\nGET /items/1 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        ok("two requests sent at once: both answered, in order", got.count(b"HTTP/1.1 200 OK") == 2 and got.index(b"hello you") < got.index(b'"first"'), got)
+        r, d = req("HEAD", "/hello")
+        ok("HEAD: the length, no body", r.status == 200 and r.getheader("Content-Length") == "9" and d == b"", (r.status, r.getheader("Content-Length"), d))
+        got = raw(b"POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6;x=y\r\n world\r\n0\r\n\r\n")
+        ok("a chunked body", got.endswith(b"\r\n\r\nPOST 11 hello world"), got)
+        s = socket.create_connection(("127.0.0.1", hport), timeout=5)
+        s.sendall(b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n")
+        first = s.recv(1000)
+        s.sendall(b"12345")
+        rest = b""
+        while True:
+            d = s.recv(1000)
+            if not d: break
+            rest += d
+        s.close()
+        ok("Expect: 100-continue", first == b"HTTP/1.1 100 Continue\r\n\r\n" and rest.endswith(b"POST 5 12345"), (first, rest))
+        got = raw(b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000\r\n\r\n")
+        ok("a body too big: 413", got.startswith(b"HTTP/1.1 413 Content Too Large\r\n"), got[:60])
+        got = raw(b"NOT HTTP AT ALL\r\n\r\n")
+        ok("not a request: 400", got.startswith(b"HTTP/1.1 400 Bad Request\r\n"), got[:60])
+        # cookies
+        c = http.client.HTTPConnection("127.0.0.1", hport, timeout=10)
+        c.request("GET", "/login")
+        r = c.getresponse()
+        r.read()
+        cookies = r.msg.get_all("Set-Cookie")
+        ok("Set-Cookie, twice", r.status == 303 and cookies == ["sid=abc123; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax", "theme=dark; Path=/; SameSite=Lax"], (r.status, cookies))
+        c.request("GET", "/whoami", headers={"Cookie": "sid=abc123; theme=dark"})
+        d = c.getresponse().read()
+        c.close()
+        ok("cookies read", d == b"sid=abc123 theme=dark", d)
+        # a handler that panics: 500, and the server goes on
+        r, d = req("GET", "/panic")
+        r2, d2 = req("GET", "/hello")
+        ok("a handler that panics: 500, the server goes on", r.status == 500 and r2.status == 200, (r.status, r2.status))
+        # clients slow to send and to read, while another is answered at once
+        half = socket.create_connection(("127.0.0.1", hport))
+        half.sendall(b"GET /hello HTTP/1.1\r\nHost: x\r\n")
+        lazy = socket.create_connection(("127.0.0.1", hport))
+        lazy.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        lazy.sendall(b"GET /static/big.bin HTTP/1.1\r\nHost: x\r\n\r\n")
+        time.sleep(0.3)
+        t0 = time.time()
+        r, d = req("GET", "/hello")
+        dt = time.time() - t0
+        ok("slow clients do not hold up others", r.status == 200 and dt < 0.5, f"{dt:.3f} s")
+        half.close()
+        lazy.close()
+        # files
+        r, d = req("GET", "/static/")
+        ok("files: index.html for a directory", d == b"<p>index</p>\n" and r.getheader("Content-Type") == "text/html; charset=utf-8", (d, r.getheader("Content-Type")))
+        r, d = req("GET", "/static/a.txt")
+        tag = r.getheader("ETag")
+        ok("files: a file, its type, ETag, Last-Modified", d == b"a file\n" and r.getheader("Content-Type") == "text/plain; charset=utf-8" and tag and r.getheader("Last-Modified", "").endswith(" GMT"), r.getheaders())
+        r, d = req("GET", "/static/a.txt", headers={"If-None-Match": tag})
+        ok("files: unchanged since: 304", r.status == 304 and d == b"", r.status)
+        r, d = req("GET", "/static/a.txt", headers={"If-Modified-Since": r.getheader("Last-Modified") or "Sun, 06 Nov 1994 08:49:37 GMT"})
+        r, d = req("GET", "/static/sub")
+        ok("files: a directory without its /: 301 to it", r.status == 301 and r.getheader("Location") == "/static/sub/", (r.status, r.getheader("Location")))
+        got = raw(b"GET /static/../http_server.jo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        ok("files: .. refused", got.startswith(b"HTTP/1.1 400 "), got[:40])
+        r, d = req("GET", "/static/.secret")
+        ok("files: a name starting with a dot is not served", r.status == 404, r.status)
+        r, d = req("GET", "/static/big.bin")
+        ok("files: a big file, whole", len(d) == 20 << 20 and r.getheader("Content-Length") == str(20 << 20), len(d))
+        # server-sent events: a stream, chunked
+        r, d = req("GET", "/events")
+        ok("server-sent events", r.getheader("Content-Type") == "text/event-stream" and d == b"event: time\ndata: tick\n\ndata: tock\n\n", d)
+        # a fetch while serving: the upstream takes a second, the server answers meanwhile
+        r, d = req("GET", "/fetch")
+        t0 = time.time()
+        r, d = req("GET", "/hello")
+        dt = time.time() - t0
+        ok("a fetch on its way holds up nothing", d == b"hello you" and dt < 0.3, f"{dt:.3f} s")
+        got = b""
+        while time.time() - t0 < 10 and got != b"200 upstream says hi":
+            r, got = req("GET", "/fetched")
+            time.sleep(0.1)
+        ok("the fetch's answer, once it has come", got == b"200 upstream says hi", got)
+        # WebSockets on the same port
+        def ws_open(path, extra=b""):
+            s = socket.create_connection(("127.0.0.1", hport), timeout=5)
+            s.sendall(b"GET " + path + b" HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n" + extra + b"\r\n")
+            head = b""
+            while b"\r\n\r\n" not in head: head += s.recv(1)
+            return s, head
+        def ws_send(s, op, payload):
+            mask = b"\x01\x02\x03\x04"
+            n = len(payload)
+            h = bytes([0x80 | op]) + (bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack(">H", n) if n < 65536 else bytes([0x80 | 127]) + struct.pack(">Q", n))
+            s.sendall(h + mask + bytes(b ^ mask[i & 3] for i, b in enumerate(payload)))
+        def ws_recv(s):
+            def take(n):
+                b = b""
+                while len(b) < n:
+                    d = s.recv(n - len(b))
+                    if not d: raise EOFError
+                    b += d
+                return b
+            h = take(2)
+            n = h[1] & 127
+            if n == 126: n = struct.unpack(">H", take(2))[0]
+            elif n == 127: n = struct.unpack(">Q", take(8))[0]
+            return h[0] & 15, take(n)
+        s, head = ws_open(b"/ws?room=4", b"Cookie: sid=abc123\r\nOrigin: http://example.test\r\n")
+        ok("WebSocket: the handshake answered", head.startswith(b"HTTP/1.1 101 Switching Protocols\r\n") and b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" in head, head)
+        m1 = ws_recv(s)
+        ws_send(s, 1, b"hi")
+        m2 = ws_recv(s)
+        ok("WebSocket: messages both ways", m1 == (1, b"welcome") and m2 == (1, b"echo hi"), (m1, m2))
+        ws_send(s, 8, struct.pack(">H", 1000) + b"bye")
+        m3 = ws_recv(s)
+        try: eof = s.recv(10) == b""
+        except OSError: eof = True
+        s.close()
+        ok("WebSocket: a close answered with its code, then the end", m3 == (8, struct.pack(">H", 1000)) and eof, (m3, eof))
+        s, head = ws_open(b"/ws")
+        ws_recv(s)
+        ws_send(s, 2, bytes(2000))
+        m = ws_recv(s)
+        s.close()
+        ok("WebSocket: a message too big: closed with 1009", m == (8, struct.pack(">H", 1009)), m)
+        s, head = ws_open(b"/ws")
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        ws_recv(s)
+        ws_send(s, 1, b"flood")
+        time.sleep(3)
+        s.close()
+        # asked to stop (Windows has no SIGTERM to send: a request that asks): the loop ends, on_quit runs
+        if os.name != "nt": srv.send_signal(signal.SIGTERM)
+        else: req("GET", "/quit")
+        out = srv.communicate(timeout=20)[0]
+        lines = [l for l in out.splitlines() if l.strip()]
+        lines = [l if "it took none of the last" not in l else l.split(" of the last")[0] + " of the last N bytes" + l.split(" bytes", 1)[1] for l in lines]
+        want = ["listening", "server: ws joined /ws room=4 sid=abc123 origin=http://example.test", "server: ws left: closed",
+                "server: ws joined /ws room=- sid=- origin=", "server: ws left: it sent a message bigger than the 1000 bytes taken",
+                "server: ws joined /ws room=- sid=- origin=", "server: ws left: it took none of the last N bytes sent to it (a reader that stopped)",
+                "server: stopped", "server: on_quit"]
+        check("http server: what it printed (WebSockets' handshakes and ends; stopped by SIGTERM, on_quit)", "\n".join(lines), want)
+    finally:
+        if srv.poll() is None: srv.kill()
+
+class Upstream(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *a): pass
+    def do_GET(self):
+        if self.path == "/slow": time.sleep(1.0)
+        body = b"upstream says hi"
+        self.send_response(200)
+        if self.path == "/cookies":
+            self.send_header("Set-Cookie", "a=1; Path=/")
+            self.send_header("Set-Cookie", "b=2; Path=/")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+port += 1
+up_port = port
+up = http.server.ThreadingHTTPServer(("127.0.0.1", up_port), Upstream)
+threading.Thread(target=up.serve_forever, daemon=True).start()
+port += 1
+http_server = build("http_server") + exe
+http_server_test(http_server, port, up_port)
+up.shutdown()
 port += 1
 env["NET_PORT"] = str(port)
 
@@ -485,6 +739,30 @@ if shell:
         h_out = h.communicate()[0]
     b.kill()
     check("client and server with a web page (in Chromium)", h_out, ["server: hello page", "server: walked true"])
+    # a web page's fetch (the browser's), from an HTTP server of lib/http.jo
+    port += 1
+    page = build("web_fetch", "--target", "wasm") + ".html"
+    h = subprocess.Popen([http_server], stdout=subprocess.PIPE, text=True, env=dict(env, NET_PORT=str(port), NET_DIR=tmp))
+    wait_port(port)
+    b = subprocess.Popen([shell, "--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0",
+                          "file://" + page + f"?NET_PORT={port}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # (its lines as they come, for up to 30 seconds)
+    import queue
+    lines_q = queue.Queue()
+    threading.Thread(target=lambda: [lines_q.put(l) for l in h.stdout], daemon=True).start()
+    seen = []
+    t0 = time.time()
+    while time.time() - t0 < 30 and not any("page fetched" in l for l in seen):
+        try: seen.append(lines_q.get(timeout=1).strip())
+        except queue.Empty: pass
+    b.kill()
+    try:
+        q = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        q.request("GET", "/quit")
+        q.getresponse().read()
+        h.wait(timeout=20)
+    except (OSError, subprocess.TimeoutExpired): h.kill()
+    check("a web page's fetch_start (in Chromium)", "\n".join(seen), ["listening", "server: page fetched 200 from the server"])
     # two web pages, straight to each other (WebRTC): the relay passes on only how they connect
     port += 1
     env["NET_PORT"] = str(port)

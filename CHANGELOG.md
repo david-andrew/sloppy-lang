@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+- `import http`: HTTP servers. Routes of a method and a path with `:names` (and `*rest`), each
+  answered by a function from a `Request` (method, path, query, params, headers, cookies, body and
+  text) to a `Response` (`text`, `html`, `json`, `binary`, `status`, `redirect`, `file`, with
+  `set_cookie`); `read_json(r, into)` reads a body into a struct or gives the 400 to send. Keep-alive,
+  HTTP/1.0's close, HEAD, pipelined requests, chunked bodies and `Expect: 100-continue`, size limits
+  (431, 413), 404 and 405 with Allow; `files(prefix, dir)` serves a directory (types, index.html,
+  directories sent to their /, `..` and dotfiles refused, ETag and Last-Modified with 304), a piece at
+  a time; server-sent events and chunked streams (`events()`, `send_event`); WebSockets on the same
+  port, which become net's peers (`websocket(r)`); `log_line` and `log_requests`, `http_date`,
+  `reason`, `mime_type`. A handler that panics is answered 500 and the server goes on. `http.serve(port)`
+  answers until ctrl-c or SIGTERM; `http.listen` and `http.answer()` answer from a loop of the
+  program's own. 25,000 to 38,000 requests a second over 50 keep-alive connections (`ab`, release
+  build: ab is the limit), 8,000 a second on a new connection each, and one client's request on a
+  new connection answered in 0.18 ms.
+- `net.wait(seconds)`: a program with no window sleeps until something comes (a peer's message, a
+  connection's bytes, a fetch's answer, a request for its server) instead of a fixed time. It waits
+  with poll (WSAPoll on Windows).
+- `net.fetch_start(url, ...)` and `net.fetch_result(f)`: a fetch that goes on while the program
+  does (a game's frames, a server's other requests); several at once. In a web page it is the
+  browser's fetch, so web builds can fetch too. `net.fetch` waits on it, and names are looked up
+  without waiting on Linux.
+- `net.tcp_write(c, data)` sends without waiting: what the other side has not taken goes later, as
+  it takes it (`tcp_unsent(c)` says how much waits); `tcp_send` waits on poll rather than sleeping
+  a millisecond at a time, and gives up after `wait` seconds in which nothing went. `tcp_receive`
+  reads into one buffer kept for all (it made and zeroed 64 KB each call). `tcp_listen` and
+  `net.listen` take the address to listen on (`host = "127.0.0.1"`: this machine only) and a
+  backlog of 511 (it was 64); `tcp_address(c)` says where an accepted connection came from.
+- `net.listen`'s WebSockets: a close from the other side is answered with its code (browsers saw
+  1006, an error), a message over `largest` closes with 1009, `net.handshake(peer)` gives how a peer
+  asked to connect (path, query, headers, cookies, origin, address), `net.unsent(peer)` how much waits
+  to go out to it, and a peer with 8 MB waiting (a reader that stopped) is let go rather than kept
+  growing; sending to a slow peer no longer copies what waits each time some of it goes.
+- `HttpReply.all_headers` and `net.header_values(r, name)`: every header as it came (each
+  Set-Cookie); `headers` joins a repeated one's values with ", " (it kept the last).
+- `on_quit` in programs without a window: it runs as the program ends (its last line, `exit()`) or
+  is stopped by ctrl-c, SIGTERM or its console closing; `stopping()` tells a loop that runs until
+  then that it has been asked to stop. In a game, ctrl-c in the terminal closes it as its window's
+  close button does, when it has an on_quit.
+- `from_json`'s errors speak JSON: "expected , or } to end the object", "expected an object for
+  Todo, found a list", "the text ends before title's value", "id: too large for an int",
+  "title: expected a string, found a number", with the line and column; and it no longer takes what
+  is not JSON (a missing or extra comma, a name without quotes).
+- A slice past the end of the text to its end, `s[1..]` of "", says `string slice [1..] out of
+  bounds: it starts after the end (length 0)` (it said `[1..-1]`).
+- `parse_query(q)` and `parse_cookies(header)`: a query string's and a Cookie header's names and
+  values.
+
 - Floats print 5 times as fast where they need 16 or 17 digits (0.1 + 0.2): those digits are
   worked out exactly in 128-bit whole numbers instead of the arbitrary-precision way, which stays
   for the rest (very large and small numbers, f32s).

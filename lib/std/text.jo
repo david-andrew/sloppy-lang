@@ -18,7 +18,7 @@ struct TextError:
     message: str
     line: int
     column: int
-    path = ""       # where in the value: items[2].count (the message starts with it too)
+    path = ""       # where in the value: items[2].count (the message names it too)
 
 to_text[T] = (x: T) -> str:
     buf: u8[]
@@ -64,7 +64,9 @@ __from_text_into[T] = (text: str, x: mut T, json: bool = false) -> TextError?:
     r = __TextIn(text, json = json)
     __read(r, x)
     __tx_space(r)
-    if len(r.err) == 0 and r.i < len(text): __tx_fail(r, "more text after the value")
+    if len(r.err) == 0 and r.i < len(text):
+        if json: __tx_fail(r, "more after the end of the value")
+        else: __tx_fail(r, "more text after the value")
     if len(r.err) == 0: return none
     line = 1
     col = 1
@@ -75,6 +77,11 @@ __from_text_into[T] = (text: str, x: mut T, json: bool = false) -> TextError?:
             col = 1
     msg = r.err
     if len(r.err_path) > 0: msg = "{r.err_path}: {r.err}"
+    if json:
+        # (a web server's error page where JSON was expected, as parse_json says)
+        t = trim_start(text)
+        if len(t) > 0 and t[0] == '<' and r.at <= len(text) - len(t): msg = "this is HTML (a web page, an error page perhaps), not JSON: it starts with '<'"
+        else if len(r.err_path) > 0 and ends_with(r.err, ", found the end of the text"): msg = "the text ends before {r.err_path}'s value"
     TextError(msg, line, col, r.err_path)
 
 # ---------------- the reader ----------------
@@ -90,12 +97,22 @@ struct __TextIn:
     json = false    # reading JSON (from_json): {"field": value}, [a, b] for tuples and vectors, null
     path: str[]     # the fields and elements being read (items, [2], count)
     err_path = ""   # where err is, as items[2].count
+    open_err = false    # (JSON) err is a struct's or vector's start: its type is named in err after
 
 __tx_space = (r: mut __TextIn):
     loop r.i < len(r.s) and (r.s[r.i] == ' ' or r.s[r.i] == '\n' or r.s[r.i] == '\t' or r.s[r.i] == '\r'): r.i += 1
 
-# a word just read is not what it should be: the mistake is there
+# a word just read is not what it should be: the mistake is there (JSON: and what it is)
 __tx_bad = (r: mut __TextIn, msg: str):
+    if r.json and len(r.err) == 0:
+        w = r.s[r.n0..r.n1)
+        if len(w) > 24: w = w[0..24) + "..."
+        r.i = r.w0
+        if len(w) == 0: __tx_fail_json(r, msg)
+        else if r.s[r.w0] == '"': __tx_fail(r, "{msg}, found \"{w}\"")
+        else if is_digit(w[0]) or w[0] == '-' or w == "true" or w == "false" or w == "null": __tx_fail(r, "{msg}, found {w}")
+        else: __tx_fail(r, "{msg}, found `{w}`")
+        return
     r.i = r.w0
     __tx_fail(r, msg)
 
@@ -109,6 +126,9 @@ __tx_fail = (r: mut __TextIn, msg: str):
 
 # (as __tx_fail, saying what is there: the word at it, up to a bracket, comma or space)
 __tx_fail_found = (r: mut __TextIn, msg: str):
+    if r.json:
+        __tx_fail_json(r, msg)
+        return
     __tx_space(r)
     if r.i >= len(r.s):
         __tx_fail(r, "{msg}, found the end")
@@ -117,6 +137,44 @@ __tx_fail_found = (r: mut __TextIn, msg: str):
     loop e < len(r.s) and e - r.i < 24 and r.s[e] != '(' and r.s[e] != ',' and r.s[e] != ')' and r.s[e] != ' ' and r.s[e] != '\n': e += 1
     if e == r.i: e = r.i + 1
     __tx_fail(r, "{msg}, found '{r.s[r.i..e)}'")
+
+# (JSON: what is next, in JSON's words: an object, a list, a string, a number, true, false, null,
+# nothing (the text is blank), the end of the text, or the start of anything else in `quotes`)
+__tx_found = (r: mut __TextIn) -> str:
+    __tx_space(r)
+    s = r.s
+    if r.i >= len(s):
+        if len(trim_start(s)) == 0: return "nothing"
+        return "the end of the text"
+    c = s[r.i]
+    if c == '{{': return "an object"
+    if c == '[': return "a list"
+    if c == '"': return "a string"
+    if is_digit(c) or c == '-': return "a number"
+    e = r.i
+    loop e < len(s) and e - r.i < 24 and (is_alnum(s[e]) or s[e] == '_'): e += 1
+    if e == r.i: e = r.i + 1
+    w = s[r.i..e)
+    if w == "true" or w == "false" or w == "null": return w
+    "`{w}`"
+
+# (JSON: as __tx_fail, saying what is there instead: "expected a string, found a number")
+__tx_fail_json = (r: mut __TextIn, msg: str):
+    if len(r.err) == 0: __tx_fail(r, "{msg}, found {__tx_found(r)}")
+    else: __tx_fail(r, msg)
+
+# (JSON: the same for a missing mark (a ',' or a closing bracket): at the end of the text, msg
+# alone, as the text ending there is no value missing)
+__tx_fail_end = (r: mut __TextIn, msg: str):
+    __tx_space(r)
+    if r.i >= len(r.s): __tx_fail(r, msg)
+    else: __tx_fail_json(r, msg)
+
+# (JSON: where the character before r.i is, past any spaces; -1 at the start)
+__tx_before = (r: __TextIn) -> int:
+    i = r.i - 1
+    loop i >= 0 and (r.s[i] == ' ' or r.s[i] == '\n' or r.s[i] == '\t' or r.s[i] == '\r'): i -= 1
+    i
 
 # (after reading the field or element `part`: a mistake in it is in that part, so its name goes
 # before the path, items[2].count built from the inside out; nothing to do while all is well)
@@ -137,15 +195,23 @@ __tx_eat = (r: mut __TextIn, c: u8) -> bool:
         r.i += 1
         return true
     if r.json and r.i < len(r.s):
-        # (JSON's way: objects and lists for structs, tuples and vectors; ':' for '=')
+        # (JSON's way: lists for tuples, vectors and an enum variant's fields (a struct's object is
+        # read by __tx_open and __tx_json_field); ':' for '=')
         d = r.s[r.i]
-        if c == '(' and (d == '{{' or d == '[') or c == ')' and (d == '}}' or d == ']') or c == '=' and d == ':':
+        if c == '(' and d == '[' or c == ')' and d == ']' or c == '=' and d == ':':
             r.i += 1
             return true
     false
 
 __tx_want = (r: mut __TextIn, c: u8):
-    if not __tx_eat(r, c): __tx_fail(r, "expected '{chr(c)}'")
+    if __tx_eat(r, c): return
+    if not r.json: __tx_fail(r, "expected '{chr(c)}'")
+    # (JSON: what the mark stands for there: '(' starts a tuple's or an enum variant's list)
+    else if c == '[' or c == '(': __tx_fail_json(r, "expected a list")
+    else if c == '{{': __tx_fail_json(r, "expected an object")
+    else if c == ':': __tx_fail_end(r, "expected : after the key")
+    else if c == ',': __tx_fail_end(r, "expected , and the next item")
+    else: __tx_fail_end(r, "expected ] to end the list")
 
 # a ',' before every item but the first
 __tx_sep = (r: mut __TextIn, i: int):
@@ -187,6 +253,15 @@ __tx_name_is = (r: __TextIn, name: str) -> bool:
 
 # Name( or ( : the start of a struct, the name (any: a renamed type still reads) left out
 __tx_open = (r: mut __TextIn):
+    if r.json:
+        # ({ for a struct, [ for a vector; __read names the type in the message: it is not known here)
+        __tx_space(r)
+        if r.i < len(r.s) and (r.s[r.i] == '{{' or r.s[r.i] == '['):
+            r.i += 1
+            return
+        if len(r.err) == 0: r.open_err = true
+        __tx_fail_json(r, "expected an object")
+        return
     __tx_word_at(r, false)
     # (a generic struct's type arguments, Pair[int], if written)
     if r.n1 > r.n0 and r.i < len(r.s) and r.s[r.i] == '[':
@@ -201,6 +276,7 @@ __tx_open = (r: mut __TextIn):
 # the next field's name= (in r.name), or false at the closing ')'
 __tx_field = (r: mut __TextIn) -> bool:
     if len(r.err) > 0: return false
+    if r.json: return __tx_json_field(r)
     __tx_eat(r, ',')
     if __tx_eat(r, ')'): return false
     if r.i >= len(r.s):
@@ -211,6 +287,30 @@ __tx_field = (r: mut __TextIn) -> bool:
         __tx_fail(r, "expected a field's name")
         return false
     __tx_want(r, '=')
+    true
+
+# (JSON: the same: "name": with a ',' before each but the first, or false at the closing '}')
+__tx_json_field = (r: mut __TextIn) -> bool:
+    # (the first: just after the struct's '{', or a '[': a list where the struct is)
+    b = __tx_before(r)
+    first = b >= 0 and (r.s[b] == '{{' or r.s[b] == '[')
+    if first and r.s[b] == '[':
+        r.i = b
+        r.open_err = true
+        __tx_fail_json(r, "expected an object")
+        return false
+    if __tx_eat(r, '}}'): return false
+    if not first and not __tx_eat(r, ','):
+        __tx_fail_end(r, "expected , or } to end the object")
+        return false
+    __tx_space(r)
+    if r.i >= len(r.s) or r.s[r.i] != '"':
+        __tx_fail_end(r, "expected a field name in quotes")
+        return false
+    __tx_word_at(r, false)
+    if not __tx_eat(r, ':'):
+        __tx_fail_end(r, "expected : after \"{r.s[r.n0..r.n1)}\"")
+        return false
     true
 
 # what the next value looks like: 1 a string, 2 a whole number, 3 another number, 4 none,
@@ -243,6 +343,12 @@ __tx_kind = (r: mut __TextIn) -> int:
 # past one value of any kind (a field the struct does not have)
 __tx_skip = (r: mut __TextIn):
     __tx_space(r)
+    if r.json and (r.i >= len(r.s) or r.s[r.i] == ',' or r.s[r.i] == '}}' or r.s[r.i] == ']'):
+        # (a field with no value: the field's name says where)
+        name = r.s[r.n0..r.n1)
+        __tx_fail_json(r, "expected a value")
+        r.err_path = name
+        return
     depth = 0
     loop r.i < len(r.s):
         c = r.s[r.i]
@@ -257,7 +363,8 @@ __tx_skip = (r: mut __TextIn):
         else if c == ',' and depth == 0: return
         r.i += 1
 
-__tx_int = (r: mut __TextIn, lo: int, hi: int) -> int:
+# (t: the type, for JSON's messages: "too large for an i32")
+__tx_int = (r: mut __TextIn, lo: int, hi: int, t = "an int") -> int:
     __tx_word_at(r, true)
     # (plain digits, read where they are; anything else, 0x1F or 1_000, by to_int)
     s = r.s
@@ -277,32 +384,53 @@ __tx_int = (r: mut __TextIn, lo: int, hi: int) -> int:
             v = v * 10 + int(c) - 48
         if ok:
             if neg: v = -v
-            if v < lo or v > hi: __tx_bad(r, "{v} is out of range ({lo} to {hi})")
+            if v < lo or v > hi: __tx_range(r, "{v}", v < lo, lo, hi, t)
             return v
     w = r.s[r.n0..r.n1)
     if let v = to_int(w):
-        if v < lo or v > hi: __tx_bad(r, "{v} is out of range ({lo} to {hi})")
+        if v < lo or v > hi: __tx_range(r, "{v}", v < lo, lo, hi, t)
         return v
+    # (JSON: digits beyond an int's)
+    if r.json and r.n1 > i:
+        digits = true
+        loop k in [i..r.n1):
+            if not is_digit(s[k]): digits = false
+        if digits:
+            __tx_range(r, "", neg, lo, hi, t)
+            return 0
     __tx_bad(r, "expected a whole number")
     0
 
+# (the number v is beyond lo to hi, t's range (below it if small): JSON's message names t, "too
+# large for an i32 (at most 2147483647)", and leaves out an int's and a u64's own bounds)
+__tx_range = (r: mut __TextIn, v: str, small: bool, lo: int, hi: int, t: str):
+    r.i = r.w0
+    if not r.json: __tx_fail(r, "{v} is out of range ({lo} to {hi})")
+    else if small and t == "an int": __tx_fail(r, "too small for an int")
+    else if small: __tx_fail(r, "too small for {t} (at least {lo})")
+    else if t == "an int" or t == "a u64": __tx_fail(r, "too large for {t}")
+    else: __tx_fail(r, "too large for {t} (at most {hi})")
+
 # ---------------- each type ----------------
 __read = (r: mut __TextIn, x: mut int): x = __tx_int(r, -0x7FFFFFFFFFFFFFFF - 1, 0x7FFFFFFFFFFFFFFF)
-__read = (r: mut __TextIn, x: mut i32): x = i32(__tx_int(r, -0x80000000, 0x7FFFFFFF))
-__read = (r: mut __TextIn, x: mut i16): x = i16(__tx_int(r, -0x8000, 0x7FFF))
-__read = (r: mut __TextIn, x: mut i8): x = i8(__tx_int(r, -0x80, 0x7F))
-__read = (r: mut __TextIn, x: mut u32): x = u32(__tx_int(r, 0, 0xFFFFFFFF))
-__read = (r: mut __TextIn, x: mut u16): x = u16(__tx_int(r, 0, 0xFFFF))
-__read = (r: mut __TextIn, x: mut u8): x = u8(__tx_int(r, 0, 0xFF))
+__read = (r: mut __TextIn, x: mut i32): x = i32(__tx_int(r, -0x80000000, 0x7FFFFFFF, "an i32"))
+__read = (r: mut __TextIn, x: mut i16): x = i16(__tx_int(r, -0x8000, 0x7FFF, "an i16"))
+__read = (r: mut __TextIn, x: mut i8): x = i8(__tx_int(r, -0x80, 0x7F, "an i8"))
+__read = (r: mut __TextIn, x: mut u32): x = u32(__tx_int(r, 0, 0xFFFFFFFF, "a u32"))
+__read = (r: mut __TextIn, x: mut u16): x = u16(__tx_int(r, 0, 0xFFFF, "a u16"))
+__read = (r: mut __TextIn, x: mut u8): x = u8(__tx_int(r, 0, 0xFF, "a u8"))
 __read = (r: mut __TextIn, x: mut u64):
     w = __tx_word(r, true)
     v: u64 = 0
     loop c in w:
         if not is_digit(c) or v > 1844674407370955161 or v == 1844674407370955161 and c > '5':
-            __tx_bad(r, "expected a whole number from 0 to 18446744073709551615")
+            if not r.json: __tx_bad(r, "expected a whole number from 0 to 18446744073709551615")
+            else if is_digit(c): __tx_range(r, "", false, 0, 0, "a u64")
+            else if w[0] == '-' and len(w) > 1 and is_digit(w[1]): __tx_range(r, "", true, 0, 0, "a u64")
+            else: __tx_bad(r, "expected a whole number")
             return
         v = v * 10 + u64(c - '0')
-    if len(w) == 0: __tx_fail(r, "expected a whole number")
+    if len(w) == 0: __tx_bad(r, "expected a whole number")
     x = v
 
 __read = (r: mut __TextIn, x: mut f64):
@@ -351,7 +479,8 @@ __read = (r: mut __TextIn, x: mut bool):
 
 __read = (r: mut __TextIn, x: mut str):
     if not __tx_eat(r, '"'):
-        __tx_fail(r, "expected a string (in \"quotes\")")
+        if r.json: __tx_fail_json(r, "expected a string")
+        else: __tx_fail(r, "expected a string (in \"quotes\")")
         return
     buf: u8[]
     loop r.i < len(r.s) and r.s[r.i] != '"':
@@ -392,12 +521,29 @@ __tx_hex = (h: u8) -> int:
     if h >= 'A' and h <= 'F': return int(h) - 55
     -1
 
+# (before a list's or map's next item: false at its end, close; JSON wants a ',' between items,
+# and none before the end)
+__tx_more = (r: mut __TextIn, close: u8, n: int) -> bool:
+    if len(r.err) > 0: return false
+    if not r.json:
+        __tx_eat(r, ',')
+        return not __tx_eat(r, close)
+    if __tx_eat(r, close): return false
+    if n > 0 and not __tx_eat(r, ','):
+        if close == ']': __tx_fail_end(r, "expected , or ] to end the list")
+        else: __tx_fail_end(r, "expected , or } to end the object")
+        return false
+    __tx_space(r)
+    if r.i >= len(r.s):
+        if close == ']': __tx_fail(r, "expected ] to end the list")
+        else: __tx_fail(r, "expected } to end the object")
+        return false
+    true
+
 __read[T] = (r: mut __TextIn, xs: mut T[]):
     xs.clear()
     __tx_want(r, '[')
-    loop len(r.err) == 0:
-        __tx_eat(r, ',')
-        if __tx_eat(r, ']'): return
+    loop __tx_more(r, ']', xs.len()):
         v: T
         __default_init(v)
         __read(r, v)
@@ -408,9 +554,7 @@ __read[T] = (r: mut __TextIn, xs: mut T[]):
 __read[T] = (r: mut __TextIn, xs: mut soa T[]):
     xs.clear()
     __tx_want(r, '[')
-    loop len(r.err) == 0:
-        __tx_eat(r, ',')
-        if __tx_eat(r, ']'): return
+    loop __tx_more(r, ']', xs.len()):
         v: T
         __default_init(v)
         __read(r, v)
@@ -428,12 +572,17 @@ __fmt_elem[T] = (buf: mut u8[], xs: soa T[]): __fmt(buf, xs)
 __read[K, V] = (r: mut __TextIn, m: mut Map[K, V]):
     m.clear()
     __tx_want(r, '{{')
-    loop len(r.err) == 0:
-        __tx_eat(r, ',')
-        if __tx_eat(r, '}}'): return
+    n = 0
+    loop __tx_more(r, '}}', n):
+        n += 1
+        # (JSON's keys are in quotes: a map's number keys too)
+        if r.json and r.s[r.i] != '"':
+            __tx_fail_json(r, "expected a key in quotes")
+            return
         k: K
         __default_init(k)
         __read(r, k)
+        if r.json and len(r.err) > 0: return
         __tx_want(r, ':')
         v: V
         __default_init(v)
@@ -453,4 +602,17 @@ __read[T] = (r: mut __TextIn, x: mut T?):
 
 # structs, tuples, enums, unions, vectors, fixed-size arrays: read field by field (the compiler
 # writes the code for each type)
-__read[T] = (r: mut __TextIn, x: mut T): __read_fields(r, x)
+__read[T] = (r: mut __TextIn, x: mut T):
+    __read_fields(r, x)
+    if r.open_err: __tx_name_open(r, to_text(x))
+
+# (JSON: a struct or vector that does not start as one: its type, the start of its text t, is
+# named: "expected an object for Todo, found a list")
+__tx_name_open = (r: mut __TextIn, t: str):
+    r.open_err = false
+    e = 0
+    loop e < len(t) and t[e] != '(' and t[e] != '[': e += 1
+    name = t[0..e)
+    what = "an object"
+    if starts_with(name, "vec") or starts_with(name, "ivec"): what = "a list"
+    r.err = "expected {what} for {name}" + r.err[len("expected an object")..len(r.err))

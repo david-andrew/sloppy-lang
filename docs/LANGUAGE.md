@@ -1016,7 +1016,9 @@ the last frame, at most 0.1: after a long stall (the window dragged, a hidden ta
 takes one 0.1 s step, not a jump. A clock that must keep up with real time reads `elapsed()`
 (or, for music, `audio_time()`) instead of adding up `dt`. An `on_quit = ():` runs once as
 the game ends (its window closed, `quit()` called, or a web page closed or left): the place to
-save.
+save. A program without a window has it too: it runs as the program ends, at its last line,
+`exit()`, or ctrl-c or SIGTERM (which then end it at its next `sleep` or `net.wait`; one that
+loops `loop not stopping():` ends its loop itself).
 
 ```gdscript
 pos = vec2(100, 100)
