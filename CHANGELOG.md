@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The language server gives up a check that is no longer wanted while it runs: the editor
+  cancelled the request, or the document changed (it went on to the end, up to seconds on a big
+  program, before reading either).
 - Messages: `while` says there is none and how a loop repeats; `v.pos` on a vector names the
   field (it named its first letter) and what a vector has; an enum with no variant like the one
   written lists its variants (`screen_fit(.fit)`: .expand, .letterbox, ...). START's Python and

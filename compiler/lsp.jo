@@ -341,12 +341,55 @@ lsp_next = () -> str?:
         else: return m
     none
 
+# while a check runs: what it is for, to give it up when that is gone. The request being answered
+# (its id as sent; "" for a check of the editor's text) and the document ("file://..." as sent);
+# lsp_stop says why it was given up (-32800 cancelled, -32801 the document changed)
+lsp_req = ""
+lsp_req_uri = ""
+lsp_stop = 0
+lsp_seen = 0                    # (lsp_queue's messages looked at already)
+
+# whether what arrived while checking makes the check useless: the request cancelled, or the
+# document changed. (Looked for in the messages' text: json_parse would start its nodes afresh,
+# under the request's own)
+lsp_watch = (req: str, uri: str):
+    lsp_req = req
+    lsp_req_uri = uri
+    lsp_stop = 0
+    lsp_seen = 0
+
+lsp_should_stop = () -> bool:
+    loop lsp_input_ready():
+        if let m = lsp_read(): lsp_queue.push(m)
+        else: break
+    loop lsp_seen < lsp_queue.len():
+        m = lsp_queue[lsp_seen]
+        lsp_seen += 1
+        if len(lsp_req_uri) > 0 and contains(m, "\"textDocument/didChange\"") and contains(m, "\"{lsp_req_uri}\""):
+            lsp_stop = -32801
+            return true
+        if len(lsp_req) > 0 and contains(m, "\"$/cancelRequest\""):
+            k = find(m, "\"params\"")
+            if k >= 0:
+                rest = m[k..]
+                i = find(rest, "\"id\"")
+                if i >= 0:
+                    j = i + 4
+                    loop j < len(rest) and (rest[j] == ':' or rest[j] == ' '): j += 1
+                    e = j
+                    loop e < len(rest) and rest[e] != ',' and rest[e] != '}' and rest[e] != ' ': e += 1
+                    if rest[j..e) == lsp_req:
+                        lsp_stop = -32800
+                        return true
+    false
+
 lsp_send = (body: str):
     msg = "Content-Length: {len(body)}\r\n\r\n{body}"
     __write_fd(1, data(msg), len(msg))
 
 # (requests are answered with `return lsp_reply(...)`: handlers return 0)
 lsp_reply = (id: int, result: str) -> int:
+    if lsp_stop != 0: return lsp_error(id, lsp_stop, if lsp_stop == -32800: "cancelled" else: "the document changed")
     lsp_send("\{\"jsonrpc\":\"2.0\",\"id\":{jn_raw(id)},\"result\":{result}\}")
     0
 
@@ -559,6 +602,8 @@ struct RunOut:
 
 # check the program in a child process; its findings, as lines
 run_child = (main_path: str, doc_path: str, sentinel: bool, skips: str[], lower: bool, wide: bool) -> RunOut:
+    # (given up already: what it is for is gone)
+    if lsp_stop != 0: return RunOut([], false)
     when TARGET == "windows":
         return run_child_w32(main_path, doc_path, sentinel, skips, lower, wide)
     else:
@@ -575,6 +620,7 @@ run_child = (main_path: str, doc_path: str, sentinel: bool, skips: str[], lower:
         out: u8[]
         deadline = time() + 20.0
         killed = false
+        stopped = false
         loop true:
             pfd = [rfd | (1 << 32)]
             left = int((deadline - time()) * 1000.0)
@@ -582,7 +628,12 @@ run_child = (main_path: str, doc_path: str, sentinel: bool, skips: str[], lower:
                 syscall(62, pid, 9)                         # kill
                 killed = true
                 break
-            pr = syscall(7, data(pfd), 1, left)
+            # (the editor's messages looked into each 50 ms: the check may be given up)
+            if lsp_should_stop():
+                syscall(62, pid, 9)
+                stopped = true
+                break
+            pr = syscall(7, data(pfd), 1, min(left, 50))
             if pr < 0: continue
             if pr == 0: continue
             n = out.len()
@@ -595,6 +646,7 @@ run_child = (main_path: str, doc_path: str, sentinel: bool, skips: str[], lower:
         syscall(3, rfd)
         status = [0]
         syscall(61, pid, data(status), 0, 0)                # wait4
+        if stopped: return RunOut([], false)
         if killed:
             lsp_log("checking {doc_path} took too long")
             return RunOut([], false)
@@ -608,6 +660,8 @@ run_child = (main_path: str, doc_path: str, sentinel: bool, skips: str[], lower:
 
 # (the child: check, write the findings to fd, and end)
 check_child = (main_path: str, doc_path: str, sentinel: bool, skips: str[], lower: bool, wide: bool, fd: int):
+    # (a testing aid: tools/lsptest.py makes checks slow, to see one given up while it runs)
+    if let ms = env("SLOPPY_CHECK_DELAY"): sleep(f64(to_int(ms) ?? 0) / 1000.0)
     ide_on = true
     ide_fd = fd
     ide_doc = doc_path
@@ -692,6 +746,7 @@ run_child_w32 = (main_path: str, doc_path: str, sentinel: bool, skips: str[], lo
         out: u8[]
         deadline = time() + 20.0
         killed = false
+        stopped = false
         avail: u32[] = [0]
         loop true:
             # (fails once the child has ended and everything it wrote is read)
@@ -700,6 +755,10 @@ run_child_w32 = (main_path: str, doc_path: str, sentinel: bool, skips: str[], lo
                 if time() > deadline:
                     TerminateProcess(proc, 1)
                     killed = true
+                    break
+                if lsp_should_stop():
+                    TerminateProcess(proc, 1)
+                    stopped = true
                     break
                 WaitForSingleObject(proc, 5)
                 continue
@@ -714,6 +773,7 @@ run_child_w32 = (main_path: str, doc_path: str, sentinel: bool, skips: str[], lo
         code: u32[] = [0]
         GetExitCodeProcess(proc, data(code))
         CloseHandle(proc)
+        if stopped: return RunOut([], false)
         if killed:
             lsp_log("checking {doc_path} took too long")
             return RunOut([], false)
@@ -888,6 +948,7 @@ check_doc = (path: str, completing: int, lower: bool, wide: bool) -> Result:
     t0 = time()
     loop rnd in [0..10):
         o = run_child(main_path, path, sentinel, skips, lower, wide)
+        if lsp_stop != 0: break
         nd = r.diags.len()
         nskips = r.skips.len()
         take_lines(r, o.lines)
@@ -954,7 +1015,13 @@ ensure_checked = (d: int):
 refresh = (d: int):
     docs[d].dirty = false
     docs[d].lowered = false
+    lsp_watch("", docs[d].uri)
     r = check_doc(docs[d].path, -1, false, false)
+    # (given up: the text changed, and is checked again)
+    if lsp_stop != 0:
+        docs[d].dirty = true
+        lsp_stop = 0
+        return
     r.texts = ide_texts
     docs[d].res = r
     if not docs[d].has_good or r.diags.len() == 0 or r.refs.len() >= docs[d].good.refs.len():
@@ -965,7 +1032,12 @@ refresh = (d: int):
 # check document d again, lowering it too (when the editor has been quiet for a moment)
 refresh_lowered = (d: int):
     docs[d].lowered = true
+    lsp_watch("", docs[d].uri)
     r = check_doc(docs[d].path, -1, true, false)
+    if lsp_stop != 0:
+        docs[d].lowered = false
+        lsp_stop = 0
+        return
     r.texts = ide_texts
     if r.diags.len() == 0 and docs[d].res.diags.len() == 0: return
     docs[d].res = r
@@ -2185,6 +2257,7 @@ lsp_main = ():
         method = jstr(jget(root, "method"))
         id = jget(root, "id")
         params = jget(root, "params")
+        lsp_watch(if id != 0: jn_raw(id) else: "", jstr(jget(jget(params, "textDocument"), "uri")))
         if method == "initialize":
             ws_init(params)
             lsp_reply(id, "\{\"capabilities\":{capabilities},\"serverInfo\":\{\"name\":\"sloppy\"\}\}")

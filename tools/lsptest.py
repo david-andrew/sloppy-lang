@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test the language server (sloppy lsp) the way an editor uses it.
 usage: tools/lsptest.py [path/to/sloppy]        (default: bin/sloppy)"""
-import json, os, pathlib, subprocess, sys, tempfile, urllib.parse
+import json, os, pathlib, subprocess, sys, tempfile, time, urllib.parse
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sloppy = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(root, "bin", "sloppy.exe" if os.name == "nt" else "sloppy")
@@ -11,9 +11,9 @@ same_uri = lambda a, b: a == b or os.name == "nt" and urllib.parse.unquote(a).lo
 
 
 class Client:
-    def __init__(self):
+    def __init__(self, **more_env):
         self.p = subprocess.Popen([sloppy, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                  env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")))
+                                  env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), **more_env))
         self.id = 0
         self.notes = []
         self.versions = {}
@@ -582,6 +582,36 @@ while len(answers) < 3:
     if m.get("id") in (9001, 9002, 9003) and "method" not in m: answers[m["id"]] = m
     else: c.notes.append(m)
 check("cancelled, changed since, answered", [answers[9001].get("error", {}).get("code"), answers[9002].get("error", {}).get("code"), "result" in answers[9003]], [-32800, -32801, True])
+
+# ---- a check given up while it runs: its text changed, or the request it is for cancelled ----
+# (a server whose checks each take 1.5 s: SLOPPY_CHECK_DELAY)
+s2 = Client(SLOPPY_CHECK_DELAY="1500")
+s2.request("initialize", {"processId": None, "rootUri": None, "capabilities": {}})
+s2.notify("initialized", {})
+gsrc = "g = 1\nprint(g)\n"
+gu = to_uri(os.path.join(tmp, "given_up.jo"))
+t0 = time.time()
+s2.set_text(gu, gsrc)
+time.sleep(0.4)
+s2.set_text(gu, gsrc + "print(g + 1)\n")
+published = []
+while not any(v == 2 for v in published):
+    m = s2.recv()
+    if m.get("method") == "textDocument/publishDiagnostics" and m["params"]["uri"] == gu: published.append(m["params"].get("version"))
+check("a check of changed text given up: only the new text's errors, once", (published, time.time() - t0 < 2.8), ([2], True))
+gsrc2 = gsrc + "print(g + 1)\n"
+s2.id += 1
+t1 = time.time()
+s2.send({"jsonrpc": "2.0", "id": s2.id, "method": "textDocument/completion", "params": {"textDocument": {"uri": gu}, "position": {"line": 1, "character": 7}}})
+time.sleep(0.4)
+s2.send({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": s2.id}})
+while True:
+    m = s2.recv()
+    if m.get("id") == s2.id and "method" not in m: break
+check("a request cancelled while its check runs: answered at once", (m.get("error", {}).get("code"), time.time() - t1 < 1.2), (-32800, True))
+s2.request("shutdown", None)
+s2.notify("exit", None)
+s2.p.wait(timeout=5)
 
 c.request("shutdown", None)
 c.notify("exit", None)
