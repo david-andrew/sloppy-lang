@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.23.0
 
 - `a..b` leaves `b` out, as Python's `range(a, b)`: `loop i in 0..n:` is n times, `0..xs.len()`
   every index, and slices go as Python's (`xs[2..5]` is `xs[2:5]`, `xs[..3]` the first three).
