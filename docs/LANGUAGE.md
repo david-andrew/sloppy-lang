@@ -71,7 +71,10 @@ piped in (`sloppy < script.txt`).
   (`if x: return 1`) or an indented block on the following lines.
   Inside brackets newlines are ignored (except in array literals, where they separate rows),
   and a `:` at the end of a line opens an indented block (this is how multi-line lambdas work).
-* `;` may separate statements on one line.
+* `;` may separate statements on one line, and a `\` at the end of a line continues it on the
+  next (inside brackets lines continue by themselves).
+* Indentation is spaces or tabs, a tab counting as up to 4 columns; a file uses one or the
+  other (mixing them is an error that says so).
 * Integer literals: `42`, `1_000_000`, `0xff`, `0b1010`. Float literals: `1.5`, `2.0e-3`.
   Literals take the type their context expects, and must fit it (`x: u8 = 300` and
   `x: u64 = -1` are errors; a literal above the i64 range is a `u64`, or `int`'s bits).
@@ -100,8 +103,9 @@ piped in (`sloppy < script.txt`).
   angle `rad deg turn`, force `N`, and long names (`10seconds`, `3meters`). Values are plain
   `f64`s (no dimension checking).
 
-Keywords: `struct enum type if else loop in break continue return match use as const true false
-none null and or xor not is let mut when defer extern test build pass` (`loop let xor is` and
+Keywords: `struct enum type if else loop in break continue return match import use as const true
+false none null and or xor not is let mut when defer extern test build pass` (and `from` and
+`error` before `import` and `struct`/`enum`) (`loop let xor is` and
 `type` may still be used as field and variant names).
 
 ## 3. Variables and constants
@@ -181,6 +185,18 @@ numbers, unsigned or sized integers, next to `&` or `<<`) gets a warning.
 with low precedence (below comparisons); `& | ~ << >>` are the bitwise operators with high
 precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests membership
 (`x in 1..10` compares, no array is made). `a ?? b` is `a` unless it is `none`.
+
+**Looks familiar, means something else.** What Python, JavaScript or C would read otherwise:
+- `x ^ y` is a power; xor is `xor`.
+- `7 / 2` is 3 with whole numbers, and `-7 % 3` is -1 (as in C, not Python).
+- `not` on a whole number flips its bits: `not 0` is -1 (conditions take bools).
+- `+` on arrays of one dimension joins them (`[1, 2] + [3]`); on a matrix it adds element by
+  element. `.+` always adds element by element.
+- `x = 1` in a function changes a global named `x` when there is one; `let x = 1` makes a local.
+- `a..b` leaves `b` out, as Python's `range(a, b)` does; `[a..b]` keeps it.
+- `'a'` and `"a"` are both text, but where a number is expected `'a'` is its character code (97).
+- `load()?.name` is not optional chaining: `?` returns from the function when `load()` fails.
+- `!` unwraps an optional, not an error: `x is ParseError`, or `?`, handle those.
 
 From tightest to loosest (operators on one line bind alike, left to right but for `^`):
 
