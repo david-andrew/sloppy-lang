@@ -162,7 +162,8 @@ theirs for every tick after, sent to the others as theirs. A game makes that inp
 computer flies it" (a field the tick reads). Only a machine that had everything the leaver sent
 anyone can do it: the host (all of it passed through the host), or either of two players. A
 page that closes may not be reported as gone for half a minute: a player `s.silent(p)` for some
-seconds can be taken as gone (Aces waits 8).
+seconds can be taken as gone (Aces waits 8), but only while the game lasts: after it, a player
+reading the results, or back in the lobby, plays no more ticks and sends nothing.
 
 The session's packets on those peers are its own (marked, so the game's `net.receive()` leaves
 them); the game sends and reads its own messages on the same peers as ever (a chat, "again?"),
