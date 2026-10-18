@@ -194,6 +194,8 @@ struct LoopInfo:
     brk: int
     cont: int
     scope: int
+    items: int      # tl_items and building when the loop began: a break or continue from inside
+    built: int      # an expression drops what came after
 
 cur_fn = 0
 cur_ret = 0
@@ -375,6 +377,21 @@ stmt_end = ():
 drop_item = (it: TempItem):
     if it.is_slot: drop_at(e_slot(it.ref), it.t)
     else: release(it.ref, it.t)
+
+# (leaving the statements from tl_items[items] on, and the values being built from building[built]
+# on, from inside an expression: a return, break or continue there)
+drop_held = (items: int, built: int):
+    k = building.len() - 1
+    loop k >= built:
+        drop_item(building[k])
+        k -= 1
+    j = tl_items.len() - 1
+    loop j >= items:
+        k = tl_items[j].len() - 1
+        loop k >= 0:
+            drop_item(tl_items[j][k])
+            k -= 1
+        j -= 1
 
 enter_cond = (): cond_depth += 1
 leave_cond = (): cond_depth -= 1
@@ -2806,13 +2823,12 @@ gen_expr = (e: int) -> Val:
         return V(norm(e_un(.not_, VI, v), t), false)
     if k == .not_: return V(e_bin(.xor, VI, gen_expr(int(nodes[e].a)).v, e_iconst(1)), false)
     if k == .and_ or k == .or_:
+        # (as a condition's branches, each comparison a jump: 1 where the whole holds, else 0)
         r = vreg(VI)
-        e_mov(r, gen_expr(int(nodes[e].a)).v)
-        if k == .and_: iff(r)
-        else: iff(e_bin(.eq, VI, r, e_iconst(0)))
-        enter_cond()
-        e_mov(r, gen_expr(int(nodes[e].b)).v)
-        leave_cond()
+        e_mov(r, e_iconst(0))
+        blk()
+        jump_if_false(e, ctl)
+        e_mov(r, e_iconst(1))
         endc()
         return V(r, false)
     if k == .binary: return gen_binary(e)
@@ -3051,7 +3067,11 @@ gen_array = (e: int, t: int) -> Val:
     if all_const(e, et):
         # immutable static array: lives in rodata, copied on first write
         return V(e_daddr(const_array(e, et)), false)
-    arr = e_call(rt("__arr_filled"), [e_iconst(n), e_iconst(esz)], VI)
+    # (elements that hold references start zeroed: a return, break or continue while it is built
+    # drops the array with those not stored yet)
+    fill_fn = "__arr_filled"
+    if is_managed(et): fill_fn = "__arr_repeat"
+    arr = e_call(rt(fill_fn), [e_iconst(n), e_iconst(esz)], VI)
     res = vreg(VI)
     e_mov(res, arr)
     building.push(TempItem(false, res, t, false))
@@ -3255,17 +3275,7 @@ gen_return = (s: int):
         stmt_end()
     # (a return from inside an expression, as `?` makes: what the statements around it hold, and
     # values half built, are dropped as their ends would drop them)
-    k = building.len() - 1
-    loop k >= 0:
-        drop_item(building[k])
-        k -= 1
-    j = tl_items.len() - 1
-    loop j >= 0:
-        k = tl_items[j].len() - 1
-        loop k >= 0:
-            drop_item(tl_items[j][k])
-            k -= 1
-        j -= 1
+    drop_held(0, 0)
     i = scope_locals.len() - 1
     loop i >= 0:
         emit_scope_exit(i)
@@ -3957,7 +3967,7 @@ gen_for = (s: int):
         if not direct: write_place(local_place(l, true), lt, ctr)
         blk()
         cont = ctl
-        loops.push(LoopInfo(brk, cont, scope_locals.len()))
+        loops.push(LoopInfo(brk, cont, scope_locals.len(), tl_items.len(), building.len()))
         gen_loop_body(int(nodes[s].b))
         loops.pop()
         loop sa in safe_arrs: safe_index.pop()
@@ -4066,7 +4076,7 @@ gen_for = (s: int):
             e_mov(int(locals[vl].vreg), e_bin(.add, VI, e_addi(vals, 24), e_bin(.mul, VI, i, e_iconst(tsize(vt)))))
     blk()
     cont = ctl
-    loops.push(LoopInfo(brk, cont, scope_locals.len()))
+    loops.push(LoopInfo(brk, cont, scope_locals.len(), tl_items.len(), building.len()))
     gen_loop_body(int(nodes[s].b))
     loops.pop()
     endc()
@@ -4481,7 +4491,7 @@ gen_while = (s: int):
         scope_add_local(l)
         blk()
         cont = ctl
-        loops.push(LoopInfo(brk, cont, scope_locals.len()))
+        loops.push(LoopInfo(brk, cont, scope_locals.len(), tl_items.len(), building.len()))
         gen_block_stmts(int(nodes[s].b))
         loops.pop()
         endc()
@@ -4492,7 +4502,7 @@ gen_while = (s: int):
         if not rotate: jump_if_false(int(nodes[s].a), brk)
         blk()
         cont = ctl
-        loops.push(LoopInfo(brk, cont, scope_locals.len()))
+        loops.push(LoopInfo(brk, cont, scope_locals.len(), tl_items.len(), building.len()))
         gen_loop_body(int(nodes[s].b))
         loops.pop()
         endc()
@@ -4538,6 +4548,7 @@ gen_stmt = (s: int):
     else if k == .return_: gen_return(s)
     else if k == .break_ or k == .continue_:
         lp = loops[loops.len() - 1]
+        drop_held(lp.items, lp.built)
         i = scope_locals.len() - 1
         loop i >= lp.scope:
             emit_scope_exit(i)
@@ -5108,6 +5119,12 @@ lower_extern_thunk = (lf: int, f: int):
     cps: int[]
     loop i in 0.. and t in fns[f].ptypes:
         if tkind(t) == .str_: cps.push(e_call(rt("__c_str"), [ps[i]], VI))
+        else if fns[f].cvariadic > 0 and i >= int(fns[f].cvariadic) - 1 and vt_of(t) == VS:
+            # (C's variadic arguments: an f32 goes as a double, as C promotes a float there;
+            # smaller integers are already whole registers, extended as an int is)
+            d = vreg(VF)
+            emit(.f2f, VF, d, ps[i], 0, 0, 0)
+            cps.push(d)
         else: cps.push(ps[i])
     ret = int(fns[f].ret)
     if vc(ret) == VC_AGG: fatal(nodes[int(fns[f].decl)].pos, "C functions can only return scalars or pointers")
