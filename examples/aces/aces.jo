@@ -1,6 +1,7 @@
-# ACES - biplanes in a dogfight over farmland: two sides, Red and Blue, of 1 to 6 planes each,
-# flown by players over the network and the computer. The first side to shoot down 5 planes for
-# each of its own wins (15 for 3 a side).
+# ACES - a dogfight over farmland, Red's triplanes against Blue's biplanes: two sides of 1 to 6
+# planes each, flown by players over the network and the computer. The first side to shoot down
+# 5 planes for each of its own wins (15 for 3 a side). Each player has a name and an insignia on
+# their plane (Settings), besides their side's crosses or roundels.
 #
 # Invite a friend gives a link to send them (lib/invite.jo): they open it, the game in a web
 # browser, and the two games connect straight to each other with no server, anywhere. The one who
@@ -497,6 +498,10 @@ struct Settings:
     sides = 3                   # planes a side
     together = false            # friends on the same side (Red), the computer against them
     name = ""                   # (as typed: clean_name makes it the one shown)
+    badge = -1                  # (the insignia on this one's plane: BADGES)
+
+# the insignias a player can have on their plane, besides their side's (Settings)
+BADGES = ["none", "white bands", "yellow nose", "chevron", "star", "skull", "lightning", "yellow tail"]
 
 # a player's name as shown and sent: up to 12 characters, no commas, one space between words
 # (it travels as an underscore, so a message's words stay words)
@@ -528,12 +533,14 @@ if let saved = load_data("settings"):
         settings.sides = clamp(to_int(w[4]) ?? 3, 1, MOST)
         settings.together = w[5] == "1"
     if w.len() >= 7: settings.name = clean_name(w[6])
+    if w.len() >= 8: settings.badge = to_int(w[7]) ?? -1
 save_settings = ():
     settings.name = my_name()
-    save_data("settings", "{if settings.invert: 1 else: 0} {settings.sound} {settings.skill} {if settings.mouse: 1 else: 0} {settings.sides} {if settings.together: 1 else: 0} {wire(settings.name)}")
-# (the first time: a name to change in Settings)
-if len(settings.name) == 0:
-    settings.name = "Pilot {random_int(100, 1000)}"
+    save_data("settings", "{if settings.invert: 1 else: 0} {settings.sound} {settings.skill} {if settings.mouse: 1 else: 0} {settings.sides} {if settings.together: 1 else: 0} {wire(settings.name)} {settings.badge}")
+# (the first time: a name and an insignia, to change in Settings)
+if len(settings.name) == 0 or settings.badge < 0 or settings.badge >= BADGES.len():
+    if len(settings.name) == 0: settings.name = "Pilot {random_int(100, 1000)}"
+    if settings.badge < 0 or settings.badge >= BADGES.len(): settings.badge = random_int(1, BADGES.len())
     save_settings()
 SKILLS = [0.3, 0.65, 1.0]
 
@@ -556,18 +563,31 @@ invite.from_link()
 # with friends: the one who invited them has each one's peer (player k + 1's: -1 once gone); each
 # of them the inviter's
 friends: int[]
-friend_names: str[]             # (each one's, as they said: "" until then)
+friend_names: str[]             # (each one's name and insignia, as they said: "" until then)
+friend_badges: int[]
 host = -1
 fights = 0                      # (fights started with these friends: their numbers)
 lobby_me = 0                    # (joined: this one's player, and the sides, as the host says)
 lobby_pilots: int[]
 lobby_names: str[]
+lobby_badges: int[]
 told_at = 0.0
 away: int[]                     # (the players who left this fight: the computer flies their planes)
 results: Game? = none           # (the last fight, over: its tally shown with the sides, till the next)
 results_me = 0
-# the players' names in this fight, by number (only shown: nothing a tick does depends on them)
+# the players' names and insignias in this fight, by number (only shown: nothing a tick does
+# depends on them)
 crew_names: str[]
+crew_badges: int[]
+
+# (an insignia as sent: one of BADGES)
+to_badge = (t: str) -> int: clamp(to_int(t) ?? 0, 0, BADGES.len() - 1)
+
+# the insignia on plane j: its player's (the menu's plane: this one's, to see it), or none
+badge_of = (g: Game, j: int) -> int:
+    if mode == .menu: return if j == 0: settings.badge else: 0
+    k = g.pilots[j]
+    if k >= 0 and k < crew_badges.len(): crew_badges[k] else: 0
 
 # what plane j is called: its player's name, or the computer's "Red 2"
 call = (g: Game, j: int) -> str:
@@ -583,14 +603,22 @@ names_now = () -> str[]:
     n = [my_name()]
     n.extend(friend_names)
     n
+badges_now = () -> int[]:
+    b = [settings.badge]
+    b.extend(friend_badges)
+    b
 
 # (the friends still there, with their names)
 drop_gone = ():
     names: str[]
+    badges: int[]
     loop k in 0.. and f in friends:
-        if f >= 0: names.push(friend_names[k])
+        if f >= 0:
+            names.push(friend_names[k])
+            badges.push(friend_badges[k])
     friends = friends.filter((f): f >= 0)
     friend_names = names
+    friend_badges = badges
 
 # the sides as they would be now (the inviter's)
 lobby_seats = () -> int[]:
@@ -607,6 +635,7 @@ start_fight = ():
     save_settings()
     results = none
     crew_names = names_now()
+    crew_badges = badges_now()
     if friends.len() == 0:
         local = new_game(pilots, skill)
         mine = 0
@@ -619,7 +648,7 @@ start_fight = ():
     begin(0, pilots, skill, peers)
     tell_start()
 
-start_text = (k: int) -> str: "start {fights} {k} {settings.skill} {join(game().pilots.map((p): "{p}"), ",")} {join(crew_names.map(wire), ",")}"
+start_text = (k: int) -> str: "start {fights} {k} {settings.skill} {join(game().pilots.map((p): "{p}"), ",")} {join(crew_names.map(wire), ",")} {join(crew_badges.map((b): "{b}"), ",")}"
 tell_start = ():
     loop k in 0.. and f in friends:
         if f >= 0: net.send(f, start_text(k + 1))
@@ -641,6 +670,7 @@ leave = ():
         if f >= 0: net.close(f)
     friends = []
     friend_names = []
+    friend_badges = []
     if host >= 0: net.close(host)
     host = -1
     status = ""
@@ -665,7 +695,9 @@ on_net = (e: net.NetEvent):
     if e.peer != host:
         k = friends.index_of(e.peer)
         w = split(e.text, " ")
-        if k >= 0 and w.len() >= 2 and w[0] == "me": friend_names[k] = clean_name(w[1])
+        if k >= 0 and w.len() >= 3 and w[0] == "me":
+            friend_names[k] = clean_name(w[1])
+            friend_badges[k] = to_badge(w[2])
         return
     w = split(e.text, " ")
     if w.len() >= 2 and w[0] == "gone" and mode == .online:
@@ -679,6 +711,7 @@ on_net = (e: net.NetEvent):
         lobby_me = to_int(w[2]) ?? 0
         lobby_pilots = split(w[3], ",").map((t): to_int(t) ?? -1)
         lobby_names = if w.len() >= 5: split(w[4], ",").map(clean_name) else: []
+        lobby_badges = if w.len() >= 6: split(w[5], ",").map(to_badge) else: []
     else if w.len() >= 5 and w[0] == "start":
         r = to_int(w[1]) ?? 0
         if r <= fights: return
@@ -691,6 +724,7 @@ on_net = (e: net.NetEvent):
         peers = fill(-1, players)
         peers[0] = host
         crew_names = if w.len() >= 6: split(w[5], ",").map(clean_name) else: []
+        crew_badges = if w.len() >= 7: split(w[6], ",").map(to_badge) else: []
         begin(who, pilots, SKILLS[clamp(to_int(w[3]) ?? 1, 0, 2)], peers)
 
 # a friend's game has gone (closed, or not heard from)
@@ -732,14 +766,15 @@ tell = ():
     if elapsed() - told_at < 0.5: return
     if host >= 0 and mode == .menu and page == JOINED:
         told_at = elapsed()
-        if lobby_me <= 0 or lobby_me >= lobby_names.len() or lobby_names[lobby_me] != my_name(): net.send(host, "me {wire(my_name())}")
+        if lobby_me <= 0 or lobby_me >= lobby_badges.len() or lobby_names[lobby_me] != my_name() or lobby_badges[lobby_me] != settings.badge: net.send(host, "me {wire(my_name())} {settings.badge}")
     if friends.len() == 0: return
     if mode == .menu and page == LOBBY:
         told_at = elapsed()
         p = join(lobby_seats().map((x): "{x}"), ",")
         n = join(names_now().map(wire), ",")
+        b = join(badges_now().map((x): "{x}"), ",")
         loop k in 0.. and f in friends:
-            if f >= 0: net.send(f, "lobby {fights} {k + 1} {p} {n}")
+            if f >= 0: net.send(f, "lobby {fights} {k + 1} {p} {n} {b}")
     else if mode == .online and s.me == 0:
         told_at = elapsed()
         if s.tick < 300: tell_start()
@@ -1045,14 +1080,147 @@ quad = (vs: mut Vertex3D[], a: vec3, b: vec3, c: vec3, d: vec3, color: vec4, ins
     if f64(dot(n, (a + c) * 0.5 - inside)) < 0.0: n = n * -1.0
     loop p in [a, b, c, a, c, d]: vs.push(Vertex3D(p, n, vec2(0, 0), color))
 
-# a biplane, nose toward -z: body, wings, cream discs on them, its own color at the tail
-make_plane = (body: vec4, wings: vec4, mark: vec4) -> Mesh:
-    vs: Vertex3D[]
-    metal = rgb(0.42, 0.42, 0.4)
+# the body's cross-section at z (between two of loft's rectangles), and how fast its half width
+# changes there (a mark on its side lies on the slant)
+ring_at = (rings: vec4[], z: f64) -> (vec4, f64):
+    loop i in [0..rings.len() - 1):
+        a = rings[i]
+        b = rings[i + 1]
+        if z <= f64(b.x) or i == rings.len() - 2:
+            t = f32((z - f64(a.x)) / f64(b.x - a.x))
+            return (lerp(a, b, t), f64(b.z - a.z) / f64(b.x - a.x))
+    (rings[0], 0.0)
+
+# a flat piece through pts (in order round it, in one plane, each seen from their middle), thick
+# along n: a tailplane, a rudder
+plate = (vs: mut Vertex3D[], pts: vec3[], n: vec3, thick: f64, color: vec4):
+    mid = vec3(0, 0, 0)
+    loop p in pts: mid += p
+    mid = mid * f32(1.0 / f64(pts.len()))
+    h = n * f32(thick / 2.0)
+    loop i in [0..pts.len()):
+        a = pts[i]
+        b = pts[(i + 1) % pts.len()]
+        loop s in [1.0, -1.0]:
+            o = h * f32(s)
+            loop p in [mid + o, a + o, b + o]: vs.push(Vertex3D(p, n * f32(s), vec2(0, 0), color))
+        quad(vs, a + h, b + h, b - h, a - h, color, mid)
+
+# ---------------- markings: flat shapes (triangles, about 1 across) laid on a surface ----------------
+quad2 = (a: vec2, b: vec2, c: vec2, d: vec2) -> vec2[]: [a, b, c, a, c, d]
+box2 = (c: vec2, w: f64, h: f64) -> vec2[]:
+    x = f32(w / 2.0)
+    y = f32(h / 2.0)
+    quad2(c + vec2(-x, -y), c + vec2(x, -y), c + vec2(x, y), c + vec2(-x, y))
+
+disc2 = (c: vec2, r: f64, n: int = 18) -> vec2[]:
+    t: vec2[]
+    loop i in [0..n):
+        a = TAU * f64(i) / f64(n)
+        b = TAU * f64(i + 1) / f64(n)
+        t.extend([c, c + vec2(f32(cos(a) * r), f32(sin(a) * r)), c + vec2(f32(cos(b) * r), f32(sin(b) * r))])
+    t
+
+star2 = (r: f64) -> vec2[]:
+    t: vec2[]
+    at = (k: int) -> vec2:
+        a = PI / 2.0 + PI * f64(k) / 5.0
+        l = if k % 2 == 0: r else: r * 0.42
+        vec2(f32(cos(a) * l), f32(sin(a) * l))
+    loop k in [0..10): t.extend([vec2(0, 0), at(k), at(k + 1)])
+    t
+
+# (a shape turned a quarter: its top toward +x)
+turned = (t: vec2[]) -> vec2[]: t.map((p): vec2(p.y, -p.x))
+
+WHITE_PAINT = rgb(0.95, 0.93, 0.86)
+BLACK_PAINT = rgb(0.08, 0.08, 0.08)
+YELLOW_PAINT = rgb(0.95, 0.75, 0.15)
+NAVY = rgb(0.1, 0.14, 0.38)
+ROUNDEL_RED = rgb(0.75, 0.1, 0.1)
+
+# each side's own: Red's black cross edged in white, Blue's roundel (layers, the first underneath)
+CROSS = [(box2(vec2(0, 0), 2.0, 0.64) + box2(vec2(0, 0), 0.64, 2.0), WHITE_PAINT), (box2(vec2(0, 0), 1.76, 0.4) + box2(vec2(0, 0), 0.4, 1.76), BLACK_PAINT)]
+ROUNDEL = [(disc2(vec2(0, 0), 1.0, 24), NAVY), (disc2(vec2(0, 0), 0.66, 24), WHITE_PAINT), (disc2(vec2(0, 0), 0.33, 18), ROUNDEL_RED)]
+
+# a player's own insignia (BADGES; the computer's planes have none)
+const NOSE = 2
+const TAIL = 7
+CHEVRON = quad2(vec2(-1.0, -0.6), vec2(0.0, 0.4), vec2(0.0, 0.85), vec2(-1.0, -0.15)) + quad2(vec2(1.0, -0.6), vec2(0.0, 0.4), vec2(0.0, 0.85), vec2(1.0, -0.15))
+SKULL = [(disc2(vec2(0, 0.15), 0.62, 16) + box2(vec2(0, -0.45), 0.7, 0.5), WHITE_PAINT),
+         (disc2(vec2(-0.24, 0.12), 0.17, 8) + disc2(vec2(0.24, 0.12), 0.17, 8) + [vec2(0, -0.08), vec2(-0.09, -0.24), vec2(0.09, -0.24)] + box2(vec2(-0.12, -0.56), 0.06, 0.28) + box2(vec2(0.12, -0.56), 0.06, 0.28), BLACK_PAINT)]
+# (a bolt along the side, from the tail to the nose: +x)
+bolt = () -> vec2[]:
+    t = 0.11
+    seg = (a: vec2, b: vec2) -> vec2[]: quad2(a + vec2(0, -t), b + vec2(0, -t), b + vec2(0, t), a + vec2(0, t))
+    seg(vec2(-1.0, -0.05), vec2(0.1, 0.22)) + quad2(vec2(0.1 - t, 0.22 + t), vec2(0.1 + t, 0.22 - t), vec2(-0.05 + t, -0.2 - t), vec2(-0.05 - t, -0.2 + t)) + seg(vec2(-0.05, -0.2), vec2(1.0, 0.02))
+BOLT = bolt()
+
+# marking layers laid on a surface at `at`, facing n: the shapes' x along u, y along v, size
+# across (each layer a little above the one before)
+mark = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], at: vec3, u: vec3, v: vec3, n: vec3, size: f64):
+    loop k in 0.. and l in layers:
+        o = at + n * f32(0.012 + 0.006 * f64(k))
+        loop p in l.0: vs.push(Vertex3D(o + u * f32(f64(p.x) * size) + v * f32(f64(p.y) * size), n, vec2(0, 0), l.1))
+
+on_top = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], at: vec3, size: f64): mark(vs, layers, at, vec3(1, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0), size)
+underneath = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], at: vec3, size: f64): mark(vs, layers, at, vec3(1, 0, 0), vec3(0, 0, -1), vec3(0, -1, 0), size)
+
+# on both sides of the body at z (x toward the nose, y up)
+on_sides = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], rings: vec4[], z: f64, size: f64):
+    r = ring_at(rings, z)
+    loop s in [1.0, -1.0]:
+        n = normalize(vec3(f32(s), 0, f32(-r.1)))
+        u = normalize(vec3(f32(-s * r.1), 0, -1))
+        mark(vs, layers, vec3(f32(s * f64(r.0.z)), r.0.y, f32(z)), u, vec3(0, 1, 0), n, size)
+
+# the pilot's insignia, on the body (at z: the front of the tail part) and the top wing's middle
+# (at y, z); bands go round the body
+own_mark = (vs: mut Vertex3D[], badge: int, rings: vec4[], z: f64, wing: vec3):
+    one = (shape: vec2[]) -> (vec2[], vec4)[]: [(shape, WHITE_PAINT)]
+    if badge == 1:
+        loop c in [z + 0.55, z + 0.85]:
+            a = ring_at(rings, c - 0.07).0
+            b = ring_at(rings, c + 0.07).0
+            loft(vs, [vec4(a.x, a.y, a.z + 0.012, a.w + 0.012), vec4(b.x, b.y, b.z + 0.012, b.w + 0.012)], WHITE_PAINT)
+    else if badge == 3:
+        on_sides(vs, one(turned(CHEVRON)), rings, z, 0.26)
+        on_top(vs, one(CHEVRON), wing, 0.45)
+    else if badge == 4:
+        on_sides(vs, one(star2(1.0)), rings, z, 0.3)
+        on_top(vs, one(star2(1.0)), wing, 0.45)
+    else if badge == 5:
+        on_sides(vs, SKULL, rings, z, 0.3)
+        on_top(vs, SKULL, wing, 0.4)
+    else if badge == 6: on_sides(vs, [(BOLT, YELLOW_PAINT)], rings, z - 0.3, 0.55)
+
+# what both have: the cockpit and its pilot, the guns, the wheels
+common = (vs: mut Vertex3D[], gun_y: f64):
     dark = rgb(0.12, 0.11, 0.1)
     wood = rgb(0.45, 0.32, 0.2)
-    loft(vs, [vec4(-2.9, 0.05, 0.42, 0.42), vec4(-2.3, 0.05, 0.5, 0.5)], metal)
-    loft(vs, [vec4(-2.3, 0.05, 0.5, 0.5), vec4(-0.6, 0.1, 0.48, 0.52), vec4(1.2, 0.15, 0.32, 0.38), vec4(3.9, 0.25, 0.06, 0.1)], body)
+    loop sx in [-1.0, 1.0]:
+        x = f32(sx)
+        add_box(vs, vec3(0.17 * x, f32(gun_y), -1.7), vec3(0.08, 0.08, 1.1), dark)
+        add_box(vs, vec3(0.7 * x, -0.85, -1.4), vec3(0.07, 0.9, 0.07), dark)
+        add_cylinder(vs, vec3(-1.3, f32(-sx * 0.95 - 0.07), -1.4), 0.33, 0.14, dark, 10, transform = rotation_z(PI / 2.0))
+    add_box(vs, vec3(0, -1.3, -1.4), vec3(1.5, 0.05, 0.05), dark)
+    add_box(vs, vec3(0, 0.58, 0.35), vec3(0.62, 0.1, 0.9), dark)
+    add_sphere(vs, vec3(0, 0.8, 0.55), 0.2, wood, 8, 5)
+    add_box(vs, vec3(0, 0.75, -0.15), vec3(0.4, 0.22, 0.03), rgb(0.6, 0.7, 0.75))
+
+BI_BODY = [vec4(-2.3, 0.05, 0.5, 0.5), vec4(-0.6, 0.1, 0.48, 0.52), vec4(1.2, 0.15, 0.32, 0.38), vec4(3.9, 0.25, 0.06, 0.1)]
+TRI_BODY = [vec4(-2.2, 0.05, 0.47, 0.49), vec4(-0.6, 0.1, 0.45, 0.5), vec4(1.2, 0.15, 0.3, 0.36), vec4(3.75, 0.25, 0.05, 0.08)]
+
+# Blue's biplane, nose toward -z: a metal nose, two long wings, roundels, the rudder striped
+make_biplane = (badge: int) -> Mesh:
+    vs: Vertex3D[]
+    body = rgb(0.15, 0.3, 0.62)
+    wings = rgb(0.22, 0.42, 0.76)
+    dark = rgb(0.12, 0.11, 0.1)
+    wood = rgb(0.45, 0.32, 0.2)
+    tail = if badge == TAIL: YELLOW_PAINT else: wings
+    loft(vs, [vec4(-2.9, 0.05, 0.42, 0.42), vec4(-2.3, 0.05, 0.5, 0.5)], if badge == NOSE: YELLOW_PAINT else: rgb(0.42, 0.42, 0.4))
+    loft(vs, BI_BODY, body)
     add_box(vs, vec3(0, 0.05, -2.92), vec3(0.6, 0.6, 0.04), dark)
     add_box(vs, vec3(0, 1.35, -0.9), vec3(8.8, 0.12, 1.5), wings)
     add_box(vs, vec3(0, -0.45, -0.7), vec3(8.0, 0.12, 1.35), wings)
@@ -1063,26 +1231,62 @@ make_plane = (body: vec4, wings: vec4, mark: vec4) -> Mesh:
         add_box(vs, vec3(3.0 * x, 0.45, -0.4), vec3(0.07, 1.75, 0.07), wood)
         add_box(vs, vec3(0.42 * x, 0.92, -1.35), vec3(0.06, 0.8, 0.06), wood)
         add_box(vs, vec3(0.42 * x, 0.92, -0.55), vec3(0.06, 0.8, 0.06), wood)
-        # the wheels and their legs
-        add_box(vs, vec3(0.7 * x, -0.85, -1.4), vec3(0.07, 0.9, 0.07), dark)
-        add_cylinder(vs, vec3(-1.3, f32(-sx * 0.95 - 0.07), -1.4), 0.33, 0.14, dark, 10, transform = rotation_z(PI / 2.0))
-        # discs on the wings, top and bottom
-        add_cylinder(vs, vec3(3.1 * x, 1.41, -0.9), 0.6, 0.02, mark, 16)
-        add_cylinder(vs, vec3(3.1 * x, 1.425, -0.9), 0.3, 0.02, body, 16)
-        add_cylinder(vs, vec3(2.8 * x, -0.55, -0.7), 0.55, 0.02, mark, 16)
-        # the guns, on top of the nose
-        add_box(vs, vec3(0.17 * x, 0.6, -1.7), vec3(0.08, 0.08, 1.1), dark)
-    add_box(vs, vec3(0, -1.3, -1.4), vec3(1.5, 0.05, 0.05), dark)
-    # the cockpit and its pilot
-    add_box(vs, vec3(0, 0.58, 0.35), vec3(0.62, 0.1, 0.9), dark)
-    add_sphere(vs, vec3(0, 0.8, 0.55), 0.2, wood, 8, 5)
-    add_box(vs, vec3(0, 0.75, -0.15), vec3(0.4, 0.22, 0.03), rgb(0.6, 0.7, 0.75))
-    # the tail
-    add_box(vs, vec3(0, 0.25, 3.45), vec3(3.0, 0.07, 1.0), wings)
-    add_box(vs, vec3(0, 0.75, 3.55), vec3(0.07, 1.1, 1.0), mark)
-    add_box(vs, vec3(0, 0.75, 3.95), vec3(0.075, 1.1, 0.25), body)
+        on_top(vs, ROUNDEL, vec3(3.1 * x, 1.41, -0.9), 0.6)
+        underneath(vs, ROUNDEL, vec3(2.8 * x, -0.51, -0.7), 0.55)
+    common(vs, 0.6)
+    on_sides(vs, ROUNDEL, BI_BODY, 2.15, 0.24)
+    # the tail: the fin, and the rudder in the roundel's colors
+    add_box(vs, vec3(0, 0.25, 3.45), vec3(3.0, 0.07, 1.0), tail)
+    add_box(vs, vec3(0, 0.75, 3.25), vec3(0.07, 1.1, 0.4), tail)
+    loop k in 0.. and c in [NAVY, WHITE_PAINT, ROUNDEL_RED]: add_box(vs, vec3(0, 0.75, f32(3.55 + 0.2 * f64(k))), vec3(0.075, 1.1, 0.2), c)
     add_box(vs, vec3(0, -0.2, 3.6), vec3(0.06, 0.5, 0.06), dark)
+    own_mark(vs, badge, BI_BODY, 0.85, vec3(0, 1.41, -0.9))
     custom_mesh(vs)
+
+# Red's triplane (as the Fokker Dr.I): a rotary engine's round cowling, three short wings one
+# over another, single struts through them, a white comma of a rudder; black crosses
+make_triplane = (badge: int) -> Mesh:
+    vs: Vertex3D[]
+    body = rgb(0.72, 0.1, 0.08)
+    wings = rgb(0.78, 0.15, 0.1)
+    dark = rgb(0.12, 0.11, 0.1)
+    wood = rgb(0.45, 0.32, 0.2)
+    nose = if badge == NOSE: YELLOW_PAINT else: body
+    # the cowling, open at the front on the engine
+    add_cylinder(vs, vec3(0, 0, 0), 0.56, 0.74, nose, 18, 0.5, translation(vec3(0, 0.05, -2.18)) * rotation_x(-PI / 2.0))
+    add_cylinder(vs, vec3(0, 0, 0), 0.42, 0.03, dark, 14, -1.0, translation(vec3(0, 0.05, -2.91)) * rotation_x(-PI / 2.0))
+    loft(vs, TRI_BODY, body)
+    add_box(vs, vec3(0, 1.45, -1.05), vec3(7.6, 0.11, 1.05), wings)
+    add_box(vs, vec3(0, 0.55, -0.95), vec3(6.8, 0.11, 1.05), wings)
+    add_box(vs, vec3(0, -0.42, -0.85), vec3(6.2, 0.11, 1.05), wings)
+    loop sx in [-1.0, 1.0]:
+        x = f32(sx)
+        add_box(vs, vec3(2.7 * x, 0.52, -0.95), vec3(0.07, 1.9, 0.3), wood)
+        add_box(vs, vec3(0.38 * x, 1.0, -1.35), vec3(0.06, 0.9, 0.06), wood)
+        add_box(vs, vec3(0.38 * x, 1.0, -0.7), vec3(0.06, 0.9, 0.06), wood)
+        on_top(vs, CROSS, vec3(2.85 * x, 1.505, -1.05), 0.45)
+        underneath(vs, CROSS, vec3(2.45 * x, -0.475, -0.85), 0.42)
+    common(vs, 0.72)
+    # (a little wing on the wheels' axle)
+    add_box(vs, vec3(0, -1.3, -1.4), vec3(1.7, 0.07, 0.42), wings)
+    on_sides(vs, CROSS, TRI_BODY, 2.15, 0.22)
+    # the tail: a tailplane swept back from a point, the rudder round, and the skid
+    plate(vs, [vec3(0, 0.27, 2.85), vec3(1.55, 0.27, 3.45), vec3(1.45, 0.27, 3.85), vec3(-1.45, 0.27, 3.85), vec3(-1.55, 0.27, 3.45)], vec3(0, 1, 0), 0.06, if badge == TAIL: YELLOW_PAINT else: wings)
+    comma = [vec2(-0.25, 3.72), vec2(0.2, 3.62), vec2(0.6, 3.55), vec2(0.95, 3.55), vec2(1.18, 3.68), vec2(1.28, 3.9), vec2(1.22, 4.12), vec2(1.02, 4.28), vec2(0.72, 4.32), vec2(0.35, 4.2), vec2(0.05, 4.0), vec2(-0.15, 3.85)]
+    plate(vs, comma.map((p): vec3(0, p.x, p.y)), vec3(1, 0, 0), 0.06, if badge == TAIL: YELLOW_PAINT else: WHITE_PAINT)
+    loop s in [1.0, -1.0]: mark(vs, CROSS, vec3(f32(0.03 * s), 0.78, 3.93), vec3(0, 0, -1), vec3(0, 1, 0), vec3(f32(s), 0, 0), 0.3)
+    add_box(vs, vec3(0, -0.15, 3.5), vec3(0.06, 0.45, 0.06), dark)
+    own_mark(vs, badge, TRI_BODY, 0.85, vec3(0, 1.505, -1.05))
+    custom_mesh(vs)
+
+# each side's plane with each insignia, made when first drawn
+plane_meshes: {int: Mesh} = {}
+plane_mesh = (team: int, badge: int) -> Mesh:
+    key = team * 64 + badge
+    if let m = plane_meshes.get(key): return m
+    m = if team == 0: make_triplane(badge) else: make_biplane(badge)
+    plane_meshes[key] = m
+    m
 
 make_propeller = () -> Mesh:
     vs: Vertex3D[]
@@ -1181,9 +1385,7 @@ plant = ():
             p = vec3(f32(cx + f64((hk >> 8) % 120) - 60.0), f32(cy + f64((hk >> 16) % 20)), f32(cz + f64((hk >> 24) % 90) - 45.0))
             clouds.push(instance(translation(p) * scaling(vec3(f32(r * 1.4), f32(r * 0.7), f32(r))), rgb(1, 1, 1)))
 
-LIVERY = [(rgb(0.72, 0.1, 0.08), rgb(0.78, 0.15, 0.1), rgb(0.95, 0.92, 0.8)), (rgb(0.15, 0.3, 0.62), rgb(0.22, 0.42, 0.76), rgb(0.95, 0.92, 0.8))]
 COLORS = [rgb(1.0, 0.38, 0.32), rgb(0.42, 0.68, 1.0)]
-planes: Mesh[]
 prop = Mesh()
 ground_mesh = Mesh()
 villages = Mesh()
@@ -1196,7 +1398,6 @@ made = false
 make_world = ():
     if made: return
     made = true
-    loop l in LIVERY: planes.push(make_plane(l.0, l.1, l.2))
     prop = make_propeller()
     ground_mesh = make_ground()
     villages = make_villages()
@@ -1231,7 +1432,7 @@ draw = ():
         m = plane_matrix(p)
         c = vec4(1, 1, 1, 1)
         if p.safe > 0 and p.safe % 10 < 5: c = vec4(1.6, 1.6, 1.6, 1)
-        draw_mesh(planes[p.team], m, c, specular = 0.25)
+        draw_mesh(plane_mesh(p.team, badge_of(g, i)), m, c, specular = 0.25)
         prop_turn[i] += frame_time() * (if p.down > 0: 3.0 else: 25.0 + 30.0 * p.throttle)
         draw_mesh(prop, m * translation(vec3(0, 0.05, -3.02)) * rotation_z(prop_turn[i]), specular = 0.1)
     # the bullets: every one a tracer
@@ -1513,12 +1714,14 @@ draw_menu = ():
             if c.inviter:
                 friends.push(c.peer)
                 friend_names.push("")
+                friend_badges.push(0)
                 page = LOBBY
                 told_at = 0.0
             else:
                 host = c.peer
                 lobby_pilots = []
                 lobby_names = []
+                lobby_badges = []
                 page = JOINED
         return
     if page == SETTINGS:
@@ -1544,7 +1747,7 @@ draw_menu = ():
     if len(status) > 0: text_centered(status, vec2(280, 560), 22, gray(0.85))
     how = "The mouse steers and its button fires. Keys: S climbs, W dives, A and D roll, Q and E the rudder, Shift and Ctrl the throttle, Space fires, C looks at the target and back, Tab picks the next."
     if touch_input(): how = "The left thumb flies (down climbs); the right one fires, and changes the throttle."
-    text_wrapped("Red against Blue, up to six biplanes a side. {how}", vec2(40, 590), 480, 18, gray(0.8), align = .center)
+    text_wrapped("Red's triplanes against Blue's biplanes, up to six a side. {how}", vec2(40, 590), 480, 18, gray(0.8), align = .center)
 
 # who is on each side: "you", the other players by name (by number until it is known), and the
 # computer's
@@ -1604,10 +1807,12 @@ draw_settings = ():
     rect(Rect(240, 0, 800, 720), rgba(0.04, 0.05, 0.08, 0.8))
     text_centered("Settings", vec2(640, 70), 48, WHITE)
     ui_begin("settings", vec2(640, 140))
-    settings.name = ui_text_field("Name", settings.name, NAME_MOST)
     settings.mouse = ui_switch("Fly with the mouse", settings.mouse)
     settings.invert = ui_switch("Invert pitch", settings.invert)
     settings.sound = ui_slider("Sound", settings.sound)
+    # (not first: a phone's keyboard would come up as Settings opens)
+    settings.name = ui_text_field("Name", settings.name, NAME_MOST)
+    settings.badge = ui_choice("Insignia", BADGES, settings.badge)
     ui_controls()
     if ui_button("Back") or ui_back():
         save_settings()
