@@ -83,8 +83,8 @@ browser](https://sloppy-lang.org/breakwater/).
 - **Easy.** Type inference everywhere, Python-like indentation syntax, first-class functions
   (`f = (x: int): x * 2`), closures, partial application (`f(1, _)`), generics without
   ceremony (untyped parameters), uniform call syntax (`x.f(y)` is `f(x, y)`), one `loop` for
-  every kind of loop, type unions (`int | ParseError`) with `is`, optionals, unit literals
-  (`120ms`, `1.2(m/s)`).
+  every kind of loop, type unions (`int | ParseError`) with `is`, errors as values passed on
+  with `?` (`n = parse(s)?`), optionals, unit literals (`120ms`, `1.2(m/s)`).
 - **Numeric arrays.** numpy-style elementwise operators that broadcast (`a .* b .+ 1`,
   `f.(xs)`) and compile to one fused loop, 2-D arrays (`[1 2; 3 4]`, matrix products),
   `zeros`/`linspace`/`rand`..., struct-of-arrays storage (`soa Particle[]`), and GPU arrays
@@ -101,9 +101,15 @@ browser](https://sloppy-lang.org/breakwater/).
   `sloppy new my_game online`): they open it, the game in their browser, and the two games
   connect straight to each other, browser or desktop, anywhere (WebRTC: the browser's own in a
   page, Sloppy's own in native programs; a TURN relay for strict networks if you have one).
-  Rollback netplay (`netplay.session`) for fighting and action games, client and server for
-  many players. See [playing over a network](docs/MULTIPLAYER.md), [Duel](https://sloppy-lang.org/examples/duel/)
+  Rooms with a short code through a small matchmaking server of your own
+  ([docs/MATCHMAKING.md](docs/MATCHMAKING.md)). Rollback netplay (`netplay.session`) for fighting
+  and action games, client and server for many players. See [playing over a network](docs/MULTIPLAYER.md), [Duel](https://sloppy-lang.org/examples/duel/)
   and [Aces](https://sloppy-lang.org/examples/aces/) (biplanes in a dogfight, up to six a side).
+- **Scripts, tools and servers.** `net.fetch` for http and https (TLS 1.3 and 1.2, Sloppy's own,
+  checked against the system's certificates), an HTTP server (`import http`: routes, files,
+  cookies, WebSockets), JSON into structs (`from_json[Config](text)`), command-line options from
+  a struct (`parse_args[Options]("what it does")`), files, processes and regular expressions; see
+  [Scripts and tools](docs/START.md#scripts-and-tools).
 - **Programs keep working.** Native executables are static (they talk to the kernel directly);
   the GPU driver is loaded at run time when present, and without one games still run on a
   multithreaded software renderer. Web builds are one HTML file with the WebAssembly embedded. The compiler needs no assembler, linker or C toolchain.
