@@ -1186,9 +1186,9 @@ Each series given no color takes the next of a palette. The axes fit what is sho
 
 ## Cryptography
 
-A module (`import crypto`): SHA-1 and SHA-256, HMAC, AES-128-GCM, P-256 keys (ECDH) and signatures (ECDSA), self-signed certificates and random bytes from the operating system; checked against the standards' test vectors.
+A module (`import crypto`): SHA-1, SHA-256, SHA-384 and SHA-512, HMAC, HKDF, AES-128-GCM, P-256 and X25519 keys (ECDH), P-256 signatures (ECDSA), P-384 and RSA signatures checked, self-signed certificates and random bytes from the operating system; checked against the standards' test vectors and Wycheproof's.
 
-Cryptography: hashes (SHA-1, SHA-256), HMAC, AES-128-GCM, the P-256 curve (ECDH keys and ECDSA signatures), a self-signed certificate, and random bytes from the operating system. It is what the library's WebRTC (lib/rtc.jo) is made of, and a program may use it too: `import crypto`.
+Cryptography: hashes (SHA-1, SHA-256, SHA-384, SHA-512), HMAC, HKDF, AES-128-GCM, the P-256 curve (ECDH keys and ECDSA signatures), X25519 keys, P-384 and RSA signatures checked, a self-signed certificate, and random bytes from the operating system. It is what the library's WebRTC (lib/rtc.jo) and TLS (lib/tls.jo) are made of, and a program may use it too: `import crypto`.
 
 ```gdscript
 key = crypto.random_bytes(16)
@@ -1199,7 +1199,7 @@ sig = crypto.p256_sign(pk, crypto.sha256(msg))
 ok = crypto.p256_verify(pk.public, crypto.sha256(msg), sig)
 ```
 
-(The curve's arithmetic does not take the same time whatever the key: fine for keys made for a session, as WebRTC's are; not for long-lived keys on shared machines.)
+(P-256's arithmetic does not take the same time whatever the key: fine for keys made for a session, as WebRTC's are; not for long-lived keys on shared machines. X25519's does.)
 
 #### Random bytes
 
@@ -1222,10 +1222,20 @@ ok = crypto.p256_verify(pk.public, crypto.sha256(msg), sig)
 
 - `sha256 = (m: u8[]) -> u8[]`: SHA-256 of the bytes (32 bytes; std/hash's sha256 gives them as hex)
 
+#### SHA-512, SHA-384
+
+- `sha512 = (m: u8[]) -> u8[]`: SHA-512 of the bytes (64 bytes)
+- `sha384 = (m: u8[]) -> u8[]`: SHA-384 of the bytes (48 bytes: SHA-512 started elsewhere, cut short)
+
 #### HMAC
 
 - `hmac_sha256 = (key: u8[], msg: u8[]) -> u8[]`
 - `hmac_sha1 = (key: u8[], msg: u8[]) -> u8[]`
+
+#### HKDF (RFC 5869, with SHA-256)
+
+- `hkdf_extract = (salt: u8[], ikm: u8[]) -> u8[]`: a key of 32 bytes made from input keying material and a salt (empty: as 32 zeros)
+- `hkdf_expand = (prk: u8[], info: u8[], n: int) -> u8[]`: n bytes of keys made from such a key, for a purpose (info)
 
 #### AES-128
 
@@ -1255,6 +1265,26 @@ ok = crypto.p256_verify(pk.public, crypto.sha256(msg), sig)
 - `p256_ecdh = (k: P256Key, other: u8[]) -> u8[]?`: the shared secret of a key and another's public point (its x, 32 bytes), or none when that is no point on the curve
 - `p256_sign = (k: P256Key, hash: u8[]) -> u8[]`: an ECDSA signature of a 32-byte hash: r and s, 32 bytes each
 - `p256_verify = (public: u8[], hash: u8[], sig: u8[]) -> bool`: whether sig (r and s, 32 bytes each) signs the 32-byte hash for the public point
+
+#### X25519 (RFC 7748)
+
+- `struct X25519Key`: an X25519 key: the private scalar and the public value, 32 bytes each
+  ```gdscript
+  struct X25519Key:
+      private: u8[]
+      public: u8[]
+  ```
+- `x25519_key = () -> X25519Key`: a new key, from the system's random bytes
+- `x25519_ecdh = (k: X25519Key, other: u8[]) -> u8[]?`: the shared secret of a key and another's public value (32 bytes), or none when it comes out all zeros (the other's value was one of the few that make it so)
+
+#### RSA signatures (checking only)
+
+- `rsa_verify_pkcs1 = (n: u8[], e: u8[], hash: u8[], sig: u8[]) -> bool`: whether sig is an RSASSA-PKCS1-v1_5 signature of the hash (as certificates are signed)
+- `rsa_verify_pss = (n: u8[], e: u8[], hash: u8[], sig: u8[]) -> bool`: whether sig is an RSASSA-PSS signature of the hash, with MGF1 of the same hash and a salt as long as the hash (as TLS 1.3 signs)
+
+#### P-384 (ECDSA signatures, checking only)
+
+- `p384_verify = (public: u8[], hash: u8[], sig: u8[]) -> bool`: whether sig (r and s, 48 bytes each) signs the hash for the P-384 public point (97 bytes: 0x04, x, y); a hash longer than 48 bytes is cut to its first 48, as ECDSA does
 
 #### DER
 
@@ -4039,7 +4069,7 @@ Masses come from sizes and `density` (kilograms per cubic meter: 1000 is water's
 
 ## Networking
 
-A module (`import net`): messages between programs over WebSockets, so a native build and a web page can play together (a server is a native program; a web page connects to one: [examples/netpong](https://github.com/david-andrew/sloppy-lang/tree/master/examples/netpong)), and UDP datagrams between native programs.
+A module (`import net`): messages between programs over WebSockets, so a native build and a web page can play together (a server is a native program; a web page connects to one: [examples/netpong](https://github.com/david-andrew/sloppy-lang/tree/master/examples/netpong)), UDP datagrams between native programs, TCP and TLS streams, and `fetch` for what is at an http:// or https:// address.
 
 ```gdscript
 # example: networking
@@ -4080,7 +4110,7 @@ loop e in net.receive():                # what happened since the last call (eve
 net.send(p, "hello")                    # a str or u8[]; net.send_all(...) to every peer
 ```
 
-Messages arrive whole and in order (WebSockets over TCP). A web page can only connect, not listen: the server is a native program (a game that hosts, or a small server of its own). A page served over https can only reach a wss:// server (TLS: put a proxy that has a certificate, such as Caddy, in front of the server); net.connect("wss://game.example.com") takes a URL as well.
+Messages arrive whole and in order (WebSockets over TCP). A web page can only connect, not listen: the server is a native program (a game that hosts, or a small server of its own). A page served over https can only reach a wss:// server (TLS: put a proxy that has a certificate, such as Caddy, in front of the server); net.connect("wss://game.example.com") takes a URL as well, from a web page or a native program.
 
 - `enum NetKind: joined, message, left`
 - `struct NetEvent`
@@ -4140,7 +4170,10 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 
 #### TCP: a stream of bytes to one other program
 
-- `tcp_connect = (host: str, port: int, timeout: f64 = 5.0) -> int`: a connection to host's port, waiting up to `timeout` seconds for it; -1 if it cannot be made
+- `tcp_connect = (host: str, port: int, timeout: f64 = 5.0) -> int`: a connection to host's port, waiting up to `timeout` seconds for it; -1 if it cannot be made (tcp_why says why)
+- `tls_connect = (host: str, port: int = 443, timeout: f64 = 10.0) -> int`: a connection to host's port over TLS (443: https's), waiting up to `timeout` seconds for it; -1 if it cannot be made, or the server's certificate is not one this computer trusts for host (tcp_why says why). What it sends and receives goes through tcp_send, tcp_receive, tcp_close
+- `tcp_why = () -> str`: why the last tcp_connect or tls_connect gave -1
+- `trust_certificate = (pem: str) -> int`: a certificate authority to trust from now on, besides those the system trusts: its certificate as PEM text (what a .pem or .crt file holds, -----BEGIN CERTIFICATE----- ...), for servers whose certificates it signed (a test server's, a private network's); how many certificates were taken. The SLOPPY_CA_FILE environment variable names such a file for any program
 - `tcp_listen = (port: int) -> int`: a server on port: connections come from tcp_accept; -1 if the port cannot be had
 - `tcp_accept = (server: int, wait: f64 = 0.0) -> int`: a connection made to the server (waiting up to `wait` seconds for one), or -1 if none came
 - `tcp_send = (c: int, data: u8[]) -> bool`: all of data sent (waiting while the other side is slow to take it); false if the connection has failed or closed
@@ -4148,6 +4181,20 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `tcp_receive = (c: int, wait: f64 = 0.0) -> u8[]`: the bytes that have arrived (waiting up to `wait` seconds for the first); empty when none has (or the connection has ended: tcp_closed says)
 - `tcp_closed = (c: int) -> bool`: the other side has closed the connection (or it failed), and everything sent has been received
 - `tcp_close = (c: int)`
+
+#### HTTP: what is at a web address
+
+- `struct HttpReply`
+  ```gdscript
+  struct HttpReply:
+      status: int             # the server's answer: 200 when all went well (404: no such page...);
+                              # 0 when there was none (why says why)
+      data: u8[]              # what it sent ...
+      text = ""               # ... as text
+      headers: {str: str}     # its headers, their names in small letters
+      why = ""
+  ```
+- `fetch = (url: str, wait: f64 = 30.0) -> HttpReply`: a GET of an http:// or https:// address (following where it redirects, five times at most), waiting up to `wait` seconds in all; https is checked as a browser checks it (tls_connect)
 
 ## Invite a friend
 
@@ -4209,7 +4256,7 @@ draw = ():
 
 #### Rooms, through a matchmaking server (tools/rendezvous.jo)
 
-- `server = (url: str, native: str = "")`: the matchmaking server for rooms (tools/rendezvous.jo: docs/MATCHMAKING.md runs one): url is where web pages reach it, as wss://match.example.com (a page served over https may only reach wss://), native where native programs do, which have no TLS ("": ws:// to the same host, on the server's own port, 7700). "" for none. SLOPPY_SERVER (a web page's ?server=) sets it for any game, over the game's own ("none": no server): for trying a server of one's own
+- `server = (url: str)`: the matchmaking server for rooms (tools/rendezvous.jo: docs/MATCHMAKING.md runs one), as wss://match.example.com (web pages and native programs both reach it there; a page served over https may only reach wss://). "" for none. SLOPPY_SERVER (a web page's ?server=) sets it for any game, over the game's own ("none": no server): for trying a server of one's own
 - `has_server = () -> bool`: there is a matchmaking server (rooms: start opens one, join takes a room's code)
 - `room_code = () -> str`: this computer's room code while its room is open ("" when it is not): to show in a game's lobby
 - `room_link = (web_page: str = "") -> str`: a link to the open room: this page's address (or web_page) with ?room= ("" with neither, or no room)

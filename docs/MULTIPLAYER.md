@@ -113,7 +113,7 @@ comes while the host's game is not open is told so, and joins once it is. The sc
 Invite with a code instead, and says so when the server cannot be reached.
 
 ```gdscript
-invite.server("wss://match.example.org")        # (native builds: ws://match.example.org:7700)
+invite.server("wss://match.example.org")        # (web pages and native builds alike)
 invite.from_link()                              # (?room=... too)
 ...
 if ui_button("Invite friends"): invite.start(players = 4)      # a room for 4, this side too
@@ -158,9 +158,11 @@ What players need to know, a game should show them: the host's screen gives its 
 it (port forwarding), or both connect to a server with a public address.
 
 A web page cannot listen, and a page served over https (as from a website) may only reach `wss://`
-servers or `localhost`. For trying a game with pages alone, `tools/netpong_relay.py` (Python, no
-Sloppy needed) serves Netpong's page over plain http on the network and passes messages between
-two pages, the first of which hosts: a pattern for any game's own relay.
+servers or `localhost`; native builds reach `wss://` servers too (TLS, with the server's
+certificate checked against the authorities the system trusts). For trying a game with pages
+alone, `tools/netpong_relay.py` (Python, no Sloppy needed) serves Netpong's page over plain http
+on the network and passes messages between two pages, the first of which hosts: a pattern for
+any game's own relay.
 
 ## Rollback
 

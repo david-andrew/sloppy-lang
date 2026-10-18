@@ -48,8 +48,9 @@ TOPICS = [
      "Line charts, scatter plots, bars and histograms with axes and a legend: drawn in a game's `draw`, or "
      "made into a picture with no window (`chart_image`, then `save_png`). `render_image` draws any picture that way."),
     ("Data", "crypto", "Cryptography", ["crypto"], None,
-     "A module (`import crypto`): SHA-1 and SHA-256, HMAC, AES-128-GCM, P-256 keys (ECDH) and signatures (ECDSA), "
-     "self-signed certificates and random bytes from the operating system; checked against the standards' test vectors."),
+     "A module (`import crypto`): SHA-1, SHA-256, SHA-384 and SHA-512, HMAC, HKDF, AES-128-GCM, P-256 and X25519 keys (ECDH), "
+     "P-256 signatures (ECDSA), P-384 and RSA signatures checked, self-signed certificates and random bytes from the operating "
+     "system; checked against the standards' test vectors and Wycheproof's."),
     ("Data", "big", "Big numbers", ["big"], None,
      "A module (`use big`): numbers past f64's 1.8e308, a mantissa and a power of ten (an idle game's currency), "
      "with arithmetic, comparison, `min`, `max`, sorting and saving as for numbers; shown as 1.23M or 4.56e+1234."),
@@ -87,7 +88,7 @@ TOPICS = [
     ("Games", "net", "Networking", ["net"], "networking",
      "A module (`import net`): messages between programs over WebSockets, so a native build and a web page "
      "can play together (a server is a native program; a web page connects to one: [examples/netpong](https://github.com/david-andrew/sloppy-lang/tree/master/examples/netpong)), "
-     "and UDP datagrams between native programs."),
+     "UDP datagrams between native programs, TCP and TLS streams, and `fetch` for what is at an http:// or https:// address."),
     ("Games", "invite", "Invite a friend", ["invite"], "invite",
      "A module (`import invite`): the screens that connect two players with invite codes and no server: a link to send "
      "in a chat (it opens the game in a browser), a code sent back, copying, sharing and pasting (on phones too), and why "
@@ -102,7 +103,7 @@ TOPICS = [
 ]
 # the library's own machinery (the runtime, the OS and graphics layers, the prompt...): not listed
 INTERNAL = {"core/rt", "core/fmt", "core/windows", "core/macos", "game/dl", "game/cocoa", "game/x11", "game/wayland", "game/wlclient", "game/dmabuf", "game/vk", "game/vkgl", "game/metal",
-            "game/gl", "game/softgl", "std/backtrace", "std/snapshot", "std/repl", "std/watch", "rtc"}
+            "game/gl", "game/softgl", "std/backtrace", "std/snapshot", "std/repl", "std/watch", "rtc", "tls"}
 
 # what the compiler itself provides: (topic, section, name, signatures, what it does)
 BUILTINS = [

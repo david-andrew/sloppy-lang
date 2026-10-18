@@ -194,6 +194,164 @@ rv.kill()
 port += 2
 env["NET_PORT"] = str(port)
 
+# TLS (lib/tls.jo) against OpenSSL's own server: a test authority made here (P-256, with an
+# intermediate of P-384) and another of RSA; certificates for localhost of P-256, P-384 and RSA,
+# which must be taken, and ones that must not: for another name, expired, from an authority not
+# trusted; a server that asks for a key share again (P-256), one that asks for a certificate, and
+# one that speaks only TLS 1.2. Then wss:// through a TLS proxy (Python's) in front of the
+# WebSocket server, and a room through a matchmaking server behind it
+# (OpenSSL's own, 1.1.1 or later: macOS's LibreSSL makes certificates differently)
+def find_openssl():
+    for o in [os.environ.get("SLOPPY_OPENSSL", ""), "/opt/homebrew/opt/openssl@3/bin/openssl", "/usr/local/opt/openssl@3/bin/openssl",
+              shutil.which("openssl") or "", r"C:\Program Files\OpenSSL\bin\openssl.exe", r"C:\Program Files\Git\usr\bin\openssl.exe"]:
+        if o and os.path.exists(o):
+            v = subprocess.run([o, "version"], capture_output=True, text=True).stdout
+            r = subprocess.run([o, "s_server", "-help"], capture_output=True, text=True)
+            if v.startswith("OpenSSL ") and not v.startswith("OpenSSL 1.0") and "-tls1_3" in r.stdout + r.stderr: return o
+    return None
+
+openssl = find_openssl()
+if openssl:
+    td = os.path.join(tmp, "tls")
+    os.makedirs(td)
+    def ossl(*a):
+        r = subprocess.run([openssl, *a], cwd=td, capture_output=True, text=True)
+        if r.returncode != 0: raise SystemExit(f"openssl {' '.join(a)}: {r.stderr}")
+    with open(os.path.join(td, "req.cnf"), "w") as f: f.write("[req]\ndistinguished_name = dn\nprompt = no\n[dn]\nCN = x\n")
+    with open(os.path.join(td, "ext.cnf"), "w") as f:
+        f.write("[root]\nbasicConstraints = critical, CA:TRUE\nkeyUsage = critical, keyCertSign, cRLSign\n"
+                "[inter]\nbasicConstraints = critical, CA:TRUE, pathlen:0\nkeyUsage = critical, keyCertSign, cRLSign\nextendedKeyUsage = serverAuth\n"
+                "[leaf]\nbasicConstraints = critical, CA:FALSE\nkeyUsage = critical, digitalSignature\nextendedKeyUsage = serverAuth\nsubjectAltName = DNS:localhost, IP:127.0.0.1\n"
+                "[other]\nbasicConstraints = critical, CA:FALSE\nkeyUsage = critical, digitalSignature\nextendedKeyUsage = serverAuth\nsubjectAltName = DNS:other.test, DNS:*.other.test\n")
+    with open(os.path.join(td, "ca.cnf"), "w") as f:
+        f.write("[ca]\ndefault_ca = test\n[test]\ndatabase = index.txt\nnew_certs_dir = .\nserial = serial.txt\ndefault_md = sha256\npolicy = any\nunique_subject = no\n[any]\ncommonName = supplied\n")
+    open(os.path.join(td, "index.txt"), "w").close()
+    with open(os.path.join(td, "serial.txt"), "w") as f: f.write("1000\n")
+    def key(name, kind):
+        if kind.startswith("rsa"): ossl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:" + kind[3:], "-out", name + ".key")
+        else: ossl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:" + kind, "-pkeyopt", "ec_param_enc:named_curve", "-out", name + ".key")
+        ossl("req", "-new", "-config", "req.cnf", "-key", name + ".key", "-subj", f"/CN=Sloppy test {name}", "-out", name + ".csr")
+    serial = [1]
+    def cert(name, kind, signer, ext, md="-sha256"):
+        key(name, kind)
+        serial[0] += 1
+        by = ["-signkey", name + ".key"] if signer is None else ["-CA", signer + ".pem", "-CAkey", signer + ".key", "-set_serial", str(serial[0])]
+        ossl("x509", "-req", "-in", name + ".csr", *by, "-days", "3650", md, "-extfile", "ext.cnf", "-extensions", ext, "-out", name + ".pem")
+    cert("root", "P-256", None, "root")
+    cert("inter", "P-384", "root", "inter")
+    cert("leaf_ec", "P-256", "inter", "leaf", "-sha384")
+    cert("leaf_p384", "P-384", "root", "leaf")
+    cert("rsaroot", "rsa3072", None, "root")
+    cert("leaf_rsa", "rsa2048", "rsaroot", "leaf")
+    cert("other", "P-256", "inter", "other", "-sha384")
+    cert("stranger", "P-256", None, "root")
+    cert("leaf_stranger", "P-256", "stranger", "leaf")
+    key("expired", "P-256")
+    ossl("ca", "-config", "ca.cnf", "-batch", "-notext", "-cert", "root.pem", "-keyfile", "root.key", "-startdate", "20200101000000Z",
+         "-enddate", "20210101000000Z", "-extfile", "ext.cnf", "-extensions", "leaf", "-in", "expired.csr", "-out", "expired.pem")
+    with open(os.path.join(td, "trusted.pem"), "w") as f: f.write(open(os.path.join(td, "root.pem")).read() + open(os.path.join(td, "rsaroot.pem")).read())
+    fetch = build("tls_fetch") + exe
+    tenv = dict(env, SLOPPY_CA_FILE=os.path.join(td, "trusted.pem"))
+    def s_server(leaf, *more, chain=None):
+        global port
+        port += 1
+        args = [openssl, "s_server", "-accept", f"127.0.0.1:{port}", "-cert", leaf + ".pem", "-key", leaf + ".key", "-www", "-quiet", *more]
+        if chain: args += ["-cert_chain", chain + ".pem"]
+        s = subprocess.Popen(args, cwd=td, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.5)
+        return s, port
+    cases = [("a P-256 certificate, through a P-384 authority", "leaf_ec", ["-tls1_3"], "inter", "200 true"),
+             ("the same at 127.0.0.1 (its address in the certificate)", "leaf_ec", ["-tls1_3"], "inter", "200 true"),
+             ("a server that asks for a P-256 key share instead (HelloRetryRequest)", "leaf_ec", ["-tls1_3", "-groups", "P-256"], "inter", "200 true"),
+             ("a server that asks for this side's certificate", "leaf_ec", ["-tls1_3", "-verify", "1"], "inter", "200 true"),
+             ("a P-384 certificate", "leaf_p384", ["-tls1_3"], None, "200 true"),
+             ("an RSA certificate (RSA-PSS handshake, PKCS#1 chain)", "leaf_rsa", ["-tls1_3"], None, "200 true"),
+             ("a certificate for another name is refused", "other", ["-tls1_3"], "inter", "no: the secure connection failed: localhost is not who it says: its certificate is for other names (other.test, *.other.test), not localhost"),
+             ("an expired certificate is refused", "expired", ["-tls1_3"], None, "no: the secure connection failed: localhost is not who it says: its certificate has expired"),
+             ("a certificate from an authority not trusted is refused", "leaf_stranger", ["-tls1_3"], None, "no: the secure connection failed: localhost is not who it says: it comes from Sloppy test stranger, an authority this computer does not trust"),
+             ("a server of TLS 1.2 only is refused, and says why", "leaf_ec", ["-tls1_2"], "inter", "no: the secure connection failed: the server ended the connection (protocol_version: it does not speak TLS 1.3, the only version here)"),
+             ("without the test authority trusted, refused", "leaf_ec", ["-tls1_3"], "inter", "no: the secure connection failed: localhost is not who it says: it comes from Sloppy test root, an authority this computer does not trust")]
+    for k, (what, leaf, more, chain, want) in enumerate(cases):
+        s, p = s_server(leaf, *more, chain=chain)
+        url = f"https://{'127.0.0.1' if k == 1 else 'localhost'}:{p}/"
+        cenv = tenv if k < len(cases) - 1 else env
+        r = subprocess.run([fetch, url], capture_output=True, text=True, env=cenv, timeout=60)
+        s.kill()
+        s.wait()
+        got = r.stdout.strip().split(" (")[0] if r.stdout.startswith(url + ": 200") else r.stdout.strip()
+        check("TLS: " + what, got, [f"{url}: {want}"])
+    # wss:// through a TLS proxy in front of the WebSocket server (as Caddy is in front of one)
+    import ssl, socket, threading
+    def tls_proxy(listen, to):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+        chain = os.path.join(td, "leaf_chain.pem")
+        with open(chain, "w") as f: f.write(open(os.path.join(td, "leaf_ec.pem")).read() + open(os.path.join(td, "inter.pem")).read())
+        ctx.load_cert_chain(chain, os.path.join(td, "leaf_ec.key"))
+        ls = socket.socket()
+        ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ls.bind(("127.0.0.1", listen))
+        ls.listen(16)
+        def pump(a, b):
+            try:
+                while True:
+                    d = a.recv(65536)
+                    if not d: break
+                    b.sendall(d)
+            except OSError: pass
+            for x in (a, b):
+                try: x.close()
+                except OSError: pass
+        def serve():
+            while True:
+                try: c, _ = ls.accept()
+                except OSError: return
+                try: tc = ctx.wrap_socket(c, server_side=True)
+                except (OSError, ssl.SSLError):
+                    c.close()
+                    continue
+                b = socket.create_connection(("127.0.0.1", to))
+                threading.Thread(target=pump, args=(tc, b), daemon=True).start()
+                threading.Thread(target=pump, args=(b, tc), daemon=True).start()
+        threading.Thread(target=serve, daemon=True).start()
+        return ls
+    port += 1
+    ws_port = port
+    port += 1
+    proxy = tls_proxy(port, ws_port)
+    s = subprocess.Popen([server], stdout=subprocess.PIPE, text=True, env=dict(env, NET_PORT=str(ws_port)))
+    time.sleep(0.5)
+    c = subprocess.run([client], capture_output=True, text=True, env=dict(tenv, NET_HOST=f"wss://localhost:{port}"), timeout=60)
+    s_out = s.communicate(timeout=60)[0]
+    proxy.close()
+    check("wss://, through a TLS proxy: the client", c.stdout, WANT_CLIENT)
+    check("wss://, through a TLS proxy: the server", s_out, WANT_SERVER)
+    port += 1
+    rvs_port = port
+    port += 1
+    proxy = tls_proxy(port, rvs_port)
+    rv = rendezvous(rvs_port)
+    rd = os.path.join(tmp, "room_wss")
+    os.makedirs(os.path.join(rd, "host", "room_game"))
+    wenv = dict(SLOPPY_SERVER=f"wss://localhost:{port}", SLOPPY_CA_FILE=os.path.join(td, "trusted.pem"))
+    h = room_game(rd, "host", ROLE="host", FRIENDS="1", **wenv)
+    a = room_game(rd, "amy", ROLE="join", **wenv)
+    check("a room through a matchmaking server at wss://: the host", output(h), ["host got: hello from amy"])
+    check("a room through a matchmaking server at wss://: a friend", output(a), ["amy got: hello from host"])
+    rv.kill()
+    proxy.close()
+    port += 1
+    env["NET_PORT"] = str(port)
+else: print("(no openssl with TLS 1.3: TLS is not tried against it)")
+# the real thing, where SLOPPY_TEST_LIVE=1 (it needs the internet): https://sloppy-lang.org, and the
+# matchmaking server behind Caddy, with its Let's Encrypt certificate
+if os.environ.get("SLOPPY_TEST_LIVE") == "1":
+    fetch = build("tls_fetch") + exe
+    r = subprocess.run([fetch, "https://sloppy-lang.org/"], capture_output=True, text=True, env=env, timeout=60)
+    check("live: https://sloppy-lang.org", r.stdout.strip().split(" (")[0], ["https://sloppy-lang.org/: 200 true"])
+    r = subprocess.run([rv_bin + exe, "check", "wss://matchmaking.sloppy-lang.org"], capture_output=True, text=True, env=env, timeout=60)
+    check("live: wss://matchmaking.sloppy-lang.org", r.stdout.strip().split("\n")[-1], ["ok: a matchmaking server answers at wss://matchmaking.sloppy-lang.org"])
+
 # a web page's client, in a browser: the same, but as a game (messages arrive between frames)
 shell = None
 pw = os.path.expanduser("~/.cache/ms-playwright")

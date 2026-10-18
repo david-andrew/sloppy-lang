@@ -13,15 +13,17 @@ offices), a TURN relay passes their packets; coturn on the same machine does tha
 server gives each game a password for it that works for a day.
 
 This page sets up all three on one small DigitalOcean droplet: the server, Caddy in front of it
-(web pages served over https may only reach `wss://`, so Caddy adds TLS, with a free Let's
-Encrypt certificate), and coturn. Below, `match.example.org` stands for the name you choose and
-`203.0.113.7` for the droplet's address.
+(it adds TLS, with a free Let's Encrypt certificate: web pages served over https may only reach
+`wss://`, and native builds use it too), and coturn. Below, `match.example.org` stands for the
+name you choose and `203.0.113.7` for the droplet's address.
 
 | Port | For |
 |---|---|
-| 443/tcp (and 80/tcp) | web pages: `wss://match.example.org` (Caddy, to the server); 80 for Let's Encrypt |
-| 7700/tcp | native programs: `ws://match.example.org:7700` (the server itself: a native program has no TLS) |
+| 443/tcp (and 80/tcp) | the games, web pages and native builds: `wss://match.example.org` (Caddy, to the server); 80 for Let's Encrypt |
 | 3478/udp and tcp, 49160-49460/udp | TURN (coturn) |
+
+The server itself listens on port 7700 on the droplet, for Caddy only: the firewall keeps it
+closed to the outside.
 
 Cost: the $6 a month droplet (1 GB memory, 1 TB of traffic a month) has plenty of room; the $4
 one (512 MB, 500 GB) works too. Relayed games are small (a rollback game sends inputs: tens of MB
@@ -42,7 +44,6 @@ ssh root@203.0.113.7
 apt update && apt upgrade -y
 ufw allow OpenSSH
 ufw allow 80,443/tcp
-ufw allow 7700/tcp
 ufw allow 3478
 ufw allow 49160:49460/udp
 ufw enable
@@ -126,15 +127,15 @@ systemctl enable --now rendezvous
 journalctl -u rendezvous -n 5       # "rendezvous on port 7700: 0 rooms kept, TURN at turn:match.example.org:3478"
 ```
 
-From your computer (the same program checks a server):
+On the droplet, check that it answers (the same program checks a server):
 
 ```sh
-./rendezvous check ws://match.example.org:7700
+rendezvous check ws://127.0.0.1:7700
 # it gives games a TURN server: turn:match.example.org:3478, user ..., password ...
-# ok: a matchmaking server answers at ws://match.example.org:7700
+# ok: a matchmaking server answers at ws://127.0.0.1:7700
 ```
 
-## 4. Caddy: wss:// for web pages
+## 4. Caddy: wss://
 
 ```sh
 apt install -y caddy
@@ -164,13 +165,13 @@ journalctl -u caddy -n 20 | grep -i certificate     # "certificate obtained succ
 ```
 
 Caddy gets the certificate from Let's Encrypt by itself (the DNS record and port 80 must be in
-place first) and renews it. Check from your computer that a WebSocket opens through it:
+place first) and renews it. Check from your computer that the server answers through it (over
+TLS, its certificate checked as a game checks it):
 
 ```sh
-curl --http1.1 -s -i --max-time 3 -H "Connection: Upgrade" -H "Upgrade: websocket" \
-  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==" \
-  https://match.example.org/ | head -1
-# HTTP/1.1 101 Switching Protocols
+./rendezvous check wss://match.example.org
+# it gives games a TURN server: turn:match.example.org:3478, user ..., password ...
+# ok: a matchmaking server answers at wss://match.example.org
 ```
 
 ## 5. coturn: the TURN relay
@@ -219,9 +220,8 @@ Gather candidates: a line of type `relay` with 203.0.113.7 means it works.
 
 ## 6. The games
 
-In a game, `invite.server("wss://match.example.org")` before `invite.from_link()`. Web pages
-connect to that; a native build connects to `ws://match.example.org:7700` (the same host, port
-7700, worked out from the address). Aces has it as a constant:
+In a game, `invite.server("wss://match.example.org")` before `invite.from_link()`. Web pages and
+native builds both connect to that. Aces has it as a constant:
 
 ```gdscript
 const MATCH_SERVER = "wss://match.example.org"
@@ -229,7 +229,7 @@ const MATCH_SERVER = "wss://match.example.org"
 
 Rebuild the game (and the site's pages). To try a server before putting it in a game, any game
 that uses `import invite` takes it from the address of its page, `aces.html?server=wss://match.example.org`,
-or from `SLOPPY_SERVER=ws://match.example.org:7700` for a native build; add
+or from `SLOPPY_SERVER=wss://match.example.org` for a native build; add
 `&SLOPPY_RTC_RELAY_ONLY=1` to a page's address (on both players' pages) to make it connect through
 the TURN relay only.
 
@@ -248,7 +248,7 @@ the TURN relay only.
   waits for a room 30 minutes at most.
   A room not opened for 30 days is forgotten (its code can then be taken by another computer).
 - Privacy: the server sees the codes, which hold each game's network addresses (as any server
-  that connects players does), and no game traffic. The codes of native programs travel over
-  port 7700 without TLS: someone on the path could read or change them. Web pages use wss://.
+  that connects players does), and no game traffic. The codes travel over TLS (wss://), from web
+  pages and native builds alike.
 - Updates to Ubuntu: `apt upgrade` now and then (or `unattended-upgrades`, on by default on
   Ubuntu, for security updates).
