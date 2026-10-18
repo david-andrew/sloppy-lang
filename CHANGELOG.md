@@ -10,6 +10,8 @@
 - The thread pool makes a wake call only for threads that are asleep.
 - An interpolated string no longer keeps the room its builder grew ahead: `"item number {i}"`
   takes 64 bytes, not 128 (2 million of them: 142 MB, not 268).
+- `fill(u8(0), n)` and other zeroed arrays leave fresh memory untouched until used, as C's
+  calloc does: half a gigabyte of zeros costs nothing until written (it wrote every page).
 - LANGUAGE.md's Calling C: a table of C's types (Windows' 32-bit `long`), and what crosses and
   for how long (`str` read-only to C, `data(xs)` until it grows, variadic arguments, print's buffer).
 - Text is not a number: a one-character string in double quotes is a character's code only where
