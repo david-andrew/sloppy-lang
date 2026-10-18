@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.22.0
 
 - Floats print 5 times as fast where they need 16 or 17 digits (0.1 + 0.2): those digits are
   worked out exactly in 128-bit whole numbers instead of the arbitrary-precision way, which stays
