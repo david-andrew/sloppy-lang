@@ -3849,6 +3849,12 @@ check_binary = (n: int, expected: int) -> int:
     ta = prune(check_expr(a, hint))
     tb = 0
     bk = nodes[b].kind
+    if bk == .dotname and is_cmp and types[ta].kind == .enum_ and not is_union(ta):
+        # (x == .num, num holding fields: which variant x is, as `x is .num`)
+        vi = find_variant(int(types[ta].st), int(nodes[b].name))
+        if vi >= 0 and variants[int(structs[int(types[ta].st)].variants) + vi].nfields != 0:
+            vn = name_of(int(nodes[b].name))
+            fatal(nodes[b].pos, "variant '{vn}' needs arguments: `x is .{vn}` tests which variant x is (`if let .{vn}(...) = x:` names its fields)")
     if bk == .none_lit or bk == .null_lit or bk == .dotname: tb = prune(check_expr(b, ta))
     else:
         h = 0
@@ -4167,6 +4173,65 @@ check_vec_binary = (n: int, op: Tok, ta: int, tb: int) -> int:
     tb
 
 # ---------------- match ----------------
+# the names variant pattern p (.bin(op, l, r)) gives the fields of the enum value in local hidden
+# (each read from it where it is used)
+bind_variant = (p: int, st: int, vi: int, hidden: int):
+    si = int(types[st].st)
+    v = int(structs[si].variants) + vi
+    nf = int(variants[v].nfields)
+    loop f in [0..nkids(p)):
+        if nodes[kid(p, f)].kind != .ident: sub_pattern_error(p, v)
+    if nkids(p) != nf: fatal(nodes[p].pos, "variant '{name_of(int(variants[v].name))}' has {nf} field(s), pattern binds {nkids(p)}")
+    loop f in [0..nkids(p)):
+        b = kid(p, f)
+        if name_of(int(nodes[b].name)) == "_": continue
+        ft = int(fields[int(variants[v].fields) + f].type)
+        l = new_local(int(nodes[b].name), ft, nodes[b].pos)
+        locals[l].flags = i32(int(locals[l].flags) | LF_ALIAS)
+        fa = mk(.field, nodes[b].pos)
+        nodes[fa].a = i32(mk_ident_local(hidden, nodes[b].pos))
+        nodes[fa].aux = -3
+        nodes[fa].aux2 = i32(vi)
+        nodes[fa].ival = f
+        nodes[fa].type = i32(ft)
+        add_flag(fa, NF_CHECKED)
+        locals[l].alias = i32(fa)
+        nodes[b].sym = i32(l)
+
+# .bin("+", .num(a), _): a value or a pattern where a field's name goes; what to write instead is
+# the names and a condition on them
+sub_pattern_error = (p: int, v: int):
+    nf = int(variants[v].nfields)
+    parts: str[]
+    conds: str[]
+    first = 0
+    first_field = ""
+    loop f in [0..nkids(p)):
+        b = kid(p, f)
+        if nodes[b].kind == .ident:
+            parts.push(name_of(int(nodes[b].name)))
+            continue
+        fname = "x{f}"
+        if f < nf: fname = name_of(int(fields[int(variants[v].fields) + f].name))
+        if first == 0:
+            first = b
+            first_field = fname
+        parts.push(fname)
+        if nodes[b].kind == .pvariant: conds.push("{fname} is .{name_of(int(nodes[b].name))}")
+        else if nodes[b].kind == .prange: conds.push("{fname} in {name_of(int(nodes[b].sval))}")
+        else: conds.push("{fname} == {name_of(int(nodes[b].sval))}")
+    fix = ".{name_of(int(variants[v].name))}({join(parts, ", ")}) if {join(conds, " and ")}:"
+    if nodes[first].kind == .pvariant:
+        inner = ""
+        if nkids(first) > 0: inner = " (and `if let {name_of(int(nodes[first].sval))} = {first_field}:` in the arm for its fields)"
+        fatal(nodes[first].pos, "patterns do not nest: name the field and test it in a condition, `{fix}`{inner}")
+    fatal(nodes[first].pos, "a pattern names a variant's fields; it does not test their values: name the field and test it in a condition, `{fix}`")
+
+# a match not exhaustive only because the arms for these (.rect, or true) have conditions
+cond_arm_error = (m: int, which: str[]):
+    if which.len() == 1: fatal(nodes[m].pos, "the arm for {which[0]} has a condition, so {a_or_an(which[0])} that fails it is not matched: add an arm without one, or `_:`")
+    fatal(nodes[m].pos, "the arms for {join(which, ", ")} have conditions, so a value that fails them is not matched: add arms without them, or `_:`")
+
 check_match = (m: int, expected: int) -> int:
     is_stmt = has_flag(m, NF_STMT)
     check_expr(int(nodes[m].a), 0)
@@ -4181,9 +4246,14 @@ check_match = (m: int, expected: int) -> int:
     has_wild = false
     bools_seen = 0
     seen: bool[]
+    # (what arms with a condition name: a value that fails it goes on to the next arms)
+    cond_seen: bool[]
+    cond_wild = false
+    cond_bools = 0
     if types[st].kind == .enum_:
         check_struct_fields(int(types[st].st))
         seen = fill(false, int(structs[int(types[st].st)].nvariants))
+        cond_seen = seen
     sc = int(nodes[m].a)
     narrows = is_union(st) and nodes[sc].kind == .ident and nodes[sc].aux == i32(int(SK.local))
     # (a field path or a global: narrowed like `if x.f is T`)
@@ -4195,42 +4265,39 @@ check_match = (m: int, expected: int) -> int:
         arm_members: int[]
         arm_wild = false
         seen_before = seen
+        guarded = nodes[arm].a != 0
         loop k in [0..nkids(arm)):
             p = kid(arm, k)
             pk = nodes[p].kind
             if pk == .pwild:
-                has_wild = true
+                if guarded: cond_wild = true
+                else: has_wild = true
                 arm_wild = true
                 continue
             if pk == .pvariant and types[st].kind == .enum_:
                 si = int(types[st].st)
+                if ide_sentinel != 0 and int(nodes[p].name) == ide_sentinel: ide_complete_variants(st)
                 vi = find_variant(si, int(nodes[p].name))
                 if vi < 0: fatal(nodes[p].pos, "{type_str(st)} has no variant '{name_of(int(nodes[p].name))}'{variant_hint_for(st, name_of(int(nodes[p].name)))}")
+                if ide_on: ide_variant_ref(nodes[p].pos, int(nodes[p].name), st, vi)
                 nodes[p].aux2 = i32(vi)
-                seen[vi] = true
+                if guarded: cond_seen[vi] = true
+                else: seen[vi] = true
                 v = int(structs[si].variants) + vi
                 if structs[si].union_: arm_members.push(int(fields[int(variants[v].fields)].type))
                 if nkids(p) > 0:
-                    if nkids(p) != int(variants[v].nfields): fatal(nodes[p].pos, "variant '{name_of(int(variants[v].name))}' has {variants[v].nfields} field(s), pattern binds {nkids(p)}")
                     if nkids(arm) > 1: fatal(nodes[p].pos, "patterns with bindings cannot be combined with other patterns")
-                    loop f in [0..nkids(p)):
-                        b = kid(p, f)
-                        if name_of(int(nodes[b].name)) == "_": continue
-                        ft = int(fields[int(variants[v].fields) + f].type)
-                        l = new_local(int(nodes[b].name), ft, nodes[b].pos)
-                        locals[l].flags = i32(int(locals[l].flags) | LF_ALIAS)
-                        fa = mk(.field, nodes[b].pos)
-                        nodes[fa].a = i32(mk_ident_local(hidden, nodes[b].pos))
-                        nodes[fa].aux = -3
-                        nodes[fa].aux2 = i32(vi)
-                        nodes[fa].ival = f
-                        nodes[fa].type = i32(ft)
-                        add_flag(fa, NF_CHECKED)
-                        locals[l].alias = i32(fa)
-                        nodes[b].sym = i32(l)
+                    bind_variant(p, st, vi, hidden)
                 continue
             if pk == .pvariant:
                 if nodes[p].aux != 0: fatal(nodes[p].pos, "variant patterns need an enum value")
+                if lookup(int(nodes[p].name)) == 0 and int(nodes[p].name) != ide_sentinel:
+                    # (x if x < 0: as Python's `case x if ...`, which names the value)
+                    pn = name_of(int(nodes[p].name))
+                    what = "the value"
+                    if nodes[sc].kind == .ident: what = name_of(int(nodes[sc].name))
+                    if guarded: fatal(nodes[p].pos, "unknown name '{pn}': a name in a pattern is a value to compare with, not a new variable; `_ if ...:` is an arm for the values a condition on {what} picks")
+                    fatal(nodes[p].pos, "unknown name '{pn}': a name in a pattern is a value to compare with, not a new variable; `_:` is the arm for the rest")
                 id = mk(.ident, nodes[p].pos)
                 nodes[id].name = nodes[p].name
                 nodes[p] = Node(kind = .plit, pos = nodes[p].pos, a = i32(id))
@@ -4244,11 +4311,15 @@ check_match = (m: int, expected: int) -> int:
                 e = int(nodes[p].a)
                 check_expr(e, st)
                 coerce(e, st)
-                if types[st].kind == .enum_ and nodes[e].kind == .dotname: seen[int(nodes[e].aux)] = true
+                if types[st].kind == .enum_ and nodes[e].kind == .dotname:
+                    if guarded: cond_seen[int(nodes[e].aux)] = true
+                    else: seen[int(nodes[e].aux)] = true
                 # (true: and false: cover a bool)
                 if nodes[e].kind == .bool_lit:
-                    if nodes[e].ival != 0: bools_seen |= 2
-                    else: bools_seen |= 1
+                    bit = 1
+                    if nodes[e].ival != 0: bit = 2
+                    if guarded: cond_bools |= bit
+                    else: bools_seen |= bit
                 continue
             if pk == .prange:
                 if not is_int(st): fatal(nodes[p].pos, "range patterns need an integer value")
@@ -4270,6 +4341,10 @@ check_match = (m: int, expected: int) -> int:
                     if not seen_before[vi]: arm_members.push(um)
             path_narrows += 1
             narrow_expr(copy_path(sc), arm_members, nodes[arm].pos, intern(pkey))
+        if guarded:
+            # (seeing the arm's names and narrowing; what it tests holds in the arm)
+            check_to(int(nodes[arm].a), T_BOOL)
+            narrow_by(int(nodes[arm].a), true)
         body = int(nodes[arm].b)
         if is_stmt: check_block(body, 0, false)
         else:
@@ -4310,15 +4385,28 @@ check_match = (m: int, expected: int) -> int:
     if not exhaustive:
         if types[st].kind == .enum_:
             miss = ""
+            cmiss: str[]
             si = int(types[st].st)
             loop vi in 0.. and s in seen:
                 if s: continue
-                if len(miss) > 0: miss += ", "
                 # (a union's members are types: C, not .C)
                 vr = int(structs[si].variants) + vi
-                if structs[si].union_: miss += type_str(int(fields[int(variants[vr].fields)].type))
-                else: miss += ".{name_of(int(variants[vr].name))}"
+                vn = ".{name_of(int(variants[vr].name))}"
+                if structs[si].union_: vn = type_str(int(fields[int(variants[vr].fields)].type))
+                if cond_seen[vi]:
+                    cmiss.push(vn)
+                    continue
+                if len(miss) > 0: miss += ", "
+                miss += vn
+            if len(miss) == 0: cond_arm_error(m, cmiss)
+            if cond_wild: fatal(nodes[m].pos, "the `_` arm has a condition, so a value that fails it is not matched: add a `_:` arm without one")
             fatal(nodes[m].pos, "this match has no arm for {miss} (add one, or a `_:` arm for the rest)")
+        if types[st].kind == .bool_ and (bools_seen | cond_bools) == 3:
+            bmiss: str[]
+            if bools_seen & 2 == 0: bmiss.push("true")
+            if bools_seen & 1 == 0: bmiss.push("false")
+            cond_arm_error(m, bmiss)
+        if cond_wild: fatal(nodes[m].pos, "the `_` arm has a condition, so a value that fails it is not matched: add a `_:` arm without one")
         fatal(nodes[m].pos, "match expression is not exhaustive (add a `_:` arm)")
     if result == 0: result = T_NEVER
     if expected != 0 and result != T_NEVER:
@@ -6225,6 +6313,7 @@ check_istype = (n: int) -> int:
     nodes[n].a = i32(last_checked)
     finalize_literal(int(nodes[n].a))
     at = prune(ntype(int(nodes[n].a)))
+    if nodes[int(nodes[n].b)].kind == .dotname: return check_is_variant(n, at)
     tt = resolve_type(int(nodes[n].b))
     pos = nodes[n].pos
     # x is A, x is A | B, where x: (A | B | C)?: x != none and (x is A or x is B)
@@ -6252,6 +6341,22 @@ check_istype = (n: int) -> int:
         else: fatal(nodes[int(nodes[n].b)].pos, "{a_type(at)} is either {a_type(int(types[at].elem))} or none, never {a_type(tt)}")
     else if type_eq(at, tt): nodes[n].aux = -3      # (already narrowed to it, say): always true
     else: fatal(nodes[n].pos, "`is` tests which type a union (A | B) or optional value holds; this is always {a_type(at)}")
+    T_BOOL
+
+# x is .num: which variant an enum value is (aux), with or without fields
+check_is_variant = (n: int, at: int) -> int:
+    d = int(nodes[n].b)
+    nm = int(nodes[d].name)
+    if types[at].kind != .enum_ or is_union(at):
+        if is_union(at): fatal(nodes[d].pos, "{type_str(at)} is a union, whose members are told apart by type: `x is {type_str(union_members(at)[0])}`")
+        fatal(nodes[d].pos, "`is .{name_of(nm)}` tests which variant an enum value is; this is {a_type(at)}")
+    if ide_sentinel != 0 and nm == ide_sentinel: ide_complete_variants(at)
+    vi = find_variant(int(types[at].st), nm)
+    if vi < 0: fatal(nodes[d].pos, "{type_str(at)} has no variant '{name_of(nm)}'{variant_hint_for(at, name_of(nm))}")
+    if ide_on: ide_variant_ref(nodes[d].pos, nm, at, vi)
+    nodes[d].aux = i32(vi)
+    nodes[d].type = i32(at)
+    nodes[n].aux = i32(vi)
     T_BOOL
 
 # what `x is ...` tests again: x itself (a variable or field path), or else its value put in a
@@ -6538,13 +6643,36 @@ path_forget = (key: str):
         i -= 1
     loop nm in found: push_scope_sym(nm, new_sym(nm, .global, -1, 0))
 
+# if let .bin(op, l, r) = e (or loop let): e's value in a variable of its own (sym), whose
+# variant is tested and whose fields the names stand for, as in a match arm
+let_variant = (n: int, ot: int, what: str):
+    p = int(nodes[n].d)
+    vn = name_of(int(nodes[p].name))
+    if types[ot].kind == .opt: fatal(nodes[p].pos, "`{what} x = value` gives an optional's value a name; `.{vn}(...)` is for a variant of an enum, and this is {a_type(ot)}")
+    if is_union(ot): fatal(nodes[p].pos, "{type_str(ot)} is a union, whose members are told apart by type: `if x is {type_str(union_members(ot)[0])}:` (x is one in the branch)")
+    if types[ot].kind != .enum_: fatal(nodes[p].pos, "`{what} .{vn}(...) = value` needs an enum value, found {a_type(ot)}")
+    finalize_literal(int(nodes[n].a))
+    si = int(types[ot].st)
+    check_struct_fields(si)
+    if ide_sentinel != 0 and int(nodes[p].name) == ide_sentinel: ide_complete_variants(ot)
+    vi = find_variant(si, int(nodes[p].name))
+    if vi < 0: fatal(nodes[p].pos, "{type_str(ot)} has no variant '{vn}'{variant_hint_for(ot, vn)}")
+    if ide_on: ide_variant_ref(nodes[p].pos, int(nodes[p].name), ot, vi)
+    nodes[p].aux2 = i32(vi)
+    hidden = new_local(0, ot, nodes[n].pos)
+    locals[hidden].flags = i32(LF_ADDR)
+    nodes[n].sym = i32(hidden)
+    if nkids(p) > 0: bind_variant(p, ot, vi, hidden)
+
 check_iflet = (n: int, ex: int) -> int:
     is_stmt = has_flag(n, NF_STMT)
     ot = prune(check_expr(int(nodes[n].a), 0))
-    if types[ot].kind != .opt: fatal(nodes[int(nodes[n].a)].pos, "'if let x = value' needs an optional value, found {type_str(ot)}")
     mark = scope_mark()
-    l = new_local(int(nodes[n].name), int(types[ot].elem), nodes[n].pos)
-    nodes[n].sym = i32(l)
+    if nodes[n].d != 0: let_variant(n, ot, "if let")
+    else:
+        if types[ot].kind != .opt: fatal(nodes[int(nodes[n].a)].pos, "'if let x = value' needs an optional value, found {type_str(ot)}")
+        l = new_local(int(nodes[n].name), int(types[ot].elem), nodes[n].pos)
+        nodes[n].sym = i32(l)
     b = int(nodes[n].b)
     c = int(nodes[n].c)
     e1 = ex

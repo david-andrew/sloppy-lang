@@ -1712,6 +1712,8 @@ gen_match_switch = (m: int, st0: int, rs: int, rtp: int, val: bool) -> bool:
     wild = -1
     loop i in [0..na):
         arm = kid(m, i)
+        # (an arm with a condition: tested in order, below)
+        if nodes[arm].a != 0: return false
         loop k in [0..nkids(arm)):
             p = kid(arm, k)
             pk = nodes[p].kind
@@ -1810,6 +1812,7 @@ gen_match = (m: int, want: bool) -> Val:
         br_to(fail_level)
         endc()
         enter_cond()
+        if nodes[arm].a != 0: jump_if_false(int(nodes[arm].a), fail_level)
         body = int(nodes[arm].b)
         if val: gen_value_block(body, rs, rtp)
         else:
@@ -2877,6 +2880,9 @@ gen_expr = (e: int) -> Val:
         at = prune(ntype(a))
         vi = int(nodes[e].aux)
         if vi == -3: return V(e_iconst(1), false)
+        if types[at].kind == .enum_ and structs[int(types[at].st)].simple_enum:
+            # (x is .a, for an enum without fields: its value is the variant's)
+            return V(e_bin(.eq, VI, gen_expr(a).v, e_iconst(variants[int(structs[int(types[at].st)].variants) + vi].value)), false)
         p = gen_place(a, false)
         addr = place_addr(p, at)
         if vi < 0:
@@ -3366,19 +3372,28 @@ gen_iflet = (e: int, t: int) -> Val:
     l = int(nodes[e].sym)
     a = int(nodes[e].a)
     ot = prune(ntype(a))
-    inner = int(types[ot].elem)
     scope_push()
-    stmt_begin()
-    # (an owned optional: its value moves into the variable, with no copy to release)
-    ov = gen_owned(a)
-    pa = ov.v
     has = vreg(VI)
-    e_mov(has, e_load(VI, pa, tsize(inner), 1))
-    iff(has)
-    write_place(local_place(l, true), inner, load_val(inner, pa, 0))
-    endc()
-    stmt_end()
-    scope_add_local(l)
+    if nodes[e].d != 0:
+        # (if let .bin(op, l, r) = x: x in a variable of its own, as a match's, and its tag tested)
+        stmt_begin()
+        sv = gen_owned(a)
+        store_val(ot, e_slot(int(locals[l].offset)), 0, sv.v)
+        stmt_end()
+        scope_add_local(l)
+        e_mov(has, gen_match_test(int(nodes[e].d), ot, e_slot(int(locals[l].offset))))
+    else:
+        inner = int(types[ot].elem)
+        stmt_begin()
+        # (an owned optional: its value moves into the variable, with no copy to release)
+        ov = gen_owned(a)
+        pa = ov.v
+        e_mov(has, e_load(VI, pa, tsize(inner), 1))
+        iff(has)
+        write_place(local_place(l, true), inner, load_val(inner, pa, 0))
+        endc()
+        stmt_end()
+        scope_add_local(l)
     iff(has)
     enter_cond()
     if val: gen_value_block(int(nodes[e].b), rs, t)
@@ -4633,7 +4648,11 @@ gen_while = (s: int):
         has = vreg(VI)
         stmt_begin()
         pa = place_addr(gen_place(a, false), ot)
-        e_mov(has, e_load(VI, pa, tsize(inner), 1))
+        if nodes[s].d != 0:
+            # (loop let .cons(head, tail) = list: a copy of the value when it is that variant)
+            inner = ot
+            e_mov(has, gen_match_test(int(nodes[s].d), ot, pa))
+        else: e_mov(has, e_load(VI, pa, tsize(inner), 1))
         iff(has)
         vv = own(V(load_val(inner, pa, 0), false), inner)
         write_place(local_place(l, true), inner, vv.v)

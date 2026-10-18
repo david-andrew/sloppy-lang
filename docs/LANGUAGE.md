@@ -435,6 +435,7 @@ loop x in xs: ...
 loop k, v in table: ...                # unpacks: map entries, or an array of pairs
 loop mut x in xs: x *= 2               # x is the element itself
 loop let job = queue.next(): ...       # while the optional has a value
+loop let .cons(x, rest) = list: ...    # while an enum value is that variant (section 7)
 break / continue / return
 defer close(f)                         # runs when the enclosing block exits
 ```
@@ -542,6 +543,7 @@ match value:
     1, 2: print("small")
     3..9: print("medium")
     'a'..'z': print("a letter code")
+    _ if value < 0: print("negative")   # an arm with a condition
     _: print("big")
 
 enum Screen: menu, playing, paused
@@ -559,6 +561,14 @@ that one added later is not passed over quietly. A match statement on numbers or
 match that gives a value needs an arm for every value (`true:` and `false:` cover a `bool`).
 Where its type is known, as on a function's last line, each arm gives that type, so the arms
 of a `match` or `if` among them may give different members of a union.
+
+An arm can have a condition, `if` and a test after its patterns: `.rect(w, h) if w == h:`,
+`int if v < 0:`, `_ if n > 100:`. It is tested when the pattern matches, and when it fails the
+arms below are tried. The names the arm binds, and what its pattern narrows, are known in the
+condition, and what the condition tests with `is` holds in the arm. An arm with a condition
+does not count for naming each variant: an enum's match still needs an arm for that variant
+without one, or `_:` (and a `bool`'s, a `true:` and a `false:` without one). A name in a pattern
+is a value to compare with, not a new variable: for "any number above 100", `_ if n > 100:`.
 
 ## 7. Structs, unions, enums, optionals, tuples
 
@@ -800,16 +810,25 @@ enum Shape:
 s = Shape.rect(2, 3)
 area = match s:
     .circle(r): PI * r ^ 2             # an arm names the variant and binds its fields, in order
-    .rect(w, _): w * w                 # (`_` for a field not used)
+    .rect(w, h) if w == h: w * w       # a condition on them (a square)
+    .rect(w, h): w * h
+if s is .circle: print("round")        # which variant it is (`is not` too)
+if let .rect(w, _) = s: print(w)       # its fields, when it is that variant (`_`: one not used)
 enum Tree[T]:                           # generic: the type arguments come from the fields given
     leaf
     node(v: T, kids: Tree[T][])
 t = Tree.node("a", [])                  # a Tree[str]
 ```
 
-An arm binds a variant's fields by position, as plain names (or `_`), one variant to an arm;
-arms cannot test the fields' values (`.rect(w, h) if w == h`), nest patterns, or bind variants
-in `if let`: match the variant, then test its fields in the arm.
+An arm binds a variant's fields by position, as plain names (or `_`), one variant to an arm.
+`x is .rect` tests which variant a value is without naming its fields (for an enum without
+fields it is `x == .rect` too). `if let .rect(w, h) = s:` names them when `s` is that variant,
+with `else:` (or `else if let`) for the rest and `and` for a condition on them, as `if let` does
+for an optional; it is an expression too, `if let .num(v) = e: v else: 0.0`. `loop let .cons(head,
+tail) = list:` goes round while the value is that variant, which walks a list made of an enum
+holding itself (`list = tail` in the loop). Patterns do not nest, and do not test a field's value
+in its place (`.bin("+", .num(a), _)`): name the fields and test them in a condition,
+`.bin(op, l, r) if op == "+" and l is .num:`, then `if let .num(a) = l:` in the arm.
 
 ## 8. Arrays for numeric work
 
