@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `rk4(state, t, dt, rate)`: a simulation's step by the Runge-Kutta method, for a number, a
+  vector, an f64[] or a struct with + and * of its own (TEACHING.md: a pendulum).
 - `net.fetch` takes `method` ("POST", "PUT", "DELETE", "HEAD"...), `headers` (sent besides the
   usual ones: "Authorization"...), a `body` (its Content-Type, unless given, JSON when it starts
   with { or [), `save_to` (a successful answer goes to that file as it comes, not into memory)

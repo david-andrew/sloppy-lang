@@ -415,6 +415,12 @@ Math basics.
 - `inverse_lerp = (a: f64, b: f64, x: f64) -> f64`: where x is between a and b, from 0 (at a) to 1 (at b): lerp backwards
 - `remap = (x: f64, a: f64, b: f64, c: f64, d: f64) -> f64`: x moved from the range a..b to c..d, as p5's map: remap(mouse.x, 0, 1280, -1, 1)
 - `smoothstep = (e0: f64, e1: f64, x: f64) -> f64`
+- `rk4[T] = (y: T, t: f64, dt: f64, rate: (T, f64) -> T) -> T`: the state y of a simulation dt seconds on, by the classic Runge-Kutta method (far closer than y + rate(y, t) * dt, Euler's: an orbit stays closed, a spring keeps its energy): rate(y, t) says how fast y changes at time t. y is a number, a vector, an f64[], or a struct with + and * by a number of its own ((+) = (a: S, b: S) -> S: ...)
+- `rk4 = (y: f64[], t: f64, dt: f64, rate: (f64[], f64) -> f64[]) -> f64[]`
+  ```gdscript
+  # a pendulum: (angle, angular speed)
+  s = rk4(s, t, dt, (s: vec2, t: f64) -> vec2: vec2(s.y, -9.81 / length * sin(s.x)))
+  ```
 - `sin = (x: f64) -> f64`
 - `cos = (x: f64) -> f64`
 - `tan = (x: f64) -> f64`

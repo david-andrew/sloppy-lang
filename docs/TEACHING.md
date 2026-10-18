@@ -108,6 +108,26 @@ draw = ():
     draw_chart(c, Rect(620, 40, 620, 420))
 ```
 
+Where no formula gives the answer (a pendulum swinging wide, a ball with drag, an orbit), the
+program steps the motion along. `rk4(state, t, dt, rate)` moves a state dt seconds on, by the
+Runge-Kutta method: `rate` says how fast each part changes. A pendulum's state is its angle and
+its angular speed:
+
+```gdscript
+# (angle, angular speed): the angle changes by the speed, the speed by gravity's pull
+swing = (s: vec2, t: f64) -> vec2: vec2(s.y, -9.81 / 2.0 * sin(s.x))
+
+s = vec2(1.2, 0)
+t = 0.0
+loop t < 10.0:
+    s = rk4(s, t, 0.01, swing)
+    t += 0.01
+```
+
+The state can be a number, a vector, an f64[] (`[x, y, vx, vy]`), or a struct with `+` and `*`
+of its own. Stepping by `s + rate(s, t) * dt` instead (Euler's way) is the first thing to try in
+class, and the place to see why: its pendulum swings higher each time.
+
 `hud_slider(rect, value, low, high, step, label)` puts a slider anywhere. The built-in font has
 Greek letters, subscripts and superscripts, arrows and the common mathematical signs (θ ω Δ
 v₀ x² → ≈ ≤ √). A chart for a worksheet is a picture without a window:
