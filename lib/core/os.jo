@@ -39,7 +39,15 @@ __cstr = (p: *u8) -> str:
 
 # an environment variable (in a web page: the page's URL parameter of that name, where `SLOPPY_X`
 # may also be written `x`, and a bare `?x` is "1")
+# set_env's and unset_env's changes (Windows keeps them itself): seen by env, env_all, and the
+# programs started after them
+__env_set: {str: str} = {}
+__env_unset: {str: bool} = {}
+
 env = (name: str) -> str?:
+    when TARGET != "windows":
+        if __env_unset.has(name): return none
+        if let v = __env_set.get(name): return v
     when TARGET == "wasm":
         buf = fill(u8(0), 256)
         n = __wasm_env(data(name), len(name), data(buf), 256)
@@ -596,10 +604,7 @@ exec = (path: str, argv: str[]) -> bool:
         pp = ptrs as **u8
         loop i in 0.. and a in argv: pp[i] = data(__zstr(a))
         pp[argv.len()] = null
-        sp = __argv() as *int
-        argc = sp[0]
-        envp = (sp + 2 + argc) as *u8
-        syscall(59, data(__zstr(path)), ptrs, envp)
+        syscall(59, data(__zstr(path)), ptrs, __envp())
         false
 
 # exec, the program where it was linked: the interactive prompt's session and sloppy watch's game
@@ -611,8 +616,7 @@ __exec_unslid = (path: str, argv: str[]) -> bool:
         pp = ptrs as **u8
         loop i in 0.. and a in argv: pp[i] = data(__zstr(a))
         pp[argv.len()] = null
-        sp = __argv() as *int
-        envp = (sp + 2 + sp[0]) as *u8
+        envp = __envp()
         attr = [0]
         __c_spawnattr_init(data(attr) as *u8)
         __c_spawnattr_setflags(data(attr) as *u8, i16(0x40 | 0x100))       # SETEXEC, DISABLE_ASLR
@@ -620,6 +624,65 @@ __exec_unslid = (path: str, argv: str[]) -> bool:
         return false
     else:
         return exec(path, argv)
+
+# an environment variable set, for this program and the programs it starts after this
+set_env = (name: str, value: str):
+    when TARGET == "windows":
+        SetEnvironmentVariableW(data(__wide(name)), data(__wide(value)))
+    else:
+        __env_set[name] = value
+        __env_unset.remove(name)
+
+# an environment variable taken away, for this program and the programs it starts after this
+unset_env = (name: str):
+    when TARGET == "windows":
+        SetEnvironmentVariableW(data(__wide(name)), null)
+    else:
+        __env_set.remove(name)
+        __env_unset[name] = true
+
+# every environment variable, by name (in a web page: only those set with set_env)
+env_all = () -> {str: str}:
+    out: {str: str} = {}
+    when TARGET == "windows":
+        p = GetEnvironmentStringsW()
+        if p == null: return out
+        at = p
+        loop at[0] != u16(0):
+            n = 0
+            loop at[n] != u16(0): n += 1
+            e = __narrow(at, n)
+            # (Windows' own "=C:=C:\dir" entries start with = and are left out)
+            k = find_byte(e, '=')
+            if k > 0: out[e[..k)] = e[k + 1..]
+            at = at + n + 1
+        FreeEnvironmentStringsW(p)
+        return out
+    else when TARGET != "wasm":
+        sp = __argv() as *int
+        envp = (sp + 2 + sp[0]) as **u8
+        i = 0
+        loop envp[i] != null:
+            e = __cstr(envp[i])
+            k = find_byte(e, '=')
+            if k > 0 and not __env_unset.has(e[..k)): out[e[..k)] = e[k + 1..]
+            i += 1
+    loop k, v in __env_set: out[k] = v
+    out
+
+# (the environment for a program started: as this one's was, unless set_env changed it)
+__envp = () -> *u8:
+    sp = __argv() as *int
+    if __env_set.len() == 0 and __env_unset.len() == 0: return (sp + 2 + sp[0]) as *u8
+    all = env_all()
+    ptrs = __alloc(8 * (all.len() + 1))
+    pp = ptrs as **u8
+    i = 0
+    loop k, v in all:
+        pp[i] = data(__zstr("{k}={v}"))
+        i += 1
+    pp[i] = null
+    ptrs as *u8
 
 # start a program in the background, detached from this one: its own session, no terminal
 # (input and output go to /dev/null); returns whether it was started
