@@ -1580,6 +1580,7 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
   if can_share() and hud_button(r, "Share"): share(invite_link)
   ```
 - `share = (text: str)`
+- `sideways_hint = (on: bool)`: a phone held upright, playing a game made for a screen wider than tall: a note over the game to turn the phone sideways (on to start with; the game goes on under it). Off for a game laid out for a phone either way up (visible_rect says what shows).
 - `mouse_lock = (on: bool = true) -> bool`: lock the mouse pointer to the window and hide it, for mouse look: the pointer stays put and its motion keeps arriving through mouse_delta(). false where the platform cannot. (A web page gets the lock at the next click into it, as browsers require; Escape releases it there.)
 - `is_mouse_locked = () -> bool`: (in a screenshot run, what the game asked for: the desktop's focus coming and going would make the run differ from one time to the next)
 - `window_focused = () -> bool`: the window (or the web page) has the keyboard's focus: false while the player is in another window or tab, as after a click outside an itch.io frame (a game may pause then)
@@ -1863,7 +1864,7 @@ draw = ():
 - `ring = (center: vec2, radius: f64, thickness: f64, c: vec4, segments: int = 48)`
 - `arc = (center: vec2, radius: f64, thickness: f64, start: f64, stop: f64, c: vec4, segments: int = 0)`: part of a ring: from angle `start` to `stop` (radians, clockwise on screen)
 - `line = (a: vec2, b: vec2, thickness: f64, c: vec4)`
-- `polyline = (points: vec2[], thickness: f64, c: vec4, closed: bool = false)`
+- `polyline = (points: vec2[], thickness: f64, c: vec4, closed: bool = false)`: lines through the points, one band without gaps at the bends (mitred: a sharp bend's point cut off at three times the thickness)
 - `polygon = (points: vec2[], c: vec4)`: a filled polygon, its points in order around it (either way round); a concave one (a star, an L) is cut into triangles
 
 #### Sprites

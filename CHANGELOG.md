@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A phone held upright, playing a game made wider than tall: a note over it to turn the phone
+  sideways (the game goes on under it; `sideways_hint(false)` for a game laid out for both ways).
+- Thick `polyline`s (and `rect_rounded_outline`) are one band through their points: the bends
+  had gaps, which made a rounded outline's corners a fan of spikes. Bends are mitred, a sharp
+  one's point cut off at three times the thickness.
+
 ## 0.20.0
 
 - Aces (examples/aces, in the gallery): biplanes in a dogfight, Red against Blue, up to six a

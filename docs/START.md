@@ -124,7 +124,9 @@ the last input was a finger (no hover then). `screen_fit(.expand)` and `visible_
 the game out for any shape of screen. `toggle_fullscreen()` from a tap goes fullscreen as the
 finger lifts (browsers allow it only then); iPhones' Safari has no fullscreen for a page's
 canvas. A `hud_text_field` tapped brings up the phone's keyboard, with a Paste button beside
-what is typed while it has it.
+what is typed while it has it. A game made wider than tall (as `window()`'s 1280x720 is) shows a
+note to turn the phone sideways while a phone is held upright; one laid out for both ways says
+`sideways_hint(false)`.
 
 A board and buttons, for a phone held either way: the board in the part of the screen the
 buttons leave (`camera2d_fit`), a tool picked with a button, then a tap on the board; a tap on a
