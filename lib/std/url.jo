@@ -1,0 +1,119 @@
+# Text for the web: a URL's parts percent-encoded and back, query strings, and HTML's entities.
+#   url = "https://api.example.com/search?" + url_query({"q": "café au lait", "page": "2"})
+#   name = url_decode("caf%C3%A9")                        # café
+#   title = html_unescape("Tom &amp; Jerry &#8212; &lt;b&gt;")  # Tom & Jerry — <b>
+
+# text as a part of a URL (a query's value, a path's segment): every byte but letters, digits and
+# - _ . ~ as %XX (a space as %20, é as %C3%A9), as Python's quote(s, safe="") writes it
+url_encode = (s: str) -> str:
+    b: u8[]
+    loop c in s:
+        if is_alnum(c) or c == '-' or c == '.' or c == '~': b.push(c)      # (is_alnum: _ too)
+        else:
+            b.push('%')
+            b.push("0123456789ABCDEF"[int(c) >> 4])
+            b.push("0123456789ABCDEF"[int(c) & 15])
+    str_from_bytes(b)
+
+# percent-encoded text back as it was: %XX as that byte (a % without two hex digits stays as it
+# is); with plus = true a + is a space too, as an HTML form's query writes one
+url_decode = (s: str, plus: bool = false) -> str:
+    if find_byte(s, '%') < 0 and not (plus and find_byte(s, '+') >= 0): return s
+    b: u8[]
+    i = 0
+    loop i < len(s):
+        c = s[i]
+        if c == '%' and i + 2 < len(s) and __tx_hex(s[i + 1]) >= 0 and __tx_hex(s[i + 2]) >= 0:
+            b.push(u8(__tx_hex(s[i + 1]) * 16 + __tx_hex(s[i + 2])))
+            i += 3
+            continue
+        if c == '+' and plus: b.push(' ')
+        else: b.push(c)
+        i += 1
+    str_from_bytes(b)
+
+# a query string from names and values, each url_encoded: url_query({"q": "x y", "n": "5"}) is
+# "q=x%20y&n=5" (what goes after the ? of a URL; Python's urlencode)
+url_query[T] = (params: {str: T}) -> str:
+    parts: str[]
+    loop k, v in params: parts.push(url_encode(k) + "=" + url_encode("{v}"))
+    join(parts, "&")
+
+# HTML's entities as the characters they stand for: &amp; &lt; &gt; &quot; &#39; &nbsp;, the other
+# named ones of Latin-1 and punctuation (&eacute; &copy; &mdash; &hellip; &euro;...), and numbers
+# (&#233; &#xE9;); one it does not know stays as it is
+html_unescape = (s: str) -> str:
+    if find_byte(s, '&') < 0: return s
+    b: u8[]
+    i = 0
+    loop i < len(s):
+        c = s[i]
+        if c != '&':
+            b.push(c)
+            i += 1
+            continue
+        cp = -1
+        e = i + 1
+        if e < len(s) and s[e] == '#':
+            # (&#233; or &#xE9;: the character with that number; the ; may be left out)
+            e += 1
+            hex = e < len(s) and (s[e] == 'x' or s[e] == 'X')
+            if hex: e += 1
+            d0 = e
+            v = 0
+            loop e < len(s) and (hex and __tx_hex(s[e]) >= 0 or is_digit(s[e])):
+                if v < 0x110000:
+                    if hex: v = v * 16 + __tx_hex(s[e])
+                    else: v = v * 10 + int(s[e]) - 48
+                e += 1
+            if e > d0:
+                # (none, a surrogate's half, or beyond Unicode: the replacement character, as browsers show it)
+                if v == 0 or v >= 0xD800 and v < 0xE000 or v >= 0x110000: v = 0xFFFD
+                cp = v
+                if e < len(s) and s[e] == ';': e += 1
+        else:
+            loop e < len(s) and e - i <= 10 and is_alnum(s[e]): e += 1
+            if e < len(s) and s[e] == ';' and e > i + 1:
+                cp = __html_entity(s[i + 1..e))
+                e += 1
+        if cp < 0:
+            b.push('&')
+            i += 1
+            continue
+        __utf8_push(b, cp)
+        i = e
+    str_from_bytes(b)
+
+# text with & < > " ' as entities, to put inside HTML
+html_escape = (s: str) -> str:
+    b: u8[]
+    loop c in s:
+        if c == '&': __buf_append_str(b, "&amp;")
+        else if c == '<': __buf_append_str(b, "&lt;")
+        else if c == '>': __buf_append_str(b, "&gt;")
+        else if c == '"': __buf_append_str(b, "&quot;")
+        else if c == '\'': __buf_append_str(b, "&#39;")
+        else: b.push(c)
+    str_from_bytes(b)
+
+# (Latin-1's names, from &nbsp; at 160 to &yuml; at 255, in order)
+__HTML_LATIN1 = ["nbsp", "iexcl", "cent", "pound", "curren", "yen", "brvbar", "sect", "uml", "copy", "ordf", "laquo", "not", "shy", "reg", "macr",
+    "deg", "plusmn", "sup2", "sup3", "acute", "micro", "para", "middot", "cedil", "sup1", "ordm", "raquo", "frac14", "frac12", "frac34", "iquest",
+    "Agrave", "Aacute", "Acirc", "Atilde", "Auml", "Aring", "AElig", "Ccedil", "Egrave", "Eacute", "Ecirc", "Euml", "Igrave", "Iacute", "Icirc", "Iuml",
+    "ETH", "Ntilde", "Ograve", "Oacute", "Ocirc", "Otilde", "Ouml", "times", "Oslash", "Ugrave", "Uacute", "Ucirc", "Uuml", "Yacute", "THORN", "szlig",
+    "agrave", "aacute", "acirc", "atilde", "auml", "aring", "aelig", "ccedil", "egrave", "eacute", "ecirc", "euml", "igrave", "iacute", "icirc", "iuml",
+    "eth", "ntilde", "ograve", "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave", "uacute", "ucirc", "uuml", "yacute", "thorn", "yuml"]
+__HTML_NAMES = ["amp", "lt", "gt", "quot", "apos", "OElig", "oelig", "Scaron", "scaron", "Yuml", "fnof", "circ", "tilde", "ensp", "emsp", "thinsp",
+    "zwnj", "zwj", "lrm", "rlm", "ndash", "mdash", "lsquo", "rsquo", "sbquo", "ldquo", "rdquo", "bdquo", "dagger", "Dagger", "bull", "hellip",
+    "permil", "prime", "Prime", "lsaquo", "rsaquo", "euro", "trade", "larr", "uarr", "rarr", "darr", "harr", "spades", "clubs", "hearts", "diams"]
+__HTML_CODES = [38, 60, 62, 34, 39, 338, 339, 352, 353, 376, 402, 710, 732, 8194, 8195, 8201,
+    8204, 8205, 8206, 8207, 8211, 8212, 8216, 8217, 8218, 8220, 8221, 8222, 8224, 8225, 8226, 8230,
+    8240, 8242, 8243, 8249, 8250, 8364, 8482, 8592, 8593, 8594, 8595, 8596, 9824, 9827, 9829, 9830]
+
+# (the character a named entity stands for, or -1)
+__html_entity = (name: str) -> int:
+    loop i in 0.. and n in __HTML_NAMES:
+        if n == name: return __HTML_CODES[i]
+    loop i in 0.. and n in __HTML_LATIN1:
+        if n == name: return 160 + i
+    -1
