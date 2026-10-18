@@ -150,10 +150,19 @@ s.over([-1, friend])
 # player 1, with the code: host = net.join_invite(code) ... s.over([host, -1])
 ```
 
-For three or four players, one hosts: it invites each of the others (an invite and a reply
+For more players, one hosts: it invites each of the others (an invite and a reply
 each), tells each its number in a message of the game's ("you are 2"), and plays over all of
 them, `s.over([-1, a, b])`; the others play over the host alone, `s.over([host, -1, -1])`, and the
-host passes on what goes between them (tests/net/np_three.jo does this).
+host passes on what goes between them (tests/net/np_three.jo does this; Aces does it for up to
+twelve, in examples/aces).
+
+**When a player leaves**, the session would wait for their inputs. `s.stand_in(p, input)` has
+this machine play for them from then on: their inputs that reached it are kept, and `input` is
+theirs for every tick after, sent to the others as theirs. A game makes that input mean "the
+computer flies it" (a field the tick reads). Only a machine that had everything the leaver sent
+anyone can do it: the host (all of it passed through the host), or either of two players. A
+page that closes may not be reported as gone for half a minute: a player `s.silent(p)` for some
+seconds can be taken as gone (Aces waits 8).
 
 The session's packets on those peers are its own (marked, so the game's `net.receive()` leaves
 them); the game sends and reads its own messages on the same peers as ever (a chat, "again?"),

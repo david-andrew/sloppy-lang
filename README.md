@@ -103,7 +103,7 @@ browser](https://sloppy-lang.org/breakwater/).
   page, Sloppy's own in native programs; a TURN relay for strict networks if you have one).
   Rollback netplay (`netplay.session`) for fighting and action games, client and server for
   many players. See [playing over a network](docs/MULTIPLAYER.md), [Duel](https://sloppy-lang.org/examples/duel/)
-  and [Aces](https://sloppy-lang.org/examples/aces/) (biplanes in a dogfight).
+  and [Aces](https://sloppy-lang.org/examples/aces/) (biplanes in a dogfight, up to six a side).
 - **Programs keep working.** Native executables are static (they talk to the kernel directly);
   the GPU driver is loaded at run time when present, and without one games still run on a
   multithreaded software renderer. Web builds are one HTML file with the WebAssembly embedded. The compiler needs no assembler, linker or C toolchain.

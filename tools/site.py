@@ -557,8 +557,8 @@ GALLERY = [
 
 # (what a card says besides its program's first sentence)
 GALLERY_NOTES = {
-    "aces": 'For two, anywhere, as Duel is (Invite a friend gives a link to send them), or alone against the computer. '
-            'Flown with keys, a gamepad or two thumbs on a phone; the planes are built from boxes in the program (<code>add_box</code>, <code>custom_mesh</code>).',
+    "aces": 'Up to six a side, players and the computer: Invite a friend gives a link to send them, as many friends as there are planes, on the same side or against each other; or Practice, alone with the computer. '
+            'Flown with the mouse, keys, a gamepad or two thumbs on a phone; the planes are built from boxes in the program (<code>add_box</code>, <code>custom_mesh</code>).',
     "duel": 'For two, anywhere: Invite a friend gives a link to send them; they open it, in a browser here or on a phone. '
             'Rollback netplay (<code>netplay.session</code> over invite codes): each game runs the whole match, with no server between them.',
     "netpong": 'For two, anywhere: choose Invite a friend and send them the link it gives; they open it (on a phone too), and you paste back the code their game then shows. '

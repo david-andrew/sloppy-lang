@@ -4256,6 +4256,8 @@ draw = ():
 - `play[S, I] = (s: mut Session[S, I], input: I)`: this frame's input from this machine's player; the game moves on a tick (unless waiting)
 - `outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]`: what to send to whom since the last call: (player, bytes) (without s.udp)
 - `receive[S, I] = (s: mut Session[S, I], data: u8[])`: bytes that arrived from another player (the packet says which)
+- `stand_in[S, I] = (s: mut Session[S, I], p: int, input: I)`: this machine plays for player p from now on, with this input every tick (a game's "the computer flies it": the game's tick makes it so): for one who has left. Their inputs that reached this machine are kept, and the rest are this, so the others must have had none of theirs that this one did not: over net's peers, the host, who passes on all of them, can (or either of two players).
+- `stands_in[S, I] = (s: Session[S, I], p: int) -> bool`: this machine plays for player p (s.stand_in)
 - `lag[S, I] = (s: mut Session[S, I], ms: f64, jitter_ms: f64 = 0, loss: f64 = 0)`: simulate a slow network on what this session sends: ms more latency, up to jitter_ms more at random, and a share of packets lost (0 to 1)
 
 #### Over net's peers (invite codes: web pages and native programs)

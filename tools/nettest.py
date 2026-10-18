@@ -105,8 +105,8 @@ f1 = subprocess.Popen([n3], stdout=subprocess.PIPE, text=True, env=dict(env, DIR
 f2 = subprocess.run([n3], capture_output=True, text=True, env=dict(env, DIR=n3d, ROLE="friend", N="2"), timeout=120)
 h_out = h.communicate(timeout=60)[0]
 f1_out = f1.communicate(timeout=60)[0]
-check("netplay for three through the host: the host", h_out, ["player 0: played true, desync -1"])
-check("netplay for three through the host: player 1", f1_out, ["player 1: played true, desync -1"])
+check("netplay for three through the host: the host", h_out, ["player 0: played true, desync -1, stood in true"])
+check("netplay for three through the host: player 1", f1_out, ["player 1: played true, desync -1, stood in true"])
 check("netplay for three through the host: player 2", f2.stdout, ["player 2: played true, desync -1"])
 # two games through lib/invite.jo's screens (run with no window: the software renderer, no display)
 ig = build("invite_game") + exe

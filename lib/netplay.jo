@@ -35,6 +35,8 @@ import net
 # (s.receive(player, bytes)): any transport works (net's WebSockets, a relay server), and two
 # sessions in one program can play each other over netplay.Link, a simulated network with
 # latency, jitter and loss. s.lag(ms, jitter_ms, loss) simulates the same on a real one.
+# When a player leaves, the game can go on: s.stand_in(p, input) on the host (or the other of two)
+# plays for them from then on, with an input that has the game's tick fly them itself.
 
 const __NP_HIST = 128               # ticks kept: states and inputs
 
@@ -87,6 +89,10 @@ struct Session[S, I]:
     __loss = 0.0
     __held: (f64, int, u8[])[]
     __rand: u64 = 12345
+    # (players this machine plays for, who left: s.stand_in)
+    __stand: bool[]
+    __stand_in: I[]
+    __has: int[]                    # [q * players + p]: player q has p's inputs below this
 
 struct __NpPacket[I]:
     from: int
@@ -98,6 +104,7 @@ struct __NpPacket[I]:
     inputs: I[]                     # the sender's inputs from first on
     check: int                      # a tick of the sender's game, and its hash (-1: none)
     hash: u64
+    has: int[]                      # the sender has each player's inputs below this
     sent = 0.0                      # the sender's clock (ms)
     echo = -1.0                     # the receiver's clock in the latest packet from it, and how
     held = 0.0                      # long ago that came (ms): the round trip is now - echo - held
@@ -118,6 +125,9 @@ session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: in
     s.__heard = fill(elapsed(), players)
     s.__rtt = fill(0.0, players)
     s.__stamp = fill(-1.0, players)
+    s.__stand = fill(false, players)
+    s.__stand_in = fill(zero, players)
+    s.__has = fill(delay, players * players)
     # (the first ticks, before anyone's input can take effect: no input)
     loop t in [0..delay):
         loop p in [0..players): s.__known[t * players + p] = true
@@ -152,19 +162,24 @@ play[S, I] = (s: mut Session[S, I], input: I):
     t = s.tick + s.delay
     if s.__recv[s.me] == t:
         __np_set(s, s.me, t, input)
+    # (and theirs, for those who left, up to the same tick)
+    loop p in [0..s.players):
+        if s.__stand[p]:
+            loop s.__recv[p] <= t:
+                if not __np_take(s, p, s.__recv[p], s.__stand_in[p]): break
     if s.__wrong >= 0 and s.__wrong < s.tick: __np_replay(s, s.__wrong)
     s.__wrong = -1
     # wait when too far ahead of someone's inputs, or a tick at times when ahead of their clock
     s.waiting = false
     loop p in [0..s.players):
-        if p == s.me: continue
+        if p == s.me or s.__stand[p]: continue
         if s.tick - s.__recv[p] >= s.max_ahead: s.waiting = true
         lead = (s.tick - s.__their_tick[p] - s.__their_adv[p]) / 2
         if lead >= 2 and s.__frames % 4 == 0: s.waiting = true
     if not s.waiting: __np_advance(s)
     # (a player who was there and has gone quiet)
     loop p in [0..s.players):
-        if p != s.me and s.__their_tick[p] > 0 and silent(s, p) > 5.0: __np_problem(s, "player {p} has not been heard from for 5 seconds (gone?)")
+        if p != s.me and not s.__stand[p] and s.__their_tick[p] > 0 and silent(s, p) > 5.0: __np_problem(s, "player {p} has not been heard from for 5 seconds (gone?)")
     __np_hash_confirmed(s)
     __np_send(s)
     if s.__sock >= 0: __np_udp_send(s)
@@ -204,11 +219,17 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
     if p == s.me and pk.to != s.me: __np_problem(s, "two players are both player {p}: give each machine its own number (`me`)")
     # (over net's peers, for another player: from one who has no peer to them, passed on (this is the host))
     if pk.to != s.me and pk.to >= 0 and pk.to < s.__peers.len() and s.__peers[pk.to] >= 0 and p != s.me:
+        # (not from or to one this machine plays for now: what it sends is all of theirs)
+        if s.__stand[pk.to] or (p >= 0 and p < s.players and s.__stand[p]): return
         b: u8[] = [u8(net.__NET_MARK)]
         b.extend(data)
         net.send(s.__peers[pk.to], b)
+        # (its inputs are taken here too: all that reaches anyone from p has reached the host,
+        # who can play for p, should p leave, from where the others are)
+        if p >= 0 and p < s.players:
+            loop k in 0.. and inp in pk.inputs: __np_take(s, p, pk.first + k, inp)
         return
-    if p < 0 or p >= s.players or p == s.me or pk.to != s.me: return
+    if p < 0 or p >= s.players or p == s.me or pk.to != s.me or s.__stand[p]: return
     s.__heard[p] = elapsed()
     # (a player gone quiet is back: that problem is over)
     if starts_with(s.problem, "player {p} has not been heard from"): s.problem = ""
@@ -217,13 +238,10 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
     s.__acked[p] = max(s.__acked[p], pk.ack)
     s.__their_tick[p] = max(s.__their_tick[p], pk.tick)
     s.__their_adv[p] = pk.adv
+    if pk.has.len() == s.players:
+        loop q in [0..s.players): s.__has[p * s.players + q] = max(s.__has[p * s.players + q], pk.has[q])
     loop k in 0.. and inp in pk.inputs:
-        t = pk.first + k
-        if t < s.__recv[p]: continue
-        if t > s.__recv[p] or t - confirmed(s) >= __NP_HIST - 1: break
-        if t < s.tick and s.__inputs[t % __NP_HIST * s.players + p] != inp:
-            if s.__wrong < 0 or t < s.__wrong: s.__wrong = t
-        __np_set(s, p, t, inp)
+        if not __np_take(s, p, pk.first + k, inp): break
     if pk.check >= 0:
         s.__their_hashes[pk.check] = pk.hash
         __np_compare(s, pk.check)
@@ -232,6 +250,15 @@ __np_problem[S, I] = (s: mut Session[S, I], what: str):
     if len(s.problem) > 0: return
     s.problem = what
     eprint("netplay: {what}")
+
+# player p's input for tick t, if it is the next one wanted from them (false: past it, to stop)
+__np_take[S, I] = (s: mut Session[S, I], p: int, t: int, inp: I) -> bool:
+    if t < s.__recv[p]: return true
+    if t > s.__recv[p] or t - confirmed(s) >= __NP_HIST - 1: return false
+    if t < s.tick and s.__inputs[t % __NP_HIST * s.players + p] != inp:
+        if s.__wrong < 0 or t < s.__wrong: s.__wrong = t
+    __np_set(s, p, t, inp)
+    true
 
 __np_set[S, I] = (s: mut Session[S, I], p: int, t: int, inp: I):
     k = t % __NP_HIST * s.players + p
@@ -289,15 +316,37 @@ __np_compare[S, I] = (s: mut Session[S, I], c: int):
 
 __np_send[S, I] = (s: mut Session[S, I]):
     loop p in [0..s.players):
-        if p == s.me: continue
+        if p == s.me or s.__stand[p]: continue
         first = max(s.__acked[p], s.__recv[s.me] - 64)
         ins: I[]
         loop t in [first..s.__recv[s.me]): ins.push(s.__inputs[t % __NP_HIST * s.players + s.me])
         h: u64 = 0
         if s.__check >= 0: h = s.__hashes.get(s.__check) ?? 0
         now = elapsed() * 1000.0
-        pk = __NpPacket[I](s.me, p, s.tick, s.tick - s.__their_tick[p], s.__recv[p], first, ins, s.__check, h, now, s.__stamp[p], now - s.__heard[p] * 1000.0)
+        pk = __NpPacket[I](s.me, p, s.tick, s.tick - s.__their_tick[p], s.__recv[p], first, ins, s.__check, h, s.__recv, now, s.__stamp[p], now - s.__heard[p] * 1000.0)
         __np_out(s, p, bytes(to_text(pk)))
+        # (and the inputs of those this machine plays for, as theirs)
+        loop q in [0..s.players):
+            if not s.__stand[q] or q == p: continue
+            from = max(s.__has[p * s.players + q], s.__recv[q] - 64)
+            qs: I[]
+            loop t in [from..s.__recv[q]): qs.push(s.__inputs[t % __NP_HIST * s.players + q])
+            pq = __NpPacket[I](q, p, s.tick, s.tick - s.__their_tick[p], s.__recv[p], from, qs, -1, 0, s.__recv, now)
+            __np_out(s, p, bytes(to_text(pq)))
+
+# this machine plays for player p from now on, with this input every tick (a game's "the
+# computer flies it": the game's tick makes it so): for one who has left. Their inputs that
+# reached this machine are kept, and the rest are this, so the others must have had none of
+# theirs that this one did not: over net's peers, the host, who passes on all of them, can (or
+# either of two players).
+stand_in[S, I] = (s: mut Session[S, I], p: int, input: I):
+    if p == s.me or p < 0 or p >= s.players: return
+    s.__stand[p] = true
+    s.__stand_in[p] = input
+    if starts_with(s.problem, "player {p} has not been heard from"): s.problem = ""
+
+# this machine plays for player p (s.stand_in)
+stands_in[S, I] = (s: Session[S, I], p: int) -> bool: s.__stand[p]
 
 __np_out[S, I] = (s: mut Session[S, I], p: int, b: u8[]):
     if s.__lag <= 0.0 and s.__loss <= 0.0 and s.__jitter <= 0.0:
