@@ -4103,6 +4103,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
   ```
 - `join_invite = (code0: str) -> int`: join a game with the code its host sent, or a link with the code in it (…?invite=code): a peer, whose invite_code(p) is then the reply to send back
 - `invite_code = (peer: int) -> str`: this side's code for a peer from invite or join_invite: "" while it is being made (a moment, as this machine's addresses are found)
+- `webrtc_missing = () -> str`: why this game cannot connect straight to another player (invite, join_invite), in words for players: a web browser with WebRTC turned off (Firefox's media.peerconnection.enabled, a privacy setting); "" when it can
 - `code_kind = (code: str) -> str`: what a code is: "invite" (from net.invite: for join_invite), "reply" (from join_invite: for accept_reply), or "" (not a code: cut short, or something else pasted); a link to an invite is one
 - `accept_reply = (peer: int, reply: str) -> bool`: the other player's reply to this side's invite; false when it is not a reply code
 - `turn_server = (url: str, user: str, password: str)`: a TURN server ("turn:host:port", or "host:port") with the user name and password it gives: the invites made after this also offer a path through it, a relay, for players whose networks allow none straight to each other (some mobile data, schools, offices). Your own (coturn), or a service's (some have a free tier); its password goes into every copy of the game. UDP only
@@ -4192,10 +4193,12 @@ draw = ():
 - `struct Invited`: the other player, once connected
   ```gdscript
   struct Invited:
-      peer: int                   # (a net peer: net.send, net.receive)
+      peer: int                   # (a net peer: net.send, net.receive; -1: this side hosts the room Play with anybody found, with no one yet)
       inviter: bool               # this side invited (and the other joined)
   ```
 - `start = (reliable: bool = true, players: int = 2)`: show Invite a friend: an invite is made at once (reliable = false: lost messages are not sent again, nor do they hold up later ones; for fast games and rollback). With a matchmaking server, this computer's room opens instead, for players in all (this side too: 0 for any number, until close_room); the screen has Invite with a code instead
+- `start_codes = (reliable: bool = true)`: show Invite a friend with codes (a link to send, a code sent back), with a matchmaking server too: for a game's own Invite with a code instead
+- `anybody = (reliable: bool = true)`: Play with anybody (with a matchmaking server): the server finds a public room of this game that has room, or makes this side the host of a new one, which others who ask then join. The screen says how it goes; it gives the host Invited(-1, true) at once (the others then come by arrivals, as to a room), and the others the host (Invited(peer, false)). room_busy(true) sends those who come to another room
 - `join = (code: str = "")`: show Join a friend, with their link or code if given (joined at once): an invite's, or a room's (with a matchmaking server: the short code, or a link with ?room= in it)
 - `from_link = () -> bool`: the program was opened from an invite link (a web page's ?invite=... or ?room=..., or INVITE=code or ROOM=code): Join a friend with it, and true
 - `active = () -> bool`: one of the screens is up
@@ -4210,9 +4213,11 @@ draw = ():
 - `has_server = () -> bool`: there is a matchmaking server (rooms: start opens one, join takes a room's code)
 - `room_code = () -> str`: this computer's room code while its room is open ("" when it is not): to show in a game's lobby
 - `room_link = (web_page: str = "") -> str`: a link to the open room: this page's address (or web_page) with ?room= ("" with neither, or no room)
-- `room_status = () -> str`: what the room is doing, in words ("" when it is not open)
+- `open_room = (reliable: bool = true, players: int = 0)`: open this computer's room, as start does, but with no screen: for a game that shows its code (room_code, room_link) and how it is going (room_status) in a lobby of its own. Friends come by arrivals(). Nothing without a matchmaking server (has_server); room_status says why when it cannot open
+- `room_public = () -> bool`: the open room is a public one, which Play with anybody (anybody) found or made
+- `room_status = () -> str`: what the room is doing, in words ("" when it is not open; why not, when open_room could not open it)
 - `arrivals = () -> Invited[]`: friends who have connected through the open room since the last call (the first, while the screen is up, comes from screen): each a peer, as screen's. Call it every frame while hosting
-- `room_busy = (on: bool)`: while on, friends who come to the room wait (told so) until it is off: for a game whose fight has started (call it every frame, with whether that is so)
+- `room_busy = (on: bool)`: while on, friends who come to the room wait (told so) until it is off (to a public room: they are sent to another): for a game whose fight has started (call it every frame, with whether that is so)
 - `close_room = ()`: close the room: friends can no longer join with its code (until start opens it again)
 - `new_room_code = ()`: a new code for this computer's room (the old one, and links with it, no longer lead here)
 

@@ -4,7 +4,9 @@
 // the other browser opens it and both connect. Then: the friend opening the link while the host's
 // page is closed is told so, and joins once the host is back; the same program built for this
 // computer joins a page's room by its code (ROOM=); and with the server out of reach, the page
-// says so and Invite with a code instead still makes an invite.
+// says so and Invite with a code instead still makes an invite. Then two pages choose Play with
+// anybody: the first hosts a public room, the second is put in it; and a browser with WebRTC
+// turned off (as Firefox's media.peerconnection.enabled = false: no RTCPeerConnection) says so.
 // usage: node tools/web_room.mjs chrome page.html port native_build workdir
 // (ROOM_PAGE_QUERY=SLOPPY_RTC_RELAY_ONLY=1: each page's address has it too; ROOM_STEPS=2: the
 // first two steps only; ROOM_SERVER=wss://host: a server already running, as a deployed one)
@@ -14,7 +16,7 @@ const [chrome, page, port, native, dir] = process.argv.slice(2);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = process.env.ROOM_SERVER || `ws://127.0.0.1:${port}`;
 const extra = process.env.ROOM_PAGE_QUERY ? "&" + process.env.ROOM_PAGE_QUERY : "";
-const steps = Number(process.env.ROOM_STEPS || 5);
+const steps = Number(process.env.ROOM_STEPS || 7);
 let done = 0;
 let failed = 0;
 
@@ -112,6 +114,22 @@ try {
     await A.click(800, 502);                                     // Invite with a code instead
     const inv = await until(async () => { const c = await A.clip(); return c.includes("?invite=") && c; }, 15000);
     if (!inv) throw new Error("no invite link was copied");
+  });
+  await step("two pages play with anybody: the first hosts, the second is put in its room", async () => {
+    await A.go(home);
+    await A.click(640, 416);                                     // Play with anybody
+    if (!await until(() => said(A, "hosts the public room true"), 15000)) throw new Error(`the first page said ${JSON.stringify(A.lines)}`);
+    await B.go(home);
+    await B.click(640, 416);
+    const ok = await until(() => said(A, "got: hello from the friend") && said(B, "got: hello from the inviter"), 20000);
+    if (!ok) throw new Error(`not connected: the first page said ${JSON.stringify(A.lines)}, the second ${JSON.stringify(B.lines)}`);
+  });
+  await step("a browser with WebRTC turned off says so", async () => {
+    await B.go("about:blank");
+    await A.send("Page.addScriptToEvaluateOnNewDocument", { source: "delete window.RTCPeerConnection; delete window.webkitRTCPeerConnection;" });
+    await A.go(home);
+    await A.click(640, 323);                                     // Invite a friend
+    if (!await until(() => said(A, "the screen says: This browser has WebRTC turned off"), 10000)) throw new Error(`the page said ${JSON.stringify(A.lines)}`);
   });
 } finally {
   A.close(); B.close();

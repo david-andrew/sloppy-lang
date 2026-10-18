@@ -13,6 +13,22 @@
   friends a room (`invite.arrivals`, `room_busy`, `room_code`, `close_room`); Invite with a code
   instead stays, for when the server cannot be reached (the screen says so). Aces uses it
   (`MATCH_SERVER`); `SLOPPY_SERVER`, or a page's `?server=`, points any game at one.
+- Play with anybody (`invite.anybody()`): the matchmaking server puts players who ask into a
+  public room of their game that has space, or makes them the host of a new one (`public` in
+  tools/rendezvous.jo's protocol: redeploy the server); one waiting for a public room whose host
+  goes, or turns busy, is found another. `invite.open_room()` opens this computer's room with no
+  screen, for a game's own lobby (`room_code`, `room_link`, `room_status`, `room_public`);
+  `invite.start_codes()` is Invite with a code instead from a game's own button.
+- A web browser with WebRTC turned off (Firefox's `media.peerconnection.enabled = false`) said
+  only that no connection could be made: the invite screens now say WebRTC is off and how to turn
+  it on, at once (`net.webrtc_missing()`; `net.invite` and `join_invite` fail with it).
+- Aces: the menu is Make a room (the code big, and its link, in the lobby), Join a room and Play
+  with anybody (a public room's fight starts by itself after 30 s, the computer filling the
+  sides), or Invite a friend and Join a friend without a server. The lobby shows Red and Blue in
+  two columns, each player's name and insignia and the computer's planes, the same on every
+  player's screen; each player picks their own side (Switch side, Tab, a gamepad's X), practice
+  too. An insignia (or name) changed in Settings during a fight now shows on everyone's screen
+  (it showed from the next fight). The simulation is unchanged (the same hash).
 - Aces: six more insignias, famous ones: the 94th Aero Squadron's hat in the ring
   (Rickenbacker's), a shark's mouth on the nose, Nungesser's black heart, Voss's face on the
   cowling, the Cigognes' stork (Guynemer's), the ace of spades; the crash is quieter.

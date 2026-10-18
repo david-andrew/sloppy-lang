@@ -125,6 +125,32 @@ those who come wait, told why, while a fight is on; `invite.room_code()` is the 
 lobby, and `invite.close_room()` closes it. `SLOPPY_SERVER` (a page's `?server=`) points any game
 that uses `import invite` at a server, for trying one; examples/aces uses rooms.
 
+A game with a lobby of its own opens the room with `invite.open_room()` instead: no screen, the
+lobby shows `room_code()` (big, to read out), `room_link(web_page)` and `room_status()` (which
+also says why it could not open), and friends come by `arrivals()`. `invite.start_codes()` is
+Invite with a code instead, from the lobby's own button.
+
+**Play with anybody.** `invite.anybody()` asks the server for a public room of the game: one
+with space (whose host is not busy), or, when there is none, a new one this side hosts. Its
+screen says how it goes, and gives the host `Invited(-1, true)` at once (nobody yet: the others
+come by `arrivals()`, as to a room), and the others the host, as Join a friend does. A host's
+`room_busy(true)` (a fight on) sends those who come to another room; one waiting in a public room
+whose host leaves is found another. Aces starts a public room's fight by itself after 30 s, the
+computer filling the sides, so nobody waits long for a full room.
+
+**A browser with WebRTC turned off** (Firefox's `media.peerconnection.enabled = false`, a privacy
+setting; some privacy extensions) cannot connect to anyone. `net.webrtc_missing()` says so, in
+words for players ("" where WebRTC works, and always in native programs); `net.invite` and
+`net.join_invite` then fail with it as `net.why`, and every one of the invite screens shows it
+(with how to turn it on in Firefox) instead of trying.
+
+**Aces's lobby** shows both sides, the same on every player's screen: the host keeps each
+player's side, and sends the sides (who flies which plane, their names and insignias) to everyone
+twice a second; a friend's Switch side asks the host, which moves them if that side has room.
+Plane i is on side i % 2, so the players on each side take its planes in order and the computer
+the rest. A name or insignia changed during a fight goes to the host, which tells everyone: it is
+only drawn, never part of the game the tick plays.
+
 What players need to know, a game should show them: the host's screen gives its address,
 `net.local_address()` (as 192.168.1.20), and the one joining types it; both on the same network
 (the same Wi-Fi or router), and on one computer, `localhost`. examples/netpong does this, with a

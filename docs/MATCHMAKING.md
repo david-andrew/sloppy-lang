@@ -2,8 +2,9 @@
 
 With a matchmaking server, a game's Invite a friend shows a short room code ("KX7P4") and a link
 with it, the same each time on that computer; friends type the code into Join a friend, or open
-the link, and are in. Without one, players pass an invite code and a reply code back and forth
-(lib/invite.jo, [Playing together over a network](MULTIPLAYER.md)).
+the link, and are in. Play with anybody (`invite.anybody()`) asks it for a public room of the
+game: one with space, or a new one that player hosts. Without a server, players pass an invite
+code and a reply code back and forth (lib/invite.jo, [Playing together over a network](MULTIPLAYER.md)).
 
 The server, `tools/rendezvous.jo`, only passes those two codes between the games in a room. The
 games then connect straight to each other (WebRTC), as they do with codes: no game traffic goes
@@ -237,7 +238,11 @@ the TURN relay only.
 - Logs: `journalctl -u rendezvous` (a line an hour: connections, open rooms, friends waiting).
 - A new version: build and copy it as in step 3, then `systemctl restart rendezvous`. The rooms
   are kept in `/var/lib/rendezvous/rooms.txt`, and the games connect again by themselves.
-- Limits: messages of 4 KB at most, one room a connection, 30 joins a connection in 10 minutes,
+- Public rooms (Play with anybody) are not kept: one closes when its host goes, and the players
+  waiting for it are put in another. A server from before them answers a game's Play with
+  anybody with "error what is that?": build and copy the new one (the protocol is at the top of
+  `tools/rendezvous.jo`).
+- Limits: messages of 4 KB at most, one room a connection, 30 joins (or plays with anybody) a connection in 10 minutes,
   32 friends waiting in a room, `MAX_CLIENTS` (2000) connections; a connection silent for 150 s
   is closed (games say something every 20 s, but not from a hidden browser tab), and a friend
   waits for a room 30 minutes at most.
