@@ -95,7 +95,7 @@ await session(true, dir + "/touch", async ({ send, ev, value, said, active, expe
     await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     await sleep(600);
   };
-  await drag(100, 276, 200);
+  await drag(100, 276, 140);
   expect("a drag begun on a button presses nothing", said("pressed").join(","), "0");
   const off = Number(said("scrolled").pop() || 0);
   expect("a drag begun on a button scrolls the list", off >= 100, true);
