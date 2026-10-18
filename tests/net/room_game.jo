@@ -1,0 +1,60 @@
+# tools/nettest.py: games connected through a room of a matchmaking server (tools/rendezvous.jo,
+# at SLOPPY_SERVER) with lib/invite.jo's screens. The host (ROLE host) opens its room, writes its
+# code to DIR/room.txt once it is open, and waits for FRIENDS friends; a friend (ROLE join) joins
+# with ROOM, or the code in that file (as a link when LINK is set). Each says hello once connected
+# and prints what it got; a friend prints what it was told while waiting (WAIT=1); ROLE look
+# prints the room's status once the server could not be reached, and quits
+build:
+    name = "room_game"
+
+import net
+import invite
+
+dir = env("DIR") ?? "."
+role = env("ROLE") ?? "host"
+want = to_int(env("FRIENDS") ?? "1") ?? 1
+me = env("NAME") ?? role
+if role == "join":
+    room = env("ROOM") ?? ""
+    if len(room) == 0:
+        t0 = time()
+        loop not file_exists("{dir}/room.txt") and time() - t0 < 40.0: sleep(0.05)
+        room = trim(read_file("{dir}/room.txt") ?? "")
+        if env("LINK") != none: room = "https://example.com/game/?room={room}&server=x"
+        else: room = room.lower()
+    invite.join(room)
+else: invite.start(players = 0)
+friends: int[]
+got: str[]
+wrote = false
+said = ""
+done_at = -1.0
+
+met = (c: invite.Invited):
+    friends.push(c.peer)
+    net.send(c.peer, "hello from {me}")
+
+draw = ():
+    clear()
+    if role == "look":
+        if find(invite.room_status(), "cannot be reached") >= 0:
+            print("look: {invite.room_code() == invite.__inv_room}, said it cannot be reached")
+            quit()
+        return
+    if role == "host" and not wrote and invite.__inv_room_state == "open":
+        write_file("{dir}/room.tmp", invite.room_code())
+        rename_file("{dir}/room.tmp", "{dir}/room.txt")
+        wrote = true
+    if role == "join" and env("WAIT") != none and invite.__inv_join_state != said:
+        said = invite.__inv_join_state
+        if starts_with(said, "wait"): print("{me}: told {said}")
+    if invite.active():
+        if let c = invite.screen("the test", "https://example.com/game/"): met(c)
+    loop c in invite.arrivals(): met(c)
+    loop e in net.receive():
+        if e.kind == .message: got.push(e.text)
+    if done_at < 0.0 and got.len() >= (if role == "host": want else: 1):
+        done_at = time()
+        loop g in sorted(got): print("{me} got: {g}")
+    # (a moment for the last hello to go out)
+    if done_at > 0.0 and time() - done_at > 1.0: quit()

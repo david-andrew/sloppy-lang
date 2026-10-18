@@ -49,6 +49,8 @@ __net_events: NetEvent[]
 __net_accepted: {int: bool}     # the peers that connected to this program's server
 __net_key = ""              # (a client's handshake key)
 const __NET_MAX = 16 << 20  # the biggest message taken (bigger: the connection ends)
+__net_largest = __NET_MAX   # (from the peers that connected to this program's server: listen's)
+__net_rbuf: u8[]            # (what a socket gives, read into: one for all)
 
 # ---------------- straight to another player, with no server (WebRTC) ----------------
 # (the peers made by invite and join_invite: opened, their messages, gone)
@@ -209,12 +211,15 @@ __net_fail = (i: int, why: str):
     __net_why[__net_peers[i].id] = why
     __net_gone(i)
 
-# start a server on port (native programs); false if the port cannot be had
+# start a server on port (native programs); false if the port cannot be had. largest: the
+# biggest message taken from the peers that connect (one bigger ends its connection: a public
+# server's guard), and a peer that has not finished connecting in 10 seconds is let go
 @no_web("does nothing in a web page: a page can only connect (the server is a native program)")
-listen = (port: int) -> bool:
+listen = (port: int, largest: int = 16 << 20) -> bool:
     when TARGET == "wasm":
         return false
     else:
+        __net_largest = min(largest, __NET_MAX)
         if __net_listen_fd >= 0: return true
         __pace_real_time = true         # (a test's screenshot run: at the other end's pace, a frame each 60th of a second)
         __net_hook()
@@ -507,10 +512,15 @@ __net_poll = ():
                 __net_peers.push(__NetPeer(id = __net_next, fd = fd, state = 1, client = false, since = time()))
                 __net_accepted[__net_next] = true
                 __net_next += 1
+        if __net_rbuf.len() == 0: __net_rbuf = fill(u8(0), 1 << 16)
         loop i in [0..__net_peers.len()):
             st = __net_peers[i].state
             if st == 3 or __net_peers[i].rtc >= 0: continue
             fd = __net_peers[i].fd
+            if st == 1 and not __net_peers[i].client and time() - __net_peers[i].since > 10.0:
+                __n_close(fd)
+                __net_gone(i)
+                continue
             if st == 0:
                 c = __n_connected(fd)
                 if c < 0 or c == 0 and time() - __net_peers[i].since > 10.0:
@@ -528,15 +538,14 @@ __net_poll = ():
             __net_flush(i)
             if __net_peers[i].state == 3: continue
             # what has come in
-            buf = fill(u8(0), 1 << 16)
             loop true:
-                n = __n_recv(fd, data(buf), buf.len())
+                n = __n_recv(fd, data(__net_rbuf), __net_rbuf.len())
                 if n == -1: break
                 if n <= 0:
                     __n_close(fd)
                     __net_gone(i)
                     break
-                __net_peers[i].inbuf.extend(buf[..n))
+                __net_peers[i].inbuf.extend(__net_rbuf[..n))
             if __net_peers[i].state == 3: continue
             __net_parse(i)
         # (gone peers: dropped once their left event is out)
@@ -590,6 +599,7 @@ __net_parse = (i: int):
         __net_events.push(NetEvent(.joined, __net_peers[i].id, []))
     # frames: [fin, opcode] [mask, length] [16 or 64-bit length] [mask key] payload
     msg: u8[]
+    most = if __net_peers[i].client: __NET_MAX else: __net_largest
     loop __net_peers[i].state == 2:
         b = __net_peers[i].inbuf
         if b.len() < 2: return
@@ -606,7 +616,7 @@ __net_parse = (i: int):
             n = 0
             loop k in [2..10): n = (n << 8) | int(b[k])
             at = 10
-        if n > __NET_MAX or n < 0:
+        if n > most or n < 0:
             # (a frame bigger than any message is let be: the peer is not playing)
             __n_close(__net_peers[i].fd)
             __net_gone(i)
@@ -629,7 +639,7 @@ __net_parse = (i: int):
             continue
         if op == 10: continue
         msg.extend(payload)
-        if msg.len() > __NET_MAX:
+        if msg.len() > most:
             __n_close(__net_peers[i].fd)
             __net_gone(i)
             return

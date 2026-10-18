@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Rooms, through a matchmaking server of your own: friends join with a short code ("KX7P4") or a
+  link with it, and send nothing back. `tools/rendezvous.jo` is the server (it passes only the
+  invite and reply codes: the games still connect straight to each other), and
+  docs/MATCHMAKING.md sets it up on a small DigitalOcean droplet, with Caddy for wss:// and
+  coturn for TURN (the server gives each game a TURN password good for a day). With
+  `invite.server(url)`, Invite a friend opens this computer's room, whose code and link stay the
+  same after a refresh or a restart (New code makes another); Join a friend takes the code; a
+  friend who comes while the host's game is closed is told so and joins once it is open. Several
+  friends a room (`invite.arrivals`, `room_busy`, `room_code`, `close_room`); Invite with a code
+  instead stays, for when the server cannot be reached (the screen says so). Aces uses it
+  (`MATCH_SERVER`); `SLOPPY_SERVER`, or a page's `?server=`, points any game at one.
+- `net.listen(port, largest)`: the biggest message a server takes from its peers; a connection
+  that has not finished its handshake in 10 s is closed; a server reads all its connections into
+  one buffer (it made a 64 KB one for each connection, each time it looked).
+
 - netplay: a second game on the same peers froze at its start when the other machine's first
   game still ran a moment (its packets said this one's inputs had long since arrived, so they
   were not sent again). Packets with inputs this session never made are another session's.
