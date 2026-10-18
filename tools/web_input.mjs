@@ -1,6 +1,7 @@
 // A text field in a web page (tests/web/text_field.jo) typed in as on a phone, with touches and
-// the phone keyboard's input, and as on a computer, with the mouse, keys and ctrl+V; the page
-// runs in headless Chromium, driven over its DevTools protocol.
+// the phone keyboard's input, and as on a computer, with the mouse, keys and ctrl+V; a list of
+// buttons tapped and dragged; a phone turned over and back. The page runs in headless Chromium,
+// driven over its DevTools protocol.
 // usage: node tools/web_input.mjs chrome page.html workdir
 import { spawn } from "node:child_process";
 
@@ -34,18 +35,19 @@ async function session(touch, profile, run) {
   while (!lines.length && Date.now() - t1 < 15000) { await ev("0"); await sleep(100); if (await ev("!!document.getElementById('sloppy-canvas') && document.readyState === 'complete'")) break; }
   await sleep(1000);
   const value = () => (lines.filter((l) => l.startsWith("value:")).pop() || "value:").slice(6);
+  const said = (what) => lines.filter((l) => l.startsWith(what + ":")).map((l) => l.slice(what.length + 1));
   const active = () => ev("document.activeElement ? document.activeElement.tagName : ''");
   const expect = (what, got, want) => {
     if (got === want) console.log(`ok   ${what}`);
     else { failed++; console.log(`FAIL ${what}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`); }
   };
-  try { await run({ send, ev, value, active, expect }); }
+  try { await run({ send, ev, value, said, active, expect }); }
   finally { ws.close(); b.kill(); }
 }
 
 // (the page's 800x600 pixels are 1280x960 of the screen's units, 120 cut off above and below:
 // the field, at 20..420 x 20..60, is at 12..262 x 87..113)
-await session(true, dir + "/touch", async ({ send, ev, value, active, expect }) => {
+await session(true, dir + "/touch", async ({ send, ev, value, said, active, expect }) => {
   const tap = async (x, y) => {
     await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
     await sleep(80);
@@ -74,6 +76,37 @@ await session(true, dir + "/touch", async ({ send, ev, value, active, expect }) 
   await send("Input.insertText", { text: "zz" });
   await sleep(150);
   expect("typing goes nowhere then", value(), "hellxPASTED");
+  // (the keyboard put away by the player, as by its own key: the field lets go, and a key typed
+  // after goes nowhere)
+  await tap(100, 100);
+  await ev("document.activeElement.blur()");
+  await sleep(150);
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: "q", code: "KeyQ", text: "q" });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: "q", code: "KeyQ" });
+  await sleep(150);
+  expect("the keyboard put away lets go of the field", value(), "hellxPASTED");
+  // (the list: rows 50 units apart from y 200, 31.25 pixels from 200; a tap on a row presses it as
+  // the finger lifts, a drag that starts on one scrolls the list instead)
+  await tap(100, 214);
+  expect("a tapped button is pressed", said("pressed").join(","), "0");
+  const drag = async (x, y0, y1) => {
+    await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: y0 }] });
+    for (let i = 1; i <= 8; i++) { await sleep(20); await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y0 + (y1 - y0) * i / 8 }] }); }
+    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await sleep(600);
+  };
+  await drag(100, 276, 200);
+  expect("a drag begun on a button presses nothing", said("pressed").join(","), "0");
+  const off = Number(said("scrolled").pop() || 0);
+  expect("a drag begun on a button scrolls the list", off >= 100, true);
+  // (a phone turned sideways and back: the page is not left zoomed out)
+  await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await sleep(300);
+  await send("Emulation.setDeviceMetricsOverride", { width: 844, height: 390, deviceScaleFactor: 3, mobile: true, screenOrientation: { type: "landscapePrimary", angle: 90 } });
+  await sleep(300);
+  await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true, screenOrientation: { type: "portraitPrimary", angle: 0 } });
+  await sleep(500);
+  expect("a phone turned over and back is not zoomed out", await ev("[visualViewport.scale, document.getElementById('sloppy-canvas').clientWidth].join(' ')"), "1 390");
 });
 
 await session(false, dir + "/mouse", async ({ send, ev, value, active, expect }) => {

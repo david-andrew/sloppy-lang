@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- Phones (from a portrait game's test on emulated phones): buttons (`ui_button`, `ui_switch`,
+  `ui_choice`, `hud_button`, `hud_checkbox`, a text field's focus) act as the press lets go, on
+  the item it went down on, the mouse's too, as other toolkits' do; a finger that slides away is
+  no tap. `hud_scroll` lists scroll by dragging anywhere in them (a finger or the mouse) and glide
+  on when let go moving; a drag that starts on a row's Buy button scrolls and buys nothing. In a
+  page the tap's frame runs at once as the finger lifts, so what a button does that browsers allow
+  only then (the keyboard, fullscreen, the clipboard, sharing) still works. Keys and gamepads
+  are as they were.
+- Menus and `hud_` boxes take the pointer through the 2D transform they are drawn under: a
+  phone's column laid out at 360 x 640 and fitted with `camera2d_fit` is tapped where it shows
+  (they took the untransformed pointer). `hud_hovered` knows them where they show.
+- A page turned from sideways to upright stayed zoomed out (its canvas was sized from the visual
+  viewport, which the zoom made wider): the canvas is the page's layout size, and the page can
+  not zoom (`minimum-scale=1, maximum-scale=1`). The page around the game is the color it clears
+  the screen with.
+- `css_pixel()`: a point (a CSS pixel) in 2D units, for things sized for a finger on any screen;
+  `pixel_ratio()`: the window's pixels per point (the page's, Wayland's, a Retina Mac's,
+  Windows' display scale). `design_size(w, h)` changes the 2D units while the game runs (a layout
+  for each way a phone is held), and `window(...)` called again does (its new size was ignored).
+- `safe_rect()`: the part of `visible_rect()` clear of a phone's notch, rounded corners and home
+  bar (the page is `viewport-fit=cover` and reads CSS's safe-area insets).
+- `touch_device()`: a touch screen, known before the first touch; on one, menus show no keyboard
+  focus marks from the start, and draw their items as boxes no wider than the screen
+  (`ui_style.margin` from its edges, `ui_style.box_color`).
+- `upright_hint`: a game made taller than wide, on a phone held sideways, asks for it upright
+  (`sideways_hint` asked only the other way).
+- The phone's keyboard: the page moves up over it as far as the text field needs, the game
+  keeping its size (it shrank the game to the part above it); put away by the player, the field
+  lets go of it (it stayed focused, `ui_typing()` true); `ui_text_field` has the Paste button
+  `hud_text_field` had, and starts typing on a tap, not as a finger slides over it.
+- `swipe()`: the way a drag just went (left, right, up or down); `long_press()`: a finger held
+  still (its button then takes no tap).
+- A `ui_button` (or any menu item, or `ui_text`) with no `ui_begin` before it stops the game with
+  what it needs; it was drawn half off the screen. `clip(r)` takes a Rect.
+- `SLOPPY_TOUCH=1` and `SLOPPY_PIXEL_RATIO=3` try a game as on a phone's screen natively;
+  START.md has a Phones section (a design size, points, the other way up, the notch, the
+  keyboard, trying it). API.md's `hud_slider` had `hud_checkbox`'s description.
 - `rk4(state, t, dt, rate)`: a simulation's step by the Runge-Kutta method, for a number, a
   vector, an f64[] or a struct with + and * of its own (TEACHING.md: a pendulum).
 - `net.fetch` takes `method` ("POST", "PUT", "DELETE", "HEAD"...), `headers` (sent besides the
