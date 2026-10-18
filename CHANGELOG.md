@@ -51,6 +51,8 @@
   cowling, the Cigognes' stork (Guynemer's), the ace of spades; the crash is quieter.
 - Lowline is gone (from the examples, the site's gallery and the playground); Aces takes its
   place among the render tests.
+- A warning where `end` inside brackets (`xs[i..end]`, the last index) meets a variable named
+  end: the brackets' meaning wins, so the variable was quietly not used.
 - A struct field whose default makes another of the same struct (`rooms = [Room()]`) is an
   error that says so; the compiler went round without end and crashed (found by the fuzzer).
 - `net.listen(port, largest)`: the biggest message a server takes from its peers; a connection
