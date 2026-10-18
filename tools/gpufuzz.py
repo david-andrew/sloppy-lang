@@ -628,6 +628,31 @@ def reduce(path, lvp):
     print(f"reduced: {out}")
 
 
+def compare(prog, runs, f2i):
+    """runs prog on each of runs; (agree, what differs, whether integers made from floats differ
+    by more than one, so that it is worth trying the program without them)"""
+    outs = [(name, *run(prog, env)) for name, env in runs]
+    c0, o0 = outs[0][1], outs[0][2]
+    if c0 != 0: return False, f"cpu run failed ({c0}):\n{o0[-2000:]}", False
+    i0, f0 = parse(o0)
+    for name, code, out in outs[1:]:
+        if code != 0: return False, f"{name} failed ({code}):\n{out[-2000:]}", False
+        i1, f1 = parse(out)
+        # (integers made from floats, f32 -> i32 and vec -> ivec, can be off by one: the
+        # floats may be too, as a GPU may fuse a * b + c, and land on either side of a
+        # whole number)
+        if i1 != i0 and len(i1) == len(i0) and all(off_by_one(a, b) for a, b in zip(i0, i1)) and f2i:
+            print(f"(inexact: integers made from floats are off by one on {name})")
+            i1 = i0
+        if i1 != i0:
+            j = next((j for j in range(min(len(i0), len(i1))) if i0[j] != i1[j]), -1)
+            return False, f"{name}: integer result {j} differs: cpu {i0[j] if j >= 0 else len(i0)} vs {i1[j] if j >= 0 else len(i1)}", f2i
+        sf, j = same_floats(f0, f1)
+        if not sf:
+            return False, f"{name}: float result {j} differs: cpu {f0[j] if 0 <= j < len(f0) else len(f0)} vs {f1[j] if 0 <= j < len(f1) else len(f1)}", False
+    return True, "", False
+
+
 def main():
     args = sys.argv[1:]
     if "--reduce" in args:
@@ -672,37 +697,16 @@ def main():
         with open(prog, "w") as f: f.write(src)
         runs = [("cpu", {"SLOPPY_NO_GPU": "1"}), ("gpu", {})]
         if lvp: runs.append(("lavapipe", {"VK_ICD_FILENAMES": LVP}))
-        outs = []
-        for name, env in runs:
-            code, out = run(prog, env)
-            outs.append((name, code, out))
-        ok = True
-        msg = ""
-        c0, o0 = outs[0][1], outs[0][2]
-        if c0 != 0:
-            ok = False
-            msg = f"cpu run failed ({c0}):\n{o0[-2000:]}"
-        else:
-            i0, f0 = parse(o0)
-            for name, code, out in outs[1:]:
-                if code != 0:
-                    ok, msg = False, f"{name} failed ({code}):\n{out[-2000:]}"
-                    break
-                i1, f1 = parse(out)
-                # (integers made from floats, f32 -> i32 and vec -> ivec, can be off by one: the
-                # floats may be too, as a GPU may fuse a * b + c, and land on either side of a
-                # whole number)
-                if i1 != i0 and len(i1) == len(i0) and all(off_by_one(a, b) for a, b in zip(i0, i1)) and F2I_MARK in src:
-                    print(f"(inexact {s}: integers made from floats are off by one on {name})")
-                    i1 = i0
-                if i1 != i0:
-                    j = next((j for j in range(min(len(i0), len(i1))) if i0[j] != i1[j]), -1)
-                    ok, msg = False, f"{name}: integer result {j} differs: cpu {i0[j] if j >= 0 else len(i0)} vs {i1[j] if j >= 0 else len(i1)}"
-                    break
-                sf, j = same_floats(f0, f1)
-                if not sf:
-                    ok, msg = False, f"{name}: float result {j} differs: cpu {f0[j] if 0 <= j < len(f0) else len(f0)} vs {f1[j] if 0 <= j < len(f1) else len(f1)}"
-                    break
+        ok, msg, f2i = compare(prog, runs, F2I_MARK in src)
+        if f2i:
+            # (an integer made from a float off by one can grow, in the arithmetic after it, to more
+            # than one: the same program with no integers made from floats must agree)
+            with open(prog, "w") as f: f.write(src.replace("\n".join(FI), "\n".join(FI0)))
+            ok0, msg0, _ = compare(prog, runs, False)
+            if ok0:
+                print(f"(inexact {s}: {msg[:160]}...; the same without integers made from floats agrees)")
+                ok = True
+            with open(prog, "w") as f: f.write(src)
         if ok:
             if not keep: os.remove(prog)
             print(f"ok {s}")
