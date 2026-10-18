@@ -153,8 +153,8 @@ game picks from (and an example of each):
   tilesets (done), OpenType fonts with CFF outlines and kerning.
 - Input: non-XInput gamepads on Windows, actions bound per player.
 - Linux window icons on Wayland (KDE's xdg-toplevel-icon; GNOME needs a .desktop file).
-- Scripts (from a Python programmer's pass): an HTTP client (http first; https needs TLS, a
-  large piece), date parsing (`strptime`) and durations, a set type or its operations on maps,
+- Scripts (from a Python programmer's pass): an HTTP client (done for native programs:
+  `net.fetch`, http and https; a web page's still to come), date parsing (`strptime`) and durations, a set type or its operations on maps,
   changing a Json object in place, reading a file line by line without loading it whole.
 - A serializer (structs to text and back) for saves and settings: done (`save_value`,
   `load_value`, `to_text`, `from_text`).

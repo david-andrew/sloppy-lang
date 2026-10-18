@@ -1,0 +1,1190 @@
+# TLS 1.3 (RFC 8446), the client's side: what lib/net.jo's wss:// and https:// connections, and
+# net.tls_connect, are made of. A connection here only turns bytes into bytes: net.jo moves them
+# between it and a socket.
+#
+# One cipher suite (TLS_AES_128_GCM_SHA256, which every TLS 1.3 server has), keys agreed with
+# X25519 (or P-256 when the server asks for it), and the server's certificate checked as browsers
+# do: its chain up to an authority this computer trusts (the system's list, and those given to
+# net.trust_certificate or named by SLOPPY_CA_FILE), each certificate's dates, signatures and
+# constraints, and the name connected to among the names it is for. There is no way to skip that.
+
+import crypto
+
+# ---------------- DER (what certificates are written in) ----------------
+# an element of b between at and stop: its tag, where its contents start and where it ends; none
+# when it is not well-formed DER
+__tls_der = (b: u8[], at: int, stop: int) -> (int, int, int)?:
+    if at < 0 or at + 2 > stop or stop > b.len(): return none
+    tag = int(b[at])
+    if tag & 0x1f == 0x1f: return none                     # (tag numbers past 30: not in certificates)
+    n = int(b[at + 1])
+    i = at + 2
+    if n >= 0x80:
+        k = n & 0x7f
+        if k == 0 or k > 3 or i + k > stop: return none
+        n = 0
+        loop _ in [0..k):
+            n = (n << 8) | int(b[i])
+            i += 1
+        # (DER writes a length the shortest way)
+        if n < 0x80 or (k > 1 and n < (1 << (8 * (k - 1)))): return none
+    if i + n > stop: return none
+    (tag, i, i + n)
+
+# the elements inside contents b[start..stop), or none when they are not well-formed
+__tls_der_items = (b: u8[], start: int, stop: int) -> (int, int, int)[]?:
+    out: (int, int, int)[]
+    at = start
+    loop at < stop:
+        e = __tls_der(b, at, stop)
+        if e == none: return none
+        out.push(e!)
+        at = e!.2
+    out
+
+# object identifiers (their contents)
+__TLS_OID_EC: u8[] = [u8(0x2a), 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]
+__TLS_OID_P256: u8[] = [u8(0x2a), 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]
+__TLS_OID_P384: u8[] = [u8(0x2b), 0x81, 0x04, 0x00, 0x22]
+__TLS_OID_RSA: u8[] = [u8(0x2a), 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01]
+__TLS_OID_RSA_SHA256: u8[] = [u8(0x2a), 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b]
+__TLS_OID_RSA_SHA384: u8[] = [u8(0x2a), 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0c]
+__TLS_OID_RSA_SHA512: u8[] = [u8(0x2a), 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0d]
+__TLS_OID_ECDSA_SHA256: u8[] = [u8(0x2a), 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]
+__TLS_OID_ECDSA_SHA384: u8[] = [u8(0x2a), 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03]
+__TLS_OID_ECDSA_SHA512: u8[] = [u8(0x2a), 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x04]
+__TLS_OID_SERVER_AUTH: u8[] = [u8(0x2b), 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01]
+__TLS_OID_ANY_EKU: u8[] = [u8(0x55), 0x1d, 0x25, 0x00]
+__TLS_OID_CN: u8[] = [u8(0x55), 0x04, 0x03]
+__TLS_OID_O: u8[] = [u8(0x55), 0x04, 0x0a]
+
+# (a certificate's signature: how it was made)
+const __TLS_SIG_RSA = 1             # RSA PKCS#1 v1.5 ...
+const __TLS_SIG_ECDSA = 2           # ... or ECDSA, with
+                                    # the hash's length (32: SHA-256, 48: SHA-384, 64: SHA-512)
+
+# (a public key's kind)
+const __TLS_KEY_P256 = 1
+const __TLS_KEY_P384 = 2
+const __TLS_KEY_RSA = 3
+
+# ---------------- certificates (X.509, RFC 5280) ----------------
+struct __TlsCert:
+    der: u8[]
+    tbs: u8[]               # the part signed
+    sig_kind = 0            # __TLS_SIG_*
+    sig_hash = 0            # 32, 48, 64
+    sig: u8[]
+    issuer: u8[]            # the names, as written (compared byte for byte)
+    subject: u8[]
+    not_before = 0          # seconds since 1970
+    not_after = 0
+    key_kind = 0            # __TLS_KEY_*
+    key: u8[]               # an EC point (0x04, x, y), or RSA's modulus
+    rsa_e: u8[]
+    v3 = false
+    ca = false              # basicConstraints says it is an authority
+    path_len = -1           # how many authorities may come below it (-1: any)
+    key_usage = -1          # its bits (bit 0: digitalSignature, 5: keyCertSign); -1 when it does not say
+    server_auth = true      # extKeyUsage allows servers (or it has none)
+    dns: str[]              # subjectAltName's names ...
+    ips: u8[][]             # ... and addresses
+    constrained = false     # nameConstraints: the names it may sign for, and those it may not
+    permit_dns: str[]
+    exclude_dns: str[]
+    permit_ip: u8[][]       # (address, then mask)
+    exclude_ip: u8[][]
+    permit_any_dns = true   # (no permitted names of that kind: any)
+    permit_any_ip = true
+
+# a certificate (DER) read, or none when it is malformed or holds what this side does not know.
+# An authority trusted (anchor) may be signed any way, SHA-1 too: its own signature is not what
+# makes it trusted, and is not checked
+__tls_cert = (der: u8[], anchor: bool = false) -> __TlsCert?:
+    c = __TlsCert(der = der)
+    top = __tls_der(der, 0, der.len())
+    if top == none or top!.0 != 0x30 or top!.2 != der.len(): return none
+    parts = __tls_der_items(der, top!.1, top!.2) ?? []
+    if parts.len() != 3 or parts[0].0 != 0x30 or parts[1].0 != 0x30 or parts[2].0 != 3: return none
+    c.tbs = der[top!.1..parts[0].2)
+    outer_alg = der[parts[0].2..parts[1].2)
+    # (the signature: a BIT STRING with no unused bits)
+    if parts[2].2 - parts[2].1 < 2 or der[parts[2].1] != 0: return none
+    c.sig = der[parts[2].1 + 1..parts[2].2)
+    f = __tls_der_items(der, parts[0].1, parts[0].2) ?? []
+    k = 0
+    if f.len() > 0 and f[0].0 == 0xa0:
+        # version: v3 is 2
+        v = __tls_der_items(der, f[0].1, f[0].2) ?? []
+        if v.len() != 1 or v[0].0 != 2 or v[0].2 - v[0].1 != 1: return none
+        c.v3 = der[v[0].1] == 2
+        k = 1
+    if f.len() < k + 6: return none
+    # serial, signature algorithm, issuer, validity, subject, key
+    if f[k].0 != 2 or f[k + 1].0 != 0x30 or f[k + 2].0 != 0x30 or f[k + 3].0 != 0x30 or f[k + 4].0 != 0x30 or f[k + 5].0 != 0x30: return none
+    inner_alg = __tls_der_bytes(der, f, k + 1, parts[0].1)
+    if inner_alg != outer_alg: return none
+    if let sa = __tls_sig_alg(der, f[k + 1]):
+        c.sig_kind = sa.0
+        c.sig_hash = sa.1
+    else if not anchor: return none
+    c.issuer = __tls_der_bytes(der, f, k + 2, parts[0].1)
+    c.subject = __tls_der_bytes(der, f, k + 4, parts[0].1)
+    times = __tls_der_items(der, f[k + 3].1, f[k + 3].2) ?? []
+    if times.len() != 2: return none
+    nb = __tls_time(der, times[0])
+    na = __tls_time(der, times[1])
+    if nb == none or na == none: return none
+    c.not_before = nb!
+    c.not_after = na!
+    if not __tls_read_key(c, der, f[k + 5]): return none
+    # the extensions ([3], after the optional unique ids)
+    loop j in [k + 6..f.len()):
+        if f[j].0 == 0x81 or f[j].0 == 0x82: continue
+        if f[j].0 != 0xa3 or not c.v3: return none
+        exts = __tls_der(der, f[j].1, f[j].2)
+        if exts == none or exts!.0 != 0x30 or exts!.2 != f[j].2: return none
+        loop e in __tls_der_items(der, exts!.1, exts!.2) ?? [(0, 0, 0)]:
+            if e.0 != 0x30 or not __tls_read_ext(c, der, e): return none
+    c
+
+# the element f[i]'s whole bytes, tag and length too (f: the items that start at `from`)
+__tls_der_bytes = (b: u8[], f: (int, int, int)[], i: int, from: int) -> u8[]:
+    start = if i == 0: from else: f[i - 1].2
+    b[start..f[i].2)
+
+__tls_is = (b: u8[], e: (int, int, int), oid: u8[]) -> bool:
+    e.0 == 6 and e.2 - e.1 == oid.len() and b[e.1..e.2) == oid
+
+# a signature algorithm (AlgorithmIdentifier): its kind and hash; none for one this side does
+# not take (SHA-1's among them)
+__tls_sig_alg = (b: u8[], e: (int, int, int)) -> (int, int)?:
+    a = __tls_der_items(b, e.1, e.2) ?? []
+    if a.len() == 0: return none
+    o = a[0]
+    # (RSA's have NULL parameters, ECDSA's none)
+    rsa_params = a.len() == 2 and a[1].0 == 5 and a[1].2 == a[1].1
+    if __tls_is(b, o, __TLS_OID_RSA_SHA256) and rsa_params: return (__TLS_SIG_RSA, 32)
+    if __tls_is(b, o, __TLS_OID_RSA_SHA384) and rsa_params: return (__TLS_SIG_RSA, 48)
+    if __tls_is(b, o, __TLS_OID_RSA_SHA512) and rsa_params: return (__TLS_SIG_RSA, 64)
+    if a.len() != 1: return none
+    if __tls_is(b, o, __TLS_OID_ECDSA_SHA256): return (__TLS_SIG_ECDSA, 32)
+    if __tls_is(b, o, __TLS_OID_ECDSA_SHA384): return (__TLS_SIG_ECDSA, 48)
+    if __tls_is(b, o, __TLS_OID_ECDSA_SHA512): return (__TLS_SIG_ECDSA, 64)
+    none
+
+# UTCTime or GeneralizedTime, as seconds since 1970
+__tls_time = (b: u8[], e: (int, int, int)) -> int?:
+    s = str_from_bytes(b[e.1..e.2))
+    y = 0
+    at = 0
+    if e.0 == 0x17 and len(s) == 13:
+        y = to_int(s[0..2)) ?? -1
+        if y < 0: return none
+        y += if y >= 50: 1900 else: 2000
+        at = 2
+    else if e.0 == 0x18 and len(s) == 15:
+        y = to_int(s[0..4)) ?? -1
+        at = 4
+    else: return none
+    if s[len(s) - 1] != 'Z': return none
+    loop ch in s[..len(s) - 1):
+        if ch < '0' or ch > '9': return none
+    mo = to_int(s[at..at + 2))!
+    d = to_int(s[at + 2..at + 4))!
+    h = to_int(s[at + 4..at + 6))!
+    mi = to_int(s[at + 6..at + 8))!
+    se = to_int(s[at + 8..at + 10))!
+    if y < 0 or mo < 1 or mo > 12 or d < 1 or d > 31 or h > 23 or mi > 59 or se > 60: return none
+    __tls_days(y, mo, d) * 86400 + h * 3600 + mi * 60 + se
+
+# days since 1970-01-01 (the proleptic Gregorian calendar)
+__tls_days = (y0: int, m: int, d: int) -> int:
+    y = if m <= 2: y0 - 1 else: y0
+    era = (if y >= 0: y else: y - 399) / 400
+    yoe = y - era * 400
+    mp = if m > 2: m - 3 else: m + 9
+    doy = (153 * mp + 2) / 5 + d - 1
+    doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+
+# subjectPublicKeyInfo: a P-256 or P-384 point, or an RSA key of 2048 bits or more
+__tls_read_key = (c: mut __TlsCert, b: u8[], e: (int, int, int)) -> bool:
+    k = __tls_der_items(b, e.1, e.2) ?? []
+    if k.len() != 2 or k[0].0 != 0x30 or k[1].0 != 3: return false
+    alg = __tls_der_items(b, k[0].1, k[0].2) ?? []
+    if alg.len() == 0 or k[1].2 - k[1].1 < 2 or b[k[1].1] != 0: return false
+    bits = b[k[1].1 + 1..k[1].2)
+    if __tls_is(b, alg[0], __TLS_OID_EC):
+        if alg.len() != 2: return false
+        if __tls_is(b, alg[1], __TLS_OID_P256) and bits.len() == 65 and bits[0] == 4: c.key_kind = __TLS_KEY_P256
+        else if __tls_is(b, alg[1], __TLS_OID_P384) and bits.len() == 97 and bits[0] == 4: c.key_kind = __TLS_KEY_P384
+        else: return false
+        c.key = bits
+        return true
+    if __tls_is(b, alg[0], __TLS_OID_RSA):
+        top = __tls_der(bits, 0, bits.len())
+        if top == none or top!.0 != 0x30 or top!.2 != bits.len(): return false
+        ne = __tls_der_items(bits, top!.1, top!.2) ?? []
+        if ne.len() != 2 or ne[0].0 != 2 or ne[1].0 != 2: return false
+        n = bits[ne[0].1..ne[0].2)
+        loop n.len() > 0 and n[0] == 0: n = n[1..]
+        ex = bits[ne[1].1..ne[1].2)
+        loop ex.len() > 0 and ex[0] == 0: ex = ex[1..]
+        if n.len() < 256 or n.len() > 1024 or ex.len() == 0 or ex.len() > 4: return false
+        c.key_kind = __TLS_KEY_RSA
+        c.key = n
+        c.rsa_e = ex
+        return true
+    false
+
+# one extension; false when it is malformed, or critical and not one this side knows
+__tls_read_ext = (c: mut __TlsCert, b: u8[], e: (int, int, int)) -> bool:
+    p = __tls_der_items(b, e.1, e.2) ?? []
+    if p.len() < 2 or p.len() > 3 or p[0].0 != 6: return false
+    critical = false
+    if p.len() == 3:
+        if p[1].0 != 1 or p[1].2 - p[1].1 != 1: return false
+        critical = b[p[1].1] != 0
+    v = p[p.len() - 1]
+    if v.0 != 4: return false
+    oid = b[p[0].1..p[0].2)
+    # (2.5.29.x: the standard ones)
+    if oid.len() != 3 or oid[0] != 0x55 or oid[1] != 0x1d: return not critical
+    w = __tls_der(b, v.1, v.2)
+    if w == none or w!.2 != v.2: return false
+    x = w!
+    id = int(oid[2])
+    if id == 19:
+        # basicConstraints: SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLen INTEGER OPTIONAL }
+        if x.0 != 0x30: return false
+        items = __tls_der_items(b, x.1, x.2) ?? [(0, 0, 0)]
+        loop it in items:
+            if it.0 == 1 and it.2 - it.1 == 1: c.ca = b[it.1] != 0
+            else if it.0 == 2 and it.2 - it.1 >= 1 and it.2 - it.1 <= 2 and b[it.1] < 0x80:
+                c.path_len = 0
+                loop q in [it.1..it.2): c.path_len = c.path_len * 256 + int(b[q])
+            else: return false
+        return true
+    if id == 15:
+        # keyUsage: a BIT STRING (bit 0 the first byte's highest)
+        if x.0 != 3 or x.2 - x.1 < 2: return false
+        c.key_usage = 0
+        loop q in [x.1 + 1..x.2):
+            byte = int(b[q])
+            loop bit in [0..8):
+                if (byte >> (7 - bit)) & 1 != 0: c.key_usage = c.key_usage | (1 << ((q - x.1 - 1) * 8 + bit))
+        return true
+    if id == 37:
+        # extKeyUsage: purposes
+        if x.0 != 0x30: return false
+        c.server_auth = false
+        loop it in __tls_der_items(b, x.1, x.2) ?? [(0, 0, 0)]:
+            if it.0 != 6: return false
+            if __tls_is(b, it, __TLS_OID_SERVER_AUTH) or __tls_is(b, it, __TLS_OID_ANY_EKU): c.server_auth = true
+        return true
+    if id == 17:
+        # subjectAltName: dNSName [2] and iPAddress [7] (the rest: not names this side connects to)
+        if x.0 != 0x30: return false
+        loop it in __tls_der_items(b, x.1, x.2) ?? [(0, 0, 0)]:
+            if it.0 == 0x82: c.dns.push(str_from_bytes(b[it.1..it.2)).lower())
+            else if it.0 == 0x87: c.ips.push(b[it.1..it.2))
+            else if it.0 == 0: return false
+        return true
+    if id == 30:
+        # nameConstraints: permitted [0], excluded [1], each a list of GeneralSubtree
+        if x.0 != 0x30: return false
+        c.constrained = true
+        loop t in __tls_der_items(b, x.1, x.2) ?? [(0, 0, 0)]:
+            if t.0 != 0xa0 and t.0 != 0xa1: return false
+            loop st in __tls_der_items(b, t.1, t.2) ?? [(0, 0, 0)]:
+                if st.0 != 0x30: return false
+                g = __tls_der(b, st.1, st.2)
+                if g == none: return false
+                base = b[g!.1..g!.2)
+                if g!.0 == 0x82:
+                    name = str_from_bytes(base).lower()
+                    if t.0 == 0xa0:
+                        c.permit_dns.push(name)
+                        c.permit_any_dns = false
+                    else: c.exclude_dns.push(name)
+                else if g!.0 == 0x87:
+                    if base.len() != 8 and base.len() != 32: return false
+                    if t.0 == 0xa0:
+                        c.permit_ip.push(base)
+                        c.permit_any_ip = false
+                    else: c.exclude_ip.push(base)
+        return true
+    # (known, and nothing to check here: policies and their constraints, key identifiers, where
+    # revocation lists and the issuer's certificate are, an issuer's other names)
+    if id == 32 or id == 36 or id == 54 or id == 33 or id == 35 or id == 14 or id == 31 or id == 18 or id == 9: return true
+    not critical
+
+# a name's common name (or organization) as text, for messages
+__tls_name_text = (name: u8[]) -> str:
+    found = ""
+    top = __tls_der(name, 0, name.len())
+    if top == none: return "?"
+    loop rdn in __tls_der_items(name, top!.1, top!.2) ?? []:
+        loop atv in __tls_der_items(name, rdn.1, rdn.2) ?? []:
+            p = __tls_der_items(name, atv.1, atv.2) ?? []
+            if p.len() != 2: continue
+            if __tls_is(name, p[0], __TLS_OID_CN): found = str_from_bytes(name[p[1].1..p[1].2))
+            else if __tls_is(name, p[0], __TLS_OID_O) and len(found) == 0: found = str_from_bytes(name[p[1].1..p[1].2))
+    if len(found) == 0: "?" else: found
+
+# ---------------- names ----------------
+# "1.2.3.4" as its 4 bytes, or none
+__tls_ip4 = (s: str) -> u8[]?:
+    parts = split(s, ".")
+    if parts.len() != 4: return none
+    out: u8[]
+    loop p in parts:
+        if len(p) == 0 or len(p) > 3: return none
+        v = to_int(p) ?? -1
+        if v < 0 or v > 255: return none
+        out.push(u8(v))
+    out
+
+# whether a certificate's name (maybe "*.example.com") is the host's (both in small letters).
+# A wildcard stands for one whole label, the leftmost, and only above two labels (RFC 6125)
+__tls_name_match = (pattern: str, host: str) -> bool:
+    if pattern == host: return true
+    if not starts_with(pattern, "*.") or len(pattern) < 3: return false
+    rest = pattern[1..]
+    if find(rest[1..], ".") < 0 or find(rest, "*") >= 0: return false
+    dot = find(host, ".")
+    dot > 0 and host[dot..] == rest
+
+# whether a name is within a name constraint ("example.com": it and below; ".example.com": below)
+__tls_dns_within = (name: str, c: str) -> bool:
+    if len(c) == 0: return true
+    n = if starts_with(name, "*."): name[2..] else: name
+    if starts_with(c, "."): return ends_with(n, c) or (starts_with(name, "*.") and "." + n == c)
+    n == c or ends_with(n, "." + c)
+
+__tls_ip_within = (ip: u8[], c: u8[]) -> bool:
+    k = c.len() / 2
+    if ip.len() != k: return false
+    loop i in [0..k):
+        if (ip[i] & c[k + i]) != (c[i] & c[k + i]): return false
+    true
+
+# whether an authority's name constraints allow the leaf's names
+__tls_names_allowed = (ca: __TlsCert, leaf: __TlsCert) -> bool:
+    if not ca.constrained: return true
+    loop n in leaf.dns:
+        loop x in ca.exclude_dns:
+            if __tls_dns_within(n, x): return false
+            # (a wildcard covering a name excluded: as if it were that name)
+            if starts_with(n, "*.") and ends_with(if starts_with(x, "."): x else: "." + x, n[1..]): return false
+        if not ca.permit_any_dns:
+            ok = false
+            loop p in ca.permit_dns:
+                if __tls_dns_within(n, p): ok = true
+            if not ok: return false
+    loop a in leaf.ips:
+        loop x in ca.exclude_ip:
+            if __tls_ip_within(a, x): return false
+        if not ca.permit_any_ip:
+            ok = false
+            loop p in ca.permit_ip:
+                if __tls_ip_within(a, p): ok = true
+            if not ok: return false
+    true
+
+# ---------------- signatures ----------------
+# a DER ECDSA signature as r and s, size bytes each (none when malformed)
+__tls_ecdsa_parts = (der: u8[], size: int) -> u8[]?:
+    top = __tls_der(der, 0, der.len())
+    if top == none or top!.0 != 0x30 or top!.2 != der.len(): return none
+    rs = __tls_der_items(der, top!.1, top!.2) ?? []
+    if rs.len() != 2: return none
+    out: u8[]
+    loop e in rs:
+        if e.0 != 2 or e.2 == e.1 or der[e.1] >= 0x80: return none
+        v = der[e.1..e.2)
+        loop v.len() > 1 and v[0] == 0: v = v[1..]
+        if v.len() > size: return none
+        loop v.len() < size: v.insert(0, 0)
+        out.extend(v)
+    out
+
+__tls_hash = (size: int, m: u8[]) -> u8[]:
+    if size == 48: return crypto.sha384(m)
+    if size == 64: return crypto.sha512(m)
+    crypto.sha256(m)
+
+# whether the key signed the message: ECDSA (DER) or RSA PKCS#1 v1.5, with that hash
+__tls_check_sig = (key: __TlsCert, kind: int, hsize: int, msg: u8[], sig: u8[]) -> bool:
+    h = __tls_hash(hsize, msg)
+    if kind == __TLS_SIG_ECDSA:
+        if key.key_kind == __TLS_KEY_P256:
+            rs = __tls_ecdsa_parts(sig, 32)
+            return rs != none and crypto.p256_verify(key.key, h, rs!)
+        if key.key_kind == __TLS_KEY_P384:
+            rs = __tls_ecdsa_parts(sig, 48)
+            return rs != none and crypto.p384_verify(key.key, h, rs!)
+        return false
+    if kind == __TLS_SIG_RSA and key.key_kind == __TLS_KEY_RSA: return crypto.rsa_verify_pkcs1(key.key, key.rsa_e, h, sig)
+    false
+
+# ---------------- the authorities this computer trusts ----------------
+__tls_roots: __TlsCert[]
+__tls_roots_by: {u8[]: int[]}       # (a subject's roots)
+__tls_roots_loaded = false
+__tls_roots_where = ""              # (where they came from, for messages)
+
+# the certificates of PEM text (-----BEGIN CERTIFICATE----- ... -----END CERTIFICATE-----), DER
+__tls_pem = (text: str) -> u8[][]:
+    out: u8[][]
+    at = 0
+    loop true:
+        s = find(text[at..], "-----BEGIN CERTIFICATE-----")
+        if s < 0: break
+        s += at + 27
+        e = find(text[s..], "-----END CERTIFICATE-----")
+        if e < 0: break
+        body = text[s..s + e).replace("\r", "").replace("\n", "").replace(" ", "")
+        if let d = base64_decode(body): out.push(d)
+        at = s + e + 25
+    out
+
+__tls_add_root = (der: u8[]) -> bool:
+    c = __tls_cert(der, anchor = true)
+    if c == none: return false
+    loop i in __tls_roots_by.get(c!.subject) ?? []:
+        if __tls_roots[i].der == der: return true
+    __tls_roots_by[c!.subject].push(__tls_roots.len())
+    __tls_roots.push(c!)
+    true
+
+# certificate authorities to trust besides the system's (PEM text, one or more); how many were
+# taken
+__tls_trust = (pem: str) -> int:
+    __tls_load_roots()
+    n = 0
+    loop d in __tls_pem(pem):
+        if __tls_add_root(d): n += 1
+    n
+
+# (the bundles of authorities systems keep, in the usual places)
+__TLS_BUNDLES: str[] = ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem", "/etc/pki/tls/cacert.pem", "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    "/etc/ssl/cert.pem", "/usr/local/etc/openssl/cert.pem", "/opt/homebrew/etc/ca-certificates/cert.pem"]
+
+__tls_load_roots = ():
+    if __tls_roots_loaded: return
+    __tls_roots_loaded = true
+    # (SSL_CERT_FILE, as OpenSSL takes it: a bundle used instead of the system's)
+    if let f = env("SSL_CERT_FILE"):
+        if let t = read_file(f):
+            loop d in __tls_pem(t): __tls_add_root(d)
+            __tls_roots_where = f
+    if len(__tls_roots_where) == 0:
+        when TARGET == "windows":
+            __tls_windows_roots()
+        else:
+            loop f in __TLS_BUNDLES:
+                if let t = read_file(f):
+                    loop d in __tls_pem(t): __tls_add_root(d)
+                    __tls_roots_where = f
+                    break
+    if let f = env("SLOPPY_CA_FILE"):
+        if let t = read_file(f):
+            loop d in __tls_pem(t): __tls_add_root(d)
+    if __tls_debug: eprint("tls: {__tls_roots.len()} authorities trusted (from {if len(__tls_roots_where) > 0: __tls_roots_where else: "nowhere"}{if env("SLOPPY_CA_FILE") != none: " and SLOPPY_CA_FILE" else: ""})")
+
+when TARGET == "windows":
+    @lib("crypt32.dll")
+    extern CertOpenSystemStoreW = (prov: int, name: *u16) -> *u8
+    @lib("crypt32.dll")
+    extern CertEnumCertificatesInStore = (store: *u8, prev: *u8) -> *u8
+    @lib("crypt32.dll")
+    extern CertCloseStore = (store: *u8, flags: u32) -> i32
+
+    # the system's root store (CERT_CONTEXT: its encoding, then a pointer to the certificate and
+    # its length)
+    __tls_windows_roots = ():
+        store = CertOpenSystemStoreW(0, data(__wide("ROOT")))
+        if store == null: return
+        ctx = CertEnumCertificatesInStore(store, null)
+        loop ctx != null:
+            p = ((ctx + 8) as **u8)[0]
+            n = int(((ctx + 16) as *u32)[0])
+            der = fill(u8(0), n)
+            loop i in [0..n): der[i] = p[i]
+            __tls_add_root(der)
+            ctx = CertEnumCertificatesInStore(store, ctx)
+        CertCloseStore(store, u32(0))
+        __tls_roots_where = "the Windows root store"
+
+    @lib("crypt32.dll")
+    extern CertOpenStore = (provider: int, encoding: u32, prov: int, flags: u32, para: *u8) -> *u8
+    @lib("crypt32.dll")
+    extern CertAddEncodedCertificateToStore = (store: *u8, encoding: u32, p: *u8, n: u32, how: u32, ctx: *u8) -> i32
+    @lib("crypt32.dll")
+    extern CertGetCertificateChain = (engine: *u8, cert: *u8, time: *u8, store: *u8, para: *u8, flags: u32, reserved: *u8, chain: *u8) -> i32
+    @lib("crypt32.dll")
+    extern CertFreeCertificateChain = (chain: *u8)
+    @lib("crypt32.dll")
+    extern CertFreeCertificateContext = (ctx: *u8) -> i32
+
+    # (Windows keeps only some of the authorities it trusts on the computer, and fetches the others
+    # when a chain needs one: the chain shown to it, so that it does, then its store read again)
+    __tls_windows_fetch = (chain: u8[][]) -> bool:
+        mem = CertOpenStore(2, u32(0), 0, u32(0), null)                # (CERT_STORE_PROV_MEMORY)
+        if mem == null: return false
+        slot = [0]
+        leaf = [0]
+        loop i in [0..chain.len()):
+            # (X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, CERT_STORE_ADD_ALWAYS)
+            slot[0] = 0
+            added = int(CertAddEncodedCertificateToStore(mem, u32(0x10001), data(chain[i]), u32(chain[i].len()), u32(4), data(slot) as *u8)) != 0
+            if added and i == 0: leaf[0] = slot[0]
+            else if added and slot[0] != 0: CertFreeCertificateContext((data(slot) as **u8)[0])
+        before = __tls_roots.len()
+        if leaf[0] != 0:
+            # (CERT_CHAIN_PARA: its size, and no usage asked for)
+            para = fill(u8(0), 32)
+            para[0] = 32
+            got = [0]
+            if int(CertGetCertificateChain(null, (data(leaf) as **u8)[0], null, mem, data(para), u32(0), null, data(got) as *u8)) != 0: CertFreeCertificateChain((data(got) as **u8)[0])
+            CertFreeCertificateContext((data(leaf) as **u8)[0])
+            __tls_windows_roots()
+        CertCloseStore(mem, u32(0))
+        if __tls_debug: eprint("tls: Windows was asked for the authority: {__tls_roots.len() - before} more trusted now")
+        __tls_roots.len() > before
+
+# ---------------- checking the server's certificates ----------------
+__tls_checks = 0                    # (signatures checked for one chain)
+
+# "" when the chain (the leaf first) is good for host now, else why not; and the alert to send
+__tls_verify = (chain: u8[][], host: str, now: int) -> (str, int):
+    __tls_load_roots()
+    if chain.len() > 10: return ("it sent more certificates than a chain needs ({chain.len()})", 42)
+    __tls_checks = 0
+    certs: __TlsCert[]
+    loop d in chain:
+        c = __tls_cert(d)
+        if c == none:
+            if certs.len() == 0: return ("its certificate is malformed, or of a kind this side does not take", 42)
+            continue                    # (an extra certificate it need not have sent)
+        certs.push(c!)
+    leaf = certs[0]
+    # the name
+    named = false
+    if let ip = __tls_ip4(host):
+        loop a in leaf.ips:
+            if a == ip: named = true
+    else:
+        h = host.lower()
+        if ends_with(h, "."): h = h[..len(h) - 1)
+        loop n in leaf.dns:
+            if __tls_name_match(n, h): named = true
+    if not named:
+        names = if leaf.dns.len() > 0: join(leaf.dns[..min(leaf.dns.len(), 4)), ", ") else: "no names"
+        return ("its certificate is for other names ({names}), not {host}", 42)
+    if now < leaf.not_before: return ("its certificate is not valid yet (this computer's clock may be wrong)", 45)
+    if now > leaf.not_after: return ("its certificate has expired", 45)
+    if not leaf.server_auth or (leaf.key_usage >= 0 and leaf.key_usage & 1 == 0): return ("its certificate is not for a server", 43)
+    if __tls_roots.len() == 0: return ("no certificate authorities were found on this computer to check it against (SSL_CERT_FILE can name a file of them)", 48)
+    used = fill(false, certs.len())
+    used[0] = true
+    why = __tls_path(certs, used, leaf, 0, leaf, now)
+    when TARGET == "windows":
+        if len(why) > 0 and find(why, "does not trust") >= 0 and __tls_windows_fetch(chain): why = __tls_path(certs, used, leaf, 0, leaf, now)
+    if len(why) == 0: return ("", 0)
+    (why, if find(why, "trust") >= 0: 48 else: 42)
+
+# a path from cert up to a trusted authority, through the other certificates sent ("" when there
+# is one, else why not); below: how many authorities are under cert in the path (not the leaf).
+# (Signatures checked: 32 at most, whatever certificates come, as many with one name and key)
+__tls_path = (certs: __TlsCert[], used: mut bool[], cert: __TlsCert, below: int, leaf: __TlsCert, now: int) -> str:
+    why = ""
+    if __tls_checks > 32: return "its certificates take too long to check"
+    # an authority this computer trusts
+    loop ri in __tls_roots_by.get(cert.issuer) ?? []:
+        r = __tls_roots[ri]
+        if now < r.not_before or now > r.not_after:
+            why = "the authority it comes from ({__tls_name_text(r.subject)}) has expired here"
+            continue
+        if r.path_len >= 0 and below > r.path_len: continue
+        if not __tls_names_allowed(r, leaf): continue
+        __tls_checks += 1
+        if __tls_check_sig(r, cert.sig_kind, cert.sig_hash, cert.tbs, cert.sig): return ""
+    # one of the certificates the server sent, as an authority between
+    if below < 6:
+        loop i in [0..certs.len()):
+            if used[i] or certs[i].subject != cert.issuer: continue
+            ca = certs[i]
+            if not ca.v3 or not ca.ca or (ca.key_usage >= 0 and ca.key_usage & 32 == 0): continue
+            if not ca.server_auth or (ca.path_len >= 0 and below > ca.path_len): continue
+            if now < ca.not_before or now > ca.not_after:
+                why = "the certificate of {__tls_name_text(ca.subject)}, which signed it, has expired"
+                continue
+            if not __tls_names_allowed(ca, leaf):
+                why = "{__tls_name_text(ca.subject)} may not sign for these names"
+                continue
+            __tls_checks += 1
+            if __tls_checks > 32: return "its certificates take too long to check"
+            if not __tls_check_sig(ca, cert.sig_kind, cert.sig_hash, cert.tbs, cert.sig): continue
+            used[i] = true
+            w = __tls_path(certs, used, ca, below + 1, leaf, now)
+            used[i] = false
+            if len(w) == 0: return ""
+            why = w
+    if len(why) > 0: return why
+    "it comes from {__tls_name_text(cert.issuer)}, an authority this computer does not trust"
+
+# ---------------- the connection ----------------
+const __TLS_HELLO = 0               # (state: waiting for the server's hello ...)
+const __TLS_HANDSHAKE = 1           # (... for the rest of its handshake)
+const __TLS_OPEN = 2
+const __TLS_CLOSED = 3              # (the server said close_notify: what came before it is whole)
+const __TLS_FAILED = 4
+const __TLS_FREE = 5                # (a slot to reuse)
+
+struct __TlsConn:
+    host: str
+    alpn: str
+    state = 0
+    why = ""                        # (failed: why)
+    out: u8[]                       # bytes for the socket
+    app: u8[]                       # what the server sent
+    pending: u8[]                   # what this side sends once the handshake is done
+    inbuf: u8[]                     # bytes from the socket, not yet a whole record
+    hs: u8[]                        # handshake bytes, not yet a whole message
+    transcript: u8[]
+    crand: u8[]
+    session: u8[]
+    xkey: crypto.X25519Key
+    pkey: crypto.P256Key
+    group = 0x1d                    # the key share sent
+    retried = false                 # (after a HelloRetryRequest)
+    cookie: u8[]
+    expect = 2                      # the handshake message next
+    hs_secret: u8[]
+    c_secret: u8[]                  # this side's traffic secret, and the server's
+    s_secret: u8[]
+    wkey: crypto.AesKey
+    wiv: u8[]
+    wseq = 0
+    keyed_w = false                 # (records sent are encrypted)
+    rkey: crypto.AesKey
+    riv: u8[]
+    rseq = 0
+    keyed_r = false
+    chain: u8[][]                   # the server's certificates
+    leaf: __TlsCert
+    cert_req = false
+    cert_ctx: u8[]
+    got_alpn = ""
+
+__tls_conns: __TlsConn[]
+
+# (SLOPPY_TLS_DEBUG=1: each handshake's steps, on stderr)
+__tls_debug = env("SLOPPY_TLS_DEBUG") != none
+__tls_say = (c: __TlsConn, s: str):
+    if __tls_debug: eprint("tls {c.host} {time():.3f}: {s}")
+
+__tls_put16 = (out: mut u8[], v: int):
+    out.push(u8((v >> 8) & 255))
+    out.push(u8(v & 255))
+__tls_put24 = (out: mut u8[], v: int):
+    out.push(u8((v >> 16) & 255))
+    out.push(u8((v >> 8) & 255))
+    out.push(u8(v & 255))
+__tls_be16 = (b: u8[], i: int) -> int: (int(b[i]) << 8) | int(b[i + 1])
+__tls_be24 = (b: u8[], i: int) -> int: (int(b[i]) << 16) | (int(b[i + 1]) << 8) | int(b[i + 2])
+
+# a connection to host (its name: sent, and its certificate checked for it) speaking alpn
+# ("http/1.1"; "": none said); its ClientHello is ready to send
+__tls_open = (host: str, alpn: str) -> int:
+    id = -1
+    loop i in [0..__tls_conns.len()):
+        if __tls_conns[i].state == __TLS_FREE:
+            id = i
+            break
+    c = __TlsConn(host = host, alpn = alpn)
+    c.crand = crypto.random_bytes(32)
+    c.session = crypto.random_bytes(32)
+    c.xkey = crypto.x25519_key()
+    hello = __tls_client_hello(c)
+    c.transcript = hello
+    __tls_record(c, 22, hello, 0x0301)
+    if id < 0:
+        __tls_conns.push(c)
+        return __tls_conns.len() - 1
+    __tls_conns[id] = c
+    id
+
+# (the ClientHello: its key share for c.group)
+__tls_client_hello = (c: __TlsConn) -> u8[]:
+    b: u8[] = [u8(3), 3]
+    b.extend(c.crand)
+    b.push(32)
+    b.extend(c.session)
+    b.extend([u8(0), 2, 0x13, 0x01])            # TLS_AES_128_GCM_SHA256
+    b.extend([u8(1), 0])                        # (no compression)
+    e: u8[]
+    if __tls_ip4(c.host) == none:
+        # server_name
+        name = bytes(c.host)
+        __tls_put16(e, 0)
+        __tls_put16(e, name.len() + 5)
+        __tls_put16(e, name.len() + 3)
+        e.push(0)
+        __tls_put16(e, name.len())
+        e.extend(name)
+    # supported_groups: x25519, secp256r1
+    e.extend([u8(0), 10, 0, 6, 0, 4, 0, 0x1d, 0, 0x17])
+    # signature_algorithms: ECDSA P-256 and P-384, RSA-PSS, RSA PKCS#1 (for certificates)
+    e.extend([u8(0), 13, 0, 18, 0, 16, 4, 3, 5, 3, 8, 4, 8, 5, 8, 6, 4, 1, 5, 1, 6, 1])
+    # supported_versions: TLS 1.3
+    e.extend([u8(0), 43, 0, 3, 2, 3, 4])
+    # key_share
+    share = if c.group == 0x1d: c.xkey.public else: c.pkey.public
+    __tls_put16(e, 51)
+    __tls_put16(e, share.len() + 6)
+    __tls_put16(e, share.len() + 4)
+    __tls_put16(e, c.group)
+    __tls_put16(e, share.len())
+    e.extend(share)
+    if len(c.alpn) > 0:
+        p = bytes(c.alpn)
+        __tls_put16(e, 16)
+        __tls_put16(e, p.len() + 3)
+        __tls_put16(e, p.len() + 1)
+        e.push(u8(p.len()))
+        e.extend(p)
+    if c.cookie.len() > 0:
+        __tls_put16(e, 44)
+        __tls_put16(e, c.cookie.len() + 2)
+        __tls_put16(e, c.cookie.len())
+        e.extend(c.cookie)
+    __tls_put16(b, e.len())
+    b.extend(e)
+    m: u8[] = [u8(1)]
+    __tls_put24(m, b.len())
+    m.extend(b)
+    m
+
+# a record to the socket: as it is (no keys yet), or encrypted with this side's keys
+__tls_record = (c: mut __TlsConn, typ: int, body: u8[], version: int = 0x0303):
+    at = 0
+    loop at < body.len() or at == 0:
+        piece = body[at..min(body.len(), at + 16384))
+        at += 16384
+        if not c.keyed_w:
+            c.out.push(u8(typ))
+            __tls_put16(c.out, version)
+            __tls_put16(c.out, piece.len())
+            c.out.extend(piece)
+        else:
+            plain = piece
+            plain.push(u8(typ))
+            hdr: u8[] = [u8(23), 3, 3]
+            __tls_put16(hdr, plain.len() + 16)
+            sealed = crypto.aes_gcm_seal(c.wkey, __tls_nonce(c.wiv, c.wseq), hdr, plain)
+            c.wseq += 1
+            c.out.extend(hdr)
+            c.out.extend(sealed)
+        if at >= body.len(): break
+
+__tls_nonce = (iv: u8[], seq: int) -> u8[]:
+    n = iv
+    loop k in [0..8): n[4 + k] = n[4 + k] xor u8((seq >> (56 - 8 * k)) & 255)
+    n
+
+# fail: why, and the alert told to the server (0: none)
+__tls_fail = (c: mut __TlsConn, why: str, alert: int):
+    if c.state >= __TLS_CLOSED: return
+    __tls_say(c, "failed: {why}")
+    if alert > 0: __tls_record(c, 21, [u8(2), u8(alert)])
+    c.state = __TLS_FAILED
+    c.why = why
+
+# HKDF-Expand-Label and Derive-Secret (RFC 8446 7.1)
+__tls_label = (secret: u8[], label: str, ctx: u8[], n: int) -> u8[]:
+    info: u8[]
+    __tls_put16(info, n)
+    l = bytes("tls13 " + label)
+    info.push(u8(l.len()))
+    info.extend(l)
+    info.push(u8(ctx.len()))
+    info.extend(ctx)
+    crypto.hkdf_expand(secret, info, n)
+
+__tls_derive = (secret: u8[], label: str, transcript: u8[]) -> u8[]: __tls_label(secret, label, crypto.sha256(transcript), 32)
+
+__tls_set_write = (c: mut __TlsConn, secret: u8[]):
+    c.c_secret = secret
+    c.wkey = crypto.aes_key(__tls_label(secret, "key", [], 16))
+    c.wiv = __tls_label(secret, "iv", [], 12)
+    c.wseq = 0
+    c.keyed_w = true
+
+__tls_set_read = (c: mut __TlsConn, secret: u8[]):
+    c.s_secret = secret
+    c.rkey = crypto.aes_key(__tls_label(secret, "key", [], 16))
+    c.riv = __tls_label(secret, "iv", [], 12)
+    c.rseq = 0
+    c.keyed_r = true
+
+# bytes from the socket
+__tls_feed = (id: int, b: u8[]): __tls_take_in(__tls_conns[id], b)
+
+__tls_take_in = (c: mut __TlsConn, b: u8[]):
+    if c.state >= __TLS_CLOSED: return
+    c.inbuf.extend(b)
+    at = 0
+    loop c.state < __TLS_CLOSED and c.inbuf.len() - at >= 5:
+        typ = int(c.inbuf[at])
+        n = __tls_be16(c.inbuf, at + 3)
+        if n > 16384 + 256:
+            __tls_fail(c, "the server sent a record too large", 22)
+            break
+        if c.inbuf.len() - at < 5 + n: break
+        hdr = c.inbuf[at..at + 5)
+        body = c.inbuf[at + 5..at + 5 + n)
+        at += 5 + n
+        __tls_in_record(c, typ, hdr, body)
+    if at > 0: c.inbuf = c.inbuf[at..]
+
+__tls_in_record = (c: mut __TlsConn, typ0: int, hdr: u8[], body: u8[]):
+    typ = typ0
+    data = body
+    if typ == 20:
+        # (ChangeCipherSpec: only for middleboxes, in the handshake; nothing to do)
+        if c.state >= __TLS_OPEN or body.len() != 1 or body[0] != 1: __tls_fail(c, "the server sent a stray change_cipher_spec", 10)
+        return
+    if typ == 21 and not c.keyed_r:
+        __tls_alert_in(c, body)
+        return
+    if c.keyed_r:
+        if typ != 23:
+            __tls_fail(c, "the server sent a record that is not encrypted", 10)
+            return
+        opened = crypto.aes_gcm_open(c.rkey, __tls_nonce(c.riv, c.rseq), hdr, body)
+        c.rseq += 1
+        if opened == none:
+            __tls_fail(c, "a record from the server did not decrypt (changed on the way?)", 20)
+            return
+        data = opened!
+        # (the real type: the last byte that is not padding)
+        k = data.len() - 1
+        loop k >= 0 and data[k] == 0: k -= 1
+        if k < 0:
+            __tls_fail(c, "the server sent a record with no type", 10)
+            return
+        typ = int(data[k])
+        data = data[..k)
+    else if typ != 22:
+        __tls_fail(c, "the server sent something before its hello (is it a TLS server?)", 10)
+        return
+    if typ == 21: __tls_alert_in(c, data)
+    else if typ == 23:
+        if c.state != __TLS_OPEN:
+            __tls_fail(c, "the server sent data before the handshake was done", 10)
+            return
+        c.app.extend(data)
+    else if typ == 22:
+        if data.len() == 0:
+            __tls_fail(c, "the server sent an empty handshake record", 10)
+            return
+        c.hs.extend(data)
+        loop c.state < __TLS_CLOSED and c.hs.len() >= 4:
+            n = __tls_be24(c.hs, 1)
+            if n > 65536:
+                __tls_fail(c, "the server sent a handshake message too large", 50)
+                return
+            if c.hs.len() < 4 + n: break
+            msg = c.hs[..4 + n)
+            c.hs = c.hs[4 + n..]
+            was_keyed = c.s_secret
+            __tls_message(c, msg)
+            # (the keys change at a record's end: nothing of the handshake may follow then)
+            if c.s_secret != was_keyed and c.hs.len() > 0: __tls_fail(c, "the server's handshake went on past a change of keys", 10)
+    else: __tls_fail(c, "the server sent a record of an unknown type", 10)
+
+__tls_alert_in = (c: mut __TlsConn, b: u8[]):
+    if b.len() != 2:
+        __tls_fail(c, "the server sent a malformed alert", 50)
+        return
+    if b[1] == 0:
+        c.state = __TLS_CLOSED
+        return
+    d = int(b[1])
+    what = "alert {d}"
+    if d == 40: what = "handshake_failure: it found nothing in common with this side{if c.state == __TLS_HELLO: ", which speaks TLS 1.3 only" else: ""}"
+    else if d == 70: what = "protocol_version: it does not speak TLS 1.3, the only version here"
+    else if d == 112: what = "unrecognized_name: it has no site by that name"
+    else if d == 120: what = "no_application_protocol"
+    else if d == 116: what = "certificate_required"
+    c.state = __TLS_FAILED
+    c.why = "the server ended the connection ({what})"
+
+__TLS_HRR: u8[] = [u8(0xCF), 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
+    0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C]
+
+# one handshake message, whole (its type and length first)
+__tls_message = (c: mut __TlsConn, msg: u8[]):
+    typ = int(msg[0])
+    body = msg[4..]
+    if c.state == __TLS_OPEN:
+        if typ == 4: return                     # (NewSessionTicket: no resumption here)
+        if typ == 24 and body.len() == 1 and body[0] <= 1:
+            # KeyUpdate: the server's next keys; and this side's when it asks
+            __tls_set_read(c, __tls_label(c.s_secret, "traffic upd", [], 32))
+            if body[0] == 1:
+                __tls_record(c, 22, [u8(24), 0, 0, 1, 0])
+                __tls_set_write(c, __tls_label(c.c_secret, "traffic upd", [], 32))
+            return
+        __tls_fail(c, "the server sent handshake message {typ} after the handshake", 10)
+        return
+    if typ != c.expect and not (c.expect == 13 and typ == 11):
+        __tls_fail(c, "the server sent handshake message {typ}, not {c.expect}", 10)
+        return
+    if typ == 2:
+        __tls_server_hello(c, msg)
+        return
+    if typ == 8:
+        # EncryptedExtensions: the protocol it chose, if any
+        if body.len() < 2 or 2 + __tls_be16(body, 0) != body.len():
+            __tls_fail(c, "the server's extensions are malformed", 50)
+            return
+        i = 2
+        loop i + 4 <= body.len():
+            t = __tls_be16(body, i)
+            n = __tls_be16(body, i + 2)
+            if i + 4 + n > body.len(): break
+            if t == 16 and n >= 4:
+                p = str_from_bytes(body[i + 7..i + 4 + n))
+                if p != c.alpn:
+                    __tls_fail(c, "the server chose a protocol not offered ({p})", 47)
+                    return
+                c.got_alpn = p
+            i += 4 + n
+        c.transcript.extend(msg)
+        c.expect = 13
+        return
+    if typ == 13:
+        # CertificateRequest: this side has none, and says so with an empty Certificate
+        if body.len() < 1:
+            __tls_fail(c, "the server's certificate request is malformed", 50)
+            return
+        c.cert_req = true
+        c.cert_ctx = body[1..1 + min(int(body[0]), body.len() - 1))
+        c.transcript.extend(msg)
+        c.expect = 11
+        return
+    if typ == 11:
+        # Certificate: the chain, the server's own first
+        if body.len() < 4 or body[0] != 0 or 4 + __tls_be24(body, 1) != body.len():
+            __tls_fail(c, "the server's certificates are malformed", 50)
+            return
+        i = 4
+        loop i + 3 <= body.len():
+            n = __tls_be24(body, i)
+            if i + 3 + n + 2 > body.len() or n == 0:
+                __tls_fail(c, "the server's certificates are malformed", 50)
+                return
+            c.chain.push(body[i + 3..i + 3 + n))
+            i += 3 + n
+            i += 2 + __tls_be16(body, i)
+        if c.chain.len() == 0 or i != body.len():
+            __tls_fail(c, "the server showed no certificate", 50)
+            return
+        why, alert = __tls_verify(c.chain, c.host, int(unix_time()))
+        if __tls_debug:
+            loop d in c.chain:
+                if let x = __tls_cert(d): __tls_say(c, "certificate of {__tls_name_text(x.subject)} (key kind {x.key_kind}), from {__tls_name_text(x.issuer)}")
+            __tls_say(c, if len(why) == 0: "the chain is good" else: "the chain is not good: {why}")
+        if len(why) > 0:
+            __tls_fail(c, "{c.host} is not who it says: {why}", alert)
+            return
+        c.leaf = __tls_cert(c.chain[0])!
+        c.transcript.extend(msg)
+        c.expect = 15
+        return
+    if typ == 15:
+        # CertificateVerify: the transcript signed with the certificate's key
+        if body.len() < 4 or 4 + __tls_be16(body, 2) != body.len():
+            __tls_fail(c, "the server's signature is malformed", 50)
+            return
+        scheme = __tls_be16(body, 0)
+        __tls_say(c, "signed with scheme {scheme:x}")
+        sig = body[4..]
+        signed = fill(u8(32), 64)
+        signed.extend(bytes("TLS 1.3, server CertificateVerify"))
+        signed.push(0)
+        signed.extend(crypto.sha256(c.transcript))
+        ok = false
+        k = c.leaf
+        if scheme == 0x0403 and k.key_kind == __TLS_KEY_P256: ok = __tls_check_sig(k, __TLS_SIG_ECDSA, 32, signed, sig)
+        else if scheme == 0x0503 and k.key_kind == __TLS_KEY_P384: ok = __tls_check_sig(k, __TLS_SIG_ECDSA, 48, signed, sig)
+        else if scheme >= 0x0804 and scheme <= 0x0806 and k.key_kind == __TLS_KEY_RSA:
+            hs = if scheme == 0x0804: 32 else if scheme == 0x0805: 48 else: 64
+            ok = crypto.rsa_verify_pss(k.key, k.rsa_e, __tls_hash(hs, signed), sig)
+        else:
+            __tls_fail(c, "the server signed in a way it was not offered (scheme {scheme:x})", 47)
+            return
+        if not ok:
+            __tls_fail(c, "the server's handshake is not signed by its certificate's key", 51)
+            return
+        c.transcript.extend(msg)
+        c.expect = 20
+        return
+    if typ == 20:
+        fk = __tls_label(c.s_secret, "finished", [], 32)
+        if body != crypto.hmac_sha256(fk, crypto.sha256(c.transcript)):
+            __tls_fail(c, "the server's Finished is wrong (the handshake was changed on the way?)", 51)
+            return
+        c.transcript.extend(msg)
+        __tls_client_finished(c)
+
+# ServerHello, or a HelloRetryRequest
+__tls_server_hello = (c: mut __TlsConn, msg: u8[]):
+    body = msg[4..]
+    if body.len() < 38:
+        __tls_fail(c, "the server's hello is malformed", 50)
+        return
+    sl = int(body[34])
+    i = 35 + sl
+    if i + 5 > body.len() or body[35..35 + sl) != c.session:
+        __tls_fail(c, "the server's hello is malformed", 47)
+        return
+    suite = __tls_be16(body, i)
+    if body[i + 2] != 0:
+        __tls_fail(c, "the server's hello is malformed", 47)
+        return
+    i += 3
+    version = 0
+    group = -1
+    share: u8[]
+    cookie: u8[]
+    if i + 2 <= body.len():
+        stop = i + 2 + __tls_be16(body, i)
+        if stop != body.len():
+            __tls_fail(c, "the server's hello is malformed", 50)
+            return
+        i += 2
+        loop i + 4 <= stop:
+            t = __tls_be16(body, i)
+            n = __tls_be16(body, i + 2)
+            v = body[i + 4..min(stop, i + 4 + n))
+            if v.len() != n:
+                __tls_fail(c, "the server's hello is malformed", 50)
+                return
+            if t == 43 and n == 2: version = __tls_be16(v, 0)
+            else if t == 51 and n >= 2:
+                group = __tls_be16(v, 0)
+                if n >= 4 and n == 4 + __tls_be16(v, 2): share = v[4..]
+            else if t == 44 and n > 2: cookie = v[2..]
+            i += 4 + n
+    if version != 0x0304:
+        __tls_fail(c, "the server does not speak TLS 1.3 (this side speaks only that)", 70)
+        return
+    if suite != 0x1301:
+        __tls_fail(c, "the server chose a cipher suite not offered", 47)
+        return
+    __tls_say(c, if body[2..34) == __TLS_HRR: "hello retry request, for group {group:x}" else: "server hello, group {group:x}")
+    if body[2..34) == __TLS_HRR:
+        # (it wants another key share: P-256, once)
+        if c.retried or group != 0x17:
+            __tls_fail(c, "the server asked for a key share again, or one not offered", 47)
+            return
+        c.retried = true
+        c.group = group
+        c.cookie = cookie
+        c.pkey = crypto.p256_key()
+        mh: u8[] = [u8(254), 0, 0, 32]
+        mh.extend(crypto.sha256(c.transcript))
+        mh.extend(msg)
+        hello = __tls_client_hello(c)
+        mh.extend(hello)
+        c.transcript = mh
+        __tls_record(c, 20, [u8(1)])
+        __tls_record(c, 22, hello)
+        return
+    if group != c.group:
+        __tls_fail(c, "the server's key share is not for the group offered", 47)
+        return
+    shared = if group == 0x1d: crypto.x25519_ecdh(c.xkey, share) else: crypto.p256_ecdh(c.pkey, share)
+    if shared == none:
+        __tls_fail(c, "the server's key share is not a key", 47)
+        return
+    c.transcript.extend(msg)
+    zero = fill(u8(0), 32)
+    early = crypto.hkdf_extract(zero, zero)
+    c.hs_secret = crypto.hkdf_extract(__tls_derive(early, "derived", []), shared!)
+    # (a change_cipher_spec, for middleboxes that look for one, then the keys)
+    if not c.retried: __tls_record(c, 20, [u8(1)])
+    __tls_set_write(c, __tls_derive(c.hs_secret, "c hs traffic", c.transcript))
+    __tls_set_read(c, __tls_derive(c.hs_secret, "s hs traffic", c.transcript))
+    c.state = __TLS_HANDSHAKE
+    c.expect = 8
+
+# the server's Finished is good: this side's (an empty Certificate first when one was asked for),
+# then the keys for data
+__tls_client_finished = (c: mut __TlsConn):
+    zero = fill(u8(0), 32)
+    master = crypto.hkdf_extract(__tls_derive(c.hs_secret, "derived", []), zero)
+    c_ap = __tls_derive(master, "c ap traffic", c.transcript)
+    s_ap = __tls_derive(master, "s ap traffic", c.transcript)
+    if c.cert_req:
+        m: u8[] = [u8(11)]
+        __tls_put24(m, c.cert_ctx.len() + 4)
+        m.push(u8(c.cert_ctx.len()))
+        m.extend(c.cert_ctx)
+        m.extend([u8(0), 0, 0])
+        c.transcript.extend(m)
+        __tls_record(c, 22, m)
+    fk = __tls_label(c.c_secret, "finished", [], 32)
+    fin: u8[] = [u8(20), 0, 0, 32]
+    fin.extend(crypto.hmac_sha256(fk, crypto.sha256(c.transcript)))
+    __tls_record(c, 22, fin)
+    __tls_set_write(c, c_ap)
+    __tls_set_read(c, s_ap)
+    c.state = __TLS_OPEN
+    c.transcript = []
+    c.chain = []
+    if c.pending.len() > 0:
+        __tls_record(c, 23, c.pending)
+        c.pending = []
+
+# ---------------- for lib/net.jo ----------------
+# the bytes to write to the socket now
+__tls_output = (id: int) -> u8[]:
+    o = __tls_conns[id].out
+    __tls_conns[id].out = []
+    o
+
+# what the server sent since the last call
+__tls_read = (id: int) -> u8[]:
+    a = __tls_conns[id].app
+    __tls_conns[id].app = []
+    a
+
+# data to the server (kept until the handshake is done)
+__tls_write = (id: int, b: u8[]):
+    if __tls_conns[id].state == __TLS_OPEN: __tls_record(__tls_conns[id], 23, b)
+    else if __tls_conns[id].state < __TLS_OPEN: __tls_conns[id].pending.extend(b)
+
+# 0 handshaking, 1 open, 2 ended by the server (close_notify), 3 failed (__tls_why says why)
+__tls_status = (id: int) -> int:
+    s = __tls_conns[id].state
+    if s < __TLS_OPEN: return 0
+    if s == __TLS_OPEN: return 1
+    if s == __TLS_CLOSED: return 2
+    3
+
+__tls_why = (id: int) -> str: __tls_conns[id].why
+
+# the end: close_notify to send (__tls_output), then the slot is free for another
+__tls_close = (id: int):
+    if __tls_conns[id].state == __TLS_OPEN: __tls_record(__tls_conns[id], 21, [u8(1), 0])
+
+__tls_free = (id: int):
+    __tls_conns[id] = __TlsConn(host = "", alpn = "", state = __TLS_FREE)

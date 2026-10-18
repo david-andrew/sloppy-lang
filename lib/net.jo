@@ -12,10 +12,12 @@
 # Messages arrive whole and in order (WebSockets over TCP). A web page can only connect, not
 # listen: the server is a native program (a game that hosts, or a small server of its own). A page
 # served over https can only reach a wss:// server (TLS: put a proxy that has a certificate, such
-# as Caddy, in front of the server); net.connect("wss://game.example.com") takes a URL as well.
+# as Caddy, in front of the server); net.connect("wss://game.example.com") takes a URL as well,
+# from a web page or a native program.
 
 import crypto
 import rtc
+import tls
 
 enum NetKind: joined, message, left
 
@@ -39,6 +41,9 @@ struct __NetPeer:
     outbuf: u8[]
     since: f64              # (connecting: when it began)
     rtc = -1                # (straight to another player, WebRTC: its connection; else -1)
+    secure = false          # (wss://: over TLS ...)
+    tls = -1                # (... its connection, once the socket is)
+    path = "/"
     answering = false       # (joined with a code: its own code is the reply)
     code = ""               # (this side's code, once made)
 
@@ -258,22 +263,18 @@ connect = (host: str, port: int = 0) -> int:
     else:
         h = host
         pt = port
-        if starts_with(h, "wss://"):
-            # (no TLS here: a native program connects to ws:// servers)
-            __net_events.push(NetEvent(.left, id, []))
-            p.state = 3
-            __net_why[id] = "a native program connects to ws:// addresses (wss:// needs TLS, which it does not have)"
-            __net_peers.push(p)
-            return id
-        if starts_with(h, "ws://"):
-            h = h[5..]
+        if starts_with(h, "ws://") or starts_with(h, "wss://"):
+            p.secure = starts_with(h, "wss://")
+            h = h[(if p.secure: 6 else: 5)..]
             sl = find(h, "/")
-            if sl >= 0: h = h[..sl)
+            if sl >= 0:
+                p.path = h[sl..]
+                h = h[..sl)
+            pt = if p.secure: 443 else: 80
             c = find(h, ":")
             if c >= 0:
-                pt = to_int(h[c + 1..]) ?? 80
+                pt = to_int(h[c + 1..]) ?? pt
                 h = h[..c)
-            else: pt = 80
         p.host = h
         p.port = pt
         ip = __n_resolve(h)
@@ -309,7 +310,9 @@ __net_send = (peer: int, msg: u8[], text: bool):
                 if __net_peers[i].state == 2:
                     op = 2
                     if text: op = 1
-                    __ws_frame(__net_peers[i].outbuf, op, msg, __net_peers[i].client)
+                    f: u8[]
+                    __ws_frame(f, op, msg, __net_peers[i].client)
+                    __net_out(i, f)
                     __net_flush(i)
             return
 
@@ -344,8 +347,12 @@ close = (peer: int):
                 __wasm_ws_close(__net_peers[i].fd)
             else:
                 if __net_peers[i].state == 2:
-                    empty: u8[]
-                    __ws_frame(__net_peers[i].outbuf, 8, empty, __net_peers[i].client)
+                    f: u8[]
+                    __ws_frame(f, 8, [], __net_peers[i].client)
+                    __net_out(i, f)
+                    if __net_peers[i].tls >= 0:
+                        tls.__tls_close(__net_peers[i].tls)
+                        __net_peers[i].outbuf.extend(tls.__tls_output(__net_peers[i].tls))
                     __net_flush(i)
                 __n_close(__net_peers[i].fd)
             __net_gone(i)
@@ -365,6 +372,10 @@ __net_goodbye = ():
 __net_gone = (i: int):
     if __net_peers[i].state == 3: return
     __net_peers[i].state = 3
+    when TARGET != "wasm":
+        if __net_peers[i].tls >= 0:
+            tls.__tls_free(__net_peers[i].tls)
+            __net_peers[i].tls = -1
     __net_events.push(NetEvent(.left, __net_peers[i].id, []))
 
 # why a peer could not connect, once it has left ("": it did not say; a web page's browser does
@@ -530,11 +541,19 @@ __net_poll = ():
                     __net_gone(i)
                     continue
                 if c == 0: continue
-                # (connected: the WebSocket handshake)
+                # (connected: TLS's handshake first for wss://, then the WebSocket handshake)
                 __net_peers[i].state = 1
+                if __net_peers[i].secure: __net_peers[i].tls = tls.__tls_open(__net_peers[i].host, "http/1.1")
                 __net_key = __ws_key()
-                req = "GET / HTTP/1.1\r\nHost: {__net_peers[i].host}:{__net_peers[i].port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {__net_key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
-                __net_peers[i].outbuf.extend(bytes(req))
+                at = __net_peers[i].host
+                if __net_peers[i].port != (if __net_peers[i].secure: 443 else: 80): at = "{at}:{__net_peers[i].port}"
+                req = "GET {__net_peers[i].path} HTTP/1.1\r\nHost: {at}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {__net_key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+                __net_out(i, bytes(req))
+            if __net_peers[i].tls >= 0 and __net_peers[i].state == 1 and time() - __net_peers[i].since > 20.0:
+                __net_why[__net_peers[i].id] = "the secure connection (TLS) was not made in 20 seconds"
+                __n_close(fd)
+                __net_gone(i)
+                continue
             __net_flush(i)
             if __net_peers[i].state == 3: continue
             # what has come in
@@ -542,10 +561,31 @@ __net_poll = ():
                 n = __n_recv(fd, data(__net_rbuf), __net_rbuf.len())
                 if n == -1: break
                 if n <= 0:
-                    __n_close(fd)
-                    __net_gone(i)
+                    if __net_peers[i].tls >= 0 and tls.__tls_status(__net_peers[i].tls) == 0: __net_why[__net_peers[i].id] = "the server closed the connection in TLS's handshake (is it a TLS server, on that port?)"
+                    # (the messages that came before the end, then the end)
+                    if __net_peers[i].state == 2: __net_parse(i)
+                    if __net_peers[i].state != 3:
+                        __n_close(fd)
+                        __net_gone(i)
                     break
-                __net_peers[i].inbuf.extend(__net_rbuf[..n))
+                if __net_peers[i].tls < 0:
+                    __net_peers[i].inbuf.extend(__net_rbuf[..n))
+                    continue
+                t = __net_peers[i].tls
+                tls.__tls_feed(t, __net_rbuf[..n))
+                __net_peers[i].inbuf.extend(tls.__tls_read(t))
+                __net_peers[i].outbuf.extend(tls.__tls_output(t))
+                ts = tls.__tls_status(t)
+                if ts >= 2:
+                    if ts == 3: __net_why[__net_peers[i].id] = "the secure connection failed: {tls.__tls_why(t)}"
+                    __net_flush(i)
+                    if __net_peers[i].state == 2: __net_parse(i)
+                    if __net_peers[i].state != 3:
+                        __n_close(fd)
+                        __net_gone(i)
+                    break
+            if __net_peers[i].state == 3: continue
+            __net_flush(i)
             if __net_peers[i].state == 3: continue
             __net_parse(i)
         # (gone peers: dropped once their left event is out)
@@ -555,6 +595,15 @@ __net_poll = ():
                 __net_peers.remove(k)
                 continue
             k += 1
+
+# bytes to a peer: into what waits to go out (through TLS, for wss://)
+__net_out = (i: int, b: u8[]):
+    when TARGET != "wasm":
+        if __net_peers[i].tls >= 0:
+            tls.__tls_write(__net_peers[i].tls, b)
+            __net_peers[i].outbuf.extend(tls.__tls_output(__net_peers[i].tls))
+            return
+    __net_peers[i].outbuf.extend(b)
 
 # write what is waiting to go out (as much as the socket takes now)
 __net_flush = (i: int):
@@ -580,6 +629,10 @@ __net_parse = (i: int):
         __net_peers[i].inbuf = b[e + 4..)
         if __net_peers[i].client:
             if not starts_with(head, "HTTP/1.1 101"):
+                first = head
+                k = find(first, "\r")
+                if k >= 0: first = first[..k)
+                __net_why[__net_peers[i].id] = "the server answered \"{first}\", not a WebSocket's handshake (is the address right?)"
                 __n_close(__net_peers[i].fd)
                 __net_gone(i)
                 return
@@ -593,7 +646,7 @@ __net_parse = (i: int):
                 __net_gone(i)
                 return
             acc = base64_encode(crypto.sha1(bytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")))
-            __net_peers[i].outbuf.extend(bytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {acc}\r\n\r\n"))
+            __net_out(i, bytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {acc}\r\n\r\n"))
             __net_flush(i)
         __net_peers[i].state = 2
         __net_events.push(NetEvent(.joined, __net_peers[i].id, []))
@@ -634,7 +687,9 @@ __net_parse = (i: int):
             __net_gone(i)
             return
         if op == 9:
-            __ws_frame(__net_peers[i].outbuf, 10, payload, __net_peers[i].client)      # pong
+            f: u8[]
+            __ws_frame(f, 10, payload, __net_peers[i].client)      # pong
+            __net_out(i, f)
             __net_flush(i)
             continue
         if op == 10: continue
@@ -731,22 +786,32 @@ udp_close = (sock: int):
 # ---------------- TCP: a stream of bytes to one other program ----------------
 # For a tool or a server of your own speaking someone else's protocol (HTTP, a game server's);
 # between your own programs, the messages above are simpler. Native programs only.
-#   c = net.tcp_connect("example.com", 80)                 # -1 if it cannot be reached
+#   c = net.tcp_connect("example.com", 80)                 # -1 if it cannot be reached (tcp_why says why)
 #   net.tcp_send(c, "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
 #   reply: u8[]
 #   loop not net.tcp_closed(c): reply.extend(net.tcp_receive(c, wait = 5.0))
 #   net.tcp_close(c)
+# net.tls_connect("example.com", 443) is the same over TLS (encrypted, the server's certificate
+# checked), as https and other secure protocols want; the tcp_ functions then work as above.
 # A server: s = net.tcp_listen(8080), then each c = net.tcp_accept(s) (-1: none waiting).
 
 __tcp_eof: {int: bool}
+__tcp_tls: {int: int}               # (a tls_connect's connections: each one's TLS)
+__tcp_why = ""
 
 # a connection to host's port, waiting up to `timeout` seconds for it; -1 if it cannot be made
+# (tcp_why says why)
 @no_web("gives -1 in a web page: browsers have no TCP sockets (net.connect, over WebSockets, works there)")
 tcp_connect = (host: str, port: int, timeout: f64 = 5.0) -> int:
+    __tcp_why = ""
     ip = __n_resolve(host)
-    if ip < 0: return -1
+    if ip < 0:
+        __tcp_why = "no machine named '{host}' was found"
+        return -1
     fd = __n_connect(ip, port)
-    if fd < 0: return -1
+    if fd < 0:
+        __tcp_why = "the connection could not be started"
+        return -1
     end = time() + timeout
     loop true:
         st = __n_connected(fd)
@@ -754,10 +819,59 @@ tcp_connect = (host: str, port: int, timeout: f64 = 5.0) -> int:
             __tcp_eof[fd] = false
             return fd
         if st < 0 or time() > end:
+            __tcp_why = if st < 0: __n_why(-st, port) else: "no answer in {timeout} seconds"
             __n_close(fd)
             return -1
         sleep(0.001)
     -1
+
+# a connection to host's port over TLS (443: https's), waiting up to `timeout` seconds for it;
+# -1 if it cannot be made, or the server's certificate is not one this computer trusts for host
+# (tcp_why says why). What it sends and receives goes through tcp_send, tcp_receive, tcp_close
+@no_web("gives -1 in a web page: browsers have no TCP sockets (net.connect, over WebSockets, works there)")
+tls_connect = (host: str, port: int = 443, timeout: f64 = 10.0) -> int: __tls_connect(host, port, timeout, "")
+
+__tls_connect = (host: str, port: int, timeout: f64, alpn: str) -> int:
+    end = time() + timeout
+    fd = tcp_connect(host, port, timeout)
+    if fd < 0: return -1
+    t = tls.__tls_open(host, alpn)
+    buf = fill(u8(0), 65536)
+    loop true:
+        if not __tcp_raw_send(fd, tls.__tls_output(t)):
+            __tcp_why = "the connection failed in TLS's handshake"
+            break
+        st = tls.__tls_status(t)
+        if st == 1:
+            __tcp_tls[fd] = t
+            return fd
+        if st >= 2:
+            __tcp_why = "the secure connection failed: {tls.__tls_why(t)}"
+            break
+        n = __n_recv(fd, data(buf), buf.len())
+        if n > 0:
+            tls.__tls_feed(t, buf[..n))
+            continue
+        if n == 0 or n == -2:
+            __tcp_why = "the server closed the connection in TLS's handshake (is it a TLS server, on that port?)"
+            break
+        if time() > end:
+            __tcp_why = "no answer to TLS's handshake in {timeout} seconds"
+            break
+        sleep(0.001)
+    tls.__tls_free(t)
+    __n_close(fd)
+    __tcp_eof.remove(fd)
+    -1
+
+# why the last tcp_connect or tls_connect gave -1
+tcp_why = () -> str: __tcp_why
+
+# a certificate authority to trust from now on, besides those the system trusts: its certificate
+# as PEM text (what a .pem or .crt file holds, -----BEGIN CERTIFICATE----- ...), for servers whose
+# certificates it signed (a test server's, a private network's); how many certificates were taken.
+# The SLOPPY_CA_FILE environment variable names such a file for any program
+trust_certificate = (pem: str) -> int: tls.__tls_trust(pem)
 
 # a server on port: connections come from tcp_accept; -1 if the port cannot be had
 @no_web("gives -1 in a web page: a page cannot listen (the server is a native program)")
@@ -779,6 +893,13 @@ tcp_accept = (server: int, wait: f64 = 0.0) -> int:
 # all of data sent (waiting while the other side is slow to take it); false if the connection
 # has failed or closed
 tcp_send = (c: int, data: u8[]) -> bool:
+    if let t = __tcp_tls.get(c):
+        tls.__tls_write(t, data)
+        return tls.__tls_status(t) == 1 and __tcp_raw_send(c, tls.__tls_output(t))
+    __tcp_raw_send(c, data)
+tcp_send = (c: int, text: str) -> bool: tcp_send(c, bytes(text))
+
+__tcp_raw_send = (c: int, data: u8[]) -> bool:
     at = 0
     loop at < data.len():
         n = __n_send(c, data(data) + at, data.len() - at)
@@ -788,21 +909,27 @@ tcp_send = (c: int, data: u8[]) -> bool:
             continue
         at += n
     true
-tcp_send = (c: int, text: str) -> bool: tcp_send(c, bytes(text))
 
 # the bytes that have arrived (waiting up to `wait` seconds for the first); empty when none has
 # (or the connection has ended: tcp_closed says)
 tcp_receive = (c: int, wait: f64 = 0.0) -> u8[]:
     out: u8[]
     if c < 0 or (__tcp_eof.get(c) ?? true): return out
+    t = __tcp_tls.get(c) ?? -1
     buf = fill(u8(0), 65536)
     end = time() + wait
     loop true:
+        if t >= 0: out.extend(tls.__tls_read(t))
         n = __n_recv(c, data(buf), buf.len())
         if n > 0:
-            out.extend(buf[..n))
+            if t < 0: out.extend(buf[..n))
+            else:
+                tls.__tls_feed(t, buf[..n))
+                __tcp_raw_send(c, tls.__tls_output(t))
             continue
-        if n == 0 or n == -2:
+        # (over TLS: also ended when the server said so, or something was wrong)
+        if n == 0 or n == -2 or (t >= 0 and tls.__tls_status(t) >= 2):
+            if t >= 0: out.extend(tls.__tls_read(t))
             __tcp_eof[c] = true
             return out
         # (nothing now: done if something came, else wait a little)
@@ -815,8 +942,165 @@ tcp_closed = (c: int) -> bool: __tcp_eof.get(c) ?? true
 
 tcp_close = (c: int):
     if c < 0: return
+    if let t = __tcp_tls.get(c):
+        tls.__tls_close(t)
+        __tcp_raw_send(c, tls.__tls_output(t))
+        tls.__tls_free(t)
+        __tcp_tls.remove(c)
     __n_close(c)
     __tcp_eof.remove(c)
+
+# ---------------- HTTP: what is at a web address ----------------
+#   r = net.fetch("https://example.com/data.json")
+#   if r.status == 200: print(r.text)
+#   else: print("no: {r.status} {r.why}")
+
+struct HttpReply:
+    status: int             # the server's answer: 200 when all went well (404: no such page...);
+                            # 0 when there was none (why says why)
+    data: u8[]              # what it sent ...
+    text = ""               # ... as text
+    headers: {str: str}     # its headers, their names in small letters
+    why = ""
+
+# a GET of an http:// or https:// address (following where it redirects, five times at most),
+# waiting up to `wait` seconds in all; https is checked as a browser checks it (tls_connect)
+@no_web("gives status 0 in a web page: native programs only, for now")
+fetch = (url: str, wait: f64 = 30.0) -> HttpReply:
+    end = time() + wait
+    at = url
+    loop _ in [0..6):
+        r = __http_get(at, end)
+        if r.status in [301, 302, 303, 307, 308]:
+            if let loc = r.headers.get("location"):
+                at = __http_join(at, trim(loc))
+                continue
+        return r
+    HttpReply(0, [], why = "it redirected too many times")
+
+# an http(s):// address's parts: secure, host, port, path (none when it is not one)
+__http_parts = (url: str) -> (bool, str, int, str)?:
+    secure = starts_with(url, "https://")
+    if not secure and not starts_with(url, "http://"): return none
+    rest = url[(if secure: 8 else: 7)..]
+    path = "/"
+    k = find(rest, "/")
+    q = find(rest, "?")
+    if q >= 0 and (k < 0 or q < k): k = q
+    if k >= 0:
+        path = rest[k..]
+        rest = rest[..k)
+        if starts_with(path, "?"): path = "/" + path
+    h = find(path, "#")
+    if h >= 0: path = path[..h)
+    port = if secure: 443 else: 80
+    c = find(rest, ":")
+    if c >= 0:
+        port = to_int(rest[c + 1..]) ?? -1
+        rest = rest[..c)
+    if len(rest) == 0 or port <= 0 or port > 65535: return none
+    (secure, rest, port, path)
+
+# where a redirect goes: an address, or a path on the same server
+__http_join = (base: str, loc: str) -> str:
+    if starts_with(loc, "http://") or starts_with(loc, "https://"): return loc
+    if let p = __http_parts(base):
+        scheme = if p.0: "https" else: "http"
+        if starts_with(loc, "//"): return "{scheme}:{loc}"
+        root = "{scheme}://{p.1}"
+        if p.2 != (if p.0: 443 else: 80): root = "{root}:{p.2}"
+        if starts_with(loc, "/"): return root + loc
+        dir = p.3
+        k = find(dir, "?")
+        if k >= 0: dir = dir[..k)
+        s = len(dir) - 1
+        loop s >= 0 and dir[s] != '/': s -= 1
+        return root + dir[..s + 1) + loc
+    loc
+
+__http_get = (url: str, end: f64) -> HttpReply:
+    pp = __http_parts(url)
+    if pp == none: return HttpReply(0, [], why = "not an http:// or https:// address: {url}")
+    p = pp!
+    left = max(end - time(), 0.1)
+    c = if p.0: __tls_connect(p.1, p.2, left, "http/1.1") else: tcp_connect(p.1, p.2, left)
+    if c < 0: return HttpReply(0, [], why = __tcp_why)
+    host = p.1
+    if p.2 != (if p.0: 443 else: 80): host = "{host}:{p.2}"
+    tcp_send(c, "GET {p.3} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Sloppy\r\nAccept: */*\r\nConnection: close\r\n\r\n")
+    got: u8[]
+    r = HttpReply(0, [])
+    head_end = -1
+    loop time() < end:
+        got.extend(tcp_receive(c, wait = min(0.25, max(end - time(), 0.0))))
+        if head_end < 0:
+            head_end = __find_crlf2(got)
+            if head_end >= 0: r = __http_head(str_from_bytes(got[..head_end)))
+        if head_end >= 0 and __http_done(r, got[head_end + 4..], false): break
+        if tcp_closed(c): break
+    closed = tcp_closed(c)
+    tcp_close(c)
+    if head_end < 0:
+        if got.len() == 0 and closed: return HttpReply(0, [], why = "the server closed the connection with no answer")
+        return HttpReply(0, [], why = if closed: "the server's answer is not HTTP" else: "no answer in time")
+    if r.status == 0: return r
+    body = got[head_end + 4..]
+    if not __http_done(r, body, closed):
+        r.status = 0
+        r.why = if closed: "the server's answer was cut short" else: "the whole answer did not come in time"
+        return r
+    if (r.headers.get("transfer-encoding") ?? "").lower() == "chunked": body = __http_unchunk(body)!
+    else if let n = to_int(r.headers.get("content-length") ?? ""): body = body[..min(n, body.len()))
+    r.data = body
+    r.text = str_from_bytes(body)
+    r
+
+# the status line and headers
+__http_head = (head: str) -> HttpReply:
+    lines = split(head, "\r\n")
+    r = HttpReply(0, [])
+    w = split(lines[0], " ")
+    if w.len() >= 2 and starts_with(w[0], "HTTP/"): r.status = to_int(w[1]) ?? 0
+    if r.status <= 0:
+        r.status = 0
+        r.why = "the server's answer is not HTTP"
+        return r
+    loop line in lines[1..):
+        k = find(line, ":")
+        if k > 0: r.headers[trim(line[..k)).lower()] = trim(line[k + 1..])
+    r
+
+# whether all of the body has come: as long as it says, to its last chunk, or (neither said) to
+# the connection's end
+__http_done = (r: HttpReply, body: u8[], closed: bool) -> bool:
+    if r.status == 204 or r.status == 304 or (r.status >= 100 and r.status < 200): return true
+    if (r.headers.get("transfer-encoding") ?? "").lower() == "chunked": return __http_unchunk(body) != none
+    if let n = to_int(r.headers.get("content-length") ?? ""): return body.len() >= n
+    closed
+
+# a chunked body put together (none until its last chunk has come, or when it is malformed)
+__http_unchunk = (b: u8[]) -> u8[]?:
+    out: u8[]
+    at = 0
+    loop true:
+        e = at
+        loop e + 1 < b.len() and not (b[e] == '\r' and b[e + 1] == '\n'): e += 1
+        if e + 1 >= b.len(): return none
+        size = trim(str_from_bytes(b[at..e)))
+        k = find(size, ";")
+        if k >= 0: size = trim(size[..k))
+        if len(size) == 0 or len(size) > 12: return none
+        n = 0
+        loop ch in size:
+            d = crypto.__cr_hexval(ch)
+            if d < 0: return none
+            n = n * 16 + d
+        at = e + 2
+        if n == 0: return out
+        if at + n + 2 > b.len(): return none
+        out.extend(b[at..at + n))
+        at += n + 2
+    out
 
 # ---------------- sockets: each system's ----------------
 # __n_listen(port) -> fd (-1: failed); __n_connect(ip, port) -> fd, connecting (-1: failed);

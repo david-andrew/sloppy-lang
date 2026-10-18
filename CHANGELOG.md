@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- TLS 1.3 in native programs (lib/tls.jo, the library's own: no OpenSSL): `net.connect("wss://...")`
+  works from native builds as from web pages, `net.fetch(url)` gets what is at an http:// or
+  https:// address (redirects followed; `HttpReply` with status, data, text, headers, why), and
+  `net.tls_connect(host, port)` gives a stream for the `tcp_` functions (`net.tcp_why()` says why
+  a connection failed). The server's certificate is checked as browsers check it: its chain to an
+  authority the system trusts (Linux's and macOS's bundle of them, Windows' root store, which is
+  asked for one it lacks), dates, signatures (ECDSA P-256 and P-384, RSA PKCS#1 and PSS; not
+  SHA-1), constraints, and the name, with RFC 6125's wildcards. `net.trust_certificate(pem)` or
+  `SLOPPY_CA_FILE` adds an authority (a test server's); there is no switch to skip the check.
+  Keys are agreed with X25519 (P-256 when a server asks for it); AES-128-GCM. A handshake takes
+  about 40 ms of a debug build's time. `SLOPPY_TLS_DEBUG=1` shows each handshake's steps.
+- Invite's matchmaking: native builds reach the server at its wss:// address too (they connected
+  to ws://...:7700 unencrypted); `invite.server(url)` takes only that address, and the server's
+  port 7700 need not be open (docs/MATCHMAKING.md).
+- crypto: SHA-384 and SHA-512, HKDF, X25519 keys, P-384 and RSA (PKCS#1 v1.5, PSS) signatures
+  checked (against Wycheproof's vectors as well as the standards').
+
 - Rooms, through a matchmaking server of your own: friends join with a short code ("KX7P4") or a
   link with it, and send nothing back. `tools/rendezvous.jo` is the server (it passes only the
   invite and reply codes: the games still connect straight to each other), and
