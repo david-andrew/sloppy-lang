@@ -16,8 +16,8 @@
 - Aces: six more insignias, famous ones: the 94th Aero Squadron's hat in the ring
   (Rickenbacker's), a shark's mouth on the nose, Nungesser's black heart, Voss's face on the
   cowling, the Cigognes' stork (Guynemer's), the ace of spades; the crash is quieter.
-- Lowline: steering right turns and banks right (it went left: the valley runs along +z, where
-  +x is on the left as seen from behind).
+- Lowline is gone (from the examples, the site's gallery and the playground); Aces takes its
+  place among the render tests.
 - A struct field whose default makes another of the same struct (`rooms = [Room()]`) is an
   error that says so; the compiler went round without end and crashed (found by the fuzzer).
 - `net.listen(port, largest)`: the biggest message a server takes from its peers; a connection

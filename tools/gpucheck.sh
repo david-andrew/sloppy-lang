@@ -62,7 +62,7 @@ fi
     python3 tools/gpufuzz.py 300 --seed 1 $lvp
 
     section "frame times (600 frames each, through Vulkan, no display)"
-    for g in examples/breakwater/breakwater.jo examples/dunes/dunes.jo examples/rebound/rebound.jo examples/lowline/lowline.jo; do
+    for g in examples/breakwater/breakwater.jo examples/dunes/dunes.jo examples/rebound/rebound.jo; do
         echo "-- $g"
         (cd "$(dirname "$g")" && env -u DISPLAY -u WAYLAND_DISPLAY SLOPPY_STATS=log SLOPPY_FRAMES=600 \
             SLOPPY_SCREENSHOT="$PWD/../../$out/$(basename "$g" .jo).png" timeout 300 \
