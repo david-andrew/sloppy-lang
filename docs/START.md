@@ -320,6 +320,106 @@ print("{repo.full_name}: {repo.stargazers_count} stars, {repo.description ?? "-"
   `url_encode(s)` and `url_decode(s)` one part of an address, and `html_unescape(s)` turns
   `&amp;` and `&#233;` back into `&` and `é`.
 - Fetches happen one at a time (`parallel_map` cannot run them); a loop over the addresses does.
+- `net.fetch` waits for the answer. `f = net.fetch_start(url)` (the same options) starts one and
+  goes on; `net.fetch_result(f)` gives the `HttpReply` once it has come (none before): a game asks
+  each frame, a server each time round its loop. Several can be on their way at once, and in a web
+  page this is the browser's own fetch (the server must allow the page's site: CORS).
+- A header sent more than once (`Set-Cookie`): `net.header_values(r, "set-cookie")` has each.
+
+### Writing a server
+
+`import http` serves web pages, an API, or a game's page with its WebSockets, from a native
+program. Each route is a method and a path, with `:names` for the parts that vary, answered by a
+function from a `Request` to a `Response`:
+
+```gdscript
+import http
+
+struct Todo:
+    id = 0
+    title = ""
+    done = false
+
+struct TodoIn:
+    title = ""
+
+todos: Todo[]
+
+http.get("/todos", (r: http.Request) -> http.Response: http.json(todos))
+http.get("/todos/:id", (r: http.Request) -> http.Response:
+    id = to_int(r.params["id"]) ?? -1
+    loop t in todos:
+        if t.id == id: return http.json(t)
+    http.json_error(404, "no todo {id}"))
+http.post("/todos", (r: http.Request) -> http.Response:
+    t = TodoIn()
+    if let bad = http.read_json(r, t): return bad     # 400, saying what is wrong with the JSON
+    todos.push(Todo(todos.len() + 1, trim(t.title)))
+    http.json(todos.last(), 201))
+http.files("/", "public")                             # the rest: the files under public/
+
+http.log_requests = true                              # a line for each, on standard error
+if not http.serve(8080): eprint("port 8080 is taken")
+on_quit = (): write_file("todos.json", to_json(todos))
+```
+
+- A `Request` has `method`, `path`, `params` (the route's `:names`), `query` (`?done=true`),
+  `headers` (names in small letters), `cookies`, `body` and `text`, and `address`. Answers are
+  `http.text(s)`, `http.html(s)`, `http.json(value)`, `http.binary(bytes, type)`,
+  `http.status(404)`, `http.redirect("/login")` and `http.file(r, path)`, with `status`, `headers`
+  and `http.set_cookie(res, name, value)` to change. A route of `"/files/*path"` takes the rest of
+  the path; a path no route has is answered 404, and one routes have for other methods 405.
+- `http.serve` answers until ctrl-c, or the SIGTERM that systemd and docker send, and then returns,
+  so the program can save; `on_quit` runs as any program ends, so it is the place for that too.
+  Other programs that run until stopped do the same with `loop not stopping(): ...`.
+- A client that is slow to send or to read holds up no other, a big file goes a piece at a time
+  (a 300 MB one is never in memory), and a handler that panics is answered 500 while the server
+  goes on (the panic is on standard error). Bodies over 1 MB are refused (`largest = ...` takes
+  more).
+- A program that does more than answer (a game hosting, a job that fetches, WebSockets) answers in
+  its own loop: `http.listen(8080)`, then `loop not stopping():` with `http.answer()`, its other
+  work (`net.receive()`, `net.fetch_result(f)`), and `net.wait(1.0)`, which sleeps until something
+  comes, a request or a message, rather than a fixed time.
+- WebSockets on the same port: a route answers `http.websocket(r)` (after checking
+  `r.headers.get("origin")` or a cookie), and the connection is a peer of `net`'s from then on
+  (`net.receive()`, `net.send`, `net.handshake(peer)` for its path and cookies). Server-sent
+  events: a route answers `http.events()` and keeps `r.conn`; `http.send_event(conn, text)`
+  sends to it later.
+
+**On a server of its own.** Listen on `host = "127.0.0.1"` and put Caddy in front: it gets the
+certificate (https) and passes requests on. [Running a matchmaking server](MATCHMAKING.md) sets this
+up on a small droplet, with a systemd service that starts the program and restarts it; for a site
+of your own the Caddyfile is
+
+```
+example.org {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+(WebSockets pass through it too.) Behind Caddy, `r.address` is Caddy's; the client's is in
+`r.headers.get("x-forwarded-for")`.
+
+**Keeping data.** A small server keeps its data in a JSON file: `to_json`, written to a new file
+that then takes the old one's place (`write_file(tmp, text)`, `rename_file(tmp, path)`), so a crash
+never leaves half a file; `from_json[T]` reads it back at the start. For more, SQLite (or any C
+library) is a few `extern`s away (section 13 of [the language](LANGUAGE.md#13-calling-c)). Each
+`extern` names its library with `@lib`; a constant keeps that short:
+
+```gdscript
+const SQLITE = "libsqlite3.so.0"
+@lib(SQLITE)
+extern sqlite3_open = (path: str, db: **u8) -> i32
+@lib(SQLITE)
+extern sqlite3_exec = (db: *u8, sql: str, cb: *u8, arg: *u8, err: **u8) -> i32
+
+db: *u8 = null
+if sqlite3_open("todos.db", &db) != 0: exit(1)
+sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS todos(id INTEGER PRIMARY KEY, title TEXT)", null, null, null)
+```
+
+(`sqlite3_prepare_v2`, `sqlite3_bind_text` and `sqlite3_step` the same way, for values from
+clients: never put them in the SQL text.)
 
 ## Coming from Scratch
 

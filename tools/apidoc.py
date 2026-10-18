@@ -25,7 +25,7 @@ TOPICS = [
      "`{K: V}` maps keys to values, in the order they were added."),
     ("Basics", "math", "Math and random numbers", ["core/math"], "math",
      "For vectors and matrices, see [colors, vectors and matrices](#colors-vectors-and-matrices)."),
-    ("Basics", "system", "Files, time and the system", ["core/os", "std/path", "std/date", "std/cli"], "system",
+    ("Basics", "system", "Files, time and the system", ["core/os", "std/path", "std/date", "std/cli", "std/stop"], "system",
      "In a web page, files are the ones the page was given, and `env` reads its address's parameters. "
      "What is at a web address: `net.fetch(url)`, after `import net` ([fetching from the web](START.md#fetching-from-the-web))."),
     ("Data", "json", "JSON, CSV, URLs, base64 and SHA-256", ["std/json", "std/csv", "std/url", "std/base64", "std/hash"], "json",
@@ -90,6 +90,10 @@ TOPICS = [
      "A module (`import net`): messages between programs over WebSockets, so a native build and a web page "
      "can play together (a server is a native program; a web page connects to one: [examples/netpong](https://github.com/david-andrew/sloppy-lang/tree/master/examples/netpong)), "
      "UDP datagrams between native programs, TCP and TLS streams, and `fetch` for what is at an http:// or https:// address."),
+    ("Games", "http", "HTTP servers", ["http"], "http",
+     "A module (`import http`): a web site, an API or a game's page served from a native program: routes with `:names`, "
+     "JSON, cookies, files, server-sent events, and WebSockets on the same port (as net's peers). It waits with `net.wait`, so a "
+     "slow client holds up no other; behind Caddy it serves https ([writing a server](START.md#writing-a-server))."),
     ("Games", "invite", "Invite a friend", ["invite"], "invite",
      "A module (`import invite`): the screens that connect two players with invite codes and no server: a link to send "
      "in a chat (it opens the game in a browser), a code sent back, copying, sharing and pasting (on phones too), and why "

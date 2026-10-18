@@ -1,0 +1,76 @@
+# requires: sloppy
+# requires: native
+# An HTTP server (lib/http.jo) and its client (net.fetch_start) in one program, over loopback: each
+# fetch is answered by http.answer() in the same loop. Routes, params, JSON in and out, 404, 405,
+# HEAD, cookies, a handler that panics (answered 500), redirects, chunked streams; and the helpers
+import http
+import net
+
+struct Point:
+    x = 0
+    y = 0
+
+http.get("/hello/:name", (r: http.Request) -> http.Response: http.text("hello {r.params["name"]}{r.query.get("end") ?? ""}"))
+http.post("/sum", (r: http.Request) -> http.Response:
+    p = Point()
+    if let bad = http.read_json(r, p): return bad
+    http.json({"sum": p.x + p.y}))
+http.get("/files/*rest", (r: http.Request) -> http.Response: http.text("rest: {r.params["rest"]}"))
+http.get("/cookie", (r: http.Request) -> http.Response:
+    res = http.text("{r.cookies.get("a") ?? "-"}")
+    http.set_cookie(res, "seen", "yes", max_age = 60)
+    res)
+http.get("/panic", (r: http.Request) -> http.Response:
+    xs: int[]
+    http.text("{xs[0]}"))
+http.get("/old", (r: http.Request) -> http.Response: http.redirect("/hello/again", 301))
+http.get("/stream", (r: http.Request) -> http.Response:
+    streams.push(r.conn)
+    http.stream())
+streams: int[]
+
+port = 19421
+if not http.listen(port, host = "127.0.0.1"): panic("cannot listen on {port}")
+at = "http://127.0.0.1:{port}"
+
+# (a fetch, answered by this same program's server meanwhile)
+ask = (path: str, method: str = "GET", body: str = "", headers: {str: str} = {}) -> net.HttpReply:
+    f = net.fetch_start(at + path, method = method, body = body, headers = headers, wait = 5.0)
+    loop true:
+        http.answer()
+        loop c in streams:
+            http.send_chunk(c, "one ")
+            http.send_chunk(c, "two")
+            http.end_stream(c)
+        streams = []
+        if let r = net.fetch_result(f): return r
+        net.wait(0.1)
+    net.HttpReply(0, [])
+
+r = ask("/hello/ann?end=!")
+print(r.status, r.text, r.headers["content-type"])
+r = ask("/hello/ann/more")
+print(r.status, r.text)
+r = ask("/sum", "POST", to_json(Point(2, 40)))
+print(r.status, r.text)
+r = ask("/sum", "POST", "[1, 2]")
+print(r.status, r.text)
+r = ask("/sum")
+print(r.status, r.headers["allow"])
+r = ask("/hello/bo", "HEAD")
+print(r.status, r.headers["content-length"], r.data.len())
+r = ask("/files/a/b%20c.txt")
+print(r.text)
+r = ask("/cookie", headers = {"Cookie": "a=1; b=2"})
+print(r.text, net.header_values(r, "set-cookie"))
+r = ask("/panic")
+print(r.status, r.text)
+r = ask("/old")
+print(r.status, r.text)
+r = ask("/stream")
+print(r.status, r.text, r.headers["transfer-encoding"])
+
+print(http.http_date(784111777.0), http.from_http_date("Sun, 06 Nov 1994 08:49:37 GMT"), http.from_http_date("yesterday"))
+print(http.reason(404), http.reason(418), http.reason(599), http.mime_type("a/b/site.CSS"), http.mime_type("x.unknown"))
+print(parse_query("q=caf%C3%A9+au+lait&n=5&flag"), parse_cookies("sid=abc; theme=\"dark\"; bad"))
+print(http.status(204).body.len(), http.status(404).status, http.json([1, 2]).headers["Content-Type"])

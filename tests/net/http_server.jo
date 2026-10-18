@@ -1,0 +1,102 @@
+# tools/nettest.py's HTTP server (lib/http.jo) on NET_PORT: routes, JSON, cookies, a handler that
+# panics, files under NET_DIR, a stream of events, WebSockets on the same port, and a fetch from
+# NET_UPSTREAM made while it serves; it stops when asked (SIGTERM, or /quit where there is none),
+# on_quit then running
+import http
+import net
+
+struct Item:
+    id = 0
+    name = ""
+
+struct ItemIn:
+    name = ""
+
+items: Item[] = [Item(1, "first")]
+listeners: int[]
+fetching = -1
+fetched = ""
+quitting = false
+
+http.get("/hello", (r: http.Request) -> http.Response: http.text("hello {r.query.get("name") ?? "you"}"))
+http.get("/items/:id", (r: http.Request) -> http.Response:
+    id = to_int(r.params["id"]) ?? -1
+    loop it in items:
+        if it.id == id: return http.json(it)
+    http.json_error(404, "no item {id}"))
+http.post("/items", (r: http.Request) -> http.Response:
+    i = ItemIn()
+    if let bad = http.read_json(r, i): return bad
+    it = Item(items.len() + 1, i.name)
+    items.push(it)
+    res = http.json(it, 201)
+    res.headers["Location"] = "/items/{it.id}"
+    res)
+http.get("/rest/*path", (r: http.Request) -> http.Response: http.text("rest={r.params["path"]}"))
+http.post("/echo", (r: http.Request) -> http.Response: http.text("{r.method} {r.body.len()} {r.text}"))
+http.get("/login", (r: http.Request) -> http.Response:
+    res = http.redirect("/whoami", 303)
+    http.set_cookie(res, "sid", "abc123", max_age = 3600)
+    http.set_cookie(res, "theme", "dark", http_only = false)
+    res)
+http.get("/whoami", (r: http.Request) -> http.Response: http.text("sid={r.cookies.get("sid") ?? "-"} theme={r.cookies.get("theme") ?? "-"}"))
+http.get("/panic", (r: http.Request) -> http.Response:
+    xs = [1, 2, 3]
+    http.text("{xs[r.query.len() + 7]}"))
+http.get("/events", (r: http.Request) -> http.Response:
+    listeners.push(r.conn)
+    http.events())
+http.get("/ws", (r: http.Request) -> http.Response: http.websocket(r, largest = 1000))
+http.get("/fetch", (r: http.Request) -> http.Response:
+    fetching = net.fetch_start(env("NET_UPSTREAM") ?? "")
+    http.text("started"))
+http.get("/fetched", (r: http.Request) -> http.Response: http.text(fetched))
+http.get("/cors", (r: http.Request) -> http.Response:
+    res = http.text("from the server")
+    res.headers["Access-Control-Allow-Origin"] = "*"
+    res)
+http.post("/report", (r: http.Request) -> http.Response:
+    print("server: {r.text}")
+    flush_output()
+    res = http.text("ok")
+    res.headers["Access-Control-Allow-Origin"] = "*"
+    res)
+http.get("/quit", (r: http.Request) -> http.Response:
+    quitting = true
+    http.text("bye"))
+http.files("/static", join_path(env("NET_DIR") ?? ".", "site"))
+
+on_quit = (): print("server: on_quit")
+
+port = to_int(env("NET_PORT") ?? "19410") ?? 19410
+if not http.listen(port, host = "127.0.0.1"):
+    print("cannot listen on {port}")
+    exit(1)
+print("listening")
+flush_output()
+loop not stopping() and not quitting:
+    http.answer()
+    loop e in net.receive():
+        if e.kind == .joined:
+            h = net.handshake(e.peer)
+            print("server: ws joined {h.path} room={h.query.get("room") ?? "-"} sid={h.cookies.get("sid") ?? "-"} origin={h.origin}")
+            net.send(e.peer, "welcome")
+        else if e.kind == .message:
+            if e.text == "flood":
+                # (a reader that has stopped: let go once 8 MB wait for it)
+                loop _ in [0..400):
+                    net.send(e.peer, fill(u8(1), 64 << 10))
+                    if net.peers().len() == 0: break
+            else: net.send(e.peer, "echo {e.text}")
+        else: print("server: ws left: {if len(net.why(e.peer)) > 0: net.why(e.peer) else: "closed"}")
+    if fetching >= 0:
+        if let f = net.fetch_result(fetching):
+            fetched = "{f.status} {f.text}"
+            fetching = -1
+    loop c in listeners:
+        http.send_event(c, "tick", event = "time")
+        http.send_event(c, "tock")
+        http.end_stream(c)
+    listeners = []
+    net.wait(1.0)
+print("server: stopped")

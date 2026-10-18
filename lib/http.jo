@@ -1,0 +1,827 @@
+# HTTP servers: a web site, an API, a game's page with its WebSockets on the same port. `import
+# http`, then routes (a method and a path, with :names for parts that vary), each answered by a
+# function from a Request to a Response:
+#
+#   http.get("/", (r: http.Request) -> http.Response: http.html("<h1>Hello</h1>"))
+#   http.get("/todos/:id", (r: http.Request) -> http.Response:
+#       if let t = todos.get(to_int(r.params["id"]) ?? -1): return http.json(t)
+#       http.status(404))
+#   http.post("/todos", add_todo)
+#   http.files("/", "public")                   # the files under public/ (index.html for /)
+#   http.serve(8080)                            # answers until ctrl-c (or SIGTERM)
+#
+# A program that does more than answer (a chat whose WebSockets come through net, a job that
+# fetches meanwhile) answers what has come each time round its own loop:
+#   http.listen(8080)
+#   loop not stopping():
+#       http.answer()
+#       loop e in net.receive(): ...
+#       net.wait(1.0)                           # until something comes (a request, a message)
+#
+# Requests are answered one at a time, in the order they come; a client slow to send or to read
+# holds up no other (what waits to go out to it goes as it takes it). A handler that panics is
+# answered 500 and the server goes on (the panic and its backtrace are written to standard error;
+# what the handler had changed stays changed). Behind a proxy that has the certificate (Caddy:
+# docs/START.md's "Writing a server"), the same program serves https. Native programs only.
+
+import net
+
+struct Request:
+    method = ""             # "GET", "POST", ...
+    path = ""               # "/todos/3": decoded (%20 a space), without the query
+    query: {str: str}       # ?done=true&q=a%20b: {"done": "true", "q": "a b"}
+    params: {str: str}      # the route's :names: /todos/:id gives {"id": "3"}
+    headers: {str: str}     # names in small letters
+    cookies: {str: str}
+    body: u8[]              # what was sent with it ...
+    text = ""               # ... as text (read_json reads it into a struct)
+    target = ""             # the path and query as sent: "/todos?done=true"
+    version = "HTTP/1.1"
+    address = ""            # where it came from: "1.2.3.4" (behind a proxy, the proxy's; Caddy puts
+                            # the client's in X-Forwarded-For)
+    conn = 0                # its connection (a stream's: send_event and send_chunk go to it)
+
+struct Response:
+    status = 200
+    headers: {str: str}     # (Content-Length, Date and Connection are added)
+    body: u8[]
+    cookies: str[]          # each a Set-Cookie header (set_cookie makes them)
+    file = ""               # a file sent as the body, a piece at a time (file() sets it)
+    stream = false          # the body is sent later, by send_chunk or send_event (stream(), events())
+    upgrade = false         # (websocket(): the connection becomes a net peer ...)
+    __largest = 0           # (... taking messages up to this big)
+
+# ---------------- routes ----------------
+# A pattern is a path whose parts may be :names (any one part: /todos/:id) and whose last part may
+# be *name (the rest of the path, slashes too: /files/*path). Routes are tried in the order they
+# were made; one for GET answers HEAD too. A path that no route has is answered 404, one that a
+# route has for other methods 405.
+
+# a route for requests of that method ("*": any) to paths of the pattern
+route = (method: str, pattern: str, handler: (Request) -> Response):
+    rt = __Route(method = method.upper(), handler = handler)
+    loop part in split(pattern, "/"):
+        p = part
+        # ({id} too, as Go writes it: in a string, "/todos/{{id}}")
+        if starts_with(p, "{") and ends_with(p, "}") and len(p) > 2: p = ":" + p[1..len(p) - 1)
+        if starts_with(p, "*"):
+            rt.rest = if len(p) > 1: p[1..] else: "*"
+            break
+        rt.parts.push(p)
+    # (a slash at the end is the same path without it, as /todos/ and /todos)
+    if rt.parts.len() > 2 and rt.parts[rt.parts.len() - 1] == "" and len(rt.rest) == 0: rt.parts.pop()
+    __routes.push(rt)
+
+get = (pattern: str, handler: (Request) -> Response): route("GET", pattern, handler)
+post = (pattern: str, handler: (Request) -> Response): route("POST", pattern, handler)
+put = (pattern: str, handler: (Request) -> Response): route("PUT", pattern, handler)
+patch = (pattern: str, handler: (Request) -> Response): route("PATCH", pattern, handler)
+delete = (pattern: str, handler: (Request) -> Response): route("DELETE", pattern, handler)
+
+# the files under dir, at the paths under prefix ("/": the site's root): GET and HEAD, with each
+# file's type, index.html for a directory (a directory asked for without its / is sent there), and
+# what lets a browser keep a copy (ETag, Last-Modified: a file unchanged since is answered 304).
+# Names starting with a dot (.git, .env) and paths with .. are not served
+files = (prefix: str, dir: str):
+    root = abs_path(dir)
+    p = if ends_with(prefix, "/"): prefix else: prefix + "/"
+    route("GET", p + "*path", (r: Request) -> Response: __http_files(r, root))
+
+struct __Route:
+    method: str
+    parts: str[]
+    rest = ""               # (*name: the rest of the path, as that param)
+    handler: (Request) -> Response
+
+__routes: __Route[]
+
+# (the server's: its connections, the ports it listens on)
+const __HTTP_MOST_CONNS = 10000
+const __HTTP_IDLE = 30.0    # (seconds a connection may send and take nothing)
+const __HTTP_SLOWEST = 60.0 # (seconds a request may take to come)
+const __HTTP_MOST_HEAD = 65536
+const __HTTP_MOST_OUT = 1 << 20     # (more than this waiting to go out: no more requests read till it goes)
+
+__http_conns: {int: __Conn}
+__http_next = 1
+__http_listeners: int[]
+__http_largest = 1 << 20
+__http_hooked = false
+__http_full_until = 0.0
+__http_t = 0.0              # (answer()'s time: what connections are timed by)
+__http_day = -1.0
+__http_day_text = ""
+__http_day_next = 0.0
+
+# (the route for a request: its index, its params set; -1 none for that path, -2 none for its method)
+__http_route = (r: mut Request) -> int:
+    segs = __http_segs(r.path)
+    path_found = false
+    loop i in [0..__routes.len()):
+        if not __http_fits(__routes[i], segs): continue
+        m = __routes[i].method
+        if m != "*" and m != r.method and not (m == "GET" and r.method == "HEAD"):
+            path_found = true
+            continue
+        np = __routes[i].parts.len()
+        loop k in [0..np):
+            p = __routes[i].parts[k]
+            if len(p) > 0 and p[0] == ':': r.params[p[1..]] = segs[k]
+        if len(__routes[i].rest) > 0: r.params[__routes[i].rest] = join(segs[np..], "/")
+        return i
+    if path_found: -2 else: -1
+
+# (a path's parts: "/a/b/" as "", "a", "b")
+__http_segs = (path: str) -> str[]:
+    segs = split(path, "/")
+    if segs.len() > 2 and segs[segs.len() - 1] == "": segs.pop()
+    segs
+
+# (whether a route's pattern has the path, whatever the method)
+__http_fits = (rt: __Route, segs: str[]) -> bool:
+    np = rt.parts.len()
+    if segs.len() < np or (len(rt.rest) == 0 and segs.len() != np): return false
+    loop k in [0..np):
+        p = rt.parts[k]
+        if len(p) > 0 and p[0] == ':':
+            if len(segs[k]) == 0: return false
+        else if p != segs[k]: return false
+    true
+
+# (the methods there are routes for at a path: a 405's Allow)
+__http_allowed = (path: str) -> str:
+    segs = __http_segs(path)
+    out: str[]
+    loop rt in __routes:
+        if not __http_fits(rt, segs) or rt.method in out: continue
+        out.push(rt.method)
+        if rt.method == "GET" and not ("HEAD" in out): out.push("HEAD")
+    join(out, ", ")
+
+# ---------------- answers ----------------
+
+# text (as text/plain, unless type says otherwise)
+text = (s: str, status: int = 200, type: str = "text/plain; charset=utf-8") -> Response:
+    Response(status = status, headers = {"Content-Type": type}, body = bytes(s))
+
+# a web page's HTML
+html = (s: str, status: int = 200) -> Response: text(s, status, "text/html; charset=utf-8")
+
+# any value as JSON (to_json's): a struct, an array, a map...; JSON text already made goes with
+# text(s, type = "application/json")
+json = (value, status: int = 200) -> Response: text(to_json(value), status, "application/json")
+
+# bytes, of a type ("image/png"...)
+binary = (b: u8[], type: str = "application/octet-stream", status: int = 200) -> Response:
+    Response(status = status, headers = {"Content-Type": type}, body = b)
+
+# a status with its reason as the text ("404 Not Found"), or with the text given
+status = (code: int, message: str = "") -> Response:
+    if code == 204 or code == 304 or (code >= 100 and code < 200): return Response(status = code)
+    text(if len(message) > 0: message else: "{code} {reason(code)}", code)
+
+# an error for an API's client: {"error": message} as JSON
+json_error = (code: int, message: str) -> Response: json({"error": message}, code)
+
+# to another address (302: for now; 301: for good; 303: after a form's POST, a GET of it)
+redirect = (to: str, status: int = 302) -> Response:
+    Response(status = status, headers = {"Location": to, "Content-Type": "text/plain; charset=utf-8"}, body = bytes("{status} {reason(status)}: {to}\n"))
+
+# a file, sent a piece at a time (a big one is never all in memory), with its type and what lets a
+# browser keep a copy (as files() does); 404 when there is no such file
+file = (r: Request, path: str) -> Response:
+    if is_dir(path) or not file_exists(path): return status(404)
+    size = file_size(path) ?? 0
+    t = file_time(path) ?? 0.0
+    tag = "W/\"{int(t):x}-{size:x}\""
+    res = Response(headers = {"Content-Type": mime_type(path), "ETag": tag, "Last-Modified": http_date(t)})
+    if r.headers.get("if-none-match") == tag:
+        res.status = 304
+        return res
+    if let since = r.headers.get("if-modified-since") and r.headers.get("if-none-match") == none:
+        if let s = from_http_date(since) and f64(int(t)) <= s:
+            res.status = 304
+            return res
+    res.file = path
+    res.headers["Content-Length"] = "{size}"
+    res
+
+# the request's body, as JSON, into `into` (a struct, an array...: from_json's); none when it went
+# well, else the answer to give (400, saying what is wrong with it):
+#   t = TodoIn()
+#   if let bad = http.read_json(r, t): return bad
+read_json[T] = (r: Request, into: mut T) -> Response?:
+    v = from_json[T](r.text)
+    if v is TextError: return json_error(400, "the body is not what this takes: {v.message}")
+    into = v
+    none
+
+# a Set-Cookie on the answer: the client sends the cookie back with its requests from then on
+# (r.cookies), for max_age seconds (-1: until the browser closes). http_only: not for the page's
+# JavaScript; secure: over https only; same_site: "Lax", "Strict" or "None"
+set_cookie = (res: mut Response, name: str, value: str, max_age: int = -1, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = ""):
+    c = "{name}={value}; Path={path}"
+    if max_age >= 0: c += "; Max-Age={max_age}"
+    if len(domain) > 0: c += "; Domain={domain}"
+    if http_only: c += "; HttpOnly"
+    if secure: c += "; Secure"
+    if len(same_site) > 0: c += "; SameSite={same_site}"
+    res.cookies.push(c)
+
+# a Set-Cookie that has the client forget a cookie
+clear_cookie = (res: mut Response, name: str, path: str = "/"):
+    res.cookies.push("{name}=; Path={path}; Max-Age=0")
+
+# ---------------- streams: server-sent events and chunks ----------------
+# A handler answers stream() or events(), and keeps r.conn: the connection stays open, and the
+# program sends to it later, as things happen (false once the client has gone):
+#   http.get("/events", (r: http.Request) -> http.Response:
+#       listeners.push(r.conn)
+#       http.events())
+#   ...
+#   listeners = listeners.filter((c: int): http.send_event(c, to_json(score)))
+
+# an answer whose body is sent later, a chunk at a time (send_chunk, then end_stream)
+stream = (type: str = "text/plain; charset=utf-8") -> Response:
+    Response(headers = {"Content-Type": type}, stream = true)
+
+# a stream of server-sent events, what a web page's EventSource reads (send_event)
+events = () -> Response:
+    Response(headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}, stream = true)
+
+# a chunk of a stream's body; false when the client has gone (or has 8 MB waiting for it, a reader
+# that stopped: then it is let go)
+send_chunk = (conn: int, b: u8[]) -> bool:
+    if not __http_conns.has(conn) or not __http_conns[conn].streaming: return false
+    if b.len() == 0: return true
+    if __http_conns[conn].out.len() - __http_conns[conn].at > 8 << 20:
+        __http_close(conn)
+        return false
+    if __http_conns[conn].chunked: __http_out(conn, bytes("{b.len():x}\r\n"))
+    __http_out(conn, b)
+    if __http_conns[conn].chunked: __http_out(conn, bytes("\r\n"))
+    __http_flush(conn)
+    __http_conns.has(conn)
+send_chunk = (conn: int, text: str) -> bool: send_chunk(conn, bytes(text))
+
+# an event to an events() stream: its data (lines of text), and its name when not "message"
+# (a page's EventSource: addEventListener(event, ...))
+send_event = (conn: int, data: str, event: str = "") -> bool:
+    s = if len(event) > 0: "event: {event}\n" else: ""
+    loop line in split(data, "\n"): s += "data: {line}\n"
+    send_chunk(conn, s + "\n")
+
+# the end of a stream: its body is complete (the connection may carry other requests)
+end_stream = (conn: int):
+    if not __http_conns.has(conn) or not __http_conns[conn].streaming: return
+    if __http_conns[conn].chunked: __http_out(conn, bytes("0\r\n\r\n"))
+    else: __http_conns[conn].closing = true
+    __http_conns[conn].streaming = false
+    __http_flush(conn)
+
+# ---------------- WebSockets ----------------
+# A WebSocket on the server's own port: a handler answers websocket(r) and the connection becomes
+# a peer of net's, as one that connected to net.listen (net.receive gives its joined event and
+# messages; net.handshake(peer) the request's path, headers and cookies):
+#   http.get("/ws", (r: http.Request) -> http.Response:
+#       if r.headers.get("origin") != "https://example.com": return http.status(403)
+#       http.websocket(r))
+
+# the answer that makes the request's connection a WebSocket (a request that is not one's: 426).
+# largest: the biggest message taken from it (a bigger one ends the connection, with code 1009)
+websocket = (r: Request, largest: int = 16 << 20) -> Response:
+    if (r.headers.get("upgrade") ?? "").lower() != "websocket" or not r.headers.has("sec-websocket-key"):
+        return status(426, "426 Upgrade Required: a WebSocket's request\n")
+    Response(status = 101, upgrade = true, __largest = largest)
+
+# ---------------- serving ----------------
+
+# answer requests on port until the program is asked to stop (ctrl-c, SIGTERM: stopping()); false
+# at once when the port cannot be had. host, largest, backlog: as listen's
+@no_web("gives false in a web page: a page cannot listen (the server is a native program)")
+serve = (port: int, host: str = "", largest: int = 1 << 20, backlog: int = 511) -> bool:
+    if not listen(port, host, largest, backlog): return false
+    loop not stopping():
+        answer()
+        net.wait(1.0)
+    true
+
+# start taking requests on port (answer() answers them); false when the port cannot be had (another
+# program has it). host: the address it is reached at, "" every one this machine has ("127.0.0.1":
+# from this machine only, as behind a proxy on it); largest: the biggest body taken (a bigger one is
+# answered 413); backlog: how many connections may wait to be taken
+@no_web("gives false in a web page: a page cannot listen (the server is a native program)")
+listen = (port: int, host: str = "", largest: int = 1 << 20, backlog: int = 511) -> bool:
+    when TARGET == "wasm":
+        return false
+    else:
+        ip = if len(host) == 0: 0 else: net.__n_resolve(host)
+        if ip < 0: return false
+        net.__n_more_files()
+        fd = net.__n_listen(ip, port, backlog)
+        if fd < 0: return false
+        __http_listeners.push(fd)
+        __http_largest = largest
+        if not __http_hooked:
+            __http_hooked = true
+            net.__net_wait_hooks.push(__http_wait_fds)
+        true
+
+# stop taking requests (those of connections open are still answered)
+stop_listening = ():
+    loop fd in __http_listeners: net.__n_close(fd)
+    __http_listeners = []
+
+# answer the requests that have come, and send what waits to go out; how many were answered. It
+# does not wait: net.wait does (until there is something to answer)
+answer = () -> int:
+    when TARGET == "wasm":
+        return 0
+    else:
+        now = time()
+        __http_t = now
+        # new connections
+        loop fd in __http_listeners:
+            loop __http_conns.len() < __HTTP_MOST_CONNS and now >= __http_full_until:
+                c = net.__n_accept(fd)
+                # (none can be taken, as with too many open: not waited for a moment, which would
+                # come at once)
+                if c == -2: __http_full_until = now + 0.25
+                if c < 0: break
+                id = __http_next
+                __http_next += 1
+                __http_conns[id] = __Conn(fd = c, since = now, address = net.__n_ip_text(net.__n_from))
+        # what is ready, of what each waits for
+        ids: int[]
+        fds: int[]
+        want: int[]
+        loop id, c in __http_conns:
+            w = __http_want(c)
+            if w == 0: continue
+            ids.push(id)
+            fds.push(c.fd)
+            want.push(w)
+        got = net.__n_wait(fds, want, 0)
+        n = 0
+        loop k in [0..ids.len()):
+            id = ids[k]
+            if not __http_conns.has(id): continue
+            if got[k] & 2 != 0: __http_flush(id)
+            if got[k] & 5 != 0 and __http_conns.has(id): __http_read(id)
+        # requests that have come whole, answered while there is room for their answers
+        loop id in ids:
+            if __http_conns.has(id): n += __http_handle(id)
+        # connections done with, or silent for too long
+        gone: int[]
+        loop id, c in __http_conns:
+            out_left = c.out.len() - c.at
+            if c.closing and out_left == 0 and not c.sending: gone.push(id)
+            else if c.eof and out_left == 0 and not c.sending and not c.streaming: gone.push(id)
+            else if now - c.since > __HTTP_IDLE and not (c.streaming and out_left == 0): gone.push(id)
+            # (a request that comes a byte at a time, so as never to be idle)
+            else if c.inbuf.len() > 0 and now - c.begun > __HTTP_SLOWEST and not c.closing: __http_refuse(id, 408, "the request did not all come in {__HTTP_SLOWEST} seconds")
+        loop id in gone: __http_close(id)
+        n
+
+# the line a request makes in a log: who, what, the answer's status and size, how long it took
+#   127.0.0.1 "GET /todos?done=true HTTP/1.1" 200 312 0.4ms
+log_line = (r: Request, res: Response, seconds: f64) -> str:
+    size = if len(res.file) > 0: (file_size(res.file) ?? 0) else: res.body.len()
+    "{r.address} \"{r.method} {r.target} {r.version}\" {res.status} {size} {seconds * 1000.0:.1}ms"
+
+# write each request's log_line to standard error
+log_requests = false
+
+# a time (unix_time's seconds) as HTTP writes one: "Sun, 06 Nov 1994 08:49:37 GMT"
+http_date = (t: f64) -> str:
+    d = date(t, utc = true)
+    "{weekday_name(d)[..3)}, {d.day:02} {month_name(d)[..3)} {d.year} {d.hour:02}:{d.minute:02}:{d.second:02} GMT"
+
+# an HTTP date ("Sun, 06 Nov 1994 08:49:37 GMT") as unix_time's seconds; none when it is not one
+from_http_date = (s: str) -> f64?:
+    w = split(trim(s), " ")
+    if w.len() != 6 or w[5] != "GMT": return none
+    m = -1
+    loop i in [0..12):
+        if __HTTP_MONTHS[i] == w[2]: m = i + 1
+    hms = split(w[4], ":")
+    if m < 0 or hms.len() != 3: return none
+    day = to_int(w[1]) ?? -1
+    year = to_int(w[3]) ?? -1
+    h = to_int(hms[0]) ?? -1
+    mi = to_int(hms[1]) ?? -1
+    sec = to_int(hms[2]) ?? -1
+    if day < 1 or year < 1970 or h < 0 or mi < 0 or sec < 0: return none
+    unix_time(Date(year = year, month = m, day = day, hour = h, minute = mi, second = sec))
+
+__HTTP_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+# a status's reason: 404 "Not Found"
+reason = (code: int) -> str:
+    match code:
+        100: "Continue"
+        101: "Switching Protocols"
+        200: "OK"
+        201: "Created"
+        202: "Accepted"
+        204: "No Content"
+        206: "Partial Content"
+        301: "Moved Permanently"
+        302: "Found"
+        303: "See Other"
+        304: "Not Modified"
+        307: "Temporary Redirect"
+        308: "Permanent Redirect"
+        400: "Bad Request"
+        401: "Unauthorized"
+        403: "Forbidden"
+        404: "Not Found"
+        405: "Method Not Allowed"
+        406: "Not Acceptable"
+        408: "Request Timeout"
+        409: "Conflict"
+        410: "Gone"
+        411: "Length Required"
+        413: "Content Too Large"
+        414: "URI Too Long"
+        415: "Unsupported Media Type"
+        418: "I'm a teapot"
+        422: "Unprocessable Content"
+        426: "Upgrade Required"
+        429: "Too Many Requests"
+        431: "Request Header Fields Too Large"
+        500: "Internal Server Error"
+        501: "Not Implemented"
+        502: "Bad Gateway"
+        503: "Service Unavailable"
+        504: "Gateway Timeout"
+        _: if code < 200: "Informational" else: if code < 300: "Success" else: if code < 400: "Redirection" else: if code < 500: "Client Error" else: "Server Error"
+
+# the type of a file by its extension, as a Content-Type ("text/html; charset=utf-8" for .html);
+# application/octet-stream for one not known
+mime_type = (path: str) -> str: __HTTP_TYPES.get(extension(path).lower()) ?? "application/octet-stream"
+
+__HTTP_TYPES = {".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".json": "application/json",
+    ".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8", ".csv": "text/csv; charset=utf-8",
+    ".xml": "application/xml", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif", ".ico": "image/x-icon", ".bmp": "image/bmp",
+    ".wasm": "application/wasm", ".pdf": "application/pdf", ".zip": "application/zip", ".gz": "application/gzip",
+    ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf",
+    ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".wav": "audio/wav", ".mp4": "video/mp4", ".webm": "video/webm",
+    ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".jo": "text/plain; charset=utf-8"}
+
+# ---------------- connections ----------------
+
+struct __Conn:
+    fd: int
+    since: f64              # (when it last sent or took something)
+    begun = 0.0             # (when the request coming began to)
+    address = ""
+    inbuf: u8[]
+    scanned = 0             # (inbuf has no head's end before this)
+    out: u8[]               # (what waits to go out, from out[at])
+    at = 0
+    eof = false             # (the client has sent all it will)
+    closing = false         # (to close once out has gone)
+    file = File()           # (a file being sent, a piece at a time)
+    sending = false
+    streaming = false       # (a stream's: its body comes from send_chunk)
+    chunked = false
+    keep = true             # (the connection stays open after the answer being sent)
+    continued = false       # (100 Continue sent for the request whose body is coming)
+
+
+# (what a connection waits for: 1 to read, 2 to write)
+__http_want = (c: __Conn) -> int:
+    w = 0
+    if not c.eof and c.out.len() - c.at < __HTTP_MOST_OUT and not c.closing: w |= 1
+    if c.at < c.out.len(): w |= 2
+    w
+
+# (net.wait's: the sockets of the server)
+__http_wait_fds = () -> (int, int)[]:
+    out: (int, int)[]
+    if __http_conns.len() < __HTTP_MOST_CONNS and __http_t >= __http_full_until:
+        loop fd in __http_listeners: out.push((fd, 1))
+    loop id, c in __http_conns:
+        w = __http_want(c)
+        if w != 0: out.push((c.fd, w))
+    out
+
+__http_out = (id: int, b: u8[]): __http_conns[id].out.extend(b)
+
+# (what waits to go out: as much as the socket takes now, then more of the file being sent)
+__http_flush = (id: int):
+    loop true:
+        c = __http_conns[id]
+        loop __http_conns[id].at < __http_conns[id].out.len():
+            at = __http_conns[id].at
+            n = net.__n_send(c.fd, data(__http_conns[id].out) + at, __http_conns[id].out.len() - at)
+            if n == -1: break
+            if n < 0:
+                __http_close(id)
+                return
+            __http_conns[id].at += n
+            __http_conns[id].since = __http_t
+        if __http_conns[id].at == __http_conns[id].out.len():
+            __http_conns[id].out.clear()
+            __http_conns[id].at = 0
+        else if __http_conns[id].at > 65536 and __http_conns[id].at * 2 > __http_conns[id].out.len():
+            __http_conns[id].out = __http_conns[id].out[__http_conns[id].at..]
+            __http_conns[id].at = 0
+        # (a file: its next piece, while little waits)
+        if not __http_conns[id].sending or __http_conns[id].out.len() - __http_conns[id].at >= 1 << 18: return
+        piece = __http_conns[id].file.read_bytes(1 << 16)
+        if piece.len() == 0:
+            __http_conns[id].file.close()
+            __http_conns[id].sending = false
+            return
+        __http_conns[id].out.extend(piece)
+
+__http_read = (id: int):
+    net.__net_rbuf_ready()
+    loop __http_conns[id].inbuf.len() < __http_largest + __HTTP_MOST_HEAD:
+        n = net.__n_recv(__http_conns[id].fd, data(net.__net_rbuf), net.__net_rbuf.len())
+        if n == -1: break
+        if n <= 0:
+            __http_conns[id].eof = true
+            break
+        if __http_conns[id].inbuf.len() == 0: __http_conns[id].begun = __http_t
+        __http_conns[id].inbuf.extend(net.__net_rbuf[..n))
+        __http_conns[id].since = __http_t
+        if n < net.__net_rbuf.len(): break
+
+__http_close = (id: int):
+    if not __http_conns.has(id): return
+    if __http_conns[id].sending: __http_conns[id].file.close()
+    net.__n_close(__http_conns[id].fd)
+    __http_conns.remove(id)
+
+# (the requests that have come whole on a connection, answered in order; how many)
+__http_handle = (id: int) -> int:
+    n = 0
+    loop __http_conns.has(id):
+        c = __http_conns[id]
+        if c.closing or c.streaming or c.sending or c.out.len() - c.at >= __HTTP_MOST_OUT or c.inbuf.len() == 0: break
+        b = c.inbuf
+        e = __http_head_end(b, c.scanned)
+        if e < 0:
+            __http_conns[id].scanned = max(b.len() - 3, 0)
+            if b.len() > __HTTP_MOST_HEAD: __http_refuse(id, 431, "the request's headers are too long")
+            break
+        rr = __http_request(b, e)
+        if rr == none:
+            __http_refuse(id, 400, "that is not an HTTP request")
+            break
+        req = rr!
+        req.address = c.address
+        req.conn = id
+        # its body: as long as Content-Length says, or in chunks
+        start = e + 4
+        stop = start
+        if (req.headers.get("transfer-encoding") ?? "").lower() == "chunked":
+            got, body, at = __http_unchunk(b, start, __http_largest)
+            if got == -1:
+                __http_refuse(id, 400, "its chunks are not as HTTP's are")
+                break
+            if got == -2:
+                __http_refuse(id, 413, "its body is bigger than the {__http_largest} bytes taken")
+                break
+            if got == 0:
+                __http_continue(id, req)
+                break
+            req.body = body
+            stop = at
+        else if let cl = req.headers.get("content-length"):
+            k = to_int(cl) ?? -1
+            if k < 0:
+                __http_refuse(id, 400, "its Content-Length is not a number")
+                break
+            if k > __http_largest:
+                __http_refuse(id, 413, "its body is bigger than the {__http_largest} bytes taken")
+                break
+            if b.len() < start + k:
+                __http_continue(id, req)
+                break
+            req.body = b[start..start + k)
+            stop = start + k
+        if req.body.len() > 0: req.text = str_from_bytes(req.body)
+        __http_conns[id].inbuf = if stop == b.len(): [] else: b[stop..]
+        __http_conns[id].scanned = 0
+        __http_conns[id].continued = false
+        __http_answer(id, req)
+        n += 1
+    n
+
+# (a request whose body has not all come, and whose client waits to be told to send it)
+__http_continue = (id: int, req: Request):
+    if __http_conns[id].continued or (req.headers.get("expect") ?? "").lower() != "100-continue": return
+    __http_conns[id].continued = true
+    __http_out(id, bytes("HTTP/1.1 100 Continue\r\n\r\n"))
+    __http_flush(id)
+
+# (a request that cannot be answered: told why, and the connection closed)
+__http_refuse = (id: int, code: int, why: str):
+    res = status(code, "{code} {reason(code)}: {why}\n")
+    __http_conns[id].inbuf = []
+    __http_send(id, Request(), res, false)
+    if __http_conns.has(id): __http_conns[id].closing = true
+
+# (a request, answered by its route's handler)
+__http_answer = (id: int, req0: Request):
+    t0 = if log_requests: time() else: 0.0
+    req = req0
+    res = Response()
+    i = __http_route(req)
+    if i == -1: res = status(404)
+    else if i == -2:
+        res = status(405)
+        res.headers["Allow"] = __http_allowed(req.path)
+    else if not __http_call(__routes[i].handler, req, res): res = status(500)
+    if res.upgrade:
+        __http_upgrade(id, req, res.__largest)
+        return
+    conn = (req.headers.get("connection") ?? "").lower()
+    keep = if req.version == "HTTP/1.0": find(conn, "keep-alive") >= 0 else: find(conn, "close") < 0
+    __http_send(id, req, res, keep)
+    if log_requests: eprint(log_line(req, res, time() - t0))
+
+# (the handler called; false when it panicked, the panic caught: lib/core/rt.jo)
+__http_call = (h: (Request) -> Response, r: Request, res: mut Response) -> bool:
+    when TARGET == "wasm":
+        res = h(r)
+        return true
+    else:
+        jb = __alloc(256)
+        keep = __catch_jmp
+        if __setjmp(jb) == 0:
+            __catch_jmp = jb
+            res = h(r)
+            __catch_jmp = keep
+            __free(jb)
+            return true
+        __catch_jmp = keep
+        __free(jb)
+        false
+
+# (an answer, written out: its status line and headers, then its body, its file or its stream)
+__http_send = (id: int, req: Request, res: Response, keep0: bool):
+    keep = keep0
+    v10 = req.version == "HTTP/1.0"
+    s = "HTTP/1.1 {res.status} {reason(res.status)}\r\n"
+    loop k, v in res.headers:
+        lk = k.lower()
+        if lk == "connection":
+            if v.lower() == "close": keep = false
+            continue
+        if lk == "transfer-encoding" or (lk == "content-length" and len(res.file) == 0): continue
+        s += "{k}: {v}\r\n"
+    loop ck in res.cookies: s += "Set-Cookie: {ck}\r\n"
+    if not res.headers.has("Date"): s += "Date: {__http_now()}\r\n"
+    has_body = res.status >= 200 and res.status != 204 and res.status != 304
+    chunked = false
+    if res.stream:
+        if v10: keep = false
+        else:
+            chunked = true
+            s += "Transfer-Encoding: chunked\r\n"
+    else if len(res.file) == 0 and has_body: s += "Content-Length: {res.body.len()}\r\n"
+    if not keep: s += "Connection: close\r\n"
+    else if v10: s += "Connection: keep-alive\r\n"
+    s += "\r\n"
+    __http_out(id, bytes(s))
+    if req.method != "HEAD" and has_body:
+        if res.stream:
+            __http_conns[id].streaming = true
+            __http_conns[id].chunked = chunked
+        else if len(res.file) > 0:
+            if let f = open_file(res.file):
+                __http_conns[id].file = f
+                __http_conns[id].sending = true
+            else: keep = false
+        else: __http_out(id, res.body)
+    __http_conns[id].keep = keep
+    if not keep and not res.stream: __http_conns[id].closing = true
+    __http_flush(id)
+
+# (the request's connection, a WebSocket from now on: a peer of net's)
+__http_upgrade = (id: int, req: Request, largest: int):
+    __http_out(id, bytes(net.__ws_accept_reply(req.headers["sec-websocket-key"])))
+    hs = net.Handshake(path = req.path, query = req.query, headers = req.headers, cookies = req.cookies, origin = req.headers.get("origin") ?? "", address = req.address)
+    c = __http_conns[id]
+    __http_conns.remove(id)
+    net.__net_adopt(c.fd, c.inbuf, c.out[c.at..], hs, largest)
+    if log_requests: eprint(log_line(req, Response(status = 101), 0.0))
+
+# (Date's text, made once a second: the wall clock looked at when the next second is due)
+__http_now = () -> str:
+    if __http_t >= __http_day_next or __http_t == 0.0:
+        u = unix_time()
+        t = floor(u)
+        if t != __http_day:
+            __http_day = t
+            __http_day_text = http_date(t)
+        __http_day_next = __http_t + (t + 1.0 - u)
+    __http_day_text
+
+# (where the head of a request ends, its \r\n\r\n, looked for from `from` on; -1: not yet)
+__http_head_end = (b: u8[], from: int) -> int:
+    k = from
+    n = b.len() - 3
+    loop k < n:
+        c = b[k + 3]
+        if c == '\n':
+            if b[k] == '\r' and b[k + 1] == '\n' and b[k + 2] == '\r': return k
+            k += 1
+        else if c == '\r': k += 1
+        else: k += 4
+    -1
+
+# (a request's head: its line and headers; none when it is not one)
+__http_request = (b: u8[], e: int) -> Request?:
+    lines = split(str_from_bytes(b[..e)), "\r\n")
+    w = split(lines[0], " ")
+    if w.len() != 3 or len(w[0]) == 0 or not starts_with(w[2], "HTTP/1."): return none
+    r = Request(method = w[0], target = w[1], version = w[2])
+    target = w[1]
+    # (a proxy's form: the whole address)
+    if starts_with(target, "http://") or starts_with(target, "https://"):
+        rest = target[find(target, "//") + 2..]
+        k = find(rest, "/")
+        target = if k < 0: "/" else: rest[k..]
+    q = find(target, "?")
+    if q >= 0:
+        r.query = parse_query(target[q + 1..])
+        target = target[..q)
+    r.path = url_decode(target)
+    if find(r.path, "\0") >= 0: return none
+    if r.path != "*" and (len(r.path) == 0 or r.path[0] != '/'): return none
+    loop line in lines[1..]:
+        c = find(line, ":")
+        if c <= 0: return none
+        name = trim(line[..c)).lower()
+        v = trim(line[c + 1..])
+        if let was = r.headers.get(name): r.headers[name] = if name == "cookie": "{was}; {v}" else: "{was}, {v}"
+        else: r.headers[name] = v
+    if let ck = r.headers.get("cookie"): r.cookies = parse_cookies(ck)
+    r
+
+# (a chunked body from b[at]: 1 and it and where it ends, once it has all come; 0 not yet; -1 not
+# chunks; -2 bigger than most)
+__http_unchunk = (b: u8[], at0: int, most: int) -> (int, u8[], int):
+    out: u8[]
+    at = at0
+    loop true:
+        e = __http_line_end(b, at)
+        if e < 0: return (if b.len() - at > 100: -1 else: 0, out, 0)
+        size = 0
+        digits = 0
+        loop k in [at..e):
+            d = __http_hex(b[k])
+            if d < 0: break
+            size = size * 16 + d
+            digits += 1
+        if digits == 0 or digits > 12: return (-1, out, 0)
+        at = e + 2
+        if size == 0:
+            # (trailers, if any: lines up to an empty one)
+            loop true:
+                e = __http_line_end(b, at)
+                if e < 0: return (0, out, 0)
+                if e == at: return (1, out, e + 2)
+                at = e + 2
+        if out.len() + size > most: return (-2, out, 0)
+        if b.len() < at + size + 2: return (0, out, 0)
+        if b[at + size] != '\r' or b[at + size + 1] != '\n': return (-1, out, 0)
+        out.extend(b[at..at + size))
+        at += size + 2
+    (0, out, 0)
+
+__http_line_end = (b: u8[], at: int) -> int:
+    k = at
+    loop k + 1 < b.len():
+        if b[k] == '\r' and b[k + 1] == '\n': return k
+        k += 1
+    -1
+
+__http_hex = (c: u8) -> int:
+    if c >= '0' and c <= '9': return int(c) - '0'
+    if c >= 'a' and c <= 'f': return int(c) - 'a' + 10
+    if c >= 'A' and c <= 'F': return int(c) - 'A' + 10
+    -1
+
+# (files()'s: the file under root that the request's path names)
+__http_files = (r: Request, root: str) -> Response:
+    rel = r.params.get("path") ?? ""
+    loop seg in split(rel, "/"):
+        if seg == "..": return status(400, "400 Bad Request: a path with .. in it\n")
+        if len(seg) > 0 and seg[0] == '.': return status(404)
+    if find(rel, "\\") >= 0: return status(400, "400 Bad Request: a path with \\ in it\n")
+    p = if len(rel) == 0: root else: join_path(root, rel)
+    if is_dir(p):
+        if not ends_with(r.path, "/"):
+            q = find(r.target, "?")
+            return redirect(r.path + "/" + (if q >= 0: r.target[q..] else: ""), 301)
+        p = join_path(p, "index.html")
+    file(r, p)
