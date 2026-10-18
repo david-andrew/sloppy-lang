@@ -756,8 +756,10 @@ in `if let`: match the variant, then test its fields in the arm.
 ## 8. Arrays for numeric work
 
 Inside array brackets elements are separated by spaces or commas: `[1 2 3]`, `[a, b]`.
-(There, `[a -b]` has two elements and `[a - b]` one, as in MATLAB, and `f(x)` / `xs[i]` are
-written without a space before `(` / `[`.) `[xs... 4 5]` spreads an array into a literal and
+An operator joins what is on both sides of it, whatever the spaces: `[a -b]` and `[a - b]` are
+both one element, a - b; a negative element is put in parentheses or after a comma, `[a (-b)]`,
+`[1 (-2) 3]`, `[a, -b]`. A space before `(` or `[` starts a new element (`[a (-b)]`), and `f(x)`
+/ `xs[i]` are written without one. `[xs... 4 5]` spreads an array into a literal and
 `fill(x, n)` repeats a value.
 
 **Elementwise operations.** The dotted operators `.+ .- .* ./ .% .^ .== .!= .< .<= .> .>=`

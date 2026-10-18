@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- In an array an operator joins its two sides whatever the spaces: `[a -b]` is one element, a - b,
+  as `[a - b]` is (it was two, as in MATLAB, so a space changed the meaning). A negative element
+  goes in parentheses or after a comma: `[a (-b)]`, `[1 (-2) 3]`, `[a, -b]`; `[a -b]` warns, and
+  `sloppy fmt` writes it `[a - b]`.
 - `import http`: HTTP servers. Routes of a method and a path with `:names` (and `*rest`), each
   answered by a function from a `Request` (method, path, query, params, headers, cookies, body and
   text) to a `Response` (`text`, `html`, `json`, `binary`, `status`, `redirect`, `file`, with
