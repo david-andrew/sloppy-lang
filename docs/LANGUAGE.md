@@ -73,8 +73,8 @@ piped in (`sloppy < script.txt`).
   and a `:` at the end of a line opens an indented block (this is how multi-line lambdas work).
 * `;` may separate statements on one line, and a `\` at the end of a line continues it on the
   next (inside brackets lines continue by themselves).
-* Indentation is spaces or tabs, a tab counting as up to 4 columns; a file uses one or the
-  other (mixing them is an error that says so).
+* Indentation is spaces or tabs, a tab counting as up to 4 columns. Use one or the other: an
+  indentation error in a file that mixes them says so.
 * Integer literals: `42`, `1_000_000`, `0xff`, `0b1010`. Float literals: `1.5`, `2.0e-3`.
   Literals take the type their context expects, and must fit it (`x: u8 = 300` and
   `x: u64 = -1` are errors; a literal above the i64 range is a `u64`, or `int`'s bits).
