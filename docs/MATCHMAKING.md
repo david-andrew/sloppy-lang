@@ -48,6 +48,13 @@ ufw enable
 ufw status          # the rules above, "Status: active"
 ```
 
+On the $4 droplet (512 MB), add some swap, so that `apt upgrade` has room:
+
+```sh
+fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+echo "/swapfile none swap sw 0 0" >> /etc/fstab
+```
+
 (DigitalOcean's Cloud Firewall, under Networking, does the same from the dashboard; one of the two
 is enough.)
 
@@ -136,9 +143,19 @@ apt install -y caddy
 
 ```
 match.example.org {
-    reverse_proxy 127.0.0.1:7700
+    @ws header Upgrade websocket
+    handle @ws {
+        reverse_proxy 127.0.0.1:7700
+    }
+    handle {
+        respond 404
+    }
 }
 ```
+
+(Only WebSockets go on to the server; anything else gets 404. Scanners find a new name within
+minutes, from the public log of certificates, and try their usual pages on it. Each `handle` is
+needed: on its own, `respond` goes before `reverse_proxy`, whatever their order in the file.)
 
 ```sh
 systemctl reload caddy
@@ -180,6 +197,7 @@ denied-peer-ip=172.16.0.0-172.31.255.255
 denied-peer-ip=192.168.0.0-192.168.255.255
 denied-peer-ip=169.254.0.0-169.254.255.255
 total-quota=200
+syslog
 ```
 
 (The denied addresses keep the relay from reaching the droplet's private network and

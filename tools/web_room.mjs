@@ -7,12 +7,12 @@
 // says so and Invite with a code instead still makes an invite.
 // usage: node tools/web_room.mjs chrome page.html port native_build workdir
 // (ROOM_PAGE_QUERY=SLOPPY_RTC_RELAY_ONLY=1: each page's address has it too; ROOM_STEPS=2: the
-// first two steps only)
+// first two steps only; ROOM_SERVER=wss://host: a server already running, as a deployed one)
 import { spawn } from "node:child_process";
 
 const [chrome, page, port, native, dir] = process.argv.slice(2);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const server = `ws://127.0.0.1:${port}`;
+const server = process.env.ROOM_SERVER || `ws://127.0.0.1:${port}`;
 const extra = process.env.ROOM_PAGE_QUERY ? "&" + process.env.ROOM_PAGE_QUERY : "";
 const steps = Number(process.env.ROOM_STEPS || 5);
 let done = 0;
