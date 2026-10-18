@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Aces: the lobby has your name and insignia (as Settings has them); the shark's mouth is bigger
+  and reaches the nose, round the triplane's cowling.
+
 ## 0.21.0
 
 - TLS 1.3 in native programs (lib/tls.jo, the library's own: no OpenSSL): `net.connect("wss://...")`
