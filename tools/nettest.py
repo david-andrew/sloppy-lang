@@ -443,10 +443,10 @@ def http_server_test(hs_exe, hport, upstream_port):
     global failed
     site = os.path.join(tmp, "http_site")
     os.makedirs(os.path.join(site, "site", "sub"), exist_ok=True)
-    with open(os.path.join(site, "site", "index.html"), "w") as f: f.write("<p>index</p>\n")
-    with open(os.path.join(site, "site", "a.txt"), "w") as f: f.write("a file\n")
-    with open(os.path.join(site, "site", ".secret"), "w") as f: f.write("no\n")
-    with open(os.path.join(site, "site", "sub", "index.html"), "w") as f: f.write("<p>sub</p>\n")
+    with open(os.path.join(site, "site", "index.html"), "w", newline="") as f: f.write("<p>index</p>\n")
+    with open(os.path.join(site, "site", "a.txt"), "w", newline="") as f: f.write("a file\n")
+    with open(os.path.join(site, "site", ".secret"), "w", newline="") as f: f.write("no\n")
+    with open(os.path.join(site, "site", "sub", "index.html"), "w", newline="") as f: f.write("<p>sub</p>\n")
     with open(os.path.join(site, "site", "big.bin"), "wb") as f: f.write(bytes(20 << 20))
     srv = subprocess.Popen([hs_exe], stdout=subprocess.PIPE, text=True,
                            env=dict(env, NET_PORT=str(hport), NET_DIR=site, NET_UPSTREAM=f"http://127.0.0.1:{upstream_port}/slow"))
