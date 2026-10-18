@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.20.0
+
+- Aces (examples/aces, in the gallery): biplanes in a dogfight, Red against Blue, up to six a
+  side, players and the computer. Invite a friend, then more (each their own invite); the one
+  who invites chooses the sides and starts, and passes on what goes between the others. Flown
+  with the mouse, keys, a gamepad or two thumbs on a phone.
+- netplay: `s.stand_in(p, input)` plays for a player who left, so the others play on (the game
+  makes the input mean "the computer flies it"). The host takes in the inputs it passes on, so it
+  has all anyone has of a player's; `s.stands_in(p)` says whether this machine does.
+- `camera3d` takes an up direction (a camera that banks with a plane); 3D sound pans with it.
+- Menus: a row is as wide as its label needs (a long label ran into its value), and a menu's
+  values stay in one column.
+
 ## 0.19.1
 
 - Invite codes between web pages work in Firefox: a page gave up while its friend was still
