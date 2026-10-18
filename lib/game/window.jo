@@ -234,6 +234,12 @@ share = (text: str): __platform_share(text)
 sideways_hint = (on: bool): __sideways_on = on
 __sideways_on = true
 
+# the other way: a phone held sideways, playing a game made for a screen taller than wide (as
+# window("...", 360, 640)): a note to turn the phone upright (on to start with); off for a game
+# laid out for both
+upright_hint = (on: bool): __upright_on = on
+__upright_on = true
+
 # lock the mouse pointer to the window and hide it, for mouse look: the pointer stays put and
 # its motion keeps arriving through mouse_delta(). false where the platform cannot. (A web
 # page gets the lock at the next click into it, as browsers require; Escape releases it there.)
@@ -264,9 +270,123 @@ touches = () -> vec2[]:
 # lifted leaves mouse_pos where it was: hover highlights mean nothing then)
 touch_input = () -> bool: __touch_last
 
+# whether the screen is a touch screen, its main pointer a finger (a phone or a tablet: a page
+# asks the browser), known before the first touch: on-screen buttons from the start, say.
+# touch_input() says whether the last input was a finger
+touch_device = () -> bool: __platform_finger() or __touch_env
+__touch_env = false
+
 __touch_ids: int[]
 __touch_pos: vec2[]
 __touch_last = false
+
+# ---- a press of the left button (or of the first finger): taps, drags, swipes ----
+__press_x = 0.0                 # where it went down (the window's pixels)
+__press_y = 0.0
+__press_time = -10.0
+__press_frame = -10
+__press_finger = false          # (it was a finger)
+__press_far = false             # it went farther from there than a finger wobbles (10 points)
+__press_taken = false           # a scrolling list moved with it, or it was a long press: no tap
+__press_on_hud = false          # (it landed on a hud_ box)
+__long_press_frame = -10
+
+# (each frame, before update: a press starting, and how far it went)
+__press_track = ():
+    __input_init()
+    if __mouse_pressed[0]:
+        __press_x = __mouse_x
+        __press_y = __mouse_y
+        __press_time = elapsed()
+        __press_frame = __frame_count
+        __press_finger = __touch_last
+        __press_far = false
+        __press_taken = false
+        __press_on_hud = hud_hovered()
+    if (__mouse_btn[0] or __mouse_released[0]) and not __press_far:
+        dx = __mouse_x - __press_x
+        dy = __mouse_y - __press_y
+        d = 10.0 * pixel_ratio()
+        __press_far = dx * dx + dy * dy > d * d
+
+# (where the press went down, in 2D units)
+__press_pos = () -> vec2: __to_units(__press_x, __press_y)
+
+# (whether letting go of the press is a tap, a click: a finger that moved away is a drag, and a
+# press a list scrolled with is the list's)
+__press_tap = () -> bool: not __press_taken and not (__press_finger and __press_far)
+
+# a drag of a finger (or the mouse) that just ended, 30 points long or more: which way it went
+# most, vec2(-1, 0) left, vec2(1, 0) right, vec2(0, -1) up or vec2(0, 1) down, in the frame it
+# lets go; none otherwise, and for a drag begun on a hud_ box or one a scrolling list moved with
+#   if let d = swipe(): slide(int(d.x), int(d.y))
+swipe = () -> vec2?:
+    if not mouse_released(.left) or __press_taken or __press_on_hud: return none
+    dx = __mouse_x - __press_x
+    dy = __mouse_y - __press_y
+    d = 30.0 * pixel_ratio()
+    if dx * dx + dy * dy < d * d: return none
+    if abs(dx) > abs(dy): return vec2(f32(sign(dx)), 0)
+    vec2(0, f32(sign(dy)))
+
+# true once, in the frame a finger (or the left mouse button) has been held down `seconds` without
+# moving: what it is on, said more about, say. Letting go after it is no tap of a button
+long_press = (seconds: f64 = 0.5) -> bool:
+    if __long_press_frame == __frame_count: return true
+    if not mouse_down(.left) or __press_far or __press_taken or elapsed() - __press_time < seconds: return false
+    __press_taken = true
+    __long_press_frame = __frame_count
+    true
+
+# ---- points, a phone's notch, the design size: one layout for screens of any size ----
+
+# how many of the window's pixels make a point (a page's CSS pixel: about 1/160 inch on a phone,
+# 1/96 on a desktop screen): the page's devicePixelRatio as it is drawn, or the desktop's scale
+# (Wayland's, a Retina Mac's, Windows'), 1 without one
+pixel_ratio = () -> f64:
+    if __pixel_ratio_env > 0.0: return __pixel_ratio_env
+    max(__platform_pixel_ratio(), 0.25)
+__pixel_ratio_env = -1.0
+
+# a point's size in 2D units: what must be the same size to a finger or an eye on any screen, a
+# phone's or a desktop's, is sized in these (a button 48 * css_pixel() tall fits a finger; text
+# 16 * css_pixel() high reads as a page's)
+css_pixel = () -> f64:
+    __screen_layout()
+    pixel_ratio() / __map_sy
+
+# the part of visible_rect() clear of a phone's notch, rounded corners and home bar (in a page on
+# such a phone; all of visible_rect() elsewhere): what must be seen or tapped goes inside it,
+# backgrounds over all of visible_rect()
+safe_rect = () -> Rect:
+    v = visible_rect()
+    k = pixel_ratio()
+    i = __safe_insets
+    a = __to_units(f64(i.w) * k, f64(i.x) * k)
+    b = __to_units(f64(__win_w) - f64(i.y) * k, f64(__win_h) - f64(i.z) * k)
+    x0 = max(a.x, v.x)
+    y0 = max(a.y, v.y)
+    x1 = min(b.x, v.x + v.w)
+    y1 = min(b.y, v.y + v.h)
+    Rect(x0, y0, max(x1 - x0, 0), max(y1 - y0, 0))
+__safe_insets = vec4(0, 0, 0, 0)            # (top, right, bottom, left, in points)
+
+# change the design size (the 2D units, as given to window()) while the game runs: one layout for
+# a phone held upright, another for a screen wider than tall, say (the window keeps its size;
+# screen_fit says how the new units fill it), at once: in update, before drawing (with a
+# letterbox fit or a fixed resolution, from the next frame)
+#   p = pixel_size() / f32(pixel_ratio())           # the screen in points
+#   if p.y > p.x: design_size(360, 640) else: design_size(1280, 720)
+design_size = (w: int, h: int):
+    if max(w, 1) == __design_w and max(h, 1) == __design_h: return
+    __design_w = max(w, 1)
+    __design_h = max(h, 1)
+    # (the frame being drawn straight to the window takes it too)
+    if __win_open and __cur_target < 0 and not __canvas_active:
+        __screen_layout()
+        if not __canvas_on:
+            flush()
+            __set_screen_target()
 
 # a finger (a web page's, or SLOPPY_INPUT's): kind 1 down, 0 moved, 2 up (or cancelled); 3: the
 # mouse was used (id -1); x, y in the window's pixels
@@ -342,16 +462,22 @@ __icon_argb = (max_words: int) -> int[]:
                 out.push(v)
     out
 
+# (the window the game runs in: the one opened already, or one of the size given or the default)
+__window_default = ():
+    if not __win_open or __offscreen: window(__win_title, __win_w, __win_h)
+
 # Open the game window (called automatically when the program defines update/draw).
 window = (title: str = "", width: int = 1280, height: int = 720):
     __input_init()
     name = title
     if len(name) == 0: name = __program_name()
     if __win_open and not __offscreen:
-        # already opened (e.g. by creating a mesh first): just take the new title
+        # already opened (by creating a mesh first, or window() called again): the new title, and
+        # the new size as the design size (design_size: the window keeps its own)
         if name != __win_title:
             __win_title = name
             __platform_title()
+        if width != __design_w or height != __design_h: design_size(width, height)
         return
     # (pictures drawn before it, with no window: the software renderer, which has their textures)
     if __offscreen:
@@ -374,10 +500,16 @@ window = (title: str = "", width: int = 1280, height: int = 720):
         if x > 0:
             __win_w = to_int(ws[..x)) ?? width
             __win_h = to_int(ws[x + 1..]) ?? height
+    # (testing aids for a phone's screen: SLOPPY_TOUCH=1 is a touch screen (touch_device(), menus
+    # drawn for fingers), SLOPPY_PIXEL_RATIO=3 its pixels per point)
+    __touch_env = env("SLOPPY_TOUCH") == "1"
+    if let pr = to_float(env("SLOPPY_PIXEL_RATIO") ?? ""): __pixel_ratio_env = pr
     # (sloppy test: the tests run with no window, and no display needed)
     if __testing: return
     __platform_open()
     __win_open = true
+    # (on a phone, the pointer is a finger from the start: no keyboard focus marks in menus)
+    __touch_last = touch_device()
     __time0 = time()
     if __mouse_lock_want: __platform_mouse_lock(true)
     if __cursor_hidden: __platform_show_cursor(false)
@@ -394,11 +526,12 @@ when TARGET == "wasm":
     extern __web_show_cursor = (on: i32)
     extern __web_clipboard_get = (out: *u8, cap: i32) -> i32
     extern __web_clipboard_set = (p: *u8, n: i32)
-    extern __web_keyboard = (on: i32)
+    extern __web_keyboard = (on: i32, bottom: f32)
     extern __web_paste = ()
     extern __web_can_share = () -> i32
     extern __web_finger = () -> i32
     extern __web_share = (p: *u8, n: i32)
+    extern __web_page_color = (r: f32, g: f32, b: f32)
 
     __platform_fullscreen = (on: bool): __web_fullscreen(i32(int(on)))
     __platform_mouse_lock = (on: bool) -> bool: __web_pointer_lock(i32(int(on))) != 0
@@ -418,6 +551,8 @@ when TARGET == "wasm":
     __platform_can_share = () -> bool: __web_can_share() != 0
     __platform_finger = () -> bool: __web_finger() != 0
     __platform_share = (s: str): __web_share(data(s), i32(len(s)))
+    __platform_pixel_ratio = () -> f64: __web_ratio
+    __web_ratio = 1.0
     __web_pasted_frame = -10
     __web_keyboard_on = false
 
@@ -435,18 +570,35 @@ when TARGET == "wasm":
         dt = 0.016
         if __web_last >= 0.0: dt = clamp(now - __web_last, 0.0, 0.1)
         __web_last = now
-        sz: (i32, i32)
+        # (the canvas's pixels, its size in points, and the safe area's insets in points)
+        sz: (i32, i32, i32, i32, i32, i32, i32, i32)
         __web_canvas_size(&sz as *i32)
         __win_w = int(sz.0)
         __win_h = int(sz.1)
+        if sz.2 > 0: __web_ratio = f64(sz.0) / f64(sz.2)
+        __safe_insets = vec4(f32(sz.4), f32(sz.5), f32(sz.6), f32(sz.7))
         __fullscreen = __web_is_fullscreen() != 0          # (the browser leaves it on Escape)
         __run_frame(dt, __web_update, __web_draw)
         # a text field typed in with a finger: the phone's keyboard comes up (the page shows it
-        # at the end of the touch, as browsers allow it only then)
+        # at the end of the touch, as browsers allow it only then), the page moved up over it as
+        # far as the field needs, told where the field's bottom is each frame
         kb = ui_typing() and __touch_last
-        if kb != __web_keyboard_on:
+        if kb != __web_keyboard_on or kb:
             __web_keyboard_on = kb
-            __web_keyboard(i32(int(kb)))
+            __web_keyboard(i32(int(kb)), f32(__typing_bottom))
+
+    # the player put the phone's keyboard away: the text field typed in lets go of it
+    @export("__keyboard_closed")
+    __web_keyboard_closed = ():
+        __hud_focus = ""
+        __ui_text_on = ""
+        __typing_frame = -10
+
+    # (whether a tap ending now may be a widget's: the page then runs a frame at once, inside the
+    # touch's or click's end, where browsers allow what a button does (the keyboard, fullscreen,
+    # the clipboard, sharing))
+    @export("__tap_pending")
+    __web_tap_pending = () -> i32: i32(int(__tap_frame >= frame_number() - 1))
 
     # down: 0 released, 1 pressed, 2 repeated (held down)
     @export("__key")
@@ -485,7 +637,7 @@ when TARGET == "wasm":
     __web_touch = (id: i32, kind: i32, x: f32, y: f32): __touch_event(int(id), int(kind), x, y)
 
     __game_run = (update: (f64) -> void, draw: () -> void):
-        window(__win_title, __win_w, __win_h)
+        __window_default()
         __web_update = update
         __web_draw = draw
 else when TARGET == "windows":
@@ -559,6 +711,8 @@ else when TARGET == "windows":
     extern GlobalLock = (h: *u8) -> *u8
     @lib("kernel32.dll")
     extern GlobalUnlock = (h: *u8) -> i32
+    @lib("gdi32.dll")
+    extern GetDeviceCaps = (hdc: *u8, index: i32) -> i32
     @lib("gdi32.dll")
     extern StretchDIBits = (hdc: *u8, x: i32, y: i32, w: i32, h: i32, sx: i32, sy: i32, sw: i32, sh: i32, bits: *u8, info: *u8, usage: u32, rop: u32) -> i32
 
@@ -958,9 +1112,13 @@ else when TARGET == "windows":
     __platform_can_share = () -> bool: false
     __platform_share = (s: str): pass
     __platform_finger = () -> bool: false
+    # (Windows' display scale: the program is DPI-aware, its window in the screen's pixels)
+    __platform_pixel_ratio = () -> f64:
+        if __w32_dc == null: return 1.0
+        f64(GetDeviceCaps(__w32_dc, 88)) / 96.0       # LOGPIXELSX
 
     __game_run = (update: (f64) -> void, draw: () -> void):
-        window(__win_title, __win_w, __win_h)
+        __window_default()
         __fixed_step = env("SLOPPY_SCREENSHOT") != none
         when WATCH:
             __watch_init()
@@ -1542,6 +1700,9 @@ else when TARGET == "linux":
     __platform_can_share = () -> bool: false
     __platform_share = (s: str): pass
     __platform_finger = () -> bool: false
+    __platform_pixel_ratio = () -> f64:
+        if __wayland: return __wl_scale
+        1.0
 
     # (Vulkan surfaces for the window: the libX11 window, or the libwayland surface)
     __vk_xlib_surface = () -> int:
@@ -1580,7 +1741,7 @@ else when TARGET == "linux":
         else: eglSwapBuffers(__egl_dpy, __egl_surf)
 
     __game_run = (update: (f64) -> void, draw: () -> void):
-        window(__win_title, __win_w, __win_h)
+        __window_default()
         __fixed_step = env("SLOPPY_SCREENSHOT") != none
         when WATCH:
             __watch_init()
@@ -1836,6 +1997,7 @@ __run_frame = (dt: f64, update: (f64) -> void, draw: () -> void):
     __scripted_input()
     __pad_frame()
     __scripted_pad()
+    __press_track()
     __fps_acc += dt
     __fps_n += 1
     if __fps_acc >= 0.5:
@@ -1867,27 +2029,42 @@ __run_frame = (dt: f64, update: (f64) -> void, draw: () -> void):
     __input_end_frame()
     __frame_count += 1
 
-# (sideways_hint's note: a phone upright on the left, an arrow, the phone sideways, and words,
-# sized by the screen's width)
+# (sideways_hint's and upright_hint's note: the phone as it is held, an arrow, the phone as the
+# game wants it, and words, sized by the screen's shorter side)
 __sideways_draw = ():
-    if not __sideways_on or __win_h <= __win_w or __design_w <= __design_h or not __platform_finger(): return
+    if not touch_device(): return
+    sideways = __sideways_on and __win_h > __win_w and __design_w > __design_h
+    upright = __upright_on and __win_w > __win_h and __design_h > __design_w
+    if not sideways and not upright: return
     reset_transform()
     r = visible_rect()
     rect(r, rgba(0.03, 0.04, 0.06, 0.85))
-    w = f64(r.w)
-    cx = f64(r.x) + w / 2.0
+    w = min(f64(r.w), f64(r.h))
+    cx = f64(r.x) + f64(r.w) / 2.0
     cy = f64(r.y + r.h / 2.0)
     col = rgba(1, 1, 1, 0.9)
     t = w * 0.012
     ph = w * 0.2
     pw = ph * 0.52
-    rect_rounded_outline(cx - w * 0.22 - pw / 2.0, cy - ph / 2.0, pw, ph, pw * 0.15, t, col)
-    rect_rounded_outline(cx + w * 0.22 - ph / 2.0, cy - pw / 2.0, ph, pw, pw * 0.15, t, col)
+    # (upright, then sideways; turned the other way for upright_hint)
+    a_w = pw
+    a_h = ph
+    b_w = ph
+    b_h = pw
+    if upright:
+        a_w = ph
+        a_h = pw
+        b_w = pw
+        b_h = ph
+    rect_rounded_outline(cx - w * 0.22 - a_w / 2.0, cy - a_h / 2.0, a_w, a_h, pw * 0.15, t, col)
+    rect_rounded_outline(cx + w * 0.22 - b_w / 2.0, cy - b_h / 2.0, b_w, b_h, pw * 0.15, t, col)
     a = vec2(f32(cx - w * 0.07), f32(cy))
     b = vec2(f32(cx + w * 0.05), f32(cy))
     line(a, b, t, col)
     triangle(b + vec2(f32(w * 0.04), 0), b + vec2(0, f32(-w * 0.03)), b + vec2(0, f32(w * 0.03)), col)
-    text_centered("Turn your phone sideways", vec2(f32(cx), f32(cy + ph * 0.5 + w * 0.12)), w * 0.06, col)
+    words = "Turn your phone sideways"
+    if upright: words = "Turn your phone upright"
+    text_centered(words, vec2(f32(cx), f32(cy + ph * 0.5 + w * 0.12)), w * 0.06, col)
 
 __frame_cpu = 0.0
 __frame_present = 0.0         # time spent handing frames to the screen (and waiting for vsync)

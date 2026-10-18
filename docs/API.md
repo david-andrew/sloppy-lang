@@ -1665,11 +1665,32 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
   ```
 - `share = (text: str)`
 - `sideways_hint = (on: bool)`: a phone held upright, playing a game made for a screen wider than tall: a note over the game to turn the phone sideways (on to start with; the game goes on under it). Off for a game laid out for a phone either way up (visible_rect says what shows).
+- `upright_hint = (on: bool)`: the other way: a phone held sideways, playing a game made for a screen taller than wide (as window("...", 360, 640)): a note to turn the phone upright (on to start with); off for a game laid out for both
 - `mouse_lock = (on: bool = true) -> bool`: lock the mouse pointer to the window and hide it, for mouse look: the pointer stays put and its motion keeps arriving through mouse_delta(). false where the platform cannot. (A web page gets the lock at the next click into it, as browsers require; Escape releases it there.)
 - `is_mouse_locked = () -> bool`: (in a screenshot run, what the game asked for: the desktop's focus coming and going would make the run differ from one time to the next)
 - `window_focused = () -> bool`: the window (or the web page) has the keyboard's focus: false while the player is in another window or tab, as after a click outside an itch.io frame (a game may pause then)
 - `touches = () -> vec2[]`: the fingers on a touch screen (a phone's, in a web page): where each is, in the screen's units as mouse_pos, in the order they landed. The first finger also is the mouse, its left button held while it is down, so a game made for the mouse works with one finger; more fingers (on screen buttons: left, right, jump) are only here. Empty without a touch screen.
 - `touch_input = () -> bool`: whether the pointer is a finger: the last pointer input was a touch, not the mouse (a finger lifted leaves mouse_pos where it was: hover highlights mean nothing then)
+- `touch_device = () -> bool`: whether the screen is a touch screen, its main pointer a finger (a phone or a tablet: a page asks the browser), known before the first touch: on-screen buttons from the start, say. touch_input() says whether the last input was a finger
+
+#### A press of the left button (or of the first finger): taps, drags, swipes
+
+- `swipe = () -> vec2?`: a drag of a finger (or the mouse) that just ended, 30 points long or more: which way it went most, vec2(-1, 0) left, vec2(1, 0) right, vec2(0, -1) up or vec2(0, 1) down, in the frame it lets go; none otherwise, and for a drag begun on a hud_ box or one a scrolling list moved with
+  ```gdscript
+  if let d = swipe(): slide(int(d.x), int(d.y))
+  ```
+- `long_press = (seconds: f64 = 0.5) -> bool`: true once, in the frame a finger (or the left mouse button) has been held down `seconds` without moving: what it is on, said more about, say. Letting go after it is no tap of a button
+
+#### Points, a phone's notch, the design size: one layout for screens of any size
+
+- `pixel_ratio = () -> f64`: how many of the window's pixels make a point (a page's CSS pixel: about 1/160 inch on a phone, 1/96 on a desktop screen): the page's devicePixelRatio as it is drawn, or the desktop's scale (Wayland's, a Retina Mac's, Windows'), 1 without one
+- `css_pixel = () -> f64`: a point's size in 2D units: what must be the same size to a finger or an eye on any screen, a phone's or a desktop's, is sized in these (a button 48 * css_pixel() tall fits a finger; text 16 * css_pixel() high reads as a page's)
+- `safe_rect = () -> Rect`: the part of visible_rect() clear of a phone's notch, rounded corners and home bar (in a page on such a phone; all of visible_rect() elsewhere): what must be seen or tapped goes inside it, backgrounds over all of visible_rect()
+- `design_size = (w: int, h: int)`: change the design size (the 2D units, as given to window()) while the game runs: one layout for a phone held upright, another for a screen wider than tall, say (the window keeps its size; screen_fit says how the new units fill it), at once: in update, before drawing (with a letterbox fit or a fixed resolution, from the next frame)
+  ```gdscript
+  p = pixel_size() / f32(pixel_ratio())           # the screen in points
+  if p.y > p.x: design_size(360, 640) else: design_size(1280, 720)
+  ```
 - `show_cursor = (on: bool)`: show or hide the mouse pointer over the window (hidden: a game drawing its own crosshair or cursor); unlike mouse_lock, it still moves and mouse_pos() follows it
 - `window = (title: str = "", width: int = 1280, height: int = 720)`: Open the game window (called automatically when the program defines update/draw).
 
@@ -1854,6 +1875,7 @@ draw = ():
 - `clear = (c: vec4 = vec4(0, 0, 0, 1))`
 - `blend = (b: Blend)`
 - `clip = (pos: vec2, size: vec2)`: 2D drawing after this shows only inside the rectangle (in screen units, or a render target's pixels: translate and camera2d do not move it), until no_clip(), the next frame or another target (draw_to); for a scrolling list, a panel, a minimap
+- `clip = (r: Rect)`: the same, with a Rect: clip(r) around a scrolling list's box
 - `no_clip = ()`
 - `push_transform = ()`
 - `pop_transform = ()`
@@ -2017,7 +2039,7 @@ Japanese, Chinese or Korean text needs a font with them (Noto Sans CJK, which mo
 
 How a game's picture fits windows of any size and shape.
 
-A game is drawn in 2D units: the size given to window() (its design size), so the same coordinates work in any window. Two settings decide how that maps to the window's pixels:
+A game is drawn in 2D units: the size given to window() (its design size; design_size changes it while the game runs), so the same coordinates work in any window. Two settings decide how that maps to the window's pixels:
 
 ```gdscript
 screen_fit(mode): what a window of another shape shows
@@ -3426,7 +3448,9 @@ draw = ():
     ui_end()
 ```
 
-Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a click choose, left/right change sliders, switches and choices; ui_back() is true when escape or B was pressed. A menu ignores input in the frame it opens (the key that opened it is still pressed then); ui_ready() says whether that frame is over, for a game's own keys in a menu.
+Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a click (a tap) choose, left/right change sliders, switches and choices; ui_back() is true when escape or B was pressed. A click acts as the button comes up on the item it went down on (a finger that slides away is no tap). A menu ignores input in the frame it opens (the key that opened it is still pressed then); ui_ready() says whether that frame is over, for a game's own keys in a menu. On a touch screen the items are drawn as boxes, for fingers.
+
+Menus and hud_ boxes are drawn in the units of the 2D transform drawing has (camera2d_fit, translate, scale) and take the mouse and fingers where they show: a column laid out at 360 x 640 and fitted to any screen with camera2d_fit works as drawn.
 
 - `struct UiStyle`: how the ui_ menus look: set ui_style's fields (ui_style.size = 28.0, ui_style.focus_color = rgb(0.4, 0.8, 1)), for every menu drawn after
   ```gdscript
@@ -3438,17 +3462,19 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
       focus_color: vec4 = vec4(1, 0.9, 0.55, 1)
       disabled_color: vec4 = vec4(1, 1, 1, 0.28)
       bar_color: vec4 = vec4(1, 1, 1, 0.2)
+      box_color: vec4 = vec4(1, 1, 1, 0.08)   # behind each item on a touch screen
+      margin: f64 = 16.0                      # kept between the rows and the screen's edges
   ```
 - `ui_light_style = () -> UiStyle`: the look for menus over a light background (dark text, a dark orange for the chosen item): `ui_style = ui_light_style()`
 - `ui_begin = (name: str, top_center: vec2)`: start a menu: items go in a column centered on x, from y down. A menu starts with its first item chosen; shown again (back from its Settings), with the item it was left on.
 - `ui_end = ()`
 - `ui_back = () -> bool`: escape or the B button: go back (close the menu)
 - `ui_ready = () -> bool`: false in the frame the menu opened in: input then belongs to whatever opened it
-- `ui_button = (label: str, enabled: bool = true) -> bool`: a button: true in the frame it is chosen
+- `ui_button = (label: str, enabled: bool = true) -> bool`: a button: true in the frame it is chosen (enter, or a click or tap let go on it)
 - `ui_slider = (label: str, value: f64, step: f64 = 0.1, low: f64 = 0.0, high: f64 = 1.0) -> f64`: a value from low to high (0 to 1 unless given), changed in steps of `step` (left/right, or dragging with the mouse or a finger): `angle = ui_slider("Angle {int(angle)}°", angle, 1, 5, 90)`
-- `ui_switch = (label: str, on: bool) -> bool`: on or off (left/right, enter, or a click)
-- `ui_choice = (label: str, options: str[], index: int) -> int`: one of several (left/right, or a click on either side, goes to the one before or after): `difficulty = ui_choice("Difficulty", ["easy", "normal", "hard"], difficulty)`
-- `ui_text_field = (label: str, value: str, max_chars: int = 24) -> str`: a line of text typed in, up to max_chars characters: what is typed while it has the focus is added, backspace takes the last character away, enter (like down) goes on to the next item; `name = ui_text_field("Name", name)`
+- `ui_switch = (label: str, on: bool) -> bool`: on or off (left/right, enter, or a click or tap)
+- `ui_choice = (label: str, options: str[], index: int) -> int`: one of several (left/right, or a click or tap on either side, goes to the one before or after): `difficulty = ui_choice("Difficulty", ["easy", "normal", "hard"], difficulty)`
+- `ui_text_field = (label: str, value: str, max_chars: int = 24) -> str`: a line of text typed in, up to max_chars characters: what is typed while it has the focus is added, backspace takes the last character away, enter (like down) goes on to the next item; `name = ui_text_field("Name", name)`. With a finger, a tap on it brings up the phone's keyboard, and a Paste button at its right end, until the keyboard is put away
 - `ui_typing = () -> bool`: whether a text field (a menu's ui_text_field with the focus, or a hud_text_field clicked into) takes the keyboard: the game's own letter keys are better left alone then (ImGui's WantCaptureKeyboard)
 - `ui_text = (s: str, size: f64 = 24.0, color: vec4 = vec4(1, 1, 1, 0.6))`: a line of text in the column (not an item: it cannot be chosen)
 
@@ -3469,20 +3495,20 @@ Up/down (arrows, W/S, d-pad, left stick) move between items, enter/space/A or a 
   ```
 - `hud_hovered = () -> bool`: whether the mouse (or a finger) is over the interface now: over a hud_ box drawn in the last frame or this one, where it is now (a tap on the world just after one on a button is the world's; a tap landing on a button is the button's from that frame on)
 - `hud_panel = (r: Rect, color: vec4 = vec4(0, 0, 0, 0))`: a box behind other parts (it also keeps clicks on it from the world)
-- `hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false) -> bool`: a button with a label: true in the frame it is clicked (or tapped); selected: drawn as the one chosen of several (a tool, a tab)
+- `hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false) -> bool`: a button with a label: true in the frame it is clicked (or tapped): let go on it, having gone down on it (a finger that slides away is no tap, and a press that scrolls a list is the list's); selected: drawn as the one chosen of several (a tool, a tab)
 - `hud_bar = (r: Rect, amount: f64, color: vec4, back: vec4 = vec4(0, 0, 0, 0.5))`: a bar filled to `amount` (0 to 1): health, progress, a cooldown
-- `hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: str = "") -> str`: a box to type text in: clicking it gives it the keyboard, Enter, Escape or a click elsewhere takes it away; returns the text as it is now. Tapped on a phone, it brings up the phone's keyboard, and a Paste button at its right end. `id` tells fields with the same place apart (their rectangle names them otherwise); `hint` is shown dimmed while it is empty ("seed")
-- `hud_scroll = (r: Rect, content_height: f64, id: str = "") -> f64`: a list taller than its box: how far it is scrolled, from 0, moved by the wheel over the box and by dragging the bar drawn at its right edge (when there is more than fits). The rows go at their y minus that, inside clip(...) of the box: rows scrolled out of it take no clicks
+- `hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: str = "") -> str`: a box to type text in: clicking it gives it the keyboard, Enter, Escape or a click elsewhere takes it away; returns the text as it is now. Tapped on a phone, it brings up the phone's keyboard, and a Paste button at its right end, until the keyboard is put away. `id` tells fields with the same place apart (their rectangle names them otherwise); `hint` is shown dimmed while it is empty ("seed")
+- `hud_scroll = (r: Rect, content_height: f64, id: str = "") -> f64`: a list taller than its box: how far it is scrolled, from 0. Moved by dragging it (with a finger, or the mouse: a press on a row that moves is a drag, not a click on the row, and let go moving, the list glides on), by the wheel over the box and by the bar drawn at its right edge (when there is more than fits). The rows go at their y minus that, inside clip(...) of the box: rows scrolled out of it take no clicks
   ```gdscript
-  off = hud_scroll(r, f64(items.len()) * 44.0, "shop")
-  clip(vec2(r.x, r.y), vec2(r.w, r.h))
+  off = hud_scroll(r, items.len() * 44, "shop")
+  clip(r)
   loop i in 0.. and it in items:
-      if hud_button(Rect(r.x, r.y + f32(f64(i) * 44.0 - off), r.w - 14, 40), it.name): buy(i)
+      if hud_button(Rect(r.x, r.y + i * 44 - off, r.w - 14, 40), it.name): buy(i)
   no_clip()
   ```
 - `hud_tooltip = (s: str)`: a box of text beside the mouse, kept on the screen: what the thing under the mouse is or does. Draw it after the rest of the interface, so nothing covers it (`if hovered: tip = "..."`, then at the end of draw, `if len(tip) > 0: hud_tooltip(tip)`); lines break at "\n"
-- `hud_slider = (r: Rect, value: f64, low: f64, high: f64, step: f64 = 0.0, label: str = "") -> f64`: a box ticked or not, with its label to the right: the new state (flipped in the frame it is clicked) a value from low to high, set by dragging along the box (a finger too: the slider pressed on keeps the drag until let go), in steps of `step` (0: any value); the label, if any, is drawn over the box's left part, so give it room: `g = hud_slider(Rect(20, 80, 300, 36), g, 1, 20, 0.1, "g {g:.1f} m/s²")`
-- `hud_checkbox = (r: Rect, label: str, on: bool) -> bool`
+- `hud_slider = (r: Rect, value: f64, low: f64, high: f64, step: f64 = 0.0, label: str = "") -> f64`: a value from low to high, set by dragging along the box (a finger too: the slider pressed on keeps the drag until let go), in steps of `step` (0: any value); the label, if any, is drawn over the box's left part, so give it room: `g = hud_slider(Rect(20, 80, 300, 36), g, 1, 20, 0.1, "g {g:.1f} m/s²")`
+- `hud_checkbox = (r: Rect, label: str, on: bool) -> bool`: a box ticked or not, with its label to the right: the new state (flipped in the frame it is clicked or tapped)
 
 ## Paths
 

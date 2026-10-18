@@ -117,18 +117,76 @@ builds are the smaller ones; `--release` makes the code faster and larger.
 Pause when `window_focused()` is false: the player clicked outside the page's frame (`sloppy
 new` makes games that do). The page takes the keyboard as it loads.
 
-On phones (tick "Mobile friendly" on itch.io, and pick the orientation): the first finger is the
-mouse, its left button down while it touches, so a game made for the mouse works as it is;
-`touches()` has every finger (on-screen buttons: left, right, jump), and `touch_input()` says
-the last input was a finger (no hover then). `screen_fit(.expand)` and `visible_rect()` lay
-the game out for any shape of screen. `toggle_fullscreen()` from a tap goes fullscreen as the
-finger lifts (browsers allow it only then); iPhones' Safari has no fullscreen for a page's
-canvas. A `hud_text_field` tapped brings up the phone's keyboard, with a Paste button beside
-what is typed while it has it. A game made wider than tall (as `window()`'s 1280x720 is) shows a
-note to turn the phone sideways while a phone is held upright; one laid out for both ways says
-`sideways_hint(false)`.
+On phones (tick "Mobile friendly" on itch.io, and pick the orientation) games work with
+fingers: [Phones](#phones) below says how to lay one out.
 
-A board and buttons, for a phone held either way: the board in the part of the screen the
+Each is one file with nothing to install alongside it (`--target macos` and `--target linux`
+make the same from any system too; a Windows build's `.pdb` beside it is for debuggers only, so
+leave it out of what you share; Windows warns about a program it has not seen signed before,
+"More info", then "Run anyway").
+`sloppy build game.jo --target macos -o Game.app` makes a Mac app (its icon, its name in the
+Dock and the menu bar); `zip -r Game.zip Game.app` to share it. It is not signed by an Apple
+developer account, so a Mac opens a downloaded one after a right click, Open (or System
+Settings, Privacy & Security, Open Anyway).
+
+## Phones
+
+The first finger is the mouse, its left button down while it touches, so a game made for the
+mouse works as it is; `touches()` has every finger (on-screen buttons: left, right, jump).
+`touch_device()` says the screen is a touch screen from the start, `touch_input()` that the last
+input was a finger (no hover then). `swipe()` is the way a drag just went (a 2048 move),
+`long_press()` a finger held still. `toggle_fullscreen()` from a tap goes fullscreen as the
+finger lifts (browsers allow it only then); iPhones' Safari has no fullscreen for a page's
+canvas.
+
+**A design size.** For a game held upright, give `window` a phone's shape in points, as
+`window("Merge", 360, 640)`: phones are 360 to 430 points wide, and taller than 640, so with the
+default `screen_fit(.expand)` the extra height shows; `visible_rect()` is all of it. Lay out from
+its edges: a header at its top, the board in the middle, buttons at its bottom. `css_pixel()` is
+how large a point (a CSS pixel: about 1/160 inch on a phone) is in your units, so `48 *
+css_pixel()` is a button a finger hits on any screen; `pixel_ratio()` is the screen's pixels per
+point.
+
+**Held the other way, and on a desktop.** A game made taller than wide shows a note to turn the
+phone upright while it is held sideways (`upright_hint(false)` for one laid out for both ways),
+and one made wider than tall the other way round (`sideways_hint(false)`). On a desktop browser
+the same 360 x 640 column shows in the middle of a wider screen, scaled to its height. A game
+laid out for both shapes can change its units as the screen turns: `design_size(w, h)` (or
+`window(...)` called again) at the start of `update`:
+
+```gdscript
+update = (dt: f64):
+    p = pixel_size() / f32(pixel_ratio())       # the screen, in points
+    if p.y > p.x: design_size(360, 640) else: design_size(800, 450)
+```
+
+Or draw a column designed at 360 x 640 under `camera2d_fit(Rect(0, 0, 360, 640), visible_rect())`:
+menus and `hud_` boxes take taps where they show, under any 2D transform.
+
+**The notch and the home bar.** `safe_rect()` is the part of `visible_rect()` that a phone's
+notch, rounded corners and home bar leave clear (all of it elsewhere): backgrounds over
+`visible_rect()`, buttons and text inside `safe_rect()`. The page around the game takes the color
+the game clears the screen with.
+
+**Taps, lists and menus.** Buttons act as the finger lifts, on the button it went down on; a
+finger that slides away is no tap, so a drag that starts on a row of a `hud_scroll` list scrolls
+the list (it glides on when let go moving) and buys nothing. `ui_` menus on a touch screen draw
+each item as a box no wider than the screen (`ui_style.margin` from its edges), with no keyboard
+focus marks.
+
+**The keyboard.** A `ui_text_field` or `hud_text_field` tapped brings up the phone's keyboard,
+with a Paste button beside what is typed; the page moves up over the keyboard as far as the field
+needs (the game keeps its size), and when the player puts the keyboard away the field lets go of
+it. `ui_typing()` says a field has the keyboard.
+
+**Trying it on the desktop.** A native run takes a phone's shape and a finger's input:
+`SLOPPY_WINDOW=360x800 sloppy run game.jo` opens a phone-shaped window, `SLOPPY_TOUCH=1` makes
+it a touch screen (menus as on a phone, the turn-the-phone notes) and `SLOPPY_PIXEL_RATIO=3` its
+pixels per point; `SLOPPY_INPUT="5:touch1=180x300 7:touch1-"` taps (in your units), and with
+`SLOPPY_SCREENSHOT=out.png SLOPPY_FRAMES=10` saves the frame. In a browser, the developer tools'
+device mode shows a phone, its rotation and its touches.
+
+A board and buttons for a phone held either way: the board in the part of the screen the
 buttons leave (`camera2d_fit`), a tool picked with a button, then a tap on the board; a tap on a
 button is not one on the board (`hud_hovered()`):
 
@@ -150,15 +208,6 @@ draw = ():
         r = if upright: Rect(v.x + 20 + f64(i) * 150, v.y + v.h - 140, 140, 120) else: Rect(v.x + v.w - 200, v.y + 20 + f64(i) * 130, 180, 120)
         if hud_button(r, name, selected = tool == i): tool = i
 ```
-
-Each is one file with nothing to install alongside it (`--target macos` and `--target linux`
-make the same from any system too; a Windows build's `.pdb` beside it is for debuggers only, so
-leave it out of what you share; Windows warns about a program it has not seen signed before,
-"More info", then "Run anyway").
-`sloppy build game.jo --target macos -o Game.app` makes a Mac app (its icon, its name in the
-Dock and the menu bar); `zip -r Game.zip Game.app` to share it. It is not signed by an Apple
-developer account, so a Mac opens a downloaded one after a right click, Open (or System
-Settings, Privacy & Security, Open Anyway).
 
 ## Editors
 
