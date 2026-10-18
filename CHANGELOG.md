@@ -8,6 +8,8 @@
   8 bytes (a 24-bit field). `to_int(s, base)` for bases 2 to 36; `to_int` reads 0b and 0o too.
 - `set_env`, `unset_env` and `env_all()`: seen by `env` and by the programs started after.
 - The thread pool makes a wake call only for threads that are asleep.
+- LANGUAGE.md's Calling C: a table of C's types (Windows' 32-bit `long`), and what crosses and
+  for how long (`str` read-only to C, `data(xs)` until it grows, variadic arguments, print's buffer).
 - Text is not a number: a one-character string in double quotes is a character's code only where
   a byte (`u8`) is expected (`s[i] == "a"`, `bytes.push("\n")`); single quotes, `'a'`, still are
   wherever an integer goes. `add(1, "2")` printed 51 and `x: int = "5"` made 53; now they are

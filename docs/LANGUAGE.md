@@ -1351,6 +1351,38 @@ q = p + 2                                    # two elements on, not two bytes
 print(xs, q[0], size_of(i32))
 ```
 
+**C's types**, and what to write for them:
+
+| C | Sloppy |
+|---|---|
+| `int`, `unsigned`, `short`, `char` / `unsigned char` | `i32`, `u32`, `i16`, `i8` / `u8` |
+| `long`, `unsigned long` | `int`, `u64` on Linux and macOS; `i32`, `u32` on Windows (its `long` is 32 bits) |
+| `size_t`, `ssize_t`, `int64_t`, `intptr_t` | `u64` or `int`, `int`, `int`, `int` |
+| `bool` (C99) | `u8` (1 is true) |
+| `float`, `double` | `f32`, `f64` |
+| `const char *` in | `str` (C may read it, never write it), or `*u8` |
+| `char *` out, or kept by C | `*u8`, copied with `str_from_c(p)` (`""` for null: check `p == null` first when that matters) |
+| `void *`, `T *`, `T **` | `*u8`, `*T`, `**T` (`p.field` reads a struct through its pointer) |
+| a struct | the same fields, in order: passed by pointer (`&s`, `data(xs)`); not by value |
+
+What crosses, and for how long:
+- **`str` is read-only to C.** It may share its bytes with other strings. Give C a buffer to
+  write into as `u8[]`: `buf = fill(u8(0), 256)`, then `data(buf)`.
+- **Text passed as a `str` lives for the call.** A library that keeps the pointer for later
+  (sqlite's `SQLITE_STATIC`) needs bytes that last: a `u8[]` kept in a variable, or the library's
+  copying form (`SQLITE_TRANSIENT`).
+- **`data(xs)` stays valid while `xs` neither grows nor goes away.** A `push` or `resize` may
+  move it.
+- **What can't cross:** an `extern` can't give back a `str` (it gives `*u8`, read with
+  `str_from_c`), and `@cabi` functions take and give scalars and pointers only.
+- **Variadic arguments are not promoted as C promotes them.** Pass `f64(x)` for a `%f` and
+  `i32(...)` for a `%d`.
+- **`print` is buffered.** Call `flush_output()` before C writes to the same output
+  (`puts`, `write`), or the lines come out of order.
+- **Names that clash.** An `extern` with the name of a library function (`abs`, `write`, `exit`)
+  adds an overload of it rather than replacing it. Give it another name and the C one in
+  `@symbol("abs")`.
+
 `@cabi` functions may run on threads C makes (pthreads, a library's callbacks): such threads
 take turns at memory of their own. What they share with the rest of the program is theirs to
 guard (reference counts change without atomics there); for work on several threads, use
