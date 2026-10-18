@@ -48,6 +48,22 @@
   bounds: it starts after the end (length 0)` (it said `[1..-1]`).
 - `parse_query(q)` and `parse_cookies(header)`: a query string's and a Cookie header's names and
   values.
+- `?` passes a failure on: `n = parse(s)?` returns a none, or an error, from the function, and
+  gives the value otherwise (`sum += parse_num(l)?` for `r = parse_num(l)`, `if r is ParseError:
+  return r`, `sum += r`). An error is a type declared `error struct ParseError:` (or `error enum`),
+  which adds nothing else; the library's JsonError, TextError and ModelError are. It is an
+  expression, evaluated left to right wherever one goes: arguments, `loop` conditions (checked
+  each time), `"{f()?}"`, `load()?.items[0]`, `total += n()?`, match arms; deferred code runs as
+  for any return. The compiler says when the function's result type cannot hold what `?` returns
+  (`make its result int | ParseError`), when a value has nothing to pass on (an `int`, or a union
+  whose structs are not declared `error`) or everything would be, at the top level and in
+  deferred code, and that `a?.b` is not optional chaining. Hover on a `?` shows the value's type
+  and what it returns.
+- A call whose result can be an error, written as a statement, warns that it is ignored
+  (`save(path)` with `-> bool | SaveError`); `_ = save(path)` drops it on purpose.
+- A return from inside an expression (`f(name(), if c: 1 else: return 0)`) releases what the
+  statement held for the call, and a struct, array, tuple, map or text half built around it
+  (they leaked).
 - Bit helpers count and turn a number's own bits: `rotate_left(x: u32, 1)` stays a u32 (it
   turned 64 bits, giving numbers a u32 cannot hold), `leading_zeros(u8(0x80))` is 0 (it was 56),
   `popcount(i32(-1))` 32; for u8 to u64 and i8 to i32. `get_le`/`get_be` take any size from 1 to

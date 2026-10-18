@@ -4332,6 +4332,109 @@ mk_ident_local = (l: int, pos: int) -> int:
     add_flag(n, NF_CHECKED)
     n
 
+# ---------------- passing failures on: a? ----------------
+# a member of a union that `?` passes on: one declared `error struct` or `error enum` (none too)
+try_passes = (m: int) -> bool:
+    pm = prune(m)
+    k = types[pm].kind
+    if k != .struct_ and (k != .enum_ or is_union(pm)): return false
+    d = int(structs[int(types[pm].st)].decl)
+    d != 0 and has_flag(d, NF_ERROR)
+
+# can a function giving rt return m (a member, or none) as it is?
+try_holds = (rt: int, m: int) -> bool:
+    r = prune(rt)
+    if m == T_NONE: return types[r].kind == .opt
+    if types[r].kind == .opt: r = prune(int(types[r].elem))
+    if is_union(r): return union_index(r, m) >= 0
+    type_eq(r, m)
+
+a_or_an = (s: str) -> str:
+    if len(s) > 0 and find_byte("aeiouAEIOU", s[0]) >= 0: return "an {s}"
+    "a {s}"
+
+try_defers: int[]     # the function contexts whose deferred code is being checked (it cannot return)
+
+# a?: `__tryN = a`, then `if __tryN == none: return none` (a an optional) and `if __tryN is E:
+# return __tryN` for each error member E, then __tryN, narrowed to the members left
+check_try = (n: int, expected: int) -> int:
+    pos = nodes[n].pos
+    at = prune(check_expr(int(nodes[n].a), 0))
+    a = last_checked
+    add_flag(a, NF_CHECKED)
+    if types[at].kind == .void_: fatal(pos, "`?` cannot be used here: this gives no value")
+    vt = at
+    if types[at].kind == .opt: vt = prune(int(types[at].elem))
+    ms = [vt]
+    if is_union(vt): ms = union_members(vt)
+    fails: int[]
+    rest: int[]
+    loop m in ms:
+        if try_passes(m): fails.push(m)
+        else: rest.push(m)
+    pass_none = types[at].kind == .opt
+    if not pass_none and fails.len() == 0:
+        loop m in ms:
+            k = tkind(m)
+            if (k == .struct_ or (k == .enum_ and not is_union(m))) and is_union(vt):
+                kw = "struct"
+                if k == .enum_: kw = "enum"
+                fatal(pos, "{type_str(at)} has nothing for `?` to pass on: handle it with `is`, or declare {type_str(m)} with `error {kw}` if it is a failure")
+        fatal(pos, "`?` cannot be used on {a_or_an(type_str(at))}: it holds neither none nor an error (an `error struct`), so there is nothing to pass on: remove the `?`")
+    if rest.len() == 0: fatal(pos, "every member of {type_str(at)} is passed on by `?`, so no value would be left: `return` it instead")
+    # (f()?.x: `?` and a field, which a habit from other languages reads as one `?.`)
+    chain = ""
+    if src_char(pos + 1) == '.': chain = " (there is no `?.` optional chaining: `?` returns from the function; `if let v = x: v.f` uses the value when there is one, `(x ?? default).f` a default otherwise)"
+    if fns[int(ctxs[cx].inst)].kind == FK_INIT and ctxs[cx].parent < 0: fatal(pos, "`?` returns from a function, and there is none here: handle the result here, or move this into a function{chain}")
+    if try_defers.len() > 0 and try_defers[try_defers.len() - 1] == cx: fatal(pos, "`?` returns from the function, which deferred code cannot do: handle the result here")
+    ret = int(ctxs[cx].ret)
+    fname = "this function"
+    fd = int(fns[int(ctxs[cx].inst)].decl)
+    if fns[int(ctxs[cx].inst)].kind == FK_NORMAL and fd != 0 and nodes[fd].kind == .fn_: fname = name_of(int(nodes[fd].name))
+    if ctxs[cx].infer_ret and tkind(ret) == .var:
+        # (a result type inferred, and not known yet: one return of a failure would make it that)
+        what = "none"
+        if fails.len() > 0: what = a_or_an(type_str(fails[0]))
+        fatal(pos, "this `?` can return {what}, but the result type of {fname} is not written: write it, with the failure in it (`-> {type_str(at)}`, when it gives {a_or_an(type_str(mk_union(rest)))} otherwise)")
+    rt = prune(ret)
+    gives = "gives {type_str(rt)}"
+    if types[rt].kind == .void_: gives = "gives no value"
+    if pass_none and not try_holds(rt, T_NONE):
+        add = ", or add it to the result type (`-> {type_str(mk_opt(rt))}`)"
+        if types[rt].kind == .void_: add = ""
+        fatal(pos, "this `?` can return none, but {fname} {gives}: use `?? default`, handle none (`if let v = x: ...`){add}{chain}")
+    loop m in fails:
+        if try_holds(rt, m): continue
+        make = "make its result `{type_str(mk_union([rt, m]))}`"
+        if types[rt].kind == .void_: make = "give it a result type that holds it"
+        fatal(pos, "this `?` can return {a_or_an(type_str(m))}, but {fname} {gives}: {make}, or handle or convert {type_str(m)} here (`if r is {type_str(m)}: return ...`)")
+    if ide_on and ide_indexed(pos_file(pos)):
+        gone: str[]
+        if pass_none: gone.push("none")
+        loop m in fails: gone.push(type_str(m))
+        dot = ""
+        if len(chain) > 0: dot = " (not optional chaining)"
+        gs = join(gone, " or ")
+        info = "(?) {type_str(mk_union(rest))}    # {gs} returned from {fname}{dot}"
+        ide_try_refs.push("R\t{ide_pos_str(pos)}\t1\t\t{ide_esc(info)}")
+    nm = "__try{bc_count}"
+    bc_count += 1
+    stmts = [bc_let(nm, a, pos)]
+    if pass_none:
+        ret_none = mk(.return_, pos)
+        nodes[ret_none].a = i32(mk(.none_lit, pos))
+        stmts.push(bc_if(bc_bin(.eq, bc_ident(nm, pos), mk(.none_lit, pos), pos), [ret_none], [], pos))
+    loop m in fails:
+        it = mk(.istype, pos)
+        nodes[it].a = i32(bc_ident(nm, pos))
+        nodes[it].b = i32(type_node_of(m, pos))
+        r = mk(.return_, pos)
+        nodes[r].a = i32(bc_ident(nm, pos))
+        stmts.push(bc_if(it, [r], [], pos))
+    stmts.push(bc_stmt(bc_ident(nm, pos), pos))
+    nodes[n] = nodes[bc_block(stmts, pos)]
+    check_expr(n, expected)
+
 # ---------------- main expression checker ----------------
 check_expr = (n: int, expected: int) -> int:
     last_checked = n
@@ -4853,9 +4956,11 @@ check_expr = (n: int, expected: int) -> int:
         if ex != 0:
             if exk == .opt: h = ex
             else: h = mk_opt(ex)
+        was_try = nodes[int(nodes[n].a)].kind == .try_
         at = prune(check_expr(int(nodes[n].a), h))
         if types[at].kind != .opt:
             lhs = int(nodes[n].a)
+            if was_try: fatal(nodes[n].pos, "the `?` before `??` has returned the none already, so `??` never sees one: drop the `?` to give a default instead, or the `??` to pass the none on")
             # (an index into a map has become a call by now; its position is still the '[')
             lp = int(nodes[lhs].pos)
             lf = pos_file(lp)
@@ -4886,6 +4991,11 @@ check_expr = (n: int, expected: int) -> int:
                 at = prune(ntype(int(nodes[al].a)))
         if types[at].kind != .opt: fatal(nodes[n].pos, "'!' needs an optional value, found {type_str(at)}")
         t = int(types[at].elem)
+    else if k == .try_: return check_try(n, expected)
+    else if k == .topt and has_flag(n, NF_TYPE_EXPR):
+        # (xs[i?]: parsed as a type argument, int?, and a value here)
+        nodes[n].kind = .try_
+        return check_try(n, expected)
     else if k == .lambda: t = check_lambda(n, expected)
     else if k == .array and has_flag(n, NF_TYPE_EXPR):
         # (thorns = Rect[]: an empty array of Rects is declared with a colon)

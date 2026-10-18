@@ -146,7 +146,7 @@ habit = (i: int, want: Tok):
         loop j > 0 and not nl_before(j): j -= 1
         if j >= 0 and toks[j].kind == .ident and (tok_src(j) == "for" or tok_src(j) == "while"): fatal(toks[j].pos, "loops are `loop i in [0..n):` (i from 0 to n - 1), or `loop condition:` (while it holds)")
     if k == .ellipsis and want == .eof: fatal(toks[i].pos, "an array is spread with `...` after it: `[xs... 4 5]`, `f(args...)`")
-    if pw == "throw" or pw == "raise": fatal(at, "there are no exceptions: a function gives back what went wrong as a value (`-> Level | LoadError`), or `panic(\"...\")` stops the program")
+    if pw == "throw" or pw == "raise": fatal(at, "there are no exceptions: a function gives back what went wrong as a value (`-> Level | LoadError`, with `error struct LoadError:`), which `?` passes on to its caller, or `panic(\"...\")` stops the program")
     if word_in(pw, ["public", "private", "protected", "static", "override", "virtual"]): fatal(at, "there is no `{pw}`: every name can be used from other files (one starting with `_` stays in its own), and a variable or field is written `speed: f64 = 5.0`")
     if word_in(pw, ["export", "pub"]): fatal(at, "every top-level name can be imported already (`from 'file.jo' import name`); a name starting with `_` stays private to its file")
     # (C#'s and Java's `void Start()`, `float speed = 5`: the type before the name)
@@ -659,6 +659,7 @@ id_end = 0
 id_type = 0
 id_soa = 0
 id_from = 0
+id_error = 0
 
 # parser modes
 p_matrix = 0          # > 0 inside array brackets: a space separates elements
@@ -989,8 +990,9 @@ parse_postfix = (e0: int) -> int:
             set_list(a, [e])
             add_flag(a, NF_TYPE_EXPR)
             e = a
-        else if (k == .question or k == .qq) and (pkn(1) == .rbrack or pkn(1) == .comma) and p_index.len() > 0:
-            # T?: the optional type, as a type argument (gen[int?](none); T?? is a T? too)
+        else if (k == .question or k == .qq) and (pkn(1) == .rbrack or pkn(1) == .comma) and p_index.len() > 0 and nodes[e].kind != .call:
+            # T?: the optional type, as a type argument (gen[int?](none); T?? is a T? too; xs[i?],
+            # a value, is made a `?` when checked)
             advance()
             o = mk(.topt, pos)
             nodes[o].a = i32(e)
@@ -1084,6 +1086,12 @@ parse_postfix = (e0: int) -> int:
         else if k == .bang:
             advance()
             u = mk(.unwrap, pos)
+            nodes[u].a = i32(e)
+            e = u
+        else if k == .question and not space_before(ti):
+            # f()?: f's failure passed on (`c ? a : b`, spaced, is no `?` of this kind)
+            advance()
+            u = mk(.try_, pos)
             nodes[u].a = i32(e)
             e = u
         else: return e
@@ -1793,7 +1801,7 @@ parse_simple_stmt = () -> int:
     if k == .ident and pkn(1) == .colon:
         w = tok_src(ti)
         if pkn(2) == .newline and word_in(w, ["try", "except", "catch", "finally"]):
-            fatal(pos, "there are no exceptions: errors are values (a function gives `T | Error`, and `match` or `is` sees which came back; `panic` stops the program)")
+            fatal(pos, "there are no exceptions: errors are values (a function gives `T | Error`, and `match` or `is` sees which came back, or `?` passes it on to the caller; `panic` stops the program)")
         d = mk(.vardecl, pos)
         nodes[d].name = i32(expect_ident(""))
         advance()
@@ -2595,6 +2603,12 @@ parse_toplevel = () -> int:
         d = parse_fn_decl(true)
     else if k == .kw_struct: d = parse_struct()
     else if k == .kw_enum: d = parse_enum()
+    else if k == .ident and toks[ti].ival == id_error and (pkn(1) == .kw_struct or pkn(1) == .kw_enum):
+        # error struct ParseError: a failure, which `?` passes on
+        advance()
+        if pk() == .kw_struct: d = parse_struct()
+        else: d = parse_enum()
+        add_flag(d, NF_ERROR)
     else if k == .ident and toks[ti].ival == id_from and (pkn(1) == .str_lit or pkn(1) == .ident):
         # from physics import step, Body as B: those names (aux 2; each an ident whose aux is
         # its new name, or 0)
@@ -2664,6 +2678,7 @@ parse_file = (file: int) -> int[]:
         id_type = intern("type")
         id_soa = intern("soa")
         id_from = intern("from")
+        id_error = intern("error")
     lx_lazy = p_lazy
     toks = lex(file, files[file].src)
     lx_lazy = false

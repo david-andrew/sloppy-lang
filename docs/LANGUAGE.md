@@ -185,7 +185,7 @@ From tightest to loosest (operators on one line bind alike, left to right but fo
 
 | Operators | |
 |---|---|
-| `x.f`, `f(x)`, `xs[i]`, `x!` | field, call, index, unwrap |
+| `x.f`, `f(x)`, `xs[i]`, `x!`, `x?` | field, call, index, unwrap, pass a failure on ([errors](#7-structs-unions-enums-optionals-tuples)) |
 | `^` | power (right to left) |
 | `-x`, `~x` | negation, bitwise not |
 | `*` `/` `%` | |
@@ -595,7 +595,7 @@ describe = (v: int | str) -> str:
 
 parse_int = (s: str) -> int | ParseError: ...
 r = parse_int(text)
-if r is ParseError: return r
+if r is ParseError: return r            # (`?` says this in one step: see Errors below)
 print(r + 1)                            # r is an int
 ```
 
@@ -651,14 +651,17 @@ n = lookup(key) ?? 0                    # default
 k = lookup(key)!                        # unwrap or panic
 ```
 
-**Errors.** A function that can fail returns its result or the reason: `T | SomeError` (a struct
-of your own, holding what the caller needs to know), or `T?` when there is nothing to say. A
-caller passes a failure on with `if r is SomeError: return r`, after which `r` is a `T`. Panics
-are for mistakes in the program (an index out of bounds, a broken assumption); things that can go
-wrong while it runs (bad input, a missing file) are values.
+**Errors.** A function that can fail returns its result or the reason: `T?` when there is
+nothing to say (`none`), or `T | SomeError`, where `SomeError` is a struct of your own, declared
+`error struct`, holding what the caller needs to know. Panics are for mistakes in the program (an
+index out of bounds, a broken assumption); things that can go wrong while it runs (bad input, a
+missing file) are values.
+
+The caller can handle a failure where it is: `x ?? default` or `if let v = x:` for a `none`,
+`is` (or a `match`) for an error, after which the value is what is left:
 
 ```gdscript
-struct ParseError:
+error struct ParseError:
     msg: str
     line: int
 
@@ -666,14 +669,58 @@ parse_num = (s: str, line: int) -> int | ParseError:
     if let n = to_int(s): return n
     ParseError("not a number: '{s}'", line)
 
+r = parse_num("12", 1)
+if r is ParseError: print("line {r.line}: {r.msg}")
+else: print(r + 1)                      # r is an int
+```
+
+Or it can pass the failure on to its own caller. `?` returns a missing value or an error from
+this function; otherwise it gives you the value:
+
+```gdscript
 total = (text: str) -> int | ParseError:
     sum = 0
     loop i in 0.. and l in split(text, "\n"):
-        r = parse_num(l, i + 1)
-        if r is ParseError: return r
-        sum += r
+        sum += parse_num(l, i + 1)?         # a ParseError is returned from total as it is
     sum
+
+load_score = (path: str) -> int?:
+    text = read_file(path)?             # none: no file
+    to_int(text)?                       # none: not a number
 ```
+
+`sum += parse_num(l, i + 1)?` is short for
+
+```gdscript
+r = parse_num(l, i + 1)
+if r is ParseError: return r
+sum += r
+```
+
+- `?` passes on `none`, and each member of the union declared `error struct` or `error enum`
+  (only the value's own members: a `ParseError[]` is an array, not a failure); what is left is
+  the value. `error` adds nothing else (no fields, no base type), and a name ending in `Error` is
+  a habit, not what decides: the library's `JsonError`, `TextError` and `ModelError` are
+  declared so. `?` on a value with nothing to pass on (an `int`, or a union whose structs are not
+  declared `error`) is an error, as is one where every member would be passed on.
+- What `?` can return must fit the result type of the function it is in (the nearest one: in a
+  lambda, the lambda's): the compiler says what to add (`-> int | ParseError`), or convert it
+  there, `if r is ParseError: return EvalError(r.msg)`. The result type has to be written where
+  `?` is used, unless an earlier `return` has settled it. `?` cannot be used at the top level of
+  a program or in a test (there is no function to return from), nor in deferred code; a `defer`
+  runs when `?` returns, as for any `return`.
+- It is an expression, so it goes anywhere one does, evaluated left to right: `add(a()?, b()?)`
+  calls `b` only when `a` gave a value, a `loop` condition with a `?` in it checks it each time,
+  and `"{f()?}"`, `x and f()?` (only when x holds), `load()?.items[0]` work.
+- `a()?.b` returns from the function when `a()` gives none; it is not optional chaining. For a
+  value that may be none, `(a() ?? default).b` or `if let v = a(): v.b`.
+- `??`, `if let` and `!` handle `none` only: an error goes through them unchanged.
+- An error cannot pass through `?` as a value: the members of a union that are errors always
+  return. To give one back as data (a list of the problems found), return them in an array, or
+  wrap the error in a struct of its own.
+- A call whose result can be an error, written as a statement, gets a warning (`save(path)` with
+  `-> bool | SaveError`): handle it, pass it on with `?`, or drop it on purpose with
+  `_ = save(path)`.
 
 **Tuples:**
 
