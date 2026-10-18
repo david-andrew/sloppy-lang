@@ -168,7 +168,11 @@ mk_array = (e: int) -> int: mk_type(TypeInfo(kind = .array, elem = i32(e)), [])
 mk_fixed = (e: int, n: int) -> int: mk_type(TypeInfo(kind = .fixed, elem = i32(e), bits = i32(n)), [])
 fixed_len = (t: int) -> int: int(types[prune(t)].bits)
 mk_ptr = (e: int) -> int: mk_type(TypeInfo(kind = .ptr, elem = i32(e)), [])
-mk_opt = (e: int) -> int: mk_type(TypeInfo(kind = .opt, elem = i32(e)), [])
+# (T? is T | none, so a T?? is a T?: an optional of an optional is the optional, as with
+# map.get on a map of optionals, whose none is either a missing key or a none kept)
+mk_opt = (e: int) -> int:
+    if types[prune(e)].kind == .opt: return prune(e)
+    mk_type(TypeInfo(kind = .opt, elem = i32(e)), [])
 mk_fn = (params: int[], ret: int, mutmask: int) -> int: mk_type(TypeInfo(kind = .fn_, elem = i32(ret), mutmask = i32(mutmask)), params)
 mk_cfn = (params: int[], ret: int) -> int: mk_type(TypeInfo(kind = .cfn, elem = i32(ret)), params)
 mk_tuple = (elems: int[]) -> int: mk_type(TypeInfo(kind = .tuple), elems)
@@ -439,6 +443,27 @@ talign = (t: int) -> int:
     if a == 0: return 1
     a
 
+# (a struct or enum whose fields are being laid out: the field on the way, for contains_itself)
+laying_out: {int: int} = {}
+laying_variant: {int: int} = {}
+
+# struct or enum si holds itself in place (through field laying_out[si], of variant vi of an
+# enum): an error saying how to keep it
+contains_itself = (si: int, what: str, vi: int):
+    nm = structs[si].name
+    fi = laying_out.get(si) ?? -1
+    if fi < 0: fatal(nodes[int(structs[si].decl)].pos, "{what} '{nm}' contains itself (use an array T[] for recursive data)")
+    fname = name_of(int(fields[fi].name))
+    ft = type_str(int(fields[fi].type))
+    where = "its field '{fname}' ({ft})"
+    fix = "`{fname}: {nm}[]` (empty, or one)"
+    if vi >= 0:
+        vn = name_of(int(variants[vi].name))
+        where = "variant {vn}'s field '{fname}' ({ft})"
+        fix = "`{vn}({fname}: {nm}[])`"
+        if int(variants[vi].nfields) > 1: fix = "`{fname}: {nm}[]` in {vn}(...)"
+    fatal(nodes[int(structs[si].decl)].pos, "{what} '{nm}' contains itself: {where} would hold a whole {nm} inside each {nm}. An array holds its elements apart, so recursive data goes in one: {fix}, or all of them in one array, linked by index (`{fname}: int`)")
+
 layout = (t0: int):
     t = prune(t0)
     if int(types[t].flags) & TF_LAID_OUT != 0: return
@@ -479,12 +504,13 @@ layout = (t0: int):
     else if k == .struct_:
         si = int(types[t].st)
         check_struct_fields(si)
-        if structs[si].resolving: fatal(nodes[int(structs[si].decl)].pos, "struct '{structs[si].name}' contains itself (use an array T[] for recursive data)")
+        if structs[si].resolving: contains_itself(si, "struct", -1)
         structs[si].resolving = true
         off = 0
         loop i in [0..int(structs[si].nfields)):
             fi = int(structs[si].fields) + i
             e = int(fields[fi].type)
+            laying_out[si] = fi
             layout(e)
             off = align_up(off, talign(e))
             fields[fi].offset = i32(off)
@@ -496,7 +522,7 @@ layout = (t0: int):
     else if k == .enum_:
         si = int(types[t].st)
         check_struct_fields(si)
-        if structs[si].resolving: fatal(nodes[int(structs[si].decl)].pos, "enum '{structs[si].name}' contains itself")
+        if structs[si].resolving: contains_itself(si, "enum", laying_variant.get(si) ?? -1)
         structs[si].resolving = true
         psize = 0
         pal = 4
@@ -506,6 +532,8 @@ layout = (t0: int):
             loop i in [0..int(variants[vi].nfields)):
                 fi = int(variants[vi].fields) + i
                 e = int(fields[fi].type)
+                laying_out[si] = fi
+                laying_variant[si] = vi
                 layout(e)
                 off = align_up(off, talign(e))
                 fields[fi].offset = i32(off)

@@ -2,6 +2,46 @@
 
 ## 0.22.0
 
+- Text is not a number: a one-character string in double quotes is a character's code only where
+  a byte (`u8`) is expected (`s[i] == "a"`, `bytes.push("\n")`); single quotes, `'a'`, still are
+  wherever an integer goes. `add(1, "2")` printed 51 and `x: int = "5"` made 53; now they are
+  errors saying `to_int("2")` reads the number and `'2'` is the code (`n == "5"` too).
+  `c in ['+', '-']` with `c: u8` works (the array's elements are bytes).
+- Comparing structs (`==`, map keys, `contains`) that hold a function is an error naming the
+  field (`circle(1) == circle(2)` was true: function fields were left out); arrays and optionals
+  of functions too.
+- An element passed as `mut` to a call that runs a function value changing its array
+  (`hit(es[0], cb)`, cb removing es[0]) stops the program, saying the array changed size during
+  `hit(es[0], ...)`, rather than putting the element back over another one; elements added at
+  the end still work.
+- A match on a function's last line gives each arm the function's result type: a `match` or `if`
+  among the arms may give another member of a result union (`-> f64 | E` with `_: E("bad")`
+  in an inner match was "expected f64, found E").
+- Generic functions over unions infer two type parameters (`unwrap_or[T, X] = (r: T | X, d: T)`:
+  `d` decides T, X is the rest), and explicit ones match (`unwrap_or[int, E](...)` said "expects
+  int | E, found int | E"); when nothing decides which is which, the message says to give them.
+- `T??` is `T?` (T? is T | none): `m.get(k)` on a `{str: int?}` works (it failed inside the
+  library), `gen[int?](none)` parses, and `int??` can be written.
+- An optional prints as the value it holds, as a union does: `x: str? = "a"` prints `a`, not
+  `"a"` (in an array or map, text is still quoted).
+- `x is E` on an `x: (A | E)?` narrows x to `A?` when it fails (`if p is E: return`, then
+  `if p == none: return`, left p an `E | A`).
+- A narrowed variable given another type in a loop that reads it as the narrowed one is an error
+  (the next round read a B as an A, and panicked with "a closure changed it"); the run-time check
+  that remains says which variable, where it was tested and that a function called since changed
+  it (an `int?` one said "`!` found no value here ... as to_int of text ...").
+- `match b:` with `true:` and `false:` arms is exhaustive; a union match missing a member names
+  it as a type (`C`, not `.C`).
+- `Tree.node("a", [])` on a generic enum infers `Tree[str]` from the arguments (and `Tree.leaf`
+  from where it goes); `one(sqrt)` gives sqrt where a `(f64) -> f64` is wanted; changing a const
+  (`XS.push(4)`, `bump(C)`) names it and says it would be a variable without `const`.
+- "struct contains itself" names the field and suggests an array (`next: Node[]`) or indexes; an
+  enum's says the same.
+- LANGUAGE.md: characters and text, recursive data, `u8(x)` wrapping, `defer` and panics, which
+  matches need `_:`, data enums' patterns and their limits, narrowing in loops, `T??`; its example
+  of two elements passed as `mut` was `swap(xs[i], xs[j])`, which is `swap(xs, i, j)`.
+  `to_int(" 42")` leaving out spaces around the number is stated.
+
 - Floats print 5 times as fast where they need 16 or 17 digits (0.1 + 0.2): those digits are
   worked out exactly in 128-bit whole numbers instead of the arbitrary-precision way, which stays
   for the rest (very large and small numbers, f32s).

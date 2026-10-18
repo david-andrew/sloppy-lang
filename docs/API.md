@@ -202,8 +202,8 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `(*) = (n: int, s: str) -> str`
 - `upper = (s: str) -> str`: s in capitals (letters of Latin, accented ones too, Greek and Cyrillic: "café" is "CAFÉ")
 - `lower = (s: str) -> str`: s in small letters (as upper)
-- `to_int = (s: str) -> int?`: parse an integer (decimal, or hex after 0x; _ may separate digits); none if it is not one or does not fit in an int
-- `to_float = (s: str) -> f64?`: Parse a decimal number. The result is the double nearest to the exact decimal value (ties to even), like C's strtod: an estimate, then exact big-integer comparisons.
+- `to_int = (s: str) -> int?`: parse an integer (decimal, or hex after 0x; _ may separate digits); none if it is not one or does not fit in an int. Spaces and line ends around it are left out (" 42\n" is 42, a line as read from a file); inside it they are not ("4 2" is none)
+- `to_float = (s: str) -> f64?`: Parse a decimal number. The result is the double nearest to the exact decimal value (ties to even), like C's strtod: an estimate, then exact big-integer comparisons. Spaces and line ends around it are left out, as for to_int.
 
 #### Characters
 

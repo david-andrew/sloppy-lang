@@ -156,7 +156,7 @@ lit_fits = (n: int, t: int) -> bool:
 # coerce node n to `target` (rewrites n in place); returns n
 coerce = (n: int, target: int) -> int:
     if target == 0: return n
-    if charlike(n) and is_int(target):
+    if char_code_ok(n, target):
         charlike_to_int(n)
         nodes[n].type = i32(target)
         return n
@@ -288,7 +288,7 @@ coerce = (n: int, target: int) -> int:
         wrap_conv(n, .ptr, to)
         return n
     if fk == .typeval: fatal(nodes[n].pos, "expected a value of type {type_str(to)}, found a type name")
-    why = variant_hint(n, to)
+    why = variant_hint(n, to) + text_char_hint(n, to)
     # (shown += c with c from a loop over a string: a character's code)
     if len(why) == 0 and tkind(to) == .str_ and type_eq(prune(from), T_U8): why = " (a string's elements are character codes, numbers: `chr(c)` is the character as text)"
     if fk == .void_: why = void_rec_hint(n)
@@ -636,6 +636,9 @@ check_place = (n: int, for_mut: bool):
         check_place(int(nodes[n].a), for_mut)
         cp_inner -= 1
         return
+    # (const C = P(5), then bump(C) or C.push(x): a const is its value, written where it is used)
+    cn = const_named(n)
+    if len(cn) > 0: fatal(nodes[n].pos, "'{cn}' is a const, which never changes: declared without `const` (`{cn} = ...`), it is a variable, which can be changed")
     if for_mut: fatal(nodes[n].pos, "a `mut` argument must be a variable, field or element")
     # (w.pos(b).y = 3: a value a function gave back, changed where nothing keeps it)
     if k == .call:
@@ -652,9 +655,23 @@ check_place = (n: int, for_mut: bool):
             if lookup(intern("set_{fnm}")) != 0 or (fm >= 0 and modules[fm].names.get(intern("set_{fnm}")) != none): setter = ": `set_{fnm}(...)` changes it"
             fatal(nodes[n].pos, "this is a copy that {fnm}(...) gave back, so changing it changes nothing{setter}")
     # (const gens = [1, 2], then gens.push(3): a const is its value, written where it is used)
-    if k == .array or k == .int_lit or k == .float_lit or k == .str_lit or k == .map_lit or (k == .ident and nodes[n].aux == i32(int(SK.const_))):
-        fatal(nodes[n].pos, "this is a const, which never changes: made without `const`, it is a variable, which can")
+    if k == .array or k == .int_lit or k == .float_lit or k == .str_lit or k == .map_lit:
+        fatal(nodes[n].pos, "this value is written in the code, so it cannot be changed: put it in a variable first (`xs = [1, 2]`, then `xs.push(3)`)")
     fatal(nodes[n].pos, "cannot assign to this expression")
+
+# the name of the const whose value node n is (a const's use is its value, at the name's place), or ""
+const_named = (n: int) -> str:
+    f = pos_file(nodes[n].pos)
+    if nodes[n].pos <= 0 or f < 0 or f >= files.len(): return ""
+    src = files[f].src
+    o = pos_off(nodes[n].pos)
+    e = o
+    loop e < len(src) and (is_ident_start(src[e]) or (e > o and is_ident_char(src[e]))): e += 1
+    if e == o: return ""
+    w = src[o..e)
+    s = lookup(intern(w))
+    if s == 0 or syms[s].kind != .const_: return ""
+    w
 
 # ---------------- type expressions written as expressions ----------------
 expr_as_type = (e: int) -> int:
@@ -674,6 +691,7 @@ expr_as_type = (e: int) -> int:
         if targs.len() != nkids2(d): fatal(nodes[e].pos, "wrong number of type arguments")
         return get_struct_inst(d, targs)
     if k == .array and nkids(e) == 1: return mk_array(expr_as_type(kid(e, 0)))
+    if k == .topt: return mk_opt(expr_as_type(int(nodes[e].a)))
     # ({str: P}: a map type, written where an expression is parsed, as from_json[{str: P}])
     if k == .map_lit and nkids(e) == 1:
         pr = kid(e, 0)
@@ -844,26 +862,37 @@ param_in_union = (t0: int, id: int) -> bool:
             if param_in_union(struct_targ(si, j), id): return true
     false
 
-# T | Err against int | str | Err: the members the pattern names match themselves, and its type
-# parameter stands for the rest (int | str); a lone member (Err, or int) matches the same way
+# T | Err against int | str | Err: the members the pattern names match themselves (its types,
+# and its type parameters other arguments decided), and its one undecided type parameter stands
+# for the rest (int | str); a lone member (Err, or int) matches the same way
 match_union = (pat: int, a: int, binds: mut int[], depth: int) -> int:
-    pms = union_members(pat)
+    named: int[]
+    open: int[]
+    loop pm in union_members(pat):
+        p = prune(pm)
+        if not has_var(p): named.push(p)
+        else if types[p].kind != .param: return -1
+        else if binds[int(types[p].id)] == 0 or tkind(binds[int(types[p].id)]) == .var: open.push(p)
+        else:
+            b = prune(binds[int(types[p].id)])
+            if is_union(b):
+                loop m in union_members(b): named.push(m)
+            else: named.push(b)
     ams = [a]
     if is_union(a): ams = union_members(a)
     rest: int[]
     loop m in ams:
-        named = false
-        loop pm in pms:
-            if not has_var(pm) and type_eq(pm, m): named = true
-        if not named: rest.push(m)
-    params: int[]
-    loop pm in pms:
-        if has_var(pm): params.push(pm)
-    if params.len() != 1 or types[prune(params[0])].kind != .param: return -1
+        known = false
+        loop t in named:
+            if type_eq(t, m): known = true
+        if not known: rest.push(m)
     widen = 0
     if not is_union(a): widen = 1
-    if rest.len() == 0: return widen        # (the parameter is decided by other arguments)
-    r = match_type(params[0], mk_union(rest), binds, depth + 1)
+    if rest.len() == 0: return widen        # (the parameters are decided by other arguments)
+    if open.len() == 0: return -1
+    # (T | X given an int | E: which is which waits for the other arguments, resolve_fn_call)
+    if open.len() > 1: return widen
+    r = match_type(open[0], mk_union(rest), binds, depth + 1)
     if r < 0: return -1
     r + widen
 
@@ -945,7 +974,7 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
             if pk == .struct_ and structs[int(types[p].st)].name == "Map": return 0
             return -1
         return -1
-    if charlike(a) and pk == .int_: return 1
+    if pk == .int_ and char_code_ok(a, p): return 1
     if pk == .enum_ and not has_var(p) and is_union(p) and not is_union(ntype(a)):
         # a member value passed for a union parameter
         if union_target(a, ntype(a), p) >= 0: return 1
@@ -997,7 +1026,8 @@ check_args_untyped = (args: int[]):
         a = unnamed(a0)
         if nodes[a].kind == .ident and not has_flag(a, NF_CHECKED):
             s = lookup(int(nodes[a].name))
-            if s != 0 and syms[s].kind == .fns: add_flag(a, NF_FNREF_ARG)
+            # (sqrt, a function the compiler makes: given where a function is wanted, it calls it)
+            if s != 0 and (syms[s].kind == .fns or syms[s].kind == .builtin): add_flag(a, NF_FNREF_ARG)
         # (cm.step: a module's function, checked with the parameter's type as a plain one is)
         if nodes[a].kind == .field and not has_flag(a, NF_CHECKED) and nodes[int(nodes[a].a)].kind == .ident:
             ms = lookup(int(nodes[int(nodes[a].a)].name))
@@ -1202,7 +1232,7 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                         vn = int(nodes[a].name)
                         last_err = "{type_str(ptx)} has no variant '{name_of(vn)}'{variant_hint_for(ptx, name_of(vn))}"
                     else: last_err = "argument '{name_of(pnames[fi])}' has the wrong type (expects {type_str(ptx)})"
-                    last_err += uncalled_hint(a, ptx)
+                    last_err += uncalled_hint(a, ptx) + text_char_hint(a, ptx)
                     last_err_plain = last_err
                     fnm = name_of(int(nodes[int(cd.decl)].name))
                     # (text("Score:", score, pos): Scratch's join, or Python's print, pieces in a row)
@@ -1398,6 +1428,28 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
         if a == 0 or not is_lit(a): continue
         p = prune(cd.sig.params[i])
         if types[p].kind == .param and cd.binds[int(types[p].id)] == 0: cd.binds[int(types[p].id)] = lit_default(a)
+    # (r: T | X given an int | E, d: T given 0: once the others decide T, X is the rest)
+    loop i in [0..np):
+        a = cd.args[i]
+        if a == 0 or is_lit(a) or ctx_dependent(a) or nodes[a].type == 0: continue
+        p = prune(cd.sig.params[i])
+        if not is_union(p) or not has_var(p): continue
+        open = ""
+        nopen = 0
+        loop pm in union_members(p):
+            id = int(types[prune(pm)].id)
+            if tkind(pm) == .param and (cd.binds[id] == 0 or tkind(cd.binds[id]) == .var):
+                if nopen > 0: open += " and which "
+                if int(nodes[decl].nlist2) > id: open += name_of(int(nodes[kid2(decl, id)].name))
+                else: open += "type {id + 1}"
+                nopen += 1
+        if nopen > 1 and is_union(prune(ntype(a))):
+            tps = ""
+            loop k in [0..int(nodes[decl].nlist2)):
+                if k > 0: tps += ", "
+                tps += name_of(int(nodes[kid2(decl, k)].name))
+            fatal(nodes[a].pos, "which members of {type_str(ntype(a))} are {open} cannot be told from the arguments: give the types, `{name_of(name)}[{tps}](...)` with each written out")
+        if nopen > 0: match_type(p, ntype(a), cd.binds, 0)
     loop i in [0..np):
         a = cd.args[i]
         if a == 0 or not ctx_dependent(a) or nodes[a].kind == .hole: continue
@@ -1631,6 +1683,50 @@ missing_field_check = (n: int, decl: int, si: int, args: int[], mapped: int[]):
         if fk != .int_ and fk != .float_ and fk != .vec and fk != .str_ and fk != .struct_: continue
         warn(nodes[n].pos, "{sn}(...) leaves its field '{fname}' at zero ({npos} of its {nf} fields given in order): give it, give it a default in the struct (`{fname}: {type_str(int(fields[fi].type))} = ...`), or name the fields given (`{sn}({name_of(int(fields[int(structs[si].fields)].name))} = ...)`)")
         return
+
+# the instance of generic enum decl a call of its variant `vname` makes: the expected type's, or
+# the type arguments its arguments give (as a generic struct's constructor's do)
+enum_inst_from_args = (n: int, decl: int, vname: int, args: int[], expected: int) -> int:
+    ex = prune(expected)
+    if expected != 0 and types[ex].kind == .opt: ex = prune(int(types[ex].elem))
+    if expected != 0 and types[ex].kind == .enum_ and int(structs[int(types[ex].st)].decl) == decl: return ex
+    vn = 0
+    loop v in [0..nkids(decl)):
+        if int(nodes[kid(decl, v)].name) == vname: vn = kid(decl, v)
+    if vn == 0: return 0
+    ntp = nkids2(decl)
+    binds = fill(0, ntp)
+    mark = scope_mark()
+    loop i in [0..ntp):
+        nm = int(nodes[kid2(decl, i)].name)
+        push_scope_sym(nm, new_sym(nm, .type_, mk_param(i), 0))
+    check_args_untyped(args)
+    pnames: int[]
+    hasdef: bool[]
+    loop i in [0..nkids(vn)):
+        pnames.push(int(nodes[kid(vn, i)].name))
+        hasdef.push(false)
+    mapped: int[]
+    err = map_args(pnames, hasdef, args, mapped)
+    if len(err) > 0: fatal(nodes[n].pos, "in {name_of(vname)}(...): {err}")
+    loop i in [0..nkids(vn)):
+        a = mapped[i]
+        if a == 0 or ctx_dependent(a): continue
+        f = kid(vn, i)
+        if nodes[f].a == 0: continue
+        pat = resolve_type(int(nodes[f].a))
+        if is_lit(a): finalize_literal(a)
+        match_type(pat, ntype(a), binds, 0)
+    scope_reset(mark)
+    en = name_of(int(nodes[decl].name))
+    vt = name_of(vname)
+    from = " here"
+    if nkids(vn) > 0:
+        vt += "(...)"
+        from = " from these arguments"
+    loop i in [0..ntp):
+        if binds[i] == 0: fatal(nodes[n].pos, "cannot infer type parameter '{name_of(int(nodes[kid2(decl, i)].name))}' of {en}{from}: give it, as `{en}[int].{vt}`, or say the type the value goes to (`t: {en}[int] = .{vt}`)")
+    get_struct_inst(decl, binds)
 
 variant_ctor = (n: int, et: int, vi: int, args: int[]) -> int:
     si = int(types[prune(et)].st)
@@ -2591,6 +2687,9 @@ cmp_error = (n: int, ta: int, tb: int):
         why = " (it may be none: `(x ?? default) == value` compares its value, or a default when there is none; `if let v = x:` names the value)"
     if len(why) == 0 and ((type_eq(prune(ta), T_U8) and tkind(tb) == .str_) or (tkind(ta) == .str_ and type_eq(prune(tb), T_U8))):
         why = " (`s[i]` is a character's code, a number: the character as text is `s[i..i]`)"
+    # (n == "5" with n an int: "5" is text; '5' is the character's code)
+    if len(why) == 0 and is_int(ta): why = text_char_hint(int(nodes[n].b), ta)
+    if len(why) == 0 and is_int(tb): why = text_char_hint(a, tb)
     if len(why) == 0 and ((tkind(ta) == .str_ and is_numeric(tb)) or (is_numeric(ta) and tkind(tb) == .str_)):
         why = " (text is not a number, even with digits in it: `to_int(s) ?? 0` or `to_float(s) ?? 0.0` reads one, and `input_int(...)` asks for one)"
     # (n == 1 with n an enum: C's and JavaScript's numbered names)
@@ -2770,6 +2869,10 @@ check_call = (n: int, expected: int) -> int:
         if rk == .module: return call_by_name(n, fname, int(types[rt].mod), args, expected, false)
         if rk == .typeval:
             tt = prune(int(types[rt].elem))
+            if tt == 0 and nodes[recv].kind == .ident:
+                # (Tree.node("a", []) for enum Tree[T]: Tree[str], from the arguments)
+                es = lookup(int(nodes[recv].name))
+                if es != 0 and syms[es].kind == .enum_: tt = enum_inst_from_args(n, int(syms[es].ref), fname, args, expected)
             if tt != 0 and types[tt].kind == .enum_:
                 vi = find_variant(int(types[tt].st), fname)
                 if vi < 0: fatal(nodes[callee].pos, "{type_str(tt)} has no variant '{name_of(fname)}'{variant_hint_for(tt, name_of(fname))}")
@@ -3153,6 +3256,7 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
     else if id == .hash:
         nargs_check(n, nargs, 1, 1, "__hash_value")
         arg_type(args, 0, 0)
+        no_fn_compare(ntype(args[0]), nodes[n].pos, "hashed (as a map's key)")
         r = T_U64
     else if id == .shader:
         nargs_check(n, nargs, 2, 2, "shader")
@@ -3447,6 +3551,57 @@ op_overload = (n: int, opname: str) -> int:
     set_list(n, args)
     resolve_fn_call(n, nm, decls, args, 0)
 
+# where a value of type t holds a function, which == cannot compare nor a map hash: "its field
+# 'area'", "its elements", ...; "" when nowhere (seen: the types on the way, as a struct may hold
+# an array of itself)
+fn_inside = (t0: int, seen: mut int[]) -> str:
+    t = prune(t0)
+    k = types[t].kind
+    if k == .fn_: return "it is a function"
+    if seen.contains(t): return ""
+    seen.push(t)
+    if k == .array or k == .fixed:
+        if len(fn_inside(int(types[t].elem), seen)) > 0: return "its elements hold functions"
+    else if k == .opt:
+        if len(fn_inside(int(types[t].elem), seen)) > 0: return "the value it may hold has a function"
+    else if k == .tuple:
+        loop i in [0..int(types[t].nargs)):
+            if len(fn_inside(targ(t, i), seen)) > 0: return "its part .{i} holds a function"
+    else if is_map_type(t):
+        si = int(types[t].st)
+        if len(fn_inside(struct_targ(si, 0), seen)) > 0: return "its keys hold functions"
+        if len(fn_inside(struct_targ(si, 1), seen)) > 0: return "its values hold functions"
+    else if is_union(t):
+        loop m in union_members(t):
+            if len(fn_inside(m, seen)) > 0: return "its member {type_str(m)} holds a function"
+    else if k == .struct_:
+        si = int(types[t].st)
+        check_struct_fields(si)
+        loop i in [0..int(structs[si].nfields)):
+            f = int(structs[si].fields) + i
+            w = fn_inside(int(fields[f].type), seen)
+            if w == "it is a function": return "its field '{name_of(int(fields[f].name))}' is a function"
+            if len(w) > 0: return "its field '{name_of(int(fields[f].name))}' holds a function"
+    else if k == .enum_:
+        si = int(types[t].st)
+        check_struct_fields(si)
+        loop v in [0..int(structs[si].nvariants)):
+            vr = int(structs[si].variants) + v
+            loop i in [0..int(variants[vr].nfields)):
+                f = int(variants[vr].fields) + i
+                if len(fn_inside(int(fields[f].type), seen)) > 0: return "its variant {name_of(int(variants[vr].name))}'s field '{name_of(int(fields[f].name))}' holds a function"
+    ""
+
+# values of type t compared (or hashed: `how` says) at pos: an error naming where a function is in them
+no_fn_compare = (t: int, pos: int, how: str):
+    seen: int[]
+    w = fn_inside(t, seen)
+    if len(w) == 0: return
+    if tkind(t) == .fn_: fatal(pos, "functions cannot be {how}")
+    why = " (compare the fields that can be, `a.name == b.name`)"
+    if how != "compared": why = " (key the map by a field that can be, as a name)"
+    fatal(pos, "{type_str(t)} cannot be {how}: {w}, and functions cannot be{why}")
+
 is_struct_like = (t0: int) -> bool:
     t = prune(t0)
     k = types[t].kind
@@ -3498,6 +3653,23 @@ src_char = (p: int) -> u8:
 
 charlike = (n: int) -> bool: nodes[n].kind == .str_lit and has_flag(n, NF_CHARLIKE)
 
+# can one-character literal n be its character's code as integer type t? 'a' (a character) can be
+# wherever an integer is expected; "a" (text, to the reader) only where a byte is: s[i] == "a",
+# bytes.push("\n") (add(1, "2") with add taking ints is a mistake, not 50)
+char_code_ok = (n: int, t: int) -> bool:
+    if not charlike(n) or t == 0 or not is_int(t): return false
+    has_flag(n, NF_SQUOTE) or type_eq(prune(t), T_U8)
+
+# (x: int = "5": text where a number is wanted, said with what was likely meant)
+text_char_hint = (n: int, t: int) -> str:
+    if not charlike(n) or t == 0 or not is_int(t): return ""
+    w = name_of(int(nodes[n].sval))
+    q = w
+    if w == "'" or w == "\\": q = "\\" + w
+    num = ""
+    if w[0] >= '0' and w[0] <= '9': num = "`to_int(\"{w}\")` reads a number from text, "
+    " (\"{w}\" is text: {num}`'{q}'` is the character's code)"
+
 charlike_to_int = (n: int):
     s = name_of(int(nodes[n].sval))
     v = int(s[0])
@@ -3528,10 +3700,21 @@ check_binary = (n: int, expected: int) -> int:
         tb = prune(check_expr(int(nodes[n].b), 0))
         nodes[n].b = i32(last_checked)
         add_flag(int(nodes[n].b), NF_CHECKED)
-        if is_int(tb): charlike_to_int(int(nodes[n].a))
+        if char_code_ok(int(nodes[n].a), tb): charlike_to_int(int(nodes[n].a))
     if op == .kw_in and nodes[int(nodes[n].b)].kind == .range and not has_flag(int(nodes[n].b), NF_STEP):
         return check_in_range(n, expected)
     if op == .kw_in:
+        # (c in ['+', '-'] with c: u8: the literal's elements are of c's type)
+        ia = int(nodes[n].a)
+        ib = int(nodes[n].b)
+        if nodes[ib].kind == .array and nkids(ib) > 0 and not has_flag(ib, NF_CHECKED) and charlike(kid(ib, 0)):
+            ta = prune(check_expr(ia, 0))
+            nodes[n].a = i32(last_checked)
+            add_flag(int(nodes[n].a), NF_CHECKED)
+            if is_int(ta):
+                check_expr(ib, mk_array(ta))
+                nodes[n].b = i32(last_checked)
+                add_flag(int(nodes[n].b), NF_CHECKED)
         call = mk(.call, nodes[n].pos)
         callee = mk(.field, nodes[n].pos)
         nodes[callee].a = nodes[n].b
@@ -3609,6 +3792,7 @@ check_binary = (n: int, expected: int) -> int:
         if op != .eq and op != .ne: fatal(nodes[n].pos, "operator {tok_text(op)} is not defined for {type_str(ta)} and {type_str(tb)} (fixed-size arrays can be compared with == and !=)")
         if types[ta].kind == .fixed: coerce(b, ta)
         else: coerce(a, tb)
+        no_fn_compare(ntype(a), nodes[n].pos, "compared")
         nodes[n].aux = 1
         nodes[n].type = i32(T_BOOL)
         return T_BOOL
@@ -3641,6 +3825,7 @@ check_binary = (n: int, expected: int) -> int:
                 return r2
         if op == .eq or op == .ne:
             if not type_eq(ta, tb): cmp_error(n, ta, tb)
+            no_fn_compare(ta, nodes[n].pos, "compared")
             nodes[n].aux = 1
             nodes[n].type = i32(T_BOOL)
             return T_BOOL
@@ -3698,7 +3883,7 @@ check_binary = (n: int, expected: int) -> int:
                 nodes[n].aux = 6
                 nodes[n].type = i32(T_BOOL)
                 return T_BOOL
-            join_types(a, b, nodes[n].pos)
+            no_fn_compare(join_types(a, b, nodes[n].pos), nodes[n].pos, "compared")
             nodes[n].aux = 1
             nodes[n].type = i32(T_BOOL)
             return T_BOOL
@@ -3711,6 +3896,7 @@ check_binary = (n: int, expected: int) -> int:
                 fatal(nodes[n].pos, "an array compared with {type_str(tb)}: for each element use .{tok_text(op)} (xs .{tok_text(op)} 2.0 gives bool[])")
             if not can_coerce(b, tb, ta): cmp_error(n, ta, tb)
             coerce(b, ta)
+            no_fn_compare(ta, nodes[n].pos, "compared")
             nodes[n].aux = 1
             nodes[n].type = i32(T_BOOL)
             return T_BOOL
@@ -3884,6 +4070,7 @@ check_match = (m: int, expected: int) -> int:
     result = 0
     first_val = 0
     has_wild = false
+    bools_seen = 0
     seen: bool[]
     if types[st].kind == .enum_:
         check_struct_fields(int(types[st].st))
@@ -3949,6 +4136,10 @@ check_match = (m: int, expected: int) -> int:
                 check_expr(e, st)
                 coerce(e, st)
                 if types[st].kind == .enum_ and nodes[e].kind == .dotname: seen[int(nodes[e].aux)] = true
+                # (true: and false: cover a bool)
+                if nodes[e].kind == .bool_lit:
+                    if nodes[e].ival != 0: bools_seen |= 2
+                    else: bools_seen |= 1
                 continue
             if pk == .prange:
                 if not is_int(st): fatal(nodes[p].pos, "range patterns need an integer value")
@@ -3973,8 +4164,10 @@ check_match = (m: int, expected: int) -> int:
         body = int(nodes[arm].b)
         if is_stmt: check_block(body, 0, false)
         else:
+            # (the expected type, when there is one, reaches every arm: a match among them
+            # may give a member the first arm does not, f64 | E)
             exp = expected
-            if result != 0: exp = result
+            if result != 0 and (expected == 0 or tkind(expected) == .var): exp = result
             # (one arm prints, another gives a number: as a function's last line, the match is
             # what it gives back)
             if result != 0 and tkind(result) == .void_ and (expected == 0 or tkind(expected) == .var): coerce_hint = " (an arm above gives no value, so this match gives none: where it ends a function, its arms are what the function gives back; `-> void` after the function's parameters says it gives back nothing)"
@@ -3994,7 +4187,7 @@ check_match = (m: int, expected: int) -> int:
             coerce_hint = ""
         scope_reset(amark)
     scope_reset(mark)
-    exhaustive = has_wild
+    exhaustive = has_wild or (types[st].kind == .bool_ and bools_seen == 3)
     if not exhaustive and types[st].kind == .enum_:
         exhaustive = true
         loop s in seen:
@@ -4012,7 +4205,10 @@ check_match = (m: int, expected: int) -> int:
             loop vi in 0.. and s in seen:
                 if s: continue
                 if len(miss) > 0: miss += ", "
-                miss += ".{name_of(int(variants[int(structs[si].variants) + vi].name))}"
+                # (a union's members are types: C, not .C)
+                vr = int(structs[si].variants) + vi
+                if structs[si].union_: miss += type_str(int(fields[int(variants[vr].fields)].type))
+                else: miss += ".{name_of(int(variants[vr].name))}"
             fatal(nodes[m].pos, "this match has no arm for {miss} (add one, or a `_:` arm for the rest)")
         fatal(nodes[m].pos, "match expression is not exhaustive (add a `_:` arm)")
     if result == 0: result = T_NEVER
@@ -4169,7 +4365,7 @@ check_expr = (n: int, expected: int) -> int:
         else:
             add_flag(n, NF_LITERAL)
             t = T_FLOAT
-    else if k == .str_lit and has_flag(n, NF_CHARLIKE) and ex != 0 and is_int(ex):
+    else if k == .str_lit and char_code_ok(n, ex):
         charlike_to_int(n)
         return check_expr(n, expected)
     else if k == .str_lit:
@@ -4239,6 +4435,8 @@ check_expr = (n: int, expected: int) -> int:
             if n != assign_root:
                 locals[l].flags = locals[l].flags | i32(LF_READ)
                 locals[l0].flags = locals[l0].flags | i32(LF_READ)
+                # (a narrowing read in a loop entered after it: check.jo, narrow_losses)
+                if int(locals[l0].flags) & LF_ALIAS != 0 and loop_serials.len() > int(locals[l0].dloops): narrow_reads[l0] = loop_serials[int(locals[l0].dloops)]
             nodes[n].sym = i32(l)
             t = int(locals[l].type)
         else if sk == .global:
@@ -4286,7 +4484,28 @@ check_expr = (n: int, expected: int) -> int:
             else: t = mk_typeval(get_struct_inst(d, []))
         else if sk == .type_: t = mk_typeval(int(syms[s].ref))
         else if sk == .module: t = mk_modval(int(syms[s].ref))
-        else if sk == .builtin: fatal(nodes[n].pos, "'{name_of(nm)}' must be called")
+        else if sk == .builtin:
+            # (apply(sqrt) where an (f64) -> f64 is wanted: the function calling it, (x: f64): sqrt(x))
+            known = ex != 0 and exk == .fn_
+            if known:
+                loop i in [0..int(types[ex].nargs)):
+                    if has_var(targ(ex, i)): known = false
+            if known:
+                pos = nodes[n].pos
+                params: int[]
+                args: int[]
+                loop i in [0..int(types[ex].nargs)):
+                    pm = mk(.param, pos)
+                    nodes[pm].name = i32(intern("__a{i}"))
+                    nodes[pm].a = i32(type_node_of(targ(ex, i), pos))
+                    params.push(pm)
+                    args.push(bc_ident("__a{i}", pos))
+                lam = mk(.lambda, pos)
+                set_list(lam, params)
+                nodes[lam].b = i32(bc_block([bc_stmt(bc_call(name_of(nm), args, pos), pos)], pos))
+                nodes[n] = nodes[lam]
+                return check_expr(n, expected)
+            fatal(nodes[n].pos, "'{name_of(nm)}' must be called")
         else: fatal(nodes[n].pos, "invalid use of '{name_of(nm)}'")
     else if k == .field:
         a0 = int(nodes[n].a)
@@ -4329,6 +4548,13 @@ check_expr = (n: int, expected: int) -> int:
             return t
         if bk == .typeval:
             tt = prune(int(types[bt].elem))
+            a0 = int(nodes[n].a)
+            if tt == 0 and nodes[a0].kind == .ident:
+                # (Tree.leaf for enum Tree[T]: the Tree the value goes to)
+                es = lookup(int(nodes[a0].name))
+                if es != 0 and syms[es].kind == .enum_:
+                    tt = enum_inst_from_args(n, int(syms[es].ref), fname, [], expected)
+                    if tt == 0: fatal(nodes[n].pos, "{name_of(int(nodes[a0].name))} has no variant '{name_of(fname)}'")
             if tt != 0 and types[tt].kind == .enum_:
                 vi = find_variant(int(types[tt].st), fname)
                 if vi < 0: fatal(nodes[n].pos, "{type_str(tt)} has no variant '{name_of(fname)}'{variant_hint_for(tt, name_of(fname))}")
@@ -5764,6 +5990,7 @@ check_istype = (n: int) -> int:
         if ms.len() > 0:
             subj = is_subject(n, orig)
             c = bc_logic(.and_, bc_bin(.ne, copy_path(subj), mk(.none_lit, pos), pos), members_test(subj, ms, pos), pos)
+            add_flag(c, NF_OPT_IS)
             return is_rewritten(n, orig, c)
     # x is A | B, where x: A | B | C: x is A or x is B
     if is_union(at) and is_union(tt) and union_index(at, tt) < 0:
@@ -5842,6 +6069,9 @@ narrow_by = (c: int, holds: bool):
     else if k == .and_ and holds:
         narrow_by(int(nodes[c].a), true)
         narrow_by(int(nodes[c].b), true)
+    else if k == .and_ and has_flag(c, NF_OPT_IS):
+        # (x is A with x: (A | B)?, not holding: x is none or a B, a B?)
+        narrow_opt_union(c)
     else if k == .or_ and not holds:
         narrow_by(int(nodes[c].a), false)
         narrow_by(int(nodes[c].b), false)
@@ -5872,11 +6102,57 @@ narrow_var = (isn: int, holds: bool):
         return
     if types[ut].kind != .opt or (vi == -2) != holds: return
     e = mk(.unwrap, pos)
+    nodes[e].aux = 1
     t = int(types[ut].elem)
     nodes[e].a = i32(mk_ident_local(l, pos))
     nodes[e].type = i32(t)
     add_flag(e, NF_CHECKED)
     nl = new_local(int(locals[l].name), t, pos)
+    locals[nl].flags = i32(LF_ALIAS)
+    locals[nl].alias = i32(e)
+
+# where `x != none and (x is A ...)` (x is A, x: (A | B | C)?) does not hold: x is a (B | C)?, the
+# members tested ruled out
+narrow_opt_union = (c: int):
+    ne = int(nodes[c].a)
+    if nodes[ne].kind != .binary: return
+    x = int(nodes[ne].a)
+    xt = prune(ntype(x))
+    if types[xt].kind != .opt or not is_union(prune(int(types[xt].elem))): return
+    tests: int[]
+    if not or_tests(int(nodes[c].b), tests): return
+    u = prune(int(types[xt].elem))
+    ms = union_members(u)
+    keep: int[]
+    loop m in ms:
+        out = false
+        loop t in tests:
+            tu = prune(ntype(int(nodes[t].a)))
+            if is_union(tu) and type_eq(union_members(tu)[int(nodes[t].aux)], m): out = true
+        if not out: keep.push(m)
+    if keep.len() == ms.len() or keep.len() == 0: return
+    nt = 0
+    if keep.len() == 1: nt = mk_opt(keep[0])
+    else: nt = mk_opt(mk_union(keep))
+    pos = nodes[x].pos
+    name = 0
+    root = 0
+    if nodes[x].kind == .ident and nodes[x].aux == i32(int(SK.local)):
+        l = int(nodes[x].sym)
+        name = int(locals[l].name)
+        root = mk_ident_local(l, pos)
+    else:
+        key = path_key(x)
+        if len(key) == 0: return
+        path_narrows += 1
+        name = intern(key)
+        root = copy_path(x)
+    e = mk(.conv, pos)
+    nodes[e].aux = i32(int(CV.union_))
+    nodes[e].a = i32(root)
+    nodes[e].type = i32(nt)
+    add_flag(e, NF_CHECKED)
+    nl = new_local(name, nt, pos)
     locals[nl].flags = i32(LF_ALIAS)
     locals[nl].alias = i32(e)
 
@@ -5964,6 +6240,7 @@ narrow_path = (a: int, vi: int, holds: bool):
         narrow_expr(copy_path(a), sel, pos, intern(key))
     else if types[ut].kind == .opt and (vi == -2) == holds:
         e = mk(.unwrap, pos)
+        nodes[e].aux = 1
         nodes[e].a = i32(copy_path(a))
         nodes[e].type = types[ut].elem
         add_flag(e, NF_CHECKED)
