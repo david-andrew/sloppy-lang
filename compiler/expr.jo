@@ -13,7 +13,7 @@ enum IN:
     arrdata, panic, assert, print, embed, from_bytes, to_bytes, argv, setlen, truncate, resize,
     hash, alignof, unreachable, arrcap, fmt_struct, sqrt, vec_ctor, cfn_cast, wasm_call, callc, floor_,
     ceil_, fabs, fmin, fmax, setjmp, longjmp, jump, shader, extend, clone_thread, atomic_add, atomic_cas, stack_ptr, fill, fmt_elem, gpu_kernel, cpu_features, code_sync, compute, compute_spirv, compute_textures,
-    read_fields, default_init, embed_dir
+    read_fields, default_init, embed_dir, field_notes
 
 # (fixed2arr: T[N] -> T[], a new array holding a copy of the elements)
 enum CV: none_, int_, int2float, float2int, float_, opt, ptr, bits, fn2clos, union_, fixed2arr
@@ -40,6 +40,7 @@ intrinsics = [
     Intrinsic("__atomic_cas", .atomic_cas, false), Intrinsic("__stack_ptr", .stack_ptr, false),
     Intrinsic("__cpu_features", .cpu_features, false), Intrinsic("__code_sync", .code_sync, false), Intrinsic("compute", .compute, false), Intrinsic("__compute_spirv", .compute_spirv, false), Intrinsic("__compute_textures", .compute_textures, false),
     Intrinsic("__read_fields", .read_fields, false), Intrinsic("__default_init", .default_init, false),
+    Intrinsic("__field_notes", .field_notes, false),
 ]
 
 last_checked = 0
@@ -409,6 +410,86 @@ private_hint = (name: int) -> str:
             if s >= 0: f = f[s + 1..]
             return " (it is private to {f}: `use` leaves out names starting with _; `from '{f}' import {name_of(name)}` brings it in)"
     ""
+
+# a parameter's type as written (`b: GpuBuffer[T]`: GpuBuffer[T])
+param_type_text = (d: int, i: int) -> str:
+    t = ide_param_text(nodes[kid(d, i)].pos)
+    c = find(t, ":")
+    if c < 0: return t
+    t = trim(t[c + 1..])
+    eq = find(t, " = ")
+    if eq >= 0: t = t[..eq)
+    t
+
+# 2 for a union holding a Json (parse_json's Json | JsonError), 1 for a Json, else 0
+json_kind = (t0: int) -> int:
+    t = prune(t0)
+    if is_union(t):
+        loop m in union_members(t):
+            if json_kind(m) == 1: return 2
+        return 0
+    if tkind(t) != .enum_ or structs[int(types[t].st)].name != "Json": return 0
+    d = int(structs[int(types[t].st)].decl)
+    if d != 0 and decl_in_prelude(d): return 1
+    0
+
+# (the name of a Json in a message: the variable's, or j)
+json_var = (e: int) -> str:
+    if nodes[e].kind != .ident: return "j"
+    # (as written: a variable narrowed by `is` has a name of the compiler's own)
+    src = files[pos_file(nodes[e].pos)].src
+    a = pos_off(nodes[e].pos)
+    b = a
+    loop b < len(src) and is_ident_char(src[b]): b += 1
+    if b == a: return "j"
+    src[a..b)
+
+# (a Json | JsonError used as a Json: check it first)
+json_union_hint = (t: int, v: str) -> str:
+    if json_kind(t) != 2: return ""
+    ": parse_json gives a JsonError when the text is not JSON, so check that first (`if {v} is JsonError: ...`); after it, {v} is a Json"
+
+# (len(j), j.get("a", 0) and the like, which do not take a Json: what does)
+json_call_hint = (fnm: str, args: int[]) -> str:
+    loop a0 in args:
+        a = unnamed(a0)
+        if nodes[a].type == 0 or json_kind(ntype(a)) == 0: continue
+        v = json_var(a)
+        jh = json_union_hint(ntype(a), v)
+        if len(jh) > 0: return " ({jh[2..]})"
+        if fnm == "len": return " (a Json list's length is `{v}.as_list().len()`, an object's `{v}.keys().len()`)"
+        if fnm == "get" and args.len() == 3 and nodes[unnamed(args[1])].kind == .str_lit:
+            d = unnamed(args[2])
+            rd = "as_str"
+            if nodes[d].kind == .int_lit: rd = "as_int"
+            else if nodes[d].kind == .float_lit: rd = "as_num"
+            else if nodes[d].kind == .bool_lit: rd = "as_bool"
+            key = name_of(int(nodes[unnamed(args[1])].sval))
+            return " (get takes the field's name only, and gives a Json?: `{v}.get(\"{key}\").{rd}() ?? {ide_param_text(nodes[d].pos)}` reads it, with what to use when it is not there)"
+        return ""
+    ""
+
+# the library's modules, imported by name (lib/net.jo...), that have a function of this name, read
+# from their text: only when a call has nothing else it can be
+lib_modules_with = (name: str) -> str[]:
+    out: str[]
+    if len(lib_root) == 0 or len(name) == 0 or name[0] == '_': return out
+    fs = list_dir(lib_root)
+    fs.sort()
+    loop f in fs:
+        if not ends_with(f, ".jo"): continue
+        src = read_file("{lib_root}/{f}") ?? ""
+        at = 0
+        loop true:
+            k = find(src, name, at)
+            if k < 0: break
+            at = k + len(name)
+            if k > 0 and src[k - 1] != '\n': continue
+            rest = src[at..min(at + 4, len(src)))
+            if starts_with(rest, " = (") or starts_with(rest, "["):
+                out.push(f[..len(f) - 3))
+                break
+    out
 
 # (helper() whose file the program has, but not `use`d by this one: `use` brings in the names of
 # the file it names only, not those of the files that one uses)
@@ -1020,6 +1101,11 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
     last_err = ""
     last_err_pos = 0          # (where the argument it is about is: the error points there)
     last_err_arg = 0          # (which argument, from 1)
+    # (the overloads that all went as far, and failed at the same argument: what each takes there;
+    # when they differ, one of them is not the one meant, and all are said)
+    tie_types: str[]
+    tie_arg = -1
+    last_err_plain = ""
     best = -1
     # (an argument that is a number of a known type, the first such, rules out before anything is
     # made for them the overloads whose parameter there is a number type it cannot become: abs(x)
@@ -1105,6 +1191,10 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                                 fi = j
                                 break
                     a = cd.args[fi]
+                    if i + 1 > last_err_arg or fi != tie_arg: tie_types = []
+                    tie_arg = fi
+                    ptt = param_type_text(int(cd.decl), fi)
+                    if not tie_types.contains(ptt): tie_types.push(ptt)
                     last_err_arg = i + 1
                     ptx = subst(cd.sig.params[fi], cd.binds)
                     if nodes[a].type != 0: last_err = "argument '{name_of(pnames[fi])}' expects {type_str(ptx)}, found {type_str(ntype(a))}{variant_hint(a, ptx)}"
@@ -1113,6 +1203,7 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                         last_err = "{type_str(ptx)} has no variant '{name_of(vn)}'{variant_hint_for(ptx, name_of(vn))}"
                     else: last_err = "argument '{name_of(pnames[fi])}' has the wrong type (expects {type_str(ptx)})"
                     last_err += uncalled_hint(a, ptx)
+                    last_err_plain = last_err
                     fnm = name_of(int(nodes[int(cd.decl)].name))
                     # (text("Score:", score, pos): Scratch's join, or Python's print, pieces in a row)
                     if (fnm == "text" or fnm == "text_centered") and fi == 1 and nodes[cd.args[0]].kind == .str_lit and nodes[a].type != 0 and tkind(ntype(a)) != .vec:
@@ -1250,6 +1341,19 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
             fatal(nodes[n].pos, "no version of '{name_of(name)}' takes {an}{ot}")
         what = "({ts})"
         if find(ts, "?") >= 0: what = "these arguments"
+        jh = json_call_hint(name_of(name), args)
+        if len(jh) > 0: fatal(nodes[n].pos, "no version of '{name_of(name)}' takes {what}{jh}")
+        # (len(j): every version failed at the same argument, each wanting another type there)
+        if tie_types.len() > 1 and last_err == last_err_plain and tie_arg < args.len():
+            a = unnamed(args[tie_arg])
+            if nodes[a].type != 0:
+                ii = intrinsic_of(name)
+                if ii >= 0 and intrinsics[ii].arr and tie_arg == 0: tie_types.insert(0, "an array or a str")
+                more = ""
+                if tie_types.len() > 6:
+                    tie_types.truncate(6)
+                    more = " ..."
+                fatal(nodes[n].pos, "no version of '{name_of(name)}' takes {what}: argument {tie_arg + 1} can be {join(tie_types, ", ")}{more}, not {type_str(ntype(a))}")
         fatal(nodes[n].pos, "no version of '{name_of(name)}' takes {what}{sep}{last_err}{ot}")
     cd = cands[best]
     decl = cd.decl
@@ -1758,6 +1862,8 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
                 si = int(types[t0].st)
                 loop i in [0..int(structs[si].nfields)): cands.push(int(fields[int(structs[si].fields) + i].name))
             if is_map_type(t0) and len(map_habit_name(name_of(name))) > 0: fatal(nodes[n].pos, "no field or function '{name_of(name)}' for type {type_str(t0)} (use {map_habit_name(name_of(name))})")
+            th = type_habit_name(type_str(t0), name_of(name))
+            if len(th) > 0: fatal(nodes[n].pos, "no field or function '{name_of(name)}' for type {type_str(t0)} (use {th})")
             # (m.groups(): a field, called as a method)
             if types[t0].kind == .struct_:
                 si = int(types[t0].st)
@@ -1799,6 +1905,10 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
             if lookup(intern(mn)) != 0: fatal(nodes[n].pos, "unknown function '{name_of(name)}' (it is {mn}'s: `{mn}.{name_of(name)}(...)`)")
         uh = unused_file_hint(name)
         if len(uh) > 0: fatal(nodes[n].pos, "unknown function '{name_of(name)}'{uh}")
+        # (fetch(url) with no import: a function of a library module the program does not import)
+        lms = lib_modules_with(name_of(name))
+        if lms.len() > 0:
+            fatal(nodes[n].pos, "unknown function '{name_of(name)}' (it is {lms[0]}'s: `{lms[0]}.{name_of(name)}(...)`, after `import {lms[0]}` at the top of the file)")
         fatal(nodes[n].pos, "unknown function '{name_of(name)}'{private_hint(name)}{suggestion(name_of(name), all)}")
     resolve_fn_call(n, name, decls, args, expected)
 
@@ -1992,6 +2102,38 @@ program_str_fn = (t0: int, pos: int) -> int:
         if sig.generic or sig.params.len() != 1 or not type_eq(prune(sig.params[0]), t): continue
         return get_fn_inst(d, [], pos)
     0
+
+# the comment on a field's line, after it (`out = "a.txt"   # where it goes`), or else on the
+# lines just above it, joined; "" when there is none or another field follows on its line
+field_note = (p: int) -> str:
+    src = files[pos_file(p)].src
+    i = pos_off(p)
+    loop i < len(src) and src[i] != '\n':
+        if ide_str_start(src, i):
+            i = ide_skip_str(src, i)
+            continue
+        if src[i] == ';': return ""
+        if src[i] == '#':
+            e = i
+            loop e < len(src) and src[e] != '\n': e += 1
+            return trim(src[i + 1..e))
+        i += 1
+    # (the comment lines above start where the field does: one further right goes on the comment
+    # of the field above)
+    note = ""
+    s0 = pos_off(p)
+    loop s0 > 0 and src[s0 - 1] != '\n': s0 -= 1
+    col = 0
+    loop src[s0 + col] == ' ' or src[s0 + col] == '\t': col += 1
+    loop s0 > 0:
+        a = s0 - 1
+        loop a > 0 and src[a - 1] != '\n': a -= 1
+        line = trim(src[a..s0 - 1))
+        if len(line) == 0 or line[0] != '#' or a + col >= s0 or src[a + col] != '#': break
+        if len(note) > 0: note = " " + note
+        note = trim(line[1..]) + note
+        s0 = a
+    note
 
 # a library function called as another language's of the same name is (p5's line(x1, y1, x2,
 # y2), fill(r, g, b) and push(); atan(y, x)): what it is here, before its overloads are tried
@@ -3134,6 +3276,21 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
                 stmts.push(bc_assign(bc_ident(name_of(int(nodes[args[0]].name)), pos), d, pos))
         nodes[n] = nodes[bc_block(stmts, pos)]
         return check_expr(n, expected)
+    else if id == .field_notes:
+        # __field_notes(x): for each of a struct's fields, the comment written beside it (or on the
+        # lines just above it), "" for none: what parse_args's --help says of each option
+        nargs_check(n, nargs, 1, 1, "__field_notes")
+        t = prune(arg_type(args, 0, 0))
+        pos = nodes[n].pos
+        notes: int[]
+        if types[t].kind == .struct_ and not is_map_type(t):
+            d = int(structs[int(types[t].st)].decl)
+            if nodes[d].kind == .struct_:
+                loop i in [0..nkids(d)): notes.push(bc_str(field_note(int(nodes[kid(d, i)].pos)), pos))
+        arr = mk(.array, pos)
+        set_list(arr, notes)
+        nodes[n] = nodes[arr]
+        return check_expr(n, mk_array(T_STR))
     else if id == .read_fields:
         # __read_fields(r, x): the code that reads a struct, tuple, enum, union, vector or fixed-size
         # array from text, field by field (lib/std/text.jo)
@@ -4277,6 +4434,8 @@ check_expr = (n: int, expected: int) -> int:
                         et = pushed_type(gn)
                         if len(et) == 0: et = "Thing"
                         fatal(nodes[n].pos, "the type of what '{gn}' holds is not known here (it starts empty): write it where '{gn}' is made, as `{gn}: {et}[] = []`")
+                th = type_habit_name(type_str(bt), name_of(fname))
+                if len(th) > 0: fatal(nodes[n].pos, "{type_str(bt)} has no field '{name_of(fname)}' (use {th})")
                 fatal(nodes[n].pos, "{type_str(bt)} has no field '{name_of(fname)}'{suggestion(name_of(fname), cands)}")
     else if k == .dotname:
         if ide_sentinel != 0 and int(nodes[n].name) == ide_sentinel: ide_complete_variants(ex)
@@ -4387,6 +4546,15 @@ check_expr = (n: int, expected: int) -> int:
                 return t
             else:
                 if tkind(bt) == .tuple: fatal(nodes[n].pos, "a tuple's parts are `t.0`, `t.1` (an index in brackets is for arrays)")
+                # (data["name"], data a Json: Python's way with its dicts)
+                if json_kind(bt) != 0:
+                    v = json_var(int(nodes[n].a))
+                    part = "{v}.get(\"name\")"
+                    if nodes[b].kind == .str_lit: part = "{v}.get(\"{name_of(int(nodes[b].sval))}\")"
+                    else if nodes[b].kind == .int_lit: part = "{v}.at({nodes[b].ival})"
+                    jh = json_union_hint(bt, v)
+                    if len(jh) > 0: fatal(nodes[n].pos, "cannot index a value of type {type_str(bt)}{jh}, and `{part}.as_str()` reads that field")
+                    fatal(nodes[n].pos, "cannot index a Json: `{part}` is that part of it (a Json?, none when it is not there), and `.as_str()`, `.as_int()`, `.as_num()`, `.as_bool()` or `.as_list()` reads it: `{part}.as_str() ?? \"\"`")
                 fatal(nodes[n].pos, "cannot index a value of type {type_str(bt)}")
     else if k == .unary:
         hint = 0

@@ -233,6 +233,45 @@ a value, the last list field gets the other arguments, and `--help` lists them a
 - `sloppy test count.jo` runs its `test` blocks; `sloppy test count.jo sort` only those with
   "sort" in their names.
 
+### Fetching from the web
+
+`net.fetch(url)` (after `import net`) asks a web server for what is at an address and gives an
+`HttpReply`: its `status` (200 when all went well, 0 when no reply came, and `why` says why),
+`text`, `data` (the same as bytes), `headers` and `size`. JSON goes straight into a struct of
+yours with `from_json[T]`, which reads the fields the struct has and skips the others:
+
+```gdscript
+import net
+
+struct Repo:
+    full_name = ""
+    stargazers_count = 0
+    description: str? = none          # null in the JSON is none
+
+r = net.fetch("https://api.github.com/repos/python/cpython")
+if r.status != 200:
+    eprint("no: {r.status} {r.why}")
+    exit(1)
+repo = from_json[Repo](r.text)
+if repo is TextError:
+    eprint("not what was expected: {repo.message}")
+    exit(1)
+print("{repo.full_name}: {repo.stargazers_count} stars, {repo.description ?? "-"}")
+```
+
+- `net.fetch(url, method = "POST", headers = {"Authorization": "Bearer {token}"}, body =
+  to_json(item))` sends a request of another kind; a body starting with `{` or `[` goes as JSON
+  unless a `Content-Type` header says otherwise. `wait = 10.0` gives up sooner than 30 seconds.
+- `net.fetch(url, save_to = "big.zip", progress = (got: int, all: int): print("{got} of {all}"))`
+  downloads into a file as it comes.
+- JSON of any shape: `j = parse_json(r.text)`, then `if j is JsonError: ...`, and
+  `j.get("items").at(0).get("name").as_str() ?? ""` (each step gives none when that part is not
+  there); `j.as_list()` and `j.keys()` to loop over it. `print(j)` shows it as JSON.
+- `url_query({"q": "café au lait", "page": "2"})` makes a query (`q=caf%C3%A9%20au%20lait&page=2`),
+  `url_encode(s)` and `url_decode(s)` one part of an address, and `html_unescape(s)` turns
+  `&amp;` and `&#233;` back into `&` and `é`.
+- Fetches happen one at a time (`parallel_map` cannot run them); a loop over the addresses does.
+
 ## Coming from Scratch
 
 A Scratch project is sprites, each with its scripts running at once. In Sloppy one program
@@ -344,6 +383,10 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `for line in open(p):` | `if let f = open_file(p):` then `loop let line = f.read_line():` (a file of any size) |
 | `hashlib.sha256(b).hexdigest()` | `sha256(b)` (bytes or text) |
 | `json.loads(s)`, `json.dumps(x)` | `parse_json(s)` (a Json), `from_json[Config](s)` (into a struct), `to_json(x)` |
+| `requests.get(url)`, `urllib.request.urlopen(url)` | `import net`, then `r = net.fetch(url)`: `r.status`, `r.text`, and `from_json[T](r.text)` ([fetching from the web](#fetching-from-the-web)) |
+| `requests.post(url, json=d, headers=h)` | `net.fetch(url, method = "POST", body = to_json(d), headers = h)` |
+| `urllib.parse.quote(s)`, `urlencode(d)`, `html.unescape(s)` | `url_encode(s)`, `url_query(d)`, `html_unescape(s)` |
+| `s[:4]`, `f"{s:.4}"` | `first(s, 4)` or `"{s:.4}"` (characters; `s[..4)` counts bytes, and can cut an `é` in two) |
 | `re.search(r"\d+", s)` | `s.find(regex(r"\d+"))` (a `Match?`: `m.text`, `m.groups`) |
 | `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero when changed (`counts[w] += 1`, `groups[k].push(x)`); reading one, `m[k]`, is an error: `m.get(k) ?? 0` |
 | `set()` | a map to `bool`, or `unique(xs)` |

@@ -1031,6 +1031,8 @@ inst_mutmask = (f: int) -> int:
 # A function given to a @parallel function (parallel_map...) runs on many threads at once: it
 # must not change the variables it captured, or globals -- also not in the functions it calls.
 race_done: {int: bool} = {}     # named functions known not to change globals
+race_lib_fn = 0                 # the library function the checked code called, and where (a
+race_lib_pos = 0                # race inside it is said there, of that function)
 
 race_check = (callee: int, args: int[], pos: int):
     # (the library's own calls take care of threads themselves)
@@ -1044,10 +1046,10 @@ race_arg = (a: int, who: str):
     k = nodes[a].kind
     if k == .conv: race_arg(int(nodes[a].a), who)
     else if k == .lambda: race_scan(int(fns[int(nodes[a].sym)].body), int(nodes[a].sym), who, true)
-    else if k == .fnref: race_named(int(nodes[a].sym), who)
+    else if k == .fnref: race_named(int(nodes[a].sym), who, nodes[a].pos)
     else if k == .partial:
         if nodes[a].aux == 1: race_arg(int(nodes[a].a), who)
-        else: race_named(int(nodes[a].sym), who)
+        else: race_named(int(nodes[a].sym), who, nodes[a].pos)
     else:
         # (a @parallel function may pass on the functions it is given: its callers are checked)
         param = k == .ident and nodes[a].aux == i32(int(SK.local)) and int(locals[int(nodes[a].sym)].owner) == cur_fn and int(locals[int(nodes[a].sym)].flags) & LF_PARAM != 0
@@ -1072,14 +1074,20 @@ in_lib = (pos: int) -> bool:
     fi = pos_file(pos)
     fi >= 0 and fi < files.len() and starts_with(files[fi].path, lib_dir + "/")
 
-race_named = (f: int, who: str):
+race_named = (f: int, who: str, pos: int):
     if race_done.contains(f) or fns[f].body == 0: return
     race_done[f] = true
     # (the core and standard libraries take care of threads themselves)
     if fns[f].decl != 0:
         fi = pos_file(int(nodes[int(fns[f].decl)].pos))
         if fi >= 0 and fi < files.len() and starts_with(files[fi].path, lib_dir + "/") and (find(files[fi].path, "/core/") >= 0 or find(files[fi].path, "/std/") >= 0): return
+    # (a library module's function, called from the program's code: net.fetch)
+    outer = race_lib_fn == 0 and fns[f].decl != 0 and in_lib(int(nodes[int(fns[f].decl)].pos)) and not in_lib(pos)
+    if outer:
+        race_lib_fn = f
+        race_lib_pos = pos
     race_scan(int(fns[f].body), f, who, false)
+    if outer: race_lib_fn = 0
 
 # a place that changes: the variable it belongs to, if that is shared with other threads
 race_target = (t: int, f: int, who: str, captures: bool, pos: int):
@@ -1088,6 +1096,13 @@ race_target = (t: int, f: int, who: str, captures: bool, pos: int):
     if n == 0: return
     nm = name_of(int(nodes[n].name))
     if nodes[n].aux == i32(int(SK.global)):
+        # (inside a library function the program called: that function cannot run on many threads)
+        if race_lib_fn != 0 and in_lib(pos):
+            d = int(fns[race_lib_fn].decl)
+            fname = name_of(int(nodes[d].name))
+            m = int(nodes[d].mod)
+            if m >= 0 and not modules[m].is_prelude: fname = "{name_of(int(modules[m].name))}.{fname}"
+            fatal(race_lib_pos, "{who} runs this function on many threads at once, which {fname} cannot do: it changes its library's own variables ('{nm}'), so its calls must come one at a time: call it in a plain loop")
         fatal(pos, "{who} runs this function on many threads at once, so it must not change the global '{nm}' (a data race): return values instead")
     if captures and nodes[n].aux == i32(int(SK.local)):
         l = int(nodes[n].sym)
@@ -1107,13 +1122,13 @@ race_scan = (n: int, f: int, who: str, captures: bool):
         loop i in [0..nkids(n)):
             if has_flag(kid(n, i), NF_MUT): race_target(kid(n, i), f, who, captures, nodes[kid(n, i)].pos)
         aux = int(nodes[n].aux)
-        if aux == 0 and nodes[n].sym > 0: race_named(int(nodes[n].sym), who)
+        if aux == 0 and nodes[n].sym > 0: race_named(int(nodes[n].sym), who, nodes[n].pos)
         # (calling a function value: which one, the compiler cannot tell; the library's are its own)
         else if aux == 1 and not in_lib(nodes[n].pos):
             fatal(nodes[n].pos, "{who} runs this code on many threads at once, so the compiler checks it for data races, which it cannot do through a call of a function value: call a function by name")
     else if k == .for_ and has_flag(n, NF_MUT): race_target(int(nodes[n].a), f, who, captures, nodes[n].pos)
     # (a part of "...{x}...": formatted by a __fmt function, which may be the program's)
-    else if k == .pair and nodes[n].sym > 0: race_named(int(nodes[n].sym), who)
+    else if k == .pair and nodes[n].sym > 0: race_named(int(nodes[n].sym), who, nodes[n].pos)
     race_scan(int(nodes[n].a), f, who, captures)
     race_scan(int(nodes[n].b), f, who, captures)
     if k != .for_:

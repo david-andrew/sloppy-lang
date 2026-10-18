@@ -86,7 +86,8 @@ piped in (`sloppy < script.txt`).
   line break, the indentation all its lines share and the last line break (before the closing
   `"""` on a line of its own) are left out, so the text can be indented with the code;
   `r"""..."""` is both (help text with `{name}` in it). Widths in format specs count
-  characters, so `"{city:<8}"` lines up "Zürich" with "Paris".
+  characters, so `"{city:<8}"` lines up "Zürich" with "Paris", and a precision on text cuts it to
+  that many characters: `"{title:<20.20}"` is a column 20 wide.
 * **Characters.** A one-character string where an integer is expected stands for its
   character code: `c == 'a'`, `'0'..'9'` in a match, `u8('A')`, `'{'` (a brace alone is not an
   interpolation).
@@ -202,6 +203,7 @@ four for others (`é`, `ж`, `中`, `😀`). Its bytes are what the basic operat
 |---|---|
 | `len(s)`, `s[i]`, `s[a..b)`, `loop b in s` | bytes: `s[i]` is a `u8`, a slice is a range of bytes |
 | `char_count(s)`, `chars(s)` | characters (Unicode code points): how many, and each as its number |
+| `first(s, n)`, `last(s, n)`, `"{s:.n}"` | the first or last n characters (a slice in the middle of an `é` would cut it in two) |
 | `chr(233)` | the character with that number, as a `str`: `"é"` (`byte_str(b)`: a one-byte `str`) |
 | `split(s, "")` | each character, as a `str` |
 | `text_width(s, size)` | how wide it is drawn, in pixels (what a text box needs) |

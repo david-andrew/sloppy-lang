@@ -9,6 +9,41 @@
   field (it named its first letter) and what a vector has; an enum with no variant like the one
   written lists its variants (`screen_fit(.fit)`: .expand, .letterbox, ...). START's Python and
   JavaScript tables have `range(n)` and `while`.
+- JSON's whole numbers are exact: `parse_json` reads one as `Json.integer(i)` while it fits in an
+  int (as Python's json does), `as_int` gives it as written (1234567890123456789 had become
+  ...568), and `to_json` writes an int field as itself rather than 1.2345678901234568e+18.
+- `print(j)` and `"{j}"` show a Json as JSON text (it was `object(["a"], [number(1.0)])`).
+- `parse_json` is 5 times as fast (as fast as Python's json.loads on a 4.6 MB file): text with no
+  escapes is sliced at once, numbers read where they are, words not tried at each value.
+  `to_json` of a Json is twice as fast, and of any other value writes JSON straight from the
+  value's text (no Json made in between): 0.94 s became 0.3 s on that file's structs.
+- `parse_json` of a web page (an error page where JSON was expected) says it is HTML, not
+  `1:1 a value was expected`.
+- `url_encode`, `url_decode`, `url_query({"q": "x y", "page": "2"})` (Python's quote, unquote and
+  urlencode), `html_unescape` (named entities of Latin-1 and punctuation, and numbers) and
+  `html_escape`.
+- A precision cuts text to that many characters, as Python's does: `"{name:<12.12}"` is a column
+  12 wide (it was not cut). `first(s, n)` and `last(s, n)` on text count characters (a slice
+  counts bytes, and can cut an é in two).
+- `parse_args`'s `--help` shows each option's comment, the one beside its field or on the lines
+  just above it; a field starting with h is -H (-h is help: it had no short form).
+- Messages for JSON read as Python reads its dicts: `data["name"]` says to check
+  `if data is JsonError:` first, then `data.get("name").as_str()`; `loop x in j` points to
+  `j.as_list()` and `j.keys()`, `len(j)` to `j.as_list().len()`, and `j.get("a", 0)` to
+  `j.get("a").as_int() ?? 0`.
+- When no version of a function takes an argument and they all failed at it, the message says
+  what that argument can be (`len(p)`: an array or a str, Map[K, V], Heap[T]...), not one
+  version's parameter (`argument 'b' expects GpuBuffer[$0]`).
+- `fetch(url)` without `import net` says it is `net.fetch`, after `import net` (any function of a
+  library module the program does not import); `import requests` (urllib, http, httpx) says how
+  net.fetch does it; `r.ok`, `r.status_code`, `r.json()` on an HttpReply say what it has.
+- `parallel_map(urls, (u): net.fetch(u))` is said at the call, of net.fetch, which cannot run on
+  many threads at once, rather than at a variable inside lib/net.jo.
+- JSON in a string (`"{\"a\": 1}"`) is pointed to `{{` and raw strings (`r'{"a": 1}'`).
+- `from_text` and `from_json` read back the `\x01` to_text writes for a control character.
+- docs/START.md: "Fetching from the web" (net.fetch and from_json), and requests, urllib and
+  html in Coming from Python.
+
 - `rk4(state, t, dt, rate)`: a simulation's step by the Runge-Kutta method, for a number, a
   vector, an f64[] or a struct with + and * of its own (TEACHING.md: a pendulum).
 - `net.fetch` takes `method` ("POST", "PUT", "DELETE", "HEAD"...), `headers` (sent besides the
