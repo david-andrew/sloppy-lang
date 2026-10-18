@@ -14,6 +14,8 @@ const __C_NEXT = 1         # next chunk to claim
 const __C_DONE = 2         # chunks finished
 const __C_ACK = 3          # workers finished with the current job (futex word for the caller)
 const __C_CHUNKS = 4       # chunks in the current job
+const __C_SLEEPERS = 5     # workers asleep on __C_GEN (woken only when there are some)
+const __C_WAITING = 6      # the caller asleep on __C_DONE (woken only then)
 __pool_ctl: *int = null
 __pool_workers = 0
 __job_idle_c: (int, int) -> void = __job_idle      # (made once: converting a function to a closure allocates)
@@ -112,7 +114,9 @@ __run_chunks = ():
         if k >= c[__C_CHUNKS]: return
         __run_chunk(k)
         # (the last chunk wakes the caller, waiting for them all)
-        if __atomic_add(c + __C_DONE, 1) + 1 == c[__C_CHUNKS]: __futex_wake(c + __C_DONE)
+        # (a wake is a system call: made only when the caller went to sleep. It counts itself
+        # asleep before it sleeps, and the sleep checks __C_DONE again: no wake is missed)
+        if __atomic_add(c + __C_DONE, 1) + 1 == c[__C_CHUNKS] and __atomic_add(c + __C_WAITING, 0) > 0: __futex_wake(c + __C_DONE)
 
 # (a function of its own, kept out of line: the reference to the job's function it takes is
 # dropped before the chunk is counted done, while refcounts are still atomic; after the last
@@ -134,11 +138,13 @@ __worker_main = (id: int):
         spins = 0
         loop __atomic_add(c + __C_GEN, 0) == seen:
             spins += 1
-            if spins > 20000: __futex_wait(c + __C_GEN, seen)
+            if spins > 20000:
+                __atomic_add(c + __C_SLEEPERS, 1)
+                __futex_wait(c + __C_GEN, seen)
+                __atomic_add(c + __C_SLEEPERS, -1)
         seen = __atomic_add(c + __C_GEN, 0)
         __run_chunks()
         __atomic_add(c + __C_ACK, 1)
-        __futex_wake(c + __C_ACK)
 
 __pool_start = ():
     when TARGET != "wasm":
@@ -230,7 +236,8 @@ __parallel_run_job = (total: int, f: (int, int) -> void):
             o = __atomic_add(c + __C_NEXT, 0)
             if __atomic_cas(c + __C_NEXT, o, 0) == o: break
         __atomic_add(c + __C_GEN, 1)
-        __futex_wake(c + __C_GEN)
+        # (only when some worker sleeps: the others are spinning, and see the job by themselves)
+        if __atomic_add(c + __C_SLEEPERS, 0) > 0: __futex_wake(c + __C_GEN)
         __run_chunks()
         # wait until every chunk is done, not for every worker: one the system has not woken
         # yet (on a busy machine) would hold each call up by milliseconds. A worker that wakes
@@ -242,7 +249,10 @@ __parallel_run_job = (total: int, f: (int, int) -> void):
             d = __atomic_add(c + __C_DONE, 0)
             if d >= chunks: break
             spins += 1
-            if spins > 2000: __futex_wait(c + __C_DONE, d)
+            if spins > 2000:
+                __atomic_add(c + __C_WAITING, 1)
+                __futex_wait(c + __C_DONE, d)
+                __atomic_add(c + __C_WAITING, -1)
         __atomic_add(c + __C_NEXT, 1 << 40)
         __mt_active = false
         __out_direct = false

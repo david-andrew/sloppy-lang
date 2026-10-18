@@ -202,8 +202,9 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `(*) = (n: int, s: str) -> str`
 - `upper = (s: str) -> str`: s in capitals (letters of Latin, accented ones too, Greek and Cyrillic: "café" is "CAFÉ")
 - `lower = (s: str) -> str`: s in small letters (as upper)
-- `to_int = (s: str) -> int?`: parse an integer (decimal, or hex after 0x; _ may separate digits); none if it is not one or does not fit in an int
-- `to_float = (s: str) -> f64?`: Parse a decimal number. The result is the double nearest to the exact decimal value (ties to even), like C's strtod: an estimate, then exact big-integer comparisons.
+- `to_int = (s: str) -> int?`: parse an integer (decimal, or hex after 0x, binary after 0b, octal after 0o; _ may separate digits); none if it is not one or does not fit in an int. Spaces and line ends around it are left out (" 42\n" is 42, a line as read from a file); inside it they are not ("4 2" is none)
+- `to_int = (s: str, base: int) -> int?`: an integer written in base 2 to 36 (to_int("ff", 16) is 255; letters for the digits past 9, in either case; the base's own prefix may come first: "0xff", "0b101")
+- `to_float = (s: str) -> f64?`: Parse a decimal number. The result is the double nearest to the exact decimal value (ties to even), like C's strtod: an estimate, then exact big-integer comparisons. Spaces and line ends around it are left out, as for to_int.
 
 #### Characters
 
@@ -498,7 +499,7 @@ Operating system access: files, arguments, environment, time.
 
 - `exit = (code: int)`
 - `args = () -> str[]`: command line arguments (args()[0] is the program as it was started: `sloppy tool.jo` gives "tool.jo")
-- `env = (name: str) -> str?`: an environment variable (in a web page: the page's URL parameter of that name, where `SLOPPY_X` may also be written `x`, and a bare `?x` is "1")
+- `env = (name: str) -> str?`
 - `file_error = () -> str`: why the last file operation that failed did, in words: "no such file or directory", "permission denied", "it is a directory", "the disk is full"... ("" when none has failed):
   ```gdscript
   if not write_file(p, text): eprint("cannot write {p}: {file_error()}")
@@ -556,6 +557,9 @@ Operating system access: files, arguments, environment, time.
 - `list_dir = (path: str) -> str[]`: names of the entries in a directory (excluding . and ..); [] for a file or a path that is not there too (is_dir tells them apart)
 - `exe_path = () -> str`: absolute path of the running executable (a script run with `sloppy tool.jo` is built into a cache first: its own path is args()[0])
 - `exec = (path: str, argv: str[]) -> bool`: replace the current process with another program (returns only on failure)
+- `set_env = (name: str, value: str)`: an environment variable set, for this program and the programs it starts after this
+- `unset_env = (name: str)`: an environment variable taken away, for this program and the programs it starts after this
+- `env_all = () -> {str: str}`: every environment variable, by name (in a web page: only those set with set_env)
 - `spawn_detached = (path: str, argv: str[]) -> bool`: start a program in the background, detached from this one: its own session, no terminal (input and output go to /dev/null); returns whether it was started
 - `run_program = (program: str, args: str[] = [], show: bool = false, cwd: str = "") -> (int, str)`: run a program and wait for it to end: its exit code (-1: it could not be started) and what it wrote to its standard output (its errors go where this program's go). A program named without a / is looked for on the PATH. args are its arguments, after its name. show = true: its output goes straight to this program's as it runs (a build's progress), and the text returned is "". cwd: the directory it runs in ("": this program's; a program named with a relative path is found from there)
 - `run_shell = (command: str, show: bool = false, cwd: str = "") -> (int, str)`: run a command line through the system's shell (sh; cmd on Windows): pipes, `*.jo`, `&&` work as typed. Its exit code and what it wrote to its standard output; show and cwd as run_program's
@@ -827,7 +831,7 @@ rate = get_be(packet, 0, 2)
 rate_f = f32_from_bits(u32(get_le(file, 8, 4)))   # a float's bytes
 ```
 
-Sizes are 1, 2, 4 or 8 bytes; get_le and get_be give the bytes as an unsigned number (8 bytes: its bits as an int), get_le_signed and get_be_signed with their sign.
+Sizes are 1 to 8 bytes (3 for a 24-bit field); get_le and get_be give the bytes as an unsigned number (8 bytes: its bits as an int), get_le_signed and get_be_signed with their sign.
 
 - `get_le = (b: u8[], at: int, size: int) -> int`: the size-byte number at b[at..], least significant byte first
 - `get_be = (b: u8[], at: int, size: int) -> int`: the size-byte number at b[at..], most significant byte first (network order)
@@ -845,6 +849,41 @@ Sizes are 1, 2, 4 or 8 bytes; get_le and get_be give the bytes as an unsigned nu
 - `trailing_zeros = (x: int) -> int`: how many 0 bits come after the lowest 1 (64 for 0)
 - `rotate_left = (x: int, n: int) -> int`: the bits turned by n places (those going out at one end come back at the other)
 - `rotate_right = (x: int, n: int) -> int`
+- `popcount = (x: u8) -> int`: (each of the above for a number of each size, counting and turning its own bits: a u32's 32)
+- `leading_zeros = (x: u8) -> int`
+- `trailing_zeros = (x: u8) -> int`
+- `rotate_left = (x: u8, n: int) -> u8`
+- `rotate_right = (x: u8, n: int) -> u8`
+- `popcount = (x: u16) -> int`
+- `leading_zeros = (x: u16) -> int`
+- `trailing_zeros = (x: u16) -> int`
+- `rotate_left = (x: u16, n: int) -> u16`
+- `rotate_right = (x: u16, n: int) -> u16`
+- `popcount = (x: u32) -> int`
+- `leading_zeros = (x: u32) -> int`
+- `trailing_zeros = (x: u32) -> int`
+- `rotate_left = (x: u32, n: int) -> u32`
+- `rotate_right = (x: u32, n: int) -> u32`
+- `popcount = (x: u64) -> int`
+- `leading_zeros = (x: u64) -> int`
+- `trailing_zeros = (x: u64) -> int`
+- `rotate_left = (x: u64, n: int) -> u64`
+- `rotate_right = (x: u64, n: int) -> u64`
+- `popcount = (x: i8) -> int`
+- `leading_zeros = (x: i8) -> int`
+- `trailing_zeros = (x: i8) -> int`
+- `rotate_left = (x: i8, n: int) -> i8`
+- `rotate_right = (x: i8, n: int) -> i8`
+- `popcount = (x: i16) -> int`
+- `leading_zeros = (x: i16) -> int`
+- `trailing_zeros = (x: i16) -> int`
+- `rotate_left = (x: i16, n: int) -> i16`
+- `rotate_right = (x: i16, n: int) -> i16`
+- `popcount = (x: i32) -> int`
+- `leading_zeros = (x: i32) -> int`
+- `trailing_zeros = (x: i32) -> int`
+- `rotate_left = (x: i32, n: int) -> i32`
+- `rotate_right = (x: i32, n: int) -> i32`
 - `byte_swap = (x: int, size: int = 8) -> int`: the bytes of a size-byte number in the other order (0x1234, 2 -> 0x3412)
 
 #### From C
