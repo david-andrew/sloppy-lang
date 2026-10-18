@@ -29,6 +29,13 @@
   player's screen; each player picks their own side (Switch side, Tab, a gamepad's X), practice
   too. An insignia (or name) changed in Settings during a fight now shows on everyone's screen
   (it showed from the next fight). The simulation is unchanged (the same hash).
+- Aces: six more insignias, famous ones: the 94th Aero Squadron's hat in the ring
+  (Rickenbacker's), a shark's mouth on the nose, Nungesser's black heart, Voss's face on the
+  cowling, the Cigognes' stork (Guynemer's), the ace of spades; the crash is quieter.
+- Lowline: steering right turns and banks right (it went left: the valley runs along +z, where
+  +x is on the left as seen from behind).
+- A struct field whose default makes another of the same struct (`rooms = [Room()]`) is an
+  error that says so; the compiler went round without end and crashed (found by the fuzzer).
 - `net.listen(port, largest)`: the biggest message a server takes from its peers; a connection
   that has not finished its handshake in 10 s is closed; a server reads all its connections into
   one buffer (it made a 64 KB one for each connection, each time it looked).
