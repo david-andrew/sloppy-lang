@@ -44,6 +44,10 @@ try:
         s1 = os.path.join(tmp, "sloppy-old1")
         subprocess.run([os.path.join(wt, "stage0", "sloppy0"), os.path.join(wt, "compiler", "main.jo"), "-o", s1], check=True, env=wenv)
         subprocess.run([s1, "build", os.path.join(wt, "compiler", "main.jo"), "-o", old], check=True, env=wenv)
+    # (its library kept: when this commit's library has what it cannot read, new syntax, it
+    # compiles with its own)
+    old_lib = os.path.join(tmp, "base-lib")
+    shutil.copytree(os.path.join(wt, "lib"), old_lib)
 finally:
     run("git", "worktree", "remove", "--force", wt)
 new = os.path.join(root, "bin", "sloppy")
@@ -54,8 +58,9 @@ new = os.path.join(root, "bin", "sloppy")
 counter = None
 
 
-def icount(compiler, src, extra):
+def icount(compiler, src, extra, lib=None):
     global counter
+    env = dict(globals()["env"], SLOPPY_LIB=lib) if lib else globals()["env"]
     cmd = [compiler, "build", src, "-o", os.path.join(tmp, "out"), *extra]
     if counter is None:
         r = subprocess.run([os.path.join(root, "tools", "icount"), *cmd], cwd=root, env=env, capture_output=True, text=True)
@@ -70,6 +75,9 @@ def icount(compiler, src, extra):
                            cwd=root, env=env, capture_output=True, text=True)
         refs = [l for l in r.stderr.splitlines() if "I refs:" in l or "I   refs:" in l]
         if r.returncode == 0 and refs: return int(refs[-1].split(":")[1].replace(",", "")) / 1e9
+    if compiler == old and not lib:
+        print(f"(the earlier compiler cannot read this commit's library: {src} measured with its own)")
+        return icount(compiler, src, extra, old_lib)
     sys.exit(f"speedcheck: cannot count {os.path.basename(compiler)} build {src}: {r.stderr.strip()[-500:]}")
 
 
