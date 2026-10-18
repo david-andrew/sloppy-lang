@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Aces: the lobby has your name and insignia (as Settings has them); the shark's mouth is bigger
-  and reaches the nose, round the triplane's cowling.
+  and reaches the nose, round the triplane's cowling; Lock camera roll (Settings, off at first)
+  keeps the horizon level in any view, with keys or a gamepad as with the mouse.
 
 ## 0.21.0
 
