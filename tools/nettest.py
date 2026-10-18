@@ -120,6 +120,55 @@ a_out = a.communicate(timeout=90)[0]
 check("invite screens: the inviter", a_out, ["invite: connected, inviter true, screens up false", "invite got: hello from join"])
 check("invite screens: the friend", b.stdout, ["join: connected, inviter false, screens up false", "join got: hello from invite"])
 
+# rooms through a matchmaking server (tools/rendezvous.jo), with lib/invite.jo's screens: a host and
+# two friends (one with the code typed in small letters, one with its link); a friend who comes
+# before the host, who then opens the room with the code its computer kept; the host gone, and
+# back; and the server out of reach
+rv_bin = os.path.join(tmp, "rendezvous")
+subprocess.run([sloppy, "build", os.path.join(root, "tools", "rendezvous.jo"), "-o", rv_bin], check=True, env=env)
+port += 1
+rv_port = port
+def rendezvous(at):
+    r = subprocess.Popen([rv_bin + exe], stdout=subprocess.DEVNULL, env=dict(env, PORT=str(at), ROOMS=os.path.join(tmp, f"rooms{at}.txt")))
+    time.sleep(0.5)
+    return r
+rv = rendezvous(rv_port)
+rg = build("room_game") + exe
+renv = dict(genv, SLOPPY_FRAMES="1800", SLOPPY_SERVER=f"ws://127.0.0.1:{rv_port}")
+def room_game(d, name, **kw):
+    return subprocess.Popen([rg], stdout=subprocess.PIPE, text=True, env=dict(renv, DIR=d, NAME=name, SLOPPY_SAVE_DIR=os.path.join(d, name), **kw))
+def output(p):
+    try: return p.communicate(timeout=60)[0]
+    except subprocess.TimeoutExpired:
+        p.kill()
+        return p.communicate()[0]
+rd = os.path.join(tmp, "room")
+os.makedirs(os.path.join(rd, "host", "room_game"))
+h = room_game(rd, "host", ROLE="host", FRIENDS="2")
+a = room_game(rd, "amy", ROLE="join")
+b = room_game(rd, "bob", ROLE="join", LINK="1")
+check("a room, three games: the host", output(h), ["host got: hello from amy", "host got: hello from bob"])
+check("a room, three games: a friend with its code", output(a), ["amy got: hello from host"])
+check("a room, three games: a friend with its link", output(b), ["bob got: hello from host"])
+rd = os.path.join(tmp, "room_kept")
+os.makedirs(os.path.join(rd, "host", "room_game"))
+with open(os.path.join(rd, "host", "room_game", "invite_room"), "w") as f: f.write("KX7P4 0123456789abcdef0123")
+a = room_game(rd, "amy", ROLE="join", ROOM="kx7p4", WAIT="1")
+time.sleep(2)
+h = room_game(rd, "host", ROLE="host")
+check("a room: a friend who comes first waits", output(a), ["amy: told wait new", "amy got: hello from host"])
+check("a room: its host opens it later, with the code its computer kept", output(h), ["host got: hello from amy"])
+a = room_game(rd, "amy", ROLE="join", ROOM="KX7P4", WAIT="1")
+time.sleep(2)
+h = room_game(rd, "host", ROLE="host")
+check("a room whose host has gone: the friend is told, and joins when it is back", output(a), ["amy: told wait host", "amy got: hello from host"])
+output(h)
+l = room_game(rd, "look", ROLE="look", SLOPPY_SERVER=f"ws://127.0.0.1:{rv_port + 1}")
+check("a room with the server out of reach says so", output(l), ["look: true, said it cannot be reached"])
+rv.kill()
+port += 2
+env["NET_PORT"] = str(port)
+
 # a web page's client, in a browser: the same, but as a game (messages arrive between frames)
 shell = None
 pw = os.path.expanduser("~/.cache/ms-playwright")
@@ -196,6 +245,21 @@ if shell:
         print(r.stdout.strip())
         if r.returncode != 0: failed += 1
     else: print("(no node: WebRTC with a web page is not tried)")
+    # rooms through a matchmaking server with web pages (driven by node): the link the same after a
+    # reload, a page joining by it, the host's page gone and back, a native program joining a
+    # page's room, the server out of reach
+    if shutil.which("node"):
+        port += 1
+        env["NET_PORT"] = str(port)
+        rv = rendezvous(port)
+        ui = os.path.join(tmp, "invite_ui")
+        subprocess.run([sloppy, "build", os.path.join(root, "tests", "web", "invite_ui.jo"), "-o", ui, "--target", "wasm"], check=True, env=env)
+        subprocess.run([sloppy, "build", os.path.join(root, "tests", "web", "invite_ui.jo"), "-o", ui + "_native"], check=True, env=env)
+        r = subprocess.run(["node", os.path.join(root, "tools", "web_room.mjs"), shell, ui + ".html", str(port), ui + "_native" + exe, os.path.join(tmp, "webroom")],
+                           capture_output=True, text=True, timeout=300, env=genv)
+        rv.kill()
+        print(r.stdout.strip())
+        if r.returncode != 0: failed += 1
 else: print("(no browser: the web client is not tried)")
 # through a TURN relay only, where SLOPPY_TEST_TURN names a test server ("turn:host:port,user,password":
 # coturn, run locally): two native programs, and a native program with a web page

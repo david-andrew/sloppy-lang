@@ -4106,7 +4106,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `code_kind = (code: str) -> str`: what a code is: "invite" (from net.invite: for join_invite), "reply" (from join_invite: for accept_reply), or "" (not a code: cut short, or something else pasted); a link to an invite is one
 - `accept_reply = (peer: int, reply: str) -> bool`: the other player's reply to this side's invite; false when it is not a reply code
 - `turn_server = (url: str, user: str, password: str)`: a TURN server ("turn:host:port", or "host:port") with the user name and password it gives: the invites made after this also offer a path through it, a relay, for players whose networks allow none straight to each other (some mobile data, schools, offices). Your own (coturn), or a service's (some have a free tier); its password goes into every copy of the game. UDP only
-- `listen = (port: int) -> bool`: start a server on port (native programs); false if the port cannot be had
+- `listen = (port: int, largest: int = 16 << 20) -> bool`: start a server on port (native programs); false if the port cannot be had. largest: the biggest message taken from the peers that connect (one bigger ends its connection: a public server's guard), and a peer that has not finished connecting in 10 seconds is let go
 - `stop_listening = ()`: stop taking new connections (the peers connected stay); listen starts again
 - `connect = (host: str, port: int = 0) -> int`: connect to a server: a peer, connecting in the background (joined or left arrive by receive); host is a name or address and port its port, or host is a ws:// or wss:// URL (port then unused)
 - `send = (peer: int, msg: u8[])`: send a message to a peer (nothing if it is not connected, or has gone): text goes as a text message (a string to a page's WebSocket), bytes as a binary one
@@ -4195,14 +4195,26 @@ draw = ():
       peer: int                   # (a net peer: net.send, net.receive)
       inviter: bool               # this side invited (and the other joined)
   ```
-- `start = (reliable: bool = true)`: show Invite a friend: an invite is made at once (reliable = false: lost messages are not sent again, nor do they hold up later ones; for fast games and rollback)
-- `join = (code: str = "")`: show Join a friend, with their link or code if given (joined at once)
-- `from_link = () -> bool`: the program was opened from an invite link (a web page's ?invite=..., or INVITE=code): Join a friend with it, and true
+- `start = (reliable: bool = true, players: int = 2)`: show Invite a friend: an invite is made at once (reliable = false: lost messages are not sent again, nor do they hold up later ones; for fast games and rollback). With a matchmaking server, this computer's room opens instead, for players in all (this side too: 0 for any number, until close_room); the screen has Invite with a code instead
+- `join = (code: str = "")`: show Join a friend, with their link or code if given (joined at once): an invite's, or a room's (with a matchmaking server: the short code, or a link with ?room= in it)
+- `from_link = () -> bool`: the program was opened from an invite link (a web page's ?invite=... or ?room=..., or INVITE=code or ROOM=code): Join a friend with it, and true
 - `active = () -> bool`: one of the screens is up
 - `code = () -> str`: this side's code: the invite, or the reply to one ("" until it is made, a moment after start or join): for a game that shows it in its own way
 - `reply = (code: str) -> bool`: the friend's reply to this side's invite, as Connect takes it from the box: false if it is not one
-- `cancel = ()`: leave the screens (Back does it too), dropping the invite if it has not connected
+- `cancel = ()`: leave the screens (Back does it too), dropping the invite if it has not connected (and the room, if no friend has come through it)
 - `screen = (game: str = "the game", web_page: str = "") -> Invited?`: draw the screen that is up (in draw), and follow the connection: none until the other player is connected, then them (the screens are gone then). game names the game in what it says; web_page is where it is on the web, for a computer's invite to link to
+
+#### Rooms, through a matchmaking server (tools/rendezvous.jo)
+
+- `server = (url: str, native: str = "")`: the matchmaking server for rooms (tools/rendezvous.jo: docs/MATCHMAKING.md runs one): url is where web pages reach it, as wss://match.example.com (a page served over https may only reach wss://), native where native programs do, which have no TLS ("": ws:// to the same host, on the server's own port, 7700). "" for none. SLOPPY_SERVER (a web page's ?server=) sets it for any game, over the game's own ("none": no server): for trying a server of one's own
+- `has_server = () -> bool`: there is a matchmaking server (rooms: start opens one, join takes a room's code)
+- `room_code = () -> str`: this computer's room code while its room is open ("" when it is not): to show in a game's lobby
+- `room_link = (web_page: str = "") -> str`: a link to the open room: this page's address (or web_page) with ?room= ("" with neither, or no room)
+- `room_status = () -> str`: what the room is doing, in words ("" when it is not open)
+- `arrivals = () -> Invited[]`: friends who have connected through the open room since the last call (the first, while the screen is up, comes from screen): each a peer, as screen's. Call it every frame while hosting
+- `room_busy = (on: bool)`: while on, friends who come to the room wait (told so) until it is off: for a game whose fight has started (call it every frame, with whether that is so)
+- `close_room = ()`: close the room: friends can no longer join with its code (until start opens it again)
+- `new_room_code = ()`: a new code for this computer's room (the old one, and links with it, no longer lead here)
 
 ## Netplay
 

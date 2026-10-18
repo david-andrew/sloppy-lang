@@ -103,6 +103,28 @@ practice mode).
 Netpong's Invite a friend and Join a friend show the whole of it, with the codes copied to the
 clipboard and pasted back.
 
+**Rooms: a matchmaking server instead of the reply code.** With `invite.server(url)` (a
+server of your own, tools/rendezvous.jo: [how to run one](MATCHMAKING.md)), Invite a friend opens
+this computer's room instead: a short code ("KX7P4") and a link with it (`?room=KX7P4`), kept, so
+they are the same after a refresh or a restart (New code makes another). Friends type the code into
+Join a friend, or open the link, and nothing comes back: their game and the host's pass the invite
+and the reply through the server, and then connect straight to each other as before. A friend who
+comes while the host's game is not open is told so, and joins once it is. The screen keeps
+Invite with a code instead, and says so when the server cannot be reached.
+
+```gdscript
+invite.server("wss://match.example.org")        # (native builds: ws://match.example.org:7700)
+invite.from_link()                              # (?room=... too)
+...
+if ui_button("Invite friends"): invite.start(players = 4)      # a room for 4, this side too
+```
+
+A room lets in several friends, one by one: the first comes from `invite.screen` as before, the
+others from `invite.arrivals()` (each frame, in the game's lobby); `invite.room_busy(true)` makes
+those who come wait, told why, while a fight is on; `invite.room_code()` is the code to show in a
+lobby, and `invite.close_room()` closes it. `SLOPPY_SERVER` (a page's `?server=`) points any game
+that uses `import invite` at a server, for trying one; examples/aces uses rooms.
+
 What players need to know, a game should show them: the host's screen gives its address,
 `net.local_address()` (as 192.168.1.20), and the one joining types it; both on the same network
 (the same Wi-Fi or router), and on one computer, `localhost`. examples/netpong does this, with a
