@@ -84,7 +84,9 @@ __wl_ddev = 0
 __wl_source = 0                # ours, while we own the clipboard
 __wl_clip_text = ""
 __wl_sel_offer = 0             # the clipboard's current contents, offered by whoever owns it
-__wl_offers: int[]             # data offers: (id, has text) pairs
+__wl_offers: int[]             # data offers: (id, what it has: 1 text, 2 a text/uri-list) pairs
+__wl_ddm_ver = 1
+__wl_dnd_offer = 0             # what is being dragged over the window (files, if it has a uri-list)
 __wl_srv_kind: int[]            # objects the compositor made (ids from 0xff000000) -> interface
 __wl_sync_done = false
 __wl_configured = false
@@ -279,7 +281,7 @@ __wl_take_fd = () -> int:
     f
 
 __wl_event = (obj: int, op: int, a: u8[]):
-    global __fullscreen, __win_close, __wl_compositor, __wl_compositor_ver, __wl_configured, __wl_constraints, __wl_csd, __wl_cursor_dev, __wl_cursor_mgr, __wl_ddm, __wl_deco_mgr, __wl_dmabuf, __wl_failed, __wl_frac_mgr, __wl_frame_pending, __wl_fullscreen, __wl_keyboard, __wl_lh, __wl_lw, __wl_maximized, __wl_params_result, __wl_pending_h, __wl_pending_w, __wl_pointer, __wl_relmgr, __wl_seat, __wl_shm, __wl_source, __wl_sync_done, __wl_viewporter, __wl_wm_base
+    global __fullscreen, __win_close, __wl_compositor, __wl_compositor_ver, __wl_configured, __wl_constraints, __wl_csd, __wl_cursor_dev, __wl_cursor_mgr, __wl_ddm, __wl_ddm_ver, __wl_deco_mgr, __wl_dmabuf, __wl_failed, __wl_frac_mgr, __wl_frame_pending, __wl_fullscreen, __wl_keyboard, __wl_lh, __wl_lw, __wl_maximized, __wl_params_result, __wl_pending_h, __wl_pending_w, __wl_pointer, __wl_relmgr, __wl_seat, __wl_shm, __wl_source, __wl_sync_done, __wl_viewporter, __wl_wm_base
     kind = WLK_NONE
     if obj >= 0xff000000:
         if obj - 0xff000000 < __wl_srv_kind.len(): kind = __wl_srv_kind[obj - 0xff000000]
@@ -308,7 +310,9 @@ __wl_event = (obj: int, op: int, a: u8[]):
         else if iface == "zwp_linux_dmabuf_v1" and ver >= 3: __wl_dmabuf = __wl_bind(name, iface, 3, WLK_DMABUF)
         else if iface == "wp_viewporter": __wl_viewporter = __wl_bind(name, iface, 1, WLK_VIEWPORTER)
         else if iface == "wp_fractional_scale_manager_v1": __wl_frac_mgr = __wl_bind(name, iface, 1, WLK_FRAC_MGR)
-        else if iface == "wl_data_device_manager": __wl_ddm = __wl_bind(name, iface, min(ver, 3), WLK_DDM)
+        else if iface == "wl_data_device_manager":
+            __wl_ddm_ver = min(ver, 3)
+            __wl_ddm = __wl_bind(name, iface, __wl_ddm_ver, WLK_DDM)
         else if iface == "zwp_pointer_constraints_v1": __wl_constraints = __wl_bind(name, iface, 1, WLK_CONSTRAINTS)
         else if iface == "zwp_relative_pointer_manager_v1": __wl_relmgr = __wl_bind(name, iface, 1, WLK_RELMGR)
     else if kind == WLK_CALLBACK and op == 0: __wl_sync_done = true
@@ -371,12 +375,17 @@ __wl_event = (obj: int, op: int, a: u8[]):
             __wl_srv_kind[id - 0xff000000] = WLK_DOFFER
             __wl_offers.push(id)
             __wl_offers.push(0)
+        else if op == 1: __wl_dnd_enter(__wl_u32(a, 0), __wl_u32(a, 16))
+        else if op == 2: __wl_dnd_end()
+        else if op == 4: __wl_dnd_drop()
         else if op == 5: __wl_new_selection(__wl_u32(a, 0))
     else if kind == WLK_DOFFER and op == 0:
         mime, _ = __wl_str(a, 0)
-        if mime == "text/plain;charset=utf-8" or mime == "text/plain" or mime == "UTF8_STRING":
-            loop i in [0..__wl_offers.len() / 2):
-                if __wl_offers[2 * i] == obj: __wl_offers[2 * i + 1] = 1
+        has = 0
+        if mime == "text/plain;charset=utf-8" or mime == "text/plain" or mime == "UTF8_STRING": has = 1
+        else if mime == "text/uri-list": has = 2
+        loop i in [0..__wl_offers.len() / 2):
+            if __wl_offers[2 * i] == obj: __wl_offers[2 * i + 1] |= has
     else if kind == WLK_DSOURCE:
         if op == 1:
             # someone pastes: write our text to the pipe they sent
@@ -580,7 +589,10 @@ __wl_show_cursor = (on: bool):
 __wl_set_cursor = ():
     global __wl_cursor
     if __wl_cursor_dev == 0: return
-    shape = 1                                  # default
+    # (set_cursor's shape, as Cursor numbers them: default, text, pointer, crosshair, move,
+    # ew_resize, ns_resize, nwse_resize, nesw_resize, not_allowed, wait)
+    shapes = [1, 9, 4, 8, 13, 26, 27, 29, 28, 15, 6, 1]
+    shape = shapes[int(__cursor_now)]
     match __wl_edge:
         1: shape = 19                          # n_resize
         2: shape = 22                          # s_resize
@@ -1021,6 +1033,14 @@ __wl_set_title = (title: str):
     __wl_end()
     __wl_flush()
 
+# a size the program asks for (in logical units): the next frame is drawn at it
+__wl_resize = (w: int, h: int):
+    global __wl_lh, __wl_lw
+    __wl_lw = max(w, 1)
+    __wl_lh = max(h, 1)
+    if __ld_frame != null: __ld_resize(__wl_lw, __wl_lh)
+    __wl_apply_size()
+
 __wl_poll = ():
     loop __wl_read(0): pass
     __wl_repeat()
@@ -1054,7 +1074,7 @@ __wl_new_selection = (id: int):
     keep: int[]
     loop i in [0..__wl_offers.len() / 2):
         o = __wl_offers[2 * i]
-        if o == id:
+        if o == id or o == __wl_dnd_offer:
             keep.push(o)
             keep.push(__wl_offers[2 * i + 1])
         else:
@@ -1067,18 +1087,70 @@ __wl_get_clipboard = () -> str:
     if __wl_source != 0: return __wl_clip_text
     has_text = false
     loop i in [0..__wl_offers.len() / 2):
-        if __wl_offers[2 * i] == __wl_sel_offer and __wl_offers[2 * i + 1] == 1: has_text = true
+        if __wl_offers[2 * i] == __wl_sel_offer and __wl_offers[2 * i + 1] & 1 != 0: has_text = true
     if __wl_sel_offer == 0 or not has_text: return ""
-    # ask for the text through a pipe, and read it until the owner closes its end
+    str_from_bytes(__wl_receive(__wl_sel_offer, "text/plain;charset=utf-8"))
+
+# ---- files dropped on the window ----
+# (something dragged came over the window: files, if it offers a text/uri-list, are taken as a copy)
+__wl_dnd_enter = (serial: int, offer: int):
+    global __wl_dnd_offer
+    __wl_dnd_end()
+    has = 0
+    loop i in [0..__wl_offers.len() / 2):
+        if __wl_offers[2 * i] == offer: has = __wl_offers[2 * i + 1]
+    if offer == 0 or has & 2 == 0: return
+    __wl_dnd_offer = offer
+    __wl_begin(offer, 0)                       # accept
+    __wl_u(serial)
+    __wl_s("text/uri-list")
+    __wl_end()
+    if __wl_ddm_ver >= 3:
+        __wl_begin(offer, 4)                   # set_actions(copy, copy)
+        __wl_u(1)
+        __wl_u(1)
+        __wl_end()
+    __wl_flush()
+
+# (it was dropped: the paths, through a pipe)
+__wl_dnd_drop = ():
+    o = __wl_dnd_offer
+    if o == 0: return
+    paths = __uri_paths(str_from_bytes(__wl_receive(o, "text/uri-list")))
+    if __wl_ddm_ver >= 3:
+        __wl_begin(o, 3)                       # finish
+        __wl_end()
+    __wl_dnd_end()
+    __drop_add(paths)
+
+# (it went away, or was dropped: the offer is no longer needed)
+__wl_dnd_end = ():
+    global __wl_dnd_offer, __wl_offers
+    o = __wl_dnd_offer
+    __wl_dnd_offer = 0
+    if o == 0 or o == __wl_sel_offer: return
+    keep: int[]
+    loop i in [0..__wl_offers.len() / 2):
+        if __wl_offers[2 * i] != o:
+            keep.push(__wl_offers[2 * i])
+            keep.push(__wl_offers[2 * i + 1])
+    __wl_offers = keep
+    __wl_begin(o, 2)                           # destroy
+    __wl_end()
+    __wl_flush()
+
+# what a data offer holds as mime type: asked for through a pipe, read until its owner closes
+# its end (half a second at most)
+__wl_receive = (offer: int, mime: str) -> u8[]:
+    out: u8[]
     fds: i32[] = [-1, -1]
-    if syscall(293, data(fds), 0x80000) != 0: return ""          # pipe2(O_CLOEXEC)
-    __wl_begin(__wl_sel_offer, 1)              # receive
-    __wl_s("text/plain;charset=utf-8")
+    if syscall(293, data(fds), 0x80000) != 0: return out          # pipe2(O_CLOEXEC)
+    __wl_begin(offer, 1)                       # receive
+    __wl_s(mime)
     __wl_end()
     __wl_out_fds.push(int(fds[1]))
     __wl_flush()
     syscall(3, int(fds[1]))
-    out: u8[]
     buf = fill(u8(0), 4096)
     t0 = time()
     loop time() - t0 < 0.5:
@@ -1092,7 +1164,7 @@ __wl_get_clipboard = () -> str:
         if r <= 0: break
         loop k in [0..r): out.push(buf[k])
     syscall(3, int(fds[0]))
-    str_from_bytes(out)
+    out
 
 __wl_set_clipboard = (s: str):
     global __wl_clip_text, __wl_source

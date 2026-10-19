@@ -1,0 +1,320 @@
+# A user's files: dropped onto the window, or chosen in the system's file dialog. The same calls
+# everywhere; what a path is differs. Natively a path is where the file is on the disk. In a web
+# page the browser gives the page a copy of the file, not where it is: the page keeps it in its
+# own files, which read_file, read_bytes and load_image read, under the file's name.
+#
+#   loop path in dropped_files(): open_doc(read_file(path) ?? "")
+#
+#   if key_pressed(.o) and key_down(.ctrl): asked = open_file_dialog([".txt", ".md"])
+#   if asked >= 0:
+#       if let paths = file_dialog_result(asked):        # (each frame: none while it is open)
+#           asked = -1
+#           if paths.len() > 0: open_doc(read_file(paths[0]) ?? "")      # ([]: cancelled)
+#
+# Dialogs: on Windows the system's (the program waits while it is open); on Linux zenity's or
+# kdialog's, when one of them is installed (else the answer is at once: no files); on macOS
+# AppleScript's (osascript). In a web page, the browser's file picker: it opens only as a click,
+# a tap or a key ends (browsers allow it only then; asked for at another time, it opens at the
+# next one). Drops: Windows, X11, Wayland and web pages (not yet macOS).
+#
+# Testing aids: SLOPPY_FILE_DIALOG="a.txt|b.txt" answers every dialog with those paths, at
+# once ("": cancelled); SLOPPY_INPUT's 5:drop=a.txt drops a file in frame 5.
+
+# the files dropped onto the window since the last frame: their paths (in a web page, the names
+# of the page's copies, which read_file reads), in this frame only; [] in most frames
+dropped_files = () -> str[]: __dropped
+
+# ask the user for a file to open, in the system's dialog: an id for file_dialog_result, which
+# gives the answer once the user has chosen. types: the extensions to show (".png", "jpg"),
+# [] for any file; multiple: more than one may be chosen; title: the dialog's own
+open_file_dialog = (types: str[] = [], multiple: bool = false, title: str = "") -> int:
+    __dialog_start(false, types, multiple, title, "")
+
+# ask the user where to save a file: as open_file_dialog, with a name to start with. The answer
+# is the path to write to. In a web page the answer is `name` at once, a file of the page's own:
+# write it there, then download_file(path) hands it to the browser, which saves it where the
+# user says (natively download_file does nothing more; the same code works everywhere)
+#   if let p = file_dialog_result(asked):
+#       if p.len() > 0:
+#           write_file(p[0], text)
+#           download_file(p[0])
+save_file_dialog = (name: str = "", types: str[] = [], title: str = "") -> int:
+    __dialog_start(true, types, false, title, name)
+
+# a file dialog's answer (open_file_dialog's or save_file_dialog's id), once the user has chosen:
+# the paths chosen, [] if the dialog was cancelled; none while it is open. Given once: asking
+# again stops the program (a mistake: keep the answer when it comes)
+file_dialog_result = (d: int) -> str[]?:
+    i = -1
+    loop k in 0.. and x in __dialogs:
+        if x.id == d: i = k
+    if i < 0: panic("file_dialog_result({d}): no file dialog {d} is open: each answer is given once (keep it when it comes)")
+    __dialogs_poll()
+    if not __dialogs[i].done: return none
+    paths = __dialogs[i].paths
+    __dialogs.remove_at(i)
+    paths
+
+struct __Dialog:
+    id: int
+    done = false
+    paths: str[] = []
+    pid = 0                     # (Linux, macOS: the program asking: zenity, kdialog, osascript)
+    fd = -1                     # (what it writes: the paths, a line each)
+    out: u8[] = []
+
+__dialogs: __Dialog[]
+__dialog_next = 1
+__drops: str[]                  # (dropped since the last frame)
+__dropped: str[]                # (this frame's)
+__dialog_warned = false
+
+# (files dropped onto the window: dropped_files() has them in the next frame)
+__drop_add = (paths: str[]):
+    global __lazy_poke
+    loop p in paths:
+        if len(p) > 0: __drops.push(p)
+    __lazy_poke = true
+
+# (each frame, before update: the files dropped since the last are this frame's)
+__drop_frame = ():
+    global __dropped, __drops
+    when TARGET == "wasm":
+        __web_files_poll()
+    __dropped = __drops
+    __drops = []
+
+# (a text/uri-list's file:// addresses, as paths: X11's and Wayland's drops)
+__uri_paths = (s: str) -> str[]:
+    out: str[]
+    loop l0 in split(s, "\n"):
+        l = trim(l0)
+        if len(l) == 0 or l[0] == '#' or not starts_with(l, "file://"): continue
+        rest = l[7..]
+        # (file://host/path: the host left out)
+        k = find(rest, "/")
+        if k < 0: continue
+        out.push(url_decode(rest[k..]))
+    out
+
+# (the extensions asked for, without their dots)
+__dialog_exts = (types: str[]) -> str[]:
+    out: str[]
+    loop t in types:
+        e = trim(t)
+        if starts_with(e, "*."): e = e[2..]
+        if starts_with(e, "."): e = e[1..]
+        if len(e) > 0: out.push(e)
+    out
+
+__dialog_start = (save: bool, types: str[], multiple: bool, title: str, name: str) -> int:
+    global __dialog_next, __lazy_poke
+    d = __Dialog(id = __dialog_next)
+    __dialog_next += 1
+    exts = __dialog_exts(types)
+    if let t = env("SLOPPY_FILE_DIALOG"):
+        d.done = true
+        loop p in split(t, "|"):
+            if len(p) > 0: d.paths.push(p)
+    else:
+        when TARGET == "wasm":
+            if save:
+                # (the page's own file: the program writes it, download_file hands it over)
+                d.done = true
+                n = name
+                if len(n) == 0: n = "untitled"
+                d.paths.push(n)
+            else:
+                acc = join([loop e in exts: ".{e}"], ",")
+                __web_file_open(i32(d.id), data(acc), i32(len(acc)), i32(int(multiple)))
+        else when TARGET == "windows":
+            d.paths = __w32_file_dialog(save, exts, multiple, title, name)
+            d.done = true
+        else:
+            argv = __dialog_argv(save, exts, multiple, title, name)
+            if argv.len() == 0 or not __dialog_spawn(d, argv): d.done = true
+    if d.done: __lazy_poke = true
+    __dialogs.push(d)
+    d.id
+
+# (each frame, and while redraw_on_input waits: the dialogs' programs' answers read as they come)
+__dialogs_poll = ():
+    global __lazy_poke
+    when TARGET != "wasm" and TARGET != "windows":
+        loop mut d in __dialogs:
+            if d.done or d.fd < 0: continue
+            loop true:
+                pfd = fill(0, 1)
+                (data(pfd) as *i32)[0] = i32(d.fd)
+                (data(pfd) as *i16)[2] = 1                  # POLLIN
+                if syscall(7, data(pfd), 1, 0) <= 0: break
+                buf = fill(u8(0), 4096)
+                r = syscall(0, d.fd, data(buf), 4096)
+                if r > 0:
+                    loop k in [0..r): d.out.push(buf[k])
+                    continue
+                if r == -4 or r == -11: break               # (EINTR, EAGAIN: later)
+                # (its end: the paths, a line each; none when it was cancelled)
+                syscall(3, d.fd)
+                d.fd = -1
+                st = [0]
+                syscall(61, d.pid, data(st), 0, 0)          # wait4
+                loop l in split(str_from_bytes(d.out), "\n"):
+                    p = trim(l)
+                    if len(p) > 0: d.paths.push(p)
+                d.done = true
+                __lazy_poke = true
+                break
+
+when TARGET != "wasm" and TARGET != "windows":
+    # (a program on the PATH, or "")
+    __which = (name: str) -> str:
+        loop dir in split(env("PATH") ?? "/usr/bin:/bin", ":"):
+            if len(dir) > 0 and file_exists("{dir}/{name}"): return "{dir}/{name}"
+        ""
+
+    # (the program that asks, and its arguments: zenity, or kdialog first on KDE; osascript on a
+    # Mac. [] when there is none, said once)
+    __dialog_argv = (save: bool, exts: str[], multiple: bool, title: str, name: str) -> str[]:
+        global __dialog_warned
+        when TARGET == "macos":
+            return ["/usr/bin/osascript"] + __mac_dialog_script(save, exts, multiple, title, name)
+        else:
+            order = ["zenity", "kdialog"]
+            if find(env("XDG_CURRENT_DESKTOP") ?? "", "KDE") >= 0: order = ["kdialog", "zenity"]
+            loop prog in order:
+                path = __which(prog)
+                if len(path) == 0: continue
+                t = title
+                if len(t) == 0: t = if save: "Save" else: "Open"
+                if prog == "zenity":
+                    a = [path, "--file-selection", "--title={t}"]
+                    if save:
+                        a.push("--save")
+                        if len(name) > 0: a.push("--filename={name}")
+                    if multiple: a = a + ["--multiple", "--separator=\n"]
+                    if exts.len() > 0:
+                        globs = join([loop e in exts: "*.{e}"], " ")
+                        a.push("--file-filter={globs} | {globs}")
+                        a.push("--file-filter=* | *")
+                    return a
+                filter = join([loop e in exts: "*.{e}"], " ")
+                if save: return [path, "--title", t, "--getsavefilename", name, filter]
+                a = [path, "--title", t, "--getopenfilename", ".", filter]
+                if multiple: a = a + ["--multiple", "--separate-output"]
+                return a
+            if not __dialog_warned:
+                __dialog_warned = true
+                eprint("note: no file dialog: install zenity (or kdialog) for open_file_dialog and save_file_dialog")
+            return []
+
+    # (AppleScript's choose file: the POSIX paths, a line each; cancelled, nothing)
+    __mac_dialog_script = (save: bool, exts: str[], multiple: bool, title: str, name: str) -> str[]:
+        q = (s: str) -> str: "\"" + replace(replace(s, "\\", "\\\\"), "\"", "\\\"") + "\""
+        t = title
+        if len(t) == 0: t = if save: "Save" else: "Open"
+        if save:
+            return ["-e", "POSIX path of (choose file name with prompt {q(t)} default name {q(name)})"]
+        c = "choose file with prompt {q(t)}"
+        if exts.len() > 0: c += " of type {{" + join([loop e in exts: q(e)], ", ") + "}}"
+        if multiple: c += " with multiple selections allowed"
+        ["-e", "set fs to ({c})", "-e", "if class of fs is not list then set fs to {{fs}}", "-e", "set out to \"\"",
+         "-e", "repeat with f in fs", "-e", "set out to out & POSIX path of f & linefeed", "-e", "end repeat", "-e", "out"]
+
+    # (the program started, its output into a pipe read as it comes; false if it could not be)
+    __dialog_spawn = (d: mut __Dialog, argv: str[]) -> bool:
+        fds = [0]
+        if syscall(293, data(fds), 0x80000) != 0: return false         # pipe2(O_CLOEXEC)
+        rfd = fds[0] & 0xFFFFFFFF
+        wfd = fds[0] >> 32
+        pid = syscall(57)                            # fork
+        if pid < 0:
+            syscall(3, rfd)
+            syscall(3, wfd)
+            return false
+        if pid == 0:
+            syscall(33, wfd, 1)                      # dup2: its output into the pipe
+            nul = syscall(2, data(__zstr("/dev/null")), 2)
+            if nul >= 0: syscall(33, nul, 2)         # (its warnings unseen)
+            exec(argv[0], argv)
+            syscall(60, 127)                         # exit: exec failed
+        syscall(3, wfd)
+        d.pid = pid
+        d.fd = rfd
+        true
+else when TARGET == "windows":
+    @lib("comdlg32.dll")
+    extern GetOpenFileNameW = (ofn: *u8) -> i32
+    @lib("comdlg32.dll")
+    extern GetSaveFileNameW = (ofn: *u8) -> i32
+
+    # the system's dialog (the program waits while it is open): the paths chosen, [] if cancelled
+    __w32_file_dialog = (save: bool, exts: str[], multiple: bool, title: str, name: str) -> str[]:
+        # the filter: "*.txt;*.md\0*.txt;*.md\0All files\0*.*\0\0"
+        filter: u16[]
+        if exts.len() > 0:
+            globs = join([loop e in exts: "*.{e}"], ";")
+            filter = filter + __wide(globs) + __wide(globs)
+        filter = filter + __wide("All files") + __wide("*.*")
+        filter.push(0)
+        n = 32768
+        buf = fill(u16(0), n)
+        start = __wide(name)
+        loop i in [0..min(start.len(), n - 1)): buf[i] = start[i]
+        t = __wide(title)
+        ofn = fill(u8(0), 152)                                  # OPENFILENAMEW
+        p = data(ofn)
+        (p as *u32)[0] = 152
+        ((p + 8) as **u8)[0] = __w32_hwnd
+        ((p + 24) as **u8)[0] = data(filter) as *u8
+        ((p + 44) as *u32)[0] = 1                               # nFilterIndex
+        ((p + 48) as **u8)[0] = data(buf) as *u8
+        ((p + 56) as *u32)[0] = u32(n)
+        if len(title) > 0: ((p + 88) as **u8)[0] = data(t) as *u8
+        # EXPLORER, NOCHANGEDIR; open: FILEMUSTEXIST, PATHMUSTEXIST (ALLOWMULTISELECT); save: OVERWRITEPROMPT
+        flags = 0x80000 | 0x8
+        if save: flags |= 0x2
+        else: flags |= 0x1000 | 0x800
+        if multiple and not save: flags |= 0x200
+        ((p + 96) as *u32)[0] = u32(flags)
+        ok = 0
+        if save: ok = GetSaveFileNameW(p)
+        else: ok = GetOpenFileNameW(p)
+        out: str[]
+        if ok == 0: return out
+        # (several: the directory, then each name, NUL after each, two at the end; one: its path)
+        parts: str[]
+        i = 0
+        loop i < n and buf[i] != 0:
+            parts.push(__narrow((data(buf) as *u8 + 2 * i) as *u16, -1))
+            loop buf[i] != 0: i += 1
+            i += 1
+        if parts.len() <= 1: return parts
+        loop k in [1..parts.len()): out.push(parts[0] + "\\" + parts[k])
+        out
+else:
+    extern __web_file_open = (id: i32, accept: *u8, accept_len: i32, multiple: i32)
+    extern __web_file_poll = (out: *u8, cap: i32) -> i32
+
+    # (files the page was given: "drop" or "open ID", then the names, a line each)
+    __web_files_poll = ():
+        global __lazy_poke
+        loop true:
+            buf = fill(u8(0), 4096)
+            n = int(__web_file_poll(data(buf), 4096))
+            if n < 0: return
+            if n > 4096:
+                buf = fill(u8(0), n)
+                __web_file_poll(data(buf), i32(n))
+            ls = split(str_from_bytes(buf[..n)), "\n")
+            names: str[]
+            loop l in ls[1..]:
+                if len(l) > 0: names.push(l)
+            if ls[0] == "drop": __drop_add(names)
+            else if starts_with(ls[0], "open "):
+                id = to_int(ls[0][5..]) ?? -1
+                loop mut d in __dialogs:
+                    if d.id == id:
+                        d.paths = names
+                        d.done = true
+                __lazy_poke = true
