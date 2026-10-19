@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `upper()` and `lower()` of text with letters past ASCII work on its bytes, eight at a time where
+  they are ASCII, where they made a list of its characters and a string for each: 100 MB of text
+  with an é in it now takes 0.1 s and 200 MB, where it took 10 s and 5.8 GB. Bytes that are not
+  UTF-8 are kept as they are.
+
 ## 0.25.0
 
 - `counts = {}` with no type written: the key and value types come from the first `counts[k] =
