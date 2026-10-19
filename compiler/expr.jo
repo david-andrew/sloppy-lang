@@ -1612,6 +1612,9 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
             if partial: fatal(nodes[n].pos, "cannot infer generic types for partial application of '{name_of(name)}'; annotate the arguments")
             tp = "{i + 1}"
             if int(nodes[decl].nlist2) > i: tp = "'{name_of(int(nodes[kid2(decl, i)].name))}'"
+            # (k = (s): s.len(): s, a lambda's parameter without a type, given to a generic function)
+            loop a in cd.args:
+                if a != 0 and nodes[a].kind == .ident and nodes[a].type != 0 and tkind(ntype(a)) == .var: untyped_param_error(a)
             fatal(nodes[n].pos, "cannot infer type parameter {tp} of '{name_of(name)}' from the arguments")
     f = get_fn_inst(decl, cd.binds, nodes[n].pos)
     if ide_on:
@@ -4070,6 +4073,17 @@ check_binary = (n: int, expected: int) -> int:
     if a_char and is_int(tb) and not is_lit(b) and is_int(ta) and not has_flag(a, NF_SQUOTE):
         warn(nodes[n].pos, "this adds a character code and a number: for text, ... + chr(x)")
     if types[ta].kind == .typeval or types[tb].kind == .typeval: fatal(nodes[n].pos, "a type name cannot be used as a value here")
+    # ((x): x + 1: a lambda's parameter without a type takes the other side's)
+    if tkind(ta) == .var or tkind(tb) == .var:
+        if tkind(ta) == .var and tkind(tb) == .var: untyped_param_error(a)
+        if tkind(ta) == .var and bk != .none_lit and bk != .null_lit:
+            if is_lit(b): tb = finalize_literal(b)
+            if not unify(ta, tb): untyped_param_error(a)
+            ta = prune(ta)
+        else if tkind(tb) == .var and nodes[a].kind != .none_lit:
+            if is_lit(a): ta = finalize_literal(a)
+            if not unify(tb, ta): untyped_param_error(b)
+            tb = prune(tb)
     # vectors
     if is_cmp and (op == .eq or op == .ne):
         # (x == v with x: T? and v: T: v as a T?, so none is never equal to it)
@@ -4616,6 +4630,15 @@ check_match = (m: int, expected: int) -> int:
     result
 
 # ---------------- lambdas ----------------
+# n, of a type not known yet (a lambda's parameter without one, used where its type decides)
+untyped_param_error = (n: int):
+    nm = "this"
+    eg = "x"
+    if nodes[n].kind == .ident:
+        eg = name_of(int(nodes[n].name))
+        nm = "'{eg}'"
+    fatal(nodes[n].pos, "cannot infer the type of {nm} from how it is used here; give the parameter a type, as `({eg}: int): ...`")
+
 check_lambda = (lam: int, expected: int) -> int:
     et = prune(expected)
     if expected != 0 and types[et].kind != .fn_: et = 0
@@ -4628,6 +4651,7 @@ check_lambda = (lam: int, expected: int) -> int:
     fns[f].body = nodes[lam].b
     mm = 0
     pts: int[]
+    untyped: int[]
     loop i in [0..np):
         p = kid(lam, i)
         pt = 0
@@ -4639,7 +4663,9 @@ check_lambda = (lam: int, expected: int) -> int:
             pn = name_of(int(nodes[p].name))
             if i == 0 and (pn == "self" or pn == "this"):
                 fatal(nodes[p].pos, "structs have no methods: write the function at the top level (not inside the struct), taking what it works on first, as `move = (p: mut Player, dt: f64): ...`; `p.move(dt)` calls it")
-            fatal(nodes[p].pos, "cannot infer the type of parameter '{pn}'; add a type annotation")
+            # ((y): g(y) * 2: its type from how the body uses it, checked below)
+            pt = mk_var()
+            untyped.push(i)
         if has_flag(p, NF_MUT): mm |= 1 << i
         if et != 0 and int(types[et].mutmask) & (1 << i) != 0:
             mm |= 1 << i
@@ -4651,6 +4677,10 @@ check_lambda = (lam: int, expected: int) -> int:
     check_lambda_body(f, lam, ret_hint)
     zp: int[]
     loop t in fns[f].ptypes: zp.push(zonk(t))
+    loop i in untyped:
+        if has_var(prune(zp[i])) or tkind(zp[i]) == .var:
+            p = kid(lam, i)
+            fatal(nodes[p].pos, "cannot infer the type of parameter '{name_of(int(nodes[p].name))}'; add a type annotation")
     fns[f].ptypes = zp
     fns[f].ret = i32(zonk(int(fns[f].ret)))
     zonk_tree(int(fns[f].body))

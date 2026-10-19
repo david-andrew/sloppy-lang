@@ -371,7 +371,10 @@ written inside an expression is a lambda.
 * A default value may use earlier parameters: `rect_at = (p: vec2, w: f64, h: f64 = w)` (the
   argument given for them is used again, so it is a value or a variable).
 * **Untyped parameters make a function generic**: `twice = (f, x): f(f(x))` is
-  instantiated for each distinct set of argument types (like a template).
+  instantiated for each distinct set of argument types (like a template). A lambda inside a
+  function is one value, so its untyped parameters take their types from where it is passed
+  (`xs.map((x): x * 2)`) or from how its body uses them (`inc = (x): x + 1` makes x an int);
+  where neither says, give the type: `(x: f64): x * x`.
 * Explicit type parameters: `first[T] = (xs: T[]) -> T: xs[0]`. A call can give them when the
   arguments do not say (`from_json[Settings](text)`, `gpu_buffer[Bug](100)`), also a module's
   (`cfg.load[Settings](path)`).

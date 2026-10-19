@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A lambda inside a function may leave a parameter's type out where its body says it: `inc =
+  (x): x + 1` (x an int), `h = (y): g(y) * 2` (y what g takes), and a lambda returned from a
+  generic function (`compose = (f, g): (x): f(g(x))`). It said "cannot infer the type of
+  parameter 'x'"; it still does where the body leaves it open (`(x): x * x`), naming the use.
 - A tuple literal converts each element where a tuple type is expected: `heap_push(q, (d, p.x,
   p.y))` for a `(int, int, int)[]` with p an ivec2 (i32 components), and `g((1, "x"))` for
   `p: (int?, str?)`, said "expects (int, int, int), found (int, i32, i32)".
