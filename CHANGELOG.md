@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `not` is for bools: on an integer it is an error that suggests `x == 0` or `~x` (it flipped the
+  bits before).
 - `xs.remove_at(i)` takes out the element at index i (what `xs.remove(i)` did); `xs.remove(x)`
   takes out the first element equal to x, as Python's `list.remove` (false when there is none).
 - `c'a'` is a character's code, a number: `c - c'0'`, `c'a' + k`, `[c'a'..c'z']` in a match,

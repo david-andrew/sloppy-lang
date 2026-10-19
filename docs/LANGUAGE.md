@@ -201,7 +201,7 @@ precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests mem
 **Looks familiar, means something else.** What Python, JavaScript or C would read otherwise:
 - `x ^ y` is a power; xor is `xor`.
 - `7 / 2` is 3 with whole numbers, and `-7 % 3` is -1 (as in C, not Python).
-- `not` on a whole number flips its bits: `not 0` is -1 (conditions take bools).
+- `not` is for bools; `~x` flips a whole number's bits (`~0` is -1), and conditions take bools.
 - `+` on arrays of one dimension joins them (`[1, 2] + [3]`); on a matrix it adds element by
   element. `.+` always adds element by element.
 - `x = 1` in a function changes a global named `x` when there is one; `let x = 1` makes a local.
@@ -1038,7 +1038,7 @@ layers = cube .* reshape([1.0, 2.0, 3.0, 4.0], 4, 1, 1)   # broadcasting along t
 ```
 
 Ranges among the indexes select parts: `m[i, ..]` is row `i`, `m[.., j]` column `j`,
-`m[1..2, 3..]` a block (ranges include both ends; `a..` runs to the end of the axis, and indexes
+`m[1..3, 3..]` a block (`a..b` leaves `b` out, as everywhere, and `[a..b]` keeps it; `a..` runs to the end of the axis, and indexes
 left out at the end mean whole axes). A part is an array of its own; assigning to one writes into
 the array: `m[.., 0] = xs`, `m[0, ..] = 0.0`. A 1-D one (a row, a column) goes where a `T[]` is
 expected, as in `argmax(m[0, ..])` or a function of your own (one with more dimensions there
@@ -1071,7 +1071,7 @@ the rest under Arrays):
 | `a * 2`, `a + b`, `a ** 2`, `a > 0.5` (elementwise) | `a .* 2.0`, `a .+ b`, `a .^ 2`, `a .> 0.5` |
 | `np.sqrt(a)`, `np.clip(a, 2, 4)` | `sqrt.(a)`, `clamp.(a, 2.0, 4.0)` |
 | `a @ b`, `a.T`, `a.reshape(2, 2)`, `a.shape` | `a * b`, `transpose(a)`, `reshape(a, [2, 2])`, `a.shape` |
-| `a[0, :]`, `a[:, 1]`, `a[1:3]` | `a[0, ..]`, `a[.., 1]`, `a[1..2]` (ranges include both ends) |
+| `a[0, :]`, `a[:, 1]`, `a[1:3]` | `a[0, ..]`, `a[.., 1]`, `a[1..3]` (`a..b` leaves `b` out, as Python's `a:b`) |
 | `a[a > 0.5]`, `a[a < 0] = 0`, `a[np.argsort(a)]` | `a[a .> 0.5]`, `a[a .< 0.0] = 0.0`, `a[argsort(a)]` |
 | `np.where(a > 2, a, 0)` | `[loop x in a: (if x > 2.0: x else: 0.0)]` |
 | `a.sum(axis=0)`, `a.mean()`, `a.std()`, `a.var()` | `sum(a, 0)`, `mean(a)`, `std_dev(a)`, `variance(a)` |
