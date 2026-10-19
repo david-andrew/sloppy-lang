@@ -6,6 +6,15 @@
   they are ASCII, where they made a list of its characters and a string for each: 100 MB of text
   with an é in it now takes 0.1 s and 200 MB, where it took 10 s and 5.8 GB. Bytes that are not
   UTF-8 are kept as they are.
+- Regular expressions match 3 to 50 times faster: the Pike VM keeps its threads in flat tables
+  (it made an array for each thread's captures at each character), tests a class's ASCII
+  characters in a bitmap, skips to the text every match starts with (`href="`) or past
+  characters no match can start with; and on a long text a pattern without `^ $ \b \B` is
+  matched by DFAs made as they are needed (one forward for where the match ends, one of the
+  pattern reversed for where it starts, the VM then only for the groups, in the match).
+  `find_all` of `[a-z]+` over 1.2 MB: 380 -> 45 ms; of `href="([^"]*)"` over 216 KB: 63 -> 14
+  ms; `contains` that runs through 1.2 MB: 475 -> 9 ms. `find(s, r, from)` with `from` past
+  the end gives none (it could panic).
 
 ## 0.25.0
 

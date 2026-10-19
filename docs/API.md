@@ -285,7 +285,7 @@ if let m = "due 2026-10-14!".find(date): print(m.text, m.groups[0])   # 2026-10-
 "a, b;c".split(regex(r"[,;]\s*"))                       # ["a", "b", "c"]
 ```
 
-Patterns: . (any character but a line break) [abc] [a-z] [^0-9] \d \w \s (and \D \W \S) ^ $ \b \B, x* x+ x? x{2} x{2,} x{2,5} (and lazy x*? x+? x?? x{2,5}?), a|b, (group) (?:group), \ before any of .[]{}()*+?^$|\ for itself, \n \t \r; (?i) at the start ignores case (in ASCII). \w takes letters of any script ("Zürich" is one word). A pattern a user typed is checked first with regex_error(pattern) (regex(pattern) stops the program when it is wrong). Matching takes time in proportion to the text's length times the pattern's (it never backtracks without end), and works on characters (code points), not bytes.
+Patterns: . (any character but a line break) [abc] [a-z] [^0-9] \d \w \s (and \D \W \S) ^ $ \b \B, x* x+ x? x{2} x{2,} x{2,5} (and lazy x*? x+? x?? x{2,5}?), a|b, (group) (?:group), \ before any of .[]{}()*+?^$|\ for itself, \n \t \r; (?i) at the start ignores case (in ASCII). \w takes letters of any script ("Zürich" is one word). A pattern a user typed is checked first with regex_error(pattern) (regex(pattern) stops the program when it is wrong). Matching takes time in proportion to the text's length times the pattern's (it never backtracks without end), and works on characters (code points), not bytes. Make a Regex once and use it for every text: regex() reads and prepares the pattern each time. On a long text, a pattern without ^ $ \b \B is matched a character at a time by a table made as it goes (a DFA), a few nanoseconds a character.
 
 - `struct Regex`
   ```gdscript
@@ -295,8 +295,17 @@ Patterns: . (any character but a line break) [abc] [a-z] [^0-9] \d \w \s (and \D
       classes: __ReClass[]
       groups: int             # how many ( ) groups it has
       icase = false
-      first = -1              # (an ASCII character every match starts with, or -1: skipped to with memchr)
-      first_pc = -1           # (the instruction that reads every match's first character, or -1)
+      code: int[]
+      amap: int[]
+      crange: int[]
+      cstart: int[]
+      cneg: int[]
+      smap: int[]
+      start_wide = true
+      start_any = true
+      prefix = ""
+      dfa = false
+      rcode: int[]
   ```
 - `struct Match`: one match: where it is (byte offsets), its text, and the text of each ( ) group ("" for a group that took no part)
   ```gdscript
