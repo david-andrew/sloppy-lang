@@ -572,13 +572,25 @@ __icon_argb = (max_words: int) -> int[]:
                 out.push(v)
     out
 
+__win_upscaled = false          # (opened a whole number of times larger than a small design)
+
+# (screen_fit(.native) after window() opened a small design's window larger, as for pixel art,
+# before the first frame: the window takes the design's own size)
+__fit_native = ():
+    global __win_h, __win_upscaled, __win_w
+    if not __win_upscaled or __frame_count > 0: return
+    __win_upscaled = false
+    __win_w = __design_w
+    __win_h = __design_h
+    if __win_open and not __offscreen and not __testing: __platform_resize(__win_w, __win_h)
+
 # (the window the game runs in: the one opened already, or one of the size given or the default)
 __window_default = ():
     if not __win_open or __offscreen: window(__win_title, __win_w, __win_h)
 
 # Open the game window (called automatically when the program defines update/draw).
 window = (title: str = "", width: int = 1280, height: int = 720):
-    global __design_h, __design_w, __offscreen, __pixel_ratio_env, __soft_kept, __time0, __touch_env, __touch_last, __win_h, __win_open, __win_title, __win_w
+    global __design_h, __design_w, __offscreen, __pixel_ratio_env, __soft_kept, __time0, __touch_env, __touch_last, __win_h, __win_open, __win_title, __win_upscaled, __win_w
     __input_init()
     name = title
     if len(name) == 0: name = __program_name()
@@ -600,17 +612,23 @@ window = (title: str = "", width: int = 1280, height: int = 720):
     __win_h = height
     __design_w = width
     __design_h = height
-    # a design that small is pixel art: the window opens a whole number of times larger
-    if width < 640 and height < 360 and width > 0 and height > 0:
+    # a design that small is pixel art: the window opens a whole number of times larger (not
+    # with screen_fit(.native), where a unit is a pixel: a small tool's window is its own size;
+    # screen_fit(.native) after this gives the window its size back, see __fit_native)
+    if not __screen_env_read: __screen_env()
+    __win_upscaled = false
+    if width < 640 and height < 360 and width > 0 and height > 0 and __fit != .native:
         k = max(1, min(1280 / width, 720 / height))
         __win_w = width * k
         __win_h = height * k
+        __win_upscaled = k > 1
     # (testing aid: SLOPPY_WINDOW=WxH opens the window at another size than the design size)
     if let ws = env("SLOPPY_WINDOW"):
         x = find(ws, "x")
         if x > 0:
             __win_w = to_int(ws[..x)) ?? width
             __win_h = to_int(ws[x + 1..]) ?? height
+            __win_upscaled = false
     # (testing aids for a phone's screen: SLOPPY_TOUCH=1 is a touch screen (touch_device(), menus
     # drawn for fingers), SLOPPY_PIXEL_RATIO=3 its pixels per point)
     __touch_env = env("SLOPPY_TOUCH") == "1"
@@ -678,6 +696,7 @@ when TARGET == "wasm":
 
     __platform_open = (): __web_canvas_open(data(__win_title), i32(len(__win_title)), i32(__win_w), i32(__win_h))
     __platform_title = (): __web_set_title(data(__win_title), i32(len(__win_title)))
+    __platform_resize = (w: int, h: int): pass          # (the canvas fills the page)
 
     # the page calls this every animation frame
     __web_update: (f64) -> void
@@ -982,6 +1001,13 @@ else when TARGET == "windows":
         if __w32_hwnd != null:
             t = __wide(__win_title)
             SetWindowTextW(__w32_hwnd, data(t))
+
+    # (a client area of w x h, the window where it is)
+    __platform_resize = (w: int, h: int):
+        if __w32_hwnd == null: return
+        r: i32[] = [0, 0, i32(w), i32(h)]
+        AdjustWindowRect(data(r), u32(__WS_OVERLAPPEDWINDOW), 0)
+        SetWindowPos(__w32_hwnd, null, 0, 0, r[2] - r[0], r[3] - r[1], u32(0x16))     # NOMOVE, NOZORDER, NOACTIVATE
 
     __platform_poll = ():
         if __w32_hwnd == null: return
@@ -1338,7 +1364,9 @@ else when TARGET == "linux":
     @lib("libX11.so.6")
     extern XChangeProperty = (d: *u8, w: int, property: int, ty: int, format: i32, mode: i32, data: *u8, n: i32) -> i32
     @lib("libX11.so.6")
-    extern XGetWindowProperty = (d: *u8, w: int, property: int, offset: int, length: int, delete: i32, req_type: int, actual_type: *int, actual_format: *i32, nitems: *int, bytes_after: *int, prop: **u8) -> i32
+    extern XResizeWindow = (d: *u8, w: int, width: u32, height: u32) -> i32
+    @lib("libX11.so.6")
+    extern XGetWindowProperty =(d: *u8, w: int, property: int, offset: int, length: int, delete: i32, req_type: int, actual_type: *int, actual_format: *i32, nitems: *int, bytes_after: *int, prop: **u8) -> i32
 
     @lib("libEGL.so.1")
     extern eglGetDisplay = (native: *u8) -> *u8
@@ -1471,6 +1499,13 @@ else when TARGET == "linux":
         else if __xproto: __xp_property(39, 31, 8, bytes(__win_title))         # WM_NAME, STRING
         else if __xdpy != null:
             XStoreName(__xdpy, __xwin, data(__zstr(__win_title)))
+            XFlush(__xdpy)
+
+    __platform_resize = (w: int, h: int):
+        if __wayland: __wl_resize(w, h)
+        else if __xproto: __xp_resize(w, h)
+        else if __xdpy != null:
+            XResizeWindow(__xdpy, __xwin, u32(w), u32(h))
             XFlush(__xdpy)
 
     # OpenGL ES without a window surface: drawing goes to an offscreen framebuffer that is
