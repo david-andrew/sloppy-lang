@@ -446,27 +446,27 @@ class ManyHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
     def do_GET(self):
         H = ManyHandler
-        with H.lock:
-            H.now += 1
-            H.most = max(H.most, H.now)
-        try:
-            if self.path.startswith("/n/"):
-                time.sleep(0.2)
-                self.reply(200, self.path[3:].encode())
-            elif self.path == "/flaky":
-                with H.lock: H.flaky += 1
-                if H.flaky <= 2: self.reply(503, b"busy")
-                else: self.reply(200, b"ok after %d" % H.flaky)
-            elif self.path == "/ra":
-                with H.lock: H.ra += 1
-                if H.ra == 1: self.reply(429, b"slow down", [("Retry-After", "1")])
-                else: self.reply(200, b"ok")
-            elif self.path == "/most": self.reply(200, str(H.most).encode())
-            elif self.path == "/loop": self.reply(302, b"", [("Location", "/loop")])
-            elif self.path == "/huge": self.reply(200, b"", [("X-Big", "y" * 200000)])
-            else: self.reply(404, b"no such page")
-        finally:
+        if self.path.startswith("/n/"):
+            # (how many of these at once: counted before the answer goes, so that the client
+            # cannot ask /most while one is still counted)
+            with H.lock:
+                H.now += 1
+                H.most = max(H.most, H.now)
+            time.sleep(0.2)
             with H.lock: H.now -= 1
+            self.reply(200, self.path[3:].encode())
+        elif self.path == "/flaky":
+            with H.lock: H.flaky += 1
+            if H.flaky <= 2: self.reply(503, b"busy")
+            else: self.reply(200, b"ok after %d" % H.flaky)
+        elif self.path == "/ra":
+            with H.lock: H.ra += 1
+            if H.ra == 1: self.reply(429, b"slow down", [("Retry-After", "1")])
+            else: self.reply(200, b"ok")
+        elif self.path == "/most": self.reply(200, str(H.most).encode())
+        elif self.path == "/loop": self.reply(302, b"", [("Location", "/loop")])
+        elif self.path == "/huge": self.reply(200, b"", [("X-Big", "y" * 200000)])
+        else: self.reply(404, b"no such page")
 port += 1
 httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), ManyHandler)
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
