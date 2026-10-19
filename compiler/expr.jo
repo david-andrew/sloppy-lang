@@ -528,6 +528,19 @@ json_union_hint = (t: int, v: str) -> str:
     ": parse_json gives a JsonError when the text is not JSON, so check that first (`if {v} is JsonError: ...`); after it, {v} is a Json"
 
 # (len(j), j.get("a", 0) and the like, which do not take a Json: what does)
+# (exp(X), clip(X, 0.0, 1.0) with X an array of numbers: what applies a function to each element)
+elementwise_hint = (fnm: str, args: int[]) -> str:
+    if args.len() == 0: return ""
+    a0 = unnamed(args[0])
+    if nodes[a0].type == 0: return ""
+    t = prune(ntype(a0))
+    if not is_nd(t) and not (tkind(t) == .array and is_numeric(int(types[t].elem))): return ""
+    one = ["exp", "log", "log2", "log10", "sin", "cos", "tan", "tanh", "asin", "acos", "atan", "floor", "ceil", "round", "abs", "sign", "sqrt"]
+    if one.contains(fnm) and args.len() == 1: return "{type_str(t)}: for each element, `{fnm}.(xs)`"
+    if (fnm == "clip" or fnm == "clamp") and args.len() == 3: return "{type_str(t)}: for each element, `clamp.(xs, lo, hi)`"
+    if (fnm == "maximum" or fnm == "minimum") and args.len() == 2: return "{type_str(t)}: for each element, `{fnm[..3]}.(xs, ys)`"
+    ""
+
 json_call_hint = (fnm: str, args: int[]) -> str:
     loop a0 in args:
         a = unnamed(a0)
@@ -660,6 +673,8 @@ check_place = (n: int, for_mut: bool):
                 else if narrowed_var(r) != 0: r = narrowed_var(r)
                 else: break
             rf = int(locals[r].flags)
+            # (a.grad += ... in a closure: micrograd's graph of objects that change one another)
+            if rf & LF_PARAM != 0 and rf & LF_MUTPARAM == 0 and via_closure: fatal(nodes[n].pos, "cannot modify parameter '{nm}' in a function made here: values are copies, so a change made later would not reach the caller's. Things that change one another (a graph's nodes) go in an array, naming each other by index: `nodes[i].grad += ...`")
             if rf & LF_PARAM != 0 and rf & LF_MUTPARAM == 0: fatal(nodes[n].pos, "cannot modify parameter '{nm}' (parameters are read-only; mark it `mut` or copy it with `let {nm} = {nm}`)")
             if rf & LF_BYREF != 0 and via_closure: fatal(nodes[n].pos, "cannot modify loop variable '{nm}', a copy of an element, and the function changing it runs later: change the element by its position, `loop i in 0.. and {nm} in xs:` and then `(): xs[i]...` in the function")
             # (w = w.lower(): Python's new value for the name, the element left as it was)
@@ -1587,6 +1602,9 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
         sep = ""
         if len(last_err) > 0: sep = ": "
         ot = overloads_text(decls, last_err)
+        # (exp(X), clip(X, 0, 1) on an array: NumPy's, which apply to each element)
+        eh = elementwise_hint(name_of(name), args)
+        if len(eh) > 0: fatal(nodes[n].pos, "no version of '{name_of(name)}' takes {eh}")
         # (rect(0, 616, 1280, 120): none takes 4, said of them all rather than of the last one tried)
         if len(ot) > 0 and (starts_with(last_err, "too many") or starts_with(last_err, "missing")):
             an = "{args.len()} arguments"
@@ -2147,7 +2165,7 @@ conversion = (n: int, to0: int, args: int[]) -> int:
         else if fk == .enum_ and simple_enum(ft): cv = int(CV.int_)
         else if fk == .ptr: cv = int(CV.ptr)
     else if tk == .float_:
-        if fk == .int_: cv = int(CV.int2float)
+        if fk == .int_ or fk == .bool_: cv = int(CV.int2float)
         else if fk == .float_: cv = int(CV.float_)
     else if tk == .bool_:
         if fk == .bool_: cv = int(CV.none_)
@@ -3784,6 +3802,7 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         if is_lit(args[0]) or types[t].kind == .int_:
             coerce(args[0], T_FLOAT)
             t = T_FLOAT
+        if is_nd(t) or (types[t].kind == .array and is_numeric(int(types[t].elem))): fatal(nodes[n].pos, "sqrt() takes one number: for each element, `sqrt.(xs)`")
         if types[t].kind != .float_: fatal(nodes[n].pos, "sqrt() needs a float")
         r = t
     else if id == .fmt_struct:
@@ -4554,7 +4573,9 @@ check_binary = (n: int, expected: int) -> int:
             return T_BOOL
         why = ""
         if is_union(ta) or is_union(tb): why = " (find out which it holds first: `if x is int: ...` or a `match`)"
-        else if type_eq(ta, tb) and types[ta].kind == .struct_ and not is_map_type(ta):
+        else if (is_nd(ta) or is_nd(tb)) and (op == .plus or op == .minus or op == .star or op == .slash or op == .percent): why = " (for each element: .{opn}, as in xs .{opn} 2.0)"
+        else if type_eq(ta, tb) and types[ta].kind == .struct_ and starts_with(type_str(ta), "GpuArray[") and op == .star: why = " (there is no matrix product of GPU arrays: `.*` multiplies element by element, and a compute function can do the product)"
+        else if type_eq(ta, tb) and types[ta].kind == .struct_ and not is_map_type(ta) and not pos_in_lib(nodes[int(structs[int(types[ta].st)].decl)].pos):
             why = " (a struct has the operators defined for it: `({opn}) = (a: {type_str(ta)}, b: {type_str(ta)}) -> ...`)"
             if op == .gt or op == .le or op == .ge: why = " (define `(<) = (a: {type_str(ta)}, b: {type_str(ta)}) -> bool: ...` and >, <= and >= come from it)"
         fatal(nodes[n].pos, "operator {opn} is not defined for {type_str(ta)} and {type_str(tb)}{why}")
@@ -4656,7 +4677,7 @@ check_binary = (n: int, expected: int) -> int:
         if tka == .array and is_int(tb) and op == .star:
             why = " (fill(x, n) makes an array of n copies of x)"
             if is_numeric(int(types[ta].elem)): why = " (fill(x, n) makes an array of n copies of x; xs .* n multiplies each element)"
-        else if (tka == .array and is_numeric(int(types[ta].elem))) or (tkb == .array and is_numeric(int(types[tb].elem))):
+        else if (tka == .array and is_numeric(int(types[ta].elem))) or (tkb == .array and is_numeric(int(types[tb].elem))) or is_nd(ta) or is_nd(tb):
             if op == .plus or op == .minus or op == .star or op == .slash or op == .percent: why = " (for each element: .{tok_text(op)}, as in xs .{tok_text(op)} 2.0)"
         if len(why) == 0 and op == .percent and tka == .str_: why = " (a value goes into text inside braces, with its format: \"\{x:.2f}\")"
         # (age + 1 with age from read_line: text, not a number)
@@ -4800,6 +4821,50 @@ check_vec_binary = (n: int, op: Tok, ta: int, tb: int) -> int:
 # ---------------- match ----------------
 # the names variant pattern p (.bin(op, l, r)) gives the fields of the enum value in local hidden
 # (each read from it where it is used)
+# (the patterns of an arm with more than one: variants of enum st whose names bind fields alike,
+# the same names to fields of the same types, at the same places, so read the same way whichever
+# matched; .num(_) binds nothing, and loses its `_`s here)
+arm_binds_alike = (arm: int, st: int) -> bool:
+    si = int(types[st].st)
+    names: int[]
+    ftypes: int[]
+    first = true
+    bare = false            # (a pattern naming nothing: then none may name anything)
+    loop k in [0..nkids(arm)):
+        p = kid(arm, k)
+        if nodes[p].kind != .pvariant: return false
+        if nkids(p) == 0:
+            bare = true
+            continue
+        all_wild = true
+        loop f in [0..nkids(p)):
+            b = kid(p, f)
+            if nodes[b].kind != .ident or name_of(int(nodes[b].name)) != "_": all_wild = false
+        vi = find_variant(si, int(nodes[p].name))
+        if vi < 0: return false
+        v = int(structs[si].variants) + vi
+        if all_wild and nkids(p) == int(variants[v].nfields):
+            set_list(p, [])
+            bare = true
+            continue
+        if nkids(p) != int(variants[v].nfields): return false
+        pn: int[]
+        pt: int[]
+        loop f in [0..nkids(p)):
+            b = kid(p, f)
+            if nodes[b].kind != .ident: return false
+            pn.push(int(nodes[b].name))
+            pt.push(int(fields[int(variants[v].fields) + f].type))
+        if first:
+            names = pn
+            ftypes = pt
+            first = false
+        else:
+            if pn.len() != names.len(): return false
+            loop f in [0..pn.len()):
+                if pn[f] != names[f] or not type_eq(prune(pt[f]), prune(ftypes[f])): return false
+    first or not bare
+
 bind_variant = (p: int, st: int, vi: int, hidden: int):
     si = int(types[st].st)
     v = int(structs[si].variants) + vi
@@ -4894,6 +4959,8 @@ check_match = (m: int, expected: int) -> int:
         arm_wild = false
         seen_before = seen
         guarded = nodes[arm].a != 0
+        shared = types[st].kind == .enum_ and nkids(arm) > 1 and arm_binds_alike(arm, st)
+        bound = false
         loop k in [0..nkids(arm)):
             p = kid(arm, k)
             pk = nodes[p].kind
@@ -4914,8 +4981,10 @@ check_match = (m: int, expected: int) -> int:
                 v = int(structs[si].variants) + vi
                 if structs[si].union_: arm_members.push(int(fields[int(variants[v].fields)].type))
                 if nkids(p) > 0:
-                    if nkids(arm) > 1: fatal(nodes[p].pos, "patterns with bindings cannot be combined with other patterns")
-                    bind_variant(p, st, vi, hidden)
+                    if nkids(arm) > 1 and not shared: fatal(nodes[p].pos, "patterns that name fields share an arm only when each names the same fields, of the same types in the same places (`.add(a, b), .mul(a, b):`): give the others an arm of their own")
+                    # (the same fields at the same places: the first one's names serve them all)
+                    if not bound: bind_variant(p, st, vi, hidden)
+                    bound = true
                 continue
             if pk == .pvariant:
                 if nodes[p].aux != 0: fatal(nodes[p].pos, "variant patterns need an enum value")
@@ -5750,6 +5819,15 @@ check_expr = (n: int, expected: int) -> int:
                 rect_fields = ""
                 if type_str(bt) == "Rect" and types[bt].kind == .struct_ and pos_in_lib(nodes[int(structs[int(types[bt].st)].decl)].pos): rect_fields = "a Rect's fields are x, y, w and h (its top left corner and its size); center(r), right(r) and bottom(r) work out the rest"
                 if len(th) > 0: fatal(nodes[n].pos, "{type_str(bt)} has no field '{name_of(fname)}' (use {th})")
+                # (X.T, X.size: NumPy's)
+                if is_nd(bt):
+                    fnm = name_of(fname)
+                    nh = ""
+                    if fnm == "T": nh = "the transpose is `transpose(X)`"
+                    else if fnm == "size": nh = "how many elements is `size(X)`"
+                    else if fnm == "ndim": nh = "how many dimensions is `ndim(X)`"
+                    else if fnm == "flat" or fnm == "ravel": nh = "the elements in a row are `flatten(X)`"
+                    if len(nh) > 0: fatal(nodes[n].pos, "{type_str(bt)} has no field '{fnm}' ({nh}; `X.shape` is its sizes)")
                 sug = suggestion(name_of(fname), cands)
                 if len(sug) == 0 and len(rect_fields) > 0: sug = " ({rect_fields})"
                 fatal(nodes[n].pos, "{type_str(bt)} has no field '{name_of(fname)}'{sug}")

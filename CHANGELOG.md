@@ -72,6 +72,17 @@
   changes no globals (an emulator's 64 KB machine was copied on every call: 2 µs, now 2 ns).
 - A default naming an earlier parameter (`b: int = a`) works when the caller gives a variable
   (it said the variable was unknown).
+- Messages for NumPy's habits: `X.T`, `X @ W`, `exp(X)` and `sqrt(X)` (`exp.(X)`), `X + 1.0`
+  (`.+`), `X .** 2` (`.^`), `X[:, 0]` (`X[.., 0]`), `clip(X, lo, hi)` (`clamp.(...)`), `ln`;
+  `GpuArray * GpuArray`; a library struct's missing operator no longer says to define it.
+- `(^) = (a: V, k: f64) -> V: ...` defines the `pow` that `a ^ k` calls (it was never used).
+- `f64(b)` and `f64.(mask)` of bools (1.0 and 0.0).
+- An arm's patterns may name fields together when they name the same fields, of the same types
+  (`.add(a, b), .mul(a, b):`); `.num(_)` names nothing.
+- Messages: a function named where a type goes (`Rule = (Node, Node) -> f64`: `type Rule = ...`),
+  a closure changing a parameter (a graph of nodes goes in an array), a variable holding a
+  function given to `parallel_range`; `sloppy run x.jo --release` says the `--release` went to
+  the program and the build is a debug one.
 - `to_bytes(x)` and `from_bytes[T](b)`: a plain struct's bytes and back, for a save state written
   in one go.
 - An array of numbers written out, given for a `u8[]` or `f64[]` parameter, takes that element

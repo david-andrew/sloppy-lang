@@ -1006,7 +1006,9 @@ enum Tree[T]:                           # generic: the type arguments come from 
 t = Tree.node("a", [])                  # a Tree[str]
 ```
 
-An arm binds a variant's fields by position, as plain names (or `_`), one variant to an arm.
+An arm binds a variant's fields by position, as plain names (or `_`). Variants share an arm when
+they name the same fields, of the same types (`.add(a, b), .mul(a, b): ...`), or name none
+(`.num(_), .zero:`).
 `x is .rect` tests which variant a value is without naming its fields (for an enum without
 fields it is `x == .rect` too). `if let .rect(w, h) = s:` names them when `s` is that variant,
 with `else:` (or `else if let`) for the rest and `and` for a condition on them, as `if let` does
