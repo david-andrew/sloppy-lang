@@ -19,8 +19,8 @@
   taken out, `/path`, `//host`, `?query`, `#fragment`; Python's urljoin, Go's ResolveReference),
   and `parse_url(s) -> Url | UrlError`: an address's scheme, user, host, port, path, query and
   fragment (an IPv6 host in `[ ]`, a bad port or a control character said), which prints as the
-  URL put back together (`str(u)`, `"{u}"`). `url_encode(s, safe = "/")` keeps the characters given. A redirect's
-  `Location` is followed with url_join (`../` in it was kept).
+  URL put back together (`str(u)`, `"{u}"`). `url_encode(s, safe = "/")` keeps the characters
+  given. A redirect's `Location` is followed with url_join (`../` in it was kept).
 - `net.fetch_all(urls, at_once = 8, retries = 2, wait = 30.0, ...) -> HttpReply[]`: many
   requests, at most `at_once` on their way at a time, the answers in the order of the URLs (Go's
   worker pool, an errgroup with a limit). One that failed or found the server busy (status 0,
