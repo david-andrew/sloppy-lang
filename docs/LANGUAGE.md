@@ -1525,6 +1525,44 @@ update = (dt: f64):
 `clipboard()` reads the system clipboard's text and `set_clipboard(s)` replaces it. A web page
 may read the clipboard only as something is pasted, so there `clipboard()` is the text last
 pasted (ctrl+V, or a text field's Paste button on a phone) into the page; the X11 fallback without libX11 keeps the text within the program.
+`pasted_text()` is the text pasted in this frame ("" in others), for a widget of the game's own.
+
+**Menus, boxes and text fields.** `ui_begin`/`ui_button`/`ui_slider`/`ui_text_field`/`ui_end` make
+a column menu worked with keys, a gamepad, the mouse or a finger; `hud_button`, `hud_panel`,
+`hud_checkbox`, `hud_slider`, `hud_scroll`, `hud_text_field` and `hud_text_area` are boxes placed
+anywhere, for a game's own interface or a desktop tool. Both are immediate mode: drawn every
+frame in `draw`, each says what was done to it (`if hud_button(r, "Save"): save()`, `name =
+hud_text_field(r, name)`). Their boxes are in the units of the 2D transform (`camera2d_fit`,
+`translate`, `scale`), and so is `clip(r)`.
+
+```gdscript
+query = ""
+body = ""
+draw = ():
+    global body, query
+    clear()
+    if key_down(.ctrl) and key_pressed(.f): hud_focus("search")
+    query = hud_text_field(Rect(10, 10, 300, 30), query, id = "search", hint = "Search")
+    if hud_submitted(): find_next(query)
+    body = hud_text_area(Rect(10, 50, 600, 400), body, id = "body")
+```
+
+Text fields edit as a desktop's text boxes do: a click puts the caret, a drag selects (a double
+click a word), arrows, home and end move the caret (with ctrl, or alt on a Mac, by words; with
+shift, selecting), backspace and delete (ctrl: a word), ctrl+A, ctrl+C, ctrl+X, ctrl+V, ctrl+Z,
+ctrl+shift+Z and ctrl+Y (cmd on a Mac). Tab and shift+tab go between the fields in the order they
+are drawn; Escape lets go of the keyboard; Enter does too, and `hud_submitted()` is true right
+after the field (ctrl+Enter in a text area, where Enter starts a new line). `hud_focus(id)` gives
+a field the keyboard, `hud_focused(id)` says whether it has it, and `ui_typing()` whether any
+does (a game's own letter keys are better left alone then).
+
+A `hud_panel` covers what was drawn before it: a dialog drawn last takes the clicks and the wheel
+from the buttons under it, and `hud_panel(visible_rect(), rgba(0, 0, 0, 0.5))` drawn first makes
+it modal. In a `hud_scroll` list, a row dragged somewhere (a card to another column) calls
+`claim_press()` as the press goes down, and the list does not move with it; letting go of a
+claimed press clicks no button. Labels too long for a `hud_button` or a `hud_checkbox` (given a
+rectangle as wide as box and label) end in …, as `fit_text(s, width, size)` cuts any text;
+`hud_button(r, label, align = .left)` puts the label at the left, for a list's rows.
 
 **Window size.** `window("Title", 1280, 720)` (called for you with those defaults) sets the
 window's starting size and the program's 2D coordinate space: 2D drawing and `mouse_pos()` are in

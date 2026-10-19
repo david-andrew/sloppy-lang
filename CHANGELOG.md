@@ -18,6 +18,34 @@
 - `can_fullscreen()`: false in an iPhone's Safari, which has no fullscreen for a page.
 - Aces: on a phone the throttle is a slider; a Fullscreen button in the menu, and a Fullscreen
   switch in Settings.
+- `hud_text_field` and `ui_text_field` edit at a caret, drawn as a thin bar: a click puts it, a
+  drag selects (a double click a word), arrows, home, end, ctrl+arrows by words, shift selecting,
+  backspace and delete at the caret (ctrl: a word), ctrl+A, ctrl+C/X/V with the clipboard, undo
+  and redo (ctrl+Z, ctrl+shift+Z, ctrl+Y; cmd on a Mac). A long text scrolls to keep the caret in
+  view. `hud_style.selection` colors what is selected.
+- `hud_text_area(r, text, id, max_chars, hint)`: several lines, wrapped at the box's width, with
+  the same keys, enter for a new line, up and down by the lines as wrapped, page up and down, the
+  wheel, and scrolling to keep the caret in view.
+- Tab and shift+tab go between hud_ text fields in the order they are drawn (a field's text
+  selected), and between a menu's items from a `ui_text_field`; `hud_focus(id)` gives a field the
+  keyboard (`hud_focus("")` takes it away), `hud_focused(id)` says whether it has it, and
+  `hud_submitted()` whether Enter was pressed in the field just drawn (ctrl+Enter in an area).
+- A `hud_panel` takes the pointer from the hud_ boxes and ui_ items drawn before it, under it: a
+  dialog's buttons are the only ones clicked while it is up. A list's own rows drawn as panels
+  leave its wheel and dragging alone.
+- `claim_press()`: the press now held is the program's (a row dragged out of a `hud_scroll`
+  list): the list does not move with it, and letting go of it clicks no button;
+  `press_claimed()` says whether it was.
+- `clip(r)` is in the units of the 2D transform, as drawing is (it was in the screen's), so a
+  `hud_scroll` list under `camera2d_fit` or `scale` clips where it shows, and `hud_text_field`'s
+  text no longer disappears under a transform.
+- `hud_button` cuts a label too long for it short with … (it shrank it, to 6 pixels high);
+  `align = .left` (or `.right`) puts it at a side. `hud_checkbox`'s label is as large as
+  `hud_style.text_size` (it was at most 0.7 of the box), cut short with … when its rectangle is
+  wider than the box. `fit_text(s, width, size)` does the same for any text.
+- `hud_scroll`'s bar is drawn over the rows, at the `no_clip()` after them (or as draw ends): rows
+  as wide as the list no longer hide it.
+- `pasted_text()`: the text pasted in this frame, for a widget of a program's own.
 
 ## 0.26.0
 
