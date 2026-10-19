@@ -247,7 +247,8 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 
 #### Characters
 
-- `reverse = (s: str) -> str`: the characters (code points) in reverse order
+- `reversed = (s: str) -> str`: the characters (code points) in reverse order (also as `reversed(s)`, as for an array)
+- `reverse = (s: str) -> str`
 - `without_last_char = (s: str) -> str`: number of unicode code points s without its last character (all its bytes: backspace in a text field)
 - `char_count = (s: str) -> int`
 - `first = (s: str, n: int) -> str`: the first n characters (all of it when there are fewer; s[..n] counts bytes, and can cut an é in two)

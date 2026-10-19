@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `s.reversed()` for text, as for an array (text had only `reverse`).
 - No "clear covers everything drawn before it" warning for a clear in each arm of a `match
   screen:` (or branch of an `if`): one of them runs, so nothing drawn in another comes before it.
 - `var speed = 5` says `` `speed = 5` declares speed ``, with the name and value written (it
