@@ -242,6 +242,7 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `lower = (s: str) -> str`: s in small letters (as upper)
 - `to_int = (s: str) -> int?`: parse an integer (decimal, or hex after 0x, binary after 0b, octal after 0o; _ may separate digits); none if it is not one or does not fit in an int. Spaces and line ends around it are left out (" 42\n" is 42, a line as read from a file); inside it they are not ("4 2" is none)
 - `to_int = (s: str, base: int) -> int?`: an integer written in base 2 to 36 (to_int("ff", 16) is 255; letters for the digits past 9, in either case; the base's own prefix may come first: "0xff", "0b101")
+- `ints = (text: str) -> int[]`: every whole number in the text, in order: each run of digits, negative when a `-` is right before it (ints("x=3,y=-4") is [3, -4], ints("1-3 a") is [1, -3]); in one pass, without splitting. A number too big for an int stops the program
 - `to_float = (s: str) -> f64?`: Parse a decimal number. The result is the double nearest to the exact decimal value (ties to even), like C's strtod: an estimate, then exact big-integer comparisons. Spaces and line ends around it are left out, as for to_int.
 
 #### Characters

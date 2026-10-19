@@ -1308,6 +1308,122 @@ o_licm = (code: Ins[]) -> Ins[]:
         out.push(ins)
     out
 
+# ---------------- returns ----------------
+# A branch to where the function returns (past ends only) returns there: `v = x; br out` then
+# `end ... ret v` becomes `ret x`. The value of an if in return position (fib's) then lives
+# only in its own branch, not across the other's calls. (Release builds.)
+o_ret_sink = (code0: Ins[]) -> Ins[]:
+    code = code0
+    n = code.len()
+    # (only in recursive functions, where a value kept across the calls costs at every call,
+    # and where some ret comes right after an end)
+    any = false
+    calls = false
+    loop i in [1..n):
+        op = code[i].op
+        if op == .ret and code[i - 1].op == .end: any = true
+        else if op == .call and code[i].imm == ir.fn_index: calls = true
+    if not any or not calls: return code
+    # where each construct starts: the end of the construct a br leaves (-1 for a loop: it goes back)
+    ends = fill(-1, n)
+    open: int[]
+    loop i in 0.. and ins in code:
+        op = ins.op
+        if op == .block or op == .loop or op == .if_: open.push(i)
+        else if op == .end: ends[open.pop()] = i
+    stack: int[]
+    loop i in [0..n):
+        op = code[i].op
+        if op == .block or op == .loop or op == .if_: stack.push(i)
+        else if op == .end and stack.len() > 0: stack.pop()
+        if op != .br: continue
+        ins = code[i]
+        if int(ins.imm) < stack.len():
+            st = stack[stack.len() - 1 - int(ins.imm)]
+            if code[st].op != .loop:
+                q = ends[st] + 1
+                loop q < n and code[q].op == .end: q += 1
+                if q < n and code[q].op == .ret:
+                    # (only for `v = x` just before: ret x; a return of nothing gains nothing
+                    # but one more copy of what returning takes)
+                    r = code[q]
+                    if i > 0 and int(r.a) >= 0:
+                        lst = code[i - 1]
+                        ta = 0
+                        if lst.op == .mov: ta = vtype(int(lst.a))
+                        if ta == VK: ta = VI
+                        if lst.op == .mov and int(lst.dst) == int(r.a) and int(lst.ty) == ta and int(lst.a) != int(r.a):
+                            code[i - 1] = Ins(.nop, 0, 0, 0, 0, 0, 0)
+                            r.a = lst.a
+                            r.pos = ins.pos
+                            code[i] = r
+    code
+
+# ---------------- selects ----------------
+# An if whose branches only set one integer, `block { block { c = ...; brif c, 0; d = x; br 1 }
+# d = y }` (min and max after inlining) and `d = y; if c { d = x }`, becomes d = select(c, ...):
+# a conditional move, with no branch to guess wrong. (Release builds, last.)
+o_sel_val = (v: int) -> bool:
+    t = vtype(v)
+    t == VI or t == VK
+
+# d = x or d = constant
+o_sel_set = (ins: Ins) -> bool:
+    if ins.op == .mov: return o_sel_val(int(ins.a))
+    ins.op == .iconst and ins.imm >= -2147483648 and ins.imm <= 2147483647
+
+o_sel_src = (ins: Ins) -> int:
+    if ins.op == .mov: return int(ins.a)
+    k_vreg(ins.imm)
+
+o_selects = (code0: Ins[]) -> Ins[]:
+    code = code0
+    n = code.len()
+    # (in loops only, where a branch is taken or not again and again: from the first one on)
+    i = 0
+    loop i < n and code[i].op != .loop: i += 1
+    if i >= n: return code
+    nop = Ins(.nop, 0, 0, 0, 0, 0, 0)
+    loop i + 3 < n:
+        op0 = code[i].op
+        if op0 != .block and op0 != .mov and op0 != .iconst:
+            i += 1
+            continue
+        ins = code[i]
+        if ins.op == .block and i + 7 < n and code[i + 1].op == .block:
+            # (what the inner block computes first stays, in order)
+            j = i + 2
+            loop j < n and j < i + 40 and code[j].op != .brif and o_pure(code[j].op) and o_defines(code[j].op): j += 1
+            if j + 5 < n:
+                bi = code[j]
+                mx = code[j + 1]
+                my = code[j + 4]
+                if bi.op == .brif and bi.imm == 0 and o_sel_set(mx) and code[j + 2].op == .br and code[j + 2].imm == 1 and code[j + 3].op == .end and o_sel_set(my) and code[j + 5].op == .end:
+                    d = int(mx.dst)
+                    clash = false
+                    loop p in [i + 2..j):
+                        if int(code[p].dst) == d: clash = true
+                    if d == int(my.dst) and vtype(d) == VI and not clash:
+                        # (in place: the computations moved up two, the select, then nothing)
+                        loop p in [i + 2..j): code[p - 2] = code[p]
+                        code[j - 2] = Ins(.select, VI, i32(d), bi.a, i32(o_sel_src(my)), i32(o_sel_src(mx)), 0, bi.pos)
+                        loop p in [j - 1..j + 6): code[p] = nop
+                        i = j + 6
+                        continue
+        if o_sel_set(ins) and code[i + 1].op == .if_ and o_sel_set(code[i + 2]) and code[i + 3].op == .end:
+            d = int(ins.dst)
+            mx = code[i + 2]
+            c = int(code[i + 1].a)
+            if int(mx.dst) == d and vtype(d) == VI and c != d and o_sel_src(mx) != d:
+                code[i] = Ins(.select, VI, i32(d), i32(c), i32(o_sel_src(mx)), i32(o_sel_src(ins)), 0, ins.pos)
+                code[i + 1] = nop
+                code[i + 2] = nop
+                code[i + 3] = nop
+                i += 4
+                continue
+        i += 1
+    code
+
 # is any of dpos[lo..hi) (ascending, but for single entries) within [s, e]
 o_def_within = (dpos: int[], lo: int, hi: int, s: int, e: int) -> bool:
     if hi - lo == 1: return dpos[lo] >= s and dpos[lo] <= e

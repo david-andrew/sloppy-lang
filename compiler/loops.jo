@@ -18,15 +18,16 @@ struct CLoop:
     pe: int             # its end
     ctr: int            # counter vreg
     endv: int           # the bound it stays below
-    inc: int            # position of `ctr = ctr + 1`
+    inc: int            # position of `ctr = ctr + 1` (or - 1)
     signed: bool        # (counter and bound compare signed)
+    down: bool          # counting down: ctr - 1 while ctr >= endv (from its start down to endv)
 
 # where each construct starting at a position ends (-1 elsewhere)
 lx_ends = (code: Ins[]) -> int[]:
     ends = fill(-1, code.len())
     open: int[]
-    loop i in 0.. and ins in code:
-        op = ins.op
+    loop i in [0..code.len()):
+        op = code[i].op
         if op == .block or op == .loop or op == .if_: open.push(i)
         else if op == .end: ends[open.pop()] = i
     ends
@@ -35,10 +36,11 @@ lx_is_const = (v: int, k: int) -> bool: v >= 0 and is_kv(v) and kv_of(v) == k
 
 # is v defined anywhere in [s, e]?
 lx_defined_in = (code: Ins[], v: int, s: int, e: int) -> bool:
+    vv = i32(v)
     loop p in [s..e]:
-        ins = code[p]
-        if int(ins.dst) == v and o_defines(ins.op): return true
-        if ins.op == .zeroslots:
+        if code[p].dst == vv and o_defines(code[p].op): return true
+        if code[p].op == .zeroslots:
+            ins = code[p]
             loop k in [0..int(ins.b)):
                 item = int(ir.args[int(ins.a) + k])
                 if item & 1 == 1 and item >> 1 == v: return true
@@ -47,8 +49,8 @@ lx_defined_in = (code: Ins[], v: int, s: int, e: int) -> bool:
 # the innermost counting loops
 lx_counting = (code: Ins[], ends: int[]) -> CLoop[]:
     out: CLoop[]
-    loop i in 0.. and ins in code:
-        if ins.op != .loop: continue
+    loop i in [0..code.len()):
+        if code[i].op != .loop: continue
         e = ends[i]
         if e < i + 4: continue
         inner = false
@@ -61,10 +63,13 @@ lx_counting = (code: Ins[], ends: int[]) -> CLoop[]:
         cmp = code[e - 2]
         inc = code[e - 3]
         if br.op != .brif or br.imm != 0 or int(br.a) != int(cmp.dst): continue
-        if cmp.op != .lts and cmp.op != .ltu: continue
+        if cmp.op != .lts and cmp.op != .ltu and cmp.op != .ges: continue
+        down = cmp.op == .ges
         ctr = int(cmp.a)
         endv = int(cmp.b)
-        if inc.op != .add or int(inc.dst) != ctr or int(inc.a) != ctr or not lx_is_const(int(inc.b), 1): continue
+        step = 1
+        if down: step = -1
+        if inc.op != .add or int(inc.dst) != ctr or int(inc.a) != ctr or not lx_is_const(int(inc.b), step): continue
         # (nothing else changes the counter or the bound)
         ok = true
         loop p in [i + 1..e - 3):
@@ -72,14 +77,15 @@ lx_counting = (code: Ins[], ends: int[]) -> CLoop[]:
             if o_defines(ins2.op) and (int(ins2.dst) == ctr or int(ins2.dst) == endv): ok = false
             if ins2.op == .zeroslots: ok = false
         if lx_defined_in(code, endv, i + 1, e - 3): ok = false
-        if ok: out.push(CLoop(i, e, ctr, endv, e - 3, cmp.op == .lts))
+        if ok: out.push(CLoop(i, e, ctr, endv, e - 3, cmp.op != .ltu, down))
     out
 
 # the position of the definition of v in [s, e) when there is exactly one there (-1 otherwise)
 lx_def_at = (code: Ins[], v: int, s: int, e: int) -> int:
     at = -1
+    vv = i32(v)
     loop p in [s..e):
-        if int(code[p].dst) == v and o_defines(code[p].op):
+        if code[p].dst == vv and o_defines(code[p].op):
             if at >= 0: return -1
             at = p
     at
@@ -89,10 +95,71 @@ struct LCheck:
     pi: int             # the if
     pend: int           # its end
     pc: int             # the comparison it tests (gone with it in the copy, when used only there)
-    kind: int           # 0: index x + k against len (x the counter), 1: invariant index x, 2: null arr
+    kind: int           # 0: index x + k against len (x the counter), 1: invariant index x, 2: null arr,
+                        # 3: index x + terms + k, 4: index terms + k (the terms: what the loop does not
+                        # change, or makes from that: i * w for an outer loop's i)
     x: int
     k: int
     len: int
+    terms: int[]        # (v + 1, or -(v + 1) where subtracted)
+
+# x as the counter times lx_tc, plus the terms, plus lx_tk: from additions and subtractions the loop
+# makes before position p of what it does not change; false when it is something else
+lx_terms: int[]
+lx_tk = 0
+lx_tc = 0
+
+lx_decomp = (code: Ins[], L: CLoop, x: int, sgn: int, p: int, depth: int) -> bool:
+    if x == L.ctr:
+        lx_tc += sgn
+        return true
+    if is_kv(x):
+        kv = kv_of(x)
+        if kv < -(1 << 40) or kv > (1 << 40): return false
+        lx_tk += sgn * kv
+        return true
+    if not lx_defined_in(code, x, L.pl + 1, L.pe):
+        lx_terms.push(sgn * (x + 1))
+        return true
+    if depth > 4: return false
+    q = lx_def_at(code, x, L.pl + 1, L.inc)
+    if q < 0 or q > p: return false
+    xi = code[q]
+    if xi.op == .add: return lx_decomp(code, L, int(xi.a), sgn, q, depth + 1) and lx_decomp(code, L, int(xi.b), sgn, q, depth + 1)
+    if xi.op == .sub: return lx_decomp(code, L, int(xi.a), sgn, q, depth + 1) and lx_decomp(code, L, int(xi.b), -sgn, q, depth + 1)
+    if xi.op == .mov: return lx_decomp(code, L, int(xi.a), sgn, q, depth + 1)
+    if lx_inv_made(code, L, x, p, depth):
+        lx_terms.push(sgn * (x + 1))
+        return true
+    false
+
+# is v made in the loop (before p, once) from what it does not change, by arithmetic that cannot trap?
+lx_inv_made = (code: Ins[], L: CLoop, v: int, p: int, depth: int) -> bool:
+    if v == L.ctr or depth > 5: return false
+    if is_kv(v) or not lx_defined_in(code, v, L.pl + 1, L.pe): return true
+    q = lx_def_at(code, v, L.pl + 1, L.inc)
+    if q < 0 or q > p: return false
+    xi = code[q]
+    if xi.op == .mov: return lx_inv_made(code, L, int(xi.a), q, depth + 1)
+    if xi.op != .add and xi.op != .sub and xi.op != .mul and xi.op != .shl and xi.op != .and_ and xi.op != .or_ and xi.op != .xor: return false
+    lx_inv_made(code, L, int(xi.a), q, depth + 1) and lx_inv_made(code, L, int(xi.b), q, depth + 1)
+
+# v's value, in front of the loop (what the loop makes of what it does not change: made again)
+lx_mat = (code: Ins[], L: CLoop, v: int, out: mut Ins[]) -> int:
+    if is_kv(v) or not lx_defined_in(code, v, L.pl + 1, L.pe): return v
+    xi = code[lx_def_at(code, v, L.pl + 1, L.inc)]
+    if xi.op == .mov: return lx_mat(code, L, int(xi.a), out)
+    a = lx_mat(code, L, int(xi.a), out)
+    b = lx_mat(code, L, int(xi.b), out)
+    lx_bin(out, xi.op, a, b)
+
+# the terms plus k, in front of the loop
+lx_sum = (code: Ins[], L: CLoop, terms: int[], k: int, out: mut Ins[]) -> int:
+    acc = k_vreg(k)
+    loop t in terms:
+        if t > 0: acc = lx_bin(out, .add, acc, lx_mat(code, L, t - 1, out))
+        else: acc = lx_bin(out, .sub, acc, lx_mat(code, L, -t - 1, out))
+    acc
 
 lx_checks = (code: Ins[], ends: int[], L: CLoop) -> LCheck[]:
     out: LCheck[]
@@ -117,17 +184,25 @@ lx_checks = (code: Ins[], ends: int[], L: CLoop) -> LCheck[]:
             len = int(cd.b)
             if lx_defined_in(code, len, L.pl + 1, L.pe): continue
             if x == L.ctr:
-                out.push(LCheck(p, q, d, 0, x, 0, len))
+                out.push(LCheck(p, q, d, 0, x, 0, len, []))
                 continue
             if not lx_defined_in(code, x, L.pl + 1, L.pe):
-                out.push(LCheck(p, q, d, 1, x, 0, len))
+                out.push(LCheck(p, q, d, 1, x, 0, len, []))
                 continue
-            xd = lx_def_at(code, x, L.pl + 1, L.inc)
-            if xd >= 0 and code[xd].op == .add and int(code[xd].a) == L.ctr and is_kv(int(code[xd].b)) and lx_def_at(code, L.ctr, L.pl + 1, L.inc) < 0:
-                out.push(LCheck(p, q, d, 0, L.ctr, kv_of(int(code[xd].b)), len))
+            if lx_def_at(code, L.ctr, L.pl + 1, L.inc) >= 0: continue
+            lx_terms = []
+            lx_tk = 0
+            lx_tc = 0
+            if not lx_decomp(code, L, x, 1, p, 0): continue
+            if lx_tk <= -(1 << 40) or lx_tk >= (1 << 40) or lx_terms.len() > 4: continue
+            if lx_tc == 1 and lx_terms.len() == 0:
+                # (small offsets: a range of them is tested at its ends)
+                if lx_tk > -1000000 and lx_tk < 1000000: out.push(LCheck(p, q, d, 0, L.ctr, lx_tk, len, []))
+            else if lx_tc == 1: out.push(LCheck(p, q, d, 3, L.ctr, lx_tk, len, lx_terms))
+            else if lx_tc == 0: out.push(LCheck(p, q, d, 4, 0, lx_tk, len, lx_terms))
             continue
         if cd.op == .eq and lx_is_const(int(cd.b), 0) and not lx_defined_in(code, int(cd.a), L.pl + 1, L.pe):
-            out.push(LCheck(p, q, d, 2, int(cd.a), 0, 0))
+            out.push(LCheck(p, q, d, 2, int(cd.a), 0, 0, []))
     out
 
 # o_repl as the identity for every vreg made so far (it renames uses in copies)
@@ -505,6 +580,197 @@ lx_vec_emit = (code: Ins[], L: CLoop, checks: LCheck[], plan: VPlan, out: mut In
     if not plan.avx_only: lx_vloop(code, L, checks, plan, VX, out)
     out.push(Ins(.end, 0, 0, 0, 0, 0, 0))
 
+# ---------------- hoisting loads of globals ----------------
+# An innermost loop that calls nothing and stores only where no global variable is (the stack,
+# or objects reached through pointers read from globals or the heap) leaves the globals as they
+# are: their values are read once in front of it, and then the headers (lengths) of what they
+# hold, when the loop does not write headers either (guarded: a null array has none, and the
+# loop reads one only past its own null test). Top-level code, whose variables are all globals,
+# then gets its checks dropped by versioning as a function's locals do.
+lh_ndef: int[]
+lh_defpos: int[]
+lh_raw = false                 # (the function reads or writes through raw pointers: only stores through
+                               # an array or string global count as the heap's)
+
+# is v defined once, by an instruction (a parameter or a vreg defined several times: no)
+lh_def = (code: Ins[], v: int) -> int:
+    if v < 0 or v >= lh_ndef.len() or is_kv(v) or lh_ndef[v] != 1: return -1
+    lh_defpos[v]
+
+# the address v is that of a global variable (its own storage, plus a constant)
+lh_global_addr = (code: Ins[], v0: int) -> bool:
+    v = v0
+    loop k in [0..8):
+        p = lh_def(code, v)
+        if p < 0: return false
+        ins = code[p]
+        if ins.op == .gaddr: return true
+        if ins.op == .mov: v = int(ins.a)
+        else if ins.op == .add and is_kv(int(ins.b)): v = int(ins.a)
+        else: return false
+    false
+
+# a pointer read from a global or from the heap (not from the stack, which may hold a pointer to a
+# global, as a `mut` parameter's): an object's, never a global variable's own storage
+lh_heap_ptr = (code: Ins[], v: int, depth: int) -> bool:
+    p = lh_def(code, v)
+    if p < 0 or depth > 8: return false
+    ins = code[p]
+    if ins.op == .mov: return lh_heap_ptr(code, int(ins.a), depth + 1)
+    if ins.op != .load or int(ins.c) & M_HDR != 0: return false
+    a = int(ins.a)
+    if lh_raw:
+        q = lh_def(code, a)
+        return q >= 0 and code[q].op == .gaddr and obj_global_offs.contains(code[q].imm)
+    lh_global_addr(code, a) or lh_heap_addr(code, a, depth + 1)
+
+# an address in an object reached through such a pointer
+lh_heap_addr = (code: Ins[], v: int, depth: int) -> bool:
+    p = lh_def(code, v)
+    if p < 0 or depth > 8: return false
+    ins = code[p]
+    if ins.op == .add and is_kv(int(ins.b)): return lh_heap_addr(code, int(ins.a), depth + 1)
+    if ins.op == .mov: return lh_heap_addr(code, int(ins.a), depth + 1)
+    lh_heap_ptr(code, v, depth)
+
+# may a store to address v write a global variable?
+lh_safe_store = (code: Ins[], v: int) -> bool:
+    p = lh_def(code, v)
+    if p < 0: return false
+    op = code[p].op
+    if op == .slot: return true
+    if (op == .add and is_kv(int(code[p].b))) or op == .mov:
+        q = lh_def(code, int(code[p].a))
+        if q >= 0 and code[q].op == .slot: return true
+    lh_heap_addr(code, v, 0)
+
+lh_mark: int[]             # per vreg: what the loop being looked at does with it (lx_hoist)
+const LH_BIG = 1000000000
+
+lh_prepare = (code: Ins[]):
+    nv = ir.vtypes.len()
+    lh_ndef = fill(0, nv)
+    lh_defpos = fill(-1, nv)
+    loop q in 0.. and qi in code:
+        d = int(qi.dst)
+        if d >= 0 and o_defines(qi.op):
+            lh_ndef[d] += 1
+            lh_defpos[d] = q
+        if qi.op == .zeroslots:
+            loop k in [0..int(qi.b)):
+                item = int(ir.args[int(qi.a) + k])
+                if item & 1 == 1: lh_ndef[item >> 1] += 2
+    lh_mark = fill(0, nv)
+
+# the loops of cl that have checks (and nothing that may write a global) get the loads moved
+# in front of them; true if any did
+lx_hoist = (cl: CLoop[]) -> bool:
+    lh_raw = ir.raw_mem
+    code = ir.code
+    hoists: (int, int[])[]          # (loop position, what moves in front of it: positions, a
+                                    # negative one a header load, guarded)
+    moved: bool[]
+    ready = false
+    loop L in cl:
+        pl = L.pl
+        pe = L.pe
+        # (first what is quick to see: calls, checks, and something to move)
+        ok = true
+        checks = 0
+        loads = false
+        stores = false
+        loop p in [pl + 1..pe):
+            op = code[p].op
+            if op == .calli or op == .callc or op == .syscall or op == .intr or op == .vop or op == .vst:
+                ok = false
+                break
+            if op == .call:
+                if code[p].c != 1:
+                    ok = false
+                    break
+                checks += 1
+            else if op == .gaddr or (op == .load and int(code[p].c) & M_INDEX == 0): loads = true
+            else if op == .store or op == .copy or op == .zero or op == .memcpy or op == .memset: stores = true
+        if not ok or checks == 0 or not loads: continue
+        if not ready:
+            # (definitions: counted once, for the first loop that needs them)
+            ready = true
+            lh_prepare(code)
+            moved = fill(false, code.len())
+        hdr_ok = true
+        if stores:
+            loop p in [pl + 1..pe):
+                op = code[p].op
+                if op == .store or op == .copy or op == .zero or op == .memcpy or op == .memset:
+                    ins = code[p]
+                    if not lh_safe_store(code, int(ins.a)):
+                        ok = false
+                        break
+                    if op == .store and int(ins.c) & M_HDR != 0: hdr_ok = false
+                    if op != .store:
+                        q = lh_def(code, int(ins.a))
+                        if q < 0 or code[q].op != .slot: hdr_ok = false
+        if not ok: continue
+        # (marks for this loop: lm defined in it, lm + BIG also read before that (or cleared by
+        # zeroslots), -lm only read in it)
+        lm = pl + 1
+        loop p in [pl + 1..pe):
+            ins = code[p]
+            d = o_operands(ins)
+            loop u in o_buf:
+                m = lh_mark[u]
+                if m != lm and m != -lm and m != lm + LH_BIG: lh_mark[u] = -lm
+            if d >= 0:
+                if lh_mark[d] == -lm: lh_mark[d] = lm + LH_BIG
+                else if lh_mark[d] != lm + LH_BIG: lh_mark[d] = lm
+            if ins.op == .zeroslots:
+                loop k in [0..int(ins.b)):
+                    item = int(ir.args[int(ins.a) + k])
+                    if item & 1 == 1: lh_mark[item >> 1] = lm + LH_BIG
+        hs: int[]
+        loop p in [pl + 1..pe):
+            ins = code[p]
+            d = int(ins.dst)
+            if d < 0 or not o_defines(ins.op) or lh_ndef[d] != 1 or lh_mark[d] != lm: continue
+            a = int(ins.a)
+            inl = a >= 0 and (lh_mark[a] == lm or lh_mark[a] == lm + LH_BIG)
+            if ins.op == .gaddr:
+                hs.push(p)
+                lh_mark[d] = 0
+            else if ins.op == .load and int(ins.c) & (M_INDEX | M_HDR) == 0 and not inl and lh_global_addr(code, a):
+                hs.push(p)
+                lh_mark[d] = 0
+            else if ins.op == .load and hdr_ok and int(ins.c) & M_INDEX == 0 and int(ins.c) & M_HDR != 0 and not inl:
+                hs.push(-p - 1)
+                lh_mark[d] = 0
+        if hs.len() == 0: continue
+        hoists.push((pl, hs))
+        loop h in hs:
+            if h >= 0: moved[h] = true
+            else: moved[-h - 1] = true
+    if hoists.len() == 0: return false
+    out: Ins[]
+    out.reserve(code.len() + 16)
+    hk = 0
+    loop p in 0.. and ins in code:
+        if moved[p]: continue
+        if hk < hoists.len() and hoists[hk].0 == p:
+            loop h in hoists[hk].1:
+                if h >= 0: out.push(code[h])
+                else:
+                    hi = code[-h - 1]
+                    # d = 0; if a != 0: d = load a
+                    out.push(Ins(.mov, VI, hi.dst, i32(k_vreg(0)), 0, 0, 0))
+                    t = vreg(VI)
+                    out.push(Ins(.ne, VI, i32(t), hi.a, i32(k_vreg(0)), 0, 0))
+                    out.push(Ins(.if_, 0, 0, i32(t), 0, 0, 0))
+                    out.push(hi)
+                    out.push(Ins(.end, 0, 0, 0, 0, 0, 0))
+            hk += 1
+        out.push(ins)
+    ir.code = out
+    true
+
 # version the counting loops of the current function that have checks to drop
 lx_dbg_read = false
 lx_dbg = ""
@@ -517,6 +783,10 @@ loop_versioning = ():
     ends = lx_ends(code)
     cl = lx_counting(code, ends)
     if cl.len() == 0: return
+    if lx_hoist(cl):
+        code = ir.code
+        ends = lx_ends(code)
+        cl = lx_counting(code, ends)
     nv = ir.vtypes.len()
     lx_known = 0
     lx_sync()
@@ -538,7 +808,7 @@ loop_versioning = ():
         if L.pe - L.pl > 400: continue
         checks = lx_checks(code, ends, L)
         plan = VPlan(false, 0, false, [], [], [])
-        if lx_vec_on: plan = lx_vec_plan(code, L, checks, first, last)
+        if lx_vec_on and not L.down: plan = lx_vec_plan(code, L, checks, first, last)
         # (one check costs about as much as testing for it in front: not worth a copy)
         if not plan.ok and checks.len() < 2: continue
         loop p in [at..L.pl): out.push(code[p])
@@ -551,6 +821,16 @@ loop_versioning = ():
             wrap = 2
         start_nonneg = lx_starts_nonneg(code, L)
         done_len: int[]
+        # (the tests below take the loop to run from the counter's value here: so it does,
+        # where lowering tests it in front; if not, the checking loop runs)
+        if L.down: lx_fail(out, lx_bin(out, .lts, L.ctr, L.endv))
+        else:
+            loop ch in checks:
+                if ch.kind == 3:
+                    ge = Op.geu
+                    if L.signed: ge = .ges
+                    lx_fail(out, lx_bin(out, ge, L.ctr, L.endv))
+                    break
         loop ch in checks:
             if ch.kind == 0:
                 # (one test per length: the smallest and largest offsets against it)
@@ -562,6 +842,11 @@ loop_versioning = ():
                     if c2.kind == 0 and c2.len == ch.len:
                         kmin = min(kmin, c2.k)
                         kmax = max(kmax, c2.k)
+                if L.down:
+                    # (the counter goes from its value here down to endv)
+                    lx_fail(out, lx_bin(out, .lts, lx_bin(out, .add, L.endv, k_vreg(kmin)), k_vreg(0)))
+                    lx_fail(out, lx_bin(out, .ges, lx_bin(out, .add, L.ctr, k_vreg(kmax)), ch.len))
+                    continue
                 if not (start_nonneg and kmin >= 0):
                     lo = L.ctr
                     if kmin != 0: lo = lx_bin(out, .add, L.ctr, k_vreg(kmin))
@@ -569,7 +854,27 @@ loop_versioning = ():
                 hi = L.endv
                 if kmax != 0: hi = lx_bin(out, .add, L.endv, k_vreg(kmax))
                 lx_fail(out, lx_bin(out, .gts, hi, ch.len))
+            else if ch.kind == 3:
+                # the counter's smallest and largest values, and the offset, all within 2^40 of
+                # 0 (no sum below wraps around), then the smallest and largest index in bounds
+                slo = L.ctr
+                shi = lx_bin(out, .sub, L.endv, k_vreg(1))
+                if L.down:
+                    slo = L.endv
+                    shi = L.ctr
+                ov = lx_sum(code, L, ch.terms, ch.k, out)
+                # (the limits made by iconst: compares take immediates of 32 bits)
+                lim = vreg(VI)
+                out.push(Ins(.iconst, VI, i32(lim), 0, 0, 0, 1 << 40))
+                nlim = vreg(VI)
+                out.push(Ins(.iconst, VI, i32(nlim), 0, 0, 0, -(1 << 40)))
+                loop w in [slo, shi, ov]:
+                    lx_fail(out, lx_bin(out, .lts, w, nlim))
+                    lx_fail(out, lx_bin(out, .gts, w, lim))
+                lx_fail(out, lx_bin(out, .lts, lx_bin(out, .add, slo, ov), k_vreg(0)))
+                lx_fail(out, lx_bin(out, .ges, lx_bin(out, .add, shi, ov), ch.len))
             else if ch.kind == 1: lx_fail(out, lx_bin(out, .geu, ch.x, ch.len))
+            else if ch.kind == 4: lx_fail(out, lx_bin(out, .geu, lx_sum(code, L, ch.terms, ch.k, out), ch.len))
             else: lx_fail(out, lx_bin(out, .eq, ch.x, k_vreg(0)))
         # the copy without the checks: values made and used only in the loop get names of their own
         lx_sync()

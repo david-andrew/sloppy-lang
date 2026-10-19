@@ -405,6 +405,11 @@ operands = (ins: Ins) -> int:
             use_buf.push(bb)
             use_buf.push(int(ins.c))
             return -1
+        select:
+            use_buf.push(a)
+            use_buf.push(bb)
+            use_buf.push(int(ins.c))
+            return d
         zeroslots:
             # defines vreg items (handled by caller via args)
             return -1
@@ -1125,6 +1130,42 @@ src_reg = (v: int) -> int:
     if l >= 0: return l
     -1
 
+# copy rcx bytes from rsi to rdi (all caller-saved registers are free: a memcpy is call-like).
+# Up to 16 bytes with two loads and two stores (rep movsb takes some 30 cycles to start where
+# the CPU lacks fast short rep movs), loads before stores (overlap copies as memmove does)
+emit_memcpy = ():
+    bs([0x48, 0x83, 0xF9, 0x10, 0x77, 0])               # cmp rcx, 16; ja big
+    big = code.len() - 1
+    bs([0x48, 0x83, 0xF9, 0x08, 0x72, 0])               # cmp rcx, 8; jb lt8
+    lt8 = code.len() - 1
+    bs([0x48, 0x8B, 0x06, 0x48, 0x8B, 0x54, 0x0E, 0xF8])    # mov rax, [rsi]; mov rdx, [rsi+rcx-8]
+    bs([0x48, 0x89, 0x07, 0x48, 0x89, 0x54, 0x0F, 0xF8])    # mov [rdi], rax; mov [rdi+rcx-8], rdx
+    bs([0xEB, 0])                                       # jmp done
+    d1 = code.len() - 1
+    code[lt8] = u8(code.len() - lt8 - 1)
+    bs([0x48, 0x83, 0xF9, 0x04, 0x72, 0])               # cmp rcx, 4; jb lt4
+    lt4 = code.len() - 1
+    bs([0x8B, 0x06, 0x8B, 0x54, 0x0E, 0xFC])            # mov eax, [rsi]; mov edx, [rsi+rcx-4]
+    bs([0x89, 0x07, 0x89, 0x54, 0x0F, 0xFC])            # mov [rdi], eax; mov [rdi+rcx-4], edx
+    bs([0xEB, 0])                                       # jmp done
+    d2 = code.len() - 1
+    code[lt4] = u8(code.len() - lt4 - 1)
+    bs([0x48, 0x85, 0xC9, 0x74, 0])                     # test rcx, rcx; jz done
+    d3 = code.len() - 1
+    # (1 to 3: the first, middle and last bytes)
+    bs([0x49, 0x89, 0xC8, 0x49, 0xD1, 0xE8])            # mov r8, rcx; shr r8, 1
+    bs([0x0F, 0xB6, 0x06, 0x0F, 0xB6, 0x54, 0x0E, 0xFF])    # movzx eax, [rsi]; movzx edx, [rsi+rcx-1]
+    bs([0x46, 0x0F, 0xB6, 0x0C, 0x06])                  # movzx r9d, [rsi+r8]
+    bs([0x88, 0x07, 0x46, 0x88, 0x0C, 0x07, 0x88, 0x54, 0x0F, 0xFF])    # mov [rdi], al; mov [rdi+r8], r9b; mov [rdi+rcx-1], dl
+    bs([0xEB, 0])                                       # jmp done
+    d4 = code.len() - 1
+    code[big] = u8(code.len() - big - 1)
+    bs([0xF3, 0xA4])                                    # rep movsb
+    loop k in [d1, d2, d3, d4]: code[k] = u8(code.len() - k - 1)
+
+bs = (xs: int[]):
+    loop x in xs: code.push(u8(x & 255))
+
 emit_parallel = (moves: PMove[]):
     pending = moves
     # register to register moves first (with cycle breaking via the stack)
@@ -1592,6 +1633,10 @@ x_unary = (prefix: int, opc: int, ins: Ins, src_ty: int, dst_ty: int):
 # fused compare + branch: next instruction consumes the flag
 fused_cc = -1
 fuse_skip = -1             # an instruction folded into the branch after it
+sel_fused = -1             # a select whose compare (sel_ca against sel_cb, true on sel_cc) it makes
+sel_ca = 0
+sel_cb = 0
+sel_cc = 0
 
 emit_ins = (pos: int, ins: Ins):
     op = ins.op
@@ -1603,6 +1648,13 @@ emit_ins = (pos: int, ins: Ins):
         # fuse with a following if/brif that is the only user
         if pos + 1 < ir.code.len() and v_nuse[d] == 1:
             nx = ir.code[pos + 1]
+            # (or a select: compared there, then a conditional move on the flags)
+            if nx.op == .select and int(nx.a) == d and is_icmp(op) and int(nx.b) != d and int(nx.c) != d:
+                sel_fused = pos + 1
+                sel_ca = a
+                sel_cb = bb
+                sel_cc = icc(op)
+                return
             if (nx.op == .if_ or nx.op == .brif) and int(nx.a) == d:
                 if is_icmp(op):
                     cmp_ops(a, bb)
@@ -2110,7 +2162,7 @@ emit_ins = (pos: int, ins: Ins):
         memcpy:
             moves = [PMove(RDI, a), PMove(RSI, bb), PMove(RCX, int(ins.c))]
             emit_parallel(moves)
-            b(0xF3); b(0xA4)
+            emit_memcpy()
         memset:
             moves = [PMove(RDI, a), PMove(RAX, bb), PMove(RCX, int(ins.c))]
             emit_parallel(moves)
@@ -2309,7 +2361,36 @@ emit_ins = (pos: int, ins: Ins):
                 else: lds(0, a, ty)
             emit_epilogue()
         trap: b(0x0F); b(0x0B)
-        select: ice("select not supported")
+        select:
+            # d = a != 0 ? b : c (integers): rax = c; test a; cmovne rax, b
+            cc = CC_NE
+            rb = 0
+            r = 0
+            if sel_fused == pos:
+                # (its compare first: what follows only moves, which keep the flags)
+                sel_fused = -1
+                if vloc[d] == LOC_NONE: return
+                cmp_ops(sel_ca, sel_cb)
+                cc = sel_cc
+                rb = reg_of(bb, RDX)
+                r = dreg(d, RAX)
+                if r == rb: r = RAX
+                ld(r, int(ins.c))
+            else:
+                if vloc[d] == LOC_NONE: return
+                rb = reg_of(bb, RDX)
+                rc = reg_of(a, RCX)
+                r = dreg(d, RAX)
+                if r == rb or r == rc: r = RAX
+                ld(r, int(ins.c))
+                rex(true, rc, 0, rc, false)
+                b(0x85)
+                modrr(rc, rc)
+            rex(true, r, 0, rb, false)
+            b(0x0F)
+            b(0x40 + cc)
+            modrr(r, rb)
+            st(d, r)
 
 # jumps taken when condition `cc` is false (fixup positions appended to fx)
 jfalse = (cc: int, fx: mut int[]):
@@ -2376,6 +2457,7 @@ x64_function = ():
     xctl = []
     fused_cc = -1
     fuse_skip = -1
+    sel_fused = -1
     fold_load = -1
     # (the prologue is the declaration's line, the body's first line comes after it: where
     # debuggers put a breakpoint on the function)
