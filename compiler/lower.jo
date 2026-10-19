@@ -1073,6 +1073,8 @@ borrow_may_change = (a: int, args: int[], i: int, callee: int) -> bool:
             if not calls_leave(args[j], n, false): return true
         return false
     if nodes[n].aux != i32(int(SK.local)): return false
+    # (a held view's part stays as it is while the function runs, as a parameter does)
+    if held_views.contains(int(nodes[n].sym)): return false
     int(locals[int(nodes[n].sym)].flags) & (LF_SHARED | LF_CAPTURE | LF_MUTPARAM | LF_BYREF | LF_ALIAS) != 0
 
 # A `mut` argument that is an element of an array or map (xs[i], xs[i].f) is written through
@@ -1751,7 +1753,7 @@ gen_match_switch = (m: int, st0: int, rs: int, rtp: int, val: bool) -> bool:
         blk()
         arm_level[i] = ctl
         i -= 1
-    ha = e_slot(int(locals[int(nodes[m].sym)].offset))
+    ha = local_place(int(nodes[m].sym), false).v
     x = 0
     if is_enum: x = e_load(VI, ha, 0, 4)
     else: x = load_val(st, ha, 0)
@@ -1785,11 +1787,13 @@ gen_match = (m: int, want: bool) -> Val:
         rs = new_temp(rtp)
         e_zero(e_slot(rs), tsize(rtp))
     scope_push()
-    stmt_begin()
-    sv = gen_owned(int(nodes[m].a))
-    store_val(st, e_slot(int(locals[hidden].offset)), 0, sv.v)
-    stmt_end()
-    scope_add_local(hidden)
+    if held_views.contains(hidden): e_mov(int(locals[hidden].vreg), gen_place(int(nodes[m].a), false).v)
+    else:
+        stmt_begin()
+        sv = gen_owned(int(nodes[m].a))
+        store_val(st, e_slot(int(locals[hidden].offset)), 0, sv.v)
+        stmt_end()
+        scope_add_local(hidden)
     if gen_match_switch(m, st, rs, rtp, val):
         scope_pop()
         if val: return result_from_slot(rs, rtp)
@@ -1804,7 +1808,7 @@ gen_match = (m: int, want: bool) -> Val:
         match_level = ctl
         loop k in [0..nkids(arm)):
             p = kid(arm, k)
-            ha = e_slot(int(locals[hidden].offset))
+            ha = local_place(hidden, false).v
             enter_cond()
             ok = gen_match_test(p, st, ha)
             leave_cond()
@@ -3374,7 +3378,12 @@ gen_iflet = (e: int, t: int) -> Val:
     ot = prune(ntype(a))
     scope_push()
     has = vreg(VI)
-    if nodes[e].d != 0:
+    if held_views.contains(l):
+        pa = gen_place(a, false).v
+        e_mov(int(locals[l].vreg), pa)
+        if nodes[e].d != 0: e_mov(has, gen_match_test(int(nodes[e].d), ot, pa))
+        else: e_mov(has, e_load(VI, pa, tsize(int(types[ot].elem)), 1))
+    else if nodes[e].d != 0:
         # (if let .bin(op, l, r) = x: x in a variable of its own, as a match's, and its tag tested)
         stmt_begin()
         sv = gen_owned(a)
@@ -3500,6 +3509,10 @@ gen_assign = (s: int):
         else: write_place(pl, t, e_bin(.sub, VI, cur, d))
         return
     if nodes[s].op == i32(int(Tok.assign)):
+        if nodes[a].kind == .ident and nodes[a].aux == i32(int(SK.local)) and held_views.contains(int(nodes[a].sym)):
+            # (a held view given another part: its address)
+            e_mov(int(locals[int(nodes[a].sym)].vreg), gen_place(int(nodes[s].b), false).v)
+            return
         val = gen_owned(int(nodes[s].b))
         assign_to(a, t, val.v)
         return
@@ -3556,6 +3569,9 @@ gen_vardecl = (s: int):
         return
     l = int(nodes[s].sym)
     t = int(locals[l].type)
+    if held_views.contains(l):
+        e_mov(int(locals[l].vreg), gen_place(int(nodes[s].b), false).v)
+        return
     if view_decl(s, l): return
     if is_shared(l): new_cell(l)
     pl = local_place(l, true)
@@ -3613,6 +3629,117 @@ view_decl = (s: int, l: int) -> bool:
     locals[l].vreg = i32(v)
     locals[l].flags = i32(fl | LF_BYREF)
     true
+
+# A walk down a tree, `cur = n` and then `loop let c = cur: cur = c.left`, or a match on a
+# parameter, `match e: .bin(op, l, r): ...`, would copy each node it passes into a variable (and
+# retain what the node holds, to release it after). What a parameter holds stays as it is for the
+# whole call: the function cannot change it, and a caller gives a copy of what the call could
+# change (borrow_may_change). So a variable only ever given parts of a parameter (through fields,
+# boxed ones too, `!` and narrowing), or parts of other such variables, and never changed through,
+# can be the address of the part: no copy and no reference counting (release builds). These
+# held views are plain variables (given another part by assignment), the names of `if let` and
+# `loop let`, and the value a match or a variant `if let` / `loop let` looks at, whose names stand
+# for its fields.
+held_views: {int: bool}         # the held views of the function being lowered
+hv_given: (int, int)[]          # (finding them) each variable and a value it is given
+hv_cand: {int: bool}            # ... the variables given values
+hv_bad: {int: bool}             # ... those that cannot be views
+hv_lambda = false               # ... a closure is made (none then: it may change what it captures)
+
+find_views = (f: int):
+    held_views = {}
+    # (what C gives a function it calls is C's, which may change it meanwhile)
+    if not opt_release or fns[f].body == 0 or fns[f].cabi: return
+    rooted = false
+    loop l in fns[f].params:
+        if hv_root(l): rooted = true
+    if not rooted: return
+    hv_given = []
+    hv_cand = {}
+    hv_bad = {}
+    hv_lambda = false
+    hv_scan(int(fns[f].body))
+    if hv_lambda or hv_given.len() == 0: return
+    # (assumed views until a value given cannot be one: what is left gives each other only parts)
+    changed = true
+    loop changed:
+        changed = false
+        loop g in hv_given:
+            if not hv_bad.contains(g.0) and not hv_part(g.1):
+                hv_bad[g.0] = true
+                changed = true
+    loop l in hv_cand.keys():
+        if hv_bad.contains(l): continue
+        held_views[l] = true
+        locals[l].flags = i32(int(locals[l].flags) | LF_BYREF)
+
+# a parameter whose parts can be views: a value in memory the function cannot change
+hv_root = (l: int) -> bool:
+    fl = int(locals[l].flags)
+    fl & (LF_MUTPARAM | LF_CAPTURE) == 0 and vc(int(locals[l].type)) == VC_AGG and is_managed(int(locals[l].type))
+
+hv_give = (l: int, v: int):
+    fl = int(locals[l].flags)
+    # (a match's own variable is LF_ADDR: the match reads it in memory)
+    ok = v != 0 and fl & (LF_CAPTURE | LF_CAPTURED | LF_BYREF | LF_ALIAS | LF_PARAM) == 0 and (fl & LF_ADDR == 0 or locals[l].name == 0)
+    if not ok or is_shared(l) or not is_managed(int(locals[l].type)):
+        hv_bad[l] = true
+        return
+    hv_given.push((l, v))
+    hv_cand[l] = true
+
+# place p is written: what it is in cannot be a view
+hv_spoil = (p: int):
+    r = place_var(p)
+    if r != 0 and nodes[r].aux == i32(int(SK.local)): hv_bad[int(nodes[r].sym)] = true
+
+hv_scan = (n: int):
+    if n <= 0: return
+    k = nodes[n].kind
+    if k == .lambda:
+        hv_lambda = true
+        return
+    if k == .vardecl:
+        if nodes[n].nlist > 0:
+            loop i in [0..nkids(n)): hv_spoil(kid(n, i))
+        else if not has_flag(n, NF_GLOBAL): hv_give(int(nodes[n].sym), int(nodes[n].b))
+    else if k == .iflet or k == .match_ or (k == .while_ and nodes[n].aux == 1): hv_give(int(nodes[n].sym), int(nodes[n].a))
+    else if k == .assign:
+        a = int(nodes[n].a)
+        if nodes[n].aux == 1:
+            loop i in [0..nkids(a)): hv_spoil(kid(a, i))
+        else if nodes[n].aux == 0 and nodes[n].op == i32(int(Tok.assign)) and nodes[a].kind == .ident and nodes[a].aux == i32(int(SK.local)) and int(locals[int(nodes[a].sym)].flags) & LF_ALIAS == 0: hv_give(int(nodes[a].sym), int(nodes[n].b))
+        else: hv_spoil(a)
+    else if k == .intrinsic and nkids(n) > 0:
+        id = nodes[n].aux as IN
+        if id == .push or id == .pop or id == .insert or id == .remove or id == .clear or id == .reserve or id == .resize or id == .truncate or id == .setlen or id == .extend or id == .arrdata: hv_spoil(kid(n, 0))
+    else if k == .addr or (k == .cast or k == .conv) and raw_view(n): hv_spoil(int(nodes[n].a))
+    else if k == .for_ and has_flag(n, NF_MUT): hv_spoil(int(nodes[n].a))
+    fs = [int(nodes[n].a), int(nodes[n].b), int(nodes[n].c), int(nodes[n].d)]
+    if k == .for_: fs = [int(nodes[n].a), int(nodes[n].b)]
+    loop c in fs: hv_scan(c)
+    loop i in [0..nkids(n)):
+        c = kid(n, i)
+        if has_flag(c, NF_MUT): hv_spoil(c)
+        hv_scan(c)
+    loop i in [0..nkids2(n)): hv_scan(kid2(n, i))
+
+# is p a part of a parameter or of a view (as views are assumed so far)?
+hv_part = (p: int) -> bool:
+    k = nodes[p].kind
+    if k == .ident:
+        if nodes[p].aux != i32(int(SK.local)): return false
+        l = int(nodes[p].sym)
+        fl = int(locals[l].flags)
+        if fl & LF_ALIAS != 0: return locals[l].alias != 0 and hv_part(int(locals[l].alias))
+        if fl & LF_PARAM != 0: return hv_root(l)
+        return hv_cand.contains(l) and not hv_bad.contains(l)
+    if k == .field:
+        a = int(nodes[p].a)
+        tk = tkind(ntype(a))
+        return (nodes[p].aux == -3 or nodes[p].aux >= 0 and (tk == .struct_ or tk == .tuple)) and hv_part(a)
+    if k == .unwrap or k == .narrow: return hv_part(int(nodes[p].a))
+    false
 
 # is e a variable (or a field path of one) that code n cannot change?
 unchanged_by = (e: int, n: int) -> bool:
@@ -4653,10 +4780,12 @@ gen_while = (s: int):
             inner = ot
             e_mov(has, gen_match_test(int(nodes[s].d), ot, pa))
         else: e_mov(has, e_load(VI, pa, tsize(inner), 1))
-        iff(has)
-        vv = own(V(load_val(inner, pa, 0), false), inner)
-        write_place(local_place(l, true), inner, vv.v)
-        endc()
+        if held_views.contains(l): e_mov(int(locals[l].vreg), pa)
+        else:
+            iff(has)
+            vv = own(V(load_val(inner, pa, 0), false), inner)
+            write_place(local_place(l, true), inner, vv.v)
+            endc()
         stmt_end()
         brif_to(e_bin(.eq, VI, has, e_iconst(0)), brk)
         scope_push()
@@ -4792,7 +4921,8 @@ lower_inst = (lf: int, f: int):
         loop l in fns[f].params:
             t = prune(int(locals[l].type))
             if types[t].kind == .int_ and tsize(t) < 8 and int(locals[l].flags) & LF_MUTPARAM == 0: e_mov(int(locals[l].vreg), norm(int(locals[l].vreg), t))
-    # locals
+    # locals (held views hold an address, as LF_BYREF ones)
+    find_views(f)
     loop l in fns[f].locals:
         fl = int(locals[l].flags)
         t = int(locals[l].type)
