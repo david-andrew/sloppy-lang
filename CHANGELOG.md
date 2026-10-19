@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.25.1
 
 - Security: `net.fetch` refuses an address or a header value with a line break or another
   control character in it, and a header name that is not one (they were sent as they were: a
