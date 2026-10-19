@@ -1605,7 +1605,7 @@ body = ""
 draw = ():
     global body, query
     clear()
-    if key_down(.ctrl) and key_pressed(.f): hud_focus("search")
+    if shortcut(.f): hud_focus("search")              # Ctrl+F (Cmd+F on a Mac)
     query = hud_text_field(Rect(10, 10, 300, 30), query, id = "search", hint = "Search")
     if hud_submitted(): find_next(query)
     body = hud_text_area(Rect(10, 50, 600, 400), body, id = "body")
