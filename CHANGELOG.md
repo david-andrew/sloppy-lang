@@ -16,6 +16,24 @@
   `"A" | "a":` in a match says an arm lists its values with commas.
 - `row = g[1]` at the top of a file, then `row[2] = 7`, with row read nowhere after, warns that
   row is a copy and g stays as it was, as it did inside a function.
+- `BigInt`: exact whole numbers of any size, as Python's `int` (lib/std/bigint.jo, no import):
+  `bigint(2) ^ 1000`, `bigint("123456789012345678901234567890")`, `to_bigint(s)` (none when it
+  is not a number; hex, binary and octal too). `+ - * / %`, `^`, `<< >>`, comparisons, `==`,
+  printing, `str(x, 16)`, `min`/`max`/`sort`, map keys and sets work, with ints mixed in (`f *=
+  i`, `x % 1_000_000_007`); `/` and `%` truncate as they do on ints, `mod` is Python's `%`.
+  `int(x)`, `to_int(x)`, `f64(x)` give it back; `gcd`, `lcm`, `isqrt`, `pow_mod`, `inv_mod`,
+  `digits`, `bit_length` take BigInts. Products go by Karatsuba past 48 digits of 32 bits, and
+  long division and the schoolbook product two digits at a time with the 128-bit product;
+  printing splits a long number in halves. Checked against Python on random operands. Times
+  (debug build, release, Python 3.14): 2^100000 printed 8.7 ms, 5.9 ms, 2.2 ms; 5000! 9 ms,
+  4.8 ms, 7.8 ms; Fibonacci(100000) by additions 0.29 s, 0.14 s, 0.20 s; a 2048-bit `pow_mod`
+  as RSA's 32 ms, 25 ms, 29 ms.
+- The compiler reads lib/std/bigint.jo only for a program that names `BigInt`, `bigint` or
+  `to_bigint` (the editor and the interactive prompt always do): a program without one compiles
+  as fast as before. `int(x)`, `str(x)` and `f64(x)` beside a function of that name ask which
+  functions take the value once per type, where they asked at each call.
+- `2 ^ 1000` and an integer literal past 64 bits say that `bigint(2) ^ 1000` and
+  `bigint("...")` keep every digit.
 - `cnt[c - 'a']` with c a byte of text is worked out as an int where one is wanted: a character
   before 'a' gives a negative number (it wrapped around as a byte), and there is no warning on
   the most common way of counting letters.
