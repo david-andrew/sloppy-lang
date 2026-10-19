@@ -1811,6 +1811,86 @@ DevTools protocol instead (`--remote-debugging-port`, as Playwright and Puppetee
 page, wait in real time, send keys with `Input.dispatchKeyEvent` and take the picture with
 `Page.captureScreenshot`.
 
+### Terminal programs
+
+A program can take the whole terminal as a screen of characters, as curses, tcell or bubbletea
+let one do: a file browser, an editor, a game in the terminal. `import term`, then `term.start()`:
+keys come one at a time as they are typed, the program draws into a screen of cells, and
+`term.flush()` shows what changed. [examples/files.jo](../examples/files.jo) is a file browser;
+`sloppy new my_list tui` makes a list of things to do to start from.
+
+```gdscript
+import term
+
+x = 10
+y = 5
+term.start(mouse = true)
+loop:
+    w, h = term.size()
+    term.clear()
+    term.box(0, 0, w, h - 1, title = "arrows or a click move it, q quits")
+    term.put(x, y, "@", fg = term.YELLOW, style = term.BOLD)
+    term.put(0, h - 1, "at {x}, {y}", fg = term.GRAY)
+    term.flush()
+    e = term.read_event() ?? break
+    if e.kind == .mouse and e.mouse == .press: x, y = e.x, e.y
+    match e.name:
+        "q", "escape": break
+        "left": x -= 1
+        "right": x += 1
+        "up": y -= 1
+        "down": y += 1
+```
+
+- **Drawing.** Columns (`x`) and rows (`y`) count from 0 at the top left, and what falls off the
+  screen is left out. `put(x, y, text, fg, bg, style)` gives the column after the text;
+  `fill_rect`, `box` (`lines = .single`, `.double`, `.rounded` or `.heavy`, with a `title`),
+  `hline`, `vline` and `clear(bg = ...)` do what they say. Characters of East Asian scripts and
+  emoji take two cells, marks on a letter none: `text_width(s)` counts the columns text takes,
+  and `fit(s, 20)` cuts it to 20 with a `…`. `set_cursor(x, y)` shows the cursor where the user
+  types.
+- **Colors** are numbers: the 16 named ones (`term.RED`, `term.BRIGHT_BLUE`, `term.GRAY`...)
+  follow the terminal's theme, `term.color(n)` is one of xterm's 256, `term.color(rgb(1, 0.5,
+  0))` any color (24 bits), and `term.DEFAULT` the terminal's own. Styles join with `|`:
+  `term.BOLD | term.UNDERLINE` (also `DIM`, `ITALIC`, `REVERSE`, `STRIKE`).
+- **Showing it.** Draw everything each time, as a game's `draw` does: `flush` compares the screen
+  with what the terminal shows and writes only the cells that changed, in one write, with the
+  cursor moved as little as it can be (as synchronized output, which the terminals that have it
+  show at once). It gives the bytes it wrote; `redraw()` makes the next flush write every cell
+  (after something else wrote to the terminal).
+- **Events.** `term.read_event()` waits for the next one, `read_event(wait = 0.1)` at most a
+  tenth of a second (none: nothing came; for a loop that animates). An `Event`'s `kind` is
+  `.key`, `.mouse`, `.resize` or `.paste`. A key is `e.key` (`.char`, the character in `e.text`,
+  or `.enter`, `.tab`, `.backspace`, `.delete`, `.escape`, the arrows, `.home`, `.end`,
+  `.page_up`, `.page_down`, `.insert`, `.f1` to `.f12`) with `e.ctrl`, `e.alt` and `e.shift`,
+  and `e.name` says it as text to match on: `"a"`, `"A"`, `"space"`, `"enter"`, `"ctrl+c"`,
+  `"shift+tab"`, `"alt+x"`, `"ctrl+up"`, `"f5"`. With `start(mouse = true)` the mouse's presses,
+  releases, drags and wheel come too (`e.mouse`, `e.button` 1 to 3, `e.x`, `e.y`; `mouse_moves =
+  true` for moves with no button held). A resize has given the screen its new size already
+  (`term.size()`), and the next flush writes it all. Pasted text is one event, its lines ending
+  with `\n`. A lone escape is told from the start of a key's sequence by 50 ms with nothing
+  after it.
+- **Putting the terminal back.** `term.stop()` puts the terminal back as it was (its screen, the
+  cursor, its settings), and so does the program's end however it comes: its last line,
+  `exit()`, a panic or a crash (whose message then shows on the terminal's own screen), ctrl-c,
+  SIGTERM, the terminal closed. `on_quit` runs after that, so what it prints shows. Ctrl-c asks
+  the program to stop as it does anywhere ([stop.jo](API.md#stopjo)): a program that looks at
+  `stopping()` is given none once by `read_event`, and one that does not ends at its next
+  `read_event`, `flush` or `sleep`; a second ctrl-c ends one that computes without waiting.
+  `start(ctrl_c_key = true)` makes ctrl-c a key it reads instead (an editor's copy). Ctrl-z and
+  ctrl-\ are keys (a program on the terminal's screen is not suspended).
+- **Tasks.** A task waiting in `read_event` lets the others run: a clock can tick in a task,
+  drawing as it goes, while main waits for keys. On Windows the wait looks for input every 10 ms.
+- **Where.** Linux and macOS: any terminal with xterm's sequences (all of today's). Windows 10 and
+  later: the console (Windows Terminal, the older console window), its keys, mouse and resizes
+  read as the console's events; pasted text comes as keys typed there. A web page has no
+  terminal: `start` gives false, and a web build that calls it is warned.
+- **Testing.** Without a terminal the screen still works: `term.set_size(40, 10)`, then drawing,
+  then `term.screen_text()` (its characters, a line for each row) or `term.render()` (what a
+  flush would write). `term.decode(bytes)` gives the events in a terminal's input.
+- A program that defines `update` or `draw` is a game, with a window: the function that draws a
+  terminal program's screen needs another name (`show`).
+
 ## 13. Calling C
 
 Native programs can call functions from system shared libraries; the library is loaded the
