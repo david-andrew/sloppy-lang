@@ -1574,8 +1574,9 @@ extern gl_clear_native = (mask: u32)
 extern snprintf = (buf: *u8, n: int, fmt: *u8, x: f64) -> i32
 ```
 
-Arguments and results must be scalars or pointers; `cfn(...) -> T` is the type of a C function
-pointer, and `@cabi` makes a Sloppy function callable from C. Windows programs name DLLs
+Arguments and results are numbers, pointers, or structs and vectors passed by value (below);
+`cfn(...) -> T` is the type of a C function pointer, and `@cabi` makes a Sloppy function
+callable from C. Windows programs name DLLs
 (`@lib("user32.dll")`) and are called with the Windows x64 convention; the same code can serve
 both systems under `when TARGET == "windows":`. A variadic C function (`printf(fmt, ...)`) is
 declared with the arguments a call gives it and `@variadic(n)`, n being its fixed parameters:
@@ -1631,7 +1632,9 @@ print(xs, q[0], size_of(i32))
 | `const char *` in | `str` (C may read it, never write it), or `*u8` |
 | `char *` out, or kept by C | `*u8`, copied with `str_from_c(p)` (`""` for null: check `p == null` first when that matters) |
 | `void *`, `T *`, `T **` | `*u8`, `*T`, `**T` (`p.field` reads a struct through its pointer) |
-| a struct | the same fields, in order: passed by pointer (`&s`, `data(xs)`); not by value |
+| a struct | the same fields, in order; by value (`Vector2 v`) or by pointer (`&s`, `data(xs)`) |
+| `float v[4]` in a struct | `v: f32[4]` |
+| raylib's `Vector2`, `Vector3`, `Vector4`, `Matrix` | `vec2`, `vec3`, `vec4`, `mat4` (or structs of the same floats) |
 | `__attribute__((packed))` | `@packed` above the struct: no padding between its fields (it holds plain data only) |
 
 What crosses, and for how long:
@@ -1642,8 +1645,16 @@ What crosses, and for how long:
   copying form (`SQLITE_TRANSIENT`).
 - **`data(xs)` stays valid while `xs` neither grows nor goes away.** A `push` or `resize` may
   move it.
+- **Structs by value** go as C's convention for each system has them (small ones in
+  registers, larger ones copied), so `extern draw_circle_v = (center: vec2, radius: f32, color:
+  Color)` (Color a struct of four `u8`s, as raylib's) and `extern get_mouse_position = () ->
+  vec2` call raylib as C does. A struct passed
+  by value holds numbers, bools, pointers, vectors, fixed-size arrays and structs of them, and
+  is a copy: C's changes to it are not seen. A web build's externs are JavaScript functions,
+  which take no structs.
 - **What can't cross:** an `extern` can't give back a `str` (it gives `*u8`, read with
-  `str_from_c`), `@cabi` functions take and give scalars and pointers only, and a struct C
+  `str_from_c`), `@cabi` functions take and give scalars and pointers only (a struct from C as
+  `p: *Vec2`), a struct can't be one of a variadic function's `...` arguments, and a struct C
   reads through a pointer has no `str`, array or map fields (`*u8` and a pointer with a length
   instead). The compiler says so where each is declared.
 - **Variadic arguments are promoted as C promotes them:** an `f32` goes as a double (`%f`), and
