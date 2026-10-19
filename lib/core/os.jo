@@ -249,7 +249,10 @@ __stdin_more = () -> bool:
     # (in a program with tasks, the others take their turns until a line comes: lib/std/task.jo)
     when not BOOTSTRAP:
         when TARGET != "windows" and TARGET != "wasm":
-            if __tasks_on: __task_wait_fn([0], [1], -1.0)
+            if __tasks_on:
+                __task_wait_fn([0], [1], -1.0)
+                # (a task cancelled: as if the input had ended)
+                if __task_cancelling: return false
     r = __read_fd(0, data(__stdin_buf), __stdin_buf.len())
     if r <= 0: return false
     __stdin_end = r
@@ -593,6 +596,8 @@ sleep = (seconds: f64):
 __stop_asked = false
 __stop_sig = 0
 __stop_polled = false
+__stop_wfd = -1             # (a pipe the signal's handler writes to, which wakes the tasks' wait:
+__stop_rfd = -1             # lib/std/task.jo)
 __stop_check = ():
     if __stop_asked and not __stop_polled: exit(128 + __stop_sig)
 
@@ -795,7 +800,8 @@ spawn_detached = (path: str, argv: str[]) -> bool:
 # a / is looked for on the PATH. args are its arguments, after its name. show = true: its output
 # goes straight to this program's as it runs (a build's progress), and the text returned is "".
 # cwd: the directory it runs in ("": this program's; a program named with a relative path is
-# found from there)
+# found from there). In a program with tasks the others take their turns meanwhile (on Windows
+# they wait for it), and a task cancelled meanwhile ends it (its code is then 137)
 run_program = (program: str, args: str[] = [], show: bool = false, cwd: str = "") -> (int, str):
     argv = [program] + args
     when TARGET == "wasm":
@@ -834,9 +840,20 @@ run_program = (program: str, args: str[] = [], show: bool = false, cwd: str = ""
             exec(path, argv)
             syscall(60, 127)                         # exit: exec failed
         out: u8[]
+        # (in a program with tasks, the others take their turns while it runs: its output and its
+        # end are waited for as the tasks wait, lib/std/task.jo; a task cancelled meanwhile ends it)
+        tasks = false
+        when not BOOTSTRAP:
+            tasks = __tasks_on
         if not show:
             syscall(3, wfd)
             loop true:
+                when not BOOTSTRAP:
+                    if tasks:
+                        __task_wait_fn([rfd], [1], -1.0)
+                        if __task_cancelling:
+                            syscall(62, pid, 9)                     # kill: SIGKILL
+                            break
                 n = out.len()
                 out.resize(n + 65536)
                 r = syscall(0, rfd, data(out) + n, 65536)
@@ -845,8 +862,17 @@ run_program = (program: str, args: str[] = [], show: bool = false, cwd: str = ""
                 if r <= 0: break
             syscall(3, rfd)
         status = [0]
+        pause = 0.001
+        hang = 0
+        if tasks: hang = 1                           # (WNOHANG)
         loop true:
-            if syscall(61, pid, data(status), 0, 0) != -4: break    # wait4 (EINTR: again)
+            r = syscall(61, pid, data(status), hang, 0)     # wait4
+            if r == -4: continue                     # (EINTR: again)
+            if r != 0: break
+            when not BOOTSTRAP:
+                __task_wait_fn([], [], pause)
+                pause = min(pause * 2.0, 0.05)
+                if __task_cancelling: syscall(62, pid, 9)
         st = status[0] & 0xFFFF
         code = (st >> 8) & 255
         if st & 127 != 0: code = 128 + (st & 127)    # (ended by a signal)

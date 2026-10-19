@@ -81,13 +81,28 @@ __backtrace_from = (fp0: int, pc: int):
         loop k in [max(ring_n - 200, 0)..ring_n):
             rets.push(ring_r[k % 200])
             counts.push(ring_c[k % 200])
-        when TARGET == "windows":
-            __backtrace_print_pe(rets, counts)
-        else when TARGET == "macos":
-            __backtrace_print_macho(rets, counts)
-        else:
-            if let exe = read_bytes("/proc/self/exe"): __backtrace_print(rets, counts, exe)
+        __backtrace_out(rets, counts)
         __in_backtrace = false
+
+__backtrace_out = (rets: int[], counts: int[]):
+    when TARGET == "windows":
+        __backtrace_print_pe(rets, counts)
+    else when TARGET == "macos":
+        __backtrace_print_macho(rets, counts)
+    else when TARGET != "wasm":
+        if let exe = read_bytes("/proc/self/exe"): __backtrace_print(rets, counts, exe)
+
+# (the calls of return addresses rets, as more "called from" lines: where a task was spawned,
+# lib/std/task.jo, spawn itself left out)
+__bt_site = false
+__backtrace_site = (rets: int[]):
+    global __bt_site, __in_backtrace
+    if __in_backtrace: return
+    __in_backtrace = true
+    __bt_site = true
+    __backtrace_out(rets, fill(1, rets.len()))
+    __bt_site = false
+    __in_backtrace = false
 
 # (the last 2p calls are p calls twice, for p up to 6: they become p calls and a count of 2;
 # gives p, or 0)
@@ -480,6 +495,7 @@ __backtrace_report = (rets: int[], counts: int[], fnames: str[], b: u8[], lines_
         # which the top level starts: no line of it is where they were called from)
         if fname == "__game_run": game_loop = true
         if len(fname) == 0 or starts_with(fname, "__") or fname == "_start" or fname == "_main": continue
+        if __bt_site and fname == "spawn": continue
         what = __fn_display(fname)
         if len(what) == 0: continue
         if game_loop and starts_with(fname, "init_") and lines.len() > 0:
@@ -496,7 +512,10 @@ __backtrace_report = (rets: int[], counts: int[], fnames: str[], b: u8[], lines_
                 break
             if addrs[mid] < ret: lo = mid + 1
             else: hi = mid - 1
-        if found >= 0 and fis[found] < files.len(): what = "{what} ({files[fis[found]]}:{lns[found]})"
+        if found >= 0 and fis[found] < files.len():
+            # (where a task starts its function: lib/std/task.jo's spawn)
+            if fname == "lambda" and files[fis[found]] == "task.jo": continue
+            what = "{what} ({files[fis[found]]}:{lns[found]})"
         # (the same call again, with internals between: one line)
         if lines.len() > 0 and lines[lines.len() - 1] == what and times[times.len() - 1] > 0: times[times.len() - 1] += counts[ri]
         else:
@@ -507,7 +526,7 @@ __backtrace_report = (rets: int[], counts: int[], fnames: str[], b: u8[], lines_
         if times[k] < 0: out.push("    {line}")
         else:
             how = "    called from "
-            if out.len() == 0: how = "    in "
+            if out.len() == 0 and not __bt_site: how = "    in "
             n = ""
             if times[k] > 1: n = " ({times[k]:,} times)"
             out.push("{how}{line}{n}")

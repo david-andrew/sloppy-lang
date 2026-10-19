@@ -1402,31 +1402,69 @@ wait_all(workers)
 ```
 
 Tasks take turns on the program's one thread: one runs until it waits (to send or receive on a
-channel, for `t.wait()`, `sleep`, the network, a line of input), then the next ready one runs.
-So between two waits nothing else changes the program's variables, and they need no locks; and a
-task that computes for long without waiting holds up the others (for the processor's cores:
-`parallel_map`, above). A task's closure sees the variables around it, as any closure does, and
-one made in a loop has that turn's.
+channel, for `t.wait()`, `sleep`, the network, a line of input, a program it runs), then the next
+ready one runs. So between two waits nothing else changes the program's variables, and they need
+no locks; and a task that computes for long without waiting holds up the others (for the
+processor's cores: `parallel_map`, above). So do file reads and writes, C functions, and
+`run_program` on Windows: they wait without letting the others run. A send or receive that need
+not wait goes on at once, and lets the others ready take their turns every 64th time, so a loop of
+them never holds the rest up for long. A task's closure sees the variables around it, as any
+closure does, and one made in a loop has that turn's.
 
 - `ch.send(v)` waits until a receiver takes `v` (a channel of capacity 0), or while the channel
   holds `capacity` values. `ch.receive()` waits for the next value, and gives none once the
   channel is closed and empty: `loop let v = ch.receive():`, or `loop v in ch:`, go until then.
 - `ch.receive(wait = 2.0)` waits at most 2 seconds (none: nothing came; `ch.closed()` tells it
-  from a closed channel). `ch.try_send(v)` and `ch.try_receive()` do not wait; `ch.len()` is how
-  many wait in it.
+  from a closed channel), and `ch.send(v, wait = 2.0)` is false when `v` could not go in that
+  time. `ch.try_send(v)` and `ch.try_receive()` do not wait; `ch.len()` is how many wait in it. A
+  time that has passed (below 0) is no wait at all; NaN is an error.
 - A channel's values cannot be optionals (`channel[int?]` is an error): `receive`'s none means
   the channel is closed.
-- `select` takes the first of several channel operations that can go on, waiting until one can
-  (one that is ready is picked fairly, not always the first):
+- `select` takes the first of several operations that can go on, waiting until one can (one that
+  is ready is picked fairly, not always the first):
 
   ```gdscript
   select:
       inbox.receive() as msg: handle(msg)       # msg: the value, or none once inbox is closed
       out.send(job): sent += 1
+      worker.wait() as r: print("done:", r)     # a task has ended
+      stopping(): break                         # ctrl-c or SIGTERM (lib/std/stop.jo)
       after 2.0: print("nothing for 2 seconds")  # or `else:`, for when none can go on now
   ```
-- `wait_all(tasks)` gives their results in order; `t.done()` says whether one has ended;
-  `yield_now()` lets the others take their turns in a task that computes for long.
+
+  A closed channel's arm is always ready (with none). To stop selecting on it, keep the channel
+  in an optional and set it to none: an arm on none is never ready.
+
+  ```gdscript
+  a: Channel[int]? = fast
+  b: Channel[int]? = slow
+  loop a != none or b != none:
+      select:
+          a.receive() as v:
+              if let x = v: merged.push(x)
+              else: a = none                    # closed: this arm is off from now on
+          b.receive() as v:
+              if let x = v: merged.push(x)
+              else: b = none
+  ```
+- `wait_all(tasks)` gives their results in order; `t.done()` says whether one has ended, and
+  `t.wait(wait = 5.0)` waits at most 5 seconds for it (true once it has); `yield_now()` lets the
+  others take their turns in a task that computes for long.
+- `t.cancel()` asks a task to stop: its waits end at once from then on, the one it is in too,
+  giving nothing (`receive` none, `sleep` returns, a `send` gives up, `select` takes its `after` or
+  `else` arm, `net.fetch` status 0, `tcp_receive` nothing), and `cancelled()` is true in it, for
+  it to clean up and end. A task that never waits or looks is not stopped. `t.wait()` still waits
+  for the result.
+- A group: `g = task_group()`, then `g.spawn((): ...)` for each; `g.wait()` waits for them all,
+  `g.cancel()` cancels them all. A panic in one ends that one only (it is told on standard error)
+  and cancels the others; `g.wait()` then gives false, and `g.why()` the panic's message. A task
+  that is cancelled while it waits for a group cancels the group's tasks.
+
+  ```gdscript
+  g = task_group()
+  pages = [loop u in urls: g.spawn((): net.fetch(u, wait = 10.0).text)]
+  if not g.wait(): eprint("a fetch failed: {g.why()}")
+  ```
 - `next_frame()` in a game's task waits for the next frame: a game's tasks take their turns at
   the start of each frame, before `update`, so a task can play out a sequence over several
   (show "Ready", `sleep(1.0)`, show "Go!").
@@ -1434,12 +1472,28 @@ one made in a loop has that turn's.
   `spawn(f, background = true)` starts one the end does not wait for: a server's loop, so a test
   can serve and fetch from itself (`spawn((): http.serve(port), background = true)`).
 - If every task waits for something none of them will do (a receive on a channel nothing sends
-  to, a send nothing receives), the program stops and says where each one waits.
-- A panic in a task ends the program, as anywhere else. An HTTP server's handlers run as tasks
-  of their own: one that waits lets the others be answered.
+  to, a send nothing receives), the program stops and says where each one waits, and where each
+  was spawned. `report_tasks()` writes the same at any time (for a program that seems stuck), and
+  `task_count()` is how many are running.
+- A panic in a task (outside a group) ends the program, as anywhere else, and says where the task
+  was spawned. An HTTP server's handlers run as tasks of their own: one that waits lets the
+  others be answered.
+- Ctrl-c and SIGTERM (`stopping()`, lib/std/stop.jo): the `sleep` and `net.wait` of a task that
+  has asked `stopping()` end at once, and a `stopping():` arm is ready. The usual order: main (or
+  the loop that watches) sees `stopping()`, tells the tasks (closes the channels they read, or
+  cancels them), waits for them, then saves. If tasks go on once main has ended, the program says
+  which and where they wait, after a second; a second ctrl-c or SIGTERM ends it.
+- A connection (`net.tcp_*`, a WebSocket peer) is a number of its own: the task that has it reads
+  it, answers, and closes it. One closed by another task is closed for all (a `tcp_receive`
+  waiting on it ends with nothing), and a new connection is never given the old number. A
+  server can have a task for each connection: `net.tcp_accept(s, wait = 1.0)` and
+  `net.tcp_receive(c, wait = ...)` in it, or for WebSockets `p = net.accept(wait = 1.0)` and
+  `net.receive([p], wait = ...)`, which waits for that peer's events only.
 - In a web page, tasks need a browser that can pause WebAssembly code (JSPI: Chrome and Edge
-  137 or later, and the newest Firefox and Safari); `sleep` waits there too in a program with
-  tasks. A switch between tasks costs some microseconds there (about 0.1 natively).
+  137 or later, and the newest Firefox and Safari); `sleep`, `net.fetch` and `net.receive([p],
+  wait = ...)` wait there too in a program with tasks (not in a game's `update`). A panic in a
+  task ends the program there, in a group too. A switch between tasks costs some microseconds
+  there (about 0.1 natively).
 
 ## 12. Programs and the game loop
 

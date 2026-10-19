@@ -75,6 +75,9 @@ for t in tests:
         continue
     if target == "wasm" and "# requires: native" in head:
         continue
+    # (`# requires: unix`: signals, a shell's commands)
+    if (target in ("wasm", "windows") or on_windows) and "# requires: unix" in head:
+        continue
     # (name.in, when there is one, is the test's standard input; Wine's container is not given it)
     stdin_data = open(t[:-3] + ".in", encoding="utf-8").read() if os.path.exists(t[:-3] + ".in") else ""
     if stdin_data and target == "windows":

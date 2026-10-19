@@ -397,9 +397,11 @@ on_quit = (): write_file("todos.json", to_json(todos))
   `http.status(404)`, `http.redirect("/login")` and `http.file(r, path)`, with `status`, `headers`
   and `http.set_cookie(res, name, value)` to change. A route of `"/files/*path"` takes the rest of
   the path; a path no route has is answered 404, and one routes have for other methods 405.
-- `http.serve` answers until ctrl-c, or the SIGTERM that systemd and docker send, and then returns,
-  so the program can save; `on_quit` runs as any program ends, so it is the place for that too.
-  Other programs that run until stopped do the same with `loop not stopping(): ...`.
+- `http.serve` answers until ctrl-c, or the SIGTERM that systemd and docker send, then stops
+  taking requests, gives the handlers still running up to 10 seconds to answer (`drain = ...`),
+  and returns, so the program can end its own tasks and save; `on_quit` runs as any program ends,
+  so it is the place for that too. Other programs that run until stopped do the same with
+  `loop not stopping(): ...` (and `http.shutdown()` in their own loop).
 - A client that is slow to send or to read holds up no other, a big file goes a piece at a time
   (a 300 MB one is never in memory), and a handler that panics is answered 500 while the server
   goes on (the panic is on standard error). Bodies over 1 MB are refused (`largest = ...` takes
@@ -407,7 +409,8 @@ on_quit = (): write_file("todos.json", to_json(todos))
 - Each request's handler runs as a [task](LANGUAGE.md#tasks-and-channels): one that waits (a
   `net.fetch`, `sleep`, a channel) lets the others be answered meanwhile. Tasks take turns on the
   program's one thread, so handlers change its variables (`todos` above) with no locks: between
-  two waits nothing else runs.
+  two waits nothing else runs. One that computes for long, or runs a program, or reads a big
+  file, holds up the others while it does.
 - `http.read_json(r, t)` sets the fields the body has and keeps the others as they were, so a
   PATCH is `t = todos[i]`, `if let bad = http.read_json(r, t): return bad`, `todos[i] = t`; a body
   that does not read leaves `t` as it was.
@@ -425,9 +428,10 @@ on_quit = (): write_file("todos.json", to_json(todos))
   ```
 - WebSockets on the same port: a route answers `http.websocket(r)` (after checking
   `r.headers.get("origin")` or a cookie), and the connection is a peer of `net`'s from then on
-  (`net.receive()`, `net.send`, `net.handshake(peer)` for its path and cookies). Server-sent
-  events: a route answers `http.events()` and keeps `r.conn`; `http.send_event(conn, text)`
-  sends to it later.
+  (`net.receive()`, `net.send`, `net.handshake(peer)` for its path and cookies). A task for each:
+  `p = net.accept(wait = 1.0)` gives the next one, and that task waits for its own with
+  `net.receive([p], wait = 30.0)`. Server-sent events: a route answers `http.events()` and keeps
+  `r.conn`; `http.send_event(conn, text)` sends to it later.
 
 **On a server of its own.** Listen on `host = "127.0.0.1"` and put Caddy in front: it gets the
 certificate (https) and passes requests on. [Running a matchmaking server](MATCHMAKING.md) sets this
@@ -615,15 +619,18 @@ waits (a channel, a fetch, a connection, `sleep`) lets the others run. For the p
 | `ch := make(chan int)`, `make(chan int, 10)` | `ch = channel[int]()`, `channel[int](10)` |
 | `ch <- v`, `v, ok := <-ch`, `close(ch)` | `ch.send(v)`, `if let v = ch.receive():` (none once closed and empty), `ch.close()` |
 | `for v := range ch` | `loop v in ch:` |
-| `sync.WaitGroup`, `errgroup` | `wait_all(tasks)`: their results, in order |
+| `sync.WaitGroup`, `errgroup` | `wait_all(tasks)`: their results, in order; or a group, `g = task_group()`, `g.spawn((): ...)`, `g.wait()` (false if one panicked: the others are cancelled, `g.why()` says what) |
 | a worker pool over fetches, `errgroup` with `SetLimit(8)` | `rs = net.fetch_all(urls, at_once = 8, retries = 2)`: the answers in order, each failed or busy one asked again |
 | goroutines for CPU work | `parallel_map(xs, f)`, `parallel_range(n, f)` and `parallel_update(xs, f)` run `f` on every core and give back its results, in order |
 | `sync.Mutex` | not needed: tasks take turns, and between two waits nothing else runs; `parallel_map`'s function cannot change a variable it shares (the compiler says so: return values instead), and a count the threads share is an `Atomic` (`done = atomic(0)`, `done.add(1)`) |
-| `select` | `select:` with arms `ch.receive() as v:`, `ch.send(x):`, `after 2.0:` and `else:`; one channel alone: `ch.receive(wait = 2.0)` |
+| `select` | `select:` with arms `ch.receive() as v:`, `ch.send(x):`, `t.wait() as r:` (a task has ended), `stopping():` (ctrl-c), `after 2.0:` and `else:`; one channel alone: `ch.receive(wait = 2.0)`, `ch.send(x, wait = 2.0)` |
+| a nil channel in a `select` (`ch = nil` once it is closed) | the channel in an optional, set to none: an arm on `none` is never ready (`a: Channel[int]? = ch`, then `a = none`) |
 | `runtime.Gosched()` | `yield_now()` |
 | "all goroutines are asleep - deadlock!" | the same: every task waiting on what none will do is told, with where each waits |
 | `context.WithTimeout`, cancelling | `net.fetch(url, wait = 5.0)` (and `fetch_start`, `fetch_all`): status 0 and `r.why` when the time runs out; `net.fetch_cancel(f)` stops one |
-| `signal.NotifyContext(ctx, os.Interrupt)`, graceful shutdown | `loop not stopping(): ...`: ctrl-c and SIGTERM make `stopping()` true (and end `net.wait` early); `on_quit = (): ...` runs as the program ends |
+| `ctx.Done()`, `cancel()` | `t.cancel()`: the task's waits (sleep, a channel, select, the network's) end at once with nothing, and `cancelled()` is true in it, for it to clean up and end; a group's `g.cancel()` cancels every one |
+| `signal.NotifyContext(ctx, os.Interrupt)`, graceful shutdown | `loop not stopping(): ...`: ctrl-c and SIGTERM make `stopping()` true (and end the `sleep` and `net.wait` of a task that has asked it); `on_quit = (): ...` runs as the program ends. A task that goes on after main has ended is told; a second ctrl-c ends the program |
+| a goroutine dump (SIGQUIT) | `report_tasks()`: what each task waits for, where, and where it was spawned; `task_count()` |
 | `if err != nil { return err }` | `x = f()?`: a failure (an `error struct`, or none) goes back to the caller as it is |
 | `errors.New`, a type implementing `error` | `error struct LoadError:` with the fields the caller needs; the function returns `Config \| LoadError`, and the caller checks `if r is LoadError:` |
 | `func save() error` | `save = () -> void \| SaveError:`; `save()?` passes the error on |

@@ -1,0 +1,128 @@
+# requires: sloppy
+# Cancelling tasks (lib/std/task.jo): each kind of wait ends at once with nothing, cancelled() is
+# true in the task, t.wait(wait = ...), send with a time limit, groups waited for and cancelled
+# together, and select's arms on a task's end and on optional channels
+
+main = ():
+    # sleep, receive, send, select, a task's wait: each ends at once, and the task can clean up
+    c = channel[int]()
+    full = channel[int](1)
+    full.send(0)
+    log: str[]
+    t = spawn(():
+        t0 = time()
+        sleep(10.0)
+        log.push("sleep {time() - t0 < 1.0} cancelled {cancelled()}")
+        log.push("receive {c.receive()} {c.receive(wait = 10.0)}")
+        full.send(1)
+        log.push("send dropped: {full.len()}")
+        log.push("send with a wait {full.send(2, wait = 10.0)}")
+        select:
+            c.receive() as v: log.push("select got {v}")
+            after 10.0: log.push("select took after")
+        select:
+            c.receive() as v: log.push("select got {v}")
+        log.push("select with no after went on")
+        other = spawn((): sleep(0.05))
+        log.push("wait(wait) {other.wait(wait = 10.0)}")
+        "cleaned up"
+    )
+    sleep(0.01)
+    print(t.done(), t.wait(wait = 0.0), t.wait(wait = -1.0))
+    t.cancel()
+    print(t.wait(), t.done(), t.wait(wait = 1.0))
+    loop l in log: print(" ", l)
+    t.cancel()                  # (ended: nothing)
+
+    # a task cancelled before it runs: its first wait ends at once
+    u = spawn(():
+        sleep(5.0)
+        cancelled()
+    )
+    u.cancel()
+    print("cancelled before it ran:", u.wait())
+
+    # send with a time limit: false when no receiver comes, true when one does
+    ch = channel[str]()
+    print("no receiver:", ch.send("x", wait = 0.02))
+    r = spawn((): ch.receive())
+    print("a receiver:", ch.send("y", wait = 1.0), r.wait())
+    late = spawn(():
+        sleep(0.02)
+        ch.receive(wait = 1.0)
+    )
+    print("one that comes later:", ch.send("z", wait = 1.0), late.wait())
+
+    # a passed time is no wait at all
+    print(ch.receive(wait = -1.0))
+    deadline = time() - 1.0
+    select:
+        ch.receive() as v: print("no", v)
+        after deadline - time(): print("a passed deadline fires at once")
+
+    # a group: waited for together, cancelled together
+    g = task_group()
+    got = channel[int](10)
+    loop i in 0..3:
+        g.spawn(():
+            sleep(0.01 * f64(i + 1))
+            got.send(i)
+        )
+    print("group:", g.wait(), g.why(), [loop _ in 0..3: got.receive()!])
+    h = task_group()
+    loop i in 0..3:
+        h.spawn(():
+            loop not cancelled(): sleep(1.0)
+            got.send(10 + i)
+        )
+    sleep(0.01)
+    print("tasks running:", task_count())
+    h.cancel()
+    print("cancelled group:", h.wait(), [loop _ in 0..3: got.receive()!].sum(), task_count())
+    h.spawn((): got.send(cancelled() as int))
+    h.wait()
+    print("spawned into a cancelled group:", got.receive())
+
+    # a task that waits on a group, cancelled: the group's tasks are cancelled too
+    inner = task_group()
+    outer = spawn(():
+        loop _ in 0..2: inner.spawn((): sleep(10.0))
+        inner.wait()
+    )
+    sleep(0.01)
+    outer.cancel()
+    print("outer:", outer.wait(), task_count())
+
+    # select on a task's end, and an arm on an optional channel that is none (never ready)
+    fast = channel[int]()
+    slow = channel[int]()
+    spawn(():
+        fast.send(1)
+        fast.close()
+    )
+    spawn(():
+        sleep(0.03)
+        slow.send(2)
+        slow.close()
+    )
+    a: Channel[int]? = fast
+    b: Channel[int]? = slow
+    vals: int[]
+    rounds = 0
+    loop a != none or b != none:
+        rounds += 1
+        select:
+            a.receive() as v:
+                if let x = v: vals.push(x)
+                else: a = none
+            b.receive() as v:
+                if let x = v: vals.push(x)
+                else: b = none
+    print("fan-in:", vals, rounds <= 6)
+    job = spawn(():
+        sleep(0.02)
+        "result"
+    )
+    select:
+        job.wait() as r: print("ended:", r)
+        after 5.0: print("no")

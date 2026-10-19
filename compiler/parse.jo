@@ -2817,11 +2817,14 @@ parse_stmt = () -> int:
 #   select:
 #       inbox.receive() as msg: ...     # msg: a value, or none once the channel is closed
 #       out.send(v): ...
+#       t.wait() as r: ...              # a task has ended (r: its result)
+#       stopping(): ...                 # the program is asked to stop
 #       after 2.0: ...                  # none could within 2 seconds
 #       else: ...                       # none can now
-# becomes: each channel and value kept, then a loop that finds the arms ready (from a turning
-# start, so that none is always first) or waits on all of their channels; then the arm chosen
-# takes or puts its value, and its body runs (outside the loop: a break in it is the program's)
+# becomes: a turn for the others now and then (__select_fair), each channel and value kept, then a
+# loop that finds the arms ready (from a turning start, so that none is always first) or waits on
+# all of their channels; then the arm chosen takes or puts its value, and its body runs (outside
+# the loop: a break in it is the program's)
 select_count = 0
 parse_select = () -> int:
     pos = cur_pos()
@@ -2832,6 +2835,7 @@ parse_select = () -> int:
     select_count += 1
     pre = "__sel{select_count}_"
     stmts: int[]
+    stmts.push(sel_stmt(sel_call("__select_fair", [], pos), pos))
     ready: int[]                # (each arm's readiness test)
     watch: int[]                # (each arm's wait on its channel)
     chosen: int[]               # (each arm's statements once chosen)
@@ -2877,7 +2881,12 @@ parse_select = () -> int:
                     loop a in kids(e): args.push(a)
             i = ready.len()
             cn = "{pre}c{i}"
-            if fname == "receive" and args.len() == 1:
+            if fname == "stopping" and args.len() == 0:
+                if bind != 0: fatal(apos, "stopping() has no value to name: `stopping():`")
+                ready.push(sel_call("__select_ready_stop", [], apos))
+                watch.push(sel_stmt(sel_call("__select_watch_stop", [], apos), apos))
+                chosen.push(sel_block([body], apos))
+            else if (fname == "receive" or fname == "wait") and args.len() == 1:
                 stmts.push(sel_let(cn, args[0], apos))
                 ready.push(sel_call("__select_ready_receive", [sel_ident(cn, apos)], apos))
                 watch.push(sel_stmt(sel_call("__select_watch_receive", [sel_ident(cn, apos)], apos), apos))
@@ -2893,7 +2902,7 @@ parse_select = () -> int:
                 watch.push(sel_stmt(sel_call("__select_watch_send", [sel_ident(cn, apos)], apos), apos))
                 put = sel_stmt(sel_call("__select_put", [sel_ident(cn, apos), sel_ident(vn, apos)], apos), apos)
                 chosen.push(sel_block([put, body], apos))
-            else: fatal(apos, "a select's arms are `ch.receive() as v:` (v: the value, or none once the channel is closed), `ch.send(x):`, `after seconds:` (none could in that time) and `else:` (none can now)")
+            else: fatal(apos, "a select's arms are `ch.receive() as v:` (v: the value, or none once the channel is closed), `ch.send(x):`, `t.wait() as v:` (a task has ended), `stopping():` (ctrl-c), `after seconds:` (none could in that time) and `else:` (none can now)")
         if pk() != .dedent and pk() != .eof: accept(.newline)
     expect(.dedent, "")
     n = ready.len()

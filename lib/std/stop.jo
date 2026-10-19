@@ -8,7 +8,13 @@
 # or has an on_quit = (): ..., which runs as any program ends: its window closed, its last line
 # done, exit() called, or asked to stop. A program that does not look at stopping() ends at its
 # next wait (sleep, net.wait, a server's), running on_quit; one busy elsewhere, at a second ctrl-c
-# (then on_quit does not run).
+# or SIGTERM (then on_quit does not run).
+#
+# With tasks (lib/std/task.jo), the sleep or net.wait of a task that has asked stopping() ends
+# early as well, and so does a select with a `stopping():` arm. The usual order: main (or the
+# server's loop) sees stopping(), tells its tasks (closing the channels they read, or
+# t.cancel()), waits for them, then saves. A task that goes on is told after a moment, with
+# where it waits; a second ctrl-c ends the program.
 
 # true once the program has been asked to stop (ctrl-c, SIGTERM, its console closed): from the
 # first call on, being asked no longer ends the program at once, it is for the program to stop
@@ -16,15 +22,16 @@ stopping = () -> bool:
     global __stop_polled
     __stop_polled = true
     __stop_watch()
+    if __tasks_on: __task_stop_fn()
     __stop_asked
 
 __stop_watching = false
 __stop_finished = false             # (Windows: the program has ended, so the console may close)
 
-# (from now on, ctrl-c and SIGTERM set __stop_asked rather than end the program; a second one
-# ends it as before)
+# (from now on, ctrl-c and SIGTERM set __stop_asked rather than end the program; a second one, of
+# either kind, ends it as before)
 __stop_watch = ():
-    global __stop_watching
+    global __stop_rfd, __stop_wfd, __stop_watching
     if __stop_watching: return
     __stop_watching = true
     when TARGET == "windows":
@@ -33,6 +40,11 @@ __stop_watch = ():
         # (what it calls, looked up now: that allocates, which it cannot on the thread it runs on)
         Sleep(u32(0))
     else when TARGET != "wasm":
+        # (the pipe the handler writes to, which ends the tasks' wait: lib/std/task.jo)
+        fds = [0]
+        if syscall(293, data(fds), 0x80800) == 0:               # pipe2(O_CLOEXEC | O_NONBLOCK)
+            __stop_rfd = fds[0] & 0xFFFFFFFF
+            __stop_wfd = fds[0] >> 32
         h: cfn(i32) = __stop_signal
         act = [h as int, 0x10000000 | 0x80000000, 0, 0]       # SA_RESTART | SA_RESETHAND
         when TARGET == "linux" and ARCH != "arm64":
@@ -44,8 +56,14 @@ __stop_watch = ():
 @cabi
 __stop_signal = (sig: i32):
     global __stop_asked, __stop_sig
+    # (the second: SIGTERM after ctrl-c, or ctrl-c after SIGTERM; the same one again is the
+    # system's, SA_RESETHAND)
+    if __stop_asked: syscall(231, 128 + int(sig))               # exit_group
     __stop_asked = true
     __stop_sig = int(sig)
+    if __stop_wfd >= 0:
+        one = (1, 0)
+        syscall(1, __stop_wfd, &one, 1)
 
 # (x86-64 Linux: a handler returns through code of the program's that asks the system to go back to
 # what it interrupted, rt_sigreturn: mov eax, 15; syscall)

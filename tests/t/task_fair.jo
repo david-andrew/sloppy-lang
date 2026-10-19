@@ -1,0 +1,53 @@
+# requires: sloppy
+# Channel operations and selects that never wait still let the other tasks take turns: a loop of
+# selects on a closed channel does not keep a sleeping task from waking, and try_send to many
+# consumers lets them take what was sent
+main = ():
+    # (a closed channel's arm is always ready: the loop spins, yet the sleeper wakes)
+    fast = channel[int]()
+    slow = channel[int]()
+    spawn(():
+        fast.send(1)
+        fast.close()
+    )
+    spawn(():
+        sleep(0.02)
+        slow.send(2)
+        slow.close()
+    )
+    fast_done = false
+    slow_done = false
+    got: int[]
+    loop not (fast_done and slow_done):
+        select:
+            fast.receive() as v:
+                if let x = v: got.push(x)
+                else: fast_done = true
+            slow.receive() as v:
+                if let x = v: got.push(x)
+                else: slow_done = true
+    print("select loop:", got)
+
+    # a loop of try_receive that never waits
+    c = channel[int](1)
+    spawn(():
+        sleep(0.02)
+        c.send(5)
+    )
+    v: int? = none
+    loop v == none: v = c.try_receive()
+    print("try_receive loop:", v)
+
+    # fan-out with try_send: the consumers keep up
+    outs = [loop _ in 0..10: channel[int](8)]
+    counts = fill(0, 10)
+    ts = [loop k in 0..10: spawn(():
+        loop _ in outs[k]: counts[k] += 1
+    )]
+    sent = 0
+    loop i in 0..1000:
+        loop o in outs:
+            if o.try_send(i): sent += 1
+    loop o in outs: o.close()
+    wait_all(ts)
+    print("try_send fan-out:", sent, counts.sum())
