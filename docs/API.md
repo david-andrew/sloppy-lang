@@ -112,6 +112,7 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `map[T, U] = (xs: T[], f: (T) -> U) -> U[]`
 - `filter[T] = (xs: T[], f: (T) -> bool) -> T[]`
 - `retain[T] = (xs: mut T[], keep: (T) -> bool)`: keep only the elements for which keep is true, in their order (in place: bullets.retain((b): b.alive))
+- `remove[T] = (xs: mut T[], x: T) -> bool`: take out the first element equal to x (Python's list.remove); false when there is none. By position: xs.remove_at(i)
 - `each[T] = (xs: T[], f: (T) -> void)`
 - `reduce[T, A] = (xs: T[], init: A, f: (A, T) -> A) -> A`
 - `find_index[T] = (xs: T[], f: (T) -> bool) -> int`: the index of the first element f is true for, or -1
@@ -2125,7 +2126,7 @@ update = (dt: f64):                      # every frame; dt: the seconds since th
     if key_pressed(.tab): show_stats(not stats_shown())     # frame times, and the zones' below
     zone("trail")                         # a part of the frame, timed in the statistics
     trail.push(pos)
-    if trail.len() > 60: trail.remove(0)
+    if trail.len() > 60: trail.remove_at(0)
     zone_end()
 
 draw = ():                               # every frame, after update

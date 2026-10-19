@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `xs.remove_at(i)` takes out the element at index i (what `xs.remove(i)` did); `xs.remove(x)`
+  takes out the first element equal to x, as Python's `list.remove` (false when there is none).
 - `c'a'` is a character's code, a number: `c - c'0'`, `c'a' + k`, `[c'a'..c'z']` in a match,
   `c'é'` (233). `'a'` is text, as `"a"` is (as in Python): it no longer becomes a number where
   an integer is expected. Quoted text still stands for a byte where one is expected

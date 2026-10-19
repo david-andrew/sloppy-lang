@@ -699,8 +699,9 @@ draw = ():
 | `RESIZABLE`, `VIDEORESIZE`, `toggle_fullscreen()` | windows are resizable, and the game keeps its 2D units (`visible_rect()` is what shows); `toggle_fullscreen()` |
 | `joystick.Joystick(0)` | `gamepad_down(.a)`, `left_stick()` (any pad, or the pad's number first) |
 
-Also not as in Python: `xs.remove(i)` takes an index (the value 2 goes with `xs.retain((x): x !=
-2)`), `round(5.7)` is `6.0` (`int(round(x))` for a whole number), and angles are in radians.
+Also not as in Python: `round(5.7)` is `6.0` (`int(round(x))` for a whole number), and angles
+are in radians. `xs.remove(x)` takes out the first element equal to x, as in Python, and
+`xs.remove_at(i)` the one at index i (Python's `del xs[i]`).
 To look at a frame without playing, or press keys at given frames: [Testing a
 game](LANGUAGE.md#testing-a-game).
 
@@ -733,7 +734,7 @@ game](LANGUAGE.md#testing-a-game).
 | `Time.deltaTime` | `dt`, what `update = (dt: f64):` is given |
 | `Input.GetKey(KeyCode.W)`, `GetKeyDown`, `GetAxis` | `key_down(.w)`, `key_pressed(.space)`, `input_axis()` |
 | `Mathf.Clamp`, `Mathf.Sin`, `Debug.Log` | plain functions: `clamp`, `sin`, `lerp`, `PI`; `print` |
-| `Instantiate`, `Destroy` | a function that makes the struct, pushed onto its array; `xs.remove(i)` or `xs.retain(...)` |
+| `Instantiate`, `Destroy` | a function that makes the struct, pushed onto its array; `xs.remove_at(i)` or `xs.retain(...)` |
 | `List<T>`, `Dictionary<K, V>`, `null` | `T[]`, `{K: V}`, `none` (a `T?` may be none: `if let v = x:`) |
 | `Rigidbody`, `Physics.Raycast`, a CharacterController | `import physics3d`: `w.add_sphere(...)`, `w.raycast(a, b)`, `w.character(...)` and `w.walk(...)` |
 | `Quaternion.Euler(0, 45, 0)`, `LookRotation` | `quat_euler(0, 45deg, 0)`, `facing(dir)`; or matrices: `rotation_y(45deg)` (angles are radians: `45deg` is 45 degrees) |

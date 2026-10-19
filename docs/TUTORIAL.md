@@ -197,7 +197,7 @@ update = (dt: f64):
     i = 0
     loop i < lights.len():
         if circles_overlap(pos, SIZE, lights[i], 10.0):
-            lights.remove(i)
+            lights.remove_at(i)
             collected += 1
             play(chime)
         else: i += 1
@@ -285,7 +285,7 @@ update = (dt: f64):
     i = 0
     loop i < lights.len():
         if circles_overlap(pos, SIZE, lights[i], 10.0):
-            lights.remove(i)
+            lights.remove_at(i)
             collected += 1
             play(chime)
         else: i += 1
@@ -406,7 +406,7 @@ update = (dt: f64):
     i = 0
     loop i < lights.len():
         if circles_overlap(pos, SIZE, lights[i], 10.0):
-            lights.remove(i)
+            lights.remove_at(i)
             collected += 1
             play(chime)
         else: i += 1
@@ -559,7 +559,7 @@ update = (dt: f64):
     i = 0
     loop i < lights.len():
         if circles_overlap(pos, SIZE, lights[i], 10.0):
-            lights.remove(i)
+            lights.remove_at(i)
             collected += 1
             play(chime)
             emit(sparks, pos, 20, 250.0, rgba(1, 0.8, 0.4, 1), 0.7, 4.0)

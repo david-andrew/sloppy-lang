@@ -23,7 +23,7 @@ Node *mk_ident_local(Local *l, Pos pos) {
 // ---------------- intrinsics ----------------
 static struct { const char *name; int id; bool arr_domain; } intrinsics[] = {
   {"len", IN_LEN, true}, {"cap", IN_ARRCAP, true}, {"push", IN_PUSH, true}, {"pop", IN_POP, true},
-  {"insert", IN_INSERT, true}, {"remove", IN_REMOVE, true}, {"clear", IN_CLEAR, true},
+  {"insert", IN_INSERT, true}, {"remove_at", IN_REMOVE, true}, {"clear", IN_CLEAR, true},
   {"reserve", IN_RESERVE, true}, {"resize", IN_RESIZE, true}, {"truncate", IN_TRUNCATE, true},
   {"data", IN_ARRDATA, true},
   {"syscall", IN_SYSCALL, false}, {"mem_copy", IN_MEMCPY, false}, {"mem_set", IN_MEMSET, false},
@@ -1039,7 +1039,7 @@ static Type *check_intrinsic(FnCtx *c, Node **pn, int id, Node **args, int nargs
     break;
   }
   case IN_REMOVE: {
-    nargs_check(n, nargs, 2, 2, "remove");
+    nargs_check(n, nargs, 2, 2, "remove_at");
     Type *t = arg_type(c, args, 0, NULL);
     if (t->kind != TY_ARRAY) fatal(n->pos, "remove() needs an array");
     check_place(c, args[0], true);

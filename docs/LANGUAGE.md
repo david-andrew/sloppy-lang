@@ -147,7 +147,7 @@ Top-level statements in the main file run in order, like a script.
 | `f64` `f32` | floats (`1.5` is an `f64` unless the context wants an `f32`) |
 | `bool` | `true` / `false` |
 | `str` | immutable UTF-8 string (`+` concatenates, `*` repeats) |
-| `T[]` | growable array (value semantics); `push pop insert remove extend len` ... (also `Array[T]`) |
+| `T[]` | growable array (value semantics); `push pop insert remove_at remove extend len` ... (also `Array[T]`) |
 | `T[N]` | fixed-size array: N elements stored in place (in a struct, a variable, a shader's uniforms) |
 | `T[,]` | n-dimensional array (see section 8) |
 | `soa T[]` | array of structs stored as one array per field (see section 8) |
@@ -206,8 +206,6 @@ precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests mem
   element. `.+` always adds element by element.
 - `x = 1` in a function changes a global named `x` when there is one; `let x = 1` makes a local.
 - `a..b` leaves `b` out, as Python's `range(a, b)` does; `[a..b]` keeps it.
-- `xs.remove(2)` removes the element at index 2 (Python's `del xs[2]`); the value 2 goes with
-  `xs.retain((x): x != 2)`.
 - `round(5.7)` is `6.0`, an f64 (as `floor` and `ceil`); `int(round(x))` is the whole number.
 - Angles are in radians: `rotate(v, PI / 2)`, or `rotate(v, 90deg)` (a literal over 2π warns).
 - `'a'` and `"a"` are both text, as in Python; `c'a'` is the character's code (97). `s[i]` is
@@ -303,7 +301,7 @@ inside it (`xs[0]` and `xs[0][0]`) are not. When the function may call a functio
 the compiler cannot see into), an element of a global array (or of a `mut` parameter's) is given
 to it as a copy that is written back to `xs[i]` when it returns, since that code could resize
 the array. Elements that code adds at the end leave `xs[i]` where it was; if it removed or
-inserted elements before it (`xs.remove(0)`, `xs.clear()`), or changed `xs[i]` itself, the copy
+inserted elements before it (`xs.remove_at(0)`, `xs.clear()`), or changed `xs[i]` itself, the copy
 cannot be put back without writing over another element, and the program stops, saying so.
 
 To modify array elements in a loop, use `loop mut`:
