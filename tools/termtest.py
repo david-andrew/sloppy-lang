@@ -5,7 +5,7 @@ panic, a crash, ctrl-c and SIGTERM, a resize, what a flush writes, and a task ru
 another waits for a key.
 
 usage: tools/termtest.py [compiler]   (Linux and macOS)"""
-import codecs, fcntl, os, select, signal, struct, subprocess, sys, tempfile, termios, time, unicodedata
+import codecs, fcntl, os, select, shutil, signal, struct, subprocess, sys, tempfile, termios, time, unicodedata
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sloppy = sys.argv[1] if len(sys.argv) > 1 else os.path.join(root, "bin", "sloppy")
@@ -419,6 +419,7 @@ def main():
         t.restored("the file browser")
         t.close()
 
+    shutil.rmtree(d, ignore_errors=True)
     print(f"{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
 
