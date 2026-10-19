@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `==` on a struct, tuple, array, fixed-size array, optional or enum uses the `==` of a member
+  that has one of its own: a map's (the same entries, in any order), a set's, a deque's, a Big's
+  and the program's own `(==) = (p: V, q: V) -> bool: ...`, where it compared those members field
+  by field (`S(a) == S(b)` and `[a] == [b]` were false for maps `a == b` with their keys added in
+  another order). The same for `contains`, `in` and map keys. Maps, sets, deques and Bigs have a
+  `hash` of their own that agrees with their `==` (a map's adds up its entries' hashes, in any
+  order), so they can be map keys and set values; a type of the program's with `==` but no hash,
+  as a key or inside one, says "V has == of its own but no hash, which a map's key needs: define
+  `hash = (v: V) -> u64: ...`, giving values that are == the same hash", where its fields were
+  hashed and keys that are == could be two entries.
+- `b += x` (and `-=`, `*=`, ...) on a bool says "operator + is not defined for bool and bool", as
+  `b + x` does, where it compiled to a value that printed `true` and was neither `== true` nor
+  `== false` (in a generic function too, `r += y` with T a bool). `&=` and `|=` stay.
 - A change to a variable that holds a copy of another place, when nothing reads the variable
   after it, is warned of, where only a variable never read at all was before: the way Java and
   Python add at the end of a linked list (`cur = l.head!`, a loop to the last node, then

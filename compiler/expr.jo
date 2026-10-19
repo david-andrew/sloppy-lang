@@ -3106,6 +3106,16 @@ check_call = (n: int, expected: int) -> int:
     value_call(n, callee, args)
 
 resolve_by_types = (name: int, ts: int[], pos: int, required: bool) -> int:
+    d, binds = pick_by_types(name, ts)
+    if d == 0:
+        if not required: return 0
+        last = "()"
+        if ts.len() > 0: last = type_str(ts[ts.len() - 1])
+        fatal(pos, "no function '{name_of(name)}' accepting {last}")
+    get_fn_inst(d, binds, pos)
+
+# the declaration of `name` that arguments of types ts go to, with its type arguments (0 when none)
+pick_by_types = (name: int, ts: int[]) -> (int, int[]):
     decls: int[]
     collect_fns(name, decls)
     collect_in(prelude, name, decls)
@@ -3135,12 +3145,8 @@ resolve_by_types = (name: int, ts: int[], pos: int, required: bool) -> int:
             bestcost = cost
             bestb = binds
             bestgen = sig.ntp > 0
-    if best < 0:
-        if not required: return 0
-        last = "()"
-        if ts.len() > 0: last = type_str(ts[ts.len() - 1])
-        fatal(pos, "no function '{name_of(name)}' accepting {last}")
-    get_fn_inst(decls[best], bestb, pos)
+    if best < 0: return (0, bestb)
+    (decls[best], bestb)
 
 # ---------------- intrinsics ----------------
 arg_type = (args: int[], i: int, expected: int) -> int:
@@ -3773,15 +3779,70 @@ fn_inside = (t0: int, seen: mut int[]) -> str:
                 if len(fn_inside(int(fields[f].type), seen)) > 0: return "its variant {name_of(int(variants[vr].name))}'s field '{name_of(int(fields[f].name))}' holds a function"
     ""
 
-# values of type t compared (or hashed: `how` says) at pos: an error naming where a function is in them
+# values of type t compared (or hashed: `how` says) at pos: an error naming where a function is in
+# them; what is in them with an == of its own, found (own_ops)
 no_fn_compare = (t: int, pos: int, how: str):
     seen: int[]
     w = fn_inside(t, seen)
-    if len(w) == 0: return
-    if tkind(t) == .fn_: fatal(pos, "functions cannot be {how}")
-    why = " (compare the fields that can be, `a.name == b.name`)"
-    if how != "compared": why = " (key the map by a field that can be, as a name)"
-    fatal(pos, "{type_str(t)} cannot be {how}: {w}, and functions cannot be{why}")
+    if len(w) > 0:
+        if tkind(t) == .fn_: fatal(pos, "functions cannot be {how}")
+        why = " (compare the fields that can be, `a.name == b.name`)"
+        if how != "compared": why = " (key the map by a field that can be, as a name)"
+        fatal(pos, "{type_str(t)} cannot be {how}: {w}, and functions cannot be{why}")
+    done_key = prune(t)
+    if how != "compared": done_key = -done_key
+    if own_ops_done.has(done_key): return
+    own_ops_done[done_key] = true
+    seen2: int[]
+    own_ops(t, pos, how != "compared", seen2)
+
+# The types with an == of their own (the program's, or a map's, a set's) and their hash, for the
+# values that == compares and hashing goes through member by member: lower.jo's helper_eq and
+# helper_hash call these for them (type -> the instance; own_eqs has a 0 for a type without one)
+own_eqs: {int: int}
+own_hashes: {int: int}
+# (the types own_ops went through, compared (t) and hashed (-t): once each)
+own_ops_done: {int: bool}
+
+# what is inside values of type t with an == of its own, compared (or hashed) at pos: its == (and
+# hash, which must agree with it) found and made
+own_ops = (t0: int, pos: int, hashed: bool, seen: mut int[]):
+    t = prune(t0)
+    if has_var(t) or seen.contains(t): return
+    seen.push(t)
+    k = types[t].kind
+    if is_struct_like(t) and not is_union(t):
+        eqf = own_eqs.get(t) ?? -1
+        if eqf < 0:
+            eqf = resolve_by_types(intern("=="), [t, t], pos, false)
+            own_eqs[t] = eqf
+        if eqf > 0:
+            if hashed and not own_hashes.has(t):
+                # (not the library's `hash = (x)`, for any value: its hash, member by member, is what
+                # this == is not)
+                hd, hbinds = pick_by_types(intern("hash"), [t])
+                if hd == 0 or nodes[kid(hd, 0)].a == 0:
+                    tn = type_str(t)
+                    held = ""
+                    if seen[0] != t: held = "{type_str(seen[0])} holds {a_type(t)}, and "
+                    fatal(pos, "{held}{tn} has == of its own but no hash, which a map's key needs: define `hash = (v: {tn}) -> u64: ...`, giving values that are == the same hash")
+                own_hashes[t] = get_fn_inst(hd, hbinds, pos)
+            return
+    if k == .array or k == .fixed or k == .opt or k == .box: own_ops(int(types[t].elem), pos, hashed, seen)
+    else if k == .tuple:
+        loop i in [0..int(types[t].nargs)): own_ops(targ(t, i), pos, hashed, seen)
+    else if is_union(t):
+        loop m in union_members(t): own_ops(m, pos, hashed, seen)
+    else if k == .struct_:
+        si = int(types[t].st)
+        check_struct_fields(si)
+        loop i in [0..int(structs[si].nfields)): own_ops(int(fields[int(structs[si].fields) + i].type), pos, hashed, seen)
+    else if k == .enum_:
+        si = int(types[t].st)
+        check_struct_fields(si)
+        loop v in [0..int(structs[si].nvariants)):
+            vr = int(structs[si].variants) + v
+            loop i in [0..int(variants[vr].nfields)): own_ops(int(fields[int(variants[vr].fields) + i].type), pos, hashed, seen)
 
 is_struct_like = (t0: int) -> bool:
     t = prune(t0)
