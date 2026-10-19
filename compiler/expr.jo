@@ -3070,7 +3070,11 @@ check_call = (n: int, expected: int) -> int:
                 loop d in fd:
                     if nkids(d) == 0: why = " (functions are not kept in types: call it by itself, `{name_of(fname)}()`)"
                 if name_of(fname) == "now" and type_str(tt) == "Date": why = " (`unix_time()` is the seconds since 1970, a moment to save and compare; `now()` gives today's Date; `time()` the seconds the program has run, for timing)"
-            fatal(nodes[callee].pos, "type {type_str(tt)} has no member '{name_of(fname)}'{why}")
+            # (int.Parse(s), float.TryParse: C#'s)
+            fnm = name_of(fname)
+            if (fnm == "Parse" or fnm == "TryParse" or fnm == "parse") and types[tt].kind == .int_: why = " (use `to_int(s)`: an int?, none when the text is not a number)"
+            if (fnm == "Parse" or fnm == "TryParse" or fnm == "parse") and types[tt].kind == .float_: why = " (use `to_float(s)`: an f64?, none when the text is not a number)"
+            fatal(nodes[callee].pos, "type {type_str(tt)} has no member '{fnm}'{why}")
         if is_soa(rt): return check_soa_method(n, recv, fname, args, expected)
         st = rt
         if rk == .ptr: st = prune(int(types[rt].elem))
@@ -3344,7 +3348,7 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         rel = name_of(int(nodes[a].sval))
         path = rel
         if not is_abs_path(rel): path = "{files[pos_file(nodes[n].pos)].dir}/{rel}"
-        d = read_file(path)
+        d = __read_file_raw(path)
         if d == none:
             # (Cat1.png for cat1.png: a file's name with its capitals another way)
             dir = path[..max(rfind(path, "/"), 0))
@@ -3352,7 +3356,21 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
             if len(dir) > 0:
                 loop f in list_dir(dir):
                     if lower(f) == lower(base) and f != base: fatal(nodes[n].pos, "embed: there is no '{base}' next to the program, but there is '{f}': file names care about capital letters")
-            fatal(nodes[n].pos, "embed: cannot read '{path}'")
+            why = file_error()
+            if not file_exists(path): why = "there is no such file"
+            if is_abs_path(rel): fatal(nodes[n].pos, "embed: cannot read '{rel}': {why}")
+            pdir = files[pos_file(nodes[n].pos)].dir
+            if pdir == "." or pdir == "": pdir = os_path(cwd())
+            fatal(nodes[n].pos, "embed: cannot read '{rel}': {why} (it is looked for from the program's folder, {pdir})")
+        else if not pos_in_lib(nodes[n].pos):
+            # (Cat1.png for cat1.png on Windows or a Mac, which do not care about capitals: not on Linux)
+            dir = path[..max(rfind(path, "/"), 0))
+            base = path[max(rfind(path, "/"), -1) + 1..]
+            if len(dir) > 0 and is_dir(dir):
+                fs = list_dir(dir)
+                if not fs.contains(base):
+                    loop f in fs:
+                        if lower(f) == lower(base): warn(nodes[n].pos, "embed: the file is '{f}', not '{base}': this builds here, but not on Linux, where file names care about capital letters")
         nodes[n].sval = i32(intern(d!))
         r = mk_array(T_U8)
     else if id == .embed_dir:
@@ -5410,6 +5428,12 @@ check_expr = (n: int, expected: int) -> int:
             lf = pos_file(lp)
             if lf >= 0 and lf < files.len() and pos_off(lp) < len(files[lf].src) and files[lf].src[pos_off(lp)] == '[':
                 fatal(nodes[n].pos, "'??' needs an optional on the left, found {type_str(at)} (indexing gives the element itself; m.get(k) gives an optional, m.get(k, default) a value)")
+            # (text ?? "" after `if text == none: return`: known not to be none there)
+            if nodes[lhs].kind == .narrow and tkind(prune(ntype(int(nodes[lhs].a)))) == .opt or nodes[lhs].kind == .ident and nodes[lhs].aux == i32(int(SK.local)) and int(locals[int(nodes[lhs].sym)].flags) & LF_ALIAS != 0 and int(locals[int(nodes[lhs].sym)].alias) != 0 and nodes[int(locals[int(nodes[lhs].sym)].alias)].kind == .unwrap:
+                vn = "it"
+                if nodes[lhs].kind == .ident: vn = name_of(int(nodes[lhs].name))
+                else if nodes[int(nodes[lhs].a)].kind == .ident: vn = name_of(int(nodes[int(nodes[lhs].a)].name))
+                fatal(nodes[n].pos, "'??' needs an optional on the left, and {vn} is {a_type(at)} here (the code above rules none out): drop the `??` and what follows it")
             fatal(nodes[n].pos, "'??' needs an optional on the left, found {type_str(at)}")
         inner = int(types[at].elem)
         h2 = inner

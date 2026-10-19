@@ -201,6 +201,10 @@ precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests mem
 - `'a'` and `"a"` are both text, but where a number is expected `'a'` is its character code (97).
 - `load()?.name` is not optional chaining: `?` returns from the function when `load()` fails.
 - `!` unwraps an optional, not an error: `x is ParseError`, or `?`, handle those.
+- `s[i]` is a byte (a number), not a one-character string: `s[i..i + 1]` or `chr(s[i])` is text.
+- `read_file` keeps line ends as they are: `text.split("\n")` keeps the `"\r"` of Windows line
+  ends (Python's text mode drops it); `text.lines()` takes either.
+- `"C:\temp"` holds a tab (`\t`), as in Python: write a path `r"C:\temp"`, or with `/`.
 
 From tightest to loosest (operators on one line bind alike, left to right but for `^`):
 

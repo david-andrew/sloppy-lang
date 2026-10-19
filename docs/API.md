@@ -187,7 +187,7 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `trim = (s: str, chars: str) -> str`: remove any of the characters in `chars` from both ends
 - `trim_start = (s: str) -> str`
 - `trim_end = (s: str) -> str`
-- `split = (s: str, sep: str) -> str[]`: the parts of s between the separators (split("a,b", ",") is ["a", "b"]; with "", the characters)
+- `split = (s: str, sep: str) -> str[]`: the parts of s between the separators (split("a,b", ",") is ["a", "b"]; with "", the characters). For a text's lines, `lines(s)`: split(s, "\n") keeps the "\r" of Windows line ends ("\r\n")
 - `split = (s: str, sep: str, max: int) -> str[]`: split at the first `max` separators only: the rest stays in the last part (split("k=v=w", "=", 1) is ["k", "v=w"])
 - `split = (s: str) -> str[]`: split on runs of whitespace (the same as words(s))
 - `count = (s: str, sub: str) -> int`: how many times sub is in s, not overlapping ("banana".count("an") is 2)
@@ -195,7 +195,7 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `pad_end = (s: str, width: int, fill: str = " ") -> str`
 - `capitalize = (s: str) -> str`: the first letter in upper case ("hello world" -> "Hello world")
 - `words = (s: str) -> str[]`: split on runs of whitespace
-- `lines = (s: str) -> str[]`
+- `lines = (s: str) -> str[]`: the lines of s, without their line ends ("\n", or Windows' "\r\n")
 - `join = (parts: str[], sep: str = "") -> str`: sep.join(parts), as in Python
 - `join = (sep: str, parts: str[]) -> str`
 - `replace = (s: str, old: str, new: str) -> str`
@@ -508,7 +508,7 @@ Operating system access: files, arguments, environment, time.
   ```gdscript
   if not write_file(p, text): eprint("cannot write {p}: {file_error()}")
   ```
-- `read_file = (path: str) -> str?`: read a whole file; none if it cannot be read (or is a directory: file_error() says why)
+- `read_file = (path: str) -> str?`: read a whole file; none if it cannot be read (or is a directory: file_error() says why). A UTF-8 byte order mark at its start (Notepad's "UTF-8 with BOM") is left out; read_bytes keeps every byte
 - `read_line = () -> str?`: a line typed in (or piped in), without its end; none when the input has ended
 - `struct File`: A file open for reading a piece at a time (a log too big to load whole, the start of a file to hash):
   ```gdscript

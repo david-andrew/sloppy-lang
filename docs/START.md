@@ -48,6 +48,13 @@ sloppy hello.jo
 (`sloppy run hello.jo` is the same.) Each run compiles the whole program, in a few milliseconds, and runs it. `sloppy` alone is an
 interactive prompt, for trying things a line at a time.
 
+On Windows, an editor makes this simplest: VS Code with the [Sloppy
+extension](https://marketplace.visualstudio.com/items?itemName=RedFoxLabs.sloppy) runs the open
+file with the run button at the top right, or Ctrl+F5. With Notepad, choose "All files" under "Save as type" (or it saves `hello.jo.txt`),
+and keep the encoding UTF-8; then in Explorer, right-click the folder and pick "Open in Terminal"
+to type the command there. PowerShell's `>` and `Out-File` write UTF-16, which Sloppy does not
+read as a program: save files from an editor, or with `Set-Content -Encoding utf8`.
+
 A name is given a value with `=`, and `{...}` inside text puts a value there. `loop i in [1..4]:`
 runs the indented line once for each number from 1 to 4.
 

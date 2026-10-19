@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- From a Windows newcomer's pass:
+  - A source file saved with a UTF-8 byte order mark (Notepad's "UTF-8 with BOM") compiles (it
+    said "unknown function 'print'"), and `read_file` leaves the mark out, so `from_json`,
+    `from_text` and `lines()` read such files (a settings file fell back to its defaults);
+    `read_bytes` and `embed` keep every byte. A UTF-16 file (Windows PowerShell's `>`) says it
+    is UTF-16 and how to save it as UTF-8, where it said it held binary data.
+  - `"C:\Users\..."` says a Windows path goes in a raw string, `r"C:\Users\..."`, or with `/`
+    (it said "unknown escape \U"); `"C:\temp\notes.txt"`, whose `\t` and `\n` are escapes,
+    warns.
+  - `sloppy hi.jo` with Notepad's `hi.jo.txt` there says so; a missing program says which
+    folder it looked in; `sloppy hello` with a hello.jo asks "did you mean 'sloppy hello.jo'?".
+  - `from_csv` gives a TextError where it gave rows of defaults: for a header naming none of
+    the struct's fields (one column with `;` in it asks "is the separator ';'?", as European
+    Excel saves), and for UTF-16 text.
+  - `embed` of a missing file says why and the folder it looked from; one whose name differs
+    in capitals (`Hit.wav` for `hit.wav`) warns where it builds (Windows, macOS), as it does
+    not on Linux.
+  - `text ?? ""` after `if text == none: return` says text is a str there (it said "needs an
+    optional on the left").
+  - C# habits: `Console.WriteLine`, `Path.Combine`, `File`, `Environment`, `Convert`,
+    `int.Parse`/`float.Parse`, `1.5f` and `10L` say what Sloppy writes.
+  - START.md says how to save and run a first program on Windows (Notepad's .txt, "Open in
+    Terminal", the VS Code extension); LANGUAGE.md's "looks familiar" list has `s[i]` (a byte),
+    `split("\n")` and `\r`, and `"C:\temp"`.
 - Set literals: `{1, 2, 3}` is a `Set[int]` (it said "expected ':'"), `{loop w in ws: w}` makes
   one by a loop, and `{}` where a Set is expected is an empty one (`seen: Set[int] = {}`).
 - No warning for a number with a format in a string, `"{42:05}"` (it took it for a regular

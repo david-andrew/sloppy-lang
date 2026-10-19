@@ -195,6 +195,8 @@ Token *lex_file(int file, int *ntok) {
   Lexer L = {0};
   L.file = file;
   L.src = L.p = L.line_start = g_files.data[file].src;
+  /* a UTF-8 byte order mark (Notepad's "UTF-8 with BOM") is skipped */
+  if ((unsigned char)L.p[0] == 0xEF && (unsigned char)L.p[1] == 0xBB && (unsigned char)L.p[2] == 0xBF) L.p = L.line_start = L.p + 3;
   L.line = 1;
   L.indents[L.nind++] = 0;
   L.ctx[L.nctx++] = (Ctx){true, 1};
