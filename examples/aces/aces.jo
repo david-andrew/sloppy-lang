@@ -20,7 +20,7 @@
 # picks the next one, Escape is the menu. A gamepad: the left stick flies, LB and RB the rudder,
 # the d-pad the throttle, A or RT fires, LT looks (and back), X the next target.
 # Settings changes any of them. On a phone, either way up: a finger dragged anywhere aims, as the
-# mouse does, and buttons fire, change the throttle and look at the target.
+# mouse does, and buttons fire and look at the target; a slider is the throttle.
 #
 # The twin guns jam when they get too hot, until they cool. Below about 95 km/h the wings stall
 # and the nose drops until there is speed again. Turning hard costs speed; diving gains it.
@@ -1044,27 +1044,30 @@ alert_at = () -> vec2: mid() + vec2(0, if upright: -220.0 else: 110.0)
 # the screen is for dragging the aim
 fire_at = () -> vec2: at_edge(-150, -160)
 look_button = () -> vec2: at_edge(-110, -330)
-throttle_up = () -> vec2: at_edge(if upright: 110.0 else: -310.0, -300)
-throttle_down = () -> vec2: at_edge(if upright: 110.0 else: -310.0, -160)
+# (the throttle's slider: full at the top)
+throttle_track = () -> Rect:
+    a = at_edge(if upright: 80.0 else: -350.0, -400)
+    Rect(a.x, a.y, 60, 290)
 leave_box = () -> Rect:
     l = at_edge(-130, 20)
     Rect(l.x, l.y, 110, 40)
-# (what a finger landing at t is on: 1 Fire, 2 throttle up, 3 down, 4 Look, 5 Leave, 0 none)
+# (what a finger landing at t is on: 1 Fire, 2 the throttle, 4 Look, 5 Leave, 0 none)
 button_at = (t: vec2) -> int:
     if length(t - fire_at()) < 90.0: return 1
-    if length(t - throttle_up()) < 55.0: return 2
-    if length(t - throttle_down()) < 55.0: return 3
+    r = throttle_track()
+    if contains(Rect(r.x - 30, r.y - 30, r.w + 60, r.h + 60), t): return 2
     if length(t - look_button()) < 55.0: return 4
     if contains(leave_box(), t): return 5
     0
 
 # the fingers down (touch_ids), what each landed on (button_at) and where each was the frame
-# before; what the buttons held say
+# before; what the buttons held say (throttle_want: where the finger on the throttle is, 0 to 1;
+# -1 with none on it)
 finger_ids: int[]
 finger_on: int[]
 finger_at: vec2[]
 touch_fire = false
-touch_throttle = 0
+throttle_want = -1.0
 
 my_pad = () -> Pad:
     global stick
@@ -1088,7 +1091,10 @@ my_pad = () -> Pad:
     if action_down("Throttle up"): c.throttle = 1
     if action_down("Throttle down"): c.throttle = -1
     if touch_fire: c.fire = true
-    if touch_throttle != 0: c.throttle = touch_throttle
+    # (the throttle goes toward where the slider is held, a step a tick)
+    if throttle_want >= 0.0:
+        if throttle_want > p.throttle + 0.01: c.throttle = 1
+        else if throttle_want < p.throttle - 0.01: c.throttle = -1
     stick = approach(stick, want, if aim_steering(): 30.0 else: 9.0, DT)
     c.pitch = int(round(clamp(f64(stick.x), -1.0, 1.0) * 100.0))
     c.roll = int(round(clamp(f64(stick.y), -1.0, 1.0) * 100.0))
@@ -1135,21 +1141,22 @@ aim_at_target = ():
 # (each frame: the buttons held, Look tapped, and how far the fingers on no button moved, in
 # points)
 read_fingers = () -> vec2:
-    global finger_at, finger_ids, finger_on, touch_fire, touch_throttle, tracking
+    global finger_at, finger_ids, finger_on, throttle_want, touch_fire, tracking
     ids = touch_ids()
     ts = touches()
     on: int[]
     moved = vec2(0, 0)
     touch_fire = false
-    touch_throttle = 0
+    throttle_want = -1.0
     loop k in 0.. and id in ids:
         j = finger_ids.index_of(id)
         b = if j >= 0: finger_on[j] else: if touch_flying(): button_at(ts[k]) else: -1
         if j < 0 and b == 4: tracking = not tracking
         if j >= 0 and b == 0: moved += ts[k] - finger_at[j]
         if b == 1: touch_fire = true
-        else if b == 2: touch_throttle = 1
-        else if b == 3: touch_throttle = -1
+        else if b == 2:
+            r = throttle_track()
+            throttle_want = clamp(f64(r.y + r.h - ts[k].y) / f64(r.h), 0.0, 1.0)
         on.push(b)
     finger_ids = ids
     finger_on = on
@@ -2073,9 +2080,17 @@ draw_hud = (g: Game):
         # (brighter while held)
         circle(fire_at(), 80, rgba(1, 1, 1, if touch_fire: 0.3 else: 0.14))
         text_centered("Fire", fire_at(), 26, rgba(1, 1, 1, 0.7))
-        loop b in [(throttle_up(), "+", touch_throttle > 0), (throttle_down(), "-", touch_throttle < 0), (look_button(), "Look", tracking)]:
-            circle(b.0, 42, rgba(1, 1, 1, if b.2: 0.35 else: 0.12))
-            text_centered(b.1, b.0, 24, rgba(1, 1, 1, 0.7))
+        circle(look_button(), 42, rgba(1, 1, 1, if tracking: 0.35 else: 0.12))
+        text_centered("Look", look_button(), 24, rgba(1, 1, 1, 0.7))
+        # (the throttle: filled as far as it is open; the handle where the finger holds it)
+        r = throttle_track()
+        held = throttle_want >= 0.0
+        rect(r, rgba(1, 1, 1, if held: 0.16 else: 0.1))
+        f = f32(p.throttle) * r.h
+        rect(Rect(r.x, r.y + r.h - f, r.w, f), rgba(1, 1, 1, 0.18))
+        hy = r.y + r.h - f32(if held: throttle_want else: p.throttle) * r.h
+        rect(Rect(r.x - 8, hy - 4, r.w + 16, 8), rgba(1, 1, 1, if held: 0.8 else: 0.5))
+        text_centered("throttle", vec2(r.x + r.w / 2, r.y + r.h + 22), 16, rgba(1, 1, 1, 0.6))
         if hud_button(leave_box(), "Leave"): leave()
     else: text("Escape: menu", at_edge(-130, 20), 16, gray(0.55))
 
@@ -2169,13 +2184,15 @@ draw_menu = ():
         if ui_button("Invite a friend"): invite.start(reliable = false, players = 2 * MOST)
         if ui_button("Join a friend"): invite.join()
     if ui_button("Practice"): page = LOBBY
+    # (a phone's browser: the bars at the top and bottom away)
+    if touch_device() and can_fullscreen() and not is_fullscreen() and ui_button("Fullscreen"): set_fullscreen(true)
     if ui_button("Settings"): page = SETTINGS
     when TARGET != "wasm":
         if ui_button("Quit"): quit()
     ui_end()
     if len(status) > 0: text_centered(status, vec2(x, f32(y + 580.0)), 22, gray(0.85))
     how = "The mouse steers and its button fires. Keys: S climbs, W dives, A and D roll, Q and E the rudder, Shift and Ctrl the throttle, Space fires, C looks at the target and back, Tab picks the next."
-    if touch_input() or touch_device(): how = "Drag a finger anywhere to aim: the plane turns toward where it points. Hold Fire to shoot; + and - change the throttle; Look watches the target, and again looks ahead."
+    if touch_input() or touch_device(): how = "Drag a finger anywhere to aim: the plane turns toward where it points. Hold Fire to shoot; slide the throttle up and down; Look watches the target, and again looks ahead."
     text_wrapped("Red's triplanes against Blue's biplanes, up to six a side. {how}", vec2(x - 240, f32(y + 610.0)), 480, 18, gray(0.8), align = .center)
 
 # a player's insignia, small, centered at `at` on the screen: its shape, or a mark of the color
@@ -2327,6 +2344,9 @@ draw_settings = ():
     settings.mouse = ui_switch("Fly with the mouse", settings.mouse)
     settings.invert = ui_switch("Invert pitch", settings.invert)
     settings.level = ui_switch("Lock camera roll", settings.level)
+    if can_fullscreen():
+        fs = ui_switch("Fullscreen", is_fullscreen())
+        if fs != is_fullscreen(): set_fullscreen(fs)
     settings.sound = ui_slider("Sound", settings.sound)
     # (not first: a phone's keyboard would come up as Settings opens)
     settings.name = ui_text_field("Name", settings.name, NAME_MOST)

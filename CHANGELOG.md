@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- A match whose arms give no value, as the last line of a function, is a statement: it needs no
+  `_:` arm (it was taken for the function's value and asked for one).
+- Web: when frames come late (fewer than 50 a second) and the program's own work is not the
+  cause, as on a phone that has grown hot, the canvas is drawn with fewer pixels, and with more
+  again once frames keep up.
+- `can_fullscreen()`: false in an iPhone's Safari, which has no fullscreen for a page.
+- Aces: on a phone the throttle is a slider; a Fullscreen button in the menu, and a Fullscreen
+  switch in Settings.
+
 ## 0.26.0
 
 - In a function, `x = v` makes `x` the function's own variable unless the function says

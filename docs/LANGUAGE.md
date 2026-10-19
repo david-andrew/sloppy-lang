@@ -1517,7 +1517,8 @@ update = (dt: f64):
 ```
 
 **Fullscreen and the clipboard.** `set_fullscreen(true)`, `toggle_fullscreen()` and
-`is_fullscreen()` (in a browser, the page asks for fullscreen; it leaves on Escape).
+`is_fullscreen()` (in a browser, the page asks for fullscreen; it leaves on Escape);
+`can_fullscreen()` is false where it cannot be had, in an iPhone's Safari.
 `clipboard()` reads the system clipboard's text and `set_clipboard(s)` replaces it. A web page
 may read the clipboard only as something is pasted, so there `clipboard()` is the text last
 pasted (ctrl+V, or a text field's Paste button on a phone) into the page; the X11 fallback without libX11 keeps the text within the program.

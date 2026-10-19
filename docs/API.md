@@ -2193,6 +2193,7 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `set_fullscreen = (on: bool = true)`
 - `toggle_fullscreen = ()`
 - `is_fullscreen = () -> bool`
+- `can_fullscreen = () -> bool`: whether set_fullscreen can fill the screen: false in an iPhone's Safari, which has no fullscreen for a page's canvas (a game can leave its Fullscreen button out there)
 - `clipboard = () -> str`: the text on the system clipboard ("" if none, or not text). In a web page the browser lets a page read it only as it is pasted: this is the text last pasted (ctrl+V, or a text field's Paste button on a phone) into the page.
 - `set_clipboard = (s: str)`
 - `can_share = () -> bool`: the system's menu for sending text to another app (a chat, Messages, mail), where there is one: a web page on a phone, and in some desktop browsers. In a page the menu opens as the tap or click that asked ends (browsers allow it only then)

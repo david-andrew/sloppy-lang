@@ -146,7 +146,7 @@ how far that finger moved since the last frame).
 input was a finger (no hover then). `swipe()` is the way a drag just went (a 2048 move),
 `long_press()` a finger held still. `toggle_fullscreen()` from a tap goes fullscreen as the
 finger lifts (browsers allow it only then); iPhones' Safari has no fullscreen for a page's
-canvas.
+canvas (`can_fullscreen()` says so).
 
 **A design size.** For a game held upright, give `window` a phone's shape in points, as
 `window("Merge", 360, 640)`: phones are 360 to 430 points wide, and taller than 640, so with the
