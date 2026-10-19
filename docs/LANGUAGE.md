@@ -770,7 +770,8 @@ Err, d: T) -> T` called with an `int | str | Err` has `T = int | str`. With two 
 stands for the rest; when nothing does (`expect(r, "msg")`), the call gives them:
 `expect[int, ParseError](r, "msg")`. A union value prints as the value it holds. `T | none` is
 `T?`, so a `T??` is a `T?` too: a map of optionals' `m.get(k)` is `none` for a missing key and for
-a `none` kept alike (`m.has(k)` tells them apart).
+a `none` kept alike (`m.has(k)` tells them apart). A `T[]` passes where a `T?[]` is expected as
+a copy, its elements as optionals (`count(xs)` for `count = (xs: int?[]) -> int`).
 
 A union does the work of a base class. Passing one where a function has an overload for each
 of its members calls the overload for what it holds (a `mut` parameter changes it in place), and

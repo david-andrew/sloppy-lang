@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A `T[]` passes where a `T?[]` is expected (an argument, an assignment, a return), as a copy
+  with its elements as optionals: `count([1 2 3])` for `count = (xs: int?[]) -> int` said
+  "expects int?[], found int[]".
 - `==` on a struct, tuple, array, fixed-size array, optional or enum uses the `==` of a member
   that has one of its own: a map's (the same entries, in any order), a set's, a deque's, a Big's
   and the program's own `(==) = (p: V, q: V) -> bool: ...`, where it compared those members field
