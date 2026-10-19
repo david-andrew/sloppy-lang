@@ -1083,7 +1083,6 @@ title = html_unescape("Tom &amp; Jerry &#8212; &lt;b&gt;")  # Tom & Jerry — <b
   u = parse_url("https://example.com:8443/search?q=sloppy")?
   print(u.host, u.port, parse_query(u.query)["q"])      # example.com 8443 sloppy
   ```
-- `str = (u: Url) -> str`: the URL again, as text (print(u) and "{u}" show it so)
 - `url_join = (base: str, link: str) -> str`: a link (an href, a redirect's Location) as the URL it leads to from the page at base: "../c?x" from https://example.com/a/b/page.html is https://example.com/a/c?x. As RFC 3986 says (section 5.2: ./ and ../ taken out, a path from / on the same host, //host on the same scheme, a ?query or a #fragment on the same page), as Python's urljoin and Go's ResolveReference do. A link with its own scheme ("mailto:...", "https://...") is the link itself (with its ./ and ../ out); spaces and line breaks around it, and tabs and line breaks inside it (as in HTML written over lines), are left out.
   ```gdscript
   loop m in page.find_all(regex("href=\"([^\"]*)\"")): links.push(url_join(page_url, m.groups[0]))
