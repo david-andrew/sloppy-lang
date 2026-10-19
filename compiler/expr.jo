@@ -1724,6 +1724,69 @@ pow_fits_check = (n: int):
         if mv > lim / mb: fatal(nodes[n].pos, "{btxt} ^ {e} does not fit in an int (64 bits: at most about 9.2e18), and would wrap around: `bigint({base}) ^ {e}` is exact, every digit; `{base}.0 ^ {e}` is a float (about {pow(f64(base), f64(e)):.3e})")
         mv *= mb
 
+# (the value of whole numbers and + - * on them, as written, 3 * 1000 or a const's: ok false for
+# anything else, or a number written in hex or binary, which is bits)
+const_int_of = (n0: int) -> (bool, int):
+    n = unconv(n0)
+    k = nodes[n].kind
+    if k == .int_lit: return (not bitwise_looking(n) and not has_flag(n, NF_U64), nodes[n].ival)
+    if k != .binary: return (false, 0)
+    op = nodes[n].op as Tok
+    if op != .plus and op != .minus and op != .star: return (false, 0)
+    oka, x = const_int_of(int(nodes[n].a))
+    okb, y = const_int_of(int(nodes[n].b))
+    if not oka or not okb: return (false, 0)
+    if op == .plus: return (true, x + y)
+    if op == .minus: return (true, x - y)
+    (true, x * y)
+
+int_over_msg = (op: Tok, x: int, y: int) -> str:
+    "{x} {tok_text(op)} {y} does not fit in an int (64 bits: at most 9223372036854775807), and would wrap around: `bigint({x}) {tok_text(op)} {y}` is exact, every digit; `{x}.0 {tok_text(op)} {y}` is a float"
+
+# (the smallest and largest values of integer type t, as text)
+int_lo = (t: int) -> str:
+    bits = int(types[t].bits)
+    if not types[t].sign: return "0"
+    if bits >= 64: return "-9223372036854775808"
+    "{-(1 << (bits - 1))}"
+int_hi = (t: int) -> str:
+    bits = int(types[t].bits)
+    if bits >= 64 and types[t].sign: return "9223372036854775807"
+    if bits >= 64: return "18446744073709551615"
+    if types[t].sign: return "{(1 << (bits - 1)) - 1}"
+    "{(1 << bits) - 1}"
+
+# (x + y, x - y or x * y past 64 bits)
+int_op_overflows = (op: Tok, x: int, y: int) -> bool:
+    MAXI: int = 9223372036854775807
+    MINI: int = -MAXI - 1
+    if op == .plus: return (y > 0 and x > MAXI - y) or (y < 0 and x < MINI - y)
+    if op == .minus: return (y < 0 and x > MAXI + y) or (y > 0 and x < MINI + y)
+    if op != .star or x == 0: return false
+    (x * y) / x != y or (x == -1 and y == MINI) or (y == -1 and x == MINI)
+
+# (BIG + 1, 1 << 70, x: u8 = 200 + 100 with whole numbers written down: past what the type holds,
+# where it would wrap around)
+const_fits_check = (n: int, t0: int):
+    op = nodes[n].op as Tok
+    t = prune(t0)
+    if t != 0 and tkind(t) == .var and is_lit(n): t = T_INT
+    if t == 0 or tkind(t) != .int_: return
+    if op == .shl:
+        okb, y = const_int_of(int(nodes[n].b))
+        bits = int(types[t].bits)
+        if okb and (y < 0 or y >= bits): fatal(nodes[n].pos, "a shift by {y} on {a_type(t)} ({bits} bits) is past its bits: shifts go from 0 to {bits - 1}")
+        return
+    if op != .plus and op != .minus and op != .star: return
+    oka, x = const_int_of(int(nodes[n].a))
+    okb, y = const_int_of(int(nodes[n].b))
+    if not oka or not okb: return
+    if int_op_overflows(op, x, y): fatal(nodes[n].pos, int_over_msg(op, x, y))
+    v = x * y
+    if op == .plus: v = x + y
+    else if op == .minus: v = x - y
+    if not int_fits(v, t) and not (int(types[t].bits) >= 64 and not types[t].sign): fatal(nodes[n].pos, "{x} {tok_text(op)} {y} is {v}, which does not fit in {a_type(t)} (from {int_lo(t)} to {int_hi(t)}), and would wrap around")
+
 # (a match giving a value whose last `_` arm has a condition: or tuple patterns, which are those)
 cond_wild_msg = (m: int) -> str:
     sj = int(nodes[m].a)
@@ -4496,6 +4559,11 @@ check_binary = (n: int, expected: int) -> int:
             else if op == .shl: v = x << y
             else if op == .shr: v = x >> y
             else: ok = false
+            if ok and not pos_in_lib(nodes[n].pos):
+                if op == .shl and (y < 0 or y >= 64): fatal(nodes[n].pos, "a shift by {y} is past an int's 64 bits: shifts go from 0 to 63")
+                oka, _ = const_int_of(a)
+                okb, _ = const_int_of(b)
+                if oka and okb and int_op_overflows(op, x, y): fatal(nodes[n].pos, int_over_msg(op, x, y))
             if ok:
                 big = v < 0 and (has_flag(a, NF_U64) or has_flag(b, NF_U64) or (op == .shl and x >= 0))
                 nodes[n] = Node(kind = .int_lit, pos = nodes[n].pos, ival = v, flags = i32(NF_LITERAL | NF_CHECKED), type = i32(T_INT))
@@ -5706,7 +5774,9 @@ check_expr = (n: int, expected: int) -> int:
         else if nodes[n].op == i32(int(Tok.tilde)):
             if not is_int(at): fatal(nodes[n].pos, "'~' needs an integer")
         t = at
-    else if k == .binary: t = check_binary(n, expected)
+    else if k == .binary:
+        t = check_binary(n, expected)
+        if nodes[n].kind == .binary and not pos_in_lib(nodes[n].pos): const_fits_check(n, t)
     else if k == .and_ or k == .or_:
         # on integers, and/or are bitwise
         h = 0

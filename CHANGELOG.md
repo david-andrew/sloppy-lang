@@ -7,6 +7,9 @@
 - Web: when frames come late (fewer than 50 a second) and the program's own work is not the
   cause, as on a phone that has grown hot, the canvas is drawn with fewer pixels, and with more
   again once frames keep up.
+- Whole numbers written out whose sum, difference or product does not fit its type are an error
+  (`BIG + 1` with `const BIG = 9223372036854775807`, `x: u8 = 200 + 100`), as is a shift of a
+  number written out by 64 or more (`1 << 70`, which gave 64). Hex numbers are bits and may wrap.
 - `can_fullscreen()`: false in an iPhone's Safari, which has no fullscreen for a page.
 - Aces: on a phone the throttle is a slider; a Fullscreen button in the menu, and a Fullscreen
   switch in Settings.

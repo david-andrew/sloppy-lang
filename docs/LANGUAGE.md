@@ -196,7 +196,10 @@ beyond the integer range become its minimum or maximum (the same on every target
 
 **Operators.** Integer `/` truncates, `%` is remainder, integer overflow wraps (in debug and
 release builds alike: `i8(127) + i8(1)` is -128), and a shift counts modulo the width
-(`1 << 64` is 1, as x86-64 and arm64 shift). Where overflow must not pass unseen, the library
+(`1 << n` with n at 64 is 1, as x86-64 and arm64 shift). Numbers written out are worked out
+while compiling, and one that does not fit is an error rather than a wrapped value:
+`9223372036854775807 + 1`, `x: u8 = 200 + 100`, `1 << 70` (numbers written in hex are bits, and
+may wrap). Where overflow must not pass unseen, the library
 has `checked_add`, `checked_sub` and `checked_mul` (an optional, `none` on overflow:
 `checked_mul(w, h) ?? panic("too big")`), `saturating_add`, `_sub` and `_mul` (the type's
 largest or smallest value) and `wrapping_add`, `_sub` and `_mul` (as the operators, said on
