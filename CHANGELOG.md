@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- Tasks: `t.cancel()` makes the task's waits end at once with nothing (receive none, sleep
+  returns, select takes `after`, `net.fetch` status 0, `tcp_receive` nothing), and `cancelled()`
+  is true in it. Groups: `g = task_group()`, `g.spawn(f)`, `g.wait()` (false when one panicked:
+  that one ends, the others are cancelled, `g.why()` says what), `g.cancel()`.
+- `ch.send(v, wait = s)` (false: not sent in that time), `t.wait(wait = s)` (true once it has
+  ended); `select` arms `t.wait() as r:` (a task has ended) and `stopping():` (ctrl-c); an arm on
+  an optional channel that is none is never ready, the way to switch off a closed one.
+- A loop of channel operations or selects that never waits (a select on a closed channel,
+  try_send to many) no longer starves the other tasks: every 64th lets them take their turns; a
+  full channel's `try_send` lets a just-woken receiver take what waits first.
+- A time to wait that has passed (`after deadline - time()`, `receive(wait = -1.0)`) is no wait
+  at all, not a panic; NaN still is one.
+- Ctrl-c and SIGTERM end the `sleep` and `net.wait` of a task that has asked `stopping()` at once
+  (they waited their whole time once a task had run), and `http.serve` stops at once. Once main has
+  ended, tasks that go on are told, with where each waits; a second signal of either kind ends the
+  program.
+- `http.serve` waits up to `drain` seconds (10) for the handlers running to answer before it
+  returns; `http.shutdown(wait)` does the same for a program's own loop.
+- A panic in a task, a deadlock and `report_tasks()` say where each task was spawned;
+  `task_count()`.
+- TCP connections and servers are numbers of their own, not the system's sockets: a task waiting
+  in `tcp_receive` on a connection another task closes wakes with nothing (it could read the next
+  connection's bytes, given the same socket).
+- `net.accept(wait)` gives a server's new WebSocket peer for a task of its own, and
+  `net.receive([p], wait = s)` waits for that peer's events only (`receive()` and
+  `receive_server()` leave them); `net.gone(p)`.
+- `run_program` and `run_shell` let the other tasks run while the command runs (not on Windows);
+  a task cancelled meanwhile ends it.
+- Web: `net.fetch` waits in a program with tasks (it gave status 0 at once); a task's stack of
+  the browser's is let go of once it ends (some 4.5 KB stayed for each).
+- `receive(wait = s)` is about twice as fast.
+
 - A match whose arms give no value, as the last line of a function, is a statement: it needs no
   `_:` arm (it was taken for the function's value and asked for one).
 - Web: when frames come late (fewer than 50 a second) and the program's own work is not the

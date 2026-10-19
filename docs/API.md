@@ -836,7 +836,7 @@ Operating system access: files, arguments, environment, time.
 - `unset_env = (name: str)`: an environment variable taken away, for this program and the programs it starts after this
 - `env_all = () -> {str: str}`: every environment variable, by name (in a web page: only those set with set_env)
 - `spawn_detached = (path: str, argv: str[]) -> bool`: start a program in the background, detached from this one: its own session, no terminal (input and output go to /dev/null); returns whether it was started
-- `run_program = (program: str, args: str[] = [], show: bool = false, cwd: str = "") -> (int, str)`: run a program and wait for it to end: its exit code (-1: it could not be started) and what it wrote to its standard output (its errors go where this program's go). A program named without a / is looked for on the PATH. args are its arguments, after its name. show = true: its output goes straight to this program's as it runs (a build's progress), and the text returned is "". cwd: the directory it runs in ("": this program's; a program named with a relative path is found from there)
+- `run_program = (program: str, args: str[] = [], show: bool = false, cwd: str = "") -> (int, str)`: run a program and wait for it to end: its exit code (-1: it could not be started) and what it wrote to its standard output (its errors go where this program's go). A program named without a / is looked for on the PATH. args are its arguments, after its name. show = true: its output goes straight to this program's as it runs (a build's progress), and the text returned is "". cwd: the directory it runs in ("": this program's; a program named with a relative path is found from there). In a program with tasks the others take their turns meanwhile (on Windows they wait for it), and a task cancelled meanwhile ends it (its code is then 137)
 - `run_shell = (command: str, show: bool = false, cwd: str = "") -> (int, str)`: run a command line through the system's shell (sh; cmd on Windows): pipes, `*.jo`, `&&` work as typed. Its exit code and what it wrote to its standard output; show and cwd as run_program's
 - `chmod = (path: str, mode: int) -> bool`
 - `mkdir = (path: str) -> bool`
@@ -936,7 +936,9 @@ loop not stopping():
 save()
 ```
 
-or has an on_quit = (): ..., which runs as any program ends: its window closed, its last line done, exit() called, or asked to stop. A program that does not look at stopping() ends at its next wait (sleep, net.wait, a server's), running on_quit; one busy elsewhere, at a second ctrl-c (then on_quit does not run).
+or has an on_quit = (): ..., which runs as any program ends: its window closed, its last line done, exit() called, or asked to stop. A program that does not look at stopping() ends at its next wait (sleep, net.wait, a server's), running on_quit; one busy elsewhere, at a second ctrl-c or SIGTERM (then on_quit does not run).
+
+With tasks (lib/std/task.jo), the sleep or net.wait of a task that has asked stopping() ends early as well, and so does a select with a `stopping():` arm. The usual order: main (or the server's loop) sees stopping(), tells its tasks (closing the channels they read, or t.cancel()), waits for them, then saves. A task that goes on is told after a moment, with where it waits; a second ctrl-c ends the program.
 
 - `stopping = () -> bool`: true once the program has been asked to stop (ctrl-c, SIGTERM, its console closed): from the first call on, being asked no longer ends the program at once, it is for the program to stop
 
@@ -1883,23 +1885,43 @@ jobs.close()                     # the workers' loops end once they have taken e
 loop _ in urls: print(results.receive()!)
 ```
 
-Tasks take turns on the program's one thread: one runs until it waits, then another. So between two waits nothing else changes the program's variables, and they need no locks; a task that computes for a long time without waiting holds up the others (parallel_map shares work over all of the processor's cores). The program ends when main and every task have ended, or at exit(); a game's tasks take their turns at the start of each frame, and end with it.
+Tasks take turns on the program's one thread: one runs until it waits, then another. So between two waits nothing else changes the program's variables, and they need no locks; a task that computes for a long time without waiting holds up the others (parallel_map shares work over all of the processor's cores). A channel's send or receive that need not wait goes on at once, letting the others ready take their turns only every 64th time; run_program, file reads and writes, and a C function hold up every task while they run. The program ends when main and every task have ended, or at exit(); a game's tasks take their turns at the start of each frame, and end with it.
+
+t.cancel() asks a task to stop: from then on its waits end at once, giving nothing (receive none, sleep returns, the network's calls nothing or status 0), and cancelled() is true in it, for it to clean up and end. A group (task_group) is tasks waited for and cancelled together.
 
 #### Tasks
 
 - `struct Task[T]`
 - `spawn[T] = (f: () -> T, background: bool = false) -> Task[T]`: run f alongside the rest of the program; its result is the Task's wait(). background: the program's end does not wait for it (a server's loop, a task that watches something)
-- `wait[T] = (t: Task[T]) -> T`: its result, once it has ended (until then the caller waits, and the others take their turns)
+- `wait[T] = (t: Task[T]) -> T`: its result, once it has ended (until then the caller waits, and the others take their turns; also in a task that has been cancelled, as the result is needed: wait(wait = ...) is a wait that cancel ends)
+- `wait[T] = (t: Task[T], wait: f64) -> bool`: wait at most `wait` seconds for it to end: true once it has (wait() then gives its result at once), false if it has not (or the task waiting has been cancelled)
+  ```gdscript
+  if not t.wait(wait = 5.0): t.cancel()
+  ```
 - `done[T] = (t: Task[T]) -> bool`: it has ended
 - `wait_all[T] = (ts: Task[T][]) -> T[]`: the results of all of them, in their order
+- `cancel[T] = (t: Task[T])`: ask it to stop: its waits end at once from now on, the one it is in too, giving nothing (a channel's receive none, a send gives up, sleep returns, select takes its after or else arm, the network's calls give nothing or status 0), and cancelled() is true in it, for it to clean up and end. Nothing if it has ended. A task that never waits or looks is not stopped
+- `cancelled = () -> bool`: true in a task that has been cancelled (t.cancel(), or its group's): time for it to end
+- `task_count = () -> int`: how many tasks have started and not ended (main not counted, those in the background counted)
+- `report_tasks = ()`: write to standard error what each task is doing (what it waits for, where, and where it was spawned): for a program that seems stuck
+
+#### Groups
+
+- `struct TaskGroup`
+- `task_group = () -> TaskGroup`: a group, with no tasks yet
+- `spawn[T] = (g: TaskGroup, f: () -> T) -> Task[T]`: run f alongside the rest of the program, in group g (cancelled at once if g has been)
+- `wait = (g: TaskGroup) -> bool`: wait until every task of the group has ended; false if one of them panicked (why() says what; the others were cancelled then). In a task that has been cancelled, the group's are cancelled first
+- `cancel = (g: TaskGroup)`: cancel every task of the group (t.cancel()), and those spawned into it from now on
+- `why = (g: TaskGroup) -> str`: the message of the first panic in the group's tasks ("": none has panicked)
 
 #### Channels
 
 - `struct Channel[T]`: Values sent from one task to another, in order. send waits until a receiver takes the value (capacity 0), or while capacity values wait to be taken; receive waits until one comes, and gives none once the channel is closed and every value has been taken. Copies of a Channel are the same channel.
 - `channel[T] = (capacity: int = 0) -> Channel[T]`: a channel of T: channel[str](), or channel[int](100) for one that holds up to 100 values before send waits
-- `send[T] = (c: Channel[T], v: T)`: send v: it waits until a receiver takes it (or while the channel is full)
-- `try_send[T] = (c: Channel[T], v: T) -> bool`: send v if that needs no wait (a receiver waits for it, or there is room); false: not sent
-- `receive[T] = (c: Channel[T]) -> T?`: the next value; none once the channel is closed and every value sent has been taken
+- `send[T] = (c: Channel[T], v: T)`: send v: it waits until a receiver takes it (or while the channel is full). In a task that has been cancelled it waits for nothing: v is sent if there is room, else dropped (or left in the channel, when the send was waiting already)
+- `send[T] = (c: Channel[T], v: T, wait: f64) -> bool`: send v if it can go within `wait` seconds (a receiver takes it, or there is room); false: it was not sent
+- `try_send[T] = (c: Channel[T], v: T) -> bool`: send v if that needs no wait (a receiver waits for it, or there is room); false: not sent. When it is full and other tasks are ready (a receiver just woken), they take their turns first
+- `receive[T] = (c: Channel[T]) -> T?`: the next value; none once the channel is closed and every value sent has been taken (or the task has been cancelled)
 - `receive[T] = (c: Channel[T], wait: f64) -> T?`: the next value, waiting at most `wait` seconds for it; none when none came (or the channel is closed and empty: closed() tells which)
 - `try_receive[T] = (c: Channel[T]) -> T?`: the next value if one waits; none if not
 - `close[T] = (c: Channel[T])`: no more values will be sent: receivers take what is left, then get none (and loops over it end)
@@ -4993,8 +5015,22 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `local_address = () -> str`: this machine's address on its network (as 192.168.1.20): what another machine there connects to, and what a host tells the players joining it; "" when it has none (no network, or a web page)
 - `receive = () -> NetEvent[]`: what happened since the last call: peers joining and leaving, and their messages, in order
 - `receive = (only: int[]) -> NetEvent[]`: the same, for the given peers only (the others' events wait for another call): parts of a program that each have peers of their own, as a game hosting a relay and playing through it
+- `receive = (only: int[], wait: f64) -> NetEvent[]`: the same, waiting up to `wait` seconds for the first of their events: a task's, for the peers it serves (a server's connection each, from accept). The peers waited for are its own from then on: receive() and receive_server() leave their events. In a web page, in a task only
+  ```gdscript
+  talk = (p: int):
+      loop not net.gone(p):
+          loop e in net.receive([p], wait = 30.0):
+              if e.kind == .message: net.send(p, "you said {e.text}")
+  ```
+- `accept = (wait: f64 = 0.0) -> int`: a peer that connected to this program's server (listen's port, or an http server's websocket()), waiting up to `wait` seconds for one; -1 if none came. It is the caller's own, its joined event taken: its events come from receive([peer], ...), not receive() or receive_server(), so that a task can serve each one
+  ```gdscript
+  loop not stopping():
+      p = net.accept(wait = 1.0)
+      if p >= 0: spawn((): talk(p))
+  ```
+- `gone = (peer: int) -> bool`: the peer has gone (or never was): its left event has come, or is waiting to be taken
 - `receive_server = () -> NetEvent[]`: the same, for the peers that connected to this program's server (listen) only
-- `wait = (seconds: f64) -> bool`: wait until something comes for the program, or `seconds` pass: a message or a peer (receive), a connection's bytes or one to accept (the tcp_ functions), a fetch's answer (fetch_result), a request for its http server; true when something came (false: the time passed, or the program was asked to stop, as stopping() then says). Meanwhile what waits to go out is sent as the connections take it. For a program with no window, which has nothing else to do: a game's frames come anyway
+- `wait = (seconds: f64) -> bool`: wait until something comes for the program, or `seconds` pass: a message or a peer (receive), a connection's bytes or one to accept (the tcp_ functions), a fetch's answer (fetch_result), a request for its http server; true when something came (false: the time passed, or the program was asked to stop, as stopping() then says, or the task was cancelled). Meanwhile what waits to go out is sent as the connections take it. For a program with no window, which has nothing else to do: a game's frames come anyway
 - `unsent = (peer: int) -> int`: how many bytes sent to a peer still wait to go out to it (a peer that reads slowly, or has stopped: one with more than 8 MB waiting is let go, so that it does not hold the server's memory)
 - `handshake = (peer: int) -> Handshake`: how a peer asked to connect to this program's server (an empty Handshake for others)
 
@@ -5021,16 +5057,16 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `tcp_why = () -> str`: why the last tcp_connect or tls_connect gave -1
 - `trust_certificate = (pem: str) -> int`: a certificate authority to trust from now on, besides those the system trusts: its certificate as PEM text (what a .pem or .crt file holds, -----BEGIN CERTIFICATE----- ...), for servers whose certificates it signed (a test server's, a private network's); how many certificates were taken. The SLOPPY_CA_FILE environment variable names such a file for any program
 - `tcp_listen = (port: int, host: str = "", backlog: int = 511) -> int`: a server on port: connections come from tcp_accept; -1 if the port cannot be had. host: the address it is reached at, "" every one this machine has ("127.0.0.1": from this machine only); backlog: how many connections may wait to be accepted
-- `tcp_accept = (server: int, wait: f64 = 0.0) -> int`: a connection made to the server (waiting up to `wait` seconds for one), or -1 if none came
+- `tcp_accept = (server: int, wait: f64 = 0.0) -> int`: a connection made to the server (waiting up to `wait` seconds for one), or -1 if none came (or the server was closed meanwhile)
 - `tcp_address = (c: int) -> str`: the address a connection accepted by tcp_accept came from ("1.2.3.4"; "" for others)
 - `tcp_send = (c: int, data: u8[], wait: f64 = 30.0) -> bool`: all of data sent, waiting while the other side is slow to take it (up to `wait` seconds while it takes none); false if the connection has failed or closed, or nothing went for that long
 - `tcp_send = (c: int, text: str, wait: f64 = 30.0) -> bool`
 - `tcp_write = (c: int, data: u8[]) -> bool`: data sent without waiting: what the other side has not taken yet goes later, as it takes it (in this connection's later tcp_ calls, and in net.wait); false if the connection has failed or closed. A server's way to send: one slow reader holds up nothing else (tcp_unsent says how much waits for it)
 - `tcp_write = (c: int, text: str) -> bool`
 - `tcp_unsent = (c: int) -> int`: how many bytes sent with tcp_write still wait for the other side to take them
-- `tcp_receive = (c: int, wait: f64 = 0.0) -> u8[]`: the bytes that have arrived (waiting up to `wait` seconds for the first); empty when none has (or the connection has ended: tcp_closed says)
+- `tcp_receive = (c: int, wait: f64 = 0.0) -> u8[]`: the bytes that have arrived (waiting up to `wait` seconds for the first); empty when none has (or the connection has ended: tcp_closed says; or it was closed meanwhile, by another task)
 - `tcp_closed = (c: int) -> bool`: the other side has closed the connection (or it failed), and everything sent has been received
-- `tcp_close = (c: int, wait: f64 = 5.0)`: end a connection (or stop a server of tcp_listen's), after sending what tcp_write left waiting (for up to `wait` seconds)
+- `tcp_close = (c: int, wait: f64 = 5.0)`: end a connection (or stop a server of tcp_listen's), after sending what tcp_write left waiting (for up to `wait` seconds). A task waiting in another tcp_ call on it is woken, and finds it closed
 
 #### HTTP: what is at a web address
 
@@ -5124,20 +5160,16 @@ loop not stopping():
     net.wait(1.0)                           # until something comes (a request, a message)
 ```
 
-Requests are answered one at a time, in the order they come; a client slow to send or to read holds up no other (what waits to go out to it goes as it takes it). Handlers run one at a time too, on the program's one thread: they change the program's variables (a map of todos, a count) with no locks, as nothing else runs meanwhile. A handler that waits holds up the others: one that fetches from elsewhere starts it (net.fetch_start) and answers later, or keeps it short. A handler that panics is answered 500 and the server goes on (the panic and its backtrace are written to standard error; what the handler had changed stays changed). Behind a proxy that has the certificate (Caddy: docs/START.md's "Writing a server"), the same program serves https. Native programs only.
+Each request's handler runs as a task of its own (lib/std/task.jo): one that waits (a net.fetch, sleep, a channel) lets the others be answered meanwhile; one connection's requests are answered in order. Tasks take turns on the program's one thread, so handlers change the program's variables (a map of todos, a count) with no locks: nothing else runs between two waits. One that computes for long, runs a program (run_program) or reads a big file holds up the others while it does. A client slow to send or to read holds up no other (what waits to go out to it goes as it takes it). A handler that panics is answered 500 and the server goes on (the panic and its backtrace are written to standard error; what the handler had changed stays changed). Behind a proxy that has the certificate (Caddy: docs/START.md's "Writing a server"), the same program serves https. Native programs only.
 
-Trying a server from the same program (a test, Go's httptest): a net.fetch to it would wait for an answer that never comes, the server's loop waiting too; start the fetch, and answer until it has come:
+Asked to stop (ctrl-c, SIGTERM), serve takes no more requests, gives the handlers running up to `drain` seconds to answer, and returns: the program then ends what it runs besides (closing the channels its tasks read), and saves. A program with its own loop calls shutdown() itself.
+
+Trying a server from the same program (a test, Go's httptest): serve in a task, and fetch from it:
 
 ```gdscript
 http.listen(18080, host = "127.0.0.1")
-ask = (path: str) -> net.HttpReply:
-    f = net.fetch_start("http://127.0.0.1:18080{path}", wait = 5.0)
-    loop true:
-        http.answer()
-        if let res = net.fetch_result(f): return res
-        net.wait(0.1)
-    net.HttpReply(0, [])
-assert(ask("/todos/1").status == 200)
+spawn((): http.serve(18080), background = true)
+assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 ```
 
 - `struct Request`
@@ -5216,7 +5248,8 @@ assert(ask("/todos/1").status == 200)
 
 #### Serving
 
-- `serve = (port: int, host: str = "", largest: int = 1 << 20, backlog: int = 511) -> bool`: answer requests on port until the program is asked to stop (ctrl-c, SIGTERM: stopping()); false at once when the port cannot be had. host, largest, backlog: as listen's
+- `serve = (port: int, host: str = "", largest: int = 1 << 20, backlog: int = 511, drain: f64 = 10.0) -> bool`: answer requests on port until the program is asked to stop (ctrl-c, SIGTERM: stopping()), then give the handlers running up to `drain` seconds to answer (shutdown); false at once when the port cannot be had. host, largest, backlog: as listen's
+- `shutdown = (wait: f64 = 10.0) -> bool`: stop serving: no more requests are taken, the handlers running are waited for (up to `wait` seconds) and their answers sent, and the connections are closed (streams too). true when every one was answered in time (a handler still running then goes on, but its answer goes nowhere)
 - `listen = (port: int, host: str = "", largest: int = 1 << 20, backlog: int = 511) -> bool`: start taking requests on port (answer() answers them); false when the port cannot be had (another program has it). host: the address it is reached at, "" every one this machine has ("127.0.0.1": from this machine only, as behind a proxy on it); largest: the biggest body taken (a bigger one is answered 413); backlog: how many connections may wait to be taken
 - `stop_listening = ()`: stop taking requests (those of connections open are still answered)
 - `answer = () -> int`: answer the requests that have come, and send what waits to go out; how many were answered. It does not wait: net.wait does (until there is something to answer)
