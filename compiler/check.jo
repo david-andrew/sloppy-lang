@@ -793,11 +793,8 @@ assign_declares = (s: int, m: int) -> bool:
 global_decls: {int: int} = {}       # `global x` in the function: where
 global_reads: {int: int} = {}       # the global x read in the function: where first
 own_shadows: {int: int} = {}        # x made the function's own though a global x exists: where
-# (SLOPPY_GLOBALFIX: the old rule, `x = v` changing the global, with each such line told, to add
-# `global x` where it is meant; SLOPPY_NO_SHADOW: the compiler's own build, which the C bootstrap
-# compiles with the old rule, so no variable of a function may have a global's name)
-GLOBALFIX = env("SLOPPY_GLOBALFIX") != none
-OLD_RULE = GLOBALFIX or env("SLOPPY_OLDRULE") != none
+# (SLOPPY_NO_SHADOW: the compiler's own build, which the C bootstrap compiles with `x = v`
+# changing a global x, so no variable of a function may have a global's name)
 NO_SHADOW = env("SLOPPY_NO_SHADOW") != none
 
 # (a module's top-level code)
@@ -817,30 +814,6 @@ check_init_fn = (k: int):
     fns[k].ret = i32(T_VOID)
     fns[k].state = 2
     cx = -1
-
-# (SLOPPY_GLOBALFIX: every library function checked, one that does not check for this target
-# passed over)
-gf_jb: *u8 = null
-globalfix_check = (d: int):
-    global __repl_jmp, cx, gf_jb, quiet_errors
-    # (d: the function instance)
-    when not BOOTSTRAP:
-        if gf_jb == null: gf_jb = __alloc(256)
-        saved_cx = cx
-        nctx = ctxs.len()
-        mark = scope_mark()
-        quiet_errors = true
-        if __setjmp(gf_jb) == 0:
-            __repl_jmp = gf_jb
-            # (-d: the function declared at node d, made)
-            if d < 0: get_fn_inst(-d, [], nodes[-d].pos)
-            else if fns[d].kind == FK_INIT: check_init_fn(d)
-            else: check_fn_body(d)
-        __repl_jmp = null
-        quiet_errors = false
-        cx = saved_cx
-        loop ctxs.len() > nctx: ctxs.pop()
-        scope_reset(mark)
 
 # (the function whose rule applies to code checked in ctx c: the one it is in, through lambdas;
 # -1: top-level code, or a lambda in it)
@@ -864,12 +837,7 @@ makes_own = (nm: int, pos: int) -> bool:
     rc = rule_ctx(cx)
     if rc < 0: return false
     key = own_key(rc, nm)
-    if global_decls.has(key): return false
-    if OLD_RULE:
-        fd = int(fns[int(ctxs[rc].inst)].decl)
-        if GLOBALFIX and fd != 0: eprint("GLOBALFIX {files[pos_file(nodes[fd].pos)].path}:{pos_off(nodes[fd].pos)} {name_of(nm)}")
-        return false
-    true
+    not global_decls.has(key)
 
 # (the local x = v makes, when it is named as a global: told when the function read that global
 # before, as its value would then be the global's above the line and its own below)
@@ -4407,11 +4375,10 @@ check_program = (main_path: str):
     # unused code); only what is reachable is compiled
     if ide_on: ide_force = ide_find_file(ide_doc)
     loop m in modules:
-        if m.is_prelude and int(m.file) != ide_force and not GLOBALFIX: continue
+        if m.is_prelude and int(m.file) != ide_force: continue
         loop d in m.decls:
             if nodes[d].kind == .fn_ and not has_flag(d, NF_EXTERN) and not fn_sig(d).generic:
-                if m.is_prelude and GLOBALFIX: globalfix_check(-d)
-                else: get_fn_inst(d, [], nodes[d].pos)
+                get_fn_inst(d, [], nodes[d].pos)
             if nodes[d].kind == .fn_ and (has_flag(d, NF_EXTERN) or nodes[d].c != 0) and not m.is_prelude: c_sig_check(d)
     loop nm in runtime_names: runtime_fn(nm)
     loop nm in optional_runtime:
@@ -4435,8 +4402,7 @@ check_program = (main_path: str):
     loop true:
         loop k < fns.len():
             if fns[k].state == 0 and (fns[k].kind == FK_NORMAL or fns[k].kind == FK_INIT) and k != 0:
-                if GLOBALFIX and (fns[k].kind == FK_INIT and modules[int(fns[k].mod)].is_prelude or fns[k].decl != 0 and decl_in_prelude(int(fns[k].decl))): globalfix_check(k)
-                else if fns[k].kind == FK_INIT: check_init_fn(k)
+                if fns[k].kind == FK_INIT: check_init_fn(k)
                 else: check_fn_body(k)
             k += 1
 
