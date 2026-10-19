@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `counts = {}` with no type written: the key and value types come from the first `counts[k] =
+  v` or `counts[k] += 1` (or `get(k, default)`) after it, as an empty `[]`'s come from a push
+  (it said "cannot infer the type of an empty map"). Reading or printing it before then says the
+  map's types are not known yet.
 - `s.reversed()` for text, as for an array (text had only `reverse`).
 - No "clear covers everything drawn before it" warning for a clear in each arm of a `match
   screen:` (or branch of an `if`): one of them runs, so nothing drawn in another comes before it.

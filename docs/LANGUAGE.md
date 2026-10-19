@@ -352,12 +352,16 @@ missing key is an error; `m.get(k)` gives an optional, `m.get(k, default)` a def
 missing key first, with V's zero value (for a struct, its default field values):
 
 ```gdscript
-counts: {str: int} = {}
+counts = {}                             # (its types from the first `counts[k] = v` or `+=`)
 loop w in words: counts[w] += 1
-groups: {int: str[]} = {}
+groups: {int: str[]} = {}               # (written: what goes in it is pushed, not assigned)
 loop w in words: groups[len(w)].push(w)
 loop k, v in counts: print("{k}: {v}")
 ```
+
+An empty `{}` with no type written takes its key and value types from the first `m[k] = v` (or
+`m[k] += v`, or `m.get(k, default)`) after it, as an empty `[]` does from a push; until then it
+cannot be read or printed.
 
 `m.has(k)`, `m.remove(k)`, `m.keys()`, `m.values()` and `m.len()` do what they say; `m.items()` is the (key, value) pairs, to sort them (`m.items().sorted_by((p): -p.1)`).
 

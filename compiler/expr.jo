@@ -1252,6 +1252,7 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
     targs_here = call_targs
     call_targs = []
     check_args_untyped(args)
+    open_map_args(n, name, decls, args)
     cands: Cand[]
     last_err = ""
     last_err_pos = 0          # (where the argument it is about is: the error points there)
@@ -2374,6 +2375,30 @@ a_type = (t: int) -> str: a_or_an(type_str(t))
 coerce_hint = ""     # (said after a type mismatch, by what asked for the type)
 
 fn_used: {int: bool}            # the program's functions called or used as a value (by decl)
+empty_maps: {int: int} = {}     # (the type variables of `{}` with no type known yet: where each was)
+
+# (print(counts) before anything is put in counts = {}: nothing says what the map holds, and a
+# function taking any value would take it as whatever its first version takes; a parameter that
+# is a map, as get's, works its types out from the other arguments)
+open_map_args = (n: int, name: int, decls: int[], args: int[]):
+    if empty_maps.len() == 0: return
+    loop i in 0.. and a0 in args:
+        a = unnamed(a0)
+        if nodes[a].type == 0: continue
+        at = prune(ntype(a))
+        if tkind(at) != .var or not empty_maps.has(at): continue
+        takes_map = false
+        loop d in decls:
+            sig = fn_sig(d)
+            if i < sig.params.len() and is_map_type(prune(sig.params[i])): takes_map = true
+        if not takes_map: fatal(nodes[a].pos, "the map's types are not known yet, as nothing has been put in it: put something in it first (`m[k] = v`), or write them where it is made: `m: \{str: int} = \{}`")
+
+# (counts[w] = v, counts = {} a moment ago: its key's and value's types are those)
+settle_empty_map = (bt: int, kt: int, vt: int):
+    if tkind(bt) != .var or not empty_maps.has(bt): return
+    ms = prelude.get(intern("Map")) ?? 0
+    if ms == 0: return
+    unify(bt, get_struct_inst(int(syms[ms].ref), [kt, vt]))
 drew_in: {int: bool}            # (functions, by instance, that have drawn something so far)
 
 # (whether the function being checked has drawn something so far, and setting it: an `if`'s
@@ -3288,6 +3313,10 @@ check_call = (n: int, expected: int) -> int:
     value_call(n, callee, args)
 
 resolve_by_types = (name: int, ts: int[], pos: int, required: bool) -> int:
+    # ("{counts}" before anything is put in counts = {}: see open_map_args)
+    if empty_maps.len() > 0:
+        loop t in ts:
+            if tkind(prune(t)) == .var and empty_maps.has(prune(t)): fatal(pos, "the map's types are not known yet, as nothing has been put in it: put something in it first (`m[k] = v`), or write them where it is made: `m: \{str: int} = \{}`")
     d, binds = pick_by_types(name, ts)
     if d == 0:
         if not required: return 0
@@ -4782,6 +4811,7 @@ check_match = (m: int, expected: int) -> int:
 # ---------------- lambdas ----------------
 # n, of a type not known yet (a lambda's parameter without one, used where its type decides)
 untyped_param_error = (n: int):
+    if nodes[n].type != 0 and empty_maps.has(prune(ntype(n))): fatal(nodes[n].pos, "the map's types are not known yet, as nothing has been put in it: put something in it first (`m[k] = v`), or write them where it is made: `m: \{str: int} = \{}`")
     nm = "this"
     eg = "x"
     if nodes[n].kind == .ident:
@@ -5585,6 +5615,8 @@ check_expr = (n: int, expected: int) -> int:
                     jh = json_union_hint(bt, v)
                     if len(jh) > 0: fatal(nodes[n].pos, "cannot index a value of type {type_str(bt)}{jh}, and `{part}.as_str()` reads that field")
                     fatal(nodes[n].pos, "cannot index a Json: `{part}` is that part of it (a Json?, none when it is not there), and `.as_str()`, `.as_int()`, `.as_num()`, `.as_bool()` or `.as_list()` reads it: `{part}.as_str() ?? \"\"`")
+                # (counts = {}, then counts[w] read before anything is put in it)
+                if tkind(bt) == .var and empty_maps.has(bt): fatal(nodes[n].pos, "the map's types are not known yet, as nothing has been put in it: put something in it first (`m[k] = v`), or write them where it is made: `m: \{str: int} = \{}`")
                 fatal(nodes[n].pos, "cannot index a value of type {type_str(bt)}")
     else if k == .unary:
         hint = 0
@@ -5844,7 +5876,12 @@ check_expr = (n: int, expected: int) -> int:
             kt = struct_targ(int(types[ex].st), 0)
             vt = struct_targ(int(types[ex].st), 1)
         if kt == 0:
-            if nkids(n) == 0: fatal(nodes[n].pos, "cannot infer the type of an empty map; add a type annotation: `m: \{K: V} = \{}` (an empty set: `s: Set[int] = \{}`)")
+            if nkids(n) == 0:
+                # (counts = {}, then counts[w] = ...: a map whose types the first use settles)
+                t = mk_var()
+                empty_maps[t] = nodes[n].pos
+                nodes[n].type = i32(t)
+                return t
             p0 = kid(n, 0)
             check_expr(int(nodes[p0].a), 0)
             kt = finalize_literal(int(nodes[p0].a))
