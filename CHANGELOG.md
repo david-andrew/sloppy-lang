@@ -18,6 +18,24 @@
   (another one starts from its first frame, the one playing goes on), `anim.draw(pos)`,
   `anim_frame`, `anim_done`. `draw_anim(sheet, "run", t, pos)` takes an animation's name, and one
   the sheet does not have says which it has.
+- Tiled: tile objects (Insert Tile) keep their tile (`MapObject.tile`, `flip_x`, `flip_y`, and
+  `draw_tile(map, id, center, size)` draws it), and their rect is from its top left corner as other
+  objects' (Tiled places them by their bottom left: they came out a tile too low); objects have
+  their `id` and `rotation`. The map's custom properties are `Tilemap.props` and a layer's
+  `TileLayer.props`, and each tile's are kept, not only `shape` (now documented):
+  `tile_prop(map, id, "hurts")`, `set_tile_prop`.
+- Tiled: draw_tilemap draws layers at their offsets, with their parallax factors (from the map's
+  parallax origin) and opacity, groups' passed on to their layers; image layers are layers with a
+  picture (`image`, repeated across or down as Tiled repeats it); tile animations play.
+- `tilemap_tiles(map, layer, box)`: the tiles a box touches (column, row, id); and
+  `tilemap_touches(map, layer, box, "hurts")`: whether it touches a tile with that property (a
+  hazard: Godot's custom data), or a tile id. The docs say that tilemap_hits counts any tile, an
+  `.empty` one too.
+- `map.edges = .sides` makes the map's left and right edges walls for tilemap_move (`.closed`: all
+  four), where a box walked off the side into the void.
+- `tilemap_move(..., platforms = rects, solids = rects)`: boxes that are not tiles stop it too,
+  one-way (moving platforms) or from every side (crates, doors); the move's `platform` (or `solid`)
+  says which one the box stands on, for the game to carry it.
 - Tuple patterns: `match (i % 3, i % 5): (0, 0): ... (0, _): ...`, each part a value, a range,
   `.variant` or `_`, tuples inside tuples too (it said "unsupported pattern for this type").
   `"A" | "a":` in a match says an arm lists its values with commas.
