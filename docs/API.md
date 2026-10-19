@@ -1047,19 +1047,47 @@ if sales is TextError: fail(sales.message)
 
 ### url.jo
 
-Text for the web: a URL's parts percent-encoded and back, query strings, cookies, and HTML's entities.
+Text for the web: URLs taken apart and links followed from a page, a URL's parts percent-encoded and back, query strings, cookies, and HTML's entities.
 
 ```gdscript
 url = "https://api.example.com/search?" + url_query({"q": "café au lait", "page": "2"})
 name = url_decode("caf%C3%A9")                        # café
+u = parse_url("https://example.com:8080/a/b?q=1")?   # u.host "example.com", u.port 8080
+next = url_join("https://example.com/a/b/page.html", "../c.html")   # https://example.com/a/c.html
 title = html_unescape("Tom &amp; Jerry &#8212; &lt;b&gt;")  # Tom & Jerry — <b>
 ```
 
-- `url_encode = (s: str) -> str`: text as a part of a URL (a query's value, a path's segment): every byte but letters, digits and - _ . ~ as %XX (a space as %20, é as %C3%A9), as Python's quote(s, safe="") writes it
+- `url_encode = (s: str, safe: str = "") -> str`: text as a part of a URL (a query's value, a path's segment): every byte but letters, digits and - _ . ~ as %XX (a space as %20, é as %C3%A9), as Python's quote(s, safe="") writes it; the characters in `safe` are kept too: url_encode("/a b/c", safe = "/") is "/a%20b/c" (a path)
 - `url_decode = (s: str, plus: bool = false) -> str`: percent-encoded text back as it was: %XX as that byte (a % without two hex digits stays as it is); with plus = true a + is a space too, as an HTML form's query writes one
 - `url_query[T] = (params: {str: T}) -> str`: a query string from names and values, each url_encoded: url_query({"q": "x y", "n": "5"}) is "q=x%20y&n=5" (what goes after the ? of a URL; Python's urlencode)
 - `parse_query = (q: str) -> {str: str}`: a query string's names and values, decoded: parse_query("q=x%20y&n=5") is {"q": "x y", "n": "5"} (what comes after the ? of a URL, or an HTML form's body; a name given twice: the last)
 - `parse_cookies = (header: str) -> {str: str}`: a Cookie header's names and values: parse_cookies("a=1; b=2") is {"a": "1", "b": "2"}
+- `struct Url`: a URL taken apart (parse_url), each part as written (its %XX kept: url_decode(u.path) for the text): https://ann@example.com:8080/a/b?q=1#top has scheme "https", user "ann", host "example.com", port 8080, path "/a/b", query "q=1" and fragment "top". The scheme and host are in small letters; an IPv6 host is without its [ ]. A part not written is "" (the port: -1). str(u) puts it back together.
+  ```gdscript
+  struct Url:
+      scheme = ""
+      user = ""                   # (before an @: a name, or name:password)
+      host = ""
+      port = -1
+      path = ""
+      query = ""                  # (after the ?, without it: parse_query(u.query) for its values)
+      fragment = ""               # (after the #, without it)
+  ```
+- `error struct UrlError`
+  ```gdscript
+  error struct UrlError:
+      message: str
+  ```
+- `parse_url = (s: str) -> Url \| UrlError`: a URL's parts, or what is wrong with it (a port that is not a number or is over 65535, a [ without its ], a control character such as a line break in it). Spaces and line breaks around it are left out. A URL with no scheme is a relative one ("/a/b?q=1", "../c": scheme and host "")
+  ```gdscript
+  u = parse_url("https://example.com:8443/search?q=sloppy")?
+  print(u.host, u.port, parse_query(u.query)["q"])      # example.com 8443 sloppy
+  ```
+- `str = (u: Url) -> str`: the URL again, as text (print(u) and "{u}" show it so)
+- `url_join = (base: str, link: str) -> str`: a link (an href, a redirect's Location) as the URL it leads to from the page at base: "../c?x" from https://example.com/a/b/page.html is https://example.com/a/c?x. As RFC 3986 says (section 5.2: ./ and ../ taken out, a path from / on the same host, //host on the same scheme, a ?query or a #fragment on the same page), as Python's urljoin and Go's ResolveReference do. A link with its own scheme ("mailto:...", "https://...") is the link itself (with its ./ and ../ out); spaces and line breaks around it, and tabs and line breaks inside it (as in HTML written over lines), are left out.
+  ```gdscript
+  loop m in page.find_all(regex("href=\"([^\"]*)\"")): links.push(url_join(page_url, m.groups[0]))
+  ```
 - `html_unescape = (s: str) -> str`: HTML's entities as the characters they stand for: &amp; &lt; &gt; &quot; &#39; &nbsp;, the other named ones of Latin-1 and punctuation (&eacute; &copy; &mdash; &hellip; &euro;...), and numbers (&#233; &#xE9;); one it does not know stays as it is
 - `html_escape = (s: str) -> str`: text with & < > " ' as entities, to put inside HTML
 

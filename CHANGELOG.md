@@ -15,6 +15,12 @@
   `find_all` of `[a-z]+` over 1.2 MB: 380 -> 45 ms; of `href="([^"]*)"` over 216 KB: 63 -> 14
   ms; `contains` that runs through 1.2 MB: 475 -> 9 ms. `find(s, r, from)` with `from` past
   the end gives none (it could panic).
+- `url_join(base, link)`: where a link on a page leads, as RFC 3986 resolves it (`../` and `./`
+  taken out, `/path`, `//host`, `?query`, `#fragment`; Python's urljoin, Go's ResolveReference),
+  and `parse_url(s) -> Url | UrlError`: an address's scheme, user, host, port, path, query and
+  fragment (an IPv6 host in `[ ]`, a bad port or a control character said), with `str(u)` to put
+  it back together. `url_encode(s, safe = "/")` keeps the characters given. A redirect's
+  `Location` is followed with url_join (`../` in it was kept).
 
 ## 0.25.0
 

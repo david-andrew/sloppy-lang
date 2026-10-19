@@ -326,6 +326,10 @@ print("{repo.full_name}: {repo.stargazers_count} stars, {repo.description ?? "-"
 - `url_query({"q": "café au lait", "page": "2"})` makes a query (`q=caf%C3%A9%20au%20lait&page=2`),
   `url_encode(s)` and `url_decode(s)` one part of an address, and `html_unescape(s)` turns
   `&amp;` and `&#233;` back into `&` and `é`.
+- `url_join(page, href)` is where a link on a page leads (`../c.html` from
+  `https://example.com/a/b/x.html` is `https://example.com/a/c.html`), and `parse_url(s)` takes
+  an address apart: `u.scheme`, `u.host`, `u.port` (-1 when not written), `u.path`, `u.query`,
+  `u.fragment`, or a `UrlError`; `str(u)` puts it back together.
 - Fetches happen one at a time (`parallel_map` cannot run them); a loop over the addresses does.
 - `net.fetch` waits for the answer. `f = net.fetch_start(url)` (the same options) starts one and
   goes on; `net.fetch_result(f)` gives the `HttpReply` once it has come (none before): a game asks
@@ -545,6 +549,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `requests.get(url)`, `urllib.request.urlopen(url)` | `import net`, then `r = net.fetch(url)`: `r.status`, `r.text`, and `from_json[T](r.text)` ([fetching from the web](#fetching-from-the-web)) |
 | `requests.post(url, json=d, headers=h)` | `net.fetch(url, method = "POST", body = to_json(d), headers = h)` |
 | `urllib.parse.quote(s)`, `urlencode(d)`, `html.unescape(s)` | `url_encode(s)`, `url_query(d)`, `html_unescape(s)` |
+| `urljoin(base, link)`, `urlsplit(url)` | `url_join(base, link)`, `parse_url(url)` (`u.host`, `u.port`, `u.path`...) |
 | `s[:4]`, `f"{s:.4}"` | `first(s, 4)` or `"{s:.4}"` (characters; `s[..4]` counts bytes, and can cut an `é` in two) |
 | `re.search(r"\d+", s)` | `s.find(regex(r"\d+"))` (a `Match?`: `m.text`, `m.groups`) |
 | `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero when changed (`counts[w] += 1`, `groups[k].push(x)`); reading one, `m[k]`, is an error: `m.get(k) ?? 0` |
