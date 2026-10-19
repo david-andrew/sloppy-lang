@@ -558,6 +558,9 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `async`/`await`, a chain of animations | a phase for each step (`enum Phase: idle, swapping, clearing, falling`), moved on in update when its tweens are done; or `Actions` for timed steps |
 | `btoa`, `atob` | `base64_encode(bytes(s))`, `base64_decode(s)` |
 | `window.onbeforeunload` | `on_quit = (): ...`, which the game calls as it closes |
+| `<input type="file">`, Electron's `dialog.showOpenDialog`, a drop zone | `d = open_file_dialog([".txt"])`, then `if let paths = file_dialog_result(d):` each frame; `dropped_files()` |
+| CSS `cursor: pointer`, `cursor: col-resize` | `set_cursor(.hand)`, `set_cursor(.resize_ew)` |
+| a page that redraws only as things change | `redraw_on_input()`: frames only on input; `request_redraw()` while something animates |
 | `Number.isFinite`, `Infinity`, break_infinity.js | `is_finite(x)`, `INF` (floats reach about 1.8e308); past that, `use big`: `dust = big(1.5, 400)` |
 
 ## Coming from Python

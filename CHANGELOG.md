@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- `dropped_files()`: the paths of files dropped onto the window, in the frame they arrive
+  (Windows, X11, Wayland; in a web page, names of the page's copies, which `read_file` reads).
+  `open_file_dialog(types, multiple, title)` and `save_file_dialog(name, types, title)` start the
+  system's file dialog (Windows'; zenity's or kdialog's on Linux; AppleScript's on macOS; the
+  browser's picker, at the click or key that asked), and `file_dialog_result(id)` gives the
+  paths once chosen, as `net.fetch_result` gives an answer. In a page, saving gives the name at
+  once: write it, then `download_file`. For tests: `SLOPPY_FILE_DIALOG`, SLOPPY_INPUT's `drop=`.
+- `set_cursor(c)`: the mouse pointer's shape (`.ibeam`, `.hand`, `.resize_ew`, `.move`,
+  `.not_allowed`, `.hidden`...) in web pages, on Windows, X11 and macOS, and on Wayland where
+  the compositor has cursor shapes. Text fields show an I-beam under the pointer.
+- `redraw_on_input()`: frames only as input comes, at the time `redraw_after(s)` asks, or after
+  `request_redraw()` (tweens, a list's gliding and a caret's blinking ask themselves); the
+  program sleeps between, natively and in a web page. An idle notes app with the software
+  renderer: under 0.01 s of CPU in 3 s (7 s without it).
+- A window for a design smaller than 640 x 360 with `screen_fit(.native)` opens at its own size
+  (it opened a whole number of times larger, as for pixel art, drawn in its corner), also when
+  `screen_fit` comes after `window()`.
+- Web: on a computer a hidden textarea has the typing focus, so what an input method composes
+  (Japanese, Chinese, Korean) and the system's emoji panel inserts reach `text_input()`; keys
+  that compose are no longer the program's keys.
 - A match whose arms give no value, as the last line of a function, is a statement: it needs no
   `_:` arm (it was taken for the function's value and asked for one).
 - Web: when frames come late (fewer than 50 a second) and the program's own work is not the

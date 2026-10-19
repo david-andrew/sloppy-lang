@@ -2190,6 +2190,16 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `frame_number = () -> int`
 - `quit = ()`: end the game (the window closes once this frame is done). A web page cannot close itself: there it does nothing (can_quit() is false, so a menu can leave its Quit button out)
 - `can_quit = () -> bool`
+
+#### Frames drawn on demand: tools, editors, forms
+
+- `redraw_on_input = (on: bool = true)`: A game draws 60 frames a second; a tool that waits for its user need not. With redraw_on_input(), a frame is drawn only when something may have changed: a key, the mouse moving, a click or the wheel, text typed, the window resized or focused, files dropped, a file dialog's answer (and two frames after each, for what a frame's drawing sets off), at the time redraw_after asked for, or after request_redraw(). In between the program sleeps (sound still plays). update's dt is the time since the last frame (0.1 s at most). Something that moves on its own (an animation, a timer shown, a tween) calls request_redraw() in each frame it is not done in (tweens, hud_scroll's gliding and a text field's blinking caret do so themselves). While the program fetches from the network or has tasks, a frame comes at least 10 times a second, so that their answers are seen. Screenshot runs draw every frame as usual. On the web too: the page asks for no animation frames while it waits.
+  ```gdscript
+  redraw_on_input()
+  draw = (): ...                      # a frame only as something happens
+  ```
+- `request_redraw = ()`: draw another frame soon, even with nothing typed or moved (redraw_on_input): while an animation runs, once in each frame
+- `redraw_after = (seconds: f64)`: draw a frame `seconds` from now at the latest (redraw_on_input): a clock that shows the time, a message that goes away, a caret that blinks
 - `set_fullscreen = (on: bool = true)`
 - `toggle_fullscreen = ()`
 - `is_fullscreen = () -> bool`
@@ -2233,8 +2243,43 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
   if p.y > p.x: design_size(360, 640) else: design_size(1280, 720)
   ```
 - `show_cursor = (on: bool)`: show or hide the mouse pointer over the window (hidden: a game drawing its own crosshair or cursor); unlike mouse_lock, it still moves and mouse_pos() follows it
+- `set_cursor = (c: Cursor)`: the mouse pointer's shape over the window, from the end of this frame on: .arrow (the usual), .ibeam over text to type in, .hand over a link, .crosshair, .move over what drags, .resize_ew, .resize_ns, .resize_nwse and .resize_nesw over an edge or a corner that resizes, .not_allowed, .wait while busy; .hidden is show_cursor(false), and any other shape shows it again. While it is .arrow, a hud_text_field or ui_text_field under the pointer shows an I-beam. (In a web page, the browser's cursors; on Wayland, where the compositor has cursor shapes)
+  ```gdscript
+  over = divider.contains(mouse_pos())
+  set_cursor(if over or dragging: Cursor.resize_ew else: Cursor.arrow)
+  ```
+- `enum Cursor: arrow, ibeam, hand, crosshair, move, resize_ew, resize_ns, resize_nwse, resize_nesw, not_allowed, wait, hidden`
 - `window = (title: str = "", width: int = 1280, height: int = 720)`: Open the game window (called automatically when the program defines update/draw).
 - `set_title = (title: str)`: change the window's title while the game runs (a level's name, the score); in a web page, the page's title
+
+### files.jo
+
+A user's files: dropped onto the window, or chosen in the system's file dialog. The same calls everywhere; what a path is differs. Natively a path is where the file is on the disk. In a web page the browser gives the page a copy of the file, not where it is: the page keeps it in its own files, which read_file, read_bytes and load_image read, under the file's name.
+
+```gdscript
+loop path in dropped_files(): open_doc(read_file(path) ?? "")
+
+if key_pressed(.o) and key_down(.ctrl): asked = open_file_dialog([".txt", ".md"])
+if asked >= 0:
+    if let paths = file_dialog_result(asked):        # (each frame: none while it is open)
+        asked = -1
+        if paths.len() > 0: open_doc(read_file(paths[0]) ?? "")      # ([]: cancelled)
+```
+
+Dialogs: on Windows the system's (the program waits while it is open); on Linux zenity's or kdialog's, when one of them is installed (else the answer is at once: no files); on macOS AppleScript's (osascript). In a web page, the browser's file picker: it opens only as a click, a tap or a key ends (browsers allow it only then; asked for at another time, it opens at the next one). Drops: Windows, X11, Wayland and web pages (not yet macOS).
+
+Testing aids: SLOPPY_FILE_DIALOG="a.txt|b.txt" answers every dialog with those paths, at once ("": cancelled); SLOPPY_INPUT's 5:drop=a.txt drops a file in frame 5.
+
+- `dropped_files = () -> str[]`: the files dropped onto the window since the last frame: their paths (in a web page, the names of the page's copies, which read_file reads), in this frame only; [] in most frames
+- `open_file_dialog = (types: str[] = [], multiple: bool = false, title: str = "") -> int`: ask the user for a file to open, in the system's dialog: an id for file_dialog_result, which gives the answer once the user has chosen. types: the extensions to show (".png", "jpg"), [] for any file; multiple: more than one may be chosen; title: the dialog's own
+- `save_file_dialog = (name: str = "", types: str[] = [], title: str = "") -> int`: ask the user where to save a file: as open_file_dialog, with a name to start with. The answer is the path to write to. In a web page the answer is `name` at once, a file of the page's own: write it there, then download_file(path) hands it to the browser, which saves it where the user says (natively download_file does nothing more; the same code works everywhere)
+  ```gdscript
+  if let p = file_dialog_result(asked):
+      if p.len() > 0:
+          write_file(p[0], text)
+          download_file(p[0])
+  ```
+- `file_dialog_result = (d: int) -> str[]?`: a file dialog's answer (open_file_dialog's or save_file_dialog's id), once the user has chosen: the paths chosen, [] if the dialog was cancelled; none while it is open. Given once: asking again stops the program (a mistake: keep the answer when it comes)
 
 ### stats.jo
 
@@ -4417,7 +4462,7 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
   ```
 - `tween[T] = (from: T, to: T, duration: f64, ease: (f64) -> f64 = ease_in_out, delay: f64 = 0.0, mode: TweenMode = .once) -> Tween[T]`: a value going from `from` to `to` over `duration` seconds along an easing curve: a number, a position (vec2, vec3) or a color (vec4); delay: seconds before it starts. For example `pop = tween(0.0, 1.0, 0.4, ease_out_back)`, then `pop.update(dt)` each frame and `pop.value()` where it is (grown in 0.4 s, a little past the end, then back).
 - `tween = (from: f64, to: f64, duration: f64, ease: (f64) -> f64 = ease_in_out, delay: f64 = 0.0, mode: TweenMode = .once) -> Tween[f64]`: (numbers: tween(0, 10, 0.5) goes through the fractions between)
-- `update[T] = (tw: mut Tween[T], dt: f64)`
+- `update[T] = (tw: mut Tween[T], dt: f64)`: move it on by dt seconds (with redraw_on_input, it asks for frames until it is done)
 - `progress[T] = (tw: Tween[T]) -> f64`: where along the curve it is, from 0 to 1 (before the easing)
 - `value[T] = (tw: Tween[T]) -> T`
 - `done[T] = (tw: Tween[T]) -> bool`: finished (a tween that repeats never is)

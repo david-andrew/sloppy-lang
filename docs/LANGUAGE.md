@@ -1498,6 +1498,17 @@ started from Steam (in Desktop Mode too, after Games → Add a Non-Steam Game); 
 way, Steam turns them into a keyboard and mouse. For mouse look, `mouse_lock()` hides the pointer and keeps it in the
 window while `mouse_delta()` reports how far it moved (Wayland, X11 and browsers, where the
 lock starts at the next click and Escape ends it); `mouse_lock(false)` lets it go.
+In a web page, `text_input()` also has what an input method composes (Japanese, Chinese,
+Korean) and what the system's emoji panel inserts, once committed; natively, Windows gives it
+too, while on Linux it is the keys' characters (X11's XIM and Wayland's text-input are not
+used yet).
+
+`set_cursor(c)` gives the mouse pointer a shape over the window: `.arrow`, `.ibeam`, `.hand`,
+`.crosshair`, `.move`, `.resize_ew`, `.resize_ns`, `.resize_nwse`, `.resize_nesw`,
+`.not_allowed`, `.wait`, or `.hidden` (as `show_cursor(false)`); while it is `.arrow`, a text
+field under the pointer shows an I-beam. Web pages, Windows, X11 and macOS have them all
+(macOS shows the arrow for the diagonals and `.wait`); Wayland where the compositor offers
+cursor shapes (GNOME, KDE).
 
 Dragging is a pick on `mouse_pressed`, a follow while `mouse_down`, and a drop on
 `mouse_released` (with a camera, `screen_to_world(mouse_pos())` is where the pointer is in the
@@ -1526,6 +1537,44 @@ update = (dt: f64):
 may read the clipboard only as something is pasted, so there `clipboard()` is the text last
 pasted (ctrl+V, or a text field's Paste button on a phone) into the page; the X11 fallback without libX11 keeps the text within the program.
 
+**A user's files.** `dropped_files()` is the paths of the files dropped onto the window, in
+the frame they arrive ([] in the others): Windows, X11, Wayland and web pages. A dialog is
+started, and its answer comes later, as a fetch's does: `open_file_dialog(types, multiple,
+title)` and `save_file_dialog(name, types, title)` give an id, and `file_dialog_result(id)` is
+none while the dialog is open, then the paths chosen ([] if it was cancelled), once. Natively
+it is the system's dialog on Windows, zenity's or kdialog's on Linux (when one is installed),
+AppleScript's on macOS. In a web page the browser gives the page a copy of each file, which
+`read_file`, `read_bytes` and `load_image` read under its name; its file picker opens only as
+a click, a tap or a key ends (asked for in another frame, at the next one), and saving gives
+the name asked for at once: write the file there, then `download_file(path)` (which natively
+does nothing more), so the same code works everywhere. `SLOPPY_FILE_DIALOG="a.txt|b.txt"`
+answers every dialog at once (`""`: cancelled), and SLOPPY_INPUT's `5:drop=a.txt` drops a file.
+
+```gdscript
+asked = -1
+update = (dt: f64):
+    global asked
+    loop p in dropped_files(): open_doc(p)
+    if key_down(.ctrl) and key_pressed(.o): asked = open_file_dialog([".txt", ".md"])
+    if asked >= 0:
+        if let paths = file_dialog_result(asked):
+            asked = -1
+            if paths.len() > 0: open_doc(paths[0])
+open_doc = (p: str): text = read_file(p) ?? ""
+```
+
+**Tools: frames on demand.** A game draws 60 frames a second; a notes app or an editor that
+waits for its user need not. After `redraw_on_input()`, a frame is drawn only when something
+may have changed: a key, the mouse moving or clicked, the wheel, text typed, the window resized
+or focused, files dropped, a dialog's answer (and two frames after each), at the time
+`redraw_after(seconds)` asked for (a clock, a message that goes away), or after
+`request_redraw()`. In between the program sleeps, using next to no CPU (sound still plays).
+What moves on its own calls `request_redraw()` in each frame it is not done in; tweens,
+`hud_scroll`'s gliding and a text field's blinking caret do so themselves. While the program
+fetches from the network or has tasks, frames come at least 10 times a second, so that it sees
+their answers. A web page stops asking for animation frames meanwhile; screenshot runs draw
+every frame as usual.
+
 **Window size.** `window("Title", 1280, 720)` (called for you with those defaults) sets the
 window's starting size and the program's 2D coordinate space: 2D drawing and `mouse_pos()` are in
 those units however large the window becomes — resized, maximized, or a browser page, which the
@@ -1544,7 +1593,8 @@ screen_fit(.expand)       # (default) scaled to fit, centered; a wider or taller
 screen_fit(.letterbox)    # just the design area, with bars (letterbox_color(c))
 screen_fit(.crop)         # the design area fills the window; what sticks out is cut off
 screen_fit(.stretch)      # stretched to the window (shapes distort)
-screen_fit(.native)       # no scaling: one unit per window pixel
+screen_fit(.native)       # no scaling: one unit per window pixel (a window for a design smaller
+                          # than 640 x 360 opens at its own size, not larger as for pixel art)
 
 render_resolution(640, 360)   # draw at a fixed resolution, scaled up (sharp pixels, whole steps;
                               # smooth = true, whole = false for other looks)
