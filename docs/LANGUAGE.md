@@ -167,7 +167,8 @@ signedness and to floats; `f32` and `f64` convert implicitly in both directions.
 Narrowing is explicit: `int(3.7)`, `u8(x)`, `i32(n)`; `f64(n)` makes a float of an integer.
 An integer converted to a smaller integer type keeps its low bits, wrapping around as C's casts
 do: with `n = 300`, `u8(n)` is 44; `u8(n - 301)` is 255 (a literal that does not fit, as in
-`u8(300)`, is an error when compiling).
+`u8(300)`, is an error when compiling). `checked_cast[u8](n)` is `none` there instead, and
+`saturating_cast[u8](n)` 255.
 `as` reinterprets pointers, and integers as another size or sign (`x as u8`, `p as *f32`). It
 does not go between integers and floats: `f64_bits(x)` and `f64_from_bits(b)` give and take a
 float's bits. For C, `data(xs)` is a pointer to an array's or a string's first element, and a
@@ -175,8 +176,15 @@ string's bytes end with a 0. A union is not cast but tested with `is`.
 Float to integer conversion truncates toward zero and saturates: NaN becomes 0 and values
 beyond the integer range become its minimum or maximum (the same on every target).
 
-**Operators.** Integer `/` truncates, `%` is remainder, integer overflow wraps, and a shift
-counts modulo the width (`1 << 64` is 1, as x86-64 and arm64 shift). `x ^ y` is
+**Operators.** Integer `/` truncates, `%` is remainder, integer overflow wraps (in debug and
+release builds alike: `i8(127) + i8(1)` is -128), and a shift counts modulo the width
+(`1 << 64` is 1, as x86-64 and arm64 shift). Where overflow must not pass unseen, the library
+has `checked_add`, `checked_sub` and `checked_mul` (an optional, `none` on overflow:
+`checked_mul(w, h) ?? panic("too big")`), `saturating_add`, `_sub` and `_mul` (the type's
+largest or smallest value) and `wrapping_add`, `_sub` and `_mul` (as the operators, said on
+purpose), for every integer type. A conversion that must not lose anything is
+`checked_cast[u8](x)` (`none` unless x is a value a `u8` has), and `saturating_cast[u8](x)` gives
+0 or 255 past the ends. `x ^ y` is
 `pow(x, y)` (right-associative and tighter than unary minus: `-2 ^ 2 == -4`). On integers it
 is an integer: a negative power truncates as `/` does (`2 ^ -1 == 0`), and it wraps on overflow
 (`2 ^ 64 == 0`); `2.0 ^ -1` is 0.5. C's xor is `xor`: a `^` that looks like one (on hex

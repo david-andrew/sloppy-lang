@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Integer arithmetic that says when it overflows (lib/std/checked.jo): `checked_add`,
+  `checked_sub` and `checked_mul` give an optional, `none` when the result does not fit the type;
+  `saturating_add`, `_sub` and `_mul` give the type's largest or smallest value; `wrapping_add`,
+  `_sub` and `_mul` wrap, as the operators do (in debug and release builds alike), saying it is
+  meant. They are there for int, i32, i16, i8, u64, u32, u16 and u8. `checked_cast[u8](x)` is x
+  as a `u8` when it is one of its values and `none` otherwise (where `u8(x)` keeps the low bits),
+  `saturating_cast[u8](x)` 0 or 255 past the ends, for any integer type. Until now a program had
+  to write the tests for overflow itself. `checked_mul` on int and u64 is the high half of the
+  128-bit product (one instruction on x86-64 and arm64; a few on the web).
 - A fixed-size array slices as a `T[]` does: with `a: int[4]`, `a[1..3]`, `a[[1..3]]`, `a[1..]`
   and `a[..2]` are new `int[]`s holding those elements, where they said "cannot slice int[4]". A
   slice with a constant end past the last index is an error when compiling. A fixed-size array

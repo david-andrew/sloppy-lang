@@ -23,8 +23,9 @@ TOPICS = [
      "and `s.split(r)` use it. Raw strings (`r\"\\d+\"`) keep the backslashes as they are."),
     ("Basics", "maps", "Maps", ["core/map"], "maps",
      "`{K: V}` maps keys to values, in the order they were added."),
-    ("Basics", "math", "Math and random numbers", ["core/math"], "math",
-     "For vectors and matrices, see [colors, vectors and matrices](#colors-vectors-and-matrices)."),
+    ("Basics", "math", "Math and random numbers", ["core/math", "std/checked"], "math",
+     "For vectors and matrices, see [colors, vectors and matrices](#colors-vectors-and-matrices). "
+     "`+`, `-` and `*` on integers wrap around; `checked_add` and the others below say when they would."),
     ("Basics", "system", "Files, time and the system", ["core/os", "std/path", "std/date", "std/cli", "std/stop"], "system",
      "In a web page, files are the ones the page was given, and `env` reads its address's parameters. "
      "What is at a web address: `net.fetch(url)`, after `import net` ([fetching from the web](START.md#fetching-from-the-web))."),

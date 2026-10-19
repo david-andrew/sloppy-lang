@@ -339,7 +339,7 @@ Hash map {K: V}: insertion ordered, open addressing over a dense entry list. The
 
 ## Math and random numbers
 
-For vectors and matrices, see [colors, vectors and matrices](#colors-vectors-and-matrices).
+For vectors and matrices, see [colors, vectors and matrices](#colors-vectors-and-matrices). `+`, `-` and `*` on integers wrap around; `checked_add` and the others below say when they would.
 
 ```gdscript
 # example: math and random numbers
@@ -347,6 +347,7 @@ print(PI, sqrt(2.0), abs(-3), floor(2.7), round(2.5))
 print(min(3, 8), max(2.5, 1.0), clamp(15, 0, 10))
 print(sin(PI / 2.0), atan2(1.0, 1.0), degrees(PI), pow(2.0, 10.0))
 print(lerp(0.0, 100.0, 0.25), smoothstep(0.0, 1.0, 0.5), mod(-1, 3))
+print(checked_add(MAX_INT, 1), saturating_add(u8(250), 10), checked_cast[u8](300), wrapping_mul(u8(16), 16))
 
 seed_random(7)                           # the same numbers every run
 print(random(), random(10.0, 20.0), random_int(1, 7))
@@ -354,6 +355,8 @@ print(random(), random(10.0, 20.0), random_int(1, 7))
 r = rng(123)                             # a generator of its own
 print(r.next_int(0, 100), r.next_float())
 ```
+
+### math.jo
 
 Math basics.
 
@@ -478,6 +481,111 @@ Math basics.
 - `random_int = (lo: int, hi: int) -> int`: a random whole number from lo up to hi, hi left out (as in lo..hi): random_int(0, xs.len()) picks a position, and a die is random_int(1, 7)
 - `random_item[T] = (xs: T[]) -> T`: a random element of xs (which must not be empty)
 - `shuffle[T] = (xs: mut T[])`: put xs in a random order
+
+### checked.jo
+
+Integer arithmetic that says when it overflows. `+`, `-` and `*` on integers wrap around, in debug and release builds alike (`i8(127) + i8(1)` is -128); these say what to do instead:
+
+```gdscript
+checked_add(a, b)        # an optional: none when the sum does not fit the type
+saturating_add(a, b)     # the type's largest (or smallest) value when it does not fit
+wrapping_add(a, b)       # as a + b: wrapped around, said on purpose
+checked_cast[u8](x)      # x as a u8 when it fits, else none (u8(x) keeps the low bits)
+saturating_cast[u8](x)   # 0 below, 255 above
+
+total = checked_add(total, n) ?? panic("total overflowed")
+if let p = checked_mul(w, h): ...
+```
+
+They take two values of one integer type (int, i32, i16, i8, u64, u32, u16, u8) and give that type; values of mixed types go as the int ones, as other operators do (`checked_add(x, n)` with x an i32 and n an int is an int). A literal takes the other's type: `checked_add(b, 1)` with b a u8 is a u8.
+
+#### Checked: none when the exact result does not fit
+
+- `checked_add = (a: int, b: int) -> int?`: a + b, or none when it overflows
+- `checked_add = (a: u64, b: u64) -> u64?`
+- `checked_add = (a: i32, b: i32) -> i32?`
+- `checked_add = (a: i16, b: i16) -> i16?`
+- `checked_add = (a: i8, b: i8) -> i8?`
+- `checked_add = (a: u32, b: u32) -> u32?`
+- `checked_add = (a: u16, b: u16) -> u16?`
+- `checked_add = (a: u8, b: u8) -> u8?`
+- `checked_sub = (a: int, b: int) -> int?`: a - b, or none when it overflows (for the unsigned types: when b > a)
+- `checked_sub = (a: u64, b: u64) -> u64?`
+- `checked_sub = (a: i32, b: i32) -> i32?`
+- `checked_sub = (a: i16, b: i16) -> i16?`
+- `checked_sub = (a: i8, b: i8) -> i8?`
+- `checked_sub = (a: u32, b: u32) -> u32?`
+- `checked_sub = (a: u16, b: u16) -> u16?`
+- `checked_sub = (a: u8, b: u8) -> u8?`
+- `checked_mul = (a: int, b: int) -> int?`: a * b, or none when it overflows
+- `checked_mul = (a: u64, b: u64) -> u64?`
+- `checked_mul = (a: i32, b: i32) -> i32?`
+- `checked_mul = (a: i16, b: i16) -> i16?`
+- `checked_mul = (a: i8, b: i8) -> i8?`
+- `checked_mul = (a: u32, b: u32) -> u32?`
+- `checked_mul = (a: u16, b: u16) -> u16?`
+- `checked_mul = (a: u8, b: u8) -> u8?`
+
+#### Saturating: the nearest value the type has
+
+- `saturating_add = (a: int, b: int) -> int`: a + b, or the type's largest or smallest value when it overflows
+- `saturating_add = (a: u64, b: u64) -> u64`
+- `saturating_add = (a: i32, b: i32) -> i32`
+- `saturating_add = (a: i16, b: i16) -> i16`
+- `saturating_add = (a: i8, b: i8) -> i8`
+- `saturating_add = (a: u32, b: u32) -> u32`
+- `saturating_add = (a: u16, b: u16) -> u16`
+- `saturating_add = (a: u8, b: u8) -> u8`
+- `saturating_sub = (a: int, b: int) -> int`: a - b, or the type's largest or smallest value when it overflows (0 for the unsigned types when b > a)
+- `saturating_sub = (a: u64, b: u64) -> u64`
+- `saturating_sub = (a: i32, b: i32) -> i32`
+- `saturating_sub = (a: i16, b: i16) -> i16`
+- `saturating_sub = (a: i8, b: i8) -> i8`
+- `saturating_sub = (a: u32, b: u32) -> u32`
+- `saturating_sub = (a: u16, b: u16) -> u16`
+- `saturating_sub = (a: u8, b: u8) -> u8`
+- `saturating_mul = (a: int, b: int) -> int`: a * b, or the type's largest or smallest value when it overflows
+- `saturating_mul = (a: u64, b: u64) -> u64`
+- `saturating_mul = (a: i32, b: i32) -> i32`
+- `saturating_mul = (a: i16, b: i16) -> i16`
+- `saturating_mul = (a: i8, b: i8) -> i8`
+- `saturating_mul = (a: u32, b: u32) -> u32`
+- `saturating_mul = (a: u16, b: u16) -> u16`
+- `saturating_mul = (a: u8, b: u8) -> u8`
+
+#### Wrapping: as the operators, said on purpose
+
+- `wrapping_add = (a: int, b: int) -> int`: a + b, wrapped around on overflow (as `+` does: this says it is meant)
+- `wrapping_add = (a: u64, b: u64) -> u64`
+- `wrapping_add = (a: i32, b: i32) -> i32`
+- `wrapping_add = (a: i16, b: i16) -> i16`
+- `wrapping_add = (a: i8, b: i8) -> i8`
+- `wrapping_add = (a: u32, b: u32) -> u32`
+- `wrapping_add = (a: u16, b: u16) -> u16`
+- `wrapping_add = (a: u8, b: u8) -> u8`
+- `wrapping_sub = (a: int, b: int) -> int`: a - b, wrapped around on overflow (as `-` does: this says it is meant)
+- `wrapping_sub = (a: u64, b: u64) -> u64`
+- `wrapping_sub = (a: i32, b: i32) -> i32`
+- `wrapping_sub = (a: i16, b: i16) -> i16`
+- `wrapping_sub = (a: i8, b: i8) -> i8`
+- `wrapping_sub = (a: u32, b: u32) -> u32`
+- `wrapping_sub = (a: u16, b: u16) -> u16`
+- `wrapping_sub = (a: u8, b: u8) -> u8`
+- `wrapping_mul = (a: int, b: int) -> int`: a * b, wrapped around on overflow (as `*` does: this says it is meant)
+- `wrapping_mul = (a: u64, b: u64) -> u64`
+- `wrapping_mul = (a: i32, b: i32) -> i32`
+- `wrapping_mul = (a: i16, b: i16) -> i16`
+- `wrapping_mul = (a: i8, b: i8) -> i8`
+- `wrapping_mul = (a: u32, b: u32) -> u32`
+- `wrapping_mul = (a: u16, b: u16) -> u16`
+- `wrapping_mul = (a: u8, b: u8) -> u8`
+
+#### Conversions
+
+- `checked_cast[T] = (x: int) -> T?`: x as a T (an integer type: checked_cast[u8](x)) when it has that value, else none (`u8(x)` keeps the low bits: u8(300) is 44, checked_cast[u8](300) none)
+- `checked_cast[T] = (x: u64) -> T?`
+- `saturating_cast[T] = (x: int) -> T`: x as a T (an integer type: saturating_cast[u8](x)), or T's smallest or largest value when x is past it (saturating_cast[u8](300) is 255, saturating_cast[u8](-5) 0)
+- `saturating_cast[T] = (x: u64) -> T`
 
 ## Files, time and the system
 
