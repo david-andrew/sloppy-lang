@@ -120,6 +120,8 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `sum[T] = (xs: T[]) -> T`
 - `min[T] = (xs: T[]) -> T`
 - `max[T] = (xs: T[]) -> T`
+- `min[T] = (xs: T[], default: T) -> T`: (the smallest or largest, or `default` when xs is empty: `xs.max(default = 0)`)
+- `max[T] = (xs: T[], default: T) -> T`
 - `min[T] = (a: T, b: T) -> T`: the smaller and the larger of two values of a type with its own `<` (a big number, a version)
 - `max[T] = (a: T, b: T) -> T`
 - `min_by[T, K] = (xs: T[], key: (T) -> K) -> T`: the element with the smallest key, or the largest (the first of equal ones): the cheapest item, the nearest enemy (min_by(enemies, (e): distance(e.pos, me)))

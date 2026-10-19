@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `-> void | E`: a function that gives back nothing but can fail. A bare `return` and reaching
+  the end give the void, `?` on its call passes E on (with `-> E?` both members were passed on,
+  so `?` could not be used), and the void prints as `void`. `-> void | E` said "expected ':'".
+- `x ?? return v`, `x ?? continue` and `x ?? break`: the value, or leave there (as Kotlin's
+  `?: return`): `n = to_int(s) ?? return ParseError("...")`.
+- `xs.max(default = 0)` and `xs.min(default = ...)` for an array that may be empty (max of an
+  empty one stops the program); `xs.max() ?? 0` says so.
+- `sloppy tool.jo -- add x` gives the program `add x`: the `--` was passed on as its first
+  argument (also for `sloppy watch`).
 - A lambda inside a function may leave a parameter's type out where its body says it: `inc =
   (x): x + 1` (x an int), `h = (y): g(y) * 2` (y what g takes), and a lambda returned from a
   generic function (`compose = (f, g): (x): f(g(x))`). It said "cannot infer the type of

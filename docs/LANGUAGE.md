@@ -853,6 +853,17 @@ load_score = (path: str) -> int?:
     to_int(text)?                       # none: not a number
 ```
 
+A function that gives back nothing but can fail returns `void | SomeError`: a bare `return`, or
+reaching the end, gives the void, and `?` on its call passes the error on:
+
+```gdscript
+save_all = (dir: str) -> void | SaveError:
+    loop s in sheets: save_sheet(dir, s)?
+```
+
+A missing value can also end the function, or a loop round, right there: `n = to_int(s) ??
+return ParseError("not a number")`, `?? continue`, `?? break`.
+
 `sum += parse_num(l, i + 1)?` is short for
 
 ```gdscript
