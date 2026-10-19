@@ -967,6 +967,8 @@ sum += r
 - `a()?.b` returns from the function when `a()` gives none; it is not optional chaining. For a
   value that may be none, `(a() ?? default).b` or `if let v = a(): v.b`.
 - `??`, `if let` and `!` handle `none` only: an error goes through them unchanged.
+- To pass on the error and keep the none (`int? | AsmError`, none meaning "not known yet"), test
+  for it: `if r is AsmError: return r`, and r is an `int?` after it.
 - An error cannot pass through `?` as a value: the members of a union that are errors always
   return. To give one back as data (a list of the problems found), return them in an array, or
   wrap the error in a struct of its own.
