@@ -927,6 +927,9 @@ call_args = (args: int[], ptypes: int[], mutmask: int, out: mut int[], callee: i
     if any_mut: mut_alias_check(args, mutmask, callee)
     loop i in 0.. and a in args:
         if mutmask & (1 << i) != 0:
+            if i < ptypes.len() and tkind(ntype(a)) == .fixed and tkind(ptypes[i]) == .array:
+                out.push(fixed_mut_in(a, ptypes[i], mut_call_text(callee, a, args.len())))
+                continue
             if copy_through(a, callee):
                 out.push(copy_in(a, mut_call_text(callee, a, args.len())))
                 continue
@@ -1011,6 +1014,60 @@ copy_in = (a: int, call: str) -> int:
     copy_backs.push(cb)
     tmp
 
+# a new T[] holding copies of the elements of the T[N] at src
+fixed_to_arr = (src: int, from: int) -> int:
+    et = int(types[from].elem)
+    esz = tsize(et)
+    n = fixed_len(from)
+    arr = vreg(VI)
+    e_mov(arr, e_call(rt("__arr_filled"), [e_iconst(n), e_iconst(esz)], VI))
+    e_copy(e_addi(arr, 24), src, n * esz)
+    if is_managed(et):
+        i = vreg(VI)
+        e_mov(i, e_iconst(0))
+        blk()
+        lop()
+        brif_to(e_bin(.ges, VI, i, e_iconst(n)), ctl - 1)
+        copy_at(e_bin(.add, VI, e_addi(arr, 24), e_bin(.mul, VI, i, e_iconst(esz))), et)
+        e_mov(i, e_addi(i, 1))
+        br_to(ctl)
+        endc()
+        endc()
+    arr
+
+# a T[N] passed for a `mut T[]` parameter: a T[] holding a copy, in a slot whose address is the
+# argument; copy_back puts its elements back (snap -1 marks it)
+fixed_mut_in = (a: int, at: int, call: str) -> int:
+    t = ntype(a)
+    cb = CopyBack(a, new_temp(at), [], [], -1, call)
+    loop st in place_steps(a):
+        if nodes[st].kind == .index: cb.idx.push((int(nodes[st].b), gen_expr(int(nodes[st].b)).v))
+    loop x in cb.idx: frozen[x.0] = x.1
+    src = place_addr(gen_place(a, true), t)
+    loop x in cb.idx: frozen.remove(x.0)
+    tmp = e_slot(cb.slot)
+    store_val(at, tmp, 0, fixed_to_arr(src, t))
+    copy_backs.push(cb)
+    tmp
+
+# after the call: the T[] fixed_mut_in made goes back into the fixed-size array, which keeps its
+# length
+fixed_mut_back = (cb: CopyBack):
+    t = ntype(cb.arg)
+    at = mk_array(int(types[prune(t)].elem))
+    n = fixed_len(t)
+    loop x in cb.idx: frozen[x.0] = x.1
+    dst = place_addr(gen_place(cb.arg, true), t)
+    loop x in cb.idx: frozen.remove(x.0)
+    q = load_val(at, e_slot(cb.slot), 0)
+    iff(e_bin(.ne, VI, arr_len(q), e_iconst(n)))
+    e_call_nr(rt("__panic_fixed_len"), [e_daddr(loc_data(nodes[cb.arg].pos)), e_daddr(str_data("{cb.call} changed the length of {place_text(cb.arg)}, of type {type_str(t)}: a fixed-size array keeps its length, so give a function that adds or removes elements a variable of type {type_str(at)}"))], -1)
+    endc()
+    drop_at(dst, t)
+    if n > 0: e_copy(dst, e_addi(q, 24), n * tsize(int(types[prune(t)].elem)))
+    copy_at(dst, t)
+    release(q, at)
+
 # the length of the array in place n
 place_len = (n: int) -> int:
     t = ntype(n)
@@ -1023,6 +1080,9 @@ place_len = (n: int) -> int:
 copy_back = (mark: int):
     loop copy_backs.len() > mark:
         cb = copy_backs.pop()
+        if cb.snap < 0:
+            fixed_mut_back(cb)
+            continue
         t = ntype(cb.arg)
         loop x in cb.idx: frozen[x.0] = x.1
         resized = vreg(VI)
@@ -1488,13 +1548,19 @@ gen_cfn_call = (callee: int, args: int[]) -> Val:
     ret = int(types[ft].elem)
     fp = gen_expr(callee).v
     argv: int[]
+    pts: int[]
     loop a in args:
         val = gen_expr(a)
         borrow(val, ntype(a))
         argv.push(val.v)
-    rv = e_calli(fp, argv, ret_vt(ret), true)
-    if vc(ret) == VC_AGG: ice("C functions returning structs are not supported")
-    finish_call(ret, rv, -1)
+        pts.push(ntype(a))
+    rslot = -1
+    dest = -1
+    if vc(ret) == VC_AGG:
+        rslot = new_temp(ret)
+        dest = e_slot(rslot)
+    rv = c_call(fp, argv, pts, ret, dest, 0, nodes[callee].pos)
+    finish_call(ret, rv, rslot)
 
 # ---------------- closures ----------------
 env_layout = (f: int):
@@ -2531,6 +2597,15 @@ gen_intrinsic = (e: int) -> Val:
         if id == .code_sync: code = 11
         emit(.intr, VI, d, i32(start), i32(vs.len()), 0, code)
         return V(d, false)
+    if id == .mul_high:
+        signed = prune(ntype(args[0])) == T_INT
+        x = gen_expr(args[0]).v
+        y = gen_expr(args[1]).v
+        if not mulh_ok:
+            if signed: return V(e_call(rt("__mul_high_soft_s"), [x, y], VI), false)
+            return V(e_call(rt("__mul_high_soft_u"), [x, y], VI), false)
+        if signed: return V(e_bin(.mulhs, VI, x, y), false)
+        return V(e_bin(.mulhu, VI, x, y), false)
     if id == .sqrt:
         v = gen_expr(args[0]).v
         return V(e_un(.fsqrt, vt_of(ntype(args[0])), v), false)
@@ -2766,27 +2841,7 @@ gen_conv = (e: int) -> Val:
             return Val(d, true, s)
         union_moved(src, from, d, to, e)
         return Val(d, true, s)
-    if cv == .fixed2arr:
-        # a new array holding copies of the elements
-        et = int(types[from].elem)
-        esz = tsize(et)
-        n = fixed_len(from)
-        src = place_addr(gen_place(a, false), from)
-        arr = vreg(VI)
-        e_mov(arr, e_call(rt("__arr_filled"), [e_iconst(n), e_iconst(esz)], VI))
-        e_copy(e_addi(arr, 24), src, n * esz)
-        if is_managed(et):
-            i = vreg(VI)
-            e_mov(i, e_iconst(0))
-            blk()
-            lop()
-            brif_to(e_bin(.ges, VI, i, e_iconst(n)), ctl - 1)
-            copy_at(e_bin(.add, VI, e_addi(arr, 24), e_bin(.mul, VI, i, e_iconst(esz))), et)
-            e_mov(i, e_addi(i, 1))
-            br_to(ctl)
-            endc()
-            endc()
-        return V(arr, true)
+    if cv == .fixed2arr: return V(fixed_to_arr(place_addr(gen_place(a, false), from), from), true)
     if cv == .opt:
         inner = int(types[to].elem)
         s = new_temp(to)
@@ -3102,7 +3157,10 @@ gen_slice = (e: int) -> Val:
     a = int(nodes[e].a)
     bt = prune(ntype(a))
     r = int(nodes[e].b)
-    p = gen_borrowed(a).v
+    fixed = types[bt].kind == .fixed
+    p = 0
+    if fixed: p = place_addr(gen_place(a, false), bt)
+    else: p = gen_borrowed(a).v
     lo = 0
     if nodes[r].a != 0: lo = gen_expr(int(nodes[r].a)).v
     else: lo = e_iconst(0)
@@ -3110,10 +3168,13 @@ gen_slice = (e: int) -> Val:
     if nodes[r].b != 0:
         hi = gen_expr(int(nodes[r].b)).v
         if has_flag(r, NF_INCLUSIVE): hi = e_addi(hi, 1)
+    else if fixed: hi = e_iconst(fixed_len(bt))
     else: hi = arr_len(p)
     if types[bt].kind == .str_: return V(e_call(rt("__str_slice"), [p, lo, hi], VI), true)
     et = int(types[bt].elem)
-    q = e_call(rt("__arr_slice"), [p, lo, hi, e_iconst(tsize(et))], VI)
+    q = 0
+    if fixed: q = e_call(rt("__fixed_slice"), [p, e_iconst(fixed_len(bt)), lo, hi, e_iconst(tsize(et))], VI)
+    else: q = e_call(rt("__arr_slice"), [p, lo, hi, e_iconst(tsize(et))], VI)
     if is_managed(et): retain_elems(q, et)
     V(q, true)
 
@@ -5514,12 +5575,17 @@ lower_extern_thunk = (lf: int, f: int):
     lib = fns[f].clib
     nm = name_of(int(nodes[int(fns[f].decl)].name))
     if len(fns[f].csym) > 0: nm = fns[f].csym
+    ret = int(fns[f].ret)
+    # (a struct result: where the caller wants it, the first parameter)
+    dest = -1
+    if vc(ret) == VC_AGG: dest = vreg(VI)
     ps: int[]
     loop t in fns[f].ptypes:
-        if vc(t) == VC_AGG: fatal(nodes[int(fns[f].decl)].pos, "C functions can only take scalar or pointer arguments")
         if tkind(t) == .array: fatal(nodes[int(fns[f].decl)].pos, "a C function cannot take an array: declare the parameter as a pointer (*f32) and pass data(xs)")
-        ps.push(vreg(vt_of(t)))
-    ir.nparams = ps.len()
+        # (a struct: its address)
+        if vc(t) == VC_AGG: ps.push(vreg(VI))
+        else: ps.push(vreg(vt_of(t)))
+    ir.nparams = ir.vtypes.len()
     # (a str goes to C as its bytes, ending in a zero byte: a char *)
     cps: int[]
     loop i in 0.. and t in fns[f].ptypes:
@@ -5531,8 +5597,6 @@ lower_extern_thunk = (lf: int, f: int):
             emit(.f2f, VF, d, ps[i], 0, 0, 0)
             cps.push(d)
         else: cps.push(ps[i])
-    ret = int(fns[f].ret)
-    if vc(ret) == VC_AGG: fatal(nodes[int(fns[f].decl)].pos, "C functions can only return scalars or pointers")
     ir.ret = ret_vt(ret)
     data_size = align_up(data_size, 8)
     slot = data_size
@@ -5561,8 +5625,167 @@ lower_extern_thunk = (lf: int, f: int):
         e_mov(fp, e_call(rt("__ffi_resolve"), [e_daddr(str_data(rlib)), e_daddr(str_data(nm))], VI))
         e_store(e_gaddr(slot), 0, fp, 8)
         endc()
-    r = e_calli(fp, cps, ret_vt(ret), true)
-    # (C's variadic arguments: on Apple's arm64 they go on the stack)
-    if fns[f].cvariadic > 0: ir.code[ir.code.len() - 1].imm = int(fns[f].cvariadic)
+    r = c_call(fp, cps, fns[f].ptypes, ret, dest, int(fns[f].cvariadic), nodes[int(fns[f].decl)].pos)
     if vc(ret) == VC_INT: r = norm(r, ret)
     e_ret(r)
+
+# ---------------- C's conventions for structs by value ----------------
+# A struct (or vector) passed to or given back by C by value goes as C's convention for the
+# target has it. Linux x86-64 (System V): one of 16 bytes or less in up to two registers, each
+# 8 bytes in an integer register when an integer is in them, else in a float one; larger, or
+# when the registers have run out, copied onto the stack. Windows x64: one of 1, 2, 4 or 8 bytes
+# as an integer, others as a pointer to a copy. arm64 (Linux, macOS): 1 to 4 floats of one type
+# (an HFA) in float registers, others of 16 bytes or less in up to two integer registers, larger
+# ones as a pointer to a copy. A struct result comes back in the same registers, or larger
+# ones in memory the caller gives: its address a first argument (x8 on arm64).
+
+# a call of the C function at fp with vals (a struct's: its address) of types ts, giving a ret
+# (a struct: written to dest); variadic is @variadic's count
+c_call = (fp: int, vals: int[], ts: int[], ret0: int, dest: int, variadic: int, pos: int) -> int:
+    ret = prune(ret0)
+    cargs: int[]
+    cc = CCall(0, -1, [], false)
+    ni = 0          # (registers taken, x86-64 Linux and arm64)
+    nf = 0
+    rsz = 0
+    rs = -1
+    rint = false    # (Windows: a small struct result is an integer)
+    if target_wasm:
+        loop t in ts:
+            if vc(t) == VC_AGG: fatal(pos, "a web build passes no structs to C functions: pass {type_str(t)}'s fields")
+        if vc(ret) == VC_AGG: fatal(pos, "a web build gets no structs from C functions: give a pointer to write {type_str(ret)} to")
+    if vc(ret) == VC_AGG:
+        rsz = tsize(ret)
+        rs = new_slot(align_up(max(rsz, 8), 8), 16)
+        if target_windows:
+            rint = rsz == 1 or rsz == 2 or rsz == 4 or rsz == 8
+            if not rint:
+                cargs.push(e_slot(rs))
+                ni = 1
+        else if target_arm64:
+            h = c_hfa(ret)
+            if h.0 > 0:
+                loop i in [0..h.0):
+                    if h.1 == 1: cc.parts.push(2 | (4 * i) << 4)
+                    else: cc.parts.push(1 | (8 * i) << 4)
+            else if rsz <= 16:
+                loop i in [0..(rsz + 7) / 8): cc.parts.push((8 * i) << 4)
+            else: cc.x8 = true
+            cc.slot = rs
+        else:
+            cls = c_sysv_classes(ret)
+            if cls.len() == 0:
+                cargs.push(e_slot(rs))
+                ni = 1
+            else:
+                loop i in 0.. and c in cls:
+                    if c == 1: cc.parts.push((8 * i) << 4)
+                    else: cc.parts.push(1 | (8 * i) << 4)
+                cc.slot = rs
+    loop i in 0.. and v in vals:
+        t = prune(ts[i])
+        if vc(t) != VC_AGG:
+            # (arm64: once a struct has gone on the stack for want of registers, so do the
+            # arguments of its kind after it)
+            if target_arm64 and ((vtype(v) == VI and ni >= 8) or (vtype(v) != VI and nf >= 8)): c_stack_arg(cc, cargs, pos)
+            cargs.push(v)
+            if vtype(v) == VI: ni += 1
+            else: nf += 1
+            continue
+        if variadic > 0 and i >= variadic - 1: fatal(pos, "a struct cannot be one of a variadic C function's `...` arguments: pass its fields")
+        sz = tsize(t)
+        if target_windows:
+            if sz == 1 or sz == 2 or sz == 4 or sz == 8: cargs.push(e_load(VI, v, 0, sz))
+            else:
+                # (a pointer to a copy C may change)
+                s = new_slot(sz, 16)
+                e_copy(e_slot(s), v, sz)
+                cargs.push(e_slot(s))
+            continue
+        if target_arm64:
+            h = c_hfa(t)
+            k = (sz + 7) / 8
+            if h.0 > 0 and nf + h.0 <= 8:
+                loop j in [0..h.0):
+                    if h.1 == 1: cargs.push(e_load(VS, v, 4 * j, 4 | M_FLOAT))
+                    else: cargs.push(e_load(VF, v, 8 * j, 8 | M_FLOAT))
+                nf += h.0
+            else if h.0 > 0 or sz <= 16:
+                s = new_slot(8 * k, 8)
+                e_copy(e_slot(s), v, sz)
+                # (too few registers left: on the stack, and no more registers of its kind)
+                spill = (h.0 > 0) or ni + k > 8
+                loop j in [0..k):
+                    if spill: c_stack_arg(cc, cargs, pos)
+                    cargs.push(e_load(VI, e_slot(s), 8 * j, 8))
+                if h.0 > 0: nf = 8
+                else if spill: ni = 8
+                else: ni += k
+            else:
+                s = new_slot(sz, 16)
+                e_copy(e_slot(s), v, sz)
+                if ni >= 8: c_stack_arg(cc, cargs, pos)
+                cargs.push(e_slot(s))
+                ni += 1
+            continue
+        # (x86-64 Linux: by its 8-byte halves, copied out whole: the last may be short)
+        cls = c_sysv_classes(t)
+        nint = 0
+        loop c in cls:
+            if c == 1: nint += 1
+        k = (sz + 7) / 8
+        s = new_slot(8 * k, 8)
+        e_copy(e_slot(s), v, sz)
+        on_stack = cls.len() == 0 or ni + nint > 6 or nf + cls.len() - nint > 8
+        loop j in [0..k):
+            if on_stack:
+                c_stack_arg(cc, cargs, pos)
+                cargs.push(e_load(VI, e_slot(s), 8 * j, 8))
+            else if cls[j] == 1: cargs.push(e_load(VI, e_slot(s), 8 * j, 8))
+            else: cargs.push(e_load(VF, e_slot(s), 8 * j, 8 | M_FLOAT))
+        if not on_stack:
+            ni += nint
+            nf += cls.len() - nint
+    rv = -1
+    if vc(ret) != VC_AGG: rv = ret_vt(ret)
+    else if rint: rv = VI
+    r = e_calli(fp, cargs, rv, true)
+    # (C's variadic arguments: on Apple's arm64 they go on the stack)
+    imm = variadic
+    if cc.stack != 0 or cc.slot >= 0:
+        ir.ccalls.push(cc)
+        imm |= ir.ccalls.len() << 16
+    ir.code[ir.code.len() - 1].imm = imm
+    if vc(ret) != VC_AGG: return r
+    if rint: e_store(dest, 0, r, rsz)
+    else: e_copy(dest, e_slot(rs), rsz)
+    -1
+
+# (the argument pushed next goes on the stack, whatever registers are free)
+c_stack_arg = (cc: mut CCall, cargs: int[], pos: int):
+    if cargs.len() >= 62: fatal(pos, "too many arguments to a C function with structs on the stack (62 at most)")
+    cc.stack |= 1 << cargs.len()
+
+# System V's classes of the 8-byte halves of a struct: 1 an integer register, 2 a float one;
+# none when it goes in memory (over 16 bytes, or a field not aligned: @packed)
+c_sysv_classes = (t: int) -> int[]:
+    sz = tsize(t)
+    if sz > 16 or sz == 0: return []
+    lv: (int, int, int)[]
+    c_leaves(t, 0, lv)
+    cls = fill(2, (sz + 7) / 8)
+    loop l in lv:
+        if l.0 % l.2 != 0: return []
+        if l.1 == 0: cls[l.0 / 8] = 1
+    cls
+
+# a homogeneous float aggregate (arm64: 1 to 4 floats of one type, in float registers): (count,
+# kind: 1 f32, 2 f64), or (0, 0)
+c_hfa = (t: int) -> (int, int):
+    lv: (int, int, int)[]
+    c_leaves(t, 0, lv)
+    if lv.len() == 0 or lv.len() > 4 or lv[0].1 == 0: return (0, 0)
+    loop i in 0.. and l in lv:
+        if l.1 != lv[0].1 or l.0 != i * l.2: return (0, 0)
+    if tsize(t) != lv.len() * lv[0].2: return (0, 0)
+    (lv.len(), lv[0].1)

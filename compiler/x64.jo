@@ -1304,6 +1304,25 @@ emit_epilogue = ():
     if dbg_on: dbg_epis.push(code.len())
     b(0xC3)       # ret
 
+# a struct C gave back in registers (rax, rdx, xmm0, xmm1), into its slot
+x64_struct_result = (cc: CCall):
+    ri = [RAX, RDX]
+    ni = 0
+    nf = 0
+    loop p in cc.parts:
+        off = slot_off[cc.slot] + (p >> 4)
+        if p & 15 == 0:
+            mov_mr(RBP, off, ri[ni])
+            ni += 1
+        else:
+            pre = 0xF2                      # movsd [rbp + off], xmm (movss for 4 bytes)
+            if p & 15 == 2: pre = 0xF3
+            sse_rm(pre, 0x11, nf, RBP, off)
+            nf += 1
+
+# (bit k: argument k of the C call made now goes on the stack: x64_struct_result's CCall)
+call_stack_mask = 0
+
 emit_call_args = (start: int, n: int, extra: int, extra_dst: int):
     ni = 0
     nf = 0
@@ -1312,6 +1331,9 @@ emit_call_args = (start: int, n: int, extra: int, extra_dst: int):
     loop k in [0..n):
         v = int(ir.args[start + k])
         ty = vtype(v)
+        if call_stack_mask & (1 << k) != 0:
+            stack_args.push(v)
+            continue
         if ty == VI:
             if ni < 6:
                 moves.push(PMove(int_arg_regs[ni], v))
@@ -2175,12 +2197,15 @@ emit_ins = (pos: int, ins: Ins):
                 pop_call_stack()
             store_result(ins)
         calli, callc:
+            ci = ccall_of(ins)
             if op == .callc and target_windows: emit_call_args_win64(a, bb, int(ins.c), R11)
             else:
+                if ci >= 0: call_stack_mask = ir.ccalls[ci].stack
                 emit_call_args(a, bb, int(ins.c), R11)
+                call_stack_mask = 0
                 # (a variadic C function, printf, reads from al how many vector registers hold
                 # arguments: with 0 it does not look at them)
-                if op == .callc and ins.imm > 0:
+                if op == .callc and cvariadic_of(ins) > 0:
                     nvec = 0
                     loop k in [0..bb):
                         if vtype(int(ir.args[a + k])) != VI: nvec += 1
@@ -2190,6 +2215,7 @@ emit_ins = (pos: int, ins: Ins):
             call_site(ins)
             pop_call_stack()
             store_result(ins)
+            if ci >= 0: x64_struct_result(ir.ccalls[ci])
         syscall:
             regs = [RAX, RDI, RSI, RDX, R10, R8, R9]
             moves: PMove[]

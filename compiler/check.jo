@@ -1409,11 +1409,75 @@ c_sig_check = (d: int):
         loop i in 0.. and t in sig.params:
             pt = prune(t)
             if types[pt].kind == .ptr and tkind(int(types[pt].elem)) == .struct_: c_struct_check(prune(int(types[pt].elem)), nodes[kid(d, i)].pos, 0)
+            c_by_value_check(pt, nodes[kid(d, i)].pos)
+        if sig.ret != 0: c_by_value_check(int(sig.ret), rp)
     else if has_attr(d, "cabi") or has_attr(d, "export"):
         why = "C passes text as `*u8` (`str_from_c(p)` to read it), arrays as a pointer and a length"
         loop i in 0.. and t in sig.params:
             if tkind(t) == .str_ or tkind(t) == .array: fatal(nodes[kid(d, i)].pos, why)
+            if c_by_value(t): fatal(nodes[kid(d, i)].pos, "a @cabi function takes structs from C by pointer: `p: *{type_str(t)}`, its fields read as `p.x`")
         if sig.ret != 0 and (tkind(int(sig.ret)) == .str_ or tkind(int(sig.ret)) == .array): fatal(rp, why)
+        if sig.ret != 0 and c_by_value(int(sig.ret)): fatal(rp, "a @cabi function gives C structs by pointer: take a `*{type_str(int(sig.ret))}` to write the result to")
+
+# a struct or vector, which C takes and gives by value (lower.jo: c_call)
+c_by_value = (t0: int) -> bool:
+    t = prune(t0)
+    k = types[t].kind
+    k == .struct_ or k == .vec or k == .tuple or k == .opt or k == .fixed or k == .range or (k == .enum_ and not simple_enum(t))
+
+# what a parameter or result of type t of an extern passed by value must be: a struct of numbers
+# and pointers, or a vector (not on the web: a JavaScript function takes no structs)
+c_by_value_check = (t0: int, p: int):
+    t = prune(t0)
+    if not c_by_value(t): return
+    k = types[t].kind
+    if target_wasm: fatal(p, "a web build's extern functions are JavaScript ones, which take numbers and pointers: pass {type_str(t)}'s fields one by one")
+    if k == .tuple: fatal(p, "C has no tuples: declare a struct with the same fields")
+    if k == .fixed: fatal(p, "C takes an array as a pointer to its first element: declare the parameter `*{type_str(int(types[t].elem))}` and pass `&xs`")
+    if k != .struct_ and k != .vec: fatal(p, "C has no type like {type_str(t)}: pass a struct of numbers and pointers, or a pointer")
+    if k == .struct_: c_struct_check(t, p, 0)
+    lv: (int, int, int)[]
+    what = c_leaves(t, 0, lv)
+    if len(what) > 0: fatal(p, "{type_str(t)} holds {what}, which C has no type for: a struct passed to C by value holds numbers, bools, pointers, vectors, fixed-size arrays and structs of them")
+    if lv.len() == 0: fatal(p, "{type_str(t)} has no fields: C passes no empty structs")
+
+# the numbers a struct (or vector) passed to C by value is made of, into out: (offset, kind, size),
+# kind 0 an integer or pointer, 1 an f32, 2 an f64. Gives "" or what C has no type for
+c_leaves = (t0: int, base: int, out: mut (int, int, int)[]) -> str:
+    t = prune(t0)
+    k = types[t].kind
+    if k == .int_ or k == .bool_ or k == .ptr or k == .cfn or k == .null_ or (k == .enum_ and simple_enum(t)):
+        out.push((base, 0, tsize(t)))
+        return ""
+    if k == .float_:
+        fk = 2
+        if int(types[t].bits) == 32: fk = 1
+        out.push((base, fk, tsize(t)))
+        return ""
+    if k == .vec:
+        vk = 1
+        if types[t].sign: vk = 0
+        loop i in [0..int(types[t].bits)): out.push((base + 4 * i, vk, 4))
+        return ""
+    if k == .fixed:
+        et = int(types[t].elem)
+        loop i in [0..fixed_len(t)):
+            w = c_leaves(et, base + i * tsize(et), out)
+            if len(w) > 0: return w
+        return ""
+    if k == .struct_:
+        si = int(types[t].st)
+        if structs[si].union_ or structs[si].soa_: return a_type(t)
+        check_struct_fields(si)
+        decide_boxes(si)
+        layout(t)
+        loop i in [0..int(structs[si].nfields)):
+            fi = int(structs[si].fields) + i
+            if fields[fi].boxed: return "{a_type(int(fields[fi].type))} in a box"
+            w = c_leaves(int(fields[fi].type), base + int(fields[fi].offset), out)
+            if len(w) > 0: return w
+        return ""
+    a_type(t)
 
 # (struct t goes to C by pointer, from an extern's parameter at p: C reads its fields as its own)
 c_struct_check = (t: int, p: int, depth: int):
@@ -3656,7 +3720,7 @@ runtime_names = ["__alloc", "__free", "__panic", "__panic_bounds", "__panic_unwr
     "__print_str", "__str_from_bytes", "__assert_fail", "__hash_bytes", "__str_hash", "__div_zero", "__rc_inc", "__rc_dec",
     "__arr_extend", "__rc_dec_test", "__out_flush", "__end_flush", "__box_new", "__box_clone", "__box_defer", "__box_next",
     "__main_stack"]
-optional_runtime = ["__c_str", "__mat4_mul", "__mat4_mul_vec4", "__fmt_i32", "__fmt_f32", "__ffi_resolve", "__panic_narrow", "__ffi_missing", "__mac_syscall"]
+optional_runtime = ["__c_str", "__fixed_slice", "__panic_fixed_len", "__mat4_mul", "__mat4_mul_vec4", "__fmt_i32", "__fmt_f32", "__ffi_resolve", "__panic_narrow", "__ffi_missing", "__mac_syscall"]
 runtime_insts: {str: int} = {}
 
 runtime_fn = (name: str) -> int:

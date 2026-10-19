@@ -523,7 +523,12 @@ a_epilogue = ():
 # arguments into x0-x7 / v0-v7 and the stack (from memory: no register is a source)
 # (macOS: a C function's variadic arguments are on the stack, @variadic: callc's imm is the
 # number of fixed ones + 1)
-a_on_stack = (ins: Ins, k: int) -> bool: target_macos and ins.op == .callc and ins.imm > 0 and k >= ins.imm - 1
+# (and a C call's arguments its CCall puts there: lower.jo, c_call)
+a_on_stack = (ins: Ins, k: int) -> bool:
+    if ins.op != .callc: return false
+    if target_macos and cvariadic_of(ins) > 0 and k >= cvariadic_of(ins) - 1: return true
+    ci = ccall_of(ins)
+    ci >= 0 and ir.ccalls[ci].stack & (1 << k) != 0
 
 a_call_args = (ins: Ins):
     start = int(ins.a)
@@ -557,6 +562,21 @@ a_call_args = (ins: Ins):
                 a_lds(16, v, ty)
                 a_mem(false, 16, A_SP, 8 * ns, 8, false, true)
                 ns += 1
+
+# a struct C gave back in registers (x0, x1 or v0-v3), into its slot
+a_struct_result = (cc: CCall):
+    ni = 0
+    nf = 0
+    loop p in cc.parts:
+        off = slot_off[cc.slot] + (p >> 4)
+        if p & 15 == 0:
+            a_str(ni, A_SP, off)
+            ni += 1
+        else:
+            sz = 8
+            if p & 15 == 2: sz = 4
+            a_mem(false, nf, A_SP, off, sz, false, true)
+            nf += 1
 
 a_result = (ins: Ins):
     d = int(ins.dst)
@@ -1150,9 +1170,13 @@ arm64_ins = (pos: int, ins: Ins):
         calli, callc:
             a_call_args(ins)
             a_ld(16, int(ins.c))
+            ci = ccall_of(ins)
+            # (a struct C gives back in memory: x8 is where, a slot of this frame)
+            if ci >= 0 and ir.ccalls[ci].x8: a_add_imm(8, A_SP, slot_off[ir.ccalls[ci].slot])
             a_blr(16)
             call_site(ins)
             a_result(ins)
+            if ci >= 0: a_struct_result(ir.ccalls[ci])
         syscall: a_syscall(ins)
         intr:
             if ins.imm == 1:

@@ -167,7 +167,8 @@ signedness and to floats; `f32` and `f64` convert implicitly in both directions.
 Narrowing is explicit: `int(3.7)`, `u8(x)`, `i32(n)`; `f64(n)` makes a float of an integer.
 An integer converted to a smaller integer type keeps its low bits, wrapping around as C's casts
 do: with `n = 300`, `u8(n)` is 44; `u8(n - 301)` is 255 (a literal that does not fit, as in
-`u8(300)`, is an error when compiling).
+`u8(300)`, is an error when compiling). `checked_cast[u8](n)` is `none` there instead, and
+`saturating_cast[u8](n)` 255.
 `as` reinterprets pointers, and integers as another size or sign (`x as u8`, `p as *f32`). It
 does not go between integers and floats: `f64_bits(x)` and `f64_from_bits(b)` give and take a
 float's bits. For C, `data(xs)` is a pointer to an array's or a string's first element, and a
@@ -175,8 +176,15 @@ string's bytes end with a 0. A union is not cast but tested with `is`.
 Float to integer conversion truncates toward zero and saturates: NaN becomes 0 and values
 beyond the integer range become its minimum or maximum (the same on every target).
 
-**Operators.** Integer `/` truncates, `%` is remainder, integer overflow wraps, and a shift
-counts modulo the width (`1 << 64` is 1, as x86-64 and arm64 shift). `x ^ y` is
+**Operators.** Integer `/` truncates, `%` is remainder, integer overflow wraps (in debug and
+release builds alike: `i8(127) + i8(1)` is -128), and a shift counts modulo the width
+(`1 << 64` is 1, as x86-64 and arm64 shift). Where overflow must not pass unseen, the library
+has `checked_add`, `checked_sub` and `checked_mul` (an optional, `none` on overflow:
+`checked_mul(w, h) ?? panic("too big")`), `saturating_add`, `_sub` and `_mul` (the type's
+largest or smallest value) and `wrapping_add`, `_sub` and `_mul` (as the operators, said on
+purpose), for every integer type. A conversion that must not lose anything is
+`checked_cast[u8](x)` (`none` unless x is a value a `u8` has), and `saturating_cast[u8](x)` gives
+0 or 255 past the ends. `x ^ y` is
 `pow(x, y)` (right-associative and tighter than unary minus: `-2 ^ 2 == -4`). On integers it
 is an integer: a negative power truncates as `/` does (`2 ^ -1 == 0`), and it wraps on overflow
 (`2 ^ 64 == 0`); `2.0 ^ -1` is 0.5. C's xor is `xor`: a `^` that looks like one (on hex
@@ -324,10 +332,13 @@ loop mut c in corners: c *= 2.0
 print(corners.len(), inv.slots == fill(0, 8))
 ```
 
-They index, loop (`loop x in xs`, `loop mut x in xs`), compare with `==`, print and work as
-map keys like `T[]`. A copy copies the elements. Where a `T[]` is expected (`sum(xs)`, a
-parameter `xs: T[]`) a fixed-size array is passed as a new array holding a copy; `push`,
-`pop` and the other functions that change the length need a `T[]`.
+They index, slice, loop (`loop x in xs`, `loop mut x in xs`), compare with `==`, print and
+work as map keys like `T[]`. A copy copies the elements. A slice (`xs[1..3]`, `xs[[1..end]]`)
+is a new `T[]` holding a copy of those elements, as a slice of a `T[]` is. Where a `T[]` is
+expected (`sum(xs)`, a parameter `xs: T[]`) a fixed-size array is passed as a new array holding
+a copy. Given for a `mut T[]` parameter (`sort(mut xs)`, `xs.reverse()`, `shuffle(mut xs)`) it is
+passed as a `T[]` whose elements go back into `xs` when the call returns; a function that changes
+the length (`push`, `pop`, ...) panics there, as a fixed-size array keeps its length.
 
 ### Maps
 
@@ -1586,8 +1597,9 @@ extern gl_clear_native = (mask: u32)
 extern snprintf = (buf: *u8, n: int, fmt: *u8, x: f64) -> i32
 ```
 
-Arguments and results must be scalars or pointers; `cfn(...) -> T` is the type of a C function
-pointer, and `@cabi` makes a Sloppy function callable from C. Windows programs name DLLs
+Arguments and results are numbers, pointers, or structs and vectors passed by value (below);
+`cfn(...) -> T` is the type of a C function pointer, and `@cabi` makes a Sloppy function
+callable from C. Windows programs name DLLs
 (`@lib("user32.dll")`) and are called with the Windows x64 convention; the same code can serve
 both systems under `when TARGET == "windows":`. A variadic C function (`printf(fmt, ...)`) is
 declared with the arguments a call gives it and `@variadic(n)`, n being its fixed parameters:
@@ -1643,7 +1655,9 @@ print(xs, q[0], size_of(i32))
 | `const char *` in | `str` (C may read it, never write it), or `*u8` |
 | `char *` out, or kept by C | `*u8`, copied with `str_from_c(p)` (`""` for null: check `p == null` first when that matters) |
 | `void *`, `T *`, `T **` | `*u8`, `*T`, `**T` (`p.field` reads a struct through its pointer) |
-| a struct | the same fields, in order: passed by pointer (`&s`, `data(xs)`); not by value |
+| a struct | the same fields, in order; by value (`Vector2 v`) or by pointer (`&s`, `data(xs)`) |
+| `float v[4]` in a struct | `v: f32[4]` |
+| raylib's `Vector2`, `Vector3`, `Vector4`, `Matrix` | `vec2`, `vec3`, `vec4`, `mat4` (or structs of the same floats) |
 | `__attribute__((packed))` | `@packed` above the struct: no padding between its fields (it holds plain data only) |
 
 What crosses, and for how long:
@@ -1654,8 +1668,16 @@ What crosses, and for how long:
   copying form (`SQLITE_TRANSIENT`).
 - **`data(xs)` stays valid while `xs` neither grows nor goes away.** A `push` or `resize` may
   move it.
+- **Structs by value** go as C's convention for each system has them (small ones in
+  registers, larger ones copied), so `extern draw_circle_v = (center: vec2, radius: f32, color:
+  Color)` (Color a struct of four `u8`s, as raylib's) and `extern get_mouse_position = () ->
+  vec2` call raylib as C does. A struct passed
+  by value holds numbers, bools, pointers, vectors, fixed-size arrays and structs of them, and
+  is a copy: C's changes to it are not seen. A web build's externs are JavaScript functions,
+  which take no structs.
 - **What can't cross:** an `extern` can't give back a `str` (it gives `*u8`, read with
-  `str_from_c`), `@cabi` functions take and give scalars and pointers only, and a struct C
+  `str_from_c`), `@cabi` functions take and give scalars and pointers only (a struct from C as
+  `p: *Vec2`), a struct can't be one of a variadic function's `...` arguments, and a struct C
   reads through a pointer has no `str`, array or map fields (`*u8` and a pointer with a length
   instead). The compiler says so where each is declared.
 - **Variadic arguments are promoted as C promotes them:** an `f32` goes as a double (`%f`), and

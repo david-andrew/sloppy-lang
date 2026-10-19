@@ -28,6 +28,30 @@ def stop_container_run(target):
     elif target == "linux-arm64" and os.environ.get("SLOPPY_ARM64_RUN", "").startswith("podman exec"):
         c = os.environ["SLOPPY_ARM64_RUN"].split()[2]
         subprocess.run(["podman", "exec", c, "sh", "-c", "kill -9 $(ls /proc | grep -E '^[0-9]+$' | grep -v -x 1) 2>/dev/null"], capture_output=True)
+# (a test with a .c file next to it calls C: the C is built into a library in the directory the
+# test runs in, lib<name>.so (<name>.dll on Windows), with the target's C compiler. The command
+# lists, or "" when there is no compiler for the target here)
+def c_lib_commands(src, name, d):
+    if on_windows:
+        return [["gcc", "-shared", "-O1", "-o", os.path.join(d, name + ".dll"), src]] if shutil.which("gcc") else ""
+    if target == "windows":
+        if shutil.which("x86_64-w64-mingw32-gcc"):
+            return [["x86_64-w64-mingw32-gcc", "-shared", "-O1", "-o", os.path.join(d, name + ".dll"), src]]
+        # (Wine's container has one: the source copied where it sees it)
+        shutil.copy(src, os.path.join(d, name + ".c"))
+        wcc = os.environ.get("SLOPPY_WIN_CC", "podman exec sloppy-win x86_64-w64-mingw32-gcc").split()
+        return [wcc + ["-shared", "-O1", "-o", f"/w/tests/{name}.dll", f"/w/tests/{name}.c"]]
+    out = os.path.join(d, "lib" + name + ".so")
+    if target == "linux-arm64":
+        if shutil.which("aarch64-linux-gnu-gcc"): return [["aarch64-linux-gnu-gcc", "-shared", "-fPIC", "-O1", "-o", out, src]]
+        # (clang makes the code, and bare-metal binutils' ld the library: the C uses no libc)
+        if shutil.which("clang") and shutil.which("aarch64-elf-ld"):
+            return [["clang", "--target=aarch64-linux-gnu", "-ffreestanding", "-fPIC", "-O1", "-c", src, "-o", out + ".o"],
+                    ["aarch64-elf-ld", "-shared", "-o", out, out + ".o"]]
+        return ""
+    cc = os.environ.get("CC", "cc")
+    return [[cc, "-shared", "-fPIC", "-O1", "-o", out, src]] if shutil.which(cc) else ""
+
 tmp = os.path.join(tempfile.gettempdir(), "sloppy-tests")
 sloppy_bin = os.path.join(root, "bin", "sloppy.exe" if on_windows else "sloppy")
 tests = sorted(glob.glob(os.path.join(root, "tests", "t", "*.jo")))
@@ -55,6 +79,21 @@ for t in tests:
     stdin_data = open(t[:-3] + ".in", encoding="utf-8").read() if os.path.exists(t[:-3] + ".in") else ""
     if stdin_data and target == "windows":
         continue
+    run_dir = None
+    if os.path.exists(t[:-3] + ".c") and target != "wasm":
+        cmds = c_lib_commands(t[:-3] + ".c", name, os.path.dirname(exe))
+        if not cmds:
+            print(f"SKIP {name}: no C compiler for {target} here")
+            continue
+        r = None
+        for c in cmds:
+            r = subprocess.run(c, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+            if r.returncode != 0: break
+        if r.returncode != 0:
+            print(f"FAIL {name}: its C does not build\n{r.stdout}{r.stderr}")
+            failed += 1
+            continue
+        run_dir = os.path.dirname(exe)
     if compiler == "sloppy0":
         cmd = [os.path.join(root, "stage0", "sloppy0"), t, "-o", exe]
     else:
@@ -104,8 +143,10 @@ for t in tests:
                     cv = v.strip().replace("$TMP", "/w/tests" if target == "windows" else tmp)
                     run[2:2] = ["-e", f"{k.strip()}={cv}"]
                     if "-e" in run and "LANG=C.UTF-8" not in run: run[2:2] = ["-e", "LANG=C.UTF-8"]     # (é as UTF-8, not two Latin-1 letters)
+        # (a test with a C library runs where it is: `@lib("./libname.so")`)
+        if run_dir and run[:2] == ["podman", "exec"] and target != "windows": run[2:2] = ["-w", run_dir]
         r = subprocess.run(run, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, input=stdin_data,
-                           env=test_env)
+                           env=test_env, cwd=run_dir)
     except subprocess.TimeoutExpired:
         print(f"FAIL {name}: timed out")
         failed += 1

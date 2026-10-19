@@ -55,6 +55,38 @@
   they said "expected type name" or "expected ')'"; `f(x: 1)` (Swift, C#) says "a named argument
   is written `x = 1`"; `w = w.lower()` on a loop variable says `let w = ...` makes a new one;
   `write_file(p, s)!` says the bool it gives is for `assert(...)` or `if not ...:`.
+- C functions take and give structs and vectors by value: `extern draw_circle_v = (center:
+  vec2, radius: f32, color: Color)`, `extern get_mouse_position = () -> vec2`, `extern
+  load_texture = (path: str) -> Texture2D`, where an extern said "C functions can only take
+  scalar or pointer arguments" (and a `cfn` taking a struct passed its address, and one giving
+  one back stopped the compiler). Each system's convention is followed: Linux x86-64's (up to 16
+  bytes in integer and float registers by the kinds of its 8-byte halves, larger ones copied
+  onto the stack, or given back through memory the caller gives), Windows x64's (1, 2, 4 or 8
+  bytes as an integer, others as a pointer to a copy) and arm64's on Linux and macOS (1 to 4
+  floats of one type in float registers, others up to 16 bytes in integer registers, larger ones
+  as a pointer to a copy, given back through x8), also when the registers run out before a
+  struct. Tested against C built by cc, clang and mingw on x86-64, arm64 and Windows
+  (tests/t/c_structs.c: runtests builds a test's .c into a library next to it). A struct passed
+  by value holds numbers, bools, pointers, vectors, fixed-size arrays and structs of them; one
+  with a `str`, an optional or another type C has none like is an error where the extern is
+  declared, as is a struct by value in a `@cabi` function (`p: *V2` takes it from C) or a web
+  build's extern.
+- Integer arithmetic that says when it overflows (lib/std/checked.jo): `checked_add`,
+  `checked_sub` and `checked_mul` give an optional, `none` when the result does not fit the type;
+  `saturating_add`, `_sub` and `_mul` give the type's largest or smallest value; `wrapping_add`,
+  `_sub` and `_mul` wrap, as the operators do (in debug and release builds alike), saying it is
+  meant. They are there for int, i32, i16, i8, u64, u32, u16 and u8. `checked_cast[u8](x)` is x
+  as a `u8` when it is one of its values and `none` otherwise (where `u8(x)` keeps the low bits),
+  `saturating_cast[u8](x)` 0 or 255 past the ends, for any integer type. Until now a program had
+  to write the tests for overflow itself. `checked_mul` on int and u64 is the high half of the
+  128-bit product (one instruction on x86-64 and arm64; a few on the web).
+- A fixed-size array slices as a `T[]` does: with `a: int[4]`, `a[1..3]`, `a[[1..3]]`, `a[1..]`
+  and `a[..2]` are new `int[]`s holding those elements, where they said "cannot slice int[4]". A
+  slice with a constant end past the last index is an error when compiling. A fixed-size array
+  is also taken by a function's `mut T[]` parameter: `sort(mut a)`, `a.reverse()`,
+  `shuffle(mut a)` and `a.sort_by(...)` change it in place, where they said "argument 1 must
+  have type int[] (mut parameters need an exact match)". It goes in as a `T[]` whose elements go
+  back when the call returns; a call that changes its length panics, saying so.
 - A `T[]` passes where a `T?[]` is expected (an argument, an assignment, a return), as a copy
   with its elements as optionals: `count([1 2 3])` for `count = (xs: int?[]) -> int` said
   "expects int?[], found int[]".
