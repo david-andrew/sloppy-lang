@@ -13,7 +13,7 @@ enum IN:
     arrdata, panic, assert, print, embed, from_bytes, to_bytes, argv, setlen, truncate, resize,
     hash, alignof, unreachable, arrcap, fmt_struct, sqrt, vec_ctor, cfn_cast, wasm_call, callc, floor_,
     ceil_, fabs, fmin, fmax, setjmp, longjmp, jump, shader, extend, clone_thread, atomic_add, atomic_cas, stack_ptr, fill, fmt_elem, gpu_kernel, cpu_features, code_sync, compute, compute_spirv, compute_textures,
-    read_fields, default_init, embed_dir, field_notes
+    read_fields, default_init, embed_dir, field_notes, unwrap, expect
 
 # (fixed2arr: T[N] -> T[], a new array holding a copy of the elements)
 enum CV: none_, int_, int2float, float2int, float_, opt, ptr, bits, fn2clos, union_, fixed2arr
@@ -40,7 +40,7 @@ intrinsics = [
     Intrinsic("__atomic_cas", .atomic_cas, false), Intrinsic("__stack_ptr", .stack_ptr, false),
     Intrinsic("__cpu_features", .cpu_features, false), Intrinsic("__code_sync", .code_sync, false), Intrinsic("compute", .compute, false), Intrinsic("__compute_spirv", .compute_spirv, false), Intrinsic("__compute_textures", .compute_textures, false),
     Intrinsic("__read_fields", .read_fields, false), Intrinsic("__default_init", .default_init, false),
-    Intrinsic("__field_notes", .field_notes, false),
+    Intrinsic("__field_notes", .field_notes, false), Intrinsic("unwrap", .unwrap, false), Intrinsic("expect", .expect, false),
 ]
 
 last_checked = 0
@@ -1339,7 +1339,7 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 fatal(nodes[n].pos, "no version of '{fnm}' takes these arguments (`{cap}(...)` makes {a_or_an(cap)}){ot}")
         # (range(3), set(): Python's, which mean other things here)
         if name_of(name) == "range" and args.len() == 1: fatal(nodes[n].pos, "the numbers from 0 to n - 1 are `0..n` (`loop i in 0..3:`); range(a, b) is a..b")
-        if name_of(name) == "set" and args.len() == 0: fatal(nodes[n].pos, "there is no set type: a map to bool (`seen: \{str: bool} = \{}`, `seen[x] = true`, `x in seen`), or `unique(xs)`")
+        if name_of(name) == "set" and args.len() == 0: fatal(nodes[n].pos, "an empty set is a variable of its type, `seen: Set[int]` (set(xs) makes one of an array's values)")
         if name_of(name) == "join" and args.len() == 2 and nodes[unnamed(args[1])].type != 0 and tkind(prune(ntype(unnamed(args[1])))) == .array:
             fatal(nodes[n].pos, "join puts text together: `[loop x in xs: str(x)]` makes text of each first")
         # (xs.size() and the like: a name that means something else here)
@@ -3113,6 +3113,7 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
     nodes[n].a = 0
     nargs = args.len()
     r = T_VOID
+    if id == .unwrap or id == .expect: return check_unwrap(n, id, args, expected)
     if id == .len or id == .arrcap:
         nargs_check(n, nargs, 1, 1, "len")
         t = arg_type(args, 0, 0)
@@ -4552,6 +4553,72 @@ check_try = (n: int, expected: int) -> int:
         r = mk(.return_, pos)
         nodes[r].a = i32(bc_ident(nm, pos))
         stmts.push(bc_if(it, [r], [], pos))
+    stmts.push(bc_stmt(bc_ident(nm, pos), pos))
+    nodes[n] = nodes[bc_block(stmts, pos)]
+    check_expr(n, expected)
+
+# unwrap(r), expect(r, msg): r's value when it has one; none, or an error (a member of r's union
+# declared `error struct` or `error enum`), stops the program, saying which (after msg, for
+# expect) and where. As `?` (check_try), which returns them instead: a block that tests each.
+check_unwrap = (n: int, id: IN, args: int[], expected: int) -> int:
+    pos = nodes[n].pos
+    fname = "unwrap"
+    if id == .expect:
+        fname = "expect"
+        if args.len() != 2: fatal(pos, "expect takes the value and what to say if it has none: `expect(r, \"the settings file\")` (unwrap(r) says only what it got)")
+    else: nargs_check(n, args.len(), 1, 1, "unwrap")
+    at = prune(check_expr(args[0], 0))
+    a = last_checked
+    add_flag(a, NF_CHECKED)
+    if types[at].kind == .void_: fatal(pos, "{fname}() takes a value, and this gives none")
+    vt = at
+    if types[at].kind == .opt: vt = prune(int(types[at].elem))
+    ms = [vt]
+    if is_union(vt): ms = union_members(vt)
+    fails: int[]
+    rest = 0
+    loop m in ms:
+        if try_passes(m): fails.push(m)
+        else: rest += 1
+    has_none = types[at].kind == .opt
+    if not has_none and fails.len() == 0: fatal(pos, "{fname}() takes an optional or a result that can be an error (an `error struct`), and {a_or_an(type_str(at))} is always a value: remove {fname}")
+    if rest == 0: fatal(pos, "every member of {type_str(at)} is an error: no value would be left for {fname}() to give")
+    nm = "__unwrap{bc_count}"
+    bc_count += 1
+    # (the message, made only when it stops: expect's own first)
+    ln, col = line_col(pos)
+    fpath = files[pos_file(pos)].path
+    lead = "{fpath[rfind(fpath, "/") + 1..]}:{ln}: "
+    if id == .unwrap: lead = "{lead}unwrap of "
+    stmts = [bc_let(nm, a, pos)]
+    loop k in [0..fails.len() + 1):
+        if k == 0 and not has_none: continue
+        parts: int[]
+        if id == .expect:
+            parts.push(bc_str(lead, pos))
+            pm = mk(.pair, pos)
+            nodes[pm].a = i32(clone(args[1]))
+            nodes[pm].sval = -1
+            parts.push(pm)
+            if k == 0: parts.push(bc_str(" (none)", pos))
+            else: parts.push(bc_str(": ", pos))
+        else if k == 0: parts.push(bc_str("{lead}none (`x ?? default` gives a default instead, `if let v = x:` runs code only when there is a value)", pos))
+        else: parts.push(bc_str("{lead}an error: ", pos))
+        if k > 0:
+            pv = mk(.pair, pos)
+            nodes[pv].a = i32(bc_ident(nm, pos))
+            nodes[pv].sval = -1
+            parts.push(pv)
+        msg = mk(.str_lit, pos)
+        nodes[msg].aux = 1
+        set_list(msg, parts)
+        halt = bc_stmt(bc_call("panic", [msg], pos), pos)
+        if k == 0: stmts.push(bc_if(bc_bin(.eq, bc_ident(nm, pos), mk(.none_lit, pos), pos), [halt], [], pos))
+        else:
+            it = mk(.istype, pos)
+            nodes[it].a = i32(bc_ident(nm, pos))
+            nodes[it].b = i32(type_node_of(fails[k - 1], pos))
+            stmts.push(bc_if(it, [halt], [], pos))
     stmts.push(bc_stmt(bc_ident(nm, pos), pos))
     nodes[n] = nodes[bc_block(stmts, pos)]
     check_expr(n, expected)

@@ -447,6 +447,12 @@ value is the array of its numbers: `[0, 3..9]` is `[0, 3, 6, 9]`. In index brack
 Python's: `xs[2..5]` is elements 2, 3 and 4 (`xs[2:5]`), `xs[2..]` to the end, `xs[..3]` the first
 three; `xs[end]` is the last element, `xs[[2..5]]` keeps element 5.
 
+The brackets of a range are not an array's brackets, which can look alike. `[1..5]` is the
+array `[1, 2, 3, 4, 5]`; one bracket more, `[[1..5]]`, is an array holding that one array (its
+`len()` is 1), as `[xs]` holds `xs`. Inside an index the outer brackets are the index's, so
+`xs[[2..5]]` is a slice that keeps both ends (elements 2 to 5), not an index by an array.
+`[loop i in [1..5]: i]` and `range(1, 6)` are the array too, if the brackets read wrong.
+
 | Written | Gives |
 |---|---|
 | `1..5`, `[1..5)` | 1 2 3 4 |
@@ -470,6 +476,25 @@ panic: hit an enemy that was already defeated
 A stack overflow (a function that calls itself without end) and a crash in code using raw
 pointers or C are reported the same way. (Release builds inline small functions: their frames
 show as the line of the call. In a web page the browser's console has the JavaScript stack.)
+A run of the same call, or of a few calls over and over (functions calling each other), shows
+once with how many times it repeats.
+
+**How deep recursion goes.** A native program's main thread has a stack of 1 GB, taken from
+the system only as it is used: a small recursive function (`depth(n - 1) + 1`) goes some 60
+million calls deep, walking a linked list with `mut` (`append(n!.next, v)`) about 10 million,
+and printing, `==` or hashing a recursive value millions of nodes long. Past that, a stack
+overflow says how deep it got:
+
+```
+panic: stack overflow, 11,173,887 calls deep (a function that calls itself without end? Recursion this deep wants a loop instead, with an array as its stack if it needs one)
+    in append
+    called from append (list.jo:16) (11,173,884 times)
+    called from the top level of list (list.jo:20)
+```
+
+Worker threads (`parallel_map` and the like) have 8 MB each, and a web page has the browser's
+stack, which holds some 10,000 calls: there, a recursion that deep is a loop instead, keeping
+what it still has to do in an array (`todo.push(n)`, `n = todo.pop()`).
 A panic ends the program where it is: `defer`red code does not run (the system closes the
 program's files).
 
@@ -632,6 +657,58 @@ error: `struct Bad: me: Bad` (make it `me: Bad?`, or an array). Arrays still hol
 apart too (`kids: Node[]` for a tree with any number of children). A struct holding itself is
 not plain data: it cannot go to the GPU (`gpu_buffer`, shaders), be `@packed`, or be read by C
 through a pointer.
+
+Changing a recursive value, as a course's binary search tree does, is a recursion with `mut`:
+the parameter is the field itself (`n.left`, `n.right`), so assigning it changes the tree.
+
+```gdscript
+struct Tree:
+    key: int
+    left: Tree?
+    right: Tree?
+
+insert = (n: mut Tree?, k: int):
+    if n == none: n = Tree(k)                  # an empty place: the new node goes here
+    else if k < n!.key: insert(n!.left, k)
+    else if k > n!.key: insert(n!.right, k)
+
+delete = (n: mut Tree?, k: int):
+    if n == none: return
+    if k < n!.key: delete(n!.left, k)
+    else if k > n!.key: delete(n!.right, k)
+    else if n!.left == none: n = n!.right      # the node goes; its one child takes its place
+    else if n!.right == none: n = n!.left
+    else:
+        m = n!.right!                          # two children: the smallest key on the right
+        loop let l = m.left: m = l             # (reading through a copy is fine)
+        n!.key = m.key
+        delete(n!.right, m.key)
+
+root: Tree? = none
+loop k in [5, 3, 8, 1, 4]: insert(root, k)
+delete(root, 3)
+```
+
+A variable is a value of its own, so a cursor is a copy: after `cur = list.head!` and
+`loop let nx = cur.next: cur = nx`, a change through `cur` (`cur.next = Node(v)`) changes
+`cur` only, and the list stays as it was. Reading through a cursor is fine; to change the
+structure, recurse with `mut` as above (`append(n!.next, v)`), or keep the nodes in an array (or
+a [`Pool`](API.md#pools-and-handles)) and link them by index: `next: int` (-1 for none) is what
+a doubly linked list, a tree with parent links or a graph needs, since a value cannot point
+back at what holds it.
+
+```gdscript
+struct Node:
+    value: int
+    prev = -1
+    next = -1
+
+nodes: Node[]
+push_back = (nodes: mut Node[], tail: int, v: int) -> int:
+    nodes.push(Node(v, prev = tail))
+    if tail >= 0: nodes[tail].next = nodes.len() - 1
+    nodes.len() - 1
+```
 
 **Unions** hold a value of one of several types. `is` tests which, and a variable that has
 been tested *is* that type where the test holds — in the `if`, after an `if` that returns or
@@ -1007,6 +1084,11 @@ files; `from ... import` picks names (a long list can go in parentheses over sev
 `from 'physics.jo' import _helper` reach them deliberately. A module's own functions with an
 imported function's name are overloads of it; any other clash is an error (rename with `as`).
 `use` and imports are not transitive: a file sees the names of the modules it brings in itself.
+A module's top-level code runs when the program starts, before the code of the file that brings
+it in (each module once). Its `main`, if it has one, does not: only the program's own file's
+`main` runs, as Python's `if __name__ == "__main__":` does, so a module can keep a `main` that
+tries it out by itself (`sloppy physics.jo`), and its `test` blocks run with `sloppy test
+physics.jo`.
 A variable brought in by `use` (or the library's, like `ui_style`) is changed by assigning to
 it, at the top level as in a function: `volume = 0.5` after `use 'audio_settings.jo'` sets that
 module's `volume`, not a new one.
@@ -1090,7 +1172,12 @@ own: one that fails (an `assert` with its message and location, or a panic) is r
 `FAILED`, the others still run (and do not see what it changed), and the run ends with how many
 passed and failed and exit status 1. On Windows and the web the first failure stops the run.
 `sloppy test file.jo parse save` runs only the tests whose names have `parse` or `save` in
-them. A test that calls `exit()` fails (it did not reach its end).
+them. A test that calls `exit()` fails (it did not reach its end). `assert(a == b)` (and the
+other comparisons) with no message of its own says what each side was when it fails,
+`assertion failed: xs == ys (xs is [1, 2], ys is [1, 3])`; `unwrap(r)` and `expect(r, "what")`
+give an optional's or a result's value, stopping with what it held instead. `sloppy check
+file.jo` and editors check the `test` blocks too; `sloppy file.jo` builds the program without
+them, so a test half written does not keep it from running.
 
 **Release builds.** `opt = release` (or `sloppy build --release`) inlines refcount, uniqueness
 and bounds-check fast paths and runs the optimizer (constant folding, copy propagation,
@@ -1351,6 +1438,11 @@ sloppy fmt file.jo        lay out the code one way (directories too; --check: on
                           would change; -: standard input to standard output)
 sloppy update             install the latest release (when this is not it)
 ```
+
+Options (`--release`, `--target windows`, `--time`, `--web`) go before or after the file:
+`sloppy test --release f.jo` and `sloppy test f.jo --release` are the same. Running a program
+is the exception: what follows its file is the program's own arguments, so `sloppy --release
+game.jo level2`.
 
 On Windows, `sloppy` is `sloppy.exe` and programs are Windows executables (`sloppy build game.jo`
 writes `game.exe`); `sloppy build --target windows` makes them on Linux too, and `--target linux`

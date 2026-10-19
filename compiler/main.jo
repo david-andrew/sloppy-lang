@@ -41,7 +41,7 @@ const SLOPPY_VERSION = "0.23.0"
 const SLOPPY_INSTALL_URL = "https://sloppy-lang.org/install"
 
 usage = ():
-    eprint("usage: sloppy   (an interactive prompt)\n       sloppy [run] [--web] [--release] file.jo [args...]   (--web: build for the browser and open it there)\n       sloppy watch file.jo [args...]   (run it, and reload it while its files change)\n       sloppy test file.jo [words]   (only the tests whose names have one of the words)\n       sloppy check file.jo\n       sloppy fmt [--check] file.jo or directory...   (lay out the code one way; -: standard input)\n       sloppy add <git URL or directory> [name] [file.jo]   (a package, pinned in sloppy.lock)\n       sloppy new <directory> [game|arcade|platformer|3d|story|online|program]   (a project to start from)\n       sloppy lsp   (a language server for editors, on standard input and output)\n       sloppy --version\n       sloppy update   (install the latest release, if this is not it)\n       sloppy build file.jo [-o output] [--target native|linux|linux-arm64|windows|macos|wasm] [--release] [-g: variables for debuggers] [--ir]")
+    eprint("usage: sloppy   (an interactive prompt)\n       sloppy [run] [--web] [--release] file.jo [args...]   (--web: build for the browser and open it there)\n       sloppy watch file.jo [args...]   (run it, and reload it while its files change)\n       sloppy test file.jo [words] [--release]   (only the tests whose names have one of the words)\n       sloppy check file.jo [--target ...]\n       sloppy fmt [--check] file.jo or directory...   (lay out the code one way; -: standard input)\n       sloppy add <git URL or directory> [name] [file.jo]   (a package, pinned in sloppy.lock)\n       sloppy new <directory> [game|arcade|platformer|3d|story|online|program]   (a project to start from)\n       sloppy lsp   (a language server for editors, on standard input and output)\n       sloppy --version\n       sloppy update   (install the latest release, if this is not it)\n       sloppy build file.jo [-o output] [--target native|linux|linux-arm64|windows|macos|wasm] [--release] [-g: variables for debuggers] [--ir]")
     exit(2)
 
 find_lib_dir = () -> str:
@@ -352,6 +352,9 @@ compile = (path: str, out0: str) -> str:
     # (after main: what print has collected, written out)
     entry_end_lf = -1
     if not target_wasm and not lower_only and not repl_image: entry_end_lf = lf_of_inst(runtime_fn("__end_flush"))
+    # (first: the main thread's own big stack, where there is one)
+    entry_stack_lf = -1
+    if not target_wasm and not target_windows and not lower_only and not repl_image: entry_stack_lf = lf_of_inst(runtime_fn("__main_stack"))
     pinit = init_fns[0]
     pinit_lf = roots[0]
     # (vectorized loops ask whether the processor has AVX2: the runtime finds out at start)
@@ -537,6 +540,28 @@ open_in_browser = (path: str) -> bool:
     else:
         return spawn_detached("/usr/bin/xdg-open", ["xdg-open", path])
 
+# an option of the compiler's at a[i] (--release, --web, --time, --target t), taken: how many
+# words it is (0: none of them)
+cli_option = (a: str[], i: int) -> int:
+    x = a[i]
+    if x == "--web": cli_target = "wasm"
+    else if x == "--release": cli_release = true
+    else if x == "--time": timing = true
+    else if x == "--target" and i + 1 < a.len():
+        cli_target = a[i + 1]
+        return 2
+    else: return 0
+    1
+
+# the options from a[i] on: where they end (another word starting with -- is not one: usage)
+cli_options = (a: str[], i0: int) -> int:
+    i = i0
+    loop i < a.len() and starts_with(a[i], "--"):
+        k = cli_option(a, i)
+        if k == 0: usage()
+        i += k
+    i
+
 main = ():
     __copies_min = 0       # (SLOPPY_COPIES is for the program it runs, not the compiler's own copies)
     a = args()
@@ -641,7 +666,17 @@ main = ():
         # type check only
         if a.len() < 3: usage()
         if let s = env("SLOPPY_STOP"): stop_after = s
-        path = os_path(a[2])
+        # (options before or after the file)
+        path = ""
+        i = 2
+        loop i < a.len():
+            k = cli_option(a, i)
+            if k == 0:
+                if len(path) > 0: usage()
+                path = os_path(a[i])
+                k = 1
+            i += k
+        if len(path) == 0: usage()
         # (the test blocks are checked too, as sloppy test would)
         test_mode = true
         check_all = true
@@ -661,18 +696,12 @@ main = ():
     first = 1
     if a[1] == "run": first = 2          # (sloppy run game.jo is sloppy game.jo)
     # options for running come before the file (what follows it goes to the program)
-    loop first < a.len() and starts_with(a[first], "--"):
-        x = a[first]
-        if x == "--web": cli_target = "wasm"
-        else if x == "--release": cli_release = true
-        else if x == "--time": timing = true
-        else if x == "--target" and first + 1 < a.len():
-            cli_target = a[first + 1]
-            first += 1
-        else: usage()
-        first += 1
+    first = cli_options(a, first)
+    if first < a.len() and a[first] == "run" and first > 1: first = cli_options(a, first + 1)     # (sloppy --release run f.jo)
     if first >= a.len(): usage()
     if a[first] == "watch":
+        # (sloppy watch --release game.jo, as sloppy --release watch game.jo)
+        first = cli_options(a, first + 1) - 1
         if a.len() < first + 2: usage()
         if cli_target == "wasm": fatal(0, "sloppy watch runs programs natively (for the web, use sloppy build --target wasm)")
         cli_target = "native"
@@ -680,11 +709,21 @@ main = ():
         loop i in [first + 2..a.len()): wargs.push(a[i])
         watch_main(os_path(a[first + 1]), wargs)
         return
+    test_words: str[]
     if a[first] == "test":
-        if a.len() < first + 2: usage()
+        # (options before or after the file: sloppy test --release f.jo, sloppy test f.jo --release;
+        # the other words after it pick tests by name)
+        first = cli_options(a, first + 1)
+        if first >= a.len(): usage()
+        i = first + 1
+        loop i < a.len():
+            k = cli_option(a, i)
+            if k == 0:
+                test_words.push(a[i])
+                k = 1
+            i += k
         test_mode = true
         cli_target = "native"         # tests run natively even for web games
-        first += 1
     path = os_path(a[first])
     if not file_exists(path) and not ends_with(path, ".jo") and find(path, "/") < 0:
         near = ""
@@ -724,7 +763,9 @@ main = ():
         exit(0)
     # (args()[0] is the program as it was named: the source file)
     run_args = [path]
-    loop i in [first + 1..a.len()): run_args.push(a[i])
+    if test_mode: run_args = run_args + test_words
+    else:
+        loop i in [first + 1..a.len()): run_args.push(a[i])
     exec(built, run_args)
     eprint("sloppy: failed to run {built}")
     exit(1)

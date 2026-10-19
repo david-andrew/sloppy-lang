@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- Recursion goes about 100 times deeper: a native program's main thread runs on a stack of its
+  own, 1 GB of address space taken from the system only as it is used, with 1 MB below it that is
+  never mapped (on Windows, the executable asks for a 1 GB stack that grows, and a frame bigger
+  than a page touches its pages in order). `push_back` by recursion on a list of 100,000, a
+  recursive quicksort of 150,000 sorted numbers, a depth-first search down a path of 200,000,
+  and printing, `==` and hashing of lists a million long, which all stopped at about 87,000
+  calls, run; a small function recursing goes 67 million calls deep (11 million for a list's
+  `mut` walk). A hello world starts as before (2 MB resident, the same; the stack's few system
+  calls add some microseconds). A stack overflow says how deep it got and what to do instead,
+  `panic: stack overflow, 11,173,887 calls deep (a function that calls itself without end?
+  Recursion this deep wants a loop instead, with an array as its stack if it needs one)`, and
+  backtraces fold a few calls repeating (functions calling each other) into one line with a
+  count, and keep the outermost calls of a stack too deep to list, so an overflow inside the
+  library (printing a list) still says where the program's own code called it. The compiler's
+  helpers show as what they do: `comparing two Node values`, not `h_eq_42`. In a web page,
+  whose stack is the browser's (some 10,000 calls), running out is told the same way instead of
+  as a JavaScript RangeError.
+- `xs.swap(i, j)` checks its indexes and makes a shared array its own once, then moves the two
+  elements as they are, and is inlined in release builds: 50 million swaps take 0.37 billion
+  cycles, not 0.81 (by hand: 0.27). What makes a `panic`'s message is a rarely taken path, so a
+  function that checks something before it works is inlined too.
+- `assert(a == b)` (and `!=`, `<`, `<=`, `>`, `>=`) without a message says what the sides were:
+  `assertion failed: xs == ys (xs is [1, 2], ys is [1, 3])`, text in quotes; each side is worked
+  out once, as before, and a literal side is not repeated.
+- `unwrap(r)` and `expect(r, "what it is")` (also `r.unwrap()`): the value of an optional, or of a
+  result that can be an error (`int | ParseError`); none or an error stops the program, saying
+  which, the error's fields and where (`config.jo:3: the settings file: ReadError(...)`).
+- `Set[T]`: `set(xs)`, `s.add(x)` (true when it was new), `remove`, `x in s` (and `has`), `len`,
+  `loop x in s` (in the order added), `union`, `intersection`, `difference`, `is_subset`, `==` in
+  any order, printed as `{1, 2, 3}`. `Deque[T]`: `push` and `pop` at the back, `push_front` and
+  `pop_front` at the front, each in the same short time, `first`, `last`, `d[i]`, `loop x in d`.
+  `xs.heap_push(x)` and `xs.heap_pop()` keep an array as a heap, as Python's heapq does (tuples
+  `(dist, node)` compared in order); `Heap`'s `pop_with_priority()` gives the priority with the
+  value (its docs said `peek` did).
+- Options go before or after the file for every command: `sloppy test --release f.jo`,
+  `sloppy test f.jo --release words`, `sloppy check --target windows f.jo`, `sloppy --release run
+  f.jo`, `sloppy watch --release f.jo` (when running a program, what follows the file is still its
+  own arguments).
+- LANGUAGE.md: inserting into and deleting from a binary search tree by recursion with `mut`, why
+  a cursor (`cur = cur.next!`) changes only itself, nodes linked by index for doubly linked lists
+  and parent links, how deep recursion goes, `[[1..5]]` (an array holding an array) next to
+  `xs[[2..5]]` (a slice keeping both ends), and that a module's `main` does not run when it is
+  brought in. TEACHING.md: data structures for a course (lists, trees, graphs, sets, deques,
+  heaps, Python's names for them).
 - Recursive types: a struct or enum can hold itself, as an optional (`next: Node?`), in an enum's
   variant (`bin(op: str, l: Expr, r: Expr)`), through a union (`child: Branch | Leaf`) or through
   another struct that holds it (`struct A: b: B?` and `struct B: a: A?`), where it had to go in an

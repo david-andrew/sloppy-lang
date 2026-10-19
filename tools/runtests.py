@@ -110,7 +110,7 @@ for t in tests:
     if r.returncode != 0 and not name.startswith("panic"):
         # (the backtrace after a panic differs with --release and is not there on the web;
         # tests/backtrace checks it)
-        err = "".join(l for l in r.stderr.splitlines(True) if not l.startswith(("    in ", "    called from ", "    ... and ")))
+        err = "".join(l for l in r.stderr.splitlines(True) if not l.startswith(("    in ", "    called from ", "    ...", "    (the ")))
         out += f"[exit {r.returncode}] {err}"
     if expected is None:
         print(f"NEW  {name}:\n{out}")
@@ -141,7 +141,8 @@ if compiler != "sloppy0" and target in ("native", "windows") and not release:
         subprocess.run([sloppy, "build", t, "-o", exe] + (["--target", target] if target != "native" else []), capture_output=True, env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")))
         r = subprocess.run(run, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
         # (how deep a recursion gets before the stack runs out depends on the machine)
-        out = re.sub(r"\(\d+ times\)", "(N times)", r.stdout + r.stderr)
+        out = re.sub(r"\([\d,]+ times\)", "(N times)", r.stdout + r.stderr)
+        out = re.sub(r"\d[\d,]* calls deep", "N calls deep", out)
         exp_path = t[:-3] + ".out"
         if not os.path.exists(exp_path):
             print(f"NEW  {name}:\n{out}")
@@ -310,7 +311,7 @@ if compiler != "sloppy0" and target == "native":
         exp_path = t[:-3] + ".out"
         r = subprocess.run([sloppy], stdin=open(t), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
                            env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")), timeout=60, cwd=os.path.dirname(t))
-        out = r.stdout + (f"[exit {r.returncode}]\n" if r.returncode != 0 else "")
+        out = re.sub(r"\d[\d,]* calls deep", "N calls deep", r.stdout) + (f"[exit {r.returncode}]\n" if r.returncode != 0 else "")
         if not os.path.exists(exp_path):
             print(f"NEW  {name}:\n{out}")
             failed += 1
