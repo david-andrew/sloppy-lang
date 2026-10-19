@@ -84,7 +84,9 @@ browser](https://sloppy-lang.org/breakwater/).
   (`f = (x: int): x * 2`), closures, partial application (`f(1, _)`), generics without
   ceremony (untyped parameters), uniform call syntax (`x.f(y)` is `f(x, y)`), one `loop` for
   every kind of loop, type unions (`int | ParseError`) with `is`, errors as values passed on
-  with `?` (`n = parse(s)?`), optionals, unit literals (`120ms`, `1.2(m/s)`).
+  with `?` (`n = parse(s)?`), optionals, pattern matching (`match`, `if let .bin(op, l, r) =
+  e:`), recursive types (`struct Node: next: Node?`), maps and sets (`{"a": 1}`, `{1, 2}`), unit
+  literals (`120ms`, `1.2(m/s)`).
 - **Numeric arrays.** numpy-style elementwise operators that broadcast (`a .* b .+ 1`,
   `f.(xs)`) and compile to one fused loop, 2-D arrays (`[1 2; 3 4]`, matrix products),
   `zeros`/`linspace`/`rand`..., struct-of-arrays storage (`soa Particle[]`), and GPU arrays

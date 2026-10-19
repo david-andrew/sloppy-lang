@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.24.0
 
+- Python's spellings for sorting by a key: `sorted(words, key = len)`, `xs.sort(key = (p):
+  p.age, descending = true)`, `max(xs, key = len)` and `min` (as `sorted_by`, `sort_by`,
+  `max_by`, `min_by`). `len`, `sqrt` and the compiler's other functions can be given as values
+  beside the library's own of that name (`sorted_by(xs, len)` said "no version of 'len' matches
+  (str) -> ?T17").
 - `to_int(s)?` in a `-> int | E` (or `void | E`) function suggests `?? return E(...)` where it
   suggested `-> (int | E)?`; an empty `{}` or `set()` says how to write an empty set.
 - `embed("sounds\\hit.wav")` and `embed_dir` with `\` build on Linux and macOS too (a path

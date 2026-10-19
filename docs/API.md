@@ -126,6 +126,8 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `max[T] = (a: T, b: T) -> T`
 - `min_by[T, K] = (xs: T[], key: (T) -> K) -> T`: the element with the smallest key, or the largest (the first of equal ones): the cheapest item, the nearest enemy (min_by(enemies, (e): distance(e.pos, me)))
 - `max_by[T, K] = (xs: T[], key: (T) -> K) -> T`
+- `min[T, K] = (xs: T[], key: (T) -> K) -> T`: the element with the smallest key, as Python's `min(words, key = len)` (min_by)
+- `max[T, K] = (xs: T[], key: (T) -> K) -> T`: the element with the largest key, as Python's `max(words, key = len)` (max_by)
 - `unique[T] = (xs: T[]) -> T[]`: each different element once, in the order they first come
 - `group_by[T, K] = (xs: T[], key: (T) -> K) -> {K: T[]}`: the elements by a key: each key with the elements that have it, in order (keys in the order they first come)
 - `reverse[T] = (xs: mut T[])`
@@ -145,6 +147,8 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `sort_by[T, K] = (xs: mut T[], key: (T) -> K, descending: bool = false)`: sort in place by a key, smallest first or largest first (equal keys keep their order: sort by name, then by score, for the scores in order of name)
 - `sorted[T] = (xs: T[], descending: bool = false) -> T[]`: a sorted copy of xs
 - `sorted_by[T, K] = (xs: T[], key: (T) -> K, descending: bool = false) -> T[]`: a copy of xs sorted by a key
+- `sorted[T, K] = (xs: T[], key: (T) -> K, descending: bool = false) -> T[]`: a copy of xs sorted by a key, as Python's `sorted(words, key = len)` (sorted_by)
+- `sort[T, K] = (xs: mut T[], key: (T) -> K, descending: bool = false)`: sort in place by a key, as Python's `xs.sort(key = (p): p.age)` (sort_by)
 
 ## Strings
 

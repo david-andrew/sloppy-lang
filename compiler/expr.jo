@@ -853,7 +853,8 @@ map_args = (pnames: int[], has_default: bool[], args: int[], out: mut int[]) -> 
                 if pnames[j] == int(nodes[a].name): k = j
             if k < 0:
                 an = name_of(int(nodes[a].name))
-                if an == "key" or an == "reverse": return "no parameter named '{an}' (by a key: `max_by(xs, (x): len(x))`, `min_by`, `sorted_by(xs, (x): x.age)`, `sort_by`; `descending = true` sorts largest first)"
+                if an == "reverse": return "no parameter named 'reverse' (`descending = true` sorts largest first)"
+                if an == "key": return "no parameter named 'key' (sort, sorted, max and min take one: `sorted(xs, key = len)`)"
                 return "no parameter named '{an}'{suggestion(an, pnames)}"
             if out[k] != 0: return "parameter '{name_of(int(nodes[a].name))}' given twice"
             out[k] = int(nodes[a].a)
@@ -4730,6 +4731,31 @@ check_lambda = (lam: int, expected: int) -> int:
     fns[f].fntype = i32(t)
     t
 
+# can a function the compiler makes (sqrt, len) be given where an `ex` is wanted? (its
+# parameters' types known)
+builtin_value_ok = (ex: int) -> bool:
+    if ex == 0 or tkind(ex) != .fn_: return false
+    loop i in [0..int(types[prune(ex)].nargs)):
+        if has_var(targ(prune(ex), i)): return false
+    true
+
+# (apply(sqrt) where an (f64) -> f64 is wanted: n becomes the function calling it, (x: f64): sqrt(x))
+builtin_lambda = (n: int, ex0: int, nm: int):
+    ex = prune(ex0)
+    pos = nodes[n].pos
+    params: int[]
+    args: int[]
+    loop i in [0..int(types[ex].nargs)):
+        pm = mk(.param, pos)
+        nodes[pm].name = i32(intern("__a{i}"))
+        nodes[pm].a = i32(type_node_of(targ(ex, i), pos))
+        params.push(pm)
+        args.push(bc_ident("__a{i}", pos))
+    lam = mk(.lambda, pos)
+    set_list(lam, params)
+    nodes[lam].b = i32(bc_block([bc_stmt(bc_call(name_of(nm), args, pos), pos)], pos))
+    nodes[n] = nodes[lam]
+
 fn_value = (n: int, expected: int) -> int:
     decls: int[]
     collect_fns(int(nodes[n].name), decls)
@@ -4767,6 +4793,10 @@ fn_value = (n: int, expected: int) -> int:
                 own_d = d
                 own_n += 1
         if own_n == 1 and not fn_sig(own_d).generic: f = get_fn_inst(own_d, [], nodes[n].pos)
+    if f == 0 and intrinsic_of(int(nodes[n].name)) >= 0 and builtin_value_ok(et):
+        # (sorted(words, key = len): len of a str is the compiler's, beside the library's for maps)
+        builtin_lambda(n, et, int(nodes[n].name))
+        return check_expr(n, expected)
     if f == 0:
         if et != 0 and types[et].kind == .fn_:
             nm = name_of(int(nodes[n].name))
@@ -5135,25 +5165,8 @@ check_expr = (n: int, expected: int) -> int:
         else if sk == .type_: t = mk_typeval(int(syms[s].ref))
         else if sk == .module: t = mk_modval(int(syms[s].ref))
         else if sk == .builtin:
-            # (apply(sqrt) where an (f64) -> f64 is wanted: the function calling it, (x: f64): sqrt(x))
-            known = ex != 0 and exk == .fn_
-            if known:
-                loop i in [0..int(types[ex].nargs)):
-                    if has_var(targ(ex, i)): known = false
-            if known:
-                pos = nodes[n].pos
-                params: int[]
-                args: int[]
-                loop i in [0..int(types[ex].nargs)):
-                    pm = mk(.param, pos)
-                    nodes[pm].name = i32(intern("__a{i}"))
-                    nodes[pm].a = i32(type_node_of(targ(ex, i), pos))
-                    params.push(pm)
-                    args.push(bc_ident("__a{i}", pos))
-                lam = mk(.lambda, pos)
-                set_list(lam, params)
-                nodes[lam].b = i32(bc_block([bc_stmt(bc_call(name_of(nm), args, pos), pos)], pos))
-                nodes[n] = nodes[lam]
+            if builtin_value_ok(ex):
+                builtin_lambda(n, ex, nm)
                 return check_expr(n, expected)
             fatal(nodes[n].pos, "'{name_of(nm)}' must be called")
         else: fatal(nodes[n].pos, "invalid use of '{name_of(nm)}'")
