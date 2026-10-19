@@ -46,9 +46,11 @@ const LF_SOAMUT = 8192      # ... and the loop is `loop mut`
 const LF_ELEMALIAS = 16384  # `mut x in xs` in a combined loop: x stands for xs[k] (writes to x write xs)
 const LF_READ = 32768       # its value is read somewhere (not only the base of a write: v.f = 1)
 const LF_QUIET = 65536      # a loop counter or part of `a, b = f()`: not warned about when unused
+const LF_MUTARG = 131072    # passed as a `mut` argument, or a part of it (see dead_copy_change)
 assign_root = 0                 # (the variable an assignment being checked writes through)
 copy_writes: {int: int} = {}    # local -> where its fields or elements are first written
 gcopy_writes: {int: int} = {}   # the same for globals
+mut_arg_seen = false            # some local has LF_MUTARG
 global_read: bool[]             # by global: its value is read somewhere
 open_globals: int[]             # globals made empty (`xs = []`) whose element type is still open
 
@@ -69,6 +71,7 @@ struct Local:
     dloops: i32     # loops being checked when it was declared
     soa: i32        # LF_SOAELEM: the (unchecked) ps[i] it stands for
     wloop: i32      # outermost loop (inside its scope) that modifies it before any capture
+    origin: i32     # the first statement giving it a copy of something else (dead_copy_change)
 
 struct Global:
     name: i32
@@ -2098,6 +2101,35 @@ round_after = (n: int, s: int, crossed: bool) -> int:
         if r >= 0: return r
     -1
 
+# Narrowed names made the whole variable again (LF_UNNARROWED), in order. In a branch that does
+# not come back (`if n.v == 0: n = n.nx; return true`) that is undone after the branch: the code
+# after it runs only when the branch did not, where the name is still narrowed
+unnarrowed: int[]
+
+# (the branch b is checked; the names unnarrowed in it from unnarrowed[mark] on)
+renarrow = (mark: int, b: int):
+    if unnarrowed.len() == mark or not stmt_terminates(b): return
+    jumps = has_jump(b)
+    keep: int[]
+    loop i in [mark..unnarrowed.len()):
+        l = unnarrowed[i]
+        # (a break or continue leaves the name's scope only if it was narrowed inside that loop)
+        if jumps and int(locals[l].dloops) != loop_serials.len(): keep.push(l)
+        else: locals[l].flags = i32(int(locals[l].flags) & ~LF_UNNARROWED)
+    loop unnarrowed.len() > mark: unnarrowed.pop()
+    loop l in keep: unnarrowed.push(l)
+
+# a break or continue in n (not one of a loop inside it)
+has_jump = (n: int) -> bool:
+    if n == 0: return false
+    k = nodes[n].kind
+    if k == .break_ or k == .continue_: return true
+    if k == .while_ or k == .for_ or k == .lambda: return false
+    if has_jump(int(nodes[n].a)) or has_jump(int(nodes[n].b)) or has_jump(int(nodes[n].c)): return true
+    loop i in [0..nkids(n)):
+        if has_jump(kid(n, i)): return true
+    false
+
 # x = v where x is narrowed (by `is`) and v is not of the narrowed type: x is the whole variable again
 unnarrow_assign = (s: int):
     lhs = int(nodes[s].a)
@@ -2116,6 +2148,7 @@ unnarrow_assign = (s: int):
     in_place = nodes[al].kind != .conv
     if in_place and not is_union(rt) and types[rt].kind != .opt and can_coerce(int(nodes[s].b), rt, int(locals[l].type)): return
     locals[l].flags = i32(int(locals[l].flags) | LF_UNNARROWED)
+    unnarrowed.push(l)
     nm = int(nodes[lhs].name)
     d = int(locals[l].dloops)
     if loop_serials.len() > d and (narrow_reads.get(l) ?? 0) == loop_serials[d]:
@@ -2361,6 +2394,7 @@ check_assign = (s: int) -> int:
         rt = prune(check_expr(int(nodes[s].b), lt))
         if rt != lt and nodes[lhs].kind == .ident and (nodes[lhs].aux == i32(int(SK.local)) or nodes[lhs].aux == i32(int(SK.global))) and not can_coerce(last_checked, rt, lt): var_type_error(lhs, lt, rt, nodes[last_checked].pos, last_checked)
         nodes[s].b = i32(coerce(last_checked, lt))
+        if nodes[lhs].kind == .ident and nodes[lhs].aux == i32(int(SK.local)): note_origin(int(nodes[lhs].sym), s, int(nodes[s].b))
         if path_narrows > 0 and nodes[lhs].kind != .ident or path_narrows > 0 and nodes[lhs].aux == i32(int(SK.global)):
             key = path_key(lhs)
             path_forget(key)
@@ -2535,6 +2569,7 @@ check_vardecl = (s: int):
     l = new_local(int(nodes[s].name), t, nodes[s].pos)
     if nodes[s].b != 0 and quat_nodes.has(int(nodes[s].b)): quat_locals[l] = true
     locals[l].flags = i32(LF_DECL)
+    note_origin(l, s, int(nodes[s].b))
     if has_flag(s, NF_LOOPCOUNT): locals[l].flags = i32(LF_DECL | LF_QUIET)
     nodes[s].sym = i32(l)
     if ide_on and nodes[s].a == 0: ide_hint_local(s, l)
@@ -2614,6 +2649,7 @@ check_stmt = (s: int):
             else:
                 if types[t].kind != .opt: fatal(nodes[int(nodes[s].a)].pos, "'loop let x = value' needs an optional value, found {type_str(t)}")
                 nodes[s].sym = i32(new_local(int(nodes[s].name), int(types[t].elem), nodes[s].pos))
+                note_origin(int(nodes[s].sym), s, int(nodes[s].a))
         else:
             ct = check_expr(int(nodes[s].a), T_BOOL)
             if tkind(ct) == .array or nodes[int(nodes[s].a)].kind == .range: fatal(nodes[s].pos, "`loop cond:` repeats while cond is true; to go through a range or an array, name the element: `loop i in 0..n:` (`loop _ in` when it is not used)")
@@ -2829,13 +2865,341 @@ place_root = (n: int) -> int:
 # copy changed for nothing (`if let e = enemies.find(...): e.hp -= 5` leaves the enemy as it was)
 copy_write_warnings = (f: int):
     unused_local_warnings(f)
-    if copy_writes.len() == 0: return
+    if copy_writes.len() == 0 and not mut_arg_seen: return
     skip = LF_READ | LF_PARAM | LF_MUTPARAM | LF_CAPTURE | LF_CAPTURED | LF_ADDR | LF_ALIAS | LF_BYREF | LF_ELEMALIAS | LF_SOAELEM | LF_SHARED
     loop l in fns[f].locals:
         if not copy_writes.has(l) or int(locals[l].flags) & skip != 0: continue
         nm = name_of(int(locals[l].name))
         if starts_with(nm, "#") or starts_with(nm, "__") or pos_in_lib(locals[l].pos): continue
+        if dead_copy_change(f, l): continue
         warn(copy_writes[l], "'{nm}' is changed here but never read: it holds a copy (structs and arrays are values), so what it was copied from stays as it was; change that instead (`xs[i].hp -= 5`, `loop mut e in xs`)")
+    loop l in fns[f].locals:
+        # (a `mut` argument's address is taken: whether `&` is, dead_copy_change sees)
+        if (copy_writes.has(l) or int(locals[l].flags) & LF_MUTARG != 0) and int(locals[l].flags) & LF_READ != 0 and int(locals[l].flags) & (skip & ~(LF_READ | LF_ADDR)) == 0: dead_copy_change(f, l)
+
+# ---------------- changes to a copy that nothing reads after ----------------
+# cur = l.head!, a walk to the end, then `cur.next = Node(v)`: Java's and Python's way to change a
+# linked list changes cur, a copy, as the last thing done with it. A change to a variable that
+# holds a copy of another place (a field, an element, `x!`, what `if let`/`loop let` bind, what a
+# function gives back) is warned of when nothing reads the variable after it, on any path: a
+# backward walk over the function, for that one variable, the loops' next rounds included.
+dc_var = 0                  # the variable
+dc_names: {int: bool} = {}  # the names that stand for a part of it (narrowed, `loop mut` elements)
+dc_brk: bool[]              # by loop being walked, innermost last: is dc_var read after a break
+dc_cont: bool[]             # ... and after a continue (from the loop's next round)
+dc_dead: int[]              # changes found never read (statements)
+dc_bail = false             # (a defer reads it: when is not followed)
+dc_origin = 0               # the value it was first given that is a copy of something else
+dc_bound = false            # ... by `if let` or `loop let` (it holds what the optional holds)
+
+# warns of a change to l (a copy) never read after; true when it did
+dead_copy_change = (f: int, l: int) -> bool:
+    nm = name_of(int(locals[l].name))
+    if len(nm) == 0 or starts_with(nm, "#") or starts_with(nm, "__") or pos_in_lib(locals[l].pos): return false
+    body = int(fns[f].body)
+    if body == 0: return false
+    dc_var = l
+    dc_names = {}
+    dc_names[l] = true
+    dc_origin = origin_value(l)
+    if dc_origin == 0: return false
+    dc_bound = nodes[int(locals[l].origin)].kind == .iflet or nodes[int(locals[l].origin)].kind == .while_
+    # (passed as a `mut` argument only: see dc_change)
+    ok = nodes[unconv(dc_origin)].kind
+    if not copy_writes.has(l) and (ok == .call or ok == .ident): return false
+    loop a in fns[f].locals:
+        if a > l and int(locals[a].flags) & LF_ALIAS != 0 and locals[a].alias != 0:
+            r = dc_root(int(locals[a].alias))
+            if r != 0 and dc_names.has(int(nodes[r].sym)): dc_names[a] = true
+    if int(locals[l].flags) & LF_ADDR != 0 and dc_addr(body): return false
+    dc_brk = []
+    dc_cont = []
+    dc_dead = []
+    dc_bail = false
+    dc_walk(body, false, true)
+    if dc_bail or dc_dead.len() == 0: return false
+    # (the first such change in the file)
+    s = dc_dead[0]
+    loop d in dc_dead:
+        if nodes[d].pos < nodes[s].pos: s = d
+    warn(nodes[s].pos, dc_message(f, l, s))
+    true
+
+# the name at the bottom of a place, through `!` and narrowing too (an ident node), or 0
+dc_base = (n: int) -> int:
+    r = n
+    loop r != 0:
+        k = nodes[r].kind
+        if k == .field or k == .index or k == .unwrap or k == .narrow or k == .conv: r = int(nodes[r].a)
+        else: break
+    if r != 0 and nodes[r].kind == .ident: return r
+    0
+
+# ... when it is a variable of the function
+dc_root = (n: int) -> int:
+    r = dc_base(n)
+    if r != 0 and nodes[r].aux == i32(int(SK.local)): return r
+    0
+
+dc_is = (n: int) -> bool: nodes[n].kind == .ident and nodes[n].aux == i32(int(SK.local)) and dc_names.has(int(nodes[n].sym))
+
+# is dc_var (or a name for a part of it) used anywhere in n?
+dc_uses = (n: int) -> bool:
+    if n == 0: return false
+    k = nodes[n].kind
+    if k == .ident: return dc_is(n)
+    if k == .lambda: return false
+    if dc_uses(int(nodes[n].a)) or dc_uses(int(nodes[n].b)): return true
+    if k != .for_:
+        if dc_uses(int(nodes[n].c)): return true
+        if k != .partial and dc_uses(int(nodes[n].d)): return true
+    loop i in [0..nkids(n)):
+        if dc_uses(kid(n, i)): return true
+    loop i in [0..nkids2(n)):
+        if dc_uses(kid2(n, i)): return true
+    false
+
+# (&x: a pointer to it, which may be read through later)
+dc_addr = (n: int) -> bool:
+    if n == 0: return false
+    k = nodes[n].kind
+    if k == .addr: return dc_uses(int(nodes[n].a))
+    if k == .lambda: return false
+    if dc_addr(int(nodes[n].a)) or dc_addr(int(nodes[n].b)): return true
+    if k != .for_:
+        if dc_addr(int(nodes[n].c)): return true
+        if k != .partial and dc_addr(int(nodes[n].d)): return true
+    loop i in [0..nkids(n)):
+        if dc_addr(kid(n, i)): return true
+    false
+
+# a value that is a copy of something that lives on (a place, or what a function gives back),
+# given to variable l: noted as l's origin (dead_copy_change)
+copy_value = (v0: int, l: int) -> bool:
+    v = unconv(v0)
+    k = nodes[v].kind
+    if k == .narrow: return copy_value(int(nodes[v].a), l)
+    if k == .call: return nodes[v].a == 0 and nodes[v].aux == 0 and nodes[v].sym > 0
+    if k != .field and k != .index and k != .unwrap and k != .ident: return false
+    r = dc_base(v)
+    if r == 0: return false
+    if nodes[r].aux == i32(int(SK.global)): return true
+    nodes[r].aux == i32(int(SK.local)) and int(nodes[r].sym) != l
+
+# (statement s gives l value v: noted when it is the first that is a copy)
+note_origin = (l: int, s: int, v: int):
+    if locals[l].origin == 0 and v != 0 and copy_value(v, l): locals[l].origin = i32(s)
+
+# the value of l's origin (what `if let` or `loop let` bind from, for those), or 0
+origin_value = (l: int) -> int:
+    s = int(locals[l].origin)
+    if s == 0: return 0
+    k = nodes[s].kind
+    if k == .vardecl or k == .assign: return unconv(int(nodes[s].b))
+    unconv(int(nodes[s].a))
+
+# a statement that changes dc_var without reading it: the place written (an assignment's, or a
+# `mut` argument's), or 0
+dc_change = (s: int) -> int:
+    k = nodes[s].kind
+    if k == .assign:
+        lhs = int(nodes[s].a)
+        if nodes[lhs].kind != .field and nodes[lhs].kind != .index: return 0
+        r = dc_root(lhs)
+        if r == 0 or not dc_is(r): return 0
+        return lhs
+    if k != .exprstmt: return 0
+    e = int(nodes[s].a)
+    # (one whose value is used, as xs.pop()'s, is for that; a value a function made, as
+    # open_file's, is no copy of another, and f.close() is for what it does; a whole variable
+    # copied, `a = data` and then `a.sort()`, is copied to be changed)
+    ok = nodes[unconv(dc_origin)].kind
+    if nodes[e].kind != .call or tkind(ntype(e)) != .void_ or ok == .call or ok == .ident: return 0
+    w = 0
+    loop i in [0..nkids(e)):
+        a = kid(e, i)
+        if has_flag(a, NF_MUT):
+            r = dc_root(a)
+            if r != 0 and dc_is(r):
+                if w != 0: return 0
+                w = a
+    w
+
+# Is dc_var read before it is given a value again, from just before n on, when `live` says
+# whether it is from just after n? (rec: note the changes after which it is not)
+dc_walk = (n: int, live: bool, rec: bool) -> bool:
+    if n == 0: return live
+    k = nodes[n].kind
+    if k == .block:
+        lv = live
+        i = nkids(n) - 1
+        loop i >= 0:
+            lv = dc_walk(kid(n, i), lv, rec)
+            i -= 1
+        return lv
+    if k == .vardecl:
+        if nodes[n].nlist == 0 and not has_flag(n, NF_GLOBAL) and int(nodes[n].sym) == dc_var: return dc_uses(int(nodes[n].b))
+        return live or dc_uses(int(nodes[n].b))
+    if k == .assign or k == .exprstmt:
+        w = dc_change(n)
+        if w != 0:
+            if not live and rec: dc_dead.push(n)
+            # (what it is changed with, and the indexes of the place, are read before)
+            if k == .assign:
+                if dc_uses(int(nodes[n].b)) or dc_index_uses(w): return true
+                return live
+            e = int(nodes[n].a)
+            loop i in [0..nkids(e)):
+                a = kid(e, i)
+                if a != w and dc_uses(a): return true
+            return live or dc_index_uses(w)
+        lhs = int(nodes[n].a)
+        if k == .assign and nodes[n].op == i32(int(Tok.assign)) and nodes[lhs].kind == .ident and nodes[lhs].aux == i32(int(SK.local)) and int(nodes[lhs].sym) == dc_var: return dc_uses(int(nodes[n].b))
+        if k == .exprstmt:
+            e = int(nodes[n].a)
+            ek = nodes[e].kind
+            if ek == .if_ or ek == .iflet or ek == .match_: return dc_walk(e, live, rec)
+    if k == .if_:
+        lb = dc_walk(int(nodes[n].b), live, rec)
+        lc = live
+        if nodes[n].c != 0: lc = dc_walk(int(nodes[n].c), live, rec)
+        return dc_uses(int(nodes[n].a)) or lb or lc
+    if k == .iflet:
+        lb = dc_walk(int(nodes[n].b), live, rec)
+        if nodes[n].d == 0 and int(nodes[n].sym) == dc_var: lb = false
+        lc = live
+        if nodes[n].c != 0: lc = dc_walk(int(nodes[n].c), live, rec)
+        return dc_uses(int(nodes[n].a)) or dc_uses(int(nodes[n].d)) or lb or lc
+    if k == .match_:
+        lv = live or dc_uses(int(nodes[n].a))
+        loop i in [0..nkids(n)):
+            arm = kid(n, i)
+            if dc_walk(int(nodes[arm].b), live, rec): lv = true
+            if dc_uses(int(nodes[arm].a)): lv = true
+            loop j in [0..nkids(arm)):
+                if dc_uses(kid(arm, j)): lv = true
+        return lv
+    if k == .while_ or k == .for_:
+        # (a loop that does not use it leaves it as it was)
+        if not dc_uses(n): return live
+        binds = k == .while_ and nodes[n].aux == 1 and nodes[n].d == 0 and int(nodes[n].sym) == dc_var
+        head_uses = k == .while_ and (dc_uses(int(nodes[n].a)) or dc_uses(int(nodes[n].c)) or dc_uses(int(nodes[n].d)))
+        # (its round's start: read there, after the loop, or in a round; until nothing changes)
+        head = live or head_uses
+        loop true:
+            dc_brk.push(live)
+            dc_cont.push(head)
+            lb = dc_walk(int(nodes[n].b), head, false)
+            dc_brk.pop()
+            dc_cont.pop()
+            if binds: lb = false
+            if not lb or head: break
+            head = true
+        if rec:
+            dc_brk.push(live)
+            dc_cont.push(head)
+            dc_walk(int(nodes[n].b), head, true)
+            dc_brk.pop()
+            dc_cont.pop()
+        if k == .for_: return head or dc_uses(int(nodes[n].a))
+        return head
+    if k == .return_: return dc_uses(int(nodes[n].a))
+    if k == .break_ and dc_brk.len() > 0: return dc_brk[dc_brk.len() - 1]
+    if k == .continue_ and dc_cont.len() > 0: return dc_cont[dc_cont.len() - 1]
+    if k == .defer_:
+        if dc_uses(n): dc_bail = true
+        return live
+    # (anything else reads it if it uses it; a break or continue in it goes where those go)
+    if dc_uses(n): return true
+    if has_jump(n):
+        loop b in dc_brk:
+            if b: return true
+        loop c in dc_cont:
+            if c: return true
+    live
+
+# (xs[cur.i] = v: the place's indexes read dc_var)
+dc_index_uses = (w: int) -> bool:
+    r = w
+    loop nodes[r].kind == .field or nodes[r].kind == .index or nodes[r].kind == .unwrap or nodes[r].kind == .narrow or nodes[r].kind == .conv:
+        if nodes[r].kind == .index:
+            if dc_uses(int(nodes[r].b)): return true
+            loop i in [0..nkids(r)):
+                if dc_uses(kid(r, i)): return true
+        r = int(nodes[r].a)
+    false
+
+dc_message = (f: int, l: int, s: int) -> str:
+    nm = name_of(int(locals[l].name))
+    o = unconv(dc_origin)
+    ot = text_or(o, "")
+    # (the variable whose part it copies: l.head!'s l; a function's first argument)
+    rn = ""
+    r = dc_base(o)
+    if r == 0 and nodes[o].kind == .call and nkids(o) > 0 and nodes[kid(o, 0)].pos < nodes[o].pos: r = dc_base(kid(o, 0))
+    of = "of {ot}"
+    if nodes[o].kind == .call: of = "of what {ot} gives back"
+    if len(ot) == 0: of = "of another value"
+    # (n of `loop let n = cur`, where cur = l.head: a copy of a copy, which changes l no more)
+    seen: int[] = [l]
+    loop _ in [0..3):
+        if r == 0 or nodes[r].aux != i32(int(SK.local)) or int(locals[int(nodes[r].sym)].flags) & (LF_PARAM | LF_MUTPARAM | LF_ALIAS | LF_BYREF) != 0: break
+        rl = int(nodes[r].sym)
+        if seen.contains(rl): break
+        seen.push(rl)
+        ro = origin_value(rl)
+        if ro == 0 or nodes[ro].kind == .call: break
+        rot = expr_text(ro)
+        if len(rot) == 0: break
+        of += ", a copy of {rot}"
+        o = ro
+        r = dc_base(ro)
+    if r != 0: rn = expr_text(r)
+    # (the place itself: n.next! for `if let nx = n.next`)
+    place = ot
+    if dc_bound and len(place) > 0: place += "!"
+    if nodes[o].kind == .call: place = ""
+    does = "it does not change {rn}"
+    if len(rn) == 0 or rn == nm: does = "it changes nothing else"
+    # (a struct that holds itself, as a list's node: a function taking a `mut` one, calling itself on the next)
+    rec = ""
+    t = prune(int(locals[l].type))
+    if tkind(t) == .opt: t = prune(int(types[t].elem))
+    if tkind(t) == .struct_:
+        si = int(types[t].st)
+        decide_boxes(si)
+        boxed = false
+        loop i in [0..int(structs[si].nfields)):
+            if fields[int(structs[si].fields) + i].boxed: boxed = true
+        fnm = "f"
+        if fns[f].decl != 0 and nodes[int(fns[f].decl)].kind == .fn_: fnm = name_of(int(nodes[int(fns[f].decl)].name))
+        if boxed: rec = ", or with a function that takes it as a `mut` parameter and calls itself on the next one (`{fnm}(n: mut {type_str(t)}?, ...)`)"
+    w = dc_change(s)
+    if nodes[s].kind == .exprstmt:
+        how = ""
+        if len(place) > 0: how = ". Pass `{place}` to change {ot} itself"
+        return "'{nm}' is a copy ({of}), so passing it as a `mut` argument changes the copy, which nothing reads after: {does}{how}"
+    how = ""
+    # (what is after the name in the place changed, and how: `.next =`, `.hp -=`)
+    wtx = expr_text(w)
+    after = ""
+    if starts_with(wtx, nm + ".") or starts_with(wtx, nm + "["):
+        opt = "="
+        if nodes[s].op != i32(int(Tok.assign)): opt = tok_text(nodes[s].op as Tok)
+        after = "{wtx[len(nm)..]} {opt} ..."
+    if r != 0 and nodes[r].aux == i32(int(SK.local)) and int(locals[int(nodes[r].sym)].flags) & LF_BYREF != 0:
+        # (q = p of `loop p in ps`: the loop's element is a copy too)
+        how = ". To change the elements, go through them with `loop mut {rn} in ...`"
+    else if len(place) > 0 and len(rn) > 0 and rn != nm and o == unconv(dc_origin):
+        ex = ""
+        if len(after) > 0: ex = " (`{place}{after}`)"
+        how = ". To change {rn}, change it through {rn}{ex}"
+    else if r != 0 and tkind(ntype(r)) == .array and nodes[o].kind == .call and len(after) > 0:
+        # (if let e = enemies.find(...): the element by its place, or each in a `loop mut`)
+        how = ". To change an element of {rn}, change it there, by its place (`{rn}[i]{after}`) or in `loop mut {nm} in {rn}`"
+    else if len(rn) > 0 and rn != nm: how = ". To change {rn}, change it through {rn}"
+    else if len(rec) > 0: how = ". To change what it was copied from, change that"
+    "'{nm}' is a copy ({of}), and this change to it is never read: {does}{how}{rec}"
 
 # how many times w appears in src as a whole word
 word_count = (src: str, w: str) -> int:

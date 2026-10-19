@@ -672,6 +672,49 @@ const_named = (n: int) -> str:
     if s == 0 or syms[s].kind != .const_: return ""
     w
 
+# an expression as written, for messages (n.next, xs[i].pos!, env.get(...)); "" for one longer
+expr_text = (n: int) -> str:
+    if n == 0: return ""
+    k = nodes[n].kind
+    a = int(nodes[n].a)
+    if k == .ident:
+        nm = name_of(int(nodes[n].name))
+        if not starts_with(nm, "#") and not starts_with(nm, "__"): return nm
+        # (a narrowed field or global: the place it stands for)
+        if nodes[n].aux == i32(int(SK.local)) and nodes[n].sym > 0 and locals[int(nodes[n].sym)].alias != 0: return expr_text(int(locals[int(nodes[n].sym)].alias))
+        return ""
+    if k == .narrow or k == .conv: return expr_text(a)
+    if k == .call and a == 0 and nodes[n].sym > 0 and int(nodes[n].sym) < fns.len() and fns[int(nodes[n].sym)].decl != 0:
+        # (a call checked: the function it calls, and its receiver when written before it)
+        fnm = name_of(int(nodes[int(fns[int(nodes[n].sym)].decl)].name))
+        if nkids(n) > 0 and nodes[kid(n, 0)].pos < nodes[n].pos:
+            r = expr_text(kid(n, 0))
+            if len(r) == 0: return ""
+            return "{r}.{fnm}(...)"
+        return "{fnm}(...)"
+    # (a struct made: check_struct_call)
+    if k == .call and a == 0 and nodes[n].aux == 2 and tkind(int(nodes[n].type)) == .struct_: return "{type_str(int(nodes[n].type))}(...)"
+    if k == .field or k == .unwrap or k == .index or k == .call:
+        if k == .call and nodes[a].kind == .ident: return "{name_of(int(nodes[a].name))}(...)"
+        if k == .call and nodes[a].kind == .field:
+            r = expr_text(int(nodes[a].a))
+            if len(r) == 0: return ""
+            return "{r}.{name_of(int(nodes[a].name))}(...)"
+        base = expr_text(a)
+        if len(base) == 0 or k == .call: return ""
+        if k == .field: return "{base}.{name_of(int(nodes[n].name))}"
+        if k == .unwrap: return "{base}!"
+        b = int(nodes[n].b)
+        if b != 0 and nodes[b].kind == .ident: return "{base}[{name_of(int(nodes[b].name))}]"
+        if b != 0 and nodes[b].kind == .int_lit: return "{base}[{nodes[b].ival}]"
+        return "{base}[...]"
+    ""
+
+text_or = (n: int, other: str) -> str:
+    t = expr_text(n)
+    if len(t) == 0: return other
+    t
+
 # ---------------- type expressions written as expressions ----------------
 expr_as_type = (e: int) -> int:
     k = nodes[e].kind
@@ -691,6 +734,11 @@ expr_as_type = (e: int) -> int:
         return get_struct_inst(d, targs)
     if k == .array and nkids(e) == 1: return mk_array(expr_as_type(kid(e, 0)))
     if k == .topt: return mk_opt(expr_as_type(int(nodes[e].a)))
+    # ((int, str): a tuple type, as id[(int, str)](...))
+    if k == .tuple:
+        elems: int[]
+        loop i in [0..nkids(e)): elems.push(expr_as_type(kid(e, i)))
+        return mk_tuple(elems)
     # ({str: P}: a map type, written where an expression is parsed, as from_json[{str: P}])
     if k == .map_lit and nkids(e) == 1:
         pr = kid(e, 0)
@@ -1050,6 +1098,11 @@ finish_arg = (a: int, pt: int, is_mut: bool):
         add_flag(a, NF_CHECKED)
     if is_mut:
         check_place(a, true)
+        # (a variable passed to be changed: see copy_write_warnings)
+        wr = place_root(a)
+        if wr != 0 and nodes[wr].aux == i32(int(SK.local)):
+            locals[int(nodes[wr].sym)].flags = locals[int(nodes[wr].sym)].flags | i32(LF_MUTARG)
+            mut_arg_seen = true
         if path_narrows > 0: path_forget(path_key(a))
         if not type_eq(ntype(a), pt) and not unify(ntype(a), pt): fatal(nodes[a].pos, "`mut` argument must have type {type_str(pt)} exactly, found {type_str(ntype(a))}")
         add_flag(a, NF_MUT)
@@ -1124,6 +1177,8 @@ finish_partial = (n: int, ptypes: int[], mutmask: int, ret: int) -> int:
 call_targs: int[]              # type arguments written at the call being resolved (f[T](...))
 cur_assign = 0                 # the assignment whose target is being checked (`x = ...`, `x += ...`)
 early_set: {int: bool} = {}    # globals top-level code assigns above their own line
+others_tried: int[]            # the library's functions of a name the program's own is chosen
+others_call = 0                # over when none fits at call others_call (said with its error)
 
 resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) -> int:
     # (this call's own type arguments: a call among its arguments has none, from_text[S](f(x)))
@@ -1318,7 +1373,8 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 else if tkind(et0) == .float_: dv = "0.0"
                 else if tkind(et0) == .bool_: dv = "false"
                 fatal(nodes[a0].pos, "{gn} may give none (nothing) rather than {a_type(et0)}: say what to use then, as `{gn}(...) ?? {dv}`, before calling '{name_of(name)}'")
-            fatal(nodes[a0].pos, "this {type_str(at)} may be none (nothing) rather than {a_type(int(types[at].elem))}: before calling '{name_of(name)}', say what to use then (`x ?? default`), or `x!` when it cannot be none, or `if let v = x: ...`")
+            xt = text_or(a0, "x")
+            fatal(nodes[a0].pos, "this {type_str(at)} may be none (nothing) rather than {a_type(int(types[at].elem))}: before calling '{name_of(name)}', say what to use then (`{xt} ?? default`), or `{xt}!` when it cannot be none, or `if let v = {xt}: ...`")
         # (atomic_add(&x, 1): the atomics are for GPU buffers)
         if starts_with(name_of(name), "atomic_") and args.len() > 0 and nodes[unnamed(args[0])].type != 0 and tkind(ntype(unnamed(args[0]))) == .ptr:
             fatal(nodes[n].pos, "{name_of(name)} changes an element of a GpuBuffer in a compute function; threads on the CPU do not share variables: parallel_map gives each one's result back, and a count or flag they share is an Atomic (`done = atomic(0)`, `done.add(1)`)")
@@ -1363,12 +1419,30 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
             own: int[]
             loop d in decls:
                 if not decl_in_prelude(d): own.push(d)
-            if own.len() == 1: resolve_fn_call(n, name, own, args, expected)
+            if own.len() == 1:
+                others_tried = []
+                loop d in decls:
+                    if decl_in_prelude(d) and not starts_with(name_of(int(nodes[d].name)), "__"): others_tried.push(d)
+                others_call = n
+                resolve_fn_call(n, name, own, args, expected)
+                others_call = 0
         if decls.len() == 1:
             if len(last_err) == 0: last_err = "arguments do not match"
             ep = nodes[n].pos
             if last_err_pos > 0: ep = last_err_pos
-            fatal(ep, "in call to {call_text(decls[0])}: {last_err}")
+            # (index_of(xs, x) with the program's own index_of(p: Parser, c: str): the library's,
+            # which the call may have meant, did not fit either)
+            also = ""
+            if others_call == n:
+                loop i in 0.. and d in others_tried:
+                    if i == 3:
+                        also += ", ..."
+                        break
+                    if i > 0: also += ", "
+                    also += call_text(d)
+            if len(also) > 0 and others_tried.len() == 1: also = " (the library's {also} does not take these either)"
+            else if len(also) > 0: also = " (the library's {also} do not take these either)"
+            fatal(ep, "in call to {call_text(decls[0])}: {last_err}{also}")
         ts = ""
         loop i in 0.. and a0 in args:
             a = unnamed(a0)
@@ -4033,7 +4107,9 @@ check_binary = (n: int, expected: int) -> int:
     if not is_numeric(ta) or not is_numeric(tb):
         r = op_overload(n, tok_text(op))
         if r != 0: return r
-        if tka == .opt and is_numeric(int(types[ta].elem)): fatal(nodes[n].pos, "this {type_str(ta)} may be none (nothing), so {tok_text(op)} cannot use it: say what to use then (`x ?? 0`), or `x!` when it cannot be none")
+        if tka == .opt and is_numeric(int(types[ta].elem)):
+            xt = text_or(int(nodes[n].a), "x")
+            fatal(nodes[n].pos, "this {type_str(ta)} may be none (nothing), so {tok_text(op)} cannot use it: say what to use then (`{xt} ?? 0`), or `{xt}!` when it cannot be none")
         why = ""
         if is_union(ta) or is_union(tb): why = " (find out which it holds first: `if x is int: ...` or a `match`)"
         if tka == .array and is_int(tb) and op == .star:
@@ -4942,7 +5018,8 @@ check_expr = (n: int, expected: int) -> int:
                         loop i in [0..int(structs[esi].nfields)):
                             if int(fields[int(structs[esi].fields) + i].name) == fname: has = true
                     if has:
-                        fatal(nodes[n].pos, "this {type_str(bt)} may be none (nothing), which has no {name_of(fname)}: `x!.{name_of(fname)}` when it cannot be none, or `if let v = x: v.{name_of(fname)}`")
+                        xt = text_or(int(nodes[n].a), "x")
+                        fatal(nodes[n].pos, "this {type_str(bt)} may be none (nothing), which has no {name_of(fname)}: `{xt}!.{name_of(fname)}` when it cannot be none, or `if let v = {xt}: v.{name_of(fname)}`")
                 # (transform.position: a function's name, with a field after it)
                 if tkind(bt) == .fn_:
                     bn = int(nodes[n].a)
@@ -5198,6 +5275,11 @@ check_expr = (n: int, expected: int) -> int:
             t = at
             nodes[n].aux = 1
         else:
+            # (env.get(k) ?? EvalError(...) in a function giving back f64 | EvalError: the value
+            # or the error is an if)
+            if not can_coerce(int(nodes[n].b), btt, inner) and not is_union(inner):
+                xt = text_or(int(nodes[n].a), "x")
+                fatal(nodes[int(nodes[n].b)].pos, "`??` gives a default of the value's own type, for when {xt} is none: {a_type(inner)} here, and this is {a_type(btt)}. To give back one or the other: `if let v = {xt}: v else: {text_or(int(nodes[n].b), "...")}`")
             coerce(int(nodes[n].b), inner)
             t = inner
     else if k == .unwrap:
@@ -5496,11 +5578,15 @@ check_if = (n: int, ex: int) -> int:
     if is_stmt:
         mark = scope_mark()
         narrow_by(cond, true)
+        um = unnarrowed.len()
         check_block(b, 0, false)
+        renarrow(um, b)
         scope_reset(mark)
         if c != 0:
             narrow_by(cond, false)
+            um = unnarrowed.len()
             check_block(c, 0, false)
+            renarrow(um, c)
             scope_reset(mark)
         # if x is E: return ...   narrows x for the rest of the block
         if stmt_terminates(b) and (c == 0 or not stmt_terminates(c)): narrow_by(cond, false)
@@ -6673,18 +6759,23 @@ check_iflet = (n: int, ex: int) -> int:
         if types[ot].kind != .opt: fatal(nodes[int(nodes[n].a)].pos, "'if let x = value' needs an optional value, found {type_str(ot)}")
         l = new_local(int(nodes[n].name), int(types[ot].elem), nodes[n].pos)
         nodes[n].sym = i32(l)
+        note_origin(l, n, int(nodes[n].a))
     b = int(nodes[n].b)
     c = int(nodes[n].c)
     e1 = ex
     if is_stmt: e1 = 0
+    um = unnarrowed.len()
     t1 = check_block(b, e1, not is_stmt)
+    if is_stmt: renarrow(um, b)
     scope_reset(mark)
     t2 = T_VOID
     if c != 0:
         e2 = ex
         if e2 == 0: e2 = t1
         if is_stmt: e2 = 0
+        um = unnarrowed.len()
         t2 = check_block(c, e2, not is_stmt)
+        if is_stmt: renarrow(um, c)
     if is_stmt: return T_VOID
     if c == 0: fatal(nodes[n].pos, "an if expression needs an else branch")
     # (branches that are statements, as at the end of a function: no value, as check_if)

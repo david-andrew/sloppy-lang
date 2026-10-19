@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- A change to a variable that holds a copy of another place, when nothing reads the variable
+  after it, is warned of, where only a variable never read at all was before: the way Java and
+  Python add at the end of a linked list (`cur = l.head!`, a loop to the last node, then
+  `cur.next = Node(v)`) changed cur and left the list as it was, with no word. "'cur' is a copy (of
+  l.head!), and this change to it is never read: it does not change l. To change l, change it
+  through l (`l.head!.next = ...`), or with a function that takes it as a `mut` parameter and
+  calls itself on the next one (`push_back(n: mut Node?, ...)`)". The copies are of fields,
+  elements, `x!`, what `if let` and `loop let` bind (a copy of a copy says where that came from)
+  and what a function gives back; a change read later, as on a loop's next round, after a `break`
+  or `continue`, given back, stored or passed on, is not warned of. Passing such a copy as a `mut`
+  argument with nothing reading it after (`if let nx = n.next: append(nx, v)`) says to pass
+  `n.next!`, and `if let mut nx = n.next` says that the binding is a copy and to change `n.next!`,
+  where it said a `let` variable can change already.
+- A narrowed variable given another value in a branch that does not come back (`if n.v == 0: n =
+  n.nx; return true`) is still narrowed after the branch (it was the whole optional again, and
+  `n.v` after it an error). A `break` or `continue` counts when the narrowing is inside that loop.
+- A tuple type is a type argument in a call (`id[(int, str)]((1, "a"))`, `f[(int, str)[]](...)`),
+  where it was "expected a type".
+- `x ?? EvalError(...)` with a default of another type says that the default is of the value's
+  own type and gives the `if let v = x: v else: EvalError(...)` that gives back one or the other.
+  "May be none" errors name the expression (`n.next!.value`, `if let v = n.next: v.value`) where
+  they said `x`, and a call that no function of its name takes, when the program's own function
+  of the name is the one whose error is shown, says the library's of that name do not take it
+  either.
+- Release builds walk a tree without copying its nodes: a variable only ever given parts of a
+  parameter (`cur = n`, then `loop let c = cur: cur = c.left`), and the value a match, `if let` or
+  `loop let` looks at when it is such a part (`match e: .bin(op, l, r)`), is the part's address,
+  with no reference counting. A binary search tree's lookup: 20 -> 4.5 ns a level (28 -> 12 on a
+  100,000-node tree); an expression evaluator, a million evaluations: 0.53 -> 0.40 s.
 - `use bst` from a file with a short relative path (`foo.jo`) found no module: a name not found
   compared equal to a path of just the right length.
 - Patterns: a match arm can have a condition after its patterns, `.rect(w, h) if w == h:`,

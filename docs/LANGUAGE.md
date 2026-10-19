@@ -296,6 +296,12 @@ loop mut p in particles:
     p.pos += p.vel * dt
 ```
 
+A variable given a copy of another place (`e = xs[i]`, `cur = l.head!`, what `if let` or `loop
+let` binds) and then changed, with nothing reading it after the change, changes only the copy:
+the compiler warns of it, saying where the copy came from and how to change that instead (through
+the place, `xs[i].hp -= 1`, or with a `mut` parameter: a function that adds at the end of a list
+takes `n: mut Node?` and calls itself on `n!.next`).
+
 ### Fixed-size arrays
 
 `T[N]` holds exactly N elements, stored in place: inside a struct, a variable or a shader's
