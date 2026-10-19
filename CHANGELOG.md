@@ -11,6 +11,56 @@
   screen:` (or branch of an `if`): one of them runs, so nothing drawn in another comes before it.
 - `var speed = 5` says `` `speed = 5` declares speed ``, with the name and value written (it
   said `x = 5`).
+- `pixel_art()` makes the textures loaded after it sharp: `load_texture(file)` and `texture(img)`
+  take their smoothing from `smooth_textures`, which it sets to false, where pixel sprites came out
+  blurred, with dark fringes around their transparent pixels, unless each was loaded with `false`.
+- `sprite_tiled(t, area, offset, scale, tint, src)` fills a rectangle with copies of a texture, or
+  of a part of one (a frame of a sheet), shifted by `offset`: a background that repeats as the
+  camera moves (Godot's motion_mirroring), the same on every renderer and with no set_repeat.
+  `set_repeat` is documented, and what `sprite_region` shows past a texture's edge: the edge's
+  pixels stretched (the texture again, after set_repeat).
+- `origin` for `sprite`, `sprite_region`, `draw_frame` and `draw_anim`: the point of the picture
+  put at the position given (`vec2(0.5, 1)`: a character's feet), where `sprite` puts its top left
+  corner and the others its middle, as before. sprites.jo's docs have a table of where each draw
+  function puts a picture.
+- `AnimPlayer` plays a sheet's animations by name: `anim = anim_player(hero)`, `anim.play("run")`
+  (another one starts from its first frame, the one playing goes on), `anim.draw(pos)`,
+  `anim_frame`, `anim_done`. `draw_anim(sheet, "run", t, pos)` takes an animation's name, and one
+  the sheet does not have says which it has.
+- Tiled: tile objects (Insert Tile) keep their tile (`MapObject.tile`, `flip_x`, `flip_y`, and
+  `draw_tile(map, id, center, size)` draws it), and their rect is from its top left corner as other
+  objects' (Tiled places them by their bottom left: they came out a tile too low); objects have
+  their `id` and `rotation`. The map's custom properties are `Tilemap.props` and a layer's
+  `TileLayer.props`, and each tile's are kept, not only `shape` (now documented):
+  `tile_prop(map, id, "hurts")`, `set_tile_prop`.
+- Tiled: draw_tilemap draws layers at their offsets, with their parallax factors (from the map's
+  parallax origin) and opacity, groups' passed on to their layers; image layers are layers with a
+  picture (`image`, repeated across or down as Tiled repeats it); tile animations play.
+- `tilemap_tiles(map, layer, box)`: the tiles a box touches (column, row, id); and
+  `tilemap_touches(map, layer, box, "hurts")`: whether it touches a tile with that property (a
+  hazard: Godot's custom data), or a tile id. The docs say that tilemap_hits counts any tile, an
+  `.empty` one too.
+- `map.edges = .sides` makes the map's left and right edges walls for tilemap_move (`.closed`: all
+  four), where a box walked off the side into the void.
+- `tilemap_move(..., platforms = rects, solids = rects)`: boxes that are not tiles stop it too,
+  one-way (moving platforms) or from every side (crates, doors); the move's `platform` (or `solid`)
+  says which one the box stands on, for the game to carry it.
+- `ui_` menus scale their sizes with the design size (`ui_scale()`: its shorter side over 720), so
+  at 480 x 270 a menu takes the part of the screen it takes at 1280 x 720, where its text was 34
+  units tall; sizes a game sets in `ui_style` are used as they are. Games at 1280 x 720 look the
+  same.
+- `fixed_update(dt, step, rate = 60)` runs `step` at a fixed rate whatever the frame rate (Godot's
+  _physics_process), and gives back how far the time is into the next step. In a step, a press
+  (`action_pressed`, `key_pressed`, `gamepad_pressed`...) is seen in one step only, even one made
+  in a frame with no step.
+- Messages: `r.position` on a Rect (`vec2(r.x, r.y)`: its fields are x, y, w and h), and a field a
+  Rect does not have says its fields; `sprite(sheet, pos)` with a SpriteSheet says it is drawn a
+  frame at a time (`draw_frame(sheet, i, center)`); an action asked for by a name of another case,
+  or a letter off, says the one meant (`no action "jump": did you mean "Jump"?`).
+- A "Platformers" part of the library's docs: a small platformer (a moving platform carrying the
+  player, spikes as a tile's property, walls at the level's ends, wall slides and wall jumps,
+  coyote time and a jump buffer, a camera kept inside the level, fixed steps), and how its pieces
+  fit.
 - Tuple patterns: `match (i % 3, i % 5): (0, 0): ... (0, _): ...`, each part a value, a range,
   `.variant` or `_`, tuples inside tuples too (it said "unsupported pattern for this type").
   `"A" | "a":` in a match says an arm lists its values with commas.

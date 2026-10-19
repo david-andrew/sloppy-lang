@@ -117,9 +117,11 @@ key_down = (k: Key) -> bool:
 # true only in the frame the key was pressed
 key_pressed = (k: Key) -> bool:
     __input_init()
+    if __fx_in: return __fx_keys[int(k)]
     __key_pressed[int(k)]
 key_released = (k: Key) -> bool:
     __input_init()
+    if __fx_in: return __fx_keys[__NKEYS + int(k)]
     __key_released[int(k)]
 # true in the frame the key was pressed, and again each time it repeats while held down (for
 # moving through text or menus); characters typed arrive through text_input()
@@ -137,12 +139,89 @@ mouse_down = (b: Mouse) -> bool:
     __mouse_btn[int(b)]
 mouse_pressed = (b: Mouse) -> bool:
     __input_init()
+    if __fx_in: return __fx_btns[int(b)]
     __mouse_pressed[int(b)]
 mouse_released = (b: Mouse) -> bool:
     __input_init()
+    if __fx_in: return __fx_btns[8 + int(b)]
     __mouse_released[int(b)]
 # characters typed this frame
 text_input = () -> str: __text_input
+
+# ---------------- a fixed time step ----------------
+# step(dt) at a fixed rate, `rate` times a second whatever the frame rate: as many times as the
+# time since the last frame holds (none in some frames of a 144 Hz screen, two in some at 30), the
+# rest kept for the next frame. Physics and jumps come out the same at any frame rate (Godot's
+# _physics_process, Unity's FixedUpdate):
+#   update = (dt: f64): fixed_update(dt, physics)
+#   physics = (dt: f64):                 # dt: 1 / 60, always
+#       if action_pressed("jump"): vel.y = -JUMP
+#       ...
+# In step, a press (key_pressed, mouse_pressed, gamepad_pressed, action_pressed, and their
+# released) is seen in one step only, the first after it, even one that came in a frame with no
+# step. It gives back how far the time is into the next step (0 to 1): to draw what moves
+# between where the last two steps put it, `mix(prev_pos, pos, f32(k))`.
+fixed_update = (dt: f64, step: (f64) -> void, rate: f64 = 60.0) -> f64:
+    __input_init()
+    h = 1.0 / max(rate, 1.0)
+    __fx_collect()
+    __fx_acc += dt
+    n = 0
+    loop __fx_acc >= h - 1e-9:          # (a hair under h, from rounding, is a step)
+        __fx_acc -= h
+        n += 1
+        # (a long stall: the steps it would take are dropped, not run all at once)
+        if n > 8:
+            __fx_acc = 0.0
+            break
+        __fx_in = true
+        step(h)
+        __fx_in = false
+        # (each press once: the steps after the first see none)
+        if n == 1: __fx_clear()
+    max(__fx_acc, 0.0) / h
+
+__fx_acc = 0.0
+__fx_in = false                 # (in a step: the presses below are the ones seen)
+__fx_keys: bool[]               # keys pressed, then released, since the last step
+__fx_btns: bool[]               # mouse buttons
+__fx_pad: bool[]                # gamepad buttons pressed, then released
+__fx_sticks: bool[]             # sticks pushed past halfway (pad, axis, way)
+
+# (this frame's presses, kept until a step sees them)
+__fx_collect = ():
+    if __fx_keys.len() == 0: __fx_clear()
+    loop i in [0..__NKEYS):
+        if __key_pressed[i]: __fx_keys[i] = true
+        if __key_released[i]: __fx_keys[__NKEYS + i] = true
+    loop i in [0..8):
+        if __mouse_pressed[i]: __fx_btns[i] = true
+        if __mouse_released[i]: __fx_btns[8 + i] = true
+    loop p in [0..MAX_GAMEPADS):
+        loop b in [0..15):
+            k = p * 15 + b
+            if __pad_down[k] and not __pad_prev[k]: __fx_pad[k] = true
+            if __pad_prev[k] and not __pad_down[k]: __fx_pad[MAX_GAMEPADS * 15 + k] = true
+        loop a in [0..6):
+            loop w in [0..2):
+                d = 2 * w - 1
+                if __ctl_stick(p, a, d, false) >= 0.5 and __ctl_stick(p, a, d, true) < 0.5: __fx_sticks[(p * 6 + a) * 2 + w] = true
+
+__fx_clear = ():
+    __fx_keys = fill(false, 2 * __NKEYS)
+    __fx_btns = fill(false, 16)
+    __fx_pad = fill(false, 2 * MAX_GAMEPADS * 15)
+    __fx_sticks = fill(false, MAX_GAMEPADS * 12)
+
+# (a stick pushed past halfway one way (dir 1 or -1) in this frame, or, in a fixed step, since
+# the last one)
+__stick_pressed = (p: int, a: int, d: int) -> bool:
+    if __fx_in:
+        if p < 0 or p >= MAX_GAMEPADS or a < 0 or a >= 6: return false
+        w = 0
+        if d > 0: w = 1
+        return __fx_sticks[(p * 6 + a) * 2 + w]
+    __ctl_stick(p, a, d, false) >= 0.5 and __ctl_stick(p, a, d, true) < 0.5
 
 # arrows/WASD (or a gamepad's left stick and d-pad) as a direction vector (y down)
 input_axis = () -> vec2:

@@ -268,7 +268,7 @@ __gfx_init = ():
     glVertexAttribPointer(3, 1, GL_FLOAT, 0, i32(stride), 32)
     glBindVertexArray(0)
     white = image(1, 1, vec4(1, 1, 1, 1))
-    __white = texture(white)
+    __white = texture(white, true)
     # default font (signed distance field atlas)
     __font_init()
     same = __font.texture.id == __default_font.texture.id
@@ -367,8 +367,13 @@ __bind_current = ():
     else: __bind_screen()
 
 # ---------------- textures ----------------
-# upload an image to the GPU
-texture = (img: Image, smooth: bool = true) -> Texture:
+# whether a texture is smoothed (sampled linearly) when drawn larger, smaller or between pixels,
+# where texture() and load_texture() are not told: yes, until pixel_art() makes it no (sharp
+# pixels, no blur and no dark fringes around transparent ones). It is read when a texture is made.
+smooth_textures = true
+
+# upload an image to the GPU (smooth: see smooth_textures)
+texture = (img: Image, smooth: bool = smooth_textures) -> Texture:
     __gfx_init_gl_only()
     id = gl_create_texture()
     glBindTexture(GL_TEXTURE_2D, u32(id))
@@ -394,6 +399,10 @@ __gfx_init_gl_only = ():
         if __is_game: window(__win_title, __win_w, __win_h)
         else: __open_offscreen()
 
+# a texture that repeats past its edges, for sprite_region (and a shader's sample) beyond them: a
+# source rectangle wider than the texture shows it again and again. Off (the default), what is past
+# an edge is that edge's pixels, stretched. A whole texture repeats, not a part of a sheet:
+# sprite_tiled repeats any part, on every texture.
 set_repeat = (t: Texture, on: bool):
     glBindTexture(GL_TEXTURE_2D, u32(t.id))
     m = GL_CLAMP_TO_EDGE
@@ -407,7 +416,9 @@ update_texture = (t: Texture, img: Image):
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
     gl_tex_sub_image(0, 0, img.width, img.height, GL_RGBA, GL_UNSIGNED_BYTE, data(img.pixels), img.pixels.len())
 
-load_texture = (file: u8[], smooth: bool = true) -> Texture: texture(load_image(file), smooth)
+# a texture from a PNG or JPEG file's bytes: `load_texture(embed("hero.png"))`; smooth: false for
+# sharp pixels when it is drawn larger (pixel art), as every texture is after pixel_art()
+load_texture = (file: u8[], smooth: bool = smooth_textures) -> Texture: texture(load_image(file), smooth)
 
 # give back a texture's memory (it may not be drawn after): for textures made while the game
 # runs, a save's thumbnail, a level's tiles
@@ -734,7 +745,7 @@ __soft_dot_texture = () -> Texture:
         loop x in 0..n:
             d = sqrt((f64(x) + 0.5 - h) * (f64(x) + 0.5 - h) + (f64(y) + 0.5 - h) * (f64(y) + 0.5 - h)) / h
             img.set(x, y, vec4(1, 1, 1, f32(clamp(1.0 - d, 0.0, 1.0))))
-    __soft_dot = texture(img)
+    __soft_dot = texture(img, true)
     __soft_dot
 
 # ---------------- shapes ----------------
@@ -1043,14 +1054,25 @@ __triangulate = (ps: vec2[]) -> int[]:
     out
 
 # ---------------- sprites ----------------
-# draw a texture at `pos` (top-left), optionally scaled, rotated around its center and tinted
-sprite = (t: Texture, pos: vec2, size: vec2 = vec2(0, 0), tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0):
+# (where each puts a picture, and origin: the table in sprites.jo)
+# draw a texture with its top left corner at `pos` (origin: another point of it), optionally
+# scaled (size: in the screen's units; vec2(0, 0): its own), turned and tinted
+sprite = (t: Texture, pos: vec2, size: vec2 = vec2(0, 0), tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, origin: vec2 = vec2(0, 0)):
     sz = size
     if sz.x == 0.0 and sz.y == 0.0: sz = vec2(f32(t.width), f32(t.height))
-    sprite_region(t, vec4(0, 0, f32(t.width), f32(t.height)), pos + sz * 0.5, sz, tint, angle)
+    sprite_region(t, vec4(0, 0, f32(t.width), f32(t.height)), pos, sz, tint, angle, origin)
 
-# draw part of a texture (src = x, y, w, h in pixels) centered at `center`
-sprite_region = (t: Texture, src: vec4, center: vec2, size: vec2, tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0):
+# draw part of a texture (src = x, y, w, h in its pixels) with its middle at `center` (origin:
+# another point of it), size big. A src past the texture's edges shows the edge pixels stretched,
+# unless set_repeat(t, true) (the texture again); sprite_tiled repeats a part of one.
+sprite_region = (t: Texture, src: vec4, center: vec2, size: vec2, tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, origin: vec2 = vec2(0.5, 0.5)):
+    if origin != vec2(0.5, 0.5):
+        o = (vec2(0.5, 0.5) - origin) * abs(size)
+        __sprite_region(t, src, center + o, size, tint, angle)
+        return
+    __sprite_region(t, src, center, size, tint, angle)
+
+__sprite_region = (t: Texture, src: vec4, center: vec2, size: vec2, tint: vec4, angle: f64):
     __use_tex(t.id, 6)
     tw = f32(t.width)
     th = f32(t.height)
@@ -1079,6 +1101,41 @@ sprite_region = (t: Texture, src: vec4, center: vec2, size: vec2, tint: vec4 = v
         c = rotate(c, angle)
         d = rotate(d, angle)
     __quad(center + a, center + b, center + c, center + d, vec2(u0, v0), vec2(u1, v0), vec2(u1, v1), vec2(u0, v1), tint, 0)
+
+# fill `area` with copies of a texture side by side (or of a part of it, src: x, y, w, h in its
+# pixels), each `scale` times its size, the copies shifted by `offset`; those at area's edges are
+# cut. A background that scrolls and repeats (Godot's motion_mirroring), drawn without a camera,
+# here a third as fast as the camera:
+#   sprite_tiled(hills, Rect(0, 90, 480, 180), vec2(-cam.x / 3.0, 0))
+# A strip repeats one way when area is as tall (or wide) as a copy. Any texture, any part of
+# one: no set_repeat needed.
+sprite_tiled = (t: Texture, area: Rect, offset: vec2 = vec2(0, 0), scale: f64 = 1.0, tint: vec4 = vec4(1, 1, 1, 1), src: vec4 = vec4(0, 0, 0, 0)):
+    s = src
+    if s.z <= 0.0 or s.w <= 0.0: s = vec4(0, 0, f32(t.width), f32(t.height))
+    cw = f64(s.z) * scale
+    ch = f64(s.w) * scale
+    if cw < 0.01 or ch < 0.01 or area.w <= 0.0 or area.h <= 0.0: return
+    ax = f64(area.x)
+    ay = f64(area.y)
+    ax1 = ax + f64(area.w)
+    ay1 = ay + f64(area.h)
+    # (the first copy at or before the area's left and top edges; a limit on how many there are)
+    x0 = ax + f64(offset.x) + floor(-f64(offset.x) / cw) * cw
+    y0 = ay + f64(offset.y) + floor(-f64(offset.y) / ch) * ch
+    if (ax1 - x0) / cw * (ay1 - y0) / ch > 20000.0: return
+    y = y0
+    loop y < ay1:
+        py0 = max(y, ay)
+        py1 = min(y + ch, ay1)
+        x = x0
+        loop x < ax1:
+            px0 = max(x, ax)
+            px1 = min(x + cw, ax1)
+            if px1 > px0 and py1 > py0:
+                r = vec4(f32(f64(s.x) + (px0 - x) / scale), f32(f64(s.y) + (py0 - y) / scale), f32((px1 - px0) / scale), f32((py1 - py0) / scale))
+                __sprite_region(t, r, vec2(f32((px0 + px1) / 2.0), f32((py0 + py1) / 2.0)), vec2(f32(px1 - px0), f32(py1 - py0)), tint, 0.0)
+            x += cw
+        y += ch
 
 # draw a render target's texture (flipped: render targets are stored bottom-up)
 draw_target = (rt: RenderTarget, pos: vec2 = vec2(0, 0), size: vec2 = vec2(0, 0), tint: vec4 = vec4(1, 1, 1, 1)):

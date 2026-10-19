@@ -1456,7 +1456,8 @@ screen_fit(.native)       # no scaling: one unit per window pixel
 render_resolution(640, 360)   # draw at a fixed resolution, scaled up (sharp pixels, whole steps;
                               # smooth = true, whole = false for other looks)
 pixel_art()                   # the same at the design size: window("game", 320, 180) + pixel_art()
-                              # is a 320 x 180 pixel game (its window opens 4 times larger)
+                              # is a 320 x 180 pixel game (its window opens 4 times larger);
+                              # textures loaded after it are sharp (smooth_textures)
 render_scale(0.5)             # draw at half the window's resolution (fewer pixels: faster)
 full_resolution()             # in draw: the rest of the frame at the window's own resolution
 ```
@@ -1467,6 +1468,10 @@ resolution, in the same units, over the pixel art (`text("Score {score}", vec2(4
 units tall, 32 pixels in a window four times larger). A pixel font is a TTF like any other,
 `set_font(load_font(embed("pixel.ttf")))`; give it sizes the window's scale turns into whole
 pixels.
+
+Menus (`ui_begin`, `ui_button`...) keep their sizes in step with the design size: at 480 x 270
+they take the same part of the screen as at 1280 x 720 (`ui_scale()`), unless `ui_style` sets
+its own.
 
 `mouse_pos()` is in the same 2D units, and 3D follows the same picture (a letterboxed game's 3D
 view has the design area's shape). `SLOPPY_FIT=letterbox` and `SLOPPY_RESOLUTION=320x180` try a mode
