@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- `pixel_art()` makes the textures loaded after it sharp: `load_texture(file)` and `texture(img)`
+  take their smoothing from `smooth_textures`, which it sets to false, where pixel sprites came out
+  blurred, with dark fringes around their transparent pixels, unless each was loaded with `false`.
+- `sprite_tiled(t, area, offset, scale, tint, src)` fills a rectangle with copies of a texture, or
+  of a part of one (a frame of a sheet), shifted by `offset`: a background that repeats as the
+  camera moves (Godot's motion_mirroring), the same on every renderer and with no set_repeat.
+  `set_repeat` is documented, and what `sprite_region` shows past a texture's edge: the edge's
+  pixels stretched (the texture again, after set_repeat).
+- `origin` for `sprite`, `sprite_region`, `draw_frame` and `draw_anim`: the point of the picture
+  put at the position given (`vec2(0.5, 1)`: a character's feet), where `sprite` puts its top left
+  corner and the others its middle, as before. sprites.jo's docs have a table of where each draw
+  function puts a picture.
+- `AnimPlayer` plays a sheet's animations by name: `anim = anim_player(hero)`, `anim.play("run")`
+  (another one starts from its first frame, the one playing goes on), `anim.draw(pos)`,
+  `anim_frame`, `anim_done`. `draw_anim(sheet, "run", t, pos)` takes an animation's name, and one
+  the sheet does not have says which it has.
 - Tuple patterns: `match (i % 3, i % 5): (0, 0): ... (0, _): ...`, each part a value, a range,
   `.variant` or `_`, tuples inside tuples too (it said "unsupported pattern for this type").
   `"A" | "a":` in a match says an arm lists its values with commas.

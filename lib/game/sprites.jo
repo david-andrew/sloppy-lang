@@ -1,12 +1,35 @@
 # Sprite sheets and animations. A sheet is a texture cut into frames: a grid of equal frames
 # (sprite_sheet), or the frames and animations Aseprite exports (load_aseprite: File > Export
 # Sprite Sheet with "JSON Data" on; each tag becomes an animation). Pixel art wants its texture
-# loaded unsmoothed: load_texture(file, false).
+# loaded unsmoothed: load_texture(file, false), as every texture is after pixel_art().
+#
+# Where each puts a picture: the point given is its top left corner or its middle, and `origin`
+# (vec2(0, 0): the top left corner, vec2(0.5, 0.5): the middle, vec2(0.5, 1): the middle of the
+# bottom edge, a character's feet) puts another point of the picture there. An angle turns it
+# around its middle.
+#
+#   sprite(t, pos)                        pos: its top left corner (origin = vec2(0, 0))
+#   sprite_region(t, src, center, size)   center: its middle (origin = vec2(0.5, 0.5))
+#   draw_frame(sheet, i, center)          its middle
+#   draw_anim(sheet, anim, t, center)     its middle
+#   anim.draw(center)                     its middle (an AnimPlayer)
+#   draw_tile(map, id, center)            its middle
+#   sprite_tiled(t, area)                 fills area (x, y: its top left corner)
+#   draw_target(rt, pos)                  its top left corner
+#   text(s, pos)                          the top left corner; text_centered(s, center): the middle
 #
 #   hero = sprite_sheet(load_texture(embed("hero.png"), false), 32, 32)
 #   walk = animation(4, 7, 10.0)                    # frames 4 to 7, ten a second
 #   draw = ():
 #       draw_anim(hero, walk, elapsed(), pos, 3.0)  # three times as big
+#
+# An AnimPlayer plays the sheet's animations by name, each from its start when it changes:
+#
+#   hero.anims["idle"] = animation(0, 1, 2.0)
+#   hero.anims["run"] = animation(2, 5, 12.0)
+#   anim = anim_player(hero)
+#   ...in update: anim.play(if moving: "run" else: "idle")   # (the same one again goes on)
+#   ...in draw:   anim.draw(feet, origin = vec2(0.5, 1), flip_x = facing < 0.0)
 
 struct Animation:
     frames: int[]               # the sheet's frames, in order
@@ -62,19 +85,75 @@ anim_frame = (a: Animation, t: f64) -> int:
 # has a non-looping animation finished, t seconds after it started?
 anim_done = (a: Animation, t: f64) -> bool: not a.looping and t >= anim_length(a)
 
-# frame i of the sheet, centered at `center` (scale: its size times this; flip_x: mirrored, to
-# face the other way)
-draw_frame = (s: SpriteSheet, frame: int, center: vec2, scale: f64 = 1.0, tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, flip_x: bool = false, flip_y: bool = false):
+# frame i of the sheet, its middle at `center` (scale: its size times this; flip_x: mirrored, to
+# face the other way; origin: the point of it at center, vec2(0.5, 1) its bottom edge's middle)
+draw_frame = (s: SpriteSheet, frame: int, center: vec2, scale: f64 = 1.0, tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, flip_x: bool = false, flip_y: bool = false, origin: vec2 = vec2(0.5, 0.5)):
     if frame < 0 or frame >= s.frames.len(): return
     r = s.frames[frame]
     size = vec2(r.z, r.w) * f32(scale)
     if flip_x: size.x = -size.x
     if flip_y: size.y = -size.y
-    sprite_region(s.texture, r, center, size, tint, angle)
+    sprite_region(s.texture, r, center, size, tint, angle, origin)
 
 # the frame an animation shows t seconds after it started
-draw_anim = (s: SpriteSheet, a: Animation, t: f64, center: vec2, scale: f64 = 1.0, tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, flip_x: bool = false, flip_y: bool = false):
-    draw_frame(s, anim_frame(a, t), center, scale, tint, angle, flip_x, flip_y)
+draw_anim = (s: SpriteSheet, a: Animation, t: f64, center: vec2, scale: f64 = 1.0, tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, flip_x: bool = false, flip_y: bool = false, origin: vec2 = vec2(0.5, 0.5)):
+    draw_frame(s, anim_frame(a, t), center, scale, tint, angle, flip_x, flip_y, origin)
+
+# the same, with the sheet's animation of this name (sheet.anims: Aseprite's tags, or set with
+# `sheet.anims["run"] = animation(2, 5)`)
+draw_anim = (s: SpriteSheet, name: str, t: f64, center: vec2, scale: f64 = 1.0, tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, flip_x: bool = false, flip_y: bool = false, origin: vec2 = vec2(0.5, 0.5)):
+    draw_anim(s, __sheet_anim(s, name), t, center, scale, tint, angle, flip_x, flip_y, origin)
+
+__sheet_anim = (s: SpriteSheet, name: str) -> Animation:
+    if let a = s.anims.get(name): return a
+    names: str[]
+    loop k, v in s.anims: names.push("\"{k}\"")
+    if names.len() == 0: panic("the sheet has no animations: give it \"{name}\", `sheet.anims[\"{name}\"] = animation(first, last, fps)` (its frames are numbered from 0)")
+    loop k, v in s.anims:
+        if lower(k) == lower(name): panic("the sheet has no animation \"{name}\": did you mean \"{k}\"?")
+    panic("the sheet has no animation \"{name}\" (it has {join(names, ", ")})")
+
+# plays a sheet's animations by name: the one playing, and when it started. Changing to another
+# starts that one from its first frame; play with the one playing goes on with it. Its clock is
+# elapsed(), so it goes on while a game's own pause screen shows (draw_anim(sheet, p.name, t,
+# ...) draws it on a clock of the game's own).
+struct AnimPlayer:
+    sheet: SpriteSheet
+    name = ""                   # the animation playing ("": none yet)
+    start = 0.0                 # when it started (elapsed())
+
+anim_player = (sheet: SpriteSheet, name: str = "") -> AnimPlayer:
+    p = AnimPlayer(sheet)
+    if name != "": play(p, name)
+    p
+
+# play the sheet's animation of this name: from its start if another was playing (or restart:
+# even if it was this one)
+play = (p: mut AnimPlayer, name: str, restart: bool = false):
+    if name == p.name and not restart: return
+    __sheet_anim(p.sheet, name)
+    p.name = name
+    # (one made before the first frame starts with the game)
+    p.start = 0.0
+    if frame_number() > 0: p.start = elapsed()
+
+# how long the animation playing has played (seconds)
+anim_time = (p: AnimPlayer) -> f64: max(elapsed() - p.start, 0.0)
+
+# the frame it shows now
+anim_frame = (p: AnimPlayer) -> int:
+    if p.name == "": return 0
+    anim_frame(__sheet_anim(p.sheet, p.name), anim_time(p))
+
+# has a non-looping animation played to its end (an attack, a jump's take-off)?
+anim_done = (p: AnimPlayer) -> bool:
+    if p.name == "": return true
+    anim_done(__sheet_anim(p.sheet, p.name), anim_time(p))
+
+# draw the frame it shows now, as draw_frame does
+draw = (p: AnimPlayer, center: vec2, scale: f64 = 1.0, tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, flip_x: bool = false, flip_y: bool = false, origin: vec2 = vec2(0.5, 0.5)):
+    if p.name == "": return
+    draw_frame(p.sheet, anim_frame(p), center, scale, tint, angle, flip_x, flip_y, origin)
 
 # a sheet from Aseprite's export: its texture, and the JSON it wrote beside it (as an array or a
 # hash of frames). Tags become animations (forward, reverse or ping-pong), with each frame's own

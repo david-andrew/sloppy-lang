@@ -1451,7 +1451,8 @@ screen_fit(.native)       # no scaling: one unit per window pixel
 render_resolution(640, 360)   # draw at a fixed resolution, scaled up (sharp pixels, whole steps;
                               # smooth = true, whole = false for other looks)
 pixel_art()                   # the same at the design size: window("game", 320, 180) + pixel_art()
-                              # is a 320 x 180 pixel game (its window opens 4 times larger)
+                              # is a 320 x 180 pixel game (its window opens 4 times larger);
+                              # textures loaded after it are sharp (smooth_textures)
 render_scale(0.5)             # draw at half the window's resolution (fewer pixels: faster)
 full_resolution()             # in draw: the rest of the frame at the window's own resolution
 ```
