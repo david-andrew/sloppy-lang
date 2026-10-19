@@ -93,6 +93,11 @@ struct Session[S, I]:
     __stand: bool[]
     __stand_in: I[]
     __has: int[]                    # [q * players + p]: player q has p's inputs below this
+    # (since the last stats_line)
+    __log_tick = 0
+    __log_waits = 0
+    __log_rollbacks = 0
+    __log_longest = 0
 
 struct __NpPacket[I]:
     from: int
@@ -144,6 +149,25 @@ confirmed[S, I] = (s: Session[S, I]) -> int:
 # player p has not been heard from for this many seconds
 silent[S, I] = (s: Session[S, I], p: int) -> f64: elapsed() - s.__heard[p]
 
+# one line on how play has gone since the last call, for a log (the game writes it where it likes,
+# once a second, say): ticks played, frames spent waiting for someone's inputs, rollbacks and the
+# longest, and for each other player the round trip, how long since heard from, and over net's
+# peers how they are reached and what waits to go to them
+stats_line[S, I] = (s: mut Session[S, I]) -> str:
+    out = "tick {s.tick} (+{s.tick - s.__log_tick}) waited {s.__log_waits} rollbacks +{s.rollbacks - s.__log_rollbacks} longest {s.__log_longest}"
+    loop p in [0..s.players):
+        if p == s.me: continue
+        out += " | p{p} ping {int(s.__rtt[p])}ms quiet {silent(s, p):.1}s"
+        if s.__stand[p]: out += " (played here)"
+        if p < s.__peers.len() and s.__peers[p] >= 0: out += " {net.route(s.__peers[p])} backlog {net.backlog(s.__peers[p])} dropped {net.dropped(s.__peers[p])}"
+    if s.desync >= 0: out += " | desync at {s.desync}"
+    if len(s.problem) > 0: out += " | {s.problem}"
+    s.__log_tick = s.tick
+    s.__log_waits = 0
+    s.__log_rollbacks = s.rollbacks
+    s.__log_longest = 0
+    out
+
 # the round trip to player p and back, in milliseconds (smoothed; 0 before it is known)
 ping[S, I] = (s: Session[S, I], p: int) -> f64: s.__rtt[p]
 
@@ -177,6 +201,7 @@ play[S, I] = (s: mut Session[S, I], input: I):
         if s.tick - s.__recv[p] >= s.max_ahead: s.waiting = true
         lead = (s.tick - s.__their_tick[p] - s.__their_adv[p]) / 2
         if lead >= 2 and s.__frames % 4 == 0: s.waiting = true
+    if s.waiting: s.__log_waits += 1
     if not s.waiting: __np_advance(s)
     # (a player who was there and has gone quiet)
     loop p in [0..s.players):
@@ -298,6 +323,7 @@ __np_replay[S, I] = (s: mut Session[S, I], from: int):
     loop _ in [from..now): __np_advance(s)
     s.rollbacks += 1
     s.longest_rollback = max(s.longest_rollback, now - from)
+    s.__log_longest = max(s.__log_longest, now - from)
 
 # every half second, the hash of the game at a tick everyone's inputs are in for, to compare
 __np_hash_confirmed[S, I] = (s: mut Session[S, I]):

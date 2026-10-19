@@ -691,6 +691,7 @@ Operating system access: files, arguments, environment, time.
 - `file_time = (path: str) -> f64?`: when a file or directory was last changed, in seconds since 1970 (as unix_time()); none if it is not there
 - `walk_dir = (path: str) -> str[]`: every file under a directory, at any depth, as paths from it ("maps/level1.tmx"), sorted; links to directories are not followed
 - `glob = (pattern: str) -> str[]`: the files whose paths match a pattern: `*` is any part of a name, `?` one character, and `**` any number of directories ("src/*.jo", "assets/**/*.png"), sorted. As in the shell, hidden names (.git, .env) match only a pattern that starts them with a dot (".*", "**/.env"). On Windows letters match in either case, as its file names do ("*.TXT" matches notes.txt); elsewhere only in the same case. On Windows a pattern's `\` is a `/` ("data\*.txt" gives data/notes.txt)
+- `memory_in_use = () -> int`: the memory this program has in use, in bytes (what the system counts as its resident set: on Linux, its pages in RAM; on Windows, its working set); 0 where it is not known (macOS, a web page)
 - `cwd = () -> str`: the current directory
 - `temp_dir = () -> str`: a directory for temporary files (TMPDIR, else /tmp; on Windows, the user's temporary directory)
 
@@ -4513,6 +4514,9 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `send_all = (msg: str)`
 - `peers = () -> int[]`: the peers connected now
 - `close = (peer: int)`: end a connection (a left event follows)
+- `route = (peer: int) -> str`: how a peer is reached: "direct" (WebRTC, straight between the two), "relay" (WebRTC through a TURN server), "websocket" (a connection to a server, or one a server took), or "" (not known yet, or gone; a web page's browser does not tell)
+- `backlog = (peer: int) -> int`: how much waits to reach a peer: over WebRTC, the pieces sent and not acknowledged yet and those waiting for room; over a WebSocket, the bytes not sent yet (0 in a web page)
+- `dropped = (peer: int) -> int`: the messages to a peer dropped so far for want of room (one invited with reliable = false, whose messages may be lost: while the other side is slow to take them, newer ones are not held up)
 - `why = (peer: int) -> str`: why a peer could not connect, once it has left ("": it did not say; a web page's browser does not tell)
 - `local_address = () -> str`: this machine's address on its network (as 192.168.1.20): what another machine there connects to, and what a host tells the players joining it; "" when it has none (no network, or a web page)
 - `receive = () -> NetEvent[]`: what happened since the last call: peers joining and leaving, and their messages, in order
@@ -4866,6 +4870,7 @@ draw = ():
 - `session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: int = 2) -> Session[S, I]`: a session of `players` players, this machine's being player `me` (from 0)
 - `confirmed[S, I] = (s: Session[S, I]) -> int`: ticks below this have every player's input: they will not change again (some may not have been played here yet: those from s.tick on)
 - `silent[S, I] = (s: Session[S, I], p: int) -> f64`: player p has not been heard from for this many seconds
+- `stats_line[S, I] = (s: mut Session[S, I]) -> str`: one line on how play has gone since the last call, for a log (the game writes it where it likes, once a second, say): ticks played, frames spent waiting for someone's inputs, rollbacks and the longest, and for each other player the round trip, how long since heard from, and over net's peers how they are reached and what waits to go to them
 - `ping[S, I] = (s: Session[S, I], p: int) -> f64`: the round trip to player p and back, in milliseconds (smoothed; 0 before it is known)
 - `play[S, I] = (s: mut Session[S, I], input: I)`: this frame's input from this machine's player; the game moves on a tick (unless waiting)
 - `outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]`: what to send to whom since the last call: (player, bytes) (without s.udp)

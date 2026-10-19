@@ -714,9 +714,38 @@ tell_start = ():
     loop k in 0.. and f in friends:
         if f.peer >= 0: net.send(f.peer, start_text(k + 1))
 
+# ---------------- a log of online play, to see what went wrong ----------------
+# Each second of an online fight, a line in online-log.txt in the game's save folder (on Linux
+# ~/.local/share/Aces/, on Windows %APPDATA%\Aces\, on macOS ~/Library/Application Support/Aces/):
+# frames and the slowest, the ticks played and the frames spent waiting for the others, rollbacks,
+# each other player's ping, how they are reached and what waits to go to them, and the memory in
+# use. Past 2 MB it starts again (the one before kept as online-log-old.txt).
+log_frames = 0
+log_slowest = 0.0
+log_at = 0.0
+log_line = (line: str):
+    when TARGET != "wasm":
+        dir = save_dir()
+        make_dirs(dir)
+        path = "{dir}/online-log.txt"
+        if (file_size(path) ?? 0) > 2000000: _ = rename_file(path, "{dir}/online-log-old.txt")
+        _ = append_file(path, line + "\n")
+log_frame = (dt: f64):
+    log_frames += 1
+    log_slowest = max(log_slowest, dt)
+    if elapsed() - log_at < 1.0: return
+    log_at = elapsed()
+    d = now()
+    log_line("{d.hour:02}:{d.minute:02}:{d.second:02} fps {log_frames} slowest {int(log_slowest * 1000.0)}ms {s.stats_line()} | memory {memory_in_use() / 1000000}MB")
+    log_frames = 0
+    log_slowest = 0.0
+
 begin = (who: int, pilots: int[], skill: f64, peers: int[]):
     s = netplay.session(new_game(pilots, skill), tick, players = peers.len(), me = who)
     s.over(peers)
+    d = now()
+    log_line("{d.year}-{d.month:02}-{d.day:02} {d.hour:02}:{d.minute:02}: a fight of {peers.len()}, this one player {who} ({TARGET})")
+    log_at = elapsed()
     if let lag = env("LAG"): s.lag(to_float(lag) ?? 0, 10, 0.02)
     mine = max(pilots.index_of(who), 0)
     away = []
@@ -1050,6 +1079,7 @@ aim_at_target = ():
 
 update = (dt: f64):
     loop e in net.receive(): on_net(e)
+    if mode == .online: log_frame(dt)
     # (the menu's plane: one of this one's side, in the lobby)
     if mode == .menu: mine = if page == LOBBY: settings.side else: if page == JOINED: max(lobby_pilots.index_of(lobby_me), 0) % 2 else: 0
     # (friends who come by the room's code: let in while the sides are chosen, made to wait in a

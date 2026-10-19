@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- WebRTC channels that may lose messages (`reliable = false`, as netplay uses) drop a message
+  when the other side has not acknowledged a window's worth yet, where they kept it in a queue
+  with no limit: while one machine was slow (a stall, a busy network), every packet after waited
+  behind the queue, so both games stalled, and the queue grew for as long as it lasted.
+  `net.dropped(peer)` counts them.
+- Aces writes a line a second of online play to `online-log.txt` in its save folder (frames and
+  the slowest, ticks, frames waiting for the others, rollbacks, each player's ping, direct or
+  relayed, what waits to go to them, memory in use), to find out what a stutter was.
+- `netplay`'s `s.stats_line()` (how play has gone since the last call, for such a log),
+  `net.route(peer)` ("direct", "relay" through TURN, "websocket"), `net.backlog(peer)`, and
+  `memory_in_use()` (the program's resident memory, Linux and Windows).
 - A function made inside another can call itself by the name it is given (`dfs = (u: int): ...
   dfs(v)`, a DFS over the arrays it captures; `fib` with a memo map): it said "unknown function
   'dfs'". It calls itself directly, so no closure keeps itself alive.

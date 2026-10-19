@@ -219,6 +219,7 @@ struct __Conn:
     s_got: {int: __Chunk}   # (its chunks come ahead of others: by TSN)
     s_unacked: __Sent[]
     s_queue: __Sent[]       # (made, waiting for room: no more than __SCTP_WINDOW go unacknowledged)
+    s_dropped = 0           # (messages a channel that may lose them dropped, having no room)
     s_init: u8[]            # (the INIT, sent again until answered)
     s_init_at = 0.0
     s_echo: u8[]            # (the COOKIE ECHO, likewise)
@@ -1513,6 +1514,13 @@ __rtc_send = (id: int, msg: u8[], text: bool):
     m = msg
     if m.len() == 0: m = [u8(0)]
     rel = __conns[id].s_reliable
+    # (a channel whose messages may be lost: one with no room now is not kept for later, where it
+    # would hold up the newer ones behind it and pile up while the other side is slow; a game's
+    # next packet says the same and more)
+    n = (m.len() + __CHUNK_DATA - 1) / __CHUNK_DATA
+    if not rel and (__conns[id].s_queue.len() > 0 or __conns[id].s_unacked.len() + n > __SCTP_WINDOW):
+        __conns[id].s_dropped += 1
+        return
     if __conns[id].s_queue.len() == 0 and __conns[id].s_unacked.len() < __SCTP_WINDOW:
         __sctp_send_data(__conns[id], __conns[id].s_chan, ppid, m, rel, rel)
         return
@@ -1525,6 +1533,19 @@ __rtc_send = (id: int, msg: u8[], text: bool):
         __conns[id].s_tsn = __tsn_next(__conns[id].s_tsn)
 
 # the messages that came (each: 1 text or 0 bytes, then the message)
+# the path chosen: "direct", "relay" (through a TURN server), or "" (none yet)
+__rtc_route = (id: int) -> str:
+    c = __conns[id]
+    if len(c.sel_host) == 0: return ""
+    if c.sel_relay: return "relay"
+    "direct"
+
+# the chunks sent and not acknowledged yet, and those waiting for room to be sent
+__rtc_backlog = (id: int) -> int: __conns[id].s_unacked.len() + __conns[id].s_queue.len()
+
+# the messages dropped so far for want of room (a channel that may lose them)
+__rtc_dropped = (id: int) -> int: __conns[id].s_dropped
+
 __rtc_take = (id: int) -> u8[][]:
     out = __conns[id].s_msgs
     __conns[id].s_msgs.clear()
