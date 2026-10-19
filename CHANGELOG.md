@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Aces plays on a phone held upright: the menu, the lobby and Settings are laid out for a tall
+  screen (the plane above the menu), the camera sees more up and down, and the buttons are at
+  the bottom (Fire and Look on the right, the throttle's + and - on the left). On a phone either
+  way up, a finger dragged anywhere but on a button aims, as the mouse does: the plane turns
+  toward where it points. The on-screen stick is gone; Fire and the throttle's buttons light up
+  while held.
+- `touch_ids()`: a number for each finger in `touches()`, the same while it stays down, so a game
+  can follow a finger from frame to frame (how far it moved: a drag that aims or turns a camera).
+
 - `upper()` and `lower()` of text with letters past ASCII work on its bytes, eight at a time where
   they are ASCII, where they made a list of its characters and a string for each: 100 MB of text
   with an é in it now takes 0.1 s and 200 MB, where it took 10 s and 5.8 GB. Bytes that are not
