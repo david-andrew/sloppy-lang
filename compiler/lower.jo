@@ -47,6 +47,7 @@ ffi_keys: str[]
 ffi_slot: {int: int} = {}       # offset -> index
 glsl_of: {int: str} = {}        # (sloppy watch) shader() node -> the GLSL made for it
 global_off: {int: int} = {}
+obj_global_offs: {int: bool} = {}      # (globals holding an array or a string: an object, never a global's address)
 entry_points: int[]
 
 # relocations inside rodata/data that hold function addresses or data addresses are not needed:
@@ -119,6 +120,8 @@ global_addr_off = (g: int) -> int:
     if sz < 8: sz = 8
     data_size += sz
     global_off[g] = o
+    tk = types[prune(t)].kind
+    if tk == .array or tk == .str_: obj_global_offs[o] = true
     o
 
 # ---------------- type helpers ----------------
@@ -4281,6 +4284,21 @@ gen_loop_body = (b: int):
     gen_block_stmts(b)
     scope_pop()
 
+# the step of a range `a, b..` when b is a plus or minus a literal and a an int variable
+# (`n, n - 1..0` counts down by 1); 0 when it is known only at run time
+range_step_k = (a: int, b: int) -> int:
+    if nodes[b].kind != .binary or nodes[a].kind != .ident: return 0
+    op = nodes[b].op as Tok
+    x = int(nodes[b].a)
+    kn = int(nodes[b].b)
+    if (op != .plus and op != .minus) or nodes[kn].kind != .int_lit or nodes[x].kind != .ident: return 0
+    if nodes[x].aux != nodes[a].aux or nodes[x].sym != nodes[a].sym or prune(ntype(a)) != T_INT or prune(ntype(x)) != T_INT: return 0
+    if nodes[a].aux != i32(int(SK.local)) and nodes[a].aux != i32(int(SK.global)): return 0
+    kv = int(nodes[kn].ival)
+    if kv < -1000000000 or kv > 1000000000: return 0
+    if op == .minus: return -kv
+    kv
+
 # is a counting loop done (ctr past its end)
 for_done = (step_k: int, cmpop: Op, ltop: Op, ctr: int, endv: int, endn: int, stepv: int) -> int:
     if step_k > 0: return e_bin(cmpop, VI, ctr, endv)
@@ -4314,9 +4332,11 @@ gen_for = (s: int):
             if has_flag(it, NF_STEP):
                 second = int(nodes[it].c)
                 stepv = vreg(VI)
-                e_mov(stepv, e_bin(.sub, VI, gen_expr(second).v, ctr))
-                step_k = 0
-                if has_flag(int(nodes[it].a), NF_LITERAL) and has_flag(second, NF_LITERAL): step_k = int(nodes[second].ival - nodes[int(nodes[it].a)].ival)
+                step_k = range_step_k(int(nodes[it].a), second)
+                if step_k != 0: e_mov(stepv, e_iconst(step_k))
+                else:
+                    e_mov(stepv, e_bin(.sub, VI, gen_expr(second).v, ctr))
+                    if has_flag(int(nodes[it].a), NF_LITERAL) and has_flag(second, NF_LITERAL): step_k = int(nodes[second].ival - nodes[int(nodes[it].a)].ival)
             if nodes[it].b == 0: open_end = true
             else:
                 hi = gen_expr(int(nodes[it].b)).v

@@ -28,6 +28,14 @@
   and `min`, are conditional moves in loops, with no branch to guess wrong; an `if`'s int or
   float value is kept in a register, where it went through memory; and in a recursive function
   each branch of the `if` it returns gives back its own value (`fib(38)` took 0.47 s, now 0.31 s).
+- Release builds drop the bounds checks of more loops (the indexes tested once in front of the
+  loop, then a copy without the checks runs; where any could fail, the loop with them does):
+  loops counting down (`loop c in cap, cap - 1..w - 1`: a step written as the start plus or
+  minus a number is now known), indexes like `i - 1`, `i + w`, an outer loop's `i - 1` and
+  `(i - 1) * w + j` (w and i what the loop does not change), and loops in top-level code, whose
+  variables are globals: a loop that calls nothing and changes no global reads them, and their
+  lengths, once in front of it. 0/1 knapsack (2·10^8 steps) took 0.66 s, now 0.35 s (g++ -O2:
+  0.25 s); edit distance on two 5000-letter strings 0.26 s, now 0.09 s (g++: 0.06 s).
 
 ## 0.24.0
 
