@@ -115,7 +115,7 @@ await session(false, dir + "/mouse", async ({ send, ev, value, active, expect })
   await sleep(80);
   await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 100, y: 100, button: "left", clickCount: 1 });
   await sleep(150);
-  expect("a clicked text field keeps the keyboard on the page", await active(), "CANVAS");
+  expect("a clicked text field keeps the keyboard on the page (its hidden textarea)", await active(), "TEXTAREA");
   for (const c of "abc") {
     await send("Input.dispatchKeyEvent", { type: "keyDown", key: c, code: "Key" + c.toUpperCase(), text: c });
     await send("Input.dispatchKeyEvent", { type: "keyUp", key: c, code: "Key" + c.toUpperCase() });

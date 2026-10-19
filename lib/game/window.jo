@@ -294,6 +294,99 @@ can_quit = () -> bool:
     when TARGET == "wasm": return false
     else: return true
 
+# ---- frames drawn on demand: tools, editors, forms ----
+# A game draws 60 frames a second; a tool that waits for its user need not. With
+# redraw_on_input(), a frame is drawn only when something may have changed: a key, the mouse
+# moving, a click or the wheel, text typed, the window resized or focused, files dropped, a file
+# dialog's answer (and two frames after each, for what a frame's drawing sets off), at the time
+# redraw_after asked for, or after request_redraw(). In between the program sleeps (sound still
+# plays). update's dt is the time since the last frame (0.1 s at most). Something that moves on
+# its own (an animation, a timer shown, a tween) calls request_redraw() in each frame it is not
+# done in (tweens, hud_scroll's gliding and a text field's blinking caret do so themselves).
+# While the program fetches from the network or has tasks, a frame comes at least 10 times a
+# second, so that their answers are seen. Screenshot runs draw every frame as usual. On the web
+# too: the page asks for no animation frames while it waits.
+#   redraw_on_input()
+#   draw = (): ...                      # a frame only as something happens
+redraw_on_input = (on: bool = true):
+    global __lazy
+    __lazy = on
+
+# draw another frame soon, even with nothing typed or moved (redraw_on_input): while an animation
+# runs, once in each frame
+request_redraw = ():
+    global __redraw_asked
+    __redraw_asked = true
+
+# draw a frame `seconds` from now at the latest (redraw_on_input): a clock that shows the time, a
+# message that goes away, a caret that blinks
+redraw_after = (seconds: f64):
+    global __redraw_at
+    t = time() + max(seconds, 0.0)
+    if __redraw_at < 0.0 or t < __redraw_at: __redraw_at = t
+
+__lazy = false
+__redraw_asked = false
+__redraw_at = -1.0                  # (time(): when a frame is due; -1: none asked for)
+__lazy_extra = 0                    # (frames still to draw after the last input)
+__lazy_last = 0.0                   # (when the last frame began)
+__lazy_mx = -1.0                    # (the pointer, the window's size and focus at the last frame)
+__lazy_my = -1.0
+__lazy_w = 0
+__lazy_h = 0
+__lazy_focus = true
+__lazy_poke = false                 # (something came that is no key, nor the mouse: files dropped)
+
+# (whether input came since the last frame)
+__lazy_input = () -> bool:
+    __input_init()
+    if __lazy_poke or len(__text_input) > 0 or __mouse_wheel != 0.0 or __mouse_dx != 0.0 or __mouse_dy != 0.0: return true
+    if __mouse_x != __lazy_mx or __mouse_y != __lazy_my or __win_w != __lazy_w or __win_h != __lazy_h or __win_focused != __lazy_focus: return true
+    loop k in [0..__NKEYS):
+        if __key_pressed[k] or __key_released[k] or __key_typed[k]: return true
+    loop b in [0..8):
+        if __mouse_pressed[b] or __mouse_released[b]: return true
+    false
+
+# (whether a frame is due now: always, but with redraw_on_input outside screenshot runs)
+__lazy_due = () -> bool:
+    if not __lazy or __fixed_step or __win_close or __redraw_asked or __lazy_extra > 0: return true
+    if __redraw_at >= 0.0 and time() >= __redraw_at: return true
+    if __lazy_input(): return true
+    # (answers on their way, tasks, a file watched: looked at 10 times a second)
+    busy = __pace_real_time or __tasks_on or __dialogs.len() > 0
+    when WATCH:
+        busy = true
+    busy and time() - __lazy_last >= 0.1
+
+# (a frame begins: what it was due to is taken)
+__lazy_begin = ():
+    global __lazy_extra, __lazy_focus, __lazy_h, __lazy_last, __lazy_mx, __lazy_my, __lazy_poke, __lazy_w, __redraw_asked, __redraw_at
+    if not __lazy: return
+    if __lazy_input(): __lazy_extra = 2
+    else if __lazy_extra > 0: __lazy_extra -= 1
+    __lazy_poke = false
+    __redraw_asked = false
+    if __redraw_at >= 0.0 and time() >= __redraw_at: __redraw_at = -1.0
+    __lazy_last = time()
+    __lazy_mx = __mouse_x
+    __lazy_my = __mouse_y
+    __lazy_w = __win_w
+    __lazy_h = __win_h
+    __lazy_focus = __win_focused
+
+# (a native loop, before each frame: asleep until one is due, the window's events read and the
+# sound mixed meanwhile)
+__lazy_wait = ():
+    when TARGET != "wasm":
+        if not __lazy_due(): __out_flush()         # (what the last frame printed, shown now)
+        loop not __lazy_due():
+            sleep(0.008)
+            __platform_poll()
+            __dialogs_poll()
+            __audio_update()
+    __lazy_begin()
+
 # fill the screen with the window (and back); also in a web page
 __fullscreen = false
 set_fullscreen = (on: bool = true):
@@ -526,6 +619,38 @@ show_cursor = (on: bool):
     __cursor_hidden = not on
     if __win_open: __platform_show_cursor(on)
 
+# the mouse pointer's shape over the window, from the end of this frame on: .arrow (the usual),
+# .ibeam over text to type in, .hand over a link, .crosshair, .move over what drags, .resize_ew,
+# .resize_ns, .resize_nwse and .resize_nesw over an edge or a corner that resizes, .not_allowed,
+# .wait while busy; .hidden is show_cursor(false), and any other shape shows it again. While it
+# is .arrow, a hud_text_field or ui_text_field under the pointer shows an I-beam. (In a web page,
+# the browser's cursors; on Wayland, where the compositor has cursor shapes)
+#   over = divider.contains(mouse_pos())
+#   set_cursor(if over or dragging: Cursor.resize_ew else: Cursor.arrow)
+set_cursor = (c: Cursor):
+    global __cursor_shape
+    if c == .hidden:
+        show_cursor(false)
+        return
+    __cursor_shape = c
+    if __cursor_hidden: show_cursor(true)
+
+enum Cursor: arrow, ibeam, hand, crosshair, move, resize_ew, resize_ns, resize_nwse, resize_nesw, not_allowed, wait, hidden
+
+__cursor_shape = Cursor.arrow       # set_cursor's
+__cursor_auto = Cursor.arrow        # (this frame's own: an I-beam over a text field)
+__cursor_now = Cursor.arrow         # (the shape the window shows, unless hidden)
+
+# (at the end of each frame: the shape for the next)
+__cursor_frame_end = ():
+    global __cursor_auto, __cursor_now
+    c = __cursor_shape
+    if c == .arrow: c = __cursor_auto
+    __cursor_auto = .arrow
+    if c == __cursor_now: return
+    __cursor_now = c
+    if __win_open and not __offscreen and not __testing: __platform_set_cursor()
+
 # the program's name (shapes for shapes.jo, or the build block's name), for a window without a
 # title of its own
 __program_name = () -> str:
@@ -662,6 +787,7 @@ when TARGET == "wasm":
     extern __web_pointer_lock = (on: i32) -> i32
     extern __web_pointer_locked = () -> i32
     extern __web_show_cursor = (on: i32)
+    extern __web_set_cursor = (shape: i32)
     extern __web_clipboard_get = (out: *u8, cap: i32) -> i32
     extern __web_clipboard_set = (p: *u8, n: i32)
     extern __web_keyboard = (on: i32, bottom: f32)
@@ -670,11 +796,13 @@ when TARGET == "wasm":
     extern __web_finger = () -> i32
     extern __web_share = (p: *u8, n: i32)
     extern __web_page_color = (r: f32, g: f32, b: f32)
+    extern __web_typing_at = (y: f32)
 
     __platform_fullscreen = (on: bool): __web_fullscreen(i32(int(on)))
     __platform_mouse_lock = (on: bool) -> bool: __web_pointer_lock(i32(int(on))) != 0
     __platform_mouse_locked = () -> bool: __web_pointer_locked() != 0
     __platform_show_cursor = (on: bool): __web_show_cursor(i32(int(on)))
+    __platform_set_cursor = (): __web_set_cursor(i32(int(__cursor_now)))
     __platform_clipboard = () -> str:
         buf = fill(u8(0), 4096)
         n = int(__web_clipboard_get(data(buf), 4096))
@@ -718,6 +846,7 @@ when TARGET == "wasm":
         if sz.2 > 0: __web_ratio = f64(sz.0) / f64(sz.2)
         __safe_insets = vec4(f32(sz.4), f32(sz.5), f32(sz.6), f32(sz.7))
         __fullscreen = __web_is_fullscreen() != 0          # (the browser leaves it on Escape)
+        __lazy_begin()
         __run_frame(dt, __web_update, __web_draw)
         # a text field typed in with a finger: the phone's keyboard comes up (the page shows it
         # at the end of the touch, as browsers allow it only then), the page moved up over it as
@@ -726,6 +855,19 @@ when TARGET == "wasm":
         if kb != __web_keyboard_on or kb:
             __web_keyboard_on = kb
             __web_keyboard(i32(int(kb)), f32(__typing_bottom))
+        # (with a keyboard: an input method's choices shown by the field typed in)
+        else if ui_typing(): __web_typing_at(f32(__typing_bottom))
+
+    # (after a frame: -1, the next at the next animation frame; else how many milliseconds the
+    # page may wait for one, unless input comes first: redraw_on_input)
+    @export("__frame_wait")
+    __web_frame_wait = () -> f64:
+        if not __lazy or __redraw_asked or __lazy_extra > 0: return -1.0
+        wait = 1e9
+        if __redraw_at >= 0.0: wait = max(__redraw_at - time(), 0.0) * 1000.0
+        if __pace_real_time or __tasks_on or __dialogs.len() > 0: wait = min(wait, 100.0)
+        __out_flush()                       # (what the frame printed, shown now)
+        wait
 
     # the player put the phone's keyboard away: the text field typed in lets go of it
     @export("__keyboard_closed")
@@ -839,6 +981,14 @@ else when TARGET == "windows":
     @lib("user32.dll")
     extern ShowCursor = (show: i32) -> i32
     @lib("user32.dll")
+    extern SetCursor = (c: *u8) -> *u8
+    @lib("shell32.dll")
+    extern DragAcceptFiles = (hwnd: *u8, accept: i32)
+    @lib("shell32.dll")
+    extern DragQueryFileW = (drop: *u8, i: u32, out: *u16, n: u32) -> u32
+    @lib("shell32.dll")
+    extern DragFinish = (drop: *u8)
+    @lib("user32.dll")
     extern RegisterRawInputDevices = (devs: *u8, n: u32, size: u32) -> i32
     @lib("user32.dll")
     extern GetRawInputData = (h: *u8, cmd: u32, data: *u8, size: *u32, header: u32) -> u32
@@ -926,6 +1076,7 @@ else when TARGET == "windows":
         cw = i32(0x80000000 as int)                             # CW_USEDEFAULT
         __w32_hwnd = CreateWindowExW(0, data(cls), data(title), u32(__WS_OVERLAPPEDWINDOW | __WS_VISIBLE), cw, cw, r[2] - r[0], r[3] - r[1], null, null, inst, null)
         __need(__w32_hwnd != null, "CreateWindowExW failed")
+        DragAcceptFiles(__w32_hwnd, 1)                         # (files dropped on it: WM_DROPFILES)
         ShowWindow(__w32_hwnd, 1)
         __w32_dc = GetDC(__w32_hwnd)
         __w32_msg = fill(u8(0), 48)
@@ -1024,7 +1175,7 @@ else when TARGET == "windows":
 
     @cabi
     __w32_wndproc = (hwnd: *u8, msg: u32, wp: int, lp: int) -> int:
-        global __mouse_x, __mouse_y, __w32_surrogate, __win_close, __win_focused, __win_h, __win_w
+        global __mouse_x, __mouse_y, __w32_in_client, __w32_surrogate, __win_close, __win_focused, __win_h, __win_w
         m = int(msg)
         if m == 0x10:                                           # WM_CLOSE
             __win_close = true
@@ -1108,6 +1259,22 @@ else when TARGET == "windows":
             if __mouse_lock_want: __w32_lock(true)
             return 0
         if m == 0x14: return 1                                  # WM_ERASEBKGND: drawn whole anyway
+        if m == 0x233:                                          # WM_DROPFILES: their paths
+            h = wp as *u8
+            paths: str[]
+            loop i in [0..int(DragQueryFileW(h, u32(0xFFFFFFFF), null, 0))):
+                n = int(DragQueryFileW(h, u32(i), null, 0))
+                buf = fill(u16(0), n + 1)
+                DragQueryFileW(h, u32(i), data(buf), u32(n + 1))
+                paths.push(__narrow(data(buf), n))
+            DragFinish(h)
+            __drop_add(paths)
+            return 0
+        if m == 0x20:                                           # WM_SETCURSOR: set_cursor's, in the client area
+            __w32_in_client = lp & 0xFFFF == 1
+            if __w32_in_client:
+                SetCursor(__w32_cursor())
+                return 1
         DefWindowProcW(hwnd, msg, wp, lp)
 
     __w32_utf8 = (c: int) -> str:
@@ -1244,6 +1411,15 @@ else when TARGET == "windows":
     __platform_mouse_lock = (on: bool) -> bool: __w32_lock(on)
     __platform_mouse_locked = () -> bool: __w32_locked
     __platform_show_cursor = (on: bool): __w32_cursor_update()
+    __platform_set_cursor = ():
+        if __w32_in_client: SetCursor(__w32_cursor())
+
+    # (the pointer is over the client area: the last WM_SETCURSOR's hit test said so)
+    __w32_in_client = false
+    # set_cursor's shape: the system's cursor (IDC_ARROW, IDC_IBEAM, IDC_HAND...)
+    __w32_cursor = () -> *u8:
+        ids = [32512, 32513, 32649, 32515, 32646, 32644, 32645, 32642, 32643, 32648, 32514, 32512]
+        LoadCursorW(null, ids[int(__cursor_now)])
 
     __platform_clipboard = () -> str:
         if OpenClipboard(__w32_hwnd) == 0: return ""
@@ -1289,6 +1465,7 @@ else when TARGET == "windows":
             when WATCH:
                 __watch_frame()
             __platform_poll()
+            __lazy_wait()                   # (redraw_on_input: until a frame is due)
             now = time()
             dt = clamp(now - last, 0.0, 0.1)
             last = now
@@ -1366,7 +1543,7 @@ else when TARGET == "linux":
     @lib("libX11.so.6")
     extern XResizeWindow = (d: *u8, w: int, width: u32, height: u32) -> i32
     @lib("libX11.so.6")
-    extern XGetWindowProperty =(d: *u8, w: int, property: int, offset: int, length: int, delete: i32, req_type: int, actual_type: *int, actual_format: *i32, nitems: *int, bytes_after: *int, prop: **u8) -> i32
+    extern XGetWindowProperty = (d: *u8, w: int, property: int, offset: int, length: int, delete: i32, req_type: int, actual_type: *int, actual_format: *i32, nitems: *int, bytes_after: *int, prop: **u8) -> i32
 
     @lib("libEGL.so.1")
     extern eglGetDisplay = (native: *u8) -> *u8
@@ -1479,6 +1656,9 @@ else when TARGET == "linux":
         XSelectInput(__xdpy, __xwin, 0x1 | 0x2 | 0x4 | 0x8 | 0x40 | 0x20000 | 0x200000)
         __wm_delete = XInternAtom(__xdpy, data("WM_DELETE_WINDOW"), 0)
         XSetWMProtocols(__xdpy, __xwin, &__wm_delete, 1)
+        # (files may be dropped on it: XDND, version 5)
+        xdnd = [5]
+        XChangeProperty(__xdpy, __xwin, __x_atom("XdndAware"), 4, 32, 0, data(xdnd) as *u8, 1)     # ATOM
         XkbSetDetectableAutoRepeat(__xdpy, 1, null)       # (a held key repeats presses only)
         XMapWindow(__xdpy, __xwin)
         XFlush(__xdpy)
@@ -1695,7 +1875,7 @@ else when TARGET == "linux":
             __win_w = int(ev[14])
             __win_h = int(ev[15])
         else if kind == 33:
-            if (evp as *int)[7] == __wm_delete: __win_close = true
+            if not __x_dnd(evp as *int) and (evp as *int)[7] == __wm_delete: __win_close = true
         else if kind == 10:
             __win_focused = false
             loop mut kd in __key_down: kd = false
@@ -1707,6 +1887,7 @@ else when TARGET == "linux":
             __win_focused = true
             if __mouse_lock_want and not __x_locked: __x_mouse_lock(true)
         else if kind == 30: __x_selection_request(evp)
+        else if kind == 31 and (evp as *int)[5] == __x_atom("XdndSelection"): __x_dnd_take((evp as *int)[7])
         else if kind == 31:
             __x_sel_done = true
             __x_sel_prop = (evp as *int)[7]
@@ -1795,6 +1976,61 @@ else when TARGET == "linux":
         XFree(p)
         str_from_bytes(out)
 
+    # ---- files dropped on the window (libX11): XDND ----
+    # The program dragged from says it is over the window (XdndPosition: it is told the window
+    # takes a copy), then drops (XdndDrop): the window asks for the drop's text/uri-list, which
+    # comes as a SelectionNotify, and says it is done (XdndFinished)
+    __x_dnd_src = 0
+
+    # (a ClientMessage of XDND's, handled: true)
+    __x_dnd = (e: *int) -> bool:
+        global __x_dnd_src
+        mt = e[5]
+        if mt == __x_atom("XdndEnter") or mt == __x_atom("XdndLeave"):
+            __x_dnd_src = e[7]
+            return true
+        if mt == __x_atom("XdndPosition"):
+            __x_dnd_src = e[7]
+            __x_dnd_send("XdndStatus", 1, 0, 0, __x_atom("XdndActionCopy"))      # (accepted)
+            return true
+        if mt == __x_atom("XdndDrop"):
+            __x_dnd_src = e[7]
+            XConvertSelection(__xdpy, __x_atom("XdndSelection"), __x_atom("text/uri-list"), __x_atom("SLOPPY_DROP"), __xwin, e[9])
+            XFlush(__xdpy)
+            return true
+        false
+
+    # (a ClientMessage to the program dragged from: our window, then four values)
+    __x_dnd_send = (what: str, a: int, b: int, c: int, d: int):
+        ev = fill(0, 24)
+        ev[0] = 33
+        ev[4] = __x_dnd_src
+        ev[5] = __x_atom(what)
+        ev[6] = 32
+        ev[7] = __xwin
+        ev[8] = a
+        ev[9] = b
+        ev[10] = c
+        ev[11] = d
+        XSendEvent(__xdpy, __x_dnd_src, 0, 0, data(ev) as *u8)
+        XFlush(__xdpy)
+
+    # (the dropped files' addresses came, in property prop of our window: 0 if none)
+    __x_dnd_take = (prop: int):
+        if prop != 0:
+            ty = 0
+            fmt: i32 = 0
+            n = 0
+            after = 0
+            p: *u8 = null
+            XGetWindowProperty(__xdpy, __xwin, prop, 0, 1 << 24, 1, 0, &ty, &fmt, &n, &after, &p)
+            if p != null:
+                out = fill(u8(0), n)
+                mem_copy(data(out), p, n)
+                XFree(p)
+                __drop_add(__uri_paths(str_from_bytes(out)))
+        if __x_dnd_src != 0: __x_dnd_send("XdndFinished", int(prop != 0), __x_atom("XdndActionCopy"), 0, 0)
+
     # the clipboard where the platform has none of its own (the X11 protocol path): this program's
     __local_clip = ""
     __platform_fullscreen = (on: bool):
@@ -1811,6 +2047,10 @@ else when TARGET == "linux":
     __platform_show_cursor = (on: bool):
         if __wayland: __wl_show_cursor(on)
         else if __xdpy != null and not __xproto: __x_show_cursor(on)
+    __platform_set_cursor = ():
+        if __cursor_hidden: return
+        if __wayland: __wl_show_cursor(true)
+        else if __xdpy != null and not __xproto: __x_show_cursor(true)
 
     # ---- mouse lock (libX11): the pointer grabbed, hidden and put back in the middle ----
     @lib("libX11.so.6")
@@ -1827,6 +2067,10 @@ else when TARGET == "linux":
     extern XDefineCursor = (d: *u8, w: int, c: int) -> i32
     @lib("libX11.so.6")
     extern XUndefineCursor = (d: *u8, w: int) -> i32
+    @lib("libX11.so.6")
+    extern XCreateFontCursor = (d: *u8, shape: u32) -> int
+    @lib("libXcursor.so.1")
+    extern XcursorLibraryLoadCursor = (d: *u8, name: *u8) -> int
 
     __x_locked = false
     __x_blank = 0
@@ -1857,11 +2101,30 @@ else when TARGET == "linux":
 
     __x_show_cursor = (on: bool):
         if __x_locked: return
-        if on: XUndefineCursor(__xdpy, __xwin)
-        else:
+        if not on:
             __x_make_blank()
             XDefineCursor(__xdpy, __xwin, __x_blank)
+        else if __cursor_now == .arrow: XUndefineCursor(__xdpy, __xwin)
+        else: XDefineCursor(__xdpy, __xwin, __x_cursor(int(__cursor_now)))
         XFlush(__xdpy)
+
+    # set_cursor's shape: the cursor theme's (libXcursor, by its CSS name or its older one), or
+    # else the X server's cursor font's
+    __x_cursors: int[]
+    __x_cursor = (k: int) -> int:
+        global __x_cursors
+        if __x_cursors.len() == 0: __x_cursors = fill(0, 12)
+        if __x_cursors[k] != 0: return __x_cursors[k]
+        names = ["default", "text", "pointer", "crosshair", "move", "ew-resize", "ns-resize", "nwse-resize", "nesw-resize", "not-allowed", "wait", "default"]
+        old = ["left_ptr", "xterm", "hand2", "crosshair", "fleur", "sb_h_double_arrow", "sb_v_double_arrow", "bottom_right_corner", "bottom_left_corner", "crossed_circle", "watch", "left_ptr"]
+        font = [68, 152, 60, 34, 52, 108, 116, 14, 12, 0, 150, 68]
+        c = 0
+        if lib_available("libXcursor.so.1"):
+            c = XcursorLibraryLoadCursor(__xdpy, data(__zstr(names[k])))
+            if c == 0: c = XcursorLibraryLoadCursor(__xdpy, data(__zstr(old[k])))
+        if c == 0: c = XCreateFontCursor(__xdpy, u32(font[k]))
+        __x_cursors[k] = c
+        c
 
     __x_recenter = ():
         global __mouse_x, __mouse_y
@@ -1934,6 +2197,7 @@ else when TARGET == "linux":
             when WATCH:
                 __watch_frame()
             __platform_poll()
+            __lazy_wait()                   # (redraw_on_input: until a frame is due)
             now = time()
             dt = clamp(now - last, 0.0, 0.1)
             last = now
@@ -1996,7 +2260,8 @@ __fps_acc = 0.0
 __fps_n = 0
 
 # testing aid: SLOPPY_INPUT="5:space+,7:space-,10:right+" (commas or spaces between) presses (+) / releases (-) keys at
-# frames (the names of Key: a, n1, space, escape, left, shift...); mouse_left+ (and mouse_right,
+# frames (the names of Key: a, n1, space, escape, left, shift...); 5:drop=notes.txt drops a file onto
+# the window (dropped_files()); mouse_left+ (and mouse_right,
 # mouse_middle) the mouse's buttons, 3:wheel=1 turns the wheel a notch (-1: back), and
 # 12:mouse=400x300 moves the mouse there (in the screen's
 # units, as mouse_pos); 5:touch1=400x300 puts finger 1 down there or moves it, 9:touch1- lifts it
@@ -2007,6 +2272,7 @@ __script: (int, int, bool, vec2)[]          # (frame, key (-1 - button: a mouse 
 __script_loaded = false
 __script_mouse_placed = false
 __script_text: (int, str)[]                 # (frame, text typed then: 5:text=ACE)
+__script_drops: (int, str)[]                # (frame, a file dropped then: 5:drop=notes.txt)
 # (SLOPPY_INPUT's gamepad, pad 0: there from the first item that uses it)
 __scripted_pad = ():
     loop e in __script:
@@ -2053,6 +2319,9 @@ __scripted_input = ():
                 fr = to_int(item[..c)) ?? 0
                 if starts_with(item[c + 1..], "text="):
                     __script_text.push((fr, item[c + 6..]))
+                    continue
+                if starts_with(item[c + 1..], "drop="):
+                    __script_drops.push((fr, item[c + 6..]))
                     continue
                 if starts_with(item[c + 1..], "wheel="):
                     if let wv = to_float(item[c + 7..]):
@@ -2116,11 +2385,13 @@ __scripted_input = ():
                 loop b in [0..3):
                     if "mouse_{b as Mouse}" == name: found = -1 - b
                 if found == -1000 or (item[len(item) - 1] != '+' and item[len(item) - 1] != '-'):
-                    eprint("SLOPPY_INPUT: '{item}' is not frame:key+ or frame:key- (keys as Key names them: a, n1, space, enter, escape, left, shift; mouse_left), frame:mouse=XxY, frame:wheel=N, frame:text=..., frame:touch1=XxY or frame:touch1-, frame:pad_a+ (a gamepad's buttons), frame:lstick=XxY, rstick=XxY, lt=V nor rt=V")
+                    eprint("SLOPPY_INPUT: '{item}' is not frame:key+ or frame:key- (keys as Key names them: a, n1, space, enter, escape, left, shift; mouse_left), frame:mouse=XxY, frame:wheel=N, frame:text=..., frame:drop=PATH, frame:touch1=XxY or frame:touch1-, frame:pad_a+ (a gamepad's buttons), frame:lstick=XxY, rstick=XxY, lt=V nor rt=V")
                     continue
                 __script.push((fr, found, down, vec2(0, 0)))
     loop e in __script_text:
         if e.0 == __frame_count: __text_input += e.1
+    loop e in __script_drops:
+        if e.0 == __frame_count: __drop_add([e.1])
     loop e in __script:
         if e.0 != __frame_count: continue
         if e.1 >= 0:
@@ -2188,6 +2459,8 @@ __run_frame = (dt: f64, update: (f64) -> void, draw: () -> void):
     global __dt, __fps, __fps_acc, __fps_n
     __out_flush()                   # (what the last frame printed)
     __scripted_input()
+    __dialogs_poll()
+    __drop_frame()
     __pad_frame()
     __scripted_pad()
     __press_track()
@@ -2220,6 +2493,7 @@ __run_frame = (dt: f64, update: (f64) -> void, draw: () -> void):
     __frame_cpu += time() - t0
     __stats_record(time() - t0)
     __stats_draw()
+    __cursor_frame_end()
     __maybe_screenshot()
     __input_end_frame()
     __frame_count += 1

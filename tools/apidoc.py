@@ -75,7 +75,7 @@ TOPICS = [
     ("Data", "numeric", "Numeric arrays", ["std/nd"], "numeric",
      "Elementwise operators (`.+ .* .^`...), `f.(xs)` and n-dimensional arrays are part of the language: "
      "see [arrays for numeric work](LANGUAGE.md#8-arrays-for-numeric-work). These are the functions on them."),
-    ("Games", "window", "The window, the game loop and input", ["game/window", "game/stats"], "window",
+    ("Games", "window", "The window, the game loop and input", ["game/window", "game/files", "game/stats"], "window",
      "A program that defines `update(dt: f64)` or `draw()` opens a window and calls them every frame. "
      "More on windows, screen sizes and the game loop: [the language](LANGUAGE.md#12-programs-and-the-game-loop)."),
     ("Games", "controls", "Controls and gamepads", ["game/controls", "game/gamepad"], "controls", ""),
