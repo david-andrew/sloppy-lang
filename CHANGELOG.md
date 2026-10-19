@@ -43,6 +43,9 @@
   a body that does not read leaves `into` as it was. lib/http.jo's docs (and START.md's) say that
   handlers run one at a time, changing the program's variables with no locks, and how to try a
   server from its own program (fetch_start, then http.answer() until the answer has come).
+- parse_args' `--help` leaves out an option's name at the start of its field's comment (`#
+  --words, or -w: count words too` shows as `-w, --words   count words too`, where the name came
+  twice), and START.md's example no longer writes it there.
 
 ## 0.25.0
 

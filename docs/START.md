@@ -242,8 +242,8 @@ the file calls it).
 # count.jo: lines and words in files, largest first
 
 struct Options:
-    words = false               # --words, or -w: count words too
-    top = 0                     # --top 5: only the largest five (0: all)
+    words = false               # count words too
+    top = 0                     # only the largest n (0: all)
     files: str[]                # the arguments that are not options
 
 main = () -> int:
@@ -274,8 +274,9 @@ With the first line `#!/usr/bin/env sloppy` and `chmod +x count.jo`, it runs as
 `./count.jo -w --top 3 *.txt` (on Linux and macOS). Everything after the file's name goes to the
 script, `--release` too; `args()[0]` is the script's own path (`exe_path()` is where its build
 is kept). `parse_args` reads the options into the struct: a `bool` field is a flag, others take
-a value, the last list field gets the other arguments, and `--help` lists them all; a mistake
-(`--top many`) is said with that help, and exit code 2.
+a value, the last list field gets the other arguments, and `--help` lists them all, each beside
+its field's comment (`-w, --words   count words too`: the comment need not name the option); a
+mistake (`--top many`) is said with that help, and exit code 2.
 
 - `run_program("make", ["-j8"], show = true)` shows a program's output as it runs;
   without `show`, it is returned as text. `cwd = "build"` runs it in another directory.
