@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `as` after a match arm's patterns names the value matched, narrowed as the patterns narrow it:
+  `_ as n if n > 100:`, `1..10 as d:`, `Circle as c:` (a union's member), `.rect(w, h) as r:`. A
+  name alone still compares (`limit:`); an unknown one suggests `_ as n`.
 - Tasks and channels, as Go's goroutines: `t = spawn((): f(x))` runs `f` alongside the rest of
   the program and `t.wait()` is its result; `ch = channel[int]()` (or `channel[int](100)`) with
   `send`, `receive` (none once closed and empty), `close`, `receive(wait = 2.0)`, `try_send`,

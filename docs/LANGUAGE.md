@@ -631,7 +631,17 @@ arms below are tried. The names the arm binds, and what its pattern narrows, are
 condition, and what the condition tests with `is` holds in the arm. An arm with a condition
 does not count for naming each variant: an enum's match still needs an arm for that variant
 without one, or `_:` (and a `bool`'s, a `true:` and a `false:` without one). A name in a pattern
-is a value to compare with, not a new variable: for "any number above 100", `_ if n > 100:`.
+is a value to compare with, not a new variable (`limit:` matches the value of `limit`); `as`
+after an arm's patterns names the value matched, narrowed as they narrow it:
+
+```gdscript
+match x:
+    1..10 as d: print("digit", d)
+    _ as n if n > 100: print("big", n)
+match shape:                             # Circle | Rect
+    Circle as c: c.r * c.r * PI
+    Rect as r: r.w * r.h
+```
 
 A tuple is matched part by part, each part a value, a range, `.variant` or `_` (any), tuples
 inside it too:
