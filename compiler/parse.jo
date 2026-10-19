@@ -2737,6 +2737,8 @@ parse_stmt = () -> int:
             add_flag(m, NF_STMT)
             nodes[s].a = i32(m)
         add_flag(s, NF_TERMINATED)
+    else if k == .ident and pkn(1) == .colon and pkn(2) == .newline and tok_src(ti) == "select":
+        s = parse_select()
     else if k == .kw_const:
         advance()
         s = mk(.const_, pos)
@@ -2751,6 +2753,185 @@ parse_stmt = () -> int:
         if sk == .return_ and nodes[s].a != 0 and has_flag(int(nodes[s].a), NF_TERMINATED): add_flag(s, NF_TERMINATED)
     end_stmt(s)
     s
+
+# select: the first of several channel operations that can go on, waiting until one can (lib/std/task.jo)
+#   select:
+#       inbox.receive() as msg: ...     # msg: a value, or none once the channel is closed
+#       out.send(v): ...
+#       after 2.0: ...                  # none could within 2 seconds
+#       else: ...                       # none can now
+# becomes: each channel and value kept, then a loop that finds the arms ready (from a turning
+# start, so that none is always first) or waits on all of their channels; then the arm chosen
+# takes or puts its value, and its body runs (outside the loop: a break in it is the program's)
+select_count = 0
+parse_select = () -> int:
+    pos = cur_pos()
+    advance()
+    expect(.colon, "")
+    expect(.newline, "")
+    expect(.indent, "indented select arms: `ch.receive() as v:`, `ch.send(x):`, `after 2.0:`, `else:`")
+    select_count += 1
+    pre = "__sel{select_count}_"
+    stmts: int[]
+    ready: int[]                # (each arm's readiness test)
+    watch: int[]                # (each arm's wait on its channel)
+    chosen: int[]               # (each arm's statements once chosen)
+    after_at = -1
+    after_body = 0
+    else_body = 0
+    loop pk() != .dedent and pk() != .eof:
+        apos = cur_pos()
+        if pk() == .kw_else:
+            if else_body != 0: fatal(apos, "a select has one `else:`")
+            advance()
+            expect(.colon, "")
+            else_body = parse_block()
+        else if pk() == .ident and tok_src(ti) == "after" and pkn(1) != .colon and pkn(1) != .dot and pkn(1) != .lparen:
+            if after_body != 0: fatal(apos, "a select has one `after seconds:`")
+            advance()
+            d = parse_expr()
+            stmts.push(sel_let("{pre}d", sel_call("__select_deadline", [d], apos), apos))
+            expect(.colon, "")
+            after_body = parse_block()
+        else:
+            e = parse_prefix()
+            bind = 0
+            if accept(.kw_as): bind = expect_ident("a name for the value received")
+            expect(.colon, "")
+            body = parse_block()
+            # (ch.receive() / receive(ch), ch.send(v) / send(ch, v))
+            fname = ""
+            args: int[]
+            if nodes[e].kind == .call:
+                cal = int(nodes[e].a)
+                if nodes[cal].kind == .field:
+                    fname = name_of(int(nodes[cal].name))
+                    args.push(int(nodes[cal].a))
+                    loop a in kids(e): args.push(a)
+                else if nodes[cal].kind == .ident:
+                    fname = name_of(int(nodes[cal].name))
+                    loop a in kids(e): args.push(a)
+            i = ready.len()
+            cn = "{pre}c{i}"
+            if fname == "receive" and args.len() == 1:
+                stmts.push(sel_let(cn, args[0], apos))
+                ready.push(sel_call("__select_ready_receive", [sel_ident(cn, apos)], apos))
+                watch.push(sel_stmt(sel_call("__select_watch_receive", [sel_ident(cn, apos)], apos), apos))
+                take = sel_call("__select_take", [sel_ident(cn, apos)], apos)
+                first = if bind != 0: sel_let(name_of(bind), take, apos) else: sel_stmt(sel_call("__select_drop", [sel_ident(cn, apos)], apos), apos)
+                chosen.push(sel_block([first, body], apos))
+            else if fname == "send" and args.len() == 2:
+                if bind != 0: fatal(apos, "a send has no value to name: `ch.send(x):`")
+                vn = "{pre}v{i}"
+                stmts.push(sel_let(cn, args[0], apos))
+                stmts.push(sel_let(vn, args[1], apos))
+                ready.push(sel_call("__select_ready_send", [sel_ident(cn, apos)], apos))
+                watch.push(sel_stmt(sel_call("__select_watch_send", [sel_ident(cn, apos)], apos), apos))
+                put = sel_stmt(sel_call("__select_put", [sel_ident(cn, apos), sel_ident(vn, apos)], apos), apos)
+                chosen.push(sel_block([put, body], apos))
+            else: fatal(apos, "a select's arms are `ch.receive() as v:` (v: the value, or none once the channel is closed), `ch.send(x):`, `after seconds:` (none could in that time) and `else:` (none can now)")
+        if pk() != .dedent and pk() != .eof: accept(.newline)
+    expect(.dedent, "")
+    n = ready.len()
+    if n == 0: fatal(pos, "a select needs at least one `ch.receive()` or `ch.send(x)` arm")
+    if after_body != 0 and else_body != 0: fatal(pos, "a select has `after` or `else`, not both: `else` runs when no arm can go on now, `after` when none could in that time")
+    kn = "{pre}k"
+    minus1 = sel_int(-1, pos)
+    stmts.push(sel_let(kn, minus1, pos))
+    # loop k < 0: k = __select_pick([ready...]); if k < 0: (else: k = n) or (watch...; if not __select_block(d): k = n)
+    w = mk(.while_, pos)
+    nodes[w].a = i32(sel_bin(.lt, sel_ident(kn, pos), sel_int(0, pos), pos))
+    arr = mk(.array, pos)
+    set_list(arr, ready)
+    body_stmts: int[]
+    body_stmts.push(sel_assign(kn, sel_call("__select_pick", [arr], pos), pos))
+    none_ready: int[]
+    if else_body != 0: none_ready.push(sel_assign(kn, sel_int(n, pos), pos))
+    else:
+        loop x in watch: none_ready.push(x)
+        dl = if after_body != 0: sel_ident("{pre}d", pos) else: sel_float(-1.0, pos)
+        timed = mk(.not_, pos)
+        nodes[timed].a = i32(sel_call("__select_block", [dl], pos))
+        none_ready.push(sel_if(timed, sel_block([sel_assign(kn, sel_int(n, pos), pos)], pos), 0, pos))
+    body_stmts.push(sel_if(sel_bin(.lt, sel_ident(kn, pos), sel_int(0, pos), pos), sel_block(none_ready, pos), 0, pos))
+    nodes[w].b = i32(sel_block(body_stmts, pos))
+    stmts.push(w)
+    # then the arm chosen: if k == 0: ... else if k == 1: ... else: (after or else)
+    last = 0
+    if after_body != 0: last = after_body
+    if else_body != 0: last = else_body
+    chain = last
+    k = n - 1
+    loop k >= 0:
+        cond = sel_bin(.eq, sel_ident(kn, pos), sel_int(k, pos), pos)
+        iff = sel_if(cond, chosen[k], chain, pos)
+        chain = sel_block([iff], pos)
+        k -= 1
+    stmts.push(kid(chain, 0))
+    b = sel_block(stmts, pos)
+    add_flag(b, NF_SPLICE)
+    b
+
+sel_ident = (name: str, pos: int) -> int:
+    n = mk(.ident, pos)
+    nodes[n].name = i32(intern(name))
+    n
+
+sel_int = (v: int, pos: int) -> int:
+    n = mk(.int_lit, pos)
+    nodes[n].ival = v
+    add_flag(n, NF_LITERAL)
+    n
+
+sel_float = (v: f64, pos: int) -> int:
+    n = mk(.float_lit, pos)
+    nodes[n].fval = v
+    add_flag(n, NF_LITERAL)
+    n
+
+sel_call = (fname: str, args: int[], pos: int) -> int:
+    c = mk(.call, pos)
+    nodes[c].a = i32(sel_ident(fname, pos))
+    set_list(c, args)
+    c
+
+sel_stmt = (e: int, pos: int) -> int:
+    s = mk(.exprstmt, pos)
+    nodes[s].a = i32(e)
+    s
+
+sel_let = (name: str, e: int, pos: int) -> int:
+    d = mk(.vardecl, pos)
+    nodes[d].name = i32(intern(name))
+    nodes[d].b = i32(e)
+    d
+
+sel_assign = (name: str, e: int, pos: int) -> int:
+    a = mk(.assign, pos)
+    nodes[a].op = i32(int(Tok.assign))
+    nodes[a].a = i32(sel_ident(name, pos))
+    nodes[a].b = i32(e)
+    a
+
+sel_bin = (op: Tok, a: int, b: int, pos: int) -> int:
+    n = mk(.binary, pos)
+    nodes[n].op = i32(int(op))
+    nodes[n].a = i32(a)
+    nodes[n].b = i32(b)
+    n
+
+sel_if = (cond: int, then: int, els: int, pos: int) -> int:
+    n = mk(.if_, pos)
+    nodes[n].a = i32(cond)
+    nodes[n].b = i32(then)
+    if els != 0: nodes[n].c = i32(els)
+    add_flag(n, NF_STMT)
+    n
+
+sel_block = (stmts: int[], pos: int) -> int:
+    b = mk(.block, pos)
+    set_list(b, stmts)
+    b
 
 struct_body = ""                # (the struct whose fields are being parsed)
 parse_struct = () -> int:

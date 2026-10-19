@@ -419,7 +419,7 @@ on_quit = (): write_file("todos.json", to_json(todos))
 
   ```gdscript
   http.listen(8080, host = "127.0.0.1")
-  spawn((): http.serve(8080))
+  spawn((): http.serve(8080), background = true)     # (the program's end does not wait for it)
   r = net.fetch("http://127.0.0.1:8080/todos")       # answered meanwhile
   assert(r.status == 200)
   ```
@@ -619,7 +619,8 @@ waits (a channel, a fetch, a connection, `sleep`) lets the others run. For the p
 | a worker pool over fetches, `errgroup` with `SetLimit(8)` | `rs = net.fetch_all(urls, at_once = 8, retries = 2)`: the answers in order, each failed or busy one asked again |
 | goroutines for CPU work | `parallel_map(xs, f)`, `parallel_range(n, f)` and `parallel_update(xs, f)` run `f` on every core and give back its results, in order |
 | `sync.Mutex` | not needed: tasks take turns, and between two waits nothing else runs; `parallel_map`'s function cannot change a variable it shares (the compiler says so: return values instead), and a count the threads share is an `Atomic` (`done = atomic(0)`, `done.add(1)`) |
-| `select` with a timeout | `ch.receive(wait = 2.0)`: none when nothing came in time (`ch.closed()` tells it from a closed channel); several senders send to one channel; `net.wait(seconds)` waits for any socket |
+| `select` | `select:` with arms `ch.receive() as v:`, `ch.send(x):`, `after 2.0:` and `else:`; one channel alone: `ch.receive(wait = 2.0)` |
+| `runtime.Gosched()` | `yield_now()` |
 | "all goroutines are asleep - deadlock!" | the same: every task waiting on what none will do is told, with where each waits |
 | `context.WithTimeout`, cancelling | `net.fetch(url, wait = 5.0)` (and `fetch_start`, `fetch_all`): status 0 and `r.why` when the time runs out; `net.fetch_cancel(f)` stops one |
 | `signal.NotifyContext(ctx, os.Interrupt)`, graceful shutdown | `loop not stopping(): ...`: ctrl-c and SIGTERM make `stopping()` true (and end `net.wait` early); `on_quit = (): ...` runs as the program ends |
@@ -637,7 +638,7 @@ waits (a channel, a fetch, a connection, `sleep`) lets the others run. For the p
 | `regexp.MustCompile(expr)` | `regex(r"...")`, made once and used for every text |
 | `url.Parse`, `base.ResolveReference(ref)` | `parse_url(s)` (`u.host`, `u.port`, `u.path`), `url_join(base, link)` |
 | `http.HandleFunc`, `http.ListenAndServe` | `import http`, `http.get("/todos/:id", handler)`, `http.serve(8080)` ([writing a server](#writing-a-server)) |
-| `httptest.NewServer` | the server in the same program: `http.listen(port, host = "127.0.0.1")`, `spawn((): http.serve(port))`, then `net.fetch` ([as above](#writing-a-server)) |
+| `httptest.NewServer` | the server in the same program: `http.listen(port, host = "127.0.0.1")`, `spawn((): http.serve(port), background = true)`, then `net.fetch` ([as above](#writing-a-server)) |
 | `go test`, `func TestX(t *testing.T)` | `test "x": assert(...)` blocks, run by `sloppy test file.jo` (`sloppy test file.jo x`: only those named so) |
 | a small static binary | `sloppy build --release tool.jo`: one static executable (no libc; hello world is about 150 KB) |
 | `GOOS=windows GOARCH=amd64 go build` | `sloppy build tool.jo --target windows` (`linux`, `linux-arm64`, `macos`, `wasm`), from any system; Linux, ARM and macOS builds are all named `tool` unless `-o` says otherwise, so give each its own: `--target macos -o tool-mac` |

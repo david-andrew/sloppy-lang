@@ -1375,13 +1375,25 @@ one made in a loop has that turn's.
 - `ch.receive(wait = 2.0)` waits at most 2 seconds (none: nothing came; `ch.closed()` tells it
   from a closed channel). `ch.try_send(v)` and `ch.try_receive()` do not wait; `ch.len()` is how
   many wait in it.
-- `wait_all(tasks)` gives their results in order; `t.done()` says whether one has ended.
+- A channel's values cannot be optionals (`channel[int?]` is an error): `receive`'s none means
+  the channel is closed.
+- `select` takes the first of several channel operations that can go on, waiting until one can
+  (one that is ready is picked fairly, not always the first):
+
+  ```gdscript
+  select:
+      inbox.receive() as msg: handle(msg)       # msg: the value, or none once inbox is closed
+      out.send(job): sent += 1
+      after 2.0: print("nothing for 2 seconds")  # or `else:`, for when none can go on now
+  ```
+- `wait_all(tasks)` gives their results in order; `t.done()` says whether one has ended;
+  `yield_now()` lets the others take their turns in a task that computes for long.
 - `next_frame()` in a game's task waits for the next frame: a game's tasks take their turns at
   the start of each frame, before `update`, so a task can play out a sequence over several
   (show "Ready", `sleep(1.0)`, show "Go!").
 - The program ends when `main` (or the top-level code) and every task have ended, or at `exit()`.
-  An `http.serve` in a task is the exception: it ends with the rest, so a test can serve and
-  fetch from itself.
+  `spawn(f, background = true)` starts one the end does not wait for: a server's loop, so a test
+  can serve and fetch from itself (`spawn((): http.serve(port), background = true)`).
 - If every task waits for something none of them will do (a receive on a channel nothing sends
   to, a send nothing receives), the program stops and says where each one waits.
 - A panic in a task ends the program, as anywhere else. An HTTP server's handlers run as tasks

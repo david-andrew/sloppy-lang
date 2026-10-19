@@ -25,7 +25,7 @@
 # ---------------- tasks ----------------
 # (a task's result, and who waits for it: shared by the copies of its Task)
 struct __TaskCell[T]:
-    result: T?
+    result: T[]             # (its one value once it has ended: a T? would lose a result of none)
     done = false
     waiting: int[]          # (tasks waiting for it to end: their ids and waits, two ints each)
 
@@ -33,17 +33,18 @@ struct Task[T]:
     __cell: __TaskCell[T][]
     __p: *__TaskCell[T]
 
-# run f alongside the rest of the program; its result is the Task's wait()
-spawn[T] = (f: () -> T) -> Task[T]:
+# run f alongside the rest of the program; its result is the Task's wait(). background: the
+# program's end does not wait for it (a server's loop, a task that watches something)
+spawn[T] = (f: () -> T, background: bool = false) -> Task[T]:
     cell: __TaskCell[T][]
-    cell.push(__TaskCell[T](none))
+    cell.push(__TaskCell[T]())
     p = data(cell)                 # (before cell is shared: data() of a shared array copies it)
     t = Task[T](cell, p)
-    __task_start((): __task_run(t, f))
+    __task_start((): __task_run(t, f), background)
     t
 
 __task_run[T] = (t: Task[T], f: () -> T):
-    t.__p[0].result = f()
+    t.__p[0].result.push(f())
     t.__p[0].done = true
     __task_wake_all(t.__p[0].waiting)
 
@@ -52,7 +53,7 @@ wait[T] = (t: Task[T]) -> T:
     __task_cell_check(t.__cell.len())
     loop not t.__p[0].done:
         __task_wait_on(t.__p[0].waiting, "for a task to end")
-    t.__p[0].result!
+    t.__p[0].result[0]
 
 # it has ended
 done[T] = (t: Task[T]) -> bool:
@@ -61,6 +62,9 @@ done[T] = (t: Task[T]) -> bool:
 
 # the results of all of them, in their order
 wait_all[T] = (ts: Task[T][]) -> T[]: [loop t in ts: t.wait()]
+
+__task_wait_check = (wait: f64):
+    if not (wait >= 0.0) or wait > 1e18: __panic("a time to wait of {wait}: it is a number of seconds, 0 or more (to wait for as long as it takes, leave it out)")
 
 __task_cell_check = (n: int):
     if n == 0: __panic("this Task was not started: a Task comes from spawn((): ...)")
@@ -107,13 +111,15 @@ send[T] = (c: Channel[T], v: T):
     loop me >= p[0].taken + p[0].capacity:
         __task_wait_on(p[0].senders, "to send on a channel (nothing receives from it)")
 
-# send v if that needs no wait (a receiver waits, or there is room); false: not sent
+# send v if that needs no wait (a receiver waits for it, or there is room); false: not sent
 try_send[T] = (c: Channel[T], v: T) -> bool:
     __chan_check(c.__cell.len())
     p = c.__p
     if p[0].closed: __panic("send on a closed channel: close it once every value has been sent")
     if p[0].sent - p[0].taken >= p[0].capacity + __task_waiters(p[0].receivers): return false
-    send(c, v)
+    p[0].q.push(v)
+    p[0].sent += 1
+    __task_wake_one(p[0].receivers)
     true
 
 # the next value; none once the channel is closed and every value sent has been taken
@@ -130,7 +136,8 @@ receive[T] = (c: Channel[T]) -> T?:
 receive[T] = (c: Channel[T], wait: f64) -> T?:
     __chan_check(c.__cell.len())
     p = c.__p
-    end = time() + max(wait, 0.0)
+    __task_wait_check(wait)
+    end = time() + wait
     loop p[0].q.len() == 0:
         if p[0].closed: return none
         left = end - time()
@@ -156,6 +163,7 @@ close[T] = (c: Channel[T]):
     __chan_check(c.__cell.len())
     c.__p[0].closed = true
     __task_wake_all(c.__p[0].receivers)
+    __task_wake_all(c.__p[0].senders)
 
 # it has been closed (values may still wait in it)
 closed[T] = (c: Channel[T]) -> bool:
@@ -166,6 +174,65 @@ closed[T] = (c: Channel[T]) -> bool:
 len[T] = (c: Channel[T]) -> int:
     __chan_check(c.__cell.len())
     c.__p[0].q.len()
+
+# ---------------- select (the statement: compiler/parse.jo's parse_select) ----------------
+__select_turn = 0
+
+# (the arm to take of those ready, from a start that turns, so that none is always first; -1: none)
+__select_pick = (ready: bool[]) -> int:
+    n = ready.len()
+    __select_turn += 1
+    loop j in [0..n):
+        k = (__select_turn + j) % n
+        if ready[k]: return k
+    -1
+
+__select_ready_receive[T] = (c: Channel[T]) -> bool:
+    __chan_check(c.__cell.len())
+    c.__p[0].q.len() > 0 or c.__p[0].closed
+
+__select_ready_send[T] = (c: Channel[T]) -> bool:
+    __chan_check(c.__cell.len())
+    p = c.__p
+    p[0].closed or p[0].sent - p[0].taken < p[0].capacity + __task_waiters(p[0].receivers)
+
+__select_watch_receive[T] = (c: Channel[T]):
+    __task_init()
+    c.__p[0].receivers.push(__task_cur)
+    c.__p[0].receivers.push(__tasks[__task_cur].gen + 1)
+
+__select_watch_send[T] = (c: Channel[T]):
+    __task_init()
+    c.__p[0].senders.push(__task_cur)
+    c.__p[0].senders.push(__tasks[__task_cur].gen + 1)
+
+__select_deadline = (seconds: f64) -> f64:
+    __task_wait_check(seconds)
+    time() + seconds
+
+# (wait for a channel watched, until deadline (-1: none); false: the time came)
+__select_block = (deadline: f64) -> bool:
+    if deadline < 0.0:
+        __task_block("in a select, for one of its channels", -1.0)
+        return true
+    left = deadline - time()
+    if left <= 0.0: return false
+    __task_block("in a select, for one of its channels", left)
+    time() < deadline
+
+__select_take[T] = (c: Channel[T]) -> T?:
+    if c.__p[0].q.len() == 0: return none
+    __chan_take(c)
+
+__select_drop[T] = (c: Channel[T]):
+    if c.__p[0].q.len() > 0: __chan_take(c)
+
+__select_put[T] = (c: Channel[T], v: T):
+    p = c.__p
+    if p[0].closed: __panic("send on a closed channel (in a select): close it once every value has been sent")
+    p[0].q.push(v)
+    p[0].sent += 1
+    __task_wake_one(p[0].receivers)
 
 # ---------------- waiting ----------------
 # wait until the next frame (a game's), letting the others take their turns; outside a game, the
@@ -180,15 +247,13 @@ next_frame = ():
     __task_frame_waiters.push(__tasks[__task_cur].gen + 1)
     __task_block("for the next frame", -1.0)
 
-# (the running task is one the program's end does not wait for: http.serve's)
-__task_background = ():
-    if not __tasks_on or __task_cur == 0 or __tasks[__task_cur].background: return
-    __tasks[__task_cur].background = true
-    __task_less()
-
 __task_less = ():
     __task_live -= 1
     if __task_live == 0 and __task_end_waiting: __task_wake(0, __tasks[0].gen)
+
+# let the other tasks ready take their turns, then go on: for a task that computes for long without
+# waiting, now and then
+yield_now = (): __task_yield()
 
 # (the others ready take their turns, then the running task goes on)
 __task_yield = ():
@@ -245,7 +310,7 @@ __task_init = ():
         __tasks[0].fiber = ConvertThreadToFiber(null)
         if __tasks[0].fiber == null: __panic("tasks: the main thread could not become a fiber")
 
-__task_start = (f: () -> void):
+__task_start = (f: () -> void, background: bool):
     __task_init()
     id = 0
     if __task_free.len() > 0:
@@ -254,7 +319,6 @@ __task_start = (f: () -> void):
         __tasks[id].started = false
         __tasks[id].why = ""
         __tasks[id].catch_jmp = null
-        __tasks[id].background = false
     else:
         id = __tasks.len()
         __tasks.push(__TaskRec(jb = __alloc(192), run = f))
@@ -272,7 +336,8 @@ __task_start = (f: () -> void):
         __tasks[id].base = base
         __tasks[id].lo = base + __TASK_GUARD
         __tasks[id].hi = base + __TASK_STACK
-    __task_live += 1
+    __tasks[id].background = background
+    if not background: __task_live += 1
     __task_make_ready(id)
 
 # (a stack: a mapping with a guard at its end that is never readable, so that going past it is a

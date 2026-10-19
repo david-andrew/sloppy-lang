@@ -13,8 +13,11 @@
   WebAssembly code (JSPI: Chrome and Edge 137 or later).
 - An HTTP server's handlers run as tasks: one that waits (a fetch, `sleep`) no longer holds up
   the others, and a handler can fetch from its own server. `http.serve` after `http.listen` on the
-  same port answers instead of returning false, and in a task it ends with the program, so a test
-  serves and fetches from itself with `spawn((): http.serve(port))`.
+  same port answers instead of returning false, so a test serves and fetches from itself with
+  `spawn((): http.serve(port), background = true)` (a task the program's end does not wait for).
+- `select:` takes the first of several channel operations that can go on, fairly, waiting until
+  one can: arms `ch.receive() as v:`, `ch.send(x):`, `after seconds:` and `else:`. `yield_now()`
+  lets the other tasks run. A channel of optionals is an error (receive's none means closed).
 - A function type is taken as a type argument: `channel[() -> int]()`.
 
 - Aces plays on a phone held upright: the menu, the lobby and Settings are laid out for a tall

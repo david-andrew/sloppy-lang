@@ -1887,7 +1887,7 @@ Tasks take turns on the program's one thread: one runs until it waits, then anot
 #### Tasks
 
 - `struct Task[T]`
-- `spawn[T] = (f: () -> T) -> Task[T]`: run f alongside the rest of the program; its result is the Task's wait()
+- `spawn[T] = (f: () -> T, background: bool = false) -> Task[T]`: run f alongside the rest of the program; its result is the Task's wait(). background: the program's end does not wait for it (a server's loop, a task that watches something)
 - `wait[T] = (t: Task[T]) -> T`: its result, once it has ended (until then the caller waits, and the others take their turns)
 - `done[T] = (t: Task[T]) -> bool`: it has ended
 - `wait_all[T] = (ts: Task[T][]) -> T[]`: the results of all of them, in their order
@@ -1897,7 +1897,7 @@ Tasks take turns on the program's one thread: one runs until it waits, then anot
 - `struct Channel[T]`: Values sent from one task to another, in order. send waits until a receiver takes the value (capacity 0), or while capacity values wait to be taken; receive waits until one comes, and gives none once the channel is closed and every value has been taken. Copies of a Channel are the same channel.
 - `channel[T] = (capacity: int = 0) -> Channel[T]`: a channel of T: channel[str](), or channel[int](100) for one that holds up to 100 values before send waits
 - `send[T] = (c: Channel[T], v: T)`: send v: it waits until a receiver takes it (or while the channel is full)
-- `try_send[T] = (c: Channel[T], v: T) -> bool`: send v if that needs no wait (a receiver waits, or there is room); false: not sent
+- `try_send[T] = (c: Channel[T], v: T) -> bool`: send v if that needs no wait (a receiver waits for it, or there is room); false: not sent
 - `receive[T] = (c: Channel[T]) -> T?`: the next value; none once the channel is closed and every value sent has been taken
 - `receive[T] = (c: Channel[T], wait: f64) -> T?`: the next value, waiting at most `wait` seconds for it; none when none came (or the channel is closed and empty: closed() tells which)
 - `try_receive[T] = (c: Channel[T]) -> T?`: the next value if one waits; none if not
@@ -1908,6 +1908,7 @@ Tasks take turns on the program's one thread: one runs until it waits, then anot
 #### Waiting
 
 - `next_frame = ()`: wait until the next frame (a game's), letting the others take their turns; outside a game, the same as sleep(0)
+- `yield_now = ()`: let the other tasks ready take their turns, then go on: for a task that computes for long without waiting, now and then
 
 ## Threads
 
