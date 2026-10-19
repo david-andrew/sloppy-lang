@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A tuple literal converts each element where a tuple type is expected: `heap_push(q, (d, p.x,
+  p.y))` for a `(int, int, int)[]` with p an ivec2 (i32 components), and `g((1, "x"))` for
+  `p: (int?, str?)`, said "expects (int, int, int), found (int, i32, i32)".
+- `<` on vectors (a heap or a sort of `(dist, ivec2)` pairs) says they have no order and what to
+  compare instead.
 - From a Windows newcomer's pass:
   - A source file saved with a UTF-8 byte order mark (Notepad's "UTF-8 with BOM") compiles (it
     said "unknown function 'print'"), and `read_file` leaves the mark out, so `from_json`,

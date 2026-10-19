@@ -109,6 +109,7 @@ can_coerce = (n: int, from0: int, to0: int) -> bool:
     if fk == .fn_ and tk == .fn_ and never_fn_fits(from, to): return true
     if fk == .array and tk == .fixed and n != 0 and fixed_literal_ok(n, to): return true
     if fk == .array and tk == .array and opt_of(int(types[to].elem), int(types[from].elem)): return true
+    if fk == .tuple and tk == .tuple and n != 0 and tuple_lit_fits(n, to): return true
     if tk == .opt:
         if fk == .none_lit: return true
         if fk == .opt: return type_eq(int(types[from].elem), int(types[to].elem)) or tkind(int(types[from].elem)) == .var
@@ -116,6 +117,15 @@ can_coerce = (n: int, from0: int, to0: int) -> bool:
     if fk == .null_ and (tk == .ptr or tk == .cfn): return true
     if fk == .ptr and tk == .ptr and (to == T_RAWPTR or from == T_RAWPTR): return true
     false
+
+# can tuple literal n become a `to` (a tuple as long), each element converted ((0, p.x) for an
+# (int, int), p.x an i32)?
+tuple_lit_fits = (n: int, to: int) -> bool:
+    if nodes[n].kind != .tuple or nkids(n) != int(types[to].nargs) or has_var(to): return false
+    loop i in [0..nkids(n)):
+        e = kid(n, i)
+        if nodes[e].type == 0 or not can_coerce(e, ntype(e), targ(to, i)): return false
+    true
 
 # is o the optional of e (T? and T)?
 opt_of = (o: int, e: int) -> bool:
@@ -218,6 +228,11 @@ coerce = (n: int, target: int) -> int:
         return n
     if fk == .fixed and tk == .array and type_eq(int(types[from].elem), int(types[to].elem)):
         wrap_conv(n, .fixed2arr, to)
+        return n
+    if fk == .tuple and tk == .tuple and tuple_lit_fits(n, to):
+        loop i in [0..nkids(n)): coerce(kid(n, i), targ(to, i))
+        nodes[n].type = i32(to)
+        clear_flag(n, NF_LITERAL)
         return n
     if fk == .array and tk == .array and opt_of(int(types[to].elem), int(types[from].elem)):
         # a T[] where a T?[] is expected: a copy of it, its elements as optionals
@@ -1082,6 +1097,7 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
         loop i in [0..nkids(a)):
             if not can_coerce(kid(a, i), ntype(kid(a, i)), et): return -1
         return 1
+    if nodes[a].kind == .tuple and types[fp].kind == .tuple and not has_var(fp) and not type_eq(fp, ntype(a)) and tuple_lit_fits(a, fp): return 1
     r = match_type(pat, ntype(a), binds, 0)
     if r < 0 and types[fp].kind == .array and is_nd(ntype(a)):
         # a 1-D T[,] (a row, a column) for a T[] parameter
@@ -4314,6 +4330,9 @@ check_vec_binary = (n: int, op: Tok, ta: int, tb: int) -> int:
         nodes[n].aux = 1
         nodes[n].type = i32(T_BOOL)
         return T_BOOL
+    if op == .lt or op == .gt or op == .le or op == .ge:
+        # (a heap of (dist, ivec2) pairs: tuples compare element by element)
+        fatal(nodes[n].pos, "operator {tok_text(op)} is not defined for vectors, which have no order: compare a component, `a.x {tok_text(op)} b.x`, or `length(a) {tok_text(op)} length(b)`; to sort or keep in a heap pairs that hold one, put its components in the tuple, `(d, p.x, p.y)`")
     if op != .plus and op != .minus and op != .star and op != .slash: fatal(nodes[n].pos, "operator {tok_text(op)} is not defined for vectors")
     if is_vec(ta) and is_vec(tb):
         if ta == T_MAT4 and tb == T_MAT4:
