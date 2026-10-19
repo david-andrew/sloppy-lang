@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.26.0
 
 - In a function, `x = v` makes `x` the function's own variable unless the function says
   `global x`, as in Python, so a helper's `count = 0` stays its own whatever globals the file
@@ -85,17 +85,14 @@
   already.
 - `http.read_json(r, into)` sets the fields the body has and keeps the others as they were (a
   PATCH), where it replaced `into` with a new value, the fields not in the body at their defaults;
-  a body that does not read leaves `into` as it was. lib/http.jo's docs (and START.md's) say that
-  handlers run one at a time, changing the program's variables with no locks, and how to try a
-  server from its own program (fetch_start, then http.answer() until the answer has come).
+  a body that does not read leaves `into` as it was.
 - parse_args' `--help` leaves out an option's name at the start of its field's comment (`#
   --words, or -w: count words too` shows as `-w, --words   count words too`, where the name came
   twice), and START.md's example no longer writes it there.
-- START.md: a "Coming from Go" table: goroutines and channels for I/O (fetch_start, fetch_result
-  and net.wait, or fetch_all), for the cores (parallel_map), mutexes (not needed: what the race
-  checker allows), select, timeouts and cancelling, shutdown, errors as values (`?`, `error
-  struct`, `void | E`), defer, httptest, go test, small static binaries and cross-compiling (each
-  target's `-o`).
+- START.md: a "Coming from Go" table: goroutines, channels and select (tasks), for the cores
+  (parallel_map), mutexes (not needed), timeouts and cancelling, shutdown, errors as values (`?`,
+  `error struct`, `void | E`), defer, httptest, go test, small static binaries and
+  cross-compiling (each target's `-o`).
 
 ## 0.25.1
 
