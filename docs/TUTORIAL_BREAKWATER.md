@@ -39,6 +39,7 @@ eye = () -> vec3: pos + vec3(0, EYE, 0)
 aim = () -> vec3: look_dir(yaw, pitch)
 
 update = (dt: f64):
+    global pitch
     # a click hands the mouse to the game: then moving it turns the view
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
@@ -86,6 +87,10 @@ mouse back; click again to look.)
 `input_axis()` is W A S D (or the arrows, or a gamepad's stick) as a 2D vector with y pointing down
 the screen, so W is y = -1. Walking turns it the way you face: forward is `look_dir(yaw, 0.0)`
 along the ground, and right is the same a quarter turn clockwise.
+
+`global pitch` says that `pitch = ...` in `update` changes the variable at the top of the file;
+without it, a function's `x = ...` makes a variable of its own. `yaw -= ...` and `pos += ...`
+change what is there, and need no `global`.
 
 ## 2. Cover that stops you, and jumping onto it
 
@@ -156,6 +161,7 @@ eye = () -> vec3: pos + vec3(0, EYE, 0)
 aim = () -> vec3: look_dir(yaw, pitch)
 
 update = (dt: f64):
+    global grounded, pitch, pos
     # a click hands the mouse to the game: then moving it turns the view
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
@@ -348,6 +354,7 @@ tracers: Tracer[]
 sparks: Spark[]
 
 fire = ():
+    global kick, wait
     ammo -= 1
     wait = GAP
     kick = 0.06
@@ -361,6 +368,7 @@ fire = ():
         loop i in 0..3: sparks.push(Spark(stop, scatter(vec3(0, 1, 0), 1.0) * 3.0, 0.3))
 
 step_player = (dt: f64):
+    global ammo, grounded, kick, pitch, pos, reloading
     # a click hands the mouse to the game: then moving it turns the view
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
@@ -396,6 +404,7 @@ step_player = (dt: f64):
     if mouse_down(.left) and is_mouse_locked() and wait <= 0.0 and reloading <= 0.0 and ammo > 0: fire()
 
 update = (dt: f64):
+    global sparks, tracers
     step_player(dt)
     loop mut t in tracers: t.life -= dt
     tracers = tracers.filter((t): t.life > 0.0)
@@ -410,6 +419,7 @@ rifle = Mesh()
 
 # the rifle, from boxes (its barrel along -z)
 make_meshes = ():
+    global rifle
     r: Vertex3D[]
     add_box(r, vec3(0, 0, 0), vec3(0.07, 0.09, 0.3), rgb(0.85, 0.85, 0.82))
     add_box(r, vec3(0, 0.01, -0.28), vec3(0.03, 0.03, 0.28), rgb(0.15, 0.15, 0.17))
@@ -624,6 +634,7 @@ burst = (at: vec3, n: int):
     loop i in 0..n: sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
+    global kick, wait
     ammo -= 1
     wait = GAP
     kick = 0.06
@@ -648,6 +659,7 @@ fire = ():
         loop i in 0..3: sparks.push(Spark(stop, scatter(vec3(0, 1, 0), 1.0) * 3.0, 0.3))
 
 step_drones = (dt: f64):
+    global drones
     # (all down: four more, from the far side)
     if drones.len() == 0:
         loop i in 0..4: drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, strafe = random_int(0, 2) * 2 - 1))
@@ -674,6 +686,7 @@ step_drones = (dt: f64):
     drones = drones.filter((d): d.health > 0.0)
 
 step_player = (dt: f64):
+    global ammo, grounded, kick, pitch, pos, reloading
     # a click hands the mouse to the game: then moving it turns the view
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
@@ -709,6 +722,7 @@ step_player = (dt: f64):
     if mouse_down(.left) and is_mouse_locked() and wait <= 0.0 and reloading <= 0.0 and ammo > 0: fire()
 
 update = (dt: f64):
+    global sparks, tracers
     step_player(dt)
     step_drones(dt)
     loop mut t in tracers: t.life -= dt
@@ -726,6 +740,7 @@ eye_mesh = sphere_mesh(0.14, 12, 8)
 
 # a drone: a ball with a band and two fins; the rifle, from boxes (its barrel along -z)
 make_meshes = ():
+    global drone_mesh, rifle
     v: Vertex3D[]
     add_sphere(v, vec3(0, 0, 0), DRONE_R, rgb(0.8, 0.8, 0.82), 16, 10)
     add_cylinder(v, vec3(0, -0.08, 0), 0.53, 0.16, rgb(0.9, 0.45, 0.1), 20)
@@ -968,6 +983,7 @@ bolts: Bolt[]
 score = 0
 
 new_run = ():
+    global ammo, bolts, drones, health, pitch, pos, reloading, score, shield, vel, yaw
     pos = vec3(0, 0, 12)
     vel = vec3(0, 0, 0)
     yaw = 0
@@ -982,6 +998,7 @@ new_run = ():
 
 # the shield takes hits first; then health; with none left, start again
 hurt = (dmg: f64):
+    global calm, shield
     calm = 0
     left = dmg - shield
     shield = max(0.0, shield - dmg)
@@ -992,6 +1009,7 @@ burst = (at: vec3, n: int):
     loop i in 0..n: sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
+    global kick, wait
     ammo -= 1
     wait = GAP
     kick = 0.06
@@ -1016,6 +1034,7 @@ fire = ():
         loop i in 0..3: sparks.push(Spark(stop, scatter(vec3(0, 1, 0), 1.0) * 3.0, 0.3))
 
 step_drones = (dt: f64):
+    global bolts, drones
     # (all down: four more, from the far side)
     if drones.len() == 0:
         loop i in 0..4: drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = random_int(0, 2) * 2 - 1))
@@ -1071,6 +1090,7 @@ step_drones = (dt: f64):
     if taken > 0.0: hurt(taken)
 
 step_player = (dt: f64):
+    global ammo, grounded, kick, pitch, pos, reloading, shield
     # a click hands the mouse to the game: then moving it turns the view
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
@@ -1109,6 +1129,7 @@ step_player = (dt: f64):
     if mouse_down(.left) and is_mouse_locked() and wait <= 0.0 and reloading <= 0.0 and ammo > 0: fire()
 
 update = (dt: f64):
+    global sparks, tracers
     step_player(dt)
     step_drones(dt)
     loop mut t in tracers: t.life -= dt
@@ -1126,6 +1147,7 @@ eye_mesh = sphere_mesh(0.14, 12, 8)
 
 # a drone: a ball with a band and two fins; the rifle, from boxes (its barrel along -z)
 make_meshes = ():
+    global drone_mesh, rifle
     v: Vertex3D[]
     add_sphere(v, vec3(0, 0, 0), DRONE_R, rgb(0.8, 0.8, 0.82), 16, 10)
     add_cylinder(v, vec3(0, -0.08, 0), 0.53, 0.16, rgb(0.9, 0.45, 0.1), 20)
@@ -1382,6 +1404,7 @@ bolts: Bolt[]
 score = 0
 
 new_run = ():
+    global ammo, bolts, drones, health, held, pitch, pos, reloading, score, shield, vel, yaw
     pos = vec3(0, 0, 12)
     vel = vec3(0, 0, 0)
     yaw = 0
@@ -1397,6 +1420,7 @@ new_run = ():
 
 # the shield takes hits first; then health; with none left, start again
 hurt = (dmg: f64):
+    global calm, shield
     calm = 0
     left = dmg - shield
     shield = max(0.0, shield - dmg)
@@ -1407,6 +1431,7 @@ burst = (at: vec3, n: int):
     loop i in 0..n: sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
+    global kick, wait
     g = guns[held]
     ammo[held] -= 1
     wait = g.gap
@@ -1432,6 +1457,7 @@ fire = ():
         else if far < 100.0: sparks.push(Spark(stop, scatter(vec3(0, 1, 0), 1.0) * 3.0, 0.3))
 
 step_drones = (dt: f64):
+    global bolts, drones
     # (all down: four more, from the far side)
     if drones.len() == 0:
         loop i in 0..4: drones.push(Drone(vec3(random(-HALF_X + 2.0, HALF_X - 2.0), 3, -HALF_Z + 1.0), vec3(0, 0, 0), 30, random(1.0, 3.0), strafe = random_int(0, 2) * 2 - 1))
@@ -1487,6 +1513,7 @@ step_drones = (dt: f64):
     if taken > 0.0: hurt(taken)
 
 step_player = (dt: f64):
+    global grounded, held, kick, pitch, pos, reloading, shield, wait
     # a click hands the mouse to the game: then moving it turns the view
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
@@ -1537,6 +1564,7 @@ step_player = (dt: f64):
     if trigger and is_mouse_locked() and wait <= 0.0 and reloading <= 0.0 and ammo[held] > 0: fire()
 
 update = (dt: f64):
+    global sparks, tracers
     step_player(dt)
     step_drones(dt)
     loop mut t in tracers: t.life -= dt
@@ -1554,6 +1582,7 @@ eye_mesh = sphere_mesh(0.14, 12, 8)
 
 # a drone: a ball with a band and two fins; the weapons, from boxes (their barrels along -z)
 make_meshes = ():
+    global drone_mesh, gun_meshes
     v: Vertex3D[]
     add_sphere(v, vec3(0, 0, 0), DRONE_R, rgb(0.8, 0.8, 0.82), 16, 10)
     add_cylinder(v, vec3(0, -0.08, 0), 0.53, 0.16, rgb(0.9, 0.45, 0.1), 20)
@@ -1819,6 +1848,7 @@ score = 0
 best = to_int(load_data("best") ?? "0") ?? 0
 
 new_run = ():
+    global ammo, bolts, drones, health, held, pitch, pos, reloading, score, shield, to_spawn, vel, wave, yaw
     pos = vec3(0, 0, 12)
     vel = vec3(0, 0, 0)
     yaw = 0
@@ -1836,6 +1866,7 @@ new_run = ():
 
 # the shield takes hits first; then health; with none left, the run is over
 hurt = (dmg: f64):
+    global best, calm, screen, shield
     calm = 0
     left = dmg - shield
     shield = max(0.0, shield - dmg)
@@ -1851,6 +1882,7 @@ burst = (at: vec3, n: int):
     loop i in 0..n: sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
+    global kick, wait
     g = guns[held]
     ammo[held] -= 1
     wait = g.gap
@@ -1876,6 +1908,7 @@ fire = ():
         else if far < 100.0: sparks.push(Spark(stop, scatter(vec3(0, 1, 0), 1.0) * 3.0, 0.3))
 
 step_drones = (dt: f64):
+    global bolts, drones, spawn_wait, to_spawn
     # a wave: its drones arrive one by one at the far side, more and tougher each wave; the
     # next wave once all are down
     if to_spawn == 0 and drones.len() == 0:
@@ -1939,6 +1972,7 @@ step_drones = (dt: f64):
     if taken > 0.0: hurt(taken)
 
 step_player = (dt: f64):
+    global grounded, held, kick, pitch, pos, reloading, shield, wait
     # a click hands the mouse to the game: then moving it turns the view
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
@@ -1989,6 +2023,7 @@ step_player = (dt: f64):
     if trigger and is_mouse_locked() and wait <= 0.0 and reloading <= 0.0 and ammo[held] > 0: fire()
 
 update = (dt: f64):
+    global screen, sparks, tracers
     loop mut t in tracers: t.life -= dt
     tracers = tracers.filter((t): t.life > 0.0)
     loop mut s in sparks:
@@ -2012,6 +2047,7 @@ eye_mesh = sphere_mesh(0.14, 12, 8)
 
 # a drone: a ball with a band and two fins; the weapons, from boxes (their barrels along -z)
 make_meshes = ():
+    global drone_mesh, gun_meshes
     v: Vertex3D[]
     add_sphere(v, vec3(0, 0, 0), DRONE_R, rgb(0.8, 0.8, 0.82), 16, 10)
     add_cylinder(v, vec3(0, -0.08, 0), 0.53, 0.16, rgb(0.9, 0.45, 0.1), 20)
@@ -2307,6 +2343,7 @@ snd_boom = mix([tone(90.0, 0.5, .noise, 0.6, 0.002, 0.45, 0.4), tone(60.0, 0.4, 
 snd_hurt = tone(200.0, 0.2, .saw, 0.3, 0.002, 0.18, 0.6)
 
 new_run = ():
+    global ammo, bolts, drones, health, held, pitch, pos, reloading, score, shield, to_spawn, vel, wave, yaw
     pos = vec3(0, 0, 12)
     vel = vec3(0, 0, 0)
     yaw = 0
@@ -2324,6 +2361,7 @@ new_run = ():
 
 # the shield takes hits first; then health; with none left, the run is over
 hurt = (dmg: f64):
+    global best, calm, screen, shield
     calm = 0
     play(snd_hurt, 0.5)
     left = dmg - shield
@@ -2340,6 +2378,7 @@ burst = (at: vec3, n: int):
     loop i in 0..n: sparks.push(Spark(at, scatter(vec3(0, 1, 0), 2.0) * random(3.0, 9.0), random(0.3, 0.7)))
 
 fire = ():
+    global hit_mark, kick, wait
     g = guns[held]
     ammo[held] -= 1
     wait = g.gap
@@ -2372,6 +2411,7 @@ fire = ():
     else: play(snd_shotgun, 0.7)
 
 step_drones = (dt: f64):
+    global bolts, drones, spawn_wait, to_spawn
     # a wave: its drones arrive one by one at the far side, more and tougher each wave; the
     # next wave once all are down
     if to_spawn == 0 and drones.len() == 0:
@@ -2437,6 +2477,7 @@ step_drones = (dt: f64):
     if taken > 0.0: hurt(taken)
 
 step_player = (dt: f64):
+    global grounded, held, kick, pitch, pos, reloading, shield, wait
     # a click hands the mouse to the game: then moving it turns the view
     if mouse_pressed(.left) and not is_mouse_locked(): mouse_lock()
     if is_mouse_locked():
@@ -2490,6 +2531,7 @@ step_player = (dt: f64):
     if trigger and is_mouse_locked() and wait <= 0.0 and reloading <= 0.0 and ammo[held] > 0: fire()
 
 update = (dt: f64):
+    global screen, sparks, tracers
     loop mut t in tracers: t.life -= dt
     tracers = tracers.filter((t): t.life > 0.0)
     loop mut s in sparks:
@@ -2513,6 +2555,7 @@ eye_mesh = sphere_mesh(0.14, 12, 8)
 
 # a drone: a ball with a band and two fins; the weapons, from boxes (their barrels along -z)
 make_meshes = ():
+    global drone_mesh, gun_meshes
     v: Vertex3D[]
     add_sphere(v, vec3(0, 0, 0), DRONE_R, rgb(0.8, 0.8, 0.82), 16, 10)
     add_cylinder(v, vec3(0, -0.08, 0), 0.53, 0.16, rgb(0.9, 0.45, 0.1), 20)

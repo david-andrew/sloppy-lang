@@ -858,6 +858,14 @@ static bool is_assign_op(int k) {
 
 static Node *parse_simple_stmt(void) {
   Pos pos = cur_pos();
+  /* global a, b: which globals the function changes (the bootstrap compiler assigns a global of
+     that name anyway: the compiler's own code makes no variable of a global's name) */
+  if (tok_is(&P->t[P->i], "global") && P->t[P->i + 1].kind == TK_IDENT) {
+    next();
+    next();
+    while (pk() == TK_COMMA) { next(); next(); }
+    return new_node(N_BLOCK, pos);
+  }
   switch (pk()) {
   case TK_RETURN: {
     next();

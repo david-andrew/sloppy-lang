@@ -591,9 +591,9 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `math.gcd`, `math.isqrt`, `pow(b, e, m)` | `gcd(a, b)`, `isqrt(n)`, `pow_mod(b, e, m)`, `inv_mod(a, m)` |
 | `" ".join(map(str, xs))`, `print(x, file=sys.stderr)` | `xs.join(" ")`, `eprint(x)` |
 | `None`, `if x is None:` | `none`, `if x == none:`; `if let v = x:` gets what is inside |
-| `match s:` with `case Rect(w, h) if w == h:`, `case n if n > 100:` | `match s:` with `.rect(w, h) if w == h:` (a variant of an enum, its fields by position), `_ if s > 100:`; `if let .rect(w, h) = s:` for one variant |
+| `match s:` with `case Rect(w, h) if w == h:`, `case n if n > 100:` | `match s:` with `.rect(w, h) if w == h:` (a variant of an enum, its fields by position), `_ as n if n > 100:`; `if let .rect(w, h) = s:` for one variant |
 | `t[0]` (a tuple) | `t.0` |
-| `x = 1` in a function makes a local | `x = 1` in a function changes a global named `x` (one declared above it); `let x = 1` makes a local of that name |
+| `global x` before `x = 1` or `x += 1` in a function | `global x` before `x = 1`; `x += 1`, `x.f = 1` and `xs[i] = 1` change the global without it |
 | `max(xs, key=len)`, `sorted(xs, key=..., reverse=True)` | `max(xs, key = len)`, `sorted(xs, key = (x): x.age, descending = true)` |
 | `try: ... except: ...` | a function gives back what went wrong as a value (`-> Config \| JsonError`), checked with `if r is JsonError:`, or passed on to the caller with `?` (`cfg = load(p)?`) |
 | `def test_x(): assert ...` (pytest) | `test "x": assert(...)`, run with `sloppy test file.jo` |

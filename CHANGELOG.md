@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- In a function, `x = v` makes `x` the function's own variable unless the function says
+  `global x`, as in Python, so a helper's `count = 0` stays its own whatever globals the file
+  has. `x += 1`, `x.f = v` and `xs[i] = v` still change the global (they cannot make a variable).
+  Reading the global `x` and then giving `x` a value in the same function, or a variable named as
+  a global that is never read, is an error that says to write `global x`. Lambdas in top-level
+  code change the globals around them; a lambda in a function follows that function. The rule
+  that a function may not assign a global declared below it is gone (it cannot now).
 - `not` is for bools: on an integer it is an error that suggests `x == 0` or `~x` (it flipped the
   bits before).
 - `xs.remove_at(i)` takes out the element at index i (what `xs.remove(i)` did); `xs.remove(x)`

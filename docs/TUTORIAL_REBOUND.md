@@ -75,6 +75,7 @@ wrap = (a: f64) -> f64: mod(a + PI, TAU) - PI
 shielded = (a: f64) -> bool: abs(wrap(a - shield)) <= SHIELD_HALF
 
 update = (dt: f64):
+    global bolts, shield
     if key_down(.left) or key_down(.a): shield = wrap(shield - TURN * dt)
     if key_down(.right) or key_down(.d): shield = wrap(shield + TURN * dt)
     loop mut t in turrets:
@@ -114,6 +115,10 @@ A `struct` is a kind of value with named fields; `turrets: Turret[]` is an array
 standing for each element itself, so changing `t.cool` changes the turret in the array (plain
 `loop t in turrets` gives copies to read). `bolts.filter((b): b.alive)` keeps the bolts that are
 still alive: `(b): b.alive` is a small function, called for each bolt.
+
+`global bolts, shield` at the start of `update` says that `shield = ...` and `bolts = ...` change
+the variables at the top of the file; without it, a function's `x = ...` makes a variable of its
+own. `core -= 1` and `t.cool -= dt` change what is there, and need no `global`.
 
 Two helpers do the geometry. `polar(a, r)` is the point at angle `a`, distance `r` from the core.
 `wrap` turns any angle into one from `-PI` to `PI`, so `abs(wrap(a - shield))` is how far apart
@@ -162,6 +167,7 @@ wrap = (a: f64) -> f64: mod(a + PI, TAU) - PI
 shielded = (a: f64) -> bool: abs(wrap(a - shield)) <= SHIELD_HALF
 
 update = (dt: f64):
+    global bolts, shield, spawn, turrets
     if key_down(.left) or key_down(.a): shield = wrap(shield - TURN * dt)
     if key_down(.right) or key_down(.d): shield = wrap(shield + TURN * dt)
     # a new turret every few seconds
@@ -284,6 +290,7 @@ catch = (b: mut Bolt, off: f64):
     streak += 1
 
 update = (dt: f64):
+    global bolts, shield, spawn, streak, turrets
     if key_down(.left) or key_down(.a): shield = wrap(shield - TURN * dt)
     if key_down(.right) or key_down(.d): shield = wrap(shield + TURN * dt)
     # a new turret every few seconds
@@ -430,6 +437,7 @@ catch = (b: mut Bolt, off: f64):
     emit(sparks, b.pos, 12, 250.0, rgba(0.5, 1, 1, 1), 0.3, 4.0)
 
 destroy = (t: mut Turret, depth: int, bank: bool):
+    global shake
     t.alive = false
     points = 100 * mult() * (depth + 1)
     if bank: points *= 2
@@ -439,6 +447,7 @@ destroy = (t: mut Turret, depth: int, bank: bool):
     shake = max(shake, 8.0 + 3.0 * f64(depth))
 
 update = (dt: f64):
+    global blasts, bolts, shake, shield, spawn, streak, turrets
     update(sparks, dt)
     shake = max(shake - dt * 40.0, 0.0)
     if key_down(.left) or key_down(.a): shield = wrap(shield - TURN * dt)
@@ -582,6 +591,7 @@ wrap = (a: f64) -> f64: mod(a + PI, TAU) - PI
 mult = () -> int: min(1 + streak / 4, 8)
 
 start = ():
+    global core, score, screen, shield, spawn, streak, time
     turrets.clear()
     bolts.clear()
     blasts.clear()
@@ -629,6 +639,7 @@ catch = (b: mut Bolt, off: f64):
     emit(sparks, b.pos, 12, 250.0, rgba(0.5, 1, 1, 1), 0.3, 4.0)
 
 destroy = (t: mut Turret, depth: int, bank: bool):
+    global shake
     t.alive = false
     points = 100 * mult() * (depth + 1)
     if bank: points *= 2
@@ -638,6 +649,7 @@ destroy = (t: mut Turret, depth: int, bank: bool):
     shake = max(shake, 8.0 + 3.0 * f64(depth))
 
 hit_core = ():
+    global best, screen, shake, streak
     core -= 1
     streak = 0
     shake = 25.0
@@ -649,6 +661,7 @@ hit_core = ():
         screen = .over
 
 update = (dt: f64):
+    global blasts, bolts, shake, shield, spawn, turrets
     update(sparks, dt)
     shake = max(shake - dt * 40.0, 0.0)
     if screen != .play: return
@@ -812,6 +825,7 @@ mult = () -> int: min(1 + streak / 4, 8)
 half = () -> f64: SHIELD_HALF * (1.0 + 0.3 * f64(wide))
 
 start = ():
+    global bigger, core, kills, next_upgrade, score, screen, shield, spawn, streak, time, twin, wide
     turrets.clear()
     bolts.clear()
     blasts.clear()
@@ -867,6 +881,7 @@ catch = (b: mut Bolt, off: f64):
     emit(sparks, b.pos, 12, 250.0, rgba(0.5, 1, 1, 1), 0.3, 4.0)
 
 destroy = (t: mut Turret, depth: int, bank: bool):
+    global shake
     t.alive = false
     kills += 1
     points = 100 * mult() * (depth + 1)
@@ -877,6 +892,7 @@ destroy = (t: mut Turret, depth: int, bank: bool):
     shake = max(shake, 8.0 + 3.0 * f64(depth))
 
 hit_core = ():
+    global best, screen, shake, streak
     core -= 1
     streak = 0
     shake = 25.0
@@ -888,6 +904,7 @@ hit_core = ():
         screen = .over
 
 update = (dt: f64):
+    global blasts, bolts, screen, shake, shield, spawn, turrets
     update(sparks, dt)
     shake = max(shake - dt * 40.0, 0.0)
     if screen != .play: return
@@ -944,6 +961,7 @@ draw_shield = (a: f64):
     arc(CENTER, ORBIT_R, 9, a - half(), a + half(), rgb(0.35, 0.95, 1))
 
 draw = ():
+    global screen, twin
     clear(rgb(0.01, 0.02, 0.05))
     push_transform()
     translate(random(-shake, shake), random(-shake, shake))
@@ -1078,6 +1096,7 @@ mult = () -> int: min(1 + streak / 4, 8)
 half = () -> f64: SHIELD_HALF * (1.0 + 0.3 * f64(wide))
 
 start = ():
+    global bigger, core, kills, next_upgrade, score, screen, shield, spawn, streak, time, twin, wide
     turrets.clear()
     bolts.clear()
     blasts.clear()
@@ -1134,6 +1153,7 @@ catch = (b: mut Bolt, off: f64):
     emit(sparks, b.pos, 12, 250.0, rgba(0.5, 1, 1, 1), 0.3, 4.0)
 
 destroy = (t: mut Turret, depth: int, bank: bool):
+    global shake
     t.alive = false
     kills += 1
     points = 100 * mult() * (depth + 1)
@@ -1145,6 +1165,7 @@ destroy = (t: mut Turret, depth: int, bank: bool):
     play(snd_boom, 0.5, pitch = 1.0 + 0.15 * f64(depth))
 
 hit_core = ():
+    global best, screen, shake, streak
     core -= 1
     streak = 0
     shake = 25.0
@@ -1157,6 +1178,7 @@ hit_core = ():
         screen = .over
 
 update = (dt: f64):
+    global blasts, bolts, screen, shake, shield, spawn, turrets
     update(sparks, dt)
     shake = max(shake - dt * 40.0, 0.0)
     if screen != .play: return
@@ -1216,6 +1238,7 @@ draw_shield = (a: f64):
     arc(CENTER, ORBIT_R, 9, a - half(), a + half(), rgb(0.35, 0.95, 1))
 
 draw = ():
+    global screen, twin
     clear(rgb(0.01, 0.02, 0.05))
     push_transform()
     translate(random(-shake, shake), random(-shake, shake))

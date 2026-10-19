@@ -263,6 +263,7 @@ broken = (x: int) -> int:
     x + "no"
 
 update = (dt: f64):
+    global mode
     loop s in ships:
         BODY
 '''

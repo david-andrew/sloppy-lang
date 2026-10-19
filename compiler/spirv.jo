@@ -125,18 +125,21 @@ sv_val = (op: int, ty: int, args: int[]) -> int:
     id
 
 sv_begin = (label: int):
+    global sv_dead, sv_label
     sv_ins(sv_body, 248, [label])
     sv_label = label
     sv_dead = false
 
 # end the block with a branch (unless it has ended); returns whether it branched
 sv_branch = (target: int) -> bool:
+    global sv_dead
     if sv_dead: return false
     sv_ins(sv_body, 249, [target])
     sv_dead = true
     true
 
 sv_cond_branch = (c: int, a: int, b: int):
+    global sv_dead
     sv_code(250, [c, a, b])
     sv_dead = true
 
@@ -266,6 +269,7 @@ sv_pc_types = () -> int[]:
     [r, r, r, sv_i32(), sv_i32(), sv_f32(), sv_i32()]
 
 sv_pc_var = () -> int:
+    global sv_pc
     if sv_pc != 0: return sv_pc
     ms = sv_pc_types()
     st = sv_type_key("pcst", 30, ms)
@@ -286,10 +290,12 @@ sv_builtin_var = (ty: int, sc: int, builtin: int) -> int:
     v
 
 sv_vertex_id = () -> int:
+    global sv_vid
     if sv_vid == 0: sv_vid = sv_builtin_var(sv_i32(), SC_INPUT, 42)
     sv_load(sv_i32(), sv_vid)
 
 sv_instance_id = () -> int:
+    global sv_iid
     if sv_iid == 0: sv_iid = sv_builtin_var(sv_i32(), SC_INPUT, 43)
     sv_load(sv_i32(), sv_iid)
 
@@ -298,6 +304,7 @@ sv_sampled_type = () -> int: sv_type_key("simg2d", 27, [sv_image_type()])
 
 # the texture with index t (a u32), as a sampled image
 sv_texture = (t: int) -> int:
+    global sv_textures
     si = sv_sampled_type()
     if sv_textures == 0:
         arr = sv_type_key("texarr", 29, [si])
@@ -468,6 +475,7 @@ sv_finish_fn = (head: int[]):
     sv_ins(sv_fns, 56, [])
 
 sv_start_fn = ():
+    global sv_body, sv_dead, sv_loops, sv_lref, sv_lvar, sv_vars
     sv_body = []
     sv_vars = []
     sv_loops = []
@@ -478,6 +486,7 @@ sv_start_fn = ():
 
 # translate a function (the ones it calls are translated later: see sv_pending)
 sv_function = (f: int):
+    global sv_dead
     decl = int(fns[f].decl)
     if decl == 0 or (nodes[decl].kind != .fn_ and nodes[decl].kind != .lambda): sv_err(0, "only named functions can be used in shaders")
     if fns[f].caps.len() > 0: sv_err(nodes[decl].pos, "a function that captures variables cannot run on the GPU")
@@ -525,6 +534,7 @@ sv_stmts = (b: int):
     loop i in [0..nkids(b)): sv_stmt(kid(b, i))
 
 sv_stmt = (s: int):
+    global sv_dead
     k = nodes[s].kind
     if k == .vardecl:
         if nodes[s].nlist > 0: sv_err(nodes[s].pos, "tuple destructuring is not supported in shaders")
@@ -1189,6 +1199,7 @@ sv_std_ops: {str: (int, int)} = {
 }
 
 sv_call = (e: int) -> int:
+    global sv_dead
     t = prune(ntype(e))
     pos = nodes[e].pos
     aux = int(nodes[e].aux)
@@ -1548,6 +1559,7 @@ sv_subgroup = (e: int, nm: str) -> int:
 
 # ---------------- the stages ----------------
 sv_reset = (stage: str):
+    global sv_bound, sv_cache, sv_caps, sv_dec, sv_fn_ids, sv_fns, sv_glob, sv_group, sv_iface, sv_iid, sv_pc, sv_pending, sv_stage, sv_std, sv_textures, sv_vid
     sv_bound = 0
     sv_caps = []
     sv_dec = []
@@ -1665,6 +1677,7 @@ sv_rebuild = (t0: int, path: int[], leaves: (int[], int)[], vals: int[], pos: in
 # the vertex stage: read this vertex (and instance), call the vertex function, write the clip
 # position (in Vulkan's conventions) and the varyings
 sv_vertex = (vsf: int) -> str:
+    global sv_dead, sv_utype
     sv_reset("vertex")
     pos = nodes[int(fns[vsf].decl)].pos
     np = fns[vsf].ptypes.len()
@@ -1715,6 +1728,7 @@ sv_vertex = (vsf: int) -> str:
 # the fragment stage: the varyings (and the window position, as OpenGL has it) into the fragment
 # function, its color out
 sv_fragment = (fsf: int) -> str:
+    global sv_dead, sv_utype
     sv_reset("fragment")
     pos = nodes[int(fns[fsf].decl)].pos
     np = fns[fsf].ptypes.len()
@@ -1756,6 +1770,7 @@ sv_dumped = 0
 # returns (vertex module, fragment module). With SLOPPY_SPIRV_DUMP=dir, each is also written to
 # dir/<n>.vert.spv and dir/<n>.frag.spv (for spirv-val: tools/spirvtest.py)
 spirv_build = (vsf: int, fsf: int) -> (str, str):
+    global sv_translated
     sv_translated = {}
     vs = sv_vertex(vsf)
     sv_translated = {}
@@ -1806,6 +1821,7 @@ sv_invocation = () -> int:
     sv_val(128, i, [gx, sv_val(132, i, [gy, sv_val(132, i, [nx, sv_ci(SV_KERNEL_GROUP)])])])
 
 spirv_kernel = (f: int, desc: str) -> str:
+    global sv_dead, sv_translated, sv_utype
     sv_translated = {}
     sv_reset("kernel")
     sv_utype = 0
@@ -1894,6 +1910,7 @@ spirv_kernel = (f: int, desc: str) -> str:
 # constants where the strides are; a 3D grid's (f(id: ivec3, params)) in groups of 4 x 4 x 4,
 # its depth in the push constants' padding.
 spirv_compute = (f: int) -> str:
+    global sv_dead, sv_group, sv_translated, sv_utype
     sv_translated = {}
     sv_reset("compute")
     sv_utype = prune(int(fns[f].ptypes[1]))

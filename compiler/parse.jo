@@ -229,12 +229,12 @@ habit = (i: int, want: Tok):
         else if pw == "int" or pw == "long": st = "int"
         else if pw == "char": st = "u8"
         if pw != "void": fatal(at, "a variable is written `{nm} = ...`, or with its type after the name: `{nm}: {st} = ...`")
-    if pw == "delete" or pw == "del": fatal(at, "`xs.remove(i)` takes an element out of an array, `m.remove(k)` a key out of a map")
+    if pw == "delete" or pw == "del": fatal(at, "`xs.remove_at(i)` takes the element at i out of an array, `xs.remove(x)` one equal to x, `m.remove(k)` a key out of a map")
     if pw == "typeof" or (k == .ident and tok_src(i) == "instanceof"): fatal(at, "`x is T` asks which member of a union x holds (the other types are known when compiling)")
     value_start = k == .ident or k == .int_lit or k == .float_lit or k == .str_lit
     # (Python's statements that are functions or nothing here)
     if pw == "with" and value_start: fatal(at, "there is no `with`: `text = read_file(path)` (a `str?`: none when it cannot be read), `write_file(path, s)`, `append_file(path, s)`")
-    if (pw == "global" or pw == "nonlocal") and k == .ident: fatal(at, "no `{pw}` is needed: a function that gives a top-level variable a value changes it (`let x = ...` makes one of its own)")
+    if pw == "nonlocal" and k == .ident: fatal(at, "no `nonlocal` is needed: a function's lambdas change its variables by name (for a global, `global x`)")
     if pw == "assert" and value_start: fatal(at, "assert is a function: `assert(x == 2, \"why\")`")
     if pw == "print" and value_start: fatal(at, "print is a function: `print(x)`")
     # (Scratch's blocks: set score to 0, change score by 1)
@@ -582,6 +582,7 @@ __utf8_len1 = (t: str) -> bool:
     (b >= 0xc0 and b < 0xe0 and n == 2) or (b >= 0xe0 and b < 0xf0 and n == 3) or (b >= 0xf0 and n == 4)
 
 parse_string_token = (t: int) -> int:
+    global lx_base, p_base, p_file, p_src, ti, toks
     pos = toks[t].pos
     s = tok_src(t)
     flags = int(toks[t].flags)
@@ -718,6 +719,7 @@ p_pattern = false     # parsing a match arm's patterns: `as` names the value, it
 # (inside a call's parentheses `(x): ...` is a function again, in an if or loop header too:
 # `if xs.any((x): x > 2): ...`)
 parse_args = (call: int):
+    global p_header
     saved_h = p_header
     p_header = false
     parse_args_in(call)
@@ -758,6 +760,7 @@ p_index: int[]         # the arrays being indexed (for `end`)
 p_id_async = 0
 p_id_await = 0
 parse_primary = () -> int:
+    global p_id_async, p_id_await, p_matrix
     t = ti
     pos = cur_pos()
     k = pk()
@@ -1082,6 +1085,7 @@ is_fn_literal = (i: int) -> bool:
     true
 
 parse_postfix = (e0: int) -> int:
+    global p_matrix
     e = e0
     loop true:
         pos = cur_pos()
@@ -1523,6 +1527,7 @@ comp_count = 0
 
 # ({loop ...: key: value} is __map_of([loop ...: (key, value)]))
 parse_comprehension = (pos: int, map: bool = false) -> int:
+    global p_header, p_matrix
     clauses: (int, int)[]          # (1, loop node) or (2, condition)
     set_comp = false
     as_map = map
@@ -1623,6 +1628,7 @@ comp_ident = (name: int, pos: int) -> int:
 # an if inside an expression: f(if c: a else: b, x), where a branch on the same line ends at
 # a comma (a tuple there needs parentheses, as in a one-line function literal)
 parse_if_expr = () -> int:
+    global p_no_tuple
     saved = p_no_tuple
     p_no_tuple = true
     n = parse_if()
@@ -1630,6 +1636,7 @@ parse_if_expr = () -> int:
     n
 
 parse_if = () -> int:
+    global p_header, p_no_tuple, ti
     pos = cur_pos()
     expect(.kw_if, "")
     n = mk(.if_, pos)
@@ -1769,6 +1776,7 @@ parse_pattern = () -> int:
     l
 
 parse_match = () -> int:
+    global p_header, p_pattern
     pos = cur_pos()
     expect(.kw_match, "")
     m = mk(.match_, pos)
@@ -1922,6 +1930,7 @@ tuple_cond = (tp: int, mv: int, path: int[]) -> int:
     cond
 
 parse_params = (f: int):
+    global p_matrix
     expect(.lparen, "")
     ps: int[]
     saved_m = p_matrix
@@ -1942,6 +1951,7 @@ parse_params = (f: int):
 
 # (params) [-> R] : body   (a declaration if name != 0; extern functions have no body)
 parse_fn_literal = (kind: NK, name: int, pos: int) -> int:
+    global p_header, p_matrix, p_no_tuple
     f = mk(kind, pos)
     nodes[f].name = i32(name)
     lambda = kind == .lambda
@@ -2201,6 +2211,7 @@ parse_top_block = () -> int:
         if s != 0: items.push(s)
         add_flag(b, NF_TERMINATED)
         set_list(b, items)
+        when_globals(items)
         return b
     expect(.newline, "newline")
     if pk() != .indent: __no_block()
@@ -2213,9 +2224,21 @@ parse_top_block = () -> int:
     expect(.dedent, "end of block")
     add_flag(b, NF_TERMINATED)
     set_list(b, items)
+    when_globals(items)
     b
 
+# (the globals a top-level `when` block declares, for any target: a function's `global x` may
+# name one of another target's, which is then not there to change)
+when_global_names: {int: bool} = {}
+when_globals = (items: int[]):
+    global when_global_names
+    loop s in items:
+        k = nodes[s].kind
+        if k == .vardecl and nodes[s].name != 0: when_global_names[int(nodes[s].name)] = true
+        else if k == .assign and nodes[int(nodes[s].a)].kind == .ident: when_global_names[int(nodes[int(nodes[s].a)].name)] = true
+
 parse_when = () -> int:
+    global ti
     pos = cur_pos()
     expect(.kw_when, "")
     w = mk(.when_, pos)
@@ -2244,6 +2267,7 @@ parse_when = () -> int:
 # loop header: a condition, `x in xs`, `mut x in xs`, `k, v in m`, `let x = opt`, or
 # several joined by and/or; returns a while_, for_ or loopx node (body filled in by the caller)
 parse_loop_head = () -> int:
+    global p_header, ti
     pos = cur_pos()
     expect(.kw_loop, "")
     # (loop (k, v) in pairs: Python's and Rust's brackets around the names)
@@ -2745,6 +2769,17 @@ parse_stmt = () -> int:
         add_flag(s, NF_TERMINATED)
     else if k == .ident and pkn(1) == .colon and pkn(2) == .newline and tok_src(ti) == "select":
         s = parse_select()
+    else if k == .ident and pkn(1) == .ident and tok_src(ti) == "global":
+        # global a, b: the globals the function changes with `=`
+        advance()
+        s = mk(.global_, pos)
+        names: int[]
+        loop true:
+            v = mk(.ident, cur_pos())
+            nodes[v].name = i32(expect_ident("a global variable's name"))
+            names.push(v)
+            if not accept(.comma): break
+        set_list(s, names)
     else if k == .kw_const:
         advance()
         s = mk(.const_, pos)
@@ -2940,6 +2975,7 @@ sel_block = (stmts: int[], pos: int) -> int:
 
 struct_body = ""                # (the struct whose fields are being parsed)
 parse_struct = () -> int:
+    global struct_body
     pos = cur_pos()
     expect(.kw_struct, "")
     s = mk(.struct_, pos)
@@ -3078,6 +3114,7 @@ parse_module_spec = (d: int):
         nodes[d].name = i32(last)
 
 parse_toplevel = () -> int:
+    global p_top_decl, p_when_top
     pos = cur_pos()
     if is_keyword_tok(pk()) and pkn(1) == .assign: keyword_name_error(ti)
     attrs: int[]
@@ -3174,6 +3211,7 @@ parse_toplevel = () -> int:
 stop_after = ""
 
 parse_file = (file: int) -> int[]:
+    global id_cfn, id_end, id_error, id_from, id_soa, id_type, id_void, lx_lazy, p_file, p_src, ti, toks
     if id_void == 0:
         id_void = intern("void")
         id_cfn = intern("cfn")
@@ -3202,6 +3240,7 @@ parse_file = (file: int) -> int[]:
 
 # the body of function declaration d, parsed now if it was left for later
 ensure_body = (d: int):
+    global p_base, p_file, p_header, p_lazy, p_matrix, p_no_tuple, p_src, p_top_decl, ti, toks
     b = int(nodes[d].b)
     if b == 0 or not has_flag(b, NF_LAZY): return
     saved_toks = toks

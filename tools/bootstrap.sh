@@ -5,6 +5,9 @@ cd "$(dirname "$0")/.."
 make -s -C stage0
 mkdir -p bin
 export SLOPPY_LIB="$PWD/lib"
+# (the C bootstrap compiler changes the global x where a function writes `x = ...`; the compiler's
+# own code names its functions' variables apart from its globals, so both read it alike)
+export SLOPPY_NO_SHADOW=1
 ./stage0/sloppy0 compiler/main.jo -o /tmp/sloppy1
 /tmp/sloppy1 build compiler/main.jo -o /tmp/sloppy2
 /tmp/sloppy2 build compiler/main.jo -o /tmp/sloppy3

@@ -124,16 +124,34 @@ k, v = line.split("=", 1)   # another length panics)
 const SPEED = 300.0  # compile-time constant
 ```
 
-`x = value` declares `x` when no variable `x` is visible, and assigns otherwise: inside a
-function, assigning to a global changes the global. At the top level of a file, `x = 1`
-declares a global of that file, or assigns one the file `use`s (an `import`ed file's names are
-apart: `physics.x`).
+`x = value` declares `x` when no variable `x` is visible, and assigns otherwise. At the top
+level of a file, `x = 1` declares a global of that file, or assigns one the file `use`s (an
+`import`ed file's names are apart: `physics.x`).
 
-A function may not assign (with `=`) a global declared further down the file: a global added
-there later (`i`, `best`) would quietly change what the function does. `let x = ...` makes a
-variable of the function's own; declaring the global above the function says the function
-means it. `score += 1` (and the other compound assignments) cannot declare anything, so it
-always means the global, wherever in the file it is declared.
+In a function, `x = value` makes `x` a variable of the function's own unless the function says
+`global x`, as in Python, so a helper's `count = 0` or `best = 0` stays its own whatever globals
+the file has, now or later:
+
+```gdscript
+score = 0
+state = Screen.menu
+
+start = ():
+    global score, state          # these change the globals
+    score = 0
+    state = .playing
+
+hit = (): score += 1             # += (and -=, ...) changes the global: it cannot make a variable
+reset_enemy = (e: mut Enemy): e.hp = 3    # so does writing a field or an element
+```
+
+`score += 1`, `player.x = 5` and `grid[i] = 0` change the global when the function has no
+variable of that name: they cannot make one. A function that reads the global `x` and also gives
+`x` a value with `=` (and no `global x`) is an error, and so is a variable of the function's own
+that is named as a global and never read: both say to write `global x`. A lambda in top-level
+code changes the globals around it as any closure changes the variables around it; a lambda in a
+function, as that function does (its `global` lines count for it). `let x = ...` always makes a
+new variable.
 
 Top-level variables are globals, initialized in order before `main` runs (each where its line
 is, even `x = 0`).
@@ -204,7 +222,8 @@ precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests mem
 - `not` is for bools; `~x` flips a whole number's bits (`~0` is -1), and conditions take bools.
 - `+` on arrays of one dimension joins them (`[1, 2] + [3]`); on a matrix it adds element by
   element. `.+` always adds element by element.
-- `x = 1` in a function changes a global named `x` when there is one; `let x = 1` makes a local.
+- `x = 1` in a function makes a variable of its own, as in Python; `global x` in it changes the
+  global (`x += 1`, `x.f = 1` and `xs[i] = 1` change the global without it).
 - `a..b` leaves `b` out, as Python's `range(a, b)` does; `[a..b]` keeps it.
 - `round(5.7)` is `6.0`, an f64 (as `floor` and `ceil`); `int(round(x))` is the whole number.
 - Angles are in radians: `rotate(v, PI / 2)`, or `rotate(v, 90deg)` (a literal over 2π warns).

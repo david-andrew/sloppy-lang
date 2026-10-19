@@ -1155,6 +1155,7 @@ fixed_for_mut = (at0: int, pt0: int) -> bool:
     tkind(at) == .fixed and tkind(pt) == .array and type_eq(int(types[at].elem), int(types[pt].elem))
 
 finish_arg = (a: int, pt: int, is_mut: bool):
+    global mut_arg_seen
     if nodes[a].kind == .hole:
         nodes[a].type = i32(pt)
         return
@@ -1178,6 +1179,7 @@ finish_arg = (a: int, pt: int, is_mut: bool):
     coerce(a, pt)
 
 default_arg = (decl: int, i: int, pt: int, given: int[] = []) -> int:
+    global cx
     d = clone(int(nodes[kid(decl, i)].b))
     # (h: f64 = w: a default naming an earlier parameter takes that argument)
     if given.len() > 0: subst_params(d, decl, given)
@@ -1249,6 +1251,7 @@ others_tried: int[]            # the library's functions of a name the program's
 others_call = 0                # over when none fits at call others_call (said with its error)
 
 resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) -> int:
+    global call_targs, others_call, others_tried
     # (this call's own type arguments: a call among its arguments has none, from_text[S](f(x)))
     targs_here = call_targs
     call_targs = []
@@ -1799,6 +1802,7 @@ struct_has_defaults = (si: int, depth: int) -> bool:
     has
 
 struct_ctor = (n: int, st_type: int, decl: int, args: int[], expected: int) -> int:
+    global cx
     t = st_type
     if t == 0 and nkids2(decl) == 0: t = get_struct_inst(decl, [])
     if t == 0:
@@ -2068,6 +2072,7 @@ hide_private = false
 hide_lib_only = false
 
 collect_module = (m: int, name: int, out: mut int[]):
+    global hide_lib_only, hide_private
     if m < 0: return
     if modules[m].is_prelude: collect_in(prelude, name, out)
     else:
@@ -2080,6 +2085,7 @@ collect_module = (m: int, name: int, out: mut int[]):
         hide_private = false
 
 collect_fns = (name: int, out: mut int[]):
+    global hide_lib_only, hide_private
     m = cur_mod()
     collect_module(m, name, out)
     hide_private = m >= 0 and not modules[m].is_prelude
@@ -2448,6 +2454,7 @@ top_loop_warned = false
 # drawing in update, clearing after drawing, sleeping in a frame: done where it shows nothing,
 # covers what was drawn, or stops the game
 frame_call_check = (n: int, decl: int):
+    global top_loop_warned
     if cx < 0: return
     ci = int(ctxs[cx].inst)
     # (a main loop of pygame's, `loop running:` at the top of the file with drawing in it: it runs
@@ -3133,6 +3140,7 @@ fn_names_for = (t: int) -> int[]:
     out
 
 check_expr_in_module = (n: int, m: int, expected: int = 0) -> int:
+    global cx
     saved = cx
     ctxs.push(FnCtx(ctxs[cx].inst, i32(cx), ctxs[cx].ret, false, 0, i32(m), i32(sc_names.len())))
     cx = ctxs.len() - 1
@@ -3175,6 +3183,7 @@ lib_fns_only = (name: int) -> bool:
 
 id_at = 0
 is_unchecked_at = (n: int) -> bool:
+    global id_at
     callee = int(nodes[n].a)
     if nodes[callee].kind != .ident or nkids(n) != 2: return false
     if id_at == 0: id_at = intern("__at")
@@ -3211,6 +3220,7 @@ xor_meant = (n: int, in_bits: bool) -> bool:
     (ta != T_INT or tb != T_INT) and not small
 
 check_call = (n: int, expected: int) -> int:
+    global call_targs, id_eprint, id_len
     callee = int(nodes[n].a)
     args = kids(n)
     ck = nodes[callee].kind
@@ -3425,6 +3435,7 @@ fmt_part = (part: int, pos: int):
     else: nodes[part].sym = i32(resolve_by_types(intern("__fmt"), [bt, t], pos, true))
 
 check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
+    global coerce_hint
     nodes[n].kind = .intrinsic
     nodes[n].aux = i32(int(id))
     set_list(n, args)
@@ -4640,6 +4651,7 @@ cond_arm_error = (m: int, which: str[]):
     fatal(nodes[m].pos, "the arms for {join(which, ", ")} have conditions, so a value that fails them is not matched: add arms without them, or `_:`")
 
 check_match = (m: int, expected: int) -> int:
+    global coerce_hint
     is_stmt = has_flag(m, NF_STMT)
     check_expr(int(nodes[m].a), 0)
     finalize_literal(int(nodes[m].a))
@@ -4860,6 +4872,7 @@ untyped_param_error = (n: int):
     fatal(nodes[n].pos, "cannot infer the type of {nm} from how it is used here; give the parameter a type, as `({eg}: int): ...`")
 
 check_lambda = (lam: int, expected: int) -> int:
+    global self_lam
     et = prune(expected)
     if expected != 0 and types[et].kind != .fn_: et = 0
     if expected == 0: et = 0
@@ -5197,6 +5210,7 @@ check_unwrap = (n: int, id: IN, args: int[], expected: int) -> int:
 
 # ---------------- main expression checker ----------------
 check_expr = (n: int, expected: int) -> int:
+    global coerce_hint, last_checked
     last_checked = n
     if nodes[n].type != 0 and has_flag(n, NF_CHECKED): return ntype(n)
     t = 0
@@ -5307,6 +5321,8 @@ check_expr = (n: int, expected: int) -> int:
         else if sk == .global:
             g = int(syms[s].ref)
             ensure_global(g, nodes[n].pos)
+            # (any use but `x = v`'s target: a read, `x += 1`, `x.f = v`)
+            if cx >= 0 and not (cur_assign != 0 and nodes[cur_assign].a == i32(n) and nodes[cur_assign].op == i32(int(Tok.assign))): global_read_in_fn(nm, nodes[n].pos)
             if n != assign_root:
                 loop global_read.len() <= g: global_read.push(false)
                 global_read[g] = true
@@ -6459,6 +6475,7 @@ embed_dir_walk = (dir: str, prefix: str, out: mut str[]):
 # `end` inside xs[...] is the last index, whatever variable is named end: said where there is one
 id_end_var = 0
 end_shadow_check = (n: int):
+    global id_end_var
     if id_end_var == 0: id_end_var = intern("end")
     s = lookup(id_end_var)
     if s <= 0: return

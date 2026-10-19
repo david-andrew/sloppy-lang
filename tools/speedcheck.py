@@ -48,6 +48,11 @@ try:
     # compiles with its own)
     old_lib = os.path.join(tmp, "base-lib")
     shutil.copytree(os.path.join(wt, "lib"), old_lib)
+    # (and its own copy of the inputs: when this commit's are in syntax it cannot read, it
+    # compiles those, nearly the same)
+    old_src = os.path.join(tmp, "base-src")
+    for d in ["bench", "compiler", "examples/rebound", "examples/breakwater"]:
+        if os.path.isdir(os.path.join(wt, d)): shutil.copytree(os.path.join(wt, d), os.path.join(old_src, d))
 finally:
     run("git", "worktree", "remove", "--force", wt)
 new = os.path.join(root, "bin", "sloppy")
@@ -78,8 +83,9 @@ def icount(compiler, src, extra, lib=None):
     if compiler == old and not lib:
         print(f"(the earlier compiler cannot read this commit's library: {src} measured with its own)")
         return icount(compiler, src, extra, old_lib)
-    # (the compiler's own source in syntax the earlier one cannot read: not compared)
-    if compiler == old and src == "compiler/main.jo": return None
+    if compiler == old and not src.startswith(old_src) and os.path.exists(os.path.join(old_src, src)):
+        print(f"(the earlier compiler cannot read this commit's {src}: its own copy measured)")
+        return icount(compiler, os.path.join(old_src, src), extra, old_lib)
     sys.exit(f"speedcheck: cannot count {os.path.basename(compiler)} build {src}: {r.stderr.strip()[-500:]}")
 
 
@@ -90,9 +96,6 @@ print(f"compile speed: {base} -> working tree (G instructions)")
 for extra in modes:
     for src in inputs:
         a = icount(old, src, extra)
-        if a is None:
-            print(f"  {src + (' --release' if extra else ''):46} (written in syntax the earlier compiler cannot read: not compared)")
-            continue
         b = icount(new, src, extra)
         pct = (b - a) / a * 100
         worst = max(worst, pct)

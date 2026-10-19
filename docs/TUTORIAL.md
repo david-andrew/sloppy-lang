@@ -117,6 +117,7 @@ blocked = (p: vec2) -> bool:
     false
 
 update = (dt: f64):
+    global on_ground, pos
     vel.x = input_axis().x * 400.0
     vel.y += GRAVITY * dt
     if on_ground and key_pressed(.space): vel.y = -JUMP
@@ -150,6 +151,11 @@ moves across and then up or down, each only if nothing is in the way, so it slid
 and lands on top of platforms. Landing is what makes `on_ground` true, so jumps only start from
 the ground.
 
+`global on_ground, pos` at the start of `update` says that `pos = next` and `on_ground = false`
+change the variables at the top of the file. Without it, `x = ...` in a function makes a variable
+of the function's own (as a helper's `count = 0` should), and Sloppy says so when that one is
+never read. `vel.y += ...` and `vel.x = ...` change what is there already, and need no `global`.
+
 ## 5. Things to collect
 
 ```gdscript
@@ -181,6 +187,7 @@ blocked = (p: vec2) -> bool:
     false
 
 update = (dt: f64):
+    global on_ground, pos
     vel.x = input_axis().x * 400.0
     vel.y += GRAVITY * dt
     if on_ground and key_pressed(.space): vel.y = -JUMP
@@ -266,11 +273,13 @@ blocked = (p: vec2) -> bool:
 
 # back to the start (the lights stay taken)
 restart = ():
+    global pos, vel
     play(ouch)
     pos = vec2(100, 400)
     vel = vec2(0, 0)
 
 update = (dt: f64):
+    global cam, on_ground, pos
     vel.x = input_axis().x * 400.0
     vel.y += GRAVITY * dt
     if on_ground and key_pressed(.space): vel.y = -JUMP
@@ -373,6 +382,7 @@ blocked = (p: vec2) -> bool:
     false
 
 start = ():
+    global collected, pos, screen, time, vel
     platforms.clear()
     thorns.clear()
     lights.clear()
@@ -385,11 +395,13 @@ start = ():
 
 # back to the start (the lights stay taken)
 restart = ():
+    global pos, vel
     play(ouch)
     pos = vec2(100, 400)
     vel = vec2(0, 0)
 
 update = (dt: f64):
+    global best, cam, on_ground, pos, screen
     if screen != .play: return
     time += dt
     vel.x = input_axis().x * 400.0
@@ -524,6 +536,7 @@ blocked = (p: vec2) -> bool:
     false
 
 start = ():
+    global collected, pos, screen, time, vel
     platforms.clear()
     thorns.clear()
     lights.clear()
@@ -536,11 +549,13 @@ start = ():
 
 # back to the start (the lights stay taken)
 restart = ():
+    global pos, vel
     play(ouch)
     pos = vec2(100, 400)
     vel = vec2(0, 0)
 
 update = (dt: f64):
+    global best, cam, on_ground, pos, screen
     if screen != .play: return
     time += dt
     vel.x = input_axis().x * 400.0

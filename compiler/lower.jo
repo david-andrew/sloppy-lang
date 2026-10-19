@@ -110,6 +110,7 @@ push_i64 = (b: mut u8[], v: int):
     loop i in [0..8): b.push(u8((v >> (8 * i)) & 255))
 
 global_addr_off = (g: int) -> int:
+    global data_size
     if let o = global_off.get(g): return o
     t = int(globals[g].type)
     al = talign(t)
@@ -229,6 +230,7 @@ opt_release = false
 # (where __mt_active is among the globals, for the code generator's CALL_RC_INC and CALL_RC_DEC)
 mt_active_off = -1
 note_mt_active = ():
+    global mt_active_off
     if mt_active_off >= 0: return
     s = prelude.get(intern("__mt_active")) ?? 0
     if s == 0 or syms[s].kind != .global: ice("missing runtime global __mt_active")
@@ -236,6 +238,7 @@ note_mt_active = ():
 
 # rc <= 0 marks immortal objects
 retain = (v: int, t: int):
+    global ir_cold
     if not opt_release:
         # (one call in the IR, which the code generator does inline when it can: CALL_RC_INC)
         e_call(rt("__rc_inc"), [v], -1)
@@ -261,6 +264,7 @@ retain = (v: int, t: int):
     endc()
 
 release = (v: int, t0: int):
+    global ir_cold
     t = prune(t0)
     if not opt_release:
         release_call(v, t)
@@ -554,6 +558,7 @@ box_val = (p: int, t: int) -> int:
 # the box at slot made the writer's own (a new one holding the default when it is empty, a copy
 # when it is shared), for a write through it: the address of its value
 box_unique = (slot: int, t: int) -> int:
+    global ir_cold
     sz = tsize(t)
     iff(e_bin(.eq, VI, e_load(VI, slot, 0, ptr_size), e_iconst(0)))
     was = ir_cold
@@ -615,6 +620,7 @@ pinned_box = -1
 pinned_type = 0
 
 field_place = (f: int, addr: int, write: bool, slot: bool) -> Place:
+    global pinned_box, pinned_type
     a = e_addi(addr, int(fields[f].offset))
     if not fields[f].boxed or slot: return Place(true, a)
     if write:
@@ -697,6 +703,7 @@ loc_last_line = -1
 loc_last_off = 0
 
 loc_data = (pos: int) -> int:
+    global loc_last_file, loc_last_line, loc_last_off
     f = pos_file(pos)
     l, c = line_col(pos)
     if f == loc_last_file and l == loc_last_line: return loc_last_off
@@ -738,6 +745,7 @@ arr_len = (p: int) -> int:
     r
 
 arr_unique = (slot_addr_or_place: Place, at: int):
+    global ir_cold
     # ensure the array in the place is uniquely owned
     # (fast path inline: a non-null array with refcount 1 is already unique. Debug builds keep
     # the IR one call, which the code generator skips in those cases (CALL_IF_SHARED): out of
@@ -768,6 +776,7 @@ gen_index = (n: int) -> int:
     gen_expr(n).v
 
 gen_place = (e: int, write: bool) -> Place:
+    global box_slot
     k = nodes[e].kind
     if k == .ident:
         if nodes[e].aux == i32(int(SK.local)): return local_place(int(nodes[e].sym), write)
@@ -926,6 +935,7 @@ tuple_off = (t: int, idx: int) -> int:
 
 # ---------------- calls ----------------
 call_args = (args: int[], ptypes: int[], mutmask: int, out: mut int[], callee: int = 0):
+    global pinned_box
     any_mut = mutmask != 0
     if any_mut: mut_alias_check(args, mutmask, callee)
     loop i in 0.. and a in args:
@@ -1120,6 +1130,7 @@ copy_back = (mark: int):
 # Release builds leave out the reference to a global that neither the callee nor the later
 # arguments can change.
 borrow_may_change = (a: int, args: int[], i: int, callee: int) -> bool:
+    global mwr_direct
     n = place_var(a)
     if n == 0: return false
     if nodes[n].aux == i32(int(SK.global)):
@@ -1233,6 +1244,7 @@ pw_heap = false
 pw_box = false
 pw_depth = 0
 place_var = (n0: int) -> int:
+    global pw_box, pw_depth, pw_heap
     n = n0
     pw_heap = false
     pw_box = false
@@ -1372,6 +1384,7 @@ in_lib = (pos: int) -> bool:
     fi >= 0 and fi < files.len() and starts_with(files[fi].path, lib_dir + "/")
 
 race_named = (f: int, who: str, pos: int):
+    global race_lib_fn, race_lib_pos
     if race_done.contains(f) or fns[f].body == 0: return
     race_done[f] = true
     # (the core and standard libraries take care of threads themselves)
@@ -2316,6 +2329,7 @@ data_writable = (e: int) -> bool:
 
 # ---------------- intrinsics ----------------
 gen_intrinsic = (e: int) -> Val:
+    global ir_cold
     id = nodes[e].aux as IN
     args = kids(e)
     if id == .len or id == .arrcap:
@@ -3602,6 +3616,7 @@ gen_return = (s: int):
     else: e_ret(rv)
 
 assign_to = (target: int, t: int, v: int):
+    global box_slot
     if nodes[target].kind == .field and nodes[target].aux == -4 and not swizzle_run(target):
         # v.zx = w: each component where it goes
         a = int(nodes[target].a)
@@ -3797,6 +3812,7 @@ hv_bad: {int: bool}             # ... those that cannot be views
 hv_lambda = false               # ... a closure is made (none then: it may change what it captures)
 
 find_views = (f: int):
+    global held_views, hv_bad, hv_cand, hv_given, hv_lambda
     held_views = {}
     # (what C gives a function it calls is C's, which may change it meanwhile)
     if not opt_release or fns[f].body == 0 or fns[f].cabi: return
@@ -3844,6 +3860,7 @@ hv_spoil = (p: int):
     if r != 0 and nodes[r].aux == i32(int(SK.local)): hv_bad[int(nodes[r].sym)] = true
 
 hv_scan = (n: int):
+    global hv_lambda
     if n <= 0: return
     k = nodes[n].kind
     if k == .lambda:
@@ -4177,6 +4194,7 @@ cur_closed = -1                # 1: the function calls nothing and uses no globa
 # a mut parameter may be the caller's global; it can only be resized behind this function's
 # back by code it calls or by naming that global, so the function must do neither
 fn_is_closed = () -> bool:
+    global cur_closed
     if cur_closed < 0:
         seen = fill(false, nodes.len())
         cur_closed = 0
@@ -4611,6 +4629,7 @@ path_within = (p: str, k: str) -> bool: p == k or starts_with(p, k + ".")
 
 # ctx: 0 the value is used (copied, passed), 1 it is only indexed or measured
 fp_scan = (n: int, ctx: int):
+    global fp_calls, fp_lambda
     if n == 0: return
     k = nodes[n].kind
     if k == .lambda:
@@ -4740,6 +4759,7 @@ fp_target = (t: int):
 # the paths of loop s (with variable l) fixed during it; returns how many were added
 # (place: the array of a `loop mut x in place`, whose elements the loop writes)
 fp_begin = (s: int, l: int, bound: int, place: int) -> int:
+    global fp_calls, fp_lambda
     if not opt_release: return 0
     fp_bases.clear()
     fp_kill.clear()
@@ -4817,6 +4837,7 @@ uq_calls = false            # the loop calls code that might copy a mut paramete
 uniq_locals: int[]          # locals known to be unique while lowering the current loop
 
 uq_scan = (n: int, ctx: int):
+    global uq_calls, uq_lambda
     # ctx: 0 = the value escapes (copied, passed, captured), 1 = indexed read, 2 = indexed write
     if n == 0: return
     k = nodes[n].kind
@@ -4870,6 +4891,7 @@ uq_target = (t: int):
 
 # hoist the uniqueness checks of a loop's arrays in front of it; returns how many were added
 uq_begin = (s: int) -> int:
+    global uq_calls, uq_lambda
     if not opt_release: return 0
     uq_written.clear()
     uq_escaped.clear()
@@ -5035,6 +5057,7 @@ gen_stmt = (s: int):
     else: fatal(nodes[s].pos, "unsupported statement in codegen")
 
 gen_block_stmts = (b: int):
+    global cur_block, cur_block_i
     loop i in [0..nkids(b)):
         cur_block = b
         cur_block_i = i
@@ -5042,6 +5065,7 @@ gen_block_stmts = (b: int):
 
 # ---------------- functions ----------------
 begin_fn = (name: str, idx: int):
+    global building, cond_depth, ctl, env_v, loops, scope_defers, scope_locals, sret_v, tl_cond, tl_items, tl_nop
     ir_begin(name, idx)
     ctl = 0
     cond_depth = 0
@@ -5056,6 +5080,7 @@ begin_fn = (name: str, idx: int):
     env_v = -1
 
 lower_inst = (lf: int, f: int):
+    global cur_closed, cur_fn, cur_ret, env_v, sret_v
     begin_fn(fns[f].sym, lf)
     if fns[f].decl != 0:
         ir_set_pos(nodes[int(fns[f].decl)].pos)
@@ -5142,6 +5167,7 @@ lower_inst = (lf: int, f: int):
 lop_watch = false       # (loops in this function count down to the web page's watchdog)
 
 lower_function = (lf: int):
+    global ir_pos, lop_watch
     f = lfuncs[lf]
     lop_watch = false
     if want_loop_watch and f.kind == LK_INST and prelude.get(intern("__loop_budget")) != none:
@@ -5668,6 +5694,7 @@ mac_bound_lib = (lib: str) -> str:
     ""
 
 lower_extern_thunk = (lf: int, f: int):
+    global data_size
     begin_fn(fns[f].sym, lf)
     lib = fns[f].clib
     nm = name_of(int(nodes[int(fns[f].decl)].name))

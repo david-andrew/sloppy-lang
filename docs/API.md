@@ -2119,6 +2119,7 @@ pos = vec2(480, 270)
 trail: vec2[] = []
 
 update = (dt: f64):                      # every frame; dt: the seconds since the last one
+    global pos
     pos += input_axis() * 320 * dt  # arrows, W A S D, or a gamepad's stick
     if mouse_down(.left): pos = mouse_pos()
     if key_pressed(.space): trail.clear()
@@ -2264,6 +2265,7 @@ vy = 0.0
 settings = false
 
 update = (dt: f64):
+    global settings, vy, y
     if key_pressed(.tab): settings = not settings
     if settings: return
     x += action_axis("left", "right") * 300 * dt        # -1 to 1 (a stick gives in between)
@@ -2272,6 +2274,7 @@ update = (dt: f64):
     y = max(0.0, y + vy * dt)
 
 draw = ():
+    global settings
     clear(rgb(0.1, 0.1, 0.14))
     rect(0, 440, 960, 100, rgb(0.25, 0.3, 0.25))
     rect(x - 20, 400 - y, 40, 40, ORANGE)
@@ -2984,6 +2987,7 @@ action("jump", [.key(.space), .key(.up), .button(.a)])
 update = (dt: f64): fixed_update(dt, step)
 
 step = (dt: f64):
+    global box, buffered, cam, coyote, on_ground, riding, vel, wall
     # the movers move first, and carry what stands on them
     loop mut mv in movers:
         mv.t += dt
@@ -4168,6 +4172,7 @@ fullscreen = false
 clicks = 0
 
 draw = ():
+    global fullscreen, volume
     clear(rgb(0.1, 0.1, 0.15))
     ui_begin("main", vec2(480, 140))     # a menu: its items, every frame
     if ui_button("Click me"): clicks += 1
@@ -4337,6 +4342,7 @@ cam = vec2(480, 270)
 shake = Shake()
 
 update = (dt: f64):
+    global cam
     t += dt
     if mouse_pressed(.left):
         sparks.emit(screen_to_world(mouse_pos()), 40, 250, ORANGE)
@@ -5239,6 +5245,7 @@ theirs = vec2(640, 360)
 invite.from_link()
 
 update = (dt: f64):
+    global friend, theirs
     if friend < 0: return
     mine += input_axis() * f32(300.0 * dt)
     net.send(friend, "{mine.x} {mine.y}")
@@ -5249,6 +5256,7 @@ update = (dt: f64):
         else if e.kind == .left: friend = -1
 
 draw = ():
+    global friend
     clear()
     if friend >= 0:
         circle(mine, 20, rgb(0.4, 0.8, 1.0))

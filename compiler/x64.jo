@@ -52,6 +52,7 @@ cur_index = -1
 cur_scale = 0
 
 use_index = (ix: int, scale: int):
+    global cur_index, cur_scale
     cur_index = ix
     cur_scale = scale
 
@@ -451,6 +452,7 @@ vop_operand = (x: int, v: int, splat: bool, n: int, scratch: int):
             sse_rr(0, 0x16, x, 15)                                       # movlhps x, xmm15
 
 analyze = ():
+    global call_pos, call_w, dbg_keep, loop_e, loop_s, v_first, v_last, v_ndef, v_nuse, v_weight, vcval, vgkind, vgoff, vloc, vslot, vsoff
     nv = ir.vtypes.len()
     v_first = fill(INF_POS, nv)
     v_last = fill(-1, nv)
@@ -617,6 +619,7 @@ spills_before = (a: int, b: int) -> bool:
     x < y or (x == y and v_last[a] > v_last[b])
 
 allocate = ():
+    global callee_off, vsave
     nv = ir.vtypes.len()
     callee_off = fill(0, 16)
     vsave = fill(false, nv)
@@ -799,6 +802,7 @@ ra_cross_w = (s: int, e: int) -> int:
     ra_cw[lo] - ra_cw[a]
 
 allocate_release = ():
+    global callee_off, ra_cw, ra_occ, ra_words, vsave
     nv = ir.vtypes.len()
     callee_off = fill(0, 16)
     vsave = fill(false, nv)
@@ -969,6 +973,7 @@ allocate_release = ():
             eprint("v{v} {live_start(v)}..{v_last[v]} w {v_weight[v]} calls {cross[v]} -> {vloc[v]}{tag}")
 
 layout_frame = ():
+    global frame_size, save_list, slot_off, vspill
     off = 0
     loop r in [0..16):
         if callee_off[r] != 0:
@@ -1038,6 +1043,7 @@ movsd_rr = (x: int, y: int, ty: int):
 xzero = (x: int): sse_rr(0, 0x57, x, x)          # xorps x, x
 
 lds = (x: int, v: int, ty: int):
+    global rip_kind
     l = vloc[v]
     if l >= XMM: movsd_rr(x, l - XMM, ty)
     else if l == LOC_SPILL and is_vreg_vec(ty): vmov_rm(x, RBP, vspill[v], ty)
@@ -1108,6 +1114,7 @@ alu_v = (opc_rr: int, ext: int, r: int, v: int):
 
 # memory base for an address vreg: returns (base register, displacement)
 addr_of = (v: int, scratch: int) -> (int, int):
+    global rip_kind
     if vloc[v] == LOC_SLOT: return (RBP, slot_disp(v))
     if vloc[v] == LOC_GLOBAL:
         rip_kind = vgkind[v]
@@ -1232,6 +1239,7 @@ uw_fo = 0                   # (Windows: the function's rbp is rsp + 16 uw_fo, it
 uw_at = 0
 
 emit_prologue = ():
+    global uw_at, uw_fo, vloc
     b(0x55)                        # push rbp
     nsave = 0
     loop r in [0..16):
@@ -1365,6 +1373,7 @@ x64_struct_result = (cc: CCall):
 call_stack_mask = 0
 
 emit_call_args = (start: int, n: int, extra: int, extra_dst: int):
+    global call_stack_bytes
     ni = 0
     nf = 0
     stack_args: int[]
@@ -1408,6 +1417,7 @@ emit_call_args = (start: int, n: int, extra: int, extra_dst: int):
 # a call of a C function on Windows: the first four arguments in rcx, rdx, r8, r9 or xmm0-3 by
 # position, the rest on the stack above 32 bytes the callee may use ("shadow space")
 emit_call_args_win64 = (start: int, n: int, extra: int, extra_dst: int):
+    global call_stack_bytes
     regs = [RCX, RDX, 8, 9]
     stack_args: int[]
     moves: PMove[]
@@ -1500,6 +1510,7 @@ branch_target_jcc = (depth: int, cc: int):
 # d = a + b (sign -1: a - b, b a constant) into a register other than a's in one instruction:
 # lea d, [a + b]
 lea_add = (d: int, a: int, bb: int, sign: int) -> bool:
+    global cur_index
     rd = vloc[d]
     ra = vloc[a]
     rb = vloc[bb]
@@ -1576,6 +1587,7 @@ is_falu = (op: Op) -> bool: op == .fadd or op == .fsub or op == .fmul or op == .
 fold_load = -1             # a load the next instruction reads from memory (see load)
 
 falu = (opc: int, ins: Ins):
+    global cur_index, fold_load, rip_kind
     ty = int(ins.ty)
     d = int(ins.dst)
     if fold_load >= 0:
@@ -1639,6 +1651,7 @@ sel_cb = 0
 sel_cc = 0
 
 emit_ins = (pos: int, ins: Ins):
+    global call_stack_mask, cur_index, fold_load, fuse_skip, fused_cc, rip_kind, sel_ca, sel_cb, sel_cc, sel_fused
     op = ins.op
     d = int(ins.dst)
     a = int(ins.a)
@@ -2445,6 +2458,7 @@ dbg_cfi: int[]
 dbg_epis: int[]         # (while a function is emitted: where its epilogues pop rbp)
 
 x64_function = ():
+    global dbg_pos, fold_load, fuse_skip, fused_cc, ra_fn_base, row_line, row_pos, save_next, sel_fused, xctl
     loop fn_addr.len() <= ir.fn_index: fn_addr.push(-1)
     loop fn_len.len() <= ir.fn_index: fn_len.push(0)
     loop code.len() % 16 != 0: b(0xCC)
@@ -2664,6 +2678,7 @@ win_virtual_alloc = (at: int, size: int, kind: int):
     b(32)
 
 x64_entry_win = (inits: int[], main_lf: int) -> int:
+    global row_pos
     loop code.len() % 16 != 0: b(0xCC)
     start = code.len()
     line_rows.push(code.len())
@@ -2769,6 +2784,7 @@ x64_cabi_adapter = (lf: int, ptypes: int[]) -> int:
     start
 
 x64_entry = (inits: int[], main_lf: int) -> int:
+    global row_line, row_pos
     loop code.len() % 16 != 0: b(0xCC)
     start = code.len()
     # (no source line: line 0)
@@ -2839,6 +2855,7 @@ row_file = -1
 
 # (a row where the position changes; dwarf.jo leaves out those on the same line)
 line_row = (pos: int):
+    global row_pos
     if pos == 0 or pos == row_pos: return
     row_pos = pos
     line_rows.push(code.len())
@@ -2919,6 +2936,7 @@ stub_addr: int[] = [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
 
 # machine code stubs for non-local control transfer
 x64_stubs = ():
+    global row_line, row_pos
     loop code.len() % 16 != 0: b(0xCC)
     line_rows.push(code.len())
     line_rows.push(0)

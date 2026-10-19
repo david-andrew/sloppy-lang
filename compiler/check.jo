@@ -47,6 +47,7 @@ const LF_ELEMALIAS = 16384  # `mut x in xs` in a combined loop: x stands for xs[
 const LF_READ = 32768       # its value is read somewhere (not only the base of a write: v.f = 1)
 const LF_QUIET = 65536      # a loop counter or part of `a, b = f()`: not warned about when unused
 const LF_MUTARG = 131072    # passed as a `mut` argument, or a part of it (see dead_copy_change)
+const LF_SHADOWS = 262144   # a function's own variable named as a global is (x = 1 with no `global x`)
 assign_root = 0                 # (the variable an assignment being checked writes through)
 copy_writes: {int: int} = {}    # local -> where its fields or elements are first written
 gcopy_writes: {int: int} = {}   # the same for globals
@@ -724,6 +725,7 @@ find_module = (path: str) -> int:
     -1
 
 load_module = (path: str, is_prelude: bool, from: int) -> int:
+    global p_lazy
     ex = find_module(path)
     if ex >= 0: return ex
     src = read_source(path)
@@ -751,6 +753,7 @@ load_module = (path: str, is_prelude: bool, from: int) -> int:
     mi
 
 eval_when_toplevel = (m: int, w: int):
+    global cx
     saved = cx
     ctxs.push(FnCtx(0, -1, i32(T_VOID), false, 0, i32(m), i32(sc_names.len())))
     cx = ctxs.len() - 1
@@ -768,7 +771,7 @@ assign_declares = (s: int, m: int) -> bool:
     if nodes[s].kind != .assign or nodes[s].op != i32(int(Tok.assign)): return false
     lhs = int(nodes[s].a)
     lk = nodes[lhs].kind
-    if lk == .ident: return not name_assignable(int(nodes[lhs].name), m)
+    if lk == .ident: return not name_assignable(int(nodes[lhs].name), m) or m < 0 and makes_own(int(nodes[lhs].name), nodes[lhs].pos)
     if lk != .tuple: return false
     any = false
     loop i in [0..nkids(lhs)):
@@ -776,9 +779,157 @@ assign_declares = (s: int, m: int) -> bool:
         ck = nodes[c].kind
         if ck == .hole: continue
         if ck != .ident: return false
-        if name_assignable(int(nodes[c].name), m): return false
+        if name_assignable(int(nodes[c].name), m) and not (m < 0 and makes_own(int(nodes[c].name), nodes[c].pos)): return false
         any = true
     any
+
+# ---------------- a function's own variables and the globals ----------------
+# In a function, `x = v` makes x the function's own variable unless the function says `global x`
+# (as Python's): a global added later cannot change what it does, and a helper's `count = 0` is
+# its own. `x += 1`, `x.f = v` and `x[i] = v` cannot make a variable, so they change the global x
+# when the function has none of its own. A lambda in top-level code changes the globals around it
+# as any closure changes its variables; one in a function, as that function does.
+# (keys: the function's instance << 32 | the name)
+global_decls: {int: int} = {}       # `global x` in the function: where
+global_reads: {int: int} = {}       # the global x read in the function: where first
+own_shadows: {int: int} = {}        # x made the function's own though a global x exists: where
+# (SLOPPY_GLOBALFIX: the old rule, `x = v` changing the global, with each such line told, to add
+# `global x` where it is meant; SLOPPY_NO_SHADOW: the compiler's own build, which the C bootstrap
+# compiles with the old rule, so no variable of a function may have a global's name)
+GLOBALFIX = env("SLOPPY_GLOBALFIX") != none
+OLD_RULE = GLOBALFIX or env("SLOPPY_OLDRULE") != none
+NO_SHADOW = env("SLOPPY_NO_SHADOW") != none
+
+# (a module's top-level code)
+check_init_fn = (k: int):
+    global cx
+    m = int(fns[k].mod)
+    cx = module_ctx[m]
+    fns[k].state = 1
+    mark = scope_mark()
+    ctxs[cx].floor = i32(sc_names.len())
+    body = int(fns[k].body)
+    loop j in [0..nkids(body)): check_stmt(kid(body, j))
+    scope_reset(mark)
+    zonk_tree(body)
+    loop l in fns[k].locals: locals[l].type = i32(zonk(int(locals[l].type)))
+    copy_write_warnings(k)
+    fns[k].ret = i32(T_VOID)
+    fns[k].state = 2
+    cx = -1
+
+# (SLOPPY_GLOBALFIX: every library function checked, one that does not check for this target
+# passed over)
+gf_jb: *u8 = null
+globalfix_check = (d: int):
+    global __repl_jmp, cx, gf_jb, quiet_errors
+    # (d: the function instance)
+    when not BOOTSTRAP:
+        if gf_jb == null: gf_jb = __alloc(256)
+        saved_cx = cx
+        nctx = ctxs.len()
+        mark = scope_mark()
+        quiet_errors = true
+        if __setjmp(gf_jb) == 0:
+            __repl_jmp = gf_jb
+            # (-d: the function declared at node d, made)
+            if d < 0: get_fn_inst(-d, [], nodes[-d].pos)
+            else if fns[d].kind == FK_INIT: check_init_fn(d)
+            else: check_fn_body(d)
+        __repl_jmp = null
+        quiet_errors = false
+        cx = saved_cx
+        loop ctxs.len() > nctx: ctxs.pop()
+        scope_reset(mark)
+
+# (the function whose rule applies to code checked in ctx c: the one it is in, through lambdas;
+# -1: top-level code, or a lambda in it)
+rule_ctx = (c: int) -> int:
+    k = c
+    loop k >= 0:
+        f = int(ctxs[k].inst)
+        if f <= 0 or fns[f].kind == FK_INIT: return -1
+        p = int(ctxs[k].parent)
+        if p < 0: return k
+        k = p
+    -1
+
+own_key = (rc: int, nm: int) -> int: (int(ctxs[rc].inst) << 32) | nm
+
+# (x = v here makes x the function's own, though a global x is seen: no `global x`)
+makes_own = (nm: int, pos: int) -> bool:
+    if cx < 0: return false
+    sy = lookup(nm)
+    if sy == 0 or syms[sy].kind != .global: return false
+    rc = rule_ctx(cx)
+    if rc < 0: return false
+    key = own_key(rc, nm)
+    if global_decls.has(key): return false
+    if OLD_RULE:
+        fd = int(fns[int(ctxs[rc].inst)].decl)
+        if GLOBALFIX and fd != 0: eprint("GLOBALFIX {files[pos_file(nodes[fd].pos)].path}:{pos_off(nodes[fd].pos)} {name_of(nm)}")
+        return false
+    true
+
+# (the local x = v makes, when it is named as a global: told when the function read that global
+# before, as its value would then be the global's above the line and its own below)
+shadowing = (s: int) -> int:
+    lhs = int(nodes[s].a)
+    if nodes[lhs].kind != .ident or cx < 0: return 0
+    nm = int(nodes[lhs].name)
+    sy = lookup(nm)
+    if sy == 0 or syms[sy].kind != .global: return 0
+    rc = rule_ctx(cx)
+    if rc < 0: return 0
+    key = own_key(rc, nm)
+    n = name_of(nm)
+    gp = nodes[int(globals[int(syms[sy].ref)].decl)].pos
+    if NO_SHADOW: fatal(nodes[lhs].pos, "'{n}' is a global (at {pos_str(gp)}): in the compiler's own code a function's variable takes another name, as the C bootstrap compiler would change the global (`global {n}` means the global)")
+    # (the library's functions name their variables apart from its globals: its reads of them
+    # are not followed, global_read_in_fn)
+    if modules[int(ctxs[cx].mod)].is_prelude: fatal(nodes[lhs].pos, "'{n}' is a global of the library (at {pos_str(gp)}): a library function's variable takes another name (`global {n}` means the global)")
+    if let rp = global_reads.get(key):
+        ln, cc = line_col(rp)
+        fatal(nodes[lhs].pos, "'{n}' is the global variable (at {pos_str(gp)}) where line {ln} reads it, and `{n} = ...` here makes a variable of this function's own: to change the global, write `global {n}` at the start of the function; for a variable of its own, give it another name")
+    if not own_shadows.has(key): own_shadows[key] = nodes[lhs].pos
+    1
+
+# (the global x read in a function: told when x is the function's own there, as a variable it
+# made in a block that has ended)
+global_read_in_fn = (nm: int, pos: int):
+    if modules[int(ctxs[cx].mod)].is_prelude: return
+    rc = rule_ctx(cx)
+    if rc < 0: return
+    key = own_key(rc, nm)
+    if global_decls.has(key): return
+    if let sp = own_shadows.get(key):
+        ln, cc = line_col(sp)
+        n = name_of(nm)
+        fatal(pos, "'{n}' here is the global variable, but line {ln} gives the function a variable of its own named {n} (in a block that has ended here): give that one its value before the block to use it here, or write `global {n}` at the start of the function to change the global there")
+    if not global_reads.has(key): global_reads[key] = pos
+
+check_global_decl = (s: int):
+    rc = rule_ctx(cx)
+    if rc < 0: fatal(nodes[s].pos, "`global` names the globals a function changes; in top-level code (and its lambdas), `x = ...` changes the global x already")
+    loop i in [0..nkids(s)):
+        id = kid(s, i)
+        nm = int(nodes[id].name)
+        sy = lookup(nm)
+        n = name_of(nm)
+        # (a global of another target's: nothing to change here)
+        if sy == 0 and when_global_names.has(nm): continue
+        if sy == 0 or syms[sy].kind != .global:
+            if sy != 0 and syms[sy].kind == .local: fatal(nodes[id].pos, "'{n}' is a variable of this function's own here (or a parameter), not a global")
+            if sy != 0 and syms[sy].kind == .const_: fatal(nodes[id].pos, "'{n}' is a constant: it cannot change")
+            fatal(nodes[id].pos, "there is no global variable '{n}' (a global is given its first value at the top level of a file: `{n} = 0`)")
+        key = own_key(rc, nm)
+        if let sp = own_shadows.get(key):
+            ln, cc = line_col(sp)
+            fatal(nodes[id].pos, "line {ln} made '{n}' a variable of this function's own: `global {n}` goes before it")
+        global_decls[key] = nodes[id].pos
+    # (nothing to run)
+    nodes[s].kind = .block
+    nodes[s].nlist = 0
 
 # (at the top level: the module's own variables, and those of the modules it `use`s and of the
 # library, as in a function: `ui_style = ...` there changes the library's, not a new one)
@@ -821,6 +972,7 @@ register_module = (m: int):
     register_decls(m, modules[m].decls)
 
 register_decls = (m: int, decls: int[]):
+    global build_node
     loop d in decls:
         nodes[d].mod = i32(m)
         if nodes[d].kind == .assign and assign_declares(d, m): assign_to_decl(d)
@@ -964,6 +1116,7 @@ new_global = (name: int, decl: int, m: int) -> int:
 
 # ---------------- type resolution ----------------
 resolve_type = (tn: int) -> int:
+    global soa_decl
     if nodes[tn].kind == .tname and nodes[tn].aux == -7: return int(nodes[tn].ival)
     k = nodes[tn].kind
     if k == .tname:
@@ -1083,6 +1236,7 @@ nd_of = (t: int, pos: int) -> int:
 
 # type Name[T] = ...: the type it stands for, given its type arguments
 resolve_alias = (d: int, targs: int[], use_pos: int) -> int:
+    global cx
     ntp = nkids2(d)
     nm = name_of(int(nodes[d].name))
     if targs.len() != ntp: fatal(use_pos, "type '{nm}' expects {ntp} type argument(s), got {targs.len()}")
@@ -1133,6 +1287,7 @@ push_type_params = (decl: int, targs: int[]):
         if i < targs.len(): push_scope_sym(int(nodes[kid2(decl, i)].name), new_sym(int(nodes[kid2(decl, i)].name), .type_, targs[i], 0))
 
 check_struct_fields = (si: int):
+    global cx
     if structs[si].resolved: return
     structs[si].resolved = true
     d = int(structs[si].decl)
@@ -1209,6 +1364,7 @@ decl_info = (decl: int) -> int:
     int(nodes[decl].sym)
 
 fn_sig = (decl: int) -> FnSig:
+    global cx
     di = decl_info(decl)
     if decl_infos[di].sig.done: return decl_infos[di].sig
     sig = FnSig(done = true)
@@ -1621,6 +1777,7 @@ alias_global = (l: int) -> int:
 # (in_flow: its declaration reached among the top-level statements, after what they narrowed,
 # `if r == none: panic(...)` say, which it then sees; elsewhere it is checked on its own)
 ensure_global = (g: int, use_pos: int, in_flow: bool = false):
+    global cx
     if globals[g].state == 2: return
     if globals[g].state == 1:
         gn = name_of(int(globals[g].name))
@@ -2212,6 +2369,7 @@ narrow_losses: NarrowLoss[]
 
 # (the loop with serial `serial`, body `body`, is checked: the assignments in it that lose a narrowing)
 check_narrow_losses = (serial: int, body: int):
+    global narrow_losses
     if narrow_losses.len() == 0: return
     loop nl in narrow_losses:
         if nl.serial == serial and round_after(body, nl.stmt, false) == 1: fatal(nodes[nl.stmt].pos, nl.msg)
@@ -2310,31 +2468,6 @@ unnarrow_assign = (s: int):
         narrow_losses.push(nl)
     push_scope_sym(nm, new_sym(nm, .local, u, 0))
 
-# returns the (possibly replaced) statement node
-# `x = ...` in a function, where x is a global declared below the function in the same file:
-# that reads like a new local variable, but changes the global, so it gets a warning (a loop
-# counter `k` in a helper quietly being the script's `k` further down). Declaring the global
-# above the function says it is meant.
-late_warned: {int: bool}
-check_late_global = (s: int):
-    if cx < 0 or nodes[s].op != i32(int(Tok.assign)): return
-    if ctxs[cx].mod >= 0 and modules[int(ctxs[cx].mod)].is_prelude: return
-    lhs = int(nodes[s].a)
-    if nodes[lhs].kind != .ident: return
-    inst = int(ctxs[cx].inst)
-    if inst <= 0 or inst >= fns.len(): return
-    fd = int(fns[inst].decl)
-    if fd == 0: return
-    nm = int(nodes[lhs].name)
-    sym = lookup(nm)
-    if sym == 0 or syms[sym].kind != .global or syms[sym].decl == 0: return
-    gpos = nodes[int(syms[sym].decl)].pos
-    fpos = nodes[fd].pos
-    if pos_file(gpos) != pos_file(fpos) or pos_off(gpos) <= pos_off(fpos): return
-    # (an error, not a warning: a global added further down would quietly change what the
-    # function does)
-    fatal(nodes[lhs].pos, "'{name_of(nm)}' is the global variable declared below this function (at {pos_str(gpos)}), so this would change it: for a variable of the function's own, write `let {name_of(nm)} = ...` (or use another name); to mean the global, declare it above the function")
-
 # b[i].f = v (also b[i].f.g += v...) where b's type defines [] and []= (a GpuBuffer...): there
 # is no place b[i] to change in, so the element is read, changed and written back,
 #     e = b[i]; e.f = v; b[i] = e
@@ -2424,6 +2557,7 @@ append_assign = (s: int):
     nodes[s].op = i32(int(Tok.pluseq))
 
 check_assign = (s: int) -> int:
+    global assign_root, cur_assign, no_narrow_at
     if nodes[s].op == i32(int(Tok.assign)):
         unnarrow_assign(s)
         append_assign(s)
@@ -2695,6 +2829,7 @@ names_ident = (n: int, name: int) -> bool:
     false
 
 check_vardecl = (s: int):
+    global self_lam, self_lam_name
     if has_flag(s, NF_SOA):
         soa_alias(s)
         return
@@ -2776,6 +2911,7 @@ check_vardecl = (s: int):
     if ide_on and nodes[s].a == 0: ide_hint_local(s, l)
 
 check_stmt = (s: int):
+    global discarding
     k = nodes[s].kind
     if k == .vardecl and has_flag(s, NF_CHECKED): return
     if k == .vardecl: check_vardecl(s)
@@ -2803,10 +2939,12 @@ check_stmt = (s: int):
         check_stmt(s)
         discarding = false
     else if k == .assign and assign_declares(s, -1):
+        sh = shadowing(s)
         assign_to_decl(s)
         check_vardecl(s)
+        if sh != 0 and nodes[s].nlist == 0: locals[int(nodes[s].sym)].flags = locals[int(nodes[s].sym)].flags | i32(LF_SHADOWS)
+    else if k == .global_: check_global_decl(s)
     else if k == .assign:
-        check_late_global(s)
         r = check_assign(s)
         if r != s:
             nodes[s] = nodes[r]
@@ -3022,6 +3160,7 @@ assert_op_at = (text: str, op: str) -> int:
 
 # (a generic instance's body: an error in the library's code is reported at the program's call)
 check_fn_body = (f: int):
+    global err_trail, err_trail_fns, err_trail_names
     if fns[f].state != 0: return
     if fns[f].targs.len() == 0 or fns[f].decl == 0:
         # (an ordinary function's body: not part of the generic instance that led to it)
@@ -3055,6 +3194,7 @@ check_fn_body = (f: int):
         err_trail_fns.pop()
 
 __check_fn_body = (f: int):
+    global cx
     if fns[f].state != 0: return
     fns[f].state = 1
     decl = int(fns[f].decl)
@@ -3265,6 +3405,7 @@ dc_bound = false            # ... by `if let` or `loop let` (it holds what the o
 
 # warns of a change to l (a copy) never read after; true when it did
 dead_copy_change = (f: int, l: int) -> bool:
+    global dc_bail, dc_bound, dc_brk, dc_cont, dc_dead, dc_names, dc_origin, dc_var
     nm = name_of(int(locals[l].name))
     if len(nm) == 0 or starts_with(nm, "#") or starts_with(nm, "__") or pos_in_lib(locals[l].pos): return false
     body = int(fns[f].body)
@@ -3399,6 +3540,7 @@ dc_change = (s: int) -> int:
 # Is dc_var read before it is given a value again, from just before n on, when `live` says
 # whether it is from just after n? (rec: note the changes after which it is not)
 dc_walk = (n: int, live: bool, rec: bool) -> bool:
+    global dc_bail
     if n == 0: return live
     k = nodes[n].kind
     if k == .block:
@@ -3602,6 +3744,12 @@ unused_local_warnings = (f: int):
         if fl & LF_DECL == 0 or fl & skip != 0 or copy_writes.has(l): continue
         nm = name_of(int(locals[l].name))
         if len(nm) == 0 or starts_with(nm, "_") or starts_with(nm, "#") or pos_in_lib(locals[l].pos): continue
+        # (state = .menu in a function, meaning the global: a variable of its own, never read)
+        if fl & LF_SHADOWS != 0:
+            sy = lookup(int(locals[l].name))
+            gw = ""
+            if sy != 0 and syms[sy].kind == .global: gw = " (at {pos_str(nodes[int(globals[int(syms[sy].ref)].decl)].pos)})"
+            fatal(locals[l].pos, "'{nm}' is given a value here but never read: it is a variable of this function's own, not the global '{nm}'{gw}. To change the global, write `global {nm}` at the start of the function")
         near = ""
         loop gi in [0..globals.len()):
             gn = name_of(int(globals[gi].name))
@@ -3629,6 +3777,7 @@ unused_local_warnings = (f: int):
         else: warn(locals[l].pos, "'{nm}' is given a value here but never used{near}")
 
 check_lambda_body = (f: int, lam: int, ret_hint: int):
+    global cx
     fns[f].state = 1
     parent = cx
     ctxs.push(FnCtx(i32(f), i32(parent), 0, false, 0, ctxs[parent].mod, ctxs[parent].floor))
@@ -3819,6 +3968,7 @@ const_eval_bool = (e: int) -> bool: ceval(e).i != 0
 # the build: block of the main file, checked (main.jo's scan_build_block read it before checking
 # began, to know the target: here its mistakes are errors with places)
 check_build_block = ():
+    global program_icon, program_js
     if build_node == 0: return
     b = int(nodes[build_node].b)
     seen: str[]
@@ -3896,6 +4046,7 @@ runtime_fn = (name: str) -> int:
     f
 
 add_universe = ():
+    global icon_node
     tys = [("int", T_INT), ("i8", T_I8), ("i16", T_I16), ("i32", T_I32), ("i64", T_INT), ("u8", T_U8), ("byte", T_U8),
         ("u16", T_U16), ("u32", T_U32), ("u64", T_U64), ("f64", T_FLOAT), ("f32", T_F32),
         ("bool", T_BOOL), ("str", T_STR), ("void", T_VOID), ("vec2", T_VEC2), ("vec3", T_VEC3), ("vec4", T_VEC4),
@@ -3986,6 +4137,7 @@ order_modules = (m: int, out: mut int[]):
 # statement calling a prelude function with the given argument nodes
 # a, b = xs with an array: its elements, as a tuple (__unpack2(xs): the length checked)
 unpack_array = (e: int, t: int, n: int, pos: int) -> int:
+    global last_checked
     if types[t].kind != .array or n < 2 or n > 4: return t
     add_flag(e, NF_CHECKED)
     c = int(nodes[synth_call("__unpack{n}", [e], pos)].a)
@@ -4011,6 +4163,7 @@ synth_str = (s: str, pos: int) -> int:
 program_named = false         # (the build block gave the name)
 
 check_program = (main_path: str):
+    global cx, dfs_state, draw_fn, ide_force, init_fns, main_fn, module_ctx, program_name, program_named, skip_main, update_fn
     if len(program_name) > 0: program_named = true
     if len(program_name) == 0:
         program_name = main_path
@@ -4254,9 +4407,11 @@ check_program = (main_path: str):
     # unused code); only what is reachable is compiled
     if ide_on: ide_force = ide_find_file(ide_doc)
     loop m in modules:
-        if m.is_prelude and int(m.file) != ide_force: continue
+        if m.is_prelude and int(m.file) != ide_force and not GLOBALFIX: continue
         loop d in m.decls:
-            if nodes[d].kind == .fn_ and not has_flag(d, NF_EXTERN) and not fn_sig(d).generic: get_fn_inst(d, [], nodes[d].pos)
+            if nodes[d].kind == .fn_ and not has_flag(d, NF_EXTERN) and not fn_sig(d).generic:
+                if m.is_prelude and GLOBALFIX: globalfix_check(-d)
+                else: get_fn_inst(d, [], nodes[d].pos)
             if nodes[d].kind == .fn_ and (has_flag(d, NF_EXTERN) or nodes[d].c != 0) and not m.is_prelude: c_sig_check(d)
     loop nm in runtime_names: runtime_fn(nm)
     loop nm in optional_runtime:
@@ -4280,21 +4435,8 @@ check_program = (main_path: str):
     loop true:
         loop k < fns.len():
             if fns[k].state == 0 and (fns[k].kind == FK_NORMAL or fns[k].kind == FK_INIT) and k != 0:
-                if fns[k].kind == FK_INIT:
-                    m = int(fns[k].mod)
-                    cx = module_ctx[m]
-                    fns[k].state = 1
-                    mark = scope_mark()
-                    ctxs[cx].floor = i32(sc_names.len())
-                    body = int(fns[k].body)
-                    loop j in [0..nkids(body)): check_stmt(kid(body, j))
-                    scope_reset(mark)
-                    zonk_tree(body)
-                    loop l in fns[k].locals: locals[l].type = i32(zonk(int(locals[l].type)))
-                    copy_write_warnings(k)
-                    fns[k].ret = i32(T_VOID)
-                    fns[k].state = 2
-                    cx = -1
+                if GLOBALFIX and (fns[k].kind == FK_INIT and modules[int(fns[k].mod)].is_prelude or fns[k].decl != 0 and decl_in_prelude(int(fns[k].decl))): globalfix_check(k)
+                else if fns[k].kind == FK_INIT: check_init_fn(k)
                 else: check_fn_body(k)
             k += 1
 
