@@ -40,6 +40,10 @@
   at 480 x 270 a menu takes the part of the screen it takes at 1280 x 720, where its text was 34
   units tall; sizes a game sets in `ui_style` are used as they are. Games at 1280 x 720 look the
   same.
+- `fixed_update(dt, step, rate = 60)` runs `step` at a fixed rate whatever the frame rate (Godot's
+  _physics_process), and gives back how far the time is into the next step. In a step, a press
+  (`action_pressed`, `key_pressed`, `gamepad_pressed`...) is seen in one step only, even one made
+  in a frame with no step.
 - Tuple patterns: `match (i % 3, i % 5): (0, 0): ... (0, _): ...`, each part a value, a range,
   `.variant` or `_`, tuples inside tuples too (it said "unsupported pattern for this type").
   `"A" | "a":` in a match says an arm lists its values with commas.
