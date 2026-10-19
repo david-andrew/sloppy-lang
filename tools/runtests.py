@@ -72,6 +72,11 @@ for t in tests:
         print(f"FAIL {name}: compile error\n{r.stderr}")
         failed += 1
         continue
+    # (`# no warnings` at the top: code a warning must not be given for)
+    if "# no warnings" in head and "warning: " in r.stderr:
+        print(f"FAIL {name}: a warning where none is wanted\n{r.stderr}")
+        failed += 1
+        continue
     if target == "wasm":
         run = ["node", os.path.join(root, "tools", "runwasm.js"), exe + ".html"]
     elif target == "windows":
