@@ -2678,7 +2678,9 @@ screen_fit(mode): what a window of another shape shows
     .letterbox  just the design area, scaled to fit, with bars (letterbox_color) around it
     .crop       the design area scaled to fill the window: what does not fit is cut off
     .stretch    the design area stretched to the window (shapes distort)
-    .native     no scaling: one 2D unit is one pixel of the window (screen_size() is its size)
+    .native     no scaling: one 2D unit is one pixel as the desktop counts them (on a screen
+                at 200%, or a phone's, two of the screen's own; screen_size() is the
+                window's size in them): a desktop tool's layout
 
 render_resolution(w, h): draw at a fixed resolution, scaled up to the window, by default
     with sharp pixels (nearest) and in whole steps (2x, 3x...); 2D units stay the design size

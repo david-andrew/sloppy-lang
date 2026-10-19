@@ -47,6 +47,8 @@
   `request_redraw()` (tweens, a list's gliding and a caret's blinking ask themselves); the
   program sleeps between, natively and in a web page. An idle notes app with the software
   renderer: under 0.01 s of CPU in 3 s (7 s without it).
+- `screen_fit(.native)`: a unit is a pixel as the desktop counts them, two of the screen's own at
+  200% or on a phone (it was the screen's own, so a tool came out half size there).
 - A window for a design smaller than 640 x 360 with `screen_fit(.native)` opens at its own size
   (it opened a whole number of times larger, as for pixel art, drawn in its corner), also when
   `screen_fit` comes after `window()`.

@@ -1697,8 +1697,10 @@ screen_fit(.expand)       # (default) scaled to fit, centered; a wider or taller
 screen_fit(.letterbox)    # just the design area, with bars (letterbox_color(c))
 screen_fit(.crop)         # the design area fills the window; what sticks out is cut off
 screen_fit(.stretch)      # stretched to the window (shapes distort)
-screen_fit(.native)       # no scaling: one unit per window pixel (a window for a design smaller
-                          # than 640 x 360 opens at its own size, not larger as for pixel art)
+screen_fit(.native)       # no scaling: one unit per pixel as the desktop counts them (two of the
+                          # screen's own at 200%, as on a phone), so a tool's text and boxes are
+                          # one size everywhere; a window for a design smaller than 640 x 360
+                          # opens at its own size, not larger as for pixel art
 
 render_resolution(640, 360)   # draw at a fixed resolution, scaled up (sharp pixels, whole steps;
                               # smooth = true, whole = false for other looks)
