@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.24.1
 
 - WebRTC channels that may lose messages (`reliable = false`, as netplay uses) drop a message
   when the other side has not acknowledged a window's worth yet, where they kept it in a queue
