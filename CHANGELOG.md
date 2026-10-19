@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `row = g[1]` at the top of a file, then `row[2] = 7`, with row read nowhere after, warns that
+  row is a copy and g stays as it was, as it did inside a function.
 - `cnt[c - 'a']` with c a byte of text is worked out as an int where one is wanted: a character
   before 'a' gives a negative number (it wrapped around as a byte), and there is no warning on
   the most common way of counting letters.

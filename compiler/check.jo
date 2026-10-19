@@ -3126,6 +3126,62 @@ copy_write_warnings = (f: int):
         # (a `mut` argument's address is taken: whether `&` is, dead_copy_change sees)
         if (copy_writes.has(l) or int(locals[l].flags) & LF_MUTARG != 0) and int(locals[l].flags) & LF_READ != 0 and int(locals[l].flags) & (skip & ~(LF_READ | LF_ADDR)) == 0: dead_copy_change(f, l)
 
+# (row = g[1] at the top of a file, then row[2] = 7, and row read nowhere: a global holding a
+# copy of a part of another, changed and never read, by the top level or any function)
+toplevel_copy_warnings = (mainm: int):
+    cands: int[]
+    loop s in modules[mainm].inits:
+        if nodes[s].kind != .vardecl or not has_flag(s, NF_GLOBAL) or nodes[s].b == 0 or nodes[s].nlist > 0 or pos_in_lib(nodes[s].pos): continue
+        v = unconv(int(nodes[s].b))
+        vk = nodes[v].kind
+        if (vk != .index and vk != .field) or nodes[v].b == 0 and vk == .index: continue
+        if dc_base(v) == 0: continue
+        gt = tkind(int(globals[int(nodes[s].sym)].type))
+        if gt != .array and gt != .struct_ and gt != .fixed and gt != .tuple: continue
+        cands.push(s)
+    if cands.len() == 0: return
+    # (the variables at the bottom of what is assigned: written, not read)
+    written: {int: bool} = {}
+    first_write: {int: int} = {}
+    loop i in [1..nodes.len()):
+        if nodes[i].kind != .assign: continue
+        lhs = int(nodes[i].a)
+        if lhs == 0 or (nodes[lhs].kind != .index and nodes[lhs].kind != .field): continue
+        r = place_root(lhs)
+        if r == 0 or nodes[r].aux != i32(int(SK.global)): continue
+        written[r] = true
+        g = int(nodes[r].sym)
+        if not first_write.has(g) or nodes[i].pos < nodes[first_write[g]].pos: first_write[g] = i
+    loop s in cands:
+        g = int(nodes[s].sym)
+        if not first_write.has(g): continue
+        read = false
+        loop i in [1..nodes.len()):
+            if nodes[i].kind == .ident and nodes[i].aux == i32(int(SK.global)) and int(nodes[i].sym) == g and not written.has(i):
+                read = true
+                break
+        if read: continue
+        w = first_write[g]
+        nm = name_of(int(nodes[s].name))
+        src = place_src_text(unconv(int(nodes[s].b)))
+        base = name_of(int(nodes[dc_base(unconv(int(nodes[s].b)))].name))
+        lt = place_src_text(int(nodes[w].a))
+        warn(nodes[w].pos, "'{nm}' is a copy (of {src}), and this change to it is never read: it does not change {base}. To change {base}, change it through {base} (`{src}{lt[len(nm)..]} = ...`)")
+
+# the text of a place as written: g[1], p.pos
+place_src_text = (n: int) -> str:
+    k = nodes[n].kind
+    if k == .ident: return name_of(int(nodes[n].name))
+    if k == .conv or k == .narrow: return place_src_text(int(nodes[n].a))
+    if k == .field: return "{place_src_text(int(nodes[n].a))}.{name_of(int(nodes[n].name))}"
+    if k == .index:
+        b = int(nodes[n].b)
+        i = "..."
+        if b != 0 and nodes[b].kind == .ident: i = name_of(int(nodes[b].name))
+        else if b != 0 and nodes[b].kind == .int_lit: i = "{nodes[b].ival}"
+        return "{place_src_text(int(nodes[n].a))}[{i}]"
+    "it"
+
 # ---------------- changes to a copy that nothing reads after ----------------
 # cur = l.head!, a walk to the end, then `cur.next = Node(v)`: Java's and Python's way to change a
 # linked list changes cur, a copy, as the last thing done with it. A change to a variable that
@@ -4158,6 +4214,7 @@ check_program = (main_path: str):
                 more = true
         if not more: break
     if open_globals.len() > 0: settle_open_globals()
+    toplevel_copy_warnings(mainm)
     # (make_world written and never called: nothing runs it. A file of definitions alone, with
     # no main, update or draw and no statement at its top that does something, is a module that
     # others use: checked by itself, nothing in it is called)
