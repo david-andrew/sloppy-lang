@@ -44,6 +44,10 @@
   _physics_process), and gives back how far the time is into the next step. In a step, a press
   (`action_pressed`, `key_pressed`, `gamepad_pressed`...) is seen in one step only, even one made
   in a frame with no step.
+- Messages: `r.position` on a Rect (`vec2(r.x, r.y)`: its fields are x, y, w and h), and a field a
+  Rect does not have says its fields; `sprite(sheet, pos)` with a SpriteSheet says it is drawn a
+  frame at a time (`draw_frame(sheet, i, center)`); an action asked for by a name of another case,
+  or a letter off, says the one meant (`no action "jump": did you mean "Jump"?`).
 - Tuple patterns: `match (i % 3, i % 5): (0, 0): ... (0, _): ...`, each part a value, a range,
   `.variant` or `_`, tuples inside tuples too (it said "unsupported pattern for this type").
   `"A" | "a":` in a match says an arm lists its values with commas.
