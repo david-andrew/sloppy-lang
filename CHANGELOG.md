@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A fixed-size array slices as a `T[]` does: with `a: int[4]`, `a[1..3]`, `a[[1..3]]`, `a[1..]`
+  and `a[..2]` are new `int[]`s holding those elements, where they said "cannot slice int[4]". A
+  slice with a constant end past the last index is an error when compiling. A fixed-size array
+  is also taken by a function's `mut T[]` parameter: `sort(mut a)`, `a.reverse()`,
+  `shuffle(mut a)` and `a.sort_by(...)` change it in place, where they said "argument 1 must
+  have type int[] (mut parameters need an exact match)". It goes in as a `T[]` whose elements go
+  back when the call returns; a call that changes its length panics, saying so.
 - A `T[]` passes where a `T?[]` is expected (an argument, an assignment, a return), as a copy
   with its elements as optionals: `count([1 2 3])` for `count = (xs: int?[]) -> int` said
   "expects int?[], found int[]".

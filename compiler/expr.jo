@@ -1104,6 +1104,13 @@ check_args_untyped = (args: int[]):
         check_expr(a, 0)
         add_flag(a, NF_CHECKED)
 
+# a fixed-size array T[N] given for a `mut T[]` parameter (a T[] copied back after the call,
+# which must keep its length)
+fixed_for_mut = (at0: int, pt0: int) -> bool:
+    at = prune(at0)
+    pt = prune(pt0)
+    tkind(at) == .fixed and tkind(pt) == .array and type_eq(int(types[at].elem), int(types[pt].elem))
+
 finish_arg = (a: int, pt: int, is_mut: bool):
     if nodes[a].kind == .hole:
         nodes[a].type = i32(pt)
@@ -1119,6 +1126,9 @@ finish_arg = (a: int, pt: int, is_mut: bool):
             locals[int(nodes[wr].sym)].flags = locals[int(nodes[wr].sym)].flags | i32(LF_MUTARG)
             mut_arg_seen = true
         if path_narrows > 0: path_forget(path_key(a))
+        if fixed_for_mut(ntype(a), pt):
+            add_flag(a, NF_MUT)
+            return
         if not type_eq(ntype(a), pt) and not unify(ntype(a), pt): fatal(nodes[a].pos, "`mut` argument must have type {type_str(pt)} exactly, found {type_str(ntype(a))}")
         add_flag(a, NF_MUT)
         return
@@ -1264,11 +1274,16 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 if cls != phase: continue
                 pt = cd.sig.params[i]
                 if int(cd.sig.mutmask) & (1 << i) != 0 and not ctx_dependent(a):
-                    r = match_type(pt, ntype(a), cd.binds, 0)
+                    at = ntype(a)
+                    # (a T[N] for a `mut T[]`: passed as a T[] copied back after the call)
+                    fixmut = tkind(at) == .fixed and tkind(pt) == .array
+                    if fixmut: at = mk_array(int(types[prune(at)].elem))
+                    r = match_type(pt, at, cd.binds, 0)
                     ok2 = r >= 0
                     if ok2:
                         ptx = subst(pt, cd.binds)
-                        if not has_var(prune(ptx)) and not has_var(prune(ntype(a))) and not type_eq(ptx, ntype(a)): ok2 = false
+                        if not has_var(prune(ptx)) and not has_var(prune(at)) and not type_eq(ptx, at): ok2 = false
+                    if ok2 and fixmut: r += 1000       # (a function taking the T[N] itself goes first)
                     if not ok2:
                         ok = false
                         if i + 1 < last_err_arg: break
@@ -5259,9 +5274,19 @@ check_expr = (n: int, expected: int) -> int:
                 check_to(int(nodes[b].b), T_INT)
                 neg_index_check(int(nodes[b].b))
             nodes[b].type = i32(T_RANGE)
-            if bk != .array and bk != .str_: fatal(nodes[n].pos, "cannot slice {type_str(bt)}")
+            if bk != .array and bk != .str_ and bk != .fixed: fatal(nodes[n].pos, "cannot slice {type_str(bt)}")
             nodes[n].aux = 1
             t = bt
+            # (a slice of a T[N] is a T[], as one of a T[] is)
+            if bk == .fixed:
+                t = mk_array(int(types[bt].elem))
+                ra = int(nodes[b].a)
+                rb = int(nodes[b].b)
+                if ra != 0 and nodes[ra].kind == .int_lit and nodes[ra].ival > fixed_len(bt): fatal(nodes[ra].pos, "{nodes[ra].ival} is past the end of {type_str(bt)}")
+                if rb != 0 and nodes[rb].kind == .int_lit:
+                    hi = nodes[rb].ival
+                    if has_flag(b, NF_INCLUSIVE): hi += 1
+                    if hi > fixed_len(bt): fatal(nodes[rb].pos, "this slice goes past the end of {type_str(bt)}, whose last index is {fixed_len(bt) - 1}")
         else if b == 0 and nkids(n) > 0 and bk == .struct_:
             # m[i, j]: the `[]` operator with several indexes
             call = mk(.call, nodes[n].pos)

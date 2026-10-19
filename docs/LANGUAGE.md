@@ -320,10 +320,13 @@ loop mut c in corners: c *= 2.0
 print(corners.len(), inv.slots == fill(0, 8))
 ```
 
-They index, loop (`loop x in xs`, `loop mut x in xs`), compare with `==`, print and work as
-map keys like `T[]`. A copy copies the elements. Where a `T[]` is expected (`sum(xs)`, a
-parameter `xs: T[]`) a fixed-size array is passed as a new array holding a copy; `push`,
-`pop` and the other functions that change the length need a `T[]`.
+They index, slice, loop (`loop x in xs`, `loop mut x in xs`), compare with `==`, print and
+work as map keys like `T[]`. A copy copies the elements. A slice (`xs[1..3]`, `xs[[1..end]]`)
+is a new `T[]` holding a copy of those elements, as a slice of a `T[]` is. Where a `T[]` is
+expected (`sum(xs)`, a parameter `xs: T[]`) a fixed-size array is passed as a new array holding
+a copy. Given for a `mut T[]` parameter (`sort(mut xs)`, `xs.reverse()`, `shuffle(mut xs)`) it is
+passed as a `T[]` whose elements go back into `xs` when the call returns; a function that changes
+the length (`push`, `pop`, ...) panics there, as a fixed-size array keeps its length.
 
 ### Maps
 
