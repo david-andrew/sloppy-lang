@@ -383,10 +383,11 @@ DOC_DESCRIPTIONS = {
     "tutorial.html": "Make a small platformer in Sloppy, step by step: moving, jumping, platforms, a camera, menus, saving, glow and music.",
     "tutorial-rebound.html": "Make a small arcade game in Sloppy, step by step: angles, many things at once, chain reactions, upgrades and synthesized sound.",
     "tutorial-breakwater.html": "Make a small 3D first-person shooter in Sloppy, step by step: mouse look, walls, shots as rays, enemies that fire back, waves, light and sound.",
-    "language.html": "The Sloppy language: types, functions, structs and unions, numeric arrays, modules, parallelism, the game loop and calling C.",
+    "language.html": "The Sloppy language: types, functions, structs and unions, numeric arrays, modules, parallelism, tasks and channels, the game loop and calling C.",
     "api.html": "Everything in Sloppy's standard library: strings, maps, math, files, threads, windows, input, 2D and 3D drawing, shaders and audio.",
     "graphics.html": "How Sloppy draws through Vulkan, OpenGL, WebGL or a software renderer, how shaders written in Sloppy reach each, and computing on the GPU.",
     "multiplayer.html": "Multiplayer games in Sloppy: messages, rollback netplay and client-server netcode with prediction, interpolation and lag compensation, and which to choose.",
+    "contests.html": "Sloppy for programming contests and Advent of Code: reading input, containers, binary search, number theory and big integers.",
     "report.html": "Measured results for Sloppy's design goals: compile speed, program speed against C, and executable size."}
 
 def build_docs():
