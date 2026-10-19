@@ -19,8 +19,15 @@
 # Tasks take turns on the program's one thread: one runs until it waits, then another. So between
 # two waits nothing else changes the program's variables, and they need no locks; a task that
 # computes for a long time without waiting holds up the others (parallel_map shares work over
-# all of the processor's cores). The program ends when main and every task have ended, or at
-# exit(); a game's tasks take their turns at the start of each frame, and end with it.
+# all of the processor's cores). A channel's send or receive that need not wait goes on at once,
+# letting the others ready take their turns only every 64th time; run_program, file reads and
+# writes, and a C function hold up every task while they run. The program ends when main and
+# every task have ended, or at exit(); a game's tasks take their turns at the start of each frame,
+# and end with it.
+#
+# t.cancel() asks a task to stop: from then on its waits end at once, giving nothing (receive
+# none, sleep returns, the network's calls nothing or status 0), and cancelled() is true in it,
+# for it to clean up and end. A group (task_group) is tasks waited for and cancelled together.
 
 # ---------------- tasks ----------------
 # (a task's result, and who waits for it: shared by the copies of its Task)
@@ -28,6 +35,8 @@ struct __TaskCell[T]:
     result: T[]             # (its one value once it has ended: a T? would lose a result of none)
     done = false
     waiting: int[]          # (tasks waiting for it to end: their ids and waits, two ints each)
+    id = 0                  # (its record, the scheduler's, while it runs)
+    failed = ""             # (a group's task that panicked: the panic's message)
 
 struct Task[T]:
     __cell: __TaskCell[T][]
@@ -40,7 +49,7 @@ spawn[T] = (f: () -> T, background: bool = false) -> Task[T]:
     cell.push(__TaskCell[T]())
     p = data(cell)                 # (before cell is shared: data() of a shared array copies it)
     t = Task[T](cell, p)
-    __task_start((): __task_run(t, f), background)
+    p[0].id = __task_start((): __task_run(t, f), background)
     t
 
 __task_run[T] = (t: Task[T], f: () -> T):
@@ -48,12 +57,29 @@ __task_run[T] = (t: Task[T], f: () -> T):
     t.__p[0].done = true
     __task_wake_all(t.__p[0].waiting)
 
-# its result, once it has ended (until then the caller waits, and the others take their turns)
+# its result, once it has ended (until then the caller waits, and the others take their turns;
+# also in a task that has been cancelled, as the result is needed: wait(wait = ...) is a wait
+# that cancel ends)
 wait[T] = (t: Task[T]) -> T:
     __task_cell_check(t.__cell.len())
     loop not t.__p[0].done:
-        __task_wait_on(t.__p[0].waiting, "for a task to end")
+        __task_wait_on(t.__p[0].waiting, "for a task to end", -1.0, true)
+    if t.__p[0].result.len() == 0: __panic("the task waited for panicked ({t.__p[0].failed}), so it has no result: its group's wait() gives false then")
     t.__p[0].result[0]
+
+# wait at most `wait` seconds for it to end: true once it has (wait() then gives its result at
+# once), false if it has not (or the task waiting has been cancelled)
+#   if not t.wait(wait = 5.0): t.cancel()
+wait[T] = (t: Task[T], wait: f64) -> bool:
+    __task_cell_check(t.__cell.len())
+    p = t.__p
+    if not p[0].done:
+        w = __task_wait_time(wait)
+        if w > 0.0:
+            until = time() + w
+            loop not p[0].done and not __task_cancelling:
+                if not __task_wait_on(p[0].waiting, "for a task to end", until): break
+    p[0].done
 
 # it has ended
 done[T] = (t: Task[T]) -> bool:
@@ -63,11 +89,145 @@ done[T] = (t: Task[T]) -> bool:
 # the results of all of them, in their order
 wait_all[T] = (ts: Task[T][]) -> T[]: [loop t in ts: t.wait()]
 
-__task_wait_check = (wait: f64):
-    if not (wait >= 0.0) or wait > 1e18: __panic("a time to wait of {wait}: it is a number of seconds, 0 or more (to wait for as long as it takes, leave it out)")
+# ask it to stop: its waits end at once from now on, the one it is in too, giving nothing (a
+# channel's receive none, a send gives up, sleep returns, select takes its after or else arm,
+# the network's calls give nothing or status 0), and cancelled() is true in it, for it to clean
+# up and end. Nothing if it has ended. A task that never waits or looks is not stopped
+cancel[T] = (t: Task[T]):
+    __task_cell_check(t.__cell.len())
+    if not t.__p[0].done: __task_cancel(t.__p[0].id)
+
+# true in a task that has been cancelled (t.cancel(), or its group's): time for it to end
+cancelled = () -> bool: __task_cancelling
+
+# how many tasks have started and not ended (main not counted, those in the background counted)
+task_count = () -> int:
+    n = 0
+    loop id in 0.. and r in __tasks:
+        if id > 0 and r.state >= 1 and r.state <= 3: n += 1
+    n
+
+# write to standard error what each task is doing (what it waits for, where, and where it was
+# spawned): for a program that seems stuck
+report_tasks = ():
+    __out_flush()
+    __write_err("tasks: {task_count()} besides main\n")
+    loop id in [0..__tasks.len()):
+        if __tasks[id].state >= 1 and __tasks[id].state <= 3: __task_tell(id)
+
+# (a time to wait, in seconds: one that has passed already, below 0, is 0, and one beyond 30 years
+# as good as none; NaN is a mistake)
+__task_wait_time = (wait: f64) -> f64:
+    if wait != wait: __panic("a time to wait of NaN (not a number): it is a number of seconds (to wait for as long as it takes, leave it out)")
+    clamp(wait, 0.0, 1e9)
 
 __task_cell_check = (n: int):
     if n == 0: __panic("this Task was not started: a Task comes from spawn((): ...)")
+
+# ---------------- groups ----------------
+# Tasks that belong together (a request's fetches, a crawl's workers): spawned into a group,
+# waited for together, cancelled together. A panic in one of them ends that one only (told on
+# standard error, as any panic) and cancels the others; the group's wait() then gives false, and
+# why() the panic's message. (In a web page a panic ends the program, in a group too.)
+#   g = task_group()
+#   pages = [loop u in urls: g.spawn((): net.fetch(u).text)]
+#   if not g.wait(): eprint("failed: {g.why()}")
+struct __GroupCell:
+    ids: int[]              # (its tasks running: their records)
+    live = 0
+    waiting: int[]
+    cancelled = false
+    why = ""
+
+struct TaskGroup:
+    __cell: __GroupCell[]
+    __p: *__GroupCell
+
+# a group, with no tasks yet
+task_group = () -> TaskGroup:
+    cell: __GroupCell[]
+    cell.push(__GroupCell())
+    p = data(cell)
+    TaskGroup(cell, p)
+
+__group_check = (n: int):
+    if n == 0: __panic("this TaskGroup was not made: a TaskGroup comes from task_group()")
+
+# run f alongside the rest of the program, in group g (cancelled at once if g has been)
+spawn[T] = (g: TaskGroup, f: () -> T) -> Task[T]:
+    __group_check(g.__cell.len())
+    cell: __TaskCell[T][]
+    cell.push(__TaskCell[T]())
+    p = data(cell)
+    t = Task[T](cell, p)
+    gp = g.__p
+    gp[0].live += 1
+    id = __task_start((): __task_run_in(t, f, g), false)
+    p[0].id = id
+    gp[0].ids.push(id)
+    if gp[0].cancelled: __task_cancel(id)
+    t
+
+__task_run_in[T] = (t: Task[T], f: () -> T, g: TaskGroup):
+    ok = __task_catch(t, f)
+    p = t.__p
+    gp = g.__p
+    gp[0].live -= 1
+    loop k in [0..gp[0].ids.len()):
+        if gp[0].ids[k] == p[0].id:
+            gp[0].ids.remove_at(k)
+            break
+    if not ok:
+        p[0].failed = __caught
+        if len(gp[0].why) == 0: gp[0].why = __caught
+        __group_cancel(gp)
+    p[0].done = true
+    __task_wake_all(p[0].waiting)
+    if gp[0].live == 0: __task_wake_all(gp[0].waiting)
+
+# (f's result kept; false: it panicked, the panic caught: lib/core/rt.jo, as an http handler's)
+__task_catch[T] = (t: Task[T], f: () -> T) -> bool:
+    global __catch_jmp
+    when TARGET == "wasm":
+        t.__p[0].result.push(f())
+        return true
+    else:
+        jb = __alloc(256)
+        keep = __catch_jmp
+        if __setjmp(jb) == 0:
+            __catch_jmp = jb
+            t.__p[0].result.push(f())
+            __catch_jmp = keep
+            __free(jb)
+            return true
+        __catch_jmp = keep
+        __free(jb)
+        false
+
+# wait until every task of the group has ended; false if one of them panicked (why() says what;
+# the others were cancelled then). In a task that has been cancelled, the group's are cancelled
+# first
+wait = (g: TaskGroup) -> bool:
+    __group_check(g.__cell.len())
+    gp = g.__p
+    loop gp[0].live > 0:
+        if __task_cancelling and not gp[0].cancelled: __group_cancel(gp)
+        __task_wait_on(gp[0].waiting, "for a group's tasks to end", -1.0, true)
+    len(gp[0].why) == 0
+
+# cancel every task of the group (t.cancel()), and those spawned into it from now on
+cancel = (g: TaskGroup):
+    __group_check(g.__cell.len())
+    __group_cancel(g.__p)
+
+__group_cancel = (gp: *__GroupCell):
+    gp[0].cancelled = true
+    loop id in gp[0].ids: __task_cancel(id)
+
+# the message of the first panic in the group's tasks ("": none has panicked)
+why = (g: TaskGroup) -> str:
+    __group_check(g.__cell.len())
+    g.__p[0].why
 
 # ---------------- channels ----------------
 struct __ChanCell[T]:
@@ -99,35 +259,71 @@ channel[T] = (capacity: int = 0) -> Channel[T]:
 __chan_check = (n: int):
     if n == 0: __panic("this Channel was not made: a Channel comes from channel[T]() (channel[int](), channel[str](10) ...)")
 
-# send v: it waits until a receiver takes it (or while the channel is full)
+# send v: it waits until a receiver takes it (or while the channel is full). In a task that has
+# been cancelled it waits for nothing: v is sent if there is room, else dropped (or left in the
+# channel, when the send was waiting already)
 send[T] = (c: Channel[T], v: T):
     __chan_check(c.__cell.len())
+    __task_fair()
     p = c.__p
     if p[0].closed: __panic("send on a closed channel: close it once every value has been sent")
+    if __task_cancelling and p[0].sent - p[0].taken >= p[0].capacity + __task_waiters(p[0].receivers): return
     p[0].q.push(v)
     me = p[0].sent
     p[0].sent += 1
     __task_wake_one(p[0].receivers)
-    loop me >= p[0].taken + p[0].capacity:
+    loop me >= p[0].taken + p[0].capacity and not __task_cancelling:
         __task_wait_on(p[0].senders, "to send on a channel (nothing receives from it)")
 
-# send v if that needs no wait (a receiver waits for it, or there is room); false: not sent
+# send v if it can go within `wait` seconds (a receiver takes it, or there is room); false: it
+# was not sent
+send[T] = (c: Channel[T], v: T, wait: f64) -> bool:
+    __chan_check(c.__cell.len())
+    __task_fair()
+    p = c.__p
+    until = -1.0
+    loop true:
+        if p[0].closed: __panic("send on a closed channel: close it once every value has been sent")
+        if p[0].sent - p[0].taken < p[0].capacity + __task_waiters(p[0].receivers):
+            p[0].q.push(v)
+            p[0].sent += 1
+            __task_wake_one(p[0].receivers)
+            return true
+        if __task_cancelling: return false
+        if until < 0.0:
+            w = __task_wait_time(wait)
+            if w == 0.0: return false
+            until = time() + w
+        if not __task_wait_on(p[0].senders, "to send on a channel (nothing receives from it)", until): return false
+    false
+
+# send v if that needs no wait (a receiver waits for it, or there is room); false: not sent. When
+# it is full and other tasks are ready (a receiver just woken), they take their turns first
 try_send[T] = (c: Channel[T], v: T) -> bool:
     __chan_check(c.__cell.len())
+    __task_fair()
     p = c.__p
     if p[0].closed: __panic("send on a closed channel: close it once every value has been sent")
-    if p[0].sent - p[0].taken >= p[0].capacity + __task_waiters(p[0].receivers): return false
+    if p[0].sent - p[0].taken >= p[0].capacity + __task_waiters(p[0].receivers):
+        if __task_ready.len() == 0: return false
+        __task_yield()
+        if p[0].closed: __panic("send on a closed channel: close it once every value has been sent")
+        if p[0].sent - p[0].taken >= p[0].capacity + __task_waiters(p[0].receivers): return false
     p[0].q.push(v)
     p[0].sent += 1
     __task_wake_one(p[0].receivers)
     true
 
-# the next value; none once the channel is closed and every value sent has been taken
+# the next value; none once the channel is closed and every value sent has been taken (or the
+# task has been cancelled)
 receive[T] = (c: Channel[T]) -> T?:
     __chan_check(c.__cell.len())
+    __task_fair()
     p = c.__p
     loop p[0].q.len() == 0:
-        if p[0].closed: return none
+        if p[0].closed or __task_cancelling: return none
+        # (senders with a time limit wait for a receiver)
+        if p[0].senders.len() > 0: __task_wake_all(p[0].senders)
         __task_wait_on(p[0].receivers, "to receive from a channel (nothing sends to it)")
     __chan_take(c)
 
@@ -135,19 +331,24 @@ receive[T] = (c: Channel[T]) -> T?:
 # closed and empty: closed() tells which)
 receive[T] = (c: Channel[T], wait: f64) -> T?:
     __chan_check(c.__cell.len())
+    __task_fair()
     p = c.__p
-    __task_wait_check(wait)
-    end = time() + wait
-    loop p[0].q.len() == 0:
-        if p[0].closed: return none
-        left = end - time()
-        if left <= 0.0: return none
-        __task_wait_on(p[0].receivers, "to receive from a channel (nothing sends to it)", left)
+    if p[0].q.len() == 0:
+        if p[0].closed or __task_cancelling: return none
+        w = __task_wait_time(wait)
+        if w == 0.0: return none
+        until = time() + w
+        loop p[0].q.len() == 0:
+            if p[0].closed or __task_cancelling: return none
+            if p[0].senders.len() > 0: __task_wake_all(p[0].senders)
+            if not __task_wait_on(p[0].receivers, "to receive from a channel (nothing sends to it)", until): break
+        if p[0].q.len() == 0: return none
     __chan_take(c)
 
 # the next value if one waits; none if not
 try_receive[T] = (c: Channel[T]) -> T?:
     __chan_check(c.__cell.len())
+    __task_fair()
     if c.__p[0].q.len() == 0: return none
     __chan_take(c)
 
@@ -176,7 +377,14 @@ len[T] = (c: Channel[T]) -> int:
     c.__p[0].q.len()
 
 # ---------------- select (the statement: compiler/parse.jo's parse_select) ----------------
+# Its arms: a channel's receive (ready once a value waits, or it is closed) or send (ready while
+# there is room, or a receiver waits); a task's wait (ready once it has ended); stopping() (ready
+# once the program is asked to stop). An arm whose channel is an optional that is none is never
+# ready: a fan-in sets a closed channel's variable to none, as Go sets one to nil.
 __select_turn = 0
+
+# (at a select's start: every 64th lets the others take their turns, as a channel's operations do)
+__select_fair = (): __task_fair()
 
 # (the arm to take of those ready, from a start that turns, so that none is always first; -1: none)
 __select_pick = (ready: bool[]) -> int:
@@ -198,27 +406,15 @@ __select_ready_send[T] = (c: Channel[T]) -> bool:
 
 __select_watch_receive[T] = (c: Channel[T]):
     __task_init()
-    c.__p[0].receivers.push(__task_cur)
-    c.__p[0].receivers.push(__tasks[__task_cur].gen + 1)
+    p = c.__p
+    if p[0].senders.len() > 0: __task_wake_all(p[0].senders)
+    p[0].receivers.push(__task_cur)
+    p[0].receivers.push(__tasks[__task_cur].gen + 1)
 
 __select_watch_send[T] = (c: Channel[T]):
     __task_init()
     c.__p[0].senders.push(__task_cur)
     c.__p[0].senders.push(__tasks[__task_cur].gen + 1)
-
-__select_deadline = (seconds: f64) -> f64:
-    __task_wait_check(seconds)
-    time() + seconds
-
-# (wait for a channel watched, until deadline (-1: none); false: the time came)
-__select_block = (deadline: f64) -> bool:
-    if deadline < 0.0:
-        __task_block("in a select, for one of its channels", -1.0)
-        return true
-    left = deadline - time()
-    if left <= 0.0: return false
-    __task_block("in a select, for one of its channels", left)
-    time() < deadline
 
 __select_take[T] = (c: Channel[T]) -> T?:
     if c.__p[0].q.len() == 0: return none
@@ -233,6 +429,65 @@ __select_put[T] = (c: Channel[T], v: T):
     p[0].q.push(v)
     p[0].sent += 1
     __task_wake_one(p[0].receivers)
+
+# (an arm on an optional channel: none is never ready)
+__select_ready_receive[T] = (c: Channel[T]?) -> bool:
+    if let ch = c: return __select_ready_receive(ch)
+    false
+
+__select_ready_send[T] = (c: Channel[T]?) -> bool:
+    if let ch = c: return __select_ready_send(ch)
+    false
+
+__select_watch_receive[T] = (c: Channel[T]?):
+    if let ch = c: __select_watch_receive(ch)
+
+__select_watch_send[T] = (c: Channel[T]?):
+    if let ch = c: __select_watch_send(ch)
+
+__select_take[T] = (c: Channel[T]?) -> T?:
+    if let ch = c: return __select_take(ch)
+    none
+
+__select_drop[T] = (c: Channel[T]?):
+    if let ch = c: __select_drop(ch)
+
+__select_put[T] = (c: Channel[T]?, v: T):
+    if let ch = c: __select_put(ch, v)
+
+# (an arm on a task's end: t.wait() as v)
+__select_ready_receive[T] = (t: Task[T]) -> bool:
+    __task_cell_check(t.__cell.len())
+    t.__p[0].done
+
+__select_watch_receive[T] = (t: Task[T]):
+    __task_init()
+    t.__p[0].waiting.push(__task_cur)
+    t.__p[0].waiting.push(__tasks[__task_cur].gen + 1)
+
+__select_take[T] = (t: Task[T]) -> T?:
+    if t.__p[0].result.len() == 0: return none
+    t.__p[0].result[0]
+
+__select_drop[T] = (t: Task[T]): pass
+
+# (an arm on the program being asked to stop: stopping())
+__select_ready_stop = () -> bool: stopping()
+
+__select_watch_stop = ():
+    __task_init()
+    __task_stop_waiters.push(__task_cur)
+    __task_stop_waiters.push(__tasks[__task_cur].gen + 1)
+
+__select_deadline = (seconds: f64) -> f64: time() + __task_wait_time(seconds)
+
+# (wait for an arm watched, until deadline (-1: none); false: the time came, or the task has been
+# cancelled)
+__select_block = (deadline: f64) -> bool:
+    if __task_cancelling: return false
+    if deadline < 0.0: return __task_block("in a select, for one of its arms", -1.0)
+    if deadline <= time(): return false
+    __task_block("in a select, for one of its arms", deadline)
 
 # ---------------- waiting ----------------
 # wait until the next frame (a game's), letting the others take their turns; outside a game, the
@@ -262,6 +517,21 @@ __task_yield = ():
     __task_make_ready(__task_cur)
     __task_give_way()
 
+# (a channel's operation, or a select: every 64th lets the others ready, and those whose time or
+# socket has come, take their turns, so that a loop of them that never waits (a select on a closed
+# channel, try_send to many) holds up no other for long. A game's update and draw are left be)
+__task_fair = ():
+    global __task_ops
+    __task_ops += 1
+    if __task_ops & 63 != 0 or not __tasks_on: return
+    if __is_game and __task_cur == 0: return
+    if __task_pollable(): __task_poll(false)
+    __task_yield()
+
+# (a look at the sockets and times would find something: some task waits for them, or the program
+# has been asked to stop)
+__task_pollable = () -> bool: __task_timers.len() > 0 or __task_io.len() > 0 or __stop_asked
+
 # ---------------- the scheduler ----------------
 struct __TaskRec:
     jb: *u8                 # (where it was when it last gave way: setjmp's buffer)
@@ -280,6 +550,11 @@ struct __TaskRec:
     why = ""                # (what it waits for: told if every task waits)
     catch_jmp: *u8 = null   # (its own __catch_jmp: a server's handler)
     background = false      # (the program's end does not wait for it: a server's loop)
+    by_time = false         # (its last wait ended as its time came)
+    cancelled = false
+    stops = false           # (it has asked stopping(): its sleep and net.wait end when that is asked)
+    sleeping = false        # (waiting in sleep, or for sockets)
+    site: int[]             # (where it was spawned: return addresses)
 
 __tasks: __TaskRec[]
 __task_cur = 0
@@ -289,29 +564,40 @@ __task_ended: int[]         # (ended: their stacks let go of from another)
 __task_stacks: int[]        # (stacks kept for the next tasks)
 __task_live = 0             # (tasks started and not ended, main and those in the background not counted)
 __task_turns = 0
+__task_ops = 0              # (channel operations and selects, for __task_fair)
 __task_timers: Heap[int]    # (tasks waiting with a time limit: their ids and waits, by when)
 __task_io: int[]            # (tasks waiting for sockets)
 __task_frame_waiters: int[]
+__task_stop_waiters: int[]  # (selects with a stopping() arm)
+__task_stop_woken = false   # (the program's being asked to stop has been seen: its waiters woken)
 __task_end_waiting = false  # (main has ended, and waits for the tasks)
 __task_nothing: () -> void = __task_none
+__task_jb: *u8 = null       # (for __task_note_site)
 const __TASK_STACK = 8 << 20
 const __TASK_GUARD = 64 << 10
 const __WASM_TASK_STACK = 64 << 10
 
 __task_init = ():
-    global __task_end_fn, __task_frame_fn, __task_wait_fn, __tasks_on
+    global __task_closing_fn, __task_end_fn, __task_frame_fn, __task_panic_fn, __task_stop_fn, __task_wait_fn, __task_waiter_fn, __task_wake_fn, __tasks_on
     if __tasks_on: return
     __tasks_on = true
     __task_wait_fn = __task_wait_io
     __task_frame_fn = __task_frame
     __task_end_fn = __task_end
+    __task_stop_fn = __task_stops
+    __task_panic_fn = __task_panic_site
+    __task_closing_fn = __task_closing
+    __task_wake_fn = __task_wake_list
+    __task_waiter_fn = __task_waiter
     # (the main thread is task 0)
-    __tasks.push(__TaskRec(jb = __alloc(192), run = __task_nothing, state = 2, started = true))
+    __tasks.push(__TaskRec(jb = __alloc(192), run = __task_nothing, state = 2, started = true, stops = __stop_polled))
     when TARGET == "windows":
         __tasks[0].fiber = ConvertThreadToFiber(null)
         if __tasks[0].fiber == null: __panic("tasks: the main thread could not become a fiber")
 
-__task_start = (f: () -> void, background: bool):
+# (a task for f, ready to run: its record's number)
+@noinline
+__task_start = (f: () -> void, background: bool) -> int:
     __task_init()
     id = 0
     if __task_free.len() > 0:
@@ -320,9 +606,13 @@ __task_start = (f: () -> void, background: bool):
         __tasks[id].started = false
         __tasks[id].why = ""
         __tasks[id].catch_jmp = null
+        __tasks[id].cancelled = false
+        __tasks[id].stops = false
+        __tasks[id].sleeping = false
     else:
         id = __tasks.len()
         __tasks.push(__TaskRec(jb = __alloc(192), run = f))
+    __task_note_site(id)
     when TARGET == "windows":
         fb: cfn(*u8) = __task_fiber_start
         __tasks[id].fiber = CreateFiberEx(64 << 10, __TASK_STACK, u32(0), fb as *u8, id as *u8)
@@ -340,6 +630,29 @@ __task_start = (f: () -> void, background: bool):
     __tasks[id].background = background
     if not background: __task_live += 1
     __task_make_ready(id)
+    id
+
+# (where spawn was called from: the return addresses of the calls that led to it, for the reports)
+@noinline
+__task_note_site = (id: int):
+    global __task_jb
+    __tasks[id].site.clear()
+    when TARGET != "wasm":
+        if __task_jb == null: __task_jb = __alloc(192)
+        __setjmp(__task_jb)
+        fp = 0
+        when ARCH == "arm64":
+            fp = (__task_jb as *int)[10]
+        else:
+            fp = (__task_jb as *int)[1]
+        loop __tasks[id].site.len() < 8 and fp != 0 and fp & 7 == 0:
+            ret = (fp as *int)[1]
+            when TARGET == "macos": ret = ret & 0x7FFFFFFFFFFF
+            if ret == 0: break
+            __tasks[id].site.push(ret)
+            next = (fp as *int)[0]
+            if next <= fp or next - fp > (1 << 23): break
+            fp = next
 
 # (a stack: a mapping with a guard at its end that is never readable, so that going past it is a
 # stack overflow and not a write into what is mapped next; pages are only taken as they are used)
@@ -376,7 +689,7 @@ __task_reap = ():
         __task_free.push(id)
 
 __task_make_ready = (id: int):
-    __tasks[id].state = 1
+    data(__tasks)[id].state = 1
     __task_ready.push(id)
 
 # (wake a task waiting at its wait number w; a stale one is left be)
@@ -399,6 +712,14 @@ __task_wake_all = (ws: mut int[]):
     loop k in [0..ws.len() / 2): __task_wake(ws[2 * k], ws[2 * k + 1])
     ws.clear()
 
+# (the library's: lib/net.jo's waiters of a peer)
+__task_wake_list = (ws: int[]):
+    loop k in [0..ws.len() / 2): __task_wake(ws[2 * k], ws[2 * k + 1])
+
+__task_waiter = () -> (int, int):
+    __task_init()
+    (__task_cur, __tasks[__task_cur].gen + 1)
+
 # (how many of a list of waiters still wait there)
 __task_waiters = (ws: int[]) -> int:
     n = 0
@@ -407,21 +728,59 @@ __task_waiters = (ws: int[]) -> int:
         if id < __tasks.len() and __tasks[id].state == 3 and __tasks[id].gen == ws[2 * k + 1]: n += 1
     n
 
-# (wait, put on a list of waiters, until woken from it, or for at most `seconds`)
-__task_wait_on = (ws: mut int[], why: str, seconds: f64 = -1.0):
+# (wait, put on a list of waiters, until woken from it, or until the time `until` (-1: none); false:
+# the time came. firm: also in a task that has been cancelled)
+__task_wait_on = (ws: mut int[], why: str, until: f64 = -1.0, firm: bool = false) -> bool:
     __task_init()
     ws.push(__task_cur)
     ws.push(__tasks[__task_cur].gen + 1)
-    __task_block(why, seconds)
+    __task_block(why, until, firm)
 
-# (the running task waits: until woken, for at most `seconds` (-1: no limit))
-__task_block = (why: str, seconds: f64):
+# (the running task waits: until woken, or until the time `until` (-1: none); false: the time came.
+# One that has been cancelled waits for nothing (unless firm): the others ready take their turns,
+# and it goes on)
+__task_block = (why: str, until: f64, firm: bool = false) -> bool:
     me = __task_cur
-    __tasks[me].gen += 1
-    __tasks[me].state = 3
-    __tasks[me].why = why
-    if seconds >= 0.0: __task_timers.push((me << 32) | (__tasks[me].gen & 0xFFFFFFFF), time() + seconds)
+    # (its record through a pointer: one look at the array, which may grow while others run)
+    rs = data(__tasks)
+    rs[me].gen += 1
+    rs[me].by_time = false
+    if rs[me].cancelled and not firm:
+        __task_make_ready(me)
+        __task_give_way()
+        return true
+    rs[me].state = 3
+    rs[me].why = why
+    if until >= 0.0: __task_timers.push((me << 32) | (rs[me].gen & 0xFFFFFFFF), until)
     __task_give_way()
+    not data(__tasks)[me].by_time
+
+# (cancel task id: lib's cancel)
+__task_cancel = (id: int):
+    global __task_cancelling
+    if id <= 0 or id >= __tasks.len() or __tasks[id].state == 0 or __tasks[id].state == 4: return
+    __tasks[id].cancelled = true
+    if id == __task_cur: __task_cancelling = true
+    if __tasks[id].state == 3: __task_make_ready(id)
+
+# (stopping() asked in the running task)
+__task_stops = ():
+    __tasks[__task_cur].stops = true
+
+# (a panic in a task: where it was spawned, after the panic's backtrace)
+__task_panic_site = ():
+    if __task_cur != 0: __task_tell_site(__task_cur)
+
+# (a socket about to be closed: the tasks waiting for it are woken, as by an error on it, so that
+# none waits for a socket that may be reused by the next connection)
+__task_closing = (fd: int):
+    loop id in __task_io:
+        if __tasks[id].state != 3: continue
+        loop j in [0..__tasks[id].fds.len()):
+            if __tasks[id].fds[j] == fd:
+                __tasks[id].got[j] |= 4
+                __task_make_ready(id)
+                break
 
 # (the running task lets another run, until it is made ready again and its turn comes)
 __task_give_way = ():
@@ -433,7 +792,7 @@ __task_give_way = ():
                 continue
             else:
                 __task_poll(true)
-        else if __task_turns % 64 == 0: __task_poll(false)
+        else if __task_turns % 64 == 0 and __task_pollable(): __task_poll(false)
         if __task_ready.len() == 0: continue
         next = __task_ready.pop_front()
         if next == __task_cur:
@@ -452,7 +811,9 @@ __task_wait_io = (fds: int[], want: int[], seconds: f64) -> int[]:
         __tasks[me].in_io = true
         __task_io.push(me)
     why = if fds.len() == 0: "in sleep" else: if fds.len() == 1 and fds[0] == 0: "for a line of input" else: "for the network"
-    __task_block(why, seconds)
+    __tasks[me].sleeping = true
+    __task_block(why, if seconds < 0.0: -1.0 else: time() + seconds)
+    __tasks[me].sleeping = false
     __tasks[me].fds = []
     __tasks[me].want = []
     got = __tasks[me].got
@@ -471,17 +832,49 @@ __task_frame = ():
     __task_make_ready(__task_cur)
     __task_give_way()
 
-# (main has ended: the program goes on until the tasks have)
+# (main has ended: the program goes on until the tasks have. Asked to stop, it tells after a
+# second which go on)
 __task_end = ():
     global __task_end_waiting
     if __task_cur != 0: return
     __task_end_waiting = true
-    loop __task_live > 0: __task_block("for the tasks to end", -1.0)
+    told = false
+    until = -1.0
+    loop __task_live > 0:
+        if __stop_asked and not told:
+            if until < 0.0: until = time() + 1.0
+            if not __task_block("for the tasks to end", until, true):
+                told = true
+                __task_tell_left()
+            continue
+        __task_block("for the tasks to end", -1.0, true)
+
+# (asked to stop, main has ended, and tasks go on: told, with where each one is)
+__task_tell_left = ():
+    if __task_live == 0: return
+    __out_flush()
+    n = if __task_live == 1: "a task goes on" else: "{__task_live} tasks go on"
+    __write_err("the program was asked to stop and main has ended, but {n} (a task ends then if it looks at stopping(), or if main cancels it); ctrl-c again ends the program\n")
+    loop id in [1..__tasks.len()):
+        st = __tasks[id].state
+        if st >= 1 and st <= 3 and not __tasks[id].background: __task_tell(id)
+
+# (the program being asked to stop, seen: those that wait for that woken (a sleep or net.wait in a
+# task that has asked stopping(), a select's stopping() arm, main waiting for the tasks to end)
+__task_stop_seen = ():
+    global __task_stop_woken
+    if not __stop_asked or __task_stop_woken: return
+    __task_stop_woken = true
+    loop id in [0..__tasks.len()):
+        if __tasks[id].state == 3 and __tasks[id].sleeping and __tasks[id].stops: __task_make_ready(id)
+    __task_wake_all(__task_stop_waiters)
+    if __task_end_waiting: __task_wake(0, __tasks[0].gen)
 
 # (sockets and times looked at: tasks whose time has come, or whose sockets are ready, made
 # ready. block: nothing else is ready, so this waits for one of them)
 __task_poll = (block: bool):
     global __task_io
+    __task_stop_seen()
     until = __task_times(time())
     fds: int[]
     want: int[]
@@ -499,8 +892,19 @@ __task_poll = (block: bool):
     __task_io = keep
     ms = 0
     if block and __task_ready.len() == 0:
-        if fds.len() == 0 and until < 0.0: __task_deadlock()
-        ms = if until < 0.0: -1 else: max(int(ceil((until - time()) * 1000.0)), 0)
+        # (a select waiting for ctrl-c alone is no deadlock: the signal ends it)
+        if fds.len() == 0 and until < 0.0 and not (__stop_watching and not __stop_asked and __task_waiters(__task_stop_waiters) > 0): __task_deadlock()
+        ms = if until < 0.0: -1 else: min(max(int(ceil((until - time()) * 1000.0)), 0), 3600000)
+        # (ctrl-c: the pipe its handler writes to ends the wait, lib/std/stop.jo; Windows's is seen
+        # by another thread, which wakes nothing here)
+        if __stop_watching and not __stop_asked:
+            when TARGET == "windows":
+                if ms < 0 or ms > 100: ms = 100
+            else:
+                if __stop_rfd >= 0:
+                    fds.push(__stop_rfd)
+                    want.push(1)
+                    owner.push(-1)
     if fds.len() == 0:
         if ms > 0: __task_sleep_ms(ms)
     else:
@@ -508,11 +912,13 @@ __task_poll = (block: bool):
         loop k in [0..fds.len()):
             if got[k] == 0: continue
             id = owner[k]
-            if __tasks[id].state != 3: continue
+            if id < 0 or __tasks[id].state != 3: continue
             loop j in [0..__tasks[id].fds.len()):
                 if __tasks[id].fds[j] == fds[k]: __tasks[id].got[j] |= got[k]
             __task_make_ready(id)
-    if ms != 0: __task_times(time())
+    if ms != 0:
+        __task_stop_seen()
+        __task_times(time())
 
 # (the tasks whose time has come made ready; when the next one's comes, -1: none waits for a time)
 __task_times = (now: f64) -> f64:
@@ -525,6 +931,7 @@ __task_times = (now: f64) -> f64:
         u = __task_timers.peek_priority()
         if u > now: return u
         __task_timers.pop()
+        __tasks[id].by_time = true
         __task_make_ready(id)
     -1.0
 
@@ -578,37 +985,54 @@ __task_deadlock = ():
     __write_err("panic: deadlock: every task is waiting, and none of them can go on\n")
     loop id in [0..__tasks.len()):
         if __tasks[id].state != 3 or id == __task_cur: continue
-        who = if id == 0: "main" else: "task {id}"
-        __write_err("\n{who} waits {__tasks[id].why}\n")
-        when TARGET != "windows" and TARGET != "wasm":
-            jb = __tasks[id].jb as *int
-            when ARCH == "arm64":
-                __backtrace_from(jb[10], 0)
-            else:
-                __backtrace_from(jb[1], 0)
-    if __tasks[__task_cur].state == 3:
-        who = if __task_cur == 0: "main" else: "task {__task_cur}"
-        __write_err("\n{who} waits {__tasks[__task_cur].why}\n")
-        __backtrace()
+        __task_tell(id)
+    if __tasks[__task_cur].state == 3: __task_tell(__task_cur)
     __exit(101)
 
+# (where task id is, on standard error: what it waits for, its calls, and where it was spawned)
+__task_tell = (id: int):
+    who = if id == 0: "main" else: "task {id}"
+    st = __tasks[id].state
+    what = if st == 3: "waits {__tasks[id].why}" else: if st == 2: "is running" else: "is ready to run"
+    if __tasks[id].cancelled: what += " (cancelled)"
+    __write_err("\n{who} {what}\n")
+    if id == __task_cur: __backtrace()
+    else:
+        when TARGET != "windows" and TARGET != "wasm":
+            if __tasks[id].started:
+                jb = __tasks[id].jb as *int
+                when ARCH == "arm64":
+                    __backtrace_from(jb[10], 0)
+                else:
+                    __backtrace_from(jb[1], 0)
+    __task_tell_site(id)
+
+__task_tell_site = (id: int):
+    if id == 0 or __tasks[id].site.len() == 0: return
+    __write_err("    (the task was spawned here:)\n")
+    __backtrace_site(__tasks[id].site)
 # (the running task gives way to task `to`, and goes on from here when its turn comes again)
 @noinline
 __task_switch = (to: int):
-    global __catch_jmp, __task_cur, __task_hi, __task_lo
+    global __catch_jmp, __task_cancelling, __task_cur, __task_hi, __task_lo
     from = __task_cur
-    __tasks[from].catch_jmp = __catch_jmp
+    rs = data(__tasks)
+    rs[from].catch_jmp = __catch_jmp
     __task_cur = to
-    __tasks[to].state = 2
-    __catch_jmp = __tasks[to].catch_jmp
-    __task_lo = __tasks[to].lo
-    __task_hi = __tasks[to].hi
+    rs[to].state = 2
+    __catch_jmp = rs[to].catch_jmp
+    __task_cancelling = rs[to].cancelled
+    __task_lo = rs[to].lo
+    __task_hi = rs[to].hi
     when TARGET == "windows":
         SwitchToFiber(__tasks[to].fiber)
     else when TARGET == "wasm":
         fresh = if __tasks[to].started: 0 else: 1
         __tasks[to].started = true
-        __wasm_task_switch(from, to, fresh, __tasks[to].hi, if __tasks[from].state == 4: 1 else: 0)
+        # (one that has ended is not paused: it returns, and its stack of the browser's goes)
+        ended = __tasks[from].state == 4
+        __wasm_task_switch(from, to, fresh, __tasks[to].hi, if ended: 1 else: 0)
+        if ended: return
         __wasm_task_resumed(from)
     else:
         if __setjmp(__tasks[from].jb) == 0:
@@ -691,8 +1115,11 @@ when TARGET == "wasm":
 
     @export("__task_tick")
     __task_tick = ():
-        global __task_cur, __task_hi, __task_lo
+        global __task_cancelling, __task_cur, __task_hi, __task_lo
         __task_cur = 0
+        # (a tick also comes when the network has something, a fetch's answer or a WebSocket's
+        # message: the tasks waiting for it look again)
+        __task_net_look()
         until = __task_times(time())
         if __task_ready.len() == 0:
             if until >= 0.0: __wasm_task_timer(__task_ms(until))
@@ -700,6 +1127,7 @@ when TARGET == "wasm":
         next = __task_ready.pop_front()
         __task_cur = next
         __tasks[next].state = 2
+        __task_cancelling = __tasks[next].cancelled
         __task_lo = __tasks[next].lo
         __task_hi = __tasks[next].hi
         fresh = if __tasks[next].started: 0 else: 1
@@ -716,13 +1144,29 @@ __task_idle = () -> bool:
         me = __task_cur
         until = __task_times(time())
         if __task_ready.len() > 0: return false
-        # (a game's frames come, and its update may send to a channel; anything else waiting with
-        # no time limit waits for good)
-        if until < 0.0 and not __is_game: __task_deadlock()
+        # (a game's frames come, and its update may send to a channel; the network's answers come;
+        # anything else waiting with no time limit waits for good)
+        if until < 0.0 and not __is_game and not __task_net_waits(): __task_deadlock()
         __task_cur = 0
-        __wasm_task_idle(me, if until < 0.0: -1 else: __task_ms(until), if __tasks[me].state == 4: 1 else: 0)
+        # (one that has ended is not paused: it returns, and its stack of the browser's goes)
+        ended = __tasks[me].state == 4
+        __wasm_task_idle(me, if until < 0.0: -1 else: __task_ms(until), if ended: 1 else: 0)
+        if ended: return true
         __wasm_task_resumed(me)
     true
+
+# (wasm: the tasks waiting for the network (a fetch, a WebSocket's messages), woken to look again)
+__task_net_look = ():
+    global __task_io
+    loop id in __task_io:
+        __tasks[id].in_io = false
+        if __tasks[id].state == 3: __task_make_ready(id)
+    __task_io = []
+
+__task_net_waits = () -> bool:
+    loop id in __task_io:
+        if __tasks[id].state == 3: return true
+    false
 
 # (a web page's main has ended: the page goes on until the tasks have, as a program's end does)
 __task_main_end = ():
