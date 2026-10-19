@@ -343,6 +343,11 @@ loop k, v in counts: print("{k}: {v}")
 
 `m.has(k)`, `m.remove(k)`, `m.keys()`, `m.values()` and `m.len()` do what they say; `m.items()` is the (key, value) pairs, to sort them (`m.items().sorted_by((p): -p.1)`).
 
+A set (`Set[T]`, values without repeats) is written with braces and no colons, `{"a", "e",
+"i"}`, or made by a loop, `{loop w in words: w.lower()}`; `{}` is an empty one where a `Set` is
+expected (`seen: Set[int] = {}`), and an empty map otherwise. `x in s`, `s.add(x)` and
+`s.remove(x)`; more in [API.md](API.md#sets-and-deques).
+
 ## 5. Functions
 
 ```gdscript

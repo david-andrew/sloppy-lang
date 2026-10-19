@@ -1063,8 +1063,9 @@ print(seen.difference(upstairs), "roof" in seen, seen.len())
 A set: values without repeats, kept in the order they were first added, asked about in about the same time however many it holds (a map from each to nothing, underneath).
 
 ```gdscript
-seen: Set[int]
+seen: Set[int]                      # (or seen: Set[int] = {}, empty)
 seen.add(start)
+vowels = {"a", "e", "i", "o", "u"}  # the values written; {loop w in ws: w.lower()} too
 if next in seen: continue           # x in s, or s.has(x)
 words = set(split(text, " "))       # the different words
 loop w in words: print(w)

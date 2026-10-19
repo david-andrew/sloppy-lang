@@ -814,6 +814,22 @@ parse_primary = () -> int:
         loop pk() != .rbrace:
             pr = mk(.pair, cur_pos())
             nodes[pr].a = i32(parse_expr())
+            if pairs.len() == 0 and (pk() == .comma or pk() == .rbrace):
+                # ({1, 2, 3}: a set, __set_of([1, 2, 3]))
+                elems = [int(nodes[pr].a)]
+                loop accept(.comma):
+                    if pk() == .rbrace: break
+                    e = parse_expr()
+                    if pk() == .colon: fatal(cur_pos(), "a set's values have no `:` after them (this is a set, as its first value has none: a map is `\{k: v, ...}`)")
+                    elems.push(e)
+                p_matrix = saved_m
+                expect(.rbrace, "")
+                arr = mk(.array, pos)
+                set_list(arr, elems)
+                sc = mk(.call, pos)
+                nodes[sc].a = i32(comp_ident(intern("__set_of"), pos))
+                set_list(sc, [arr])
+                return sc
             # ({x = 1, y = 2}: a Lua table or a JavaScript object)
             if pk() == .assign: fatal(cur_pos(), "a map is `\{\"x\": 1, \"y\": 2}` (keys are values); for named fields, declare a struct and make one with `Point(x = 1, y = 2)`")
             expect(.colon, "")
@@ -1467,6 +1483,8 @@ comp_count = 0
 # ({loop ...: key: value} is __map_of([loop ...: (key, value)]))
 parse_comprehension = (pos: int, map: bool = false) -> int:
     clauses: (int, int)[]          # (1, loop node) or (2, condition)
+    set_comp = false
+    as_map = map
     saved_m = p_matrix
     p_matrix = 0
     elem = 0
@@ -1495,7 +1513,11 @@ parse_comprehension = (pos: int, map: bool = false) -> int:
             accept(.colon)
         else:
             elem = parse_expr()
-            if map:
+            # ({loop w in ws: w}: a set)
+            if as_map and pk() != .colon:
+                as_map = false
+                set_comp = true
+            if as_map:
                 expect(.colon, "':' between a key and its value")
                 v = parse_expr()
                 pair = mk(.tuple, nodes[elem].pos)
@@ -1504,7 +1526,7 @@ parse_comprehension = (pos: int, map: bool = false) -> int:
             break
     p_matrix = saved_m
     if pk() == .kw_else: fatal(cur_pos(), "an `if` right after the loop's colon picks which elements there are; a choice between two values goes in parentheses: `[loop x in xs: (if c: a else: b)]`")
-    if map: expect(.rbrace, "")
+    if as_map or set_comp: expect(.rbrace, "")
     else: expect(.rbrack, "")
     comp_count += 1
     acc = intern("__comp{comp_count}")
@@ -1545,9 +1567,10 @@ parse_comprehension = (pos: int, map: bool = false) -> int:
     nodes[result].a = i32(comp_ident(acc, pos))
     blk = mk(.block, pos)
     set_list(blk, [decl, stmt, result])
-    if not map: return blk
+    if not as_map and not set_comp: return blk
     mc = mk(.call, pos)
     nodes[mc].a = i32(comp_ident(intern("__map_of"), pos))
+    if set_comp: nodes[mc].a = i32(comp_ident(intern("__set_of"), pos))
     set_list(mc, [blk])
     mc
 

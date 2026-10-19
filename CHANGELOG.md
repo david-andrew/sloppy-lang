@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Set literals: `{1, 2, 3}` is a `Set[int]` (it said "expected ':'"), `{loop w in ws: w}` makes
+  one by a loop, and `{}` where a Set is expected is an empty one (`seen: Set[int] = {}`).
+- No warning for a number with a format in a string, `"{42:05}"` (it took it for a regular
+  expression's `{4}`).
 - `m.items()` gives a map's (key, value) pairs as an array, in the order added (it said "no
   'items' for {str: int}"), for sorting them: `m.items().sorted_by((p): -p.1)`.
 - Messages for other languages' habits: `(x) -> x * 2` and `x -> x * 2` (Java, Kotlin) say "a
