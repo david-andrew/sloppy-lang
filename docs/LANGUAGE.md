@@ -1156,6 +1156,7 @@ build:                          # build options live in the source
     opt = release               # debug | release
     output = "mygame"           # the file `sloppy build` writes (beside the program)
     name = "My Game"            # PROGRAM_NAME: window title, and where save_data keeps data
+                                # (a folder's name, as Windows allows them: no / \ : * ? " < > |)
     icon = "icon.png"           # a square PNG (up to 256 px): the .exe's icon, the window's (on
                                 # Windows and X11), the Dock's on macOS, the web page's;
                                 # PROGRAM_ICON has its bytes
@@ -1460,7 +1461,7 @@ sloppy file.jo [args]     compile and run (wasm target: opens the browser)
 sloppy watch file.jo      run it, and reload it while its files change
 sloppy --web file.jo      compile for the web and open it in the browser
 sloppy build file.jo      write the executable / .html (-o game.zip: the page as index.html in a
-                          zip, ready to upload to itch.io)
+                          zip, ready to upload to itch.io; on Windows the .exe in one)
 sloppy test file.jo       run `test` blocks (sloppy test file.jo save: those with "save" in their names)
 sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, platformer, 3d, story, online, program)
 sloppy check file.jo      type check only
@@ -1476,8 +1477,13 @@ is the exception: what follows its file is the program's own arguments, so `slop
 game.jo level2`.
 
 On Windows, `sloppy` is `sloppy.exe` and programs are Windows executables (`sloppy build game.jo`
-writes `game.exe`); `sloppy build --target windows` makes them on Linux too, and `--target linux`
-Linux ones on Windows. `--target linux-arm64` makes programs for Linux on 64-bit ARM (a Raspberry
+writes `game.exe`, and `game.pdb` beside it, which only debuggers use); `sloppy build --target
+windows` makes them on Linux too, and `--target linux` Linux ones on Windows. On Windows, `-o
+game.zip` writes the program in a zip, to share (`--target wasm -o game.zip` the web page, as
+elsewhere). A game has no console of its own: `sloppy game.jo` shows what it prints in the one it
+was started from, and a built game that stops with an error when it was started some other way
+(double-clicked) shows the error in a message box and writes it to `crash.txt` in its save folder
+(`%APPDATA%\<name>`). `--target linux-arm64` makes programs for Linux on 64-bit ARM (a Raspberry
 Pi, ARM laptops and servers), the default when the compiler itself runs there.
 
 **Reloading while it runs.** `sloppy watch game.jo` runs the game and keeps watching the files it
