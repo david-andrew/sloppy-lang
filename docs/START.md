@@ -139,7 +139,9 @@ Settings, Privacy & Security, Open Anyway).
 ## Phones
 
 The first finger is the mouse, its left button down while it touches, so a game made for the
-mouse works as it is; `touches()` has every finger (on-screen buttons: left, right, jump).
+mouse works as it is; `touches()` has every finger (on-screen buttons: left, right, jump), and
+`touch_ids()` a number for each that stays the same while it is down (a drag that turns a camera:
+how far that finger moved since the last frame).
 `touch_device()` says the screen is a touch screen from the start, `touch_input()` that the last
 input was a finger (no hover then). `swipe()` is the way a drag just went (a 2048 move),
 `long_press()` a finger held still. `toggle_fullscreen()` from a tap goes fullscreen as the

@@ -2138,6 +2138,10 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `is_mouse_locked = () -> bool`: (in a screenshot run, what the game asked for: the desktop's focus coming and going would make the run differ from one time to the next)
 - `window_focused = () -> bool`: the window (or the web page) has the keyboard's focus: false while the player is in another window or tab, as after a click outside an itch.io frame (a game may pause then)
 - `touches = () -> vec2[]`: the fingers on a touch screen (a phone's, in a web page): where each is, in the screen's units as mouse_pos, in the order they landed. The first finger also is the mouse, its left button held while it is down, so a game made for the mouse works with one finger; more fingers (on screen buttons: left, right, jump) are only here. Empty without a touch screen.
+- `touch_ids = () -> int[]`: each finger's number, in the order of touches(): the same for as long as that finger stays down, and another for the next one to land, so a game can follow each finger from frame to frame (what it landed on, how far it moved since the last frame: a drag that turns a camera)
+  ```gdscript
+  loop k in 0.. and id in touch_ids(): at = touches()[k]
+  ```
 - `touch_input = () -> bool`: whether the pointer is a finger: the last pointer input was a touch, not the mouse (a finger lifted leaves mouse_pos where it was: hover highlights mean nothing then)
 - `touch_device = () -> bool`: whether the screen is a touch screen, its main pointer a finger (a phone or a tablet: a page asks the browser), known before the first touch: on-screen buttons from the start, say. touch_input() says whether the last input was a finger
 
