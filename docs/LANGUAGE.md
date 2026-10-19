@@ -345,7 +345,9 @@ takes `n: mut Node?` and calls itself on `n!.next`).
 `T[N]` holds exactly N elements, stored in place: inside a struct, a variable or a shader's
 uniforms, with no separate allocation. N is a number or a constant (`const SLOTS = 8`, then
 `int[SLOTS]`). They are made from a literal with N elements, from `[]` (all zeros, which is also
-what a field or variable without a value starts as) or from `fill(x, N)`:
+what a field or variable without a value starts as), from `fill(x, N)`, or from a comprehension
+that makes N (`bits: u8[256] = [loop i in 0..256: u8(popcount(i))]`, a table worked out; another
+count panics):
 
 ```gdscript
 struct Inventory:
