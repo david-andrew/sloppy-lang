@@ -94,6 +94,12 @@ __main_stack = () -> int:
         return __main_stack_hi
 
 __ts = () -> *int:
+    # (the usual case, small enough to be put inline: no threads but the main one)
+    if __tstack_base == null and not __c_threads and __tstate != null: return __tstate
+    __ts_other()
+
+@noinline
+__ts_other = () -> *int:
     if __tstate == null: __ts_init()
     if __c_threads: return __ts_by_stack()
     __tstate + __tid() * __TS_WORDS
@@ -223,10 +229,16 @@ __out_of_memory = ():
     __write_err("fatal: out of memory\n")
     __exit(1)
 
-# smallest c with 32 << c >= n (the exponent of float(n - 1) is floor(log2(n - 1)))
+# Blocks come in sizes 32, 48, 64, 96, 128, 192, ...: each power of two and one and a half
+# times it (a short string, 41 bytes and its text, takes 48 where it took 64). The class of a
+# size: c, the smallest with __class_size(c) >= n (from the exponent of float(n - 1), which is
+# floor(log2(n - 1)), and the top bit of its mantissa, whether n - 1 is past one and a half
+# times that power)
 __size_class = (n: int) -> int:
     if n <= 32: return 0
-    int((f64(n - 1) as u64) >> 52) - 1027
+    int((f64(n - 1) as u64) >> 51) - 2055
+
+__class_size = (c: int) -> int: (32 | ((c & 1) << 4)) << (c >> 1)
 
 # Allocate `size` zeroed bytes (16-byte aligned).
 __alloc = (size: int) -> *u8: __alloc_z(size, true)
@@ -251,6 +263,14 @@ __alloc_z = (size: int, zero: bool) -> *u8:
             if zero: mem_set(head + 16, 0, size)
             (head as *int)[0] = c
             return head + 16
+        # (none freed: the next block of the chunk being carved up, which is zeros already)
+        cur = t[0]
+        csize = __class_size(c)
+        if cur != 0 and cur + csize <= t[1]:
+            t[0] = cur + csize
+            t[2] += 1
+            (cur as *int)[0] = c
+            return (cur + 16) as *u8
     __alloc_slow(size, zero)
 
 # (a thread C made: the shared state, one thread at a time)
@@ -290,7 +310,7 @@ __alloc_slow = (size: int, zero: bool) -> *u8:
         h[1] = -1
         return (h as *u8) + 16
     c = __size_class(n)
-    csize = 32 << c
+    csize = __class_size(c)
     cur = t[0] as *u8
     if cur == null or cur + csize > t[1] as *u8:
         chunk = 4 << 20
@@ -372,7 +392,7 @@ __big_take = (t: *int, total: int) -> *int:
 __grow_alloc = (p: *u8, used: int, size: int) -> *u8:
     h = (p - 16) as *int
     if h[1] == -1: return __grow_big(p, used, size)
-    if size + 16 <= 32 << h[0]: return p
+    if size + 16 <= __class_size(h[0]): return p
     q = __alloc_raw(size)
     mem_copy(q, p, used)
     __free(p)
@@ -402,7 +422,7 @@ __grow_big = (p: *u8, used: int, size: int) -> *u8:
 __alloc_size = (p: *u8) -> int:
     h = (p - 16) as *int
     if h[1] == -1: return h[0] - 16
-    (32 << h[0]) - 16
+    __class_size(h[0]) - 16
 
 __free_obj = (p: *u8):
     __free(p)

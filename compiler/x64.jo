@@ -1125,6 +1125,42 @@ src_reg = (v: int) -> int:
     if l >= 0: return l
     -1
 
+# copy rcx bytes from rsi to rdi (all caller-saved registers are free: a memcpy is call-like).
+# Up to 16 bytes with two loads and two stores (rep movsb takes some 30 cycles to start where
+# the CPU lacks fast short rep movs), loads before stores (overlap copies as memmove does)
+emit_memcpy = ():
+    bs([0x48, 0x83, 0xF9, 0x10, 0x77, 0])               # cmp rcx, 16; ja big
+    big = code.len() - 1
+    bs([0x48, 0x83, 0xF9, 0x08, 0x72, 0])               # cmp rcx, 8; jb lt8
+    lt8 = code.len() - 1
+    bs([0x48, 0x8B, 0x06, 0x48, 0x8B, 0x54, 0x0E, 0xF8])    # mov rax, [rsi]; mov rdx, [rsi+rcx-8]
+    bs([0x48, 0x89, 0x07, 0x48, 0x89, 0x54, 0x0F, 0xF8])    # mov [rdi], rax; mov [rdi+rcx-8], rdx
+    bs([0xEB, 0])                                       # jmp done
+    d1 = code.len() - 1
+    code[lt8] = u8(code.len() - lt8 - 1)
+    bs([0x48, 0x83, 0xF9, 0x04, 0x72, 0])               # cmp rcx, 4; jb lt4
+    lt4 = code.len() - 1
+    bs([0x8B, 0x06, 0x8B, 0x54, 0x0E, 0xFC])            # mov eax, [rsi]; mov edx, [rsi+rcx-4]
+    bs([0x89, 0x07, 0x89, 0x54, 0x0F, 0xFC])            # mov [rdi], eax; mov [rdi+rcx-4], edx
+    bs([0xEB, 0])                                       # jmp done
+    d2 = code.len() - 1
+    code[lt4] = u8(code.len() - lt4 - 1)
+    bs([0x48, 0x85, 0xC9, 0x74, 0])                     # test rcx, rcx; jz done
+    d3 = code.len() - 1
+    # (1 to 3: the first, middle and last bytes)
+    bs([0x49, 0x89, 0xC8, 0x49, 0xD1, 0xE8])            # mov r8, rcx; shr r8, 1
+    bs([0x0F, 0xB6, 0x06, 0x0F, 0xB6, 0x54, 0x0E, 0xFF])    # movzx eax, [rsi]; movzx edx, [rsi+rcx-1]
+    bs([0x46, 0x0F, 0xB6, 0x0C, 0x06])                  # movzx r9d, [rsi+r8]
+    bs([0x88, 0x07, 0x46, 0x88, 0x0C, 0x07, 0x88, 0x54, 0x0F, 0xFF])    # mov [rdi], al; mov [rdi+r8], r9b; mov [rdi+rcx-1], dl
+    bs([0xEB, 0])                                       # jmp done
+    d4 = code.len() - 1
+    code[big] = u8(code.len() - big - 1)
+    bs([0xF3, 0xA4])                                    # rep movsb
+    loop k in [d1, d2, d3, d4]: code[k] = u8(code.len() - k - 1)
+
+bs = (xs: int[]):
+    loop x in xs: code.push(u8(x & 255))
+
 emit_parallel = (moves: PMove[]):
     pending = moves
     # register to register moves first (with cycle breaking via the stack)
@@ -2110,7 +2146,7 @@ emit_ins = (pos: int, ins: Ins):
         memcpy:
             moves = [PMove(RDI, a), PMove(RSI, bb), PMove(RCX, int(ins.c))]
             emit_parallel(moves)
-            b(0xF3); b(0xA4)
+            emit_memcpy()
         memset:
             moves = [PMove(RDI, a), PMove(RAX, bb), PMove(RCX, int(ins.c))]
             emit_parallel(moves)

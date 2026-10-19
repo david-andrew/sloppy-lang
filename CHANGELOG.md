@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- `ints(text)`: every whole number in a text, in one pass, a `-` right before one making it
+  negative (`ints("x=3,y=-4")` is `[3, -4]`): the Advent of Code workhorse, without splitting.
+  A million numbers in 10 MB take 30 ms, where `split()` and `to_int` took 250 ms (now 92 ms).
+- `to_int` is about six times faster on plain decimal text (a sign and up to 18 digits: 27 ns
+  a number, where it took 180 ns), with what it accepts and refuses as before; text it does
+  not make a new string to trim any more either.
+- `read_stdin()` reads straight into the text, where it copied it a byte at a time (10 MB: 3 ms,
+  where it took 45 ms).
+- `read_line()` shows what was printed before only when it waits for input, where it wrote it
+  out at every line: reading a million lines and printing one for each took 2.2 s, now 0.45 s.
+  A prompt still shows before the program waits (`input("name? ")`), and a program talking to
+  another through pipes still gets its answers. `read_line` and `File.read_line` find the line
+  end a word at a time; a line longer than 64 KB in a file read with `File.read_line` is no
+  longer searched again from its start at each 64 KB (a 10 MB line took 1.1 s, now 20 ms).
+- Allocation: a block of the heap is now one of 32, 48, 64, 96, 128, ... bytes (a power of two
+  or one and a half times one), where it was a power of two: a short string (up to 7 bytes)
+  takes 48 bytes where it took 64. Splitting 3 million short words peaked at 207 MB where it
+  took 252 MB; the compiler itself takes 225 MB where it took 241 MB. Taking a block is faster
+  too (fewer calls; no worker threads: no thread lookup), and `split()` makes its strings
+  without clearing them first: `split()` takes 40% fewer cycles.
+- Copies of up to 16 bytes (`mem_copy`, strings, slices) take two loads and two stores on x86-64,
+  where `rep movsb` took some 30 cycles to start on processors without fast short copies.
+
 ## 0.24.0
 
 - Python's spellings for sorting by a key: `sorted(words, key = len)`, `xs.sort(key = (p):
