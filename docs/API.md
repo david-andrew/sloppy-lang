@@ -332,6 +332,7 @@ Hash map {K: V}: insertion ordered, open addressing over a dense entry list. The
 - `is_empty[K, V] = (m: Map[K, V]) -> bool`
 - `keys[K, V] = (m: Map[K, V]) -> K[]`
 - `values[K, V] = (m: Map[K, V]) -> V[]`
+- `items[K, V] = (m: Map[K, V]) -> (K, V)[]`: (the (key, value) pairs, in the order added: for sorting them, `m.items().sort_by(...)`)
 - `clear[K, V] = (m: mut Map[K, V])`
 - `remove[K, V] = (m: mut Map[K, V], k: K) -> bool`: remove a key; returns true if it was present. The others keep their order.
 - `(==)[K, V] = (a: Map[K, V], b: Map[K, V]) -> bool`: the same keys with equal values (in any order) (not for sloppy0: it would take the generic (==) for all structs)

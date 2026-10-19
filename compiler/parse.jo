@@ -69,6 +69,43 @@ spec_problem = (spec: str) -> str:
 
 tok_char = (c: u8) -> str: str_from_bytes([c])
 
+# the source from token a to token b
+toks_src = (a: int, b: int) -> str:
+    s = int(toks[a].start)
+    p_src[s..int(toks[b].start) + int(toks[b].len))
+
+# is there a `:` (outside brackets) from token a to the end of its line or call argument?
+colon_in_arg = (a: int) -> bool:
+    j = a
+    depth = 0
+    loop j < toks.len():
+        k = toks[j].kind
+        if k == .newline or k == .eof: return false
+        if k == .colon and depth == 0: return true
+        if k == .lparen or k == .lbrack or k == .lbrace: depth += 1
+        if k == .rparen or k == .rbrack or k == .rbrace:
+            if depth == 0: return false
+            depth -= 1
+        if k == .comma and depth == 0: return false
+        j += 1
+    false
+
+# the source of the expression from token a to the end of its line or call argument
+arg_src = (a: int) -> str:
+    j = a
+    depth = 0
+    loop j < toks.len():
+        k = toks[j].kind
+        if k == .newline or k == .eof: break
+        if k == .lparen or k == .lbrack or k == .lbrace: depth += 1
+        if k == .rparen or k == .rbrack or k == .rbrace:
+            if depth == 0: break
+            depth -= 1
+        if k == .comma and depth == 0: break
+        j += 1
+    if j == a: return "..."
+    toks_src(a, j - 1)
+
 nk_is = (i: int, k: Tok) -> bool: i + 1 < toks.len() and toks[i + 1].kind == k
 
 # a mistake carried over from another language where parsing stopped at token i (wanting
@@ -155,6 +192,12 @@ habit = (i: int, want: Tok):
     if k == .gt and p == .assign and glued: fatal(toks[i - 1].pos, "a function value is written `(x): x * 2`")
     if k == .starstar: fatal(toks[i].pos, "`x ^ y` is x to the power y")
     if k == .arrow and p == .ident and nk_is(i, .ident) and glued: fatal(toks[i].pos, "a field through a pointer is `q.x` (or `q[0].x`): there is no `->`")
+    if k == .arrow and p == .ident and (want == .rparen or want == .comma) and i + 1 < toks.len():
+        # (xs.map(x -> x * 2): Java's and Kotlin's lambda)
+        fatal(toks[i].pos, "a function value is written `({pw}): {arg_src(i + 1)}`, its body after a colon")
+    if k == .colon and p == .ident and (want == .rparen or want == .comma) and i > 1 and (toks[i - 2].kind == .lparen or toks[i - 2].kind == .comma):
+        # (f(x: 1): Swift's and C#'s named argument)
+        fatal(toks[i].pos, "a named argument is written `{pw} = {arg_src(i + 1)}` (and a function value `({pw}): ...`)")
     if k == .semi:
         # (for (i = 0; i < n; i++): C's loop)
         j = i - 1
@@ -1697,7 +1740,16 @@ parse_fn_literal = (kind: NK, name: int, pos: int) -> int:
     f = mk(kind, pos)
     nodes[f].name = i32(name)
     lambda = kind == .lambda
+    p0 = ti
     parse_params(f)
+    p1 = ti - 1
+    arrow = -1
+    if pk() == .arrow: arrow = ti
+    if lambda and arrow >= 0 and not colon_in_arg(arrow + 1):
+        # ((x) -> x * 2: the body where its result type goes)
+        ps = toks_src(p0, p1)
+        body = arg_src(arrow + 1)
+        fatal(toks[arrow].pos, "a function value is written `{ps}: {body}`, its body after a colon (`->` names the type of its result: `(x) -> int: x * 2`)")
     if accept(.arrow):
         if pk() == .ident and toks[ti].ival == id_void:
             advance()

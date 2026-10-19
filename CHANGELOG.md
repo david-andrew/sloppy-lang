@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `m.items()` gives a map's (key, value) pairs as an array, in the order added (it said "no
+  'items' for {str: int}"), for sorting them: `m.items().sorted_by((p): -p.1)`.
+- Messages for other languages' habits: `(x) -> x * 2` and `x -> x * 2` (Java, Kotlin) say "a
+  function value is written `(x): x * 2`, its body after a colon", with the code written, where
+  they said "expected type name" or "expected ')'"; `f(x: 1)` (Swift, C#) says "a named argument
+  is written `x = 1`"; `w = w.lower()` on a loop variable says `let w = ...` makes a new one;
+  `write_file(p, s)!` says the bool it gives is for `assert(...)` or `if not ...:`.
 - A `T[]` passes where a `T?[]` is expected (an argument, an assignment, a return), as a copy
   with its elements as optionals: `count([1 2 3])` for `count = (xs: int?[]) -> int` said
   "expects int?[], found int[]".

@@ -341,7 +341,7 @@ loop w in words: groups[len(w)].push(w)
 loop k, v in counts: print("{k}: {v}")
 ```
 
-`m.has(k)`, `m.remove(k)`, `m.keys()`, `m.values()` and `m.len()` do what they say.
+`m.has(k)`, `m.remove(k)`, `m.keys()`, `m.values()` and `m.len()` do what they say; `m.items()` is the (key, value) pairs, to sort them (`m.items().sorted_by((p): -p.1)`).
 
 ## 5. Functions
 
