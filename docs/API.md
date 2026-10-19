@@ -335,6 +335,7 @@ Hash map {K: V}: insertion ordered, open addressing over a dense entry list. The
 - `clear[K, V] = (m: mut Map[K, V])`
 - `remove[K, V] = (m: mut Map[K, V], k: K) -> bool`: remove a key; returns true if it was present. The others keep their order.
 - `(==)[K, V] = (a: Map[K, V], b: Map[K, V]) -> bool`: the same keys with equal values (in any order) (not for sloppy0: it would take the generic (==) for all structs)
+- `hash[K, V] = (m: Map[K, V]) -> u64`: a number made from the entries, in any order: maps that are == hash alike (so a map can be a key). (Each entry's key and value hashed together, the entries' added up)
 
 ## Math and random numbers
 
@@ -1086,6 +1087,7 @@ Sets compare with `==` by what they hold, in any order, and print as {1, 2, 3}.
 - `difference[T] = (a: Set[T], b: Set[T]) -> Set[T]`: what is in a and not in b
 - `is_subset[T] = (a: Set[T], b: Set[T]) -> bool`: whether everything in a is in b
 - `(==)[T] = (a: Set[T], b: Set[T]) -> bool`: the same values, in any order
+- `hash[T] = (s: Set[T]) -> u64`: a number made from the values, in any order: sets that are == hash alike (so a set can be a key)
 
 ### deque.jo
 
@@ -1117,6 +1119,7 @@ A loop over a deque goes from front to back; it prints as an array does.
 - `clear[T] = (d: mut Deque[T])`
 - `items[T] = (d: Deque[T]) -> T[]`: the values from front to back, in an array (a loop over the deque goes over these)
 - `(==)[T] = (a: Deque[T], b: Deque[T]) -> bool`: the same values in the same order
+- `hash[T] = (d: Deque[T]) -> u64`: a number made from the values, in order: deques that are == hash alike (so a deque can be a key)
 
 ## Priority queues
 
@@ -1526,6 +1529,7 @@ to_text, to_json and saves write its fields (Big(m=4.2, e=1234)) and read them b
 - `(*) = (x: f64, a: Big) -> Big`
 - `(<) = (a: Big, b: Big) -> bool`
 - `(==) = (a: Big, b: Big) -> bool`
+- `hash = (b: Big) -> u64`: a number made from b: the same for Bigs that are == (every zero alike), so a Big can be a key
 - `(<) = (a: Big, x: f64) -> bool`
 - `(<) = (x: f64, a: Big) -> bool`
 - `log10 = (b: Big) -> f64`: the power of ten it is near: log10(big(1, 500)) is 500
