@@ -157,6 +157,47 @@ static void lex_number(Lexer *L) {
   L->toks.data[L->toks.len - 1].ival = v;
 }
 
+/* c'a': a character's code, a number */
+static void lex_char(Lexer *L) {
+  const char *s = L->p;
+  const unsigned char *p = (const unsigned char *)s + 2;
+  long v = 0;
+  if (*p == '\\') {
+    p++;
+    int c = *p++;
+    switch (c) {
+      case 'n': v = 10; break;
+      case 't': v = 9; break;
+      case 'r': v = 13; break;
+      case '0': v = 0; break;
+      case '\\': v = 92; break;
+      case '\'': v = 39; break;
+      case '"': v = 34; break;
+      case 'e': v = 27; break;
+      case 'x': {
+        int h = 0;
+        for (int k = 0; k < 2; k++) {
+          int d = *p++;
+          h = h * 16 + (d >= 'a' ? d - 'a' + 10 : d >= 'A' ? d - 'A' + 10 : d - '0');
+        }
+        v = h;
+        break;
+      }
+      default: fatal(lpos(L, s), "unknown escape sequence");
+    }
+  } else if (*p < 0x80) {
+    v = *p++;
+  } else {
+    int n = *p >= 0xf0 ? 3 : *p >= 0xe0 ? 2 : 1;
+    v = *p++ & (0x3f >> n);
+    for (int k = 0; k < n; k++) v = (v << 6) | (*p++ & 0x3f);
+  }
+  if (*p != '\'') fatal(lpos(L, s), "unterminated character code literal");
+  L->p = (const char *)p + 1;
+  emit(L, TK_INT, s, L->p - s);
+  L->toks.data[L->toks.len - 1].ival = v;
+}
+
 static void lex_string(Lexer *L, bool raw) {
   const char *s = L->p; // at opening quote
   char q = s[0];
@@ -216,6 +257,7 @@ Token *lex_file(int file, int *ntok) {
     }
     if (is_ident_start(c)) {
       if (c == 'r' && (p[1] == '"' || p[1] == '\'')) { L.p++; lex_string(&L, true); continue; }
+      if (c == 'c' && p[1] == '\'') { lex_char(&L); continue; }
       const char *s = p;
       while (is_ident_char(*p)) p++;
       L.p = p;

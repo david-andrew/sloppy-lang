@@ -149,7 +149,7 @@ BUILTINS = [
     ("builtins", "", "str_from_bytes", ["str_from_bytes(b: u8[]) -> str"], "a string of these bytes"),
     ("builtins", "", "size_of", ["size_of(T) -> int", "align_of(T) -> int"], "how many bytes a value of type T takes, and its alignment"),
     ("builtins", "", "int", ["int(x)", "i32(x)", "u8(x)"], "a number as a whole number of that type (a float is cut toward zero: int(3.7) is 3); "
-     "text is read with `to_int(s)`, and a one-character string in single quotes is its code (`u8('A')` is 65)"),
+     "text is read with `to_int(s)`, and `c'A'` is a character's code (65)"),
     ("builtins", "", "f64", ["f64(x)", "f32(x)"], "a number as a float of that size (f32 and f64 also mix by themselves)"),
     ("builtins", "", "str", ["str(x)"], "any value as text, as `print` shows it"),
     ("arrays", "Built in", "len", ["len(xs: T[]) -> int"], "how many elements"),

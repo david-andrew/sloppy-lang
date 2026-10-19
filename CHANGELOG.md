@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `c'a'` is a character's code, a number: `c - c'0'`, `c'a' + k`, `[c'a'..c'z']` in a match,
+  `c'é'` (233). `'a'` is text, as `"a"` is (as in Python): it no longer becomes a number where
+  an integer is expected. Quoted text still stands for a byte where one is expected
+  (`s[i] == "a"`, `s[i] - 'a'`, a match on a byte). `'a' + i` says to write `c'a'`.
 - `as` after a match arm's patterns names the value matched, narrowed as the patterns narrow it:
   `_ as n if n > 100:`, `1..10 as d:`, `Circle as c:` (a union's member), `.rect(w, h) as r:`. A
   name alone still compares (`limit:`); an unknown one suggests `_ as n`.

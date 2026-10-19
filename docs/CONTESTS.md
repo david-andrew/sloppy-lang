@@ -23,7 +23,7 @@ the program waits for the answer. Output to a file or a pipe is collected and wr
 pieces, so printing many lines is fast; `flush_output()` writes it out now.
 
 A string's `s[i]` is a byte (a `u8`), compared with character literals: `grid[y][x] == '#'`,
-`int(c - '0')` for a digit. `text.lines()` of a grid gives its rows; `chars(s)` gives the
+`int(c - c'0')` for a digit. `text.lines()` of a grid gives its rows; `chars(s)` gives the
 characters of text that is not ASCII.
 
 `sloppy --release day1.jo < input.txt` runs a release build (inlined, registers, fewer bounds

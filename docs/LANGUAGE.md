@@ -91,12 +91,12 @@ piped in (`sloppy < script.txt`).
   `r"""..."""` is both (help text with `{name}` in it). Widths in format specs count
   characters, so `"{city:<8}"` lines up "Zürich" with "Paris", and a precision on text cuts it to
   that many characters: `"{title:<20.20}"` is a column 20 wide.
-* **Characters.** A one-character string in single quotes where an integer is expected stands
-  for its character code: `c == 'a'`, `'0'..'9'` in a match, `'a' + i`, `u8('A')`, `'{'` (a brace
-  alone is not an interpolation). In double quotes it is text, except where a byte (`u8`) is
-  expected: `s[i] == "a"`, `c in "+-"`, `bytes.push("\n")`. Elsewhere text is not a number:
-  `add(1, "2")` with `add` taking `int`s is an error (`to_int("2")` reads the number, `'2'` is
-  the character's code).
+* **Characters.** `c'a'` is a character's code, a number (97): `c - c'0'`, `c'a' + i`,
+  `[c'a'..c'z']` in a match, `c'\n'`, `c'é'` (233, the character's Unicode number; text holds
+  it as two bytes). Quoted text, in single or double quotes alike, stands for a character's code
+  only where a byte (`u8`) is expected: `s[i] == "a"`, `c in "+-"`, `bytes.push("\n")`, a match
+  on `s[i]`. Elsewhere text is not a number: `add(1, "2")` with `add` taking `int`s is an error
+  (`to_int("2")` reads the number, `c'2'` is the character's code), and so is `'a' + 1`.
 * **Units.** A unit right after a number (no space) converts to the SI base unit at compile
   time: `120ms` is `0.12`, `90deg` is `PI / 2`, `3km` is `3000.0`, `1.2(m/s)`,
   `9.81(m/s^2)`, `[1.2 0](m/s)`. Time `s ms us ns min h`, length `m cm mm km`, mass `kg g`,
@@ -210,7 +210,8 @@ precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests mem
   `xs.retain((x): x != 2)`.
 - `round(5.7)` is `6.0`, an f64 (as `floor` and `ceil`); `int(round(x))` is the whole number.
 - Angles are in radians: `rotate(v, PI / 2)`, or `rotate(v, 90deg)` (a literal over 2π warns).
-- `'a'` and `"a"` are both text, but where a number is expected `'a'` is its character code (97).
+- `'a'` and `"a"` are both text, as in Python; `c'a'` is the character's code (97). `s[i]` is
+  a byte, which compares with `"a"` (or `c'a'`).
 - `load()?.name` is not optional chaining: `?` returns from the function when `load()` fails.
 - `!` unwraps an optional, not an error: `x is ParseError`, or `?`, handle those.
 - `s[i]` is a byte (a number), not a one-character string: `s[i..i + 1]` or `chr(s[i])` is text.
@@ -605,7 +606,7 @@ match value:
     0: print("zero")
     1, 2: print("small")
     3..9: print("medium")
-    'a'..'z': print("a letter code")
+    [c'a'..c'z']: print("a letter's code")
     _ if value < 0: print("negative")   # an arm with a condition
     _: print("big")
 

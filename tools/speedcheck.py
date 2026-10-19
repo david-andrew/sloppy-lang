@@ -78,6 +78,8 @@ def icount(compiler, src, extra, lib=None):
     if compiler == old and not lib:
         print(f"(the earlier compiler cannot read this commit's library: {src} measured with its own)")
         return icount(compiler, src, extra, old_lib)
+    # (the compiler's own source in syntax the earlier one cannot read: not compared)
+    if compiler == old and src == "compiler/main.jo": return None
     sys.exit(f"speedcheck: cannot count {os.path.basename(compiler)} build {src}: {r.stderr.strip()[-500:]}")
 
 
@@ -87,7 +89,11 @@ worst = 0.0
 print(f"compile speed: {base} -> working tree (G instructions)")
 for extra in modes:
     for src in inputs:
-        a, b = icount(old, src, extra), icount(new, src, extra)
+        a = icount(old, src, extra)
+        if a is None:
+            print(f"  {src + (' --release' if extra else ''):46} (written in syntax the earlier compiler cannot read: not compared)")
+            continue
+        b = icount(new, src, extra)
         pct = (b - a) / a * 100
         worst = max(worst, pct)
         flag = "  <- slower" if pct > args.limit else ""
