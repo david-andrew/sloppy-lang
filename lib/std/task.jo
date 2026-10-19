@@ -34,7 +34,6 @@ struct Task[T]:
     __p: *__TaskCell[T]
 
 # run f alongside the rest of the program; its result is the Task's wait()
-@no_web("does not run in a web page yet: tasks are native-only for now")
 spawn[T] = (f: () -> T) -> Task[T]:
     cell: __TaskCell[T][]
     cell.push(__TaskCell[T](none))
@@ -232,6 +231,7 @@ __task_end_waiting = false  # (main has ended, and waits for the tasks)
 __task_nothing: () -> void = __task_none
 const __TASK_STACK = 8 << 20
 const __TASK_GUARD = 64 << 10
+const __WASM_TASK_STACK = 64 << 10
 
 __task_init = ():
     if __tasks_on: return
@@ -262,6 +262,11 @@ __task_start = (f: () -> void):
         fb: cfn(*u8) = __task_fiber_start
         __tasks[id].fiber = CreateFiberEx(64 << 10, __TASK_STACK, u32(0), fb as *u8, id as *u8)
         if __tasks[id].fiber == null: __panic("spawn: no room for another task's stack ({__task_live} tasks running)")
+    else when TARGET == "wasm":
+        base = __task_stack()
+        __tasks[id].base = base
+        __tasks[id].lo = base
+        __tasks[id].hi = base + __WASM_TASK_STACK
     else:
         base = __task_stack()
         __tasks[id].base = base
@@ -274,8 +279,12 @@ __task_start = (f: () -> void):
 # stack overflow and not a write into what is mapped next; pages are only taken as they are used)
 __task_stack = () -> int:
     if __task_stacks.len() > 0: return __task_stacks.pop()
-    when TARGET == "windows" or TARGET == "wasm":
+    when TARGET == "windows":
         return 0
+    else when TARGET == "wasm":
+        # (a web page's: the shadow stack, for what the code keeps in memory; the calls are on
+        # the browser's stack for the task)
+        return __alloc(__WASM_TASK_STACK) as int
     else:
         p = syscall(9, 0, __TASK_STACK, 0, 0x22 | 0x4000, -1, 0)       # PROT_NONE, MAP_PRIVATE|ANON|NORESERVE
         if p < 0 and p > -4096: __panic("spawn: no room for another task's stack ({__task_live} tasks running)")
@@ -289,9 +298,13 @@ __task_reap = ():
         when TARGET == "windows":
             DeleteFiber(__tasks[id].fiber)
             __tasks[id].fiber = null
-        else when TARGET != "wasm":
+        else:
             if __task_stacks.len() < 64: __task_stacks.push(__tasks[id].base)
-            else: syscall(11, __tasks[id].base, __TASK_STACK)
+            else:
+                when TARGET == "wasm":
+                    __free(__tasks[id].base as *u8)
+                else:
+                    syscall(11, __tasks[id].base, __TASK_STACK)
         __tasks[id].base = 0
         __tasks[id].state = 0
         __task_free.push(id)
@@ -348,7 +361,12 @@ __task_block = (why: str, seconds: f64):
 __task_give_way = ():
     loop:
         __task_turns += 1
-        if __task_ready.len() == 0: __task_poll(true)
+        if __task_ready.len() == 0:
+            when TARGET == "wasm":
+                if __task_idle(): return
+                continue
+            else:
+                __task_poll(true)
         else if __task_turns % 64 == 0: __task_poll(false)
         if __task_ready.len() == 0: continue
         next = __task_ready.pop_front()
@@ -517,7 +535,12 @@ __task_switch = (to: int):
     __task_hi = __tasks[to].hi
     when TARGET == "windows":
         SwitchToFiber(__tasks[to].fiber)
-    else when TARGET != "wasm":
+    else when TARGET == "wasm":
+        fresh = if __tasks[to].started: 0 else: 1
+        __tasks[to].started = true
+        __wasm_task_switch(from, to, fresh, __tasks[to].hi, if __tasks[from].state == 4: 1 else: 0)
+        __wasm_task_resumed(from)
+    else:
         if __setjmp(__tasks[from].jb) == 0:
             if not __tasks[to].started:
                 __tasks[to].started = true
@@ -580,3 +603,54 @@ __task_end_here = ():
     __task_ended.push(me)
     if not __tasks[me].background: __task_less()
     __task_give_way()
+
+# ---------------- web pages ----------------
+# A web page's tasks each run on a stack of the browser's, which pauses one and goes on with
+# another (JSPI: lib/web/runtime.js). When none is ready, the page goes on with its frames and
+# events; a timer for the next task's time calls __task_tick, which starts the first one ready.
+when TARGET == "wasm":
+    extern __wasm_task_switch = (from: int, to: int, fresh: int, top: int, ended: int)
+    extern __wasm_task_idle = (me: int, ms: int, ended: int)
+    extern __wasm_task_resumed = (me: int)
+    extern __wasm_task_kick = (to: int, fresh: int, top: int)
+    extern __wasm_task_timer = (ms: int)
+
+    @export("__task_entry")
+    __task_entry_web = (id: int): __task_go()
+
+    @export("__task_tick")
+    __task_tick = ():
+        __task_cur = 0
+        until = __task_times(time())
+        if __task_ready.len() == 0:
+            if until >= 0.0: __wasm_task_timer(__task_ms(until))
+            return
+        next = __task_ready.pop_front()
+        __task_cur = next
+        __tasks[next].state = 2
+        __task_lo = __tasks[next].lo
+        __task_hi = __tasks[next].hi
+        fresh = if __tasks[next].started: 0 else: 1
+        __tasks[next].started = true
+        __wasm_task_kick(next, fresh, __tasks[next].hi)
+
+__task_ms = (until: f64) -> int: max(int(ceil((until - time()) * 1000.0)), 0)
+
+# (wasm: nothing is ready, so the running task is paused until a task makes it ready and its turn
+# comes, or the timer for the next one's time starts it; true: it runs again)
+__task_idle = () -> bool:
+    when TARGET == "wasm":
+        me = __task_cur
+        until = __task_times(time())
+        if __task_ready.len() > 0: return false
+        # (a game's frames come, and its update may send to a channel; anything else waiting with
+        # no time limit waits for good)
+        if until < 0.0 and not __is_game: __task_deadlock()
+        __task_cur = 0
+        __wasm_task_idle(me, if until < 0.0: -1 else: __task_ms(until), if __tasks[me].state == 4: 1 else: 0)
+        __wasm_task_resumed(me)
+    true
+
+# (a web page's main has ended: the page goes on until the tasks have, as a program's end does)
+__task_main_end = ():
+    if __tasks_on and not __is_game: __task_end()

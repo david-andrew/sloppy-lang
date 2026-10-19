@@ -9,7 +9,8 @@
   thread: one that waits (a channel, `sleep`, the network, a line of input) lets the others run,
   and between two waits nothing else changes the program's variables. Every task waiting on what
   none will do is told, with where each waits. A game's tasks take their turns at the start of
-  each frame (`next_frame()` waits for the next). Native builds; not yet in web builds.
+  each frame (`next_frame()` waits for the next). Web pages run them where the browser can pause
+  WebAssembly code (JSPI: Chrome and Edge 137 or later).
 - An HTTP server's handlers run as tasks: one that waits (a fetch, `sleep`) no longer holds up
   the others, and a handler can fetch from its own server. `http.serve` after `http.listen` on the
   same port answers instead of returning false, and in a task it ends with the program, so a test

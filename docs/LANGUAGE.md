@@ -1386,7 +1386,9 @@ one made in a loop has that turn's.
   to, a send nothing receives), the program stops and says where each one waits.
 - A panic in a task ends the program, as anywhere else. An HTTP server's handlers run as tasks
   of their own: one that waits lets the others be answered.
-- Web builds do not have tasks yet.
+- In a web page, tasks need a browser that can pause WebAssembly code (JSPI: Chrome and Edge
+  137 or later, and the newest Firefox and Safari); `sleep` waits there too in a program with
+  tasks. A switch between tasks costs some microseconds there (about 0.1 natively).
 
 ## 12. Programs and the game loop
 
