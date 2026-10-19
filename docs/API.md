@@ -2166,6 +2166,7 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `mouse_pressed = (b: Mouse) -> bool`
 - `mouse_released = (b: Mouse) -> bool`
 - `text_input = () -> str`: characters typed this frame
+- `pasted_text = () -> str`: the text pasted this frame (ctrl+V, cmd+V on a Mac, a web page's paste, a text field's Paste button on a phone): the clipboard's text then; "" in other frames. For a widget of a game's own (the hud_ text fields take it themselves)
 
 #### A fixed time step
 
@@ -2217,6 +2218,13 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 
 #### A press of the left button (or of the first finger): taps, drags, swipes
 
+- `claim_press = ()`: the press now held (of the left button, or a finger) is the game's own, for a drag of its own: a hud_scroll list it went down in does not move with it, and letting go of it clicks no button. Call it in the frame it goes down (on mouse_pressed), as the drag starts:
+  ```gdscript
+  if mouse_pressed(.left) and contains(row, mouse_pos()):
+      dragging = i
+      claim_press()
+  ```
+- `press_claimed = () -> bool`: whether the press now held was claimed (claim_press), or moved a hud_scroll list
 - `swipe = () -> vec2?`: a drag of a finger (or the mouse) that just ended, 30 points long or more: which way it went most, vec2(-1, 0) left, vec2(1, 0) right, vec2(0, -1) up or vec2(0, 1) down, in the frame it lets go; none otherwise, and for a drag begun on a hud_ box or one a scrolling list moved with
   ```gdscript
   if let d = swipe(): slide(int(d.x), int(d.y))
@@ -2419,9 +2427,9 @@ draw = ():
 - `enum Blend: alpha, add, multiply, premultiplied`
 - `clear = (c: vec4 = vec4(0, 0, 0, 1))`
 - `blend = (b: Blend)`
-- `clip = (pos: vec2, size: vec2)`: 2D drawing after this shows only inside the rectangle (in screen units, or a render target's pixels: translate and camera2d do not move it), until no_clip(), the next frame or another target (draw_to); for a scrolling list, a panel, a minimap
+- `clip = (pos: vec2, size: vec2)`: 2D drawing after this shows only inside the rectangle, until no_clip(), the next frame or another target (draw_to); for a scrolling list, a panel, a minimap. The rectangle is in the units of the 2D transform, as what is drawn is (under translate, scale or camera2d_fit it is where a rect() of it shows; turned, the box around that); the clip is then kept where it is on the screen, whatever transform comes after
 - `clip = (r: Rect)`: the same, with a Rect: clip(r) around a scrolling list's box
-- `no_clip = ()`
+- `no_clip = ()`: drawing shows everywhere again (and a hud_scroll list's bar, drawn over its rows, is drawn now, as they are done)
 - `push_transform = ()`
 - `pop_transform = ()`
 - `translate = (x: f64, y: f64)`
@@ -2533,6 +2541,7 @@ draw = ():
 - `set_font = (f: Font)`: the font text() and text_width() use (load_font makes one); set_font() goes back to the built-in
 - `set_font = ()`
 - `text_width = (s: str, size: f64 = 20.0, mono: bool = false) -> f64`: how wide text is drawn (the widest of its lines)
+- `fit_text = (s: str, width: f64, size: f64 = 20.0) -> str`: s as it fits in a line `width` wide: cut short, ending in …, when it is wider (a long name on a button, a table's cell)
 - `text_height = (s: str, size: f64 = 20.0) -> f64`: how tall text is drawn: its lines, each size * 1.25 below the one before
 - `enum Align:`
   ```gdscript
@@ -4227,7 +4236,7 @@ Menus and hud_ boxes are drawn in the units of the 2D transform drawing has (cam
 - `ui_slider = (label: str, value: f64, step: f64 = 0.1, low: f64 = 0.0, high: f64 = 1.0) -> f64`: a value from low to high (0 to 1 unless given), changed in steps of `step` (left/right, or dragging with the mouse or a finger): `angle = ui_slider("Angle {int(angle)}°", angle, 1, 5, 90)`
 - `ui_switch = (label: str, on: bool) -> bool`: on or off (left/right, enter, or a click or tap)
 - `ui_choice = (label: str, options: str[], index: int) -> int`: one of several (left/right, or a click or tap on either side, goes to the one before or after): `difficulty = ui_choice("Difficulty", ["easy", "normal", "hard"], difficulty)`
-- `ui_text_field = (label: str, value: str, max_chars: int = 24) -> str`: a line of text typed in, up to max_chars characters: what is typed while it has the focus is added, backspace takes the last character away, enter (like down) goes on to the next item; `name = ui_text_field("Name", name)`. With a finger, a tap on it brings up the phone's keyboard, and a Paste button at its right end, until the keyboard is put away
+- `ui_text_field = (label: str, value: str, max_chars: int = 24) -> str`: a line of text typed in, up to max_chars characters, edited as a desktop's text boxes are (the keys hud_text_field takes, but up and down, which go on through the menu); enter or tab go on to the next item, shift+tab back; `name = ui_text_field("Name", name)`. With a finger, a tap on it brings up the phone's keyboard, and a Paste button at its right end, until the keyboard is put away
 - `ui_typing = () -> bool`: whether a text field (a menu's ui_text_field with the focus, or a hud_text_field clicked into) takes the keyboard: the game's own letter keys are better left alone then (ImGui's WantCaptureKeyboard)
 - `ui_text = (s: str, size: f64 = 24.0 * ui_scale(), color: vec4 = vec4(1, 1, 1, 0.6))`: a line of text in the column (not an item: it cannot be chosen)
 
@@ -4244,24 +4253,39 @@ Menus and hud_ boxes are drawn in the units of the 2D transform drawing has (cam
       border: vec4 = vec4(1, 1, 1, 0.18)
       text: vec4 = vec4(1, 1, 1, 0.92)
       disabled: vec4 = vec4(1, 1, 1, 0.35)
+      selection: vec4 = vec4(1, 0.82, 0.4, 0.35)     # behind text selected in a field (left as it is: the accent's)
       text_size: f64 = 20.0
   ```
 - `hud_hovered = () -> bool`: whether the mouse (or a finger) is over the interface now: over a hud_ box drawn in the last frame or this one, where it is now (a tap on the world just after one on a button is the world's; a tap landing on a button is the button's from that frame on)
-- `hud_panel = (r: Rect, color: vec4 = vec4(0, 0, 0, 0))`: a box behind other parts (it also keeps clicks on it from the world)
-- `hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false) -> bool`: a button with a label: true in the frame it is clicked (or tapped): let go on it, having gone down on it (a finger that slides away is no tap, and a press that scrolls a list is the list's); selected: drawn as the one chosen of several (a tool, a tab)
+- `hud_panel = (r: Rect, color: vec4 = vec4(0, 0, 0, 0))`: a box behind other parts (it also keeps clicks on it from the world, and from the hud_ boxes drawn before it, under it)
+- `hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false, align: Align = .center) -> bool`: a button with a label: true in the frame it is clicked (or tapped): let go on it, having gone down on it (a finger that slides away is no tap, and a press that scrolls a list is the list's); selected: drawn as the one chosen of several (a tool, a tab). A label wider than the button is cut short with …; align = .left puts it at the left, as a list's rows have it
 - `hud_bar = (r: Rect, amount: f64, color: vec4, back: vec4 = vec4(0, 0, 0, 0.5))`: a bar filled to `amount` (0 to 1): health, progress, a cooldown
-- `hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: str = "") -> str`: a box to type text in: clicking it gives it the keyboard, Enter, Escape or a click elsewhere takes it away; returns the text as it is now. Tapped on a phone, it brings up the phone's keyboard, and a Paste button at its right end, until the keyboard is put away. `id` tells fields with the same place apart (their rectangle names them otherwise); `hint` is shown dimmed while it is empty ("seed")
-- `hud_scroll = (r: Rect, content_height: f64, id: str = "") -> f64`: a list taller than its box: how far it is scrolled, from 0. Moved by dragging it (with a finger, or the mouse: a press on a row that moves is a drag, not a click on the row, and let go moving, the list glides on), by the wheel over the box and by the bar drawn at its right edge (when there is more than fits). The rows go at their y minus that, inside clip(...) of the box: rows scrolled out of it take no clicks
+- `hud_scroll = (r: Rect, content_height: f64, id: str = "") -> f64`: a list taller than its box: how far it is scrolled, from 0. Moved by dragging it (with a finger, or the mouse: a press on a row that moves is a drag, not a click on the row, and let go moving, the list glides on; a press claimed with claim_press(), as a row dragged to another place, does not move it), by the wheel over the box and by the bar at its right edge (when there is more than fits). The rows go at their y minus that, inside clip(r) of the box: rows scrolled out of it take no clicks. The bar is drawn over the rows, at the no_clip() after them (or as draw ends)
   ```gdscript
   off = hud_scroll(r, items.len() * 44, "shop")
   clip(r)
   loop i in 0.. and it in items:
-      if hud_button(Rect(r.x, r.y + i * 44 - off, r.w - 14, 40), it.name): buy(i)
+      if hud_button(Rect(r.x, r.y + i * 44 - off, r.w - 10, 40), it.name): buy(i)
   no_clip()
   ```
 - `hud_tooltip = (s: str)`: a box of text beside the mouse, kept on the screen: what the thing under the mouse is or does. Draw it after the rest of the interface, so nothing covers it (`if hovered: tip = "..."`, then at the end of draw, `if len(tip) > 0: hud_tooltip(tip)`); lines break at "\n"
 - `hud_slider = (r: Rect, value: f64, low: f64, high: f64, step: f64 = 0.0, label: str = "") -> f64`: a value from low to high, set by dragging along the box (a finger too: the slider pressed on keeps the drag until let go), in steps of `step` (0: any value); the label, if any, is drawn over the box's left part, so give it room: `g = hud_slider(Rect(20, 80, 300, 36), g, 1, 20, 0.1, "g {g:.1f} m/s²")`
-- `hud_checkbox = (r: Rect, label: str, on: bool) -> bool`: a box ticked or not, with its label to the right: the new state (flipped in the frame it is clicked or tapped)
+- `hud_checkbox = (r: Rect, label: str, on: bool) -> bool`: a box ticked or not, with its label to the right: the new state (flipped in the frame it is clicked or tapped, on the box or its label). The box is as tall as r; an r wider than that holds the label too, cut short with … to fit it
+
+#### Text fields
+
+- `hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: str = "") -> str`: A box to type text in, edited as a desktop's text boxes are: a click gives it the keyboard and puts the caret there (a drag selects, a double click a word, three clicks all of it), left and right (with ctrl, alt on a Mac: by words; with shift: selecting), home and end, backspace and delete (with ctrl: a word), ctrl+A, ctrl+C, ctrl+X, ctrl+V, ctrl+Z, ctrl+shift+Z and ctrl+Y (cmd on a Mac). A long text moves to keep the caret in view. Tab and shift+tab go on to the next or back to the last field drawn, its text selected; Enter (hud_submitted()), Escape or a click elsewhere takes the keyboard away. Returns the text as it is now: `name = hud_text_field(r, name)`. Tapped on a phone, it brings up the phone's keyboard, and a Paste button at its right end, until the keyboard is put away. `id` names the field (hud_focus, hud_focused) and tells fields with the same place apart (their rectangle names them otherwise); `hint` is shown dimmed while it is empty ("Search")
+- `hud_text_area = (r: Rect, value: str, id: str = "", max_chars: int = 1000000, hint: str = "") -> str`: a box of several lines of text, edited as hud_text_field is, its lines wrapped at the box's width: enter starts a new line, up and down go to the line above or below, page up and page down a boxful, ctrl+home and ctrl+end to the start and the end; the wheel scrolls it and it scrolls to keep the caret in view. Ctrl+enter is hud_submitted()
+  ```gdscript
+  note.body = hud_text_area(Rect(260, 50, 500, 400), note.body, id = "body")
+  ```
+- `hud_focus = (id: str)`: give the keyboard to the hud_text_field or hud_text_area with this id, as tab does (a field's text selected): ctrl+F to the search box, `if key_down(.ctrl) and key_pressed(.f): hud_focus("search")`. hud_focus("") takes it from every field
+- `hud_focused = (id: str) -> bool`: whether the field with this id has the keyboard
+- `hud_submitted = () -> bool`: true in the frame enter was pressed in the text field drawn last (ctrl+enter in a text area):
+  ```gdscript
+  path = hud_text_field(r, path, id = "path")
+  if hud_submitted(): open_file(path)
+  ```
 
 ## Paths
 

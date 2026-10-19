@@ -81,27 +81,13 @@ __ui_inv_of = mat4()
 __ui_inv = mat4()
 __ui_ptr = () -> vec2: __ui_local(mouse_pos())
 
-# (a rectangle through a transform: around its corners)
-__ui_xform_rect = (m: mat4, r: Rect) -> Rect:
-    x0 = 1e30
-    y0 = 1e30
-    x1 = -1e30
-    y1 = -1e30
-    loop k in [0..4):
-        p = m * vec4(r.x + r.w * f32(k % 2), r.y + r.h * f32(k / 2), 0, 1)
-        x0 = min(x0, f64(p.x))
-        y0 = min(y0, f64(p.y))
-        x1 = max(x1, f64(p.x))
-        y1 = max(y1, f64(p.y))
-    Rect(x0, y0, x1 - x0, y1 - y0)
-
 # (a rectangle drawn in the transform's units, on the screen; the screen's, in those units)
 __ui_to_screen = (r: Rect) -> Rect:
     if __xform == __ui_ident: return r
-    __ui_xform_rect(__xform, r)
+    __xform_rect(__xform, r)
 __ui_from_screen = (r: Rect) -> Rect:
     if __xform == __ui_ident: return r
-    __ui_xform_rect(__ui_inverse(), r)
+    __xform_rect(__ui_inverse(), r)
 
 # (a text field typed in: its bottom edge in the window's pixels, for the page to keep it above
 # a phone's keyboard)
@@ -243,11 +229,12 @@ __ui_item = (w: f64, what: str) -> (int, vec2, bool, bool, bool):
     i = __ui_count
     __ui_count += 1
     c = __ui_pos + vec2(0, f32(f64(i) * __ui_spacing()))
-    over = __ui_on(c, w, __ui_ptr())
+    # (a hud_panel drawn over the menu, a dialog, takes the pointer from its items)
+    over = __ui_on(c, w, __ui_ptr()) and not __hud_covered(mouse_pos())
     # (the mouse takes the focus when it moves onto an item)
     if over and __ui_mouse_moved: __ui_focus = i
     # (a press from before the menu opened is not one on it)
-    on = (mouse_down(.left) or mouse_released(.left)) and __press_frame > __ui_open_frame and __press_tap() and __ui_on(c, w, __ui_local(__press_pos()))
+    on = (mouse_down(.left) or mouse_released(.left)) and __press_frame > __ui_open_frame and __press_tap() and __ui_on(c, w, __ui_local(__press_pos())) and not __hud_covered(__press_pos())
     if on and mouse_down(.left): __tap_frame = frame_number()
     (i, c, __ui_focus == i, over, on)
 
@@ -393,12 +380,13 @@ ui_choice = (label: str, options: str[], index: int) -> int:
     text_centered("< {shown} >", vec2(f32(f64(c.x) + w / 4.0), c.y), __ui_size(), col)
     v
 
-# a line of text typed in, up to max_chars characters: what is typed while it has the focus is
-# added, backspace takes the last character away, enter (like down) goes on to the next item;
-# `name = ui_text_field("Name", name)`. With a finger, a tap on it brings up the phone's
-# keyboard, and a Paste button at its right end, until the keyboard is put away
+# a line of text typed in, up to max_chars characters, edited as a desktop's text boxes are
+# (the keys hud_text_field takes, but up and down, which go on through the menu); enter or tab go
+# on to the next item, shift+tab back; `name = ui_text_field("Name", name)`. With a finger, a tap
+# on it brings up the phone's keyboard, and a Paste button at its right end, until the keyboard
+# is put away
 ui_text_field = (label: str, value: str, max_chars: int = 24) -> str:
-    global __typing_frame, __ui_focus, __ui_text_on, __ui_typing
+    global __press_taken, __typing_frame, __ui_focus, __ui_text_on, __ui_typing
     w = __ui_row(label, 0.0)
     r = __ui_item(w, "ui_text_field")
     __ui_box(r, w)
@@ -407,43 +395,52 @@ ui_text_field = (label: str, value: str, max_chars: int = 24) -> str:
     if __ui_tap(r): __ui_text_on = key
     else if not r.2 and __ui_text_on == key: __ui_text_on = ""
     typing = r.2 and (not touch_input() or __ui_text_on == key)
-    v = value
     size = __ui_size()
+    # the box: right half of the row, the text in it
+    bx = f64(c.x) + 10.0 * ui_scale()
+    bw = w / 2.0 - 10.0 * ui_scale() - __ui_inset()
+    # (typed in with a finger: a Paste button at its right end, as a phone has no ctrl+V)
+    pw = 0.0
+    ps = size * 0.6
+    if typing and touch_input():
+        pw = text_width("Paste", ps) + 16.0
+        bw -= pw + 6.0
+    st = __text_edits.get("ui {key}") ?? __TextEdit()
+    v = __te_sync(st, value)
+    __te_layout(st, v, -1.0, size)
+    ty = f64(c.y) - size * 0.5
+    ox = bx - st.scroll
     if typing:
         __ui_typing = r.0
         __typing_frame = frame_number()
         __ui_typing_at(f64(c.y) + __ui_spacing() / 2.0)
         if ui_ready() and not rebinding():
-            loop ch in chars(text_input()):
-                if ch >= 32 and char_count(v) < max_chars: v += chr(ch)
-            if __platform_pasted(): v = __paste_line(v, max_chars)
-            if key_typed(.backspace): v = without_last_char(v)
-            if key_pressed(.enter): __ui_focus = r.0 + 1
+            # (the mouse on the box: the caret where it went down, a drag selects)
+            m = __ui_ptr()
+            if mouse_pressed(.left) and not touch_input() and f64(m.x) >= bx - 4.0 and f64(m.x) <= bx + bw + 4.0 and abs(f64(m.y - c.y)) < __ui_spacing() / 2.0 and not __hud_covered(mouse_pos()):
+                __press_taken = true
+                __te_press(st, v, __te_at(st, v, m, ox, ty, size * 1.25))
+            __te_drag(st, v, ox, ty, size * 1.25)
+            n = max(__ui_last_count, r.0 + 1)
+            if key_typed(.tab) and key_down(.shift): __ui_focus = (r.0 + n - 1) % n
+            else if key_typed(.tab) or key_pressed(.enter): __ui_focus = r.0 + 1
+            else: v = __te_keys(st, v, max_chars, false, false, -1.0, size, 1)
+    else: st.drag = false
     col = ui_style.color
     if __ui_lit(r.2) or typing: col = ui_style.focus_color
     __ui_row_label(label, c, w, col)
-    # the box: right half of the row, the text in it, and where typing goes when it has the focus
-    bx = f64(c.x) + 10.0 * ui_scale()
-    bw = w / 2.0 - 10.0 * ui_scale() - __ui_inset()
-    # (typed in with a finger: a Paste button at its right end, as a phone has no ctrl+V)
-    if typing and touch_input():
-        ps = size * 0.6
-        pw = text_width("Paste", ps) + 16.0
-        bw -= pw + 6.0
+    if pw > 0.0:
         was = hud_style.text_size
         hud_style.text_size = ps
         if hud_button(Rect(bx + bw + 6.0, f64(c.y) - size * 0.55, pw, size * 1.1), "Paste"): __platform_paste()
         hud_style.text_size = was
     rect(bx, f64(c.y) + size * 0.55, bw, 2.0 * ui_scale(), col)
-    shown = v
-    if typing and int(elapsed() * 2.0) % 2 == 0: shown += "|"
-    # (a long text shows its end, cut at the box's left edge)
-    tw = text_width(shown, size)
-    tx = bx
-    if tw > bw: tx = bx + bw - tw
-    clip(vec2(f32(bx), f32(f64(c.y) - size)), vec2(f32(bw), f32(size * 2.0)))
-    text(shown, vec2(f32(tx), f32(f64(c.y) - size * 0.5)), size, col)
-    no_clip()
+    __te_follow_x(st, typing, bw)
+    saved = __hud_clip_in(Rect(bx, f64(c.y) - size, bw, size * 2.0))
+    __te_draw(st, v, bx - st.scroll, ty, size * 1.25, size, col, typing, 0, 0)
+    __hud_clip_out(saved)
+    st.text = v
+    __text_edits["ui {key}"] = st
     v
 __ui_text_on = ""               # (the field a finger tapped to type in: "menu/item")
 
@@ -474,6 +471,10 @@ ui_text = (s: str, size: f64 = 24.0 * ui_scale(), color: vec4 = vec4(1, 1, 1, 0.
 #
 # (hud_hovered: whether the mouse was over any of them in the last frame drawn, so a click on
 # a button is not also a click on the world behind it)
+#
+# A hud_panel covers what was drawn before it: a dialog drawn last, over buttons, takes their
+# clicks (and the wheel), as one over a ui_ menu does; `hud_panel(visible_rect(), rgba(0, 0, 0,
+# 0.5))` under a dialog makes it modal, everything else dimmed and out of reach.
 
 # how hud_button, hud_panel, hud_bar, hud_text_field and hud_checkbox look: set hud_style's
 # fields (hud_style.text_size = 16.0, hud_style.button = rgb(0.2, 0.3, 0.5)); a change holds for
@@ -487,6 +488,7 @@ struct HudStyle:
     border: vec4 = vec4(1, 1, 1, 0.18)
     text: vec4 = vec4(1, 1, 1, 0.92)
     disabled: vec4 = vec4(1, 1, 1, 0.35)
+    selection: vec4 = vec4(1, 0.82, 0.4, 0.35)     # behind text selected in a field (left as it is: the accent's)
     text_size: f64 = 20.0
 
 hud_style = HudStyle()
@@ -494,6 +496,8 @@ hud_style = HudStyle()
 __hud_boxes: Rect[]             # the boxes drawn this frame (as much of each as is not clipped away)
 __hud_boxes_last: Rect[]        # ... and in the last frame
 __hud_frame = -1
+__hud_panels: (Rect, bool)[]    # the panels drawn this frame, on the screen, and whether a clip was on (a list's rows)
+__hud_panels_last: (Rect, bool)[]
 
 # (a box drawn: kept, on the screen, for hud_hovered; whether the pointer is on it)
 __hud_touch = (r: Rect) -> bool:
@@ -502,22 +506,36 @@ __hud_touch = (r: Rect) -> bool:
         __hud_boxes_last = __hud_boxes
         __hud_boxes = []
         __hud_frame = frame_number()
+    __hud_boxes.push(__hud_screen_box(r))
+    __hud_hit(r, mouse_pos())
+
+# (r on the screen: as much of it as is not clipped away; a row of a scrolling list out of view
+# is not there to click)
+__hud_screen_box = (r: Rect) -> Rect:
     box = __ui_to_screen(r)
-    # (a box clipped away, a row of a scrolling list out of view: not there to click)
     if __clip_on and __cur_target < 0:
         x0 = max(box.x, __clip.x)
         y0 = max(box.y, __clip.y)
         x1 = min(box.x + box.w, __clip.x + __clip.z)
         y1 = min(box.y + box.h, __clip.y + __clip.w)
         box = Rect(x0, y0, max(x1 - x0, 0), max(y1 - y0, 0))
-    __hud_boxes.push(box)
-    __hud_hit(r, mouse_pos())
+    box
 
 # (whether a point on the screen (2D units, as mouse_pos) is on r, drawn in the transform's
-# units, and not clipped away)
-__hud_hit = (r: Rect, p: vec2) -> bool:
+# units, not clipped away, nor under a panel drawn after it; within: a list's box on the screen,
+# which the panels of its own rows do not cover)
+__hud_hit = (r: Rect, p: vec2, within: Rect = Rect(0, 0, 0, 0)) -> bool:
     if __clip_on and __cur_target < 0 and not contains(Rect(__clip.x, __clip.y, __clip.z, __clip.w), p): return false
-    contains(r, __ui_local(p))
+    contains(r, __ui_local(p)) and not __hud_covered(p, within)
+
+# (whether a hud_panel drawn after what is drawn now covered p (on the screen) in the last frame:
+# the panels drawn so far this frame are the ones before it)
+__hud_covered = (p: vec2, within: Rect = Rect(0, 0, 0, 0)) -> bool:
+    loop k in [__hud_panels.len()..__hud_panels_last.len()):
+        b = __hud_panels_last[k]
+        if b.1 and within.w > 0 and b.0.x >= within.x - 0.5 and b.0.y >= within.y - 0.5 and b.0.x + b.0.w <= within.x + within.w + 0.5 and b.0.y + b.0.h <= within.y + within.h + 0.5: continue
+        if contains(b.0, p): return true
+    false
 
 # (whether the press now held, or just let go, went down on r and is still a tap)
 __hud_press_on = (r: Rect) -> bool:
@@ -545,17 +563,30 @@ hud_hovered = () -> bool:
 # (a box under the pointer looks hovered, but not under a finger lifted away, nor one dragging)
 __hud_lit = (over: bool) -> bool: over and (not touch_input() or (mouse_down(.left) and __press_tap()))
 
-# a box behind other parts (it also keeps clicks on it from the world)
+# (after draw, each frame: the lists' bars not drawn yet, and this frame's panels and text fields
+# kept for the next)
+__hud_frame_end = ():
+    global __hud_order, __hud_order_last, __hud_panels, __hud_panels_last
+    __hud_bars_draw()
+    __hud_panels_last = __hud_panels
+    __hud_panels = []
+    __hud_order_last = __hud_order
+    __hud_order = []
+
+# a box behind other parts (it also keeps clicks on it from the world, and from the hud_ boxes
+# drawn before it, under it)
 hud_panel = (r: Rect, color: vec4 = vec4(0, 0, 0, 0)):
     __hud_touch(r)
+    __hud_panels.push((__hud_screen_box(r), __clip_on and __cur_target < 0))
     c = color
     if c.w == 0.0: c = hud_style.panel
     rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), c)
 
 # a button with a label: true in the frame it is clicked (or tapped): let go on it, having gone
 # down on it (a finger that slides away is no tap, and a press that scrolls a list is the
-# list's); selected: drawn as the one chosen of several (a tool, a tab)
-hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false) -> bool:
+# list's); selected: drawn as the one chosen of several (a tool, a tab). A label wider than the
+# button is cut short with …; align = .left puts it at the left, as a list's rows have it
+hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false, align: Align = .center) -> bool:
     over = __hud_touch(r)
     on = enabled and __hud_press_on(r)
     c = hud_style.button
@@ -570,10 +601,14 @@ hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false)
     tc = hud_style.text
     if not enabled: tc = hud_style.disabled
     size = min(hud_style.text_size, f64(r.h) * 0.6)
-    # (a label wider than the button: smaller, to fit)
-    tw = text_width(label, size)
-    if tw > f64(r.w) - 8.0 and tw > 0.0: size = max(size * (f64(r.w) - 8.0) / tw, 6.0)
-    text_centered(label, center(r), size, tc)
+    pad = 4.0
+    if align != .center: pad = max(8.0, size * 0.5)
+    shown = fit_text(label, f64(r.w) - 2.0 * pad, size)
+    ty = f64(r.y) + (f64(r.h) - size) / 2.0
+    match align:
+        center: text_centered(shown, center(r), size, tc)
+        left: text(shown, vec2(f32(f64(r.x) + pad), f32(ty)), size, tc)
+        right: text(shown, vec2(f32(f64(r.x + r.w) - pad - text_width(shown, size)), f32(ty)), size, tc)
     on and over and mouse_released(.left)
 
 # a bar filled to `amount` (0 to 1): health, progress, a cooldown
@@ -582,88 +617,16 @@ hud_bar = (r: Rect, amount: f64, color: vec4, back: vec4 = vec4(0, 0, 0, 0.5)):
     rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), back)
     rect(f64(r.x), f64(r.y), f64(r.w) * clamp(amount, 0.0, 1.0), f64(r.h), color)
 
-# a box to type text in: clicking it gives it the keyboard, Enter, Escape or a click elsewhere
-# takes it away; returns the text as it is now. Tapped on a phone, it brings up the phone's
-# keyboard, and a Paste button at its right end, until the keyboard is put away. `id` tells
-# fields with the same place apart (their rectangle names them otherwise); `hint` is shown
-# dimmed while it is empty ("seed")
-hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: str = "") -> str:
-    global __hud_focus, __typing_frame
-    over = __hud_touch(r)
-    key = id
-    if len(key) == 0: key = "{r.x},{r.y}"
-    if over and __hud_press_on(r) and mouse_released(.left): __hud_focus = key
-    else if mouse_pressed(.left) and not over and __hud_focus == key: __hud_focus = ""
-    focused = __hud_focus == key
-    v = value
-    if focused:
-        __typing_frame = frame_number()
-        __ui_typing_at(f64(r.y + r.h))
-        loop ch in chars(text_input()):
-            if ch >= 32 and char_count(v) < max_chars: v += chr(ch)
-        # (ctrl+V, cmd+V on a Mac, or the Paste button: the clipboard's first line)
-        if __platform_pasted(): v = __paste_line(v, max_chars)
-        if key_typed(.backspace): v = without_last_char(v)
-        if key_pressed(.enter) or key_pressed(.escape): __hud_focus = ""
-    c = hud_style.button
-    if __hud_lit(over) or focused: c = hud_style.hover
-    rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), c)
-    edge = hud_style.border
-    if focused: edge = hud_style.accent
-    rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, edge)
-    size = min(hud_style.text_size, f64(r.h) * 0.6)
-    # (typed in with a finger: a Paste button at its right end, as a phone has no ctrl+V)
-    paste_w = 0.0
-    if focused and touch_input(): paste_w = text_width("Paste", size) + 16.0
-    shown = v
-    if focused and int(elapsed() * 2.0) % 2 == 0: shown += "|"
-    # (a long text shows its end, cut at the box's left edge)
-    pad = 6.0
-    tw = text_width(shown, size)
-    tx = f64(r.x) + pad
-    if tw > f64(r.w) - paste_w - 2.0 * pad: tx = f64(r.x + r.w) - paste_w - pad - tw
-    # (inside the clip already on, as a scrolling list's: that one comes back after)
-    was_on = __clip_on
-    was = __clip
-    cx0 = f64(r.x)
-    cy0 = f64(r.y)
-    cx1 = f64(r.x + r.w) - paste_w
-    cy1 = f64(r.y + r.h)
-    if was_on:
-        cx0 = max(cx0, f64(was.x))
-        cy0 = max(cy0, f64(was.y))
-        cx1 = min(cx1, f64(was.x + was.z))
-        cy1 = min(cy1, f64(was.y + was.w))
-    clip(vec2(f32(cx0), f32(cy0)), vec2(f32(max(cx1 - cx0, 0.0)), f32(max(cy1 - cy0, 0.0))))
-    ty = f32(f64(r.y) + (f64(r.h) - size) / 2.0)
-    # (empty: the hint, dimmed, saying what goes in it)
-    if len(v) == 0 and len(hint) > 0 and not focused: text(hint, vec2(f32(tx), ty), size, hud_style.disabled)
-    else: text(shown, vec2(f32(tx), ty), size, hud_style.text)
-    if was_on: clip(vec2(was.x, was.y), vec2(was.z, was.w))
-    else: no_clip()
-    if paste_w > 0.0:
-        pr = Rect(r.x + r.w - f32(paste_w) - 3, r.y + 3, f32(paste_w), r.h - 6)
-        if hud_button(pr, "Paste"): __platform_paste()
-    v
-__hud_focus = ""
-
-# v with the clipboard's first line added, as much as fits in max_chars
-__paste_line = (v: str, max_chars: int) -> str:
-    out = v
-    loop ch in chars(clipboard()):
-        if ch == 10 or ch == 13: break
-        if ch >= 32 and char_count(out) < max_chars: out += chr(ch)
-    out
-
 # a list taller than its box: how far it is scrolled, from 0. Moved by dragging it (with a finger,
 # or the mouse: a press on a row that moves is a drag, not a click on the row, and let go moving,
-# the list glides on), by the wheel over the box and by the bar drawn at its right edge (when
-# there is more than fits). The rows go at their y minus that, inside clip(...) of the box: rows
-# scrolled out of it take no clicks
+# the list glides on; a press claimed with claim_press(), as a row dragged to another place, does
+# not move it), by the wheel over the box and by the bar at its right edge (when there is more
+# than fits). The rows go at their y minus that, inside clip(r) of the box: rows scrolled out of
+# it take no clicks. The bar is drawn over the rows, at the no_clip() after them (or as draw ends)
 #   off = hud_scroll(r, items.len() * 44, "shop")
 #   clip(r)
 #   loop i in 0.. and it in items:
-#       if hud_button(Rect(r.x, r.y + i * 44 - off, r.w - 14, 40), it.name): buy(i)
+#       if hud_button(Rect(r.x, r.y + i * 44 - off, r.w - 10, 40), it.name): buy(i)
 #   no_clip()
 hud_scroll = (r: Rect, content_height: f64, id: str = "") -> f64:
     global __hud_drag, __hud_grab, __hud_pan, __hud_pan_at, __hud_panning, __press_taken
@@ -677,7 +640,7 @@ hud_scroll = (r: Rect, content_height: f64, id: str = "") -> f64:
     st.t = now
     room = max(content_height - f64(r.h), 0.0)
     m = __ui_ptr()
-    over = __hud_hit(r, mouse_pos())
+    over = __hud_hit(r, mouse_pos(), __ui_to_screen(r))
     if over and mouse_wheel() != 0.0:
         off -= mouse_wheel() * 44.0
         st.speed = 0.0
@@ -723,10 +686,9 @@ hud_scroll = (r: Rect, content_height: f64, id: str = "") -> f64:
     st.off = off
     __hud_scrolls[key] = st
     if room > 0.0:
-        rect(bx, f64(r.y), bw, f64(r.h), hud_style.pressed)
         c = hud_style.button
         if __hud_drag == key or (__hud_panning and __hud_pan == key) or (__hud_lit(over) and f64(m.x) >= bx - 4.0): c = hud_style.hover
-        rect(bx, f64(r.y) + track * off / room, bw, th, c)
+        __hud_bars.push(__HudBar(Rect(bx, f64(r.y), bw, f64(r.h)), Rect(bx, f64(r.y) + track * off / room, bw, th), hud_style.pressed, c, __xform))
     off
 struct __HudScroll:
     off = 0.0
@@ -738,6 +700,26 @@ __hud_grab = 0.0
 __hud_pan = ""                  # (the list a press went down in, and whether it moves with it)
 __hud_panning = false
 __hud_pan_at = 0.0             # (where the list's top would be under the pointer)
+
+# (the lists' bars, drawn over their rows once those are done: at no_clip(), or as draw ends)
+struct __HudBar:
+    track: Rect
+    thumb: Rect
+    back: vec4
+    color: vec4
+    xform: mat4
+__hud_bars: __HudBar[]
+__hud_bars_draw = ():
+    global __hud_bars, __xform
+    if __hud_bars.len() == 0: return
+    bars = __hud_bars
+    __hud_bars = []
+    was = __xform
+    loop b in bars:
+        __xform = b.xform
+        rect(b.track, b.back)
+        rect(b.thumb, b.color)
+    __xform = was
 
 # a box of text beside the mouse, kept on the screen: what the thing under the mouse is or does.
 # Draw it after the rest of the interface, so nothing covers it (`if hovered: tip = "..."`, then
@@ -792,7 +774,8 @@ hud_slider = (r: Rect, value: f64, low: f64, high: f64, step: f64 = 0.0, label: 
     v
 
 # a box ticked or not, with its label to the right: the new state (flipped in the frame it is
-# clicked or tapped)
+# clicked or tapped, on the box or its label). The box is as tall as r; an r wider than that
+# holds the label too, cut short with … to fit it
 hud_checkbox = (r: Rect, label: str, on: bool) -> bool:
     over = __hud_touch(r)
     v = on
@@ -803,6 +786,594 @@ hud_checkbox = (r: Rect, label: str, on: bool) -> bool:
     rect(f64(r.x), f64(r.y), b, b, c)
     rect_outline(f64(r.x), f64(r.y), b, b, 1.0, hud_style.border)
     if v: rect(f64(r.x) + b * 0.25, f64(r.y) + b * 0.25, b * 0.5, b * 0.5, hud_style.accent)
-    size = min(hud_style.text_size, b * 0.7)
-    text(label, vec2(f32(f64(r.x) + b * 1.3), f32(f64(r.y) + (b - size) / 2.0)), size, hud_style.text)
+    size = min(hud_style.text_size, b * 1.2)
+    lx = f64(r.x) + b * 1.3
+    shown = label
+    if f64(r.w) > b * 1.3: shown = fit_text(label, f64(r.x + r.w) - lx, size)
+    text(shown, vec2(f32(lx), f32(f64(r.y) + (b - size) / 2.0)), size, hud_style.text)
+    v
+
+# ---- text fields ----
+# A box to type text in, edited as a desktop's text boxes are: a click gives it the keyboard and
+# puts the caret there (a drag selects, a double click a word, three clicks all of it), left and
+# right (with ctrl, alt on a Mac: by words; with shift: selecting), home and end, backspace and
+# delete (with ctrl: a word), ctrl+A, ctrl+C, ctrl+X, ctrl+V, ctrl+Z, ctrl+shift+Z and ctrl+Y (cmd
+# on a Mac). A long text moves to keep the caret in view. Tab and shift+tab go on to the next or
+# back to the last field drawn, its text selected; Enter (hud_submitted()), Escape or a click
+# elsewhere takes the keyboard away. Returns the text as it is now: `name = hud_text_field(r, name)`.
+# Tapped on a phone, it brings up the phone's keyboard, and a Paste button at its right end,
+# until the keyboard is put away. `id` names the field (hud_focus, hud_focused) and tells fields
+# with the same place apart (their rectangle names them otherwise); `hint` is shown dimmed while
+# it is empty ("Search")
+hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: str = "") -> str:
+    over = __hud_touch(r)
+    key = __hud_field_key(r, id)
+    size = min(hud_style.text_size, f64(r.h) * 0.6)
+    pad = 6.0
+    st = __text_edits.get(key) ?? __TextEdit()
+    v = __te_sync(st, value)
+    __te_layout(st, v, -1.0, size)
+    ty = f64(r.y) + (f64(r.h) - size) / 2.0
+    v = __hud_edit(st, key, v, r, over, f64(r.x) + pad - st.scroll, ty, size * 1.25, max_chars, -1.0, size, 1)
+    focused = __hud_focus == key
+    c = hud_style.button
+    if __hud_lit(over) or focused: c = hud_style.hover
+    rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), c)
+    edge = hud_style.border
+    if focused: edge = hud_style.accent
+    rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, edge)
+    # (typed in with a finger: a Paste button at its right end, as a phone has no ctrl+V)
+    paste_w = 0.0
+    if focused and touch_input(): paste_w = text_width("Paste", size) + 16.0
+    iw = f64(r.w) - paste_w - 2.0 * pad
+    __te_follow_x(st, focused, iw)
+    saved = __hud_clip_in(Rect(r.x, r.y, f32(f64(r.w) - paste_w), r.h))
+    # (empty: the hint, dimmed, saying what goes in it)
+    if len(v) == 0 and len(hint) > 0: text(hint, vec2(f32(f64(r.x) + pad), f32(ty)), size, hud_style.disabled)
+    __te_draw(st, v, f64(r.x) + pad - st.scroll, ty, size * 1.25, size, hud_style.text, focused, 0, 0)
+    __hud_clip_out(saved)
+    if paste_w > 0.0:
+        pr = Rect(r.x + r.w - f32(paste_w) - 3, r.y + 3, f32(paste_w), r.h - 6)
+        if hud_button(pr, "Paste"): __platform_paste()
+    st.text = v
+    __text_edits[key] = st
+    v
+
+# a box of several lines of text, edited as hud_text_field is, its lines wrapped at the box's
+# width: enter starts a new line, up and down go to the line above or below, page up and page
+# down a boxful, ctrl+home and ctrl+end to the start and the end; the wheel scrolls it and it
+# scrolls to keep the caret in view. Ctrl+enter is hud_submitted()
+#   note.body = hud_text_area(Rect(260, 50, 500, 400), note.body, id = "body")
+hud_text_area = (r: Rect, value: str, id: str = "", max_chars: int = 1000000, hint: str = "") -> str:
+    over = __hud_touch(r)
+    key = __hud_field_key(r, id)
+    size = hud_style.text_size
+    lh = size * 1.25
+    pad = 6.0
+    bar = 6.0
+    ww = max(f64(r.w) - 2.0 * pad - bar, size)
+    ih = f64(r.h) - 2.0 * pad
+    st = __text_edits.get(key) ?? __TextEdit()
+    v = __te_sync(st, value, true)
+    __te_layout(st, v, ww, size)
+    if over and mouse_wheel() != 0.0: st.scroll -= mouse_wheel() * lh * 3.0
+    v = __hud_edit(st, key, v, r, over, f64(r.x) + pad, f64(r.y) + pad - st.scroll, lh, max_chars, ww, size, max(int(ih / lh) - 1, 1))
+    __te_layout(st, v, ww, size)
+    focused = __hud_focus == key
+    # (the caret moved: the lines scroll to show it)
+    content = f64(st.lines.len()) * lh
+    if st.follow:
+        cy = f64(__te_line(st.lines, st.caret)) * lh
+        if cy < st.scroll: st.scroll = cy
+        if cy + lh > st.scroll + ih: st.scroll = cy + lh - ih
+        st.follow = false
+    st.scroll = clamp(st.scroll, 0.0, max(content - ih, 0.0))
+    c = hud_style.button
+    if focused: c = hud_style.hover
+    rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), c)
+    edge = hud_style.border
+    if focused: edge = hud_style.accent
+    rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, edge)
+    saved = __hud_clip_in(Rect(r.x + 1, f32(f64(r.y) + 1.0), r.w - 2, r.h - 2))
+    oy = f64(r.y) + pad - st.scroll
+    if len(v) == 0 and len(hint) > 0: text(hint, vec2(f32(f64(r.x) + pad), f32(oy)), size, hud_style.disabled)
+    first = max(int(st.scroll / lh) - 1, 0)
+    last = min(int((st.scroll + ih) / lh) + 1, st.lines.len() - 1)
+    __te_draw(st, v, f64(r.x) + pad, oy, lh, size, hud_style.text, focused, first, last)
+    __hud_clip_out(saved)
+    # (more than fits: a bar at the right edge, as long as the part shown)
+    if content > ih:
+        th = max(ih * ih / content, 16.0)
+        y = f64(r.y) + pad + (ih - th) * st.scroll / (content - ih)
+        rect(f64(r.x + r.w) - bar - 2.0, y, bar - 2.0, th, hud_style.border)
+    st.text = v
+    __text_edits[key] = st
+    v
+
+# give the keyboard to the hud_text_field or hud_text_area with this id, as tab does (a field's
+# text selected): ctrl+F to the search box, `if key_down(.ctrl) and key_pressed(.f): hud_focus("search")`.
+# hud_focus("") takes it from every field
+hud_focus = (id: str):
+    global __hud_focus, __hud_focus_frame, __hud_focus_new
+    __hud_focus = id
+    __hud_focus_frame = frame_number()
+    __hud_focus_new = id
+# whether the field with this id has the keyboard
+hud_focused = (id: str) -> bool: len(id) > 0 and __hud_focus == id
+# true in the frame enter was pressed in the text field drawn last (ctrl+enter in a text area):
+#   path = hud_text_field(r, path, id = "path")
+#   if hud_submitted(): open_file(path)
+hud_submitted = () -> bool: __hud_submit_frame == frame_number() and __hud_submit_key == __hud_last_field
+
+__hud_focus = ""                # (the field with the keyboard: its id, or "x,y" of its rectangle)
+__hud_focus_frame = -10         # (the frame hud_focus or tab gave it: the keys of that frame are not its)
+__hud_focus_new = ""            # (given by hud_focus or tab: its text is selected as it takes it)
+__hud_order: str[]              # (the text fields drawn this frame, in order, for tab; and in the last)
+__hud_order_last: str[]
+__hud_last_field = ""
+__hud_submit_key = ""
+__hud_submit_frame = -10
+
+__hud_field_key = (r: Rect, id: str) -> str:
+    if len(id) > 0: return id
+    "{r.x},{r.y}"
+
+# (a field's pointer and keys: who has the keyboard, the caret and selection the mouse or a
+# finger puts, and what is typed; the text as it leaves them. ox, oy: where its first line's text
+# starts, as it is scrolled; w: an area's width (-1: a field's single line); page: the lines page
+# up and down go)
+__hud_edit = (st: mut __TextEdit, key: str, value: str, r: Rect, over: bool, ox: f64, oy: f64, lh: f64, max_chars: int, w: f64, size: f64, page: int) -> str:
+    global __hud_focus, __hud_focus_new, __hud_last_field, __hud_submit_frame, __hud_submit_key, __press_taken, __typing_frame
+    v = value
+    multi = w > 0.0
+    __hud_last_field = key
+    __hud_order.push(key)
+    m = __ui_ptr()
+    if not touch_input() and mouse_pressed(.left) and over:
+        # (the mouse: the keyboard and the caret as it goes down; the press is the field's, for
+        # selecting, not a scrolling list's)
+        __hud_focus = key
+        __press_taken = true
+        __te_press(st, v, __te_at(st, v, m, ox, oy, lh))
+    else if touch_input() and over and __hud_press_on(r) and mouse_released(.left):
+        __hud_focus = key
+        st.caret = __te_at(st, v, m, ox, oy, lh)
+        st.anchor = st.caret
+        st.follow = true
+    else if mouse_pressed(.left) and not over and __hud_focus == key: __hud_focus = ""
+    if __hud_focus != key:
+        st.drag = false
+        return v
+    __te_drag(st, v, ox, oy, lh)
+    __typing_frame = frame_number()
+    __ui_typing_at(f64(r.y + r.h))
+    if __hud_focus_new == key:
+        __hud_focus_new = ""
+        # (a field's text selected, to be typed over; an area's caret where it was)
+        if not multi:
+            st.anchor = 0
+            st.caret = len(v)
+        st.follow = true
+    # (the keys of the frame it was given the keyboard in were for what gave it)
+    if __hud_focus_frame == frame_number(): return v
+    if key_typed(.tab):
+        __hud_tab(key, key_down(.shift))
+        return v
+    if key_pressed(.escape):
+        __hud_focus = ""
+        return v
+    if key_pressed(.enter) and (not multi or __te_mod()):
+        __hud_submit_key = key
+        __hud_submit_frame = frame_number()
+        if not multi: __hud_focus = ""
+        return v
+    __te_keys(st, v, max_chars, multi, true, w, size, page)
+
+# (tab in a field: the keyboard to the next field drawn (shift: the one before), its text selected)
+__hud_tab = (key: str, back: bool):
+    o = __hud_order_last
+    i = o.index_of(key)
+    if i < 0 or o.len() < 2: return
+    n = o.len()
+    j = (i + 1) % n
+    if back: j = (i + n - 1) % n
+    hud_focus(o[j])
+
+# (drawing clipped to r as well, in the transform's units, inside a clip already on (a scrolling
+# list's); what was on before, to put back)
+__hud_clip_in = (r: Rect) -> (bool, vec4):
+    was = (__clip_on, __clip)
+    b = __ui_to_screen(r)
+    x0 = f64(b.x)
+    y0 = f64(b.y)
+    x1 = f64(b.x + b.w)
+    y1 = f64(b.y + b.h)
+    if __clip_on:
+        x0 = max(x0, f64(__clip.x))
+        y0 = max(y0, f64(__clip.y))
+        x1 = min(x1, f64(__clip.x + __clip.z))
+        y1 = min(y1, f64(__clip.y + __clip.w))
+    __clip_screen(vec4(f32(x0), f32(y0), f32(max(x1 - x0, 0.0)), f32(max(y1 - y0, 0.0))))
+    was
+__hud_clip_out = (was: (bool, vec4)):
+    if was.0: __clip_screen(was.1)
+    else: __clip_none()
+
+# (the text being edited: a field's caret, selection and undo, kept by its id)
+struct __TextEdit:
+    caret = 0                   # (bytes into the text, at a character's start)
+    anchor = 0                  # (the selection's other end: the caret's place, for none)
+    scroll = 0.0                # (a field: how far its text is moved left; an area: up)
+    text = ""                   # (the text given back last frame: another, set by the program, puts the caret at its end)
+    undo: __TextSnap[]
+    redo: __TextSnap[]
+    kind = 0                    # (the last edit: 1 typing, 2 deleting; a run of one kind, without a pause, is one undo step)
+    kind_t = -10.0
+    drag = false                # (the mouse went down in it and selects as it moves)
+    click_t = -10.0             # (the last click, and how many came quickly: 2 a word, 3 all)
+    clicks = 0
+    blink_t = 0.0               # (the caret shows, steadily, for a moment after it moves)
+    goal_x = -1.0               # (up and down keep to the x they started from)
+    follow = false              # (the caret moved: an area scrolls to show it)
+    lines: (int, int)[]         # (where each line starts and ends, wrapped)
+    xs: f64[]                   # (where each byte's character starts, from the text's start)
+    laid_of = ""                # (the text, width and size they are for)
+    laid_w = -2.0
+    laid_size = 0.0
+struct __TextSnap:
+    text = ""
+    caret = 0
+    anchor = 0
+__text_edits: {str: __TextEdit} = {}
+
+# (the text the program gives: one other than the field gave back puts the caret at its end (an
+# area's at its start, scrolled to the top), and what undo would go back to is gone)
+__te_sync = (st: mut __TextEdit, value: str, multi: bool = false) -> str:
+    if value != st.text or st.caret > len(value) or st.anchor > len(value):
+        st.text = value
+        st.caret = len(value)
+        if multi:
+            st.caret = 0
+            st.scroll = 0.0
+        st.anchor = st.caret
+        st.undo.clear()
+        st.redo.clear()
+        st.kind = 0
+    value
+
+# (its lines, wrapped at w (-1: one line), and where each character is, when the text changed)
+__te_layout = (st: mut __TextEdit, v: str, w: f64, size: f64):
+    if v == st.laid_of and w == st.laid_w and size == st.laid_size and st.xs.len() == len(v) + 1: return
+    st.laid_of = v
+    st.laid_w = w
+    st.laid_size = size
+    st.xs = __char_xs(v, size)
+    if w < 0.0: st.lines = [(0, len(v))]
+    else: st.lines = __te_wrap(v, st.xs, w)
+
+# (lines no wider than w: each one's start, and its end, before its line break or where the next
+# starts (after the spaces it broke at); a word wider than w broken where it reaches it)
+__te_wrap = (s: str, xs: f64[], w: f64) -> (int, int)[]:
+    out: (int, int)[]
+    start = 0
+    brk = -1                    # (where the line may break: after a space, or at a CJK character)
+    i = 0
+    loop i < len(s):
+        if s[i] == '\n':
+            out.push((start, i))
+            start = i + 1
+            brk = -1
+            i += 1
+            continue
+        r = __next_char(s, i)
+        if r.0 == c' ':
+            brk = r.1
+            i = r.1
+            continue
+        if __cjk(r.0) and i > start: brk = i
+        if xs[r.1] - xs[start] > w and i > start:
+            at = i
+            if brk > start: at = brk
+            out.push((start, at))
+            start = at
+            brk = -1
+        if __cjk(r.0): brk = r.1
+        i = r.1
+    out.push((start, len(s)))
+    out
+
+# (the line the place i is on: the last starting at or before it)
+__te_line = (lines: (int, int)[], i: int) -> int:
+    k = 0
+    loop j in 0.. and l in lines:
+        if l.0 > i: break
+        k = j
+    k
+
+# (where the caret goes at the end of line k: before a wrapped line's last space; a word broken
+# in two, before its last character on this line)
+__te_line_end = (s: str, lines: (int, int)[], k: int) -> int:
+    l = lines[k]
+    if k + 1 < lines.len() and lines[k + 1].0 == l.1 and l.1 > l.0:
+        if s[l.1 - 1] == ' ': return l.1 - 1
+        return __te_prev(s, l.1)
+    l.1
+
+# (the place nearest x (from the line's start) on line k)
+__te_hit = (st: __TextEdit, s: str, k: int, x: f64) -> int:
+    l = st.lines[k]
+    e = __te_line_end(s, st.lines, k)
+    x0 = st.xs[l.0]
+    i = l.0
+    loop i < e:
+        j = __te_next(s, i)
+        if x < (st.xs[i] + st.xs[j]) / 2.0 - x0: return i
+        i = j
+    e
+
+# (the place under the point p, in the field's units; ox, oy: where the first line's text starts)
+__te_at = (st: __TextEdit, v: str, p: vec2, ox: f64, oy: f64, lh: f64) -> int:
+    k = 0
+    if st.lines.len() > 1: k = clamp(int(floor((f64(p.y) - oy) / lh)), 0, st.lines.len() - 1)
+    __te_hit(st, v, k, f64(p.x) - ox)
+
+# (the mouse went down at `at`: the caret there (with shift, the selection to there); a second
+# click soon after, the word there; a third, all of it (an area: the paragraph))
+__te_press = (st: mut __TextEdit, v: str, at: int):
+    now = elapsed()
+    if now - st.click_t < 0.4 and st.clicks > 0 and not key_down(.shift): st.clicks += 1
+    else: st.clicks = 1
+    st.click_t = now
+    st.caret = at
+    if st.clicks == 1:
+        if not key_down(.shift): st.anchor = at
+        st.drag = true
+    else if st.clicks == 2:
+        wd = __te_word_at(v, at)
+        st.anchor = wd.0
+        st.caret = wd.1
+    else:
+        a = at
+        loop a > 0 and v[a - 1] != '\n': a -= 1
+        b = at
+        loop b < len(v) and v[b] != '\n': b += 1
+        st.anchor = a
+        st.caret = b
+    st.kind = 0
+    st.goal_x = -1.0
+    st.blink_t = now
+    st.follow = true
+
+# (the mouse held down after a press in it: the selection goes to where it is)
+__te_drag = (st: mut __TextEdit, v: str, ox: f64, oy: f64, lh: f64):
+    if not st.drag: return
+    if not mouse_down(.left):
+        st.drag = false
+        return
+    at = __te_at(st, v, __ui_ptr(), ox, oy, lh)
+    if at != st.caret:
+        st.caret = at
+        st.follow = true
+        st.blink_t = elapsed()
+
+# (a field's single line: moved left as far as the caret needs to show in a box w wide, back at
+# its start when it does not have the keyboard)
+__te_follow_x = (st: mut __TextEdit, focused: bool, w: f64):
+    if not focused:
+        st.scroll = 0.0
+        return
+    cx = st.xs[st.caret]
+    if cx - st.scroll > w - 2.0: st.scroll = cx - w + 2.0
+    if cx < st.scroll: st.scroll = cx
+    st.scroll = clamp(st.scroll, 0.0, max(st.xs[st.xs.len() - 1] - w + 2.0, 0.0))
+
+# (lines first to last of the text, the first one's text at ox, oy: the selection behind them,
+# and the caret, a thin bar blinking, while it has the keyboard)
+__te_draw = (st: __TextEdit, v: str, ox: f64, oy: f64, lh: f64, size: f64, color: vec4, focused: bool, first: int, last: int):
+    a = min(st.caret, st.anchor)
+    b = max(st.caret, st.anchor)
+    ck = __te_line(st.lines, st.caret)
+    loop k in [first..last]:
+        if k < 0 or k >= st.lines.len(): continue
+        l = st.lines[k]
+        y = oy + f64(k) * lh
+        x0 = st.xs[l.0]
+        if focused and a < b and b > l.0 and a <= l.1:
+            sa = max(a, l.0)
+            sb = min(b, l.1)
+            sw = st.xs[sb] - st.xs[sa]
+            if b > l.1 and k + 1 < st.lines.len() and st.lines[k + 1].0 > l.1: sw += size * 0.3     # (the line break, selected)
+            rect(ox + st.xs[sa] - x0, y - (lh - size) * 0.5, sw, lh, __te_selection())
+        if l.1 > l.0: text(v[l.0..l.1), vec2(f32(ox), f32(y)), size, color)
+        if focused and k == ck and int((elapsed() - st.blink_t) * 2.0) % 2 == 0:
+            cw = max(1.0, size * 0.08)
+            rect(ox + st.xs[st.caret] - x0 - cw / 2.0, y - size * 0.08, cw, size * 1.16, color)
+
+# (the selection's color: hud_style.selection, or, left as it is, the accent's, see-through)
+__te_selection = () -> vec4:
+    if hud_style.selection == vec4(1, 0.82, 0.4, 0.35): return with_alpha(hud_style.accent, 0.35)
+    hud_style.selection
+
+# (the place before the character before i, and after the one at i)
+__te_prev = (s: str, i: int) -> int:
+    j = max(i - 1, 0)
+    loop j > 0 and int(s[j]) & 0xC0 == 0x80: j -= 1
+    j
+__te_next = (s: str, i: int) -> int:
+    if i >= len(s): return len(s)
+    __next_char(s, i).1
+
+# (a byte of a word: a letter, a digit, _ or part of a character beyond ASCII)
+__te_wordy = (c: u8) -> bool: c >= 128 or is_alnum(c) or c == '_'
+__te_word_left = (s: str, i: int) -> int:
+    j = i
+    loop j > 0 and not __te_wordy(s[j - 1]): j -= 1
+    loop j > 0 and __te_wordy(s[j - 1]): j -= 1
+    j
+__te_word_right = (s: str, i: int) -> int:
+    j = i
+    loop j < len(s) and not __te_wordy(s[j]): j += 1
+    loop j < len(s) and __te_wordy(s[j]): j += 1
+    j
+# (the word at i, for a double click: or the one character there, a space or a mark)
+__te_word_at = (s: str, i: int) -> (int, int):
+    if (i < len(s) and __te_wordy(s[i])) or (i > 0 and __te_wordy(s[i - 1])):
+        a = i
+        loop a > 0 and __te_wordy(s[a - 1]): a -= 1
+        b = i
+        loop b < len(s) and __te_wordy(s[b]): b += 1
+        return (a, b)
+    (i, __te_next(s, i))
+
+# (the keys that go with ctrl on Linux and Windows and cmd on a Mac (ctrl too, which a Mac's text
+# boxes leave unused for these), either in a browser: k typed, shift held or not as asked, alt
+# not held)
+__te_shortcut = (k: Key, shift: bool = false) -> bool:
+    key_typed(k) and __te_mod() and key_down(.shift) == shift and not key_down(.alt)
+__te_mod = () -> bool:
+    when TARGET == "macos" or TARGET == "wasm": return key_down(.ctrl) or key_down(.super)
+    else: return key_down(.ctrl)
+# (moving by words: ctrl, or alt (option) on a Mac; to the line's ends: cmd on a Mac)
+__te_word_mod = () -> bool:
+    when TARGET == "macos" or TARGET == "wasm": return key_down(.ctrl) or key_down(.alt)
+    else: return key_down(.ctrl)
+__te_line_mod = () -> bool:
+    when TARGET == "macos" or TARGET == "wasm": return key_down(.super)
+    else: return false
+
+# (s as a field takes it: a line's characters, without control characters; an area's keeps its
+# line breaks; tabs as four spaces)
+__te_clean = (s: str, multi: bool) -> str:
+    out = ""
+    loop ch in chars(s):
+        if ch == 10 or ch == 13:
+            if not multi: break
+            if ch == 10: out += "\n"
+        else if ch == 9: out += "    "
+        else if ch >= 32 and ch != 127: out += chr(ch)
+    out
+
+# (s, at most n characters of it)
+__te_first = (s: str, n: int) -> str:
+    i = 0
+    k = 0
+    loop i < len(s) and k < n:
+        i = __te_next(s, i)
+        k += 1
+    s[..i)
+
+# (the selection replaced with ins, at most max_chars in all: kind 1 typing, 2 deleting, a run of
+# which is one undo step, 0 a step of its own)
+__te_put = (st: mut __TextEdit, v: str, ins: str, max_chars: int, kind: int) -> str:
+    a = min(st.caret, st.anchor)
+    b = max(st.caret, st.anchor)
+    put = __te_first(ins, max_chars - char_count(v) + char_count(v[a..b)))
+    if a == b and len(put) == 0: return v
+    now = elapsed()
+    if kind == 0 or kind != st.kind or now - st.kind_t > 1.0:
+        st.undo.push(__TextSnap(v, st.caret, st.anchor))
+        if st.undo.len() > 100: st.undo.remove_at(0)
+    st.redo.clear()
+    st.kind = kind
+    st.kind_t = now
+    st.caret = a + len(put)
+    st.anchor = st.caret
+    st.follow = true
+    st.goal_x = -1.0
+    st.blink_t = now
+    v[..a) + put + v[b..]
+
+# (the caret to i, the selection kept from where it was with shift)
+__te_move = (st: mut __TextEdit, i: int, select: bool, keep_x: bool = false):
+    st.caret = i
+    if not select: st.anchor = i
+    st.kind = 0
+    st.follow = true
+    st.blink_t = elapsed()
+    if not keep_x: st.goal_x = -1.0
+
+# (the keys of a field with the keyboard: typing, the caret (with shift: selecting), deleting,
+# the clipboard and undo; the text as they leave it. updown: up and down move the caret (a menu's
+# field leaves them to the menu); w: an area's width (-1: a field's single line))
+__te_keys = (st: mut __TextEdit, value: str, max_chars: int, multi: bool, updown: bool, w: f64, size: f64, page: int) -> str:
+    v = value
+    sh = key_down(.shift)
+    word = __te_word_mod()
+    typed = __te_clean(text_input(), false)
+    if len(typed) > 0:
+        kind = 1
+        if st.caret != st.anchor: kind = 0
+        v = __te_put(st, v, typed, max_chars, kind)
+    if __platform_pasted(): v = __te_put(st, v, __te_clean(clipboard(), multi), max_chars, 0)
+    if multi and key_typed(.enter) and not __te_mod(): v = __te_put(st, v, "\n", max_chars, 1)
+    if key_typed(.backspace) or key_typed(.delete):
+        if st.caret == st.anchor:
+            if key_typed(.backspace) and word: st.anchor = __te_word_left(v, st.caret)
+            else if key_typed(.backspace): st.anchor = __te_prev(v, st.caret)
+            else if word: st.anchor = __te_word_right(v, st.caret)
+            else: st.anchor = __te_next(v, st.caret)
+            v = __te_put(st, v, "", max_chars, 2)
+        else: v = __te_put(st, v, "", max_chars, 0)
+    a = min(st.caret, st.anchor)
+    b = max(st.caret, st.anchor)
+    if __te_shortcut(.a):
+        st.anchor = 0
+        __te_move(st, len(v), true)
+    if (__te_shortcut(.c) or __te_shortcut(.x)) and a < b:
+        set_clipboard(v[a..b))
+        if __te_shortcut(.x): v = __te_put(st, v, "", max_chars, 0)
+    if __te_shortcut(.z) and st.undo.len() > 0:
+        st.redo.push(__TextSnap(v, st.caret, st.anchor))
+        s = st.undo.pop()
+        v = s.text
+        st.caret = s.caret
+        st.anchor = s.anchor
+        st.kind = 0
+        st.follow = true
+    else if (__te_shortcut(.z, true) or __te_shortcut(.y)) and st.redo.len() > 0:
+        st.undo.push(__TextSnap(v, st.caret, st.anchor))
+        s = st.redo.pop()
+        v = s.text
+        st.caret = s.caret
+        st.anchor = s.anchor
+        st.kind = 0
+        st.follow = true
+    # (the caret: left and right a character, a word or to the line's ends; with a selection and
+    # no shift, to its start or end)
+    __te_layout(st, v, w, size)
+    k = __te_line(st.lines, st.caret)
+    if key_typed(.left):
+        if st.caret != st.anchor and not sh: __te_move(st, min(st.caret, st.anchor), false)
+        else if __te_line_mod(): __te_move(st, st.lines[k].0, sh)
+        else if word: __te_move(st, __te_word_left(v, st.caret), sh)
+        else: __te_move(st, __te_prev(v, st.caret), sh)
+    if key_typed(.right):
+        if st.caret != st.anchor and not sh: __te_move(st, max(st.caret, st.anchor), false)
+        else if __te_line_mod(): __te_move(st, __te_line_end(v, st.lines, k), sh)
+        else if word: __te_move(st, __te_word_right(v, st.caret), sh)
+        else: __te_move(st, __te_next(v, st.caret), sh)
+    k = __te_line(st.lines, st.caret)
+    if key_typed(.home):
+        if key_down(.ctrl): __te_move(st, 0, sh)
+        else: __te_move(st, st.lines[k].0, sh)
+    if key_typed(.end):
+        if key_down(.ctrl): __te_move(st, len(v), sh)
+        else: __te_move(st, __te_line_end(v, st.lines, k), sh)
+    if updown:
+        go = 0
+        if key_typed(.up): go = -1
+        if key_typed(.down): go = 1
+        if key_typed(.page_up): go = -page
+        if key_typed(.page_down): go = page
+        if go != 0 and __te_line_mod():
+            # (cmd+up and cmd+down on a Mac: the start and the end)
+            if go < 0: __te_move(st, 0, sh)
+            else: __te_move(st, len(v), sh)
+        else if go != 0:
+            k = __te_line(st.lines, st.caret)
+            if st.goal_x < 0.0: st.goal_x = st.xs[st.caret] - st.xs[st.lines[k].0]
+            to = k + go
+            if to < 0: __te_move(st, 0, sh, true)
+            else if to >= st.lines.len(): __te_move(st, len(v), sh, true)
+            else: __te_move(st, __te_hit(st, v, to, st.goal_x), sh, true)
     v
