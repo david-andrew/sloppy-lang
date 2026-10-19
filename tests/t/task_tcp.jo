@@ -1,0 +1,52 @@
+# requires: sloppy
+# requires: native
+# TCP with tasks: a task for each connection, and a connection closed by one task while another
+# waits in tcp_receive on it (that one wakes with nothing, and a new connection, which may get the
+# same socket, is a number of its own)
+import net
+
+const PORT = 19463
+
+main = ():
+    srv = net.tcp_listen(PORT, host = "127.0.0.1")
+    cli = net.tcp_connect("127.0.0.1", PORT)
+    conn = net.tcp_accept(srv, wait = 1.0)
+    reader = spawn(():
+        t0 = time()
+        got = net.tcp_receive(conn, wait = 3.0)
+        "woke with '{str_from_bytes(got)}', soon: {time() - t0 < 1.0}, closed: {net.tcp_closed(conn)}"
+    )
+    sleep(0.05)
+    net.tcp_close(conn)
+    cli2 = net.tcp_connect("127.0.0.1", PORT)
+    conn2 = net.tcp_accept(srv, wait = 1.0)
+    net.tcp_send(conn2, "for the new connection")
+    print(reader.wait())
+    print(conn2 != conn, str_from_bytes(net.tcp_receive(cli2, wait = 1.0)))
+    net.tcp_close(cli)
+    net.tcp_close(cli2)
+    net.tcp_close(conn2)
+
+    # an echo server: a task for each connection, each waiting for its own
+    serve = (c: int):
+        loop not net.tcp_closed(c):
+            b = net.tcp_receive(c, wait = 5.0)
+            if b.len() > 0: net.tcp_send(c, "echo " + str_from_bytes(b))
+        net.tcp_close(c)
+    acceptor = spawn(():
+        loop _ in 0..3:
+            c = net.tcp_accept(srv, wait = 5.0)
+            if c >= 0: spawn((): serve(c))
+    )
+    clients = [loop k in 0..3: spawn(():
+        c = net.tcp_connect("127.0.0.1", PORT)
+        sleep(0.01 * f64(3 - k))
+        net.tcp_send(c, "client {k}")
+        reply = str_from_bytes(net.tcp_receive(c, wait = 5.0))
+        net.tcp_close(c)
+        reply
+    )]
+    print(wait_all(clients))
+    acceptor.wait()
+    net.tcp_close(srv)
+    print("closed server accepts nothing:", net.tcp_accept(srv, wait = 0.1))

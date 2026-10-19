@@ -388,6 +388,11 @@ peers = () -> int[]:
 
 # end a connection (a left event follows)
 close = (peer: int):
+    n0 = __net_events.len()
+    __net_close(peer)
+    __net_wake(n0)
+
+__net_close = (peer: int):
     loop i in [0..__net_peers.len()):
         if __net_peers[i].id == peer and __net_peers[i].state != 3:
             if __net_peers[i].rtc >= 0:
@@ -495,14 +500,14 @@ __n_why = (e: int, port: int) -> str:
 receive = () -> NetEvent[]:
     global __net_events
     __net_poll()
-    if __net_held.len() == 0 and __net_marked.len() == 0:
+    if __net_held.len() == 0 and __net_marked.len() == 0 and __net_owned.len() == 0:
         out = __net_events
         __net_events = []
         return out
     out: NetEvent[]
     keep: NetEvent[]
     loop e in __net_events:
-        if __net_kept(e): keep.push(e)
+        if __net_kept(e) or __net_owned.has(e.peer): keep.push(e)
         else: out.push(e)
     __net_events = keep
     out
@@ -518,7 +523,123 @@ receive = (only: int[]) -> NetEvent[]:
         if e.peer in only and not __net_kept(e): out.push(e)
         else: keep.push(e)
     __net_events = keep
+    # (a peer gone is no one's any more)
+    loop e in out:
+        if e.kind == .left and __net_owned.has(e.peer):
+            __net_owned.remove(e.peer)
+            __net_accepted.remove(e.peer)
     out
+
+# the same, waiting up to `wait` seconds for the first of their events: a task's, for the peers it
+# serves (a server's connection each, from accept). The peers waited for are its own from then on:
+# receive() and receive_server() leave their events. In a web page, in a task only
+#   talk = (p: int):
+#       loop not net.gone(p):
+#           loop e in net.receive([p], wait = 30.0):
+#               if e.kind == .message: net.send(p, "you said {e.text}")
+receive = (only: int[], wait: f64) -> NetEvent[]:
+    loop p in only: __net_owned[p] = true
+    end = time() + max(wait, 0.0)
+    loop true:
+        out = receive(only)
+        if out.len() > 0 or __task_cancelling or time() >= end or not __net_can_wait(): return out
+        fds: int[]
+        want: int[]
+        ms = __net_ms(end)
+        loop p in __net_peers:
+            if p.state == 3 or not (p.id in only): continue
+            if p.rtc >= 0:
+                ms = min(ms, 10)
+                continue
+            if p.fd < 0: continue
+            fds.push(p.fd)
+            want.push(if p.state == 0: 2 else: if p.outat < p.outbuf.len(): 3 else: 1)
+        __net_wait_on(only)
+        when TARGET == "wasm":
+            __n_wait([-1], [1], ms)
+        else:
+            __n_wait(fds, want, ms)
+    []
+
+# a peer that connected to this program's server (listen's port, or an http server's websocket()),
+# waiting up to `wait` seconds for one; -1 if none came. It is the caller's own, its joined event
+# taken: its events come from receive([peer], ...), not receive() or receive_server(), so that a
+# task can serve each one
+#   loop not stopping():
+#       p = net.accept(wait = 1.0)
+#       if p >= 0: spawn((): talk(p))
+accept = (wait: f64 = 0.0) -> int:
+    global __net_accept_waits
+    end = time() + max(wait, 0.0)
+    loop true:
+        __net_poll()
+        loop k in [0..__net_events.len()):
+            e = __net_events[k]
+            if e.kind == .joined and __net_accepted.has(e.peer) and not __net_owned.has(e.peer) and not (e.peer in __net_held):
+                __net_events.remove_at(k)
+                __net_owned[e.peer] = true
+                return e.peer
+        if __task_cancelling or time() >= end or not __net_can_wait(): return -1
+        fds: int[]
+        want: int[]
+        if __net_listen_fd >= 0:
+            fds.push(__net_listen_fd)
+            want.push(1)
+        loop p in __net_peers:
+            if p.state == 1 and not p.client and p.fd >= 0:
+                fds.push(p.fd)
+                want.push(if p.outat < p.outbuf.len(): 3 else: 1)
+        if __tasks_on:
+            wg = __task_waiter_fn()
+            __net_accept_waits.push(wg.0)
+            __net_accept_waits.push(wg.1)
+        __n_wait(fds, want, __net_ms(end))
+    -1
+
+# the peer has gone (or never was): its left event has come, or is waiting to be taken
+gone = (peer: int) -> bool:
+    loop p in __net_peers:
+        if p.id == peer: return p.state == 3
+    true
+
+# (tasks waiting in receive(only, wait), by the peers they wait for, and in accept: ids and waits,
+# woken by the events that come for them)
+__net_owned: {int: bool}            # (peers whose events are a task's, from receive(only, wait) or accept)
+__net_waits: {int: int[]}
+__net_accept_waits: int[]
+
+__net_can_wait = () -> bool:
+    when TARGET == "wasm":
+        # (a web page waits in a task (main too, in a program that has them), not in a game's frame)
+        if not __tasks_on: return false
+        return not (__is_game and __task_waiter_fn().0 == 0)
+    else:
+        return true
+
+__net_wait_on = (only: int[]):
+    if not __tasks_on: return
+    wg = __task_waiter_fn()
+    loop p in only:
+        ws: int[]
+        if let had = __net_waits.get(p): ws = had
+        # (a peer's waiters that never had an event: the oldest dropped, a bound on them)
+        if ws.len() >= 32: ws = ws[2..]
+        ws.push(wg.0)
+        ws.push(wg.1)
+        __net_waits[p] = ws
+
+# (the events from index `from` on have come: the tasks waiting for them woken)
+__net_wake = (from: int):
+    global __net_accept_waits
+    if __net_waits.len() == 0 and __net_accept_waits.len() == 0: return
+    loop k in [from..__net_events.len()):
+        e = __net_events[k]
+        if let ws = __net_waits.get(e.peer):
+            __task_wake_fn(ws)
+            __net_waits.remove(e.peer)
+        if e.kind == .joined and __net_accept_waits.len() > 0 and __net_accepted.has(e.peer):
+            __task_wake_fn(__net_accept_waits)
+            __net_accept_waits = []
 
 # (an event receive() leaves for another part of the library: an invite peer's while invite's
 # screens connect it, and netplay's packets on peers it plays over, which start with its mark)
@@ -578,7 +699,7 @@ receive_server = () -> NetEvent[]:
     out: NetEvent[]
     keep: NetEvent[]
     loop e in __net_events:
-        if __net_accepted.has(e.peer): out.push(e)
+        if __net_accepted.has(e.peer) and not __net_owned.has(e.peer): out.push(e)
         else: keep.push(e)
     __net_events = keep
     loop e in out:
@@ -591,7 +712,7 @@ __net_wait_hooks: (() -> (int, int)[])[]
 # wait until something comes for the program, or `seconds` pass: a message or a peer (receive), a
 # connection's bytes or one to accept (the tcp_ functions), a fetch's answer (fetch_result), a
 # request for its http server; true when something came (false: the time passed, or the program
-# was asked to stop, as stopping() then says). Meanwhile what waits to go out is sent as the
+# was asked to stop, as stopping() then says, or the task was cancelled). Meanwhile what waits to go out is sent as the
 # connections take it. For a program with no window, which has nothing else to do: a game's
 # frames come anyway
 wait = (seconds: f64) -> bool:
@@ -601,7 +722,7 @@ wait = (seconds: f64) -> bool:
         end = time() + max(seconds, 0.0)
         loop true:
             __stop_check()
-            if __stop_asked: return false
+            if __stop_asked or __task_cancelling: return false
             fds: int[]
             want: int[]
             kind: int[]                 # (each fd's: 0 a peer's, 1 a tcp connection's, 2 the rest's)
@@ -619,13 +740,15 @@ wait = (seconds: f64) -> bool:
                 fds.push(p.fd)
                 want.push(if p.state == 0: 2 else: if p.outat < p.outbuf.len(): 3 else: 1)
                 kind.push(0)
+            conn: int[]                 # (a tcp connection's: its handle)
             loop c, t in __tcps:
                 if t.eof and t.at == t.out.len(): continue
-                fds.push(c)
+                fds.push(t.fd)
                 want.push(if t.eof: 2 else: if t.at < t.out.len(): 3 else: 1)
                 kind.push(1)
-            loop s in __tcp_servers:
-                fds.push(s)
+                conn.push(c)
+            loop _, sfd in __tcp_servers:
+                fds.push(sfd)
                 want.push(1)
                 kind.push(2)
             loop i in [0..__fetches.len()):
@@ -642,25 +765,38 @@ wait = (seconds: f64) -> bool:
             when TARGET == "windows":
                 if __stop_watching: ms = min(ms, 100)
             got = __n_wait(fds, want, ms)
+            if __task_cancelling: return false
             came = false
+            peer_came = false
             loop i in [0..fds.len()):
                 g = got[i]
                 if g == 0: continue
                 # (only room to write: what waits goes out here, and the wait goes on)
                 if g == 2 and kind[i] < 2:
-                    if kind[i] == 1: __tcp_flush(fds[i])
+                    if kind[i] == 1:
+                        loop k in [0..conn.len()):
+                            if __tcps.has(conn[k]) and __tcps[conn[k]].fd == fds[i]: __tcp_flush(conn[k])
                     else:
                         loop k in [0..__net_peers.len()):
                             if __net_peers[k].fd == fds[i] and __net_peers[k].state != 3 and __net_peers[k].rtc < 0:
                                 if __net_peers[k].state == 0: came = true
                                 else: __net_flush(k)
                     continue
+                # (a peer's messages: taken in now, for receive, so that its socket is not ready
+                # again at the next wait; a task waiting for that peer is woken)
+                if kind[i] == 0: peer_came = true
                 came = true
+            if peer_came: __net_poll()
             if came: return true
             if time() >= end: return false
         false
 
 __net_poll = ():
+    n0 = __net_events.len()
+    __net_poll_all()
+    __net_wake(n0)
+
+__net_poll_all = ():
     global __net_key
     __net_rtc_poll()
     when TARGET == "wasm":
@@ -941,9 +1077,11 @@ __net_adopt = (fd: int, rest: u8[], out: u8[], hs: Handshake, largest: int) -> i
     __net_next += 1
     __net_peers.push(__NetPeer(id = id, fd = fd, state = 2, client = false, since = time(), inbuf = rest, outbuf = out, hs = hs, largest = min(largest, __NET_MAX)))
     __net_accepted[id] = true
+    n0 = __net_events.len()
     __net_events.push(NetEvent(.joined, id, []))
     __net_flush(__net_peers.len() - 1)
     __net_parse(__net_peers.len() - 1)
+    __net_wake(n0)
     id
 
 __find_crlf2 = (b: u8[]) -> int:
@@ -1045,8 +1183,15 @@ udp_close = (sock: int):
 #       if c >= 0: conns.push(c)
 #       loop c in conns: answer(c, net.tcp_receive(c))     # (net.tcp_write(c, reply) in it)
 #       net.wait(1.0)                                       # until one has something (or a second)
+# or has a task for each connection (lib/std/task.jo), each waiting in tcp_receive for its own:
+#   loop not stopping():
+#       c = net.tcp_accept(s, wait = 1.0)
+#       if c >= 0: spawn((): serve(c))          # (serve's: it reads, answers, and closes c)
+# A connection is a number of its own, never given again: one closed by a task is closed for the
+# others (their tcp_ calls on it end at once), and a new connection is another number.
 
 struct __Tcp:
+    fd = -1
     eof = false
     tls = -1                # (a tls_connect's connection: its TLS)
     out: u8[]               # what waits to go out (from out[at])
@@ -1054,9 +1199,20 @@ struct __Tcp:
     failed = false
     from = ""               # (accepted: the address it came from)
 
+# (connections and servers by their handles, numbers of their own and not the sockets': a socket's
+# number is the system's to give again once it is closed, and a task still holding the old one
+# would read the new connection's bytes)
 __tcps: {int: __Tcp}
-__tcp_servers: int[]
+__tcp_servers: {int: int}   # (a server's handle: its socket)
+__tcp_next = 1
 __tcp_why = ""
+
+__tcp_new = (fd: int, from: str) -> int:
+    global __tcp_next
+    c = __tcp_next
+    __tcp_next += 1
+    __tcps[c] = __Tcp(fd = fd, from = from)
+    c
 
 # a connection to host's port, waiting up to `timeout` seconds for it; -1 if it cannot be made
 # (tcp_why says why)
@@ -1075,11 +1231,9 @@ tcp_connect = (host: str, port: int, timeout: f64 = 5.0) -> int:
     end = time() + timeout
     loop true:
         st = __n_connected(fd)
-        if st > 0:
-            __tcps[fd] = __Tcp()
-            return fd
-        if st < 0 or time() > end:
-            __tcp_why = if st < 0: __n_why(-st, port) else: "no answer in {timeout} seconds"
+        if st > 0: return __tcp_new(fd, "")
+        if st < 0 or time() > end or __task_cancelling:
+            __tcp_why = if st < 0: __n_why(-st, port) else: if __task_cancelling: "the task was cancelled" else: "no answer in {timeout} seconds"
             __n_close(fd)
             return -1
         __n_wait([fd], [2], __net_ms(end))
@@ -1092,8 +1246,9 @@ tcp_connect = (host: str, port: int, timeout: f64 = 5.0) -> int:
 tls_connect = (host: str, port: int = 443, timeout: f64 = 10.0) -> int:
     global __tcp_why
     end = time() + timeout
-    fd = tcp_connect(host, port, timeout)
-    if fd < 0: return -1
+    c = tcp_connect(host, port, timeout)
+    if c < 0: return -1
+    fd = __tcps[c].fd
     t = tls.__tls_open(host, "")
     __net_rbuf_ready()
     loop true:
@@ -1102,8 +1257,8 @@ tls_connect = (host: str, port: int = 443, timeout: f64 = 10.0) -> int:
             break
         st = tls.__tls_status(t)
         if st == 1:
-            __tcps[fd].tls = t
-            return fd
+            __tcps[c].tls = t
+            return c
         if st >= 2:
             __tcp_why = "the secure connection failed: {tls.__tls_why(t)}"
             break
@@ -1114,13 +1269,13 @@ tls_connect = (host: str, port: int = 443, timeout: f64 = 10.0) -> int:
         if n == 0 or n == -2:
             __tcp_why = "the server closed the connection in TLS's handshake (is it a TLS server, on that port?)"
             break
-        if time() > end:
-            __tcp_why = "no answer to TLS's handshake in {timeout} seconds"
+        if time() > end or __task_cancelling:
+            __tcp_why = if __task_cancelling: "the task was cancelled" else: "no answer to TLS's handshake in {timeout} seconds"
             break
         __n_wait([fd], [1], __net_ms(end))
     tls.__tls_free(t)
     __n_close(fd)
-    __tcps.remove(fd)
+    __tcps.remove(c)
     -1
 
 # why the last tcp_connect or tls_connect gave -1
@@ -1137,24 +1292,28 @@ trust_certificate = (pem: str) -> int: tls.__tls_trust(pem)
 # backlog: how many connections may wait to be accepted
 @no_web("gives -1 in a web page: a page cannot listen (the server is a native program)")
 tcp_listen = (port: int, host: str = "", backlog: int = 511) -> int:
+    global __tcp_next
     ip = if len(host) == 0: 0 else: __n_resolve(host)
     if ip < 0: return -1
     __n_more_files()
-    s = __n_listen(ip, port, backlog)
-    if s >= 0: __tcp_servers.push(s)
+    fd = __n_listen(ip, port, backlog)
+    if fd < 0: return -1
+    s = __tcp_next
+    __tcp_next += 1
+    __tcp_servers[s] = fd
     s
 
-# a connection made to the server (waiting up to `wait` seconds for one), or -1 if none came
+# a connection made to the server (waiting up to `wait` seconds for one), or -1 if none came (or
+# the server was closed meanwhile)
 tcp_accept = (server: int, wait: f64 = 0.0) -> int:
-    if server < 0: return -1
     end = time() + wait
     loop true:
-        fd = __n_accept(server)
-        if fd >= 0:
-            __tcps[fd] = __Tcp(from = __n_ip_text(__n_from))
-            return fd
-        if time() >= end: return -1
-        __n_wait([server], [1], __net_ms(end))
+        sfd = __tcp_servers.get(server) ?? -1
+        if sfd < 0: return -1
+        fd = __n_accept(sfd)
+        if fd >= 0: return __tcp_new(fd, __n_ip_text(__n_from))
+        if time() >= end or __task_cancelling: return -1
+        __n_wait([sfd], [1], __net_ms(end))
     -1
 
 # the address a connection accepted by tcp_accept came from ("1.2.3.4"; "" for others)
@@ -1168,10 +1327,11 @@ tcp_send = (c: int, data: u8[], wait: f64 = 30.0) -> bool:
     if not tcp_write(c, data): return false
     end = time() + wait
     loop true:
+        if not __tcps.has(c): return false
         left = tcp_unsent(c)
         if left == 0: return true
-        if __tcps[c].failed: return false
-        __n_wait([c], [2], __net_ms(end))
+        if __tcps[c].failed or __task_cancelling: return false
+        __n_wait([__tcps[c].fd], [2], __net_ms(end))
         __tcp_flush(c)
         if tcp_unsent(c) < left: end = time() + wait
         else if time() >= end: return false
@@ -1202,9 +1362,10 @@ tcp_unsent = (c: int) -> int:
 # (what waits to go out: as much as the socket takes now)
 __tcp_flush = (c: int):
     if not __tcps.has(c): return
+    fd = __tcps[c].fd
     loop __tcps[c].at < __tcps[c].out.len() and not __tcps[c].failed:
         at = __tcps[c].at
-        n = __n_send(c, data(__tcps[c].out) + at, __tcps[c].out.len() - at)
+        n = __n_send(fd, data(__tcps[c].out) + at, __tcps[c].out.len() - at)
         if n == -1: break
         if n < 0:
             __tcps[c].failed = true
@@ -1219,14 +1380,14 @@ __tcp_flush = (c: int):
         __tcps[c].at = 0
 
 # (bytes straight to the socket, waiting while it takes none: a handshake's)
-__tcp_raw_send = (c: int, data: u8[], end: f64) -> bool:
+__tcp_raw_send = (fd: int, data: u8[], end: f64) -> bool:
     at = 0
     loop at < data.len():
-        n = __n_send(c, data(data) + at, data.len() - at)
+        n = __n_send(fd, data(data) + at, data.len() - at)
         if n == -2: return false
         if n < 0:
-            if time() > end: return false
-            __n_wait([c], [2], __net_ms(end))
+            if time() > end or __task_cancelling: return false
+            __n_wait([fd], [2], __net_ms(end))
             continue
         at += n
     true
@@ -1236,17 +1397,18 @@ __net_rbuf_ready = ():
     if __net_rbuf.len() == 0: __net_rbuf = fill(u8(0), 1 << 16)
 
 # the bytes that have arrived (waiting up to `wait` seconds for the first); empty when none has
-# (or the connection has ended: tcp_closed says)
+# (or the connection has ended: tcp_closed says; or it was closed meanwhile, by another task)
 tcp_receive = (c: int, wait: f64 = 0.0) -> u8[]:
     out: u8[]
     if c < 0 or not __tcps.has(c) or __tcps[c].eof: return out
     __tcp_flush(c)
+    fd = __tcps[c].fd
     t = __tcps[c].tls
     __net_rbuf_ready()
     end = time() + wait
     loop true:
         if t >= 0: out.extend(tls.__tls_read(t))
-        n = __n_recv(c, data(__net_rbuf), __net_rbuf.len())
+        n = __n_recv(fd, data(__net_rbuf), __net_rbuf.len())
         if n > 0:
             if t < 0: out.extend(__net_rbuf[..n))
             else:
@@ -1262,8 +1424,9 @@ tcp_receive = (c: int, wait: f64 = 0.0) -> u8[]:
             __tcps[c].eof = true
             return out
         # (nothing now: done if something came, else wait for it)
-        if out.len() > 0 or time() >= end: return out
-        __n_wait([c], [1], __net_ms(end))
+        if out.len() > 0 or time() >= end or __task_cancelling: return out
+        __n_wait([fd], [1], __net_ms(end))
+        if not __tcps.has(c) or __tcps[c].tls != t: return out
     out
 
 # the other side has closed the connection (or it failed), and everything sent has been received
@@ -1272,25 +1435,27 @@ tcp_closed = (c: int) -> bool:
     true
 
 # end a connection (or stop a server of tcp_listen's), after sending what tcp_write left waiting
-# (for up to `wait` seconds)
+# (for up to `wait` seconds). A task waiting in another tcp_ call on it is woken, and finds it
+# closed
 tcp_close = (c: int, wait: f64 = 5.0):
-    global __tcp_servers
-    if c < 0: return
-    if c in __tcp_servers:
-        __tcp_servers = __tcp_servers.filter((s: int): s != c)
-        __n_close(c)
+    if let sfd = __tcp_servers.get(c):
+        __tcp_servers.remove(c)
+        __n_close(sfd)
         return
-    if let t = __tcps.get(c):
-        if t.tls >= 0:
-            tls.__tls_close(t.tls)
-            __tcps[c].out.extend(tls.__tls_output(t.tls))
-            tls.__tls_free(t.tls)
-        end = time() + wait
-        loop tcp_unsent(c) > 0 and not __tcps[c].failed and time() < end:
-            __tcp_flush(c)
-            if tcp_unsent(c) > 0: __n_wait([c], [2], __net_ms(end))
-    __n_close(c)
-    __tcps.remove(c)
+    if not __tcps.has(c): return
+    t = __tcps[c].tls
+    if t >= 0:
+        __tcps[c].tls = -1
+        tls.__tls_close(t)
+        __tcps[c].out.extend(tls.__tls_output(t))
+        tls.__tls_free(t)
+    end = time() + wait
+    loop __tcps.has(c) and tcp_unsent(c) > 0 and not __tcps[c].failed and time() < end and not __task_cancelling:
+        __tcp_flush(c)
+        if tcp_unsent(c) > 0: __n_wait([__tcps[c].fd], [2], __net_ms(end))
+    if let tc = __tcps.get(c):
+        __tcps.remove(c)
+        __n_close(tc.fd)
 
 # (milliseconds until `end`, for a wait: at least 0)
 __net_ms = (end: f64) -> int: int(clamp(ceil((end - time()) * 1000.0), 0.0, 3600000.0))
@@ -1299,8 +1464,9 @@ __net_ms = (end: f64) -> int: int(clamp(ceil((end - time()) * 1000.0), 0.0, 3600
 #   r = net.fetch("https://example.com/data.json")
 #   if r.status == 200: print(r.text)
 #   else: print("no: {r.status} {r.why}")
-# fetch waits for the answer. A game, whose frames go on meanwhile, or a server, whose other
-# clients are answered meanwhile, starts one and looks whether it has come (in a web page too):
+# fetch waits for the answer; in a program with tasks, the others take their turns meanwhile (in a
+# web page, fetch waits only in a program with tasks, lib/std/task.jo). A game, whose frames go on
+# meanwhile, starts one and looks whether it has come (in a web page too):
 #   f = net.fetch_start("https://example.com/scores.json")
 #   ...
 #   if let r = net.fetch_result(f): show(r.text)        # (each frame: none while it is on its way)
@@ -1332,15 +1498,29 @@ header_values = (r: HttpReply, name: str) -> str[]:
 #   r = net.fetch("https://api.example.com/items", method = "POST", body = to_json(item),
 #                 headers = {"Authorization": "Bearer {token}"})
 #   net.fetch(url, save_to = "big.zip", progress = (got: int, all: int): print("{got} of {all}"))
-@no_web("gives status 0 in a web page, which cannot wait for an answer: net.fetch_start, then net.fetch_result each frame")
+@no_web("gives status 0 in a web page without tasks, which cannot wait for an answer: fetch in a task (spawn((): net.fetch(url))), or net.fetch_start, then net.fetch_result each frame")
 @no_parallel("for many at once, net.fetch_all(urls, at_once = 8), or net.fetch_start for each and net.fetch_result as they come (net.wait waits for them)")
 fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass) -> HttpReply:
     when TARGET == "wasm":
-        return HttpReply(0, [], why = "a web page cannot wait for an answer: net.fetch_start, then net.fetch_result each frame")
+        # (a web page waits in a task, as the browser answers; not in a game's frame, or a program
+        # without tasks)
+        if not __net_can_wait(): return HttpReply(0, [], why = "a web page cannot wait for an answer outside a task: net.fetch_start, then net.fetch_result each frame (or fetch in a task, spawn((): net.fetch(url)))")
+        f = fetch_start(url, wait, method, headers, body, save_to, progress)
+        end = time() + wait
+        loop true:
+            if let r = fetch_result(f): return r
+            if __task_cancelling or time() >= end:
+                fetch_cancel(f)
+                return HttpReply(0, [], why = if __task_cancelling: "the task was cancelled" else: "no answer in {wait} seconds")
+            __n_wait([-1], [1], __net_ms(end))
+        HttpReply(0, [])
     else:
         f = fetch_start(url, wait, method, headers, body, save_to, progress)
         loop true:
             if let r = fetch_result(f): return r
+            if __task_cancelling:
+                fetch_cancel(f)
+                return HttpReply(0, [], why = "the task was cancelled")
             i = __fetch_index(f)
             if i >= 0:
                 fds: int[]
@@ -1425,10 +1605,10 @@ fetch_all = (urls: str[], at_once: int = 8, retries: int = 2, wait: f64 = 30.0, 
         whose: int[]
         left = urls.len()
         loop left > 0:
-            if __stop_asked:
+            if __stop_asked or __task_cancelling:
                 loop f in ids: fetch_cancel(f)
                 loop k in [0..urls.len()):
-                    if not came[k]: out[k].why = "not fetched: the program was asked to stop"
+                    if not came[k]: out[k].why = if __task_cancelling: "not fetched: the task was cancelled" else: "not fetched: the program was asked to stop"
                 break
             # (those asked again first, once their time has come, then the next ones)
             now = time()
@@ -2186,7 +2366,10 @@ when TARGET == "linux":
         if r < 0: return -2
         r
 
-    __n_close = (fd: int): syscall(3, fd)
+    __n_close = (fd: int):
+        # (a task waiting for it is woken first: lib/std/task.jo)
+        if __tasks_on: __task_closing_fn(fd)
+        syscall(3, fd)
 
     # this machine's address on its network: a datagram socket aimed at a public address (no
     # packet is sent), and the address it was given to send from
@@ -2458,7 +2641,10 @@ when TARGET == "macos":
         if r < 0: return -2
         r
 
-    __n_close = (fd: int): syscall(3, fd)
+    __n_close = (fd: int):
+        # (a task waiting for it is woken first: lib/std/task.jo)
+        if __tasks_on: __task_closing_fn(fd)
+        syscall(3, fd)
 
     __n_lookup = (host: str) -> int:
         h = __m_gethostbyname(data(__zstr(host)))
@@ -2639,7 +2825,9 @@ when TARGET == "windows":
             return -2
         r
 
-    __n_close = (s: int): __w_closesocket(s)
+    __n_close = (s: int):
+        if __tasks_on: __task_closing_fn(s)
+        __w_closesocket(s)
 
     __n_lookup = (host: str) -> int:
         __n_start()

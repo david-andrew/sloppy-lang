@@ -18,27 +18,25 @@
 #       loop e in net.receive(): ...
 #       net.wait(1.0)                           # until something comes (a request, a message)
 #
-# Requests are answered one at a time, in the order they come; a client slow to send or to read
-# holds up no other (what waits to go out to it goes as it takes it). Handlers run one at a time
-# too, on the program's one thread: they change the program's variables (a map of todos, a count)
-# with no locks, as nothing else runs meanwhile. A handler that waits holds up the others: one
-# that fetches from elsewhere starts it (net.fetch_start) and answers later, or keeps it short. A handler that panics is
-# answered 500 and the server goes on (the panic and its backtrace are written to standard error;
-# what the handler had changed stays changed). Behind a proxy that has the certificate (Caddy:
-# docs/START.md's "Writing a server"), the same program serves https. Native programs only.
+# Each request's handler runs as a task of its own (lib/std/task.jo): one that waits (a net.fetch,
+# sleep, a channel) lets the others be answered meanwhile; one connection's requests are answered
+# in order. Tasks take turns on the program's one thread, so handlers change the program's
+# variables (a map of todos, a count) with no locks: nothing else runs between two waits. One that
+# computes for long, runs a program (run_program) or reads a big file holds up the others while it
+# does. A client slow to send or to read holds up no other (what waits to go out to it goes as it
+# takes it). A handler that panics is answered 500 and the server goes on (the panic and its
+# backtrace are written to standard error; what the handler had changed stays changed). Behind a
+# proxy that has the certificate (Caddy: docs/START.md's "Writing a server"), the same program
+# serves https. Native programs only.
 #
-# Trying a server from the same program (a test, Go's httptest): a net.fetch to it would wait for
-# an answer that never comes, the server's loop waiting too; start the fetch, and answer until it
-# has come:
+# Asked to stop (ctrl-c, SIGTERM), serve takes no more requests, gives the handlers running up to
+# `drain` seconds to answer, and returns: the program then ends what it runs besides (closing the
+# channels its tasks read), and saves. A program with its own loop calls shutdown() itself.
+#
+# Trying a server from the same program (a test, Go's httptest): serve in a task, and fetch from it:
 #   http.listen(18080, host = "127.0.0.1")
-#   ask = (path: str) -> net.HttpReply:
-#       f = net.fetch_start("http://127.0.0.1:18080{path}", wait = 5.0)
-#       loop true:
-#           http.answer()
-#           if let res = net.fetch_result(f): return res
-#           net.wait(0.1)
-#       net.HttpReply(0, [])
-#   assert(ask("/todos/1").status == 200)
+#   spawn((): http.serve(18080), background = true)
+#   assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 
 import net
 
@@ -123,6 +121,7 @@ __http_next = 1
 __http_listeners: int[]
 __http_largest = 1 << 20
 __http_hooked = false
+__http_draining = false     # (shutdown: no more requests are started)
 __http_full_until = 0.0
 __http_t = 0.0              # (answer()'s time: what connections are timed by)
 __http_day = -1.0
@@ -363,16 +362,48 @@ websocket = (r: Request, largest: int = 16 << 20) -> Response:
 
 # ---------------- serving ----------------
 
-# answer requests on port until the program is asked to stop (ctrl-c, SIGTERM: stopping()); false
-# at once when the port cannot be had. host, largest, backlog: as listen's
+# answer requests on port until the program is asked to stop (ctrl-c, SIGTERM: stopping()), then
+# give the handlers running up to `drain` seconds to answer (shutdown); false at once when the
+# port cannot be had. host, largest, backlog: as listen's
 @no_web("gives false in a web page: a page cannot listen (the server is a native program)")
-serve = (port: int, host: str = "", largest: int = 1 << 20, backlog: int = 511) -> bool:
+serve = (port: int, host: str = "", largest: int = 1 << 20, backlog: int = 511, drain: f64 = 10.0) -> bool:
     # (already listening, by listen(): answered)
     if __http_listeners.len() == 0 and not listen(port, host, largest, backlog): return false
     loop not stopping():
         answer()
         net.wait(1.0)
+    shutdown(drain)
     true
+
+# stop serving: no more requests are taken, the handlers running are waited for (up to `wait`
+# seconds) and their answers sent, and the connections are closed (streams too). true when every
+# one was answered in time (a handler still running then goes on, but its answer goes nowhere)
+shutdown = (wait: f64 = 10.0) -> bool:
+    global __http_draining
+    stop_listening()
+    __http_draining = true
+    end = time() + wait
+    loop __http_busy() and time() < end:
+        answer()
+        # (what waits to go out goes as the sockets take it; the handlers end meanwhile)
+        fds: int[]
+        want: int[]
+        loop fw in __http_wait_fds():
+            fds.push(fw.0)
+            want.push(fw.1)
+        net.__n_wait(fds, want, min(net.__net_ms(end), 20))
+    done = not __http_busy()
+    ids: int[]
+    loop id, _ in __http_conns: ids.push(id)
+    loop id in ids: __http_close(id)
+    __http_draining = false
+    done
+
+# (a handler runs, or an answer waits to go out; a stream's connection is not waited for)
+__http_busy = () -> bool:
+    loop _, c in __http_conns:
+        if c.answering or c.sending or (c.at < c.out.len() and not c.streaming): return true
+    false
 
 # start taking requests on port (answer() answers them); false when the port cannot be had (another
 # program has it). host: the address it is reached at, "" every one this machine has ("127.0.0.1":
@@ -639,7 +670,7 @@ __http_handle = (id: int) -> int:
     n = 0
     loop __http_conns.has(id):
         c = __http_conns[id]
-        if c.answering or c.closing or c.streaming or c.sending or c.out.len() - c.at >= __HTTP_MOST_OUT or c.inbuf.len() == 0: break
+        if __http_draining or c.answering or c.closing or c.streaming or c.sending or c.out.len() - c.at >= __HTTP_MOST_OUT or c.inbuf.len() == 0: break
         b = c.inbuf
         e = __http_head_end(b, c.scanned)
         if e < 0:

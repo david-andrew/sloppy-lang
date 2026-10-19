@@ -1,0 +1,44 @@
+# requires: sloppy
+# requires: native
+# WebSocket peers with a task each: net.accept gives the server's new peers, and receive([p], wait)
+# waits for one peer's events only, while other tasks wait for theirs
+import net
+
+const PORT = 19464
+
+talk = (p: int) -> int:
+    n = 0
+    loop not net.gone(p):
+        loop e in net.receive([p], wait = 5.0):
+            if e.kind == .message:
+                n += 1
+                net.send(p, "you said {e.text}")
+    n
+
+main = ():
+    if not net.listen(PORT, host = "127.0.0.1"): panic("cannot listen")
+    served = channel[Task[int]](10)
+    spawn(():
+        loop _ in 0..3:
+            p = net.accept(wait = 5.0)
+            if p >= 0: served.send(spawn((): talk(p)))
+        served.close()
+    )
+    clients = [loop k in 0..3: spawn(():
+        p = net.connect("127.0.0.1", PORT)
+        # (sent once it has joined: before that, a message goes nowhere)
+        joined = false
+        loop not joined:
+            loop e in net.receive([p], wait = 5.0): joined = joined or e.kind == .joined
+        replies: str[]
+        loop i in 0..2:
+            net.send(p, "{k}.{i}")
+            loop replies.len() <= i:
+                loop e in net.receive([p], wait = 5.0):
+                    if e.kind == .message: replies.push(e.text)
+        net.close(p)
+        replies
+    )]
+    loop r in wait_all(clients): print(r)
+    print("messages each server task took:", [loop t in served: t.wait()])
+    print("left for receive():", net.receive().len())

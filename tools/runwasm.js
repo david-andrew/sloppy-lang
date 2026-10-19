@@ -7,6 +7,7 @@ const vm = require("vm");
 // (the program's files are the real ones; its arguments follow the page's name)
 const path = require("path");
 const sloppyArgs = [path.basename(process.argv[2]).replace(/\.html$/, "")].concat(process.argv.slice(3));
-const ctx = { console, process, Buffer, TextDecoder, TextEncoder, WebAssembly, performance, Proxy, Error, Uint8Array, Object, WebSocket: globalThis.WebSocket, setTimeout, clearTimeout, queueMicrotask, sloppyFs: fs, sloppyArgs, crypto: globalThis.crypto };
+const ctx = { console, process, Buffer, TextDecoder, TextEncoder, WebAssembly, performance, Proxy, Error, Uint8Array, Object, WebSocket: globalThis.WebSocket, setTimeout, clearTimeout, queueMicrotask, sloppyFs: fs, sloppyArgs, crypto: globalThis.crypto,
+              fetch: globalThis.fetch, AbortController, Headers, Request, Response, URL };
 vm.createContext(ctx);
 vm.runInContext(m[1], ctx);
