@@ -278,6 +278,14 @@ coerce = (n: int, target: int) -> int:
             # (a + b with a, b: u8, put in an int: added as u8s first, so 200 + 200 is 144)
             if nodes[n].kind == .binary and int(types[from].bits) <= 16 and int(types[to].bits) > int(types[from].bits) and not pos_in_lib(nodes[n].pos):
                 bop = nodes[n].op as Tok
+                rb = int(nodes[n].b)
+                if bop == .minus and nodes[rb].kind == .int_lit and has_flag(rb, NF_SQUOTE) and types[to].sign:
+                    # (cnt[c - 'a'], c a byte of text: worked out as the wider type, so a
+                    # character before 'a' gives a negative number, not one wrapped around)
+                    coerce(int(nodes[n].a), to)
+                    nodes[rb].type = i32(to)
+                    nodes[n].type = i32(to)
+                    return n
                 if bop == .plus or bop == .minus or bop == .star or bop == .shl:
                     an = "x"
                     if nodes[int(nodes[n].a)].kind == .ident: an = name_of(int(nodes[int(nodes[n].a)].name))
@@ -667,7 +675,10 @@ check_place = (n: int, for_mut: bool):
             cp_inner -= 1
             return
         if bk != .array: fatal(nodes[n].pos, "cannot assign to this index expression")
-        if nodes[n].aux == 1: fatal(nodes[n].pos, "cannot assign to a slice")
+        if nodes[n].aux == 1:
+            # (xs[1..].reverse(): a slice is a copy, changed and dropped)
+            if for_mut: fatal(nodes[n].pos, "a slice is a copy, so changing it changes nothing in the array: `xs.reverse(start, end)` reverses part of xs in place")
+            fatal(nodes[n].pos, "cannot assign to a slice")
         check_place(int(nodes[n].a), for_mut)
         cp_inner -= 1
         return
@@ -1672,6 +1683,28 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
 self_name_free = (name: int) -> bool:
     sy = lookup(name)
     sy == 0 or syms[sy].kind == .fns or syms[sy].kind == .builtin
+
+# (2 ^ 1000 with whole numbers: past 64 bits, where it wraps around to 0)
+pow_fits_check = (n: int):
+    if nkids(n) != 2: return
+    a = kid(n, 0)
+    b = kid(n, 1)
+    loop nodes[a].kind == .conv: a = int(nodes[a].a)
+    loop nodes[b].kind == .conv: b = int(nodes[b].a)
+    if nodes[a].kind != .int_lit or nodes[b].kind != .int_lit: return
+    base = nodes[a].ival
+    e = nodes[b].ival
+    if e < 0 or base == 0 or base == 1 or base == -1: return
+    # (in magnitudes: -2 ^ 63 is the smallest int, which fits)
+    lim: u64 = 9223372036854775807
+    if base < 0 and e % 2 == 1: lim += 1
+    mb = u64(abs(base))
+    mv: u64 = 1
+    btxt = "{base}"
+    if base < 0: btxt = "({base})"
+    loop i in [0..e):
+        if mv > lim / mb: fatal(nodes[n].pos, "{btxt} ^ {e} does not fit in an int (64 bits: at most about 9.2e18), and would wrap around: `{base}.0 ^ {e}` is a float (about {pow(f64(base), f64(e)):.3e})")
+        mv *= mb
 
 # dfs(u + 1) inside dfs = (u: int): ...: the lambda calling itself, with the environment it has
 # (no variable holds it yet, and none captures it: no closure keeping itself alive)
@@ -3131,6 +3164,7 @@ check_call = (n: int, expected: int) -> int:
             args = [et]
         r = call_by_name(n, int(nodes[callee].name), -1, args, expected, false)
         if has_flag(n, NF_CARET) and xor_meant(n, false): warn(nodes[n].pos, CARET_HINT)
+        if has_flag(n, NF_CARET) and is_int(prune(r)): pow_fits_check(n)
         return r
     if ck == .dotname:
         if ide_sentinel != 0 and int(nodes[callee].name) == ide_sentinel: ide_complete_variants(expected)
@@ -3340,6 +3374,8 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         check_place(args[0], false)
         arg_type(args, 1, int(types[t].elem))
     else if id == .pop:
+        # (q.pop(0): Python's, taking the first)
+        if nargs == 2: fatal(nodes[n].pos, "pop takes the last element (and no index): `xs.remove(i)` takes the one at i, `xs.remove(0)` the first (a Deque takes either end without moving the rest)")
         nargs_check(n, nargs, 1, 1, "pop")
         t = arg_type(args, 0, 0)
         if types[t].kind != .array: fatal(nodes[n].pos, "pop() needs an array")
@@ -5472,7 +5508,10 @@ check_expr = (n: int, expected: int) -> int:
             last_checked = n
             return t
         else:
-            if b == 0: fatal(nodes[n].pos, "invalid index")
+            if b == 0:
+                # (a[1, 0] on an array of arrays: NumPy's, or a T[,]'s)
+                if bk == .array and nkids(n) == 2: fatal(nodes[n].pos, "a[i, j] indexes a 2-D array (T[,], as `zeros(3, 4)` makes); in an array of arrays it is `a[i][j]`")
+                fatal(nodes[n].pos, "invalid index")
             if (bk == .array or bk == .str_) and nodes[b].kind == .int_lit: neg_index_check(b)
             if bk == .array:
                 pick = index_array_fn(b, "__pick")

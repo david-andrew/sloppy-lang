@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `cnt[c - 'a']` with c a byte of text is worked out as an int where one is wanted: a character
+  before 'a' gives a negative number (it wrapped around as a byte), and there is no warning on
+  the most common way of counting letters.
+- `2 ^ 1000` with whole numbers is an error saying it does not fit in 64 bits and what `2.0 ^
+  1000` is (it gave 0).
+- Messages: `0..=n` (a range keeping its end is `[a..b]`), `ord(c)` (`s[i]` is the code
+  already), `q.pop(0)` (`remove(0)`; a Deque), `a[1, 0]` on an array of arrays (`a[i][j]`), and
+  `xs[1..].reverse()` (a slice is a copy: `xs.reverse(start, end)`).
 - `ints(text)`: every whole number in a text, in one pass, a `-` right before one making it
   negative (`ints("x=3,y=-4")` is `[3, -4]`): the Advent of Code workhorse, without splitting.
   A million numbers in 10 MB take 30 ms, where `split()` and `to_int` took 250 ms (now 92 ms).
