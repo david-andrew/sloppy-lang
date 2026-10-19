@@ -15,6 +15,10 @@
   version (`sorted(xs)`); a function of the program's own says to end it with its value.
 - Windows REPL: a character beyond ASCII typed in the console is read once (its first byte
   repeated). Hints for JavaScript's `shift`/`splice`, C++'s `erase` and others say `remove_at`.
+- A `mut` parameter passed on to a read-only one is no longer copied when the function called
+  changes no globals (an emulator's 64 KB machine was copied on every call: 2 µs, now 2 ns).
+- A default naming an earlier parameter (`b: int = a`) works when the caller gives a variable
+  (it said the variable was unknown).
 - Messages for Go's habits with tasks: `c <- 5` and `v = <-c` (send and receive), `go f()`,
   `spawn(worker, 3)` and `spawn(worker(3))` (spawn((): worker(3))), a select arm written
   `v = c.receive():` or `case ...:`, and `stage = [A, B](...)` for a generic function. Giving a
