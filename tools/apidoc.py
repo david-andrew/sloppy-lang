@@ -28,7 +28,11 @@ TOPICS = [
      "For vectors and matrices, see [colors, vectors and matrices](#colors-vectors-and-matrices). "
      "`int` is 64 bits: `gcd`, `isqrt`, `pow_mod` and the others in integer.jo are exact for all of them. "
      "`+`, `-` and `*` on integers wrap around; `checked_add` and the others below say when they would. "
-     "Past 64 bits: [big numbers](#big-numbers) (a float with a large exponent, about 15 digits; there are no exact big integers)."),
+     "Past 64 bits: [big integers](#big-integers), exact, and [big numbers](#big-numbers), a float with a large exponent (about 15 digits)."),
+    ("Basics", "bigint", "Big integers", ["std/bigint"], "bigint",
+     "`BigInt` is a whole number of any size, every digit kept, as Python's `int`: `bigint(2) ^ 1000`, "
+     "`bigint(\"123456789012345678901234567890\")`. The operators, comparisons and printing work as on ints, "
+     "ints mixed in; it can be a map key or in a set. Nothing is imported (the compiler reads it for the programs that use it)."),
     ("Basics", "system", "Files, time and the system", ["core/os", "std/path", "std/date", "std/cli", "std/stop"], "system",
      "In a web page, files are the ones the page was given, and `env` reads its address's parameters. "
      "What is at a web address: `net.fetch(url)`, after `import net` ([fetching from the web](START.md#fetching-from-the-web))."),

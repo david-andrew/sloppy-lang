@@ -1,0 +1,959 @@
+# Exact whole numbers of any size: 2 ^ 1000's 302 digits, factorials, Fibonacci(10000), RSA's
+# modular arithmetic. Every digit is kept (Big, `use big`, is a float with a large exponent:
+# about 15 digits, for an idle game's money).
+#
+#   f = bigint(1)
+#   loop i in [1..100]: f *= i               # 100!, all 158 digits
+#   print(f)
+#   x = bigint("123456789012345678901234567890")
+#   y = (x * x + 1) % bigint(10) ^ 20
+#   if y > x: print(str(y, 16))              # in hex
+#   print(pow_mod(bigint(3), bigint(10) ^ 30, bigint(2) ^ 127 - 1))
+#
+# `+ - * / %` and `^` (an int power) work as on ints, with BigInts and ints mixed (`x * 2`,
+# `1 + x`); `/` truncates toward zero and `%` keeps the sign of the left side, as for ints (`-7
+# / 2` is -3, `-7 % 3` is -1; `mod(x, m)` is from 0 to m - 1). Comparisons, `==`, `min`, `max`
+# and `sort` work, and a BigInt can be a map key or in a set. `print` shows its digits;
+# `int(x)` or `to_int(x)` give it back as an int. to_text, to_json and saves write its fields,
+# which read back.
+
+struct BigInt:
+    __neg: bool         # (never for 0)
+    __d: u32[]          # the size: little-endian digits in base 2^32, none 0 at the top (0 is [])
+
+# n as a BigInt
+bigint = (n: int) -> BigInt:
+    if n < 0: return BigInt(true, __bi_of_u64(u64(0) - (n as u64)))
+    BigInt(false, __bi_of_u64(n as u64))
+
+bigint = (n: u64) -> BigInt: BigInt(false, __bi_of_u64(n))
+
+# the whole number written in text, as to_bigint reads it; text that is not one stops the
+# program (to_bigint says none instead)
+bigint = (s: str) -> BigInt: to_bigint(s) ?? panic("bigint: \"{s}\" is not a whole number")
+
+# the whole number written in text: decimal digits, or hex after 0x, binary after 0b, octal
+# after 0o, with a sign before it if any; _ may separate digits, and spaces and line ends around
+# it are left out (as to_int reads one, of any length). none if it is not one
+to_bigint = (s: str) -> BigInt?: __bi_parse(s, 0)
+
+# a whole number written in base 2 to 36 (to_bigint("ff", 16) is 255; letters for the digits past
+# 9, in either case; the base's own prefix may come first: "0xff")
+to_bigint = (s: str, base: int) -> BigInt?:
+    if base < 2 or base > 36: panic("to_bigint: a base from 2 to 36, not {base}")
+    __bi_parse(s, base)
+
+# x as an int, or none when it does not fit (from -2^63 to 2^63 - 1)
+to_int = (x: BigInt) -> int?:
+    if x.__d.len() > 2: return none
+    v = __bi_u64(x.__d)
+    if x.__neg:
+        if v > u64(1) << 63: return none
+        return (u64(0) - v) as int
+    if v >= u64(1) << 63: return none
+    v as int
+
+# x as an int; one that does not fit stops the program (to_int says none instead)
+int = (x: BigInt) -> int: to_int(x) ?? panic("int: {x} does not fit in an int (from -2^63 to 2^63 - 1)")
+
+# x as a u64, or none when it is negative or past 2^64 - 1
+to_u64 = (x: BigInt) -> u64?:
+    if x.__neg or x.__d.len() > 2: return none
+    __bi_u64(x.__d)
+
+# the f64 nearest x (infinity past about 1.8e308)
+f64 = (x: BigInt) -> f64:
+    bits = bit_length(x)
+    r = 0.0
+    if bits <= 64: r = f64(__bi_u64(x.__d))
+    else:
+        # (the top 64 bits, the lowest of them 1 when any bit below is: rounded once, as it must be)
+        top = __bi_u64(__bi_shr(x.__d, bits - 64))
+        if __bi_low_bits(x.__d, bits - 64): top = top | 1
+        k = bits - 64
+        if k > 1023: r = INF
+        else: r = f64(top) * f64_from_bits(u64(1023 + k) << 52)
+    if x.__neg: return -r
+    r
+
+# x shown in base 2 to 36, with lowercase letters for the digits past 9 (str(bigint(255), 16) is
+# "ff"; a minus sign first when it is negative)
+str = (x: BigInt, base: int) -> str:
+    if base < 2 or base > 36: panic("str: a base from 2 to 36, not {base}")
+    s = __bi_str(x.__d, base)
+    if x.__neg: return "-" + s
+    s
+
+# x in decimal: print(x) and "{x}" show it so
+str = (x: BigInt) -> str: str(x, 10)
+
+__fmt = (buf: mut u8[], x: BigInt):
+    if __text_exact: __fmt_fields(buf, x)
+    else: __buf_append_str(buf, str(x, 10))
+
+# the decimal digits of x, most significant first, without its sign (digits(bigint(2) ^ 10) is
+# [1, 0, 2, 4]; for 0, [0]): digits(bigint(2) ^ 1000).sum()
+digits = (x: BigInt) -> int[]:
+    s = __bi_str(x.__d, 10)
+    out = fill(0, len(s))
+    p = data(s)
+    loop i in 0..len(s): out[i] = int(p[i]) - 48
+    out
+
+# how many bits x takes without its sign: bit_length(bigint(255)) is 8; 0 for 0
+bit_length = (x: BigInt) -> int: __bi_bits(x.__d)
+
+# -1, 0 or 1
+sign = (x: BigInt) -> int:
+    if x.__neg: return -1
+    if x.__d.len() == 0: return 0
+    1
+
+abs = (x: BigInt) -> BigInt: BigInt(false, x.__d)
+
+(-) = (a: BigInt) -> BigInt: BigInt(not a.__neg and a.__d.len() > 0, a.__d)
+
+(+) = (a: BigInt, b: BigInt) -> BigInt:
+    if a.__neg == b.__neg: return BigInt(a.__neg, __bi_add(a.__d, b.__d))
+    c = __bi_cmp(a.__d, b.__d)
+    if c == 0: return BigInt()
+    if c > 0: return BigInt(a.__neg, __bi_sub(a.__d, b.__d))
+    BigInt(b.__neg, __bi_sub(b.__d, a.__d))
+
+(-) = (a: BigInt, b: BigInt) -> BigInt: a + BigInt(not b.__neg and b.__d.len() > 0, b.__d)
+
+(*) = (a: BigInt, b: BigInt) -> BigInt:
+    d = __bi_mul(a.__d, b.__d)
+    BigInt(a.__neg != b.__neg and d.len() > 0, d)
+
+# truncated toward zero, as for ints (bigint(-7) / 2 is -3)
+(/) = (a: BigInt, b: BigInt) -> BigInt:
+    q, _ = __bi_divmod(a.__d, b.__d)
+    BigInt(a.__neg != b.__neg and q.len() > 0, q)
+
+# the remainder of a / b, with a's sign, as for ints (bigint(-7) % 3 is -1; mod(x, m) is from 0
+# to m - 1)
+(%) = (a: BigInt, b: BigInt) -> BigInt:
+    _, r = __bi_divmod(a.__d, b.__d)
+    BigInt(a.__neg and r.len() > 0, r)
+
+# x to the power e (x ^ e). A negative e truncates as / does: 0 unless x is 1 or -1
+pow = (x: BigInt, e: int) -> BigInt:
+    if e < 0:
+        if x.__d.len() == 0: panic("0 to a negative power (a division by zero)")
+        if x.__d.len() == 1 and x.__d[0] == 1:
+            if x.__neg and e & 1 == 1: return x
+            return bigint(1)
+        return BigInt()
+    neg = x.__neg and e & 1 == 1
+    n = x.__d.len()
+    if n == 0:
+        if e == 0: return bigint(1)
+        return x
+    # (a power of two: a shift)
+    if __bi_is_pow2(x.__d): return BigInt(neg, __bi_shl(fill(u32(1), 1), (bit_length(x) - 1) * e))
+    # (from the top bit of e down: the products by x are by a small number when x is one)
+    r: u32[] = [1]
+    k = 62
+    loop k >= 0 and (e >> k) & 1 == 0: k -= 1
+    loop k >= 0:
+        r = __bi_mul(r, r)
+        if (e >> k) & 1 == 1:
+            if n == 1: r = __bi_mul_small(r, x.__d[0])
+            else: r = __bi_mul(r, x.__d)
+        k -= 1
+    BigInt(neg, r)
+
+(==) = (a: BigInt, b: BigInt) -> bool: a.__neg == b.__neg and a.__d == b.__d
+(<) = (a: BigInt, b: BigInt) -> bool: __bi_cmps(a, b) < 0
+
+# a number made from x: the same for BigInts that are ==, so a BigInt can be a key
+hash = (x: BigInt) -> u64:
+    h = __hash_bytes(data(x.__d) as *u8, x.__d.len() * 4)
+    if x.__neg: return h xor 0x9E3779B97F4A7C15
+    h
+
+# ---- mixed with ints ----
+
+(+) = (a: BigInt, b: int) -> BigInt: a + bigint(b)
+(+) = (a: int, b: BigInt) -> BigInt: bigint(a) + b
+(-) = (a: BigInt, b: int) -> BigInt: a - bigint(b)
+(-) = (a: int, b: BigInt) -> BigInt: bigint(a) - b
+(*) = (a: BigInt, b: int) -> BigInt:
+    if b == 0 or a.__d.len() == 0: return BigInt()
+    m = __bi_abs_u64(b)
+    if m >> 32 == 0: return BigInt(a.__neg != (b < 0), __bi_mul_small(a.__d, u32(m)))
+    a * bigint(b)
+(*) = (a: int, b: BigInt) -> BigInt: b * a
+(/) = (a: BigInt, b: int) -> BigInt:
+    m = __bi_abs_u64(b)
+    if m != 0 and m >> 32 == 0:
+        q, _ = __bi_divmod_small(a.__d, u32(m))
+        return BigInt(a.__neg != (b < 0) and q.len() > 0, q)
+    a / bigint(b)
+(/) = (a: int, b: BigInt) -> BigInt: bigint(a) / b
+(%) = (a: BigInt, b: int) -> BigInt:
+    m = __bi_abs_u64(b)
+    if m != 0 and m >> 32 == 0:
+        _, r = __bi_divmod_small(a.__d, u32(m))
+        if r == 0: return BigInt()
+        return BigInt(a.__neg, [r])
+    a % bigint(b)
+(%) = (a: int, b: BigInt) -> BigInt: bigint(a) % b
+
+(==) = (a: BigInt, b: int) -> bool:
+    if let v = to_int(a): return v == b
+    false
+(==) = (a: int, b: BigInt) -> bool: b == a
+(<) = (a: BigInt, b: int) -> bool:
+    if let v = to_int(a): return v < b
+    a.__neg
+(<) = (a: int, b: BigInt) -> bool:
+    if let v = to_int(b): return a < v
+    not b.__neg
+
+# x shifted left n bits: x * 2 ^ n
+(<<) = (x: BigInt, n: int) -> BigInt:
+    if n < 0: return x >> -n
+    BigInt(x.__neg, __bi_shl(x.__d, n))
+
+# x shifted right n bits, rounding down as >> on ints does (bigint(-7) >> 1 is -4)
+(>>) = (x: BigInt, n: int) -> BigInt:
+    if n < 0: return x << -n
+    if not x.__neg: return BigInt(false, __bi_shr(x.__d, n))
+    # (-((|x| - 1) >> n) - 1)
+    m = __bi_shr(__bi_sub(x.__d, [u32(1)]), n)
+    BigInt(true, __bi_add(m, [u32(1)]))
+
+# ---- number theory ----
+
+# x mod m, from 0 to m - 1 for m > 0 (with m's sign, as Python's %: mod(bigint(-7), 3) is 2)
+mod = (x: BigInt, m: BigInt) -> BigInt:
+    r = x % m
+    if r.__d.len() > 0 and r.__neg != m.__neg: return r + m
+    r
+
+mod = (x: BigInt, m: int) -> BigInt: mod(x, bigint(m))
+
+# the greatest common divisor, 0 or more (gcd of 0 and 0 is 0)
+gcd = (a: BigInt, b: BigInt) -> BigInt:
+    x = a.__d
+    y = b.__d
+    loop y.len() > 0:
+        if x.len() <= 2 and y.len() <= 2: return bigint(gcd(__bi_u64(x), __bi_u64(y)))
+        _, r = __bi_divmod(x, y)
+        x = y
+        y = r
+    BigInt(false, x)
+
+# the least common multiple, 0 or more (0 when either is 0)
+lcm = (a: BigInt, b: BigInt) -> BigInt:
+    if a.__d.len() == 0 or b.__d.len() == 0: return BigInt()
+    abs(a / gcd(a, b) * b)
+
+# the whole square root: the largest r with r * r <= n
+isqrt = (n: BigInt) -> BigInt:
+    if n.__neg: panic("isqrt of a negative number ({n})")
+    if n.__d.len() == 0: return n
+    # (Newton's steps, from a power of two at least as large: they go down to it)
+    x = BigInt(false, __bi_shl([u32(1)], (bit_length(n) + 1) / 2))
+    loop true:
+        y = (x + n / x) >> 1
+        if not (y < x): return x
+        x = y
+    x
+
+# the inverse of a mod m: the x from 0 to m - 1 with a * x mod m == 1, or none when a and m have
+# a common divisor
+inv_mod = (a: BigInt, m: BigInt) -> BigInt?:
+    if m.__neg or m.__d.len() == 0: panic("inv_mod: the modulus must be more than 0, not {m}")
+    r0 = m
+    r1 = mod(a, m)
+    t0 = BigInt()
+    t1 = bigint(1)
+    loop r1.__d.len() > 0:
+        q = r0 / r1
+        r2 = r0 - q * r1
+        r0 = r1
+        r1 = r2
+        t2 = t0 - q * t1
+        t0 = t1
+        t1 = t2
+    if r0 != 1: return none
+    mod(t0, m)
+
+# base to the power e, mod m (from 0 to m - 1), in about log2(e) steps: RSA's
+# pow_mod(msg, e, n). A negative e is a power of base's inverse; without one it stops the program
+pow_mod = (base: BigInt, e: BigInt, m: BigInt) -> BigInt:
+    if m.__neg or m.__d.len() == 0: panic("pow_mod: the modulus must be more than 0, not {m}")
+    b = mod(base, m)
+    k = e
+    if k.__neg:
+        b = inv_mod(b, m) ?? panic("pow_mod: {base} has no inverse mod {m} (they have a common divisor), so no negative power")
+        k = -k
+    r = mod(bigint(1), m)
+    n = bit_length(k)
+    if n <= 64:
+        loop i in 0..n:
+            if (k.__d[i >> 5] >> u32(i & 31)) & 1 == 1: r = r * b % m
+            if i + 1 < n: b = b * b % m
+        return r
+    # (a long e: 4 bits at a time from the top, with b ^ 0 to b ^ 15 made first: a product for
+    # each 4 squares, where bit by bit there is one for each 2)
+    pows = [r, b]
+    loop pows.len() < 16: pows.push(pows[pows.len() - 1] * b % m)
+    w = (n + 3) / 4
+    loop i in 0..w:
+        p = (w - 1 - i) * 4
+        if i > 0:
+            loop _ in 0..4: r = r * r % m
+        dg = int((k.__d[p >> 5] >> u32(p & 31)) & 15)
+        if dg != 0: r = r * pows[dg] % m
+    r
+
+pow_mod = (base: BigInt, e: int, m: BigInt) -> BigInt: pow_mod(base, bigint(e), m)
+
+# ---- sizes: little-endian u32 digits, none 0 at the top ----
+
+__bi_of_u64 = (v: u64) -> u32[]:
+    if v == 0: return []
+    if v >> 32 == 0: return [u32(v)]
+    [u32(v), u32(v >> 32)]
+
+# (the low 64 bits)
+__bi_u64 = (d: u32[]) -> u64:
+    if d.len() == 0: return 0
+    if d.len() == 1: return u64(d[0])
+    u64(d[0]) | (u64(d[1]) << 32)
+
+__bi_bits = (d: u32[]) -> int:
+    n = d.len()
+    if n == 0: return 0
+    32 * n - leading_zeros(d[n - 1])
+
+__bi_abs_u64 = (n: int) -> u64:
+    if n < 0: return u64(0) - (n as u64)
+    n as u64
+
+__bi_cmps = (a: BigInt, b: BigInt) -> int:
+    if a.__neg != b.__neg:
+        if a.__neg: return -1
+        return 1
+    c = __bi_cmp(a.__d, b.__d)
+    if a.__neg: return -c
+    c
+
+__bi_is_pow2 = (d: u32[]) -> bool:
+    n = d.len()
+    loop i in 0..n - 1:
+        if d[i] != 0: return false
+    t = d[n - 1]
+    t & (t - 1) == 0
+
+# (any of the n lowest bits 1)
+__bi_low_bits = (d: u32[], n: int) -> bool:
+    w = n >> 5
+    loop i in 0..min(w, d.len()):
+        if d[i] != 0: return true
+    s = n & 31
+    if s > 0 and w < d.len(): return d[w] & ((u32(1) << u32(s)) - 1) != 0
+    false
+
+__bi_trim = (d: mut u32[]):
+    n = d.len()
+    loop n > 0 and d[n - 1] == 0: n -= 1
+    if n < d.len(): d.truncate(n)
+
+__bi_cmp = (a: u32[], b: u32[]) -> int:
+    na = a.len()
+    if na != b.len():
+        if na < b.len(): return -1
+        return 1
+    pa = data(a)
+    pb = data(b)
+    i = na - 1
+    loop i >= 0:
+        if pa[i] != pb[i]:
+            if pa[i] < pb[i]: return -1
+            return 1
+        i -= 1
+    0
+
+__bi_add = (a: u32[], b: u32[]) -> u32[]:
+    if a.len() < b.len(): return __bi_add(b, a)
+    na = a.len()
+    nb = b.len()
+    r = fill(u32(0), na + 1)
+    pa = data(a)
+    pb = data(b)
+    pr = data(r)
+    c: u64 = 0
+    i = 0
+    loop i < nb:
+        t = u64(pa[i]) + u64(pb[i]) + c
+        pr[i] = u32(t)
+        c = t >> 32
+        i += 1
+    loop i < na:
+        t = u64(pa[i]) + c
+        pr[i] = u32(t)
+        c = t >> 32
+        i += 1
+    if c == 0: r.truncate(na)
+    else: pr[na] = 1
+    r
+
+# (a - b, for a >= b)
+__bi_sub = (a: u32[], b: u32[]) -> u32[]:
+    na = a.len()
+    nb = b.len()
+    r = fill(u32(0), na)
+    pa = data(a)
+    pb = data(b)
+    pr = data(r)
+    borrow: u64 = 0
+    i = 0
+    loop i < nb:
+        t = u64(pa[i]) - u64(pb[i]) - borrow
+        pr[i] = u32(t)
+        borrow = (t >> 32) & 1
+        i += 1
+    loop i < na:
+        t = u64(pa[i]) - borrow
+        pr[i] = u32(t)
+        borrow = (t >> 32) & 1
+        i += 1
+    __bi_trim(r)
+    r
+
+__bi_mul_small = (a: u32[], m: u32) -> u32[]:
+    n = a.len()
+    if n == 0 or m == 0: return []
+    r = fill(u32(0), n + 1)
+    pa = data(a)
+    pr = data(r)
+    mm = u64(m)
+    c: u64 = 0
+    i = 0
+    loop i < n:
+        t = u64(pa[i]) * mm + c
+        pr[i] = u32(t)
+        c = t >> 32
+        i += 1
+    if c == 0: r.truncate(n)
+    else: pr[n] = u32(c)
+    r
+
+# (below this many digits in the shorter, the schoolbook product; Karatsuba's above)
+const __BI_KARATSUBA = 48
+
+__bi_mul = (a: u32[], b: u32[]) -> u32[]:
+    na = a.len()
+    nb = b.len()
+    if na < nb: return __bi_mul(b, a)
+    if nb == 0: return []
+    if nb == 1: return __bi_mul_small(a, b[0])
+    when TARGET != "wasm":
+        if nb >= 4 and nb < __BI_KARATSUBA: return __bi_mul64(a, b)
+    r = fill(u32(0), na + nb)
+    if nb < __BI_KARATSUBA: __bi_mul_school(data(a), na, data(b), nb, data(r))
+    else if nb * 2 <= na:
+        # (much longer: pieces of a as long as b)
+        i = 0
+        loop i < na:
+            m = min(nb, na - i)
+            part = a[i..i + m]
+            __bi_trim(part)
+            __bi_addto(data(r) + i, na + nb - i, __bi_mul(part, b))
+            i += m
+    else:
+        # a0 + a1 B, b0 + b1 B: a0 b0 + ((a0 + a1)(b0 + b1) - a0 b0 - a1 b1) B + a1 b1 B^2
+        k = na / 2
+        a0 = a[0..k]
+        b0 = b[0..k]
+        __bi_trim(a0)
+        __bi_trim(b0)
+        a1 = a[k..na]
+        b1 = b[k..nb]
+        z0 = __bi_mul(a0, b0)
+        z2 = __bi_mul(a1, b1)
+        z1 = __bi_sub(__bi_sub(__bi_mul(__bi_add(a0, a1), __bi_add(b0, b1)), z0), z2)
+        pr = data(r)
+        loop i in 0..z0.len(): pr[i] = z0[i]
+        loop i in 0..z2.len(): pr[2 * k + i] = z2[i]
+        __bi_addto(pr + k, na + nb - k, z1)
+    __bi_trim(r)
+    r
+
+# (pr[0..na + nb), zeros, += a * b)
+__bi_mul_school = (pa: *u32, na: int, pb: *u32, nb: int, pr: *u32):
+    i = 0
+    loop i < na:
+        ai = u64(pa[i])
+        if ai != 0:
+            q = pr + i
+            c: u64 = 0
+            j = 0
+            loop j < nb:
+                t = ai * u64(pb[j]) + u64(q[j]) + c
+                q[j] = u32(t)
+                c = t >> 32
+                j += 1
+            q[nb] = u32(c)
+        i += 1
+
+# (the schoolbook product two digits at a time, as u64s; a digit 0 on top of an odd number of
+# them. Not on WebAssembly, which has no instruction for __mul_high)
+__bi_mul64 = (a: u32[], b: u32[]) -> u32[]:
+    pa = data(a) as *u64
+    pb = data(b) as *u64
+    ae: u32[]
+    be: u32[]
+    if a.len() & 1 == 1:
+        ae = a
+        ae.push(0)
+        pa = data(ae) as *u64
+    if b.len() & 1 == 1:
+        be = b
+        be.push(0)
+        pb = data(be) as *u64
+    na = (a.len() + 1) / 2
+    nb = (b.len() + 1) / 2
+    r = fill(u32(0), 2 * (na + nb))
+    pr = data(r) as *u64
+    i = 0
+    loop i < na:
+        x = pa[i]
+        if x != 0:
+            q = pr + i
+            c: u64 = 0
+            j = 0
+            loop j < nb:
+                y = pb[j]
+                lo = x * y
+                hi = __mul_high(x, y)
+                # (the carries as numbers, not branches, which would be guessed wrong half the time)
+                s1 = lo + c
+                s2 = s1 + q[j]
+                q[j] = s2
+                c = hi + u64(s1 < lo) + u64(s2 < s1)
+                j += 1
+            q[nb] = c
+        i += 1
+    __bi_trim(r)
+    r
+
+# (p[0..n) += x, carrying up: the sum fits in n digits)
+__bi_addto = (p: *u32, n: int, x: u32[]):
+    px = data(x)
+    m = x.len()
+    c: u64 = 0
+    i = 0
+    loop i < m:
+        t = u64(p[i]) + u64(px[i]) + c
+        p[i] = u32(t)
+        c = t >> 32
+        i += 1
+    loop c != 0 and i < n:
+        t = u64(p[i]) + c
+        p[i] = u32(t)
+        c = t >> 32
+        i += 1
+
+__bi_shl = (a: u32[], n: int) -> u32[]:
+    na = a.len()
+    if na == 0: return []
+    w = n >> 5
+    s = u64(n & 31)
+    r = fill(u32(0), na + w + 1)
+    pa = data(a)
+    pr = data(r) + w
+    c: u64 = 0
+    loop i in 0..na:
+        v = (u64(pa[i]) << s) | c
+        pr[i] = u32(v)
+        c = v >> 32
+    pr[na] = u32(c)
+    __bi_trim(r)
+    r
+
+__bi_shr = (a: u32[], n: int) -> u32[]:
+    na = a.len()
+    w = n >> 5
+    if w >= na: return []
+    s = u64(n & 31)
+    m = na - w
+    r = fill(u32(0), m)
+    pa = data(a) + w
+    pr = data(r)
+    loop i in 0..m:
+        v = u64(pa[i]) >> s
+        if i + 1 < m: v = v | (u64(pa[i + 1]) << (32 - s))
+        pr[i] = u32(v)
+    __bi_trim(r)
+    r
+
+__bi_divmod_small = (a: u32[], d: u32) -> (u32[], u32):
+    n = a.len()
+    q = fill(u32(0), n)
+    pa = data(a)
+    pq = data(q)
+    dd = u64(d)
+    rem: u64 = 0
+    i = n - 1
+    loop i >= 0:
+        cur = (rem << 32) | u64(pa[i])
+        x = cur / dd
+        pq[i] = u32(x)
+        rem = cur - x * dd
+        i -= 1
+    __bi_trim(q)
+    (q, u32(rem))
+
+# (the quotient and remainder of the sizes: Knuth's algorithm D, as Hacker's Delight writes it)
+__bi_divmod = (a: u32[], b: u32[]) -> (u32[], u32[]):
+    nb = b.len()
+    if nb == 0: panic("division by zero")
+    none_: u32[]
+    if __bi_cmp(a, b) < 0: return (none_, a)
+    if nb == 1:
+        q1, r1 = __bi_divmod_small(a, b[0])
+        return (q1, __bi_of_u64(u64(r1)))
+    when TARGET != "wasm":
+        if nb >= 4: return __bi_divmod64(a, b)
+    n = nb
+    m = a.len() - nb
+    s = u64(leading_zeros(b[nb - 1]))
+    # (shifted so that the divisor's top digit has its top bit set; the dividend gets a digit more)
+    vn = fill(u32(0), n)
+    un = fill(u32(0), a.len() + 1)
+    pa = data(a)
+    pb = data(b)
+    pv = data(vn)
+    pu = data(un)
+    c: u64 = 0
+    loop i in 0..n:
+        x = (u64(pb[i]) << s) | c
+        pv[i] = u32(x)
+        c = x >> 32
+    c = 0
+    loop i in 0..a.len():
+        x = (u64(pa[i]) << s) | c
+        pu[i] = u32(x)
+        c = x >> 32
+    pu[a.len()] = u32(c)
+    q = fill(u32(0), m + 1)
+    pq = data(q)
+    B = u64(1) << 32
+    vtop = u64(pv[n - 1])
+    vnext = u64(pv[n - 2])
+    j = m
+    loop j >= 0:
+        num = (u64(pu[j + n]) << 32) | u64(pu[j + n - 1])
+        qhat = num / vtop
+        rhat = num - qhat * vtop
+        loop qhat >= B or qhat * vnext > ((rhat << 32) | u64(pu[j + n - 2])):
+            qhat -= 1
+            rhat += vtop
+            if rhat >= B: break
+        # (u[j..j + n] -= qhat * v)
+        k = 0
+        t = 0
+        pj = pu + j
+        loop i in 0..n:
+            p = qhat * u64(pv[i])
+            t = int(pj[i]) - k - int(p & 0xFFFFFFFF)
+            pj[i] = u32(t)
+            k = int(p >> 32) - (t >> 32)
+        t = int(pj[n]) - k
+        pj[n] = u32(t)
+        if t < 0:
+            # (qhat was one too many: add v back)
+            qhat -= 1
+            c2: u64 = 0
+            loop i in 0..n:
+                x = u64(pj[i]) + u64(pv[i]) + c2
+                pj[i] = u32(x)
+                c2 = x >> 32
+            pj[n] = u32(u64(pj[n]) + c2)
+        pq[j] = u32(qhat)
+        j -= 1
+    __bi_trim(q)
+    # (the remainder: u's low n digits, shifted back)
+    r = fill(u32(0), n)
+    pr = data(r)
+    loop i in 0..n:
+        x = u64(pu[i]) >> s
+        if s > 0: x = x | (u64(pu[i + 1]) << (32 - s))
+        pr[i] = u32(x)
+    __bi_trim(r)
+    (q, r)
+
+# (as __bi_divmod, two digits at a time as u64s, for b of 3 digits or more; not on WebAssembly)
+__bi_divmod64 = (a: u32[], b: u32[]) -> (u32[], u32[]):
+    nb = (b.len() + 1) / 2
+    na = (a.len() + 1) / 2
+    # (shifted so that the divisor's top u64 has its top bit set; the dividend gets a u64 more)
+    top = u64(b[b.len() - 1])
+    if b.len() & 1 == 0: top = (top << 32) | u64(b[b.len() - 2])
+    s = u64(leading_zeros(top))
+    vn = fill(u64(0), nb)
+    un = fill(u64(0), na + 1)
+    pv = data(vn)
+    pu = data(un)
+    __bi_pack_shl(b, s, pv, nb)
+    pu[na] = __bi_pack_shl(a, s, pu, na)
+    m = na - nb
+    q = fill(u32(0), 2 * (m + 1))
+    pq = data(q) as *u64
+    vtop = pv[nb - 1]
+    vnext = pv[nb - 2]
+    j = m
+    loop j >= 0:
+        u2 = pu[j + nb]
+        u1 = pu[j + nb - 1]
+        u0 = pu[j + nb - 2]
+        qhat: u64 = 0
+        rhat: u64 = 0
+        # (rhat past 2^64: qhat is right or one too many, which the subtraction finds)
+        rbig = false
+        if u2 >= vtop:
+            qhat = 0xFFFFFFFFFFFFFFFF
+            rhat = u1 + vtop
+            rbig = rhat < u1
+        else: qhat, rhat = __bi_div128(u2, u1, vtop)
+        loop not rbig:
+            ph = __mul_high(qhat, vnext)
+            pl = qhat * vnext
+            if ph < rhat or (ph == rhat and pl <= u0): break
+            qhat -= 1
+            r2 = rhat + vtop
+            rbig = r2 < rhat
+            rhat = r2
+        # (u[j..j + nb] -= qhat * v)
+        pj = pu + j
+        carry: u64 = 0
+        borrow: u64 = 0
+        i = 0
+        loop i < nb:
+            y = pv[i]
+            plo = qhat * y
+            phi = __mul_high(qhat, y)
+            plo += carry
+            x = pj[i]
+            t = x - plo
+            pj[i] = t - borrow
+            # (the borrows as numbers, not branches, which would be guessed wrong half the time)
+            borrow = u64(x < plo) + u64(t < borrow)
+            carry = phi + u64(plo < carry)
+            i += 1
+        x = pj[nb]
+        sub = carry + borrow
+        pj[nb] = x - sub
+        if x < sub:
+            # (qhat was one too many: add v back)
+            qhat -= 1
+            c: u64 = 0
+            i = 0
+            loop i < nb:
+                s1 = pj[i] + c
+                s2 = s1 + pv[i]
+                pj[i] = s2
+                c = u64(s1 < c) + u64(s2 < s1)
+                i += 1
+            pj[nb] += c
+        pq[j] = qhat
+        j -= 1
+    __bi_trim(q)
+    # (the remainder: u's low nb u64s, shifted back)
+    r = fill(u32(0), 2 * nb)
+    pr = data(r)
+    loop i in 0..nb:
+        w = pu[i] >> s
+        if s > 0: w = w | (pu[i + 1] << (64 - s))
+        pr[2 * i] = u32(w)
+        pr[2 * i + 1] = u32(w >> 32)
+    __bi_trim(r)
+    (q, r)
+
+# (a's digits as n u64s, shifted left s bits (less than 64), into out; what is shifted out the top)
+__bi_pack_shl = (a: u32[], s: u64, out: *u64, n: int) -> u64:
+    pa = data(a)
+    m = a.len()
+    c: u64 = 0
+    loop i in 0..n:
+        w = u64(pa[2 * i])
+        if 2 * i + 1 < m: w = w | (u64(pa[2 * i + 1]) << 32)
+        out[i] = (w << s) | c
+        c = 0
+        if s > 0: c = w >> (64 - s)
+    c
+
+# (hi:lo / d and its remainder, for d with its top bit set and hi < d: Hacker's Delight's divlu)
+__bi_div128 = (hi: u64, lo: u64, d: u64) -> (u64, u64):
+    B = u64(1) << 32
+    dh = d >> 32
+    dl = d & 0xFFFFFFFF
+    un1 = lo >> 32
+    un0 = lo & 0xFFFFFFFF
+    q1 = hi / dh
+    rhat = hi - q1 * dh
+    loop q1 >= B or q1 * dl > (rhat << 32) + un1:
+        q1 -= 1
+        rhat += dh
+        if rhat >= B: break
+    un21 = (hi << 32) + un1 - q1 * d
+    q0 = un21 / dh
+    rhat = un21 - q0 * dh
+    loop q0 >= B or q0 * dl > (rhat << 32) + un0:
+        q0 -= 1
+        rhat += dh
+        if rhat >= B: break
+    ((q1 << 32) + q0, (un21 << 32) + un0 - q0 * d)
+
+# (how many digits of base fit in a u32 at once, and base to that power)
+__bi_chunk = (base: int) -> (int, u64):
+    k = 1
+    p = u64(base)
+    loop p * u64(base) <= 0xFFFFFFFF:
+        p = p * u64(base)
+        k += 1
+    (k, p)
+
+__bi_str = (d: u32[], base: int) -> str:
+    n = d.len()
+    if n == 0: return "0"
+    if n <= 2 and base == 10: return "{__bi_u64(d)}"
+    k, big = __bi_chunk(base)
+    # (at least log2(base) bits per digit: fl of them)
+    fl = 1
+    loop (1 << (fl + 1)) <= base: fl += 1
+    cap = n * 32 / fl + k + 1
+    out = fill(u8('0'), cap)
+    # (a long one: split by big ^ (2 ^ i), the largest whose square is past it, then each half so;
+    # pows[i] is that power, the low half's digits padded to k << i)
+    pows: u32[][]
+    if n >= __BI_STR_SPLIT:
+        pows.push(__bi_of_u64(big))
+        bits = __bi_bits(d)
+        loop 2 * __bi_bits(pows[pows.len() - 1]) - 1 <= bits:
+            last = pows[pows.len() - 1]
+            pows.push(__bi_mul(last, last))
+    at = __bi_str_into(d, data(out), cap, pows, pows.len() - 1, k, big, base)
+    str_from_bytes(out[at..cap])
+
+# (below this many digits, printing divides by base ^ k a digit at a time)
+const __BI_STR_SPLIT = 60
+
+# (d's digits written to end at po[end], the k << lev of a lower half padded with the 0s there
+# already; where they start)
+__bi_str_into = (d: u32[], po: *u8, end: int, pows: u32[][], lev: int, k: int, big: u64, base: int) -> int:
+    if lev < 0 or d.len() < __BI_STR_SPLIT: return __bi_str_small(d, po, end, k, big, base)
+    if __bi_cmp(d, pows[lev]) < 0: return __bi_str_into(d, po, end, pows, lev - 1, k, big, base)
+    q, r = __bi_divmod(d, pows[lev])
+    __bi_str_into(r, po, end, pows, lev - 1, k, big, base)
+    __bi_str_into(q, po, end - (k << lev), pows, lev - 1, k, big, base)
+
+__bi_str_small = (d: u32[], po: *u8, end: int, k: int, big: u64, base: int) -> int:
+    n = d.len()
+    at = end
+    t = d
+    pt = data(t)
+    pd = data("0123456789abcdefghijklmnopqrstuvwxyz")
+    ub = u64(base)
+    # (dividing by 10^9: by a multiplication, which is several times faster than a division)
+    magic = false
+    when TARGET != "wasm": magic = base == 10
+    loop n > 0:
+        # (t /= big, in place; the remainder is the next k digits)
+        rem: u64 = 0
+        i = n - 1
+        if magic:
+            loop i >= 0:
+                cur = (rem << 32) | u64(pt[i])
+                x = __mul_high(cur, 9903520314283042200) >> 29
+                pt[i] = u32(x)
+                rem = cur - x * 1000000000
+                i -= 1
+        else:
+            loop i >= 0:
+                cur = (rem << 32) | u64(pt[i])
+                x = cur / big
+                pt[i] = u32(x)
+                rem = cur - x * big
+                i -= 1
+        loop n > 0 and pt[n - 1] == 0: n -= 1
+        c = 0
+        loop c < k and (rem != 0 or n > 0):
+            at -= 1
+            po[at] = pd[int(rem % ub)]
+            rem = rem / ub
+            c += 1
+    at
+
+__bi_parse = (s: str, base0: int) -> BigInt?:
+    p = data(s)
+    n = len(s)
+    a = 0
+    loop a < n and is_space(p[a]): a += 1
+    loop n > a and is_space(p[n - 1]): n -= 1
+    if a == n: return none
+    i = a
+    neg = false
+    if p[i] == '-' or p[i] == '+':
+        neg = p[i] == '-'
+        i += 1
+    base = base0
+    if base == 0: base = 10
+    if i + 1 < n and p[i] == '0':
+        pc = p[i + 1] | 0x20
+        pb = 0
+        if pc == 'x': pb = 16
+        else if pc == 'b': pb = 2
+        else if pc == 'o': pb = 8
+        if pb > 0 and (base0 == 0 or base0 == pb):
+            base = pb
+            i += 2
+    k, _ = __bi_chunk(base)
+    # (at most 6 bits a digit, in base 36)
+    r = fill(u32(0), (n - i) * 6 / 32 + 2)
+    pr = data(r)
+    used = 0
+    acc: u64 = 0
+    mul: u64 = 1
+    cnt = 0
+    any = false
+    ub = u64(base)
+    loop i <= n:
+        if i == n or cnt == k:
+            # (r = r * mul + acc)
+            if cnt > 0:
+                c = acc
+                loop j in 0..used:
+                    t = u64(pr[j]) * mul + c
+                    pr[j] = u32(t)
+                    c = t >> 32
+                if c != 0:
+                    pr[used] = u32(c)
+                    used += 1
+                acc = 0
+                mul = 1
+                cnt = 0
+            if i == n: break
+        ch = p[i]
+        dv = 99
+        if ch >= '0' and ch <= '9': dv = int(ch) - 48
+        else if ch >= 'a' and ch <= 'z': dv = int(ch) - 87
+        else if ch >= 'A' and ch <= 'Z': dv = int(ch) - 55
+        else if ch == '_':
+            i += 1
+            continue
+        if dv >= base: return none
+        acc = acc * ub + u64(dv)
+        mul = mul * ub
+        cnt += 1
+        any = true
+        i += 1
+    if not any: return none
+    r.truncate(used)
+    BigInt(neg and used > 0, r)

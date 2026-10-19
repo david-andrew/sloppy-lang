@@ -39,8 +39,18 @@ checks): worth it for a long search; a debug build compiles faster and checks mo
 - `/` truncates toward zero and `%` keeps the sign of the left side, as in C (`-7 / 2` is -3,
   `-7 % 3` is -1); `mod(-7, 3)` is 2, as Python's `%`.
 - `x ^ y` on ints is an int power (`10 ^ 18`); `2.0 ^ 0.5` is a float one.
-- For numbers past 64 bits there are no exact big integers. `Big` (`use big`) is a float with
-  a large exponent: about 15 digits, for an idle game's money, not for exact answers.
+- Past 64 bits, `BigInt` keeps every digit, as Python's `int` does: `bigint(2) ^ 1000`,
+  `bigint("123456789012345678901234567890")`. `+ - * / %`, `^`, comparisons and printing work
+  as on ints, with ints mixed in (`f *= i`, `x % 1_000_000_007`); `int(x)` gives one back.
+  (`Big`, after `use big`, is something else: a float with a large exponent, about 15 digits.)
+
+```gdscript
+f = bigint(1)
+loop i in [1..100]: f *= i               # 100!, exactly
+print(f, digits(f).sum())                # 9332621544... 648
+print(pow_mod(bigint(3), bigint(10) ^ 30, bigint(2) ^ 127 - 1))
+```
+
 - Number theory, exact for every int (no float in between; [integer.jo](API.md#integerjo)):
 
 | C++ / Python | Sloppy |
@@ -51,6 +61,9 @@ checks): worth it for a long search; a debug build compiles faster and checks mo
 | `pow(a, -1, m)` | `inv_mod(a, m)`: an `int?`, none when a and m have a common divisor |
 | `(__int128)a * b % m` | `mul_mod(a, b, m)`: for m up to 2^63 (and `u64`s up to 2^64) |
 | `stoull(s)` | `to_u64(s)` (to_int stops at 2^63 - 1) |
+| Python's big `int`, `int("123...")`, `math.factorial` | `bigint(n)`, `bigint("123...")` (`to_bigint(s)`: none when it is not a number), `f *= i` in a loop |
+| `pow(b, e, m)`, `math.gcd`, `math.isqrt` past 64 bits | the same names on BigInts: `pow_mod`, `gcd`, `lcm`, `isqrt`, `inv_mod`, `mod` |
+| `x.bit_length()`, `hex(x)`, `sum(map(int, str(x)))` | `bit_length(x)`, `str(x, 16)`, `digits(x).sum()` |
 
 ## Containers
 

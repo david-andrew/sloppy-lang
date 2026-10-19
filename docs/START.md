@@ -560,7 +560,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `max(xs, key=len)`, `sorted(xs, key=..., reverse=True)` | `max(xs, key = len)`, `sorted(xs, key = (x): x.age, descending = true)` |
 | `try: ... except: ...` | a function gives back what went wrong as a value (`-> Config \| JsonError`), checked with `if r is JsonError:`, or passed on to the caller with `?` (`cfg = load(p)?`) |
 | `def test_x(): assert ...` (pytest) | `test "x": assert(...)`, run with `sloppy test file.jo` |
-| big integers | `int` is 64 bits and wraps around (`checked_mul(a, b)` is none where it would); there are no exact big integers (`Big`, after `use big`, is a float with a large exponent, about 15 digits) |
+| big integers: `2 ** 1000`, `int("123...")`, `math.factorial(100)` | `int` is 64 bits and wraps around (`checked_mul(a, b)` is none where it would); past that, `BigInt` keeps every digit: `bigint(2) ^ 1000`, `bigint("123...")`, `f *= i` from `f = bigint(1)`, with `+ - * / %`, comparisons, `print` and `pow_mod`, `gcd`, `isqrt` as for ints |
 
 For contests and Advent of Code (reading all the input at once, the containers, binary search,
 number theory): [Contests and Advent of Code](CONTESTS.md).
