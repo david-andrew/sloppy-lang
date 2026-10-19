@@ -1,0 +1,166 @@
+# A file browser in the terminal: the files of a directory on the left, what the one chosen holds
+# on the right. Up and down (or j and k, the mouse's wheel) choose, enter (or right, a click on the
+# chosen one) opens a directory, backspace (or left) goes up, / filters by name (escape clears),
+# q quits. `sloppy examples/files.jo [directory]`
+import term
+
+struct Entry:
+    name: str
+    dir: bool
+    size: int
+
+dir = abs_path(if args().len() > 1: args()[1] else: ".")
+entries: Entry[]
+chosen = 0
+top = 0                                 # (the first entry shown: the list scrolls)
+filter = ""
+typing = false                          # (the filter is being typed)
+note = ""                               # (a message on the last line, until the next key)
+
+load = (path: str):
+    global chosen, dir, entries, note, top
+    names = list_dir(path)
+    if names.len() == 0 and not is_dir(path):
+        note = "cannot read {path}"
+        return
+    dir = path
+    entries = [loop n in names: Entry(n, is_dir(join_path(path, n)), file_size(join_path(path, n)) ?? 0)]
+    entries.sort_by((e): (not e.dir, e.name.lower()))
+    chosen = 0
+    top = 0
+
+shown = () -> Entry[]: [loop e in entries if contains(e.name.lower(), filter.lower()): e]
+
+open_chosen = ():
+    global filter
+    list = shown()
+    if chosen >= list.len(): return
+    e = list[chosen]
+    if e.dir:
+        filter = ""
+        load(join_path(dir, e.name))
+
+go_up = ():
+    global filter
+    parent = dir_name(dir)
+    if len(parent) == 0 or parent == dir: return
+    was = file_name(dir)
+    filter = ""
+    load(parent)
+    loop i in 0.. and e in entries:
+        if e.name == was: choose(i)
+
+choose = (i: int):
+    global chosen, top
+    n = shown().len()
+    chosen = clamp(i, 0, max(n - 1, 0))
+    rows = term.size().1 - 4
+    if chosen < top: top = chosen
+    if chosen >= top + rows: top = chosen - rows + 1
+
+size_text = (n: int) -> str:
+    if n < 1024: return "{n} B"
+    if n < 1 << 20: return "{f64(n) / 1024.0:.1f} KB"
+    "{f64(n) / f64(1 << 20):.1f} MB"
+
+# the right side: a directory's names, a text file's first lines, or what a file is
+preview = (e: Entry, x: int, w: int, h: int):
+    path = join_path(dir, e.name)
+    if e.dir:
+        names = list_dir(path)
+        names.sort()
+        loop i in 0.. and n in names and i < h: term.put(x, 2 + i, term.fit(n, w), fg = term.GRAY)
+        if names.len() == 0: term.put(x, 2, "(empty)", fg = term.GRAY, style = term.ITALIC)
+        return
+    if e.size > 1 << 20:
+        term.put(x, 2, "{size_text(e.size)}: too big to show", fg = term.GRAY)
+        return
+    b = read_bytes(path) ?? []
+    if b.contains(u8(0)):
+        term.put(x, 2, "binary, {size_text(e.size)}", fg = term.GRAY)
+        return
+    loop i in 0.. and line in lines(str_from_bytes(b)) and i < h:
+        term.put(x, 2 + i, term.fit(replace(line, "\t", "    "), w))
+
+show = ():
+    w, h = term.size()
+    left = clamp(w / 3, 16, 40)
+    rows = h - 4
+    term.clear()
+    term.fill_rect(0, 0, w, 1, bg = term.BLUE)
+    term.put(1, 0, term.fit(dir, w - 2), fg = term.BRIGHT_WHITE, bg = term.BLUE, style = term.BOLD)
+    term.box(0, 1, w, h - 2, fg = term.GRAY)
+    term.vline(left, 2, h - 4, fg = term.GRAY)
+    term.put(left, 1, "┬", fg = term.GRAY)
+    term.put(left, h - 2, "┴", fg = term.GRAY)
+    list = shown()
+    loop i in 0..rows:
+        k = top + i
+        if k >= list.len(): break
+        e = list[k]
+        name = if e.dir: e.name + "/" else: e.name
+        fg = if e.dir: term.BRIGHT_BLUE else: term.DEFAULT
+        style = if e.dir: term.BOLD else: 0
+        if k == chosen:
+            term.fill_rect(1, 2 + i, left - 1, 1, bg = term.color(238))
+            term.put(1, 2 + i, term.fit(name, left - 2), fg = fg, bg = term.color(238), style = style)
+        else: term.put(1, 2 + i, term.fit(name, left - 2), fg = fg, style = style)
+    if chosen < list.len(): preview(list[chosen], left + 2, w - left - 4, rows)
+    # the last line: the filter as it is typed, a message, or the keys
+    term.hide_cursor()
+    if typing:
+        x = term.put(0, h - 1, "/", fg = term.YELLOW)
+        x = term.put(x, h - 1, filter)
+        term.set_cursor(x, h - 1)
+    else if len(note) > 0: term.put(0, h - 1, note, fg = term.RED)
+    else:
+        count = "{list.len()} of {entries.len()}"
+        if len(filter) > 0: count += " matching '{filter}'"
+        term.put(0, h - 1, term.fit("{count}   enter open  backspace up  / filter  q quit", w), fg = term.GRAY)
+    term.flush()
+
+main = () -> int:
+    global filter, note, typing
+    load(dir)
+    if not term.start(mouse = true):
+        eprint("files.jo: this is for a terminal (standard input and output are not one)")
+        return 1
+    loop:
+        show()
+        e = term.read_event() ?? break
+        note = ""
+        if e.kind == .paste and typing:
+            filter += replace(e.text, "\n", " ")
+            choose(0)
+        else if e.kind == .mouse:
+            row = e.y - 2 + top
+            if e.mouse == .wheel_up: choose(chosen - 3)
+            else if e.mouse == .wheel_down: choose(chosen + 3)
+            else if e.mouse == .press and e.button == 1 and e.y >= 2 and row < shown().len():
+                if row == chosen: open_chosen()
+                else: choose(row)
+        else if e.kind == .key and typing:
+            if e.key == .enter: typing = false
+            else if e.key == .escape:
+                typing = false
+                filter = ""
+            else if e.key == .backspace: filter = filter.without_last_char()
+            else if e.key == .char and not e.ctrl and not e.alt: filter += e.text
+            choose(0)
+        else if e.kind == .key:
+            match e.name:
+                "q", "ctrl+c": break
+                "up", "k": choose(chosen - 1)
+                "down", "j": choose(chosen + 1)
+                "page_up": choose(chosen - (term.size().1 - 4))
+                "page_down": choose(chosen + (term.size().1 - 4))
+                "home": choose(0)
+                "end": choose(shown().len() - 1)
+                "enter", "right", "l": open_chosen()
+                "backspace", "left", "h": go_up()
+                "/": typing = true
+                "escape":
+                    filter = ""
+                    choose(0)
+        else if e.kind == .resize: choose(chosen)
+    0

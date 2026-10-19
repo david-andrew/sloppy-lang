@@ -36,6 +36,11 @@ TOPICS = [
     ("Basics", "system", "Files, time and the system", ["core/os", "std/path", "std/date", "std/cli", "std/stop"], "system",
      "In a web page, files are the ones the page was given, and `env` reads its address's parameters. "
      "What is at a web address: `net.fetch(url)`, after `import net` ([fetching from the web](START.md#fetching-from-the-web))."),
+    ("Basics", "term", "Terminal programs", ["term"], "term",
+     "A module (`import term`): the whole terminal as a screen of characters, as curses, tcell or bubbletea give it: keys "
+     "(with ctrl, alt and shift), the mouse, resizes and pasted text as events, colors and styles, boxes, and a flush that "
+     "writes only the cells that changed. The terminal is put back as it was however the program ends. See "
+     "[terminal programs](LANGUAGE.md#terminal-programs) and [examples/files.jo](https://github.com/david-andrew/sloppy-lang/blob/master/examples/files.jo)."),
     ("Data", "json", "JSON, CSV, URLs, base64 and SHA-256", ["std/json", "std/csv", "std/url", "std/base64", "std/hash"], "json",
      "`to_json(value)` and `from_json[T](text)` turn any value (a struct, an array, a map...) into JSON and back; "
      "`parse_json` reads JSON of any shape as a `Json` to look inside."),

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Terminal programs: `import term` takes the whole terminal as a screen of characters, as curses,
+  tcell or bubbletea do. `term.start(mouse = true)`, then `put`, `fill_rect`, `box`, `hline`,
+  `vline` into a screen of cells (16 named colors, `color(n)` of 256, `color(rgb(...))` of 24 bits,
+  `BOLD | UNDERLINE`...), and `flush()`, which writes only the cells changed since the last, in
+  one write; East Asian characters and emoji take two cells. `read_event(wait = s)` gives keys
+  (UTF-8 characters, ctrl, alt and shift, arrows, F1-F12, `e.name` as `"ctrl+up"`), the mouse
+  (SGR: presses, drags, the wheel), resizes and pasted text as one event; a task waiting there
+  lets the others run. The terminal is put back as it was however the program ends: its end,
+  `exit()`, a panic or a crash (the message shown after), ctrl-c, SIGTERM. Linux, macOS and
+  Windows (the console's events; VT output turned on); `start` gives false in a web page.
+  `examples/files.jo` is a file browser, `sloppy new my_list tui` a list of things to do.
+  `tools/termtest.py` drives programs through a pseudo-terminal.
+- A second ctrl-c or SIGTERM ends a program from its handler with the usual code (130, 143) once
+  a terminal program has started, so that the terminal is put back first.
+
 - Tasks: `t.cancel()` makes the task's waits end at once with nothing (receive none, sleep
   returns, select takes `after`, `net.fetch` status 0, `tcp_receive` nothing), and `cancelled()`
   is true in it. Groups: `g = task_group()`, `g.spawn(f)`, `g.wait()` (false when one panicked:

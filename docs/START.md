@@ -99,6 +99,7 @@ sloppy new my_game 3d         # a first-person 3D game: mouse look, walking, jum
 sloppy new my_tale story      # a story in lines and choices (a visual novel), its script as Ren'Py's
 sloppy new my_duel online     # two players anywhere, no server: invite a friend by a link (rollback)
 sloppy new my_tool program    # a program for the terminal, with a test
+sloppy new my_list tui        # a program for the whole terminal: a list of things to do (keys, the mouse)
 sloppy watch my_game/my_game.jo
 ```
 
@@ -291,6 +292,15 @@ mistake (`--top many`) is said with that help, and exit code 2.
   several lines with no `{}` interpolation and no `\` escapes (help text with `{name}` in it).
 - `sloppy test count.jo` runs its `test` blocks; `sloppy test count.jo sort` only those with
   "sort" in their names.
+
+A program can also take the whole terminal, as a screen of characters it draws on (a file
+browser, an editor, a game in the terminal): `import term`, `term.start()`, then `term.put(x, y,
+text, fg = term.YELLOW)`, `term.box(...)` and `term.flush()`, which writes only what changed, and
+`term.read_event()` for keys, the mouse and resizes. The terminal is put back as it was however
+the program ends. `sloppy new my_list tui` starts one; [terminal
+programs](LANGUAGE.md#terminal-programs) says the rest, and
+[examples/files.jo](https://github.com/david-andrew/sloppy-lang/blob/master/examples/files.jo) is
+a file browser.
 
 ### Fetching from the web
 
@@ -712,6 +722,33 @@ waits (a channel, a fetch, a connection, `sleep`) lets the others run. For the p
 | `go test`, `func TestX(t *testing.T)` | `test "x": assert(...)` blocks, run by `sloppy test file.jo` (`sloppy test file.jo x`: only those named so) |
 | a small static binary | `sloppy build --release tool.jo`: one static executable (no libc; hello world is about 150 KB) |
 | `GOOS=windows GOARCH=amd64 go build` | `sloppy build tool.jo --target windows` (`linux`, `linux-arm64`, `macos`, `wasm`), from any system; Linux, ARM and macOS builds are all named `tool` unless `-o` says otherwise, so give each its own: `--target macos -o tool-mac` |
+
+## Coming from curses or bubbletea
+
+`import term` is the terminal as curses, tcell or bubbletea give it, with the loop the program's
+own: draw everything into the screen (`term.clear()`, `term.put(...)`), `term.flush()` (only what
+changed goes out), then wait for `term.read_event()`. Keys come as an `Event` whose `name` is as
+bubbletea's `msg.String()`: `"ctrl+c"`, `"up"`, `"enter"`, `"a"`.
+
+| curses / tcell / bubbletea | Sloppy |
+|---|---|
+| `curses.wrapper(main)`, `initscr()` with `cbreak()`, `noecho()`, `keypad(True)`; `tcell.NewScreen()` with `Init()`; `tea.NewProgram(m, tea.WithAltScreen())` | `term.start()`: raw keys, the terminal's own screen, the cursor hidden; put back as it was by `term.stop()` or however the program ends (a panic, ctrl-c, SIGTERM too) |
+| `stdscr.getmaxyx()`, `screen.Size()`, `tea.WindowSizeMsg` | `w, h = term.size()` (columns, rows); a resize is an event of kind `.resize`, the screen resized already |
+| `stdscr.addstr(y, x, s, attr)`, `screen.SetContent(x, y, r, nil, style)` | `term.put(x, y, s, fg = term.RED, style = term.BOLD)`: x first, and it gives the column after |
+| `stdscr.refresh()`, `screen.Show()` | `term.flush()`: only the cells changed, in one write |
+| `stdscr.clear()`, `screen.Clear()` | `term.clear()` (each frame: only what changed is written anyway) |
+| `stdscr.getch()`, `get_wch()`, `screen.PollEvent()`, `tea.KeyMsg` | `e = term.read_event()`: `e.key` (`.char`, `.up`, `.f5`...), `e.text`, `e.ctrl`, `e.alt`, `e.shift`, `e.name` (`"ctrl+up"`) |
+| `stdscr.timeout(100)`, `nodelay(True)`, `tea.Tick` | `term.read_event(wait = 0.1)` (none: nothing came), or a task that ticks while main waits for keys |
+| `curses.mousemask(ALL_MOUSE_EVENTS)`, `screen.EnableMouse()`, `tea.WithMouseCellMotion()` | `term.start(mouse = true)`: `.press`, `.release`, `.drag`, `.wheel_up`... with `e.button`, `e.x`, `e.y` (`mouse_moves = true`: `tea.WithMouseAllMotion()`) |
+| `screen.EnablePaste()`, `tea.KeyMsg` with `Paste` | a paste is one event of kind `.paste`, its text in `e.text` (on by itself) |
+| `init_pair(1, COLOR_RED, COLOR_BLACK)`, `color_pair(1)`; `tcell.ColorRed`; lipgloss's `Color("205")`, `Color("#ff8000")` | `fg = term.RED, bg = term.BLACK` on each call; `term.color(205)`, `term.color(hex(0xff8000))` |
+| `A_BOLD \| A_UNDERLINE`, `A_REVERSE`, `A_DIM` | `term.BOLD \| term.UNDERLINE`, `term.REVERSE`, `term.DIM` (`ITALIC`, `STRIKE`) |
+| `stdscr.border()`, `curses.textpad.rectangle`, lipgloss's borders | `term.box(x, y, w, h, title = "...", lines = .rounded)` (`.single`, `.double`, `.heavy`); `term.hline`, `term.vline` |
+| `curs_set(1)` and `move(y, x)` | `term.set_cursor(x, y)` (shown after each flush), `term.hide_cursor()` |
+| `wcwidth`, `runewidth.StringWidth`, `lipgloss.Width` | `term.text_width(s)`; `term.fit(s, 20)` cuts to 20 columns with a `…` |
+| `KeyboardInterrupt` in `getch()`; `tea.Quit` on `"ctrl+c"` | ctrl-c asks the program to stop (`stopping()`, `on_quit`), ending it at its next `read_event` if it does not look; `term.start(ctrl_c_key = true)` to read it as `"ctrl+c"` |
+| `curses.endwin()` before a shell command, then `refresh()` | `term.stop()`, `run_program(cmd, show = true)`, `term.start()` |
+| tests with `teatest`, a `tcell.SimulationScreen` | `term.set_size(40, 10)`, draw, then `term.screen_text()` or `term.render()`; `term.decode(bytes)` for input |
 
 ## Coming from pygame
 
