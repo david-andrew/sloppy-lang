@@ -31,12 +31,79 @@ extension = (path: str) -> str:
 # the path without its file name's extension ("art/hero.png" -> "art/hero")
 without_extension = (path: str) -> str: path[..len(path) - len(extension(path)))
 
-# a then b, with one separator between them (b as it is when it starts at the root)
+# a then b, with one separator between them (b as it is when it starts at the root). The
+# separator is /, but on Windows \ when a is written with \ or is a drive ("C:\Users\me" and
+# "report.txt" give "C:\Users\me\report.txt"; "art" and "hero.png" give "art/hero.png")
 join_path = (a: str, b: str) -> str:
     if len(a) == 0 or (len(b) > 0 and __is_sep(b[0])): return b
     if len(b) == 0: return a
     if __is_sep(a[len(a) - 1]): return a + b
+    when TARGET == "windows":
+        if find(a, "\\") >= 0 or (len(a) == 2 and a[1] == ':'): return a + "\\" + b
     a + "/" + b
+
+# the user's home directory ("" when there is none: in a web page): /home/me, C:\Users\me
+home_dir = () -> str:
+    when TARGET == "windows":
+        return __w32_known_folder(0x5E6C858F, 0x0E22, 0x4760, [u8(0x9A), 0xFE, 0xEA, 0x33, 0x17, 0xB6, 0x71, 0x73], "USERPROFILE")
+    else when TARGET == "wasm":
+        return ""
+    else:
+        return env("HOME") ?? ""
+
+# the user's Documents folder ("" when there is none: in a web page). On Windows wherever it
+# is (OneDrive may hold it); on Linux XDG_DOCUMENTS_DIR from ~/.config/user-dirs.dirs, else
+# ~/Documents; on macOS ~/Documents. It may not be there yet: make_dirs makes it
+documents_dir = () -> str:
+    when TARGET == "windows":
+        d = __w32_known_folder(0xFDD39AD0, 0x238F, 0x46AF, [u8(0xAD), 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7], "")
+        if len(d) == 0: d = join_path(home_dir(), "Documents")
+        return d
+    else when TARGET == "wasm":
+        return ""
+    else when TARGET == "linux":
+        home = home_dir()
+        if len(home) == 0: return ""
+        conf = env("XDG_CONFIG_HOME") ?? ""
+        if len(conf) == 0: conf = home + "/.config"
+        # (XDG_DOCUMENTS_DIR="$HOME/Documents", as xdg-user-dirs writes it)
+        if let text = read_file(conf + "/user-dirs.dirs"):
+            loop line in text.lines():
+                t = trim(line)
+                if not starts_with(t, "XDG_DOCUMENTS_DIR="): continue
+                v = trim(t[len("XDG_DOCUMENTS_DIR=")..], "\"")
+                if starts_with(v, "$HOME"): v = home + v[5..]
+                # (set to the home directory itself: none of its own)
+                if len(v) > 0 and v[0] == '/' and v != home and v != home + "/": return v
+        return home + "/Documents"
+    else:
+        home = home_dir()
+        if len(home) == 0: return ""
+        return home + "/Documents"
+
+when TARGET == "windows":
+    @lib("shell32.dll")
+    extern SHGetKnownFolderPath = (id: *u8, flags: u32, token: *u8, path: **u16) -> i32
+    @lib("ole32.dll")
+    extern CoTaskMemFree = (p: *u8)
+
+    # (a known folder, by its GUID's parts; else the environment variable's value, if one is named)
+    __w32_known_folder = (d1: int, d2: int, d3: int, d4: u8[], fallback: str) -> str:
+        id = fill(u8(0), 16)
+        loop k in [0..4): id[k] = u8((d1 >> (8 * k)) & 255)
+        id[4] = u8(d2 & 255)
+        id[5] = u8(d2 >> 8)
+        id[6] = u8(d3 & 255)
+        id[7] = u8(d3 >> 8)
+        loop k in [0..8): id[8 + k] = d4[k]
+        p: *u16[] = [null]
+        if SHGetKnownFolderPath(data(id), 0, null, data(p)) == 0 and p[0] != null:
+            s = __narrow(p[0], -1)
+            CoTaskMemFree(p[0] as *u8)
+            return s
+        if p[0] != null: CoTaskMemFree(p[0] as *u8)
+        if len(fallback) == 0: return ""
+        env(fallback) ?? ""
 
 # the path from the root: a relative one from the working directory, with `.` and `..` worked
 # out ("../x" in /home/me/src is /home/me/x; links are not followed). On Windows, with \

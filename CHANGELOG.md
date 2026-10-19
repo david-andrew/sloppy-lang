@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Windows: `sloppy game.jo` shows what a game prints, and why it panicked, in the console it was
+  started from. A game has no console of its own, and it was started without this one's input,
+  output and errors, so all of it was lost (`sloppy watch game.jo` the same).
+- Windows: a built game that stops with an error when nothing shows its errors (double-clicked)
+  shows the error in a message box and writes it to `crash.txt` in its save folder
+  (`%APPDATA%\<name>`), with what it wrote to standard error before. It closed with no word.
+- Windows: ctrl-c under `sloppy tool.jo` is the program's: it runs its `on_quit`, and sloppy waits
+  for it and ends with its exit code. sloppy ended at once, and the program with it, without its
+  `on_quit`.
+- Windows: `file_error()` gives errors in words where it said "Windows error 123": a name Windows
+  does not allow (with what it does not allow), no such drive, a drive not ready, and the system's
+  own words for others.
+- The names `save_data`, `load_data` and `delete_data` take are refused, on every system, where
+  Windows does not allow them as file names (`"high*score"`, `"con"`, `"best."`), with
+  `file_error()` saying why: they worked on Linux and failed on Windows with "Windows error 123".
+- Windows: `input()` and `read_line()` at the console give typed letters outside ASCII as UTF-8
+  (`Zoë` is 4 bytes): they came in the console's old code page, one byte that was not text. A
+  program that printed set the console to UTF-8 and left it so after it ended; it is put back.
+- Windows: `glob("*.TXT")` finds `notes.txt`, as Windows' file names are the same in either case
+  (elsewhere letters match only in the same case).
+- Windows: `join_path` joins with `\` a path written with `\` or a drive (`C:\Users\me\Documents`
+  and `report.txt` give `C:\Users\me\Documents\report.txt`, not `...\Documents/report.txt`).
+- `home_dir()` and `documents_dir()`: the user's home directory and Documents folder (on Windows
+  the folder Windows says, which OneDrive may hold; on Linux XDG_DOCUMENTS_DIR, else ~/Documents;
+  "" in a web page).
+- Windows: `parse_args` takes `/?` for help, as `--help` and `-h`.
 - Set literals: `{1, 2, 3}` is a `Set[int]` (it said "expected ':'"), `{loop w in ws: w}` makes
   one by a loop, and `{}` where a Set is expected is an empty one (`seen: Set[int] = {}`).
 - No warning for a number with a format in a string, `"{42:05}"` (it took it for a regular
