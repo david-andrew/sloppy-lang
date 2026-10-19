@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.25.0
 
 - `counts = {}` with no type written: the key and value types come from the first `counts[k] =
   v` or `counts[k] += 1` (or `get(k, default)`) after it, as an empty `[]`'s come from a push
