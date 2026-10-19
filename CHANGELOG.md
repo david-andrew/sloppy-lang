@@ -46,6 +46,11 @@
 - parse_args' `--help` leaves out an option's name at the start of its field's comment (`#
   --words, or -w: count words too` shows as `-w, --words   count words too`, where the name came
   twice), and START.md's example no longer writes it there.
+- START.md: a "Coming from Go" table: goroutines and channels for I/O (fetch_start, fetch_result
+  and net.wait, or fetch_all), for the cores (parallel_map), mutexes (not needed: what the race
+  checker allows), select, timeouts and cancelling, shutdown, errors as values (`?`, `error
+  struct`, `void | E`), defer, httptest, go test, small static binaries and cross-compiling (each
+  target's `-o`).
 
 ## 0.25.0
 

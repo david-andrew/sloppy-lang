@@ -603,6 +603,41 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 For contests and Advent of Code (reading all the input at once, the containers, binary search,
 number theory): [Contests and Advent of Code](CONTESTS.md).
 
+## Coming from Go
+
+Sloppy programs run on one thread, with two ways to do more at once: waiting on many things
+(fetches, connections, requests) from that thread, and sharing out work for the processor's
+cores with `parallel_map`, whose functions the compiler checks for data races.
+
+| Go | Sloppy |
+|---|---|
+| `go run main.go`, `go build` | `sloppy main.jo`, `sloppy build main.jo` (`--release` for faster code) |
+| goroutines and channels for I/O: `go fetch(url)`, results on a channel | `f = net.fetch_start(url)` for each, then `net.fetch_result(f)` as they come, with `net.wait(1.0)` between, which sleeps until something has come; `net.fetch_all(urls, at_once = 8)` does all that ([fetching from the web](#fetching-from-the-web)) |
+| a worker pool, `errgroup` with `SetLimit(8)`, `sync.WaitGroup` | `rs = net.fetch_all(urls, at_once = 8, retries = 2)`: the answers in order, each failed or busy one asked again |
+| goroutines for CPU work | `parallel_map(xs, f)`, `parallel_range(n, f)` and `parallel_update(xs, f)` run `f` on every core and give back its results, in order |
+| `sync.Mutex` | not needed: `parallel_map`'s function cannot change a variable it shares (the compiler says so: return values instead), and a count the threads share is an `Atomic` (`done = atomic(0)`, `done.add(1)`); an HTTP server's handlers run one at a time, so they change the program's variables freely |
+| `select` on channels | `net.wait(seconds)`: until a fetch's answer, a message, a connection's bytes or a request comes, then look at each (`net.fetch_result(f)`, `net.receive()`, `http.answer()`) |
+| `context.WithTimeout`, cancelling | `net.fetch(url, wait = 5.0)` (and `fetch_start`, `fetch_all`): status 0 and `r.why` when the time runs out; `net.fetch_cancel(f)` stops one |
+| `signal.NotifyContext(ctx, os.Interrupt)`, graceful shutdown | `loop not stopping(): ...`: ctrl-c and SIGTERM make `stopping()` true (and end `net.wait` early); `on_quit = (): ...` runs as the program ends |
+| `if err != nil { return err }` | `x = f()?`: a failure (an `error struct`, or none) goes back to the caller as it is |
+| `errors.New`, a type implementing `error` | `error struct LoadError:` with the fields the caller needs; the function returns `Config \| LoadError`, and the caller checks `if r is LoadError:` |
+| `func save() error` | `save = () -> void \| SaveError:`; `save()?` passes the error on |
+| `defer f.Close()` | `defer f.close()`: runs as the block ends, by a `return` or a `?` too |
+| `v, ok := m[k]`, `m[k]++` | `if let v = m.get(k):`, `m[k] += 1` (a missing key starts at zero) |
+| `append(xs, x)`, `len(xs)`, `xs[1:3]` | `xs.push(x)`, `xs.len()`, `xs[1..3)` |
+| structs and methods | `struct Box:` and functions taking one: `area = (b: Box) -> f64: b.w * b.h` is called `b.area()` |
+| `fmt.Printf("%-10s %5.2f\n", s, x)` | `print("{s:<10} {x:5.2f}")` |
+| `flag.Bool("words", false, "count words")` | a struct of the options, `opts = parse_args[Options]("what it does")`, the comments as the help |
+| `encoding/json`, struct tags | `from_json[Item](s)` (fields by name), `to_json(x)`, `parse_json(s)` for any shape |
+| `bufio.Scanner` over a file | `if let f = open_file(p):` then `loop let line = f.read_line():` |
+| `regexp.MustCompile(expr)` | `regex(r"...")`, made once and used for every text |
+| `url.Parse`, `base.ResolveReference(ref)` | `parse_url(s)` (`u.host`, `u.port`, `u.path`), `url_join(base, link)` |
+| `http.HandleFunc`, `http.ListenAndServe` | `import http`, `http.get("/todos/:id", handler)`, `http.serve(8080)` ([writing a server](#writing-a-server)) |
+| `httptest.NewServer` | the server in the same program: `http.listen(port)`, then `net.fetch_start` and `http.answer()` in a loop until `net.fetch_result` has the answer ([as above](#writing-a-server)); a blocking `net.fetch` to itself would wait forever |
+| `go test`, `func TestX(t *testing.T)` | `test "x": assert(...)` blocks, run by `sloppy test file.jo` (`sloppy test file.jo x`: only those named so) |
+| a small static binary | `sloppy build --release tool.jo`: one static executable (no libc; hello world is about 150 KB) |
+| `GOOS=windows GOARCH=amd64 go build` | `sloppy build tool.jo --target windows` (`linux`, `linux-arm64`, `macos`, `wasm`), from any system; Linux, ARM and macOS builds are all named `tool` unless `-o` says otherwise, so give each its own: `--target macos -o tool-mac` |
+
 ## Coming from pygame
 
 A pygame program owns its main loop: it reads events, moves things, draws onto the screen
