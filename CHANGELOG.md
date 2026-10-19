@@ -24,6 +24,10 @@
   without clearing them first: `split()` takes 40% fewer cycles.
 - Copies of up to 16 bytes (`mem_copy`, strings, slices) take two loads and two stores on x86-64,
   where `rep movsb` took some 30 cycles to start on processors without fast short copies.
+- Release builds: an `if` whose value is an int (`c = if a[i] == b[j]: 0 else: 1`), and `max`
+  and `min`, are conditional moves in loops, with no branch to guess wrong; an `if`'s int or
+  float value is kept in a register, where it went through memory; and in a recursive function
+  each branch of the `if` it returns gives back its own value (`fib(38)` took 0.47 s, now 0.31 s).
 
 ## 0.24.0
 
