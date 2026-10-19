@@ -385,7 +385,8 @@ written inside an expression is a lambda.
   instantiated for each distinct set of argument types (like a template). A lambda inside a
   function is one value, so its untyped parameters take their types from where it is passed
   (`xs.map((x): x * 2)`) or from how its body uses them (`inc = (x): x + 1` makes x an int);
-  where neither says, give the type: `(x: f64): x * x`.
+  where neither says, give the type: `(x: f64): x * x`. Such a function can call itself by the
+  name it is given, when its parameters' types are written: `dfs = (u: int): ... dfs(v)`.
 * Explicit type parameters: `first[T] = (xs: T[]) -> T: xs[0]`. A call can give them when the
   arguments do not say (`from_json[Settings](text)`, `gpu_buffer[Bug](100)`), also a module's
   (`cfg.load[Settings](path)`).

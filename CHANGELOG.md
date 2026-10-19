@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- A function made inside another can call itself by the name it is given (`dfs = (u: int): ...
+  dfs(v)`, a DFS over the arrays it captures; `fib` with a memo map): it said "unknown function
+  'dfs'". It calls itself directly, so no closure keeps itself alive.
+- A character literal where a generic parameter is a u8 already: `xs.index_of('#')` on bytes,
+  `grid[k] = '#'` for a `{int: u8}`, `s.add('x')` on a `Set[u8]` (it said "expects u8, found str").
+- `x!` on none says what gave the none: "read_file(...) gave none: the file could not be read",
+  "x is none" (it always spoke of to_int).
+- `update = (tree: mut int[], i: int, v: int)` in a program with no draw is a function of its
+  own (it was taken for the game's update, which takes the seconds).
+- Messages: `x = none` for an `x: int` says to declare it `int?`; `s[i] = 98` on a string points
+  to `bytes(s)` and `str_from_bytes`; `map(int, words)` says the array comes first; slices out of
+  bounds show what was written (`0..10`, not `[0..9]`); `xs[..end)` no longer warns.
 ## 0.24.0
 
 - Python's spellings for sorting by a key: `sorted(words, key = len)`, `xs.sort(key = (p):

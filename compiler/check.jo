@@ -2599,7 +2599,33 @@ var_type_error = (lhs: int, lt: int, rt: int, at: int, rhs: int = 0):
         fatal(at, "'{nm}' holds text{made} (a value in quotes, \"0\", is text, even with digits): for a number, give it one without quotes (`{nm} = 0`)")
     # (x = 1, then x = "s": text, which is not the character's code here)
     if rhs != 0 and charlike(rhs) and is_int(lt): fatal(at, "'{nm}' has type {type_str(lt)}{made} and cannot hold text{text_char_hint(rhs, lt)}")
+    # (x = none for x: int: an optional is what may be none)
+    if rhs != 0 and nodes[rhs].kind == .none_lit: fatal(at, "'{nm}' has type {type_str(lt)}{made}, which is never none: declare it `{nm}: {type_str(lt)}? = ...` to let it be")
     fatal(at, "'{nm}' has type {type_str(lt)}{made} and cannot hold this {type_str(rt)}: {how}")
+
+# (the lambda being checked as the value of a new variable it calls by name, and that name)
+self_lam = 0
+self_lam_name = 0
+# (while its body is checked: the variable's name and the lambda's instance, innermost last)
+self_names: int[]
+self_insts: int[]
+# (the names of the new variables whose lambdas are being checked and name them)
+self_named_any: int[]
+
+# is n a lambda with every parameter's type written, whose body names `name` (itself)?
+self_calling_lambda = (n: int, name: int) -> bool:
+    if nodes[n].kind != .lambda: return false
+    loop i in [0..nkids(n)):
+        if nodes[kid(n, i)].a == 0: return false
+    names_ident(int(nodes[n].b), name)
+
+names_ident = (n: int, name: int) -> bool:
+    if n == 0: return false
+    if nodes[n].kind == .ident and int(nodes[n].name) == name: return true
+    if names_ident(int(nodes[n].a), name) or names_ident(int(nodes[n].b), name) or names_ident(int(nodes[n].c), name): return true
+    loop i in [0..nkids(n)):
+        if names_ident(kid(n, i), name): return true
+    false
 
 check_vardecl = (s: int):
     if has_flag(s, NF_SOA):
@@ -2647,8 +2673,20 @@ check_vardecl = (s: int):
     nm = name_of(int(nodes[s].name))
     # (x: T, a struct with default field values: it starts with them, as T() would)
     if nodes[s].b == 0 and t != 0: nodes[s].b = i32(struct_default(t, nodes[s].pos))
+    # (dfs = (u: int): ... dfs(u + 1): a function of the function's own calling itself, which
+    # the lambda does directly, with what it captured: see self_call)
+    saved_sl = self_lam
+    saved_sn = self_lam_name
+    named_any = t == 0 and nodes[s].b != 0 and nodes[int(nodes[s].b)].kind == .lambda and names_ident(int(nodes[int(nodes[s].b)].b), int(nodes[s].name))
+    if named_any: self_named_any.push(int(nodes[s].name))
+    if t == 0 and nodes[s].b != 0 and self_calling_lambda(int(nodes[s].b), int(nodes[s].name)):
+        self_lam = int(nodes[s].b)
+        self_lam_name = int(nodes[s].name)
     if nodes[s].b != 0:
         et = check_expr(int(nodes[s].b), t)
+        self_lam = saved_sl
+        self_lam_name = saved_sn
+        if named_any: self_named_any.pop()
         nodes[s].b = i32(last_checked)
         if t != 0: nodes[s].b = i32(coerce(int(nodes[s].b), t))
         else:
@@ -3714,7 +3752,7 @@ check_build_block = ():
 want_cpu_flag = false           # (release builds for x86-64: the vectorizer may use __cpu_avx2)
 want_loop_watch = false         # (debug web builds: loops count down to __loop_watchdog)
 watch_build = false             # (built for `sloppy watch`: WATCH is true in the program)
-runtime_names = ["__alloc", "__free", "__panic", "__panic_bounds", "__panic_unwrap", "__free_obj", "__arr_clone", "__arr_push_slot",
+runtime_names = ["__alloc", "__free", "__panic", "__panic_bounds", "__panic_unwrap", "__panic_unwrap_in", "__free_obj", "__arr_clone", "__arr_push_slot",
     "__arr_reserve", "__arr_insert_slot", "__arr_remove_slot", "__arr_slice", "__arr_concat", "__str_concat", "__str_eq",
     "__str_cmp", "__str_slice", "__str_append", "__buf_finish", "__buf_append_str", "__arr_resize", "__arr_repeat", "__arr_filled",
     "__print_str", "__str_from_bytes", "__assert_fail", "__hash_bytes", "__str_hash", "__div_zero", "__rc_inc", "__rc_dec",
@@ -3844,6 +3882,12 @@ check_program = (main_path: str):
     # programs with update()/draw() run the game loop after main()
     has_upd = modules[mainm].names.get(intern("update")) != none
     has_drw = modules[mainm].names.get(intern("draw")) != none
+    # (update = (tree: mut int[], i: int, v: int), a segment tree's, in a program with no draw:
+    # a function of its own, not the game's, which takes the seconds since the last frame)
+    if has_upd and not has_drw:
+        us = modules[mainm].names[intern("update")]
+        ud = int(syms[us].decl)
+        if syms[us].kind == .fns and ud != 0 and nodes[ud].kind == .fn_ and nkids(ud) >= 2: has_upd = false
     # (two updates, as a Scratch project's scripts, one per sprite: only the first would run)
     loop gname in ["update", "draw", "main"]:
         first = 0
@@ -3866,6 +3910,7 @@ check_program = (main_path: str):
     # (the game ignores what update and draw give back: their last line is a statement, as
     # `world.step(dt)` or a mistaken `pos == pos + v`, which then gets its warning)
     loop gn in ["update", "draw"]:
+        if gn == "update" and not has_upd: continue
         if let gs = modules[mainm].names.get(intern(gn)):
             gd = int(syms[gs].decl)
             if syms[gs].kind == .fns and gd != 0 and nodes[gd].kind == .fn_ and nodes[gd].a == 0: add_flag(gd, NF_VOID)

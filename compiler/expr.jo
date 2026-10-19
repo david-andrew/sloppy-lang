@@ -660,7 +660,7 @@ check_place = (n: int, for_mut: bool):
         bt = prune(ntype(int(nodes[n].a)))
         bk = types[bt].kind
         if bk == .ptr: return
-        if bk == .str_: fatal(nodes[n].pos, "a string's characters cannot be changed in place: make a new string, `s = s[..i] + \"x\" + s[i + 1..]`, or change `cs = chars(s)` and `join(cs)` it back")
+        if bk == .str_: fatal(nodes[n].pos, "a string's characters cannot be changed in place: make a new string, `s = s[..i] + \"x\" + s[i + 1..]`, or change the bytes, `b = bytes(s)`, `b[i] = 'x'`, and make text of them again, `s = str_from_bytes(b)`")
         cp_inner += 1
         if bk == .vec or bk == .fixed:
             check_place(int(nodes[n].a), for_mut)
@@ -1065,6 +1065,8 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
             return -1
         return -1
     if pk == .int_ and char_code_ok(a, p): return 1
+    # (xs.index_of('#') with xs: u8[]: T is u8 already, and '#' its code)
+    if pk == .param and binds[int(types[p].id)] != 0 and tkind(binds[int(types[p].id)]) == .int_ and char_code_ok(a, prune(binds[int(types[p].id)])): return 1
     if pk == .enum_ and not has_var(p) and is_union(p) and not is_union(ntype(a)):
         # a member value passed for a union parameter
         if union_target(a, ntype(a), p) >= 0: return 1
@@ -1353,6 +1355,8 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                         last_err = "{type_str(ptx)} has no variant '{name_of(vn)}'{variant_hint_for(ptx, name_of(vn))}"
                     else: last_err = "argument '{name_of(pnames[fi])}' has the wrong type (expects {type_str(ptx)})"
                     last_err += uncalled_hint(a, ptx) + text_char_hint(a, ptx)
+                    # (map(int, words): Python's, the function first and a type as it)
+                    if nodes[a].type != 0 and tkind(ntype(a)) == .typeval and name_of(name) == "map" and fi == 0: last_err += " (the array comes first, then a function: `words.map((s): to_int(s)!)` reads numbers from text)"
                     last_err_plain = last_err
                     fnm = name_of(int(nodes[int(cd.decl)].name))
                     # (text("Score:", score, pos): Scratch's join, or Python's print, pieces in a row)
@@ -1663,6 +1667,27 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
     if partial: return finish_partial(n, fns[f].ptypes, int(cd.sig.mutmask), int(fns[f].ret))
     nodes[n].type = fns[f].ret
     int(fns[f].ret)
+
+# (the name a variable will have, not one already: a function's, as the library's count, gives way)
+self_name_free = (name: int) -> bool:
+    sy = lookup(name)
+    sy == 0 or syms[sy].kind == .fns or syms[sy].kind == .builtin
+
+# dfs(u + 1) inside dfs = (u: int): ...: the lambda calling itself, with the environment it has
+# (no variable holds it yet, and none captures it: no closure keeping itself alive)
+self_call = (n: int, f: int, args: int[]) -> int:
+    lam = int(fns[f].decl)
+    if args.len() != fns[f].ptypes.len(): fatal(nodes[n].pos, "{name_of(self_names[self_names.len() - 1])} takes {fns[f].ptypes.len()} argument(s), given {args.len()}")
+    loop i in 0.. and a in args:
+        if nodes[a].kind == .namedarg: fatal(nodes[a].pos, "named arguments are not allowed when a function calls itself this way")
+        finish_arg(a, fns[f].ptypes[i], has_flag(kid(lam, i), NF_MUT))
+    set_list(n, args)
+    nodes[n].a = 0
+    nodes[n].sym = i32(f)
+    nodes[n].aux = 9
+    r = int(ctxs[cx].ret)
+    nodes[n].type = i32(r)
+    r
 
 value_call = (n: int, callee: int, args: int[]) -> int:
     ft = prune(ntype(callee))
@@ -2155,6 +2180,8 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
             if lookup(intern(mn)) != 0: fatal(nodes[n].pos, "unknown function '{name_of(name)}' (it is {mn}'s: `{mn}.{name_of(name)}(...)`)")
         uh = unused_file_hint(name)
         if len(uh) > 0: fatal(nodes[n].pos, "unknown function '{name_of(name)}'{uh}")
+        # (dfs = (u): ... dfs(u + 1): calling itself, which needs its parameters' types)
+        if self_named_any.contains(name): fatal(nodes[n].pos, "unknown function '{name_of(name)}' (a function made inside another can call itself when every parameter has its type written: `{name_of(name)} = (u: int): ...`)")
         # (fetch(url) with no import: a function of a library module the program does not import)
         lms = lib_modules_with(name_of(name))
         if lms.len() > 0:
@@ -3063,6 +3090,8 @@ check_call = (n: int, expected: int) -> int:
             args[0] = last_checked
             set_kid(n, 0, args[0])
             if is_soa(at): return check_soa_method(n, args[0], int(nodes[callee].name), [], expected)
+        if self_names.len() > 0 and int(nodes[callee].name) == self_names[self_names.len() - 1] and int(ctxs[cx].inst) == self_insts[self_insts.len() - 1] and self_name_free(int(nodes[callee].name)):
+            return self_call(n, self_insts[self_insts.len() - 1], args)
         if not pos_in_lib(nodes[n].pos): habit_call_check(n, int(nodes[callee].name), args)
         r = call_by_name(n, int(nodes[callee].name), -1, args, expected, false)
         if has_flag(n, NF_CARET) and xor_meant(n, false): warn(nodes[n].pos, CARET_HINT)
@@ -4714,7 +4743,15 @@ check_lambda = (lam: int, expected: int) -> int:
     fns[f].ptypes = pts
     ret_hint = 0
     if et != 0: ret_hint = int(types[et].elem)
+    is_self = lam == self_lam and self_lam != 0
+    if is_self:
+        self_names.push(self_lam_name)
+        self_insts.push(f)
+        self_lam = 0
     check_lambda_body(f, lam, ret_hint)
+    if is_self:
+        self_names.pop()
+        self_insts.pop()
     zp: int[]
     loop t in fns[f].ptypes: zp.push(zonk(t))
     loop i in untyped:
@@ -5068,6 +5105,7 @@ check_expr = (n: int, expected: int) -> int:
         if ide_sentinel != 0 and nm == ide_sentinel: ide_complete_names()
         s = lookup(nm)
         if s == 0:
+            if self_names.contains(nm): fatal(nodes[n].pos, "unknown name '{name_of(nm)}' (inside itself it can be called, `{name_of(nm)}(...)`, not used as a value: it has no variable yet)")
             if ex != 0 and exk == .enum_:
                 loop v in variant_names(ex):
                     if v == nm: fatal(nodes[n].pos, "unknown name '{name_of(nm)}' (the {type_str(ex)} is written `.{name_of(nm)}`)")
