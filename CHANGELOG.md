@@ -4,6 +4,7 @@
 
 - Tuple patterns: `match (i % 3, i % 5): (0, 0): ... (0, _): ...`, each part a value, a range,
   `.variant` or `_`, tuples inside tuples too (it said "unsupported pattern for this type").
+  `"A" | "a":` in a match says an arm lists its values with commas.
 - `row = g[1]` at the top of a file, then `row[2] = 7`, with row read nowhere after, warns that
   row is a copy and g stays as it was, as it did inside a function.
 - `cnt[c - 'a']` with c a byte of text is worked out as an int where one is wanted: a character
