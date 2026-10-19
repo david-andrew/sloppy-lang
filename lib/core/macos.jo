@@ -106,6 +106,9 @@ when TARGET == "macos":
     @symbol("poll")
     extern __c_poll = (fds: int, n: i32, ms: i32) -> i32
     @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("select")
+    extern __c_select = (n: i32, r: *u8, w: *u8, e: *u8, tv: *u8) -> i32
+    @lib("/usr/lib/libSystem.B.dylib")
     @symbol("opendir")
     extern __c_opendir = (path: *u8) -> *u8
     @lib("/usr/lib/libSystem.B.dylib")
@@ -236,7 +239,7 @@ when TARGET == "macos":
         if n == 1: return __mac_r(__c_write(i32(a), b, c))
         if n == 2: return __mac_r(int(__c_open(a, i32(__mac_oflags(b)), 0, 0, 0, 0, 0, 0, c)))
         if n == 3: return __mac_r(int(__c_close(i32(a))))
-        if n == 7: return __mac_r(int(__c_poll(a, i32(b), i32(c))))
+        if n == 7: return __mac_poll(a, b, c)
         if n == 8: return __mac_r(__c_lseek(i32(a), b, i32(c)))
         if n == 9:
             fl = d & 0x13                                   # MAP_SHARED, MAP_PRIVATE, MAP_FIXED
@@ -298,6 +301,41 @@ when TARGET == "macos":
         # mremap, sched_getaffinity: what macOS lacks or does differently)
         if n == 16: return -25                              # ENOTTY
         -38                                                 # ENOSYS
+
+    # poll(), with select() for what it leaves out: macOS's poll does not take every device (it
+    # says POLLNVAL), where select waits for a terminal as for a socket
+    __mac_poll = (fds: int, n: int, ms: int) -> int:
+        r = __mac_r(int(__c_poll(fds, i32(n), i32(ms))))
+        if r <= 0: return r
+        p = fds as *int                                     # (struct pollfd: fd, events, revents)
+        nval = false
+        loop k in 0..n:
+            fd = int(i32(p[k] & 0xFFFFFFFF))
+            if (p[k] >> 48) & 0x20 != 0 and fd >= 0 and fd < 1024: nval = true
+        if not nval: return r
+        rs = fill(0, 16)                                    # (fd_sets of 1024 bits)
+        ws = fill(0, 16)
+        top = -1
+        loop k in 0..n:
+            fd = int(i32(p[k] & 0xFFFFFFFF))
+            if fd < 0 or fd >= 1024: continue
+            if (p[k] >> 32) & 1 != 0: rs[fd / 64] |= 1 << (fd % 64)
+            if (p[k] >> 32) & 4 != 0: ws[fd / 64] |= 1 << (fd % 64)
+            top = max(top, fd)
+        tv = [ms / 1000, (ms % 1000) * 1000]
+        tp: *u8 = null
+        if ms >= 0: tp = data(tv) as *u8
+        if __c_select(i32(top + 1), data(rs) as *u8, data(ws) as *u8, null, tp) < 0: return r
+        got = 0
+        loop k in 0..n:
+            fd = int(i32(p[k] & 0xFFFFFFFF))
+            if fd < 0 or fd >= 1024: continue
+            e = 0
+            if (rs[fd / 64] >> (fd % 64)) & 1 != 0: e |= 1
+            if (ws[fd / 64] >> (fd % 64)) & 1 != 0: e |= 4
+            p[k] = (p[k] & 0xFFFFFFFFFFFF) | (e << 48)
+            if e != 0: got += 1
+        got
 
     # (struct dirent: the name's length at 18, the name at 21)
     __mac_list_dir = (path: str) -> str[]:
