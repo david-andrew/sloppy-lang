@@ -10,6 +10,11 @@
 - Whole numbers written out whose sum, difference or product does not fit its type are an error
   (`BIG + 1` with `const BIG = 9223372036854775807`, `x: u8 = 200 + 100`), as is a shift of a
   number written out by 64 or more (`1 << 70`, which gave 64). Hex numbers are bits and may wrap.
+- Using what an in-place call gives back (`print(xs.sort_by(f))`, `y = xs.sort()`,
+  `xs.sort().map(f)`) says that it changes xs and gives nothing back, and names the copying
+  version (`sorted(xs)`); a function of the program's own says to end it with its value.
+- Windows REPL: a character beyond ASCII typed in the console is read once (its first byte
+  repeated). Hints for JavaScript's `shift`/`splice`, C++'s `erase` and others say `remove_at`.
 - `can_fullscreen()`: false in an iPhone's Safari, which has no fullscreen for a page.
 - Aces: on a phone the throttle is a slider; a Fullscreen button in the menu, and a Fullscreen
   switch in Settings.
