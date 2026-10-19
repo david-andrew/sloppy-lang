@@ -567,6 +567,66 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | a page that redraws only as things change | `redraw_on_input()`: frames only on input; `request_redraw()` while something animates |
 | `Number.isFinite`, `Infinity`, break_infinity.js | `is_finite(x)`, `INF` (floats reach about 1.8e308); past that, `use big`: `dust = big(1.5, 400)` |
 
+## Coming from React or Electron: desktop tools
+
+A tool is a program like a game: `draw` runs each frame and draws its boxes, each of which says
+what was done to it. There is no tree of components to keep in step with the data: the data is
+drawn as it is, every frame. Three lines make a window behave as a desktop program's:
+`screen_fit(.native)` (units are the desktop's pixels, and a wider window shows more, laid out
+from `visible_rect()`), `redraw_on_input()` (frames only when something happens, so an idle tool
+takes no CPU) and `on_quit` to save.
+
+```gdscript
+struct Note:
+    title: str
+    body: str
+
+window("Notes", 900, 600)
+screen_fit(.native)
+redraw_on_input()
+notes = load_value("notes", [Note("First", "")])
+at = 0
+query = ""
+
+on_quit = (): save_value("notes", notes)
+
+draw = ():
+    global at, query
+    clear(rgb(0.11, 0.12, 0.14))
+    if shortcut(.n):
+        notes.push(Note("Untitled", ""))
+        at = notes.len() - 1
+    if shortcut(.f): hud_focus("search")
+    v = visible_rect()
+    query = hud_text_field(Rect(10, 10, 220, 30), query, id = "search", hint = "Search")
+    y = 50.0
+    loop i in 0.. and n in notes:
+        if len(query) > 0 and find(lower(n.title), lower(query)) < 0: continue
+        if hud_button(Rect(10, y, 220, 32), n.title, selected = i == at, align = .left): at = i
+        y += 36.0
+    notes[at].title = hud_text_field(Rect(240, 10, v.w - 250, 30), notes[at].title, id = "title")
+    notes[at].body = hud_text_area(Rect(240, 50, v.w - 250, v.h - 60), notes[at].body, id = "body")
+```
+
+| React / Electron | Sloppy |
+|---|---|
+| `useState`, props, re-rendering | plain variables; `draw` shows them as they are each frame |
+| `<input value onChange>`, `<textarea>` | `name = hud_text_field(r, name)`, `body = hud_text_area(r, body)` |
+| `<button onClick>`, a checkbox, a range input | `if hud_button(r, "Save"): save()`, `on = hud_checkbox(r, "Sound", on)`, `v = hud_slider(r, v, 0, 1)` |
+| `autoFocus`, `ref.focus()`, Tab order, Enter | `hud_focus("search")`, Tab goes in drawing order, `hud_submitted()` |
+| a scrolling `<div>` | `off = hud_scroll(r, content_height, "list")`, then `clip(r)` ... `no_clip()` |
+| a modal dialog | `hud_panel(visible_rect(), rgba(0, 0, 0, 0.5))` then the dialog's boxes, drawn last |
+| drag and drop in a list | `claim_press()` when a row is pressed, then follow `mouse_pos()` |
+| CSS (theme, font size) | `hud_style.button = ...`, `hud_style.text_size = 18.0` |
+| `cursor: pointer` | `set_cursor(.hand)` (text fields show an I-beam themselves) |
+| keyboard shortcuts | `if shortcut(.s): save()` (Ctrl+S, Cmd+S on a Mac) |
+| `dialog.showOpenDialog`, a file `<input>`, drop events | `d = open_file_dialog(["csv"])`, then `file_dialog_result(d)` each frame; `dropped_files()` |
+| `fs.readFile`, `fs.writeFile` | `read_file(path)`, `write_file(path, s)`; in a page, `download_file(path)` to hand a file over |
+| `localStorage`, electron-store | `save_value("notes", notes)`, `load_value("notes", default)` (a file natively, the browser's storage in a page) |
+| `navigator.clipboard` | `clipboard()`, `set_clipboard(s)` (text fields do Ctrl+C/X/V themselves) |
+| `window.onbeforeunload` | `on_quit = (): ...` |
+| `requestAnimationFrame` | `draw` itself; with `redraw_on_input()`, `request_redraw()` or `redraw_after(s)` asks for a frame |
+
 ## Coming from Python
 
 | Python | Sloppy |
