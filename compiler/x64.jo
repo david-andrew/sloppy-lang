@@ -27,6 +27,7 @@ code: u8[]
 fn_addr: int[]            # lfunc index -> code offset (-1 = not yet)
 call_fix: (int, int)[]    # (position of rel32, lfunc)
 entry_end_lf = -1         # called by the entry after main (the runtime's __out_flush: what print left)
+entry_stack_lf = -1       # called by the entry first (the runtime's __main_stack: the main thread's stack)
 data_fix: (int, int, int)[]  # (position of rel32, kind 0=rodata 1=data, offset)
 int_arg_regs = [RDI, RSI, RDX, RCX, R8, R9]
 
@@ -1232,6 +1233,14 @@ emit_prologue = ():
             b32(frame_size)        # sub rsp, frame
         loop r in [0..16):
             if callee_off[r] != 0: mov_mr(RBP, callee_off[r], r)
+    # (Windows: a frame bigger than a page is touched a page at a time, from the top, before
+    # anything in it is used: the stack grows as its guard page is reached, which no access may
+    # jump over. After the prologue: its unwind codes are not moved.)
+    if target_windows:
+        off = 4096
+        loop off <= frame_size:
+            b(0x85); b(0x85); b32(-off)           # test [rbp - off], eax
+            off += 4096
     # incoming parameters
     ni = 0
     nf = 0
@@ -2683,6 +2692,13 @@ x64_entry = (inits: int[], main_lf: int) -> int:
         mov_imm(RDX, 0x6A6F74776174636B)
         mov_mr(RAX, 0, RDX)
         code[j - 1] = u8(code.len() - j)
+    if entry_stack_lf >= 0:
+        b(0xE8)
+        b32(0)
+        call_fix.push((code.len() - 4, entry_stack_lf))
+        b(0x48); b(0x85); b(0xC0)             # test rax, rax
+        b(0x74); b(3)                         # je over the move (the system's stack, then)
+        mov_rr(RSP, RAX)
     loop f in inits:
         b(0xE8)
         b32(0)

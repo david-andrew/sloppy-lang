@@ -2,7 +2,8 @@
 
 For a class of students who have not programmed before: how they can run it, programs that ask
 questions, an order to teach things in, the mistakes students make, and grading work with
-`sloppy test`.
+`sloppy test`. For a data structures course: lists, trees and graphs, and the library's sets,
+queues and heaps.
 
 ## Where students run it
 
@@ -73,6 +74,83 @@ test "0 is an F": assert(letter(0) == "F")
 did. The student's file runs its top-level code first, so ask students to put what asks
 questions in `main = (): ...`, which runs only when their program is run itself. For a program
 that prints, `run_shell("printf '90\\n' | sloppy grades.jo")` gives its output to check.
+
+## Data structures
+
+Values in Sloppy are copied, not shared (a variable holds its own list, as it holds its own
+number), and recursion goes deep: a native program's stack holds millions of calls. Both shape
+how a course's structures are written.
+
+**A linked list, a tree.** A struct can hold itself as an optional. Code that changes one
+recurses with a `mut` parameter, which is the field itself, so assigning it changes the
+structure:
+
+```gdscript
+struct Node:
+    value: int
+    next: Node?
+
+push_back = (n: mut Node?, v: int):
+    if n == none: n = Node(v)
+    else: push_back(n!.next, v)
+
+head: Node? = none
+loop v in [3, 1, 4]: push_back(head, v)
+print(head)                     # Node(value=3, next=Node(value=1, next=Node(value=4, next=none)))
+```
+
+A binary search tree's insert and delete go the same way ([the language](LANGUAGE.md#7-structs-unions-enums-optionals-tuples)
+has both). What students bring from Java or Python, a cursor walking the list
+(`cur = head!`, `loop let nx = cur.next: cur = nx`, then `cur.next = Node(v)`), changes only
+the cursor, which is a copy: reading through one is fine, changing goes through `mut`. A doubly
+linked list, parent links or a graph's edges point back at what holds them, which a value cannot
+do: keep the nodes in an array and link them by index (`next: int`, -1 for none), as the
+memory of a real machine does. That is also how to show what a pointer is.
+
+**Graphs** are adjacency lists, an array of arrays (`adj: int[][]`) or a map
+(`{str: str[]}`). A breadth-first search takes a `Deque` for its frontier and a `Set` for what
+it has seen; Dijkstra's algorithm keeps `(distance, node)` pairs in an array used as a heap, as
+Python's `heapq` does:
+
+```gdscript
+adj: (int, f64)[][] = [[(1, 4.0), (2, 1.0)], [(3, 1.0)], [(1, 2.0), (3, 5.0)], []]
+dist = fill(1e18, adj.len())
+dist[0] = 0.0
+pq = [(0.0, 0)]
+loop pq.len() > 0:
+    d, u = pq.heap_pop()                 # the nearest not yet done
+    if d > dist[u]: continue             # (an older, longer way to u)
+    loop e in adj[u]:
+        if d + e.1 < dist[e.0]:
+            dist[e.0] = d + e.1
+            pq.heap_push((dist[e.0], e.0))
+print(dist)                              # [0.0, 3.0, 1.0, 4.0]
+```
+
+**The library's structures:**
+
+| Python | Sloppy |
+|---|---|
+| `set()`, `set(xs)`, `x in s`, `s.add(x)` | `s: Set[int]`, `set(xs)`, `x in s`, `s.add(x)` (true when it was new), `union`, `intersection`, `difference` |
+| `collections.deque`, `append`, `popleft` | `q: Deque[int]`, `q.push(x)`, `q.pop_front()`, `push_front`, `pop` |
+| `heapq.heappush`, `heappop` | `pq.heap_push(x)`, `pq.heap_pop()` on an array; `Heap[T]` with a priority for each value |
+| `dict`, `d.get(k, 0)` | `{K: V}`, `d.get(k) ?? 0` (`d[k] += 1` starts a missing key at zero) |
+
+**How deep recursion goes.** A recursive function a million calls deep runs as it is (the main
+thread's stack is 1 GB, taken from the system only as it is used), so a recursive quicksort on
+sorted input or a depth-first search down a long path does not need rewriting. One that never
+stops is told as a stack overflow, with how deep it got and the function that called itself.
+Worker threads (`parallel_map`) and web pages (the playground) have small stacks, some 10,000
+calls in a browser: there a deep recursion becomes a loop with an array as its stack.
+
+**Asserts that explain.** In a grader, `assert(bubble_sort([3, 1, 2]) == [1, 2, 3])` says what
+the student's function gave when it fails, so a failing test is a hint, not only a mark:
+`assertion failed: bubble_sort([3, 1, 2]) == [1, 2, 3] (bubble_sort([3, 1, 2]) is [1, 3, 2])`.
+
+**A file of structures, used by others.** A file's top-level code runs when another brings it in
+with `use`, but its `main` does not (as Python's `if __name__ == "__main__":`), and its tests run
+only with `sloppy test` on it: a student's `linkedlist.jo` can keep its own tryouts in `main` and
+its tests beside the code.
 
 ## A simulation for a class
 

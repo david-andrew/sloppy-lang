@@ -40,8 +40,12 @@ TOPICS = [
     ("Data", "pool", "Pools and handles", ["std/pool"], "pool",
      "`Pool[T]` holds things that come and go (enemies, bullets), each found again by its `Handle`, which stays its own "
      "while others are removed (an array's index does not) and says so once its thing is gone."),
+    ("Data", "sets", "Sets and deques", ["std/set", "std/deque"], "sets",
+     "`Set[T]` holds values without repeats (`x in s` asks in about the same time however many it holds); "
+     "`Deque[T]` is a queue with two ends, pushed and popped at either in the same short time: a breadth-first search's frontier."),
     ("Data", "heap", "Priority queues", ["std/heap"], "heap",
-     "`Heap[T]` gives back what it holds smallest priority first: A*'s open list, events by time."),
+     "`Heap[T]` gives back what it holds smallest priority first: A*'s open list, events by time. `heap_push` and "
+     "`heap_pop` keep a plain array as a heap of values that order themselves, as Python's heapq does."),
     ("Data", "story", "Stories and dialogue", ["std/story"], "story",
      "A story's script, written as Ren'Py writes one (labels, lines, menus, variables), read into a `Story` the "
      "game steps through: it draws each line and choice its own way (a dialogue box, `text_rich`) and does each command."),
@@ -113,8 +117,10 @@ INTERNAL = {"core/rt", "core/fmt", "core/windows", "core/macos", "game/dl", "gam
 # what the compiler itself provides: (topic, section, name, signatures, what it does)
 BUILTINS = [
     ("builtins", "", "print", ["print(values...)"], "prints the values, separated by spaces, and a line break"),
-    ("builtins", "", "assert", ["assert(ok: bool, message: str = \"\")"], "stops the program (with the message, and where) if `ok` is false"),
+    ("builtins", "", "assert", ["assert(ok: bool, message: str = \"\")"], "stops the program (with the message, and where) if `ok` is false; with no message, a comparison says what its sides were: `assertion failed: total == 10 (total is 9)`"),
     ("builtins", "", "panic", ["panic(message: str)"], "stops the program, with the message and where each function on the way was called"),
+    ("builtins", "", "unwrap", ["unwrap(r) -> T"], "the value of an optional, or of a result that can be an error (`int | ParseError`); none or an error stops the program, saying which and where"),
+    ("builtins", "", "expect", ["expect(r, message: str) -> T"], "the same, saying the message first when it stops: `config = read_file(path).expect(\"the settings file\")`"),
     ("builtins", "", "fill", ["fill[T](x: T, n: int) -> T[]"], "an array of `n` copies of `x`"),
     ("builtins", "", "sqrt", ["sqrt(x: f64) -> f64", "sqrt(x: f32) -> f32"], "the square root"),
     ("builtins", "", "embed", ["embed(path: str) -> u8[]"], "a file's contents, read when the program is compiled and kept in it (the path is relative to the source file)"),

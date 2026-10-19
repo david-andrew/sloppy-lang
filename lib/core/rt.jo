@@ -65,6 +65,34 @@ __ts_lock = 0
 __main_sp = 0
 __c_threads = false             # (a @cabi function has been called: from then on, by stack)
 
+# The main thread runs on a stack of its own, far bigger than the system's 8 MB (some 90,000
+# calls of a small recursive function): 1 GB of address space, of which only the pages used are
+# taken, with 1 MB below it that is never readable, so that going past its end is a stack
+# overflow (lib/std/backtrace.jo) and not a write into whatever is mapped next. The entry point
+# calls this before anything else (so: no allocation, and globals have no values of their own
+# yet) and moves to the top it gives (0: it stays on the system's). Windows grows the stack its
+# header asks for (compiler/pe.jo); the web's is the browser's.
+const __MAIN_STACK = 1 << 30
+const __STACK_GUARD = 1 << 20
+__main_stack_lo = 0
+__main_stack_hi = 0
+
+__main_stack = () -> int:
+    when TARGET == "windows":
+        return 0
+    else when TARGET == "wasm":
+        return 0
+    else:
+        p = syscall(9, 0, __MAIN_STACK, 0, 0x22 | 0x4000, -1, 0)       # PROT_NONE, MAP_PRIVATE|ANON|NORESERVE
+        if p < 0 and p > -4096: return 0
+        if syscall(10, p + __STACK_GUARD, __MAIN_STACK - __STACK_GUARD, 3) != 0:   # the rest read|write
+            syscall(11, p, __MAIN_STACK)
+            return 0
+        syscall(28, p, __MAIN_STACK, 15)                                # MADV_NOHUGEPAGE (pages as used)
+        __main_stack_lo = p + __STACK_GUARD
+        __main_stack_hi = p + __MAIN_STACK
+        return __main_stack_hi
+
 __ts = () -> *int:
     if __tstate == null: __ts_init()
     if __c_threads: return __ts_by_stack()
@@ -79,14 +107,23 @@ __ts_by_stack = () -> *int:
         if __tstack_base != null and sp >= __tstack_base and sp < __tstack_base + (__MAX_THREADS << __TSTACK_SHIFT):
             return __tstate + (((sp - __tstack_base) >> __TSTACK_SHIFT) + 1) * __TS_WORDS
         a = sp as int
-        # (the main thread's stack: from where it was when the program began, down by up to 120 MB)
-        if a <= __main_sp + 65536 and a > __main_sp - (120 << 20): return __tstate
+        if __main_stack_hi != 0:
+            if a >= __main_stack_lo and a < __main_stack_hi: return __tstate
+        # (the main thread's stack, the system's: from where it was when the program began, down
+        # by up to 120 MB)
+        else if a <= __main_sp + 65536 and a > __main_sp - (120 << 20): return __tstate
         __ts_foreign
 
 __ts_init = ():
     __tstate = __os_pages((__MAX_THREADS + 2) * __TS_WORDS * 8) as *int
     __ts_foreign = __tstate + (__MAX_THREADS + 1) * __TS_WORDS
-    when TARGET != "wasm":
+    when TARGET == "windows":
+        lo = 0
+        hi = 0
+        GetCurrentThreadStackLimits(&lo, &hi)
+        __main_stack_lo = lo
+        __main_stack_hi = hi
+    else when TARGET != "wasm":
         __main_sp = __stack_ptr() as int
 
 # number of live heap allocations (useful for leak tests)

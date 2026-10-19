@@ -485,7 +485,6 @@ HABITS = ["index", "`find(s, x)` for text (-1 when it is not there), `index_of(x
     "memcpy", "`mem_copy(dst, src, n)`", "memmove", "`mem_copy(dst, src, n)`", "memset", "`fill(u8(0), n)` for a new array, or a loop",
     "tostring", "`str(x)`", "tonumber", "`to_int(s)` or `to_float(s)` (an optional: none when it is not a number)", "ipairs", "`loop i in 0.. and x in xs:`", "pairs", "`loop k, v in m:`",
     "math", "the plain functions: `floor(x)`, `sqrt(x)`, `random()`", "table", "an array (`T[]`) or a map (`\{K: V}`)", "require", "`import name` (a library module) or `use 'file.jo'`",
-    "set", "a map to `bool` (`\{str: bool}`) or `unique(xs)`", "Set", "a map to `bool` (`\{str: bool}`) or `unique(xs)`",
     "every", "`all(xs, f)`", "some", "`any(xs, f)`", "at", "`xs[i]` (the last: `xs[end]`)", "slice", "a slice: `xs[a..b]` (b left out)",
     "concat", "`xs + ys`", "splice", "`xs.insert(i, x)` or `xs.remove(i)`", "shift", "`xs.remove(0)`", "unshift", "`xs.insert(0, x)`",
     "flatMap", "`flatten(map(xs, f))`", "flat_map", "`flatten(map(xs, f))`", "findIndex", "`find_index(xs, f)`", "toFixed", "\"\{x:.2}\" (two decimals)",
@@ -892,7 +891,8 @@ register_decls = (m: int, decls: int[]):
                     else if py == "random" or py == "math": pym = ": `random()`, `random_int(lo, hi)`, `sqrt`, `floor`, `PI` are there without an import"
                     else if py == "pygame": pym = ": the game library is there without an import: `window(\"Title\", 800, 600)` at the top, then `update = (dt: f64):` and `draw = ():`, which the game calls each frame (docs/START.md, Coming from pygame)"
                     else if py == "csv": pym = ": `csv_rows(text)` is there without an import"
-                    else if py == "collections": pym = ": maps start missing keys at zero (`counts[w] += 1`); `sorted_by`, `unique`, `group_by`"
+                    else if py == "collections": pym = ": `Deque[T]` (push, pop_front...), `Set[T]`, and maps start missing keys at zero (`counts[w] += 1`); `sorted_by`, `unique`, `group_by`"
+                    else if py == "heapq": pym = ": `xs.heap_push(x)` and `xs.heap_pop()` work on an array as heapq's do (or `Heap[T]`, with priorities)"
                     else if py == "subprocess": pym = ": `run_program(\"ls\", [\"-l\"])` (its exit code and output)"
                     else if py == "argparse": pym = ": a struct of the options (`verbose = false`, `out = \"a.txt\"`, `files: str[]`), then `opts = parse_args[Options](\"what it does\")`"
                     else if py == "hashlib": pym = ": `sha256(text_or_bytes)` is there without an import (as hex digits)"
@@ -1922,6 +1922,16 @@ check_for = (s: int):
             check_expr(lv, 0)
             it = last_checked
             nodes[s].a = i32(it)
+        # (a Set's or a Deque's values: the loop goes over them as an array, lib/std/set.jo)
+        if types[t].kind == .struct_ and structs[int(types[t].st)].decl != 0 and pos_in_lib(nodes[int(structs[int(types[t].st)].decl)].pos):
+            snm = structs[int(types[t].st)].name
+            if snm == "Set" or snm == "Deque":
+                if is_mut: fatal(pos, "`loop mut` changes values in place, and a {snm}'s cannot be: loop over it, then change it (`add`, `remove`), or loop over an array")
+                add_flag(it, NF_CHECKED)
+                li = int(nodes[synth_call("__loop_items", [it], pos)].a)
+                t = prune(check_expr(li, 0))
+                it = last_checked
+                nodes[s].a = i32(it)
         k = types[t].kind
         if k == .range:
             l = new_local(n1, T_INT, pos)
@@ -2611,6 +2621,9 @@ check_stmt = (s: int):
             nodes[s] = nodes[r]
     else if k == .exprstmt:
         if has_flag(s, NF_CHECKED): return
+        if assert_values(s):
+            check_stmt(s)
+            return
         e = int(nodes[s].a)
         if repl_sig_query and nodes[e].kind == .ident:
             # (`:type name` at the REPL, for a function: its versions as written, with their notes)
@@ -2710,6 +2723,110 @@ check_stmt = (s: int):
     else if k == .fn_ or k == .struct_ or k == .enum_ or k == .import_: fatal(nodes[s].pos, "declarations are only allowed at the top level")
     else if k == .test_ or k == .build_: pass
     else: fatal(nodes[s].pos, "invalid statement")
+
+# assert(a == b), and the other comparisons: the values compared are kept, in variables of their
+# own (named as no program's can be), and told if it fails: "assertion failed: total == 10 (total
+# is 9)". The statement becomes a block: the variables, then assert with that message (made only
+# if it fails). Literals stay as they are: they are in the text already, and take their type
+# from the other side (x == 5 for a float x).
+assert_values = (s: int) -> bool:
+    e = int(nodes[s].a)
+    if nodes[e].kind != .call or nkids(e) != 1: return false
+    f = int(nodes[e].a)
+    if nodes[f].kind != .ident or name_of(int(nodes[f].name)) != "assert": return false
+    sy = lookup(int(nodes[f].name))
+    if sy == 0 or syms[sy].kind != .builtin: return false
+    c = kid(e, 0)
+    if nodes[c].kind != .binary or nodes[c].aux != 0: return false
+    op = nodes[c].op as Tok
+    ops = ["==", "!=", "<", "<=", ">", ">="]
+    oi = -1
+    loop j in 0.. and o in [Tok.eq, Tok.ne, Tok.lt, Tok.le, Tok.gt, Tok.ge]:
+        if o == op: oi = j
+    if oi < 0: return false
+    text = call_args_text(nodes[e].pos)
+    at = assert_op_at(text, ops[oi])
+    if at < 0 or len(text) > 200: return false
+    vnames = ["assert left", "assert right"]
+    texts = [trim(text[..at)), trim(text[at + len(ops[oi])..])]
+    stmts: int[]
+    parts: int[]
+    lead = "assertion failed: {text} ("
+    loop k in [0..2):
+        x = int(nodes[c].a)
+        if k == 1: x = int(nodes[c].b)
+        if assert_literal(x): continue
+        # (checked here: what cannot be kept in a variable is compared as it is)
+        tk = tkind(check_expr(x, 0))
+        x = last_checked
+        if k == 0: nodes[c].a = i32(x)
+        else: nodes[c].b = i32(x)
+        if tk == .void_ or tk == .fn_ or tk == .cfn or tk == .typeval or tk == .module or tk == .none_lit or tk == .null_ or tk == .var: continue
+        add_flag(x, NF_CHECKED)
+        nm = intern(vnames[k])
+        d = mk(.vardecl, nodes[x].pos)
+        nodes[d].name = i32(nm)
+        nodes[d].b = i32(x)
+        stmts.push(d)
+        id = mk(.ident, nodes[x].pos)
+        nodes[id].name = i32(nm)
+        if k == 0: nodes[c].a = i32(id)
+        else: nodes[c].b = i32(id)
+        parts.push(synth_str("{lead}{texts[k]} is ", nodes[x].pos))
+        id2 = mk(.ident, nodes[x].pos)
+        nodes[id2].name = i32(nm)
+        show = int(nodes[synth_call("__assert_show", [id2], nodes[x].pos)].a)
+        pr = mk(.pair, nodes[x].pos)
+        nodes[pr].a = i32(show)
+        nodes[pr].sval = -1
+        parts.push(pr)
+        lead = ", "
+    if stmts.len() == 0: return false
+    parts.push(synth_str(")", nodes[e].pos))
+    msg = mk(.str_lit, nodes[e].pos)
+    nodes[msg].aux = 1
+    set_list(msg, parts)
+    set_list(e, [c, msg])
+    st = mk(.exprstmt, nodes[s].pos)
+    nodes[st].a = i32(e)
+    stmts.push(st)
+    nodes[s] = Node(kind = .block, pos = nodes[s].pos)
+    set_list(s, stmts)
+    true
+
+# (a side of assert's comparison written out: a literal, none, .name, or brackets of them)
+assert_literal = (x: int) -> bool:
+    k = nodes[x].kind
+    if k == .int_lit or k == .float_lit or k == .bool_lit or k == .none_lit or k == .null_lit or k == .dotname: return true
+    if k == .array or k == .map_lit or k == .tuple or k == .matrix: return true
+    if k == .str_lit: return nodes[x].aux == 0
+    if k == .unary: return assert_literal(int(nodes[x].a))
+    if k == .binary: return assert_literal(int(nodes[x].a)) and assert_literal(int(nodes[x].b))
+    false
+
+# where the operator op is in text, outside brackets and quotes (-1: not there)
+assert_op_at = (text: str, op: str) -> int:
+    depth = 0
+    i = 0
+    n = len(text)
+    loop i < n:
+        ch = text[i]
+        if ch == '"' or ch == '\'':
+            i += 1
+            loop i < n and text[i] != ch:
+                if text[i] == '\\': i += 1
+                i += 1
+        else if ch == '(' or ch == '[' or ch == '\{': depth += 1
+        else if ch == ')' or ch == ']' or ch == '}': depth -= 1
+        else if depth == 0 and starts_with(text[i..], op):
+            # (< is not <= or <<, == is not part of !== ...)
+            nx = 0
+            if i + len(op) < n: nx = int(text[i + len(op)])
+            pv = 0
+            if i > 0: pv = int(text[i - 1])
+            if nx != '=' and nx != '<' and nx != '>' and pv != '<' and pv != '>' and pv != '=' and pv != '!': return i
+        i += 1
+    -1
 
 # (a generic instance's body: an error in the library's code is reported at the program's call)
 check_fn_body = (f: int):
@@ -3508,7 +3625,8 @@ runtime_names = ["__alloc", "__free", "__panic", "__panic_bounds", "__panic_unwr
     "__arr_reserve", "__arr_insert_slot", "__arr_remove_slot", "__arr_slice", "__arr_concat", "__str_concat", "__str_eq",
     "__str_cmp", "__str_slice", "__str_append", "__buf_finish", "__buf_append_str", "__arr_resize", "__arr_repeat", "__arr_filled",
     "__print_str", "__str_from_bytes", "__assert_fail", "__hash_bytes", "__str_hash", "__div_zero", "__rc_inc", "__rc_dec",
-    "__arr_extend", "__rc_dec_test", "__out_flush", "__end_flush", "__box_new", "__box_clone", "__box_defer", "__box_next"]
+    "__arr_extend", "__rc_dec_test", "__out_flush", "__end_flush", "__box_new", "__box_clone", "__box_defer", "__box_next",
+    "__main_stack"]
 optional_runtime = ["__c_str", "__mat4_mul", "__mat4_mul_vec4", "__fmt_i32", "__fmt_f32", "__ffi_resolve", "__panic_narrow", "__ffi_missing", "__mac_syscall"]
 runtime_insts: {str: int} = {}
 
