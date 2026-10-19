@@ -4961,7 +4961,8 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
   ```gdscript
   struct HttpReply:
       status: int             # the server's answer: 200 when all went well (404: no such page...);
-                              # 0 when there was none (why says why)
+                              # 0 when there was none (why says why; a redirect not followed, after
+                              # five, is given as it came, with a why too)
       data: u8[]              # what it sent ...
       text = ""               # ... as text
       headers: {str: str} = {}    # its headers, their names in small letters (one sent more than
@@ -4980,6 +4981,12 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass) -> int`: the same request, started: an id for fetch_result, which gives the answer once it has come. Nothing waits for it meanwhile (in a web page, the browser asks; its server must allow the page's site, CORS)
 - `fetch_result = (f: int) -> HttpReply?`: a fetch's answer (fetch_start's id), once it has come (status 0 when it failed: why says why); none while it is on its way. Given once: the fetch is done with after that
 - `fetch_cancel = (f: int)`: stop a fetch on its way (its answer is not given)
+- `fetch_all = (urls: str[], at_once: int = 8, retries: int = 2, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", done: (int, HttpReply) -> void = (i: int, r: HttpReply): pass) -> HttpReply[]`: many requests, at most at_once of them on their way at a time (Go's worker pool around http.Get, an errgroup with SetLimit): their answers, in the order of urls. One that fails (status 0: no answer, or none in `wait` seconds) or whose server is busy or broken (429, 500, 502, 503, 504) is asked again, `retries` more times at most, after half a second, then 1, 2, 4... (or after the Retry-After the server asks for, a minute at most), unless it is a POST or a PATCH (which may have been done: those are not asked again); the other options are fetch's, for each one. done(i, r) is called as each answer comes (r is that of urls[i]): for a program that shows how far it is, or goes on with each answer at once. A program that asks stopping() and is asked to stop (ctrl-c) gets the answers that came, the rest with status 0. (A program with more to do as they come, a game's frames or a server's requests, uses fetch_start and fetch_result itself, as this does)
+  ```gdscript
+  rs = net.fetch_all(urls, at_once = 16)
+  loop i in 0.. and r in rs:
+      if r.status != 200: eprint("{urls[i]}: {r.status} {r.why}")
+  ```
 
 ## HTTP servers
 

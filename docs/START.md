@@ -330,7 +330,21 @@ print("{repo.full_name}: {repo.stargazers_count} stars, {repo.description ?? "-"
   `https://example.com/a/b/x.html` is `https://example.com/a/c.html`), and `parse_url(s)` takes
   an address apart: `u.scheme`, `u.host`, `u.port` (-1 when not written), `u.path`, `u.query`,
   `u.fragment`, or a `UrlError`; `str(u)` puts it back together.
-- Fetches happen one at a time (`parallel_map` cannot run them); a loop over the addresses does.
+- Many at once: `net.fetch_all(urls, at_once = 8)` gives their answers in the order of `urls`,
+  with at most 8 on their way at a time (Go's worker pool, an errgroup with a limit). One that
+  failed, or found the server busy (429, 503...), is asked again, `retries = 2` more times, half a
+  second later, then a second...; `done = (i: int, r: net.HttpReply): ...` sees each answer as it
+  comes. (`parallel_map` does not run fetches: it shares out work for the processor's cores, and
+  a fetch is waiting.)
+
+  ```gdscript
+  import net
+
+  urls = [loop id in [1..50]: "https://api.example.com/items/{id}"]
+  rs = net.fetch_all(urls, at_once = 8, wait = 10.0)
+  loop i in 0.. and r in rs:
+      if r.status != 200: eprint("{urls[i]}: {r.status} {r.why}")
+  ```
 - `net.fetch` waits for the answer. `f = net.fetch_start(url)` (the same options) starts one and
   goes on; `net.fetch_result(f)` gives the `HttpReply` once it has come (none before): a game asks
   each frame, a server each time round its loop. Several can be on their way at once, and in a web

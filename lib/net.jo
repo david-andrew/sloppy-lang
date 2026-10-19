@@ -1281,7 +1281,8 @@ __net_ms = (end: f64) -> int: int(clamp(ceil((end - time()) * 1000.0), 0.0, 3600
 
 struct HttpReply:
     status: int             # the server's answer: 200 when all went well (404: no such page...);
-                            # 0 when there was none (why says why)
+                            # 0 when there was none (why says why; a redirect not followed, after
+                            # five, is given as it came, with a why too)
     data: u8[]              # what it sent ...
     text = ""               # ... as text
     headers: {str: str} = {}    # its headers, their names in small letters (one sent more than
@@ -1359,6 +1360,88 @@ fetch_cancel = (f: int):
         __fetch_close(i)
     __fetches.remove(i)
 
+# many requests, at most at_once of them on their way at a time (Go's worker pool around
+# http.Get, an errgroup with SetLimit): their answers, in the order of urls. One that fails
+# (status 0: no answer, or none in `wait` seconds) or whose server is busy or broken (429, 500,
+# 502, 503, 504) is asked again, `retries` more times at most, after half a second, then 1, 2,
+# 4... (or after the Retry-After the server asks for, a minute at most), unless it is a POST or a
+# PATCH (which may have been done: those are not asked again); the other options are fetch's,
+# for each one. done(i, r) is called as each answer comes (r is that of urls[i]): for a
+# program that shows how far it is, or goes on with each answer at once. A program that asks
+# stopping() and is asked to stop (ctrl-c) gets the answers that came, the rest with status 0.
+#   rs = net.fetch_all(urls, at_once = 16)
+#   loop i in 0.. and r in rs:
+#       if r.status != 200: eprint("{urls[i]}: {r.status} {r.why}")
+# (A program with more to do as they come, a game's frames or a server's requests, uses
+# fetch_start and fetch_result itself, as this does)
+@no_web("gives status 0 in a web page, which cannot wait for answers: net.fetch_start, then net.fetch_result each frame")
+fetch_all = (urls: str[], at_once: int = 8, retries: int = 2, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", done: (int, HttpReply) -> void = (i: int, r: HttpReply): pass) -> HttpReply[]:
+    out = fill(HttpReply(0, []), urls.len())
+    when TARGET == "wasm":
+        loop mut r in out: r.why = "a web page cannot wait for answers: net.fetch_start, then net.fetch_result each frame"
+        return out
+    else:
+        tries = fill(0, urls.len())
+        m = method.upper()
+        if m == "POST" or m == "PATCH": tries = fill(retries, urls.len())
+        ready = fill(0.0, urls.len())           # (when one asked again may start)
+        came = fill(false, urls.len())
+        next = 0                                # (the first not started yet)
+        later: int[]                            # (those to ask again, once their time comes)
+        ids: int[]                              # (the fetches on their way, and whose they are)
+        whose: int[]
+        left = urls.len()
+        loop left > 0:
+            if __stop_asked:
+                loop f in ids: fetch_cancel(f)
+                loop k in [0..urls.len()):
+                    if not came[k]: out[k].why = "not fetched: the program was asked to stop"
+                break
+            # (those asked again first, once their time has come, then the next ones)
+            now = time()
+            loop ids.len() < max(at_once, 1):
+                k = -1
+                loop j in [0..later.len()):
+                    if ready[later[j]] <= now:
+                        k = later[j]
+                        later.remove(j)
+                        break
+                if k < 0 and next < urls.len():
+                    k = next
+                    next += 1
+                if k < 0: break
+                ids.push(fetch_start(urls[k], wait, method, headers, body))
+                whose.push(k)
+            got = false
+            j = 0
+            loop j < ids.len():
+                if let r = fetch_result(ids[j]):
+                    k = whose[j]
+                    ids.remove(j)
+                    whose.remove(j)
+                    got = true
+                    if tries[k] < retries and (r.status == 0 or r.status == 429 or r.status == 500 or r.status >= 502 and r.status <= 504):
+                        pause = 0.5 * f64(1 << tries[k])
+                        if let ra = r.headers.get("retry-after"): pause = max(pause, f64(min(to_int(ra) ?? 0, 60)))
+                        tries[k] += 1
+                        ready[k] = time() + pause
+                        later.push(k)
+                    else:
+                        out[k] = r
+                        came[k] = true
+                        left -= 1
+                        done(k, r)
+                else: j += 1
+            if not got:
+                # (until an answer comes, or the time of one to ask again)
+                t = 1.0
+                if ids.len() < max(at_once, 1):
+                    loop k in later: t = min(t, ready[k] - time())
+                __fetch_all_wait(max(t, 0.0))
+        out
+
+__fetch_all_wait = (seconds: f64): wait(seconds)
+
 struct __Fetch:
     id: int
     url: str
@@ -1392,6 +1475,8 @@ struct __Fetch:
 
 __fetches: __Fetch[]
 __fetch_next = 1
+const __FETCH_HOPS = 5          # (redirects followed at most)
+const __FETCH_HEAD_MAX = 65536  # (an answer's status line and headers, in bytes at most)
 
 __fetch_index = (f: int) -> int:
     loop i in [0..__fetches.len()):
@@ -1597,8 +1682,17 @@ __fetch_take = (i: int, piece: u8[], closed: bool):
         __fetches[i].head.extend(piece)
         e = __find_crlf2(__fetches[i].head)
         if e < 0:
-            if closed: __fetch_fail(i, if __fetches[i].head.len() == 0: "the server closed the connection with no answer" else: "the server's answer is not HTTP")
-            else if __fetches[i].head.len() > 65536: __fetch_fail(i, "the server's answer is not HTTP")
+            # (headers that have not ended: an answer cut short, or too long, when they start as
+            # HTTP's do)
+            h = __fetches[i].head
+            http = h.len() >= 5 and h[0] == 'H' and h[1] == 'T' and h[2] == 'T' and h[3] == 'P' and h[4] == '/'
+            if closed:
+                if h.len() == 0: __fetch_fail(i, "the server closed the connection with no answer")
+                else if http: __fetch_fail(i, "the server's answer was cut short, in its headers")
+                else: __fetch_fail(i, "the server's answer is not HTTP")
+            else if h.len() > __FETCH_HEAD_MAX:
+                if http: __fetch_fail(i, "the server's headers are too large: over {__FETCH_HEAD_MAX / 1024} KB, the most net.fetch takes")
+                else: __fetch_fail(i, "the server's answer is not HTTP")
             return
         __fetches[i].head_end = e
         r = __http_head(str_from_bytes(__fetches[i].head[..e)))
@@ -1609,9 +1703,11 @@ __fetch_take = (i: int, piece: u8[], closed: bool):
         __fetches[i].st.chunked = (r.headers.get("transfer-encoding") ?? "").lower() == "chunked"
         __fetches[i].st.length = to_int(r.headers.get("content-length") ?? "") ?? -1
         # (a redirect: its body is not wanted)
-        if r.status in [301, 302, 303, 307, 308] and r.headers.has("location") and __fetches[i].hops < 5:
-            __fetch_redirect(i)
-            return
+        if r.status in [301, 302, 303, 307, 308] and r.headers.has("location"):
+            if __fetches[i].hops < __FETCH_HOPS:
+                __fetch_redirect(i)
+                return
+            __fetches[i].reply.why = "too many redirects (a loop?): {__FETCH_HOPS} followed, and this one to {__url_quoted(trim(r.headers["location"]))}"
         if method == "HEAD" or r.status == 204 or r.status == 304 or r.status < 200: __fetches[i].st.done = true
         else if len(__fetches[i].save_to) > 0 and r.status >= 200 and r.status < 300:
             if let f = create_file(__fetches[i].save_to):
@@ -1666,7 +1762,7 @@ __fetch_redirect = (i: int):
 # (why a fetch out of time failed: how far it came)
 __fetch_late = (i: int) -> str:
     f = __fetches[i]
-    if f.hops >= 5 and f.reply.status in [301, 302, 303, 307, 308]: return "it redirected too many times"
+    if f.hops >= __FETCH_HOPS and f.reply.status in [301, 302, 303, 307, 308]: return "too many redirects (a loop?): {__FETCH_HOPS} followed"
     if f.stage == 0: return "no machine named '{f.host}' was found in time"
     if f.stage == 1: return "no answer in time (connecting to {f.host})"
     if f.tls >= 0 and tls.__tls_status(f.tls) == 0: return "no answer to TLS's handshake in time"

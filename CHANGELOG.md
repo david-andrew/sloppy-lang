@@ -21,6 +21,15 @@
   fragment (an IPv6 host in `[ ]`, a bad port or a control character said), with `str(u)` to put
   it back together. `url_encode(s, safe = "/")` keeps the characters given. A redirect's
   `Location` is followed with url_join (`../` in it was kept).
+- `net.fetch_all(urls, at_once = 8, retries = 2, wait = 30.0, ...) -> HttpReply[]`: many
+  requests, at most `at_once` on their way at a time, the answers in the order of the URLs (Go's
+  worker pool, an errgroup with a limit). One that failed or found the server busy (status 0,
+  429, 500, 502-504) is asked again after half a second, then 1, 2... (or the server's
+  Retry-After), a POST or PATCH not; `done = (i, r): ...` sees each answer as it comes.
+- net.fetch: a redirect loop's answer (a 302 after five redirects) says "too many redirects (a
+  loop?)" in `why`, where it said nothing; headers over 64 KB say they are too large and what the
+  most is, and an answer cut short in its headers says so, where both said "the server's answer
+  is not HTTP".
 
 ## 0.25.0
 
