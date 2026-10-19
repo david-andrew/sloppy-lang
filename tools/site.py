@@ -22,7 +22,8 @@ LINKS = {"docs/TUTORIAL.md": "tutorial.html", "TUTORIAL.md": "tutorial.html",
          "docs/TUTORIAL_REBOUND.md": "tutorial-rebound.html", "TUTORIAL_REBOUND.md": "tutorial-rebound.html", "docs/TUTORIAL_BREAKWATER.md": "tutorial-breakwater.html", "TUTORIAL_BREAKWATER.md": "tutorial-breakwater.html", "docs/LANGUAGE.md": "language.html", "LANGUAGE.md": "language.html", "docs/API.md": "api.html",
          "API.md": "api.html", "docs/REPORT.md": "report.html", "REPORT.md": "report.html", "docs/START.md": "start.html",
          "START.md": "start.html", "docs/GRAPHICS.md": "graphics.html", "GRAPHICS.md": "graphics.html",
-         "docs/MULTIPLAYER.md": "multiplayer.html", "MULTIPLAYER.md": "multiplayer.html"}
+         "docs/MULTIPLAYER.md": "multiplayer.html", "MULTIPLAYER.md": "multiplayer.html",
+         "docs/CONTESTS.md": "contests.html", "CONTESTS.md": "contests.html"}
 
 # a table row's cells, as GitHub splits them: at each | that is not escaped (\|, which stands
 # for a | in the cell, code included)
@@ -375,6 +376,7 @@ DOCS = [("start.html", "docs/START.md", "Getting started", "Start"),
         ("api.html", "docs/API.md", "The library", "Reference"),
         ("graphics.html", "docs/GRAPHICS.md", "Graphics and the GPU", "Reference"),
         ("multiplayer.html", "docs/MULTIPLAYER.md", "Playing over a network", "Reference"),
+        ("contests.html", "docs/CONTESTS.md", "Contests and Advent of Code", "More"),
         ("report.html", "docs/REPORT.md", "Measured results", "More")]
 DOC_DESCRIPTIONS = {
     "start.html": "Install Sloppy, a simple game dev language, and write your first program and game.",

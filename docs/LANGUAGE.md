@@ -184,7 +184,10 @@ has `checked_add`, `checked_sub` and `checked_mul` (an optional, `none` on overf
 largest or smallest value) and `wrapping_add`, `_sub` and `_mul` (as the operators, said on
 purpose), for every integer type. A conversion that must not lose anything is
 `checked_cast[u8](x)` (`none` unless x is a value a `u8` has), and `saturating_cast[u8](x)` gives
-0 or 255 past the ends. `x ^ y` is
+0 or 255 past the ends. `gcd`, `lcm`, `isqrt`, `mul_mod`, `pow_mod` and `inv_mod` are exact for
+every int (`mul_mod(a, b, m)` for m up to 2^63, with the 128-bit product). There are no exact
+integers past 64 bits: `Big` (`use big`) is a float with a large exponent, about 15 digits
+([API.md](API.md#big-numbers)). `x ^ y` is
 `pow(x, y)` (right-associative and tighter than unary minus: `-2 ^ 2 == -4`). On integers it
 is an integer: a negative power truncates as `/` does (`2 ^ -1 == 0`), and it wraps on overflow
 (`2 ^ 64 == 0`); `2.0 ^ -1` is 0.5. C's xor is `xor`: a `^` that looks like one (on hex

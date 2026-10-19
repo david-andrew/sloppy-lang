@@ -209,6 +209,7 @@ pages and the playground.
 - [docs/START.md](docs/START.md) — getting started: installing, a first program and game, sharing it
 - [docs/LANGUAGE.md](docs/LANGUAGE.md) — the language
 - [docs/API.md](docs/API.md) — the library, by topic, each with an example (generated from `lib/` and `docs/api/`)
+- [docs/CONTESTS.md](docs/CONTESTS.md) — contests and Advent of Code: input, integers, containers, binary search, number theory
 - [docs/REPORT.md](docs/REPORT.md) — measured results for the design goals (`tools/report.py`)
 
 ## Repository layout

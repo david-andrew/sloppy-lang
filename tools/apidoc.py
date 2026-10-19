@@ -12,9 +12,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOPICS = [
     ("Basics", "builtins", "Built-in functions", [], "builtins",
      "Part of the language itself: printing, stopping with an error, and a few functions the compiler knows."),
-    ("Basics", "arrays", "Arrays", ["core/array"], "arrays",
+    ("Basics", "arrays", "Arrays", ["core/array", "std/algo"], "arrays",
      "`T[]` is a growable array. Arrays are values: assigning one or passing it to a function gives a copy "
-     "(shared until one of them changes). Functions can be called as `f(xs, y)` or `xs.f(y)`."),
+     "(shared until one of them changes). Functions can be called as `f(xs, y)` or `xs.f(y)`. "
+     "Binary search, orderings and choices (`lower_bound`, `next_permutation`, `combinations`): algo.jo below."),
     ("Basics", "strings", "Strings", ["core/str"], "strings",
      "`str` is text, in UTF-8. `\"{x}\"` puts a value in a string; `\"{x:.2}\"` rounds it to two decimals "
      "(more ways: [the language](LANGUAGE.md#2-lexical-structure)). Strings are values, like arrays."),
@@ -23,9 +24,11 @@ TOPICS = [
      "and `s.split(r)` use it. Raw strings (`r\"\\d+\"`) keep the backslashes as they are."),
     ("Basics", "maps", "Maps", ["core/map"], "maps",
      "`{K: V}` maps keys to values, in the order they were added."),
-    ("Basics", "math", "Math and random numbers", ["core/math", "std/checked"], "math",
+    ("Basics", "math", "Math and random numbers", ["core/math", "std/integer", "std/checked"], "math",
      "For vectors and matrices, see [colors, vectors and matrices](#colors-vectors-and-matrices). "
-     "`+`, `-` and `*` on integers wrap around; `checked_add` and the others below say when they would."),
+     "`int` is 64 bits: `gcd`, `isqrt`, `pow_mod` and the others in integer.jo are exact for all of them. "
+     "`+`, `-` and `*` on integers wrap around; `checked_add` and the others below say when they would. "
+     "Past 64 bits: [big numbers](#big-numbers) (a float with a large exponent, about 15 digits; there are no exact big integers)."),
     ("Basics", "system", "Files, time and the system", ["core/os", "std/path", "std/date", "std/cli", "std/stop"], "system",
      "In a web page, files are the ones the page was given, and `env` reads its address's parameters. "
      "What is at a web address: `net.fetch(url)`, after `import net` ([fetching from the web](START.md#fetching-from-the-web))."),

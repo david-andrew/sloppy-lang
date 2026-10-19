@@ -25,6 +25,32 @@
 - Messages: `x = none` for an `x: int` says to declare it `int?`; `s[i] = 98` on a string points
   to `bytes(s)` and `str_from_bytes`; `map(int, words)` says the array comes first; slices out of
   bounds show what was written (`0..10`, not `[0..9]`); `xs[..end)` no longer warns.
+- From a competitive programmer's pass (C++ and Python contests, Advent of Code):
+  - Number theory, exact for every int (lib/std/integer.jo): `gcd(a, b)`, `lcm(a, b)`,
+    `isqrt(n)` (exact past 2^52, where `int(sqrt(f64(n)))` is not), `mul_mod(a, b, m)` (with the
+    128-bit product: for m up to 2^63, where `a * b % m` overflows past about 3e9),
+    `pow_mod(b, e, m)` (a negative e is a power of the inverse) and `inv_mod(a, m)` (an `int?`:
+    none when there is no inverse); `u64` versions of gcd, lcm, mul_mod and pow_mod (moduli up to
+    2^64: Miller-Rabin for every 64-bit number). `to_u64(s)` and `to_u64(s, base)` parse up to
+    2^64 - 1.
+  - Searching sorted arrays and orderings (lib/std/algo.jo): `lower_bound(xs, x)` and
+    `upper_bound(xs, x)` (also as Python's `bisect_left` and `bisect_right`), `partition_point(xs,
+    f)`, `next_permutation(xs)` and `prev_permutation(xs)` (C++'s, in place), `permutations(xs)`,
+    `permutations(xs, k)` and `combinations(xs, k)` (in Python's order, all at once), and
+    `xs.reverse(start, end)` for a part of an array.
+  - `xs.join(" ")` for an array of any type: each element as print shows it (`[1 2 3].join(" ")`
+    was an error: join took only text).
+  - `eprint` takes what print takes: `eprint(5)`, `eprint("line", i, xs)` (it took one str).
+  - `Heap[T]` takes int priorities as well as f64s, and keeps their order exactly: past 2^53, where
+    neighboring ints are the same f64, they came out in the wrong order without a word.
+    `pop_with_int_priority` and `peek_int_priority` give one back exactly.
+  - `heapify(xs)`: an array made a heap in place, for `heap_pop`.
+  - docs/CONTESTS.md: reading the input, the integer facts, the containers (as C++ and Python
+    have them), recursion depth and an Advent of Code day with its example as a test. START.md's
+    "Coming from Python" has sets (it said "a map to bool"), deques, heaps, bisect, gcd and
+    pow(b, e, m); LANGUAGE.md and the library's math section say that there are no exact
+    integers past 64 bits (Big is a float with a large exponent).
+
 ## 0.24.0
 
 - Python's spellings for sorting by a key: `sorted(words, key = len)`, `xs.sort(key = (p):

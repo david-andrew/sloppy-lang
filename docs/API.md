@@ -59,7 +59,7 @@ if xs[2] != 7: panic("xs[2] changed")   # stop, with a message and where it happ
 
 ## Arrays
 
-`T[]` is a growable array. Arrays are values: assigning one or passing it to a function gives a copy (shared until one of them changes). Functions can be called as `f(xs, y)` or `xs.f(y)`.
+`T[]` is a growable array. Arrays are values: assigning one or passing it to a function gives a copy (shared until one of them changes). Functions can be called as `f(xs, y)` or `xs.f(y)`. Binary search, orderings and choices (`lower_bound`, `next_permutation`, `combinations`): algo.jo below.
 
 ```gdscript
 # example: arrays
@@ -79,6 +79,8 @@ loop i in 0.. and s in scores:           # an index and the elements together
 top = scores.pop()                       # take the last one off
 scores.insert(0, 1)                      # put one in at the front
 print(top, scores, scores.contains(12), scores.index_of(25))
+
+print(scores.lower_bound(25), scores.join(" "))   # (scores is sorted) where 25 goes; as text
 ```
 
 #### Built in
@@ -149,6 +151,34 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `sorted_by[T, K] = (xs: T[], key: (T) -> K, descending: bool = false) -> T[]`: a copy of xs sorted by a key
 - `sorted[T, K] = (xs: T[], key: (T) -> K, descending: bool = false) -> T[]`: a copy of xs sorted by a key, as Python's `sorted(words, key = len)` (sorted_by)
 - `sort[T, K] = (xs: mut T[], key: (T) -> K, descending: bool = false)`: sort in place by a key, as Python's `xs.sort(key = (p): p.age)` (sort_by)
+
+### algo.jo
+
+Searching sorted arrays, orderings and choices, as C++'s <algorithm> and Python's bisect and itertools have them:
+
+```gdscript
+xs = [1 3 3 5 8]
+lower_bound(xs, 3)           # 1: the first index whose element is not less than 3
+upper_bound(xs, 3)           # 3: the first index whose element is more than 3
+partition_point(xs, (x): x < 4)   # 3: the first index where the condition stops holding
+loop next_permutation(p):    # each ordering of p after the one it has, in sorted order
+combinations(xs, 2)          # every choice of 2, as arrays
+```
+
+The binary searches take time in proportion to the log of the length; the array must be sorted (as by sort()) for their answers to mean anything.
+
+- `lower_bound[T] = (xs: T[], x: T) -> int`: the first index i where xs[i] is not less than x (xs.len() when there is none): where x would go in the sorted array before the ones equal to it (C++'s lower_bound; Python's bisect_left)
+- `upper_bound[T] = (xs: T[], x: T) -> int`: the first index i where x is less than xs[i] (xs.len() when there is none): where x would go after the ones equal to it; upper_bound - lower_bound is how many equal x (C++'s upper_bound; Python's bisect_right)
+- `bisect_left[T] = (xs: T[], x: T) -> int`: Python's name for lower_bound
+- `bisect_right[T] = (xs: T[], x: T) -> int`: Python's name for upper_bound
+- `partition_point[T] = (xs: T[], f: (T) -> bool) -> int`: the first index where f is false, for an f that is true for the first elements and false for the rest (xs.len() when it is true for all): partition_point(xs, (p): p.age < 30) in people sorted by age (Rust's partition_point; C++'s with a condition)
+- `reverse[T] = (xs: mut T[], start: int, end: int)`: the elements from index start up to (not including) end reversed in place: xs[start..end] backwards (reverse(xs) turns the whole array)
+- `next_permutation[T] = (xs: mut T[]) -> bool`: the next ordering of xs in sorted order (by <), in place, and true; for the last one (largest first) xs goes back to the first (sorted) and it gives false. Starting from a sorted array, `loop next_permutation(p):` after a first look at p goes through each ordering once, equal elements not repeating any (C++'s next_permutation)
+- `prev_permutation[T] = (xs: mut T[]) -> bool`: the previous ordering of xs in sorted order, in place, and true; for the first one (sorted) xs goes to the last (largest first) and it gives false (C++'s prev_permutation)
+- `permutations[T] = (xs: T[]) -> T[][]`: every ordering of xs, each an array: n! of them (10 elements are 3.6 million arrays; to go through them without keeping them all, sort and loop on next_permutation). In the order of Python's itertools.permutations: by the positions taken, so equal elements give repeats
+- `permutations[T] = (xs: T[], k: int) -> T[][]`: every ordering of k of the elements of xs: n! / (n - k)! arrays of k (permutations([1 2 3], 2) is [[1, 2], [1, 3], [2, 1], [2, 3], [3, 1], [3, 2]])
+- `combinations[T] = (xs: T[], k: int) -> T[][]`: every choice of k of the elements of xs, each an array in the order they are in xs: n! / (k! (n - k)!) of them (combinations([1 2 3 4], 2) is [[1, 2], [1, 3], [1, 4], [2, 3], [2, 4], [3, 4]], as Python's itertools.combinations; 30 choose 15 is 155 million arrays: count first)
+- `join[T] = (xs: T[], sep: str = "") -> str`: the elements as text with sep between them, as print shows each: [1 2 3].join(" ") is "1 2 3" (an array of str joins as it is)
 
 ## Strings
 
@@ -346,7 +376,7 @@ Hash map {K: V}: insertion ordered, open addressing over a dense entry list. The
 
 ## Math and random numbers
 
-For vectors and matrices, see [colors, vectors and matrices](#colors-vectors-and-matrices). `+`, `-` and `*` on integers wrap around; `checked_add` and the others below say when they would.
+For vectors and matrices, see [colors, vectors and matrices](#colors-vectors-and-matrices). `int` is 64 bits: `gcd`, `isqrt`, `pow_mod` and the others in integer.jo are exact for all of them. `+`, `-` and `*` on integers wrap around; `checked_add` and the others below say when they would. Past 64 bits: [big numbers](#big-numbers) (a float with a large exponent, about 15 digits; there are no exact big integers).
 
 ```gdscript
 # example: math and random numbers
@@ -354,6 +384,7 @@ print(PI, sqrt(2.0), abs(-3), floor(2.7), round(2.5))
 print(min(3, 8), max(2.5, 1.0), clamp(15, 0, 10))
 print(sin(PI / 2.0), atan2(1.0, 1.0), degrees(PI), pow(2.0, 10.0))
 print(lerp(0.0, 100.0, 0.25), smoothstep(0.0, 1.0, 0.5), mod(-1, 3))
+print(gcd(12, 18), lcm(4, 6), isqrt(10 ^ 18), pow_mod(3, 10 ^ 18, 1_000_000_007), inv_mod(3, 7))
 print(checked_add(MAX_INT, 1), saturating_add(u8(250), 10), checked_cast[u8](300), wrapping_mul(u8(16), 16))
 
 seed_random(7)                           # the same numbers every run
@@ -488,6 +519,33 @@ Math basics.
 - `random_int = (lo: int, hi: int) -> int`: a random whole number from lo up to hi, hi left out (as in lo..hi): random_int(0, xs.len()) picks a position, and a die is random_int(1, 7)
 - `random_item[T] = (xs: T[]) -> T`: a random element of xs (which must not be empty)
 - `shuffle[T] = (xs: mut T[])`: put xs in a random order
+
+### integer.jo
+
+Number theory on whole numbers, as contests and puzzles want it: greatest common divisors, square roots and arithmetic modulo m, exact for every int (no float in between):
+
+```gdscript
+gcd(12, 18)                  # 6
+isqrt(10 ^ 18 - 1)           # 999999999
+pow_mod(3, 10 ^ 18, 1_000_000_007)
+inv_mod(2, 1_000_000_007)    # 500000004 (an optional: none when there is none)
+mul_mod(a, b, m)             # a * b mod m without overflow, for m up to 2^63
+```
+
+The results of the modulo functions are from 0 to m - 1, negative arguments too (as `mod(x, m)`; `%` keeps the sign of x). For integers past 64 bits, see Big (`use big`), which is a float with a large exponent: about 15 digits, not exact.
+
+- `gcd = (a: int, b: int) -> int`: the greatest common divisor, 0 or more (gcd(0, 0) is 0; gcd(-4, 6) is 2)
+- `gcd = (a: u64, b: u64) -> u64`
+- `lcm = (a: int, b: int) -> int`: the least common multiple, 0 or more (0 when either is 0; it wraps around when it does not fit, as `*` does)
+- `lcm = (a: u64, b: u64) -> u64`
+- `isqrt = (n: int) -> int`: the whole square root: the largest r with r * r <= n (isqrt(15) is 3), exact where int(sqrt(f64(n))) is not (past 2^52)
+- `mul_mod = (a: int, b: int, m: int) -> int`: a * b mod m, from 0 to m - 1, with the 128-bit product (a * b % m overflows once a * b passes 2^63, as it does for m past about 3e9)
+- `mul_mod = (a: u64, b: u64, m: u64) -> u64`
+- `pow_mod = (base: int, e: int, m: int) -> int`: base to the power e, mod m (from 0 to m - 1), in about log2(e) steps: pow_mod(2, 10 ^ 18, 1_000_000_007). A negative e is a power of base's inverse (pow_mod(2, -1, 7) is 4); without one it stops the program (inv_mod says whether there is one)
+- `pow_mod = (base: u64, e: u64, m: u64) -> u64`
+- `inv_mod = (a: int, m: int) -> int?`: the inverse of a mod m: the x from 0 to m - 1 with a * x mod m == 1, or none when a and m have a common divisor (inv_mod(3, 7) is 5; inv_mod(2, 4) is none). For a prime m it is also pow_mod(a, m - 2, m)
+- `to_u64 = (s: str) -> u64?`: parse a whole number from 0 to 2^64 - 1 (to_int stops at 2^63 - 1), as to_int does: decimal, or hex after 0x, binary after 0b, octal after 0o; _ may separate digits; none if it is not one, is negative or does not fit
+- `to_u64 = (s: str, base: int) -> u64?`: a whole number from 0 to 2^64 - 1 written in base 2 to 36 (to_u64("ffffffffffffffff", 16))
 
 ### checked.jo
 
@@ -671,7 +729,7 @@ Operating system access: files, arguments, environment, time.
 - `write = (s: str)`: print without a trailing newline
 - `flush_output = ()`: what print and write gave so far, written out now (output to a file or a pipe is collected and written in large pieces; to a terminal it goes at once anyway)
 - `is_terminal = () -> bool`: standard output is a terminal (not a file or a pipe)
-- `eprint = (s: str)`: print to standard error (for messages about the program, kept apart from its output), and a line break
+- `eprint = (s: str)`: print to standard error (for messages about the program, kept apart from its output), and a line break; it takes what print takes: eprint("bad line", i, xs)
 - `list_dir = (path: str) -> str[]`: names of the entries in a directory (excluding . and ..); [] for a file or a path that is not there too (is_dir tells them apart)
 - `exe_path = () -> str`: absolute path of the running executable (a script run with `sloppy tool.jo` is built into a cache first: its own path is args()[0])
 - `exec = (path: str, argv: str[]) -> bool`: replace the current process with another program (returns only on failure)
@@ -1280,7 +1338,7 @@ loop open.len() > 0:
     ...open.push(next, d + cost)
 ```
 
-(largest first: push with -priority.) Values that order themselves, as Python's heapq keeps them, need no Heap: `pq.heap_push((dist, node))` and `pq.heap_pop()` on an array keep the smallest at pq[0], tuples compared by their first element, then the next.
+Priorities are f64s, or ints: an int priority keeps its order exactly, past 2^53 too, where f64s of neighboring ints are equal (pop_with_int_priority gives one back exactly). (largest first: push with -priority.) Values that order themselves, as Python's heapq keeps them, need no Heap: `pq.heap_push((dist, node))` and `pq.heap_pop()` on an array keep the smallest at pq[0], tuples compared by their first element, then the next.
 
 - `struct Heap[T]`
   ```gdscript
@@ -1289,16 +1347,20 @@ loop open.len() > 0:
       keys: f64[]
   ```
 - `push[T] = (h: mut Heap[T], x: T, priority: f64)`: put x in with this priority
+- `push[T] = (h: mut Heap[T], x: T, priority: int)`: put x in with an int priority, kept exactly (an int past 2^53 is not, as an f64)
 - `pop[T] = (h: mut Heap[T]) -> T`: take out the value with the least priority (the heap must not be empty)
 - `pop_with_priority[T] = (h: mut Heap[T]) -> (T, f64)`: take out the value with the least priority, and give that priority too (the heap must not be empty)
+- `pop_with_int_priority[T] = (h: mut Heap[T]) -> (T, int)`: take out the value with the least priority, and give that priority as an int, exactly as pushed with an int (the heap must not be empty)
 - `peek[T] = (h: Heap[T]) -> T`: the value pop would take out (the heap must not be empty)
 - `peek_priority[T] = (h: Heap[T]) -> f64`: the least priority, the one of the value pop would take out (the heap must not be empty)
+- `peek_int_priority[T] = (h: Heap[T]) -> int`: the least priority as an int, exactly as pushed with an int (the heap must not be empty)
 - `len[T] = (h: Heap[T]) -> int`
 - `clear[T] = (h: mut Heap[T])`
 
 #### An array as a heap
 
 - `heap_push[T] = (xs: mut T[], x: T)`: put x in the array kept as a heap
+- `heapify[T] = (xs: mut T[])`: the array made a heap in place, in time in proportion to its length (Python's heapify): heap_pop then takes out its smallest
 - `heap_pop[T] = (xs: mut T[]) -> T`: take the smallest value out of the array kept as a heap (it must not be empty)
 
 ## Stories and dialogue
