@@ -285,7 +285,7 @@ if let m = "due 2026-10-14!".find(date): print(m.text, m.groups[0])   # 2026-10-
 "a, b;c".split(regex(r"[,;]\s*"))                       # ["a", "b", "c"]
 ```
 
-Patterns: . (any character but a line break) [abc] [a-z] [^0-9] \d \w \s (and \D \W \S) ^ $ \b \B, x* x+ x? x{2} x{2,} x{2,5} (and lazy x*? x+? x?? x{2,5}?), a|b, (group) (?:group), \ before any of .[]{}()*+?^$|\ for itself, \n \t \r; (?i) at the start ignores case (in ASCII). \w takes letters of any script ("Zürich" is one word). A pattern a user typed is checked first with regex_error(pattern) (regex(pattern) stops the program when it is wrong). Matching takes time in proportion to the text's length times the pattern's (it never backtracks without end), and works on characters (code points), not bytes.
+Patterns: . (any character but a line break) [abc] [a-z] [^0-9] \d \w \s (and \D \W \S) ^ $ \b \B, x* x+ x? x{2} x{2,} x{2,5} (and lazy x*? x+? x?? x{2,5}?), a|b, (group) (?:group), \ before any of .[]{}()*+?^$|\ for itself, \n \t \r; (?i) at the start ignores case (in ASCII). \w takes letters of any script ("Zürich" is one word). A pattern a user typed is checked first with regex_error(pattern) (regex(pattern) stops the program when it is wrong). Matching takes time in proportion to the text's length times the pattern's (it never backtracks without end), and works on characters (code points), not bytes. Make a Regex once and use it for every text: regex() reads and prepares the pattern each time. On a long text, a pattern without ^ $ \b \B is matched a character at a time by a table made as it goes (a DFA), a few nanoseconds a character.
 
 - `struct Regex`
   ```gdscript
@@ -295,8 +295,17 @@ Patterns: . (any character but a line break) [abc] [a-z] [^0-9] \d \w \s (and \D
       classes: __ReClass[]
       groups: int             # how many ( ) groups it has
       icase = false
-      first = -1              # (an ASCII character every match starts with, or -1: skipped to with memchr)
-      first_pc = -1           # (the instruction that reads every match's first character, or -1)
+      code: int[]
+      amap: int[]
+      crange: int[]
+      cstart: int[]
+      cneg: int[]
+      smap: int[]
+      start_wide = true
+      start_any = true
+      prefix = ""
+      dfa = false
+      rcode: int[]
   ```
 - `struct Match`: one match: where it is (byte offsets), its text, and the text of each ( ) group ("" for a group that took no part)
   ```gdscript
@@ -1038,19 +1047,46 @@ if sales is TextError: fail(sales.message)
 
 ### url.jo
 
-Text for the web: a URL's parts percent-encoded and back, query strings, cookies, and HTML's entities.
+Text for the web: URLs taken apart and links followed from a page, a URL's parts percent-encoded and back, query strings, cookies, and HTML's entities.
 
 ```gdscript
 url = "https://api.example.com/search?" + url_query({"q": "café au lait", "page": "2"})
 name = url_decode("caf%C3%A9")                        # café
+u = parse_url("https://example.com:8080/a/b?q=1")?   # u.host "example.com", u.port 8080
+next = url_join("https://example.com/a/b/page.html", "../c.html")   # https://example.com/a/c.html
 title = html_unescape("Tom &amp; Jerry &#8212; &lt;b&gt;")  # Tom & Jerry — <b>
 ```
 
-- `url_encode = (s: str) -> str`: text as a part of a URL (a query's value, a path's segment): every byte but letters, digits and - _ . ~ as %XX (a space as %20, é as %C3%A9), as Python's quote(s, safe="") writes it
+- `url_encode = (s: str, safe: str = "") -> str`: text as a part of a URL (a query's value, a path's segment): every byte but letters, digits and - _ . ~ as %XX (a space as %20, é as %C3%A9), as Python's quote(s, safe="") writes it; the characters in `safe` are kept too: url_encode("/a b/c", safe = "/") is "/a%20b/c" (a path)
 - `url_decode = (s: str, plus: bool = false) -> str`: percent-encoded text back as it was: %XX as that byte (a % without two hex digits stays as it is); with plus = true a + is a space too, as an HTML form's query writes one
 - `url_query[T] = (params: {str: T}) -> str`: a query string from names and values, each url_encoded: url_query({"q": "x y", "n": "5"}) is "q=x%20y&n=5" (what goes after the ? of a URL; Python's urlencode)
 - `parse_query = (q: str) -> {str: str}`: a query string's names and values, decoded: parse_query("q=x%20y&n=5") is {"q": "x y", "n": "5"} (what comes after the ? of a URL, or an HTML form's body; a name given twice: the last)
 - `parse_cookies = (header: str) -> {str: str}`: a Cookie header's names and values: parse_cookies("a=1; b=2") is {"a": "1", "b": "2"}
+- `struct Url`: a URL taken apart (parse_url), each part as written (its %XX kept: url_decode(u.path) for the text): https://ann@example.com:8080/a/b?q=1#top has scheme "https", user "ann", host "example.com", port 8080, path "/a/b", query "q=1" and fragment "top". The scheme and host are in small letters; an IPv6 host is without its [ ]. A part not written is "" (the port: -1). str(u) puts it back together.
+  ```gdscript
+  struct Url:
+      scheme = ""
+      user = ""                   # (before an @: a name, or name:password)
+      host = ""
+      port = -1
+      path = ""
+      query = ""                  # (after the ?, without it: parse_query(u.query) for its values)
+      fragment = ""               # (after the #, without it)
+  ```
+- `error struct UrlError`
+  ```gdscript
+  error struct UrlError:
+      message: str
+  ```
+- `parse_url = (s: str) -> Url \| UrlError`: a URL's parts, or what is wrong with it (a port that is not a number or is over 65535, a [ without its ], a control character such as a line break in it). Spaces and line breaks around it are left out. A URL with no scheme is a relative one ("/a/b?q=1", "../c": scheme and host "")
+  ```gdscript
+  u = parse_url("https://example.com:8443/search?q=sloppy")?
+  print(u.host, u.port, parse_query(u.query)["q"])      # example.com 8443 sloppy
+  ```
+- `url_join = (base: str, link: str) -> str`: a link (an href, a redirect's Location) as the URL it leads to from the page at base: "../c?x" from https://example.com/a/b/page.html is https://example.com/a/c?x. As RFC 3986 says (section 5.2: ./ and ../ taken out, a path from / on the same host, //host on the same scheme, a ?query or a #fragment on the same page), as Python's urljoin and Go's ResolveReference do. A link with its own scheme ("mailto:...", "https://...") is the link itself (with its ./ and ../ out); spaces and line breaks around it, and tabs and line breaks inside it (as in HTML written over lines), are left out.
+  ```gdscript
+  loop m in page.find_all(regex("href=\"([^\"]*)\"")): links.push(url_join(page_url, m.groups[0]))
+  ```
 - `html_unescape = (s: str) -> str`: HTML's entities as the characters they stand for: &amp; &lt; &gt; &quot; &#39; &nbsp;, the other named ones of Latin-1 and punctuation (&eacute; &copy; &mdash; &hellip; &euro;...), and numbers (&#233; &#xE9;); one it does not know stays as it is
 - `html_escape = (s: str) -> str`: text with & < > " ' as entities, to put inside HTML
 
@@ -4924,7 +4960,8 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
   ```gdscript
   struct HttpReply:
       status: int             # the server's answer: 200 when all went well (404: no such page...);
-                              # 0 when there was none (why says why)
+                              # 0 when there was none (why says why; a redirect not followed, after
+                              # five, is given as it came, with a why too)
       data: u8[]              # what it sent ...
       text = ""               # ... as text
       headers: {str: str} = {}    # its headers, their names in small letters (one sent more than
@@ -4943,6 +4980,12 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass) -> int`: the same request, started: an id for fetch_result, which gives the answer once it has come. Nothing waits for it meanwhile (in a web page, the browser asks; its server must allow the page's site, CORS)
 - `fetch_result = (f: int) -> HttpReply?`: a fetch's answer (fetch_start's id), once it has come (status 0 when it failed: why says why); none while it is on its way. Given once: the fetch is done with after that, and asking again stops the program (a mistake: keep the answer when it comes)
 - `fetch_cancel = (f: int)`: stop a fetch on its way (its answer is not given)
+- `fetch_all = (urls: str[], at_once: int = 8, retries: int = 2, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", done: (int, HttpReply) -> void = (i: int, r: HttpReply): pass) -> HttpReply[]`: many requests, at most at_once of them on their way at a time (Go's worker pool around http.Get, an errgroup with SetLimit): their answers, in the order of urls. One that fails (status 0: no answer, or none in `wait` seconds) or whose server is busy or broken (429, 500, 502, 503, 504) is asked again, `retries` more times at most, after half a second, then 1, 2, 4... (or after the Retry-After the server asks for, a minute at most), unless it is a POST or a PATCH (which may have been done: those are not asked again); the other options are fetch's, for each one. done(i, r) is called as each answer comes (r is that of urls[i]): for a program that shows how far it is, or goes on with each answer at once. A program that asks stopping() and is asked to stop (ctrl-c) gets the answers that came, the rest with status 0. (A program with more to do as they come, a game's frames or a server's requests, uses fetch_start and fetch_result itself, as this does)
+  ```gdscript
+  rs = net.fetch_all(urls, at_once = 16)
+  loop i in 0.. and r in rs:
+      if r.status != 200: eprint("{urls[i]}: {r.status} {r.why}")
+  ```
 
 ## HTTP servers
 
@@ -5003,7 +5046,21 @@ loop not stopping():
     net.wait(1.0)                           # until something comes (a request, a message)
 ```
 
-Requests are answered one at a time, in the order they come; a client slow to send or to read holds up no other (what waits to go out to it goes as it takes it). A handler that panics is answered 500 and the server goes on (the panic and its backtrace are written to standard error; what the handler had changed stays changed). Behind a proxy that has the certificate (Caddy: docs/START.md's "Writing a server"), the same program serves https. Native programs only.
+Requests are answered one at a time, in the order they come; a client slow to send or to read holds up no other (what waits to go out to it goes as it takes it). Handlers run one at a time too, on the program's one thread: they change the program's variables (a map of todos, a count) with no locks, as nothing else runs meanwhile. A handler that waits holds up the others: one that fetches from elsewhere starts it (net.fetch_start) and answers later, or keeps it short. A handler that panics is answered 500 and the server goes on (the panic and its backtrace are written to standard error; what the handler had changed stays changed). Behind a proxy that has the certificate (Caddy: docs/START.md's "Writing a server"), the same program serves https. Native programs only.
+
+Trying a server from the same program (a test, Go's httptest): a net.fetch to it would wait for an answer that never comes, the server's loop waiting too; start the fetch, and answer until it has come:
+
+```gdscript
+http.listen(18080, host = "127.0.0.1")
+ask = (path: str) -> net.HttpReply:
+    f = net.fetch_start("http://127.0.0.1:18080{path}", wait = 5.0)
+    loop true:
+        http.answer()
+        if let res = net.fetch_result(f): return res
+        net.wait(0.1)
+    net.HttpReply(0, [])
+assert(ask("/todos/1").status == 200)
+```
 
 - `struct Request`
   ```gdscript
@@ -5054,10 +5111,14 @@ Requests are answered one at a time, in the order they come; a client slow to se
 - `json_error = (code: int, message: str) -> Response`: an error for an API's client: {"error": message} as JSON
 - `redirect = (to0: str, status: int = 302) -> Response`: to another address (302: for now; 301: for good; 303: after a form's POST, a GET of it)
 - `file = (r: Request, path: str) -> Response`: a file, sent a piece at a time (a big one is never all in memory), with its type and what lets a browser keep a copy (as files() does); 404 when there is no such file
-- `read_json[T] = (r: Request, into: mut T) -> Response?`: the request's body, as JSON, into `into` (a struct, an array...: from_json's); none when it went well, else the answer to give (400, saying what is wrong with it):
+- `read_json[T] = (r: Request, into: mut T) -> Response?`: the request's body, as JSON, read into `into` (a struct, an array...: what from_json reads): none when it went well, else the answer to give (400, saying what is wrong with it), and `into` is as it was. The fields the body has are set, the others keep the values they had (a struct in it too, field by field; an array or a map in it is replaced), so the same reads a new one and changes one, a PATCH:
   ```gdscript
   t = TodoIn()
   if let bad = http.read_json(r, t): return bad
+  ...
+  t = todos[id]                                   # (PATCH /todos/:id with {"done": true})
+  if let bad = http.read_json(r, t): return bad
+  todos[id] = t                                   # (its title as it was)
   ```
 - `set_cookie = (res: mut Response, name: str, value: str, max_age: int = -1, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = "")`: a Set-Cookie on the answer: the client sends the cookie back with its requests from then on (r.cookies), for max_age seconds (-1: until the browser closes). http_only: not for the page's JavaScript; secure: over https only; same_site: "Lax", "Strict" or "None"
 - `clear_cookie = (res: mut Response, name: str, path: str = "/")`: a Set-Cookie that has the client forget a cookie

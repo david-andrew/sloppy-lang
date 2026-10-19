@@ -430,6 +430,60 @@ check("net.fetch over HTTP", r.stdout, [
     "two at once: 200 one two three, 200 slow answer"])
 port += 1
 env["NET_PORT"] = str(port)
+# net.fetch_all: many at once, at most at_once at a time (the server counts them), a 503 and a
+# 429 with Retry-After asked again, a refused connection given up after its retries; and what a
+# redirect loop and too large headers say
+class ManyHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    lock = threading.Lock()
+    now = most = flaky = ra = 0
+    def log_message(self, *a): pass
+    def reply(self, code, body, headers=()):
+        self.send_response(code)
+        for k, v in headers: self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def do_GET(self):
+        H = ManyHandler
+        if self.path.startswith("/n/"):
+            # (how many of these at once: counted before the answer goes, so that the client
+            # cannot ask /most while one is still counted)
+            with H.lock:
+                H.now += 1
+                H.most = max(H.most, H.now)
+            time.sleep(0.2)
+            with H.lock: H.now -= 1
+            self.reply(200, self.path[3:].encode())
+        elif self.path == "/flaky":
+            with H.lock: H.flaky += 1
+            if H.flaky <= 2: self.reply(503, b"busy")
+            else: self.reply(200, b"ok after %d" % H.flaky)
+        elif self.path == "/ra":
+            with H.lock: H.ra += 1
+            if H.ra == 1: self.reply(429, b"slow down", [("Retry-After", "1")])
+            else: self.reply(200, b"ok")
+        elif self.path == "/most": self.reply(200, str(H.most).encode())
+        elif self.path == "/loop": self.reply(302, b"", [("Location", "/loop")])
+        elif self.path == "/huge": self.reply(200, b"", [("X-Big", "y" * 200000)])
+        else: self.reply(404, b"no such page")
+port += 1
+httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), ManyHandler)
+threading.Thread(target=httpd.serve_forever, daemon=True).start()
+r = subprocess.run([build("http_fetch_all") + exe], capture_output=True, text=True, env=dict(env, NET_PORT=str(port)), timeout=60)
+httpd.shutdown()
+check("net.fetch_all, and a redirect loop's and too large headers' messages", r.stdout, [
+    "all: 16 0 1 2 3 4 5 6 7 8 9 10 11",
+    "flaky: 200 ok after 3",
+    "retry-after: 200 ok",
+    "404: 404 no such page",
+    "refused: 0 true",
+    "done: true",
+    "at once: 3",
+    "loop: 302 too many redirects (a loop?): 5 followed, and this one to /loop",
+    "huge: 0 the server's headers are too large: over 64 KB, the most net.fetch takes"])
+port += 1
+env["NET_PORT"] = str(port)
 
 # an HTTP server of lib/http.jo (tests/net/http_server.jo), spoken to as browsers and curl do:
 # routes, JSON, keep-alive and HTTP/1.0's close, HEAD, chunked bodies and 100-continue, a body too

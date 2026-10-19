@@ -1,15 +1,18 @@
-# Text for the web: a URL's parts percent-encoded and back, query strings, cookies, and HTML's
-# entities.
+# Text for the web: URLs taken apart and links followed from a page, a URL's parts
+# percent-encoded and back, query strings, cookies, and HTML's entities.
 #   url = "https://api.example.com/search?" + url_query({"q": "café au lait", "page": "2"})
 #   name = url_decode("caf%C3%A9")                        # café
+#   u = parse_url("https://example.com:8080/a/b?q=1")?   # u.host "example.com", u.port 8080
+#   next = url_join("https://example.com/a/b/page.html", "../c.html")   # https://example.com/a/c.html
 #   title = html_unescape("Tom &amp; Jerry &#8212; &lt;b&gt;")  # Tom & Jerry — <b>
 
 # text as a part of a URL (a query's value, a path's segment): every byte but letters, digits and
-# - _ . ~ as %XX (a space as %20, é as %C3%A9), as Python's quote(s, safe="") writes it
-url_encode = (s: str) -> str:
+# - _ . ~ as %XX (a space as %20, é as %C3%A9), as Python's quote(s, safe="") writes it; the
+# characters in `safe` are kept too: url_encode("/a b/c", safe = "/") is "/a%20b/c" (a path)
+url_encode = (s: str, safe: str = "") -> str:
     b: u8[]
     loop c in s:
-        if is_alnum(c) or c == '-' or c == '.' or c == '~': b.push(c)      # (is_alnum: _ too)
+        if is_alnum(c) or c == '-' or c == '.' or c == '~' or (len(safe) > 0 and find_byte(safe, c) >= 0): b.push(c)      # (is_alnum: _ too)
         else:
             b.push('%')
             b.push("0123456789ABCDEF"[int(c) >> 4])
@@ -61,6 +64,229 @@ parse_cookies = (header: str) -> {str: str}:
         if len(v) >= 2 and v[0] == '"' and v[len(v) - 1] == '"': v = v[1..len(v) - 1)
         out[trim(part[..k))] = v
     out
+
+# a URL taken apart (parse_url), each part as written (its %XX kept: url_decode(u.path) for the
+# text): https://ann@example.com:8080/a/b?q=1#top has scheme "https", user "ann", host
+# "example.com", port 8080, path "/a/b", query "q=1" and fragment "top". The scheme and host are
+# in small letters; an IPv6 host is without its [ ]. A part not written is "" (the port: -1).
+# str(u) puts it back together.
+struct Url:
+    scheme = ""
+    user = ""                   # (before an @: a name, or name:password)
+    host = ""
+    port = -1
+    path = ""
+    query = ""                  # (after the ?, without it: parse_query(u.query) for its values)
+    fragment = ""               # (after the #, without it)
+
+error struct UrlError:
+    message: str
+
+# a URL's parts, or what is wrong with it (a port that is not a number or is over 65535, a [
+# without its ], a control character such as a line break in it). Spaces and line breaks around
+# it are left out. A URL with no scheme is a relative one ("/a/b?q=1", "../c": scheme and host "")
+#   u = parse_url("https://example.com:8443/search?q=sloppy")?
+#   print(u.host, u.port, parse_query(u.query)["q"])      # example.com 8443 sloppy
+parse_url = (s: str) -> Url | UrlError:
+    t = trim(s)
+    loop c in t:
+        if c < 32 or c == 127: return UrlError("a URL cannot have a control character in it (byte {c}): {__url_quoted(t)}")
+    p = __url_split(t)
+    u = Url(p.scheme, path = p.path, query = p.query, fragment = p.frag)
+    if not p.has_auth: return u
+    hp = p.auth
+    at = __url_last(hp, '@')
+    if at >= 0:
+        u.user = hp[..at)
+        hp = hp[at + 1..]
+    port = ""
+    if starts_with(hp, "["):
+        e = find(hp, "]")
+        if e < 0: return UrlError("a [ (an IPv6 address) without its ] in {__url_quoted(t)}")
+        u.host = hp[1..e)
+        rest = hp[e + 1..]
+        if len(rest) > 0:
+            if rest[0] != ':': return UrlError("'{rest}' after the ] of the host in {__url_quoted(t)}")
+            port = rest[1..]
+    else:
+        c = __url_last(hp, ':')
+        if c >= 0:
+            port = hp[c + 1..]
+            hp = hp[..c)
+        u.host = hp
+    u.host = lower(u.host)
+    if len(port) > 0:
+        loop c in port:
+            if not is_digit(c): return UrlError("the port '{port}' is not a number, in {__url_quoted(t)}")
+        if len(port) > 5 or to_int(port)! > 65535: return UrlError("the port {port} is over 65535, in {__url_quoted(t)}")
+        u.port = to_int(port)!
+    u
+
+# (the URL again, as text: str(u), print(u) and "{u}" show it so)
+__url_text = (u: Url) -> str:
+    b: u8[]
+    if len(u.scheme) > 0:
+        __buf_append_str(b, u.scheme)
+        b.push(':')
+    auth = len(u.host) > 0 or len(u.user) > 0 or u.port >= 0
+    if auth or u.scheme == "file" and starts_with(u.path, "/"):
+        __buf_append_str(b, "//")
+        if len(u.user) > 0:
+            __buf_append_str(b, u.user)
+            b.push('@')
+        if find_byte(u.host, ':') >= 0:
+            b.push('[')
+            __buf_append_str(b, u.host)
+            b.push(']')
+        else: __buf_append_str(b, u.host)
+        if u.port >= 0: __buf_append_str(b, ":{u.port}")
+        if auth and len(u.path) > 0 and u.path[0] != '/': b.push('/')
+    __buf_append_str(b, u.path)
+    if len(u.query) > 0:
+        b.push('?')
+        __buf_append_str(b, u.query)
+    if len(u.fragment) > 0:
+        b.push('#')
+        __buf_append_str(b, u.fragment)
+    str_from_bytes(b)
+
+__fmt = (buf: mut u8[], u: Url):
+    if __text_exact: __fmt_fields(buf, u)
+    else: __buf_append_str(buf, __url_text(u))
+
+# a link (an href, a redirect's Location) as the URL it leads to from the page at base: "../c?x"
+# from https://example.com/a/b/page.html is https://example.com/a/c?x. As RFC 3986 says (section
+# 5.2: ./ and ../ taken out, a path from / on the same host, //host on the same scheme, a ?query
+# or a #fragment on the same page), as Python's urljoin and Go's ResolveReference do. A link with
+# its own scheme ("mailto:...", "https://...") is the link itself (with its ./ and ../ out);
+# spaces and line breaks around it, and tabs and line breaks inside it (as in HTML written over
+# lines), are left out.
+#   loop m in page.find_all(regex("href=\"([^\"]*)\"")): links.push(url_join(page_url, m.groups[0]))
+url_join = (base: str, link: str) -> str:
+    r = __url_split(__url_clean(link))
+    if len(r.scheme) > 0:
+        r.path = __url_dots(r.path)
+        return __url_unsplit(r)
+    b = __url_split(__url_clean(base))
+    t = r
+    t.scheme = b.scheme
+    if not r.has_auth:
+        t.has_auth = b.has_auth
+        t.auth = b.auth
+        if len(r.path) == 0:
+            t.path = b.path
+            if not r.has_query:
+                t.has_query = b.has_query
+                t.query = b.query
+        else if r.path[0] == '/': t.path = __url_dots(r.path)
+        else:
+            # (the base's path up to its last /, then the link's)
+            k = __url_last(b.path, '/')
+            if b.has_auth and len(b.path) == 0: t.path = __url_dots("/" + r.path)
+            else: t.path = __url_dots(b.path[..k + 1) + r.path)
+    else: t.path = __url_dots(r.path)
+    __url_unsplit(t)
+
+# (the parts as RFC 3986 splits them, where an empty authority, query or fragment is told from
+# none: "http://a/b?" has an empty query)
+struct __UrlParts:
+    scheme = ""
+    has_auth = false
+    auth = ""
+    path = ""
+    has_query = false
+    query = ""
+    has_frag = false
+    frag = ""
+
+__url_split = (s: str) -> __UrlParts:
+    p = __UrlParts()
+    rest = s
+    # (a scheme: a letter, then letters, digits, + - and ., before a :)
+    i = 0
+    loop i < len(rest) and (is_alnum(rest[i]) and rest[i] != '_' or (i > 0 and (rest[i] == '+' or rest[i] == '-' or rest[i] == '.'))): i += 1
+    if i > 0 and i < len(rest) and rest[i] == ':' and is_alpha(rest[0]) and rest[0] != '_':
+        p.scheme = lower(rest[..i))
+        rest = rest[i + 1..]
+    h = find_byte(rest, '#')
+    if h >= 0:
+        p.has_frag = true
+        p.frag = rest[h + 1..]
+        rest = rest[..h)
+    q = find_byte(rest, '?')
+    if q >= 0:
+        p.has_query = true
+        p.query = rest[q + 1..]
+        rest = rest[..q)
+    if starts_with(rest, "//"):
+        p.has_auth = true
+        e = find_byte(rest, '/', 2)
+        if e < 0: e = len(rest)
+        p.auth = rest[2..e)
+        rest = rest[e..]
+    p.path = rest
+    p
+
+__url_unsplit = (p: __UrlParts) -> str:
+    b: u8[]
+    if len(p.scheme) > 0:
+        __buf_append_str(b, p.scheme)
+        b.push(':')
+    if p.has_auth:
+        __buf_append_str(b, "//")
+        __buf_append_str(b, p.auth)
+    __buf_append_str(b, p.path)
+    if p.has_query:
+        b.push('?')
+        __buf_append_str(b, p.query)
+    if p.has_frag:
+        b.push('#')
+        __buf_append_str(b, p.frag)
+    str_from_bytes(b)
+
+# (a path with its . and .. segments taken out: RFC 3986's remove_dot_segments; /a/b/../c is /a/c)
+__url_dots = (path: str) -> str:
+    if find(path, ".") < 0: return path
+    segs: str[]
+    abs = starts_with(path, "/")
+    parts = split(path, "/")
+    if abs: parts = parts[1..]
+    loop i in 0.. and seg in parts:
+        last = i == parts.len() - 1
+        if seg == ".":
+            if last: segs.push("")
+        else if seg == "..":
+            if segs.len() > 0: segs.pop()
+            if last: segs.push("")
+        else: segs.push(seg)
+    out = join(segs, "/")
+    if abs: return "/" + out
+    out
+
+# (text from a page as a link: spaces and line breaks around it, and tabs and line breaks in it, out)
+__url_clean = (s: str) -> str:
+    t = trim(s)
+    if find_byte(t, '\t') < 0 and find_byte(t, '\n') < 0 and find_byte(t, '\r') < 0: return t
+    b: u8[]
+    loop c in t:
+        if c != '\t' and c != '\n' and c != '\r': b.push(c)
+    str_from_bytes(b)
+
+__url_last = (s: str, c: u8) -> int:
+    i = len(s) - 1
+    loop i >= 0 and s[i] != c: i -= 1
+    i
+
+# (a URL in a message: its control characters written as escapes, so a line break cannot start a
+# line of its own)
+__url_quoted = (s: str) -> str:
+    b: u8[]
+    loop c in s:
+        if c == '\n': __buf_append_str(b, "\\n")
+        else if c == '\r': __buf_append_str(b, "\\r")
+        else if c < 32 or c == 127: __buf_append_str(b, "\\x{int(c):02x}")
+        else: b.push(c)
+    str_from_bytes(b)
 
 # HTML's entities as the characters they stand for: &amp; &lt; &gt; &quot; &#39; &nbsp;, the other
 # named ones of Latin-1 and punctuation (&eacute; &copy; &mdash; &hellip; &euro;...), and numbers

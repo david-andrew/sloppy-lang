@@ -242,8 +242,8 @@ the file calls it).
 # count.jo: lines and words in files, largest first
 
 struct Options:
-    words = false               # --words, or -w: count words too
-    top = 0                     # --top 5: only the largest five (0: all)
+    words = false               # count words too
+    top = 0                     # only the largest n (0: all)
     files: str[]                # the arguments that are not options
 
 main = () -> int:
@@ -274,8 +274,9 @@ With the first line `#!/usr/bin/env sloppy` and `chmod +x count.jo`, it runs as
 `./count.jo -w --top 3 *.txt` (on Linux and macOS). Everything after the file's name goes to the
 script, `--release` too; `args()[0]` is the script's own path (`exe_path()` is where its build
 is kept). `parse_args` reads the options into the struct: a `bool` field is a flag, others take
-a value, the last list field gets the other arguments, and `--help` lists them all; a mistake
-(`--top many`) is said with that help, and exit code 2.
+a value, the last list field gets the other arguments, and `--help` lists them all, each beside
+its field's comment (`-w, --words   count words too`: the comment need not name the option); a
+mistake (`--top many`) is said with that help, and exit code 2.
 
 - `run_program("make", ["-j8"], show = true)` shows a program's output as it runs;
   without `show`, it is returned as text. `cwd = "build"` runs it in another directory.
@@ -326,7 +327,25 @@ print("{repo.full_name}: {repo.stargazers_count} stars, {repo.description ?? "-"
 - `url_query({"q": "café au lait", "page": "2"})` makes a query (`q=caf%C3%A9%20au%20lait&page=2`),
   `url_encode(s)` and `url_decode(s)` one part of an address, and `html_unescape(s)` turns
   `&amp;` and `&#233;` back into `&` and `é`.
-- Fetches happen one at a time (`parallel_map` cannot run them); a loop over the addresses does.
+- `url_join(page, href)` is where a link on a page leads (`../c.html` from
+  `https://example.com/a/b/x.html` is `https://example.com/a/c.html`), and `parse_url(s)` takes
+  an address apart: `u.scheme`, `u.host`, `u.port` (-1 when not written), `u.path`, `u.query`,
+  `u.fragment`, or a `UrlError`; `str(u)` puts it back together.
+- Many at once: `net.fetch_all(urls, at_once = 8)` gives their answers in the order of `urls`,
+  with at most 8 on their way at a time (Go's worker pool, an errgroup with a limit). One that
+  failed, or found the server busy (429, 503...), is asked again, `retries = 2` more times, half a
+  second later, then a second...; `done = (i: int, r: net.HttpReply): ...` sees each answer as it
+  comes. (`parallel_map` does not run fetches: it shares out work for the processor's cores, and
+  a fetch is waiting.)
+
+  ```gdscript
+  import net
+
+  urls = [loop id in [1..50]: "https://api.example.com/items/{id}"]
+  rs = net.fetch_all(urls, at_once = 8, wait = 10.0)
+  loop i in 0.. and r in rs:
+      if r.status != 200: eprint("{urls[i]}: {r.status} {r.why}")
+  ```
 - `net.fetch` waits for the answer. `f = net.fetch_start(url)` (the same options) starts one and
   goes on; `net.fetch_result(f)` gives the `HttpReply` once it has come (none before): a game asks
   each frame, a server each time round its loop. Several can be on their way at once, and in a web
@@ -383,10 +402,28 @@ on_quit = (): write_file("todos.json", to_json(todos))
   (a 300 MB one is never in memory), and a handler that panics is answered 500 while the server
   goes on (the panic is on standard error). Bodies over 1 MB are refused (`largest = ...` takes
   more).
+- Handlers run one at a time, on the program's one thread, so they change its variables (`todos`
+  above) with no locks: nothing else runs meanwhile. A handler that waits (a `net.fetch`) holds up
+  the others.
+- `http.read_json(r, t)` sets the fields the body has and keeps the others as they were, so a
+  PATCH is `t = todos[i]`, `if let bad = http.read_json(r, t): return bad`, `todos[i] = t`; a body
+  that does not read leaves `t` as it was.
 - A program that does more than answer (a game hosting, a job that fetches, WebSockets) answers in
   its own loop: `http.listen(8080)`, then `loop not stopping():` with `http.answer()`, its other
   work (`net.receive()`, `net.fetch_result(f)`), and `net.wait(1.0)`, which sleeps until something
   comes, a request or a message, rather than a fixed time.
+- To try the server from the same program (a test), a `net.fetch` to it would wait forever (the
+  server waits too); start the fetch and answer until it has come:
+
+  ```gdscript
+  ask = (path: str) -> net.HttpReply:
+      f = net.fetch_start("http://127.0.0.1:8080{path}")
+      loop true:
+          http.answer()
+          if let res = net.fetch_result(f): return res
+          net.wait(0.1)
+      net.HttpReply(0, [])
+  ```
 - WebSockets on the same port: a route answers `http.websocket(r)` (after checking
   `r.headers.get("origin")` or a cookie), and the connection is a peer of `net`'s from then on
   (`net.receive()`, `net.send`, `net.handshake(peer)` for its path and cookies). Server-sent
@@ -545,6 +582,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `requests.get(url)`, `urllib.request.urlopen(url)` | `import net`, then `r = net.fetch(url)`: `r.status`, `r.text`, and `from_json[T](r.text)` ([fetching from the web](#fetching-from-the-web)) |
 | `requests.post(url, json=d, headers=h)` | `net.fetch(url, method = "POST", body = to_json(d), headers = h)` |
 | `urllib.parse.quote(s)`, `urlencode(d)`, `html.unescape(s)` | `url_encode(s)`, `url_query(d)`, `html_unescape(s)` |
+| `urljoin(base, link)`, `urlsplit(url)` | `url_join(base, link)`, `parse_url(url)` (`u.host`, `u.port`, `u.path`...) |
 | `s[:4]`, `f"{s:.4}"` | `first(s, 4)` or `"{s:.4}"` (characters; `s[..4]` counts bytes, and can cut an `é` in two) |
 | `re.search(r"\d+", s)` | `s.find(regex(r"\d+"))` (a `Match?`: `m.text`, `m.groups`) |
 | `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero when changed (`counts[w] += 1`, `groups[k].push(x)`); reading one, `m[k]`, is an error: `m.get(k) ?? 0` |
@@ -564,6 +602,41 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 
 For contests and Advent of Code (reading all the input at once, the containers, binary search,
 number theory): [Contests and Advent of Code](CONTESTS.md).
+
+## Coming from Go
+
+Sloppy programs run on one thread, with two ways to do more at once: waiting on many things
+(fetches, connections, requests) from that thread, and sharing out work for the processor's
+cores with `parallel_map`, whose functions the compiler checks for data races.
+
+| Go | Sloppy |
+|---|---|
+| `go run main.go`, `go build` | `sloppy main.jo`, `sloppy build main.jo` (`--release` for faster code) |
+| goroutines and channels for I/O: `go fetch(url)`, results on a channel | `f = net.fetch_start(url)` for each, then `net.fetch_result(f)` as they come, with `net.wait(1.0)` between, which sleeps until something has come; `net.fetch_all(urls, at_once = 8)` does all that ([fetching from the web](#fetching-from-the-web)) |
+| a worker pool, `errgroup` with `SetLimit(8)`, `sync.WaitGroup` | `rs = net.fetch_all(urls, at_once = 8, retries = 2)`: the answers in order, each failed or busy one asked again |
+| goroutines for CPU work | `parallel_map(xs, f)`, `parallel_range(n, f)` and `parallel_update(xs, f)` run `f` on every core and give back its results, in order |
+| `sync.Mutex` | not needed: `parallel_map`'s function cannot change a variable it shares (the compiler says so: return values instead), and a count the threads share is an `Atomic` (`done = atomic(0)`, `done.add(1)`); an HTTP server's handlers run one at a time, so they change the program's variables freely |
+| `select` on channels | `net.wait(seconds)`: until a fetch's answer, a message, a connection's bytes or a request comes, then look at each (`net.fetch_result(f)`, `net.receive()`, `http.answer()`) |
+| `context.WithTimeout`, cancelling | `net.fetch(url, wait = 5.0)` (and `fetch_start`, `fetch_all`): status 0 and `r.why` when the time runs out; `net.fetch_cancel(f)` stops one |
+| `signal.NotifyContext(ctx, os.Interrupt)`, graceful shutdown | `loop not stopping(): ...`: ctrl-c and SIGTERM make `stopping()` true (and end `net.wait` early); `on_quit = (): ...` runs as the program ends |
+| `if err != nil { return err }` | `x = f()?`: a failure (an `error struct`, or none) goes back to the caller as it is |
+| `errors.New`, a type implementing `error` | `error struct LoadError:` with the fields the caller needs; the function returns `Config \| LoadError`, and the caller checks `if r is LoadError:` |
+| `func save() error` | `save = () -> void \| SaveError:`; `save()?` passes the error on |
+| `defer f.Close()` | `defer f.close()`: runs as the block ends, by a `return` or a `?` too |
+| `v, ok := m[k]`, `m[k]++` | `if let v = m.get(k):`, `m[k] += 1` (a missing key starts at zero) |
+| `append(xs, x)`, `len(xs)`, `xs[1:3]` | `xs.push(x)`, `xs.len()`, `xs[1..3)` |
+| structs and methods | `struct Box:` and functions taking one: `area = (b: Box) -> f64: b.w * b.h` is called `b.area()` |
+| `fmt.Printf("%-10s %5.2f\n", s, x)` | `print("{s:<10} {x:5.2f}")` |
+| `flag.Bool("words", false, "count words")` | a struct of the options, `opts = parse_args[Options]("what it does")`, the comments as the help |
+| `encoding/json`, struct tags | `from_json[Item](s)` (fields by name), `to_json(x)`, `parse_json(s)` for any shape |
+| `bufio.Scanner` over a file | `if let f = open_file(p):` then `loop let line = f.read_line():` |
+| `regexp.MustCompile(expr)` | `regex(r"...")`, made once and used for every text |
+| `url.Parse`, `base.ResolveReference(ref)` | `parse_url(s)` (`u.host`, `u.port`, `u.path`), `url_join(base, link)` |
+| `http.HandleFunc`, `http.ListenAndServe` | `import http`, `http.get("/todos/:id", handler)`, `http.serve(8080)` ([writing a server](#writing-a-server)) |
+| `httptest.NewServer` | the server in the same program: `http.listen(port)`, then `net.fetch_start` and `http.answer()` in a loop until `net.fetch_result` has the answer ([as above](#writing-a-server)); a blocking `net.fetch` to itself would wait forever |
+| `go test`, `func TestX(t *testing.T)` | `test "x": assert(...)` blocks, run by `sloppy test file.jo` (`sloppy test file.jo x`: only those named so) |
+| a small static binary | `sloppy build --release tool.jo`: one static executable (no libc; hello world is about 150 KB) |
+| `GOOS=windows GOARCH=amd64 go build` | `sloppy build tool.jo --target windows` (`linux`, `linux-arm64`, `macos`, `wasm`), from any system; Linux, ARM and macOS builds are all named `tool` unless `-o` says otherwise, so give each its own: `--target macos -o tool-mac` |
 
 ## Coming from pygame
 

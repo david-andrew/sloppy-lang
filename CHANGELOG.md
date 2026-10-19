@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased
+
+- `upper()` and `lower()` of text with letters past ASCII work on its bytes, eight at a time where
+  they are ASCII, where they made a list of its characters and a string for each: 100 MB of text
+  with an é in it now takes 0.1 s and 200 MB, where it took 10 s and 5.8 GB. Bytes that are not
+  UTF-8 are kept as they are.
+- Regular expressions match 3 to 50 times faster: the Pike VM keeps its threads in flat tables
+  (it made an array for each thread's captures at each character), tests a class's ASCII
+  characters in a bitmap, skips to the text every match starts with (`href="`) or past
+  characters no match can start with; and on a long text a pattern without `^ $ \b \B` is
+  matched by DFAs made as they are needed (one forward for where the match ends, one of the
+  pattern reversed for where it starts, the VM then only for the groups, in the match).
+  `find_all` of `[a-z]+` over 1.2 MB: 380 -> 45 ms; of `href="([^"]*)"` over 216 KB: 63 -> 14
+  ms; `contains` that runs through 1.2 MB: 475 -> 9 ms. `find(s, r, from)` with `from` past
+  the end gives none (it could panic).
+- `url_join(base, link)`: where a link on a page leads, as RFC 3986 resolves it (`../` and `./`
+  taken out, `/path`, `//host`, `?query`, `#fragment`; Python's urljoin, Go's ResolveReference),
+  and `parse_url(s) -> Url | UrlError`: an address's scheme, user, host, port, path, query and
+  fragment (an IPv6 host in `[ ]`, a bad port or a control character said), which prints as the
+  URL put back together (`str(u)`, `"{u}"`). `url_encode(s, safe = "/")` keeps the characters
+  given. A redirect's `Location` is followed with url_join (`../` in it was kept).
+- `net.fetch_all(urls, at_once = 8, retries = 2, wait = 30.0, ...) -> HttpReply[]`: many
+  requests, at most `at_once` on their way at a time, the answers in the order of the URLs (Go's
+  worker pool, an errgroup with a limit). One that failed or found the server busy (status 0,
+  429, 500, 502-504) is asked again after half a second, then 1, 2... (or the server's
+  Retry-After), a POST or PATCH not; `done = (i, r): ...` sees each answer as it comes.
+- net.fetch: a redirect loop's answer (a 302 after five redirects) says "too many redirects (a
+  loop?)" in `why`, where it said nothing; headers over 64 KB say they are too large and what the
+  most is, and an answer cut short in its headers says so, where both said "the server's answer
+  is not HTTP".
+- `net.fetch` (or `net.fetch_start`) in a `parallel_map` says to use `net.fetch_all`, or
+  fetch_start and fetch_result, for many at once, where it named a variable of the library's
+  own (`'__pace_real_time'`) and said to call it in a plain loop. A library function says what to
+  do instead with `@no_parallel("...")`; without one, its hidden variables are not named.
+- Messages: `text(b)` with a byte array says the text in it is `str_from_bytes(b)` (`text` draws
+  in a window; it said "missing argument 'pos'"), and `text(s)` alone that it draws at a position,
+  `print(s)` showing it in the terminal; `s.byte(i)` (and `char_at`) says `s[i]` is the byte
+  already.
+- `http.read_json(r, into)` sets the fields the body has and keeps the others as they were (a
+  PATCH), where it replaced `into` with a new value, the fields not in the body at their defaults;
+  a body that does not read leaves `into` as it was. lib/http.jo's docs (and START.md's) say that
+  handlers run one at a time, changing the program's variables with no locks, and how to try a
+  server from its own program (fetch_start, then http.answer() until the answer has come).
+- parse_args' `--help` leaves out an option's name at the start of its field's comment (`#
+  --words, or -w: count words too` shows as `-w, --words   count words too`, where the name came
+  twice), and START.md's example no longer writes it there.
+- START.md: a "Coming from Go" table: goroutines and channels for I/O (fetch_start, fetch_result
+  and net.wait, or fetch_all), for the cores (parallel_map), mutexes (not needed: what the race
+  checker allows), select, timeouts and cancelling, shutdown, errors as values (`?`, `error
+  struct`, `void | E`), defer, httptest, go test, small static binaries and cross-compiling (each
+  target's `-o`).
+
 ## 0.25.1
 
 - Security: `net.fetch` refuses an address or a header value with a line break or another
