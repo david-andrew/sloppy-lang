@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `to_int(s)?` in a `-> int | E` (or `void | E`) function suggests `?? return E(...)` where it
+  suggested `-> (int | E)?`; an empty `{}` or `set()` says how to write an empty set.
 - `embed("sounds\\hit.wav")` and `embed_dir` with `\` build on Linux and macOS too (a path
   written on Windows said the file could not be read); on Windows `glob("data\\*.txt")` takes
   `\` as `/`.
