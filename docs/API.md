@@ -2158,7 +2158,7 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `key_pressed = (k: Key) -> bool`: true only in the frame the key was pressed
 - `key_released = (k: Key) -> bool`
 - `key_typed = (k: Key) -> bool`: true in the frame the key was pressed, and again each time it repeats while held down (for moving through text or menus); characters typed arrive through text_input()
-- `shortcut = (k: Key, shift: bool = false) -> bool`: true in the frame Ctrl and k are pressed together, and as it repeats (Cmd and k on a Mac; in a browser either), for a tool's keys: `if shortcut(.s): save()`; shift: with Shift held too, as Ctrl+Shift+Z (without it, Shift must not be held). Browsers keep some for themselves (Ctrl+N, Ctrl+W, Ctrl+T) and the page never sees them.
+- `shortcut = (k: Key, shift: bool = false) -> bool`: true in the frame Ctrl and k are pressed together, and as it repeats (on a Mac and in a browser Cmd too), for a tool's keys: `if shortcut(.s): save()`; shift: with Shift held too, as Ctrl+Shift+Z (without it, Shift must not be held). Browsers keep some for themselves (Ctrl+N, Ctrl+W, Ctrl+T) and the page never sees them.
 - `mouse_pos = () -> vec2`: (in the 2D units of the screen: see screen_size and screen.jo)
 - `mouse_delta = () -> vec2`
 - `mouse_wheel = () -> f64`
