@@ -565,19 +565,47 @@ blend = (b: Blend):
     flush()
     __apply_blend(b)
 
-# 2D drawing after this shows only inside the rectangle (in screen units, or a render target's
-# pixels: translate and camera2d do not move it), until no_clip(), the next frame or another
-# target (draw_to); for a scrolling list, a panel, a minimap
+# 2D drawing after this shows only inside the rectangle, until no_clip(), the next frame or
+# another target (draw_to); for a scrolling list, a panel, a minimap. The rectangle is in the
+# units of the 2D transform, as what is drawn is (under translate, scale or camera2d_fit it is
+# where a rect() of it shows; turned, the box around that); the clip is then kept where it is on
+# the screen, whatever transform comes after
 clip = (pos: vec2, size: vec2):
-    global __clip, __clip_on
-    flush()
-    __clip_on = true
-    __clip = vec4(pos.x, pos.y, size.x, size.y)
-    __apply_clip()
+    r = Rect(pos.x, pos.y, size.x, size.y)
+    if __xform != mat4(): r = __xform_rect(__xform, r)
+    __clip_screen(vec4(r.x, r.y, r.w, r.h))
 # the same, with a Rect: clip(r) around a scrolling list's box
 clip = (r: Rect): clip(vec2(r.x, r.y), vec2(r.w, r.h))
 
+# (a clip in the screen's units, or a render target's pixels)
+__clip_screen = (c: vec4):
+    global __clip, __clip_on
+    flush()
+    __clip_on = true
+    __clip = c
+    __apply_clip()
+
+# (a rectangle through a transform: the box around its corners)
+__xform_rect = (m: mat4, r: Rect) -> Rect:
+    x0 = 1e30
+    y0 = 1e30
+    x1 = -1e30
+    y1 = -1e30
+    loop k in [0..4):
+        p = m * vec4(r.x + r.w * f32(k % 2), r.y + r.h * f32(k / 2), 0, 1)
+        x0 = min(x0, f64(p.x))
+        y0 = min(y0, f64(p.y))
+        x1 = max(x1, f64(p.x))
+        y1 = max(y1, f64(p.y))
+    Rect(x0, y0, x1 - x0, y1 - y0)
+
+# drawing shows everywhere again (and a hud_scroll list's bar, drawn over its rows, is drawn
+# now, as they are done)
 no_clip = ():
+    __clip_none()
+    __hud_bars_draw()
+
+__clip_none = ():
     global __clip_on
     if not __clip_on: return
     flush()
@@ -1236,17 +1264,52 @@ text_width = (s: str, size: f64 = 20.0, mono: bool = false) -> f64:
             widest = max(widest, w)
             w = 0.0
             continue
-        g = __glyph(__font, r.0)
-        if g < 0 and __font_loaded and r.0 >= 32:
-            # (drawn with the built-in font)
-            g2 = __glyph(__default_font, r.0)
-            if g2 < 0: g2 = __glyph(__default_font, c'?')
-            if g2 >= 0 and __glyph(__font, r.0) < 0 and (__glyph(__default_font, r.0) >= 0 or __glyph(__font, c'?') < 0):
-                w += __default_font.adv[g2] * size / __default_font.px
-                continue
-        if g < 0 and r.0 >= 32: g = __glyph(__font, c'?')
-        if g >= 0: w += __font.adv[g] * k
+        w += __char_adv(r.0, size, k)
     max(widest, w)
+
+# (how far one character moves the pen: k is size / the font's px)
+__char_adv = (c: int, size: f64, k: f64) -> f64:
+    g = __glyph(__font, c)
+    if g < 0 and __font_loaded and c >= 32:
+        # (drawn with the built-in font)
+        g2 = __glyph(__default_font, c)
+        if g2 < 0: g2 = __glyph(__default_font, c'?')
+        if g2 >= 0 and (__glyph(__default_font, c) >= 0 or __glyph(__font, c'?') < 0):
+            return __default_font.adv[g2] * size / __default_font.px
+    if g < 0 and c >= 32: g = __glyph(__font, c'?')
+    if g >= 0: return __font.adv[g] * k
+    0.0
+
+# (where each character of one line of s starts and the last ends, size high: xs[j] for the
+# byte s[j] starts at, from 0; bytes inside a character have their character's)
+__char_xs = (s: str, size: f64) -> f64[]:
+    __font_init()
+    k = size / __font.px
+    xs = fill(0.0, len(s) + 1)
+    w = 0.0
+    i = 0
+    loop i < len(s):
+        r = __next_char(s, i)
+        loop j in [i..r.1): xs[j] = w
+        w += __char_adv(r.0, size, k)
+        i = r.1
+    xs[len(s)] = w
+    xs
+
+# s as it fits in a line `width` wide: cut short, ending in …, when it is wider (a long name on a
+# button, a table's cell)
+fit_text = (s: str, width: f64, size: f64 = 20.0) -> str:
+    if text_width(s, size) <= width: return s
+    room = width - text_width("…", size)
+    xs = __char_xs(s, size)
+    n = 0
+    i = 0
+    loop i < len(s):
+        j = __next_char(s, i).1
+        if xs[j] > room: break
+        n = j
+        i = j
+    trim_end(s[..n)) + "…"
 
 # how tall text is drawn: its lines, each size * 1.25 below the one before
 text_height = (s: str, size: f64 = 20.0) -> f64: size + f64(s.count("\n")) * size * 1.25

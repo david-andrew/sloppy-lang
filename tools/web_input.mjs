@@ -127,5 +127,23 @@ await session(false, dir + "/mouse", async ({ send, ev, value, active, expect })
   await ev(`(() => { const d = new DataTransfer(); d.setData("text/plain", "CLIP"); document.activeElement.dispatchEvent(new ClipboardEvent("paste", { clipboardData: d, bubbles: true })); })()`);
   await sleep(150);
   expect("ctrl+V", value(), "abCLIP");
+  // (the caret: home, then typing there; ctrl+A, then typing over it all)
+  const key = async (k, code, vk, mods = 0, text = undefined) => {
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, windowsVirtualKeyCode: vk, modifiers: mods, text });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: vk, modifiers: mods });
+  };
+  await key("Home", "Home", 36);
+  await sleep(100);
+  await key("Z", "KeyZ", 90, 8, "Z");
+  await sleep(150);
+  expect("home, then typing at the caret", value(), "ZabCLIP");
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, modifiers: 2 });
+  await key("a", "KeyA", 65, 2);
+  await sleep(100);
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17 });
+  await sleep(100);
+  await key("q", "KeyQ", 81, 0, "q");
+  await sleep(150);
+  expect("ctrl+A, then typing over it", value(), "q");
 });
 process.exit(failed ? 1 : 0);
