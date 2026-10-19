@@ -18,8 +18,8 @@
 - `url_join(base, link)`: where a link on a page leads, as RFC 3986 resolves it (`../` and `./`
   taken out, `/path`, `//host`, `?query`, `#fragment`; Python's urljoin, Go's ResolveReference),
   and `parse_url(s) -> Url | UrlError`: an address's scheme, user, host, port, path, query and
-  fragment (an IPv6 host in `[ ]`, a bad port or a control character said), with `str(u)` to put
-  it back together. `url_encode(s, safe = "/")` keeps the characters given. A redirect's
+  fragment (an IPv6 host in `[ ]`, a bad port or a control character said), which prints as the
+  URL put back together (`str(u)`, `"{u}"`). `url_encode(s, safe = "/")` keeps the characters given. A redirect's
   `Location` is followed with url_join (`../` in it was kept).
 - `net.fetch_all(urls, at_once = 8, retries = 2, wait = 30.0, ...) -> HttpReply[]`: many
   requests, at most `at_once` on their way at a time, the answers in the order of the URLs (Go's
@@ -30,6 +30,10 @@
   loop?)" in `why`, where it said nothing; headers over 64 KB say they are too large and what the
   most is, and an answer cut short in its headers says so, where both said "the server's answer
   is not HTTP".
+- `net.fetch` (or `net.fetch_start`) in a `parallel_map` says to use `net.fetch_all`, or
+  fetch_start and fetch_result, for many at once, where it named a variable of the library's
+  own (`'__pace_real_time'`) and said to call it in a plain loop. A library function says what to
+  do instead with `@no_parallel("...")`; without one, its hidden variables are not named.
 
 ## 0.25.0
 
