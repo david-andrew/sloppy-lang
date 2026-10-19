@@ -34,6 +34,10 @@
   fetch_start and fetch_result, for many at once, where it named a variable of the library's
   own (`'__pace_real_time'`) and said to call it in a plain loop. A library function says what to
   do instead with `@no_parallel("...")`; without one, its hidden variables are not named.
+- Messages: `text(b)` with a byte array says the text in it is `str_from_bytes(b)` (`text` draws
+  in a window; it said "missing argument 'pos'"), and `text(s)` alone that it draws at a position,
+  `print(s)` showing it in the terminal; `s.byte(i)` (and `char_at`) says `s[i]` is the byte
+  already.
 
 ## 0.25.0
 
