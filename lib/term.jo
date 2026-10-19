@@ -1,0 +1,1347 @@
+# Terminal programs: the whole terminal as a screen of characters, drawn into and shown (a file
+# browser, an editor, a game in the terminal), as curses, tcell or bubbletea do. `import term`:
+#
+#   term.start()                            # keys one at a time, a screen of the program's own
+#   loop:
+#       term.clear()
+#       term.box(0, 0, 30, 5, title = "hello")
+#       term.put(2, 2, "q quits", fg = term.YELLOW, style = term.BOLD)
+#       term.flush()                        # what changed since the last flush, in one write
+#       if let e = term.read_event():       # a key, the mouse, a resize, text pasted
+#           if e.name == "q" or e.name == "escape": break
+#
+# Drawing goes into a screen of cells (a character, its colors and style) that flush compares
+# with what the terminal shows, writing only the cells that changed. Characters of East Asian
+# scripts and emoji take two cells. Columns (x) and rows (y) count from 0 at the top left.
+#
+# The terminal is put back as it was (its screen, the cursor, keys echoed and read by line) by
+# term.stop(), and as the program ends whichever way: its end, exit(), a panic or a crash, ctrl-c,
+# SIGTERM or the terminal closed. Ctrl-c asks the program to stop as it does elsewhere
+# (stopping() and on_quit, lib/std/stop.jo): a program that does not look ends at its next
+# read_event, flush or sleep. start(ctrl_c_key = true) makes ctrl-c a key the program reads
+# ("ctrl+c") instead. Ctrl-z and ctrl-\ are keys too.
+#
+# In a program with tasks, a task waiting in read_event lets the others run (on Windows it looks
+# for input every 10 ms meanwhile). Windows: keys, the mouse and resizes come from the console's
+# events (paste comes as keys typed); a web page has no terminal (start gives false).
+
+# ---------------- colors and styles ----------------
+# Colors are numbers: DEFAULT is the terminal's own, the 16 named ones follow the terminal's
+# theme, color(n) is one of the 256 of xterm's palette, and color(rgb(...)) any (24-bit).
+const DEFAULT = 0
+const BLACK = 0x100
+const RED = 0x101
+const GREEN = 0x102
+const YELLOW = 0x103
+const BLUE = 0x104
+const MAGENTA = 0x105
+const CYAN = 0x106
+const WHITE = 0x107
+const GRAY = 0x108                  # (bright black)
+const BRIGHT_RED = 0x109
+const BRIGHT_GREEN = 0x10A
+const BRIGHT_YELLOW = 0x10B
+const BRIGHT_BLUE = 0x10C
+const BRIGHT_MAGENTA = 0x10D
+const BRIGHT_CYAN = 0x10E
+const BRIGHT_WHITE = 0x10F
+
+# styles, joined with |: BOLD | UNDERLINE
+const BOLD = 1
+const DIM = 2
+const ITALIC = 4
+const UNDERLINE = 8
+const REVERSE = 16                  # (foreground and background swapped)
+const STRIKE = 32
+
+# one of the 256 colors of xterm's palette: 0-15 the named ones, 16-231 a 6x6x6 cube
+# (16 + 36 r + 6 g + b), 232-255 grays
+color = (n: int) -> int: 0x100 | (n & 255)
+
+# a color of 24 bits, from one of the library's (rgb(1, 0.5, 0), hex(0xff8000), ORANGE)
+color = (c: vec4) -> int:
+    r = clamp(int(round(f64(c.x) * 255.0)), 0, 255)
+    g = clamp(int(round(f64(c.y) * 255.0)), 0, 255)
+    b = clamp(int(round(f64(c.z) * 255.0)), 0, 255)
+    0x1000000 | (r << 16) | (g << 8) | b
+
+# ---------------- events ----------------
+enum EventKind: key, mouse, resize, paste
+
+# a key: a character typed is .char (the character in the event's text)
+enum Key: char, enter, tab, backspace, delete, escape, up, down, left, right, home, end, page_up, page_down, insert, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12
+
+# what the mouse did
+enum Mouse: press, release, drag, move, wheel_up, wheel_down, wheel_left, wheel_right
+
+# what read_event gives: a key pressed, the mouse (start(mouse = true)), the terminal resized
+# (the screen has its new size already, and shows it all again at the next flush), or text pasted
+struct Event:
+    kind: EventKind
+    key: Key                # a key's (.char: a character, in text)
+    text = ""               # the character typed (a letter with ctrl is small: "c"), or the text pasted
+    name = ""               # a key as text: "a", "A", "space", "enter", "ctrl+c", "alt+x", "shift+tab", "ctrl+up", "f5"
+    ctrl = false
+    alt = false
+    shift = false           # (keys other than characters: a character typed with shift is that character, "A")
+    mouse: Mouse            # the mouse's: what it did
+    button = 0              # which button: 1 left, 2 middle, 3 right (0: none, as for a move or the wheel)
+    x = 0                   # the mouse's column; resize: the new width
+    y = 0                   # the mouse's row; resize: the new height
+
+# an event as text: "key ctrl+c", "mouse press 1 at 10,3", "resize 120x40", "paste 12 bytes"
+str = (e: Event) -> str:
+    match e.kind:
+        .key: "key {e.name}"
+        .mouse: "mouse {e.mouse} {e.button} at {e.x},{e.y}"
+        .resize: "resize {e.x}x{e.y}"
+        .paste: "paste {len(e.text)} bytes"
+
+# ---------------- the terminal ----------------
+__t_on = false                      # (started: raw mode, the screen of its own)
+__t_once = false                    # (the end's restore and the signal's handler set up)
+__t_reset_p: *u8 = null             # (what puts the terminal's screen back, written as it is put back)
+__t_reset_n = 0
+__t_saved: *u8 = null               # (the terminal's settings as they were: Linux's termios, macOS's)
+__t_mode_in = 0                     # (Windows: the console's modes as they were)
+__t_mode_out = 0
+__t_wake_r = -1                     # (a pipe SIGWINCH's handler writes to, which ends a wait)
+__t_wake_w = -1
+__t_winch = false                   # (the terminal has been resized: its size not read yet)
+__t_in: u8[]                        # (bytes read, not made into events yet)
+__t_events: Event[]                 # (events made, not given yet)
+__t_stop_told = false               # (read_event has given none once for being asked to stop)
+__t_gone = false                    # (the terminal's input has ended: it was closed)
+__t_mouse_on = false
+__t_mouse_moves = false
+__t_buttons = 0                     # (Windows: the mouse's buttons held)
+__t_high = 0                        # (Windows: the first half of a character past U+FFFF)
+__t_top = 0                         # (Windows: the console window's first row and column in its buffer)
+__t_left = 0
+
+# the program takes the terminal over: keys come one at a time and are not shown, its screen is
+# one of its own (the terminal's is back as it was afterwards), the cursor hidden, pasted text
+# one event. mouse: the mouse's presses, releases, drags and wheel come as events (mouse_moves:
+# its moves with no button held too). ctrl_c_key: ctrl-c is a key, not a request to stop. False
+# when standard input or output is not a terminal (a pipe, a file); true if started already
+@no_web("does nothing in a web page, which has no terminal (it gives false)")
+start = (mouse: bool = false, mouse_moves: bool = false, ctrl_c_key: bool = false) -> bool:
+    global __t_cursor_shown, __t_mouse_moves, __t_mouse_on, __t_on, __t_stop_told
+    if __t_on: return true
+    when TARGET == "wasm":
+        return false
+    else:
+        if not __t_is_terminal(): return false
+        # (ctrl-c and SIGTERM: asked to stop, rather than ended at once, so that the terminal is put
+        # back: lib/std/stop.jo)
+        __stop_watch()
+        __t_setup()
+        if not __t_raw(true, mouse, ctrl_c_key): return false
+        __t_mouse_on = mouse or mouse_moves
+        __t_mouse_moves = mouse_moves
+        on = "\x1b[?1049h\x1b[?25l\x1b[?2004h"                   # its own screen, no cursor, paste
+        off = "\x1b[0m\x1b[?2004l"
+        if __t_mouse_on:
+            on += if mouse_moves: "\x1b[?1003h\x1b[?1006h" else: "\x1b[?1002h\x1b[?1006h"
+            off += "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l"
+        off += "\x1b[?25h\x1b[?1049l"
+        __t_set_reset(off)
+        __out_flush()
+        __write_fd(1, data(on), len(on))
+        __t_on = true
+        __t_stop_told = false
+        w, h = __t_query_size()
+        set_size(w, h)
+        __t_cursor_shown = false
+        redraw()
+        true
+
+# the terminal put back as it was before start (its screen, the cursor, its settings); start
+# takes it over again (around run_program(..., show = true) of an editor, say)
+stop = ():
+    if not __t_on: return
+    __t_reset()
+
+# the screen's size: its columns and rows (the terminal's, from start on; 80 x 24 before)
+size = () -> (int, int):
+    if __t_on: __t_check_size()
+    (__t_w, __t_h)
+
+# the screen's size in cells, which start and a resize set: for tests without a terminal. What
+# is drawn stays where it fits, and the next flush shows it all
+set_size = (w: int, h: int):
+    global __t_back, __t_front, __t_h, __t_w
+    w2 = max(w, 1)
+    h2 = max(h, 1)
+    if w2 == __t_w and h2 == __t_h and __t_back.len() == w2 * h2: return
+    nb = fill(__t_blank(0, 0), w2 * h2)
+    loop y in 0..min(h2, __t_h):
+        loop x in 0..min(w2, __t_w):
+            nb[y * w2 + x] = __t_back[y * __t_w + x]
+        # (a wide character cut at the new right edge)
+        if w2 < __t_w and nb[y * w2 + w2 - 1].ch != 0 and __t_back.len() > 0 and __t_back[y * __t_w + w2].ch == 0: nb[y * w2 + w2 - 1] = __t_blank(0, 0)
+    __t_back = nb
+    __t_w = w2
+    __t_h = h2
+    __t_front = fill(__t_blank(0, 0), w2 * h2)
+    redraw()
+
+# the terminal window's title
+set_title = (s: str):
+    if not __t_on: return
+    t = "\x1b]0;{s}\x07"
+    __write_fd(1, data(t), len(t))
+
+# ---------------- reading events ----------------
+# the next key pressed, mouse event, resize or paste, waiting at most `wait` seconds for it (below
+# 0: until one comes). none: none came in that time, the task waiting was cancelled, the terminal
+# was closed, or the program has been asked to stop (ctrl-c: once, for a program that looks at
+# stopping()). A lone escape is told from a key's sequence by 50 ms with nothing after it
+read_event = (wait: f64 = -1.0) -> Event?:
+    if not __t_on: panic("term.read_event: the terminal is not started (term.start() first)")
+    deadline = if wait < 0.0: -1.0 else: time() + min(wait, 1e9)
+    loop true:
+        if __t_events.len() > 0: return __t_events.remove_at(0)
+        if __t_gone: return none
+        if __t_on: __t_check_size()
+        if __t_events.len() > 0: continue
+        when TARGET == "windows":
+            if not __t_w32_wait(deadline): return none
+        else:
+            # (what has come so far, made into events: a sequence cut short waits for its end)
+            __t_take(false)
+            if __t_events.len() > 0: continue
+            if __t_in.len() > 0:
+                # (an escape, or the start of a key's sequence: more comes at once, or it was the key)
+                left = 0.05
+                if deadline >= 0.0: left = min(left, deadline - time())
+                if not __t_wait_input(max(left, 0.0)):
+                    if __t_told_stop(): return none
+                    __t_take(true)
+                    continue
+            else if not __t_wait_input(if deadline < 0.0: -1.0 else: max(deadline - time(), 0.0)):
+                if __t_told_stop(): return none
+                if deadline >= 0.0 and time() >= deadline: return none
+                if __task_cancelling: return none
+    none
+
+# the events in a terminal's input bytes, as read_event makes them (an escape at the end is the
+# key): for tests, and for a terminal's bytes from elsewhere
+decode = (b: u8[]) -> Event[]:
+    out: Event[]
+    i = 0
+    loop i < b.len():
+        e, n = __t_parse(b, i, true)
+        if n == 0:
+            # (a paste with no end: what there is)
+            if b.len() - i > 6 and b[i + 2] == '2':
+                out.push(__t_paste(b[i + 6..]))
+            break
+        if let x = e: out.push(x)
+        i += n
+    out
+
+# (the bytes read made into events; final: nothing more came after a part of a sequence)
+__t_take = (final: bool):
+    global __t_in
+    i = 0
+    loop i < __t_in.len():
+        e, n = __t_parse(__t_in, i, final)
+        if n == 0: break
+        if let x = e: __t_events.push(x)
+        i += n
+    if i > 0: __t_in = __t_in[i..]
+
+# (asked to stop while waiting: a program that looks at stopping() is given none, once; one that
+# does not ends here)
+__t_told_stop = () -> bool:
+    global __t_stop_told
+    if not __stop_asked: return false
+    __stop_check()
+    if __t_stop_told: return false
+    __t_stop_told = true
+    true
+
+# (wait up to `seconds` (below 0: no limit) for input, reading what comes into __t_in; true when
+# some came. A resize, or being asked to stop, ends the wait as well)
+__t_wait_input = (seconds: f64) -> bool:
+    when TARGET != "windows" and TARGET != "wasm":
+        fds = [0, __t_wake_r]
+        want = [1, 1]
+        if __stop_rfd >= 0 and not __t_stop_told:
+            fds.push(__stop_rfd)
+            want.push(1)
+        got: int[]
+        if __tasks_on: got = __task_wait_fn(fds, want, seconds)
+        else:
+            ms = if seconds < 0.0: -1 else: int(ceil(seconds * 1000.0))
+            p = fill(0, fds.len())
+            loop k in 0..fds.len(): p[k] = (fds[k] & 0xFFFFFFFF) | (1 << 32)        # POLLIN
+            got = fill(0, fds.len())
+            if syscall(7, data(p), p.len(), ms) > 0:
+                loop k in 0..fds.len():
+                    if (p[k] >> 48) & 0x39 != 0: got[k] = 1                     # POLLIN, POLLERR, POLLHUP, POLLNVAL
+        if got[1] != 0: __t_check_size()
+        if got[0] != 0:
+            buf = fill(u8(0), 4096)
+            r = syscall(0, 0, data(buf), 4096)
+            if r > 0:
+                __t_in.extend(buf[..r))
+                return true
+            if r == 0 or (r < 0 and r != -4 and r != -11):
+                # (the terminal is gone: as a hangup, the program is asked to stop)
+                __t_hangup()
+        return __t_events.len() > 0
+    false
+
+__t_hangup = ():
+    global __stop_asked, __stop_sig, __t_gone
+    __t_gone = true
+    if not __stop_asked:
+        __stop_asked = true
+        __stop_sig = 1
+    __stop_check()
+
+# (a resize seen by SIGWINCH's handler (or Windows's console, at a flush): the screen gets the new
+# size, and an event says so)
+__t_check_size = ():
+    global __t_winch
+    when TARGET == "windows":
+        w, h = __t_query_size()
+        if w != __t_w or h != __t_h: __t_resized(w, h)
+    else when TARGET != "wasm":
+        if not __t_winch: return
+        __t_winch = false
+        # (the pipe emptied: poll first, as macOS's pipe waits when empty)
+        p = [(__t_wake_r & 0xFFFFFFFF) | (1 << 32)]
+        if syscall(7, data(p), 1, 0) > 0:
+            b = fill(u8(0), 64)
+            syscall(0, __t_wake_r, data(b), 64)
+        w, h = __t_query_size()
+        if w != __t_w or h != __t_h: __t_resized(w, h)
+
+__t_resized = (w: int, h: int):
+    set_size(w, h)
+    __t_events.push(Event(.resize, x = w, y = h))
+
+# ---------------- the screen ----------------
+# (a cell: ch the character (a code point); 0 the right half of a wide character to its left;
+# below 0 a character with marks on it, __t_clusters[-1 - ch])
+struct __Cell:
+    ch: i32
+    fg: i32
+    bg: i32
+    style: i32
+
+__t_w = 80
+__t_h = 24
+__t_back: __Cell[] = fill(__Cell(32, 0, 0, 0), 80 * 24)        # (what is drawn)
+__t_front: __Cell[] = fill(__Cell(32, 0, 0, 0), 80 * 24)       # (what the terminal shows)
+__t_full = true                     # (the next flush shows everything)
+__t_clusters: str[]
+__t_cluster_ids: {str: int}
+__t_cursor_x = -1                   # (where the cursor is shown after a flush; -1: hidden)
+__t_cursor_y = -1
+__t_cursor_shown = false
+
+__t_blank = (fg: int, bg: int) -> __Cell: __Cell(32, i32(fg), i32(bg), 0)
+
+# every cell blank, in the colors given (bg: the background all over)
+clear = (fg: int = 0, bg: int = 0):
+    c = __t_blank(fg, bg)
+    loop mut x in __t_back: x = c
+
+# write text at column x of row y, going right; what is off the screen is left out (x may be below
+# 0). The column after it: put(put(x, y, "name: "), y, name, fg = CYAN)
+put = (x: int, y: int, text: str, fg: int = 0, bg: int = 0, style: int = 0) -> int:
+    cx = x
+    on_row = y >= 0 and y < __t_h
+    i = 0
+    n = len(text)
+    joined = false                  # (after a zero width joiner: the next character joins too)
+    loop i < n:
+        cp, k = __t_utf8(text, i)
+        i += k
+        if cp < 32 or (cp >= 0x7F and cp < 0xA0): cp = 32       # (no control characters reach the terminal)
+        w = __t_cp_width(cp)
+        if joined: w = 0
+        joined = cp == 0x200D
+        if w == 0:
+            if on_row and cx > 0 and cx <= __t_w: __t_join(cx - 1, y, cp)
+            continue
+        if on_row:
+            if cx >= 0 and cx + w <= __t_w: __t_set(cx, y, cp, w, fg, bg, style)
+            else if cx < __t_w and cx + w > 0:
+                # (a wide character half off the screen: the half on it blank)
+                hx = max(cx, 0)
+                __t_set(hx, y, 32, 1, fg, bg, style)
+        cx += w
+    cx
+
+# fill a rectangle with a character (a space: the background color alone)
+fill_rect = (x: int, y: int, w: int, h: int, ch: str = " ", fg: int = 0, bg: int = 0, style: int = 0):
+    cp = __t_first(ch)
+    cw = max(__t_cp_width(cp), 1)
+    y0 = max(y, 0)
+    y1 = min(y + h, __t_h)
+    x0 = max(x, 0)
+    x1 = min(x + w, __t_w)
+    loop yy in y0..y1:
+        xx = x0
+        loop xx + cw <= x1:
+            __t_set(xx, yy, cp, cw, fg, bg, style)
+            xx += cw
+
+# the lines a box is drawn with
+enum Lines: single, double, rounded, heavy
+
+# a box's outline, with lines drawing characters: w columns wide, h rows high (the inside is left
+# as it is: fill_rect for a background). title: written on its top line
+box = (x: int, y: int, w: int, h: int, fg: int = 0, bg: int = 0, style: int = 0, lines: Lines = .single, title: str = ""):
+    if w < 2 or h < 2: return
+    s = match lines:
+        .single: "┌┐└┘─│"
+        .double: "╔╗╚╝═║"
+        .rounded: "╭╮╰╯─│"
+        .heavy: "┏┓┗┛━┃"
+    c = chars(s)
+    loop xx in x + 1..x + w - 1: __t_put_cp(xx, y, c[4], fg, bg, style)
+    loop xx in x + 1..x + w - 1: __t_put_cp(xx, y + h - 1, c[4], fg, bg, style)
+    loop yy in y + 1..y + h - 1:
+        __t_put_cp(x, yy, c[5], fg, bg, style)
+        __t_put_cp(x + w - 1, yy, c[5], fg, bg, style)
+    __t_put_cp(x, y, c[0], fg, bg, style)
+    __t_put_cp(x + w - 1, y, c[1], fg, bg, style)
+    __t_put_cp(x, y + h - 1, c[2], fg, bg, style)
+    __t_put_cp(x + w - 1, y + h - 1, c[3], fg, bg, style)
+    if len(title) > 0 and w > 4: put(x + 2, y, " " + fit(title, w - 6) + " ", fg, bg, style)
+
+# a line across, w columns long, from x (ch: what it is drawn with)
+hline = (x: int, y: int, w: int, fg: int = 0, bg: int = 0, style: int = 0, ch: str = "─"):
+    cp = __t_first(ch)
+    loop xx in x..x + w: __t_put_cp(xx, y, cp, fg, bg, style)
+
+# a line down, h rows long, from y
+vline = (x: int, y: int, h: int, fg: int = 0, bg: int = 0, style: int = 0, ch: str = "│"):
+    cp = __t_first(ch)
+    loop yy in y..y + h: __t_put_cp(x, yy, cp, fg, bg, style)
+
+# how many columns text takes (two for a wide character, none for a mark on the one before)
+text_width = (text: str) -> int:
+    w = 0
+    i = 0
+    joined = false
+    loop i < len(text):
+        cp, k = __t_utf8(text, i)
+        i += k
+        if cp < 32: cp = 32
+        cw = __t_cp_width(cp)
+        if not joined: w += cw
+        joined = cp == 0x200D
+    w
+
+# text cut to fit `width` columns (with … at its end when it is cut)
+fit = (text: str, width: int) -> str:
+    if width <= 0: return ""
+    if text_width(text) <= width: return text
+    out = ""
+    w = 0
+    i = 0
+    loop i < len(text):
+        cp, k = __t_utf8(text, i)
+        cw = __t_cp_width(cp)
+        if w + cw > width - 1: break
+        out += text[i..i + k)
+        w += cw
+        i += k
+    out + "…"
+
+# show the cursor at column x of row y after each flush (where the user types)
+set_cursor = (x: int, y: int):
+    global __t_cursor_x, __t_cursor_y
+    __t_cursor_x = x
+    __t_cursor_y = y
+
+# no cursor shown (as from start on)
+hide_cursor = ():
+    global __t_cursor_x, __t_cursor_y
+    __t_cursor_x = -1
+    __t_cursor_y = -1
+
+# the next flush shows every cell, not only those changed (after something else wrote to the
+# terminal: a program run, a message)
+redraw = ():
+    global __t_full
+    __t_full = true
+
+# show what was drawn: the cells changed since the last flush, written in one go with the cursor
+# moved as little as it can be. How many bytes were written
+flush = () -> int:
+    if not __t_on: return 0
+    __t_check_size()
+    __stop_check()
+    b = __t_render()
+    if b.len() > 0:
+        __out_flush()
+        __write_fd(1, data(b), b.len())
+    b.len()
+
+# what flush would write now, as text, the screen then counting it as shown: for tests without a
+# terminal
+render = () -> str: str_from_bytes(__t_render())
+
+# the screen's characters, a line for each row (colors and styles left out): for tests
+screen_text = () -> str:
+    out: u8[]
+    loop y in 0..__t_h:
+        if y > 0: out.push('\n')
+        loop x in 0..__t_w: __t_cell_bytes(out, __t_back[y * __t_w + x].ch)
+    str_from_bytes(out)
+
+# (a character into a cell, the cells it covers made right: a wide character's half written over
+# leaves the other half blank)
+__t_set = (x: int, y: int, cp: int, w: int, fg: int, bg: int, style: int):
+    i = y * __t_w + x
+    if __t_back[i].ch == 0 and x > 0: __t_back[i - 1] = __t_blank(int(__t_back[i - 1].fg), int(__t_back[i - 1].bg))
+    __t_back[i] = __Cell(i32(cp), i32(fg), i32(bg), i32(style))
+    j = x + 1
+    if w == 2 and j < __t_w:
+        __t_back[i + 1] = __Cell(0, i32(fg), i32(bg), i32(style))
+        j += 1
+    if j < __t_w and __t_back[y * __t_w + j].ch == 0: __t_back[y * __t_w + j] = __t_blank(fg, bg)
+
+# (a text's first character; a space for none)
+__t_first = (s: str) -> int:
+    if len(s) == 0: return 32
+    cp, _ = __t_utf8(s, 0)
+    if cp < 32: return 32
+    cp
+
+__t_put_cp = (x: int, y: int, cp: int, fg: int, bg: int, style: int):
+    if x >= 0 and y >= 0 and x < __t_w and y < __t_h: __t_set(x, y, cp, 1, fg, bg, style)
+
+# (a mark (or a joined character) on the character at x: the cell holds them as one)
+__t_join = (x0: int, y: int, cp: int):
+    global __t_cluster_ids, __t_clusters
+    x = x0
+    if x > 0 and __t_back[y * __t_w + x].ch == 0: x -= 1
+    i = y * __t_w + x
+    c = int(__t_back[i].ch)
+    base = if c < 0: __t_clusters[-1 - c] else: chr(c)
+    t = base + chr(cp)
+    id = __t_cluster_ids.get(t) ?? -1
+    if id < 0:
+        # (kept for the screens' cells; past 4096, started again, and everything shown again)
+        if __t_clusters.len() >= 4096:
+            __t_clusters = []
+            __t_cluster_ids = {}
+            loop mut cell in __t_back:
+                if cell.ch < 0: cell.ch = 32
+            redraw()
+        id = __t_clusters.len()
+        __t_clusters.push(t)
+        __t_cluster_ids[t] = id
+    __t_back[i].ch = i32(-1 - id)
+
+# (a character's code point at byte i, and its bytes: U+FFFD for bytes that are not UTF-8)
+__t_utf8 = (s: str, i: int) -> (int, int):
+    c = int(s[i])
+    if c < 0x80: return (c, 1)
+    n = 0
+    v = 0
+    if c >= 0xF0 and c < 0xF8:
+        n = 4
+        v = c & 7
+    else if c >= 0xE0:
+        n = 3
+        v = c & 15
+    else if c >= 0xC0:
+        n = 2
+        v = c & 31
+    else: return (0xFFFD, 1)
+    if c >= 0xF8 or i + n > len(s): return (0xFFFD, 1)
+    loop k in 1..n:
+        b = int(s[i + k])
+        if b & 0xC0 != 0x80: return (0xFFFD, k)
+        v = (v << 6) | (b & 63)
+    (v, n)
+
+# (a cell's character, as UTF-8)
+__t_cell_bytes = (out: mut u8[], ch: i32):
+    c = int(ch)
+    if c < 0: out.extend(bytes(__t_clusters[-1 - c]))
+    else if c == 0: pass
+    else: __t_push_cp(out, c)
+
+__t_push_cp = (out: mut u8[], c: int):
+    if c < 0x80: out.push(u8(c))
+    else if c < 0x800:
+        out.push(u8(0xC0 | (c >> 6)))
+        out.push(u8(0x80 | (c & 63)))
+    else if c < 0x10000:
+        out.push(u8(0xE0 | (c >> 12)))
+        out.push(u8(0x80 | ((c >> 6) & 63)))
+        out.push(u8(0x80 | (c & 63)))
+    else:
+        out.push(u8(0xF0 | (c >> 18)))
+        out.push(u8(0x80 | ((c >> 12) & 63)))
+        out.push(u8(0x80 | ((c >> 6) & 63)))
+        out.push(u8(0x80 | (c & 63)))
+
+__t_push_str = (out: mut u8[], s: str):
+    loop i in 0..len(s): out.push(s[i])
+
+__t_push_num = (out: mut u8[], n: int):
+    if n >= 10: __t_push_num(out, n / 10)
+    out.push(u8(c'0' + n % 10))
+
+# ---------------- what a flush writes ----------------
+__t_sfg = 0                         # (the colors and style the terminal writes in now)
+__t_sbg = 0
+__t_sst = 0
+__t_px = -1                         # (where the terminal's cursor is: -1 not known)
+__t_py = -1
+
+__t_render = () -> u8[]:
+    global __t_cursor_shown, __t_front, __t_full, __t_px, __t_py, __t_sbg, __t_sfg, __t_sst
+    out: u8[]
+    W = __t_w
+    H = __t_h
+    if __t_full:
+        __t_push_str(out, "\x1b[0m\x1b[H\x1b[2J")
+        __t_front = fill(__t_blank(0, 0), W * H)
+        __t_full = false
+        __t_sfg = 0
+        __t_sbg = 0
+        __t_sst = 0
+        __t_px = 0
+        __t_py = 0
+    started = out.len()
+    loop y in 0..H:
+        row = y * W
+        x = 0
+        loop x < W:
+            i = row + x
+            b = __t_back[i]
+            if b.ch == 0:
+                x += 1
+                continue
+            wide = x + 1 < W and __t_back[i + 1].ch == 0
+            if b == __t_front[i] and (not wide or __t_back[i + 1] == __t_front[i + 1]):
+                x += 1
+                continue
+            # (the cursor there: the cells between written again when that is shorter)
+            if __t_py != y or __t_px != x:
+                gap = x - __t_px
+                if __t_py == y and __t_px >= 0 and gap > 0 and gap <= 3 and __t_plain(row + __t_px, gap):
+                    loop k in 0..gap: out.push(u8(__t_back[row + __t_px + k].ch))
+                else if __t_py == y and __t_px >= 0 and gap > 0:
+                    __t_push_str(out, "\x1b[")
+                    if gap > 1: __t_push_num(out, gap)
+                    out.push('C')
+                else if x == 0 and __t_py >= 0 and y == __t_py + 1: __t_push_str(out, "\r\n")
+                else if x == 0 and __t_py == y: out.push('\r')
+                else if __t_py == y and __t_px > x:
+                    __t_push_str(out, "\x1b[")
+                    if __t_px - x > 1: __t_push_num(out, __t_px - x)
+                    out.push('D')
+                else:
+                    __t_push_str(out, "\x1b[")
+                    __t_push_num(out, y + 1)
+                    out.push(';')
+                    __t_push_num(out, x + 1)
+                    out.push('H')
+            __t_sgr(out, int(b.fg), int(b.bg), int(b.style))
+            __t_cell_bytes(out, b.ch)
+            __t_front[i] = b
+            n = 1
+            if wide:
+                __t_front[i + 1] = __t_back[i + 1]
+                n = 2
+            __t_px = x + n
+            __t_py = y
+            # (past the last column the cursor waits to wrap; a character with marks, or an emoji,
+            # some terminals show at another width: where the cursor is then is not known)
+            if __t_px >= W or b.ch < 0 or b.ch >= 0x1F000 or (b.ch >= 0x2600 and b.ch < 0x2800): __t_px = -1
+            x += n
+    changed = out.len() > started
+    if __t_sfg != 0 or __t_sbg != 0 or __t_sst != 0:
+        __t_push_str(out, "\x1b[0m")
+        __t_sfg = 0
+        __t_sbg = 0
+        __t_sst = 0
+    cx = __t_cursor_x
+    cy = __t_cursor_y
+    if cx >= 0 and cy >= 0 and cx < W and cy < H:
+        if changed or __t_px != cx or __t_py != cy or not __t_cursor_shown:
+            __t_push_str(out, "\x1b[")
+            __t_push_num(out, cy + 1)
+            out.push(';')
+            __t_push_num(out, cx + 1)
+            out.push('H')
+            __t_px = cx
+            __t_py = cy
+        if not __t_cursor_shown: __t_push_str(out, "\x1b[?25h")
+        __t_cursor_shown = true
+    else if __t_cursor_shown:
+        __t_push_str(out, "\x1b[?25l")
+        __t_cursor_shown = false
+    # (shown all at once by the terminals that can: synchronized output; others pass it over)
+    if not changed: return out
+    sync: u8[] = bytes("\x1b[?2026h")
+    sync.extend(out)
+    __t_push_str(sync, "\x1b[?2026l")
+    sync
+
+# (cells written again in place of a cursor move: unchanged, plain ASCII in the colors written now)
+__t_plain = (from: int, n: int) -> bool:
+    loop k in 0..n:
+        c = __t_back[from + k]
+        if c != __t_front[from + k] or c.ch < 32 or c.ch > 126 or int(c.fg) != __t_sfg or int(c.bg) != __t_sbg or int(c.style) != __t_sst: return false
+    true
+
+# (the colors and style to write in, when they are not those written in now)
+__t_sgr = (out: mut u8[], fg: int, bg: int, st: int):
+    global __t_sbg, __t_sfg, __t_sst
+    if fg == __t_sfg and bg == __t_sbg and st == __t_sst: return
+    __t_push_str(out, "\x1b[")
+    if st != __t_sst:
+        out.push('0')
+        if st & BOLD != 0: __t_push_str(out, ";1")
+        if st & DIM != 0: __t_push_str(out, ";2")
+        if st & ITALIC != 0: __t_push_str(out, ";3")
+        if st & UNDERLINE != 0: __t_push_str(out, ";4")
+        if st & REVERSE != 0: __t_push_str(out, ";7")
+        if st & STRIKE != 0: __t_push_str(out, ";9")
+        if fg != 0:
+            out.push(';')
+            __t_color(out, fg, 30)
+        if bg != 0:
+            out.push(';')
+            __t_color(out, bg, 40)
+    else:
+        sep = false
+        if fg != __t_sfg:
+            __t_color(out, fg, 30)
+            sep = true
+        if bg != __t_sbg:
+            if sep: out.push(';')
+            __t_color(out, bg, 40)
+    out.push('m')
+    __t_sfg = fg
+    __t_sbg = bg
+    __t_sst = st
+
+# (a color's parameters: base 30 the foreground's, 40 the background's)
+__t_color = (out: mut u8[], c: int, base: int):
+    if c == 0: __t_push_num(out, base + 9)
+    else if c & 0x1000000 != 0:
+        __t_push_num(out, base + 8)
+        __t_push_str(out, ";2;")
+        __t_push_num(out, (c >> 16) & 255)
+        out.push(';')
+        __t_push_num(out, (c >> 8) & 255)
+        out.push(';')
+        __t_push_num(out, c & 255)
+    else:
+        n = c & 255
+        if n < 8: __t_push_num(out, base + n)
+        else if n < 16: __t_push_num(out, base + 60 + n - 8)
+        else:
+            __t_push_num(out, base + 8)
+            __t_push_str(out, ";5;")
+            __t_push_num(out, n)
+
+# ---------------- character widths ----------------
+# (how many cells a character takes: 0 a mark on the one before, 2 East Asian wide ones and
+# emoji, else 1; ranges as Unicode's East Asian Width and wcwidth have them)
+__t_cp_width = (c: int) -> int:
+    if c < 0x300: return 1
+    if __t_in_ranges(__t_zero_ranges, c): return 0
+    if c >= 0x1100 and __t_in_ranges(__t_wide_ranges, c): return 2
+    1
+
+__t_in_ranges = (r: int[], c: int) -> bool:
+    lo = 0
+    hi = r.len() / 2
+    loop lo < hi:
+        m = (lo + hi) / 2
+        if c < r[2 * m]: hi = m
+        else if c > r[2 * m + 1]: lo = m + 1
+        else: return true
+    false
+
+__t_zero_ranges: int[] = [0x0300, 0x036F, 0x0483, 0x0489, 0x0591, 0x05BD, 0x05BF, 0x05BF, 0x05C1, 0x05C2, 0x05C4, 0x05C5,
+    0x05C7, 0x05C7, 0x0610, 0x061A, 0x064B, 0x065F, 0x0670, 0x0670, 0x06D6, 0x06DC, 0x06DF, 0x06E4, 0x06E7, 0x06E8,
+    0x06EA, 0x06ED, 0x0711, 0x0711, 0x0730, 0x074A, 0x07A6, 0x07B0, 0x07EB, 0x07F3, 0x0816, 0x0819, 0x081B, 0x0823,
+    0x0825, 0x0827, 0x0829, 0x082D, 0x0859, 0x085B, 0x08D3, 0x08E1, 0x08E3, 0x0902, 0x093A, 0x093A, 0x093C, 0x093C,
+    0x0941, 0x0948, 0x094D, 0x094D, 0x0951, 0x0957, 0x0962, 0x0963, 0x0981, 0x0981, 0x09BC, 0x09BC, 0x09C1, 0x09C4,
+    0x09CD, 0x09CD, 0x09E2, 0x09E3, 0x0A01, 0x0A02, 0x0A3C, 0x0A3C, 0x0A41, 0x0A51, 0x0A70, 0x0A71, 0x0A75, 0x0A75,
+    0x0A81, 0x0A82, 0x0ABC, 0x0ABC, 0x0AC1, 0x0AC8, 0x0ACD, 0x0ACD, 0x0B01, 0x0B01, 0x0B3C, 0x0B3C, 0x0B3F, 0x0B3F,
+    0x0B41, 0x0B44, 0x0B4D, 0x0B4D, 0x0BC0, 0x0BC0, 0x0BCD, 0x0BCD, 0x0C3E, 0x0C40, 0x0C46, 0x0C56, 0x0CBC, 0x0CBC,
+    0x0CCC, 0x0CCD, 0x0D41, 0x0D44, 0x0D4D, 0x0D4D, 0x0DCA, 0x0DCA, 0x0DD2, 0x0DD6, 0x0E31, 0x0E31, 0x0E34, 0x0E3A,
+    0x0E47, 0x0E4E, 0x0EB1, 0x0EB1, 0x0EB4, 0x0EBC, 0x0EC8, 0x0ECD, 0x0F18, 0x0F19, 0x0F35, 0x0F35, 0x0F37, 0x0F37,
+    0x0F39, 0x0F39, 0x0F71, 0x0F7E, 0x0F80, 0x0F84, 0x0F86, 0x0F87, 0x0F8D, 0x0FBC, 0x102D, 0x1030, 0x1032, 0x1037,
+    0x1039, 0x103A, 0x1160, 0x11FF, 0x135D, 0x135F, 0x1712, 0x1714, 0x17B4, 0x17B5, 0x17B7, 0x17BD, 0x17C6, 0x17C6,
+    0x17C9, 0x17D3, 0x180B, 0x180D, 0x1AB0, 0x1AFF, 0x1DC0, 0x1DFF, 0x200B, 0x200F, 0x2028, 0x202E, 0x2060, 0x2064,
+    0x20D0, 0x20F0, 0x302A, 0x302D, 0x3099, 0x309A, 0xA66F, 0xA672, 0xA674, 0xA67D, 0xFB1E, 0xFB1E, 0xFE00, 0xFE0F,
+    0xFE20, 0xFE2F, 0xFEFF, 0xFEFF, 0x1F3FB, 0x1F3FF, 0xE0000, 0xE0FFF]
+
+__t_wide_ranges: int[] = [0x1100, 0x115F, 0x231A, 0x231B, 0x2329, 0x232A, 0x23E9, 0x23EC, 0x23F0, 0x23F0, 0x23F3, 0x23F3,
+    0x25FD, 0x25FE, 0x2614, 0x2615, 0x2648, 0x2653, 0x267F, 0x267F, 0x2693, 0x2693, 0x26A1, 0x26A1, 0x26AA, 0x26AB,
+    0x26BD, 0x26BE, 0x26C4, 0x26C5, 0x26CE, 0x26CE, 0x26D4, 0x26D4, 0x26EA, 0x26EA, 0x26F2, 0x26F3, 0x26F5, 0x26F5,
+    0x26FA, 0x26FA, 0x26FD, 0x26FD, 0x2705, 0x2705, 0x270A, 0x270B, 0x2728, 0x2728, 0x274C, 0x274C, 0x274E, 0x274E,
+    0x2753, 0x2755, 0x2757, 0x2757, 0x2795, 0x2797, 0x27B0, 0x27B0, 0x27BF, 0x27BF, 0x2B1B, 0x2B1C, 0x2B50, 0x2B50,
+    0x2B55, 0x2B55, 0x2E80, 0x303E, 0x3041, 0x33FF, 0x3400, 0x4DBF, 0x4E00, 0x9FFF, 0xA000, 0xA4CF, 0xA960, 0xA97F,
+    0xAC00, 0xD7A3, 0xF900, 0xFAFF, 0xFE10, 0xFE19, 0xFE30, 0xFE6F, 0xFF00, 0xFF60, 0xFFE0, 0xFFE6, 0x16FE0, 0x16FE4,
+    0x17000, 0x18CFF, 0x1B000, 0x1B2FF, 0x1F004, 0x1F004, 0x1F0CF, 0x1F0CF, 0x1F18E, 0x1F18E, 0x1F191, 0x1F19A,
+    0x1F200, 0x1F202, 0x1F210, 0x1F23B, 0x1F240, 0x1F248, 0x1F250, 0x1F251, 0x1F260, 0x1F265, 0x1F300, 0x1F320,
+    0x1F32D, 0x1F335, 0x1F337, 0x1F37C, 0x1F37E, 0x1F393, 0x1F3A0, 0x1F3CA, 0x1F3CF, 0x1F3D3, 0x1F3E0, 0x1F3F0,
+    0x1F3F4, 0x1F3F4, 0x1F3F8, 0x1F43E, 0x1F440, 0x1F440, 0x1F442, 0x1F4FC, 0x1F4FF, 0x1F53D, 0x1F54B, 0x1F54E,
+    0x1F550, 0x1F567, 0x1F57A, 0x1F57A, 0x1F595, 0x1F596, 0x1F5A4, 0x1F5A4, 0x1F5FB, 0x1F64F, 0x1F680, 0x1F6C5,
+    0x1F6CC, 0x1F6CC, 0x1F6D0, 0x1F6D2, 0x1F6D5, 0x1F6D7, 0x1F6DC, 0x1F6DF, 0x1F6EB, 0x1F6EC, 0x1F6F4, 0x1F6FC,
+    0x1F7E0, 0x1F7EB, 0x1F7F0, 0x1F7F0, 0x1F90C, 0x1F93A, 0x1F93C, 0x1F945, 0x1F947, 0x1F9FF, 0x1FA70, 0x1FAFF,
+    0x20000, 0x2FFFD, 0x30000, 0x3FFFD]
+
+# ---------------- decoding the terminal's input ----------------
+# (one event from b at i, and how many bytes it took: 0 when the bytes end in the middle of a
+# sequence (final: nothing more is coming, so they are what they are as keys); an event of none
+# for a sequence that means nothing here, skipped)
+__t_parse = (b: u8[], i: int, final: bool) -> (Event?, int):
+    n = b.len()
+    c = int(b[i])
+    if c == 0x1B:
+        if i + 1 >= n:
+            if final: return (__t_key(.escape), 1)
+            return (none, 0)
+        c2 = int(b[i + 1])
+        if c2 == c'[':
+            e, k = __t_csi(b, i + 2, final)
+            if k == 0: return (none, 0)
+            if k < 0: return (__t_char(c'[', alt = true), 2)     # (not a sequence: alt+[)
+            return (e, k + 2)
+        if c2 == c'O':
+            if i + 2 >= n:
+                if final: return (__t_char(c'O', alt = true), 2)
+                return (none, 0)
+            k = match int(b[i + 2]):
+                c'A': Key.up
+                c'B': Key.down
+                c'C': Key.right
+                c'D': Key.left
+                c'H': Key.home
+                c'F': Key.end
+                c'P': Key.f1
+                c'Q': Key.f2
+                c'R': Key.f3
+                c'S': Key.f4
+                c'M': Key.enter
+                _: Key.char
+            if k == .char: return (__t_char(c'O', alt = true), 2)
+            return (__t_key(k), 3)
+        if c2 == 0x1B:
+            # (escape, then a sequence: that key with alt, as some terminals send it)
+            if i + 2 >= n and not final: return (none, 0)
+            if i + 2 < n and (b[i + 2] == '[' or b[i + 2] == 'O'):
+                e, k = __t_parse(b, i + 1, final)
+                if k == 0: return (none, 0)
+                if let x = e: return (__t_with(x, alt = true), k + 1)
+                return (none, k + 1)
+            return (__t_key(.escape, alt = true), 2)
+        # (escape, then a key: that key with alt)
+        e, k = __t_parse(b, i + 1, final)
+        if k == 0: return (none, 0)
+        if let x = e: return (__t_with(x, alt = true), k + 1)
+        return (none, k + 1)
+    if c == 13 or c == 10: return (__t_key(.enter), 1)
+    if c == 9: return (__t_key(.tab), 1)
+    if c == 127: return (__t_key(.backspace), 1)
+    if c == 8: return (__t_key(.backspace, ctrl = true), 1)
+    if c == 0: return (__t_char(32, ctrl = true), 1)
+    if c < 27: return (__t_char(c'a' + c - 1, ctrl = true), 1)
+    if c < 32: return (__t_char(c'\\' + c - 28, ctrl = true), 1)      # (ctrl+\ ] ^ _)
+    if c < 0x80: return (__t_char(c), 1)
+    # (a character of several bytes)
+    need = if c >= 0xF0: 4 else: if c >= 0xE0: 3 else: 2
+    if i + need > n:
+        if not final: return (none, 0)
+        return (__t_char(0xFFFD), 1)
+    s = str_from_bytes(b[i..i + need))
+    cp, k = __t_utf8(s, 0)
+    (__t_char(cp), k)
+
+# (a CSI sequence's parameters and final byte, from j: the key it is, and the bytes it took; 0:
+# not all there yet, -1: not a sequence)
+__t_csi = (b: u8[], j: int, final: bool) -> (Event?, int):
+    n = b.len()
+    k = j
+    loop k < n and b[k] >= 0x20 and b[k] <= 0x3F: k += 1
+    if k >= n:
+        if final: return (none, -1)
+        return (none, 0)
+    f = int(b[k])
+    if f < 0x40 or f > 0x7E: return (none, -1)
+    took = k + 1 - j
+    p = str_from_bytes(b[j..k))
+    # (the mouse, as xterm's SGR mode 1006 says it: <button;x;y, M pressed, m released)
+    if len(p) > 0 and p[0] == '<' and (f == c'M' or f == c'm'):
+        ns = __t_nums(p[1..])
+        if ns.len() < 3: return (none, took)
+        return (__t_mouse_event(ns[0], ns[1] - 1, ns[2] - 1, f == c'm'), took)
+    # (the mouse in X10's mode, for a terminal without 1006: three bytes after it)
+    if len(p) == 0 and f == c'M':
+        if k + 3 >= n:
+            if final: return (none, took)
+            return (none, 0)
+        return (__t_mouse_event(int(b[k + 1]) - 32, int(b[k + 2]) - 33, int(b[k + 3]) - 33, false), took + 3)
+    ns = __t_nums(p)
+    mods = if ns.len() >= 2: ns[1] else: 1
+    if f == c'~':
+        if ns.len() == 0: return (none, took)
+        if ns[0] == 200:
+            # (pasted text, up to ESC [ 201 ~)
+            e = __t_find(b, k + 1, "\x1b[201~")
+            if e < 0: return (none, 0)
+            return (__t_paste(b[k + 1..e)), e + 6 - j)
+        if ns[0] == 27 and ns.len() >= 3: return (__t_mods(__t_code_key(ns[2]), ns[1]), took)    # (xterm's modifyOtherKeys)
+        key = match ns[0]:
+            1, 7: Key.home
+            2: Key.insert
+            3: Key.delete
+            4, 8: Key.end
+            5: Key.page_up
+            6: Key.page_down
+            11: Key.f1
+            12: Key.f2
+            13: Key.f3
+            14: Key.f4
+            15: Key.f5
+            17: Key.f6
+            18: Key.f7
+            19: Key.f8
+            20: Key.f9
+            21: Key.f10
+            23: Key.f11
+            24: Key.f12
+            _: Key.char
+        if key == .char: return (none, took)
+        return (__t_mods(__t_key(key), mods), took)
+    if f == c'u':
+        # (a key as its code with its modifiers: CSI u, as kitty and foot send)
+        if ns.len() == 0: return (none, took)
+        return (__t_mods(__t_code_key(ns[0]), mods), took)
+    if f == c'Z': return (__t_key(.tab, shift = true), took)
+    if f == c'I' or f == c'O': return (none, took)                     # (focus in, out)
+    key = match f:
+        c'A': Key.up
+        c'B': Key.down
+        c'C': Key.right
+        c'D': Key.left
+        c'H': Key.home
+        c'F': Key.end
+        c'P': Key.f1
+        c'Q': Key.f2
+        c'R': Key.f3
+        c'S': Key.f4
+        _: Key.char
+    # (the Linux console's F1-F5: ESC [ [ A..E)
+    if len(p) == 0 and f == c'[' and k + 1 < n:
+        c3 = int(b[k + 1])
+        if c3 >= c'A' and c3 <= c'E': return (__t_key(Key(int(Key.f1) + c3 - c'A')), took + 1)
+    if key == .char: return (none, took)
+    (__t_mods(__t_key(key), mods), took)
+
+# (a key's code, as CSI u and modifyOtherKeys give it)
+__t_code_key = (code: int) -> Event:
+    if code == 13: return __t_key(.enter)
+    if code == 9: return __t_key(.tab)
+    if code == 27: return __t_key(.escape)
+    if code == 127 or code == 8: return __t_key(.backspace)
+    __t_char(code)
+
+# (the numbers of a sequence's parameters, separated by ; (a : and what follows it left out))
+__t_nums = (p: str) -> int[]:
+    out: int[]
+    v = 0
+    skip = false
+    loop i in 0..len(p):
+        c = p[i]
+        if c == ';':
+            out.push(v)
+            v = 0
+            skip = false
+        else if c == ':': skip = true
+        else if c >= '0' and c <= '9' and not skip: v = v * 10 + int(c - '0')
+    if len(p) > 0: out.push(v)
+    out
+
+__t_find = (b: u8[], from: int, s: str) -> int:
+    i = from
+    loop i + len(s) <= b.len():
+        ok = true
+        loop k in 0..len(s):
+            if b[i + k] != s[k]:
+                ok = false
+                break
+        if ok: return i
+        i += 1
+    -1
+
+# (pasted text: its line ends as \n)
+__t_paste = (b: u8[]) -> Event:
+    t = replace(replace(str_from_bytes(b), "\r\n", "\n"), "\r", "\n")
+    Event(.paste, text = t)
+
+# (xterm's modifiers parameter: 1 + shift 1, alt 2, ctrl 4, meta 8)
+__t_mods = (e: Event, m: int) -> Event:
+    if m <= 1: return e
+    b = m - 1
+    __t_with(e, shift = b & 1 != 0, alt = b & 10 != 0, ctrl = b & 4 != 0)
+
+# (the mouse: SGR's button number, bits 4 shift, 8 alt, 16 ctrl, 32 moving, 64 the wheel)
+__t_mouse_event = (bt: int, x: int, y: int, released: bool) -> Event?:
+    e = Event(.mouse, x = x, y = y, shift = bt & 4 != 0, alt = bt & 8 != 0, ctrl = bt & 16 != 0)
+    low = bt & 3
+    if bt & 64 != 0:
+        e.mouse = match low:
+            0: Mouse.wheel_up
+            1: Mouse.wheel_down
+            2: Mouse.wheel_left
+            _: Mouse.wheel_right
+        return e
+    btn = if low == 3: 0 else: if low == 1: 2 else: if low == 2: 3 else: 1
+    if bt & 32 != 0:
+        e.mouse = if btn == 0: .move else: .drag
+        e.button = btn
+        return e
+    e.button = btn
+    e.mouse = if released or btn == 0: .release else: .press
+    e
+
+__t_key = (k: Key, ctrl: bool = false, alt: bool = false, shift: bool = false) -> Event:
+    e = Event(.key, key = k, ctrl = ctrl, alt = alt, shift = shift)
+    e.name = __t_name(e)
+    e
+
+__t_char = (cp: int, ctrl: bool = false, alt: bool = false) -> Event:
+    e = Event(.key, key = .char, text = chr(cp), ctrl = ctrl, alt = alt)
+    e.name = __t_name(e)
+    e
+
+# (the event with these modifiers added, its name made again)
+__t_with = (e0: Event, ctrl: bool = false, alt: bool = false, shift: bool = false) -> Event:
+    e = e0
+    e.ctrl = e.ctrl or ctrl
+    e.alt = e.alt or alt
+    if e.key != .char: e.shift = e.shift or shift
+    if e.kind == .key: e.name = __t_name(e)
+    e
+
+__t_name = (e: Event) -> str:
+    base = if e.key == .char: (if e.text == " ": "space" else: e.text) else: "{e.key}"
+    pre = ""
+    if e.ctrl: pre += "ctrl+"
+    if e.alt: pre += "alt+"
+    if e.shift and e.key != .char: pre += "shift+"
+    pre + base
+
+# ---------------- the terminal's settings, by system ----------------
+when TARGET == "windows":
+    @lib("kernel32.dll")
+    @symbol("SetConsoleMode")
+    extern __t_set_console_mode = (h: *u8, mode: u32) -> i32
+    @lib("kernel32.dll")
+    @symbol("GetConsoleScreenBufferInfo")
+    extern __t_buffer_info = (h: *u8, info: *u8) -> i32
+else when TARGET == "macos":
+    @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("ioctl")
+    @variadic(2)
+    extern __t_ioctl = (fd: i32, req: u64, p: *u8) -> i32
+
+# (standard input and output are the terminal)
+__t_is_terminal = () -> bool:
+    when TARGET == "windows":
+        m: u32[] = [0]
+        return GetConsoleMode(GetStdHandle(u32(0xFFFFFFF6)), data(m)) != 0 and GetConsoleMode(GetStdHandle(u32(0xFFFFFFF5)), data(m)) != 0
+    else when TARGET == "macos":
+        return __mac_isatty(i32(0)) == 1 and __mac_isatty(i32(1)) == 1
+    else when TARGET == "wasm":
+        return false
+    else:
+        t = fill(u8(0), 64)
+        return syscall(16, 0, 0x5401, data(t)) == 0 and syscall(16, 1, 0x5401, data(t)) == 0
+
+# (once: the terminal put back as the program ends (before its on_quit, which may print), and on
+# a panic, a crash or a second ctrl-c (lib/std/stop.jo); SIGWINCH's handler)
+__t_setup = ():
+    global __t_once, __t_wake_r, __t_wake_w, __term_reset_fn
+    if __t_once: return
+    __t_once = true
+    __end_fns.insert(0, __t_at_end)
+    __term_reset_fn = __t_reset
+    when TARGET != "windows" and TARGET != "wasm":
+        fds = [0]
+        if syscall(293, data(fds), 0x80800) == 0:               # pipe2(O_CLOEXEC | O_NONBLOCK)
+            __t_wake_r = fds[0] & 0xFFFFFFFF
+            __t_wake_w = fds[0] >> 32
+        h: cfn(i32) = __t_on_winch
+        act = [h as int, 0x10000000, 0, 0]                      # SA_RESTART
+        when TARGET == "linux" and ARCH != "arm64":
+            act[1] |= 0x04000000                                # SA_RESTORER
+            act[2] = __stop_restorer()
+        syscall(13, 28, data(act), 0, 8)                        # rt_sigaction(SIGWINCH)
+        # (a second ctrl-c or SIGTERM ends the program in stop.jo's handler, which puts the terminal
+        # back, rather than by the system's default)
+        hs: cfn(i32) = __stop_signal
+        act[0] = hs as int
+        syscall(13, 2, data(act), 0, 8)                         # rt_sigaction(SIGINT)
+        syscall(13, 15, data(act), 0, 8)                        # rt_sigaction(SIGTERM)
+
+__t_at_end = (): __t_reset()
+
+@cabi
+__t_on_winch = (sig: i32):
+    global __t_winch
+    if __t_winch: return
+    __t_winch = true
+    if __t_wake_w >= 0:
+        one = (1, 0)
+        syscall(1, __t_wake_w, &one, 1)
+
+# (what puts the screen back, kept where a signal's handler can write it without allocating)
+__t_set_reset = (s: str):
+    global __t_reset_n, __t_reset_p
+    if __t_reset_p == null: __t_reset_p = __alloc(256)
+    n = min(len(s), 256)
+    loop i in 0..n: __t_reset_p[i] = s[i]
+    __t_reset_n = n
+
+# (the terminal put back: its screen, then its settings. It may run in a signal's handler or as a
+# panic is told: it allocates nothing)
+__t_reset = ():
+    global __t_on
+    if not __t_on: return
+    __t_on = false
+    when TARGET == "windows":
+        __w32_write(1, __t_reset_p, __t_reset_n)
+        __t_set_console_mode(GetStdHandle(u32(0xFFFFFFF6)), u32(__t_mode_in))
+        __t_set_console_mode(GetStdHandle(u32(0xFFFFFFF5)), u32(__t_mode_out))
+    else when TARGET == "macos":
+        __c_write(1, __t_reset_p as int, __t_reset_n)
+        __c_tcsetattr(0, 0, __t_saved)
+    else when TARGET != "wasm":
+        syscall(1, 1, __t_reset_p, __t_reset_n)
+        syscall(16, 0, 0x5402, __t_saved)                      # TCSETS
+
+# (raw mode: keys one at a time as they are typed, not shown; the terminal's settings kept, to put back)
+__t_raw = (on: bool, mouse: bool, ctrl_c_key: bool) -> bool:
+    global __t_mode_in, __t_mode_out, __t_saved
+    when TARGET == "windows":
+        hin = GetStdHandle(u32(0xFFFFFFF6))
+        hout = GetStdHandle(u32(0xFFFFFFF5))
+        m: u32[] = [0]
+        if GetConsoleMode(hin, data(m)) == 0: return false
+        __t_mode_in = int(m[0])
+        GetConsoleMode(hout, data(m))
+        __t_mode_out = int(m[0])
+        # (window and mouse events, no line editing or echo; ctrl-c the system's unless it is a key;
+        # quick edit off while the mouse is the program's)
+        mode = 0x8 | 0x80
+        if not ctrl_c_key: mode |= 0x1
+        if mouse: mode |= 0x10
+        else: mode |= __t_mode_in & 0x40
+        __t_set_console_mode(hin, u32(mode))
+        __t_set_console_mode(hout, u32(__t_mode_out | 0x1 | 0x4))      # VIRTUAL_TERMINAL_PROCESSING
+        __w32_utf8_console()
+        return true
+    else when TARGET == "macos":
+        # (macOS's struct termios: four u64 flags, cc[20] at 32, the speeds)
+        if __t_saved == null: __t_saved = __alloc(128)
+        if __c_tcgetattr(0, __t_saved) != 0: return false
+        t = __alloc(128)
+        mem_copy(t, __t_saved, 128)
+        f = t as *int
+        f[0] = f[0] & ~(0x1 | 0x2 | 0x8 | 0x20 | 0x40 | 0x80 | 0x100 | 0x200)     # IGNBRK BRKINT PARMRK ISTRIP INLCR IGNCR ICRNL IXON
+        lf = 0x8 | 0x10 | 0x100 | 0x400                                       # ECHO ECHONL ICANON IEXTEN
+        if ctrl_c_key: lf |= 0x80                                             # ISIG
+        f[3] = f[3] & ~lf
+        cc = t + 32
+        cc[16] = 1                                                            # VMIN
+        cc[17] = 0                                                            # VTIME
+        cc[9] = 0xFF                                                          # VQUIT, VSUSP, VDSUSP, VSTATUS: off
+        cc[10] = 0xFF
+        cc[11] = 0xFF
+        cc[18] = 0xFF
+        ok = __c_tcsetattr(0, 0, t) == 0
+        __free(t)
+        return ok
+    else when TARGET == "wasm":
+        return false
+    else:
+        # (Linux's struct termios: iflag, oflag, cflag, lflag (u32), line, cc[19])
+        if __t_saved == null: __t_saved = __alloc(64)
+        if syscall(16, 0, 0x5401, __t_saved) != 0: return false        # TCGETS
+        t = fill(u8(0), 64)
+        mem_copy(data(t), __t_saved, 64)
+        f = data(t) as *u32
+        f[0] = f[0] & u32(~(0x1 | 0x2 | 0x8 | 0x20 | 0x40 | 0x80 | 0x100 | 0x400))    # IGNBRK BRKINT PARMRK ISTRIP INLCR IGNCR ICRNL IXON
+        lf = 0x8 | 0x40 | 0x2 | 0x8000                                        # ECHO ECHONL ICANON IEXTEN
+        if ctrl_c_key: lf |= 0x1                                              # ISIG
+        f[3] = f[3] & u32(~lf)
+        t[17 + 6] = 1                                                         # VMIN
+        t[17 + 5] = 0                                                         # VTIME
+        t[17 + 1] = 0                                                         # VQUIT, VSUSP: off (keys)
+        t[17 + 10] = 0
+        return syscall(16, 0, 0x5402, data(t)) == 0                           # TCSETS
+
+# (the terminal's columns and rows; 80 x 24 when it does not say)
+__t_query_size = () -> (int, int):
+    global __t_left, __t_top
+    when TARGET == "windows":
+        info = fill(u8(0), 24)
+        if __t_buffer_info(GetStdHandle(u32(0xFFFFFFF5)), data(info)) == 0: return (80, 24)
+        s = data(info) as *i16
+        __t_left = int(s[5])
+        __t_top = int(s[6])
+        return (int(s[7]) - int(s[5]) + 1, int(s[8]) - int(s[6]) + 1)
+    else when TARGET == "wasm":
+        return (80, 24)
+    else:
+        ws: u16[] = [0, 0, 0, 0]
+        r = 0
+        when TARGET == "macos":
+            r = int(__t_ioctl(1, u64(0x40087468), data(ws) as *u8))
+        else:
+            r = syscall(16, 1, 0x5413, data(ws))                # TIOCGWINSZ
+        if r != 0 or ws[0] == 0 or ws[1] == 0: return (80, 24)
+        return (int(ws[1]), int(ws[0]))
+
+# ---------------- Windows's console events ----------------
+when TARGET == "windows":
+    # (wait for the console's events until deadline (-1: none), made into events; false: none came
+    # (the time passed, the task was cancelled, or the program asked to stop))
+    __t_w32_wait = (deadline: f64) -> bool:
+        hin = GetStdHandle(u32(0xFFFFFFF6))
+        loop true:
+            n: u32[] = [0]
+            GetNumberOfConsoleInputEvents(hin, data(n))
+            if n[0] > 0:
+                rec = fill(u8(0), 20 * 64)
+                got: u32[] = [0]
+                if ReadConsoleInputW(hin, data(rec), 64, data(got)) != 0:
+                    loop k in 0..int(got[0]):
+                        r = data(rec) + k * 20
+                        if (r as *u16)[0] != 2 or __t_mouse_on: __t_w32_record(r)
+                if __t_events.len() > 0: return true
+                continue
+            if __stop_asked:
+                if __t_told_stop(): return false
+            if deadline >= 0.0 and time() >= deadline: return false
+            left = if deadline < 0.0: 0.1 else: min(0.1, deadline - time())
+            if __tasks_on:
+                __task_wait_fn([], [], min(left, 0.01))
+                if __task_cancelling: return false
+            else: WaitForSingleObject(hin, u32(max(int(left * 1000.0), 1)))
+            __t_check_size()
+            if __t_events.len() > 0: return true
+        false
+
+else:
+    __t_w32_wait = (deadline: f64) -> bool: false
+
+# (a Windows console's INPUT_RECORD made into events: its kind, then a key's, the mouse's or a
+# resize's fields. Plain bytes, so that a test on any system can give it some)
+__t_w32_record = (r: *u8):
+    global __t_buttons, __t_high
+    kind = int((r as *u16)[0])
+    if kind == 1:
+        down = ((r + 4) as *i32)[0] != 0
+        repeat = max(int(((r + 8) as *u16)[0]), 1)
+        vk = int(((r + 10) as *u16)[0])
+        ch = int(((r + 14) as *u16)[0])
+        st = int(((r + 16) as *u32)[0])
+        # (a character made with alt and the number pad comes as alt is let go)
+        if not down and not (vk == 0x12 and ch != 0): return
+        ctrl = st & 0xC != 0
+        alt = st & 0x3 != 0
+        shift = st & 0x10 != 0
+        if ch >= 32 and st & 0x1 != 0 and st & 0x8 != 0:
+            # (AltGr: right alt and left ctrl together type a character)
+            ctrl = false
+            alt = false
+        key = match vk:
+            0x08: Key.backspace
+            0x09: Key.tab
+            0x0D: Key.enter
+            0x1B: Key.escape
+            0x21: Key.page_up
+            0x22: Key.page_down
+            0x23: Key.end
+            0x24: Key.home
+            0x25: Key.left
+            0x26: Key.up
+            0x27: Key.right
+            0x28: Key.down
+            0x2D: Key.insert
+            0x2E: Key.delete
+            [0x70..0x7B]: Key(int(Key.f1) + vk - 0x70)
+            _: Key.char
+        e: Event? = none
+        if not down: e = __t_char(ch)
+        else if key != .char: e = __t_key(key, ctrl = ctrl, alt = alt, shift = shift)
+        else if vk == 0x10 or vk == 0x11 or vk == 0x12 or vk == 0x14 or vk == 0x5B or vk == 0x5C: return
+        else if ch >= 0xD800 and ch < 0xDC00:
+            __t_high = ch
+            return
+        else if ch >= 0xDC00 and ch < 0xE000:
+            if __t_high == 0: return
+            e = __t_char(0x10000 + ((__t_high - 0xD800) << 10) + (ch - 0xDC00), ctrl = ctrl, alt = alt)
+            __t_high = 0
+        else if ctrl and vk >= c'A' and vk <= c'Z': e = __t_char(vk - c'A' + c'a', ctrl = true, alt = alt)
+        else if ch >= 32: e = __t_char(ch, ctrl = ctrl, alt = alt)
+        else if ctrl and vk == 0x20: e = __t_char(32, ctrl = true, alt = alt)
+        else if ch > 0: e = (__t_parse([u8(ch)], 0, true)).0
+        else if ctrl and vk >= c'0' and vk <= c'9': e = __t_char(vk, ctrl = true, alt = alt)
+        if let x = e:
+            loop _ in 0..repeat: __t_events.push(x)
+    else if kind == 2:
+        x = int(((r + 4) as *i16)[0]) - __t_left
+        y = int(((r + 6) as *i16)[0]) - __t_top
+        bs = int(((r + 8) as *u32)[0])
+        st = int(((r + 12) as *u32)[0])
+        fl = int(((r + 16) as *u32)[0])
+        e = Event(.mouse, x = x, y = y, ctrl = st & 0xC != 0, alt = st & 0x3 != 0, shift = st & 0x10 != 0)
+        if fl & 4 != 0 or fl & 8 != 0:
+            up = (bs >> 16) & 0xFFFF < 0x8000
+            if fl & 4 != 0: e.mouse = if up: .wheel_up else: .wheel_down
+            else: e.mouse = if up: .wheel_right else: .wheel_left
+            __t_events.push(e)
+            return
+        held = bs & 7
+        if fl & 1 != 0:
+            if held == 0 and not __t_mouse_moves: return
+            e.mouse = if held == 0: .move else: .drag
+            e.button = __t_w32_button(held)
+            __t_events.push(e)
+            return
+        # (presses and releases: the buttons that changed)
+        loop bit in [1, 4, 2]:
+            if held & bit != 0 and __t_buttons & bit == 0:
+                e.mouse = .press
+                e.button = __t_w32_button(bit)
+                __t_events.push(e)
+            else if held & bit == 0 and __t_buttons & bit != 0:
+                e.mouse = .release
+                e.button = __t_w32_button(bit)
+                __t_events.push(e)
+        __t_buttons = held
+    else if kind == 4:
+        __t_check_size()
+
+# (the console's button bits: 1 the left, 2 the right, 4 the middle)
+__t_w32_button = (bits: int) -> int:
+    if bits & 1 != 0: return 1
+    if bits & 4 != 0: return 2
+    if bits & 2 != 0: return 3
+    0
