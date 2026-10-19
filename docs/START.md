@@ -548,7 +548,11 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `s[:4]`, `f"{s:.4}"` | `first(s, 4)` or `"{s:.4}"` (characters; `s[..4]` counts bytes, and can cut an `é` in two) |
 | `re.search(r"\d+", s)` | `s.find(regex(r"\d+"))` (a `Match?`: `m.text`, `m.groups`) |
 | `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero when changed (`counts[w] += 1`, `groups[k].push(x)`); reading one, `m[k]`, is an error: `m.get(k) ?? 0` |
-| `set()` | a map to `bool`, or `unique(xs)` |
+| `set()`, `{1, 2}`, `x in s` | `seen: Set[int]` (`{}` where a Set is expected), `{1, 2}`, `s.add(x)`, `x in s`; `unique(xs)` for an array without repeats |
+| `collections.deque`, `heapq.heappush(pq, (d, v))` | `q: Deque[int]` with `q.push(x)` and `q.pop_front()`; `pq.heap_push((d, v))` and `pq.heap_pop()` on an array |
+| `bisect.bisect_left(xs, x)`, `itertools.permutations(xs)`, `combinations(xs, k)` | `lower_bound(xs, x)` (or `bisect_left`), `permutations(xs)`, `combinations(xs, k)` |
+| `math.gcd`, `math.isqrt`, `pow(b, e, m)` | `gcd(a, b)`, `isqrt(n)`, `pow_mod(b, e, m)`, `inv_mod(a, m)` |
+| `" ".join(map(str, xs))`, `print(x, file=sys.stderr)` | `xs.join(" ")`, `eprint(x)` |
 | `None`, `if x is None:` | `none`, `if x == none:`; `if let v = x:` gets what is inside |
 | `match s:` with `case Rect(w, h) if w == h:`, `case n if n > 100:` | `match s:` with `.rect(w, h) if w == h:` (a variant of an enum, its fields by position), `_ if s > 100:`; `if let .rect(w, h) = s:` for one variant |
 | `t[0]` (a tuple) | `t.0` |
@@ -556,7 +560,10 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `max(xs, key=len)`, `sorted(xs, key=..., reverse=True)` | `max(xs, key = len)`, `sorted(xs, key = (x): x.age, descending = true)` |
 | `try: ... except: ...` | a function gives back what went wrong as a value (`-> Config \| JsonError`), checked with `if r is JsonError:`, or passed on to the caller with `?` (`cfg = load(p)?`) |
 | `def test_x(): assert ...` (pytest) | `test "x": assert(...)`, run with `sloppy test file.jo` |
-| big integers | `int` is 64 bits and wraps around |
+| big integers | `int` is 64 bits and wraps around (`checked_mul(a, b)` is none where it would); there are no exact big integers (`Big`, after `use big`, is a float with a large exponent, about 15 digits) |
+
+For contests and Advent of Code (reading all the input at once, the containers, binary search,
+number theory): [Contests and Advent of Code](CONTESTS.md).
 
 ## Coming from pygame
 
@@ -662,6 +669,8 @@ game](LANGUAGE.md#testing-a-game).
   [an arcade game](TUTORIAL_REBOUND.md) and [a 3D shooter](TUTORIAL_BREAKWATER.md).
 - [The language](LANGUAGE.md): everything Sloppy has, with examples.
 - [Teaching with Sloppy](TEACHING.md): for a class, an order to teach things in, and grading.
+- [Contests and Advent of Code](CONTESTS.md): reading the input, integers, containers, binary
+  search and number theory, for C++ and Python contest regulars.
 - [The library](API.md): windows, input, drawing in 2D and 3D, sound, files and the rest.
 - [The playground](https://sloppy-lang.org/playground/) has more examples, including two
   complete games.

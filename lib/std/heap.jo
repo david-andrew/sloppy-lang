@@ -7,6 +7,8 @@
 #       c, d = open.pop_with_priority()    # the one with the least priority, and that priority
 #       ...open.push(next, d + cost)
 #
+# Priorities are f64s, or ints: an int priority keeps its order exactly, past 2^53 too, where
+# f64s of neighboring ints are equal (pop_with_int_priority gives one back exactly).
 # (largest first: push with -priority.) Values that order themselves, as Python's heapq keeps
 # them, need no Heap: `pq.heap_push((dist, node))` and `pq.heap_pop()` on an array keep the
 # smallest at pq[0], tuples compared by their first element, then the next.
@@ -14,17 +16,39 @@
 struct Heap[T]:
     items: T[]
     keys: f64[]
+    # (what an int priority has past its f64 in keys: compared where the keys are equal)
+    __rest: int[]
 
 # put x in with this priority
 push[T] = (h: mut Heap[T], x: T, priority: f64):
     h.items.push(x)
     h.keys.push(priority)
+    h.__rest.push(0)
+    __heap_up(h)
+
+# put x in with an int priority, kept exactly (an int past 2^53 is not, as an f64)
+push[T] = (h: mut Heap[T], x: T, priority: int):
+    k = f64(priority)
+    h.items.push(x)
+    h.keys.push(k)
+    # (f64(priority) rounds to the nearest; what is left over orders those that round alike)
+    if k >= 9223372036854775807.0: h.__rest.push(priority + MIN_INT)
+    else: h.__rest.push(priority - int(k))
+    __heap_up(h)
+
+__heap_up[T] = (h: mut Heap[T]):
     i = h.keys.len() - 1
     loop i > 0:
         p = (i - 1) / 2
-        if h.keys[p] <= h.keys[i]: break
+        if not __heap_less(h, i, p): break
         __heap_swap(h, i, p)
         i = p
+
+# (the priority at i less than the one at j)
+__heap_less[T] = (h: Heap[T], i: int, j: int) -> bool:
+    a = h.keys[i]
+    b = h.keys[j]
+    a < b or (a == b and h.__rest[i] < h.__rest[j])
 
 # take out the value with the least priority (the heap must not be empty)
 pop[T] = (h: mut Heap[T]) -> T:
@@ -38,20 +62,33 @@ pop_with_priority[T] = (h: mut Heap[T]) -> (T, f64):
     k = h.keys[0]
     (__heap_pop(h), k)
 
+# take out the value with the least priority, and give that priority as an int, exactly as
+# pushed with an int (the heap must not be empty)
+pop_with_int_priority[T] = (h: mut Heap[T]) -> (T, int):
+    if h.items.len() == 0: panic("pop_with_int_priority from an empty Heap (ask h.len() > 0 first)")
+    k = __heap_int_key(h, 0)
+    (__heap_pop(h), k)
+
+__heap_int_key[T] = (h: Heap[T], i: int) -> int:
+    k = h.keys[i]
+    if k >= 9223372036854775807.0: return h.__rest[i] - MIN_INT
+    int(k) + h.__rest[i]
+
 __heap_pop[T] = (h: mut Heap[T]) -> T:
     top = h.items[0]
     last = h.items.len() - 1
     __heap_swap(h, 0, last)
     h.items.pop()
     h.keys.pop()
+    h.__rest.pop()
     n = last
     i = 0
     loop true:
         l = 2 * i + 1
         r = l + 1
         m = i
-        if l < n and h.keys[l] < h.keys[m]: m = l
-        if r < n and h.keys[r] < h.keys[m]: m = r
+        if l < n and __heap_less(h, l, m): m = l
+        if r < n and __heap_less(h, r, m): m = r
         if m == i: break
         __heap_swap(h, i, m)
         i = m
@@ -65,11 +102,16 @@ peek[T] = (h: Heap[T]) -> T:
 peek_priority[T] = (h: Heap[T]) -> f64:
     if h.keys.len() == 0: panic("peek_priority of an empty Heap (ask h.len() > 0 first)")
     h.keys[0]
+# the least priority as an int, exactly as pushed with an int (the heap must not be empty)
+peek_int_priority[T] = (h: Heap[T]) -> int:
+    if h.keys.len() == 0: panic("peek_int_priority of an empty Heap (ask h.len() > 0 first)")
+    __heap_int_key(h, 0)
 
 len[T] = (h: Heap[T]) -> int: h.items.len()
 clear[T] = (h: mut Heap[T]):
     h.items.clear()
     h.keys.clear()
+    h.__rest.clear()
 
 __heap_swap[T] = (h: mut Heap[T], a: int, b: int):
     if a == b: return
@@ -79,6 +121,9 @@ __heap_swap[T] = (h: mut Heap[T], a: int, b: int):
     k = h.keys[a]
     h.keys[a] = h.keys[b]
     h.keys[b] = k
+    r = h.__rest[a]
+    h.__rest[a] = h.__rest[b]
+    h.__rest[b] = r
 
 # ---------------- an array as a heap ----------------
 # Python's heapq: the array's smallest value is at xs[0], each value compared with < (numbers,
@@ -94,13 +139,14 @@ heap_push[T] = (xs: mut T[], x: T):
         xs.swap(i, p)
         i = p
 
-# take the smallest value out of the array kept as a heap (it must not be empty)
-heap_pop[T] = (xs: mut T[]) -> T:
-    if xs.len() == 0: panic("heap_pop from an empty array (ask xs.len() > 0 first)")
-    xs.swap(0, xs.len() - 1)
-    top = xs.pop()
+# the array made a heap in place, in time in proportion to its length (Python's heapify):
+# heap_pop then takes out its smallest
+heapify[T] = (xs: mut T[]):
     n = xs.len()
-    i = 0
+    loop s in n / 2 - 1, n / 2 - 2..-1: __heap_down(xs, s, n)
+
+__heap_down[T] = (xs: mut T[], start: int, n: int):
+    i = start
     loop true:
         l = 2 * i + 1
         r = l + 1
@@ -110,4 +156,11 @@ heap_pop[T] = (xs: mut T[]) -> T:
         if m == i: break
         xs.swap(i, m)
         i = m
+
+# take the smallest value out of the array kept as a heap (it must not be empty)
+heap_pop[T] = (xs: mut T[]) -> T:
+    if xs.len() == 0: panic("heap_pop from an empty array (ask xs.len() > 0 first)")
+    xs.swap(0, xs.len() - 1)
+    top = xs.pop()
+    __heap_down(xs, 0, xs.len())
     top
