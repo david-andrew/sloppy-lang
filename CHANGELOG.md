@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `embed("sounds\\hit.wav")` and `embed_dir` with `\` build on Linux and macOS too (a path
+  written on Windows said the file could not be read); on Windows `glob("data\\*.txt")` takes
+  `\` as `/`.
 - `-> void | E`: a function that gives back nothing but can fail. A bare `return` and reaching
   the end give the void, `?` on its call passes E on (with `-> E?` both members were passed on,
   so `?` could not be used), and the void prints as `void`. `-> void | E` said "expected ':'".

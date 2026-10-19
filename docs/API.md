@@ -686,7 +686,7 @@ Operating system access: files, arguments, environment, time.
 - `append_file = (path: str, contents: str) -> bool`: add to the end of a file (made if it is not there): a log
 - `file_time = (path: str) -> f64?`: when a file or directory was last changed, in seconds since 1970 (as unix_time()); none if it is not there
 - `walk_dir = (path: str) -> str[]`: every file under a directory, at any depth, as paths from it ("maps/level1.tmx"), sorted; links to directories are not followed
-- `glob = (pattern: str) -> str[]`: the files whose paths match a pattern: `*` is any part of a name, `?` one character, and `**` any number of directories ("src/*.jo", "assets/**/*.png"), sorted. As in the shell, hidden names (.git, .env) match only a pattern that starts them with a dot (".*", "**/.env"). On Windows letters match in either case, as its file names do ("*.TXT" matches notes.txt); elsewhere only in the same case
+- `glob = (pattern: str) -> str[]`: the files whose paths match a pattern: `*` is any part of a name, `?` one character, and `**` any number of directories ("src/*.jo", "assets/**/*.png"), sorted. As in the shell, hidden names (.git, .env) match only a pattern that starts them with a dot (".*", "**/.env"). On Windows letters match in either case, as its file names do ("*.TXT" matches notes.txt); elsewhere only in the same case. On Windows a pattern's `\` is a `/` ("data\*.txt" gives data/notes.txt)
 - `cwd = () -> str`: the current directory
 - `temp_dir = () -> str`: a directory for temporary files (TMPDIR, else /tmp; on Windows, the user's temporary directory)
 
