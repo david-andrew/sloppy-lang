@@ -36,6 +36,10 @@
 - `tilemap_move(..., platforms = rects, solids = rects)`: boxes that are not tiles stop it too,
   one-way (moving platforms) or from every side (crates, doors); the move's `platform` (or `solid`)
   says which one the box stands on, for the game to carry it.
+- `ui_` menus scale their sizes with the design size (`ui_scale()`: its shorter side over 720), so
+  at 480 x 270 a menu takes the part of the screen it takes at 1280 x 720, where its text was 34
+  units tall; sizes a game sets in `ui_style` are used as they are. Games at 1280 x 720 look the
+  same.
 - Tuple patterns: `match (i % 3, i % 5): (0, 0): ... (0, _): ...`, each part a value, a range,
   `.variant` or `_`, tuples inside tuples too (it said "unsupported pattern for this type").
   `"A" | "a":` in a match says an arm lists its values with commas.

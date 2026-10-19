@@ -1464,6 +1464,10 @@ units tall, 32 pixels in a window four times larger). A pixel font is a TTF like
 `set_font(load_font(embed("pixel.ttf")))`; give it sizes the window's scale turns into whole
 pixels.
 
+Menus (`ui_begin`, `ui_button`...) keep their sizes in step with the design size: at 480 x 270
+they take the same part of the screen as at 1280 x 720 (`ui_scale()`), unless `ui_style` sets
+its own.
+
 `mouse_pos()` is in the same 2D units, and 3D follows the same picture (a letterboxed game's 3D
 view has the design area's shape). `SLOPPY_FIT=letterbox` and `SLOPPY_RESOLUTION=320x180` try a mode
 on any game without changing it.
