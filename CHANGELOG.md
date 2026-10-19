@@ -133,6 +133,9 @@
 - `hud_scroll`'s bar is drawn over the rows, at the `no_clip()` after them (or as draw ends): rows
   as wide as the list no longer hide it.
 - `pasted_text()`: the text pasted in this frame, for a widget of a program's own.
+- `parallel_map`, `parallel_range` and `parallel_update` no longer count a reference to the
+  function at each element, an atomic add every thread made on the same memory: 1024 small jobs
+  took 150 µs, 30 times the serial loop, now about 15.
 
 ## 0.26.0
 
