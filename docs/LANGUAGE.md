@@ -1491,7 +1491,9 @@ on_quit = (): keep()
 **Input.** `key_down(k)` is true while a key is held, `key_pressed(k)` / `key_released(k)` in
 the frame it goes down or up, and `key_typed(k)` when pressed and again as it repeats while held
 (at the desktop's repeat rate: for moving through text or menus). `text_input()` is the text
-typed this frame, repeats included. Likewise `mouse_down`, `mouse_pressed`, `mouse_pos()`,
+typed this frame, repeats included. `shortcut(.s)` is a tool's key: Ctrl+S (Cmd+S on a Mac),
+`shortcut(.z, shift = true)` Ctrl+Shift+Z; browsers keep Ctrl+N, Ctrl+W and Ctrl+T for
+themselves. Likewise `mouse_down`, `mouse_pressed`, `mouse_pos()`,
 `mouse_wheel()`, and gamepads (`gamepad_down`, `left_stick()`); `input_axis()` combines arrows,
 WASD and the left stick. On a Steam Deck the built-in controls are a gamepad when the game is
 started from Steam (in Desktop Mode too, after Games → Add a Non-Steam Game); started any other
@@ -1685,7 +1687,7 @@ finished, or in a test of your own. Environment variables say what happens:
   spaces between items). Keys are as `Key` names them: `a`, `n1`, `space`, `enter`, `escape`,
   `left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons,
   `12:mouse=400x300` moves the mouse there and `3:wheel=1` turns the wheel a notch (in the
-  screen's units), `7:text=hi` types, `5:touch1=400x300` puts finger 1 down there (or moves it)
+  screen's units), `7:text=hi there` types (to the next comma), `5:touch1=400x300` puts finger 1 down there (or moves it)
   and `9:touch1-` lifts it (the first finger down is the mouse too, as on a phone),
   `5:pad_a+`/`9:pad_a-` press and let go a gamepad's button (pad 0; PadButton's names),
   `6:lstick=1x0` and `rstick=` set its sticks, `lt=1` and `rt=` its triggers. An item it

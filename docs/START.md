@@ -116,7 +116,7 @@ the browser", and give the viewport the size of your `window(...)` (1280 x 720 i
 "Fullscreen button" lets players make it bigger. Give the game a name in its build block
 (`build:` and `name = "Drone Arena"` below it): what `save_data` keeps is stored under it, and
 games on one site share the browser's storage (it is the browser's localStorage, as
-`sloppy:<name>/<key>`). Sound starts after the player's first click, tap or key, as browsers
+`sloppy:<name>/<key>`, the bytes in base64). Sound starts after the player's first click, tap or key, as browsers
 require, and stops while the tab is hidden (the game gets no frames then). A file the game
 reads is built in with `embed("x.png")` or `embed_dir("assets")`: a page has no disk. Debug
 builds are the smaller ones; `--release` makes the code faster and larger.

@@ -156,7 +156,7 @@ BUILTINS = [
     ("arrays", "Built in", "push", ["push(xs: mut T[], x: T)"], "adds `x` at the end"),
     ("arrays", "Built in", "pop", ["pop(xs: mut T[]) -> T"], "removes the last element and gives it back"),
     ("arrays", "Built in", "insert", ["insert(xs: mut T[], i: int, x: T)"], "puts `x` in at index `i`, moving the ones after it along"),
-    ("arrays", "Built in", "remove", ["remove(xs: mut T[], i: int) -> T"], "takes out the element at `i` and gives it back"),
+    ("arrays", "Built in", "remove_at", ["remove_at(xs: mut T[], i: int) -> T"], "takes out the element at `i` and gives it back (`remove(x)` takes out a value)"),
     ("arrays", "Built in", "extend", ["extend(xs: mut T[], ys: T[])"], "adds all of `ys` at the end"),
     ("arrays", "Built in", "clear", ["clear(xs: mut T[])"], "removes every element"),
     ("arrays", "Built in", "truncate", ["truncate(xs: mut T[], n: int)"], "keeps the first `n` elements"),

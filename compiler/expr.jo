@@ -346,6 +346,13 @@ coerce = (n: int, target: int) -> int:
             if not can_coerce(0, targ(prune(from), i), targ(prune(to), i)): each = false
             parts.push("{nm}.{i}")
         if each: why = " (a tuple written out converts each part: `({join(parts, ", ")})`)"
+    if fk == .opt and type_eq(prune(int(types[prune(from)].elem)), prune(to)):
+        # (x: int = c.receive(): none once the channel is closed)
+        xt = expr_text(n)
+        if len(xt) == 0 or len(xt) > 30: xt = "x"
+        whence = "it may be none"
+        if nodes[n].kind == .call and nodes[n].sym > 0 and int(nodes[n].sym) < fns.len() and fns[int(nodes[n].sym)].decl != 0 and name_of(int(nodes[int(fns[int(nodes[n].sym)].decl)].name)) == "receive": whence = "receive gives none once the channel is closed"
+        why = " ({whence}: `{xt}!` when it cannot be, `{xt} ?? default` for a value to use then, or `if let v = {xt}:`)"
     if fk == .opt and tk == .bool_: why = " (an optional is not true or false: `if let v = x:` runs when there is a value and names it, `x != none` asks)"
     if fk == .float_ and tk == .int_: why = " (int(x) makes it a whole number, dropping the fraction)"
     if tk == .bool_ and (fk == .array or fk == .str_ or is_map_type(from)): why = " (not true or false: `xs.len() > 0` asks if it has anything)"
@@ -1371,6 +1378,12 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                         last_err = "{type_str(ptx)} has no variant '{name_of(vn)}'{variant_hint_for(ptx, name_of(vn))}"
                     else: last_err = "argument '{name_of(pnames[fi])}' has the wrong type (expects {type_str(ptx)})"
                     last_err += uncalled_hint(a, ptx) + text_char_hint(a, ptx)
+                    # (window(900, 300): the title, which may be left out, comes first)
+                    if nodes[a].type != 0 and not cd.sig.generic and fi < args.len() and nodes[args[fi]].kind != .namedarg and nodes[kid(int(cd.decl), fi)].b != 0:
+                        loop j in [fi + 1..cd.sig.params.len()):
+                            if nodes[kid(int(cd.decl), j)].b != 0 and arg_cost(a, cd.sig.params[j], cd.binds) >= 0:
+                                last_err += " ({name_of(pnames[fi])} comes first: to give {name_of(pnames[j])} and leave {name_of(pnames[fi])} out, name it, `{name_of(pnames[j])} = ...`)"
+                                break
                     # (map(int, words): Python's, the function first and a type as it)
                     if nodes[a].type != 0 and tkind(ntype(a)) == .typeval and name_of(name) == "map" and fi == 0: last_err += " (the array comes first, then a function: `words.map((s): to_int(s)!)` reads numbers from text)"
                     last_err_plain = last_err
@@ -1515,6 +1528,8 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 others_call = n
                 resolve_fn_call(n, name, own, args, expected)
                 others_call = 0
+        # (spawn(worker, 3), spawn(worker(3)): a task runs a function given no arguments)
+        if name_of(name) == "spawn" and args.len() >= 1 and decls.len() > 0 and decl_in_prelude(decls[0]): spawn_args_check(n, args)
         if decls.len() == 1:
             if len(last_err) == 0: last_err = "arguments do not match"
             ep = nodes[n].pos
@@ -1773,9 +1788,10 @@ const_fits_check = (n: int, t0: int):
     if t != 0 and tkind(t) == .var and is_lit(n): t = T_INT
     if t == 0 or tkind(t) != .int_: return
     if op == .shl:
+        oka, _ = const_int_of(int(nodes[n].a))
         okb, y = const_int_of(int(nodes[n].b))
         bits = int(types[t].bits)
-        if okb and (y < 0 or y >= bits): fatal(nodes[n].pos, "a shift by {y} on {a_type(t)} ({bits} bits) is past its bits: shifts go from 0 to {bits - 1}")
+        if oka and okb and (y < 0 or y >= bits): fatal(nodes[n].pos, "a shift by {y} on {a_type(t)} ({bits} bits) is past its bits: shifts go from 0 to {bits - 1}")
         return
     if op != .plus and op != .minus and op != .star: return
     oka, x = const_int_of(int(nodes[n].a))
@@ -4235,6 +4251,55 @@ written_int = (a: int) -> int:
     if nodes[a].kind == .int_lit: return nodes[a].ival
     int(nodes[a].fval)
 
+# (the source of call n, worker(3) or net.fetch(url), as written; "" when it is not one line)
+call_src = (n: int) -> str:
+    p = nodes[n].pos
+    f = pos_file(p)
+    if p <= 0 or f < 0 or f >= files.len(): return ""
+    src = files[f].src
+    o = pos_off(p)
+    if o >= len(src) or src[o] != '(': return ""
+    s = o
+    loop s > 0 and (is_ident_char(src[s - 1]) or src[s - 1] == '.'): s -= 1
+    e = o
+    depth = 0
+    quoted = false
+    loop e < len(src) and src[e] != '\n':
+        c = src[e]
+        if c == '"': quoted = not quoted
+        else if not quoted and c == '(': depth += 1
+        else if not quoted and c == ')':
+            depth -= 1
+            if depth == 0: return src[s..e + 1]
+        e += 1
+    ""
+
+spawn_args_check = (n: int, args: int[]):
+    a0 = unnamed(args[0])
+    # (a function's name, not checked yet: whether it takes arguments)
+    takes = false
+    if nodes[a0].kind == .ident and nodes[a0].type == 0:
+        fd: int[]
+        collect_fns(int(nodes[a0].name), fd)
+        takes = fd.len() > 0
+        loop d in fd:
+            if nkids(d) == 0: takes = false
+    else if nodes[a0].type != 0: takes = tkind(prune(ntype(a0))) == .fn_ and int(types[prune(ntype(a0))].nargs) > 0
+    else: return
+    if takes and args.len() >= 2:
+        ft = expr_text(a0)
+        rest: str[]
+        loop a in args[1..]:
+            at = expr_text(unnamed(a))
+            if nodes[unnamed(a)].kind == .int_lit: at = "{nodes[unnamed(a)].ival}"
+            if len(at) == 0: at = "..."
+            rest.push(at)
+        if len(ft) > 0: fatal(nodes[n].pos, "spawn takes a function with no arguments, which it calls in the task: `spawn((): {ft}({join(rest, ", ")}))`")
+    if nodes[a0].kind == .call and nodes[a0].type != 0 and tkind(prune(ntype(a0))) != .fn_:
+        cs = call_src(a0)
+        if len(cs) == 0: cs = "f(...)"
+        fatal(nodes[a0].pos, "this calls {cs[..find(cs, "(")]} here and now, and gives spawn what it gives back: `spawn((): {cs})` calls it in the task")
+
 src_char = (p: int) -> u8:
     f = pos_file(p)
     if p <= 0 or f < 0 or f >= files.len(): return 0
@@ -4327,6 +4392,11 @@ check_binary = (n: int, expected: int) -> int:
     a_char = op == .plus and charlike(a)
     b_char = op == .plus and charlike(b)
     ta = prune(check_expr(a, hint))
+    # (c <- 5: Go's send, read as c < -5)
+    if op == .lt and types[ta].kind == .struct_ and structs[int(types[ta].st)].name == "Channel" and src_char(nodes[n].pos + 1) == '-':
+        ct = expr_text(a)
+        if len(ct) == 0: ct = "c"
+        fatal(nodes[n].pos, "Sloppy has no `<-`: `{ct}.send(x)` sends, `{ct}.receive()` receives (and `select` waits on several)")
     tb = 0
     bk = nodes[b].kind
     if bk == .dotname and is_cmp and types[ta].kind == .enum_ and not is_union(ta):

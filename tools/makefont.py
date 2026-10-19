@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Bake the default SDF font atlas used by Sloppy's text rendering: ASCII 32..126 in its first
 cells, then Latin-1 (accented letters: é, ñ, ü, ...), common punctuation (€, curly quotes,
-dashes, ...), Greek, and what science and maths write (− √ ≈ ≤ ∞ ∑ ∫ ∂, arrows, sub- and
-superscript digits, ✓ ✗). Characters Noto Sans lacks come from Noto Sans Math, then Noto Sans
+dashes, ...), Greek, what science and maths write (− √ ≈ ≤ ∞ ∑ ∫ ∂, arrows, sub- and
+superscript digits, ✓ ✗), Latin Extended-A (ł, ő, č, ...) and Cyrillic. Characters Noto Sans lacks come from Noto Sans Math, then Noto Sans
 Symbols 2 (all under the SIL Open Font License, as Noto Sans).
 Output: lib/game/assets/font.png (grayscale SDF atlas) + font.txt (metrics; its third line is
 the code point of each cell after the ASCII ones)."""
@@ -66,6 +66,9 @@ CODES += list(range(0x391, 0x3A2)) + list(range(0x3A3, 0x3AA)) + list(range(0x3B
 # − √ ≈ ≠ ≤ ≥ ∞ ∑ ∫ ∂ ∝ ⋅ ∇ ∈, arrows, ⁰ ⁴-⁹ ⁺ ⁻ (¹ ² ³ are Latin-1's), ₀-₉, ′ ″, ✓ ✗
 CODES += [0x2212, 0x221A, 0x2248, 0x2260, 0x2264, 0x2265, 0x221E, 0x2211, 0x222B, 0x2202, 0x221D, 0x22C5, 0x2207, 0x2208,
     0x2190, 0x2191, 0x2192, 0x2193, 0x2194, 0x2070] + list(range(0x2074, 0x207C)) + list(range(0x2080, 0x208A)) + [0x2032, 0x2033, 0x2713, 0x2717]
+# Latin Extended-A (ā ć č ę ğ ı ł ń ő œ ř ś ş š ū ů ź ż ž ...), Romanian's ș ț, and Cyrillic (Russian,
+# Ukrainian, Belarusian, Serbian, Bulgarian, Macedonian)
+CODES += list(range(0x100, 0x180)) + [0x218, 0x219, 0x21A, 0x21B] + list(range(0x400, 0x460))
 CODES = list(dict.fromkeys(CODES))
 cols = 16
 rows = (len(CODES) + cols - 1) // cols

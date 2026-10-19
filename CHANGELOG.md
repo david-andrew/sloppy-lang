@@ -9,12 +9,24 @@
   again once frames keep up.
 - Whole numbers written out whose sum, difference or product does not fit its type are an error
   (`BIG + 1` with `const BIG = 9223372036854775807`, `x: u8 = 200 + 100`), as is a shift of a
-  number written out by 64 or more (`1 << 70`, which gave 64). Hex numbers are bits and may wrap.
+  number written out by its width or more (`1 << 70`, which gave 64). Hex numbers are bits and may wrap.
 - Using what an in-place call gives back (`print(xs.sort_by(f))`, `y = xs.sort()`,
   `xs.sort().map(f)`) says that it changes xs and gives nothing back, and names the copying
   version (`sorted(xs)`); a function of the program's own says to end it with its value.
 - Windows REPL: a character beyond ASCII typed in the console is read once (its first byte
   repeated). Hints for JavaScript's `shift`/`splice`, C++'s `erase` and others say `remove_at`.
+- Messages for Go's habits with tasks: `c <- 5` and `v = <-c` (send and receive), `go f()`,
+  `spawn(worker, 3)` and `spawn(worker(3))` (spawn((): worker(3))), a select arm written
+  `v = c.receive():` or `case ...:`, and `stage = [A, B](...)` for a generic function. Giving a
+  `T?` where a T goes says how to get the value (`x!`, `x ?? default`, `if let`), and for
+  `receive` that it is none once the channel is closed.
+- A widget's result dropped (`hud_text_field(r, name)` as a statement) is a warning: the widget
+  gives back what the user changed. Assigning a library-private name (`__hud_focus = ...`) in a
+  function is an error (it made a variable of the function's own).
+- `window(900, 300)`: the message says title comes first, and to name `width = ...`.
+- `shortcut(.s)`: Ctrl+S (Cmd+S on a Mac) for a tool's keys, with `shift = true` for
+  Ctrl+Shift+Z.
+- The built-in font has Latin Extended-A (ł ő č ş ğ ı ž ...), Romanian's ș ț and Cyrillic.
 - `can_fullscreen()`: false in an iPhone's Safari, which has no fullscreen for a page.
 - Aces: on a phone the throttle is a slider; a Fullscreen button in the menu, and a Fullscreen
   switch in Settings.

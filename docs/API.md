@@ -89,7 +89,7 @@ print(scores.lower_bound(25), scores.join(" "))   # (scores is sorted) where 25 
 - `push(xs: mut T[], x: T)`: adds `x` at the end
 - `pop(xs: mut T[]) -> T`: removes the last element and gives it back
 - `insert(xs: mut T[], i: int, x: T)`: puts `x` in at index `i`, moving the ones after it along
-- `remove(xs: mut T[], i: int) -> T`: takes out the element at `i` and gives it back
+- `remove_at(xs: mut T[], i: int) -> T`: takes out the element at `i` and gives it back (`remove(x)` takes out a value)
 - `extend(xs: mut T[], ys: T[])`: adds all of `ys` at the end
 - `clear(xs: mut T[])`: removes every element
 - `truncate(xs: mut T[], n: int)`: keeps the first `n` elements
@@ -250,8 +250,8 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 
 - `reversed = (s: str) -> str`: the characters (code points) in reverse order (also as `reversed(s)`, as for an array)
 - `reverse = (s: str) -> str`
-- `without_last_char = (s: str) -> str`: number of unicode code points s without its last character (all its bytes: backspace in a text field)
-- `char_count = (s: str) -> int`
+- `without_last_char = (s: str) -> str`: s without its last character (all its bytes: backspace in a text field)
+- `char_count = (s: str) -> int`: number of unicode code points
 - `first = (s: str, n: int) -> str`: the first n characters (all of it when there are fewer; s[..n] counts bytes, and can cut an é in two)
 - `last = (s: str, n: int) -> str`: the last n characters (all of it when there are fewer)
 - `chars = (s: str) -> int[]`: unicode code points of s
@@ -2158,6 +2158,7 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `key_pressed = (k: Key) -> bool`: true only in the frame the key was pressed
 - `key_released = (k: Key) -> bool`
 - `key_typed = (k: Key) -> bool`: true in the frame the key was pressed, and again each time it repeats while held down (for moving through text or menus); characters typed arrive through text_input()
+- `shortcut = (k: Key, shift: bool = false) -> bool`: true in the frame Ctrl and k are pressed together, and as it repeats (Cmd and k on a Mac; in a browser either), for a tool's keys: `if shortcut(.s): save()`; shift: with Shift held too, as Ctrl+Shift+Z (without it, Shift must not be held). Browsers keep some for themselves (Ctrl+N, Ctrl+W, Ctrl+T) and the page never sees them.
 - `mouse_pos = () -> vec2`: (in the 2D units of the screen: see screen_size and screen.jo)
 - `mouse_delta = () -> vec2`
 - `mouse_wheel = () -> f64`
@@ -2542,7 +2543,7 @@ draw = ():
   ```
 - `wrap_text = (s: str, width: f64, size: f64 = 20.0) -> str[]`: s broken into lines no wider than width, at spaces, and between the characters of Chinese, Japanese and Korean (a word wider than that has a line of its own; a line break in s starts a new line; 。、」 and the like stay at the end of a line, not the start of the next)
 - `text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), align: Align = .left, shadow: vec4 = vec4(0, 0, 0, 0), chars: int = -1) -> f64`: text in a column `width` wide from pos (its top-left corner), broken into lines at spaces, each line to the left, centered or to the right; the height it took (LÖVE's printf). chars: only the first that many characters, laid out where the whole text puts them (dialogue that types itself out does not jump to the next line midway through a word)
-- `text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false, chars: int = -1)`: draw text with its top-left corner at `pos`. The built-in font has ASCII, Latin-1's accented letters and symbols (° ² ½ ± × ÷), Greek (θ ω π Δ λ μ), − √ ≈ ≠ ≤ ≥ ∞ ∑ ∫ ∂ ∝ ⋅ ∇ ∈, arrows (→ ← ↑ ↓ ↔), sub- and superscript digits (v₀, x⁴, 10⁻⁹), ′ ″ and ✓ ✗; characters a font does not have show as ? (load_font: others); shadow: a color drawn under it, a little down and right, to read over a busy scene (`shadow = rgba(0, 0, 0, 0.7)`). mono: each character in a cell of the same width, so columns made with "{name:<12} {score:>5}" line up (a scoreboard, a table, a roguelike's map). chars: only the first that many characters (dialogue appearing letter by letter: where the rest will be does not move); -1: all
+- `text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false, chars: int = -1)`: draw text with its top-left corner at `pos`. The built-in font has ASCII, the accented letters of European languages (é ñ ü ł ő č ş ș), symbols (° ² ½ ± × ÷), Cyrillic (Привет), Greek (θ ω π Δ λ μ), − √ ≈ ≠ ≤ ≥ ∞ ∑ ∫ ∂ ∝ ⋅ ∇ ∈, arrows (→ ← ↑ ↓ ↔), sub- and superscript digits (v₀, x⁴, 10⁻⁹), ′ ″ and ✓ ✗; characters a font does not have show as ? (load_font: others); shadow: a color drawn under it, a little down and right, to read over a busy scene (`shadow = rgba(0, 0, 0, 0.7)`). mono: each character in a cell of the same width, so columns made with "{name:<12} {score:>5}" line up (a scoreboard, a table, a roguelike's map). chars: only the first that many characters (dialogue appearing letter by letter: where the rest will be does not move); -1: all
 - `text_rich = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), width: f64 = 0.0, chars: int = -1, shadow: vec4 = vec4(0, 0, 0, 0)) -> f64`: text with parts of it styled where they are: [color=#ff8040]...[/color] (or a name: red, green, blue, yellow, orange, purple, cyan, magenta, gray, white, black), [b]...[/b] bold, [i]...[/i] slanted, [[ for a [. width above 0: lines broken to fit it (as wrap_text). chars: only the first that many characters (dialogue typing itself out). The height it took.
   ```gdscript
   text_rich("You found [color=yellow]the brass key[/color]. It is [i]warm[/i].", vec2(40, 600), 24, WHITE, width = 800)

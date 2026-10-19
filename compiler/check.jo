@@ -856,6 +856,8 @@ shadowing = (s: int) -> int:
     # (the library's functions name their variables apart from its globals: its reads of them
     # are not followed, global_read_in_fn)
     if modules[int(ctxs[cx].mod)].is_prelude: fatal(nodes[lhs].pos, "'{n}' is a global of the library (at {pos_str(gp)}): a library function's variable takes another name (`global {n}` means the global)")
+    # (__hud_focus = "search": the library's own state, which this would not change)
+    if starts_with(n, "__") and pos_in_lib(gp): fatal(nodes[lhs].pos, "'{n}' is the library's own (at {pos_str(gp)}), and `{n} = ...` here makes a variable of this function's own, changing nothing there: names starting with __ are the library's workings, not for programs (look in docs/API.md for a function that does this)")
     # (counter = counter + 1: the global read, and a variable of its own made)
     rp = global_reads.get(key) ?? 0
     if rp == 0 and nodes[s].b != 0 and names_ident(int(nodes[s].b), nm): rp = nodes[int(nodes[s].b)].pos
@@ -1833,7 +1835,9 @@ unused_result = (x: int, pos: int):
     if d == 0 or not modules[int(nodes[d].mod)].is_prelude: return
     if fns[f].ptypes.len() == 0 or nkids(d) != fns[f].ptypes.len() or has_flag(d, NF_EXTERN): return
     r = prune(int(fns[f].ret))
-    if tkind(r) == .void_ or r == T_NEVER or not type_eq(r, prune(fns[f].ptypes[0])): return
+    if tkind(r) == .void_ or r == T_NEVER: return
+    widget_result_unused(x, f, r, pos)
+    if not type_eq(r, prune(fns[f].ptypes[0])): return
     # (values: a number or a flag given back is as often a handle or how it went)
     rk = tkind(r)
     if rk != .str_ and rk != .array and rk != .vec and rk != .struct_ and rk != .fixed: return
@@ -1849,6 +1853,23 @@ unused_result = (x: int, pos: int):
         v = name_of(int(nodes[a0].name))
         how = " (`{v} = {v}.{fname}(...)` keeps it)"
     warn(pos, "{fname} gives a new {type_str(r)} and leaves its argument as it was: this does nothing{how}")
+
+# (hud_text_field(r, name), ui_switch("Sound", sound_on) as statements: a widget is given the
+# value it shows and gives back the one the user made, which is dropped here)
+widget_result_unused = (x: int, f: int, r: int, pos: int):
+    d = int(fns[f].decl)
+    fname = name_of(int(nodes[d].name))
+    if not starts_with(fname, "hud_") and not starts_with(fname, "ui_"): return
+    if files[pos_file(pos)].path == "<input>": return
+    loop i in [0..nkids(x)):
+        a = kid(x, i)
+        loop nodes[a].kind == .conv or nodes[a].kind == .namedarg: a = int(nodes[a].a)
+        if nodes[a].kind != .ident and nodes[a].kind != .field: continue
+        if nodes[a].type == 0 or not type_eq(prune(ntype(a)), r): continue
+        v = expr_text(a)
+        if len(v) == 0: continue
+        warn(pos, "{fname} gives back {v} as the user changed it, and this drops it, so {v} never changes: write `{v} = {fname}(...)`")
+        return
 
 # `x == 6`, `speed + 1`, `true` as a statement: a value made and dropped, which changes nothing
 # (written for `=`, `+=` or `return true`)

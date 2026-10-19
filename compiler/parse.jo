@@ -209,6 +209,17 @@ habit = (i: int, want: Tok):
         # (xs.map(x -> x * 2): Java's and Kotlin's lambda)
         fatal(toks[i].pos, "a function value is written `({pw}): {arg_src(i + 1)}`, its body after a colon")
     if k == .colon and p == .ident and (want == .rparen or want == .comma) and i > 1 and (toks[i - 2].kind == .lparen or toks[i - 2].kind == .comma):
+        # (stage = [A, B](inp: Channel[A]): a generic function, its type parameters written after `=`)
+        j = i - 2
+        loop j > 0 and toks[j].kind != .lparen: j -= 1
+        if j >= 4 and toks[j - 1].kind == .rbrack:
+            b = j - 2
+            loop b > 0 and (toks[b].kind == .ident or toks[b].kind == .comma): b -= 1
+            if toks[b].kind == .lbrack and b >= 2 and toks[b - 1].kind == .assign and toks[b - 2].kind == .ident:
+                tps: str[]
+                loop q in [b + 1..j - 2]:
+                    if toks[q].kind == .ident: tps.push(tok_src(q))
+                fatal(toks[b].pos, "a generic function has its type parameters after its name: `{tok_src(b - 2)}[{join(tps, ", ")}] = ({pw}: ...) -> ...:`")
         # (f(x: 1): Swift's and C#'s named argument)
         fatal(toks[i].pos, "a named argument is written `{pw} = {arg_src(i + 1)}` (and a function value `({pw}): ...`)")
     if k == .semi:
@@ -237,6 +248,8 @@ habit = (i: int, want: Tok):
     if pw == "nonlocal" and k == .ident: fatal(at, "no `nonlocal` is needed: a function's lambdas change its variables by name (for a global, `global x`)")
     if pw == "assert" and value_start: fatal(at, "assert is a function: `assert(x == 2, \"why\")`")
     if pw == "print" and value_start: fatal(at, "print is a function: `print(x)`")
+    # (go worker(3): Go's goroutine)
+    if pw == "go" and k == .ident: fatal(at, "a task is started with spawn: `spawn((): {tok_src(i)}(...))` runs it alongside, and gives a Task to `wait()` for")
     # (Scratch's blocks: set score to 0, change score by 1)
     if (pw == "set" or pw == "change") and k == .ident and i + 1 < toks.len() and toks[i + 1].kind == .ident:
         nm = tok_src(i)
@@ -898,6 +911,9 @@ parse_primary = () -> int:
         fatal(toks[t - 2].pos, "loops are `loop i in 0..8:` (i from 0 to 7) and `loop g in gems:` (each element)")
     if (k == .lt or k == .gt or k == .le or k == .ge or k == .eq or k == .ne) and t >= 1 and (toks[t - 1].kind == .kw_and or toks[t - 1].kind == .kw_or):
         fatal(pos, "after `{tok_src(t - 1)}`, write the whole comparison again: `score > 10 and score < 20`")
+    # (v = <-c: Go's receive)
+    if k == .lt and toks[t + 1].kind == .minus and toks[t + 1].pos == pos + 1 and toks[t + 2].kind == .ident:
+        fatal(pos, "Sloppy has no `<-`: `{tok_src(t + 2)}.receive()` receives (none once the channel is closed), `{tok_src(t + 2)}.send(x)` sends")
     # (play(s, when = 0.1): a word Sloppy keeps for itself, as an argument's or a variable's name)
     if nk_is(t, .assign) and keywords.get(tok_src(t)) != none: fatal(pos, "'{tok_src(t)}' is a word Sloppy keeps for itself, so it cannot name an argument or a variable (call it something else)")
     fatal(pos, "expected an expression, found {tok_name(k)}")
@@ -2834,6 +2850,12 @@ parse_select = () -> int:
             expect(.colon, "")
             after_body = parse_block()
         else:
+            # (case v := <-c: and v = c.receive(): Go's arm, and an assignment)
+            if pk() == .ident and tok_src(ti) == "case": fatal(apos, "select arms have no `case`: `ch.receive() as v:` receives into v, `ch.send(x):` sends, and there are `after 2.0:` and `else:`")
+            if pk() == .ident and pkn(1) == .assign:
+                ch = "ch"
+                if toks[ti + 2].kind == .ident and toks[ti + 3].kind == .dot: ch = tok_src(ti + 2)
+                fatal(apos, "a select arm names what it receives with `as`: `{ch}.receive() as {tok_src(ti)}:`")
             e = parse_prefix()
             bind = 0
             if accept(.kw_as): bind = expect_ident("a name for the value received")
