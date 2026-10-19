@@ -628,6 +628,24 @@ does not count for naming each variant: an enum's match still needs an arm for t
 without one, or `_:` (and a `bool`'s, a `true:` and a `false:` without one). A name in a pattern
 is a value to compare with, not a new variable: for "any number above 100", `_ if n > 100:`.
 
+A tuple is matched part by part, each part a value, a range, `.variant` or `_` (any), tuples
+inside it too:
+
+```gdscript
+fizz = (i: int) -> str:
+    match (i % 3, i % 5):
+        (0, 0): "FizzBuzz"
+        (0, _): "Fizz"
+        (_, 0): "Buzz"
+        _: "{i}"
+
+match (state, key):
+    (.idle, .space), (.run, .space): jump()
+    (.run, _): run()
+```
+
+A match on tuples that gives a value has a `_:` arm for the rest.
+
 ## 7. Structs, unions, enums, optionals, tuples
 
 ```gdscript

@@ -1494,7 +1494,9 @@ parse_indented_block = (b: int) -> int:
     stmts: int[]
     loop pk() != .dedent and pk() != .eof:
         s = parse_stmt()
-        if s != 0: stmts.push(s)
+        if s != 0 and nodes[s].kind == .block and has_flag(s, NF_SPLICE):
+            loop k in kids(s): stmts.push(k)
+        else if s != 0: stmts.push(s)
     expect(.dedent, "end of block")
     add_flag(b, NF_TERMINATED)
     set_list(b, stmts)
@@ -1684,15 +1686,40 @@ parse_let_target = (n: int):
     else: nodes[n].name = i32(expect_ident("variable name"))
     expect(.assign, "'='")
 
+# does the ( at i hold a comma of its own (a tuple, not a value in parentheses)?
+paren_has_comma = (i: int) -> bool:
+    close = partner(i)
+    if close <= i: return false
+    depth = 0
+    loop j in [i + 1..close):
+        k = toks[j].kind
+        if k == .lparen or k == .lbrack or k == .lbrace: depth += 1
+        else if k == .rparen or k == .rbrack or k == .rbrace: depth -= 1
+        else if k == .comma and depth == 0: return true
+    false
+
 parse_pattern = () -> int:
     pos = cur_pos()
+    # ((0, _): a tuple's parts, each a pattern of its own)
+    if pk() == .lparen and paren_has_comma(ti):
+        advance()
+        tp = mk(.tuple, pos)
+        parts: int[]
+        loop pk() != .rparen:
+            parts.push(parse_pattern())
+            if not accept(.comma): break
+        expect(.rparen, "")
+        set_list(tp, parts)
+        return tp
     if pk() == .ident and toks[ti].len == 1 and p_src[int(toks[ti].start)] == '_':
         advance()
         return mk(.pwild, pos)
     if pk() == .dot or ((pk() == .ident or is_soft_kw(pk())) and (pkn(1) == .lparen or pkn(1) == .colon or pkn(1) == .comma or pkn(1) == .kw_if)):
-        if pk() == .dot: advance()
+        dotted = pk() == .dot
+        if dotted: advance()
         v = mk(.pvariant, pos)
         nodes[v].name = i32(expect_name("variant name"))
+        if dotted: nodes[v].aux2 = 1
         if accept(.lparen):
             binds: int[]
             loop pk() != .rparen:
@@ -1761,7 +1788,117 @@ parse_match = () -> int:
     expect(.dedent, "")
     set_list(m, arms)
     add_flag(m, NF_TERMINATED)
-    m
+    tuple_arms = false
+    loop arm in arms:
+        loop pt in kids(arm):
+            if nodes[pt].kind == .tuple: tuple_arms = true
+    if not tuple_arms: return m
+    # (match (i % 3, i % 5): (0, _): ...: the value kept in a variable, and each tuple pattern a
+    # condition on its parts, `_ if v.0 == 0:`)
+    mt_count += 1
+    mv = intern("__match{mt_count}")
+    decl = mk(.vardecl, pos)
+    nodes[decl].name = i32(mv)
+    nodes[decl].b = nodes[m].a
+    subj = mk(.ident, pos)
+    nodes[subj].name = i32(mv)
+    nodes[m].a = i32(subj)
+    loop arm in arms:
+        pats = kids(arm)
+        cond = 0
+        any_tuple = false
+        loop pt in pats:
+            if nodes[pt].kind == .tuple: any_tuple = true
+        if not any_tuple: continue
+        loop pt in pats:
+            if nodes[pt].kind != .tuple: fatal(nodes[pt].pos, "an arm with tuple patterns has only tuple patterns (or one `_`)")
+            c = tuple_cond(pt, mv, [])
+            if c == 0: c = bool_true(nodes[pt].pos)
+            if cond == 0: cond = c
+            else:
+                o = mk(.or_, nodes[pt].pos)
+                nodes[o].a = i32(cond)
+                nodes[o].b = i32(c)
+                cond = o
+        if nodes[arm].a != 0:
+            an = mk(.and_, nodes[arm].pos)
+            nodes[an].a = i32(cond)
+            nodes[an].b = nodes[arm].a
+            cond = an
+        nodes[arm].a = i32(cond)
+        set_list(arm, [mk(.pwild, nodes[arm].pos)])
+    ms = mk(.exprstmt, pos)
+    nodes[ms].a = i32(m)
+    add_flag(ms, NF_TERMINATED)
+    blk = mk(.block, pos)
+    set_list(blk, [decl, ms])
+    add_flag(blk, NF_TERMINATED)
+    blk
+
+mt_count = 0
+
+bool_true = (pos: int) -> int:
+    b = mk(.bool_lit, pos)
+    nodes[b].ival = 1
+    b
+
+# v.i.j (the part of the matched value at that path)
+pat_access = (mv: int, path: int[], pos: int) -> int:
+    e = mk(.ident, pos)
+    nodes[e].name = i32(mv)
+    loop i in path:
+        f = mk(.field, pos)
+        nodes[f].a = i32(e)
+        nodes[f].name = i32(intern("{i}"))
+        nodes[f].aux = -2
+        nodes[f].ival = i
+        e = f
+    e
+
+# the condition a tuple pattern puts on the matched value's parts (0: none, all `_`)
+tuple_cond = (tp: int, mv: int, path: int[]) -> int:
+    cond = 0
+    loop i in 0.. and pt in kids(tp):
+        here = path + [i]
+        pos = nodes[pt].pos
+        k = nodes[pt].kind
+        c = 0
+        if k == .pwild: continue
+        if k == .tuple: c = tuple_cond(pt, mv, here)
+        else if k == .plit:
+            c = mk(.binary, pos)
+            nodes[c].op = i32(int(Tok.eq))
+            nodes[c].a = i32(pat_access(mv, here, pos))
+            nodes[c].b = nodes[pt].a
+        else if k == .prange:
+            nodes[pt].kind = .range
+            c = mk(.binary, pos)
+            nodes[c].op = i32(int(Tok.kw_in))
+            nodes[c].a = i32(pat_access(mv, here, pos))
+            nodes[c].b = i32(pt)
+        else if k == .pvariant and nodes[pt].aux == 0 and nodes[pt].aux2 == 0:
+            # (a bare name: a value to compare with, as a constant; a variant is written `.v`)
+            c = mk(.binary, pos)
+            nodes[c].op = i32(int(Tok.eq))
+            nodes[c].a = i32(pat_access(mv, here, pos))
+            nm = mk(.ident, pos)
+            nodes[nm].name = nodes[pt].name
+            nodes[c].b = i32(nm)
+        else if k == .pvariant and nodes[pt].aux == 0:
+            c = mk(.istype, pos)
+            nodes[c].a = i32(pat_access(mv, here, pos))
+            d = mk(.dotname, pos)
+            nodes[d].name = nodes[pt].name
+            nodes[c].b = i32(d)
+        else: fatal(pos, "inside a tuple pattern, each part is a value, a range, `.variant` or `_` (a variant's fields: match that part of it on its own)")
+        if c == 0: continue
+        if cond == 0: cond = c
+        else:
+            an = mk(.and_, pos)
+            nodes[an].a = i32(cond)
+            nodes[an].b = i32(c)
+            cond = an
+    cond
 
 parse_params = (f: int):
     expect(.lparen, "")
@@ -2575,8 +2712,15 @@ parse_stmt = () -> int:
     else if k == .kw_match:
         s = mk(.exprstmt, pos)
         m = parse_match()
-        add_flag(m, NF_STMT)
-        nodes[s].a = i32(m)
+        if nodes[m].kind == .block:
+            # (tuple patterns: the value in a variable, then the match, in the block around it,
+            # where the match can be its last line, giving its value)
+            add_flag(int(nodes[kid(m, 1)].a), NF_STMT)
+            add_flag(m, NF_SPLICE)
+            s = m
+        else:
+            add_flag(m, NF_STMT)
+            nodes[s].a = i32(m)
         add_flag(s, NF_TERMINATED)
     else if k == .kw_const:
         advance()
