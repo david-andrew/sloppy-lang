@@ -4941,7 +4941,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
   net.fetch(url, save_to = "big.zip", progress = (got: int, all: int): print("{got} of {all}"))
   ```
 - `fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass) -> int`: the same request, started: an id for fetch_result, which gives the answer once it has come. Nothing waits for it meanwhile (in a web page, the browser asks; its server must allow the page's site, CORS)
-- `fetch_result = (f: int) -> HttpReply?`: a fetch's answer (fetch_start's id), once it has come (status 0 when it failed: why says why); none while it is on its way. Given once: the fetch is done with after that
+- `fetch_result = (f: int) -> HttpReply?`: a fetch's answer (fetch_start's id), once it has come (status 0 when it failed: why says why); none while it is on its way. Given once: the fetch is done with after that, and asking again stops the program (a mistake: keep the answer when it comes)
 - `fetch_cancel = (f: int)`: stop a fetch on its way (its answer is not given)
 
 ## HTTP servers
@@ -5052,7 +5052,7 @@ Requests are answered one at a time, in the order they come; a client slow to se
 - `binary = (b: u8[], type: str = "application/octet-stream", status: int = 200) -> Response`: bytes, of a type ("image/png"...)
 - `status = (code: int, message: str = "") -> Response`: a status with its reason as the text ("404 Not Found"), or with the text given
 - `json_error = (code: int, message: str) -> Response`: an error for an API's client: {"error": message} as JSON
-- `redirect = (to: str, status: int = 302) -> Response`: to another address (302: for now; 301: for good; 303: after a form's POST, a GET of it)
+- `redirect = (to0: str, status: int = 302) -> Response`: to another address (302: for now; 301: for good; 303: after a form's POST, a GET of it)
 - `file = (r: Request, path: str) -> Response`: a file, sent a piece at a time (a big one is never all in memory), with its type and what lets a browser keep a copy (as files() does); 404 when there is no such file
 - `read_json[T] = (r: Request, into: mut T) -> Response?`: the request's body, as JSON, into `into` (a struct, an array...: from_json's); none when it went well, else the answer to give (400, saying what is wrong with it):
   ```gdscript

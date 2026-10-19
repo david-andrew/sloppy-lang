@@ -312,6 +312,14 @@ connect = (host: str, port: int = 0) -> int:
                 h = h[..c)
         p.host = h
         p.port = pt
+        # (a line break in the address would start a header of its own in the request)
+        if __http_has_control(host, false):
+            p.state = 3
+            __net_why[id] = "the address has a line break or another control character in it: {__http_show(host)}"
+            __net_events.push(NetEvent(.left, id, []))
+            __net_peers.push(p)
+            return id
+        p.path = __http_path_escape(p.path)
         ip = __n_resolve(h)
         if ip >= 0: p.fd = __n_connect(ip, pt)
         if p.fd < 0:
@@ -1339,10 +1347,13 @@ fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: s
     f.id
 
 # a fetch's answer (fetch_start's id), once it has come (status 0 when it failed: why says why);
-# none while it is on its way. Given once: the fetch is done with after that
+# none while it is on its way. Given once: the fetch is done with after that, and asking again
+# stops the program (a mistake: keep the answer when it comes)
 fetch_result = (f: int) -> HttpReply?:
     i = __fetch_index(f)
-    if i < 0: return HttpReply(0, [], why = "no fetch {f} is on its way (its answer was given already?)")
+    # (an answer given already, or a number never given: a mistake in the program, where a reply
+    # with status 0 would read as a network failure, again at each look)
+    if i < 0: panic("fetch_result({f}): no fetch {f} is on its way: each answer is given once (keep it when it comes), and a cancelled one has none")
     __fetch_step(i)
     if not __fetches[i].done: return none
     r = __fetches[i].reply
@@ -1430,11 +1441,23 @@ __fetch_go = (i: int, url: str):
         __fetch_fail(i, "not an http:// or https:// address: {url}")
         return
     p = pp!
+    # (a line break in an address or a header would end the request line there and start a
+    # header of the address's own: refused, as browsers and other libraries do)
+    if __http_has_control(url, false):
+        __fetch_fail(i, "the address has a line break or another control character in it: {__http_show(url)}")
+        return
+    loop k, v in __fetches[i].headers:
+        if not __http_token(k):
+            __fetch_fail(i, "the header name '{__http_show(k)}' is not one (letters, digits and !#$%&'*+-.^_`|~, no spaces or colons)")
+            return
+        if __http_has_control(v, true):
+            __fetch_fail(i, "the value of the header {k} has a line break or another control character in it")
+            return
     __fetches[i].url = url
     __fetches[i].secure = p.0
     __fetches[i].host = p.1
     __fetches[i].port = p.2
-    __fetches[i].path = p.3
+    __fetches[i].path = __http_path_escape(p.3)
     __fetches[i].stage = 0
     __fetches[i].out = []
     __fetches[i].at = 0
@@ -1708,6 +1731,39 @@ __fetch_web_reply = (i: int, b: u8[]) -> HttpReply:
     progress = __fetches[i].progress
     progress(r.size, r.size)
     r
+
+# (text with its line breaks shown as \\r and \\n)
+__http_show = (s: str) -> str: s.replace("\r", "\\r").replace("\n", "\\n")
+
+# (bytes below space, and DEL: a tab allowed where tab_ok, as in a header's value)
+__http_has_control = (s: str, tab_ok: bool) -> bool:
+    loop c in s:
+        if c == 127 or c < 32 and not (tab_ok and c == 9): return true
+    false
+
+# (a header's name: RFC 9110's token characters)
+__http_token = (s: str) -> bool:
+    if len(s) == 0: return false
+    loop c in s:
+        if is_alnum(c): continue
+        if find_byte("!#$%&'*+-.^_`|~", c) < 0: return false
+    true
+
+# (a path as sent: a space and bytes past ASCII percent-encoded, as browsers send a link's)
+__http_path_escape = (p: str) -> str:
+    plain = true
+    loop c in p:
+        if c == ' ' or c >= 128: plain = false
+    if plain: return p
+    out: u8[]
+    hex = "0123456789ABCDEF"
+    loop c in p:
+        if c == ' ' or c >= 128:
+            out.push('%')
+            out.push(hex[int(c) >> 4])
+            out.push(hex[int(c) & 15])
+        else: out.push(c)
+    str_from_bytes(out)
 
 # an http(s):// address's parts: secure, host, port, path (none when it is not one)
 __http_parts = (url: str) -> (bool, str, int, str)?:

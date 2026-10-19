@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Security: `net.fetch` refuses an address or a header value with a line break or another
+  control character in it, and a header name that is not one (they were sent as they were: a
+  link taken from a page could add headers of its own, or a request of its own); a space and
+  bytes past ASCII in a path are percent-encoded, as browsers send them. `net.connect` refuses
+  such an address too.
+- Security: `lib/http.jo`'s answers keep each header on one line (a line break in a value, as
+  `%0d%0a` decoded from a query, started a header of its own: `redirect(r.query["to"])` could
+  set a cookie); `redirect` percent-encodes its address, a header with a name that is not one is
+  left out, and `set_cookie` leaves out what would end a cookie or start an attribute (`;`),
+  quoting a value with a space or a comma.
+- A variable named `end` used inside `[ ]` is an error, where it was a warning: there `end` is
+  the last index, so `text[start..end]` with an `end` of the program's own read another part.
+- `net.fetch_result` on a fetch whose answer was given already (or one cancelled) stops the
+  program saying so, where it gave a reply with status 0, as for a failed fetch, at each look.
+- `assert(t is Todo)` and `assert(x != none)` narrow t and x for the lines after them.
 ## 0.25.0
 
 - `counts = {}` with no type written: the key and value types come from the first `counts[k] =

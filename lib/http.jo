@@ -184,8 +184,52 @@ status = (code: int, message: str = "") -> Response:
 json_error = (code: int, message: str) -> Response: json({"error": message}, code)
 
 # to another address (302: for now; 301: for good; 303: after a form's POST, a GET of it)
-redirect = (to: str, status: int = 302) -> Response:
+redirect = (to0: str, status: int = 302) -> Response:
+    # (an address from a query, `?to=/x%0d%0aSet-Cookie:...`: its line breaks, spaces and bytes
+    # past ASCII percent-encoded, as a browser sends a link)
+    to = __http_url_escape(to0)
     Response(status = status, headers = {"Location": to, "Content-Type": "text/plain; charset=utf-8"}, body = bytes("{status} {reason(status)}: {to}\n"))
+
+# (a header's value on one line: line breaks as spaces)
+__http_one_line = (v: str) -> str:
+    if find_byte(v, '\r') < 0 and find_byte(v, '\n') < 0: return v
+    v.replace("\r", " ").replace("\n", " ")
+
+# (an address as it goes in a header: control bytes, spaces and bytes past ASCII percent-encoded)
+__http_url_escape = (u: str) -> str:
+    plain = true
+    loop c in u:
+        if c <= 32 or c >= 127: plain = false
+    if plain: return u
+    out: u8[]
+    hex = "0123456789ABCDEF"
+    loop c in u:
+        if c <= 32 or c >= 127:
+            out.push('%')
+            out.push(hex[int(c) >> 4])
+            out.push(hex[int(c) & 15])
+        else: out.push(c)
+    str_from_bytes(out)
+
+# (a cookie's name, value or attribute as RFC 6265 lets it be: bytes that would end it or start an
+# attribute of their own, `;` and line breaks, left out)
+__cookie_part = (v: str, attr: bool) -> str:
+    out: u8[]
+    loop c in v:
+        if c < 32 or c == 127 or c == ';': continue
+        if not attr and (c == '"' or c == '\\'): continue
+        out.push(c)
+    r = str_from_bytes(out)
+    # (a value with a space or a comma in quotes, as Go writes it)
+    if not attr and (find_byte(r, ' ') >= 0 or find_byte(r, ',') >= 0): return "\"{r}\""
+    r
+
+# (a cookie's name: RFC 9110's token characters only)
+__cookie_name = (v: str) -> str:
+    out: u8[]
+    loop c in v:
+        if net.__http_token(str_from_bytes([c])): out.push(c)
+    str_from_bytes(out)
 
 # a file, sent a piece at a time (a big one is never all in memory), with its type and what lets a
 # browser keep a copy (as files() does); 404 when there is no such file
@@ -220,12 +264,12 @@ read_json[T] = (r: Request, into: mut T) -> Response?:
 # (r.cookies), for max_age seconds (-1: until the browser closes). http_only: not for the page's
 # JavaScript; secure: over https only; same_site: "Lax", "Strict" or "None"
 set_cookie = (res: mut Response, name: str, value: str, max_age: int = -1, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = ""):
-    c = "{name}={value}; Path={path}"
+    c = "{__cookie_name(name)}={__cookie_part(value, false)}; Path={__cookie_part(path, true)}"
     if max_age >= 0: c += "; Max-Age={max_age}"
-    if len(domain) > 0: c += "; Domain={domain}"
+    if len(domain) > 0: c += "; Domain={__cookie_part(domain, true)}"
     if http_only: c += "; HttpOnly"
     if secure: c += "; Secure"
-    if len(same_site) > 0: c += "; SameSite={same_site}"
+    if len(same_site) > 0: c += "; SameSite={__cookie_part(same_site, true)}"
     res.cookies.push(c)
 
 # a Set-Cookie that has the client forget a cookie
@@ -676,8 +720,11 @@ __http_send = (id: int, req: Request, res: Response, keep0: bool):
             if v.lower() == "close": keep = false
             continue
         if lk == "transfer-encoding" or (lk == "content-length" and len(res.file) == 0): continue
-        s += "{k}: {v}\r\n"
-    loop ck in res.cookies: s += "Set-Cookie: {ck}\r\n"
+        # (a line break in a value, `%0d%0a` from a query, would start a header of its own: a
+        # space instead, as Go does; a name that is not one is left out)
+        if not net.__http_token(k): continue
+        s += "{k}: {__http_one_line(v)}\r\n"
+    loop ck in res.cookies: s += "Set-Cookie: {__http_one_line(ck)}\r\n"
     if not res.headers.has("Date"): s += "Date: {__http_now()}\r\n"
     has_body = res.status >= 200 and res.status != 204 and res.status != 304
     chunked = false
