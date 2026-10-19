@@ -149,6 +149,20 @@ when TARGET == "windows":
     extern GetCurrentDirectoryW = (n: u32, buf: *u16) -> u32
     @lib("kernel32.dll")
     extern GetTempPathW = (n: u32, buf: *u16) -> u32
+    @lib("kernel32.dll")
+    extern SetConsoleCtrlHandler = (f: *u8, add: i32) -> i32
+    @lib("kernel32.dll")
+    extern GetCurrentProcess = () -> *u8
+    @lib("kernel32.dll")
+    extern DuplicateHandle = (from_proc: *u8, h: *u8, to_proc: *u8, out: **u8, access: u32, inherit: i32, options: u32) -> i32
+    @lib("kernel32.dll")
+    extern GetFileType = (h: *u8) -> u32
+    @lib("kernel32.dll")
+    extern GetConsoleOutputCP = () -> u32
+    @lib("kernel32.dll")
+    extern ReadConsoleW = (h: *u8, buf: *u16, n: u32, got: *u32, ctl: *u8) -> i32
+    @lib("kernel32.dll")
+    extern FormatMessageW = (flags: u32, src: *u8, code: u32, lang: u32, buf: *u16, n: u32, args: *u8) -> u32
 
     # ---------------- text: UTF-8 <-> UTF-16 ----------------
     # a NUL-terminated UTF-16 copy of s (what the W functions take)
@@ -217,13 +231,49 @@ when TARGET == "windows":
         m = [u32(0)]
         GetConsoleMode(GetStdHandle(u32(0xFFFFFFF5)), data(m)) != 0
 
+    # (the console's code page before this program made it UTF-8: put back as the program ends,
+    # so what runs after it in the console shows as it did before)
+    __w32_old_cp = 0
+
+    __w32_utf8_console = ():
+        if __w32_old_cp != 0: return
+        __w32_old_cp = int(GetConsoleOutputCP())
+        if __w32_old_cp == 0: __w32_old_cp = 65001        # (no console)
+        if __w32_old_cp != 65001: SetConsoleOutputCP(65001)
+
+    __w32_restore_cp = ():
+        if __w32_old_cp != 0 and __w32_old_cp != 65001: SetConsoleOutputCP(u32(__w32_old_cp))
+        __w32_old_cp = 0
+
+    # (standard error: 0 not looked at yet, 1 it goes somewhere, 2 nowhere: a program with no
+    # console, double-clicked. What is written to it then is kept, the last of it, for a crash's
+    # report: lib/std/backtrace.jo, __w32_crash_report)
+    __w32_err_where = 0
+    __w32_err_kept: u8[]
+    __w32_panic_at = 0              # (where in it a panic's text starts)
+
+    __w32_err_nowhere = () -> bool:
+        if __w32_err_where == 0:
+            h = GetStdHandle(u32(0xFFFFFFF4))
+            __w32_err_where = 1
+            if h == null or (h as int) == -1 or GetFileType(h) == u32(0): __w32_err_where = 2
+        __w32_err_where == 2
+
     __w32_write = (fd: int, p: *u8, n: int):
         if __w32_out == null:
-            SetConsoleOutputCP(65001)                         # (UTF-8)
+            __w32_utf8_console()
             __w32_out = GetStdHandle(u32(0xFFFFFFF5))
             __w32_err = GetStdHandle(u32(0xFFFFFFF4))
         h = __w32_out
-        if fd == 2: h = __w32_err
+        if fd == 2:
+            h = __w32_err
+            if __w32_err_nowhere():
+                if __w32_err_kept.len() > 32768:
+                    # (the last 16 KB kept)
+                    __w32_err_kept = __w32_err_kept[__w32_err_kept.len() - 16384..]
+                    __w32_panic_at = 0
+                loop i in [0..n): __w32_err_kept.push(p[i])
+                return
         w: u32[] = [0]
         off = 0
         loop off < n:
@@ -231,14 +281,37 @@ when TARGET == "windows":
             off += int(w[0])
 
     __w32_in: *u8 = null
+    __w32_in_console = false
+    __w32_in_rest: u8[]             # (a line typed at the console, as UTF-8: what is not read yet)
 
     __w32_read = (fd: int, p: *u8, n: int) -> int:
         if fd != 0: return -1
-        if __w32_in == null: __w32_in = GetStdHandle(u32(0xFFFFFFF6))
+        if __w32_in == null:
+            __w32_in = GetStdHandle(u32(0xFFFFFFF6))
+            m = [u32(0)]
+            __w32_in_console = GetConsoleMode(__w32_in, data(m)) != 0
+        if __w32_in_console:
+            # (typed text read as UTF-16 and given as UTF-8: ReadFile gives it in the console's
+            # old code page, where é and ü are other bytes)
+            loop __w32_in_rest.len() == 0:
+                if not __w32_console_line(): return 0
+            k = min(n, __w32_in_rest.len())
+            loop i in [0..k): p[i] = __w32_in_rest[i]
+            __w32_in_rest = __w32_in_rest[k..]
+            return k
         r: u32[] = [0]
         # (a pipe whose writer is gone: the end)
         if ReadFile(__w32_in, p, u32(min(n, 1 << 30)), data(r), null) == 0: return 0
         int(r[0])
+
+    # (a line from the console, into __w32_in_rest; false at its end: ctrl-z, then enter)
+    __w32_console_line = () -> bool:
+        buf = fill(u16(0), 4096)
+        got: u32[] = [0]
+        if ReadConsoleW(__w32_in, data(buf), 4096, data(got), null) == 0 or got[0] == 0: return false
+        if buf[0] == u16(26): return false
+        loop c in __narrow(data(buf), int(got[0])): __w32_in_rest.push(c)
+        true
 
     __w32_open_file = (path: str, write: bool) -> *u8:
         wp = __wide(path)
@@ -302,9 +375,25 @@ when TARGET == "windows":
         else if c == 17: e = 18
         else if c == 4: e = 24
         if e == 0:
-            __file_err = "Windows error {c}"
+            __file_errno = 0
+            __file_err = __w32_error_words(c)
             return false
         __ferr(-e)
+
+    # (an error of Windows' not like one of Linux's, in words)
+    __w32_error_words = (c: int) -> str:
+        if c == 123 or c == 161: return "the name is not allowed on Windows (it cannot have \\ / : * ? \" < > |, end with a dot or a space, or be CON, PRN, AUX, NUL, COM1 to COM9 or LPT1 to LPT9)"
+        if c == 267: return "a part of the path is not a directory"
+        if c == 15: return "there is no such drive"
+        if c == 21: return "the drive is not ready (no disc or card in it?)"
+        if c == 1920 or c == 1921: return "it cannot be reached (a link to something not there?)"
+        if c == 225 or c == 226: return "Windows' virus protection blocked it"
+        if c == 1224: return "it is in use (open in another program)"
+        buf = fill(u16(0), 512)
+        k = int(FormatMessageW(u32(0x1200), null, u32(c), 0, data(buf), 512, null))     # FROM_SYSTEM | IGNORE_INSERTS
+        loop k > 0 and (buf[k - 1] == u16(10) or buf[k - 1] == u16(13) or buf[k - 1] == u16(32) or buf[k - 1] == u16(46)): k -= 1
+        if k == 0: return "Windows error {c}"
+        "{__narrow(data(buf), k)} (Windows error {c})"
 
     __w32_delete = (path: str) -> bool:
         wp = __wide(path)
@@ -381,7 +470,9 @@ when TARGET == "windows":
     __w32_sleep = (seconds: f64):
         if seconds > 0.0: Sleep(u32(seconds * 1000.0))
 
-    __w32_exit = (code: int): ExitProcess(u32(code))
+    __w32_exit = (code: int):
+        __w32_restore_cp()
+        ExitProcess(u32(code))
 
     # (a panic: a debugger, if one is attached, stops here, with the stack and its variables)
     __w32_debug_break = ():
@@ -454,20 +545,41 @@ when TARGET == "windows":
         CloseHandle(proc)
         (int(code[0]), str_from_bytes(out))
 
+    # an inheritable copy of a handle of this program's (null for none), for a program it starts
+    __w32_inheritable = (h: *u8) -> *u8:
+        if h == null or (h as int) == -1: return null
+        out: *u8[] = [null]
+        if DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), data(out), 0, 1, u32(2)) == 0: return null    # DUPLICATE_SAME_ACCESS
+        out[0]
+
+    # (wait: the program is given this one's input, output and errors, also a game, which has no
+    # console of its own: `sloppy game.jo` shows what it prints and why it panicked. While it
+    # runs, ctrl-c is the program's alone: it may run its on_quit, and this one waits for it.)
     __w32_run = (path: str, argv: str[], wait: bool) -> int:
         wcmd = __wide(__w32_cmdline(argv))
         wpath = __wide(path)
-        si = fill(u8(0), 104)
-        (data(si) as *u32)[0] = 104
+        si = fill(0, 13)                                        # STARTUPINFOW
+        si[0] = 104
         pi = fill(u8(0), 24)
         flags = u32(0)
+        inherit = i32(0)
         if not wait: flags = u32(0x00000008)                    # DETACHED_PROCESS
-        if CreateProcessW(data(wpath), data(wcmd), null, null, 0, flags, null, null, data(si), data(pi)) == 0: return -1
+        else:
+            # (UTF-8 for what a game writes to the console: it has none to set that in)
+            __w32_utf8_console()
+            (data(si) as *u32)[15] = u32(0x100)                 # STARTF_USESTDHANDLES
+            loop k in [0..3): si[10 + k] = __w32_inheritable(GetStdHandle(u32(0xFFFFFFF6 - k))) as int
+            inherit = i32(1)
+        ok = CreateProcessW(data(wpath), data(wcmd), null, null, inherit, flags, null, null, data(si) as *u8, data(pi)) != 0
+        loop k in [10..13):
+            if si[k] != 0: CloseHandle(si[k] as *u8)
+        if not ok: return -1
         h = (data(pi) as **u8)[0]
         if not wait:
             CloseHandle(h)
             CloseHandle((data(pi) as **u8)[1])
             return 0
+        SetConsoleCtrlHandler(null, 1)
         WaitForSingleObject(h, u32(0xFFFFFFFF))
         code: u32[] = [0]
         GetExitCodeProcess(h, data(code))

@@ -179,11 +179,49 @@ when TARGET == "windows":
             else: what = "crashed: memory access at 0x{a:x} (a bad pointer, in code using raw pointers or C?)"
         else if code == 0xC0000094 or code == 0xC0000095: what = "arithmetic error"
         else if code == 0xC000001D or code == 0xC0000096: what = "illegal instruction"
+        __w32_panic_at = __w32_err_kept.len()
         __write_err("panic: {what}\n")
         __backtrace_from(rbp, rip)
         if __repl_crashed(ctx): return -1                                    # EXCEPTION_CONTINUE_EXECUTION
+        __w32_crash_report()
         __exit(101)
         0
+
+    # A program with nowhere to write its errors (a game, double-clicked: it has no console)
+    # that panics or crashes: what it would have written is shown in a message box, and kept in
+    # crash.txt in its save folder (with what it wrote to standard error before)
+    __w32_crash_report = ():
+        if not __w32_err_nowhere() or __w32_err_kept.len() == 0: return
+        all = str_from_bytes(__w32_err_kept)
+        text = str_from_bytes(__w32_err_kept[min(__w32_panic_at, __w32_err_kept.len())..])
+        lines = split(text, "\n")
+        if lines.len() > 25: text = join(lines[..25), "\n") + "\n..."
+        name = PROGRAM_NAME
+        if len(name) == 0: name = "The program"
+        msg = "{name} stopped because of an error:\n\n{trim(text)}"
+        dir = save_dir()
+        path = "{dir}\\crash.txt"
+        make_dirs(dir)
+        if write_file(path, replace(all, "\n", "\r\n")): msg += "\n\nThis is also in {path}"
+        # (shown from a thread of its own: after a stack overflow this one has little stack left)
+        __w32_box_text = __wide(msg)
+        __w32_box_title = __wide(name)
+        __w32_box_args = [data(__w32_box_text), data(__w32_box_title), __ffi_resolve("user32.dll", "MessageBoxW") as *u16]
+        f: cfn(*u8) -> u32 = __w32_box_thread
+        t = CreateThread(null, 0, f as *u8, data(__w32_box_args) as *u8, 0, null)
+        if t != null: WaitForSingleObject(t, u32(0xFFFFFFFF))
+
+    __w32_box_text: u16[]
+    __w32_box_title: u16[]
+    __w32_box_args: *u16[]
+
+    # (on a thread Windows started, which has none of a Sloppy thread's own: no allocating)
+    @cabi
+    __w32_box_thread = (p: *u8) -> u32:
+        a = p as **u16
+        box = (a[2] as *u8) as cfn(*u8, *u16, *u16, u32) -> i32
+        box(null, a[0], a[1], u32(0x10 | 0x10000 | 0x40000))         # MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST
+        u32(0)
 else when TARGET == "macos":
     __crash_install = () -> bool:
         if env("SLOPPY_NO_CRASH_HANDLER") != none: return false

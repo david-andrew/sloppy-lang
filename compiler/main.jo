@@ -99,6 +99,7 @@ timing = false
 build_target = ""
 build_output = ""
 cli_target = ""
+made_pdb = ""           # (the PDB a Windows build wrote beside the program, for debuggers)
 
 # the target, from the command line or else the build block: for building, checking and the
 # language server alike
@@ -316,10 +317,25 @@ compile = (path: str, out0: str) -> str:
     # (debug information for variables: x86-64 and arm64 Linux, macOS, Windows)
     dbg_on = debug_vars and debug_info and not watch_build and not lower_only and not target_wasm
     out = out0
+    fail_path = ""              # (what could not be written, when it is not out)
     if target_wasm and not ends_with(out, ".html") and not ends_with(out, ".zip"): out = out + ".html"
+    # (-o game.zip, a Windows program: game.exe in a zip, made in a directory of its own first)
+    zip_out = ""
+    if ends_with(lower(out), ".zip") and not target_wasm and not lower_only:
+        if not target_windows:
+            tn = "Linux"
+            if target_macos: tn = "macOS"
+            eprint("error: -o {out}: a zip is made of a web page (--target wasm) or of a Windows program (--target windows); a {tn} program is written as it is (-o {out[..len(out) - 4)})")
+            exit(2)
+        zip_out = out
+        zn = out[..len(out) - 4)
+        zs = max(rfind(zn, "/"), rfind(zn, "\\"))
+        if zs >= 0: zn = zn[zs + 1..]
+        zdir = "{os_path(temp_dir())}/sloppy-zip-{time_ns()}"
+        out = "{zdir}/{zn}.exe"
     if target_windows:
         if ends_with(out, ".bin"): out = out[..len(out) - 4)
-        if not ends_with(out, ".exe"): out = out + ".exe"
+        if not ends_with(lower(out), ".exe"): out = out + ".exe"
     init_types()
     want_cpu_flag = opt_release and not target_wasm and not target_arm64 and not lower_only
     want_loop_watch = target_wasm and not opt_release and not lower_only
@@ -419,6 +435,9 @@ compile = (path: str, out0: str) -> str:
     t2 = time()
     ok = false
     size = 0
+    # (why writing failed, if it does: not an earlier file's)
+    __file_err = ""
+    __file_errno = 0
     if target_wasm:
         mod = wasm_module(roots, main_lf, -1)
         size = mod.len()
@@ -435,14 +454,28 @@ compile = (path: str, out0: str) -> str:
         if watch_build and not watch_first: ok = watch_make_patch()
         else:
             # (debuggers get a PDB beside what `sloppy build` writes)
+            # (not for a zip to share: a debugger reads it beside the program it built)
             pdb = ""
             guid: u8[]
-            if debug_info and not watch_build:
+            if debug_info and not watch_build and len(zip_out) == 0:
                 pdb = strip_ext(out) + ".pdb"
                 guid = pdb_guid(code)
+            if len(zip_out) > 0: make_dirs(out[..max(rfind(out, "/"), rfind(out, "\\"))))
             ok = write_pe(out, code, entry, rodata, data_size + 8 + bss_reserve, (update_fn != 0 or draw_fn != 0) and not test_mode, pe_backtrace_info(), program_icon, pdb_name(pdb), guid)
-            if ok and len(pdb) > 0: ok = write_pdb(pdb, guid, code.len(), pe_section_headers, path, "sloppy {SLOPPY_VERSION}")
+            if ok and len(pdb) > 0:
+                ok = write_pdb(pdb, guid, code.len(), pe_section_headers, path, "sloppy {SLOPPY_VERSION}")
+                if ok: made_pdb = pdb
+                else: fail_path = pdb
             if ok and watch_build: watch_record_image()
+            if len(zip_out) > 0:
+                exe = read_bytes(out) ?? []
+                zname = out[max(rfind(out, "/"), rfind(out, "\\")) + 1..]
+                delete_file(out)
+                delete_dir(out[..max(rfind(out, "/"), rfind(out, "\\"))))
+                if ok:
+                    fail_path = zip_out
+                    ok = exe.len() > 0 and write_zip(zip_out, [(zname, exe)])
+                out = zip_out
         size = code.len()
     else if target_macos:
         arm64_stubs()
@@ -531,7 +564,17 @@ compile = (path: str, out0: str) -> str:
         eprint("check {(t1 - t0) * 1000.0:.1} ms, lower+codegen {(t2 - t1) * 1000.0:.1} ms, write {(t3 - t2) * 1000.0:.1} ms; {lfuncs.len()} functions, {nodes.len()} nodes, {size} bytes of code")
     if not ok:
         # (a patch for sloppy watch tells its own trouble)
-        if not watch_build or watch_first: eprint("error: cannot write {out} (a directory there, or no permission?)")
+        if not watch_build or watch_first:
+            fp = out
+            if len(fail_path) > 0: fp = fail_path
+            # (a program that is running cannot be written over: Windows says it is in use, or
+            # that access is denied; Linux that it is running)
+            e = __file_errno
+            when TARGET == "windows":
+                if e == 13 and file_exists(fp) and not is_dir(fp): e = 16
+            if e == 16 or e == 26: eprint("error: {fp} is in use: is the program still running? (close it, then build again)")
+            else if len(file_error()) > 0 and e != 13: eprint("error: cannot write {fp}: {file_error()}")
+            else: eprint("error: cannot write {fp} (a directory there, or no permission?)")
         return ""
     out
 
@@ -638,16 +681,25 @@ main = ():
             out = strip_ext(out)
             if out == path: out = path + ".bin"     # (no extension: not over the source)
         # (-o game.zip, -o game.html, -o game.exe: what is asked for, without --target too)
+        # (-o game.zip on Windows: the program in a zip, unless the build block names a target;
+        # elsewhere the web page in one, for itch.io)
+        lo = lower(out)
         if len(cli_target) == 0:
-            if ends_with(out, ".html") or ends_with(out, ".zip"): cli_target = "wasm"
-            else if ends_with(out, ".exe"): cli_target = "windows"
+            if ends_with(lo, ".html"): cli_target = "wasm"
+            else if ends_with(lo, ".exe"): cli_target = "windows"
+            else if ends_with(lo, ".zip") and len(build_target) == 0:
+                cli_target = "wasm"
+                when TARGET == "windows":
+                    cli_target = "windows"
         # (-o dist/game.zip: the directory made if it is not there)
         sl = max(rfind(out, "/"), rfind(out, "\\"))
         if sl > 0: make_dirs(out[..sl))
         made = compile(path, out)
         if len(made) == 0: exit(1)
         # (where it is, said at a terminal: a script that builds gets no line it did not ask for)
-        if is_terminal(): print("made {made}")
+        if is_terminal():
+            if len(made_pdb) > 0: print("made {made} (and {made_pdb}, which only debuggers use)")
+            else: print("made {made}")
         return
     if a[1] == "lsp":
         lsp_main()
@@ -751,14 +803,17 @@ main = ():
     base = "{base}-{path_hash(full)}"
     if (time_ns() / 1000) % 64 == 0: clean_cache(cache)
     out = "{cache}/{base}.bin"
-    # (made beside it, then put in its place: a copy of the program still running is not
-    # written over; Windows cannot replace a running program, so there it is written in place)
+    # (made beside it, then put in its place, with the extension the target gave it: .exe, .html;
+    # a copy of the program still running is not written over. Windows cannot replace a program
+    # that is running: then the new one runs from where it was made, and clean_cache removes it)
     tmp = out
-    if not target_windows and not target_wasm and cli_target != "wasm" and cli_target != "web" and cli_target != "windows": tmp = "{cache}/{base}.{time_ns()}.new"
+    if cli_target != "wasm" and cli_target != "web": tmp = "{cache}/{base}.{time_ns()}.new"
     built = compile(path, tmp)
     if len(built) == 0: exit(1)
-    if built == tmp and tmp != out and not target_wasm:
-        if rename_file(tmp, out): built = out
+    if tmp != out and starts_with(built, tmp):
+        ext = built[len(tmp)..]
+        if len(ext) == 0: ext = ".bin"
+        if rename_file(built, "{cache}/{base}{ext}"): built = "{cache}/{base}{ext}"
     if target_wasm:
         # open the page in the default browser, detached (the browser's output does not
         # reach this terminal, and sloppy returns at once)
@@ -811,7 +866,8 @@ clean_cache = (cache: str):
     loop f in list_dir(cache):
         p = cache + "/" + f
         if let t = file_time(p):
-            if now - t > 7.0 * 86400.0 or (ends_with(f, ".new") and now - t > 3600.0): delete_file(p)
+            half_made = ends_with(f, ".new") or ends_with(f, ".new.exe") or ends_with(f, ".new.html")
+            if now - t > 7.0 * 86400.0 or (half_made and now - t > 3600.0): delete_file(p)
             else if f != ".now":
                 n = file_size(p) ?? 0
                 kept.push((t, p, n))

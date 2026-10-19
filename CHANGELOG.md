@@ -44,6 +44,47 @@
   - START.md says how to save and run a first program on Windows (Notepad's .txt, "Open in
     Terminal", the VS Code extension); LANGUAGE.md's "looks familiar" list has `s[i]` (a byte),
     `split("\n")` and `\r`, and `"C:\temp"`.
+- Windows: `sloppy game.jo` shows what a game prints, and why it panicked, in the console it was
+  started from. A game has no console of its own, and it was started without this one's input,
+  output and errors, so all of it was lost (`sloppy watch game.jo` the same).
+- Windows: a built game that stops with an error when nothing shows its errors (double-clicked)
+  shows the error in a message box and writes it to `crash.txt` in its save folder
+  (`%APPDATA%\<name>`), with what it wrote to standard error before. It closed with no word.
+- Windows: ctrl-c under `sloppy tool.jo` is the program's: it runs its `on_quit`, and sloppy waits
+  for it and ends with its exit code. sloppy ended at once, and the program with it, without its
+  `on_quit`.
+- Windows: `sloppy game.jo` builds into one file per program in the run cache and puts it in
+  place of the last one, where it wrote a new `.new.exe` each time and never removed it.
+- Windows: `sloppy build game.jo -o game.zip` writes game.exe in a zip, where it wrote a web page
+  without a word (`--target wasm` still makes the web page's zip); `--target windows -o win.zip`
+  wrote `win.zip.exe`. A Linux or macOS program with `-o x.zip` is an error that says to write it
+  as it is. At a terminal, `sloppy build` says that the `.pdb` beside a Windows program is only
+  for debuggers.
+- `sloppy build` while the program it writes is still running says "game.exe is in use: is the
+  program still running?", where it said "cannot write game.exe (a directory there, or no
+  permission?)". Other errors in writing it say what they were.
+- Windows: `file_error()` gives errors in words where it said "Windows error 123": a name Windows
+  does not allow (with what it does not allow), no such drive, a drive not ready, and the system's
+  own words for others.
+- The program's name in the build block (its save folder's name) cannot have `* ? " < > |`, end
+  with a dot or a space, or be CON, PRN, AUX, NUL, COM1 to COM9 or LPT1 to LPT9, on any system, as
+  Windows allows none of them: such a name compiled, and the game could not save on Windows.
+- The names `save_data`, `load_data` and `delete_data` take are refused, on every system, where
+  Windows does not allow them as file names (`"high*score"`, `"con"`, `"best."`), with
+  `file_error()` saying why: they worked on Linux and failed on Windows with "Windows error 123".
+- Windows: `input()` and `read_line()` at the console give typed letters outside ASCII as UTF-8
+  (`Zoë` is 4 bytes): they came in the console's old code page, one byte that was not text. A
+  program that printed set the console to UTF-8 and left it so after it ended; it is put back.
+- Windows: `glob("*.TXT")` finds `notes.txt`, as Windows' file names are the same in either case
+  (elsewhere letters match only in the same case).
+- Windows: `join_path` joins with `\` a path written with `\` or a drive (`C:\Users\me\Documents`
+  and `report.txt` give `C:\Users\me\Documents\report.txt`, not `...\Documents/report.txt`).
+- `home_dir()` and `documents_dir()`: the user's home directory and Documents folder (on Windows
+  the folder Windows says, which OneDrive may hold; on Linux XDG_DOCUMENTS_DIR, else ~/Documents;
+  "" in a web page).
+- Windows: `parse_args` takes `/?` for help, as `--help` and `-h`.
+- `sloppy new "my tool"` writes the commands it suggests with the path in quotes
+  (`sloppy "my tool/my tool.jo"`), which did not run as shown; its .gitignore has the `.pdb`.
 - Set literals: `{1, 2, 3}` is a `Set[int]` (it said "expected ':'"), `{loop w in ws: w}` makes
   one by a loop, and `{}` where a Set is expected is an empty one (`seen: Set[int] = {}`).
 - No warning for a number with a format in a string, `"{42:05}"` (it took it for a regular

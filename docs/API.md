@@ -602,8 +602,8 @@ if let text = read_file("notes.txt"):    # none if it could not be read
     loop line in text.lines(): print("> {line}")
 print(file_exists("notes.txt"), args())
 delete_file("notes.txt")
-home = env("HOME") ?? "(no HOME)"
-print(home, cpu_count())
+docs = documents_dir()                    # (C:\Users\me\Documents, /home/me/Documents)
+print(home_dir(), join_path(docs, "report.txt"), cpu_count())
 print("took {(time() - start) * 1000.0:.2} ms")
 ```
 
@@ -686,7 +686,7 @@ Operating system access: files, arguments, environment, time.
 - `append_file = (path: str, contents: str) -> bool`: add to the end of a file (made if it is not there): a log
 - `file_time = (path: str) -> f64?`: when a file or directory was last changed, in seconds since 1970 (as unix_time()); none if it is not there
 - `walk_dir = (path: str) -> str[]`: every file under a directory, at any depth, as paths from it ("maps/level1.tmx"), sorted; links to directories are not followed
-- `glob = (pattern: str) -> str[]`: the files whose paths match a pattern: `*` is any part of a name, `?` one character, and `**` any number of directories ("src/*.jo", "assets/**/*.png"), sorted. As in the shell, hidden names (.git, .env) match only a pattern that starts them with a dot (".*", "**/.env")
+- `glob = (pattern: str) -> str[]`: the files whose paths match a pattern: `*` is any part of a name, `?` one character, and `**` any number of directories ("src/*.jo", "assets/**/*.png"), sorted. As in the shell, hidden names (.git, .env) match only a pattern that starts them with a dot (".*", "**/.env"). On Windows letters match in either case, as its file names do ("*.TXT" matches notes.txt); elsewhere only in the same case
 - `cwd = () -> str`: the current directory
 - `temp_dir = () -> str`: a directory for temporary files (TMPDIR, else /tmp; on Windows, the user's temporary directory)
 
@@ -703,7 +703,9 @@ without_extension(...) "art/hero", join_path("art", "hero.png") "art/hero.png"
 - `dir_name = (path: str) -> str`: all but the last part ("." for a bare name; "/" for one at the root)
 - `extension = (path: str) -> str`: the file name's extension with its dot (".png"; "" when it has none, or is like ".bashrc")
 - `without_extension = (path: str) -> str`: the path without its file name's extension ("art/hero.png" -> "art/hero")
-- `join_path = (a: str, b: str) -> str`: a then b, with one separator between them (b as it is when it starts at the root)
+- `join_path = (a: str, b: str) -> str`: a then b, with one separator between them (b as it is when it starts at the root). The separator is /, but on Windows \ when a is written with \ or is a drive ("C:\Users\me" and "report.txt" give "C:\Users\me\report.txt"; "art" and "hero.png" give "art/hero.png")
+- `home_dir = () -> str`: the user's home directory ("" when there is none: in a web page): /home/me, C:\Users\me
+- `documents_dir = () -> str`: the user's Documents folder ("" when there is none: in a web page). On Windows wherever it is (OneDrive may hold it); on Linux XDG_DOCUMENTS_DIR from ~/.config/user-dirs.dirs, else ~/Documents; on macOS ~/Documents. It may not be there yet: make_dirs makes it
 - `abs_path = (path: str) -> str`: the path from the root: a relative one from the working directory, with `.` and `..` worked out ("../x" in /home/me/src is /home/me/x; links are not followed). On Windows, with \
 
 ### date.jo
@@ -755,7 +757,7 @@ struct Options:
 opts = parse_args[Options]("count lines in files")
 ```
 
-That reads --verbose (or -v), --out file.txt (--out=file.txt, -o file.txt), --jobs 8 (a whole number) and the arguments that are not options (into the last list field). `--help` (or -h) prints what the options are, each with the comment written beside its field (or on the lines just above it), and ends the program; a mistake (an option it does not have, a word where a number goes) is said with the same help, and ends it with exit code 2. A field `dry_run` is --dry-run; -x is the one field starting with x (when only one does; -h is help, so a field starting with h is -H). A list field given as an option takes it each time (--tag a --tag b). Enums take a variant's name (--mode slow), optionals a value or nothing. After `--` all are arguments.
+That reads --verbose (or -v), --out file.txt (--out=file.txt, -o file.txt), --jobs 8 (a whole number) and the arguments that are not options (into the last list field). `--help` (or -h, and on Windows /?) prints what the options are, each with the comment written beside its field (or on the lines just above it), and ends the program; a mistake (an option it does not have, a word where a number goes) is said with the same help, and ends it with exit code 2. A field `dry_run` is --dry-run; -x is the one field starting with x (when only one does; -h is help, so a field starting with h is -H). A list field given as an option takes it each time (--tag a --tag b). Enums take a variant's name (--mode slow), optionals a value or nothing. After `--` all are arguments.
 
 - `parse_args[T] = (about: str = "") -> T`: the program's command line (after its name) read into a T, as above. about: one line on what the program does, for --help
 - `read_args[T] = (words: str[]) -> T \| str`: words of a command line read into a T, or what is wrong with them (parse_args without its --help, messages and exit: for tests, or a program's own handling)
@@ -1039,7 +1041,7 @@ if let s = load_data("progress"): ...
 Each program has its own place, named after it (PROGRAM_NAME: the build block's `name`, else the main file's name): on Linux ~/.local/share/<name>/ (or $XDG_DATA_HOME), on Windows %APPDATA%\<name>\, on macOS ~/Library/Application Support/<name>/, in a web page the browser's storage for the page (it survives reloads and restarts of the browser). SLOPPY_SAVE_DIR=/tmp/x puts it in /tmp/x/<name>/ instead (tests). For a file the player names (an editor's levels), write the text yourself: `write_file(path, to_text(level))` and `from_text[Level](read_file(path) ?? "")`.
 
 - `save_dir = () -> str`: the directory a program's data goes to (made when first written; "" in a web page)
-- `save_data = (name: str, contents: str) -> bool`: keep contents under name (a file name: no / or \); false if it could not be written
+- `save_data = (name: str, contents: str) -> bool`: keep contents under name (a file name, as Windows allows them: no / \ : * ? " < > |); false if it could not be written (file_error() says why)
 - `load_data = (name: str) -> str?`: what was kept under name; none if nothing was
 - `delete_data = (name: str) -> bool`: forget what was kept under name (a saved game, at the player's death); false if nothing was
 
