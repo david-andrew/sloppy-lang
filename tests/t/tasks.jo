@@ -1,0 +1,101 @@
+# requires: sloppy
+# requires: native
+# Tasks and channels (lib/std/task.jo): results, void tasks, unbuffered and buffered channels,
+# close, loops over a channel, waits with a time limit, try_send/try_receive, worker pools, the
+# order tasks take turns in, sleep letting the others run, and no allocations left behind
+
+square = (x: int) -> int: x * x
+
+go = ():
+    # a result, and a task that gives none
+    t = spawn((): square(7))
+    print(t.wait(), t.done())
+    v = spawn((): print("a void task ran"))
+    v.wait()
+    print(wait_all([loop i in 0..5: spawn((): "s{i}")]))
+
+    # an unbuffered channel: each send waits for its receive
+    ch = channel[int]()
+    spawn(():
+        loop i in 0..4: ch.send(i * 10)
+        ch.close()
+    )
+    loop x in ch: print("got", x)
+    print("closed", ch.closed(), ch.receive())
+
+    # a buffered one: sends go on until it is full
+    b = channel[str](2)
+    order: str[]
+    p = spawn(():
+        loop w in ["a", "b", "c", "d"]:
+            b.send(w)
+            order.push("sent {w}")
+        b.close()
+    )
+    order.push("main first")
+    loop let w = b.receive(): order.push("took {w}")
+    p.wait()
+    print(order)
+
+    # try_
+    c = channel[int](1)
+    print(c.try_send(1), c.try_send(2), c.len(), c.try_receive(), c.try_receive())
+
+    # a wait with a time limit
+    slow = channel[str]()
+    spawn(():
+        sleep(0.2)
+        slow.send("late")
+    )
+    print(slow.receive(wait = 0.05), slow.closed())
+    print(slow.receive(wait = 5.0))
+
+    # sleeping tasks wake in the order of their times
+    woke = channel[int](10)
+    loop ms in [30, 10, 20]:
+        spawn(():
+            sleep(f64(ms) / 1000.0)
+            woke.send(ms)
+        )
+    print([loop _ in 0..3: woke.receive()!])
+
+    # a pool of workers over a channel of jobs
+    jobs = channel[int]()
+    results = channel[(int, int)](100)
+    workers = [loop k in 0..3: spawn(():
+        n = 0
+        loop j in jobs:
+            results.send((j, square(j)))
+            n += 1
+        n
+    )]
+    loop j in [1..9]: jobs.send(j)
+    jobs.close()
+    done = wait_all(workers)
+    total = 0
+    loop _ in 0..9: total += results.receive()!.1
+    print("jobs", done.sum(), "sum of squares", total)
+
+    # tasks take turns: each runs until it waits
+    log: str[]
+    a = spawn(():
+        log.push("a1")
+        sleep(0.0)
+        log.push("a2")
+    )
+    log.push("main")
+    a.wait()
+    print(log)
+
+    # channels of functions
+    fs = channel[() -> int](4)
+    g: () -> int = (): 42
+    fs.send(g)
+    print(fs.receive()!())
+
+main = ():
+    go()
+    n = alloc_count()
+    go()
+    left = alloc_count() - n
+    print("left", left)

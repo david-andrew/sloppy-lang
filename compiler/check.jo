@@ -117,6 +117,7 @@ struct FnInst:
     parallel: bool      # @parallel: the functions it is given run on many threads at once
     deterministic: bool # @deterministic: the functions it is given must give the same results on every machine
     noinline: bool      # @noinline: release builds call it, not copy it into its callers
+    own_thread: bool    # @own_thread: a @cabi function entered on the program's own threads only
     gdepth: i32         # generic instances: how many were being checked, one inside the other, when it was made
     export_name: str
     aux_void: bool
@@ -1366,6 +1367,11 @@ get_fn_inst = (decl: int, targs: int[], use_pos: int) -> int:
             at = kid(ab, i)
             an = name_of(int(nodes[at].name))
             if an == "cabi": fns[f].cabi = true
+            # (a @cabi function the runtime enters on a stack of its own, on its own thread: a
+            # task's, lib/std/task.jo; it leaves the allocator as it was)
+            else if an == "own_thread":
+                fns[f].cabi = true
+                fns[f].own_thread = true
             else if an == "parallel": fns[f].parallel = true
             else if an == "deterministic": fns[f].deterministic = true
             else if an == "noinline": fns[f].noinline = true
@@ -1972,6 +1978,23 @@ map_tidy_first = (s: int) -> bool:
 # (loops made by map_tidy_first: the map is tidied already)
 map_tidied: {int: bool} = {}
 
+# (loop v in ch, a Channel: loop let v = ch.receive(), until it is closed and empty:
+# lib/std/task.jo; the loop being checked, it is left first)
+chan_loop = (s: int, it: int, mark: int):
+    pos = nodes[s].pos
+    if has_flag(s, NF_MUT): fatal(pos, "`loop mut` changes values in place, and a channel's are taken out of it: `loop v in ch` takes each")
+    if nkids(s) != 1: fatal(pos, "a loop over a channel has one variable: `loop v in ch` (each value, as it comes)")
+    loop_serials.pop()
+    scope_reset(mark)
+    add_flag(it, NF_CHECKED)
+    w = mk(.while_, pos)
+    nodes[w].aux = 1
+    nodes[w].name = nodes[kid(s, 0)].name
+    nodes[w].a = nodes[synth_call("receive", [it], pos)].a
+    nodes[w].b = nodes[s].b
+    nodes[s] = nodes[w]
+    check_stmt(s)
+
 check_for = (s: int):
     soa_loop(s)
     unpack_loop(s)
@@ -2028,6 +2051,9 @@ check_for = (s: int):
         # (a Set's or a Deque's values: the loop goes over them as an array, lib/std/set.jo)
         if types[t].kind == .struct_ and structs[int(types[t].st)].decl != 0 and pos_in_lib(nodes[int(structs[int(types[t].st)].decl)].pos):
             snm = structs[int(types[t].st)].name
+            if snm == "Channel":
+                chan_loop(s, it, mark)
+                return
             if snm == "Set" or snm == "Deque":
                 if is_mut: fatal(pos, "`loop mut` changes values in place, and a {snm}'s cannot be: loop over it, then change it (`add`, `remove`), or loop over an array")
                 add_flag(it, NF_CHECKED)
@@ -3915,8 +3941,8 @@ load_prelude = ():
 # prompt (whose later inputs may name them) always read them. (The names are in one string for
 # each file, split where they are used: a string of one of them alone would be a name of the
 # compiler's own source, which would read the file whenever it compiles itself.)
-on_demand_files = ["bigint.jo"]
-on_demand_names = ["BigInt bigint to_bigint"]
+on_demand_files = ["bigint.jo", "task.jo"]
+on_demand_names = ["BigInt bigint to_bigint", "spawn channel Channel Task next_frame"]
 on_demand_read: bool[]
 on_demand_all = false           # (the interactive prompt: repl.jo)
 

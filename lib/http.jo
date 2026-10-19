@@ -367,7 +367,10 @@ websocket = (r: Request, largest: int = 16 << 20) -> Response:
 # at once when the port cannot be had. host, largest, backlog: as listen's
 @no_web("gives false in a web page: a page cannot listen (the server is a native program)")
 serve = (port: int, host: str = "", largest: int = 1 << 20, backlog: int = 511) -> bool:
-    if not listen(port, host, largest, backlog): return false
+    # (already listening, by listen(): answered)
+    if __http_listeners.len() == 0 and not listen(port, host, largest, backlog): return false
+    # (in a task: the program's end does not wait for it)
+    __task_background()
     loop not stopping():
         answer()
         net.wait(1.0)
@@ -441,6 +444,7 @@ answer = () -> int:
         # connections done with, or silent for too long
         gone: int[]
         loop id, c in __http_conns:
+            if c.answering: continue
             out_left = c.out.len() - c.at
             if c.closing and out_left == 0 and not c.sending: gone.push(id)
             else if c.eof and out_left == 0 and not c.sending and not c.streaming: gone.push(id)
@@ -448,6 +452,9 @@ answer = () -> int:
             # (a request that comes a byte at a time, so as never to be idle)
             else if c.inbuf.len() > 0 and now - c.begun > __HTTP_SLOWEST and not c.closing: __http_refuse(id, 408, "the request did not all come in {__HTTP_SLOWEST} seconds")
         loop id in gone: __http_close(id)
+        # (the handlers just started take their turns: those that do not wait have answered when
+        # this returns)
+        if n > 0: __task_yield()
         n
 
 # the line a request makes in a log: who, what, the answer's status and size, how long it took
@@ -557,6 +564,7 @@ struct __Conn:
     chunked = false
     keep = true             # (the connection stays open after the answer being sent)
     continued = false       # (100 Continue sent for the request whose body is coming)
+    answering = false       # (its request's handler runs, in a task of its own: the next waits)
 
 
 # (what a connection waits for: 1 to read, 2 to write)
@@ -630,7 +638,7 @@ __http_handle = (id: int) -> int:
     n = 0
     loop __http_conns.has(id):
         c = __http_conns[id]
-        if c.closing or c.streaming or c.sending or c.out.len() - c.at >= __HTTP_MOST_OUT or c.inbuf.len() == 0: break
+        if c.answering or c.closing or c.streaming or c.sending or c.out.len() - c.at >= __HTTP_MOST_OUT or c.inbuf.len() == 0: break
         b = c.inbuf
         e = __http_head_end(b, c.scanned)
         if e < 0:
@@ -677,9 +685,19 @@ __http_handle = (id: int) -> int:
         __http_conns[id].inbuf = if stop == b.len(): [] else: b[stop..]
         __http_conns[id].scanned = 0
         __http_conns[id].continued = false
-        __http_answer(id, req)
+        # (its handler in a task of its own, so that one that waits holds up no other; the
+        # connection's next request once it is answered)
+        __http_conns[id].answering = true
+        spawn((): __http_answer_task(id, req))
         n += 1
+        break
     n
+
+__http_answer_task = (id: int, req: Request):
+    __http_answer(id, req)
+    if __http_conns.has(id):
+        __http_conns[id].answering = false
+        __http_handle(id)
 
 # (a request whose body has not all come, and whose client waits to be told to send it)
 __http_continue = (id: int, req: Request):
@@ -706,6 +724,7 @@ __http_answer = (id: int, req0: Request):
         res = status(405)
         res.headers["Allow"] = __http_allowed(req.path)
     else if not __http_call(__routes[i].handler, req, res): res = status(500)
+    if not __http_conns.has(id): return
     if res.upgrade:
         __http_upgrade(id, req, res.__largest)
         return

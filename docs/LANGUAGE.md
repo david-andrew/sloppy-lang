@@ -1341,6 +1341,53 @@ parallel_range(n, (i: int) -> int:
 (Writing through a raw pointer is left to the program: it is how disjoint parts of one buffer are
 filled in parallel.) Web builds run the same code on one thread.
 
+### Tasks and channels
+
+A task is a function running alongside the rest of the program. `spawn` starts one and gives a
+`Task`, whose `wait()` is the function's result; a channel carries values from one task to
+another:
+
+```gdscript
+t = spawn((): net.fetch("https://example.com").status)   # starts it: the program goes on
+...
+print(t.wait())                         # its result, waiting for it if need be
+
+jobs = channel[str]()                   # channel[int](100): one that holds 100 before send waits
+results = channel[int](100)
+workers = [loop _ in 0..4: spawn(():
+    loop url in jobs: results.send(net.fetch(url).status)     # until jobs is closed and empty
+)]
+loop u in urls: jobs.send(u)
+jobs.close()
+wait_all(workers)
+```
+
+Tasks take turns on the program's one thread: one runs until it waits (to send or receive on a
+channel, for `t.wait()`, `sleep`, the network, a line of input), then the next ready one runs.
+So between two waits nothing else changes the program's variables, and they need no locks; and a
+task that computes for long without waiting holds up the others (for the processor's cores:
+`parallel_map`, above). A task's closure sees the variables around it, as any closure does, and
+one made in a loop has that turn's.
+
+- `ch.send(v)` waits until a receiver takes `v` (a channel of capacity 0), or while the channel
+  holds `capacity` values. `ch.receive()` waits for the next value, and gives none once the
+  channel is closed and empty: `loop let v = ch.receive():`, or `loop v in ch:`, go until then.
+- `ch.receive(wait = 2.0)` waits at most 2 seconds (none: nothing came; `ch.closed()` tells it
+  from a closed channel). `ch.try_send(v)` and `ch.try_receive()` do not wait; `ch.len()` is how
+  many wait in it.
+- `wait_all(tasks)` gives their results in order; `t.done()` says whether one has ended.
+- `next_frame()` in a game's task waits for the next frame: a game's tasks take their turns at
+  the start of each frame, before `update`, so a task can play out a sequence over several
+  (show "Ready", `sleep(1.0)`, show "Go!").
+- The program ends when `main` (or the top-level code) and every task have ended, or at `exit()`.
+  An `http.serve` in a task is the exception: it ends with the rest, so a test can serve and
+  fetch from itself.
+- If every task waits for something none of them will do (a receive on a channel nothing sends
+  to, a send nothing receives), the program stops and says where each one waits.
+- A panic in a task ends the program, as anywhere else. An HTTP server's handlers run as tasks
+  of their own: one that waits lets the others be answered.
+- Web builds do not have tasks yet.
+
 ## 12. Programs and the game loop
 
 A program runs its top-level statements, then `main()` if defined. A `main = () -> int` gives

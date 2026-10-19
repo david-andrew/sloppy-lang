@@ -67,6 +67,10 @@ TOPICS = [
     ("Data", "big", "Big numbers", ["big"], None,
      "A module (`use big`): numbers past f64's 1.8e308, a mantissa and a power of ten (an idle game's currency), "
      "with arithmetic, comparison, `min`, `max`, sorting and saving as for numbers; shown as 1.23M or 4.56e+1234."),
+    ("Data", "tasks", "Tasks and channels", ["std/task"], "tasks",
+     "`spawn((): ...)` runs a function alongside the rest of the program; a task that waits (a channel, "
+     "the network, `sleep`, a line of input) lets the others run meanwhile. Channels carry values between them. "
+     "Nothing is imported (the compiler reads it for the programs that use it). See [tasks](LANGUAGE.md#tasks-and-channels)."),
     ("Data", "threads", "Threads", ["std/thread"], "threads", ""),
     ("Data", "numeric", "Numeric arrays", ["std/nd"], "numeric",
      "Elementwise operators (`.+ .* .^`...), `f.(xs)` and n-dimensional arrays are part of the language: "

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Tasks and channels, as Go's goroutines: `t = spawn((): f(x))` runs `f` alongside the rest of
+  the program and `t.wait()` is its result; `ch = channel[int]()` (or `channel[int](100)`) with
+  `send`, `receive` (none once closed and empty), `close`, `receive(wait = 2.0)`, `try_send`,
+  `try_receive`, and `loop v in ch:`; `wait_all(tasks)`. Tasks take turns on the program's one
+  thread: one that waits (a channel, `sleep`, the network, a line of input) lets the others run,
+  and between two waits nothing else changes the program's variables. Every task waiting on what
+  none will do is told, with where each waits. A game's tasks take their turns at the start of
+  each frame (`next_frame()` waits for the next). Native builds; not yet in web builds.
+- An HTTP server's handlers run as tasks: one that waits (a fetch, `sleep`) no longer holds up
+  the others, and a handler can fetch from its own server. `http.serve` after `http.listen` on the
+  same port answers instead of returning false, and in a task it ends with the program, so a test
+  serves and fetches from itself with `spawn((): http.serve(port))`.
+- A function type is taken as a type argument: `channel[() -> int]()`.
+
 - Aces plays on a phone held upright: the menu, the lobby and Settings are laid out for a tall
   screen (the plane above the menu), the camera sees more up and down, and the buttons are at
   the bottom (Fire and Look on the right, the throttle's + and - on the left). On a phone either
