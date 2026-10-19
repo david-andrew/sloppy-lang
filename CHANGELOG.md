@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Release builds walk a tree without copying its nodes: a variable only ever given parts of a
+  parameter (`cur = n`, then `loop let c = cur: cur = c.left`), and the value a match, `if let` or
+  `loop let` looks at when it is such a part (`match e: .bin(op, l, r)`), is the part's address,
+  with no reference counting. A binary search tree's lookup: 20 -> 4.5 ns a level (28 -> 12 on a
+  100,000-node tree); an expression evaluator, a million evaluations: 0.53 -> 0.40 s.
 - `use bst` from a file with a short relative path (`foo.jo`) found no module: a name not found
   compared equal to a path of just the right length.
 - Patterns: a match arm can have a condition after its patterns, `.rect(w, h) if w == h:`,
