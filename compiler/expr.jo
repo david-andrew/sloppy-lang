@@ -289,7 +289,7 @@ coerce = (n: int, target: int) -> int:
                 if bop == .plus or bop == .minus or bop == .star or bop == .shl:
                     an = "x"
                     if nodes[int(nodes[n].a)].kind == .ident: an = name_of(int(nodes[int(nodes[n].a)].name))
-                    warn(nodes[n].pos, "this is worked out as {a_type(from)}, which wraps around past its range, before it becomes {a_type(to)}: `{type_str(to)}({an}) {tok_text(bop)} ...` works in {type_str(to)}")
+                    warn(nodes[n].pos, "this is worked out as {a_type(from)}, which wraps around past its range, before it becomes {a_type(to)}: `{type_str(to)}({an}) {tok_text(bop)} ...` works in {type_str(to)}, and `{type_str(from)}(...)` around it says the wrap is meant")
             wrap_conv(n, .int_, to)
             return n
         if nodes[n].kind == .call and has_flag(n, NF_CARET): fatal(nodes[n].pos, "cannot implicitly convert {type_str(from)} to {type_str(to)}: {CARET_HINT}")
@@ -353,6 +353,8 @@ coerce = (n: int, target: int) -> int:
         whence = "it may be none"
         if nodes[n].kind == .call and nodes[n].sym > 0 and int(nodes[n].sym) < fns.len() and fns[int(nodes[n].sym)].decl != 0 and name_of(int(nodes[int(fns[int(nodes[n].sym)].decl)].name)) == "receive": whence = "receive gives none once the channel is closed"
         why = " ({whence}: `{xt}!` when it cannot be, `{xt} ?? default` for a value to use then, or `if let v = {xt}:`)"
+    # (a table of bytes written over several lines, as in C)
+    if is_nd(from) and src_char(nodes[n].pos) == '[' and (tk == .array or tk == .fixed): why = " (written over several lines without commas, it is a matrix, a row on each line: for one array, end each line but the last with a comma, `0xF0 0x90 0x90,`)"
     if fk == .opt and tk == .bool_: why = " (an optional is not true or false: `if let v = x:` runs when there is a value and names it, `x != none` asks)"
     if fk == .float_ and tk == .int_: why = " (int(x) makes it a whole number, dropping the fraction)"
     if tk == .bool_ and (fk == .array or fk == .str_ or is_map_type(from)): why = " (not true or false: `xs.len() > 0` asks if it has anything)"
@@ -1797,6 +1799,15 @@ const_fits_check = (n: int, t0: int):
         okb, y = const_int_of(int(nodes[n].b))
         bits = int(types[t].bits)
         if oka and okb and (y < 0 or y >= bits): fatal(nodes[n].pos, "a shift by {y} on {a_type(t)} ({bits} bits) is past its bits: shifts go from 0 to {bits - 1}")
+        # ((hi << 8) | lo with hi: u8: every bit shifted out, so 0)
+        if not oka and okb and y >= bits and bits < 64:
+            wider = "u16"
+            if bits >= 16: wider = "u32"
+            if bits >= 32: wider = "u64"
+            if types[t].sign: wider = "i" + wider[1..]
+            an = expr_text(int(nodes[n].a))
+            if len(an) == 0: an = "x"
+            warn(nodes[n].pos, "a shift by {y} on {a_type(t)} ({bits} bits) moves every bit out, giving 0: `{wider}({an}) << {y}` shifts in a wider type")
         return
     if op != .plus and op != .minus and op != .star: return
     oka, x = const_int_of(int(nodes[n].a))
@@ -1834,7 +1845,11 @@ value_call = (n: int, callee: int, args: int[]) -> int:
     ft = prune(ntype(callee))
     if types[ft].kind != .fn_ and types[ft].kind != .cfn: fatal(nodes[n].pos, "cannot call a value of type {type_str(ft)}")
     na = int(types[ft].nargs)
-    if args.len() != na: fatal(nodes[n].pos, "function value expects {na} argument(s), got {args.len()}")
+    if args.len() != na:
+        # (row = (s: str, size: int = 18): ... in a function, called row("b"))
+        why = ""
+        if args.len() < na: why = " (a function value keeps no defaults for its parameters: give them all, or make it a function of the file, at the top level, where defaults work)"
+        fatal(nodes[n].pos, "function value expects {na} argument(s), got {args.len()}{why}")
     loop i in 0.. and a in args:
         if nodes[a].kind == .namedarg: fatal(nodes[a].pos, "named arguments are not allowed when calling a function value")
         finish_arg(a, targ(ft, i), int(types[ft].mutmask) & (1 << i) != 0)
@@ -2117,6 +2132,11 @@ conversion = (n: int, to0: int, args: int[]) -> int:
         if fk == .str_ and tk == .float_: hint = " (`to_float(s)` reads a number from text: it gives an f64?, none when the text is not one)"
         fatal(nodes[n].pos, "cannot convert {type_str(ft)} to {type_str(to)}{hint}")
     if type_eq(ft, to):
+        # (u8(z + 1) with z: u8: said to wrap around in a u8, so no warning where it becomes an
+        # int, as an index)
+        if nodes[a].kind == .binary and tk == .int_:
+            nodes[n] = Node(kind = .conv, pos = nodes[n].pos, a = i32(a), aux = i32(int(CV.none_)), type = i32(to), flags = i32(NF_CHECKED))
+            return to
         nodes[n] = nodes[a]
         return to
     nodes[n] = Node(kind = .conv, pos = nodes[n].pos, a = i32(a), aux = i32(cv), type = i32(to), flags = i32(NF_CHECKED))

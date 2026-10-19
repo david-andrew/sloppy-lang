@@ -19,6 +19,16 @@
   changes no globals (an emulator's 64 KB machine was copied on every call: 2 µs, now 2 ns).
 - A default naming an earlier parameter (`b: int = a`) works when the caller gives a variable
   (it said the variable was unknown).
+- `@inline`: release builds copy the function into every caller, whatever its size.
+- An unsigned index whose every value is in a fixed-size array (a u16 into `u8[65536]`) is not
+  checked.
+- A line starting with `(` after a match that gives a value is a line of its own (it was taken
+  as a call of the match's value).
+- `u8(z + 1)` with z a u8 says the wrap is meant: no warning where it becomes an int. Shifting a
+  narrow variable by its width or more (`hi << 8` with hi a u8, which is 0) is a warning that
+  suggests `u16(hi) << 8`; LANGUAGE.md says how shifts on narrow types go.
+- Messages: a byte table over several lines without commas (a matrix) where an array goes, and a
+  function value called without its parameters' defaults.
 - Messages for Go's habits with tasks: `c <- 5` and `v = <-c` (send and receive), `go f()`,
   `spawn(worker, 3)` and `spawn(worker(3))` (spawn((): worker(3))), a select arm written
   `v = c.receive():` or `case ...:`, and `stage = [A, B](...)` for a generic function. Giving a

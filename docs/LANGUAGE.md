@@ -195,8 +195,9 @@ Float to integer conversion truncates toward zero and saturates: NaN becomes 0 a
 beyond the integer range become its minimum or maximum (the same on every target).
 
 **Operators.** Integer `/` truncates, `%` is remainder, integer overflow wraps (in debug and
-release builds alike: `i8(127) + i8(1)` is -128), and a shift counts modulo the width
-(`1 << n` with n at 64 is 1, as x86-64 and arm64 shift). Numbers written out are worked out
+release builds alike: `i8(127) + i8(1)` is -128). A shift on a type narrower than 64 bits keeps
+what fits the type (`u8(0x80) << 1` is 0, and `hi << 8` with hi a u8 is 0: `u16(hi) << 8`); a
+shift by 64 or more counts modulo 64 (`1 << n` with n at 64 is 1, as x86-64 and arm64 shift). Numbers written out are worked out
 while compiling, and one that does not fit is an error rather than a wrapped value:
 `9223372036854775807 + 1`, `x: u8 = 200 + 100`, `1 << 70` (numbers written in hex are bits, and
 may wrap). Where overflow must not pass unseen, the library
@@ -444,6 +445,11 @@ scale = (k: f64, x: f64): k * x
 half = scale(0.5, _)            # partial application: `_` marks missing arguments
 print(half(10))                 # 5
 ```
+
+A function's type is written as it is called: `(f64) -> f64`, `(str, int) -> bool`, `() -> void`,
+with `mut` before a parameter it changes: `ops: ((mut Cpu) -> void)[]` is a table of functions
+that each change a Cpu. A function value has no defaults for its parameters: it is given all of
+them.
 
 **Closures capture variables, not values**, the same way everywhere: a closure made inside a
 function sees (and can change) that function's variables, just as a closure at the top level
@@ -1896,6 +1902,13 @@ lose their bounds checks and vectorize in release builds, as do integer sums ove
 `soa` arrays (section 8), or a pointer from `data(xs)` (section 13) let it go. Calls through
 function values (`reduce`, `sort_by`, a lambda) are not inlined: in a hot loop, write the loop.
 `soa T[]` keeps each field together, which is what loops over one or two fields want.
+
+**Functions.** Release builds copy small functions into their callers; `@inline` on a function
+copies it into every caller whatever its size (an interpreter's helpers), and `@noinline` keeps
+one out. A `match` on whole numbers with many arms becomes a jump table: an interpreter's
+`match opcode:` inside its loop is the fast way to dispatch, faster than an array of functions.
+Parameters are borrowed, not copied: a struct passed on, from a `mut` parameter too, costs a
+pointer.
 
 **Numbers.** `int` is 64 bits and wraps around. Arithmetic on narrow types stays in them: two
 `u8`s add as a `u8` (200 + 200 is 144), so widen first, `int(a) + b` (the compiler warns when the
