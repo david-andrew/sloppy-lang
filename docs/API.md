@@ -1088,7 +1088,7 @@ In a program with tasks, a task waiting in read_event lets the others run (on Wi
 - `set_cursor = (x: int, y: int)`: show the cursor at column x of row y after each flush (where the user types)
 - `hide_cursor = ()`: no cursor shown (as from start on)
 - `redraw = ()`: the next flush shows every cell, not only those changed (after something else wrote to the terminal: a program run, a message)
-- `flush = () -> int`: show what was drawn: the cells changed since the last flush, written in one go with the cursor moved as little as it can be. How many bytes were written
+- `flush = () -> int`: show what was drawn: the cells changed since the last flush, written in one go with the cursor moved as little as it can be. How many bytes were written (none while stopped)
 - `render = () -> str`: what flush would write now, as text, the screen then counting it as shown: for tests without a terminal
 - `screen_text = () -> str`: the screen's characters, a line for each row (colors and styles left out): for tests
 

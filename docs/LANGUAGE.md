@@ -1816,8 +1816,9 @@ page, wait in real time, send keys with `Input.dispatchKeyEvent` and take the pi
 A program can take the whole terminal as a screen of characters, as curses, tcell or bubbletea
 let one do: a file browser, an editor, a game in the terminal. `import term`, then `term.start()`:
 keys come one at a time as they are typed, the program draws into a screen of cells, and
-`term.flush()` shows what changed. [examples/files.jo](../examples/files.jo) is a file browser;
-`sloppy new my_list tui` makes a list of things to do to start from.
+`term.flush()` shows what changed.
+[examples/files.jo](https://github.com/david-andrew/sloppy-lang/blob/master/examples/files.jo)
+is a file browser; `sloppy new my_list tui` makes a list of things to do to start from.
 
 ```gdscript
 import term

@@ -298,8 +298,9 @@ browser, an editor, a game in the terminal): `import term`, `term.start()`, then
 text, fg = term.YELLOW)`, `term.box(...)` and `term.flush()`, which writes only what changed, and
 `term.read_event()` for keys, the mouse and resizes. The terminal is put back as it was however
 the program ends. `sloppy new my_list tui` starts one; [terminal
-programs](LANGUAGE.md#terminal-programs) says the rest, and [examples/files.jo](../examples/files.jo)
-is a file browser.
+programs](LANGUAGE.md#terminal-programs) says the rest, and
+[examples/files.jo](https://github.com/david-andrew/sloppy-lang/blob/master/examples/files.jo) is
+a file browser.
 
 ### Fetching from the web
 

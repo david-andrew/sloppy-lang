@@ -112,6 +112,7 @@ __t_in: u8[]                        # (bytes read, not made into events yet)
 __t_events: Event[]                 # (events made, not given yet)
 __t_stop_told = false               # (read_event has given none once for being asked to stop)
 __t_gone = false                    # (the terminal's input has ended: it was closed)
+__t_refused = false                 # (start gave false: not a terminal)
 __t_mouse_on = false
 __t_mouse_moves = false
 __t_buttons = 0                     # (Windows: the mouse's buttons held)
@@ -126,12 +127,14 @@ __t_left = 0
 # when standard input or output is not a terminal (a pipe, a file); true if started already
 @no_web("does nothing in a web page, which has no terminal (it gives false)")
 start = (mouse: bool = false, mouse_moves: bool = false, ctrl_c_key: bool = false) -> bool:
-    global __t_cursor_shown, __t_mouse_moves, __t_mouse_on, __t_on, __t_stop_told
+    global __t_cursor_shown, __t_mouse_moves, __t_mouse_on, __t_on, __t_refused, __t_stop_told
     if __t_on: return true
     when TARGET == "wasm":
         return false
     else:
-        if not __t_is_terminal(): return false
+        if not __t_is_terminal():
+            __t_refused = true
+            return false
         # (ctrl-c and SIGTERM: asked to stop, rather than ended at once, so that the terminal is put
         # back: lib/std/stop.jo)
         __stop_watch()
@@ -198,7 +201,7 @@ set_title = (s: str):
 # was closed, or the program has been asked to stop (ctrl-c: once, for a program that looks at
 # stopping()). A lone escape is told from a key's sequence by 50 ms with nothing after it
 read_event = (wait: f64 = -1.0) -> Event?:
-    if not __t_on: panic("term.read_event: the terminal is not started (term.start() first)")
+    if not __t_on: panic("term.read_event: {__t_not_started()}")
     deadline = if wait < 0.0: -1.0 else: time() + min(wait, 1e9)
     loop true:
         if __t_events.len() > 0: return __t_events.remove_at(0)
@@ -251,6 +254,11 @@ __t_take = (final: bool):
         if let x = e: __t_events.push(x)
         i += n
     if i > 0: __t_in = __t_in[i..]
+
+__t_not_started = () -> str:
+    if __t_refused: return "the terminal is not started: start() gave false, as standard input or output is not a terminal (a pipe, a file)"
+    if __t_once: return "the terminal is stopped (term.stop() was called: term.start() takes it again)"
+    "the terminal is not started (term.start() first; term.render() gives what a flush would write)"
 
 # (asked to stop while waiting: a program that looks at stopping() is given none, once; one that
 # does not ends here)
@@ -475,8 +483,9 @@ redraw = ():
     __t_full = true
 
 # show what was drawn: the cells changed since the last flush, written in one go with the cursor
-# moved as little as it can be. How many bytes were written
+# moved as little as it can be. How many bytes were written (none while stopped)
 flush = () -> int:
+    if not __t_once: panic("term.flush: {__t_not_started()}")
     if not __t_on: return 0
     __t_check_size()
     __stop_check()
