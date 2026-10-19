@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- No "clear covers everything drawn before it" warning for a clear in each arm of a `match
+  screen:` (or branch of an `if`): one of them runs, so nothing drawn in another comes before it.
+- `var speed = 5` says `` `speed = 5` declares speed ``, with the name and value written (it
+  said `x = 5`).
 - Tuple patterns: `match (i % 3, i % 5): (0, 0): ... (0, _): ...`, each part a value, a range,
   `.variant` or `_`, tuples inside tuples too (it said "unsupported pattern for this type").
   `"A" | "a":` in a match says an arm lists its values with commas.

@@ -2375,6 +2375,17 @@ coerce_hint = ""     # (said after a type mismatch, by what asked for the type)
 
 fn_used: {int: bool}            # the program's functions called or used as a value (by decl)
 drew_in: {int: bool}            # (functions, by instance, that have drawn something so far)
+
+# (whether the function being checked has drawn something so far, and setting it: an `if`'s
+# branches and a match's arms each start from what was drawn before them)
+drew_now = () -> bool:
+    if cx < 0: return false
+    drew_in.get(int(ctxs[cx].inst)) != none
+drew_set = (v: bool):
+    if cx < 0: return
+    ci = int(ctxs[cx].inst)
+    if v: drew_in[ci] = true
+    else if drew_in.get(ci) != none: drew_in.remove(ci)
 draw_to_at: {int: int}          # (draw's first draw_to, by instance)
 back_to_screen: {int: bool}     # (draw calls draw_to_screen)
 
@@ -4598,6 +4609,8 @@ check_match = (m: int, expected: int) -> int:
     # (a field path or a global: narrowed like `if x.f is T`)
     pkey = ""
     if is_union(st) and not narrows: pkey = path_key(sc)
+    drew_before = drew_now()
+    drew_any = drew_before
     loop i in [0..nkids(m)):
         arm = kid(m, i)
         amark = scope_mark()
@@ -4685,6 +4698,8 @@ check_match = (m: int, expected: int) -> int:
             check_to(int(nodes[arm].a), T_BOOL)
             narrow_by(int(nodes[arm].a), true)
         body = int(nodes[arm].b)
+        # (what one arm draws is not drawn before a clear in another: one of them runs)
+        drew_set(drew_before)
         if is_stmt: check_block(body, 0, false)
         else:
             # (the expected type, when there is one, reaches every arm: a match among them
@@ -4708,7 +4723,9 @@ check_match = (m: int, expected: int) -> int:
                     else if first_val != 0: result = join_types(block_value(first_val), vp, nodes[arm].pos)
                     else: coerce(vp, result)
             coerce_hint = ""
+        drew_any = drew_any or drew_now()
         scope_reset(amark)
+    drew_set(drew_any)
     scope_reset(mark)
     exhaustive = has_wild or (types[st].kind == .bool_ and bools_seen == 3)
     if not exhaustive and types[st].kind == .enum_:
@@ -5983,15 +6000,19 @@ check_if = (n: int, ex: int) -> int:
         mark = scope_mark()
         narrow_by(cond, true)
         um = unnarrowed.len()
+        drew_before = drew_now()
         check_block(b, 0, false)
+        drew_b = drew_now()
         renarrow(um, b)
         scope_reset(mark)
         if c != 0:
+            drew_set(drew_before)
             narrow_by(cond, false)
             um = unnarrowed.len()
             check_block(c, 0, false)
             renarrow(um, c)
             scope_reset(mark)
+        drew_set(drew_b or drew_now())
         # if x is E: return ...   narrows x for the rest of the block
         if stmt_terminates(b) and (c == 0 or not stmt_terminates(c)): narrow_by(cond, false)
         else if c != 0 and stmt_terminates(c) and not stmt_terminates(b): narrow_by(cond, true)
