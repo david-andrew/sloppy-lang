@@ -38,6 +38,11 @@
   in a window; it said "missing argument 'pos'"), and `text(s)` alone that it draws at a position,
   `print(s)` showing it in the terminal; `s.byte(i)` (and `char_at`) says `s[i]` is the byte
   already.
+- `http.read_json(r, into)` sets the fields the body has and keeps the others as they were (a
+  PATCH), where it replaced `into` with a new value, the fields not in the body at their defaults;
+  a body that does not read leaves `into` as it was. lib/http.jo's docs (and START.md's) say that
+  handlers run one at a time, changing the program's variables with no locks, and how to try a
+  server from its own program (fetch_start, then http.answer() until the answer has come).
 
 ## 0.25.0
 

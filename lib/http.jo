@@ -19,10 +19,26 @@
 #       net.wait(1.0)                           # until something comes (a request, a message)
 #
 # Requests are answered one at a time, in the order they come; a client slow to send or to read
-# holds up no other (what waits to go out to it goes as it takes it). A handler that panics is
+# holds up no other (what waits to go out to it goes as it takes it). Handlers run one at a time
+# too, on the program's one thread: they change the program's variables (a map of todos, a count)
+# with no locks, as nothing else runs meanwhile. A handler that waits holds up the others: one
+# that fetches from elsewhere starts it (net.fetch_start) and answers later, or keeps it short. A handler that panics is
 # answered 500 and the server goes on (the panic and its backtrace are written to standard error;
 # what the handler had changed stays changed). Behind a proxy that has the certificate (Caddy:
 # docs/START.md's "Writing a server"), the same program serves https. Native programs only.
+#
+# Trying a server from the same program (a test, Go's httptest): a net.fetch to it would wait for
+# an answer that never comes, the server's loop waiting too; start the fetch, and answer until it
+# has come:
+#   http.listen(18080, host = "127.0.0.1")
+#   ask = (path: str) -> net.HttpReply:
+#       f = net.fetch_start("http://127.0.0.1:18080{path}", wait = 5.0)
+#       loop true:
+#           http.answer()
+#           if let res = net.fetch_result(f): return res
+#           net.wait(0.1)
+#       net.HttpReply(0, [])
+#   assert(ask("/todos/1").status == 200)
 
 import net
 
@@ -206,13 +222,20 @@ file = (r: Request, path: str) -> Response:
     res.headers["Content-Length"] = "{size}"
     res
 
-# the request's body, as JSON, into `into` (a struct, an array...: from_json's); none when it went
-# well, else the answer to give (400, saying what is wrong with it):
+# the request's body, as JSON, read into `into` (a struct, an array...: what from_json reads):
+# none when it went well, else the answer to give (400, saying what is wrong with it), and `into`
+# is as it was. The fields the body has are set, the others keep the values they had (a struct
+# in it too, field by field; an array or a map in it is replaced), so the same reads a new one and
+# changes one, a PATCH:
 #   t = TodoIn()
 #   if let bad = http.read_json(r, t): return bad
+#   ...
+#   t = todos[id]                                   # (PATCH /todos/:id with {"done": true})
+#   if let bad = http.read_json(r, t): return bad
+#   todos[id] = t                                   # (its title as it was)
 read_json[T] = (r: Request, into: mut T) -> Response?:
-    v = from_json[T](r.text)
-    if v is TextError: return json_error(400, "the body is not what this takes: {v.message}")
+    v = into
+    if let e = __from_text_into(r.text, v, true): return json_error(400, "the body is not what this takes: {e.message}")
     into = v
     none
 

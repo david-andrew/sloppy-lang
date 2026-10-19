@@ -5046,7 +5046,21 @@ loop not stopping():
     net.wait(1.0)                           # until something comes (a request, a message)
 ```
 
-Requests are answered one at a time, in the order they come; a client slow to send or to read holds up no other (what waits to go out to it goes as it takes it). A handler that panics is answered 500 and the server goes on (the panic and its backtrace are written to standard error; what the handler had changed stays changed). Behind a proxy that has the certificate (Caddy: docs/START.md's "Writing a server"), the same program serves https. Native programs only.
+Requests are answered one at a time, in the order they come; a client slow to send or to read holds up no other (what waits to go out to it goes as it takes it). Handlers run one at a time too, on the program's one thread: they change the program's variables (a map of todos, a count) with no locks, as nothing else runs meanwhile. A handler that waits holds up the others: one that fetches from elsewhere starts it (net.fetch_start) and answers later, or keeps it short. A handler that panics is answered 500 and the server goes on (the panic and its backtrace are written to standard error; what the handler had changed stays changed). Behind a proxy that has the certificate (Caddy: docs/START.md's "Writing a server"), the same program serves https. Native programs only.
+
+Trying a server from the same program (a test, Go's httptest): a net.fetch to it would wait for an answer that never comes, the server's loop waiting too; start the fetch, and answer until it has come:
+
+```gdscript
+http.listen(18080, host = "127.0.0.1")
+ask = (path: str) -> net.HttpReply:
+    f = net.fetch_start("http://127.0.0.1:18080{path}", wait = 5.0)
+    loop true:
+        http.answer()
+        if let res = net.fetch_result(f): return res
+        net.wait(0.1)
+    net.HttpReply(0, [])
+assert(ask("/todos/1").status == 200)
+```
 
 - `struct Request`
   ```gdscript
@@ -5097,10 +5111,14 @@ Requests are answered one at a time, in the order they come; a client slow to se
 - `json_error = (code: int, message: str) -> Response`: an error for an API's client: {"error": message} as JSON
 - `redirect = (to: str, status: int = 302) -> Response`: to another address (302: for now; 301: for good; 303: after a form's POST, a GET of it)
 - `file = (r: Request, path: str) -> Response`: a file, sent a piece at a time (a big one is never all in memory), with its type and what lets a browser keep a copy (as files() does); 404 when there is no such file
-- `read_json[T] = (r: Request, into: mut T) -> Response?`: the request's body, as JSON, into `into` (a struct, an array...: from_json's); none when it went well, else the answer to give (400, saying what is wrong with it):
+- `read_json[T] = (r: Request, into: mut T) -> Response?`: the request's body, as JSON, read into `into` (a struct, an array...: what from_json reads): none when it went well, else the answer to give (400, saying what is wrong with it), and `into` is as it was. The fields the body has are set, the others keep the values they had (a struct in it too, field by field; an array or a map in it is replaced), so the same reads a new one and changes one, a PATCH:
   ```gdscript
   t = TodoIn()
   if let bad = http.read_json(r, t): return bad
+  ...
+  t = todos[id]                                   # (PATCH /todos/:id with {"done": true})
+  if let bad = http.read_json(r, t): return bad
+  todos[id] = t                                   # (its title as it was)
   ```
 - `set_cookie = (res: mut Response, name: str, value: str, max_age: int = -1, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = "")`: a Set-Cookie on the answer: the client sends the cookie back with its requests from then on (r.cookies), for max_age seconds (-1: until the browser closes). http_only: not for the page's JavaScript; secure: over https only; same_site: "Lax", "Strict" or "None"
 - `clear_cookie = (res: mut Response, name: str, path: str = "/")`: a Set-Cookie that has the client forget a cookie

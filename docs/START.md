@@ -401,10 +401,28 @@ on_quit = (): write_file("todos.json", to_json(todos))
   (a 300 MB one is never in memory), and a handler that panics is answered 500 while the server
   goes on (the panic is on standard error). Bodies over 1 MB are refused (`largest = ...` takes
   more).
+- Handlers run one at a time, on the program's one thread, so they change its variables (`todos`
+  above) with no locks: nothing else runs meanwhile. A handler that waits (a `net.fetch`) holds up
+  the others.
+- `http.read_json(r, t)` sets the fields the body has and keeps the others as they were, so a
+  PATCH is `t = todos[i]`, `if let bad = http.read_json(r, t): return bad`, `todos[i] = t`; a body
+  that does not read leaves `t` as it was.
 - A program that does more than answer (a game hosting, a job that fetches, WebSockets) answers in
   its own loop: `http.listen(8080)`, then `loop not stopping():` with `http.answer()`, its other
   work (`net.receive()`, `net.fetch_result(f)`), and `net.wait(1.0)`, which sleeps until something
   comes, a request or a message, rather than a fixed time.
+- To try the server from the same program (a test), a `net.fetch` to it would wait forever (the
+  server waits too); start the fetch and answer until it has come:
+
+  ```gdscript
+  ask = (path: str) -> net.HttpReply:
+      f = net.fetch_start("http://127.0.0.1:8080{path}")
+      loop true:
+          http.answer()
+          if let res = net.fetch_result(f): return res
+          net.wait(0.1)
+      net.HttpReply(0, [])
+  ```
 - WebSockets on the same port: a route answers `http.websocket(r)` (after checking
   `r.headers.get("origin")` or a cookie), and the connection is a peer of `net`'s from then on
   (`net.receive()`, `net.send`, `net.handshake(peer)` for its path and cookies). Server-sent
