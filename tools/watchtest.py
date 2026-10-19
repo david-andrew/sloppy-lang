@@ -139,6 +139,7 @@ use 'helper.jo'
 counter = 0
 hook: (int) -> int = (a: int) -> int: a + 1
 update = (dt: f64):
+    global counter
     counter = hook(counter)
     if frame_number() % 10 == 0: print("tick counter={counter} name={helper_name()} scale={scale(3)}")
     sleep(0.005)
