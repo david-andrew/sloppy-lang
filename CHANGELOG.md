@@ -48,6 +48,10 @@
   Rect does not have says its fields; `sprite(sheet, pos)` with a SpriteSheet says it is drawn a
   frame at a time (`draw_frame(sheet, i, center)`); an action asked for by a name of another case,
   or a letter off, says the one meant (`no action "jump": did you mean "Jump"?`).
+- A "Platformers" part of the library's docs: a small platformer (a moving platform carrying the
+  player, spikes as a tile's property, walls at the level's ends, wall slides and wall jumps,
+  coyote time and a jump buffer, a camera kept inside the level, fixed steps), and how its pieces
+  fit.
 - Tuple patterns: `match (i % 3, i % 5): (0, 0): ... (0, _): ...`, each part a value, a range,
   `.variant` or `_`, tuples inside tuples too (it said "unsupported pattern for this type").
   `"A" | "a":` in a match says an arm lists its values with commas.

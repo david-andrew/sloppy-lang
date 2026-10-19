@@ -1,0 +1,114 @@
+# example: platformers
+# a level with spikes, walls at its sides, and a platform that carries the player across a pit;
+# running, jumping (with coyote time and a jump buffer), sliding down walls and jumping off them,
+# and a camera that stays inside the level. Arrows or A/D to run, space to jump.
+window("Platformer", 960, 540)
+const T = 32
+
+LEVEL = r"
+......................................
+......................................
+......................................
+......................................
+......................................
+......................................
+......................................
+......................................
+......................................
+...............................o......
+.............................=====....
+...........o..........................
+..........===.....................#...
+..........................#.......#...
+...@......................#.......#...
+########............#######^^^^####...
+########^^^^^^^^^^^^##################
+"
+
+# the tiles: ground, a one-way platform, spikes (drawn here; a tileset image does as well)
+img = image(3 * T, T)
+loop y in 0..T:
+    loop x in 0..T:
+        img.set(x, y, rgb(0.42, 0.3, 0.22))
+        if y < 8: img.set(T + x, y, rgb(0.7, 0.5, 0.3))
+        if y > T - 2 * abs(x % 16 - 8) * 2: img.set(2 * T + x, y, rgb(0.85, 0.25, 0.25))
+level = tilemap(tileset(texture(img), T, T), [tile_layer("ground", LEVEL, "#=^")])
+set_tile_shape(level, 2, .platform)
+set_tile_shape(level, 3, .empty)            # spikes: passed into, not stood on...
+set_tile_prop(level, 3, "hurts", "true")    # ...and they hurt (in Tiled: a custom property of the tile)
+level.edges = .sides                        # walls at the level's left and right ends
+
+# a moving platform: where it is, and how far it moved in the last step (to carry its rider)
+struct Mover:
+    rect: Rect
+    from: vec2
+    to: vec2
+    t = 0.0
+    moved = vec2(0, 0)
+movers = [Mover(Rect(8 * T, 15 * T, 3 * T, 10), vec2(8 * T, 15 * T), vec2(17 * T, 15 * T))]
+
+const RUN = 300.0
+const JUMP = 760.0
+const GRAVITY = 2200.0
+start = vec2(3 * T, 14 * T)
+box = Rect(start.x, start.y, 22, 30)
+vel = vec2(0, 0)
+on_ground = false
+coyote = 0.0        # time left to jump after running off a ledge
+buffered = 0.0      # time left for a jump pressed just before landing
+wall = 0.0          # -1: a wall on the left is touched, 1: on the right
+riding = -1         # the mover stood on
+cam = start
+action("jump", [.key(.space), .key(.up), .button(.a)])
+
+# the game in steps of 1/60 s, whatever the frame rate (a press is seen in one step only)
+update = (dt: f64): fixed_update(dt, step)
+
+step = (dt: f64):
+    # the movers move first, and carry what stands on them
+    loop mut mv in movers:
+        mv.t += dt
+        p = mix(mv.from, mv.to, f32(0.5 - 0.5 * cos(mv.t * 0.8)))
+        mv.moved = p - vec2(mv.rect.x, mv.rect.y)
+        mv.rect.x = p.x
+        mv.rect.y = p.y
+    if riding >= 0: box = tilemap_move(level, 0, box, movers[riding].moved).rect
+    move = input_axis().x
+    vel.x = approach(vel.x, move * RUN, 14.0, dt)
+    vel.y += GRAVITY * dt
+    if vel.y < 0.0 and not action_down("jump"): vel.y += GRAVITY * dt      # let go early: a short hop
+    # sliding down a wall pushed into
+    if wall != 0.0 and move == wall and not on_ground: vel.y = min(vel.y, 120.0)
+    coyote -= dt
+    buffered -= dt
+    if on_ground: coyote = 0.1
+    if action_pressed("jump"): buffered = 0.12
+    if buffered > 0.0 and (coyote > 0.0 or wall != 0.0):
+        if coyote <= 0.0: vel.x = -wall * RUN          # off a wall: away from it
+        vel.y = -JUMP
+        buffered = 0.0
+        coyote = 0.0
+    hit = tilemap_move(level, 0, box, vel * f32(dt), drop = input_axis().y > 0.5, platforms = movers.map((mv): mv.rect))
+    box = hit.rect
+    wall = 0.0
+    if hit.hit_x:
+        wall = sign(vel.x)
+        vel.x = 0.0
+    on_ground = hit.hit_y and vel.y > 0.0
+    if hit.hit_y: vel.y = 0.0
+    riding = hit.platform
+    # spikes, or a fall out of the level: back to the start
+    if tilemap_touches(level, 0, box.grow(-4), "hurts") or box.y > tilemap_size(level).y:
+        box = Rect(start.x, start.y, box.w, box.h)
+        vel = vec2(0, 0)
+    # the camera follows, and stops at the level's edges
+    size = tilemap_size(level)
+    cam = follow(cam, center(box), dt, 6.0, vec2(80, 60))
+    cam = clamp(cam, vec2(480, 270), vec2(max(size.x - 480.0, 480.0), max(size.y - 270.0, 270.0)))
+
+draw = ():
+    clear(rgb(0.5, 0.72, 0.92))
+    camera2d(cam)
+    draw_tilemap(level)
+    loop mv in movers: rect(mv.rect, rgb(0.55, 0.4, 0.3))
+    rect(box, rgb(0.95, 0.85, 0.3))

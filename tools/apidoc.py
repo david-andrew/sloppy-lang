@@ -73,6 +73,15 @@ TOPICS = [
     ("Games", "controls", "Controls and gamepads", ["game/controls", "game/gamepad"], "controls", ""),
     ("Games", "draw2d", "Drawing in 2D", ["game/draw2d", "game/font", "game/screen", ("game/softgl", ["soft_rendering"])], "draw2d", ""),
     ("Games", "sprites", "Images, sprites and tilemaps", ["game/image", "game/jpeg", "game/sprites", "game/tilemap"], "sprites", ""),
+    ("Games", "platformers", "Platformers", [], "platformer",
+     "How the pieces fit for a platformer (the program here is one): `tilemap_move` for running and landing (one-way "
+     "platforms, slopes, `drop` to fall through a platform), `level.edges = .sides` for walls at a level's ends, `platforms` "
+     "(and `solids`) for moving platforms (move them first, then carry what stood on one by what it moved: the move's "
+     "`platform` says which), hazards as a tile's property (`tilemap_touches(level, 0, box, \"hurts\")`; in Tiled, a custom "
+     "property of the tile), a wall slide from `hit_x`, coyote time and a jump buffer as two timers, a camera held inside the "
+     "level with `clamp`, and `fixed_update` for the same jumps at any frame rate. `sloppy new mygame platformer` starts a "
+     "project with slopes, coins and a camera; `AnimPlayer` ([sprites](#spritesjo)) plays a character's animations by name, and "
+     "`sprite_tiled` repeats a background as the camera moves."),
     ("Games", "vmath", "Colors, vectors and matrices", ["game/vmath"], "colors",
      "`vec2`, `vec3`, `vec4`, `ivec2` and `mat4` are built-in types, with `+ - *` and fields `.x .y .z .w` "
      "(and swizzles: `v.xz`). Colors are `vec4`s: red, green, blue and alpha, from 0 to 1."),
