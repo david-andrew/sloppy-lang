@@ -51,6 +51,10 @@
   changes no globals (an emulator's 64 KB machine was copied on every call: 2 µs, now 2 ns).
 - A default naming an earlier parameter (`b: int = a`) works when the caller gives a variable
   (it said the variable was unknown).
+- `to_bytes(x)` and `from_bytes[T](b)`: a plain struct's bytes and back, for a save state written
+  in one go.
+- An array of numbers written out, given for a `u8[]` or `f64[]` parameter, takes that element
+  type (`write_bytes(path, [0x89, 0x50])`, `mean_of([1, 2, 3])`), as it does in `x: u8[] = [...]`.
 - A fixed-size array can be made from a comprehension, `pop: u8[256] = [loop i in 0..256: ...]`
   (a lookup table worked out); a count other than its size panics.
 - `sound_stream()`, `push_samples(s, samples)` and `queued_samples(s)`: sound a program makes as it

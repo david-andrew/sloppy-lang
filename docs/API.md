@@ -1193,6 +1193,11 @@ Sizes are 1 to 8 bytes (3 for a 24-bit field); get_le and get_be give the bytes 
 - `rotate_right = (x: i32, n: int) -> i32`
 - `byte_swap = (x: int, size: int = 8) -> int`: the bytes of a size-byte number in the other order (0x1234, 2 -> 0x3412)
 
+#### Plain values
+
+- `to_bytes[T] = (x: T) -> u8[]`: a plain value's bytes as it is in memory (numbers, bools, vectors, fixed-size arrays and structs of them; no str or T[]): a machine's state saved in one go, `write_bytes(path, to_bytes(cpu))`. They are this program's layout of the type, on a little-endian machine (every one Sloppy runs on): for reading back with from_bytes, not a file format for other programs
+- `from_bytes[T] = (b: u8[]) -> T?`: the plain value whose bytes are b (from to_bytes): `from_bytes[Cpu](read_bytes(path) ?? [])`; none when b is not the size of a T
+
 #### From C
 
 - `bytes_from = (p: *u8, n: int) -> u8[]`: a copy of the n bytes at p
