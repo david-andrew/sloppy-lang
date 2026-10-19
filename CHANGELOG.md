@@ -19,6 +19,8 @@
   changes no globals (an emulator's 64 KB machine was copied on every call: 2 µs, now 2 ns).
 - A default naming an earlier parameter (`b: int = a`) works when the caller gives a variable
   (it said the variable was unknown).
+- `sound_stream()`, `push_samples(s, samples)` and `queued_samples(s)`: sound a program makes as it
+  runs (an emulator's sound chip, a synthesizer), at its own rate, mono or stereo.
 - `@inline`: release builds copy the function into every caller, whatever its size.
 - An unsigned index whose every value is in a fixed-size array (a u16 into `u8[65536]`) is not
   checked.

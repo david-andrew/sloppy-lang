@@ -20,6 +20,7 @@ struct Voice:
     looping: bool
     id: int
     stream = false      # music, decoded as it plays (play_music): its __Stream has this id
+    pushed = false      # samples the program pushes (sound_stream): its __Pushed has this id
     fade_to: f32 = 0.0  # (fade_volume: the volume it is going to, in fade_time seconds)
     fade_time = 0.0
     fade_stop = false   # (fade_out: stopped when the fade ends)
@@ -67,10 +68,15 @@ stop = (id: int):
     loop i < __streams.len():
         if __streams[i].id == id: __streams.remove_at(i)
         else: i += 1
+    i = 0
+    loop i < __pushed.len():
+        if __pushed[i].id == id: __pushed.remove_at(i)
+        else: i += 1
 
 stop_all = ():
     __voices.clear()
     __streams.clear()
+    __pushed.clear()
 is_playing = (id: int) -> bool:
     loop v in __voices:
         if v.id == id: return true
@@ -185,6 +191,11 @@ __mix = (n: int):
             if __mix_stream(i, out, n) and not last: i += 1
             else: stop(v.id)
             continue
+        if v.pushed:
+            __mix_pushed(i, out, f0, n, v0)
+            if last: stop(v.id)
+            else: i += 1
+            continue
         src = data(v.sound.samples)
         total = v.sound.samples.len() / 2
         if total == 0:
@@ -223,6 +234,76 @@ __mix = (n: int):
         x = out[k]
         if x > 0.75: out[k] = f32(0.75 + 0.25 * tanh((f64(x) - 0.75) * 4.0))
         else if x < -0.75: out[k] = f32(-0.75 - 0.25 * tanh((-f64(x) - 0.75) * 4.0))
+
+# ---------------- samples made as it runs ----------------
+# A stream of samples the program makes while it plays (an emulator's sound chip, a synthesizer):
+# `s = sound_stream()` starts it, and each frame `push_samples(s, samples)` adds what comes next,
+# left and right in turn from -1 to 1 (with `channels = 1`, one value a frame), at `rate` a
+# second. `queued_samples(s)` is how many frames wait to be heard: push about a frame's worth
+# more when it drops below two frames' (`rate / 30`); run dry, the stream is silent until more
+# come. It is a voice: stop, set_volume, set_pan and is_playing take it.
+struct __Pushed:
+    id: int
+    buf: f32[]                  # stereo frames at the stream's rate, not heard yet
+    step: f64                   # its frames per frame of the mix
+    channels: int
+
+__pushed: __Pushed[]
+
+sound_stream = (rate: int = MIX_RATE, channels: int = 2, volume: f64 = 1.0, pan: f64 = 0.0) -> int:
+    if rate <= 0: panic("sound_stream: a rate of {rate} frames a second")
+    if channels != 1 and channels != 2: panic("sound_stream: {channels} channels (1 or 2)")
+    __audio_start()
+    __voice_id += 1
+    __pushed.push(__Pushed(__voice_id, [], f64(rate) / f64(MIX_RATE), channels))
+    v = Voice(Sound([]), 0.0, f32(volume), f32(clamp(pan, -1.0, 1.0)), 1.0, false, __voice_id)
+    v.pushed = true
+    __voices.push(v)
+    __voice_id
+
+push_samples = (id: int, samples: f32[]):
+    loop mut p in __pushed:
+        if p.id != id: continue
+        if p.channels == 2: p.buf.extend(samples)
+        else:
+            loop x in samples:
+                p.buf.push(x)
+                p.buf.push(x)
+        return
+
+queued_samples = (id: int) -> int:
+    loop p in __pushed:
+        if p.id == id: return p.buf.len() / 2
+    0
+
+# (mix voice i, a pushed stream, into out from frame f0)
+__mix_pushed = (vi: int, out: *f32, f0: int, n: int, v0: f32):
+    k = -1
+    loop j in 0.. and p in __pushed:
+        if p.id == __voices[vi].id: k = j
+    if k < 0: return
+    v = __voices[vi]
+    src = data(__pushed[k].buf)
+    total = __pushed[k].buf.len() / 2
+    pl = f32(__master) * (1.0 - max(v.pan, 0.0))
+    pr = f32(__master) * (1.0 + min(v.pan, 0.0))
+    dvol = (v.volume - v0) / f32(n)
+    pos = v.pos
+    step = __pushed[k].step * v.pitch
+    loop f in [f0..n):
+        ip = int(pos)
+        if ip >= total: break
+        fr = f32(pos - f64(ip))
+        nx = min(ip + 1, total - 1)
+        l = src[ip * 2] + (src[nx * 2] - src[ip * 2]) * fr
+        r = src[ip * 2 + 1] + (src[nx * 2 + 1] - src[ip * 2 + 1]) * fr
+        vol = v0 + dvol * f32(f)
+        out[f * 2] += l * vol * pl
+        out[f * 2 + 1] += r * vol * pr
+        pos += step
+    used = min(int(pos), total)
+    if used > 0: __pushed[k].buf = __pushed[k].buf[used * 2..]
+    __voices[vi].pos = pos - f64(used)
 
 # (no output: the mixer still runs, by the frames' time, so sounds end, fades finish and
 # is_playing tells the truth; what it makes goes nowhere)

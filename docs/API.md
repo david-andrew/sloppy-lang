@@ -3710,6 +3710,7 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
       looping: bool
       id: int
       stream = false      # music, decoded as it plays (play_music): its __Stream has this id
+      pushed = false      # samples the program pushes (sound_stream): its __Pushed has this id
       fade_to: f32 = 0.0  # (fade_volume: the volume it is going to, in fade_time seconds)
       fade_time = 0.0
       fade_stop = false   # (fade_out: stopped when the fade ends)
@@ -3742,6 +3743,12 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
 
 - `master_volume = (v: f64)`: the volume of everything played, from 0 (silent) to 1
 - `master_volume = () -> f64`: the volume set with master_volume (0.8 to start with)
+
+#### Samples made as it runs
+
+- `sound_stream = (rate: int = MIX_RATE, channels: int = 2, volume: f64 = 1.0, pan: f64 = 0.0) -> int`
+- `push_samples = (id: int, samples: f32[])`
+- `queued_samples = (id: int) -> int`
 
 #### Making sounds
 
