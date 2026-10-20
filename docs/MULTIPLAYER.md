@@ -294,6 +294,32 @@ Played again: `g = Game()`, then `loop pads in replay: g = tick(g, pads)`. A des
 here too: two machines' replays are the same inputs, and the tick at which their games differ
 can be found by playing each.
 
+A spectator is sent them as they come. The game sends `s.feed(sent)` (the inputs confirmed
+since `sent`) to the spectator over any transport, its own `net.send` included, and the
+spectator plays them with a `Watch`, about 0.1 s behind the players. A spectator who comes in
+late is sent `s.feed(-1)` first: the game as it is at a confirmed tick, then the inputs from
+there.
+
+```gdscript
+# a player's machine
+sent = -1
+update = (dt: f64):
+    s.play(read_pad())
+    net.send(viewer, s.feed(sent))
+    sent = s.confirmed()
+
+# the spectator's
+w = netplay.watch(Game(), tick)
+update = (dt: f64):
+    loop m in net.receive(): w.receive(m.data)
+    w.update(dt)
+draw = (): ... w.state ...
+```
+
+`w.waiting` is true while the feed has not caught up (the game holds still until `w.behind`
+ticks, 6, are in hand), and `w.problem` says what is wrong with a feed: one from another build
+of the game, or ticks skipped.
+
 **Local players.** Two players on one keyboard, or a keyboard and a gamepad, give each player
 actions of their own, declared for their number: `action("p2 punch", [.key(.k), .button(.x)],
 player = 1)` is the K key, and gamepad 1's X.

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- netplay spectators: `s.feed(sent)` gives the inputs confirmed since `sent`, to send over
+  any transport, and `netplay.watch(Game(), tick)` plays them a little behind the players; a
+  late spectator is sent the game as it stands first.
 - netplay: when two machines' games differ, a debug build writes its game at that tick to
   `netplay-desync-<tick>-p<me>.json`, to compare with the other machine's.
 - `import sqlite`: databases through the system's SQLite (Linux's libsqlite3, macOS's and

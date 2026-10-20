@@ -1,0 +1,59 @@
+# requires: sloppy
+# netplay spectators: a player's machine sends the confirmed inputs on (s.feed), and a Watch
+# plays them a little behind; one that starts late is sent the game as it is, then the inputs
+import netplay
+
+struct Pad:
+    dx = 0
+struct Game:
+    x = [0, 0]
+    sum = 0
+
+tick = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in 0.. and pad in pads:
+        g.x[p] += pad.dx
+        g.sum = (g.sum * 31 + g.x[p] + 7) % 1000003
+    g
+
+pad = (p: int, t: int) -> Pad: Pad(((t / 7 + p * 3) % 3) - 1)
+
+main = ():
+    a = netplay.session(Game(), tick, players = 2, me = 0)
+    b = netplay.session(Game(), tick, players = 2, me = 1)
+    l = netplay.Link(latency = 0.03)
+    w = netplay.watch(Game(), tick)
+    late = netplay.watch(Game(), tick)
+    sent = -1
+    sent_late = -1
+    replay: Pad[][]
+    saved = 0
+    loop f in [0..600):
+        now = f64(f) / 60.0
+        a.play(pad(0, a.tick))
+        b.play(pad(1, b.tick))
+        loop o in a.outgoing(): l.send(o.0, o.1, now)
+        loop o in b.outgoing(): l.send(o.0, o.1, now)
+        loop d in l.deliver(now):
+            if d.0 == 0: a.receive(d.1)
+            else: b.receive(d.1)
+        loop saved < a.confirmed():
+            replay.push(a.inputs_at(saved))
+            saved += 1
+        w.receive(a.feed(sent))
+        if f >= 300:
+            late.receive(a.feed(sent_late))
+            sent_late = a.confirmed()
+        sent = a.confirmed()
+        w.update(1.0 / 60.0)
+        late.update(1.0 / 60.0)
+    g = Game()
+    loop t in 0.. and pads in replay:
+        if t < w.tick: g = tick(g, pads)
+    print("watched:", w.tick > 500, "behind the players by a little:", a.tick - w.tick < 20)
+    print("same game:", w.state == g)
+    g2 = Game()
+    loop t in 0.. and pads in replay:
+        if t < late.tick: g2 = tick(g2, pads)
+    print("late spectator:", late.tick > 500, late.state == g2, late.problem == "")
+    print("a second of inputs, deflated, is short:", a.feed(sent - 60).len() < 200)

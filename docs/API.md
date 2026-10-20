@@ -5868,6 +5868,25 @@ draw = ():
 
 - `join_relay[S, I] = (s: mut Session[S, I], host: str, port: int, room: str, stun: str = "stun:stun.l.google.com:19302")`: play through the relay at host and port (or a ws:// or wss:// URL), with the players who name the same room
 - `direct[S, I] = (s: Session[S, I], p: int) -> bool`: player p's packets come and go straight (WebRTC between web pages), not through the relay
+
+#### Spectators
+
+- `feed[S, I] = (s: Session[S, I], from: int) -> u8[]`: the inputs confirmed from tick `from` on (what confirmed() gave when the last was sent), for a spectator's Watch; with -1 (a spectator new to the game), or a tick no longer kept, the game as it is at a confirmed tick comes first, then the inputs from there
+- `struct Watch[S, I]`: a spectator's game, played from a feed
+  ```gdscript
+  struct Watch[S, I]:
+      step: (S, I[]) -> S
+      state: S
+      tick = 0                        # the tick state is at
+      behind = 6                      # ticks kept in hand (about 0.1 s), so a late packet does not stop play
+      ticks_per_second = 60.0
+      waiting = true                  # no inputs for the next tick yet: the game holds still
+      problem = ""                    # what is wrong with the feed, said once on stderr too
+  ```
+- `watch[S, I] = (start: S, step: (S, I[]) -> S) -> Watch[S, I]`
+- `ahead[S, I] = (w: Watch[S, I]) -> int`: ticks the spectator has inputs for and has not played yet
+- `receive[S, I] = (w: mut Watch[S, I], data: u8[])`: a feed's bytes, as they arrive
+- `update[S, I] = (w: mut Watch[S, I], dt: f64)`: plays the ticks due in dt seconds, each with its inputs; it holds still (w.waiting) when they have not come, until `behind` have, then plays on (a tick more each frame while far behind)
 - `relay = (port: int)`: a relay on port: call it every frame (in a game that hosts others), or relay_forever
 - `relay_forever = (port: int)`: a program that is only a relay
 

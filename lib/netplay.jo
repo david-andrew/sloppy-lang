@@ -649,6 +649,139 @@ when TARGET == "wasm":
     extern __wasm_rtc_poll = (id: int, out: *u8, cap: int) -> int
     extern __wasm_rtc_close = (id: int)
 
+# ---------------- spectators ----------------
+# A spectator plays the game from the confirmed inputs a player's machine sends it, a little
+# behind the players. The game sends them itself, over any transport (net.send to the
+# spectator's peer, as its other messages):
+#   sent = -1                           # (-1: the spectator has nothing yet)
+#   update = (dt: f64):
+#       s.play(read_pad())
+#       net.send(viewer, s.feed(sent))
+#       sent = s.confirmed()
+# and the spectator:
+#   w = netplay.watch(Game(), tick)
+#   update = (dt: f64):
+#       loop m in net.receive(): w.receive(m.data)
+#       w.update(dt)
+#   draw = (): ... w.state ...
+
+# the inputs confirmed from tick `from` on (what confirmed() gave when the last was sent), for a
+# spectator's Watch; with -1 (a spectator new to the game), or a tick no longer kept, the game as
+# it is at a confirmed tick comes first, then the inputs from there
+feed[S, I] = (s: Session[S, I], from: int) -> u8[]:
+    c = confirmed(s)
+    top = 0
+    loop r in s.__recv: top = max(top, r)
+    start = from
+    body = ""
+    whole = 0
+    if from < 0 or from < top - __NP_HIST + 8 or from > c:
+        whole = 1
+        start = min(c, s.tick)
+        st = s.state
+        if start < s.tick: st = s.__states[start % __NP_HIST]
+        body = "\n" + to_text(st)
+    prev = ""
+    loop t in [start..c):
+        ins: I[]
+        loop p in [0..s.players): ins.push(s.__inputs[t % __NP_HIST * s.players + p])
+        l = to_text(ins)
+        body += if l == prev: "\n=" else: "\n" + l
+        prev = l
+    out = bytes("NPF1 {start} {c - start} {whole}")
+    if len(body) > 48:
+        out.push('\n')
+        out.push('z')
+        out.extend(deflate(bytes(body[1..])))
+    else: out.extend(bytes(body))
+    out
+
+# a spectator's game, played from a feed
+struct Watch[S, I]:
+    step: (S, I[]) -> S
+    state: S
+    tick = 0                        # the tick state is at
+    behind = 6                      # ticks kept in hand (about 0.1 s), so a late packet does not stop play
+    ticks_per_second = 60.0
+    waiting = true                  # no inputs for the next tick yet: the game holds still
+    problem = ""                    # what is wrong with the feed, said once on stderr too
+    __ins: I[][]                    # the inputs of ticks tick.. on, from __at
+    __at = 0
+    __time = 0.0
+
+watch[S, I] = (start: S, step: (S, I[]) -> S) -> Watch[S, I]: Watch[S, I](step, start)
+
+# ticks the spectator has inputs for and has not played yet
+ahead[S, I] = (w: Watch[S, I]) -> int: w.__ins.len() - w.__at
+
+# a feed's bytes, as they arrive
+receive[S, I] = (w: mut Watch[S, I], data: u8[]):
+    what = __np_watch_take(w, data)
+    if len(what) > 0 and w.problem != what:
+        w.problem = what
+        eprint("netplay: {what}")
+
+# (what is wrong with the feed: "" when nothing is)
+__np_watch_take[S, I] = (w: mut Watch[S, I], data: u8[]) -> str:
+    nl = 0
+    loop nl < data.len() and data[nl] != '\n': nl += 1
+    h = split(str_from_bytes(data[..nl)), " ")
+    bad = "a message that is not a feed (s.feed's bytes) came to watch's receive"
+    if h.len() != 4 or h[0] != "NPF1": return bad
+    start = to_int(h[1]) ?? return bad
+    n = to_int(h[2]) ?? return bad
+    ls: str[]
+    if nl + 1 < data.len() and data[nl + 1] == 'z':
+        raw = inflate(data, nl + 2) ?? return bad
+        ls = lines(str_from_bytes(raw))
+    else if nl + 1 < data.len(): ls = lines(str_from_bytes(data[nl + 1..]))
+    k = 0
+    if h[3] == "1":
+        if ls.len() == 0: return bad
+        k = 1
+        # (the game at tick start: taken when this one has nothing for it)
+        if start > w.tick + ahead(w) or (w.tick == 0 and ahead(w) == 0):
+            st = from_text[S](ls[0])
+            if st is TextError: return "a feed's game cannot be read: {st.message} (from another version of the game?)"
+            w.state = st
+            w.tick = start
+            w.__ins = []
+            w.__at = 0
+    if start > w.tick + ahead(w): return "a feed skipped ticks {w.tick + ahead(w)} to {start - 1}: send each from the tick confirmed() gave when the last was sent, over a transport that loses none"
+    prev: I[]
+    loop i in [0..n):
+        if k + i >= ls.len(): return bad
+        l = ls[k + i]
+        if l != "=":
+            r = from_text[I[]](l)
+            if r is TextError: return "a feed's inputs cannot be read: {r.message} (from another version of the game?)"
+            prev = r
+        else if i == 0: return bad
+        if start + i >= w.tick + ahead(w): w.__ins.push(prev)
+    ""
+
+# plays the ticks due in dt seconds, each with its inputs; it holds still (w.waiting) when they
+# have not come, until `behind` have, then plays on (a tick more each frame while far behind)
+update[S, I] = (w: mut Watch[S, I], dt: f64):
+    if w.waiting:
+        if ahead(w) < max(w.behind, 1): return
+        w.waiting = false
+        w.__time = 0.0
+    w.__time += dt * w.ticks_per_second
+    n = int(w.__time)
+    w.__time -= f64(n)
+    if ahead(w) > w.behind * 3: n += 1
+    loop _ in [0..min(n, 8)):
+        if ahead(w) == 0:
+            w.waiting = true
+            break
+        w.state = w.step(w.state, w.__ins[w.__at])
+        w.__at += 1
+        w.tick += 1
+    if w.__at > 256:
+        w.__ins = w.__ins[w.__at..]
+        w.__at = 0
+
 __np_rooms: {int: str}
 
 # a relay on port: call it every frame (in a game that hosts others), or relay_forever
