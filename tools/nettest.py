@@ -697,7 +697,7 @@ def http_server_test(hs_exe, hport, upstream_port):
         out = srv.communicate(timeout=20)[0]
         lines = [l for l in out.splitlines() if l.strip()]
         lines = [l if "it took none of the last" not in l else l.split(" of the last")[0] + " of the last N bytes" + l.split(" bytes", 1)[1] for l in lines]
-        want = ["listening", "server: ws joined /ws room=4 sid=abc123 origin=http://example.test", "server: ws left: closed",
+        want = ["listening", "server: ws joined /ws room=4 sid=abc123 origin=http://example.test", "server: ws left: bye",
                 "server: ws joined /ws room=- sid=- origin=", "server: ws left: it sent a message bigger than the 1000 bytes taken",
                 "server: ws joined /ws room=- sid=- origin=", "server: ws left: it took none of the last N bytes sent to it (a reader that stopped)",
                 "server: stopped", "server: on_quit"]
