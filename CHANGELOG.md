@@ -29,6 +29,30 @@
   and Flask (routes, request.form and args, jsonify, sessions and flash, redirect, abort,
   test_client); the server section says to `html_escape` what users wrote; `find`, `rfind` and
   `find_byte` say they give -1 when it is not there.
+- Sound for rhythm games: `audio_time()` is smooth, the sound heard so far: read from the
+  monotonic clock between mixes and kept to what the output reports it has played (ALSA's
+  `snd_pcm_delay`, waveOut's position, the AudioQueue's time, a web page's queue and
+  `outputLatency`), averaged; it never goes back and never passes the sound mixed (it moved in
+  steps of a period, 10.7 ms, about 3 ms off a straight line; now about 0.2 ms). It starts with
+  the sound: `audio_time()` and `audio_started()` start it too (natively they stayed 0 until a
+  first `play`). Screenshot runs keep exactly 1/60 s a frame. `audio_latency()`: how long a
+  sound played now takes to be heard; `audio_time_at(t)`: the clock at an `elapsed()` time.
+- `play(s, at = t)` and `play_music(m, at = t)` start a sound when `audio_time()` is `t`, to
+  the sample (Unity's `PlayScheduled`); one already past starts as far into it as it would be
+  by then. A negative `delay` starts that far into the sound (it was taken as 0), and
+  `play_music` has `delay` too, to the sample.
+- `pause(id)`, `resume(id)`, `seek(id, t)` and `voice_time(id)` (where a voice is, as heard now)
+  for sounds and music; music seeks from the Ogg page before `t`, to the sample.
+- Presses counted and timed within a frame: `key_presses(k)` (two taps in one frame are 2;
+  key_pressed says only that it was), `key_press_time(k, i)` and `key_release_time(k)` on
+  `elapsed()`'s clock, from the desktop's times for the events (X11, Wayland, macOS, a browser's
+  `timeStamp`; Windows' to about 16 ms), and `mouse_presses`, `mouse_press_time`,
+  `action_presses`, `action_press_time`. SLOPPY_INPUT's `7.25:d+` presses d a quarter of the
+  way through frame 7.
+- Docs: rhythm games and music sync in START.md (the audio clock, scheduling, judging presses,
+  calibration), and Unity's `AudioSettings.dspTime` and `PlayScheduled` in its table.
+- Messages: `load_wav([])`, `load_ogg([])` and `load_music([])` say the file is empty; `c: Color`
+  says colors are `vec4`s (`c: vec4`); `xs[end]` of an empty array says it is empty.
 - netplay spectators: `s.feed(sent)` gives the inputs confirmed since `sent`, to send over
   any transport, and `netplay.watch(Game(), tick)` plays them a little behind the players; a
   late spectator is sent the game as it stands first.

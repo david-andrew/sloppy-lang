@@ -37,12 +37,19 @@ load_music = (file: u8[]) -> Music:
     if d.error != "": panic("load_music: {d.error}")
     Music(file, d.ch, d.v.rate, f64(d.granule) / f64(max(d.v.rate, 1)))
 
-# play music from its start; returns a voice id for stop(), set_volume() and is_playing()
-play_music = (m: Music, volume: f64 = 1.0, looping: bool = true, pan: f64 = 0.0) -> int:
+# play music from its start; returns a voice id for stop(), set_volume(), is_playing(), pause(),
+# seek() and voice_time(). delay and at as for play(), to the sample: `at = audio_time() + 1.0`
+# starts it a second from now on the audio clock, a negative delay that far into it
+play_music = (m: Music, volume: f64 = 1.0, looping: bool = true, pan: f64 = 0.0, delay: f64 = 0.0, at: f64? = none) -> int:
     __audio_start()
     __voice_id += 1
-    __streams.push(__Stream(__voice_id, __vdec_open(m.file), [], 0.0, looping))
-    __voices.push(Voice(Sound([]), 0.0, f32(volume), f32(clamp(pan, -1.0, 1.0)), 1.0, looping, __voice_id, true))
+    st = __Stream(__voice_id, __vdec_open(m.file), [], 0.0, looping)
+    if st.dec.v.rate > 0: st.length = int(f64(st.dec.granule) * f64(MIX_RATE) / f64(st.dec.v.rate))
+    v = Voice(Sound([]), 0.0, f32(volume), f32(clamp(pan, -1.0, 1.0)), 1.0, looping, __voice_id, true)
+    early = __voice_start(v, delay, at)
+    if early > 0: __stream_seek(st, f64(early) / f64(MIX_RATE))
+    __streams.push(st)
+    __voices.push(v)
     __voice_id
 
 # fade out the voice `old` while music m starts silent and fades in to `volume` (returns the
@@ -60,8 +67,39 @@ struct __Stream:
     frac: f64                   # where resampling is, in dec.out's frames
     looping: bool
     ended = false
+    played = 0                  # (frames of the mixer's taken from buf since its start: voice_time)
+    length = 0                  # (the music's, in the mixer's frames; 0: not known)
 
 __streams: __Stream[]
+
+# (music voice id's place in its music, at the mixer's next samples, in seconds)
+__stream_time = (v: Voice) -> f64:
+    loop st in __streams:
+        if st.id != v.id: continue
+        f = f64(st.played) + v.pos - f64(v.wait) * v.pitch
+        if st.length > 0 and st.looping and f > 0.0: f -= floor(f / f64(st.length)) * f64(st.length)
+        return f / f64(MIX_RATE)
+    0.0
+
+__stream_length = (id: int) -> f64:
+    loop st in __streams:
+        if st.id == id: return f64(st.length) / f64(MIX_RATE)
+    0.0
+
+__stream_seek_id = (id: int, t: f64):
+    loop mut st in __streams:
+        if st.id == id: __stream_seek(st, t)
+
+# (music from t seconds in: decoded from the page before, what comes before t left out)
+__stream_seek = (s: mut __Stream, t: f64):
+    f = max(t, 0.0) * f64(MIX_RATE)
+    if s.length > 0 and s.looping: f -= floor(f / f64(s.length)) * f64(s.length)
+    src = f * f64(s.dec.v.rate) / f64(MIX_RATE)
+    __vdec_seek(s.dec, int(src))
+    s.frac = src - floor(src)
+    s.buf.clear()
+    s.ended = false
+    s.played = int(f)
 
 # at least `need` frames in s.buf (fewer only at the end of music that does not loop)
 __stream_fill = (s: mut __Stream, need: int):
@@ -95,20 +133,20 @@ __stream_fill = (s: mut __Stream, need: int):
                     s.buf.push(s.dec.out[last])
                     s.buf.push(s.dec.out[last + right])
 
-# mix voice i (a music one) into out; false when it has finished
-__mix_stream = (vi: int, out: *f32, n: int) -> bool:
+# mix voice i (a music one) into out from frame f0; false when it has finished
+__mix_stream = (vi: int, out: *f32, f0: int, n: int) -> bool:
     k = -1
     loop j in 0.. and st in __streams:
         if st.id == __voices[vi].id: k = j
     if k < 0: return false
     v = __voices[vi]
-    __stream_fill(__streams[k], int(f64(n) * v.pitch) + 2)
+    __stream_fill(__streams[k], int(f64(n - f0) * v.pitch) + 2)
     src = data(__streams[k].buf)
     total = __streams[k].buf.len() / 2
     gl_ = v.volume * f32(__master) * (1.0 - max(v.pan, 0.0))
     gr = v.volume * f32(__master) * (1.0 + min(v.pan, 0.0))
     pos = v.pos
-    loop f in [0..n):
+    loop f in [f0..n):
         ip = int(pos)
         if ip + 1 >= total: break
         fr = f32(pos - f64(ip))
@@ -119,6 +157,7 @@ __mix_stream = (vi: int, out: *f32, n: int) -> bool:
         pos += v.pitch
     used = min(int(pos), total)
     __streams[k].buf = __streams[k].buf[used * 2..]
+    __streams[k].played += used
     __voices[vi].pos = pos - f64(used)
     if __streams[k].ended and __streams[k].buf.len() <= 2:
         __streams.remove_at(k)
@@ -755,13 +794,16 @@ __vwindow = (n: int, bs0: int, long: bool, prev_long: bool, next_long: bool) -> 
 
 # ---------------- Ogg pages ----------------
 # the packets of the file's first stream, and the last page's granule position (its length in
-# samples)
-__ogg_packets = (f: u8[]) -> (u8[][], int, str):
+# samples); and for each packet, the granule position of its page if it is the last to end there
+# (-1 for others: where seeking starts)
+__ogg_packets = (f: u8[]) -> (u8[][], int, str, int[]):
     packets: u8[][]
+    pgran: int[]
     cur: u8[]
     serial = -1
     granule = -1
-    if f.len() < 4 or f[0] != 'O' or f[1] != 'g' or f[2] != 'g' or f[3] != 'S': return (packets, 0, "not an Ogg file")
+    if f.len() == 0: return (packets, 0, "the file is empty (0 bytes)", pgran)
+    if f.len() < 4 or f[0] != 'O' or f[1] != 'g' or f[2] != 'g' or f[3] != 'S': return (packets, 0, "not an Ogg file", pgran)
     p = 0
     loop p + 27 <= f.len():
         if f[p] != 'O' or f[p + 1] != 'g' or f[p + 2] != 'g' or f[p + 3] != 'S':
@@ -786,9 +828,11 @@ __ogg_packets = (f: u8[]) -> (u8[][], int, str):
                 q += l
                 if l < 255:
                     packets.push(cur)
+                    pgran.push(-1)
                     cur = []
+            if g >= 0 and pgran.len() > 0: pgran[pgran.len() - 1] = g
         p = body + total
-    (packets, granule, "")
+    (packets, granule, "", pgran)
 
 # a decoder that goes a packet at a time (load_ogg runs it to the end; music plays as it goes)
 struct __VDec:
@@ -811,11 +855,12 @@ struct __VDec:
     out: f32[]                  # samples made and not taken yet (interleaved, ch of them)
     made = 0                    # frames made since the start
     error = ""
+    pgran: int[]                # (__ogg_packets': each packet's page's granule position, or -1)
 
 __vdec_open = (file: u8[]) -> __VDec:
     v = __VState()
     pk = __ogg_packets(file)
-    d = __VDec(v, pk.0, pk.1, 3, 0, __vmdct_for(64), __vmdct_for(64), [], 0, [], 0, [], [], [], [], 0, [], 0, pk.2)
+    d = __VDec(v, pk.0, pk.1, 3, 0, __vmdct_for(64), __vmdct_for(64), [], 0, [], 0, [], [], [], [], 0, [], 0, pk.2, pk.3)
     if d.error != "": return d
     packets = pk.0
     if packets.len() < 3:
@@ -868,6 +913,32 @@ __vdec_rewind = (d: mut __VDec):
     d.next = 3
     d.prev_n = 0
     d.made = 0
+
+# (to frame `target`: decoding starts after the last page that ends before it, the first packet
+# priming the overlap (a block's output runs from the middle of the one before to its own); what
+# comes before target is dropped)
+__vdec_seek = (d: mut __VDec, target: int):
+    d.out.clear()
+    k = 2
+    loop j in [3..d.pgran.len() - 1):
+        if d.pgran[j] >= 0 and d.pgran[j] <= target: k = j
+    d.next = k + 1
+    d.prev_n = 0
+    d.made = 0
+    if k >= 3: d.made = d.pgran[k] + __vdec_block(d, k) / 4 + __vdec_block(d, k + 1) / 4
+    ch = max(d.ch, 1)
+    loop d.made <= target and __vdec_packet(d): pass
+    drop = clamp(target - (d.made - d.out.len() / ch), 0, d.out.len() / ch)
+    d.out = d.out[drop * ch..]
+
+# (the size of packet j's block)
+__vdec_block = (d: __VDec, j: int) -> int:
+    b = __vbits_of(d.packets[j])
+    if d.packets[j].len() == 0 or __vget(b, 1) != 0: return 0
+    mi = __vget(b, d.mode_bits)
+    if mi >= d.v.modes.len(): return 0
+    if d.v.modes[mi].long: return d.v.bs1
+    d.v.bs0
 
 # decode the next packet into d.out; false at the end of the stream
 __vdec_packet = (d: mut __VDec) -> bool:

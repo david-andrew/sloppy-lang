@@ -2,7 +2,7 @@
 """Web builds in a browser (Playwright's headless Chromium, when it is installed): typing into a text
 field on a phone (touches and the phone's keyboard) and on a computer (mouse, keys, ctrl+V); text
 from an input method, files dropped and picked, cursor shapes, redraw_on_input; two pages connected
-through lib/invite.jo's screens.
+through lib/invite.jo's screens; the audio clock and the times of presses.
 usage: tools/webtest.py [path/to/sloppy]"""
 import os, shutil, subprocess, sys, tempfile
 
@@ -30,5 +30,8 @@ r3 = subprocess.run(["node", os.path.join(root, "tools", "web_desktop.mjs"), she
 inv = os.path.join(tmp, "invite_ui")
 subprocess.run([sloppy, "build", os.path.join(root, "tests", "web", "invite_ui.jo"), "-o", inv, "--target", "wasm"], check=True, env=env)
 r2 = subprocess.run(["node", os.path.join(root, "tools", "web_invite.mjs"), shell, inv + ".html", tmp], timeout=120)
+aud = os.path.join(tmp, "audio_clock")
+subprocess.run([sloppy, "build", os.path.join(root, "tests", "web", "audio_clock.jo"), "-o", aud, "--target", "wasm"], check=True, env=env)
+r4 = subprocess.run(["node", os.path.join(root, "tools", "web_audio.mjs"), shell, aud + ".html", tmp], timeout=120)
 shutil.rmtree(tmp, ignore_errors=True)
-sys.exit(r.returncode or r2.returncode or r3.returncode)
+sys.exit(r.returncode or r2.returncode or r3.returncode or r4.returncode)

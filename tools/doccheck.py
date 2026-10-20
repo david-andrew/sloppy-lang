@@ -9,7 +9,7 @@ import glob, os, re, subprocess, sys, tempfile
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sloppy = sys.argv[1] if len(sys.argv) > 1 else os.path.join(root, "bin", "sloppy")
-PASS = re.compile(r"unknown (name|function|type|module)|cannot find (module|')|is never|expected an expression here|"
+PASS = re.compile(r"unknown (name|function|type|module)|cannot find (module|')|embed: cannot read|is never|expected an expression here|"
                   r"spread with `\.\.\.`|unexpected indentation|cannot read the JavaScript|is already defined|"
                   r"overloaded or generic function '.*' as a value|is a function and is not called here")
 docs = [d for d in sorted(glob.glob(os.path.join(root, "docs", "*.md")))

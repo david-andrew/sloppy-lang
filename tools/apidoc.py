@@ -100,7 +100,9 @@ TOPICS = [
      "(and swizzles: `v.xz`). Colors are `vec4`s: red, green, blue and alpha, from 0 to 1."),
     ("Games", "draw3d", "3D", ["game/draw3d", "game/camera3d"], "draw3d", ""),
     ("Games", "models", "Models (glTF)", ["game/gltf"], None, ""),
-    ("Games", "sound", "Sound and music", ["game/audio", "game/vorbis"], "sound", ""),
+    ("Games", "sound", "Sound and music", ["game/audio", "game/vorbis"], "sound",
+     "Music in time with a game (a rhythm game's notes, a beat): the audio clock, sounds started on it to the sample, "
+     "presses timed finer than a frame and calibration, in [rhythm games and music sync](START.md#rhythm-games-and-music-sync)."),
     ("Games", "gpu", "GPU programs", ["game/gpu"], "gpu", ""),
     ("Games", "gpuarray", "GPU arrays", ["game/gpuarray"], "gpuarray", ""),
     ("Games", "gpubuffer", "GPU buffers and compute", ["game/gpubuffer"], "gpubuffer",
