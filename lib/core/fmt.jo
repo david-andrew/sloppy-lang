@@ -233,11 +233,23 @@ __pow5_factor = (v0: u64) -> int:
 
 # (m, at most 55 bits, times the 128-bit number at p (its low word first), shifted right by j)
 __mul_shift = (m: u64, p: *u64, j: int) -> u64:
-    hi = __mul_high(m, p[1])
-    sum = __mul_high(m, p[0]) + m * p[1]
+    hi = __mulhi(m, p[1])
+    sum = __mulhi(m, p[0]) + m * p[1]
     if sum < m * p[1]: hi += 1
     s = u64(j - 64)
     (hi << (u64(64) - s)) | (sum >> s)
+
+# (the high 64 bits of a * b; the bootstrap compiler has no __mul_high)
+__mulhi = (a: u64, b: u64) -> u64:
+    when BOOTSTRAP:
+        a0 = a & 0xFFFFFFFF
+        a1 = a >> 32
+        b0 = b & 0xFFFFFFFF
+        b1 = b >> 32
+        mid = ((a0 * b0) >> 32) + ((a0 * b1) & 0xFFFFFFFF) + ((a1 * b0) & 0xFFFFFFFF)
+        return a1 * b1 + ((a0 * b1) >> 32) + ((a1 * b0) >> 32) + (mid >> 32)
+    else:
+        return __mul_high(a, b)
 
 # Ryu's powers of five, made at the first float written (by one thread, any others waiting): for
 # q of 0..291, 2^(bits of 5^q + 124) / 5^q plus one; then for i of 0..325, 5^i to 125 bits. Two
@@ -303,18 +315,17 @@ __ryu_make = () -> *u64:
 
 # (bits s to s + 127 of a number of 32-bit limbs, the lowest first; bits below 0 are zeros)
 __big_bits = (limbs: u64[], s: int) -> (u64, u64):
-    w: u64[4]
-    loop k in [0..4):
-        at = s + 32 * k
-        if at <= -32 or at >= 32 * limbs.len(): w[k] = 0
-        else if at < 0: w[k] = (limbs[0] << u64(-at)) & 0xFFFFFFFF
-        else:
-            li = at >> 5
-            bo = at & 31
-            v = limbs[li] >> u64(bo)
-            if bo > 0 and li + 1 < limbs.len(): v |= limbs[li + 1] << u64(32 - bo)
-            w[k] = v & 0xFFFFFFFF
-    (w[0] | (w[1] << 32), w[2] | (w[3] << 32))
+    (__big_word(limbs, s) | (__big_word(limbs, s + 32) << 32), __big_word(limbs, s + 64) | (__big_word(limbs, s + 96) << 32))
+
+# (bits at to at + 31 of such a number)
+__big_word = (limbs: u64[], at: int) -> u64:
+    if at <= -32 or at >= 32 * limbs.len(): return 0
+    if at < 0: return (limbs[0] << u64(-at)) & 0xFFFFFFFF
+    li = at >> 5
+    bo = at & 31
+    v = limbs[li] >> u64(bo)
+    if bo > 0 and li + 1 < limbs.len(): v |= limbs[li + 1] << u64(32 - bo)
+    v & 0xFFFFFFFF
 
 __fmt_float = (buf: mut u8[], x: f64, is_f32: bool):
     if x != x:

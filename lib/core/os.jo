@@ -464,24 +464,55 @@ download_file = (path: str, name: str = "") -> bool:
     else:
         return file_exists(path)
 
-write_file = (path: str, contents: str) -> bool:
+# write a whole file (made, or replaced); false if it could not be (file_error() says why).
+# sync = true: on the disk itself when this returns, and whole: written to a new file beside it
+# (path + ".new"), which is put on the disk and then takes the old one's place, the directory put
+# on the disk too, so that neither a crash nor a power cut leaves half a file, or none (for data
+# a program keeps, as a server's: it takes some milliseconds more; a web page's storage keeps
+# what it is given as it does)
+write_file = (path: str, contents: str, sync: bool = false) -> bool:
     when TARGET == "wasm":
         return __wasm_write_file(data(path), len(path), data(contents), len(contents)) == 1
     else when TARGET == "windows":
-        return __w32_write_file(path, contents)
+        if not sync: return __w32_write_file(path, contents)
+        # (MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH: the move on the disk when it returns)
+        tmp = path + ".new"
+        if not __w32_write_file(tmp, contents, true): return false
+        return MoveFileExW(data(__wide(tmp)), data(__wide(path)), u32(1 | 8)) != 0 or __w32_ferr()
     else:
-        fd = syscall(2, data(__zstr(path)), 0x241, 0x1A4)
-        if fd < 0: return __ferr(fd)
-        defer syscall(3, fd)
-        off = 0
-        n = len(contents)
-        loop off < n:
-            r = syscall(1, fd, data(contents) + off, n - off)
-            if r <= 0: return __ferr(min(r, -28))
-            off += r
+        if not sync: return __write_to(path, contents, 0x241, false)       # O_WRONLY|O_CREAT|O_TRUNC
+        tmp = path + ".new"
+        if not __write_to(tmp, contents, 0x241, true): return false
+        if not rename_file(tmp, path): return false
+        __sync_dir(path)
         true
 
-write_bytes = (path: str, b: u8[]) -> bool: write_file(path, str_from_bytes(b))
+write_bytes = (path: str, b: u8[], sync: bool = false) -> bool: write_file(path, str_from_bytes(b), sync)
+
+# (contents written to a file opened with flags, created if need be; on the disk when sync:
+# fsync, F_FULLFSYNC on macOS, which also has the disk itself write what it holds)
+__write_to = (path: str, contents: str, flags: int, sync: bool) -> bool:
+    fd = syscall(2, data(__zstr(path)), flags, 0x1A4)
+    if fd < 0: return __ferr(fd)
+    defer syscall(3, fd)
+    off = 0
+    n = len(contents)
+    loop off < n:
+        r = syscall(1, fd, data(contents) + off, n - off)
+        if r <= 0: return __ferr(min(r, -28))
+        off += r
+    if sync: return __ferr(syscall(74, fd))
+    true
+
+# (the directory a file is in, put on the disk: a rename in it, or the file's being made, kept)
+__sync_dir = (path: str):
+    k = len(path) - 1
+    loop k >= 0 and path[k] != '/': k -= 1
+    dir = if k > 0: path[..k) else: if k == 0: "/" else: "."
+    fd = syscall(2, data(__zstr(dir)), 0, 0)                 # O_RDONLY
+    if fd < 0: return
+    syscall(74, fd)
+    syscall(3, fd)
 
 # a directory (and not a file)
 is_dir = (path: str) -> bool:
@@ -942,25 +973,21 @@ copy_file = (from: str, to: str) -> bool:
     if let s = read_file(from): return write_file(to, s)
     false
 
-# add to the end of a file (made if it is not there): a log
-append_file = (path: str, contents: str) -> bool:
-    when TARGET == "wasm" or TARGET == "windows":
+# add to the end of a file (made if it is not there): a log. sync = true: on the disk itself when
+# this returns (a change a server has made, kept before it answers: a crash or a power cut may cut
+# short a line written as it happened, never one before it)
+append_file = (path: str, contents: str, sync: bool = false) -> bool:
+    when TARGET == "wasm":
         old = read_file(path) ?? ""
         return write_file(path, old + contents)
+    else when TARGET == "windows":
+        return __w32_append_file(path, contents, sync)
     else:
-        fd = syscall(2, data(__zstr(path)), 0x441, 0x1A4)
-        if fd < 0: return __ferr(fd)
-        off = 0
-        n = len(contents)
-        ok = true
-        loop off < n:
-            r = syscall(1, fd, data(contents) + off, n - off)
-            if r <= 0:
-                ok = __ferr(min(r, -28))
-                break
-            off += r
-        syscall(3, fd)
-        ok
+        made = sync and not file_exists(path)
+        if not __write_to(path, contents, 0x441, sync): return false       # O_WRONLY|O_CREAT|O_APPEND
+        # (a file just made: its name kept too)
+        if made: __sync_dir(path)
+        true
 
 # when a file or directory was last changed, in seconds since 1970 (as unix_time()); none if it
 # is not there

@@ -814,8 +814,8 @@ Operating system access: files, arguments, environment, time.
 - `read_bytes = (path: str) -> u8[]?`
 - `page_url = () -> str`: a web page's own address, without its ?query (to make a link to it: page_url() + "?invite=" + code); "" in a native program
 - `download_file = (path: str, name: str = "") -> bool`: a file the program wrote, given to the person using it: in a web page, the browser downloads it (a picture saved with save_png, an exported save), named `name` or as the path ends; elsewhere it is already where it was written. True if the file is there
-- `write_file = (path: str, contents: str) -> bool`
-- `write_bytes = (path: str, b: u8[]) -> bool`
+- `write_file = (path: str, contents: str, sync: bool = false) -> bool`: write a whole file (made, or replaced); false if it could not be (file_error() says why). sync = true: on the disk itself when this returns, and whole: written to a new file beside it (path + ".new"), which is put on the disk and then takes the old one's place, the directory put on the disk too, so that neither a crash nor a power cut leaves half a file, or none (for data a program keeps, as a server's: it takes some milliseconds more; a web page's storage keeps what it is given as it does)
+- `write_bytes = (path: str, b: u8[], sync: bool = false) -> bool`
 - `is_dir = (path: str) -> bool`: a directory (and not a file)
 - `is_symlink = (path: str) -> bool`: the path is a symbolic link (to anything, or to nothing); is_dir and the rest follow links, so a walk through directories that should not go round in circles asks this first
 - `file_size = (path: str) -> int?`: a file's size in bytes; none if it cannot be opened (or is a directory)
@@ -844,7 +844,7 @@ Operating system access: files, arguments, environment, time.
 - `delete_dir = (path: str) -> bool`: remove a directory, which must be empty (delete_file for a file)
 - `rename_file = (from: str, to: str, replace: bool = true) -> bool`: move or rename a file or directory (one already at `to` is replaced: a file, or an empty directory). replace = false: false instead when something is at `to` (file_error() says "it is already there"), checked as it moves, so no other program can put one there in between
 - `copy_file = (from: str, to: str) -> bool`: copy a file's contents to another (made, or replaced)
-- `append_file = (path: str, contents: str) -> bool`: add to the end of a file (made if it is not there): a log
+- `append_file = (path: str, contents: str, sync: bool = false) -> bool`: add to the end of a file (made if it is not there): a log. sync = true: on the disk itself when this returns (a change a server has made, kept before it answers: a crash or a power cut may cut short a line written as it happened, never one before it)
 - `file_time = (path: str) -> f64?`: when a file or directory was last changed, in seconds since 1970 (as unix_time()); none if it is not there
 - `walk_dir = (path: str) -> str[]`: every file under a directory, at any depth, as paths from it ("maps/level1.tmx"), sorted; links to directories are not followed
 - `glob = (pattern: str) -> str[]`: the files whose paths match a pattern: `*` is any part of a name, `?` one character, and `**` any number of directories ("src/*.jo", "assets/**/*.png"), sorted. As in the shell, hidden names (.git, .env) match only a pattern that starts them with a dot (".*", "**/.env"). On Windows letters match in either case, as its file names do ("*.TXT" matches notes.txt); elsewhere only in the same case. On Windows a pattern's `\` is a `/` ("data\*.txt" gives data/notes.txt)

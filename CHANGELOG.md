@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Data that survives a power cut: `write_file(path, text, sync = true)` (and `write_bytes`)
+  writes a new file beside it, puts it on the disk (fsync; macOS's F_FULLFSYNC; Windows'
+  FlushFileBuffers), renames it over the old one and puts the directory on the disk too (Windows:
+  MoveFileEx with MOVEFILE_WRITE_THROUGH); `append_file(path, line, sync = true)` is on the disk
+  when it returns. START.md's "Keeping data": whole-file writes cost time as the data grows
+  (320 bookings a second down to 120 at 2,000 records), and a recipe for a log of changes with
+  the whole file written now and then. `append_file` on Windows appends (it read the whole file
+  and wrote it again).
 - Floats are written 2-6x faster (`print`, `str(x)`, `"{x}"`, `to_json`, `to_text`): Ryu's
   shortest digits, from 128-bit powers of five made at the first float written, in place of
   trying 1 to 15 digits and then exact big numbers. The same text for every f64 (checked against
