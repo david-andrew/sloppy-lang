@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.28.0
 
 - Packages: each build block's names are its own package's. A package's `import util` is the
   `util` its own build block names, whatever the program calls `util` (the first name anywhere
