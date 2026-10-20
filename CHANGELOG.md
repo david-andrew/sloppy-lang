@@ -45,6 +45,10 @@
 - netplay: `c.reconnect = true` connects again by itself after a connection lost (or the server
   going away or restarting: 1001, 1006, 1011-1014), after 1, 2, 4... up to 30 s; not after a
   close on purpose. `c.problem` has the server's close reason and code.
+- netplay at other tick rates: `srv.ticks_per_second` (`srv.run(20)` sets it) goes to the
+  clients with each world (`c.ticks_per_second`); `c.interpolation` is in seconds (0.1); `c.view()`
+  moves between plays by the time since the last, so drawn each frame at 60 it is smooth with a
+  server at 20, and it follows the server's tick smoothed over the worlds as they come.
 
 ## 0.28.0
 

@@ -1,0 +1,55 @@
+# requires: sloppy
+# requires: native
+# netplay at 20 ticks a second: the client learns the server's rate from its worlds, and c.view(),
+# drawn each frame (60 a second), moves each frame, between whole ticks, about interpolation
+# seconds behind the server
+import netplay
+
+struct Pad:
+    dx = 0
+struct World:
+    x = 0.0
+
+apply = (w: World, player: int, p: Pad, seen: World) -> World: w
+step = (w: World) -> World: World(w.x + 1.0)
+
+const PORT = 9535
+
+main = ():
+    srv = netplay.server(World(), apply, step)
+    srv.ticks_per_second = 20.0
+    srv.send_every = 1
+    srv.listen(PORT)
+    c = netplay.client(World(), apply)
+    c.connect("127.0.0.1", PORT)
+    frames = 0
+    moved = 0
+    between = 0
+    backwards = 0
+    behind: f64[]
+    last = -1.0
+    start = time()
+    loop f in 0..240:
+        # (a tick every third frame, on both sides)
+        if f % 3 == 0:
+            srv.update()
+            c.play(Pad())
+        if c.connected() and f >= 60:
+            a, b, t = c.view()
+            x = f64(mix(f32(a.x), f32(b.x), t))
+            frames += 1
+            if x > last: moved += 1
+            if x < last - 0.01: backwards += 1
+            if t > 0.05 and t < 0.95: between += 1
+            behind.push(srv.world.x - x)
+            last = x
+        # (on time: each frame's start from the first)
+        wait = start + f64(f + 1) / 60.0 - time()
+        if wait > 0.0: sleep(wait)
+    print("rate learned:", c.ticks_per_second)
+    print("moved on most frames:", moved * 10 > frames * 9, "between ticks on many:", between * 2 > frames, "never back:", backwards == 0)
+    avg = 0.0
+    loop d in behind: avg += d
+    avg /= f64(behind.len())
+    # (0.1 s at 20 a second: 2 ticks, less the time since the tick, a third of one on average)
+    print("behind the server by about the interpolation:", avg > 1.2 and avg < 2.5)

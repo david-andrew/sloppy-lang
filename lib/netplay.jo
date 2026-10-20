@@ -670,7 +670,10 @@ deliver = (l: mut Link, now: f64) -> (int, u8[])[]:
 #   c.connect("game.example.com", 4600)                 # (web pages too)
 #   every tick: c.play(pad); draw c.state for one's own player, c.view() for the others
 #
-# Ticks are 1/60 s on both sides; the server sends its world every send_every ticks.
+# Ticks are 1/60 s on both sides unless the server says otherwise (ticks_per_second: 20 or 30
+# for a game that needs less, up to 120); a client plays once a tick at the server's rate, which
+# it learns from the worlds (c.ticks_per_second). The server sends its world every send_every
+# ticks.
 
 struct Server[W, I]:
     world: W
@@ -678,6 +681,7 @@ struct Server[W, I]:
     step: (W) -> W
     tick = 0
     send_every = 2                  # (30 worlds a second)
+    ticks_per_second = 60.0         # how often update is called (run sets it): its clients learn it
     joined: int[]                   # the players who came, and went, in the last update
     left: int[]
     messages: (int, str)[]          # the game's own messages that came in the last update, and who sent each (say)
@@ -738,6 +742,7 @@ struct __CsWorld[W]:
     you: int
     tick: int
     ack: int
+    rate: f64
     world: W
 
 server[W, I] = (world: W, apply: (W, int, I, W) -> W, step: (W) -> W) -> Server[W, I]:
@@ -803,6 +808,7 @@ lag[W, I] = (s: mut Server[W, I], ms: f64, jitter_ms: f64 = 0):
 # run the server: update 60 times a second, on time (each tick's start set from the first, so a
 # slow sleep does not make it fall behind), until the program ends
 run[W, I] = (s: mut Server[W, I], ticks_per_second: f64 = 60.0):
+    s.ticks_per_second = ticks_per_second
     dt = 1.0 / ticks_per_second
     next = time()
     loop true:
@@ -844,7 +850,7 @@ update[W, I] = (s: mut Server[W, I]):
         # then, so their inputs do not pile up and lag; at most 1 in 32, and only while it has had
         # fewer than 60 a second since it joined: a client sending more gains nothing by it. A
         # server driven by hand, as a test is, counts its own ticks for the time: one in 59 more)
-        due = if s.__port >= 0: (elapsed() - c.since) * 60.0 else: f64(s.tick - c.since_tick) * 60.0 / 59.0
+        due = if s.__port >= 0: (elapsed() - c.since) * s.ticks_per_second else: f64(s.tick - c.since_tick) * 60.0 / 59.0
         if s.tick % 32 == 0 and c.queue.len() > 2 and f64(c.applied + cr) < due: cr += 1
         n = min(c.queue.len(), cr)
         s.__clients[p].credit = cr - n
@@ -863,10 +869,10 @@ update[W, I] = (s: mut Server[W, I]):
     s.tick += 1
     s.__hist[s.tick % __CS_HIST] = s.world
     if s.tick % s.send_every == 0 and s.__clients.len() > 0:
-        # (the world as text, compressed once for everyone: who, tick and ack before it)
+        # (the world as text, compressed once for everyone: who, tick, ack and the tick rate before it)
         z = deflate(bytes(to_text(s.world)))
         loop p, c in s.__clients:
-            b = bytes("\x02{p} {s.tick} {c.acked} ")
+            b = bytes("\x02{p} {s.tick} {c.acked} {s.ticks_per_second} ")
             loop x in z: b.push(x)
             __cs_server_send(s, p, b)
     if s.__lag.held.len() > 0:
@@ -891,7 +897,10 @@ struct Client[W, I]:
     server: W                       # the latest world from the server, as it sent it
     me = -1                         # this player's number (once the server has said)
     server_tick = -1                # the tick of server
-    interpolation = 6               # how far in the past others are drawn (view), in ticks
+    interpolation = 0.1             # how far in the past others are drawn (view), in seconds: two
+                                    # worlds' time apart or more (send_every ticks), more on a network
+                                    # that is uneven
+    ticks_per_second = 60.0         # the server's (from its worlds): play once a tick at this rate
     ping = 0.0                      # milliseconds from an input sent to the world that answers it (smoothed)
     messages: str[]                 # the server's own messages that came in the last play (say)
     __seq = 0
@@ -899,7 +908,9 @@ struct Client[W, I]:
     __sent: (int, f64)[]            # (when each of those was sent)
     __worlds: (int, W)[]            # the latest worlds, with their ticks
     __clock = 0                     # this client's ticks
-    __got_at = 0                    # (its clock when the latest world came)
+    __played_at = 0.0               # (when the latest play was: view goes on between plays)
+    __ahead = 0.0                   # (the server's tick less this client's clock, smoothed over the
+    __synced = false                # worlds as they come, however unevenly)
     __out: u8[][]
     __peer = -1
     problem = ""                    # what is wrong, said once on stderr too: could not connect, the
@@ -935,6 +946,7 @@ connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = ""):
     c.__pending.clear()
     c.__sent.clear()
     c.__worlds.clear()
+    c.__synced = false
     c.__hello = hello
     c.__peer = net.connect(host, port)
     # (a screenshot run of a networked game keeps to real time: the server does)
@@ -985,6 +997,9 @@ say[W, I] = (c: mut Client[W, I], text: str):
 # this tick's input: applied here at once (prediction) and sent
 play[W, I] = (c: mut Client[W, I], input: I):
     c.messages.clear()
+    # (this tick's: a world that comes now is the server's of now, the view its interpolation behind)
+    c.__clock += 1
+    c.__played_at = elapsed()
     # (with lag: what is held, sent when its time comes; worlds from the server held as long)
     if c.__lag.held.len() > 0:
         loop m in __cs_lag_due(c.__lag):
@@ -1012,7 +1027,6 @@ play[W, I] = (c: mut Client[W, I], input: I):
         if c.reconnect:
             c.disconnect()
             __cs_retry_later(c)
-    c.__clock += 1
     if c.me < 0: return
     c.__seq += 1
     c.__pending.push((c.__seq, input))
@@ -1041,7 +1055,14 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
     c.__retry_wait = 1.0
     c.server_tick = r.tick
     c.server = r.world
-    c.__got_at = c.__clock
+    # (where the server is, from this world: smoothed, so that a world late or early moves the
+    # view by a little, and a big change, as after a pause, at once)
+    c.ticks_per_second = r.rate
+    d = f64(r.tick - c.__clock)
+    if not c.__synced or abs(d - c.__ahead) > 0.5 * r.rate:
+        c.__ahead = d
+        c.__synced = true
+    else: c.__ahead += (d - c.__ahead) * 0.1
     c.__worlds.push((r.tick, r.world))
     if c.__worlds.len() > 32: c.__worlds.remove_at(0)
     # (what the server has done of mine is in its world; the rest applied again)
@@ -1058,23 +1079,25 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
     c.state = r.world
     loop p in c.__pending: c.state = c.apply(c.state, c.me, p.1, c.state)
 
-# (a world as the server sends it: 2, "you tick ack ", then the world's text deflated)
+# (a world as the server sends it: 2, "you tick ack rate ", then the world's text deflated)
 __cs_world[W] = (data: u8[]) -> __CsWorld[W] | TextError:
     if data.len() == 0 or data[0] != 2: return TextError("not a world", 1, 1)
     sp = 0
     k = 1
-    loop k < data.len() and sp < 3:
+    loop k < data.len() and sp < 4:
         if data[k] == ' ': sp += 1
         k += 1
     head = split(trim(str_from_bytes(data[1..k))), " ")
-    if head.len() != 3: return TextError("a world's header is not readable", 1, 1)
+    if head.len() != 4: return TextError("a world's header is not readable", 1, 1)
     you = to_int(head[0]) ?? -1
     tick = to_int(head[1]) ?? -1
     ack = to_int(head[2]) ?? -1
+    rate = to_float(head[3]) ?? 60.0
+    if rate <= 0.0: rate = 60.0
     if let raw = inflate(data, k):
         w = from_text[W](str_from_bytes(raw))
         if w is TextError: return w
-        return __CsWorld[W](you, tick, ack, w)
+        return __CsWorld[W](you, tick, ack, rate, w)
     TextError("a world could not be inflated", 1, 1)
 
 # what to send since the last call (without connect)
@@ -1083,8 +1106,11 @@ outgoing[W, I] = (c: mut Client[W, I]) -> u8[][]:
     c.__out.clear()
     o
 
-# the server's tick being drawn for the others: some ticks in the past (fractional)
-view_tick[W, I] = (c: Client[W, I]) -> f64: f64(c.server_tick + (c.__clock - c.__got_at) - c.interpolation)
+# the server's tick being drawn for the others: interpolation seconds in the past (fractional,
+# going on by the time between plays too, so a view drawn each frame moves each frame)
+view_tick[W, I] = (c: Client[W, I]) -> f64:
+    between = clamp((elapsed() - c.__played_at) * c.ticks_per_second, 0.0, 1.0)
+    f64(c.__clock) + between + c.__ahead - c.interpolation * c.ticks_per_second
 
 # the two worlds around view_tick and how far between them (0 to 1): draw the others at
 # mix(a's, b's, f)

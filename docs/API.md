@@ -5757,6 +5757,7 @@ draw = ():
       step: (W) -> W
       tick = 0
       send_every = 2                  # (30 worlds a second)
+      ticks_per_second = 60.0         # how often update is called (run sets it): its clients learn it
       joined: int[]                   # the players who came, and went, in the last update
       left: int[]
       messages: (int, str)[]          # the game's own messages that came in the last update, and who sent each (say)
@@ -5783,7 +5784,10 @@ draw = ():
       server: W                       # the latest world from the server, as it sent it
       me = -1                         # this player's number (once the server has said)
       server_tick = -1                # the tick of server
-      interpolation = 6               # how far in the past others are drawn (view), in ticks
+      interpolation = 0.1             # how far in the past others are drawn (view), in seconds: two
+                                      # worlds' time apart or more (send_every ticks), more on a network
+                                      # that is uneven
+      ticks_per_second = 60.0         # the server's (from its worlds): play once a tick at this rate
       ping = 0.0                      # milliseconds from an input sent to the world that answers it (smoothed)
       messages: str[]                 # the server's own messages that came in the last play (say)
       problem = ""                    # what is wrong, said once on stderr too: could not connect, the
@@ -5801,6 +5805,6 @@ draw = ():
 - `play[W, I] = (c: mut Client[W, I], input: I)`: this tick's input: applied here at once (prediction) and sent
 - `receive[W, I] = (c: mut Client[W, I], data: u8[])`: bytes from the server
 - `outgoing[W, I] = (c: mut Client[W, I]) -> u8[][]`: what to send since the last call (without connect)
-- `view_tick[W, I] = (c: Client[W, I]) -> f64`: the server's tick being drawn for the others: some ticks in the past (fractional)
+- `view_tick[W, I] = (c: Client[W, I]) -> f64`: the server's tick being drawn for the others: interpolation seconds in the past (fractional, going on by the time between plays too, so a view drawn each frame moves each frame)
 - `view[W, I] = (c: Client[W, I]) -> (W, W, f32)`: the two worlds around view_tick and how far between them (0 to 1): draw the others at mix(a's, b's, f)
 
