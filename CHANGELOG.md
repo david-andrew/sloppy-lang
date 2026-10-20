@@ -15,6 +15,26 @@
   faster at all (the catch-up input, one in 32 ticks, went to it every time: 3% faster); `srv.say(p, text)`,
   `srv.say_all(text)`, `c.say(text)` and `srv.messages`, `c.messages`: the game's own messages
   on the same connection (another message ended a client's connection).
+- A task per WebSocket (`net.accept`, `net.receive([p], wait)`) costs less than one loop over
+  `net.receive_server()`: a task reads its own peer's socket only (it read every peer's, each
+  time), and the server's `net.wait` leaves a task's peers to it. An echo server with 200
+  clients at 20 messages a second: 58-63% of a core, now 18% (the loop's: 29%). Peers are found
+  by id at once (`send`, `close`, `gone`, `handshake`).
+- `net.close(p, code = 1000, reason = "")`: the other side's `.left` event has the code and the
+  reason (`e.code`, `e.text`, and `net.why(p)`), natively and in a web page; a page's own
+  WebSocket has them in its close event. 1006: the connection was lost with no close. A closed
+  socket reads and drops what still comes until the other side closes too (a browser that was
+  sending got 1006 instead of the code: the close was lost to a reset). A client that got the
+  server's handshake and close together saw neither.
+- crypto: `pbkdf2_sha256(password, salt, iterations, n = 32)`, `hash_password(pw)` and
+  `check_password(pw, stored)` (`pbkdf2-sha256$100000$salt$hash`), `constant_time_equal(a, b)`.
+  SHA-256 is twice as fast in a debug build.
+- http: `http.before((r: mut Request) -> Response?)` runs before the routes and may answer early
+  (a sign-in, a rate limit) or change the request; `http.after((r, res) -> Response)` gets every
+  answer (headers, a log). `http.cors(origins = ["*"], methods, headers, credentials, max_age)`
+  answers CORS's preflights and lets the sites listed read the answers. Answers of text, JSON,
+  JavaScript, SVG and wasm of 1 KB or more go gzip'd to clients that take it, files once per
+  change (with an ETag of their own); `http.gzip = false` for none.
 
 ## 0.28.0
 

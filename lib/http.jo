@@ -38,6 +38,7 @@
 #   spawn((): http.serve(18080), background = true)
 #   assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 
+import crypto
 import net
 
 struct Request:
@@ -254,7 +255,7 @@ file = (r: Request, path: str) -> Response:
     t = file_time(path) ?? 0.0
     tag = "W/\"{int(t):x}-{size:x}\""
     res = Response(headers = {"Content-Type": mime_type(path), "ETag": tag, "Last-Modified": http_date(t)})
-    if r.headers.get("if-none-match") == tag:
+    if let inm = r.headers.get("if-none-match") and (inm == tag or inm == __http_gz_tag(tag)):
         res.status = 304
         return res
     if let since = r.headers.get("if-modified-since") and r.headers.get("if-none-match") == none:
@@ -359,6 +360,163 @@ websocket = (r: Request, largest: int = 16 << 20) -> Response:
     if (r.headers.get("upgrade") ?? "").lower() != "websocket" or not r.headers.has("sec-websocket-key"):
         return status(426, "426 Upgrade Required: a WebSocket's request\n")
     Response(status = 101, upgrade = true, __largest = largest)
+
+# ---------------- every request: before and after its route ----------------
+# Functions for every request, around its route's handler: what checks a sign-in, counts requests
+# for a limit, adds headers or writes a log. before(f): f is given the request first, and may
+# answer it itself (its route is then not called) or give none to let it go on; it may change the
+# request too (as by setting r.params["user"] for the handlers). after(f): f is given each request
+# and its answer, and gives the answer to send (the same, changed, or another). Each is called in
+# the order they were made; a panic in one is a 500, as a handler's is.
+#   http.before((r: mut http.Request) -> http.Response?:
+#       if starts_with(r.path, "/api/") and r.headers.get("authorization") != "Bearer " + TOKEN:
+#           return http.json_error(401, "sign in first")
+#       none)
+#   http.after((r: http.Request, res: http.Response) -> http.Response:
+#       let res = res
+#       res.headers["X-Frame-Options"] = "DENY"
+#       res)
+
+# a function each request is given before its route
+before = (f: (mut Request) -> Response?): __http_befores.push(f)
+
+# a function each request's answer goes through after its route (a WebSocket's too, as its 101)
+after = (f: (Request, Response) -> Response): __http_afters.push(f)
+
+__http_befores: ((mut Request) -> Response?)[]
+__http_afters: ((Request, Response) -> Response)[]
+
+# ---------------- CORS: requests from web pages of other sites ----------------
+# A browser lets a page of another site (another origin: scheme, host and port) read this server's
+# answers only when they say it may: cors(origins) says so for those sites ("*": any site), and
+# answers the browser's preflight (an OPTIONS request it sends first, for a PUT, a DELETE, or a
+# request with JSON or an Authorization header) before any before() or route sees it.
+#   http.cors(["https://example.com", "http://localhost:5173"])
+#   http.cors()                                     # any site (an open API, without cookies)
+# credentials: the page's cookies (and Authorization) go along (with the sites listed only: a
+# browser sends none to "*"); max_age: how many seconds a browser may keep a preflight's answer
+cors = (origins: str[] = ["*"], methods: str = "GET, HEAD, POST, PUT, PATCH, DELETE", headers: str = "Content-Type, Authorization", credentials: bool = false, max_age: int = 600):
+    global __http_cors
+    __http_cors = __Cors(on = true, origins = origins, methods = methods, headers = headers, credentials = credentials, max_age = max_age)
+
+struct __Cors:
+    on = false
+    origins: str[]
+    methods = ""
+    headers = ""
+    credentials = false
+    max_age = 0
+
+__http_cors = __Cors()
+
+# (the origin a request's answer lets read it, "" none: the request's Origin when it is listed, or
+# "*" for any)
+__http_cors_origin = (r: Request) -> str:
+    if not __http_cors.on: return ""
+    o = r.headers.get("origin") ?? ""
+    if len(o) == 0: return ""
+    if "*" in __http_cors.origins: return "*"
+    if o in __http_cors.origins: o else: ""
+
+# (CORS's headers on an answer, for the request's origin; a preflight's too)
+__http_cors_headers = (r: Request, res: mut Response, preflight: bool):
+    o = __http_cors_origin(r)
+    if len(o) == 0: return
+    res.headers["Access-Control-Allow-Origin"] = o
+    if o != "*": res.headers["Vary"] = __http_vary(res, "Origin")
+    if __http_cors.credentials and o != "*": res.headers["Access-Control-Allow-Credentials"] = "true"
+    if preflight:
+        res.headers["Access-Control-Allow-Methods"] = __http_cors.methods
+        # (the headers the page asked for, when any may be: else those listed)
+        res.headers["Access-Control-Allow-Headers"] = if __http_cors.headers == "*": (r.headers.get("access-control-request-headers") ?? "") else: __http_cors.headers
+        res.headers["Access-Control-Max-Age"] = "{__http_cors.max_age}"
+
+# (a Vary header with one name more)
+__http_vary = (res: Response, name: str) -> str:
+    was = res.headers.get("Vary") ?? ""
+    if len(was) == 0: return name
+    if find(was.lower(), name.lower()) >= 0: return was
+    "{was}, {name}"
+
+# ---------------- gzip ----------------
+# Answers of text (HTML, CSS, JavaScript, JSON, SVG...) and WebAssembly of 1 KB or more are sent
+# gzip'd to the clients that take it (Accept-Encoding: gzip): a third or less of the bytes. A
+# file's is made once, while the file is unchanged (up to 64 MB of them kept). false: none are
+# (as behind a proxy that does it, Caddy's `encode gzip`)
+gzip = true
+
+const __HTTP_GZIP_LEAST = 1024
+const __HTTP_GZIP_FILE_MOST = 16 << 20
+const __HTTP_GZIP_KEPT_MOST = 64 << 20
+
+struct __Gz:
+    time: f64
+    size: int
+    gz: u8[]
+
+__http_gz_files: {str: __Gz}
+__http_gz_kept = 0
+
+# (whether the answer is one to gzip for this request: the client takes gzip, and it is of a type
+# that shrinks, big enough, and not gzip'd already)
+__http_gzips = (r: Request, res: Response) -> bool:
+    if not gzip or r.method == "HEAD" or res.stream or res.upgrade or res.status < 200 or res.status == 204 or res.status == 304: return false
+    if res.headers.has("Content-Encoding") or res.headers.has("content-encoding"): return false
+    if not __http_takes_gzip(r.headers.get("accept-encoding") ?? ""): return false
+    t = (res.headers.get("Content-Type") ?? res.headers.get("content-type") ?? "").lower()
+    if not (starts_with(t, "text/") or find(t, "json") >= 0 or find(t, "javascript") >= 0 or find(t, "xml") >= 0 or find(t, "wasm") >= 0): return false
+    size = if len(res.file) > 0: (file_size(res.file) ?? 0) else: res.body.len()
+    size >= __HTTP_GZIP_LEAST and size <= __HTTP_GZIP_FILE_MOST
+
+# (an Accept-Encoding that has gzip, not with q=0)
+__http_takes_gzip = (ae: str) -> bool:
+    loop part in split(ae.lower(), ","):
+        bits = split(part, ";")
+        if trim(bits[0]) != "gzip": continue
+        loop b in bits[1..]:
+            kv = trim(b)
+            if starts_with(kv, "q="): return (to_float(kv[2..]) ?? 1.0) > 0.0
+        return true
+    false
+
+# (the answer gzip'd: its body, or its file's, kept while the file is unchanged)
+__http_gzip_answer = (res: mut Response):
+    if len(res.file) > 0:
+        t = file_time(res.file) ?? 0.0
+        size = file_size(res.file) ?? 0
+        if let g = __http_gz_files.get(res.file) and g.time == t and g.size == size: res.body = g.gz
+        else:
+            b = read_bytes(res.file) ?? []
+            if b.len() != size: return
+            res.body = __http_gz(b)
+            __http_gz_keep(res.file, __Gz(t, size, res.body))
+        res.file = ""
+        if let tag = res.headers.get("ETag"): res.headers["ETag"] = __http_gz_tag(tag)
+    else: res.body = __http_gz(res.body)
+    res.headers["Content-Encoding"] = "gzip"
+    res.headers["Vary"] = __http_vary(res, "Accept-Encoding")
+
+__http_gz_keep = (path: str, g: __Gz):
+    global __http_gz_kept, __http_gz_files
+    if let was = __http_gz_files.get(path): __http_gz_kept -= was.gz.len()
+    if __http_gz_kept + g.gz.len() > __HTTP_GZIP_KEPT_MOST:
+        __http_gz_files = {}
+        __http_gz_kept = 0
+    __http_gz_files[path] = g
+    __http_gz_kept += g.gz.len()
+
+# (a file's ETag for its gzip'd body: another, as its bytes are others; W/"5f3a-1c" W/"5f3a-1c-gz")
+__http_gz_tag = (tag: str) -> str: if ends_with(tag, "\""): tag[..len(tag) - 1) + "-gz\"" else: tag
+
+# (bytes in gzip's format: a header, deflate's stream, its CRC-32 and length)
+__http_gz = (b: u8[]) -> u8[]:
+    out: u8[] = [u8(0x1f), 0x8b, 8, 0, 0, 0, 0, 0, 0, 255]
+    out.extend(deflate(b))
+    c = int(crypto.crc32(b))
+    n = b.len()
+    loop k in [0..4): out.push(u8((c >> (8 * k)) & 255))
+    loop k in [0..4): out.push(u8((n >> (8 * k)) & 255))
+    out
 
 # ---------------- serving ----------------
 
@@ -745,17 +903,21 @@ __http_refuse = (id: int, code: int, why: str):
     __http_send(id, Request(), res, false)
     if __http_conns.has(id): __http_conns[id].closing = true
 
-# (a request, answered by its route's handler)
+# (a request, answered by its route's handler, with before's and after's around it)
 __http_answer = (id: int, req0: Request):
     t0 = if log_requests: time() else: 0.0
     req = req0
     res = Response()
-    i = __http_route(req)
-    if i == -1: res = status(404)
-    else if i == -2:
-        res = status(405)
-        res.headers["Allow"] = __http_allowed(req.path)
-    else if not __http_call(__routes[i].handler, req, res): res = status(500)
+    # (a CORS preflight: answered for the browser, before any before() sees it)
+    if __http_cors.on and req.method == "OPTIONS" and req.headers.has("access-control-request-method") and req.headers.has("origin"):
+        res = Response(status = 204)
+        __http_cors_headers(req, res, true)
+    else:
+        if not __http_call(__http_handler, req, res): res = status(500)
+        __http_cors_headers(req, res, false)
+        if __http_afters.len() > 0:
+            done = res
+            if not __http_call((r: Request) -> Response: __http_after_all(r, done), req, res): res = status(500)
     if not __http_conns.has(id): return
     if res.upgrade:
         __http_upgrade(id, req, res.__largest)
@@ -764,6 +926,24 @@ __http_answer = (id: int, req0: Request):
     keep = if req.version == "HTTP/1.0": find(conn, "keep-alive") >= 0 else: find(conn, "close") < 0
     __http_send(id, req, res, keep)
     if log_requests: eprint(log_line(req, res, time() - t0))
+
+# (the before's, then the route's handler: the answer; 404 and 405 for none)
+__http_handler = (r0: Request) -> Response:
+    r = r0
+    loop f in __http_befores:
+        if let early = f(r): return early
+    i = __http_route(r)
+    if i == -1: return status(404)
+    if i == -2:
+        res = status(405)
+        res.headers["Allow"] = __http_allowed(r.path)
+        return res
+    __routes[i].handler(r)
+
+__http_after_all = (r: Request, res0: Response) -> Response:
+    res = res0
+    loop f in __http_afters: res = f(r, res)
+    res
 
 # (the handler called; false when it panicked, the panic caught: lib/core/rt.jo)
 __http_call = (h: (Request) -> Response, r: Request, res: mut Response) -> bool:
@@ -785,8 +965,10 @@ __http_call = (h: (Request) -> Response, r: Request, res: mut Response) -> bool:
         false
 
 # (an answer, written out: its status line and headers, then its body, its file or its stream)
-__http_send = (id: int, req: Request, res: Response, keep0: bool):
+__http_send = (id: int, req: Request, res0: Response, keep0: bool):
     keep = keep0
+    res = res0
+    if __http_gzips(req, res): __http_gzip_answer(res)
     v10 = req.version == "HTTP/1.0"
     s = "HTTP/1.1 {res.status} {reason(res.status)}\r\n"
     loop k, v in res.headers:

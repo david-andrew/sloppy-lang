@@ -1891,6 +1891,14 @@ ok = crypto.p256_verify(pk.public, crypto.sha256(msg), sig)
 - `hkdf_extract = (salt: u8[], ikm: u8[]) -> u8[]`: a key of 32 bytes made from input keying material and a salt (empty: as 32 zeros)
 - `hkdf_expand = (prk: u8[], info: u8[], n: int) -> u8[]`: n bytes of keys made from such a key, for a purpose (info)
 
+#### Passwords: PBKDF2 (RFC 8018, with HMAC-SHA256)
+
+- `pbkdf2_sha256 = (password: u8[], salt: u8[], iterations: int, n: int = 32) -> u8[]`: n bytes of key from a password and a salt, by `iterations` rounds of HMAC-SHA256
+- `hash_password = (password: str, iterations: int = 100000) -> str`: a password as text to store: a new random salt, and PBKDF2-HMAC-SHA256's hash of it with that many iterations. 100000 takes about a sixth of a second in a release build (a third in a debug one); OWASP asks for 600000 of programs whose SHA-256 is faster (OpenSSL's): more where sign-ins are few, as an admin's
+- `check_password = (password: str, stored: str) -> bool`: whether the password is the one stored by hash_password (false too for text that is not such a hash); it takes as long whichever bytes differ
+- `constant_time_equal = (a: u8[], b: u8[]) -> bool`: whether a and b are the same bytes, taking as long whichever bytes differ (a secret compared with what a client sent: a token, a signature, an HMAC), so that the time taken tells nothing about where they differ. Their lengths are not secret: different lengths are false at once
+- `constant_time_equal = (a: str, b: str) -> bool`
+
 #### TLS 1.2's PRF (RFC 5246 5, P_SHA256)
 
 - `tls12_prf = (secret: u8[], label: str, seed: u8[], n: int) -> u8[]`: n bytes of keys made from a secret, for a purpose (label) and a seed
@@ -5234,7 +5242,11 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
       kind: NetKind
       peer: int
       data: u8[]              # a message's bytes ...
-      text = ""               # ... and as text
+      text = ""               # ... and as text; a left event's: why it left (why(peer))
+      code = 0                # a left event's: the WebSocket's close code (close's: 1000 a normal
+                              # close, 1001 a page that went away, 4000-4999 a program's own), 1005
+                              # a close that gave none, 1006 none at all (the connection was lost);
+                              # 0 over WebRTC
   ```
 
 #### The peers
@@ -5273,11 +5285,14 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `send_all = (msg: u8[])`: send a message to every connected peer
 - `send_all = (msg: str)`
 - `peers = () -> int[]`: the peers connected now
-- `close = (peer: int)`: end a connection (a left event follows)
+- `close = (peer: int, code: int = 1000, reason: str = "")`: end a connection (a left event follows). Over a WebSocket, the other side's left event has the code and the reason (its code, and its text and why(peer)); a web page's WebSocket has them in its close event (event.code, event.reason). code: 1000 a normal close, 4000-4999 the program's own (4001 a full room, 4003 a sign-in refused...), as a browser's own WebSocket takes; reason: a few words, up to 123 bytes
+  ```gdscript
+  net.close(p, 4001, "the room is full")
+  ```
 - `route = (peer: int) -> str`: how a peer is reached: "direct" (WebRTC, straight between the two), "relay" (WebRTC through a TURN server), "websocket" (a connection to a server, or one a server took), or "" (not known yet, or gone; a web page's browser does not tell)
 - `backlog = (peer: int) -> int`: how much waits to reach a peer: over WebRTC, the pieces sent and not acknowledged yet and those waiting for room (in a web page, the bytes its data channel holds); over a WebSocket, the bytes not sent yet (0 in a web page)
 - `dropped = (peer: int) -> int`: the messages to a peer dropped so far for want of room (one invited with reliable = false, whose messages may be lost: while the other side is slow to take them, newer ones are not held up)
-- `why = (peer: int) -> str`: why a peer could not connect, once it has left ("": it did not say; a web page's browser does not tell)
+- `why = (peer: int) -> str`: why a peer could not connect, or the reason its close gave (net.close(p, code, reason)), once it has left ("": it did not say; a web page's browser does not tell why it could not connect)
 - `local_address = () -> str`: this machine's address on its network (as 192.168.1.20): what another machine there connects to, and what a host tells the players joining it; "" when it has none (no network, or a web page)
 - `receive = () -> NetEvent[]`: what happened since the last call: peers joining and leaving, and their messages, in order
 - `receive = (only: int[]) -> NetEvent[]`: the same, for the given peers only (the others' events wait for another call): parts of a program that each have peers of their own, as a game hosting a relay and playing through it
@@ -5511,6 +5526,19 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 #### WebSockets
 
 - `websocket = (r: Request, largest: int = 16 << 20) -> Response`: the answer that makes the request's connection a WebSocket (a request that is not one's: 426). largest: the biggest message taken from it (a bigger one ends the connection, with code 1009)
+
+#### Every request: before and after its route
+
+- `before = (f: (mut Request) -> Response?)`: a function each request is given before its route
+- `after = (f: (Request, Response) -> Response)`: a function each request's answer goes through after its route (a WebSocket's too, as its 101)
+
+#### CORS: requests from web pages of other sites
+
+- `cors = (origins: str[] = ["*"], methods: str = "GET, HEAD, POST, PUT, PATCH, DELETE", headers: str = "Content-Type, Authorization", credentials: bool = false, max_age: int = 600)`: A browser lets a page of another site (another origin: scheme, host and port) read this server's answers only when they say it may: cors(origins) says so for those sites ("*": any site), and answers the browser's preflight (an OPTIONS request it sends first, for a PUT, a DELETE, or a request with JSON or an Authorization header) before any before() or route sees it. credentials: the page's cookies (and Authorization) go along (with the sites listed only: a browser sends none to "*"); max_age: how many seconds a browser may keep a preflight's answer
+  ```gdscript
+  http.cors(["https://example.com", "http://localhost:5173"])
+  http.cors()                                     # any site (an open API, without cookies)
+  ```
 
 #### Serving
 

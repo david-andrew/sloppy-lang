@@ -1,0 +1,93 @@
+# requires: sloppy
+# requires: native
+# lib/http.jo around the routes: before() answering early (a sign-in) and changing the request,
+# after() changing every answer, a panic in one (500), CORS (an allowed site, one not allowed, a
+# preflight answered before any before), and gzip (a JSON answer, a file, its ETag; not for a
+# small answer, a client that does not take it, or an image)
+import crypto
+import http
+import net
+
+const TOKEN = "s3cret"
+
+struct Item:
+    id = 0
+    name = ""
+
+http.before((r: mut http.Request) -> http.Response?:
+    if r.path == "/boom": panic("before went wrong")
+    if not starts_with(r.path, "/api/"): return none
+    if r.headers.get("authorization") != "Bearer " + TOKEN: return http.json_error(401, "sign in first")
+    r.params["user"] = "ann"
+    none)
+http.after((r: http.Request, res: http.Response) -> http.Response:
+    let res = res
+    res.headers["X-Seen"] = "{r.method} {r.path}"
+    res)
+http.cors(["https://good.example"])
+http.get("/api/me", (r: http.Request) -> http.Response: http.text("you are {r.params.get("user") ?? "?"}"))
+http.put("/api/items/:id", (r: http.Request) -> http.Response: http.text("put {r.params["id"]}"))
+http.get("/api/items", (r: http.Request) -> http.Response: http.json([loop i in 0..200: Item(i, "item number {i}")]))
+http.get("/small", (r: http.Request) -> http.Response: http.text("small"))
+http.get("/png", (r: http.Request) -> http.Response: http.binary(fill(u8(7), 5000), "image/png"))
+dir = temp_dir() + "/sloppy-http-hooks"
+make_dirs(dir)
+write_file(dir + "/page.html", "<p>hello</p>\n" * 400)
+http.files("/static", dir)
+
+port = 9532
+if not http.listen(port, host = "127.0.0.1"): panic("cannot listen on {port}")
+at = "http://127.0.0.1:{port}"
+
+ask = (path: str, method: str = "GET", headers: {str: str} = {}) -> net.HttpReply:
+    f = net.fetch_start(at + path, method = method, headers = headers, wait = 5.0)
+    loop true:
+        http.answer()
+        if let r = net.fetch_result(f): return r
+        net.wait(0.1)
+    net.HttpReply(0, [])
+
+auth = {"Authorization": "Bearer " + TOKEN}
+r = ask("/api/me")
+print(r.status, r.text, r.headers.get("x-seen") ?? "-")
+r = ask("/api/me", headers = auth)
+print(r.status, r.text, r.headers.get("x-seen") ?? "-")
+r = ask("/boom")
+print(r.status)
+r = ask("/nothing")
+print(r.status, r.headers.get("x-seen") ?? "-")
+
+# CORS: the answer lets the listed site read it, not another; a preflight is answered with no sign-in
+r = ask("/api/me", headers = {"Authorization": "Bearer " + TOKEN, "Origin": "https://good.example"})
+print(r.status, r.headers.get("access-control-allow-origin") ?? "-", r.headers.get("vary") ?? "-")
+r = ask("/api/me", headers = {"Authorization": "Bearer " + TOKEN, "Origin": "https://evil.example"})
+print(r.status, r.headers.get("access-control-allow-origin") ?? "-")
+r = ask("/api/items/3", "OPTIONS", {"Origin": "https://good.example", "Access-Control-Request-Method": "PUT", "Access-Control-Request-Headers": "authorization"})
+print(r.status, r.headers.get("access-control-allow-origin") ?? "-", r.headers.get("access-control-allow-methods") ?? "-", "|", r.headers.get("access-control-allow-headers") ?? "-", r.headers.get("access-control-max-age") ?? "-")
+
+# gzip: for a client that takes it, big enough, of a type that shrinks
+gz = {"Authorization": "Bearer " + TOKEN, "Accept-Encoding": "gzip, deflate, br"}
+plain = ask("/api/items", headers = auth)
+r = ask("/api/items", headers = gz)
+print(r.status, r.headers.get("content-encoding") ?? "-", r.headers.get("vary") ?? "-", r.data.len() * 4 < plain.data.len())
+un = inflate(r.data, 10) ?? []
+n = r.data.len()
+crc = int(r.data[n - 8]) | (int(r.data[n - 7]) << 8) | (int(r.data[n - 6]) << 16) | (int(r.data[n - 5]) << 24)
+print(un == plain.data, int(crypto.crc32(un)) == crc)
+r = ask("/small", headers = gz)
+print(r.text, r.headers.get("content-encoding") ?? "-")
+r = ask("/png", headers = gz)
+print(r.data.len(), r.headers.get("content-encoding") ?? "-")
+r = ask("/api/items", headers = {"Authorization": "Bearer " + TOKEN, "Accept-Encoding": "gzip;q=0"})
+print(r.headers.get("content-encoding") ?? "-")
+# (a file: gzip'd, with an ETag of its own, which is answered 304 next time)
+r = ask("/static/page.html", headers = {"Accept-Encoding": "gzip"})
+tag = r.headers.get("etag") ?? ""
+print(r.status, r.headers.get("content-encoding") ?? "-", ends_with(tag, "-gz\""), str_from_bytes(inflate(r.data, 10) ?? []) == "<p>hello</p>\n" * 400)
+r = ask("/static/page.html", headers = {"Accept-Encoding": "gzip", "If-None-Match": tag})
+print(r.status)
+r = ask("/static/page.html")
+print(r.status, r.headers.get("content-encoding") ?? "-", r.data.len())
+http.gzip = false
+r = ask("/api/items", headers = gz)
+print(r.headers.get("content-encoding") ?? "-")
