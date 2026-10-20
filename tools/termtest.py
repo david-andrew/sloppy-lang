@@ -255,8 +255,20 @@ class Run:
 
     def restored(self, what):
         """the terminal's settings and screen as they were before the program"""
-        now = termios.tcgetattr(self.slave)
-        check(now == self.cooked, f"{what}: the terminal's settings put back", f"before {self.cooked}\nafter  {now}")
+        try:
+            now = termios.tcgetattr(self.slave)
+        except termios.error:
+            # (macOS takes the terminal back when the program that had it, its session's leader,
+            # has ended: its settings can no longer be read)
+            if sys.platform != "darwin": raise
+            now = None
+        if now is not None:
+            before = list(self.cooked)
+            if sys.platform == "darwin":
+                # (PENDIN: macOS sets it itself when a terminal goes back to lines with input waiting)
+                before[3] &= ~0x20000000
+                now[3] &= ~0x20000000
+            check(now == before, f"{what}: the terminal's settings put back", f"before {before}\nafter  {now}")
         tail = self.out[max(self.out.rfind(b"\x1b[?1049h"), 0):]
         check(b"\x1b[?1049l" in tail and b"\x1b[?25h" in tail, f"{what}: its screen and cursor put back", repr(self.out[-300:]))
 
