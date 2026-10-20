@@ -278,7 +278,10 @@ four for others (`é`, `ж`, `中`, `😀`). Its bytes are what the basic operat
 `find`, `replace`, `split`, `trim`, `starts_with` and the other functions on text work on any
 text, since a character's bytes never look like another's. For text from players or files, count
 characters with `char_count`, and to step through them, `loop c in chars(s)` (`loop c in s` gives
-bytes, which print as numbers: `str(c)` of an `a` is `"97"`).
+bytes, which print as numbers: `str(c)` of an `a` is `"97"`). `find(s, sub)`, `rfind(s, sub)` and
+`find_byte(s, c)` give a byte index, and -1 when it is not there (not none: `if find(s, "@") >=
+0:`, or `sub in s` for whether it is); `s.find(regex(...))` gives a `Match?`, none when there is
+no match.
 
 `print(x)` and `"{x}"` show any value: a struct as `Big(m=1.5, e=300)`. A type of the program's
 own shows as its own text when a `str` for it is written beside it, everywhere it is shown (in
