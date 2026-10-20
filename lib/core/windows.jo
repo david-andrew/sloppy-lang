@@ -140,6 +140,8 @@ when TARGET == "windows":
     @lib("kernel32.dll")
     extern MoveFileExW = (from: *u16, to: *u16, flags: u32) -> i32
     @lib("kernel32.dll")
+    extern FlushFileBuffers = (h: *u8) -> i32
+    @lib("kernel32.dll")
     extern RemoveDirectoryW = (path: *u16) -> i32
     @lib("kernel32.dll")
     extern AddVectoredExceptionHandler = (first: u32, h: *u8) -> *u8
@@ -349,17 +351,31 @@ when TARGET == "windows":
         (p as *int)[1] = got
         p as str
 
-    __w32_write_file = (path: str, contents: str) -> bool:
+    # (flush: on the disk itself when it returns)
+    __w32_write_file = (path: str, contents: str, flush: bool = false) -> bool:
         h = __w32_open_file(path, true)
         if h == null: return false
         defer CloseHandle(h)
+        return __w32_write_all(h, contents, flush)
+
+    __w32_write_all = (h: *u8, contents: str, flush: bool) -> bool:
         off = 0
         n = len(contents)
         w: u32[] = [0]
         loop off < n:
             if WriteFile(h, data(contents) + off, u32(min(n - off, 1 << 30)), data(w), null) == 0: return __w32_ferr()
             off += int(w[0])
+        if flush and FlushFileBuffers(h) == 0: return __w32_ferr()
         true
+
+    # (FILE_APPEND_DATA, OPEN_ALWAYS: made if it is not there, each write at its end)
+    __w32_append_file = (path: str, contents: str, flush: bool) -> bool:
+        h = CreateFileW(data(__wide(path)), u32(4), 1, null, 4, 0x80, null)
+        if (h as int) == -1:
+            if __w32_is_dir(path): return __ferr(-21)
+            return __w32_ferr()
+        defer CloseHandle(h)
+        return __w32_write_all(h, contents, flush)
 
     __w32_exists = (path: str) -> bool:
         wp = __wide(path)

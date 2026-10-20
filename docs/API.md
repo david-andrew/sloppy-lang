@@ -814,8 +814,8 @@ Operating system access: files, arguments, environment, time.
 - `read_bytes = (path: str) -> u8[]?`
 - `page_url = () -> str`: a web page's own address, without its ?query (to make a link to it: page_url() + "?invite=" + code); "" in a native program
 - `download_file = (path: str, name: str = "") -> bool`: a file the program wrote, given to the person using it: in a web page, the browser downloads it (a picture saved with save_png, an exported save), named `name` or as the path ends; elsewhere it is already where it was written. True if the file is there
-- `write_file = (path: str, contents: str) -> bool`
-- `write_bytes = (path: str, b: u8[]) -> bool`
+- `write_file = (path: str, contents: str, sync: bool = false) -> bool`: write a whole file (made, or replaced); false if it could not be (file_error() says why). sync = true: on the disk itself when this returns, and whole: written to a new file beside it (path + ".new"), which is put on the disk and then takes the old one's place, the directory put on the disk too, so that neither a crash nor a power cut leaves half a file, or none (for data a program keeps, as a server's: it takes some milliseconds more; a web page's storage keeps what it is given as it does)
+- `write_bytes = (path: str, b: u8[], sync: bool = false) -> bool`
 - `is_dir = (path: str) -> bool`: a directory (and not a file)
 - `is_symlink = (path: str) -> bool`: the path is a symbolic link (to anything, or to nothing); is_dir and the rest follow links, so a walk through directories that should not go round in circles asks this first
 - `file_size = (path: str) -> int?`: a file's size in bytes; none if it cannot be opened (or is a directory)
@@ -844,7 +844,7 @@ Operating system access: files, arguments, environment, time.
 - `delete_dir = (path: str) -> bool`: remove a directory, which must be empty (delete_file for a file)
 - `rename_file = (from: str, to: str, replace: bool = true) -> bool`: move or rename a file or directory (one already at `to` is replaced: a file, or an empty directory). replace = false: false instead when something is at `to` (file_error() says "it is already there"), checked as it moves, so no other program can put one there in between
 - `copy_file = (from: str, to: str) -> bool`: copy a file's contents to another (made, or replaced)
-- `append_file = (path: str, contents: str) -> bool`: add to the end of a file (made if it is not there): a log
+- `append_file = (path: str, contents: str, sync: bool = false) -> bool`: add to the end of a file (made if it is not there): a log. sync = true: on the disk itself when this returns (a change a server has made, kept before it answers: a crash or a power cut may cut short a line written as it happened, never one before it)
 - `file_time = (path: str) -> f64?`: when a file or directory was last changed, in seconds since 1970 (as unix_time()); none if it is not there
 - `walk_dir = (path: str) -> str[]`: every file under a directory, at any depth, as paths from it ("maps/level1.tmx"), sorted; links to directories are not followed
 - `glob = (pattern: str) -> str[]`: the files whose paths match a pattern: `*` is any part of a name, `?` one character, and `**` any number of directories ("src/*.jo", "assets/**/*.png"), sorted. As in the shell, hidden names (.git, .env) match only a pattern that starts them with a dot (".*", "**/.env"). On Windows letters match in either case, as its file names do ("*.TXT" matches notes.txt); elsewhere only in the same case. On Windows a pattern's `\` is a `/` ("data\*.txt" gives data/notes.txt)
@@ -1142,7 +1142,7 @@ name = j.get("layers").at(0).get("name").as_str() ?? "?"
 loop l in j.get("layers").as_list(): print(l.get("name").as_str() ?? "")
 ```
 
-For JSON straight into your own structs and back, from_json[Config](text) and to_json(value) are in "Saving, and values as text" (they give a TextError, with the same message, line, column).
+For JSON straight into your own structs and back, from_json[Config](text) and to_json(value) are in "Saving, and values as text" (they give a TextError, with the same message, line, column). JSON has no infinity or NaN: to_json writes them as null, as JavaScript's JSON.stringify does (from_json reads null into a float as NaN), and the words Infinity, -Infinity and NaN that Python's json writes are read too. Its text is UTF-8: a byte in a string that is not is a mistake where it is, and to_json writes such bytes as U+FFFD, so what it writes always is.
 
 - `enum Json: null_, boolean(b: bool), integer(i: int), number(n: f64), text(s: str), list(items: Json[]), object(keys: str[], values: Json[])`: a whole number in the text is an integer, kept exactly as written while it fits in an int; any other is a number (as_num and as_int read both). print shows a Json as JSON text
 - `error struct JsonError`
@@ -1169,7 +1169,7 @@ For JSON straight into your own structs and back, from_json[Config](text) and to
 #### Writing
 
 - `to_json = (j: Json, indent: int = 0) -> str`: JSON text for a value (indent > 0: on several lines, indented by that many spaces)
-- `to_json[T] = (x: T, indent: int = 0) -> str`: any value as JSON: a struct as an object (by field name: one ending in _, as when_, without it), an array, tuple or vector as a list, a map as an object (its keys as text), none as null, an enum's variant as its name (one with fields as {"name": [fields]}), and a Json inside it as itself; from_json[T] reads it back
+- `to_json[T] = (x: T, indent: int = 0) -> str`: any value as JSON: a struct as an object (by field name: one ending in _, as when_, without it), an array, tuple or vector as a list, a map as an object (its keys as text), none as null, an enum's variant as its name (one with fields as {"name": [fields]}), and a Json inside it as itself; from_json[T] reads it back. NaN and the infinities are null (JSON has none)
 - `json_value = (j: Json) -> Json`: any value as a Json (what to_json writes for it) (a Json as it is: in a Json literal, {"user": j})
 - `json_value[T] = (x: T) -> Json`
 
@@ -1421,7 +1421,7 @@ Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs, enu
   ```
 - `to_text[T] = (x: T) -> str`
 - `from_text[T] = (text: str) -> T \| TextError`
-- `from_json[T] = (text: str) -> T \| TextError`: a value of type T from JSON: objects for structs (by field name: a field left out keeps its default, one the struct does not have is skipped) and maps, lists for arrays, tuples and vectors, null for none, an enum's variant by its name in quotes. A field whose name ends in _ is the name without it in JSON: `when_: str` is "when" (a keyword, which a field cannot be)
+- `from_json[T] = (text: str) -> T \| TextError`: a value of type T from JSON: objects for structs (by field name: a field left out keeps its default, one the struct does not have is skipped) and maps, lists for arrays, tuples and vectors, null for none, an enum's variant by its name in quotes. A field whose name ends in _ is the name without it in JSON: `when_: str` is "when" (a keyword, which a field cannot be). A float reads null as NaN (to_json writes NaN and the infinities so), and Infinity and NaN as Python's json writes them; a string with bytes that are not UTF-8 is a TextError
 - `save_value[T] = (name: str, x: T) -> bool`: keep value under name (save_data) as text; false if it could not be written
 - `load_value[T] = (name: str, default: T) -> T`: the value kept under name, or default if there is none or it does not read as one (said on stderr then, and what was kept is copied to name + ".bad" first: the next save_value over it does not lose it)
 
@@ -1894,8 +1894,8 @@ ok = crypto.p256_verify(pk.public, crypto.sha256(msg), sig)
 
 #### Passwords: PBKDF2 (RFC 8018, with HMAC-SHA256)
 
-- `pbkdf2_sha256 = (password: u8[], salt: u8[], iterations: int, n: int = 32) -> u8[]`: n bytes of key from a password and a salt, by `iterations` rounds of HMAC-SHA256
-- `hash_password = (password: str, iterations: int = 100000) -> str`: a password as text to store: a new random salt, and PBKDF2-HMAC-SHA256's hash of it with that many iterations. 100000 takes about a sixth of a second in a release build (a third in a debug one); OWASP asks for 600000 of programs whose SHA-256 is faster (OpenSSL's): more where sign-ins are few, as an admin's
+- `pbkdf2_sha256 = (password: u8[], salt: u8[], iterations: int, n: int = 32) -> u8[]`: n bytes of key from a password and a salt, by `iterations` rounds of HMAC-SHA256 (on a helper thread where tasks run, as hash_password's)
+- `hash_password = (password: str, iterations: int = 100000) -> str`: a password as text to store: a new random salt, and PBKDF2-HMAC-SHA256's hash of it with that many iterations. 100000 takes about a tenth of a second in a release build (a sixth in a debug one: OpenSSL's SHA-256 is twice as fast); OWASP asks for 600000 of programs whose SHA-256 is OpenSSL's: more where sign-ins are few, as an admin's. Where tasks run, it is made on a helper thread (pbkdf2_sha256's)
 - `check_password = (password: str, stored: str) -> bool`: whether the password is the one stored by hash_password (false too for text that is not such a hash); it takes as long whichever bytes differ
 - `constant_time_equal = (a: u8[], b: u8[]) -> bool`: whether a and b are the same bytes, taking as long whichever bytes differ (a secret compared with what a client sent: a token, a signature, an HMAC), so that the time taken tells nothing about where they differ. Their lengths are not secret: different lengths are false at once
 - `constant_time_equal = (a: str, b: str) -> bool`

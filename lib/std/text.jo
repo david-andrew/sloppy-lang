@@ -38,7 +38,9 @@ from_text[T] = (text: str) -> T | TextError:
 # a value of type T from JSON: objects for structs (by field name: a field left out keeps its
 # default, one the struct does not have is skipped) and maps, lists for arrays, tuples and
 # vectors, null for none, an enum's variant by its name in quotes. A field whose name ends in _
-# is the name without it in JSON: `when_: str` is "when" (a keyword, which a field cannot be)
+# is the name without it in JSON: `when_: str` is "when" (a keyword, which a field cannot be).
+# A float reads null as NaN (to_json writes NaN and the infinities so), and Infinity and NaN as
+# Python's json writes them; a string with bytes that are not UTF-8 is a TextError
 from_json[T] = (text: str) -> T | TextError:
     x: T
     __default_init(x)
@@ -246,7 +248,8 @@ __tx_word_at = (r: mut __TextIn, number: bool):
     e = a
     loop e < n:
         c = s[e]
-        if not (is_alnum(c) or c == '_' or number and (c == '.' or c == '+' or c == '-')): break
+        # (digits first: most words are numbers)
+        if not (c >= '0' and c <= '9' or is_alpha(c) or number and (c == '.' or c == '+' or c == '-')): break
         e += 1
     r.n0 = a
     r.n1 = e
@@ -351,9 +354,11 @@ __tx_kind = (r: mut __TextIn) -> int:
     if c == '(': return 10
     at = r.i
     if is_digit(c) or c == '-' or c == '+':
-        w = __tx_word(r, true)
+        # (looked at where it is: no text made for each number)
+        __tx_word_at(r, true)
         r.i = at
-        loop d in w:
+        loop k in [r.n0..r.n1):
+            d = r.s[k]
             if d == '.' or d == 'e' or d == 'n': return 3
         return 2
     w = __tx_word(r, false)
@@ -489,6 +494,8 @@ __read = (r: mut __TextIn, x: mut f64):
         x = v
         return
     if let v = to_float(r.s[r.n0..r.n1)): x = v
+    # (JSON's null: NaN, as to_json writes NaN and the infinities, which JSON has not)
+    else if r.json and r.n1 - r.n0 == 4 and __mem_eq(data(s) + r.n0, data("null"), 4): x = 0.0 / 0.0
     else: __tx_bad(r, "expected a number")
 
 __TX_POW10 = [1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22]
@@ -512,6 +519,16 @@ __read = (r: mut __TextIn, x: mut str):
     loop r.i < len(r.s) and r.s[r.i] != '"':
         c = r.s[r.i]
         r.i += 1
+        # (JSON's text is UTF-8: what reads it later, Python's json or a browser's, takes no other)
+        if c >= u8(0x80) and r.json:
+            k = __utf8_seq(data(r.s), r.i - 1, len(r.s))
+            if k < 0:
+                r.i -= 1
+                __tx_fail(r, "a byte that is not UTF-8 (0x{int(c):02X}) in a string: JSON text is UTF-8")
+                return
+            __buf_append_raw(buf, data(r.s) + r.i - 1, k)
+            r.i += k - 1
+            continue
         if c == '\\' and r.i < len(r.s):
             e = r.s[r.i]
             r.i += 1

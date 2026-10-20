@@ -578,7 +578,7 @@ const __TASK_GUARD = 64 << 10
 const __WASM_TASK_STACK = 64 << 10
 
 __task_init = ():
-    global __task_closing_fn, __task_end_fn, __task_frame_fn, __task_panic_fn, __task_stop_fn, __task_wait_fn, __task_waiter_fn, __task_wake_fn, __tasks_on
+    global __task_closing_fn, __task_end_fn, __task_frame_fn, __task_job_wait_fn, __task_panic_fn, __task_stop_fn, __task_wait_fn, __task_waiter_fn, __task_wake_fn, __tasks_on
     if __tasks_on: return
     __tasks_on = true
     __task_wait_fn = __task_wait_io
@@ -589,6 +589,7 @@ __task_init = ():
     __task_closing_fn = __task_closing
     __task_wake_fn = __task_wake_list
     __task_waiter_fn = __task_waiter
+    __task_job_wait_fn = __task_wait_job
     # (the main thread is task 0)
     __tasks.push(__TaskRec(jb = __alloc(192), run = __task_nothing, state = 2, started = true, stops = __stop_polled))
     when TARGET == "windows":
@@ -819,6 +820,23 @@ __task_wait_io = (fds: int[], want: int[], seconds: f64) -> int[]:
     got = __tasks[me].got
     __tasks[me].got = []
     got
+
+# (the wait for work on a helper thread, lib/std/thread.jo's __off_thread: until fd can be read, or
+# for `seconds` (-1: as long as it takes). Also in a task that has been cancelled: the work's memory
+# is in use until it ends)
+__task_wait_job = (fd: int, seconds: f64):
+    me = __task_cur
+    if fd >= 0:
+        __tasks[me].fds = [fd]
+        __tasks[me].want = [1]
+        __tasks[me].got = [0]
+        if not __tasks[me].in_io:
+            __tasks[me].in_io = true
+            __task_io.push(me)
+    __task_block("for work on another thread", if seconds < 0.0: -1.0 else: time() + seconds, true)
+    __tasks[me].fds = []
+    __tasks[me].want = []
+    __tasks[me].got = []
 
 # (a game's frame: those waiting for it are woken, and every task ready takes its turn)
 __task_frame = ():

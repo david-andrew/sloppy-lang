@@ -593,11 +593,58 @@ are relative to it (without it, to `/`). `MemoryMax` has systemd stop a program 
 it (and `Restart` start it again), rather than the machine running out. `systemctl stop` sends SIGTERM, which `http.serve` answers by
 finishing what it is answering (up to `drain` seconds) and returning.
 
-**Keeping data.** A small server keeps its data in a JSON file: `to_json`, written to a new file
-that then takes the old one's place (`write_file(tmp, text)`, `rename_file(tmp, path)`), so a crash
-never leaves half a file; `from_json[T]` reads it back at the start. A file only ever replaced
-that way is whole whenever it is read, so a backup is a copy of it at any time (`cp todos.json
-backups/todos-$(date +%F).json` from cron). The server keeps the data in memory and writes all
+**Keeping data.** A small server keeps its data in a JSON file: `to_json`, written with
+`write_file(path, text, sync = true)`, and `from_json[T]` reads it back at the start. `sync`
+writes a new file beside it, has it put on the disk itself, and only then has it take the old
+one's place, so that neither a crash nor a power cut leaves half a file, or none (a plain
+`write_file` survives the program being killed, not the machine losing power).
+
+Writing the whole file at each change costs time as it grows: a booking site went from 320
+bookings a second to 120 at 2,000 records. Past a few hundred, keep each change as a line at the
+end of a log, on the disk before the answer goes, and write the whole file only now and then:
+
+```gdscript
+struct Booking:
+    id = 0
+    name = ""
+struct Db:
+    seq = 0                     # the last change written into it
+    bookings: Booking[]
+struct Change:
+    seq = 0
+    booking = Booking()
+
+db = Db()
+
+# a change: made, then one line at the end of the log (a few milliseconds)
+add = (b: Booking) -> bool:
+    global db
+    db.seq += 1
+    db.bookings.push(b)
+    append_file("changes.log", to_json(Change(db.seq, b)) + "\n", sync = true)
+
+# at the start: the whole file, then the changes after it (a line cut short by a power cut
+# does not read, and is left out), and the whole file written again, the log emptied
+load = ():
+    global db
+    if let text = read_file("data.json"):
+        got = from_json[Db](text)
+        if got is Db: db = got
+    loop line in split(read_file("changes.log") ?? "", "\n"):
+        c = from_json[Change](line)
+        if c is Change and c.seq > db.seq:
+            db.seq = c.seq
+            db.bookings.push(c.booking)
+    write_file("data.json", to_json(db), sync = true)
+    write_file("changes.log", "", sync = true)
+```
+
+(Each line says which change it is, so that one already in the file, after a crash between
+the two writes, is not made twice.) Another way is a file for each thing, `bookings/42.json`,
+each written whole as it changes.
+
+A file only ever written with `sync` is whole whenever it is read, so a backup is a copy of it
+at any time (`cp todos.json backups/todos-$(date +%F).json` from cron). The server keeps the data in memory and writes all
 of it at each change: another program that changes the file while it runs (a command to add a
 user) has its change written over at the next save. Make such changes through the server, as a
 route only an admin can call, or stop the server first (`systemctl stop todos`, the command,

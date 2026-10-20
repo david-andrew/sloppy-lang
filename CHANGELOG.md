@@ -64,6 +64,39 @@
   sessions, trusting the proxy, backups of the data file, and a command that changes the file
   while the server runs (its change is written over: an admin route instead). The library
   reference lists the settings a program changes (`http.gzip`, `http.log_requests`...).
+- Passwords no longer hold up a server: where tasks run, `crypto.hash_password`,
+  `check_password` and `pbkdf2_sha256` make the hash on a helper thread (up to 4, started as
+  needed) while the task that asked waits, and the others go on (as Node's thread pool does). A
+  server with a task checking passwords all the time and four clients logging in: its `GET /ping`
+  took 1250 ms (median), now 0.4 ms, and it answers 2.5x the logins. Without tasks, and in a web
+  page, as before; `SLOPPY_THREADS=1` keeps it on the program's thread. (The library's own: the
+  work is plain bytes, copied, as reference counts are not atomic; lib/std/thread.jo's
+  `__off_thread`.)
+- SHA-256 is 1.7x as fast (release; 1.7x debug too): its words worked on as 64-bit ints, a
+  rotation a shift of the word written twice over. `hash_password`'s 100000 iterations take
+  about a tenth of a second in a release build (OpenSSL: half that).
+- Data that survives a power cut: `write_file(path, text, sync = true)` (and `write_bytes`)
+  writes a new file beside it, puts it on the disk (fsync; macOS's F_FULLFSYNC; Windows'
+  FlushFileBuffers), renames it over the old one and puts the directory on the disk too (Windows:
+  MoveFileEx with MOVEFILE_WRITE_THROUGH); `append_file(path, line, sync = true)` is on the disk
+  when it returns. START.md's "Keeping data": whole-file writes cost time as the data grows
+  (320 bookings a second down to 120 at 2,000 records), and a recipe for a log of changes with
+  the whole file written now and then. `append_file` on Windows appends (it read the whole file
+  and wrote it again).
+- Floats are written 2-6x faster (`print`, `str(x)`, `"{x}"`, `to_json`, `to_text`): Ryu's
+  shortest digits, from 128-bit powers of five made at the first float written, in place of
+  trying 1 to 15 digits and then exact big numbers. The same text for every f64 (checked against
+  the old code and Python on 600,000 numbers); an f32 halfway between two shortest ones is the
+  even one (`432.64062`, as C and Python write it), and some f32 at a power of two are a digit
+  shorter. `to_json` of a 200,000-float array: 560 ns a float down to 170 (release; 1.6 us to
+  0.64 debug): no text made for each number as it goes from to_text's text to JSON's.
+- JSON: `to_json` (and a Json's text) writes NaN and the infinities as `null`, as
+  `JSON.stringify` does (it wrote `Infinity`, which a browser's `JSON.parse` refuses);
+  `from_json` reads `null` into a float as NaN, and still reads Python's `Infinity` and `NaN`.
+  Strings are UTF-8: `parse_json`, `from_json` and `http.read_json` refuse a byte that is not
+  (an error at it; the server's 400), and `to_json` writes such bytes as U+FFFD, so its text
+  always reads in Python and browsers. A `\ud800` alone is U+FFFD (it made bytes that are not
+  UTF-8), and `\ud800A` keeps its `A`.
 - netplay clients: one the server closed is not connected any more (5 s later it took the server
   for gone and connected again, a reconnect = true one, though turned away on purpose); `c.view()`
   never goes back (a world that came late moved it back a little).

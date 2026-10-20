@@ -8,6 +8,10 @@
 #   loop l in j.get("layers").as_list(): print(l.get("name").as_str() ?? "")
 # For JSON straight into your own structs and back, from_json[Config](text) and to_json(value)
 # are in "Saving, and values as text" (they give a TextError, with the same message, line, column).
+# JSON has no infinity or NaN: to_json writes them as null, as JavaScript's JSON.stringify does
+# (from_json reads null into a float as NaN), and the words Infinity, -Infinity and NaN that
+# Python's json writes are read too. Its text is UTF-8: a byte in a string that is not is a
+# mistake where it is, and to_json writes such bytes as U+FFFD, so what it writes always is.
 
 # a whole number in the text is an integer, kept exactly as written while it fits in an int; any
 # other is a number (as_num and as_int read both). print shows a Json as JSON text
@@ -213,15 +217,24 @@ __json_string = (r: mut __JsonReader) -> str:
     s = r.s
     n = len(s)
     r.i += 1
-    # (text with no escapes in it: the slice of it, made at once)
+    # (text with no escapes in it: the slice of it, made at once. Its bytes past ASCII must be
+    # UTF-8, as JSON's are: what reads it later, Python's json or a browser's, takes no other)
+    p = data(s)
     i = r.i
-    loop i < n and s[i] != '"' and s[i] != '\\': i += 1
+    loop i < n:
+        c = s[i]
+        if c == '"' or c == '\\': break
+        if c < u8(0x80): i += 1
+        else:
+            k = __utf8_seq(p, i, n)
+            if k < 0: return __json_not_utf8(r, i)
+            i += k
     if i < n and s[i] == '"':
         t = s[r.i..i)
         r.i = i + 1
         return t
     b: u8[]
-    __buf_append_raw(b, data(s) + r.i, i - r.i)
+    __buf_append_raw(b, p + r.i, i - r.i)
     r.i = i
     loop true:
         if r.i >= n:
@@ -230,6 +243,12 @@ __json_string = (r: mut __JsonReader) -> str:
         c = s[r.i]
         r.i += 1
         if c == '"': break
+        if c >= u8(0x80):
+            k = __utf8_seq(p, r.i - 1, n)
+            if k < 0: return __json_not_utf8(r, r.i - 1)
+            __buf_append_raw(b, p + r.i - 1, k)
+            r.i += k - 1
+            continue
         if c != '\\':
             b.push(c)
             continue
@@ -247,12 +266,23 @@ __json_string = (r: mut __JsonReader) -> str:
                 __json_fail(r, "\\u needs four hex digits")
                 return ""
             # (a surrogate pair: one character beyond the first 65536)
-            if cp >= 0xD800 and cp < 0xDC00 and __json_word(r, "\\u"):
-                lo = __json_hex4(r)
-                if lo >= 0xDC00 and lo < 0xE000: cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+            if cp >= 0xD800 and cp < 0xDC00:
+                at = r.i
+                if __json_word(r, "\\u"):
+                    lo = __json_hex4(r)
+                    if lo >= 0xDC00 and lo < 0xE000: cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+                    else: r.i = at
+            # (half of a pair alone is no character: U+FFFD, as a browser writes it in UTF-8)
+            if cp >= 0xD800 and cp < 0xE000: cp = 0xFFFD
             __utf8_push(b, cp)
         else: b.push(e)
     str_from_bytes(b)
+
+# (a byte at i that is not UTF-8, in a string)
+__json_not_utf8 = (r: mut __JsonReader, i: int) -> str:
+    r.i = i
+    __json_fail(r, "a byte that is not UTF-8 (0x{int(r.s[i]):02X}) in a string: JSON text is UTF-8")
+    ""
 
 # ---------------- reading ----------------
 # an object's field
@@ -338,7 +368,7 @@ to_json = (j: Json, indent: int = 0) -> str:
 # any value as JSON: a struct as an object (by field name: one ending in _, as when_, without it),
 # an array, tuple or vector as a list, a map as an object (its keys as text), none as null, an
 # enum's variant as its name (one with fields as {"name": [fields]}), and a Json inside it as
-# itself; from_json[T] reads it back
+# itself; from_json[T] reads it back. NaN and the infinities are null (JSON has none)
 to_json[T] = (x: T, indent: int = 0) -> str:
     if indent > 0: return to_json(json_value(x), indent)
     # (on one line: written as to_text's text is read, with no Json made in between)
@@ -486,17 +516,20 @@ __json_of_text_write = (r: mut __TextIn, b: mut u8[]):
     k = __tx_kind(r)
     if k == 2 or k == 3:
         # (a number as to_text wrote it: whole numbers exactly, a float as its shortest text,
-        # which JSON reads the same; a whole one without its .0, as __json_write writes it)
-        __tx_word_at(r, true)
+        # which JSON reads the same; a whole one without its .0, as __json_write writes it. Its
+        # place is where __tx_kind found it)
+        r.i = r.n1
         w0 = r.n0
         w1 = r.n1
         if k == 3:
-            w = r.s[w0..w1)
-            if w == "inf" or w == "-inf" or w == "nan":
-                wr = __TextIn(w)
-                __json_write(b, __json_of_text(wr), 0, 0)
+            # (inf, -inf, nan: null; looked at where they are, no text made for each number)
+            s = r.s
+            c = s[w0]
+            if c == '-' and w1 - w0 > 1: c = s[w0 + 1]
+            if c == 'i' or c == 'n':
+                __json_put(b, "null")
                 return
-            if find(w, "e") < 0 and ends_with(w, ".0") and w != "-0.0": w1 -= 2
+            if w1 - w0 > 2 and s[w1 - 2] == '.' and s[w1 - 1] == '0' and not (w1 - w0 == 4 and s[w0] == '-' and s[w0 + 1] == '0'): w1 -= 2
         __buf_append_raw(b, data(r.s) + w0, w1 - w0)
         return
     if k == 8 or k == 10:
@@ -586,13 +619,27 @@ __json_newline = (b: mut u8[], indent: int, level: int):
 
 __json_write_str = (b: mut u8[], s: str):
     b.push('"')
-    # (the runs of plain characters between escapes, copied whole)
+    # (the runs of plain characters between escapes, copied whole. Bytes that are not UTF-8 are
+    # written as U+FFFD, as a browser decodes them: what is written is always UTF-8, which every
+    # reader of JSON takes)
+    p = data(s)
+    n = len(s)
     run = 0
-    loop k in [0..len(s)):
-        c = s[k]
+    k = 0
+    loop k < n:
+        c = p[k]
+        if c >= u8(0x80):
+            q = __utf8_seq(p, k, n)
+            if q < 0:
+                __buf_append_raw(b, p + run, k - run)
+                __json_put(b, "\xEF\xBF\xBD")
+                run = k - q
+            k += abs(q)
+            continue
+        k += 1
         if c != '"' and c != '\\' and c >= u8(32): continue
-        __buf_append_raw(b, data(s) + run, k - run)
-        run = k + 1
+        __buf_append_raw(b, p + run, k - 1 - run)
+        run = k
         if c == '"' or c == '\\':
             b.push('\\')
             b.push(c)
@@ -613,11 +660,9 @@ __json_write = (b: mut u8[], j: Json, indent: int, level: int):
             if v: __json_put(b, "true")
             else: __json_put(b, "false")
         .number(n):
-            # (whole numbers without a fraction; JSON has no infinity or NaN: written as
-            # Python's json and JavaScript's numbers name them, and read back)
-            if n != n: __json_put(b, "NaN")
-            else if n - n != 0.0 and n > 0.0: __json_put(b, "Infinity")
-            else if n - n != 0.0: __json_put(b, "-Infinity")
+            # (whole numbers without a fraction; JSON has no infinity or NaN: null, as
+            # JavaScript's JSON.stringify writes them, which every reader takes)
+            if n - n != 0.0: __json_put(b, "null")
             else if n == 0.0 and 1.0 / n < 0.0: __json_put(b, "-0.0")
             else if n == floor(n) and abs(n) <= 9007199254740992.0: __fmt(b, int(n))      # (2^53: every whole number below is exact)
             else: __fmt(b, n)

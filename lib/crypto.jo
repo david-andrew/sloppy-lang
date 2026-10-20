@@ -229,48 +229,51 @@ sha256 = (m: u8[]) -> u8[]:
     out
 
 # (one 64-byte block, its words in w[0..16), into the state h; w[16..64) are the block's schedule.
-# Its rotations written out and its arrays read through pointers: three times as fast in a debug
-# build, which password hashing feels)
+# Its arrays are read through pointers, and its words worked on as ints, 64 bits: a word's
+# rotations are shifts of it written twice over (x | x << 32), cut to 32 bits once for all three,
+# and sums are cut only where a rotation needs them whole: half the instructions of u32 arithmetic,
+# which cuts each step to 32 bits. Twice as fast, release and debug: password hashing feels it)
 __sha256_block = (h: mut u32[8], w: mut u32[64]):
     pw = &w as *u32
     pk = &__SHA256_K as *u32
+    M = 0xFFFFFFFF
     loop t in [16..64):
-        x = pw[t - 15]
-        y = pw[t - 2]
-        s0 = ((x >> 7) | (x << 25)) xor ((x >> 18) | (x << 14)) xor (x >> 3)
-        s1 = ((y >> 17) | (y << 15)) xor ((y >> 19) | (y << 13)) xor (y >> 10)
-        pw[t] = pw[t - 16] + s0 + pw[t - 7] + s1
-    a = h[0]
-    bb = h[1]
-    c = h[2]
-    d = h[3]
-    e = h[4]
-    f = h[5]
-    g = h[6]
-    hh = h[7]
+        x = int(pw[t - 15])
+        y = int(pw[t - 2])
+        x2 = x | (x << 32)
+        y2 = y | (y << 32)
+        s0 = (((x2 >> 7) xor (x2 >> 18)) & M) xor (x >> 3)
+        s1 = (((y2 >> 17) xor (y2 >> 19)) & M) xor (y >> 10)
+        pw[t] = u32((int(pw[t - 16]) + s0 + int(pw[t - 7]) + s1) & M)
+    a = int(h[0])
+    b = int(h[1])
+    c = int(h[2])
+    d = int(h[3])
+    e = int(h[4])
+    f = int(h[5])
+    g = int(h[6])
+    hh = int(h[7])
     loop t in [0..64):
-        S1 = ((e >> 6) | (e << 26)) xor ((e >> 11) | (e << 21)) xor ((e >> 25) | (e << 7))
-        ch = (e & f) xor ((~e) & g)
-        t1 = hh + S1 + ch + pk[t] + pw[t]
-        S0 = ((a >> 2) | (a << 30)) xor ((a >> 13) | (a << 19)) xor ((a >> 22) | (a << 10))
-        mj = (a & bb) xor (a & c) xor (bb & c)
-        t2 = S0 + mj
+        e2 = e | (e << 32)
+        a2 = a | (a << 32)
+        t1 = hh + (((e2 >> 6) xor (e2 >> 11) xor (e2 >> 25)) & M) + (g xor (e & (f xor g))) + int(pk[t]) + int(pw[t])
+        t2 = (((a2 >> 2) xor (a2 >> 13) xor (a2 >> 22)) & M) + ((a & b) | (c & (a | b)))
         hh = g
         g = f
         f = e
-        e = d + t1
+        e = (d + t1) & M
         d = c
-        c = bb
-        bb = a
-        a = t1 + t2
-    h[0] += a
-    h[1] += bb
-    h[2] += c
-    h[3] += d
-    h[4] += e
-    h[5] += f
-    h[6] += g
-    h[7] += hh
+        c = b
+        b = a
+        a = (t1 + t2) & M
+    h[0] += u32(a)
+    h[1] += u32(b)
+    h[2] += u32(c)
+    h[3] += u32(d)
+    h[4] += u32(e)
+    h[5] += u32(f)
+    h[6] += u32(g)
+    h[7] += u32(hh)
 
 # ---------------- SHA-512, SHA-384 ----------------
 __SHA512_K: u64[80] = [u64(0x428a2f98d728ae22), 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
@@ -410,11 +413,48 @@ hkdf_expand = (prk: u8[], info: u8[], n: int) -> u8[]:
 #   user.hash = crypto.hash_password(password)                 # stored, as text
 #   if crypto.check_password(attempt, user.hash): ...           # signed in
 # The text says how it was made ("pbkdf2-sha256$100000$<salt>$<hash>", base64), so hashes made
-# with more iterations later (as computers get faster) are checked alongside the old ones. A hash
-# takes the program's one thread while it is made: a server's other tasks wait meanwhile.
+# with more iterations later (as computers get faster) are checked alongside the old ones. Where
+# tasks run (a server's), a hash is made on a helper thread while the task that asked waits: the
+# others go on meanwhile, and up to four hashes are made at once.
 
-# n bytes of key from a password and a salt, by `iterations` rounds of HMAC-SHA256
+# n bytes of key from a password and a salt, by `iterations` rounds of HMAC-SHA256 (on a helper
+# thread where tasks run, as hash_password's)
 pbkdf2_sha256 = (password: u8[], salt: u8[], iterations: int, n: int = 32) -> u8[]:
+    when TARGET != "wasm":
+        if iterations >= 1000 and __off_thread_ok(): return __pbkdf2_off(password, salt, iterations, n)
+    __pbkdf2(password, salt, iterations, n)
+
+when TARGET != "wasm":
+    # (the work's block: its four numbers, the password, the salt, then room for the key; all of
+    # it plain bytes, copied, as a helper thread takes them)
+    __pbkdf2_off = (password: u8[], salt: u8[], iterations: int, n: int) -> u8[]:
+        np = password.len()
+        ns = salt.len()
+        b = __alloc(32 + np + ns + max(n, 0))
+        h = b as *int
+        h[0] = np
+        h[1] = ns
+        h[2] = iterations
+        h[3] = n
+        mem_copy(b + 32, data(password) as *u8, np)
+        mem_copy(b + 32 + np, data(salt) as *u8, ns)
+        run: cfn(*u8) = __pbkdf2_job
+        __off_thread(run, b)
+        out = bytes_from(b + 32 + np + ns, max(n, 0))
+        __free(b)
+        out
+
+    # (on a helper thread: its own copies of the bytes, its key written into the block)
+    @cabi
+    @own_thread
+    __pbkdf2_job = (b: *u8):
+        h = b as *int
+        np = h[0]
+        ns = h[1]
+        key = __pbkdf2(bytes_from(b + 32, np), bytes_from(b + 32 + np, ns), h[2], h[3])
+        mem_copy(b + 32 + np + ns, data(key) as *u8, key.len())
+
+__pbkdf2 = (password: u8[], salt: u8[], iterations: int, n: int) -> u8[]:
     # (the HMAC's inner and outer states after the key's block, made once: each round is then
     # two of SHA-256's blocks)
     key = if password.len() > 64: sha256(password) else: password
@@ -462,9 +502,10 @@ __pbkdf2_key_word = (key: u8[], t: int) -> u32:
     v
 
 # a password as text to store: a new random salt, and PBKDF2-HMAC-SHA256's hash of it with that
-# many iterations. 100000 takes about a sixth of a second in a release build (a third in a debug
-# one); OWASP asks for 600000 of programs whose SHA-256 is faster (OpenSSL's): more where sign-ins
-# are few, as an admin's
+# many iterations. 100000 takes about a tenth of a second in a release build (a sixth in a debug
+# one: OpenSSL's SHA-256 is twice as fast); OWASP asks for 600000 of programs whose SHA-256 is
+# OpenSSL's: more where sign-ins are few, as an admin's. Where tasks run, it is made on a helper
+# thread (pbkdf2_sha256's)
 hash_password = (password: str, iterations: int = 100000) -> str:
     salt = random_bytes(16)
     h = pbkdf2_sha256(bytes(password), salt, iterations)
