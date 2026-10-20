@@ -404,7 +404,7 @@ http.post("/todos", (r: http.Request) -> http.Response:
     http.json(todos.last(), 201))
 http.files("/", "public")                             # the rest: the files under public/
 
-http.log_requests = true                              # a line for each, on standard error
+http.log_requests = true                              # a line for each, with its time, on standard error
 if not http.serve(8080): eprint("port 8080 is taken")
 on_quit = (): write_file("todos.json", to_json(todos))
 ```
@@ -417,6 +417,12 @@ on_quit = (): write_file("todos.json", to_json(todos))
   and `http.set_cookie(res, name, value)` to change. A route of `"/files/*path"` takes the rest of
   the path; a path no route has is answered 404, and one routes have for other methods 405
   (`http.files` is looked in last, so a GET of a POST's path is 405, not a file not found).
+- An HTML form's fields are `http.form(r)` (a map: `http.form(r).get("email") ?? ""`), each value
+  of a name given twice `http.form_all(r, "tag")`, and the files of a form with
+  `enctype="multipart/form-data"` `http.uploads(r)` (each one's `name`, `filename`, `type` and
+  `data`; `largest = ...` for more than 1 MB). Text a user wrote goes into a page through
+  `html_escape(s)`, so that a name such as `<script>...` is shown, not run:
+  `http.html("<p>Hello {html_escape(name)}</p>")`.
 - What the server answers itself (those 404s and 405s, 500 for a handler that panicked, 413 for a
   body too big, 400 for a request that is not HTTP's) is `http.on_error`'s, as text unless an API
   answers JSON everywhere:
@@ -446,7 +452,14 @@ on_quit = (): write_file("todos.json", to_json(todos))
   its own loop: `http.listen(8080)`, then `loop not stopping():` with `http.answer()`, its other
   work (`net.receive()`, `net.fetch_result(f)`), and `net.wait(1.0)`, which sleeps until something
   comes, a request or a message, rather than a fixed time.
-- To try the server from the same program (a test), listen, serve in a task, then fetch from it:
+- A test calls the routes with no server at all: `res = http.handle("POST", "/todos",
+  to_json(t))` answers as the server would (before's, after's, on_error's), and
+  `str_from_bytes(res.body)`, `res.status`, `res.headers` and `res.cookies` are what a client
+  would get (a body starting with `{` is sent as JSON). A Set-Cookie it gave goes back as
+  `headers = {"Cookie": split(res.cookies[0], ";")[0]}`.
+- To try the server from the same program (a test), listen, serve in a task, then fetch from it
+  (`http.listen(0)` takes a port no other program has, which `http.port()` says;
+  `net.fetch(url, follow = false)` gives a redirect itself, its Location and Set-Cookie):
 
   ```gdscript
   http.listen(8080, host = "127.0.0.1")
@@ -532,7 +545,8 @@ on_quit = (): write_file("todos.json", to_json(todos))
   `if not http.allow("login " + r.address, 10): return http.json_error(429, "wait a minute")`.
 - Cookies: `http.set_cookie` makes them `HttpOnly` (the page's JavaScript cannot read them, nor a
   script slipped into the page) and `SameSite=Lax` (not sent with another site's posts) unless
-  told otherwise. Behind https set `http.secure_cookies = true` (every cookie `Secure`: never sent
+  told otherwise. A value is any text: what a cookie cannot hold (`;`, spaces, letters past
+  ASCII) is percent-encoded on the way out and decoded into `r.cookies`. Behind https set `http.secure_cookies = true` (every cookie `Secure`: never sent
   over plain http). A session is a random token in a cookie that the server looks up
   (`crypto.hex_text(crypto.random_bytes(32))`, a map of them, `http.clear_cookie` to sign out),
   or a signed cookie that needs nothing kept:
@@ -648,24 +662,29 @@ at any time (`cp todos.json backups/todos-$(date +%F).json` from cron). The serv
 of it at each change: another program that changes the file while it runs (a command to add a
 user) has its change written over at the next save. Make such changes through the server, as a
 route only an admin can call, or stop the server first (`systemctl stop todos`, the command,
-`systemctl start todos`). For more, SQLite (or any C
-library) is a few `extern`s away (section 13 of [the language](LANGUAGE.md#13-calling-c)). Each
-`extern` names its library with `@lib`; a constant keeps that short:
+`systemctl start todos`).
+
+For more data than fits in memory, or changes from more than one program, `import sqlite`: one
+file, read and changed a row at a time, with the values for its `?`s given apart from the SQL
+(never put a client's text in the SQL itself):
 
 ```gdscript
-const SQLITE = "libsqlite3.so.0"
-@lib(SQLITE)
-extern sqlite3_open = (path: str, db: **u8) -> i32
-@lib(SQLITE)
-extern sqlite3_exec = (db: *u8, sql: str, cb: *u8, arg: *u8, err: **u8) -> i32
+import sqlite
 
-db: *u8 = null
-if sqlite3_open("todos.db", &db) != 0: exit(1)
-sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS todos(id INTEGER PRIMARY KEY, title TEXT)", null, null, null)
+struct Todo:
+    id = 0
+    title = ""
+    done = false
+
+db = unwrap(sqlite.open("todos.db"))
+if let e = db.exec("CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY, title TEXT, done BOOL)"): panic(e.message)
+added = unwrap(db.run("INSERT INTO todos (title, done) VALUES (?, ?)", ["milk", false]))
+todos = unwrap(db.query[Todo]("SELECT * FROM todos WHERE done = ?", [false]))
 ```
 
-(`sqlite3_prepare_v2`, `sqlite3_bind_text` and `sqlite3_step` the same way, for values from
-clients: never put them in the SQL text.)
+A row's columns go into the struct's fields of the same names; `db.begin()` and `db.commit()`
+make changes that belong together one. A backup of a database another program has open is
+`sqlite3 todos.db ".backup backups/todos.db"`, not a copy of the file.
 
 ## Coming from Scratch
 
@@ -871,6 +890,14 @@ draw = ():
 | `max(xs, key=len)`, `sorted(xs, key=..., reverse=True)` | `max(xs, key = len)`, `sorted(xs, key = (x): x.age, descending = true)` |
 | `try: ... except: ...` | a function gives back what went wrong as a value (`-> Config \| JsonError`), checked with `if r is JsonError:`, or passed on to the caller with `?` (`cfg = load(p)?`) |
 | `def test_x(): assert ...` (pytest) | `test "x": assert(...)`, run with `sloppy test file.jo` |
+| `sqlite3.connect(p)`, `cur.execute(sql, (a, b))`, `fetchall()` | `import sqlite`, `db = unwrap(sqlite.open(p))`, `db.run(sql, [a, b])`, `db.query[Todo](sql, [a])` (the rows into a struct's fields), `db.value(sql)` ([keeping data](#writing-a-server)) |
+| Flask: `@app.route("/todos", methods=["POST"])` above a function | `import http`, then `http.post("/todos", add_todo)`: a route is a call, given the function; `http.serve(8080)` ([writing a server](#writing-a-server)) |
+| `request.form["name"]`, `request.form.getlist("tag")`, `request.files` | `http.form(r).get("name") ?? ""`, `http.form_all(r, "tag")`, `http.uploads(r)` |
+| `request.args.get("q")`, `request.get_json()` | `r.query.get("q")`, `http.read_json(r, item)` (into a struct; it gives the 400 to answer when the body does not fit) |
+| `jsonify(d)`, `render_template("hi.html", name=n)` | `http.json(d)`, `http.html("<p>Hello {html_escape(n)}</p>")` (what a user wrote, escaped) |
+| `redirect(url_for("home"))`, `abort(404)` | `return http.redirect("/", 303)`, `return http.status(404)` (`http.json_error(404, "why")` for an API) |
+| `session["user"] = u`, `flash("Saved")` | `http.set_signed_cookie(res, "user", u, SECRET)`, read by `http.signed_cookie(r, "user", SECRET)`; a message for the next page: a short cookie, or `?saved=1` on the redirect |
+| `app.test_client().post("/login", data=d)` | `http.handle("POST", "/login", body, headers)`: the answer, with no server; or `http.listen(0)`, `http.port()` and `net.fetch(url, follow = false)` |
 | big integers: `2 ** 1000`, `int("123...")`, `math.factorial(100)` | `int` is 64 bits and wraps around (`checked_mul(a, b)` is none where it would); past that, `BigInt` keeps every digit: `bigint(2) ^ 1000`, `bigint("123...")`, `f *= i` from `f = bigint(1)`, with `+ - * / %`, comparisons, `print` and `pow_mod`, `gcd`, `isqrt` as for ints |
 
 For contests and Advent of Code (reading all the input at once, the containers, binary search,

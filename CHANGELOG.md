@@ -9,6 +9,26 @@
   out); run and query take one statement (`DELETE ...; DROP TABLE t` did the DELETE alone, and
   said nothing); a SELECT through run changes 0 rows; a column with no name a field can have
   (`count(*)`) is an error that says `AS total`, where its field kept 0.
+- http forms: `http.form(r)` (an HTML form's fields, urlencoded or multipart), `http.form_all(r,
+  name)` (each value of a name given twice), `http.uploads(r)` (a multipart form's files: name,
+  filename without its directories, type, bytes; bounded by `largest`). `r.form`, `r.args`,
+  `r.files`, `r.remote_addr` and Flask's other names say what to write.
+- http tests: `http.handle("POST", "/todos", body, headers)` (or `http.handle(r)` of
+  `http.request(...)`) answers as the server would, with no port: before's, after's, on_error's,
+  a file read into the body. `http.listen(0)` takes a port no other program has and
+  `http.port()` says which; `net.fetch(url, follow = false)` gives a redirect itself (its
+  Location and Set-Cookie). `sloppy new x server`'s test uses handle.
+- `@http.get("/")` or `@app.route("/")` above a function says a route is a call, given the
+  function (`http.get("/", index)`), not that @http goes above a function.
+- http: request log lines start with the time (`2026-10-20 16:15:38 127.0.0.1 "GET / ..."`).
+- http JSON: `read_json` answers 400 to a number past a float's (`1e400`), Infinity or NaN.
+- Cookies keep any text: `set_cookie` percent-encodes what a cookie's value cannot hold (`;`,
+  `"`, `\`, spaces, line breaks, letters past ASCII, and `%`), and `parse_cookies` (r.cookies)
+  decodes it (they were left out, or the value quoted, and non-ASCII sent raw).
+- Docs: START.md's keeping data uses `import sqlite`; "Coming from Python" has rows for sqlite3
+  and Flask (routes, request.form and args, jsonify, sessions and flash, redirect, abort,
+  test_client); the server section says to `html_escape` what users wrote; `find`, `rfind` and
+  `find_byte` say they give -1 when it is not there.
 - netplay spectators: `s.feed(sent)` gives the inputs confirmed since `sent`, to send over
   any transport, and `netplay.watch(Game(), tick)` plays them a little behind the players; a
   late spectator is sent the game as it stands first.

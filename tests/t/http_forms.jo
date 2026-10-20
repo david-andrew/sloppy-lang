@@ -1,0 +1,68 @@
+# requires: sloppy
+# lib/http.jo with no server: handle() answering requests in the program itself (routes, before
+# and after, on_error, a file, cookies sent back), forms (urlencoded, a name given twice, multipart
+# with a file), cookies' values percent-encoded and read back, JSON's infinities (null going out,
+# 400 coming in), and log_line's time
+import http
+
+struct In:
+    n = 0.0
+
+dir = temp_dir() + "/sloppy-http-forms"
+make_dirs(dir)
+write_file(dir + "/a.txt", "a file\n")
+
+http.after((r: http.Request, res: http.Response) -> http.Response:
+    let res = res
+    res.headers["X-Seen"] = r.path
+    res)
+http.post("/login", (r: http.Request) -> http.Response:
+    f = http.form(r)
+    res = http.redirect("/me", 303)
+    http.set_cookie(res, "user", f.get("user") ?? "?")
+    res)
+http.get("/me", (r: http.Request) -> http.Response: http.text("you are {r.cookies.get("user") ?? "nobody"}"))
+http.post("/tags", (r: http.Request) -> http.Response: http.json({"last": http.form(r).get("tag") ?? "", "all": http.form_all(r, "tag"), "q": http.query_all(r, "q")}))
+http.post("/upload", (r: http.Request) -> http.Response:
+    out: str[]
+    loop k, v in http.form(r): out.push("{k}={v}")
+    loop u in http.uploads(r): out.push("file {u.name} {u.filename} {u.type} {u.data.len()} bytes: {str_from_bytes(u.data).replace("\r\n", "|")}")
+    http.text(join(out, "\n")))
+http.post("/n", (r: http.Request) -> http.Response:
+    i = In()
+    if let bad = http.read_json(r, i): return bad
+    http.json({"n": i.n, "inf": i.n * 1e308 * 10.0, "nan": [0.0 / 0.0]}))
+http.files("/static", dir)
+
+show = (res: http.Response):
+    print(res.status, res.headers.get("Location") ?? "-", res.headers.get("X-Seen") ?? "-", res.cookies, str_from_bytes(res.body))
+
+# a form posted, its cookie sent back: text a cookie cannot have, percent-encoded and decoded
+res = http.handle("POST", "/login", "user=Zo%C3%AB+%3B+%22x%22%2C+50%25", {"Content-Type": "application/x-www-form-urlencoded"})
+show(res)
+show(http.handle("GET", "/me", headers = {"Cookie": split(res.cookies[0], ";")[0]}))
+# a name given twice; a body not a form's has no fields
+show(http.handle("POST", "/tags?q=1&q=2", "tag=a&tag=b%20c&tag=", {"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}))
+show(http.handle("POST", "/tags", "tag=a", {"Content-Type": "text/plain"}))
+# multipart: fields and a file (its directories left out), a part with no headers left as a field
+mp = "--XyZ\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nmy \"cat\"; photo\r\n--XyZ\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"C:\\\\pics\\\\cat;1.txt\"\r\nContent-Type: text/plain\r\n\r\nline one\r\nline two\r\n\r\n--XyZ\r\nContent-Disposition: form-data; name=\"empty\"\r\n\r\n\r\n--XyZ--\r\n"
+show(http.handle("POST", "/upload", mp, {"Content-Type": "multipart/form-data; boundary=XyZ"}))
+show(http.handle("POST", "/upload", "--XyZ\r\nContent-Disposition: form-data; name=\"cut\"\r\n\r\nno end", {"Content-Type": "multipart/form-data; boundary=\"XyZ\""}))
+# what the server answers itself, a file, HEAD, a method no route has
+show(http.handle("GET", "/nothing"))
+show(http.handle("GET", "/static/a.txt"))
+show(http.handle("HEAD", "/static/a.txt"))
+show(http.handle("PUT", "/login"))
+# JSON: infinite and NaN floats going out are null; a number past a float's coming in is 400
+show(http.handle("POST", "/n", "\{\"n\": 2.5}"))
+show(http.handle("POST", "/n", "\{\"n\": 1e400}"))
+show(http.handle("POST", "/n", "\{\"n\": -Infinity}"))
+show(http.handle("POST", "/n", "\{\"n\": 1e300, \"s\": \"NaN Infinity 1e999\"}"))
+# a request made, then changed before it is answered
+r = http.request("get", "/me?x=1 2")
+r.cookies["user"] = "ann"
+print(r.method, r.path, r.target, r.query, r.address)
+show(http.handle(r))
+# log_line: the time, then who and what
+line = http.log_line(r, http.text("hi"), 0.001)
+print(line.matches(regex(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d 127\.0\.0\.1 .GET /me\?x=1%202 HTTP/1\.1. 200 2 1\.0ms")))

@@ -213,9 +213,9 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `is_lower = (c: u8) -> bool`
 - `chr = (c: int) -> str`: the character with code point c, as text (UTF-8: one to four bytes); chr(233) is "é"
 - `byte_str = (b: int) -> str`: a string of the one byte b (0 to 255; text in UTF-8 is made of these)
-- `find = (s: str, sub: str, start: int = 0) -> int`
-- `rfind = (s: str, sub: str) -> int`
-- `find_byte = (s: str, c: u8, start: int = 0) -> int`
+- `find = (s: str, sub: str, start: int = 0) -> int`: where sub first is in s, from byte start on: its byte index, or -1 when it is not there (not none: `if find(s, "x") >= 0:`). find("banana", "an") is 1, find("banana", "an", 2) is 3
+- `rfind = (s: str, sub: str) -> int`: where sub last is in s: its byte index, or -1 when it is not there. rfind("a/b/c", "/") is 3
+- `find_byte = (s: str, c: u8, start: int = 0) -> int`: where byte c first is in s, from start on, or -1: find_byte(line, ':')
 - `contains = (s: str, sub: str) -> bool`: whether a character (a byte: s[i]) is one of the text's: `c in "aeiou"`
 - `contains = (s: str, c: u8) -> bool`
 - `starts_with = (s: str, prefix: str) -> bool`
@@ -1215,7 +1215,7 @@ title = html_unescape("Tom &amp; Jerry &#8212; &lt;b&gt;")  # Tom & Jerry — <b
 - `url_decode = (s: str, plus: bool = false) -> str`: percent-encoded text back as it was: %XX as that byte (a % without two hex digits stays as it is); with plus = true a + is a space too, as an HTML form's query writes one
 - `url_query[T] = (params: {str: T}) -> str`: a query string from names and values, each url_encoded: url_query({"q": "x y", "n": "5"}) is "q=x%20y&n=5" (what goes after the ? of a URL; Python's urlencode)
 - `parse_query = (q: str) -> {str: str}`: a query string's names and values, decoded: parse_query("q=x%20y&n=5") is {"q": "x y", "n": "5"} (what comes after the ? of a URL, or an HTML form's body; a name given twice: the last)
-- `parse_cookies = (header: str) -> {str: str}`: a Cookie header's names and values: parse_cookies("a=1; b=2") is {"a": "1", "b": "2"} (a name given twice: the first, which a browser sends for the longer path or the narrower domain)
+- `parse_cookies = (header: str) -> {str: str}`: a Cookie header's names and values: parse_cookies("a=1; b=2") is {"a": "1", "b": "2"} (a name given twice: the first, which a browser sends for the longer path or the narrower domain). A value's %XX are decoded, as http.set_cookie (and JavaScript's encodeURIComponent) write what a cookie cannot have: "caf%C3%A9%3B%20x" is "café; x"
 - `struct Url`: a URL taken apart (parse_url), each part as written (its %XX kept: url_decode(u.path) for the text): https://ann@example.com:8080/a/b?q=1#top has scheme "https", user "ann", host "example.com", port 8080, path "/a/b", query "q=1" and fragment "top". The scheme and host are in small letters; an IPv6 host is without its [ ]. A part not written is "" (the port: -1). str(u) puts it back together.
   ```gdscript
   struct Url:
@@ -5437,13 +5437,13 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
       all_headers: (str, str)[] = []  # every header as it came, in order (each Set-Cookie)
   ```
 - `header_values = (r: HttpReply, name: str) -> str[]`: every value of a header the answer has (as each Set-Cookie), in order; name in any letters
-- `fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass) -> HttpReply`: a request to an http:// or https:// address, and its answer (following where it redirects, five times at most), waiting up to `wait` seconds in all; https is checked as a browser checks it (tls_connect). A GET unless method says otherwise; headers are sent besides the usual ones (as "Authorization": "Bearer ..."), and body after them (its Content-Type, unless given: JSON when it starts with { or [, else text). With save_to, a successful answer (2xx) goes to that file as it comes, not into data; progress(bytes so far, all of them or -1 when not said) is called as they come.
+- `fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true) -> HttpReply`: a request to an http:// or https:// address, and its answer (following where it redirects, five times at most), waiting up to `wait` seconds in all; https is checked as a browser checks it (tls_connect). A GET unless method says otherwise; headers are sent besides the usual ones (as "Authorization": "Bearer ..."), and body after them (its Content-Type, unless given: JSON when it starts with { or [, else text). With save_to, a successful answer (2xx) goes to that file as it comes, not into data; progress(bytes so far, all of them or -1 when not said) is called as they come. follow = false: a redirect is the answer, its Location and Set-Cookie to look at (a test of a server's sign-in; native programs: a web page's browser follows them)
   ```gdscript
   r = net.fetch("https://api.example.com/items", method = "POST", body = to_json(item),
                 headers = {"Authorization": "Bearer {token}"})
   net.fetch(url, save_to = "big.zip", progress = (got: int, all: int): print("{got} of {all}"))
   ```
-- `fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass) -> int`: the same request, started: an id for fetch_result, which gives the answer once it has come. Nothing waits for it meanwhile (in a web page, the browser asks; its server must allow the page's site, CORS)
+- `fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true) -> int`: the same request, started: an id for fetch_result, which gives the answer once it has come. Nothing waits for it meanwhile (in a web page, the browser asks; its server must allow the page's site, CORS)
 - `fetch_result = (f: int) -> HttpReply?`: a fetch's answer (fetch_start's id), once it has come (status 0 when it failed: why says why); none while it is on its way. Given once: the fetch is done with after that, and asking again stops the program (a mistake: keep the answer when it comes)
 - `fetch_cancel = (f: int)`: stop a fetch on its way (its answer is not given)
 - `fetch_all = (urls: str[], at_once: int = 8, retries: int = 2, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", done: (int, HttpReply) -> void = (i: int, r: HttpReply): pass) -> HttpReply[]`: many requests, at most at_once of them on their way at a time (Go's worker pool around http.Get, an errgroup with SetLimit): their answers, in the order of urls. One that fails (status 0: no answer, or none in `wait` seconds) or whose server is busy or broken (429, 500, 502, 503, 504) is asked again, `retries` more times at most, after half a second, then 1, 2, 4... (or after the Retry-After the server asks for, a minute at most), unless it is a POST or a PATCH (which may have been done: those are not asked again); the other options are fetch's, for each one. done(i, r) is called as each answer comes (r is that of urls[i]): for a program that shows how far it is, or goes on with each answer at once. A program that asks stopping() and is asked to stop (ctrl-c) gets the answers that came, the rest with status 0. (A program with more to do as they come, a game's frames or a server's requests, uses fetch_start and fetch_result itself, as this does)
@@ -5516,12 +5516,13 @@ Each request's handler runs as a task of its own (lib/std/task.jo): one that wai
 
 Asked to stop (ctrl-c, SIGTERM), serve takes no more requests, gives the handlers running up to `drain` seconds to answer, and returns: the program then ends what it runs besides (closing the channels its tasks read), and saves. A program with its own loop calls shutdown() itself.
 
-Trying a server from the same program (a test, Go's httptest): serve in a task, and fetch from it:
+Trying the routes from the same program (a test, Flask's test_client): handle() answers with no server; or, over a real connection (Go's httptest), serve in a task on a port the system picks, and fetch from it:
 
 ```gdscript
-http.listen(18080, host = "127.0.0.1")
-spawn((): http.serve(18080), background = true)
-assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
+assert(http.handle("GET", "/todos/1").status == 200)
+http.listen(0, host = "127.0.0.1")
+spawn((): http.serve(http.port()), background = true)
+assert(net.fetch("http://127.0.0.1:{http.port()}/todos/1").status == 200)
 ```
 
 - `struct Request`
@@ -5568,7 +5569,7 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 
 - `text = (s: str, status: int = 200, type: str = "text/plain; charset=utf-8") -> Response`: text (as text/plain, unless type says otherwise)
 - `html = (s: str, status: int = 200) -> Response`: a web page's HTML
-- `json = (value, status: int = 200) -> Response`: any value as JSON (to_json's): a struct, an array, a map...; JSON text already made goes with text(s, type = "application/json"). A literal of values of several types is a Json: `http.json({"ok": true, "id": id, "tags": tags})`
+- `json = (value, status: int = 200) -> Response`: any value as JSON (to_json's): a struct, an array, a map...; JSON text already made goes with text(s, type = "application/json"). A literal of values of several types is a Json: `http.json({"ok": true, "id": id, "tags": tags})`. A float that is infinite or NaN is null, as JavaScript's JSON.stringify writes it
 - `json = (value: Json, status: int = 200) -> Response`
 - `binary = (b: u8[], type: str = "application/octet-stream", status: int = 200) -> Response`: bytes, of a type ("image/png"...)
 - `status = (code: int, message: str = "") -> Response`: a status with its reason as the text ("404 Not Found"), or with the text given
@@ -5584,7 +5585,7 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
   if let bad = http.read_json(r, t): return bad
   todos[id] = t                                   # (its title as it was)
   ```
-- `set_cookie = (res: mut Response, name: str, value: str, max_age: int = -1, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = "")`: a Set-Cookie on the answer: the client sends the cookie back with its requests from then on (r.cookies), for max_age seconds (-1: until the browser closes). http_only: not for the page's JavaScript; secure: over https only (secure_cookies: every cookie); same_site: "Lax" (sent with the site's own requests, and when a link from another site is followed), "Strict" (the site's own only) or "None" (any site's requests too: then Secure, as browsers require)
+- `set_cookie = (res: mut Response, name: str, value: str, max_age: int = -1, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = "")`: a Set-Cookie on the answer: the client sends the cookie back with its requests from then on (r.cookies), for max_age seconds (-1: until the browser closes). The value is any text: what a cookie's value cannot have (spaces, ; , " \, line breaks, letters past ASCII) and % are percent-encoded (%3B for ;), and r.cookies has it decoded. http_only: not for the page's JavaScript; secure: over https only (secure_cookies: every cookie); same_site: "Lax" (sent with the site's own requests, and when a link from another site is followed), "Strict" (the site's own only) or "None" (any site's requests too: then Secure, as browsers require)
 - `secure_cookies = false`: every cookie Secure: sent by the browser over https only. For a site served over https (behind Caddy), where a cookie that went over http too could be read on the way:
   ```gdscript
   http.secure_cookies = env("DEV") == none        # (http://localhost while developing)
@@ -5598,6 +5599,20 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
   ```
 - `signed_cookie = (r: Request, name: str, secret: str) -> str?`: the value of a cookie set_signed_cookie set; none when the request has none, or one whose signature is not secret's (changed, made up, another cookie's moved), or one past its max_age
 - `query_all = (r: Request, name: str) -> str[]`: every value a name has in the request's query, in order: ?tag=a&tag=b gives ["a", "b"] (r.query has the last); [] when it has none
+
+#### Forms
+
+- `form = (r: Request) -> {str: str}`: the fields of the form the request's body is (as text; a file's field: uploads)
+- `form_all = (r: Request, name: str) -> str[]`: every value a field of the form has, in order (<input type="checkbox" name="tag"> checked twice: both); [] when it has none
+- `struct Upload`: a file a form sent (<input type="file" name="photo">): its field's name, the file's name on the client's machine (without its directories; the client's to write: not a path to save to as it is), its type as the client says, and its bytes
+  ```gdscript
+  struct Upload:
+      name = ""
+      filename = ""
+      type = ""
+      data: u8[]
+  ```
+- `uploads = (r: Request) -> Upload[]`: the files a form sent (<form method="post" enctype="multipart/form-data">), in order; [] for another body. They come whole with the request, so listen's largest bounds them (1 MB unless said: http.serve(8080, largest = 20 << 20) takes 20 MB)
 
 #### Rate limits
 
@@ -5659,9 +5674,9 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 - `listen = (port: int, host: str = "", largest: int = 1 << 20, backlog: int = 511) -> bool`: start taking requests on port (answer() answers them); false when the port cannot be had (another program has it). host: the address it is reached at, "" every one this machine has ("127.0.0.1": from this machine only, as behind a proxy on it); largest: the biggest body taken (a bigger one is answered 413); backlog: how many connections may wait to be taken
 - `stop_listening = ()`: stop taking requests (those of connections open are still answered)
 - `answer = () -> int`: answer the requests that have come, and send what waits to go out; how many were answered. It does not wait: net.wait does (until there is something to answer)
-- `log_line = (r: Request, res: Response, seconds: f64) -> str`: the line a request makes in a log: who, what, the answer's status and size, how long it took
+- `log_line = (r: Request, res: Response, seconds: f64) -> str`: the line a request makes in a log: when (the machine's time), who, what, the answer's status and size, how long it took
   ```gdscript
-  127.0.0.1 "GET /todos?done=true HTTP/1.1" 200 312 0.4ms
+  2026-10-20 16:15:38 127.0.0.1 "GET /todos?done=true HTTP/1.1" 200 312 0.4ms
   ```
 - `log_requests = false`: write each request's log_line to standard error
 - `trust_proxy: str[]`: the addresses of the proxies in front of the server (Caddy on the same machine: ["127.0.0.1"]): a request from one of them has as r.address (log_line's, a WebSocket's handshake's) the client's, from X-Forwarded-For: the last address in it that is not a proxy listed (each proxy adds the one it was reached from at the end; what comes before is the client's to write). None unless set: a server reached with no proxy in front would take a client's word for where it is
@@ -5672,6 +5687,13 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 - `from_http_date = (s: str) -> f64?`: an HTTP date ("Sun, 06 Nov 1994 08:49:37 GMT") as unix_time's seconds; none when it is not one
 - `reason = (code: int) -> str`: a status's reason: 404 "Not Found"
 - `mime_type = (path: str) -> str`: the type of a file by its extension, as a Content-Type ("text/html; charset=utf-8" for .html); application/octet-stream for one not known
+
+#### Trying the routes, without a server
+
+- `handle = (r: Request) -> Response`: the answer the server gives a request
+- `handle = (method: str, target: str, body: str = "", headers: {str: str} = {}) -> Response`: the answer the server gives a request of that method, target, body and headers
+- `request = (method: str, target: str, body: str = "", headers: {str: str} = {}) -> Request`: a request as the server reads one a client sent: method, target ("/todos?done=true"), body and headers (as written: "Content-Type"), from 127.0.0.1
+- `port = () -> int`: the port the server listens on: listen's, or the one the system chose for listen(0) (a test's server, on a port no other program has); -1 when it does not listen
 
 ## SQLite databases
 

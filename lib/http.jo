@@ -33,10 +33,13 @@
 # `drain` seconds to answer, and returns: the program then ends what it runs besides (closing the
 # channels its tasks read), and saves. A program with its own loop calls shutdown() itself.
 #
-# Trying a server from the same program (a test, Go's httptest): serve in a task, and fetch from it:
-#   http.listen(18080, host = "127.0.0.1")
-#   spawn((): http.serve(18080), background = true)
-#   assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
+# Trying the routes from the same program (a test, Flask's test_client): handle() answers with no
+# server; or, over a real connection (Go's httptest), serve in a task on a port the system picks,
+# and fetch from it:
+#   assert(http.handle("GET", "/todos/1").status == 200)
+#   http.listen(0, host = "127.0.0.1")
+#   spawn((): http.serve(http.port()), background = true)
+#   assert(net.fetch("http://127.0.0.1:{http.port()}/todos/1").status == 200)
 
 import crypto
 import net
@@ -194,9 +197,38 @@ html = (s: str, status: int = 200) -> Response: text(s, status, "text/html; char
 
 # any value as JSON (to_json's): a struct, an array, a map...; JSON text already made goes with
 # text(s, type = "application/json"). A literal of values of several types is a Json:
-# `http.json({"ok": true, "id": id, "tags": tags})`
+# `http.json({"ok": true, "id": id, "tags": tags})`. A float that is infinite or NaN is null, as
+# JavaScript's JSON.stringify writes it
 json = (value, status: int = 200) -> Response: text(to_json(value), status, "application/json")
 json = (value: Json, status: int = 200) -> Response: text(to_json(value), status, "application/json")
+
+# (whether JSON text has finite numbers only: no Infinity or NaN, which from_json reads as Python
+# writes them, nor a number past a float's, 1e400)
+__http_json_finite = (s: str) -> bool:
+    i = 0
+    n = len(s)
+    loop i < n:
+        c = s[i]
+        if c == '"': i = __http_json_string_end(s, i)
+        else if c == 'I' or c == 'N': return false
+        else if c == '-' or (c >= '0' and c <= '9'):
+            j = i + 1
+            long = false
+            loop j < n and ((s[j] >= '0' and s[j] <= '9') or s[j] == '.' or s[j] == 'e' or s[j] == 'E' or s[j] == '+' or s[j] == '-'):
+                if s[j] == 'e' or s[j] == 'E': long = true
+                j += 1
+            if (long or j - i > 15) and not is_finite(to_float(s[i..j)) ?? 0.0): return false
+            i = j
+        else: i += 1
+    true
+
+# (where a JSON string starting at s[i], its quote, ends: after its closing quote)
+__http_json_string_end = (s: str, i: int) -> int:
+    j = i + 1
+    loop j < len(s) and s[j] != '"':
+        if s[j] == '\\': j += 1
+        j += 1
+    min(j + 1, len(s))
 
 # bytes, of a type ("image/png"...)
 binary = (b: u8[], type: str = "application/octet-stream", status: int = 200) -> Response:
@@ -238,18 +270,32 @@ __http_url_escape = (u: str) -> str:
         else: out.push(c)
     str_from_bytes(out)
 
-# (a cookie's name, value or attribute as RFC 6265 lets it be: bytes that would end it or start an
-# attribute of their own, `;` and line breaks, left out)
-__cookie_part = (v: str, attr: bool) -> str:
+# (a cookie's attribute as RFC 6265 lets it be: bytes that would end it or start an attribute of
+# their own, `;` and line breaks, left out)
+__cookie_part = (v: str) -> str:
     out: u8[]
     loop c in v:
         if c < 32 or c == 127 or c == ';': continue
-        if not attr and (c == '"' or c == '\\'): continue
         out.push(c)
-    r = str_from_bytes(out)
-    # (a value with a space or a comma in quotes, as Go writes it)
-    if not attr and (find_byte(r, ' ') >= 0 or find_byte(r, ',') >= 0): return "\"{r}\""
-    r
+    str_from_bytes(out)
+
+# (a cookie's value as RFC 6265 lets it be, whatever text it is: the bytes a cookie's value cannot
+# have (spaces, " , ; \, line breaks, those past ASCII) and % percent-encoded, as JavaScript's
+# encodeURIComponent writes them; parse_cookies decodes them, so r.cookies has the text as set)
+__cookie_value = (v: str) -> str:
+    plain = true
+    loop c in v:
+        if c <= 32 or c >= 127 or c == '"' or c == ',' or c == ';' or c == '\\' or c == '%': plain = false
+    if plain: return v
+    out: u8[]
+    hex = "0123456789ABCDEF"
+    loop c in v:
+        if c <= 32 or c >= 127 or c == '"' or c == ',' or c == ';' or c == '\\' or c == '%':
+            out.push('%')
+            out.push(hex[int(c) >> 4])
+            out.push(hex[int(c) & 15])
+        else: out.push(c)
+    str_from_bytes(out)
 
 # (a cookie's name: RFC 9110's token characters only)
 __cookie_name = (v: str) -> str:
@@ -293,6 +339,7 @@ file = (r: Request, path: str) -> Response:
 #   todos[id] = t                                   # (its title as it was)
 read_json[T] = (r: Request, into: mut T) -> Response?:
     if not __http_is_json(r.headers.get("content-type") ?? ""): return json_error(415, "the body is to be JSON, sent with Content-Type: application/json")
+    if not __http_json_finite(r.text): return json_error(400, "the body is not what this takes: a number past a float's range (or Infinity, NaN), which JSON has none of")
     v = into
     if let e = __from_text_into(r.text, v, true): return json_error(400, "the body is not what this takes: {e.message}")
     into = v
@@ -305,17 +352,19 @@ __http_is_json = (type: str) -> bool:
     t == "application/json" or (starts_with(t, "application/") and ends_with(t, "+json"))
 
 # a Set-Cookie on the answer: the client sends the cookie back with its requests from then on
-# (r.cookies), for max_age seconds (-1: until the browser closes). http_only: not for the page's
+# (r.cookies), for max_age seconds (-1: until the browser closes). The value is any text: what a
+# cookie's value cannot have (spaces, ; , " \, line breaks, letters past ASCII) and % are
+# percent-encoded (%3B for ;), and r.cookies has it decoded. http_only: not for the page's
 # JavaScript; secure: over https only (secure_cookies: every cookie); same_site: "Lax" (sent with
 # the site's own requests, and when a link from another site is followed), "Strict" (the site's
 # own only) or "None" (any site's requests too: then Secure, as browsers require)
 set_cookie = (res: mut Response, name: str, value: str, max_age: int = -1, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = ""):
-    c = "{__cookie_name(name)}={__cookie_part(value, false)}; Path={__cookie_part(path, true)}"
+    c = "{__cookie_name(name)}={__cookie_value(value)}; Path={__cookie_part(path)}"
     if max_age >= 0: c += "; Max-Age={max_age}"
-    if len(domain) > 0: c += "; Domain={__cookie_part(domain, true)}"
+    if len(domain) > 0: c += "; Domain={__cookie_part(domain)}"
     if http_only: c += "; HttpOnly"
     if secure or secure_cookies or same_site.lower() == "none": c += "; Secure"
-    if len(same_site) > 0: c += "; SameSite={__cookie_part(same_site, true)}"
+    if len(same_site) > 0: c += "; SameSite={__cookie_part(same_site)}"
     res.cookies.push(c)
 
 # every cookie Secure: sent by the browser over https only. For a site served over https (behind
@@ -325,8 +374,8 @@ secure_cookies = false
 
 # a Set-Cookie that has the client forget a cookie (path and domain as it was set with)
 clear_cookie = (res: mut Response, name: str, path: str = "/", domain: str = ""):
-    c = "{__cookie_name(name)}=; Path={__cookie_part(path, true)}; Max-Age=0"
-    if len(domain) > 0: c += "; Domain={__cookie_part(domain, true)}"
+    c = "{__cookie_name(name)}=; Path={__cookie_part(path)}; Max-Age=0"
+    if len(domain) > 0: c += "; Domain={__cookie_part(domain)}"
     if secure_cookies: c += "; Secure"
     res.cookies.push(c)
 
@@ -379,6 +428,134 @@ query_all = (r: Request, name: str) -> str[]:
         n = if k < 0: part else: part[..k)
         if url_decode(n, plus = true) == name: out.push(if k < 0: "" else: url_decode(part[k + 1..], plus = true))
     out
+
+# ---------------- forms ----------------
+# An HTML form's fields, as a browser posts them (application/x-www-form-urlencoded, or
+# multipart/form-data when it sends files): form(r) has each field's value (a name given twice:
+# the last, as r.query; form_all(r, name) has each, as a form's checkboxes give them), uploads(r)
+# the files. A request whose body is neither has none. A form's values are the client's to write:
+# check them as any input, and html_escape them in a page
+#   http.post("/signup", (r: http.Request) -> http.Response:
+#       f = http.form(r)
+#       name = trim(f.get("name") ?? "")
+#       if len(name) == 0: return http.redirect("/signup?missing=name", 303)
+#       ...
+#       http.redirect("/thanks", 303))
+
+# the fields of the form the request's body is (as text; a file's field: uploads)
+form = (r: Request) -> {str: str}:
+    out: {str: str}
+    loop f in __http_fields(r): out[f.0] = f.1
+    out
+
+# every value a field of the form has, in order (<input type="checkbox" name="tag"> checked twice:
+# both); [] when it has none
+form_all = (r: Request, name: str) -> str[]: [loop f in __http_fields(r): if f.0 == name: f.1]
+
+# a file a form sent (<input type="file" name="photo">): its field's name, the file's name on the
+# client's machine (without its directories; the client's to write: not a path to save to as it
+# is), its type as the client says, and its bytes
+struct Upload:
+    name = ""
+    filename = ""
+    type = ""
+    data: u8[]
+
+# the files a form sent (<form method="post" enctype="multipart/form-data">), in order; [] for
+# another body. They come whole with the request, so listen's largest bounds them (1 MB unless
+# said: http.serve(8080, largest = 20 << 20) takes 20 MB)
+uploads = (r: Request) -> Upload[]:
+    out: Upload[]
+    loop p in __http_parts(r):
+        if len(p.1) > 0: out.push(Upload(p.0, p.1, p.2, p.3))
+    out
+
+# (a form's fields as names and values, in order: a body of a form's type, or a multipart one's
+# parts that are not files)
+__http_fields = (r: Request) -> (str, str)[]:
+    out: (str, str)[]
+    t = (r.headers.get("content-type") ?? "").lower()
+    if starts_with(t, "application/x-www-form-urlencoded"):
+        loop part in split(__http_text(r), "&"):
+            if len(part) == 0: continue
+            k = find_byte(part, '=')
+            if k < 0: out.push((url_decode(part, plus = true), ""))
+            else: out.push((url_decode(part[..k), plus = true), url_decode(part[k + 1..], plus = true)))
+    else:
+        loop p in __http_parts(r):
+            if len(p.1) == 0: out.push((p.0, str_from_bytes(p.3)))
+    out
+
+# (the request's body as text: r.text, or made of r.body for a request made with no text)
+__http_text = (r: Request) -> str: if len(r.text) == r.body.len(): r.text else: str_from_bytes(r.body)
+
+# (a multipart body's parts: each one's name, file name ("" for a field), type and bytes; those
+# whole only, [] for another body)
+__http_parts = (r: Request) -> (str, str, str, u8[])[]:
+    out: (str, str, str, u8[])[]
+    ct = r.headers.get("content-type") ?? ""
+    if not starts_with(ct.lower(), "multipart/form-data"): return out
+    bd = __http_param(ct, "boundary")
+    if len(bd) == 0 or len(bd) > 200: return out
+    s = __http_text(r)
+    delim = "--" + bd
+    at = find(s, delim)
+    loop at >= 0:
+        at += len(delim)
+        # (the last boundary: --boundary--)
+        if at + 1 < len(s) and s[at] == '-' and s[at + 1] == '-': break
+        e = find(s, "\r\n", at)
+        if e < 0: break
+        he = find(s, "\r\n\r\n", e)
+        if he < 0: break
+        next = find(s, "\r\n" + delim, he + 4)
+        if next < 0: break
+        name = ""
+        filename = ""
+        type = ""
+        loop line in split(s[e + 2..he), "\r\n"):
+            c = find_byte(line, ':')
+            if c <= 0: continue
+            h = trim(line[..c)).lower()
+            if h == "content-disposition":
+                name = __http_param(line[c + 1..], "name")
+                filename = __http_param(line[c + 1..], "filename")
+                # (a name with directories, as an old browser sent: the file's own)
+                k = max(rfind(filename, "/"), rfind(filename, "\\"))
+                if k >= 0: filename = filename[k + 1..]
+            else if h == "content-type": type = trim(line[c + 1..])
+        out.push((name, filename, type, r.body[he + 4..next)))
+        at = next + 2
+    out
+
+# (a parameter of a header's value: boundary of `multipart/form-data; boundary=x`, name of
+# `form-data; name="a"; filename="b.txt"`, its quotes taken off; "" when it has none)
+__http_param = (h: str, key: str) -> str:
+    i = 0
+    n = len(h)
+    loop i < n:
+        loop i < n and (h[i] == ';' or h[i] == ' ' or h[i] == '\t'): i += 1
+        k0 = i
+        loop i < n and h[i] != '=' and h[i] != ';': i += 1
+        k = trim(h[k0..i)).lower()
+        v = ""
+        if i < n and h[i] == '=':
+            i += 1
+            if i < n and h[i] == '"':
+                i += 1
+                b: u8[]
+                loop i < n and h[i] != '"':
+                    if h[i] == '\\' and i + 1 < n: i += 1
+                    b.push(h[i])
+                    i += 1
+                i += 1
+                v = str_from_bytes(b)
+            else:
+                v0 = i
+                loop i < n and h[i] != ';': i += 1
+                v = trim(h[v0..i))
+        if k == key: return v
+    ""
 
 # ---------------- rate limits ----------------
 # allow(key, per_minute) says whether one more request of key (a client's address, a user's name,
@@ -875,13 +1052,26 @@ answer = () -> int:
         if n > 0: __task_yield()
         n
 
-# the line a request makes in a log: who, what, the answer's status and size, how long it took
-#   127.0.0.1 "GET /todos?done=true HTTP/1.1" 200 312 0.4ms
+# the line a request makes in a log: when (the machine's time), who, what, the answer's status and
+# size, how long it took
+#   2026-10-20 16:15:38 127.0.0.1 "GET /todos?done=true HTTP/1.1" 200 312 0.4ms
 log_line = (r: Request, res: Response, seconds: f64) -> str:
     size = if len(res.file) > 0: (file_size(res.file) ?? 0) else: res.body.len()
     # (a request refused before its line was read: "-")
     line = if len(r.method) > 0: "\"{r.method} {r.target} {r.version}\"" else: "-"
-    "{r.address} {line} {res.status} {size} {seconds * 1000.0:.1}ms"
+    "{__http_log_time()} {r.address} {line} {res.status} {size} {seconds * 1000.0:.1}ms"
+
+# (log_line's time, made once a second)
+__http_log_time = () -> str:
+    global __http_log_second, __http_log_text
+    t = floor(unix_time())
+    if t != __http_log_second:
+        __http_log_second = t
+        __http_log_text = date_text(date(t))
+    __http_log_text
+
+__http_log_second = -1.0
+__http_log_text = ""
 
 # write each request's log_line to standard error
 log_requests = false
@@ -986,6 +1176,61 @@ __HTTP_TYPES = {".html": "text/html; charset=utf-8", ".htm": "text/html; charset
     ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf",
     ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".wav": "audio/wav", ".mp4": "video/mp4", ".webm": "video/webm",
     ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".jo": "text/plain; charset=utf-8"}
+
+# ---------------- trying the routes, without a server ----------------
+# handle answers a request as the server would (before's, its route, after's, on_error's, CORS),
+# with no port and no connection: what a test calls. Given a method, a target ("/todos?done=true"),
+# a body and headers, it makes the request as the server reads one from a client (its path, query,
+# headers in small letters, cookies; a body starting with { or [ is JSON unless a Content-Type is
+# given, as net.fetch sends it); request() makes one to change before it is answered. The answer's
+# file (http.file, files()) is read into its body. A handler that waits (a fetch, sleep) is waited
+# for. A Set-Cookie it gives is sent back by a Cookie header in the next one:
+#   test "signing in":
+#       res = http.handle("POST", "/login", "user=ann", {"Content-Type": "application/x-www-form-urlencoded"})
+#       assert(res.status == 303 and res.headers["Location"] == "/")
+#       sid = split(res.cookies[0], ";")[0]                    # "sid=..."
+#       me = http.handle("GET", "/me", headers = {"Cookie": sid})
+#       assert(str_from_bytes(me.body) == "ann")
+# (or a server on a port the system chooses: listen(0), then port())
+
+# the answer the server gives a request
+handle = (r: Request) -> Response:
+    res = __http_respond(r)
+    if len(res.file) > 0:
+        if r.method != "HEAD": res.body = read_bytes(res.file) ?? []
+        res.file = ""
+    res
+
+# the answer the server gives a request of that method, target, body and headers
+handle = (method: str, target: str, body: str = "", headers: {str: str} = {}) -> Response: handle(request(method, target, body, headers))
+
+# a request as the server reads one a client sent: method, target ("/todos?done=true"), body and
+# headers (as written: "Content-Type"), from 127.0.0.1
+request = (method: str, target: str, body: str = "", headers: {str: str} = {}) -> Request:
+    head = "{method.upper()} {__http_url_escape(target)} HTTP/1.1\r\n"
+    typed = false
+    loop k, v in headers:
+        head += "{k}: {v}\r\n"
+        if k.lower() == "content-type": typed = true
+    if not typed and (starts_with(body, "\{") or starts_with(body, "[")): head += "Content-Type: application/json\r\n"
+    b = bytes(head + "\r\n")
+    if let got = __http_request(b, b.len() - 4):
+        r = got
+        r.body = bytes(body)
+        r.text = body
+        r.address = "127.0.0.1"
+        return r
+    panic("http.request(\"{method}\", \"{target}\"): not a request HTTP takes (a method that is not a word, a header's name with a space, or a line break in a value)")
+
+# the port the server listens on: listen's, or the one the system chose for listen(0) (a test's
+# server, on a port no other program has); -1 when it does not listen
+@no_web("gives -1 in a web page: a page cannot listen")
+port = () -> int:
+    when TARGET == "wasm":
+        return -1
+    else:
+        if __http_listeners.len() == 0: return -1
+        net.__n_sock_port(__http_listeners[0])
 
 # ---------------- connections ----------------
 
@@ -1194,21 +1439,9 @@ __http_refuse = (id: int, code: int, why: str, req0: Request = Request()):
     if log_requests: eprint(log_line(req, res, 0.0))
 
 # (a request, answered by its route's handler, with before's and after's around it)
-__http_answer = (id: int, req0: Request):
+__http_answer = (id: int, req: Request):
     t0 = if log_requests: time() else: 0.0
-    req = req0
-    res = Response()
-    # (a CORS preflight: answered for the browser, before any before() sees it)
-    if __http_cors.on and req.method == "OPTIONS" and req.headers.has("access-control-request-method") and req.headers.has("origin") and __http_under(req.path, __http_cors.prefix):
-        res = Response(status = 204)
-        __http_cors_headers(req, res, true)
-    else:
-        if not __http_call(__http_handler, req, res): res = __http_own(req, 500, "")
-        # (a stream past the most: refused, and its connection closed)
-        if res.stream and req.method != "HEAD" and __http_streams() >= most_streams:
-            res = __http_own(req, 503, "{most_streams} streams are open, the most taken")
-            res.headers["Connection"] = "close"
-        res = __http_finish(req, res)
+    res = __http_respond(req)
     if not __http_conns.has(id): return
     if res.upgrade:
         __http_upgrade(id, req, res.__largest)
@@ -1217,6 +1450,21 @@ __http_answer = (id: int, req0: Request):
     keep = if req.version == "HTTP/1.0": find(conn, "keep-alive") >= 0 else: find(conn, "close") < 0
     __http_send(id, req, res, keep)
     if log_requests: eprint(log_line(req, res, time() - t0))
+
+# (a request's answer: a CORS preflight's, or its route's with the before's and after's around it)
+__http_respond = (req: Request) -> Response:
+    res = Response()
+    # (a CORS preflight: answered for the browser, before any before() sees it)
+    if __http_cors.on and req.method == "OPTIONS" and req.headers.has("access-control-request-method") and req.headers.has("origin") and __http_under(req.path, __http_cors.prefix):
+        res = Response(status = 204)
+        __http_cors_headers(req, res, true)
+        return res
+    if not __http_call(__http_handler, req, res): res = __http_own(req, 500, "")
+    # (a stream past the most: refused, and its connection closed)
+    if res.stream and req.method != "HEAD" and __http_streams() >= most_streams:
+        res = __http_own(req, 503, "{most_streams} streams are open, the most taken")
+        res.headers["Connection"] = "close"
+    __http_finish(req, res)
 
 # (the streams open)
 __http_streams = () -> int:
