@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Compile speed against an earlier commit: the instructions (tools/icount, exact unlike time) that
 compiling bench/big.jo, the compiler and the games takes, with this commit's compiler and with
-the earlier one's, on the same files. Fails when any is more than --limit percent (default 1) slower.
+the earlier one's, on the same files and library; then the library's own share, this compiler
+with the earlier library and with this one (code every program or every game compiles: a frame
+loop that calls more). Fails when any is more than --limit percent (default 1) slower.
 usage: tools/speedcheck.py [--base REV] [--limit PCT] [--release]   (default base: HEAD~1)"""
 import argparse, os, shutil, subprocess, sys, tempfile
 
@@ -101,6 +103,29 @@ for extra in modes:
         worst = max(worst, pct)
         flag = "  <- slower" if pct > args.limit else ""
         print(f"  {src + (' --release' if extra else ''):46} {a:7.3f} -> {b:7.3f}  {pct:+6.2f}%{flag}")
+
+# the library: the same compiler, the earlier library and this one, on programs that use little
+# of it, where what the library makes every program compile shows most
+with open(os.path.join(tmp, "hello.jo"), "w") as f: f.write('print("hi")\n')
+with open(os.path.join(tmp, "game.jo"), "w") as f: f.write('window("t", 320, 200)\ndraw = ():\n    clear(BLACK)\n    rect(1, 2, 3, 4, RED)\n    text("hi", vec2(3, 3), 12, WHITE)\n')
+print(f"library: {base}'s -> the working tree's, compiled by this compiler")
+for src in [os.path.join(tmp, "hello.jo"), os.path.join(tmp, "game.jo"), "examples/rebound/rebound.jo", "examples/breakwater/breakwater.jo"]:
+    cmd = [os.path.join(root, "tools", "icount"), new, "build", src, "-o", os.path.join(tmp, "out")]
+    got = []
+    for lib in [old_lib, os.path.join(root, "lib")]:
+        if counter == "valgrind": break
+        r = subprocess.run(cmd, cwd=root, env=dict(env, SLOPPY_LIB=lib), capture_output=True, text=True)
+        line = (r.stderr.strip().splitlines() or [""])[-1]
+        if r.returncode != 0 or "G instructions" not in line: break
+        got.append(float(line.split()[0]))
+    name = os.path.basename(src) if src.startswith(tmp) else src
+    if len(got) < 2:
+        print(f"  {name:46} (not measured: this compiler cannot build it with the earlier library)")
+        continue
+    pct = (got[1] - got[0]) / got[0] * 100
+    worst = max(worst, pct)
+    flag = "  <- slower" if pct > args.limit else ""
+    print(f"  {name:46} {got[0]:7.3f} -> {got[1]:7.3f}  {pct:+6.2f}%{flag}")
 shutil.rmtree(tmp, ignore_errors=True)
 if worst > args.limit:
     sys.exit(f"speedcheck: compiling is {worst:.2f}% slower than at {base} (the limit is {args.limit}%)")
