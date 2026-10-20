@@ -174,6 +174,7 @@ path = (angle: f64, speed: f64) -> (f64[], f64[]):
     (xs, ys)
 
 draw = ():
+    global angle, speed, ui_style
     clear(WHITE)
     ui_style = ui_light_style()                 # (menus over a light background)
     ui_begin("controls", vec2(300, 60))

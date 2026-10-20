@@ -764,6 +764,7 @@ player = Rect(380, 520, 40, 40)
 rocks: Rect[]
 
 update = (dt: f64):
+    global player
     if key_down(.left): player.x -= 300 * dt         # speeds are per second: times dt
     if key_down(.right): player.x += 300 * dt
     player = player.clamp(Rect(0, 0, 800, 600))

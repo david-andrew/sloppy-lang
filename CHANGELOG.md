@@ -6,6 +6,12 @@
   same as the one before): some 600 bytes became 150 for a player holding still, 60 a second to
   each other player. A packet to a peer whose path holds 16 KB not sent yet is left out (the next
   has its inputs too), where the backlog grew and the inputs came later and later.
+- A package whose git URL is wrong or private fails at once with what to check: git asked for a
+  user name and password, in the terminal or a desktop's password window, and the build waited.
+- `set_env` then `run_program` or `run_shell`: the program started got each variable whole (the
+  environment pointed at strings given back by then, and a value could come out as another's).
+- Docs: examples written before `global x` was needed say it (LANGUAGE, START, TEACHING,
+  MULTIPLAYER).
 - `net.backlog(peer)` in a web page: what its data channel holds (it was 0).
 - Aces online: the others fly on for a third of a second (20 ticks) while one machine stops, and
   that machine plays the ticks it missed, up to a quarter of a second, where it gave them up and

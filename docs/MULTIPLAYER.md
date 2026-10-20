@@ -51,6 +51,7 @@ pasted = ""                             # theirs, pasted in
 connected = false
 
 update = (dt: f64):
+    global connected, mine
     if p >= 0 and len(mine) == 0: mine = net.invite_code(p)     # ("" for a moment)
     loop e in net.receive():
         if e.kind == .joined: connected = true
@@ -58,6 +59,7 @@ update = (dt: f64):
         else if e.kind == .message: print("they said {e.text}")
 
 draw = ():
+    global p, pasted
     clear()
     if connected:
         if hud_button(Rect(40, 40, 200, 44), "Say hello"): net.send(p, "hello")
@@ -330,6 +332,7 @@ count ticks apart from frames:
 ```gdscript
 spare = 0.0
 update = (dt: f64):
+    global spare
     spare = min(spare + dt, 0.1)
     loop spare >= 1.0 / 60.0:
         spare -= 1.0 / 60.0

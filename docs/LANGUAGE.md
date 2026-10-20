@@ -1566,6 +1566,7 @@ if state.saved_at > 0.0: state.dust += state.rate * min(unix_time() - state.save
 last = unix_time()
 
 update = (dt: f64):
+    global last
     now = unix_time()
     state.dust += state.rate * (now - last)          # (real time, hidden tab or not)
     last = now
