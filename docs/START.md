@@ -19,7 +19,7 @@ irm https://sloppy-lang.org/install.ps1 | iex
 The installer puts Sloppy in your home directory (`~/.sloppy`, or `%LOCALAPPDATA%\sloppy` on
 Windows) and the `sloppy` command on your PATH, ready in the same terminal (when `~/.local/bin`
 is on your PATH, as on most Linux systems; if not, the installer shows the line that makes it
-so). Nothing else is needed: no C compiler, no linker, no SDK or Xcode. `sloppy update` installs newer releases.
+so). Nothing else is needed: no C compiler, no linker, no SDK or Xcode. `sloppy upgrade` installs newer releases.
 
 On a phone, or an Intel Mac, Sloppy's programs run in any browser: write and run them in
 [the playground](https://sloppy-lang.org/playground/).

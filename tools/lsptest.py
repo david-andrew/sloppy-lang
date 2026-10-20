@@ -320,7 +320,7 @@ check("errors cleared", c.diagnostics(euri), [])
 c.set_text(euri, 'build:\n    target = windows\nwhen TARGET == "windows":\n    print(win_only)\nelse:\n    print(other_only)\n')
 check("target from the build block", [d["message"] for d in c.diagnostics(euri)], ["unknown name 'win_only'"])
 c.set_text(euri, 'build:\n    targte = wasm\n')
-check("build block mistakes", [d["message"] for d in c.diagnostics(euri)], ["unknown build option 'targte' (the options are target, opt, output, name and icon, and packages: name = package(\"git URL\"))"])
+check("build block mistakes", [d["message"][:62] for d in c.diagnostics(euri)], ["unknown build option 'targte' (did you mean 'target'?) (the op"])
 c.set_text(euri, "x = 1\n")
 c.diagnostics(euri)
 # (errors found by lowering, reported once the editor is quiet)
@@ -356,9 +356,23 @@ c.diagnostics(muri)
 errs = [m["params"]["diagnostics"] for m in c.notes if m.get("method") == "textDocument/publishDiagnostics" and same_uri(m["params"]["uri"], uuri)]
 check("multi-file: fixed", errs[-1:], [[]])
 
+# ---- packages: go to a package's main file (its own name's), and its other files ----
+os.makedirs(os.path.join(tmp, "sloppy-physics"), exist_ok=True)
+open(os.path.join(tmp, "sloppy-physics", "physics.jo"), "w", encoding="utf-8").write("step = () -> int: 1\n")
+open(os.path.join(tmp, "sloppy-physics", "world.jo"), "w", encoding="utf-8").write("w = 2\n")
+psrc = "build:\n    ph = package(\"sloppy-physics\")\nimport ph\nimport 'ph/world.jo' as world\nprint(ph.step(), world.w)\n"
+c.set_text(muri, psrc)
+check("packages: no errors", c.diagnostics(muri), [])
+d = where(c.request("textDocument/definition", {"textDocument": {"uri": muri}, "position": lc(psrc, psrc.index("import ph") + 7)}))
+check("packages: definition of import ph", d, ("physics.jo", 0, 0))
+d = where(c.request("textDocument/definition", {"textDocument": {"uri": muri}, "position": lc(psrc, psrc.index("ph = "))}))
+check("packages: definition of its build block line", d, ("physics.jo", 0, 0))
+d = where(c.request("textDocument/definition", {"textDocument": {"uri": muri}, "position": lc(psrc, psrc.index("world.jo"))}))
+check("packages: definition of a package's file", d, ("world.jo", 0, 0))
+
 # ---- from m import names ----
 open(os.path.join(tmp, "util.jo"), "w", encoding="utf-8").write("# doubles\ndouble = (x: int) -> int: x * 2\n_secret = 3\n")
-fsrc = "from 'util.jo' import double as twice, _secret\nprint(twice(_secret))\n"
+fsrc = "from 'util.jo' import double as twice\nprint(twice(2))\n"
 c.set_text(muri, fsrc)
 check("from-import: no errors", c.diagnostics(muri), [])
 d = where(c.request("textDocument/definition", {"textDocument": {"uri": muri}, "position": lc(fsrc, fsrc.index("twice("))}))

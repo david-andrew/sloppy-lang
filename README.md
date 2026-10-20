@@ -120,7 +120,7 @@ browser](https://sloppy-lang.org/breakwater/).
 
 ## Getting started
 
-Install on Linux (x86-64 or arm64) or macOS (Apple Silicon), in a terminal (into `~/.sloppy`, with the command on your PATH, in most setups at once; `sloppy update` installs newer releases):
+Install on Linux (x86-64 or arm64) or macOS (Apple Silicon), in a terminal (into `~/.sloppy`, with the command on your PATH, in most setups at once; `sloppy upgrade` installs newer releases):
 
 ```sh
 curl -fsSL https://sloppy-lang.org/install | bash

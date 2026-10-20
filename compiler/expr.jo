@@ -483,10 +483,7 @@ private_hint = (name: int) -> str:
     if m < 0 or not is_private(name) or modules[m].is_prelude: return ""
     loop u in modules[m].uses:
         if not modules[u].is_prelude and modules[u].names.get(name) != none:
-            f = files[int(modules[u].file)].path
-            s = rfind(f, "/")
-            if s >= 0: f = f[s + 1..]
-            return " (it is private to {f}: `use` leaves out names starting with _; `from '{f}' import {name_of(name)}` brings it in)"
+            return " (it is private to {module_shown(m, u)}, which this file uses: a name starting with _ stays in its file)"
     ""
 
 # a parameter's type as written (`b: GpuBuffer[T]`: GpuBuffer[T])
@@ -815,12 +812,40 @@ text_or = (n: int, other: str) -> str:
     t
 
 # ---------------- type expressions written as expressions ----------------
+# (a.b.c: "a.b.c", for names and fields of names; else "")
+field_path = (e: int) -> str:
+    if nodes[e].kind == .ident: return name_of(int(nodes[e].name))
+    if nodes[e].kind != .field: return ""
+    b = field_path(int(nodes[e].a))
+    if len(b) == 0: return ""
+    b + "." + name_of(int(nodes[e].name))
+
 expr_as_type = (e: int) -> int:
     k = nodes[e].kind
     if k == .ident:
         tn = mk(.tname, nodes[e].pos)
         nodes[tn].name = nodes[e].name
         return resolve_type(tn)
+    # (m.T, pathgrid.grid.Grid[int]: a module's type)
+    fe = e
+    if k == .index: fe = int(nodes[e].a)
+    qual = ""
+    if nodes[fe].kind == .field: qual = field_path(int(nodes[fe].a))
+    if len(qual) > 0:
+        if k == .field:
+            tn = mk(.tname, nodes[fe].pos)
+            nodes[tn].name = nodes[fe].name
+            nodes[tn].sval = i32(intern(qual))
+            return resolve_type(tn)
+        s = qual_lookup(qual, int(nodes[fe].name), nodes[fe].pos)
+        if s == 0 or (syms[s].kind != .struct_ and syms[s].kind != .enum_): fatal(nodes[e].pos, "expected a type")
+        targs: int[]
+        if nodes[e].b != 0: targs.push(expr_as_type(int(nodes[e].b)))
+        else:
+            loop i in [0..nkids(e)): targs.push(expr_as_type(kid(e, i)))
+        d = int(syms[s].ref)
+        if targs.len() != nkids2(d): fatal(nodes[e].pos, "wrong number of type arguments")
+        return get_struct_inst(d, targs)
     if k == .index and nodes[int(nodes[e].a)].kind == .ident:
         s = lookup(int(nodes[int(nodes[e].a)].name))
         if s == 0 or (syms[s].kind != .struct_ and syms[s].kind != .enum_): fatal(nodes[e].pos, "expected a type")
@@ -2252,6 +2277,7 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
             check_expr(args[0], 0)
             ide_complete_members(ntype(args[0]))
         ide_complete_names()
+    if mod_scope >= 0 and not ufcs: private_member(mod_scope, name, nodes[n].pos)
     ii = intrinsic_of(name)
     if ii >= 0 and intrinsics[ii].arr and args.len() > 0:
         a0 = args[0]
@@ -5585,6 +5611,7 @@ check_expr = (n: int, expected: int) -> int:
             if braced_alone(nodes[n].pos, len(name_of(nm))): fatal(nodes[n].pos, "unknown name '{name_of(nm)}': `\{{name_of(nm)}}` in a string puts in the value of {name_of(nm)}; for the braces in the text (a tag), write `\{\{{name_of(nm)}}}}}`, or make it a raw string, r\"...\"")
             fatal(nodes[n].pos, "unknown name '{name_of(nm)}'{private_hint(nm)}{sug}")
         sk = syms[s].kind
+        if sk == .global or sk == .const_: use_clash(nm, nodes[n].pos)
         if ide_on and sk != .fns: ide_sym_ref(n, s)
         nodes[n].aux = i32(int(sk))
         if sk == .local:
@@ -5693,6 +5720,7 @@ check_expr = (n: int, expected: int) -> int:
             if s == 0:
                 if name_of(fname) == "path": fatal(nodes[n].pos, "paths are plain functions: `join_path(a, b)`, `file_name(p)`, `dir_name(p)`, `extension(p)`, `file_exists(p)`")
                 fatal(nodes[n].pos, "module '{name_of(int(modules[m].name))}' has no member '{name_of(fname)}'")
+            private_member(m, fname, nodes[n].pos)
             nodes[n] = Node(kind = .ident, pos = nodes[n].pos, name = i32(fname))
             t = check_expr_in_module(n, m, expected)
             last_checked = n
@@ -5758,6 +5786,7 @@ check_expr = (n: int, expected: int) -> int:
                 loop i in [0..int(structs[si].nfields)):
                     if int(fields[int(structs[si].fields) + i].name) == fname: fi = i
                 if fi >= 0:
+                    private_field(si, fname, nodes[n].pos)
                     nodes[n].aux = i32(fi)
                     t = int(fields[int(structs[si].fields) + fi].type)
                     if ide_on: ide_field_ref(nodes[n].pos, fname, int(structs[si].decl), fi, t)

@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- Packages: each build block's names are its own package's. A package's `import util` is the
+  `util` its own build block names, whatever the program calls `util` (the first name anywhere
+  in the tree won, silently), and a program's package no longer hides a standard-library module
+  from the packages it uses. Two packages can use two versions of a third: each gets its own, as
+  modules of their own (`expects mathx.Vec (v1.0.0), found mathx.Vec (v2.0.0)`); one commit is
+  fetched and compiled once. `sloppy.lock` has a line for each package as each build block names
+  it (`pathgrid/mathx`), so a dependency's dependencies are pinned too.
+- A package's main file is named after the package (its directory, or its repository without
+  `.git` and `sloppy-`), not after the name a build block gives it.
+- `sloppy add URL v1.2.0` (or `URL@v1.2.0`) adds a version; with none, the newest version tag
+  (`vX.Y.Z`), else the default branch. A name goes after `as`. `sloppy update [name]` pins the
+  packages' branches to their newest commits and lists newer version tags; installing a newer
+  Sloppy is now `sloppy upgrade`.
+- A directory or file beside the program with a package's name is an error naming both (the
+  local one won, silently). A commit can be given by its first 7 or more characters.
+- Package errors point at the package's line in the build block (the import as a note); one in
+  a package's file says which package and version (`in package inikit (v1.1.0, 5d84792):`). A
+  missing tag or branch lists the repository's branches and newest tags; a `file://` URL with no
+  repository says so (not GitHub's hint); a package with no `.jo` files, or several and none named
+  after it, says what it has. `import zzz` with nothing of that name says there is no package or
+  standard module zzz.
+- Names starting with `_` are private to their file in programs and packages: `m._x`,
+  `from m import _x` and another file's struct field `v._x` are errors (`use` already left them
+  out).
+- `use a` and `use b` with a global, constant or type of the same name is an error, as two
+  functions were (the first silently won).
+- A type through a module's module, `x: pathgrid.grid.Grid[int]`, as calls had it; and `m.T` in
+  type arguments (`from_json[cfg.Settings](s)`).
+- Two modules' types of one name are named with their modules in messages (`expects b.Vec,
+  found a.Vec`, not `expects Vec, found Vec`); `Heap[int]` after a `use` whose Heap hides the
+  library's says so.
+- `sloppy test dir` (and `sloppy test` alone, for `.`) runs the tests of each `.jo` file under
+  it, with one count at the end.
+- The build block's unknown option lists all the options.
+- The language server goes to a package's main file from `import physics` and from its line in
+  the build block, and to a package's file from `import 'physics/world.jo'`.
 - Rollback netplay's packets are short text (a line of numbers, then the inputs, `=` for one the
   same as the one before): some 600 bytes became 150 for a player holding still, 60 a second to
   each other player. A packet to a peer whose path holds 16 KB not sent yet is left out (the next

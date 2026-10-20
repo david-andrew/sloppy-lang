@@ -1233,9 +1233,14 @@ use 'physics.jo'                            # all its names, as they are
 `import` keeps a module's names apart and is the one to reach for in a program of several
 files; `from ... import` picks names (a long list can go in parentheses over several lines);
 `use` suits a small program split into files that share one set of names. Names starting with
-`_` are private to their file: `use` leaves them out, while `physics._helper` and
-`from 'physics.jo' import _helper` reach them deliberately. A module's own functions with an
-imported function's name are overloads of it; any other clash is an error (rename with `as`).
+`_` are private to their file: `use` leaves them out, and `physics._helper`, `from 'physics.jo'
+import _helper` and a struct's field `b._cache`, written in another file, are errors that say
+so. A module's own functions with an imported function's name are overloads of it; any other
+clash is an error (rename with `as`), as is a name two `use`d modules both have, when it is not
+a function (a variable, a constant, a type): `import` one of them instead. Through a module,
+its own imports are reached too: `import 'world.jo'` and then `world.grid.Grid[int]` and
+`world.grid.make(...)`. Two modules' types of the same name are two types, and messages name
+them by their modules, `expects grid.Cell, found board.Cell`.
 `use` and imports are not transitive: a file sees the names of the modules it brings in itself.
 A module's top-level code runs when the program starts, before the code of the file that brings
 it in (each module once). Its `main`, if it has one, does not: only the program's own file's
@@ -1255,20 +1260,76 @@ block:
 ```gdscript
 build:
     physics = package("https://github.com/ann/sloppy-physics")
-    tween = package("https://github.com/bob/tween", "v1.2")     # a tag, a branch or a commit
+    tween = package("https://github.com/bob/tween", "v1.2.0")   # a tag, a branch or a commit
     shared = package("../shared")                               # a directory
+    local = package("file:///home/me/repos/tween")              # a repository on this machine
 
-import physics                      # the package's main file: physics.jo at its root (or its only file there)
+import physics                      # the package's main file
 import 'physics/world.jo' as world  # any other file of it
 ```
 
-`sloppy add https://github.com/ann/sloppy-physics` writes that line (into the `.jo` file in the
-current directory, or the one given) and fetches it. The first build pins each git package to a
-commit in `sloppy.lock` beside the program: keep that file with the program, and every build
-uses the same code, whoever builds it (delete a package's line to take its newest commit). Git
-fetches each commit once, into a cache (`~/.cache/sloppy/packages`; `SLOPPY_PACKAGES` puts it
-elsewhere), so later builds need no network. The packages a package names in its own build
-block come along. There is no registry: a package is any repository with Sloppy files.
+A package's main file is named after the package itself: its directory's name, or its
+repository's without `.git` and a `sloppy-` in front (`sloppy-physics` has `physics.jo`), or
+else its only `.jo` file at its root. The name the build block gives it does not change that:
+`ph = package("https://github.com/ann/sloppy-physics")` then `import ph` loads `physics.jo`.
+A commit is its 40 characters or the first 7 or more of them. A name in the build block that
+is also a directory or file beside the program (`physics/`, `physics.jo`) is an error that names
+both: rename one.
+
+*Each package's names are its own.* A build block's names are its package's: the program's
+for the program's files, and a package's own build block (in the files at its root) for its
+files. When the program calls something `util` and a package it uses calls something else
+`util`, each `import util` gets its own; and the program's package names never hide a
+standard-library module from a package (`big = package("../big")` in the program, and a
+package's `import big` is still the library's).
+
+*Versions side by side.* Two packages may use different versions of a third (one wants
+`mathx` v1.0.0, another v2.0.0): each gets the version it names, as separate modules, so a
+value of one version's type is not the other's (`expects mathx.Vec (v1.0.0), found mathx.Vec
+(v2.0.0)`). The same repository at the same commit, wherever it is named, is fetched and
+compiled once and shared.
+
+*The lock file.* The first build pins each git package to a commit in `sloppy.lock` beside the
+program; keep that file with the program, and every build uses the same code, whoever builds
+it. Each line is a package as one build block names it (`physics`, or `physics/mathx` for the
+`mathx` that `physics` names), its URL, the tag, branch or commit asked for (`-`: the default
+branch), and its commit. Only the program's `sloppy.lock` counts: a package's own is not read.
+Deleting a line takes that package's newest commit again at the next build.
+
+```
+sloppy add <URL> [version] [as name]    a package in the build block, fetched and pinned: URL@v1.2.0
+                                        works too; with no version, the newest tag that is one
+                                        (v1.2.0), else the default branch
+sloppy update [name]                    the packages' branches (and default branches) pinned to
+                                        their newest commits, each said old -> new; tags and
+                                        commits stay, and newer version tags are listed
+sloppy upgrade                          a newer Sloppy itself
+```
+
+*The cache.* Git fetches each commit once, into `~/.cache/sloppy/packages` (macOS:
+`~/Library/Caches/sloppy/packages`; Windows: `%LOCALAPPDATA%\sloppy\packages`; the environment
+variable `SLOPPY_PACKAGES` puts it elsewhere), so later builds need no network. Deleting that
+directory clears it; the next build fetches what it needs again. Errors in a package's files
+say which package and version they are in (`in package inikit (v1.1.0, 5d84792):`), above the
+path in the cache. There is no registry: a package is any repository with Sloppy files, and
+git reaches it as it would for `git clone` (a private one with the credentials git has).
+
+*Publishing a package.* A package is a directory or git repository of `.jo` files:
+
+- its main file at the root, named after the repository (`sloppy-physics` or `physics`:
+  `physics.jo`), and its other files beside it or in directories under it, which the main
+  file imports as any program's files do (`import 'world.jo'`), and which users can import as
+  `'physics/world.jo'`;
+- the packages it needs, in the build block of a file at its root, as a program names them
+  (directory packages inside its own repository); a build block's other options (`name`,
+  `target`, `opt`, `output`, `icon`, `js`) are the program's to set, and a package's are
+  ignored;
+- releases tagged `vX.Y.Z` (`git tag v1.2.0`), which `sloppy add` picks the newest of, and a
+  new major number for changes that break code using it: both versions can be used at once;
+- names starting with `_` for what is its own: they stay in their file;
+- a `#` comment on the lines just above a definition, which editors show for it;
+- `test` blocks, which `sloppy test` runs (`sloppy test .` runs those of every file in a
+  directory).
 
 ## 10. Compile-time features
 
@@ -1326,7 +1387,8 @@ own: one that fails (an `assert` with its message and location, or a panic) is r
 `FAILED`, the others still run (and do not see what it changed), and the run ends with how many
 passed and failed and exit status 1. On Windows and the web the first failure stops the run.
 `sloppy test file.jo parse save` runs only the tests whose names have `parse` or `save` in
-them. A test that calls `exit()` fails (it did not reach its end). `assert(a == b)` (and the
+them. `sloppy test dir` (and `sloppy test` alone, for the current directory) runs the tests of
+each `.jo` file under it, a module's own tests as that file's, and ends with the counts of all. A test that calls `exit()` fails (it did not reach its end). `assert(a == b)` (and the
 other comparisons) with no message of its own says what each side was when it fails,
 `assertion failed: xs == ys (xs is [1, 2], ys is [1, 3])`; `unwrap(r)` and `expect(r, "what")`
 give an optional's or a result's value, stopping with what it held instead. `sloppy check
@@ -1798,13 +1860,15 @@ sloppy watch file.jo      run it, and reload it while its files change
 sloppy --web file.jo      compile for the web and open it in the browser
 sloppy build file.jo      write the executable / .html (-o game.zip: the page as index.html in a
                           zip, ready to upload to itch.io; on Windows the .exe in one)
-sloppy test file.jo       run `test` blocks (sloppy test file.jo save: those with "save" in their names)
+sloppy test file.jo       run `test` blocks (sloppy test file.jo save: those with "save" in their names;
+                          sloppy test dir, or sloppy test alone for .: those of each .jo file in it)
 sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, platformer, 3d, story, online, program)
 sloppy check file.jo      type check only
-sloppy add <git URL>      a package, in the build block (and sloppy.lock)
+sloppy add <git URL>      a package, in the build block (and sloppy.lock); sloppy update: the newest
+                          commits of its branches
 sloppy fmt file.jo        lay out the code one way (directories too; --check: only list what
                           would change; -: standard input to standard output)
-sloppy update             install the latest release (when this is not it)
+sloppy upgrade            install the latest release of Sloppy (when this is not it)
 ```
 
 Options (`--release`, `--target windows`, `--time`, `--web`) go before or after the file:

@@ -7,7 +7,7 @@ root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 version = sys.argv[1].lstrip("v")
 text = open(os.path.join(root, "CHANGELOG.md"), encoding="utf-8").read()
 m = re.search(r"^## " + re.escape(version) + r"\s*\n(.*?)(?=^## |\Z)", text, re.S | re.M)
-print("Install or upgrade (or run `sloppy update`): on Linux `curl -fsSL https://sloppy-lang.org/install | bash`; "
+print("Install or upgrade (or run `sloppy upgrade`): on Linux `curl -fsSL https://sloppy-lang.org/install | bash`; "
       "on Windows, in PowerShell, `irm https://sloppy-lang.org/install.ps1 | iex`")
 if m:
     # (GitHub shows each line break in release notes: join the lines of a paragraph or list item)

@@ -41,7 +41,7 @@ const SLOPPY_VERSION = "0.27.0"
 const SLOPPY_INSTALL_URL = "https://sloppy-lang.org/install"
 
 usage = ():
-    eprint("usage: sloppy   (an interactive prompt)\n       sloppy [run] [--web] [--release] file.jo [args...]   (--web: build for the browser and open it there)\n       sloppy watch file.jo [args...]   (run it, and reload it while its files change)\n       sloppy test file.jo [words] [--release]   (only the tests whose names have one of the words)\n       sloppy check file.jo [--target ...]\n       sloppy fmt [--check] file.jo or directory...   (lay out the code one way; -: standard input)\n       sloppy add <git URL or directory> [name] [file.jo]   (a package, pinned in sloppy.lock)\n       sloppy new <directory> [game|arcade|platformer|3d|story|online|program]   (a project to start from)\n       sloppy lsp   (a language server for editors, on standard input and output)\n       sloppy --version\n       sloppy update   (install the latest release, if this is not it)\n       sloppy build file.jo [-o output] [--target native|linux|linux-arm64|windows|macos|wasm] [--release] [-g: variables for debuggers] [--ir]")
+    eprint("usage: sloppy   (an interactive prompt)\n       sloppy [run] [--web] [--release] file.jo [args...]   (--web: build for the browser and open it there)\n       sloppy watch file.jo [args...]   (run it, and reload it while its files change)\n       sloppy test [file.jo or directory] [words] [--release]   (only the tests whose names have one of the words; a directory, . if none is given: the tests of its .jo files)\n       sloppy check file.jo [--target ...]\n       sloppy fmt [--check] file.jo or directory...   (lay out the code one way; -: standard input)\n       sloppy add <git URL or directory> [tag, branch or commit] [as name] [file.jo]   (a package, pinned in sloppy.lock)\n       sloppy update [package] [file.jo]   (the packages' branches pinned to their newest commits)\n       sloppy new <directory> [game|arcade|platformer|3d|story|online|program]   (a project to start from)\n       sloppy lsp   (a language server for editors, on standard input and output)\n       sloppy --version\n       sloppy upgrade   (install the latest release of Sloppy, if this is not it)\n       sloppy build file.jo [-o output] [--target native|linux|linux-arm64|windows|macos|wasm] [--release] [-g: variables for debuggers] [--ir]")
     exit(2)
 
 find_lib_dir = () -> str:
@@ -58,7 +58,7 @@ find_lib_dir = () -> str:
         exit(2)
     "{d}/lib"
 
-# sloppy update [version]: install the latest release (or that one) over this installation, with
+# sloppy upgrade [version]: install the latest release (or that one) over this installation, with
 # the install script as new users get it; it does nothing when this is already the latest
 self_update = (version: str):
     exe = os_path(exe_path())
@@ -67,7 +67,7 @@ self_update = (version: str):
         s = rfind(d, "/")
         if s >= 0: d = d[..s)
     if file_exists("{d}/compiler/main.jo"):
-        eprint("sloppy: {exe} was built from the source in {d}; to update it: cd {d} && git pull && tools/bootstrap.sh")
+        eprint("sloppy: {exe} was built from the source in {d}; to upgrade it: cd {d} && git pull && tools/bootstrap.sh")
         exit(1)
     when TARGET == "windows":
         if not file_exists("{d}/lib/core/rt.jo"):
@@ -152,16 +152,12 @@ setup_target = ():
 # (a quick read of the main file's build block before anything is checked; check_build_block
 # reports its mistakes)
 scan_build_block = (path: str):
-    global build_output, build_target, opt_release, pkg_dirs, pkg_errs, pkg_specs, program_name
+    global build_output, build_target, opt_release, program_name
     src = read_source(path) ?? ""
     # find a top-level `build:` line, then read its indented lines
     at = pkg_block_at(src)
     # (the packages it names: where they are, fetched if need be)
-    pkg_specs = []
-    pkg_dirs = {}
-    pkg_errs = {}
-    pkg_scan_at(path, src, at)
-    pkg_resolve_all(path)
+    pkg_load(path, src, at)
     if at < 0: return
     i = find_byte(src, '\n', at)
     loop i >= 0 and i < len(src):
@@ -632,7 +628,7 @@ main = ():
         loop hi < a.len():
             if a[hi] == "--help" or a[hi] == "-h": usage()
             hi += 1
-    if a.len() >= 2 and (a[1] == "update" or a[1] == "upgrade"):
+    if a.len() >= 2 and a[1] == "upgrade":
         version = ""
         if a.len() >= 3: version = a[2]
         self_update(version)
@@ -725,6 +721,9 @@ main = ():
     if a[1] == "add":
         pkg_add_main(a)
         return
+    if a[1] == "update":
+        pkg_update_main(a)
+        return
     # (building and running fetch the packages a program names; the language server does not)
     pkg_fetch = true
     if a[1] == "check":
@@ -781,7 +780,8 @@ main = ():
         # (options before or after the file: sloppy test --release f.jo, sloppy test f.jo --release;
         # the other words after it pick tests by name)
         first = cli_options(a, first + 1)
-        if first >= a.len(): usage()
+        # (a directory, . when none is named: the tests of each .jo file in it)
+        if first >= a.len() or is_dir(os_path(a[first])): test_dir(a, first)
         i = first + 1
         loop i < a.len():
             k = cli_option(a, i)
@@ -794,7 +794,7 @@ main = ():
     path = os_path(a[first])
     if not file_exists(path) and not ends_with(path, ".jo") and find(path, "/") < 0:
         near = ""
-        loop c in ["run", "build", "watch", "test", "check", "fmt", "add", "new", "lsp", "update", "help", "version", "repl"]:
+        loop c in ["run", "build", "watch", "test", "check", "fmt", "add", "update", "upgrade", "new", "lsp", "help", "version", "repl"]:
             lim = 2
             if len(c) <= 3: lim = 1
             if edit_distance(a[first], c, lim) <= lim and len(near) == 0: near = " (did you mean 'sloppy {c}'?)"
@@ -846,6 +846,86 @@ main = ():
     exec(built, run_args)
     eprint("sloppy: failed to run {built}")
     exit(1)
+
+# sloppy test <directory> [words]: each .jo file under it with tests (its test blocks: a module's
+# are its own, run as it is tested) tested as sloppy test file.jo would, one after the other, and
+# the counts of all of them (a[first]: the directory, if one is named)
+test_dir = (a: str[], first: int):
+    dir = "."
+    if first < a.len(): dir = os_path(a[first])
+    loop len(dir) > 1 and ends_with(dir, "/"): dir = dir[..len(dir) - 1)
+    opts: str[]
+    loop k in [1..min(first, a.len())):
+        if a[k] != "test" and a[k] != "run": opts.push(a[k])
+    rest: str[]
+    words: str[]
+    loop k in [first + 1..a.len()):
+        rest.push(a[k])
+        if not starts_with(a[k], "--") and a[k - 1] != "--target": words.push(a[k])
+    passed = 0
+    failed = 0
+    files_run = 0
+    bad: str[]
+    loop f in walk_dir(dir):
+        # (not in hidden directories, as .git)
+        if not ends_with(f, ".jo") or starts_with(f, ".") or find(f, "/.") >= 0: continue
+        path = f
+        if dir != ".": path = "{dir}/{f}"
+        src = read_file(path) ?? ""
+        tests = test_names(src)
+        if tests.len() == 0: continue
+        if words.len() > 0:
+            any = false
+            loop t in tests:
+                loop w in words:
+                    if find(t, w) >= 0: any = true
+            if not any: continue
+        files_run += 1
+        print("{path}:")
+        rc, out = run_program(exe_path(), ["test"] + opts + [path] + rest)
+        write(out)
+        # (its last line: "3 tests passed", "2 passed, 1 failed")
+        last = ""
+        loop line in split(trim(out), "\n"): last = trim(line)
+        np = to_int(last[..max(find(last, " "), 0))) ?? -1
+        if rc == 0 and np >= 0 and find(last, " passed") >= 0: passed += np
+        else if np >= 0 and find(last, " failed") >= 0:
+            passed += np
+            comma = find(last, ",")
+            fw = find(last, " failed")
+            failed += to_int(trim(last[comma + 1..fw))) ?? 1
+            bad.push(path)
+        else:
+            # (it did not build, or stopped before its tests ended)
+            failed += 1
+            bad.push(path)
+    if files_run == 0:
+        if words.len() > 0: eprint("no test's name in the .jo files under {dir} has {join(words, ", ")} in it")
+        else: eprint("no tests in the .jo files under {dir}: a test is written `test \"adds\":` with its lines below it, as `assert(add(1, 2) == 3)`")
+        exit(1)
+    in_files = "in {files_run} files"
+    if files_run == 1: in_files = "in 1 file"
+    if failed > 0:
+        print("{passed} passed, {failed} failed {in_files} (failed: {join(bad, ", ")})")
+        exit(1)
+    tests_word = "tests"
+    if passed == 1: tests_word = "test"
+    print("{passed} {tests_word} passed {in_files}")
+    exit(0)
+
+# the names of the test blocks in a file's text
+test_names = (src: str) -> str[]:
+    out: str[]
+    at = 0
+    loop true:
+        k = find(src, "test \"", at)
+        if k < 0: break
+        at = k + 6
+        if k > 0 and src[k - 1] != '\n': continue
+        e = find(src, "\"", at)
+        if e < 0: break
+        out.push(src[at..e))
+    out
 
 # (@lib("libc.so.6") in a Windows build: the program fails when it calls the function)
 extern_lib_check = (fi: int):
