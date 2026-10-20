@@ -2375,7 +2375,6 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `key_pressed = (k: Key) -> bool`: true only in the frame the key was pressed
 - `key_released = (k: Key) -> bool`
 - `key_typed = (k: Key) -> bool`: true in the frame the key was pressed, and again each time it repeats while held down, as the desktop repeats keys (for moving through text); characters typed arrive through text_input()
-- `key_repeat = (k: Key, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`: true in the frame the key was pressed, then again while it is held: after `delay` seconds, each `period` seconds (PICO-8's btnp: a quarter second, then 15 times a second); for moving through a menu or a grid a step at a time. It counts the game's time, the same in a SLOPPY_INPUT run; in a fixed_update step, the steps'. gamepad_repeat and action_repeat are the same for a button and an action.
 - `shortcut = (k: Key, shift: bool = false) -> bool`: true in the frame Ctrl and k are pressed together, and as it repeats (on a Mac and in a browser Cmd too), for a tool's keys: `if shortcut(.s): save()`; shift: with Shift held too, as Ctrl+Shift+Z (without it, Shift must not be held). Browsers keep some for themselves (Ctrl+N, Ctrl+W, Ctrl+T) and the page never sees them.
 - `mouse_pos = () -> vec2`: (in the 2D units of the screen: see screen_size and screen.jo)
 - `mouse_delta = () -> vec2`
@@ -2587,7 +2586,6 @@ Local multiplayer: a player number reads that gamepad (keys and the mouse count 
 - `action_down = (name: str, player: int = -1) -> bool`
 - `action_pressed = (name: str, player: int = -1) -> bool`: true in the frame the action was pressed (a stick: when it goes past halfway)
 - `action_released = (name: str, player: int = -1) -> bool`
-- `action_repeat = (name: str, player: int = -1, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`: true as the action is pressed, then again while it is held, as key_repeat (a menu's up and down)
 - `action_axis = (neg: str, pos: str, player: int = -1) -> f64`: from -1 (neg) to 1 (pos): action_axis("left", "right")
 - `action_vec = (left: str, right: str, up: str, down: str, player: int = -1) -> vec2`: a direction (y down), at most 1 long
 
@@ -2629,8 +2627,6 @@ A controller keeps its number while it is plugged in (players stay who they are)
 - `gamepad_down = (b: PadButton) -> bool`
 - `gamepad_pressed = (b: PadButton) -> bool`
 - `gamepad_released = (b: PadButton) -> bool`
-- `gamepad_repeat = (pad: int, b: PadButton, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`: true as the button is pressed, then again while it is held, as key_repeat
-- `gamepad_repeat = (b: PadButton, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`
 - `gamepad_axis = (pad: int, i: int) -> f64`: axis value in -1..1 (triggers 0..1): 0 left x, 1 left y, 2 right x, 3 right y, 4 left trigger, 5 right trigger; without a pad, the gamepad that has it furthest from rest
 - `gamepad_axis = (i: int) -> f64`
 - `left_stick = (pad: int) -> vec2`
@@ -2642,6 +2638,15 @@ A controller keeps its number while it is plugged in (players stay who they are)
 - `joystick_button = (pad: int, i: int) -> bool`
 - `joystick_pressed = (pad: int, i: int) -> bool`
 - `joystick_axis = (pad: int, i: int) -> f64`
+
+### keyrepeat.jo
+
+Key repeats as a game wants them (PICO-8's btnp): key_repeat, gamepad_repeat, action_repeat.
+
+- `key_repeat = (k: Key, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`: true in the frame the key was pressed, then again while it is held: after `delay` seconds, each `period` seconds (PICO-8's btnp: a quarter second, then 15 times a second); for moving through a menu or a grid a step at a time. It counts the game's time, the same in a SLOPPY_INPUT run; in a fixed_update step, the steps'. gamepad_repeat and action_repeat are the same for a button and an action.
+- `gamepad_repeat = (pad: int, b: PadButton, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`: true as the button is pressed, then again while it is held, as key_repeat
+- `gamepad_repeat = (b: PadButton, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`
+- `action_repeat = (name: str, player: int = -1, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`: true as the action is pressed, then again while it is held, as key_repeat (a menu's up and down)
 
 ## Drawing in 2D
 
@@ -2744,16 +2749,6 @@ draw = ():
 - `use_effect[P] = (sh: Shader, params: P)`: 2D drawing from here on goes through effect sh (made with shader(effect_vs, ...)), with params, until no_effect() or the end of the frame
 - `no_effect = ()`: back to drawing without an effect (palette swaps go on: palette_reset ends them)
 
-#### Palette swaps
-
-- `palette_swap = (from: vec4, to: vec4, screen: bool = false)`: What is drawn in one color is drawn in another, as with PICO-8's pal(c0, c1): an enemy of another color from the same sprite, a flash as something is hit, a fade through a palette's colors. Swaps stay from frame to frame until palette_reset(), up to 16 at once (a color swapped again changes its swap; swapped to itself, it has none). A pixel is in the color `from` when its red, green and blue are each within one 255th of from's; its alpha is kept. screen = true swaps the color in the whole picture as it is shown, all the frame drew (PICO-8's pal(c0, c1, 1)), once as the frame ends. The swaps of drawing are an effect (use_effect): one of the game's own is used in their place until no_effect().
-  ```gdscript
-  palette_swap(PAL[8], PAL[11])           # red is drawn green from here on: sprites, shapes, text
-  draw_frame(gfx, 2, pos)
-  palette_reset()
-  ```
-- `palette_reset = ()`: no palette swaps (of drawing and of the screen) from here on
-
 #### Textures
 
 - `texture = (img: Image, smooth: bool = smooth_textures) -> Texture`: upload an image to the GPU (smooth: see smooth_textures)
@@ -2835,14 +2830,6 @@ draw = ():
   ```
 - `text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false)`: text centered on `center` (horizontally and vertically; each of its lines centered). The built-in font is proportional ("i" is narrower than "@"): a grid of characters, a roguelike's map, draws each one centered in its cell
 
-#### The pixel font
-
-- `pixel_font = () -> Font`: PICO-8's kind of font, for tiny resolutions: each character 3 x 5 pixels, 4 apart, drawn in hard pixels at a whole-number scale: 1 at size 6 (a line 6 pixels high), 2 at 12, ... (a size between is drawn at the whole number below; under 6, at 1). It has the printable ASCII characters, the lowercase letters drawn as capitals, as PICO-8 draws them; others show as ?. Under pixel_art() text() draws with it, unless set_font gave another:
-  ```gdscript
-  set_font(pixel_font())
-  text("SCORE {score}", vec2(1, 1), 6, PAL[7])
-  ```
-
 ### font.jo
 
 Fonts: load_font reads a TrueType or OpenType font (.ttf, .otf, or the first font of a .ttc) and makes the characters text() draws with, sharp at any size (signed distance fields). set_font chooses the font text() and text_width() use; set_font() goes back to the built-in one.
@@ -2916,7 +2903,6 @@ Drawing that needs it goes to an offscreen canvas, put on the window when the fr
 - `screen_fit = (mode: Fit)`
 - `letterbox_color = (c: vec4)`
 - `render_resolution = (w: int, h: int, smooth: bool = false, whole: bool = true)`
-- `pixel_art = (smooth: bool = false)`: (and textures made after it are sharp: smooth_textures; shapes are whole pixels and text is pixel_font()'s, draw2d.jo)
 - `render_scale = (s: f64)`
 - `full_resolution = ()`: the rest of this frame's drawing at the window's own resolution, over what was drawn at the low one of pixel_art() (or render_resolution, render_scale), in the same 2D units: a HUD whose text stays sharp, where text a few pixels tall at 320 x 180 is unreadable (in the built-in font: pixel_font() and whole-pixel shapes are for pixel_art's resolution). Without a low resolution it does nothing.
   ```gdscript
@@ -2924,6 +2910,41 @@ Drawing that needs it goes to an offscreen canvas, put on the window when the fr
       draw_tilemap(level)          # pixel art
       full_resolution()
       text("Score {score}", vec2(4, 4), 8)
+  ```
+
+### pixelart.jo
+
+Pixel art: pixel_art(), PICO-8's kind of font, palette swaps (PICO-8's pal) and pictures written as text.
+
+- `pixel_art = (smooth: bool = false)`: one 2D unit is one sharp pixel: render_resolution at the design size (screen.jo). Textures made after it are sharp too (smooth_textures); lines, rects, circles, rings, arcs and ellipses are whole pixels in exactly their colors, and text() draws in pixel_font() unless set_font says
+
+#### The pixel font
+
+- `pixel_font = () -> Font`: PICO-8's kind of font, for tiny resolutions: each character 3 x 5 pixels, 4 apart, drawn in hard pixels at a whole-number scale: 1 at size 6 (a line 6 pixels high), 2 at 12, ... (a size between is drawn at the whole number below; under 6, at 1). It has the printable ASCII characters, the lowercase letters drawn as capitals, as PICO-8 draws them; others show as ?. Under pixel_art() text() draws with it, unless set_font gave another:
+  ```gdscript
+  set_font(pixel_font())
+  text("SCORE {score}", vec2(1, 1), 6, PAL[7])
+  ```
+
+#### Palette swaps
+
+- `palette_swap = (from: vec4, to: vec4, screen: bool = false)`: What is drawn in one color is drawn in another, as with PICO-8's pal(c0, c1): an enemy of another color from the same sprite, a flash as something is hit, a fade through a palette's colors. Swaps stay from frame to frame until palette_reset(), up to 16 at once (a color swapped again changes its swap; swapped to itself, it has none). A pixel is in the color `from` when its red, green and blue are each within one 255th of from's; its alpha is kept. screen = true swaps the color in the whole picture as it is shown, all the frame drew (PICO-8's pal(c0, c1, 1)), once as the frame ends. The swaps of drawing are an effect (use_effect): one of the game's own is used in their place until no_effect().
+  ```gdscript
+  palette_swap(PAL[8], PAL[11])           # red is drawn green from here on: sprites, shapes, text
+  draw_frame(gfx, 2, pos)
+  palette_reset()
+  ```
+- `palette_reset = ()`: no palette swaps (of drawing and of the screen) from here on
+
+#### Pictures written as text
+
+- `pixel_image = (rows: str, palette: vec4[]) -> Image`: a picture written as text, a character a pixel and a line a row (blank lines and the lines' indentation left out): 0 to 9 and a to f are the colors of palette with those numbers, as PICO-8's sprite editor numbers its 16 (g to z: 16 to 35; capitals the same), and "." is clear. For sprites drawn in the code:
+  ```gdscript
+  SHIP = "
+      ...77...
+      ..7cc7..
+      77777777"
+  ship = texture(pixel_image(SHIP, PAL))
   ```
 
 ### softgl.jo
@@ -2972,14 +2993,6 @@ Images: RGBA8 pixel buffers, PNG decoding (with a built-in inflate; JPEG: jpeg.j
 - `image = (w: int, h: int, fill: vec4 = vec4(0, 0, 0, 0)) -> Image`
 - `set = (img: mut Image, x: int, y: int, c: vec4)`
 - `get = (img: Image, x: int, y: int) -> vec4`
-- `pixel_image = (rows: str, palette: vec4[]) -> Image`: a picture written as text, a character a pixel and a line a row (blank lines and the lines' indentation left out): 0 to 9 and a to f are the colors of palette with those numbers, as PICO-8's sprite editor numbers its 16 (g to z: 16 to 35; capitals the same), and "." is clear. For sprites drawn in the code:
-  ```gdscript
-  SHIP = "
-      ...77...
-      ..7cc7..
-      77777777"
-  ship = texture(pixel_image(SHIP, PAL))
-  ```
 - `resized = (img: Image, w: int, h: int) -> Image`: the image at another size (a save's thumbnail, an icon): each new pixel the average of the pixels it covers when smaller, smoothly between them when larger
 
 #### Inflate (RFC 1951)
