@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- JSON written on the spot: a map or array literal where a Json goes is one, its values of any
+  types, a map or array in it one too (`to_json({"ok": true, "count": 3, "tags": ["a"]})`,
+  `http.json({"error": "nope", "code": 7})`, `j: Json = {...}`, `return {...}` from a function
+  giving a Json); a map of values of several types elsewhere says so.
 - netplay sessions keep pace by how far ahead they are over a second or so, not at each packet:
   a machine with a slow frame plays the ticks it missed at its next one, and the others no
   longer hold still for it (3 machines with jitter and three 50 ms frames a second: 62 frames

@@ -339,6 +339,10 @@ print("{repo.full_name}: {repo.stargazers_count} stars, {repo.description ?? "-"
 - JSON of any shape: `j = parse_json(r.text)`, then `if j is JsonError: ...`, and
   `j.get("items").at(0).get("name").as_str() ?? ""` (each step gives none when that part is not
   there); `j.as_list()` and `j.keys()` to loop over it. `print(j)` shows it as JSON.
+- JSON made on the spot: a map or array literal where a Json goes is one, its values of any
+  types: `to_json({"ok": true, "count": n, "tags": tags})`, `http.json({"error": "nope", "code":
+  7})`, `reply: Json = {"user": {"name": name}, "seen": none}` (a struct is the way for data
+  used again).
 - `url_query({"q": "café au lait", "page": "2"})` makes a query (`q=caf%C3%A9%20au%20lait&page=2`),
   `url_encode(s)` and `url_decode(s)` one part of an address, and `html_unescape(s)` turns
   `&amp;` and `&#233;` back into `&` and `é`.
@@ -616,6 +620,7 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | `try`/`catch`, `throw` | a function gives back what went wrong as a value (`-> Item \| LoadError`, with `error struct LoadError:`); the caller checks `if r is LoadError:`, or passes it on with `item = load(p)?` |
 | `xs.map(f)`, `filter`, `reduce((a, b) => a + b, 0)` | `xs.map(f)`, `xs.filter(f)`, `xs.reduce(0, (a, b): a + b)`, `sum(xs)` |
 | `JSON.stringify`, `JSON.parse` | `to_json(x)`, `from_json[Item](s)` (into a struct), `parse_json(s)` |
+| `res.json({ok: true, id})` | `http.json({"ok": true, "id": id})` (a literal where a Json goes is one) |
 | `localStorage` | `save_value("save", state)` and `state = load_value("save", State())` |
 | `setInterval(f, 30000)`, `setTimeout` | `if every(1, 30.0): f()` in update; `Actions` for steps one after another |
 | `Date.now()` | `unix_time()` (seconds since 1970: what to save to work out time away) |

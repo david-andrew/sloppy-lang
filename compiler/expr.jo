@@ -1139,6 +1139,8 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
             if pk == .opt: return 0
             if pk == .param: return 3
             return -1
+        # (to_json({"ok": true, "n": 3}): the version taking a Json first, as its values may differ)
+        if (k == .array or k == .map_lit) and is_json_type(p): return 1
         if k == .array:
             if pk == .array: return 0
             if pk == .param: return 3
@@ -1339,6 +1341,15 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
     # (this call's own type arguments: a call among its arguments has none, from_text[S](f(x)))
     targs_here = call_targs
     call_targs = []
+    # (to_json({"ok": true, "n": 3}): a map or array literal where a version takes a Json is one)
+    loop i in 0.. and a in args:
+        ak = nodes[a].kind
+        if ak != .map_lit and not (ak == .array and nodes[a].b == 0 and nkids(a) > 0 and not array_has_spread(a)): continue
+        loop d in decls:
+            sg = fn_sig(d)
+            if i < sg.params.len() and is_json_type(prune(sg.params[i])):
+                nodes[a] = nodes[json_lit(a)]
+                break
     check_args_untyped(args)
     open_map_args(n, name, decls, args)
     cands: Cand[]
@@ -4446,6 +4457,40 @@ color_num_hint = (n: int, t: int) -> str:
     if nodes[n].type == 0 or t == 0 or not is_numeric(ntype(n)) or type_str(t) != "vec4": return ""
     " (a colour is a vec4: `rgb(1, 0, 0.3)`, `hex(0xff004d)` or a name such as `RED`; a palette is an array of them, `PAL[8]`)"
 
+# (the library's Json: a map or array literal is one where it goes)
+is_json_type = (t: int) -> bool:
+    if t == 0 or types[t].kind != .enum_: return false
+    js = prelude.get(intern("Json")) ?? 0
+    js != 0 and syms[js].kind == .enum_ and int(structs[int(types[t].st)].decl) == int(syms[js].ref)
+
+# ({"ok": true, "tags": ["a"]} as a Json: __json_object(keys, values), each value a Json in turn,
+# a map or array in it one too; [1, "a"]: __json_list(items))
+json_lit = (n: int) -> int:
+    pos = nodes[n].pos
+    if nodes[n].kind == .map_lit:
+        ks: int[]
+        vs: int[]
+        loop i in [0..nkids(n)):
+            p = kid(n, i)
+            ks.push(int(nodes[p].a))
+            vs.push(json_elem(int(nodes[p].b)))
+        ka = mk(.array, pos)
+        set_list(ka, ks)
+        va = mk(.array, pos)
+        set_list(va, vs)
+        return bc_call("__json_object", [ka, va], pos)
+    items: int[]
+    loop i in [0..nkids(n)): items.push(json_elem(kid(n, i)))
+    a = mk(.array, pos)
+    set_list(a, items)
+    bc_call("__json_list", [a], pos)
+
+json_elem = (v: int) -> int:
+    k = nodes[v].kind
+    if k == .map_lit or (k == .array and nodes[v].b == 0 and not array_has_spread(v)): return json_lit(v)
+    if k == .none_lit: return bc_call("__json_null", [], nodes[v].pos)
+    bc_call("json_value", [v], nodes[v].pos)
+
 # (a type's text with its unknowns, ?T74, as letters: T, U, V...)
 letters_for_vars = (s: str) -> str:
     seen: str[]
@@ -6208,6 +6253,10 @@ check_expr = (n: int, expected: int) -> int:
         nodes[n].kind = .try_
         return check_try(n, expected)
     else if k == .lambda: t = check_lambda(n, expected)
+    else if (k == .map_lit or (k == .array and nodes[n].b == 0 and not has_flag(n, NF_TYPE_EXPR) and not array_has_spread(n))) and is_json_type(ex):
+        # ({"ok": true, "count": 3}, [1, "a"] where a Json goes: a Json object or list)
+        nodes[n] = nodes[json_lit(n)]
+        return check_expr(n, expected)
     else if k == .array and has_flag(n, NF_TYPE_EXPR):
         # (thorns = Rect[]: an empty array of Rects is declared with a colon)
         vn = name_before_eq(nodes[n].pos)
@@ -6354,7 +6403,7 @@ check_expr = (n: int, expected: int) -> int:
             # ({"name": "Drone", "cost": 10.0}: JavaScript's object, values of several types)
             if i > 0 and ex == 0:
                 bt = prune(check_expr(vb, vt))
-                if not type_eq(bt, prune(vt)) and not can_coerce(vb, bt, vt): fatal(nodes[vb].pos, "a map's values are all of one type, and the first is {a_type(vt)}, this {a_type(bt)}: for a record with named fields of their own types, declare `struct Name:` with them")
+                if not type_eq(bt, prune(vt)) and not can_coerce(vb, bt, vt): fatal(nodes[vb].pos, "a map's values are all of one type, and the first is {a_type(vt)}, this {a_type(bt)}: for a record with named fields of their own types, declare `struct Name:` with them; for JSON data, a Json takes any (`data: Json = \{...}`)")
                 coerce(vb, vt)
             else: check_to(vb, vt)
         t = get_struct_inst(md, [kt, vt])

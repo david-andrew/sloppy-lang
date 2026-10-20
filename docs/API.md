@@ -1170,7 +1170,8 @@ For JSON straight into your own structs and back, from_json[Config](text) and to
 
 - `to_json = (j: Json, indent: int = 0) -> str`: JSON text for a value (indent > 0: on several lines, indented by that many spaces)
 - `to_json[T] = (x: T, indent: int = 0) -> str`: any value as JSON: a struct as an object (by field name: one ending in _, as when_, without it), an array, tuple or vector as a list, a map as an object (its keys as text), none as null, an enum's variant as its name (one with fields as {"name": [fields]}), and a Json inside it as itself; from_json[T] reads it back
-- `json_value[T] = (x: T) -> Json`: any value as a Json (what to_json writes for it)
+- `json_value = (j: Json) -> Json`: any value as a Json (what to_json writes for it) (a Json as it is: in a Json literal, {"user": j})
+- `json_value[T] = (x: T) -> Json`
 
 ### csv.jo
 
@@ -5564,7 +5565,8 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 
 - `text = (s: str, status: int = 200, type: str = "text/plain; charset=utf-8") -> Response`: text (as text/plain, unless type says otherwise)
 - `html = (s: str, status: int = 200) -> Response`: a web page's HTML
-- `json = (value, status: int = 200) -> Response`: any value as JSON (to_json's): a struct, an array, a map...; JSON text already made goes with text(s, type = "application/json")
+- `json = (value, status: int = 200) -> Response`: any value as JSON (to_json's): a struct, an array, a map...; JSON text already made goes with text(s, type = "application/json"). A literal of values of several types is a Json: `http.json({"ok": true, "id": id, "tags": tags})`
+- `json = (value: Json, status: int = 200) -> Response`
 - `binary = (b: u8[], type: str = "application/octet-stream", status: int = 200) -> Response`: bytes, of a type ("image/png"...)
 - `status = (code: int, message: str = "") -> Response`: a status with its reason as the text ("404 Not Found"), or with the text given
 - `json_error = (code: int, message: str) -> Response`: an error for an API's client: {"error": message} as JSON
