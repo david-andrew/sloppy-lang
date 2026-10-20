@@ -680,8 +680,10 @@ struct Server[W, I]:
     send_every = 2                  # (30 worlds a second)
     joined: int[]                   # the players who came, and went, in the last update
     left: int[]
+    messages: (int, str)[]          # the game's own messages that came in the last update, and who sent each (say)
     __came: int[]
     __went: int[]
+    __said: (int, str)[]
     __hist: W[]                     # the last __CS_HIST worlds, by tick
     __clients: {int: __CsClient[I]}
     __out: (int, u8[])[]
@@ -693,10 +695,13 @@ const __CS_HIST = 64
 struct __CsClient[I]:
     queue: (int, int, I)[]          # inputs not applied yet: sequence number, the tick seen, input
     acked = 0                       # the last applied
-    credit = 1                      # inputs it may have applied now: one more each tick, a few kept
+    credit = 0                      # inputs it may have applied now: one more each tick, a few kept
                                     # (no faster than one a tick: sending two a tick moves no faster)
     warned = false
     hello = ""                      # what it gave connect
+    since = 0.0                     # when it joined (elapsed())
+    since_tick = 0                  # (and the server's tick then)
+    applied = 0                     # its inputs applied since
 
 # (a simulated slow network on what one side sends: latency, jitter; in order, as TCP keeps it)
 struct __CsLag:
@@ -742,7 +747,7 @@ server[W, I] = (world: W, apply: (W, int, I, W) -> W, step: (W) -> W) -> Server[
 
 # a player connected (as the player number, any int); a player left
 join[W, I] = (s: mut Server[W, I], player: int):
-    s.__clients[player] = __CsClient[I]()
+    s.__clients[player] = __CsClient[I](since = elapsed(), since_tick = s.tick)
     s.__came.push(player)
 leave[W, I] = (s: mut Server[W, I], player: int):
     s.__clients.remove(player)
@@ -755,12 +760,27 @@ receive[W, I] = (s: mut Server[W, I], player: int, data: u8[]):
     if data.len() > 0 and data[0] == 1:
         s.__clients[player].hello = str_from_bytes(data[1..])
         return
+    # (the game's own message: srv.messages in the next update)
+    if data.len() > 0 and data[0] == 3:
+        s.__said.push((player, str_from_bytes(data[1..])))
+        return
     r = from_text[__CsInput[I]](str_from_bytes(data))
     if r is TextError:
         if not s.__clients[player].warned: eprint("netplay: an input from player {player} could not be read: does it run another build of the game? ({r.message})")
         s.__clients[player].warned = true
         return
     s.__clients[player].queue.push((r.seq, r.seen, r.input))
+
+# The game's own messages beside the worlds, on the same connection: a chat line, "round over", a
+# score; text, in order, never lost (as the worlds are not either). The server says to one player
+# or to all, and gets the clients' in srv.messages (who, text) after each update; a client says
+# to the server, and gets the server's in c.messages after each play.
+say[W, I] = (s: mut Server[W, I], player: int, text: str):
+    b: u8[] = [3]
+    b.extend(bytes(text))
+    __cs_server_send(s, player, b)
+say_all[W, I] = (s: mut Server[W, I], text: str):
+    loop p, _ in s.__clients: s.say(p, text)
 
 # what player p's client gave connect (its name, a token to know it again by): "" until it has
 # come, which is soon after p joined
@@ -812,17 +832,23 @@ update[W, I] = (s: mut Server[W, I]):
             else: s.receive(e.peer, e.data)
     s.joined = s.__came
     s.left = s.__went
+    s.messages = s.__said
     s.__came.clear()
     s.__went.clear()
+    s.__said.clear()
     loop p, c in s.__clients:
         # (one input a tick, as they are made; a few more after a pause, to catch up, but never
         # more than one a tick over time: a client sending two a tick moves no faster)
         cr = min(c.credit + 1, 4)
         # (a server ticking a little slower than its clients, 59.5 a second: one more now and
-        # then, so their inputs do not pile up and lag; at most 1 in 32, no help to a cheat)
-        if s.tick % 32 == 0 and c.queue.len() > 2: cr += 1
+        # then, so their inputs do not pile up and lag; at most 1 in 32, and only while it has had
+        # fewer than 60 a second since it joined: a client sending more gains nothing by it. A
+        # server driven by hand, as a test is, counts its own ticks for the time: one in 59 more)
+        due = if s.__port >= 0: (elapsed() - c.since) * 60.0 else: f64(s.tick - c.since_tick) * 60.0 / 59.0
+        if s.tick % 32 == 0 and c.queue.len() > 2 and f64(c.applied + cr) < due: cr += 1
         n = min(c.queue.len(), cr)
         s.__clients[p].credit = cr - n
+        s.__clients[p].applied += n
         # (what piles up beyond that is dropped, the oldest first)
         queue = c.queue
         if queue.len() - n > 8: queue = queue[queue.len() - n - 8..]
@@ -867,6 +893,7 @@ struct Client[W, I]:
     server_tick = -1                # the tick of server
     interpolation = 6               # how far in the past others are drawn (view), in ticks
     ping = 0.0                      # milliseconds from an input sent to the world that answers it (smoothed)
+    messages: str[]                 # the server's own messages that came in the last play (say)
     __seq = 0
     __pending: (int, I)[]           # inputs the server has not answered yet
     __sent: (int, f64)[]            # (when each of those was sent)
@@ -927,8 +954,15 @@ __cs_problem[W, I] = (c: mut Client[W, I], what: str):
     c.problem = what
     eprint("netplay: {what}")
 
+# a message of the game's own to the server (srv.messages): sent at once, connected or not yet
+say[W, I] = (c: mut Client[W, I], text: str):
+    b: u8[] = [3]
+    b.extend(bytes(text))
+    __cs_client_send(c, b)
+
 # this tick's input: applied here at once (prediction) and sent
 play[W, I] = (c: mut Client[W, I], input: I):
+    c.messages.clear()
     # (with lag: what is held, sent when its time comes; worlds from the server held as long)
     if c.__lag.held.len() > 0:
         loop m in __cs_lag_due(c.__lag):
@@ -959,6 +993,9 @@ play[W, I] = (c: mut Client[W, I], input: I):
 
 # bytes from the server
 receive[W, I] = (c: mut Client[W, I], data: u8[]):
+    if data.len() > 0 and data[0] == 3:
+        c.messages.push(str_from_bytes(data[1..]))
+        return
     r = __cs_world[W](data)
     if r is TextError:
         __cs_problem(c, "a world from the server could not be read: does it run another build of the game? ({r.message})")

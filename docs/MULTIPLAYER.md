@@ -310,6 +310,11 @@ connection: `c.connect(host, 4600, hello = "{name} {token}")`, and the server re
 `srv.hello(p)` (empty for a moment after `p` joins: it comes with the first world).
 `c.disconnect()` leaves; `c.connect(...)` again joins again with the same client.
 
+The game's own messages (a chat line, "round over", the scores) go on the same connection, as
+text, in order: `srv.say(p, text)` to one player, `srv.say_all(text)` to everyone, read by the
+client in `c.messages` after each `c.play`; `c.say(text)` to the server, read in `srv.messages`
+(who sent each, and what) after each `srv.update()`.
+
 To try a slow network on one machine, `srv.lag(100, 20)` and `c.lag(100, 20)` hold what each
 side sends 100 ms, and up to 20 ms more at random (in order, as TCP keeps it).
 `srv.waiting(p)` says how many of p's inputs wait to be applied: 1 or 2 is right; more is lag.

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- `bytes(s)` of a text made for it (`bytes("hello {i}")`, `bytes(f(x))`) gives the text's memory
+  back with the bytes: it was never freed (a netplay server lost some 0.5 MB a second with 100
+  players).
+- `net.gone(p)` is true once p's events have all been received, its `.left` last: a task looping
+  `not net.gone(p)` lost some leaves.
+- `from_json` reads a JSON surrogate pair (`\ud83d\ude00`, an emoji as Python and Java write it) as
+  the one character (it gave two U+FFFD).
+- netplay's server (listening on a port): a client sending more than one input a tick moves no
+  faster at all (the catch-up input, one in 32 ticks, went to it every time: 3% faster); `srv.say(p, text)`,
+  `srv.say_all(text)`, `c.say(text)` and `srv.messages`, `c.messages`: the game's own messages
+  on the same connection (another message ended a client's connection).
+
 ## 0.28.0
 
 - Packages: each build block's names are its own package's. A package's `import util` is the

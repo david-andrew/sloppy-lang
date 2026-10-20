@@ -5294,7 +5294,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
       p = net.accept(wait = 1.0)
       if p >= 0: spawn((): talk(p))
   ```
-- `gone = (peer: int) -> bool`: the peer has gone (or never was): its left event has come, or is waiting to be taken
+- `gone = (peer: int) -> bool`: the peer has gone (or never was), and its events have all been received, its .left last: a task looping `not net.gone(p)` sees every one
 - `receive_server = () -> NetEvent[]`: the same, for the peers that connected to this program's server (listen) only
 - `wait = (seconds: f64) -> bool`: wait until something comes for the program, or `seconds` pass: a message or a peer (receive), a connection's bytes or one to accept (the tcp_ functions), a fetch's answer (fetch_result), a request for its http server; true when something came (false: the time passed, or the program was asked to stop, as stopping() then says, or the task was cancelled). Meanwhile what waits to go out is sent as the connections take it. For a program with no window, which has nothing else to do: a game's frames come anyway
 - `unsent = (peer: int) -> int`: how many bytes sent to a peer still wait to go out to it (a peer that reads slowly, or has stopped: one with more than 8 MB waiting is let go, so that it does not hold the server's memory)
@@ -5721,11 +5721,14 @@ draw = ():
       send_every = 2                  # (30 worlds a second)
       joined: int[]                   # the players who came, and went, in the last update
       left: int[]
+      messages: (int, str)[]          # the game's own messages that came in the last update, and who sent each (say)
   ```
 - `server[W, I] = (world: W, apply: (W, int, I, W) -> W, step: (W) -> W) -> Server[W, I]`
 - `join[W, I] = (s: mut Server[W, I], player: int)`: a player connected (as the player number, any int); a player left
 - `leave[W, I] = (s: mut Server[W, I], player: int)`
 - `receive[W, I] = (s: mut Server[W, I], player: int, data: u8[])`: bytes from a player
+- `say[W, I] = (s: mut Server[W, I], player: int, text: str)`: The game's own messages beside the worlds, on the same connection: a chat line, "round over", a score; text, in order, never lost (as the worlds are not either). The server says to one player or to all, and gets the clients' in srv.messages (who, text) after each update; a client says to the server, and gets the server's in c.messages after each play.
+- `say_all[W, I] = (s: mut Server[W, I], text: str)`
 - `hello[W, I] = (s: Server[W, I], p: int) -> str`: what player p's client gave connect (its name, a token to know it again by): "" until it has come, which is soon after p joined
 - `waiting[W, I] = (s: Server[W, I], p: int) -> int`: how many of player p's inputs are waiting to be applied (1 or 2 normally; more: they come faster than the server ticks, which shows as lag)
 - `lag[W, I] = (s: mut Server[W, I], ms: f64, jitter_ms: f64 = 0)`: simulate a slow network on what the server sends: ms more latency, up to jitter_ms more at random (kept in order, as over TCP); the client's lag does the same both ways
@@ -5744,6 +5747,7 @@ draw = ():
       server_tick = -1                # the tick of server
       interpolation = 6               # how far in the past others are drawn (view), in ticks
       ping = 0.0                      # milliseconds from an input sent to the world that answers it (smoothed)
+      messages: str[]                 # the server's own messages that came in the last play (say)
       problem = ""                    # what is wrong, said once on stderr too: could not connect, the
                                       # server gone or not heard from for 5 s, worlds that cannot be read
   ```
@@ -5752,6 +5756,7 @@ draw = ():
 - `disconnect[W, I] = (c: mut Client[W, I])`: close the connection (connect again later, to the same server or another)
 - `lag[W, I] = (c: mut Client[W, I], ms: f64, jitter_ms: f64 = 0)`: simulate a slow network on what the client sends and gets: ms more latency each way, up to jitter_ms more at random (kept in order, as over TCP)
 - `connected[W, I] = (c: Client[W, I]) -> bool`: connected, and the server has sent a world (and is still heard from)
+- `say[W, I] = (c: mut Client[W, I], text: str)`: a message of the game's own to the server (srv.messages): sent at once, connected or not yet
 - `play[W, I] = (c: mut Client[W, I], input: I)`: this tick's input: applied here at once (prediction) and sent
 - `receive[W, I] = (c: mut Client[W, I], data: u8[])`: bytes from the server
 - `outgoing[W, I] = (c: mut Client[W, I]) -> u8[][]`: what to send since the last call (without connect)
