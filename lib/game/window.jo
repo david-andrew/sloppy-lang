@@ -44,6 +44,7 @@ __pace_real_time = false      # (and at 60 frames a second, not faster: a networ
 const __SCRIPT_PUNCT = " minus -_ equals =+ comma ,< period .> slash /? semicolon ;: quote '\" lbracket [{{ rbracket ]}} backslash \\| grave `~ "
 __frame_count = 0
 __dt = 0.0
+__raw_dt = 0.0                # (the frame's time, time_scale or not: key_repeat's)
 __fps = 0.0
 
 __input_init = ():
@@ -126,11 +127,51 @@ key_released = (k: Key) -> bool:
     __input_init()
     if __fx_in: return __fx_keys[__NKEYS + int(k)]
     __key_released[int(k)]
-# true in the frame the key was pressed, and again each time it repeats while held down (for
-# moving through text or menus); characters typed arrive through text_input()
+# true in the frame the key was pressed, and again each time it repeats while held down, as the
+# desktop repeats keys (for moving through text); characters typed arrive through text_input()
 key_typed = (k: Key) -> bool:
     __input_init()
     __key_typed[int(k)]
+# true in the frame the key was pressed, then again while it is held: after `delay` seconds, each
+# `period` seconds (PICO-8's btnp: a quarter second, then 15 times a second); for moving through a
+# menu or a grid a step at a time. It counts the game's time, the same in a SLOPPY_INPUT run; in a
+# fixed_update step, the steps'. gamepad_repeat and action_repeat are the same for a button and an
+# action.
+key_repeat = (k: Key, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool: __repeat(int(k), key_down(k), key_pressed(k), delay, period)
+
+# (each key, button or action repeat asks for, in frames and apart in steps: the frame or step it
+# was last asked in, how long it had been held then and whether that was a repeat)
+struct __Rep:
+    tick = -10
+    held = 0.0
+    fired = false
+__reps: {int: __Rep}
+
+__repeat = (id0: int, down: bool, pressed: bool, delay: f64, period: f64) -> bool:
+    id = id0 * 2
+    t = __frame_count
+    dt = __raw_dt
+    if __fx_in:
+        id += 1
+        t = __fx_steps
+        dt = __fx_h
+    r = __reps.get(id) ?? __Rep()
+    if r.tick == t: return r.fired
+    held = r.held
+    r.fired = pressed
+    # (held from the press on: asked first while it is held, it counts from then)
+    if pressed or not down or r.tick != t - 1: r.held = 0.0
+    else:
+        r.held = held + dt
+        r.fired = __repeats(r.held, delay, period) > __repeats(held, delay, period)
+    r.tick = t
+    __reps[id] = r
+    r.fired
+
+# (how many repeats have come after held seconds: -1 before the first)
+__repeats = (held: f64, delay: f64, period: f64) -> int:
+    if held < delay - 1e-6: return -1
+    int(floor((held - delay) / max(period, 1e-3) + 1e-6))
 # true in the frame Ctrl and k are pressed together, and as it repeats (on a Mac and in a browser
 # Cmd too), for a tool's keys: `if shortcut(.s): save()`; shift: with Shift held too, as
 # Ctrl+Shift+Z (without it, Shift must not be held). Browsers keep some for themselves (Ctrl+N,
@@ -179,7 +220,7 @@ pasted_text = () -> str:
 # step. It gives back how far the time is into the next step (0 to 1): to draw what moves
 # between where the last two steps put it, `mix(prev_pos, pos, f32(k))`.
 fixed_update = (dt: f64, step: (f64) -> void, rate: f64 = 60.0) -> f64:
-    global __fx_acc, __fx_in
+    global __fx_acc, __fx_h, __fx_in, __fx_steps
     __input_init()
     h = 1.0 / max(rate, 1.0)
     __fx_collect()
@@ -192,6 +233,8 @@ fixed_update = (dt: f64, step: (f64) -> void, rate: f64 = 60.0) -> f64:
         if n > 8:
             __fx_acc = 0.0
             break
+        __fx_steps += 1
+        __fx_h = h
         __fx_in = true
         step(h)
         __fx_in = false
@@ -201,6 +244,8 @@ fixed_update = (dt: f64, step: (f64) -> void, rate: f64 = 60.0) -> f64:
 
 __fx_acc = 0.0
 __fx_in = false                 # (in a step: the presses below are the ones seen)
+__fx_steps = 0                  # (steps so far, and how long each is: key_repeat's time in them)
+__fx_h = 1.0 / 60.0
 __fx_keys: bool[]               # keys pressed, then released, since the last step
 __fx_btns: bool[]               # mouse buttons
 __fx_pad: bool[]                # gamepad buttons pressed, then released
@@ -2484,7 +2529,7 @@ __script_move_mouse = (p: vec2):
     __mouse_y = ny
 
 __run_frame = (dt: f64, update: (f64) -> void, draw: () -> void):
-    global __dt, __fps, __fps_acc, __fps_n
+    global __dt, __fps, __fps_acc, __fps_n, __raw_dt
     __out_flush()                   # (what the last frame printed)
     __scripted_input()
     __dialogs_poll()
@@ -2500,6 +2545,7 @@ __run_frame = (dt: f64, update: (f64) -> void, draw: () -> void):
         __fps_n = 0
     sdt = dt * __time_scale
     __dt = sdt
+    __raw_dt = dt
     # (the tasks take their turns, those waiting for this frame too: lib/std/task.jo)
     if __tasks_on: __task_frame_fn()
     t0 = time()
