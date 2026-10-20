@@ -2309,6 +2309,15 @@ call_by_name = (n: int, name: int, mod_scope: int, args: int[], expected: int, u
             ide_complete_members(ntype(args[0]))
         ide_complete_names()
     if mod_scope >= 0 and not ufcs: private_member(mod_scope, name, nodes[n].pos)
+    # (r.json() on a request: Flask's and fetch's, which here is http.json(r), an answer made of it)
+    if ufcs and args.len() == 1 and (name_of(name) == "json" or name_of(name) == "text"):
+        if not has_flag(args[0], NF_CHECKED):
+            check_expr(args[0], 0)
+            add_flag(args[0], NF_CHECKED)
+        rt = prune(ntype(args[0]))
+        if tkind(rt) == .struct_ and structs[int(types[rt].st)].name == "Request" and pos_in_lib(nodes[int(structs[int(types[rt].st)].decl)].pos):
+            if name_of(name) == "json": fatal(nodes[n].pos, "r.json() would be http.json(r), an answer made of the request: its body as JSON goes into a struct with `item = Item()`, then `if let bad = http.read_json(r, item): return bad`, or is `parse_json(r.text)`")
+            fatal(nodes[n].pos, "r.text is the request's body as text (a field, without ())")
     ii = intrinsic_of(name)
     if ii >= 0 and intrinsics[ii].arr and args.len() > 0:
         a0 = args[0]
@@ -4457,6 +4466,18 @@ color_num_hint = (n: int, t: int) -> str:
     if nodes[n].type == 0 or t == 0 or not is_numeric(ntype(n)) or type_str(t) != "vec4": return ""
     " (a colour is a vec4: `rgb(1, 0, 0.3)`, `hex(0xff004d)` or a name such as `RED`; a palette is an array of them, `PAL[8]`)"
 
+# (s.find(x) != none: what the value is instead of none)
+none_cmp_hint = (x: int) -> str:
+    t = prune(ntype(x))
+    fnm = ""
+    cs = call_src(x)
+    if len(cs) > 0 and find(cs, "(") > 0:
+        fnm = cs[..find(cs, "("))
+        loop find(fnm, ".") >= 0: fnm = fnm[find(fnm, ".") + 1..]
+    if is_int(t) and (fnm == "find" or fnm == "index_of" or fnm == "rfind" or fnm == "find_byte"): return " ({fnm} gives an int, -1 when it is not there: `x in s` tests whether it is)"
+    if tkind(t) == .opt: return ""
+    " (this is {a_type(t)}, which always has a value; a variable that may have none is declared with ?, `x: {type_str(t)}? = none`)"
+
 # (the library's Json: a map or array literal is one where it goes)
 is_json_type = (t: int) -> bool:
     if t == 0 or types[t].kind != .enum_: return false
@@ -4753,7 +4774,7 @@ check_binary = (n: int, expected: int) -> int:
                 if nodes[a].kind == .none_lit:
                     nodes[n].a = i32(b)
                     nodes[n].b = i32(a)
-                if tkind(ntype(int(nodes[n].a))) != .opt: fatal(nodes[n].pos, "only optionals can be compared with none")
+                if tkind(ntype(int(nodes[n].a))) != .opt: fatal(nodes[n].pos, "only optionals can be compared with none{none_cmp_hint(int(nodes[n].a))}")
                 nodes[n].aux = 6
                 nodes[n].type = i32(T_BOOL)
                 return T_BOOL

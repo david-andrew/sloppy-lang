@@ -80,7 +80,8 @@ piped in (`sloppy < script.txt`).
   `x: u64 = -1` are errors; a literal above the i64 range is a `u64`, or `int`'s bits).
 * Strings: `"text {expr} more {value:.2}"` and `'the same'` — the two quotes are
   interchangeable, and both may span lines. `{}` interpolates any expression in either kind
-  (so text with braces, such as JSON, needs `{{` and `}}` for literal braces, or a raw string). Escapes: `\n \t \r \0 \\ \" \' \xNN`. Format specs follow Python:
+  (so text with braces, such as JSON, needs `{{` and `}}` for literal braces, or a raw string). Escapes: `\n \t \r \0 \\ \" \' \xNN`, and a character by its code point, `\u00e9` (4 hex
+  digits) or `\U0001F600` (8; a JSON surrogate pair, `\ud83d\ude00`, is the one character). Format specs follow Python:
   `[[fill]align][+][#][0][width][,][.precision][type]` with align `<` `>` `^` and type `x` `X`
   `b` `o` `f` `e` `g` `%` — `{price:>8.2}`, `{n:,}`, `{ratio:.1%}`, `{name:<12}`, `{bits:08b}`,
   `{addr:#x}` (with `0x`). `{x=}` shows the expression before its value (`x=5`), for debugging.

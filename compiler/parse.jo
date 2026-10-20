@@ -520,6 +520,38 @@ esc_name = (c: u8) -> str:
     if c == '0': return "a zero byte"
     if c == 'e': return "an escape character"
     "a byte given in hex"
+# (n hex digits at s[at..])
+hex_run = (s: str, at: int, n: int) -> bool:
+    if at + n > len(s): return false
+    loop k in [0..n):
+        if hexval(s[at + k]) < 0: return false
+    true
+
+# (the code point in n hex digits at s[at..], and how many: \u2028's)
+hex_escape = (s: str, at: int, n: int, pos: int) -> (int, int):
+    v = 0
+    loop k in [0..n):
+        h = -1
+        if at + k < len(s): h = hexval(s[at + k])
+        if h < 0: fatal(pos, "\\u takes 4 hex digits (\\u00e9), \\U 8 (\\U0001F600)")
+        v = v * 16 + h
+    (v, n)
+
+utf8_push = (buf: mut u8[], cp: int):
+    if cp < 0x80: buf.push(u8(cp))
+    else if cp < 0x800:
+        buf.push(u8(0xC0 | (cp >> 6)))
+        buf.push(u8(0x80 | (cp & 63)))
+    else if cp < 0x10000:
+        buf.push(u8(0xE0 | (cp >> 12)))
+        buf.push(u8(0x80 | ((cp >> 6) & 63)))
+        buf.push(u8(0x80 | (cp & 63)))
+    else:
+        buf.push(u8(0xF0 | (cp >> 18)))
+        buf.push(u8(0x80 | ((cp >> 12) & 63)))
+        buf.push(u8(0x80 | ((cp >> 6) & 63)))
+        buf.push(u8(0x80 | (cp & 63)))
+
 decode_str = (s: str, pos: int, raw: bool) -> str:
     if raw: return s
     if find_byte(s, '\\') < 0 and find(s, "\{\{") < 0 and find(s, "}}") < 0: return s
@@ -549,11 +581,26 @@ decode_str = (s: str, pos: int, raw: bool) -> str:
                 if h < 0 or l < 0: fatal(pos, "bad \\x escape")
                 buf.push(u8(h * 16 + l))
                 i += 2
+            else if (e == 'u' and hex_run(s, i + 1, 4)) or (e == 'U' and hex_run(s, i + 1, 8)):
+                # (\u2028, \U0001F600: a character by its code point, as UTF-8; \ud83d\ude00, a
+                # surrogate pair as JSON and JavaScript write one character beyond 16 bits, is it)
+                nd = 4
+                if e == 'U': nd = 8
+                cp, used = hex_escape(s, i + 1, nd, pos)
+                i += used
+                if cp >= 0xD800 and cp <= 0xDBFF and i + 6 < n and s[i + 1] == '\\' and s[i + 2] == 'u':
+                    lo, used2 = hex_escape(s, i + 3, 4, pos)
+                    if lo >= 0xDC00 and lo <= 0xDFFF:
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+                        i += 2 + used2
+                if (cp >= 0xD800 and cp <= 0xDFFF) or cp > 0x10FFFF: fatal(pos, "\\u{byte_str(int(e))} escape {cp:x} is not a character (half of a surrogate pair, or beyond U+10FFFF)")
+                utf8_push(buf, cp)
             else if e == '\n':
                 loop i + 1 < n and (s[i + 1] == ' ' or s[i + 1] == '\t'): i += 1
             else:
                 why = ""
                 if e == 'd' or e == 'w' or e == 's' or e == 'b' or e == 'D' or e == 'W' or e == 'S' or e == '.': why = " (for a regular expression, a raw string keeps the backslash: r\"\\d+\")"
+                if e == 'u' or e == 'U': why = " (\\u takes 4 hex digits, \\u00e9, and \\U 8, \\U0001F600)"
                 if win_path: why = " (a Windows path keeps its backslashes in a raw string, r\"{s}\", or is written with / for each \\, as Windows takes both)"
                 else if why == "" and e >= 'A' and e <= 'Z': why = " (a Windows path keeps its backslashes in a raw string, r\"{s}\", or is written with / for each \\, as Windows takes both)"
                 fatal(pos, "unknown escape \\{byte_str(int(e))}{why}")

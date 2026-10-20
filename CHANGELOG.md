@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `\u00e9` and `\U0001F600` in strings: a character by its code point (a JSON surrogate pair,
+  `\ud83d\ude00`, is the one character). Messages: `s.find(x) != none` says find gives -1
+  (`x in s` tests it), and comparing any value that is not optional with none says how one is
+  declared; `r.json()` on a request says it would be http.json(r) and how its body is read.
 - netplay clients: one the server closed is not connected any more (5 s later it took the server
   for gone and connected again, a reconnect = true one, though turned away on purpose); `c.view()`
   never goes back (a world that came late moved it back a little).
