@@ -1682,18 +1682,19 @@ header_values = (r: HttpReply, name: str) -> str[]:
 # "Authorization": "Bearer ..."), and body after them (its Content-Type, unless given: JSON when it
 # starts with { or [, else text). With save_to, a successful answer (2xx) goes to that file as it
 # comes, not into data; progress(bytes so far, all of them or -1 when not said) is called as
-# they come.
+# they come. follow = false: a redirect is the answer, its Location and Set-Cookie to look at (a
+# test of a server's sign-in; native programs: a web page's browser follows them)
 #   r = net.fetch("https://api.example.com/items", method = "POST", body = to_json(item),
 #                 headers = {"Authorization": "Bearer {token}"})
 #   net.fetch(url, save_to = "big.zip", progress = (got: int, all: int): print("{got} of {all}"))
 @no_web("gives status 0 in a web page without tasks, which cannot wait for an answer: fetch in a task (spawn((): net.fetch(url))), or net.fetch_start, then net.fetch_result each frame")
 @no_parallel("for many at once, net.fetch_all(urls, at_once = 8), or net.fetch_start for each and net.fetch_result as they come (net.wait waits for them)")
-fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass) -> HttpReply:
+fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true) -> HttpReply:
     when TARGET == "wasm":
         # (a web page waits in a task, as the browser answers; not in a game's frame, or a program
         # without tasks)
         if not __net_can_wait(): return HttpReply(0, [], why = "a web page cannot wait for an answer outside a task: net.fetch_start, then net.fetch_result each frame (or fetch in a task, spawn((): net.fetch(url)))")
-        f = fetch_start(url, wait, method, headers, body, save_to, progress)
+        f = fetch_start(url, wait, method, headers, body, save_to, progress, follow)
         end = time() + wait
         loop true:
             if let r = fetch_result(f): return r
@@ -1703,7 +1704,7 @@ fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = 
             __n_wait([-1], [1], __net_ms(end))
         HttpReply(0, [])
     else:
-        f = fetch_start(url, wait, method, headers, body, save_to, progress)
+        f = fetch_start(url, wait, method, headers, body, save_to, progress, follow)
         loop true:
             if let r = fetch_result(f): return r
             if __task_cancelling:
@@ -1721,10 +1722,10 @@ fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = 
 # Nothing waits for it meanwhile (in a web page, the browser asks; its server must allow the
 # page's site, CORS)
 @no_parallel("for many at once, net.fetch_all(urls, at_once = 8), or net.fetch_start for each and net.fetch_result as they come (net.wait waits for them)")
-fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass) -> int:
+fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true) -> int:
     global __pace_real_time
     __pace_real_time = true
-    f = __Fetch(id = __fetch_next, url = url, method = method.upper(), headers = headers, body = body, save_to = save_to, progress = progress, end = time() + wait)
+    f = __Fetch(id = __fetch_next, url = url, method = method.upper(), headers = headers, body = body, save_to = save_to, progress = progress, end = time() + wait, follow = follow)
     __fetch_next += 1
     when TARGET == "wasm":
         h: str[]
@@ -1854,6 +1855,7 @@ struct __Fetch:
     end: f64
     web = -1                # (a web page's: the browser's fetch)
     hops = 0                # (redirects followed)
+    follow = true           # (redirects are: false, a redirect is the answer)
     stage = 0               # (0 finding the host, 1 connecting, 2 the request and its answer)
     secure = false
     host = ""
@@ -2116,7 +2118,7 @@ __fetch_take = (i: int, piece: u8[], closed: bool):
         __fetches[i].st.chunked = (r.headers.get("transfer-encoding") ?? "").lower() == "chunked"
         __fetches[i].st.length = to_int(r.headers.get("content-length") ?? "") ?? -1
         # (a redirect: its body is not wanted)
-        if r.status in [301, 302, 303, 307, 308] and r.headers.has("location"):
+        if r.status in [301, 302, 303, 307, 308] and r.headers.has("location") and __fetches[i].follow:
             if __fetches[i].hops < __FETCH_HOPS:
                 __fetch_redirect(i)
                 return
