@@ -6,6 +6,8 @@
   same as the one before): some 600 bytes became 150 for a player holding still, 60 a second to
   each other player. A packet to a peer whose path holds 16 KB not sent yet is left out (the next
   has its inputs too), where the backlog grew and the inputs came later and later.
+- `m[k] = {}` for a map of maps, as `m[k] = []` for a map of arrays (it said the argument had
+  the wrong type).
 - A package whose git URL is wrong or private fails at once with what to check: git asked for a
   user name and password, in the terminal or a desktop's password window, and the build waited.
 - `set_env` then `run_program` or `run_shell`: the program started got each variable whole (the
