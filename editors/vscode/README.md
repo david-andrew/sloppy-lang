@@ -42,7 +42,7 @@ On Windows, in PowerShell:
 irm https://sloppy-lang.org/install.ps1 | iex
 ```
 
-`sloppy update` (or the command **Sloppy: Install or Update the Sloppy Compiler**) installs newer
+`sloppy upgrade` (or the command **Sloppy: Install or Update the Sloppy Compiler**) installs newer
 releases.
 
 The extension uses the setting `sloppy.path` if it is set, else `bin/sloppy` when the Sloppy

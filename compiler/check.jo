@@ -29,6 +29,7 @@ struct Module:
     is_main: bool
     inits: int[]
     init_fn: i32
+    pkg: i32            # the package it is in, whose build block names the packages it imports (pkg.jo: 0, the program; -1, the library)
 
 const LF_PARAM = 1
 const LF_MUTPARAM = 2
@@ -744,7 +745,9 @@ load_module = (path: str, is_prelude: bool, from: int) -> int:
     base = path
     if slash >= 0: base = path[slash + 1..]
     base = strip_ext(base)
-    m = Module(name = i32(intern(base)), file = i32(fi), dir = d, is_prelude = is_prelude)
+    pk = 0
+    if is_prelude: pk = -1
+    m = Module(name = i32(intern(base)), file = i32(fi), dir = d, is_prelude = is_prelude, pkg = i32(pk))
     modules.push(m)
     mi = modules.len() - 1
     p_lazy = is_prelude and not ide_on
@@ -936,6 +939,41 @@ assign_to_decl = (s: int):
         nodes[s].list = nodes[lhs].list
         nodes[s].nlist = nodes[lhs].nlist
 
+# a package's mistake (pkg.jo), said at its line in the build block, with the import d as a note
+# (at the import, where the build block's file is not one the program reads)
+pkg_fatal = (sp: int, d: int, msg: str):
+    global err_note, err_note_at
+    loop fi in [0..files.len()):
+        if files[fi].path == pkg_specs[sp].file:
+            err_note_at = nodes[d].pos
+            err_note = "imported here"
+            fatal(mkpos(fi, pkg_specs[sp].at), msg)
+    fatal(nodes[d].pos, msg)
+
+# (an import of package spec sp: the reason it has none, if it has none)
+pkg_check = (sp: int, d: int):
+    if len(pkg_specs[sp].err) > 0: pkg_fatal(sp, d, pkg_specs[sp].err)
+
+# (types of one name in two modules, as two versions of a package have: in messages, each with
+# its module, and its package's version, mathx.Vec (v1.0.0): types.jo, type_qual)
+type_name_decls: {int: int} = {}        # a type's name -> the first type of that name
+type_name_seen = (nm: int, d: int, m: int):
+    if modules[m].is_prelude: return
+    o = type_name_decls.get(nm) ?? 0
+    if o == 0:
+        type_name_decls[nm] = d
+        return
+    if int(nodes[o].mod) == m: return
+    type_qualify(o)
+    type_qualify(d)
+
+type_qualify = (d: int):
+    m = int(nodes[d].mod)
+    type_qual[d] = "{name_of(int(modules[m].name))}."
+    v = pkg_version_label(int(modules[m].pkg))
+    if len(v) > 0: type_qual_end[d] = " ({v})"
+    else: type_qual_end[d] = ""
+
 # (a module `use`d by another is registered first, so that a top-level `x = ...` there sees the
 # used module's x: name_assignable)
 registered: bool[]
@@ -975,7 +1013,10 @@ register_decls = (m: int, decls: int[]):
                 loop at in kids(int(nodes[d].c)):
                     if name_of(int(nodes[at].name)) != "packed" or nodes[at].a != 0: fatal(nodes[at].pos, "unknown attribute @{name_of(int(nodes[at].name))} for a struct: there is @packed (its fields with no padding between them, as C's __attribute__((packed)))")
             scope_add_module(m, nm, .struct_, d, d)
-        else if k == .enum_: scope_add_module(m, nm, .enum_, d, d)
+            type_name_seen(nm, d, m)
+        else if k == .enum_:
+            scope_add_module(m, nm, .enum_, d, d)
+            type_name_seen(nm, d, m)
         else if k == .typealias: scope_add_module(m, nm, .alias_, d, d)
         else if k == .const_:
             globals.push(Global(name = i32(nm), decl = i32(d), mod = i32(m), is_const = true))
@@ -983,24 +1024,36 @@ register_decls = (m: int, decls: int[]):
         else if k == .import_:
             rel = name_of(int(nodes[d].sval))
             path = "{modules[m].dir}/{rel}.jo"
+            # (the packages are those this module's package names: pkg.jo)
+            mpk = int(modules[m].pkg)
+            ipk = mpk
+            sl = find(rel, "/")
+            sp = -1
+            if nodes[d].aux2 != 1: sp = pkg_lookup(mpk, rel)
+            else if sl > 0 and not is_abs_path(rel): sp = pkg_lookup(mpk, rel[..sl))
+            here = files[int(modules[m].file)].path
             if nodes[d].aux2 == 1:
                 # use 'file.jo': relative to the importing file
                 path = rel
                 if not is_abs_path(rel): path = "{modules[m].dir}/{rel}"
                 if len(modules[m].dir) == 0: path = rel
-                # ('package/file.jo': a file of a package)
-                sl = find(rel, "/")
-                if not file_exists(path) and sl > 0:
-                    pn = rel[..sl)
-                    if let why = pkg_errs.get(pn): fatal(nodes[d].pos, why)
-                    if let pd = pkg_dirs.get(pn): path = "{pd}/{rel[sl + 1..]}"
+                if sp >= 0:
+                    # ('package/file.jo': a file of a package)
+                    pkg_check(sp, d)
+                    ipk = pkg_specs[sp].pkg
+                    pp = "{pkgs[ipk].dir}/{rel[sl + 1..]}"
+                    if file_exists(path) and pkg_norm(path) != pkg_norm(pp): fatal(nodes[d].pos, "'{rel}' could be package {rel[..sl)}'s {rel[sl + 1..]} ({pp}) or the file {path} beside this one: rename that directory, or give the package another name in the build block")
+                    if not file_exists(pp): fatal(nodes[d].pos, "package {rel[..sl)} has no file {rel[sl + 1..]} (there is no {pp})")
+                    path = pp
                 if not file_exists(path): fatal(nodes[d].pos, "cannot find '{rel}' (looked for {path})")
-            else if pkg_dirs.get(rel) != none or pkg_errs.get(rel) != none:
+            else if sp >= 0:
                 # a package (pkg.jo): its main file
-                if let why = pkg_errs.get(rel): fatal(nodes[d].pos, why)
-                pd = pkg_dirs[rel]
-                path = pkg_main(rel, pd) ?? ""
-                if len(path) == 0: fatal(nodes[d].pos, "package '{rel}' has no main file ({rel}.jo, or only one .jo file at its root): import one of its files, as import '{rel}/file.jo'")
+                pkg_check(sp, d)
+                ipk = pkg_specs[sp].pkg
+                mp = pkg_main(ipk) ?? ""
+                if len(mp) == 0: pkg_fatal(sp, d, pkg_no_main(sp))
+                if file_exists(path) and pkg_norm(path) != pkg_norm(here) and pkg_norm(path) != pkg_norm(mp): fatal(nodes[d].pos, "'{rel}' could be the package {rel} or the file {path} beside this one: rename the file, or give the package another name in the build block")
+                path = mp
             else:
                 # a standard-library module by name: lib/NAME.jo or lib/{std,game,core}/NAME.jo (a
                 # file of that name beside the program first, unless it is this one: physics.jo's
@@ -1013,7 +1066,9 @@ register_decls = (m: int, decls: int[]):
                 # (a file beside it with a library module's name: that file, said once)
                 if file_exists(path) and not pos_in_lib(nodes[d].pos) and file_exists("{lib_dir}/{rel}.jo"):
                     warn(nodes[d].pos, "this imports {path}, not the library's {rel} (a file beside this one has its name)")
-                if not file_exists(path): path = "{lib_dir}/{rel}.jo"
+                if not file_exists(path):
+                    path = "{lib_dir}/{rel}.jo"
+                    ipk = -1
                 if not file_exists(path): path = "{lib_dir}/std/{rel}.jo"
                 if not file_exists(path): path = "{lib_dir}/game/{rel}.jo"
                 if not file_exists(path): path = "{lib_dir}/core/{rel}.jo"
@@ -1039,8 +1094,15 @@ register_decls = (m: int, decls: int[]):
                     else if py == "subprocess": pym = ": `run_program(\"ls\", [\"-l\"])` (its exit code and output)"
                     else if py == "argparse": pym = ": a struct of the options (`verbose = false`, `out = \"a.txt\"`, `files: str[]`), then `opts = parse_args[Options](\"what it does\")`"
                     else if py == "hashlib": pym = ": `sha256(text_or_bytes)` is there without an import (as hex digits)"
+                    if len(pym) == 0 and find(rel, "/") < 0:
+                        bb = "the build block"
+                        if mpk > 0: bb = "the build block of package {pkg_label(mpk)}"
+                        pym = ": no package {rel} in {bb} (`{rel} = package(\"git URL or directory\")` there names one), and no standard module {rel}"
                     fatal(nodes[d].pos, "cannot find module '{rel}'{pym}")
+            n0 = modules.len()
             im = load_module(path, false, nodes[d].pos)
+            if im >= n0: modules[im].pkg = i32(ipk)
+            nodes[d].sym = i32(im)
             if nodes[d].aux == 1:
                 modules[m].uses.push(im)
                 register_module(im)
@@ -3982,7 +4044,7 @@ check_build_block = ():
     loop i in [0..nkids(b)):
         s = kid(b, i)
         if nodes[s].kind != .assign or nodes[int(nodes[s].a)].kind != .ident:
-            fatal(nodes[s].pos, "a build option is `name = value` (target, opt or output)")
+            fatal(nodes[s].pos, "a build option is `name = value` ({build_options})")
         key = name_of(int(nodes[int(nodes[s].a)].name))
         v = int(nodes[s].b)
         word = ""
@@ -4029,7 +4091,9 @@ check_build_block = ():
             bad = __file_name_problem(word)
             if len(bad) > 0: fatal(nodes[v].pos, "the program's name is also its save folder's, and {bad}: a folder's name cannot have / \\ : * ? \" < > |, end with a dot or a space, or be CON, PRN, AUX, NUL, COM1 to COM9 or LPT1 to LPT9 (Windows allows none of them, so here no system does: a game saves wherever it runs)")
         else:
-            fatal(nodes[int(nodes[s].a)].pos, "unknown build option '{key}' (the options are target, opt, output, name and icon, and packages: name = package(\"git URL\"))")
+            fatal(nodes[int(nodes[s].a)].pos, "unknown build option '{key}'{suggestion(key, [intern("name"), intern("icon"), intern("js"), intern("target"), intern("opt"), intern("output")])} (the options: {build_options})")
+
+build_options = "name = \"Star Garden\", icon = \"icon.png\", js = \"glue.js\", target = native, linux, linux-arm64, macos, windows or wasm, opt = debug or release, output = \"game\"; and packages, as physics = package(\"git URL or directory\")"
 
 # ---------------- program ----------------
 want_cpu_flag = false           # (release builds for x86-64: the vectorizer may use __cpu_avx2)

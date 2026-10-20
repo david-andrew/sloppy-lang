@@ -3,7 +3,7 @@
 #   $env:SLOPPY_WANT = "v0.3.0"; irm https://sloppy-lang.org/install.ps1 | iex     (a version)
 # Installs to %LOCALAPPDATA%\sloppy (or $env:SLOPPY_INSTALL): bin\sloppy.exe and the standard
 # library beside it, and puts its bin on your PATH. Running it again updates.
-# (`sloppy update` runs it with SLOPPY_CURRENT, the version installed: nothing to do if it is the
+# (`sloppy upgrade` runs it with SLOPPY_CURRENT, the version installed: nothing to do if it is the
 # latest. Settings come in environment variables: a script run by iex takes no arguments.)
 & {
     $ErrorActionPreference = 'Stop'
@@ -68,7 +68,7 @@
         if (-not $src -or -not (Test-Path (Join-Path $src.FullName 'bin\sloppy.exe'))) { throw "the download does not hold bin\sloppy.exe" }
 
         # ---- install (replacing an earlier one whole: no stale library files) ----
-        # (a running sloppy.exe, as under `sloppy update`, cannot be deleted, but it can be renamed)
+        # (a running sloppy.exe, as under `sloppy upgrade`, cannot be deleted, but it can be renamed)
         $bin = Join-Path $Install 'bin'
         $old = Join-Path $bin 'sloppy.old.exe'
         if (Test-Path $Install) {
@@ -121,5 +121,5 @@
         Write-Host "  $editor --install-extension RedFoxLabs.sloppy" -ForegroundColor Cyan
     }
     Write-Host ''
-    Write-Host "Docs: https://sloppy-lang.org  -  update: sloppy update  -  uninstall: delete $Install" -ForegroundColor DarkGray
+    Write-Host "Docs: https://sloppy-lang.org  -  upgrade: sloppy upgrade  -  uninstall: delete $Install" -ForegroundColor DarkGray
 }

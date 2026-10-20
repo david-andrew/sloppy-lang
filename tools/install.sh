@@ -5,7 +5,7 @@
 # Installs to ~/.sloppy (or $SLOPPY_INSTALL): bin/sloppy and the standard library beside it, and puts
 # the command on your PATH (a link in ~/.local/bin if that is on the PATH, else a line in your
 # shell's startup file). Running it again updates.
-# (`sloppy update` runs it with SLOPPY_CURRENT, the version installed: nothing to do if it is the latest)
+# (`sloppy upgrade` runs it with SLOPPY_CURRENT, the version installed: nothing to do if it is the latest)
 set -euo pipefail
 
 REPO="david-andrew/sloppy-lang"
@@ -177,4 +177,4 @@ if [ -n "$editor" ]; then
     say "  ${CYAN}$editor --install-extension RedFoxLabs.sloppy${RESET}"
 fi
 say ""
-say "${DIM}Docs: https://sloppy-lang.org  ·  update: sloppy update  ·  uninstall: $uninstall${RESET}"
+say "${DIM}Docs: https://sloppy-lang.org  ·  upgrade: sloppy upgrade  ·  uninstall: $uninstall${RESET}"
