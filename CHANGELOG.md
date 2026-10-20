@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Sound: `.noise` in `tone` has a pitch (a new level 16 times a cycle: 60 rumbles, 5000 hisses;
+  it was white noise at any freq, so slides did nothing); a note's attack and release are at
+  most half of it each (a 0.05 s blip with the 0.1 s release was half as loud);
+  `encode_wav(sound)` and `save_wav(sound, path)` (16-bit stereo, as load_wav reads).
+- Messages for PICO-8's habits: `cls`, `flr`, `rnd`, `mid`, `sgn`, `btn`, `btnp`, `spr`, `sspr`,
+  `circ`, `circfill`, `rectfill`, `pset`, `sfx`, `music`, `dget`, `dset`, `cartdata`, `tostr`,
+  `tonum` say what to write; a colour given as a number (`circle(p, 10, 8)`, `clear(7)`) says a
+  colour is a vec4 (clear(7) named the version taking Actions). A name of a module imported
+  with `import` used without it says `pal.PAL`. "did you mean" knows BigInt's names
+  (`big_int`: bigint).
 - Messages: `x || d` says `x ?? d` gives a default; `to_hex` says `crypto.hex_text`. A web page's
   failed fetch from its own server says the server did not answer, not CORS.
 - `bytes(s)` of a text made for it (`bytes("hello {i}")`, `bytes(f(x))`) gives the text's memory

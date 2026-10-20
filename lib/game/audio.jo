@@ -330,21 +330,36 @@ __osc = (w: Wave, phase: f64) -> f64:
         saw: (2.0 * p - 1.0) * 0.7
         noise: random(-1.0, 1.0)
 
-# a single synthesized note: frequency slides from freq to freq * slide over the duration
+# a single synthesized note: frequency slides from freq to freq * slide over the duration. The
+# volume rises over attack seconds and falls over the last release seconds, each at most half the
+# note (a short blip keeps its volume). Noise has a pitch too: a new random level 16 times a
+# cycle, so a low one rumbles (an explosion at 60) and a high one hisses (5000)
 tone = (freq: f64, seconds: f64, wave: Wave = .sine, volume: f64 = 0.5, attack: f64 = 0.005, release: f64 = 0.1, slide: f64 = 1.0, vibrato: f64 = 0.0) -> Sound:
     n = int(seconds * f64(MIX_RATE))
     s = Sound(fill(f32(0), n * 2))
     phase = 0.0
+    att = min(attack, seconds * 0.5)
+    rel = min(release, seconds * 0.5)
+    held = 0.0
+    step = -1
     loop i in [0..n):
         t = f64(i) / f64(MIX_RATE)
         u = f64(i) / f64(max(n, 1))
         f = freq * pow(slide, u) * (1.0 + vibrato * sin(t * 30.0))
         phase += f / f64(MIX_RATE)
         env = 1.0
-        if t < attack: env = t / attack
+        if t < att: env = t / att
         rem = seconds - t
-        if rem < release: env = env * max(rem / release, 0.0)
-        x = f32(__osc(wave, phase) * env * volume)
+        if rem < rel: env = env * max(rem / rel, 0.0)
+        v = 0.0
+        if wave == .noise:
+            k = int(phase * 16.0)
+            if k != step:
+                held = random(-1.0, 1.0)
+                step = k
+            v = held
+        else: v = __osc(wave, phase)
+        x = f32(v * env * volume)
         s.samples[i * 2] = x
         s.samples[i * 2 + 1] = x
     s
@@ -518,6 +533,35 @@ load_wav = (file: u8[]) -> Sound:
         pos = b + n + (n & 1)
     panic("load_wav: the file has no data chunk")
     Sound([])
+
+# a sound as a WAV file's bytes: 16-bit stereo at MIX_RATE (what load_wav reads back), to keep
+# or to listen to a sound made in code
+encode_wav = (s: Sound) -> u8[]:
+    n = s.samples.len() / 2
+    out: u8[]
+    out.reserve(44 + n * 4)
+    put32 = (b: mut u8[], v: int):
+        loop k in [0..4): b.push(u8((v >> (8 * k)) & 255))
+    put16 = (b: mut u8[], v: int):
+        b.push(u8(v & 255))
+        b.push(u8((v >> 8) & 255))
+    loop c in bytes("RIFF"): out.push(c)
+    put32(out, 36 + n * 4)
+    loop c in bytes("WAVEfmt "): out.push(c)
+    put32(out, 16)
+    put16(out, 1)
+    put16(out, 2)
+    put32(out, MIX_RATE)
+    put32(out, MIX_RATE * 4)
+    put16(out, 4)
+    put16(out, 16)
+    loop c in bytes("data"): out.push(c)
+    put32(out, n * 4)
+    loop x in s.samples: put16(out, int(round(clamp(f64(x), -1.0, 1.0) * 32767.0)))
+    out
+
+# write a sound to a WAV file (false: it could not be written)
+save_wav = (s: Sound, path: str) -> bool: write_bytes(path, encode_wav(s))
 
 __resample = (src: f32[], rate: int) -> Sound:
     if rate == MIX_RATE: return Sound(src)

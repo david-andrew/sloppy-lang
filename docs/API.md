@@ -4016,7 +4016,7 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
 
 #### Making sounds
 
-- `tone = (freq: f64, seconds: f64, wave: Wave = .sine, volume: f64 = 0.5, attack: f64 = 0.005, release: f64 = 0.1, slide: f64 = 1.0, vibrato: f64 = 0.0) -> Sound`: a single synthesized note: frequency slides from freq to freq * slide over the duration
+- `tone = (freq: f64, seconds: f64, wave: Wave = .sine, volume: f64 = 0.5, attack: f64 = 0.005, release: f64 = 0.1, slide: f64 = 1.0, vibrato: f64 = 0.0) -> Sound`: a single synthesized note: frequency slides from freq to freq * slide over the duration. The volume rises over attack seconds and falls over the last release seconds, each at most half the note (a short blip keeps its volume). Noise has a pitch too: a new random level 16 times a cycle, so a low one rumbles (an explosion at 60) and a high one hisses (5000)
 - `mix = (sounds: Sound[]) -> Sound`: mix several sounds into one (useful for chords and layered effects)
 - `sfx_jump = () -> Sound`: sound effect presets
 - `sfx_coin = () -> Sound`
@@ -4035,6 +4035,8 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
 #### WAV files
 
 - `load_wav = (file: u8[]) -> Sound`: a WAV file's sound: integer samples of 8, 16, 24 or 32 bits or floats of 32 or 64, any number of channels (the first two are used; mono plays on both), any rate (resampled to MIX_RATE). Other files are an error that says what they are.
+- `encode_wav = (s: Sound) -> u8[]`: a sound as a WAV file's bytes: 16-bit stereo at MIX_RATE (what load_wav reads back), to keep or to listen to a sound made in code
+- `save_wav = (s: Sound, path: str) -> bool`: write a sound to a WAV file (false: it could not be written)
 
 ### vorbis.jo
 
