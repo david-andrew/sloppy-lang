@@ -315,20 +315,28 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
 # the one before it (most are: what a player holds stays so a while). As to_text wrote the whole
 # packet, it was some 70 bytes an input, and 600 a packet, 60 a second to each player.
 __np_encode[I] = (pk: __NpPacket[I]) -> u8[]:
-    out = "NP2 {pk.from} {pk.to} {pk.tick} {pk.adv} {pk.ack} {pk.first} {pk.check} {pk.hash >> 32} {pk.hash & 0xFFFFFFFF} {pk.sent} {pk.echo} {pk.held} {join(pk.has.map((h): "{h}"), ",")}"
+    out = bytes("NP3 {pk.from} {pk.to} {pk.tick} {pk.adv} {pk.ack} {pk.first} {pk.check} {pk.hash >> 32} {pk.hash & 0xFFFFFFFF} {pk.sent:.4} {pk.echo:.4} {pk.held:.4} {join(pk.has.map((h): "{h}"), ",")}")
+    body = ""
     prev = ""
     loop inp in pk.inputs:
         t = to_text(inp)
-        out += if t == prev: "\n=" else: "\n" + t
+        body += if t == prev: "\n=" else: "\n" + t
         prev = t
-    bytes(out)
+    # (more than a few inputs deflated, after a z: an input's text repeats its fields' names, and
+    # its values change little from one to the next, so it is a third as long)
+    if len(body) > 48:
+        out.push('\n')
+        out.push('z')
+        out.extend(deflate(bytes(body[1..])))
+    else: out.extend(bytes(body))
+    out
 
 # (none: not a packet of this game's, or of this version of netplay)
 __np_decode[I] = (data: u8[]) -> __NpPacket[I]?:
-    ls = lines(str_from_bytes(data))
-    if ls.len() == 0: return none
-    w = split(ls[0], " ")
-    if w.len() != 14 or w[0] != "NP2": return none
+    nl = 0
+    loop nl < data.len() and data[nl] != '\n': nl += 1
+    w = split(str_from_bytes(data[..nl)), " ")
+    if w.len() != 14 or w[0] != "NP3": return none
     n: int[]
     loop k in [1..10):
         v = to_int(w[k]) ?? return none
@@ -342,13 +350,18 @@ __np_decode[I] = (data: u8[]) -> __NpPacket[I]?:
         loop x in split(w[13], ","):
             v = to_int(x) ?? return none
             has.push(v)
+    ls: str[]
+    if nl + 1 < data.len() and data[nl + 1] == 'z':
+        raw = inflate(data, nl + 2) ?? return none
+        ls = lines(str_from_bytes(raw))
+    else if nl + 1 < data.len(): ls = lines(str_from_bytes(data[nl + 1..]))
     ins: I[]
-    loop k in [1..ls.len()):
-        if ls[k] == "=":
+    loop l in ls:
+        if l == "=":
             if ins.len() == 0: return none
             ins.push(ins[ins.len() - 1])
         else:
-            r = from_text[I](ls[k])
+            r = from_text[I](l)
             if r is TextError: return none
             ins.push(r)
     __NpPacket[I](n[0], n[1], n[2], n[3], n[4], n[5], ins, n[6], (u64(n[7]) << 32) | u64(n[8]), has, f[0], f[1], f[2])

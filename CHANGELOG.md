@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- netplay sessions send half as much: the inputs in a packet are deflated (an input's text
+  repeats its fields' names), 264 bytes a packet on average down to 128 at 80 ms (another
+  build's packets are said to be one). `deflate` of a short input is 6x faster: its tables are
+  as big as the input, and a short block uses the fixed codes (109 us for 140 bytes, now 17).
 - netplay sessions: inputs made while play waits are played on the ticks after, each change in
   turn (a button tapped during a wait was lost: 5 of 10 taps in a 0.4 s stall); `s.delay`
   changed after the session is made works, longer or shorter (4 hung the session, 1 did

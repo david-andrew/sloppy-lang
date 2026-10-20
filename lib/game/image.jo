@@ -496,6 +496,10 @@ __dist_code = (d: int) -> int:
 # the distance of each length (0 for a literal). Written the shortest way: with codes made for
 # it, with the fixed codes, or stored as it is.
 __deflate_block = (w: mut __Bits, lits: int[], dists: int[], last: bool, src: u8[], from: int, to: int):
+    # (a short block: the fixed codes, as a table of its own would take more than it saves)
+    if lits.len() < 100:
+        __deflate_codes(w, lits, dists, last, 1, __fixed_lit_lengths(), fill(5, 30))
+        return
     lf = fill(0, 286)
     df = fill(0, 30)
     loop i in 0.. and v in lits:
@@ -648,7 +652,8 @@ __lz_match = (src: u8[], i: int, head: int[], prev: int[]) -> (int, int):
     if i + 2 >= n: return (0, 0)
     best = 0
     bdist = 0
-    h = ((int(src[i]) << 10) xor (int(src[i + 1]) << 5) xor int(src[i + 2])) & 32767
+    mask = head.len() - 1
+    h = ((int(src[i]) << 10) xor (int(src[i + 1]) << 5) xor int(src[i + 2])) & mask
     c = head[h]
     chain = 48
     most = min(258, n - i)
@@ -660,7 +665,7 @@ __lz_match = (src: u8[], i: int, head: int[], prev: int[]) -> (int, int):
                 best = l
                 bdist = i - c
                 if l == most: break
-        c = prev[c & 32767]
+        c = prev[c & mask]
         chain -= 1
     (best, bdist)
 
@@ -670,9 +675,12 @@ deflate = (src: u8[]) -> u8[]:
     w = __Bits([], 0, 0)
     w.out.reserve(src.len() / 2 + 64)
     n = src.len()
-    hsize = 1 << 15
+    # (the tables as big as the window, 32 KB, or the input if smaller: a short one, a packet's,
+    # is not slowed by filling them)
+    hsize = 64
+    loop hsize < n and hsize < 32768: hsize *= 2
     head = fill(-1, hsize)
-    prev = fill(-1, 32768)
+    prev = fill(-1, hsize)
     lits: int[]
     dists: int[]
     bstart = 0
@@ -681,7 +689,7 @@ deflate = (src: u8[]) -> u8[]:
         best, bdist = __lz_match(src, i, head, prev)
         if i + 2 < n:
             h = ((int(src[i]) << 10) xor (int(src[i + 1]) << 5) xor int(src[i + 2])) & (hsize - 1)
-            prev[i & 32767] = head[h]
+            prev[i & (hsize - 1)] = head[h]
             head[h] = i
         # (lazily: a longer match one byte on is better than this one)
         if best >= 3 and best < 32 and i + 1 < n:
@@ -693,7 +701,7 @@ deflate = (src: u8[]) -> u8[]:
             # (the positions inside the match are in the chains too)
             loop j in [i + 1..min(i + best, n - 2)):
                 h = ((int(src[j]) << 10) xor (int(src[j + 1]) << 5) xor int(src[j + 2])) & (hsize - 1)
-                prev[j & 32767] = head[h]
+                prev[j & (hsize - 1)] = head[h]
                 head[h] = j
             i += best
         else:
