@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- netplay sessions keep pace by how far ahead they are over a second or so, not at each packet:
+  a machine with a slow frame plays the ticks it missed at its next one, and the others no
+  longer hold still for it (3 machines with jitter and three 50 ms frames a second: 62 frames
+  held still in 2 minutes, now none; a frame held still is the player's own plane stopping).
 - netplay sessions send half as much: the inputs in a packet are deflated (an input's text
   repeats its fields' names), 264 bytes a packet on average down to 128 at 80 ms (another
   build's packets are said to be one). `deflate` of a short input is 6x faster: its tables are
