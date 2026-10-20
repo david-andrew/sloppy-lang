@@ -86,263 +86,235 @@ __scale10 = (x: f64, k: int) -> f64:
     if k < -300: return x / __pow10(300) / __pow10(-k - 300)
     x / __pow10(-k)
 
-# decimal exponent e such that 10^e <= x < 10^(e+1)
-__exp10 = (x: f64) -> int:
-    e = 0
-    v = x
-    if v >= 10.0:
-        loop v >= 1e100:
-            v = v / 1e100
-            e += 100
-        loop v >= 1e10:
-            v = v / 1e10
-            e += 10
-        loop v >= 10.0:
-            v = v / 10.0
-            e += 1
-    else if v < 1.0:
-        loop v < 1e-100:
-            v = v * 1e100
-            e -= 100
-        loop v < 1e-10:
-            v = v * 1e10
-            e -= 10
-        loop v < 1.0:
-            v = v * 10.0
-            e -= 1
-    e
-
-# The shortest digit string that reads back as x (Steele & White / Burger & Dybvig free-format
-# algorithm on exact big integers); returns (digits, decimal exponent of the first digit).
+# The shortest digits that read back as x, and the decimal exponent of the first: Ryu (Ulf Adams,
+# 2018). x is m2 2^e2, the numbers that read back as it lie between its neighbors' halfway points,
+# and those three times a power of ten (q) are taken in whole numbers, from a 128-bit power of five
+# or its inverse: digits are then taken off them while the bounds still differ, the one left
+# rounded as x's own digits are. An f32 is taken with its own bounds (its neighbors are farther).
 __shortest = (x: f64, is_f32: bool) -> (u64, int):
-    # fast path: candidates with up to 15 digits can be checked with one exact operation
-    if x >= 1e-5 and x < 1e15:
-        e = __exp10(x)
-        p = 1
-        loop p <= 15:
-            sh = p - 1 - e
-            if sh > 22 or sh < -22: break
-            scaled = 0.0
-            if sh >= 0: scaled = x * __pow10(sh)
-            else: scaled = x / __pow10(-sh)
-            d = floor(scaled + 0.5)
-            ee = e
-            if d >= __pow10(p):
-                d = d / 10.0
-                ee += 1
-            sh2 = p - 1 - ee
-            back = 0.0
-            if sh2 >= 0: back = d / __pow10(sh2)
-            else: back = d * __pow10(-sh2)
-            if (is_f32 and f32(back) == f32(x)) or (not is_f32 and back == x): return (u64(d), ee)
-            p += 1
-        # (16 and 17 digits, exactly, in 128-bit whole numbers: x is m 2^-s, its neighbors half a
-        # step either side; the nearest p-digit number reads back as x when it is between them)
-        if not is_f32:
-            b = x as u64
-            m = (b & 0x000FFFFFFFFFFFFF) | (u64(1) << 52)
-            sh0 = 1075 - int((b >> 52) & 0x7FF)
-            if m != u64(1) << 52 and sh0 > 0 and sh0 < 120:
-                p = 16
-                fixes = 0
-                loop p <= 17:
-                    k = p - 1 - e
-                    if k < 0 or k > 38: break
-                    # m 10^k, and the nearest whole number to it / 2^sh0 (halves to even)
-                    ph, pl = __mul_pow10(0, m, k)
-                    dh, dl = __shr128(ph, pl, sh0)
-                    rh, rl = __sub128(ph, pl, __shl128(dh, dl, sh0))
-                    hh, hl = __shl128(0, 1, sh0 - 1)
-                    c = __cmp128(rh, rl, hh, hl)
-                    if c > 0 or (c == 0 and dl & 1 == 1): dl += 1
-                    # (e, from repeated float steps, can be one off near a power of ten: p digits
-                    # or it is fixed, and the digits tried again from 16)
-                    top = u64(1)
-                    loop _ in [0..p): top = top * 10
-                    if dh == 0 and fixes < 2 and (dl < top / 10 or dl > top):
-                        if dl < top / 10: e -= 1
-                        else: e += 1
-                        fixes += 1
-                        p = 16
-                        continue
-                    # (d 2^(sh0 + 1) against (2m -+ 1) 10^k: within x's half-steps)
-                    lh, ll = __shl128(0, dl, sh0 + 1)
-                    loh, lol = __mul_pow10(0, 2 * m - 1, k)
-                    hih, hil = __mul_pow10(0, 2 * m + 1, k)
-                    even = m & 1 == 0
-                    a = __cmp128(lh, ll, loh, lol)
-                    z = __cmp128(lh, ll, hih, hil)
-                    if dh == 0 and (a > 0 or (a == 0 and even)) and (z < 0 or (z == 0 and even)):
-                        # (rounding up to 10^p: one digit more than counted; as whole numbers:
-                        # 9999999999999999 is 1e16 as an f64)
-                        if dl >= top: return (dl / 10, e + 1)
-                        return (dl, e)
-                    p += 1
-    __shortest_exact(x, is_f32)
-
-# (whole numbers of 128 bits as two halves, high and low, for __shortest)
-__mul128 = (a: u64, b: u64) -> (u64, u64):
-    a0 = a & 0xFFFFFFFF
-    a1 = a >> 32
-    b0 = b & 0xFFFFFFFF
-    b1 = b >> 32
-    p00 = a0 * b0
-    p01 = a0 * b1
-    p10 = a1 * b0
-    mid = (p00 >> 32) + (p01 & 0xFFFFFFFF) + (p10 & 0xFFFFFFFF)
-    (a1 * b1 + (p01 >> 32) + (p10 >> 32) + (mid >> 32), (p00 & 0xFFFFFFFF) | (mid << 32))
-
-# h:l times 10^k (the product below 2^128)
-__mul_pow10 = (h: u64, l: u64, k: int) -> (u64, u64):
-    rh = h
-    rl = l
-    left = k
-    loop left > 0:
-        step = left
-        if step > 19: step = 19
-        f = u64(1)
-        loop _ in [0..step): f = f * 10
-        ah, al = __mul128(rl, f)
-        rh = rh * f + ah
-        rl = al
-        left -= step
-    (rh, rl)
-
-__shr128 = (h: u64, l: u64, n: int) -> (u64, u64):
-    if n >= 128: return (0, 0)
-    if n >= 64: return (0, h >> u64(n - 64))
-    if n == 0: return (h, l)
-    (h >> u64(n), (l >> u64(n)) | (h << u64(64 - n)))
-
-__shl128 = (h: u64, l: u64, n: int) -> (u64, u64):
-    if n >= 128: return (0, 0)
-    if n >= 64: return (l << u64(n - 64), 0)
-    if n == 0: return (h, l)
-    ((h << u64(n)) | (l >> u64(64 - n)), l << u64(n))
-
-__sub128 = (ah: u64, al: u64, b: (u64, u64)) -> (u64, u64):
-    lo = al - b.1
-    borrow = u64(0)
-    if lo > al: borrow = 1
-    (ah - b.0 - borrow, lo)
-
-__cmp128 = (ah: u64, al: u64, bh: u64, bl: u64) -> int:
-    if ah != bh:
-        if ah < bh: return -1
-        return 1
-    if al < bl: return -1
-    if al > bl: return 1
-    0
-
-__shortest_exact = (x: f64, is_f32: bool) -> (u64, int):
-    m = 0
+    m2 = u64(0)
     e2 = 0
-    hidden = 0
-    low_exp = false
+    mm_shift = u64(1)              # (the gap below is half the one above, at a power of two)
     if is_f32:
-        b = int((f32(x) as i32) as u32)
-        ef = (b >> 23) & 0xFF
-        m = b & 0x7FFFFF
-        hidden = 0x800000
-        if ef == 0: e2 = -149
+        b = u64((f32(x) as i32) as u32)
+        ef = int((b >> 23) & 0xFF)
+        m2 = b & 0x7FFFFF
+        if ef == 0: e2 = -151
         else:
-            m = m | hidden
-            e2 = ef - 150
-        low_exp = ef <= 1
+            e2 = ef - 152
+            if m2 == 0 and ef > 1: mm_shift = 0
+            m2 = m2 | 0x800000
     else:
-        b = int(x as u64)
-        ef = (b >> 52) & 0x7FF
-        m = b & 0x000FFFFFFFFFFFFF
-        hidden = 1 << 52
-        if ef == 0: e2 = -1074
+        b = x as u64
+        ef = int((b >> 52) & 0x7FF)
+        m2 = b & 0xFFFFFFFFFFFFF
+        if ef == 0: e2 = -1076
         else:
-            m = m | hidden
-            e2 = ef - 1075
-        low_exp = ef <= 1
-    even = m & 1 == 0
-    unequal = m == hidden and not low_exp     # the gap below is half the gap above
-    # value = r / s, half-gaps above and below = mp / s, mm / s
-    r = __big_of(m)
-    s: int[] = [1]
-    mp: int[] = [1]
-    mm: int[] = [1]
+            e2 = ef - 1077
+            if m2 == 0 and ef > 1: mm_shift = 0
+            m2 = m2 | 0x10000000000000
+            # (a whole number below 2^53: its own digits, the zeros at its end taken off)
+            if e2 >= -54 and e2 <= -2 and m2 & ((u64(1) << u64(-e2 - 2)) - 1) == 0:
+                d = m2 >> u64(-e2 - 2)
+                n = 0
+                loop d % 10 == 0:
+                    d = d / 10
+                    n += 1
+                return (d, n + __dec_len(d) - 1)
+    # (each of the three, 4 m2 and its bounds, times 2^e2 and the power of ten: e10 its exponent)
+    even = m2 & 1 == 0
+    mv = 4 * m2
+    t = __ryu_tables()
+    e10 = 0
+    vr = u64(0)
+    vp = u64(0)
+    vm = u64(0)
+    vm_tz = false               # (the digits taken off the lower bound or x are all zeros)
+    vr_tz = false
     if e2 >= 0:
-        __big_shl(r, e2 + 1)
-        s = [2]
-        __big_shl(mp, e2)
-        __big_shl(mm, e2)
-        if unequal:
-            __big_shl(r, 1)
-            __big_shl(s, 1)
-            __big_shl(mp, 1)
+        q = ((e2 * 78913) >> 18) - (if e2 > 3: 1 else: 0)          # (log10(2^e2), one less)
+        e10 = q
+        j = -e2 + q + 124 + __pow5_bits(q)
+        p = t + 2 * q
+        vr = __mul_shift(mv, p, j)
+        vp = __mul_shift(mv + 2, p, j)
+        vm = __mul_shift(mv - 1 - mm_shift, p, j)
+        # (x, or a bound, may be a multiple of 5^q: its digits past q are then zeros)
+        if q <= 21:
+            if mv % 5 == 0: vr_tz = __pow5_factor(mv) >= q
+            else if even: vm_tz = __pow5_factor(mv - 1 - mm_shift) >= q
+            else if __pow5_factor(mv + 2) >= q: vp -= 1
     else:
-        __big_shl(r, 1)
-        __big_shl(s, 1 - e2)
-        if unequal:
-            __big_shl(r, 1)
-            __big_shl(s, 1)
-            mp = [2]
-    # k: 10^(k-1) <= x < 10^k, from an estimate and exact fix-ups
-    k = int(ceil(log10(x) - 1e-10))
-    if k >= 0: __big_mul_pow10(s, k)
+        q = ((-e2 * 732923) >> 20) - (if -e2 > 1: 1 else: 0)       # (log10(5^-e2), one less)
+        e10 = q + e2
+        i = -e2 - q
+        j = q - (__pow5_bits(i) - 125)
+        p = t + 2 * (__RYU_INV_N + i)
+        vr = __mul_shift(mv, p, j)
+        vp = __mul_shift(mv + 2, p, j)
+        vm = __mul_shift(mv - 1 - mm_shift, p, j)
+        if q <= 1:
+            vr_tz = true
+            if even: vm_tz = mm_shift == 1
+            else: vp -= 1
+        else if q < 63: vr_tz = mv & ((u64(1) << u64(q)) - 1) == 0
+    # digits taken off while the bounds differ in them (two at a time while they can be)
+    removed = 0
+    if vm_tz or vr_tz:
+        # (rare: a bound that is one of the numbers itself, or an exact half to round to even)
+        last = u64(0)
+        loop vp / 10 > vm / 10:
+            vm_tz = vm_tz and vm % 10 == 0
+            vr_tz = vr_tz and last == 0
+            last = vr % 10
+            vr = vr / 10
+            vp = vp / 10
+            vm = vm / 10
+            removed += 1
+        if vm_tz:
+            loop vm % 10 == 0:
+                vr_tz = vr_tz and last == 0
+                last = vr % 10
+                vr = vr / 10
+                vp = vp / 10
+                vm = vm / 10
+                removed += 1
+        if vr_tz and last == 5 and vr % 2 == 0: last = 4
+        if (vr == vm and (not even or not vm_tz)) or last >= 5: vr += 1
     else:
-        __big_mul_pow10(r, -k)
-        __big_mul_pow10(mp, -k)
-        __big_mul_pow10(mm, -k)
-    loop true:
-        c = __big_cmp(__big_add(r, mp), s)
-        if c > 0 or (c == 0 and even):
-            __big_mul_small(s, 10)
-            k += 1
-        else: break
-    loop true:
-        t = __big_add(r, mp)
-        __big_mul_small(t, 10)
-        c = __big_cmp(t, s)
-        if c < 0 or (c == 0 and not even):
-            __big_mul_small(r, 10)
-            __big_mul_small(mp, 10)
-            __big_mul_small(mm, 10)
-            k -= 1
-        else: break
-    # generate digits until the remainder is within the rounding interval
-    digits: int[]
-    loop true:
-        __big_mul_small(r, 10)
-        __big_mul_small(mp, 10)
-        __big_mul_small(mm, 10)
-        d = 0
-        loop __big_cmp(r, s) >= 0:
-            __big_sub(r, s)
-            d += 1
-        lo = __big_cmp(r, mm)
-        tc1 = lo < 0 or (lo == 0 and even)
-        hi = __big_cmp(__big_add(r, mp), s)
-        tc2 = hi > 0 or (hi == 0 and even)
-        if not tc1 and not tc2:
-            digits.push(d)
-            continue
-        if tc1 and tc2:
-            r2 = r
-            __big_shl(r2, 1)
-            c = __big_cmp(r2, s)
-            if c > 0 or (c == 0 and d % 2 == 1): d += 1
-        else if tc2: d += 1
-        digits.push(d)
-        break
-    # a final round-up can carry into earlier digits
-    i = digits.len() - 1
-    loop i > 0 and digits[i] == 10:
-        digits[i] = 0
-        digits[i - 1] += 1
-        i -= 1
-    if digits[0] == 10:
-        digits[0] = 1
-        k += 1
-    loop digits.len() > 1 and digits[digits.len() - 1] == 0: digits.pop()
-    dv: u64 = 0
-    loop dg in digits: dv = dv * 10 + u64(dg)
-    (dv, k - 1)
+        # (four at a time, then two, then one: rounded up when the last taken off is 5 or more)
+        up = false
+        loop vp / 10000 > vm / 10000:
+            q = vr / 10000
+            up = vr - q * 10000 >= 5000
+            vr = q
+            vp = vp / 10000
+            vm = vm / 10000
+            removed += 4
+        if vp / 100 > vm / 100:
+            q = vr / 100
+            up = vr - q * 100 >= 50
+            vr = q
+            vp = vp / 100
+            vm = vm / 100
+            removed += 2
+        if vp / 10 > vm / 10:
+            q = vr / 10
+            up = vr - q * 10 >= 5
+            vr = q
+            vm = vm / 10
+            removed += 1
+        if vr == vm or up: vr += 1
+    (vr, e10 + removed + __dec_len(vr) - 1)
+
+# (how many decimal digits v has, at least 1)
+__dec_len = (v: u64) -> int:
+    n = 1
+    t = v
+    loop t >= 10000:
+        t = t / 10000
+        n += 4
+    loop t >= 10:
+        t = t / 10
+        n += 1
+    n
+
+# (bits of 5^e, 1 for e = 0)
+__pow5_bits = (e: int) -> int: ((e * 1217359) >> 19) + 1
+
+# (how many times 5 divides v)
+__pow5_factor = (v0: u64) -> int:
+    v = v0
+    n = 0
+    loop v % 5 == 0:
+        v = v / 5
+        n += 1
+    n
+
+# (m, at most 55 bits, times the 128-bit number at p (its low word first), shifted right by j)
+__mul_shift = (m: u64, p: *u64, j: int) -> u64:
+    hi = __mul_high(m, p[1])
+    sum = __mul_high(m, p[0]) + m * p[1]
+    if sum < m * p[1]: hi += 1
+    s = u64(j - 64)
+    (hi << (u64(64) - s)) | (sum >> s)
+
+# Ryu's powers of five, made at the first float written (by one thread, any others waiting): for
+# q of 0..291, 2^(bits of 5^q + 124) / 5^q plus one; then for i of 0..325, 5^i to 125 bits. Two
+# words each, the low one first, in memory of its own (no counts of references, which threads
+# would share)
+const __RYU_INV_N = 292
+const __RYU_POW_N = 326
+__ryu_tab = 0
+__ryu_state = 0
+
+__ryu_tables = () -> *u64:
+    global __ryu_tab
+    t = __ryu_tab
+    if t != 0: return t as *u64
+    when TARGET == "wasm":
+        __ryu_tab = __ryu_make() as int
+    else:
+        if __atomic_cas(&__ryu_state, 0, 1) == 0: __atomic_cas(&__ryu_tab, 0, __ryu_make() as int)
+        else:
+            loop __atomic_add(&__ryu_tab, 0) == 0: pass
+    __ryu_tab as *u64
+
+__ryu_make = () -> *u64:
+    # (pages of its own: not one of the program's allocations, which alloc_count counts)
+    t = __os_pages(16 * (__RYU_INV_N + __RYU_POW_N)) as *u64
+    # 2^832 / 5^q, a 32-bit limb at a time (the lowest first): divided by 5 for each next q
+    big = fill(u64(0), 27)
+    big[26] = 1
+    top = 26                    # (its highest limb that is not zero)
+    loop q in [0..__RYU_INV_N):
+        if q > 0:
+            r = u64(0)
+            k = top
+            loop k >= 0:
+                cur = (r << 32) | big[k]
+                big[k] = cur / 5
+                r = cur % 5
+                k -= 1
+            if big[top] == 0: top -= 1
+        lo, hi = __big_bits(big, 832 - __pow5_bits(q) + 1 - 125)
+        lo += 1
+        if lo == 0: hi += 1
+        t[2 * q] = lo
+        t[2 * q + 1] = hi
+    # 5^i, times 5 for each next
+    pw = fill(u64(0), 27)
+    pw[0] = 1
+    top = 0
+    loop i in [0..__RYU_POW_N):
+        if i > 0:
+            c = u64(0)
+            loop k in [0..top + 1):
+                cur = pw[k] * 5 + c
+                pw[k] = cur & 0xFFFFFFFF
+                c = cur >> 32
+            if c != 0:
+                top += 1
+                pw[top] = c
+        lo, hi = __big_bits(pw, __pow5_bits(i) - 125)
+        t[2 * (__RYU_INV_N + i)] = lo
+        t[2 * (__RYU_INV_N + i) + 1] = hi
+    t
+
+# (bits s to s + 127 of a number of 32-bit limbs, the lowest first; bits below 0 are zeros)
+__big_bits = (limbs: u64[], s: int) -> (u64, u64):
+    w: u64[4]
+    loop k in [0..4):
+        at = s + 32 * k
+        if at <= -32 or at >= 32 * limbs.len(): w[k] = 0
+        else if at < 0: w[k] = (limbs[0] << u64(-at)) & 0xFFFFFFFF
+        else:
+            li = at >> 5
+            bo = at & 31
+            v = limbs[li] >> u64(bo)
+            if bo > 0 and li + 1 < limbs.len(): v |= limbs[li + 1] << u64(32 - bo)
+            w[k] = v & 0xFFFFFFFF
+    (w[0] | (w[1] << 32), w[2] | (w[3] << 32))
 
 __fmt_float = (buf: mut u8[], x: f64, is_f32: bool):
     if x != x:
@@ -360,55 +332,62 @@ __fmt_float = (buf: mut u8[], x: f64, is_f32: bool):
         __buf_append_str(buf, "inf")
         return
     d, e = __shortest(v, is_f32)
-    # digits of d
-    ds: u8[]
-    t = d
-    loop t > 0:
-        ds.push(u8(48 + int(t % 10)))
-        t = t / 10
-    if ds.len() == 0: ds.push('0')
-    nd = ds.len()
-    # ds is reversed; ds[nd-1] is the most significant digit
-    if e >= 16 or e < -5:
-        __buf_byte(buf, int(ds[nd - 1]))
-        if nd > 1:
-            __buf_byte(buf, c'.')
-            i = nd - 2
-            loop i >= 0:
-                __buf_byte(buf, int(ds[i]))
-                i -= 1
-        __buf_byte(buf, c'e')
-        if e < 0:
-            __buf_byte(buf, c'-')
-            __fmt(buf, -e)
-        else:
-            __buf_byte(buf, c'+')
-            __fmt(buf, e)
-        return
-    if e < 0:
-        __buf_append_str(buf, "0.")
-        z = -e - 1
-        loop z > 0:
-            __buf_byte(buf, c'0')
-            z -= 1
-        i = nd - 1
-        loop i >= 0:
-            __buf_byte(buf, int(ds[i]))
-            i -= 1
-        return
-    # integer part: digits [0..e]
+    nd = __dec_len(d)
+    # (written in place: at most 17 digits, a point, and "e-324" or "0.00000")
+    old = len(buf)
+    p = __buf_reserve(buf, 32)
+    o = p + 24 + old
     k = 0
-    loop k <= e:
-        if k < nd: __buf_byte(buf, int(ds[nd - 1 - k]))
-        else: __buf_byte(buf, c'0')
-        k += 1
-    __buf_byte(buf, c'.')
-    if nd <= e + 1:
-        __buf_byte(buf, c'0')
-        return
-    loop k < nd:
-        __buf_byte(buf, int(ds[nd - 1 - k]))
-        k += 1
+    if e >= 16 or e < -5:
+        # d.ddde+X
+        __put_digits(o + 1, d, nd)
+        o[0] = o[1]
+        k = 1
+        if nd > 1:
+            o[1] = '.'
+            k = nd + 1
+        o[k] = 'e'
+        o[k + 1] = if e < 0: '-' else: '+'
+        ae = abs(e)
+        ne = __dec_len(u64(ae))
+        __put_digits(o + k + 2, u64(ae), ne)
+        k += 2 + ne
+    else if e < 0:
+        # 0.000ddd
+        o[0] = '0'
+        o[1] = '.'
+        k = 2
+        loop _ in [0..-e - 1):
+            o[k] = '0'
+            k += 1
+        __put_digits(o + k, d, nd)
+        k += nd
+    else if nd <= e + 1:
+        # ddd000.0
+        __put_digits(o, d, nd)
+        k = nd
+        loop k <= e:
+            o[k] = '0'
+            k += 1
+        o[k] = '.'
+        o[k + 1] = '0'
+        k += 2
+    else:
+        # ddd.ddd
+        __put_digits(o + 1, d, nd)
+        loop i in [0..e + 1): o[i] = o[i + 1]
+        o[e + 1] = '.'
+        k = nd + 1
+    (p as *int)[1] = old + k
+
+# (v's n digits at o)
+__put_digits = (o: *u8, v: u64, n: int):
+    t = v
+    k = n - 1
+    loop k >= 0:
+        o[k] = u8(48 + int(t % 10))
+        t = t / 10
+        k -= 1
 
 __fmt = (buf: mut u8[], x: f64): __fmt_float(buf, x, false)
 __fmt = (buf: mut u8[], x: f32): __fmt_float(buf, f64(x), true)

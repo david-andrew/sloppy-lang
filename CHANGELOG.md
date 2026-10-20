@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Floats are written 2-6x faster (`print`, `str(x)`, `"{x}"`, `to_json`, `to_text`): Ryu's
+  shortest digits, from 128-bit powers of five made at the first float written, in place of
+  trying 1 to 15 digits and then exact big numbers. The same text for every f64 (checked against
+  the old code and Python on 600,000 numbers); an f32 halfway between two shortest ones is the
+  even one (`432.64062`, as C and Python write it), and some f32 at a power of two are a digit
+  shorter. `to_json` of a 200,000-float array: 560 ns a float down to 170 (release; 1.6 us to
+  0.64 debug): no text made for each number as it goes from to_text's text to JSON's.
 - JSON: `to_json` (and a Json's text) writes NaN and the infinities as `null`, as
   `JSON.stringify` does (it wrote `Infinity`, which a browser's `JSON.parse` refuses);
   `from_json` reads `null` into a float as NaN, and still reads Python's `Infinity` and `NaN`.
