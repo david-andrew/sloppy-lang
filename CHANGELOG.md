@@ -35,6 +35,9 @@
   answers CORS's preflights and lets the sites listed read the answers. Answers of text, JSON,
   JavaScript, SVG and wasm of 1 KB or more go gzip'd to clients that take it, files once per
   change (with an ETag of their own); `http.gzip = false` for none.
+- JSON: a struct field whose name ends in `_` is the name without it in `to_json`, `json_value`
+  and `from_json` (`when_: f64` is `"when"`): JSON names that are keywords. A keyword as a
+  field's name says so.
 
 ## 0.28.0
 
