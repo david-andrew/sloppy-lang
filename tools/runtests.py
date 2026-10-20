@@ -156,8 +156,14 @@ for t in tests:
         if run_dir and run[:2] == ["podman", "exec"] and target != "windows": run[2:2] = ["-w", run_dir]
         r = subprocess.run(run, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, input=stdin_data,
                            env=test_env, cwd=run_dir)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         print(f"FAIL {name}: timed out")
+        # (what it said before: where it stopped)
+        for what, out in (("stdout", e.stdout), ("stderr", e.stderr)):
+            if isinstance(out, bytes): out = out.decode("utf-8", "replace")
+            if out:
+                print(f"   {what}, the last lines:")
+                for l in out.splitlines()[-8:]: print(f"   | {l}")
         failed += 1
         stop_container_run(target)
         continue
