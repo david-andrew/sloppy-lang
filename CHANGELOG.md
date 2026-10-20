@@ -17,6 +17,53 @@
   `\ud83d\ude00`, is the one character). Messages: `s.find(x) != none` says find gives -1
   (`x in s` tests it), and comparing any value that is not optional with none says how one is
   declared; `r.json()` on a request says it would be http.json(r) and how its body is read.
+- http: requests are read strictly, so that no request can hide in another's body behind a
+  proxy (request smuggling): a Transfer-Encoding other than chunked is 501 (`gzip, chunked` was
+  taken as no body and its chunks as the next request), both it and a Content-Length 400,
+  Content-Lengths that differ or are not plain digits 400, a header with a space before its
+  colon or a line that goes on from the one before 400, a lone \r 400; lines that end in \n
+  alone are 400 at once (they waited 60 s for an answer); empty lines before a request are
+  skipped; a chunk's size with more after it (`5x`) is 400.
+- http: `send_event` splits its data at \r and \r\n too (a lone \r started an event of its own
+  in a browser: `"hi\revent: admin"`), and an event's name and id lose their line breaks;
+  `send_event(..., id = "42")`: the id a page's EventSource says it had last when it connects
+  again (`r.headers.get("last-event-id")`).
+- http: a stream whose client has gone is closed at once (200 pages that closed held 200
+  connections until the next send), `http.stream_open(conn)` says whether it is open; an
+  events() stream sent nothing for `http.heartbeat` seconds (15) is sent a comment, which keeps
+  proxies from cutting it and finds clients gone without a word; at most `http.most_streams`
+  (1000) are open, one more is 503; a stop (SIGTERM, `shutdown`) ends streams with their last
+  chunk (curl said the transfer was cut, exit 18).
+- http: `http.on_error = (r, code, why) -> Response` makes what the server answers itself (404,
+  405, 500, and a request refused: 400, 408, 413, 431, 501, 503), JSON for an API; those go
+  through `after()` too (a 413 skipped it, as text/plain). `http.files` is looked in after the
+  other routes, so a GET of a POST's path is 405 with Allow (it was 404, the file route taking
+  every GET); `/index.html/` is 404, not the file.
+- http: `http.trust_proxy = ["127.0.0.1"]`: requests from the proxy in front have the client's
+  address (`r.address`, the log's lines, a WebSocket's handshake), the last in X-Forwarded-For
+  that is not a proxy listed; none trusted unless set.
+- http: `http.set_signed_cookie(res, name, value, secret)` and `http.signed_cookie(r, name,
+  secret)`: a cookie the client cannot change or make up (HMAC-SHA256 over its name, value and
+  expiry, compared in constant time). `http.secure_cookies = true` makes every cookie Secure (for
+  a site behind https); `SameSite=None` is Secure always, as browsers require; `clear_cookie`
+  takes a domain and keeps the name to a cookie's characters.
+- http: `http.allow(key, per_minute, burst = 0)`: a rate limit per key (a token bucket, at most
+  100,000 keys kept). `http.before("/api/", f)` and `http.after("/api/", f)` for the paths under
+  a prefix only, and `http.cors(..., prefix = "/api/")`. With sites listed, every answer of
+  cors's paths says `Vary: Origin` (one to a site not listed did not, so a cache could give it
+  to a listed one).
+- http: `http.query_all(r, "tag")`: each value of a name given twice (`?tag=a&tag=b`; r.query has
+  the last). A cookie sent twice is the first (`sid=one; sid=two` was two), as browsers send the
+  one for the longer path first (`parse_cookies` too).
+- http: `read_json` takes a body sent as JSON only (Content-Type: application/json or
+  `...+json`, as net.fetch sends a JSON body), else 415: a form posted from another site's page,
+  which goes with the browser's cookies and no CORS preflight, does not reach the handler.
+- `sloppy new my_site server`: a web server to start from (a JSON API kept in a file, a page that
+  uses it, live updates by server-sent events, a rate limit, JSON errors, a test). START.md: a
+  whole WebSocket chat with rooms, the list of event streams kept to those open, cookies and
+  sessions, trusting the proxy, backups of the data file, and a command that changes the file
+  while the server runs (its change is written over: an admin route instead). The library
+  reference lists the settings a program changes (`http.gzip`, `http.log_requests`...).
 - netplay clients: one the server closed is not connected any more (5 s later it took the server
   for gone and connected again, a reconnect = true one, though turned away on purpose); `c.view()`
   never goes back (a world that came late moved it back a little).

@@ -1215,7 +1215,7 @@ title = html_unescape("Tom &amp; Jerry &#8212; &lt;b&gt;")  # Tom & Jerry — <b
 - `url_decode = (s: str, plus: bool = false) -> str`: percent-encoded text back as it was: %XX as that byte (a % without two hex digits stays as it is); with plus = true a + is a space too, as an HTML form's query writes one
 - `url_query[T] = (params: {str: T}) -> str`: a query string from names and values, each url_encoded: url_query({"q": "x y", "n": "5"}) is "q=x%20y&n=5" (what goes after the ? of a URL; Python's urlencode)
 - `parse_query = (q: str) -> {str: str}`: a query string's names and values, decoded: parse_query("q=x%20y&n=5") is {"q": "x y", "n": "5"} (what comes after the ? of a URL, or an HTML form's body; a name given twice: the last)
-- `parse_cookies = (header: str) -> {str: str}`: a Cookie header's names and values: parse_cookies("a=1; b=2") is {"a": "1", "b": "2"}
+- `parse_cookies = (header: str) -> {str: str}`: a Cookie header's names and values: parse_cookies("a=1; b=2") is {"a": "1", "b": "2"} (a name given twice: the first, which a browser sends for the longer path or the narrower domain)
 - `struct Url`: a URL taken apart (parse_url), each part as written (its %XX kept: url_decode(u.path) for the text): https://ann@example.com:8080/a/b?q=1#top has scheme "https", user "ann", host "example.com", port 8080, path "/a/b", query "q=1" and fragment "top". The scheme and host are in small letters; an IPv6 host is without its [ ]. A part not written is "" (the port: -1). str(u) puts it back together.
   ```gdscript
   struct Url:
@@ -2757,6 +2757,7 @@ draw = ():
 
 #### Textures
 
+- `smooth_textures = true`: whether a texture is smoothed (sampled linearly) when drawn larger, smaller or between pixels, where texture() and load_texture() are not told: yes, until pixel_art() makes it no (sharp pixels, no blur and no dark fringes around transparent ones). It is read when a texture is made.
 - `texture = (img: Image, smooth: bool = smooth_textures) -> Texture`: upload an image to the GPU (smooth: see smooth_textures)
 - `set_repeat = (t: Texture, on: bool)`: a texture that repeats past its edges, for sprite_region (and a shader's sample) beyond them: a source rectangle wider than the texture shows it again and again. Off (the default), what is past an edge is that edge's pixels, stretched. A whole texture repeats, not a part of a sheet: sprite_tiled repeats any part, on every texture.
 - `update_texture = (t: Texture, img: Image)`
@@ -5132,6 +5133,7 @@ Masses come from sizes and `density` (kilograms per cubic meter: 1000 is water's
       normal: vec3
       fraction: f32
   ```
+- `ground = Body(0)`: the world itself, for joints to it: w.ball(ground, lamp, at) hangs a lamp from a fixed point
 
 #### The world
 
@@ -5453,7 +5455,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 
 ## HTTP servers
 
-A module (`import http`): a web site, an API or a game's page served from a native program: routes with `:names`, JSON, cookies, files, server-sent events, and WebSockets on the same port (as net's peers). It waits with `net.wait`, so a slow client holds up no other; behind Caddy it serves https ([writing a server](START.md#writing-a-server)).
+A module (`import http`): a web site, an API or a game's page served from a native program: routes with `:names`, JSON, cookies (signed ones too), files, server-sent events, WebSockets on the same port (as net's peers), rate limits, and its own answers (404, 413...) as the program says. It waits with `net.wait`, so a slow client holds up no other; behind Caddy it serves https ([writing a server](START.md#writing-a-server)). `sloppy new my_site server` starts one.
 
 ```gdscript
 # example: HTTP servers
@@ -5510,7 +5512,7 @@ loop not stopping():
     net.wait(1.0)                           # until something comes (a request, a message)
 ```
 
-Each request's handler runs as a task of its own (lib/std/task.jo): one that waits (a net.fetch, sleep, a channel) lets the others be answered meanwhile; one connection's requests are answered in order. Tasks take turns on the program's one thread, so handlers change the program's variables (a map of todos, a count) with no locks: nothing else runs between two waits. One that computes for long, runs a program (run_program) or reads a big file holds up the others while it does. A client slow to send or to read holds up no other (what waits to go out to it goes as it takes it). A handler that panics is answered 500 and the server goes on (the panic and its backtrace are written to standard error; what the handler had changed stays changed). Behind a proxy that has the certificate (Caddy: docs/START.md's "Writing a server"), the same program serves https. Native programs only.
+Each request's handler runs as a task of its own (lib/std/task.jo): one that waits (a net.fetch, sleep, a channel) lets the others be answered meanwhile; one connection's requests are answered in order. Tasks take turns on the program's one thread, so handlers change the program's variables (a map of todos, a count) with no locks: nothing else runs between two waits. One that computes for long, runs a program (run_program) or reads a big file holds up the others while it does. A client slow to send or to read holds up no other (what waits to go out to it goes as it takes it). A handler that panics is answered 500 and the server goes on (the panic and its backtrace are written to standard error; what the handler had changed stays changed). Behind a proxy that has the certificate (Caddy: docs/START.md's "Writing a server"), the same program serves https (trust_proxy: the clients' addresses; secure_cookies). Native programs only.
 
 Asked to stop (ctrl-c, SIGTERM), serve takes no more requests, gives the handlers running up to `drain` seconds to answer, and returns: the program then ends what it runs besides (closing the channels its tasks read), and saves. A program with its own loop calls shutdown() itself.
 
@@ -5527,16 +5529,17 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
   struct Request:
       method = ""             # "GET", "POST", ...
       path = ""               # "/todos/3": decoded (%20 a space), without the query
-      query: {str: str}       # ?done=true&q=a%20b: {"done": "true", "q": "a b"}
+      query: {str: str}       # ?done=true&q=a%20b: {"done": "true", "q": "a b"} (a name given twice:
+                              # the last; query_all(r, name) has each)
       params: {str: str}      # the route's :names: /todos/:id gives {"id": "3"}
-      headers: {str: str}     # names in small letters
-      cookies: {str: str}
+      headers: {str: str}     # names in small letters (a header sent twice: its values joined by ", ")
+      cookies: {str: str}     # (a name sent twice: the first, the one for the longer path)
       body: u8[]              # what was sent with it ...
       text = ""               # ... as text (read_json reads it into a struct)
       target = ""             # the path and query as sent: "/todos?done=true"
       version = "HTTP/1.1"
-      address = ""            # where it came from: "1.2.3.4" (behind a proxy, the proxy's; Caddy puts
-                              # the client's last in X-Forwarded-For, to trust from the proxy only)
+      address = ""            # where it came from: "1.2.3.4" (behind a proxy, the proxy's, unless
+                              # trust_proxy names it: then the client's, from X-Forwarded-For)
       conn = 0                # its connection (a stream's: send_event and send_chunk go to it)
   ```
 - `struct Response`
@@ -5571,8 +5574,8 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 - `status = (code: int, message: str = "") -> Response`: a status with its reason as the text ("404 Not Found"), or with the text given
 - `json_error = (code: int, message: str) -> Response`: an error for an API's client: {"error": message} as JSON
 - `redirect = (to0: str, status: int = 302) -> Response`: to another address (302: for now; 301: for good; 303: after a form's POST, a GET of it)
-- `file = (r: Request, path: str) -> Response`: a file, sent a piece at a time (a big one is never all in memory), with its type and what lets a browser keep a copy (as files() does); 404 when there is no such file
-- `read_json[T] = (r: Request, into: mut T) -> Response?`: the request's body, as JSON, read into `into` (a struct, an array...: what from_json reads): none when it went well, else the answer to give (400, saying what is wrong with it), and `into` is as it was. The fields the body has are set, the others keep the values they had (a struct in it too, field by field; an array or a map in it is replaced), so the same reads a new one and changes one, a PATCH:
+- `file = (r: Request, path: str) -> Response`: a file, sent a piece at a time (a big one is never all in memory), with its type and what lets a browser keep a copy (as files() does); on_error's 404 when there is no such file
+- `read_json[T] = (r: Request, into: mut T) -> Response?`: the request's body, as JSON, read into `into` (a struct, an array...: what from_json reads): none when it went well, else the answer to give (400, saying what is wrong with it), and `into` is as it was. The fields the body has are set, the others keep the values they had (a struct in it too, field by field; an array or a map in it is replaced), so the same reads a new one and changes one, a PATCH. The request must say it sends JSON (Content-Type: application/json, or a type ending in +json, as net.fetch, a page's fetch() with that header and curl --json send it), else it is answered 415: what a page of another site can send with the browser's cookies and no CORS preflight (a form's post, text/plain) never reaches the handler.
   ```gdscript
   t = TodoIn()
   if let bad = http.read_json(r, t): return bad
@@ -5581,16 +5584,40 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
   if let bad = http.read_json(r, t): return bad
   todos[id] = t                                   # (its title as it was)
   ```
-- `set_cookie = (res: mut Response, name: str, value: str, max_age: int = -1, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = "")`: a Set-Cookie on the answer: the client sends the cookie back with its requests from then on (r.cookies), for max_age seconds (-1: until the browser closes). http_only: not for the page's JavaScript; secure: over https only; same_site: "Lax", "Strict" or "None"
-- `clear_cookie = (res: mut Response, name: str, path: str = "/")`: a Set-Cookie that has the client forget a cookie
+- `set_cookie = (res: mut Response, name: str, value: str, max_age: int = -1, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = "")`: a Set-Cookie on the answer: the client sends the cookie back with its requests from then on (r.cookies), for max_age seconds (-1: until the browser closes). http_only: not for the page's JavaScript; secure: over https only (secure_cookies: every cookie); same_site: "Lax" (sent with the site's own requests, and when a link from another site is followed), "Strict" (the site's own only) or "None" (any site's requests too: then Secure, as browsers require)
+- `secure_cookies = false`: every cookie Secure: sent by the browser over https only. For a site served over https (behind Caddy), where a cookie that went over http too could be read on the way:
+  ```gdscript
+  http.secure_cookies = env("DEV") == none        # (http://localhost while developing)
+  ```
+- `clear_cookie = (res: mut Response, name: str, path: str = "/", domain: str = "")`: a Set-Cookie that has the client forget a cookie (path and domain as it was set with)
+- `set_signed_cookie = (res: mut Response, name: str, value: str, secret: str, max_age: int = 7 * 86400, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = "")`: a cookie the client can read but not change or make up (a session's user, a cart): its value signed with secret (HMAC-SHA256 over its name, value and when it ends), signed_cookie reads it back. As set_cookie's (HttpOnly, SameSite=Lax), and good for max_age seconds, a week unless said (-1: until the browser closes, its signature good for as long). The value is in it to read (base64), not hidden: no password in it. secret: 16 bytes or more, kept out of the code (env("SESSION_SECRET"), or crypto.hex_text(crypto.random_bytes(32)) made once and saved); a new secret undoes every cookie signed with the old one (everyone signed out)
+  ```gdscript
+  http.set_signed_cookie(res, "user", name, SECRET, max_age = 8 * 3600)
+  ...
+  if let user = http.signed_cookie(r, "user", SECRET): ...
+  ```
+- `signed_cookie = (r: Request, name: str, secret: str) -> str?`: the value of a cookie set_signed_cookie set; none when the request has none, or one whose signature is not secret's (changed, made up, another cookie's moved), or one past its max_age
+- `query_all = (r: Request, name: str) -> str[]`: every value a name has in the request's query, in order: ?tag=a&tag=b gives ["a", "b"] (r.query has the last); [] when it has none
+
+#### Rate limits
+
+- `allow = (key: str, per_minute: int, burst: int = 0) -> bool`: allow(key, per_minute) says whether one more request of key (a client's address, a user's name, what they do: "login " + r.address) may go on: per_minute of them a minute, in a burst of up to burst (0: per_minute) at once. Each key's count fills back as time passes (a token bucket). Memory is bounded: past 100,000 keys, those nearest to full are forgotten (a key not seen starts full).
+  ```gdscript
+  http.before("/api/", (r: mut http.Request) -> http.Response?:
+      if not http.allow(r.address, 120): return http.json_error(429, "slow down")
+      none)
+  ```
 
 #### Streams: server-sent events and chunks
 
+- `heartbeat = 15.0`: seconds an events() stream may be sent nothing before a comment goes to it (0: none go)
+- `most_streams = 1000`: the most streams (stream(), events()) open at once; one more is answered 503 (on_error's). Each holds a connection open, and the connections a program may have are shared by all
+- `stream_open = (conn: int) -> bool`: whether a stream (the r.conn of a stream() or events() answer) is open: false once its client has gone, end_stream ended it, or the server stopped
 - `stream = (type: str = "text/plain; charset=utf-8") -> Response`: an answer whose body is sent later, a chunk at a time (send_chunk, then end_stream)
 - `events = () -> Response`: a stream of server-sent events, what a web page's EventSource reads (send_event)
 - `send_chunk = (conn: int, b: u8[]) -> bool`: a chunk of a stream's body; false when the client has gone (or has 8 MB waiting for it, a reader that stopped: then it is let go)
 - `send_chunk = (conn: int, text: str) -> bool`
-- `send_event = (conn: int, data: str, event: str = "") -> bool`: an event to an events() stream: its data (lines of text), and its name when not "message" (a page's EventSource: addEventListener(event, ...))
+- `send_event = (conn: int, data: str, event: str = "", id: str = "") -> bool`: an event to an events() stream: its data (lines of text: each a data: line, whether it ends in \n, \r\n or \r), its name when not "message" (a page's EventSource: addEventListener(event, ...)), and its id (what the page's next connection says it had last: Last-Event-ID). A line break in event or id is left out (it would start a field of its own)
 - `end_stream = (conn: int)`: the end of a stream: its body is complete (the connection may carry other requests)
 
 #### WebSockets
@@ -5600,26 +5627,46 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 #### Every request: before and after its route
 
 - `before = (f: (mut Request) -> Response?)`: a function each request is given before its route
+- `before = (prefix: str, f: (mut Request) -> Response?)`: a function the requests to the paths under prefix are given before their route
 - `after = (f: (Request, Response) -> Response)`: a function each request's answer goes through after its route (a WebSocket's too, as its 101)
+- `after = (prefix: str, f: (Request, Response) -> Response)`: a function the answers to the paths under prefix go through after their route
+
+#### What the server answers itself
+
+- `on_error: (Request, int, str) -> Response`: The answers no handler made: 404 (no route has the path), 405 (routes have it for other methods: Allow says which), 500 (a handler panicked), and a request refused before it gets to a route (400 not HTTP's, 408 too slow to come, 413 its body too big, 431 its headers, 501 a Transfer-Encoding not taken, 503 too many streams). They are on_error's: given the request (as much of it as was read), the status and why ("" for 404, 405 and 500), and they go through after() as any answer. As text unless changed: an API answers JSON with
+  ```gdscript
+  http.on_error = (r: http.Request, code: int, why: str) -> http.Response:
+      http.json_error(code, if len(why) > 0: why else: http.reason(code))
+  ```
 
 #### CORS: requests from web pages of other sites
 
-- `cors = (origins: str[] = ["*"], methods: str = "GET, HEAD, POST, PUT, PATCH, DELETE", headers: str = "Content-Type, Authorization", credentials: bool = false, max_age: int = 600)`: A browser lets a page of another site (another origin: scheme, host and port) read this server's answers only when they say it may: cors(origins) says so for those sites ("*": any site), and answers the browser's preflight (an OPTIONS request it sends first, for a PUT, a DELETE, or a request with JSON or an Authorization header) before any before() or route sees it. credentials: the page's cookies (and Authorization) go along (with the sites listed only: a browser sends none to "*"); max_age: how many seconds a browser may keep a preflight's answer
+- `cors = (origins: str[] = ["*"], methods: str = "GET, HEAD, POST, PUT, PATCH, DELETE", headers: str = "Content-Type, Authorization", credentials: bool = false, max_age: int = 600, prefix: str = "/")`: A browser lets a page of another site (another origin: scheme, host and port) read this server's answers only when they say it may: cors(origins) says so for those sites ("*": any site), and answers the browser's preflight (an OPTIONS request it sends first, for a PUT, a DELETE, or a request with JSON or an Authorization header) before any before() or route sees it. credentials: the page's cookies (and Authorization) go along (with the sites listed only: a browser sends none to "*"); max_age: how many seconds a browser may keep a preflight's answer
   ```gdscript
   http.cors(["https://example.com", "http://localhost:5173"])
   http.cors()                                     # any site (an open API, without cookies)
+  http.cors(["https://example.com"], prefix = "/api/")   # the paths under /api/ only
   ```
+
+#### Gzip
+
+- `gzip = true`: Answers of text (HTML, CSS, JavaScript, JSON, SVG...) and WebAssembly of 1 KB or more are sent gzip'd to the clients that take it (Accept-Encoding: gzip): a third or less of the bytes. A file's is made once, while the file is unchanged (up to 64 MB of them kept). false: none are (as behind a proxy that does it, Caddy's `encode gzip`)
 
 #### Serving
 
 - `serve = (port: int, host: str = "", largest: int = 1 << 20, backlog: int = 511, drain: f64 = 10.0) -> bool`: answer requests on port until the program is asked to stop (ctrl-c, SIGTERM: stopping()), then give the handlers running up to `drain` seconds to answer (shutdown); false at once when the port cannot be had. host, largest, backlog: as listen's
-- `shutdown = (wait: f64 = 10.0) -> bool`: stop serving: no more requests are taken, the handlers running are waited for (up to `wait` seconds) and their answers sent, and the connections are closed (streams too). true when every one was answered in time (a handler still running then goes on, but its answer goes nowhere)
+- `shutdown = (wait: f64 = 10.0) -> bool`: stop serving: no more requests are taken, the handlers running are waited for (up to `wait` seconds) and their answers sent, and the connections are closed (streams too, ended first as end_stream ends one, so a client sees them complete). true when every one was answered in time (a handler still running then goes on, but its answer goes nowhere)
 - `listen = (port: int, host: str = "", largest: int = 1 << 20, backlog: int = 511) -> bool`: start taking requests on port (answer() answers them); false when the port cannot be had (another program has it). host: the address it is reached at, "" every one this machine has ("127.0.0.1": from this machine only, as behind a proxy on it); largest: the biggest body taken (a bigger one is answered 413); backlog: how many connections may wait to be taken
 - `stop_listening = ()`: stop taking requests (those of connections open are still answered)
 - `answer = () -> int`: answer the requests that have come, and send what waits to go out; how many were answered. It does not wait: net.wait does (until there is something to answer)
 - `log_line = (r: Request, res: Response, seconds: f64) -> str`: the line a request makes in a log: who, what, the answer's status and size, how long it took
   ```gdscript
   127.0.0.1 "GET /todos?done=true HTTP/1.1" 200 312 0.4ms
+  ```
+- `log_requests = false`: write each request's log_line to standard error
+- `trust_proxy: str[]`: the addresses of the proxies in front of the server (Caddy on the same machine: ["127.0.0.1"]): a request from one of them has as r.address (log_line's, a WebSocket's handshake's) the client's, from X-Forwarded-For: the last address in it that is not a proxy listed (each proxy adds the one it was reached from at the end; what comes before is the client's to write). None unless set: a server reached with no proxy in front would take a client's word for where it is
+  ```gdscript
+  http.trust_proxy = ["127.0.0.1"]
   ```
 - `http_date = (t: f64) -> str`: a time (unix_time's seconds) as HTTP writes one: "Sun, 06 Nov 1994 08:49:37 GMT"
 - `from_http_date = (s: str) -> f64?`: an HTTP date ("Sun, 06 Nov 1994 08:49:37 GMT") as unix_time's seconds; none when it is not one

@@ -101,6 +101,7 @@ sloppy new my_tale story      # a story in lines and choices (a visual novel), i
 sloppy new my_duel online     # two players anywhere, no server: invite a friend by a link (rollback)
 sloppy new my_tool program    # a program for the terminal, with a test
 sloppy new my_list tui        # a program for the whole terminal: a list of things to do (keys, the mouse)
+sloppy new my_site server     # a web server: a JSON API kept in a file, a page, live updates, a test
 sloppy watch my_game/my_game.jo
 ```
 
@@ -408,12 +409,19 @@ if not http.serve(8080): eprint("port 8080 is taken")
 on_quit = (): write_file("todos.json", to_json(todos))
 ```
 
-- A `Request` has `method`, `path`, `params` (the route's `:names`), `query` (`?done=true`),
+- A `Request` has `method`, `path`, `params` (the route's `:names`), `query` (`?done=true`; a
+  name given twice, `?tag=a&tag=b`, has its last there and each in `http.query_all(r, "tag")`),
   `headers` (names in small letters), `cookies`, `body` and `text`, and `address`. Answers are
   `http.text(s)`, `http.html(s)`, `http.json(value)`, `http.binary(bytes, type)`,
   `http.status(404)`, `http.redirect("/login")` and `http.file(r, path)`, with `status`, `headers`
   and `http.set_cookie(res, name, value)` to change. A route of `"/files/*path"` takes the rest of
-  the path; a path no route has is answered 404, and one routes have for other methods 405.
+  the path; a path no route has is answered 404, and one routes have for other methods 405
+  (`http.files` is looked in last, so a GET of a POST's path is 405, not a file not found).
+- What the server answers itself (those 404s and 405s, 500 for a handler that panicked, 413 for a
+  body too big, 400 for a request that is not HTTP's) is `http.on_error`'s, as text unless an API
+  answers JSON everywhere:
+  `http.on_error = (r: http.Request, code: int, why: str) -> http.Response: http.json_error(code, if len(why) > 0: why else: http.reason(code))`.
+  Those go through `http.after` as every answer does.
 - `http.serve` answers until ctrl-c, or the SIGTERM that systemd and docker send, then stops
   taking requests, gives the handlers still running up to 10 seconds to answer (`drain = ...`),
   and returns, so the program can end its own tasks and save; `on_quit` runs as any program ends,
@@ -430,7 +438,10 @@ on_quit = (): write_file("todos.json", to_json(todos))
   file, holds up the others while it does.
 - `http.read_json(r, t)` sets the fields the body has and keeps the others as they were, so a
   PATCH is `t = todos[i]`, `if let bad = http.read_json(r, t): return bad`, `todos[i] = t`; a body
-  that does not read leaves `t` as it was.
+  that does not read leaves `t` as it was. It takes a body sent as JSON only (`Content-Type:
+  application/json`, which `net.fetch` sends with a JSON body, a page's `fetch` with that header,
+  and `curl --json`), else answers 415: a form that another site's page posts, which goes with
+  the browser's cookies, never reaches the handler.
 - A program that does more than answer (a game hosting, a job that fetches, WebSockets) answers in
   its own loop: `http.listen(8080)`, then `loop not stopping():` with `http.answer()`, its other
   work (`net.receive()`, `net.fetch_result(f)`), and `net.wait(1.0)`, which sleeps until something
@@ -454,16 +465,81 @@ on_quit = (): write_file("todos.json", to_json(todos))
   browser's WebSocket its close event (`event.code`, `event.reason`); 4000-4999 are the
   program's own. Rooms, as Socket.IO's: `net.join_room(p, "match-7")`,
   `net.send_room("match-7", text)`, `net.members("match-7")`; a peer that leaves leaves its rooms.
-  Server-sent events: a route answers `http.events()` and keeps `r.conn`; `http.send_event(conn,
-  text)` sends to it later.
+  A chat with rooms, whole:
+
+  ```gdscript
+  import http
+  import net
+
+  http.get("/ws", (r: http.Request) -> http.Response:
+      if r.headers.get("origin") != "https://chat.example": return http.status(403)
+      http.websocket(r))
+  http.files("/", "public")
+
+  # a peer's own task: it joins the room its page asked for (/ws?room=lobby), and what it sends
+  # goes to everyone in that room
+  chat = (p: int):
+      room = net.handshake(p).query.get("room") ?? "lobby"
+      net.join_room(p, room)
+      net.send_room(room, "{net.members(room).len()} here")
+      loop not net.gone(p) and not stopping():
+          loop e in net.receive([p], wait = 30.0):
+              if e.kind == .message: net.send_room(room, e.text)
+
+  # each peer that connects, given a task of its own
+  take_peers = ():
+      loop not stopping():
+          p = net.accept(wait = 1.0)
+          if p >= 0: spawn((): chat(p))
+
+  spawn(take_peers, background = true)
+  http.serve(8080)
+  ```
+- Server-sent events, for a page that only listens (`new EventSource("/events")`, which connects
+  again by itself): a route answers `http.events()` and keeps `r.conn`, and
+  `http.send_event(conn, text)` sends to it later, false once the page has gone. A page that
+  closes is noticed at once, and `http.stream_open(conn)` is false from then on, so a list of
+  them is kept to those open each time one is added:
+
+  ```gdscript
+  listeners: int[]
+  http.get("/events", (r: http.Request) -> http.Response:
+      listeners = listeners.filter((c: int): http.stream_open(c))
+      listeners.push(r.conn)
+      http.events())
+  # ... when something happens (a booking, a score):
+  listeners = listeners.filter((c: int): http.send_event(c, to_json(score), event = "score", id = "{score.id}"))
+  ```
+
+  A stream sent nothing for 15 seconds is sent a comment, which the page skips (`http.heartbeat`),
+  so that a proxy does not cut it for being idle; at most 1000 are open at once
+  (`http.most_streams`), and a stop (SIGTERM) ends them as a stream ends. A page that connects
+  again says the id of the last event it had in `r.headers.get("last-event-id")`: what came
+  since can be sent first. Lines of data are each a `data:` line of their own, so text from a
+  client cannot start an event of its own.
 - Around the routes: `http.before((r: mut http.Request) -> http.Response?: ...)` sees each request
-  first, and answers it itself (a sign-in missing, a rate limit: `http.json_error(429, ...)`) or
-  gives `none` to let it go on, maybe with `r.params["user"]` set for the handlers;
-  `http.after((r: http.Request, res: http.Response) -> http.Response: ...)` sees each answer
-  (headers to add, a log). `http.cors(["https://example.com"])` lets those sites' pages read the
-  answers (`http.cors()`: any site), and answers the browser's preflight `OPTIONS` before any
-  `before`. Answers of text, JSON, JavaScript and wasm of 1 KB or more go gzip'd to browsers
-  (files once per change); `http.gzip = false` turns that off.
+  first, and answers it itself (a sign-in missing) or gives `none` to let it go on, maybe with
+  `r.params["user"]` set for the handlers; `http.after((r: http.Request, res: http.Response) ->
+  http.Response: ...)` sees each answer (headers to add, a log). Given a path first,
+  `http.before("/api/", f)` is for `/api` and the paths under it only. `http.cors(["https://example.com"])`
+  lets those sites' pages read the answers (`http.cors()`: any site; `prefix = "/api/"`: those
+  paths only), and answers the browser's preflight `OPTIONS` before any `before`. Answers of
+  text, JSON, JavaScript and wasm of 1 KB or more go gzip'd to browsers (files once per change);
+  `http.gzip = false` turns that off.
+- Rate limits: `http.allow(key, per_minute)` is true while `key` (an address, a user, what they
+  do) has made fewer than that many requests a minute, and false past it (a token bucket per key;
+  its memory is bounded):
+  `if not http.allow("login " + r.address, 10): return http.json_error(429, "wait a minute")`.
+- Cookies: `http.set_cookie` makes them `HttpOnly` (the page's JavaScript cannot read them, nor a
+  script slipped into the page) and `SameSite=Lax` (not sent with another site's posts) unless
+  told otherwise. Behind https set `http.secure_cookies = true` (every cookie `Secure`: never sent
+  over plain http). A session is a random token in a cookie that the server looks up
+  (`crypto.hex_text(crypto.random_bytes(32))`, a map of them, `http.clear_cookie` to sign out),
+  or a signed cookie that needs nothing kept:
+  `http.set_signed_cookie(res, "user", name, SECRET, max_age = 8 * 3600)`, read back by
+  `http.signed_cookie(r, "user", SECRET)`, which is `none` for one changed, made up or expired
+  (HMAC-SHA256; the value can be read, so no secrets in it). `SECRET` comes from outside the code
+  (`env("SESSION_SECRET")`); a new one signs everyone out.
 - Passwords: `crypto.hash_password(pw)` gives text to store (PBKDF2-SHA256, a salt of its own),
   and `crypto.check_password(pw, stored)` says whether a password is it. A token or a signature a
   client sent is compared with `crypto.constant_time_equal(a, b)`, which takes as long wherever
@@ -486,10 +562,12 @@ example.org {
 
 (WebSockets pass through it too; `encode gzip` on a line of its own in the block has Caddy gzip
 what the program does not, and leaves what it did.) Behind Caddy, `r.address` (and
-`net.handshake(p).address` for a WebSocket) is Caddy's, 127.0.0.1; the client's is the last
-address in `r.headers.get("x-forwarded-for")`, which Caddy adds. Trust that header only from the
-proxy: a server that listens on every address lets anyone send one saying anything, so listen on
-`host = "127.0.0.1"`, or take the header only when `r.address == "127.0.0.1"`.
+`net.handshake(p).address` for a WebSocket, and the log's lines) is Caddy's, 127.0.0.1, unless
+the program says Caddy is a proxy it trusts: `http.trust_proxy = ["127.0.0.1"]`. Then a request
+from it has the client's address, the last in the `X-Forwarded-For` header that Caddy adds to
+(what comes before that in it is the client's to write, and is not taken). Without a proxy in
+front, leave `trust_proxy` empty, as it is unless set: anyone could send the header saying
+anything. With https, `http.secure_cookies = true` too.
 
 A systemd service for it, `/etc/systemd/system/todos.service`:
 
@@ -517,7 +595,13 @@ finishing what it is answering (up to `drain` seconds) and returning.
 
 **Keeping data.** A small server keeps its data in a JSON file: `to_json`, written to a new file
 that then takes the old one's place (`write_file(tmp, text)`, `rename_file(tmp, path)`), so a crash
-never leaves half a file; `from_json[T]` reads it back at the start. For more, SQLite (or any C
+never leaves half a file; `from_json[T]` reads it back at the start. A file only ever replaced
+that way is whole whenever it is read, so a backup is a copy of it at any time (`cp todos.json
+backups/todos-$(date +%F).json` from cron). The server keeps the data in memory and writes all
+of it at each change: another program that changes the file while it runs (a command to add a
+user) has its change written over at the next save. Make such changes through the server, as a
+route only an admin can call, or stop the server first (`systemctl stop todos`, the command,
+`systemctl start todos`). For more, SQLite (or any C
 library) is a few `extern`s away (section 13 of [the language](LANGUAGE.md#13-calling-c)). Each
 `extern` names its library with `@lib`; a constant keeps that short:
 

@@ -1,0 +1,64 @@
+# requires: sloppy
+# lib/http.jo's helpers that need no connection: signed cookies (read back; changed, moved to
+# another name, signed with another secret or expired: none), cookies' secure defaults, allow()'s
+# rate limits, query_all, and read_json taking JSON only
+import http
+
+const SECRET = "0123456789abcdef0123456789abcdef"
+
+# (a request with the cookie a Set-Cookie of res sets)
+sent_back = (res: http.Response, k: int = 0) -> http.Request:
+    c = split(res.cookies[k], ";")[0]
+    e = find(c, "=")
+    http.Request(cookies = {c[..e): c[e + 1..]})
+
+res = http.text("hi")
+http.set_signed_cookie(res, "user", "ann; admin=1 é", SECRET, max_age = 3600)
+print(find(res.cookies[0], "; Max-Age=3600; HttpOnly; SameSite=Lax") > 0, find(res.cookies[0], "admin") < 0)
+r = sent_back(res)
+print(http.signed_cookie(r, "user", SECRET), http.signed_cookie(r, "user", SECRET + "x"), http.signed_cookie(r, "other", SECRET))
+# (changed: a byte of its value, or its expiry)
+v = r.cookies["user"]
+parts = split(v, ".")
+r.cookies["user"] = "{parts[0]}A.{parts[1]}.{parts[2]}"
+print(http.signed_cookie(r, "user", SECRET))
+r.cookies["user"] = "{parts[0]}.{to_int(parts[1])! + 1000}.{parts[2]}"
+print(http.signed_cookie(r, "user", SECRET))
+# (moved to another name: its signature is of its name too)
+r.cookies = {"admin": v}
+print(http.signed_cookie(r, "admin", SECRET))
+# (expired, and until the browser closes)
+res = http.text("hi")
+http.set_signed_cookie(res, "user", "bo", SECRET, max_age = 0)
+http.set_signed_cookie(res, "user", "cy", SECRET, max_age = -1)
+print(http.signed_cookie(sent_back(res), "user", SECRET), http.signed_cookie(sent_back(res, 1), "user", SECRET), find(res.cookies[1], "Max-Age") < 0)
+
+# secure_cookies: every cookie Secure; SameSite=None is Secure always; clear_cookie as set_cookie
+res = http.text("hi")
+http.set_cookie(res, "a", "1", same_site = "None")
+http.clear_cookie(res, "b\r\nX: 1", path = "/app")
+http.secure_cookies = true
+http.set_cookie(res, "c", "3")
+http.clear_cookie(res, "c")
+loop c in res.cookies: print(c)
+http.secure_cookies = false
+
+# allow: per_minute a minute, a burst of `burst` at once, each key its own
+print([loop _ in 0..4: http.allow("ann", 60, burst = 3)], http.allow("bo", 60, burst = 3), http.allow("none", 0))
+print([loop _ in 0..61: http.allow("cy", 60)].count((b: bool): b))
+# (past 100,000 keys, the oldest are forgotten: memory bounded)
+loop i in 0..100010: http.allow("key {i}", 1)
+print(http.allow("key 100009", 1), http.allow("key 0", 1))
+
+# query_all: each value a name has
+q = http.Request(target = "/search?tag=a&tag=b%20c&x=1&tag&tag=d+e")
+print(http.query_all(q, "tag"), http.query_all(q, "x"), http.query_all(q, "none"), http.query_all(http.Request(target = "/"), "tag"))
+
+# read_json: the request must say it is JSON
+struct In:
+    n = 0
+loop t in ["application/json", "application/json; charset=utf-8", "application/merge-patch+json", "text/plain", "", "application/x-www-form-urlencoded"]:
+    r = http.Request(text = "\{\"n\": 5}", headers = if len(t) > 0: {"content-type": t} else: {})
+    i = In()
+    if let bad = http.read_json(r, i): print(t, bad.status, str_from_bytes(bad.body))
+    else: print(t, i.n)
