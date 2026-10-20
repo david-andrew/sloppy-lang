@@ -228,6 +228,11 @@ class Run:
         except OSError:
             return []
 
+    def last(self):
+        """the last event ("" while there is none, or the file is being written)"""
+        e = self.events()
+        return e[-1] if e else ""
+
     def wait_for(self, cond, what, timeout=10):
         end = time.time() + timeout
         while time.time() < end:
@@ -311,7 +316,7 @@ def main():
             (b"\x1b[200~two\r\nlines\x1b[201~", "paste 9 bytes")]
     for seq, want in keys:
         t.send(seq)
-        got = t.events()[-1]
+        got = t.last()
         check(got.endswith(want), f"key {seq!r}", f"expected {want!r}, got {got!r}")
     # (several in one read, and a paste in pieces)
     t.send(b"\x1b[A\x1b[Bz", 3)
@@ -319,25 +324,25 @@ def main():
     t.send(b"\x1b[200~pie", 0)
     time.sleep(0.2)
     t.send(b"ces\x1b[201~")
-    check(t.events()[-1] == "paste 6 bytes", "a paste in two pieces", t.events()[-1])
+    check(t.last() == "paste 6 bytes", "a paste in two pieces", t.last())
     t.same_screen("after the keys")
 
     # a resize: the event, and the screen drawn again at the new size
     fcntl.ioctl(t.master, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
     t.term.resize(100, 30)
     os.kill(t.p.pid, signal.SIGWINCH)
-    t.wait_for(lambda: t.events()[-1] == "resize 100x30", "the resize event")
+    t.wait_for(lambda: t.last() == "resize 100x30", "the resize event")
     t.wait_for(lambda: b"row 29 of" in t.out, "the screen drawn at the new size")
     t.same_screen("after a resize")
 
     # a flush writes what changed: one cell
     t.out = b""
     t.send(b"x", 2)
-    flushed = int(t.events()[-1].split()[-1])
+    flushed = int(t.last().split()[-1])
     t.read(0.1)
     check(flushed < 40 and b"X" in t.out, "a flush of one cell changed", f"{flushed} bytes: {t.out!r}")
     t.send(b"x", 2)
-    check(t.events()[-1] == "flushed 0", "a flush with nothing changed writes nothing", t.events()[-1])
+    check(t.last() == "flushed 0", "a flush with nothing changed writes nothing", t.last())
     t.send(b"w", 2)
     t.read(0.1)
     check("日本語".encode() in t.out, "wide characters written", repr(t.out[-200:]))
@@ -345,12 +350,12 @@ def main():
 
     # stop and start again: the terminal as it was in between
     t.send(b"r", 1)
-    t.wait_for(lambda: t.events()[-1] == "stopped", "stop")
+    t.wait_for(lambda: t.last() == "stopped", "stop")
     between = termios.tcgetattr(t.slave)
     check(same_settings(between, t.cooked), "term.stop() puts the settings back", f"before {t.cooked}\nafter  {between}")
-    t.wait_for(lambda: t.events()[-1] == "started again", "start again")
+    t.wait_for(lambda: t.last() == "started again", "start again")
     t.send(b"k")
-    check(t.events()[-1] == "key k", "keys after starting again", t.events()[-1])
+    check(t.last() == "key k", "keys after starting again", t.last())
     t.same_screen("started again")
     t.send(b"q", 2)
     code = t.end()
@@ -384,7 +389,7 @@ def main():
     # ctrl-c as a key
     t = Run(exe, d, {"TT_CTRLC": "1"})
     t.send(b"\x03")
-    check(t.events()[-1] == "key ctrl+c", "ctrl-c as a key", t.events()[-1])
+    check(t.last() == "key ctrl+c", "ctrl-c as a key", t.last())
     t.send(b"q", 2)
     check(t.end() == 0, "ctrl-c as a key: q ends it")
     t.restored("ctrl-c as a key")
@@ -397,7 +402,7 @@ def main():
     frames = t.out.count(b"\x1b[?2026h")
     check(frames >= 4, "a task draws while main waits for a key", f"{frames} frames in 0.6 s")
     t.send(b"j")
-    check(t.events()[-1] == "key j", "a key read with a task running", t.events()[-1])
+    check(t.last() == "key j", "a key read with a task running", t.last())
     t.same_screen("with a task drawing")
     t.send(b"q", 2)
     check(t.end() == 0, "with a task: q ends it")
