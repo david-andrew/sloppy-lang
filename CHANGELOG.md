@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `import sqlite`: databases through the system's SQLite (Linux's libsqlite3, macOS's and
+  Windows' own): `sqlite.open(path)`, `db.exec(script)`, `db.run(sql, [values])` (rows changed,
+  the last id), `db.query[T](sql, [values])` (rows into a struct by its fields' names, a BOOL
+  column a bool), `db.query_json`, `db.value`, `begin`/`commit`/`rollback`, `SqlError`s with
+  SQLite's message and code; values go to the ?s, so text that looks like SQL is only text.
+  `x.f[T](args)`: a type argument in uniform call syntax. runtests: `# requires: sqlite`.
 - `\u00e9` and `\U0001F600` in strings: a character by its code point (a JSON surrogate pair,
   `\ud83d\ude00`, is the one character). Messages: `s.find(x) != none` says find gives -1
   (`x in s` tests it), and comparing any value that is not optional with none says how one is

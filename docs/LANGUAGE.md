@@ -422,7 +422,7 @@ written inside an expression is a lambda.
   name it is given, when its parameters' types are written: `dfs = (u: int): ... dfs(v)`.
 * Explicit type parameters: `first[T] = (xs: T[]) -> T: xs[0]`. A call can give them when the
   arguments do not say (`from_json[Settings](text)`, `gpu_buffer[Bug](100)`), also a module's
-  (`cfg.load[Settings](path)`).
+  (`cfg.load[Settings](path)`) and in uniform call syntax (`db.query[Booking](sql)`).
 * Through `[]` and `[]=` overloads, `b[i].f = v` and `b[i].f += v` work as for arrays: the
   element is read, changed and written back (its index computed once).
 * **Uniform call syntax**: `x.f(a)` is the same as `f(x, a)`. There are no methods,

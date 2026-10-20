@@ -124,6 +124,10 @@ TOPICS = [
      "A module (`import http`): a web site, an API or a game's page served from a native program: routes with `:names`, "
      "JSON, cookies, files, server-sent events, and WebSockets on the same port (as net's peers). It waits with `net.wait`, so a "
      "slow client holds up no other; behind Caddy it serves https ([writing a server](START.md#writing-a-server))."),
+    ("Games", "sqlite", "SQLite databases", ["sqlite"], "sqlite",
+     "A module (`import sqlite`): a database in one file, through the system's SQLite (it comes with macOS and Windows; on Linux, "
+     "libsqlite3). `db.run(sql, [values])` changes, `db.query[T](sql, [values])` reads rows into a struct by its fields' names, "
+     "and `?` in the SQL takes each value, so text that looks like SQL is only text. Not in web pages."),
     ("Games", "invite", "Invite a friend", ["invite"], "invite",
      "A module (`import invite`): the screens that connect two players with invite codes and no server: a link to send "
      "in a chat (it opens the game in a browser), a code sent back, copying, sharing and pasting (on phones too), and why "

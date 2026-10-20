@@ -1,0 +1,293 @@
+# SQLite databases, through the system's SQLite (libsqlite3 on Linux, macOS's own, winsqlite3 on
+# Windows): for a program's data that outgrows a JSON file, one file however much is in it, read
+# and changed a row at a time. `import sqlite`, then:
+#
+#   db = unwrap(sqlite.open("shop.db"))            # (a SqlError when it cannot be: `?`, `is`, unwrap)
+#   db.exec("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY, name TEXT, spots INT, paid BOOL)")
+#   r = unwrap(db.run("INSERT INTO bookings (name, spots, paid) VALUES (?, ?, ?)", [name, 3, false]))
+#   print(r.last_id)
+#   struct Booking:
+#       id = 0
+#       name = ""
+#       spots = 0
+#       paid = false
+#   bs = unwrap(db.query[Booking]("SELECT * FROM bookings WHERE spots > ?", [0]))
+#   n = db.value("SELECT count(*) FROM bookings").as_int() ?? 0
+#
+# The values for the ?s are a list of any types ([name, 3, 2.5, none, true]). Never put them in
+# the SQL's text, where a name such as `x'); DROP TABLE bookings; --` would be SQL: as a value
+# it is only text. A row's columns go into the fields of the same names (a field with no column
+# keeps its default, a column with no field is left out; a BOOL column is a bool); query_json
+# gives the rows as Json objects. Changes that belong together go between db.begin() and
+# db.commit() (or db.rollback()), as one: all of them or none, even if the program is stopped
+# halfway, and much faster (1000 inserts: a few ms in one, each one by itself waits for the disk).
+# The file is opened in WAL mode (readers do not wait for a writer) and waits up to 5 s for
+# another program's lock. Not in web pages.
+
+error struct SqlError:
+    message: str
+    code = 0                        # SQLite's (19: a constraint, as UNIQUE or NOT NULL, 5: busy)
+
+struct Db:
+    path = ""
+    __h: *u8 = null
+
+# what run changed
+struct Changed:
+    rows = 0                        # how many rows were inserted, changed or deleted
+    last_id = 0                     # the id (rowid) of the latest row inserted
+
+const __SQ_ROW = 100
+const __SQ_DONE = 101
+const __SQ_TRANSIENT = -1           # (SQLite copies a value bound: the text may go)
+
+when TARGET == "wasm":
+    const __SQ_LIB = ""
+    __sq_open = (path: str, db: **u8) -> i32: 1
+    __sq_close = (db: *u8) -> i32: 0
+    __sq_errmsg = (db: *u8) -> *u8: null
+    __sq_exec = (db: *u8, sql: str, cb: *u8, arg: *u8, err: **u8) -> i32: 1
+    __sq_prepare = (db: *u8, sql: str, n: i32, stmt: **u8, tail: **u8) -> i32: 1
+    __sq_bind_count = (st: *u8) -> i32: 0
+    __sq_bind_null = (st: *u8, i: i32) -> i32: 0
+    __sq_bind_int = (st: *u8, i: i32, v: int) -> i32: 0
+    __sq_bind_double = (st: *u8, i: i32, v: f64) -> i32: 0
+    __sq_bind_text = (st: *u8, i: i32, s: str, n: i32, d: int) -> i32: 0
+    __sq_step = (st: *u8) -> i32: 1
+    __sq_finalize = (st: *u8) -> i32: 0
+    __sq_changes = (db: *u8) -> i32: 0
+    __sq_last_id = (db: *u8) -> int: 0
+    __sq_columns = (st: *u8) -> i32: 0
+    __sq_column_name = (st: *u8, i: i32) -> *u8: null
+    __sq_column_decltype = (st: *u8, i: i32) -> *u8: null
+    __sq_column_type = (st: *u8, i: i32) -> i32: 5
+    __sq_column_int = (st: *u8, i: i32) -> int: 0
+    __sq_column_double = (st: *u8, i: i32) -> f64: 0.0
+    __sq_column_text = (st: *u8, i: i32) -> *u8: null
+    __sq_column_bytes = (st: *u8, i: i32) -> i32: 0
+else:
+    when TARGET == "windows":
+        const __SQ_LIB = "winsqlite3.dll"
+    else when TARGET == "macos":
+        const __SQ_LIB = "/usr/lib/libsqlite3.dylib"
+    else:
+        const __SQ_LIB = "libsqlite3.so.0"
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_open")
+    extern __sq_open = (path: str, db: **u8) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_close_v2")
+    extern __sq_close = (db: *u8) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_errmsg")
+    extern __sq_errmsg = (db: *u8) -> *u8
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_exec")
+    extern __sq_exec = (db: *u8, sql: str, cb: *u8, arg: *u8, err: **u8) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_prepare_v2")
+    extern __sq_prepare = (db: *u8, sql: str, n: i32, stmt: **u8, tail: **u8) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_bind_parameter_count")
+    extern __sq_bind_count = (st: *u8) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_bind_null")
+    extern __sq_bind_null = (st: *u8, i: i32) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_bind_int64")
+    extern __sq_bind_int = (st: *u8, i: i32, v: int) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_bind_double")
+    extern __sq_bind_double = (st: *u8, i: i32, v: f64) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_bind_text")
+    extern __sq_bind_text = (st: *u8, i: i32, s: str, n: i32, d: int) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_step")
+    extern __sq_step = (st: *u8) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_finalize")
+    extern __sq_finalize = (st: *u8) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_changes")
+    extern __sq_changes = (db: *u8) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_last_insert_rowid")
+    extern __sq_last_id = (db: *u8) -> int
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_column_count")
+    extern __sq_columns = (st: *u8) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_column_name")
+    extern __sq_column_name = (st: *u8, i: i32) -> *u8
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_column_decltype")
+    extern __sq_column_decltype = (st: *u8, i: i32) -> *u8
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_column_type")
+    extern __sq_column_type = (st: *u8, i: i32) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_column_int64")
+    extern __sq_column_int = (st: *u8, i: i32) -> int
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_column_double")
+    extern __sq_column_double = (st: *u8, i: i32) -> f64
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_column_text")
+    extern __sq_column_text = (st: *u8, i: i32) -> *u8
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_column_bytes")
+    extern __sq_column_bytes = (st: *u8, i: i32) -> i32
+
+# the database in the file at path, made when there is none (":memory:": one in memory only, gone
+# at the end)
+open = (path: str) -> Db | SqlError:
+    when TARGET == "wasm":
+        return SqlError("there is no SQLite in a web page: keep its data with save_value, or on a server")
+    else:
+        if not lib_available(__SQ_LIB): return SqlError("SQLite is not on this system ({__SQ_LIB} cannot be loaded): it comes with macOS and Windows; on Linux, `apt install libsqlite3-0` or `dnf install sqlite-libs`")
+    h: *u8 = null
+    rc = __sq_open(path, &h)
+    if rc != 0:
+        m = "out of memory"
+        if h != null:
+            m = str_from_c(__sq_errmsg(h))
+            __sq_close(h)
+        return SqlError("cannot open {path}: {m}", int(rc))
+    __sq_exec(h, "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON", null, null, null)
+    Db(path, h)
+
+# done with it (what it holds is written already)
+close = (db: mut Db):
+    if db.__h != null: __sq_close(db.__h)
+    db.__h = null
+
+# SQL statements, as many as there are, with no values for ?s: a schema, a migration
+# (none: done; a SqlError: the first that failed, and those after it not done)
+exec = (db: Db, script: str) -> SqlError?:
+    err: *u8 = null
+    rc = __sq_exec(db.__h, script, null, null, &err)
+    if rc != 0: return SqlError(__sq_message(db), int(rc))
+    none
+
+# one statement that changes something: INSERT, UPDATE, DELETE, CREATE..., with the values for its ?s
+run = (db: Db, sql: str, args: Json = []) -> Changed | SqlError:
+    st = __sq_statement(db, sql, args)
+    if st is SqlError: return st
+    rc = __sq_step(st.p)
+    loop rc == __SQ_ROW: rc = __sq_step(st.p)
+    if rc != __SQ_DONE:
+        e = SqlError(__sq_message(db), int(rc))
+        __sq_finalize(st.p)
+        return e
+    __sq_finalize(st.p)
+    Changed(int(__sq_changes(db.__h)), __sq_last_id(db.__h))
+
+# the rows a query gives, each a T: its columns in the fields of the same names
+query[T] = (db: Db, sql: str, args: Json = []) -> T[] | SqlError:
+    j = query_json(db, sql, args)
+    if j is SqlError: return j
+    out: T[]
+    loop row in j.as_list():
+        r = from_json[T](to_json(row))
+        if r is TextError: return SqlError("a row does not fit the struct: {r.message} (in: {sql})")
+        out.push(r)
+    out
+
+# the rows a query gives, each a Json object of its columns, in a Json list
+query_json = (db: Db, sql: str, args: Json = []) -> Json | SqlError:
+    st = __sq_statement(db, sql, args)
+    if st is SqlError: return st
+    n = int(__sq_columns(st.p))
+    names: str[]
+    bools: bool[]
+    loop c in [0..n):
+        names.push(str_from_c(__sq_column_name(st.p, i32(c))))
+        dt = __sq_column_decltype(st.p, i32(c))
+        bools.push(dt != null and find(upper(str_from_c(dt)), "BOOL") >= 0)
+    rows: Json[]
+    rc = __sq_step(st.p)
+    loop rc == __SQ_ROW:
+        vs: Json[]
+        loop c in [0..n): vs.push(__sq_column(st.p, c, bools[c]))
+        rows.push(Json.object(names, vs))
+        rc = __sq_step(st.p)
+    if rc != __SQ_DONE:
+        e = SqlError(__sq_message(db), int(rc))
+        __sq_finalize(st.p)
+        return e
+    __sq_finalize(st.p)
+    Json.list(rows)
+
+# the first column of the first row a query gives (Json's null when there is none, or on an
+# error, which is said on stderr): `db.value("SELECT count(*) FROM t").as_int() ?? 0`
+value = (db: Db, sql: str, args: Json = []) -> Json:
+    j = query_json(db, sql, args)
+    if j is SqlError:
+        eprint("sqlite: {j.message}")
+        return Json.null_
+    rows = j.as_list()
+    if rows.len() == 0: return Json.null_
+    match rows[0]:
+        .object(ks, vs):
+            if vs.len() > 0: return vs[0]
+        _: pass
+    Json.null_
+
+# a transaction: the changes from here to commit are made all together, or none of them (rollback,
+# or the program stopped before commit)
+begin = (db: Db) -> SqlError?: exec(db, "BEGIN IMMEDIATE")
+commit = (db: Db) -> SqlError?: exec(db, "COMMIT")
+rollback = (db: Db) -> SqlError?: exec(db, "ROLLBACK")
+
+struct __SqStmt:
+    p: *u8
+
+# (sql prepared, its ?s given args' values)
+__sq_statement = (db: Db, sql: str, args: Json) -> __SqStmt | SqlError:
+    if db.__h == null: return SqlError("the database is not open (sqlite.open, and not closed since)")
+    p: *u8 = null
+    rc = __sq_prepare(db.__h, sql, -1, &p, null)
+    if rc != 0: return SqlError("{__sq_message(db)} (in: {sql})", int(rc))
+    vals: Json[]
+    match args:
+        .list(items): vals = items
+        .null_: pass
+        _:
+            __sq_finalize(p)
+            return SqlError("the values for the ?s are a list, [a, b] (in: {sql})")
+    want = int(__sq_bind_count(p))
+    if vals.len() != want:
+        __sq_finalize(p)
+        return SqlError("{want} ?s in the SQL, and {vals.len()} values given (in: {sql})")
+    loop i in 0.. and v in vals:
+        k = i32(i + 1)
+        match v:
+            .null_: __sq_bind_null(p, k)
+            .boolean(b): __sq_bind_int(p, k, if b: 1 else: 0)
+            .integer(x): __sq_bind_int(p, k, x)
+            .number(x): __sq_bind_double(p, k, x)
+            .text(s): __sq_bind_text(p, k, s, i32(len(s)), __SQ_TRANSIENT)
+            _:
+                t = to_json(v)
+                __sq_bind_text(p, k, t, i32(len(t)), __SQ_TRANSIENT)
+    __SqStmt(p)
+
+# (column c of the row at hand, as a Json)
+__sq_column = (p: *u8, c: int, as_bool: bool) -> Json:
+    k = i32(c)
+    match int(__sq_column_type(p, k)):
+        1:
+            x = __sq_column_int(p, k)
+            if as_bool: return Json.boolean(x != 0)
+            Json.integer(x)
+        2: Json.number(__sq_column_double(p, k))
+        5: Json.null_
+        _:
+            t = __sq_column_text(p, k)
+            if t == null: return Json.null_
+            Json.text(str_from_bytes(bytes_from(t, int(__sq_column_bytes(p, k)))))
+
+__sq_message = (db: Db) -> str:
+    if db.__h == null: return "the database is not open"
+    str_from_c(__sq_errmsg(db.__h))

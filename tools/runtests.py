@@ -19,6 +19,8 @@ while i < len(args):
     else: pattern = args[i]; i += 1
 
 on_windows = os.name == "nt"
+import ctypes.util
+have_sqlite = on_windows or ctypes.util.find_library("sqlite3") is not None
 
 # (a test in a container that ran out of time: stopping `podman exec` leaves the program running
 # inside, for hours, so the container's own processes are stopped too)
@@ -77,6 +79,10 @@ for t in tests:
         continue
     # (`# requires: unix`: signals, a shell's commands)
     if (target in ("wasm", "windows") or on_windows) and "# requires: unix" in head:
+        continue
+    # (`# requires: sqlite`: the system's SQLite, which a machine may not have; Wine has none)
+    if "# requires: sqlite" in head and (target not in ("native",) or not have_sqlite):
+        print(f"SKIP {name}: no SQLite here")
         continue
     # (name.in, when there is one, is the test's standard input; Wine's container is not given it)
     stdin_data = open(t[:-3] + ".in", encoding="utf-8").read() if os.path.exists(t[:-3] + ".in") else ""
