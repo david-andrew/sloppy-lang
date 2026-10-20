@@ -958,6 +958,7 @@ struct Client[W, I]:
     __worlds: (int, W)[]            # the latest worlds, with their ticks
     __clock = 0                     # this client's ticks
     __played_at = 0.0               # (when the latest play was: view goes on between plays)
+    __view_floor = -1.0e18          # (the view as the latest play began: it does not go back from it)
     __ahead = 0.0                   # (the server's tick less this client's clock, smoothed over the
     __synced = false                # worlds as they come, however unevenly)
     __out: u8[][]
@@ -996,6 +997,7 @@ connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = ""):
     c.__sent.clear()
     c.__worlds.clear()
     c.__synced = false
+    c.__view_floor = -1.0e18
     c.__hello = hello
     c.__peer = net.connect(host, port)
     # (a screenshot run of a networked game keeps to real time: the server does)
@@ -1046,6 +1048,7 @@ say[W, I] = (c: mut Client[W, I], text: str):
 # this tick's input: applied here at once (prediction) and sent
 play[W, I] = (c: mut Client[W, I], input: I):
     c.messages.clear()
+    c.__view_floor = view_tick(c)
     # (this tick's: a world that comes now is the server's of now, the view its interpolation behind)
     c.__clock += 1
     c.__played_at = elapsed()
@@ -1071,6 +1074,9 @@ play[W, I] = (c: mut Client[W, I], input: I):
                 if c.me < 0 and e.code == 1006: __cs_problem(c, "could not connect to the server{said}{then}")
                 else if e.code == 1006: __cs_problem(c, "the connection to the server was lost{said}{then}")
                 else: __cs_problem(c, "the server closed the connection{said} ({e.code}){then}")
+                # (gone: not a connection to hear from, nor to send on)
+                c.__peer = -1
+                c.me = -1
     if c.me >= 0 and c.__heard >= 0.0 and elapsed() - c.__heard > 5.0:
         __cs_problem(c, "the server has not been heard from for 5 seconds (gone?)")
         if c.reconnect:
@@ -1110,6 +1116,7 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
     d = f64(r.tick - c.__clock)
     if not c.__synced or abs(d - c.__ahead) > 0.5 * r.rate:
         c.__ahead = d
+        c.__view_floor = -1.0e18
         c.__synced = true
     else: c.__ahead += (d - c.__ahead) * 0.1
     c.__worlds.push((r.tick, r.world))
@@ -1159,7 +1166,7 @@ outgoing[W, I] = (c: mut Client[W, I]) -> u8[][]:
 # going on by the time between plays too, so a view drawn each frame moves each frame)
 view_tick[W, I] = (c: Client[W, I]) -> f64:
     between = clamp((elapsed() - c.__played_at) * c.ticks_per_second, 0.0, 1.0)
-    f64(c.__clock) + between + c.__ahead - c.interpolation * c.ticks_per_second
+    max(f64(c.__clock) + between + c.__ahead - c.interpolation * c.ticks_per_second, c.__view_floor)
 
 # the two worlds around view_tick and how far between them (0 to 1): draw the others at
 # mix(a's, b's, f)

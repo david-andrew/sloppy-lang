@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- netplay clients: one the server closed is not connected any more (5 s later it took the server
+  for gone and connected again, a reconnect = true one, though turned away on purpose); `c.view()`
+  never goes back (a world that came late moved it back a little).
 - JSON written on the spot: a map or array literal where a Json goes is one, its values of any
   types, a map or array in it one too (`to_json({"ok": true, "count": 3, "tags": ["a"]})`,
   `http.json({"error": "nope", "code": 7})`, `j: Json = {...}`, `return {...}` from a function
