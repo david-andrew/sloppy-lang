@@ -174,6 +174,15 @@ def check(ok, what, detail=""):
         print(f"FAIL {what}" + (f"\n{detail}" if detail else ""))
 
 
+def same_settings(a, b):
+    """two termios settings alike (PENDIN aside: macOS sets it itself when a terminal goes back to
+    lines with input waiting)"""
+    a, b = list(a), list(b)
+    if sys.platform == "darwin":
+        a[3] &= ~0x20000000
+        b[3] &= ~0x20000000
+    return a == b
+
 class Run:
     """the program on a terminal of its own, which this side writes keys to and reads"""
 
@@ -263,12 +272,7 @@ class Run:
             if sys.platform != "darwin": raise
             now = None
         if now is not None:
-            before = list(self.cooked)
-            if sys.platform == "darwin":
-                # (PENDIN: macOS sets it itself when a terminal goes back to lines with input waiting)
-                before[3] &= ~0x20000000
-                now[3] &= ~0x20000000
-            check(now == before, f"{what}: the terminal's settings put back", f"before {before}\nafter  {now}")
+            check(same_settings(now, self.cooked), f"{what}: the terminal's settings put back", f"before {self.cooked}\nafter  {now}")
         tail = self.out[max(self.out.rfind(b"\x1b[?1049h"), 0):]
         check(b"\x1b[?1049l" in tail and b"\x1b[?25h" in tail, f"{what}: its screen and cursor put back", repr(self.out[-300:]))
 
@@ -343,7 +347,7 @@ def main():
     t.send(b"r", 1)
     t.wait_for(lambda: t.events()[-1] == "stopped", "stop")
     between = termios.tcgetattr(t.slave)
-    check(between == t.cooked, "term.stop() puts the settings back", f"{between}")
+    check(same_settings(between, t.cooked), "term.stop() puts the settings back", f"before {t.cooked}\nafter  {between}")
     t.wait_for(lambda: t.events()[-1] == "started again", "start again")
     t.send(b"k")
     check(t.events()[-1] == "key k", "keys after starting again", t.events()[-1])
@@ -421,7 +425,8 @@ def main():
         os.write(t.master, b"\x1b")
         t.wait_for(shows("3 of 3"), "the filter cleared")
         os.write(t.master, b"\x1b[<0;3;3M")          # (a click on the first row, chosen already: opened)
-        t.wait_for(shows("/alpha", "inner.txt", "inside", "1 of 1"), "a click opening the directory")
+        # (not the title: macOS's temporary directories are long, and it is cut short)
+        t.wait_for(shows("inner.txt", "inside", "1 of 1"), "a click opening the directory")
         os.write(t.master, b"\x7f")
         t.wait_for(shows("3 of 3", "alpha/", "beta.txt"), "backspace going up")
         lines = t.term.text().splitlines()
