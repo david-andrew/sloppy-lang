@@ -83,8 +83,8 @@ TOPICS = [
     ("Games", "window", "The window, the game loop and input", ["game/window", "game/files", "game/stats"], "window",
      "A program that defines `update(dt: f64)` or `draw()` opens a window and calls them every frame. "
      "More on windows, screen sizes and the game loop: [the language](LANGUAGE.md#12-programs-and-the-game-loop)."),
-    ("Games", "controls", "Controls and gamepads", ["game/controls", "game/gamepad"], "controls", ""),
-    ("Games", "draw2d", "Drawing in 2D", ["game/draw2d", "game/font", "game/screen", ("game/softgl", ["soft_rendering"])], "draw2d", ""),
+    ("Games", "controls", "Controls and gamepads", ["game/controls", "game/gamepad", "std/keyrepeat"], "controls", ""),
+    ("Games", "draw2d", "Drawing in 2D", ["game/draw2d", "game/font", "game/screen", "std/pixelart", ("game/softgl", ["soft_rendering"])], "draw2d", ""),
     ("Games", "sprites", "Images, sprites and tilemaps", ["game/image", "game/jpeg", "game/sprites", "game/tilemap"], "sprites", ""),
     ("Games", "platformers", "Platformers", [], "platformer",
      "How the pieces fit for a platformer (the program here is one): `tilemap_move` for running and landing (one-way "

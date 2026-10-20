@@ -3,10 +3,10 @@
 # sloppy watch a panic in update or draw does not end it: the game pauses with the message on the
 # screen, and goes on after the next reload.
 #
-# Messages: words [op, a, b], then for op 1 and 4 b bytes
+# Messages: words [op, a, b], then for op 1, 4 and 6 b bytes
 #   1 write the bytes at address a    2 run the function at a    3 jump from a to b
 #   4 show text over the game (a: 1 for the compiler's errors; 0: a build worked, nothing)
-#   5 the end: apply
+#   5 the end: apply                  6 the names and lines of new code (__watch_bt_add)
 
 const __WATCH_IN = 3
 const __WATCH_OUT = 4
@@ -125,6 +125,10 @@ __watch_frame = ():
                 if hdr[2] > 0 and not __watch_read(data(b), hdr[2]): return
                 __watch_note = str_from_bytes(b)
                 if hdr[1] == 0: built = true
+            else if op == 6:
+                b = fill(u8(0), hdr[2])
+                if hdr[2] > 0 and not __watch_read(data(b), hdr[2]): return
+                __watch_bt_add(b)
             else if op == 5: break
         # a jump at the first address of each function replaced
         k = 0
@@ -167,6 +171,25 @@ __watch_frame = ():
             __watch_paused = false
         __watch_answer(0)
 
+# ---- backtraces through new code (compiler/watch.jo, watch_bt_info) ----
+# (the functions put in the region, which the program file's tables do not have: start, end,
+# name; each call in them, by its return address: "file:line")
+__watch_fns: (int, int, str)[]
+__watch_calls: {int: str} = {}
+
+__watch_bt_add = (b: u8[]):
+    loop l in lines(str_from_bytes(b)):
+        w = words(l)
+        if w.len() < 3: continue
+        a = to_int(w[1]) ?? 0
+        if w[0] == "f": __watch_fns.push((a, a + (to_int(w[2]) ?? 0), join(w[3..], " ")))
+        else: __watch_calls[a] = join(w[2..], " ")
+
+__watch_fn_of = (ret: int) -> str:
+    loop f in __watch_fns:
+        if ret > f.0 and ret <= f.1: return f.2
+    ""
+
 # (macOS: bytes written into the region holding the game's code, by the loader's copier: code
 # running from the region cannot run while the region is writable, compiler/macho.jo)
 __watch_jit_copy = (to: *u8, from: *u8, n: int):
@@ -201,21 +224,39 @@ __watch_update_draw = (dt: f64, update: (f64) -> void, draw: () -> void):
             eprint("sloppy watch: paused (fix the code and save it to go on)")
     if len(__watch_note) > 0: __watch_draw_note()
 
+# (drawn at the window's own pixels, as the desktop counts them, whatever the game's design size
+# and pixel_art: a 128 x 128 game's message is not 18 of its pixels high; in the built-in font,
+# with no effect or palette swap)
 __watch_draw_note = ():
+    global __font, __font_loaded, __fx_on, __proj
+    full_resolution()
+    if __cur_target >= 0: draw_to_screen()
+    flush()
+    __fx_on = false
+    k = pixel_ratio()
+    w = f64(__win_w) / k
+    h = f64(__win_h) / k
+    __proj = orthographic(0.0, w, h, 0.0, -1.0, 1.0)
+    font = __font
+    loaded = __font_loaded
+    __font = __default_font
+    __font_loaded = true
     push_transform()
     reset_transform()
-    r = visible_rect()
-    lines = split(__watch_note, "\n")
+    lines: str[]
+    loop l in split(__watch_note, "\n"): lines.extend(wrap_text(l, w - 36.0, 18.0))
     if lines.len() > 12: lines = lines[..12)
-    h = f64(lines.len()) * 22.0 + 36.0
+    bh = f64(lines.len()) * 22.0 + 36.0
     if __watch_paused:
-        rect(r, vec4(0.08, 0.08, 0.1, 1))
+        rect(0, 0, w, h, vec4(0.08, 0.08, 0.1, 1))
+        n = lines.len()
         lines.push("")
-        lines.push("(paused: fix the code and save it to go on)")
-        h += 44.0
-    rect(f64(r.x), f64(r.y), f64(r.w), h, vec4(0.35, 0.05, 0.05, 0.92))
-    loop i in 0.. and l in lines:
-        s = l
-        if len(s) > 120: s = s[..117) + "..."
-        text(s, vec2(f32(r.x) + 18.0, f32(r.y) + 14.0 + f32(i) * 22.0), 18.0, vec4(1, 0.92, 0.88, 1))
+        lines.extend(wrap_text("(paused: fix the code and save it to go on)", w - 36.0, 18.0))
+        bh += f64(lines.len() - n) * 22.0
+    rect(0, 0, w, bh, vec4(0.35, 0.05, 0.05, 0.92))
+    loop i in 0.. and l in lines: text(l, vec2(18, 14 + f32(i) * 22.0), 18.0, vec4(1, 0.92, 0.88, 1))
+    flush()
     pop_transform()
+    __font = font
+    __font_loaded = loaded
+    __set_screen_target()

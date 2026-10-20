@@ -1868,7 +1868,7 @@ sloppy build file.jo      write the executable / .html (-o game.zip: the page as
                           zip, ready to upload to itch.io; on Windows the .exe in one)
 sloppy test file.jo       run `test` blocks (sloppy test file.jo save: those with "save" in their names;
                           sloppy test dir, or sloppy test alone for .: those of each .jo file in it)
-sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, platformer, 3d, story, online, program)
+sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, pico, platformer, 3d, story, online, program, tui)
 sloppy check file.jo      type check only
 sloppy add <git URL>      a package, in the build block (and sloppy.lock); sloppy update: the newest
                           commits of its branches
@@ -1919,7 +1919,10 @@ change to how something moves or looks shows at once.
 - A program without `update`/`draw` is run again from the start each time its files change.
 
 `sloppy watch` runs native builds (Linux or Windows; on Windows `r` and `q` need no enter), in debug
-or release mode as the build block says.
+or release mode as the build block says. It runs headless as a game does ([Testing a
+game](#testing-a-game)): `SLOPPY_SOFTWARE=1 SLOPPY_SCREENSHOT=shot.png SLOPPY_FRAMES=600 sloppy
+watch game.jo` takes the reloads with no window and saves frame 600, with an error or a panic over
+it as the window would show it.
 
 ### Testing a game
 

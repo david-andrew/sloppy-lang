@@ -37,6 +37,8 @@ __target_w = 0          # pixels of the current target
 __target_h = 0
 __view_w = 0.0          # its size in 2D drawing units
 __view_h = 0.0
+__view_x = 0.0          # (and where its top-left corner is in them)
+__view_y = 0.0
 __cur_target = -1
 __blend = Blend.alpha
 
@@ -158,9 +160,10 @@ __fx_has_mesh = false
 # 2D drawing from here on goes through effect sh (made with shader(effect_vs, ...)), with params,
 # until no_effect() or the end of the frame
 use_effect[P] = (sh: Shader, params: P):
-    global __b_count, __fx_draw, __fx_has_mesh, __fx_mesh, __fx_on
+    global __b_count, __fx_draw, __fx_has_mesh, __fx_mesh, __fx_on, __pal_fx
     flush()
     __fx_on = true
+    __pal_fx = false
     __fx_draw = ():
         vs: __Vert2D[]
         vs.reserve(__b_count)
@@ -178,12 +181,13 @@ use_effect[P] = (sh: Shader, params: P):
         draw(sh, __fx_mesh, Effect2D[P](__proj, Texture(__b_tex, 1, 1), params))
         __fx_on = true
 
-# back to drawing without an effect
+# back to drawing without an effect (palette swaps go on: palette_reset ends them)
 no_effect = ():
     global __fx_on
-    if not __fx_on: return
+    if not __fx_on or __pal_fx: return
     flush()
     __fx_on = false
+    if __pal_on: __pal_fn()
 
 # (a circle drawn as a square: its uv where the pixel is, in radii from the center; the edge
 # smoothed over a pixel)
@@ -301,9 +305,10 @@ __font_init = ():
     if same: __font = f
 
 __gfx_begin_frame = ():
-    global __cur_target, __fx_on, __xform, __xform_set
+    global __cur_target, __fx_on, __pal_fx, __xform, __xform_set
     __gfx_init()
     __fx_on = false
+    __pal_fx = false
     __screen_layout()
     __canvas_begin()
     __cur_target = -1
@@ -325,6 +330,8 @@ __gfx_begin_frame = ():
     if black:
         glClearColor(0.0, 0.0, 0.0, 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    # (palette swaps stay from frame to frame)
+    if __pal_on: __pal_fn()
 
 __gfx_end_frame = ():
     global __clip_on
@@ -337,22 +344,26 @@ __gfx_end_frame = ():
 
 # a render target: 2D units are its pixels
 __set_target_size = (w: int, h: int):
-    global __proj, __target_h, __target_w, __view_h, __view_w
+    global __proj, __target_h, __target_w, __view_h, __view_w, __view_x, __view_y
     __target_w = w
     __target_h = h
     __view_w = f64(w)
     __view_h = f64(h)
+    __view_x = 0.0
+    __view_y = 0.0
     __proj = orthographic(0.0, f64(w), f64(h), 0.0, -1.0, 1.0)
 
 # the screen: 2D units are the size the program asked for in window(), mapped to the window as
 # screen.jo says (by default scaled uniformly to fit and centered, showing more around it)
 __set_screen_target = ():
-    global __proj, __target_h, __target_w, __view_h, __view_w
+    global __proj, __target_h, __target_w, __view_h, __view_w, __view_x, __view_y
     __target_w = __screen_px_w()
     __target_h = __screen_px_h()
     u = __screen_units()
     __view_w = __units_w
     __view_h = __units_h
+    __view_x = f64(u.x)
+    __view_y = f64(u.y)
     __proj = orthographic(f64(u.x), f64(u.z), f64(u.w), f64(u.y), -1.0, 1.0)
 
 # the pixels of what stands for the screen: the window, or the canvas this frame
@@ -463,7 +474,7 @@ render_target = (w: int, h: int, smooth: bool = true) -> RenderTarget:
 #       line(vec2(40, 360), vec2(560, 40), 2, BLUE))
 #   save_png(img, "chart.png")
 render_image = (w: int, h: int, draw: () -> void) -> Image:
-    global __cur_target, __proj, __target_h, __target_w, __view_h, __view_w, __xform
+    global __cur_target, __proj, __target_h, __target_w, __view_h, __view_w, __view_x, __view_y, __xform
     when TARGET != "wasm":
         if not __win_open: __open_offscreen()
     __gfx_init()
@@ -473,6 +484,8 @@ render_image = (w: int, h: int, draw: () -> void) -> Image:
     ph = __target_h
     pvw = __view_w
     pvh = __view_h
+    pvx = __view_x
+    pvy = __view_y
     pproj = __proj
     pxf = __xform
     rt = render_target(w, h)
@@ -499,6 +512,8 @@ render_image = (w: int, h: int, draw: () -> void) -> Image:
         __target_h = ph
     __view_w = pvw
     __view_h = pvh
+    __view_x = pvx
+    __view_y = pvy
     __proj = pproj
     free_render_target(rt)
     img
@@ -802,8 +817,39 @@ __soft_dot_texture = () -> Texture:
     __soft_dot = texture(img, true)
     __soft_dot
 
+# ---------------- pixel art ----------------
+# Under pixel_art() shapes are whole pixels and text is in pixel_font(); palette_swap draws one
+# color as another. Those are in lib/std/pixelart.jo, which is read only for a program that names
+# one of them: it puts its functions in the ones below, which 2D drawing calls when a flag says
+# (a shape's gives true when it drew it), so a game without them compiles none of it.
+__pixel_art = false             # (pixel_art() was called; render_resolution() ends it)
+# (a shape under pixel_art, true when it drew it: kind 0 a rect (a: x, y, w, h), 1 an ellipse or a
+# circle (a: center, radii), 2 a ring or an arc (a: center, radius, thickness; b: start, span),
+# 3 lines through ps (a.x: thickness; b: 1 when closed, 1 for a polyline's round joints))
+__px_fn: (int, vec4, vec4, vec4, vec2[]) -> bool = (kind: int, a: vec4, b: vec4, c: vec4, ps: vec2[]) -> bool: false
+__pixel_font: Font              # (pixel_font(), once pixel_art or pixel_font put it here: its bitmap is true)
+# (text in it: kind 0 text()'s, 1 text_rich()'s (width: wrapped to it), giving the height)
+__bitmap_text_fn: (int, str, vec2, f64, vec4, vec4, int, f64) -> f64 = (kind: int, s: str, p: vec2, size: f64, c: vec4, shadow: vec4, chars: int, width: f64) -> f64: 0.0
+__pal_on = false                # (palette_swap was called: __pal_fn puts the swaps of drawing on,
+__pal_fn: () -> void = __no_draw    # at a frame's start and after no_effect)
+__pal_screen_on = false         # (the screen's are on: __pal_screen_fn as the canvas goes on the window)
+__pal_screen_fn: () -> void = __no_draw
+__pal_fx = false                # (the effect on is the swaps of drawing)
+
+# (the font text() draws with: set_font's, else the built-in one; under pixel_art, at its
+# resolution, the pixel font)
+__text_font = () -> Font:
+    if not __font_loaded and __pixel_art and not __canvas_done and __pixel_font.bitmap: return __pixel_font
+    __font
+
+# (how many times its own size font f is drawn at size: a bitmap font's a whole number)
+__font_k = (f: Font, size: f64) -> f64:
+    if f.bitmap: return max(floor(size / f.px + 1e-9), 1.0)
+    size / f.px
+
 # ---------------- shapes ----------------
 rect = (x: f64, y: f64, w: f64, h: f64, c: vec4):
+    if __pixel_art and __px_fn(0, vec4(f32(x), f32(y), f32(w), f32(h)), vec4(0, 0, 0, 0), c, []): return
     __use_tex(__white.id, 6)
     z = vec2(0, 0)
     __quad(vec2(f32(x), f32(y)), vec2(f32(x + w), f32(y)), vec2(f32(x + w), f32(y + h)), vec2(f32(x), f32(y + h)), z, z, z, z, c, 0)
@@ -864,6 +910,7 @@ circle = (center: vec2, radius: f64, c: vec4, segments: int = 0):
     # smooth over a pixel on every renderer, and 6 vertices, not 3 for each of many segments;
     # segments given: a polygon of that many sides)
     if segments <= 0 and radius > 0.0:
+        if __pixel_art and __px_fn(1, vec4(center, f32(radius), f32(radius)), vec4(0, 0, 0, 0), c, []): return
         __use_tex(__white.id, 6)
         e = radius + max(1.5, radius * 0.06)
         k = f32(e / radius)
@@ -898,6 +945,8 @@ __unit_circle = (n: int) -> vec2[]:
 
 # an ellipse: radii.x across, radii.y up and down (a shadow under a card or a character)
 ellipse = (center: vec2, radii: vec2, c: vec4, segments: int = 0):
+    if segments <= 0 and radii.x > 0.0 and radii.y > 0.0:
+        if __pixel_art and __px_fn(1, vec4(center, radii), vec4(0, 0, 0, 0), c, []): return
     n = segments
     if n <= 0: n = clamp(int(f64(max(radii.x, radii.y)) * 0.8) + 12, 12, 96)
     __use_tex(__white.id, n * 3)
@@ -945,6 +994,7 @@ circle_gradient = (center: vec2, radius: f64, inner: vec4, outer: vec4, segments
         prev = p
 
 ring = (center: vec2, radius: f64, thickness: f64, c: vec4, segments: int = 48):
+    if __pixel_art and __px_fn(2, vec4(center, f32(radius), f32(thickness)), vec4(0, f32(TAU), 0, 0), c, []): return
     __use_tex(__white.id, segments * 6)
     z = vec2(0, 0)
     # (a band around: a little wider than it is, its edges smooth over a pixel)
@@ -960,6 +1010,7 @@ ring = (center: vec2, radius: f64, thickness: f64, c: vec4, segments: int = 48):
 
 # part of a ring: from angle `start` to `stop` (radians, clockwise on screen)
 arc = (center: vec2, radius: f64, thickness: f64, start: f64, stop: f64, c: vec4, segments: int = 0):
+    if __pixel_art and __px_fn(2, vec4(center, f32(radius), f32(thickness)), vec4(f32(min(start, stop)), f32(abs(stop - start)), 0, 0), c, []): return
     n = segments
     if n <= 0: n = clamp(int(abs(stop - start) * radius / 6.0) + 2, 2, 128)
     __use_tex(__white.id, n * 6)
@@ -975,6 +1026,7 @@ arc = (center: vec2, radius: f64, thickness: f64, start: f64, stop: f64, c: vec4
         __quad(center + d0 * f32(r0), center + d0 * f32(r1), center + d1 * f32(r1), center + d1 * f32(r0), vec2(0, -k), vec2(0, k), vec2(0, k), vec2(0, -k), c, 3)
 
 line = (a: vec2, b: vec2, thickness: f64, c: vec4):
+    if __pixel_art and __px_fn(3, vec4(f32(thickness), 0, 0, 0), vec4(0, 0, 0, 0), c, [a, b]): return
     d = b - a
     l = length(d)
     if l == 0.0: return
@@ -999,6 +1051,7 @@ polyline = (points: vec2[], thickness: f64, c: vec4, closed: bool = false):
     if n == 2:
         line(ps[0], ps[1], thickness, c)
         return
+    if __pixel_art and __px_fn(3, vec4(f32(thickness), 0, 0, 0), vec4(if closed: 1 else: 0, 1, 0, 0), c, ps): return
     h = thickness / 2.0
     e = f32(h + 1.0)
     k = f32((h + 1.0) / max(h, 0.0001))
@@ -1243,7 +1296,8 @@ __glyph = (f: Font, c: int) -> int:
 # how wide text is drawn (the widest of its lines)
 text_width = (s: str, size: f64 = 20.0, mono: bool = false) -> f64:
     __font_init()
-    k = size / __font.px
+    f = __text_font()
+    k = __font_k(f, size)
     if mono:
         # (each character a cell of the same width)
         widest_line = 0
@@ -1253,7 +1307,7 @@ text_width = (s: str, size: f64 = 20.0, mono: bool = false) -> f64:
                 widest_line = max(widest_line, n)
                 n = 0
             else if c & 0xC0 != 0x80: n += 1
-        return f64(max(widest_line, n)) * __mono_adv(__font) * k
+        return f64(max(widest_line, n)) * __mono_adv(f) * k
     w = 0.0
     widest = 0.0
     i = 0
@@ -1264,34 +1318,35 @@ text_width = (s: str, size: f64 = 20.0, mono: bool = false) -> f64:
             widest = max(widest, w)
             w = 0.0
             continue
-        w += __char_adv(r.0, size, k)
+        w += __char_adv(f, r.0, size, k)
     max(widest, w)
 
-# (how far one character moves the pen: k is size / the font's px)
-__char_adv = (c: int, size: f64, k: f64) -> f64:
-    g = __glyph(__font, c)
-    if g < 0 and __font_loaded and c >= 32:
+# (how far one character of font f moves the pen: k is __font_k's)
+__char_adv = (f: Font, c: int, size: f64, k: f64) -> f64:
+    g = __glyph(f, c)
+    if g < 0 and __font_loaded and c >= 32 and not f.bitmap:
         # (drawn with the built-in font)
         g2 = __glyph(__default_font, c)
         if g2 < 0: g2 = __glyph(__default_font, c'?')
-        if g2 >= 0 and (__glyph(__default_font, c) >= 0 or __glyph(__font, c'?') < 0):
+        if g2 >= 0 and (__glyph(__default_font, c) >= 0 or __glyph(f, c'?') < 0):
             return __default_font.adv[g2] * size / __default_font.px
-    if g < 0 and c >= 32: g = __glyph(__font, c'?')
-    if g >= 0: return __font.adv[g] * k
+    if g < 0 and c >= 32: g = __glyph(f, c'?')
+    if g >= 0: return f.adv[g] * k
     0.0
 
 # (where each character of one line of s starts and the last ends, size high: xs[j] for the
 # byte s[j] starts at, from 0; bytes inside a character have their character's)
 __char_xs = (s: str, size: f64) -> f64[]:
     __font_init()
-    k = size / __font.px
+    f = __text_font()
+    k = __font_k(f, size)
     xs = fill(0.0, len(s) + 1)
     w = 0.0
     i = 0
     loop i < len(s):
         r = __next_char(s, i)
         loop j in [i..r.1): xs[j] = w
-        w += __char_adv(r.0, size, k)
+        w += __char_adv(f, r.0, size, k)
         i = r.1
     xs[len(s)] = w
     xs
@@ -1311,8 +1366,18 @@ fit_text = (s: str, width: f64, size: f64 = 20.0) -> str:
         i = j
     trim_end(s[..n)) + "…"
 
-# how tall text is drawn: its lines, each size * 1.25 below the one before
-text_height = (s: str, size: f64 = 20.0) -> f64: size + f64(s.count("\n")) * size * 1.25
+# how tall text is drawn: its lines, each size * 1.25 below the one before (pixel_font's: its
+# characters' pixels, each line a pixel apart)
+text_height = (s: str, size: f64 = 20.0) -> f64:
+    f = __text_font()
+    if f.bitmap: return (f.px - 1.0) * __font_k(f, size) + f64(s.count("\n")) * __line_step(size)
+    size + f64(s.count("\n")) * size * 1.25
+
+# (how far below a line of text the next one is)
+__line_step = (size: f64) -> f64:
+    f = __text_font()
+    if f.bitmap: return f.px * __font_k(f, size)
+    size * 1.25
 
 enum Align:
     left
@@ -1403,8 +1468,8 @@ text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = v
         if left < 0: text(line, vec2(x, y), size, color, shadow)
         else if left > 0: text(line, vec2(x, y), size, color, shadow, chars = min(left, n))
         if left > 0: left = max(left - n - 1, 0)      # (and the space or break between lines)
-        y += size * 1.25
-    f64(lines.len()) * size * 1.25
+        y += __line_step(size)
+    f64(lines.len()) * __line_step(size)
 
 # draw text with its top-left corner at `pos`. The built-in font has ASCII, the accented letters
 # of European languages (é ñ ü ł ő č ş ș), symbols (° ² ½ ± × ÷), Cyrillic (Привет), Greek
@@ -1417,12 +1482,15 @@ text_wrapped = (s: str, pos: vec2, width: f64, size: f64 = 20.0, color: vec4 = v
 # chars: only the first that many characters (dialogue appearing letter by letter: where the
 # rest will be does not move); -1: all
 text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false, chars: int = -1):
+    if not __win_open: __outside_draw()
+    f = __text_font()
+    if f.bitmap:
+        __bitmap_text_fn(0, s, pos, size, color, shadow, chars, 0.0)
+        return
     if shadow.w > 0.0:
         off = f32(max(1.0, size * 0.07))
         text(s, pos + vec2(off, off), size, shadow, mono = mono, chars = chars)
-    if not __win_open: __outside_draw()
     __gfx_init()
-    f = __font
     d = __default_font
     # (a loaded font without a character: the built-in one's, as Latin in a Japanese font)
     fill_in = __font_loaded
@@ -1488,6 +1556,7 @@ __text_glyph = (f: Font, g: int, x: f32, top: f32, size: f64, sx: f32, color: ve
 # only the first that many characters (dialogue typing itself out). The height it took.
 #   text_rich("You found [color=yellow]the brass key[/color]. It is [i]warm[/i].", vec2(40, 600), 24, WHITE, width = 800)
 text_rich = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), width: f64 = 0.0, chars: int = -1, shadow: vec4 = vec4(0, 0, 0, 0)) -> f64:
+    if __text_font().bitmap: return __bitmap_text_fn(1, s, pos, size, color, shadow, chars, width)
     plain, styles = __rich_parse(s, color)
     lines = split(plain, "\n")
     if width > 0.0: lines = wrap_text(plain, width, size)
@@ -1618,9 +1687,9 @@ __mono_adv = (f: Font) -> f64:
 # map, draws each one centered in its cell
 text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false):
     if s.count("\n") == 0:
-        text(s, center - vec2(f32(text_width(s, size, mono) / 2.0), f32(size / 2.0)), size, color, shadow, mono)
+        text(s, center - vec2(f32(text_width(s, size, mono) / 2.0), f32(text_height(s, size) / 2.0)), size, color, shadow, mono)
         return
     y = f64(center.y) - text_height(s, size) / 2.0
     loop line in s.split("\n"):
         text(line, vec2(f64(center.x) - text_width(line, size, mono) / 2.0, y), size, color, shadow, mono)
-        y += size * 1.25
+        y += __line_step(size)

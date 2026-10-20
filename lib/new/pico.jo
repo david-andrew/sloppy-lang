@@ -1,0 +1,134 @@
+# __TITLE__: a small game in PICO-8's style: 128 x 128 pixels, its 16 colors, its kind of font,
+# sprites drawn in the code as text. Catch the falling gems (the green ones are worth 5); a bomb
+# ends the run.
+# Move with the arrows or a gamepad's stick; Z (or the gamepad's A) starts.
+# Run it with `sloppy watch __NAME__.jo` and change it while it runs: each save reloads the code,
+# and the game goes on where it was.
+
+build:
+    name = "__TITLE__"
+
+window("__TITLE__", 128, 128)
+pixel_art()                     # a 2D unit is a pixel, scaled up sharp; text in pixel_font()
+
+# PICO-8's 16 colors, PAL[0] to PAL[15], numbered as its pal() and sprites number them
+PAL = [hex(0x000000), hex(0x1d2b53), hex(0x7e2553), hex(0x008751),     # black, dark blue, dark purple, dark green
+       hex(0xab5236), hex(0x5f574f), hex(0xc2c3c7), hex(0xfff1e8),     # brown, dark gray, light gray, white
+       hex(0xff004d), hex(0xffa300), hex(0xffec27), hex(0x00e436),     # red, orange, yellow, green
+       hex(0x29adff), hex(0x83769c), hex(0xff77a8), hex(0xffccaa)]     # blue, lavender, pink, peach
+
+# ---------------- sprites: a character a pixel, its color's number ("." is clear) ----------------
+SHIP = "
+    ...77...
+    ..7cc7..
+    .776677.
+    77777777
+    7.8..8.7"
+GEM = "
+    ..a..
+    .a9a.
+    a999a
+    .a9a.
+    ..a.."
+BOMB = "
+    ...9.
+    ..5..
+    .000.
+    00070
+    00000
+    .000."
+ship = texture(pixel_image(SHIP, PAL))
+gem = texture(pixel_image(GEM, PAL))
+bomb = texture(pixel_image(BOMB, PAL))
+
+# ---------------- the game ----------------
+enum Kind: gem, green_gem, bomb
+
+struct Thing:
+    pos: vec2
+    speed: f64
+    kind: Kind
+    gone = false
+
+enum Screen: title, playing, over
+
+screen = Screen.title
+x = 60.0                        # the ship's left edge
+things: Thing[]
+score = 0
+best = to_int(load_data("best") ?? "0") ?? 0
+wait = 0                        # ticks until the next thing falls
+ticks = 0
+over_at = 0                     # (the tick the run ended: Z starts again a moment after)
+sparks = Particles(colors = [PAL[7], PAL[10], PAL[9], PAL[8]], drag = 3.0)
+snd_gem = sfx_coin()
+snd_boom = sfx_explosion()
+
+start = ():
+    global score, screen, wait, x
+    things.clear()
+    score = 0
+    wait = 30
+    x = 60.0
+    screen = .playing
+
+# 60 times a second, whatever the frame rate (PICO-8's _update60)
+tick = (dt: f64):
+    global best, over_at, score, screen, ticks, wait, x
+    ticks += 1
+    sparks.update(dt)
+    if screen != .playing:
+        if (key_pressed(.z) or gamepad_pressed(.a)) and ticks > over_at + 45: start()
+        return
+    x = clamp(x + input_axis().x * 1.5, 0.0, 120.0)
+    wait -= 1
+    if wait <= 0:
+        r = random_int(0, 10)
+        kind = if r < 2: Kind.bomb else if r == 2: Kind.green_gem else: Kind.gem
+        things.push(Thing(vec2(f32(random(0.0, 123.0)), -6), random(0.5, 1.0) + f64(score) * 0.01, kind))
+        wait = max(40 - score, 12)
+    loop mut t in things:
+        t.pos.y += f32(t.speed)
+        if t.pos.y > 128: t.gone = true
+        if t.gone or not overlaps(Rect(x, 112, 8, 5), Rect(t.pos.x, t.pos.y, 5, 6)): continue
+        t.gone = true
+        if t.kind == .bomb:
+            sparks.emit(vec2(f32(x + 4), 114), 40, 90, PAL[7], life = 0.8, size = 1)
+            play(snd_boom, 0.6)
+            screen = .over
+            over_at = ticks
+            if score > best:
+                best = score
+                save_data("best", "{best}")
+        else:
+            score += if t.kind == .green_gem: 5 else: 1
+            sparks.emit(t.pos + vec2(2, 2), 12, 50, PAL[7], life = 0.4, size = 1)
+            play(snd_gem, 0.4)
+    things.retain((t): not t.gone)
+
+update = (dt: f64): fixed_update(dt, tick)
+
+draw = ():
+    clear(PAL[1])
+    # stars going by
+    loop i in 0..24: rect((i * 37) % 128, (i * 53 + ticks / 4) % 128, 1, 1, PAL[if i % 3 == 0: 6 else: 13])
+    loop t in things:
+        if t.kind == .bomb: sprite(bomb, t.pos)
+        else if t.kind == .green_gem:
+            # (the same sprite, its orange and yellow drawn green: PICO-8's pal)
+            palette_swap(PAL[9], PAL[3])
+            palette_swap(PAL[10], PAL[11])
+            sprite(gem, t.pos)
+            palette_reset()
+        else: sprite(gem, t.pos)
+    if screen == .playing: sprite(ship, vec2(f32(floor(x)), 112))
+    sparks.draw()
+    text("{score}", vec2(2, 2), 6, PAL[7])
+    text("HI {best}", vec2(127 - text_width("HI {best}", 6), 2), 6, PAL[6])
+    blink = ticks / 20 % 2 == 0
+    if screen == .title:
+        text_centered("__TITLE__", vec2(64, 44), 12, PAL[10])
+        if blink: text_centered("PRESS Z", vec2(64, 80), 6, PAL[7])
+    else if screen == .over:
+        text_centered("GAME OVER", vec2(64, 52), 6, PAL[8])
+        if blink: text_centered("PRESS Z", vec2(64, 70), 6, PAL[7])

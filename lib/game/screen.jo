@@ -20,7 +20,9 @@
 #       fits). render_resolution(0, 0) goes back to the window's resolution.
 #   pixel_art(): render_resolution at the design size: for a game designed at 320 x 180, one
 #       2D unit is one sharp pixel. (A window for a design that small opens a whole number of
-#       times larger.) Textures loaded after it are sharp too (smooth_textures).
+#       times larger.) Textures loaded after it are sharp too (smooth_textures); lines, circles,
+#       rings and rects are whole pixels in exactly their colors, with no smoothed edges (a fixed
+#       palette has no shades between them); text is in pixel_font(), unless set_font says.
 #   render_scale(s): draw at a fraction of the window's pixels (0.5: a quarter of them), scaled
 #       up smoothly: faster where pixels cost (3D, the software renderer).
 #   full_resolution(): in draw, the rest of the frame at the window's own resolution, in the same
@@ -48,17 +50,12 @@ letterbox_color = (c: vec4):
     __bar_color = c
 
 render_resolution = (w: int, h: int, smooth: bool = false, whole: bool = true):
-    global __res_h, __res_smooth, __res_w, __res_whole
+    global __pixel_art, __res_h, __res_smooth, __res_w, __res_whole
     __res_w = max(w, 0)
     __res_h = max(h, 0)
     __res_smooth = smooth
     __res_whole = whole
-
-# (and textures made after it are sharp: smooth_textures)
-pixel_art = (smooth: bool = false):
-    global smooth_textures
-    render_resolution(__design_w, __design_h, smooth, true)
-    smooth_textures = false
+    __pixel_art = false
 
 render_scale = (s: f64):
     global __render_scale
@@ -66,7 +63,8 @@ render_scale = (s: f64):
 
 # the rest of this frame's drawing at the window's own resolution, over what was drawn at the
 # low one of pixel_art() (or render_resolution, render_scale), in the same 2D units: a HUD whose
-# text stays sharp, where text a few pixels tall at 320 x 180 is unreadable. Without a low
+# text stays sharp, where text a few pixels tall at 320 x 180 is unreadable (in the built-in
+# font: pixel_font() and whole-pixel shapes are for pixel_art's resolution). Without a low
 # resolution it does nothing.
 #   draw = ():
 #       draw_tilemap(level)          # pixel art
@@ -151,10 +149,10 @@ __screen_layout = ():
     __map_sy = sy
     __map_x0 = (ww - uw * sx) / 2.0
     __map_y0 = (wh - uh * sy) / 2.0
-    # an offscreen canvas: for a fixed resolution, for bars (nothing may be drawn on them), or to
-    # draw at fewer pixels
+    # an offscreen canvas: for a fixed resolution, for bars (nothing may be drawn on them), to
+    # draw at fewer pixels, or for the screen's palette swaps (draw2d.jo) as it is put on the window
     __canvas_whole = fixed or __fit == .letterbox
-    __canvas_on = __canvas_whole or __render_scale < 1.0
+    __canvas_on = __canvas_whole or __render_scale < 1.0 or __pal_screen_on
     __canvas_smooth = not fixed or __res_smooth
     if fixed:
         __canvas_w = __res_w
@@ -203,12 +201,18 @@ __canvas_begin = ():
 
 # the frame is drawn: put the canvas on the window
 __canvas_end = ():
-    global __canvas_active, __canvas_done, __proj, __target_h, __target_w, __xform
+    global __canvas_active, __canvas_done, __fx_draw, __fx_on, __pal_fx, __proj, __target_h, __target_w, __xform
     if not __canvas_active:
         __canvas_done = false
         return
     flush()
     __canvas_active = false
+    # (effects are for what is drawn, not for putting it on the window, but for palette swaps of
+    # the screen; one that was on goes on after, over the HUD of full_resolution)
+    fx = __fx_on
+    fx_draw = __fx_draw
+    pal_fx = __pal_fx
+    __fx_on = false
     glBindFramebuffer(GL_FRAMEBUFFER, 0)
     glViewport(0, 0, i32(__win_w), i32(__win_h))
     __target_w = __win_w
@@ -228,9 +232,13 @@ __canvas_end = ():
         w = __units_w * __map_sx
         h = __units_h * __map_sy
     glDisable(GL_BLEND)
+    if __pal_screen_on: __pal_screen_fn()
     p = vec2(f32(x), f32(y))
     draw_target(__canvas_rt, p, vec2(f32(w), f32(h)))
     flush()
+    __fx_on = fx
+    __fx_draw = fx_draw
+    __pal_fx = pal_fx
     __apply_blend(__blend)
     __xform = saved
 

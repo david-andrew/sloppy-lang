@@ -1,7 +1,8 @@
 # Software rendering: a CPU implementation of the part of OpenGL ES the game library uses,
 # for machines without a GPU driver (or with SLOPPY_SOFTWARE=1). Shaders written in Sloppy run as
 # the compiled Sloppy functions they are; triangles are rasterized in horizontal bands on all
-# cores. Frames are rendered at a reduced internal resolution and scaled up on screen.
+# cores. Frames are rendered at a reduced internal resolution and scaled up on screen (with
+# pixel_art(), at the game's own, scaled up by whole pixels).
 
 __soft = false
 __soft_scale = 0.5               # internal resolution / window resolution
@@ -142,15 +143,17 @@ __sw_tls_init = ():
     global __sw_tls
     if __sw_tls == null: __sw_tls = __alloc((__MAX_THREADS + 1) * 64) as *int
 
-# the window's framebuffer
+# the window's framebuffer (with a fixed resolution, pixel_art's, at the window's own: what is
+# drawn is drawn at that resolution, and only scaled up onto the window, by whole pixels)
 __sw_init_window = (w: int, h: int):
     global __soft_scale
     if __s_fb_color[0] == 0:
         # SLOPPY_SOFT_SCALE=1 renders at full resolution (sharper, about 4x the work)
         if let v = env("SLOPPY_SOFT_SCALE"): __soft_scale = clamp(to_float(v) ?? 0.5, 0.1, 1.0)
-        __s_fb_scale[0] = __soft_scale
-    iw = max(int(f64(w) * __soft_scale), 1)
-    ih = max(int(f64(h) * __soft_scale), 1)
+    s = if __res_w > 0 and __res_h > 0: 1.0 else: __soft_scale
+    __s_fb_scale[0] = s
+    iw = max(int(f64(w) * s), 1)
+    ih = max(int(f64(h) * s), 1)
     if __s_fb_color[0] == 0:
         __s_fb_color[0] = __st_new()
         __s_fb_depth[0] = __st_new()
@@ -321,11 +324,13 @@ sgl_framebuffer_renderbuffer = (attachment: u32, r: u32):
 # store a render target's pixels at the reduced internal resolution, like the window's
 __sw_scale_target = (fbo: int, w: int, h: int):
     if fbo <= 0 or fbo >= __s_fb_color.len(): return
-    iw = max(int(f64(w) * __soft_scale), 1)
-    ih = max(int(f64(h) * __soft_scale), 1)
+    # (all of it with a fixed resolution, whose pixels are each a whole number of the window's)
+    s = if __res_w > 0 and __res_h > 0: 1.0 else: __soft_scale
+    iw = max(int(f64(w) * s), 1)
+    ih = max(int(f64(h) * s), 1)
     if __s_fb_color[fbo] > 0: __st_alloc(__s_fb_color[fbo], iw, ih)
     if __s_fb_depth[fbo] > 0: __st_alloc(__s_fb_depth[fbo], iw, ih)
-    __s_fb_scale[fbo] = __soft_scale
+    __s_fb_scale[fbo] = s
 
 # a render target of exactly w x h pixels (a fixed resolution is not scaled down)
 __sw_exact_target = (fbo: int, w: int, h: int):
@@ -1000,11 +1005,12 @@ __sw_present_pixels = (out: *u8, w: int, h: int):
     p = __st[c].p
     tw = __st[c].w
     th = __st[c].h
+    s = __s_fb_scale[0]
     parallel_range(h, (r: int):
-        sy = min(int(f64(h - 1 - r) * __soft_scale), th - 1)
+        sy = min(int(f64(h - 1 - r) * s), th - 1)
         row = out + r * w * 4
         loop k in [0..w):
-            sx = min(int(f64(k) * __soft_scale), tw - 1)
+            sx = min(int(f64(k) * s), tw - 1)
             q = p + (sy * tw + sx) * 4
             o = row + k * 4
             o[0] = u8(int(clamp(q[2], 0.0, 1.0) * 255.0))

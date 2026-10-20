@@ -94,6 +94,7 @@ sloppy --web game.jo     # in your browser
 ```sh
 sloppy new my_game            # the smallest game: a window, update and draw
 sloppy new my_game arcade     # a 2D arcade game: a title menu, a score, a best score kept, sounds
+sloppy new my_game pico       # PICO-8's style: 128 x 128 pixels, 16 colors, a pixel font, sprites as text
 sloppy new my_game platformer # a 2D platformer: a level written as text, slopes, platforms, coins
 sloppy new my_game 3d         # a first-person 3D game: mouse look, walking, jumping, shooting
 sloppy new my_tale story      # a story in lines and choices (a visual novel), its script as Ren'Py's
@@ -875,6 +876,65 @@ are in radians. `xs.remove(x)` takes out the first element equal to x, as in Pyt
 `xs.remove_at(i)` the one at index i (Python's `del xs[i]`).
 To look at a frame without playing, or press keys at given frames: [Testing a
 game](LANGUAGE.md#testing-a-game).
+
+## Coming from PICO-8
+
+A cart's `_init`, `_update60` and `_draw` are a Sloppy game's top level, a step run 60 times a
+second, and `draw`. `window("Title", 128, 128)` with `pixel_art()` gives PICO-8's screen: a 2D
+unit is a pixel, scaled up sharp by whole pixels; lines, circles and rects are whole pixels in
+exactly their colors, and `text` draws in a 3 x 5 font like PICO-8's. Colors are values, not
+numbers: the palette is an array, `PAL[8]` its red. `sloppy new my_game pico` is a whole game
+to start from, with the palette, sprites written as text and a fixed 60 Hz step.
+
+```gdscript
+window("Cart", 128, 128)
+pixel_art()
+PAL = [hex(0x000000), hex(0x1d2b53), hex(0x7e2553), hex(0x008751), hex(0xab5236), hex(0x5f574f), hex(0xc2c3c7), hex(0xfff1e8),
+       hex(0xff004d), hex(0xffa300), hex(0xffec27), hex(0x00e436), hex(0x29adff), hex(0x83769c), hex(0xff77a8), hex(0xffccaa)]
+x = 64.0
+
+tick = (dt: f64):                       # _update60
+    global x
+    if key_down(.left): x -= 1
+    if key_down(.right): x += 1
+
+update = (dt: f64): fixed_update(dt, tick)
+
+draw = ():                              # _draw
+    clear(PAL[1])                       # cls(1)
+    circle(vec2(x, 64), 8, PAL[8])      # circfill(x, 64, 8, 8)
+    text("HELLO", vec2(2, 2), 6, PAL[7])   # print("hello", 2, 2, 7)
+```
+
+| PICO-8 | Sloppy |
+|---|---|
+| `_init()`, `_update60()` (`_update`), `_draw()` | the top of the file runs once; `update = (dt: f64): fixed_update(dt, tick)` runs `tick` 60 times a second (`rate = 30` for `_update`); `draw = ():` each frame |
+| colors 0 to 15 | `PAL[n]` of an array of the 16 (`hex(0xff004d)` is red); `sloppy new my_game pico` has them |
+| `cls(c)` | `clear(PAL[c])` |
+| `pset(x, y, c)`, `pget(x, y)` | `rect(x, y, 1, 1, PAL[c])`; the screen is not read back: keep what you need in variables, or an `Image` (`img.get(x, y)`) |
+| `rectfill(x0, y0, x1, y1, c)`, `rect(...)` | `rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, PAL[c])` (a size, not the far corner), `rect_outline(x, y, w, h, 1, PAL[c])` |
+| `circfill(x, y, r, c)`, `circ`, `line(x0, y0, x1, y1, c)` | `circle(vec2(x, y), r, PAL[c])`, `ring(vec2(x, y), r, 1, PAL[c])`, `line(vec2(x0, y0), vec2(x1, y1), 1, PAL[c])`: under `pixel_art()` whole pixels, a 1 wide line Bresenham's as PICO-8's; `ellipse`, `arc`, `polyline` too |
+| `spr(n, x, y, 1, 1, flip_x)`, `sspr` | `gfx = sprite_sheet(load_texture(embed("sheet.png")), 8, 8)` at the top, then `draw_frame(gfx, n, vec2(x, y), origin = vec2(0, 0), flip_x = true)` (origin: its top left at the point; without, its middle); `sprite_region` for sspr |
+| the sprite editor | a PNG from any editor (Aseprite: `load_aseprite`), or a sprite written in the code: `texture(pixel_image("...77...\n..7cc7..", PAL))`, a character a pixel, its color's number, `.` clear |
+| `map(...)`, `mget(x, y)`, `mset` | `level = tilemap(tileset(load_texture(embed("sheet.png")), 8, 8), [tile_layer("ground", ROWS, "#=")])`, `draw_tilemap(level)`, `tile_at(level, 0, x, y)`, `set_tile(level, 0, x, y, id)`; tiles count from 1 (0 is none): tile n is sprite n - 1; `load_tiled` reads a Tiled map |
+| `pal(c0, c1)`, `pal()`, `pal(c0, c1, 1)` | `palette_swap(PAL[c0], PAL[c1])`, `palette_reset()`, `palette_swap(PAL[c0], PAL[c1], screen = true)` |
+| `palt(c, true)` | a PNG's transparent pixels, or `.` in `pixel_image` |
+| `print(s, x, y, c)` | `text(s, vec2(x, y), 6, PAL[c])`: under `pixel_art()` in `pixel_font()`, 3 x 5 like PICO-8's (size 12 is twice as big); `text_width(s, 6)` is 4 a character |
+| `btn(⬅️)`, `btnp(❎)` | `key_down(.left)` (or `input_axis()`: arrows, WASD and a pad's stick), `key_pressed(.x)` (just pressed); btnp's repeat while held: `key_repeat(.down)` |
+| a gamepad, `btn(i, p)` | `gamepad_down(.a)`, `gamepad_pressed`, `gamepad_repeat`; `gamepad_down(p, .a)` for player p; `action("fire", [.key(.x), .button(.a)])` and `action_pressed("fire")` (`action_repeat`) for keys the player can change |
+| `sfx(n)`, `music(n)` | `play(snd)` of a sound made at the top: `tone(440.0, 0.1, .square)`, `sfx_coin()`, `sfx_explosion()`..., `load_wav(embed("hit.wav"))`; music: `melody_loop("C5 E5 G5 E5", 150.0, .square)` played with `play(song, looping = true)`, `mix([...])` for channels |
+| `rnd(10)`, `flr(x)`, `ceil`, `mid(lo, x, hi)`, `abs`, `sgn` | `random(0.0, 10.0)` (`random_int(0, 10)`: 0 to 9), `floor(x)` (`int(x)` for an int), `ceil`, `clamp(x, lo, hi)`, `abs`, `sign` |
+| `sin(t)`, `cos(t)`, `atan2(dx, dy)` (turns, y up) | radians, y down: PICO-8's `sin(t)` is `-sin(t * TAU)`, `cos(t)` is `cos(t * TAU)`; `atan2(dy, dx)` |
+| `t()`, `time()` | `elapsed()` (seconds); `frame_number()` |
+| `cartdata("id")`, `dset(0, v)`, `dget(0)` | `save_value("best", best)` and `best = load_value("best", 0)`: by name, no cartdata (a file natively, the browser's storage on the web) |
+| `camera(x, y)` | `translate(-x, -y)` at the top of draw, or `camera2d(vec2(x + 64, y + 64))` (it centers on its point) |
+| `clip(x, y, w, h)` | `clip(vec2(x, y), vec2(w, h))`, `no_clip()` |
+| `fillp(...)` | no fill patterns: a small texture repeated with `sprite_tiled` |
+| tables: `add(t, v)`, `del(t, v)`, `foreach`, `#t` | arrays: `xs.push(v)`, `xs.remove(v)`, `loop x in xs:`, `xs.len()`; an object is a struct |
+| `#include other.lua` | `use 'other.jo'` |
+| numbers are 16.16 fixed point | `int` (64 bits) and `f64`; positions are `vec2` (of f32) |
+| `printh(s)`, `stat(7)` | `print(s)` (to the terminal), `fps()` |
+| Ctrl+R to run again | `sloppy watch cart.jo`: each save reloads the code into the running game, which goes on where it was |
 
 ## Coming from pandas and matplotlib
 

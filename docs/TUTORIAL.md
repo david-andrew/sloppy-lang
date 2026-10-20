@@ -648,6 +648,12 @@ hero = load_texture(embed("firefly.png"))      # at the top: embed builds the fi
     sprite(hero, pos - vec2(SIZE, SIZE), vec2(SIZE * 2.0, SIZE * 2.0))
 ```
 
+Pixel art wants a small screen scaled up: `window("Firefly", 320, 180)` and `pixel_art()` under
+it make a 2D unit one pixel, scaled up sharp by a whole number; pictures stay sharp, shapes
+are whole pixels in exactly their colors (no smoothed edges between a palette's colors) and
+`text` draws in a pixel font. The game's numbers (speeds, sizes, the ground's height) are then in
+those pixels. `sloppy new my_game pico` starts a game at PICO-8's 128 x 128.
+
 ### Many things that move
 
 The firefly's lights are positions, but a game with many things that each have several values

@@ -115,6 +115,9 @@ def test_game(d):
         write(d, "g.jo", g4)
         # (the panic and the watcher's own messages come from two processes: they may interleave)
         w.expect(r"index 7 out of bounds")
+        # (the backtrace through the new code: its names and lines came with it)
+        w.expect(r"in pick \(g\.jo:10\)")
+        w.expect(r"called from update \(g\.jo:6\)")
         w.expect(r"paused")
         # an error keeps the game as it was
         write(d, "g.jo", g4.replace('"two"', '"two" +'))
