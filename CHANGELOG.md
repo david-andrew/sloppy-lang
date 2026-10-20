@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Passwords no longer hold up a server: where tasks run, `crypto.hash_password`,
+  `check_password` and `pbkdf2_sha256` make the hash on a helper thread (up to 4, started as
+  needed) while the task that asked waits, and the others go on (as Node's thread pool does). A
+  server with a task checking passwords all the time and four clients logging in: its `GET /ping`
+  took 1250 ms (median), now 0.4 ms, and it answers 2.5x the logins. Without tasks, and in a web
+  page, as before; `SLOPPY_THREADS=1` keeps it on the program's thread. (The library's own: the
+  work is plain bytes, copied, as reference counts are not atomic; lib/std/thread.jo's
+  `__off_thread`.)
+- SHA-256 is 1.7x as fast (release; 1.7x debug too): its words worked on as 64-bit ints, a
+  rotation a shift of the word written twice over. `hash_password`'s 100000 iterations take
+  about a tenth of a second in a release build (OpenSSL: half that).
 - Data that survives a power cut: `write_file(path, text, sync = true)` (and `write_bytes`)
   writes a new file beside it, puts it on the disk (fsync; macOS's F_FULLFSYNC; Windows'
   FlushFileBuffers), renames it over the old one and puts the directory on the disk too (Windows:

@@ -1894,8 +1894,8 @@ ok = crypto.p256_verify(pk.public, crypto.sha256(msg), sig)
 
 #### Passwords: PBKDF2 (RFC 8018, with HMAC-SHA256)
 
-- `pbkdf2_sha256 = (password: u8[], salt: u8[], iterations: int, n: int = 32) -> u8[]`: n bytes of key from a password and a salt, by `iterations` rounds of HMAC-SHA256
-- `hash_password = (password: str, iterations: int = 100000) -> str`: a password as text to store: a new random salt, and PBKDF2-HMAC-SHA256's hash of it with that many iterations. 100000 takes about a sixth of a second in a release build (a third in a debug one); OWASP asks for 600000 of programs whose SHA-256 is faster (OpenSSL's): more where sign-ins are few, as an admin's
+- `pbkdf2_sha256 = (password: u8[], salt: u8[], iterations: int, n: int = 32) -> u8[]`: n bytes of key from a password and a salt, by `iterations` rounds of HMAC-SHA256 (on a helper thread where tasks run, as hash_password's)
+- `hash_password = (password: str, iterations: int = 100000) -> str`: a password as text to store: a new random salt, and PBKDF2-HMAC-SHA256's hash of it with that many iterations. 100000 takes about a tenth of a second in a release build (a sixth in a debug one: OpenSSL's SHA-256 is twice as fast); OWASP asks for 600000 of programs whose SHA-256 is OpenSSL's: more where sign-ins are few, as an admin's. Where tasks run, it is made on a helper thread (pbkdf2_sha256's)
 - `check_password = (password: str, stored: str) -> bool`: whether the password is the one stored by hash_password (false too for text that is not such a hash); it takes as long whichever bytes differ
 - `constant_time_equal = (a: u8[], b: u8[]) -> bool`: whether a and b are the same bytes, taking as long whichever bytes differ (a secret compared with what a client sent: a token, a signature, an HMAC), so that the time taken tells nothing about where they differ. Their lengths are not secret: different lengths are false at once
 - `constant_time_equal = (a: str, b: str) -> bool`
