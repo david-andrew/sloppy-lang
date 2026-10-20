@@ -69,7 +69,7 @@ const home = `file://${page}?server=${server}${extra}`;
 const host = async () => {
   await A.go(home);
   await A.click(640, 323);                                       // Invite a friend
-  const link = await until(async () => { const c = await A.clip(); return c.includes("?room=") && c; }, 15000);
+  const link = await until(async () => { const c = await A.clip(); return typeof c === "string" && c.includes("?room=") && c; }, 15000);
   if (!link) throw new Error(`no room link was copied: the page said ${JSON.stringify(A.lines)}`);
   return link;
 };
@@ -112,7 +112,7 @@ try {
     await A.click(640, 323);
     if (!await until(() => said(A, "cannot be reached"), 15000)) throw new Error(`the page said ${JSON.stringify(A.lines)}`);
     await A.click(800, 502);                                     // Invite with a code instead
-    const inv = await until(async () => { const c = await A.clip(); return c.includes("?invite=") && c; }, 15000);
+    const inv = await until(async () => { const c = await A.clip(); return typeof c === "string" && c.includes("?invite=") && c; }, 15000);
     if (!inv) throw new Error("no invite link was copied");
   });
   await step("two pages play with anybody: the first hosts, the second is put in its room", async () => {

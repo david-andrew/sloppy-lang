@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Messages: `x || d` says `x ?? d` gives a default; `to_hex` says `crypto.hex_text`. A web page's
+  failed fetch from its own server says the server did not answer, not CORS.
 - `bytes(s)` of a text made for it (`bytes("hello {i}")`, `bytes(f(x))`) gives the text's memory
   back with the bytes: it was never freed (a netplay server lost some 0.5 MB a second with 100
   players).

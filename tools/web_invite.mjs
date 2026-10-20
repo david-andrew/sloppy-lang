@@ -51,10 +51,10 @@ try {
   await A.send("Page.navigate", { url: "file://" + page });
   await sleep(2000);
   await A.click(640, 323);                                       // Invite a friend
-  const link = await until(async () => { const c = await A.clip(); return c.includes("?invite=") && c; }, 15000);
+  const link = await until(async () => { const c = await A.clip(); return typeof c === "string" && c.includes("?invite=") && c; }, 15000);
   if (!link) throw new Error("no invite link was copied");
   await B.send("Page.navigate", { url: link });
-  const reply = await until(async () => { const c = await B.clip(); return c && !c.includes("?invite=") && c; }, 20000);
+  const reply = await until(async () => { const c = await B.clip(); return typeof c === "string" && c && !c.includes("?invite=") && c; }, 20000);
   if (!reply) throw new Error("the friend's page copied no reply code");
   await A.click(640, 462);                                       // the reply box
   await A.paste(reply);
