@@ -468,7 +468,7 @@ __net_drain = ():
             else: keep.push(c)
         __net_closing = keep
 
-# (the program ending: every peer told, as by close)
+# (the program ending: every peer told, as by close, with 1001: going away)
 __net_hooked = false
 __net_hook = ():
     global __net_hooked
@@ -479,7 +479,7 @@ __net_goodbye = ():
     ids: int[]
     loop p in __net_peers:
         if p.state != 3: ids.push(p.id)
-    loop id in ids: close(id)
+    loop id in ids: close(id, 1001)
 
 __net_add = (p: __NetPeer):
     __net_at[p.id] = __net_peers.len()
@@ -516,6 +516,7 @@ __net_gone = (i: int):
     id = __net_peers[i].id
     code = __net_peers[i].closed
     if code == 0 and __net_peers[i].rtc < 0: code = 1006
+    if __net_peer_rooms.len() > 0: __net_leave_rooms(id)
     __net_events.push(NetEvent(.left, id, [], __net_why.get(id) ?? "", code))
 
 # how a peer is reached: "direct" (WebRTC, straight between the two), "relay" (WebRTC through a
@@ -1243,6 +1244,64 @@ __ws_key = () -> str:
     b: u8[]
     loop _ in [0..16): b.push(u8(random_int(0, 256)))
     base64_encode(b)
+
+# ---------------- rooms: peers by name ----------------
+# A room is a name for some of the peers (a match, a chat's channel, a game's lobby), as
+# Socket.IO's: a peer joins and leaves rooms, a message goes to everyone in one, and a peer that
+# leaves (its connection closed or lost) leaves its rooms too.
+#   net.join_room(p, "match-7")
+#   net.send_room("match-7", "{name} came", except = p)    # to the others in it
+#   loop q in net.members("match-7"): ...
+#   loop r in net.rooms(): ...                              # the rooms with anyone in them
+
+# peer p is in room from now on (once, however often it joins)
+join_room = (peer: int, room: str):
+    if __net_find(peer) < 0 or __net_peers[__net_find(peer)].state == 3: return
+    ms = __net_rooms.get(room) ?? []
+    if peer in ms: return
+    ms.push(peer)
+    __net_rooms[room] = ms
+    rs = __net_peer_rooms.get(peer) ?? []
+    rs.push(room)
+    __net_peer_rooms[peer] = rs
+
+# peer p is not in room any more (a room with no one left is no more)
+leave_room = (peer: int, room: str):
+    if let ms = __net_rooms.get(room):
+        keep: int[]
+        loop q in ms:
+            if q != peer: keep.push(q)
+        if keep.len() == 0: __net_rooms.remove(room)
+        else: __net_rooms[room] = keep
+    if let rs = __net_peer_rooms.get(peer):
+        keep: str[]
+        loop r in rs:
+            if r != room: keep.push(r)
+        if keep.len() == 0: __net_peer_rooms.remove(peer)
+        else: __net_peer_rooms[peer] = keep
+
+# a message to everyone in room (but `except`, as the one who sent it)
+send_room = (room: str, msg: str, except: int = -1):
+    loop q in __net_rooms.get(room) ?? []:
+        if q != except: send(q, msg)
+send_room = (room: str, msg: u8[], except: int = -1):
+    loop q in __net_rooms.get(room) ?? []:
+        if q != except: send(q, msg)
+
+# the peers in room, in the order they joined it
+members = (room: str) -> int[]: __net_rooms.get(room) ?? []
+
+# the rooms with anyone in them; rooms(p): those peer p is in
+rooms = () -> str[]: [loop r, _ in __net_rooms: r]
+rooms = (peer: int) -> str[]: __net_peer_rooms.get(peer) ?? []
+
+__net_rooms: {str: int[]}
+__net_peer_rooms: {int: str[]}
+
+# (a peer gone: out of its rooms)
+__net_leave_rooms = (peer: int):
+    if let rs = __net_peer_rooms.get(peer):
+        loop r in rs: leave_room(peer, r)
 
 # ---------------- UDP (native programs) ----------------
 # Datagrams: no connection, each one arrives whole or not at all, maybe out of order. Faster

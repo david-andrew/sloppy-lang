@@ -1,0 +1,53 @@
+# requires: sloppy
+# requires: native
+# net's rooms: peers join and leave named rooms, send_room reaches everyone in one (but the one
+# left out), members and rooms list them, and a peer that leaves the server leaves its rooms
+import net
+
+const PORT = 9533
+
+# (a client: joined, then each message until `count` came)
+client = (name: str, count: int) -> str[]:
+    p = net.connect("127.0.0.1", PORT)
+    loop true:
+        if net.receive([p], wait = 5.0).len() > 0: break
+    net.send(p, name)
+    got: str[]
+    loop got.len() < count:
+        loop e in net.receive([p], wait = 5.0):
+            if e.kind == .message: got.push(e.text)
+    net.close(p)
+    got
+
+main = ():
+    if not net.listen(PORT, host = "127.0.0.1"): panic("cannot listen")
+    # (ann and bob play in red, cat in blue; ann watches the lobby too)
+    names: {int: str}
+    cs = [spawn((): client("ann", 2)), spawn((): client("bob", 3)), spawn((): client("cat", 1))]
+    loop names.len() < 3:
+        loop e in net.receive_server():
+            if e.kind != .message: continue
+            names[e.peer] = e.text
+            if e.text == "cat": net.join_room(e.peer, "blue")
+            else: net.join_room(e.peer, "red")
+            if e.text == "ann":
+                net.join_room(e.peer, "lobby")
+                net.join_room(e.peer, "lobby")
+        net.wait(1.0)
+    show = (ps: int[]) -> str[]: [loop q in ps: names[q]]
+    print("red:", show(net.members("red")), "blue:", show(net.members("blue")), "lobby:", show(net.members("lobby")))
+    print("rooms:", sorted(net.rooms()))
+    ann = net.members("lobby")[0]
+    print("ann's:", net.rooms(ann))
+    net.send_room("red", "red wins")
+    net.send_room("blue", "blue loses")
+    net.send_room("red", "from ann", except = ann)
+    net.leave_room(ann, "lobby")
+    print("after ann left the lobby:", sorted(net.rooms()), net.rooms(ann))
+    net.send_room("red", "again")
+    loop c in cs: print(c.wait())
+    # (each client closed: out of its rooms)
+    loop net.rooms().len() > 0:
+        loop e in net.receive_server(): pass
+        net.wait(0.1)
+    print("rooms at the end:", net.rooms(), net.members("red"))

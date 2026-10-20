@@ -38,6 +38,13 @@
 - JSON: a struct field whose name ends in `_` is the name without it in `to_json`, `json_value`
   and `from_json` (`when_: f64` is `"when"`): JSON names that are keywords. A keyword as a
   field's name says so.
+- net: rooms, as Socket.IO's: `net.join_room(p, room)`, `net.leave_room(p, room)`,
+  `net.send_room(room, msg, except = -1)`, `net.members(room)`, `net.rooms()`, `net.rooms(p)`;
+  a peer that leaves leaves its rooms. A program that ends closes its peers with 1001 (going
+  away).
+- netplay: `c.reconnect = true` connects again by itself after a connection lost (or the server
+  going away or restarting: 1001, 1006, 1011-1014), after 1, 2, 4... up to 30 s; not after a
+  close on purpose. `c.problem` has the server's close reason and code.
 
 ## 0.28.0
 

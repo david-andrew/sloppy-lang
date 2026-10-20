@@ -904,8 +904,15 @@ struct Client[W, I]:
     __peer = -1
     problem = ""                    # what is wrong, said once on stderr too: could not connect, the
                                     # server gone or not heard from for 5 s, worlds that cannot be read
+    reconnect = false               # true: a connection lost, or not made, is made again by itself
+                                    # (after 1, 2, 4... up to 30 seconds), not one the server closed
+                                    # on purpose (net.close: problem says its reason)
     __heard = -1.0
     __hello = ""
+    __host = ""
+    __port = 0
+    __retry_at = -1.0               # (when to connect again: -1 not to)
+    __retry_wait = 1.0
     __lag: __CsLag
 
 client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]:
@@ -913,10 +920,14 @@ client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]:
 
 # connect to the server; hello: text the server gets as srv.hello(player) (a name, a token to
 # know a player again by after a reconnect). A client that lost its connection, or called
-# disconnect, connects again the same way
+# disconnect, connects again the same way (or by itself, with c.reconnect = true: the server
+# sees a new player then, whose hello is the same)
 connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = ""):
     global __pace_real_time
     if c.__peer >= 0: disconnect(c)
+    c.__host = host
+    c.__port = port
+    c.__retry_at = -1.0
     c.me = -1
     c.server_tick = -1
     c.problem = ""
@@ -934,6 +945,17 @@ disconnect[W, I] = (c: mut Client[W, I]):
     if c.__peer >= 0: net.close(c.__peer)
     c.__peer = -1
     c.me = -1
+    c.__retry_at = -1.0
+
+# (reconnect's: the next try, a while after a connection lost)
+__cs_retry_later[W, I] = (c: mut Client[W, I]):
+    if not c.reconnect or c.__retry_at >= 0.0: return
+    c.__retry_at = elapsed() + c.__retry_wait
+    c.__retry_wait = min(c.__retry_wait * 2.0, 30.0)
+
+# (a close code a reconnect may mend: the connection lost, or the server going away, restarting or
+# too busy; not one closed on purpose, 1000 and the game's own 4000-4999, nor a message refused)
+__cs_retries = (code: int) -> bool: code == 1001 or code == 1005 or code == 1006 or (code >= 1011 and code <= 1014)
 
 # simulate a slow network on what the client sends and gets: ms more latency each way, up to
 # jitter_ms more at random (kept in order, as over TCP)
@@ -970,18 +992,26 @@ play[W, I] = (c: mut Client[W, I], input: I):
                 if c.__peer >= 0: net.send(c.__peer, m.1)
                 else: c.__out.push(m.1)
             else: c.receive(m.1)
+    if c.__retry_at >= 0.0 and elapsed() >= c.__retry_at: c.connect(c.__host, c.__port, c.__hello)
     if c.__peer >= 0:
         loop e in net.receive([c.__peer]):
             if e.kind == .message:
                 if c.__lag.ms > 0.0 or c.__lag.jitter > 0.0: __cs_lag_hold(c.__lag, 1, e.data)
                 else: c.receive(e.data)
             else if e.kind == .left:
-                if c.me < 0:
-                    w = net.why(c.__peer)
-                    if len(w) > 0: __cs_problem(c, "could not connect to the server: {w}")
-                    else: __cs_problem(c, "could not connect to the server")
-                else: __cs_problem(c, "the server closed the connection")
-    if c.me >= 0 and c.__heard >= 0.0 and elapsed() - c.__heard > 5.0: __cs_problem(c, "the server has not been heard from for 5 seconds (gone?)")
+                said = if len(e.text) > 0: ": {e.text}" else: ""
+                then = ""
+                if __cs_retries(e.code) and c.reconnect:
+                    __cs_retry_later(c)
+                    then = "; connecting again in {c.__retry_at - elapsed():.0} s"
+                if c.me < 0 and e.code == 1006: __cs_problem(c, "could not connect to the server{said}{then}")
+                else if e.code == 1006: __cs_problem(c, "the connection to the server was lost{said}{then}")
+                else: __cs_problem(c, "the server closed the connection{said} ({e.code}){then}")
+    if c.me >= 0 and c.__heard >= 0.0 and elapsed() - c.__heard > 5.0:
+        __cs_problem(c, "the server has not been heard from for 5 seconds (gone?)")
+        if c.reconnect:
+            c.disconnect()
+            __cs_retry_later(c)
     c.__clock += 1
     if c.me < 0: return
     c.__seq += 1
@@ -1008,6 +1038,7 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
         loop x in bytes(c.__hello): h.push(x)
         __cs_client_send(c, h)
     c.me = r.you
+    c.__retry_wait = 1.0
     c.server_tick = r.tick
     c.server = r.world
     c.__got_at = c.__clock

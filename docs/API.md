@@ -5315,6 +5315,16 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `unsent = (peer: int) -> int`: how many bytes sent to a peer still wait to go out to it (a peer that reads slowly, or has stopped: one with more than 8 MB waiting is let go, so that it does not hold the server's memory)
 - `handshake = (peer: int) -> Handshake`: how a peer asked to connect to this program's server (an empty Handshake for others)
 
+#### Rooms: peers by name
+
+- `join_room = (peer: int, room: str)`: peer p is in room from now on (once, however often it joins)
+- `leave_room = (peer: int, room: str)`: peer p is not in room any more (a room with no one left is no more)
+- `send_room = (room: str, msg: str, except: int = -1)`: a message to everyone in room (but `except`, as the one who sent it)
+- `send_room = (room: str, msg: u8[], except: int = -1)`
+- `members = (room: str) -> int[]`: the peers in room, in the order they joined it
+- `rooms = () -> str[]`: the rooms with anyone in them; rooms(p): those peer p is in
+- `rooms = (peer: int) -> str[]`
+
 #### UDP (native programs)
 
 - `struct Datagram`
@@ -5778,9 +5788,12 @@ draw = ():
       messages: str[]                 # the server's own messages that came in the last play (say)
       problem = ""                    # what is wrong, said once on stderr too: could not connect, the
                                       # server gone or not heard from for 5 s, worlds that cannot be read
+      reconnect = false               # true: a connection lost, or not made, is made again by itself
+                                      # (after 1, 2, 4... up to 30 seconds), not one the server closed
+                                      # on purpose (net.close: problem says its reason)
   ```
 - `client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]`
-- `connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = "")`: connect to the server; hello: text the server gets as srv.hello(player) (a name, a token to know a player again by after a reconnect). A client that lost its connection, or called disconnect, connects again the same way
+- `connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = "")`: connect to the server; hello: text the server gets as srv.hello(player) (a name, a token to know a player again by after a reconnect). A client that lost its connection, or called disconnect, connects again the same way (or by itself, with c.reconnect = true: the server sees a new player then, whose hello is the same)
 - `disconnect[W, I] = (c: mut Client[W, I])`: close the connection (connect again later, to the same server or another)
 - `lag[W, I] = (c: mut Client[W, I], ms: f64, jitter_ms: f64 = 0)`: simulate a slow network on what the client sends and gets: ms more latency each way, up to jitter_ms more at random (kept in order, as over TCP)
 - `connected[W, I] = (c: Client[W, I]) -> bool`: connected, and the server has sent a world (and is still heard from)
