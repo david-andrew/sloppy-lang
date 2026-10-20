@@ -108,11 +108,21 @@ for extra in modes:
 # of it, where what the library makes every program compile shows most
 with open(os.path.join(tmp, "hello.jo"), "w") as f: f.write('print("hi")\n')
 with open(os.path.join(tmp, "game.jo"), "w") as f: f.write('window("t", 320, 200)\ndraw = ():\n    clear(BLACK)\n    rect(1, 2, 3, 4, RED)\n    text("hi", vec2(3, 3), 12, WHITE)\n')
+# (files new in this library stand empty in the earlier one: this compiler may read them by name,
+# and what they hold was not in it)
+cmp_lib = os.path.join(tmp, "base-lib-cmp")
+shutil.copytree(old_lib, cmp_lib)
+for d, _, fs in os.walk(os.path.join(root, "lib")):
+    for fn in fs:
+        rel = os.path.relpath(os.path.join(d, fn), os.path.join(root, "lib"))
+        if fn.endswith(".jo") and not os.path.exists(os.path.join(cmp_lib, rel)):
+            os.makedirs(os.path.dirname(os.path.join(cmp_lib, rel)), exist_ok=True)
+            open(os.path.join(cmp_lib, rel), "w").close()
 print(f"library: {base}'s -> the working tree's, compiled by this compiler")
 for src in [os.path.join(tmp, "hello.jo"), os.path.join(tmp, "game.jo"), "examples/rebound/rebound.jo", "examples/breakwater/breakwater.jo"]:
     cmd = [os.path.join(root, "tools", "icount"), new, "build", src, "-o", os.path.join(tmp, "out")]
     got = []
-    for lib in [old_lib, os.path.join(root, "lib")]:
+    for lib in [cmp_lib, os.path.join(root, "lib")]:
         if counter == "valgrind": break
         r = subprocess.run(cmd, cwd=root, env=dict(env, SLOPPY_LIB=lib), capture_output=True, text=True)
         line = (r.stderr.strip().splitlines() or [""])[-1]
