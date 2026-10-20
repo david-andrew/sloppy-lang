@@ -2918,7 +2918,7 @@ Drawing that needs it goes to an offscreen canvas, put on the window when the fr
 - `render_resolution = (w: int, h: int, smooth: bool = false, whole: bool = true)`
 - `pixel_art = (smooth: bool = false)`: (and textures made after it are sharp: smooth_textures; shapes are whole pixels and text is pixel_font()'s, draw2d.jo)
 - `render_scale = (s: f64)`
-- `full_resolution = ()`: the rest of this frame's drawing at the window's own resolution, over what was drawn at the low one of pixel_art() (or render_resolution, render_scale), in the same 2D units: a HUD whose text stays sharp, where text a few pixels tall at 320 x 180 is unreadable. Without a low resolution it does nothing.
+- `full_resolution = ()`: the rest of this frame's drawing at the window's own resolution, over what was drawn at the low one of pixel_art() (or render_resolution, render_scale), in the same 2D units: a HUD whose text stays sharp, where text a few pixels tall at 320 x 180 is unreadable (in the built-in font: pixel_font() and whole-pixel shapes are for pixel_art's resolution). Without a low resolution it does nothing.
   ```gdscript
   draw = ():
       draw_tilemap(level)          # pixel art
