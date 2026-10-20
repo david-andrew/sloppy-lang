@@ -222,45 +222,55 @@ sha256 = (m: u8[]) -> u8[]:
     off = 0
     loop off < b.len():
         loop t in [0..16): w[t] = __be32(b, off + t * 4)
-        loop t in [16..64):
-            s0 = __rotr(w[t - 15], 7) xor __rotr(w[t - 15], 18) xor (w[t - 15] >> 3)
-            s1 = __rotr(w[t - 2], 17) xor __rotr(w[t - 2], 19) xor (w[t - 2] >> 10)
-            w[t] = w[t - 16] + s0 + w[t - 7] + s1
-        a = h[0]
-        bb = h[1]
-        c = h[2]
-        d = h[3]
-        e = h[4]
-        f = h[5]
-        g = h[6]
-        hh = h[7]
-        loop t in [0..64):
-            S1 = __rotr(e, 6) xor __rotr(e, 11) xor __rotr(e, 25)
-            ch = (e & f) xor ((~e) & g)
-            t1 = hh + S1 + ch + __SHA256_K[t] + w[t]
-            S0 = __rotr(a, 2) xor __rotr(a, 13) xor __rotr(a, 22)
-            mj = (a & bb) xor (a & c) xor (bb & c)
-            t2 = S0 + mj
-            hh = g
-            g = f
-            f = e
-            e = d + t1
-            d = c
-            c = bb
-            bb = a
-            a = t1 + t2
-        h[0] += a
-        h[1] += bb
-        h[2] += c
-        h[3] += d
-        h[4] += e
-        h[5] += f
-        h[6] += g
-        h[7] += hh
+        __sha256_block(h, w)
         off += 64
     out: u8[]
     loop v in h: __put32(out, v)
     out
+
+# (one 64-byte block, its words in w[0..16), into the state h; w[16..64) are the block's schedule.
+# Its rotations written out and its arrays read through pointers: three times as fast in a debug
+# build, which password hashing feels)
+__sha256_block = (h: mut u32[8], w: mut u32[64]):
+    pw = &w as *u32
+    pk = &__SHA256_K as *u32
+    loop t in [16..64):
+        x = pw[t - 15]
+        y = pw[t - 2]
+        s0 = ((x >> 7) | (x << 25)) xor ((x >> 18) | (x << 14)) xor (x >> 3)
+        s1 = ((y >> 17) | (y << 15)) xor ((y >> 19) | (y << 13)) xor (y >> 10)
+        pw[t] = pw[t - 16] + s0 + pw[t - 7] + s1
+    a = h[0]
+    bb = h[1]
+    c = h[2]
+    d = h[3]
+    e = h[4]
+    f = h[5]
+    g = h[6]
+    hh = h[7]
+    loop t in [0..64):
+        S1 = ((e >> 6) | (e << 26)) xor ((e >> 11) | (e << 21)) xor ((e >> 25) | (e << 7))
+        ch = (e & f) xor ((~e) & g)
+        t1 = hh + S1 + ch + pk[t] + pw[t]
+        S0 = ((a >> 2) | (a << 30)) xor ((a >> 13) | (a << 19)) xor ((a >> 22) | (a << 10))
+        mj = (a & bb) xor (a & c) xor (bb & c)
+        t2 = S0 + mj
+        hh = g
+        g = f
+        f = e
+        e = d + t1
+        d = c
+        c = bb
+        bb = a
+        a = t1 + t2
+    h[0] += a
+    h[1] += bb
+    h[2] += c
+    h[3] += d
+    h[4] += e
+    h[5] += f
+    h[6] += g
+    h[7] += hh
 
 # ---------------- SHA-512, SHA-384 ----------------
 __SHA512_K: u64[80] = [u64(0x428a2f98d728ae22), 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
@@ -392,6 +402,95 @@ hkdf_expand = (prk: u8[], info: u8[], n: int) -> u8[]:
         out.extend(t)
         i += 1
     out[..n)
+
+# ---------------- passwords: PBKDF2 (RFC 8018, with HMAC-SHA256) ----------------
+# A password kept as a hash that is slow to make, so that one who takes the stored hashes cannot
+# try many passwords against them quickly; a salt of its own for each, so that the same password
+# gives another hash for each user. hash_password and check_password are a ready pair:
+#   user.hash = crypto.hash_password(password)                 # stored, as text
+#   if crypto.check_password(attempt, user.hash): ...           # signed in
+# The text says how it was made ("pbkdf2-sha256$100000$<salt>$<hash>", base64), so hashes made
+# with more iterations later (as computers get faster) are checked alongside the old ones. A hash
+# takes the program's one thread while it is made: a server's other tasks wait meanwhile.
+
+# n bytes of key from a password and a salt, by `iterations` rounds of HMAC-SHA256
+pbkdf2_sha256 = (password: u8[], salt: u8[], iterations: int, n: int = 32) -> u8[]:
+    # (the HMAC's inner and outer states after the key's block, made once: each round is then
+    # two of SHA-256's blocks)
+    key = if password.len() > 64: sha256(password) else: password
+    inner: u32[8] = [u32(0x6a09e667), 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+    outer = inner
+    w: u32[64]
+    loop t in [0..16): w[t] = __pbkdf2_key_word(key, t) xor 0x36363636
+    __sha256_block(inner, w)
+    loop t in [0..16): w[t] = __pbkdf2_key_word(key, t) xor 0x5c5c5c5c
+    __sha256_block(outer, w)
+    out: u8[]
+    i = 1
+    loop out.len() < n:
+        m = salt
+        __put32(m, u32(i))
+        u0 = hmac_sha256(password, m)
+        u: u32[8]
+        loop t in [0..8): u[t] = __be32(u0, t * 4)
+        acc = u
+        loop _ in [1..max(iterations, 1)):
+            # (a 32-byte message after the 64-byte key's block: its padding, and its length in bits)
+            h = inner
+            loop t in [0..8): w[t] = u[t]
+            w[8] = 0x80000000
+            loop t in [9..15): w[t] = 0
+            w[15] = 768
+            __sha256_block(h, w)
+            u = outer
+            loop t in [0..8): w[t] = h[t]
+            w[8] = 0x80000000
+            loop t in [9..15): w[t] = 0
+            w[15] = 768
+            __sha256_block(u, w)
+            loop t in [0..8): acc[t] = acc[t] xor u[t]
+        loop v in acc: __put32(out, v)
+        i += 1
+    out[..n)
+
+# (the key's word t, as HMAC pads it: zeros past its end)
+__pbkdf2_key_word = (key: u8[], t: int) -> u32:
+    v = u32(0)
+    loop k in [0..4):
+        j = t * 4 + k
+        v = (v << 8) | (if j < key.len(): u32(key[j]) else: u32(0))
+    v
+
+# a password as text to store: a new random salt, and PBKDF2-HMAC-SHA256's hash of it with that
+# many iterations. 100000 takes about a sixth of a second in a release build (a third in a debug
+# one); OWASP asks for 600000 of programs whose SHA-256 is faster (OpenSSL's): more where sign-ins
+# are few, as an admin's
+hash_password = (password: str, iterations: int = 100000) -> str:
+    salt = random_bytes(16)
+    h = pbkdf2_sha256(bytes(password), salt, iterations)
+    "pbkdf2-sha256${iterations}${base64_encode(salt)}${base64_encode(h)}"
+
+# whether the password is the one stored by hash_password (false too for text that is not such a
+# hash); it takes as long whichever bytes differ
+check_password = (password: str, stored: str) -> bool:
+    parts = split(stored, "$")
+    if parts.len() != 4 or parts[0] != "pbkdf2-sha256": return false
+    iterations = to_int(parts[1]) ?? 0
+    if iterations < 1: return false
+    salt = base64_decode(parts[2]) ?? []
+    want = base64_decode(parts[3]) ?? []
+    if want.len() == 0: return false
+    constant_time_equal(pbkdf2_sha256(bytes(password), salt, iterations, want.len()), want)
+
+# whether a and b are the same bytes, taking as long whichever bytes differ (a secret compared with
+# what a client sent: a token, a signature, an HMAC), so that the time taken tells nothing about
+# where they differ. Their lengths are not secret: different lengths are false at once
+constant_time_equal = (a: u8[], b: u8[]) -> bool:
+    if a.len() != b.len(): return false
+    d = 0
+    loop k in [0..a.len()): d = d | (int(a[k]) xor int(b[k]))
+    d == 0
+constant_time_equal = (a: str, b: str) -> bool: constant_time_equal(bytes(a), bytes(b))
 
 # ---------------- TLS 1.2's PRF (RFC 5246 5, P_SHA256) ----------------
 # n bytes of keys made from a secret, for a purpose (label) and a seed
