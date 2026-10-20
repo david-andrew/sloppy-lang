@@ -728,17 +728,44 @@ tell_start = ():
 # ~/.local/share/Aces/, on Windows %APPDATA%\Aces\, on macOS ~/Library/Application Support/Aces/):
 # frames and the slowest, the ticks played and the frames spent waiting for the others, rollbacks,
 # each other player's ping, how they are reached and what waits to go to them, and the memory in
-# use. Past 2 MB it starts again (the one before kept as online-log-old.txt).
+# use. Past 2 MB it starts again (the one before kept as online-log-old.txt). In a web page it is
+# kept in the browser's storage, the last hour of it, in pieces of a minute or so (each second's
+# line saves its piece, which stays small), and Settings' "Save online log" downloads it.
 log_frames = 0
 log_slowest = 0.0
 log_at = 0.0
+const LOG_PIECE = 60            # (lines in a piece of the web's log)
+const LOG_PIECES = 60
+web_log: str[] = []             # (the lines of the piece being written)
+web_piece = -1                  # (its number: a page starts a new one, after the last it saved)
 log_line = (line: str):
+    global web_log, web_piece
     when TARGET != "wasm":
         dir = save_dir()
         make_dirs(dir)
         path = "{dir}/online-log.txt"
         if (file_size(path) ?? 0) > 2000000: _ = rename_file(path, "{dir}/online-log-old.txt")
         _ = append_file(path, line + "\n")
+    else:
+        if web_piece < 0:
+            web_piece = load_value("online-log-at", -1) + 1
+            _ = save_value("online-log-at", web_piece)
+            _ = delete_data("online-log-{web_piece - LOG_PIECES}")
+        web_log.push(line)
+        _ = save_data("online-log-{web_piece}", join(web_log, "\n") + "\n")
+        if web_log.len() >= LOG_PIECE:
+            web_log = []
+            web_piece += 1
+            _ = save_value("online-log-at", web_piece)
+            _ = delete_data("online-log-{web_piece - LOG_PIECES}")
+
+# (web: the pieces kept, oldest first, as one text; "" when there are none)
+web_log_text = () -> str:
+    last = load_value("online-log-at", -1)
+    out = ""
+    loop k in [last - LOG_PIECES + 1..last]:
+        if let t = load_data("online-log-{k}"): out += t
+    out
 log_frame = (dt: f64):
     global log_at, log_frames, log_slowest
     log_frames += 1
@@ -2348,6 +2375,11 @@ draw_settings = ():
     if can_fullscreen():
         fs = ui_switch("Fullscreen", is_fullscreen())
         if fs != is_fullscreen(): set_fullscreen(fs)
+    # (the log of online fights, to send when one went badly: a file elsewhere, see log_line)
+    when TARGET == "wasm":
+        if ui_button("Save online log"):
+            t = web_log_text()
+            if len(t) > 0 and write_file("online-log.txt", t): _ = download_file("online-log.txt")
     settings.sound = ui_slider("Sound", settings.sound)
     # (not first: a phone's keyboard would come up as Settings opens)
     settings.name = ui_text_field("Name", settings.name, NAME_MOST)
