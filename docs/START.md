@@ -94,6 +94,7 @@ sloppy --web game.jo     # in your browser
 ```sh
 sloppy new my_game            # the smallest game: a window, update and draw
 sloppy new my_game arcade     # a 2D arcade game: a title menu, a score, a best score kept, sounds
+sloppy new my_game pico       # PICO-8's style: 128 x 128 pixels, 16 colors, a pixel font, sprites as text
 sloppy new my_game platformer # a 2D platformer: a level written as text, slopes, platforms, coins
 sloppy new my_game 3d         # a first-person 3D game: mouse look, walking, jumping, shooting
 sloppy new my_tale story      # a story in lines and choices (a visual novel), its script as Ren'Py's

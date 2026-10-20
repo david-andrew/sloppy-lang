@@ -25,7 +25,7 @@ only = [a for a in sys.argv[1:] if not a.startswith("--")]
 GPU_FRAME_LIMIT = 4.0   # a whole game frame on a GPU (different rasterization and precision)
 os.makedirs(out, exist_ok=True)
 games = {"cube": "examples/cube.jo", "rebound": "examples/rebound/rebound.jo", "dunes": "examples/dunes/dunes.jo", "aces": "examples/aces/aces.jo",
-         "new_game": "lib/new/game.jo", "new_arcade": "lib/new/arcade.jo", "new_platformer": "lib/new/platformer.jo", "new_3d": "lib/new/3d.jo", "new_story": "lib/new/story.jo"}     # (and sloppy new's templates)
+         "new_game": "lib/new/game.jo", "new_arcade": "lib/new/arcade.jo", "new_pico": "lib/new/pico.jo", "new_platformer": "lib/new/platformer.jo", "new_3d": "lib/new/3d.jo", "new_story": "lib/new/story.jo"}     # (and sloppy new's templates)
 scenes = sorted(f[:-3] for f in os.listdir(refdir) if f.endswith(".jo"))
 for sc in scenes:
     games[sc] = f"tests/render/{sc}.jo"
