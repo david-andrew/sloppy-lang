@@ -1919,7 +1919,10 @@ change to how something moves or looks shows at once.
 - A program without `update`/`draw` is run again from the start each time its files change.
 
 `sloppy watch` runs native builds (Linux or Windows; on Windows `r` and `q` need no enter), in debug
-or release mode as the build block says.
+or release mode as the build block says. It runs headless as a game does ([Testing a
+game](#testing-a-game)): `SLOPPY_SOFTWARE=1 SLOPPY_SCREENSHOT=shot.png SLOPPY_FRAMES=600 sloppy
+watch game.jo` takes the reloads with no window and saves frame 600, with an error or a panic over
+it as the window would show it.
 
 ### Testing a game
 

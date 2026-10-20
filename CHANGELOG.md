@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Pixel art (`pixel_art()`): lines, circles, rings, arcs, ellipses, polylines and rects are
+  whole pixels in exactly their colors on every renderer (a line a pixel wide is Bresenham's; a
+  6-color picture had 48 colors from smoothed edges), and the software renderer draws at the
+  game's resolution and scales it up by whole pixels (a 128 x 128 game's pixels were 4 and 6
+  wide). `text` draws in `pixel_font()`, a 3 x 5 font like PICO-8's at whole-number scales (size
+  6, 12...), unless `set_font` says; `set_font(pixel_font())` anywhere.
+- `palette_swap(from, to)` draws one color as another (sprites, shapes, text) until
+  `palette_reset()`, as PICO-8's `pal(c0, c1)`; `screen = true` swaps it in the whole picture
+  as shown (`pal(c0, c1, 1)`). `pixel_image(rows, palette)` makes a picture from text, a
+  character a pixel (`"..7cc7.."`). `Particles(colors = [...])` go through those colors as
+  they age, drawn solid (no fading, which a fixed palette does not have).
+- `key_repeat(k)`, `gamepad_repeat(b)`, `action_repeat(name)`: true as pressed, then after
+  0.25 s 15 times a second while held (PICO-8's `btnp`; `delay` and `period` change it), in the
+  game's time: SLOPPY_INPUT runs and `fixed_update`'s steps repeat too (`key_typed` follows the
+  desktop's key repeat, which a scripted run has none of).
+- `sloppy new my_game pico`: a game in PICO-8's style (128 x 128, its 16 colors, the pixel
+  font, sprites written as text, a fixed 60 Hz step). START.md has "Coming from PICO-8".
+- `sloppy watch`: the error and panic message over the game is drawn at the window's own pixels
+  (over a 128 x 128 game it ran off the screen), and a panic in code a reload brought in says
+  where it is (`in draw (game.jo:283)`, `called by the game loop`), not "the top level".
 - Messages: `x || d` says `x ?? d` gives a default; `to_hex` says `crypto.hex_text`. A web page's
   failed fetch from its own server says the server did not answer, not CORS.
 - `bytes(s)` of a text made for it (`bytes("hello {i}")`, `bytes(f(x))`) gives the text's memory

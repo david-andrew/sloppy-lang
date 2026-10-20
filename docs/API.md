@@ -2374,7 +2374,8 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `key_down = (k: Key) -> bool`: true while the key is held
 - `key_pressed = (k: Key) -> bool`: true only in the frame the key was pressed
 - `key_released = (k: Key) -> bool`
-- `key_typed = (k: Key) -> bool`: true in the frame the key was pressed, and again each time it repeats while held down (for moving through text or menus); characters typed arrive through text_input()
+- `key_typed = (k: Key) -> bool`: true in the frame the key was pressed, and again each time it repeats while held down, as the desktop repeats keys (for moving through text); characters typed arrive through text_input()
+- `key_repeat = (k: Key, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`: true in the frame the key was pressed, then again while it is held: after `delay` seconds, each `period` seconds (PICO-8's btnp: a quarter second, then 15 times a second); for moving through a menu or a grid a step at a time. It counts the game's time, the same in a SLOPPY_INPUT run; in a fixed_update step, the steps'. gamepad_repeat and action_repeat are the same for a button and an action.
 - `shortcut = (k: Key, shift: bool = false) -> bool`: true in the frame Ctrl and k are pressed together, and as it repeats (on a Mac and in a browser Cmd too), for a tool's keys: `if shortcut(.s): save()`; shift: with Shift held too, as Ctrl+Shift+Z (without it, Shift must not be held). Browsers keep some for themselves (Ctrl+N, Ctrl+W, Ctrl+T) and the page never sees them.
 - `mouse_pos = () -> vec2`: (in the 2D units of the screen: see screen_size and screen.jo)
 - `mouse_delta = () -> vec2`
@@ -2586,6 +2587,7 @@ Local multiplayer: a player number reads that gamepad (keys and the mouse count 
 - `action_down = (name: str, player: int = -1) -> bool`
 - `action_pressed = (name: str, player: int = -1) -> bool`: true in the frame the action was pressed (a stick: when it goes past halfway)
 - `action_released = (name: str, player: int = -1) -> bool`
+- `action_repeat = (name: str, player: int = -1, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`: true as the action is pressed, then again while it is held, as key_repeat (a menu's up and down)
 - `action_axis = (neg: str, pos: str, player: int = -1) -> f64`: from -1 (neg) to 1 (pos): action_axis("left", "right")
 - `action_vec = (left: str, right: str, up: str, down: str, player: int = -1) -> vec2`: a direction (y down), at most 1 long
 
@@ -2627,6 +2629,8 @@ A controller keeps its number while it is plugged in (players stay who they are)
 - `gamepad_down = (b: PadButton) -> bool`
 - `gamepad_pressed = (b: PadButton) -> bool`
 - `gamepad_released = (b: PadButton) -> bool`
+- `gamepad_repeat = (pad: int, b: PadButton, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`: true as the button is pressed, then again while it is held, as key_repeat
+- `gamepad_repeat = (b: PadButton, delay: f64 = 0.25, period: f64 = 1.0 / 15.0) -> bool`
 - `gamepad_axis = (pad: int, i: int) -> f64`: axis value in -1..1 (triggers 0..1): 0 left x, 1 left y, 2 right x, 3 right y, 4 left trigger, 5 right trigger; without a pad, the gamepad that has it furthest from rest
 - `gamepad_axis = (i: int) -> f64`
 - `left_stick = (pad: int) -> vec2`
@@ -2738,7 +2742,17 @@ draw = ():
 - `effect_vs[P] = (v: __Vert2D, u: Effect2D[P]) -> Pixel2D`: the vertex function of every effect: shader(effect_vs, your_fragment_function)
 - `base_color[P] = (p: Pixel2D, u: Effect2D[P]) -> vec4`: the pixel's color as 2D drawing makes it without an effect
 - `use_effect[P] = (sh: Shader, params: P)`: 2D drawing from here on goes through effect sh (made with shader(effect_vs, ...)), with params, until no_effect() or the end of the frame
-- `no_effect = ()`: back to drawing without an effect
+- `no_effect = ()`: back to drawing without an effect (palette swaps go on: palette_reset ends them)
+
+#### Palette swaps
+
+- `palette_swap = (from: vec4, to: vec4, screen: bool = false)`: What is drawn in one color is drawn in another, as with PICO-8's pal(c0, c1): an enemy of another color from the same sprite, a flash as something is hit, a fade through a palette's colors. Swaps stay from frame to frame until palette_reset(), up to 16 at once (a color swapped again changes its swap; swapped to itself, it has none). A pixel is in the color `from` when its red, green and blue are each within one 255th of from's; its alpha is kept. screen = true swaps the color in the whole picture as it is shown, all the frame drew (PICO-8's pal(c0, c1, 1)), once as the frame ends. The swaps of drawing are an effect (use_effect): one of the game's own is used in their place until no_effect().
+  ```gdscript
+  palette_swap(PAL[8], PAL[11])           # red is drawn green from here on: sprites, shapes, text
+  draw_frame(gfx, 2, pos)
+  palette_reset()
+  ```
+- `palette_reset = ()`: no palette swaps (of drawing and of the screen) from here on
 
 #### Textures
 
@@ -2804,7 +2818,7 @@ draw = ():
 - `set_font = ()`
 - `text_width = (s: str, size: f64 = 20.0, mono: bool = false) -> f64`: how wide text is drawn (the widest of its lines)
 - `fit_text = (s: str, width: f64, size: f64 = 20.0) -> str`: s as it fits in a line `width` wide: cut short, ending in …, when it is wider (a long name on a button, a table's cell)
-- `text_height = (s: str, size: f64 = 20.0) -> f64`: how tall text is drawn: its lines, each size * 1.25 below the one before
+- `text_height = (s: str, size: f64 = 20.0) -> f64`: how tall text is drawn: its lines, each size * 1.25 below the one before (pixel_font's: its characters' pixels, each line a pixel apart)
 - `enum Align:`
   ```gdscript
   enum Align:
@@ -2820,6 +2834,14 @@ draw = ():
   text_rich("You found [color=yellow]the brass key[/color]. It is [i]warm[/i].", vec2(40, 600), 24, WHITE, width = 800)
   ```
 - `text_centered = (s: str, center: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), shadow: vec4 = vec4(0, 0, 0, 0), mono: bool = false)`: text centered on `center` (horizontally and vertically; each of its lines centered). The built-in font is proportional ("i" is narrower than "@"): a grid of characters, a roguelike's map, draws each one centered in its cell
+
+#### The pixel font
+
+- `pixel_font = () -> Font`: PICO-8's kind of font, for tiny resolutions: each character 3 x 5 pixels, 4 apart, drawn in hard pixels at a whole-number scale: 1 at size 6 (a line 6 pixels high), 2 at 12, ... (a size between is drawn at the whole number below; under 6, at 1). It has the printable ASCII characters, the lowercase letters drawn as capitals, as PICO-8 draws them; others show as ?. Under pixel_art() text() draws with it, unless set_font gave another:
+  ```gdscript
+  set_font(pixel_font())
+  text("SCORE {score}", vec2(1, 1), 6, PAL[7])
+  ```
 
 ### font.jo
 
@@ -2849,6 +2871,7 @@ Japanese, Chinese or Korean text needs a font with them (Noto Sans CJK, which mo
       px: f64                     # the size the characters were made at
       base: f64                   # the baseline's height in a cell
       spread: f64                 # distance (in atlas pixels) the field fades over
+      bitmap = false              # (pixel_font: hard pixels at whole-number scales, not distances)
   ```
 
 #### Making the atlas
@@ -2878,7 +2901,9 @@ render_resolution(w, h): draw at a fixed resolution, scaled up to the window, by
     fits). render_resolution(0, 0) goes back to the window's resolution.
 pixel_art(): render_resolution at the design size: for a game designed at 320 x 180, one
     2D unit is one sharp pixel. (A window for a design that small opens a whole number of
-    times larger.) Textures loaded after it are sharp too (smooth_textures).
+    times larger.) Textures loaded after it are sharp too (smooth_textures); lines, circles,
+    rings and rects are whole pixels in exactly their colors, with no smoothed edges (a fixed
+    palette has no shades between them); text is in pixel_font(), unless set_font says.
 render_scale(s): draw at a fraction of the window's pixels (0.5: a quarter of them), scaled
     up smoothly: faster where pixels cost (3D, the software renderer).
 full_resolution(): in draw, the rest of the frame at the window's own resolution, in the same
@@ -2891,7 +2916,7 @@ Drawing that needs it goes to an offscreen canvas, put on the window when the fr
 - `screen_fit = (mode: Fit)`
 - `letterbox_color = (c: vec4)`
 - `render_resolution = (w: int, h: int, smooth: bool = false, whole: bool = true)`
-- `pixel_art = (smooth: bool = false)`: (and textures made after it are sharp: smooth_textures)
+- `pixel_art = (smooth: bool = false)`: (and textures made after it are sharp: smooth_textures; shapes are whole pixels and text is pixel_font()'s, draw2d.jo)
 - `render_scale = (s: f64)`
 - `full_resolution = ()`: the rest of this frame's drawing at the window's own resolution, over what was drawn at the low one of pixel_art() (or render_resolution, render_scale), in the same 2D units: a HUD whose text stays sharp, where text a few pixels tall at 320 x 180 is unreadable. Without a low resolution it does nothing.
   ```gdscript
@@ -2947,6 +2972,14 @@ Images: RGBA8 pixel buffers, PNG decoding (with a built-in inflate; JPEG: jpeg.j
 - `image = (w: int, h: int, fill: vec4 = vec4(0, 0, 0, 0)) -> Image`
 - `set = (img: mut Image, x: int, y: int, c: vec4)`
 - `get = (img: Image, x: int, y: int) -> vec4`
+- `pixel_image = (rows: str, palette: vec4[]) -> Image`: a picture written as text, a character a pixel and a line a row (blank lines and the lines' indentation left out): 0 to 9 and a to f are the colors of palette with those numbers, as PICO-8's sprite editor numbers its 16 (g to z: 16 to 35; capitals the same), and "." is clear. For sprites drawn in the code:
+  ```gdscript
+  SHIP = "
+      ...77...
+      ..7cc7..
+      77777777"
+  ship = texture(pixel_image(SHIP, PAL))
+  ```
 - `resized = (img: Image, w: int, h: int) -> Image`: the image at another size (a save's thumbnail, an icon): each new pixel the average of the pixels it covers when smaller, smoothly between them when larger
 
 #### Inflate (RFC 1951)
@@ -3162,7 +3195,7 @@ In Tiled, a tile's custom property `shape` (a string) is its shape for tilemap_m
       solid = -1                  # ... of `solids`
   ```
 - `tileset = (t: Texture, tile_w: int, tile_h: int, spacing: int = 0, margin: int = 0) -> Tileset`: a tileset: an image of equal tiles in a grid, numbered from `first` (1) left to right, then down
-- `tile_layer = (name: str, rows: str, chars: str) -> TileLayer`: a layer from rows of text: the character at position i of `chars` is tile i + 1, and any other character (a space, a dot) is no tile; a character the rows never use skips a number ("_#": '#' is tile 2). Rows of spaces are rows of the map (open sky); only an empty first line (the line break after the opening quote) and a last line of spaces (before the closing quote) are left out. For tilemap_move every tile is solid, floor tiles too: a tile walked over is `set_tile_shape(map, id, .empty)`, or a character left out of `chars` (no tile).
+- `tile_layer = (name: str, rows: str, chars: str) -> TileLayer`: a layer from rows of text: the character at position i of `chars` is tile i + 1, and any other character (a space, a dot) is no tile; a character the rows never use skips a number ("_#": '#' is tile 2). Tiles count from 1, 0 being no tile: tile 1 is the tileset's top-left tile, which a sprite_sheet of the same picture calls frame 0, so tile n is frame n - 1 (with chars "123456ab", 'a' is tile 7, frame 6). Rows of spaces are rows of the map (open sky); only an empty first line (the line break after the opening quote) and a last line of spaces (before the closing quote) are left out. For tilemap_move every tile is solid, floor tiles too: a tile walked over is `set_tile_shape(map, id, .empty)`, or a character left out of `chars` (no tile).
 - `tilemap = (ts: Tileset, layers: TileLayer[]) -> Tilemap`: a map of these layers, drawn with one tileset
 - `layer_index = (m: Tilemap, name: str) -> int`: the index of the layer with this name (-1: none)
 - `tile_at = (m: Tilemap, layer: int, x: int, y: int) -> int`: the tile at column x, row y of a layer (0 outside the map)
@@ -4789,10 +4822,15 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
       items: Particle[]
       gravity: vec2           # added to their velocity each second (vec2(0, 400): they fall)
       drag: f32 = 1.0         # how fast they slow down: their speed shrinks by e^-drag a second (0: never)
+      colors: vec4[]          # the colors each goes through as it ages, drawn solid (see draw); none: emit's, fading
   ```
 - `emit = (ps: mut Particles, pos: vec2, count: int, speed: f64, color: vec4, life: f64 = 1.0, size: f64 = 4.0, spread: f64 = TAU, direction: f64 = 0.0)`: count particles from pos, at up to speed (pixels a second), lasting up to `life` seconds, of up to `size` pixels' radius; `spread` is the angle they go out in (radians, TAU: every way) around `direction` (radians, 0: right, as from_angle)
 - `update = (ps: mut Particles, dt: f64)`
-- `draw = (ps: Particles, glow: bool = true)`: draw particles as soft glowing dots (additive blending), or with glow = false as solid ones (blended as the drawing before them); each fades out and shrinks as it ages
+- `draw = (ps: Particles, glow: bool = true)`: draw particles as soft glowing dots (additive blending), or with glow = false as solid ones (blended as the drawing before them); each fades out and shrinks as it ages. With colors, each is a solid dot of its size in the color its age is at, as pixel art wants:
+  ```gdscript
+  sparks = Particles(colors = [PAL[7], PAL[10], PAL[9], PAL[8]], drag = 4.0)
+  sparks.emit(pos, 16, 90, PAL[7], life = 0.5, size = 1)
+  ```
 
 #### Timing
 
