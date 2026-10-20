@@ -5702,7 +5702,7 @@ SQLite databases, through the system's SQLite (libsqlite3 on Linux, macOS's own,
 
 ```gdscript
 db = unwrap(sqlite.open("shop.db"))            # (a SqlError when it cannot be: `?`, `is`, unwrap)
-db.exec("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY, name TEXT, spots INT, paid BOOL)")
+if let e = db.exec("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY, name TEXT, spots INT, paid BOOL)"): panic(e.message)
 r = unwrap(db.run("INSERT INTO bookings (name, spots, paid) VALUES (?, ?, ?)", [name, 3, false]))
 print(r.last_id)
 struct Booking:
@@ -5714,7 +5714,7 @@ bs = unwrap(db.query[Booking]("SELECT * FROM bookings WHERE spots > ?", [0]))
 n = db.value("SELECT count(*) FROM bookings").as_int() ?? 0
 ```
 
-The values for the ?s are a list of any types ([name, 3, 2.5, none, true]). Never put them in the SQL's text, where a name such as `x'); DROP TABLE bookings; --` would be SQL: as a value it is only text. A row's columns go into the fields of the same names (a field with no column keeps its default, a column with no field is left out; a BOOL column is a bool); query_json gives the rows as Json objects. Changes that belong together go between db.begin() and db.commit() (or db.rollback()), as one: all of them or none, even if the program is stopped halfway, and much faster (1000 inserts: a few ms in one, each one by itself waits for the disk). The file is opened in WAL mode (readers do not wait for a writer) and waits up to 5 s for another program's lock. Not in web pages.
+The values for the ?s are a list of any types ([name, 3, 2.5, none, true], bytes for a BLOB). Never put them in the SQL's text, where a name such as `x'); DROP TABLE bookings; --` would be SQL: as a value it is only text. A row's columns go into the fields of the same names (a field with no column keeps its default, a column with no field is left out; a BOOL column is a bool, a BLOB a u8[]; `count(*) AS total` names a column for a field); query_json gives the rows as Json objects. Dates go in as text, date_text(d), and come out with parse_date. run and query take one statement each; exec, a script of several. Changes that belong together go between db.begin() and db.commit() (or db.rollback()), or in db.transaction(f), as one: all of them or none, even if the program is stopped halfway, and much faster (1000 inserts: a few ms in one, each one by itself waits for the disk). One Db is shared by a server's handlers: a transaction is the task's that began it (the others' statements wait for it to end), and one whose handler panics is rolled back. The file is opened in WAL mode (readers do not wait for a writer) and waits up to 5 s for another program's lock. Not in web pages.
 
 - `error struct SqlError`
   ```gdscript
@@ -5738,11 +5738,20 @@ The values for the ?s are a list of any types ([name, 3, 2.5, none, true]). Neve
 - `exec = (db: Db, script: str) -> SqlError?`: SQL statements, as many as there are, with no values for ?s: a schema, a migration (none: done; a SqlError: the first that failed, and those after it not done)
 - `run = (db: Db, sql: str, args: Json = []) -> Changed \| SqlError`: one statement that changes something: INSERT, UPDATE, DELETE, CREATE..., with the values for its ?s
 - `query[T] = (db: Db, sql: str, args: Json = []) -> T[] \| SqlError`: the rows a query gives, each a T: its columns in the fields of the same names
+- `query_one[T] = (db: Db, sql: str, args: Json = []) -> T? \| SqlError`: the first row a query gives, as a T (none: it gives none)
 - `query_json = (db: Db, sql: str, args: Json = []) -> Json \| SqlError`: the rows a query gives, each a Json object of its columns, in a Json list
 - `value = (db: Db, sql: str, args: Json = []) -> Json`: the first column of the first row a query gives (Json's null when there is none, or on an error, which is said on stderr): `db.value("SELECT count(*) FROM t").as_int() ?? 0`
-- `begin = (db: Db) -> SqlError?`: a transaction: the changes from here to commit are made all together, or none of them (rollback, or the program stopped before commit)
+- `begin = (db: Db) -> SqlError?`: a transaction: the changes from here to commit are made all together, or none of them (rollback, or the program stopped before commit) or the program stopped before commit). It is the task's that began it: another task's statements on the same Db wait for it to end, and a panic in it (a server's handler) rolls it back
 - `commit = (db: Db) -> SqlError?`
 - `rollback = (db: Db) -> SqlError?`
+- `transaction = (db: Db, f: () -> SqlError?) -> SqlError?`: the changes f makes, as one transaction: committed when it gives none, rolled back when it gives a SqlError (which is given back) or panics
+  ```gdscript
+  e = db.transaction(():
+      db.run("UPDATE items SET stock = stock - 1 WHERE id = ?", [id])?
+      db.run("INSERT INTO bookings (item) VALUES (?)", [id])?
+      none
+  )
+  ```
 
 ## Invite a friend
 

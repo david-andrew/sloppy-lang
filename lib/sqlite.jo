@@ -3,7 +3,7 @@
 # and changed a row at a time. `import sqlite`, then:
 #
 #   db = unwrap(sqlite.open("shop.db"))            # (a SqlError when it cannot be: `?`, `is`, unwrap)
-#   db.exec("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY, name TEXT, spots INT, paid BOOL)")
+#   if let e = db.exec("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY, name TEXT, spots INT, paid BOOL)"): panic(e.message)
 #   r = unwrap(db.run("INSERT INTO bookings (name, spots, paid) VALUES (?, ?, ?)", [name, 3, false]))
 #   print(r.last_id)
 #   struct Booking:
@@ -14,13 +14,18 @@
 #   bs = unwrap(db.query[Booking]("SELECT * FROM bookings WHERE spots > ?", [0]))
 #   n = db.value("SELECT count(*) FROM bookings").as_int() ?? 0
 #
-# The values for the ?s are a list of any types ([name, 3, 2.5, none, true]). Never put them in
-# the SQL's text, where a name such as `x'); DROP TABLE bookings; --` would be SQL: as a value
-# it is only text. A row's columns go into the fields of the same names (a field with no column
-# keeps its default, a column with no field is left out; a BOOL column is a bool); query_json
-# gives the rows as Json objects. Changes that belong together go between db.begin() and
-# db.commit() (or db.rollback()), as one: all of them or none, even if the program is stopped
-# halfway, and much faster (1000 inserts: a few ms in one, each one by itself waits for the disk).
+# The values for the ?s are a list of any types ([name, 3, 2.5, none, true], bytes for a BLOB).
+# Never put them in the SQL's text, where a name such as `x'); DROP TABLE bookings; --` would be
+# SQL: as a value it is only text. A row's columns go into the fields of the same names (a field
+# with no column keeps its default, a column with no field is left out; a BOOL column is a bool,
+# a BLOB a u8[]; `count(*) AS total` names a column for a field); query_json gives the rows as
+# Json objects. Dates go in as text, date_text(d), and come out with parse_date. run and query
+# take one statement each; exec, a script of several. Changes that belong together go between
+# db.begin() and db.commit() (or db.rollback()), or in db.transaction(f), as one: all of them or
+# none, even if the program is stopped halfway, and much faster (1000 inserts: a few ms in one,
+# each one by itself waits for the disk). One Db is shared by a server's handlers: a
+# transaction is the task's that began it (the others' statements wait for it to end), and one
+# whose handler panics is rolled back.
 # The file is opened in WAL mode (readers do not wait for a writer) and waits up to 5 s for
 # another program's lock. Not in web pages.
 
@@ -65,6 +70,10 @@ when TARGET == "wasm":
     __sq_column_double = (st: *u8, i: i32) -> f64: 0.0
     __sq_column_text = (st: *u8, i: i32) -> *u8: null
     __sq_column_bytes = (st: *u8, i: i32) -> i32: 0
+    __sq_column_blob = (st: *u8, i: i32) -> *u8: null
+    __sq_bind_blob = (st: *u8, i: i32, p: *u8, n: i32, d: int) -> i32: 0
+    __sq_sql = (st: *u8) -> *u8: null
+    __sq_readonly = (st: *u8) -> i32: 0
 else:
     when TARGET == "windows":
         const __SQ_LIB = "winsqlite3.dll"
@@ -138,6 +147,18 @@ else:
     @lib(__SQ_LIB)
     @symbol("sqlite3_column_bytes")
     extern __sq_column_bytes = (st: *u8, i: i32) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_column_blob")
+    extern __sq_column_blob = (st: *u8, i: i32) -> *u8
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_bind_blob")
+    extern __sq_bind_blob = (st: *u8, i: i32, p: *u8, n: i32, d: int) -> i32
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_sql")
+    extern __sq_sql = (st: *u8) -> *u8
+    @lib(__SQ_LIB)
+    @symbol("sqlite3_stmt_readonly")
+    extern __sq_readonly = (st: *u8) -> i32
 
 # the database in the file at path, made when there is none (":memory:": one in memory only, gone
 # at the end)
@@ -165,6 +186,7 @@ close = (db: mut Db):
 # SQL statements, as many as there are, with no values for ?s: a schema, a migration
 # (none: done; a SqlError: the first that failed, and those after it not done)
 exec = (db: Db, script: str) -> SqlError?:
+    if let e = __sq_turn(db): return e
     err: *u8 = null
     rc = __sq_exec(db.__h, script, null, null, &err)
     if rc != 0: return SqlError(__sq_message(db), int(rc))
@@ -180,7 +202,9 @@ run = (db: Db, sql: str, args: Json = []) -> Changed | SqlError:
         e = SqlError(__sq_message(db), int(rc))
         __sq_finalize(st.p)
         return e
+    ro = __sq_readonly(st.p) != 0
     __sq_finalize(st.p)
+    if ro: return Changed(0, __sq_last_id(db.__h))
     Changed(int(__sq_changes(db.__h)), __sq_last_id(db.__h))
 
 # the rows a query gives, each a T: its columns in the fields of the same names
@@ -188,11 +212,25 @@ query[T] = (db: Db, sql: str, args: Json = []) -> T[] | SqlError:
     j = query_json(db, sql, args)
     if j is SqlError: return j
     out: T[]
-    loop row in j.as_list():
+    rows = j.as_list()
+    if rows.len() > 0:
+        match rows[0]:
+            .object(ks, _):
+                loop k in ks:
+                    if find(k, "(") >= 0 or find(k, " ") >= 0: return SqlError("the column `{k}` has no name a field can have: name it, `{k} AS total` (in: {sql})")
+            _: pass
+    loop row in rows:
         r = from_json[T](to_json(row))
         if r is TextError: return SqlError("a row does not fit the struct: {r.message} (in: {sql})")
         out.push(r)
     out
+
+# the first row a query gives, as a T (none: it gives none)
+query_one[T] = (db: Db, sql: str, args: Json = []) -> T? | SqlError:
+    rs = query[T](db, sql, args)
+    if rs is SqlError: return rs
+    if rs.len() == 0: return none
+    rs[0]
 
 # the rows a query gives, each a Json object of its columns, in a Json list
 query_json = (db: Db, sql: str, args: Json = []) -> Json | SqlError:
@@ -236,9 +274,66 @@ value = (db: Db, sql: str, args: Json = []) -> Json:
 
 # a transaction: the changes from here to commit are made all together, or none of them (rollback,
 # or the program stopped before commit)
-begin = (db: Db) -> SqlError?: exec(db, "BEGIN IMMEDIATE")
-commit = (db: Db) -> SqlError?: exec(db, "COMMIT")
-rollback = (db: Db) -> SqlError?: exec(db, "ROLLBACK")
+# or the program stopped before commit). It is the task's that began it: another task's statements
+# on the same Db wait for it to end, and a panic in it (a server's handler) rolls it back
+begin = (db: Db) -> SqlError?:
+    global __sq_hooked
+    if let e = exec(db, "BEGIN IMMEDIATE"): return e
+    __sq_owner[__sq_key(db)] = __task_id_fn()
+    if not __sq_hooked:
+        __sq_hooked = true
+        __caught_fns.push(__sq_caught)
+    none
+
+commit = (db: Db) -> SqlError?:
+    if let e = exec(db, "COMMIT"): return e
+    __sq_owner.remove(__sq_key(db))
+    none
+
+rollback = (db: Db) -> SqlError?:
+    e = exec(db, "ROLLBACK")
+    __sq_owner.remove(__sq_key(db))
+    e
+
+# the changes f makes, as one transaction: committed when it gives none, rolled back when it gives
+# a SqlError (which is given back) or panics
+#   e = db.transaction(():
+#       db.run("UPDATE items SET stock = stock - 1 WHERE id = ?", [id])?
+#       db.run("INSERT INTO bookings (item) VALUES (?)", [id])?
+#       none
+#   )
+transaction = (db: Db, f: () -> SqlError?) -> SqlError?:
+    if let e = begin(db): return e
+    if let e = f():
+        rollback(db)
+        return e
+    commit(db)
+
+__sq_owner: {int: int}              # (a Db's open transaction: the task that began it)
+__sq_hooked = false
+
+__sq_key = (db: Db) -> int: db.__h as int
+
+# (another task's transaction open on db: wait for it to end, up to 5 s, as for another program's)
+__sq_turn = (db: Db) -> SqlError?:
+    if __sq_owner.len() == 0: return none
+    me = __task_id_fn()
+    start = time()
+    loop:
+        o = __sq_owner.get(__sq_key(db)) ?? return none
+        if o == me: return none
+        if time() - start > 5.0: return SqlError("the database is in another task's transaction (begun and not committed or rolled back) for 5 s", 5)
+        sleep(0.001)
+
+# (a panic caught in a task: its transactions rolled back)
+__sq_caught = ():
+    me = __task_id_fn()
+    mine: int[]
+    loop k, o in __sq_owner:
+        if o == me: mine.push(k)
+    loop k in mine:
+        __sq_exec(k as *u8, "ROLLBACK", null, null, null)
+        __sq_owner.remove(k)
 
 struct __SqStmt:
     p: *u8
@@ -246,9 +341,20 @@ struct __SqStmt:
 # (sql prepared, its ?s given args' values)
 __sq_statement = (db: Db, sql: str, args: Json) -> __SqStmt | SqlError:
     if db.__h == null: return SqlError("the database is not open (sqlite.open, and not closed since)")
+    if let e = __sq_turn(db): return e
     p: *u8 = null
     rc = __sq_prepare(db.__h, sql, -1, &p, null)
     if rc != 0: return SqlError("{__sq_message(db)} (in: {sql})", int(rc))
+    if p == null: return SqlError("there is no statement in the SQL (in: {sql})")
+    # (one statement: what follows it would be left out, not done)
+    first = len(str_from_c(__sq_sql(p)))
+    if first < len(sql) and len(trim(sql[first..])) > 0:
+        q: *u8 = null
+        __sq_prepare(db.__h, sql[first..], -1, &q, null)
+        if q != null:
+            __sq_finalize(q)
+            __sq_finalize(p)
+            return SqlError("one statement at a time, and this is more: `{trim(sql[first..])}` would be left out (exec runs several, with no ?s)")
     vals: Json[]
     match args:
         .list(items): vals = items
@@ -268,6 +374,12 @@ __sq_statement = (db: Db, sql: str, args: Json) -> __SqStmt | SqlError:
             .integer(x): __sq_bind_int(p, k, x)
             .number(x): __sq_bind_double(p, k, x)
             .text(s): __sq_bind_text(p, k, s, i32(len(s)), __SQ_TRANSIENT)
+            .list(xs):
+                # (bytes, u8[]: a BLOB; another list, its JSON text)
+                if let b = __sq_bytes(xs): __sq_bind_blob(p, k, data(b), i32(b.len()), __SQ_TRANSIENT)
+                else:
+                    t = to_json(v)
+                    __sq_bind_text(p, k, t, i32(len(t)), __SQ_TRANSIENT)
             _:
                 t = to_json(v)
                 __sq_bind_text(p, k, t, i32(len(t)), __SQ_TRANSIENT)
@@ -283,10 +395,28 @@ __sq_column = (p: *u8, c: int, as_bool: bool) -> Json:
             Json.integer(x)
         2: Json.number(__sq_column_double(p, k))
         5: Json.null_
+        4:
+            # (a BLOB: its bytes, a list of numbers, as a u8[] field reads them)
+            n = int(__sq_column_bytes(p, k))
+            out: Json[]
+            if n > 0:
+                loop b in bytes_from(__sq_column_blob(p, k), n): out.push(Json.integer(int(b)))
+            Json.list(out)
         _:
             t = __sq_column_text(p, k)
             if t == null: return Json.null_
             Json.text(str_from_bytes(bytes_from(t, int(__sq_column_bytes(p, k)))))
+
+# (a list of whole numbers 0 to 255, as bytes give: those bytes)
+__sq_bytes = (xs: Json[]) -> u8[]?:
+    out: u8[]
+    loop x in xs:
+        match x:
+            .integer(i):
+                if i < 0 or i > 255: return none
+                out.push(u8(i))
+            _: return none
+    out
 
 __sq_message = (db: Db) -> str:
     if db.__h == null: return "the database is not open"

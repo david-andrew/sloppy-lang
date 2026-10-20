@@ -1,0 +1,62 @@
+# requires: sloppy
+# requires: sqlite
+# sqlite: one Db shared by tasks, as a server's handlers share one (a transaction is its task's:
+# another's insert waits, and is not lost to its rollback; a panic in it rolls it back),
+# db.transaction, one statement at a time, BLOBs, unnamed columns, query_one
+import sqlite
+
+struct Row:
+    id = 0
+    name = ""
+struct Blob:
+    data: u8[]
+struct Agg:
+    total = 0
+
+main = ():
+    db = unwrap(sqlite.open(":memory:"))
+    if let e = db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT); CREATE TABLE b (data BLOB)"): panic(e.message)
+    # (a transaction in one task; the other's insert waits for it, and is not lost to its rollback)
+    a = spawn(():
+        _ = db.begin()
+        _ = db.run("INSERT INTO t (name) VALUES (?)", ["a"])
+        sleep(0.05)
+        _ = db.rollback()
+    )
+    b = spawn(():
+        sleep(0.01)
+        r = db.run("INSERT INTO t (name) VALUES (?)", ["b"])
+        print("b's insert:", r is sqlite.Changed)
+    )
+    a.wait()
+    b.wait()
+    print(unwrap(db.query[Row]("SELECT * FROM t")))
+    # (a panic in a group's task, inside a transaction: rolled back)
+    g = task_group()
+    g.spawn(():
+        _ = db.begin()
+        _ = db.run("INSERT INTO t (name) VALUES (?)", ["boom"])
+        panic("boom")
+    )
+    g.wait()
+    print("after the panic:", db.begin() == none, db.commit() == none, db.value("SELECT count(*) FROM t").as_int() ?? -1)
+    # (transaction)
+    e = db.transaction(():
+        db.run("INSERT INTO t (name) VALUES ('c')")?
+        sqlite.SqlError("no")
+    )
+    print("transaction rolled back:", e != none, db.value("SELECT count(*) FROM t").as_int() ?? -1)
+    # (one statement)
+    r = db.run("DELETE FROM t WHERE id = 1; DROP TABLE t")
+    if r is sqlite.SqlError: print(r.message)
+    print("with a comment after:", db.run("UPDATE t SET name = 'x' WHERE id = 99; -- done") is sqlite.Changed)
+    print("a select changes none:", unwrap(db.run("SELECT 1")).rows)
+    # (blobs)
+    _ = db.run("INSERT INTO b (data) VALUES (?)", [bytes("blob\x00!")])
+    print(unwrap(db.query[Blob]("SELECT data FROM b")))
+    q = db.query[Agg]("SELECT count(*) FROM t")
+    if q is sqlite.SqlError: print(q.message)
+    print(unwrap(db.query[Agg]("SELECT count(*) AS total FROM t")))
+    one = db.query_one[Row]("SELECT * FROM t WHERE id = ?", [1])
+    if let r = one: print("one:", r)
+    print("none:", db.query_one[Row]("SELECT * FROM t WHERE id = ?", [42]) == none)

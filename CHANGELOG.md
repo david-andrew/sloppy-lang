@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- sqlite: one Db shared by a server's handlers is safe: a transaction is the task's that began
+  it (another task's statements wait for it to end: one's rollback took another's saved insert
+  with it), and a handler that panics in one has it rolled back (it stayed open, and every
+  begin after failed). `db.transaction(f)`, `db.query_one[T]`; BLOBs (bytes in, a u8[] field
+  out); run and query take one statement (`DELETE ...; DROP TABLE t` did the DELETE alone, and
+  said nothing); a SELECT through run changes 0 rows; a column with no name a field can have
+  (`count(*)`) is an error that says `AS total`, where its field kept 0.
 - netplay spectators: `s.feed(sent)` gives the inputs confirmed since `sent`, to send over
   any transport, and `netplay.watch(Game(), tick)` plays them a little behind the players; a
   late spectator is sent the game as it stands first.
