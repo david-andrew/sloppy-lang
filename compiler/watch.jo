@@ -584,9 +584,10 @@ watch_lower_inits = ():
         i += 1
 
 # ---- a patch for the running program ----
-# messages (lib/std/watch.jo): words [op, a, b], then for op 1 and 4 b bytes
+# messages (lib/std/watch.jo): words [op, a, b], then for op 1, 4 and 6 b bytes
 #   1 write the bytes at address a    2 run the function at a    3 jump from a to b
 #   4 show text over the game (a: 1 for errors; empty: nothing)   5 the end: apply
+#   6 the names and lines of new code, for backtraces (watch_bt_info)
 wp_put = (op: int, a: int, bytes: u8[]):
     push_i64(w_patch, op)
     push_i64(w_patch, a)
@@ -756,6 +757,7 @@ watch_make_patch = () -> bool:
                 put32(b, p + 4, (get32(b, p + 4) & 0xFFC003FF) | ((target & 0xFFF) << 10))
             r += 1
         wp_put(1, a, b)
+    wp_put(6, 0, watch_bt_info(place))
     # replaced functions: a jump from their first address
     loop i in [0..keys.len()):
         if place[i] == 0: continue
@@ -771,6 +773,58 @@ watch_make_patch = () -> bool:
     wm_top = wk_top_hash()
     wm_files_collect()
     true
+
+# (where the functions with new code are, what they are called, and the line of each call in them:
+# a backtrace through the region tells them as it tells the program's own, lib/std/backtrace.jo.
+# Words: the functions' count, each one's address, size and name (its length, then its bytes);
+# the files' count, each one's name; the calls' count, each one's return address, file and line)
+watch_bt_info = (place: int[]) -> u8[]:
+    names: {int: str} = {}
+    loop sy in elf_syms: names[sy.1] = sy.0
+    fns: int[]
+    loop i in [0..place.len()):
+        if place[i] != 0 and names.has(fn_addr[i]): fns.push(i)
+    out: u8[]
+    push_i64(out, fns.len())
+    loop i in fns:
+        push_i64(out, place[i])
+        push_i64(out, fn_len[i])
+        nm = names[fn_addr[i]]
+        push_i64(out, len(nm))
+        loop c in nm: out.push(c)
+    # (the calls in them: call_sites is in the order of the code, two words a call)
+    fidx: {int: int} = {}
+    fnames: str[]
+    calls: int[]
+    loop i in fns:
+        s = fn_addr[i]
+        lo = 0
+        hi = call_sites.len() / 2
+        loop lo < hi:
+            mid = (lo + hi) / 2
+            if call_sites[mid * 2] <= s: lo = mid + 1
+            else: hi = mid
+        k = lo * 2
+        loop k < call_sites.len() and call_sites[k] <= s + fn_len[i]:
+            f = pos_file(ir_positions[call_sites[k + 1]])
+            if f >= 0 and f < files.len():
+                if not fidx.has(f):
+                    fidx[f] = fnames.len()
+                    path = files[f].path
+                    sl = rfind(path, "/")
+                    if sl >= 0: path = path[sl + 1..]
+                    fnames.push(path)
+                calls.push(place[i] + call_sites[k] - s)
+                calls.push(fidx[f])
+                calls.push(ir_line(call_sites[k + 1]))
+            k += 2
+    push_i64(out, fnames.len())
+    loop nm in fnames:
+        push_i64(out, len(nm))
+        loop c in nm: out.push(c)
+    push_i64(out, calls.len() / 3)
+    loop x in calls: push_i64(out, x)
+    out
 
 get32 = (b: u8[], p: int) -> int: int(b[p]) | (int(b[p + 1]) << 8) | (int(b[p + 2]) << 16) | (int(b[p + 3]) << 24)
 
