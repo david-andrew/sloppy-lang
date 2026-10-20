@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.27.0
 
 - Terminal programs: `import term` takes the whole terminal as a screen of characters, as curses,
   tcell or bubbletea do. `term.start(mouse = true)`, then `put`, `fill_rect`, `box`, `hline`,
