@@ -6,6 +6,8 @@
   same as the one before): some 600 bytes became 150 for a player holding still, 60 a second to
   each other player. A packet to a peer whose path holds 16 KB not sent yet is left out (the next
   has its inputs too), where the backlog grew and the inputs came later and later.
+- `redraw_on_input()`: a gamepad's buttons and sticks bring a frame too, natively (they were
+  looked at only in frames drawn for something else).
 - `m[k] = {}` for a map of maps, as `m[k] = []` for a map of arrays (it said the argument had
   the wrong type).
 - A package whose git URL is wrong or private fails at once with what to check: git asked for a
