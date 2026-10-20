@@ -197,6 +197,18 @@ check("an option for git, not a URL", sloppy_in("t", "f.jo"), "is not a director
 write("t/g.jo", 'build:\n    z = package("https://example.com/x", "--upload-pack=touch pwned")\n\nimport z\nmain = (): print(1)\n')
 check("an option for git as the ref", sloppy_in("t", "g.jo"), "is not a git URL")
 check("... and nothing run", str(os.path.exists(os.path.join(tmp, "t", "pwned"))), "False")
+
+# ---- sloppy test on a directory: the tests of each file, one count
+write("tests/geo.jo", "area = (w: int, h: int) -> int: w * h\n\ntest \"area\":\n    assert(area(2, 3) == 6)\n")
+write("tests/app.jo", "import 'geo.jo'\nprint(geo.area(1, 1))\n\ntest \"one\":\n    assert(geo.area(1, 1) == 1)\n\ntest \"two\":\n    assert(geo.area(1, 2) == 2)\n")
+write("tests/sub/more.jo", "test \"more\":\n    assert(1 + 1 == 2)\n")
+write("tests/none.jo", "x = 1\n")
+out = sloppy_in("tests", "test")
+check("sloppy test: a directory", out, "4 tests passed in 3 files")
+check("sloppy test .", sloppy_in("tests", "test", "."), "4 tests passed in 3 files")
+check("sloppy test dir words", sloppy_in("", "test", "tests", "area"), "1 test passed in 1 file")
+write("tests/sub/bad.jo", "test \"bad\":\n    assert(1 == 2)\n")
+check("sloppy test: a failure", sloppy_in("tests", "test"), "4 passed, 1 failed in 4 files (failed: sub/bad.jo)")
 shutil.rmtree(tmp, ignore_errors=True)
 print(f"{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

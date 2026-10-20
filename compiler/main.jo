@@ -780,7 +780,8 @@ main = ():
         # (options before or after the file: sloppy test --release f.jo, sloppy test f.jo --release;
         # the other words after it pick tests by name)
         first = cli_options(a, first + 1)
-        if first >= a.len(): usage()
+        # (a directory, . when none is named: the tests of each .jo file in it)
+        if first >= a.len() or is_dir(os_path(a[first])): test_dir(a, first)
         i = first + 1
         loop i < a.len():
             k = cli_option(a, i)
@@ -845,6 +846,86 @@ main = ():
     exec(built, run_args)
     eprint("sloppy: failed to run {built}")
     exit(1)
+
+# sloppy test <directory> [words]: each .jo file under it with tests (its test blocks: a module's
+# are its own, run as it is tested) tested as sloppy test file.jo would, one after the other, and
+# the counts of all of them (a[first]: the directory, if one is named)
+test_dir = (a: str[], first: int):
+    dir = "."
+    if first < a.len(): dir = os_path(a[first])
+    loop len(dir) > 1 and ends_with(dir, "/"): dir = dir[..len(dir) - 1)
+    opts: str[]
+    loop k in [1..min(first, a.len())):
+        if a[k] != "test" and a[k] != "run": opts.push(a[k])
+    rest: str[]
+    words: str[]
+    loop k in [first + 1..a.len()):
+        rest.push(a[k])
+        if not starts_with(a[k], "--") and a[k - 1] != "--target": words.push(a[k])
+    passed = 0
+    failed = 0
+    files_run = 0
+    bad: str[]
+    loop f in walk_dir(dir):
+        # (not in hidden directories, as .git)
+        if not ends_with(f, ".jo") or starts_with(f, ".") or find(f, "/.") >= 0: continue
+        path = f
+        if dir != ".": path = "{dir}/{f}"
+        src = read_file(path) ?? ""
+        tests = test_names(src)
+        if tests.len() == 0: continue
+        if words.len() > 0:
+            any = false
+            loop t in tests:
+                loop w in words:
+                    if find(t, w) >= 0: any = true
+            if not any: continue
+        files_run += 1
+        print("{path}:")
+        rc, out = run_program(exe_path(), ["test"] + opts + [path] + rest)
+        write(out)
+        # (its last line: "3 tests passed", "2 passed, 1 failed")
+        last = ""
+        loop line in split(trim(out), "\n"): last = trim(line)
+        np = to_int(last[..max(find(last, " "), 0))) ?? -1
+        if rc == 0 and np >= 0 and find(last, " passed") >= 0: passed += np
+        else if np >= 0 and find(last, " failed") >= 0:
+            passed += np
+            comma = find(last, ",")
+            fw = find(last, " failed")
+            failed += to_int(trim(last[comma + 1..fw))) ?? 1
+            bad.push(path)
+        else:
+            # (it did not build, or stopped before its tests ended)
+            failed += 1
+            bad.push(path)
+    if files_run == 0:
+        if words.len() > 0: eprint("no test's name in the .jo files under {dir} has {join(words, ", ")} in it")
+        else: eprint("no tests in the .jo files under {dir}: a test is written `test \"adds\":` with its lines below it, as `assert(add(1, 2) == 3)`")
+        exit(1)
+    in_files = "in {files_run} files"
+    if files_run == 1: in_files = "in 1 file"
+    if failed > 0:
+        print("{passed} passed, {failed} failed {in_files} (failed: {join(bad, ", ")})")
+        exit(1)
+    tests_word = "tests"
+    if passed == 1: tests_word = "test"
+    print("{passed} {tests_word} passed {in_files}")
+    exit(0)
+
+# the names of the test blocks in a file's text
+test_names = (src: str) -> str[]:
+    out: str[]
+    at = 0
+    loop true:
+        k = find(src, "test \"", at)
+        if k < 0: break
+        at = k + 6
+        if k > 0 and src[k - 1] != '\n': continue
+        e = find(src, "\"", at)
+        if e < 0: break
+        out.push(src[at..e))
+    out
 
 # (@lib("libc.so.6") in a Windows build: the program fails when it calls the function)
 extern_lib_check = (fi: int):
