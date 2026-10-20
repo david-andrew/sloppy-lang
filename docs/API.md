@@ -1142,7 +1142,7 @@ name = j.get("layers").at(0).get("name").as_str() ?? "?"
 loop l in j.get("layers").as_list(): print(l.get("name").as_str() ?? "")
 ```
 
-For JSON straight into your own structs and back, from_json[Config](text) and to_json(value) are in "Saving, and values as text" (they give a TextError, with the same message, line, column).
+For JSON straight into your own structs and back, from_json[Config](text) and to_json(value) are in "Saving, and values as text" (they give a TextError, with the same message, line, column). JSON has no infinity or NaN: to_json writes them as null, as JavaScript's JSON.stringify does (from_json reads null into a float as NaN), and the words Infinity, -Infinity and NaN that Python's json writes are read too. Its text is UTF-8: a byte in a string that is not is a mistake where it is, and to_json writes such bytes as U+FFFD, so what it writes always is.
 
 - `enum Json: null_, boolean(b: bool), integer(i: int), number(n: f64), text(s: str), list(items: Json[]), object(keys: str[], values: Json[])`: a whole number in the text is an integer, kept exactly as written while it fits in an int; any other is a number (as_num and as_int read both). print shows a Json as JSON text
 - `error struct JsonError`
@@ -1169,7 +1169,7 @@ For JSON straight into your own structs and back, from_json[Config](text) and to
 #### Writing
 
 - `to_json = (j: Json, indent: int = 0) -> str`: JSON text for a value (indent > 0: on several lines, indented by that many spaces)
-- `to_json[T] = (x: T, indent: int = 0) -> str`: any value as JSON: a struct as an object (by field name: one ending in _, as when_, without it), an array, tuple or vector as a list, a map as an object (its keys as text), none as null, an enum's variant as its name (one with fields as {"name": [fields]}), and a Json inside it as itself; from_json[T] reads it back
+- `to_json[T] = (x: T, indent: int = 0) -> str`: any value as JSON: a struct as an object (by field name: one ending in _, as when_, without it), an array, tuple or vector as a list, a map as an object (its keys as text), none as null, an enum's variant as its name (one with fields as {"name": [fields]}), and a Json inside it as itself; from_json[T] reads it back. NaN and the infinities are null (JSON has none)
 - `json_value = (j: Json) -> Json`: any value as a Json (what to_json writes for it) (a Json as it is: in a Json literal, {"user": j})
 - `json_value[T] = (x: T) -> Json`
 
@@ -1421,7 +1421,7 @@ Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs, enu
   ```
 - `to_text[T] = (x: T) -> str`
 - `from_text[T] = (text: str) -> T \| TextError`
-- `from_json[T] = (text: str) -> T \| TextError`: a value of type T from JSON: objects for structs (by field name: a field left out keeps its default, one the struct does not have is skipped) and maps, lists for arrays, tuples and vectors, null for none, an enum's variant by its name in quotes. A field whose name ends in _ is the name without it in JSON: `when_: str` is "when" (a keyword, which a field cannot be)
+- `from_json[T] = (text: str) -> T \| TextError`: a value of type T from JSON: objects for structs (by field name: a field left out keeps its default, one the struct does not have is skipped) and maps, lists for arrays, tuples and vectors, null for none, an enum's variant by its name in quotes. A field whose name ends in _ is the name without it in JSON: `when_: str` is "when" (a keyword, which a field cannot be). A float reads null as NaN (to_json writes NaN and the infinities so), and Infinity and NaN as Python's json writes them; a string with bytes that are not UTF-8 is a TextError
 - `save_value[T] = (name: str, x: T) -> bool`: keep value under name (save_data) as text; false if it could not be written
 - `load_value[T] = (name: str, default: T) -> T`: the value kept under name, or default if there is none or it does not read as one (said on stderr then, and what was kept is copied to name + ".bad" first: the next save_value over it does not lose it)
 

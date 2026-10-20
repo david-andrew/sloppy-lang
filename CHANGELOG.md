@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- JSON: `to_json` (and a Json's text) writes NaN and the infinities as `null`, as
+  `JSON.stringify` does (it wrote `Infinity`, which a browser's `JSON.parse` refuses);
+  `from_json` reads `null` into a float as NaN, and still reads Python's `Infinity` and `NaN`.
+  Strings are UTF-8: `parse_json`, `from_json` and `http.read_json` refuse a byte that is not
+  (an error at it; the server's 400), and `to_json` writes such bytes as U+FFFD, so its text
+  always reads in Python and browsers. A `\ud800` alone is U+FFFD (it made bytes that are not
+  UTF-8), and `\ud800A` keeps its `A`.
 - netplay clients: one the server closed is not connected any more (5 s later it took the server
   for gone and connected again, a reconnect = true one, though turned away on purpose); `c.view()`
   never goes back (a world that came late moved it back a little).
