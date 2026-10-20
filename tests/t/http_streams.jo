@@ -1,0 +1,71 @@
+# requires: sloppy
+# requires: native
+# lib/http.jo's event streams: send_event's data split at every line break (\n, \r\n and \r: no
+# event slipped in), its name and id on one line; Last-Event-ID; a client that goes noticed at
+# once (stream_open); heartbeats; most_streams; and the streams ended properly at shutdown
+import http
+import net
+
+const PORT = 9662
+
+streams: int[]
+http.get("/events", (r: http.Request) -> http.Response:
+    streams = streams.filter((c: int): http.stream_open(c))
+    streams.push(r.conn)
+    print("a stream: last-event-id {r.headers.get("last-event-id") ?? "-"}, {streams.len()} open")
+    http.events())
+http.heartbeat = 0.0
+if not http.listen(PORT, host = "127.0.0.1"): panic("cannot listen on {PORT}")
+
+# (what has come on c, the server answering meanwhile, until `until` is in it or it is closed)
+got: {int: str}
+read_until = (c: int, until: str) -> str:
+    end = time() + 10.0
+    loop time() < end and find(got[c], until) < 0 and not net.tcp_closed(c):
+        http.answer()
+        got[c] += str_from_bytes(net.tcp_receive(c, 0.02))
+    got[c]
+
+open_stream = (extra: str = "") -> int:
+    c = net.tcp_connect("127.0.0.1", PORT)
+    got[c] = ""
+    net.tcp_send(c, "GET /events HTTP/1.1\r\nHost: x\r\n{extra}\r\n")
+    read_until(c, "\r\n\r\n")
+    c
+
+# (the chunks that came after the head, as text, line breaks shown)
+body = (c: int) -> str:
+    t = got[c]
+    t = t[find(t, "\r\n\r\n") + 4..]
+    t.replace("\r\n", "<crlf>").replace("\n", "|").replace("\r", "<cr>")
+
+a = open_stream("Last-Event-ID: 41\r\n")
+print(split(got[a], "\r\n")[0], find(got[a], "Content-Type: text/event-stream") >= 0)
+print(http.send_event(streams[0], "hello\revent: admin\rdata: x\r\nend\n", event = "chat\nevil: 1", id = "42\r\nretry: 1"))
+read_until(a, "\n\n\r\n")
+print(body(a))
+
+# the client goes: noticed without sending to it
+conn = streams[0]
+net.tcp_close(a, 0.0)
+end = time() + 10.0
+loop time() < end and http.stream_open(conn):
+    http.answer()
+    net.wait(0.02)
+print("open after the client went:", http.stream_open(conn), http.send_event(conn, "late"))
+
+# a heartbeat to a stream sent nothing for a while; one stream past the most: 503
+http.heartbeat = 0.2
+b = open_stream()
+read_until(b, ":\n\n")
+print("heartbeat:", find(body(b), ":||") >= 0)
+http.most_streams = 1
+c = open_stream()
+read_until(c, "the most taken")
+print(split(got[c], "\r\n")[0])
+
+# shutdown ends the streams as end_stream does: the last chunk, then the connection closed
+http.heartbeat = 0.0
+http.shutdown(2.0)
+loop not net.tcp_closed(b): got[b] += str_from_bytes(net.tcp_receive(b, 1.0))
+print("ended:", ends_with(got[b], "\r\n0\r\n\r\n"), http.stream_open(streams[streams.len() - 1]))

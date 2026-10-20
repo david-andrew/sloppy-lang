@@ -540,7 +540,7 @@ def http_server_test(hs_exe, hport, upstream_port):
         ok("404 as JSON from the handler", r.status == 404 and d == b'{"error":"no item 9"}', (r.status, d))
         r, d = req("POST", "/items", body=b'{"name": "second"}', headers={"Content-Type": "application/json"})
         ok("POST read with read_json: 201, Location", r.status == 201 and d == b'{"id":2,"name":"second"}' and r.getheader("Location") == "/items/2", (r.status, d))
-        r, d = req("POST", "/items", body=b'{"name": ')
+        r, d = req("POST", "/items", body=b'{"name": ', headers={"Content-Type": "application/json"})
         ok("POST of broken JSON: 400 saying why", r.status == 400 and d == b'{"error":"the body is not what this takes: the text ends before name\'s value"}', (r.status, d))
         r, d = req("DELETE", "/items")
         ok("a method no route has: 405 with Allow", r.status == 405 and r.getheader("Allow") == "POST", (r.status, r.getheader("Allow")))

@@ -1,0 +1,102 @@
+# requires: sloppy
+# requires: native
+# lib/http.jo's requests read strictly (what a proxy in front could read another way is refused:
+# request smuggling), the server's own answers (on_error, through after()), files() after the
+# other routes (405 before a file not found), before() and cors() for some paths, trust_proxy,
+# and a cookie or a query name sent twice. Each request is sent as bytes over TCP, and its answer
+# read until the server closes the connection
+import http
+import net
+
+const PORT = 9661
+
+http.on_error = (r: http.Request, code: int, why: str) -> http.Response:
+    http.json_error(code, if len(why) > 0: why else: http.reason(code))
+http.after((r: http.Request, res: http.Response) -> http.Response:
+    let res = res
+    res.headers["X-Seen"] = "yes"
+    res)
+http.before("/api/", (r: mut http.Request) -> http.Response?:
+    r.params["user"] = "ann"
+    none)
+http.cors(["https://good.example"], prefix = "/api/")
+http.post("/echo", (r: http.Request) -> http.Response: http.text("{r.body.len()} {r.text}"))
+http.post("/api/login", (r: http.Request) -> http.Response: http.text("in"))
+http.get("/api/me", (r: http.Request) -> http.Response: http.text("you are {r.params.get("user") ?? "?"}"))
+http.get("/apiary", (r: http.Request) -> http.Response: http.text("bees {r.params.get("user") ?? "?"}"))
+http.get("/who", (r: http.Request) -> http.Response: http.text("from {r.address}"))
+http.get("/cookies", (r: http.Request) -> http.Response: http.text("sid={r.cookies.get("sid") ?? "-"}"))
+http.get("/panic", (r: http.Request) -> http.Response:
+    xs: int[]
+    http.text("{xs[r.query.len() + 1]}"))
+dir = temp_dir() + "/sloppy-http-strict"
+make_dirs(dir)
+write_file(dir + "/a.txt", "a file\n")
+http.files("/", dir)
+if not http.listen(PORT, host = "127.0.0.1", largest = 1000): panic("cannot listen on {PORT}")
+
+# (the bytes sent, and what came back until the server closed the connection: its status line, and
+# the headers and body asked for)
+raw = (req: str, show: str[] = []) -> str:
+    c = net.tcp_connect("127.0.0.1", PORT)
+    net.tcp_send(c, req)
+    got: u8[]
+    end = time() + 10.0
+    loop time() < end and not net.tcp_closed(c):
+        http.answer()
+        got.extend(net.tcp_receive(c, 0.02))
+    net.tcp_close(c, 0.0)
+    text = str_from_bytes(got)
+    head = split(text, "\r\n\r\n")[0]
+    lines = split(head, "\r\n")
+    out = "{lines[0]} x{text.count("HTTP/1.1 ")}"
+    loop line in lines[1..]:
+        k = find(line, ":")
+        if k > 0 and line[..k).lower() in show: out += " | {line}"
+    if "body" in show: out += " | " + text[len(head) + 4..]
+    out
+
+# smuggling: a Transfer-Encoding not chunked, both, Content-Lengths that differ, a space before a colon
+print(raw("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n2d\r\nGET /panic HTTP/1.1\r\nHost: x\r\nX: 1234567890\r\n\r\n0\r\n\r\n", ["body"]))
+print(raw("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"))
+print(raw("POST /echo HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"))
+print(raw("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello!"))
+print(raw("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello", ["body"]))
+print(raw("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: +5\r\n\r\nhello"))
+print(raw("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length : 5\r\n\r\nhello"))
+print(raw("GET /who HTTP/1.1\r\nHost: x\r\n X-Folded: 1\r\n\r\n"))
+print(raw("GET /who HTTP/1.1\r\nHost: x\rX-A: 1\r\n\r\n"))
+print(raw("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5x\r\nhello\r\n0\r\n\r\n"))
+print(raw("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5;ext=1\r\nhello\r\n0\r\n\r\n", ["body"]))
+# (lines that end in \n alone: 400 at once, not a wait for the \r\n\r\n that never comes)
+print(raw("GET /who HTTP/1.1\nHost: x\n\n"))
+# (empty lines before a request: skipped)
+print(raw("\r\n\r\nGET /who HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", ["body"]))
+
+# the server's own answers: on_error's (JSON here), through after()
+print(raw("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5000\r\n\r\n", ["content-type", "x-seen", "body"]))
+print(raw("GET /nothing/a.txt HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", ["content-type", "x-seen", "body"]))
+print(raw("GET /panic HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", ["x-seen", "body"]))
+print(raw("NOT HTTP\r\n\r\n", ["x-seen", "body"]))
+# files() after the other routes: a GET of a POST's path is 405; a file's path with a / after it 404
+print(raw("GET /api/login HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", ["allow", "body"]))
+print(raw("DELETE /a.txt HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", ["allow"]))
+print(raw("GET /a.txt HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", ["body"]))
+print(raw("GET /a.txt/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", ["body"]))
+
+# before() and cors() for the paths under /api/ only; with sites listed, Vary: Origin on every answer
+print(raw("GET /api/me HTTP/1.1\r\nHost: x\r\nOrigin: https://good.example\r\nConnection: close\r\n\r\n", ["access-control-allow-origin", "vary", "body"]))
+print(raw("GET /api/me HTTP/1.1\r\nHost: x\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n", ["access-control-allow-origin", "vary"]))
+print(raw("GET /apiary HTTP/1.1\r\nHost: x\r\nOrigin: https://good.example\r\nConnection: close\r\n\r\n", ["access-control-allow-origin", "vary", "body"]))
+print(raw("OPTIONS /api/login HTTP/1.1\r\nHost: x\r\nOrigin: https://good.example\r\nAccess-Control-Request-Method: POST\r\nConnection: close\r\n\r\n", ["access-control-allow-origin"]))
+print(raw("OPTIONS /apiary HTTP/1.1\r\nHost: x\r\nOrigin: https://good.example\r\nAccess-Control-Request-Method: POST\r\nConnection: close\r\n\r\n", ["access-control-allow-origin", "allow"]))
+
+# a cookie sent twice: the first (the one for the longer path); the client's address through a proxy
+print(raw("GET /cookies HTTP/1.1\r\nHost: x\r\nCookie: sid=one; sid=two\r\nConnection: close\r\n\r\n", ["body"]))
+xff = "GET /who HTTP/1.1\r\nHost: x\r\nX-Forwarded-For: 6.6.6.6, 1.2.3.4, 127.0.0.1\r\nConnection: close\r\n\r\n"
+print(raw(xff, ["body"]))
+http.trust_proxy = ["127.0.0.1"]
+print(raw(xff, ["body"]))
+print(raw("GET /who HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", ["body"]))
+http.trust_proxy = ["10.0.0.1"]
+print(raw(xff, ["body"]))
