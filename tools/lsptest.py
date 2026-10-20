@@ -372,7 +372,7 @@ check("packages: definition of a package's file", d, ("world.jo", 0, 0))
 
 # ---- from m import names ----
 open(os.path.join(tmp, "util.jo"), "w", encoding="utf-8").write("# doubles\ndouble = (x: int) -> int: x * 2\n_secret = 3\n")
-fsrc = "from 'util.jo' import double as twice, _secret\nprint(twice(_secret))\n"
+fsrc = "from 'util.jo' import double as twice\nprint(twice(2))\n"
 c.set_text(muri, fsrc)
 check("from-import: no errors", c.diagnostics(muri), [])
 d = where(c.request("textDocument/definition", {"textDocument": {"uri": muri}, "position": lc(fsrc, fsrc.index("twice("))}))

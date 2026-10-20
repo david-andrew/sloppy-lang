@@ -255,12 +255,61 @@ module_lookup = (m: int, name: int) -> int:
     if let s = universe.get(name): return s
     0
 
-# names starting with _ stay in their module: `use` does not bring them (`import m` reaches
-# them as m._x, `from m import _x` by name). The library's are hidden from programs; its __
-# names are the runtime's, which code the compiler writes calls
+# names starting with _ stay in their file: `use` does not bring them, and m._x, `from m import
+# _x` and a struct's field v._x are errors in another file's code (private_member). The
+# library's files share theirs, and its __ names are the runtime's, which code the compiler
+# writes calls from anywhere
 is_private = (name: int) -> bool:
     s = name_of(name)
     len(s) > 0 and s[0] == '_'
+
+# (a name that two modules this one `use`s have, neither as functions, which are overloads of
+# each other: which one is meant is not clear)
+use_clash = (nm: int, pos: int):
+    m = cur_mod()
+    if m < 0 or modules[m].uses.len() < 2 or modules[m].is_prelude or is_private(nm) or modules[m].names.get(nm) != none: return
+    first = -1
+    fs = 0
+    loop u in modules[m].uses:
+        if modules[u].is_prelude: continue
+        s = modules[u].names.get(nm) ?? 0
+        if s == 0 or syms[s].kind == .fns or syms[s].kind == .module: continue
+        if first < 0:
+            first = u
+            fs = s
+        else if u != first and (syms[s].kind != syms[fs].kind or syms[s].ref != syms[fs].ref):
+            a = module_shown(m, first)
+            fatal(pos, "'{name_of(nm)}' is in both {a} and {module_shown(m, u)}, which this file uses: say which, with `import` for one of them instead of `use` (then {name_of(int(modules[first].name))}.{name_of(nm)}), or `from {a} import {name_of(nm)} as ...`")
+
+# (m.name, at pos: an error if name is private to m's file)
+private_member = (m: int, name: int, pos: int):
+    if not is_private(name) or pos <= 0 or pos_in_lib(pos) or modules[m].is_prelude: return
+    if modules[m].names.get(name) == none or pos_file(pos) == int(modules[m].file): return
+    if starts_with(name_of(name), "__") and pos_in_lib(mkpos(int(modules[m].file), 1)): return
+    fatal(pos, "'{name_of(name)}' is private to {module_shown(cur_mod(), m)}: a name starting with _ stays in its file")
+
+# (v.name, a field of struct si, at pos: an error if it is private to another file)
+private_field = (si: int, name: int, pos: int):
+    d = int(structs[si].decl)
+    if not is_private(name) or pos <= 0 or d == 0 or pos_in_lib(pos): return
+    dp = nodes[d].pos
+    if pos_file(dp) == pos_file(pos) or starts_with(name_of(name), "__") and pos_in_lib(dp): return
+    f = files[pos_file(dp)].path
+    sl = rfind(f, "/")
+    if sl >= 0: f = f[sl + 1..]
+    fatal(pos, "'{name_of(name)}' is a private field of {structs[si].name} (private to {f}, where it is declared: a name starting with _ stays in its file)")
+
+# a module as file fm's import names it ('pathgrid/grid.jo', inikit), else its file's name
+module_shown = (fm: int, im: int) -> str:
+    if fm >= 0:
+        loop d in modules[fm].decls:
+            if nodes[d].kind == .import_ and int(nodes[d].sym) == im:
+                if nodes[d].aux2 == 1: return "'{name_of(int(nodes[d].sval))}'"
+                return replace(name_of(int(nodes[d].sval)), "/", ".")
+    f = files[int(modules[im].file)].path
+    sl = rfind(f, "/")
+    if sl >= 0: f = f[sl + 1..]
+    f
 
 lib_private = (name: int) -> bool:
     s = name_of(name)
@@ -284,7 +333,10 @@ bind_from_imports = ():
                 if ide_on: ide_alias_of[alias] = nm
             s = 0
             if modules[im].is_prelude: s = prelude.get(nm) ?? 0
-            else: s = modules[im].names.get(nm) ?? 0
+            else:
+                s = modules[im].names.get(nm) ?? 0
+                if s != 0 and is_private(nm) and not pos_in_lib(nodes[id].pos) and not pos_in_lib(mkpos(int(modules[im].file), 1)):
+                    fatal(nodes[id].pos, "'{name_of(nm)}' is private to {module_shown(m, im)}: a name starting with _ stays in its file")
             if s == 0 or syms[s].kind == .module:
                 cands: int[]
                 if not modules[im].is_prelude:
@@ -1150,6 +1202,35 @@ new_global = (name: int, decl: int, m: int) -> int:
     global_ids.push(g)
     g
 
+# (Heap[int] after `use heap`, whose Heap is another: the library's type of that name, hidden)
+lib_type_hidden = (nm: int, d: int) -> str:
+    ls = prelude.get(nm) ?? 0
+    if ls == 0 or decl_in_prelude(d) or (syms[ls].kind != .struct_ and syms[ls].kind != .enum_): return ""
+    ld = int(syms[ls].ref)
+    shown = name_of(nm)
+    if nkids2(ld) > 0:
+        tps: str[]
+        loop i in [0..nkids2(ld)): tps.push(name_of(int(nodes[kid2(ld, i)].name)))
+        shown = "{shown}[{join(tps, ", ")}]"
+    f = files[pos_file(nodes[d].pos)].path
+    sl = rfind(f, "/")
+    if sl >= 0: f = f[sl + 1..]
+    " (this {name_of(nm)} is {f}'s, which hides the library's {shown}; `import` that file instead of `use`, and its type is {strip_ext(f)}.{name_of(nm)})"
+
+# name nm in module path qual ("m", or "pathgrid.grid": a module's module), as m.T is (0: none)
+qual_lookup = (qual: str, nm: int, pos: int) -> int:
+    parts = split(qual, ".")
+    ms = lookup(intern(parts[0]))
+    if ms == 0 or syms[ms].kind != .module: fatal(pos, "unknown module '{parts[0]}'")
+    mm = int(syms[ms].ref)
+    loop qi in [1..parts.len()):
+        ms = module_lookup(mm, intern(parts[qi]))
+        if ms == 0 or syms[ms].kind != .module: fatal(pos, "module '{join(parts[..qi), ".")}' has no module '{parts[qi]}'")
+        mm = int(syms[ms].ref)
+    s = module_lookup(mm, nm)
+    if s != 0: private_member(mm, nm, pos)
+    s
+
 # ---------------- type resolution ----------------
 resolve_type = (tn: int) -> int:
     global soa_decl
@@ -1159,12 +1240,11 @@ resolve_type = (tn: int) -> int:
         nm = int(nodes[tn].name)
         s = 0
         if nodes[tn].sval != 0:
-            ms = lookup(int(nodes[tn].sval))
-            if ms == 0 or syms[ms].kind != .module: fatal(nodes[tn].pos, "unknown module '{name_of(int(nodes[tn].sval))}'")
-            s = module_lookup(int(syms[ms].ref), nm)
+            s = qual_lookup(name_of(int(nodes[tn].sval)), nm, nodes[tn].pos)
         else:
             if ide_sentinel != 0 and nm == ide_sentinel: ide_complete_types()
             s = lookup(nm)
+            if s != 0 and syms[s].kind != .local: use_clash(nm, nodes[tn].pos)
         if s == 0:
             if name_of(nm) == "none": return T_NONE
             # (push = (h: mut Heap[T], x: T): a generic function names its type parameters)
@@ -1194,7 +1274,7 @@ resolve_type = (tn: int) -> int:
             ntp = nkids2(d)
             if ntp == 0 and fixed_size_arg(tn):
                 return mk_fixed_checked(get_struct_inst(d, []), fixed_size(kid(tn, 0)), nodes[tn].pos)
-            if nkids(tn) != ntp: fatal(nodes[tn].pos, "type '{name_of(nm)}' expects {ntp} type argument(s), got {nkids(tn)}")
+            if nkids(tn) != ntp: fatal(nodes[tn].pos, "type '{name_of(nm)}' expects {ntp} type argument(s), got {nkids(tn)}{lib_type_hidden(nm, d)}")
             targs: int[]
             loop i in [0..ntp): targs.push(resolve_type(kid(tn, i)))
             return get_struct_inst(d, targs)
