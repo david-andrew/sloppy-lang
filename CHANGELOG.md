@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `?` on an error or nothing (`E?`, as `db.exec(...)` gives) passes the error on and goes on
+  when there is none; it was an error ("every member ... is passed on").
+- A value where a Json goes is made one, as `json_value(x)` makes it: `args.push(name)` to a
+  Json[], `m["n"] = 4` in a `{str: Json}`, a Json[] for a Json parameter, `j == "ok"`.
+- Messages: a type of an imported file's written without its module's name says it
+  (`store.Item`); a lambda that can end without its value says why at its last line, as a
+  function does.
 - sqlite: one Db shared by a server's handlers is safe: a transaction is the task's that began
   it (another task's statements wait for it to end: one's rollback took another's saved insert
   with it), and a handler that panics in one has it rolled back (it stayed open, and every

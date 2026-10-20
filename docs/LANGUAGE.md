@@ -964,7 +964,9 @@ sum += r
   the value. `error` adds nothing else (no fields, no base type), and a name ending in `Error` is
   a habit, not what decides: the library's `JsonError`, `TextError` and `ModelError` are
   declared so. `?` on a value with nothing to pass on (an `int`, or a union whose structs are not
-  declared `error`) is an error, as is one where every member would be passed on.
+  declared `error`) is an error, as is one where every member would be passed on. An error or
+  nothing, `ParseError?` (none: it went well, as `db.exec(...)` gives), is the one exception:
+  `check()?` passes the error on and goes on when there is none, giving no value.
 - What `?` can return must fit the result type of the function it is in (the nearest one: in a
   lambda, the lambda's): the compiler says what to add (`-> int | ParseError`), or convert it
   there, `if r is ParseError: return EvalError(r.msg)`. The result type has to be written where

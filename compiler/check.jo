@@ -1251,6 +1251,22 @@ qual_lookup = (qual: str, nm: int, pos: int) -> int:
     s
 
 # ---------------- type resolution ----------------
+# (a function that gives back r, and whose body can end with none: why, at its last line)
+ends_without_value = (body: int, r: int):
+    n = nkids(body)
+    if n == 0: return
+    # (total = a + b as the last line: total is made, and not given back)
+    ls = kid(body, n - 1)
+    vn = ""
+    if nodes[ls].kind == .vardecl and nodes[ls].name > 0: vn = name_of(int(nodes[ls].name))
+    else if nodes[ls].kind == .assign and nodes[ls].a != 0 and nodes[int(nodes[ls].a)].kind == .ident: vn = name_of(int(nodes[int(nodes[ls].a)].name))
+    if len(vn) > 0:
+        fatal(nodes[ls].pos, "the function gives back {a_type(r)}, but its last line gives nothing: a last line `{vn}` gives {vn} back")
+    # (if n > 0: x, with no else: nothing when it does not hold)
+    if (nodes[ls].kind == .if_ or nodes[ls].kind == .iflet) and nodes[ls].c == 0:
+        fatal(nodes[ls].pos, "the function gives back {a_type(r)}, but an `if` without `else` gives nothing when it does not hold: add `else:` and the value then")
+    fatal(nodes[ls].pos, "the function gives back {a_type(r)}, but its last line gives nothing: end it with the value to give back (or `return value`)")
+
 resolve_type = (tn: int) -> int:
     global soa_decl
     if nodes[tn].kind == .tname and nodes[tn].aux == -7: return int(nodes[tn].ival)
@@ -1270,6 +1286,9 @@ resolve_type = (tn: int) -> int:
             tn_s = name_of(nm)
             if len(tn_s) <= 2 and tn_s[0] >= 'A' and tn_s[0] <= 'Z' and cx >= 0 and fns.len() > int(ctxs[cx].inst):
                 fatal(nodes[tn].pos, "unknown type '{tn_s}' (a generic function names its type parameters after its name: `f[{tn_s}] = (x: {tn_s}) -> {tn_s}: ...`; a generic struct, `struct Heap[{tn_s}]:`)")
+            # (a type of an imported file's, written without its module's name)
+            uh = unused_file_hint(nm)
+            if len(uh) > 0: fatal(nodes[tn].pos, "unknown type '{name_of(nm)}'{uh}")
             fatal(nodes[tn].pos, "unknown type '{name_of(nm)}'{suggestion(name_of(nm), type_names())}")
         sk = syms[s].kind
         # (str = (b: Big) -> str: a function of the program's named as a type, its `str` there
@@ -3432,18 +3451,7 @@ __check_fn_body = (f: int):
             else if bt != T_NEVER and not (n > 0 and stmt_terminates(kid(body, n - 1))):
                 p = nodes[body].pos
                 if decl != 0: p = nodes[decl].pos
-                # (total = a + b as the last line: total is made, and not given back)
-                if n > 0:
-                    ls = kid(body, n - 1)
-                    vn = ""
-                    if nodes[ls].kind == .vardecl and nodes[ls].name > 0: vn = name_of(int(nodes[ls].name))
-                    else if nodes[ls].kind == .assign and nodes[ls].a != 0 and nodes[int(nodes[ls].a)].kind == .ident: vn = name_of(int(nodes[int(nodes[ls].a)].name))
-                    if len(vn) > 0:
-                        fatal(nodes[ls].pos, "the function gives back {a_type(r)}, but its last line gives nothing: a last line `{vn}` gives {vn} back")
-                    # (if n > 0: x, with no else: nothing when it does not hold)
-                    if (nodes[ls].kind == .if_ or nodes[ls].kind == .iflet) and nodes[ls].c == 0:
-                        fatal(nodes[ls].pos, "the function gives back {a_type(r)}, but an `if` without `else` gives nothing when it does not hold: add `else:` and the value then")
-                    fatal(nodes[ls].pos, "the function gives back {a_type(r)}, but its last line gives nothing: end it with the value to give back (or `return value`)")
+                ends_without_value(body, r)
                 fatal(p, "missing return value: function returns {type_str(r)}")
     if body != 0 and nodes[body].kind == .block and nodes[body].aux != 0 and nkids(body) > 0: local_addr_check(block_value(body))
     zonk_tree(body)
@@ -3985,10 +3993,14 @@ check_lambda_body = (f: int, lam: int, ret_hint: int):
             else: unify(r, T_VOID)
         else if types[r].kind == .void_: nodes[body].aux = 0
         else if nodes[body].aux != 0: set_block_value(body, coerce(block_value(body), r))
-        else if bt != T_NEVER: fatal(nodes[body].pos, "lambda must return a value of type {type_str(r)}")
+        else if bt != T_NEVER:
+            ends_without_value(body, r)
+            fatal(nodes[body].pos, "lambda must return a value of type {type_str(r)}")
     else if want:
         if nodes[body].aux != 0: set_block_value(body, coerce(block_value(body), r))
-        else if bt != T_NEVER: fatal(nodes[body].pos, "lambda must return a value of type {type_str(r)}")
+        else if bt != T_NEVER:
+            ends_without_value(body, r)
+            fatal(nodes[body].pos, "lambda must return a value of type {type_str(r)}")
     else: nodes[body].aux = 0
     fns[f].ret = ctxs[cx].ret
     fns[f].state = 2

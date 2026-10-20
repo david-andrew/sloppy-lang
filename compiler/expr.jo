@@ -236,6 +236,14 @@ coerce = (n: int, target: int) -> int:
         clear_flag(n, NF_LITERAL)
         return n
     fk = types[from].kind
+    if is_json_type(to) and (from == T_NONE or nodes[n].kind == .none_lit or json_convertible(from)):
+        # (a value where a Json goes, `args.push(name)`: made one, as json_value(x) makes it)
+        inner = nodes.len()
+        nodes.push(nodes[n])
+        if from == T_NONE or nodes[n].kind == .none_lit: nodes[n] = nodes[bc_call("__json_null", [], nodes[n].pos)]
+        else: nodes[n] = nodes[bc_call("json_value", [inner], nodes[n].pos)]
+        check_expr(n, to)
+        return n
     if fk == .array and is_soa(to) and can_coerce(0, int(types[from].elem), soa_elem(to)):
         soa_from_array(n, to)
         return n
@@ -1138,6 +1146,7 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
         if k == .none_lit:
             if pk == .opt: return 0
             if pk == .param: return 3
+            if is_json_type(p): return 4
             return -1
         # (to_json({"ok": true, "n": 3}): the version taking a Json first, as its values may differ)
         if (k == .array or k == .map_lit) and is_json_type(p): return 1
@@ -1168,6 +1177,7 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
             b = binds[int(types[p].id)]
             if b == 0: return 3
             if can_coerce(a, ntype(a), b): return 0
+            if is_json_type(prune(b)): return 4
             return -1
         if is_union(p) and has_var(p): return match_type(pat, lit_default(a), binds, 0)
         if pk == .int_:
@@ -1188,6 +1198,7 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
             if union_target(a, ntype(a), prune(int(types[p].elem))) >= 0: return 2
             return -1
         if pk == .vec: return -1
+        if is_json_type(p): return 4
         return -1
     fp = p
     if pk == .param and binds[int(types[p].id)] != 0: fp = prune(binds[int(types[p].id)])
@@ -1209,7 +1220,16 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
         # a 1-D T[,] (a row, a column) for a T[] parameter
         r = match_type(pat, mk_array(nd_elem(ntype(a))), binds, 0)
         if r >= 0: return r + 2
+    # (any value where a Json goes, f(names) for f(args: Json): made one, as json_value(x) makes
+    # it; after every other version)
+    if r < 0 and is_json_type(fp) and json_convertible(prune(ntype(a))): return 4
     r
+
+# (a value of this type can be made a Json where one goes)
+json_convertible = (t: int) -> bool:
+    k = types[t].kind
+    if has_var(t) or k == .void_ or k == .fn_ or k == .cfn or k == .ptr or k == .param or k == .null_ or k == .range or k == .module or k == .typeval or k == .none_lit: return false
+    not is_json_type(t)
 
 check_args_untyped = (args: int[]):
     loop a0 in args:
@@ -4702,6 +4722,16 @@ check_binary = (n: int, expected: int) -> int:
             nodes[n].a = i32(coerce(a, tb))
             a = int(nodes[n].a)
             ta = tb
+    # (j == "ok" with j a Json: the other made one)
+    if is_cmp and (op == .eq or op == .ne) and is_json_type(ta) != is_json_type(tb):
+        if is_json_type(ta) and (is_lit(b) or json_convertible(tb)):
+            nodes[n].b = i32(coerce(b, ta))
+            b = int(nodes[n].b)
+            tb = ta
+        else if is_json_type(tb) and (is_lit(a) or json_convertible(ta)):
+            nodes[n].a = i32(coerce(a, tb))
+            a = int(nodes[n].a)
+            ta = tb
     # ("v is " + v: a vector joined to text)
     if op == .plus and (tkind(ta) == .str_ and is_vec(tb) or is_vec(ta) and tkind(tb) == .str_):
         vt = tb
@@ -5553,7 +5583,11 @@ check_try = (n: int, expected: int) -> int:
                 if k == .enum_: kw = "enum"
                 fatal(pos, "{type_str(at)} has nothing for `?` to pass on: handle it with `is`, or declare {type_str(m)} with `error {kw}` if it is a failure")
         fatal(pos, "`?` cannot be used on {a_or_an(type_str(at))}: it holds neither none nor an error (an `error struct`), so there is nothing to pass on: remove the `?`")
-    if rest.len() == 0: fatal(pos, "every member of {type_str(at)} is passed on by `?`, so no value would be left: `return` it instead")
+    # (an error or nothing, as db.exec(...) gives: `?` passes the error on, and none, all went
+    # well, goes on, giving no value)
+    errnone = pass_none and rest.len() == 0 and fails.len() > 0
+    if errnone: pass_none = false
+    else if rest.len() == 0: fatal(pos, "every member of {type_str(at)} is passed on by `?`, so no value would be left: `return` it instead")
     # (f()?.x: `?` and a field, which a habit from other languages reads as one `?.`)
     chain = ""
     if src_char(pos + 1) == '.': chain = " (there is no `?.` optional chaining: `?` returns from the function; `if let v = x: v.f` uses the value when there is one, `(x ?? default).f` a default otherwise)"
@@ -5567,6 +5601,7 @@ check_try = (n: int, expected: int) -> int:
         # (a result type inferred, and not known yet: one return of a failure would make it that)
         what = "none"
         if fails.len() > 0: what = a_or_an(type_str(fails[0]))
+        if rest.len() == 0: fatal(pos, "this `?` can return {what}, but the result type of {fname} is not written: write it, with the failure in it (`-> {type_str(at)}`)")
         fatal(pos, "this `?` can return {what}, but the result type of {fname} is not written: write it, with the failure in it (`-> {type_str(at)}`, when it gives {a_or_an(type_str(mk_union(rest)))} otherwise)")
     rt = prune(ret)
     gives = "gives {type_str(rt)}"
@@ -5593,7 +5628,9 @@ check_try = (n: int, expected: int) -> int:
         dot = ""
         if len(chain) > 0: dot = " (not optional chaining)"
         gs = join(gone, " or ")
-        info = "(?) {type_str(mk_union(rest))}    # {gs} returned from {fname}{dot}"
+        kept = "no value"
+        if rest.len() > 0: kept = type_str(mk_union(rest))
+        info = "(?) {kept}    # {gs} returned from {fname}{dot}"
         ide_try_refs.push("R\t{ide_pos_str(pos)}\t1\t\t{ide_esc(info)}")
     nm = "__try{bc_count}"
     bc_count += 1
@@ -5609,7 +5646,7 @@ check_try = (n: int, expected: int) -> int:
         r = mk(.return_, pos)
         nodes[r].a = i32(bc_ident(nm, pos))
         stmts.push(bc_if(it, [r], [], pos))
-    stmts.push(bc_stmt(bc_ident(nm, pos), pos))
+    if not errnone: stmts.push(bc_stmt(bc_ident(nm, pos), pos))
     nodes[n] = nodes[bc_block(stmts, pos)]
     check_expr(n, expected)
 
