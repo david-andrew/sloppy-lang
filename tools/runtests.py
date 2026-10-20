@@ -80,6 +80,10 @@ for t in tests:
     # (`# requires: unix`: signals, a shell's commands)
     if (target in ("wasm", "windows") or on_windows) and "# requires: unix" in head:
         continue
+    # (`# known: macos hangs, ...`: a failure on macOS that is being looked into, told, not run)
+    if sys.platform == "darwin" and target == "native" and "# known: macos" in head:
+        print(f"SKIP {name}: known to fail on macOS ({head.split('# known: macos', 1)[1].splitlines()[0].strip(' ,')})")
+        continue
     # (`# requires: sqlite`: the system's SQLite, which a machine may not have; Wine has none)
     if "# requires: sqlite" in head and (target not in ("native",) or not have_sqlite):
         print(f"SKIP {name}: no SQLite here")
