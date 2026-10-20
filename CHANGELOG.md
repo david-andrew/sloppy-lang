@@ -159,6 +159,35 @@
 - `hud_scroll`'s bar is drawn over the rows, at the `no_clip()` after them (or as draw ends): rows
   as wide as the list no longer hide it.
 - `pasted_text()`: the text pasted in this frame, for a widget of a program's own.
+- `parallel_map`, `parallel_range` and `parallel_update` no longer count a reference to the
+  function at each element, an atomic add every thread made on the same memory: 1024 small jobs
+  took 150 µs, 30 times the serial loop, now about 15.
+- `f64[,]`: `to_json` of a 2-D array no longer hangs; it writes lists of lists, and
+  `from_json[f64[,]](text)` reads them (`T[,]` is now a type argument). `from_text`, `load_value`
+  and `save_value` read back what `to_text` writes, the shape too: a 2-D array of one row prints
+  as `[1.0 2.0;]` and one with no elements as `ndarray([], [0, 3])` (an `f64[,]` never given a
+  value printed a panic).
+- `x[idx, ..]`, `x[idx]`, `x[.., idx]` with an `int[]` or a `bool[]` mask pick those parts along
+  the axis, in order (a mini-batch); `take(m, idx, axis)`.
+- `argmax(m, axis)`, `argmin(m, axis)`; `keepdims = true` on them and on `sum`, `min`, `max` and
+  `mean` along an axis; `softmax(m, axis)` and `logsumexp(m, axis)` (and of an `f64[]`), with the
+  largest taken out first; `concat(a, b, axis)`, `concat(parts, axis)`, `vstack`, `hstack`.
+- `csv_array(text)`: the numbers of a CSV file as an `f64[,]` (a header row left out; empty or NA
+  is NaN). `to_bytes(xs)` and `to_bytes(m)` of arrays of plain values, `array_from_bytes[T](b)`
+  and `ndarray_from_bytes[T](b)` back.
+- `f64(true)`, `f64.(mask)`: bools convert to floats (1.0 and 0.0).
+- `rows: f64[][] = [loop i in 0..n: m[i, ..]]`: a comprehension where a `T[][]` is expected
+  converts each 1-D `T[,]` element, as an assignment does.
+- `a * b` of two `f64[,]` of one shape that do not multiply as matrices says that `a .* b` is
+  element by element.
+- Numeric speed (release): the matrix product works in blocks that stay in the cache, four rows
+  of b at a time, in vectorized loops (512x512: 4.5 to 40 GFLOP/s on 8 cores; 64x64x128: 1.5 to
+  12-18); a dotted expression over `f64[,]` operands of one shape is one vectorized loop (4.1 to
+  0.5 ns an element), and one with a row stretched down the rows a vectorized loop a row (2.3 to
+  1.0); `sum(m, 1)` 8.9 to 1.0 ns an element, `max(m, 1)` 11.6 to 2.0; `exp` 1.7 times faster
+  with the same results. Loops over `c[i * n + j]` and over `data(xs)` pointers vectorize (2.4 to
+  4-5 GFLOP/s for a flat matrix product's inner loop). A row `m[i, ..]` read with `r[j]` in a loop
+  is no longer copied at each element (7.1 to 2.0 ns; 1.1 for an `f64[]` row).
 
 ## 0.26.0
 

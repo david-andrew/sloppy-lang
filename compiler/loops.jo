@@ -282,7 +282,8 @@ lx_copy = (code: Ins[], s: int, e: int, checks: LCheck[], ren: int[], out: mut I
 
 # ---------------- vectorization ----------------
 # A counting loop whose body (without its checks) is straight-line code doing the same thing
-# to element i of arrays (loads and stores at [base + i * size], elements of one size) and
+# to element i of arrays (loads and stores at [base + i * size], or at [base + (i + x) * size]
+# with x the same in every iteration, as c[r * n + i]; elements of one size) and
 # arithmetic of + - * / min max on floats or + - and or xor on integers, with values from
 # outside the loop used in every lane, runs 8 (or 4) elements at a time with AVX2 where the
 # processor has it, else 4 (or 2) with SSE2, then the rest one at a time. Each element gets
@@ -301,6 +302,9 @@ struct VPlan:
     bases: int[]            # memory accesses: base vreg, offset, 1 if a store
     offs: int[]
     stores: bool[]
+    invs: int[]             # (and the x added to the counter in its index, -1 for none)
+    made: int[]             # integers the loop makes from what it does not change (i * n): made in
+                            # front of the vector loop instead
 
 lx_kind_of_mode = (c: int) -> int:
     size = c & 15
@@ -316,11 +320,13 @@ lx_in_check = (p: int, checks: LCheck[]) -> bool:
     false
 
 lx_vec_plan = (code: Ins[], L: CLoop, checks: LCheck[], first: int[], last: int[]) -> VPlan:
-    no = VPlan(false, 0, false, [], [], [])
-    plan = VPlan(true, 0, false, [], [], [])
+    no = VPlan(false, 0, false, [], [], [], [], [])
+    plan = VPlan(true, 0, false, [], [], [], [], [])
     lx_reds.clear()
     lx_red_ops.clear()
     kinds: {int: int}           # vreg made in the body -> element kind of its lanes
+    addr: {int: int}            # vreg made in the body as the counter plus x (unchanged by the loop) -> x,
+                                # used only as an index: the access is at element i of base + x
     loop p in [L.pl + 1..L.inc):
         if lx_in_check(p, checks): continue
         ins = code[p]
@@ -340,7 +346,11 @@ lx_vec_plan = (code: Ins[], L: CLoop, checks: LCheck[], first: int[], last: int[
             ix = mem_index(ins)
             sc = 3
             if size == 4: sc = 2
-            if ix != L.ctr or mem_scale(ins) != sc: return no
+            inv = -1
+            if ix != L.ctr:
+                if let x = addr.get(ix): inv = x
+                else: return no
+            if mem_scale(ins) != sc: return no
             base = int(ins.a)
             if lx_defined_in(code, base, L.pl + 1, L.pe): return no
             if plan.es == 0: plan.es = size
@@ -349,6 +359,7 @@ lx_vec_plan = (code: Ins[], L: CLoop, checks: LCheck[], first: int[], last: int[
             plan.bases.push(base)
             plan.offs.push(ins.imm)
             plan.stores.push(op == .store)
+            plan.invs.push(inv)
             if op == .load:
                 if last[d] > L.pe or first[d] < L.pl: return no
                 kinds[d] = k
@@ -365,6 +376,14 @@ lx_vec_plan = (code: Ins[], L: CLoop, checks: LCheck[], first: int[], last: int[
                     kinds[d] = 2
                     continue
             return no
+        # (i + x, x unchanged by the loop: an index, if it is used only as one; anything else
+        # using it gives up below, as it has no lanes)
+        if op == .add and int(ins.ty) == VI and int(ins.a) != int(ins.b) and (int(ins.a) == L.ctr or int(ins.b) == L.ctr) and first[d] >= L.pl and last[d] <= L.pe:
+            x = int(ins.a)
+            if x == L.ctr: x = int(ins.b)
+            if lx_inv_made(code, L, x, p, 0) and lx_def_at(code, d, L.pl + 1, L.inc) == p:
+                addr[d] = x
+                continue
         # (s = s + x: an integer sum over the loop, s used nowhere else in it)
         if (op == .add or op == .xor or op == .or_ or op == .and_) and int(ins.ty) == VI and (int(ins.a) == d or int(ins.b) == d) and int(ins.a) != int(ins.b):
             x = int(ins.b)
@@ -388,10 +407,16 @@ lx_vec_plan = (code: Ins[], L: CLoop, checks: LCheck[], first: int[], last: int[
                     if k >= 0 and k != uk: return no
                     k = uk
                 lanes += 1
-            else if lx_defined_in(code, u, L.pl + 1, L.pe): return no   # (from the last iteration)
+            else if lx_defined_in(code, u, L.pl + 1, L.pe) and not plan.made.contains(u): return no   # (from the last iteration)
         fk = 1
         if int(ins.ty) == VS: fk = 0
-        if lanes == 0: return no                  # (both operands the same in every iteration)
+        if lanes == 0:
+            # (both operands the same in every iteration: an integer made from what the loop does
+            # not change, as i * n in c[i * n + j])
+            if il and int(ins.ty) == VI and last[d] <= L.pe and lx_inv_made(code, L, d, p, 0):
+                plan.made.push(d)
+                continue
+            return no
         if k < 0:
             k = 3
             if fl: k = fk
@@ -406,7 +431,7 @@ lx_vec_plan = (code: Ins[], L: CLoop, checks: LCheck[], first: int[], last: int[
     # stores and the accesses at the same base: the same element (an update in place), or none
     loop i in 0.. and bi in plan.bases:
         loop j in 0.. and bj in plan.bases:
-            if i < j and bi == bj and (plan.stores[i] or plan.stores[j]) and plan.offs[i] != plan.offs[j]: return no
+            if i < j and bi == bj and plan.invs[i] == plan.invs[j] and (plan.stores[i] or plan.stores[j]) and plan.offs[i] != plan.offs[j]: return no
     plan
 
 # how many instructions in [lo, hi] name v (define or use it)
@@ -424,9 +449,10 @@ lx_appears = (code: Ins[], v: int, lo: int, hi: int) -> int:
     n
 
 # the vector of u: its own if made in the loop, else u in every lane (made once, in front)
-lx_splat = (pre: mut Ins[], vmap: mut {int: int}, u: int, k: int, ty: int) -> int:
+lx_splat = (code: Ins[], L: CLoop, plan: VPlan, pre: mut Ins[], vmap: mut {int: int}, u: int, k: int, ty: int) -> int:
     if let v = vmap.get(u): return v
     src = u
+    if plan.made.contains(u): src = lx_mat(code, L, u, pre)
     if is_kv(u):
         src = vreg(VI)
         pre.push(Ins(.iconst, VI, i32(src), 0, 0, 0, kv_of(u)))
@@ -434,6 +460,21 @@ lx_splat = (pre: mut Ins[], vmap: mut {int: int}, u: int, k: int, ty: int) -> in
     pre.push(Ins(.vsplat, i32(ty), i32(v), i32(src), 0, 0, k))
     vmap[u] = v
     v
+
+# where element i of a vector access starts, made in front of the loop: base + x * size for an
+# index i + x, else base
+lx_vbase = (code: Ins[], L: CLoop, ins: Ins, plan: VPlan, pre: mut Ins[]) -> int:
+    ix = mem_index(ins)
+    if ix == L.ctr: return int(ins.a)
+    a = code[lx_def_at(code, ix, L.pl + 1, L.inc)]
+    x = int(a.a)
+    if x == L.ctr: x = int(a.b)
+    lx_bin(pre, .add, int(ins.a), lx_bin(pre, .mul, lx_mat(code, L, x, pre), k_vreg(plan.es)))
+
+# access i of the plan: its base, plus x * size for an index i + x
+lx_base = (code: Ins[], L: CLoop, out: mut Ins[], plan: VPlan, i: int) -> int:
+    if plan.invs[i] < 0: return plan.bases[i]
+    lx_bin(out, .add, plan.bases[i], lx_bin(out, .mul, lx_mat(code, L, plan.invs[i], out), k_vreg(plan.es)))
 
 # the vector loop of width ty (VY or VX) over the body of L; in a block that it leaves when
 # fewer than a vector's worth of elements remain
@@ -473,16 +514,19 @@ lx_vloop = (code: Ins[], L: CLoop, checks: LCheck[], plan: VPlan, ty: int, out: 
         if op == .load:
             k = lx_kind_of_mode(int(ins.c))
             v = vreg(ty)
-            body.push(Ins(.vld, i32(ty), i32(v), ins.a, i32(L.ctr), i32(k), ins.imm))
+            body.push(Ins(.vld, i32(ty), i32(v), i32(lx_vbase(code, L, ins, plan, pre)), i32(L.ctr), i32(k), ins.imm))
             vmap[d] = v
             kind[d] = k
             continue
         if op == .store:
             k = lx_kind_of_mode(int(ins.c))
             val = int(ins.b)
-            vv = lx_splat(pre, vmap, val, k, ty)
-            body.push(Ins(.vst, i32(ty), i32(L.ctr), ins.a, i32(vv), i32(k), ins.imm))
+            vv = lx_splat(code, L, plan, pre, vmap, val, k, ty)
+            body.push(Ins(.vst, i32(ty), i32(L.ctr), i32(lx_vbase(code, L, ins, plan, pre)), i32(vv), i32(k), ins.imm))
             continue
+        # (i + x: an index, which lx_vbase made part of the base; integers made in front)
+        if op == .add and int(ins.ty) == VI and (int(ins.a) == L.ctr or int(ins.b) == L.ctr): continue
+        if plan.made.contains(d): continue
         if op == .sext32 or op == .zext32:
             vmap[d] = vmap[int(ins.a)]
             kind[d] = 2
@@ -522,8 +566,8 @@ lx_vloop = (code: Ins[], L: CLoop, checks: LCheck[], plan: VPlan, ty: int, out: 
             and_: vo = 6
             or_: vo = 7
             _: vo = 8
-        xa = lx_splat(pre, vmap, int(ins.a), k, ty)
-        xb = lx_splat(pre, vmap, int(ins.b), k, ty)
+        xa = lx_splat(code, L, plan, pre, vmap, int(ins.a), k, ty)
+        xb = lx_splat(code, L, plan, pre, vmap, int(ins.b), k, ty)
         v = vreg(ty)
         body.push(Ins(.vbin, i32(ty), i32(v), i32(xa), i32(xb), i32(vo), k))
         vmap[d] = v
@@ -557,9 +601,9 @@ lx_vec_emit = (code: Ins[], L: CLoop, checks: LCheck[], plan: VPlan, out: mut In
     es = k_vreg(plan.es)
     loop i in 0.. and bi in plan.bases:
         loop j in 0.. and bj in plan.bases:
-            if j <= i or bi == bj or not (plan.stores[i] or plan.stores[j]): continue
-            ai = lx_bin(out, .add, bi, k_vreg(plan.offs[i]))
-            aj = lx_bin(out, .add, bj, k_vreg(plan.offs[j]))
+            if j <= i or bi == bj and plan.invs[i] == plan.invs[j] or not (plan.stores[i] or plan.stores[j]): continue
+            ai = lx_bin(out, .add, lx_base(code, L, out, plan, i), k_vreg(plan.offs[i]))
+            aj = lx_bin(out, .add, lx_base(code, L, out, plan, j), k_vreg(plan.offs[j]))
             lo = lx_bin(out, .mul, L.ctr, es)
             hi = lx_bin(out, .mul, L.endv, es)
             lo_i = lx_bin(out, .add, ai, lo)
@@ -812,7 +856,7 @@ loop_versioning = ():
     loop L in cl:
         if L.pe - L.pl > 400: continue
         checks = lx_checks(code, ends, L)
-        plan = VPlan(false, 0, false, [], [], [])
+        plan = VPlan(false, 0, false, [], [], [], [], [])
         if lx_vec_on and not L.down: plan = lx_vec_plan(code, L, checks, first, last)
         # (one check costs about as much as testing for it in front: not worth a copy)
         if not plan.ok and checks.len() < 2: continue

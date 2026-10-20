@@ -5,9 +5,11 @@
 # commas are only for the reader). Write a 2-D one as [1 2; 3 4] (rows separated by ';' or line
 # breaks), stack arrays with [a; b], or make one with zeros(2, 3, 4), ones, eye, rand, reshape.
 # m[i, j] (with as many indexes as dimensions) reads and writes an element; m.shape is its shape.
-# Ranges select parts: m[i, ..] is row i, m[.., j] column j, m[1..2, 0..] a block (ranges include
-# both ends; missing indexes at the end mean whole axes). A part is an array of its own; assigning
-# to one (m[.., 0] = xs, m[0, ..] = 0.0) writes into m.
+# Ranges select parts: m[i, ..] is row i, m[.., j] column j, m[1..3, 0..] a block (a..b leaves b
+# out, as everywhere; missing indexes at the end mean whole axes). A part is an array of its own:
+# m[i, ..] is a 1-D T[,], which goes where a T[] is expected (row(m, i) gives the T[] itself, the
+# fast way in a loop). Assigning to one (m[.., 0] = xs, m[0, ..] = 0.0) writes into m. An array of
+# indexes or a mask picks parts along its axis: x[idx, ..] is the rows idx, in that order.
 #
 # The dotted operators work element by element on arrays of any shape, and broadcast like numpy
 # (a dimension of length 1, or a missing leading one, stretches to fit): a .* b, m .+ 1.0, v .^ 2,
@@ -183,6 +185,49 @@ __nd_slice_set[T] = (m: mut T[,], spec: int[], xs: T[]):
 
 __nd_slice_set[T] = (m: mut T[,], spec: int[], xs: T[,]): __nd_slice_set(m, spec, xs.data)
 
+# ---------------- picking along an axis ----------------
+# the parts of m at these indexes along an axis, in their order (NumPy's take): take(x, idx) is
+# the rows idx of x, as x[idx, ..] and x[idx] are (a mini-batch); with a mask (a bool[] as long as
+# the axis), the parts where it is true
+take[T] = (m: T[,], idx: int[], axis: int = 0) -> T[,]:
+    r = m.shape.len()
+    if axis < 0 or axis >= r: panic("axis {axis} of an array of shape {__shape_str(m.shape)}")
+    n = m.shape[axis]
+    outer = __nd_size(m.shape[..axis))
+    inner = __nd_size(m.shape[axis + 1..])
+    out: T[]
+    out.reserve(outer * idx.len() * inner)
+    loop o in [0..outer):
+        loop k in idx:
+            if k < 0 or k >= n: panic("index {k} out of bounds for axis {axis} of an array of shape {__shape_str(m.shape)}")
+            s = (o * n + k) * inner
+            loop i in [s..s + inner): out.push(m.data[i])
+    shape = m.shape
+    shape[axis] = idx.len()
+    NDArray(out, shape)
+take[T] = (m: T[,], mask: bool[], axis: int = 0) -> T[,]:
+    if axis >= 0 and axis < m.shape.len() and mask.len() != m.shape[axis]: panic("a mask of {mask.len()} for axis {axis} of an array of shape {__shape_str(m.shape)}")
+    take(m, [loop i in 0.. and b in mask if b: i], axis)
+
+([])[T] = (m: T[,], idx: int[]) -> T[,]: take(m, idx, 0)
+([])[T] = (m: T[,], mask: bool[]) -> T[,]: take(m, mask, 0)
+
+# m[a, idx, ..]: the part (spec has the whole axis where idx is), then its parts at idx along
+# that axis
+__nd_take_part[T] = (m: T[,], spec: int[], axis: int, idx: int[]) -> T[,]:
+    kept = 0
+    loop d in [0..axis):
+        if spec[3 * d + 2] != 0: kept += 1
+    take(__nd_slice(m, spec), idx, kept)
+__nd_take_part[T] = (m: T[,], spec: int[], axis: int, mask: bool[]) -> T[,]:
+    kept = 0
+    loop d in [0..axis):
+        if spec[3 * d + 2] != 0: kept += 1
+    take(__nd_slice(m, spec), mask, kept)
+# (a 1-D mask or index array made by a dotted expression on a part: x[x[.., 0] .> 0.5, ..])
+__nd_take_part[T] = (m: T[,], spec: int[], axis: int, mask: bool[,]) -> T[,]: __nd_take_part(m, spec, axis, __nd_1d(mask))
+__nd_take_part[T] = (m: T[,], spec: int[], axis: int, idx: int[,]) -> T[,]: __nd_take_part(m, spec, axis, __nd_1d(idx))
+
 # ---------------- array literals ----------------
 # [1 2; 3 4]: elements row by row
 __array2[T] = (data: T[], rows: int, cols: int) -> T[,]: NDArray(data, [rows, cols])
@@ -208,6 +253,44 @@ __array_stack[T] = (parts: NDArray[T][]) -> T[,]:
         if p.shape != s: panic("stacked arrays must have the same shape ({__shape_str(s)} and {__shape_str(p.shape)})")
         data.extend(p.data)
     NDArray(data, [parts.len()] + s)
+
+# ---------------- joining ----------------
+# the arrays joined along an axis (NumPy's concatenate): their other dimensions must be the same.
+# concat(a, b) puts b's rows under a's, concat(a, b, 1) b's columns after a's
+concat[T] = (a: T[,], b: T[,], axis: int = 0) -> T[,]: concat([a, b], axis)
+concat[T] = (parts: T[,][], axis: int = 0) -> T[,]:
+    if parts.len() == 0: return NDArray([] as T[], [0])
+    s0 = parts[0].shape
+    if axis < 0 or axis >= s0.len(): panic("concat: axis {axis} of arrays of shape {__shape_str(s0)}")
+    total = 0
+    n = 0
+    loop p in parts:
+        ok = p.shape.len() == s0.len()
+        if ok:
+            loop d in [0..s0.len()):
+                if d != axis and p.shape[d] != s0[d]: ok = false
+        if not ok: panic("concat along axis {axis}: arrays of shapes {__shape_str(s0)} and {__shape_str(p.shape)} (only that axis may differ)")
+        total += p.shape[axis]
+        n += p.data.len()
+    out: T[]
+    out.reserve(n)
+    loop o in [0..__nd_size(s0[..axis))):
+        loop p in parts:
+            run = p.shape[axis] * __nd_size(p.shape[axis + 1..])
+            loop i in [o * run..(o + 1) * run): out.push(p.data[i])
+    shape = s0
+    shape[axis] = total
+    NDArray(out, shape)
+
+# NumPy's vstack and hstack: rows under rows, a 1-D array being a row (so [a; b] for two), and
+# columns after columns (1-D arrays joined end to end)
+vstack[T] = (parts: T[,][]) -> T[,]:
+    rows = [loop p in parts: (if p.shape.len() == 1: NDArray(p.data, [1, p.shape[0]]) else: p)]
+    concat(rows, 0)
+vstack[T] = (rows: T[][]) -> T[,]: __array2_rows(rows)
+hstack[T] = (parts: T[,][]) -> T[,]:
+    if parts.len() > 0 and parts[0].shape.len() == 1: return concat(parts, 0)
+    concat(parts, 1)
 
 # ---------------- broadcasting (used by dotted expressions) ----------------
 # the common length of 1-D operands (each equal to it, or 1)
@@ -484,23 +567,52 @@ std_dev = (xs: f64[]) -> f64:
 std_dev = (xs: int[]) -> f64: std_dev(xs.map((x: int): f64(x)))
 
 # along one axis: the array without that axis, each element combining the ones along it
-# (sum(m, 0) adds up the rows of a 2-D array: one sum per column)
-sum[T] = (m: T[,], axis: int) -> T[,]: __nd_reduce(m, axis, 0)
-min[T] = (m: T[,], axis: int) -> T[,]: __nd_reduce(m, axis, 1)
-max[T] = (m: T[,], axis: int) -> T[,]: __nd_reduce(m, axis, 2)
-mean = (m: f64[,], axis: int) -> f64[,]:
+# (sum(m, 0) adds up the rows of a 2-D array: one sum per column). keepdims = true keeps the axis,
+# with length 1, so that the result broadcasts against m: m .- max(m, 1, keepdims = true) takes
+# each row's largest from the row (NumPy's keepdims)
+sum[T] = (m: T[,], axis: int, keepdims = false) -> T[,]: __nd_keep(__nd_reduce(m, axis, 0), m.shape, axis, keepdims)
+min[T] = (m: T[,], axis: int, keepdims = false) -> T[,]: __nd_keep(__nd_reduce(m, axis, 1), m.shape, axis, keepdims)
+max[T] = (m: T[,], axis: int, keepdims = false) -> T[,]: __nd_keep(__nd_reduce(m, axis, 2), m.shape, axis, keepdims)
+mean = (m: f64[,], axis: int, keepdims = false) -> f64[,]:
     s = __nd_reduce(m, axis, 0)
-    s ./ f64(m.shape[axis])
+    __nd_keep(s ./ f64(m.shape[axis]), m.shape, axis, keepdims)
+
+# (r, m reduced along axis, given that axis back with length 1)
+__nd_keep[T] = (r: T[,], shape: int[], axis: int, keep: bool) -> T[,]:
+    if not keep: return r
+    s = shape
+    s[axis] = 1
+    NDArray(r.data, s)
+
+# (the sizes before an axis, along it and after it: m's elements are outer runs of n blocks of inner)
+__nd_axis = (shape: int[], axis: int) -> (int, int, int):
+    if axis < 0 or axis >= shape.len(): panic("axis {axis} of an array of shape {__shape_str(shape)}")
+    (__nd_size(shape[..axis)), shape[axis], __nd_size(shape[axis + 1..]))
 
 # op: 0 sum, 1 min, 2 max
 __nd_reduce[T] = (m: T[,], axis: int, op: int) -> T[,]:
-    r = m.shape.len()
-    if axis < 0 or axis >= r: panic("axis {axis} of an array of shape {__shape_str(m.shape)}")
-    n = m.shape[axis]
+    outer, n, inner = __nd_axis(m.shape, axis)
     if n == 0 and op != 0: panic("min/max along an empty axis")
-    outer = __nd_size(m.shape[..axis))
-    inner = __nd_size(m.shape[axis + 1..])
     out: T[]
+    shape = m.shape[..axis) + m.shape[axis + 1..]
+    if inner == 1:
+        # (along the last axis: each result from a run of the data, in a loop of its own)
+        out.reserve(outer)
+        loop o in [0..outer):
+            s = o * n
+            if op == 0:
+                t = T(0)
+                loop k in [s..s + n): t += m.data[k]
+                out.push(t)
+            else if op == 1:
+                t = m.data[s]
+                loop k in [s..s + n): t = min(t, m.data[k])
+                out.push(t)
+            else:
+                t = m.data[s]
+                loop k in [s..s + n): t = max(t, m.data[k])
+                out.push(t)
+        return NDArray(out, shape)
     if op == 0: out = fill(T(0), outer * inner)
     else:
         out.reserve(outer * inner)
@@ -516,7 +628,56 @@ __nd_reduce[T] = (m: T[,], axis: int, op: int) -> T[,]:
                 loop i in [0..inner): out[dst + i] = min(out[dst + i], m.data[src + i])
             else:
                 loop i in [0..inner): out[dst + i] = max(out[dst + i], m.data[src + i])
+    NDArray(out, shape)
+
+# where the largest (smallest) value along an axis is: its index there, the first of equal ones
+# (argmax(scores, 1): each row's best column, as NumPy's argmax(axis=1))
+argmax[T] = (m: T[,], axis: int, keepdims = false) -> int[,]: __nd_keep(__nd_arg(m, axis, true), m.shape, axis, keepdims)
+argmin[T] = (m: T[,], axis: int, keepdims = false) -> int[,]: __nd_keep(__nd_arg(m, axis, false), m.shape, axis, keepdims)
+
+__nd_arg[T] = (m: T[,], axis: int, largest: bool) -> int[,]:
+    outer, n, inner = __nd_axis(m.shape, axis)
+    if n == 0: panic("argmax/argmin along an empty axis")
+    out = fill(0, outer * inner)
+    loop o in [0..outer):
+        loop i in [0..inner):
+            s = o * n * inner + i
+            best = m.data[s]
+            at = 0
+            loop k in [1..n):
+                x = m.data[s + k * inner]
+                if largest and best < x or not largest and x < best:
+                    best = x
+                    at = k
+            out[o * inner + i] = at
     NDArray(out, m.shape[..axis) + m.shape[axis + 1..])
+
+# e^x of each element over the sum of those along the axis: each row of softmax(scores, 1) is
+# positive and adds up to 1. The largest along the axis is taken away first, so that no e^x
+# overflows (NumPy-style code writes the same, scipy's softmax)
+softmax = (m: f64[,], axis: int) -> f64[,]:
+    e = exp.(m .- max(m, axis, keepdims = true))
+    e ./ sum(e, axis, keepdims = true)
+softmax = (xs: f64[]) -> f64[]:
+    e = exp.(xs .- max(xs))
+    e ./ sum(e)
+
+# log(sum(exp(m), axis)), without exp overflowing or underflowing: the largest along the axis is
+# taken out first (scipy's logsumexp)
+logsumexp = (m: f64[,], axis: int, keepdims = false) -> f64[,]:
+    mx = max(m, axis, keepdims = true)
+    # (an axis whose largest is inf or -inf: the sum is that, not inf - inf)
+    mx.data = [loop x in mx.data: (if x - x == 0.0: x else: 0.0)]
+    r = log.(sum(exp.(m .- mx), axis, keepdims = true)) .+ mx
+    if keepdims: return r
+    NDArray(r.data, m.shape[..axis) + m.shape[axis + 1..])
+logsumexp = (xs: f64[]) -> f64:
+    if xs.len() == 0: return -INF
+    mx = max(xs)
+    if mx - mx != 0.0: mx = 0.0
+    t = 0.0
+    loop x in xs: t += exp(x - mx)
+    log(t) + mx
 
 # the sum of a[i] * b[i] (kept in four running sums, about twice as fast: rounded a little
 # differently from adding in order, the same for the same input every time)
@@ -749,26 +910,55 @@ __swap_rows = (m: mut f64[], n: int, a: int, b: int):
     ac = cols(a)
     br = rows(b)
     bc = cols(b)
-    if ac != br: panic("matrix product of {ar}x{ac} and {br}x{bc}: inner sizes differ")
-    zero = T(0)
-    out = fill(zero, ar * bc)
+    if ac != br:
+        if ar == br and ac == bc: panic("matrix product of {ar}x{ac} and {br}x{bc}: inner sizes differ (element by element is `a .* b`)")
+        panic("matrix product of {ar}x{ac} and {br}x{bc}: inner sizes differ")
+    out = fill(T(0), ar * bc)
     if a.data.len() != ar * ac or b.data.len() != br * bc: panic("matrix product of arrays not {ar}x{ac} and {br}x{bc}")
     op = data(out)
     ap = data(a.data)
     bp = data(b.data)
-    # (row by row, each row of b scaled and added in: the inner loop goes along memory; big
-    # products share the rows out among the threads)
-    some_rows = (lo: int, hi: int):
-        loop i in [lo..hi):
-            ro = i * bc
-            loop k in [0..ac):
-                x = ap[i * ac + k]
-                if x == zero: continue
-                bo = k * bc
-                loop j in [0..bc): op[ro + j] += x * bp[bo + j]
-    if ar > 1 and ar * ac * bc >= 1 << 18: __parallel_run(ar, some_rows)
-    else: some_rows(0, ar)
+    # (products of 256K multiplications and more, some 20 µs, share the rows out among the
+    # threads; below that, waking them costs about what it saves)
+    if ar > 1 and ar * ac * bc >= 1 << 18: __parallel_run(ar, (lo: int, hi: int): __mm_rows(op, ap, bp, ac, bc, lo, hi))
+    else: __mm_rows(op, ap, bp, ac, bc, 0, ar)
     NDArray(out, [ar, bc])
+
+# rows lo..hi of c = a * b, a m columns wide and b p (c holds zeros). Each row of c gets the rows
+# of b, scaled by a's elements, added in four at a time: a loop the compiler runs several
+# elements at a time, reading and writing c once for four rows of b. The sums are made in the
+# same order as one row at a time, so the result is the same. The columns go in blocks of 512
+# and the rows of b in blocks of 64, so the part of b in use (256 KB) stays in the cache while
+# every row of a goes by.
+__mm_rows[T] = (c: *T, a: *T, b: *T, m: int, p: int, lo: int, hi: int):
+    jb = 0
+    loop jb < p:
+        je = min(jb + 512, p)
+        kb = 0
+        loop kb < m:
+            ke = min(kb + 64, m)
+            loop i in [lo..hi):
+                ci = i * p
+                ai = i * m
+                k = kb
+                loop k + 4 <= ke:
+                    x0 = a[ai + k]
+                    x1 = a[ai + k + 1]
+                    x2 = a[ai + k + 2]
+                    x3 = a[ai + k + 3]
+                    b0 = k * p
+                    b1 = b0 + p
+                    b2 = b1 + p
+                    b3 = b2 + p
+                    loop j in [jb..je): c[ci + j] = c[ci + j] + x0 * b[b0 + j] + x1 * b[b1 + j] + x2 * b[b2 + j] + x3 * b[b3 + j]
+                    k += 4
+                loop k < ke:
+                    x = a[ai + k]
+                    bk = k * p
+                    loop j in [jb..je): c[ci + j] = c[ci + j] + x * b[bk + j]
+                    k += 1
+            kb = ke
+        jb = je
 
 # matrix times column vector
 (*)[T] = (a: T[,], v: T[]) -> T[]:
@@ -794,8 +984,11 @@ __swap_rows = (m: mut f64[], n: int, a: int, b: int):
     if a.shape != b.shape: panic("subtracting arrays of shapes {__shape_str(b.shape)} from {__shape_str(a.shape)}")
     a .- b
 
-# ---------------- printing ----------------
-# [1.0 2.0 3.0], [1.0 2.0; 3.0 4.0], and higher dimensions as lists of those: [[1 2; 3 4], [5 6; 7 8]]
+# ---------------- printing and reading ----------------
+# [1.0 2.0 3.0], [1.0 2.0; 3.0 4.0], and higher dimensions as lists of those: [[1 2; 3 4], [5 6; 7 8]].
+# A 2-D array of one row ends it with ';', [1.0 2.0;] (as it is written in code), and one with no
+# elements says its shape, ndarray([], [0, 3]) (other than an empty 1-D one, []): what is
+# printed reads back (from_text, load_value) as the same shape
 __fmt[T] = (buf: mut u8[], m: T[,]):
     __fmt_nd(buf, m.data, m.shape, 0, 0)
 
@@ -803,11 +996,11 @@ __fmt[T] = (buf: mut u8[], m: T[,]):
 # middle of a large one left out (...). Inside a list or a struct, and in to_text, each number
 # is exact, on one line
 __fmt = (buf: mut u8[], m: f64[,]):
-    if m.shape.len() != 2 or m.shape[0] < 2: return __fmt_nd(buf, m.data, m.shape, 0, 0)
+    if m.shape.len() != 2 or m.shape[0] < 2 or m.data.len() == 0: return __fmt_nd(buf, m.data, m.shape, 0, 0)
     __fmt_grid(buf, m.shape[0], m.shape[1], (i: int) -> str: __fmt_short(m.data[i]))
 
 __fmt = (buf: mut u8[], m: int[,]):
-    if m.shape.len() != 2 or m.shape[0] < 2: return __fmt_nd(buf, m.data, m.shape, 0, 0)
+    if m.shape.len() != 2 or m.shape[0] < 2 or m.data.len() == 0: return __fmt_nd(buf, m.data, m.shape, 0, 0)
     __fmt_grid(buf, m.shape[0], m.shape[1], (i: int) -> str: "{m.data[i]}")
 
 # (the cells, cell(index), lined up in columns)
@@ -853,6 +1046,13 @@ __fmt_short = (x: f64) -> str:
 
 __fmt_nd[T] = (buf: mut u8[], data: T[], shape: int[], dim: int, start: int):
     r = shape.len() - dim
+    if dim == 0 and (r == 0 or r > 1 and data.len() == 0):
+        __buf_append_str(buf, "ndarray(")
+        __fmt_elem(buf, data)
+        __buf_append_str(buf, ", ")
+        __fmt_elem(buf, shape)
+        __buf_byte(buf, c')')
+        return
     __buf_byte(buf, c'[')
     if r <= 1:
         n = 1
@@ -867,6 +1067,7 @@ __fmt_nd[T] = (buf: mut u8[], data: T[], shape: int[], dim: int, start: int):
             loop j in [0..c):
                 if j > 0: __buf_byte(buf, c' ')
                 __fmt_elem(buf, data[start + i * c + j])
+        if shape[dim] == 1: __buf_byte(buf, c';')
     else:
         sub = __nd_size(shape[dim + 1..])
         loop i in [0..shape[dim]):
@@ -875,3 +1076,207 @@ __fmt_nd[T] = (buf: mut u8[], data: T[], shape: int[], dim: int, start: int):
         __buf_byte(buf, c']')
         return
     __buf_byte(buf, c']')
+
+# ---------------- as bytes ----------------
+# an n-dimensional array of plain values as bytes: how many dimensions it has and each of them (8
+# bytes each, little-endian), then its elements' (as to_bytes of its data): read back with
+# ndarray_from_bytes
+@plain
+to_bytes[T] = (m: T[,]) -> u8[]:
+    out: u8[]
+    append_le(out, m.shape.len(), 8)
+    loop d in m.shape: append_le(out, d, 8)
+    out.extend(to_bytes(m.data))
+    out
+
+# the array whose bytes are b (from to_bytes): `ndarray_from_bytes[f64](read_bytes(path) ?? [])`;
+# none when b is not one
+@plain
+ndarray_from_bytes[T] = (b: u8[]) -> T[,]?:
+    if b.len() < 8: return none
+    r = get_le(b, 0, 8)
+    if r < 0 or r > 64 or b.len() < 8 + 8 * r: return none
+    shape = [loop d in 0..r: get_le(b, 8 + 8 * d, 8)]
+    xs = array_from_bytes[T](b[8 + 8 * r..])?
+    loop d in shape:
+        if d < 0: return none
+    if __nd_size(shape) != xs.len() and shape.len() + xs.len() > 0: return none
+    NDArray(xs, shape)
+
+# ---------------- from CSV ----------------
+# the numbers of a CSV text as a 2-D array, a row of the array for each row of the text (NumPy's
+# loadtxt(path, delimiter=",")): `x = csv_array(read_file("data.csv") ?? "")`. A first row that
+# is not all numbers (a header) is left out; an empty field, or NA, is NaN. A TextError says
+# where a field is not a number, or a row has another number of fields than the first
+csv_array = (text: str, sep: u8 = ',') -> f64[,] | TextError:
+    # (fields in quotes: read as csv_rows reads them; else where they are, with no text made for each)
+    if find(text, "\"") >= 0: return __csv_array_rows(csv_rows(text, sep))
+    data: f64[]
+    r = __TextIn(text)
+    n = len(text)
+    i = __csv_start(text)
+    line = 0
+    rows = 0
+    cols = 0
+    loop i < n:
+        line += 1
+        e = i
+        loop e < n and text[e] != '\n': e += 1
+        le = e
+        if le > i and text[le - 1] == '\r': le -= 1
+        a = i
+        i = e + 1
+        # (a blank line: no row)
+        b = a
+        loop b < le and (text[b] == ' ' or text[b] == '\t'): b += 1
+        if b == le: continue
+        start = data.len()
+        k = 0
+        f = a
+        loop:
+            fe = f
+            loop fe < le and text[fe] != sep: fe += 1
+            if let v = __csv_number(r, f, fe): data.push(v)
+            else:
+                # (the first row with a field that is not a number: a header)
+                if rows == 0 and start == 0 and line == 1 + __csv_blank_lines(text, sep):
+                    data.clear()
+                    k = -1
+                    break
+                return TextError("line {line}, column {k + 1}: '{trim(text[f..fe))}' is not a number", line, f - a + 1)
+            k += 1
+            if fe >= le: break
+            f = fe + 1
+        if k < 0: continue
+        if rows == 0: cols = k
+        else if k != cols: return TextError("line {line} has {__fields(k)}, the first row {cols}", line, 1)
+        rows += 1
+    NDArray(data, [rows, cols])
+
+__fields = (k: int) -> str:
+    if k == 1: return "1 field"
+    "{k} fields"
+
+# (how many blank lines there are before the first that is not)
+__csv_blank_lines = (text: str, sep: u8) -> int:
+    k = 0
+    i = __csv_start(text)
+    loop i < len(text):
+        c = text[i]
+        if c == '\n': k += 1
+        else if c != ' ' and c != '\t' and c != '\r': return k
+        i += 1
+    k
+
+# the number in text[a..b) (spaces around it allowed), NaN for none (empty, NA, NaN, null); none
+# for anything else
+__csv_number = (r: mut __TextIn, a0: int, b0: int) -> f64?:
+    s = r.s
+    a = a0
+    b = b0
+    loop a < b and (s[a] == ' ' or s[a] == '\t'): a += 1
+    loop b > a and (s[b - 1] == ' ' or s[b - 1] == '\t'): b -= 1
+    if a == b: return NAN
+    if b - a <= 4 and not is_digit(s[a]):
+        w = s[a..b)
+        if w == "NA" or w == "N/A" or w == "NaN" or w == "nan" or w == "null": return NAN
+    r.i = a
+    r.err = ""
+    v = 0.0
+    __read(r, v)
+    if len(r.err) > 0 or r.i != b: return none
+    v
+
+# (csv_array of fields csv_rows read)
+__csv_array_rows = (rows: str[][]) -> f64[,] | TextError:
+    data: f64[]
+    r = __TextIn("")
+    n = 0
+    cols = 0
+    loop i in 0.. and row in rows:
+        start = data.len()
+        header = false
+        loop j in 0.. and f in row:
+            r.s = f
+            if let v = __csv_number(r, 0, len(f)): data.push(v)
+            else if i == 0: header = true
+            else: return TextError("row {i + 1}, column {j + 1}: '{trim(f)}' is not a number", i + 1, 1)
+        if header:
+            data.truncate(start)
+            continue
+        if n == 0: cols = row.len()
+        else if row.len() != cols: return TextError("row {i + 1} has {__fields(row.len())}, the first row {cols}", i + 1, 1)
+        n += 1
+    NDArray(data, [n, cols])
+
+# reading one back, from to_text's text or JSON's lists of lists ([[1, 2], [3, 4]])
+__read[T] = (r: mut __TextIn, m: mut T[,]):
+    data: T[]
+    shape: int[]
+    if not r.json and __tx_kind(r) == 6 and r.name == "ndarray":
+        __tx_word(r, false)
+        __tx_want(r, '(')
+        __read(r, data)
+        __tx_want(r, ',')
+        __read(r, shape)
+        __tx_want(r, ')')
+        # (an f64[,] never given a value has no shape and no elements)
+        if len(r.err) == 0 and __nd_size(shape) != data.len() and shape.len() + data.len() > 0: __tx_fail(r, "{data.len()} elements do not make an array of shape {__shape_str(shape)}")
+    else if r.json and __tx_kind(r) != 8:
+        # (JSON: a number alone, an array of no dimensions)
+        v: T
+        __default_init(v)
+        __read(r, v)
+        data.push(v)
+    else: shape = __nd_read(r, data)
+    if len(r.err) == 0: m = NDArray(data, shape)
+
+# one level of brackets: its shape, its elements pushed to data. Text has rows separated by ';'
+# ([1 2; 3 4], [1 2;] a single one) and lists of those; JSON lists of lists
+__nd_read[T] = (r: mut __TextIn, data: mut T[]) -> int[]:
+    __tx_want(r, '[')
+    sub: int[]          # each item's shape (none for numbers)
+    kind = 0            # what the items are: 1 numbers, 2 arrays
+    n = 0               # items in this row (in all, with no ';')
+    rows = 0            # rows ended by ';'
+    cols = 0
+    loop len(r.err) == 0:
+        if r.json:
+            if not __tx_more(r, ']', n): break
+        else:
+            __tx_eat(r, ',')
+            if __tx_eat(r, ']'): break
+            if __tx_eat(r, ';'):
+                if rows > 0 and n != cols:
+                    __tx_fail(r, "rows of different lengths ({cols} and {n})")
+                    break
+                cols = n
+                n = 0
+                rows += 1
+                continue
+            if r.i >= len(r.s):
+                __tx_fail(r, "expected ']'")
+                break
+        __tx_space(r)
+        if r.i < len(r.s) and r.s[r.i] == '[':
+            s = __nd_read(r, data)
+            if kind == 0: sub = s
+            if kind == 1 or s != sub:
+                if len(r.err) == 0: __tx_fail(r, "the parts of an array must have the same shape ({__shape_str(sub)} and {__shape_str(s)})")
+            kind = 2
+        else:
+            if kind == 2:
+                __tx_fail(r, "expected '[': the parts of an array must have the same shape")
+                break
+            kind = 1
+            v: T
+            __default_init(v)
+            __read(r, v)
+            data.push(v)
+        if len(r.err) > 0: __tx_at(r, "[{rows * cols + n}]")
+        n += 1
+    if rows == 0: return [n] + sub
+    if n > 0:
+        if n != cols and len(r.err) == 0: __tx_fail(r, "rows of different lengths ({cols} and {n})")
+        rows += 1
+    [rows, cols] + sub

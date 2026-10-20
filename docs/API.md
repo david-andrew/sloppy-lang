@@ -1288,7 +1288,7 @@ rate = get_be(packet, 0, 2)
 rate_f = f32_from_bits(u32(get_le(file, 8, 4)))   # a float's bytes
 ```
 
-Sizes are 1 to 8 bytes (3 for a 24-bit field); get_le and get_be give the bytes as an unsigned number (8 bytes: its bits as an int), get_le_signed and get_be_signed with their sign.
+Sizes are 1 to 8 bytes (3 for a 24-bit field); get_le and get_be give the bytes as an unsigned number (8 bytes: its bits as an int), get_le_signed and get_be_signed with their sign. A float's bits are a u64 (f64_bits) and these take an int: `append_le(b, int(f64_bits(x)), 8)`, and back `f64_from_bits(u64(get_le(b, at, 8)))`; to_bytes(xs) and array_from_bytes[f64](b) do a whole array.
 
 - `get_le = (b: u8[], at: int, size: int) -> int`: the size-byte number at b[at..], least significant byte first
 - `get_be = (b: u8[], at: int, size: int) -> int`: the size-byte number at b[at..], most significant byte first (network order)
@@ -1347,6 +1347,8 @@ Sizes are 1 to 8 bytes (3 for a 24-bit field); get_le and get_be give the bytes 
 
 - `to_bytes[T] = (x: T) -> u8[]`: a plain value's bytes as it is in memory (numbers, bools, vectors, fixed-size arrays and structs of them; no str or T[]): a machine's state saved in one go, `write_bytes(path, to_bytes(cpu))`. They are this program's layout of the type, on a little-endian machine (every one Sloppy runs on): for reading back with from_bytes, not a file format for other programs
 - `from_bytes[T] = (b: u8[]) -> T?`: the plain value whose bytes are b (from to_bytes): `from_bytes[Cpu](read_bytes(path) ?? [])`; none when b is not the size of a T
+- `to_bytes[T] = (xs: T[]) -> u8[]`: an array of plain values: its elements' bytes one after another (n f64s are 8n bytes, as in a C array and NumPy's tobytes): `write_bytes(path, to_bytes(weights))`
+- `array_from_bytes[T] = (b: u8[]) -> T[]?`: the array whose elements' bytes are b (from to_bytes): `array_from_bytes[f64](read_bytes(path) ?? [])`; none when b is not a whole number of them
 
 #### From C
 
@@ -2158,7 +2160,7 @@ print(grid)
 
 Arrays for numeric work, in the spirit of numpy and MATLAB.
 
-T[,] is an n-dimensional array (NDArray[T]): its elements in row-major order, and its shape. How many dimensions it has is part of the value, as in numpy (T[,,] is the same type; the commas are only for the reader). Write a 2-D one as [1 2; 3 4] (rows separated by ';' or line breaks), stack arrays with [a; b], or make one with zeros(2, 3, 4), ones, eye, rand, reshape. m[i, j] (with as many indexes as dimensions) reads and writes an element; m.shape is its shape. Ranges select parts: m[i, ..] is row i, m[.., j] column j, m[1..2, 0..] a block (ranges include both ends; missing indexes at the end mean whole axes). A part is an array of its own; assigning to one (m[.., 0] = xs, m[0, ..] = 0.0) writes into m.
+T[,] is an n-dimensional array (NDArray[T]): its elements in row-major order, and its shape. How many dimensions it has is part of the value, as in numpy (T[,,] is the same type; the commas are only for the reader). Write a 2-D one as [1 2; 3 4] (rows separated by ';' or line breaks), stack arrays with [a; b], or make one with zeros(2, 3, 4), ones, eye, rand, reshape. m[i, j] (with as many indexes as dimensions) reads and writes an element; m.shape is its shape. Ranges select parts: m[i, ..] is row i, m[.., j] column j, m[1..3, 0..] a block (a..b leaves b out, as everywhere; missing indexes at the end mean whole axes). A part is an array of its own: m[i, ..] is a 1-D T[,], which goes where a T[] is expected (row(m, i) gives the T[] itself, the fast way in a loop). Assigning to one (m[.., 0] = xs, m[0, ..] = 0.0) writes into m. An array of indexes or a mask picks parts along its axis: x[idx, ..] is the rows idx, in that order.
 
 The dotted operators work element by element on arrays of any shape, and broadcast like numpy (a dimension of length 1, or a missing leading one, stretches to fit): a .* b, m .+ 1.0, v .^ 2, xs .< 0.5, and f.(xs) applies f to each element. A whole dotted expression runs as one loop. On 2-D arrays the plain operators follow linear algebra: a * b is the matrix product.
 
@@ -2190,6 +2192,21 @@ The dotted operators work element by element on arrays of any shape, and broadca
 - `([]=)[T] = (m: mut T[,], i: int, j: int, v: T)`
 - `([]=)[T] = (m: mut T[,], i: int, j: int, k: int, v: T)`
 - `([]=)[T] = (m: mut T[,], i: int, j: int, k: int, l: int, v: T)`
+
+#### Picking along an axis
+
+- `take[T] = (m: T[,], idx: int[], axis: int = 0) -> T[,]`: the parts of m at these indexes along an axis, in their order (NumPy's take): take(x, idx) is the rows idx of x, as x[idx, ..] and x[idx] are (a mini-batch); with a mask (a bool[] as long as the axis), the parts where it is true
+- `take[T] = (m: T[,], mask: bool[], axis: int = 0) -> T[,]`
+- `([])[T] = (m: T[,], idx: int[]) -> T[,]`
+- `([])[T] = (m: T[,], mask: bool[]) -> T[,]`
+
+#### Joining
+
+- `concat[T] = (a: T[,], b: T[,], axis: int = 0) -> T[,]`: the arrays joined along an axis (NumPy's concatenate): their other dimensions must be the same. concat(a, b) puts b's rows under a's, concat(a, b, 1) b's columns after a's
+- `concat[T] = (parts: T[,][], axis: int = 0) -> T[,]`
+- `vstack[T] = (parts: T[,][]) -> T[,]`: NumPy's vstack and hstack: rows under rows, a 1-D array being a row (so [a; b] for two), and columns after columns (1-D arrays joined end to end)
+- `vstack[T] = (rows: T[][]) -> T[,]`
+- `hstack[T] = (parts: T[,][]) -> T[,]`
 
 #### Making arrays
 
@@ -2241,10 +2258,16 @@ The dotted operators work element by element on arrays of any shape, and broadca
 - `median = (xs: int[]) -> f64`
 - `std_dev = (xs: f64[]) -> f64`: how far the values are from their mean, on average (the standard deviation of these values: the population's, as numpy's std; Python's statistics.stdev divides by n - 1 instead)
 - `std_dev = (xs: int[]) -> f64`
-- `sum[T] = (m: T[,], axis: int) -> T[,]`: along one axis: the array without that axis, each element combining the ones along it (sum(m, 0) adds up the rows of a 2-D array: one sum per column)
-- `min[T] = (m: T[,], axis: int) -> T[,]`
-- `max[T] = (m: T[,], axis: int) -> T[,]`
-- `mean = (m: f64[,], axis: int) -> f64[,]`
+- `sum[T] = (m: T[,], axis: int, keepdims = false) -> T[,]`: along one axis: the array without that axis, each element combining the ones along it (sum(m, 0) adds up the rows of a 2-D array: one sum per column). keepdims = true keeps the axis, with length 1, so that the result broadcasts against m: m .- max(m, 1, keepdims = true) takes each row's largest from the row (NumPy's keepdims)
+- `min[T] = (m: T[,], axis: int, keepdims = false) -> T[,]`
+- `max[T] = (m: T[,], axis: int, keepdims = false) -> T[,]`
+- `mean = (m: f64[,], axis: int, keepdims = false) -> f64[,]`
+- `argmax[T] = (m: T[,], axis: int, keepdims = false) -> int[,]`: where the largest (smallest) value along an axis is: its index there, the first of equal ones (argmax(scores, 1): each row's best column, as NumPy's argmax(axis=1))
+- `argmin[T] = (m: T[,], axis: int, keepdims = false) -> int[,]`
+- `softmax = (m: f64[,], axis: int) -> f64[,]`: e^x of each element over the sum of those along the axis: each row of softmax(scores, 1) is positive and adds up to 1. The largest along the axis is taken away first, so that no e^x overflows (NumPy-style code writes the same, scipy's softmax)
+- `softmax = (xs: f64[]) -> f64[]`
+- `logsumexp = (m: f64[,], axis: int, keepdims = false) -> f64[,]`: log(sum(exp(m), axis)), without exp overflowing or underflowing: the largest along the axis is taken out first (scipy's logsumexp)
+- `logsumexp = (xs: f64[]) -> f64`
 - `dot = (a: f64[], b: f64[]) -> f64`: the sum of a[i] * b[i] (kept in four running sums, about twice as fast: rounded a little differently from adding in order, the same for the same input every time)
 - `norm = (a: f64[]) -> f64`
 - `variance = (xs: f64[]) -> f64`: the variance: the mean of the squared distances from the mean (NumPy's var; std_dev squared)
@@ -2283,6 +2306,15 @@ The dotted operators work element by element on arrays of any shape, and broadca
 - `(/)[T] = (m: T[,], k: T) -> T[,]`
 - `(+)[T] = (a: T[,], b: T[,]) -> T[,]`
 - `(-)[T] = (a: T[,], b: T[,]) -> T[,]`
+
+#### As bytes
+
+- `to_bytes[T] = (m: T[,]) -> u8[]`: an n-dimensional array of plain values as bytes: how many dimensions it has and each of them (8 bytes each, little-endian), then its elements' (as to_bytes of its data): read back with ndarray_from_bytes
+- `ndarray_from_bytes[T] = (b: u8[]) -> T[,]?`: the array whose bytes are b (from to_bytes): `ndarray_from_bytes[f64](read_bytes(path) ?? [])`; none when b is not one
+
+#### From CSV
+
+- `csv_array = (text: str, sep: u8 = ',') -> f64[,] \| TextError`: the numbers of a CSV text as a 2-D array, a row of the array for each row of the text (NumPy's loadtxt(path, delimiter=",")): `x = csv_array(read_file("data.csv") ?? "")`. A first row that is not all numbers (a header) is left out; an empty field, or NA, is NaN. A TextError says where a field is not a number, or a row has another number of fields than the first
 
 ## The window, the game loop and input
 

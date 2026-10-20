@@ -1074,10 +1074,18 @@ layers = cube .* reshape([1.0, 2.0, 3.0, 4.0], 4, 1, 1)   # broadcasting along t
 Ranges among the indexes select parts: `m[i, ..]` is row `i`, `m[.., j]` column `j`,
 `m[1..3, 3..]` a block (`a..b` leaves `b` out, as everywhere, and `[a..b]` keeps it; `a..` runs to the end of the axis, and indexes
 left out at the end mean whole axes). A part is an array of its own; assigning to one writes into
-the array: `m[.., 0] = xs`, `m[0, ..] = 0.0`. A 1-D one (a row, a column) goes where a `T[]` is
-expected, as in `argmax(m[0, ..])` or a function of your own (one with more dimensions there
-stops the program: `m.data` has all the elements). `sum(m, axis)`, `mean`, `min` and `max` reduce along
-one axis (`sum(m, 0)` adds up the rows: one sum per column).
+the array: `m[.., 0] = xs`, `m[0, ..] = 0.0`. A 1-D one (a row, a column) is itself a `T[,]`, and
+goes where a `T[]` is expected, as in `argmax(m[0, ..])`, a function of your own or a
+comprehension of that type, `rows: f64[][] = [loop i in 0..n: m[i, ..]]` (one with more
+dimensions there stops the program: `m.data` has all the elements); `row(m, i)` gives the `f64[]`
+at once. An array of indexes, or a mask, among the indexes picks those parts along its axis, in
+that order: `x[idx, ..]` (or `x[idx]`) the rows idx, a mini-batch, `x[.., [2, 0]]` two columns,
+`x[x[.., 0] .> 0.5, ..]` the rows whose first element is over 0.5 (`take(m, idx, axis)` for any
+axis). `sum(m, axis)`, `mean`, `min`, `max`, `argmax` and `argmin` reduce along one axis
+(`sum(m, 0)` adds up the rows: one sum per column); `keepdims = true` keeps the axis with
+length 1, so the result broadcasts against `m`: `m .- max(m, 1, keepdims = true)`. `softmax(m, 1)`
+and `logsumexp(m, 1)` take the largest along the axis out first, so nothing overflows.
+`concat(a, b, axis)` joins arrays along an axis, `vstack` and `hstack` lists of them.
 
 ```gdscript
 img = zeros(480, 640, 3)
@@ -1085,6 +1093,13 @@ img[.., .., 0] = 1.0             # the red channel
 top = img[0..239, ..]
 brightness = sum(img, 2)            # (480x640)
 ```
+
+Printed, `to_text` and `save_value` write an array as it is written in code, `[1.0 2.0; 3.0 4.0]`
+(a single row ends with `;`, `[1.0 2.0;]`, and one with no elements says its shape), and
+`from_text`, `load_value` read it back the same; `to_json` writes lists of lists, which
+`from_json[f64[,]](text)` reads. `csv_array(text)` reads the numbers of a CSV file into a 2-D
+array (a header row is left out), and `to_bytes(m)` / `ndarray_from_bytes[f64](b)` keep one as
+its bytes.
 
 `zeros`, `ones`, `rand` (uniform in [0, 1)) and `randn` (normal) take 1 to 4 dimensions (with
 one, they make a plain `f64[]`); also `eye(n)`, `linspace(a, b, n)`, `reshape(xs, dims...)` or
@@ -1109,12 +1124,20 @@ the rest under Arrays):
 | `a[a > 0.5]`, `a[a < 0] = 0`, `a[np.argsort(a)]` | `a[a .> 0.5]`, `a[a .< 0.0] = 0.0`, `a[argsort(a)]` |
 | `np.where(a > 2, a, 0)` | `[loop x in a: (if x > 2.0: x else: 0.0)]` |
 | `a.sum(axis=0)`, `a.mean()`, `a.std()`, `a.var()` | `sum(a, 0)`, `mean(a)`, `std_dev(a)`, `variance(a)` |
+| `a.max(axis=1, keepdims=True)`, `a.argmax(axis=1)` | `max(a, 1, keepdims = true)`, `argmax(a, 1)` |
+| `softmax(a, axis=1)`, `logsumexp(a, axis=1)` (scipy) | `softmax(a, 1)`, `logsumexp(a, 1)` |
+| `a[idx]`, `a[idx, :]`, `a[:, idx]`, `np.take(a, idx, axis)` | `a[idx]`, `a[idx, ..]`, `a[.., idx]`, `take(a, idx, axis)` |
+| `mask.astype(float)` | `f64.(mask)` |
 | `np.percentile(a, 90)`, `np.median(a)`, `a.argmax()`, `np.cumsum(a)` | `percentile(a, 90.0)`, `median(a)`, `argmax(a)`, `cumsum(a)` |
 | `np.concatenate([a, b])`, `np.vstack([a, b])`, `np.dot(a, b)` | `a + b`, `[a; b]`, `dot(a, b)` |
+| `np.concatenate([a, b], axis=1)`, `np.hstack([a, b])` | `concat(a, b, 1)`, `hstack([a, b])` |
+| `np.loadtxt(path, delimiter=",")`, `a.tolist()` (JSON) | `csv_array(read_file(path) ?? "")`, `to_json(a)` |
 | `np.linalg.solve(m, v)`, `np.linalg.inv(m)`, `np.linalg.det(m)` | `solve(m, v)`, `inverse(m)`, `det(m)` |
 
-Two differences catch NumPy hands: `+` on 1-D arrays joins them (`.+` adds), and a whole
-dotted expression is one loop, so `a .* 2.0 .+ b` makes no array in between.
+Three differences catch NumPy hands: `+` on 1-D arrays joins them (`.+` adds); a whole
+dotted expression is one loop, so `a .* 2.0 .+ b` makes no array in between; and in brackets a
+`-` joins what is on its two sides, so `[1.0 -2.0; 3.0 4.0]` has a first row of one element
+(`1.0 - 2.0`): write `[1.0, -2.0; 3.0, 4.0]` or `[1.0 (-2.0); 3.0 4.0]`.
 
 **Struct-of-arrays.** `ps: soa Particle[]` is used like `Particle[]` for `push`, `pop`,
 `remove`, `clear`, `reserve`, `truncate`, `len`, `ps[i]`, `ps[i].x += 1`, `loop p in ps`,
@@ -2090,10 +2113,17 @@ allocated each time round; make it once outside.
 
 **Loops the compiler can speed up.** `loop mut p in ps:` and `loop i in 0..n: a[i] ...`
 lose their bounds checks and vectorize in release builds, as do integer sums over a loop
-(float sums keep their order, so that every machine gets the same result). An index the compiler cannot follow
-(`c[i * n + j]` in a matrix) keeps its check on each access: a row array per row (`c[i][j]`),
-`soa` arrays (section 8), or a pointer from `data(xs)` (section 13) let it go. Calls through
-function values (`reduce`, `sort_by`, a lambda) are not inlined: in a hot loop, write the loop.
+(float sums keep their order, so that every machine gets the same result: `dot` and `sum` of
+an array add in several running sums). So does an index that is the counter plus something the
+loop does not change, as a row of a flat matrix, `c[i * n + j] += x * b[k * n + j]`, and the
+same through a pointer from `data(xs)` (section 13). Through a pointer, write the loop in a
+function, with the sizes as its parameters or variables: in top-level code they are globals,
+which a write through the pointer could change, so they are read again for each element.
+Indexes the compiler cannot follow (`c[idx[j]]`) keep their check on each access. For numeric
+arrays the library does this already: `a * b` of two `f64[,]` is a matrix product in blocks that
+stay in the cache, vectorized and shared among the cores when large, and a dotted expression
+over `f64[,]` arrays of one shape is one vectorized loop, as over `f64[]`. Calls through function
+values (`reduce`, `sort_by`, a lambda) are not inlined: in a hot loop, write the loop.
 `soa T[]` keeps each field together, which is what loops over one or two fields want.
 
 **Functions.** Release builds copy small functions into their callers; `@inline` on a function

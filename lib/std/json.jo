@@ -379,11 +379,18 @@ __json_of_text = (r: mut __TextIn) -> Json:
         if k == 10: close = ')'
         r.i += 1
         items: Json[]
+        rows: Json[]        # (an n-dimensional array's rows, [1 2; 3 4]: a list of lists)
         loop len(r.err) == 0:
             __tx_eat(r, ',')
             if __tx_eat(r, close): break
+            if close == ']' and __tx_eat(r, ';'):
+                rows.push(Json.list(items))
+                items = []
+                continue
             items.push(__json_of_text(r))
-        return Json.list(items)
+        if rows.len() == 0: return Json.list(items)
+        if items.len() > 0: rows.push(Json.list(items))
+        return Json.list(rows)
     if k == 9:
         r.i += 1
         keys: str[]
@@ -402,6 +409,20 @@ __json_of_text = (r: mut __TextIn) -> Json:
         name = r.name
         __tx_word(r, false)
         __tx_want(r, '(')
+        if name == "ndarray":
+            # (an n-dimensional array with no elements, ndarray([], [2, 0]): lists as deep as its
+            # shape goes, [[], []]; a number for one with no dimensions)
+            elems = __json_of_text(r)
+            shape: int[]
+            __tx_eat(r, ',')
+            __read(r, shape)
+            __tx_want(r, ')')
+            # (one of no dimensions, ndarray([7.5], []): its number)
+            match elems:
+                .list(xs):
+                    if shape.len() == 0 and xs.len() == 1: return xs[0]
+                _: pass
+            return __json_nd_empty(shape, 0)
         # (a struct names its fields: Name(a=1); a vector or an enum's variant does not)
         at = r.i
         w = __tx_word(r, false)
@@ -441,6 +462,12 @@ __json_of_text = (r: mut __TextIn) -> Json:
     __tx_fail(r, "a value that is not JSON")
     Json.null_
 
+__json_nd_empty = (shape: int[], d: int) -> Json:
+    items: Json[]
+    if d + 1 < shape.len():
+        loop _ in [0..shape[d]): items.push(__json_nd_empty(shape, d + 1))
+    Json.list(items)
+
 # (to_text's text of a value, written as JSON: what __json_of_text reads, as __json_write writes
 # it with no indent)
 __json_of_text_write = (r: mut __TextIn, b: mut u8[]):
@@ -464,14 +491,24 @@ __json_of_text_write = (r: mut __TextIn, b: mut u8[]):
         close: u8 = ']'
         if k == 10: close = ')'
         r.i += 1
+        start = b.len()
         b.push('[')
         n = 0
+        rows = 0            # (an n-dimensional array's rows, [1 2; 3 4]: [[1,2],[3,4]])
         loop len(r.err) == 0:
             __tx_eat(r, ',')
             if __tx_eat(r, close): break
-            if n > 0: b.push(',')
+            if close == ']' and __tx_eat(r, ';'):
+                if rows == 0: b.insert(start + 1, '[')
+                b.push(']')
+                rows += 1
+                n = 0
+                continue
+            if n == 0 and rows > 0: __json_put(b, ",[")
+            else if n > 0: b.push(',')
             __json_of_text_write(r, b)
             n += 1
+        if rows > 0 and n > 0: b.push(']')
         b.push(']')
         return
     if k == 9:
@@ -493,8 +530,9 @@ __json_of_text_write = (r: mut __TextIn, b: mut u8[]):
         return
     if k == 6:
         name = r.name
-        # (a Json inside the value, and vectors: as __json_of_text reads them)
-        if name == "boolean" or name == "integer" or name == "number" or name == "text" or name == "list" or name == "object" or starts_with(name, "vec") or starts_with(name, "ivec") or name == "mat4":
+        # (a Json inside the value, vectors and an empty n-dimensional array: as __json_of_text
+        # reads them)
+        if name == "ndarray" or name == "boolean" or name == "integer" or name == "number" or name == "text" or name == "list" or name == "object" or starts_with(name, "vec") or starts_with(name, "ivec") or name == "mat4":
             __json_write(b, __json_of_text(r), 0, 0)
             return
         __tx_word(r, false)

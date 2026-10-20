@@ -5867,8 +5867,16 @@ check_expr = (n: int, expected: int) -> int:
         if bk == .typeval: t = mk_typeval(expr_as_type(n))
         else if b != 0 and nodes[b].kind != .range and is_soa(bt): return check_soa_index(n, expected)
         else if bk == .struct_ and is_part_index(n):
-            # m[i, ..], m[1..2, 0..]: a part of an n-dimensional array
-            call = bc_call("__nd_slice", [int(nodes[n].a), part_spec(n)], nodes[n].pos)
+            # m[i, ..], m[1..2, 0..]: a part of an n-dimensional array; m[idx, ..] with idx an
+            # int[] (or a bool[] mask) the parts at those indexes along that axis (NumPy's X[idx, :])
+            fx = part_pick_axis(n)
+            call = 0
+            if fx < 0: call = bc_call("__nd_slice", [int(nodes[n].a), part_spec(n)], nodes[n].pos)
+            else:
+                idx = kid(n, fx)
+                whole = mk(.range, nodes[idx].pos)
+                set_kid(n, fx, whole)
+                call = bc_call("__nd_take_part", [int(nodes[n].a), part_spec(n), bc_int(fx, nodes[n].pos), idx], nodes[n].pos)
             add_flag(int(nodes[n].a), NF_CHECKED)
             nodes[n] = nodes[call]
             t = check_expr(n, expected)
@@ -6703,6 +6711,21 @@ is_part_index = (n: int) -> bool:
         if nodes[kid(n, i)].kind == .range: return true
     false
 
+# the index of m[...] that is an array of indexes or a mask (-1: none)
+part_pick_axis = (n: int) -> int:
+    if nodes[n].b != 0: return -1
+    at = -1
+    loop i in [0..nkids(n)):
+        x = kid(n, i)
+        k = nodes[x].kind
+        if k == .range or k == .int_lit: continue
+        t = prune(check_expr(x, 0))
+        add_flag(x, NF_CHECKED)
+        if types[t].kind != .array and not is_nd(t): continue
+        if at >= 0: fatal(nodes[x].pos, "one array of indexes at a time picks parts of an n-dimensional array (take(m, idx, axis) for each axis in turn)")
+        at = i
+    at
+
 # the indexes of m[...] as (lo, hi, kind) triples for __nd_slice (see lib/std/nd.jo)
 part_spec = (n: int) -> int:
     pos = nodes[n].pos
@@ -6922,7 +6945,6 @@ dot_template = (n: int, leaves: mut int[], tag: str) -> int:
 bc_loop_nd = (tmpl: int, arrs: str[], kinds: int[], pre: str, epre: str, pos: int) -> int[]:
     stmts: int[]
     rowpre: int[]
-    body: int[]
     out = "{pre}o"
     shp = (k: int) -> int:
         if kinds[k] == 2: return bc_field(bc_ident(arrs[k], pos), "shape", pos)
@@ -6935,32 +6957,64 @@ bc_loop_nd = (tmpl: int, arrs: str[], kinds: int[], pre: str, epre: str, pos: in
     sa = mk(.array, pos)
     set_list(sa, shs)
     id = (nm: str) -> int: bc_ident("{pre}{nm}", pos)
+    # (a and b, or b alone when a is 0)
+    both = (a: int, b: int) -> int:
+        if a == 0: return b
+        x = mk(.and_, pos)
+        nodes[x].a = i32(a)
+        nodes[x].b = i32(b)
+        x
     stmts.push(bc_let("{pre}shs", sa, pos))
     stmts.push(bc_let("{pre}shp", bc_call("__bcast_shape", [id("shs")], pos), pos))
     stmts.push(bc_let("{pre}n", bc_call("__nd_size", [id("shp")], pos), pos))
     stmts.push(bc_let("{pre}in", bc_call("__bcast_inner", [id("shs"), id("shp")], pos), pos))
     stmts.push(bc_let("{pre}on", bc_bin(.slash, id("n"), bc_call("max", [id("in"), bc_int(1, pos)], pos), pos), pos))
+    xarrs: str[]
+    all_full = 0
+    all_unit = 0
     loop k in [0..kinds.len()):
-        if kinds[k] == 0: continue
+        if kinds[k] == 0:
+            xarrs.push("")
+            continue
         src = bc_ident(arrs[k], pos)
         if kinds[k] == 2: src = bc_field(bc_ident(arrs[k], pos), "data", pos)
         stmts.push(bc_let("{pre}x{k}", src, pos))
         stmts.push(bc_let("{pre}st{k}", bc_call("__bcast_strides", [shp(k), id("shp")], pos), pos))
         stmts.push(bc_let("{pre}ls{k}", bc_call("__bcast_last", [id("st{k}"), bc_call("len", [id("x{k}")], pos), id("n")], pos), pos))
         rowpre.push(bc_let("{pre}b{k}", bc_call("__bcast_offset", [id("r"), id("shp"), id("st{k}")], pos), pos))
-        ix = mk(.index, pos)
-        nodes[ix].a = i32(id("x{k}"))
-        nodes[ix].b = i32(bc_bin(.plus, id("b{k}"), bc_bin(.star, id("j"), id("ls{k}"), pos), pos))
-        body.push(bc_let("{epre}e{k}", ix, pos))
+        xarrs.push("{pre}x{k}")
+        all_full = both(all_full, bc_bin(.eq, bc_call("len", [id("x{k}")], pos), id("n"), pos))
+        all_unit = both(all_unit, bc_bin(.eq, id("ls{k}"), bc_int(1, pos), pos))
     stmts.push(bc_let(out, mk(.array, pos), pos))
     stmts.push(bc_stmt(bc_method(bc_ident(out, pos), "reserve", [id("n")], pos), pos))
-    # (on * in = n elements, room reserved; the indexes keep their checks: an NDArray's data and
-    # shape could disagree)
-    pu = bc_method(bc_ident(out, pos), "push", [tmpl], pos)
-    add_flag(pu, NF_INBOUNDS)
-    body.push(bc_stmt(pu, pos))
-    rowpre.push(bc_loop("{pre}j", id("in"), body, pos))
-    stmts.push(bc_loop("{pre}r", id("on"), rowpre, pos))
+    # (room for every element, written at its place: n = on * in)
+    stmts.push(bc_stmt(bc_call("__set_len", [bc_ident(out, pos), id("n")], pos), pos))
+    # with every operand of the result's size (no stretching: the usual case) element i of each
+    # is at i, in a loop the compiler can run several elements at a time, as for 1-D arrays
+    fast = bc_loop("{pre}i", id("n"), bc_body1(clone(tmpl), xarrs, pre, epre, out, false, pos), pos)
+    # else a loop for each row of the result, along the rows of the operands (the indexes keep
+    # their checks: an NDArray's data and shape could disagree); when none is stretched along it
+    # (m .+ v with v a row) element j of each is at its row's start + j, again a loop of the kind
+    # the compiler speeds up
+    row = (unit: bool, t: int) -> int:
+        body: int[]
+        loop k in [0..kinds.len()):
+            if kinds[k] == 0: continue
+            ix = mk(.index, pos)
+            nodes[ix].a = i32(id("x{k}"))
+            if unit: nodes[ix].b = i32(bc_bin(.plus, id("b{k}"), id("j"), pos))
+            else: nodes[ix].b = i32(bc_bin(.plus, id("b{k}"), bc_bin(.star, id("j"), id("ls{k}"), pos), pos))
+            body.push(bc_let("{epre}e{k}", ix, pos))
+        ixo = mk(.index, pos)
+        nodes[ixo].a = i32(bc_ident(out, pos))
+        nodes[ixo].b = i32(bc_bin(.plus, id("ro"), id("j"), pos))
+        add_flag(ixo, NF_INBOUNDS)
+        body.push(bc_assign(ixo, t, pos))
+        bc_loop("{pre}j", id("in"), body, pos)
+    rowpre.push(bc_let("{pre}ro", bc_bin(.star, id("r"), id("in"), pos), pos))
+    rowpre.push(bc_if(id("unit"), [row(true, clone(tmpl))], [row(false, tmpl)], pos))
+    stmts.push(bc_let("{pre}unit", all_unit, pos))
+    stmts.push(bc_if(all_full, [fast], [bc_loop("{pre}r", id("on"), rowpre, pos)], pos))
     stmts.push(bc_stmt(bc_call("ndarray", [bc_ident(out, pos), id("shp")], pos), pos))
     stmts
 
