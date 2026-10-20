@@ -122,8 +122,9 @@ TOPICS = [
      "UDP datagrams between native programs, TCP and TLS streams, and `fetch` for what is at an http:// or https:// address."),
     ("Games", "http", "HTTP servers", ["http"], "http",
      "A module (`import http`): a web site, an API or a game's page served from a native program: routes with `:names`, "
-     "JSON, cookies, files, server-sent events, and WebSockets on the same port (as net's peers). It waits with `net.wait`, so a "
-     "slow client holds up no other; behind Caddy it serves https ([writing a server](START.md#writing-a-server))."),
+     "JSON, cookies (signed ones too), files, server-sent events, WebSockets on the same port (as net's peers), rate limits, "
+     "and its own answers (404, 413...) as the program says. It waits with `net.wait`, so a slow client holds up no other; "
+     "behind Caddy it serves https ([writing a server](START.md#writing-a-server)). `sloppy new my_site server` starts one."),
     ("Games", "invite", "Invite a friend", ["invite"], "invite",
      "A module (`import invite`): the screens that connect two players with invite codes and no server: a link to send "
      "in a chat (it opens the game in a browser), a code sent back, copying, sharing and pasting (on phones too), and why "
@@ -249,11 +250,17 @@ def entries_of(path, only=None):
             continue
         m = re.match(r"(?:error\s+)?(struct|enum|const|type)\s+([A-Za-z_]\w*)(.*)", s)
         f = re.match(r"(?:extern\s+)?(\([^)\s]+\)|[A-Za-z_]\w*)(\[[^\]]*\])?\s*=\s*\(", s)
-        if not s.startswith(" ") and (m or f):
-            name = m.group(2) if m else f.group(1)
+        # (a setting the program changes, with a comment saying what it does: `gzip = true`,
+        # `trust_proxy: str[]`, `on_error: (Request, int, str) -> Response = __http_error`)
+        g = None if (m or f or not comment) else re.fullmatch(r"([a-z]\w*)(\s*:\s*[^=#]+?)?(\s*=\s*[^#]+?)?(\s+#.*)?", s)
+        if g and not g.group(2) and not g.group(3): g = None
+        if not s.startswith(" ") and (m or f or g):
+            name = m.group(2) if m else f.group(1) if f else g.group(1)
             if not name.startswith("_") and (only is None or name in only):      # (private, and the runtime's __ names)
                 sig = s
-                if f and not m: sig = signature(s)
+                # (a setting's default when it is the library's own function: left out)
+                if g: sig = g.group(1) + (g.group(2) or "") + ("" if not g.group(3) or g.group(3).strip(" =").startswith("_") else g.group(3))
+                elif f and not m: sig = signature(s)
                 elif m.group(1) == "struct": sig = s.split(":")[0]
                 elif m.group(1) == "const": sig = re.sub(r"\s+#.*$", "", s)
                 if sig.strip() not in seen:

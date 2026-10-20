@@ -2757,6 +2757,7 @@ draw = ():
 
 #### Textures
 
+- `smooth_textures = true`: whether a texture is smoothed (sampled linearly) when drawn larger, smaller or between pixels, where texture() and load_texture() are not told: yes, until pixel_art() makes it no (sharp pixels, no blur and no dark fringes around transparent ones). It is read when a texture is made.
 - `texture = (img: Image, smooth: bool = smooth_textures) -> Texture`: upload an image to the GPU (smooth: see smooth_textures)
 - `set_repeat = (t: Texture, on: bool)`: a texture that repeats past its edges, for sprite_region (and a shader's sample) beyond them: a source rectangle wider than the texture shows it again and again. Off (the default), what is past an edge is that edge's pixels, stretched. A whole texture repeats, not a part of a sheet: sprite_tiled repeats any part, on every texture.
 - `update_texture = (t: Texture, img: Image)`
@@ -5132,6 +5133,7 @@ Masses come from sizes and `density` (kilograms per cubic meter: 1000 is water's
       normal: vec3
       fraction: f32
   ```
+- `ground = Body(0)`: the world itself, for joints to it: w.ball(ground, lamp, at) hangs a lamp from a fixed point
 
 #### The world
 
@@ -5453,7 +5455,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 
 ## HTTP servers
 
-A module (`import http`): a web site, an API or a game's page served from a native program: routes with `:names`, JSON, cookies, files, server-sent events, and WebSockets on the same port (as net's peers). It waits with `net.wait`, so a slow client holds up no other; behind Caddy it serves https ([writing a server](START.md#writing-a-server)).
+A module (`import http`): a web site, an API or a game's page served from a native program: routes with `:names`, JSON, cookies (signed ones too), files, server-sent events, WebSockets on the same port (as net's peers), rate limits, and its own answers (404, 413...) as the program says. It waits with `net.wait`, so a slow client holds up no other; behind Caddy it serves https ([writing a server](START.md#writing-a-server)). `sloppy new my_site server` starts one.
 
 ```gdscript
 # example: HTTP servers
@@ -5583,6 +5585,10 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
   todos[id] = t                                   # (its title as it was)
   ```
 - `set_cookie = (res: mut Response, name: str, value: str, max_age: int = -1, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = "")`: a Set-Cookie on the answer: the client sends the cookie back with its requests from then on (r.cookies), for max_age seconds (-1: until the browser closes). http_only: not for the page's JavaScript; secure: over https only (secure_cookies: every cookie); same_site: "Lax" (sent with the site's own requests, and when a link from another site is followed), "Strict" (the site's own only) or "None" (any site's requests too: then Secure, as browsers require)
+- `secure_cookies = false`: every cookie Secure: sent by the browser over https only. For a site served over https (behind Caddy), where a cookie that went over http too could be read on the way:
+  ```gdscript
+  http.secure_cookies = env("DEV") == none        # (http://localhost while developing)
+  ```
 - `clear_cookie = (res: mut Response, name: str, path: str = "/", domain: str = "")`: a Set-Cookie that has the client forget a cookie (path and domain as it was set with)
 - `set_signed_cookie = (res: mut Response, name: str, value: str, secret: str, max_age: int = 7 * 86400, path: str = "/", http_only: bool = true, secure: bool = false, same_site: str = "Lax", domain: str = "")`: a cookie the client can read but not change or make up (a session's user, a cart): its value signed with secret (HMAC-SHA256 over its name, value and when it ends), signed_cookie reads it back. As set_cookie's (HttpOnly, SameSite=Lax), and good for max_age seconds, a week unless said (-1: until the browser closes, its signature good for as long). The value is in it to read (base64), not hidden: no password in it. secret: 16 bytes or more, kept out of the code (env("SESSION_SECRET"), or crypto.hex_text(crypto.random_bytes(32)) made once and saved); a new secret undoes every cookie signed with the old one (everyone signed out)
   ```gdscript
@@ -5604,6 +5610,8 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 
 #### Streams: server-sent events and chunks
 
+- `heartbeat = 15.0`: seconds an events() stream may be sent nothing before a comment goes to it (0: none go)
+- `most_streams = 1000`: the most streams (stream(), events()) open at once; one more is answered 503 (on_error's). Each holds a connection open, and the connections a program may have are shared by all
 - `stream_open = (conn: int) -> bool`: whether a stream (the r.conn of a stream() or events() answer) is open: false once its client has gone, end_stream ended it, or the server stopped
 - `stream = (type: str = "text/plain; charset=utf-8") -> Response`: an answer whose body is sent later, a chunk at a time (send_chunk, then end_stream)
 - `events = () -> Response`: a stream of server-sent events, what a web page's EventSource reads (send_event)
@@ -5623,6 +5631,14 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 - `after = (f: (Request, Response) -> Response)`: a function each request's answer goes through after its route (a WebSocket's too, as its 101)
 - `after = (prefix: str, f: (Request, Response) -> Response)`: a function the answers to the paths under prefix go through after their route
 
+#### What the server answers itself
+
+- `on_error: (Request, int, str) -> Response`: The answers no handler made: 404 (no route has the path), 405 (routes have it for other methods: Allow says which), 500 (a handler panicked), and a request refused before it gets to a route (400 not HTTP's, 408 too slow to come, 413 its body too big, 431 its headers, 501 a Transfer-Encoding not taken, 503 too many streams). They are on_error's: given the request (as much of it as was read), the status and why ("" for 404, 405 and 500), and they go through after() as any answer. As text unless changed: an API answers JSON with
+  ```gdscript
+  http.on_error = (r: http.Request, code: int, why: str) -> http.Response:
+      http.json_error(code, if len(why) > 0: why else: http.reason(code))
+  ```
+
 #### CORS: requests from web pages of other sites
 
 - `cors = (origins: str[] = ["*"], methods: str = "GET, HEAD, POST, PUT, PATCH, DELETE", headers: str = "Content-Type, Authorization", credentials: bool = false, max_age: int = 600, prefix: str = "/")`: A browser lets a page of another site (another origin: scheme, host and port) read this server's answers only when they say it may: cors(origins) says so for those sites ("*": any site), and answers the browser's preflight (an OPTIONS request it sends first, for a PUT, a DELETE, or a request with JSON or an Authorization header) before any before() or route sees it. credentials: the page's cookies (and Authorization) go along (with the sites listed only: a browser sends none to "*"); max_age: how many seconds a browser may keep a preflight's answer
@@ -5631,6 +5647,10 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
   http.cors()                                     # any site (an open API, without cookies)
   http.cors(["https://example.com"], prefix = "/api/")   # the paths under /api/ only
   ```
+
+#### Gzip
+
+- `gzip = true`: Answers of text (HTML, CSS, JavaScript, JSON, SVG...) and WebAssembly of 1 KB or more are sent gzip'd to the clients that take it (Accept-Encoding: gzip): a third or less of the bytes. A file's is made once, while the file is unchanged (up to 64 MB of them kept). false: none are (as behind a proxy that does it, Caddy's `encode gzip`)
 
 #### Serving
 
@@ -5642,6 +5662,11 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
 - `log_line = (r: Request, res: Response, seconds: f64) -> str`: the line a request makes in a log: who, what, the answer's status and size, how long it took
   ```gdscript
   127.0.0.1 "GET /todos?done=true HTTP/1.1" 200 312 0.4ms
+  ```
+- `log_requests = false`: write each request's log_line to standard error
+- `trust_proxy: str[]`: the addresses of the proxies in front of the server (Caddy on the same machine: ["127.0.0.1"]): a request from one of them has as r.address (log_line's, a WebSocket's handshake's) the client's, from X-Forwarded-For: the last address in it that is not a proxy listed (each proxy adds the one it was reached from at the end; what comes before is the client's to write). None unless set: a server reached with no proxy in front would take a client's word for where it is
+  ```gdscript
+  http.trust_proxy = ["127.0.0.1"]
   ```
 - `http_date = (t: f64) -> str`: a time (unix_time's seconds) as HTTP writes one: "Sun, 06 Nov 1994 08:49:37 GMT"
 - `from_http_date = (s: str) -> f64?`: an HTTP date ("Sun, 06 Nov 1994 08:49:37 GMT") as unix_time's seconds; none when it is not one
