@@ -1,0 +1,57 @@
+# requires: sloppy
+# requires: native
+# net.close with a code and a reason: the other side's left event has them (e.code, e.text) and
+# net.why(p) the reason, either way round; a close with messages still unread on its side reaches
+# the other side all the same; a connection that is never made leaves with 1006
+import net
+
+const PORT = 9531
+
+# (the next left event of p, after its joined: its code and text)
+left_of = (p: int) -> str:
+    loop true:
+        loop e in net.receive([p], wait = 5.0):
+            if e.kind == .left: return "{e.code} '{e.text}' why '{net.why(p)}'"
+
+main = ():
+    if not net.listen(PORT, host = "127.0.0.1"): panic("cannot listen")
+    server = spawn(():
+        out: str[]
+        # a full room
+        p = net.accept(wait = 5.0)
+        net.close(p, 4001, "the room is full")
+        # one that sends a lot, closed while what it sent is still unread
+        p = net.accept(wait = 5.0)
+        loop e in net.receive([p], wait = 5.0): pass
+        sleep(0.2)
+        net.close(p, 4003, "not signed in")
+        # one that closes itself
+        p = net.accept(wait = 5.0)
+        out.push("server: " + left_of(p))
+        # a reason longer than a close takes: cut to 123 bytes, where a character begins
+        p = net.accept(wait = 5.0)
+        net.close(p, 4002, "é" * 100)
+        out
+    )
+    a = net.connect("127.0.0.1", PORT)
+    print("full: " + left_of(a))
+    b = net.connect("127.0.0.1", PORT)
+    loop true:
+        if net.receive([b], wait = 5.0).len() > 0: break
+    loop i in 0..2000: net.send(b, "input {i} " + "x" * 200)
+    print("busy: " + left_of(b))
+    c = net.connect("127.0.0.1", PORT)
+    loop true:
+        if net.receive([c], wait = 5.0).len() > 0: break
+    net.close(c, 4005, "going home")
+    print("closed by this side: " + left_of(c))
+    e = net.connect("127.0.0.1", PORT)
+    loop true:
+        loop ev in net.receive([e], wait = 5.0):
+            if ev.kind == .left:
+                print("long: {ev.code} {len(ev.text)} bytes, {ev.text == "é" * 61}")
+                break
+        if net.gone(e): break
+    loop line in server.wait(): print(line)
+    d = net.connect("127.0.0.1", PORT + 1)
+    print("nothing there: " + left_of(d)[..4))

@@ -793,6 +793,22 @@ if shell:
         h_out = h.communicate()[0]
     b.kill()
     check("client and server with a web page (in Chromium)", h_out, ["server: hello page", "server: walked true"])
+    # net.close's code and reason, to a web page and from it
+    port += 1
+    env["NET_PORT"] = str(port)
+    srv = build("close_server") + exe
+    page = build("close_page", "--target", "wasm") + ".html"
+    h = subprocess.Popen([srv], stdout=subprocess.PIPE, text=True, env=env)
+    wait_port(port)
+    b = subprocess.Popen([shell, "--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0",
+                          "file://" + page + f"?net_port={port}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try: h_out = h.communicate(timeout=40)[0]
+    except subprocess.TimeoutExpired:
+        h.kill()
+        h_out = h.communicate()[0]
+    b.kill()
+    check("a close's code and reason, to a web page and from it (in Chromium)", h_out, ["listening",
+        "server: page was told 4001 'the room is full', why 'the room is full'", "server: the page left with 4002 'bye from the page'"])
     # a web page's fetch (the browser's), from an HTTP server of lib/http.jo
     port += 1
     page = build("web_fetch", "--target", "wasm") + ".html"

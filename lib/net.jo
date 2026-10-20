@@ -25,7 +25,11 @@ struct NetEvent:
     kind: NetKind
     peer: int
     data: u8[]              # a message's bytes ...
-    text = ""               # ... and as text
+    text = ""               # ... and as text; a left event's: why it left (why(peer))
+    code = 0                # a left event's: the WebSocket's close code (close's: 1000 a normal
+                            # close, 1001 a page that went away, 4000-4999 a program's own), 1005
+                            # a close that gave none, 1006 none at all (the connection was lost);
+                            # 0 over WebRTC
 
 __net_msg = (peer: int, b: u8[]) -> NetEvent: NetEvent(.message, peer, b, str_from_bytes(b))
 
@@ -49,8 +53,11 @@ struct __NetPeer:
     path = "/"
     answering = false       # (joined with a code: its own code is the reply)
     code = ""               # (this side's code, once made)
+    closed = 0              # (the close code, once one was sent or came)
 
 __net_peers: __NetPeer[]
+__net_at: {int: int}        # (a peer's index in __net_peers, by its id)
+__net_dead = 0              # (peers gone since __net_peers was last tidied)
 __net_next = 1
 __net_listen_fd = -1
 __net_events: NetEvent[]
@@ -129,7 +136,7 @@ invite = (reliable: bool = true) -> int:
     else:
         p.rtc = rtc.__rtc_new(true)
         if p.rtc >= 0: rtc.__conns[p.rtc].s_reliable = reliable
-    __net_peers.push(p)
+    __net_add(p)
     if len(webrtc_missing()) > 0: __net_fail(__net_peers.len() - 1, webrtc_missing())
     else if p.rtc < 0: __net_fail(__net_peers.len() - 1, "a connection could not be made here")
     p.id
@@ -148,7 +155,7 @@ join_invite = (code0: str) -> int:
     __net_hook()
     p = __NetPeer(id = __net_next, fd = -1, state = 0, client = true, host = "", port = 0, since = time(), answering = true)
     __net_next += 1
-    __net_peers.push(p)
+    __net_add(p)
     i = __net_peers.len() - 1
     d = rtc.rtc_from_code(code)
     if len(webrtc_missing()) > 0:
@@ -297,8 +304,8 @@ connect = (host: str, port: int = 0) -> int:
         # this same computer)
         if p.fd == -4: __net_why[id] = "this page is served over https, so the browser only lets it reach wss:// servers (a host behind a TLS proxy) or this same computer (localhost); a page served over http, or a native build, can join {url}"
         else if p.fd < 0: __net_why[id] = "the browser would not open {url}"
-        __net_peers.push(p)
-        if p.state == 3: __net_events.push(NetEvent(.left, id, []))
+        __net_add(p)
+        if p.state == 3: __net_events.push(NetEvent(.left, id, [], __net_why.get(id) ?? "", 1006))
         return id
     else:
         h = host
@@ -321,8 +328,8 @@ connect = (host: str, port: int = 0) -> int:
         if __http_has_control(host, false):
             p.state = 3
             __net_why[id] = "the address has a line break or another control character in it: {__http_show(host)}"
-            __net_events.push(NetEvent(.left, id, []))
-            __net_peers.push(p)
+            __net_events.push(NetEvent(.left, id, [], __net_why.get(id) ?? "", 1006))
+            __net_add(p)
             return id
         p.path = __http_path_escape(p.path)
         ip = __n_resolve(h)
@@ -331,8 +338,8 @@ connect = (host: str, port: int = 0) -> int:
             p.state = 3
             if ip < 0: __net_why[id] = "no machine named '{h}' was found"
             else: __net_why[id] = "the connection could not be started"
-            __net_events.push(NetEvent(.left, id, []))
-        __net_peers.push(p)
+            __net_events.push(NetEvent(.left, id, [], __net_why.get(id) ?? "", 1006))
+        __net_add(p)
         id
 
 # send a message to a peer (nothing if it is not connected, or has gone): text goes as a text
@@ -341,34 +348,33 @@ send = (peer: int, msg: u8[]): __net_send(peer, msg, false)
 send = (peer: int, msg: str): __net_send(peer, bytes(msg), true)
 
 __net_send = (peer: int, msg: u8[], text: bool):
-    loop i in [0..__net_peers.len()):
-        if __net_peers[i].id == peer:
-            if __net_peers[i].rtc >= 0:
-                if __net_peers[i].state == 2:
-                    when TARGET == "wasm":
-                        __wasm_rtcp_send(__net_peers[i].rtc, data(msg), msg.len())
-                    else:
-                        rtc.__rtc_send(__net_peers[i].rtc, msg, text)
-                return
+    i = __net_find(peer)
+    if i < 0: return
+    if __net_peers[i].rtc >= 0:
+        if __net_peers[i].state == 2:
             when TARGET == "wasm":
-                if __net_peers[i].state != 3:
-                    if text: __wasm_ws_send_text(__net_peers[i].fd, data(msg), msg.len())
-                    else: __wasm_ws_send(__net_peers[i].fd, data(msg), msg.len())
+                __wasm_rtcp_send(__net_peers[i].rtc, data(msg), msg.len())
             else:
-                if __net_peers[i].state == 2:
-                    op = 2
-                    if text: op = 1
-                    f: u8[]
-                    __ws_frame(f, op, msg, __net_peers[i].client)
-                    waiting = __net_peers[i].outbuf.len() - __net_peers[i].outat
-                    if waiting > 0 and waiting + f.len() > __net_most_unsent:
-                        __net_why[peer] = "it took none of the last {waiting} bytes sent to it (a reader that stopped)"
-                        __n_close(__net_peers[i].fd)
-                        __net_gone(i)
-                        return
-                    __net_out(i, f)
-                    __net_flush(i)
-            return
+                rtc.__rtc_send(__net_peers[i].rtc, msg, text)
+        return
+    when TARGET == "wasm":
+        if __net_peers[i].state != 3:
+            if text: __wasm_ws_send_text(__net_peers[i].fd, data(msg), msg.len())
+            else: __wasm_ws_send(__net_peers[i].fd, data(msg), msg.len())
+    else:
+        if __net_peers[i].state == 2:
+            op = 2
+            if text: op = 1
+            f: u8[]
+            __ws_frame(f, op, msg, __net_peers[i].client)
+            waiting = __net_peers[i].outbuf.len() - __net_peers[i].outat
+            if waiting > 0 and waiting + f.len() > __net_most_unsent:
+                __net_why[peer] = "it took none of the last {waiting} bytes sent to it (a reader that stopped)"
+                __n_close(__net_peers[i].fd)
+                __net_gone(i)
+                return
+            __net_out(i, f)
+            __net_flush(i)
 
 # send a message to every connected peer
 send_all = (msg: u8[]):
@@ -386,35 +392,81 @@ peers = () -> int[]:
         if p.state == 2: out.push(p.id)
     out
 
-# end a connection (a left event follows)
-close = (peer: int):
+# end a connection (a left event follows). Over a WebSocket, the other side's left event has the
+# code and the reason (its code, and its text and why(peer)); a web page's WebSocket has them in
+# its close event (event.code, event.reason). code: 1000 a normal close, 4000-4999 the program's
+# own (4001 a full room, 4003 a sign-in refused...), as a browser's own WebSocket takes; reason:
+# a few words, up to 123 bytes
+#   net.close(p, 4001, "the room is full")
+close = (peer: int, code: int = 1000, reason: str = ""):
     n0 = __net_events.len()
-    __net_close(peer)
+    __net_close(peer, code, reason)
     __net_wake(n0)
 
-__net_close = (peer: int):
-    loop i in [0..__net_peers.len()):
-        if __net_peers[i].id == peer and __net_peers[i].state != 3:
-            if __net_peers[i].rtc >= 0:
-                when TARGET == "wasm":
-                    __wasm_rtcp_close(__net_peers[i].rtc)
-                else:
-                    rtc.__rtc_close(__net_peers[i].rtc)
-                __net_gone(i)
-                return
-            when TARGET == "wasm":
-                __wasm_ws_close(__net_peers[i].fd)
-            else:
-                if __net_peers[i].state == 2:
-                    f: u8[]
-                    __ws_frame(f, 8, [u8(0x03), 0xE8], __net_peers[i].client)     # (1000: a normal close)
-                    __net_out(i, f)
-                    if __net_peers[i].tls >= 0:
-                        tls.__tls_close(__net_peers[i].tls)
-                        __net_peers[i].outbuf.extend(tls.__tls_output(__net_peers[i].tls))
-                    __net_flush(i)
-                __n_close(__net_peers[i].fd)
-            __net_gone(i)
+__net_close = (peer: int, code: int = 1000, reason: str = ""):
+    i = __net_find(peer)
+    if i < 0 or __net_peers[i].state == 3: return
+    if __net_peers[i].rtc >= 0:
+        when TARGET == "wasm":
+            __wasm_rtcp_close(__net_peers[i].rtc)
+        else:
+            rtc.__rtc_close(__net_peers[i].rtc)
+        __net_gone(i)
+        return
+    why = __net_reason(reason)
+    __net_peers[i].closed = code
+    if len(why) > 0: __net_why[peer] = why
+    when TARGET == "wasm":
+        __wasm_ws_close(__net_peers[i].fd, code, data(why), len(why))
+    else:
+        if __net_peers[i].state == 2:
+            f: u8[]
+            pl = [u8(code >> 8), u8(code & 255)]
+            pl.extend(bytes(why))
+            __ws_frame(f, 8, pl, __net_peers[i].client)
+            __net_out(i, f)
+            if __net_peers[i].tls >= 0:
+                tls.__tls_close(__net_peers[i].tls)
+                __net_peers[i].outbuf.extend(tls.__tls_output(__net_peers[i].tls))
+            __net_flush(i)
+            __net_linger(__net_peers[i].fd)
+        else: __n_close(__net_peers[i].fd)
+    __net_gone(i)
+
+# (a close's reason as a WebSocket takes one: up to 123 bytes, cut where a character begins)
+__net_reason = (reason: str) -> str:
+    if len(reason) <= 123: return reason
+    n = 123
+    loop n > 0 and int(reason[n]) & 0xC0 == 0x80: n -= 1
+    reason[..n)
+
+# (sockets closed by this side, after their close frame: what still comes is read and dropped
+# until the other side closes too, or for 5 seconds, so that the close frame is not lost to a
+# reset, as it is when a socket closes with bytes unread)
+__net_closing: (int, f64)[]
+
+__net_linger = (fd: int):
+    when TARGET != "wasm":
+        __n_shutdown(fd)
+        __net_closing.push((fd, time() + 5.0))
+        __net_drain()
+
+__net_drain = ():
+    global __net_closing
+    when TARGET != "wasm":
+        if __net_closing.len() == 0: return
+        __net_rbuf_ready()
+        now = time()
+        keep: (int, f64)[]
+        loop c in __net_closing:
+            ended = now >= c.1
+            loop not ended:
+                n = __n_recv(c.0, data(__net_rbuf), __net_rbuf.len())
+                if n == -1: break
+                if n <= 0: ended = true
+            if ended: __n_close(c.0)
+            else: keep.push(c)
+        __net_closing = keep
 
 # (the program ending: every peer told, as by close)
 __net_hooked = false
@@ -429,14 +481,42 @@ __net_goodbye = ():
         if p.state != 3: ids.push(p.id)
     loop id in ids: close(id)
 
+__net_add = (p: __NetPeer):
+    __net_at[p.id] = __net_peers.len()
+    __net_peers.push(p)
+
+# (a peer's index in __net_peers, -1 when it is not there: gone, and tidied away)
+__net_find = (peer: int) -> int: __net_at.get(peer) ?? -1
+
+# (gone peers dropped, once their left events are out)
+__net_tidy = ():
+    global __net_dead
+    __net_dead = 0
+    k = 0
+    gone = false
+    loop k < __net_peers.len():
+        if __net_peers[k].state == 3:
+            __net_at.remove(__net_peers[k].id)
+            __net_peers.remove_at(k)
+            gone = true
+            continue
+        k += 1
+    if gone:
+        loop i in [0..__net_peers.len()): __net_at[__net_peers[i].id] = i
+
 __net_gone = (i: int):
+    global __net_dead
     if __net_peers[i].state == 3: return
     __net_peers[i].state = 3
+    __net_dead += 1
     when TARGET != "wasm":
         if __net_peers[i].tls >= 0:
             tls.__tls_free(__net_peers[i].tls)
             __net_peers[i].tls = -1
-    __net_events.push(NetEvent(.left, __net_peers[i].id, []))
+    id = __net_peers[i].id
+    code = __net_peers[i].closed
+    if code == 0 and __net_peers[i].rtc < 0: code = 1006
+    __net_events.push(NetEvent(.left, id, [], __net_why.get(id) ?? "", code))
 
 # how a peer is reached: "direct" (WebRTC, straight between the two), "relay" (WebRTC through a
 # TURN server), "websocket" (a connection to a server, or one a server took), or "" (not known yet,
@@ -476,8 +556,8 @@ dropped = (peer: int) -> int:
             if p.rtc >= 0: return rtc.__rtc_dropped(p.rtc)
     0
 
-# why a peer could not connect, once it has left ("": it did not say; a web page's browser does
-# not tell)
+# why a peer could not connect, or the reason its close gave (net.close(p, code, reason)), once it
+# has left ("": it did not say; a web page's browser does not tell why it could not connect)
 why = (peer: int) -> str: __net_why.get(peer) ?? ""
 
 # this machine's address on its network (as 192.168.1.20): what another machine there connects to,
@@ -518,7 +598,7 @@ receive = () -> NetEvent[]:
 # program that each have peers of their own, as a game hosting a relay and playing through it
 receive = (only: int[]) -> NetEvent[]:
     global __net_events
-    __net_poll()
+    __net_poll_some(only)
     out: NetEvent[]
     keep: NetEvent[]
     loop e in __net_events:
@@ -548,14 +628,15 @@ receive = (only: int[], wait: f64) -> NetEvent[]:
         fds: int[]
         want: int[]
         ms = __net_ms(end)
-        loop p in __net_peers:
-            if p.state == 3 or not (p.id in only): continue
-            if p.rtc >= 0:
+        loop id in only:
+            i = __net_find(id)
+            if i < 0 or __net_peers[i].state == 3: continue
+            if __net_peers[i].rtc >= 0:
                 ms = min(ms, 10)
                 continue
-            if p.fd < 0: continue
-            fds.push(p.fd)
-            want.push(if p.state == 0: 2 else: if p.outat < p.outbuf.len(): 3 else: 1)
+            if __net_peers[i].fd < 0: continue
+            fds.push(__net_peers[i].fd)
+            want.push(if __net_peers[i].state == 0: 2 else: if __net_peers[i].outat < __net_peers[i].outbuf.len(): 3 else: 1)
         __net_wait_on(only)
         when TARGET == "wasm":
             __n_wait([-1], [1], ms)
@@ -604,9 +685,8 @@ gone = (peer: int) -> bool:
     # (not while an event of its is still to be received: its .left last of all)
     loop e in __net_events:
         if e.peer == peer: return false
-    loop p in __net_peers:
-        if p.id == peer: return p.state == 3
-    true
+    i = __net_find(peer)
+    i < 0 or __net_peers[i].state == 3
 
 # (tasks waiting in receive(only, wait), by the peers they wait for, and in accept: ids and waits,
 # woken by the events that come for them)
@@ -729,9 +809,10 @@ wait = (seconds: f64) -> bool:
         loop true:
             __stop_check()
             if __stop_asked or __task_cancelling: return false
+            __net_drain()
             fds: int[]
             want: int[]
-            kind: int[]                 # (each fd's: 0 a peer's, 1 a tcp connection's, 2 the rest's)
+            kind: int[]                 # (each fd's: 0 a peer's, 1 a tcp connection's, 2 the rest's, 3 one closing)
             ms = __net_ms(end)
             if __net_listen_fd >= 0:
                 fds.push(__net_listen_fd)
@@ -743,9 +824,21 @@ wait = (seconds: f64) -> bool:
                     if p.state != 3: ms = min(ms, 10)
                     continue
                 if p.state == 3 or p.fd < 0: continue
+                # (a peer a task serves: its task reads it, in receive([p], wait); here only what
+                # waits to go out to it)
+                if __tasks_on and __net_owned.has(p.id):
+                    if p.outat < p.outbuf.len():
+                        fds.push(p.fd)
+                        want.push(2)
+                        kind.push(0)
+                    continue
                 fds.push(p.fd)
                 want.push(if p.state == 0: 2 else: if p.outat < p.outbuf.len(): 3 else: 1)
                 kind.push(0)
+            loop c in __net_closing:
+                fds.push(c.0)
+                want.push(1)
+                kind.push(3)
             conn: int[]                 # (a tcp connection's: its handle)
             loop c, t in __tcps:
                 if t.eof and t.at == t.out.len(): continue
@@ -774,9 +867,13 @@ wait = (seconds: f64) -> bool:
             if __task_cancelling: return false
             came = false
             peer_came = false
+            closing_came = false
             loop i in [0..fds.len()):
                 g = got[i]
                 if g == 0: continue
+                if kind[i] == 3:
+                    closing_came = true
+                    continue
                 # (only room to write: what waits goes out here, and the wait goes on)
                 if g == 2 and kind[i] < 2:
                     if kind[i] == 1:
@@ -792,6 +889,7 @@ wait = (seconds: f64) -> bool:
                 # again at the next wait; a task waiting for that peer is woken)
                 if kind[i] == 0: peer_came = true
                 came = true
+            if closing_came: __net_drain()
             if peer_came: __net_poll()
             if came: return true
             if time() >= end: return false
@@ -802,8 +900,25 @@ __net_poll = ():
     __net_poll_all()
     __net_wake(n0)
 
+# (the same, for the given peers only: a task's receive, which need not read every other peer's
+# socket)
+__net_poll_some = (only: int[]):
+    when TARGET == "wasm":
+        __net_poll()
+    else:
+        n0 = __net_events.len()
+        __net_rbuf_ready()
+        rtc_too = false
+        loop id in only:
+            i = __net_find(id)
+            if i < 0: continue
+            if __net_peers[i].rtc >= 0: rtc_too = true
+            else: __net_poll_peer(i)
+        if rtc_too: __net_rtc_poll()
+        if __net_dead > 0: __net_tidy()
+        __net_wake(n0)
+
 __net_poll_all = ():
-    global __net_key
     __net_rtc_poll()
     when TARGET == "wasm":
         buf = fill(u8(0), 1 << 16)
@@ -818,6 +933,11 @@ __net_poll_all = ():
                         __net_events.push(NetEvent(.joined, __net_peers[i].id, []))
                     continue
                 if n == -3:
+                    # (the close's code and reason, the server's)
+                    w = __wasm_ws_why(__net_peers[i].fd, data(buf), 256)
+                    if w > 0:
+                        __net_peers[i].closed = w >> 16
+                        if w & 0xFFFF > 0: __net_why[__net_peers[i].id] = str_from_bytes(buf[..w & 0xFFFF))
                     # (closed before it ever opened: nothing answered there)
                     if __net_peers[i].state == 0 and __net_why.get(__net_peers[i].id) == none:
                         at = "{__net_peers[i].host}:{__net_peers[i].port}"
@@ -835,81 +955,80 @@ __net_poll_all = ():
             loop true:
                 fd = __n_accept(__net_listen_fd)
                 if fd < 0: break
-                __net_peers.push(__NetPeer(id = __net_next, fd = fd, state = 1, client = false, since = time(), hs = Handshake(address = __n_ip_text(__n_from))))
+                __net_add(__NetPeer(id = __net_next, fd = fd, state = 1, client = false, since = time(), hs = Handshake(address = __n_ip_text(__n_from))))
                 __net_accepted[__net_next] = true
                 __net_next += 1
         __net_rbuf_ready()
-        loop i in [0..__net_peers.len()):
-            st = __net_peers[i].state
-            if st == 3 or __net_peers[i].rtc >= 0: continue
-            fd = __net_peers[i].fd
-            if st == 1 and not __net_peers[i].client and time() - __net_peers[i].since > 10.0:
+        loop i in [0..__net_peers.len()): __net_poll_peer(i)
+        __net_tidy()
+        __net_drain()
+
+# (a peer's socket read, and what came made events: its handshake, messages, end)
+__net_poll_peer = (i: int):
+    global __net_key
+    st = __net_peers[i].state
+    if st == 3 or __net_peers[i].rtc >= 0: return
+    fd = __net_peers[i].fd
+    if st == 1 and not __net_peers[i].client and time() - __net_peers[i].since > 10.0:
+        __n_close(fd)
+        __net_gone(i)
+        return
+    if st == 0:
+        c = __n_connected(fd)
+        if c < 0 or c == 0 and time() - __net_peers[i].since > 10.0:
+            if c == 0: __net_why[__net_peers[i].id] = "no answer in 10 seconds (a wrong address, or a firewall in the way?)"
+            else: __net_why[__net_peers[i].id] = __n_why(-c, __net_peers[i].port)
+            __n_close(fd)
+            __net_gone(i)
+            return
+        if c == 0: return
+        # (connected: TLS's handshake first for wss://, then the WebSocket handshake)
+        __net_peers[i].state = 1
+        if __net_peers[i].secure: __net_peers[i].tls = tls.__tls_open(__net_peers[i].host, "http/1.1")
+        __net_key = __ws_key()
+        at = __net_peers[i].host
+        if __net_peers[i].port != (if __net_peers[i].secure: 443 else: 80): at = "{at}:{__net_peers[i].port}"
+        req = "GET {__net_peers[i].path} HTTP/1.1\r\nHost: {at}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {__net_key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        __net_out(i, bytes(req))
+    if __net_peers[i].tls >= 0 and __net_peers[i].state == 1 and time() - __net_peers[i].since > 20.0:
+        __net_why[__net_peers[i].id] = "the secure connection (TLS) was not made in 20 seconds"
+        __n_close(fd)
+        __net_gone(i)
+        return
+    __net_flush(i)
+    if __net_peers[i].state == 3: return
+    # what has come in
+    loop true:
+        n = __n_recv(fd, data(__net_rbuf), __net_rbuf.len())
+        if n == -1: break
+        if n <= 0:
+            if __net_peers[i].tls >= 0 and tls.__tls_status(__net_peers[i].tls) == 0: __net_why[__net_peers[i].id] = "the server closed the connection in TLS's handshake (is it a TLS server, on that port?)"
+            # (the handshake and messages that came before the end, then the end)
+            if __net_peers[i].state == 1 or __net_peers[i].state == 2: __net_parse(i)
+            if __net_peers[i].state != 3:
                 __n_close(fd)
                 __net_gone(i)
-                continue
-            if st == 0:
-                c = __n_connected(fd)
-                if c < 0 or c == 0 and time() - __net_peers[i].since > 10.0:
-                    if c == 0: __net_why[__net_peers[i].id] = "no answer in 10 seconds (a wrong address, or a firewall in the way?)"
-                    else: __net_why[__net_peers[i].id] = __n_why(-c, __net_peers[i].port)
-                    __n_close(fd)
-                    __net_gone(i)
-                    continue
-                if c == 0: continue
-                # (connected: TLS's handshake first for wss://, then the WebSocket handshake)
-                __net_peers[i].state = 1
-                if __net_peers[i].secure: __net_peers[i].tls = tls.__tls_open(__net_peers[i].host, "http/1.1")
-                __net_key = __ws_key()
-                at = __net_peers[i].host
-                if __net_peers[i].port != (if __net_peers[i].secure: 443 else: 80): at = "{at}:{__net_peers[i].port}"
-                req = "GET {__net_peers[i].path} HTTP/1.1\r\nHost: {at}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {__net_key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
-                __net_out(i, bytes(req))
-            if __net_peers[i].tls >= 0 and __net_peers[i].state == 1 and time() - __net_peers[i].since > 20.0:
-                __net_why[__net_peers[i].id] = "the secure connection (TLS) was not made in 20 seconds"
+            break
+        if __net_peers[i].tls < 0:
+            __net_peers[i].inbuf.extend(__net_rbuf[..n))
+            continue
+        t = __net_peers[i].tls
+        tls.__tls_feed(t, __net_rbuf[..n))
+        __net_peers[i].inbuf.extend(tls.__tls_read(t))
+        __net_peers[i].outbuf.extend(tls.__tls_output(t))
+        ts = tls.__tls_status(t)
+        if ts >= 2:
+            if ts == 3: __net_why[__net_peers[i].id] = "the secure connection failed: {tls.__tls_why(t)}"
+            __net_flush(i)
+            if __net_peers[i].state == 1 or __net_peers[i].state == 2: __net_parse(i)
+            if __net_peers[i].state != 3:
                 __n_close(fd)
                 __net_gone(i)
-                continue
-            __net_flush(i)
-            if __net_peers[i].state == 3: continue
-            # what has come in
-            loop true:
-                n = __n_recv(fd, data(__net_rbuf), __net_rbuf.len())
-                if n == -1: break
-                if n <= 0:
-                    if __net_peers[i].tls >= 0 and tls.__tls_status(__net_peers[i].tls) == 0: __net_why[__net_peers[i].id] = "the server closed the connection in TLS's handshake (is it a TLS server, on that port?)"
-                    # (the messages that came before the end, then the end)
-                    if __net_peers[i].state == 2: __net_parse(i)
-                    if __net_peers[i].state != 3:
-                        __n_close(fd)
-                        __net_gone(i)
-                    break
-                if __net_peers[i].tls < 0:
-                    __net_peers[i].inbuf.extend(__net_rbuf[..n))
-                    continue
-                t = __net_peers[i].tls
-                tls.__tls_feed(t, __net_rbuf[..n))
-                __net_peers[i].inbuf.extend(tls.__tls_read(t))
-                __net_peers[i].outbuf.extend(tls.__tls_output(t))
-                ts = tls.__tls_status(t)
-                if ts >= 2:
-                    if ts == 3: __net_why[__net_peers[i].id] = "the secure connection failed: {tls.__tls_why(t)}"
-                    __net_flush(i)
-                    if __net_peers[i].state == 2: __net_parse(i)
-                    if __net_peers[i].state != 3:
-                        __n_close(fd)
-                        __net_gone(i)
-                    break
-            if __net_peers[i].state == 3: continue
-            __net_flush(i)
-            if __net_peers[i].state == 3: continue
-            __net_parse(i)
-        # (gone peers: dropped once their left event is out)
-        k = 0
-        loop k < __net_peers.len():
-            if __net_peers[k].state == 3:
-                __net_peers.remove_at(k)
-                continue
-            k += 1
+            break
+    if __net_peers[i].state == 3: return
+    __net_flush(i)
+    if __net_peers[i].state == 3: return
+    __net_parse(i)
 
 # bytes to a peer: into what waits to go out (through TLS, for wss://)
 __net_out = (i: int, b: u8[]):
@@ -943,9 +1062,8 @@ __net_flush = (i: int):
 # how many bytes sent to a peer still wait to go out to it (a peer that reads slowly, or has
 # stopped: one with more than 8 MB waiting is let go, so that it does not hold the server's memory)
 unsent = (peer: int) -> int:
-    loop p in __net_peers:
-        if p.id == peer: return p.outbuf.len() - p.outat
-    0
+    i = __net_find(peer)
+    if i < 0: 0 else: __net_peers[i].outbuf.len() - __net_peers[i].outat
 
 # the handshake, then frames, from what has come in
 __net_parse = (i: int):
@@ -1009,7 +1127,12 @@ __net_parse = (i: int):
         __net_peers[i].inbuf = b[at + n..)
         fin = int(b[0]) & 128 != 0
         if op == 8:
-            # (the other side closes: its close answered with its code, as the protocol asks)
+            # (the other side closes: its code and reason kept, for the left event; its close
+            # answered with its code, as the protocol asks)
+            __net_peers[i].closed = if n >= 2: (int(payload[0]) << 8) | int(payload[1]) else: 1005
+            if n > 2:
+                why = str_from_bytes(payload[2..])
+                if len(why) > 0: __net_why[__net_peers[i].id] = why
             f: u8[]
             __ws_frame(f, 8, if n >= 2: payload[..2) else: [], __net_peers[i].client)
             __net_out(i, f)
@@ -1036,12 +1159,13 @@ __net_parse = (i: int):
 # (a peer let go with a close frame of that code: 1009 a message too big)
 __net_refuse = (i: int, code: int, why: str):
     __net_why[__net_peers[i].id] = why
+    __net_peers[i].closed = code
     f: u8[]
     __ws_frame(f, 8, [u8(code >> 8), u8(code & 255)], __net_peers[i].client)
     __net_out(i, f)
     __net_flush(i)
     if __net_peers[i].state != 3:
-        __n_close(__net_peers[i].fd)
+        __net_linger(__net_peers[i].fd)
         __net_gone(i)
 
 # (a WebSocket's handshake request: its path, query, headers and cookies)
@@ -1063,9 +1187,8 @@ __net_handshake_read = (h: mut Handshake, head: str):
 
 # how a peer asked to connect to this program's server (an empty Handshake for others)
 handshake = (peer: int) -> Handshake:
-    loop p in __net_peers:
-        if p.id == peer: return p.hs
-    Handshake()
+    i = __net_find(peer)
+    if i < 0: Handshake() else: __net_peers[i].hs
 
 # (the answer to a WebSocket's handshake that has the key given)
 __ws_accept_reply = (key: str) -> str:
@@ -1081,7 +1204,7 @@ __net_adopt = (fd: int, rest: u8[], out: u8[], hs: Handshake, largest: int) -> i
     __net_hook()
     id = __net_next
     __net_next += 1
-    __net_peers.push(__NetPeer(id = id, fd = fd, state = 2, client = false, since = time(), inbuf = rest, outbuf = out, hs = hs, largest = min(largest, __NET_MAX)))
+    __net_add(__NetPeer(id = id, fd = fd, state = 2, client = false, since = time(), inbuf = rest, outbuf = out, hs = hs, largest = min(largest, __NET_MAX)))
     __net_accepted[id] = true
     n0 = __net_events.len()
     __net_events.push(NetEvent(.joined, id, []))
@@ -2377,6 +2500,9 @@ when TARGET == "linux":
         if __tasks_on: __task_closing_fn(fd)
         syscall(3, fd)
 
+    # (no more is sent: the other side reads the end, after what was sent)
+    __n_shutdown = (fd: int): syscall(48, fd, 1)                   # shutdown(SHUT_WR)
+
     # this machine's address on its network: a datagram socket aimed at a public address (no
     # packet is sent), and the address it was given to send from
     __n_local_ip = () -> int:
@@ -2541,6 +2667,9 @@ when TARGET == "macos":
     extern __m_recvfrom = (fd: i32, p: *u8, n: int, flags: i32, addr: *u8, len: *u32) -> int
 
     @lib("/usr/lib/libSystem.B.dylib")
+    @symbol("shutdown")
+    extern __m_shutdown = (fd: i32, how: i32) -> i32
+    @lib("/usr/lib/libSystem.B.dylib")
     @symbol("getsockname")
     extern __m_getsockname = (fd: i32, addr: *u8, len: *u32) -> i32
     @lib("/usr/lib/libSystem.B.dylib")
@@ -2652,6 +2781,8 @@ when TARGET == "macos":
         if __tasks_on: __task_closing_fn(fd)
         syscall(3, fd)
 
+    __n_shutdown = (fd: int): __m_shutdown(i32(fd), i32(1))       # SHUT_WR
+
     __n_lookup = (host: str) -> int:
         h = __m_gethostbyname(data(__zstr(host)))
         if h == null: return -1
@@ -2689,6 +2820,9 @@ when TARGET == "windows":
     @lib("ws2_32.dll")
     @symbol("closesocket")
     extern __w_closesocket = (s: int) -> i32
+    @lib("ws2_32.dll")
+    @symbol("shutdown")
+    extern __w_shutdown = (s: int, how: i32) -> i32
     @lib("ws2_32.dll")
     @symbol("ioctlsocket")
     extern __w_ioctlsocket = (s: int, cmd: i32, arg: *u32) -> i32
@@ -2835,6 +2969,8 @@ when TARGET == "windows":
         if __tasks_on: __task_closing_fn(s)
         __w_closesocket(s)
 
+    __n_shutdown = (s: int): __w_shutdown(s, i32(1))               # SD_SEND
+
     __n_lookup = (host: str) -> int:
         __n_start()
         h = __w_gethostbyname(data(__zstr(host)))
@@ -2851,7 +2987,8 @@ when TARGET == "wasm":
     extern __wasm_ws_send = (id: int, p: *u8, n: int)
     extern __wasm_ws_send_text = (id: int, p: *u8, n: int)
     extern __wasm_ws_poll = (id: int, out: *u8, cap: int) -> int
-    extern __wasm_ws_close = (id: int)
+    extern __wasm_ws_close = (id: int, code: int, reason: *u8, n: int)
+    extern __wasm_ws_why = (id: int, out: *u8, cap: int) -> int
     extern __wasm_rtc_invite = (reliable: int, stun: *u8, n: int) -> int
     extern __wasm_rtc_join = (stun: *u8, n: int, sdp: *u8, sn: int) -> int
     extern __wasm_rtc_local = (id: int, out: *u8, cap: int) -> int
@@ -2873,6 +3010,7 @@ when TARGET == "wasm":
     __n_send = (fd: int, p: *u8, n: int) -> int: -2
     __n_recv = (fd: int, p: *u8, n: int) -> int: -2
     __n_close = (fd: int): pass
+    __n_shutdown = (fd: int): pass
     __n_lookup = (host: str) -> int: -1
     __n_udp = (port: int) -> int: -1
     __n_local_ip = () -> int: -1

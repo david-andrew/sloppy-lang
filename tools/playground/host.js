@@ -77,7 +77,8 @@ const sloppyHost = (() => {
         u8().set(x, Number(op));
         return BigInt(x.length);
       },
-      __wasm_ws_close: (id) => { const s = sockets[Number(id)]; if (s) s.ws.close(); },
+      __wasm_ws_close: (id, code, p, n) => { const s = sockets[Number(id)]; if (s) s.ws.close(); },
+      __wasm_ws_why: (id, out, cap) => 0n,
       __wasm_exit: (code) => { throw new Exit(Number(code)); },
       __wasm_now: () => performance.now(),
       __wasm_grow: (n) => BigInt(mem.grow(Number(n))),
