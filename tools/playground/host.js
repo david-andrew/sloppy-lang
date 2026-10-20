@@ -100,6 +100,12 @@ const sloppyHost = (() => {
       __wasm_args: (op, cap) => give(enc.encode(args.join("\0")), op, cap),
       // (the compiler reads no standard input here: it has ended)
       __wasm_read_stdin: (p, n) => -1n,
+      // (the compiler runs no tasks: lib/std/task.jo's imports, never called)
+      __wasm_task_switch: () => { throw new Error("the compiler has no tasks"); },
+      __wasm_task_idle: () => { throw new Error("the compiler has no tasks"); },
+      __wasm_task_resumed: () => {},
+      __wasm_task_kick: () => {},
+      __wasm_task_timer: () => {},
     };
     let ok = false;
     try {
