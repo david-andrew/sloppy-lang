@@ -2375,6 +2375,9 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `key_down = (k: Key) -> bool`: true while the key is held
 - `key_pressed = (k: Key) -> bool`: true only in the frame the key was pressed
 - `key_released = (k: Key) -> bool`
+- `key_presses = (k: Key) -> int`: how many times the key was pressed this frame: 2 for two taps that came in one frame, which key_pressed counts as one (in a fixed step, 1 at most)
+- `key_press_time = (k: Key, i: int = 0) -> f64`: when the key was pressed this frame (its i-th press, from 0), on elapsed()'s clock, -1 if it was not: the time the desktop gives the event, finer than the frame, to judge a hit by (`audio_time_at(key_press_time(.d))` is the music's time then). Without one (gamepads, Windows to about 16 ms), when the frame read it; in a screenshot run its frame's time, or SLOPPY_INPUT's (5.5:d+ is half way through frame 5, seen in frame 6)
+- `key_release_time = (k: Key) -> f64`: when the key was let go this frame (the last time), as key_press_time, -1 if it was not
 - `key_typed = (k: Key) -> bool`: true in the frame the key was pressed, and again each time it repeats while held down, as the desktop repeats keys (for moving through text); characters typed arrive through text_input()
 - `shortcut = (k: Key, shift: bool = false) -> bool`: true in the frame Ctrl and k are pressed together, and as it repeats (on a Mac and in a browser Cmd too), for a tool's keys: `if shortcut(.s): save()`; shift: with Shift held too, as Ctrl+Shift+Z (without it, Shift must not be held). Browsers keep some for themselves (Ctrl+N, Ctrl+W, Ctrl+T) and the page never sees them.
 - `mouse_pos = () -> vec2`: (in the 2D units of the screen: see screen_size and screen.jo)
@@ -2383,6 +2386,8 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `mouse_down = (b: Mouse) -> bool`
 - `mouse_pressed = (b: Mouse) -> bool`
 - `mouse_released = (b: Mouse) -> bool`
+- `mouse_presses = (b: Mouse) -> int`: how many times the button was pressed this frame, and when (as key_presses, key_press_time)
+- `mouse_press_time = (b: Mouse, i: int = 0) -> f64`
 - `text_input = () -> str`: characters typed this frame
 - `pasted_text = () -> str`: the text pasted this frame (ctrl+V, cmd+V on a Mac, a web page's paste, a text field's Paste button on a phone): the clipboard's text then; "" in other frames. For a widget of a game's own (the hud_ text fields take it themselves)
 
@@ -2591,6 +2596,8 @@ if action_pressed("p2 jump"): ...               # the up arrow, or gamepad 1's A
 - `action_value = (name: str, player: int = -1) -> f64`: how far the action is pushed, 0 to 1 (the most of its inputs)
 - `action_down = (name: str, player: int = -1) -> bool`
 - `action_pressed = (name: str, player: int = -1) -> bool`: true in the frame the action was pressed (a stick: when it goes past halfway)
+- `action_presses = (name: str, player: int = -1) -> int`: how many times the action was pressed this frame (two taps of its key in one frame: 2), and when, on elapsed()'s clock, -1 if it was not (as key_press_time: its keys' and mouse buttons' times from the desktop, a gamepad's when the frame read it)
+- `action_press_time = (name: str, i: int = 0, player: int = -1) -> f64`
 - `action_released = (name: str, player: int = -1) -> bool`
 - `action_axis = (neg: str, pos: str, player: int = -1) -> f64`: from -1 (neg) to 1 (pos): action_axis("left", "right")
 - `action_vec = (left: str, right: str, up: str, down: str, player: int = -1) -> vec2`: a direction (y down), at most 1 long
@@ -3982,6 +3989,8 @@ A .gltf names its other files: give them by those names, as `files` (or put them
 
 ## Sound and music
 
+Music in time with a game (a rhythm game's notes, a beat): the audio clock, sounds started on it to the sample, presses timed finer than a frame and calibration, in [rhythm games and music sync](START.md#rhythm-games-and-music-sync).
+
 ```gdscript
 # example: sound
 window("Sound", 960, 540)
@@ -4032,14 +4041,18 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
       fade_time = 0.0
       fade_stop = false   # (fade_out: stopped when the fade ends)
       wait = 0            # (play's delay: frames of the mix before it starts)
+      paused = false
+      mixed = 0           # (frames of the mix it has played in: voice_time's, for one that loops)
   ```
 - `enum Wave: sine, square, triangle, saw, noise`
 - `const MIX_RATE = 48000`
 - `frames = (s: Sound) -> int`
 - `duration = (s: Sound) -> f64`
-- `play = (s: Sound, volume: f64 = 1.0, pan: f64 = 0.0, pitch: f64 = 1.0, looping: bool = false, delay: f64 = 0.0) -> int`: play a sound; returns a voice id for stop()/set_volume(). It starts with the mixer's next samples (made each frame, a little ahead of what is heard), or `delay` seconds after them, to the sample: for music, `play(kick, delay = beat_at - audio_time())` starts each note on time whatever the frame rate
-- `audio_time = () -> f64`: the audio clock: seconds of sound the mixer has made (ahead of what is heard by the output's latency, about 20-60 ms); what play's delay counts from. It runs on in step with the sound, not the frames: a beat kept by it does not drift when frames are slow or dt is capped
+- `play = (s: Sound, volume: f64 = 1.0, pan: f64 = 0.0, pitch: f64 = 1.0, looping: bool = false, delay: f64 = 0.0, at: f64? = none) -> int`: play a sound; returns a voice id for stop()/set_volume(). It starts with the mixer's next samples (made each frame, heard audio_latency() later), or `delay` seconds after them, to the sample; a negative delay starts it that far into the sound. `at` starts it when audio_time() is `at` (plus delay), to the sample, whatever the frame rate: for music, `play(kick, at = beat_at)` a beat or so ahead keeps each note on time; an `at` already past starts it with the next samples, as far into it as it would be by then (a song resumed at `at = audio_time() - 30.0`: 30 seconds in, in time with the clock)
+- `audio_time = () -> f64`: the audio clock: seconds of sound heard so far, as the system reports it (the mixer is audio_latency() ahead). It runs smoothly, read from the monotonic clock between mixes and kept in step with the output's reports, averaged (off a straight line by about 0.2 ms where a device reports a 10 ms period at a time); it never goes back, and never passes the sound mixed. In step with the sound, not the frames, a beat kept by it does not drift when frames are slow or dt is capped; play's `at` counts on it. It starts with the sound: the first play, or the first audio_time() or audio_started(). With no sound device (or SLOPPY_NO_AUDIO=1) it moves with the frames' time, a frame at a time; in a screenshot run exactly 1/60 s a frame.
 - `audio_started = () -> bool`: whether sound has started: a web page's waits for the first click or key (browsers allow no sound before), and audio_time stays at 0 until then; a "click to start" screen asks this
+- `audio_latency = () -> f64`: how long a sound played now takes to be heard, in seconds: the samples the output holds and the delay the system reports past them (Bluetooth headphones may add more than it knows: a game that judges timing has a calibration setting too); 0 with no sound device
+- `audio_time_at = (t: f64) -> f64`: audio_time() as it was at elapsed() time t: when a key was pressed, by the music (`audio_time_at(key_press_time(.d))`)
 - `stop = (id: int)`
 - `stop_all = ()`
 - `is_playing = (id: int) -> bool`
@@ -4049,6 +4062,10 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
 - `crossfade = (old: int, s: Sound, seconds: f64 = 1.0, volume: f64 = 1.0, looping: bool = true) -> int`: fade out the voice `old` while `s` starts silent and fades in to `volume`: from one music or ambience loop to the next (returns the new voice; old may be 0 or already stopped)
 - `set_pitch = (id: int, pitch: f64)`
 - `set_pan = (id: int, pan: f64)`
+- `pause = (id: int)`: hold a voice where it is (a sound, music, a stream), silent, until resume(id); it is still playing (is_playing), and stop() still ends it
+- `resume = (id: int)`
+- `voice_time = (id: int) -> f64`: where a voice is in its sound, in seconds, as heard now (by audio_time, so it runs as smoothly): a song's position, for a chart. Negative before it is heard (play's delay, and audio_latency); 0 for one that has stopped
+- `seek = (id: int, t: f64)`: a voice goes on from t seconds into its sound (music too: decoded from the page before t), with the mixer's next samples; one that loops, from t in its turn
 
 #### Sounds in a place
 
@@ -4117,7 +4134,7 @@ play(music, 0.6, looping = true)
       seconds: f64                # how long it is (0: unknown)
   ```
 - `load_music = (file: u8[]) -> Music`
-- `play_music = (m: Music, volume: f64 = 1.0, looping: bool = true, pan: f64 = 0.0) -> int`: play music from its start; returns a voice id for stop(), set_volume() and is_playing()
+- `play_music = (m: Music, volume: f64 = 1.0, looping: bool = true, pan: f64 = 0.0, delay: f64 = 0.0, at: f64? = none) -> int`: play music from its start; returns a voice id for stop(), set_volume(), is_playing(), pause(), seek() and voice_time(). delay and at as for play(), to the sample: `at = audio_time() + 1.0` starts it a second from now on the audio clock, a negative delay that far into it
 - `crossfade = (old: int, m: Music, seconds: f64 = 1.0, volume: f64 = 1.0, looping: bool = true) -> int`: fade out the voice `old` while music m starts silent and fades in to `volume` (returns the music's voice; old may be 0 or already stopped)
 - `struct OggAudio`: the samples as the file has them (interleaved, d.channels of them, at d.rate)
   ```gdscript

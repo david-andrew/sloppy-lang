@@ -25,6 +25,8 @@ struct Voice:
     fade_time = 0.0
     fade_stop = false   # (fade_out: stopped when the fade ends)
     wait = 0            # (play's delay: frames of the mix before it starts)
+    paused = false
+    mixed = 0           # (frames of the mix it has played in: voice_time's, for one that loops)
 
 enum Wave: sine, square, triangle, saw, noise
 
@@ -40,24 +42,85 @@ frames = (s: Sound) -> int: s.samples.len() / 2
 duration = (s: Sound) -> f64: f64(frames(s)) / f64(MIX_RATE)
 
 # play a sound; returns a voice id for stop()/set_volume(). It starts with the mixer's next
-# samples (made each frame, a little ahead of what is heard), or `delay` seconds after them, to
-# the sample: for music, `play(kick, delay = beat_at - audio_time())` starts each note on time
-# whatever the frame rate
-play = (s: Sound, volume: f64 = 1.0, pan: f64 = 0.0, pitch: f64 = 1.0, looping: bool = false, delay: f64 = 0.0) -> int:
+# samples (made each frame, heard audio_latency() later), or `delay` seconds after them, to the
+# sample; a negative delay starts it that far into the sound. `at` starts it when audio_time() is
+# `at` (plus delay), to the sample, whatever the frame rate: for music, `play(kick, at = beat_at)`
+# a beat or so ahead keeps each note on time; an `at` already past starts it with the next
+# samples, as far into it as it would be by then (a song resumed at `at = audio_time() - 30.0`:
+# 30 seconds in, in time with the clock)
+play = (s: Sound, volume: f64 = 1.0, pan: f64 = 0.0, pitch: f64 = 1.0, looping: bool = false, delay: f64 = 0.0, at: f64? = none) -> int:
     __audio_start()
     __voice_id += 1
     v = Voice(s, 0.0, f32(volume), f32(clamp(pan, -1.0, 1.0)), pitch, looping, __voice_id)
-    v.wait = max(int(round(delay * f64(MIX_RATE))), 0)
+    early = __voice_start(v, delay, at)
+    if early > 0:
+        v.pos = f64(early) * pitch
+        total = frames(s)
+        if looping and total > 0: v.pos = v.pos - floor(v.pos / f64(total)) * f64(total)
     __voices.push(v)
     __voice_id
 
-# the audio clock: seconds of sound the mixer has made (ahead of what is heard by the output's
-# latency, about 20-60 ms); what play's delay counts from. It runs on in step with the sound,
-# not the frames: a beat kept by it does not drift when frames are slow or dt is capped
-audio_time = () -> f64: f64(__mixed) / f64(MIX_RATE)
+# (where a new voice starts: its wait in frames of the mix, set; or, when the start is already
+# mixed, how many frames of the mix late it is, given back)
+__voice_start = (v: mut Voice, delay: f64, at: f64?) -> int:
+    start = __mixed + int(round(delay * f64(MIX_RATE)))
+    if let a = at: start = int(round((a + delay) * f64(MIX_RATE)))
+    if start >= __mixed:
+        v.wait = start - __mixed
+        return 0
+    __mixed - start
+
+# the audio clock: seconds of sound heard so far, as the system reports it (the mixer is
+# audio_latency() ahead). It runs smoothly, read from the monotonic clock between mixes and kept
+# in step with the output's reports, averaged (off a straight line by about 0.2 ms where a device
+# reports a 10 ms period at a time); it never goes back, and never passes the sound mixed. In
+# step with the sound, not the frames, a beat kept by it does not drift when frames are slow or
+# dt is capped; play's `at` counts on it. It starts with the sound: the first play, or the first
+# audio_time() or audio_started(). With no sound device (or SLOPPY_NO_AUDIO=1) it moves with the
+# frames' time, a frame at a time; in a screenshot run exactly 1/60 s a frame.
+audio_time = () -> f64:
+    __audio_start()
+    __clock_read(time())
 # whether sound has started: a web page's waits for the first click or key (browsers allow no
 # sound before), and audio_time stays at 0 until then; a "click to start" screen asks this
-audio_started = () -> bool: __mixed > 0
+audio_started = () -> bool:
+    __audio_start()
+    __mixed > 0
+# how long a sound played now takes to be heard, in seconds: the samples the output holds and the
+# delay the system reports past them (Bluetooth headphones may add more than it knows: a game
+# that judges timing has a calibration setting too); 0 with no sound device
+audio_latency = () -> f64: __clk_lat
+# audio_time() as it was at elapsed() time t: when a key was pressed, by the music
+# (`audio_time_at(key_press_time(.d))`)
+audio_time_at = (t: f64) -> f64: audio_time() - (elapsed() - t)
+
+__clk_off = 0.0         # (a device's: the sound heard minus time(), smoothed over its reports)
+__clk_n = 0             # (its reports so far; none: audio_time is the samples mixed)
+__clk_last = 0.0        # (what audio_time gave last)
+__clk_lat = 0.0
+
+# (the clock at time() now)
+__clock_read = (now: f64) -> f64:
+    global __clk_last
+    w = f64(__mixed) / f64(MIX_RATE)
+    if __clk_n == 0: return w
+    __clk_last = max(__clk_last, min(now + __clk_off, w))
+    __clk_last
+
+# (a device's report after it took samples: how many it holds that are not heard yet)
+__clock_heard = (held: int): __clock_note(held, time())
+__clock_note = (held: int, now: f64):
+    global __clk_lat, __clk_n, __clk_off
+    if held < 0 or held > MIX_RATE: return
+    lat = f64(held) / f64(MIX_RATE)
+    m = f64(__mixed) / f64(MIX_RATE) - lat - now
+    # (the first, or a jump, as when the output ran dry: taken as it is; else the reports
+    # averaged, the last hundred or so, which smooths what a device reports a period at a time)
+    if __clk_n == 0 or abs(m - __clk_off) > 0.05: __clk_n = 0
+    k = max(1.0 / f64(__clk_n + 1), 0.01)
+    __clk_off += (m - __clk_off) * k
+    __clk_lat += (lat - __clk_lat) * k
+    __clk_n += 1
 
 stop = (id: int):
     i = 0
@@ -115,6 +178,49 @@ set_pan = (id: int, pan: f64):
     loop mut v in __voices:
         if v.id == id: v.pan = f32(clamp(pan, -1.0, 1.0))
 
+# hold a voice where it is (a sound, music, a stream), silent, until resume(id); it is still
+# playing (is_playing), and stop() still ends it
+pause = (id: int):
+    loop mut v in __voices:
+        if v.id == id: v.paused = true
+resume = (id: int):
+    loop mut v in __voices:
+        if v.id == id: v.paused = false
+
+# where a voice is in its sound, in seconds, as heard now (by audio_time, so it runs as smoothly):
+# a song's position, for a chart. Negative before it is heard (play's delay, and audio_latency);
+# 0 for one that has stopped
+voice_time = (id: int) -> f64:
+    lag = f64(__mixed) / f64(MIX_RATE) - audio_time()
+    loop v in __voices:
+        if v.id != id: continue
+        t = (v.pos - f64(v.wait) * v.pitch) / f64(MIX_RATE)
+        if v.stream: t = __stream_time(v)
+        else if v.pushed: t = f64(v.mixed) / f64(MIX_RATE)
+        t -= lag * v.pitch
+        # (one that loops, heard from its end still: a turn back)
+        if v.looping and t < 0.0 and f64(v.mixed) / f64(MIX_RATE) > lag:
+            d = duration(v.sound)
+            if v.stream: d = __stream_length(id)
+            if d > 0.0: t += d
+        return t
+    0.0
+
+# a voice goes on from t seconds into its sound (music too: decoded from the page before t), with
+# the mixer's next samples; one that loops, from t in its turn
+seek = (id: int, t: f64):
+    loop i in 0.. and v in __voices:
+        if v.id != id or v.pushed: continue
+        if v.stream:
+            __stream_seek_id(id, t)
+            __voices[i].pos = 0.0
+        else:
+            total = f64(frames(v.sound))
+            p = max(t, 0.0) * f64(MIX_RATE)
+            if v.looping and total > 0.0: p -= floor(p / total) * total
+            __voices[i].pos = min(p, total)
+        __voices[i].wait = 0
+
 # ---------------- sounds in a place ----------------
 # how loud a sound at distance d is, of volume, heard up to reach (fading as it gets further)
 __reach_gain = (d: f64, reach: f64) -> f64:
@@ -167,6 +273,9 @@ __mix = (n: int):
     i = 0
     loop i < __voices.len():
         v = __voices[i]
+        if v.paused:
+            i += 1
+            continue
         # (not started yet: play's delay)
         f0 = 0
         if v.wait > 0:
@@ -187,8 +296,9 @@ __mix = (n: int):
             __voices[i].fade_time = max(v.fade_time - step, 0.0)
             if __voices[i].fade_time == 0.0 and v.fade_stop: last = true
             v = __voices[i]
+        __voices[i].mixed = v.mixed + n - f0
         if v.stream:
-            if __mix_stream(i, out, n) and not last: i += 1
+            if __mix_stream(i, out, f0, n) and not last: i += 1
             else: stop(v.id)
             continue
         if v.pushed:
@@ -476,6 +586,7 @@ melody_loop = (notes: str, bpm: f64 = 120.0, wave: Wave = .triangle, volume: f64
 # channels (the first two are used; mono plays on both), any rate (resampled to MIX_RATE). Other
 # files are an error that says what they are.
 load_wav = (file: u8[]) -> Sound:
+    if file.len() == 0: panic("load_wav: the file is empty (0 bytes)")
     if file.len() >= 4 and file[0] == 'O' and file[1] == 'g' and file[2] == 'g' and file[3] == 'S': panic("load_wav: this is an Ogg Vorbis file: load_ogg(file) for a sound, load_music(file) for music played as it goes")
     if file.len() < 12 or file[0] != 'R' or file[1] != 'I' or file[2] != 'F' or file[3] != 'F' or file[8] != 'W': panic("load_wav: not a WAV file (no RIFF/WAVE header)")
     u16_at = (o: int) -> int: int(file[o]) | (int(file[o + 1]) << 8)
@@ -580,6 +691,7 @@ __resample = (src: f32[], rate: int) -> Sound:
 # ---------------- output ----------------
 when TARGET == "wasm":
     extern __web_audio_start = (rate: i32)
+    extern __web_audio_held = () -> f64
 
     __audio_start = ():
         global __audio_state
@@ -593,7 +705,12 @@ when TARGET == "wasm":
         __mix(int(n))
         data(__mix_buf)
 
-    __audio_update = (): pass
+    # (the page says how much it holds that is not heard yet, in seconds: what it has queued and
+    # the context's output latency; below 0 while it is not playing)
+    __audio_update = ():
+        if __audio_state != 1: return
+        h = __web_audio_held()
+        if h >= 0.0: __clock_heard(int(h * f64(MIX_RATE)))
 else when TARGET == "windows":
     # waveOut (winmm): a few buffers of float samples, refilled as each one finishes playing
     @lib("winmm.dll")
@@ -602,6 +719,8 @@ else when TARGET == "windows":
     extern waveOutPrepareHeader = (h: *u8, hdr: *u8, size: u32) -> u32
     @lib("winmm.dll")
     extern waveOutWrite = (h: *u8, hdr: *u8, size: u32) -> u32
+    @lib("winmm.dll")
+    extern waveOutGetPosition = (h: *u8, mmt: *u8, size: u32) -> u32
 
     const __WO_BUFS = 4
     const __WO_FRAMES = 1024          # (21 ms each)
@@ -648,6 +767,15 @@ else when TARGET == "windows":
             mem_copy((data(__wo_data) + i * __WO_FRAMES * 2) as *u8, data(__mix_buf) as *u8, __WO_FRAMES * 8)
             ((hd + 24) as *u32)[0] = ((hd + 24) as *u32)[0] & ~1
             waveOutWrite(__wo, hd, 48)
+        # (the samples played so far: MMTIME, asked for in samples, or in bytes where a driver
+        # counts those)
+        mmt = [0, 0]
+        p = data(mmt) as *u8
+        (p as *u32)[0] = 2
+        if waveOutGetPosition(__wo, p, 12) == 0:
+            played = int(((p + 4) as *u32)[0])
+            if (p as *u32)[0] == 4: played = played / 8
+            if (p as *u32)[0] == 2 or (p as *u32)[0] == 4: __clock_heard((__mixed - played) & 0xFFFFFFFF)
 else when TARGET == "macos":
     # an AudioQueue of a few float buffers: its callback (on the queue's own thread) only marks a
     # buffer played; the game's thread mixes into it and queues it again
@@ -659,6 +787,8 @@ else when TARGET == "macos":
     extern AudioQueueEnqueueBuffer = (q: *u8, buf: *u8, n: u32, descs: *u8) -> i32
     @lib("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")
     extern AudioQueueStart = (q: *u8, at: *u8) -> i32
+    @lib("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")
+    extern AudioQueueGetCurrentTime = (q: *u8, timeline: *u8, ts: *u8, disc: *u8) -> i32
 
     const __AQ_BUFS = 4
     const __AQ_FRAMES = 1024          # (21 ms each)
@@ -716,6 +846,11 @@ else when TARGET == "macos":
             mem_copy(((b + 8) as **u8)[0], data(__mix_buf) as *u8, __AQ_FRAMES * 8)
             ((b + 16) as *u32)[0] = u32(__AQ_FRAMES * 8)
             AudioQueueEnqueueBuffer(__aq, b, 0, null)
+        # (the samples played since it started: an AudioTimeStamp's sample time)
+        ts = fill(0, 8)
+        if AudioQueueGetCurrentTime(__aq, null, data(ts) as *u8, null) == 0:
+            played = int((data(ts) as *f64)[0])
+            if played >= 0 and played <= __mixed: __clock_heard(__mixed - played)
 else:
     @lib("libasound.so.2")
     extern snd_pcm_open = (pcm: **u8, name: *u8, stream: i32, mode: i32) -> i32
@@ -729,6 +864,8 @@ else:
     extern snd_pcm_recover = (pcm: *u8, err: i32, silent: i32) -> i32
     @lib("libasound.so.2")
     extern snd_pcm_prepare = (pcm: *u8) -> i32
+    @lib("libasound.so.2")
+    extern snd_pcm_delay = (pcm: *u8, frames: *int) -> i32
 
     __pcm: *u8 = null
 
@@ -754,8 +891,13 @@ else:
         if avail < 0:
             snd_pcm_recover(__pcm, i32(avail), 1)
             return
-        if avail == 0: return
-        n = min(avail, 8192)
-        __mix(n)
-        r = snd_pcm_writei(__pcm, data(__mix_buf) as *u8, n)
-        if r < 0: snd_pcm_recover(__pcm, i32(r), 1)
+        if avail > 0:
+            n = min(avail, 8192)
+            __mix(n)
+            r = snd_pcm_writei(__pcm, data(__mix_buf) as *u8, n)
+            if r < 0:
+                snd_pcm_recover(__pcm, i32(r), 1)
+                return
+        # (what it holds that is not heard yet: the samples written, and the delay past them)
+        held = 0
+        if snd_pcm_delay(__pcm, &held) == 0: __clock_heard(held)

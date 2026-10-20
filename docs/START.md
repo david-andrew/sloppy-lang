@@ -620,6 +620,94 @@ sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS todos(id INTEGER PRIMARY KEY, title
 (`sqlite3_prepare_v2`, `sqlite3_bind_text` and `sqlite3_step` the same way, for values from
 clients: never put them in the SQL text.)
 
+## Rhythm games and music sync
+
+A rhythm game keeps its notes on the music's clock, not the frames': `audio_time()` is the
+seconds of sound heard so far. It is smooth: between mixes it runs on the monotonic clock, kept
+in step with what the output says it has played (averaged over its last reports, so a device
+that reports a 10 ms period at a time gives a clock off a straight line by about 0.2 ms); it
+never goes back and never passes the sound mixed. The output's own delay is in it, as far as the
+system reports one. It starts with the sound: the first `play`, `play_music`, `audio_time()` or
+`audio_started()`; in a web page at the first click or key (browsers allow no sound before:
+`audio_started()` says when). With no sound device it moves with the frames' time, a frame at a
+time, and in a screenshot run exactly 1/60 s a frame, so tests come out the same each run.
+
+```gdscript
+# four lanes: notes fall to a line, hit as they cross it
+window("Lanes", 800, 600)
+song = load_music(embed("song.ogg"))
+chart = [(0, 1.0), (1, 1.5), (2, 2.0), (3, 2.25), (0, 2.5)]   # (lane, seconds into the song)
+keys = [Key.d, Key.f, Key.j, Key.k]
+hit = fill(false, chart.len())
+offset = load_data("offset") ?? "0"     # the player's calibration (seconds), from a settings screen
+calib = to_float(offset) ?? 0.0
+start = audio_time() + 1.0                # the song starts a second from now, to the sample
+music = play_music(song, looping = false, at = start)
+
+# the song's time when the player heard what was playing at audio time t
+song_time = (t: f64) -> f64: t - start - calib
+
+update = (dt: f64):
+    loop lane in 0.. and k in keys:
+        # (each press this frame, two in one frame too, at the time the desktop gave it)
+        loop i in [0..key_presses(k)):
+            judge(lane, song_time(audio_time_at(key_press_time(k, i))))
+
+judge = (lane: int, t: f64):
+    loop j in 0.. and n in chart:
+        if hit[j] or n.0 != lane: continue
+        if abs(t - n.1) < 0.05:                # 50 ms either way
+            hit[j] = true
+            print("lane {lane}: {(t - n.1) * 1000.0:.0} ms")
+            return
+
+draw = ():
+    clear(BLACK)
+    now = song_time(audio_time())
+    rect(0, 500, 800, 4, WHITE)                # where notes are hit
+    loop j in 0.. and n in chart:
+        if hit[j]: continue
+        y = 500.0 - (n.1 - now) * 400.0        # 400 units a second
+        rect(f64(100 + n.0 * 160), y - 10.0, 120, 20, CYAN)
+```
+
+**Starting on time.** `play(s, at = t)` and `play_music(m, at = t)` start a sound when
+`audio_time()` is `t`, to the sample, whatever the frame rate (Unity's `PlayScheduled`). Give it
+a little ahead: the mixer works `audio_latency()` ahead of what is heard (20 to 100 ms), and an
+`at` already mixed starts at once, as far into the sound as it would be by then (a song resumed
+with `at = audio_time() - 30.0` is 30 seconds in, in time with the clock). A metronome
+schedules each click half a second before it:
+
+```gdscript
+click = tone(1800.0, 0.03, .square, 0.3)
+beat = 60.0 / 120.0                         # 120 beats a minute
+next_click = audio_time() + 0.5
+update = (dt: f64):
+    global next_click
+    loop next_click < audio_time() + 0.5:
+        play(click, at = next_click)
+        next_click += beat
+```
+
+- **`delay`** counts from the mixer's next samples instead: `play(s, delay = 0.25)` a quarter
+  second after a sound played now, to the sample; a negative delay starts that far into it.
+- **Judging a hit.** `key_presses(k)` counts the presses of a key in this frame (two taps in one
+  frame are two) and `key_press_time(k, i)` says when each came, on `elapsed()`'s clock, from the
+  time the desktop gives the event: X11, Wayland, macOS and browsers to the millisecond, Windows
+  to about 16 ms; gamepads when the frame read them. `audio_time_at(t)` is the music's time
+  then. `mouse_presses`, `mouse_press_time`, `action_presses` and `action_press_time` are the
+  same for buttons and actions, and `key_release_time(k)` for the end of a held note.
+- **Calibration.** What the system does not report (Bluetooth headphones, a TV, the player's own
+  ears) is a setting: play clicks on a beat, have the player tap along, and keep the average of
+  (the tap's music time minus the click's) as the offset taken from each press, as `calib` above.
+  `audio_latency()` is how far ahead of the speakers the mixer is, for showing it.
+- **The song's position.** `voice_time(id)` is where a voice is in its sound as heard now (smooth,
+  as `audio_time`; negative before it is heard); `pause(id)` and `resume(id)` hold it (a pause
+  menu), `seek(id, t)` moves it (a practice mode from a part of the song: music is decoded from
+  the page before `t`, not from the start).
+- **Testing.** In a screenshot run, `SLOPPY_INPUT="7.25:d+"` presses d a quarter of the way
+  through frame 7: `key_press_time(.d)` is 7.25 / 60 when frame 8 sees it.
+
 ## Coming from Scratch
 
 A Scratch project is sprites, each with its scripts running at once. In Sloppy one program
@@ -1052,6 +1140,10 @@ draw = ():                              # _draw
 | the Animator | `pose_at` for a clip at a time, `blend_poses` to mix two, the time and weights kept in the struct |
 | the inspector | `print(x)` shows any value, and `sloppy watch` reloads the code as it changes |
 | `Time.deltaTime` | `dt`, what `update = (dt: f64):` is given |
+| `AudioSettings.dspTime`, `AudioServer.get_time_since_last_mix()` | `audio_time()`: the audio clock, smooth, the sound heard so far (see [rhythm games](#rhythm-games-and-music-sync)) |
+| `AudioSource.PlayScheduled(t)`, `PlayDelayed(d)` | `play(s, at = t)` on the audio clock, `play(s, delay = d)`, to the sample (`play_music` too) |
+| `AudioSource.time`, `Pause()`, `UnPause()`, seeking | `voice_time(id)`, `pause(id)`, `resume(id)`, `seek(id, t)` |
+| `AudioServer.get_output_latency()` | `audio_latency()` |
 | `Input.GetKey(KeyCode.W)`, `GetKeyDown`, `GetAxis` | `key_down(.w)`, `key_pressed(.space)`, `input_axis()` |
 | `Mathf.Clamp`, `Mathf.Sin`, `Debug.Log` | plain functions: `clamp`, `sin`, `lerp`, `PI`; `print` |
 | `Instantiate`, `Destroy` | a function that makes the struct, pushed onto its array; `xs.remove_at(i)` or `xs.retain(...)` |

@@ -58,25 +58,63 @@ __input_init = ():
         __mouse_pressed = fill(false, 8)
         __mouse_released = fill(false, 8)
 
-# (repeat: the key was held down long enough to repeat, as in a text field)
-__key_event = (k: int, down: bool, repeat: bool = false):
+# (repeat: the key was held down long enough to repeat, as in a text field; t: when, on
+# elapsed()'s clock, from the event (__ev_ago), or -1: now)
+__key_event = (k: int, down: bool, repeat: bool = false, t: f64 = -1.0):
     if k <= 0 or k >= __NKEYS: return
     if down:
-        if not __key_down[k]: __key_pressed[k] = true
+        if not __key_down[k]:
+            __key_pressed[k] = true
+            __press_log(k, t)
         if not __key_down[k] or repeat: __key_typed[k] = true
         __key_down[k] = true
     else:
-        if __key_down[k]: __key_released[k] = true
+        if __key_down[k]:
+            __key_released[k] = true
+            __press_log(k + 256, t)
         __key_down[k] = false
 
-__mouse_event = (b: int, down: bool):
+__mouse_event = (b: int, down: bool, t: f64 = -1.0):
     if b < 0 or b >= 8: return
     if down:
-        if not __mouse_btn[b]: __mouse_pressed[b] = true
+        if not __mouse_btn[b]:
+            __mouse_pressed[b] = true
+            __press_log(__NKEYS + b, t)
         __mouse_btn[b] = true
     else:
         if __mouse_btn[b]: __mouse_released[b] = true
         __mouse_btn[b] = false
+
+# (this frame's presses, in order: a key, __NKEYS + a mouse button, 256 + a key released; and
+# when, on elapsed()'s clock)
+__presses: (int, f64)[]
+__input_t = 0.0                 # (when the frame read its input: a gamepad's presses' time)
+__press_log = (code: int, t: f64):
+    if t >= 0.0: __presses.push((code, min(t, elapsed())))
+    else: __presses.push((code, elapsed()))
+
+# (an event's time on elapsed()'s clock, from how long ago, in seconds, the desktop's time for it
+# says it came; one not believed (a clock of its own): -1, now)
+__ev_ago = (s: f64) -> f64:
+    if s >= 0.0 and s < 2.0: return elapsed() - s
+    -1.0
+
+# (X11's and Wayland's event times: milliseconds of the monotonic clock, time()'s, wrapping at 2^32)
+__ev_ms = (ms: int) -> f64: __ev_ago(f64((int(time() * 1000.0) - ms) & 0xFFFFFFFF) / 1000.0)
+
+# (the n-th of this frame's presses of code, or -1)
+__press_at = (code: int, n: int) -> f64:
+    k = 0
+    loop p in __presses:
+        if p.0 != code: continue
+        if k == n: return p.1
+        k += 1
+    -1.0
+__press_count = (code: int) -> int:
+    k = 0
+    loop p in __presses:
+        if p.0 == code: k += 1
+    k
 
 __input_end_frame = ():
     global __kept_btns, __kept_keys, __kept_mouse, __mouse_dx, __mouse_dy, __mouse_wheel, __text_input
@@ -89,6 +127,7 @@ __input_end_frame = ():
     __mouse_dy = 0.0
     __mouse_wheel = 0.0
     __text_input = ""
+    __presses.clear()
     if __fixed_step:
         __kept_keys = __key_down
         __kept_btns = __mouse_btn
@@ -112,6 +151,7 @@ __ignore_real_input = ():
     __mouse_dy = 0.0
     __mouse_wheel = 0.0
     __text_input = ""
+    __presses.clear()
 
 # ---------------- public input API ----------------
 # true while the key is held
@@ -127,6 +167,19 @@ key_released = (k: Key) -> bool:
     __input_init()
     if __fx_in: return __fx_keys[__NKEYS + int(k)]
     __key_released[int(k)]
+# how many times the key was pressed this frame: 2 for two taps that came in one frame, which
+# key_pressed counts as one (in a fixed step, 1 at most)
+key_presses = (k: Key) -> int:
+    if __fx_in: return int(key_pressed(k))
+    __press_count(int(k))
+# when the key was pressed this frame (its i-th press, from 0), on elapsed()'s clock, -1 if it was
+# not: the time the desktop gives the event, finer than the frame, to judge a hit by
+# (`audio_time_at(key_press_time(.d))` is the music's time then). Without one (gamepads, Windows
+# to about 16 ms), when the frame read it; in a screenshot run its frame's time, or SLOPPY_INPUT's
+# (5.5:d+ is half way through frame 5, seen in frame 6)
+key_press_time = (k: Key, i: int = 0) -> f64: __press_at(int(k), i)
+# when the key was let go this frame (the last time), as key_press_time, -1 if it was not
+key_release_time = (k: Key) -> f64: __press_at(int(k) + 256, __press_count(int(k) + 256) - 1)
 # true in the frame the key was pressed, and again each time it repeats while held down, as the
 # desktop repeats keys (for moving through text); characters typed arrive through text_input()
 key_typed = (k: Key) -> bool:
@@ -157,6 +210,11 @@ mouse_released = (b: Mouse) -> bool:
     __input_init()
     if __fx_in: return __fx_btns[8 + int(b)]
     __mouse_released[int(b)]
+# how many times the button was pressed this frame, and when (as key_presses, key_press_time)
+mouse_presses = (b: Mouse) -> int:
+    if __fx_in: return int(mouse_pressed(b))
+    __press_count(__NKEYS + int(b))
+mouse_press_time = (b: Mouse, i: int = 0) -> f64: __press_at(__NKEYS + int(b), i)
 # characters typed this frame
 text_input = () -> str: __text_input
 # the text pasted this frame (ctrl+V, cmd+V on a Mac, a web page's paste, a text field's Paste
@@ -916,9 +974,10 @@ when TARGET == "wasm":
     @export("__tap_pending")
     __web_tap_pending = () -> i32: i32(int(__tap_frame >= frame_number() - 1))
 
-    # down: 0 released, 1 pressed, 2 repeated (held down)
+    # down: 0 released, 1 pressed, 2 repeated (held down); t: the event's timeStamp (ms, on
+    # performance.now()'s clock, time()'s), if it has one
     @export("__key")
-    __web_key = (k: i32, down: i32): __key_event(int(k), down != 0, down == 2)
+    __web_key = (k: i32, down: i32, t: f64): __key_event(int(k), down != 0, down == 2, __ev_ago(time() - t / 1000.0))
 
     @export("__focus")
     __web_focus = (on: i32):
@@ -929,15 +988,15 @@ when TARGET == "wasm":
     __web_quit = (): __game_quit()
 
     @export("__mouse")
-    __web_mouse = (kind: i32, x: f32, y: f32, b: i32):
+    __web_mouse = (kind: i32, x: f32, y: f32, b: i32, t: f64):
         global __mouse_x, __mouse_y
         if kind == 0:
             __mouse_dx += f64(x) - __mouse_x
             __mouse_dy += f64(y) - __mouse_y
             __mouse_x = f64(x)
             __mouse_y = f64(y)
-        else if kind == 1: __mouse_event(int(b), true)
-        else if kind == 2: __mouse_event(int(b), false)
+        else if kind == 1: __mouse_event(int(b), true, __ev_ago(time() - t / 1000.0))
+        else if kind == 2: __mouse_event(int(b), false, __ev_ago(time() - t / 1000.0))
         else if kind == 3: __mouse_wheel += f64(y)
         else if kind == 4:
             # motion while the pointer is locked: only how far it moved
@@ -975,6 +1034,10 @@ else when TARGET == "windows":
     extern DefWindowProcW = (hwnd: *u8, msg: u32, wp: int, lp: int) -> int
     @lib("user32.dll")
     extern PeekMessageW = (msg: *u8, hwnd: *u8, lo: u32, hi: u32, remove: u32) -> i32
+    @lib("user32.dll")
+    extern GetMessageTime = () -> i32
+    @lib("kernel32.dll")
+    extern GetTickCount = () -> u32
     @lib("user32.dll")
     extern TranslateMessage = (msg: *u8) -> i32
     @lib("user32.dll")
@@ -1070,6 +1133,8 @@ else when TARGET == "windows":
     __w32_locked = false
     __w32_saved_style = 0
     __w32_saved_rect: i32[] = [0, 0, 0, 0]
+    # (the message's time: GetTickCount's milliseconds, to about 16 ms)
+    __w32_msg_time = () -> f64: __ev_ago(f64((int(GetTickCount()) - int(GetMessageTime())) & 0xFFFFFFFF) / 1000.0)
     __w32_surrogate = 0
 
     const __WS_OVERLAPPEDWINDOW = 0x00CF0000
@@ -1238,7 +1303,7 @@ else when TARGET == "windows":
                 else if vk == 0x22: k = int(Key.kp3)
                 else if vk == 0x2D: k = int(Key.kp0)
                 else if vk == 0x2E: k = int(Key.kp_period)
-            if k > 0: __key_event(k, down, down and (lp >> 30) & 1 == 1)
+            if k > 0: __key_event(k, down, down and (lp >> 30) & 1 == 1, __w32_msg_time())
             # (alt+F4 still closes; other system keys are the game's)
             if m == 0x104 and int(wp) == 0x73: return DefWindowProcW(hwnd, msg, wp, lp)
             return 0
@@ -1262,13 +1327,13 @@ else when TARGET == "windows":
             __mouse_y = y
             return 0
         if m == 0x201 or m == 0x202:
-            __mouse_event(0, m == 0x201)
+            __mouse_event(0, m == 0x201, __w32_msg_time())
             return 0
         if m == 0x207 or m == 0x208:
-            __mouse_event(1, m == 0x207)
+            __mouse_event(1, m == 0x207, __w32_msg_time())
             return 0
         if m == 0x204 or m == 0x205:
-            __mouse_event(2, m == 0x204)
+            __mouse_event(2, m == 0x204, __w32_msg_time())
             return 0
         if m == 0x20A:                                          # WM_MOUSEWHEEL
             __mouse_wheel += f64(__w32_hi(wp)) / 120.0
@@ -1874,8 +1939,8 @@ else when TARGET == "linux":
         if kind == 2 or kind == 3:
             sym = XLookupKeysym(evp, 0)
             k = __xkey(sym)
-            # (a press of a key already down: held, repeating)
-            __key_event(k, kind == 2, kind == 2 and k > 0 and __key_down[k])
+            # (a press of a key already down: held, repeating; its time, a Time at 56)
+            __key_event(k, kind == 2, kind == 2 and k > 0 and __key_down[k], __ev_ms(int(ev[14]) & 0xFFFFFFFF))
             if kind == 2 and int(ev[20]) & 4 == 0:
                 buf = __alloc(16)
                 ks = [0]
@@ -1890,9 +1955,10 @@ else when TARGET == "linux":
                 __free(buf)
         else if kind == 4 or kind == 5:
             btn = int(ev[21])
-            if btn == 1: __mouse_event(0, kind == 4)
-            else if btn == 2: __mouse_event(1, kind == 4)
-            else if btn == 3: __mouse_event(2, kind == 4)
+            bt = __ev_ms(int(ev[14]) & 0xFFFFFFFF)
+            if btn == 1: __mouse_event(0, kind == 4, bt)
+            else if btn == 2: __mouse_event(1, kind == 4, bt)
+            else if btn == 3: __mouse_event(2, kind == 4, bt)
             else if btn == 4 and kind == 4: __mouse_wheel += 1.0
             else if btn == 5 and kind == 4: __mouse_wheel -= 1.0
         else if kind == 6:
@@ -2301,7 +2367,8 @@ __fps_n = 0
 # (the first finger down is the mouse too, as on a phone); a letter, digit, space or punctuation key pressed is typed (text_input; with shift, as a US keyboard does), and 9:text=ACE types text;
 # a gamepad (pad 0): 5:pad_a+ and 9:pad_a- (PadButton's names: pad_start, pad_up...), 5:lstick=1x0
 # and rstick=XxY (x right, y down, -1 to 1), 5:lt=1 and rt=V (the triggers, 0 to 1); another
-# by its number: 5:pad1_a+, 5:pad1_lstick=1x0
+# by its number: 5:pad1_a+, 5:pad1_lstick=1x0. A key or mouse button at 5.5 comes half way through
+# frame 5 (seen in frame 6, key_press_time 5.5 / 60 in a screenshot run)
 __script: (int, int, bool, vec2)[]          # (frame, key (-1 - button: a mouse button; -100: a move), down, where)
 __script_loaded = false
 __script_mouse_placed = false
@@ -2351,7 +2418,7 @@ __scripted_input = ():
                 in_text = false
                 loop w in words(part):
                     c0 = find(w, ":")
-                    starts_item = c0 > 0 and to_int(w[..c0)) != none
+                    starts_item = c0 > 0 and to_float(w[..c0)) != none
                     if in_text and not starts_item:
                         items[items.len() - 1] = items[items.len() - 1] + " " + w
                         continue
@@ -2360,7 +2427,9 @@ __scripted_input = ():
             loop item in items:
                 c = find(item, ":")
                 if c < 0 or len(item) < c + 3: continue
-                fr = to_int(item[..c)) ?? 0
+                # (5.5:d+: a key or button half way through frame 5, seen in frame 6, its time 5.5 / 60)
+                at = to_float(item[..c)) ?? 0.0
+                fr = int(ceil(at))
                 if starts_with(item[c + 1..], "text="):
                     __script_text.push((fr, item[c + 6..]))
                     continue
@@ -2437,7 +2506,7 @@ __scripted_input = ():
                 if found == -1000 or (item[len(item) - 1] != '+' and item[len(item) - 1] != '-'):
                     eprint("SLOPPY_INPUT: '{item}' is not frame:key+ or frame:key- (keys as Key names them: a, n1, space, enter, escape, left, shift; mouse_left), frame:mouse=XxY, frame:wheel=N, frame:text=..., frame:drop=PATH, frame:touch1=XxY or frame:touch1-, frame:pad_a+ (a gamepad's buttons; pad1_a+ gamepad 1's), frame:lstick=XxY, rstick=XxY, lt=V nor rt=V")
                     continue
-                __script.push((fr, found, down, vec2(0, 0)))
+                __script.push((fr, found, down, vec2(f32(at), 0)))
     loop e in __script_text:
         if e.0 == __frame_count: __text_input += e.1
     loop e in __script_drops:
@@ -2445,7 +2514,7 @@ __scripted_input = ():
     loop e in __script:
         if e.0 != __frame_count: continue
         if e.1 >= 0:
-            __key_event(e.1, e.2)
+            __key_event(e.1, e.2, false, __script_time(e.3.x))
             # (a letter, digit, space or punctuation key pressed types it too, as a keyboard does; not with ctrl
             # or alt held: a shortcut, ctrl+z, types nothing)
             if e.2 and not key_down(.ctrl) and not key_down(.alt):
@@ -2488,9 +2557,14 @@ __scripted_input = ():
                 if fid == __script_finger:
                     __mouse_event(0, false)
                     __script_finger = -1
-        else: __mouse_event(-1 - e.1, e.2)
+        else: __mouse_event(-1 - e.1, e.2, __script_time(e.3.x))
 
 __script_finger = -1                        # (the finger that is the mouse)
+# (SLOPPY_INPUT's time for a key at frame `at` (5.5: half way through frame 5): in a screenshot run
+# at / 60 s, else when the frame reads it)
+__script_time = (at: f32) -> f64:
+    if __fixed_step: return f64(at) / 60.0
+    -1.0
 # move the mouse to p (in the screen's units), as a pointer moving there: mouse_delta, drags and
 # mouse look see it; the first move only says where it is, as a pointer that has been there all along
 __script_move_mouse = (p: vec2):
@@ -2506,8 +2580,9 @@ __script_move_mouse = (p: vec2):
     __mouse_y = ny
 
 __run_frame = (dt: f64, update: (f64) -> void, draw: () -> void):
-    global __dt, __fps, __fps_acc, __fps_n, __raw_dt
+    global __dt, __fps, __fps_acc, __fps_n, __input_t, __raw_dt
     __out_flush()                   # (what the last frame printed)
+    __input_t = elapsed()
     __scripted_input()
     __dialogs_poll()
     __drop_frame()
