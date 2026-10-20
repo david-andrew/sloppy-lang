@@ -1,0 +1,108 @@
+# __TITLE__: a web server: a JSON API, kept in a file, a page that uses it, and live updates to
+# every page open (server-sent events). Run it with `sloppy __NAME__.jo` and open
+# http://localhost:8080; test it with `sloppy test __NAME__.jo`. On a server of its own, behind
+# Caddy (https): docs/START.md's "Writing a server".
+import http
+import net
+
+build:
+    name = "__TITLE__"
+
+struct Note:
+    id = 0
+    text = ""
+
+struct NoteIn:
+    text = ""
+
+data = "notes.json"
+notes: Note[]
+listeners: int[]            # (the pages open: their events() streams)
+
+# the notes, written to a new file that then takes the old one's place (a crash never leaves half
+# a file; a copy of it is a backup at any time)
+save = () -> bool: write_file(data + ".tmp", to_json(notes)) and rename_file(data + ".tmp", data)
+
+# (false when the file is there and not notes: then the server does not start, which would
+# write over it)
+load = () -> bool:
+    global notes
+    if not file_exists(data): return true
+    got = from_json[Note[]](read_file(data) ?? "")
+    if got is TextError:
+        eprint("{data} is not notes: {got.message}")
+        return false
+    notes = got
+    true
+
+# the server's own answers (404, a body too big...) as JSON, as the API's are
+http.on_error = (r: http.Request, code: int, why: str) -> http.Response:
+    http.json_error(code, if len(why) > 0: why else: http.reason(code))
+
+http.get("/api/notes", (r: http.Request) -> http.Response: http.json(notes))
+
+http.post("/api/notes", (r: http.Request) -> http.Response:
+    if not http.allow("add " + r.address, 30): return http.json_error(429, "slow down: 30 notes a minute")
+    n = NoteIn()
+    if let bad = http.read_json(r, n): return bad
+    text = trim(n.text)
+    if len(text) == 0 or char_count(text) > 500: return http.json_error(422, "a note is 1 to 500 characters")
+    notes.push(Note(if notes.len() > 0: notes.last().id + 1 else: 1, text))
+    if not save():
+        notes.pop()
+        return http.json_error(500, "the note could not be saved")
+    # (to every page open; those closed are let go)
+    listeners = listeners.filter((c: int): http.send_event(c, to_json(notes.last()), event = "note"))
+    http.json(notes.last(), 201))
+
+http.get("/api/events", (r: http.Request) -> http.Response:
+    listeners = listeners.filter((c: int): http.stream_open(c))
+    listeners.push(r.conn)
+    http.events())
+
+http.get("/", (r: http.Request) -> http.Response: http.html(PAGE))
+
+PAGE = r"""<!doctype html>
+<meta charset="utf-8">
+<title>__TITLE__</title>
+<style>body { font: 16px sans-serif; max-width: 40em; margin: 2em auto } input { width: 30em }</style>
+<h1>__TITLE__</h1>
+<form id="add"><input id="text" placeholder="a note" autofocus> <button>Add</button> <span id="why"></span></form>
+<ul id="notes"></ul>
+<script>
+const list = document.getElementById("notes")
+const show = n => { const li = document.createElement("li"); li.textContent = n.text; list.append(li) }
+fetch("/api/notes").then(r => r.json()).then(ns => ns.forEach(show))
+new EventSource("/api/events").addEventListener("note", e => show(JSON.parse(e.data)))
+document.getElementById("add").onsubmit = async e => {
+    e.preventDefault()
+    const box = document.getElementById("text")
+    const r = await fetch("/api/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: box.value }) })
+    document.getElementById("why").textContent = r.ok ? "" : (await r.json()).error
+    if (r.ok) box.value = ""
+}
+</script>
+"""
+
+main = () -> int:
+    if not load(): return 1
+    port = to_int(env("PORT") ?? "") ?? 8080
+    http.log_requests = true
+    print("serving on http://localhost:{port}")
+    if not http.serve(port):
+        eprint("port {port} is taken (PORT=8081 sloppy __NAME__.jo: another)")
+        return 1
+    0
+
+test "a note is added, read back, and kept":
+    data = join_path(temp_dir(), "__NAME__-test.json")
+    delete_file(data)
+    http.listen(9690, host = "127.0.0.1")
+    spawn((): http.serve(9690), background = true)
+    at = "http://127.0.0.1:9690"
+    r = net.fetch(at + "/api/notes", method = "POST", body = to_json(NoteIn("buy milk")))
+    assert(r.status == 201)
+    assert(net.fetch(at + "/api/notes").text == "[\{\"id\":1,\"text\":\"buy milk\"}]")
+    assert(net.fetch(at + "/api/notes", method = "POST", body = to_json(NoteIn("  "))).status == 422)
+    assert(net.fetch(at + "/nothing").text == "\{\"error\":\"Not Found\"}")
+    assert(read_file(data)! == to_json(notes))
