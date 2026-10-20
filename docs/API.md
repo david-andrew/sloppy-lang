@@ -5275,7 +5275,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `peers = () -> int[]`: the peers connected now
 - `close = (peer: int)`: end a connection (a left event follows)
 - `route = (peer: int) -> str`: how a peer is reached: "direct" (WebRTC, straight between the two), "relay" (WebRTC through a TURN server), "websocket" (a connection to a server, or one a server took), or "" (not known yet, or gone; a web page's browser does not tell)
-- `backlog = (peer: int) -> int`: how much waits to reach a peer: over WebRTC, the pieces sent and not acknowledged yet and those waiting for room; over a WebSocket, the bytes not sent yet (0 in a web page)
+- `backlog = (peer: int) -> int`: how much waits to reach a peer: over WebRTC, the pieces sent and not acknowledged yet and those waiting for room (in a web page, the bytes its data channel holds); over a WebSocket, the bytes not sent yet (0 in a web page)
 - `dropped = (peer: int) -> int`: the messages to a peer dropped so far for want of room (one invited with reliable = false, whose messages may be lost: while the other side is slow to take them, newer ones are not held up)
 - `why = (peer: int) -> str`: why a peer could not connect, once it has left ("": it did not say; a web page's browser does not tell)
 - `local_address = () -> str`: this machine's address on its network (as 192.168.1.20): what another machine there connects to, and what a host tells the players joining it; "" when it has none (no network, or a web page)

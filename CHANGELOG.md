@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Rollback netplay's packets are short text (a line of numbers, then the inputs, `=` for one the
+  same as the one before): some 600 bytes became 150 for a player holding still, 60 a second to
+  each other player. A packet to a peer whose path holds 16 KB not sent yet is left out (the next
+  has its inputs too), where the backlog grew and the inputs came later and later.
+- `net.backlog(peer)` in a web page: what its data channel holds (it was 0).
+- Aces online: the others fly on for a third of a second (20 ticks) while one machine stops, and
+  that machine plays the ticks it missed, up to a quarter of a second, where it gave them up and
+  the others waited for it. In a web page the online log is kept in the browser's storage, and
+  Settings' Save online log downloads it.
+
 ## 0.27.0
 
 - Terminal programs: `import term` takes the whole terminal as a screen of characters, as curses,

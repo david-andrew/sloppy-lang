@@ -39,6 +39,7 @@ import net
 # plays for them from then on, with an input that has the game's tick fly them itself.
 
 const __NP_HIST = 128               # ticks kept: states and inputs
+const __NP_BACKLOG = 16000          # bytes waiting for a peer past which a packet is left out
 
 struct Session[S, I]:
     step: (S, I[]) -> S
@@ -219,6 +220,9 @@ play[S, I] = (s: mut Session[S, I], input: I):
                 loop q in s.__peers:
                     if q >= 0 and to < 0: to = q
             if to < 0: continue
+            # (a path that holds what was sent, sending slower than this: this one is left out,
+            # as the next has its inputs too; sent anyway, they would wait longer and longer)
+            if net.backlog(to) > __NP_BACKLOG: continue
             # (marked: the game's own messages on the same peer stay the game's)
             b: u8[] = [u8(net.__NET_MARK)]
             b.extend(o.1)
@@ -236,11 +240,11 @@ outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]:
 
 # bytes that arrived from another player (the packet says which)
 receive[S, I] = (s: mut Session[S, I], data: u8[]):
-    r = from_text[__NpPacket[I]](str_from_bytes(data))
-    if r is TextError:
-        __np_problem(s, "a packet from another player could not be read as this game's input: does the other player run another build of the game? ({r.message})")
+    got = __np_decode[I](data)
+    if got == none:
+        __np_problem(s, "a packet from another player could not be read as this game's input: does the other player run another build of the game?")
         return
-    pk = r
+    pk = got!
     p = pk.from
     if p == s.me and pk.to != s.me: __np_problem(s, "two players are both player {p}: give each machine its own number (`me`)")
     # (over net's peers, for another player: from one who has no peer to them, passed on (this is the host))
@@ -249,7 +253,7 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
         if s.__stand[pk.to] or (p >= 0 and p < s.players and s.__stand[p]): return
         b: u8[] = [u8(net.__NET_MARK)]
         b.extend(data)
-        net.send(s.__peers[pk.to], b)
+        if net.backlog(s.__peers[pk.to]) <= __NP_BACKLOG: net.send(s.__peers[pk.to], b)
         # (its inputs are taken here too: all that reaches anyone from p has reached the host,
         # who can play for p, should p leave, from where the others are)
         if p >= 0 and p < s.players:
@@ -274,6 +278,48 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
     if pk.check >= 0:
         s.__their_hashes[pk.check] = pk.hash
         __np_compare(s, pk.check)
+
+# A packet as text, short: its numbers in a row, then an input a line, `=` for one the same as
+# the one before it (most are: what a player holds stays so a while). As to_text wrote the whole
+# packet, it was some 70 bytes an input, and 600 a packet, 60 a second to each player.
+__np_encode[I] = (pk: __NpPacket[I]) -> u8[]:
+    out = "NP2 {pk.from} {pk.to} {pk.tick} {pk.adv} {pk.ack} {pk.first} {pk.check} {pk.hash >> 32} {pk.hash & 0xFFFFFFFF} {pk.sent} {pk.echo} {pk.held} {join(pk.has.map((h): "{h}"), ",")}"
+    prev = ""
+    loop inp in pk.inputs:
+        t = to_text(inp)
+        out += if t == prev: "\n=" else: "\n" + t
+        prev = t
+    bytes(out)
+
+# (none: not a packet of this game's, or of this version of netplay)
+__np_decode[I] = (data: u8[]) -> __NpPacket[I]?:
+    ls = lines(str_from_bytes(data))
+    if ls.len() == 0: return none
+    w = split(ls[0], " ")
+    if w.len() != 14 or w[0] != "NP2": return none
+    n: int[]
+    loop k in [1..10):
+        v = to_int(w[k]) ?? return none
+        n.push(v)
+    f: f64[]
+    loop k in [10..13):
+        v = to_float(w[k]) ?? return none
+        f.push(v)
+    has: int[]
+    if len(w[13]) > 0:
+        loop x in split(w[13], ","):
+            v = to_int(x) ?? return none
+            has.push(v)
+    ins: I[]
+    loop k in [1..ls.len()):
+        if ls[k] == "=":
+            if ins.len() == 0: return none
+            ins.push(ins[ins.len() - 1])
+        else:
+            r = from_text[I](ls[k])
+            if r is TextError: return none
+            ins.push(r)
+    __NpPacket[I](n[0], n[1], n[2], n[3], n[4], n[5], ins, n[6], (u64(n[7]) << 32) | u64(n[8]), has, f[0], f[1], f[2])
 
 __np_problem[S, I] = (s: mut Session[S, I], what: str):
     if len(s.problem) > 0: return
@@ -354,7 +400,7 @@ __np_send[S, I] = (s: mut Session[S, I]):
         if s.__check >= 0: h = s.__hashes.get(s.__check) ?? 0
         now = elapsed() * 1000.0
         pk = __NpPacket[I](s.me, p, s.tick, s.tick - s.__their_tick[p], s.__recv[p], first, ins, s.__check, h, s.__recv, now, s.__stamp[p], now - s.__heard[p] * 1000.0)
-        __np_out(s, p, bytes(to_text(pk)))
+        __np_out(s, p, __np_encode(pk))
         # (and the inputs of those this machine plays for, as theirs)
         loop q in [0..s.players):
             if not s.__stand[q] or q == p: continue
@@ -362,7 +408,7 @@ __np_send[S, I] = (s: mut Session[S, I]):
             qs: I[]
             loop t in [from..s.__recv[q]): qs.push(s.__inputs[t % __NP_HIST * s.players + q])
             pq = __NpPacket[I](q, p, s.tick, s.tick - s.__their_tick[p], s.__recv[p], from, qs, -1, 0, s.__recv, now)
-            __np_out(s, p, bytes(to_text(pq)))
+            __np_out(s, p, __np_encode(pq))
 
 # this machine plays for player p from now on, with this input every tick (a game's "the
 # computer flies it": the game's tick makes it so): for one who has left. Their inputs that
