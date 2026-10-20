@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- netplay: when two machines' games differ, a debug build writes its game at that tick to
+  `netplay-desync-<tick>-p<me>.json`, to compare with the other machine's.
 - `import sqlite`: databases through the system's SQLite (Linux's libsqlite3, macOS's and
   Windows' own): `sqlite.open(path)`, `db.exec(script)`, `db.run(sql, [values])` (rows changed,
   the last id), `db.query[T](sql, [values])` (rows into a struct by its fields' names, a BOOL

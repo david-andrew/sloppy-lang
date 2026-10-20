@@ -251,7 +251,9 @@ When it does break, the session finds out: each machine sends a hash of its game
 everyone's inputs are in for, and `s.desync` says the first tick at which two differed. That,
 and other trouble (packets from another build of the game that cannot be read, two machines
 with the same `me`, a player not heard from for 5 seconds), is in `s.problem` and said once on
-stderr. Test with a different `SLOPPY_SEED` for each machine: screenshot runs
+stderr. A debug build (not `--release`) also writes its game at that tick, as JSON, to
+`netplay-desync-<tick>-p<me>.json`: the two machines' files differ where the games went apart.
+Test with a different `SLOPPY_SEED` for each machine: screenshot runs
 (`SLOPPY_SCREENSHOT`) seed `random()` alike and step by exactly 1/60 s, which hides those two
 mistakes.
 
