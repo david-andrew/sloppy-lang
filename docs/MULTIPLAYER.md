@@ -267,8 +267,9 @@ things hide the latency:
 - **prediction**: a client applies its own input at once, so its own player answers without
   delay; when a world comes from the server, the inputs it has not answered yet are applied to
   it again (**reconciliation**), so the player ends up where the server says without jumping;
-- **interpolation**: others are drawn a few ticks in the past, between two worlds from the
-  server (`c.view()`), so they move smoothly however unevenly the worlds arrive;
+- **interpolation**: others are drawn a little in the past (`c.interpolation`, 0.1 s), between
+  two worlds from the server (`c.view()`), so they move smoothly however unevenly the worlds
+  arrive;
 - **lag compensation**: each input says which tick its player was seeing, and the game's
   `apply` gets that world too, so a shot hits what the shooter saw.
 
@@ -294,10 +295,13 @@ client's own player would wait for the server). `random()` in `apply` makes the 
 and the server's differ, which shows as flicker: draw it from something both have. Add each
 player to the world when `srv.joined` names them, and take them out on `srv.left`.
 `c.connected()` turns false, and `c.problem` says why, when the client cannot connect, the
-server closes the connection, or nothing comes from it for 5 seconds. A server without a
-window calls `srv.run()`: `srv.update()` 60 times a second, on time (a loop of `update` and
-`sleep(1.0 / 60.0)` ticks a little slower than the clients, and their inputs wait in a queue:
-lag).
+server closes the connection (with its reason: `net.close(p, 4001, "the room is full")` on the
+server), or nothing comes from it for 5 seconds. With `c.reconnect = true` a client connects
+again by itself when the connection is lost or the server goes away or restarts (after 1, 2,
+4... up to 30 seconds), not when the server closed it on purpose; the server sees a new player
+then, with the same hello. A server without a window calls `srv.run()`: `srv.update()` 60 times
+a second, on time (a loop of `update` and `sleep(1.0 / 60.0)` ticks a little slower than the
+clients, and their inputs wait in a queue: lag).
 
 ```gdscript
 srv = netplay.server(World(), apply, step)
@@ -329,10 +333,91 @@ server's world shows them, half a round trip and the interpolation later. For a 
 must show at once, draw its flash in the client when the button is pressed, and let the
 server's world bring the bullet.
 
+### Other tick rates
+
+A game that needs fewer ticks (a strategy game, a slow arena: 20 or 30 a second) or more (up to
+120) says so on the server: `srv.run(20)`, or `srv.ticks_per_second = 20` for a server ticking in
+its own loop. The worlds carry it to the clients (`c.ticks_per_second`), and each client calls
+`c.play` once a tick at that rate (as below, with `1.0 / c.ticks_per_second` for `1.0 / 60.0`).
+`c.view()` is meant to be drawn every frame: between two plays it goes on by the time since the
+last, so others move smoothly at 60 frames a second with a server at 20. `c.interpolation` is in
+seconds: at least the time between two worlds (`srv.send_every` ticks: `srv.send_every = 1` at 20
+a second), and more on an uneven network.
+
+### Several games on one port
+
+One server can hold many games, each a `netplay.server` of its own, behind one http server on
+one port (its pages, its API and the games' WebSockets together). Without `srv.listen`, a server
+is fed by hand: `srv.join(p)`, `srv.receive(p, data)` and `srv.leave(p)` from the program's own
+`net.receive_server()` loop, and what it has to send comes from `srv.outgoing()`:
+
+```gdscript
+import http
+import net
+import netplay
+
+rooms: {str: netplay.Server[World, Pad]}       # a game each, by its name
+room_of: {int: str}                             # each player's room
+
+http.get("/play/:room", (r: http.Request) -> http.Response: http.websocket(r))
+http.files("/", "public")
+http.listen(8080)
+next = time()
+loop not stopping():
+    http.answer()
+    loop e in net.receive_server():
+        if e.kind == .joined:
+            name = net.handshake(e.peer).path[len("/play/")..]
+            if not rooms.has(name): rooms[name] = netplay.server(World(), apply, step)
+            if [loop _, r in room_of: if r == name: r].len() >= 8:
+                net.close(e.peer, 4001, "the room is full")
+                continue
+            rooms[name].join(e.peer)
+            room_of[e.peer] = name
+        else if let name = room_of.get(e.peer):
+            if e.kind == .message: rooms[name].receive(e.peer, e.data)
+            else:
+                rooms[name].leave(e.peer)
+                room_of.remove(e.peer)
+    # (every room's tick, 60 a second, on time)
+    if time() >= next:
+        next = max(next + 1.0 / 60.0, time() - 0.25)
+        loop name in [loop n, _ in rooms: n]:
+            rooms[name].update()
+            loop p in rooms[name].joined: rooms[name].world.pos[p] = 0
+            loop p in rooms[name].left: rooms[name].world.pos.remove(p)
+            loop o in rooms[name].outgoing(): net.send(o.0, o.1)
+            if rooms[name].world.pos.len() == 0 and rooms[name].tick > 60: rooms.remove(name)
+    net.wait(max(next - time(), 0.0))
+```
+
+A client joins a room by its address: `c.connect("wss://game.example.com/play/red", 0)`. A
+task for each room works too (its server fed through a channel); the loop above is the
+simplest, and costs no more.
+
+### What goes over the wire
+
+For a bot or a client in another language: a WebSocket, binary messages, each starting with a
+byte that says what it is.
+
+- From the server, `2` then `you tick ack rate ` in ASCII (four numbers, each followed by a
+  space: this player's number, the world's tick, the sequence number of this player's last
+  input applied, the server's ticks a second), then the world as `to_text` writes it (Sloppy's
+  text for values, as `World(pos={1: 3}, hits=0)`), compressed with raw deflate (RFC 1951, no
+  zlib header: Python's `zlib.decompress(data, -15)`).
+- From the server, `3` then UTF-8 text: `srv.say`.
+- From the client, `1` then UTF-8 text: its hello, once its first world has come.
+- From the client, `3` then UTF-8 text: `c.say`.
+- From the client, an input: `(seq=12, seen=340, input=Pad(dx=1, fire=false))` as text (no
+  leading byte; a struct's name may be left out, `(dx=1, fire=false)`). `seq` counts the
+  client's inputs from 1, `seen` is the tick of the world it was drawing (-1 for none: no lag
+  compensation). One a tick, at the server's rate: more wait in a queue and are dropped past 8.
+
 ## Ticks, not frames
 
-Both kinds play in ticks of 1/60 s. A screen may show 144 frames a second, or drop a frame, so
-count ticks apart from frames:
+Both kinds play in ticks of 1/60 s (a client-server game at the server's rate:
+`c.ticks_per_second`). A screen may show 144 frames a second, or drop a frame, so count ticks
+apart from frames:
 
 ```gdscript
 spare = 0.0

@@ -719,6 +719,12 @@ Leave fields out by naming the ones given (`Player(name = "cy")`); values given 
 stop one or two fields short of a number, text or struct without a default get a warning, as
 that is usually a value forgotten.
 
+A field cannot be named with a keyword; `when_` (a `_` at its end) can, and JSON calls it
+`when`: `to_json` writes `{"when": 1.5}` for `when_ = 1.5`, and `from_json` reads it back, so
+JSON whose names are keywords (`when`, `in`, `if`, `match`) reads into a struct. Names that are
+not names at all (`"content-type"`, `"first name"`) go in a map field (`{str: str}`) or through
+`parse_json`.
+
 Structs compare with `==` field by field (and so work as map keys), unless a field holds a
 function: functions cannot be compared, so neither can such a struct (the compiler names the
 field; compare the fields that can be, `a.name == b.name`).

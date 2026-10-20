@@ -5477,7 +5477,7 @@ assert(net.fetch("http://127.0.0.1:18080/todos/1").status == 200)
       target = ""             # the path and query as sent: "/todos?done=true"
       version = "HTTP/1.1"
       address = ""            # where it came from: "1.2.3.4" (behind a proxy, the proxy's; Caddy puts
-                              # the client's in X-Forwarded-For)
+                              # the client's last in X-Forwarded-For, to trust from the proxy only)
       conn = 0                # its connection (a stream's: send_event and send_chunk go to it)
   ```
 - `struct Response`

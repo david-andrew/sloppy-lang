@@ -328,6 +328,8 @@ if repo is TextError:
 print("{repo.full_name}: {repo.stargazers_count} stars, {repo.description ?? "-"}")
 ```
 
+- A JSON name that is a keyword (`"when"`, `"in"`) is a field with `_` after it: `when_ = ""`
+  reads `"when"`, and `to_json` writes it so.
 - `net.fetch(url, method = "POST", headers = {"Authorization": "Bearer {token}"}, body =
   to_json(item))` sends a request of another kind; a body starting with `{` or `[` goes as JSON
   unless a `Content-Type` header says otherwise. `wait = 10.0` gives up sooner than 30 seconds.
@@ -440,8 +442,31 @@ on_quit = (): write_file("todos.json", to_json(todos))
   `r.headers.get("origin")` or a cookie), and the connection is a peer of `net`'s from then on
   (`net.receive()`, `net.send`, `net.handshake(peer)` for its path and cookies). A task for each:
   `p = net.accept(wait = 1.0)` gives the next one, and that task waits for its own with
-  `net.receive([p], wait = 30.0)`. Server-sent events: a route answers `http.events()` and keeps
-  `r.conn`; `http.send_event(conn, text)` sends to it later.
+  `net.receive([p], wait = 30.0)`. A task reads only its own peer's socket, so this costs no more
+  than one loop over `net.receive_server()`: an echo server with 200 clients sending 20 messages
+  a second each takes about a fifth of a core either way. `net.close(p, 4001, "the room is full")`
+  sends a code and a reason, which the other side's `.left` event has (`e.code`, `e.text`) and a
+  browser's WebSocket its close event (`event.code`, `event.reason`); 4000-4999 are the
+  program's own. Rooms, as Socket.IO's: `net.join_room(p, "match-7")`,
+  `net.send_room("match-7", text)`, `net.members("match-7")`; a peer that leaves leaves its rooms.
+  Server-sent events: a route answers `http.events()` and keeps `r.conn`; `http.send_event(conn,
+  text)` sends to it later.
+- Around the routes: `http.before((r: mut http.Request) -> http.Response?: ...)` sees each request
+  first, and answers it itself (a sign-in missing, a rate limit: `http.json_error(429, ...)`) or
+  gives `none` to let it go on, maybe with `r.params["user"]` set for the handlers;
+  `http.after((r: http.Request, res: http.Response) -> http.Response: ...)` sees each answer
+  (headers to add, a log). `http.cors(["https://example.com"])` lets those sites' pages read the
+  answers (`http.cors()`: any site), and answers the browser's preflight `OPTIONS` before any
+  `before`. Answers of text, JSON, JavaScript and wasm of 1 KB or more go gzip'd to browsers
+  (files once per change); `http.gzip = false` turns that off.
+- Passwords: `crypto.hash_password(pw)` gives text to store (PBKDF2-SHA256, a salt of its own),
+  and `crypto.check_password(pw, stored)` says whether a password is it. A token or a signature a
+  client sent is compared with `crypto.constant_time_equal(a, b)`, which takes as long wherever
+  they differ.
+- A health check for a load balancer or a monitor is a route of its own:
+  `http.get("/health", (r: http.Request) -> http.Response: http.text("ok"))` (answered at once by
+  a server that is running: one that also checks what it needs, its database file, answers
+  `http.status(503)` when that fails).
 
 **On a server of its own.** Listen on `host = "127.0.0.1"` and put Caddy in front: it gets the
 certificate (https) and passes requests on. [Running a matchmaking server](MATCHMAKING.md) sets this
@@ -454,8 +479,36 @@ example.org {
 }
 ```
 
-(WebSockets pass through it too.) Behind Caddy, `r.address` is Caddy's; the client's is in
-`r.headers.get("x-forwarded-for")`.
+(WebSockets pass through it too; `encode gzip` on a line of its own in the block has Caddy gzip
+what the program does not, and leaves what it did.) Behind Caddy, `r.address` (and
+`net.handshake(p).address` for a WebSocket) is Caddy's, 127.0.0.1; the client's is the last
+address in `r.headers.get("x-forwarded-for")`, which Caddy adds. Trust that header only from the
+proxy: a server that listens on every address lets anyone send one saying anything, so listen on
+`host = "127.0.0.1"`, or take the header only when `r.address == "127.0.0.1"`.
+
+A systemd service for it, `/etc/systemd/system/todos.service`:
+
+```
+[Unit]
+Description=todos
+After=network-online.target
+
+[Service]
+User=todos
+WorkingDirectory=/srv/todos
+ExecStart=/srv/todos/todos
+Restart=always
+RestartSec=2
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`WorkingDirectory` matters: `http.files("/", "public")`, `read_file("todos.json")` and the like
+are relative to it (without it, to `/`). `MemoryMax` has systemd stop a program that grows past
+it (and `Restart` start it again), rather than the machine running out. `systemctl stop` sends SIGTERM, which `http.serve` answers by
+finishing what it is answering (up to `drain` seconds) and returning.
 
 **Keeping data.** A small server keeps its data in a JSON file: `to_json`, written to a new file
 that then takes the old one's place (`write_file(tmp, text)`, `rename_file(tmp, path)`), so a crash
@@ -571,6 +624,13 @@ vectors' parts as there; `post_effects()` adds bloom and a vignette to 2D drawin
 | scenes, `this.scene.start("Level")` | `enum Screen: title, play, over`, `screen = .play`, and a `match screen:` in update and in draw |
 | `async`/`await`, a chain of animations | a phase for each step (`enum Phase: idle, swapping, clearing, falling`), moved on in update when its tweens are done; or `Actions` for timed steps |
 | `btoa`, `atob` | `base64_encode(bytes(s))`, `base64_decode(s)` |
+| Express: `app.get("/todos/:id", ...)`, `app.listen(8080)` | `http.get("/todos/:id", handler)`, `http.serve(8080)` ([writing a server](#writing-a-server)) |
+| Express middleware, `cors()`, `compression()` | `http.before(f)` (may answer early: a sign-in, a rate limit) and `http.after(f)`; `http.cors(["https://example.com"])`; gzip is on (`http.gzip = false`) |
+| Socket.IO: `io.on("connection")`, `socket.join(room)`, `io.to(room).emit(...)` | `http.websocket(r)` in a route, then `net.accept` and `net.receive([p], wait = 30.0)` in a task for each (or one loop over `net.receive_server()`); `net.join_room(p, room)`, `net.send_room(room, text, except = p)`, `net.members(room)` |
+| `socket.disconnect()`, a close code | `net.close(p, 4001, "the room is full")`: the other side's `.left` event has `e.code` and `e.text`, a page's WebSocket `event.code` and `event.reason` |
+| Socket.IO's reconnection | a netplay client's `c.reconnect = true` (1, 2, 4... up to 30 s between tries); with net alone, `net.connect` again when `.left` comes |
+| `bcrypt.hash`, `crypto.timingSafeEqual` | `crypto.hash_password(pw)`, `crypto.check_password(pw, stored)`, `crypto.constant_time_equal(a, b)` |
+| JSON keys that are keywords (`{"when": ...}`) | a field named `when_`: `to_json` and `from_json` call it `"when"` |
 | `window.onbeforeunload` | `on_quit = (): ...`, which the game calls as it closes |
 | `<input type="file">`, Electron's `dialog.showOpenDialog`, a drop zone | `d = open_file_dialog([".txt"])`, then `if let paths = file_dialog_result(d):` each frame; `dropped_files()` |
 | CSS `cursor: pointer`, `cursor: col-resize` | `set_cursor(.hand)`, `set_cursor(.resize_ew)` |
@@ -713,11 +773,14 @@ waits (a channel, a fetch, a connection, `sleep`) lets the others run. For the p
 | structs and methods | `struct Box:` and functions taking one: `area = (b: Box) -> f64: b.w * b.h` is called `b.area()` |
 | `fmt.Printf("%-10s %5.2f\n", s, x)` | `print("{s:<10} {x:5.2f}")` |
 | `flag.Bool("words", false, "count words")` | a struct of the options, `opts = parse_args[Options]("what it does")`, the comments as the help |
-| `encoding/json`, struct tags | `from_json[Item](s)` (fields by name), `to_json(x)`, `parse_json(s)` for any shape |
+| `encoding/json`, struct tags | `from_json[Item](s)` (fields by name), `to_json(x)`, `parse_json(s)` for any shape; a JSON name that is a keyword is a field with `_` after it (`when_` is `"when"`) |
 | `bufio.Scanner` over a file | `if let f = open_file(p):` then `loop let line = f.read_line():` |
 | `regexp.MustCompile(expr)` | `regex(r"...")`, made once and used for every text |
 | `url.Parse`, `base.ResolveReference(ref)` | `parse_url(s)` (`u.host`, `u.port`, `u.path`), `url_join(base, link)` |
 | `http.HandleFunc`, `http.ListenAndServe` | `import http`, `http.get("/todos/:id", handler)`, `http.serve(8080)` ([writing a server](#writing-a-server)) |
+| middleware, `rs/cors`, `gziphandler` | `http.before(f)` (may answer early) and `http.after(f)`, `http.cors(["https://example.com"])`; gzip is on (`http.gzip = false`) |
+| `bcrypt.GenerateFromPassword`, `subtle.ConstantTimeCompare` | `crypto.hash_password(pw)` and `crypto.check_password(pw, stored)` (PBKDF2-SHA256), `crypto.constant_time_equal(a, b)` |
+| gorilla/websocket, a goroutine per connection | `http.websocket(r)` in a route; `p = net.accept(wait = 1.0)`, a task for each with `net.receive([p], wait = 30.0)`; `net.close(p, 4001, "the room is full")` |
 | `httptest.NewServer` | the server in the same program: `http.listen(port, host = "127.0.0.1")`, `spawn((): http.serve(port), background = true)`, then `net.fetch` ([as above](#writing-a-server)) |
 | `go test`, `func TestX(t *testing.T)` | `test "x": assert(...)` blocks, run by `sloppy test file.jo` (`sloppy test file.jo x`: only those named so) |
 | a small static binary | `sloppy build --release tool.jo`: one static executable (no libc; hello world is about 150 KB) |
