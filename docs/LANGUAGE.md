@@ -1940,7 +1940,8 @@ finished, or in a test of your own. Environment variables say what happens:
   screen's units), `7:text=hi there` types (to the next comma), `5:touch1=400x300` puts finger 1 down there (or moves it)
   and `9:touch1-` lifts it (the first finger down is the mouse too, as on a phone),
   `5:pad_a+`/`9:pad_a-` press and let go a gamepad's button (pad 0; PadButton's names),
-  `6:lstick=1x0` and `rstick=` set its sticks, `lt=1` and `rt=` its triggers. An item it
+  `6:lstick=1x0` and `rstick=` set its sticks, `lt=1` and `rt=` its triggers (another gamepad
+  by its number: `5:pad1_a+`, `6:pad1_lstick=1x0`). An item it
   cannot read is reported. A web build takes it in the page's address,
   `page.html?SLOPPY_INPUT=5:space%2B`, with `+` written `%2B`.
 - `SLOPPY_SEED=n` makes `random()` the same each run; `SLOPPY_WINDOW=800x600` opens the window

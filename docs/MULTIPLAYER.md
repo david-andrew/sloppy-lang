@@ -231,7 +231,9 @@ machines:
 - anything outside the game: the window's size, the mouse in pixels (turn it into the input
   first), files, the order of a map filled from the network;
 - a global the tick changes: it is not part of the game, so a rollback does not put it back
-  (keep it in the game's struct).
+  (keep it in the game's struct);
+- a global the tick reads that is not the same everywhere: a setting, `env(...)`, a difficulty
+  chosen on one machine (put it in the game's struct, the same for all, before the first tick).
 
 The compiler warns where the tick given to `netplay.session`, or a function of the program's it
 calls, takes random numbers, reads the clock or the input, or changes a global. (An `Rng` kept in
@@ -242,7 +244,8 @@ compute the game: a sound or particles started in it would start again. Start th
 from what changed in `s.state` since the last frame.
 
 `s.ping(p)` is the round trip to player p and back, in milliseconds, to show players (a
-client's is `c.ping`).
+client's is `c.ping`). It is from an input made to the answer's arrival, so it includes the
+frame each side waits before it plays and sends: two machines on one computer show about 16 ms.
 
 When it does break, the session finds out: each machine sends a hash of its game at ticks that
 everyone's inputs are in for, and `s.desync` says the first tick at which two differed. That,
@@ -254,11 +257,44 @@ mistakes.
 
 **Input delay.** An input takes effect `delay` ticks after it is made (2 by default, about
 33 ms), which hides that much latency with no rollback at all. More delay means fewer and
-shorter rollbacks; fighting games use 2 or 3.
+shorter rollbacks; fighting games use 2 or 3, and more for a far player: about half the ping in
+ticks, `s.delay = clamp(int(s.ping(other) / 2.0 / 16.7), 2, 6)`. `s.delay` may be changed at
+any time (from the ping once it is known, or a setting): a longer delay gives the ticks between
+the same input, a shorter one plays the inputs made meanwhile in turn.
 
-**Waiting.** A session runs at most `max_ahead` ticks ahead of the inputs it has (then
+**Waiting.** A session runs at most `s.max_ahead` ticks ahead of the inputs it has (10; then
 `s.waiting` is true and the game holds still), and slows down a little when its clock is ahead
-of the other's, so both keep pace.
+of the other's, so both keep pace. Set it after making the session, as `delay`. Inputs made
+while it waits are not lost: each change of input is played in turn on the ticks after (a
+button tapped during a wait still hits).
+
+A machine that stops for a moment (a 0.3 s hitch: a disk, another program) catches up on the
+ticks it missed only as far as `dt` goes, which is never more than 0.1 s (a game playing a tick
+for each 1/60 s of it); the rest of the time is lost, and the others, who went on, wait a few
+frames for it and then run a little slower until both agree again.
+
+**Replays and spectators.** The ticks below `s.confirmed()` have everyone's inputs for good, and
+`s.inputs_at(t)` gives them; taken as they come, they are a replay: the game played again from
+its start, tick by tick, comes out the same (and the same on another machine, so a spectator can
+be sent them).
+
+```gdscript
+saved = 0
+replay: Pad[][]
+update = (dt: f64):
+    s.play(read_pad())
+    loop saved < s.confirmed():
+        replay.push(s.inputs_at(saved))
+        saved += 1
+```
+
+Played again: `g = Game()`, then `loop pads in replay: g = tick(g, pads)`. A desync shows up
+here too: two machines' replays are the same inputs, and the tick at which their games differ
+can be found by playing each.
+
+**Local players.** Two players on one keyboard, or a keyboard and a gamepad, give each player
+actions of their own, declared for their number: `action("p2 punch", [.key(.k), .button(.x)],
+player = 1)` is the K key, and gamepad 1's X.
 
 ## Client and server
 

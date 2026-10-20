@@ -35,11 +35,15 @@ import net
 # (s.receive(player, bytes)): any transport works (net's WebSockets, a relay server), and two
 # sessions in one program can play each other over netplay.Link, a simulated network with
 # latency, jitter and loss. s.lag(ms, jitter_ms, loss) simulates the same on a real one.
+# Replays and spectators: the ticks below s.confirmed() have everyone's inputs for good, and
+# s.inputs_at(t) gives them. A tick's inputs can change until then, so a game kept from
+# s.state is not one.
 # When a player leaves, the game can go on: s.stand_in(p, input) on the host (or the other of two)
 # plays for them from then on, with an input that has the game's tick fly them itself.
 
 const __NP_HIST = 128               # ticks kept: states and inputs
 const __NP_BACKLOG = 16000          # bytes waiting for a peer past which a packet is left out
+const __NP_PEND = 8                 # my inputs kept while play waits (past it, the latest replaces the last)
 
 struct Session[S, I]:
     step: (S, I[]) -> S
@@ -60,6 +64,7 @@ struct Session[S, I]:
     __inputs: I[]                   # [tick % HIST * players + player]
     __known: bool[]
     __last: I[]                     # each player's latest input (what is predicted for them)
+    __pend: I[]                     # my inputs not yet given a tick (made while play waited), each change once
     __recv: int[]                   # each player's inputs below this tick have arrived (mine: are made)
     __acked: int[]                  # each player has my inputs below this tick
     __their_tick: int[]             # the tick each said it was at
@@ -147,6 +152,22 @@ confirmed[S, I] = (s: Session[S, I]) -> int:
     loop r in s.__recv: c = min(c, r)
     c
 
+# everyone's inputs at tick t, one of those confirmed (below s.confirmed(), and not more than 100
+# ticks before it): a replay keeps them as they come, to play the game again from its start
+# (tick of the start, each one in turn), or a spectator is sent them
+#   loop saved < s.confirmed():
+#       replay.push(s.inputs_at(saved))
+#       saved += 1
+inputs_at[S, I] = (s: Session[S, I], t: int) -> I[]:
+    c = confirmed(s)
+    top = 0
+    loop r in s.__recv: top = max(top, r)
+    if t < 0 or t >= c: panic("inputs_at({t}): not confirmed yet (ticks below s.confirmed(), {c}, are)")
+    if t < top - __NP_HIST + 8: panic("inputs_at({t}): too long ago, its inputs are no longer kept (take each as it is confirmed)")
+    out: I[]
+    loop p in [0..s.players): out.push(s.__inputs[t % __NP_HIST * s.players + p])
+    out
+
 # player p has not been heard from for this many seconds
 silent[S, I] = (s: Session[S, I], p: int) -> f64: elapsed() - s.__heard[p]
 
@@ -184,10 +205,21 @@ play[S, I] = (s: mut Session[S, I], input: I):
     if s.__relay >= 0: __np_relay_receive(s)
     if s.__peers.len() > 0:
         loop d in net.__net_take_marked(s.__peers): s.receive(d)
-    # (my input for the tick it takes effect: once per tick, as others may have it already)
-    t = s.tick + s.delay
-    if s.__recv[s.me] == t:
-        __np_set(s, s.me, t, input)
+    # (my input for the tick it takes effect: once per tick, as others may have it already. Those
+    # made while play waits, or while a delay made shorter catches up, go to the ticks after in
+    # turn, each change of input once: a button tapped in a wait is not lost, and a queue of the
+    # same input held takes no time. A delay made longer gives the ticks between the same input)
+    was = if s.__pend.len() > 0: s.__pend[s.__pend.len() - 1] else: s.__last[s.me]
+    if input != was:
+        if s.__pend.len() < __NP_PEND: s.__pend.push(input)
+        else: s.__pend[s.__pend.len() - 1] = input
+    t = s.tick + clamp(s.delay, 0, __NP_HIST / 4)
+    loop s.__recv[s.me] <= t:
+        x = input
+        if s.__pend.len() > 0:
+            x = s.__pend[0]
+            if s.__pend.len() > 1 or s.__recv[s.me] == t: s.__pend.remove_at(0)
+        __np_set(s, s.me, s.__recv[s.me], x)
     # (and theirs, for those who left, up to the same tick)
     loop p in [0..s.players):
         if s.__stand[p]:
@@ -387,7 +419,7 @@ __np_compare[S, I] = (s: mut Session[S, I], c: int):
     if let mine = s.__hashes.get(c):
         if let theirs = s.__their_hashes.get(c):
             if mine != theirs and (s.desync < 0 or c < s.desync):
-                if s.desync < 0: __np_problem(s, "the games differ from tick {c} on: tick must give the same game for the same inputs on every machine (no random() without a seed in the game, no clock, no dt, no globals it changes)")
+                if s.desync < 0: __np_problem(s, "the games differ from tick {c} on: tick must give the same game for the same inputs on every machine (no random() without a seed in the game, no clock, no dt, no globals it changes, none it reads that can differ between machines: a setting, env(); a replay kept with s.inputs_at shows where)")
                 s.desync = c
 
 __np_send[S, I] = (s: mut Session[S, I]):

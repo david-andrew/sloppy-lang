@@ -2295,27 +2295,38 @@ __fps_n = 0
 # units, as mouse_pos); 5:touch1=400x300 puts finger 1 down there or moves it, 9:touch1- lifts it
 # (the first finger down is the mouse too, as on a phone); a letter, digit, space or punctuation key pressed is typed (text_input; with shift, as a US keyboard does), and 9:text=ACE types text;
 # a gamepad (pad 0): 5:pad_a+ and 9:pad_a- (PadButton's names: pad_start, pad_up...), 5:lstick=1x0
-# and rstick=XxY (x right, y down, -1 to 1), 5:lt=1 and rt=V (the triggers, 0 to 1)
+# and rstick=XxY (x right, y down, -1 to 1), 5:lt=1 and rt=V (the triggers, 0 to 1); another
+# by its number: 5:pad1_a+, 5:pad1_lstick=1x0
 __script: (int, int, bool, vec2)[]          # (frame, key (-1 - button: a mouse button; -100: a move), down, where)
 __script_loaded = false
 __script_mouse_placed = false
 __script_text: (int, str)[]                 # (frame, text typed then: 5:text=ACE)
 __script_drops: (int, str)[]                # (frame, a file dropped then: 5:drop=notes.txt)
-# (SLOPPY_INPUT's gamepad, pad 0: there from the first item that uses it)
+# (SLOPPY_INPUT's gamepads: each there from the first item that uses it. Pad 0's items are
+# -300 - button and -400 - axis; pad n's -1000 * n - button and -1000 * n - 50 - axis)
 __scripted_pad = ():
     loop e in __script:
-        if e.0 != __frame_count or e.1 > -300 or e.1 <= -500: continue
-        if not __pad_on[0]:
-            __pad_on[0] = true
-            __pad_names[0] = "SLOPPY_INPUT"
-        if e.1 > -400:
-            __pad_down[-300 - e.1] = e.2
+        if e.0 != __frame_count: continue
+        pad = -1
+        k = 0
+        if e.1 <= -300 and e.1 > -500:
+            pad = 0
+            k = if e.1 > -400: -300 - e.1 else: 50 + (-400 - e.1)
+        else if e.1 <= -1000:
+            pad = (-e.1) / 1000
+            k = (-e.1) % 1000
+        if pad < 0 or pad >= 8: continue
+        if not __pad_on[pad]:
+            __pad_on[pad] = true
+            __pad_names[pad] = "SLOPPY_INPUT"
+        if k < 50:
+            __pad_down[pad * 15 + k] = e.2
         else:
-            ax = -400 - e.1
+            ax = k - 50
             if ax == 0 or ax == 1:
-                __pad_axes[ax * 2] = f64(e.3.x)
-                __pad_axes[ax * 2 + 1] = f64(e.3.y)
-            else: __pad_axes[2 + ax] = f64(e.3.x)
+                __pad_axes[pad * 6 + ax * 2] = f64(e.3.x)
+                __pad_axes[pad * 6 + ax * 2 + 1] = f64(e.3.y)
+            else: __pad_axes[pad * 6 + 2 + ax] = f64(e.3.x)
 
 __scripted_input = ():
     global __mouse_x, __mouse_y, __script_finger, __script_loaded
@@ -2371,8 +2382,14 @@ __scripted_input = ():
                         if let fid = to_int(rest[..len(rest) - 1)):
                             __script.push((fr, -200 - fid, false, vec2(0, 0)))
                             continue
-                # (a gamepad, pad 0: its sticks and triggers set, its buttons pressed and let go)
+                # (a gamepad, pad 0: its sticks and triggers set, its buttons pressed and let go; another
+                # pad by its number, pad1_a+, pad1_lstick=1x0)
                 pv = item[c + 1..]
+                pn = 0
+                if len(pv) > 5 and starts_with(pv, "pad") and is_digit(pv[3]) and pv[4] == '_':
+                    pn = int(pv[3]) - 48
+                    pv = pv[5..]
+                    if not (starts_with(pv, "lstick=") or starts_with(pv, "rstick=") or starts_with(pv, "lt=") or starts_with(pv, "rt=")): pv = "pad_" + pv
                 ax = -1
                 if starts_with(pv, "lstick="): ax = 0
                 else if starts_with(pv, "rstick="): ax = 1
@@ -2385,10 +2402,10 @@ __scripted_input = ():
                         if xy.len() == 2:
                             if let sx = to_float(xy[0]):
                                 if let sy = to_float(xy[1]):
-                                    __script.push((fr, -400 - ax, false, vec2(f32(sx), f32(sy))))
+                                    __script.push((fr, if pn == 0: -400 - ax else: -1000 * pn - 50 - ax, false, vec2(f32(sx), f32(sy))))
                                     continue
                     else if let tv = to_float(vs):
-                        __script.push((fr, -400 - ax, false, vec2(f32(tv), 0)))
+                        __script.push((fr, if pn == 0: -400 - ax else: -1000 * pn - 50 - ax, false, vec2(f32(tv), 0)))
                         continue
                 if starts_with(pv, "pad_") and len(pv) > 5 and (ends_with(pv, "+") or ends_with(pv, "-")):
                     bn = pv[4..len(pv) - 1)
@@ -2396,7 +2413,7 @@ __scripted_input = ():
                     loop b in [0..15):
                         if "{b as PadButton}" == bn: bi = b
                     if bi >= 0:
-                        __script.push((fr, -300 - bi, ends_with(pv, "+"), vec2(0, 0)))
+                        __script.push((fr, if pn == 0: -300 - bi else: -1000 * pn - bi, ends_with(pv, "+"), vec2(0, 0)))
                         continue
                 if starts_with(item[c + 1..], "mouse="):
                     xy = split(item[c + 7..], "x")
@@ -2413,7 +2430,7 @@ __scripted_input = ():
                 loop b in [0..3):
                     if "mouse_{b as Mouse}" == name: found = -1 - b
                 if found == -1000 or (item[len(item) - 1] != '+' and item[len(item) - 1] != '-'):
-                    eprint("SLOPPY_INPUT: '{item}' is not frame:key+ or frame:key- (keys as Key names them: a, n1, space, enter, escape, left, shift; mouse_left), frame:mouse=XxY, frame:wheel=N, frame:text=..., frame:drop=PATH, frame:touch1=XxY or frame:touch1-, frame:pad_a+ (a gamepad's buttons), frame:lstick=XxY, rstick=XxY, lt=V nor rt=V")
+                    eprint("SLOPPY_INPUT: '{item}' is not frame:key+ or frame:key- (keys as Key names them: a, n1, space, enter, escape, left, shift; mouse_left), frame:mouse=XxY, frame:wheel=N, frame:text=..., frame:drop=PATH, frame:touch1=XxY or frame:touch1-, frame:pad_a+ (a gamepad's buttons; pad1_a+ gamepad 1's), frame:lstick=XxY, rstick=XxY, lt=V nor rt=V")
                     continue
                 __script.push((fr, found, down, vec2(0, 0)))
     loop e in __script_text:
@@ -2443,7 +2460,7 @@ __scripted_input = ():
                         j = k + len(kn) + 2
                         if key_down(.shift): __text_input += __SCRIPT_PUNCT[j + 1..j + 2)
                         else: __text_input += __SCRIPT_PUNCT[j..j + 1)
-        else if e.1 <= -300 and e.1 > -500: pass       # (a gamepad's: __scripted_pad, after the pads are read)
+        else if (e.1 <= -300 and e.1 > -500) or e.1 <= -1000: pass     # (a gamepad's: __scripted_pad, after the pads are read)
         else if e.1 == -101: __mouse_wheel += f64(e.3.x)
         else if e.1 == -100: __script_move_mouse(e.3)
         else if e.1 <= -200:

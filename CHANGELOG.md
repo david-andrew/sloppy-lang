@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- netplay sessions: inputs made while play waits are played on the ticks after, each change in
+  turn (a button tapped during a wait was lost: 5 of 10 taps in a 0.4 s stall); `s.delay`
+  changed after the session is made works, longer or shorter (4 hung the session, 1 did
+  nothing); `s.inputs_at(t)`: everyone's inputs at a confirmed tick, for replays and spectators.
+  MULTIPLAYER.md: choosing the delay from the ping, max_ahead, what ping includes, hitches,
+  replays, local players.
+- `action(name, inputs, player = 1)`: an action for one player, its keys theirs and its buttons
+  their gamepad's (players on one keyboard: "p2 left" read the keyboard only for player 0, and
+  any gamepad without a number). `SLOPPY_INPUT` drives other gamepads: `5:pad1_a+`,
+  `6:pad1_lstick=1x0`.
+- Messages: a function value of the wrong type says its own type beside the one wanted, with no
+  `?T74` in it, and a fixed-size array where any length goes (`pads: Pad[2]` for a netplay
+  tick); `s.play(a, b)` with too many arguments is said of the version taking s (it named
+  AnimPlayer's or Sound's); a named argument that is a field of what the function makes says
+  to set it after (`netplay.session(..., max_ahead = 6)`); a desync's message names globals
+  read that differ between machines.
 - Sound: `.noise` in `tone` has a pitch (a new level 16 times a cycle: 60 rumbles, 5000 hisses;
   it was white noise at any freq, so slides did nothing); a note's attack and release are at
   most half of it each (a 0.05 s blip with the 0.1 s release was half as loud);

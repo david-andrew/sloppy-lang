@@ -1350,6 +1350,8 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
     tie_types: str[]
     tie_arg = -1
     last_err_plain = ""
+    recv_d = 0                # (a version whose first parameter takes the first argument, which has too many or too few)
+    recv_err = ""
     best = -1
     # (an argument that is a number of a known type, the first such, rules out before anything is
     # made for them the overloads whose parameter there is a number type it cannot become: abs(x)
@@ -1384,6 +1386,12 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
         err = map_args(pnames, hasdef, args, cd.args)
         if len(err) > 0:
             if last_err_arg == 0: last_err = err
+            # (s.play(a, b) with s a Session: of the versions, the one taking s says what is wrong)
+            if recv_d == 0 and np > 0 and args.len() > 0 and nodes[args[0]].kind != .namedarg and nodes[args[0]].type != 0 and tkind(ntype(args[0])) == .struct_:
+                rb = fill(0, int(cd.sig.ntp))
+                if match_type(cd.sig.params[0], ntype(args[0]), rb, 0) >= 0:
+                    recv_d = d
+                    recv_err = err
             continue
         cd.binds = fill(0, int(cd.sig.ntp))
         if targs_here.len() > 0:
@@ -1607,10 +1615,20 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 others_call = n
                 resolve_fn_call(n, name, own, args, expected)
                 others_call = 0
+        if recv_d != 0 and decls.len() > 1 and last_err_arg <= 1: fatal(nodes[n].pos, "in call to {call_text(recv_d)}: {recv_err}")
         # (spawn(worker, 3), spawn(worker(3)): a task runs a function given no arguments)
         if name_of(name) == "spawn" and args.len() >= 1 and decls.len() > 0 and decl_in_prelude(decls[0]): spawn_args_check(n, args)
         if decls.len() == 1:
             if len(last_err) == 0: last_err = "arguments do not match"
+            # (netplay.session(..., max_ahead = 6): a field of what it makes, set after)
+            if starts_with(last_err, "no parameter named '") and find(last_err, "' (") < 0:
+                an = last_err[20..len(last_err) - 1)
+                rt = prune(int(fn_sig(decls[0]).ret))
+                if rt != 0 and types[rt].kind == .struct_:
+                    sd = int(structs[int(types[rt].st)].decl)
+                    sn = name_of(int(nodes[sd].name))
+                    loop i in [0..nkids(sd)):
+                        if name_of(int(nodes[kid(sd, i)].name)) == an: last_err = "no parameter named '{an}' (it is a field of the {sn} it makes: set it after, `x.{an} = ...`)"
             ep = nodes[n].pos
             if last_err_pos > 0: ep = last_err_pos
             # (index_of(xs, x) with the program's own index_of(p: Parser, c: str): the library's,
@@ -4428,6 +4446,27 @@ color_num_hint = (n: int, t: int) -> str:
     if nodes[n].type == 0 or t == 0 or not is_numeric(ntype(n)) or type_str(t) != "vec4": return ""
     " (a colour is a vec4: `rgb(1, 0, 0.3)`, `hex(0xff004d)` or a name such as `RED`; a palette is an array of them, `PAL[8]`)"
 
+# (a type's text with its unknowns, ?T74, as letters: T, U, V...)
+letters_for_vars = (s: str) -> str:
+    seen: str[]
+    out = ""
+    i = 0
+    loop i < len(s):
+        if s[i] == '?' and i + 2 < len(s) and s[i + 1] == 'T' and is_digit(s[i + 2]):
+            j = i + 2
+            loop j < len(s) and is_digit(s[j]): j += 1
+            v = s[i..j)
+            k = seen.index_of(v)
+            if k < 0:
+                k = seen.len()
+                seen.push(v)
+            out += "TUVWXYZ"[k % 7..k % 7 + 1)
+            i = j
+        else:
+            out += s[i..i + 1)
+            i += 1
+    out
+
 text_char_hint = (n: int, t: int) -> str:
     if not charlike(n) or t == 0 or not is_int(t): return ""
     w = name_of(int(nodes[n].sval))
@@ -5323,7 +5362,23 @@ fn_value = (n: int, expected: int) -> int:
             hint = ""
             if nm == "update": hint = " (the game calls update each frame with the seconds since the last one: `update = (dt: f64): ...`)"
             if nm == "draw": hint = " (the game calls draw with nothing: `draw = (): ...`)"
-            fatal(nodes[n].pos, "no version of '{nm}' matches {type_str(et)}{hint}")
+            # (tick = (g: G, pads: Pad[2]) for a (S, I[]) -> S: the one function's type beside it,
+            # the wanted one's unknowns as letters, and a fixed-size array where any length goes)
+            if decls.len() == 1 and len(hint) == 0 and not fn_sig(decls[0]).generic:
+                sg = fn_sig(decls[0])
+                ps: str[]
+                loop p in sg.params: ps.push(type_str(p))
+                rs = "void"
+                if sg.ret != 0: rs = type_str(int(sg.ret))
+                own = "({join(ps, ", ")}) -> {rs}"
+                fx = ""
+                loop i in [0..min(sg.params.len(), int(types[et].nargs))):
+                    if tkind(sg.params[i]) == .fixed and tkind(targ(et, i)) == .array:
+                        el = type_str(int(types[prune(sg.params[i])].elem))
+                        pn = name_of(int(nodes[kid(decls[0], i)].name))
+                        fx = ": its parameter {pn} is a fixed-size {type_str(sg.params[i])}, where an array of any length goes (`{pn}: {el}[]`)"
+                fatal(nodes[n].pos, "'{nm}' is {own}, and {a_or_an(letters_for_vars(type_str(et)))} is wanted here{fx}")
+            fatal(nodes[n].pos, "no version of '{nm}' matches {letters_for_vars(type_str(et))}{hint}")
         fatal(nodes[n].pos, "cannot use overloaded or generic function '{name_of(int(nodes[n].name))}' as a value without a known type{bare_variant_hint(int(nodes[n].name))}")
     mm = 0
     d = int(fns[f].decl)

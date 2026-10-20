@@ -15,8 +15,11 @@
 #   if ui_button("Back") or ui_back(): ...
 #   ui_end()
 #
-# Local multiplayer: a player number reads that gamepad (keys and the mouse count for player 0);
-# give players on one keyboard actions of their own ("p2 jump").
+# Local multiplayer: a player number reads that gamepad (keys and the mouse count for player 0).
+# Players sharing one keyboard each have actions of their own, declared for their number: its
+# keys are theirs, and its buttons their gamepad's
+#   action("p2 jump", [.key(.up), .button(.a)], player = 1)
+#   if action_pressed("p2 jump"): ...               # the up arrow, or gamepad 1's A
 
 # an input: a key, a gamepad button, a mouse button, or a stick or trigger pushed one way (axis:
 # 0 left x, 1 left y, 2 right x, 3 right y, 4 left trigger, 5 right trigger; dir: 1 or -1)
@@ -25,6 +28,7 @@ enum Input: key(k: Key), button(b: PadButton), mouse(m: Mouse), stick(axis: int,
 __ctl_names: str[]
 __ctl_defaults: Input[][]
 __ctl_binds: Input[][]
+__ctl_owner: int[]                      # the player each action is for (-1: anyone's)
 __ctl_saved: {str: str} = {}            # bindings read from the save, by action (until declared)
 __ctl_loaded = false
 __ctl_capture = -1                      # the action being rebound (ui_controls), or -1
@@ -33,8 +37,9 @@ __ctl_done_frame = -1                   # (the frame a rebinding ended: its key 
 __ctl_scroll = 0                        # (ui_controls: the first row shown)
 
 # declare an action and its default inputs (once, before reading it: again, nothing changes); a
-# binding the player saved replaces the defaults
-action = (name: str, defaults: Input[]):
+# binding the player saved replaces the defaults. player: the one it is for (its keys count for
+# them, its buttons are their gamepad's), -1 anyone's
+action = (name: str, defaults: Input[], player: int = -1):
     global __ctl_loaded
     if not __ctl_loaded:
         __ctl_loaded = true
@@ -48,6 +53,7 @@ action = (name: str, defaults: Input[]):
     b = defaults
     if let s = __ctl_saved.get(name): b = __ctl_parse(s)
     __ctl_binds.push(b)
+    __ctl_owner.push(player)
 
 __ctl_index = (name: str) -> int:
     loop i in 0.. and n in __ctl_names:
@@ -80,8 +86,16 @@ __ctl_near = (a: str, b: str) -> bool:
     i + j >= max(len(la), len(lb)) - 1
 
 # how far input x is pushed, 0 to 1, for player (-1: anyone)
-input_value = (x: Input, player: int = -1) -> f64:
-    keyboard = player <= 0
+input_value = (x: Input, player: int = -1) -> f64: __input_value(x, player, player <= 0)
+
+# (the player an action is read for: its own when it has one, none when another is asked for)
+__ctl_player = (i: int, player: int) -> int:
+    own = __ctl_owner[i]
+    if own < 0: return player
+    if player >= 0 and player != own: return -2
+    own
+
+__input_value = (x: Input, player: int, keyboard: bool) -> f64:
     match x:
         .key(k):
             if keyboard and key_down(k): return 1.0
@@ -108,8 +122,10 @@ __ctl_stick = (pad: int, axis: int, dir: int, before: bool) -> f64:
 # how far the action is pushed, 0 to 1 (the most of its inputs)
 action_value = (name: str, player: int = -1) -> f64:
     i = __ctl_get(name)
+    p = __ctl_player(i, player)
+    if p == -2: return 0.0
     v = 0.0
-    loop x in __ctl_binds[i]: v = max(v, input_value(x, player))
+    loop x in __ctl_binds[i]: v = max(v, __input_value(x, p, p <= 0 or __ctl_owner[i] >= 0))
     v
 
 action_down = (name: str, player: int = -1) -> bool: action_value(name, player) >= 0.5
@@ -117,7 +133,9 @@ action_down = (name: str, player: int = -1) -> bool: action_value(name, player) 
 # true in the frame the action was pressed (a stick: when it goes past halfway)
 action_pressed = (name: str, player: int = -1) -> bool:
     i = __ctl_get(name)
-    keyboard = player <= 0
+    pl = __ctl_player(i, player)
+    if pl == -2: return false
+    keyboard = pl <= 0 or __ctl_owner[i] >= 0
     loop x in __ctl_binds[i]:
         match x:
             .key(k):
@@ -125,15 +143,17 @@ action_pressed = (name: str, player: int = -1) -> bool:
             .mouse(m):
                 if keyboard and mouse_pressed(m): return true
             .button(b):
-                if player < 0 and gamepad_pressed(b) or player >= 0 and gamepad_pressed(player, b): return true
+                if pl < 0 and gamepad_pressed(b) or pl >= 0 and gamepad_pressed(pl, b): return true
             .stick(a, d):
                 loop p in gamepads():
-                    if (player < 0 or p == player) and __stick_pressed(p, a, d): return true
+                    if (pl < 0 or p == pl) and __stick_pressed(p, a, d): return true
     false
 
 action_released = (name: str, player: int = -1) -> bool:
     i = __ctl_get(name)
-    keyboard = player <= 0
+    pl = __ctl_player(i, player)
+    if pl == -2: return false
+    keyboard = pl <= 0 or __ctl_owner[i] >= 0
     loop x in __ctl_binds[i]:
         match x:
             .key(k):
@@ -141,7 +161,7 @@ action_released = (name: str, player: int = -1) -> bool:
             .mouse(m):
                 if keyboard and mouse_released(m): return true
             .button(b):
-                if player < 0 and gamepad_released(b) or player >= 0 and gamepad_released(player, b): return true
+                if pl < 0 and gamepad_released(b) or pl >= 0 and gamepad_released(pl, b): return true
             _: pass
     false
 

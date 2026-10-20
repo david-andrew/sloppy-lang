@@ -2577,10 +2577,15 @@ if ui_button("Back") or ui_back(): ...
 ui_end()
 ```
 
-Local multiplayer: a player number reads that gamepad (keys and the mouse count for player 0); give players on one keyboard actions of their own ("p2 jump").
+Local multiplayer: a player number reads that gamepad (keys and the mouse count for player 0). Players sharing one keyboard each have actions of their own, declared for their number: its keys are theirs, and its buttons their gamepad's
+
+```gdscript
+action("p2 jump", [.key(.up), .button(.a)], player = 1)
+if action_pressed("p2 jump"): ...               # the up arrow, or gamepad 1's A
+```
 
 - `enum Input: key(k: Key), button(b: PadButton), mouse(m: Mouse), stick(axis: int, dir: int)`: an input: a key, a gamepad button, a mouse button, or a stick or trigger pushed one way (axis: 0 left x, 1 left y, 2 right x, 3 right y, 4 left trigger, 5 right trigger; dir: 1 or -1)
-- `action = (name: str, defaults: Input[])`: declare an action and its default inputs (once, before reading it: again, nothing changes); a binding the player saved replaces the defaults
+- `action = (name: str, defaults: Input[], player: int = -1)`: declare an action and its default inputs (once, before reading it: again, nothing changes); a binding the player saved replaces the defaults. player: the one it is for (its keys count for them, its buttons are their gamepad's), -1 anyone's
 - `input_value = (x: Input, player: int = -1) -> f64`: how far input x is pushed, 0 to 1, for player (-1: anyone)
 - `action_value = (name: str, player: int = -1) -> f64`: how far the action is pushed, 0 to 1 (the most of its inputs)
 - `action_down = (name: str, player: int = -1) -> bool`
@@ -5707,6 +5712,12 @@ draw = ():
   ```
 - `session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: int = 2) -> Session[S, I]`: a session of `players` players, this machine's being player `me` (from 0)
 - `confirmed[S, I] = (s: Session[S, I]) -> int`: ticks below this have every player's input: they will not change again (some may not have been played here yet: those from s.tick on)
+- `inputs_at[S, I] = (s: Session[S, I], t: int) -> I[]`: everyone's inputs at tick t, one of those confirmed (below s.confirmed(), and not more than 100 ticks before it): a replay keeps them as they come, to play the game again from its start (tick of the start, each one in turn), or a spectator is sent them
+  ```gdscript
+  loop saved < s.confirmed():
+      replay.push(s.inputs_at(saved))
+      saved += 1
+  ```
 - `silent[S, I] = (s: Session[S, I], p: int) -> f64`: player p has not been heard from for this many seconds
 - `stats_line[S, I] = (s: mut Session[S, I]) -> str`: one line on how play has gone since the last call, for a log (the game writes it where it likes, once a second, say): ticks played, frames spent waiting for someone's inputs, rollbacks and the longest, and for each other player the round trip, how long since heard from, and over net's peers how they are reached and what waits to go to them
 - `ping[S, I] = (s: Session[S, I], p: int) -> f64`: the round trip to player p and back, in milliseconds (smoothed; 0 before it is known)
