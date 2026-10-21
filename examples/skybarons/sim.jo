@@ -21,8 +21,20 @@ const ZEPPELIN = 3
 const ULTRA = 4                 # the ultra bomber: three light bombers' size, gunners all over
 const BALLOON = 5               # a balloon: three guns and bombs; it goes where the wind blows
 const ROCKETEER = 6             # one person on a rocket pack: fast, fragile, a pistol, rockets without end
-KIND_NAMES = ["scout", "fighter", "light bomber", "zeppelin", "ultra bomber", "balloon", "rocketeer"]
-const ALL_CRAFTS = 127          # (Rules.crafts: every kind)
+const ORNITHOPTER = 7           # pedalled flapping wings: a long gun with a scope, and health packs
+KIND_NAMES = ["scout", "fighter", "light bomber", "zeppelin", "ultra bomber", "balloon", "rocketeer", "ornithopter"]
+const ALL_CRAFTS = 255          # (Rules.crafts: every kind)
+# the ornithopter's long gun (scoped): a shell that flies fast and far, and hits hard; its
+# health packs heal what they reach by HEAL, the craft's own side's or not
+const SNIPE_SPEED = 1000.0
+const SNIPE_LIFE = 130          # ticks (about 2 km)
+const SNIPE_DAMAGE = 45
+const SNIPE_GAP = 80            # ticks between shots
+const HEAL = 45
+# (where the ornithopter's guns and health packs come out: models.jo has the same)
+ORNI_SNIPER = vec3(0.42, 0.3, -3.05)
+ORNI_GUN = vec3(-0.4, 0.28, -1.5)
+ORNI_LAUNCHER = vec3(-0.42, -0.2, -1.12)
 
 # the fights (Rules.mode)
 const DOGFIGHT = 0              # shoot down the other side's crafts
@@ -66,6 +78,7 @@ struct Kind:
     mass = 1.0                  # (in a collision, the heavier one takes less)
     rocket_gap = 20             # (ticks between rockets)
     endless = false             # (rockets without end)
+    refill = 0                  # (ticks to make one more rocket in the air: 0, none)
 
 # (a gun's rest and how far it turns: never through the craft it is on)
 gun = (at: vec3, dir: vec3, degrees: f64) -> Seat: Seat(at, normalize(dir), cos(radians(degrees)))
@@ -84,6 +97,8 @@ KINDS = [
          [gun(vec3(-0.8, -11.4, -0.7), vec3(-0.6, -0.1, -0.8), 80.0), gun(vec3(0.8, -11.4, -0.7), vec3(0.6, -0.1, -0.8), 80.0), gun(vec3(0, -11.4, 0.9), vec3(0, -0.1, 1), 80.0)], 13.6, 0.0, lighter = true, mass = 3.0),
     # (the rocketeer: on the ground it stands, its pack on its back)
     Kind(10.0, 34.0, 0.0045, 2.4, 5.0, 1.2, 4.0, 12, true, 30, 4, 1, 0, vec3(0.5, 0.45, 1.0), [Seat(vec3(0, 0.2, 0))], 0.95, PI / 2.0, mass = 0.3, rocket_gap = 50, endless = true),
+    # (the ornithopter: its rockets are health packs; its guns, unscoped, an ordinary one)
+    Kind(16.0, 11.0, 0.006, 1.3, 2.4, 0.6, 2.6, 70, true, 6, 9, 6, 0, vec3(5.5, 1.6, 3.8), [Seat(vec3(0, 0.6, 0.4))], 1.4, 0.05, mass = 0.8, rocket_gap = 90, refill = 360),
 ]
 const ZEP_SPEED = 21.0          # m/s at full throttle
 const ZEP_TURN = 0.13           # radians a second
@@ -102,6 +117,7 @@ struct Pad:
     enter = false               # get in (a craft's seat, a gun on the ground); open the parachute
     leave = false               # get out (landed), bail out (flying), leave a gun
     seat = 0                    # 1, 2...: move to that seat of the craft
+    scope = false               # (the ornithopter: through its scope, the long gun fires)
     aim_yaw = 0                 # where this player looks (a gunner aims, one on foot faces):
     aim_pitch = 0               # in thousandths of a radian, the world's way (yaw 0: -z)
     computer = false            # (the computer plays it: a player who left)
@@ -176,11 +192,13 @@ struct Bullet:
     craft: int                  # (the craft it came from: it does not hit that)
     team: int                   # (the side of who fired it)
     life: int
+    damage = DAMAGE
 
 # a rocket, a bomb, or a shell from a gun against aircraft (it bursts at a time)
 const ROCKET = 0
 const BOMB = 1
 const FLAK = 2
+const PACK = 3                  # (a health pack: it seeks a craft ahead, any side's, and heals it)
 struct Shot:
     kind: int
     pos: vec3
@@ -233,6 +251,7 @@ const DITCHED = 17              # craft `who` landed on the water: sinking
 const BAILED = 18               # person `who` out of craft `by`
 const BOARDED = 19              # person `who` in craft `by`
 const TORN = 20                 # person `who`'s parachute shot through by person `by`
+const HEALED = 21               # craft `who` healed by person `by`
 
 struct Boom:
     pos: vec3
@@ -251,6 +270,13 @@ struct Rules:
     attackers = 0               # (the fights one side attacks: which)
     crafts = ALL_CRAFTS         # the kinds there are (a bit each: 1 << kind)
 
+# (a craft in the air, for the computer's pilots to keep clear of: which, where, how fast, how wide)
+struct Near:
+    craft: int
+    pos: vec3
+    vel: vec3
+    reach: f32
+
 struct Game:
     crafts: Craft[]
     people: Person[]
@@ -265,6 +291,8 @@ struct Game:
     tick = 0
     winner = -1                 # (the side)
     goals: int[] = [-1, -1]     # (each side's target on the ground, this tick: mission_target)
+    air: Near[] = []            # (the crafts in the air this tick: avoid's, made once a tick)
+    crew: int[] = []            # (each craft's crew's side this tick: crew_team, made once a tick)
     bomber = -1                 # (Bomber escort: the person who flies the attackers' bomber)
     bomber_kind = ULTRA
 
@@ -276,10 +304,11 @@ field_kinds = (n: int, mode: int, crafts: int) -> int[]:
     if n >= 4: k.push(BOMBER)
     loop i in 0..n + 1: k.push(FIGHTER)
     loop i in 0..(n + 1) / 2 + 1: k.push(SCOUT)
+    loop i in 0..max(1, (n + 1) / 3): k.push(ORNITHOPTER)
     k = k.filter((x): crafts & (1 << x) != 0)
     # (a craft to fly for everyone on the side, and one more: what is allowed, more of it, the
     # small ones first; rocketeers only when nothing else is)
-    more = [FIGHTER, SCOUT, BOMBER, BALLOON, ULTRA, ZEPPELIN].filter((x): crafts & (1 << x) != 0)
+    more = [FIGHTER, SCOUT, ORNITHOPTER, BOMBER, BALLOON, ULTRA, ZEPPELIN].filter((x): crafts & (1 << x) != 0)
     if more.len() == 0: more = [ROCKETEER]
     i = 0
     loop k.len() < n + 1:
@@ -314,7 +343,7 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
     m = rules.mode
     if g.rules.win <= 0: g.rules.win = default_win(m)
     if m == CLASSIC: g.rules.rockets = false
-    if m == TRENCH or m == ESCORT or g.rules.crafts & 127 == 0: g.rules.crafts = ALL_CRAFTS
+    if m == TRENCH or m == ESCORT or g.rules.crafts & ALL_CRAFTS == 0: g.rules.crafts = ALL_CRAFTS
     if g.rules.time_limit <= 0: g.rules.time_limit = default_minutes(m)
     if not one_sided(m): g.rules.attackers = 0
     loop s in sites(m, g.rules.attackers):
@@ -368,7 +397,7 @@ start_kind = (g: Game, i: int, want: int) -> int:
 
 # (the first allowed of these: what one flies who chose nothing, or what is not to be had)
 fallback_kind = (g: Game) -> int:
-    loop k in [FIGHTER, SCOUT, BOMBER, ULTRA, ZEPPELIN, BALLOON, ROCKETEER]:
+    loop k in [FIGHTER, SCOUT, ORNITHOPTER, BOMBER, ULTRA, ZEPPELIN, BALLOON, ROCKETEER]:
         if allowed(g, k): return k
     FIGHTER
 
@@ -434,6 +463,20 @@ manned = (c: Craft) -> bool:
 
 pilot_of = (c: Craft) -> int: if c.seats.len() > 0: c.seats[0] else: -1
 
+# (the same, of craft j, by its number: in a loop over many crafts a craft passed to a function
+# is copied, its arrays counted, where reading its fields is not)
+manned_at = (g: Game, j: int) -> bool:
+    loop s in 0..g.crafts[j].seats.len():
+        if g.crafts[j].seats[s] >= 0: return true
+    false
+crew_at = (g: Game, j: int) -> int:
+    loop s in 0..g.crafts[j].seats.len():
+        k = g.crafts[j].seats[s]
+        if k >= 0: return g.people[k].team
+    g.crafts[j].team
+# (the side craft j seems to side v: g.crew, made once a tick)
+seen_at = (g: Game, j: int, v: int) -> int: if g.crafts[j].marked[v] > g.tick: g.crew[j] else: g.crafts[j].team
+
 # the side craft c seems, to side `viewer`: its colors, unless they know better (it shot at them)
 seen_team = (g: Game, c: Craft, viewer: int) -> int:
     if c.marked[viewer] > g.tick: return crew_team(g, c)
@@ -447,8 +490,15 @@ harms = (g: Game, from: int, to: int) -> bool: g.rules.friendly_fire or from != 
 tick = (g: Game, pads: Pad[]) -> Game:
     let g = g
     g.tick += 1
-    choose_targets(g)
     loop t in 0..2: g.goals[t] = find_target(g, t)
+    g.air = []
+    g.crew = []
+    loop j in 0..g.crafts.len():
+        g.crew.push(crew_at(g, j))
+        if not g.crafts[j].free and g.crafts[j].gone == 0 and g.crafts[j].down == 0 and not g.crafts[j].landed:
+            h = KINDS[g.crafts[j].kind].half
+            g.air.push(Near(j, g.crafts[j].pos, g.crafts[j].vel, max(h.x, h.z)))
+    choose_targets(g)
     # (each person's controls: its player's, or the computer's)
     each: Pad[]
     loop i in 0..g.people.len():
@@ -458,6 +508,10 @@ tick = (g: Game, pads: Pad[]) -> Game:
     loop i in 0..g.people.len(): person(g, i, each[i])
     loop i in 0..g.crafts.len():
         if g.crafts[i].free: continue
+        # (one standing still with no one in it: nothing to do but count down its safety)
+        if g.crafts[i].landed and g.crafts[i].gone == 0 and g.crafts[i].down == 0 and g.crafts[i].vel == vec3(0, 0, 0) and not manned_at(g, i):
+            if g.crafts[i].safe > 0: g.crafts[i].safe -= 1
+            continue
         pi = pilot_of(g.crafts[i])
         fly(g, i, if pi >= 0: each[pi] else: Pad(), pi >= 0)
         gunners(g, i, pads)
@@ -881,16 +935,19 @@ fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
         at = c.pos + fwd * f32(f64(k.half.z) * 0.9) + right * f32(if which == 0: 0.35 else: -0.35) + up * 0.6
         if which == 2: at = point_of(c, vec3(0, 1.75, -1.6))
         if c.kind == ROCKETEER: at = point_of(c, vec3(0.25, -0.1, -1.1))
+        if c.kind == ORNITHOPTER: at = point_of(c, if pd.scope: ORNI_SNIPER else: ORNI_GUN)
         # (a little scatter, from the tick: the same on every machine)
         h = hash(g.tick * 4 + i)
         sx = (f64(h & 1023) / 1023.0 - 0.5) * 0.008
         sy = (f64((h >> 10) & 1023) / 1023.0 - 0.5) * 0.008
         dir = normalize(fwd + right * f32(sx) + up * f32(sy))
-        g.bullets.push(Bullet(at, c.vel + dir * f32(BULLET_SPEED), who, i, team, BULLET_LIFE))
+        snipe = c.kind == ORNITHOPTER and pd.scope
+        if snipe: g.bullets.push(Bullet(at, c.vel + fwd * f32(SNIPE_SPEED), who, i, team, SNIPE_LIFE, SNIPE_DAMAGE))
+        else: g.bullets.push(Bullet(at, c.vel + dir * f32(BULLET_SPEED), who, i, team, BULLET_LIFE))
         c.shots += 1
-        c.cooldown = if three: (if which == 2: 2 else: 3) else: k.fire_gap
+        c.cooldown = if snipe: SNIPE_GAP else: if three: (if which == 2: 2 else: 3) else: k.fire_gap
         fired = true
-        c.heat += if three: k.heat_shot * 2 / 3 else: k.heat_shot
+        if not snipe: c.heat += if three: k.heat_shot * 2 / 3 else: k.heat_shot
         if c.heat >= JAM_HEAT: c.jammed = true
     if piloted and c.down == 0 and c.rcool == 0:
         if pd.rocket and c.rockets > 0 and g.rules.rockets:
@@ -898,7 +955,10 @@ fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
             side = if (c.shots + c.rockets) % 2 == 0: 1.0 else: -1.0
             at = point_of(c, vec3(f32(side * f64(k.half.x) * 0.45), -0.3, f32(-f64(k.half.z) * 0.3)))
             if k.lighter: at = point_of(c, vec3(f32(side * 2.0), -11, -27))
-            g.shots.push(Shot(ROCKET, at, c.vel + fwd_of(c) * 60.0, who, i, team, 240))
+            if c.kind == ORNITHOPTER:
+                at = point_of(c, ORNI_LAUNCHER)
+                g.shots.push(Shot(PACK, at, c.vel + fwd_of(c) * 70.0, who, i, team, 360))
+            else: g.shots.push(Shot(ROCKET, at, c.vel + fwd_of(c) * 60.0, who, i, team, 240))
             g.booms.push(Boom(at, FIRED, g.tick, i))
             if k.endless: c.shots += 1
             else: c.rockets -= 1
@@ -916,6 +976,8 @@ fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
         g.crafts[i] = c
         seen_firing(g, i)
         c = g.crafts[i]
+    # (the ornithopter's health packs: one more each 6 s, up to its six, wherever it is)
+    if k.refill > 0 and c.rockets < k.rockets and g.rules.rockets and g.tick % k.refill == 0: c.rockets += 1
     # (stood still at its own side's field for 3 s: rearmed, mended)
     if c.landed and f64(length(c.vel)) < 0.5 and on_own_field(c, team): c.rest += 1
     else: c.rest = 0
@@ -1190,13 +1252,12 @@ collide = (g: mut Game):
     live: bool[]
     moving: bool[]
     loop i in 0..n:
-        c = g.crafts[i]
-        if c.knock > 0: g.crafts[i].knock -= 1
-        h = KINDS[c.kind].half
-        at.push(c.pos)
+        if g.crafts[i].knock > 0: g.crafts[i].knock -= 1
+        h = KINDS[g.crafts[i].kind].half
+        at.push(g.crafts[i].pos)
         reach.push(max(h.x, max(h.y, h.z)))
-        live.push(alive(c))
-        moving.push(not c.landed or c.vel != vec3(0, 0, 0))
+        live.push(not g.crafts[i].free and g.crafts[i].gone == 0)
+        moving.push(not g.crafts[i].landed or g.crafts[i].vel != vec3(0, 0, 0))
     loop i in 0..n:
         if not live[i]: continue
         loop j in i + 1..n:
@@ -1276,8 +1337,9 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
             if (g.tick + i + s) % 4 == 0 or best >= g.crafts.len():
                 best = -1
                 least = 650.0
-                loop j in 0.. and o in g.crafts:
-                    if j == i or not flying(o) or o.safe > 0 or seen_team(g, o, team) == team: continue
+                loop o in g.air:
+                    j = o.craft
+                    if j == i or g.crafts[j].safe > 0 or seen_at(g, j, team) == team: continue
                     d = f64(length(o.pos - at))
                     if d < least and f64(dot(normalize(o.pos - at), base)) > st.arc:
                         least = d
@@ -1443,13 +1505,14 @@ shoot = (g: mut Game):
     near: f32[]
     open: bool[]
     full: bool[]
-    loop c in g.crafts:
-        teams.push(crew_team(g, c))
-        h = KINDS[c.kind].half
-        r = max(h.x, max(h.y, h.z)) + 8.0
-        near.push(r * r)
-        open.push(alive(c) and c.safe == 0)
-        full.push(manned(c))
+    at: vec3[]
+    loop j in 0..g.crafts.len():
+        teams.push(crew_at(g, j))
+        h = KINDS[g.crafts[j].kind].half
+        near.push(max(h.x, max(h.y, h.z)) + 3.0)
+        open.push(not g.crafts[j].free and g.crafts[j].gone == 0 and g.crafts[j].safe == 0)
+        full.push(manned_at(g, j))
+        at.push(g.crafts[j].pos)
     loop b in g.bullets:
         let b = b
         a = b.pos
@@ -1457,17 +1520,22 @@ shoot = (g: mut Game):
         b.pos += b.vel * f32(DT)
         b.life -= 1
         hit = false
+        # (near enough to look at closer: the segment's middle within the craft's size and half
+        # the segment, which a fast shell makes long)
+        mid = (a + b.pos) * 0.5
+        half = f32(length(b.pos - a) * 0.5)
         loop j in 0..g.crafts.len():
             if not open[j] or j == b.craft: continue
-            d = b.pos - g.crafts[j].pos
-            if dot(d, d) > near[j]: continue
+            d = mid - at[j]
+            r = near[j] + half
+            if dot(d, d) > r * r: continue
             t = g.crafts[j]
             # (through those it would not harm)
             if full[j] and not harms(g, b.team, teams[j]): continue
             if hits_craft(t, a, b.pos, 0.0):
                 hit = true
                 if t.down == 0:
-                    hurt_craft(g, j, b.by, b.team, DAMAGE, b.pos)
+                    hurt_craft(g, j, b.by, b.team, b.damage, b.pos)
                 else: g.booms.push(Boom(b.pos, HIT, g.tick, j, b.by))
                 break
         if not hit:
@@ -1481,7 +1549,7 @@ shoot = (g: mut Game):
                     hit = true
                     break
                 if seg_near(a - p.pos - vec3(0, 0.9, 0), b.pos - p.pos - vec3(0, 0.9, 0), 0.7) and harms(g, b.team, p.team):
-                    hurt_person(g, j, b.by, b.team, DAMAGE)
+                    hurt_person(g, j, b.by, b.team, b.damage)
                     hit = true
                     break
         if hit: continue
@@ -1547,6 +1615,34 @@ shells = (g: mut Game):
         let s = s
         a = s.pos
         s.life -= 1
+        if s.kind == PACK:
+            # (a health pack: toward the craft nearest its way within 35 degrees and 450 m, any
+            # side's; at it, it heals it)
+            sp = f64(length(s.vel))
+            d = normalize(s.vel)
+            best = -1
+            most = 0.82
+            loop j in 0.. and c in g.crafts:
+                if j == s.craft or not whole(c): continue
+                to = c.pos - s.pos
+                l = f64(length(to))
+                if l > 450.0 or l < 0.1: continue
+                v = f64(dot(to, d)) / l
+                if v > most:
+                    most = v
+                    best = j
+            if best >= 0:
+                want = normalize(g.crafts[best].pos - s.pos)
+                d = turn_toward(d, want, 2.2 * DT)
+                if hits_craft(g.crafts[best], a, s.pos + d * f32(sp * DT), 2.0):
+                    c = g.crafts[best]
+                    g.crafts[best].health = min(c.health + HEAL, KINDS[c.kind].health)
+                    g.booms.push(Boom(c.pos, HEALED, g.tick, best, s.by))
+                    continue
+            s.vel = d * f32(min(sp + 30.0 * DT, 110.0))
+            s.pos += s.vel * f32(DT)
+            if s.life > 0 and f64(s.pos.y) > ground(f64(s.pos.x), f64(s.pos.z)): kept.push(s)
+            continue
         if s.kind == ROCKET:
             d = normalize(s.vel)
             sp = min(f64(length(s.vel)) + 120.0 * DT, 240.0)
@@ -1634,13 +1730,13 @@ guns_on_ground = (g: mut Game, pads: Pad[]):
             best = vec3(0, 0, 0)
             bv = vec3(0, 0, 0)
             least = 350.0
-            loop c in g.crafts:
-                if not flying(c) or c.safe > 0 or seen_team(g, c, team) == team: continue
-                d = f64(length(c.pos - at))
-                if d < least and f64(c.pos.y) > f64(at.y) - 30.0:
+            loop o in g.air:
+                if g.crafts[o.craft].safe > 0 or seen_at(g, o.craft, team) == team: continue
+                d = f64(length(o.pos - at))
+                if d < least and f64(o.pos.y) > f64(at.y) - 30.0:
                     least = d
-                    best = c.pos
-                    bv = c.vel
+                    best = o.pos
+                    bv = o.vel
             loop p in g.people:
                 if p.team == team or (p.state != WALK and p.state != CHUTE): continue
                 d = f64(length(p.pos - at))
@@ -1662,10 +1758,11 @@ guns_on_ground = (g: mut Game, pads: Pad[]):
             continue
         best = -1
         least = 900.0
-        loop k in 0.. and c in g.crafts:
-            if not flying(c) or c.safe > 0 or seen_team(g, c, team) == team: continue
-            d = f64(length(c.pos - at))
-            if d < least and f64(c.pos.y) > f64(at.y) + max(120.0, d * 0.27):
+        loop o in g.air:
+            k = o.craft
+            if g.crafts[k].safe > 0 or seen_at(g, k, team) == team: continue
+            d = f64(length(o.pos - at))
+            if d < least and f64(o.pos.y) > f64(at.y) + max(120.0, d * 0.27):
                 least = d
                 best = k
         aim = vec3(0, 0, 0)
@@ -1674,10 +1771,10 @@ guns_on_ground = (g: mut Game, pads: Pad[]):
             aim = c.pos + c.vel * f32(least / 300.0)
         else if g.rules.mode == TRENCH:
             # (a raider low in the gorge, within reach: a barrage over it, where it is going)
-            loop c in g.crafts:
-                if best < 0 and flying(c) and seen_team(g, c, team) != team and f64(length(c.pos - at)) < 900.0:
+            loop o in g.air:
+                if best < 0 and seen_at(g, o.craft, team) != team and f64(length(o.pos - at)) < 900.0:
                     best = 0
-                    aim = c.pos + c.vel * 1.5 + vec3(0, f32(85.0 + f64(hash(g.tick + j) % 50)), 0)
+                    aim = o.pos + o.vel * 1.5 + vec3(0, f32(85.0 + f64(hash(g.tick + j) % 50)), 0)
         if best < 0:
             g.buildings[j].cool = 15
             continue
@@ -1817,24 +1914,26 @@ steer_flat = (c: Craft, want: vec3, alt: f64) -> Pad:
 # the craft each of the computer's pilots goes after: the nearest it takes for the other side's,
 # the nearer the more ahead; looked at again every 1.5 s, and when that one is down
 choose_targets = (g: mut Game):
-    loop i in 0..g.crafts.len():
-        c = g.crafts[i]
-        if not flying(c): continue
-        team = crew_team(g, c)
-        cur = c.target
-        ok = cur >= 0 and cur < g.crafts.len() and flying(g.crafts[cur]) and g.crafts[cur].safe == 0 and seen_team(g, g.crafts[cur], team) != team
+    loop me in g.air:
+        i = me.craft
+        if g.crafts[i].down > 0: continue
+        team = g.crew[i]
+        cur = g.crafts[i].target
+        ok = cur >= 0 and cur < g.crafts.len() and not g.crafts[cur].free and g.crafts[cur].gone == 0 and g.crafts[cur].down == 0 and not g.crafts[cur].landed and g.crafts[cur].safe == 0 and seen_at(g, cur, team) != team
         if ok and (g.tick + i * 7) % 90 != 0: continue
-        f = fwd_of(c)
+        f = quat_rotate(g.crafts[i].rot, vec3(0, 0, -1))
+        kind = g.crafts[i].kind
         best = -1
         least = 1e18
-        loop j in 0..g.crafts.len():
-            e = g.crafts[j]
-            if j == i or not flying(e) or e.safe > 0 or seen_team(g, e, team) == team: continue
-            d = e.pos - c.pos
+        loop o in g.air:
+            j = o.craft
+            if j == i or g.crafts[j].safe > 0 or seen_at(g, j, team) == team: continue
+            d = o.pos - me.pos
             l = max(f64(length(d)), 1.0)
             v = l * (2.0 - f64(dot(f, d)) / l)
             # (fighters go for the big ones first, scouts for fighters)
-            if e.kind == BOMBER or e.kind == ZEPPELIN: v *= if c.kind == FIGHTER: 0.6 else: 1.3
+            ek = g.crafts[j].kind
+            if ek == BOMBER or ek == ZEPPELIN or ek == ULTRA: v *= if kind == FIGHTER: 0.6 else: 1.3
             if j == cur: v *= 0.7
             if v < least:
                 least = v
@@ -1949,6 +2048,7 @@ bot_fly = (g: Game, ci: int, c: Craft) -> Pad:
         if aligned and speed > k.stall * 1.2: pad.pitch = 40
         return pad
     if c.kind == BALLOON: return bot_balloon(g, c, team)
+    if c.kind == ORNITHOPTER: return bot_ornithopter(g, ci, c, team)
     if k.lighter or c.kind == BOMBER or c.kind == ULTRA: return bot_bomber(g, ci, c, team)
     bot_fighter(g, ci, c)
 
@@ -1972,6 +2072,51 @@ bot_balloon = (g: Game, c: Craft, team: int) -> Pad:
             most = v
             best = y
     Pad(pitch = int(clamp((best - f64(c.pos.y)) / 40.0, -1.0, 1.0) * 100.0))
+
+# the ornithopter: a hurt craft of its side near, to it and a health pack at it; else the long
+# gun from afar (250 to 700 m), the ordinary one when one comes close
+bot_ornithopter = (g: Game, ci: int, c: Craft, team: int) -> Pad:
+    fwd = fwd_of(c)
+    alt = f64(c.pos.y) - ground(f64(c.pos.x), f64(c.pos.z))
+    friend = -1
+    least = 900.0
+    if c.rockets > 0:
+        loop o in g.air:
+            j = o.craft
+            # (the cheap tests first: hurt, near; then whose)
+            if j == ci or g.crafts[j].health * 100 > KINDS[g.crafts[j].kind].health * 65: continue
+            d = f64(length(o.pos - c.pos))
+            if d >= least or not manned_at(g, j) or g.crew[j] != team: continue
+            if d < least:
+                least = d
+                friend = j
+    pad = Pad()
+    want = vec3(-c.pos.x, f32(450.0 - f64(c.pos.y)), -c.pos.z)
+    if friend >= 0:
+        o = g.crafts[friend]
+        to = o.pos + o.vel - c.pos
+        want = if least < 150.0: o.vel + to * 0.2 else: to
+        pad.rocket = least < 400.0 and f64(dot(fwd, normalize(to))) > 0.93
+    else if c.target >= 0 and c.target < g.crafts.len() and flying(g.crafts[c.target]):
+        e = g.crafts[c.target]
+        rel = e.pos - c.pos
+        d = f64(length(rel))
+        far = d > 180.0
+        t = d / (if far: SNIPE_SPEED else: BULLET_SPEED)
+        aim = rel + (e.vel - c.vel) * f32(t) + vec3(0, f32(4.9 * t * t), 0)
+        want = if d < 250.0 and far: rel * -1.0 + vec3(0, f32(d * 0.5), 0) else: aim
+        if d > 700.0: want = rel
+        on = f64(dot(fwd, normalize(aim)))
+        pad.scope = far
+        pad.fire = if far: d < 1100.0 and on > 0.9985 - (1.0 - g.skill) * 0.002 else: on > 0.995
+    if alt < 120.0: want = vec3(fwd.x, 0, fwd.z) + vec3(0, 0.9, 0)
+    st = steer(c, normalize(want) + avoid(g, ci, c))
+    pad.pitch = int(f64(st.pitch) * (0.55 + 0.45 * g.skill))
+    pad.roll = st.roll
+    pad.yaw = st.yaw
+    if f64(length(c.vel)) < KINDS[c.kind].stall * 1.3: pad.pitch = min(pad.pitch, 15)
+    pad.throttle = 1
+    pad
 
 # a fighter or a scout: Aces' pilot, and rockets for the big ones
 bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
@@ -2091,14 +2236,16 @@ bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
 avoid = (g: Game, ci: int, c: Craft) -> vec3:
     out = vec3(0, 0, 0)
     h = KINDS[c.kind].half
-    loop j in 0.. and o in g.crafts:
-        if j == ci or not whole(o) or o.landed: continue
+    mine = f64(max(h.x, h.z))
+    loop o in g.air:
+        if o.craft == ci: continue
         d = o.pos - c.pos
-        l = f64(length(d))
-        if l < 0.1 or l > 400.0: continue
+        l2 = f64(dot(d, d))
+        if l2 > 160000.0 or l2 < 0.01: continue
+        l = sqrt(l2)
         closing = f64(dot(c.vel - o.vel, d)) / l
         # (as far ahead as a second and more of closing)
-        reach = f64(max(h.x, h.z)) + f64(max(KINDS[o.kind].half.x, KINDS[o.kind].half.z)) + 25.0 + max(closing, 0.0) * 1.3
+        reach = mine + f64(o.reach) + 25.0 + max(closing, 0.0) * 1.3
         if l > reach: continue
         if closing <= 0.0 and l > reach * 0.5: continue
         # (away from where it will be, and up or down, whichever it is not)
@@ -2150,3 +2297,17 @@ bot_bomber = (g: Game, ci: int, c: Craft, team: int) -> Pad:
     near = f64(length(vec2(fall.x - goal.x, fall.z - goal.z)))
     pad.bomb = near < (if k.lighter or c.kind == ULTRA: 40.0 else: 24.0) and c.bombs > 0 and (bi >= 0 or g.rules.mode == DOGFIGHT)
     pad
+
+# this version of the game, as a number: short fights of the computer's on each map, played
+# here, hashed (two games whose numbers differ play fights differently: one of them is another
+# version, a page loaded before the game was changed)
+version_print = () -> str:
+    out = 0
+    loop m in [DOGFIGHT, BASES, TRENCH, ESCORT]:
+        set_map(if m == TRENCH: GORGE else: FARMLAND, 0)
+        r = Rules(mode = m, ground_start = m == BASES)
+        if m == DOGFIGHT: r.crafts = (1 << ROCKETEER) | (1 << ORNITHOPTER)
+        let g = new_game(fill(-1, 4), 0.65, r, [])
+        loop k in 0..240: g = tick(g, [])
+        out = out * 31 + int(hash(g) % 1000000007)
+    "v{out % 1000000007}"

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Sky Barons, round four: the ornithopter (a bicycle with two pairs of flapping wings, a bat on
+  Red's side, a gull on Blue's): a sniper and healer, R to look through the scope of its fast,
+  far-reaching gun (unscoped, a lighter gun), its rockets health packs that seek the nearest
+  craft (an enemy's too) and come back one each 6 s. Red's rocketeer is a witch on a broom with
+  a black cat; rocketeers' flames pulse. The ultra bombers have three biplane cells in tandem.
+- Sky Barons: a host and a friend whose games are different versions (one page loaded before
+  the game changed) played different fights: each game now works out its version at start, and
+  the lobby lets the other go, telling both to reload the page.
 - Sky Barons: a fight of some kinds of craft alone has enough of them: each field has one more
   craft than its side has people, of the kinds allowed (rocketeers only: as many rocketeers; one
   a side only when there is something else to fly), parked in rows that do not overlap (more
