@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Sky Barons: a fight of some kinds of craft alone has enough of them: each field has one more
+  craft than its side has people, of the kinds allowed (rocketeers only: as many rocketeers; one
+  a side only when there is something else to fly), parked in rows that do not overlap (more
+  ultra bombers and zeppelins across the strip); the fields are flat farther round.
 - Sky Barons: the computer's pilots taxiing waited forever behind a plane parked in their way
   (and all the others behind them): they steer round one standing, wait only for one moving,
   and after 6 s go on.
