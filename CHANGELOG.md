@@ -7,6 +7,8 @@
     one), then each shot a third nearer; a curtain at that height, following a climb or dive
     late, to be seen before it hits.
   - Banked, a craft also turns toward its lower wing.
+  - Bailed out, T (the key one bailed out with) opens the parachute too; under it, after a
+    moment, T is back to the fight.
   - The computer's people take scouts, fighters and light bombers; the unusual crafts only once
     one has stood a minute unflown (or nothing else is free); they walk and run each at their own
     pace, take off in three lanes, and fly to the fight spread out, not in a line.
