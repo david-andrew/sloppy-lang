@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Sky Barons: G puts one's own side out of one's craft (as its pilot; those in the air bail out),
+  or, on foot by a craft on the ground, its pilot out and oneself in. Crafts that touch with one
+  on the ground are no longer harmed: the one rolling stops that way and is eased apart.
 - Sky Barons: the in-fight menu has "Back to the lobby" (the host's ends the fight for all, the
   room kept; "Leave" says it closes the room), and the results a button to click for it.
 - Sky Barons: the ornithopter's long gun fires a shell so fast that a craft aimed at where it is

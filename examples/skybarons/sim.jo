@@ -123,6 +123,7 @@ struct Pad:
     leave = false               # get out (landed), bail out (flying), leave a gun
     seat = 0                    # 1, 2...: move to that seat of the craft
     scope = false               # (the ornithopter: through its scope, the long gun fires)
+    kick = false                # (G: one's own side out of one's craft; on foot, out of the pilot's seat)
     aim_yaw = 0                 # where this player looks (a gunner aims, one on foot faces):
     aim_pitch = 0               # in thousandths of a radian, the world's way (yaw 0: -z)
     computer = false            # (the computer plays it: a player who left)
@@ -262,6 +263,7 @@ const HEALED = 21               # craft `who` healed by person `by`
 const SNIPED = 22               # craft `who`'s long gun fired (by person `by`)
 const HEADSHOT = 23             # person `who`, in a craft, killed by a long gun's shell from `by`
 const PISTOL = 24               # person `who` fired a pistol
+const KICKED = 25               # person `who` put out of their seat by person `by`
 
 struct Boom:
     pos: vec3
@@ -587,7 +589,8 @@ person = (g: mut Game, i: int, pad: Pad):
     let p = g.people[i]
     pressed = pad.enter and p.held & 1 == 0
     out = pad.leave and p.held & 8 == 0
-    p.held = (if pad.enter: 1 else: 0) | (if pad.rocket: 2 else: 0) | (if pad.bomb: 4 else: 0) | (if pad.leave: 8 else: 0)
+    kicked = pad.kick and p.held & 16 == 0
+    p.held = (if pad.enter: 1 else: 0) | (if pad.rocket: 2 else: 0) | (if pad.bomb: 4 else: 0) | (if pad.leave: 8 else: 0) | (if pad.kick: 16 else: 0)
     seat_now = pad.seat
     seat_new = seat_now != p.seat_held and seat_now > 0
     p.seat_held = seat_now
@@ -598,6 +601,12 @@ person = (g: mut Game, i: int, pad: Pad):
         return
     if p.state == SEATED:
         c = g.crafts[p.craft]
+        # (the pilot: their own side out of the craft, those in the air on parachutes)
+        if kicked and p.seat == 0:
+            loop s in 1..c.seats.len():
+                pk = c.seats[s]
+                if pk >= 0 and g.people[pk].team == p.team: put_out(g, pk, i)
+            c = g.crafts[p.craft]
         if seat_new: p = change_seat(g, i, p, seat_now - 1)
         if out:
             if c.landed and f64(length(c.vel)) < 4.0: p = get_out(g, i, p)
@@ -687,6 +696,13 @@ person = (g: mut Game, i: int, pad: Pad):
     p.pos = out_of_buildings(g, p.pos, 0.5)
     p.pos.y = f32(ground(f64(p.pos.x), f64(p.pos.z)))
     if wet: p.pos.y = -1.1
+    # (beside a craft on the ground its pilot one's own side: they out, this one in)
+    if kicked and p.state == WALK:
+        k = flown_by_own(g, p)
+        if k >= 0:
+            put_out(g, g.crafts[k].seats[0], i)
+            g.people[i] = p
+            p = get_in(g, i, p, k)
     if pressed:
         k = nearest_craft(g, p)
         gi = nearest_gun(g, p)
@@ -819,6 +835,29 @@ change_seat = (g: mut Game, i: int, p0: Person, s: int) -> Person:
     g.crafts[p.craft].seats[s] = i
     p.seat = s
     p
+
+# person pk put out of their seat by person `by`: beside the craft on the ground, else bailing out
+put_out = (g: mut Game, pk: int, by: int):
+    q = g.people[pk]
+    if q.state != SEATED: return
+    c = g.crafts[q.craft]
+    q = if c.landed and f64(length(c.vel)) < 4.0: get_out(g, pk, q) else: bail_out(g, pk, q)
+    g.people[pk] = q
+    g.booms.push(Boom(q.pos, KICKED, g.tick, pk, by))
+
+# the craft on the ground whose pilot is of p's side, its seat within reach (-1: none)
+flown_by_own = (g: Game, p: Person) -> int:
+    best = -1
+    least = ENTER
+    loop j in 0.. and c in g.crafts:
+        if not whole(c) or not c.landed or f64(length(c.vel)) > 3.0 or c.seats.len() == 0: continue
+        pk = c.seats[0]
+        if pk < 0 or g.people[pk].team != p.team: continue
+        d = f64(length(point_of(c, KINDS[c.kind].seats[0].at) - p.pos - vec3(0, 1, 0)))
+        if d < least:
+            least = d
+            best = j
+    best
 
 # out of a craft standing on the ground: beside it, on its left
 get_out = (g: mut Game, i: int, p0: Person) -> Person:
@@ -1300,17 +1339,24 @@ collide = (g: mut Game):
             b = g.crafts[j]
             if a.knock > 0 or b.knock > 0: continue
             if not touching(a, b) and not touching(b, a): continue
+            # (either on the ground: no harm, the fields are crowded; one on the ground rolling
+            # toward the other stops that way, and is eased apart)
+            if a.landed or b.landed:
+                away = vec3(d.x, 0, d.z)
+                if length(away) < 0.01: away = vec3(1, 0, 0)
+                away = normalize(away)
+                if a.landed:
+                    toward = f64(dot(a.vel, away * -1.0))
+                    if toward > 0.0: g.crafts[i].vel = a.vel + away * f32(toward)
+                    if moving[i]: g.crafts[i].pos += away * 0.04
+                if b.landed:
+                    toward = f64(dot(b.vel, away))
+                    if toward > 0.0: g.crafts[j].vel = b.vel - away * f32(toward)
+                    if moving[j]: g.crafts[j].pos -= away * 0.04
+                continue
             g.crafts[i].knock = 30
             g.crafts[j].knock = 30
             rel = f64(length(a.vel - b.vel))
-            # (on the ground, not fast: they stop, a little bent; one rolling into one standing the same)
-            if (rel < 4.0 and (a.landed or b.landed)) or (rel < 20.0 and a.landed and b.landed):
-                if a.landed: g.crafts[i].vel = vec3(0, 0, 0)
-                if b.landed: g.crafts[j].vel = vec3(0, 0, 0)
-                if rel >= 4.0:
-                    g.crafts[i].health = max(g.crafts[i].health - int(rel * 2.0), 1)
-                    g.crafts[j].health = max(g.crafts[j].health - int(rel * 2.0), 1)
-                continue
             ma = KINDS[a.kind].mass
             mb = KINDS[b.kind].mass
             bump(g, i, int(rel * 6.0 * clamp(mb / ma, 0.15, 6.0)), (a.pos + b.pos) * 0.5)
