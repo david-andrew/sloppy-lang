@@ -773,6 +773,7 @@ print("took {(time() - start) * 1000.0:.2} ms")
 Operating system access: files, arguments, environment, time.
 
 - `exit = (code: int)`
+- `on_panic = (f: (str) -> void)`: f called with a panic's message ("game.jo:12: index 7 out of bounds..."), as the program ends with it: to keep it where the program keeps its own log, say (a game in a web page, which a player can save after reloading it). Not for a panic that is caught (a server's handler's); once, even if f panics too
 - `args = () -> str[]`: command line arguments (args()[0] is the program as it was started: `sloppy tool.jo` gives "tool.jo")
 - `env = (name: str) -> str?`
 - `file_error = () -> str`: why the last file operation that failed did, in words: "no such file or directory", "permission denied", "it is a directory", "the disk is full"... ("" when none has failed):

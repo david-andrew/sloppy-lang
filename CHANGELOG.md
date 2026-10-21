@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `on_panic(f)`: f is given a panic's message as the program ends with it (once; not for a
+  panic that is caught), to keep it in a log of the program's own. Aces and Sky Barons write it
+  to their logs: in a web page, reloaded, Settings' Save the log has it.
+- Sky Barons: a machine gun's nest destroyed (in the Trench run) ended the game with a panic
+  (its name was missing from the list said).
 - Sky Barons, after its first playtest: an ultra bomber (each side's: a Svyatogor after the
   Ilya Muromets, and a Staaken giant; 60 m across, eight engines, seven gunners); collisions in
   the air (and bumps on the ground); what wins (crafts shot down, flags) and how long, chosen in
