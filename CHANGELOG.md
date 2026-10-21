@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Sky Barons, after its first playtest: an ultra bomber (each side's: a Svyatogor after the
+  Ilya Muromets, and a Staaken giant; 60 m across, eight engines, seven gunners); collisions in
+  the air (and bumps on the ground); what wins (crafts shot down, flags) and how long, chosen in
+  the lobby, on a page of its own; the side that attacks, chosen; Flag raid (one side defends its
+  flag) and Bomber raids (each side's bombers at the other's factory); anyone can man the guns on
+  the ground (AA and machine guns: F, and T to leave); machine-gun nests at the fields and along
+  a lower, narrower, twistier gorge, flak bursting over it; guns and parked planes can be
+  destroyed (bullets test their whole path against buildings); AA guns shoot no lower than 15
+  degrees and 120 m; F gets in, T gets out; Shift runs; a craft in the other side's colors is
+  known only once one of them sees it fire (a narrow cone ahead of a pilot, a gun, a person), and
+  its name and insignia are hidden till then; gunners see from the gun itself, which turns only
+  where it can fire; the computer's pilots wait for a player near their craft, taxi out of the
+  row before turning, and keep clear of each other; steering corrections scaled to each kind (no
+  wobble), pushing down for a target a little below.
 - Sky Barons (examples/skybarons): Aces' fork with more of everything. Scouts, fighters (and
   their rockets), bombers with gunners fore and aft, zeppelins with five gun positions; bombs
   dropped by hand; each side's airfield with its parked planes, hangars, fuel and guns against
