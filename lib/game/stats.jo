@@ -4,12 +4,18 @@
 # its shadows and post-processing), on the CPU and, through Vulkan, on the GPU. show_stats() turns it
 # on, as do SLOPPY_STATS=1 and, in a web page, ?stats in the URL. SLOPPY_STATS=log (?stats=log)
 # prints the same numbers every two seconds instead, and each long frame as it happens.
+# For a game's own log: record_stats() times the zones with nothing shown, and frame_stats_line()
+# gives the frames since it was last called as one line of text.
 
 const __STATS_N = 240
+when TARGET == "wasm":
+    extern __web_gpu_info = (out: *u8, cap: i32) -> i32
 __stats_on = false
 __stats_log = false
 __stats_log_at = -1.0           # (when the last summary was written, and at which frame)
 __stats_log_i = 0
+__stats_kept = false            # (record_stats: the zones timed for frame_stats_line)
+__stats_line_i = 0              # (the frame frame_stats_line was last called at)
 __stats_checked = false
 __stats_interval: f64[]       # the time between consecutive frames (a ring)
 __stats_cpu: f64[]            # update + draw + submitting the drawing
@@ -22,6 +28,71 @@ show_stats = (on: bool = true):
     global __stats_on
     __stats_on = on
 stats_shown = () -> bool: __stats_on
+
+# time the frames and their zones with nothing shown, for frame_stats_line (a log of how a game
+# runs on the players' machines)
+record_stats = (on: bool = true):
+    global __stats_kept
+    __stats_kept = on
+
+# the frames since the last call (at most 240), as one line: how many, their average and slowest
+# time and how many took much longer than usual; the CPU's time in a frame (most: the longest),
+# handing it to the screen, the GPU's (through Vulkan); each zone's average and longest, in ms.
+# Zones are timed only after record_stats() or show_stats()
+frame_stats_line = () -> str:
+    global __stats_line_i
+    n = min(__stats_i - __stats_line_i, __STATS_N)
+    __stats_line_i = __stats_i
+    if n <= 0: return "no frames"
+    sum_i = 0.0
+    sum_c = 0.0
+    sum_p = 0.0
+    sum_g = 0.0
+    worst = 0.0
+    worst_c = 0.0
+    loop j in [0..n):
+        k = (__stats_i - 1 - j) % __STATS_N
+        sum_i += __stats_interval[k]
+        sum_c += __stats_cpu[k]
+        sum_p += __stats_present[k]
+        sum_g += __stats_gpu[k]
+        worst = max(worst, __stats_interval[k])
+        worst_c = max(worst_c, __stats_cpu[k])
+    typical = __stats_typical(min(__stats_i, __STATS_N))
+    long = 0
+    loop j in [0..n):
+        if __stats_interval[(__stats_i - 1 - j) % __STATS_N] > typical * 1.5 + 0.001: long += 1
+    ms = (t: f64) -> str: "{t * 1000.0:.1}"
+    cnt = f64(n)
+    out = "frames {n} avg {ms(sum_i / cnt)} slowest {ms(worst)} long {long} | cpu {ms(sum_c / cnt)} most {ms(worst_c)} present {ms(sum_p / cnt)}"
+    if __gpu_seen: out += " gpu {ms(sum_g / cnt)}"
+    # (each zone: average/longest, the zones inside it after it in brackets, as in "draw 2.10/4.0
+    # (3d 1.20/2.5 (shadows 0.30/0.4))")
+    if __zone_names.len() > 0:
+        out += " |"
+        depth = 0
+        loop id in 0.. and nm in __zone_names:
+            d = __zone_depth[id]
+            out += " "
+            loop k in [depth..d): out += "("
+            loop k in [d..depth): out = out[..len(out) - 1) + ") "
+            depth = d
+            avg, most = __zone_stat(id, n)
+            out += "{nm} {avg * 1000.0:.2}/{ms(most)}"
+            g = if __gpu_seen: __zone_stat(id, n, true).0 else: 0.0
+            if g >= 0.00001: out += " gpu {g * 1000.0:.2}"
+        loop k in [0..depth): out += ")"
+    out
+
+# how frames reach the screen, and on what: "vulkan (its GPU)", "egl window surface"..., in a web
+# page "webgl" and the browser's name for the GPU, and the browser
+graphics_info = () -> str:
+    when TARGET == "wasm":
+        buf = fill(u8(0), 1024)
+        n = int(__web_gpu_info(data(buf), 1024))
+        return "webgl: " + str_from_bytes(buf[..min(n, 1024)))
+    else:
+        return __present_how()
 
 # ---------------- zones: named parts of a frame, timed ----------------
 const __ZONES_MAX = 32
@@ -51,7 +122,7 @@ __gpu_time = (what: int, dt: f64):
 # overlay; a zone entered several times in a frame shows their total); costs a check when the
 # statistics are off
 zone = (name: str):
-    if not __stats_on and not __stats_log: return
+    if not __stats_on and not __stats_log and not __stats_kept: return
     id = __zone_ids.get(name) ?? -1
     if id < 0 and __zone_names.len() < __ZONES_MAX:
         id = __zone_names.len()

@@ -6,6 +6,18 @@
   in the frame's copy of the mesh): GPU memory grew by the instances' size each frame, about
   0.5 MB for Aces' trees and clouds, until the game slowed to a stop. One buffer now takes each
   draw's instances in turn.
+- Aces logs every fight, practice too, to `aces-log.txt` (it logged online fights alone, so
+  Settings' save button did nothing after practice): each second the frames (average, slowest,
+  long ones), the CPU's time in each part of a frame and the GPU's (Vulkan), the bullets and
+  particles, online the netplay line, and memory and live objects; each fight starts with a line
+  on the GPU, the browser and the screen. Save the log says what it did, or that there is none
+  yet.
+- `record_stats()` times frames and their zones with nothing shown, and `frame_stats_line()`
+  gives the frames since its last call as a line for a game's own log (the zones nested in
+  brackets); `graphics_info()` says how frames reach the screen and on what GPU (in a web page,
+  the browser's name for it, the canvas's pixels and the browser). `memory_in_use()` in a web
+  page is the size of its memory (it was 0).
+
 - `?` on an error or nothing (`E?`, as `db.exec(...)` gives) passes the error on and goes on
   when there is none; it was an error ("every member ... is passed on").
 - A value where a Json goes is made one, as `json_value(x)` makes it: `args.push(name)` to a

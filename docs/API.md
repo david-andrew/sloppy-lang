@@ -848,7 +848,7 @@ Operating system access: files, arguments, environment, time.
 - `file_time = (path: str) -> f64?`: when a file or directory was last changed, in seconds since 1970 (as unix_time()); none if it is not there
 - `walk_dir = (path: str) -> str[]`: every file under a directory, at any depth, as paths from it ("maps/level1.tmx"), sorted; links to directories are not followed
 - `glob = (pattern: str) -> str[]`: the files whose paths match a pattern: `*` is any part of a name, `?` one character, and `**` any number of directories ("src/*.jo", "assets/**/*.png"), sorted. As in the shell, hidden names (.git, .env) match only a pattern that starts them with a dot (".*", "**/.env"). On Windows letters match in either case, as its file names do ("*.TXT" matches notes.txt); elsewhere only in the same case. On Windows a pattern's `\` is a `/` ("data\*.txt" gives data/notes.txt)
-- `memory_in_use = () -> int`: the memory this program has in use, in bytes (what the system counts as its resident set: on Linux, its pages in RAM; on Windows, its working set); 0 where it is not known (macOS, a web page)
+- `memory_in_use = () -> int`: the memory this program has in use, in bytes (what the system counts as its resident set: on Linux, its pages in RAM; on Windows, its working set; in a web page, the size of its memory, which only grows); 0 where it is not known (macOS)
 - `cwd = () -> str`: the current directory
 - `temp_dir = () -> str`: a directory for temporary files (TMPDIR, else /tmp; on Windows, the user's temporary directory)
 
@@ -2515,10 +2515,13 @@ Testing aids: SLOPPY_FILE_DIALOG="a.txt|b.txt" answers every dialog with those p
 
 ### stats.jo
 
-A frame statistics overlay: frame times as a graph, CPU time, time handing frames to the screen, frames that took much longer than usual (stutter), and the time each zone of the frame takes (zone("physics") ... zone_end(): update and draw are zones already, as are the 3D scene, its shadows and post-processing), on the CPU and, through Vulkan, on the GPU. show_stats() turns it on, as do SLOPPY_STATS=1 and, in a web page, ?stats in the URL. SLOPPY_STATS=log (?stats=log) prints the same numbers every two seconds instead, and each long frame as it happens.
+A frame statistics overlay: frame times as a graph, CPU time, time handing frames to the screen, frames that took much longer than usual (stutter), and the time each zone of the frame takes (zone("physics") ... zone_end(): update and draw are zones already, as are the 3D scene, its shadows and post-processing), on the CPU and, through Vulkan, on the GPU. show_stats() turns it on, as do SLOPPY_STATS=1 and, in a web page, ?stats in the URL. SLOPPY_STATS=log (?stats=log) prints the same numbers every two seconds instead, and each long frame as it happens. For a game's own log: record_stats() times the zones with nothing shown, and frame_stats_line() gives the frames since it was last called as one line of text.
 
 - `show_stats = (on: bool = true)`
 - `stats_shown = () -> bool`
+- `record_stats = (on: bool = true)`: time the frames and their zones with nothing shown, for frame_stats_line (a log of how a game runs on the players' machines)
+- `frame_stats_line = () -> str`: the frames since the last call (at most 240), as one line: how many, their average and slowest time and how many took much longer than usual; the CPU's time in a frame (most: the longest), handing it to the screen, the GPU's (through Vulkan); each zone's average and longest, in ms. Zones are timed only after record_stats() or show_stats()
+- `graphics_info = () -> str`: how frames reach the screen, and on what: "vulkan (its GPU)", "egl window surface"..., in a web page "webgl" and the browser's name for the GPU, and the browser
 
 #### Zones: named parts of a frame, timed
 

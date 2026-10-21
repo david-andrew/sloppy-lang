@@ -711,6 +711,7 @@ start_fight = ():
         mine = max(pilots.index_of(0), 0)
         mode = .practice
         start_view()
+        log_start("practice")
         return
     fights += 1
     peers = [-1]
@@ -723,70 +724,96 @@ tell_start = ():
     loop k in 0.. and f in friends:
         if f.peer >= 0: net.send(f.peer, start_text(k + 1))
 
-# ---------------- a log of online play, to see what went wrong ----------------
-# Each second of an online fight, a line in online-log.txt in the game's save folder (on Linux
-# ~/.local/share/Aces/, on Windows %APPDATA%\Aces\, on macOS ~/Library/Application Support/Aces/):
-# frames and the slowest, the ticks played and the frames spent waiting for the others, rollbacks,
-# each other player's ping, how they are reached and what waits to go to them, and the memory in
-# use. Past 2 MB it starts again (the one before kept as online-log-old.txt). In a web page it is
-# kept in the browser's storage, the last hour of it, in pieces of a minute or so (each second's
-# line saves its piece, which stays small), and Settings' "Save online log" downloads it.
-log_frames = 0
-log_slowest = 0.0
+# ---------------- a log of how the game runs, to see what went wrong ----------------
+# Each second of a fight (practice or online), a line in aces-log.txt in the game's save folder
+# (on Linux ~/.local/share/Aces/, on Windows %APPDATA%\Aces\, on macOS ~/Library/Application
+# Support/Aces/): the frames, their average and slowest time and the long ones; the time taken by
+# each part of a frame (update, draw, the 3D scene, its shadows...); what there is to draw; online,
+# the ticks played and the frames spent waiting for the others, rollbacks, each other player's
+# ping, how they are reached and what waits to go to them; and the memory in use. Each fight
+# starts with a line saying what it is, and on what (the GPU, the browser). Past 2 MB the file
+# starts again (the one before kept as aces-log-old.txt). In a web page it is kept in the
+# browser's storage, the last half hour of it, in pieces of a minute (each second's line saves
+# its piece, which stays small), and Settings' "Save the log" downloads it.
 log_at = 0.0
 const LOG_PIECE = 60            # (lines in a piece of the web's log)
-const LOG_PIECES = 60
+const LOG_PIECES = 30
 web_log: str[] = []             # (the lines of the piece being written)
 web_piece = -1                  # (its number: a page starts a new one, after the last it saved)
+log_said = ""                   # (what Save the log did, shown under it)
 log_line = (line: str):
     global web_log, web_piece
     when TARGET != "wasm":
-        dir = save_dir()
-        make_dirs(dir)
-        path = "{dir}/online-log.txt"
-        if (file_size(path) ?? 0) > 2000000: _ = rename_file(path, "{dir}/online-log-old.txt")
-        _ = append_file(path, line + "\n")
+        _ = append_file(log_path(), line + "\n")
     else:
         if web_piece < 0:
-            web_piece = load_value("online-log-at", -1) + 1
-            _ = save_value("online-log-at", web_piece)
-            _ = delete_data("online-log-{web_piece - LOG_PIECES}")
+            web_piece = load_value("log-at", -1) + 1
+            _ = save_value("log-at", web_piece)
+            _ = delete_data("log-{web_piece - LOG_PIECES}")
         web_log.push(line)
-        _ = save_data("online-log-{web_piece}", join(web_log, "\n") + "\n")
+        _ = save_data("log-{web_piece}", join(web_log, "\n") + "\n")
         if web_log.len() >= LOG_PIECE:
             web_log = []
             web_piece += 1
-            _ = save_value("online-log-at", web_piece)
-            _ = delete_data("online-log-{web_piece - LOG_PIECES}")
+            _ = save_value("log-at", web_piece)
+            _ = delete_data("log-{web_piece - LOG_PIECES}")
+
+# (natively: the file, started again past 2 MB)
+log_path = () -> str:
+    dir = save_dir()
+    make_dirs(dir)
+    path = "{dir}/aces-log.txt"
+    if (file_size(path) ?? 0) > 2000000: _ = rename_file(path, "{dir}/aces-log-old.txt")
+    path
 
 # (web: the pieces kept, oldest first, as one text; "" when there are none)
 web_log_text = () -> str:
-    last = load_value("online-log-at", -1)
+    last = load_value("log-at", -1)
     out = ""
     loop k in [last - LOG_PIECES + 1..last]:
-        if let t = load_data("online-log-{k}"): out += t
+        if let t = load_data("log-{k}"): out += t
     out
-log_frame = (dt: f64):
-    global log_at, log_frames, log_slowest
-    log_frames += 1
-    log_slowest = max(log_slowest, dt)
-    if elapsed() - log_at < 1.0: return
+
+# Settings' Save the log: in a web page, downloaded; elsewhere, where it is
+save_log = ():
+    global log_said
+    when TARGET == "wasm":
+        t = web_log_text()
+        if len(t) == 0: log_said = "Nothing logged yet: a fight is logged as it goes"
+        else if write_file("aces-log.txt", t) and download_file("aces-log.txt"): log_said = "Downloaded aces-log.txt ({split(t, "\n").len() - 1} lines)"
+        else: log_said = "The browser would not save it"
+    else:
+        path = "{save_dir()}/aces-log.txt"
+        log_said = if file_exists(path): "It is {path}" else: "Nothing logged yet: a fight is logged as it goes"
+
+# (the first of a fight: what it is, and on what)
+log_start = (what: str):
+    global log_at
+    record_stats()
+    _ = frame_stats_line()
+    d = now()
+    size = pixel_size()
+    log_line("{d.year}-{d.month:02}-{d.day:02} {d.hour:02}:{d.minute:02}: {what}, {game().planes.len()} planes ({TARGET}, {int(size.x)}x{int(size.y)}, {graphics_info()})")
+    log_at = elapsed()
+
+log_frame = ():
+    global log_at
+    if mode == .menu or elapsed() - log_at < 1.0: return
     log_at = elapsed()
     d = now()
-    log_line("{d.hour:02}:{d.minute:02}:{d.second:02} fps {log_frames} slowest {int(log_slowest * 1000.0)}ms {s.stats_line()} | memory {memory_in_use() / 1000000}MB")
-    log_frames = 0
-    log_slowest = 0.0
+    g = game()
+    size = pixel_size()
+    net_part = if mode == .online: " | {s.stats_line()}" else: ""
+    log_line("{d.hour:02}:{d.minute:02}:{d.second:02} {frame_stats_line()} | {int(size.x)}x{int(size.y)} bullets {g.bullets.len()} particles {smoke.items.len() + fire.items.len() + sparks.items.len()}{net_part} | memory {memory_in_use() / 1000000}MB objects {alloc_count()}")
 
 begin = (who: int, pilots: int[], skill: f64, peers: int[]):
-    global away, log_at, mine, mode, results, s, status
+    global away, mine, mode, results, s, status
     s = netplay.session(new_game(pilots, skill), tick, players = peers.len(), me = who)
     # (others fly on a third of a second while one machine stops, a browser's tab busy: its
     # inputs come later, and the ticks since are played again, which costs little)
     s.max_ahead = 20
     s.over(peers)
-    d = now()
-    log_line("{d.year}-{d.month:02}-{d.day:02} {d.hour:02}:{d.minute:02}: a fight of {peers.len()}, this one player {who} ({TARGET})")
-    log_at = elapsed()
+    log_start("online, {peers.len()} players, this one player {who}")
     if let lag = env("LAG"): s.lag(to_float(lag) ?? 0, 10, 0.02)
     mine = max(pilots.index_of(who), 0)
     away = []
@@ -983,6 +1010,7 @@ after_fight = ():
     if mode == .practice and not in_room():
         local = new_game(local.pilots, local.skill)
         start_view()
+        log_start("practice again")
     else if mode == .practice or s.me == 0:
         drop_gone()
         to_menu(if friends.len() > 0 or in_room(): LOBBY else: MAIN)
@@ -1198,7 +1226,7 @@ update = (dt: f64):
     lay_out()
     dragged = read_fingers()
     loop e in net.receive(): on_net(e)
-    if mode == .online: log_frame(dt)
+    log_frame()
     # (the menu's plane: one of this one's side, in the lobby)
     if mode == .menu: mine = if page == LOBBY: settings.side else: if page == JOINED: max(lobby_pilots.index_of(lobby_me), 0) % 2 else: 0
     # (friends who come by the room's code: let in while the sides are chosen, made to wait in a
@@ -1255,6 +1283,8 @@ update = (dt: f64):
     # (online, a machine that stopped a moment plays the ticks it missed, a quarter of a second at
     # most: given up, the others would wait for it)
     spare = min(spare + dt, if mode == .online: 0.25 else: 0.1)
+    # (zones: timed for the log, see log_line)
+    zone("ticks")
     loop spare >= DT:
         spare -= DT
         before = game().planes
@@ -1263,7 +1293,8 @@ update = (dt: f64):
         else:
             local = tick(local, [])
             if local.winner >= 0: local = demo()
-    effects(dt)
+    zone_end()
+    zone("effects", (): effects(dt))
     sounds()
 
 # ---------------- what is seen ----------------
@@ -1899,7 +1930,7 @@ draw = ():
     if mode == .menu:
         draw_menu()
         return
-    draw_hud(g)
+    zone("hud", (): draw_hud(g))
     if paused: draw_paused()
 
 # ---------------- effects and sounds (from the game as it is: rolled back, it shows again) ----------------
@@ -2366,7 +2397,7 @@ draw_room = (top: f64) -> f64:
     top + 270.0
 
 draw_settings = ():
-    global page
+    global log_said, page
     if mode != .menu: rect(visible_rect(), rgba(0.03, 0.04, 0.06, 0.5))
     r = visible_rect()
     x = mid().x
@@ -2380,11 +2411,9 @@ draw_settings = ():
     if can_fullscreen():
         fs = ui_switch("Fullscreen", is_fullscreen())
         if fs != is_fullscreen(): set_fullscreen(fs)
-    # (the log of online fights, to send when one went badly: a file elsewhere, see log_line)
-    when TARGET == "wasm":
-        if ui_button("Save online log"):
-            t = web_log_text()
-            if len(t) > 0 and write_file("online-log.txt", t): _ = download_file("online-log.txt")
+    # (the log of fights, to send when one went badly: see log_line)
+    if ui_button("Save the log"): save_log()
+    if len(log_said) > 0: ui_text(log_said)
     settings.sound = ui_slider("Sound", settings.sound)
     # (not first: a phone's keyboard would come up as Settings opens)
     settings.name = ui_text_field("Name", settings.name, NAME_MOST)
@@ -2392,6 +2421,7 @@ draw_settings = ():
     ui_controls()
     if ui_button("Back") or ui_back():
         save_settings()
+        log_said = ""
         page = MAIN
     ui_end()
 
