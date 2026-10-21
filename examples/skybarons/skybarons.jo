@@ -111,9 +111,11 @@ struct Settings:
     win = 0                     # (the lobby's: what wins, by its place in win_choices; 0 the fight's own)
     minutes = 0                 # (and how long, by its place in minute_choices)
     attackers = 0               # the side that attacks, in the fights where one side does
-    crafts = ALL_CRAFTS         # the kinds of craft in the fight (a bit each)
+    crafts = DEFAULT_CRAFTS     # the kinds of craft in the fight (a bit each)
 
 settings = Settings()
+# (nothing saved yet: a first visit, whose menu shows an ornithopter, until a plane is chosen)
+first_visit = load_data("settings") == none
 if let saved = load_data("settings"):
     w = split(saved, " ")
     if w.len() >= 13:
@@ -135,9 +137,9 @@ if let saved = load_data("settings"):
         settings.minutes = clamp(to_int(w[14]) ?? 0, 0, 5)
         settings.attackers = clamp(to_int(w[15]) ?? 0, 0, 1)
     if w.len() >= 17:
-        settings.crafts = to_int(w[16]) ?? ALL_CRAFTS
-        # (saved before there were ornithopters: every kind then is every kind now)
-        if settings.crafts == 127 or settings.crafts == 255: settings.crafts = ALL_CRAFTS
+        settings.crafts = to_int(w[16]) ?? DEFAULT_CRAFTS
+        # (saved with every kind there was then: what a fight has now unless one says)
+        if settings.crafts == 127 or settings.crafts == 255 or settings.crafts == ALL_CRAFTS: settings.crafts = DEFAULT_CRAFTS
         settings.crafts = settings.crafts & ALL_CRAFTS
 save_settings = ():
     settings.name = my_name()
@@ -177,7 +179,7 @@ rules_now = () -> Rules:
     Rules(mode = m, friendly_fire = settings.ff, ground_start = settings.ground,
           win = if wins.len() > 0: wins[clamp(settings.win, 0, wins.len() - 1)] else: 0,
           time_limit = if mins.len() > 0: mins[clamp(settings.minutes, 0, mins.len() - 1)] else: 0,
-          attackers = settings.attackers, crafts = if settings.crafts == 0: ALL_CRAFTS else: settings.crafts)
+          attackers = settings.attackers, crafts = if settings.crafts == 0: DEFAULT_CRAFTS else: settings.crafts)
 
 # what can be chosen to win a fight (the first: its own number), and how long it lasts (minutes)
 win_choices = (m: int) -> int[]:
@@ -214,7 +216,7 @@ demo = () -> Game:
     # shows as it is changed)
     pilots = fill(-1, 8)
     pilots[settings.side] = 0
-    new_game(pilots, 0.75, Rules(ground_start = false), [settings.plane])
+    new_game(pilots, 0.75, Rules(ground_start = false, crafts = ALL_CRAFTS), [if first_visit: ORNITHOPTER else: settings.plane])
 # this version of the game's rules, as a number (sim.jo): friends' games say theirs, and a fight
 # starts only between games that agree
 VERSION = version_print()
@@ -637,7 +639,7 @@ on_net = (e: net.NetEvent):
             rules.win = to_int(w[11]) ?? 0
             rules.time_limit = to_int(w[12]) ?? 0
             rules.attackers = clamp(to_int(w[13]) ?? 0, 0, 1)
-        if w.len() >= 15: rules.crafts = (to_int(w[14]) ?? ALL_CRAFTS) & ALL_CRAFTS
+        if w.len() >= 15: rules.crafts = (to_int(w[14]) ?? DEFAULT_CRAFTS) & ALL_CRAFTS
         planes = split(w[10], ",").map((t): clamp(to_int(t) ?? 1, 0, CHOOSABLE - 1))
         begin(who, pilots, SKILLS[clamp(to_int(w[3]) ?? 1, 0, 2)], peers, rules, planes)
 
@@ -757,7 +759,7 @@ fight_said = () -> str:
     if r.win > 0 and win_choices(r.mode).len() > 0: out += ", {r.win} to win"
     if r.time_limit > 0: out += ", {r.time_limit} min"
     if r.friendly_fire: out += ", friendly fire"
-    if r.crafts != ALL_CRAFTS and r.mode != CLASSIC and r.mode != TRENCH and r.mode != ESCORT:
+    if r.crafts != DEFAULT_CRAFTS and r.mode != CLASSIC and r.mode != TRENCH and r.mode != ESCORT:
         kinds: str[]
         loop k in 0..CHOOSABLE:
             if r.crafts & (1 << k) != 0: kinds.push(KIND_NAMES[k] + "s")
@@ -929,6 +931,7 @@ finger_on: int[]
 finger_at: vec2[]
 touch_fire = false
 touch_enter = false
+f_held = 0.0                    # (seconds F, or a phone's In/Out, has been held: held, it puts out)
 touch_rocket = false
 touch_bomb = false
 throttle_want = -1.0
@@ -949,8 +952,13 @@ my_pad = () -> Pad:
     if paused: return c
     p = my()
     c.enter = action_down("Get in") or (touch_enter and p.state != SEATED and p.state != POST)
-    c.kick = action_down("Kick out")
+    # (F held, or G: one's own side put out; a phone's In/Out held, only on foot)
+    c.kick = action_down("Kick out") or (f_held > 0.8 and (not touch_input() or p.state == WALK))
     c.leave = action_down("Get out") or (touch_enter and (p.state == SEATED or p.state == POST))
+    # (a phone: out of a craft in the air, not going down, only with In/Out held a second)
+    if touch_enter and p.state == SEATED and not action_down("Get out"):
+        k = game().crafts[p.craft]
+        if not k.landed and k.down == 0 and f_held < 1.0: c.leave = false
     # (a seat: its number held, or the next one asked for)
     loop k in 0.. and key in [Key.n1, Key.n2, Key.n3, Key.n4, Key.n5, Key.n6, Key.n7, Key.n8]:
         if key_down(key): c.seat = k + 1
@@ -961,10 +969,11 @@ my_pad = () -> Pad:
     if on_foot:
         c.pitch = int(round(clamp(action_axis("Dive", "Climb"), -1.0, 1.0) * 100.0))
         c.roll = int(round(clamp(action_axis("Roll left", "Roll right"), -1.0, 1.0) * 100.0))
-        if touch_fire: c.pitch = -100
-        if action_down("Throttle up") or touch_fire: c.throttle = 1
+        # (a phone's Fire: on foot, walking; falling or under a canopy, the pistol)
+        if touch_fire and p.state == WALK: c.pitch = -100
+        if action_down("Throttle up") or (touch_fire and p.state == WALK): c.throttle = 1
         # (a pistol, where one looks)
-        c.fire = action_down("Fire") or (is_mouse_locked() and mouse_down(.left))
+        c.fire = action_down("Fire") or (is_mouse_locked() and mouse_down(.left)) or (touch_fire and p.state != WALK)
         return c
     if p.state == POST:
         c.fire = action_down("Fire") or touch_fire or (is_mouse_locked() and mouse_down(.left))
@@ -1102,12 +1111,13 @@ was_craft = -1
 was_seat = -1
 
 update = (dt: f64):
-    global aim_pitch, aim_yaw, before, before_people, had_lock, local, mine, next_seat, paused, paused_at, scoped, spare, steering, was_craft, was_seat, was_state
+    global aim_pitch, aim_yaw, before, before_people, f_held, had_lock, local, mine, next_seat, paused, paused_at, scoped, spare, steering, was_craft, was_seat, was_state
     lay_out()
     # (online, hidden behind another window or tab: still playing, or the others would take
     # this one for gone)
     run_hidden(mode == .online)
     dragged = read_fingers()
+    f_held = if touch_enter or action_down("Get in"): f_held + dt else: 0.0
     loop e in net.receive(): on_net(e)
     log_frame()
     # (the menu's: the person whose craft the camera follows)
@@ -2092,7 +2102,12 @@ what_f_does = (g: Game, p: Person) -> str:
             c = g.crafts[k]
             whose = if c.team != p.team: " of {TEAMS[c.team]}'s" else: ""
             seat = if c.seats.len() > 0 and c.seats[0] < 0: "fly" else: "man a gun of"
-            return "{fk}: {seat} the {kind_name(c.kind, c.team)}{whose}"
+            out = "{fk}: {seat} the {kind_name(c.kind, c.team)}{whose}"
+            own = flown_by_own(g, p)
+            if own >= 0: out += "    {fk} held: {call(g, g.crafts[own].seats[0])} out, and fly it"
+            return out
+        own = flown_by_own(g, p)
+        if own >= 0: return "{fk} held: {call(g, g.crafts[own].seats[0])} out of the {kind_name(g.crafts[own].kind, g.crafts[own].team)}, and fly it"
         if not starts_on_ground(g, p.team): return "{fk}: fly again"
         if far_from_field(p): return "{fk}: back to your field (Shift runs)"
         return ""
@@ -2102,8 +2117,17 @@ what_f_does = (g: Game, p: Person) -> str:
     if p.state == POST: return "{tk}: leave the gun"
     if p.state != SEATED: return ""
     c = g.crafts[p.craft]
-    if c.landed and f64(length(c.vel)) < 4.0: return if p.seat == 0 and c.vel == vec3(0, 0, 0) and c.throttle == 0.0: "{tk}: get out    Shift: throttle" else: "{tk}: get out"
+    # (holding F: the pilot puts out their own side; a gunner takes the pilot's seat)
+    put = ""
+    if not touch_input():
+        if p.seat == 0:
+            loop s in 1..c.seats.len():
+                if c.seats[s] >= 0 and g.people[c.seats[s]].team == p.team: put = "    {fk} held: put your crew out"
+        else if c.seats[0] >= 0 and g.people[c.seats[0]].team == p.team: put = "    {fk} held: {call(g, c.seats[0])} out, and you the pilot"
+    if c.landed and f64(length(c.vel)) < 4.0: return (if p.seat == 0 and c.vel == vec3(0, 0, 0) and c.throttle == 0.0: "{tk}: get out    Shift: throttle" else: "{tk}: get out") + put
     if c.down > 0: return "{tk}: bail out!"
+    if touch_input(): return "{tk} held: bail out"
+    if len(put) > 0: return put.trim()
     ""
 
 # the top of the screen: what the fight is about, and how it stands
@@ -2312,9 +2336,9 @@ draw_menu = ():
         if ui_button("Quit"): quit()
     ui_end()
     if len(status) > 0: text_centered(status, vec2(x, f32(y + 580.0)), 22, gray(0.85))
-    how = "On foot: WASD and the mouse, Shift runs, a click fires a pistol; F gets in (a craft, a gun on the ground), T gets out or bails out, G puts your own side out of your craft (on foot: out of the pilot's seat, and you in). Flying: the mouse steers, its buttons fire guns and rockets (X), B drops bombs, Shift and Ctrl the throttle; 1 to 8 or V change seats."
+    how = "On foot: WASD and the mouse, Shift runs, a click fires a pistol; F gets in (a craft, a gun on the ground), T gets out or bails out, F held puts your own side out of your craft (or out of the pilot's seat, and you in). Flying: the mouse steers, its buttons fire guns and rockets (X), B drops bombs, Shift and Ctrl the throttle; 1 to 8 or V change seats."
     if touch_input() or touch_device(): how = "Drag a finger to look and aim; In/Out gets in, out, or bails out. Hold Fire to shoot (on foot, to walk); the throttle slides; Look watches the target."
-    text_wrapped("Scouts, fighters, light and ultra bombers, zeppelins; up to six a side. {how}", vec2(x - 240, f32(y + 600.0)), 480, 17, gray(0.8), align = .center)
+    text_wrapped("Scouts, fighters, light and ultra bombers, zeppelins; up to 64 a side. {how}", vec2(x - 240, f32(y + 600.0)), 480, 17, gray(0.8), align = .center)
 
 # a player's insignia, small, centered at `at` on the screen: its shape, or a mark of the color
 # it paints a part of the plane
@@ -2339,6 +2363,19 @@ draw_badge = (badge: int, at: vec2, size: f64):
 
 # the two sides, a column each (the same on every player's screen): each plane's player, with
 # their insignia, or the computer; you: this one's player. Where the next thing goes, below them
+# (how many lines draw_sides takes: the players, and one for the computer's; so many as the most
+# a side has)
+side_lines = (pilots: int[]) -> int:
+    most = 0
+    loop team in 0..2:
+        people = 0
+        bots = 0
+        loop k in 0..pilots.len() / 2:
+            if pilots[2 * k + team] < 0: bots += 1
+            else: people += 1
+        most = max(most, min(people, 12) + (if bots > 0: 1 else: 0))
+    most
+
 draw_sides = (pilots: int[], you: int, names: str[], badges: int[], top: f64) -> f64:
     n = pilots.len() / 2
     # (the players each on a line; the computer's all on one, "+ 12 computer"; past 12 lines,
@@ -2377,7 +2414,7 @@ draw_sides = (pilots: int[], you: int, names: str[], badges: int[], top: f64) ->
 # the lobby: the sides, Switch side, and for the host Start and the fight's settings (practice:
 # the same, alone); the room's code, for friends to join
 draw_lobby = ():
-    global page, ui_style
+    global first_visit, page, ui_style
     hosting = page == LOBBY
     pilots = if hosting: lobby_seats() else: lobby_pilots
     players = 0
@@ -2389,7 +2426,7 @@ draw_lobby = ():
     items = if hosting: 10 else: 5
     if upright:
         # (upright: all of it at the bottom of the screen, the plane above it where there is room)
-        n = f64(min(pilots.len() / 2, 13))
+        n = f64(side_lines(pilots))
         tall = max(234.0 + n * 30.0, 300.0) + f64(items) * 50.0 + (if hosting: room_height() else: 0.0) + results_height()
         t0 = max(t0, f64(at_edge(0, 0).y) + f64(safe_rect().h) - tall - 20.0)
         r = visible_rect()
@@ -2426,6 +2463,7 @@ draw_lobby = ():
     if plane != settings.plane:
         # (the menu's fight again, this one in it)
         settings.plane = plane
+        first_visit = false
         demo_again()
     if hosting:
         if ui_button("Fight: {MODE_NAMES[settings.fight]}"): page = FIGHT

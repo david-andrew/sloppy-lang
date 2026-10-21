@@ -664,20 +664,83 @@ undercarriage = (vs: mut Vertex3D[], y: f64, z: f64, body_y: f64, spread: f64, r
     beam(vs, v3(-spread, y, z), v3(spread, y, z), 0.05, DARK)
 
 FOKKER_BODY = [vec4(-2.05, 0.0, 0.45, 0.47), vec4(-0.8, 0.05, 0.42, 0.5), vec4(0.9, 0.12, 0.3, 0.38), vec4(2.95, 0.22, 0.05, 0.09)]
-FOKKER_WING = Wing(1.0, [vec4(0, -1.55, 1.65, 0.3), vec4(2.6, -1.45, 1.48, 0.24), vec4(3.85, -1.3, 1.15, 0.16), vec4(4.2, -1.08, 0.62, 0.1)], AIRFOIL, 0.0)
+FOKKER_WING = Wing(1.0, [vec4(0, -1.55, 1.65, 0.3), vec4(2.6, -1.45, 1.48, 0.24), vec4(3.85, -1.3, 1.15, 0.16), vec4(4.2, -1.08, 0.62, 0.1)], FLAT_TOP, 0.0)
+FOKKER_AXLE_WING = Wing(-0.99, [vec4(0, -1.57, 0.45, 0.1), vec4(0.8, -1.57, 0.45, 0.1)], AIRFOIL, 0.0)
 
-# Red's scout (as the Fokker D.VIII, "the flying razor"): a rotary engine's round cowling, one
-# thick wing above the body on struts; red, a white band round the cowling; black crosses
+# printed lozenges, as a field of long hexagons (along u, r across) over u0..u1 (v: about v0..v1),
+# each its color's triangles in (u, v), cut along u at cuts (where the surface they go on bends)
+lozenge_field = (u0: f64, u1: f64, v0: f64, v1: f64, r: f64, seed: int, cuts: f64[]) -> (vec2[], vec4)[]:
+    out: (vec2[], vec4)[] = []
+    su = 1.35
+    du = 1.5 * r * su
+    dv = sqrt(3.0) * r
+    swap = (q: vec2[]) -> vec2[]: q.map((p): vec2(p.y, p.x))
+    loop i in int(floor(u0 / du)) - 1..int(u1 / du) + 2:
+        loop j in int(floor(v0 / dv)) - 1..int(v1 / dv) + 2:
+            cu = f64(i) * du
+            cv = (f64(j) + (if i % 2 == 0: 0.0 else: 0.5)) * dv
+            if cu < u0 - r * su or cu > u1 + r * su or cv < v0 - r or cv > v1 + r: continue
+            pts: vec2[] = []
+            loop k in 0..6:
+                a = PI / 3.0 * f64(k)
+                pts.push(vec2(f32(clamp(cu + cos(a) * r * su, u0, u1)), f32(cv + sin(a) * r)))
+            t: vec2[] = []
+            loop k in 1..5: t.extend([pts[0], pts[k], pts[k + 1]])
+            loop c in cuts: t = swap(split_y(swap(t), c))
+            out.push((t, LOZENGES[int(hash(i * 7919 + j * 104729 + seed) % u64(LOZENGES.len()))]))
+    out
+
+# lozenges on the flat top of a FLAT_TOP wing, tip to tip
+wing_lozenge = (vs: mut Vertex3D[], w: Wing, seed: int, r: f64):
+    tip = f64(w.st[w.st.len() - 1].x)
+    cuts: f64[] = []
+    lo = 99.0
+    hi = -99.0
+    loop s in w.st:
+        cuts.extend([f64(s.x), -f64(s.x)])
+        lo = min(lo, f64(s.y + 0.1 * s.z))
+        hi = max(hi, f64(s.y + 0.88 * s.z))
+    loop l in lozenge_field(-tip, tip, lo, hi, r, seed, cuts):
+        loop p in l.0:
+            x = f64(p.x)
+            s = station_at(w, x)
+            z = clamp(f64(p.y), f64(s.y + 0.1 * s.z), f64(s.y + 0.88 * s.z))
+            vs.push(Vertex3D(v3(x, wing_surface(w, x, z) + 0.008, z), vec3(0, 1, 0), vec2(0, 0), l.1))
+
+# lozenges on a lofted body's flat sides and top, from z0 to z1
+body_lozenge = (vs: mut Vertex3D[], rings: vec4[], z0: f64, z1: f64, seed: int, r: f64):
+    cuts = rings.map((g): f64(g.x))
+    loop face in 0..3:
+        loop l in lozenge_field(z0, z1, -1.0, 1.0, r, seed + 17 * face, cuts):
+            loop p in l.0:
+                z = f64(p.x)
+                g = ring_at(rings, z).0
+                if face == 2:
+                    x = clamp(f64(p.y), -f64(g.z) + 0.01, f64(g.z) - 0.01)
+                    vs.push(Vertex3D(v3(x, f64(g.y + g.w) + 0.006, z), vec3(0, 1, 0), vec2(0, 0), l.1))
+                else:
+                    s = if face == 0: 1.0 else: -1.0
+                    h = flat_side(rings, z)
+                    y = clamp(f64(p.y) + f64(g.y), f64(g.y - g.w) + 0.01, f64(g.y + g.w) - 0.01)
+                    vs.push(Vertex3D(v3(s * (h.0 + 0.006), y, z), vec3(f32(s) * h.1.x, h.1.y, h.1.z), vec2(0, 0), l.1))
+
+# Red's scout (as the Fokker E.V / D.VIII, "the flying razor"): a rotary engine's round cowling,
+# a slab-sided body, one thick wing over it on short struts, the wheels' axle in a little wing;
+# the wing and the body printed in lozenges, the cowling, the tailplane and the fin red, a white
+# band round the cowling, a D.VII's tail (a fin and a rudder, white); black crosses
 make_parasol = (badge: int) -> Vertex3D[]:
     vs: Vertex3D[]
-    body = rgb(0.74, 0.11, 0.08)
-    wings = rgb(0.8, 0.16, 0.1)
-    nose = if badge == NOSE or badge == FACE_BADGE: YELLOW_PAINT else: body
+    red = rgb(0.74, 0.11, 0.08)
+    nose = if badge == NOSE or badge == FACE_BADGE: YELLOW_PAINT else: red
     add_cylinder(vs, vec3(0, 0, 0), 0.52, 0.62, nose, 18, 0.46, translation(vec3(0, 0.0, -2.05)) * rotation_x(-PI / 2.0))
     if badge != MAW_BADGE: add_cylinder(vs, vec3(0, 0, 0), 0.535, 0.13, WHITE_PAINT, 18, 0.53, translation(vec3(0, 0.0, -2.12)) * rotation_x(-PI / 2.0))
     add_cylinder(vs, vec3(0, 0, 0), 0.36, 0.03, DARK, 14, -1.0, translation(vec3(0, 0.0, -2.66)) * rotation_x(-PI / 2.0))
-    loft(vs, FOKKER_BODY, body)
-    add_wing(vs, FOKKER_WING, wings)
+    # (underneath a paler print's ground)
+    pale = rgb(0.56, 0.54, 0.58)
+    loft(vs, FOKKER_BODY, pale)
+    body_lozenge(vs, FOKKER_BODY, -2.05, 2.95, 5, 0.27)
+    add_wing(vs, FOKKER_WING, pale)
+    wing_lozenge(vs, FOKKER_WING, 6, 0.3)
     # the struts: up from the body's sides, splayed out to the wing
     loop s in [-1.0, 1.0]:
         loop z in [-1.45, -0.55]:
@@ -689,14 +752,15 @@ make_parasol = (badge: int) -> Vertex3D[]:
     loop s in [-1.0, 1.0]: add_box(vs, v3(0.15 * s, 0.62, -1.35), vec3(0.08, 0.08, 1.05), DARK)
     cockpit(vs, v3(0, 0.8, 0.3))
     undercarriage(vs, -0.97, -1.35, -0.4, 0.72, 0.33)
-    add_box(vs, vec3(0, -0.97, -1.35), vec3(1.6, 0.07, 0.4), wings)
+    add_wing(vs, FOKKER_AXLE_WING, red)
     on_sides(vs, CROSS, FOKKER_BODY, 1.85, 0.22)
-    # the tail: a tailplane swept back from a point, a round rudder; the skid
-    tail = if badge == TAIL: YELLOW_PAINT else: wings
+    # the tail: a tailplane swept back from a point, a fin, the rudder white with a cross; the skid
+    tail = if badge == TAIL: YELLOW_PAINT else: red
     plate(vs, [vec3(0, 0.26, 2.2), vec3(1.4, 0.26, 2.75), vec3(1.3, 0.26, 3.1), vec3(-1.3, 0.26, 3.1), vec3(-1.4, 0.26, 2.75)], vec3(0, 1, 0), 0.06, tail)
-    comma = [vec2(-0.2, 2.75), vec2(0.25, 2.68), vec2(0.6, 2.62), vec2(0.92, 2.64), vec2(1.12, 2.78), vec2(1.2, 3.0), vec2(1.12, 3.22), vec2(0.9, 3.36), vec2(0.55, 3.38), vec2(0.2, 3.25), vec2(-0.1, 3.05)]
-    plate(vs, comma.map((p): vec3(0, p.x, p.y)), vec3(1, 0, 0), 0.06, if badge == TAIL: YELLOW_PAINT else: WHITE_PAINT)
-    loop s in [1.0, -1.0]: mark(vs, CROSS, vec3(f32(0.03 * s), 0.6, 3.02), vec3(0, 0, -1), vec3(0, 1, 0), vec3(f32(s), 0, 0), 0.26)
+    plate(vs, [vec3(0, 0.36, 2.3), vec3(0, 0.92, 2.79), vec3(0, 0.3, 2.79)], vec3(1, 0, 0), 0.05, tail)
+    rudder = [vec2(0.05, 2.8), vec2(0.92, 2.8), vec2(1.02, 2.92), vec2(0.98, 3.08), vec2(0.86, 3.18), vec2(0.0, 3.2), vec2(-0.06, 3.02)]
+    plate(vs, rudder.map((p): vec3(0, p.x, p.y)), vec3(1, 0, 0), 0.05, if badge == TAIL: YELLOW_PAINT else: WHITE_PAINT)
+    loop s in [1.0, -1.0]: mark(vs, CROSS, vec3(f32(0.025 * s), 0.52, 3.0), vec3(0, 0, -1), vec3(0, 1, 0), vec3(f32(s), 0, 0), 0.18)
     beam(vs, vec3(0, 0.05, 2.6), vec3(0, -0.35, 2.8), 0.06, DARK)
     own_mark(vs, badge, FOKKER_BODY, 0.75, vec3(0, 1.24, -0.85), FOKKER_WING)
     cowl = (z: f64, y: f64) -> (f64, vec3):

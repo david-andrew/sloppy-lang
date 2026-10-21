@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Sky Barons, round seven:
+  - Flak bursts at a height its guns set for each craft: a guess at first (now and then a good
+    one), then each shot a third nearer; a curtain at that height, following a climb or dive
+    late, to be seen before it hits.
+  - The computer's people take scouts, fighters and light bombers; the unusual crafts only once
+    one has stood a minute unflown (or nothing else is free); they walk and run each at their own
+    pace, take off in three lanes, and fly to the fight spread out, not in a line.
+  - F held puts one's own side out (prompted on the screen); G still does.
+  - Phones: out of a craft flying (not going down) only with In/Out held a second; Fire under a
+    parachute fires the pistol.
+  - Helicopters and the balloon off unless the lobby turns them on.
+  - Red's scout a Fokker E.V in lozenge camouflage.
+  - A first visit's menu shows an ornithopter; the upright lobby no longer moves as the sides'
+    size changes.
 - Sky Barons: three new crafts. Da Vinci's aerial screw, a light helicopter: its trebuchet's
   boulder (dug from the ground, low and slow, B held; X throws it) brings down whatever it hits;
   its second seat a ballista. A carcopter, a motor car under a rotor: guns ahead, and a tail
