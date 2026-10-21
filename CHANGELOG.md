@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Sky Barons, round four: the ornithopter (a bicycle with two pairs of flapping wings, a bat on
-  Red's side, a gull on Blue's): a sniper and healer, R to look through the scope of its fast,
+  Red's side, a gull on Blue's, driven by its pilot's pedalling): a sniper and healer, R to look through the scope of its fast,
   far-reaching gun (unscoped, a lighter gun), its rockets health packs that seek the nearest
   craft (an enemy's too) and come back one each 6 s. Red's rocketeer is a witch on a broom with
   a black cat; rocketeers' flames pulse. The ultra bombers have three biplane cells in tandem.
