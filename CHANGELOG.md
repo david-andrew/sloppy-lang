@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Sky Barons: the computer's pilots taxiing waited forever behind a plane parked in their way
+  (and all the others behind them): they steer round one standing, wait only for one moving,
+  and after 6 s go on.
 - Sky Barons, round three: a balloon (three seats, each a gun, bombs for all; no steering: the
   wind turns with height, so up or down chooses the way) and the rocketeer (a person on a rocket
   pack: fast, two bullets end it, a pistol, rockets without end, one a side); a fighter's third
