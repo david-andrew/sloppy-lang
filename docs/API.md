@@ -5376,7 +5376,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
   ```gdscript
   net.close(p, 4001, "the room is full")
   ```
-- `route = (peer: int) -> str`: how a peer is reached: "direct" (WebRTC, straight between the two), "relay" (WebRTC through a TURN server), "websocket" (a connection to a server, or one a server took), or "" (not known yet, or gone; a web page's browser does not tell)
+- `route = (peer: int) -> str`: how a peer is reached: "direct" (WebRTC, straight between the two), "relay" (WebRTC through a TURN server), "websocket" (a connection to a server, or one a server took), or "" (not known yet, or gone; in a web page, until the browser says, a moment after the first call)
 - `backlog = (peer: int) -> int`: how much waits to reach a peer: over WebRTC, the pieces sent and not acknowledged yet and those waiting for room (in a web page, the bytes its data channel holds); over a WebSocket, the bytes not sent yet (0 in a web page)
 - `dropped = (peer: int) -> int`: the messages to a peer dropped so far for want of room (one invited with reliable = false, whose messages may be lost: while the other side is slow to take them, newer ones are not held up)
 - `why = (peer: int) -> str`: why a peer could not connect, or the reason its close gave (net.close(p, code, reason)), once it has left ("": it did not say; a web page's browser does not tell why it could not connect)

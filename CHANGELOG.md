@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `net.route` in a web page says "direct" or "relay" (from the connection's statistics, a moment
+  after the first call); it was "" there, so Aces' online log could not tell.
 - 3D particles are drawn as instances, one for each particle, its corners placed by the shader
   (they were six vertices each, made and sent every frame): 6000 particles' frame took 1.8 ms
   of CPU time, now 0.5.

@@ -63,6 +63,10 @@ try {
   const ok = await until(() => A.lines.includes("got: hello from the friend") && B.lines.includes("got: hello from the inviter"), 20000);
   if (!ok || !A.lines.includes("connected: inviter true") || !B.lines.includes("connected: inviter false")) throw new Error(`not connected: inviter's page said ${JSON.stringify(A.lines)}, the friend's ${JSON.stringify(B.lines)}`);
   console.log("ok   two web pages through the invite screens (a link, a reply code, Connect)");
+  // (on one machine the browsers connect straight to each other, and say so)
+  const routed = await until(() => A.lines.includes("route: direct") && B.lines.includes("route: direct"), 10000);
+  if (!routed) throw new Error(`net.route: the inviter's page said ${JSON.stringify(A.lines.filter((l) => l.startsWith("route")))}, the friend's ${JSON.stringify(B.lines.filter((l) => l.startsWith("route")))}`);
+  console.log("ok   net.route says direct in both pages");
 } catch (e) {
   failed++;
   console.log(`FAIL two web pages through the invite screens: ${e.message}`);
