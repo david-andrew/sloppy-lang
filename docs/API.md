@@ -4241,7 +4241,6 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       index_count: int
       stride: int
       mode: int
-      instance_vbo: int
       instances: int
       center: vec3                # a sphere around the vertices (radius < 0: not known), for
       radius: f32 = -1.0          # leaving out what the camera cannot see (draw3d.jo)
@@ -4252,7 +4251,7 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
 - `mesh[V] = (vertices: V[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh`: upload vertices (any struct type matching the shader's vertex input) and optional indices
 - `update_mesh[V] = (m: mut Mesh, vertices: V[])`
 - `draw[U] = (sh: Shader, m0: Mesh, params: U)`: draw a mesh with a shader; `params` is the uniforms struct the shader functions take
-- `draw_instanced[U, I] = (sh: Shader, m: mut Mesh, instances: I[], params: U)`: draw many copies of a mesh in one call; `instances` holds the per-instance shader input (uploaded on every call: for instances that change rarely, keep them on the GPU with instance_buffer)
+- `draw_instanced[U, I] = (sh: Shader, m: Mesh, instances: I[], params: U)`: draw many copies of a mesh in one call; `instances` holds the per-instance shader input (uploaded on every call: for instances that change rarely, keep them on the GPU with instance_buffer)
 - `struct InstanceBuffer[I]`: per-instance shader input kept on the GPU: uploaded once (and again by set_instances), drawn any number of times with draw_instanced
   ```gdscript
   struct InstanceBuffer[I]:

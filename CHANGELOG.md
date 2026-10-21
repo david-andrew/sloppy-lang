@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `draw_mesh_instanced` made a new instance buffer every frame and never let it go (it was kept
+  in the frame's copy of the mesh): GPU memory grew by the instances' size each frame, about
+  0.5 MB for Aces' trees and clouds, until the game slowed to a stop. One buffer now takes each
+  draw's instances in turn.
 - `?` on an error or nothing (`E?`, as `db.exec(...)` gives) passes the error on and goes on
   when there is none; it was an error ("every member ... is passed on").
 - A value where a Json goes is made one, as `json_value(x)` makes it: `args.push(name)` to a
