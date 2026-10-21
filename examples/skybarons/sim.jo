@@ -1,0 +1,1579 @@
+# The game of Sky Barons: everything a tick depends on (the same game and pads give the same game
+# on every machine: rollback netplay plays ticks again). Aircraft (crafts) and people are apart:
+# a person walks, gets into a craft's seat (the pilot's, or a gunner's), gets out, bails out under
+# a parachute; a craft is its side's by its colors, whoever is in it.
+use 'world.jo'
+
+const DT = 1.0 / 60.0           # a tick
+const RESPAWN = 300             # ticks from death to coming back
+const WRECK = 600               # ticks a craft's wreck stays, before its stand has it again
+const BULLET_SPEED = 380.0
+const BULLET_LIFE = 75          # ticks (about 470 m)
+const JAM_HEAT = 300            # jammed until it is down to 120
+const DAMAGE = 7
+const CEILING = 1600.0          # (the engine fades above it)
+
+# the kinds of craft
+const SCOUT = 0
+const FIGHTER = 1
+const BOMBER = 2
+const ZEPPELIN = 3
+KIND_NAMES = ["scout", "fighter", "bomber", "zeppelin"]
+
+# the fights (Rules.mode)
+const DOGFIGHT = 0              # shoot down the other side's crafts
+const CLASSIC = 1               # the same: fighters alone, guns alone, starting in the air
+const BASES = 2                 # destroy the other side's airfield: hangars, fuel, command post
+const FLAG = 3                  # take the other side's flag home
+const TRENCH = 4                # Red raids the depot at the end of the gorge; Blue defends it
+const ESCORT = 5                # Red's bombers go for Blue's factory; fighters on both sides
+MODE_NAMES = ["Dogfight", "Classic", "Base attack", "Capture the flag", "Trench run", "Bomber escort"]
+
+# a seat in a craft: where it is (the craft's own way: -z ahead, +x right, +y up), and for a
+# gunner the way its gun points at rest and how far it turns from that (the cosine of the angle)
+struct Seat:
+    at: vec3
+    dir = vec3(0, 0, 0)         # (0: the pilot's seat, its guns fixed ahead, if the kind has any)
+    arc = 1.0
+
+struct Kind:
+    stall: f64                  # m/s: slower, the wings lose their grip
+    thrust: f64                 # m/s² at full throttle
+    drag: f64
+    pitch_rate: f64             # radians a second, at full stick and speed
+    roll_rate: f64
+    yaw_rate: f64
+    grip: f64                   # how fast the way it goes follows its nose (per second)
+    health: int
+    guns: bool                  # the pilot's guns, ahead
+    fire_gap: int               # ticks between shots
+    heat_shot: int              # (and it cools 1 a tick)
+    rockets: int
+    bombs: int
+    half: vec3                  # half its extents: what is hit (an ellipsoid)
+    seats: Seat[]
+    gear: f64                   # its middle above the ground when it stands
+    tilt: f64                   # (its nose up, standing on its tail wheel or skid)
+    lighter = false             # (a zeppelin: lighter than air)
+
+KINDS = [
+    Kind(24.0, 17.0, 0.0035, 1.45, 3.6, 0.55, 2.8, 45, true, 4, 5, 0, 0, vec3(4.2, 1.4, 3.0), [Seat(vec3(0, 0.8, 0.3))], 1.45, 0.16),
+    Kind(26.0, 13.0, 0.0042, 1.15, 2.6, 0.45, 2.4, 100, true, 4, 9, 4, 0, vec3(4.4, 1.6, 3.6), [Seat(vec3(0, 0.8, 0.55))], 1.6, 0.17),
+    Kind(22.0, 8.5, 0.0048, 0.55, 0.9, 0.3, 1.6, 600, false, 4, 7, 0, 10, vec3(12, 2.6, 8),
+         [Seat(vec3(0, 1.0, -4.0)), Seat(vec3(0, 1.3, -7.2), normalize(vec3(0, 0.15, -1)), -0.2), Seat(vec3(0, 2.7, 2.5), normalize(vec3(0, 0.7, 0.7)), -0.25)], 2.6, 0.08),
+    Kind(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1600, false, 4, 7, 8, 24, vec3(9, 11.5, 45),
+         [Seat(vec3(0, -11, -24)), Seat(vec3(0, 8.6, -25), vec3(0, 1, 0), -0.1), Seat(vec3(0, 8.6, 20), vec3(0, 1, 0), -0.1), Seat(vec3(0, -12.2, -20), normalize(vec3(0, -0.6, -0.8)), -0.1), Seat(vec3(0, 0.5, 45.5), vec3(0, 0, 1), 0.0)], 12.6, 0.0, lighter = true),
+]
+const ZEP_SPEED = 21.0          # m/s at full throttle
+const ZEP_TURN = 0.13           # radians a second
+const ZEP_CLIMB = 6.0           # m/s
+
+# ---------------- what is in a tick ----------------
+# a player's controls for a tick (the computer's too)
+struct Pad:
+    pitch = 0                   # -100 (dive; on foot: ahead) .. 100 (climb; on foot: back)
+    roll = 0                    # -100 (left) .. 100 (right): on foot, a step aside
+    yaw = 0                     # -100 (left) .. 100 (right)
+    throttle = 0                # -1, 0, 1 (-1 with the throttle shut: the brakes)
+    fire = false
+    rocket = false
+    bomb = false
+    enter = false               # get in, get out, bail out, open the parachute
+    seat = 0                    # 1, 2...: move to that seat of the craft
+    aim_yaw = 0                 # where this player looks (a gunner aims, one on foot faces):
+    aim_pitch = 0               # in thousandths of a radian, the world's way (yaw 0: -z)
+    computer = false            # (the computer plays it: a player who left)
+
+struct Craft:
+    kind: int
+    team: int                   # its colors: the side it is, as seen, whoever is in it
+    pos: vec3
+    vel: vec3
+    rot: vec4                   # (a quaternion: the nose is -z, the right wing +x, up +y)
+    throttle = 0.8
+    health = 100
+    heat = 0
+    jammed = false
+    cooldown = 0
+    shots = 0                   # fired so far (the guns take turns)
+    rockets = 0
+    bombs = 0
+    rcool = 0                   # (ticks until the next rocket or bomb)
+    seats: int[] = []           # the person in each seat (-1: none)
+    aims: vec3[] = []           # each gunner's gun, the world's way
+    gheat: int[] = []           # each gunner's gun's heat and cooldown
+    gcool: int[] = []
+    gtarget: int[] = []         # (each of the computer's gunners: the craft it aims at)
+    down = 0                    # ticks since it was shot down (0: flying)
+    gone = 0                    # ticks until its wreck is cleared (its stand has it again)
+    free = false                # (a slot with no craft in it)
+    landed = false              # on the ground: standing, rolling, taking off
+    home = -1                   # its stand (world.stands), -1: none
+    owner = -1                  # (a craft of one's own, in fights that start in the air: its person)
+    safe = 0                    # ticks it cannot be hit (just back)
+    target = -1                 # (the computer's pilot: the craft it goes after)
+    marked: int[] = [0, 0]      # until which tick each side knows who is in it (it shot at them)
+    by = -1                     # (the person who last hit it)
+    manned = -100000            # (the last tick someone flew it)
+    rest = 0                    # (ticks it has stood still at its own field: rearmed after 3 s)
+
+# a person: on foot, in a seat, falling, under a parachute, or dead for a while
+const WALK = 0
+const SEATED = 1
+const FALL = 2
+const CHUTE = 3
+const DEAD = 4
+
+struct Person:
+    team: int
+    player = -1                 # (-1: the computer)
+    pos = vec3(0, 0, 0)
+    vel = vec3(0, 0, 0)
+    yaw = 0.0
+    state = DEAD
+    craft = -1
+    seat = -1
+    timer = 1                   # (dead: ticks until back; falling: since it began)
+    held = 0                    # (the buttons held the tick before: 1 use, 2 rocket, 4 bomb)
+    seat_held = 0
+    kills = 0
+    deaths = 0
+    carry = -1                  # (the flag carried: its side; -1 none)
+    goal = -1                   # (the computer's: the craft it walks to)
+    kind = FIGHTER              # what it flies when it starts in the air
+
+struct Bullet:
+    pos: vec3
+    vel: vec3
+    by: int                     # (the person who fired it; -1 a gun of no one's)
+    craft: int                  # (the craft it came from: it does not hit that)
+    team: int                   # (the side of who fired it)
+    life: int
+
+# a rocket, a bomb, or a shell from a gun against aircraft (it bursts at a time)
+const ROCKET = 0
+const BOMB = 1
+const FLAK = 2
+struct Shot:
+    kind: int
+    pos: vec3
+    vel: vec3
+    by: int
+    craft: int
+    team: int
+    life: int
+
+# something on the ground (world.Site), with what it can still take
+struct Building:
+    kind: int
+    team: int
+    pos: vec3
+    yaw: f64
+    health: int
+    aim = vec3(0, 1, 0)         # (a gun's barrel)
+    cool = 0
+
+struct Flag:
+    team: int
+    home: vec3
+    pos: vec3
+    carrier = -1                # (the person carrying it)
+    out = 0                     # (ticks since it was dropped away from home; back at 1800)
+
+# what happened, to show and hear (who and by as each kind says)
+const HIT = 0                   # a hit on craft `who`
+const DIRT = 1                  # a bullet into the ground
+const BLAST = 2                 # craft `who` exploding
+const SHOT_DOWN = 3             # craft `who` shot down by person `by`
+const CRASHED = 4               # craft `who` flown into the ground
+const BURST = 5                 # a rocket's or a bomb's burst (`who`: 0 rocket, 1 bomb)
+const FLAK_BURST = 6
+const KILLED = 7                # person `who` killed (by person `by`, -1 none)
+const RUINED = 8                # building `who` destroyed (by person `by`)
+const OPENED = 9                # person `who`'s parachute open
+const SPLASH = 10               # into the water
+const TAKEN = 11                # flag `who` taken by person `by`
+const SCORED = 12               # flag `who` brought home by person `by`
+const RETURNED = 13             # flag `who` back at its home
+const FIRED = 14                # a rocket away (`who` craft)
+const DROPPED = 15              # a bomb away (`who` craft)
+const LANDED = 16               # craft `who` down on the ground, whole
+const DITCHED = 17              # craft `who` landed on the water: sinking
+const BAILED = 18               # person `who` out of craft `by`
+const BOARDED = 19              # person `who` in craft `by`
+
+struct Boom:
+    pos: vec3
+    kind: int
+    tick: int
+    who: int
+    by = -1
+
+struct Rules:
+    mode = DOGFIGHT
+    friendly_fire = false
+    ground_start = true         # each side starts on foot at its field (else in the air)
+    rockets = true
+    win = 10                    # (dogfight: crafts shot down; flags; Base attack: 1)
+    time_limit = 0              # ticks (0: none): then the defenders have won (Trench run, Escort)
+
+struct Game:
+    crafts: Craft[]
+    people: Person[]
+    bullets: Bullet[]
+    shots: Shot[]
+    buildings: Building[]
+    flags: Flag[]
+    booms: Boom[]               # (the last 2 s of them)
+    rules: Rules
+    skill = 0.65                # the computer's: 0 to 1
+    scores: int[] = [0, 0]      # each side's
+    tick = 0
+    winner = -1                 # (the side)
+
+# ---------------- a fight ----------------
+# the planes each side has on its field, for n people a side
+field_kinds = (n: int, mode: int) -> int[]:
+    k = [ZEPPELIN, BOMBER]
+    if n >= 4: k.push(BOMBER)
+    loop i in 0..n + 1: k.push(FIGHTER)
+    loop i in 0..(n + 1) / 2 + 1: k.push(SCOUT)
+    if mode == CLASSIC: return fill(FIGHTER, n + 2)
+    k
+
+# a fight: pilots says who each person is (one player number, or -1 the computer, for each;
+# person i is on side i % 2), kinds what each player flies when they start in the air
+new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
+    n = pilots.len() / 2
+    let g = Game([], [], [], [], [], [], [], rules, skill = skill)
+    if rules.mode == BASES or rules.mode == ESCORT or rules.mode == TRENCH or rules.mode == FLAG: g.rules.win = 1
+    if rules.mode == FLAG: g.rules.win = 3
+    if rules.mode == TRENCH: g.rules.time_limit = 60 * 60 * 5
+    if rules.mode == ESCORT: g.rules.time_limit = 60 * 60 * 6
+    loop s in sites(rules.mode == TRENCH or rules.mode == ESCORT):
+        g.buildings.push(Building(s.kind, s.team, s.pos, s.yaw, site_health(s.kind)))
+    if rules.mode == FLAG:
+        loop t in 0..2:
+            h = on_field(t, -STRIP_LONG + 230.0, -STRIP_WIDE - 40.0)
+            g.flags.push(Flag(t, h, h))
+    if starts_on_ground(g, 0) or starts_on_ground(g, 1):
+        loop st in 0.. and s in stands(field_kinds(n, rules.mode)):
+            if not starts_on_ground(g, s.team): continue
+            c = parked(s.kind, s.team, s.pos, s.yaw)
+            c.home = st
+            g.crafts.push(c)
+    loop i in 0..2 * n:
+        p = Person(i % 2, player = pilots[i])
+        p.kind = start_kind(g, i, if pilots[i] >= 0 and pilots[i] < kinds.len(): kinds[pilots[i]] else: -1)
+        p.timer = 1 + i
+        g.people.push(p)
+    g
+
+# what person i flies, starting in the air: as chosen (want: -1 none), or as the fight has it
+start_kind = (g: Game, i: int, want: int) -> int:
+    m = g.rules.mode
+    if m == CLASSIC: return FIGHTER
+    # (Escort: Red's first two people fly bombers, whoever they are; the rest escort them)
+    if m == ESCORT and i % 2 == 0 and i / 2 < 2: return BOMBER
+    if want >= 0 and want <= ZEPPELIN:
+        if m == ESCORT and want == BOMBER and i % 2 == 1: return FIGHTER
+        if m == TRENCH and want >= BOMBER: return FIGHTER
+        return want
+    if m == TRENCH: return if i / 2 % 2 == 0: FIGHTER else: SCOUT
+    FIGHTER
+
+starts_on_ground = (g: Game, team: int) -> bool:
+    m = g.rules.mode
+    if m == CLASSIC: return false
+    # (the raiders come by air; the defenders take off to meet them)
+    if m == TRENCH or m == ESCORT: return team == 1
+    g.rules.ground_start
+
+# a craft standing at pos, facing yaw, with no one in it
+parked = (kind: int, team: int, pos: vec3, yaw: f64) -> Craft:
+    k = KINDS[kind]
+    c = Craft(kind, team, pos + vec3(0, f32(k.gear), 0), vec3(0, 0, 0), ground_rot(yaw, k.tilt), throttle = 0.0, health = k.health, rockets = k.rockets, bombs = k.bombs, landed = true)
+    c.seats = fill(-1, k.seats.len())
+    c.aims = k.seats.map((s): s.dir)
+    c.gheat = fill(0, k.seats.len())
+    c.gcool = fill(0, k.seats.len())
+    c.gtarget = fill(-1, k.seats.len())
+    c
+
+# a craft in the air, flying the way dir at a speed it holds
+flying_craft = (kind: int, team: int, pos: vec3, dir: vec3) -> Craft:
+    k = KINDS[kind]
+    c = parked(kind, team, pos, 0.0)
+    c.pos = pos
+    c.rot = quat_facing(dir)
+    speed = if k.lighter: ZEP_SPEED * 0.7 else: k.stall * 1.9
+    c.vel = dir * f32(speed)
+    c.throttle = 0.8
+    c.landed = false
+    c
+
+# (standing: turned to yaw, the nose up by tilt)
+ground_rot = (yaw: f64, tilt: f64) -> vec4: quat_mul(quat_axis_angle(vec3(0, 1, 0), yaw), quat_axis_angle(vec3(1, 0, 0), tilt))
+
+fwd_of = (c: Craft) -> vec3: quat_rotate(c.rot, vec3(0, 0, -1))
+right_of = (c: Craft) -> vec3: quat_rotate(c.rot, vec3(1, 0, 0))
+up_of = (c: Craft) -> vec3: quat_rotate(c.rot, vec3(0, 1, 0))
+# a point of a craft (its own way) in the world
+point_of = (c: Craft, at: vec3) -> vec3: c.pos + quat_rotate(c.rot, at)
+
+alive = (c: Craft) -> bool: not c.free and c.gone == 0
+flying = (c: Craft) -> bool: alive(c) and c.down == 0 and not c.landed
+whole = (c: Craft) -> bool: alive(c) and c.down == 0
+
+# the side of who is in craft c (its pilot's; a gunner's; else its colors)
+crew_team = (g: Game, c: Craft) -> int:
+    loop k in c.seats:
+        if k >= 0: return g.people[k].team
+    c.team
+
+manned = (c: Craft) -> bool:
+    loop k in c.seats:
+        if k >= 0: return true
+    false
+
+pilot_of = (c: Craft) -> int: if c.seats.len() > 0: c.seats[0] else: -1
+
+# the side craft c seems, to side `viewer`: its colors, unless they know better (it shot at them)
+seen_team = (g: Game, c: Craft, viewer: int) -> int:
+    if c.marked[viewer] > g.tick: return crew_team(g, c)
+    c.team
+
+# (whether harm from side `from` counts against side `to`: always, or across sides alone)
+harms = (g: Game, from: int, to: int) -> bool: g.rules.friendly_fire or from != to
+
+# ---------------- one tick (1/60 s) ----------------
+# pads: each player's
+tick = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    g.tick += 1
+    choose_targets(g)
+    # (each person's controls: its player's, or the computer's)
+    each: Pad[]
+    loop i in 0..g.people.len():
+        p = g.people[i]
+        if p.player >= 0 and p.player < pads.len() and not pads[p.player].computer: each.push(pads[p.player])
+        else: each.push(bot_pad(g, i))
+    loop i in 0..g.people.len(): person(g, i, each[i])
+    loop i in 0..g.crafts.len():
+        if g.crafts[i].free: continue
+        pi = pilot_of(g.crafts[i])
+        fly(g, i, if pi >= 0: each[pi] else: Pad(), pi >= 0)
+        gunners(g, i, pads)
+    shoot(g)
+    shells(g)
+    guns_on_ground(g)
+    flags(g)
+    rules(g)
+    kept: Boom[]
+    loop b in g.booms:
+        if g.tick - b.tick < 120: kept.push(b)
+    g.booms = kept
+    g
+
+score = (g: mut Game, team: int, n: int = 1):
+    if g.winner >= 0: return
+    g.scores[team] += n
+    if g.scores[team] >= g.rules.win and g.rules.mode != BASES and g.rules.mode != ESCORT and g.rules.mode != TRENCH: g.winner = team
+
+# who has won, for the fights won otherwise than by a score
+rules = (g: mut Game):
+    if g.winner >= 0: return
+    m = g.rules.mode
+    if m == BASES:
+        loop t in 0..2:
+            left = 0
+            loop b in g.buildings:
+                if b.team == t and b.health > 0 and (b.kind == HANGAR or b.kind == TANK or b.kind == HQ): left += 1
+            if left == 0: g.winner = 1 - t
+    if m == TRENCH or m == ESCORT:
+        want = if m == TRENCH: DEPOT else: FACTORY
+        loop b in g.buildings:
+            if b.kind == want and b.health <= 0: g.winner = 0
+        if g.winner < 0 and m == ESCORT:
+            # (Red's bombers all lost: they do not come back)
+            left = 0
+            loop c in g.crafts:
+                if not c.free and c.kind == BOMBER and c.team == 0 and c.down == 0 and c.gone == 0: left += 1
+            if left == 0 and g.tick > 60 * 185: g.winner = 1
+        if g.winner < 0 and g.rules.time_limit > 0 and g.tick >= g.rules.time_limit: g.winner = 1
+
+# ---------------- people ----------------
+const WALK_SPEED = 5.5
+const SWIM_SPEED = 1.8
+const CHUTE_FALL = 9.0          # m/s under a parachute
+const ENTER = 8.0               # (m from a craft's seat to get in)
+
+person = (g: mut Game, i: int, pad: Pad):
+    let p = g.people[i]
+    pressed = pad.enter and p.held & 1 == 0
+    p.held = (if pad.enter: 1 else: 0) | (if pad.rocket: 2 else: 0) | (if pad.bomb: 4 else: 0)
+    seat_now = pad.seat
+    seat_new = seat_now != p.seat_held and seat_now > 0
+    p.seat_held = seat_now
+    if p.state == DEAD:
+        p.timer -= 1
+        if p.timer <= 0: respawn(g, i, p)
+        else: g.people[i] = p
+        return
+    if p.state == SEATED:
+        c = g.crafts[p.craft]
+        if seat_new: p = change_seat(g, i, p, seat_now - 1)
+        if pressed:
+            if c.landed and f64(length(c.vel)) < 4.0: p = get_out(g, i, p)
+            else: p = bail_out(g, i, p)
+        else:
+            p.pos = point_of(c, KINDS[c.kind].seats[p.seat].at)
+            p.vel = c.vel
+        g.people[i] = p
+        return
+    if p.state == FALL or p.state == CHUTE:
+        p.timer += 1
+        if p.state == FALL and (p.timer > 75 or (pressed and p.timer > 10)):
+            p.state = CHUTE
+            g.booms.push(Boom(p.pos, OPENED, g.tick, i))
+        if p.state == FALL:
+            p.vel.y -= f32(9.8 * DT)
+            p.vel = p.vel * f32(1.0 - 0.15 * DT)
+        else:
+            # (the canopy: the fall slows to CHUTE_FALL, the way it went fades; steered a little)
+            # (W spills air from the canopy: down faster, up to twice as fast)
+            fall = CHUTE_FALL * (1.0 + max(-f64(pad.pitch) / 100.0, 0.0))
+            p.vel.y = f32(approach(f64(p.vel.y), -fall, 6.0, DT))
+            h = vec3(p.vel.x, 0, p.vel.z) * f32(1.0 - 1.2 * DT)
+            yaw = f64(pad.aim_yaw) / 1000.0
+            f = vec3(f32(-sin(yaw)), 0, f32(-cos(yaw)))
+            h += f * f32(-f64(pad.pitch) / 100.0 * 2.5 * DT)
+            p.vel = vec3(h.x, p.vel.y, h.z)
+            p.yaw = yaw
+        p.pos += p.vel * f32(DT)
+        gy = ground(f64(p.pos.x), f64(p.pos.z))
+        if f64(p.pos.y) <= gy:
+            p.pos.y = f32(gy)
+            if p.state == FALL and f64(length(p.vel)) > 14.0:
+                g.people[i] = p
+                kill(g, i, -1)
+                return
+            p.state = WALK
+            p.vel = vec3(0, 0, 0)
+            if gy <= 0.0: g.booms.push(Boom(p.pos, SPLASH, g.tick, i))
+        g.people[i] = p
+        return
+    # on foot (or swimming)
+    p.yaw = f64(pad.aim_yaw) / 1000.0
+    f = vec3(f32(-sin(p.yaw)), 0, f32(-cos(p.yaw)))
+    r = vec3(-f.z, 0, f.x)
+    want = f * f32(-f64(pad.pitch) / 100.0) + r * f32(f64(pad.roll) / 100.0)
+    if length(want) > 1.0: want = normalize(want)
+    wet = is_water(f64(p.pos.x), f64(p.pos.z))
+    want = want * f32(if wet: SWIM_SPEED else: WALK_SPEED)
+    p.vel = vec3(f32(approach(f64(p.vel.x), f64(want.x), 12.0, DT)), 0, f32(approach(f64(p.vel.z), f64(want.z), 12.0, DT)))
+    np = p.pos + p.vel * f32(DT)
+    # (a slope too steep is not climbed)
+    if flatness(f64(np.x), f64(np.z)) > 0.55 or ground(f64(np.x), f64(np.z)) < f64(p.pos.y): p.pos = np
+    p.pos = out_of_buildings(g, p.pos, 0.5)
+    p.pos.y = f32(ground(f64(p.pos.x), f64(p.pos.z)))
+    if wet: p.pos.y = -1.1
+    if pressed:
+        k = nearest_craft(g, p)
+        if k >= 0: p = get_in(g, i, p, k)
+        else if not starts_on_ground(g, p.team):
+            respawn(g, i, p)
+            return
+        else if far_from_field(p):
+            # (far from one's field with no craft to take: back there, a moment later)
+            p.state = DEAD
+            p.timer = 180
+            drop_flag(g, i)
+    g.people[i] = p
+
+far_from_field = (p: Person) -> bool:
+    f = fields()[p.team]
+    f64(length(vec2(p.pos.x - f.at.x, p.pos.z - f.at.z))) > STRIP_LONG + 400.0
+
+# (one back on foot faces the parked planes, across the strip)
+spawn_yaw = (team: int) -> f64:
+    d = fields()[team].dir
+    atan2(f64(d.z), -f64(d.x))
+
+# (dead, and back: on foot at the side's field, or in the air in a craft of its own)
+respawn = (g: mut Game, i: int, p0: Person):
+    let p = p0
+    p.state = WALK
+    p.carry = -1
+    p.goal = -1
+    p.craft = -1
+    p.seat = -1
+    p.vel = vec3(0, 0, 0)
+    # (Escort: a bomber lost in the last half of the time does not come back; its crew flies a fighter)
+    if g.rules.mode == ESCORT and p.kind == BOMBER and g.tick > 60 * 180: p.kind = FIGHTER
+    if starts_on_ground(g, p.team):
+        p.pos = foot_spawn(p.team, (i / 2 + g.tick / 61) % 12)
+        p.yaw = spawn_yaw(p.team)
+        g.people[i] = p
+        return
+    # (a craft of its own, made again: the old one's slot, once its wreck is cleared)
+    k = -1
+    loop j in 0..g.crafts.len():
+        if g.crafts[j].owner == i: k = j
+    if k >= 0 and not g.crafts[k].free and g.crafts[k].gone == 0 and (g.crafts[k].down > 0 or manned(g.crafts[k])):
+        # (its last one still falls, or another has it: a new one)
+        g.crafts[k].owner = -1
+        k = -1
+    if k < 0:
+        loop j in 0..g.crafts.len():
+            if k < 0 and g.crafts[j].free: k = j
+    n = g.people.len() / 2
+    at, dir = air_start(p.team, i / 2, n, if p.kind == ZEPPELIN: 470.0 else: 430.0)
+    c = flying_craft(p.kind, p.team, at, dir)
+    c.owner = i
+    c.safe = 120
+    if g.rules.mode == CLASSIC or not g.rules.rockets: c.rockets = 0
+    if k < 0:
+        k = g.crafts.len()
+        g.crafts.push(c)
+    else: g.crafts[k] = c
+    g.crafts[k].seats[0] = i
+    p.state = SEATED
+    p.craft = k
+    p.seat = 0
+    p.pos = c.pos
+    p.yaw = atan2(-f64(dir.x), -f64(dir.z))
+    g.people[i] = p
+
+# the craft p could get into: standing or rolling slowly, near one of its seats, a seat free
+nearest_craft = (g: Game, p: Person) -> int:
+    best = -1
+    least = ENTER
+    loop j in 0.. and c in g.crafts:
+        if not whole(c) or not c.landed or f64(length(c.vel)) > 3.0: continue
+        loop s in 0.. and st in KINDS[c.kind].seats:
+            if c.seats[s] >= 0: continue
+            d = f64(length(point_of(c, st.at) - p.pos - vec3(0, 1, 0)))
+            # (a zeppelin's gunners on its back are reached by its gondola's ladder)
+            if KINDS[c.kind].lighter: d = min(d, f64(length(point_of(c, vec3(0, -11, -24)) - p.pos)) + 0.5 * f64(s))
+            if d < least:
+                least = d
+                best = j
+    best
+
+get_in = (g: mut Game, i: int, p0: Person, k: int) -> Person:
+    let p = p0
+    c = g.crafts[k]
+    # (the pilot's seat if it is free, else the nearest gunner's)
+    s = -1
+    least = 1e9
+    loop j in 0.. and st in KINDS[c.kind].seats:
+        if c.seats[j] >= 0: continue
+        d = f64(length(point_of(c, st.at) - p.pos)) + (if j == 0: -1000.0 else: 0.0)
+        if d < least:
+            least = d
+            s = j
+    if s < 0: return p
+    g.crafts[k].seats[s] = i
+    p.state = SEATED
+    p.craft = k
+    p.seat = s
+    p.goal = -1
+    g.booms.push(Boom(p.pos, BOARDED, g.tick, i, k))
+    p
+
+change_seat = (g: mut Game, i: int, p0: Person, s: int) -> Person:
+    let p = p0
+    c = g.crafts[p.craft]
+    if s < 0 or s >= c.seats.len() or c.seats[s] >= 0: return p
+    g.crafts[p.craft].seats[p.seat] = -1
+    g.crafts[p.craft].seats[s] = i
+    p.seat = s
+    p
+
+# out of a craft standing on the ground: beside it, on its left
+get_out = (g: mut Game, i: int, p0: Person) -> Person:
+    let p = p0
+    c = g.crafts[p.craft]
+    g.crafts[p.craft].seats[p.seat] = -1
+    k = KINDS[c.kind]
+    side = point_of(c, k.seats[p.seat].at + vec3(f32(-1.6 - f64(k.half.x) * 0.25), 0, 0))
+    if k.lighter: side = point_of(c, vec3(-4, -11, -24))
+    p.pos = vec3(side.x, f32(ground(f64(side.x), f64(side.z))), side.z)
+    p.vel = vec3(0, 0, 0)
+    p.state = WALK
+    p.craft = -1
+    p.seat = -1
+    p
+
+# out of a craft in the air: falling, the parachute opening a moment later
+bail_out = (g: mut Game, i: int, p0: Person) -> Person:
+    let p = p0
+    k = p.craft
+    c = g.crafts[k]
+    g.crafts[k].seats[p.seat] = -1
+    p.pos = point_of(c, KINDS[c.kind].seats[p.seat].at + vec3(0, 1.5, 0))
+    p.vel = c.vel + up_of(c) * 4.0
+    p.state = FALL
+    p.timer = 0
+    p.craft = -1
+    p.seat = -1
+    g.booms.push(Boom(p.pos, BAILED, g.tick, i, k))
+    p
+
+# person i dies (by person `by`, -1: no one): anyone in a seat with it falls with its craft
+kill = (g: mut Game, i: int, by: int):
+    p = g.people[i]
+    if p.state == DEAD: return
+    if p.state == SEATED: g.crafts[p.craft].seats[p.seat] = -1
+    drop_flag(g, i)
+    g.booms.push(Boom(p.pos, KILLED, g.tick, i, by))
+    g.people[i].state = DEAD
+    g.people[i].timer = RESPAWN
+    g.people[i].craft = -1
+    g.people[i].seat = -1
+    g.people[i].deaths += 1
+    if by >= 0 and by != i and g.people[by].team != p.team and g.winner < 0: g.people[by].kills += 1
+
+# (pushed out of the buildings still standing: a box round each, r more)
+out_of_buildings = (g: Game, p: vec3, r: f64) -> vec3:
+    let q = p
+    loop b in g.buildings:
+        if b.kind == AA or b.kind == MAST: continue
+        h = site_half(b.kind)
+        l = quat_rotate(quat_axis_angle(vec3(0, 1, 0), -b.yaw), q - b.pos)
+        ox = f64(h.x) + r - abs(f64(l.x))
+        oz = f64(h.z) + r - abs(f64(l.z))
+        if ox <= 0.0 or oz <= 0.0 or f64(l.y) > f64(h.y) * 2.0: continue
+        if ox < oz: l.x += f32(if l.x > 0.0: ox else: -ox)
+        else: l.z += f32(if l.z > 0.0: oz else: -oz)
+        q = b.pos + quat_rotate(quat_axis_angle(vec3(0, 1, 0), b.yaw), l)
+    q
+
+# ---------------- flying ----------------
+# craft i for a tick, flown by pad (no pilot: the controls let go)
+fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
+    let c = g.crafts[i]
+    if c.gone > 0:
+        c.gone -= 1
+        if c.gone == 0:
+            # (cleared: its stand has a new one; one of a person's own, nothing until they need it)
+            if c.home >= 0:
+                s = stands(field_kinds(g.people.len() / 2, g.rules.mode))[c.home]
+                n = parked(s.kind, s.team, s.pos, s.yaw)
+                n.home = c.home
+                n.safe = 60
+                c = n
+            else: c.free = true
+        g.crafts[i] = c
+        return
+    if c.safe > 0: c.safe -= 1
+    # (standing still with no one in it: nothing to do but be mended, at its own field)
+    if not piloted and c.landed and c.down == 0 and c.vel == vec3(0, 0, 0):
+        g.crafts[i] = c
+        return
+    if piloted: c.manned = g.tick
+    k = KINDS[c.kind]
+    pd = pad
+    if not piloted: pd = Pad()
+    if c.down > 0:
+        # shot down: the engine dead, the controls gone, rolling over and down
+        c.down += 1
+        pd = Pad(-40, if i % 2 == 0: 100 else: -100, 0, -1)
+    else if piloted and outside(c.pos) > 0.0 and not c.landed:
+        # (past the fight's edge: back toward the middle)
+        home = normalize(inward(c.pos) + vec3(0, f32(clamp((500.0 - f64(c.pos.y)) / 800.0, -0.3, 0.3)), 0))
+        t = steer(c, home)
+        pd.pitch = t.pitch
+        pd.roll = t.roll
+        pd.yaw = t.yaw
+    else if not piloted and outside(c.pos) > 1500.0: c.down = 1
+    if k.lighter: float(g, i, c, pd)
+    else if c.landed: roll_on_ground(g, i, c, pd)
+    else: fly_air(g, i, c, pd)
+    c = g.crafts[i]
+    if c.gone > 0 or c.free: return
+    # the pilot's guns, rockets and bombs
+    if c.cooldown > 0: c.cooldown -= 1
+    if c.heat > 0: c.heat -= 1
+    if c.rcool > 0: c.rcool -= 1
+    if c.jammed and c.heat < 120: c.jammed = false
+    who = pilot_of(c)
+    team = crew_team(g, c)
+    if pd.fire and k.guns and c.down == 0 and not c.jammed and c.cooldown == 0 and piloted:
+        fwd = fwd_of(c)
+        up = up_of(c)
+        right = right_of(c)
+        side = if c.shots % 2 == 0: 0.35 else: -0.35
+        # (a little scatter, from the tick: the same on every machine)
+        h = hash(g.tick * 4 + i)
+        sx = (f64(h & 1023) / 1023.0 - 0.5) * 0.008
+        sy = (f64((h >> 10) & 1023) / 1023.0 - 0.5) * 0.008
+        dir = normalize(fwd + right * f32(sx) + up * f32(sy))
+        g.bullets.push(Bullet(c.pos + fwd * f32(f64(k.half.z) * 0.9) + right * f32(side) + up * 0.6, c.vel + dir * f32(BULLET_SPEED), who, i, team, BULLET_LIFE))
+        c.shots += 1
+        c.cooldown = k.fire_gap
+        c.heat += k.heat_shot
+        if c.heat >= JAM_HEAT: c.jammed = true
+    if piloted and c.down == 0 and c.rcool == 0:
+        if pd.rocket and c.rockets > 0 and g.rules.rockets:
+            # (each side in turn; Le Prieur's rockets, lit and let go from the struts)
+            side = if c.rockets % 2 == 0: 1.0 else: -1.0
+            at = point_of(c, vec3(f32(side * f64(k.half.x) * 0.45), -0.3, f32(-f64(k.half.z) * 0.3)))
+            if k.lighter: at = point_of(c, vec3(f32(side * 2.0), -11, -27))
+            g.shots.push(Shot(ROCKET, at, c.vel + fwd_of(c) * 60.0, who, i, team, 240))
+            g.booms.push(Boom(at, FIRED, g.tick, i))
+            c.rockets -= 1
+            c.rcool = 20
+        else if pd.bomb and c.bombs > 0:
+            at = point_of(c, vec3(0, f32(-f64(k.half.y) * 0.8), 0))
+            if k.lighter: at = point_of(c, vec3(0, -12.5, f32(-15.0 + 6.0 * f64(c.bombs % 4))))
+            g.shots.push(Shot(BOMB, at, c.vel * 0.95, who, i, team, 60 * 40))
+            g.booms.push(Boom(at, DROPPED, g.tick, i))
+            c.bombs -= 1
+            c.rcool = if k.lighter: 12 else: 18
+    # (stood still at its own side's field for 3 s: rearmed, mended)
+    if c.landed and f64(length(c.vel)) < 0.5 and on_own_field(c, team): c.rest += 1
+    else: c.rest = 0
+    if c.rest > 180:
+        c.rockets = k.rockets
+        c.bombs = k.bombs
+        c.health = min(c.health + 2, k.health)
+    g.crafts[i] = c
+
+on_own_field = (c: Craft, team: int) -> bool:
+    f = fields()[team]
+    f64(length(vec2(c.pos.x - f.at.x, c.pos.z - f.at.z))) < STRIP_LONG + 150.0
+
+# a winged craft in the air: Aces' flight (the kind's own numbers)
+fly_air = (g: mut Game, i: int, c0: Craft, pd: Pad):
+    let c = c0
+    k = KINDS[c.kind]
+    speed = f64(length(c.vel))
+    auth = clamp(speed / (k.stall * 1.45), 0.25, 1.0)
+    q = c.rot
+    q = quat_mul(q, quat_axis_angle(vec3(1, 0, 0), f64(pd.pitch) / 100.0 * k.pitch_rate * auth * DT))
+    q = quat_mul(q, quat_axis_angle(vec3(0, 0, 1), -f64(pd.roll) / 100.0 * k.roll_rate * auth * DT))
+    q = quat_mul(q, quat_axis_angle(vec3(0, 1, 0), -f64(pd.yaw) / 100.0 * k.yaw_rate * auth * DT))
+    fwd = quat_rotate(q, vec3(0, 0, -1))
+    vdir = fwd
+    if speed > 0.1: vdir = c.vel * f32(1.0 / speed)
+    # (stalled: the nose falls toward the way it is going, and down)
+    lift = smoothstep(k.stall * 0.75, k.stall * 1.15, speed)
+    if lift < 1.0:
+        axis = cross(fwd, normalize(vdir + vec3(0, -0.7, 0)))
+        if length(axis) > 0.001: q = quat_mul(quat_axis_angle(axis, (1.0 - lift) * 1.6 * DT), q)
+    c.rot = normalize(q)
+    fwd = quat_rotate(c.rot, vec3(0, 0, -1))
+    up = quat_rotate(c.rot, vec3(0, 1, 0))
+    c.throttle = clamp(c.throttle + f64(pd.throttle) * 0.6 * DT, 0.0, 1.0)
+    # speed along the way it goes: the engine (fading up high), drag (more pulling hard), and
+    # gravity (diving gains speed, climbing costs it)
+    thin = clamp((CEILING + 300.0 - f64(c.pos.y)) / 600.0, 0.0, 1.0)
+    pull = abs(f64(pd.pitch)) / 100.0 * auth
+    acc = k.thrust * c.throttle * thin - k.drag * speed * speed * (1.0 + 0.9 * pull) - 9.8 * f64(vdir.y)
+    speed = max(speed + acc * DT, 0.0)
+    # the way it goes turns toward the nose: hardly at all when stalled
+    t = min(k.grip * lift * DT, 1.0)
+    vdir = normalize(vdir + (fwd - vdir) * f32(t))
+    c.vel = vdir * f32(speed)
+    # what the wings do not hold up falls: all of it stalled, a little banked over
+    sag = 9.8 * (1.0 - lift) + 3.0 * lift * (1.0 - max(f64(up.y), 0.0))
+    c.vel.y -= f32(sag * DT)
+    c.pos += c.vel * f32(DT)
+    gy = ground(f64(c.pos.x), f64(c.pos.z))
+    if f64(c.pos.y) - k.gear < gy or c.down > 900: touch_down(g, i, c, gy)
+    else: g.crafts[i] = c
+
+# the ground reached: landed (slow, level, gently, on flat ground), ditched (the same on water:
+# the craft sinks, the people swim) or crashed
+touch_down = (g: mut Game, i: int, c0: Craft, gy: f64):
+    let c = c0
+    k = KINDS[c.kind]
+    up = up_of(c)
+    fwd = fwd_of(c)
+    flat = vec3(fwd.x, 0, fwd.z)
+    sink = -f64(c.vel.y)
+    gentle = c.down == 0 and sink < 4.5 and f64(length(c.vel)) < k.stall * 1.9 and f64(up.y) > 0.82 and f64(fwd.y) > -0.25
+    wet = gy <= 0.0
+    if gentle and not wet and flatness(f64(c.pos.x), f64(c.pos.z)) > 0.93 and length(flat) > 0.1:
+        c.landed = true
+        speed = f64(length(vec2(c.vel.x, c.vel.z)))
+        yaw = atan2(-f64(flat.x), -f64(flat.z))
+        c.rot = ground_rot(yaw, k.tilt * 0.5)
+        c.vel = normalize(flat) * f32(speed)
+        c.pos.y = f32(gy + k.gear)
+        g.booms.push(Boom(c.pos, LANDED, g.tick, i))
+        g.crafts[i] = c
+        return
+    if gentle and wet:
+        # (ditched: the people in it come out in the water)
+        g.booms.push(Boom(c.pos, DITCHED, g.tick, i))
+        loop s in 0.. and pk in c.seats:
+            if pk < 0: continue
+            g.people[pk].state = WALK
+            g.people[pk].pos = vec3(c.pos.x + f32(s * 2), -1.1, c.pos.z)
+            g.people[pk].vel = vec3(0, 0, 0)
+            g.people[pk].craft = -1
+            g.people[pk].seat = -1
+            c.seats[s] = -1
+        c.gone = WRECK / 4
+        c.vel = vec3(0, 0, 0)
+        g.crafts[i] = c
+        return
+    crash(g, i, c)
+
+# craft i destroyed against the ground (or an obstacle): who is in it dies
+crash = (g: mut Game, i: int, c0: Craft):
+    let c = c0
+    g.booms.push(Boom(c.pos, BLAST, g.tick, i))
+    if c.down == 0:
+        g.booms.push(Boom(c.pos, CRASHED, g.tick, i))
+        if counts_kills(g) and (manned(c) or g.tick - c.manned < 600): score(g, 1 - crew_team(g, c))
+    g.crafts[i] = c
+    loop pk in c.seats:
+        if pk >= 0: kill(g, pk, if c.down > 0: c.by else: -1)
+    c = g.crafts[i]
+    c.seats = fill(-1, c.seats.len())
+    c.down = 0
+    c.landed = false
+    c.gone = WRECK
+    c.vel = vec3(0, 0, 0)
+    g.crafts[i] = c
+
+# rolling on the ground: the throttle pushes it along, the rudder (and the stick's roll) steers,
+# the brakes with the throttle shut; past its speed of flying, pulling back lifts it off
+roll_on_ground = (g: mut Game, i: int, c0: Craft, pd: Pad):
+    let c = c0
+    k = KINDS[c.kind]
+    fwd = fwd_of(c)
+    flat = vec3(fwd.x, 0, fwd.z)
+    if length(flat) < 0.05: flat = vec3(0, 0, -1)
+    flat = normalize(flat)
+    yaw = atan2(-f64(flat.x), -f64(flat.z))
+    speed = f64(dot(c.vel, flat))
+    c.throttle = clamp(c.throttle + f64(pd.throttle) * 0.6 * DT, 0.0, 1.0)
+    brake = if pd.throttle < 0 and c.throttle <= 0.0: 4.0 else: 0.0
+    acc = k.thrust * c.throttle * 1.1 - k.drag * speed * speed - (0.6 + brake) * sign(speed)
+    speed = speed + acc * DT
+    if abs(speed) < 0.05 and c.throttle <= 0.0: speed = 0.0
+    speed = clamp(speed, -2.0, 1000.0)
+    turn = clamp(f64(pd.yaw + pd.roll) / 100.0, -1.0, 1.0) * 0.7 * min(1.0, abs(speed) / 6.0 + 0.25)
+    if c.down == 0: yaw -= turn * DT
+    flat = vec3(f32(-sin(yaw)), 0, f32(-cos(yaw)))
+    np = c.pos + flat * f32(speed * DT)
+    gy = ground(f64(np.x), f64(np.z))
+    # (the tail comes up as it gathers speed)
+    lift_off = speed > k.stall * 1.12 and pd.pitch > 10 and c.down == 0
+    c.rot = ground_rot(yaw, k.tilt * (1.0 - smoothstep(0.0, k.stall, speed)))
+    c.vel = flat * f32(speed)
+    c.pos = vec3(np.x, f32(gy + k.gear), np.z)
+    # (rough ground, water, a building or another craft in the way: fast, it breaks)
+    rough = flatness(f64(np.x), f64(np.z)) < 0.9 or gy <= 0.0
+    hit = bumped(g, i, c)
+    if (rough or hit) and abs(speed) > 9.0:
+        crash(g, i, c)
+        return
+    if hit:
+        c.pos = c0.pos
+        c.vel = vec3(0, 0, 0)
+    if lift_off:
+        c.landed = false
+        c.vel = flat * f32(speed) + vec3(0, 1.5, 0)
+        c.rot = quat_mul(quat_axis_angle(vec3(0, 1, 0), yaw), quat_axis_angle(vec3(1, 0, 0), 0.12))
+    if c.down > 0 and c.down > 120: crash(g, i, c)
+    else: g.crafts[i] = c
+
+# (a craft on the ground into a building, or another craft on the ground)
+bumped = (g: Game, i: int, c: Craft) -> bool:
+    r = f64(KINDS[c.kind].half.z) * 0.8
+    loop b in g.buildings:
+        if b.health <= 0 or b.kind == AA: continue
+        h = site_half(b.kind)
+        l = quat_rotate(quat_axis_angle(vec3(0, 1, 0), -b.yaw), c.pos - b.pos)
+        if abs(f64(l.x)) < f64(h.x) + r and abs(f64(l.z)) < f64(h.z) + r: return true
+    loop j in 0.. and o in g.crafts:
+        if j == i or not alive(o) or not o.landed: continue
+        d = f64(length(o.pos - c.pos))
+        if d < (r + f64(KINDS[o.kind].half.z) * 0.8) * 0.75 and f64(dot(o.pos - c.pos, c.vel)) > 0.0: return true
+    false
+
+# a zeppelin: the throttle its speed ahead, the rudder (and the stick's roll) turns it, the
+# stick's pitch takes it up and down; shot down, it burns and sinks, nose first
+float = (g: mut Game, i: int, c0: Craft, pd: Pad):
+    let c = c0
+    k = KINDS[c.kind]
+    fwd = fwd_of(c)
+    flat = vec3(fwd.x, 0, fwd.z)
+    if length(flat) < 0.05: flat = vec3(0, 0, -1)
+    flat = normalize(flat)
+    yaw = atan2(-f64(flat.x), -f64(flat.z))
+    c.throttle = clamp(c.throttle + f64(pd.throttle) * 0.4 * DT, 0.0, 1.0)
+    speed = approach(f64(dot(c.vel, flat)), ZEP_SPEED * c.throttle, 0.25, DT)
+    turn = clamp(f64(pd.yaw + pd.roll) / 100.0, -1.0, 1.0) * ZEP_TURN * min(1.0, speed / 8.0 + 0.3)
+    yaw -= turn * DT
+    climb = f64(pd.pitch) / 100.0 * ZEP_CLIMB
+    if c.down > 0: climb = -3.0 - f64(c.down) / 120.0
+    vy = approach(f64(c.vel.y), climb, 0.6, DT)
+    if f64(c.pos.y) > CEILING and vy > 0.0: vy = 0.0
+    flat = vec3(f32(-sin(yaw)), 0, f32(-cos(yaw)))
+    c.vel = flat * f32(speed) + vec3(0, f32(vy), 0)
+    c.pos += c.vel * f32(DT)
+    nose = if c.down > 0: clamp(f64(c.down) / 900.0, 0.0, 0.35) else: clamp(vy / ZEP_CLIMB, -1.0, 1.0) * 0.04
+    c.rot = quat_mul(quat_axis_angle(vec3(0, 1, 0), yaw), quat_axis_angle(vec3(1, 0, 0), -nose))
+    if turn != 0.0: c.rot = quat_mul(c.rot, quat_axis_angle(vec3(0, 0, 1), turn * 0.8))
+    gy = ground(f64(c.pos.x), f64(c.pos.z))
+    c.landed = false
+    if f64(c.pos.y) - k.gear <= gy:
+        if c.down > 0 or f64(c.vel.y) < -5.0:
+            crash(g, i, c)
+            return
+        # (resting on its gondolas: moored)
+        c.pos.y = f32(gy + k.gear)
+        if c.vel.y < 0.0: c.vel.y = 0.0
+        c.landed = speed < 3.0 and gy > 0.0
+    g.crafts[i] = c
+
+# ---------------- the gunners ----------------
+# each gunner's seat of craft i: its gun turned toward where its person aims (one of the
+# computer's, or no one: the nearest enemy, led), and firing
+gunners = (g: mut Game, i: int, pads: Pad[]):
+    c = g.crafts[i]
+    if not whole(c) or c.seats.len() < 2 or (c.landed and not manned(c)): return
+    k = KINDS[c.kind]
+    team = crew_team(g, c)
+    loop s in 1..k.seats.len():
+        st = k.seats[s]
+        base = quat_rotate(c.rot, st.dir)
+        at = point_of(c, st.at)
+        pk = c.seats[s]
+        want = c.aims[s]
+        fire = false
+        human = pk >= 0 and g.people[pk].player >= 0 and g.people[pk].player < pads.len() and not pads[g.people[pk].player].computer
+        if human:
+            pad = pads[g.people[pk].player]
+            yaw = f64(pad.aim_yaw) / 1000.0
+            pitch = f64(pad.aim_pitch) / 1000.0
+            want = vec3(f32(-sin(yaw) * cos(pitch)), f32(sin(pitch)), f32(-cos(yaw) * cos(pitch)))
+            fire = pad.fire
+        else:
+            # (the computer's gunner, there or not: the nearest the crew knows to be the other
+            # side's, within reach of its gun; less skill, it aims worse and fires sooner)
+            best = c.gtarget[s]
+            if (g.tick + i + s) % 4 == 0 or best >= g.crafts.len():
+                best = -1
+                least = 650.0
+                loop j in 0.. and o in g.crafts:
+                    if j == i or not flying(o) or o.safe > 0 or seen_team(g, o, team) == team: continue
+                    d = f64(length(o.pos - at))
+                    if d < least and f64(dot(normalize(o.pos - at), base)) > st.arc:
+                        least = d
+                        best = j
+                g.crafts[i].gtarget[s] = best
+            least = if best >= 0: f64(length(g.crafts[best].pos - at)) else: 1e9
+            if best >= 0 and not flying(g.crafts[best]): best = -1
+            if best >= 0:
+                o = g.crafts[best]
+                l = lead_from(at, c.vel, o.pos, o.vel)
+                w = (1.0 - g.skill) * 0.05 + 0.012
+                t = f64(g.tick)
+                want = normalize(normalize(l) + vec3(f32(sin(t * 0.031 + f64(i + s)) * w), f32(cos(t * 0.027 + f64(s)) * w), f32(sin(t * 0.023 + 1.0) * w)))
+                fire = f64(dot(normalize(c.aims[s]), normalize(l))) > 0.996 and least < 600.0
+        # (the gun turns only so far from its rest, and only so fast)
+        if f64(dot(want, base)) < st.arc:
+            loop _ in 0..6:
+                if f64(dot(want, base)) < st.arc: want = normalize(want + base * 0.5)
+            fire = false
+        g.crafts[i].aims[s] = normalize(approach(c.aims[s], want, if human: 30.0 else: 4.0 + 4.0 * g.skill, DT))
+        if g.crafts[i].gcool[s] > 0: g.crafts[i].gcool[s] -= 1
+        if g.crafts[i].gheat[s] > 0: g.crafts[i].gheat[s] -= 1
+        if fire and g.crafts[i].gcool[s] == 0 and g.crafts[i].gheat[s] < JAM_HEAT:
+            dir = g.crafts[i].aims[s]
+            g.bullets.push(Bullet(at + dir * 1.5, c.vel + dir * f32(BULLET_SPEED), pk, i, team, BULLET_LIFE))
+            g.crafts[i].gcool[s] = 6
+            g.crafts[i].gheat[s] += 6
+
+# the way to aim from `at` (moving at v) to hit something at e (moving at ev): where it will be
+# when the bullets get there (they keep the shooter's speed, and drop a little)
+lead_from = (at: vec3, v: vec3, e: vec3, ev: vec3) -> vec3:
+    rel = e - at
+    rv = ev - v
+    t = f64(length(rel)) / BULLET_SPEED
+    loop k in 0..2: t = f64(length(rel + rv * f32(t))) / BULLET_SPEED
+    rel + rv * f32(t) + vec3(0, f32(4.9 * t * t), 0)
+
+lead = (c: Craft, e: Craft) -> vec3: lead_from(c.pos, c.vel, e.pos, e.vel)
+
+# ---------------- what hits what ----------------
+# whether the segment a-b passes within r of the origin
+seg_near = (a: vec3, b: vec3, r: f64) -> bool:
+    d = b - a
+    l2 = f64(dot(d, d))
+    t = 0.0
+    if l2 > 0.0: t = clamp(-f64(dot(a, d)) / l2, 0.0, 1.0)
+    q = a + d * f32(t)
+    f64(dot(q, q)) < r * r
+
+# whether the segment a-b (the world's) passes through craft c (its ellipsoid, where it was a tick
+# ago at the start: it moved too), grown by `more` meters
+hits_craft = (c: Craft, a: vec3, b: vec3, more: f64) -> bool:
+    h = KINDS[c.kind].half + vec3(f32(more), f32(more), f32(more))
+    # (first: near its sphere at all)
+    if not seg_near(a - c.pos, b - c.pos, f64(max(h.x, max(h.y, h.z))) + f64(length(c.vel)) * DT): return false
+    inv = quat_inverse(c.rot)
+    la = quat_rotate(inv, a - (c.pos - c.vel * f32(DT)))
+    lb = quat_rotate(inv, b - c.pos)
+    seg_near(vec3(la.x / h.x, la.y / h.y, la.z / h.z), vec3(lb.x / h.x, lb.y / h.y, lb.z / h.z), 1.0)
+
+# how far point p is from craft c's ellipsoid (roughly: its surface, in meters; < 0 inside)
+craft_distance = (c: Craft, p: vec3) -> f64:
+    h = KINDS[c.kind].half
+    l = quat_rotate(quat_inverse(c.rot), p - c.pos)
+    s = vec3(l.x / h.x, l.y / h.y, l.z / h.z)
+    f64(length(s) - 1.0) * f64(min(h.x, min(h.y, h.z)))
+
+# damage to craft j from person `by` (side `team`): its health down, and shot down at 0
+hurt_craft = (g: mut Game, j: int, by: int, team: int, amount: int, at: vec3):
+    c = g.crafts[j]
+    if not whole(c) or c.safe > 0: return
+    victim = crew_team(g, c)
+    if not harms(g, team, victim): return
+    g.booms.push(Boom(at, HIT, g.tick, j, by))
+    g.crafts[j].health -= amount
+    g.crafts[j].by = by
+    if g.crafts[j].health > 0: return
+    g.crafts[j].health = 0
+    if c.landed:
+        crash(g, j, g.crafts[j])
+        return
+    g.crafts[j].down = 1
+    g.booms.push(Boom(c.pos, SHOT_DOWN, g.tick, j, by))
+    if g.winner < 0 and by >= 0 and g.people[by].team != victim: g.people[by].kills += 1
+    if counts_kills(g) and (manned(c) or g.tick - c.manned < 600): score(g, 1 - victim)
+
+# (the fights whose score is the crafts shot down)
+counts_kills = (g: Game) -> bool: g.rules.mode == DOGFIGHT or g.rules.mode == CLASSIC
+
+hurt_building = (g: mut Game, j: int, by: int, team: int, amount: int):
+    b = g.buildings[j]
+    if b.health <= 0 or b.kind == MAST or not harms(g, team, b.team): return
+    g.buildings[j].health -= amount
+    if g.buildings[j].health <= 0:
+        g.buildings[j].health = 0
+        g.booms.push(Boom(b.pos, RUINED, g.tick, j, by))
+
+hurt_person = (g: mut Game, j: int, by: int, team: int, amount: int):
+    p = g.people[j]
+    if p.state == DEAD or p.state == SEATED or not harms(g, team, p.team): return
+    if amount >= 20 or hash(g.tick * 13 + j) % 3 == 0: kill(g, j, by)
+
+# a crew marked: craft `shooter`'s, by side `victim` (it shot at them: they know it now)
+mark = (g: mut Game, shooter: int, victim: int):
+    if shooter < 0 or shooter >= g.crafts.len(): return
+    if g.crafts[shooter].team == victim: g.crafts[shooter].marked[victim] = g.tick + 60 * 30
+
+# the bullets: on, down a little, into a craft, a person, a building or the ground
+shoot = (g: mut Game):
+    kept: Bullet[]
+    # (each craft that can be hit: where, how near a bullet must come to be looked at closer,
+    # its crew's side, and whether anyone is in it)
+    teams: int[]
+    near: f32[]
+    open: bool[]
+    full: bool[]
+    loop c in g.crafts:
+        teams.push(crew_team(g, c))
+        h = KINDS[c.kind].half
+        r = max(h.x, max(h.y, h.z)) + 8.0
+        near.push(r * r)
+        open.push(alive(c) and c.safe == 0)
+        full.push(manned(c))
+    loop b in g.bullets:
+        let b = b
+        a = b.pos
+        b.vel.y -= f32(9.8 * DT)
+        b.pos += b.vel * f32(DT)
+        b.life -= 1
+        hit = false
+        loop j in 0..g.crafts.len():
+            if not open[j] or j == b.craft: continue
+            d = b.pos - g.crafts[j].pos
+            if dot(d, d) > near[j]: continue
+            t = g.crafts[j]
+            # (through those it would not harm)
+            if full[j] and not harms(g, b.team, teams[j]): continue
+            if hits_craft(t, a, b.pos, 0.0):
+                hit = true
+                if t.down == 0:
+                    hurt_craft(g, j, b.by, b.team, DAMAGE, b.pos)
+                    mark(g, b.craft, teams[j])
+                else: g.booms.push(Boom(b.pos, HIT, g.tick, j, b.by))
+                break
+        if not hit:
+            loop j in 0.. and p in g.people:
+                if p.state == DEAD or p.state == SEATED: continue
+                if seg_near(a - p.pos - vec3(0, 0.9, 0), b.pos - p.pos - vec3(0, 0.9, 0), 0.7) and harms(g, b.team, p.team):
+                    hurt_person(g, j, b.by, b.team, DAMAGE)
+                    mark(g, b.craft, p.team)
+                    hit = true
+                    break
+        if hit: continue
+        if f64(b.pos.y) < 700.0:
+            gy = ground(f64(b.pos.x), f64(b.pos.z))
+            if f64(b.pos.y) < gy + 25.0:
+                bi = building_at(g, b.pos)
+                if bi >= 0:
+                    hurt_building(g, bi, b.by, b.team, 2)
+                    mark(g, b.craft, g.buildings[bi].team)
+                    g.booms.push(Boom(b.pos, DIRT, g.tick, -1))
+                    continue
+            if f64(b.pos.y) < gy:
+                g.booms.push(Boom(b.pos, if gy <= 0.0: SPLASH else: DIRT, g.tick, -1))
+                continue
+        if b.life > 0: kept.push(b)
+    g.bullets = kept
+
+# the building whose box p is in (-1: none)
+building_at = (g: Game, p: vec3) -> int:
+    loop j in 0.. and b in g.buildings:
+        if b.health <= 0: continue
+        h = site_half(b.kind)
+        l = quat_rotate(quat_axis_angle(vec3(0, 1, 0), -b.yaw), p - b.pos)
+        if abs(f64(l.x)) < f64(h.x) and f64(l.y) > -1.0 and f64(l.y) < f64(h.y) * 2.0 and abs(f64(l.z)) < f64(h.z): return j
+    -1
+
+# rockets (on, faster, into what they come near), bombs (down, bursting on the ground or what
+# they fall on) and shells (bursting when their fuse is done)
+shells = (g: mut Game):
+    kept: Shot[]
+    loop s in g.shots:
+        let s = s
+        a = s.pos
+        s.life -= 1
+        if s.kind == ROCKET:
+            d = normalize(s.vel)
+            sp = min(f64(length(s.vel)) + 120.0 * DT, 240.0)
+            s.vel = d * f32(sp) + vec3(0, f32(-2.0 * DT), 0)
+        else: s.vel.y -= f32(9.8 * DT)
+        if s.kind == BOMB: s.vel = s.vel * f32(1.0 - 0.02 * DT)
+        s.pos += s.vel * f32(DT)
+        burst = s.life <= 0 and s.kind != BOMB
+        # (a rocket bursts on, or right by, any craft but its own; a bomb on one it falls onto)
+        if s.kind != FLAK and not burst:
+            loop j in 0.. and c in g.crafts:
+                if j == s.craft or not alive(c): continue
+                if hits_craft(c, a, s.pos, if s.kind == ROCKET: 3.0 else: 0.0):
+                    burst = true
+                    break
+        gy = ground(f64(s.pos.x), f64(s.pos.z))
+        if f64(s.pos.y) <= gy or building_at(g, s.pos) >= 0: burst = true
+        if s.kind == ROCKET and s.life <= 0: burst = true
+        if not burst:
+            if f64(s.pos.y) > -50.0: kept.push(s)
+            continue
+        if s.kind == FLAK:
+            g.booms.push(Boom(s.pos, FLAK_BURST, g.tick, -1))
+            blast(g, s, 20.0, 18)
+        else:
+            g.booms.push(Boom(s.pos, if f64(s.pos.y) <= 0.3 and gy <= 0.0: SPLASH else: BURST, g.tick, s.kind))
+            if s.kind == ROCKET: blast(g, s, 14.0, 55)
+            else: blast(g, s, 30.0, 170)
+    g.shots = kept
+
+# what is within r of a burst: hurt the more the nearer
+blast = (g: mut Game, s: Shot, r: f64, most: int):
+    loop j in 0..g.crafts.len():
+        c = g.crafts[j]
+        if not whole(c): continue
+        d = craft_distance(c, s.pos)
+        if d < r:
+            n = int(f64(most) * (1.0 - max(d, 0.0) / r))
+            if n > 0:
+                hurt_craft(g, j, s.by, s.team, n, s.pos)
+                mark(g, s.craft, crew_team(g, c))
+    loop j in 0.. and b in g.buildings:
+        if b.health <= 0: continue
+        h = site_half(b.kind)
+        l = quat_rotate(quat_axis_angle(vec3(0, 1, 0), -b.yaw), s.pos - b.pos - vec3(0, h.y, 0))
+        q = vec3(f32(max(abs(f64(l.x)) - f64(h.x), 0.0)), f32(max(abs(f64(l.y)) - f64(h.y), 0.0)), f32(max(abs(f64(l.z)) - f64(h.z), 0.0)))
+        d = f64(length(q))
+        if d < r:
+            hurt_building(g, j, s.by, s.team, int(f64(most) * (1.0 - d / r)))
+            mark(g, s.craft, b.team)
+    loop j in 0.. and p in g.people:
+        if p.state == DEAD or p.state == SEATED: continue
+        d = f64(length(p.pos - s.pos))
+        if d < r * 0.8: hurt_person(g, j, s.by, s.team, int(f64(most) * (1.0 - d / r)))
+
+# the guns against aircraft round the fields and along the gorge: each at the nearest craft it
+# takes for the other side's, within 800 m and well above it (low enough, it is flown under), a shell timed to burst where the craft
+# will be (less skill, wider)
+guns_on_ground = (g: mut Game):
+    loop j in 0..g.buildings.len():
+        b = g.buildings[j]
+        if b.kind != AA or b.health <= 0: continue
+        if g.buildings[j].cool > 0:
+            g.buildings[j].cool -= 1
+            continue
+        at = b.pos + vec3(0, 2.2, 0)
+        best = -1
+        least = 800.0
+        loop k in 0.. and c in g.crafts:
+            if not flying(c) or c.safe > 0 or seen_team(g, c, b.team) == b.team: continue
+            d = f64(length(c.pos - at))
+            # (their barrels go no lower than about 9 degrees: under that, they are flown under)
+            if d < least and f64(c.pos.y) > f64(at.y) + max(50.0, d * 0.16):
+                least = d
+                best = k
+        if best < 0:
+            g.buildings[j].cool = 15
+            continue
+        c = g.crafts[best]
+        speed = 300.0
+        t = least / speed
+        aim = c.pos + c.vel * f32(t)
+        h = hash(g.tick * 7 + j)
+        spread = 14.0 + 30.0 * (1.0 - g.skill)
+        aim += vec3(f32((f64(h & 255) / 255.0 - 0.5) * spread), f32((f64((h >> 8) & 255) / 255.0 - 0.5) * spread), f32((f64((h >> 16) & 255) / 255.0 - 0.5) * spread))
+        dir = normalize(aim - at)
+        tt = f64(length(aim - at)) / speed
+        g.buildings[j].aim = dir
+        g.shots.push(Shot(FLAK, at + dir * 4.0, dir * f32(speed) + vec3(0, f32(4.9 * tt), 0), -1, -1, b.team, max(int(tt * 60.0), 5)))
+        g.buildings[j].cool = 70 + int(hash(g.tick + j * 3) % 30)
+
+# ---------------- the flags ----------------
+# a flag is taken by one of the other side who comes to it (on foot, or flying through it low
+# and slow), carried, dropped where its carrier died; brought home to one's own flag (at its
+# home), it scores; one's own, touched where it was dropped, goes home (or by itself, later)
+flags = (g: mut Game):
+    loop fi in 0..g.flags.len():
+        f = g.flags[fi]
+        if f.carrier >= 0:
+            p = g.people[f.carrier]
+            g.flags[fi].pos = p.pos
+            if p.state == DEAD:
+                g.flags[fi].carrier = -1
+                continue
+            # (home with it, its own flag there: a point)
+            own = g.flags[1 - fi]
+            if own.carrier < 0 and f64(length(own.pos - own.home)) < 1.0 and near_flag(g, p, own.home):
+                g.booms.push(Boom(own.home, SCORED, g.tick, fi, f.carrier))
+                g.people[f.carrier].carry = -1
+                g.flags[fi].carrier = -1
+                g.flags[fi].pos = f.home
+                g.flags[fi].out = 0
+                score(g, p.team)
+            continue
+        away = f64(length(f.pos - f.home)) > 1.0
+        if away:
+            g.flags[fi].out += 1
+            if g.flags[fi].out > 1800:
+                g.flags[fi].pos = f.home
+                g.flags[fi].out = 0
+                g.booms.push(Boom(f.home, RETURNED, g.tick, fi))
+                continue
+        loop j in 0.. and p in g.people:
+            if p.state == DEAD or p.state == FALL or p.state == CHUTE or not near_flag(g, p, f.pos): continue
+            if p.team != f.team and p.carry < 0:
+                g.flags[fi].carrier = j
+                g.people[j].carry = fi
+                g.booms.push(Boom(f.pos, TAKEN, g.tick, fi, j))
+                break
+            if p.team == f.team and away:
+                g.flags[fi].pos = f.home
+                g.flags[fi].out = 0
+                g.booms.push(Boom(f.home, RETURNED, g.tick, fi, j))
+                break
+
+# (on foot within 3 m of it; in a craft, the craft through it low: within 12 m, under 45 m/s)
+near_flag = (g: Game, p: Person, at: vec3) -> bool:
+    if p.state == WALK: return f64(length(p.pos - at)) < 3.0
+    if p.state != SEATED: return false
+    c = g.crafts[p.craft]
+    f64(length(c.pos - at - vec3(0, 4, 0))) < 12.0 and f64(length(c.vel)) < 45.0
+
+drop_flag = (g: mut Game, i: int):
+    p = g.people[i]
+    if p.carry < 0: return
+    fi = p.carry
+    g.flags[fi].carrier = -1
+    at = p.pos
+    if p.state == SEATED: at = g.crafts[p.craft].pos
+    g.flags[fi].pos = vec3(at.x, f32(ground(f64(at.x), f64(at.z))), at.z)
+    g.people[i].carry = -1
+
+# ---------------- the computer ----------------
+# the stick and rudder that turn craft c toward the direction want: far off, roll it overhead and
+# pull; nearly there, small corrections with the wings level
+steer = (c: Craft, want: vec3) -> Pad:
+    l = quat_rotate(quat_inverse(c.rot), normalize(want))     # (-z ahead, +x right, +y up)
+    ahead = f64(-l.z)
+    a = max(ahead, 0.1)
+    right = right_of(c)
+    near_pitch = clamp(f64(l.y) / a * 14.0, -1.0, 1.0)
+    near_yaw = clamp(f64(l.x) / a * 14.0, -1.0, 1.0)
+    near_roll = clamp(f64(right.y) * 2.0 + f64(l.x) / a * 6.0, -1.0, 1.0)
+    err = atan2(f64(l.x), f64(l.y))
+    off = acos(clamp(ahead, -1.0, 1.0))
+    far_roll = clamp(err * 2.0, -1.0, 1.0)
+    far_pitch = if abs(err) < 1.2: clamp(off * 3.0, 0.0, 1.0) else: 0.2
+    k = smoothstep(0.94, 0.995, ahead)
+    p = Pad()
+    p.pitch = int((far_pitch + (near_pitch - far_pitch) * k) * 100.0)
+    p.roll = int((far_roll + (near_roll - far_roll) * k) * 100.0)
+    p.yaw = int(near_yaw * k * 100.0)
+    p
+
+# a zeppelin's (or a bomber's on the ground's) way toward a point: turn by the rudder, up or down
+steer_flat = (c: Craft, want: vec3, alt: f64) -> Pad:
+    l = quat_rotate(quat_inverse(c.rot), normalize(vec3(want.x, 0, want.z)))
+    p = Pad()
+    p.yaw = int(clamp(f64(l.x) * 3.0 + (if l.z > 0.0: (if l.x >= 0.0: 1.0 else: -1.0) else: 0.0), -1.0, 1.0) * 100.0)
+    p.pitch = int(clamp((alt - f64(c.pos.y)) / 60.0, -1.0, 1.0) * 100.0)
+    p.throttle = 1
+    p
+
+# the craft each of the computer's pilots goes after: the nearest it takes for the other side's,
+# the nearer the more ahead; looked at again every 1.5 s, and when that one is down
+choose_targets = (g: mut Game):
+    loop i in 0..g.crafts.len():
+        c = g.crafts[i]
+        if not flying(c): continue
+        team = crew_team(g, c)
+        cur = c.target
+        ok = cur >= 0 and cur < g.crafts.len() and flying(g.crafts[cur]) and g.crafts[cur].safe == 0 and seen_team(g, g.crafts[cur], team) != team
+        if ok and (g.tick + i * 7) % 90 != 0: continue
+        f = fwd_of(c)
+        best = -1
+        least = 1e18
+        loop j in 0..g.crafts.len():
+            e = g.crafts[j]
+            if j == i or not flying(e) or e.safe > 0 or seen_team(g, e, team) == team: continue
+            d = e.pos - c.pos
+            l = max(f64(length(d)), 1.0)
+            v = l * (2.0 - f64(dot(f, d)) / l)
+            # (fighters go for the big ones first, scouts for fighters)
+            if e.kind == BOMBER or e.kind == ZEPPELIN: v *= if c.kind == FIGHTER: 0.6 else: 1.3
+            if j == cur: v *= 0.7
+            if v < least:
+                least = v
+                best = j
+        g.crafts[i].target = best
+
+# person i's controls, played by the computer: on foot to a craft and in; in a craft, its pilot
+bot_pad = (g: Game, i: int) -> Pad:
+    p = g.people[i]
+    if p.state == DEAD: return Pad()
+    if p.state == WALK: return bot_walk(g, i, p)
+    if p.state == FALL or p.state == CHUTE: return Pad(aim_yaw = int(p.yaw * 1000.0))
+    c = g.crafts[p.craft]
+    # (going down in flames, far enough up: out, the less skilled the later)
+    if c.down > 20 + int((1.0 - g.skill) * 60.0) and f64(c.pos.y) - ground(f64(c.pos.x), f64(c.pos.z)) > 60.0 and not KINDS[c.kind].lighter: return Pad(enter = g.tick % 2 == 0)
+    if p.seat != 0: return Pad()
+    bot_fly(g, p.craft, c)
+
+# on foot: to the nearest free craft of its side (the pilot's seat), and in; in the air-start
+# fights, back in the air at once
+bot_walk = (g: Game, i: int, p: Person) -> Pad:
+    if not starts_on_ground(g, p.team): return Pad(enter = g.tick % 20 == 0)
+    best = -1
+    least = 1e18
+    # (each picks by its number: some the big ones, the rest fighters and scouts)
+    want_big = role(i) == 1
+    loop j in 0.. and c in g.crafts:
+        if not whole(c) or not c.landed or c.seats[0] >= 0 or f64(length(c.vel)) > 3.0: continue
+        # (its own side's colors; one of the other side's only when very near)
+        d = f64(length(c.pos - p.pos))
+        if c.team != p.team and d > 60.0: continue
+        big = c.kind == BOMBER or c.kind == ZEPPELIN
+        if big != want_big: d += 400.0
+        if c.kind == ZEPPELIN: d += 150.0
+        # (another of the computer's going to it already)
+        loop o in g.people:
+            if o.goal == j and o.state == WALK: d += 300.0
+        if d < least:
+            least = d
+            best = j
+    # (nothing near, far from its field: back there)
+    if best < 0 or (least > 350.0 and far_from_field(p)): return Pad(aim_yaw = int(p.yaw * 1000.0), enter = g.tick % 30 == i % 30)
+    c = g.crafts[best]
+    to = point_of(c, KINDS[c.kind].seats[0].at) - p.pos
+    if KINDS[c.kind].lighter: to = point_of(c, vec3(-3, -11, -24)) - p.pos
+    to.y = 0.0
+    d = f64(length(to))
+    pad = Pad()
+    pad.aim_yaw = int(atan2(-f64(to.x), -f64(to.z)) * 1000.0)
+    pad.pitch = if d > 1.5: -100 else: 0
+    # (round the craft, not into it: aside when it is in the way)
+    if d < 12.0 and d > 3.0: pad.roll = if hash(i) % 2 == 0: 40 else: -40
+    pad.enter = d < ENTER - 2.0 and g.tick % 10 == 0
+    pad
+
+# what the computer's person i does: 0 fights, 1 flies the big ones, 2 runs for the flag (in
+# Capture the flag; else fights)
+role = (i: int) -> int: (i / 2) % 3
+
+# the computer's pilot of craft ci: take off (along the field), then fight, bomb, or go home
+bot_fly = (g: Game, ci: int, c: Craft) -> Pad:
+    k = KINDS[c.kind]
+    team = crew_team(g, c)
+    if c.down > 0: return Pad()
+    if c.landed:
+        pad = Pad()
+        pad.throttle = 1
+        # (straight down the strip: the way its stand faces)
+        fwd = fwd_of(c)
+        want = fields()[team].dir
+        if c.team != team: want = fwd
+        l = f64(cross(vec3(fwd.x, 0, fwd.z), want).y)
+        pad.yaw = int(clamp(-l * 4.0, -1.0, 1.0) * 100.0)
+        if k.lighter: pad.pitch = 100
+        else if f64(length(c.vel)) > k.stall * 1.2: pad.pitch = 40
+        return pad
+    if k.lighter or c.kind == BOMBER: return bot_bomber(g, ci, c, team)
+    bot_fighter(g, ci, c)
+
+# a fighter or a scout: Aces' pilot, and rockets for the big ones
+bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
+    k = KINDS[c.kind]
+    skill = g.skill
+    has = c.target >= 0 and c.target < g.crafts.len()
+    e = if has: g.crafts[c.target] else: c
+    fwd = fwd_of(c)
+    speed = f64(length(c.vel))
+    alt = f64(c.pos.y) - ground(f64(c.pos.x), f64(c.pos.z))
+    ahead = c.pos + c.vel * 4.0
+    low = alt < 130.0 or f64(ahead.y) < ground(f64(ahead.x), f64(ahead.z)) + 100.0
+    # (the trench run's raiders keep low in the gorge: lower is safer from its guns)
+    hug = g.rules.mode == TRENCH and crew_team(g, c) == 0
+    if hug:
+        ah = c.pos + c.vel * 2.0
+        low = alt < 22.0 or f64(ah.y) < ground(f64(ah.x), f64(ah.z)) + 18.0
+    aim = vec3(0, 0, 0)
+    fight = has and flying(e) and e.safe == 0 and not low
+    want = vec3(0, 0, 0)
+    strafe = -1
+    # (Capture the flag's runners: to the other side's flag, or home with it)
+    run_for = -1
+    run_at = vec3(0, 0, 0)
+    pi = pilot_of(c)
+    if g.rules.mode == FLAG and pi >= 0 and (role(pi) == 2 or g.people[pi].carry >= 0):
+        team = g.people[pi].team
+        if g.people[pi].carry >= 0:
+            run_for = team
+            run_at = g.flags[team].home
+        else if g.flags[1 - team].carrier < 0:
+            run_for = 1 - team
+            run_at = g.flags[1 - team].pos
+        if run_for >= 0: fight = false
+        # (low all the way, under the others' fighters; lower still near the flag)
+        if run_for >= 0:
+            near = f64(length(vec2(run_at.x - c.pos.x, run_at.z - c.pos.z))) < 700.0
+            ah = c.pos + c.vel * 2.0
+            low = alt < (if near: 2.5 else: 25.0) or f64(ah.y) < ground(f64(ah.x), f64(ah.z)) + (if near: 2.0 else: 20.0)
+    if low:
+        flat = vec3(fwd.x, 0, fwd.z)
+        if length(flat) < 0.1: flat = vec3(1, 0, 0)
+        want = normalize(flat) + vec3(0, 0.9, 0)
+    else if hug and not (fight and f64(length(e.pos - c.pos)) < 500.0):
+        # (up the gorge, along the river, toward the depot)
+        # (the river's line 350 m on, as high as the highest ground along the next 500 m)
+        tz = f64(c.pos.z) - 350.0
+        top = 0.0
+        loop k in 1..6:
+            z = f64(c.pos.z) - 100.0 * f64(k)
+            top = max(top, ground(river_x(z), z))
+        want = vec3(f32(river_x(tz)) - c.pos.x, f32(top + 45.0) - c.pos.y, f32(tz) - c.pos.z)
+        bi = mission_target(g, crew_team(g, c))
+        if bi >= 0 and f64(length(g.buildings[bi].pos - c.pos)) < 900.0: want = g.buildings[bi].pos + vec3(0, 6, 0) - c.pos
+    else if fight:
+        aim = lead(c, e)
+        # (less skill: aims round about, as if it misjudged)
+        w = (1.0 - skill) * 14.0
+        t = f64(g.tick)
+        want = aim + vec3(f32(sin(t * 0.013 + f64(ci)) * w), f32(cos(t * 0.011) * w), f32(sin(t * 0.017 + 2.0) * w))
+    else if run_for >= 0:
+        # (to the flag, then home with it: low and slow through it)
+        to = run_at - c.pos
+        flat = f64(length(vec2(to.x, to.z)))
+        h = if flat > 700.0: 60.0 else: 4.0 + flat * 0.08
+        # (far off, wide of the middle, where the others fight: each side round its own way)
+        side = if flat > 1100.0: normalize(vec3(-to.z, 0, to.x)) * f32(flat * 0.45) else: vec3(0, 0, 0)
+        want = vec3(to.x + side.x, f32(ground(f64(run_at.x), f64(run_at.z)) + h) - c.pos.y, to.z + side.z)
+    else:
+        bi = mission_target(g, crew_team(g, c))
+        if bi >= 0:
+            # (an attack run: high over to it, then down at it, guns and rockets)
+            to = g.buildings[bi].pos + vec3(0, 4, 0) - c.pos
+            flat = f64(length(vec2(to.x, to.z)))
+            want = if flat > 800.0: vec3(to.x, f32(320.0 - f64(c.pos.y) + f64(g.buildings[bi].pos.y)), to.z) else: to
+            if flat < 800.0: strafe = bi
+        else: want = vec3(-c.pos.x, f32(500.0 - f64(c.pos.y)), -c.pos.z)
+    pad = steer(c, want)
+    pad.pitch = int(f64(pad.pitch) * (0.55 + 0.45 * skill))
+    # (slow: no hard pulling, which would stall it)
+    if speed < k.stall * 1.3: pad.pitch = min(pad.pitch, 15)
+    pad.throttle = 1
+    if fight and length(aim) > 0.0:
+        d = f64(length(aim))
+        within = 0.9995 - (1.0 - skill) * 0.003
+        on = f64(dot(fwd, normalize(aim)))
+        pad.fire = d < 480.0 and on > within and c.heat < JAM_HEAT - 30
+        # (a rocket at a big one, close and lined up)
+        pad.rocket = (e.kind == BOMBER or e.kind == ZEPPELIN) and d < 260.0 and on > 0.995 and g.tick % 30 == ci % 30
+        # (close behind it: slow down, not to fly past)
+        if d < 140.0 and f64(dot(e.pos - c.pos, fwd)) > 0.0 and f64(dot(c.vel - e.vel, fwd)) > 6.0: pad.throttle = -1
+    else if run_for >= 0:
+        to = run_at - c.pos
+        if f64(length(vec2(to.x, to.z))) < 600.0 and speed > 38.0: pad.throttle = -1
+    else if strafe >= 0:
+        to = g.buildings[strafe].pos + vec3(0, 3, 0) - c.pos
+        d = f64(length(to))
+        on = f64(dot(fwd, normalize(to)))
+        pad.fire = d < 500.0 and on > 0.995
+        pad.rocket = d < 330.0 and on > 0.99 and g.tick % 25 == ci % 25
+    else if hug:
+        bi = mission_target(g, crew_team(g, c))
+        if bi >= 0:
+            to = g.buildings[bi].pos - c.pos
+            pad.rocket = f64(length(to)) < 320.0 and f64(dot(fwd, normalize(to))) > 0.97 and g.tick % 25 == ci % 25
+            pad.fire = f64(length(to)) < 450.0 and f64(dot(fwd, normalize(to))) > 0.99
+    pad
+
+# the other side's building this side goes for: the mission's target, or in Base attack the
+# nearest still standing of the field's (-1: none)
+mission_target = (g: Game, team: int) -> int:
+    m = g.rules.mode
+    best = -1
+    loop j in 0.. and b in g.buildings:
+        if b.health <= 0 or b.team == team: continue
+        if (m == TRENCH and b.kind == DEPOT) or (m == ESCORT and b.kind == FACTORY): return j
+        if m == BASES and (b.kind == HQ or b.kind == TANK or b.kind == HANGAR) and best < 0: best = j
+    best
+
+# a bomber or a zeppelin: to the other side's target (or field), level, high enough; bombs away
+# when they would fall on it; its gunners fight (gunners)
+bot_bomber = (g: Game, ci: int, c: Craft, team: int) -> Pad:
+    k = KINDS[c.kind]
+    bi = mission_target(g, team)
+    goal = if bi >= 0: g.buildings[bi].pos else: on_field(1 - team, 0.0, -STRIP_WIDE - 80.0)
+    alt = if k.lighter: 460.0 else: 380.0
+    if g.rules.mode == TRENCH: alt = 420.0
+    gy = ground(f64(c.pos.x), f64(c.pos.z))
+    want_alt = max(alt, gy + 220.0)
+    to = goal - c.pos
+    pad = Pad()
+    if k.lighter: pad = steer_flat(c, to, want_alt)
+    else:
+        dir = normalize(vec3(to.x, 0, to.z)) + vec3(0, f32(clamp((want_alt - f64(c.pos.y)) / 300.0, -0.25, 0.25)), 0)
+        # (past it: round again)
+        pad = steer(c, dir)
+        pad.pitch = int(f64(pad.pitch) * 0.7)
+        pad.throttle = 1
+    # (where a bomb let go now would fall: the fall's time from the height, carried on)
+    h = max(f64(c.pos.y) - f64(goal.y), 1.0)
+    t = sqrt(2.0 * h / 9.8)
+    fall = c.pos + c.vel * f32(t)
+    near = f64(length(vec2(fall.x - goal.x, fall.z - goal.z)))
+    pad.bomb = near < (if k.lighter: 35.0 else: 24.0) and c.bombs > 0 and (bi >= 0 or g.rules.mode == DOGFIGHT)
+    pad

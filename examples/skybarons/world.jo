@@ -1,0 +1,397 @@
+# The maps of Sky Barons: the ground (its height, the same on every machine), each side's airfield
+# (a flat strip, its hangars, the stands its planes are parked on), the buildings a mission is
+# about, and the ground's mesh, trees and clouds.
+#
+# Two maps: the farmland (Aces' rolling hills, river and villages, an airfield at each end) and
+# the gorge (a river cut deep between high plateaus, for the trench run: the target at its north
+# end, the defenders' airfield on the plateau above it).
+
+const MAP = 6400.0              # the ground: 6.4 km square,
+const CELLS = 128               # in cells of 50 m
+const CELL = MAP / f64(CELLS)
+
+const FARMLAND = 0
+const GORGE = 1
+
+# what stands on the ground (Site.kind)
+const HANGAR = 0
+const TANK = 1
+const HQ = 2
+const AA = 3
+const DEPOT = 4
+const FACTORY = 5
+const MAST = 6
+
+map_id = FARMLAND
+heights: f64[]
+
+# ---------------- the airfields ----------------
+# each side's: the middle of its strip, which way the strip runs (the way its planes take off)
+struct Field:
+    at: vec3
+    dir: vec3                   # (along the strip, toward the end the planes take off over)
+    team: int
+
+# a place a plane is parked (and comes back to, after it is lost), and what kind
+struct Stand:
+    pos: vec3
+    yaw: f64
+    kind: int
+    team: int
+
+# something on the ground: a building, a gun, a mission's target
+struct Site:
+    kind: int
+    team: int
+    pos: vec3
+    yaw: f64
+
+# (the strip: 520 m long, 90 wide)
+const STRIP_LONG = 260.0
+const STRIP_WIDE = 45.0
+
+fields = () -> Field[]: field_list
+field_list: Field[] = make_fields()
+make_fields = () -> Field[]:
+    if map_id == GORGE:
+        return [Field(vec3(-900, 0, 1500), vec3(0, 0, -1), 0), Field(vec3(900, 0, -1900), vec3(0, 0, 1), 1)]
+    [Field(vec3(-1650, 0, 200), vec3(1, 0, 0), 0), Field(vec3(1650, 0, -200), vec3(-1, 0, 0), 1)]
+
+# (the height of a field's strip: the ground's there before it was flattened)
+field_height = (f: Field) -> f64: raw_height(f64(f.at.x), f64(f.at.z))
+
+# ---------------- the ground ----------------
+river_x = (z: f64) -> f64:
+    if map_id == GORGE: return 180.0 * sin(z * 0.0013 + 0.4) + 90.0 * sin(z * 0.0031)
+    260.0 * sin(z * 0.0011 + 0.6) + 150.0
+
+# the ground before the airfields are flattened into it
+raw_height = (x: f64, z: f64) -> f64:
+    if map_id == GORGE:
+        # a plateau about 330 m up, rolling, cut by the river's gorge: steep walls, a narrow floor
+        top = 330.0 + 40.0 * sin(x * 0.0023 + 0.7) * cos(z * 0.0019) + 18.0 * sin(x * 0.0061 - z * 0.0043)
+        d = abs(x - river_x(z))
+        wall = smoothstep(70.0, 330.0, d)
+        h = -6.0 + (top + 6.0) * wall * wall * (3.0 - 2.0 * wall)
+        # (spurs into the gorge here and there, to fly round)
+        h += 60.0 * max(0.0, sin(z * 0.0047 + 1.1)) * smoothstep(40.0, 160.0, d) * (1.0 - wall)
+        m = smoothstep(2300.0, 3100.0, abs(x))
+        return h + m * m * 380.0
+    h = 55.0 + 45.0 * sin(x * 0.0021 + 1.3) * cos(z * 0.0017 - 0.4) + 22.0 * sin(x * 0.0047 - z * 0.0031 + 2.0) + 9.0 * sin(x * 0.0113 + z * 0.0087) * sin(z * 0.0131 - 1.0)
+    d = abs(x - river_x(z))
+    h = -6.0 + (h + 6.0) * smoothstep(25.0, 230.0, d)
+    m = smoothstep(2000.0, 3000.0, max(abs(x), abs(z)))
+    h + m * m * (420.0 + 120.0 * sin(x * 0.004) * sin(z * 0.0037))
+
+# the ground: the raw height, each airfield's strip (and the ground round it, toward it) flat
+height = (x: f64, z: f64) -> f64:
+    h = raw_height(x, z)
+    loop f in fields():
+        a = f64(dot(vec3(f32(x), 0, f32(z)) - f.at, f.dir))
+        side = vec3(-f.dir.z, 0, f.dir.x)
+        b = f64(dot(vec3(f32(x), 0, f32(z)) - f.at, side))
+        # (the strip, and a margin round it where the ground eases back)
+        out = max(max(abs(a) - STRIP_LONG, abs(b) - STRIP_WIDE - 60.0), 0.0)
+        k = 1.0 - smoothstep(0.0, 120.0, out)
+        if k > 0.0: h = h + (field_height(f) - h) * k
+    h
+
+# the heights at the cells' corners (the mesh's, and what is hit: the same everywhere)
+set_map = (m: int):
+    global field_list, heights, map_id
+    map_id = m
+    field_list = make_fields()
+    heights = []
+    loop zi in 0..CELLS + 1:
+        loop xi in 0..CELLS + 1: heights.push(height(f64(xi) * CELL - MAP / 2.0, f64(zi) * CELL - MAP / 2.0))
+
+corner = (xi: int, zi: int) -> f64: heights[clamp(zi, 0, CELLS) * (CELLS + 1) + clamp(xi, 0, CELLS)]
+
+# the ground's height at (x, z), on the mesh's triangles; water is at 0
+ground = (x: f64, z: f64) -> f64:
+    fx = (x + MAP / 2.0) / CELL
+    fz = (z + MAP / 2.0) / CELL
+    cx = floor(fx)
+    cz = floor(fz)
+    u = fx - cx
+    v = fz - cz
+    xi = int(cx)
+    zi = int(cz)
+    h00 = corner(xi, zi)
+    h10 = corner(xi + 1, zi)
+    h01 = corner(xi, zi + 1)
+    h11 = corner(xi + 1, zi + 1)
+    h = 0.0
+    if u + v <= 1.0: h = h00 + (h10 - h00) * u + (h01 - h00) * v
+    else: h = h11 + (h01 - h11) * (1.0 - u) + (h10 - h11) * (1.0 - v)
+    max(h, 0.0)
+
+# the ground's slope at (x, z): its normal's y (1 flat); water counts as flat
+flatness = (x: f64, z: f64) -> f64:
+    if ground(x, z) <= 0.0: return 1.0
+    e = 2.0
+    dx = ground(x + e, z) - ground(x - e, z)
+    dz = ground(x, z + e) - ground(x, z - e)
+    1.0 / sqrt(1.0 + (dx * dx + dz * dz) / (4.0 * e * e))
+
+is_water = (x: f64, z: f64) -> bool: ground(x, z) <= 0.05
+
+# ---------------- the field's edge ----------------
+# how far past the edge of the fight a point is (0 inside): beyond it, planes turn back
+outside = (p: vec3) -> f64:
+    if map_id == GORGE: return max(max(abs(f64(p.x)) - 1500.0, abs(f64(p.z)) - 2700.0), 0.0)
+    max(f64(length(vec2(p.x, p.z))) - 2200.0, 0.0)
+
+# the way back in from p (flat, toward the middle of the fight)
+inward = (p: vec3) -> vec3:
+    if map_id == GORGE: return normalize(vec3(-p.x * 0.3, 0, -p.z))
+    normalize(vec3(-p.x, 0, -p.z))
+
+# ---------------- what is where ----------------
+# a point on side `team`'s field: a along the strip from its middle, b across it (+: to the right
+# of the way the planes take off)
+on_field = (team: int, a: f64, b: f64) -> vec3:
+    f = fields()[team]
+    side = vec3(-f.dir.z, 0, f.dir.x)
+    p = f.at + f.dir * f32(a) + side * f32(b)
+    vec3(p.x, f32(ground(f64(p.x), f64(p.z))), p.z)
+
+# (the way a field's planes face: down the strip)
+field_yaw = (team: int) -> f64:
+    d = fields()[team].dir
+    atan2(-f64(d.x), -f64(d.z))
+
+# the planes parked on each side's field: side by side beside the strip, facing it (kinds as
+# sim.jo numbers them: 0 scout, 1 fighter, 2 bomber; a zeppelin moored by the mast)
+stands = (kinds: int[]) -> Stand[]:
+    out: Stand[]
+    loop t in 0..2:
+        f = fields()[t]
+        side = vec3(-f.dir.z, 0, f.dir.x)
+        yaw = atan2(-f64(side.x), -f64(side.z))
+        small = 0
+        loop kind in kinds:
+            if kind <= 1: small += 1
+        j = 0
+        b = 0
+        loop kind in kinds:
+            if kind == 3: out.push(Stand(on_field(t, -80.0, -170.0), field_yaw(t), kind, t))
+            else if kind == 2:
+                out.push(Stand(on_field(t, -STRIP_LONG + 60.0 + 12.0 * f64(small) + 30.0 * f64(b), -STRIP_WIDE - 26.0), yaw, kind, t))
+                b += 1
+            else:
+                out.push(Stand(on_field(t, -STRIP_LONG + 40.0 + 12.0 * f64(j), -STRIP_WIDE - 12.0), yaw, kind, t))
+                j += 1
+    out
+
+# where a side's people come back, on foot: by the hangars, beside the parked planes
+foot_spawn = (team: int, k: int) -> vec3: on_field(team, -STRIP_LONG + 60.0 + f64(k % 6) * 6.0, -STRIP_WIDE - 48.0 - f64(k / 6) * 5.0)
+
+# each side's buildings: hangars behind the parked planes, fuel tanks, the command post, guns
+# against aircraft round the field; and the missions' targets
+sites = (mode_targets: bool) -> Site[]:
+    out: Site[]
+    loop t in 0..2:
+        yaw = field_yaw(t)
+        loop k in 0..2: out.push(Site(HANGAR, t, on_field(t, -STRIP_LONG + 60.0 + f64(k) * 70.0, -STRIP_WIDE - 85.0), yaw + PI))
+        loop k in 0..2: out.push(Site(TANK, t, on_field(t, -STRIP_LONG + 210.0 + f64(k) * 14.0, -STRIP_WIDE - 80.0), 0.0))
+        out.push(Site(HQ, t, on_field(t, -STRIP_LONG + 260.0, -STRIP_WIDE - 95.0), yaw + PI))
+        loop k in 0..3: out.push(Site(AA, t, on_field(t, -STRIP_LONG + f64(k) * 260.0, STRIP_WIDE + 40.0), yaw))
+        out.push(Site(MAST, t, on_field(t, -80.0, -170.0 - 52.0), yaw))
+    if mode_targets:
+        if map_id == GORGE:
+            # (the depot on the gorge's floor at its north end, Blue's; guns along the rims)
+            z = -2250.0
+            x = river_x(z) + 70.0
+            out.push(Site(DEPOT, 1, vec3(f32(x), f32(ground(x, z)), f32(z)), 0.0))
+            loop k in 0..8:
+                zk = 1900.0 - f64(k) * 520.0
+                loop s in [-1.0, 1.0]:
+                    xk = river_x(zk) + s * 380.0
+                    out.push(Site(AA, 1, vec3(f32(xk), f32(ground(xk, zk)), f32(zk)), 0.0))
+        else:
+            # (the factory, Blue's, behind its field)
+            x = 2050.0
+            z = 700.0
+            out.push(Site(FACTORY, 1, vec3(f32(x), f32(ground(x, z)), f32(z)), PI / 2.0))
+            loop k in 0..3:
+                a = f64(k) * TAU / 3.0
+                xk = x + 220.0 * cos(a)
+                zk = z + 220.0 * sin(a)
+                out.push(Site(AA, 1, vec3(f32(xk), f32(ground(xk, zk)), f32(zk)), 0.0))
+    out
+
+# each building's size: half its extents (x across, y up, z along its yaw) and how much it takes
+site_half = (kind: int) -> vec3:
+    if kind == HANGAR: return vec3(12, 4.5, 10)
+    if kind == TANK: return vec3(4, 3, 4)
+    if kind == HQ: return vec3(6, 3.5, 4.5)
+    if kind == AA: return vec3(2, 1.5, 2)
+    if kind == DEPOT: return vec3(15, 4, 7.5)
+    if kind == FACTORY: return vec3(20, 6, 12.5)
+    vec3(1.5, 15, 1.5)
+site_health = (kind: int) -> int:
+    if kind == HANGAR: return 300
+    if kind == TANK: return 120
+    if kind == HQ: return 400
+    if kind == AA: return 80
+    if kind == DEPOT: return 900
+    if kind == FACTORY: return 1400
+    100000
+
+# where a plane starts in the air (fights with no airfields, and the escort's bombers): its side's
+# end of the fight, k of n in a row, and which way it faces
+air_start = (team: int, k: int, n: int, alt: f64) -> (vec3, vec3):
+    if map_id == GORGE:
+        # (the raiders come up the gorge from its south end, low; the defenders above its north)
+        if team == 0:
+            z = 2550.0 - f64(k / 2) * 60.0
+            x = river_x(z) + (if k % 2 == 0: -25.0 else: 25.0)
+            return (vec3(f32(x), f32(max(ground(x, z), 0.0) + 90.0), f32(z)), vec3(0, 0, -1))
+        z = -2000.0 + f64(k / 2) * 60.0
+        x = 600.0 + f64(k % 2) * 80.0
+        return (vec3(f32(x), f32(alt + 330.0), f32(z)), vec3(0, 0, 1))
+    side = if team == 0: 1.0 else: -1.0
+    x = (-1450.0 - f64(k % 2) * 70.0) * side
+    z = (f64(k) - f64(n - 1) / 2.0) * 150.0 - 40.0 * side
+    (vec3(f32(x), f32(alt + f64(k % 3) * 35.0), f32(z)), vec3(f32(side), 0, 0))
+
+# ---------------- what is seen of the ground ----------------
+woods = (x: f64, z: f64) -> bool:
+    if near_field(x, z, 90.0): return false
+    sin(x * 0.006 + 0.5) * sin(z * 0.0071 + 1.0) + 0.5 * sin(x * 0.017 - z * 0.013) > 0.75
+
+# (within m of an airfield's strip, or a mission's target)
+near_field = (x: f64, z: f64, m: f64) -> bool:
+    loop f in fields():
+        a = f64(dot(vec3(f32(x), 0, f32(z)) - f.at, f.dir))
+        side = vec3(-f.dir.z, 0, f.dir.x)
+        b = f64(dot(vec3(f32(x), 0, f32(z)) - f.at, side))
+        if abs(a) < STRIP_LONG + m and abs(b) < STRIP_WIDE + 140.0 + m: return true
+    false
+
+# (on a strip: its mown grass, lighter)
+on_strip = (x: f64, z: f64) -> bool:
+    loop f in fields():
+        a = f64(dot(vec3(f32(x), 0, f32(z)) - f.at, f.dir))
+        side = vec3(-f.dir.z, 0, f.dir.x)
+        b = f64(dot(vec3(f32(x), 0, f32(z)) - f.at, side))
+        if abs(a) < STRIP_LONG and abs(b) < STRIP_WIDE: return true
+    false
+
+field_color = (xi: int, zi: int, h: f64, n: vec3) -> vec4:
+    v = f32(0.94 + 0.06 * f64(hash(xi * 7919 + zi * 104729) % 100) / 100.0)
+    x = f64(xi) * CELL - MAP / 2.0 + CELL / 2.0
+    z = f64(zi) * CELL - MAP / 2.0 + CELL / 2.0
+    if on_strip(x, z): return vec4(rgb(0.52, 0.66, 0.33).xyz * v, 1)
+    if h < 1.5: return vec4(rgb(0.6, 0.56, 0.42).xyz * v, 1)
+    if h > 380.0 and n.y > 0.7 and map_id == FARMLAND: return vec4(rgb(0.92, 0.93, 0.95).xyz * v, 1)
+    if n.y < 0.8 or (h > 230.0 and map_id == FARMLAND): return vec4(rgb(0.47, 0.45, 0.4).xyz * v, 1)
+    if woods(x, z): return vec4(rgb(0.19, 0.33, 0.16).xyz * v, 1)
+    fields_ = [rgb(0.38, 0.55, 0.25), rgb(0.46, 0.6, 0.27), rgb(0.74, 0.66, 0.34), rgb(0.5, 0.39, 0.26), rgb(0.55, 0.64, 0.31), rgb(0.42, 0.5, 0.24)]
+    f = fields_[int(hash((xi / 3) * 31 + (zi / 3) * 1009) % u64(fields_.len()))]
+    vec4(f.xyz * v, 1)
+
+# the ground as flat triangles, each cell colored: fields, woods, the river's banks, rock, snow
+make_ground = () -> Mesh:
+    vs: Vertex3D[]
+    pt = (xi: int, zi: int) -> vec3: vec3(f32(f64(xi) * CELL - MAP / 2.0), f32(corner(xi, zi)), f32(f64(zi) * CELL - MAP / 2.0))
+    tri = (a: vec3, b: vec3, c: vec3, col: vec4):
+        n = normalize(cross(b - a, c - a))
+        if n.y < 0.0: n = n * -1.0
+        vs.push(Vertex3D(a, n, vec2(0, 0), col))
+        vs.push(Vertex3D(b, n, vec2(0, 0), col))
+        vs.push(Vertex3D(c, n, vec2(0, 0), col))
+    loop zi in 0..CELLS:
+        loop xi in 0..CELLS:
+            a = pt(xi, zi)
+            b = pt(xi, zi + 1)
+            c = pt(xi + 1, zi)
+            d = pt(xi + 1, zi + 1)
+            h = f64(a.y + b.y + c.y + d.y) * 0.25
+            n = normalize(cross(b - a, c - a))
+            if n.y < 0.0: n = n * -1.0
+            col = field_color(xi, zi, h, n)
+            # (split as ground() reads it)
+            tri(a, b, c, col)
+            tri(c, b, d, col)
+    # each strip's edges, marked with white boards, and a cross at each end
+    loop f in fields():
+        side = vec3(-f.dir.z, 0, f.dir.x)
+        y = f32(field_height(f) + 0.08)
+        loop k in 0..14:
+            a = -STRIP_LONG + f64(k) * 40.0
+            loop s in [-1.0, 1.0]:
+                c = f.at + f.dir * f32(a) + side * f32(s * STRIP_WIDE)
+                add_box(vs, vec3(c.x, y, c.z), vec3(3.0, 0.1, 1.0), rgb(0.95, 0.94, 0.9), rotation_y(field_yaw_of(f)))
+    custom_mesh(vs)
+
+field_yaw_of = (f: Field) -> f64: atan2(-f64(f.dir.x), -f64(f.dir.z))
+
+# villages by the river (the farmland's): white houses with dark red roofs, a church
+make_villages = () -> Mesh:
+    vs: Vertex3D[]
+    if map_id == GORGE:
+        # (a few farms on the plateaus)
+        loop v in 0..10:
+            x = f64(hash(v * 13) % 2400) - 1200.0
+            z = f64(hash(v * 17) % 4800) - 2400.0
+            if abs(x - river_x(z)) < 420.0 or near_field(x, z, 60.0): continue
+            loop k in 0..4:
+                hx = x + f64(hash(v * 100 + k) % 60) - 30.0
+                hz = z + f64(hash(v * 100 + k + 50) % 60) - 30.0
+                house(vs, hx, hz, f64(hash(v * 100 + k + 7) % 4) * PI / 2.0)
+        return custom_mesh(vs)
+    loop v in 0..7:
+        z = -1700.0 + f64(v) * 560.0 + f64(hash(v * 3) % 200)
+        x = river_x(z) + (if v % 2 == 0: 330.0 else: -330.0)
+        if near_field(x, z, 120.0): continue
+        loop k in 0..12:
+            hx = x + f64(hash(v * 100 + k) % 160) - 80.0
+            hz = z + f64(hash(v * 100 + k + 50) % 160) - 80.0
+            house(vs, hx, hz, f64(hash(v * 100 + k + 7) % 4) * PI / 2.0)
+        if v % 3 == 0:
+            gy = ground(x, z)
+            at = translation(vec3(f32(x), f32(gy), f32(z)))
+            add_box(vs, vec3(0, 6, 0), vec3(4, 12, 4), rgb(0.85, 0.83, 0.78), at)
+            add_cylinder(vs, vec3(0, 12, 0), 2.9, 7.0, rgb(0.35, 0.37, 0.4), 4, 0.0, at * rotation_y(PI / 4.0))
+    custom_mesh(vs)
+
+house = (vs: mut Vertex3D[], hx: f64, hz: f64, yaw: f64):
+    gy = ground(hx, hz)
+    if gy < 2.0: return
+    at = translation(vec3(f32(hx), f32(gy), f32(hz))) * rotation_y(yaw)
+    add_box(vs, vec3(0, 2.5, 0), vec3(6, 5, 9), rgb(0.9, 0.87, 0.8), at)
+    add_box(vs, vec3(0, 5.0, 0), vec3(4.6, 4.6, 9.4), rgb(0.55, 0.2, 0.15), at * translation(vec3(0, 0.4, 0)) * rotation_z(PI / 4.0))
+
+# the woods' trees and the clouds, as instances (kept on the GPU: they never move)
+trees = () -> Instance3D[]:
+    out: Instance3D[]
+    loop zi in 0..CELLS:
+        loop xi in 0..CELLS:
+            x = f64(xi) * CELL - MAP / 2.0
+            z = f64(zi) * CELL - MAP / 2.0
+            if not woods(x, z): continue
+            loop k in 0..3:
+                h = hash(xi * 131 + zi * 7177 + k * 31)
+                tx = x + f64(h % 50)
+                tz = z + f64((h >> 8) % 50)
+                gy = ground(tx, tz)
+                if gy < 2.0 or (gy > 230.0 and map_id == FARMLAND) or flatness(tx, tz) < 0.8: continue
+                sz = 0.8 + f64((h >> 16) % 60) / 100.0
+                out.push(instance(translation(vec3(f32(tx), f32(gy - 1.0), f32(tz))) * scaling(vec3(f32(4.0 * sz), f32(11.0 * sz), f32(4.0 * sz))), rgb(0.14, f32(0.3 + f64((h >> 24) % 10) / 100.0), 0.13)))
+    out
+
+clouds = () -> Instance3D[]:
+    out: Instance3D[]
+    loop c in 0..55:
+        h = hash(c * 977 + 5)
+        cx = f64(h % 5000) - 2500.0
+        cz = f64((h >> 16) % 5000) - 2500.0
+        cy = 520.0 + f64((h >> 32) % 300) + (if map_id == GORGE: 250.0 else: 0.0)
+        loop k in 0..6:
+            hk = hash(c * 31 + k)
+            r = 25.0 + f64(hk % 25)
+            p = vec3(f32(cx + f64((hk >> 8) % 120) - 60.0), f32(cy + f64((hk >> 16) % 20)), f32(cz + f64((hk >> 24) % 90) - 45.0))
+            out.push(instance(translation(p) * scaling(vec3(f32(r * 1.4), f32(r * 0.7), f32(r))), rgb(1, 1, 1)))
+    out

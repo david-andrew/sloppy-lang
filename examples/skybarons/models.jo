@@ -1,0 +1,1531 @@
+# Sky Barons' models: low-poly and flat-shaded, made in code (no files to load).
+# Meters; a craft's nose toward -z, up +y, its right wing +x, its origin at its middle (about
+# where it balances). Kinds: 0 scout, 1 fighter, 2 bomber, 3 zeppelin. Teams: 0 Red, 1 Blue.
+# A badge is a player's insignia: its place in BADGES.
+#
+#   craft_mesh(kind, team, badge)   each craft, without its propellers
+#   props(kind, team)               where its propellers turn (xyz) and how long they are (w)
+#   prop_mesh()                     a propeller 1 long from its hub, turning about z
+#   turret_mesh(), person_mesh(team), parachute_mesh(), rocket_mesh(), bomb_mesh()
+#   hangar_mesh(team), tank_mesh(team), hq_mesh(team), flag_mesh(team), aa_base_mesh(),
+#   aa_barrel_mesh(), mast_mesh(), depot_mesh(), factory_mesh(), wreck_mesh()
+
+const SCOUT = 0
+const FIGHTER = 1
+const BOMBER = 2
+const ZEPPELIN = 3
+
+BADGES = ["none", "white bands", "yellow nose", "chevron", "star", "skull", "lightning", "yellow tail", "hat in the ring", "shark mouth", "Nungesser's heart", "Voss's face", "stork", "ace of spades"]
+
+# a body through rectangles across it, nose to tail: each (z, y of its middle, half width,
+# half height); flat sides, as the planes of the time
+# (x: its middle, when not on the plane's middle: an engine's nacelle)
+loft = (vs: mut Vertex3D[], rings: vec4[], color: vec4, x: f64 = 0.0):
+    o = f32(x)
+    corners = (r: vec4) -> vec3[]: [vec3(o - r.z, r.y + r.w, r.x), vec3(o + r.z, r.y + r.w, r.x), vec3(o + r.z, r.y - r.w, r.x), vec3(o - r.z, r.y - r.w, r.x)]
+    loop i in 0..rings.len() - 1:
+        a = corners(rings[i])
+        b = corners(rings[i + 1])
+        mid = vec3(o, (rings[i].y + rings[i + 1].y) * 0.5, (rings[i].x + rings[i + 1].x) * 0.5)
+        loop k in 0..4: quad(vs, a[k], a[(k + 1) % 4], b[(k + 1) % 4], b[k], color, mid)
+    # (and its two ends)
+    loop r in [rings[0], rings[rings.len() - 1]]:
+        c = corners(r)
+        quad(vs, c[0], c[1], c[2], c[3], color, vec3(o, r.y, (rings[0].x + rings[rings.len() - 1].x) * 0.5))
+
+# a flat four-cornered face, facing away from `inside`
+quad = (vs: mut Vertex3D[], a: vec3, b: vec3, c: vec3, d: vec3, color: vec4, inside: vec3):
+    n = normalize(cross(b - a, c - a))
+    if f64(dot(n, (a + c) * 0.5 - inside)) < 0.0: n = n * -1.0
+    loop p in [a, b, c, a, c, d]: vs.push(Vertex3D(p, n, vec2(0, 0), color))
+
+# the body's cross-section at z (between two of loft's rectangles), and how fast its half width
+# changes there (a mark on its side lies on the slant)
+ring_at = (rings: vec4[], z: f64) -> (vec4, f64):
+    loop i in 0..rings.len() - 1:
+        a = rings[i]
+        b = rings[i + 1]
+        if z <= f64(b.x) or i == rings.len() - 2:
+            t = f32((z - f64(a.x)) / f64(b.x - a.x))
+            return (lerp(a, b, t), f64(b.z - a.z) / f64(b.x - a.x))
+    (rings[0], 0.0)
+
+# a flat piece through pts (in order round it, in one plane, each seen from their middle), thick
+# along n: a tailplane, a rudder
+plate = (vs: mut Vertex3D[], pts: vec3[], n: vec3, thick: f64, color: vec4):
+    mid = vec3(0, 0, 0)
+    loop p in pts: mid += p
+    mid = mid * f32(1.0 / f64(pts.len()))
+    h = n * f32(thick / 2.0)
+    loop i in 0..pts.len():
+        a = pts[i]
+        b = pts[(i + 1) % pts.len()]
+        loop s in [1.0, -1.0]:
+            o = h * f32(s)
+            loop p in [mid + o, a + o, b + o]: vs.push(Vertex3D(p, n * f32(s), vec2(0, 0), color))
+        quad(vs, a + h, b + h, b - h, a - h, color, mid)
+
+# ---------------- markings: flat shapes (triangles, about 1 across) laid on a surface ----------------
+quad2 = (a: vec2, b: vec2, c: vec2, d: vec2) -> vec2[]: [a, b, c, a, c, d]
+box2 = (c: vec2, w: f64, h: f64) -> vec2[]:
+    x = f32(w / 2.0)
+    y = f32(h / 2.0)
+    quad2(c + vec2(-x, -y), c + vec2(x, -y), c + vec2(x, y), c + vec2(-x, y))
+
+disc2 = (c: vec2, r: f64, n: int = 18) -> vec2[]:
+    t: vec2[]
+    loop i in 0..n:
+        a = TAU * f64(i) / f64(n)
+        b = TAU * f64(i + 1) / f64(n)
+        t.extend([c, c + vec2(f32(cos(a) * r), f32(sin(a) * r)), c + vec2(f32(cos(b) * r), f32(sin(b) * r))])
+    t
+
+star2 = (r: f64) -> vec2[]:
+    t: vec2[]
+    at = (k: int) -> vec2:
+        a = PI / 2.0 + PI * f64(k) / 5.0
+        l = if k % 2 == 0: r else: r * 0.42
+        vec2(f32(cos(a) * l), f32(sin(a) * l))
+    loop k in 0..10: t.extend([vec2(0, 0), at(k), at(k + 1)])
+    t
+
+# (a shape turned a quarter: its top toward +x)
+turned = (t: vec2[]) -> vec2[]: t.map((p): vec2(p.y, -p.x))
+
+WHITE_PAINT = rgb(0.95, 0.93, 0.86)
+BLACK_PAINT = rgb(0.08, 0.08, 0.08)
+YELLOW_PAINT = rgb(0.95, 0.75, 0.15)
+NAVY = rgb(0.1, 0.14, 0.38)
+ROUNDEL_RED = rgb(0.75, 0.1, 0.1)
+
+# each side's own: Red's black cross edged in white, Blue's roundel (layers, the first underneath)
+CROSS = [(box2(vec2(0, 0), 2.0, 0.64) + box2(vec2(0, 0), 0.64, 2.0), WHITE_PAINT), (box2(vec2(0, 0), 1.76, 0.4) + box2(vec2(0, 0), 0.4, 1.76), BLACK_PAINT)]
+ROUNDEL = [(disc2(vec2(0, 0), 1.0, 24), NAVY), (disc2(vec2(0, 0), 0.66, 24), WHITE_PAINT), (disc2(vec2(0, 0), 0.33, 18), ROUNDEL_RED)]
+
+# a player's own insignia (BADGES; the computer's planes have none)
+const NOSE = 2
+const TAIL = 7
+const MAW_BADGE = 9
+const FACE_BADGE = 11
+CHEVRON = quad2(vec2(-1.0, -0.6), vec2(0.0, 0.4), vec2(0.0, 0.85), vec2(-1.0, -0.15)) + quad2(vec2(1.0, -0.6), vec2(0.0, 0.4), vec2(0.0, 0.85), vec2(1.0, -0.15))
+SKULL = [(disc2(vec2(0, 0.15), 0.62, 16) + box2(vec2(0, -0.45), 0.7, 0.5), WHITE_PAINT),
+         (disc2(vec2(-0.24, 0.12), 0.17, 8) + disc2(vec2(0.24, 0.12), 0.17, 8) + [vec2(0, -0.08), vec2(-0.09, -0.24), vec2(0.09, -0.24)] + box2(vec2(-0.12, -0.56), 0.06, 0.28) + box2(vec2(0.12, -0.56), 0.06, 0.28), BLACK_PAINT)]
+# (a shape moved, made larger, and turned by a radians)
+placed = (t: vec2[], at: vec2, k: f64, a: f64 = 0.0) -> vec2[]:
+    c = f32(cos(a) * k)
+    sn = f32(sin(a) * k)
+    t.map((p): at + vec2(p.x * c - p.y * sn, p.x * sn + p.y * c))
+# (a shape round its middle: pts in order round it, each seen from their middle)
+poly2 = (pts: vec2[]) -> vec2[]:
+    mid = vec2(0, 0)
+    loop p in pts: mid += p
+    mid = mid * f32(1.0 / f64(pts.len()))
+    t: vec2[]
+    loop i in 0..pts.len(): t.extend([mid, pts[i], pts[(i + 1) % pts.len()]])
+    t
+# (a band from a to b, w wide)
+band2 = (a: vec2, b: vec2, w: f64) -> vec2[]:
+    d = normalize(b - a)
+    n = vec2(-d.y, d.x) * f32(w / 2.0)
+    quad2(a - n, b - n, b + n, a + n)
+ring2 = (r0: f64, r1: f64, n: int = 24) -> vec2[]:
+    t: vec2[]
+    at = (i: int, r: f64) -> vec2: vec2(f32(cos(TAU * f64(i) / f64(n)) * r), f32(sin(TAU * f64(i) / f64(n)) * r))
+    loop i in 0..n: t.extend(quad2(at(i, r0), at(i, r1), at(i + 1, r1), at(i + 1, r0)))
+    t
+heart2 = () -> vec2[]: disc2(vec2(-0.27, 0.18), 0.33) + disc2(vec2(0.27, 0.18), 0.33) + [vec2(-0.585, 0.08), vec2(0.585, 0.08), vec2(0, -0.72)]
+
+# the 94th Aero Squadron's (Rickenbacker's): Uncle Sam's hat thrown through a ring
+hat = () -> (vec2[], vec4)[]:
+    lean = -0.4
+    on = (t: vec2[]) -> vec2[]: placed(t, vec2(0.08, 0.05), 1.0, lean)
+    stripes: vec2[]
+    loop k in 0..3: stripes.extend(box2(vec2(f32(-0.2 + 0.2 * f64(k)), 0.18), 0.1, 0.62))
+    [(ring2(0.66, 1.04), WHITE_PAINT), (ring2(0.72, 0.98), ROUNDEL_RED), (on(box2(vec2(0, 0.18), 0.6, 0.62)), WHITE_PAINT), (on(stripes), ROUNDEL_RED),
+     (on(box2(vec2(0, -0.08), 0.62, 0.17) + box2(vec2(0, -0.2), 1.05, 0.09)), NAVY), (on(placed(star2(1.0), vec2(0, -0.08), 0.07)), WHITE_PAINT)]
+HAT = hat()
+
+# a shark's mouth, open wide, and its eye, along the side toward the nose (+x)
+maw = () -> (vec2[], vec4)[]:
+    top = [vec2(-1.0, 0), vec2(-0.3, 0.22), vec2(0.4, 0.4), vec2(0.85, 0.48)]
+    bottom = [vec2(0.95, -0.44), vec2(0.4, -0.5), vec2(-0.3, -0.27)]
+    mouth = top + [vec2(1.0, 0.28), vec2(1.02, -0.08)] + bottom
+    # (teeth along each lip, pointing in, larger toward the front)
+    teeth: vec2[]
+    lip = (a: vec2, b: vec2, n: int, dir: f32):
+        loop i in 0..n:
+            t0 = f32(f64(i) / f64(n))
+            t1 = f32(f64(i + 1) / f64(n))
+            p = lerp(a, b, t0)
+            q = lerp(a, b, t1)
+            teeth.extend([p, q, lerp(p, q, 0.5) + vec2(0, dir * f32(0.07 + 0.14 * f64(t1)))])
+    loop i in 0..top.len() - 1: lip(top[i], top[i + 1], 3, -1.0)
+    lip(vec2(-1.0, 0), bottom[2], 3, 1.0)
+    lip(bottom[2], bottom[1], 3, 1.0)
+    lip(bottom[1], bottom[0], 3, 1.0)
+    [(poly2(mouth.map((p): (p - vec2(0.1, 0)) * 1.1 + vec2(0.1, 0))), BLACK_PAINT), (poly2(mouth), rgb(0.55, 0.04, 0.06)), (teeth, WHITE_PAINT),
+     (disc2(vec2(0.2, 0.56), 0.13, 14), WHITE_PAINT), (disc2(vec2(0.24, 0.56), 0.07, 10), BLACK_PAINT)]
+MAW = maw()
+
+# Nungesser's: a black heart edged in white, and in it a skull over a coffin and two candles
+nungesser = () -> (vec2[], vec4)[]:
+    coffin = poly2([vec2(-0.07, -0.5), vec2(0.07, -0.5), vec2(0.11, -0.24), vec2(0.07, -0.12), vec2(-0.07, -0.12), vec2(-0.11, -0.24)])
+    candles = box2(vec2(-0.24, -0.3), 0.05, 0.2) + box2(vec2(0.24, -0.3), 0.05, 0.2)
+    [(placed(heart2(), vec2(0, -0.04), 1.12), WHITE_PAINT), (heart2(), BLACK_PAINT), (placed(SKULL[0].0, vec2(0, 0.2), 0.26) + coffin + candles, WHITE_PAINT),
+     (placed(SKULL[1].0, vec2(0, 0.2), 0.26), BLACK_PAINT), (disc2(vec2(-0.24, -0.17), 0.04, 8) + disc2(vec2(0.24, -0.17), 0.04, 8), YELLOW_PAINT)]
+HEART = nungesser()
+
+# Werner Voss's: a face on the cowling's front, yellow, frowning, with a moustache (x across)
+voss = () -> (vec2[], vec4)[]:
+    eyes = disc2(vec2(-0.36, 0.3), 0.2, 14) + disc2(vec2(0.36, 0.3), 0.2, 14)
+    dark = disc2(vec2(-0.33, 0.27), 0.1, 10) + disc2(vec2(0.33, 0.27), 0.1, 10)
+    dark.extend(band2(vec2(-0.12, 0.5), vec2(-0.62, 0.66), 0.09) + band2(vec2(0.12, 0.5), vec2(0.62, 0.66), 0.09))
+    loop s in [-1.0, 1.0]:
+        x = f32(s)
+        dark.extend(band2(vec2(0, -0.2), vec2(0.35 * x, -0.3), 0.14) + band2(vec2(0.33 * x, -0.29), vec2(0.6 * x, -0.2), 0.11) + band2(vec2(0.58 * x, -0.21), vec2(0.66 * x, -0.06), 0.08))
+    [(disc2(vec2(0, 0), 1.0, 24), YELLOW_PAINT), (eyes, WHITE_PAINT), (dark, BLACK_PAINT), (box2(vec2(0, -0.5), 0.3, 0.08), ROUNDEL_RED)]
+FACE = voss()
+
+# the Escadrille des Cigognes' (Guynemer's): a stork flying, toward the nose (+x)
+stork = () -> (vec2[], vec4)[]:
+    legs = rgb(0.85, 0.35, 0.12)
+    white = poly2([vec2(-0.42, 0), vec2(-0.2, 0.1), vec2(0.25, 0.08), vec2(0.32, 0), vec2(0.2, -0.08), vec2(-0.25, -0.08)])
+    white.extend(band2(vec2(0.25, 0.03), vec2(0.66, 0.14), 0.07) + disc2(vec2(0.68, 0.14), 0.07, 10))
+    white.extend(poly2([vec2(-0.2, 0.05), vec2(0.18, 0.06), vec2(0.06, 0.62), vec2(-0.32, 0.66)]) + poly2([vec2(-0.2, -0.05), vec2(0.15, -0.05), vec2(0.0, -0.55), vec2(-0.34, -0.5)]))
+    tips = poly2([vec2(-0.32, 0.66), vec2(0.06, 0.62), vec2(0.0, 0.9), vec2(-0.45, 0.92)]) + poly2([vec2(-0.34, -0.5), vec2(0.0, -0.55), vec2(-0.08, -0.8), vec2(-0.5, -0.74)])
+    beak = [vec2(0.72, 0.17), vec2(0.72, 0.1), vec2(1.0, 0.09)] + band2(vec2(-0.35, -0.02), vec2(-0.98, -0.1), 0.035) + band2(vec2(-0.35, -0.05), vec2(-0.98, -0.17), 0.035)
+    [(white, WHITE_PAINT), (tips, BLACK_PAINT), (beak, legs)]
+STORK = stork()
+
+# the ace of spades: a playing card
+spade = () -> (vec2[], vec4)[]:
+    pip = placed(heart2(), vec2(0, 0.1), 0.55, PI) + [vec2(0, 0.0), vec2(-0.13, -0.36), vec2(0.13, -0.36)]
+    [(box2(vec2(0, 0), 0.84, 1.16), BLACK_PAINT), (box2(vec2(0, 0), 0.76, 1.08), WHITE_PAINT), (pip, BLACK_PAINT)]
+SPADE = spade()
+
+# (a bolt along the side, from the tail to the nose: +x)
+bolt = () -> vec2[]:
+    t = 0.11
+    seg = (a: vec2, b: vec2) -> vec2[]: quad2(a + vec2(0, -t), b + vec2(0, -t), b + vec2(0, t), a + vec2(0, t))
+    seg(vec2(-1.0, -0.05), vec2(0.1, 0.22)) + quad2(vec2(0.1 - t, 0.22 + t), vec2(0.1 + t, 0.22 - t), vec2(-0.05 + t, -0.2 - t), vec2(-0.05 - t, -0.2 + t)) + seg(vec2(-0.05, -0.2), vec2(1.0, 0.02))
+BOLT = bolt()
+
+# marking layers laid on a surface at `at`, facing n: the shapes' x along u, y along v, size
+# across (each layer a little above the one before)
+mark = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], at: vec3, u: vec3, v: vec3, n: vec3, size: f64):
+    loop k in 0.. and l in layers:
+        o = at + n * f32(0.012 + 0.006 * f64(k))
+        loop p in l.0: vs.push(Vertex3D(o + u * f32(f64(p.x) * size) + v * f32(f64(p.y) * size), n, vec2(0, 0), l.1))
+
+on_top = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], at: vec3, size: f64): mark(vs, layers, at, vec3(1, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0), size)
+underneath = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], at: vec3, size: f64): mark(vs, layers, at, vec3(1, 0, 0), vec3(0, 0, -1), vec3(0, -1, 0), size)
+
+# (triangles cut in four, n times over: a shape laid on a curve bends with it)
+finer = (t: vec2[], n: int) -> vec2[]:
+    out = t
+    loop _ in 0..n:
+        cut: vec2[]
+        loop i in 0..out.len() / 3:
+            a = out[3 * i]
+            b = out[3 * i + 1]
+            c = out[3 * i + 2]
+            ab = (a + b) * 0.5
+            bc = (b + c) * 0.5
+            ca = (c + a) * 0.5
+            cut.extend([a, ab, ca, ab, b, bc, ca, bc, c, ab, bc, ca])
+        out = cut
+    out
+
+# along both sides, each point on the surface (at(z, y): the side's x there, and the way it faces
+# on the right): from the body's tail end to a round cowling (x toward the nose, from z, y)
+along_sides = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], at: (f64, f64) -> (f64, vec3), z: f64, y: f64, size: f64):
+    loop s in [1.0, -1.0]:
+        loop k in 0.. and l in layers:
+            lift = f32(0.014 + 0.006 * f64(k))
+            loop p in finer(l.0, 2):
+                pz = z - f64(p.x) * size
+                py = y + f64(p.y) * size
+                h = at(pz, py)
+                n = vec3(f32(s) * h.1.x, h.1.y, h.1.z)
+                vs.push(Vertex3D(vec3(f32(s * h.0), f32(py), f32(pz)) + n * lift, n, vec2(0, 0), l.1))
+
+# a lofted body's flat side at z
+flat_side = (rings: vec4[], z: f64) -> (f64, vec3):
+    r = ring_at(rings, z)
+    (f64(r.0.z), normalize(vec3(1, 0, f32(-r.1))))
+
+# on both sides of the body at z (x toward the nose, y up)
+on_sides = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], rings: vec4[], z: f64, size: f64):
+    r = ring_at(rings, z)
+    loop s in [1.0, -1.0]:
+        n = normalize(vec3(f32(s), 0, f32(-r.1)))
+        u = normalize(vec3(f32(-s * r.1), 0, -1))
+        mark(vs, layers, vec3(f32(s * f64(r.0.z)), r.0.y, f32(z)), u, vec3(0, 1, 0), n, size)
+
+# the pilot's insignia, on the body (at z: the front of the tail part) and the top wing's middle
+# (at y, z); bands go round the body
+own_mark = (vs: mut Vertex3D[], badge: int, rings: vec4[], z: f64, wing: vec3, surf: Wing = Wing()):
+    one = (shape: vec2[]) -> (vec2[], vec4)[]: [(shape, WHITE_PAINT)]
+    if badge == 1:
+        loop c in [z + 0.55, z + 0.85]:
+            a = ring_at(rings, c - 0.07).0
+            b = ring_at(rings, c + 0.07).0
+            loft(vs, [vec4(a.x, a.y, a.z + 0.012, a.w + 0.012), vec4(b.x, b.y, b.z + 0.012, b.w + 0.012)], WHITE_PAINT)
+    else if badge == 3:
+        on_sides(vs, one(turned(CHEVRON)), rings, z, 0.26)
+        top_mark(vs, one(CHEVRON), wing, 0.45, surf)
+    else if badge == 4:
+        on_sides(vs, one(star2(1.0)), rings, z, 0.3)
+        top_mark(vs, one(star2(1.0)), wing, 0.45, surf)
+    else if badge == 5:
+        on_sides(vs, SKULL, rings, z, 0.3)
+        top_mark(vs, SKULL, wing, 0.4, surf)
+    else if badge == 6: on_sides(vs, [(BOLT, YELLOW_PAINT)], rings, z - 0.3, 0.55)
+    else if badge == 8:
+        on_sides(vs, HAT, rings, z, 0.34)
+        top_mark(vs, HAT, wing, 0.48, surf)
+    else if badge == 10:
+        on_sides(vs, HEART, rings, z, 0.36)
+        top_mark(vs, HEART, wing, 0.5, surf)
+    else if badge == 12:
+        on_sides(vs, STORK, rings, z - 0.1, 0.42)
+        top_mark(vs, STORK.map((l): (turned(l.0), l.1)), wing, 0.5, surf)
+    else if badge == 13:
+        on_sides(vs, SPADE, rings, z, 0.3)
+        top_mark(vs, SPADE, wing, 0.42, surf)
+
+# what both have: the cockpit and its pilot, the guns, the wheels
+common = (vs: mut Vertex3D[], gun_y: f64):
+    dark = rgb(0.12, 0.11, 0.1)
+    wood = rgb(0.45, 0.32, 0.2)
+    loop sx in [-1.0, 1.0]:
+        x = f32(sx)
+        add_box(vs, vec3(0.17 * x, f32(gun_y), -1.7), vec3(0.08, 0.08, 1.1), dark)
+        add_box(vs, vec3(0.7 * x, -0.85, -1.4), vec3(0.07, 0.9, 0.07), dark)
+        add_cylinder(vs, vec3(-1.3, f32(-sx * 0.95 - 0.07), -1.4), 0.33, 0.14, dark, 10, transform = rotation_z(PI / 2.0))
+    add_box(vs, vec3(0, -1.3, -1.4), vec3(1.5, 0.05, 0.05), dark)
+    add_box(vs, vec3(0, 0.58, 0.35), vec3(0.62, 0.1, 0.9), dark)
+    add_sphere(vs, vec3(0, 0.8, 0.55), 0.2, wood, 8, 5)
+    add_box(vs, vec3(0, 0.75, -0.15), vec3(0.4, 0.22, 0.03), rgb(0.6, 0.7, 0.75))
+
+BI_BODY = [vec4(-2.3, 0.05, 0.5, 0.5), vec4(-0.6, 0.1, 0.48, 0.52), vec4(1.2, 0.15, 0.32, 0.38), vec4(3.9, 0.25, 0.06, 0.1)]
+TRI_BODY = [vec4(-2.2, 0.05, 0.47, 0.49), vec4(-0.6, 0.1, 0.45, 0.5), vec4(1.2, 0.15, 0.3, 0.36), vec4(3.75, 0.25, 0.05, 0.08)]
+
+# Blue's biplane, nose toward -z: a metal nose, two long wings, roundels, the rudder striped
+make_biplane = (badge: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    body = rgb(0.15, 0.3, 0.62)
+    wings = rgb(0.22, 0.42, 0.76)
+    dark = rgb(0.12, 0.11, 0.1)
+    wood = rgb(0.45, 0.32, 0.2)
+    tail = if badge == TAIL: YELLOW_PAINT else: wings
+    loft(vs, [vec4(-2.9, 0.05, 0.42, 0.42), vec4(-2.3, 0.05, 0.5, 0.5)], if badge == NOSE or badge == FACE_BADGE: YELLOW_PAINT else: rgb(0.42, 0.42, 0.4))
+    loft(vs, BI_BODY, body)
+    add_box(vs, vec3(0, 0.05, -2.92), vec3(0.6, 0.6, 0.04), dark)
+    add_box(vs, vec3(0, 1.35, -0.9), vec3(8.8, 0.12, 1.5), wings)
+    add_box(vs, vec3(0, -0.45, -0.7), vec3(8.0, 0.12, 1.35), wings)
+    loop sx in [-1.0, 1.0]:
+        x = f32(sx)
+        # struts between the wings, and up to the top one from the body
+        add_box(vs, vec3(3.0 * x, 0.45, -1.3), vec3(0.07, 1.75, 0.07), wood)
+        add_box(vs, vec3(3.0 * x, 0.45, -0.4), vec3(0.07, 1.75, 0.07), wood)
+        add_box(vs, vec3(0.42 * x, 0.92, -1.35), vec3(0.06, 0.8, 0.06), wood)
+        add_box(vs, vec3(0.42 * x, 0.92, -0.55), vec3(0.06, 0.8, 0.06), wood)
+        on_top(vs, ROUNDEL, vec3(3.1 * x, 1.41, -0.9), 0.6)
+        underneath(vs, ROUNDEL, vec3(2.8 * x, -0.51, -0.7), 0.55)
+    common(vs, 0.6)
+    on_sides(vs, ROUNDEL, BI_BODY, 2.15, 0.24)
+    # the tail: the fin, and the rudder in the roundel's colors
+    add_box(vs, vec3(0, 0.25, 3.45), vec3(3.0, 0.07, 1.0), tail)
+    add_box(vs, vec3(0, 0.75, 3.25), vec3(0.07, 1.1, 0.4), tail)
+    loop k in 0.. and c in [NAVY, WHITE_PAINT, ROUNDEL_RED]: add_box(vs, vec3(0, 0.75, f32(3.55 + 0.2 * f64(k))), vec3(0.075, 1.1, 0.2), c)
+    add_box(vs, vec3(0, -0.2, 3.6), vec3(0.06, 0.5, 0.06), dark)
+    own_mark(vs, badge, BI_BODY, 0.85, vec3(0, 1.41, -0.9))
+    nose = [vec4(-2.9, 0.05, 0.42, 0.42)] + BI_BODY
+    if badge == MAW_BADGE: along_sides(vs, MAW, (z: f64, y: f64): flat_side(nose, z), -2.9 + 1.02 * 0.66, 0.05, 0.66)
+    if badge == FACE_BADGE: mark(vs, FACE, vec3(0, 0.05, -2.94), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, 0, -1), 0.42)
+    vs
+
+# Red's triplane (as the Fokker Dr.I): a rotary engine's round cowling, three short wings one
+# over another, single struts through them, a white comma of a rudder; black crosses
+make_triplane = (badge: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    body = rgb(0.72, 0.1, 0.08)
+    wings = rgb(0.78, 0.15, 0.1)
+    dark = rgb(0.12, 0.11, 0.1)
+    wood = rgb(0.45, 0.32, 0.2)
+    nose = if badge == NOSE or badge == FACE_BADGE: YELLOW_PAINT else: body
+    # the cowling, open at the front on the engine
+    add_cylinder(vs, vec3(0, 0, 0), 0.56, 0.74, nose, 18, 0.5, translation(vec3(0, 0.05, -2.18)) * rotation_x(-PI / 2.0))
+    add_cylinder(vs, vec3(0, 0, 0), 0.42, 0.03, dark, 14, -1.0, translation(vec3(0, 0.05, -2.91)) * rotation_x(-PI / 2.0))
+    loft(vs, TRI_BODY, body)
+    add_box(vs, vec3(0, 1.45, -1.05), vec3(7.6, 0.11, 1.05), wings)
+    add_box(vs, vec3(0, 0.55, -0.95), vec3(6.8, 0.11, 1.05), wings)
+    add_box(vs, vec3(0, -0.42, -0.85), vec3(6.2, 0.11, 1.05), wings)
+    loop sx in [-1.0, 1.0]:
+        x = f32(sx)
+        add_box(vs, vec3(2.7 * x, 0.52, -0.95), vec3(0.07, 1.9, 0.3), wood)
+        add_box(vs, vec3(0.38 * x, 1.0, -1.35), vec3(0.06, 0.9, 0.06), wood)
+        add_box(vs, vec3(0.38 * x, 1.0, -0.7), vec3(0.06, 0.9, 0.06), wood)
+        on_top(vs, CROSS, vec3(2.85 * x, 1.505, -1.05), 0.45)
+        underneath(vs, CROSS, vec3(2.45 * x, -0.475, -0.85), 0.42)
+    common(vs, 0.72)
+    # (a little wing on the wheels' axle)
+    add_box(vs, vec3(0, -1.3, -1.4), vec3(1.7, 0.07, 0.42), wings)
+    on_sides(vs, CROSS, TRI_BODY, 2.15, 0.22)
+    # the tail: a tailplane swept back from a point, the rudder round, and the skid
+    plate(vs, [vec3(0, 0.27, 2.85), vec3(1.55, 0.27, 3.45), vec3(1.45, 0.27, 3.85), vec3(-1.45, 0.27, 3.85), vec3(-1.55, 0.27, 3.45)], vec3(0, 1, 0), 0.06, if badge == TAIL: YELLOW_PAINT else: wings)
+    comma = [vec2(-0.25, 3.72), vec2(0.2, 3.62), vec2(0.6, 3.55), vec2(0.95, 3.55), vec2(1.18, 3.68), vec2(1.28, 3.9), vec2(1.22, 4.12), vec2(1.02, 4.28), vec2(0.72, 4.32), vec2(0.35, 4.2), vec2(0.05, 4.0), vec2(-0.15, 3.85)]
+    plate(vs, comma.map((p): vec3(0, p.x, p.y)), vec3(1, 0, 0), 0.06, if badge == TAIL: YELLOW_PAINT else: WHITE_PAINT)
+    loop s in [1.0, -1.0]: mark(vs, CROSS, vec3(f32(0.03 * s), 0.78, 3.93), vec3(0, 0, -1), vec3(0, 1, 0), vec3(f32(s), 0, 0), 0.3)
+    add_box(vs, vec3(0, -0.15, 3.5), vec3(0.06, 0.45, 0.06), dark)
+    own_mark(vs, badge, TRI_BODY, 0.85, vec3(0, 1.505, -1.05))
+    # (the mouth from the cowling's front edge, round it, back along the body)
+    cowl = (z: f64, y: f64) -> (f64, vec3):
+        if z > -2.18: return flat_side(TRI_BODY, z)
+        r = 0.56 - 0.06 * clamp((-2.18 - z) / 0.74, 0.0, 1.0)
+        dy = clamp((y - 0.05) / r, -0.95, 0.95)
+        c = sqrt(1.0 - dy * dy)
+        (r * c, vec3(f32(c), f32(dy), 0))
+    if badge == MAW_BADGE: along_sides(vs, MAW, cowl, -2.9 + 1.02 * 0.66, 0.05, 0.66)
+    if badge == FACE_BADGE: mark(vs, FACE, vec3(0, 0.05, -2.94), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, 0, -1), 0.5)
+    vs
+
+
+# ---------------- more shapes ----------------
+v3 = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))
+# (a color darker or lighter, k times as bright)
+shade = (c: vec4, k: f64) -> vec4: vec4(c.xyz * f32(k), 1)
+
+# a triangle, facing away from inside
+tri = (vs: mut Vertex3D[], a: vec3, b: vec3, c: vec3, color: vec4, inside: vec3):
+    n = normalize(cross(b - a, c - a))
+    if f64(dot(n, (a + b + c) * f32(1.0 / 3.0) - inside)) < 0.0: n = n * -1.0
+    loop p in [a, b, c]: vs.push(Vertex3D(p, n, vec2(0, 0), color))
+
+# a thin square rod from a to b, t thick: a strut, a wire, a girder (ends: its ends closed)
+beam = (vs: mut Vertex3D[], a: vec3, b: vec3, t: f64, color: vec4, ends: bool = false):
+    d = normalize(b - a)
+    side = if abs(f64(d.y)) > 0.9: vec3(1, 0, 0) else: vec3(0, 1, 0)
+    u = normalize(cross(d, side)) * f32(t / 2.0)
+    w = normalize(cross(d, u)) * f32(t / 2.0)
+    o = [u + w, u - w, (u + w) * -1.0, w - u]
+    mid = (a + b) * 0.5
+    loop k in 0..4: quad(vs, a + o[k], a + o[(k + 1) % 4], b + o[(k + 1) % 4], b + o[k], color, mid)
+    if ends:
+        quad(vs, a + o[0], a + o[1], a + o[2], a + o[3], color, mid)
+        quad(vs, b + o[0], b + o[1], b + o[2], b + o[3], color, mid)
+
+# a round rod with n sides from a to b, radius r (r2 at b: a cone when 0)
+tube = (vs: mut Vertex3D[], a: vec3, b: vec3, r: f64, color: vec4, n: int = 8, r2: f64 = -1.0):
+    d = b - a
+    l = f64(length(d))
+    dir = d * f32(1.0 / l)
+    up = if abs(f64(dir.y)) > 0.95: vec3(0, 0, 1) else: vec3(0, 1, 0)
+    add_cylinder(vs, vec3(0, 0, 0), r, l, color, n, r2, translation(a) * facing(dir, up) * rotation_x(-PI / 2.0))
+
+# a wheel at c, turning about x
+wheel = (vs: mut Vertex3D[], c: vec3, r: f64, w: f64, color: vec4):
+    tube(vs, c - v3(w / 2.0, 0, 0), c + v3(w / 2.0, 0, 0), r, color, 10)
+    tube(vs, c - v3(w / 2.0 + 0.02, 0, 0), c + v3(w / 2.0 + 0.02, 0, 0), r * 0.3, rgb(0.5, 0.5, 0.48), 6)
+
+# a body round the z axis through rings (z, radius) with n flat sides, closed at its ends: a
+# bomb, a tank; turn: where the first side's edge is; colors: each band's (between two rings)
+lathe = (vs: mut Vertex3D[], prof: vec2[], n: int, color: vec4, at: vec3 = vec3(0, 0, 0), turn: f64 = 0.0, colors: vec4[] = []):
+    pt = (i: int, k: int) -> vec3:
+        a = turn + TAU * f64(k % n) / f64(n)
+        r = f64(prof[i].y)
+        at + v3(cos(a) * r, sin(a) * r, f64(prof[i].x))
+    last = prof.len() - 1
+    loop i in 0..last:
+        c = if colors.len() > i: colors[i] else: color
+        mid = at + v3(0, 0, f64(prof[i].x + prof[i + 1].x) * 0.5)
+        loop k in 0..n:
+            if f64(prof[i].y) < 0.001: tri(vs, pt(i, k), pt(i + 1, k + 1), pt(i + 1, k), c, mid)
+            else if f64(prof[i + 1].y) < 0.001: tri(vs, pt(i, k), pt(i, k + 1), pt(i + 1, k), c, mid)
+            else: quad(vs, pt(i, k), pt(i, k + 1), pt(i + 1, k + 1), pt(i + 1, k), c, mid)
+    loop e in [0, last]:
+        if f64(prof[e].y) < 0.001: continue
+        c = if e == 0 and colors.len() > 0: colors[0] else if e == last and colors.len() >= last: colors[last - 1] else: color
+        centre = at + v3(0, 0, f64(prof[e].x))
+        inside = at + v3(0, 0, f64(prof[if e == 0: last else: 0].x))
+        loop k in 0..n: tri(vs, centre, pt(e, k), pt(e, k + 1), c, inside)
+
+# a flat round piece facing up (or down), its middle at c: a floor, a lid
+disc = (vs: mut Vertex3D[], c: vec3, r: f64, color: vec4, n: int = 12, up: bool = true):
+    loop k in 0..n:
+        a = TAU * f64(k) / f64(n)
+        b = TAU * f64(k + 1) / f64(n)
+        tri(vs, c, c + v3(cos(a) * r, 0, sin(a) * r), c + v3(cos(b) * r, 0, sin(b) * r), color, c + v3(0, if up: -1.0 else: 1.0, 0))
+
+# an open ring for a gunner: low walls round c (their top), r across, depth deep, with a floor,
+# seen from inside and out; and a rim round the top
+gun_pit = (vs: mut Vertex3D[], c: vec3, r: f64, depth: f64, color: vec4, rim: vec4):
+    n = 10
+    at = (k: int, y: f64) -> vec3: c + v3(cos(TAU * f64(k) / f64(n)) * r, y, sin(TAU * f64(k) / f64(n)) * r)
+    axis = c - v3(0, depth / 2.0, 0)
+    loop k in 0..n:
+        a0 = at(k, -depth)
+        a1 = at(k + 1, -depth)
+        b0 = at(k, 0.0)
+        b1 = at(k + 1, 0.0)
+        quad(vs, a0, a1, b1, b0, color, axis)
+        p = (a0 + b1) * 0.5
+        quad(vs, a0, a1, b1, b0, shade(color, 0.6), p + (p - axis))
+        beam(vs, b0, b1, 0.07, rim)
+    disc(vs, c - v3(0, depth, 0), r, shade(color, 0.5), n)
+    disc(vs, c - v3(0, depth + 0.01, 0), r, color, n, false)
+
+# a round floor at c with a rail round it, h high: a gunner's platform
+platform = (vs: mut Vertex3D[], c: vec3, r: f64, h: f64, floor: vec4, rail: vec4):
+    add_cylinder(vs, c - v3(0, 0.1, 0), r, 0.1, floor, 12)
+    n = 10
+    loop k in 0..n:
+        a = TAU * f64(k) / f64(n)
+        b = TAU * f64(k + 1) / f64(n)
+        p = c + v3(cos(a) * r * 0.96, 0, sin(a) * r * 0.96)
+        q = c + v3(cos(b) * r * 0.96, 0, sin(b) * r * 0.96)
+        beam(vs, p, p + v3(0, h, 0), 0.06, rail)
+        beam(vs, p + v3(0, h, 0), q + v3(0, h, 0), 0.06, rail)
+        beam(vs, p + v3(0, h * 0.5, 0), q + v3(0, h * 0.5, 0), 0.04, rail)
+
+# ---------------- wings: an airfoil's section drawn out from the root to the tip ----------------
+struct Wing:
+    y: f64              # (its leading edge's height at the root)
+    st: vec4[]          # stations from the root out: each (x, z of the leading edge, chord, thickness)
+    shape: vec2[]       # the section round from the leading edge, over the top and back under: (part of the chord, part of the thickness)
+    dihedral: f64       # (how much it rises a meter out)
+
+# a thick wing's section (the top's highest a third back), and one flat on top (a wing printed
+# with lozenges)
+AIRFOIL = [vec2(0, 0), vec2(0.3, 0.6), vec2(1, 0.08), vec2(0.3, -0.4)]
+FLAT_TOP = [vec2(0, 0), vec2(0.1, 0.5), vec2(0.88, 0.5), vec2(1, 0.12), vec2(0.4, -0.4)]
+
+wing_section = (w: Wing, s: vec4, side: f64) -> vec3[]:
+    yb = w.y + abs(f64(s.x)) * w.dihedral
+    w.shape.map((p): v3(side * f64(s.x), yb + f64(p.y * s.w), f64(s.y + p.x * s.z)))
+
+# both halves (or the right one), and the tips
+add_wing = (vs: mut Vertex3D[], w: Wing, color: vec4, both: bool = true):
+    n = w.shape.len()
+    loop side in (if both: [1.0, -1.0] else: [1.0]):
+        loop i in 0..w.st.len() - 1:
+            a = wing_section(w, w.st[i], side)
+            b = wing_section(w, w.st[i + 1], side)
+            mid = vec3(0, 0, 0)
+            loop p in a + b: mid += p
+            mid = mid * f32(1.0 / f64(2 * n))
+            loop k in 0..n: quad(vs, a[k], a[(k + 1) % n], b[(k + 1) % n], b[k], color, mid)
+        tip = wing_section(w, w.st[w.st.len() - 1], side)
+        c = vec3(0, 0, 0)
+        loop p in tip: c += p
+        c = c * f32(1.0 / f64(n))
+        inside = c - v3(side * 0.3, 0, 0)
+        loop k in 0..n: tri(vs, c, tip[k], tip[(k + 1) % n], color, inside)
+
+# the station at x (from the root out), and the height of the top (or the bottom) at (x, z)
+station_at = (w: Wing, x: f64) -> vec4:
+    ax = abs(x)
+    loop i in 0..w.st.len() - 1:
+        a = w.st[i]
+        b = w.st[i + 1]
+        if ax <= f64(b.x) or i == w.st.len() - 2: return lerp(a, b, f32(clamp((ax - f64(a.x)) / f64(b.x - a.x), 0.0, 1.0)))
+    w.st[0]
+
+wing_surface = (w: Wing, x: f64, z: f64, top: bool = true) -> f64:
+    s = station_at(w, x)
+    f = clamp((z - f64(s.y)) / f64(s.z), 0.0, 1.0)
+    # (the trailing edge: the point furthest back; the top runs to it from the front, the bottom back from it)
+    te = 0
+    loop k in 0..w.shape.len(): if w.shape[k].x > w.shape[te].x: te = k
+    line: vec2[] = if top: w.shape[0..te + 1] else: w.shape[te..] + [w.shape[0]]
+    if not top: line = line.reversed()
+    g = 0.0
+    loop k in 0..line.len() - 1:
+        a = line[k]
+        b = line[k + 1]
+        if f >= f64(a.x) and f <= f64(b.x) and b.x > a.x: g = f64(a.y) + (f64(b.y) - f64(a.y)) * (f - f64(a.x)) / f64(b.x - a.x)
+    w.y + abs(x) * w.dihedral + g * f64(s.w)
+
+# markings laid on a wing's top (or underneath), at (x, z): the shapes' x along the span, y
+# toward the nose
+on_wing = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], w: Wing, at: vec2, size: f64, top: bool = true):
+    s = if top: 1.0 else: -1.0
+    # (cut where the surface bends, along the span: each piece then lies flat on it)
+    st = station_at(w, f64(at.x))
+    te = 0
+    loop k in 0..w.shape.len(): if w.shape[k].x > w.shape[te].x: te = k
+    bends: f64[]
+    loop k in 1..w.shape.len():
+        if k != te and (k < te) == top: bends.push((f64(at.y) - f64(st.y + w.shape[k].x * st.z)) / size)
+    loop k in 0.. and l in layers:
+        lift = 0.012 + 0.006 * f64(k)
+        pieces = l.0
+        loop b in bends: pieces = split_y(pieces, b)
+        loop p in pieces:
+            x = f64(at.x) + f64(p.x) * size
+            z = f64(at.y) - f64(p.y) * size
+            vs.push(Vertex3D(v3(x, wing_surface(w, x, z, top) + s * lift, z), v3(0, s, 0), vec2(0, 0), l.1))
+
+# triangles cut in two along the line y = y0 (where they cross it)
+split_y = (t: vec2[], y0: f64) -> vec2[]:
+    out: vec2[]
+    loop i in 0..t.len() / 3:
+        c = [t[3 * i], t[3 * i + 1], t[3 * i + 2]]
+        above = c.map((p): f64(p.y) > y0)
+        if above[0] == above[1] and above[1] == above[2]:
+            out.extend(c)
+            continue
+        # (the corner alone on its side, then the other two in order round)
+        k = if above[0] == above[1]: 2 else if above[0] == above[2]: 1 else: 0
+        a = c[k]
+        b = c[(k + 1) % 3]
+        d = c[(k + 2) % 3]
+        at = (p: vec2, q: vec2) -> vec2: lerp(p, q, f32((y0 - f64(p.y)) / f64(q.y - p.y)))
+        ab = at(a, b)
+        ad = at(a, d)
+        out.extend([a, ab, ad, ab, b, d, ab, d, ad])
+    out
+
+# the pilot's insignia on the top wing: laid on its curve when it has one
+top_mark = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], at: vec3, size: f64, surf: Wing):
+    if surf.st.len() == 0: on_top(vs, layers, at, size)
+    else: on_wing(vs, layers, surf, vec2(at.x, at.z), size)
+
+# a flat piece in the plane x = x0 through (y, z) points, cut to the part with z from lo to hi
+# (a rudder's stripes)
+clip_z = (pts: vec2[], lo: f64, hi: f64) -> vec2[]:
+    cut = (ps: vec2[], keep: (vec2) -> f64) -> vec2[]:
+        out: vec2[]
+        loop i in 0..ps.len():
+            a = ps[i]
+            b = ps[(i + 1) % ps.len()]
+            da = keep(a)
+            db = keep(b)
+            if da >= 0.0: out.push(a)
+            if (da >= 0.0) != (db >= 0.0): out.push(lerp(a, b, f32(da / (da - db))))
+        out
+    cut(cut(pts, (p): f64(p.y) - lo), (p): hi - f64(p.y))
+
+# ---------------- the scouts ----------------
+DARK = rgb(0.12, 0.11, 0.1)
+WOOD = rgb(0.45, 0.32, 0.2)
+METAL = rgb(0.42, 0.42, 0.4)
+GLASS = rgb(0.32, 0.45, 0.55)
+RED_SIDE = rgb(0.85, 0.12, 0.1)
+BLUE_SIDE = rgb(0.18, 0.38, 0.85)
+
+# the cockpit's rim, a windscreen and the pilot's head (at the seat)
+cockpit = (vs: mut Vertex3D[], seat: vec3):
+    add_box(vs, seat + v3(0, -0.22, -0.15), v3(0.62, 0.1, 0.9), DARK)
+    add_sphere(vs, seat, 0.2, rgb(0.3, 0.2, 0.12), 8, 5)
+    add_box(vs, seat + v3(0, -0.05, -0.68), v3(0.4, 0.22, 0.03), rgb(0.6, 0.7, 0.75))
+
+# wheels on V struts under the body, their axle at y, z
+undercarriage = (vs: mut Vertex3D[], y: f64, z: f64, body_y: f64, spread: f64, r: f64):
+    loop s in [-1.0, 1.0]:
+        beam(vs, v3(0.3 * s, body_y, z - 0.45), v3(spread * s * 0.95, y, z), 0.06, DARK)
+        beam(vs, v3(0.3 * s, body_y, z + 0.4), v3(spread * s * 0.95, y, z), 0.06, DARK)
+        wheel(vs, v3(spread * s, y, z), r, 0.13, DARK)
+    beam(vs, v3(-spread, y, z), v3(spread, y, z), 0.05, DARK)
+
+FOKKER_BODY = [vec4(-2.05, 0.0, 0.45, 0.47), vec4(-0.8, 0.05, 0.42, 0.5), vec4(0.9, 0.12, 0.3, 0.38), vec4(2.95, 0.22, 0.05, 0.09)]
+FOKKER_WING = Wing(1.0, [vec4(0, -1.55, 1.65, 0.3), vec4(2.6, -1.45, 1.48, 0.24), vec4(3.85, -1.3, 1.15, 0.16), vec4(4.2, -1.08, 0.62, 0.1)], AIRFOIL, 0.0)
+
+# Red's scout (as the Fokker D.VIII, "the flying razor"): a rotary engine's round cowling, one
+# thick wing above the body on struts; red, a white band round the cowling; black crosses
+make_parasol = (badge: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    body = rgb(0.74, 0.11, 0.08)
+    wings = rgb(0.8, 0.16, 0.1)
+    nose = if badge == NOSE or badge == FACE_BADGE: YELLOW_PAINT else: body
+    add_cylinder(vs, vec3(0, 0, 0), 0.52, 0.62, nose, 18, 0.46, translation(vec3(0, 0.0, -2.05)) * rotation_x(-PI / 2.0))
+    if badge != MAW_BADGE: add_cylinder(vs, vec3(0, 0, 0), 0.535, 0.13, WHITE_PAINT, 18, 0.53, translation(vec3(0, 0.0, -2.12)) * rotation_x(-PI / 2.0))
+    add_cylinder(vs, vec3(0, 0, 0), 0.36, 0.03, DARK, 14, -1.0, translation(vec3(0, 0.0, -2.66)) * rotation_x(-PI / 2.0))
+    loft(vs, FOKKER_BODY, body)
+    add_wing(vs, FOKKER_WING, wings)
+    # the struts: up from the body's sides, splayed out to the wing
+    loop s in [-1.0, 1.0]:
+        loop z in [-1.45, -0.55]:
+            beam(vs, v3(0.4 * s, 0.35, z), v3(0.95 * s, 1.0, z + 0.05), 0.07, DARK)
+        beam(vs, v3(0.4 * s, 0.35, -1.45), v3(0.95 * s, 1.0, -0.5), 0.05, DARK)
+        on_wing(vs, CROSS, FOKKER_WING, vec2(f32(3.15 * s), -0.72), 0.42)
+        on_wing(vs, CROSS, FOKKER_WING, vec2(f32(3.15 * s), -0.72), 0.42, false)
+    # twin guns on the body ahead of the pilot
+    loop s in [-1.0, 1.0]: add_box(vs, v3(0.15 * s, 0.62, -1.35), vec3(0.08, 0.08, 1.05), DARK)
+    cockpit(vs, v3(0, 0.8, 0.3))
+    undercarriage(vs, -0.97, -1.35, -0.4, 0.72, 0.33)
+    add_box(vs, vec3(0, -0.97, -1.35), vec3(1.6, 0.07, 0.4), wings)
+    on_sides(vs, CROSS, FOKKER_BODY, 1.85, 0.22)
+    # the tail: a tailplane swept back from a point, a round rudder; the skid
+    tail = if badge == TAIL: YELLOW_PAINT else: wings
+    plate(vs, [vec3(0, 0.26, 2.2), vec3(1.4, 0.26, 2.75), vec3(1.3, 0.26, 3.1), vec3(-1.3, 0.26, 3.1), vec3(-1.4, 0.26, 2.75)], vec3(0, 1, 0), 0.06, tail)
+    comma = [vec2(-0.2, 2.75), vec2(0.25, 2.68), vec2(0.6, 2.62), vec2(0.92, 2.64), vec2(1.12, 2.78), vec2(1.2, 3.0), vec2(1.12, 3.22), vec2(0.9, 3.36), vec2(0.55, 3.38), vec2(0.2, 3.25), vec2(-0.1, 3.05)]
+    plate(vs, comma.map((p): vec3(0, p.x, p.y)), vec3(1, 0, 0), 0.06, if badge == TAIL: YELLOW_PAINT else: WHITE_PAINT)
+    loop s in [1.0, -1.0]: mark(vs, CROSS, vec3(f32(0.03 * s), 0.6, 3.02), vec3(0, 0, -1), vec3(0, 1, 0), vec3(f32(s), 0, 0), 0.26)
+    beam(vs, vec3(0, 0.05, 2.6), vec3(0, -0.35, 2.8), 0.06, DARK)
+    own_mark(vs, badge, FOKKER_BODY, 0.75, vec3(0, 1.24, -0.85), FOKKER_WING)
+    cowl = (z: f64, y: f64) -> (f64, vec3):
+        if z > -2.05: return flat_side(FOKKER_BODY, z)
+        r = 0.52 - 0.06 * clamp((-2.05 - z) / 0.62, 0.0, 1.0)
+        dy = clamp(y / r, -0.95, 0.95)
+        c = sqrt(1.0 - dy * dy)
+        (r * c, vec3(f32(c), f32(dy), 0))
+    if badge == MAW_BADGE: along_sides(vs, MAW, cowl, -2.67 + 1.02 * 0.62, 0.0, 0.62)
+    if badge == FACE_BADGE: mark(vs, FACE, vec3(0, 0.0, -2.69), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, 0, -1), 0.44)
+    vs
+
+NIEUPORT_BODY = [vec4(-2.1, 0.0, 0.46, 0.46), vec4(-0.9, 0.05, 0.44, 0.5), vec4(0.8, 0.15, 0.3, 0.36), vec4(2.9, 0.25, 0.05, 0.08)]
+NIEUPORT_TOP = Wing(1.02, [vec4(0, -1.1, 1.45, 0.11), vec4(3.45, -1.1, 1.45, 0.11), vec4(4.15, -0.88, 1.12, 0.08)], AIRFOIL, 0.0)
+NIEUPORT_LOW = Wing(-0.47, [vec4(0, -0.62, 0.78, 0.1), vec4(3.25, -0.56, 0.68, 0.09), vec4(3.6, -0.45, 0.42, 0.07)], AIRFOIL, 0.03)
+
+# Blue's scout (as the Nieuport 17): a blue horseshoe cowling, a long top wing and a narrow one
+# under it on V struts; silver doped, roundels, the rudder striped
+make_sesquiplane = (badge: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    body = rgb(0.74, 0.77, 0.82)
+    wings = rgb(0.7, 0.77, 0.88)
+    trim = rgb(0.15, 0.3, 0.68)
+    nose = if badge == NOSE or badge == FACE_BADGE: YELLOW_PAINT else: trim
+    add_cylinder(vs, vec3(0, 0, 0), 0.5, 0.58, nose, 18, 0.44, translation(vec3(0, 0.0, -2.1)) * rotation_x(-PI / 2.0))
+    add_cylinder(vs, vec3(0, 0, 0), 0.33, 0.03, DARK, 14, -1.0, translation(vec3(0, 0.0, -2.66)) * rotation_x(-PI / 2.0))
+    loft(vs, NIEUPORT_BODY, body)
+    # (a blue band round the body behind the pilot)
+    a = ring_at(NIEUPORT_BODY, 1.05).0
+    b = ring_at(NIEUPORT_BODY, 1.3).0
+    loft(vs, [vec4(a.x, a.y, a.z + 0.012, a.w + 0.012), vec4(b.x, b.y, b.z + 0.012, b.w + 0.012)], trim)
+    add_wing(vs, NIEUPORT_TOP, wings)
+    add_wing(vs, NIEUPORT_LOW, wings)
+    loop s in [-1.0, 1.0]:
+        # the V struts, from one point on the narrow wing to both spars of the top one
+        low = v3(2.7 * s, -0.38 + 2.7 * 0.03, -0.3)
+        beam(vs, low, v3(2.85 * s, 1.03, -0.85), 0.07, trim)
+        beam(vs, low, v3(2.85 * s, 1.03, 0.05), 0.07, trim)
+        # the cabane struts, and wires
+        beam(vs, v3(0.36 * s, 0.45, -1.55), v3(0.55 * s, 1.03, -0.95), 0.05, DARK)
+        beam(vs, v3(0.36 * s, 0.45, -0.75), v3(0.55 * s, 1.03, -0.05), 0.05, DARK)
+        beam(vs, v3(0.3 * s, -0.4, -0.45), v3(2.75 * s, 1.0, -0.6), 0.018, DARK)
+        on_wing(vs, ROUNDEL, NIEUPORT_TOP, vec2(f32(3.0 * s), -0.38), 0.58)
+        on_wing(vs, ROUNDEL, NIEUPORT_LOW, vec2(f32(2.3 * s), -0.23), 0.33, false)
+    # a Vickers on the cowling and a Lewis over the top wing
+    add_box(vs, vec3(-0.14, 0.58, -1.5), vec3(0.09, 0.09, 1.0), DARK)
+    add_box(vs, vec3(0, 1.22, -1.0), vec3(0.07, 0.07, 0.95), DARK)
+    add_cylinder(vs, vec3(0, 1.26, -0.75), 0.15, 0.05, DARK, 10)
+    cockpit(vs, v3(0, 0.8, 0.3))
+    undercarriage(vs, -0.97, -1.25, -0.4, 0.7, 0.33)
+    on_sides(vs, ROUNDEL, NIEUPORT_BODY, 1.75, 0.23)
+    # the tail: a round tailplane, a rudder in the roundel's colors (blue, white, red), the skid
+    tail = if badge == TAIL: YELLOW_PAINT else: wings
+    plate(vs, [vec3(0, 0.25, 2.25), vec3(1.15, 0.25, 2.6), vec3(1.32, 0.25, 2.9), vec3(1.15, 0.25, 3.15), vec3(-1.15, 0.25, 3.15), vec3(-1.32, 0.25, 2.9), vec3(-1.15, 0.25, 2.6)], vec3(0, 1, 0), 0.05, tail)
+    rudder = [vec2(-0.1, 2.62), vec2(0.4, 2.52), vec2(0.88, 2.56), vec2(1.12, 2.72), vec2(1.18, 2.98), vec2(1.06, 3.24), vec2(0.75, 3.38), vec2(0.3, 3.36), vec2(-0.05, 3.12)]
+    if badge == TAIL: plate(vs, rudder.map((p): vec3(0, p.x, p.y)), vec3(1, 0, 0), 0.05, YELLOW_PAINT)
+    else:
+        loop k in 0.. and c in [NAVY, WHITE_PAINT, ROUNDEL_RED]:
+            part = clip_z(rudder, 2.5 + 0.3 * f64(k), 2.8 + 0.3 * f64(k) + (if k == 2: 0.2 else: 0.0))
+            if part.len() >= 3: plate(vs, part.map((p): vec3(0, p.x, p.y)), vec3(1, 0, 0), 0.05, c)
+    beam(vs, vec3(0, 0.05, 2.55), vec3(0, -0.32, 2.75), 0.06, DARK)
+    own_mark(vs, badge, NIEUPORT_BODY, 0.7, vec3(0, 1.1, -0.45), NIEUPORT_TOP)
+    nose_rings = [vec4(-2.68, 0.0, 0.42, 0.42)] + NIEUPORT_BODY
+    if badge == MAW_BADGE: along_sides(vs, MAW, (z: f64, y: f64): flat_side(nose_rings, z), -2.68 + 1.02 * 0.62, 0.0, 0.62)
+    if badge == FACE_BADGE: mark(vs, FACE, vec3(0, 0.0, -2.69), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, 0, -1), 0.42)
+    vs
+
+# ---------------- the fighters: Aces' planes, with four rockets on their struts ----------------
+# a Le Prieur rocket's tube at p (its middle), pointing ahead, held to a strut
+rocket_tube = (vs: mut Vertex3D[], p: vec3, strut_x: f64):
+    tube(vs, p + vec3(0, 0, 0.5), p - vec3(0, 0, 0.5), 0.055, rgb(0.25, 0.25, 0.24), 8)
+    tube(vs, p - vec3(0, 0, 0.5), p - vec3(0, 0, 0.7), 0.065, rgb(0.55, 0.3, 0.15), 8, 0.0)
+    beam(vs, vec3(f32(strut_x), p.y, p.z - 0.2), p - vec3(0, 0, 0.2), 0.03, DARK)
+    beam(vs, vec3(f32(strut_x), p.y, p.z + 0.3), p + vec3(0, 0, 0.3), 0.03, DARK)
+
+make_fighter = (team: int, badge: int) -> Vertex3D[]:
+    vs = if team == 0: make_triplane(badge) else: make_biplane(badge)
+    loop s in [-1.0, 1.0]:
+        if team == 0:
+            loop y in [0.06, 1.0]: rocket_tube(vs, v3(2.86 * s, y, -1.4), 2.7 * s)
+        else:
+            loop y in [0.2, 0.8]: rocket_tube(vs, v3(3.14 * s, y, -1.75), 3.0 * s)
+    vs
+
+# ---------------- propellers, guns, people ----------------
+make_prop = () -> Mesh:
+    vs: Vertex3D[]
+    wood = rgb(0.5, 0.36, 0.22)
+    loop s in [1.0, -1.0]:
+        add_box(vs, v3(0, 0.3 * s, 0), vec3(0.13, 0.5, 0.06), wood, rotation_y(0.38 * s))
+        add_box(vs, v3(0, 0.75 * s, 0), vec3(0.15, 0.4, 0.05), wood, rotation_y(0.3 * s))
+        add_box(vs, v3(0, 0.975 * s, 0), vec3(0.1, 0.05, 0.045), wood, rotation_y(0.28 * s))
+    tube(vs, vec3(0, 0, 0.1), vec3(0, 0, -0.12), 0.09, rgb(0.3, 0.3, 0.3), 8, 0.05)
+    custom_mesh(vs)
+
+# a Lewis gun on a pivot: its fat barrel along -z, the round magazine on top, a spade grip
+make_turret = () -> Mesh:
+    vs: Vertex3D[]
+    metal = rgb(0.2, 0.21, 0.22)
+    dark = rgb(0.09, 0.09, 0.1)
+    wood = rgb(0.42, 0.28, 0.16)
+    tube(vs, vec3(0, -0.4, 0), vec3(0, -0.06, 0), 0.04, metal, 6)
+    add_box(vs, vec3(0, -0.04, 0), vec3(0.2, 0.05, 0.08), metal)
+    loop s in [-1.0, 1.0]: add_box(vs, v3(0.08 * s, 0.03, 0), vec3(0.03, 0.14, 0.06), metal)
+    add_box(vs, vec3(0, 0.08, -0.04), vec3(0.1, 0.12, 0.56), metal)
+    tube(vs, vec3(0, 0.08, -0.32), vec3(0, 0.08, -0.96), 0.06, dark, 8)
+    tube(vs, vec3(0, 0.08, -0.96), vec3(0, 0.08, -1.03), 0.025, dark, 6)
+    add_cylinder(vs, vec3(0, 0.145, -0.1), 0.2, 0.06, metal, 14)
+    add_cylinder(vs, vec3(0, 0.205, -0.1), 0.05, 0.03, dark, 8)
+    add_box(vs, vec3(0, 0.07, 0.3), vec3(0.07, 0.11, 0.16), wood)
+    add_box(vs, vec3(0, 0.06, 0.38), vec3(0.22, 0.04, 0.04), wood)
+    add_box(vs, vec3(0, 0.17, -0.85), vec3(0.015, 0.07, 0.015), dark)
+    custom_mesh(vs)
+
+# a pilot standing, facing -z: a leather coat, a helmet and goggles, a scarf in the side's color
+make_person = (team: int) -> Mesh:
+    vs: Vertex3D[]
+    coat = rgb(0.36, 0.23, 0.13)
+    breeches = rgb(0.42, 0.38, 0.28)
+    boots = rgb(0.13, 0.09, 0.06)
+    skin = rgb(0.86, 0.66, 0.52)
+    helmet = rgb(0.24, 0.16, 0.09)
+    scarf = if team == 0: RED_SIDE else: BLUE_SIDE
+    loop s in [-1.0, 1.0]:
+        add_box(vs, v3(0.12 * s, 0.16, -0.03), vec3(0.15, 0.32, 0.28), boots)
+        add_box(vs, v3(0.12 * s, 0.6, 0), vec3(0.17, 0.56, 0.2), breeches)
+        add_box(vs, v3(0.33 * s, 1.15, 0), vec3(0.13, 0.62, 0.16), coat)
+        add_box(vs, v3(0.33 * s, 0.8, -0.01), vec3(0.12, 0.1, 0.13), boots)
+    add_box(vs, vec3(0, 1.12, 0), vec3(0.52, 0.76, 0.3), coat)
+    add_box(vs, vec3(0, 0.67, 0), vec3(0.54, 0.26, 0.32), coat)
+    add_box(vs, vec3(0, 0.9, 0), vec3(0.535, 0.06, 0.31), boots)
+    add_box(vs, vec3(0, 1.52, 0), vec3(0.3, 0.1, 0.26), scarf)
+    add_box(vs, vec3(0.1, 1.3, 0.165), vec3(0.11, 0.38, 0.03), scarf)
+    add_box(vs, vec3(0, 1.68, 0), vec3(0.22, 0.22, 0.24), skin)
+    add_box(vs, vec3(0, 1.76, 0.01), vec3(0.245, 0.09, 0.265), helmet)
+    add_box(vs, vec3(0, 1.66, 0.105), vec3(0.245, 0.2, 0.06), helmet)
+    loop s in [-1.0, 1.0]:
+        add_box(vs, v3(0.11 * s, 1.64, 0.02), vec3(0.03, 0.14, 0.12), helmet)
+        add_box(vs, v3(0.055 * s, 1.715, -0.125), vec3(0.075, 0.055, 0.03), rgb(0.1, 0.13, 0.16))
+    add_box(vs, vec3(0, 1.715, 0), vec3(0.25, 0.03, 0.255), rgb(0.55, 0.45, 0.3))
+    custom_mesh(vs)
+
+
+# ---------------- the bombers ----------------
+# struts between two wings at each x (both sides), at the front and back spars (z), and wires
+# crossed between them; skip: the bays left without wires (an engine in them)
+bracing = (vs: mut Vertex3D[], low: Wing, high: Wing, xs: f64[], zs: f64[], strut: vec4, skip: int[] = []):
+    wire = rgb(0.13, 0.13, 0.13)
+    at = (x: f64, z: f64, top: bool) -> vec3:
+        if top: v3(x, wing_surface(high, x, z, false), z) else: v3(x, wing_surface(low, x, z), z)
+    loop s in [-1.0, 1.0]:
+        loop i in 0.. and x in xs:
+            loop z in zs:
+                beam(vs, at(s * x, z, false), at(s * x, z, true), 0.09, strut)
+                if i + 1 < xs.len() and not skip.contains(i):
+                    x2 = xs[i + 1]
+                    beam(vs, at(s * x, z, false), at(s * x2, z, true), 0.025, wire)
+                    beam(vs, at(s * x, z, true), at(s * x2, z, false), 0.025, wire)
+
+# a ring of rods round c, flat, r across: a gun ring's rim
+rim_ring = (vs: mut Vertex3D[], c: vec3, r: f64, t: f64, color: vec4, n: int = 10):
+    loop k in 0..n:
+        a = TAU * f64(k) / f64(n)
+        b = TAU * f64(k + 1) / f64(n)
+        beam(vs, c + v3(cos(a) * r, 0, sin(a) * r), c + v3(cos(b) * r, 0, sin(b) * r), t, color)
+
+# the gunner's nest behind the top wing's middle: a tub on struts from the body, a plank to the wing
+dorsal_nest = (vs: mut Vertex3D[], seat: vec3, body: vec4[], wing_back: f64, color: vec4, strut: vec4):
+    gun_pit(vs, seat + v3(0, 0.1, 0), 0.6, 0.6, color, DARK)
+    floor = f64(seat.y) - 0.5
+    add_box(vs, v3(0, floor + 0.04, (wing_back + f64(seat.z) - 0.5) / 2.0), v3(0.7, 0.08, f64(seat.z) - 0.5 - wing_back + 0.3), WOOD)
+    r = ring_at(body, f64(seat.z)).0
+    top = f64(r.y + r.w)
+    loop s in [-1.0, 1.0]:
+        loop dz in [-0.45, 0.45]:
+            beam(vs, v3(0.45 * s, floor, f64(seat.z) + dz), v3(f64(r.z) * 0.8 * s, top, f64(seat.z) + dz * 1.4), 0.08, strut)
+
+IM_BODY = [vec4(-8.0, 0.3, 0.82, 0.88), vec4(-7.55, 0.3, 0.95, 1.0), vec4(-2.8, 0.3, 0.95, 1.0), vec4(0.5, 0.35, 0.78, 0.82), vec4(4.5, 0.5, 0.42, 0.45), vec4(8.0, 0.65, 0.12, 0.15)]
+IM_TOP = Wing(2.2, [vec4(0, -1.6, 3.0, 0.17), vec4(10.9, -1.6, 3.0, 0.17), vec4(12.0, -1.35, 2.5, 0.12)], AIRFOIL, 0.0)
+IM_LOW = Wing(-0.35, [vec4(0, -1.4, 2.6, 0.15), vec4(8.5, -1.4, 2.6, 0.15), vec4(9.3, -1.2, 2.2, 0.11)], AIRFOIL, 0.0)
+IM_NACELLE = [vec4(-2.45, 0.0, 0.2, 0.24), vec4(-2.05, 0.02, 0.3, 0.34), vec4(-0.5, 0.0, 0.28, 0.3), vec4(0.9, 0.0, 0.1, 0.1)]
+
+# Blue's bomber (as Sikorsky's Ilya Muromets): an enormous white biplane, a glazed cabin in the
+# nose, four engines on the lower wing, many struts and wires, a big flat tail with two rudders
+make_muromets = () -> Vertex3D[]:
+    vs: Vertex3D[]
+    white = rgb(0.92, 0.9, 0.84)
+    wings = rgb(0.95, 0.93, 0.88)
+    frame = rgb(0.78, 0.76, 0.7)
+    strut = rgb(0.42, 0.33, 0.24)
+    loft(vs, IM_BODY, white)
+    add_wing(vs, IM_TOP, wings)
+    add_wing(vs, IM_LOW, wings)
+    # the cabin's windows: along both sides, across the front and over the top, in frames
+    loop s in [-1.0, 1.0]:
+        add_box(vs, v3(0.955 * s, 0.72, -5.2), vec3(0.02, 0.85, 4.4), GLASS)
+        loop k in 0..9: add_box(vs, v3(0.965 * s, 0.72, -7.4 + 0.55 * f64(k)), vec3(0.03, 0.9, 0.08), frame)
+        loop y in [0.27, 1.17]: add_box(vs, v3(0.965 * s, y, -5.2), vec3(0.03, 0.07, 4.45), frame)
+    add_box(vs, vec3(0, 0.62, -8.005), vec3(1.4, 0.8, 0.02), GLASS)
+    loop x in [-0.35, 0.0, 0.35]: add_box(vs, v3(x, 0.62, -8.02), vec3(0.06, 0.85, 0.03), frame)
+    loop y in [0.21, 1.03]: add_box(vs, v3(0, y, -8.02), vec3(1.45, 0.06, 0.03), frame)
+    add_box(vs, vec3(0, 1.305, -5.4), vec3(1.2, 0.02, 1.8), GLASS)
+    loop z in [-6.3, -5.4, -4.5]: add_box(vs, v3(0, 1.315, z), vec3(1.25, 0.03, 0.07), frame)
+    # the nose gunner's ring on the cabin's roof, and the hatch under it
+    disc(vs, vec3(0, 1.312, -7.2), 0.5, DARK)
+    gun_pit(vs, vec3(0, 1.4, -7.2), 0.55, 0.3, white, DARK)
+    # four engines on the lower wing, each with its radiator, and the struts round them
+    loop s in [-1.0, 1.0]:
+        loop x in [3.2, 6.4]:
+            ex = x * s
+            loft(vs, IM_NACELLE, METAL, ex)
+            add_box(vs, v3(ex, 0.62, -1.75), vec3(0.55, 0.5, 0.14), rgb(0.22, 0.23, 0.22))
+            loop y in [0.4, 0.84]: add_box(vs, v3(ex, y, -1.75), vec3(0.6, 0.05, 0.17), rgb(0.7, 0.55, 0.25))
+            loop dx in [-0.28, 0.28]: add_box(vs, v3(ex + dx, 0.62, -1.75), vec3(0.05, 0.48, 0.17), rgb(0.7, 0.55, 0.25))
+            tube(vs, v3(ex + 0.15, 0.25, -1.2), v3(ex + 0.2, 0.55, -0.6), 0.05, DARK, 6)
+            loop dx in [-0.25, 0.25]: beam(vs, v3(ex + dx, 0.25, -1.0), v3(ex + dx, wing_surface(IM_TOP, ex, -0.9, false), -0.9), 0.05, strut)
+    bracing(vs, IM_LOW, IM_TOP, [1.1, 2.75, 3.65, 5.95, 6.85, 8.75], [-0.9, 0.65], strut, [1, 3])
+    # (out past the lower wing: struts leaning out to the top one's ends)
+    loop s in [-1.0, 1.0]:
+        loop z in [-0.9, 0.65]:
+            beam(vs, v3(8.95 * s, wing_surface(IM_LOW, 8.95, z), z), v3(10.6 * s, wing_surface(IM_TOP, 10.6, z, false), z), 0.08, strut)
+        on_wing(vs, ROUNDEL, IM_TOP, vec2(f32(10.1 * s), -0.15), 1.15)
+        on_wing(vs, ROUNDEL, IM_LOW, vec2(f32(7.5 * s), -0.1), 0.95, false)
+    # the wheels: two pairs under the wing, on skids
+    loop s in [-1.0, 1.0]:
+        loop dx in [-0.35, 0.35]: wheel(vs, v3(2.2 * s + dx, -2.05, -1.3), 0.5, 0.16, DARK)
+        beam(vs, v3(1.75 * s, -2.05, -1.3), v3(2.65 * s, -2.05, -1.3), 0.07, DARK)
+        loop z in [-2.0, -0.5]: beam(vs, v3(2.2 * s, -0.42, z), v3(2.2 * s, -2.05, -1.3), 0.09, strut)
+        beam(vs, v3(2.2 * s, -2.25, -3.0), v3(2.2 * s, -2.4, -0.4), 0.1, strut)
+        beam(vs, v3(2.2 * s, -0.42, -2.4), v3(2.2 * s, -2.28, -2.8), 0.07, strut)
+    # the dorsal gunner's nest
+    dorsal_nest(vs, vec3(0, 2.7, 2.5), IM_BODY, 1.4, white, strut)
+    # the tail: a big flat tailplane, two rudders on it, roundels on them; the skid
+    plate(vs, [vec3(-3.4, 0.82, 5.5), vec3(3.4, 0.82, 5.5), vec3(4.1, 0.82, 5.9), vec3(4.2, 0.82, 7.4), vec3(3.6, 0.82, 8.0), vec3(-3.6, 0.82, 8.0), vec3(-4.2, 0.82, 7.4), vec3(-4.1, 0.82, 5.9)], vec3(0, 1, 0), 0.08, wings)
+    rudder = [vec2(0.85, 6.5), vec2(2.2, 6.75), vec2(2.4, 7.2), vec2(2.3, 7.95), vec2(0.85, 8.0)]
+    loop s in [-1.0, 1.0]:
+        plate(vs, rudder.map((p): v3(1.6 * s, f64(p.x), f64(p.y))), vec3(1, 0, 0), 0.07, wings)
+        loop n in [-1.0, 1.0]: mark(vs, ROUNDEL, v3(1.6 * s + 0.035 * n, 1.55, 7.35), vec3(0, 0, -1), vec3(0, 1, 0), v3(n, 0, 0), 0.5)
+        beam(vs, v3(1.6 * s, 0.8, 5.6), v3(1.6 * s, 2.2, 6.75), 0.04, DARK)
+    beam(vs, vec3(0, 0.5, 7.0), vec3(0, -0.6, 7.6), 0.1, strut)
+    vs
+
+GOTHA_BODY = [vec4(-7.9, 0.2, 0.4, 0.5), vec4(-7.2, 0.3, 0.7, 0.8), vec4(-5.0, 0.2, 0.78, 0.68), vec4(-3.0, 0.2, 0.78, 0.68), vec4(0.5, 0.25, 0.7, 0.66), vec4(4.0, 0.4, 0.38, 0.45), vec4(7.6, 0.55, 0.1, 0.14)]
+GOTHA_TOP = Wing(2.3, [vec4(0, -1.7, 2.5, 0.16), vec4(10.6, -1.7, 2.5, 0.16), vec4(11.6, -1.5, 2.0, 0.12)], FLAT_TOP, 0.0)
+GOTHA_LOW = Wing(-0.62, [vec4(0, -1.6, 2.4, 0.15), vec4(9.8, -1.6, 2.4, 0.15), vec4(10.6, -1.42, 1.95, 0.11)], FLAT_TOP, 0.0)
+GOTHA_NACELLE = [vec4(-2.75, 0.6, 0.32, 0.4), vec4(-2.3, 0.6, 0.42, 0.5), vec4(0.2, 0.62, 0.4, 0.46), vec4(1.25, 0.62, 0.14, 0.17)]
+# the lozenges' colors (as printed on German fabric) and the wing's own under them
+LOZENGES = [rgb(0.2, 0.18, 0.3), rgb(0.17, 0.25, 0.18), rgb(0.42, 0.34, 0.17), rgb(0.33, 0.2, 0.27), rgb(0.14, 0.18, 0.28)]
+LOZENGE_BASE = rgb(0.26, 0.25, 0.28)
+
+# the flat top of a wing printed with lozenges: a field of long hexagons in several colors
+lozenge = (vs: mut Vertex3D[], w: Wing, seed: int):
+    st = w.st[0]
+    x1 = f64(w.st[w.st.len() - 2].x)
+    z0 = f64(st.y + 0.1 * st.z)
+    z1 = f64(st.y + 0.88 * st.z)
+    r = 0.55
+    sx = 1.35
+    dx = 1.5 * r * sx
+    dz = sqrt(3.0) * r
+    cols = int(x1 / dx) + 1
+    loop i in -cols..cols + 1:
+        loop j in -1..int((z1 - z0) / dz) + 2:
+            cx = f64(i) * dx
+            cz = z0 + (f64(j) + (if i % 2 == 0: 0.0 else: 0.5)) * dz
+            if abs(cx) > x1 + r * sx * 0.5 or cz < z0 - r or cz > z1 + r: continue
+            c = LOZENGES[int(hash(i * 7919 + j * 104729 + seed) % u64(LOZENGES.len()))]
+            pts: vec3[]
+            loop k in 0..6:
+                a = PI / 3.0 * f64(k)
+                x = clamp(cx + cos(a) * r * sx, -x1, x1)
+                z = clamp(cz + sin(a) * r, z0, z1)
+                pts.push(v3(x, wing_surface(w, x, z) + 0.008, z))
+            loop k in 1..5:
+                loop p in [pts[0], pts[k], pts[k + 1]]: vs.push(Vertex3D(p, vec3(0, 1, 0), vec2(0, 0), c))
+
+# Red's bomber (as the Gotha G.V): two engines between the wings driving propellers behind them,
+# the wings printed in lozenges, the nose, the engines and the tail's tips red; black crosses
+make_gotha = () -> Vertex3D[]:
+    vs: Vertex3D[]
+    red = rgb(0.72, 0.1, 0.08)
+    body = rgb(0.36, 0.33, 0.37)
+    strut = rgb(0.3, 0.26, 0.24)
+    n = GOTHA_BODY.len()
+    tail_start = ring_at(GOTHA_BODY, 6.0).0
+    loft(vs, GOTHA_BODY[0..2], red)
+    loft(vs, GOTHA_BODY[1..n - 1] + [tail_start], body)
+    loft(vs, [tail_start, GOTHA_BODY[n - 1]], red)
+    add_wing(vs, GOTHA_TOP, LOZENGE_BASE)
+    add_wing(vs, GOTHA_LOW, LOZENGE_BASE)
+    lozenge(vs, GOTHA_TOP, 1)
+    lozenge(vs, GOTHA_LOW, 2)
+    # the nose gunner's ring, the pilot behind him
+    gun_pit(vs, vec3(0, 1.4, -7.2), 0.55, 0.45, red, DARK)
+    cockpit(vs, vec3(0, 1.0, -4.0))
+    # the engines, their radiators at the front, exhausts, and the struts holding them
+    loop s in [-1.0, 1.0]:
+        ex = 3.6 * s
+        loft(vs, GOTHA_NACELLE, red, ex)
+        add_box(vs, v3(ex, 0.6, -2.78), vec3(0.5, 0.62, 0.05), rgb(0.2, 0.2, 0.2))
+        loop k in 0..4: add_box(vs, v3(ex, 0.38 + 0.15 * f64(k), -2.8), vec3(0.52, 0.03, 0.03), rgb(0.45, 0.45, 0.43))
+        tube(vs, v3(ex + 0.2 * s, 1.0, -1.4), v3(ex + 0.3 * s, 1.55, -0.3), 0.06, DARK, 6)
+        loop dx in [-0.3, 0.3]:
+            loop z in [-1.6, -0.1]:
+                beam(vs, v3(ex + dx, 0.2, z), v3(ex + dx, wing_surface(GOTHA_LOW, ex, z), z), 0.07, strut)
+                beam(vs, v3(ex + dx, 1.0, z), v3(ex + dx, wing_surface(GOTHA_TOP, ex, z, false), z), 0.07, strut)
+        # (the wheels under the engine)
+        loop dw in [-0.35, 0.35]: wheel(vs, v3(ex + dw, -1.95, -1.5), 0.55, 0.16, DARK)
+        loop z in [-2.0, -0.9]: beam(vs, v3(ex, wing_surface(GOTHA_LOW, ex, z, false), z), v3(ex, -1.95, -1.5), 0.09, strut)
+        beam(vs, v3(ex - 0.45, -1.95, -1.5), v3(ex + 0.45, -1.95, -1.5), 0.07, DARK)
+        on_wing(vs, CROSS, GOTHA_TOP, vec2(f32(9.6 * s), -0.45), 0.95)
+        on_wing(vs, CROSS, GOTHA_LOW, vec2(f32(8.6 * s), -0.4), 0.9, false)
+    bracing(vs, GOTHA_LOW, GOTHA_TOP, [1.3, 3.0, 4.2, 7.1, 10.0], [-1.2, 0.3], strut, [1])
+    loop s in [-1.0, 1.0]:
+        loop z in [-1.2, 0.3]: beam(vs, v3(0.55 * s, 0.85, z), v3(1.3 * s, wing_surface(GOTHA_TOP, 1.3, z, false), z), 0.07, strut)
+    on_sides(vs, CROSS, GOTHA_BODY, 3.9, 0.44)
+    dorsal_nest(vs, vec3(0, 2.7, 2.5), GOTHA_BODY, 0.8, body, strut)
+    # the tail: a tailplane (its tips red), a red fin, the rudder white with a cross; the skid
+    tp = [vec2(5.7, -3.0), vec2(5.7, 3.0), vec2(6.2, 3.3), vec2(7.3, 3.2), vec2(7.3, -3.2), vec2(6.2, -3.3)]
+    loop k in 0.. and band in [vec2(-3.5, -2.3), vec2(-2.3, 2.3), vec2(2.3, 3.5)]:
+        part = clip_z(tp, f64(band.x), f64(band.y))
+        plate(vs, part.map((p): vec3(p.y, 0.86, p.x)), vec3(0, 1, 0), 0.07, if k == 1: LOZENGE_BASE else: red)
+    plate(vs, [vec3(0, 0.86, 5.6), vec3(0, 2.1, 6.75), vec3(0, 2.3, 7.15), vec3(0, 0.86, 7.15)], vec3(1, 0, 0), 0.07, red)
+    plate(vs, [vec3(0, 0.5, 7.15), vec3(0, 2.3, 7.15), vec3(0, 2.25, 7.75), vec3(0, 1.9, 7.95), vec3(0, 0.5, 7.85)], vec3(1, 0, 0), 0.07, WHITE_PAINT)
+    loop n in [-1.0, 1.0]: mark(vs, CROSS, v3(0.035 * n, 1.45, 7.5), vec3(0, 0, -1), vec3(0, 1, 0), v3(n, 0, 0), 0.32)
+    beam(vs, vec3(0, 0.3, 6.6), vec3(0, -0.5, 7.2), 0.1, strut)
+    vs
+
+# ---------------- the zeppelins ----------------
+# the hull's rings (z, radius at its edges), 16 flat sides, a side's middle facing straight out
+# right, up, left and down
+HULL = [vec2(-45.0, 0.8), vec2(-44.0, 2.6), vec2(-42.0, 4.3), vec2(-39.0, 5.8), vec2(-35.0, 7.0), vec2(-30.0, 7.9), vec2(-24.0, 8.4), vec2(-16.0, 8.65), vec2(0.0, 8.65), vec2(10.0, 8.55), vec2(18.0, 8.0), vec2(25.0, 7.0), vec2(31.0, 5.6), vec2(36.0, 4.1), vec2(40.0, 2.8), vec2(43.0, 1.7), vec2(44.6, 0.9)]
+const HULL_SIDES = 16
+HULL_STEP = TAU / f64(HULL_SIDES)
+
+hull_r = (z: f64) -> f64:
+    loop i in 0..HULL.len() - 1:
+        a = HULL[i]
+        b = HULL[i + 1]
+        if z <= f64(b.x): return f64(a.y) + (f64(b.y) - f64(a.y)) * clamp((z - f64(a.x)) / f64(b.x - a.x), 0.0, 1.0)
+    f64(HULL[HULL.len() - 1].y)
+
+# (how far a side's middle is from the hull's axis)
+hull_flat = (z: f64) -> f64: hull_r(z) * cos(HULL_STEP / 2.0)
+
+# the point on the hull at z, at angle a round it (0: right, up from there), and the way its side faces
+hull_point = (z: f64, a: f64) -> (vec3, vec3):
+    c = f64(round(a / HULL_STEP)) * HULL_STEP
+    d = hull_flat(z) / cos(a - c)
+    (v3(cos(a) * d, sin(a) * d, z), v3(cos(c), sin(c), 0))
+
+# the hull: each side with a darker girder along its edge; colors: each band's (nose to tail);
+# sides: those sides' own color (an armored belt)
+make_hull = (vs: mut Vertex3D[], colors: vec4[], belt: vec4, belt_sides: int[]):
+    pt = (i: int, k: int) -> vec3:
+        a = -HULL_STEP / 2.0 + HULL_STEP * f64(k % HULL_SIDES)
+        r = f64(HULL[i].y)
+        v3(cos(a) * r, sin(a) * r, f64(HULL[i].x))
+    last = HULL.len() - 1
+    loop i in 0..last:
+        mid = v3(0, 0, f64(HULL[i].x + HULL[i + 1].x) * 0.5)
+        loop k in 0..HULL_SIDES:
+            c = if belt_sides.contains(k) and i > 3 and i < last - 3: belt else: colors[i]
+            a0 = pt(i, k)
+            a1 = pt(i, k + 1)
+            b0 = pt(i + 1, k)
+            b1 = pt(i + 1, k + 1)
+            sa = lerp(a0, a1, 0.1)
+            sb = lerp(b0, b1, 0.1)
+            quad(vs, a0, sa, sb, b0, shade(c, 0.8), mid)
+            quad(vs, sa, a1, b1, sb, c, mid)
+    loop e in [0, last]:
+        centre = v3(0, 0, f64(HULL[e].x))
+        inside = v3(0, 0, f64(HULL[if e == 0: last else: 0].x))
+        loop k in 0..HULL_SIDES: tri(vs, centre, pt(e, k), pt(e, k + 1), colors[if e == 0: 0 else: last - 1], inside)
+
+# markings on the hull's side at z, round it at angle a: the shapes' x toward the nose, y round
+# (up, on the right side), cut where the sides meet so each piece lies flat on one
+on_hull = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], z: f64, a: f64, size: f64):
+    rf = hull_flat(z)
+    loop k in 0.. and l in layers:
+        lift = 0.05 + 0.03 * f64(k)
+        pieces = l.0
+        loop j in -3..3: pieces = split_y(pieces, (f64(j) + 0.5) * HULL_STEP * rf / size)
+        loop p in pieces:
+            h = hull_point(z - f64(p.x) * size, a + f64(p.y) * size / rf)
+            vs.push(Vertex3D(h.0 + h.1 * f32(lift), h.1, vec2(0, 0), l.1))
+
+ZEP_FRONT = [vec4(-30.0, -10.2, 0.5, 0.6), vec4(-28.5, -10.4, 1.35, 1.45), vec4(-20.5, -10.5, 1.4, 1.5), vec4(-18.5, -10.3, 0.6, 0.6)]
+ZEP_REAR = [vec4(14.0, -8.9, 0.45, 0.5), vec4(15.2, -9.0, 1.0, 1.05), vec4(21.0, -9.0, 1.0, 1.05), vec4(22.4, -8.8, 0.4, 0.45)]
+ZEP_POD = [vec4(15.4, -9.0, 0.35, 0.4), vec4(16.2, -9.0, 0.7, 0.75), vec4(19.8, -9.0, 0.65, 0.7), vec4(20.8, -9.0, 0.28, 0.3)]
+
+# both sides' airships: a long hull of flat panels, four tail fins, a control gondola at the front
+# and an engine gondola with two engines behind; gunners' platforms on top and at the tail, a
+# gun tub under the front gondola. Red's silver with a red band round the nose and black crosses;
+# Blue's a dark steel-blue armored dreadnought, its nose dark blue, roundels
+make_zeppelin = (team: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    red = team == 0
+    hull = if red: rgb(0.7, 0.71, 0.72) else: rgb(0.3, 0.38, 0.5)
+    nose = if red: rgb(0.75, 0.1, 0.08) else: rgb(0.12, 0.16, 0.32)
+    gondola = if red: rgb(0.42, 0.42, 0.4) else: rgb(0.22, 0.26, 0.32)
+    fins = if red: rgb(0.64, 0.65, 0.66) else: rgb(0.27, 0.34, 0.45)
+    rail = rgb(0.2, 0.2, 0.2)
+    insignia = if red: CROSS else: ROUNDEL
+    colors: vec4[]
+    loop i in 0..HULL.len() - 1: colors.push(if red and (i == 2 or i == 3): nose else if not red and i < 3: nose else: hull)
+    make_hull(vs, colors, shade(hull, 0.82), if red: [] else: [1, 2, 6, 7, 9, 10, 14, 15])
+    loop s in [0.0, PI]:
+        on_hull(vs, insignia, -8.0, s, 3.4)
+        if not red:
+            # (a row of ports along the dreadnought's sides)
+            ports: vec2[]
+            loop k in 0..10: ports.extend(box2(vec2(f32(-14.0 + 3.2 * f64(k)), 0), 0.9, 0.6))
+            on_hull(vs, [(ports, rgb(0.08, 0.09, 0.12))], 4.0, s - 0.35 * (if s == 0.0: 1.0 else: -1.0), 1.0)
+    # the fins: up, right, down, left; each a fixed fin and a rudder or elevator behind it
+    loop k in 0..4:
+        a = PI / 2.0 * f64(k)
+        d = v3(cos(a), sin(a), 0)
+        at = (r: f64, z: f64) -> vec3: d * f32(r) + v3(0, 0, z)
+        n = v3(-sin(a), cos(a), 0)
+        plate(vs, [at(5.2, 30.0), at(10.2, 37.0), at(10.2, 41.6), at(1.8, 41.6)], n, 0.3, fins)
+        plate(vs, [at(1.6, 41.7), at(10.2, 41.7), at(10.2, 43.6), at(9.2, 44.3), at(0.8, 44.4)], n, 0.22, shade(fins, 0.8))
+        loop sn in [-1.0, 1.0]:
+            m = n * f32(sn)
+            mark(vs, insignia, at(6.6, 38.2) + m * 0.15, vec3(0, 0, -1), d, m, 2.0)
+    # the control gondola, its windows, held under the hull; the gun tub under its back
+    loft(vs, ZEP_FRONT, gondola)
+    panes: vec2[]
+    loop k in 0..8: panes.extend(box2(vec2(f32(-3.15 + 0.9 * f64(k)), 0.35), 0.7, 0.75))
+    on_sides(vs, [(panes, GLASS)], ZEP_FRONT, -24.5, 1.0)
+    on_sides(vs, [(box2(vec2(0, 0.3), 1.1, 0.7), GLASS)], ZEP_FRONT, -29.25, 1.0)
+    mark(vs, [(box2(vec2(0, 0), 0.7, 0.55), GLASS)], vec3(0, -10.0, -30.0), vec3(1, 0, 0), vec3(0, 1, 0), vec3(0, 0, -1), 1.0)
+    add_box(vs, v3(0, (-8.9 - hull_flat(-24.0)) / 2.0 + 0.15, -24.0), v3(1.2, hull_flat(-24.0) - 8.9 + 0.3, 6.0), gondola)
+    loop s in [-1.0, 1.0]:
+        loop z in [-28.0, -21.0]: beam(vs, v3(1.2 * s, -9.0, z), v3(2.6 * s, -hull_flat(z) + 0.6, z + (if z < -24.0: 1.5 else: -1.5)), 0.12, rail)
+    gun_pit(vs, vec3(0, -11.75, -20.0), 0.8, 0.7, gondola, rail)
+    # the engine gondola and its two engines, propellers behind them
+    loft(vs, ZEP_REAR, gondola)
+    add_box(vs, v3(0, -8.0, 18.0), vec3(1.0, 0.4, 5.0), gondola)
+    loop s in [-1.0, 1.0]:
+        loft(vs, ZEP_POD, gondola, 4.0 * s)
+        add_box(vs, v3(4.0 * s, -9.0, 15.37), vec3(0.5, 0.55, 0.05), rgb(0.15, 0.15, 0.15))
+        loop z in [16.6, 19.4]:
+            beam(vs, v3(1.0 * s, -9.0, z), v3(3.4 * s, -9.0, z), 0.12, rail)
+            beam(vs, v3(3.8 * s, -8.3, z), hull_point(z, -PI / 2.0 + 0.42 * s).0, 0.12, rail)
+        beam(vs, v3(1.0 * s, -8.3, 15.5), v3(3.4 * s, -9.0, 19.4), 0.08, rail)
+        # (windows down the engine gondola)
+    eng_panes: vec2[]
+    loop k in 0..4: eng_panes.extend(box2(vec2(f32(-2.1 + 1.4 * f64(k)), 0.3), 0.8, 0.5))
+    on_sides(vs, [(eng_panes, GLASS)], ZEP_REAR, 18.0, 1.0)
+    # the gunners' platforms: on top, front and back, and at the tail
+    loop z in [-25.0, 20.0]:
+        top = hull_flat(z)
+        if top < 8.0: add_cylinder(vs, v3(0, top - 0.3, z), 0.7, 8.1 - top + 0.3, gondola, 10)
+        platform(vs, v3(0, 8.2, z), 1.3, 0.5, gondola, rail)
+    platform(vs, vec3(0, -0.1, 45.4), 0.95, 0.5, gondola, rail)
+    vs
+
+# ---------------- what the crafts carry, and what is on the ground ----------------
+# an early stick rocket (Le Prieur's): a pointed head on a tube, a long stick behind
+make_rocket = () -> Mesh:
+    vs: Vertex3D[]
+    lathe(vs, [vec2(-0.66, 0.0), vec2(-0.48, 0.075), vec2(-0.02, 0.075)], 8, rgb(0.36, 0.37, 0.3), colors = [rgb(0.55, 0.55, 0.55), rgb(0.36, 0.37, 0.3)])
+    loop z in [-0.4, -0.1]: tube(vs, v3(0, 0, z), v3(0, 0, z + 0.04), 0.08, rgb(0.6, 0.5, 0.25), 8)
+    beam(vs, vec3(0, 0, -0.05), vec3(0, 0, 0.64), 0.03, WOOD, true)
+    custom_mesh(vs)
+
+# a bomb: a teardrop, its nose toward -z, four fins in a box at its tail
+make_bomb = () -> Mesh:
+    vs: Vertex3D[]
+    body = rgb(0.32, 0.34, 0.3)
+    prof = [vec2(-0.56, 0.0), vec2(-0.5, 0.08), vec2(-0.4, 0.14), vec2(-0.25, 0.175), vec2(-0.05, 0.18), vec2(0.15, 0.16), vec2(0.3, 0.11), vec2(0.42, 0.06), vec2(0.47, 0.035)]
+    lathe(vs, prof, 10, body, colors = [DARK, DARK, body, YELLOW_PAINT, body, body, body, body])
+    loop k in 0..4:
+        a = PI / 4.0 + PI / 2.0 * f64(k)
+        d = v3(cos(a), sin(a), 0)
+        plate(vs, [d * 0.04 + vec3(0, 0, 0.22), d * 0.18 + vec3(0, 0, 0.32), d * 0.18 + vec3(0, 0, 0.56), d * 0.04 + vec3(0, 0, 0.56)], v3(-sin(a), cos(a), 0), 0.015, body)
+        b = PI / 4.0 + PI / 2.0 * f64(k + 1)
+        e = v3(cos(b), sin(b), 0)
+        loop z in [0.4, 0.55]: beam(vs, d * 0.18 + v3(0, 0, z), e * 0.18 + v3(0, 0, z), 0.015, body)
+    custom_mesh(vs)
+
+# an open parachute: twelve gores, white and off-white, seen from inside too; its lines gather a
+# little over the shoulders of a person standing at its origin
+make_parachute = () -> Mesh:
+    vs: Vertex3D[]
+    rings = [vec2(6.5, 3.5), vec2(7.5, 3.15), vec2(8.3, 2.4), vec2(8.8, 1.4), vec2(9.0, 0.45)]
+    n = 12
+    pt = (i: int, k: int) -> vec3:
+        a = TAU * f64(k % n) / f64(n)
+        v3(cos(a) * f64(rings[i].y), f64(rings[i].x), sin(a) * f64(rings[i].y))
+    centre = vec3(0, 5.3, 0)
+    loop k in 0..n:
+        c = if k % 2 == 0: rgb(0.95, 0.94, 0.9) else: rgb(0.84, 0.81, 0.73)
+        loop i in 0..rings.len() - 1:
+            a0 = pt(i, k)
+            a1 = pt(i, k + 1)
+            b0 = pt(i + 1, k)
+            b1 = pt(i + 1, k + 1)
+            quad(vs, a0, a1, b1, b0, c, centre)
+            m = (a0 + b1) * 0.5
+            quad(vs, a0, a1, b1, b0, shade(c, 0.8), m + (m - centre))
+    loop k in 0..n:
+        top = vec3(0, 9.0, 0)
+        tri(vs, top, pt(4, k), pt(4, k + 1), rgb(0.9, 0.88, 0.82), centre)
+        tri(vs, top, pt(4, k), pt(4, k + 1), rgb(0.7, 0.68, 0.62), top + vec3(0, 1, 0))
+        beam(vs, pt(0, k), vec3(0, 2.2, 0), 0.025, rgb(0.75, 0.73, 0.68))
+    loop s in [-1.0, 1.0]: beam(vs, vec3(0, 2.2, 0), v3(0.2 * s, 1.5, 0), 0.04, rgb(0.6, 0.55, 0.45))
+    custom_mesh(vs)
+
+# a flag on a pole: the pole's foot at foot, the cloth (w by h, toward +x) at its top, the side's
+# color with its insignia on both faces
+add_flag = (vs: mut Vertex3D[], foot: vec3, pole: f64, w: f64, h: f64, team: int):
+    tube(vs, foot, foot + v3(0, pole, 0), 0.02 + 0.008 * pole, rgb(0.55, 0.5, 0.42), 6)
+    add_sphere(vs, foot + v3(0, pole + 0.1, 0), 0.06 + 0.008 * pole, YELLOW_PAINT, 6, 4)
+    cloth = if team == 0: RED_SIDE else: BLUE_SIDE
+    c = foot + v3(w / 2.0 + 0.1, pole - h / 2.0 - 0.05, 0)
+    add_box(vs, c, v3(w, h, 0.04), cloth)
+    layers = if team == 0: CROSS else: [(disc2(vec2(0, 0), 1.14, 24), WHITE_PAINT)] + ROUNDEL
+    loop n in [-1.0, 1.0]: mark(vs, layers, c + v3(0, 0, 0.02 * n), vec3(1, 0, 0), vec3(0, 1, 0), v3(0, 0, n), h * 0.36)
+
+make_flag = (team: int) -> Mesh:
+    vs: Vertex3D[]
+    add_flag(vs, vec3(0, 0, 0), 10.0, 3.0, 2.0, team)
+    add_box(vs, vec3(0, 0.15, 0), vec3(0.8, 0.3, 0.8), rgb(0.5, 0.48, 0.44))
+    custom_mesh(vs)
+
+# a building with a pitched roof: walls w (x) by d (z), wall high, the ridge (along x) at ridge
+house = (vs: mut Vertex3D[], c: vec3, w: f64, d: f64, wall: f64, ridge: f64, walls: vec4, roof: vec4):
+    add_box(vs, c + v3(0, wall / 2.0, 0), v3(w, wall, d), walls)
+    loop s in [-1.0, 1.0]:
+        x = s * w / 2.0
+        tri(vs, c + v3(x, wall, -d / 2.0), c + v3(x, wall, d / 2.0), c + v3(x, ridge, 0), walls, c + v3(0, wall, 0))
+    o = 0.45
+    e = d / 2.0 + o
+    ey = wall - o * (ridge - wall) / (d / 2.0)
+    loop s in [-1.0, 1.0]:
+        a = c + v3(-w / 2.0 - o, ey, s * e)
+        b = c + v3(w / 2.0 + o, ey, s * e)
+        r1 = c + v3(w / 2.0 + o, ridge, 0)
+        r0 = c + v3(-w / 2.0 - o, ridge, 0)
+        quad(vs, a, b, r1, r0, roof, c + v3(0, -10.0, 0))
+        quad(vs, a, b, r1, r0, shade(roof, 0.45), c + v3(0, 100.0, 0))
+
+# a window (or a door) on a wall facing n: dark panes in a light frame
+window_at = (vs: mut Vertex3D[], c: vec3, n: vec3, w: f64, h: f64, frame: vec4, glass: vec4 = rgb(0.15, 0.18, 0.22)):
+    across = if abs(f64(n.x)) > 0.5: vec3(0, 0, 1) else: vec3(1, 0, 0)
+    size = across * f32(w) + vec3(0, f32(h), 0) + v3(abs(f64(n.x)), 0, abs(f64(n.z))) * 0.06
+    add_box(vs, c + n * 0.02, size + (across + vec3(0, 1, 0)) * 0.16, frame)
+    add_box(vs, c + n * 0.04, size, glass)
+
+# Bessonneau's canvas hangar: wooden arches under the canvas, open toward +z; the side's color in
+# a stripe along it and a flag over its front
+make_hangar = (team: int) -> Mesh:
+    vs: Vertex3D[]
+    canvas = rgb(0.74, 0.68, 0.54)
+    wood = rgb(0.36, 0.26, 0.16)
+    side = if team == 0: RED_SIDE else: BLUE_SIDE
+    half = [vec2(12, 0), vec2(12, 3.6), vec2(10.2, 6.3), vec2(6.4, 8.3), vec2(0, 9.0)]
+    prof: vec2[]
+    loop p in half: prof.push(p)
+    loop i in 0..half.len() - 1: prof.push(vec2(-half[half.len() - 2 - i].x, half[half.len() - 2 - i].y))
+    axis = (z: f64) -> vec3: v3(0, 3.5, z)
+    loop i in 0..prof.len() - 1:
+        a = prof[i]
+        b = prof[i + 1]
+        p0 = v3(f64(a.x), f64(a.y), -10)
+        p1 = v3(f64(b.x), f64(b.y), -10)
+        q0 = v3(f64(a.x), f64(a.y), 10)
+        q1 = v3(f64(b.x), f64(b.y), 10)
+        quad(vs, p0, p1, q1, q0, canvas, axis(0.0))
+        m = (p0 + q1) * 0.5
+        quad(vs, p0, p1, q1, q0, shade(canvas, 0.45), m + (m - axis(0.0)))
+        # the back wall
+        tri(vs, v3(0, 4.0, -10), p0, p1, canvas, axis(0.0))
+        tri(vs, v3(0, 4.0, -10), p0, p1, shade(canvas, 0.4), axis(-20.0))
+        # the arches, every four meters
+        loop z in [-10.0, -6.0, -2.0, 2.0, 6.0, 10.0]:
+            out = (p: vec2) -> vec3:
+                d = normalize(vec2(p.x, p.y - 3.5))
+                v3(f64(p.x + d.x * 0.12), f64(p.y + d.y * 0.12), z)
+            beam(vs, out(a), out(b), if z == 10.0: 0.35 else: 0.22, wood)
+    # the stripe along both walls and over the front's top; the canvas doors drawn back
+    loop s in [-1.0, 1.0]:
+        add_box(vs, v3(12.02 * s, 2.6, 0), vec3(0.04, 0.8, 19.6), side)
+        add_box(vs, v3(11.0 * s, 1.9, 9.6), vec3(2.2, 3.8, 0.7), shade(canvas, 0.9))
+        loop k in 0..3: add_box(vs, v3(11.0 * s + f64(k - 1) * 0.6, 1.9, 9.98), vec3(0.08, 3.8, 0.08), shade(canvas, 0.75))
+    add_box(vs, vec3(0, 8.55, 10.1), vec3(10.0, 0.5, 0.06), side)
+    add_flag(vs, vec3(0, 9.0, 9.0), 3.5, 2.2, 1.4, team)
+    custom_mesh(vs)
+
+# a fuel tank: a steel drum on the ground, a band in the side's color, a ladder, a pipe
+make_tank = (team: int) -> Mesh:
+    vs: Vertex3D[]
+    steel = rgb(0.56, 0.57, 0.55)
+    side = if team == 0: RED_SIDE else: BLUE_SIDE
+    add_cylinder(vs, vec3(0, 0, 0), 4.0, 6.0, steel, 20)
+    add_cylinder(vs, vec3(0, 6.0, 0), 4.0, 0.7, shade(steel, 0.9), 20, 0.7)
+    add_cylinder(vs, vec3(0, 3.5, 0), 4.04, 1.1, side, 20)
+    loop y in [1.6, 5.2]: add_cylinder(vs, v3(0, y, 0), 4.03, 0.08, shade(steel, 0.6), 20)
+    add_cylinder(vs, vec3(0, 0, 0), 4.3, 0.3, rgb(0.45, 0.43, 0.4), 20)
+    loop s in [-1.0, 1.0]: beam(vs, v3(4.15, 0, 0.3 * s), v3(4.15, 6.4, 0.3 * s), 0.07, DARK)
+    loop k in 0..16: beam(vs, v3(4.15, 0.3 + 0.38 * f64(k), -0.3), v3(4.15, 0.3 + 0.38 * f64(k), 0.3), 0.05, DARK)
+    tube(vs, vec3(-3.9, 0.6, 0), vec3(-6.5, 0.6, 0), 0.18, DARK, 8)
+    add_cylinder(vs, vec3(-6.2, 0.6, 0), 0.25, 0.4, ROUNDEL_RED, 8)
+    custom_mesh(vs)
+
+# a command post: a farmhouse with a red roof, a radio mast, sandbags at the door, the side's flag
+# on its roof
+make_hq = (team: int) -> Mesh:
+    vs: Vertex3D[]
+    walls = rgb(0.86, 0.82, 0.72)
+    frame = rgb(0.95, 0.94, 0.9)
+    house(vs, vec3(0, 0, 0), 12.0, 9.0, 4.2, 7.0, walls, rgb(0.55, 0.2, 0.15))
+    window_at(vs, vec3(0, 1.2, -4.5), vec3(0, 0, -1), 1.4, 2.4, rgb(0.35, 0.22, 0.12), rgb(0.3, 0.2, 0.12))
+    loop x in [-4.0, -2.0, 2.0, 4.0]:
+        window_at(vs, v3(x, 2.4, -4.5), vec3(0, 0, -1), 0.9, 1.2, frame)
+        window_at(vs, v3(x, 2.4, 4.5), vec3(0, 0, 1), 0.9, 1.2, frame)
+    loop s in [-1.0, 1.0]:
+        loop z in [-2.0, 2.0]: window_at(vs, v3(6.0 * s, 2.4, z), v3(s, 0, 0), 0.9, 1.2, frame)
+    add_box(vs, vec3(-3.5, 7.0, 1.5), vec3(0.8, 2.2, 0.8), rgb(0.6, 0.35, 0.28))
+    # sandbags either side of the door
+    loop s in [-1.0, 1.0]:
+        loop k in 0..3:
+            loop l in 0..2: add_box(vs, v3(s * (1.5 + 0.62 * f64(k)) + 0.15 * f64(l) * s, 0.17 + 0.3 * f64(l), -5.3), vec3(0.6, 0.3, 0.45), rgb(0.62, 0.55, 0.4))
+    # the radio mast, its wire to the roof
+    tube(vs, vec3(7.5, 0, 3.0), vec3(7.5, 11.0, 3.0), 0.09, DARK, 6)
+    beam(vs, vec3(7.5, 10.8, 3.0), vec3(-5.5, 6.6, 0), 0.03, DARK)
+    add_flag(vs, vec3(3.0, 6.75, 0), 3.0, 1.8, 1.2, team)
+    custom_mesh(vs)
+
+# an anti-aircraft gun's emplacement: a ring of sandbags, a plank floor, the pedestal it turns on,
+# shells in boxes
+make_aa_base = () -> Mesh:
+    vs: Vertex3D[]
+    bags = rgb(0.62, 0.55, 0.4)
+    metal = rgb(0.3, 0.33, 0.28)
+    add_cylinder(vs, vec3(0, 0, 0), 1.6, 0.12, rgb(0.42, 0.32, 0.2), 14)
+    loop l in 0..3:
+        loop k in 0..16:
+            a = TAU * (f64(k) + 0.5 * f64(l % 2)) / 16.0
+            if cos(a) > 0.0 and abs(sin(a)) < 0.25: continue
+            add_box(vs, v3(0, 0.16 + 0.3 * f64(l), 0), vec3(0.42, 0.3, 0.74), shade(bags, 0.92 + 0.08 * f64((k + l) % 2)), translation(v3(cos(a) * 1.95, 0, sin(a) * 1.95)) * rotation_y(-a))
+    add_cylinder(vs, vec3(0, 0.12, 0), 0.35, 1.45, metal, 10, 0.25)
+    add_cylinder(vs, vec3(0, 1.55, 0), 0.62, 0.15, metal, 14)
+    loop k in 0..2: add_box(vs, v3(-1.1, 0.3 + 0.36 * f64(k), 0.6 - 0.5 * f64(k)), vec3(0.4, 0.34, 0.7), rgb(0.4, 0.36, 0.22))
+    custom_mesh(vs)
+
+# the gun that turns on it: its pivot at the origin (2.2 over the base's), the barrel 4 long toward
+# -z, the cradle and the yoke under it, a small shield
+make_aa_barrel = () -> Mesh:
+    vs: Vertex3D[]
+    metal = rgb(0.3, 0.33, 0.28)
+    dark = rgb(0.16, 0.17, 0.15)
+    loop s in [-1.0, 1.0]: add_box(vs, v3(0.42 * s, -0.25, 0), vec3(0.1, 0.65, 0.55), metal)
+    add_box(vs, vec3(0, -0.52, 0), vec3(0.95, 0.1, 0.6), metal)
+    tube(vs, vec3(-0.5, 0, 0), vec3(0.5, 0, 0), 0.08, dark, 8)
+    add_box(vs, vec3(0, 0.02, 0.75), vec3(0.32, 0.32, 0.65), metal)
+    tube(vs, vec3(0, -0.14, 0.6), vec3(0, -0.14, -1.6), 0.13, metal, 10)
+    tube(vs, vec3(0, 0.03, 0.45), vec3(0, 0.03, -4.0), 0.085, dark, 10, 0.07)
+    tube(vs, vec3(0, 0.03, -3.75), vec3(0, 0.03, -4.0), 0.11, dark, 10)
+    add_box(vs, vec3(0, 0.1, -0.7), vec3(1.3, 0.8, 0.05), metal)
+    add_box(vs, vec3(0.22, 0.2, 0.0), vec3(0.06, 0.12, 0.5), dark)
+    add_cylinder(vs, vec3(0, 0, 0), 0.16, 0.04, dark, 10, -1.0, translation(vec3(0.5, -0.1, 0.3)) * rotation_z(PI / 2.0))
+    custom_mesh(vs)
+
+# a zeppelin's mooring mast: a lattice tower, its legs leaning in, a platform and the mooring cup
+make_mast = () -> Mesh:
+    vs: Vertex3D[]
+    steel = rgb(0.3, 0.32, 0.33)
+    corner = (k: int, y: f64) -> vec3:
+        h = 3.0 - 2.0 * y / 28.0
+        sx = if k == 0 or k == 3: -1.0 else: 1.0
+        sz = if k < 2: -1.0 else: 1.0
+        v3(sx * h, y, sz * h)
+    ys = [0.0, 3.5, 7.0, 10.5, 14.0, 17.5, 21.0, 24.5, 28.0]
+    loop i in 0..ys.len() - 1:
+        loop k in 0..4:
+            a = corner(k, ys[i])
+            b = corner(k, ys[i + 1])
+            n0 = corner((k + 1) % 4, ys[i])
+            n1 = corner((k + 1) % 4, ys[i + 1])
+            beam(vs, a, b, 0.3, steel)
+            beam(vs, b, n1, 0.16, steel)
+            beam(vs, a, n1, 0.09, steel)
+            beam(vs, b, n0, 0.09, steel)
+    loop k in 0..4: add_box(vs, corner(k, 0.0) + vec3(0, 0.3, 0), vec3(1.1, 0.6, 1.1), rgb(0.6, 0.58, 0.54))
+    add_box(vs, vec3(0, 28.1, 0), vec3(3.4, 0.2, 3.4), steel)
+    loop k in 0..4:
+        a = corner(k, 28.2) * vec3(1.65, 1, 1.65) + vec3(0, 0, 0)
+        b = corner((k + 1) % 4, 28.2) * vec3(1.65, 1, 1.65)
+        beam(vs, v3(f64(a.x), 29.1, f64(a.z)), v3(f64(b.x), 29.1, f64(b.z)), 0.07, steel)
+        beam(vs, v3(f64(a.x), 28.2, f64(a.z)), v3(f64(a.x), 29.1, f64(a.z)), 0.07, steel)
+    add_cylinder(vs, vec3(0, 28.2, 0), 0.4, 1.4, steel, 10, 0.3)
+    add_cylinder(vs, vec3(0, 29.6, 0), 0.3, 0.5, steel, 10, 0.75)
+    add_sphere(vs, vec3(0, 30.25, 0), 0.18, ROUNDEL_RED, 8, 5)
+    custom_mesh(vs)
+
+# a stack of crates, n by m on the ground and k high, at c
+crates = (vs: mut Vertex3D[], c: vec3, n: int, m: int, k: int, s: f64 = 1.2):
+    loop i in 0..n:
+        loop j in 0..m:
+            loop l in 0..k:
+                if l > 0 and hash(i * 31 + j * 7 + l * 131 + int(c.x * 10.0)) % 4 == 0: continue
+                p = c + v3((f64(i) - f64(n - 1) / 2.0) * s * 1.02, s / 2.0 + f64(l) * s, (f64(j) - f64(m - 1) / 2.0) * s * 1.02)
+                add_box(vs, p, v3(s, s, s), shade(rgb(0.48, 0.42, 0.26), 0.85 + 0.03 * f64(hash(i + j * 3 + l * 5) % 6)))
+                add_box(vs, p, v3(s + 0.03, s * 0.12, s + 0.03), rgb(0.3, 0.26, 0.16))
+
+# an ammunition depot: two brick sheds, stacked crates, shells, barrels, a sandbag wall, a warning
+# sign
+make_depot = () -> Mesh:
+    vs: Vertex3D[]
+    brick = rgb(0.58, 0.3, 0.22)
+    slate = rgb(0.3, 0.32, 0.35)
+    door = rgb(0.22, 0.3, 0.2)
+    house(vs, vec3(-7.5, 0, -2.0), 11.0, 8.0, 4.4, 7.6, brick, slate)
+    house(vs, vec3(6.5, 0, -3.0), 8.0, 6.5, 3.8, 6.4, brick, slate)
+    window_at(vs, vec3(-7.5, 1.6, 2.0), vec3(0, 0, 1), 3.0, 3.2, rgb(0.4, 0.4, 0.38), door)
+    window_at(vs, vec3(6.5, 1.4, 0.25), vec3(0, 0, 1), 2.4, 2.8, rgb(0.4, 0.4, 0.38), door)
+    # (a red diamond: explosives)
+    loop c in [vec3(-10.5, 3.0, 2.0), vec3(9.0, 2.6, 0.25)]:
+        mark(vs, [(placed(box2(vec2(0, 0), 1.0, 1.0), vec2(0, 0), 1.0, PI / 4.0), WHITE_PAINT), (placed(box2(vec2(0, 0), 0.8, 0.8), vec2(0, 0), 1.0, PI / 4.0), ROUNDEL_RED)], c, vec3(1, 0, 0), vec3(0, 1, 0), vec3(0, 0, 1), 0.8)
+    crates(vs, vec3(-1.2, 0, 4.4), 3, 2, 3)
+    crates(vs, vec3(4.0, 0, 4.8), 2, 2, 2)
+    crates(vs, vec3(11.5, 0, 3.8), 2, 3, 2)
+    crates(vs, vec3(-12.5, 0, 5.0), 2, 2, 1)
+    # shells standing on a pallet, barrels
+    add_box(vs, vec3(-7.0, 0.1, 5.2), vec3(3.2, 0.2, 1.6), rgb(0.42, 0.32, 0.2))
+    loop i in 0..6:
+        loop j in 0..3: tube(vs, v3(-8.4 + 0.55 * f64(i), 0.2, 4.7 + 0.5 * f64(j)), v3(-8.4 + 0.55 * f64(i), 1.0, 4.7 + 0.5 * f64(j)), 0.16, rgb(0.72, 0.58, 0.28), 6, 0.08)
+    loop k in 0..4: add_cylinder(vs, v3(1.5 + 0.9 * f64(k % 2), 0, -5.5 + 0.9 * f64(k / 2)), 0.42, 1.3, rgb(0.25, 0.3, 0.22), 10)
+    # sandbags along the front
+    loop k in 0..12:
+        loop l in 0..2: add_box(vs, v3(-13.0 + 0.66 * f64(k) + 0.3 * f64(l), 0.16 + 0.3 * f64(l), 7.0), vec3(0.62, 0.3, 0.45), rgb(0.62, 0.55, 0.4))
+    custom_mesh(vs)
+
+# a factory: a long brick hall with a saw-toothed roof (glazed on its steep sides), tall windows,
+# two tall chimneys behind it
+make_factory = () -> Mesh:
+    vs: Vertex3D[]
+    brick = rgb(0.56, 0.3, 0.22)
+    roof = rgb(0.32, 0.33, 0.35)
+    glass = rgb(0.35, 0.42, 0.48)
+    add_box(vs, vec3(0, 4.5, 0), vec3(40, 9, 25), brick)
+    loop i in 0..5:
+        x0 = -20.0 + 8.0 * f64(i)
+        loop s in [-1.0, 1.0]:
+            tri(vs, v3(x0, 9, 12.5 * s), v3(x0 + 8.0, 9, 12.5 * s), v3(x0 + 8.0, 12, 12.5 * s), brick, v3(x0 + 4.0, 9, 0))
+        quad(vs, v3(x0, 9, -12.5), v3(x0 + 8.0, 12, -12.5), v3(x0 + 8.0, 12, 12.5), v3(x0, 9, 12.5), roof, v3(x0 + 4.0, 5, 0))
+        quad(vs, v3(x0 + 8.0, 9, -12.5), v3(x0 + 8.0, 12, -12.5), v3(x0 + 8.0, 12, 12.5), v3(x0 + 8.0, 9, 12.5), glass, v3(x0, 10, 0))
+        loop k in 0..9: add_box(vs, v3(x0 + 8.0, 10.5, -10.0 + 2.5 * f64(k)), vec3(0.12, 3.0, 0.12), rgb(0.2, 0.2, 0.22))
+    loop s in [-1.0, 1.0]:
+        loop k in 0..9: window_at(vs, v3(-16.0 + 4.0 * f64(k), 4.5, 12.5 * s), v3(0, 0, s), 1.8, 4.5, rgb(0.42, 0.24, 0.18))
+        loop k in 0..5: window_at(vs, v3(20.0 * s, 4.5, -10.0 + 5.0 * f64(k)), v3(s, 0, 0), 1.8, 4.5, rgb(0.42, 0.24, 0.18))
+    window_at(vs, vec3(-20, 2.6, 0), vec3(-1, 0, 0), 5.0, 5.2, rgb(0.3, 0.3, 0.3), rgb(0.2, 0.17, 0.14))
+    loop x in [-11.0, 9.0]:
+        add_box(vs, v3(x, 2.0, -14.5), vec3(4.4, 4.0, 4.4), brick)
+        add_cylinder(vs, v3(x, 4.0, -14.5), 1.6, 24.0, brick, 12, 1.1)
+        add_cylinder(vs, v3(x, 26.2, -14.5), 1.28, 1.6, rgb(0.15, 0.13, 0.12), 12, 1.25)
+    custom_mesh(vs)
+
+# (a part's vertices moved and turned by m)
+put = (vs: mut Vertex3D[], part: Vertex3D[], m: mat4):
+    loop v in part:
+        p = m * vec4(v.pos.x, v.pos.y, v.pos.z, 1)
+        n = m * vec4(v.normal.x, v.normal.y, v.normal.z, 0)
+        vs.push(Vertex3D(p.xyz, normalize(n.xyz), v.uv, v.color))
+
+# a crashed plane, burnt: the body broken on the ground, wings stripped to their ribs, the engine
+# thrown ahead, a wheel, scorched earth round it
+make_wreck = () -> Mesh:
+    vs: Vertex3D[]
+    char = rgb(0.09, 0.08, 0.07)
+    burnt = rgb(0.15, 0.1, 0.07)
+    ash = rgb(0.32, 0.31, 0.29)
+    rust = rgb(0.34, 0.19, 0.1)
+    # scorched ground
+    burn: vec2[]
+    loop k in 0..14:
+        a = TAU * f64(k) / 14.0
+        r = 3.6 + 0.9 * sin(a * 3.0 + 1.0) + 0.5 * cos(a * 5.0)
+        burn.push(vec2(f32(cos(a) * r), f32(sin(a) * r)))
+    loop t in poly2(burn): vs.push(Vertex3D(v3(f64(t.x), 0.03, f64(t.y)), vec3(0, 1, 0), vec2(0, 0), rgb(0.12, 0.11, 0.09)))
+    # the body, nose down in the earth and broken behind the cockpit
+    front: Vertex3D[]
+    loft(front, [vec4(-2.3, 0.0, 0.45, 0.45), vec4(-0.6, 0.05, 0.46, 0.5), vec4(0.6, 0.1, 0.4, 0.45)], burnt)
+    put(vs, front, translation(vec3(0.3, 0.35, -0.6)) * rotation_y(0.4) * rotation_x(0.22) * rotation_z(0.25))
+    back: Vertex3D[]
+    loft(back, [vec4(0.8, 0.1, 0.36, 0.4), vec4(3.6, 0.2, 0.05, 0.1)], char)
+    add_box(back, vec3(0, 0.2, 3.3), vec3(2.6, 0.06, 0.8), char)
+    add_box(back, vec3(0, 0.65, 3.2), vec3(0.06, 0.9, 0.6), burnt)
+    put(vs, back, translation(vec3(1.0, 0.05, 0.6)) * rotation_y(-0.5) * rotation_z(-0.6))
+    # the wings: spars and ribs, the fabric burnt off; one broken and raised
+    ribs = (len: f64) -> Vertex3D[]:
+        w: Vertex3D[]
+        loop z in [-0.6, 0.4]: beam(w, v3(0, 0, z), v3(len, 0, z), 0.08, char)
+        loop k in 0..int(len / 0.45): beam(w, v3(0.2 + 0.45 * f64(k), 0, -0.75), v3(0.2 + 0.45 * f64(k), 0, 0.55), 0.05, burnt)
+        w
+    put(vs, ribs(3.8), translation(vec3(0.6, 0.25, -0.8)) * rotation_y(-0.25) * rotation_z(0.08))
+    put(vs, ribs(3.2), translation(vec3(-0.4, 0.15, -0.4)) * rotation_y(PI + 0.5) * rotation_z(-0.12))
+    put(vs, ribs(2.6), translation(vec3(-1.6, 0.1, 1.6)) * rotation_y(PI - 0.2) * rotation_z(0.9))
+    loop k in 0..3: beam(vs, v3(-0.5 + 0.6 * f64(k), 0.2, -1.2 + 0.3 * f64(k)), v3(-0.2 + 0.5 * f64(k), 1.4 - 0.2 * f64(k), -1.0 + 0.5 * f64(k)), 0.07, char)
+    # the engine thrown ahead, a wheel on its side, scraps
+    add_cylinder(vs, vec3(0, 0, 0), 0.5, 0.6, rust, 9, 0.42, translation(vec3(-0.6, 0.45, -3.4)) * rotation_x(-1.3) * rotation_z(0.3))
+    add_cylinder(vs, vec3(1.8, 0.0, -2.2), 0.34, 0.14, char, 10)
+    loop k in 0..9:
+        h = hash(k * 977 + 3)
+        a = TAU * f64(h % 100) / 100.0
+        r = 1.5 + f64((h >> 8) % 25) / 10.0
+        add_box(vs, v3(cos(a) * r, 0.06, sin(a) * r), v3(0.2 + f64((h >> 16) % 5) / 10.0, 0.06, 0.15 + f64((h >> 24) % 4) / 10.0), if k % 3 == 0: ash else: char, rotation_y(a))
+    custom_mesh(vs)
+
+# ---------------- what the game asks for ----------------
+craft_vertices = (kind: int, team: int, badge: int) -> Vertex3D[]:
+    if kind == SCOUT: return if team == 0: make_parasol(badge) else: make_sesquiplane(badge)
+    if kind == FIGHTER: return make_fighter(team, badge)
+    if kind == BOMBER: return if team == 0: make_gotha() else: make_muromets()
+    make_zeppelin(team)
+
+# each craft with each insignia, made when first asked for (bombers and airships have none)
+craft_meshes: {int: Mesh} = {}
+craft_mesh = (kind: int, team: int, badge: int) -> Mesh:
+    b = if kind >= BOMBER: 0 else: badge
+    key = (kind * 2 + team) * 64 + b
+    if let m = craft_meshes.get(key): return m
+    m = custom_mesh(craft_vertices(kind, team, b))
+    craft_meshes[key] = m
+    m
+
+# (how many triangles a craft is)
+craft_triangles = (kind: int, team: int, badge: int) -> int: craft_vertices(kind, team, badge).len() / 3
+
+# each propeller: where its hub is (xyz) and how long a blade is (w)
+props = (kind: int, team: int) -> vec4[]:
+    if kind == SCOUT: return [vec4(0, 0, -2.75, 1.1)]
+    if kind == FIGHTER: return [vec4(0, 0.05, -3.02, 1.2)]
+    if kind == BOMBER:
+        if team == 0: return [vec4(-3.6, 0.6, 1.4, 1.5), vec4(3.6, 0.6, 1.4, 1.5)]
+        return [vec4(-6.4, 0, -2.6, 1.4), vec4(-3.2, 0, -2.6, 1.4), vec4(3.2, 0, -2.6, 1.4), vec4(6.4, 0, -2.6, 1.4)]
+    [vec4(-4, -9, 21, 2), vec4(4, -9, 21, 2)]
+
+# the rest, each made once
+_meshes: {str: Mesh} = {}
+_once = (name: str, make: () -> Mesh) -> Mesh:
+    if let m = _meshes.get(name): return m
+    m = make()
+    _meshes[name] = m
+    m
+
+prop_mesh = () -> Mesh: _once("prop", make_prop)
+turret_mesh = () -> Mesh: _once("turret", make_turret)
+person_mesh = (team: int) -> Mesh: _once("person" + str(team), (): make_person(team))
+parachute_mesh = () -> Mesh: _once("parachute", make_parachute)
+rocket_mesh = () -> Mesh: _once("rocket", make_rocket)
+bomb_mesh = () -> Mesh: _once("bomb", make_bomb)
+hangar_mesh = (team: int) -> Mesh: _once("hangar" + str(team), (): make_hangar(team))
+tank_mesh = (team: int) -> Mesh: _once("tank" + str(team), (): make_tank(team))
+hq_mesh = (team: int) -> Mesh: _once("hq" + str(team), (): make_hq(team))
+flag_mesh = (team: int) -> Mesh: _once("flag" + str(team), (): make_flag(team))
+aa_base_mesh = () -> Mesh: _once("aa base", make_aa_base)
+aa_barrel_mesh = () -> Mesh: _once("aa barrel", make_aa_barrel)
+mast_mesh = () -> Mesh: _once("mast", make_mast)
+depot_mesh = () -> Mesh: _once("depot", make_depot)
+factory_mesh = () -> Mesh: _once("factory", make_factory)
+wreck_mesh = () -> Mesh: _once("wreck", make_wreck)

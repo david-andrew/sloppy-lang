@@ -546,6 +546,7 @@ GALLERY = [
     ("netpong", "examples/netpong/netpong.jo", "Netpong", "netpong", ""),
     ("duel", "examples/duel/duel.jo", "Duel", "duel", ""),
     ("aces", "examples/aces/aces.jo", "Aces", "aces", ""),
+    ("skybarons", "examples/skybarons/skybarons.jo", "Sky Barons", "", ""),
     ("arcade", "lib/new/arcade.jo", "sloppy new: arcade", "arcade", ""),
     ("platformer", "lib/new/platformer.jo", "sloppy new: platformer", "platformer", ""),
     ("firstperson", "lib/new/3d.jo", "sloppy new: 3d", "firstperson", ""),
@@ -561,6 +562,9 @@ GALLERY = [
 GALLERY_NOTES = {
     "aces": 'Up to six a side, players and the computer: Invite a friend gives a link to send them, as many friends as there are planes, on the same side or against each other; or Practice, alone with the computer. '
             'Flown with the mouse, keys, a gamepad or two thumbs on a phone; the planes are built from boxes in the program (<code>add_box</code>, <code>custom_mesh</code>).',
+    "skybarons": 'Scouts, fighters, bombers with gunners, zeppelins; rockets and bombs; '
+                 'on foot at an airfield, getting in and out, parachutes; Dogfight, Base attack, Capture the flag, a Trench run and a Bomber escort. '
+                 'Several files: <code>sim.jo</code> (the game every machine plays the same), <code>world.jo</code> (the maps), <code>models.jo</code> (the crafts, built in code).',
     "duel": 'For two, anywhere: Invite a friend gives a link to send them; they open it, in a browser here or on a phone. '
             'Rollback netplay (<code>netplay.session</code> over invite codes): each game runs the whole match, with no server between them.',
     "netpong": 'For two, anywhere: choose Invite a friend and send them the link it gives; they open it (on a phone too), and you paste back the code their game then shows. '
@@ -579,7 +583,7 @@ def about(src):
             continue
         lines.append(t)
     text = " ".join(lines).replace("__TITLE__", "This game").replace("__NAME__", "game")
-    text = re.sub(r"^[A-Z]+ - ", "", text)
+    text = re.sub(r"^[A-Z][A-Z ]* - ", "", text)
     m = re.match(r"(.+?[.!?])( |$)", text)
     if m: text = m.group(1)
     return text[:1].upper() + text[1:]
@@ -621,8 +625,10 @@ def build_gallery():
             say = say.split(": ", 1)[-1]
             say = say[:1].upper() + say[1:]
         note = " " + GALLERY_NOTES[name] if name in GALLERY_NOTES else ""
+        # (a program of several files has no playground of its own)
+        change = f'<a class="btn" href="../playground/#example={pg}">Change it</a>' if pg else ""
         cards.append(f'<div class="card">{img}<h3>{html.escape(title)}</h3><p>{html.escape(say)}{note}</p>'
-                     f'<div class="buttons"><a class="btn primary" href="{play}">Play</a><a class="btn" href="../playground/#example={pg}">Change it</a>'
+                     f'<div class="buttons"><a class="btn primary" href="{play}">Play</a>{change}'
                      f'<a class="btn" href="{src_url}">Source</a></div></div>')
     shutil.rmtree(os.path.join(d, ".saves"), ignore_errors=True)
     # (Netpong without Sloppy: the relay, beside its page)

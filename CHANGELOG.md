@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Sky Barons (examples/skybarons): Aces' fork with more of everything. Scouts, fighters (and
+  their rockets), bombers with gunners fore and aft, zeppelins with five gun positions; bombs
+  dropped by hand; each side's airfield with its parked planes, hangars, fuel and guns against
+  aircraft. People walk (WASD and the mouse), get into any seat of any craft (F), change seats
+  (1 to 5, V), get out once landed, or bail out under a parachute; a craft in the other side's
+  colors fools that side until it shoots at them. Fights: Dogfight, Classic (Aces'), Base attack,
+  Capture the flag, the Trench run (up a gorge, under its guns) and the Bomber escort; friendly
+  fire is a choice. Several files: `sim.jo` (the game, the same on every machine), `world.jo` (the
+  two maps), `models.jo` (the crafts and buildings, built in code). In the gallery; its game is a
+  test (`skybarons_sim`: the same hash natively and in a web page).
 - `net.route` in a web page says "direct" or "relay" (from the connection's statistics, a moment
   after the first call); it was "" there, so Aces' online log could not tell.
 - 3D particles are drawn as instances, one for each particle, its corners placed by the shader
