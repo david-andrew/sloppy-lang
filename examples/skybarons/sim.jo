@@ -26,9 +26,14 @@ KIND_NAMES = ["scout", "fighter", "light bomber", "zeppelin", "ultra bomber", "b
 const ALL_CRAFTS = 255          # (Rules.crafts: every kind)
 # the ornithopter's long gun (scoped): a shell that flies fast and far, and hits hard; its
 # health packs heal what they reach by HEAL, the craft's own side's or not
-const SNIPE_SPEED = 1000.0
-const SNIPE_LIFE = 130          # ticks (about 2 km)
-const SNIPE_DAMAGE = 45
+# (the ornithopter's long gun: so fast that a craft aimed at where it is now is hit, mostly; the
+# shell hits what it comes 1.2 m near; through its crew, where they sit, it kills them)
+const SNIPE_SPEED = 12000.0
+const SNIPE_LIFE = 12           # ticks (2.4 km)
+const SNIPE_DAMAGE = 80
+const SNIPE_NEAR = 1.2
+const SNIPE_CREW = 1.3          # (how near a seat's head it must pass)
+const PISTOL_GAP = 30           # ticks between a pistol's shots (on foot, falling, under a canopy)
 const SNIPE_GAP = 80            # ticks between shots
 const HEAL = 45
 # (where the ornithopter's guns and health packs come out: models.jo has the same)
@@ -184,6 +189,7 @@ struct Person:
     goal = -1                   # (the computer's: the craft it walks to)
     kind = FIGHTER              # what it flies when it starts in the air
     torn = false                # (its parachute shot through: it falls)
+    cool = 0                    # (ticks until its pistol fires again)
 
 struct Bullet:
     pos: vec3
@@ -193,6 +199,7 @@ struct Bullet:
     team: int                   # (the side of who fired it)
     life: int
     damage = DAMAGE
+    snipe = false               # (the ornithopter's long gun's)
 
 # a rocket, a bomb, or a shell from a gun against aircraft (it bursts at a time)
 const ROCKET = 0
@@ -252,6 +259,9 @@ const BAILED = 18               # person `who` out of craft `by`
 const BOARDED = 19              # person `who` in craft `by`
 const TORN = 20                 # person `who`'s parachute shot through by person `by`
 const HEALED = 21               # craft `who` healed by person `by`
+const SNIPED = 22               # craft `who`'s long gun fired (by person `by`)
+const HEADSHOT = 23             # person `who`, in a craft, killed by a long gun's shell from `by`
+const PISTOL = 24               # person `who` fired a pistol
 
 struct Boom:
     pos: vec3
@@ -597,6 +607,16 @@ person = (g: mut Game, i: int, pad: Pad):
             p.vel = c.vel
         g.people[i] = p
         return
+    # (on foot, falling, under a canopy: a pistol, where one looks; not swimming)
+    if p.cool > 0: p.cool -= 1
+    if pad.fire and p.cool == 0 and p.state != POST and not (p.state == WALK and is_water(f64(p.pos.x), f64(p.pos.z))):
+        p.cool = PISTOL_GAP
+        yaw = f64(pad.aim_yaw) / 1000.0
+        pitch = f64(pad.aim_pitch) / 1000.0
+        dir = vec3(f32(-sin(yaw) * cos(pitch)), f32(sin(pitch)), f32(-cos(yaw) * cos(pitch)))
+        at = p.pos + vec3(0, 1.5, 0) + dir * 0.6
+        g.bullets.push(Bullet(at, p.vel + dir * f32(BULLET_SPEED), i, -1, p.team, BULLET_LIFE))
+        g.booms.push(Boom(at, PISTOL, g.tick, i))
     if p.state == FALL or p.state == CHUTE:
         p.timer += 1
         # (T: back in the fight at once, in the air or at one's field, not waiting to come down)
@@ -942,7 +962,12 @@ fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
         sy = (f64((h >> 10) & 1023) / 1023.0 - 0.5) * 0.008
         dir = normalize(fwd + right * f32(sx) + up * f32(sy))
         snipe = c.kind == ORNITHOPTER and pd.scope
-        if snipe: g.bullets.push(Bullet(at, c.vel + fwd * f32(SNIPE_SPEED), who, i, team, SNIPE_LIFE, SNIPE_DAMAGE))
+        if snipe:
+            # (the computer's aim at that range: off by a few meters a kilometer, a player's not)
+            way = fwd
+            if who < 0 or g.people[who].player < 0: way = normalize(fwd + right * f32(sx * (2.2 - g.skill)) + up * f32(sy * (2.2 - g.skill)))
+            g.bullets.push(Bullet(at, c.vel + way * f32(SNIPE_SPEED), who, i, team, SNIPE_LIFE, SNIPE_DAMAGE, snipe = true))
+            g.booms.push(Boom(at, SNIPED, g.tick, i, who))
         else: g.bullets.push(Bullet(at, c.vel + dir * f32(BULLET_SPEED), who, i, team, BULLET_LIFE))
         c.shots += 1
         c.cooldown = if snipe: SNIPE_GAP else: if three: (if which == 2: 2 else: 3) else: k.fire_gap
@@ -1538,15 +1563,16 @@ shoot = (g: mut Game):
             t = g.crafts[j]
             # (through those it would not harm)
             if full[j] and not harms(g, b.team, teams[j]): continue
-            if hits_craft(t, a, b.pos, 0.0):
+            if hits_craft(t, a, b.pos, if b.snipe: SNIPE_NEAR else: 0.0):
                 hit = true
+                if b.snipe: through_crew(g, j, a, b)
                 if t.down == 0:
                     hurt_craft(g, j, b.by, b.team, b.damage, b.pos)
                 else: g.booms.push(Boom(b.pos, HIT, g.tick, j, b.by))
                 break
         if not hit:
             loop j in 0.. and p in g.people:
-                if p.state == DEAD or p.state == SEATED: continue
+                if p.state == DEAD or p.state == SEATED or j == b.by: continue
                 # (a parachute's canopy, 3.5 m across, 6.5 m over its person: shot through, it fails)
                 if p.state == CHUTE and harms(g, b.team, p.team) and seg_near(a - p.pos - vec3(0, 6.5, 0), b.pos - p.pos - vec3(0, 6.5, 0), 3.5):
                     g.people[j].state = FALL
@@ -1573,6 +1599,17 @@ shoot = (g: mut Game):
                 continue
         if b.life > 0: kept.push(b)
     g.bullets = kept
+
+# a long gun's shell through craft j (from a to b.pos): those whose heads it passes near, killed
+through_crew = (g: mut Game, j: int, a: vec3, b: Bullet):
+    c = g.crafts[j]
+    up = up_of(c)
+    loop s in 0.. and pk in c.seats:
+        if pk < 0 or pk == b.by or not harms(g, b.team, g.people[pk].team): continue
+        head = point_of(c, KINDS[c.kind].seats[s].at) + up * 0.5
+        if seg_near(a - head, b.pos - head, SNIPE_CREW):
+            g.booms.push(Boom(head, HEADSHOT, g.tick, pk, b.by))
+            kill(g, pk, b.by)
 
 # the building the segment a-b passes into (-1: none): a box round each, in its own way
 building_hit = (g: Game, a: vec3, b: vec3) -> int:

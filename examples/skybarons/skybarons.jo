@@ -957,6 +957,8 @@ my_pad = () -> Pad:
         c.roll = int(round(clamp(action_axis("Roll left", "Roll right"), -1.0, 1.0) * 100.0))
         if touch_fire: c.pitch = -100
         if action_down("Throttle up") or touch_fire: c.throttle = 1
+        # (a pistol, where one looks)
+        c.fire = action_down("Fire") or (is_mouse_locked() and mouse_down(.left))
         return c
     if p.state == POST:
         c.fire = action_down("Fire") or touch_fire or (is_mouse_locked() and mouse_down(.left))
@@ -1325,7 +1327,13 @@ finish_camera = ():
     global cam_pos
     gy = f32(max(ground(f64(cam_pos.x), f64(cam_pos.z)), 0.0) + 1.0)
     if cam_pos.y < gy: cam_pos.y = gy
-    camera3d(cam_pos, cam_at, view_fov(), 0.5, 7000.0, cam_up)
+    # (shaken: the view kicked off its aim a little each frame, less as it settles)
+    at = cam_at
+    if shake > 0.0:
+        far = f64(length(cam_at - cam_pos))
+        a = shake * shake * 0.035 * far
+        at += vec3(f32((random() - 0.5) * a), f32((random() - 0.3) * a), f32((random() - 0.5) * a))
+    camera3d(cam_pos, at, view_fov(), 0.5, 7000.0, cam_up)
 
 # ---------------- the world's meshes ----------------
 # (made for a map the first time it is drawn, kept for when it comes again)
@@ -1523,7 +1531,12 @@ draw = ():
         back = f32(DT * (clamp(spare / DT, 0.0, 1.0) - 1.0))
         loop b in g.bullets:
             d = normalize(b.vel)
-            at = if b.life < BULLET_LIFE: b.pos + b.vel * back else: b.pos
+            at = if b.life < (if b.snipe: SNIPE_LIFE else: BULLET_LIFE): b.pos + b.vel * back else: b.pos
+            # (the long gun's shell: a streak as long as a tick's flight, not back past the muzzle)
+            if b.snipe:
+                l = min(f64(SNIPE_LIFE - b.life) + f64(back) / DT + 1.0, 1.0) * SNIPE_SPEED * DT * 0.6
+                if l > 1.0: tr.push(instance(translation(at - d * f32(l * 0.5)) * facing(d) * scaling(vec3(0.3, 0.3, f32(l))), rgb(1.0, 0.95, 0.8)))
+                continue
             tr.push(instance(translation(at - d * 2.0) * facing(d) * scaling(vec3(0.12, 0.12, 4.0)), if b.team == 0: rgb(1.0, 0.75, 0.4) else: rgb(1.0, 0.9, 0.5)))
         draw_mesh_instanced(tracer, tr, emissive = 3.0, cast_shadow = false)
     smoke.draw(glow = false)
@@ -1542,10 +1555,11 @@ sparks = Particles3D(gravity = vec3(0, -9.8, 0), drag = 0.5)
 seen: {int: bool} = {}          # (the booms already shown: tick, kind, who)
 hit_mark = 0.0                  # (seconds left: a hit by me, on the gunsight)
 hurt = 0.0                      # (seconds left: red at the edges, hit)
+shake = 0.0                     # (the camera's shaking, 1 at its most: the long gun fired)
 puffs = 0.0                     # (time since the trails were last given smoke)
 
 effects = (dt: f64):
-    global hit_mark, hurt, news, puffs, seen, won_at
+    global hit_mark, hurt, news, puffs, seen, shake, won_at
     g = game()
     myc = my_craft()
     # (the trails as many a second at any frame rate)
@@ -1619,6 +1633,20 @@ effects = (dt: f64):
             else if in_fight and b.by == me(): say("you healed {call_craft(g, b.who)}", rgb(0.6, 1.0, 0.7), small = true)
         else if b.kind == FIRED:
             if in_fight: play_at(snd_rocket, b.pos, settings.sound * 0.5, 1200.0)
+        else if b.kind == SNIPED:
+            # (the long gun: a boom, a flash and smoke at its muzzle; its own pilot's view shaken)
+            emit(fire, b.pos, 12, 8.0, rgb(1.0, 0.75, 0.35), 0.15, 1.6)
+            emit(smoke, b.pos, 8, 3.0, rgba(0.6, 0.58, 0.55, 0.7), 1.5, 3.0)
+            if in_fight:
+                if b.who == myc:
+                    play(snd_snipe, settings.sound * 0.9, pitch = 0.95 + 0.1 * random())
+                    shake = 1.0
+                else: play_at(snd_snipe, b.pos, settings.sound * 0.8, 2500.0)
+        else if b.kind == PISTOL:
+            if in_fight:
+                if b.who == me(): play(snd_pistol, settings.sound * 0.45, pitch = 0.95 + 0.1 * random())
+                else: play_at(snd_pistol, b.pos, settings.sound * 0.4, 400.0)
+            emit(sparks, b.pos, 2, 3.0, rgb(1.0, 0.85, 0.5), 0.06, 0.25)
         else if b.kind == DROPPED:
             if in_fight: play_at(snd_whistle, b.pos, settings.sound * 0.35, 1200.0)
         else if b.kind == OPENED:
@@ -1635,6 +1663,9 @@ effects = (dt: f64):
         else if b.kind == TORN:
             if b.who == me(): say("your parachute is shot through!", rgb(1, 0.5, 0.4))
             else if b.by == me(): say("you shot through {call(g, b.who)}'s parachute", COLORS[1 - g.people[b.who].team], small = true)
+        else if b.kind == HEADSHOT:
+            if b.by == me(): say("you shot {call(g, b.who)} in their seat", COLORS[1 - g.people[b.who].team])
+            else if b.who == me(): say("{if b.by >= 0: call(g, b.by) else: "someone"} shot you through your seat", rgb(1, 0.5, 0.4))
         else if b.kind == KILLED and b.who == me(): say(if b.by >= 0 and b.by != me(): "killed by {call(g, b.by)}" else: "you died", gray(0.9))
         else if b.kind == TAKEN: say("{call(g, b.by)} took {TEAMS[b.who]}'s flag", COLORS[1 - b.who], small = b.by != me())
         else if b.kind == SCORED: say("{call(g, b.by)} brought {TEAMS[b.who]}'s flag home", COLORS[1 - b.who])
@@ -1651,6 +1682,7 @@ effects = (dt: f64):
     sparks.update(dt)
     hit_mark = max(hit_mark - dt, 0.0)
     hurt = max(hurt - dt, 0.0)
+    shake = max(shake - dt * 2.2, 0.0)
     loop mut n in news: n.1 += dt
     kept: (str, f64, vec4, f64)[]
     loop n in news:
@@ -1674,6 +1706,11 @@ snd_hurt = mix([tone(240.0, 0.12, .noise, 0.5, 0.001, 0.1, 0.5), tone(160.0, 0.1
 snd_boom = mix([tone(60.0, 1.6, .noise, 0.9, 0.002, 1.5, 0.4), tone(45.0, 1.0, .square, 0.3, 0.002, 0.9, 0.5)])
 snd_flak = mix([tone(90.0, 0.5, .noise, 0.8, 0.001, 0.45, 0.5), tone(60.0, 0.3, .square, 0.2, 0.001, 0.25, 0.6)])
 snd_rocket = tone(900.0, 0.8, .noise, 0.4, 0.01, 0.6, 0.35)
+# (the ornithopter's long gun: a crack and a rolling boom)
+snd_snipe = mix([tone(1100.0, 0.12, .noise, 0.7, 0.001, 0.1, 0.4), tone(70.0, 1.4, .noise, 1.0, 0.002, 1.3, 0.35), tone(42.0, 0.9, .square, 0.45, 0.002, 0.8, 0.5)])
+snd_pistol = mix([tone(700.0, 0.08, .noise, 0.45, 0.001, 0.07, 0.5), tone(150.0, 0.06, .square, 0.15, 0.001, 0.05, 0.6)])
+# (the ornithopter's pedals and chain: a squeak each stroke, a rattle under it)
+snd_squeak = mix([tone(1750.0, 0.16, .triangle, 0.16, 0.02, 0.1, 1.35, 0.3), tone(500.0, 0.09, .noise, 0.05, 0.005, 0.07, 0.8)])
 snd_whistle = tone(1400.0, 2.2, .sine, 0.12, 0.05, 0.3, 0.45)
 snd_chute = tone(300.0, 0.35, .noise, 0.4, 0.01, 0.3, 0.6)
 const VOICES = 8                # (engines heard at once: the nearest)
@@ -1682,6 +1719,7 @@ wind_id = -1
 last_shots: int[]
 last_gcool: int[]
 last_guns: int[]
+last_strokes: int[]
 
 sounds = ():
     global wind_id
@@ -1692,11 +1730,12 @@ sounds = ():
     loop last_shots.len() < g.crafts.len(): last_shots.push(0)
     loop last_gcool.len() < g.crafts.len() * 8: last_gcool.push(0)
     loop last_guns.len() < g.buildings.len(): last_guns.push(0)
+    loop last_strokes.len() < g.crafts.len(): last_strokes.push(0)
     myc = my_craft()
     # (the engines running, nearest first: each of the voices one of them)
     near: (f64, int)[]
     loop i in 0.. and c in g.crafts:
-        if not alive(c) or (c.landed and pilot_of(c) < 0) or c.kind == BALLOON or (c.kind == ROCKETEER and c.landed): continue
+        if not alive(c) or (c.landed and pilot_of(c) < 0) or c.kind == BALLOON or c.kind == ORNITHOPTER or (c.kind == ROCKETEER and c.landed): continue
         near.push((if i == myc: -1.0 else: f64(length(c.pos - cam_pos)), i))
     near.sort_with((a, b): a.0 < b.0)
     loop v in 0..VOICES:
@@ -1712,9 +1751,20 @@ sounds = ():
         else: move_sound(engine_ids[v], c.pos, loud, if c.kind >= BOMBER: 1500.0 else: 900.0)
         base = if c.kind == ROCKETEER: 1.5 else: if c.kind == ORNITHOPTER: 1.15 else: if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
         set_pitch(engine_ids[v], base + 0.45 * c.throttle + f64(length(c.vel)) / 200.0)
+    # (the ornithoppers' pedals: a squeak each stroke, two to a turn of the cranks, as they turn)
+    loop i in 0.. and c in g.crafts:
+        if c.kind != ORNITHOPTER or i >= prop_turn.len(): continue
+        stroke = int(floor(prop_turn[i] * 0.35 / PI))
+        if on and stroke != last_strokes[i] and alive(c) and not (c.landed and pilot_of(c) < 0):
+            p = if stroke % 2 == 0: 1.0 else: 0.85
+            if i == myc: play(snd_squeak, settings.sound * 0.5, pitch = p + 0.06 * random())
+            else: play_at(snd_squeak, c.pos, settings.sound * 0.5, 300.0, pitch = p)
+        last_strokes[i] = stroke
     loop i in 0.. and c in g.crafts:
         # (each shot fired since the last frame: the pilot's guns, and each gunner's)
         n = min(c.shots - last_shots[i], 3)
+        # (not the long gun's shot, which has its own boom: SNIPED)
+        if c.kind == ORNITHOPTER and c.cooldown > KINDS[c.kind].fire_gap: n = 0
         if on and n > 0 and alive(c):
             if i == myc and piloting(): play(snd_gun, settings.sound * 0.5, pitch = 0.9 + 0.2 * random())
             else: play_at(snd_gun, c.pos, settings.sound * 0.5, 700.0)
@@ -2166,7 +2216,7 @@ draw_menu = ():
         if ui_button("Quit"): quit()
     ui_end()
     if len(status) > 0: text_centered(status, vec2(x, f32(y + 580.0)), 22, gray(0.85))
-    how = "On foot: WASD and the mouse, Shift runs; F gets in (a craft, a gun on the ground), T gets out or bails out. Flying: the mouse steers, its buttons fire guns and rockets (X), B drops bombs, Shift and Ctrl the throttle; 1 to 8 or V change seats."
+    how = "On foot: WASD and the mouse, Shift runs, a click fires a pistol; F gets in (a craft, a gun on the ground), T gets out or bails out. Flying: the mouse steers, its buttons fire guns and rockets (X), B drops bombs, Shift and Ctrl the throttle; 1 to 8 or V change seats."
     if touch_input() or touch_device(): how = "Drag a finger to look and aim; In/Out gets in, out, or bails out. Hold Fire to shoot (on foot, to walk); the throttle slides; Look watches the target."
     text_wrapped("Scouts, fighters, light and ultra bombers, zeppelins; up to six a side. {how}", vec2(x - 240, f32(y + 600.0)), 480, 17, gray(0.8), align = .center)
 
