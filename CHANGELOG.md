@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Aces and Sky Barons: Escape out of the in-fight menu (in a web page) no longer brings it back
+  at once: the mouse is taken again only once Escape is up (a browser lets go of a pointer
+  locked while Escape is down, which paused the fight again).
 - Sky Barons, round seven:
   - Flak bursts at a height its guns set for each craft: a guess at first (now and then a good
     one), then each shot a third nearer; a curtain at that height, following a climb or dive
