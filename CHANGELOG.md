@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Aces and Sky Barons: Fullscreen (and Leave fullscreen) in the in-fight menu, on computers too.
+- Aces and Sky Barons: Fullscreen (and Leave fullscreen) in the in-fight menu, on computers too;
+  Enter opens that menu as Escape does (a browser in fullscreen leaves it on Escape).
 - Aces and Sky Barons: Escape out of the in-fight menu (in a web page) no longer brings it back
   at once: the mouse is taken again only once Escape is up (a browser lets go of a pointer
   locked while Escape is down, which paused the fight again).
