@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Aces: the wind is a soft hiss again, quieter, and the engine a little louder (since noise has a
+  pitch, the wind's `tone(400, .noise)` had become a loud low whoosh over the engine).
 - `draw_mesh_instanced` made a new instance buffer every frame and never let it go (it was kept
   in the frame's copy of the mesh): GPU memory grew by the instances' size each frame, about
   0.5 MB for Aces' trees and clouds, until the game slowed to a stop. One buffer now takes each
