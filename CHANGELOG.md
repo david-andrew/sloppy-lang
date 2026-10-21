@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Sky Barons: the in-fight menu has "Back to the lobby" (the host's ends the fight for all, the
+  room kept; "Leave" says it closes the room), and the results a button to click for it.
 - Sky Barons: the ornithopter's long gun fires a shell so fast that a craft aimed at where it is
   is mostly hit (out to about 900 m), for 80 (a fighter's 100), killing those in the seats it
   passes through; a boom, and its pilot's view kicked. The pedals squeak instead of an engine's
