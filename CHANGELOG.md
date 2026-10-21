@@ -17,7 +17,7 @@
     parachute fires the pistol.
   - Helicopters and the balloon off unless the lobby turns them on.
   - Red's scout a Fokker E.V in lozenge camouflage.
-  - A first visit's menu shows an ornithopter; the upright lobby no longer moves as the sides'
+  - A first visit's menu shows Blue's fighter; the upright lobby no longer moves as the sides'
     size changes.
 - Sky Barons: three new crafts. Da Vinci's aerial screw, a light helicopter: its trebuchet's
   boulder (dug from the ground, low and slow, B held; X throws it) brings down whatever it hits;
