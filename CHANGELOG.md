@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `run_hidden()` (lib/game): a web page's frames go on while it is hidden (in a tab not shown,
+  or a window covered by another), called by a timer. Aces and Sky Barons online use it: hidden,
+  a player's game stopped sending, the others took it for gone, and the two fights went on apart
+  (with "no longer connected" now said where the ping was).
+- Sky Barons: banked, a craft's nose falls toward the ground (on its side, half the rudder toward
+  the sky holds it); the computer's pilots hold it so too.
 - Sky Barons, round four: the ornithopter (a bicycle with two pairs of flapping wings, a bat on
   Red's side, a gull on Blue's, driven by its pilot's pedalling): a sniper and healer, R to look through the scope of its fast,
   far-reaching gun (unscoped, a lighter gun), its rockets health packs that seek the nearest
