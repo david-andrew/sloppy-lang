@@ -50,7 +50,7 @@ when TARGET != "wasm":
             loop b in g.booms:
                 if b.tick == g.tick: seen[b.kind] = (seen.get(b.kind) ?? 0) + 1
             if g.winner >= 0: break
-        names = ["hits", "into the ground", "explosions", "shot down", "crashed", "bursts", "flak", "killed", "ruined", "parachutes", "splashes", "flags taken", "flags home", "flags back", "rockets", "bombs", "landed", "ditched", "bailed out", "boarded"]
+        names = ["hits", "into the ground", "explosions", "shot down", "crashed", "bursts", "flak", "killed", "ruined", "parachutes", "splashes", "flags taken", "flags home", "flags back", "rockets", "bombs", "landed", "ditched", "bailed out", "boarded", "parachutes shot through"]
         print("{MODE_NAMES[m]}, {n} a side, {g.tick / 60} s: {if g.winner >= 0: TEAMS[g.winner] + " won" else: "no winner"}, {g.scores[0]} to {g.scores[1]}")
         parts: str[]
         loop k in 0..names.len():
@@ -62,7 +62,8 @@ when TARGET != "wasm":
 # what is on the ground, by kind (world.jo: HANGAR, TANK, HQ, AA, DEPOT, FACTORY, MAST, MG)
 SITE_NAMES = ["hangar", "fuel tank", "command post", "gun against aircraft", "depot", "factory", "mast", "machine gun"]
 SEAT_NAMES = [["pilot"], ["pilot"], ["pilot", "nose gun", "back gun"], ["pilot", "top gun, fore", "top gun, aft", "gondola gun", "tail gun"],
-              ["pilot", "nose gun", "top gun, fore", "top gun, aft", "tail gun", "belly gun", "left wing gun", "right wing gun"]]
+              ["pilot", "nose gun", "top gun, fore", "top gun, aft", "tail gun", "belly gun", "left wing gun", "right wing gun"],
+              ["left gun and burner", "right gun", "back gun"], ["rocketeer"]]
 
 # ---------------- playing: with friends, or against the computer ----------------
 enum Mode: menu, online, practice
@@ -103,6 +104,7 @@ struct Settings:
     win = 0                     # (the lobby's: what wins, by its place in win_choices; 0 the fight's own)
     minutes = 0                 # (and how long, by its place in minute_choices)
     attackers = 0               # the side that attacks, in the fights where one side does
+    crafts = ALL_CRAFTS         # the kinds of craft in the fight (a bit each)
 
 settings = Settings()
 if let saved = load_data("settings"):
@@ -120,15 +122,16 @@ if let saved = load_data("settings"):
         settings.fight = clamp(to_int(w[9]) ?? 0, 0, MODE_NAMES.len() - 1)
         settings.ff = w[10] == "1"
         settings.ground = w[11] == "1"
-        settings.plane = clamp(to_int(w[12]) ?? 1, 0, ULTRA)
+        settings.plane = clamp(to_int(w[12]) ?? 1, 0, KINDS.len() - 1)
     if w.len() >= 16:
         settings.win = clamp(to_int(w[13]) ?? 0, 0, 5)
         settings.minutes = clamp(to_int(w[14]) ?? 0, 0, 5)
         settings.attackers = clamp(to_int(w[15]) ?? 0, 0, 1)
+    if w.len() >= 17: settings.crafts = (to_int(w[16]) ?? ALL_CRAFTS) & ALL_CRAFTS
 save_settings = ():
     settings.name = my_name()
     b = (x: bool) -> str: if x: "1" else: "0"
-    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers}")
+    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers} {settings.crafts}")
 
 # a player's name as shown and sent: up to 12 characters, no commas, one space between words
 # (it travels as an underscore, so a message's words stay words)
@@ -163,7 +166,7 @@ rules_now = () -> Rules:
     Rules(mode = m, friendly_fire = settings.ff, ground_start = settings.ground,
           win = if wins.len() > 0: wins[clamp(settings.win, 0, wins.len() - 1)] else: 0,
           time_limit = if mins.len() > 0: mins[clamp(settings.minutes, 0, mins.len() - 1)] else: 0,
-          attackers = settings.attackers)
+          attackers = settings.attackers, crafts = if settings.crafts == 0: ALL_CRAFTS else: settings.crafts)
 
 # what can be chosen to win a fight (the first: its own number), and how long it lasts (minutes)
 win_choices = (m: int) -> int[]:
@@ -191,7 +194,11 @@ const PUBLIC_WAIT = 30.0        # (s) a public room's fight starts by itself thi
 # (the menu's fight, behind it: the computer, in the air over the farmland)
 demo = () -> Game:
     set_map(FARMLAND, 0)
-    new_game(fill(-1, 8), 0.75, Rules(ground_start = false), [])
+    # (this one, flown by the computer, in the plane chosen, on the side chosen: its insignia
+    # shows as it is changed)
+    pilots = fill(-1, 8)
+    pilots[settings.side] = 0
+    new_game(pilots, 0.75, Rules(ground_start = false), [settings.plane])
 s = netplay.session(demo(), tick, players = 2, me = 0)
 local = demo()                  # practice, and the menu's fight in the background
 mine = 0                        # (this machine's person)
@@ -237,8 +244,8 @@ to_badge = (t: str) -> int: clamp(to_int(t) ?? 0, 0, models.BADGES.len() - 1)
 # the insignia on craft j: its pilot's, if a player flies it, in their own side's colors (one
 # in another side's craft would give themselves away; the menu's: none)
 badge_of = (g: Game, j: int) -> int:
-    if mode == .menu: return 0
     pi = pilot_of(g.crafts[j])
+    if mode == .menu: return if pi >= 0 and g.people[pi].player == 0: settings.badge else: 0
     if pi < 0 or g.people[pi].team != g.crafts[j].team: return 0
     k = g.people[pi].player
     if k >= 0 and k < crew_badges.len(): crew_badges[k] else: 0
@@ -324,10 +331,17 @@ switch_side = ():
     global told_at, want_side
     told_at = 0.0
     if page == LOBBY:
-        if counts(sides_now())[1 - settings.side] < MOST: settings.side = 1 - settings.side
+        if counts(sides_now())[1 - settings.side] < MOST:
+            settings.side = 1 - settings.side
+            demo_again()
         return
     i = lobby_pilots.index_of(lobby_me)
     if i >= 0 and players_on(lobby_pilots, 1 - i % 2) < MOST: want_side = 1 - i % 2
+
+# (the menu's fight begun again: the plane or side chosen changed)
+demo_again = ():
+    global local
+    if mode == .menu: local = demo()
 
 make_room = ():
     global page
@@ -366,7 +380,7 @@ start_fight = ():
 try_seat = (spec: str):
     global local
     w = split(spec, " ")
-    kind = clamp(to_int(w[0]) ?? 2, 0, ULTRA)
+    kind = clamp(to_int(w[0]) ?? 2, 0, KINDS.len() - 1)
     seat = if w.len() > 1: to_int(w[1]) ?? 1 else: 1
     let g = local
     loop k in 0..30: g = tick(g, [Pad()])
@@ -393,7 +407,7 @@ start_text = (k: int) -> str:
     g = game()
     r = g.rules
     b = (x: bool) -> str: if x: "1" else: "0"
-    "start {fights} {k} {settings.skill} {join(g.people.map((p): "{p.player}"), ",")} {join(crew_names.map(wire), ",")} {join(crew_badges.map((x): "{x}"), ",")} {r.mode} {b(r.friendly_fire)} {b(r.ground_start)} {join(start_planes.map((x): "{x}"), ",")} {r.win} {r.time_limit} {r.attackers}"
+    "start {fights} {k} {settings.skill} {join(g.people.map((p): "{p.player}"), ",")} {join(crew_names.map(wire), ",")} {join(crew_badges.map((x): "{x}"), ",")} {r.mode} {b(r.friendly_fire)} {b(r.ground_start)} {join(start_planes.map((x): "{x}"), ",")} {r.win} {r.time_limit} {r.attackers} {r.crafts}"
 start_planes: int[]
 tell_start = ():
     loop k in 0.. and f in friends:
@@ -580,7 +594,8 @@ on_net = (e: net.NetEvent):
             rules.win = to_int(w[11]) ?? 0
             rules.time_limit = to_int(w[12]) ?? 0
             rules.attackers = clamp(to_int(w[13]) ?? 0, 0, 1)
-        planes = split(w[10], ",").map((t): clamp(to_int(t) ?? 1, 0, ULTRA))
+        if w.len() >= 15: rules.crafts = (to_int(w[14]) ?? ALL_CRAFTS) & ALL_CRAFTS
+        planes = split(w[10], ",").map((t): clamp(to_int(t) ?? 1, 0, KINDS.len() - 1))
         begin(who, pilots, SKILLS[clamp(to_int(w[3]) ?? 1, 0, 2)], peers, rules, planes)
 
 # a friend's name and insignia (changed in a fight: everyone is told), and the side and plane
@@ -592,7 +607,7 @@ heard_me = (k: int, w: str[]):
     f.badge = to_badge(w[2])
     t = if w.len() >= 4: to_int(w[3]) ?? -1 else: -1
     if mode == .menu and t >= 0 and t <= 1 and t != f.side and counts(sides_now())[t] < MOST: f.side = t
-    if mode == .menu and w.len() >= 5: f.plane = clamp(to_int(w[4]) ?? 1, 0, ULTRA)
+    if mode == .menu and w.len() >= 5: f.plane = clamp(to_int(w[4]) ?? 1, 0, KINDS.len() - 1)
     friends[k] = f
     if mode == .online and k + 1 < crew_badges.len() and (crew_names[k + 1] != f.name or crew_badges[k + 1] != f.badge):
         crew_names[k + 1] = f.name
@@ -685,6 +700,11 @@ fight_said = () -> str:
     if r.win > 0 and win_choices(r.mode).len() > 0: out += ", {r.win} to win"
     if r.time_limit > 0: out += ", {r.time_limit} min"
     if r.friendly_fire: out += ", friendly fire"
+    if r.crafts != ALL_CRAFTS and r.mode != CLASSIC and r.mode != TRENCH and r.mode != ESCORT:
+        kinds: str[]
+        loop k in 0..KINDS.len():
+            if r.crafts & (1 << k) != 0: kinds.push(KIND_NAMES[k] + "s")
+        out += "; {join(kinds, ", ")} only"
     if (r.mode == DOGFIGHT or r.mode == BASES or r.mode == FLAG) and not r.ground_start: out += ", in the air"
     out
 
@@ -775,8 +795,9 @@ clamp_aim = (p: Person):
         b = game().buildings[p.post]
         aim_pitch = clamp(aim_pitch, if b.kind == AA: 0.1 else: -0.25, 1.45)
         return
-    if p.state != SEATED or p.seat == 0: return
+    if p.state != SEATED: return
     c = game().crafts[p.craft]
+    if not gun_seat(c.kind, p.seat): return
     st = KINDS[c.kind].seats[p.seat]
     base = quat_rotate(c.rot, st.dir)
     d = aim_dir()
@@ -791,7 +812,7 @@ clamp_aim = (p: Person):
 # what this one is doing: flying a craft, at one of its guns, on foot, falling, or dead
 piloting = () -> bool:
     p = my()
-    p.state == SEATED and p.seat == 0
+    p.state == SEATED and p.seat == 0 and not gun_seat(game().crafts[p.craft].kind, 0)
 my_craft = () -> int: my().craft
 
 mouse_flying = () -> bool: settings.mouse and mode != .menu and not paused and is_mouse_locked() and not touch_input() and piloting()
@@ -883,7 +904,12 @@ my_pad = () -> Pad:
     if p.state != SEATED: return c
     k = game().crafts[p.craft]
     c.fire = action_down("Fire") or touch_fire or (is_mouse_locked() and mouse_down(.left))
-    if p.seat > 0: return c
+    if gun_seat(k.kind, p.seat):
+        # (at a gun: its trigger; in a balloon also its bombs, and the first seat's burner)
+        if k.kind == BALLOON:
+            c.bomb = action_down("Bomb") or touch_bomb or (is_mouse_locked() and mouse_down(.middle))
+            if p.seat == 0: c.pitch = int(round(clamp(action_axis("Dive", "Climb"), -1.0, 1.0) * 100.0))
+        return c
     c.rocket = action_down("Rocket") or touch_rocket or (is_mouse_locked() and mouse_down(.right))
     c.bomb = action_down("Bomb") or touch_bomb or (is_mouse_locked() and mouse_down(.middle))
     pitch = action_axis("Dive", "Climb")
@@ -1003,7 +1029,7 @@ update = (dt: f64):
     log_frame()
     # (the menu's: the person whose craft the camera follows)
     if mode == .menu:
-        mine = if page == LOBBY or page == FIGHT: settings.side else: if page == JOINED: max(lobby_pilots.index_of(lobby_me), 0) % 2 else: 0
+        mine = settings.side
         if my().state != SEATED:
             loop i in 0.. and p in game().people:
                 if p.state == SEATED and p.seat == 0: mine = i
@@ -1053,7 +1079,7 @@ update = (dt: f64):
         changed = p.state != was_state or p.craft != was_craft or p.seat != was_seat
         if p.state == SEATED:
             c = game().crafts[p.craft]
-            if p.seat == 0:
+            if not gun_seat(c.kind, p.seat):
                 if not whole(c): aim_from(c, true)
                 else if aim_fresh or not aim_steering() or changed: aim_from(c, false)
             else if changed:
@@ -1132,6 +1158,8 @@ view_fov = () -> f64:
 cam_back = (kind: int) -> vec2:
     if kind == ZEPPELIN: return vec2(110, 26)
     if kind == ULTRA: return vec2(75, 16)
+    if kind == BALLOON: return vec2(45, 6)
+    if kind == ROCKETEER: return vec2(6, 1.6)
     if kind == BOMBER: return vec2(38, 9)
     vec2(15, 4.2)
 
@@ -1170,7 +1198,7 @@ place_camera = (g: Game, dt: f64):
         return
     c = g.crafts[p.craft]
     k = KINDS[c.kind]
-    if p.seat > 0:
+    if gun_seat(c.kind, p.seat) and mode != .menu:
         # (at a gun: the gunner's own eyes, just over it, along it; their gun not drawn, its
         # tracers and flashes in sight)
         at = point_of(c, k.seats[p.seat].at)
@@ -1249,9 +1277,10 @@ mg_base = Mesh()
 mg_gun = Mesh()
 gunner_meshes: Mesh[]
 wreck = Mesh()
+flame = Mesh()
 
 make_world = () -> Scenery:
-    global aa_barrel, aa_base, bomb, chute, cone, flag_meshes, gunner_meshes, made, mg_base, mg_gun, person_meshes, prop, puff, rocket, tracer, turret, water, wreck
+    global aa_barrel, aa_base, bomb, chute, cone, flag_meshes, flame, gunner_meshes, made, mg_base, mg_gun, person_meshes, prop, puff, rocket, tracer, turret, water, wreck
     if not made:
         made = true
         water = plane_mesh(MAP)
@@ -1271,6 +1300,7 @@ make_world = () -> Scenery:
         mg_gun = models.mg_gun_mesh()
         gunner_meshes = [models.gunner_mesh(0), models.gunner_mesh(1)]
         wreck = models.wreck_mesh()
+        flame = models.flame_mesh()
         loop t in 0..2:
             site_meshes[HANGAR * 2 + t] = models.hangar_mesh(t)
             site_meshes[TANK * 2 + t] = models.tank_mesh(t)
@@ -1354,6 +1384,12 @@ draw = ():
         draw_mesh(models.craft_mesh(c.kind, c.team, badge_of(g, i)), m, tint, specular = 0.25)
         spin = if c.down > 0: 3.0 else: if pilot_of(c) >= 0 or not c.landed: 25.0 + 30.0 * c.throttle else: 0.0
         prop_turn[i] += frame_time() * spin
+        # (a fighter's third gun, on its top wing, outside Classic)
+        if c.kind == FIGHTER and g.rules.mode != CLASSIC: draw_mesh(turret, m * translation(vec3(0, 1.62, -1.25)), specular = 0.3)
+        # (the rocketeer's pack, and a balloon's burner, alight)
+        if c.kind == ROCKETEER and not c.landed and c.down == 0:
+            loop nz in models.ROCKET_NOZZLES: draw_mesh(flame, m * translation(nz) * scaling(vec3(1, 1, f32(0.6 + 0.6 * c.throttle))), emissive = 0.9, specular = 0.0, cast_shadow = false)
+        if c.kind == BALLOON and f64(c.vel.y) > 0.3: draw_mesh(flame, m * translation(models.BURNER) * rotation_x(-PI / 2.0) * scaling(vec3(1.4, 1.4, 1.4)), emissive = 0.9, specular = 0.0, cast_shadow = false)
         loop k in 0.. and h in models.props(c.kind, c.team):
             r = f64(h.w)
             draw_mesh(prop, m * translation(h.xyz) * rotation_z(prop_turn[i] + f64(k) * 0.7) * scaling(vec3(f32(r), f32(r), f32(r))), specular = 0.1)
@@ -1479,6 +1515,9 @@ effects = (dt: f64):
             else if b.who == myc: say("shot down{if b.by >= 0: " by " + call(g, b.by) else: ""}: F to bail out", COLORS[1 - team])
             else: say("{if b.by >= 0: call(g, b.by) else: "flak"} shot down {call_craft(g, b.who)}", with_alpha(COLORS[1 - team], 0.75), small = true)
         else if b.kind == CRASHED: say(if b.who == myc: "you crashed" else: "{call_craft(g, b.who)} crashed", with_alpha(COLORS[1 - g.crafts[b.who].team], 0.75), small = b.who != myc)
+        else if b.kind == TORN:
+            if b.who == me(): say("your parachute is shot through!", rgb(1, 0.5, 0.4))
+            else if b.by == me(): say("you shot through {call(g, b.who)}'s parachute", COLORS[1 - g.people[b.who].team], small = true)
         else if b.kind == KILLED and b.who == me(): say(if b.by >= 0 and b.by != me(): "killed by {call(g, b.by)}" else: "you died", gray(0.9))
         else if b.kind == TAKEN: say("{call(g, b.by)} took {TEAMS[b.who]}'s flag", COLORS[1 - b.who], small = b.by != me())
         else if b.kind == SCORED: say("{call(g, b.by)} brought {TEAMS[b.who]}'s flag home", COLORS[1 - b.who])
@@ -1540,7 +1579,7 @@ sounds = ():
     # (the engines running, nearest first: each of the voices one of them)
     near: (f64, int)[]
     loop i in 0.. and c in g.crafts:
-        if not alive(c) or (c.landed and pilot_of(c) < 0): continue
+        if not alive(c) or (c.landed and pilot_of(c) < 0) or c.kind == BALLOON or (c.kind == ROCKETEER and c.landed): continue
         near.push((if i == myc: -1.0 else: f64(length(c.pos - cam_pos)), i))
     near.sort_with((a, b): a.0 < b.0)
     loop v in 0..VOICES:
@@ -1554,7 +1593,7 @@ sounds = ():
             set_volume(engine_ids[v], loud * 0.7)
             set_pan(engine_ids[v], 0.0)
         else: move_sound(engine_ids[v], c.pos, loud, if c.kind >= BOMBER: 1500.0 else: 900.0)
-        base = if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
+        base = if c.kind == ROCKETEER: 1.5 else: if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
         set_pitch(engine_ids[v], base + 0.45 * c.throttle + f64(length(c.vel)) / 200.0)
     loop i in 0.. and c in g.crafts:
         # (each shot fired since the last frame: the pilot's guns, and each gunner's)
@@ -1619,7 +1658,7 @@ draw_hud = (g: Game):
             brackets(at, r, col)
             text_centered("{call_craft(g, j)}  {int(d)} m", at + vec2(0, r + 16), 18, col)
             if seated and myc >= 0 and d < 700.0 and o.down == 0 and c.down == 0:
-                from = if p.seat > 0: point_of(c, k.seats[p.seat].at) else: c.pos
+                from = if gun_seat(c.kind, p.seat): point_of(c, k.seats[p.seat].at) else: c.pos
                 if let l = world_to_screen(from + lead_from(from, c.vel, o.pos, o.vel)): ring(l, 6, 2, with_alpha(col, 0.9))
         else: brackets(at, f32(clamp(900.0 / max(d, 1.0), 8.0, 30.0)), with_alpha(col, 0.5))
     # the flags, wherever they are
@@ -1637,7 +1676,7 @@ draw_hud = (g: Game):
                 continue
         arrow_to(at, with_alpha(COLORS[f.team], 0.6))
     if seated and alive(c):
-        if p.seat == 0:
+        if not gun_seat(c.kind, p.seat):
             # the gunsight: where the guns point, 300 m out (a bomber's: where its bombs would fall)
             if k.guns:
                 if let at = world_to_screen(c.pos + fwd_of(c) * 300.0):
@@ -1674,14 +1713,16 @@ draw_hud = (g: Game):
         b = at_edge(-190, if touch_input(): 80.0 else: -110.0)
         hud_bar(Rect(b.x, b.y, 160, 12), f64(c.health) / f64(k.health), COLORS[c.team])
         text(KIND_NAMES[c.kind] + (if c.team != team: " (theirs)" else: ""), b + vec2(0, -22), 16, gray(0.8))
-        heat = if p.seat == 0: c.heat else: c.gheat[p.seat]
-        if p.seat > 0 or k.guns:
+        at_gun = gun_seat(c.kind, p.seat)
+        heat = if at_gun: c.gheat[p.seat] else: c.heat
+        if at_gun or k.guns:
             hud_bar(Rect(b.x, b.y + 24, 160, 8), f64(heat) / f64(JAM_HEAT), if c.jammed and p.seat == 0: rgb(1, 0.35, 0.25) else: rgb(1, 0.75, 0.35))
             text(if c.jammed and p.seat == 0: "guns jammed" else: "guns", b + vec2(0, 38), 16, if c.jammed and p.seat == 0: rgb(1, 0.4, 0.3) else: gray(0.75))
-        if p.seat == 0 and (k.rockets > 0 or k.bombs > 0):
+        if (p.seat == 0 or c.kind == BALLOON) and (k.rockets > 0 or k.bombs > 0):
             parts: str[]
-            if k.rockets > 0 and g.rules.rockets: parts.push("rockets {c.rockets} (X)")
+            if k.rockets > 0 and g.rules.rockets: parts.push(if k.endless: "rockets (X)" else: "rockets {c.rockets} (X)")
             if k.bombs > 0: parts.push("bombs {c.bombs} (B)")
+            if c.kind == BALLOON and p.seat == 0: parts.push("S up, W down: the wind turns with height")
             t = join(parts, "   ")
             text(t, vec2(f32(min(f64(b.x), f64(at_edge(-20, 0).x) - text_width(t, 16))), b.y + 58), 16, gray(0.8))
         # (the seats, and who is in them)
@@ -1771,8 +1812,9 @@ what_f_does = (g: Game, p: Person) -> str:
         if not starts_on_ground(g, p.team): return "{fk}: fly again"
         if far_from_field(p): return "{fk}: back to your field (Shift runs)"
         return ""
-    if p.state == FALL: return "{fk}: open the parachute"
-    if p.state == CHUTE: return "W: down faster"
+    back = if starts_on_ground(g, p.team): "back to your field" else: "fly again"
+    if p.state == FALL: return if p.torn: "{tk}: {back}" else: "{fk}: open the parachute    {tk}: {back}"
+    if p.state == CHUTE: return "W: down faster    {tk}: {back}"
     if p.state == POST: return "{tk}: leave the gun"
     if p.state != SEATED: return ""
     c = g.crafts[p.craft]
@@ -1851,7 +1893,7 @@ point_at = (at: vec3, what: str, col: vec4):
 
 # a phone's buttons, for what this one can do now
 draw_touch = (g: Game, p: Person, c: Craft):
-    flying_now = p.state == SEATED and p.seat == 0
+    flying_now = piloting()
     circle(fire_at(), 80, rgba(1, 1, 1, if touch_fire: 0.3 else: 0.14))
     text_centered(if p.state == WALK: "Walk" else: "Fire", fire_at(), 26, rgba(1, 1, 1, 0.7))
     circle(look_button(), 42, rgba(1, 1, 1, if tracking: 0.35 else: 0.12))
@@ -2066,7 +2108,11 @@ draw_lobby = ():
     if badge != settings.badge:
         settings.badge = badge
         save_settings()
-    settings.plane = ui_choice("Plane in the air", KIND_NAMES, settings.plane)
+    plane = ui_choice("Plane in the air", KIND_NAMES, settings.plane)
+    if plane != settings.plane:
+        # (the menu's fight again, this one in it)
+        settings.plane = plane
+        demo_again()
     if hosting:
         if ui_button("Fight: {MODE_NAMES[settings.fight]}"): page = FIGHT
         settings.sides = ui_choice("People a side", ["1", "2", "3", "4", "5", "6"], people_a_side() - 1) + 1
@@ -2130,6 +2176,13 @@ fight_choices = ():
     if mins.len() > 0: settings.minutes = ui_choice("Minutes", mins.map((x): "{x}"), clamp(settings.minutes, 0, mins.len() - 1))
     if ground_choice(m): settings.ground = ui_switch("Start on the ground", settings.ground)
     if m != CLASSIC: settings.ff = ui_switch("Friendly fire", settings.ff)
+    # (which kinds of craft there are, where the fight does not say)
+    if m != CLASSIC and m != TRENCH and m != ESCORT:
+        loop k in 0..KINDS.len():
+            on = settings.crafts & (1 << k) != 0
+            now = ui_switch(capitalize(KIND_NAMES[k]) + "s", on)
+            # (one kind there must be)
+            if now != on and (now or settings.crafts & ~(1 << k) != 0): settings.crafts = settings.crafts xor (1 << k)
 
 ground_choice = (m: int) -> bool: m == DOGFIGHT or m == BASES or m == FLAG or m == FLAG_RAID or m == RAIDS
 

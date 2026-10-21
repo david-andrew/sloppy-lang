@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Sky Barons, round three: a balloon (three seats, each a gun, bombs for all; no steering: the
+  wind turns with height, so up or down chooses the way) and the rocketeer (a person on a rocket
+  pack: fast, two bullets end it, a pistol, rockets without end, one a side); a fighter's third
+  gun on its top wing (outside Classic); the kinds of craft in a fight chosen on the fight's
+  page; Bomber escort's one bomber is the player who chose one (light or ultra); T while falling
+  or under a parachute goes back to the fight; parachutes can be shot through; banked, wings
+  hold less up (on its side, the rudder keeps a plane's nose up); the computer's pilots break off
+  too close and keep clear of each other (none collide now); Blue's field was at the water's
+  level; Classic shows no rockets; the menu's plane is the one chosen, with the insignia chosen.
+- The site's games are built optimized (`--release`): their ticks take two thirds of the time.
 - `on_panic(f)`: f is given a panic's message as the program ends with it (once; not for a
   panic that is caught), to keep it in a log of the program's own. Aces and Sky Barons write it
   to their logs: in a web page, reloaded, Settings' Save the log has it.

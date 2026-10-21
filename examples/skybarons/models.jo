@@ -1,7 +1,7 @@
 # Sky Barons' models: low-poly and flat-shaded, made in code (no files to load).
 # Meters; a craft's nose toward -z, up +y, its right wing +x, its origin at its middle (about
-# where it balances). Kinds: 0 scout, 1 fighter, 2 bomber, 3 zeppelin, 4 ultra bomber. Teams: 0
-# Red, 1 Blue.
+# where it balances). Kinds: 0 scout, 1 fighter, 2 bomber, 3 zeppelin, 4 ultra bomber, 5 balloon,
+# 6 rocketeer. Teams: 0 Red, 1 Blue.
 # A badge is a player's insignia: its place in BADGES.
 #
 #   craft_mesh(kind, team, badge)   each craft, without its propellers
@@ -13,12 +13,17 @@
 #   mg_base_mesh(), mg_gun_mesh()   a machine-gun nest, and its twin gun 1.1 over the base's origin
 #   gunner_mesh(team)               a gunner from the waist up, holding a gun ahead (-z)
 #   ULTRA_SEATS                     the ultra bomber's seats: pilot, then gunners
+#   BALLOON_SEATS, BURNER           the balloon's gunners' seats; its burner (a flame up from it)
+#   ROCKET_NOZZLES                  where the rocketeer's nozzles end (flames back, +z, from them)
+#   flame_mesh()                    a flame 1.2 long from its base, pointing +z
 
 const SCOUT = 0
 const FIGHTER = 1
 const BOMBER = 2
 const ZEPPELIN = 3
 const ULTRA = 4
+const BALLOON = 5
+const ROCKETEER = 6
 
 BADGES = ["none", "white bands", "yellow nose", "chevron", "star", "skull", "lightning", "yellow tail", "hat in the ring", "shark mouth", "Nungesser's heart", "Voss's face", "stork", "ace of spades"]
 
@@ -1378,6 +1383,222 @@ make_riese = () -> Vertex3D[]:
     beam(vs, vec3(0, 0.9, 15.0), vec3(0, -0.4, 16.4), 0.12, strut)
     vs
 
+# ---------------- the war balloon ----------------
+# A hot-air balloon: an envelope of gores in the side's colors (its insignia on both sides), its
+# mouth 8 under the middle, ropes down to a wicker basket (floor -13.6, rim -11.6) with a burner
+# over it, three guns on the rim and bomb racks on its sides
+BALLOON_SEATS = [vec3(-0.8, -11.4, -0.7), vec3(0.8, -11.4, -0.7), vec3(0, -11.4, 0.9)]
+BURNER = vec3(0, -9.2, 0)
+const GORES = 24
+GORE_STEP = TAU / f64(GORES)
+
+# the envelope's rings, bottom to top: (y, radius); the mouth widening to 9 across at 3.5, then
+# round over the top to a point at 11
+envelope_rings = () -> vec2[]:
+    rs: vec2[]
+    loop k in 0..7:
+        t = f64(k) / 7.0
+        rs.push(vec2(f32(-8.0 + 11.5 * t), f32(2.5 + 6.5 * sin(t * PI / 2.0))))
+    loop k in 0..7:
+        a = PI / 2.0 * f64(k) / 6.0
+        rs.push(vec2(f32(3.5 + 7.5 * sin(a)), f32(if k == 6: 0.0 else: 9.0 * cos(a))))
+    rs
+ENVELOPE = envelope_rings()
+
+# a corner of the envelope: on ring i, the edge before gore j (gore 0 faces +x, the rest round
+# toward +z)
+envelope_corner = (i: int, j: int) -> vec3:
+    a = (f64(j) - 0.5) * GORE_STEP
+    r = f64(ENVELOPE[i].y)
+    v3(cos(a) * r, f64(ENVELOPE[i].x), sin(a) * r)
+
+# markings laid on the envelope, their middle on gore k at height y; cut where gores and rings
+# meet, so each piece lies flat on one panel
+on_envelope = (vs: mut Vertex3D[], layers: (vec2[], vec4)[], k: int, y: f64, size: f64):
+    band = (h: f64) -> int:
+        loop i in 0..ENVELOPE.len() - 2:
+            if h < f64(ENVELOPE[i + 1].x): return i
+        ENVELOPE.len() - 2
+    i0 = band(y)
+    r = f64(lerp(ENVELOPE[i0].y, ENVELOPE[i0 + 1].y, f32((y - f64(ENVELOPE[i0].x)) / f64(ENVELOPE[i0 + 1].x - ENVELOPE[i0].x)))) * cos(GORE_STEP / 2.0)
+    swap = (t: vec2[]) -> vec2[]: t.map((p): vec2(p.y, p.x))
+    loop n in 0.. and l in layers:
+        lift = f32(0.05 + 0.03 * f64(n))
+        # (x: across the gores, in gores; y: up, in meters)
+        pts = l.0.map((p): vec2(f32(f64(p.x) * size / r / GORE_STEP), f32(y + f64(p.y) * size)))
+        loop j in -5..5: pts = swap(split_y(swap(pts), f64(j) + 0.5))
+        loop e in ENVELOPE: pts = split_y(pts, f64(e.x))
+        loop t in 0..pts.len() / 3:
+            c = (pts[3 * t] + pts[3 * t + 1] + pts[3 * t + 2]) * f32(1.0 / 3.0)
+            g = int(round(f64(c.x)))
+            i = band(f64(c.y))
+            a0 = envelope_corner(i, k + g)
+            a1 = envelope_corner(i, k + g + 1)
+            b0 = envelope_corner(i + 1, k + g)
+            b1 = envelope_corner(i + 1, k + g + 1)
+            nn = normalize(cross(a1 - a0, b0 - a0))
+            mid = (a0 + b1) * 0.5
+            if f64(dot(nn, vec3(mid.x, 0, mid.z))) < 0.0: nn = nn * -1.0
+            y0 = f64(ENVELOPE[i].x)
+            y1 = f64(ENVELOPE[i + 1].x)
+            loop q in 0..3:
+                p = pts[3 * t + q]
+                s = f32(f64(p.x) - f64(g) + 0.5)
+                h = f32((f64(p.y) - y0) / (y1 - y0))
+                vs.push(Vertex3D(lerp(lerp(a0, a1, s), lerp(b0, b1, s), h) + nn * lift, nn, vec2(0, 0), l.1))
+
+make_balloon = (team: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    red = team == 0
+    main = if red: rgb(0.78, 0.12, 0.1) else: rgb(0.16, 0.3, 0.72)
+    other = if red: rgb(0.93, 0.9, 0.83) else: rgb(0.93, 0.92, 0.88)
+    skirt = rgb(0.5, 0.42, 0.3)
+    wicker = rgb(0.72, 0.58, 0.32)
+    weave = rgb(0.5, 0.36, 0.19)
+    leather = rgb(0.24, 0.15, 0.08)
+    rope = rgb(0.4, 0.34, 0.24)
+    steel = rgb(0.25, 0.26, 0.27)
+    # the envelope: gores alternating, the crown in the side's color, a canvas skirt at the mouth
+    last = ENVELOPE.len() - 1
+    loop i in 0..last:
+        mid = v3(0, f64(ENVELOPE[i].x + ENVELOPE[i + 1].x) * 0.5, 0)
+        loop k in 0..GORES:
+            c = if i == 0: skirt else if i >= last - 2 or k % 2 == 0: main else: other
+            if i + 1 == last: tri(vs, envelope_corner(i, k), envelope_corner(i, k + 1), envelope_corner(i + 1, k), c, mid)
+            else: quad(vs, envelope_corner(i, k), envelope_corner(i, k + 1), envelope_corner(i + 1, k + 1), envelope_corner(i + 1, k), c, mid)
+    disc(vs, vec3(0, -7.95, 0), 2.45, rgb(0.1, 0.07, 0.05), GORES, false)
+    insignia = if red: CROSS else: [(disc2(vec2(0, 0), 1.12, 24), WHITE_PAINT)] + ROUNDEL
+    loop k in [0, GORES / 2]: on_envelope(vs, insignia, k, 2.2, if red: 3.0 else: 2.9)
+    # the ropes from the mouth to the basket's corners and sides, the burner on its frame
+    loop k in 0..8:
+        a = TAU * f64(k) / 8.0
+        foot = if k % 2 == 0: v3(cos(a) * 1.3, -11.6, sin(a) * 1.3) else: v3(1.3 * sign(cos(a)), -11.6, 1.3 * sign(sin(a)))
+        beam(vs, v3(cos(a) * 2.45, -8.0, sin(a) * 2.45), foot, 0.05, rope)
+    # (the burner hung from the mouth, clear of the gunners' heads)
+    loop k in 0..4:
+        a = PI / 4.0 + PI / 2.0 * f64(k)
+        beam(vs, v3(cos(a) * 2.4, -8.0, sin(a) * 2.4), v3(cos(a) * 0.6, -10.0, sin(a) * 0.6), 0.05, steel)
+    rim_ring(vs, vec3(0, -10.0, 0), 0.6, 0.06, steel, 8)
+    add_box(vs, vec3(0, -9.75, 0), vec3(0.62, 0.4, 0.62), steel)
+    loop sx in [-1.0, 1.0]: add_cylinder(vs, v3(0.15 * sx, -9.55, 0), 0.13, 0.35, rgb(0.48, 0.42, 0.3), 8)
+    add_cylinder(vs, vec3(0, -9.4, 0), 0.17, 0.2, DARK, 8)
+    # the basket: wicker walls in bands, a leather rim, posts at its corners, its floor
+    add_box(vs, vec3(0, -13.55, 0), vec3(2.6, 0.1, 2.6), weave)
+    loop b in 0..7:
+        y = -13.5 + 0.27 * f64(b) + 0.135
+        c = if b % 2 == 0: wicker else: shade(wicker, 0.8)
+        loop sx in [-1.0, 1.0]:
+            add_box(vs, v3(1.26 * sx, y, 0), vec3(0.08, 0.27, 2.44), c)
+            add_box(vs, v3(0, y, 1.26 * sx), vec3(2.6, 0.27, 0.08), c)
+    loop sx in [-1.0, 1.0]:
+        add_box(vs, v3(1.27 * sx, -11.62, 0), vec3(0.14, 0.12, 2.68), leather)
+        add_box(vs, v3(0, -11.62, 1.27 * sx), vec3(2.68, 0.12, 0.14), leather)
+        loop sz in [-1.0, 1.0]: add_box(vs, v3(1.3 * sx, -12.6, 1.3 * sz), vec3(0.1, 2.0, 0.1), weave)
+        loop z in [-0.45, 0.45]: add_box(vs, v3(1.31 * sx, -12.55, z), vec3(0.04, 1.9, 0.07), weave)
+        loop z in [-0.45, 0.45]: add_box(vs, v3(z, -12.55, 1.31 * sx), vec3(0.07, 1.9, 0.04), weave)
+    # the guns' swivel mounts: a socket under each seat, braced to the nearest walls
+    loop s in BALLOON_SEATS:
+        tube(vs, s + v3(0, -0.62, 0), s + v3(0, -0.38, 0), 0.055, steel, 6)
+        if abs(f64(s.x)) > 0.1: beam(vs, s + v3(0, -0.5, 0), v3(1.22 * sign(f64(s.x)), f64(s.y) - 0.3, f64(s.z)), 0.06, steel)
+        beam(vs, s + v3(0, -0.5, 0), v3(f64(s.x), f64(s.y) - 0.3, 1.22 * sign(f64(s.z))), 0.06, steel)
+    # the bomb racks on the sides: a bar on two arms, a bomb hung under each end
+    loop sx in [-1.0, 1.0]:
+        loop z in [-0.98, 0.98]:
+            beam(vs, v3(1.32 * sx, -12.05, z), v3(1.66 * sx, -12.05, z), 0.07, steel)
+            beam(vs, v3(1.32 * sx, -12.55, z), v3(1.66 * sx, -12.1, z), 0.05, steel)
+        loop z in [-0.62, 0.62]:
+            bomb: Vertex3D[]
+            add_bomb(bomb)
+            put(vs, bomb, translation(v3(1.66 * sx, -12.36, z)) * scaling(vec3(0.85, 0.85, 0.85)))
+        beam(vs, v3(1.66 * sx, -12.06, -1.02), v3(1.66 * sx, -12.06, 1.02), 0.09, DARK, true)
+    vs
+
+# ---------------- the rocketeer ----------------
+# A flyer on a rocket pack, flat out ("superman"), head toward -z, back (and the pack) up; the
+# origin at the hips. Made standing (up +y, facing -z, feet at -0.95) and laid down: so turned
+# nose-up a quarter (rotation_x(PI / 2)) it stands. A leather jacket, jodhpurs and boots, a brass
+# helmet with a fin, goggles, the side's scarf; one arm ahead with a pistol (its muzzle at
+# (0.26, -0.1, -1.07)); the pack's two tanks with fins, their nozzles' ends at ROCKET_NOZZLES
+ROCKET_NOZZLES = [vec3(-0.15, 0.27, 0.36), vec3(0.15, 0.27, 0.36)]
+
+make_rocketeer = (team: int) -> Vertex3D[]:
+    st: Vertex3D[]
+    jacket = rgb(0.36, 0.23, 0.13)
+    jodhpurs = rgb(0.55, 0.47, 0.32)
+    boots = rgb(0.12, 0.08, 0.05)
+    skin = rgb(0.86, 0.66, 0.52)
+    glove = rgb(0.2, 0.14, 0.09)
+    brass = rgb(0.66, 0.48, 0.2)
+    steel = rgb(0.68, 0.69, 0.7)
+    scarf = if team == 0: RED_SIDE else: BLUE_SIDE
+    # legs: tall boots, flared jodhpurs
+    loop sx in [-1.0, 1.0]:
+        add_box(st, v3(0.11 * sx, -0.7, 0.01), vec3(0.14, 0.5, 0.16), boots)
+        add_box(st, v3(0.11 * sx, -0.9, -0.08), vec3(0.13, 0.1, 0.2), boots)
+        add_box(st, v3(0.11 * sx, -0.26, 0), vec3(0.18, 0.42, 0.2), jodhpurs)
+        add_box(st, v3(0.13 * sx, -0.3, 0), vec3(0.17, 0.2, 0.21), jodhpurs)
+    add_box(st, vec3(0, -0.02, 0), vec3(0.4, 0.16, 0.24), jodhpurs)
+    # the body: the jacket, a belt, the pack's harness
+    add_box(st, vec3(0, 0.27, 0), vec3(0.44, 0.42, 0.26), jacket)
+    add_box(st, vec3(0, 0.46, 0), vec3(0.46, 0.08, 0.27), jacket)
+    add_box(st, vec3(0, 0.07, 0), vec3(0.45, 0.07, 0.28), boots)
+    add_box(st, vec3(-0.06, 0.07, -0.145), vec3(0.08, 0.06, 0.02), brass)
+    loop sx in [-1.0, 1.0]: add_box(st, v3(0.11 * sx, 0.3, -0.135), vec3(0.05, 0.42, 0.02), boots)
+    add_box(st, vec3(0, 0.3, -0.135), vec3(0.27, 0.05, 0.02), boots)
+    # the head: a face under a brass helmet with a fin, goggles, the scarf round the neck and
+    # its end blown down the back
+    add_box(st, vec3(0, 0.55, 0), vec3(0.1, 0.08, 0.1), skin)
+    add_sphere(st, vec3(0, 0.665, -0.01), 0.1, skin, 8, 6)
+    add_sphere(st, vec3(0, 0, 0), 0.12, brass, 10, 7, translation(vec3(0, 0.725, 0.02)) * scaling(vec3(1.0, 1.0, 1.08)))
+    plate(st, [vec3(0, 0.8, -0.1), vec3(0, 0.9, -0.03), vec3(0, 0.92, 0.08), vec3(0, 0.86, 0.16), vec3(0, 0.76, 0.15)], vec3(1, 0, 0), 0.025, shade(brass, 0.75))
+    add_box(st, vec3(0, 0.7, -0.098), vec3(0.17, 0.035, 0.03), boots)
+    loop sx in [-1.0, 1.0]:
+        tube(st, v3(0.045 * sx, 0.7, -0.1), v3(0.045 * sx, 0.7, -0.125), 0.032, brass, 8)
+        tube(st, v3(0.045 * sx, 0.7, -0.1), v3(0.045 * sx, 0.7, -0.13), 0.022, rgb(0.15, 0.25, 0.3), 8)
+    add_box(st, vec3(0, 0.53, 0), vec3(0.22, 0.07, 0.21), scarf)
+    add_box(st, vec3(-0.14, 0.38, 0.14), vec3(0.08, 0.28, 0.03), scarf, rotation_z(-0.2))
+    add_box(st, vec3(-0.13, 0.2, 0.15), vec3(0.07, 0.14, 0.03), scarf, rotation_z(0.15))
+    # the arms: the right one up (ahead, flying) with the pistol, the left down at the controls
+    arm = (sh: vec3, el: vec3, wr: vec3):
+        add_box(st, sh, vec3(0.15, 0.15, 0.2), jacket)
+        beam(st, sh, el, 0.13, jacket, true)
+        beam(st, el, wr, 0.11, jacket, true)
+    arm(vec3(0.27, 0.44, 0), vec3(0.29, 0.66, -0.07), vec3(0.265, 0.86, -0.14))
+    add_box(st, vec3(0.26, 0.9, -0.15), vec3(0.09, 0.1, 0.1), glove)
+    add_box(st, vec3(0.26, 0.92, -0.16), vec3(0.03, 0.05, 0.1), DARK)
+    add_box(st, vec3(0.26, 0.98, -0.1), vec3(0.04, 0.16, 0.05), DARK)
+    tube(st, vec3(0.26, 1.05, -0.1), vec3(0.26, 1.07, -0.1), 0.014, DARK, 6)
+    arm(vec3(-0.27, 0.44, 0), vec3(-0.31, 0.2, 0.0), vec3(-0.28, 0.02, -0.07))
+    add_box(st, vec3(-0.27, -0.03, -0.09), vec3(0.09, 0.1, 0.1), glove)
+    add_box(st, vec3(-0.2, -0.02, -0.13), vec3(0.08, 0.05, 0.05), DARK)
+    # the pack: a back plate, two tanks with pointed tops, fins out and back, bell nozzles
+    # under them; the insignia on the panel between them
+    add_box(st, vec3(0, 0.22, 0.155), vec3(0.34, 0.46, 0.05), shade(steel, 0.55))
+    add_box(st, vec3(0, 0.2, 0.25), vec3(0.2, 0.44, 0.16), shade(steel, 0.7))
+    loop sx in [-1.0, 1.0]:
+        x = 0.15 * sx
+        tube(st, v3(x, -0.22, 0.27), v3(x, 0.48, 0.27), 0.095, steel, 10)
+        tube(st, v3(x, 0.48, 0.27), v3(x, 0.62, 0.27), 0.095, steel, 10, 0.02)
+        loop y in [-0.15, 0.4]: tube(st, v3(x, y, 0.27), v3(x, y + 0.04, 0.27), 0.1, brass, 10)
+        tube(st, v3(x, -0.22, 0.27), v3(x, -0.25, 0.27), 0.07, DARK, 8)
+        tube(st, v3(x, -0.25, 0.27), v3(x, -0.36, 0.27), 0.05, shade(steel, 0.4), 8, 0.075)
+        plate(st, [v3(0.23 * sx, 0.12, 0.27), v3(0.36 * sx, -0.14, 0.27), v3(0.36 * sx, -0.3, 0.27), v3(0.23 * sx, -0.2, 0.27)], vec3(0, 0, 1), 0.02, brass)
+        plate(st, [v3(x, 0.08, 0.35), v3(x, -0.16, 0.45), v3(x, -0.3, 0.45), v3(x, -0.2, 0.35)], vec3(1, 0, 0), 0.02, brass)
+    add_box(st, vec3(0, 0.43, 0.27), vec3(0.3, 0.05, 0.12), brass)
+    mark(st, if team == 0: CROSS else: [(disc2(vec2(0, 0), 1.12, 20), WHITE_PAINT)] + ROUNDEL, vec3(0, 0.22, 0.33), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, 0, 1), 0.085)
+    vs: Vertex3D[]
+    put(vs, st, rotation_x(-PI / 2.0))
+    vs
+
+# a rocket's or a burner's flame: a cone 1.2 long and 0.25 across at its base (at the origin),
+# pointing +z, white-yellow at the root to orange and red at the tip (draw it glowing:
+# emissive, no shadow)
+make_flame = () -> Mesh:
+    vs: Vertex3D[]
+    prof = [vec2(0.0, 0.07), vec2(0.06, 0.125), vec2(0.3, 0.11), vec2(0.65, 0.07), vec2(1.2, 0.0)]
+    lathe(vs, prof, 10, rgb(1.0, 0.6, 0.15), colors = [rgb(1.0, 0.97, 0.75), rgb(1.0, 0.85, 0.35), rgb(1.0, 0.6, 0.15), rgb(0.95, 0.35, 0.08)])
+    custom_mesh(vs)
+
 # ---------------- what the crafts carry, and what is on the ground ----------------
 # an early stick rocket (Le Prieur's): a pointed head on a tube, a long stick behind
 make_rocket = () -> Mesh:
@@ -1390,6 +1611,10 @@ make_rocket = () -> Mesh:
 # a bomb: a teardrop, its nose toward -z, four fins in a box at its tail
 make_bomb = () -> Mesh:
     vs: Vertex3D[]
+    add_bomb(vs)
+    custom_mesh(vs)
+
+add_bomb = (vs: mut Vertex3D[]):
     body = rgb(0.32, 0.34, 0.3)
     prof = [vec2(-0.56, 0.0), vec2(-0.5, 0.08), vec2(-0.4, 0.14), vec2(-0.25, 0.175), vec2(-0.05, 0.18), vec2(0.15, 0.16), vec2(0.3, 0.11), vec2(0.42, 0.06), vec2(0.47, 0.035)]
     lathe(vs, prof, 10, body, colors = [DARK, DARK, body, YELLOW_PAINT, body, body, body, body])
@@ -1400,7 +1625,6 @@ make_bomb = () -> Mesh:
         b = PI / 4.0 + PI / 2.0 * f64(k + 1)
         e = v3(cos(b), sin(b), 0)
         loop z in [0.4, 0.55]: beam(vs, d * 0.18 + v3(0, 0, z), e * 0.18 + v3(0, 0, z), 0.015, body)
-    custom_mesh(vs)
 
 # an open parachute: twelve gores, white and off-white, seen from inside too; its lines gather a
 # little over the shoulders of a person standing at its origin
@@ -1822,6 +2046,8 @@ craft_vertices = (kind: int, team: int, badge: int) -> Vertex3D[]:
     if kind == FIGHTER: return make_fighter(team, badge)
     if kind == BOMBER: return if team == 0: make_gotha() else: make_muromets()
     if kind == ULTRA: return if team == 0: make_riese() else: make_svyatogor()
+    if kind == BALLOON: return make_balloon(team)
+    if kind == ROCKETEER: return make_rocketeer(team)
     make_zeppelin(team)
 
 # each craft with each insignia, made when first asked for (bombers and airships have none)
@@ -1839,6 +2065,7 @@ craft_triangles = (kind: int, team: int, badge: int) -> int: craft_vertices(kind
 
 # each propeller: where its hub is (xyz) and how long a blade is (w)
 props = (kind: int, team: int) -> vec4[]:
+    if kind == BALLOON or kind == ROCKETEER: return []
     if kind == SCOUT: return [vec4(0, 0, -2.75, 1.1)]
     if kind == FIGHTER: return [vec4(0, 0.05, -3.02, 1.2)]
     if kind == BOMBER:
@@ -1881,3 +2108,4 @@ wreck_mesh = () -> Mesh: _once("wreck", make_wreck)
 mg_base_mesh = () -> Mesh: _once("mg base", make_mg_base)
 mg_gun_mesh = () -> Mesh: _once("mg gun", make_mg_gun)
 gunner_mesh = (team: int) -> Mesh: _once("gunner" + str(team), (): make_gunner(team))
+flame_mesh = () -> Mesh: _once("flame", make_flame)

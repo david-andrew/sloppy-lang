@@ -604,7 +604,8 @@ def build_gallery():
             open(full, "w").write(src)
         if not play:
             os.makedirs(os.path.join(d, name), exist_ok=True)
-            subprocess.run([sloppy, "build", full, "--target", "wasm", "-o", os.path.join(d, name, "index.html")], check=True, env=env)
+            # (optimized: the players are who wait for it, and a second's building is nothing)
+            subprocess.run([sloppy, "build", full, "--target", "wasm", "--release", "-o", os.path.join(d, name, "index.html")], check=True, env=env)
             play = f"{name}/"
         # the picture: frame 150, by the software renderer (no GPU, no display)
         exe = os.path.join(d, name + ".bin")
