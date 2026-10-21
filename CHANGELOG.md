@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Sky Barons: up to 64 a side (the lobby's sizes 1 to 64; the computer's people on one line
+  there, the results each side's best 8). Many a side, about a craft each, the rest parked in rows
+  across the strip; a Dogfight's own number to win 10 for each six. A tick at 64 a side about
+  0.55 ms (it was 1.7): the crafts on the ground listed once a tick for those walking and taxiing,
+  and collisions looked for only between crafts near along x.
 - Sky Barons: G puts one's own side out of one's craft (as its pilot; those in the air bail out),
   or, on foot by a craft on the ground, its pilot out and oneself in. Crafts that touch with one
   on the ground are no longer harmed: the one rolling stops that way and is eased apart.

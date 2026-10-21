@@ -289,6 +289,16 @@ struct Near:
     vel: vec3
     reach: f32
 
+# (a craft whole and on the ground this tick: what the computer's people on foot and taxiing
+# look at, made once a tick, read without copying the craft)
+struct Parked:
+    craft: int
+    pos: vec3
+    vel: vec3
+    kind: int
+    team: int
+    flown: bool                 # (someone in its pilot's seat)
+
 struct Game:
     crafts: Craft[]
     people: Person[]
@@ -305,6 +315,7 @@ struct Game:
     goals: int[] = [-1, -1]     # (each side's target on the ground, this tick: mission_target)
     air: Near[] = []            # (the crafts in the air this tick: avoid's, made once a tick)
     crew: int[] = []            # (each craft's crew's side this tick: crew_team, made once a tick)
+    ground: Parked[] = []       # (the crafts whole on the ground this tick, made once a tick)
     bomber = -1                 # (Bomber escort: the person who flies the attackers' bomber)
     bomber_kind = ULTRA
 
@@ -314,9 +325,17 @@ field_kinds = (n: int, mode: int, crafts: int) -> int[]:
     if mode == CLASSIC: return fill(FIGHTER, n + 2)
     k = [ZEPPELIN, ULTRA, BALLOON, ROCKETEER, BOMBER]
     if n >= 4: k.push(BOMBER)
-    loop i in 0..n + 1: k.push(FIGHTER)
-    loop i in 0..(n + 1) / 2 + 1: k.push(SCOUT)
-    loop i in 0..max(1, (n + 1) / 3): k.push(ORNITHOPTER)
+    if n <= 6:
+        loop i in 0..n + 1: k.push(FIGHTER)
+        loop i in 0..(n + 1) / 2 + 1: k.push(SCOUT)
+        loop i in 0..max(1, (n + 1) / 3): k.push(ORNITHOPTER)
+    else:
+        # (many a side: about a craft each, and a few more; not twice as many standing about)
+        loop i in 0..n / 8: k.push(BOMBER)
+        loop i in 0..n / 2: k.push(FIGHTER)
+        loop i in 0..n / 4: k.push(SCOUT)
+        loop i in 0..n / 6: k.push(ORNITHOPTER)
+        loop i in 0..n / 32: k.push(ULTRA)
     k = k.filter((x): crafts & (1 << x) != 0)
     # (a craft to fly for everyone on the side, and one more: what is allowed, more of it, the
     # small ones first; rocketeers only when nothing else is)
@@ -505,8 +524,11 @@ tick = (g: Game, pads: Pad[]) -> Game:
     loop t in 0..2: g.goals[t] = find_target(g, t)
     g.air = []
     g.crew = []
+    g.ground = []
     loop j in 0..g.crafts.len():
         g.crew.push(crew_at(g, j))
+        if g.crafts[j].landed and not g.crafts[j].free and g.crafts[j].gone == 0 and g.crafts[j].down == 0:
+            g.ground.push(Parked(j, g.crafts[j].pos, g.crafts[j].vel, g.crafts[j].kind, g.crafts[j].team, g.crafts[j].seats.len() > 0 and g.crafts[j].seats[0] >= 0))
         if not g.crafts[j].free and g.crafts[j].gone == 0 and g.crafts[j].down == 0 and not g.crafts[j].landed:
             h = KINDS[g.crafts[j].kind].half
             g.air.push(Near(j, g.crafts[j].pos, g.crafts[j].vel, max(h.x, h.z)))
@@ -1328,10 +1350,22 @@ collide = (g: mut Game):
         reach.push(max(h.x, max(h.y, h.z)))
         live.push(not g.crafts[i].free and g.crafts[i].gone == 0)
         moving.push(not g.crafts[i].landed or g.crafts[i].vel != vec3(0, 0, 0))
+    # (sorted along x: a pair looked at only when their x are as near as they reach)
+    order: (f32, int)[]
+    most = f32(0.0)
     loop i in 0..n:
-        if not live[i]: continue
-        loop j in i + 1..n:
-            if not live[j] or not (moving[i] or moving[j]): continue
+        if live[i]:
+            order.push((at[i].x, i))
+            most = max(most, reach[i])
+    order.sort_with((a, b): a.0 < b.0 or (a.0 == b.0 and a.1 < b.1))
+    loop oi in 0..order.len():
+        i0 = order[oi].1
+        loop oj in oi + 1..order.len():
+            if order[oj].0 - order[oi].0 > reach[i0] + most: break
+            j0 = order[oj].1
+            i = min(i0, j0)
+            j = max(i0, j0)
+            if not (moving[i] or moving[j]): continue
             d = at[i] - at[j]
             r = reach[i] + reach[j]
             if dot(d, d) > r * r: continue
@@ -2054,8 +2088,8 @@ bot_walk = (g: Game, i: int, p: Person) -> Pad:
     least = 1e18
     # (each picks by its number: some the big ones, the rest fighters and scouts)
     want_big = role(i) == 1
-    loop j in 0.. and c in g.crafts:
-        if not whole(c) or not c.landed or c.seats[0] >= 0 or f64(length(c.vel)) > 3.0: continue
+    loop c in g.ground:
+        if c.flown or f64(length(c.vel)) > 3.0: continue
         # (its own side's colors; one of the other side's only when very near)
         d = f64(length(c.pos - p.pos))
         if c.team != p.team and d > 60.0: continue
@@ -2064,7 +2098,7 @@ bot_walk = (g: Game, i: int, p: Person) -> Pad:
         if c.kind == ZEPPELIN: d += 150.0
         if d < least:
             least = d
-            best = j
+            best = c.craft
     # (nothing near, far from its field: back there)
     if best < 0 or (least > 350.0 and far_from_field(p)): return Pad(aim_yaw = int(p.yaw * 1000.0), enter = g.tick % 30 == i % 30)
     c = g.crafts[best]
@@ -2114,8 +2148,8 @@ bot_fly = (g: Game, ci: int, c: Craft) -> Pad:
         # bump only stops them)
         right = vec3(-fwd.z, 0, fwd.x)
         if c.rest < 360:
-            loop j in 0.. and o in g.crafts:
-                if j == ci or not whole(o) or not o.landed: continue
+            loop o in g.ground:
+                if o.craft == ci: continue
                 d = o.pos - c.pos
                 l = f64(length(d))
                 if l < 0.1 or l > 200.0: continue
