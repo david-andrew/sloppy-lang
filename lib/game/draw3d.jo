@@ -272,6 +272,8 @@ struct Draw3D:
     front: bool = false
     bones: vec4[] = []          # (skinned: the joints' rows for LitParams.bones)
     both_sides = false          # (draw_mesh's double_sided: its backs drawn too)
+    kept_vbo = 0                # (instanced from an instance_buffer: its buffer, and how many)
+    kept_count = 0
 
 __3d_ready = false
 __lit: Shader
@@ -286,11 +288,10 @@ __blur_sh: Shader
 __comp_sh: Shader
 __fs_tri: Mesh
 __draws: Draw3D[]
-# (3D particles: their shader, and a mesh for each set drawn in a frame)
+# (3D particles: their shader, and the quad each is drawn as)
 __pt_sh = Shader()
 __pt_ready = false
-__pt_meshes: Mesh[]
-__pt_used = 0
+__pt_quad = Mesh()
 __view = mat4()
 __proj3 = mat4()
 __cam_pos = vec3(0, 2, 5)
@@ -509,6 +510,19 @@ __draw_skinned = (m: Mesh, bones: vec4[], transform: mat4, color: vec4, texture:
 draw_mesh_instanced = (m: Mesh, instances: Instance3D[], color: vec4 = vec4(1, 1, 1, 1), emissive: f64 = 0.0, specular: f64 = 0.2, cast_shadow: bool = true, wind: f64 = 0.0):
     __draws.push(Draw3D(m, mat4(), color, 0, f32(emissive), f32(specular), instances, true, cast_shadow, f32(wind), __noop3d, false))
 
+# the same, of instances kept on the GPU: for copies that do not move (a forest, a town), made
+# once with instance_buffer(instances) (an array is sent to the GPU again every frame)
+#   trees = instance_buffer(tree_list)                 # once
+#   draw_mesh_instanced(tree_mesh, trees)              # in draw
+draw_mesh_instanced = (m: Mesh, instances: InstanceBuffer[Instance3D], color: vec4 = vec4(1, 1, 1, 1), emissive: f64 = 0.0, specular: f64 = 0.2, cast_shadow: bool = true, wind: f64 = 0.0):
+    if instances.count == 0: return
+    __draws.push(Draw3D(m, mat4(), color, 0, f32(emissive), f32(specular), [], true, cast_shadow, f32(wind), __noop3d, false, kept_vbo = instances.vbo, kept_count = instances.count))
+
+# (an instanced draw: of its array, or of the instance buffer it was given)
+__draw_inst3d = (sh: Shader, d: Draw3D, p: LitParams):
+    if d.kept_vbo != 0: draw_instanced(sh, d.mesh, InstanceBuffer[Instance3D](vbo = d.kept_vbo, count = d.kept_count), p)
+    else: draw_instanced(sh, d.mesh, d.instances, p)
+
 # draw with your own shader inside the 3D pass; `render` runs with depth testing on.
 # Use scene_view_proj(), scene_camera(), scene_sun(), scene_shadow_vp(), scene_shadow_map()...
 # transparent = true: run after the sky with alpha blending on and depth writes off;
@@ -576,50 +590,47 @@ update = (ps: mut Particles3D, dt: f64):
 # draw them with the 3D scene: glowing (colors add up: sparks, fire, magic) or not (blended:
 # smoke, dust); they fade and shrink as they age
 draw = (ps: Particles3D, glow: bool = true):
-    global __pt_ready, __pt_sh
+    global __pt_quad, __pt_ready, __pt_sh
     if ps.items.len() == 0: return
     if not __pt_ready:
         __pt_sh = make_shader(shader(_pt_vs, _pt_fs))
+        n0 = vec3(0, 0, 1)
+        c = vec4(1, 1, 1, 1)
+        __pt_quad = mesh([Vertex3D(vec3(0, 0, 0), n0, vec2(0, 0), c), Vertex3D(vec3(0, 0, 0), n0, vec2(1, 0), c), Vertex3D(vec3(0, 0, 0), n0, vec2(1, 1), c),
+                          Vertex3D(vec3(0, 0, 0), n0, vec2(0, 0), c), Vertex3D(vec3(0, 0, 0), n0, vec2(1, 1), c), Vertex3D(vec3(0, 0, 0), n0, vec2(0, 1), c)])
         __pt_ready = true
     fwd = normalize(__cam_target - __cam_pos)
     up0 = __cam_up
     if abs(dot(fwd, normalize(up0))) > 0.99: up0 = vec3(0, 0, 1)
     right = normalize(cross(fwd, up0))
     up = cross(right, fwd)
-    vs: Vertex3D[]
-    vs.reserve(ps.items.len() * 6)
-    n = -fwd
+    # (one instance a particle, its corners placed by the shader: a quarter of the data six
+    # vertices were, built and sent each frame)
+    insts: _PtInst[]
+    insts.reserve(ps.items.len())
     loop p in ps.items:
         t = clamp(p.life / p.max_life, 0.0, 1.0)
         c = p.color
         c.w = c.w * t
-        h = p.size * (0.5 + 0.5 * t) * 0.5
-        rx = right * h
-        uy = up * h
-        q0 = Vertex3D(p.pos - rx - uy, n, vec2(0, 0), c)
-        q1 = Vertex3D(p.pos + rx - uy, n, vec2(1, 0), c)
-        q2 = Vertex3D(p.pos + rx + uy, n, vec2(1, 1), c)
-        q3 = Vertex3D(p.pos - rx + uy, n, vec2(0, 1), c)
-        vs.push(q0)
-        vs.push(q1)
-        vs.push(q2)
-        vs.push(q0)
-        vs.push(q2)
-        vs.push(q3)
-    # (a mesh of its own for each set drawn this frame: they are drawn later, all at once)
-    k = __pt_used
-    __pt_used += 1
-    if k >= __pt_meshes.len(): __pt_meshes.push(mesh(vs))
-    else: update_mesh(__pt_meshes[k], vs)
-    draw_custom((): draw(__pt_sh, __pt_meshes[k], _PtParams(scene_view_proj())), transparent = not glow, additive = glow)
+        insts.push(_PtInst(p.pos, p.size * (0.5 + 0.5 * t) * 0.5, c))
+    draw_custom((): draw_instanced(__pt_sh, __pt_quad, insts, _PtParams(scene_view_proj(), right, up)), transparent = not glow, additive = glow)
 
+struct _PtInst:
+    pos: vec3
+    half: f32                   # (half its width)
+    color: vec4
 struct _PtParams:
     view_proj: mat4
+    right: vec3                 # (the camera's)
+    up: vec3
 struct _PtOut:
     pos: vec4
     uv: vec2
     color: vec4
-_pt_vs = (v: Vertex3D, u: _PtParams) -> _PtOut: _PtOut(u.view_proj * vec4(v.pos, 1), v.uv, v.color)
+_pt_vs = (v: Vertex3D, p: _PtInst, u: _PtParams) -> _PtOut:
+    c = v.uv * 2.0 - vec2(1, 1)
+    w = p.pos + u.right * (c.x * p.half) + u.up * (c.y * p.half)
+    _PtOut(u.view_proj * vec4(w, 1), v.uv, p.color)
 _pt_fs = (i: _PtOut, u: _PtParams) -> vec4:
     d = length(i.uv * 2.0 - vec2(1, 1))
     a = clamp(1.0 - d, 0.0, 1.0)
@@ -673,12 +684,12 @@ __cast_shadow = (d: mut Draw3D, sv: vec4[], vp: mat4):
     if not __in_view(d, sv): return
     p = __params_for(d, vp)
     p.shadow_map = Texture(0, 1, 1)          # never sample the target being rendered
-    if d.instanced: draw_instanced(__shadow_sh_inst, d.mesh, d.instances, p)
+    if d.instanced: __draw_inst3d(__shadow_sh_inst, d, p)
     else if d.bones.len() > 0: draw(__shadow_sh_skin, d.mesh, p)
     else: draw(__shadow_sh, d.mesh, p)
 
 __render3d = ():
-    global __drawn3d, __pass_frame, __pass_target, __proj3, __pt_used, __shadow_rt, __shadow_vp, __view
+    global __drawn3d, __pass_frame, __pass_target, __proj3, __shadow_rt, __shadow_vp, __view
     if __draws.len() == 0:
         __point_lights.clear()
         __point_colors.clear()
@@ -743,7 +754,7 @@ __render3d = ():
         __drawn3d += 1
         p = __params_for(d, vp)
         if d.both_sides: glDisable(GL_CULL_FACE)
-        if d.instanced: draw_instanced(__lit_inst, d.mesh, d.instances, p)
+        if d.instanced: __draw_inst3d(__lit_inst, d, p)
         else if d.bones.len() > 0: draw(__lit_skin, d.mesh, p)
         else: draw(__lit, d.mesh, p)
         if d.both_sides: glEnable(GL_CULL_FACE)
@@ -768,7 +779,7 @@ __render3d = ():
             continue
         if not __in_view(d, view): continue
         p = __params_for(d, vp)
-        if d.instanced: draw_instanced(__lit_inst, d.mesh, d.instances, p)
+        if d.instanced: __draw_inst3d(__lit_inst, d, p)
         else if d.bones.len() > 0: draw(__lit_skin, d.mesh, p)
         else: draw(__lit, d.mesh, p)
     glDepthMask(1)
@@ -791,7 +802,6 @@ __render3d = ():
     loop d in __draws:
         if d.shadow and not d.has_custom: __casters.push(d)
     __draws.clear()
-    __pt_used = 0
     if __clip_on: __apply_clip()
     zone_end()
 

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 3D particles are drawn as instances, one for each particle, its corners placed by the shader
+  (they were six vertices each, made and sent every frame): 6000 particles' frame took 1.8 ms
+  of CPU time, now 0.5.
+- `draw_mesh_instanced(mesh, instance_buffer(list))`: instances kept on the GPU, sent once, for
+  copies that do not move (a forest); an array is sent again every frame. Aces' 5800 trees and
+  its clouds are kept so (about 460 KB a frame before).
+- Aces: smoke and fire trails as many a second at any frame rate (on a 120 Hz screen they were
+  twice as thick, and the long frames grew with the particles).
 - Aces: the wind is a soft hiss again, quieter, and the engine a little louder (since noise has a
   pitch, the wind's `tone(400, .noise)` had become a loud low whoosh over the engine).
 - `draw_mesh_instanced` made a new instance buffer every frame and never let it go (it was kept

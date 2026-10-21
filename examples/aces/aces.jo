@@ -1871,10 +1871,12 @@ water = Mesh()
 cone = Mesh()
 puff = Mesh()
 tracer = Mesh()
+kept_trees = InstanceBuffer[Instance3D]()
+kept_clouds = InstanceBuffer[Instance3D]()
 made = false
 
 make_world = ():
-    global cone, ground_mesh, made, prop, puff, tracer, villages, water
+    global cone, ground_mesh, kept_clouds, kept_trees, made, prop, puff, tracer, villages, water
     if made: return
     made = true
     prop = make_propeller()
@@ -1885,6 +1887,9 @@ make_world = ():
     puff = sphere_mesh(1.0, 10, 6)
     tracer = cube_mesh(1.0)
     plant()
+    # (on the GPU once: they never move)
+    kept_trees = instance_buffer(trees)
+    kept_clouds = instance_buffer(clouds)
 
 prop_turn: f64[]
 
@@ -1903,8 +1908,8 @@ draw = ():
     draw_mesh(ground_mesh, specular = 0.02, cast_shadow = false)
     draw_mesh(water, translation(vec3(0, 0.3, 0)), rgb(0.25, 0.42, 0.55), specular = 0.8, cast_shadow = false)
     draw_mesh(villages, specular = 0.05)
-    draw_mesh_instanced(cone, trees, specular = 0.02, cast_shadow = false)
-    draw_mesh_instanced(puff, clouds, emissive = 0.35, specular = 0.0, cast_shadow = false)
+    draw_mesh_instanced(cone, kept_trees, specular = 0.02, cast_shadow = false)
+    draw_mesh_instanced(puff, kept_clouds, emissive = 0.35, specular = 0.0, cast_shadow = false)
     loop prop_turn.len() < g.planes.len(): prop_turn.push(0.0)
     loop i in 0.. and p in g.planes:
         if p.gone > 0: continue
@@ -1941,18 +1946,24 @@ seen: {int: bool} = {}          # (the booms already shown: tick, kind, who)
 last_shots: int[]
 hit_mark = 0.0                  # (seconds left: a hit by me, on the gunsight)
 hurt = 0.0                      # (seconds left: red at the edges, hit)
+puffs = 0.0                     # (time since the trails were last given smoke)
 
 effects = (dt: f64):
-    global hit_mark, hurt, news, seen, won_at
+    global hit_mark, hurt, news, puffs, seen, won_at
     g = game()
-    loop i in 0.. and p in g.planes:
-        if p.gone > 0: continue
-        tail = p.pos + fwd_of(p) * 2.0
-        # (smoke when hurt, and fire when nearly done for)
-        if p.health < 65 or p.down > 0:
-            n = if p.down > 0 or p.health < 30: 3 else: 1
-            emit(smoke, tail, n, 2.0, rgba(0.25, 0.24, 0.23, 0.7), 3.0, 4.0)
-        if p.health < 30 or p.down > 0: emit(fire, tail, 2, 2.0, rgb(1.0, 0.55, 0.15), 0.4, 1.6)
+    # (the trails as many a second at any frame rate: 60 times, not once a frame, which on a
+    # 120 Hz screen was twice the smoke)
+    puffs = min(puffs + dt, 0.1)
+    loop puffs >= DT:
+        puffs -= DT
+        loop p in g.planes:
+            if p.gone > 0: continue
+            tail = p.pos + fwd_of(p) * 2.0
+            # (smoke when hurt, and fire when nearly done for)
+            if p.health < 65 or p.down > 0:
+                n = if p.down > 0 or p.health < 30: 3 else: 1
+                emit(smoke, tail, n, 2.0, rgba(0.25, 0.24, 0.23, 0.7), 3.0, 4.0)
+            if p.health < 30 or p.down > 0: emit(fire, tail, 2, 2.0, rgb(1.0, 0.55, 0.15), 0.4, 1.6)
     loop b in g.booms:
         key = b.tick * 256 + b.kind * 16 + b.who + 1
         if seen.has(key) or g.tick - b.tick > 30: continue
