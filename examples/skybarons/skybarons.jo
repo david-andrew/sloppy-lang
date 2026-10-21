@@ -63,11 +63,12 @@ when TARGET != "wasm":
 # what is on the ground, by kind (world.jo: HANGAR, TANK, HQ, AA, DEPOT, FACTORY, MAST, MG)
 SITE_NAMES = ["hangar", "fuel tank", "command post", "gun against aircraft", "depot", "factory", "mast", "machine gun"]
 # what a kind is called, in a side's colors: Red's rocketeer is a witch on a broom
+PICK_NAMES = KIND_NAMES.filter((n): n != "drone")
 kind_name = (kind: int, team: int) -> str: if kind == ROCKETEER and team == 0: "witch" else: KIND_NAMES[kind]
 
 SEAT_NAMES = [["pilot"], ["pilot"], ["pilot", "nose gun", "back gun"], ["pilot", "top gun, fore", "top gun, aft", "gondola gun", "tail gun"],
               ["pilot", "nose gun", "top gun, fore", "top gun, aft", "tail gun", "belly gun", "left wing gun", "right wing gun"],
-              ["left gun and burner", "right gun", "back gun"], ["rocketeer"], ["pilot"]]
+              ["left gun and burner", "right gun", "back gun"], ["rocketeer"], ["pilot"], ["pilot", "ballista"], ["pilot", "tail gun and drones"], ["drone"]]
 
 # ---------------- playing: with friends, or against the computer ----------------
 enum Mode: menu, online, practice
@@ -128,15 +129,16 @@ if let saved = load_data("settings"):
         settings.fight = clamp(to_int(w[9]) ?? 0, 0, MODE_NAMES.len() - 1)
         settings.ff = w[10] == "1"
         settings.ground = w[11] == "1"
-        settings.plane = clamp(to_int(w[12]) ?? 1, 0, KINDS.len() - 1)
+        settings.plane = clamp(to_int(w[12]) ?? 1, 0, CHOOSABLE - 1)
     if w.len() >= 16:
         settings.win = clamp(to_int(w[13]) ?? 0, 0, 5)
         settings.minutes = clamp(to_int(w[14]) ?? 0, 0, 5)
         settings.attackers = clamp(to_int(w[15]) ?? 0, 0, 1)
     if w.len() >= 17:
-        settings.crafts = (to_int(w[16]) ?? ALL_CRAFTS) & ALL_CRAFTS
+        settings.crafts = to_int(w[16]) ?? ALL_CRAFTS
         # (saved before there were ornithopters: every kind then is every kind now)
-        if settings.crafts == 127: settings.crafts = ALL_CRAFTS
+        if settings.crafts == 127 or settings.crafts == 255: settings.crafts = ALL_CRAFTS
+        settings.crafts = settings.crafts & ALL_CRAFTS
 save_settings = ():
     settings.name = my_name()
     b = (x: bool) -> str: if x: "1" else: "0"
@@ -636,7 +638,7 @@ on_net = (e: net.NetEvent):
             rules.time_limit = to_int(w[12]) ?? 0
             rules.attackers = clamp(to_int(w[13]) ?? 0, 0, 1)
         if w.len() >= 15: rules.crafts = (to_int(w[14]) ?? ALL_CRAFTS) & ALL_CRAFTS
-        planes = split(w[10], ",").map((t): clamp(to_int(t) ?? 1, 0, KINDS.len() - 1))
+        planes = split(w[10], ",").map((t): clamp(to_int(t) ?? 1, 0, CHOOSABLE - 1))
         begin(who, pilots, SKILLS[clamp(to_int(w[3]) ?? 1, 0, 2)], peers, rules, planes)
 
 # the host's game is another version than this one (one of the pages loaded before the game
@@ -655,7 +657,7 @@ heard_me = (k: int, w: str[]):
     f.badge = to_badge(w[2])
     t = if w.len() >= 4: to_int(w[3]) ?? -1 else: -1
     if mode == .menu and t >= 0 and t <= 1 and t != f.side and counts(sides_now())[t] < MOST: f.side = t
-    if mode == .menu and w.len() >= 5: f.plane = clamp(to_int(w[4]) ?? 1, 0, KINDS.len() - 1)
+    if mode == .menu and w.len() >= 5: f.plane = clamp(to_int(w[4]) ?? 1, 0, CHOOSABLE - 1)
     f.version = if w.len() >= 6: w[5] else: "an older one"
     # (another version's game: told so, and let go in a moment; it is in no fight)
     if f.version != VERSION and f.away_at == 0.0:
@@ -757,7 +759,7 @@ fight_said = () -> str:
     if r.friendly_fire: out += ", friendly fire"
     if r.crafts != ALL_CRAFTS and r.mode != CLASSIC and r.mode != TRENCH and r.mode != ESCORT:
         kinds: str[]
-        loop k in 0..KINDS.len():
+        loop k in 0..CHOOSABLE:
             if r.crafts & (1 << k) != 0: kinds.push(KIND_NAMES[k] + "s")
         out += "; {join(kinds, ", ")} only"
     if (r.mode == DOGFIGHT or r.mode == BASES or r.mode == FLAG) and not r.ground_start: out += ", in the air"
@@ -982,7 +984,16 @@ my_pad = () -> Pad:
     pitch = action_axis("Dive", "Climb")
     if settings.invert: pitch = -pitch
     want = vec3(f32(pitch), f32(action_axis("Roll left", "Roll right")), f32(action_axis("Rudder left", "Rudder right")))
-    if KINDS[k.kind].lighter:
+    heli = KINDS[k.kind].heli
+    hold = Pad()
+    if heli:
+        # (a helicopter: W and S lean it ahead and back, A and D aside, Q and E or the mouse turn
+        # it; let go, it holds where it is, and its height, unless Shift or Ctrl)
+        hold = heli_to(k, k.pos, if aim_steering(): aim_dir() else: fwd_of(k), 0.0)
+        if abs(want.x) < 0.05: want.x = f32(f64(hold.pitch) / 100.0)
+        if abs(want.y) < 0.05: want.y = f32(f64(hold.roll) / 100.0)
+        if abs(want.z) < 0.05 and aim_steering(): want.z = f32(f64(hold.yaw) / 100.0)
+    else if KINDS[k.kind].lighter:
         # (a zeppelin: the keys up, down and round; the mouse turns it toward where it points)
         if aim_steering() and abs(want.y) + abs(want.z) < 0.05:
             t = steer_flat(k, aim_dir(), f64(k.pos.y))
@@ -998,10 +1009,11 @@ my_pad = () -> Pad:
         t = steer(k, vec3(aim_dir().x, 0, aim_dir().z))
         if abs(want.z) < 0.05: want.z = f32(f64(t.yaw) / 100.0)
         if abs(want.x) < 0.05 and f64(aim_dir().y) > 0.1: want.x = 1.0
+    if heli: c.throttle = hold.throttle
     if action_down("Throttle up"): c.throttle = 1
     if action_down("Throttle down"): c.throttle = -1
     # (on the ground with the mouse: the wheel, or W and S, the throttle)
-    if throttle_want >= 0.0:
+    if throttle_want >= 0.0 and not heli:
         if throttle_want > k.throttle + 0.01: c.throttle = 1
         else if throttle_want < k.throttle - 0.01: c.throttle = -1
     stick = approach(stick, want, if aim_steering(): 30.0 else: 9.0, DT)
@@ -1237,6 +1249,9 @@ cam_back = (kind: int) -> vec2:
     if kind == BALLOON: return vec2(45, 6)
     if kind == ROCKETEER: return vec2(6, 1.6)
     if kind == ORNITHOPTER: return vec2(13, 3.5)
+    if kind == DAVINCI: return vec2(17, 6)
+    if kind == CARCOPTER: return vec2(15, 5)
+    if kind == DRONE: return vec2(8, 2)
     if kind == BOMBER: return vec2(38, 9)
     vec2(15, 4.2)
 
@@ -1410,6 +1425,15 @@ site_mesh = (kind: int, team: int) -> Mesh:
     site_meshes[kind * 2 + team]
 
 prop_turn: f64[]
+# (da Vinci's trebuchets: when each threw last (elapsed()), by craft)
+thrown_at: {int: f64} = {}
+# (its arm's angle about x: at rest 0; a throw swings it down, under and on ahead (the boulder let
+# go on the way), then back)
+treb_angle = (i: int) -> f64:
+    t = elapsed() - (thrown_at.get(i) ?? -100.0)
+    if t < 0.0 or t > 2.0: return 0.0
+    if t < 0.35: return smoothstep(0.0, 0.35, t) * radians(165.0)
+    radians(165.0) * (1.0 - smoothstep(0.35, 2.0, t))
 
 # a gunner from the waist up, at a gun at `pivot` aimed along aim: a metre behind it, facing it
 draw_gunner = (team: int, pivot: vec3, aim: vec3):
@@ -1504,6 +1528,16 @@ draw = ():
                 a = if sd / 2 == 0: flap else: -flap
                 ang = if sd % 2 == 0: -a else: a
                 draw_mesh(models.wing_mesh(c.team, if sd % 2 == 0: -1 else: 1, sd / 2), m * translation(h) * rotation_z(ang), specular = 0.1)
+        # (the helicopters' rotors, turning with the throttle; da Vinci's trebuchet, swung on a
+        # throw, its boulder in its sling; its ballista where its gunner aims)
+        if c.kind == DAVINCI or c.kind == CARCOPTER:
+            turn = prop_turn[i] * (if c.kind == DAVINCI: 0.22 else: 0.45)
+            draw_mesh(models.rotor_mesh(c.kind, c.team), m * translation(models.ROTOR_AT(c.kind)) * rotation_y(-turn), specular = 0.1)
+        if c.kind == DAVINCI:
+            arm = m * translation(models.TREB_PIVOT) * rotation_x(treb_angle(i))
+            draw_mesh(models.treb_arm_mesh(c.team), arm, specular = 0.1)
+            if c.boulder: draw_mesh(models.boulder_mesh(), arm * translation(models.TREB_POUCH_LOCAL), specular = 0.05)
+            if c.aims.len() > 1: draw_mesh(models.ballista_mesh(c.team), translation(point_of(c, models.BALLISTA_PIVOT)) * quat_to_mat4(quat_facing(c.aims[1])), specular = 0.2)
         if c.kind == BALLOON and f64(c.vel.y) > 0.3: draw_mesh(flame, m * translation(models.BURNER) * rotation_x(-PI / 2.0) * scaling(vec3(1.4, 1.4, 1.4)), emissive = 0.9, specular = 0.0, cast_shadow = false)
         loop k in 0.. and h in models.props(c.kind, c.team):
             r = f64(h.w)
@@ -1513,7 +1547,7 @@ draw = ():
             if s >= c.aims.len(): continue
             gat = point_of(c, st[s].at)
             if i == my_craft() and my().seat == s and mode != .menu: continue
-            draw_mesh(turret, translation(gat) * quat_to_mat4(quat_facing(c.aims[s])), specular = 0.3)
+            if st[s].weapon != BALLISTA: draw_mesh(turret, translation(gat) * quat_to_mat4(quat_facing(c.aims[s])), specular = 0.3)
             # (a person at the gun, if there is one; the craft's own crew is not seen)
             if c.seats[s] >= 0: draw_gunner(g.people[c.seats[s]].team, gat - vec3(0, 0.25, 0), c.aims[s])
     # people on foot, falling, or hanging under a parachute
@@ -1527,6 +1561,12 @@ draw = ():
     loop sh in g.shots:
         if sh.kind == FLAK: continue
         d = if length(sh.vel) > 0.1: normalize(sh.vel) else: vec3(0, -1, 0)
+        if sh.kind == BOULDER:
+            draw_mesh(models.boulder_mesh(), translation(sh.pos) * rotation_x(f64(sh.life) * 0.08) * rotation_y(f64(sh.life) * 0.05), specular = 0.05)
+            continue
+        if sh.kind == CANNONBALL:
+            draw_mesh(models.boulder_mesh(), translation(sh.pos) * scaling(vec3(0.22, 0.22, 0.22)), rgb(0.18, 0.18, 0.2), specular = 0.5)
+            continue
         mesh_ = if sh.kind == ROCKET: rocket else: if sh.kind == PACK: pack else: bomb
         draw_mesh(mesh_, translation(sh.pos) * quat_to_mat4(quat_facing(d)), emissive = if sh.kind == ROCKET: 0.2 else: if sh.kind == PACK: 0.3 else: 0.0, specular = 0.3)
     # the bullets: every one a tracer
@@ -1536,6 +1576,10 @@ draw = ():
         loop b in g.bullets:
             d = normalize(b.vel)
             at = if b.life < (if b.snipe: SNIPE_LIFE else: BULLET_LIFE): b.pos + b.vel * back else: b.pos
+            # (a ballista's bolt: the bolt itself)
+            if b.bolt:
+                draw_mesh(models.bolt_mesh(), translation(at) * facing(d), specular = 0.2)
+                continue
             # (the long gun's shell: a streak as long as a tick's flight, not back past the muzzle)
             if b.snipe:
                 l = min(f64(SNIPE_LIFE - b.life) + f64(back) / DT + 1.0, 1.0) * SNIPE_SPEED * DT * 0.6
@@ -1646,6 +1690,30 @@ effects = (dt: f64):
                     play(snd_snipe, settings.sound * 0.9, pitch = 0.95 + 0.1 * random())
                     shake = 1.0
                 else: play_at(snd_snipe, b.pos, settings.sound * 0.8, 2500.0)
+        else if b.kind == THROWN:
+            thrown_at[b.who] = elapsed()
+            if in_fight: play_at(snd_thunk, b.pos, settings.sound * 0.7, 900.0)
+        else if b.kind == DUG:
+            emit(smoke, b.pos, 14, 4.0, rgba(0.45, 0.38, 0.28, 0.8), 1.5, 3.0)
+            if in_fight and b.who == myc: say("a boulder in the sling", rgb(1, 0.9, 0.6), small = true)
+        else if b.kind == SMASHED:
+            emit(smoke, b.pos, 20, 6.0, rgba(0.4, 0.36, 0.3, 0.8), 2.0, 5.0)
+            if in_fight:
+                play_at(snd_boom, b.pos, settings.sound * 0.6, 2000.0)
+                if b.by == me(): say("your boulder brought down {call_craft(g, b.who)}", COLORS[1 - g.crafts[b.who].team])
+                else if b.who == myc: say("hit by a boulder!", rgb(1, 0.5, 0.4))
+        else if b.kind == LAUNCHED:
+            if in_fight:
+                play_at(snd_rocket, b.pos, settings.sound * 0.4, 800.0)
+                if b.by == myc: say("a drone away", gray(0.9), small = true)
+        else if b.kind == CANNON:
+            emit(smoke, b.pos, 10, 3.0, rgba(0.75, 0.73, 0.7, 0.75), 2.0, 3.5)
+            emit(fire, b.pos, 6, 5.0, rgb(1.0, 0.75, 0.35), 0.12, 1.2)
+            if in_fight:
+                if b.who == myc:
+                    play(snd_cannon, settings.sound * 0.8, pitch = 0.9 + 0.2 * random())
+                    shake = max(shake, 0.5)
+                else: play_at(snd_cannon, b.pos, settings.sound * 0.7, 2500.0)
         else if b.kind == PISTOL:
             if in_fight:
                 if b.who == me(): play(snd_pistol, settings.sound * 0.45, pitch = 0.95 + 0.1 * random())
@@ -1715,6 +1783,8 @@ snd_flak = mix([tone(90.0, 0.5, .noise, 0.8, 0.001, 0.45, 0.5), tone(60.0, 0.3, 
 snd_rocket = tone(900.0, 0.8, .noise, 0.4, 0.01, 0.6, 0.35)
 # (the ornithopter's long gun: a crack and a rolling boom)
 snd_snipe = mix([tone(1100.0, 0.12, .noise, 0.7, 0.001, 0.1, 0.4), tone(70.0, 1.4, .noise, 1.0, 0.002, 1.3, 0.35), tone(42.0, 0.9, .square, 0.45, 0.002, 0.8, 0.5)])
+snd_thunk = mix([tone(90.0, 0.35, .noise, 0.8, 0.002, 0.3, 0.5), tone(55.0, 0.3, .square, 0.4, 0.002, 0.25, 0.6), tone(300.0, 0.6, .noise, 0.25, 0.05, 0.5, 0.5)])
+snd_cannon = mix([tone(500.0, 0.1, .noise, 0.6, 0.001, 0.08, 0.4), tone(60.0, 1.1, .noise, 0.9, 0.002, 1.0, 0.4), tone(38.0, 0.7, .square, 0.4, 0.002, 0.6, 0.5)])
 snd_pistol = mix([tone(700.0, 0.08, .noise, 0.45, 0.001, 0.07, 0.5), tone(150.0, 0.06, .square, 0.15, 0.001, 0.05, 0.6)])
 # (the ornithopter's pedals and chain: a squeak each stroke, a rattle under it)
 snd_squeak = mix([tone(1750.0, 0.16, .triangle, 0.16, 0.02, 0.1, 1.35, 0.3), tone(500.0, 0.09, .noise, 0.05, 0.005, 0.07, 0.8)])
@@ -1756,7 +1826,7 @@ sounds = ():
             set_volume(engine_ids[v], loud * 0.7)
             set_pan(engine_ids[v], 0.0)
         else: move_sound(engine_ids[v], c.pos, loud, if c.kind >= BOMBER: 1500.0 else: 900.0)
-        base = if c.kind == ROCKETEER: 1.5 else: if c.kind == ORNITHOPTER: 1.15 else: if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
+        base = if c.kind == ROCKETEER: 1.5 else: if c.kind == DRONE: 1.7 else: if c.kind == DAVINCI: 0.5 else: if c.kind == CARCOPTER: 0.6 else: if c.kind == ORNITHOPTER: 1.15 else: if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
         set_pitch(engine_ids[v], base + 0.45 * c.throttle + f64(length(c.vel)) / 200.0)
     # (the ornithoppers' pedals: a squeak each stroke, two to a turn of the cranks, as they turn)
     loop i in 0.. and c in g.crafts:
@@ -1897,11 +1967,22 @@ draw_hud = (g: Game):
         if (p.seat == 0 or c.kind == BALLOON) and (k.rockets > 0 or k.bombs > 0):
             parts: str[]
             if c.kind == ORNITHOPTER: parts.push("health packs {c.rockets} (X)    R: {if scoped: "off the scope" else: "the scope"}")
+            else if c.kind == CARCOPTER: parts.push("drones {c.rockets} (X, the tail gunner)")
             else if k.rockets > 0 and g.rules.rockets: parts.push(if k.endless: "rockets (X)" else: "rockets {c.rockets} (X)")
             if k.bombs > 0: parts.push("bombs {c.bombs} (B)")
             if c.kind == BALLOON and p.seat == 0: parts.push("S up, W down: the wind turns with height")
             t = join(parts, "   ")
             text(t, vec2(f32(min(f64(b.x), f64(at_edge(-20, 0).x) - text_width(t, 16))), b.y + 58), 16, gray(0.8))
+        # (da Vinci's: the boulder, or how to dig one; a balloon's cannons)
+        if c.kind == DAVINCI and p.seat == 0:
+            t = if c.boulder: "boulder in the sling: X throws it (it falls; what it hits goes down)" else: if c.dig > 0: "digging... {c.dig * 100 / DIG}%" else: "no boulder: low and slow over the ground, hold B to dig one"
+            text(t, vec2(f32(min(f64(b.x), f64(at_edge(-20, 0).x) - text_width(t, 16))), b.y + 58), 16, if c.boulder: rgb(1, 0.9, 0.6) else: gray(0.8))
+        if c.kind == CARCOPTER and p.seat == 1:
+            t = "drones {c.rockets} (X launches one)"
+            text(t, vec2(f32(min(f64(b.x), f64(at_edge(-20, 0).x) - text_width(t, 16))), b.y + 58), 16, gray(0.8))
+        if c.kind == BALLOON:
+            t = "X: the cannon nearest your aim"
+            text(t, vec2(f32(min(f64(b.x), f64(at_edge(-20, 0).x) - text_width(t, 16))), b.y + 78), 16, gray(0.8))
         # (the seats, and who is in them)
         if c.seats.len() > 1:
             sy = f64(at_edge(0, if touch_input(): 300.0 else: -150.0 - 20.0 * f64(c.seats.len())).y)
@@ -2341,7 +2422,7 @@ draw_lobby = ():
     if badge != settings.badge:
         settings.badge = badge
         save_settings()
-    plane = ui_choice("Plane in the air", KIND_NAMES, settings.plane)
+    plane = ui_choice("Plane in the air", PICK_NAMES, settings.plane)
     if plane != settings.plane:
         # (the menu's fight again, this one in it)
         settings.plane = plane
@@ -2389,13 +2470,13 @@ draw_fight_page = ():
     text_wrapped(about, vec2(f32(x - 240.0), f32(t0 + 100.0)), 480, 18, gray(0.8), align = .center)
     # (as close together as the screen's height needs)
     old = ui_style
-    items = if crafts: KINDS.len() + 1 else: 9
+    items = if crafts: CHOOSABLE + 1 else: 9
     top = t0 + 180.0
     ui_style.spacing = clamp((f64(safe_rect().y + safe_rect().h) - top - 30.0) / f64(items), 30.0, 50.0)
     ui_style.size = min(34.0, ui_style.spacing * 0.75)
     ui_begin(if crafts: "crafts" else: "fight", vec2(f32(x), f32(top)))
     if crafts:
-        loop k in 0..KINDS.len():
+        loop k in 0..CHOOSABLE:
             on = settings.crafts & (1 << k) != 0
             now = ui_switch(capitalize(KIND_NAMES[k]) + "s", on)
             # (one kind there must be)
@@ -2437,9 +2518,9 @@ fight_choices = ():
     # (which kinds of craft there are, where the fight does not say: a page of their own)
     if m != CLASSIC and m != TRENCH and m != ESCORT:
         n = 0
-        loop k in 0..KINDS.len():
+        loop k in 0..CHOOSABLE:
             if settings.crafts & (1 << k) != 0: n += 1
-        if ui_button("Crafts: {if n == KINDS.len(): "all" else: "{n} of {KINDS.len()}"}"): page = CRAFTS
+        if ui_button("Crafts: {if n == CHOOSABLE: "all" else: "{n} of {CHOOSABLE}"}"): page = CRAFTS
 
 ground_choice = (m: int) -> bool: m == DOGFIGHT or m == BASES or m == FLAG or m == FLAG_RAID or m == RAIDS
 

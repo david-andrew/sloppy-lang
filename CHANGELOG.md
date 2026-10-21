@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Sky Barons: three new crafts. Da Vinci's aerial screw, a light helicopter: its trebuchet's
+  boulder (dug from the ground, low and slow, B held; X throws it) brings down whatever it hits;
+  its second seat a ballista. A carcopter, a motor car under a rotor: guns ahead, and a tail
+  gunner who launches drones (X), little fighters with no one in them that shoot, then fly into
+  what they chase. The balloon's basket is a ship (Red's a pirate's), with eight cannons round
+  it: X fires the one nearest a gunner's aim. Helicopters: W and S lean ahead and back, A and D
+  aside, the mouse turns; let go, they hold where they are and their height, Shift and Ctrl up
+  and down. The computer's people fly them too.
 - Sky Barons: up to 64 a side (the lobby's sizes 1 to 64; the computer's people on one line
   there, the results each side's best 8). Many a side, about a craft each, the rest parked in rows
   across the strip; a Dogfight's own number to win 10 for each six. A tick at 64 a side about
