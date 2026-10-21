@@ -7,8 +7,9 @@
 - Sky Barons: the ornithopter's long gun fires a shell so fast that a craft aimed at where it is
   is mostly hit (out to about 900 m), for 80 (a fighter's 100), killing those in the seats it
   passes through; a boom, and its pilot's view kicked. The pedals squeak instead of an engine's
-  drone. On foot, falling or under a canopy, a pistol. Red's ultra bomber is the giant biplane
-  again; Blue's has the three cells in tandem.
+  drone. On foot, falling or under a canopy, a pistol. Red's ultra bomber has gull-winged
+  panels with engines and tall fins past its wings' ends, and a foreplane; Blue's three biplane
+  cells in tandem.
 - `run_hidden()` (lib/game): a web page's frames go on while it is hidden (in a tab not shown,
   or a window covered by another), called by a timer. Aces and Sky Barons online use it: hidden,
   a player's game stopped sending, the others took it for gone, and the two fights went on apart
