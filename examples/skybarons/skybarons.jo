@@ -112,6 +112,8 @@ struct Settings:
     minutes = 0                 # (and how long, by its place in minute_choices)
     attackers = 0               # the side that attacks, in the fights where one side does
     crafts = DEFAULT_CRAFTS     # the kinds of craft in the fight (a bit each)
+    markers = true              # the crafts marked on the screen (friends, foes, the target)
+    plain = false               # (the lobby's: no markers for anyone in the fight)
 
 settings = Settings()
 # (nothing saved yet: a first visit, whose menu shows Blue's fighter, until a plane is chosen)
@@ -141,10 +143,13 @@ if let saved = load_data("settings"):
         # (saved with every kind there was then: what a fight has now unless one says)
         if settings.crafts == 127 or settings.crafts == 255 or settings.crafts == ALL_CRAFTS: settings.crafts = DEFAULT_CRAFTS
         settings.crafts = settings.crafts & ALL_CRAFTS
+    if w.len() >= 19:
+        settings.markers = w[17] != "0"
+        settings.plain = w[18] == "1"
 save_settings = ():
     settings.name = my_name()
     b = (x: bool) -> str: if x: "1" else: "0"
-    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers} {settings.crafts}")
+    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers} {settings.crafts} {b(settings.markers)} {b(settings.plain)}")
 
 # a player's name as shown and sent: up to 12 characters, no commas, one space between words
 # (it travels as an underscore, so a message's words stay words)
@@ -179,7 +184,8 @@ rules_now = () -> Rules:
     Rules(mode = m, friendly_fire = settings.ff, ground_start = settings.ground,
           win = if wins.len() > 0: wins[clamp(settings.win, 0, wins.len() - 1)] else: 0,
           time_limit = if mins.len() > 0: mins[clamp(settings.minutes, 0, mins.len() - 1)] else: 0,
-          attackers = settings.attackers, crafts = if settings.crafts == 0: DEFAULT_CRAFTS else: settings.crafts)
+          attackers = settings.attackers, crafts = if settings.crafts == 0: DEFAULT_CRAFTS else: settings.crafts,
+          plain = settings.plain)
 
 # what can be chosen to win a fight (the first: its own number), and how long it lasts (minutes)
 win_choices = (m: int) -> int[]:
@@ -446,7 +452,7 @@ start_text = (k: int) -> str:
     g = game()
     r = g.rules
     b = (x: bool) -> str: if x: "1" else: "0"
-    "start {fights} {k} {settings.skill} {join(g.people.map((p): "{p.player}"), ",")} {join(crew_names.map(wire), ",")} {join(crew_badges.map((x): "{x}"), ",")} {r.mode} {b(r.friendly_fire)} {b(r.ground_start)} {join(start_planes.map((x): "{x}"), ",")} {r.win} {r.time_limit} {r.attackers} {r.crafts} {VERSION}"
+    "start {fights} {k} {settings.skill} {join(g.people.map((p): "{p.player}"), ",")} {join(crew_names.map(wire), ",")} {join(crew_badges.map((x): "{x}"), ",")} {r.mode} {b(r.friendly_fire)} {b(r.ground_start)} {join(start_planes.map((x): "{x}"), ",")} {r.win} {r.time_limit} {r.attackers} {r.crafts} {VERSION} {b(r.plain)}"
 start_planes: int[]
 tell_start = ():
     loop k in 0.. and f in friends:
@@ -642,6 +648,7 @@ on_net = (e: net.NetEvent):
             rules.time_limit = to_int(w[12]) ?? 0
             rules.attackers = clamp(to_int(w[13]) ?? 0, 0, 1)
         if w.len() >= 15: rules.crafts = (to_int(w[14]) ?? DEFAULT_CRAFTS) & ALL_CRAFTS
+        if w.len() >= 17: rules.plain = w[16] == "1"
         planes = split(w[10], ",").map((t): clamp(to_int(t) ?? 1, 0, CHOOSABLE - 1))
         begin(who, pilots, SKILLS[clamp(to_int(w[3]) ?? 1, 0, 2)], peers, rules, planes)
 
@@ -767,6 +774,7 @@ fight_said = () -> str:
             if r.crafts & (1 << k) != 0: kinds.push(KIND_NAMES[k] + "s")
         out += "; {join(kinds, ", ")} only"
     if (r.mode == DOGFIGHT or r.mode == BASES or r.mode == FLAG) and not r.ground_start: out += ", in the air"
+    if r.plain: out += ", no markers"
     out
 
 left_fight = (k: int):
@@ -1429,7 +1437,8 @@ made = false
 # (the buildings' meshes: by kind and side; and the rest of what models.jo makes)
 site_meshes: {int: Mesh} = {}
 turret = Mesh()
-person_meshes: Mesh[]
+# (a person in parts, to walk: by side, the body, a leg, an arm (models.person_part_mesh))
+person_parts: Mesh[]
 chute = Mesh()
 rocket = Mesh()
 bomb = Mesh()
@@ -1444,7 +1453,7 @@ flame = Mesh()
 pack = Mesh()
 
 make_world = () -> Scenery:
-    global aa_barrel, aa_base, bomb, chute, cone, flag_meshes, flame, gunner_meshes, made, mg_base, mg_gun, pack, person_meshes, prop, puff, rocket, tracer, turret, water, wreck
+    global aa_barrel, aa_base, bomb, chute, cone, flag_meshes, flame, gunner_meshes, made, mg_base, mg_gun, pack, person_parts, prop, puff, rocket, tracer, turret, water, wreck
     if not made:
         made = true
         water = plane_mesh(MAP)
@@ -1453,7 +1462,9 @@ make_world = () -> Scenery:
         tracer = cube_mesh(1.0)
         prop = models.prop_mesh()
         turret = models.turret_mesh()
-        person_meshes = [models.person_mesh(0), models.person_mesh(1)]
+        person_parts = []
+        loop t in 0..2:
+            loop part in 0..3: person_parts.push(models.person_part_mesh(t, part))
         chute = models.parachute_mesh()
         rocket = models.rocket_mesh()
         bomb = models.bomb_mesh()
@@ -1483,6 +1494,9 @@ site_mesh = (kind: int, team: int) -> Mesh:
     site_meshes[kind * 2 + team]
 
 prop_turn: f64[]
+# (each person's stride on foot: its legs' swing, a turn (TAU) a stride, by how far they went; here
+# alone, not the game's)
+strides: f64[]
 # (da Vinci's trebuchets: when each threw last (elapsed()), by craft)
 thrown_at: {int: f64} = {}
 # (its arm's angle about x: at rest 0; a throw swings it down, under and on ahead (the boulder let
@@ -1500,6 +1514,25 @@ draw_gunner = (team: int, pivot: vec3, aim: vec3):
     flat = normalize(flat)
     yaw = atan2(-f64(flat.x), -f64(flat.z))
     draw_mesh(gunner_meshes[team], translation(pivot - flat * 1.0) * rotation_y(yaw), specular = 0.05)
+
+# a person, its legs and arms swung as it walks or runs (on foot: still, none; running, past
+# about 7 m/s, longer strides, the arms pumping, leant forward a little)
+draw_person = (i: int, p: Person, at: mat4):
+    loop strides.len() <= i: strides.push(0.0)
+    speed = if p.state == WALK: f64(length(vec2(p.vel.x, p.vel.z))) else: 0.0
+    run = smoothstep(6.0, 8.0, speed)
+    strides[i] = (strides[i] + frame_time() * speed * TAU / (2.2 + 0.8 * run)) % TAU
+    swing = sin(strides[i]) * clamp(speed / 2.0, 0.0, 1.0)
+    leg = swing * (0.45 + 0.35 * run)
+    arm = swing * (0.35 + 0.45 * run)
+    body = at * rotation_x(-0.12 * run)
+    base = p.team * 3
+    draw_mesh(person_parts[base], body, specular = 0.05)
+    loop s in [-1.0, 1.0]:
+        side = vec3(f32(s), 1, 1)
+        # (each leg against the arm on its side: the left leg ahead as the right arm is)
+        draw_mesh(person_parts[base + 1], at * translation(models.PERSON_HIP * side) * rotation_x(leg * s), specular = 0.05)
+        draw_mesh(person_parts[base + 2], body * translation(models.PERSON_SHOULDER * side) * rotation_x(-arm * s), specular = 0.05)
 
 craft_matrix = (c: Craft) -> mat4: translation(c.pos) * quat_to_mat4(c.rot)
 
@@ -1613,7 +1646,7 @@ draw = ():
         if p.state == DEAD or p.state == SEATED or p.state == POST: continue
         at = translation(p.pos) * rotation_y(p.yaw)
         if p.state == FALL: at = at * rotation_x(f64(p.timer) * 0.15)
-        draw_mesh(person_meshes[p.team], at, specular = 0.05)
+        draw_person(i, p, at)
         if p.state == CHUTE: draw_mesh(chute, translation(p.pos) * rotation_y(p.yaw), specular = 0.05)
     # rockets and bombs
     loop sh in g.shots:
@@ -1943,7 +1976,9 @@ draw_hud = (g: Game):
     x = f64(mid().x)
     # the others: crafts flying, marked in their colors as they seem (a craft of the other side's
     # crew in this side's colors fools this side too, till it shoots at it); the target in brackets
+    # (none with the markers off: this one's setting, or the fight's for everyone)
     loop j in 0.. and o in g.crafts:
+        if not markers_on(g): break
         if j == myc or not flying(o): continue
         seen_as = seen_team(g, o, team)
         col = COLORS[seen_as]
@@ -2112,6 +2147,9 @@ draw_hud = (g: Game):
         else: text("ping {int(ping)} ms", at_edge(30, if touch_input(): 120.0 else: 20.0), 16, gray(0.6))
     if touch_input(): draw_touch(g, p, c)
     else: text("Escape or Enter: menu", at_edge(-130, 20), 16, gray(0.55))
+
+# (the crafts marked on the screen: this one's setting, unless the fight has them off for all)
+markers_on = (g: Game) -> bool: settings.markers and not g.rules.plain
 
 # the scope's view: dark round it, a cross where the long gun's shell goes (the craft's nose,
 # which turns toward the aim), and its loading
@@ -2604,7 +2642,7 @@ draw_fight_page = ():
     text_wrapped(about, vec2(f32(x - 240.0), f32(t0 + 100.0)), 480, 18, gray(0.8), align = .center)
     # (as close together as the screen's height needs)
     old = ui_style
-    items = if crafts: CHOOSABLE + 1 else: 9
+    items = if crafts: CHOOSABLE + 1 else: 10
     top = t0 + 180.0
     ui_style.spacing = clamp((f64(safe_rect().y + safe_rect().h) - top - 30.0) / f64(items), 30.0, 50.0)
     ui_style.size = min(34.0, ui_style.spacing * 0.75)
@@ -2649,6 +2687,8 @@ fight_choices = ():
     if mins.len() > 0: settings.minutes = ui_choice("Minutes", mins.map((x): "{x}"), clamp(settings.minutes, 0, mins.len() - 1))
     if ground_choice(m): settings.ground = ui_switch("Start on the ground", settings.ground)
     if m != CLASSIC: settings.ff = ui_switch("Friendly fire", settings.ff)
+    # (the crafts unmarked on everyone's screen: found by eye)
+    settings.plain = ui_choice("Markers", ["as chosen", "off for all"], if settings.plain: 1 else: 0) == 1
     # (which kinds of craft there are, where the fight does not say: a page of their own)
     if m != CLASSIC and m != TRENCH and m != ESCORT:
         n = 0
@@ -2704,6 +2744,7 @@ draw_settings = ():
     settings.mouse = ui_switch("Fly with the mouse", settings.mouse)
     settings.invert = ui_switch("Invert pitch", settings.invert)
     settings.level = ui_switch("Lock camera roll", settings.level)
+    settings.markers = ui_switch("Markers on crafts", settings.markers)
     if can_fullscreen():
         fs = ui_switch("Fullscreen", is_fullscreen())
         if fs != is_fullscreen(): set_fullscreen(fs)
@@ -2737,6 +2778,10 @@ draw_paused = ():
     if ui_button(if done: "Back to the results" else: "Back to the fight"): resume()
     if can_fullscreen() and ui_button(if is_fullscreen(): "Leave fullscreen" else: "Fullscreen"): set_fullscreen(not is_fullscreen())
     if (host_room or done) and ui_button(if host_room and not done: "End the fight: to the lobby" else: "Back to the lobby"): after_fight()
+    # (the crafts' markers, unless the fight has them off for everyone)
+    if not game().rules.plain and ui_button(if settings.markers: "Hide the markers" else: "Show the markers"):
+        settings.markers = not settings.markers
+        save_settings()
     if ui_button("Settings"): page = SETTINGS
     if ui_button(if host_room: "Leave: the room closes" else: "Leave"): leave()
     ui_end()
