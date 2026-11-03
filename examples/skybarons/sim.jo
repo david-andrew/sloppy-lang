@@ -109,6 +109,14 @@ MODE_MUST = [0, 0, 0, 0, 0, 0, 0, 0, 1 << CAT]
 # (Bikes & Brooms' points: a target down, the cat shot down; a target stands again TARGET_BACK
 # ticks after)
 const TARGET_POINTS = 10
+# (Bikes & Brooms' gun towers: what their crews fire at, how far their bullets go (ticks), the
+# ticks between a crew's shots, how wide they spread, and how long one shot down takes to stand
+# again)
+const NEST_RANGE = 800.0
+const NEST_LIFE = 135
+const NEST_GAP = 7
+const NEST_SPREAD = 0.05
+const NEST_BACK = 60 * 60
 const CAT_POINTS = 150          # (to the side that shoots it down: only guns, rockets and bursts can; a ram is no harm to it)
 const TARGET_BACK = 60 * 40
 const BIKES_WIN = 250           # (points to win, unless the lobby says: a cat shot down, and a few targets, and it is won)
@@ -722,10 +730,11 @@ score = (g: mut Game, team: int, n: int = 1):
 # (Bikes & Brooms: each target shot down stands again, its time up)
 targets_back = (g: mut Game):
     loop j in 0..g.buildings.len():
-        if g.buildings[j].kind != TARGET or g.buildings[j].health > 0: continue
+        k = g.buildings[j].kind
+        if (k != TARGET and k != NEST) or g.buildings[j].health > 0: continue
         g.buildings[j].back -= 1
         if g.buildings[j].back <= 0:
-            g.buildings[j].health = site_health(TARGET)
+            g.buildings[j].health = site_health(k)
             g.booms.push(Boom(g.buildings[j].pos, MENDED, g.tick, j))
 
 # who has won, for the fights won otherwise than by a score
@@ -927,7 +936,7 @@ nearest_gun = (g: Game, p: Person) -> int:
     best = -1
     least = 4.0
     loop j in 0.. and b in g.buildings:
-        if (b.kind != AA and b.kind != MG) or b.health <= 0 or b.crew >= 0: continue
+        if not is_gun(b.kind) or b.health <= 0 or b.crew >= 0: continue
         d = f64(length(vec2(b.pos.x - p.pos.x, b.pos.z - p.pos.z)))
         if d < least:
             least = d
@@ -1979,6 +1988,8 @@ hurt_building = (g: mut Game, j: int, by: int, team: int, amount: int):
         if b.kind == TARGET:
             g.buildings[j].back = TARGET_BACK
             if team != b.team: score(g, team, TARGET_POINTS)
+        # (a gun tower: built again in a while, no points for it)
+        if b.kind == NEST: g.buildings[j].back = NEST_BACK
         if b.crew >= 0: kill(g, b.crew, by)
 
 hurt_person = (g: mut Game, j: int, by: int, team: int, amount: int):
@@ -2008,7 +2019,7 @@ witness = (g: Game, at: vec3, v: int, skip: int) -> bool:
             if s == 0 and within(o.pos, fwd_of(o), 0.92, 700.0): return true
             if s > 0 and s < o.aims.len() and within(point_of(o, KINDS[o.kind].seats[s].at), o.aims[s], 0.965, 600.0): return true
     loop b in g.buildings:
-        if (b.kind == AA or b.kind == MG) and b.health > 0 and b.team == v and within(b.pos, b.aim, 0.965, 700.0): return true
+        if is_gun(b.kind) and b.health > 0 and b.team == v and within(b.pos + vec3(0, f32(gun_height(b.kind)), 0), b.aim, 0.965, 700.0): return true
     loop p in g.people:
         if p.team == v and p.state == WALK and within(p.pos + vec3(0, 1.6, 0), vec3(f32(-sin(p.yaw)), 0, f32(-cos(p.yaw))), 0.7, 400.0): return true
     false
@@ -2081,7 +2092,7 @@ shoot = (g: mut Game):
                 bi = building_hit(g, a, b.pos)
                 if bi >= 0:
                     k = g.buildings[bi].kind
-                    hurt_building(g, bi, b.by, b.team, if k == TARGET: b.damage else: if k == AA or k == MG: DAMAGE else: 2)
+                    hurt_building(g, bi, b.by, b.team, if k == TARGET: b.damage else: if is_gun(k): DAMAGE else: 2)
                     g.booms.push(Boom(b.pos, DIRT, g.tick, -1))
                     continue
             if f64(b.pos.y) < gy:
@@ -2258,46 +2269,48 @@ blast = (g: mut Game, s: Shot, r: f64, most: int):
 guns_on_ground = (g: mut Game, pads: Pad[]):
     loop j in 0..g.buildings.len():
         b = g.buildings[j]
-        if (b.kind != AA and b.kind != MG) or b.health <= 0: continue
+        if not is_gun(b.kind) or b.health <= 0: continue
         if b.cool > 0: g.buildings[j].cool -= 1
         if b.heat > 0: g.buildings[j].heat -= 1
-        at = b.pos + vec3(0, if b.kind == AA: 2.2 else: 1.1, 0)
+        at = b.pos + vec3(0, f32(gun_height(b.kind)), 0)
         team = b.team
         if b.crew >= 0:
             # (a person at it: their aim, their trigger)
             pad = pads[b.crew]
             team = g.people[b.crew].team
             yaw = f64(pad.aim_yaw) / 1000.0
-            pitch = clamp(f64(pad.aim_pitch) / 1000.0, if b.kind == AA: 0.1 else: -0.25, 1.5)
+            pitch = clamp(f64(pad.aim_pitch) / 1000.0, if b.kind == AA: 0.1 else: if b.kind == NEST: -0.7 else: -0.25, 1.5)
             dir = vec3(f32(-sin(yaw) * cos(pitch)), f32(sin(pitch)), f32(-cos(yaw) * cos(pitch)))
             g.buildings[j].aim = dir
             if pad.fire and g.buildings[j].cool == 0: fire_gun(g, j, at, dir, team, b.crew)
             continue
         if b.cool > 0: continue
-        if b.kind == MG:
-            # (the nearest it takes for the other side's: a craft, or one on foot)
+        if b.kind == MG or b.kind == NEST:
+            # (the nearest it takes for the other side's: a craft, or one on foot; a gun tower's
+            # out to NEST_RANGE, its fire spread wide over where it aims: a hail to be flown through)
+            reach = if b.kind == NEST: NEST_RANGE else: 350.0
             best = vec3(0, 0, 0)
             bv = vec3(0, 0, 0)
-            least = 350.0
+            least = reach
             loop o in g.air:
                 if g.crafts[o.craft].safe > 0 or seen_at(g, o.craft, team) == team: continue
                 d = f64(length(o.pos - at))
-                if d < least and f64(o.pos.y) > f64(at.y) - 30.0:
+                if d < least and f64(o.pos.y) > f64(at.y) - (if b.kind == NEST: 60.0 else: 30.0):
                     least = d
                     best = o.pos
                     bv = o.vel
             loop p in g.people:
                 if p.team == team or (p.state != WALK and p.state != CHUTE): continue
                 d = f64(length(p.pos - at))
-                if d < min(least, 250.0):
+                if d < min(least, if b.kind == NEST: 400.0 else: 250.0):
                     least = d
                     best = p.pos + vec3(0, 1, 0)
                     bv = p.vel
-            if least >= 350.0:
+            if least >= reach:
                 g.buildings[j].cool = 20
                 continue
             l = lead_from(at, vec3(0, 0, 0), best, bv)
-            w = 0.03 + 0.04 * (1.0 - g.skill)
+            w = (if b.kind == NEST: NEST_SPREAD else: 0.03) + 0.04 * (1.0 - g.skill)
             t = f64(g.tick)
             dir = normalize(normalize(l) + vec3(f32(sin(t * 0.37 + f64(j)) * w), f32(cos(t * 0.29) * w), f32(sin(t * 0.41 + 2.0) * w)))
             # (it turns at most 80 degrees a second: one flashing past close is hard to follow)
@@ -2369,8 +2382,10 @@ fire_gun = (g: mut Game, j: int, at: vec3, dir: vec3, team: int, by: int):
         g.buildings[j].cool = 40
     else:
         if b.heat >= JAM_HEAT: return
-        g.bullets.push(Bullet(at + dir * 1.8, dir * f32(BULLET_SPEED), by, -1, team, BULLET_LIFE))
-        g.buildings[j].cool = if by >= 0: 5 else: 10
+        # (a gun tower's: farther, and faster)
+        tower = b.kind == NEST
+        g.bullets.push(Bullet(at + dir * 1.8, dir * f32(BULLET_SPEED), by, -1, team, if tower: NEST_LIFE else: BULLET_LIFE))
+        g.buildings[j].cool = if by >= 0: (if tower: 4 else: 5) else: if tower: NEST_GAP else: 10
         g.buildings[j].heat += 8
     g.buildings[j].shots += 1
 

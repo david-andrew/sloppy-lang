@@ -64,7 +64,7 @@ when TARGET != "wasm":
         exit(0)
 
 # what is on the ground, by kind (world.jo: HANGAR, TANK, HQ, AA, DEPOT, FACTORY, MAST, MG)
-SITE_NAMES = ["hangar", "fuel tank", "command post", "gun against aircraft", "depot", "factory", "mast", "machine gun", "target"]
+SITE_NAMES = ["hangar", "fuel tank", "command post", "gun against aircraft", "depot", "factory", "mast", "machine gun", "target", "gun tower"]
 PICK_NAMES = KIND_NAMES.filter((n): n != "drone")
 # (the kinds the lobby lists for fight m: those it can have, in order)
 listed_kinds = (m: int) -> int[]: [0..CHOOSABLE).filter((k): MODE_CAN[m] & (1 << k) != 0)
@@ -911,7 +911,7 @@ clamp_aim = (p: Person):
     global aim_pitch
     if p.state == POST:
         b = game().buildings[p.post]
-        aim_pitch = clamp(aim_pitch, if b.kind == AA: 0.1 else: -0.25, 1.45)
+        aim_pitch = clamp(aim_pitch, if b.kind == AA: 0.1 else: if b.kind == NEST: -0.7 else: -0.25, 1.45)
         return
     if p.state != SEATED: return
     c = game().crafts[p.craft]
@@ -1416,8 +1416,10 @@ place_camera = (g: Game, dt: f64):
         # (at a gun on the ground: just behind and above it, along it)
         b = g.buildings[p.post]
         d = aim_dir()
-        at = b.pos + vec3(0, if b.kind == AA: 2.2 else: 1.1, 0)
+        at = b.pos + vec3(0, f32(gun_height(b.kind)), 0)
         cam_pos = at + vec3(0, 1.5, 0) - d * 3.5
+        # (up a gun tower: the eyes out at its muzzles, its guns and platform not in the way)
+        if b.kind == NEST: cam_pos = at + d * 2.2 + vec3(0, 0.5, 0)
         cam_at = cam_pos + d * 30.0
         cam_up = vec3(0, 1, 0)
         finish_camera()
@@ -1684,16 +1686,21 @@ draw = ():
     # what stands on the ground: whole, or a burnt ruin
     loop b in g.buildings:
         at = translation(b.pos) * rotation_y(b.yaw)
-        if b.kind == AA or b.kind == MG:
-            base = if b.kind == AA: aa_base else: mg_base
+        if is_gun(b.kind):
+            base = if b.kind == AA: aa_base else: if b.kind == NEST: models.nest_mesh(b.team) else: mg_base
             if b.health <= 0:
-                draw_mesh(base, at, rgb(0.3, 0.27, 0.25), specular = 0.0)
+                # (a gun tower shot down: its stump, burnt)
+                draw_mesh(base, if b.kind == NEST: at * scaling(vec3(1.0, 0.2, 1.0)) else: at, rgb(0.3, 0.27, 0.25), specular = 0.0)
                 continue
             draw_mesh(base, at, specular = 0.1)
-            pivot = b.pos + vec3(0, if b.kind == AA: 2.2 else: 1.1, 0)
-            draw_mesh(if b.kind == AA: aa_barrel else: mg_gun, translation(pivot) * quat_to_mat4(quat_facing(b.aim)), specular = 0.3)
+            pivot = b.pos + vec3(0, f32(gun_height(b.kind)), 0)
+            gun_m = translation(pivot) * quat_to_mat4(quat_facing(b.aim))
+            if b.kind == NEST: gun_m = gun_m * scaling(vec3(1.5, 1.5, 1.5))
+            # (one's own gun tower's guns and gunner not drawn: one looks out from its muzzles)
+            mine_post = b.kind == NEST and mode != .menu and my().state == POST and g.buildings[my().post].pos == b.pos
+            if not mine_post: draw_mesh(if b.kind == AA: aa_barrel else: mg_gun, gun_m, specular = 0.3)
             # (someone at it: seen behind it)
-            if b.crew >= 0: draw_gunner(g.people[b.crew].team, pivot - vec3(0, if b.kind == AA: 1.2 else: 0.4, 0), b.aim)
+            if b.crew >= 0 and not mine_post: draw_gunner(g.people[b.crew].team, pivot - vec3(0, if b.kind == AA: 1.2 else: 0.4, 0), b.aim)
             continue
         # (a target: its frame from the ground up to its ring; shot down, the frame alone)
         if b.kind == TARGET:
@@ -1919,7 +1926,7 @@ effects = (dt: f64):
                 play_at(snd_boom, bb.pos, settings.sound * 0.8, 3500.0)
                 by = if b.by >= 0: call(g, b.by) else: "someone"
                 if bb.kind == TARGET: say("{if b.by == me(): "you" else: by} shot down {TEAMS[bb.team]}'s target: {TARGET_POINTS} to {TEAMS[1 - bb.team]}", COLORS[1 - bb.team], small = b.by != me())
-                else: say("{by} destroyed {TEAMS[bb.team]}'s {SITE_NAMES[bb.kind]}", COLORS[1 - bb.team], small = bb.kind == AA or bb.kind == TANK or bb.kind == MG)
+                else: say("{by} destroyed {TEAMS[bb.team]}'s {SITE_NAMES[bb.kind]}", COLORS[1 - bb.team], small = bb.kind == AA or bb.kind == TANK or bb.kind == MG or bb.kind == NEST)
         else if b.kind == HEALED:
             if b.who >= 0 and b.who < g.crafts.len(): emit(sparks, g.crafts[b.who].pos, 30, 6.0, rgb(0.5, 1.0, 0.6), 0.8, 0.5)
             if in_fight and b.who == myc and b.by != me() and b.by >= 0: say("{call(g, b.by)} healed you", rgb(0.6, 1.0, 0.7), small = true)
@@ -2119,7 +2126,7 @@ sounds = ():
     # (the guns on the ground: a thump for a shell, a rattle for a machine gun)
     loop j in 0.. and b in g.buildings:
         if on and b.shots > last_guns[j]:
-            at = b.pos + vec3(0, if b.kind == AA: 2.2 else: 1.1, 0)
+            at = b.pos + vec3(0, f32(gun_height(b.kind)), 0)
             mine_gun = my().state == POST and my().post == j
             if b.kind == AA:
                 if mine_gun: play(snd_flak, settings.sound * 0.5)
@@ -2244,6 +2251,18 @@ draw_hud = (g: Game):
             if seated and myc >= 0 and d < 700.0 and o.down == 0 and c.down == 0:
                 from = if gun_seat(c.kind, p.seat): point_of(c, k.seats[p.seat].at) else: c.pos
                 if let l = world_to_screen(from + lead_from(from, c.vel, o.pos, o.vel)): ring(l, 6, 2, with_alpha(INK, 0.8))
+    # (Bikes & Brooms' gun towers, standing, near: a small diamond in their side's color, one's
+    # own a seat to take, the others' a place to keep clear of; not with the markers off)
+    if markers_on(g):
+        loop b in g.buildings:
+            if b.kind != NEST or b.health <= 0: continue
+            over = b.pos + vec3(0, f32(gun_height(NEST) + 3.0), 0)
+            if f64(length(over - cam_pos)) > 1500.0 or f64(dot(over - cam_pos, cam_at - cam_pos)) <= 0.0: continue
+            if let at = world_to_screen(over):
+                if not inside(at): continue
+                col = with_alpha(COLORS[b.team], 0.7)
+                triangle(at + vec2(0, -7), at + vec2(-5, 0), at + vec2(5, 0), col)
+                triangle(at + vec2(0, 7), at + vec2(5, 0), at + vec2(-5, 0), col)
     # the flags, wherever they are
     loop f in g.flags:
         if not f.real:
@@ -2297,15 +2316,15 @@ draw_hud = (g: Game):
         if p.seat == 0 and c.down == 0 and g.winner < 0 and outside(c.pos) > 0.0 and not c.landed: text_centered("turning back to the fight", alert_at() + vec2(0, 36), 20, INK, SHADOW)
     else if p.state == POST:
         b = g.buildings[p.post]
-        at = b.pos + vec3(0, if b.kind == AA: 2.2 else: 1.1, 0) + b.aim * 300.0
+        at = b.pos + vec3(0, f32(gun_height(b.kind)), 0) + b.aim * 300.0
         sight(at, b.cool > (if b.kind == AA: 30 else: 2), false)
         w = 260.0
-        h = if b.kind == MG: 110.0 else: 80.0
+        h = if b.kind != AA: 110.0 else: 80.0
         r = Rect(f32(f64(at_edge(-EDGE, 0).x) - w), f32(plate_y(h)), f32(w), f32(h))
         panel(r)
-        text(if b.kind == AA: "gun against aircraft" else: "machine gun", vec2(r.x + PAD, r.y + 10), T_BODY - 2.0, INK)
+        text(capitalize(SITE_NAMES[b.kind]), vec2(r.x + PAD, r.y + 10), T_BODY - 2.0, INK)
         plate_bar(f64(r.x) + PAD, f64(r.y) + 36.0, w - 2.0 * PAD, f64(b.health) / f64(site_health(b.kind)), "standing", health_color(f64(b.health) / f64(site_health(b.kind))))
-        if b.kind == MG: plate_bar(f64(r.x) + PAD, f64(r.y) + 70.0, w - 2.0 * PAD, f64(b.heat) / f64(JAM_HEAT), "heat", BRASS)
+        if b.kind != AA: plate_bar(f64(r.x) + PAD, f64(r.y) + 70.0, w - 2.0 * PAD, f64(b.heat) / f64(JAM_HEAT), "heat", BRASS)
     else if p.state == DEAD and g.winner < 0:
         r = Rect(mid().x - 130, alert_at().y - 34, 260, 68)
         panel(r)
@@ -2577,7 +2596,7 @@ what_f_does = (g: Game, p: Person) -> str:
         k = nearest_craft(g, p)
         gi = nearest_gun(g, p)
         if gi >= 0 and (k < 0 or f64(length(g.buildings[gi].pos - p.pos)) < 3.0):
-            return "{fk}: man the {if g.buildings[gi].kind == AA: "gun against aircraft" else: "machine gun"}"
+            return "{fk}: man the {SITE_NAMES[g.buildings[gi].kind]}"
         if k >= 0:
             c = g.crafts[k]
             whose = if c.team != p.team: " of {TEAMS[c.team]}'s" else: ""
