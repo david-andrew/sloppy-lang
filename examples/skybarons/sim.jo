@@ -158,6 +158,8 @@ BALL_KINDS = [BIG_BALL, BIG_BALL, MID_BALL, MID_BALL, SMALL_BALL, SMALL_BALL, CA
 # (a craft strikes a ball as if this many times its mass: it drives on, the ball is only pushed)
 const CRAFT_PUSH = 5.0
 const BALL_IDLE = 60 * 90       # (a ball no one has touched this long goes back to the middle)
+const BALL_APART = 40.0          # (two struck balls nearer than this, rim to rim, drift apart:
+const BALL_SPREAD = 2.0          # at most so many m/s², touching)
 const BALL_HOLD = 24            # (carried: let go when its carrier has been hurt this much: four bullets, or a rocket)
 const BROOMS_WIN = 120
 const BROOMS_CAT = 60            # (the cat shot down, in the ball fight: half a win)
@@ -592,7 +594,7 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
         loop t in 0..2:
             h = on_field(t, -STRIP_LONG + 230.0, -STRIP_WIDE - 40.0)
             g.flags.push(Flag(t, h, h, real = m == FLAG or t != g.rules.attackers))
-    if m == BROOMS: g.balls = ball_set()
+    if m == BROOMS: g.balls = ball_set(n)
     if starts_on_ground(g, 0) or starts_on_ground(g, 1):
         loop st in 0.. and s in stands(field_kinds(n, m, g.rules.crafts)):
             if not starts_on_ground(g, s.team): continue
@@ -2562,14 +2564,20 @@ drop_flag = (g: mut Game, i: int):
 # (the ball fight's balls at the start: about the middle of the field, each kind on either side of
 # it alike, a little over the height each floats at)
 BALL_HOMES = [vec2(0, 70), vec2(0, -70), vec2(120, -60), vec2(-120, 60), vec2(70, 140), vec2(-70, -140), vec2(0, 0), vec2(170, 170), vec2(-170, -170)]
-ball_set = () -> Ball[]:
+# (and in the big fights, more struck balls, a pair for every two a side over eight, three pairs at
+# most: so many strikers to so few balls, every one is fought over in the middle and none goes far)
+MORE_KINDS = [BIG_BALL, BIG_BALL, MID_BALL, MID_BALL, SMALL_BALL, SMALL_BALL]
+MORE_HOMES = [vec2(60, -220), vec2(-60, 220), vec2(220, -10), vec2(-220, 10), vec2(150, -200), vec2(-150, 200)]
+ball_set = (n: int) -> Ball[]:
     out: Ball[]
-    loop i in 0.. and k in BALL_KINDS:
-        x = f64(BALL_HOMES[i].x)
-        z = f64(BALL_HOMES[i].y)
-        h = vec3(f32(x), f32(max(ground(x, z), 0.0) + BALL_REST[k] + 25.0), f32(z))
-        out.push(Ball(k, h, vec3(0, 0, 0), h))
+    loop i in 0.. and k in BALL_KINDS: out.push(ball_at(k, BALL_HOMES[i]))
+    loop i in 0..2 * clamp((n - 7) / 2, 0, 3): out.push(ball_at(MORE_KINDS[i], MORE_HOMES[i]))
     out
+ball_at = (k: int, at: vec2) -> Ball:
+    x = f64(at.x)
+    z = f64(at.y)
+    h = vec3(f32(x), f32(max(ground(x, z), 0.0) + BALL_REST[k] + 25.0), f32(z))
+    Ball(k, h, vec3(0, 0, 0), h)
 
 # (the ball person pk carries: -1 none)
 ball_of = (g: Game, pk: int) -> int:
@@ -2764,10 +2772,18 @@ balls = (g: mut Game):
             d = g.balls[j].pos - g.balls[i].pos
             rr = BALL_R[g.balls[i].kind] + BALL_R[g.balls[j].kind]
             l = f64(length(d))
-            if l >= rr or l < 0.01: continue
+            if l >= rr + BALL_APART or l < 0.01: continue
             n = d * f32(1.0 / l)
             mi = BALL_MASS[g.balls[i].kind]
             mj = BALL_MASS[g.balls[j].kind]
+            # (near, the struck ones drift apart a little, level: a knot of them in the middle
+            # loosens, by their masses)
+            if g.balls[i].kind != CARRY_BALL and g.balls[j].kind != CARRY_BALL:
+                a = BALL_SPREAD * (1.0 - max(l - rr, 0.0) / BALL_APART) * DT
+                flat = vec3(n.x, 0, n.z)
+                g.balls[i].vel -= flat * f32(a * mj / (mi + mj))
+                g.balls[j].vel += flat * f32(a * mi / (mi + mj))
+            if l >= rr: continue
             push = rr - l
             g.balls[i].pos -= n * f32(push * mj / (mi + mj))
             g.balls[j].pos += n * f32(push * mi / (mi + mj))
@@ -2923,9 +2939,7 @@ bot_fly = (g: Game, ci: int, c: Craft) -> Pad:
     if c.down > 0: return Pad()
     # (the ball fight: most of the computer's at the balls, each in its part; the rest fight; the
     # big ones, too slow for the balls and every gun's mark, as ever, their gunners fighting)
-    if g.rules.mode == BROOMS and not c.landed and c.kind != CAT and c.kind != BALLOON and c.kind != BOMBER and c.kind != ULTRA and not k.lighter:
-        pi = pilot_of(c)
-        if pi >= 0 and (ball_role(pi) != 3 or ball_of(g, pi) >= 0): return bot_ball(g, ci, c, team)
+    if g.rules.mode == BROOMS and at_balls(g, c): return bot_ball(g, ci, c, team)
     if k.heli: return bot_heli(g, ci, c, team)
     if c.landed:
         pad = Pad()
@@ -2990,8 +3004,24 @@ bot_fly = (g: Game, ci: int, c: Craft) -> Pad:
     bot_fighter(g, ci, c)
 
 # (the ball fight's parts, by the computer's person's number: 0, 2 and 4 strike the balls toward
-# the other side's rings, 1 carries the small ones there, 3 fights (the carriers first))
-ball_role = (i: int) -> int: (i / 2) % 5
+# the other side's rings, 1 carries the small ones there, 3 fights (the carriers first). Four a
+# side or fewer, none is kept back to fight: the cat does that; the fourth carries too)
+ball_role = (g: Game, i: int) -> int:
+    j = i / 2
+    if g.people.len() <= 8: return [0, 1, 2, 1][j % 4]
+    j % 5
+
+# (whether craft c is flown at the balls by the computer, in its part: not a fighter's, nor one too
+# big or slow for them)
+at_balls = (g: Game, c: Craft) -> bool:
+    k = KINDS[c.kind]
+    if c.landed or c.kind == CAT or c.kind == BALLOON or c.kind == BOMBER or c.kind == ULTRA or k.lighter: return false
+    pi = pilot_of(c)
+    pi >= 0 and (ball_role(g, pi) != 3 or ball_of(g, pi) >= 0)
+
+# (how many strikers of a side may go after one struck ball before the rest look for another: one
+# ball mobbed by all of them goes nowhere)
+const BALL_CHASERS = 2
 
 # the computer at the balls: carrying one, to the nearest of the other side's rings, round to its
 # face and through it; a carrier, to the nearest carry ball and through it; a striker, to a ball
@@ -3005,6 +3035,7 @@ bot_ball = (g: Game, ci: int, c: Craft, team: int) -> Pad:
     rs = rings()
     mine = ball_of(g, pi)
     go = vec3(0, f32(ground(0.0, 0.0) + 60.0), 0)
+    run_in = false
     if mine >= 0:
         ri = -1
         least = 1e18
@@ -3021,7 +3052,7 @@ bot_ball = (g: Game, ci: int, c: Craft, team: int) -> Pad:
             # (in front of it and lined up: through it; else out in front of it first)
             go = if ahead > 30.0 and aside < ahead * 0.45 + 4.0: rg.at - rg.dir * 25.0 else: rg.at + rg.dir * f32(max(ahead, 0.0) * 0.5 + 280.0)
     else:
-        role = ball_role(pi)
+        role = ball_role(g, pi)
         best = -1
         least = 1e18
         loop bi in 0..g.balls.len():
@@ -3033,6 +3064,15 @@ bot_ball = (g: Game, ci: int, c: Craft, team: int) -> Pad:
             end = 1e9
             loop rg in rs: end = min(end, f64(length(rg.at - b.pos)))
             v = d * (0.7 + 0.6 * f64(hash(ci * 977 + bi * 31) % 1000) / 1000.0) * (0.4 + 0.6 * clamp(end / 1800.0, 0.0, 1.0))
+            # (a struck ball BALL_CHASERS of the side's other strikers are nearer to: another, likelier)
+            if b.kind != CARRY_BALL:
+                ahead = 0
+                loop oj in 0.. and oc in g.crafts:
+                    if oj == ci or not flying(oc) or not at_balls(g, oc) or crew_team(g, oc) != team: continue
+                    op = pilot_of(oc)
+                    if ball_role(g, op) == 1 or ball_of(g, op) >= 0: continue
+                    if f64(length(b.pos - oc.pos)) < d: ahead += 1
+                if ahead >= BALL_CHASERS: v *= 1.0 + 1.5 * f64(ahead - BALL_CHASERS + 1)
             if v < least:
                 least = v
                 best = bi
@@ -3068,7 +3108,10 @@ bot_ball = (g: Game, ci: int, c: Craft, team: int) -> Pad:
                 lined = f64(dot(rel, gd)) / dist
                 behind = f64(dot(c.pos - b.pos, gd))
                 if behind < -(r + 4.0) and lined > 0.8:
-                    # (in: at it, on the line through it to the ring, closer as it nears)
+                    # (in: at it, on the line through it to the ring, closer as it nears; the last
+                    # 250 m hardly turned aside for the others about it, or in a crowd it never
+                    # gets there)
+                    run_in = dist < 250.0
                     t = min(dist / max(speed, 15.0), 3.0)
                     go = b.pos + b.vel * f32(t) - gd * f32(max(dist * 0.35, r * 0.4))
                 else:
@@ -3088,7 +3131,7 @@ bot_ball = (g: Game, ci: int, c: Craft, team: int) -> Pad:
     else:
         ah = c.pos + c.vel * 2.0
         if alt < 14.0 or f64(ah.y) < ground(f64(ah.x), f64(ah.z)) + 10.0: want = vec3(fwd.x, 0, fwd.z) + vec3(0, 0.9, 0)
-        pad = steer(c, normalize(want) + avoid(g, ci, c) * 0.6)
+        pad = steer(c, normalize(want) + avoid(g, ci, c) * f32(if run_in: 0.1 else: 0.6))
         pad.pitch = int(f64(pad.pitch) * (0.55 + 0.45 * g.skill))
         if speed < k.stall * 1.3: pad.pitch = min(pad.pitch, 15)
         pad.throttle = 1
