@@ -62,9 +62,11 @@ when TARGET != "wasm":
 
 # what is on the ground, by kind (world.jo: HANGAR, TANK, HQ, AA, DEPOT, FACTORY, MAST, MG)
 SITE_NAMES = ["hangar", "fuel tank", "command post", "gun against aircraft", "depot", "factory", "mast", "machine gun"]
-# what a kind is called, in a side's colors: Red's rocketeer is a witch on a broom
 PICK_NAMES = KIND_NAMES.filter((n): n != "drone")
-kind_name = (kind: int, team: int) -> str: if kind == ROCKETEER and team == 0: "witch" else: KIND_NAMES[kind]
+# (a rocketeer flown as a witch on a broom: none yet)
+is_witch = (g: Game, i: int) -> bool: false
+# what craft i is called (a witch, if it is one)
+kind_name = (g: Game, i: int) -> str: if is_witch(g, i): "witch" else: KIND_NAMES[g.crafts[i].kind]
 
 SEAT_NAMES = [["pilot"], ["pilot"], ["pilot", "nose gun", "back gun"], ["pilot", "top gun, fore", "top gun, aft", "gondola gun", "tail gun"],
               ["pilot", "nose gun", "top gun, fore", "top gun, aft", "tail gun", "belly gun", "left wing gun", "right wing gun"],
@@ -296,7 +298,7 @@ call_craft = (g: Game, j: int) -> str:
     pi = pilot_of(c)
     known = mode == .menu or c.team == crew_team(g, c) or c.marked[my_team()] > g.tick or crew_team(g, c) == my_team()
     if pi >= 0 and known: return call(g, pi)
-    "a {kind_name(c.kind, c.team)}"
+    "a {kind_name(g, j)}"
 
 player_name = (k: int) -> str: if k >= 0 and k < crew_names.len() and len(crew_names[k]) > 0: crew_names[k] else: "player {k + 1}"
 
@@ -1391,8 +1393,14 @@ place_camera = (g: Game, dt: f64):
 # (how far out along its gun a gunner's view is: past what of the craft is round the seat)
 gun_reach = (kind: int, seat: int) -> f64:
     if kind == ZEPPELIN and seat == 3: return 2.6
-    if kind == DAVINCI: return 2.5
+    if kind == DAVINCI: return 2.0
+    if kind == CARCOPTER: return 2.0
     1.6
+
+# (where a rocketeer's fire comes from: its nozzles, a witch's bristles)
+rocket_ends = (g: Game, i: int) -> vec3[]:
+    if is_witch(g, i): return [models.BROOM_TAIL]
+    if g.crafts[i].team == 0: models.ROCKET_NOZZLES_RED else: models.ROCKET_NOZZLES
 
 # (the camera kept above the ground, and set; looking (nearly) straight up or down, its up is
 # along the craft's nose, or north: an up along the view itself would leave nothing seen)
@@ -1587,11 +1595,11 @@ draw = ():
             continue
         m = craft_matrix(c)
         # (the witch stands level on the ground: her broom, not her feet)
-        witch = c.kind == ROCKETEER and c.team == 0
+        witch = c.kind == ROCKETEER and is_witch(g, i)
         if witch and c.landed: m = m * rotation_x(-PI / 2.0)
         tint = vec4(1, 1, 1, 1)
         if c.safe > 0 and c.safe % 10 < 5: tint = vec4(1.6, 1.6, 1.6, 1)
-        draw_mesh(models.craft_mesh(c.kind, c.team, badge_of(g, i)), m, tint, specular = 0.25)
+        draw_mesh(if witch: models.witch_mesh(c.team) else: models.craft_mesh(c.kind, c.team, badge_of(g, i)), m, tint, specular = 0.25)
         spin = if c.down > 0: 3.0 else: if pilot_of(c) >= 0 or not c.landed: 25.0 + 30.0 * c.throttle else: 0.0
         prop_turn[i] += frame_time() * spin
         # (a fighter's third gun, on its top wing, outside Classic)
@@ -1602,7 +1610,7 @@ draw = ():
             pulse = 0.5 + 0.3 * sin(t) + 0.2 * sin(t * 2.7 + 1.3)
             len_ = f32((0.55 + 0.6 * c.throttle) * (0.75 + 0.5 * pulse))
             glow = 0.6 + 1.4 * pulse
-            ends = if witch: [models.BROOM_TAIL] else: models.ROCKET_NOZZLES
+            ends = rocket_ends(g, i)
             col = if witch: rgb(0.7, 0.35, 1.0) else: rgb(1, 1, 1)
             loop nz in ends: draw_mesh(flame, m * translation(nz) * scaling(vec3(f32(0.8 + 0.4 * pulse), f32(0.8 + 0.4 * pulse), len_)), col, emissive = glow, specular = 0.0, cast_shadow = false)
         # (the ornithopter's wings, flapping as its pilot pedals: faster with the throttle)
@@ -1619,16 +1627,23 @@ draw = ():
                 a = if sd / 2 == 0: flap else: -flap
                 ang = if sd % 2 == 0: -a else: a
                 draw_mesh(models.wing_mesh(c.team, if sd % 2 == 0: -1 else: 1, sd / 2), m * translation(h) * rotation_z(ang), specular = 0.1)
-        # (the helicopters' rotors, turning with the throttle; da Vinci's trebuchet, swung on a
-        # throw, its boulder in its sling; its ballista where its gunner aims)
-        if c.kind == DAVINCI or c.kind == CARCOPTER:
-            turn = prop_turn[i] * (if c.kind == DAVINCI: 0.22 else: 0.45)
-            draw_mesh(models.rotor_mesh(c.kind, c.team), m * translation(models.ROTOR_AT(c.kind)) * rotation_y(-turn), specular = 0.1)
+        # (da Vinci's screw, turning with the throttle, its two men pedalling it round; its
+        # trebuchet, swung on a throw, its boulder in its sling; its ballista where its gunner aims)
         if c.kind == DAVINCI:
+            turn = prop_turn[i] * 0.22
+            draw_mesh(models.rotor_mesh(c.kind, c.team), m * translation(models.ROTOR_AT(c.kind)) * rotation_y(-turn), specular = 0.1)
+            parts = models.dv_pedal_parts(c.team)
+            loop k in 0.. and pm in models.dv_pedal_mats(turn): draw_mesh(parts[k], m * pm, specular = 0.1)
             arm = m * translation(models.TREB_PIVOT) * rotation_x(treb_angle(i))
             draw_mesh(models.treb_arm_mesh(c.team), arm, specular = 0.1)
             if c.boulder: draw_mesh(models.boulder_mesh(), arm * translation(models.TREB_POUCH_LOCAL), specular = 0.05)
             if c.aims.len() > 1: draw_mesh(models.ballista_mesh(c.team), translation(point_of(c, models.BALLISTA_PIVOT)) * quat_to_mat4(quat_facing(c.aims[1])), specular = 0.2)
+        # (the carcopter's canopy: pumping up and down its sleeve, a stroke to each quarter turn
+        # or so of the old rotor, its ribs blown up on the downstroke; turning slowly)
+        if c.kind == CARCOPTER:
+            stroke = prop_turn[i] * 0.22
+            hub = models.ROTOR_AT(c.kind) + vec3(0, f32(models.canopy_pump(stroke)), 0)
+            draw_mesh(models.canopy_mesh(c.team, models.canopy_fold(stroke)), m * translation(hub) * rotation_y(-prop_turn[i] * 0.04), specular = 0.1)
         if c.kind == BALLOON and f64(c.vel.y) > 0.3: draw_mesh(flame, m * translation(models.BURNER) * rotation_x(-PI / 2.0) * scaling(vec3(1.4, 1.4, 1.4)), emissive = 0.9, specular = 0.0, cast_shadow = false)
         loop k in 0.. and h in models.props(c.kind, c.team):
             r = f64(h.w)
@@ -1718,13 +1733,12 @@ effects = (dt: f64):
             if sh.kind == ROCKET: emit(smoke, sh.pos, 1, 0.5, rgba(0.85, 0.85, 0.82, 0.6), 1.2, 1.4)
             if sh.kind == PACK: emit(sparks, sh.pos, 1, 0.5, rgb(0.5, 1.0, 0.6), 0.5, 0.35)
         # (embers off the rocket packs' fire, and the witches' brooms')
-        loop c in g.crafts:
+        loop i in 0.. and c in g.crafts:
             if c.kind != ROCKETEER or not flying(c): continue
             m = craft_matrix(c)
-            ends = if c.team == 0: [models.BROOM_TAIL] else: models.ROCKET_NOZZLES
-            loop nz in ends:
+            loop nz in rocket_ends(g, i):
                 at = (m * vec4(nz + vec3(0, 0, 0.5), 1)).xyz
-                emit(fire, at, 1, 3.0, if c.team == 0: rgb(0.6, 0.3, 1.0) else: rgb(1.0, 0.6, 0.2), 0.18, 0.3, 0.6, fwd_of(c) * -1.0)
+                emit(fire, at, 1, 3.0, if is_witch(g, i): rgb(0.6, 0.3, 1.0) else: rgb(1.0, 0.6, 0.2), 0.18, 0.3, 0.6, fwd_of(c) * -1.0)
         # (what burns on the ground)
         if hash(g.tick) % 4 == 0:
             loop b in g.buildings:
@@ -1875,6 +1889,10 @@ snd_rocket = tone(900.0, 0.8, .noise, 0.4, 0.01, 0.6, 0.35)
 # (the ornithopter's long gun: a crack and a rolling boom)
 snd_snipe = mix([tone(1100.0, 0.12, .noise, 0.7, 0.001, 0.1, 0.4), tone(70.0, 1.4, .noise, 1.0, 0.002, 1.3, 0.35), tone(42.0, 0.9, .square, 0.45, 0.002, 0.8, 0.5)])
 snd_thunk = mix([tone(90.0, 0.35, .noise, 0.8, 0.002, 0.3, 0.5), tone(55.0, 0.3, .square, 0.4, 0.002, 0.25, 0.6), tone(300.0, 0.6, .noise, 0.25, 0.05, 0.5, 0.5)])
+# (da Vinci's ballista: the bow's leaves slamming home, a deep twang shivering down, the string's
+# whip-crack, the stock's wooden thunk)
+snd_twang = mix([tone(98.0, 0.75, .saw, 0.4, 0.001, 0.65, 0.55, 0.05), tone(196.0, 0.4, .triangle, 0.25, 0.001, 0.35, 0.6, 0.08), tone(3800.0, 0.035, .noise, 0.75, 0.0005, 0.03, 0.4),
+                 tone(140.0, 0.16, .noise, 0.85, 0.001, 0.14, 0.5), tone(62.0, 0.22, .square, 0.4, 0.001, 0.2, 0.6)])
 snd_cannon = mix([tone(500.0, 0.1, .noise, 0.6, 0.001, 0.08, 0.4), tone(60.0, 1.1, .noise, 0.9, 0.002, 1.0, 0.4), tone(38.0, 0.7, .square, 0.4, 0.002, 0.6, 0.5)])
 snd_pistol = mix([tone(700.0, 0.08, .noise, 0.45, 0.001, 0.07, 0.5), tone(150.0, 0.06, .square, 0.15, 0.001, 0.05, 0.6)])
 # (the ornithopter's pedals and chain: a squeak each stroke, a rattle under it)
@@ -1940,7 +1958,10 @@ sounds = ():
         loop s in 1..min(c.gcool.len(), 8):
             if on and c.gcool[s] > last_gcool[i * 8 + s] and alive(c):
                 at = point_of(c, KINDS[c.kind].seats[s].at)
-                if i == myc and my().seat == s: play(snd_gun, settings.sound * 0.45, pitch = 1.0 + 0.2 * random())
+                if KINDS[c.kind].seats[s].weapon == BALLISTA:
+                    if i == myc and my().seat == s: play(snd_twang, settings.sound * 0.85, pitch = 0.95 + 0.1 * random())
+                    else: play_at(snd_twang, at, settings.sound * 0.75, 1200.0, pitch = 0.95 + 0.1 * random())
+                else if i == myc and my().seat == s: play(snd_gun, settings.sound * 0.45, pitch = 1.0 + 0.2 * random())
                 else: play_at(snd_gun, at, settings.sound * 0.4, 700.0)
                 emit(sparks, at + c.aims[s] * 1.6, 3, 4.0, rgb(1.0, 0.85, 0.5), 0.08, 0.35)
             last_gcool[i * 8 + s] = c.gcool[s]
@@ -2055,7 +2076,7 @@ draw_hud = (g: Game):
             text("throttle", o + vec2(168, 62), 16, gray(0.75))
         b = at_edge(-190, if touch_input(): 80.0 else: -110.0)
         hud_bar(Rect(b.x, b.y, 160, 12), f64(c.health) / f64(k.health), COLORS[c.team])
-        text(kind_name(c.kind, c.team) + (if c.team != team: " (theirs)" else: ""), b + vec2(0, -22), 16, gray(0.8))
+        text(kind_name(g, p.craft) + (if c.team != team: " (theirs)" else: ""), b + vec2(0, -22), 16, gray(0.8))
         at_gun = gun_seat(c.kind, p.seat)
         heat = if at_gun: c.gheat[p.seat] else: c.heat
         if at_gun or k.guns:
@@ -2233,12 +2254,12 @@ what_f_does = (g: Game, p: Person) -> str:
             c = g.crafts[k]
             whose = if c.team != p.team: " of {TEAMS[c.team]}'s" else: ""
             seat = if c.seats.len() > 0 and c.seats[0] < 0: "fly" else: "man a gun of"
-            out = "{fk}: {seat} the {kind_name(c.kind, c.team)}{whose}"
+            out = "{fk}: {seat} the {kind_name(g, k)}{whose}"
             own = flown_by_own(g, p)
             if own >= 0: out += "    {fk} held: {call(g, g.crafts[own].seats[0])} out, and fly it"
             return out
         own = flown_by_own(g, p)
-        if own >= 0: return "{fk} held: {call(g, g.crafts[own].seats[0])} out of the {kind_name(g.crafts[own].kind, g.crafts[own].team)}, and fly it"
+        if own >= 0: return "{fk} held: {call(g, g.crafts[own].seats[0])} out of the {kind_name(g, own)}, and fly it"
         if not starts_on_ground(g, p.team): return "{tk}: fly again"
         if far_from_field(p): return "{tk}: back to your field (Shift runs)"
         return ""
