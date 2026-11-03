@@ -36,7 +36,7 @@ const MATCH_SERVER = "wss://matchmaking.sloppy-lang.org"
 const MOST = 64                 # people a side
 SIDE_SIZES = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 64]
 TEAMS = ["Red", "Blue"]
-COLORS = [rgb(1.0, 0.38, 0.32), rgb(0.42, 0.68, 1.0)]
+COLORS = [rgb(1.0, 0.38, 0.32), rgb(0.42, 0.68, 1.0), rgb(1.0, 0.82, 0.3)]   # (and the golden cat's)
 
 # ---------------- a test without a window: the computer against itself ----------------
 when TARGET != "wasm":
@@ -71,7 +71,7 @@ PICK_NAMES = KIND_NAMES               # (by kind: the drone, 11, is never offere
 # (the kinds the lobby lists for fight m: those it can have, in order)
 listed_kinds = (m: int) -> int[]: [0..CHOOSABLE).filter((k): MODE_CAN[m] & (1 << k) != 0)
 # what craft j is called: its kind, a rocketeer seen as a witch so called
-kind_name = (g: Game, j: int) -> str: if is_witch(g, j): "witch" else: KIND_NAMES[g.crafts[j].kind]
+kind_name = (g: Game, j: int) -> str: if g.crafts[j].team == GOLD: "golden cat" else: if is_witch(g, j): "witch" else: KIND_NAMES[g.crafts[j].kind]
 # (more than one of a kind)
 kind_plural = (k: int) -> str: if ends_with(KIND_NAMES[k], "s"): KIND_NAMES[k] + "es" else: KIND_NAMES[k] + "s"
 
@@ -138,7 +138,8 @@ struct Settings:
     markers = true              # the crafts marked on the screen (friends, foes, the target)
     plain = false               # (the lobby's: no markers for anyone in the fight)
     thunderdome = THUNDERDOME_CRAFTS  # (and in the Thunderdome)
-    balls = THUNDERDOME_CRAFTS        # (and in Bikes & Brooms, the ball fight)
+    balls = BROOMS_CRAFTS             # (and in Bikes & Brooms, the ball fight)
+    balls_ground = false        # (Bikes & Brooms' own: start on foot at the field, else in the air)
     heli_follow = false         # (helicopters with the mouse: the nose always where one looks, not looking about freely)
 
 settings = Settings()
@@ -175,12 +176,16 @@ if let saved = load_data("settings"):
     if w.len() >= 20: settings.thunderdome = (to_int(w[19]) ?? THUNDERDOME_CRAFTS) & ALL_CRAFTS
     if settings.thunderdome == 0: settings.thunderdome = THUNDERDOME_CRAFTS
     if w.len() >= 21: settings.heli_follow = w[20] == "1"
-    if w.len() >= 22: settings.balls = (to_int(w[21]) ?? THUNDERDOME_CRAFTS) & ALL_CRAFTS
-    if settings.balls == 0: settings.balls = THUNDERDOME_CRAFTS
+    if w.len() >= 22: settings.balls = (to_int(w[21]) ?? BROOMS_CRAFTS) & ALL_CRAFTS
+    # (the old choice, the Thunderdome's, kept as saved: now witches and balloons; and no cat to fly)
+    if settings.balls == THUNDERDOME_CRAFTS: settings.balls = BROOMS_CRAFTS
+    settings.balls = settings.balls & MODE_CAN[BROOMS]
+    if settings.balls == 0: settings.balls = BROOMS_CRAFTS
+    if w.len() >= 23: settings.balls_ground = w[22] == "1"
 save_settings = ():
     settings.name = my_name()
     b = (x: bool) -> str: if x: "1" else: "0"
-    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers} {settings.crafts} {b(settings.markers)} {b(settings.plain)} {settings.thunderdome} {b(settings.heli_follow)} {settings.balls}")
+    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers} {settings.crafts} {b(settings.markers)} {b(settings.plain)} {settings.thunderdome} {b(settings.heli_follow)} {settings.balls} {b(settings.balls_ground)}")
 
 # a player's name as shown and sent: up to 12 characters, no commas, one space between words
 # (it travels as an underscore, so a message's words stay words)
@@ -212,7 +217,7 @@ rules_now = () -> Rules:
     m = settings.fight
     wins = win_choices(m)
     mins = minute_choices(m)
-    Rules(mode = m, friendly_fire = settings.ff, ground_start = settings.ground,
+    Rules(mode = m, friendly_fire = settings.ff, ground_start = ground_now(m),
           win = if wins.len() > 0: wins[clamp(settings.win, 0, wins.len() - 1)] else: 0,
           time_limit = if mins.len() > 0: mins[clamp(settings.minutes, 0, mins.len() - 1)] else: 0,
           attackers = settings.attackers, crafts = crafts_chosen(m),
@@ -221,7 +226,9 @@ rules_now = () -> Rules:
 # (the kinds of craft the lobby has chosen for fight m: the Thunderdome's its own)
 crafts_chosen = (m: int) -> int:
     c = if m == THUNDERDOME: settings.thunderdome else: if m == BROOMS: settings.balls else: settings.crafts
-    if c != 0: c else: if cat_fight(m): THUNDERDOME_CRAFTS else: DEFAULT_CRAFTS
+    if c != 0: c else: mode_default(m)
+# (whether fight m starts on the ground, as the lobby has it: Bikes & Brooms its own)
+ground_now = (m: int) -> bool: if m == BROOMS: settings.balls_ground else: settings.ground
 
 # what can be chosen to win a fight (the first: its own number), and how long it lasts (minutes)
 win_choices = (m: int) -> int[]:
@@ -266,7 +273,11 @@ demo = () -> Game:
     # shows as it is changed)
     pilots = fill(-1, 8)
     pilots[demo_side()] = 0
-    new_game(pilots, 0.75, Rules(ground_start = false, crafts = ALL_CRAFTS), [if first_visit: FIGHTER else: settings.plane])
+    # (in the fight chosen, when it is one whose crafts look their own (the witches, the cat), with
+    # its crafts; else a dogfight with all of them)
+    m = settings.fight
+    r = if cat_fight(m) and not first_visit: Rules(mode = m, ground_start = false, crafts = crafts_chosen(m)) else: Rules(ground_start = false, crafts = ALL_CRAFTS)
+    new_game(pilots, 0.75, r, [if first_visit: FIGHTER else: settings.plane])
 # this version of the game's rules, as a number (sim.jo): friends' games say theirs, and a fight
 # starts only between games that agree
 VERSION = version_print()
@@ -810,7 +821,7 @@ fight_said = () -> str:
     if r.win > 0 and win_choices(r.mode).len() > 0: out += ", {r.win} to win"
     if r.time_limit > 0: out += ", {r.time_limit} min"
     if r.friendly_fire: out += ", friendly fire"
-    if r.crafts != (if cat_fight(r.mode): THUNDERDOME_CRAFTS else: DEFAULT_CRAFTS) and r.mode != CLASSIC and r.mode != TRENCH and r.mode != ESCORT:
+    if r.crafts != mode_default(r.mode) and r.mode != CLASSIC and r.mode != TRENCH and r.mode != ESCORT:
         kinds: str[]
         loop k in 0..CHOOSABLE:
             if r.crafts & (1 << k) != 0: kinds.push(kind_plural(k))
@@ -1853,7 +1864,9 @@ draw = ():
         tint = vec4(1, 1, 1, 1)
         if c.safe > 0 and c.safe % 10 < 5: tint = vec4(1.6, 1.6, 1.6, 1)
         view = view_of(g, i)
-        if view.body > 0.0: draw_mesh(if witch: models.witch_mesh(c.team) else: models.craft_mesh(c.kind, c.team, badge_of(g, i), c.crew), m, see(tint, view.body), specular = 0.25, cast_shadow = view.body >= 1.0)
+        # (the golden cat drawn larger than it is, aglow: seen, to be chased)
+        if c.team == GOLD: draw_mesh(models.craft_mesh(CAT, GOLD, 0), m * scaling(vec3(2.5)), emissive = 0.35, specular = 0.6)
+        else if view.body > 0.0: draw_mesh(if witch: models.witch_mesh(c.team) else: models.craft_mesh(c.kind, c.team, badge_of(g, i), c.crew), m, see(tint, view.body), specular = 0.25, cast_shadow = view.body >= 1.0)
         spin = if c.down > 0: 3.0 else: if pilot_of(c) >= 0 or not c.landed: 25.0 + 30.0 * c.throttle else: 0.0
         prop_turn[i] += frame_time() * spin
         # (a fighter's third gun, on its top wing, outside Classic)
@@ -2024,7 +2037,8 @@ effects = (dt: f64):
             if not alive(c): continue
             k = KINDS[c.kind]
             tail = c.pos + fwd_of(c) * f32(f64(k.half.z) * 0.6)
-            share = f64(c.health) / f64(k.health)
+            # (the golden cat: frail, not smoking for it)
+            share = if c.team == GOLD: f64(c.health) / f64(GOLD_HEALTH) else: f64(c.health) / f64(k.health)
             if share < 0.65 or c.down > 0:
                 n = if c.down > 0 or share < 0.3: 3 else: 1
                 emit(smoke, tail, n, 2.0, rgba(0.25, 0.24, 0.23, 0.7), 3.0, if c.kind == ZEPPELIN: 14.0 else: 4.0)
@@ -2045,6 +2059,10 @@ effects = (dt: f64):
                 # (a witch's embers: more of them and larger, a trail in her side's color)
                 wi = is_witch(g, i)
                 emit(fire, at, if wi: 2 else: 1, 3.0, if wi: witch_flame(c.team) else: rgb(1.0, 0.6, 0.2), if wi: 0.32 else: 0.18, 0.3, if wi: 0.9 else: 0.6, fwd_of(c) * -1.0)
+        # (the golden cat's trail: gold sparks, seen far off)
+        if g.gold >= 0 and g.gold < g.crafts.len() and g.crafts[g.gold].team == GOLD and flying(g.crafts[g.gold]):
+            gc = g.crafts[g.gold]
+            emit(fire, gc.pos - fwd_of(gc) * 0.6, 2, 2.0, COLORS[GOLD], 0.7, 0.35, 0.8, fwd_of(gc) * -1.0)
         # (a ring a ball went through: fire running round its rim, sparks in the scorers' color, while it flashes)
         loop ri, t0 in ring_lit:
             t = elapsed() - t0
@@ -2193,7 +2211,15 @@ effects = (dt: f64):
                 play_at(snd_boom, rg.at, settings.sound * 0.4, 3000.0)
         if not in_fight: continue
         # (said large when it is this one's doing, smaller for the rest of the fight)
-        if b.kind == SHOT_DOWN and g.crafts[b.who].kind == CAT and cat_fight(g.rules.mode):
+        # (the golden cat: out, and caught or shot down; nothing else said of it)
+        if b.kind == GOLD_OUT: say("the golden cat is out: catch it or shoot it down to win!", COLORS[GOLD])
+        else if b.kind == GOLD_WON and b.by >= 0:
+            side = g.people[b.by].team
+            who = if b.by == me(): "you" else: call(g, b.by)
+            how = if downed_at(g, b.who, b.tick): "shot down" else: "caught"
+            say("{who} {how} the golden cat: {TEAMS[side]} wins!", COLORS[GOLD])
+        else if b.who >= 0 and b.who < g.crafts.len() and g.crafts[b.who].team == GOLD and (b.kind == SHOT_DOWN or b.kind == CRASHED or b.kind == RAMMED or b.kind == HIT): pass
+        else if b.kind == SHOT_DOWN and g.crafts[b.who].kind == CAT and cat_fight(g.rules.mode):
             # (the cat down: said large, whoever did it)
             side = 1 - crew_at(g, b.who)
             who = if b.by == me(): "you" else: if b.by >= 0: call(g, b.by) else: "flak"
@@ -2560,9 +2586,20 @@ draw_hud = (g: Game):
     # (none with the markers off: this one's setting, or the fight's for everyone)
     # (the target first, then the nearest: a name said only where it overlaps none said yet;
     # the rest their marks alone)
+    # (the golden cat, out: marked for everyone, markers or none, an arrow to it off the screen)
+    if g.gold >= 0 and g.gold < g.crafts.len() and g.crafts[g.gold].team == GOLD and flying(g.crafts[g.gold]):
+        gp = g.crafts[g.gold].pos
+        gat = world_to_screen(gp) ?? vec2(-9999, -9999)
+        if f64(dot(gp - cam_pos, cam_at - cam_pos)) > 0.0 and inside(gat):
+            gd = f64(length(gp - cam_pos))
+            q = gat + vec2(0, -26)
+            triangle(q + vec2(0, -8), q + vec2(-7, 0), q + vec2(7, 0), COLORS[GOLD])
+            triangle(q + vec2(0, 8), q + vec2(-7, 0), q + vec2(7, 0), COLORS[GOLD])
+            text_centered("golden cat  {int(gd)} m", gat + vec2(0, -48), 16, COLORS[GOLD], SHADOW)
+        else: arrow_to(gp, COLORS[GOLD])
     order: (f64, int)[]
     loop j in 0.. and o in g.crafts:
-        if markers_on(g) and j != myc and flying(o): order.push((if j == target: -1.0 else: f64(length(o.pos - cam_pos)), j))
+        if markers_on(g) and j != myc and flying(o) and o.team != GOLD: order.push((if j == target: -1.0 else: f64(length(o.pos - cam_pos)), j))
     order.sort_with((a, b): a.0 < b.0)
     said: Rect[]
     loop oj in order:
@@ -3124,7 +3161,7 @@ what_f_does = (g: Game, p: Person) -> str:
             return "{fk}: man the {SITE_NAMES[g.buildings[gi].kind]}"
         if k >= 0:
             c = g.crafts[k]
-            whose = if c.team != p.team: " of {TEAMS[c.team]}'s" else: ""
+            whose = if c.team != p.team and c.team < 2: " of {TEAMS[c.team]}'s" else: ""
             seat = if c.seats.len() > 0 and c.seats[0] < 0: "fly" else: "man a gun of"
             out = "{fk}: {seat} the {kind_name(g, k)}{whose}"
             own = flown_by_own(g, p)
@@ -3204,7 +3241,7 @@ goal_text = (g: Game, team: int) -> str:
         return if late and g.winner < 0: "level at the time: the next points win" else: "shoot their targets; shoot down their cat for {CAT_POINTS}. First to {g.rules.win}"
     if m == BROOMS:
         late = g.rules.time_limit > 0 and g.tick >= g.rules.time_limit * 3600
-        return if late and g.winner < 0: "level at the time: the next goal wins" else: "balls through their rings; shoot down their cat for {BROOMS_CAT}. First to {g.rules.win}"
+        return if late and g.winner < 0: "level at the time: the next goal wins" else: "balls through their rings, first to {g.rules.win}; the golden cat caught or shot down wins"
     if m == FLAG: return "flags home: first to {g.rules.win} (yours must be home to score)"
     if m == FLAG_RAID: return if team == att: "take their flag to your field: {g.rules.win} to win" else: "keep your flag: {TEAMS[att]} needs {g.rules.win}"
     if m == BASES: return "destroy their hangars, fuel and command post"
@@ -3558,15 +3595,17 @@ draw_lobby = ():
     if hosting and ui_button("Start"): start_fight()
     if ui_button("Switch side") or (ui_ready() and (key_pressed(.tab) or gamepad_pressed(.x))): switch_side()
     # (one's name and insignia are Settings': the others see them change)
-    # (only what the fight can have: a cat only for the Thunderdome)
-    offered = listed_kinds(settings.fight)
-    picked = max(offered.index_of(settings.plane), 0)
-    plane = offered[ui_choice("Plane in the air", offered.map((k): PICK_NAMES[k]), picked)]
-    if plane != settings.plane:
-        # (the menu's fight again, this one in it)
-        settings.plane = plane
-        first_visit = false
-        demo_again()
+    # (only what the fight has, as the host has chosen it; none to choose when it starts on the
+    # ground, where one takes what stands at the field)
+    offered = planes_offered(hosting)
+    if offered.len() > 0:
+        picked = max(offered.index_of(settings.plane), 0)
+        plane = offered[ui_choice("Plane in the air", offered.map((k): PICK_NAMES[k]), picked)]
+        if plane != settings.plane:
+            # (the menu's fight again, this one in it)
+            settings.plane = plane
+            first_visit = false
+            demo_again()
     if hosting:
         if ui_button("Fight: {MODE_NAMES[settings.fight]}"): page = FIGHT
         # (the sizes offered: the nearest at or above those already on a side)
@@ -3647,7 +3686,7 @@ FIGHT_ABOUT = [
     "The attackers take the defenders' flag home to their field, again and again; the defenders hold it.",
     "Each side's bombers go for the other's factory.",
     "Through their gun towers' fire, shoot the other side's targets ({TARGET_POINTS} points; they come back) and shoot down its cat ({CAT_POINTS}; it has no guns, it rams). Shoot down their cat and you'll likely win.",
-    "Knock balls through the other side's three rings, out in front of its field: great ones {BALL_POINTS[BIG_BALL]}, middling {BALL_POINTS[MID_BALL]}, small {BALL_POINTS[SMALL_BALL]}; carry a wicker one through ({BALL_POINTS[CARRY_BALL]}; hit hard, you drop it). Their cat: {BROOMS_CAT}.",
+    "Knock balls through the other side's rings: great ones {BALL_POINTS[BIG_BALL]}, middling {BALL_POINTS[MID_BALL]}, small {BALL_POINTS[SMALL_BALL]}; carry a wicker one through ({BALL_POINTS[CARRY_BALL]}; hit hard, you drop it). Catch or shoot down the golden cat to win.",
 ]
 
 # the host's choices of the fight: which, who attacks, what wins it, how long, how it starts
@@ -3664,7 +3703,8 @@ fight_choices = ():
     if wins.len() > 0: settings.win = ui_choice(if m == FLAG or m == FLAG_RAID: "Flags to win" else: if cat_fight(m): "Points to win" else: "Shot down to win", wins.map((x): "{x}"), clamp(settings.win, 0, wins.len() - 1))
     mins = minute_choices(m)
     if mins.len() > 0: settings.minutes = ui_choice("Minutes", mins.map((x): "{x}"), clamp(settings.minutes, 0, mins.len() - 1))
-    if ground_choice(m): settings.ground = ui_switch("Start on the ground", settings.ground)
+    if m == BROOMS: settings.balls_ground = ui_switch("Start on the ground", settings.balls_ground)
+    else if ground_choice(m): settings.ground = ui_switch("Start on the ground", settings.ground)
     if m != CLASSIC: settings.ff = ui_switch("Friendly fire", settings.ff)
     # (the crafts unmarked on everyone's screen: found by eye)
     settings.plain = ui_choice("Markers", ["as chosen", "off for all"], if settings.plain: 1 else: 0) == 1
@@ -3675,6 +3715,15 @@ fight_choices = ():
         loop k in listed_kinds(m):
             if (crafts_chosen(m) | MODE_MUST[m]) & (1 << k) != 0: n += 1
         if ui_button("Crafts: {if n == all: "all" else: "{n} of {all}"}"): page = CRAFTS
+
+# (the lobby's planes to choose from, starting in the air: the host's those of the fight as chosen,
+# none if it starts on the ground; a friend's, what the fight can have)
+planes_offered = (hosting: bool) -> int[]:
+    m = settings.fight
+    if not hosting: return listed_kinds(m)
+    if ground_choice(m) and ground_now(m): return []
+    have = crafts_chosen(m) | MODE_MUST[m]
+    listed_kinds(m).filter((k): have & (1 << k) != 0)
 
 ground_choice = (m: int) -> bool: m == DOGFIGHT or m == BASES or m == FLAG or m == FLAG_RAID or m == RAIDS or cat_fight(m)
 
