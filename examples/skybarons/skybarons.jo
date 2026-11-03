@@ -10,7 +10,8 @@
 # The fights: Dogfight (crafts shot down), Classic (Aces' own: fighters, guns, in the air), Base
 # attack (destroy the other side's hangars, fuel and command post), Capture the flag, and two
 # missions where Red attacks: the Trench run (up a gorge, low under its guns, to the depot at its
-# end) and the Bomber escort (Red's bombers to Blue's factory). Friendly fire is a choice.
+# end) and the Bomber escort (Red's bombers to Blue's factory); and Bikes & Brooms (ornithopters,
+# witches on brooms and a cat each, shooting the other side's targets). Friendly fire is a choice.
 #
 # Rooms, invites and rollback netplay as Aces has them (lib/invite.jo, lib/netplay.jo): only the
 # players' controls travel, and every machine runs the whole fight; the computer fills the sides.
@@ -52,6 +53,8 @@ when TARGET != "wasm":
                 if b.tick == g.tick: seen[b.kind] = (seen.get(b.kind) ?? 0) + 1
             if g.winner >= 0: break
         names = ["hits", "into the ground", "explosions", "shot down", "crashed", "bursts", "flak", "killed", "ruined", "parachutes", "splashes", "flags taken", "flags home", "flags back", "rockets", "bombs", "landed", "ditched", "bailed out", "boarded", "parachutes shot through", "healed"]
+        loop k in names.len()..RAMMED: names.push("")
+        names.push("rammed")
         print("{MODE_NAMES[m]}, {n} a side, {g.tick / 60} s: {if g.winner >= 0: TEAMS[g.winner] + " won" else: "no winner"}, {g.scores[0]} to {g.scores[1]}")
         parts: str[]
         loop k in 0..names.len():
@@ -61,16 +64,24 @@ when TARGET != "wasm":
         exit(0)
 
 # what is on the ground, by kind (world.jo: HANGAR, TANK, HQ, AA, DEPOT, FACTORY, MAST, MG)
-SITE_NAMES = ["hangar", "fuel tank", "command post", "gun against aircraft", "depot", "factory", "mast", "machine gun"]
+SITE_NAMES = ["hangar", "fuel tank", "command post", "gun against aircraft", "depot", "factory", "mast", "machine gun", "target"]
 PICK_NAMES = KIND_NAMES.filter((n): n != "drone")
-# (a rocketeer flown as a witch on a broom: none yet)
-is_witch = (g: Game, i: int) -> bool: false
-# what craft i is called (a witch, if it is one)
-kind_name = (g: Game, i: int) -> str: if is_witch(g, i): "witch" else: KIND_NAMES[g.crafts[i].kind]
+# what craft j is called: its kind, a rocketeer seen as a witch so called
+kind_name = (g: Game, j: int) -> str: if is_witch(g, j): "witch" else: KIND_NAMES[g.crafts[j].kind]
+
+# ---- the witch: a rocketeer's other look (shared with the rocketeer's redesign) ----
+# (craft i is a rocketeer seen as a witch on a broom: everyone's in Bikes & Brooms, elsewhere
+# its pilot's choice, K)
+is_witch = (g: Game, i: int) -> bool:
+    c = g.crafts[i]
+    if c.kind != ROCKETEER: return false
+    if g.rules.mode == BIKES: return true
+    pi = pilot_of(c)
+    pi >= 0 and g.people[pi].witch
 
 SEAT_NAMES = [["pilot"], ["pilot"], ["pilot", "nose gun", "back gun"], ["pilot", "top gun, fore", "top gun, aft", "gondola gun", "tail gun"],
               ["pilot", "nose gun", "top gun, fore", "top gun, aft", "tail gun", "belly gun", "left wing gun", "right wing gun"],
-              ["left gun and burner", "right gun", "back gun"], ["rocketeer"], ["pilot"], ["pilot", "ballista"], ["pilot", "tail gun and drones"], ["drone"]]
+              ["left gun and burner", "right gun", "back gun"], ["rocketeer"], ["pilot"], ["pilot", "ballista"], ["pilot", "tail gun and drones"], ["cat"], ["drone"]]
 
 # ---------------- playing: with friends, or against the computer ----------------
 enum Mode: menu, online, practice
@@ -95,6 +106,7 @@ action("Scope", [.key(.r), .button(.rstick)])
 action("Kick out", [.key(.g), .button(.lstick)])
 action("Look at the target", [.key(.c), .stick(4, 1)])
 action("Next target", [.key(.tab), .button(.x)])
+action("Witch", [.key(.k)])
 
 struct Settings:
     invert = false              # (pitch: W climbs, S dives)
@@ -116,6 +128,7 @@ struct Settings:
     crafts = DEFAULT_CRAFTS     # the kinds of craft in the fight (a bit each)
     markers = true              # the crafts marked on the screen (friends, foes, the target)
     plain = false               # (the lobby's: no markers for anyone in the fight)
+    bikes = BIKES_CRAFTS        # (and in Bikes & Brooms)
 
 settings = Settings()
 # (nothing saved yet: a first visit, whose menu shows Blue's fighter, until a plane is chosen)
@@ -148,10 +161,12 @@ if let saved = load_data("settings"):
     if w.len() >= 19:
         settings.markers = w[17] != "0"
         settings.plain = w[18] == "1"
+    if w.len() >= 20: settings.bikes = (to_int(w[19]) ?? BIKES_CRAFTS) & ALL_CRAFTS
+    if settings.bikes == 0: settings.bikes = BIKES_CRAFTS
 save_settings = ():
     settings.name = my_name()
     b = (x: bool) -> str: if x: "1" else: "0"
-    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers} {settings.crafts} {b(settings.markers)} {b(settings.plain)}")
+    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers} {settings.crafts} {b(settings.markers)} {b(settings.plain)} {settings.bikes}")
 
 # a player's name as shown and sent: up to 12 characters, no commas, one space between words
 # (it travels as an underscore, so a message's words stay words)
@@ -186,19 +201,26 @@ rules_now = () -> Rules:
     Rules(mode = m, friendly_fire = settings.ff, ground_start = settings.ground,
           win = if wins.len() > 0: wins[clamp(settings.win, 0, wins.len() - 1)] else: 0,
           time_limit = if mins.len() > 0: mins[clamp(settings.minutes, 0, mins.len() - 1)] else: 0,
-          attackers = settings.attackers, crafts = if settings.crafts == 0: DEFAULT_CRAFTS else: settings.crafts,
+          attackers = settings.attackers, crafts = crafts_chosen(m),
           plain = settings.plain)
+
+# (the kinds of craft the lobby has chosen for fight m: Bikes & Brooms' its own)
+crafts_chosen = (m: int) -> int:
+    c = if m == BIKES: settings.bikes else: settings.crafts
+    if c != 0: c else: if m == BIKES: BIKES_CRAFTS else: DEFAULT_CRAFTS
 
 # what can be chosen to win a fight (the first: its own number), and how long it lasts (minutes)
 win_choices = (m: int) -> int[]:
     # (the first, 10 for each six a side: many a side shoot down many more)
     if m == DOGFIGHT or m == CLASSIC: return [10 * max(1, (people_a_side() + 5) / 6), 5, 15, 20, 30, 50, 100, 200]
     if m == FLAG or m == FLAG_RAID: return [3, 1, 2, 5, 10]
+    if m == BIKES: return [BIKES_WIN, 150, 400, 600]
     []
 minute_choices = (m: int) -> int[]:
     if m == TRENCH: return [5, 3, 8, 12]
     if m == ESCORT or m == FLAG_RAID: return [6, 4, 10, 15]
     if m == RAIDS: return [8, 5, 12, 20]
+    if m == BIKES: return [8, 5, 10, 12]
     []
 
 # the map of a fight
@@ -770,12 +792,12 @@ fight_said = () -> str:
     if r.win > 0 and win_choices(r.mode).len() > 0: out += ", {r.win} to win"
     if r.time_limit > 0: out += ", {r.time_limit} min"
     if r.friendly_fire: out += ", friendly fire"
-    if r.crafts != DEFAULT_CRAFTS and r.mode != CLASSIC and r.mode != TRENCH and r.mode != ESCORT:
+    if r.crafts != (if r.mode == BIKES: BIKES_CRAFTS else: DEFAULT_CRAFTS) and r.mode != CLASSIC and r.mode != TRENCH and r.mode != ESCORT:
         kinds: str[]
         loop k in 0..CHOOSABLE:
             if r.crafts & (1 << k) != 0: kinds.push(KIND_NAMES[k] + "s")
         out += "; {join(kinds, ", ")} only"
-    if (r.mode == DOGFIGHT or r.mode == BASES or r.mode == FLAG) and not r.ground_start: out += ", in the air"
+    if (r.mode == DOGFIGHT or r.mode == BASES or r.mode == FLAG or r.mode == BIKES) and not r.ground_start: out += ", in the air"
     if r.plain: out += ", no markers"
     out
 
@@ -978,6 +1000,7 @@ my_pad = () -> Pad:
     c.aim_pitch = int(round(aim_pitch * 1000.0))
     if paused: return c
     p = my()
+    c.witch = action_down("Witch")
     c.enter = action_down("Get in") or (touch_enter and p.state != SEATED and p.state != POST)
     # (F held, or G: one's own side put out; a phone's In/Out held, only on foot)
     c.kick = action_down("Kick out") or (f_held > 0.8 and (not touch_input() or p.state == WALK))
@@ -1300,6 +1323,7 @@ cam_back = (kind: int) -> vec2:
     if kind == DAVINCI: return vec2(17, 6)
     if kind == CARCOPTER: return vec2(15, 5)
     if kind == DRONE: return vec2(8, 2)
+    if kind == CAT: return vec2(4, 1.1)
     if kind == BOMBER: return vec2(38, 9)
     vec2(15, 4.2)
 
@@ -1573,6 +1597,13 @@ draw = ():
             # (someone at it: seen behind it)
             if b.crew >= 0: draw_gunner(g.people[b.crew].team, pivot - vec3(0, if b.kind == AA: 1.2 else: 0.4, 0), b.aim)
             continue
+        # (a target: its frame from the ground up to its ring; shot down, the frame alone)
+        if b.kind == TARGET:
+            gy = ground(f64(b.pos.x), f64(b.pos.z))
+            h = max(f64(b.pos.y) - gy, 0.5)
+            draw_mesh(models.target_frame_mesh(), translation(vec3(b.pos.x, f32(gy), b.pos.z)) * rotation_y(b.yaw) * scaling(vec3(1, f32(h), 1)), specular = 0.05)
+            if b.health > 0: draw_mesh(models.target_mesh(b.team), at, specular = 0.15)
+            continue
         m = site_mesh(b.kind, b.team)
         if b.health > 0: draw_mesh(m, at, specular = 0.08)
         else: draw_mesh(m, at * scaling(vec3(1.0, 0.25, 1.0)), rgb(0.22, 0.19, 0.17), specular = 0.0)
@@ -1595,7 +1626,7 @@ draw = ():
             continue
         m = craft_matrix(c)
         # (the witch stands level on the ground: her broom, not her feet)
-        witch = c.kind == ROCKETEER and is_witch(g, i)
+        witch = is_witch(g, i)
         if witch and c.landed: m = m * rotation_x(-PI / 2.0)
         tint = vec4(1, 1, 1, 1)
         if c.safe > 0 and c.safe % 10 < 5: tint = vec4(1.6, 1.6, 1.6, 1)
@@ -1755,6 +1786,9 @@ effects = (dt: f64):
             if in_fight: play_at(if mine_hit: snd_hurt else: snd_hit, b.pos, settings.sound, 900.0)
             if mine_hit: hurt = 0.35
             if b.by == me() and in_fight: hit_mark = 0.2
+        else if b.kind == RAMMED:
+            emit(sparks, b.pos, 24, 18.0, rgb(1.0, 0.85, 0.5), 0.5, 0.3)
+            if in_fight: play_at(snd_thunk, b.pos, settings.sound * 0.8, 900.0)
         else if b.kind == DIRT: emit(smoke, b.pos, 3, 4.0, rgba(0.45, 0.38, 0.28, 0.7), 1.2, 3.0)
         else if b.kind == SPLASH: emit(sparks, b.pos, 10, 6.0, rgba(0.85, 0.9, 1.0, 0.8), 0.6, 0.6)
         else if b.kind == BLAST:
@@ -1779,7 +1813,8 @@ effects = (dt: f64):
             if in_fight:
                 play_at(snd_boom, bb.pos, settings.sound * 0.8, 3500.0)
                 by = if b.by >= 0: call(g, b.by) else: "someone"
-                say("{by} destroyed {TEAMS[bb.team]}'s {SITE_NAMES[bb.kind]}", COLORS[1 - bb.team], small = bb.kind == AA or bb.kind == TANK or bb.kind == MG)
+                if bb.kind == TARGET: say("{if b.by == me(): "you" else: by} shot down {TEAMS[bb.team]}'s target: {TARGET_POINTS} to {TEAMS[1 - bb.team]}", COLORS[1 - bb.team], small = b.by != me())
+                else: say("{by} destroyed {TEAMS[bb.team]}'s {SITE_NAMES[bb.kind]}", COLORS[1 - bb.team], small = bb.kind == AA or bb.kind == TANK or bb.kind == MG)
         else if b.kind == HEALED:
             if b.who >= 0 and b.who < g.crafts.len(): emit(sparks, g.crafts[b.who].pos, 30, 6.0, rgb(0.5, 1.0, 0.6), 0.8, 0.5)
             if in_fight and b.who == myc and b.by != me() and b.by >= 0: say("{call(g, b.by)} healed you", rgb(0.6, 1.0, 0.7), small = true)
@@ -1830,7 +1865,17 @@ effects = (dt: f64):
             if in_fight: play_at(snd_chute, b.pos, settings.sound * 0.5, 600.0)
         if not in_fight: continue
         # (said large when it is this one's doing, smaller for the rest of the fight)
-        if b.kind == SHOT_DOWN:
+        if b.kind == SHOT_DOWN and g.crafts[b.who].kind == CAT and g.rules.mode == BIKES:
+            # (the cat down: said large, whoever did it)
+            side = 1 - crew_at(g, b.who)
+            who = if b.by == me(): "you" else: if b.by >= 0: call(g, b.by) else: "flak"
+            say("{who} shot down {TEAMS[1 - side]}'s cat: {CAT_POINTS} to {TEAMS[side]}!", COLORS[side])
+            if b.who == myc: say("{if touch_input(): "In/Out" else: "T"} to bail out", gray(0.9), small = true)
+        else if b.kind == RAMMED:
+            if b.by == me(): say("you rammed {call_craft(g, b.who)}", COLORS[1 - g.crafts[b.who].team], small = true)
+            else if b.who == myc: say("rammed by {TEAMS[1 - g.crafts[b.who].team]}'s cat!", rgb(1, 0.5, 0.4))
+        else if b.kind == MENDED and b.who >= 0 and b.who < g.buildings.len(): say("{TEAMS[g.buildings[b.who].team]}'s target is up again", with_alpha(COLORS[g.buildings[b.who].team], 0.75), small = true)
+        else if b.kind == SHOT_DOWN:
             c = g.crafts[b.who]
             team = c.team
             if b.by == me(): say("you shot down {call_craft(g, b.who)}", COLORS[1 - team])
@@ -1935,7 +1980,8 @@ sounds = ():
             set_volume(engine_ids[v], loud * 0.7)
             set_pan(engine_ids[v], 0.0)
         else: move_sound(engine_ids[v], c.pos, loud, if c.kind >= BOMBER: 1500.0 else: 900.0)
-        base = if c.kind == ROCKETEER: 1.5 else: if c.kind == DRONE: 1.7 else: if c.kind == DAVINCI: 0.5 else: if c.kind == CARCOPTER: 0.6 else: if c.kind == ORNITHOPTER: 1.15 else: if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
+        if c.kind == CAT: loud *= 0.25
+        base = if c.kind == CAT: 2.4 else: if c.kind == ROCKETEER: 1.5 else: if c.kind == DRONE: 1.7 else: if c.kind == DAVINCI: 0.5 else: if c.kind == CARCOPTER: 0.6 else: if c.kind == ORNITHOPTER: 1.15 else: if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
         set_pitch(engine_ids[v], base + 0.45 * c.throttle + f64(length(c.vel)) / 200.0)
     # (the ornithoppers' pedals: a squeak each stroke, two to a turn of the cranks, as they turn)
     loop i in 0.. and c in g.crafts:
@@ -2087,6 +2133,8 @@ draw_hud = (g: Game):
             if c.kind == ORNITHOPTER: parts.push("health packs {c.rockets} (X)    R: {if scoped: "off the scope" else: "the scope"}")
             else if c.kind == CARCOPTER: parts.push("drones {c.rockets} (X, the tail gunner)")
             else if k.rockets > 0 and g.rules.rockets: parts.push(if k.endless: "rockets (X)" else: "rockets {c.rockets} (X)")
+            # (a rocketeer, outside Bikes & Brooms: K for the witch's broom, or back)
+            if c.kind == ROCKETEER and g.rules.mode != BIKES and not touch_input(): parts.push("K: {if is_witch(g, p.craft): "the rocket pack" else: "a witch's broom"}")
             if k.bombs > 0: parts.push("bombs {c.bombs} (B)")
             if c.kind == BALLOON and p.seat == 0: parts.push("S up, W down: the wind turns with height")
             t = join(parts, "   ")
@@ -2300,6 +2348,14 @@ draw_score = (g: Game, team: int, x: f64, y: f64):
         text_centered(what, vec2(f32(x), f32(y + 86.0)), 16, gray(0.75))
         if m == FLAG or m == FLAG_RAID: flag_hint(g, team, x, y)
         return
+    if m == BIKES:
+        text_centered("{g.scores[0]}", vec2(f32(x - 60.0), f32(y + 40.0)), 44, COLORS[0])
+        text_centered("{g.scores[1]}", vec2(f32(x + 60.0), f32(y + 40.0)), 44, COLORS[1])
+        rect(x + (if team == 0: -85.0 else: 35.0), y + 66.0, 50, 3, COLORS[team])
+        late = mins > 0 and g.tick >= mins * 3600
+        what = if late and g.winner < 0: "level at the time: the next points win" else: "shoot their targets; their cat is worth {CAT_POINTS}. First to {g.rules.win}"
+        text_centered(what, vec2(f32(x), f32(y + 86.0)), 16, gray(0.75))
+        return
     if m == BASES:
         loop t in 0..2:
             left = 0
@@ -2491,7 +2547,7 @@ draw_menu = ():
         if ui_button("Quit"): quit()
     ui_end()
     if len(status) > 0: text_centered(status, vec2(x, f32(y + 580.0)), 22, gray(0.85))
-    how = "On foot: WASD and the mouse, Shift runs, a click fires a pistol; F gets in (a craft, a gun on the ground), T gets out, bails out or takes you back to your field, F held puts your own side out of your craft (or out of the pilot's seat, and you in). Flying: the mouse steers, its buttons fire guns and rockets (X), B drops bombs, Shift and Ctrl the throttle; 1 to 8 or V change seats."
+    how = "On foot: WASD and the mouse, Shift runs, a click fires a pistol; F gets in (a craft, a gun on the ground), T gets out, bails out or takes you back to your field, F held puts your own side out of your craft (or out of the pilot's seat, and you in). Flying: the mouse steers, its buttons fire guns and rockets (X), B drops bombs, Shift and Ctrl the throttle; 1 to 8 or V change seats; a rocketeer, K flies a witch's broom."
     if touch_input() or touch_device(): how = "Drag a finger to look and aim; In/Out gets in, out, or bails out. Hold Fire to shoot (on foot, to walk); the throttle slides; Look watches the target."
     text_wrapped("Scouts, fighters, light and ultra bombers, zeppelins; up to 64 a side. {how}", vec2(x - 240, f32(y + 600.0)), 480, 17, gray(0.8), align = .center)
 
@@ -2669,11 +2725,14 @@ draw_fight_page = ():
     ui_style.size = min(34.0, ui_style.spacing * 0.75)
     ui_begin(if crafts: "crafts" else: "fight", vec2(f32(x), f32(top)))
     if crafts:
+        have = crafts_chosen(settings.fight)
         loop k in 0..CHOOSABLE:
-            on = settings.crafts & (1 << k) != 0
+            on = have & (1 << k) != 0
             now = ui_switch(capitalize(KIND_NAMES[k]) + "s", on)
             # (one kind there must be)
-            if now != on and (now or settings.crafts & ~(1 << k) != 0): settings.crafts = settings.crafts xor (1 << k)
+            if now != on and (now or have & ~(1 << k) != 0): have = have xor (1 << k)
+        if settings.fight == BIKES: settings.bikes = have
+        else: settings.crafts = have
         if ui_button("Back") or ui_back(): page = FIGHT
     else:
         fight_choices()
@@ -2690,6 +2749,7 @@ FIGHT_ABOUT = [
     "The attackers' bombers (an ultra bomber and a light one) go for the defenders' factory; fighters on both sides.",
     "The attackers take the defenders' flag home to their field, again and again; the defenders hold it.",
     "Each side's bombers go for the other's factory.",
+    "Shoot the other side's targets ({TARGET_POINTS} points; they come back) and its cat ({CAT_POINTS}; it rams, no guns).",
 ]
 
 # the host's choices of the fight: which, who attacks, what wins it, how long, how it starts
@@ -2703,7 +2763,7 @@ fight_choices = ():
         settings.minutes = 0
     if one_sided(m): settings.attackers = ui_choice("Attacking", TEAMS, settings.attackers)
     wins = win_choices(m)
-    if wins.len() > 0: settings.win = ui_choice(if m == FLAG or m == FLAG_RAID: "Flags to win" else: "Shot down to win", wins.map((x): "{x}"), clamp(settings.win, 0, wins.len() - 1))
+    if wins.len() > 0: settings.win = ui_choice(if m == FLAG or m == FLAG_RAID: "Flags to win" else: if m == BIKES: "Points to win" else: "Shot down to win", wins.map((x): "{x}"), clamp(settings.win, 0, wins.len() - 1))
     mins = minute_choices(m)
     if mins.len() > 0: settings.minutes = ui_choice("Minutes", mins.map((x): "{x}"), clamp(settings.minutes, 0, mins.len() - 1))
     if ground_choice(m): settings.ground = ui_switch("Start on the ground", settings.ground)
@@ -2714,10 +2774,10 @@ fight_choices = ():
     if m != CLASSIC and m != TRENCH and m != ESCORT:
         n = 0
         loop k in 0..CHOOSABLE:
-            if settings.crafts & (1 << k) != 0: n += 1
+            if crafts_chosen(m) & (1 << k) != 0: n += 1
         if ui_button("Crafts: {if n == CHOOSABLE: "all" else: "{n} of {CHOOSABLE}"}"): page = CRAFTS
 
-ground_choice = (m: int) -> bool: m == DOGFIGHT or m == BASES or m == FLAG or m == FLAG_RAID or m == RAIDS
+ground_choice = (m: int) -> bool: m == DOGFIGHT or m == BASES or m == FLAG or m == FLAG_RAID or m == RAIDS or m == BIKES
 
 # (the middle of the room's and the last fight's boxes: right of the menu; upright, under it)
 box_x = () -> f64: if upright: f64(mid().x) else: 920.0
