@@ -234,6 +234,8 @@ const LOBBY = 2                 # practice, or this one's room: the sides, Start
 const JOINED = 3                # in another's room: the sides, waiting for them to start
 const FIGHT = 4                 # the host's choices of the fight
 const CRAFTS = 5                # (and the kinds of craft in it)
+const HOWTO = 6                 # how to play: the keys, or a phone's buttons
+const CONTROLS = 7              # the keys, to change (from Settings)
 
 # (the host's pages, while friends may come to the room)
 hosting_page = () -> bool: page == LOBBY or page == FIGHT or page == CRAFTS
@@ -927,7 +929,8 @@ lay_out = ():
     global upright
     p = pixel_size()
     upright = p.y > p.x
-    if upright: design_size(720, max(1280, int(720.0 * f64(p.y) / f64(max(p.x, 1.0)))))
+    # (upright, a phone: 600 across, so that its type and buttons are big enough for it)
+    if upright: design_size(600, max(1067, int(600.0 * f64(p.y) / f64(max(p.x, 1.0)))))
     else: design_size(1280, 720)
 
 at_edge = (x: f64, y: f64) -> vec2:
@@ -940,31 +943,36 @@ column = () -> f64: if upright: f64(mid().x) else: 280.0
 alert_at = () -> vec2: mid() + vec2(0, if upright: -220.0 else: 110.0)
 
 # a phone's buttons: for the right thumb; the rest of the screen drags the aim
-fire_at = () -> vec2: at_edge(-150, -160)
-look_button = () -> vec2: at_edge(-110, -330)
-enter_button = () -> vec2: at_edge(-110, -470)
-rocket_button = () -> vec2: at_edge(-300, -110)
-bomb_button = () -> vec2: at_edge(-300, -240)
-scope_button = () -> vec2: at_edge(-300, -370)
+# (thumb-sized: Fire FIRE_R across its middle, the rest BUTTON_R, none touching; the throttle
+# on the left, the buttons on the right)
+const FIRE_R = 96.0
+const BUTTON_R = 54.0
+fire_at = () -> vec2: at_edge(-150, -170)
+look_button = () -> vec2: at_edge(-120, -350)
+enter_button = () -> vec2: at_edge(-120, -480)
+rocket_button = () -> vec2: at_edge(-320, -110)
+bomb_button = () -> vec2: at_edge(-320, -240)
+scope_button = () -> vec2: at_edge(-320, -370)
 throttle_track = () -> Rect:
-    a = at_edge(if upright: 80.0 else: -350.0, -400)
-    Rect(a.x, a.y, 60, 290)
+    a = at_edge(70, -420)
+    Rect(a.x, a.y, 64, 300)
 leave_box = () -> Rect:
-    l = at_edge(-130, 20)
-    Rect(l.x, l.y, 110, 40)
+    l = at_edge(-140, 20)
+    Rect(l.x, l.y, 120, 46)
 # (what a finger landing at t is on: 1 Fire (on foot: Walk), 2 the throttle, 4 Look, 5 Leave,
 # 6 Get in or out, 7 Rocket, 8 Bomb, 0 none)
 button_at = (t: vec2) -> int:
-    if length(t - fire_at()) < 90.0: return 1
-    if x_gunner() and length(t - rocket_button()) < 55.0: return 7
+    near = (b: vec2, r: f64) -> bool: f64(length(t - b)) < r + 6.0
+    if near(fire_at(), FIRE_R): return 1
+    if x_gunner() and near(rocket_button(), BUTTON_R): return 7
     if piloting():
         r = throttle_track()
         if contains(Rect(r.x - 30, r.y - 30, r.w + 60, r.h + 60), t): return 2
-        if length(t - rocket_button()) < 55.0: return 7
-        if length(t - bomb_button()) < 55.0: return 8
-        if in_ornithopter() and length(t - scope_button()) < 55.0: return 9
-    if length(t - look_button()) < 55.0: return 4
-    if length(t - enter_button()) < 55.0: return 6
+        if near(rocket_button(), BUTTON_R): return 7
+        if near(bomb_button(), BUTTON_R): return 8
+        if in_ornithopter() and near(scope_button(), BUTTON_R): return 9
+    if near(look_button(), BUTTON_R): return 4
+    if near(enter_button(), BUTTON_R): return 6
     if contains(leave_box(), t): return 5
     0
 
@@ -1100,7 +1108,36 @@ aimable = (g: Game, j: int) -> bool:
     c = g.crafts[j]
     if c.free or c.gone > 0 or c.down > 90 or c.landed: return false
     if j == my_craft(): return false
+    # (the fight's markers off for all: any craft the eye could find, whose ever it is)
+    if g.rules.plain: return in_sight(g, j)
     seen_team(g, c, my_team()) != my_team()
+
+# ---- the fight's markers off for all: only what could be seen is locked onto ----
+# (within SIGHT_RANGE, on the screen, and neither the ground nor a cloud between)
+const SIGHT_RANGE = 1500.0
+puffs_of: (vec3, vec3)[]
+puffs_map = -1
+in_sight = (g: Game, j: int) -> bool:
+    global puffs_map, puffs_of
+    if puffs_map != map_id:
+        puffs_of = cloud_puffs()
+        puffs_map = map_id
+    p = g.crafts[j].pos
+    d = p - cam_pos
+    l = f64(length(d))
+    if l > SIGHT_RANGE or l < 1.0 or f64(dot(d, cam_at - cam_pos)) <= 0.0: return false
+    if let at = world_to_screen(p):
+        if not inside(at): return false
+    else: return false
+    n = int(l / 40.0) + 1
+    loop k in 1..n:
+        q = cam_pos + d * f32(f64(k) / f64(n))
+        if f64(q.y) < ground(f64(q.x), f64(q.z)): return false
+    loop q in puffs_of:
+        a = cam_pos - q.0
+        b = p - q.0
+        if seg_near(vec3(a.x / q.1.x, a.y / q.1.y, a.z / q.1.z), vec3(b.x / q.1.x, b.y / q.1.y, b.z / q.1.z), 1.0): return false
+    true
 
 # the best target: the nearest of the other side's crafts, the nearer the more ahead (after: the
 # next one after it, in that order)
@@ -1123,7 +1160,8 @@ aim_at_target = ():
     global target, tracking
     g = game()
     if action_pressed("Next target"): target = pick_target(g, target)
-    else if not aimable(g, target): target = pick_target(g, -1)
+    # (none chosen for one, with the markers off for all: that would point one out)
+    else if not aimable(g, target): target = if g.rules.plain: -1 else: pick_target(g, -1)
     if action_pressed("Look at the target"): tracking = not tracking
 
 # (each frame: the buttons held, Look tapped, and how far the fingers on no button moved, in points)
@@ -2031,6 +2069,69 @@ sounds = ():
     if on and my().state == FALL: w = settings.sound * 0.4
     set_volume(wind_id, w)
 
+# ---------------- the look: one for every screen ----------------
+# (the instruments' cream faces and brass bezels; dark varnished panels with brass edges and
+# rivets; the sides' colors only for the sides; one scale of type, one edge, one padding)
+INK = rgb(0.96, 0.92, 0.82)
+INK_DIM = rgba(0.96, 0.92, 0.82, 0.62)
+INK_FAINT = rgba(0.96, 0.92, 0.82, 0.38)
+BRASS = rgb(0.84, 0.67, 0.33)
+BRASS_DIM = rgba(0.84, 0.67, 0.33, 0.55)
+PANEL_COLOR = rgba(0.08, 0.065, 0.05, 0.74)
+FACE = rgba(0.93, 0.89, 0.78, 0.94)
+FACE_INK = rgb(0.13, 0.1, 0.08)
+WARN = rgb(1.0, 0.45, 0.3)
+SHADOW = rgba(0, 0, 0, 0.55)
+const T_TITLE = 72.0
+const T_HEAD = 30.0
+const T_BODY = 20.0
+const T_SMALL = 16.0
+const EDGE = 24.0
+const PAD = 14.0
+
+# a panel: dark, a thin brass edge, a rivet at each corner
+panel = (r: Rect, color: vec4 = PANEL_COLOR):
+    rect(r, color)
+    rect_outline(r, 1.5, BRASS_DIM)
+    loop q in [vec2(r.x + 5, r.y + 5), vec2(r.x + r.w - 5, r.y + 5), vec2(r.x + 5, r.y + r.h - 5), vec2(r.x + r.w - 5, r.y + r.h - 5)]: circle(q, 1.8, BRASS)
+
+# a dial: a brass bezel, a cream face, ticks round three quarters of it, a red needle; its
+# reading under it
+dial = (c: vec2, r: f64, amount: f64, label: str, reading: str, warn: bool = false):
+    circle(c, r + 3.0, BRASS)
+    circle(c, r, FACE)
+    a0 = PI * 0.75
+    sweep = PI * 1.5
+    loop k in 0..11:
+        a = a0 + sweep * f64(k) / 10.0
+        d = vec2(f32(cos(a)), f32(sin(a)))
+        line(c + d * f32(r * (if k % 5 == 0: 0.72 else: 0.8)), c + d * f32(r * 0.92), if k % 5 == 0: 2.0 else: 1.2, FACE_INK)
+    a = a0 + sweep * clamp(amount, 0.0, 1.0)
+    d = vec2(f32(cos(a)), f32(sin(a)))
+    line(c, c + d * f32(r * 0.84), 2.5, if warn: WARN else: rgb(0.62, 0.1, 0.06))
+    circle(c, 3.0, FACE_INK)
+    text_centered(label, c + vec2(0, f32(r * 0.45)), 11, FACE_INK)
+    text_centered(reading, c + vec2(0, f32(r + 15.0)), 17, if warn: WARN else: INK, SHADOW)
+
+# a bar on a panel: a label over it, at x, y, w wide
+plate_bar = (x: f64, y: f64, w: f64, amount: f64, label: str, col: vec4, label_col: vec4 = INK_DIM):
+    text(label, vec2(f32(x), f32(y)), T_SMALL - 2.0, label_col)
+    rect(x, y + 18.0, w, 7, rgba(0, 0, 0, 0.55))
+    rect(x, y + 18.0, w * clamp(amount, 0.0, 1.0), 7, col)
+
+# (health's color: cream when whole, through amber to red as it goes)
+health_color = (f: f64) -> vec4:
+    if f > 0.6: return INK
+    if f > 0.3: return rgb(1.0, 0.72, 0.3)
+    WARN
+
+# where the HUD's corners go: a computer's at the bottom (the view above them clear); a phone's
+# at the top, under the score, its thumbs' buttons below
+plates_top = () -> bool: touch_input()
+plate_y = (h: f64) -> f64:
+    if plates_top(): return f64(at_edge(0, 0).y) + (if upright: 136.0 else: 74.0)
+    f64(at_edge(0, -EDGE).y) - h
+
 # ---------------- the heads-up display ----------------
 draw_hud = (g: Game):
     p = g.people[me()]
@@ -2065,6 +2166,17 @@ draw_hud = (g: Game):
                 from = if gun_seat(c.kind, p.seat): point_of(c, k.seats[p.seat].at) else: c.pos
                 if let l = world_to_screen(from + lead_from(from, c.vel, o.pos, o.vel)): ring(l, 6, 2, with_alpha(col, 0.9))
         else: brackets(at, f32(clamp(900.0 / max(d, 1.0), 8.0, 30.0)), with_alpha(col, 0.5))
+    # (the markers off for all: the craft locked onto, in brackets of no side's color, nothing
+    # said of it; where its guns' bullets would meet it)
+    if g.rules.plain and aimable(g, target):
+        o = g.crafts[target]
+        if let at = world_to_screen(o.pos):
+            d = f64(length(o.pos - cam_pos))
+            r = f32(clamp(1400.0 * f64(KINDS[o.kind].half.x) / 4.4 / max(d, 1.0), 14.0, 90.0))
+            brackets(at, r, with_alpha(INK, 0.85))
+            if seated and myc >= 0 and d < 700.0 and o.down == 0 and c.down == 0:
+                from = if gun_seat(c.kind, p.seat): point_of(c, k.seats[p.seat].at) else: c.pos
+                if let l = world_to_screen(from + lead_from(from, c.vel, o.pos, o.vel)): ring(l, 6, 2, with_alpha(INK, 0.8))
     # the flags, wherever they are
     loop f in g.flags:
         if not f.real:
@@ -2104,75 +2216,38 @@ draw_hud = (g: Game):
             if c.kind == DAVINCI and c.boulder and not c.landed: draw_path(boulder_path(c), rgba(1, 0.9, 0.6, 0.85))
             if aim_steering() and not k.lighter:
                 if let m = world_to_screen(c.pos + aim_dir() * 400.0): ring(m, 7, 2, rgba(1, 1, 1, 0.5))
-            else if settings.mouse and not bot and not touch_input() and not paused and c.down == 0 and not c.landed: text_centered("click to fly with the mouse", mid() + vec2(0, 240), 20, gray(0.8))
         else:
             # (at a gun: where its bullets go, 300 m out; brighter as it fires, red at its limit)
             gun_at = point_of(c, k.seats[p.seat].at) + c.aims[p.seat] * 300.0
             firing = c.gcool[p.seat] > 3
             limit = f64(dot(aim_dir(), quat_rotate(c.rot, k.seats[p.seat].dir))) < k.seats[p.seat].arc + 0.02
             sight(gun_at, firing, limit)
-        # speed, height, throttle; the craft's health, its guns, rockets and bombs
-        speed = f64(length(c.vel)) * 3.6
-        alt = f64(c.pos.y) - max(ground(f64(c.pos.x), f64(c.pos.z)), 0.0)
-        o = at_edge(30, if touch_input(): 20.0 else: -110.0)
-        if p.seat == 0:
-            text("{int(speed)} km/h", o, 26, if not k.lighter and f64(length(c.vel)) < k.stall * 1.15 and not c.landed: rgb(1, 0.5, 0.35) else: WHITE)
-            text("{int(alt)} m", o + vec2(0, 32), 26, WHITE)
-            hud_bar(Rect(o.x, o.y + 68, 160, 10), c.throttle, rgba(1, 1, 1, 0.8))
-            text("throttle", o + vec2(168, 62), 16, gray(0.75))
-        b = at_edge(-190, if touch_input(): 80.0 else: -110.0)
-        hud_bar(Rect(b.x, b.y, 160, 12), f64(c.health) / f64(k.health), COLORS[c.team])
-        text(kind_name(g, p.craft) + (if c.team != team: " (theirs)" else: ""), b + vec2(0, -22), 16, gray(0.8))
-        at_gun = gun_seat(c.kind, p.seat)
-        heat = if at_gun: c.gheat[p.seat] else: c.heat
-        if at_gun or k.guns:
-            hud_bar(Rect(b.x, b.y + 24, 160, 8), f64(heat) / f64(JAM_HEAT), if c.jammed and p.seat == 0: rgb(1, 0.35, 0.25) else: rgb(1, 0.75, 0.35))
-            text(if c.jammed and p.seat == 0: "guns jammed" else: "guns", b + vec2(0, 38), 16, if c.jammed and p.seat == 0: rgb(1, 0.4, 0.3) else: gray(0.75))
-        if (p.seat == 0 or c.kind == BALLOON) and (k.rockets > 0 or k.bombs > 0):
-            parts: str[]
-            if c.kind == ORNITHOPTER: parts.push("health packs {c.rockets} (X)    R: {if scoped: "off the scope" else: "the scope"}")
-            else if c.kind == CARCOPTER: parts.push("drones {c.rockets} (X, the tail gunner)")
-            else if k.rockets > 0 and g.rules.rockets: parts.push(if k.endless: "rockets (X)" else: "rockets {c.rockets} (X)")
-            # (a rocketeer, outside Bikes & Brooms: K for the witch's broom, or back)
-            if c.kind == ROCKETEER and g.rules.mode != BIKES and not touch_input(): parts.push("K: {if is_witch(g, p.craft): "the rocket pack" else: "a witch's broom"}")
-            if k.bombs > 0: parts.push("bombs {c.bombs} (B)")
-            if c.kind == BALLOON and p.seat == 0: parts.push("S up, W down: the wind turns with height")
-            t = join(parts, "   ")
-            text(t, vec2(f32(min(f64(b.x), f64(at_edge(-20, 0).x) - text_width(t, 16))), b.y + 58), 16, gray(0.8))
-        # (da Vinci's: the boulder, or how to dig one; a balloon's cannons)
-        if c.kind == DAVINCI and p.seat == 0:
-            t = if c.boulder: "boulder in the sling: X throws it (it falls; what it hits goes down)" else: if c.dig > 0: "digging... {c.dig * 100 / DIG}%" else: "no boulder: low and slow over the ground, hold B to dig one"
-            text(t, vec2(f32(min(f64(b.x), f64(at_edge(-20, 0).x) - text_width(t, 16))), b.y + 58), 16, if c.boulder: rgb(1, 0.9, 0.6) else: gray(0.8))
-        if c.kind == CARCOPTER and p.seat == 1:
-            t = "drones {c.rockets} (X launches one)"
-            text(t, vec2(f32(min(f64(b.x), f64(at_edge(-20, 0).x) - text_width(t, 16))), b.y + 58), 16, gray(0.8))
-        if c.kind == BALLOON:
-            t = "X: the cannon nearest your aim"
-            text(t, vec2(f32(min(f64(b.x), f64(at_edge(-20, 0).x) - text_width(t, 16))), b.y + 78), 16, gray(0.8))
-        # (the seats, and who is in them)
-        if c.seats.len() > 1:
-            sy = f64(at_edge(0, if touch_input(): 300.0 else: -150.0 - 20.0 * f64(c.seats.len())).y)
-            loop s in 0.. and pk in c.seats:
-                who = if pk == me(): "you" else: if pk >= 0: call(g, pk) else: "crew"
-                text("{s + 1}  {SEAT_NAMES[c.kind][s]}: {who}", vec2(f32(at_edge(30, 0).x), f32(sy + f64(s) * 20.0)), 16, if pk == me(): WHITE else: gray(0.7))
-        if not k.lighter and c.down == 0 and g.winner < 0 and not c.landed and p.seat == 0 and f64(length(c.vel)) < k.stall * 0.95: text_centered("STALL", alert_at(), 30, rgb(1, 0.45, 0.3))
-        if p.seat == 0 and c.down == 0 and g.winner < 0 and outside(c.pos) > 0.0 and not c.landed: text_centered("turning back to the fight", alert_at() + vec2(0, 40), 24, gray(0.85))
-        if tracking and not touch_input() and p.seat == 0: text("looking at the target (C)", at_edge(30, if touch_input(): 150.0 else: -140.0), 16, gray(0.7))
+        # the instruments (a pilot's), the craft's plate, the seats
+        if p.seat == 0: instruments(c, k)
+        craft_plate(g, c, k, p, team)
+        if c.seats.len() > 1: seats_plate(g, c)
+        if not k.lighter and c.down == 0 and g.winner < 0 and not c.landed and p.seat == 0 and f64(length(c.vel)) < k.stall * 0.95: text_centered("STALL", alert_at(), 30, WARN, SHADOW)
+        if p.seat == 0 and c.down == 0 and g.winner < 0 and outside(c.pos) > 0.0 and not c.landed: text_centered("turning back to the fight", alert_at() + vec2(0, 36), 20, INK, SHADOW)
     else if p.state == POST:
         b = g.buildings[p.post]
         at = b.pos + vec3(0, if b.kind == AA: 2.2 else: 1.1, 0) + b.aim * 300.0
         sight(at, b.cool > (if b.kind == AA: 30 else: 2), false)
-        text(if b.kind == AA: "gun against aircraft: its shells burst by a craft they pass" else: "machine gun", at_edge(30, -110), 20, WHITE)
-        if b.kind == MG:
-            hud_bar(Rect(at_edge(30, -80).x, at_edge(30, -80).y, 160, 8), f64(b.heat) / f64(JAM_HEAT), rgb(1, 0.75, 0.35))
-        hud_bar(Rect(at_edge(-190, -110).x, at_edge(-190, -110).y, 160, 12), f64(b.health) / f64(site_health(b.kind)), COLORS[b.team])
-    else if p.state == DEAD and g.winner < 0: text_centered("back in {(p.timer + 59) / 60}", alert_at(), 30, WHITE)
+        w = 260.0
+        h = if b.kind == MG: 110.0 else: 80.0
+        r = Rect(f32(f64(at_edge(-EDGE, 0).x) - w), f32(plate_y(h)), f32(w), f32(h))
+        panel(r)
+        text(if b.kind == AA: "gun against aircraft" else: "machine gun", vec2(r.x + PAD, r.y + 10), T_BODY - 2.0, INK)
+        plate_bar(f64(r.x) + PAD, f64(r.y) + 36.0, w - 2.0 * PAD, f64(b.health) / f64(site_health(b.kind)), "standing", health_color(f64(b.health) / f64(site_health(b.kind))))
+        if b.kind == MG: plate_bar(f64(r.x) + PAD, f64(r.y) + 70.0, w - 2.0 * PAD, f64(b.heat) / f64(JAM_HEAT), "heat", BRASS)
+    else if p.state == DEAD and g.winner < 0:
+        r = Rect(mid().x - 130, alert_at().y - 34, 260, 68)
+        panel(r)
+        text_centered("back in {(p.timer + 59) / 60}", vec2(mid().x, alert_at().y), T_HEAD, INK)
     else if p.state == WALK and not seated:
         # (on foot: a small cross where this one looks)
         line(mid() + vec2(-6, 0), mid() + vec2(6, 0), 2, rgba(1, 1, 1, 0.6))
         line(mid() + vec2(0, -6), mid() + vec2(0, 6), 2, rgba(1, 1, 1, 0.6))
-    prompt = what_f_does(g, p)
-    if len(prompt) > 0: text_centered(prompt, alert_at() + vec2(0, 80), 22, rgb(1.0, 0.9, 0.6))
+    draw_prompt(g, p)
     if hurt > 0.0:
         r = visible_rect()
         a = f32(hurt / 0.35 * 0.35)
@@ -2182,28 +2257,19 @@ draw_hud = (g: Game):
             rect(f64(r.x + w), f64(r.y + w), 8, f64(r.h - w * 2.0), col)
             rect(f64(r.x + r.w - w - 8.0), f64(r.y + w), 8, f64(r.h - w * 2.0), col)
     draw_score(g, team, x, f64(top.y))
-    news_y = f64(top.y) + (if upright: 200.0 else: 150.0)
+    # (the news: under the score, fading; this one's own doings larger)
+    news_y = f64(top.y) + (if touch_input(): (if upright: 470.0 else: 190.0) else: 136.0)
     loop kk in 0.. and n in news:
         a = f32(clamp(4.0 - n.1, 0.0, 1.0))
-        text_centered(n.0, vec2(f32(x), f32(news_y + f64(kk) * 32.0)), n.3, with_alpha(n.2, a * n.2.w))
-    if g.winner >= 0:
-        y = f64(mid().y) - 360.0
-        rect(x - 300.0, y + 230.0, 600, f64(290 + min(g.people.len() / 2, TALLY_MOST + 1) * 28), rgba(0.03, 0.04, 0.06, 0.5))
-        text_centered(if g.winner == team: "your side won" else: "{TEAMS[g.winner]} won", vec2(f32(x), f32(y + 300.0)), 72, COLORS[g.winner])
-        if over():
-            if touch_input() or not is_mouse_locked():
-                if hud_button(Rect(x - 120.0, y + 345.0, 240, 50), if mode == .practice and not in_room(): "Again" else: if mode == .practice or (s.me == 0 and friends.len() > 0) or host >= 0: "Back to the lobby" else: "Back"): after_fight()
-            else:
-                again = if mode == .practice and not in_room(): "Enter: again   Escape: the menu" else: if mode == .practice or (s.me == 0 and friends.len() > 0): "Enter: back to the sides" else: "Enter: back"
-                text_centered(again, vec2(f32(x), f32(y + 370.0)), 24, gray(0.8))
-        draw_tally(g, me(), x, y + 500.0)
+        text_centered(n.0, vec2(f32(x), f32(news_y + f64(kk) * (n.3 + 8.0))), n.3, with_alpha(n.2, a * n.2.w), with_alpha(SHADOW, a * 0.55))
+    if g.winner >= 0: draw_won(g, team, x)
     if mode == .online:
         if s.waiting and g.winner < 0:
             loop q in 0..s.players:
                 if q != s.me and not s.stands_in(q) and s.silent(q) > 1.0:
-                    text_centered("waiting for {player_name(q)}...", mid() + vec2(0, 200), 24, gray(0.8))
+                    text_centered("waiting for {player_name(q)}...", mid() + vec2(0, 200), T_BODY, INK, SHADOW)
                     break
-        if s.desync >= 0: text_centered("the games differ since tick {s.desync}", vec2(f32(x), top.y + 110), 22, rgb(1, 0.4, 0.4))
+        if s.desync >= 0: text_centered("the games differ since tick {s.desync}", vec2(f32(x), top.y + 110), T_BODY, WARN, SHADOW)
         ping = 0.0
         linked = 0
         loop q in 0..s.players:
@@ -2212,10 +2278,128 @@ draw_hud = (g: Game):
                 linked += 1
         # (no one else's game connected now: this fight goes on here alone, with the computer
         # for the others, and theirs with the computer for this one)
-        if linked == 0: text("no longer connected: the computer plays for the others", at_edge(30, if touch_input(): 120.0 else: 20.0), 18, rgb(1, 0.6, 0.4))
-        else: text("ping {int(ping)} ms", at_edge(30, if touch_input(): 120.0 else: 20.0), 16, gray(0.6))
-    if touch_input(): draw_touch(g, p, c)
-    else: text("Escape or Enter: menu", at_edge(-130, 20), 16, gray(0.55))
+        net_at = if touch_input(): at_edge(EDGE, -40) else: at_edge(EDGE, EDGE)
+        if linked == 0: text("no longer connected: the computer plays for the others", net_at, T_SMALL, WARN, SHADOW)
+        else: text("ping {int(ping)} ms", net_at, T_SMALL - 2.0, INK_FAINT)
+    # (a phone's buttons: not over the in-fight menu or the results' card)
+    if touch_input():
+        if not paused and g.winner < 0: draw_touch(g, p, c)
+    else:
+        # (the menu's key: said for the fight's first seconds, then gone)
+        a = clamp(1.0 - (f64(g.tick) / 60.0 - 8.0) / 2.0, 0.0, 1.0)
+        if a > 0.0: text("Escape: menu", vec2(f32(f64(at_edge(-EDGE, 0).x) - text_width("Escape: menu", T_SMALL)), at_edge(0, EDGE).y), T_SMALL, with_alpha(INK_DIM, f32(a * 0.62)), with_alpha(SHADOW, f32(a * 0.5)))
+
+# the pilot's instruments: an airspeed dial and an altimeter, the throttle's lever beside them
+instruments = (c: Craft, k: Kind):
+    r = 36.0
+    h = 2.0 * r + 50.0
+    w = 4.0 * r + 3.0 * PAD + 34.0
+    box = Rect(f32(f64(at_edge(EDGE, 0).x)), f32(plate_y(h)), f32(w), f32(h))
+    panel(box)
+    speed = f64(length(c.vel)) * 3.6
+    alt = f64(c.pos.y) - max(ground(f64(c.pos.x), f64(c.pos.z)), 0.0)
+    slow = not k.lighter and f64(length(c.vel)) < k.stall * 1.15 and not c.landed
+    cy = f64(box.y) + PAD + r + 3.0
+    dial(vec2(f32(f64(box.x) + PAD + r + 3.0), f32(cy)), r, speed / 300.0, "km/h", "{int(speed)} km/h", slow)
+    dial(vec2(f32(f64(box.x) + 2.0 * PAD + 3.0 * r + 6.0), f32(cy)), r, alt / 2000.0, "m", "{int(alt)} m")
+    # (the throttle: a slot, its brass lever as far up as it is open)
+    lx = f64(box.x) + w - PAD - 12.0
+    top = f64(box.y) + PAD
+    tall = h - 2.0 * PAD - 14.0
+    rect(lx + 4.0, top, 4, tall, rgba(0, 0, 0, 0.6))
+    ly = top + tall * (1.0 - c.throttle)
+    rect(lx - 4.0, ly - 3.0, 20, 7, BRASS)
+    text_centered("thr", vec2(f32(lx + 6.0), f32(top + tall + 10.0)), 11, INK_DIM)
+
+# the craft's plate: what it is (in its side's colors, a stripe), its health, its guns' heat, and
+# what it carries with the key for each
+craft_plate = (g: Game, c: Craft, k: Kind, p: Person, team: int):
+    rows: (str, str, vec4)[]       # (what, its key, its color)
+    at_gun = gun_seat(c.kind, p.seat)
+    if p.seat == 0 or c.kind == BALLOON:
+        if c.kind == ORNITHOPTER:
+            rows.push(("health packs {c.rockets}", "X", INK))
+            rows.push((if scoped: "off the scope" else: "the long gun's scope", "R", INK))
+        else if c.kind == CARCOPTER: rows.push(("drones {c.rockets}: the tail gunner's", "", INK_DIM))
+        else if k.rockets > 0 and g.rules.rockets and c.kind != BALLOON: rows.push((if k.endless: "rockets" else: "rockets {c.rockets}", "X", INK))
+        if k.bombs > 0: rows.push(("bombs {c.bombs}", "B", INK))
+    if c.kind == DAVINCI and p.seat == 0:
+        if c.boulder: rows.push(("boulder: throw it", "X", BRASS))
+        else if c.dig > 0: rows.push(("digging {c.dig * 100 / DIG}%", "B", INK))
+        else: rows.push(("hover low and dig a boulder", "B", INK_DIM))
+    if c.kind == CARCOPTER and p.seat == 1: rows.push(("drones {c.rockets}", "X", INK))
+    if c.kind == BALLOON:
+        rows.push(("the cannon nearest your aim", "X", INK))
+        if p.seat == 0: rows.push(("burner up, cool down", "S W", INK_DIM))
+    # (a rocketeer, outside Bikes & Brooms: K for the witch's broom, or back)
+    if c.kind == ROCKETEER and g.rules.mode != BIKES and not touch_input(): rows.push((if is_witch(g, p.craft): "the rocket pack" else: "a witch's broom", "K", INK_DIM))
+    if tracking and not touch_input() and p.seat == 0: rows.push(("looking at the target", "C", INK_DIM))
+    guns = at_gun or k.guns
+    w = 270.0
+    h = 40.0 + 34.0 + (if guns: 34.0 else: 0.0) + 22.0 * f64(rows.len()) + (if rows.len() > 0: 6.0 else: 0.0)
+    r = Rect(f32(f64(at_edge(-EDGE, 0).x) - w), f32(plate_y(h)), f32(w), f32(h))
+    panel(r)
+    rect(f64(r.x), f64(r.y), 4, f64(r.h), COLORS[c.team])
+    name = capitalize(kind_name(g, p.craft)) + (if c.team != team: ", theirs" else: "")
+    text(name, vec2(r.x + PAD, r.y + 10), T_BODY - 2.0, INK)
+    x0 = f64(r.x) + PAD
+    bw = w - 2.0 * PAD
+    y = f64(r.y) + 38.0
+    f = f64(c.health) / f64(k.health)
+    plate_bar(x0, y, bw, f, "hull", health_color(f))
+    y += 34.0
+    if guns:
+        heat = if at_gun: c.gheat[p.seat] else: c.heat
+        jam = c.jammed and p.seat == 0
+        plate_bar(x0, y, bw, f64(heat) / f64(JAM_HEAT), if jam: "guns jammed" else: "gun heat", if jam: WARN else: BRASS, if jam: WARN else: INK_DIM)
+        y += 34.0
+    loop row in rows:
+        text(row.0, vec2(f32(x0), f32(y)), T_SMALL, row.2)
+        if len(row.1) > 0 and not touch_input():
+            kw = text_width(row.1, T_SMALL - 2.0) + 10.0
+            kx = x0 + bw - kw
+            rect_outline(kx, y - 1.0, kw, 19, 1, BRASS_DIM)
+            text_centered(row.1, vec2(f32(kx + kw / 2.0), f32(y + 8.5)), T_SMALL - 2.0, BRASS)
+        y += 22.0
+
+# the seats, and who is in them (a craft with gunners): over the instruments; a phone's under them
+seats_plate = (g: Game, c: Craft):
+    n = c.seats.len()
+    w = 250.0
+    h = 16.0 + 19.0 * f64(n)
+    ih = 2.0 * 36.0 + 50.0
+    y = if plates_top(): plate_y(ih) + ih + 10.0 else: plate_y(ih) - h - 10.0
+    r = Rect(f32(f64(at_edge(EDGE, 0).x)), f32(y), f32(w), f32(h))
+    panel(r, rgba(0.08, 0.065, 0.05, 0.55))
+    loop s in 0.. and pk in c.seats:
+        mine_ = pk == me()
+        who = if mine_: "you" else: if pk >= 0: call(g, pk) else: "crew"
+        yy = f32(f64(r.y) + 8.0 + 19.0 * f64(s))
+        text("{s + 1}", vec2(r.x + PAD, yy), T_SMALL - 2.0, if mine_: BRASS else: INK_FAINT)
+        text(SEAT_NAMES[c.kind][s], vec2(r.x + PAD + 20, yy), T_SMALL - 2.0, if mine_: INK else: INK_DIM)
+        text(who, vec2(f32(f64(r.x) + w - PAD - text_width(who, T_SMALL - 2.0)), yy), T_SMALL - 2.0, if mine_: INK else: INK_FAINT)
+
+# what F or T would do now: in a small panel low in the middle (a phone's high), said when it
+# comes and gone after a few seconds, unless it is urgent (shot down, falling)
+prompt_said = ""
+prompt_since = 0.0
+draw_prompt = (g: Game, p: Person):
+    global prompt_said, prompt_since
+    t = what_f_does(g, p)
+    if not touch_input() and settings.mouse and not bot and not paused and p.state == SEATED and piloting() and not aim_steering():
+        c = g.crafts[p.craft]
+        if c.down == 0 and not c.landed: t = "click to fly with the mouse"
+    if t != prompt_said:
+        prompt_said = t
+        prompt_since = elapsed()
+    if len(t) == 0: return
+    urgent = (p.state == SEATED and g.crafts[p.craft].down > 0) or (p.state == FALL and not p.torn)
+    a = if urgent: 1.0 else: clamp(1.0 - (elapsed() - prompt_since - 5.0) / 1.5, 0.0, 1.0)
+    if a <= 0.0: return
+    at = if touch_input(): vec2(mid().x, f32(f64(at_edge(0, 0).y) + (if upright: 420.0 else: 150.0))) else: vec2(mid().x, f32(f64(at_edge(0, -EDGE).y) - 170.0))
+    w = text_width(t, T_BODY) + 2.0 * PAD + 8.0
+    panel(Rect(f32(f64(at.x) - w / 2.0), at.y - 18, f32(w), 36), rgba(0.08, 0.065, 0.05, f32(0.74 * a)))
+    text_centered(t, at, T_BODY, with_alpha(if urgent: rgb(1.0, 0.85, 0.55) else: INK, f32(a)))
 
 # (the crafts marked on the screen: this one's setting, unless the fight has them off for all)
 markers_on = (g: Game) -> bool: settings.markers and not g.rules.plain
@@ -2331,32 +2515,19 @@ what_f_does = (g: Game, p: Person) -> str:
     ""
 
 # the top of the screen: what the fight is about, and how it stands
-draw_score = (g: Game, team: int, x: f64, y: f64):
+draw_score = (g: Game, team: int, x: f64, y0: f64):
     m = g.rules.mode
     att = g.rules.attackers
-    mins = g.rules.time_limit
-    if mins > 0:
-        left = max(mins * 3600 - g.tick, 0) / 60
-        text_centered("{left / 60}:{left % 60:02}", vec2(f32(x), f32(y + 112.0)), 22, WHITE)
-    if m == DOGFIGHT or m == CLASSIC or m == FLAG or m == FLAG_RAID:
-        text_centered("{g.scores[0]}", vec2(f32(x - 50.0), f32(y + 40.0)), 44, COLORS[0])
-        text_centered("{g.scores[1]}", vec2(f32(x + 50.0), f32(y + 40.0)), 44, COLORS[1])
-        rect(x + (if team == 0: -70.0 else: 30.0), y + 66.0, 40, 3, COLORS[team])
-        what = "crafts shot down: first to {g.rules.win}"
-        if m == FLAG: what = "flags home: first to {g.rules.win}. Take theirs to yours, while yours is home"
-        if m == FLAG_RAID: what = if team == att: "take their flag to your field: {g.rules.win} to win" else: "keep your flag: {TEAMS[att]} needs {g.rules.win}"
-        text_centered(what, vec2(f32(x), f32(y + 86.0)), 16, gray(0.75))
-        if m == FLAG or m == FLAG_RAID: flag_hint(g, team, x, y)
-        return
-    if m == BIKES:
-        text_centered("{g.scores[0]}", vec2(f32(x - 60.0), f32(y + 40.0)), 44, COLORS[0])
-        text_centered("{g.scores[1]}", vec2(f32(x + 60.0), f32(y + 40.0)), 44, COLORS[1])
-        rect(x + (if team == 0: -85.0 else: 35.0), y + 66.0, 50, 3, COLORS[team])
-        late = mins > 0 and g.tick >= mins * 3600
-        what = if late and g.winner < 0: "level at the time: the next points win" else: "shoot their targets; their cat is worth {CAT_POINTS}. First to {g.rules.win}"
-        text_centered(what, vec2(f32(x), f32(y + 86.0)), 16, gray(0.75))
-        return
-    if m == BASES:
+    goal = goal_text(g, team)
+    w = max(300.0, text_width(goal, T_SMALL - 1.0) + 2.0 * PAD + 10.0)
+    y = y0 + 10.0
+    panel(Rect(f32(x - w / 2.0), f32(y), f32(w), 84))
+    if m == DOGFIGHT or m == CLASSIC or m == FLAG or m == FLAG_RAID or m == BIKES:
+        text_centered("{g.scores[0]}", vec2(f32(x - 46.0), f32(y + 32.0)), 40, COLORS[0], SHADOW)
+        text_centered("{g.scores[1]}", vec2(f32(x + 46.0), f32(y + 32.0)), 40, COLORS[1], SHADOW)
+        text_centered("·", vec2(f32(x), f32(y + 30.0)), 30, INK_FAINT)
+        rect(x + (if team == 0: -64.0 else: 28.0), y + 54.0, 36, 2, COLORS[team])
+    else if m == BASES:
         loop t in 0..2:
             left = 0
             all = 0
@@ -2364,29 +2535,45 @@ draw_score = (g: Game, team: int, x: f64, y: f64):
                 if b.team == t and (b.kind == HANGAR or b.kind == TANK or b.kind == HQ):
                     all += 1
                     if b.health > 0: left += 1
-            text_centered("{left}/{all}", vec2(f32(x + (if t == 0: -60.0 else: 60.0)), f32(y + 40.0)), 40, COLORS[t])
-        rect(x + (if team == 0: -90.0 else: 30.0), y + 64.0, 60, 3, COLORS[team])
-        text_centered("buildings standing: destroy the others' hangars, fuel and command post", vec2(f32(x), f32(y + 86.0)), 16, gray(0.7))
-        return
-    if m == RAIDS:
+            text_centered("{left}/{all}", vec2(f32(x + (if t == 0: -56.0 else: 56.0)), f32(y + 32.0)), 34, COLORS[t], SHADOW)
+        rect(x + (if team == 0: -84.0 else: 28.0), y + 54.0, 56, 2, COLORS[team])
+    else if m == RAIDS:
         loop b in g.buildings:
-            if b.kind == FACTORY: hud_bar(Rect(f32(x + (if b.team == 0: -250.0 else: 10.0)), f32(y + 30.0), 240, 12), f64(b.health) / f64(site_health(FACTORY)), COLORS[b.team])
-        text_centered("bomb their factory before they bomb yours", vec2(f32(x), f32(y + 86.0)), 16, gray(0.75))
-        return
-    # (the missions: the attackers' target's health, and what each side does)
-    want = if m == TRENCH: DEPOT else: FACTORY
-    loop b in g.buildings:
-        if b.kind == want and b.team != att:
-            hud_bar(Rect(f32(x - 120.0), f32(y + 26.0), 240, 12), f64(b.health) / f64(site_health(want)), COLORS[b.team])
+            if b.kind == FACTORY: hud_bar(Rect(f32(x + (if b.team == 0: -130.0 else: 6.0)), f32(y + 26.0), 124, 10), f64(b.health) / f64(site_health(FACTORY)), COLORS[b.team])
+    else:
+        want = if m == TRENCH: DEPOT else: FACTORY
+        loop b in g.buildings:
+            if b.kind == want and b.team != att: hud_bar(Rect(f32(x - 120.0), f32(y + 26.0), 240, 10), f64(b.health) / f64(site_health(want)), COLORS[b.team])
+    text_centered(goal, vec2(f32(x), f32(y + 70.0)), T_SMALL - 1.0, INK_DIM)
+    mins = g.rules.time_limit
+    if mins > 0:
+        left = max(mins * 3600 - g.tick, 0) / 60
+        t = "{left / 60}:{left % 60:02}"
+        panel(Rect(f32(x - 40.0), f32(y + 90.0), 80, 28))
+        text_centered(t, vec2(f32(x), f32(y + 104.0)), T_BODY, if left < 30: WARN else: INK)
+    if m == FLAG or m == FLAG_RAID: flag_hint(g, team, x, y0 + 26.0)
+
+# the fight's aim, in a line
+goal_text = (g: Game, team: int) -> str:
+    m = g.rules.mode
+    att = g.rules.attackers
+    if m == DOGFIGHT or m == CLASSIC: return "crafts shot down: first to {g.rules.win}"
+    if m == BIKES:
+        late = g.rules.time_limit > 0 and g.tick >= g.rules.time_limit * 3600
+        return if late and g.winner < 0: "level at the time: the next points win" else: "shoot their targets; their cat is worth {CAT_POINTS}. First to {g.rules.win}"
+    if m == FLAG: return "flags home: first to {g.rules.win} (yours must be home to score)"
+    if m == FLAG_RAID: return if team == att: "take their flag to your field: {g.rules.win} to win" else: "keep your flag: {TEAMS[att]} needs {g.rules.win}"
+    if m == BASES: return "destroy their hangars, fuel and command post"
+    if m == RAIDS: return "bomb their factory before they bomb yours"
     what = if m == TRENCH: "the depot" else: "the factory"
     goal = if team == att: "destroy {what}" else: "defend {what}"
-    if m == TRENCH and team == att: goal += ": up the gorge, low, under its guns"
+    if m == TRENCH and team == att: goal += ": up the gorge, low"
     if m == ESCORT:
         n = 0
         loop c in g.crafts:
             if not c.free and (c.kind == BOMBER or c.kind == ULTRA) and c.team == att and c.down == 0 and c.gone == 0: n += 1
-        goal += if team == att: ", keep the bombers flying ({n})" else: ", shoot down {TEAMS[att]}'s bombers ({n})"
-    text_centered(goal, vec2(f32(x), f32(y + 86.0)), 16, gray(0.75))
+        goal += if team == att: ", keep the bombers flying ({n})" else: ", down {TEAMS[att]}'s bombers ({n})"
+    goal
 
 # (Capture the flag: where to go now, said and pointed at)
 flag_hint = (g: Game, team: int, x: f64, y: f64):
@@ -2408,38 +2595,59 @@ point_at = (at: vec3, what: str, col: vec4):
     arrow_to(at, col)
 
 # a phone's buttons, for what this one can do now
+# (a thumb's button: dark, a brass rim, brighter held)
+tb = (at: vec2, r: f64, label: str, on: bool, size: f64 = T_BODY):
+    circle(at, r, rgba(0.08, 0.065, 0.05, if on: 0.7 else: 0.42))
+    ring(at, r, 2.5, if on: BRASS else: BRASS_DIM)
+    text_centered(label, at, size, if on: INK else: INK_DIM)
+
 draw_touch = (g: Game, p: Person, c: Craft):
+    global paused, paused_at
     flying_now = piloting()
-    circle(fire_at(), 80, rgba(1, 1, 1, if touch_fire: 0.3 else: 0.14))
-    text_centered(if p.state == WALK: "Walk" else: "Fire", fire_at(), 26, rgba(1, 1, 1, 0.7))
-    circle(look_button(), 42, rgba(1, 1, 1, if tracking: 0.35 else: 0.12))
-    text_centered("Look", look_button(), 24, rgba(1, 1, 1, 0.7))
-    if len(what_f_does(g, p)) > 0:
-        circle(enter_button(), 42, rgba(1, 0.9, 0.6, if touch_enter: 0.35 else: 0.18))
-        text_centered("In/Out", enter_button(), 20, rgba(1, 1, 1, 0.8))
-    if x_gunner():
-        circle(rocket_button(), 42, rgba(1, 1, 1, if touch_rocket: 0.3 else: 0.12))
-        text_centered(if c.kind == BALLOON: "Cannon" else: "Drone", rocket_button(), 18, rgba(1, 1, 1, 0.7))
+    tb(fire_at(), FIRE_R, if p.state == WALK: "Walk" else: "Fire", touch_fire, T_HEAD)
+    tb(look_button(), BUTTON_R, "Look", tracking)
+    if len(what_f_does(g, p)) > 0: tb(enter_button(), BUTTON_R, "In/Out", touch_enter)
+    if x_gunner(): tb(rocket_button(), BUTTON_R, if c.kind == BALLOON: "Cannon" else: "Drone", touch_rocket)
     if flying_now:
         k = KINDS[c.kind]
-        if k.rockets > 0 and g.rules.rockets and c.kind != CARCOPTER:
-            circle(rocket_button(), 42, rgba(1, 1, 1, if touch_rocket: 0.3 else: 0.12))
-            text_centered(if c.kind == ORNITHOPTER: "Heal" else: "Rocket", rocket_button(), 18, rgba(1, 1, 1, 0.7))
-        if c.kind == ORNITHOPTER:
-            circle(scope_button(), 42, rgba(1, 1, 1, if scoped: 0.35 else: 0.12))
-            text_centered("Scope", scope_button(), 18, rgba(1, 1, 1, 0.7))
-        if k.bombs > 0:
-            circle(bomb_button(), 42, rgba(1, 1, 1, if touch_bomb: 0.3 else: 0.12))
-            text_centered("Bomb", bomb_button(), 18, rgba(1, 1, 1, 0.7))
+        if k.rockets > 0 and g.rules.rockets and c.kind != CARCOPTER: tb(rocket_button(), BUTTON_R, if c.kind == ORNITHOPTER: "Heal" else: "Rocket", touch_rocket)
+        if c.kind == ORNITHOPTER: tb(scope_button(), BUTTON_R, "Scope", scoped)
+        if k.bombs > 0: tb(bomb_button(), BUTTON_R, "Bomb", touch_bomb)
         r = throttle_track()
         held = throttle_want >= 0.0
-        rect(r, rgba(1, 1, 1, if held: 0.16 else: 0.1))
+        panel(r, rgba(0.08, 0.065, 0.05, if held: 0.6 else: 0.4))
         f = f32(c.throttle) * r.h
-        rect(Rect(r.x, r.y + r.h - f, r.w, f), rgba(1, 1, 1, 0.18))
+        rect(Rect(r.x + 4, r.y + r.h - f, r.w - 8, f), rgba(0.84, 0.67, 0.33, 0.25))
         hy = r.y + r.h - f32(if held: throttle_want else: c.throttle) * r.h
-        rect(Rect(r.x - 8, hy - 4, r.w + 16, 8), rgba(1, 1, 1, if held: 0.8 else: 0.5))
-        text_centered("throttle", vec2(r.x + r.w / 2, r.y + r.h + 22), 16, rgba(1, 1, 1, 0.6))
-    if hud_button(leave_box(), "Leave"): leave()
+        rect(Rect(r.x - 8, hy - 5, r.w + 16, 10), if held: BRASS else: BRASS_DIM)
+        text_centered("throttle", vec2(r.x + r.w / 2, r.y + r.h + 22), T_SMALL, INK_DIM)
+    # (the in-fight menu, which has Leave: not leaving at one touch)
+    if hud_button(leave_box(), "Menu") and not paused:
+        paused = true
+        paused_at = elapsed()
+
+# the fight won: a card in the middle, who won, the tally, and what next
+draw_won = (g: Game, team: int, x: f64):
+    n = min(g.people.len() / 2, TALLY_MOST + 1)
+    h = 236.0 + f64(n) * 28.0
+    y = f64(mid().y) - h / 2.0
+    panel(Rect(f32(x - 320.0), f32(y), 640, f32(h)))
+    text_centered(if g.winner == team: "Your side won" else: "{TEAMS[g.winner]} won", vec2(f32(x), f32(y + 50.0)), 54, COLORS[g.winner], SHADOW)
+    m = g.rules.mode
+    sub = MODE_NAMES[m]
+    if m == DOGFIGHT or m == CLASSIC or m == FLAG or m == FLAG_RAID: sub += ", {g.scores[0]} to {g.scores[1]}"
+    text_centered(sub, vec2(f32(x), f32(y + 96.0)), T_BODY, INK_DIM)
+    line(vec2(f32(x - 280.0), f32(y + 120.0)), vec2(f32(x + 280.0), f32(y + 120.0)), 1, BRASS_DIM)
+    loop t in 0..2: text_centered("{TEAMS[t]}: shot down", vec2(f32(x + (if t == 0: -160.0 else: 160.0)), f32(y + 140.0)), T_SMALL - 2.0, INK_FAINT)
+    draw_tally(g, me(), x, y + 166.0)
+    by = y + h - 44.0
+    if over():
+        label = if mode == .practice and not in_room(): "Again" else: if mode == .practice or (s.me == 0 and friends.len() > 0) or host >= 0: "Back to the lobby" else: "Back"
+        if touch_input() or not is_mouse_locked():
+            if hud_button(Rect(f32(x - 120.0), f32(by - 22.0), 240, 46), label): after_fight()
+        else:
+            again = if mode == .practice and not in_room(): "Enter: again     Escape: the menu" else: "Enter: {label}"
+            text_centered(again, vec2(f32(x), f32(by)), T_BODY, INK)
 
 # who shot down how many, each side's in a column (around x), at the end; you: this machine's person
 # (each side's best TALLY_MOST, by what they shot down, and this one always)
@@ -2457,14 +2665,14 @@ draw_tally = (g: Game, you: int, x: f64, top: f64):
             if k >= TALLY_MOST and j != you: continue
             if k >= TALLY_MOST + 1: break
             who = if j == you: "{call(g, j)} (you)" else: call(g, j)
-            text_centered("{who}   {e.0}", vec2(cx, f32(top + f64(k) * 28.0)), 20, if j == you: WHITE else: with_alpha(COLORS[team], 0.9))
+            text_centered("{who}   {e.0}", vec2(cx, f32(top + f64(k) * 28.0)), T_BODY, if j == you: INK else: with_alpha(COLORS[team], 0.9))
             k += 1
 
 draw_results = (top: f64):
     if let g = results:
         h = 100.0 + f64(min(g.people.len() / 2, TALLY_MOST + 1)) * 28.0
         x = box_x()
-        rect(x - 320.0, top, 640, h, rgba(0.03, 0.04, 0.06, 0.55))
+        panel(Rect(f32(x - 320.0), f32(top), 640, f32(h)))
         text_centered("Last fight: {TEAMS[g.winner]} won ({MODE_NAMES[g.rules.mode]})", vec2(f32(x), f32(top + 40.0)), 28, COLORS[g.winner])
         draw_tally(g, results_me, x, top + 90.0)
 
@@ -2513,24 +2721,27 @@ draw_menu = ():
                 want_side = -1
                 page = JOINED
         return
-    if page == SETTINGS:
+    menu_style()
+    if page == SETTINGS or page == CONTROLS or page == HOWTO:
         draw_settings()
         return
     r = visible_rect()
     # (the column: on the left, beside the plane; upright, across the bottom of the screen, under
     # it, and the sides across all of it)
     x = f32(column())
-    y = if upright: f64(at_edge(0, -790).y) else: 0.0
-    # (wider than the menu's items, which are boxes on a touch screen)
-    if not upright: rect(Rect(r.x, r.y, (if touch_device(): 640 else: 560) - r.x, r.h), rgba(0.04, 0.05, 0.08, 0.55))
-    else if page != LOBBY and page != JOINED: rect(Rect(r.x, f32(y), r.w, r.y + r.h - f32(y)), rgba(0.04, 0.05, 0.08, 0.55))
+    y = if upright: f64(at_edge(0, -830).y) else: 0.0
+    if not upright: panel(Rect(r.x - 4, r.y - 4, (if touch_device(): 644 else: 564) - r.x, r.h + 8))
+    else if page != LOBBY and page != JOINED: panel(Rect(r.x - 4, f32(y), r.w + 8, r.y + r.h - f32(y) + 4))
     if page == LOBBY or page == JOINED:
         draw_lobby()
         return
     if page == FIGHT or page == CRAFTS:
+        if upright: panel(Rect(r.x - 4, r.y - 4, r.w + 8, r.h + 8))
         draw_fight_page()
         return
-    text_centered("SKY BARONS", vec2(x, f32(y + 130.0)), 80, WHITE)
+    text_centered("SKY BARONS", vec2(x, f32(y + 110.0)), T_TITLE, INK, SHADOW)
+    line(vec2(x - 150, f32(y + 160.0)), vec2(x + 150, f32(y + 160.0)), 2, BRASS)
+    text_centered("Scouts, fighters, bombers and zeppelins; up to 64 a side", vec2(x, f32(y + 186.0)), T_SMALL, INK_DIM)
     ui_begin("menu", vec2(x, f32(y + 240.0)))
     if invite.has_server():
         if ui_button("Make a room"): make_room()
@@ -2540,16 +2751,41 @@ draw_menu = ():
         if ui_button("Invite a friend"): invite.start(reliable = false, players = 2 * MOST)
         if ui_button("Join a friend"): invite.join()
     if ui_button("Practice"): page = LOBBY
+    if ui_button("How to play"): page = HOWTO
     # (a phone's browser: the bars at the top and bottom away)
     if touch_device() and can_fullscreen() and not is_fullscreen() and ui_button("Fullscreen"): set_fullscreen(true)
     if ui_button("Settings"): page = SETTINGS
     when TARGET != "wasm":
         if ui_button("Quit"): quit()
     ui_end()
-    if len(status) > 0: text_centered(status, vec2(x, f32(y + 580.0)), 22, gray(0.85))
-    how = "On foot: WASD and the mouse, Shift runs, a click fires a pistol; F gets in (a craft, a gun on the ground), T gets out, bails out or takes you back to your field, F held puts your own side out of your craft (or out of the pilot's seat, and you in). Flying: the mouse steers, its buttons fire guns and rockets (X), B drops bombs, Shift and Ctrl the throttle; 1 to 8 or V change seats; a rocketeer, K flies a witch's broom."
-    if touch_input() or touch_device(): how = "Drag a finger to look and aim; In/Out gets in, out, or bails out. Hold Fire to shoot (on foot, to walk); the throttle slides; Look watches the target."
-    text_wrapped("Scouts, fighters, light and ultra bombers, zeppelins; up to 64 a side. {how}", vec2(x - 240, f32(y + 600.0)), 480, 17, gray(0.8), align = .center)
+    if len(status) > 0: text_wrapped(status, vec2(x - 240, f32(y + 240.0 + 8.0 * ui_style.spacing)), 480, T_BODY - 2.0, WARN, align = .center)
+
+# (the menus' look: cream items, the chosen one brass; boxes a thumb can hit on a touch screen)
+menu_style = ():
+    global ui_style
+    touch = touch_device() or touch_input()
+    ui_style = UiStyle(size = if touch: 32.0 else: 28.0, spacing = if touch: 72.0 else: 46.0, width = 440.0, color = with_alpha(INK, 0.82), focus_color = BRASS, disabled_color = INK_FAINT, bar_color = rgba(0.84, 0.67, 0.33, 0.35), box_color = rgba(0.96, 0.92, 0.82, 0.07))
+
+# how to play: the keys that matter, in a table (a phone's buttons on one)
+HOW_KEYS = [("W A S D, the mouse", "walk and look (Shift runs); a click fires a pistol"), ("F", "get in: a craft, a gun on the ground"), ("T", "get out, bail out, open the parachute; on foot, back to your field"),
+            ("F held", "put your own side out of your craft (on foot: its pilot out, you in)"), ("the mouse", "flying: steer where it points (keys fly while held)"),
+            ("left button, Space", "fire"), ("right button, X", "rockets (a gunner: drones, cannons)"), ("B", "bombs"), ("Shift, Ctrl", "throttle"), ("1 to 8, V", "change seats"),
+            ("C, Tab", "look at the target, the next target"), ("K", "a rocketeer: a witch's broom, or back"), ("Escape", "the menu")]
+HOW_TOUCH = [("drag", "look and aim, anywhere off the buttons"), ("In/Out", "get in, get out, bail out, open the parachute"), ("Fire", "shoot (on foot: walk)"),
+             ("the throttle", "slide it"), ("Rocket, Bomb", "what the craft carries"), ("Look", "watch the target"), ("Menu", "the in-fight menu")]
+draw_howto = (x: f32, top: f64) -> f64:
+    rows = if touch_input() or touch_device(): HOW_TOUCH else: HOW_KEYS
+    # (what to press on the left, what it does on the right, wrapped to the screen)
+    half = min(f64(visible_rect().w) / 2.0 - 20.0, 400.0)
+    kx = f64(x) - half
+    dx = kx + (if half < 360.0: 130.0 else: 210.0)
+    size = T_BODY - 2.0
+    y = top
+    loop row in rows:
+        text(row.0, vec2(f32(kx), f32(y)), size, BRASS)
+        h = text_wrapped(row.1, vec2(f32(dx), f32(y)), f64(x) + half - dx, size, INK)
+        y += max(h, size * 1.3) + 10.0
+    y
 
 # a player's insignia, small, centered at `at` on the screen: its shape, or a mark of the color
 # it paints a part of the plane
@@ -2605,19 +2841,19 @@ draw_sides = (pilots: int[], you: int, names: str[], badges: int[], top: f64) ->
         row = 0
         loop p in people:
             if row == SHOWN - 1 and people.len() > SHOWN:
-                text("and {people.len() - row} more players", vec2(f32(x + 34.0), f32(top + 22.0 + f64(row) * 30.0 + 4.0)), 18, gray(0.8))
+                text("and {people.len() - row} more players", vec2(f32(x + 34.0), f32(top + 22.0 + f64(row) * 30.0 + 4.0)), T_SMALL, INK_DIM)
                 row += 1
                 break
             y = top + 22.0 + f64(row) * 30.0
             rect(x, y, 240, 26, with_alpha(COLORS[team], if p == you: 0.4 else: 0.14))
             draw_badge(if p < badges.len(): badges[p] else: 0, vec2(f32(x + 16.0), f32(y + 13.0)), 9.0)
             who = if p < names.len() and len(names[p]) > 0: names[p] else: "player {p + 1}"
-            text(if p == you: "{who} (you)" else: who, vec2(f32(x + 34.0), f32(y + 3.0)), 20, if p == you: WHITE else: gray(0.9))
+            text(if p == you: "{who} (you)" else: who, vec2(f32(x + 34.0), f32(y + 3.0)), T_BODY, if p == you: INK else: INK_DIM)
             row += 1
         if bots > 0:
             y = top + 22.0 + f64(row) * 30.0
             rect(x, y, 240, 26, with_alpha(COLORS[team], 0.14))
-            text(if people.len() == 0: "{bots} computer" else: "+ {bots} computer", vec2(f32(x + 34.0), f32(y + 4.0)), 18, gray(0.6))
+            text(if people.len() == 0: "{bots} computer" else: "+ {bots} computer", vec2(f32(x + 34.0), f32(y + 4.0)), T_SMALL, INK_FAINT)
             row += 1
         lines = max(lines, row)
     top + 22.0 + f64(lines) * 30.0
@@ -2634,15 +2870,15 @@ draw_lobby = ():
     title = if hosting and public: "Play with anybody" else: if hosting and friends.len() == 0 and len(invite.room_code()) == 0: "Practice" else: if players == 0: "Joined" else: if players == 1: "1 player" else: "{players} players"
     t0 = f64(at_edge(0, 0).y)
     x = f32(column())
-    items = if hosting: 10 else: 5
+    items = if hosting: 8 else: 3
     if upright:
         # (upright: all of it at the bottom of the screen, the plane above it where there is room)
         n = f64(side_lines(pilots))
         tall = max(234.0 + n * 30.0, 300.0) + f64(items) * 50.0 + (if hosting: room_height() else: 0.0) + results_height()
         t0 = max(t0, f64(at_edge(0, 0).y) + f64(safe_rect().h) - tall - 20.0)
         r = visible_rect()
-        rect(Rect(r.x, f32(t0 - 10.0), r.w, r.y + r.h - f32(t0 - 10.0)), rgba(0.04, 0.05, 0.08, 0.7))
-    text_centered(title, vec2(x, f32(t0 + 50.0)), 44, WHITE)
+        panel(Rect(r.x - 4, f32(t0 - 10.0), r.w + 8, r.y + r.h - f32(t0 - 10.0) + 4))
+    text_centered(title, vec2(x, f32(t0 + 50.0)), 44, INK, SHADOW)
     # (when the fight starts, and who starts it)
     starts = if hosting and public: starts_at else: if hosting: -1.0 else: lobby_starts
     what = ""
@@ -2651,25 +2887,18 @@ draw_lobby = ():
     else if friends.len() > 0: what = "You pass on what goes between your friends: if you leave, the fight ends for all."
     if not hosting and len(lobby_fight) > 0: what = "{lobby_fight}. {what}"
     if hosting and len(turned) > 0: what = "{turned}. {what}"
-    text_wrapped(what, vec2(x - 240, f32(t0 + 84.0)), 480, 18, gray(0.8), align = .center)
+    text_wrapped(what, vec2(x - 240, f32(t0 + 84.0)), 480, T_SMALL, INK_DIM, align = .center)
     below = draw_sides(pilots, if hosting: 0 else: lobby_me, if hosting: names_now() else: lobby_names, if hosting: badges_now() else: lobby_badges, t0 + 150.0)
-    if not touch_input(): text_centered("Tab, or a gamepad's X: switch side", vec2(x, f32(below + 16.0)), 16, gray(0.6))
     old = ui_style
     # (closer together when there are many: the host's eight fit above the screen's bottom)
     at = max(below + 52.0, t0 + 290.0)
-    ui_style.spacing = if upright: 50.0 else: clamp((710.0 - at) / f64(items), 30.0, 50.0)
-    ui_style.size = min(34.0, ui_style.spacing * 0.75)
+    ui_style.spacing = if upright: old.spacing else: clamp((710.0 - at) / f64(items), 30.0, old.spacing)
+    ui_style.size = min(old.size, ui_style.spacing * 0.68)
     ui_style.width = 400.0
     ui_begin("lobby", vec2(x, f32(at)))
     if hosting and ui_button("Start"): start_fight()
     if ui_button("Switch side") or (ui_ready() and (key_pressed(.tab) or gamepad_pressed(.x))): switch_side()
-    # (this one's name and insignia, as in Settings: the others see them change)
-    # (kept as typed until the fight or leaving: saving tidies it, and would take a space just typed)
-    settings.name = ui_text_field("Name", settings.name, NAME_MOST)
-    badge = ui_choice("Insignia", models.BADGES, settings.badge)
-    if badge != settings.badge:
-        settings.badge = badge
-        save_settings()
+    # (one's name and insignia are Settings': the others see them change)
     plane = ui_choice("Plane in the air", PICK_NAMES, settings.plane)
     if plane != settings.plane:
         # (the menu's fight again, this one in it)
@@ -2702,8 +2931,8 @@ draw_lobby = ():
     if hosting:
         # (the fight as chosen, said: its choices are on their own page)
         bx = box_x()
-        rect(bx - 320.0, next, 640, 70, rgba(0.03, 0.04, 0.06, 0.55))
-        text_wrapped(fight_said(), vec2(f32(bx - 300.0), f32(next + 14.0)), 600, 20, gray(0.9), align = .center)
+        panel(Rect(f32(bx - 320.0), f32(next), 640, 70))
+        text_wrapped(fight_said(), vec2(f32(bx - 300.0), f32(next + 14.0)), 600, T_BODY - 2.0, INK, align = .center)
         next += 90.0
     ui_style = old
     draw_results(if hosting: draw_room(next) else: next)
@@ -2714,9 +2943,9 @@ draw_fight_page = ():
     x = f64(column())
     t0 = f64(at_edge(0, 0).y)
     crafts = page == CRAFTS
-    text_centered(if crafts: "The crafts" else: "The fight", vec2(f32(x), f32(t0 + 60.0)), 44, WHITE)
+    text_centered(if crafts: "The crafts" else: "The fight", vec2(f32(x), f32(t0 + 60.0)), 44, INK, SHADOW)
     about = if crafts: "Which kinds of craft the fight has (on the fields, and to choose to start in)." else: FIGHT_ABOUT[settings.fight]
-    text_wrapped(about, vec2(f32(x - 240.0), f32(t0 + 100.0)), 480, 18, gray(0.8), align = .center)
+    text_wrapped(about, vec2(f32(x - 240.0), f32(t0 + 100.0)), 480, T_SMALL, INK_DIM, align = .center)
     # (as close together as the screen's height needs)
     old = ui_style
     items = if crafts: CHOOSABLE + 1 else: 10
@@ -2797,46 +3026,64 @@ draw_room = (top: f64) -> f64:
     if len(code) == 0 and len(how) == 0: return top
     x = box_x()
     if len(code) == 0:
-        rect(x - 320.0, top, 640, 110, rgba(0.03, 0.04, 0.06, 0.55))
-        text_wrapped(how, vec2(f32(x - 300.0), f32(top + 20.0)), 600, 20, gray(0.85), align = .center)
+        panel(Rect(f32(x - 320.0), f32(top), 640, 110))
+        text_wrapped(how, vec2(f32(x - 300.0), f32(top + 20.0)), 600, T_BODY - 2.0, INK_DIM, align = .center)
         return top + 130.0
-    rect(x - 320.0, top, 640, 250, rgba(0.03, 0.04, 0.06, 0.55))
-    text_centered("Friends join with the code", vec2(f32(x), f32(top + 30.0)), 22, gray(0.85))
-    text_centered(code, vec2(f32(x), f32(top + 80.0)), 64, rgb(1.0, 0.85, 0.3), mono = true)
+    panel(Rect(f32(x - 320.0), f32(top), 640, 250))
+    text_centered("Friends join with the code", vec2(f32(x), f32(top + 30.0)), T_BODY, INK_DIM)
+    text_centered(code, vec2(f32(x), f32(top + 80.0)), 64, BRASS, mono = true)
     link = invite.room_link(WEB_PAGE)
     if len(link) > 0:
-        text_centered(link, vec2(f32(x), f32(top + 126.0)), min(16.0, 16.0 * 600.0 / text_width(link, 16, mono = true)), gray(0.7), mono = true)
+        text_centered(link, vec2(f32(x), f32(top + 126.0)), min(16.0, 16.0 * 600.0 / text_width(link, 16, mono = true)), INK_DIM, mono = true)
         if can_share():
             if hud_button(Rect(x - 170.0, top + 146.0, 160, 40), "Copy link"): set_clipboard(link)
             if hud_button(Rect(x + 10.0, top + 146.0, 160, 40), "Share"): share(link)
         else if hud_button(Rect(x - 80.0, top + 146.0, 160, 40), "Copy link"): set_clipboard(link)
-    text_wrapped(how, vec2(f32(x - 300.0), f32(top + 202.0)), 600, 18, gray(0.8), align = .center)
+    text_wrapped(how, vec2(f32(x - 300.0), f32(top + 202.0)), 600, T_SMALL, INK_DIM, align = .center)
     top + 270.0
 
 draw_settings = ():
     global log_said, page
+    menu_style()
     if mode != .menu: rect(visible_rect(), rgba(0.03, 0.04, 0.06, 0.5))
     r = visible_rect()
     x = mid().x
     t0 = at_edge(0, 0).y
-    rect(Rect(x - 400, r.y, 800, r.h), rgba(0.04, 0.05, 0.08, 0.8))
-    text_centered("Settings", vec2(x, t0 + 70), 48, WHITE)
-    ui_begin("settings", vec2(x, t0 + 140))
+    w = f32(if page == HOWTO and not upright: 880.0 else: 800.0)
+    panel(Rect(x - w / 2, r.y - 4, w, r.h + 8))
+    title = if page == CONTROLS: "Controls" else: if page == HOWTO: "How to play" else: "Settings"
+    text_centered(title, vec2(x, t0 + 64), 44, INK, SHADOW)
+    line(vec2(x - 120, t0 + 100), vec2(x + 120, t0 + 100), 2, BRASS)
+    if page == HOWTO:
+        below = draw_howto(x, f64(t0) + 140.0)
+        ui_begin("howto", vec2(x, f32(below + 20.0)))
+        if ui_button("Back") or ui_back(): page = if mode == .menu: MAIN else: SETTINGS
+        ui_end()
+        return
+    ui_begin("settings", vec2(x, t0 + 130))
+    if page == CONTROLS:
+        ui_controls()
+        if ui_button("Back") or ui_back():
+            save_settings()
+            page = SETTINGS
+        ui_end()
+        return
+    # (the name first, but not focused into on a phone: its keyboard would come up as Settings opens)
+    settings.name = ui_text_field("Name", settings.name, NAME_MOST)
+    settings.badge = ui_choice("Insignia", models.BADGES, settings.badge)
     settings.mouse = ui_switch("Fly with the mouse", settings.mouse)
     settings.invert = ui_switch("Invert pitch", settings.invert)
     settings.level = ui_switch("Lock camera roll", settings.level)
     settings.markers = ui_switch("Markers on crafts", settings.markers)
+    settings.sound = ui_slider("Sound", settings.sound)
     if can_fullscreen():
         fs = ui_switch("Fullscreen", is_fullscreen())
         if fs != is_fullscreen(): set_fullscreen(fs)
+    if ui_button("Controls"): page = CONTROLS
+    if mode != .menu and ui_button("How to play"): page = HOWTO
     # (the log of fights, to send when one went badly: see log_line)
     if ui_button("Save the log"): save_log()
     if len(log_said) > 0: ui_text(log_said)
-    settings.sound = ui_slider("Sound", settings.sound)
-    # (not first: a phone's keyboard would come up as Settings opens)
-    settings.name = ui_text_field("Name", settings.name, NAME_MOST)
-    settings.badge = ui_choice("Insignia", models.BADGES, settings.badge)
-    ui_controls()
     if ui_button("Back") or ui_back():
         save_settings()
         log_said = ""
@@ -2846,16 +3093,22 @@ draw_settings = ():
 # the in-fight menu (Escape)
 draw_paused = ():
     global page
-    if page == SETTINGS:
+    if page == SETTINGS or page == CONTROLS or page == HOWTO:
         draw_settings()
         return
-    rect(visible_rect(), rgba(0.03, 0.04, 0.06, 0.55))
+    menu_style()
+    rect(visible_rect(), rgba(0.03, 0.04, 0.06, 0.45))
     done = mode == .online and game().winner >= 0
-    text_centered(if mode == .practice: "Paused" else: if done: "The fight is over" else: "The fight goes on", mid() - vec2(0, 160), 48, WHITE)
+    host_room0 = mode == .online and s.me == 0 and friends.len() > 0
+    n = 3 + (if can_fullscreen(): 1 else: 0) + (if host_room0 or done: 1 else: 0) + (if game().rules.plain: 0 else: 1)
+    h = 150.0 + f64(n) * ui_style.spacing
+    panel(Rect(mid().x - 260, f32(f64(mid().y) - 200.0), 520, f32(h)))
+    text_centered(if mode == .practice: "Paused" else: if done: "The fight is over" else: "The fight goes on", mid() - vec2(0, 150), 44, INK, SHADOW)
+    line(mid() - vec2(120, 114), mid() - vec2(-120, 114), 2, BRASS)
     # (the host with friends: back to the lobby with them, the room kept, the fight over or not
     # (theirs follow: the lobby's news ends it); a friend, once it is over)
     host_room = mode == .online and s.me == 0 and friends.len() > 0
-    ui_begin("paused", mid() - vec2(0, 70))
+    ui_begin("paused", mid() - vec2(0, 80))
     if ui_button(if done: "Back to the results" else: "Back to the fight"): resume()
     if can_fullscreen() and ui_button(if is_fullscreen(): "Leave fullscreen" else: "Fullscreen"): set_fullscreen(not is_fullscreen())
     if (host_room or done) and ui_button(if host_room and not done: "End the fight: to the lobby" else: "Back to the lobby"): after_fight()
