@@ -131,6 +131,7 @@ struct Settings:
     markers = true              # the crafts marked on the screen (friends, foes, the target)
     plain = false               # (the lobby's: no markers for anyone in the fight)
     bikes = BIKES_CRAFTS        # (and in Bikes & Brooms)
+    heli_follow = false         # (helicopters with the mouse: the nose always where one looks, not looking about freely)
 
 settings = Settings()
 # (nothing saved yet: a first visit, whose menu shows Blue's fighter, until a plane is chosen)
@@ -165,10 +166,11 @@ if let saved = load_data("settings"):
         settings.plain = w[18] == "1"
     if w.len() >= 20: settings.bikes = (to_int(w[19]) ?? BIKES_CRAFTS) & ALL_CRAFTS
     if settings.bikes == 0: settings.bikes = BIKES_CRAFTS
+    if w.len() >= 21: settings.heli_follow = w[20] == "1"
 save_settings = ():
     settings.name = my_name()
     b = (x: bool) -> str: if x: "1" else: "0"
-    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers} {settings.crafts} {b(settings.markers)} {b(settings.plain)} {settings.bikes}")
+    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers} {settings.crafts} {b(settings.markers)} {b(settings.plain)} {settings.bikes} {b(settings.heli_follow)}")
 
 # a player's name as shown and sent: up to 12 characters, no commas, one space between words
 # (it travels as an underscore, so a message's words stay words)
@@ -1070,13 +1072,30 @@ my_pad = () -> Pad:
     want = vec3(f32(pitch), f32(action_axis("Roll left", "Roll right")), f32(action_axis("Rudder left", "Rudder right")))
     heli = KINDS[k.kind].heli
     hold = Pad()
-    if heli:
-        # (a helicopter: W and S lean it ahead and back, A and D aside, Q and E or the mouse turn
-        # it; let go, it holds where it is, and its height, unless Shift or Ctrl)
-        hold = heli_to(k, k.pos, if aim_steering(): aim_dir() else: fwd_of(k), 0.0)
+    if heli and aim_steering():
+        # (a helicopter, the mouse looking: the keys move it as one looks, W toward where one
+        # looks, A and D across it, S back; let go, it holds its place and height (Shift and Ctrl
+        # up and down). Its nose stays as it is, Q and E turning it, and swings to where one looks
+        # while one fires or throws (its guns and trebuchet point ahead); or, as Settings may have
+        # it, it always faces where one looks)
+        look = aim_dir()
+        fl = vec3(look.x, 0, look.z)
+        if length(fl) < 0.05: fl = vec3(fwd_of(k).x, 0, fwd_of(k).z)
+        fl = if length(fl) > 0.05: normalize(fl) else: vec3(0, 0, -1)
+        across = vec3(-fl.z, 0, fl.x)
+        move = fl * f32(-f64(want.x)) + across * want.y
+        if length(move) > 1.0: move = normalize(move)
+        face = if settings.heli_follow or c.fire or c.rocket: look else: fwd_of(k)
+        hold = heli_to(k, k.pos + move * 60.0, face, 25.0 * f64(length(move)))
+        want.x = f32(f64(hold.pitch) / 100.0)
+        want.y = f32(f64(hold.roll) / 100.0)
+        if abs(want.z) < 0.05: want.z = f32(f64(hold.yaw) / 100.0)
+    else if heli:
+        # (a helicopter flown by keys alone: W and S lean it ahead and back, A and D aside, Q and E
+        # turn it; let go, it holds where it is, and its height, unless Shift or Ctrl)
+        hold = heli_to(k, k.pos, fwd_of(k), 0.0)
         if abs(want.x) < 0.05: want.x = f32(f64(hold.pitch) / 100.0)
         if abs(want.y) < 0.05: want.y = f32(f64(hold.roll) / 100.0)
-        if abs(want.z) < 0.05 and aim_steering(): want.z = f32(f64(hold.yaw) / 100.0)
     else if KINDS[k.kind].lighter:
         # (a zeppelin: the keys up, down and round; the mouse turns it toward where it points)
         if aim_steering() and abs(want.y) + abs(want.z) < 0.05:
@@ -1271,7 +1290,8 @@ update = (dt: f64):
                 s2 = (my().seat + k) % c.seats.len()
                 if c.seats[s2] < 0 and next_seat == 0: next_seat = s2 + 1
         # (keys or a stick held: they fly it, the aim kept on the nose (keys_flying))
-        keys_flying = piloting() and abs(action_axis("Dive", "Climb")) + abs(action_axis("Roll left", "Roll right")) + abs(action_axis("Rudder left", "Rudder right")) > 0.05
+        # (not a helicopter's: its keys move it, the mouse looking about all the while)
+        keys_flying = piloting() and not KINDS[game().crafts[my().craft].kind].heli and abs(action_axis("Dive", "Climb")) + abs(action_axis("Roll left", "Roll right")) + abs(action_axis("Rudder left", "Rudder right")) > 0.05
         look = vec2(0, 0)
         if is_mouse_locked() and not paused and not touch_input(): look = mouse_delta() * 0.0025
         if touch_input() and not paused: look = dragged * 0.006
@@ -2836,7 +2856,7 @@ menu_style = ():
 
 # how to play: the keys that matter, in a table (a phone's buttons on one)
 HOW_KEYS = [("W A S D, the mouse", "walk and look (Shift runs); a click fires a pistol"), ("F", "get in: a craft, a gun on the ground"), ("T", "get out, bail out, open the parachute; on foot, back to your field"),
-            ("F held", "put your own side out of your craft (on foot: its pilot out, you in)"), ("the mouse", "flying: steer where it points (keys fly while held)"),
+            ("F held", "put your own side out of your craft (on foot: its pilot out, you in)"), ("the mouse", "flying: steer where it points (keys fly while held); a helicopter: look about, W A S D move it as you look"),
             ("left button, Space", "fire"), ("right button, X", "rockets (a gunner: drones, cannons)"), ("B", "bombs"), ("Shift, Ctrl", "throttle"), ("1 to 8, V", "change seats"),
             ("C, Tab", "look at the target, the next target"), ("K", "a rocketeer: a witch's broom, or back"), ("Escape", "the menu")]
 HOW_TOUCH = [("drag", "look and aim, anywhere off the buttons"), ("In/Out", "get in, get out, bail out, open the parachute"), ("Fire", "shoot (on foot: walk)"),
@@ -3126,7 +3146,7 @@ draw_settings = ():
     r = visible_rect()
     x = mid().x
     t0 = at_edge(0, 0).y
-    w = f32(if page == HOWTO and not upright: 880.0 else: 800.0)
+    w = f32(if not upright: 880.0 else: 800.0)
     panel(Rect(x - w / 2, r.y - 4, w, r.h + 8))
     title = if page == CONTROLS: "Controls" else: if page == HOWTO: "How to play" else: "Settings"
     text_centered(title, vec2(x, t0 + 64), 44, INK, SHADOW)
@@ -3152,6 +3172,8 @@ draw_settings = ():
     settings.invert = ui_switch("Invert pitch", settings.invert)
     settings.level = ui_switch("Lock camera roll", settings.level)
     settings.markers = ui_switch("Markers on crafts", settings.markers)
+    # (a mouse's: not on a phone)
+    if not touch_device(): settings.heli_follow = ui_switch("Helicopters face the mouse", settings.heli_follow)
     settings.sound = ui_slider("Sound", settings.sound)
     if can_fullscreen():
         fs = ui_switch("Fullscreen", is_fullscreen())
