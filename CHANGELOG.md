@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.29.0
 
 - Two files that `use` (or `import`) each other share one copy of each: the program's own file is
   no longer read a second time as a module, with globals and types of its own (a struct passed
