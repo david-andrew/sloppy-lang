@@ -1893,6 +1893,7 @@ draw = ():
     # the bullets: every one a tracer
     if g.bullets.len() > 0:
         tr: Instance3D[]
+        st: Instance3D[]
         back = f32(DT * (clamp(spare / DT, 0.0, 1.0) - 1.0))
         loop b in g.bullets:
             d = normalize(b.vel)
@@ -1906,10 +1907,15 @@ draw = ():
                 l = min(f64(SNIPE_LIFE - b.life) + f64(back) / DT + 1.0, 1.0) * SNIPE_SPEED * DT * 0.6
                 if l > 1.0: tr.push(instance(translation(at - d * f32(l * 0.5)) * facing(d) * scaling(vec3(0.3, 0.3, f32(l))), rgb(1.0, 0.95, 0.8)))
                 continue
-            # (a gun tower's round: a long, bright streak, the hail seen far off)
-            if b.heavy: tr.push(instance(translation(at - d * 4.5) * facing(d) * scaling(vec3(0.24, 0.24, 9.0)), if b.team == 0: rgb(1.0, 0.55, 0.3) else: rgb(0.8, 0.9, 1.0)))
-            else: tr.push(instance(translation(at - d * 2.0) * facing(d) * scaling(vec3(0.12, 0.12, 4.0)), if b.team == 0: rgb(1.0, 0.75, 0.4) else: rgb(1.0, 0.9, 0.5)))
+            # (a tracer: a streak glowing from its hot head back to a red tail, a gun tower's longer
+            # and thicker; never wider on the screen than a few pixels, a close one a streak
+            # whizzing by, not a slab; a little warmer for Red, a little paler for Blue)
+            ln = if b.heavy: 11.0 else: 5.0
+            wd = min(if b.heavy: 0.34 else: 0.18, max(0.03, 0.007 * f64(length(at - cam_pos))))
+            tint = if b.team == 0: rgb(1.0, 0.86, 0.72) else: rgb(0.92, 0.96, 1.0)
+            st.push(instance(translation(at - d * f32(ln)) * facing(d) * scaling(vec3(f32(wd), f32(wd), f32(ln))), tint))
         draw_mesh_instanced(tracer, tr, emissive = 3.0, cast_shadow = false)
+        if st.len() > 0: draw_mesh_instanced(models.streak_mesh(), st, emissive = 2.2, cast_shadow = false)
     smoke.draw(glow = false)
     fire.draw()
     sparks.draw()
@@ -2002,9 +2008,8 @@ effects = (dt: f64):
             emit(smoke, b.pos, int(16.0 * r), 6.0 * r, rgba(0.25, 0.22, 0.2, 0.8), 4.0, 8.0 * r)
             if in_fight: play_at(snd_boom, b.pos, settings.sound * (if b.who == BOMB: 0.6 else: 0.35), 2500.0)
         else if b.kind == FLAK_BURST:
-            # (an airburst: a flash, a black puff that hangs, seen far off)
-            emit(smoke, b.pos, 16, 3.5, rgba(0.07, 0.07, 0.07, 0.9), 5.0, 10.0)
-            emit(fire, b.pos, 10, 8.0, rgb(1.0, 0.75, 0.35), 0.25, 4.0)
+            # (an airburst: a flash, a black puff that hangs for seconds, seen far off)
+            airburst(b.pos, 1.0)
             if in_fight:
                 play_at(snd_flak, b.pos, settings.sound * 0.6, 2500.0)
                 # (close by this one: the view shaken)
@@ -2104,8 +2109,10 @@ effects = (dt: f64):
             say("{who} shot down {TEAMS[1 - side]}'s cat: {cat_points(g.rules.mode)} to {TEAMS[side]}!", COLORS[side])
             if b.who == myc: say("{if touch_input(): "In/Out" else: "T"} to bail out", gray(0.9), small = true)
         else if b.kind == RAMMED:
-            if b.by == me(): say("you rammed {call_craft(g, b.who)}", COLORS[1 - g.crafts[b.who].team], small = true)
-            else if b.who == myc: say("rammed by {TEAMS[1 - g.crafts[b.who].team]}'s cat!", rgb(1, 0.5, 0.4))
+            # (a ram that brought it down is said with that (SHOT_DOWN), once: here only one it lived through)
+            if not downed_at(g, b.who, b.tick):
+                if b.by == me(): say("you rammed {call_craft(g, b.who)}", COLORS[1 - g.crafts[b.who].team], small = true)
+                else if b.who == myc: say("rammed by {TEAMS[1 - g.crafts[b.who].team]}'s cat!", rgb(1, 0.5, 0.4))
         else if b.kind == GOAL and b.who >= 0 and b.who < g.balls.len() and rings().len() > 0:
             rg = rings()[ring_near(b.pos)]
             side = 1 - rg.team
@@ -2121,9 +2128,12 @@ effects = (dt: f64):
         else if b.kind == SHOT_DOWN:
             c = g.crafts[b.who]
             team = c.team
-            if b.by == me(): say("you shot down {call_craft(g, b.who)}", COLORS[1 - team])
-            else if b.who == myc: say("shot down{if b.by >= 0: " by " + call(g, b.by) else: ""}: {if touch_input(): "In/Out" else: "T"} to bail out", COLORS[1 - team])
-            else: say("{if b.by >= 0: call(g, b.by) else: "flak"} shot down {call_craft(g, b.who)}", with_alpha(COLORS[1 - team], 0.75), small = true)
+            # (brought down by a cat's ram: said so, the one cause, not shot)
+            rammed = rammed_at(g, b.who, b.tick)
+            how = if rammed: "rammed down" else: "shot down"
+            if b.by == me(): say("you {how} {call_craft(g, b.who)}", COLORS[1 - team])
+            else if b.who == myc: say("{how}{if rammed: " by " + TEAMS[1 - team] + "'s cat" else: if b.by >= 0: " by " + call(g, b.by) else: ""}: {if touch_input(): "In/Out" else: "T"} to bail out", COLORS[1 - team])
+            else: say("{if b.by >= 0: call(g, b.by) else: "flak"} {how} {call_craft(g, b.who)}", with_alpha(COLORS[1 - team], 0.75), small = true)
         else if b.kind == CRASHED: say(if b.who == myc: "you crashed" else: "{call_craft(g, b.who)} crashed", with_alpha(COLORS[1 - g.crafts[b.who].team], 0.75), small = b.who != myc)
         else if b.kind == TORN:
             if b.who == me(): say("your parachute is shot through!", rgb(1, 0.5, 0.4))
@@ -2152,6 +2162,7 @@ effects = (dt: f64):
     hurt = max(hurt - dt, 0.0)
     shake = max(shake - dt * 2.2, 0.0)
     near_misses(g, dt)
+    barrage(g, dt)
     loop mut n in news: n.1 += dt
     kept: (str, f64, vec4, f64)[]
     loop n in news:
@@ -2159,6 +2170,50 @@ effects = (dt: f64):
     news = kept
     if g.winner >= 0 and won_at == 0: won_at = g.tick
     if g.winner < 0: won_at = 0
+
+# (a flak burst as seen: a flash and a black puff that lingers, so a curtain builds over a fought
+# base; `size` 1 a shell's)
+airburst = (at: vec3, size: f64):
+    emit(smoke, at, int(18.0 * size) + 6, 6.0 * size, rgba(0.13, 0.12, 0.11, 0.6), 8.0, 10.0 * size)
+    emit(smoke, at, int(6.0 * size) + 2, 2.0 * size, rgba(0.05, 0.05, 0.05, 0.8), 6.0, 6.0 * size)
+    emit(fire, at, int(12.0 * size) + 3, 11.0 * size, rgb(1.0, 0.62, 0.25), 0.3, 5.0 * size)
+
+# (the Thunderdome's towers, firing at something: more bursts round it than the shells the game
+# fires, here alone, to be seen and heard (what hurts is the game's own); a few a second at most,
+# scattered round the way it flies, a little ahead)
+barrage_wait = 0.0
+last_nest_shots: {int: int} = {}
+barrage = (g: Game, dt: f64):
+    global barrage_wait, shake
+    barrage_wait = max(barrage_wait - dt, 0.0)
+    if mode == .menu or g.rules.mode != THUNDERDOME: return
+    loop j in 0.. and b in g.buildings:
+        if b.kind != NEST or b.health <= 0: continue
+        fired = b.shots != (last_nest_shots.get(j) ?? b.shots)
+        last_nest_shots[j] = b.shots
+        if not fired or barrage_wait > 0.0: continue
+        # (what it is firing at: the nearest of the other side's in the air, within its reach)
+        at = b.pos + vec3(0, f32(gun_height(NEST)), 0)
+        best = -1
+        least = 820.0
+        loop o in g.air:
+            if seen_team(g, g.crafts[o.craft], b.team) == b.team: continue
+            d = f64(length(o.pos - at))
+            if d < least:
+                least = d
+                best = o.craft
+        if best < 0: continue
+        c = g.crafts[best]
+        lead = c.vel * f32(0.4 + random() * 1.2)
+        off = vec3(f32((random() - 0.5) * 90.0), f32((random() - 0.3) * 40.0), f32((random() - 0.5) * 90.0))
+        p = c.pos + lead + off
+        if f64(length(p - c.pos)) < 15.0: p = p + normalize(off + vec3(0, 1, 0)) * 15.0
+        airburst(p, 0.8)
+        play_at(snd_flak, p, settings.sound * 0.35, 1800.0, pitch = 0.85 + 0.3 * random())
+        pm = g.people[me()]
+        here = if pm.state == SEATED: g.crafts[pm.craft].pos else: pm.pos
+        if f64(length(p - here)) < 50.0: shake = max(shake, 0.4)
+        barrage_wait = 0.13
 
 # (the other side's rounds going close by this one's craft (or this one, on foot): the view
 # shaken a little, a crack heard; not more than a dozen cracks a second)
@@ -2179,6 +2234,16 @@ near_misses = (g: Game, dt: f64):
             if crack_wait <= 0.0:
                 play(snd_crack, settings.sound * (if b.heavy: 0.5 else: 0.35), pitch = 0.9 + 0.2 * random())
                 crack_wait = 0.08
+
+# (whether craft j was rammed by a cat, or brought down, in tick t: one news line for one cause)
+rammed_at = (g: Game, j: int, t: int) -> bool:
+    loop b in g.booms:
+        if b.tick == t and b.kind == RAMMED and b.who == j: return true
+    false
+downed_at = (g: Game, j: int, t: int) -> bool:
+    loop b in g.booms:
+        if b.tick == t and b.kind == SHOT_DOWN and b.who == j: return true
+    false
 
 say = (what: str, color: vec4, small: bool = false):
     global news
