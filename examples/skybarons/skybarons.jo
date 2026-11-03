@@ -72,6 +72,8 @@ PICK_NAMES = KIND_NAMES               # (by kind: the drone, 11, is never offere
 listed_kinds = (m: int) -> int[]: [0..CHOOSABLE).filter((k): MODE_CAN[m] & (1 << k) != 0)
 # what craft j is called: its kind, a rocketeer seen as a witch so called
 kind_name = (g: Game, j: int) -> str: if is_witch(g, j): "witch" else: KIND_NAMES[g.crafts[j].kind]
+# (more than one of a kind)
+kind_plural = (k: int) -> str: if ends_with(KIND_NAMES[k], "s"): KIND_NAMES[k] + "es" else: KIND_NAMES[k] + "s"
 
 # (a witch's broom's flame, and its embers: her side's red or blue)
 witch_flame = (team: int) -> vec4: if team == 0: rgb(1.0, 0.25, 0.15) else: rgb(0.3, 0.55, 1.0)
@@ -88,7 +90,7 @@ is_witch = (g: Game, i: int) -> bool:
 
 SEAT_NAMES = [["pilot"], ["pilot"], ["pilot", "nose gun", "back gun"], ["pilot", "top gun, fore", "top gun, aft", "gondola gun", "tail gun"],
               ["pilot", "nose gun", "top gun, fore", "top gun, aft", "tail gun", "belly gun", "left wing gun", "right wing gun"],
-              ["left gun and burner", "right gun", "back gun"], ["rocketeer"], ["pilot"], ["pilot", "ballista"], ["pilot", "tail gun and drones"], ["cat"], ["drone"], ["pilot", "swivel gun"]]
+              ["left gun and burner", "right gun", "back gun"], ["rocketeer"], ["pilot"], ["pilot", "bow ballista", "port ballista", "starboard ballista", "stern ballista"], ["pilot", "tail gun and drones"], ["cat"], ["drone"], ["pilot", "swivel gun"]]
 
 # ---------------- playing: with friends, or against the computer ----------------
 enum Mode: menu, online, practice
@@ -811,7 +813,7 @@ fight_said = () -> str:
     if r.crafts != (if cat_fight(r.mode): THUNDERDOME_CRAFTS else: DEFAULT_CRAFTS) and r.mode != CLASSIC and r.mode != TRENCH and r.mode != ESCORT:
         kinds: str[]
         loop k in 0..CHOOSABLE:
-            if r.crafts & (1 << k) != 0: kinds.push(KIND_NAMES[k] + "s")
+            if r.crafts & (1 << k) != 0: kinds.push(kind_plural(k))
         out += "; {join(kinds, ", ")} only"
     if (r.mode == DOGFIGHT or r.mode == BASES or r.mode == FLAG or cat_fight(r.mode)) and not r.ground_start: out += ", in the air"
     if r.plain: out += ", no markers"
@@ -1363,7 +1365,7 @@ cam_up = vec3(0, 1, 0)
 look_amount = 0.0
 look_at_pos = vec3(0, 0, 0)
 mouse_view = 0.0
-# (da Vinci's pilot with a boulder: how far the camera has eased out to its quarter, 0 to 1)
+# (da Vinci's pilot with boulders: how far the camera has eased out to its quarter, 0 to 1)
 throw_view = 0.0
 cam_aim = vec3(0, 0, -1)
 level_right = vec3(1, 0, 0)
@@ -1404,7 +1406,7 @@ cam_back = (kind: int) -> vec2:
     if kind == BALLOON: return vec2(50, 4)
     if kind == ROCKETEER: return vec2(6, 1.6)
     if kind == ORNITHOPTER: return vec2(13, 3.5)
-    if kind == DAVINCI: return vec2(125, 40)
+    if kind == DAVINCI: return vec2(115, 34)
     if kind == CARCOPTER: return vec2(15, 5)
     if kind == SCREW: return vec2(17, 6)
     if kind == DRONE: return vec2(8, 2)
@@ -1496,9 +1498,9 @@ place_camera = (g: Game, dt: f64):
         behind = lerp(behind, c.pos - d * bk.x + vec3(0, bk.y * 0.95, 0), m)
         ahead = lerp(ahead, c.pos + d * 40.0 + vec3(0, 2.5, 0), m)
         up = normalize(lerp(up, vec3(0, 1, 0), m))
-    # (da Vinci's pilot with a boulder: from its quarter, half as far to the left as behind, its
+    # (da Vinci's pilot with boulders: from its quarter, half as far to the left as behind, its
     # arc ahead seen curving down past the bow, not straight on behind the screw)
-    throw_view = approach(throw_view, if c.kind == DAVINCI and c.boulder and p.seat == 0 and mode != .menu: 1.0 else: 0.0, 1.5, dt)
+    throw_view = approach(throw_view, if c.kind == DAVINCI and c.boulders > 0 and p.seat == 0 and mode != .menu: 1.0 else: 0.0, 1.5, dt)
     if throw_view > 0.001:
         r = cross(ahead - behind, vec3(0, 1, 0))
         if length(r) > 0.01:
@@ -1625,6 +1627,46 @@ site_mesh = (kind: int, team: int) -> Mesh:
     site_meshes[kind * 2 + team]
 
 prop_turn: f64[]
+# (da Vinci's galleass's thruster blocks' screws, by craft: each one's turn and how fast it turns
+# (twelve a craft, as models.dv_thrusters has them); its heading last frame and how fast it is
+# turning, eased; here alone, not the game's)
+dv_spins: f64[]
+dv_rates: f64[]
+dv_heading: f64[]
+dv_turning: f64[]
+# (craft i's thruster screws' turns this frame: each eased toward how fast its way of the
+# controls has it turn: ahead and aside as it leans, up as its throttle is over or under what
+# holds it, turning as its heading goes round)
+dv_thrust = (g: Game, i: int, dt: f64) -> f64[]:
+    loop dv_heading.len() < g.crafts.len():
+        dv_heading.push(0.0)
+        dv_turning.push(0.0)
+        loop k in 0..12:
+            dv_spins.push(f64(k) * 0.7)
+            dv_rates.push(models.DV_IDLE)
+    c = g.crafts[i]
+    k = KINDS[c.kind]
+    f = fwd_of(c)
+    h = atan2(-f64(f.x), -f64(f.z))
+    d = h - dv_heading[i]
+    loop d > PI: d -= TAU
+    loop d < -PI: d += TAU
+    dv_heading[i] = h
+    on = c.down == 0 and not c.landed and pilot_of(c) >= 0
+    rate = if dt > 0.0 and abs(d) < 1.0: -d / dt / k.yaw_rate else: 0.0
+    dv_turning[i] = approach(dv_turning[i], if on: clamp(rate, -1.0, 1.0) else: 0.0, 4.0, dt)
+    hold = 9.8 / (k.thrust * max(f64(up_of(c).y), 0.5))
+    ahead = if on: clamp(f64(c.lean.y) / HELI_LEAN, -1.0, 1.0) else: 0.0
+    right = if on: clamp(f64(c.lean.x) / (HELI_LEAN * k.aside), -1.0, 1.0) else: 0.0
+    up = if on: clamp((c.throttle - hold) / 0.3, -1.0, 1.0) else: 0.0
+    want = models.dv_thrust_rates(ahead, right, up, dv_turning[i])
+    out: f64[]
+    loop j in 0..12:
+        n = i * 12 + j
+        dv_rates[n] = approach(dv_rates[n], if c.down > 0: 0.0 else: want[j], 1.6, dt)
+        dv_spins[n] = (dv_spins[n] + dv_rates[n] * dt) % TAU
+        out.push(dv_spins[n])
+    out
 # (each person's stride on foot: its legs' swing, a turn (TAU) a stride, by how far they went; here
 # alone, not the game's)
 strides: f64[]
@@ -1728,9 +1770,9 @@ struct SeatView:
 SEAT_VIEWS: {int: SeatView[]} = {
     ZEPPELIN: [SeatView(), SeatView(), SeatView(), SeatView(body = 0.3, props = 0.4), SeatView()],      # (the gondola gun: the hull over it)
     BALLOON: [SeatView(body = 0.15), SeatView(body = 0.15), SeatView(body = 0.15)],                       # (the envelope over its gunners, the baskets under them)
-    DAVINCI: [SeatView(), SeatView(rotor = 0.2)],                                                        # (the ballista: the screw over it)
-    CARCOPTER: [SeatView(), SeatView(rotor = 0.0)],
-    SCREW: [SeatView(), SeatView(rotor = 0.2)],                                                          # (the swivel gun: the screw over it)                                                      # (the tail gunner: under the canopy's rim, which pumps through their eyes)
+    DAVINCI: [SeatView(), SeatView(rotor = 0.3), SeatView(rotor = 0.3), SeatView(rotor = 0.3), SeatView(rotor = 0.3)],   # (the ballistas: the screws over them)
+    CARCOPTER: [SeatView(), SeatView(rotor = 0.0)],                                                      # (the tail gunner: under the canopy's rim, which pumps through their eyes)
+    SCREW: [SeatView(), SeatView(rotor = 0.2)],                                                          # (the swivel gun: the screw over it)
 }
 # (craft i as this one sees it: through its seat's view, if they are at one of its guns)
 view_of = (g: Game, i: int) -> SeatView:
@@ -1801,7 +1843,7 @@ draw = ():
         if c.gone > 0:
             if c.vel == vec3(0, 0, 0) and ground(f64(c.pos.x), f64(c.pos.z)) > 0.0:
                 gy = f32(ground(f64(c.pos.x), f64(c.pos.z)))
-                sz = f32(if c.kind == DAVINCI: 8.0 else: if c.kind == ZEPPELIN: 6.0 else: if c.kind == ULTRA: 5.0 else: if c.kind == BOMBER: 2.2 else: 1.0)
+                sz = f32(if c.kind == DAVINCI: 6.0 else: if c.kind == ZEPPELIN: 6.0 else: if c.kind == ULTRA: 5.0 else: if c.kind == BOMBER: 2.2 else: 1.0)
                 draw_mesh(wreck, translation(vec3(c.pos.x, gy, c.pos.z)) * rotation_y(f64(i) * 1.7) * scaling(vec3(sz, sz, sz)), specular = 0.0)
             continue
         m = craft_matrix(c)
@@ -1843,18 +1885,28 @@ draw = ():
                 a = if sd / 2 == 0: flap else: -flap
                 ang = if sd % 2 == 0: -a else: a
                 draw_mesh(models.wing_mesh(c.team, if sd % 2 == 0: -1 else: 1, sd / 2), m * translation(h) * rotation_z(ang), specular = 0.1)
-        # (da Vinci's screw, turning with the throttle (slowly: it is 80 m across), its crew rowing
-        # (or pedalling: c.crew) it round, all together, a stroke to each turn of the crank (models.DV_GEAR to the
-        # screw's), when near enough to be seen; its trebuchet, swung on a throw, its boulder in its
-        # sling; its ballista where its gunner aims)
+        # (da Vinci's galleass's three screws, turning with the throttle, its crew rowing (or
+        # pedalling: c.crew) them round, all together, a stroke to each turn of the cranks
+        # (models.DV_GEAR to a screw's), when near enough to be seen; its thruster blocks' screws,
+        # each spun up by its own way of the controls (dv_thrust); its trebuchet, swung on a throw,
+        # a boulder in its sling and the rest piled on its deck; its ballistas where their gunners
+        # aim)
         if c.kind == DAVINCI:
-            turn = prop_turn[i] * 0.03
-            if view.rotor > 0.0: draw_mesh(models.rotor_mesh(c.kind, c.team), m * translation(models.ROTOR_AT(c.kind)) * rotation_y(-turn), see(vec4(1, 1, 1, 1), view.rotor), specular = 0.1)
-            if f64(length(c.pos - cam_pos)) < 1500.0: models.dv_draw(c.team, m, turn * models.DV_GEAR, c.crew)
+            turn = prop_turn[i] * 0.06
+            near = f64(length(c.pos - cam_pos)) < 1500.0
+            if view.rotor > 0.0:
+                loop k in 0..models.DV_ROTORS.len(): draw_mesh(models.dv_rotor_mesh(c.team, k), m * translation(models.DV_ROTORS[k]) * rotation_y(-turn - f64(k) * 0.9), see(vec4(1, 1, 1, 1), view.rotor), specular = 0.1)
+            if near: models.dv_draw(c.team, m, turn * models.DV_GEAR, c.crew)
+            spins = dv_thrust(g, i, frame_time())
+            if near:
+                push = models.dv_thruster_mesh(c.team)
+                loop k in 0.. and pm in models.dv_thrusters(): draw_mesh(push, m * pm * rotation_y(spins[k]), specular = 0.1)
             arm = m * translation(models.TREB_PIVOT) * rotation_x(treb_angle(i))
             draw_mesh(models.treb_arm_mesh(c.team), arm, specular = 0.1)
-            if c.boulder: draw_mesh(models.boulder_mesh(), arm * translation(models.TREB_POUCH_LOCAL) * scaling(vec3(f32(models.BOULDER_SCALE))), specular = 0.05)
-            if c.aims.len() > 1: draw_mesh(models.ballista_mesh(c.team), translation(point_of(c, models.BALLISTA_PIVOT)) * quat_to_mat4(quat_facing(c.aims[1])), specular = 0.2)
+            bs = f32(models.BOULDER_SCALE)
+            if c.boulders > 0: draw_mesh(models.boulder_mesh(), arm * translation(models.TREB_POUCH_LOCAL) * scaling(vec3(bs)), specular = 0.05)
+            loop k in 0..min(c.boulders - 1, models.DV_PILE.len()): draw_mesh(models.boulder_mesh(), m * translation(models.DV_PILE[k]) * rotation_y(f64(k) * 1.3) * scaling(vec3(bs)), specular = 0.05)
+            loop s in 1..min(c.aims.len(), KINDS[c.kind].seats.len()): draw_mesh(models.ballista_mesh(c.team), translation(point_of(c, KINDS[c.kind].seats[s].at)) * quat_to_mat4(quat_facing(c.aims[s])), specular = 0.2)
         # (the little screw: turning with the throttle, its four men rowing (or pedalling: c.crew)
         # it round when near enough to be seen; its crossbows where its pilot looks, its swivel gun
         # where its gunner aims, its fire pots in their cradle, lit)
@@ -2084,7 +2136,7 @@ effects = (dt: f64):
                 if f64(length(b.pos - here)) < 30.0: shake = max(shake, 0.6)
         else if b.kind == DUG:
             emit(smoke, b.pos, 14, 4.0, rgba(0.45, 0.38, 0.28, 0.8), 1.5, 3.0)
-            if in_fight and b.who == myc: say("a boulder in the sling", rgb(1, 0.9, 0.6), small = true)
+            if in_fight and b.who == myc: say(if g.crafts[myc].boulders >= BOULDERS: "{BOULDERS} boulders aboard: a full load" else: "a boulder aboard ({g.crafts[myc].boulders} of {BOULDERS})", rgb(1, 0.9, 0.6), small = true)
         else if b.kind == SMASHED:
             emit(smoke, b.pos, 20, 6.0, rgba(0.4, 0.36, 0.3, 0.8), 2.0, 5.0)
             if in_fight:
@@ -2642,7 +2694,7 @@ draw_hud = (g: Game):
             # (a zeppelin's rockets: a pip where they will be 400 m out; da Vinci's boulder: its
             # whole arc, to where it lands or what it would hit)
             if c.kind == ZEPPELIN and c.rockets > 0 and g.rules.rockets: rocket_pip(c)
-            if c.kind == DAVINCI and c.boulder and not c.landed: draw_throw(boulder_throw(g, myc))
+            if c.kind == DAVINCI and c.boulders > 0 and not c.landed: draw_throw(boulder_throw(g, myc))
             if aim_steering() and not k.lighter:
                 if let m = world_to_screen(c.pos + aim_dir() * 400.0): ring(m, 7, 2, rgba(1, 1, 1, 0.5))
         else:
@@ -2775,9 +2827,10 @@ craft_plate = (g: Game, c: Craft, k: Kind, p: Person, team: int):
         else if k.rockets > 0 and g.rules.rockets and c.kind != BALLOON: rows.push((if k.endless: "rockets" else: "rockets {c.rockets}", "X", INK))
         if k.bombs > 0: rows.push(("bombs {c.bombs}", "B", INK))
     if c.kind == DAVINCI and p.seat == 0:
-        if c.boulder: rows.push(("boulder: throw it", "X", BRASS))
-        else if c.dig > 0: rows.push(("digging {c.dig * 100 / DIG}%", "B", INK))
-        else: rows.push(("hover low and dig a boulder", "B", INK_DIM))
+        if c.boulders > 0: rows.push(("boulders {c.boulders}: throw one", "X", BRASS))
+        if c.dig > 0: rows.push(("digging {c.boulders + 1} of {BOULDERS}: {c.dig * 100 / DIG}%", "B", INK))
+        else if c.boulders == 0: rows.push(("hover low and dig boulders", "B", INK_DIM))
+        else if c.boulders < BOULDERS: rows.push(("hover low to dig more", "B", INK_DIM))
     if c.kind == CARCOPTER and p.seat == 1: rows.push(("drones {c.rockets}", "X", INK))
     if c.kind == BALLOON:
         rows.push(("the cannon nearest your aim", "X", INK))
@@ -3569,9 +3622,9 @@ draw_fight_page = ():
         loop k in listed_kinds(m):
             on = have & (1 << k) != 0
             if MODE_MUST[m] & (1 << k) != 0:
-                ui_text("{capitalize(KIND_NAMES[k])}s: always, {MODE_NAMES[m]} needs them", T_BODY, INK_DIM)
+                ui_text("{capitalize(kind_plural(k))}: always, {MODE_NAMES[m]} needs them", T_BODY, INK_DIM)
                 continue
-            now = ui_switch(capitalize(KIND_NAMES[k]) + "s", on)
+            now = ui_switch(capitalize(kind_plural(k)), on)
             # (one kind there must be)
             if now != on and (now or have & ~(1 << k) != 0): have = have xor (1 << k)
         if settings.fight == THUNDERDOME: settings.thunderdome = have
