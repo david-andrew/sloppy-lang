@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.29.2
 
 - Parallel jobs (`parallel_range`, `parallel_map`, the software renderer's shading): a worker held
   up on a busy machine just after claiming past the end of one job could run a chunk of the next
