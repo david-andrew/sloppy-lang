@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.29.1
 
 - netplay: `srv.encoding((w, p, base) -> u8[])` and `c.decoding((bytes, base) -> W)`: the worlds
   in the game's own bytes, each made against the world that client last got (a delta), with no
