@@ -3673,7 +3673,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0, up: vec3 = vec3(0, 1, 0))`: place the camera; call once per frame before drawing 3D objects. up is the way that is up on the screen (tilt it to roll the picture: a camera behind a plane, banking with it)
 - `world_to_screen = (p: vec3) -> vec2?`: where a point in 3D appears on the screen, in 2D drawing units (for a name or a health bar over someone's head); none when it is behind the camera. As the camera was last placed.
 - `screen_ray = (p: vec2) -> (vec3, vec3)`: the ray from the camera through a point on the screen (2D units, as mouse_pos): where it starts and its direction (length 1), for picking what the mouse is on (with a physics3d raycast)
-- `sun = (direction: vec3, color: vec3 = vec3(1, 0.95, 0.85))`: the sunlight: direction points toward the sun (y > 0: above the horizon), color is its light
+- `sun = (direction: vec3, color: vec3 = vec3(1, 0.95, 0.85), disc: f64 = 1.0)`: the sunlight: direction points toward the sun (y > 0: above the horizon), color is its light; disc is how bright the sun's disc and its glow are in the sky (0: none, as for light from a moon or a sky with no sun, the light the same)
 - `sky = (top: vec3, horizon: vec3, ground: vec3 = vec3(0.3, 0.27, 0.24))`
 - `hide_sky = ()`
 - `night_stars = (amount: f64)`
@@ -6023,9 +6023,11 @@ draw = ():
       joined: int[]                   # the players who came, and went, in the last update
       left: int[]
       messages: (int, str)[]          # the game's own messages that came in the last update, and who sent each (say)
+      compress = true                 # the worlds deflated (false: as text, cheaper to make, bigger)
   ```
 - `server[W, I] = (world: W, apply: (W, int, I, W) -> W, step: (W) -> W) -> Server[W, I]`
-- `join[W, I] = (s: mut Server[W, I], player: int)`: a player connected (as the player number, any int); a player left
+- `per_player[W, I] = (s: mut Server[W, I], view: (W, int) -> W)`: what each player is sent: view(world, player) for the whole world, as what that player can see (the others near them, their side's), so that a big world goes out to each a part of it. The client's state and view are then that part
+- `join[W, I] = (s: mut Server[W, I], player: int)`: a player connected (as the player number, any int); a player left. On a server that listens, a player of a number below 0 is the host's own, fed by hand: srv.join(-1), srv.receive(-1, data) with what its client sends, and what srv.outgoing() has for -1 given to that client's receive
 - `leave[W, I] = (s: mut Server[W, I], player: int)`
 - `receive[W, I] = (s: mut Server[W, I], player: int, data: u8[])`: bytes from a player
 - `say[W, I] = (s: mut Server[W, I], player: int, text: str)`: The game's own messages beside the worlds, on the same connection: a chat line, "round over", a score; text, in order, never lost (as the worlds are not either). The server says to one player or to all, and gets the clients' in srv.messages (who, text) after each update; a client says to the server, and gets the server's in c.messages after each play.
@@ -6034,7 +6036,7 @@ draw = ():
 - `waiting[W, I] = (s: Server[W, I], p: int) -> int`: how many of player p's inputs are waiting to be applied (1 or 2 normally; more: they come faster than the server ticks, which shows as lag)
 - `lag[W, I] = (s: mut Server[W, I], ms: f64, jitter_ms: f64 = 0)`: simulate a slow network on what the server sends: ms more latency, up to jitter_ms more at random (kept in order, as over TCP); the client's lag does the same both ways
 - `run[W, I] = (s: mut Server[W, I], ticks_per_second: f64 = 60.0)`: run the server: update 60 times a second, on time (each tick's start set from the first, so a slow sleep does not make it fall behind), until the program ends
-- `outgoing[W, I] = (s: mut Server[W, I]) -> (int, u8[])[]`: what to send to whom since the last call (without listen)
+- `outgoing[W, I] = (s: mut Server[W, I]) -> (int, u8[])[]`: what to send to whom since the last call (without listen; with it, to the players below 0)
 - `listen[W, I] = (s: mut Server[W, I], port: int)`: serve over WebSockets on port: native and web clients connect (players are net's peers)
 - `update[W, I] = (s: mut Server[W, I])`: one tick: each player's next input applied, the rest of the tick, and the world sent out
 - `world_at[W, I] = (s: Server[W, I], tick: int) -> W`: the world as it was at an earlier tick (the latest kept, if that one is gone)
@@ -6044,7 +6046,7 @@ draw = ():
       apply: (W, int, I, W) -> W
       state: W                        # the latest world from the server, with this player's newer inputs applied
       server: W                       # the latest world from the server, as it sent it
-      me = -1                         # this player's number (once the server has said)
+      me = -1                         # this player's number (once the server has said: connected())
       server_tick = -1                # the tick of server
       interpolation = 0.1             # how far in the past others are drawn (view), in seconds: two
                                       # worlds' time apart or more (send_every ticks), more on a network

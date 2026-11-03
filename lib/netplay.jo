@@ -873,6 +873,7 @@ struct Server[W, I]:
     joined: int[]                   # the players who came, and went, in the last update
     left: int[]
     messages: (int, str)[]          # the game's own messages that came in the last update, and who sent each (say)
+    compress = true                 # the worlds deflated (false: as text, cheaper to make, bigger)
     __came: int[]
     __went: int[]
     __said: (int, str)[]
@@ -881,6 +882,8 @@ struct Server[W, I]:
     __out: (int, u8[])[]
     __port = -1
     __lag: __CsLag
+    __view: (W, int) -> W
+    __viewing = false
 
 const __CS_HIST = 64
 
@@ -934,11 +937,20 @@ struct __CsWorld[W]:
     world: W
 
 server[W, I] = (world: W, apply: (W, int, I, W) -> W, step: (W) -> W) -> Server[W, I]:
-    s = Server[W, I](world = world, apply = apply, step = step)
+    s = Server[W, I](world = world, apply = apply, step = step, __view = (w: W, p: int) -> W: w)
     s.__hist = fill(world, __CS_HIST)
     s
 
-# a player connected (as the player number, any int); a player left
+# what each player is sent: view(world, player) for the whole world, as what that player can see
+# (the others near them, their side's), so that a big world goes out to each a part of it. The
+# client's state and view are then that part
+per_player[W, I] = (s: mut Server[W, I], view: (W, int) -> W):
+    s.__view = view
+    s.__viewing = true
+
+# a player connected (as the player number, any int); a player left. On a server that listens, a
+# player of a number below 0 is the host's own, fed by hand: srv.join(-1), srv.receive(-1, data)
+# with what its client sends, and what srv.outgoing() has for -1 given to that client's receive
 join[W, I] = (s: mut Server[W, I], player: int):
     s.__clients[player] = __CsClient[I](since = elapsed(), since_tick = s.tick)
     s.__came.push(player)
@@ -1006,7 +1018,7 @@ run[W, I] = (s: mut Server[W, I], ticks_per_second: f64 = 60.0):
         if wait > 0.0: sleep(wait)
         else if wait < -0.25: next = time()          # (far behind: a pause; start again from now)
 
-# what to send to whom since the last call (without listen)
+# what to send to whom since the last call (without listen; with it, to the players below 0)
 outgoing[W, I] = (s: mut Server[W, I]) -> (int, u8[])[]:
     o = s.__out
     s.__out.clear()
@@ -1057,11 +1069,23 @@ update[W, I] = (s: mut Server[W, I]):
     s.tick += 1
     s.__hist[s.tick % __CS_HIST] = s.world
     if s.tick % s.send_every == 0 and s.__clients.len() > 0:
-        # (the world as text, compressed once for everyone: who, tick, ack and the tick rate before it)
-        z = deflate(bytes(to_text(s.world)))
+        # (the world as text, compressed once for everyone, or each player's own: who, tick, ack and
+        # the tick rate before it)
+        z: u8[]
+        if not s.__viewing:
+            z = bytes(to_text(s.world))
+            if s.compress: z = deflate(z)
         loop p, c in s.__clients:
-            b = bytes("\x02{p} {s.tick} {c.acked} {s.ticks_per_second} ")
-            loop x in z: b.push(x)
+            # (a client still behind on the worlds before, as one on a slow link: this one is not
+            # queued behind them, the next replaces it, and the server's memory stays as it is)
+            if s.__port >= 0 and p >= 0 and net.backlog(p) > max(z.len() * 2, 16384): continue
+            b: u8[] = [if s.compress: 2 else: 4]
+            b.extend(bytes("{p} {s.tick} {c.acked} {s.ticks_per_second} "))
+            if s.__viewing:
+                v = bytes(to_text(s.__view(s.world, p)))
+                if s.compress: v = deflate(v)
+                b.extend(v)
+            else: b.extend(z)
             __cs_server_send(s, p, b)
     if s.__lag.held.len() > 0:
         loop m in __cs_lag_due(s.__lag): __cs_server_put(s, m.0, m.1)
@@ -1071,7 +1095,7 @@ __cs_server_send[W, I] = (s: mut Server[W, I], p: int, b: u8[]):
     else: __cs_server_put(s, p, b)
 
 __cs_server_put[W, I] = (s: mut Server[W, I], p: int, b: u8[]):
-    if s.__port >= 0: net.send(p, b)
+    if s.__port >= 0 and p >= 0: net.send(p, b)
     else: s.__out.push((p, b))
 
 # the world as it was at an earlier tick (the latest kept, if that one is gone)
@@ -1083,7 +1107,7 @@ struct Client[W, I]:
     apply: (W, int, I, W) -> W
     state: W                        # the latest world from the server, with this player's newer inputs applied
     server: W                       # the latest world from the server, as it sent it
-    me = -1                         # this player's number (once the server has said)
+    me = -1                         # this player's number (once the server has said: connected())
     server_tick = -1                # the tick of server
     interpolation = 0.1             # how far in the past others are drawn (view), in seconds: two
                                     # worlds' time apart or more (send_every ticks), more on a network
@@ -1147,6 +1171,7 @@ disconnect[W, I] = (c: mut Client[W, I]):
     if c.__peer >= 0: net.close(c.__peer)
     c.__peer = -1
     c.me = -1
+    c.server_tick = -1
     c.__retry_at = -1.0
 
 # (reconnect's: the next try, a while after a connection lost)
@@ -1171,7 +1196,7 @@ __cs_client_send[W, I] = (c: mut Client[W, I], b: u8[]):
     else: c.__out.push(b)
 
 # connected, and the server has sent a world (and is still heard from)
-connected[W, I] = (c: Client[W, I]) -> bool: c.me >= 0 and len(c.problem) == 0
+connected[W, I] = (c: Client[W, I]) -> bool: c.server_tick >= 0 and len(c.problem) == 0
 
 __cs_problem[W, I] = (c: mut Client[W, I], what: str):
     if len(c.problem) > 0: return
@@ -1210,18 +1235,19 @@ play[W, I] = (c: mut Client[W, I], input: I):
                 if __cs_retries(e.code) and c.reconnect:
                     __cs_retry_later(c)
                     then = "; connecting again in {c.__retry_at - elapsed():.0} s"
-                if c.me < 0 and e.code == 1006: __cs_problem(c, "could not connect to the server{said}{then}")
+                if c.server_tick < 0 and e.code == 1006: __cs_problem(c, "could not connect to the server{said}{then}")
                 else if e.code == 1006: __cs_problem(c, "the connection to the server was lost{said}{then}")
                 else: __cs_problem(c, "the server closed the connection{said} ({e.code}){then}")
                 # (gone: not a connection to hear from, nor to send on)
                 c.__peer = -1
                 c.me = -1
-    if c.me >= 0 and c.__heard >= 0.0 and elapsed() - c.__heard > 5.0:
+                c.server_tick = -1
+    if c.server_tick >= 0 and c.__heard >= 0.0 and elapsed() - c.__heard > 5.0:
         __cs_problem(c, "the server has not been heard from for 5 seconds (gone?)")
         if c.reconnect:
             c.disconnect()
             __cs_retry_later(c)
-    if c.me < 0: return
+    if c.server_tick < 0: return
     c.__seq += 1
     c.__pending.push((c.__seq, input))
     c.__sent.push((c.__seq, elapsed()))
@@ -1241,7 +1267,7 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
     c.__heard = elapsed()
     if r.tick <= c.server_tick: return
     # (the hello, once the server knows this client: with its first world)
-    if c.me < 0 and len(c.__hello) > 0:
+    if c.server_tick < 0 and len(c.__hello) > 0:
         h: u8[] = [1]
         loop x in bytes(c.__hello): h.push(x)
         __cs_client_send(c, h)
@@ -1276,7 +1302,7 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
 
 # (a world as the server sends it: 2, "you tick ack rate ", then the world's text deflated)
 __cs_world[W] = (data: u8[]) -> __CsWorld[W] | TextError:
-    if data.len() == 0 or data[0] != 2: return TextError("not a world", 1, 1)
+    if data.len() == 0 or (data[0] != 2 and data[0] != 4): return TextError("not a world", 1, 1)
     sp = 0
     k = 1
     loop k < data.len() and sp < 4:
@@ -1289,6 +1315,10 @@ __cs_world[W] = (data: u8[]) -> __CsWorld[W] | TextError:
     ack = to_int(head[2]) ?? -1
     rate = to_float(head[3]) ?? 60.0
     if rate <= 0.0: rate = 60.0
+    if data[0] == 4:
+        w = from_text[W](str_from_bytes(data[k..]))
+        if w is TextError: return w
+        return __CsWorld[W](you, tick, ack, rate, w)
     if let raw = inflate(data, k):
         w = from_text[W](str_from_bytes(raw))
         if w is TextError: return w

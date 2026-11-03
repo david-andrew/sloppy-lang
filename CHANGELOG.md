@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Two files that `use` (or `import`) each other share one copy of each: the program's own file is
+  no longer read a second time as a module, with globals and types of its own (a struct passed
+  between them was "expects a.W, found a.W", a global changed in one was not in the other).
+- `build` is a name like any other (a field, a variable, a parameter): only `build:` alone on its
+  line starts the build block.
+- `inflate` gives none for any data that is not deflate (a packet from a peer), never a panic.
+- `sun(direction, color, disc = 0)`: the light without the sun's disc and glow in the sky (light
+  from a moon, a sky with no sun); in between, a dimmer disc.
+- netplay's client and server:
+  - The host plays too: a listening server's players below 0 are fed by hand (`srv.join(-1)`,
+    `srv.receive`, `srv.outgoing()`), so the host's own client needs no connection.
+  - `srv.per_player((w, p) -> World)`: each player is sent the world as they should see it (the
+    soldiers near them), for a big world.
+  - `srv.compress = false`: the worlds as plain text, cheaper for the server to make.
+  - A client behind on the worlds (a slow link) is not sent the next until it has caught up,
+    so the server's memory does not grow with what waits for it.
+- Nightly fuzzing runs again (its programs follow the language: `c'a'`, constants that fit).
 - Aces and Sky Barons: Fullscreen (and Leave fullscreen) in the in-fight menu, on computers too;
   Enter opens that menu as Escape does (a browser in fullscreen leaves it on Escape).
 - Aces and Sky Barons: Escape out of the in-fight menu (in a web page) no longer brings it back

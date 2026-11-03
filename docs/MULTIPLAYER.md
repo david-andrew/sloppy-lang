@@ -37,7 +37,9 @@ works. `net.invite(reliable = false)` sends messages that may be lost or come in
 never wait: a fast game's state. `net.code_kind(code)` says what a pasted code is ("invite",
 "reply", or "" for neither: cut short, or something else). A game that ends (quit, its window
 closed, a page closed) tells its peers so at once; one that vanishes (switched off, its network
-gone) is `.left` after 15 s of silence. A message may be up to 16 MB. `import invite` has the
+gone) is `.left` after 15 s of silence. A message may be up to 16 MB. One native game can be
+the host of many: 128 peers joined one host by invite codes in about 2 seconds and stayed (a load
+test), so a big game hosted by a player needs no server of its own. `import invite` has the
 screens for all this (below).
 
 A screen of one's own, whole (the inviter's side and the friend's in one program):
@@ -389,7 +391,13 @@ side sends 100 ms, and up to 20 ms more at random (in order, as TCP keeps it).
 
 The world goes to every client as its text (`to_text`), compressed, every `srv.send_every`
 ticks (2: 30 a second): a few hundred bytes for a small arena. Keep what does not need to
-travel (effects, sounds) out of it, or in the client only. A screenshot run
+travel (effects, sounds) out of it, or in the client only. A big world (a hundred players, an
+army each) goes out in parts: `srv.per_player((w: World, p: int) -> World: ...)` gives each
+player the world as that player should see it (the soldiers near them, their side's), and is
+what that client's `state` and `view()` then hold. `srv.compress = false` sends the worlds as
+text, not deflated: cheaper for the server to make, when its bandwidth is not what is short. A
+client still behind on the worlds before (a slow link) is not sent the next one until it has
+caught up: a newer one replaces it. A screenshot run
 (`SLOPPY_SCREENSHOT`) of a connected client keeps to real time, as the server does.
 
 Bullets and other things moved in `step` are not predicted: the client sees them when the
@@ -407,6 +415,29 @@ its own loop. The worlds carry it to the clients (`c.ticks_per_second`), and eac
 last, so others move smoothly at 60 frames a second with a server at 20. `c.interpolation` is in
 seconds: at least the time between two worlds (`srv.send_every` ticks: `srv.send_every = 1` at 20
 a second), and more on an uneven network.
+
+### The host plays too
+
+A game whose host is also a player runs the server and a client of its own in one program,
+without a connection between them: the host's player is a number below 0 (the network's are 1
+and up), joined and fed by hand while the server listens for the others.
+
+```gdscript
+srv = netplay.server(World(), apply, step)
+srv.listen(4600)
+srv.join(-1)                            # the host's own player
+me = netplay.client(World(), apply)     # (not connected: fed by hand)
+
+update = (dt: f64):                     # (once a tick)
+    srv.update()
+    loop o in srv.outgoing(): me.receive(o.1)         # (what the server has for -1)
+    if me.connected(): me.play(read_pad())
+    loop b in me.outgoing(): srv.receive(-1, b)
+```
+
+The host's player is as any other to the server (`srv.joined`, `srv.hello`, `srv.say`); its
+worlds come at once, so it plays with no lag. More than one player at the host's screen (a
+split screen) take -1, -2 and so on, each with a client of its own.
 
 ### Several games on one port
 
@@ -469,6 +500,7 @@ byte that says what it is.
   input applied, the server's ticks a second), then the world as `to_text` writes it (Sloppy's
   text for values, as `World(pos={1: 3}, hits=0)`), compressed with raw deflate (RFC 1951, no
   zlib header: Python's `zlib.decompress(data, -15)`).
+- From the server, `4` then the same as `2`, with the world's text as it is (`srv.compress = false`).
 - From the server, `3` then UTF-8 text: `srv.say`.
 - From the client, `1` then UTF-8 text: its hello, once its first world has come.
 - From the client, `3` then UTF-8 text: `c.say`.
