@@ -67,8 +67,9 @@ def verdict(src, target, timeout=20):
             return "hang"
     err = r.stderr
     if "internal compiler error" in err: return "internal compiler error: " + err.split("internal compiler error:", 1)[1].split("\n")[0].strip()
-    if "panic:" in err:
-        m = re.search(r"panic: (.*)\n(?:\s+in (\S+))?", err)
+    # (a panic starts its line: the source a message quotes, `"panic: {m}"`, is indented)
+    if re.search(r"^panic: ", err, re.M):
+        m = re.search(r"^panic: (.*)\n(?:\s+in (\S+))?", err, re.M)
         return f"panic: {m.group(1)[:80]} in {m.group(2)}" if m else "panic"
     if r.returncode not in (0, 1): return f"exit {r.returncode}"
     if r.returncode == 1 and ": error:" not in err and "error" not in err: return "exit 1 without an error message"
