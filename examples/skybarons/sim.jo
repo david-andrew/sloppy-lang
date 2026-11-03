@@ -119,8 +119,10 @@ const TARGET_POINTS = 10
 # again)
 const NEST_RANGE = 800.0
 const NEST_LIFE = 135
-const NEST_GAP = 7
-const NEST_SPREAD = 0.05
+const NEST_GAP = 4
+const NEST_SPREAD = 0.018
+const NEST_FLAK_GAP = 80
+const NEST_DAMAGE = 4
 const NEST_BACK = 60 * 60
 const CAT_POINTS = 150          # (to the side that shoots it down: only guns, rockets and bursts can; a ram is no harm to it)
 const TARGET_BACK = 60 * 40
@@ -302,6 +304,7 @@ struct Bullet:
     damage = DAMAGE
     snipe = false               # (the ornithopter's long gun's)
     bolt = false                # (a ballista's)
+    heavy = false               # (a gun tower's: a long, bright tracer)
 
 # a rocket, a bomb, or a shell from a gun against aircraft (it bursts at a time)
 const ROCKET = 0
@@ -2269,6 +2272,16 @@ blast = (g: mut Game, s: Shot, r: f64, most: int):
         d = f64(length(p.pos - s.pos))
         if d < r * 0.8: hurt_person(g, j, s.by, s.team, int(f64(most) * (1.0 - d / r)))
 
+# (nothing of the ground between a and b: a gun tower sees what it fires at; low behind a hill,
+# a craft is out of its sight)
+clear_line = (a: vec3, b: vec3) -> bool:
+    d = b - a
+    n = int(f64(length(d)) / 40.0) + 1
+    loop k in 1..n:
+        q = a + d * f32(f64(k) / f64(n))
+        if f64(q.y) < ground(f64(q.x), f64(q.z)) + 1.0: return false
+    true
+
 # the guns on the ground. Against aircraft (AA): each at the nearest craft it takes for the
 # other side's, within 900 m and well above it (its barrel goes no lower than 15 degrees, and its
 # shells are fused for 120 m and up: low enough, it is flown under), a shell timed to burst
@@ -2294,6 +2307,9 @@ guns_on_ground = (g: mut Game, pads: Pad[]):
             if pad.fire and g.buildings[j].cool == 0: fire_gun(g, j, at, dir, team, b.crew)
             continue
         if b.cool > 0: continue
+        # (the Thunderdome's time up and level: the towers' crews cease fire, the next points
+        # soon scored)
+        if b.kind == NEST and g.rules.time_limit > 0 and g.tick >= g.rules.time_limit * 3600: continue
         if b.kind == MG or b.kind == NEST:
             # (the nearest it takes for the other side's: a craft, or one on foot; a gun tower's
             # out to NEST_RANGE, its fire spread wide over where it aims: a hail to be flown through)
@@ -2304,7 +2320,7 @@ guns_on_ground = (g: mut Game, pads: Pad[]):
             loop o in g.air:
                 if g.crafts[o.craft].safe > 0 or seen_at(g, o.craft, team) == team: continue
                 d = f64(length(o.pos - at))
-                if d < least and f64(o.pos.y) > f64(at.y) - (if b.kind == NEST: 60.0 else: 30.0):
+                if d < least and f64(o.pos.y) > f64(at.y) - (if b.kind == NEST: 60.0 else: 30.0) and (b.kind != NEST or clear_line(at, o.pos)):
                     least = d
                     best = o.pos
                     bv = o.vel
@@ -2319,13 +2335,20 @@ guns_on_ground = (g: mut Game, pads: Pad[]):
                 g.buildings[j].cool = 20
                 continue
             l = lead_from(at, vec3(0, 0, 0), best, bv)
-            w = (if b.kind == NEST: NEST_SPREAD else: 0.03) + 0.04 * (1.0 - g.skill)
+            # (a gun tower's crew leads true: what flies on straight is hit; what turns hard, its
+            # bullets two seconds on the way, they miss)
+            w = if b.kind == NEST: NEST_SPREAD + 0.01 * (1.0 - g.skill) else: 0.03 + 0.04 * (1.0 - g.skill)
             t = f64(g.tick)
             dir = normalize(normalize(l) + vec3(f32(sin(t * 0.37 + f64(j)) * w), f32(cos(t * 0.29) * w), f32(sin(t * 0.41 + 2.0) * w)))
             # (it turns at most 80 degrees a second: one flashing past close is hard to follow)
             g.buildings[j].aim = turn_toward(b.aim, dir, 1.4 * 7.0 * DT)
+            # (and a shell now and then, timed to burst where it will be: flak among the tracers)
+            if b.kind == NEST and least > 220.0 and (g.tick + j * 17) % NEST_FLAK_GAP == 0:
+                tt = f64(length(l)) / 300.0
+                fd = normalize(l)
+                g.shots.push(Shot(FLAK, at + fd * 3.0, fd * 300.0 + vec3(0, f32(4.9 * tt), 0), -1, -1, team, max(int(tt * 60.0), 12)))
             if g.buildings[j].heat < 200: fire_gun(g, j, at, g.buildings[j].aim, team, -1)
-            else: g.buildings[j].cool = 90
+            else: g.buildings[j].cool = if b.kind == NEST: 50 else: 90
             continue
         best = -1
         least = 900.0
@@ -2393,9 +2416,13 @@ fire_gun = (g: mut Game, j: int, at: vec3, dir: vec3, team: int, by: int):
         if b.heat >= JAM_HEAT: return
         # (a gun tower's: farther, and faster)
         tower = b.kind == NEST
-        g.bullets.push(Bullet(at + dir * 1.8, dir * f32(BULLET_SPEED), by, -1, team, if tower: NEST_LIFE else: BULLET_LIFE))
+        if tower:
+            # (a gun tower's twin guns, both at once, side by side: a hail of half-weight rounds)
+            side = normalize(cross(dir, vec3(0, 1, 0)) + vec3(0.0001, 0, 0)) * 0.45
+            loop sd in [-1.0, 1.0]: g.bullets.push(Bullet(at + dir * 1.8 + side * f32(sd), dir * f32(BULLET_SPEED), by, -1, team, NEST_LIFE, NEST_DAMAGE, heavy = true))
+        else: g.bullets.push(Bullet(at + dir * 1.8, dir * f32(BULLET_SPEED), by, -1, team, BULLET_LIFE))
         g.buildings[j].cool = if by >= 0: (if tower: 4 else: 5) else: if tower: NEST_GAP else: 10
-        g.buildings[j].heat += 8
+        g.buildings[j].heat += if tower: 5 else: 8
     g.buildings[j].shots += 1
 
 # ---------------- the flags ----------------
@@ -3005,6 +3032,16 @@ bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
                 want = to + vec3(0, f32(4.9 * tt * tt), 0)
                 # (past it, or too close to line up: away, out to 350 m, and round again)
                 if flat < 150.0 or (flat < 350.0 and f64(dot(c.vel, to)) < 0.0): want = vec3(-to.x, f32(max(f64(g.buildings[bi].pos.y) + 40.0 - f64(c.pos.y), 0.0)), -to.z)
+            # (the Thunderdome, two in three: in under the gun towers' fire low and fast, weaving
+            # (their crews lead true: a straight run is a dead one), lining up only at the last)
+            if goal >= 0 and ci % 3 != 0 and flat < 1500.0 and flat > 150.0:
+                fl = normalize(vec3(to.x, 0, to.z) + vec3(0.0001, 0, 0))
+                side = vec3(-fl.z, 0, fl.x)
+                weave = sin(f64(g.tick) * 0.07 + f64(ci) * 1.7) * (if flat > 450.0: 0.85 else: 0.15)
+                if flat > 450.0:
+                    gy = ground(f64(c.pos.x), f64(c.pos.z))
+                    want = fl + side * f32(weave) + vec3(0, f32(clamp((gy + 28.0 - f64(c.pos.y)) / 60.0, -0.5, 0.5)), 0)
+                else: want = normalize(want) + side * f32(weave)
             if flat < 800.0: strafe = bi
         else: want = vec3(-c.pos.x, f32(500.0 - f64(c.pos.y)), -c.pos.z)
     pad = steer(c, normalize(want) + avoid(g, ci, c))

@@ -1832,7 +1832,9 @@ draw = ():
                 l = min(f64(SNIPE_LIFE - b.life) + f64(back) / DT + 1.0, 1.0) * SNIPE_SPEED * DT * 0.6
                 if l > 1.0: tr.push(instance(translation(at - d * f32(l * 0.5)) * facing(d) * scaling(vec3(0.3, 0.3, f32(l))), rgb(1.0, 0.95, 0.8)))
                 continue
-            tr.push(instance(translation(at - d * 2.0) * facing(d) * scaling(vec3(0.12, 0.12, 4.0)), if b.team == 0: rgb(1.0, 0.75, 0.4) else: rgb(1.0, 0.9, 0.5)))
+            # (a gun tower's round: a long, bright streak, the hail seen far off)
+            if b.heavy: tr.push(instance(translation(at - d * 4.5) * facing(d) * scaling(vec3(0.24, 0.24, 9.0)), if b.team == 0: rgb(1.0, 0.55, 0.3) else: rgb(0.8, 0.9, 1.0)))
+            else: tr.push(instance(translation(at - d * 2.0) * facing(d) * scaling(vec3(0.12, 0.12, 4.0)), if b.team == 0: rgb(1.0, 0.75, 0.4) else: rgb(1.0, 0.9, 0.5)))
         draw_mesh_instanced(tracer, tr, emissive = 3.0, cast_shadow = false)
     smoke.draw(glow = false)
     fire.draw()
@@ -1915,9 +1917,15 @@ effects = (dt: f64):
             emit(smoke, b.pos, int(16.0 * r), 6.0 * r, rgba(0.25, 0.22, 0.2, 0.8), 4.0, 8.0 * r)
             if in_fight: play_at(snd_boom, b.pos, settings.sound * (if b.who == BOMB: 0.6 else: 0.35), 2500.0)
         else if b.kind == FLAK_BURST:
-            emit(smoke, b.pos, 10, 3.0, rgba(0.08, 0.08, 0.08, 0.85), 4.0, 7.0)
-            emit(fire, b.pos, 6, 6.0, rgb(1.0, 0.7, 0.3), 0.2, 2.5)
-            if in_fight: play_at(snd_flak, b.pos, settings.sound * 0.5, 2500.0)
+            # (an airburst: a flash, a black puff that hangs, seen far off)
+            emit(smoke, b.pos, 16, 3.5, rgba(0.07, 0.07, 0.07, 0.9), 5.0, 10.0)
+            emit(fire, b.pos, 10, 8.0, rgb(1.0, 0.75, 0.35), 0.25, 4.0)
+            if in_fight:
+                play_at(snd_flak, b.pos, settings.sound * 0.6, 2500.0)
+                # (close by this one: the view shaken)
+                p = g.people[me()]
+                here = if p.state == SEATED: g.crafts[p.craft].pos else: p.pos
+                if f64(length(b.pos - here)) < 60.0: shake = max(shake, 0.5)
         else if b.kind == RUINED:
             bb = g.buildings[b.who]
             emit(fire, bb.pos + vec3(0, 4, 0), 120, 20.0, rgb(1.0, 0.55, 0.15), 1.5, 8.0)
@@ -2020,6 +2028,7 @@ effects = (dt: f64):
     hit_mark = max(hit_mark - dt, 0.0)
     hurt = max(hurt - dt, 0.0)
     shake = max(shake - dt * 2.2, 0.0)
+    near_misses(g, dt)
     loop mut n in news: n.1 += dt
     kept: (str, f64, vec4, f64)[]
     loop n in news:
@@ -2027,6 +2036,26 @@ effects = (dt: f64):
     news = kept
     if g.winner >= 0 and won_at == 0: won_at = g.tick
     if g.winner < 0: won_at = 0
+
+# (the other side's rounds going close by this one's craft (or this one, on foot): the view
+# shaken a little, a crack heard; not more than a dozen cracks a second)
+crack_wait = 0.0
+near_misses = (g: Game, dt: f64):
+    global crack_wait, shake
+    crack_wait = max(crack_wait - dt, 0.0)
+    if mode == .menu or g.people.len() == 0: return
+    p = g.people[me()]
+    at = if p.state == SEATED: g.crafts[p.craft].pos else: p.pos + vec3(0, 1, 0)
+    if p.state == DEAD: return
+    loop b in g.bullets:
+        if b.team == p.team or b.craft == p.craft: continue
+        a = b.pos - b.vel * f32(DT) - at
+        e = b.pos - at
+        if seg_near(a, e, 8.0):
+            shake = max(shake, if b.heavy: 0.35 else: 0.2)
+            if crack_wait <= 0.0:
+                play(snd_crack, settings.sound * (if b.heavy: 0.5 else: 0.35), pitch = 0.9 + 0.2 * random())
+                crack_wait = 0.08
 
 say = (what: str, color: vec4, small: bool = false):
     global news
@@ -2051,6 +2080,9 @@ snd_thunk = mix([tone(90.0, 0.35, .noise, 0.8, 0.002, 0.3, 0.5), tone(55.0, 0.3,
 snd_twang = mix([tone(98.0, 0.75, .saw, 0.4, 0.001, 0.65, 0.55, 0.05), tone(196.0, 0.4, .triangle, 0.25, 0.001, 0.35, 0.6, 0.08), tone(3800.0, 0.035, .noise, 0.75, 0.0005, 0.03, 0.4),
                  tone(140.0, 0.16, .noise, 0.85, 0.001, 0.14, 0.5), tone(62.0, 0.22, .square, 0.4, 0.001, 0.2, 0.6)])
 snd_cannon = mix([tone(500.0, 0.1, .noise, 0.6, 0.001, 0.08, 0.4), tone(60.0, 1.1, .noise, 0.9, 0.002, 1.0, 0.4), tone(38.0, 0.7, .square, 0.4, 0.002, 0.6, 0.5)])
+# (a gun tower's heavy guns: a deep hammer; a round going close by: a sharp crack)
+snd_heavy = mix([tone(120.0, 0.12, .noise, 0.7, 0.001, 0.1, 0.45), tone(55.0, 0.1, .square, 0.35, 0.001, 0.08, 0.6)])
+snd_crack = mix([tone(2600.0, 0.05, .noise, 0.6, 0.0005, 0.04, 0.3), tone(900.0, 0.04, .noise, 0.3, 0.0005, 0.03, 0.4)])
 snd_pistol = mix([tone(700.0, 0.08, .noise, 0.45, 0.001, 0.07, 0.5), tone(150.0, 0.06, .square, 0.15, 0.001, 0.05, 0.6)])
 # (the ornithopter's pedals and chain: a squeak each stroke, a rattle under it)
 snd_squeak = mix([tone(1750.0, 0.16, .triangle, 0.16, 0.02, 0.1, 1.35, 0.3), tone(500.0, 0.09, .noise, 0.05, 0.005, 0.07, 0.8)])
@@ -2132,7 +2164,11 @@ sounds = ():
                 if mine_gun: play(snd_flak, settings.sound * 0.5)
                 else: play_at(snd_flak, at, settings.sound * 0.3, 1500.0)
             else:
-                if mine_gun: play(snd_gun, settings.sound * 0.45, pitch = 0.8 + 0.1 * random())
+                if b.kind == NEST:
+                    # (a gun tower: a heavy hammering, heard far)
+                    if mine_gun: play(snd_heavy, settings.sound * 0.5, pitch = 0.95 + 0.1 * random())
+                    else: play_at(snd_heavy, at, settings.sound * 0.45, 1600.0, pitch = 0.9 + 0.2 * random())
+                else if mine_gun: play(snd_gun, settings.sound * 0.45, pitch = 0.8 + 0.1 * random())
                 else: play_at(snd_gun, at, settings.sound * 0.35, 700.0, pitch = 0.8)
             emit(sparks, at + b.aim * (if b.kind == AA: 4.0 else: 1.8), if b.kind == AA: 8 else: 3, 5.0, rgb(1.0, 0.8, 0.45), 0.1, if b.kind == AA: 0.8 else: 0.35)
         last_guns[j] = b.shots
