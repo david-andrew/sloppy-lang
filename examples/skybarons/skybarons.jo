@@ -1356,6 +1356,8 @@ cam_up = vec3(0, 1, 0)
 look_amount = 0.0
 look_at_pos = vec3(0, 0, 0)
 mouse_view = 0.0
+# (da Vinci's pilot with a boulder: how far the camera has eased out to its quarter, 0 to 1)
+throw_view = 0.0
 cam_aim = vec3(0, 0, -1)
 level_right = vec3(1, 0, 0)
 won_at = 0
@@ -1395,7 +1397,7 @@ cam_back = (kind: int) -> vec2:
     if kind == BALLOON: return vec2(50, 4)
     if kind == ROCKETEER: return vec2(6, 1.6)
     if kind == ORNITHOPTER: return vec2(13, 3.5)
-    if kind == DAVINCI: return vec2(17, 6)
+    if kind == DAVINCI: return vec2(125, 40)
     if kind == CARCOPTER: return vec2(15, 5)
     if kind == DRONE: return vec2(8, 2)
     if kind == CAT: return vec2(4, 1.1)
@@ -1403,7 +1405,7 @@ cam_back = (kind: int) -> vec2:
     vec2(15, 4.2)
 
 place_camera = (g: Game, dt: f64):
-    global cam_aim, cam_at, cam_pos, cam_q, cam_up, level_right, look_amount, look_at_pos, mouse_view
+    global cam_aim, cam_at, cam_pos, cam_q, cam_up, level_right, look_amount, look_at_pos, mouse_view, throw_view
     p = g.people[me()]
     if p.state == DEAD or (p.state == SEATED and g.crafts[p.craft].gone > 0):
         # (dead: watching where it happened, from above)
@@ -1484,6 +1486,15 @@ place_camera = (g: Game, dt: f64):
         behind = lerp(behind, c.pos - d * bk.x + vec3(0, bk.y * 0.95, 0), m)
         ahead = lerp(ahead, c.pos + d * 40.0 + vec3(0, 2.5, 0), m)
         up = normalize(lerp(up, vec3(0, 1, 0), m))
+    # (da Vinci's pilot with a boulder: from its quarter, half as far to the left as behind, its
+    # arc ahead seen curving down past the bow, not straight on behind the screw)
+    throw_view = approach(throw_view, if c.kind == DAVINCI and c.boulder and p.seat == 0 and mode != .menu: 1.0 else: 0.0, 1.5, dt)
+    if throw_view > 0.001:
+        r = cross(ahead - behind, vec3(0, 1, 0))
+        if length(r) > 0.01:
+            o = normalize(r) * f32(-0.5 * f64(bk.x) * smoothstep(0.0, 1.0, throw_view))
+            behind += o
+            ahead += o
     to_e = normalize(look_at_pos - c.pos)
     past = c.pos - to_e * bk.x + up * bk.y
     cam_pos = lerp(behind, past, f32(look_amount))
@@ -1494,7 +1505,7 @@ place_camera = (g: Game, dt: f64):
 # (how far out along its gun a gunner's view is: past what of the craft is round the seat)
 gun_reach = (kind: int, seat: int) -> f64:
     if kind == ZEPPELIN and seat == 3: return 2.6
-    if kind == DAVINCI: return 2.0
+    if kind == DAVINCI: return 3.2
     if kind == CARCOPTER: return 2.0
     1.6
 
@@ -1616,13 +1627,14 @@ treb_angle = (i: int) -> f64:
     if t < 0.35: return smoothstep(0.0, 0.35, t) * radians(165.0)
     radians(165.0) * (1.0 - smoothstep(0.35, 2.0, t))
 
-# a gunner from the waist up, at a gun at `pivot` aimed along aim: a metre behind it, facing it
-draw_gunner = (team: int, pivot: vec3, aim: vec3):
+# a gunner from the waist up, at a gun at `pivot` aimed along aim: a metre behind it (or `back`),
+# facing it
+draw_gunner = (team: int, pivot: vec3, aim: vec3, back: f64 = 1.0):
     flat = vec3(aim.x, 0, aim.z)
     if length(flat) < 0.05: flat = vec3(0, 0, -1)
     flat = normalize(flat)
     yaw = atan2(-f64(flat.x), -f64(flat.z))
-    draw_mesh(gunner_meshes[team], translation(pivot - flat * 1.0) * rotation_y(yaw), specular = 0.05)
+    draw_mesh(gunner_meshes[team], translation(pivot - flat * f32(back)) * rotation_y(yaw), specular = 0.05)
 
 # a person, its legs and arms swung as it walks or runs (on foot: still, none; running, past
 # about 7 m/s, longer strides, the arms pumping, leant forward a little)
@@ -1726,7 +1738,7 @@ draw = ():
         if c.gone > 0:
             if c.vel == vec3(0, 0, 0) and ground(f64(c.pos.x), f64(c.pos.z)) > 0.0:
                 gy = f32(ground(f64(c.pos.x), f64(c.pos.z)))
-                sz = f32(if c.kind == ZEPPELIN: 6.0 else: if c.kind == ULTRA: 5.0 else: if c.kind == BOMBER: 2.2 else: 1.0)
+                sz = f32(if c.kind == DAVINCI: 8.0 else: if c.kind == ZEPPELIN: 6.0 else: if c.kind == ULTRA: 5.0 else: if c.kind == BOMBER: 2.2 else: 1.0)
                 draw_mesh(wreck, translation(vec3(c.pos.x, gy, c.pos.z)) * rotation_y(f64(i) * 1.7) * scaling(vec3(sz, sz, sz)), specular = 0.0)
             continue
         m = craft_matrix(c)
@@ -1768,16 +1780,17 @@ draw = ():
                 a = if sd / 2 == 0: flap else: -flap
                 ang = if sd % 2 == 0: -a else: a
                 draw_mesh(models.wing_mesh(c.team, if sd % 2 == 0: -1 else: 1, sd / 2), m * translation(h) * rotation_z(ang), specular = 0.1)
-        # (da Vinci's screw, turning with the throttle, its two men pedalling it round; its
-        # trebuchet, swung on a throw, its boulder in its sling; its ballista where its gunner aims)
+        # (da Vinci's screw, turning with the throttle (slowly: it is 80 m across), its crew rowing
+        # (or pedalling: models.DV_CREW) it round, all together, a stroke to each turn of the crank (models.DV_GEAR to the
+        # screw's), when near enough to be seen; its trebuchet, swung on a throw, its boulder in its
+        # sling; its ballista where its gunner aims)
         if c.kind == DAVINCI:
-            turn = prop_turn[i] * 0.22
+            turn = prop_turn[i] * 0.03
             if view.rotor > 0.0: draw_mesh(models.rotor_mesh(c.kind, c.team), m * translation(models.ROTOR_AT(c.kind)) * rotation_y(-turn), see(vec4(1, 1, 1, 1), view.rotor), specular = 0.1)
-            parts = models.dv_pedal_parts(c.team)
-            loop k in 0.. and pm in models.dv_pedal_mats(turn): draw_mesh(parts[k], m * pm, specular = 0.1)
+            if f64(length(c.pos - cam_pos)) < 1500.0: models.dv_draw(c.team, m, turn * models.DV_GEAR)
             arm = m * translation(models.TREB_PIVOT) * rotation_x(treb_angle(i))
             draw_mesh(models.treb_arm_mesh(c.team), arm, specular = 0.1)
-            if c.boulder: draw_mesh(models.boulder_mesh(), arm * translation(models.TREB_POUCH_LOCAL), specular = 0.05)
+            if c.boulder: draw_mesh(models.boulder_mesh(), arm * translation(models.TREB_POUCH_LOCAL) * scaling(vec3(f32(models.BOULDER_SCALE))), specular = 0.05)
             if c.aims.len() > 1: draw_mesh(models.ballista_mesh(c.team), translation(point_of(c, models.BALLISTA_PIVOT)) * quat_to_mat4(quat_facing(c.aims[1])), specular = 0.2)
         # (the carcopter's canopy: pumping up and down its sleeve and turning, both from one
         # stroke (two and a half times the first pace), its ribs blown up on the downstroke)
@@ -1796,7 +1809,8 @@ draw = ():
             if i == my_craft() and my().seat == s and mode != .menu: continue
             if st[s].weapon != BALLISTA: draw_mesh(turret, translation(gat) * quat_to_mat4(quat_facing(c.aims[s])), specular = 0.3)
             # (a person at the gun, if there is one; the craft's own crew is not seen)
-            if c.seats[s] >= 0: draw_gunner(g.people[c.seats[s]].team, gat - vec3(0, 0.25, 0), c.aims[s])
+            # (at da Vinci's ballista, bigger, as far back as its grips)
+            if c.seats[s] >= 0: draw_gunner(g.people[c.seats[s]].team, gat - vec3(0, 0.25, 0), c.aims[s], if st[s].weapon == BALLISTA: 1.7 else: 1.0)
     # people on foot, falling, or hanging under a parachute
     loop i in 0.. and p in g.people:
         if p.state == DEAD or p.state == SEATED or p.state == POST: continue
@@ -1809,7 +1823,7 @@ draw = ():
         if sh.kind == FLAK: continue
         d = if length(sh.vel) > 0.1: normalize(sh.vel) else: vec3(0, -1, 0)
         if sh.kind == BOULDER:
-            draw_mesh(models.boulder_mesh(), translation(sh.pos) * rotation_x(f64(sh.life) * 0.08) * rotation_y(f64(sh.life) * 0.05), specular = 0.05)
+            draw_mesh(models.boulder_mesh(), translation(sh.pos) * rotation_x(f64(sh.life) * 0.03) * rotation_y(f64(sh.life) * 0.02) * scaling(vec3(f32(models.BOULDER_SCALE))), specular = 0.05)
             continue
         if sh.kind == CANNONBALL:
             draw_mesh(models.boulder_mesh(), translation(sh.pos) * scaling(vec3(0.22, 0.22, 0.22)), rgb(0.18, 0.18, 0.2), specular = 0.5)
@@ -1823,9 +1837,9 @@ draw = ():
         loop b in g.bullets:
             d = normalize(b.vel)
             at = if b.life < (if b.snipe: SNIPE_LIFE else: BULLET_LIFE): b.pos + b.vel * back else: b.pos
-            # (a ballista's bolt: the bolt itself)
+            # (a ballista's bolt: the bolt itself, as big as the ballista is)
             if b.bolt:
-                draw_mesh(models.bolt_mesh(), translation(at) * facing(d), specular = 0.2)
+                draw_mesh(models.bolt_mesh(), translation(at) * facing(d) * scaling(vec3(2)), specular = 0.2)
                 continue
             # (the long gun's shell: a streak as long as a tick's flight, not back past the muzzle)
             if b.snipe:
@@ -2125,7 +2139,7 @@ sounds = ():
             set_pan(engine_ids[v], 0.0)
         else: move_sound(engine_ids[v], c.pos, loud, if c.kind >= BOMBER: 1500.0 else: 900.0)
         if c.kind == CAT: loud *= 0.25
-        base = if c.kind == CAT: 2.4 else: if c.kind == ROCKETEER: 1.5 else: if c.kind == DRONE: 1.7 else: if c.kind == DAVINCI: 0.5 else: if c.kind == CARCOPTER: 0.6 else: if c.kind == ORNITHOPTER: 1.15 else: if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
+        base = if c.kind == CAT: 2.4 else: if c.kind == ROCKETEER: 1.5 else: if c.kind == DRONE: 1.7 else: if c.kind == DAVINCI: 0.3 else: if c.kind == CARCOPTER: 0.6 else: if c.kind == ORNITHOPTER: 1.15 else: if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
         set_pitch(engine_ids[v], base + 0.45 * c.throttle + f64(length(c.vel)) / 200.0)
     # (the ornithoppers' pedals: a squeak each stroke, two to a turn of the cranks, as they turn)
     loop i in 0.. and c in g.crafts:
@@ -2149,11 +2163,11 @@ sounds = ():
             if on and c.gcool[s] > last_gcool[i * 8 + s] and alive(c):
                 at = point_of(c, KINDS[c.kind].seats[s].at)
                 if KINDS[c.kind].seats[s].weapon == BALLISTA:
-                    if i == myc and my().seat == s: play(snd_twang, settings.sound * 0.85, pitch = 0.95 + 0.1 * random())
-                    else: play_at(snd_twang, at, settings.sound * 0.75, 1200.0, pitch = 0.95 + 0.1 * random())
+                    if i == myc and my().seat == s: play(snd_twang, settings.sound * 0.85, pitch = 0.8 + 0.08 * random())
+                    else: play_at(snd_twang, at, settings.sound * 0.75, 1200.0, pitch = 0.8 + 0.08 * random())
                 else if i == myc and my().seat == s: play(snd_gun, settings.sound * 0.45, pitch = 1.0 + 0.2 * random())
                 else: play_at(snd_gun, at, settings.sound * 0.4, 700.0)
-                emit(sparks, at + c.aims[s] * 1.6, 3, 4.0, rgb(1.0, 0.85, 0.5), 0.08, 0.35)
+                emit(sparks, at + c.aims[s] * f32(if KINDS[c.kind].seats[s].weapon == BALLISTA: 2.8 else: 1.6), 3, 4.0, rgb(1.0, 0.85, 0.5), 0.08, 0.35)
             last_gcool[i * 8 + s] = c.gcool[s]
     # (the guns on the ground: a thump for a shell, a rattle for a machine gun)
     loop j in 0.. and b in g.buildings:
@@ -2349,9 +2363,9 @@ draw_hud = (g: Game):
                     ring(at, 10, 2, rgba(1, 0.85, 0.4, 0.7))
                     line(at + vec2(-16, 0), at + vec2(16, 0), 1, rgba(1, 0.85, 0.4, 0.7))
             # (a zeppelin's rockets: a pip where they will be 400 m out; da Vinci's boulder: its
-            # whole arc, to where it lands)
+            # whole arc, to where it lands or what it would hit)
             if c.kind == ZEPPELIN and c.rockets > 0 and g.rules.rockets: rocket_pip(c)
-            if c.kind == DAVINCI and c.boulder and not c.landed: draw_path(boulder_path(c), rgba(1, 0.9, 0.6, 0.85))
+            if c.kind == DAVINCI and c.boulder and not c.landed: draw_throw(boulder_throw(g, myc))
             if aim_steering() and not k.lighter:
                 if let m = world_to_screen(c.pos + aim_dir() * 400.0): ring(m, 7, 2, rgba(1, 1, 1, 0.5))
         else:
@@ -2611,28 +2625,84 @@ rocket_pip = (c: Craft):
         circle(at, 2, col)
         loop d in [vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0, -1)]: line(at + d * 5.0, at + d * 11.0, 2, col)
 
-# (where da Vinci's boulder thrown now falls, as shells() throws it, to the ground)
-boulder_path = (c: Craft) -> vec3[]:
+# (where da Vinci's boulder thrown now goes, tick by tick as shells() throws it: to the ground, or
+# into the first craft it would meet (as the sim has it, its middle within BOULDER_NEAR of one;
+# each craft where it will be by then, flying on as it is); else how near it passes the nearest it
+# misses, and where on its path)
+struct Throw:
+    path: vec3[]
+    hit = false
+    miss = 1e9
+    near = vec3(0, 0, 0)
+boulder_throw = (g: Game, ci: int) -> Throw:
+    c = g.crafts[ci]
     f = fwd_of(c)
     flat = normalize(vec3(f.x, 0, f.z) + vec3(0, 0, 0.0001))
-    at = point_of(c, vec3(0, -0.6, -3.0))
+    at = point_of(c, BOULDER_AT)
     v = c.vel + flat * f32(BOULDER_SPEED) + vec3(0, f32(BOULDER_UP), 0)
-    out = [at]
+    # (the others it could reach in its flight: where, which way, their turn undone, how big)
+    ps: vec3[]
+    vs: vec3[]
+    qs: vec4[]
+    hs: vec3[]
+    loop j in 0..g.crafts.len():
+        if j == ci or g.crafts[j].free or g.crafts[j].gone > 0: continue
+        if f64(length(g.crafts[j].pos - at)) > 1500.0 + f64(length(g.crafts[j].vel)) * 12.0: continue
+        ps.push(g.crafts[j].pos)
+        vs.push(g.crafts[j].vel)
+        qs.push(quat_inverse(g.crafts[j].rot))
+        hs.push(KINDS[g.crafts[j].kind].half + vec3(f32(BOULDER_NEAR)))
+    out = Throw([at])
     loop k in 0..600:
         v.y -= f32(9.8 * DT)
         at += v * f32(DT)
-        out.push(at)
+        out.path.push(at)
+        t = f32(f64(k + 1) * DT)
+        loop n in 0..ps.len():
+            d = at - (ps[n] + vs[n] * t)
+            h = hs[n]
+            r = f64(max(h.x, max(h.y, h.z)))
+            if f64(dot(d, d)) > (r + 45.0) * (r + 45.0): continue
+            l = quat_rotate(qs[n], d)
+            e = f64(length(vec3(l.x / h.x, l.y / h.y, l.z / h.z)))
+            if e < 1.0:
+                out.hit = true
+                return out
+            miss = (e - 1.0) * f64(min(h.x, min(h.y, h.z)))
+            if miss < out.miss:
+                out.miss = miss
+                out.near = at
         if f64(at.y) <= ground(f64(at.x), f64(at.z)): break
     out
 
-# a path on the screen: a dot each quarter second along it, and a ring at its end
-draw_path = (pts: vec3[], col: vec4):
+# (the boulder's path; a hit ringed where it would strike; a near miss a soft glow on the path
+# where it passes nearest, the nearer the stronger (within 40 m): to throw by, not to aim it)
+draw_throw = (w: Throw):
+    draw_path(w.path, rgba(1, 0.9, 0.6, 0.85), not w.hit)
+    ahead = (q: vec3) -> bool: f64(dot(q - cam_pos, cam_at - cam_pos)) > 0.0
+    if w.hit:
+        last = w.path[w.path.len() - 1]
+        if ahead(last):
+            if let at = world_to_screen(last):
+                col = rgba(1, 0.55, 0.3, 0.95)
+                ring(at, 15, 3, col)
+                circle(at, 3, col)
+                loop dd in [vec2(1, 1), vec2(1, -1), vec2(-1, 1), vec2(-1, -1)]: line(at + dd * 13.0, at + dd * 21.0, 2, col)
+    else if w.miss < 40.0 and ahead(w.near):
+        k = 1.0 - w.miss / 40.0
+        k = k * k
+        if let at = world_to_screen(w.near):
+            circle(at, 5.0 + 9.0 * k, rgba(1, 0.7, 0.35, 0.1 + 0.25 * k))
+            ring(at, 7.0 + 9.0 * k, 2, rgba(1, 0.7, 0.35, 0.2 + 0.5 * k))
+
+# a path on the screen: a dot each quarter second along it, and a ring at its end (if `end`)
+draw_path = (pts: vec3[], col: vec4, end: bool = true):
     loop k in 0.. and q in pts:
         if k % 15 != 0 or k == 0: continue
         if f64(dot(q - cam_pos, cam_at - cam_pos)) <= 0.0: continue
         if let at = world_to_screen(q): circle(at, 3, col)
     last = pts[pts.len() - 1]
-    if f64(dot(last - cam_pos, cam_at - cam_pos)) > 0.0:
+    if end and f64(dot(last - cam_pos, cam_at - cam_pos)) > 0.0:
         if let at = world_to_screen(last):
             ring(at, 12, 2, col)
             line(at + vec2(-18, 0), at + vec2(18, 0), 1, col)
