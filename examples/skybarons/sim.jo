@@ -44,13 +44,28 @@ const BOLT_GAP = 50
 # (a carcopter's drones: a few shots, then into what it chases; gone after a minute)
 const DRONE_AMMO = 60
 const DRONE_LIFE = 3600
-# (a balloon's cannons, all round its hull: X fires the one nearest where its gunner aims)
+# (a balloon's cannons, all round its basket: X fires the one nearest where its gunner aims)
 const CANNON_SPEED = 170.0
 const CANNON_GAP = 150
 const CANNON_DAMAGE = 70
-# (where they are on the crafts: models.jo has the same)
-CANNON_PORTS = [vec3(-0.596, -12.2, -3.692), vec3(0.596, -12.2, -3.692), vec3(-1.808, -12.2, -0.966), vec3(1.808, -12.2, -0.966),
-                vec3(-1.845, -12.2, 0.982), vec3(1.845, -12.2, 0.982), vec3(-0.537, -12.47, 3.296), vec3(0.537, -12.47, 3.296)]
+# (where they are on the crafts, by side: twenty round the basket, Red's round, Blue's a little
+# oblong; models.jo has the same)
+const CANNONS = 20
+const CANNON_SPACING = 5        # (ticks between one craft's cannons going off: a broadside rolls)
+basket_point = (team: int, a: f64, y: f64) -> vec3:
+    t = clamp((y + 13.35) / 1.6, 0.0, 1.0)
+    hx = if team == 0: 1.55 + 0.4 * t else: 1.45 + 0.35 * t
+    hz = if team == 0: hx else: 2.25 + 0.5 * t
+    vec3(f32(cos(a) * hx), f32(y), f32(sin(a) * hz))
+cannon_ports = (team: int) -> vec3[]:
+    out: vec3[] = []
+    loop row in 0..2:
+        y = if row == 0: -12.05 else: -12.85
+        loop j in 0..10:
+            p = basket_point(team, TAU * (f64(j) + 0.5 * f64(row)) / 10.0, y)
+            out.push(p + normalize(vec3(p.x, 0, p.z)) * 0.75)
+    out
+CANNON_PORTS = [cannon_ports(0), cannon_ports(1)]
 TREB_POUCH = vec3(0, -2.32, 2.03)
 DRONE_RACK_AT = vec3(1.45, 0.17, 2.7)
 DRONE_RACK_WAY = normalize(vec3(0, 0.22, 1))
@@ -159,8 +174,8 @@ struct Pad:
     fire = false
     rocket = false
     bomb = false
-    enter = false               # get in (a craft's seat, a gun on the ground); open the parachute
-    leave = false               # get out (landed), bail out (flying), leave a gun
+    enter = false               # get in (a craft's seat, a gun on the ground)
+    leave = false               # get out (landed), bail out (flying), open the parachute, leave a gun; on foot back to one's field (or the air)
     seat = 0                    # 1, 2...: move to that seat of the craft
     scope = false               # (the ornithopter: through its scope, the long gun fires)
     kick = false                # (G: one's own side out of one's craft; on foot, out of the pilot's seat)
@@ -207,6 +222,7 @@ struct Craft:
     dig = 0                     # (ticks it has dug for one)
     life = 0                    # (a drone's: ticks left)
     ccool: int[] = []           # (a balloon's cannons: ticks till each fires again)
+    cgap = 0                    # (and till any of them does)
     since = 0                   # (the tick it was put on its stand)
     fuse0 = -1.0                # (the height Red's guns set their shells to burst at, firing at it: -1 none yet)
     fuse1 = -1.0                # (and Blue's)
@@ -514,7 +530,7 @@ parked = (kind: int, team: int, pos: vec3, yaw: f64) -> Craft:
     k = KINDS[kind]
     c = Craft(kind, team, pos + vec3(0, f32(k.gear), 0), vec3(0, 0, 0), ground_rot(yaw, k.tilt), throttle = 0.0, health = k.health, rockets = k.rockets, bombs = k.bombs, landed = true)
     c.seats = fill(-1, k.seats.len())
-    if kind == BALLOON: c.ccool = fill(0, CANNON_PORTS.len())
+    if kind == BALLOON: c.ccool = fill(0, CANNONS)
     c.aims = k.seats.map((s): s.dir)
     c.gheat = fill(0, k.seats.len())
     c.gcool = fill(0, k.seats.len())
@@ -812,11 +828,13 @@ person = (g: mut Game, i: int, pad: Pad):
             p.post = gi
             p.pos = g.buildings[gi].pos
         else if k >= 0: p = get_in(g, i, p, k)
-        else if not starts_on_ground(g, p.team):
+    # (T, on foot: in the fights that start in the air, flying again; far from one's field, back
+    # there a moment later (F is getting in, alone: a craft to steal is never lost to it))
+    if out and p.state == WALK:
+        if not starts_on_ground(g, p.team):
             respawn(g, i, p)
             return
-        else if far_from_field(p):
-            # (far from one's field with no craft to take: back there, a moment later)
+        if far_from_field(p):
             p.state = DEAD
             p.timer = 180
             drop_flag(g, i)
@@ -1117,7 +1135,8 @@ fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
         if not snipe: c.heat += if three: k.heat_shot * 2 / 3 else: k.heat_shot
         if c.heat >= JAM_HEAT: c.jammed = true
     if piloted and c.down == 0 and c.rcool == 0:
-        if pd.rocket and c.rockets > 0 and g.rules.rockets:
+        # (a carcopter's pilot: its guns alone; its stock is the tail gunner's drones)
+        if pd.rocket and c.rockets > 0 and g.rules.rockets and c.kind != CARCOPTER:
             # (each side in turn; Le Prieur's rockets, lit and let go from the struts)
             side = if (c.shots + c.rockets) % 2 == 0: 1.0 else: -1.0
             at = point_of(c, vec3(f32(side * f64(k.half.x) * 0.45), -0.3, f32(-f64(k.half.z) * 0.3)))
@@ -1603,6 +1622,7 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
     team = crew_team(g, c)
     loop q in 0..c.ccool.len():
         if g.crafts[i].ccool[q] > 0: g.crafts[i].ccool[q] -= 1
+    if c.cgap > 0: g.crafts[i].cgap -= 1
     loop s in first..k.seats.len():
         st = k.seats[s]
         base = quat_rotate(c.rot, st.dir)
@@ -1704,27 +1724,30 @@ launch_drone = (g: mut Game, i: int, pk: int, team: int):
     g.crafts[i].rcool = 90
     g.booms.push(Boom(d.pos, LAUNCHED, g.tick, k, i))
 
-# a balloon's cannon (craft i): the one whose port faces nearest `aim`, fired out of it (along the
-# aim, if within 50 degrees of its way out)
+# a balloon's cannon (craft i): of those loaded facing within 70 degrees of `aim`, the nearest it,
+# fired out of it (along the aim, if within 50 degrees of its way out)
 fire_cannon = (g: mut Game, i: int, pk: int, team: int, aim: vec3):
     c = g.crafts[i]
+    if c.cgap > 0: return
+    ports = CANNON_PORTS[c.team]
     best = -1
-    most = -2.0
-    loop k in 0..CANNON_PORTS.len():
-        port = CANNON_PORTS[k]
+    most = 0.3
+    loop k in 0..ports.len():
+        port = ports[k]
         out = quat_rotate(c.rot, normalize(vec3(port.x, 0, port.z)))
         v = f64(dot(out, aim))
         if g.crafts[i].ccool[k] == 0 and v > most:
             most = v
             best = k
     if best < 0: return
-    port = CANNON_PORTS[best]
+    port = ports[best]
     out = quat_rotate(c.rot, normalize(vec3(port.x, 0, port.z)))
     way = if most > 0.64: aim else: normalize(out + vec3(0, -0.05, 0))
     at = point_of(c, port) + out * 0.6
     g.shots.push(Shot(CANNONBALL, at, c.vel + way * f32(CANNON_SPEED), pk, i, team, 360))
     g.booms.push(Boom(at, CANNON, g.tick, i, pk))
     g.crafts[i].ccool[best] = CANNON_GAP
+    g.crafts[i].cgap = CANNON_SPACING
     seen_firing(g, i)
 
 # (whether a seat of the kind is a gun: every seat but a pilot's, and a balloon's first too)
@@ -2351,7 +2374,7 @@ bot_pad = (g: Game, i: int) -> Pad:
 # on foot: to the nearest free craft of its side (the pilot's seat), and in; in the air-start
 # fights, back in the air at once
 bot_walk = (g: Game, i: int, p: Person) -> Pad:
-    if not starts_on_ground(g, p.team): return Pad(enter = g.tick % 20 == 0)
+    if not starts_on_ground(g, p.team): return Pad(leave = g.tick % 20 == 0)
     best = -1
     least = 1e18
     # (each picks by its number: some the big ones, the rest fighters and scouts)
@@ -2371,7 +2394,7 @@ bot_walk = (g: Game, i: int, p: Person) -> Pad:
             least = d
             best = c.craft
     # (nothing near, far from its field: back there)
-    if best < 0 or (least > 350.0 and far_from_field(p)): return Pad(aim_yaw = int(p.yaw * 1000.0), enter = g.tick % 30 == i % 30)
+    if best < 0 or (least > 350.0 and far_from_field(p)): return Pad(aim_yaw = int(p.yaw * 1000.0), leave = g.tick % 30 == i % 30)
     c = g.crafts[best]
     to = point_of(c, KINDS[c.kind].seats[0].at) - p.pos
     if KINDS[c.kind].lighter: to = point_of(c, vec3(-3, -11, -24)) - p.pos

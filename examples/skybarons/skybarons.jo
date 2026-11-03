@@ -2,8 +2,8 @@
 # and Blue, each with an airfield of scouts (fast, nimble, fragile), fighters (guns and rockets),
 # bombers (slow, tough, gunners fore and aft, bombs dropped by hand) and a zeppelin (a flying
 # fortress: gunners all round, bombs, rockets). Each person starts on foot by their field's
-# parked planes: walk to one (WASD, the mouse to look), F to get in, take off down the strip, F
-# again to bail out under a parachute, or, landed, to get out and take another (even one of the
+# parked planes: walk to one (WASD, the mouse to look), F to get in, take off down the strip, T
+# to bail out under a parachute, or, landed, to get out and take another (even one of the
 # other side's, whose colors fool their side until it shoots at them). Number keys move to a
 # seat: a bomber's guns are manned by players, or by its crew.
 #
@@ -882,8 +882,11 @@ my_craft = () -> int: my().craft
 
 mouse_flying = () -> bool: settings.mouse and mode != .menu and not paused and is_mouse_locked() and not touch_input() and piloting()
 touch_flying = () -> bool: mode != .menu and not paused and touch_input() and piloting()
-steering = true                 # (the mouse or a finger steers, until keys or a stick do)
-aim_steering = () -> bool: (mouse_flying() or touch_flying()) and steering
+# (the mouse or a finger steers; keys or a stick held take over while they are, the aim following
+# the nose, and let go, the mouse holds the way it then goes, the wings levelled: never a bank
+# left to pull the craft round by itself)
+keys_flying = false
+aim_steering = () -> bool: mouse_flying() or touch_flying()
 
 stick = vec3(0, 0, 0)           # pitch, roll, yaw
 
@@ -921,6 +924,7 @@ leave_box = () -> Rect:
 # 6 Get in or out, 7 Rocket, 8 Bomb, 0 none)
 button_at = (t: vec2) -> int:
     if length(t - fire_at()) < 90.0: return 1
+    if x_gunner() and length(t - rocket_button()) < 55.0: return 7
     if piloting():
         r = throttle_track()
         if contains(Rect(r.x - 30, r.y - 30, r.w + 60, r.h + 60), t): return 2
@@ -944,6 +948,13 @@ throttle_want = -1.0
 next_seat = 0                   # (a seat asked for, till a tick takes it)
 scoped = false                  # (the ornithopter: through its scope, R; its long gun fires)
 
+# (at a gun whose X does something: a carcopter's drones, a balloon's cannons)
+x_gunner = () -> bool:
+    p = my()
+    if p.state != SEATED: return false
+    c = game().crafts[p.craft]
+    gun_seat(c.kind, p.seat) and (c.kind == BALLOON or KINDS[c.kind].seats[p.seat].weapon == LAUNCHER)
+
 # (flying an ornithopter)
 in_ornithopter = () -> bool:
     p = my()
@@ -960,7 +971,8 @@ my_pad = () -> Pad:
     c.enter = action_down("Get in") or (touch_enter and p.state != SEATED and p.state != POST)
     # (F held, or G: one's own side put out; a phone's In/Out held, only on foot)
     c.kick = action_down("Kick out") or (f_held > 0.8 and (not touch_input() or p.state == WALK))
-    c.leave = action_down("Get out") or (touch_enter and (p.state == SEATED or p.state == POST or p.state == FALL or p.state == CHUTE))
+    # (a phone's In/Out on foot: in, if there is something to get into; else back to the field)
+    c.leave = action_down("Get out") or (touch_enter and (p.state == SEATED or p.state == POST or p.state == FALL or p.state == CHUTE or p.state == WALK))
     # (a phone: out of a craft in the air, not going down, only with In/Out held a second)
     if touch_enter and p.state == SEATED and not action_down("Get out"):
         k = game().crafts[p.craft]
@@ -988,7 +1000,9 @@ my_pad = () -> Pad:
     k = game().crafts[p.craft]
     c.fire = action_down("Fire") or touch_fire or (is_mouse_locked() and mouse_down(.left))
     if gun_seat(k.kind, p.seat):
-        # (at a gun: its trigger; in a balloon also its bombs, and the first seat's burner)
+        # (at a gun: its trigger, and X (a carcopter's drones, a balloon's cannons); in a balloon
+        # also its bombs, and the first seat's burner)
+        c.rocket = action_down("Rocket") or touch_rocket or (is_mouse_locked() and mouse_down(.right))
         if k.kind == BALLOON:
             c.bomb = action_down("Bomb") or touch_bomb or (is_mouse_locked() and mouse_down(.middle))
             if p.seat == 0: c.pitch = int(round(clamp(action_axis("Dive", "Climb"), -1.0, 1.0) * 100.0))
@@ -1117,7 +1131,7 @@ was_craft = -1
 was_seat = -1
 
 update = (dt: f64):
-    global aim_pitch, aim_yaw, before, before_people, enter_in_fight, f_held, had_lock, local, mine, next_seat, paused, paused_at, relock_at, scoped, spare, steering, was_craft, was_seat, was_state
+    global aim_pitch, aim_yaw, before, before_people, enter_in_fight, f_held, had_lock, local, mine, next_seat, paused, paused_at, relock_at, scoped, spare, keys_flying, was_craft, was_seat, was_state
     lay_out()
     # (online, hidden behind another window or tab: still playing, or the others would take
     # this one for gone)
@@ -1171,9 +1185,8 @@ update = (dt: f64):
             loop k in 1..c.seats.len():
                 s2 = (my().seat + k) % c.seats.len()
                 if c.seats[s2] < 0 and next_seat == 0: next_seat = s2 + 1
-        # (keys or a stick take over from the mouse, the camera behind the craft again; moving
-        # the mouse or dragging a finger gives it back, from where the nose points then)
-        if piloting() and abs(action_axis("Dive", "Climb")) + abs(action_axis("Roll left", "Roll right")) + abs(action_axis("Rudder left", "Rudder right")) > 0.05: steering = false
+        # (keys or a stick held: they fly it, the aim kept on the nose (keys_flying))
+        keys_flying = piloting() and abs(action_axis("Dive", "Climb")) + abs(action_axis("Roll left", "Roll right")) + abs(action_axis("Rudder left", "Rudder right")) > 0.05
         look = vec2(0, 0)
         if is_mouse_locked() and not paused and not touch_input(): look = mouse_delta() * 0.0025
         if touch_input() and not paused: look = dragged * 0.006
@@ -1182,8 +1195,7 @@ update = (dt: f64):
         if not piloting() and length(rs) > 0.15: look += rs * f32(2.2 * dt)
         # (through the scope, the mouse moves the aim finely)
         if scoped: look = look * 0.25
-        if length(look) > 0.002: steering = true
-        if (steering or not piloting()) and length(look) > 0.0:
+        if length(look) > 0.0:
             aim_yaw -= f64(look.x)
             aim_pitch = clamp(aim_pitch - f64(look.y) * (if settings.invert and piloting(): -1.0 else: 1.0), -1.45, 1.45)
         p = my()
@@ -1193,11 +1205,12 @@ update = (dt: f64):
             c = game().crafts[p.craft]
             if not gun_seat(c.kind, p.seat):
                 if not whole(c): aim_from(c, true)
-                else if aim_fresh or not aim_steering() or changed: aim_from(c, false)
+                else if aim_fresh or not aim_steering() or changed or keys_flying: aim_from(c, false)
             else if changed:
                 # (a gun that points straight up at rest: aimed ahead and up instead, the horizon in sight)
                 rest = KINDS[c.kind].seats[p.seat].dir
                 if f64(rest.y) > 0.9: rest = normalize(vec3(0, 0.5, -0.87))
+                else if f64(rest.y) < -0.9: rest = normalize(vec3(0, -0.6, -0.8))
                 else if f64(rest.y) > 0.6: rest = normalize(vec3(rest.x, 0.35, rest.z))
                 aim_along(quat_rotate(c.rot, rest))
         else if changed and p.state == WALK:
@@ -1316,11 +1329,12 @@ place_camera = (g: Game, dt: f64):
     c = g.crafts[p.craft]
     k = KINDS[c.kind]
     if gun_seat(c.kind, p.seat) and mode != .menu:
-        # (at a gun: the gunner's own eyes, just over it, along it; their gun not drawn, its
+        # (at a gun: the gunner's eyes out at its muzzle, along it, clear of the craft (from the
+        # seat itself, some look out from inside a gondola or a hull); their gun not drawn, its
         # tracers and flashes in sight)
         at = point_of(c, k.seats[p.seat].at)
         d = aim_dir()
-        cam_pos = at + up_of(c) * 0.55
+        cam_pos = at + d * f32(gun_reach(c.kind, p.seat)) + up_of(c) * 0.3
         cam_at = cam_pos + d * 30.0
         cam_up = approach(cam_up, vec3(0, 1, 0), 3.0, dt)
         finish_camera()
@@ -1366,11 +1380,30 @@ place_camera = (g: Game, dt: f64):
     cam_up = up
     finish_camera()
 
-# (the camera kept above the ground, and set)
+# (how far out along its gun a gunner's view is: past what of the craft is round the seat)
+gun_reach = (kind: int, seat: int) -> f64:
+    if kind == ZEPPELIN and seat == 3: return 2.6
+    if kind == DAVINCI: return 2.5
+    1.6
+
+# (the camera kept above the ground, and set; looking (nearly) straight up or down, its up is
+# along the craft's nose, or north: an up along the view itself would leave nothing seen)
 finish_camera = ():
-    global cam_pos
+    global cam_pos, cam_up
     gy = f32(max(ground(f64(cam_pos.x), f64(cam_pos.z)), 0.0) + 1.0)
     if cam_pos.y < gy: cam_pos.y = gy
+    v = cam_at - cam_pos
+    if length(v) > 0.001 and length(cam_up) > 0.001:
+        v = normalize(v)
+        side = cross(v, normalize(cam_up))
+        if length(side) < 0.3:
+            p = my()
+            hint = if p.state == SEATED: fwd_of(game().crafts[p.craft]) else: vec3(0, 0, -1)
+            hint = hint - v * dot(hint, v)
+            if length(hint) < 0.05: hint = vec3(1, 0, 0) - v * v.x
+            u = normalize(cam_up - v * dot(cam_up, v))
+            w = f32(clamp((0.3 - f64(length(side))) / 0.2, 0.0, 1.0))
+            cam_up = normalize(lerp(if length(cam_up - v * dot(cam_up, v)) > 0.01: u else: normalize(hint), normalize(hint), w))
     # (shaken: the view kicked off its aim a little each frame, less as it settles)
     at = cam_at
     if shake > 0.0:
@@ -1754,7 +1787,7 @@ effects = (dt: f64):
             c = g.crafts[b.who]
             team = c.team
             if b.by == me(): say("you shot down {call_craft(g, b.who)}", COLORS[1 - team])
-            else if b.who == myc: say("shot down{if b.by >= 0: " by " + call(g, b.by) else: ""}: F to bail out", COLORS[1 - team])
+            else if b.who == myc: say("shot down{if b.by >= 0: " by " + call(g, b.by) else: ""}: {if touch_input(): "In/Out" else: "T"} to bail out", COLORS[1 - team])
             else: say("{if b.by >= 0: call(g, b.by) else: "flak"} shot down {call_craft(g, b.who)}", with_alpha(COLORS[1 - team], 0.75), small = true)
         else if b.kind == CRASHED: say(if b.who == myc: "you crashed" else: "{call_craft(g, b.who)} crashed", with_alpha(COLORS[1 - g.crafts[b.who].team], 0.75), small = b.who != myc)
         else if b.kind == TORN:
@@ -1963,6 +1996,10 @@ draw_hud = (g: Game):
                 if let at = world_to_screen(fall):
                     ring(at, 10, 2, rgba(1, 0.85, 0.4, 0.7))
                     line(at + vec2(-16, 0), at + vec2(16, 0), 1, rgba(1, 0.85, 0.4, 0.7))
+            # (a zeppelin's rockets: where they go, a dot a quarter second, and a ring where they
+            # burst; da Vinci's boulder: its whole arc, to where it lands)
+            if c.kind == ZEPPELIN and c.rockets > 0 and g.rules.rockets: draw_path(rocket_path(c), rgba(1, 0.6, 0.35, 0.8))
+            if c.kind == DAVINCI and c.boulder and not c.landed: draw_path(boulder_path(c), rgba(1, 0.9, 0.6, 0.85))
             if aim_steering() and not k.lighter:
                 if let m = world_to_screen(c.pos + aim_dir() * 400.0): ring(m, 7, 2, rgba(1, 1, 1, 0.5))
             else if settings.mouse and not bot and not touch_input() and not paused and c.down == 0 and not c.landed: text_centered("click to fly with the mouse", mid() + vec2(0, 240), 20, gray(0.8))
@@ -2096,6 +2133,47 @@ draw_scope = (c: Craft):
     ready = 1.0 - f64(c.cooldown) / f64(SNIPE_GAP)
     hud_bar(Rect(m.x - 80, m.y + rad * 0.75, 160, 6), ready, if ready >= 1.0: rgba(0.6, 1.0, 0.6, 0.9) else: rgba(1, 0.8, 0.4, 0.9))
 
+# (where a zeppelin's rocket fired now goes, tick by tick as shells() flies it: from between its
+# two tubes, to the ground or the end of its fuel)
+rocket_path = (c: Craft) -> vec3[]:
+    at = point_of(c, vec3(0, -11, -27))
+    v = c.vel + fwd_of(c) * 60.0
+    out = [at]
+    loop k in 0..240:
+        d = normalize(v)
+        v = d * f32(min(f64(length(v)) + 120.0 * DT, 240.0)) + vec3(0, f32(-2.0 * DT), 0)
+        at += v * f32(DT)
+        out.push(at)
+        if f64(at.y) <= ground(f64(at.x), f64(at.z)): break
+    out
+
+# (where da Vinci's boulder thrown now falls, as shells() throws it, to the ground)
+boulder_path = (c: Craft) -> vec3[]:
+    f = fwd_of(c)
+    flat = normalize(vec3(f.x, 0, f.z) + vec3(0, 0, 0.0001))
+    at = point_of(c, vec3(0, -0.6, -3.0))
+    v = c.vel + flat * f32(BOULDER_SPEED) + vec3(0, f32(BOULDER_UP), 0)
+    out = [at]
+    loop k in 0..600:
+        v.y -= f32(9.8 * DT)
+        at += v * f32(DT)
+        out.push(at)
+        if f64(at.y) <= ground(f64(at.x), f64(at.z)): break
+    out
+
+# a path on the screen: a dot each quarter second along it, and a ring at its end
+draw_path = (pts: vec3[], col: vec4):
+    loop k in 0.. and q in pts:
+        if k % 15 != 0 or k == 0: continue
+        if f64(dot(q - cam_pos, cam_at - cam_pos)) <= 0.0: continue
+        if let at = world_to_screen(q): circle(at, 3, col)
+    last = pts[pts.len() - 1]
+    if f64(dot(last - cam_pos, cam_at - cam_pos)) > 0.0:
+        if let at = world_to_screen(last):
+            ring(at, 12, 2, col)
+            line(at + vec2(-18, 0), at + vec2(18, 0), 1, col)
+            line(at + vec2(0, -18), at + vec2(0, 18), 1, col)
+
 # a gun's sight: where its bullets go; brighter while it fires, red where it turns no further
 sight = (at3: vec3, firing: bool, limit: bool):
     if let at = world_to_screen(at3):
@@ -2123,8 +2201,8 @@ what_f_does = (g: Game, p: Person) -> str:
             return out
         own = flown_by_own(g, p)
         if own >= 0: return "{fk} held: {call(g, g.crafts[own].seats[0])} out of the {kind_name(g.crafts[own].kind, g.crafts[own].team)}, and fly it"
-        if not starts_on_ground(g, p.team): return "{fk}: fly again"
-        if far_from_field(p): return "{fk}: back to your field (Shift runs)"
+        if not starts_on_ground(g, p.team): return "{tk}: fly again"
+        if far_from_field(p): return "{tk}: back to your field (Shift runs)"
         return ""
     back = if starts_on_ground(g, p.team): "back to your field" else: "fly again"
     if p.state == FALL: return if p.torn: "{tk}: {back}" else: "{tk}: open the parachute"
@@ -2224,9 +2302,12 @@ draw_touch = (g: Game, p: Person, c: Craft):
     if len(what_f_does(g, p)) > 0:
         circle(enter_button(), 42, rgba(1, 0.9, 0.6, if touch_enter: 0.35 else: 0.18))
         text_centered("In/Out", enter_button(), 20, rgba(1, 1, 1, 0.8))
+    if x_gunner():
+        circle(rocket_button(), 42, rgba(1, 1, 1, if touch_rocket: 0.3 else: 0.12))
+        text_centered(if c.kind == BALLOON: "Cannon" else: "Drone", rocket_button(), 18, rgba(1, 1, 1, 0.7))
     if flying_now:
         k = KINDS[c.kind]
-        if k.rockets > 0 and g.rules.rockets:
+        if k.rockets > 0 and g.rules.rockets and c.kind != CARCOPTER:
             circle(rocket_button(), 42, rgba(1, 1, 1, if touch_rocket: 0.3 else: 0.12))
             text_centered(if c.kind == ORNITHOPTER: "Heal" else: "Rocket", rocket_button(), 18, rgba(1, 1, 1, 0.7))
         if c.kind == ORNITHOPTER:
@@ -2351,7 +2432,7 @@ draw_menu = ():
         if ui_button("Quit"): quit()
     ui_end()
     if len(status) > 0: text_centered(status, vec2(x, f32(y + 580.0)), 22, gray(0.85))
-    how = "On foot: WASD and the mouse, Shift runs, a click fires a pistol; F gets in (a craft, a gun on the ground), T gets out or bails out, F held puts your own side out of your craft (or out of the pilot's seat, and you in). Flying: the mouse steers, its buttons fire guns and rockets (X), B drops bombs, Shift and Ctrl the throttle; 1 to 8 or V change seats."
+    how = "On foot: WASD and the mouse, Shift runs, a click fires a pistol; F gets in (a craft, a gun on the ground), T gets out, bails out or takes you back to your field, F held puts your own side out of your craft (or out of the pilot's seat, and you in). Flying: the mouse steers, its buttons fire guns and rockets (X), B drops bombs, Shift and Ctrl the throttle; 1 to 8 or V change seats."
     if touch_input() or touch_device(): how = "Drag a finger to look and aim; In/Out gets in, out, or bails out. Hold Fire to shoot (on foot, to walk); the throttle slides; Look watches the target."
     text_wrapped("Scouts, fighters, light and ultra bombers, zeppelins; up to 64 a side. {how}", vec2(x - 240, f32(y + 600.0)), 480, 17, gray(0.8), align = .center)
 
