@@ -16,6 +16,7 @@ renderer, OpenGL (GLSL) and Vulkan (SPIR-V) draw.
 Failing programs are saved to build/gpufuzz/fail_<seed>.jo; --reduce leaves out what it can
 while the results still differ (into fail_<seed>_min.jo).
 """
+import re
 import os, random, subprocess, sys
 
 F2I_MARK = "# (integers made from floats)"
@@ -37,6 +38,14 @@ BITS = {"i32": 32, "u32": 32, "i16": 16, "u16": 16, "i8": 8, "u8": 8}
 SIGNED = {"i32", "i16", "i8"}
 NIDS = 96
 
+
+
+CONST_WORDS = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "true", "false", "if", "else",
+               "min", "max", "clamp", "abs", "xor", "not", "fi", "int"}
+
+# (an expression with no variable or call in it, which the compiler may work out)
+def is_const(s):
+    return all(w in CONST_WORDS for w in re.findall(r"[A-Za-z_][A-Za-z_0-9]*", s))
 
 def fits(v, t):
     b = BITS[t]
@@ -189,7 +198,12 @@ class Gen:
         op = r.choice(["+", "-", "*", "&", "|", "xor", "/", "%", "<<", ">>", "neg", "not", "conv", "fconv",
                        "bconv", "min", "max", "abs", "if", "call", "clamp"])
         a = lambda: self.expr(t, d + 1)
-        if op in ("+", "-", "*", "&", "|", "xor", "<<", ">>"): return f"({a()} {op} {a()})"
+        if op in ("+", "-", "*", "&", "|", "xor", "<<", ">>"):
+            x, y = a(), a()
+            # (constants on both sides of + - * << are worked out while compiling, and an error
+            # when they overflow: | keeps such an expression)
+            if op in ("+", "-", "*", "<<") and is_const(x) and is_const(y): op = "|"
+            return f"({x} {op} {y})"
         if op in ("/", "%"): return f"({a()} {op} ({a()} | {t}(1)))"
         if op == "neg": return f"(-{a()})"
         if op == "not": return f"(~{a()})"

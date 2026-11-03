@@ -97,7 +97,7 @@ class Gen:
             vals = r.sample(range(-3, 12), r.randint(1, 5))
             for v in vals: arms.append(f"{v}: {self.iexpr(4)}")
             if r.random() < 0.5: arms.append(f"20..30: {self.iexpr(4)}")
-            if r.random() < 0.3: arms.append(f"'a', 'z': {self.iexpr(4)}")
+            if r.random() < 0.3: arms.append(f"c'a', c'z': {self.iexpr(4)}")
             arms.append(f"_: {self.iexpr(4)}")
             return "(match " + r.choice(self.ints) + ":\n" + "".join("    " * (self.depth + 2) + arm + "\n" for arm in arms) + "    " * (self.depth + 1) + ")"
         return a
