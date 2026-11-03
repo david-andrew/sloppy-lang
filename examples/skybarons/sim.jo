@@ -25,7 +25,7 @@ const ORNITHOPTER = 7           # pedalled flapping wings: a long gun with a sco
 const DAVINCI = 8               # da Vinci's aerial screw: a trebuchet's boulder (dug up), a ballista
 const CARCOPTER = 9             # a motor car under a pumping canopy: guns, a tail gunner who launches drones
 const CAT = 10                  # the cat: the fastest thing in the sky, no guns; it rams, and crashing does it no harm
-const CAT_SPEED = 260.0         # (m/s, its own flat out)
+const CAT_SPEED = 455.0         # (m/s, its own flat out)
 const DRONE = 11                # a little fighter with no one in it, launched by a carcopter
 KIND_NAMES = ["scout", "fighter", "light bomber", "zeppelin", "ultra bomber", "balloon", "rocketeer", "ornithopter", "da Vinci's screw", "carcopter", "cat", "drone"]
 const ALL_CRAFTS = 2047         # (Rules.crafts: every kind that can be chosen; not drones)
@@ -101,6 +101,11 @@ const FLAG_RAID = 6             # the attackers take the defenders' flag home, a
 const RAIDS = 7                 # each side's bombers go for the other's factory
 const BIKES = 8                 # Bikes & Brooms: shoot the other side's targets (they come back); the cat is worth many
 MODE_NAMES = ["Dogfight", "Classic", "Base attack", "Capture the flag", "Trench run", "Bomber escort", "Flag raid", "Bomber raids", "Bikes & Brooms"]
+# (each fight's kinds of craft: those it can have at all (a bit each), and those it must; the
+# lobby lists the first, the second locked on)
+NO_CAT = ALL_CRAFTS & ~(1 << CAT)
+MODE_CAN = [NO_CAT, 1 << FIGHTER, NO_CAT, NO_CAT, NO_CAT, NO_CAT, NO_CAT, NO_CAT, ALL_CRAFTS]
+MODE_MUST = [0, 0, 0, 0, 0, 0, 0, 0, 1 << CAT]
 # (Bikes & Brooms' points: a target down, the cat shot down; a target stands again TARGET_BACK
 # ticks after)
 const TARGET_POINTS = 10
@@ -171,7 +176,7 @@ KINDS = [
     Kind(0.0, 15.0, 0.1, 1.3, 1.3, 1.1, 0.0, 260, true, 4, 5, 4, 0, vec3(3.5, 2.6, 3.5), [Seat(vec3(0, 0.38, -0.48)), gun(vec3(0, 0.6, 1.95), vec3(0, 0, 1), 110.0, LAUNCHER)], 1.63, 0.0, mass = 3.0, refill = 1200, heli = true),
     # (the cat: three times as fast as the rocketeer, the fastest of the rest (87 m/s flat out);
     # turning on a penny; tiny)
-    Kind(10.0, 70.0, 70.0 / (CAT_SPEED * CAT_SPEED), 4.5, 9.0, 2.6, 7.0, 60, false, 4, 0, 0, 0, vec3(0.3, 0.35, 0.6), [Seat(vec3(0, 0.15, 0))], 0.3, 0.0, mass = 0.15),
+    Kind(10.0, 122.5, 122.5 / (CAT_SPEED * CAT_SPEED), 7.9, 15.75, 4.55, 12.25, 60, false, 4, 0, 0, 0, vec3(0.3, 0.35, 0.6), [Seat(vec3(0, 0.15, 0))], 0.3, 0.0, mass = 0.15),
     Kind(20.0, 20.0, 0.004, 2.0, 4.0, 0.8, 3.0, 25, true, 6, 0, 0, 0, vec3(1.3, 0.4, 1.0), [], 0.25, 0.1, mass = 0.2),
 ]
 const ZEP_SPEED = 21.0          # m/s at full throttle
@@ -497,6 +502,9 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
     if g.rules.win <= 0: g.rules.win = default_win(m)
     if m == CLASSIC: g.rules.rockets = false
     if m == TRENCH or m == ESCORT or g.rules.crafts & ALL_CRAFTS == 0: g.rules.crafts = if m == BIKES: BIKES_CRAFTS else: DEFAULT_CRAFTS
+    # (what the fight can have, and what it must)
+    g.rules.crafts = (g.rules.crafts & MODE_CAN[m]) | MODE_MUST[m]
+    if g.rules.crafts == 0: g.rules.crafts = (DEFAULT_CRAFTS & MODE_CAN[m]) | MODE_MUST[m]
     if g.rules.time_limit <= 0: g.rules.time_limit = default_minutes(m)
     if not one_sided(m): g.rules.attackers = 0
     loop s in sites(m, g.rules.attackers):
@@ -1284,6 +1292,13 @@ fly_air = (g: mut Game, i: int, c0: Craft, pd: Pad):
     q = quat_mul(q, quat_axis_angle(vec3(1, 0, 0), f64(pd.pitch) / 100.0 * k.pitch_rate * auth * DT))
     q = quat_mul(q, quat_axis_angle(vec3(0, 0, 1), -f64(pd.roll) / 100.0 * k.roll_rate * auth * DT))
     q = quat_mul(q, quat_axis_angle(vec3(0, 1, 0), -f64(pd.yaw) / 100.0 * k.yaw_rate * auth * DT))
+    # (one person flying (a rocketeer, the cat), the stick let go: rolled upright again, from a
+    # bank or upside down, as a helicopter levels itself)
+    if (c.kind == ROCKETEER or c.kind == CAT) and pd.roll == 0 and c.down == 0:
+        r_now = quat_rotate(q, vec3(1, 0, 0))
+        u_now = quat_rotate(q, vec3(0, 1, 0))
+        bank = atan2(f64(r_now.y), f64(u_now.y))
+        q = quat_mul(q, quat_axis_angle(vec3(0, 0, 1), -clamp(bank * 1.5, -1.0, 1.0) * k.roll_rate * 0.5 * DT))
     fwd = quat_rotate(q, vec3(0, 0, -1))
     vdir = fwd
     if speed > 0.1: vdir = c.vel * f32(1.0 / speed)
@@ -2439,8 +2454,10 @@ steer = (c: Craft, want: vec3) -> Pad:
     near_roll = clamp((f64(right.y) * 1.6 + f64(l.x) / a * 4.0) * 2.6 / rr, -1.0, 1.0)
     err = atan2(f64(l.x), f64(l.y))
     off = acos(clamp(ahead, -1.0, 1.0))
-    far_roll = clamp(err * 2.0, -1.0, 1.0)
-    far_pitch = if abs(err) < 1.2: clamp(off * 3.0, 0.0, 1.0) else: 0.2
+    # (far off: rolled and pulled as hard as a fighter would be, no harder: a kind that rolls
+    # and pulls far faster (the cat) would go past and back, round and round, upside down)
+    far_roll = clamp(err * 2.0 * min(1.0, 3.6 / rr), -1.0, 1.0)
+    far_pitch = (if abs(err) < 1.2: clamp(off * 3.0, 0.0, 1.0) else: 0.2) * min(1.0, 2.4 / pr)
     blend = smoothstep(0.94, 0.995, ahead)
     # (a little below and not far aside: pushed down, not rolled over)
     if l.y < 0.0 and abs(f64(l.x)) < 0.5 * abs(f64(l.y)) + 0.05: blend = max(blend, smoothstep(0.7, 0.85, ahead))
@@ -2449,7 +2466,7 @@ steer = (c: Craft, want: vec3) -> Pad:
     p.roll = int((far_roll + (near_roll - far_roll) * blend) * 100.0)
     p.yaw = int(near_yaw * blend * 100.0)
     # (banked, the nose falls (fly_air): rudder toward the sky holds it up, as a player's would)
-    if c.kind != ROCKETEER and abs(f64(right.y)) > 0.05:
+    if c.kind != ROCKETEER and c.kind != CAT and abs(f64(right.y)) > 0.05:
         tilt = 1.0 - max(f64(up_of(c).y), 0.0)
         hold = min(0.5 * tilt / abs(f64(right.y)), 1.0) * (if right.y < 0.0: -1.0 else: 1.0)
         p.yaw = clamp(p.yaw + int(hold * 100.0), -100, 100)

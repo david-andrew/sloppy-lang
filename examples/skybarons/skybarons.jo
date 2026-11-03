@@ -66,6 +66,8 @@ when TARGET != "wasm":
 # what is on the ground, by kind (world.jo: HANGAR, TANK, HQ, AA, DEPOT, FACTORY, MAST, MG)
 SITE_NAMES = ["hangar", "fuel tank", "command post", "gun against aircraft", "depot", "factory", "mast", "machine gun", "target"]
 PICK_NAMES = KIND_NAMES.filter((n): n != "drone")
+# (the kinds the lobby lists for fight m: those it can have, in order)
+listed_kinds = (m: int) -> int[]: [0..CHOOSABLE).filter((k): MODE_CAN[m] & (1 << k) != 0)
 # what craft j is called: its kind, a rocketeer seen as a witch so called
 kind_name = (g: Game, j: int) -> str: if is_witch(g, j): "witch" else: KIND_NAMES[g.crafts[j].kind]
 
@@ -884,7 +886,19 @@ aim_along = (d: vec3):
 aim_from = (c: Craft, later: bool):
     global aim_fresh
     aim_fresh = later
-    if not later: aim_along(fwd_of(c))
+    if later: return
+    # (on the ground: along the way it faces, a little up; not up its nose, which a rocketeer
+    # standing points at the sky: launched, it would climb on over onto its back)
+    if c.landed:
+        f = fwd_of(c)
+        flat = vec3(f.x, 0, f.z)
+        if length(flat) < 0.3:
+            u = up_of(c)
+            flat = vec3(-u.x, 0, -u.z)
+        if length(flat) > 0.01:
+            aim_along(normalize(normalize(flat) + vec3(0, 0.15, 0)))
+            return
+    aim_along(fwd_of(c))
 
 # (at a craft's gun: the aim kept within the way the gun turns, never through the craft; at a
 # gun on the ground, no lower than it goes)
@@ -967,7 +981,7 @@ button_at = (t: vec2) -> int:
     if x_gunner() and near(rocket_button(), BUTTON_R): return 7
     if piloting():
         r = throttle_track()
-        if contains(Rect(r.x - 30, r.y - 30, r.w + 60, r.h + 60), t): return 2
+        if hud_of(game().crafts[my().craft].kind).throttle and contains(Rect(r.x - 30, r.y - 30, r.w + 60, r.h + 60), t): return 2
         if near(rocket_button(), BUTTON_R): return 7
         if near(bomb_button(), BUTTON_R): return 8
         if in_ornithopter() and near(scope_button(), BUTTON_R): return 9
@@ -1606,6 +1620,29 @@ draw_person = (i: int, p: Person, at: mat4):
 
 craft_matrix = (c: Craft) -> mat4: translation(c.pos) * quat_to_mat4(c.rot)
 
+# what of one's own craft a gunner sees: how solid its body is drawn, and its rotor (da Vinci's
+# screw, the carcopter's canopy) and propellers (1 as anyone else sees it, 0 not at all); only
+# the seats whose view something of the craft fills are here, the rest see it whole
+struct SeatView:
+    body = 1.0
+    rotor = 1.0
+    props = 1.0
+SEAT_VIEWS: {int: SeatView[]} = {
+    ZEPPELIN: [SeatView(), SeatView(), SeatView(), SeatView(body = 0.3, props = 0.4), SeatView()],      # (the gondola gun: the hull over it)
+    BALLOON: [SeatView(body = 0.25), SeatView(body = 0.25), SeatView(body = 0.25)],                       # (the envelope over its gunners)
+    DAVINCI: [SeatView(), SeatView(rotor = 0.2)],                                                        # (the ballista: the screw over it)
+    CARCOPTER: [SeatView(), SeatView(rotor = 0.0)],                                                      # (the tail gunner: under the canopy's rim, which pumps through their eyes)
+}
+# (craft i as this one sees it: through its seat's view, if they are at one of its guns)
+view_of = (g: Game, i: int) -> SeatView:
+    p = g.people[me()]
+    if mode == .menu or p.state != SEATED or p.craft != i or not gun_seat(g.crafts[i].kind, p.seat): return SeatView()
+    if let vs = SEAT_VIEWS.get(g.crafts[i].kind):
+        if p.seat < vs.len(): return vs[p.seat]
+    SeatView()
+# (a color made see-through by a, 1 solid)
+see = (c: vec4, a: f64) -> vec4: vec4(c.xyz, f32(f64(c.w) * a))
+
 draw = ():
     sc = make_world()
     g = view()
@@ -1668,7 +1705,8 @@ draw = ():
         if witch and c.landed: m = m * rotation_x(-PI / 2.0)
         tint = vec4(1, 1, 1, 1)
         if c.safe > 0 and c.safe % 10 < 5: tint = vec4(1.6, 1.6, 1.6, 1)
-        draw_mesh(if witch: models.witch_mesh(c.team) else: models.craft_mesh(c.kind, c.team, badge_of(g, i)), m, tint, specular = 0.25)
+        view = view_of(g, i)
+        if view.body > 0.0: draw_mesh(if witch: models.witch_mesh(c.team) else: models.craft_mesh(c.kind, c.team, badge_of(g, i)), m, see(tint, view.body), specular = 0.25, cast_shadow = view.body >= 1.0)
         spin = if c.down > 0: 3.0 else: if pilot_of(c) >= 0 or not c.landed: 25.0 + 30.0 * c.throttle else: 0.0
         prop_turn[i] += frame_time() * spin
         # (a fighter's third gun, on its top wing, outside Classic)
@@ -1700,23 +1738,23 @@ draw = ():
         # trebuchet, swung on a throw, its boulder in its sling; its ballista where its gunner aims)
         if c.kind == DAVINCI:
             turn = prop_turn[i] * 0.22
-            draw_mesh(models.rotor_mesh(c.kind, c.team), m * translation(models.ROTOR_AT(c.kind)) * rotation_y(-turn), specular = 0.1)
+            if view.rotor > 0.0: draw_mesh(models.rotor_mesh(c.kind, c.team), m * translation(models.ROTOR_AT(c.kind)) * rotation_y(-turn), see(vec4(1, 1, 1, 1), view.rotor), specular = 0.1)
             parts = models.dv_pedal_parts(c.team)
             loop k in 0.. and pm in models.dv_pedal_mats(turn): draw_mesh(parts[k], m * pm, specular = 0.1)
             arm = m * translation(models.TREB_PIVOT) * rotation_x(treb_angle(i))
             draw_mesh(models.treb_arm_mesh(c.team), arm, specular = 0.1)
             if c.boulder: draw_mesh(models.boulder_mesh(), arm * translation(models.TREB_POUCH_LOCAL), specular = 0.05)
             if c.aims.len() > 1: draw_mesh(models.ballista_mesh(c.team), translation(point_of(c, models.BALLISTA_PIVOT)) * quat_to_mat4(quat_facing(c.aims[1])), specular = 0.2)
-        # (the carcopter's canopy: pumping up and down its sleeve, a stroke to each quarter turn
-        # or so of the old rotor, its ribs blown up on the downstroke; turning slowly)
-        if c.kind == CARCOPTER:
-            stroke = prop_turn[i] * 0.22
+        # (the carcopter's canopy: pumping up and down its sleeve and turning, both from one
+        # stroke (two and a half times the first pace), its ribs blown up on the downstroke)
+        if c.kind == CARCOPTER and view.rotor > 0.0:
+            stroke = prop_turn[i] * 0.55
             hub = models.ROTOR_AT(c.kind) + vec3(0, f32(models.canopy_pump(stroke)), 0)
-            draw_mesh(models.canopy_mesh(c.team, models.canopy_fold(stroke)), m * translation(hub) * rotation_y(-prop_turn[i] * 0.04), specular = 0.1)
+            draw_mesh(models.canopy_mesh(c.team, models.canopy_fold(stroke)), m * translation(hub) * rotation_y(-stroke * 0.18), see(vec4(1, 1, 1, 1), view.rotor), specular = 0.1)
         if c.kind == BALLOON and f64(c.vel.y) > 0.3: draw_mesh(flame, m * translation(models.BURNER) * rotation_x(-PI / 2.0) * scaling(vec3(1.4, 1.4, 1.4)), emissive = 0.9, specular = 0.0, cast_shadow = false)
         loop k in 0.. and h in models.props(c.kind, c.team):
             r = f64(h.w)
-            draw_mesh(prop, m * translation(h.xyz) * rotation_z(prop_turn[i] + f64(k) * 0.7) * scaling(vec3(f32(r), f32(r), f32(r))), specular = 0.1)
+            if view.props > 0.0: draw_mesh(prop, m * translation(h.xyz) * rotation_z(prop_turn[i] + f64(k) * 0.7) * scaling(vec3(f32(r), f32(r), f32(r))), see(vec4(1, 1, 1, 1), view.props), specular = 0.1)
         st = KINDS[c.kind].seats
         loop s in 1..st.len():
             if s >= c.aims.len(): continue
@@ -2289,11 +2327,21 @@ draw_hud = (g: Game):
         a = clamp(1.0 - (f64(g.tick) / 60.0 - 8.0) / 2.0, 0.0, 1.0)
         if a > 0.0: text("Escape: menu", vec2(f32(f64(at_edge(-EDGE, 0).x) - text_width("Escape: menu", T_SMALL)), at_edge(0, EDGE).y), T_SMALL, with_alpha(INK_DIM, f32(a * 0.62)), with_alpha(SHADOW, f32(a * 0.5)))
 
-# the pilot's instruments: an airspeed dial and an altimeter, the throttle's lever beside them
+# what a kind's HUD shows of its controls: a throttle (a lever, and the keys for it said), or a
+# climb dial instead (the balloon: its burner, up and down, and no throttle at all)
+struct CraftHud:
+    throttle = true
+    climb = false
+CRAFT_HUDS: {int: CraftHud} = {BALLOON: CraftHud(throttle = false, climb = true)}
+hud_of = (kind: int) -> CraftHud: CRAFT_HUDS.get(kind) ?? CraftHud()
+
+# the pilot's instruments: an airspeed dial and an altimeter, the throttle's lever beside them (or
+# a climb dial, as the kind has it)
 instruments = (c: Craft, k: Kind):
+    hud = hud_of(c.kind)
     r = 36.0
     h = 2.0 * r + 50.0
-    w = 4.0 * r + 3.0 * PAD + 34.0
+    w = 4.0 * r + 3.0 * PAD + (if hud.climb: 2.0 * r + PAD + 6.0 else: 0.0) + (if hud.throttle: 34.0 else: 0.0)
     box = Rect(f32(f64(at_edge(EDGE, 0).x)), f32(plate_y(h)), f32(w), f32(h))
     panel(box)
     speed = f64(length(c.vel)) * 3.6
@@ -2302,6 +2350,11 @@ instruments = (c: Craft, k: Kind):
     cy = f64(box.y) + PAD + r + 3.0
     dial(vec2(f32(f64(box.x) + PAD + r + 3.0), f32(cy)), r, speed / 300.0, "km/h", "{int(speed)} km/h", slow)
     dial(vec2(f32(f64(box.x) + 2.0 * PAD + 3.0 * r + 6.0), f32(cy)), r, alt / 2000.0, "m", "{int(alt)} m")
+    # (the climb: up or down, 5 m/s at either end)
+    if hud.climb:
+        vy = f64(c.vel.y)
+        dial(vec2(f32(f64(box.x) + 3.0 * PAD + 5.0 * r + 9.0), f32(cy)), r, (vy + 5.0) / 10.0, "climb", "{if vy >= 0.0: "+" else: ""}{vy:.1} m/s")
+    if not hud.throttle: return
     # (the throttle: a slot, its brass lever as far up as it is open)
     lx = f64(box.x) + w - PAD - 12.0
     top = f64(box.y) + PAD
@@ -2522,7 +2575,7 @@ what_f_does = (g: Game, p: Person) -> str:
             loop s in 1..c.seats.len():
                 if c.seats[s] >= 0 and g.people[c.seats[s]].team == p.team: put = "    {fk} held: put your crew out"
         else if c.seats[0] >= 0 and g.people[c.seats[0]].team == p.team: put = "    {fk} held: {call(g, c.seats[0])} out, and you the pilot"
-    if c.landed and f64(length(c.vel)) < 4.0: return (if p.seat == 0 and c.vel == vec3(0, 0, 0) and c.throttle == 0.0: "{tk}: get out    Shift: throttle" else: "{tk}: get out") + put
+    if c.landed and f64(length(c.vel)) < 4.0: return (if p.seat == 0 and c.vel == vec3(0, 0, 0) and c.throttle == 0.0 and hud_of(c.kind).throttle and not gun_seat(c.kind, 0): "{tk}: get out    Shift: throttle" else: "{tk}: get out") + put
     if c.down > 0: return "{tk}: bail out!"
     if touch_input(): return "{tk} held: bail out"
     if len(put) > 0: return put.trim()
@@ -2627,6 +2680,7 @@ draw_touch = (g: Game, p: Person, c: Craft):
         if k.rockets > 0 and g.rules.rockets and c.kind != CARCOPTER: tb(rocket_button(), BUTTON_R, if c.kind == ORNITHOPTER: "Heal" else: "Rocket", touch_rocket)
         if c.kind == ORNITHOPTER: tb(scope_button(), BUTTON_R, "Scope", scoped)
         if k.bombs > 0: tb(bomb_button(), BUTTON_R, "Bomb", touch_bomb)
+    if flying_now and hud_of(c.kind).throttle:
         r = throttle_track()
         held = throttle_want >= 0.0
         panel(r, rgba(0.08, 0.065, 0.05, if held: 0.6 else: 0.4))
@@ -2913,7 +2967,10 @@ draw_lobby = ():
     if hosting and ui_button("Start"): start_fight()
     if ui_button("Switch side") or (ui_ready() and (key_pressed(.tab) or gamepad_pressed(.x))): switch_side()
     # (one's name and insignia are Settings': the others see them change)
-    plane = ui_choice("Plane in the air", PICK_NAMES, settings.plane)
+    # (only what the fight can have: a cat only for Bikes & Brooms)
+    offered = listed_kinds(settings.fight)
+    picked = max(offered.index_of(settings.plane), 0)
+    plane = offered[ui_choice("Plane in the air", offered.map((k): PICK_NAMES[k]), picked)]
     if plane != settings.plane:
         # (the menu's fight again, this one in it)
         settings.plane = plane
@@ -2962,15 +3019,20 @@ draw_fight_page = ():
     text_wrapped(about, vec2(f32(x - 240.0), f32(t0 + 100.0)), 480, T_SMALL, INK_DIM, align = .center)
     # (as close together as the screen's height needs)
     old = ui_style
-    items = if crafts: CHOOSABLE + 1 else: 10
+    items = if crafts: listed_kinds(settings.fight).len() + 2 else: 10
     top = t0 + 180.0
     ui_style.spacing = clamp((f64(safe_rect().y + safe_rect().h) - top - 30.0) / f64(items), 30.0, 50.0)
     ui_style.size = min(34.0, ui_style.spacing * 0.75)
     ui_begin(if crafts: "crafts" else: "fight", vec2(f32(x), f32(top)))
     if crafts:
-        have = crafts_chosen(settings.fight)
-        loop k in 0..CHOOSABLE:
+        # (only the kinds this fight can have; those it must, said so and not to be switched off)
+        m = settings.fight
+        have = (crafts_chosen(m) & MODE_CAN[m]) | MODE_MUST[m]
+        loop k in listed_kinds(m):
             on = have & (1 << k) != 0
+            if MODE_MUST[m] & (1 << k) != 0:
+                ui_text("{capitalize(KIND_NAMES[k])}s: always, {MODE_NAMES[m]} needs them", T_BODY, INK_DIM)
+                continue
             now = ui_switch(capitalize(KIND_NAMES[k]) + "s", on)
             # (one kind there must be)
             if now != on and (now or have & ~(1 << k) != 0): have = have xor (1 << k)
@@ -3016,9 +3078,10 @@ fight_choices = ():
     # (which kinds of craft there are, where the fight does not say: a page of their own)
     if m != CLASSIC and m != TRENCH and m != ESCORT:
         n = 0
-        loop k in 0..CHOOSABLE:
-            if crafts_chosen(m) & (1 << k) != 0: n += 1
-        if ui_button("Crafts: {if n == CHOOSABLE: "all" else: "{n} of {CHOOSABLE}"}"): page = CRAFTS
+        all = listed_kinds(m).len()
+        loop k in listed_kinds(m):
+            if (crafts_chosen(m) | MODE_MUST[m]) & (1 << k) != 0: n += 1
+        if ui_button("Crafts: {if n == all: "all" else: "{n} of {all}"}"): page = CRAFTS
 
 ground_choice = (m: int) -> bool: m == DOGFIGHT or m == BASES or m == FLAG or m == FLAG_RAID or m == RAIDS or m == BIKES
 
