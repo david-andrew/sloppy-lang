@@ -10,8 +10,10 @@
 # The fights: Dogfight (crafts shot down), Classic (Aces' own: fighters, guns, in the air), Base
 # attack (destroy the other side's hangars, fuel and command post), Capture the flag, and two
 # missions where Red attacks: the Trench run (up a gorge, low under its guns, to the depot at its
-# end) and the Bomber escort (Red's bombers to Blue's factory); and the Thunderdome (ornithopters,
-# witches on brooms and a cat each, shooting the other side's targets). Friendly fire is a choice.
+# end) and the Bomber escort (Red's bombers to Blue's factory); the Thunderdome (ornithopters,
+# witches on brooms and a cat each, shooting the other side's targets through its gun towers'
+# fire); and Bikes & Brooms (great leather balls knocked, wicker ones carried, through the other
+# side's rings). Friendly fire is a choice.
 #
 # Rooms, invites and rollback netplay as Aces has them (lib/invite.jo, lib/netplay.jo): only the
 # players' controls travel, and every machine runs the whole fight; the computer fills the sides.
@@ -80,7 +82,7 @@ witch_flame = (team: int) -> vec4: if team == 0: rgb(1.0, 0.25, 0.15) else: rgb(
 is_witch = (g: Game, i: int) -> bool:
     c = g.crafts[i]
     if c.kind != ROCKETEER: return false
-    if g.rules.mode == THUNDERDOME: return true
+    if cat_fight(g.rules.mode): return true
     pi = pilot_of(c)
     pi >= 0 and g.people[pi].witch
 
@@ -134,6 +136,7 @@ struct Settings:
     markers = true              # the crafts marked on the screen (friends, foes, the target)
     plain = false               # (the lobby's: no markers for anyone in the fight)
     thunderdome = THUNDERDOME_CRAFTS  # (and in the Thunderdome)
+    balls = THUNDERDOME_CRAFTS        # (and in Bikes & Brooms, the ball fight)
     heli_follow = false         # (helicopters with the mouse: the nose always where one looks, not looking about freely)
 
 settings = Settings()
@@ -170,10 +173,12 @@ if let saved = load_data("settings"):
     if w.len() >= 20: settings.thunderdome = (to_int(w[19]) ?? THUNDERDOME_CRAFTS) & ALL_CRAFTS
     if settings.thunderdome == 0: settings.thunderdome = THUNDERDOME_CRAFTS
     if w.len() >= 21: settings.heli_follow = w[20] == "1"
+    if w.len() >= 22: settings.balls = (to_int(w[21]) ?? THUNDERDOME_CRAFTS) & ALL_CRAFTS
+    if settings.balls == 0: settings.balls = THUNDERDOME_CRAFTS
 save_settings = ():
     settings.name = my_name()
     b = (x: bool) -> str: if x: "1" else: "0"
-    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers} {settings.crafts} {b(settings.markers)} {b(settings.plain)} {settings.thunderdome} {b(settings.heli_follow)}")
+    save_data("settings", "{b(settings.invert)} {settings.sound} {settings.skill} {b(settings.mouse)} {settings.sides} {settings.side} {wire(settings.name)} {settings.badge} {b(settings.level)} {settings.fight} {b(settings.ff)} {b(settings.ground)} {settings.plane} {settings.win} {settings.minutes} {settings.attackers} {settings.crafts} {b(settings.markers)} {b(settings.plain)} {settings.thunderdome} {b(settings.heli_follow)} {settings.balls}")
 
 # a player's name as shown and sent: up to 12 characters, no commas, one space between words
 # (it travels as an underscore, so a message's words stay words)
@@ -213,8 +218,8 @@ rules_now = () -> Rules:
 
 # (the kinds of craft the lobby has chosen for fight m: the Thunderdome's its own)
 crafts_chosen = (m: int) -> int:
-    c = if m == THUNDERDOME: settings.thunderdome else: settings.crafts
-    if c != 0: c else: if m == THUNDERDOME: THUNDERDOME_CRAFTS else: DEFAULT_CRAFTS
+    c = if m == THUNDERDOME: settings.thunderdome else: if m == BROOMS: settings.balls else: settings.crafts
+    if c != 0: c else: if cat_fight(m): THUNDERDOME_CRAFTS else: DEFAULT_CRAFTS
 
 # what can be chosen to win a fight (the first: its own number), and how long it lasts (minutes)
 win_choices = (m: int) -> int[]:
@@ -222,12 +227,14 @@ win_choices = (m: int) -> int[]:
     if m == DOGFIGHT or m == CLASSIC: return [10 * max(1, (people_a_side() + 5) / 6), 5, 15, 20, 30, 50, 100, 200]
     if m == FLAG or m == FLAG_RAID: return [3, 1, 2, 5, 10]
     if m == THUNDERDOME: return [THUNDERDOME_WIN, 200, 300, 450, 600]
+    if m == BROOMS: return [BROOMS_WIN, 80, 160, 200, 300]
     []
 minute_choices = (m: int) -> int[]:
     if m == TRENCH: return [5, 3, 8, 12]
     if m == ESCORT or m == FLAG_RAID: return [6, 4, 10, 15]
     if m == RAIDS: return [8, 5, 12, 20]
     if m == THUNDERDOME: return [8, 5, 10, 12]
+    if m == BROOMS: return [10, 6, 8, 12, 15]
     []
 
 # the map of a fight
@@ -801,12 +808,12 @@ fight_said = () -> str:
     if r.win > 0 and win_choices(r.mode).len() > 0: out += ", {r.win} to win"
     if r.time_limit > 0: out += ", {r.time_limit} min"
     if r.friendly_fire: out += ", friendly fire"
-    if r.crafts != (if r.mode == THUNDERDOME: THUNDERDOME_CRAFTS else: DEFAULT_CRAFTS) and r.mode != CLASSIC and r.mode != TRENCH and r.mode != ESCORT:
+    if r.crafts != (if cat_fight(r.mode): THUNDERDOME_CRAFTS else: DEFAULT_CRAFTS) and r.mode != CLASSIC and r.mode != TRENCH and r.mode != ESCORT:
         kinds: str[]
         loop k in 0..CHOOSABLE:
             if r.crafts & (1 << k) != 0: kinds.push(KIND_NAMES[k] + "s")
         out += "; {join(kinds, ", ")} only"
-    if (r.mode == DOGFIGHT or r.mode == BASES or r.mode == FLAG or r.mode == THUNDERDOME) and not r.ground_start: out += ", in the air"
+    if (r.mode == DOGFIGHT or r.mode == BASES or r.mode == FLAG or cat_fight(r.mode)) and not r.ground_start: out += ", in the air"
     if r.plain: out += ", no markers"
     out
 
@@ -1627,6 +1634,56 @@ treb_angle = (i: int) -> f64:
     if t < 0.35: return smoothstep(0.0, 0.35, t) * radians(165.0)
     radians(165.0) * (1.0 - smoothstep(0.35, 2.0, t))
 
+# (the ball fight: when each ring last had a ball through it (elapsed()); each ball's turn, rolled
+# the way it goes, here alone)
+ring_lit: {int: f64} = {}
+ball_rot: vec4[]
+# (the ring nearest p: a goal's, by where it was)
+ring_near = (p: vec3) -> int:
+    best = 0
+    least = 1e18
+    loop ri in 0.. and rg in rings():
+        d = f64(length(rg.at - p))
+        if d < least:
+            least = d
+            best = ri
+    best
+
+# the rings on their posts (after a goal flashing, its lamps alight, for 3 s), and the balls: each
+# turned as it rolls, a carried one slung on a rope under its craft and glowing
+draw_balls = (g: Game):
+    loop ri in 0.. and rg in rings():
+        rot = quat_to_mat4(quat_facing(rg.dir))
+        h = f64(rg.at.y - rg.foot.y) - RING_R - 2.0 * RING_RIM - 0.4
+        draw_mesh(models.hoop_post_mesh(rg.team), translation(rg.foot) * rot * scaling(vec3(1, f32(max(h, 1.0)), 1)), specular = 0.05)
+        t = elapsed() - (ring_lit.get(ri) ?? -100.0)
+        if t >= 0.0 and t < 3.0:
+            on = sin(t * 16.0) > -0.2
+            glow = (1.0 - t / 3.0) * (if on: 1.0 else: 0.25)
+            draw_mesh(models.hoop_mesh(rg.team, on), translation(rg.at) * rot, vec4(f32(1.0 + glow), f32(1.0 + glow * 0.8), f32(1.0 + glow * 0.5), 1), emissive = glow * 1.6, specular = 0.4)
+        else: draw_mesh(models.hoop_mesh(rg.team, false), translation(rg.at) * rot, specular = 0.3)
+    loop ball_rot.len() < g.balls.len(): ball_rot.push(vec4(0, 0, 0, 1))
+    dt = frame_time()
+    loop bi in 0.. and b in g.balls:
+        r = BALL_R[b.kind]
+        flat = vec3(b.vel.x, 0, b.vel.z)
+        sp = f64(length(flat))
+        if sp > 0.05 and b.carrier < 0:
+            axis = normalize(cross(vec3(0, 1, 0), flat))
+            ball_rot[bi] = normalize(quat_mul(quat_axis_angle(axis, sp * dt / r * 0.6), ball_rot[bi]))
+        at = translation(b.pos) * quat_to_mat4(ball_rot[bi]) * scaling(vec3(f32(r), f32(r), f32(r)))
+        if b.carrier >= 0:
+            p = g.people[b.carrier]
+            if p.state == SEATED:
+                c = g.crafts[p.craft]
+                top = c.pos - up_of(c) * f32(f64(KINDS[c.kind].half.y) * 0.5)
+                low = b.pos + up_of(c) * f32(r * 0.9)
+                d = low - top
+                if length(d) > 0.1: draw_mesh(tracer, translation((top + low) * 0.5) * facing(normalize(d)) * scaling(vec3(0.07, 0.07, length(d))), rgb(0.7, 0.6, 0.42), specular = 0.0, cast_shadow = false)
+            pulse = 0.35 + 0.25 * sin(elapsed() * 6.0)
+            draw_mesh(models.ball_mesh(b.kind), at, vec4(1.15, 1.1, 0.95, 1), emissive = pulse, specular = 0.3)
+        else: draw_mesh(models.ball_mesh(b.kind), at, specular = 0.15)
+
 # a gunner from the waist up, at a gun at `pivot` aimed along aim: a metre behind it (or `back`),
 # facing it
 draw_gunner = (team: int, pivot: vec3, aim: vec3, back: f64 = 1.0):
@@ -1731,6 +1788,7 @@ draw = ():
             p = g.people[f.carrier]
             at = if p.state == SEATED: point_of(g.crafts[p.craft], vec3(0, 1.5, 1.5)) else: p.pos + vec3(0, 0.5, 0)
         draw_mesh(flag_meshes[f.team], translation(at) * scaling(vec3(if f.carrier >= 0: 0.35 else: 1.0)), specular = 0.05)
+    if g.balls.len() > 0: draw_balls(g)
     # the crafts: whole, falling in flames, or a wreck; their propellers turning, their guns
     loop prop_turn.len() < g.crafts.len(): prop_turn.push(0.0)
     loop i in 0.. and c in g.crafts:
@@ -1898,12 +1956,23 @@ effects = (dt: f64):
                 # (a witch's embers: more of them and larger, a trail in her side's color)
                 wi = is_witch(g, i)
                 emit(fire, at, if wi: 2 else: 1, 3.0, if wi: witch_flame(c.team) else: rgb(1.0, 0.6, 0.2), if wi: 0.32 else: 0.18, 0.3, if wi: 0.9 else: 0.6, fwd_of(c) * -1.0)
+        # (a ring a ball went through: fire running round its rim, sparks in the scorers' color, while it flashes)
+        loop ri, t0 in ring_lit:
+            t = elapsed() - t0
+            if t < 0.0 or t > 2.5 or ri >= rings().len(): continue
+            rg = rings()[ri]
+            across = normalize(cross(rg.dir, vec3(0, 1, 0)))
+            loop k in 0..3:
+                a = TAU * random()
+                pt = rg.at + across * f32(cos(a) * 15.0) + vec3(0, f32(sin(a) * 15.0), 0)
+                emit(fire, pt, 2, 3.0, rgb(1.0, 0.7, 0.3), 0.6, 3.0)
+                emit(sparks, pt, 2, 10.0, COLORS[1 - rg.team], 1.2, 0.9)
         # (what burns on the ground)
         if hash(g.tick) % 4 == 0:
             loop b in g.buildings:
                 if b.health <= 0 and b.kind != AA: emit(smoke, b.pos + vec3(0, 3, 0), 1, 2.0, rgba(0.15, 0.14, 0.13, 0.6), 6.0, 9.0)
     loop b in g.booms:
-        key = b.tick * 4096 + b.kind * 128 + b.who + 1
+        key = b.tick * 1048576 + b.kind * 16384 + b.who + 1
         if seen.has(key) or g.tick - b.tick > 30: continue
         seen[key] = true
         mine_hit = b.kind == HIT and b.who == myc and myc >= 0
@@ -1997,17 +2066,55 @@ effects = (dt: f64):
             if in_fight: play_at(snd_whistle, b.pos, settings.sound * 0.35, 1200.0)
         else if b.kind == OPENED:
             if in_fight: play_at(snd_chute, b.pos, settings.sound * 0.5, 600.0)
+        else if b.kind == STRUCK:
+            # (a ball struck: a thump, dust off its leather)
+            emit(smoke, b.pos, 4, 3.0, rgba(0.72, 0.66, 0.55, 0.5), 0.8, 2.0)
+            emit(sparks, b.pos, 5, 7.0, rgb(1.0, 0.9, 0.6), 0.3, 0.25)
+            if in_fight: play_at(snd_thump, b.pos, settings.sound * 0.7, 900.0)
+        else if b.kind == CAUGHT:
+            if in_fight: play_at(snd_catch, b.pos, settings.sound * 0.6, 700.0)
+        else if b.kind == GOAL and rings().len() > 0:
+            # (a goal: the ring flashes, fire round its rim, a burst of sparks through it in the
+            # scorers' color and brass, smoke; a bell and a boom)
+            ri = ring_near(b.pos)
+            ring_lit[ri] = elapsed()
+            rg = rings()[ri]
+            col = COLORS[1 - rg.team]
+            across = normalize(cross(rg.dir, vec3(0, 1, 0)))
+            loop k in 0..32:
+                a = TAU * f64(k) / 32.0
+                pt = rg.at + across * f32(cos(a) * 15.0) + vec3(0, f32(sin(a) * 15.0), 0)
+                emit(fire, pt, 6, 6.0, rgb(1.0, 0.72, 0.28), 1.0, 4.5)
+                emit(sparks, pt, 8, 20.0, col, 1.8, 1.1)
+            loop way in [rg.dir, rg.dir * -1.0]: emit(sparks, rg.at, 140, 45.0, rgb(1.0, 0.85, 0.45), 2.4, 1.2, 0.8, way)
+            emit(sparks, rg.at, 160, 30.0, col, 2.6, 1.4)
+            emit(fire, rg.at, 60, 18.0, rgb(1.0, 0.65, 0.25), 0.8, 7.0)
+            emit(smoke, rg.at, 40, 10.0, rgba(0.92, 0.9, 0.84, 0.6), 3.5, 14.0)
+            if in_fight:
+                play_at(snd_goal, rg.at, settings.sound, 5000.0)
+                play_at(snd_boom, rg.at, settings.sound * 0.4, 3000.0)
         if not in_fight: continue
         # (said large when it is this one's doing, smaller for the rest of the fight)
-        if b.kind == SHOT_DOWN and g.crafts[b.who].kind == CAT and g.rules.mode == THUNDERDOME:
+        if b.kind == SHOT_DOWN and g.crafts[b.who].kind == CAT and cat_fight(g.rules.mode):
             # (the cat down: said large, whoever did it)
             side = 1 - crew_at(g, b.who)
             who = if b.by == me(): "you" else: if b.by >= 0: call(g, b.by) else: "flak"
-            say("{who} shot down {TEAMS[1 - side]}'s cat: {CAT_POINTS} to {TEAMS[side]}!", COLORS[side])
+            say("{who} shot down {TEAMS[1 - side]}'s cat: {cat_points(g.rules.mode)} to {TEAMS[side]}!", COLORS[side])
             if b.who == myc: say("{if touch_input(): "In/Out" else: "T"} to bail out", gray(0.9), small = true)
         else if b.kind == RAMMED:
             if b.by == me(): say("you rammed {call_craft(g, b.who)}", COLORS[1 - g.crafts[b.who].team], small = true)
             else if b.who == myc: say("rammed by {TEAMS[1 - g.crafts[b.who].team]}'s cat!", rgb(1, 0.5, 0.4))
+        else if b.kind == GOAL and b.who >= 0 and b.who < g.balls.len() and rings().len() > 0:
+            rg = rings()[ring_near(b.pos)]
+            side = 1 - rg.team
+            who = if b.by == me(): "you" else: if b.by >= 0: call(g, b.by) else: "no one"
+            own = if b.by >= 0 and g.people[b.by].team == rg.team: " (their own!)" else: ""
+            say("{who} put the {BALL_NAMES[g.balls[b.who].kind]} through {TEAMS[rg.team]}'s ring{own}: {BALL_POINTS[g.balls[b.who].kind]} to {TEAMS[side]}!", COLORS[side])
+        else if b.kind == CAUGHT and b.by >= 0: say(if b.by == me(): "you have a ball: through their rings with it" else: "{call(g, b.by)} took a carry ball", COLORS[g.people[b.by].team], small = b.by != me())
+        else if b.kind == LOOSE and b.by >= 0:
+            if b.by == me(): say("you dropped the ball", gray(0.9))
+            else: say("{call(g, b.by)} dropped a ball", with_alpha(COLORS[g.people[b.by].team], 0.75), small = true)
+        else if b.kind == BALL_BACK: say("a ball left alone is back in the middle", gray(0.8), small = true)
         else if b.kind == MENDED and b.who >= 0 and b.who < g.buildings.len(): say("{TEAMS[g.buildings[b.who].team]}'s target is up again", with_alpha(COLORS[g.buildings[b.who].team], 0.75), small = true)
         else if b.kind == SHOT_DOWN:
             c = g.crafts[b.who]
@@ -2034,7 +2141,7 @@ effects = (dt: f64):
     if seen.len() > 600:
         keep: {int: bool} = {}
         loop k, v in seen:
-            if k / 4096 > g.tick - 60: keep[k] = v
+            if k / 1048576 > g.tick - 60: keep[k] = v
         seen = keep
     smoke.update(dt)
     fire.update(dt)
@@ -2102,6 +2209,12 @@ snd_pistol = mix([tone(700.0, 0.08, .noise, 0.45, 0.001, 0.07, 0.5), tone(150.0,
 snd_squeak = mix([tone(1750.0, 0.16, .triangle, 0.16, 0.02, 0.1, 1.35, 0.3), tone(500.0, 0.09, .noise, 0.05, 0.005, 0.07, 0.8)])
 snd_whistle = tone(1400.0, 2.2, .sine, 0.12, 0.05, 0.3, 0.45)
 snd_chute = tone(300.0, 0.35, .noise, 0.4, 0.01, 0.3, 0.6)
+# (the ball fight: a ball struck, a leather thump; one taken, a click of its brass ring; a goal, a
+# bell rung over a boom)
+snd_thump = mix([tone(70.0, 0.25, .noise, 0.7, 0.002, 0.22, 0.5), tone(110.0, 0.2, .sine, 0.4, 0.002, 0.18, 0.6)])
+snd_catch = mix([tone(880.0, 0.2, .triangle, 0.2, 0.003, 0.17, 1.3), tone(2400.0, 0.05, .noise, 0.2, 0.001, 0.04, 0.6)])
+snd_goal = mix([tone(523.25, 2.2, .sine, 0.28, 0.003, 2.0), tone(659.25, 2.0, .sine, 0.22, 0.003, 1.8), tone(784.0, 2.4, .sine, 0.22, 0.003, 2.2), tone(1318.5, 1.2, .triangle, 0.1, 0.003, 1.1),
+                tone(1046.5, 0.25, .sine, 0.2, 0.6, 0.2), tone(80.0, 0.9, .noise, 0.6, 0.002, 0.8, 0.5)])
 const VOICES = 8                # (engines heard at once: the nearest)
 engine_ids: int[]
 wind_id = -1
@@ -2329,6 +2442,31 @@ draw_hud = (g: Game):
                 col = with_alpha(COLORS[b.team], 0.7)
                 triangle(at + vec2(0, -7), at + vec2(-5, 0), at + vec2(5, 0), col)
                 triangle(at + vec2(0, 7), at + vec2(5, 0), at + vec2(-5, 0), col)
+    # (the ball fight: each ball ringed in brass, its points under it near; one carried, ringed in
+    # its carrier's color, said whose; the rings, whose)
+    if g.balls.len() > 0 and markers_on(g):
+        loop b in g.balls:
+            if b.carrier == me() or f64(dot(b.pos - cam_pos, cam_at - cam_pos)) <= 0.0: continue
+            d = f64(length(b.pos - cam_pos))
+            if d > 3000.0: continue
+            if let at = world_to_screen(b.pos):
+                if not inside(at): continue
+                rr = clamp(900.0 * BALL_R[b.kind] / max(d, 1.0), 4.0, 80.0)
+                if b.carrier >= 0:
+                    col = COLORS[g.people[b.carrier].team]
+                    ring(at, rr + 6.0, 3, with_alpha(col, 0.9))
+                    ring(at, rr + 11.0, 1.5, with_alpha(BRASS, 0.8))
+                    if d < 1800.0: text("ball", at + vec2(f32(rr + 15.0), -8), 14, with_alpha(col, 0.9), with_alpha(SHADOW, 0.5))
+                else:
+                    ring(at, rr + 4.0, 1.5, with_alpha(BRASS, 0.75))
+                    if d < 1500.0: text_centered("{BALL_POINTS[b.kind]}", at + vec2(0, f32(rr + 14.0)), 14, with_alpha(BRASS, 0.85))
+        # (far off, the middle one of each three alone said)
+        loop ri in 0.. and rg in rings():
+            over = rg.at + vec3(0, f32(RING_R + 9.0), 0)
+            far = f64(length(over - cam_pos))
+            if f64(dot(over - cam_pos, cam_at - cam_pos)) <= 0.0 or far > 4500.0 or (ri % 3 != 1 and far > 1500.0): continue
+            if let at = world_to_screen(over):
+                if inside(at): text_centered(if rg.team == team: "your ring" else: "their ring", at, 14, with_alpha(COLORS[rg.team], 0.75))
     # the flags, wherever they are
     loop f in g.flags:
         if not f.real:
@@ -2504,8 +2642,8 @@ craft_plate = (g: Game, c: Craft, k: Kind, p: Person, team: int):
     if c.kind == BALLOON:
         rows.push(("the cannon nearest your aim", "X", INK))
         if p.seat == 0: rows.push(("burner up, cool down", "S W", INK_DIM))
-    # (a rocketeer, outside the Thunderdome: K for the witch's broom, or back)
-    if c.kind == ROCKETEER and g.rules.mode != THUNDERDOME and not touch_input(): rows.push((if is_witch(g, p.craft): "the rocket pack" else: "a witch's broom", "K", INK_DIM))
+    # (a rocketeer, outside the Thunderdome and Bikes & Brooms: K for the witch's broom, or back)
+    if c.kind == ROCKETEER and not cat_fight(g.rules.mode) and not touch_input(): rows.push((if is_witch(g, p.craft): "the rocket pack" else: "a witch's broom", "K", INK_DIM))
     if tracking and not touch_input() and p.seat == 0: rows.push(("looking at the target", "C", INK_DIM))
     guns = at_gun or k.guns
     w = 270.0
@@ -2765,7 +2903,7 @@ draw_score = (g: Game, team: int, x: f64, y0: f64):
     w = max(300.0, text_width(goal, T_SMALL - 1.0) + 2.0 * PAD + 10.0)
     y = y0 + 10.0
     panel(Rect(f32(x - w / 2.0), f32(y), f32(w), 84))
-    if m == DOGFIGHT or m == CLASSIC or m == FLAG or m == FLAG_RAID or m == THUNDERDOME:
+    if m == DOGFIGHT or m == CLASSIC or m == FLAG or m == FLAG_RAID or cat_fight(m):
         text_centered("{g.scores[0]}", vec2(f32(x - 46.0), f32(y + 32.0)), 40, COLORS[0], SHADOW)
         text_centered("{g.scores[1]}", vec2(f32(x + 46.0), f32(y + 32.0)), 40, COLORS[1], SHADOW)
         text_centered("·", vec2(f32(x), f32(y + 30.0)), 30, INK_FAINT)
@@ -2795,6 +2933,7 @@ draw_score = (g: Game, team: int, x: f64, y0: f64):
         panel(Rect(f32(x - 40.0), f32(y + 90.0), 80, 28))
         text_centered(t, vec2(f32(x), f32(y + 104.0)), T_BODY, if left < 30: WARN else: INK)
     if m == FLAG or m == FLAG_RAID: flag_hint(g, team, x, y0 + 26.0)
+    if m == BROOMS: ball_hint(g, team, x, y0 + 26.0)
 
 # the fight's aim, in a line
 goal_text = (g: Game, team: int) -> str:
@@ -2804,6 +2943,9 @@ goal_text = (g: Game, team: int) -> str:
     if m == THUNDERDOME:
         late = g.rules.time_limit > 0 and g.tick >= g.rules.time_limit * 3600
         return if late and g.winner < 0: "level at the time: the next points win" else: "shoot their targets; shoot down their cat for {CAT_POINTS}. First to {g.rules.win}"
+    if m == BROOMS:
+        late = g.rules.time_limit > 0 and g.tick >= g.rules.time_limit * 3600
+        return if late and g.winner < 0: "level at the time: the next goal wins" else: "balls through their rings; shoot down their cat for {BROOMS_CAT}. First to {g.rules.win}"
     if m == FLAG: return "flags home: first to {g.rules.win} (yours must be home to score)"
     if m == FLAG_RAID: return if team == att: "take their flag to your field: {g.rules.win} to win" else: "keep your flag: {TEAMS[att]} needs {g.rules.win}"
     if m == BASES: return "destroy their hangars, fuel and command post"
@@ -2828,6 +2970,20 @@ flag_hint = (g: Game, team: int, x: f64, y: f64):
             text_centered("your flag is not home: it must be, to score (get it back)", vec2(f32(x), f32(y + 136.0)), 18, rgb(1.0, 0.8, 0.5))
         else: text_centered("take it to your flag's place, at your field", vec2(f32(x), f32(y + 136.0)), 18, rgb(1.0, 0.9, 0.6))
         point_at(home + vec3(0, 10, 0), "here", COLORS[team])
+
+# (the ball fight: carrying a ball, where to take it, said, and the nearest of their rings pointed at)
+ball_hint = (g: Game, team: int, x: f64, y: f64):
+    if ball_of(g, me()) < 0: return
+    text_centered("through one of their rings with it (hit hard, you drop it)", vec2(f32(x), f32(y + 136.0)), 18, rgb(1.0, 0.9, 0.6))
+    if not markers_on(g): return
+    best = -1
+    least = 1e18
+    loop ri in 0.. and rg in rings():
+        d = f64(length(rg.at - cam_pos))
+        if rg.team != team and d < least:
+            least = d
+            best = ri
+    if best >= 0: point_at(rings()[best].at, "through here", COLORS[team])
 
 # a place marked: its word over it when it is in sight, else an arrow to it
 point_at = (at: vec3, what: str, col: vec4):
@@ -2879,7 +3035,7 @@ draw_won = (g: Game, team: int, x: f64):
     text_centered(if g.winner == team: "Your side won" else: "{TEAMS[g.winner]} won", vec2(f32(x), f32(y + 50.0)), 54, COLORS[g.winner], SHADOW)
     m = g.rules.mode
     sub = MODE_NAMES[m]
-    if m == DOGFIGHT or m == CLASSIC or m == FLAG or m == FLAG_RAID: sub += ", {g.scores[0]} to {g.scores[1]}"
+    if m == DOGFIGHT or m == CLASSIC or m == FLAG or m == FLAG_RAID or m == BROOMS: sub += ", {g.scores[0]} to {g.scores[1]}"
     text_centered(sub, vec2(f32(x), f32(y + 96.0)), T_BODY, INK_DIM)
     line(vec2(f32(x - 280.0), f32(y + 120.0)), vec2(f32(x + 280.0), f32(y + 120.0)), 1, BRASS_DIM)
     loop t in 0..2: text_centered("{TEAMS[t]}: shot down", vec2(f32(x + (if t == 0: -160.0 else: 160.0)), f32(y + 140.0)), T_SMALL - 2.0, INK_FAINT)
@@ -3213,6 +3369,7 @@ draw_fight_page = ():
             # (one kind there must be)
             if now != on and (now or have & ~(1 << k) != 0): have = have xor (1 << k)
         if settings.fight == THUNDERDOME: settings.thunderdome = have
+        else if settings.fight == BROOMS: settings.balls = have
         else: settings.crafts = have
         if ui_button("Back") or ui_back(): page = FIGHT
     else:
@@ -3231,6 +3388,7 @@ FIGHT_ABOUT = [
     "The attackers take the defenders' flag home to their field, again and again; the defenders hold it.",
     "Each side's bombers go for the other's factory.",
     "Through their gun towers' fire, shoot the other side's targets ({TARGET_POINTS} points; they come back) and shoot down its cat ({CAT_POINTS}; it has no guns, it rams). Shoot down their cat and you'll likely win.",
+    "Knock balls through the other side's three rings, behind its field: great ones {BALL_POINTS[BIG_BALL]}, middling {BALL_POINTS[MID_BALL]}, small {BALL_POINTS[SMALL_BALL]}; carry a wicker one through ({BALL_POINTS[CARRY_BALL]}; hit hard, you drop it). Their cat: {BROOMS_CAT}.",
 ]
 
 # the host's choices of the fight: which, who attacks, what wins it, how long, how it starts
@@ -3244,7 +3402,7 @@ fight_choices = ():
         settings.minutes = 0
     if one_sided(m): settings.attackers = ui_choice("Attacking", TEAMS, settings.attackers)
     wins = win_choices(m)
-    if wins.len() > 0: settings.win = ui_choice(if m == FLAG or m == FLAG_RAID: "Flags to win" else: if m == THUNDERDOME: "Points to win" else: "Shot down to win", wins.map((x): "{x}"), clamp(settings.win, 0, wins.len() - 1))
+    if wins.len() > 0: settings.win = ui_choice(if m == FLAG or m == FLAG_RAID: "Flags to win" else: if cat_fight(m): "Points to win" else: "Shot down to win", wins.map((x): "{x}"), clamp(settings.win, 0, wins.len() - 1))
     mins = minute_choices(m)
     if mins.len() > 0: settings.minutes = ui_choice("Minutes", mins.map((x): "{x}"), clamp(settings.minutes, 0, mins.len() - 1))
     if ground_choice(m): settings.ground = ui_switch("Start on the ground", settings.ground)
@@ -3259,7 +3417,7 @@ fight_choices = ():
             if (crafts_chosen(m) | MODE_MUST[m]) & (1 << k) != 0: n += 1
         if ui_button("Crafts: {if n == all: "all" else: "{n} of {all}"}"): page = CRAFTS
 
-ground_choice = (m: int) -> bool: m == DOGFIGHT or m == BASES or m == FLAG or m == FLAG_RAID or m == RAIDS or m == THUNDERDOME
+ground_choice = (m: int) -> bool: m == DOGFIGHT or m == BASES or m == FLAG or m == FLAG_RAID or m == RAIDS or cat_fight(m)
 
 # (the middle of the room's and the last fight's boxes: right of the menu; upright, under it)
 box_x = () -> f64: if upright: f64(mid().x) else: 920.0
