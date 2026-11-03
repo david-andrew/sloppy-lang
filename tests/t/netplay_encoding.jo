@@ -1,0 +1,52 @@
+# requires: sloppy
+# a server whose worlds go in the game's own bytes, each a delta against the world the client last
+# had (encoding, decoding): the first in full, then only what changed
+import netplay
+struct Pad:
+    dx = 0
+struct World:
+    pos: {int: int}
+apply = (w: World, p: int, pad: Pad, seen: World) -> World:
+    out = w
+    out.pos[p] += pad.dx
+    out
+
+# (the entries that differ from base, as "key value" pairs; a key gone, as "key x")
+encode = (w: World, p: int, base: World?) -> u8[]:
+    b = base ?? World()
+    parts: str[]
+    loop k, v in w.pos:
+        if b.pos.get(k) != v: parts.push("{k} {v}")
+    loop k, _ in b.pos:
+        if not w.pos.has(k): parts.push("{k} x")
+    bytes(join(parts, ","))
+decode = (data: u8[], base: World?) -> World:
+    w = base ?? World()
+    t = str_from_bytes(data)
+    if len(t) == 0: return w
+    loop part in split(t, ","):
+        kv = split(part, " ")
+        k = to_int(kv[0])!
+        if kv[1] == "x": w.pos.remove(k)
+        else: w.pos[k] = to_int(kv[1])!
+    w
+
+srv = netplay.server(World(), apply, (w: World): w)
+srv.encoding(encode)
+c = netplay.client(World(), apply)
+c.decoding(decode)
+srv.join(1)
+srv.world.pos[1] = 0
+loop k in [2..12): srv.world.pos[k] = k * 10
+sizes: int[]
+loop tick in [0..12):
+    if tick == 6: srv.world.pos.remove(11)
+    srv.update()
+    loop o in srv.outgoing():
+        sizes.push(o.1.len())
+        c.receive(o.1)
+    if c.connected(): c.play(Pad(dx = 1))
+    loop b in c.outgoing(): srv.receive(1, b)
+print(c.server == srv.world or c.server_tick < srv.tick, c.server.pos.len(), c.server.pos[1] > 0, c.problem)
+# (the first world whole, later ones a few bytes: the one entry that moved)
+print(sizes[0] > 60, sizes[sizes.len() - 1] < 40)

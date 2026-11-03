@@ -884,6 +884,9 @@ struct Server[W, I]:
     __lag: __CsLag
     __view: (W, int) -> W
     __viewing = false
+    __encode: (W, int, W?) -> u8[]
+    __encoding = false
+    __sent: {int: (int, W)[]}       # (each player's last worlds sent, by tick: the base of the next)
 
 const __CS_HIST = 64
 
@@ -897,6 +900,7 @@ struct __CsClient[I]:
     since = 0.0                     # when it joined (elapsed())
     since_tick = 0                  # (and the server's tick then)
     applied = 0                     # its inputs applied since
+    have = -1                       # the latest world it has (by tick)
 
 # (a simulated slow network on what one side sends: latency, jitter; in order, as TCP keeps it)
 struct __CsLag:
@@ -928,6 +932,7 @@ struct __CsInput[I]:
     seq: int
     seen: int
     input: I
+    have = -1                       # (the latest world the client has: the base of the next)
 
 struct __CsWorld[W]:
     you: int
@@ -937,7 +942,7 @@ struct __CsWorld[W]:
     world: W
 
 server[W, I] = (world: W, apply: (W, int, I, W) -> W, step: (W) -> W) -> Server[W, I]:
-    s = Server[W, I](world = world, apply = apply, step = step, __view = (w: W, p: int) -> W: w)
+    s = Server[W, I](world = world, apply = apply, step = step, __view = (w: W, p: int) -> W: w, __encode = (w: W, p: int, base: W?) -> u8[]: [])
     s.__hist = fill(world, __CS_HIST)
     s
 
@@ -948,14 +953,27 @@ per_player[W, I] = (s: mut Server[W, I], view: (W, int) -> W):
     s.__view = view
     s.__viewing = true
 
+# The worlds in the game's own bytes, made against what each client already has: encode(world,
+# player, base) gives the bytes for player, where base is the world that player's client last
+# got (none at first, or when it is too far behind), and the client's decode(bytes, base) makes
+# the world again from them and the same base. Only what changed since base need go: a delta, as
+# small as the game can make it (varints, the soldiers that moved). With per_player, world is
+# what view gave for the player. The bytes go as they are (not deflated). The client says
+# c.decoding(decode).
+encoding[W, I] = (s: mut Server[W, I], encode: (W, int, W?) -> u8[]):
+    s.__encode = encode
+    s.__encoding = true
+
 # a player connected (as the player number, any int); a player left. On a server that listens, a
 # player of a number below 0 is the host's own, fed by hand: srv.join(-1), srv.receive(-1, data)
 # with what its client sends, and what srv.outgoing() has for -1 given to that client's receive
 join[W, I] = (s: mut Server[W, I], player: int):
     s.__clients[player] = __CsClient[I](since = elapsed(), since_tick = s.tick)
+    s.__sent.remove(player)
     s.__came.push(player)
 leave[W, I] = (s: mut Server[W, I], player: int):
     s.__clients.remove(player)
+    s.__sent.remove(player)
     s.__went.push(player)
 
 # bytes from a player
@@ -975,6 +993,7 @@ receive[W, I] = (s: mut Server[W, I], player: int, data: u8[]):
         s.__clients[player].warned = true
         return
     s.__clients[player].queue.push((r.seq, r.seen, r.input))
+    if r.have > s.__clients[player].have: s.__clients[player].have = r.have
 
 # The game's own messages beside the worlds, on the same connection: a chat line, "round over", a
 # score; text, in order, never lost (as the worlds are not either). The server says to one player
@@ -1079,6 +1098,9 @@ update[W, I] = (s: mut Server[W, I]):
             # (a client still behind on the worlds before, as one on a slow link: this one is not
             # queued behind them, the next replaces it, and the server's memory stays as it is)
             if s.__port >= 0 and p >= 0 and net.backlog(p) > max(z.len() * 2, 16384): continue
+            if s.__encoding:
+                __cs_send_encoded(s, p, c.have, c.acked)
+                continue
             b: u8[] = [if s.compress: 2 else: 4]
             b.extend(bytes("{p} {s.tick} {c.acked} {s.ticks_per_second} "))
             if s.__viewing:
@@ -1089,6 +1111,28 @@ update[W, I] = (s: mut Server[W, I]):
             __cs_server_send(s, p, b)
     if s.__lag.held.len() > 0:
         loop m in __cs_lag_due(s.__lag): __cs_server_put(s, m.0, m.1)
+
+# (a world in the game's bytes: 5, "you tick ack rate base ", then encode's bytes against the
+# world of tick base the client has, -1 for none)
+__cs_send_encoded[W, I] = (s: mut Server[W, I], p: int, have: int, acked: int):
+    w = s.world
+    if s.__viewing: w = s.__view(s.world, p)
+    sent = s.__sent.get(p) ?? []
+    base: W? = none
+    bt = -1
+    loop e in sent:
+        if e.0 == have:
+            base = e.1
+            bt = e.0
+    # (the ones before the base are no longer needed: the client has a newer one)
+    if bt >= 0: sent = [loop e in sent: if e.0 >= bt: e]
+    b: u8[] = [5]
+    b.extend(bytes("{p} {s.tick} {acked} {s.ticks_per_second} {bt} "))
+    b.extend(s.__encode(w, p, base))
+    sent.push((s.tick, w))
+    if sent.len() > 32: sent = sent[sent.len() - 32..]
+    s.__sent[p] = sent
+    __cs_server_send(s, p, b)
 
 __cs_server_send[W, I] = (s: mut Server[W, I], p: int, b: u8[]):
     if s.__lag.ms > 0.0 or s.__lag.jitter > 0.0: __cs_lag_hold(s.__lag, p, b)
@@ -1115,6 +1159,8 @@ struct Client[W, I]:
     ticks_per_second = 60.0         # the server's (from its worlds): play once a tick at this rate
     ping = 0.0                      # milliseconds from an input sent to the world that answers it (smoothed)
     messages: str[]                 # the server's own messages that came in the last play (say)
+    __decode: (u8[], W?) -> W
+    __decoding = false
     __seq = 0
     __pending: (int, I)[]           # inputs the server has not answered yet
     __sent: (int, f64)[]            # (when each of those was sent)
@@ -1140,7 +1186,13 @@ struct Client[W, I]:
     __lag: __CsLag
 
 client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]:
-    Client[W, I](apply = apply, state = start, server = start)
+    Client[W, I](apply = apply, state = start, server = start, __decode = (b: u8[], base: W?) -> W: start)
+
+# the worlds from a server with encoding: decode(bytes, base) makes the world from the server's
+# encode bytes and the world base this client already had (none when it had none)
+decoding[W, I] = (c: mut Client[W, I], decode: (u8[], W?) -> W):
+    c.__decode = decode
+    c.__decoding = true
 
 # connect to the server; hello: text the server gets as srv.hello(player) (a name, a token to
 # know a player again by after a reconnect). A client that lost its connection, or called
@@ -1252,7 +1304,7 @@ play[W, I] = (c: mut Client[W, I], input: I):
     c.__pending.push((c.__seq, input))
     c.__sent.push((c.__seq, elapsed()))
     seen = int(floor(view_tick(c)))
-    __cs_client_send(c, bytes(to_text(__CsInput[I](c.__seq, seen, input))))
+    __cs_client_send(c, bytes(to_text(__CsInput[I](c.__seq, seen, input, c.server_tick))))
     c.state = c.apply(c.state, c.me, input, c.state)
 
 # bytes from the server
@@ -1260,7 +1312,7 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
     if data.len() > 0 and data[0] == 3:
         c.messages.push(str_from_bytes(data[1..]))
         return
-    r = __cs_world[W](data)
+    r = if data.len() > 0 and data[0] == 5: __cs_encoded(c, data) else: __cs_world[W](data)
     if r is TextError:
         __cs_problem(c, "a world from the server could not be read: does it run another build of the game? ({r.message})")
         return
@@ -1299,6 +1351,26 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
         c.__sent = c.__sent[k..]
     c.state = r.world
     loop p in c.__pending: c.state = c.apply(c.state, c.me, p.1, c.state)
+
+# (a world in the game's bytes: 5, "you tick ack rate base ", then encode's bytes)
+__cs_encoded[W, I] = (c: mut Client[W, I], data: u8[]) -> __CsWorld[W] | TextError:
+    if not c.__decoding: return TextError("the server encodes its worlds: the client needs c.decoding(decode)", 1, 1)
+    sp = 0
+    k = 1
+    loop k < data.len() and sp < 5:
+        if data[k] == ' ': sp += 1
+        k += 1
+    head = split(trim(str_from_bytes(data[1..k))), " ")
+    if head.len() != 5: return TextError("a world's header is not readable", 1, 1)
+    bt = to_int(head[4]) ?? -1
+    base: W? = none
+    if bt >= 0:
+        loop e in c.__worlds:
+            if e.0 == bt: base = e.1
+        if base == none: return TextError("a world was made against tick {bt}, which this client no longer has", 1, 1)
+    rate = to_float(head[3]) ?? 60.0
+    if rate <= 0.0: rate = 60.0
+    __CsWorld[W](to_int(head[0]) ?? -1, to_int(head[1]) ?? -1, to_int(head[2]) ?? -1, rate, c.__decode(data[k..], base))
 
 # (a world as the server sends it: 2, "you tick ack rate ", then the world's text deflated)
 __cs_world[W] = (data: u8[]) -> __CsWorld[W] | TextError:

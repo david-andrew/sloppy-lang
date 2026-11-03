@@ -6027,6 +6027,7 @@ draw = ():
   ```
 - `server[W, I] = (world: W, apply: (W, int, I, W) -> W, step: (W) -> W) -> Server[W, I]`
 - `per_player[W, I] = (s: mut Server[W, I], view: (W, int) -> W)`: what each player is sent: view(world, player) for the whole world, as what that player can see (the others near them, their side's), so that a big world goes out to each a part of it. The client's state and view are then that part
+- `encoding[W, I] = (s: mut Server[W, I], encode: (W, int, W?) -> u8[])`: The worlds in the game's own bytes, made against what each client already has: encode(world, player, base) gives the bytes for player, where base is the world that player's client last got (none at first, or when it is too far behind), and the client's decode(bytes, base) makes the world again from them and the same base. Only what changed since base need go: a delta, as small as the game can make it (varints, the soldiers that moved). With per_player, world is what view gave for the player. The bytes go as they are (not deflated). The client says c.decoding(decode).
 - `join[W, I] = (s: mut Server[W, I], player: int)`: a player connected (as the player number, any int); a player left. On a server that listens, a player of a number below 0 is the host's own, fed by hand: srv.join(-1), srv.receive(-1, data) with what its client sends, and what srv.outgoing() has for -1 given to that client's receive
 - `leave[W, I] = (s: mut Server[W, I], player: int)`
 - `receive[W, I] = (s: mut Server[W, I], player: int, data: u8[])`: bytes from a player
@@ -6061,6 +6062,7 @@ draw = ():
                                       # on purpose (net.close: problem says its reason)
   ```
 - `client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]`
+- `decoding[W, I] = (c: mut Client[W, I], decode: (u8[], W?) -> W)`: the worlds from a server with encoding: decode(bytes, base) makes the world from the server's encode bytes and the world base this client already had (none when it had none)
 - `connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = "")`: connect to the server; hello: text the server gets as srv.hello(player) (a name, a token to know a player again by after a reconnect). A client that lost its connection, or called disconnect, connects again the same way (or by itself, with c.reconnect = true: the server sees a new player then, whose hello is the same)
 - `disconnect[W, I] = (c: mut Client[W, I])`: close the connection (connect again later, to the same server or another)
 - `lag[W, I] = (c: mut Client[W, I], ms: f64, jitter_ms: f64 = 0)`: simulate a slow network on what the client sends and gets: ms more latency each way, up to jitter_ms more at random (kept in order, as over TCP)

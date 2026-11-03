@@ -395,7 +395,13 @@ travel (effects, sounds) out of it, or in the client only. A big world (a hundre
 army each) goes out in parts: `srv.per_player((w: World, p: int) -> World: ...)` gives each
 player the world as that player should see it (the soldiers near them, their side's), and is
 what that client's `state` and `view()` then hold. `srv.compress = false` sends the worlds as
-text, not deflated: cheaper for the server to make, when its bandwidth is not what is short. A
+text, not deflated: cheaper for the server to make, when its bandwidth is not what is short.
+For the fewest bytes, the game writes the worlds itself, each against the last one that client
+has: `srv.encoding((w: World, p: int, base: World?) -> u8[]: ...)` on the server and
+`c.decoding((data: u8[], base: World?) -> World: ...)` on the client, where `base` is the same
+world on both sides (none for the first, or after a client fell far behind). Only what changed
+since `base` need go (the soldiers that moved, as varints), and nothing is turned into text or
+deflated; with `per_player`, `w` is that player's part. tests/t/netplay_encoding.jo has one. A
 client still behind on the worlds before (a slow link) is not sent the next one until it has
 caught up: a newer one replaces it. A screenshot run
 (`SLOPPY_SCREENSHOT`) of a connected client keeps to real time, as the server does.
@@ -501,13 +507,16 @@ byte that says what it is.
   text for values, as `World(pos={1: 3}, hits=0)`), compressed with raw deflate (RFC 1951, no
   zlib header: Python's `zlib.decompress(data, -15)`).
 - From the server, `4` then the same as `2`, with the world's text as it is (`srv.compress = false`).
+- From the server, `5` then `you tick ack rate base ` (base: the tick of the world the bytes were
+  made against, -1 for none), then the game's own bytes (`srv.encoding`).
 - From the server, `3` then UTF-8 text: `srv.say`.
 - From the client, `1` then UTF-8 text: its hello, once its first world has come.
 - From the client, `3` then UTF-8 text: `c.say`.
 - From the client, an input: `(seq=12, seen=340, input=Pad(dx=1, fire=false))` as text (no
   leading byte; a struct's name may be left out, `(dx=1, fire=false)`). `seq` counts the
   client's inputs from 1, `seen` is the tick of the world it was drawing (-1 for none: no lag
-  compensation). One a tick, at the server's rate: more wait in a queue and are dropped past 8.
+  compensation). `have` (left out: -1) is the tick of the latest world it has, the base of the
+  next one with `srv.encoding`. One a tick, at the server's rate: more wait in a queue and are dropped past 8.
 
 ## Ticks, not frames
 

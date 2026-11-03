@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- netplay: `srv.encoding((w, p, base) -> u8[])` and `c.decoding((bytes, base) -> W)`: the worlds
+  in the game's own bytes, each made against the world that client last got (a delta), with no
+  text or deflate between.
+- Vulkan: a window whose surface cannot say what it holds (a compositor drawing with pixman) is
+  drawn with OpenGL, not a panic.
+
 ## 0.29.0
 
 - Two files that `use` (or `import`) each other share one copy of each: the program's own file is
