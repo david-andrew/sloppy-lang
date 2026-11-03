@@ -10,7 +10,7 @@
 
 # job control block (shared between threads, accessed atomically)
 const __C_GEN = 0          # bumped to start a job (futex word for sleeping workers)
-const __C_NEXT = 1         # next chunk to claim
+const __C_NEXT = 1         # the current job's chunks << 32 | the next chunk to claim (0: no job)
 const __C_DONE = 2         # chunks finished
 const __C_ACK = 3          # workers finished with the current job (futex word for the caller)
 const __C_CHUNKS = 4       # chunks in the current job
@@ -107,16 +107,23 @@ else:
     __futex_wake = (p: *int): syscall(202, p, 129, 0x7FFFFFFF)        # FUTEX_WAKE_PRIVATE (all)
 
 # claim and run chunks of the current job until none are left
+# (the job's number of chunks comes in the same word as the claim: a worker that claimed past the
+# end of one job, then was held up by a busy machine before it looked at the count, would
+# otherwise compare with the next job's, run a chunk of it that another thread runs too, and
+# count it done twice, so that the caller went on while a chunk still ran: software rendering's
+# vertex shader writing into a draw's arrays after they were let go)
 __run_chunks = ():
     c = __pool_ctl
     loop true:
-        k = __atomic_add(c + __C_NEXT, 1)
-        if k >= c[__C_CHUNKS]: return
+        v = __atomic_add(c + __C_NEXT, 1)
+        k = v & 0xFFFFFFFF
+        n = v >> 32
+        if k >= n: return
         __run_chunk(k)
         # (the last chunk wakes the caller, waiting for them all)
         # (a wake is a system call: made only when the caller went to sleep. It counts itself
         # asleep before it sleeps, and the sleep checks __C_DONE again: no wake is missed)
-        if __atomic_add(c + __C_DONE, 1) + 1 == c[__C_CHUNKS] and __atomic_add(c + __C_WAITING, 0) > 0: __futex_wake(c + __C_DONE)
+        if __atomic_add(c + __C_DONE, 1) + 1 == n and __atomic_add(c + __C_WAITING, 0) > 0: __futex_wake(c + __C_DONE)
 
 # (a function of its own, kept out of line: the reference to the job's function it takes is
 # dropped before the chunk is counted done, while refcounts are still atomic; after the last
@@ -256,9 +263,10 @@ __parallel_run_job = (total: int, f: (int, int) -> void):
         # wakes late and claims one sees this job's function and sizes, and __mt_active, so its
         # refcounts are atomic and a parallel call inside runs in place. Swapped, not stored, so
         # that a late claim on the closed count in between is not lost)
+        opened = c[__C_CHUNKS] << 32
         loop true:
             o = __atomic_add(c + __C_NEXT, 0)
-            if __atomic_cas(c + __C_NEXT, o, 0) == o: break
+            if __atomic_cas(c + __C_NEXT, o, opened) == o: break
         __atomic_add(c + __C_GEN, 1)
         # (only when some worker sleeps: the others are spinning, and see the job by themselves)
         if __atomic_add(c + __C_SLEEPERS, 0) > 0: __futex_wake(c + __C_GEN)
@@ -277,7 +285,10 @@ __parallel_run_job = (total: int, f: (int, int) -> void):
                 __atomic_add(c + __C_WAITING, 1)
                 __futex_wait(c + __C_DONE, d)
                 __atomic_add(c + __C_WAITING, -1)
-        __atomic_add(c + __C_NEXT, 1 << 40)
+        # (closed: no chunks, so any claim from now until the next job finds none)
+        loop true:
+            o = __atomic_add(c + __C_NEXT, 0)
+            if __atomic_cas(c + __C_NEXT, o, 0) == o: break
         __mt_active = false
         __out_direct = false
         __job = __job_idle_c

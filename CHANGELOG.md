@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Parallel jobs (`parallel_range`, `parallel_map`, the software renderer's shading): a worker held
+  up on a busy machine just after claiming past the end of one job could run a chunk of the next
+  one that another thread ran too, and the job was then counted done before it was. The software
+  renderer's vertex shader could then panic now and then (a memory access in lit_vs) under load.
+
 ## 0.29.1
 
 - netplay: `srv.encoding((w, p, base) -> u8[])` and `c.decoding((bytes, base) -> W)`: the worlds
