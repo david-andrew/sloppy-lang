@@ -35,7 +35,7 @@ const WEB_PAGE = "https://sloppy-lang.org/examples/skybarons/"
 const MATCH_SERVER = "wss://matchmaking.sloppy-lang.org"
 const MOST = 64                 # people a side
 SIDE_SIZES = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 64]
-TEAMS = ["Red", "Blue"]
+TEAMS = ["Red", "Blue", "The golden cat"]   # (the last Bikes & Brooms' Team Cat: its one seat)
 COLORS = [rgb(1.0, 0.38, 0.32), rgb(0.42, 0.68, 1.0), rgb(1.0, 0.82, 0.3)]   # (and the golden cat's)
 
 # ---------------- a test without a window: the computer against itself ----------------
@@ -298,6 +298,7 @@ struct Friend:
     badge = 0
     side = 0
     plane = FIGHTER
+    cat = false                 # (Bikes & Brooms: they fly the golden cat)
     version = ""                # (their game's VERSION, as they said: another, they must reload)
     away_at = 0.0               # (and when they are let go, told so: their game is another)
 
@@ -314,7 +315,8 @@ lobby_starts = -1.0             # (when the fight starts by itself: -1, when the
 lobby_fight = ""                # (and what fight, as the host has chosen)
 lobby_version = ""              # (and the host's game's VERSION)
 turned = ""                     # (the host: whose game was another version, let go)
-want_side = -1                  # (joined: the side asked for with Switch side; -1 none)
+want_side = -1                  # (joined: the side asked for with Switch side; -1 none; GOLD the golden cat)
+cat_me = false                  # (the host: this one flies Bikes & Brooms' golden cat)
 told_at = 0.0
 crew_until = 0.0                # (the host, in a fight: until when everyone is told the names and insignias again)
 away: int[]                     # (the players who left this fight: the computer plays them)
@@ -340,6 +342,7 @@ badge_of = (g: Game, j: int) -> int:
 call = (g: Game, i: int) -> str:
     k = g.people[i].player
     if k >= 0 and k < crew_names.len() and len(crew_names[k]) > 0: return crew_names[k]
+    if g.people[i].team == GOLD: return "the golden cat"
     "{TEAMS[i % 2]} {i / 2 + 1}"
 
 # what craft j is called: its pilot's name, if this side knows who is in it (its colors are its
@@ -347,7 +350,7 @@ call = (g: Game, i: int) -> str:
 call_craft = (g: Game, j: int) -> str:
     c = g.crafts[j]
     pi = pilot_of(c)
-    known = mode == .menu or c.team == crew_team(g, c) or c.marked[my_team()] > g.tick or crew_team(g, c) == my_team()
+    known = mode == .menu or c.team == crew_team(g, c) or (my_team() < GOLD and c.marked[my_team()] > g.tick) or crew_team(g, c) == my_team()
     if pi >= 0 and known: return call(g, pi)
     "a {kind_name(g, j)}"
 
@@ -403,6 +406,7 @@ seats = (sides: int[], n: int) -> int[]:
     p = fill(-1, 2 * n)
     had = [0, 0]
     loop k in 0.. and t in sides:
+        if t < 0: continue
         if had[t] < n: p[2 * had[t] + t] = k
         had[t] += 1
     p
@@ -416,17 +420,57 @@ people_a_side = () -> int:
     n = counts(sides_now())
     clamp(max(settings.sides, max(n[0], n[1])), 1, MOST)
 
-lobby_seats = () -> int[]: seats(sides_now(), people_a_side())
+# (Bikes & Brooms: and one more, last, the golden cat's: whoever claimed it, else -1, the computer)
+lobby_seats = () -> int[]:
+    if settings.fight != BROOMS: return seats(sides_now(), people_a_side())
+    h = cat_holder()
+    t = sides_now()
+    if h >= 0: t[h] = -1
+    p = seats(t, people_a_side())
+    p.push(h)
+    p
+
+# (the host: the player who flies the golden cat, -1 none)
+cat_holder = () -> int:
+    if cat_me: return 0
+    loop k in 0.. and f in friends:
+        if f.cat and f.peer >= 0: return k + 1
+    -1
+
+# (the side of seat i: the last of an odd number the golden cat's)
+seat_side = (pilots: int[], i: int) -> int: if pilots.len() % 2 == 1 and i == pilots.len() - 1: GOLD else: i % 2
 
 players_on = (pilots: int[], t: int) -> int:
     n = 0
     loop i in 0.. and k in pilots:
-        if i % 2 == t and k >= 0: n += 1
+        if seat_side(pilots, i) == t and k >= 0: n += 1
     n
 
-switch_side = ():
-    global told_at, want_side
+# (this one flies the golden cat, as the lobby stands)
+my_cat = () -> bool:
+    if page == LOBBY: return settings.fight == BROOMS and cat_me
+    i = lobby_pilots.index_of(lobby_me)
+    i >= 0 and seat_side(lobby_pilots, i) == GOLD
+
+# (the golden cat's seat, to be claimed: Bikes & Brooms, no one in it)
+cat_free = () -> bool:
+    if page == LOBBY: return settings.fight == BROOMS and cat_holder() < 0
+    lobby_pilots.len() % 2 == 1 and lobby_pilots[lobby_pilots.len() - 1] < 0
+
+claim_cat = ():
+    global cat_me, told_at, want_side
     told_at = 0.0
+    if page == LOBBY: cat_me = true
+    else: want_side = GOLD
+
+switch_side = ():
+    global cat_me, told_at, want_side
+    told_at = 0.0
+    # (the golden cat's: back to the side one had)
+    if my_cat():
+        if page == LOBBY: cat_me = false
+        else: want_side = settings.side
+        return
     if page == LOBBY:
         if counts(sides_now())[1 - settings.side] < MOST:
             settings.side = 1 - settings.side
@@ -623,8 +667,9 @@ begin = (who: int, pilots: int[], skill: f64, peers: int[], r: Rules, planes: in
 
 # back to the menu, the friends let go (and the room closed)
 leave = ():
-    global friends, host, public, results, status, turned, want_side
+    global cat_me, friends, host, public, results, status, turned, want_side
     turned = ""
+    cat_me = false
     loop f in friends:
         if f.peer >= 0: net.close(f.peer)
     friends = []
@@ -720,6 +765,8 @@ heard_me = (k: int, w: str[]):
     f.name = clean_name(w[1])
     f.badge = to_badge(w[2])
     t = if w.len() >= 4: to_int(w[3]) ?? -1 else: -1
+    if mode == .menu and t == GOLD and settings.fight == BROOMS and cat_holder() < 0: f.cat = true
+    if mode == .menu and t >= 0 and t <= 1: f.cat = false
     if mode == .menu and t >= 0 and t <= 1 and t != f.side and counts(sides_now())[t] < MOST: f.side = t
     if mode == .menu and w.len() >= 5: f.plane = clamp(to_int(w[4]) ?? 1, 0, CHOOSABLE - 1)
     f.version = if w.len() >= 6: w[5] else: "an older one"
@@ -782,8 +829,9 @@ tell = ():
     if host >= 0 and mode == .menu and page == JOINED:
         told_at = elapsed()
         i = lobby_pilots.index_of(lobby_me)
-        shown = if i >= 0: i % 2 else: -1
-        if want_side >= 0 and want_side != shown and players_on(lobby_pilots, want_side) >= MOST: want_side = -1
+        shown = if i >= 0: seat_side(lobby_pilots, i) else: -1
+        if want_side >= 0 and want_side != shown and players_on(lobby_pilots, want_side) >= (if want_side == GOLD: 1 else: MOST): want_side = -1
+        if want_side == GOLD and lobby_pilots.len() % 2 == 0: want_side = -1
         known = lobby_me > 0 and lobby_me < lobby_badges.len() and lobby_me < lobby_names.len() and lobby_names[lobby_me] == my_name() and lobby_badges[lobby_me] == settings.badge
         if not known or (want_side >= 0 and want_side != shown) or told_plane != settings.plane:
             net.send(host, "me {wire(my_name())} {settings.badge} {want_side} {settings.plane} {VERSION}")
@@ -1181,7 +1229,7 @@ aimable = (g: Game, j: int) -> bool:
     if j < 0 or j >= g.crafts.len(): return false
     c = g.crafts[j]
     if c.free or c.gone > 0 or c.down > 90 or c.landed: return false
-    if j == my_craft(): return false
+    if j == my_craft() or my_team() == GOLD: return false
     # (the fight's markers off for all: any craft the eye could find, whose ever it is)
     if g.rules.plain: return in_sight(g, j)
     seen_team(g, c, my_team()) != my_team()
@@ -1451,6 +1499,14 @@ cam_back = (kind: int) -> vec2:
 place_camera = (g: Game, dt: f64):
     global cam_aim, cam_at, cam_pos, cam_q, cam_up, level_right, look_amount, look_at_pos, mouse_view, throw_view
     p = g.people[me()]
+    if p.team == GOLD and p.state == DEAD:
+        # (the golden cat's player, in its loft: the field below, slowly round it)
+        a = elapsed() * 0.06
+        cam_at = approach(cam_at, vec3(0, f32(max(ground(0.0, 0.0), 0.0) + 60.0), 0), 2.0, dt)
+        cam_pos = approach(cam_pos, GOLD_LOFT + vec3(f32(cos(a) * 420.0), 0, f32(sin(a) * 420.0)), 1.0, dt)
+        cam_up = approach(cam_up, vec3(0, 1, 0), 3.0, dt)
+        finish_camera()
+        return
     if p.state == DEAD or (p.state == SEATED and g.crafts[p.craft].gone > 0):
         # (dead: watching where it happened, from above)
         cam_at = approach(cam_at, p.pos, 3.0, dt)
@@ -1510,6 +1566,8 @@ place_camera = (g: Game, dt: f64):
     if look: look_at_pos = e.pos
     up = quat_rotate(cam_q, vec3(0, 1, 0))
     bk = cam_back(c.kind)
+    # (the golden cat: drawn larger, the camera as far back)
+    if c.team == GOLD: bk = bk * 2.5
     # (carrying a ball: back and up, the ball slung under the nose not filling the view)
     if g.rules.mode == BROOMS and carrying(g, p.craft): bk = vec2(bk.x * 1.25 + 2.5, bk.y + 2.5)
     side = if mode == .menu and not upright: f32(-7.0 * f64(bk.x) / 15.0) else: f32(0.0)
@@ -2271,12 +2329,18 @@ effects = (dt: f64):
         if not in_fight: continue
         # (said large when it is this one's doing, smaller for the rest of the fight)
         # (the golden cat: out, and caught or shot down; nothing else said of it)
-        if b.kind == GOLD_OUT: say("the golden cat is out: catch it or shoot it down to win!", COLORS[GOLD])
+        if b.kind == GOLD_OUT:
+            gp = gold_person(g)
+            if gp == me(): say("you're out: stay free till the whistle!", COLORS[GOLD])
+            else if gp >= 0: say("the golden cat is out, {call(g, gp)} flying it: catch it or shoot it down to win!", COLORS[GOLD])
+            else: say("the golden cat is out: catch it or shoot it down to win!", COLORS[GOLD])
         else if b.kind == GOLD_WON and b.by >= 0:
             side = g.people[b.by].team
             who = if b.by == me(): "you" else: call(g, b.by)
             how = if downed_at(g, b.who, b.tick): "shot down" else: "caught"
-            say("{who} {how} the golden cat: {TEAMS[side]} wins!", COLORS[GOLD])
+            say("{who} {how} {if b.who == myc: "you" else: "the golden cat"}: {TEAMS[side]} wins!", COLORS[GOLD])
+        else if b.kind == KILLED and b.who == me() and g.people[b.who].team == GOLD:
+            if g.winner < 0: say("you crashed: out again in {GOLD_AGAIN_PLAYER / 60} s", COLORS[GOLD])
         else if b.who >= 0 and b.who < g.crafts.len() and g.crafts[b.who].team == GOLD and (b.kind == SHOT_DOWN or b.kind == CRASHED or b.kind == RAMMED or b.kind == HIT): pass
         else if b.kind == SHOT_DOWN and g.crafts[b.who].kind == CAT and cat_fight(g.rules.mode):
             # (the cat down: said large, whoever did it)
@@ -2653,7 +2717,7 @@ draw_hud = (g: Game):
     # (the target first, then the nearest: a name said only where it overlaps none said yet;
     # the rest their marks alone)
     # (the golden cat, out: marked for everyone, markers or none, an arrow to it off the screen)
-    if g.gold >= 0 and g.gold < g.crafts.len() and g.crafts[g.gold].team == GOLD and flying(g.crafts[g.gold]):
+    if g.gold >= 0 and g.gold < g.crafts.len() and g.crafts[g.gold].team == GOLD and flying(g.crafts[g.gold]) and g.gold != myc:
         gp = g.crafts[g.gold].pos
         gat = world_to_screen(gp) ?? vec2(-9999, -9999)
         if f64(dot(gp - cam_pos, cam_at - cam_pos)) > 0.0 and inside(gat):
@@ -2671,7 +2735,7 @@ draw_hud = (g: Game):
     loop oj in order:
         j = oj.1
         o = g.crafts[j]
-        seen_as = seen_team(g, o, team)
+        seen_as = if team == GOLD: crew_at(g, j) else: seen_team(g, o, team)
         col = COLORS[seen_as]
         at = world_to_screen(o.pos) ?? vec2(-9999, -9999)
         ahead = f64(dot(o.pos - cam_pos, cam_at - cam_pos)) > 0.0
@@ -2748,7 +2812,7 @@ draw_hud = (g: Game):
                 # (on a dark slip, a little larger than the balls' points: read against the sky
                 # and the fields a long way off)
                 if inside(at):
-                    label = if rg.team == team: "your ring" else: "their ring"
+                    label = if team == GOLD: "{TEAMS[rg.team]}'s ring" else: if rg.team == team: "your ring" else: "their ring"
                     tw = text_width(label, 17)
                     rect(f64(at.x) - tw / 2.0 - 5.0, f64(at.y) - 12.0, tw + 10.0, 24.0, rgba(0, 0, 0, 0.5))
                     text_centered(label, at, 17, with_alpha(COLORS[rg.team], 0.95), SHADOW)
@@ -2823,6 +2887,13 @@ draw_hud = (g: Game):
         text(capitalize(SITE_NAMES[b.kind]), vec2(r.x + PAD, r.y + 10), T_BODY - 2.0, INK)
         plate_bar(f64(r.x) + PAD, f64(r.y) + 36.0, w - 2.0 * PAD, f64(b.health) / f64(site_health(b.kind)), "standing", health_color(f64(b.health) / f64(site_health(b.kind))))
         if b.kind != AA: plate_bar(f64(r.x) + PAD, f64(r.y) + 70.0, w - 2.0 * PAD, f64(b.heat) / f64(JAM_HEAT), "heat", BRASS)
+    else if p.state == DEAD and g.winner < 0 and team == GOLD:
+        # (the golden cat's player, in the loft: when it is out)
+        late = g.rules.time_limit > 0 and g.tick >= g.rules.time_limit * 3600
+        r = Rect(mid().x - 230, alert_at().y - 40, 460, 80)
+        panel(r)
+        text_centered(if late: "The whistle has gone: the balls decide it" else: "In your loft: out in {(p.timer + 59) / 60} s", vec2(mid().x, alert_at().y - 10), T_HEAD, COLORS[GOLD])
+        text_centered("then stay free till the whistle: nothing may touch you", vec2(mid().x, alert_at().y + 22), T_SMALL, INK_DIM)
     else if p.state == DEAD and g.winner < 0:
         r = Rect(mid().x - 130, alert_at().y - 34, 260, 68)
         panel(r)
@@ -2842,7 +2913,7 @@ draw_hud = (g: Game):
             rect(f64(r.x + r.w - w - 8.0), f64(r.y + w), 8, f64(r.h - w * 2.0), col)
     draw_score(g, team, x, f64(top.y))
     # (the news: under the score, fading; this one's own doings larger)
-    news_y = f64(top.y) + (if touch_input(): (if upright: 470.0 else: 190.0) else: 136.0)
+    news_y = f64(top.y) + (if touch_input(): (if upright: 470.0 else: 190.0) else: 136.0) + (if team == GOLD: 100.0 else: 0.0)
     loop kk in 0.. and n in news:
         a = f32(clamp(4.0 - n.1, 0.0, 1.0))
         text_centered(n.0, vec2(f32(x), f32(news_y + f64(kk) * (n.3 + 8.0))), n.3, with_alpha(n.2, a * n.2.w), with_alpha(SHADOW, a * 0.55))
@@ -2952,7 +3023,7 @@ craft_plate = (g: Game, c: Craft, k: Kind, p: Person, team: int):
     x0 = f64(r.x) + PAD
     bw = w - 2.0 * PAD
     y = f64(r.y) + 38.0
-    f = f64(c.health) / f64(k.health)
+    f = if c.team == GOLD: f64(c.health) / f64(GOLD_HEALTH) else: f64(c.health) / f64(k.health)
     plate_bar(x0, y, bw, f, "hull", health_color(f))
     y += 34.0
     if guns:
@@ -3220,6 +3291,7 @@ sight = (at3: vec3, firing: bool, limit: bool):
 
 # what F (get in) or T (get out) would do now, said ("" nothing)
 what_f_does = (g: Game, p: Person) -> str:
+    if p.team == GOLD: return ""
     fk = if touch_input(): "In/Out" else: "F"
     tk = if touch_input(): "In/Out" else: "T"
     if p.state == WALK:
@@ -3271,7 +3343,7 @@ draw_score = (g: Game, team: int, x: f64, y0: f64):
         text_centered("{g.scores[0]}", vec2(f32(x - 46.0), f32(y + 32.0)), 40, COLORS[0], SHADOW)
         text_centered("{g.scores[1]}", vec2(f32(x + 46.0), f32(y + 32.0)), 40, COLORS[1], SHADOW)
         text_centered("·", vec2(f32(x), f32(y + 30.0)), 30, INK_FAINT)
-        rect(x + (if team == 0: -64.0 else: 28.0), y + 54.0, 36, 2, COLORS[team])
+        if team < GOLD: rect(x + (if team == 0: -64.0 else: 28.0), y + 54.0, 36, 2, COLORS[team])
     else if m == BASES:
         loop t in 0..2:
             left = 0
@@ -3297,7 +3369,24 @@ draw_score = (g: Game, team: int, x: f64, y0: f64):
         panel(Rect(f32(x - 40.0), f32(y + 90.0), 80, 28))
         text_centered(t, vec2(f32(x), f32(y + 104.0)), T_BODY, if left < 30: WARN else: INK)
     if m == FLAG or m == FLAG_RAID: flag_hint(g, team, x, y0 + 26.0)
-    if m == BROOMS: ball_hint(g, team, x, y0 + 26.0)
+    if m == BROOMS and team == GOLD: cat_banner(g, x, y0 + 158.0)
+    else if m == BROOMS: ball_hint(g, team, x, y0 + 26.0)
+
+# (the golden cat's player, out: what they are, how long to the whistle, how near the nearest)
+cat_banner = (g: Game, x: f64, y: f64):
+    p = g.people[me()]
+    if p.state != SEATED or g.winner >= 0: return
+    c = g.crafts[p.craft]
+    near = 1e9
+    loop o in g.air:
+        if o.craft != p.craft and manned_at(g, o.craft): near = min(near, f64(length(o.pos - c.pos)))
+    left = max(g.rules.time_limit * 3600 - g.tick, 0) / 60
+    w = 520.0
+    panel(Rect(f32(x - w / 2.0), f32(y), f32(w), 60))
+    rect_outline(x - w / 2.0, y, w, 60, 2, with_alpha(COLORS[GOLD], 0.8))
+    text_centered("You are the golden cat: survive!", vec2(f32(x), f32(y + 18.0)), T_HEAD - 4.0, COLORS[GOLD], SHADOW)
+    hunt = if near < 1e8: "the nearest hunter {int(near)} m" else: "no one near"
+    text_centered("free at the whistle, in {left / 60}:{left % 60:02}, you win; {hunt}", vec2(f32(x), f32(y + 44.0)), T_SMALL, if near < GOLD_SHY: WARN else: INK)
 
 # the fight's aim, in a line
 goal_text = (g: Game, team: int) -> str:
@@ -3309,6 +3398,8 @@ goal_text = (g: Game, team: int) -> str:
         return if late and g.winner < 0: "level at the time: the next points win" else: "shoot their targets; shoot down their cat for {CAT_POINTS}. First to {g.rules.win}"
     if m == BROOMS:
         late = g.rules.time_limit > 0 and g.tick >= g.rules.time_limit * 3600
+        if team == GOLD: return if late and g.winner < 0: "the whistle has gone: the balls decide it" else: "anything that touches you or shoots you down wins it"
+        if gold_person(g) >= 0 and not late: return "balls through their rings, first to {g.rules.win}; catch the golden cat before the whistle"
         return if late and g.winner < 0: "level at the time: the next goal wins" else: "balls through their rings, first to {g.rules.win}; the golden cat caught or shot down wins"
     if m == FLAG: return "flags home: first to {g.rules.win} (yours must be home to score)"
     if m == FLAG_RAID: return if team == att: "take their flag to your field: {g.rules.win} to win" else: "keep your flag: {TEAMS[att]} needs {g.rules.win}"
@@ -3397,9 +3488,12 @@ draw_won = (g: Game, team: int, x: f64):
     h = 236.0 + f64(n) * 28.0
     y = f64(mid().y) - h / 2.0
     panel(Rect(f32(x - 320.0), f32(y), 640, f32(h)))
-    text_centered(if g.winner == team: "Your side won" else: "{TEAMS[g.winner]} won", vec2(f32(x), f32(y + 50.0)), 54, COLORS[g.winner], SHADOW)
+    title = if g.winner == GOLD: (if team == GOLD: "You got away!" else: "The golden cat got away") else: if team == GOLD: "Caught: {TEAMS[g.winner]} won" else: if g.winner == team: "Your side won" else: "{TEAMS[g.winner]} won"
+    text_centered(title, vec2(f32(x), f32(y + 50.0)), 54, COLORS[g.winner], SHADOW)
     m = g.rules.mode
     sub = MODE_NAMES[m]
+    gp = gold_person(g)
+    if gp >= 0: sub += " ({call(g, gp)} the golden cat{if g.winner == GOLD: ", free at the whistle" else: ""})"
     if m == DOGFIGHT or m == CLASSIC or m == FLAG or m == FLAG_RAID or m == BROOMS: sub += ", {g.scores[0]} to {g.scores[1]}"
     text_centered(sub, vec2(f32(x), f32(y + 96.0)), T_BODY, INK_DIM)
     line(vec2(f32(x - 280.0), f32(y + 120.0)), vec2(f32(x + 280.0), f32(y + 120.0)), 1, BRASS_DIM)
@@ -3438,7 +3532,7 @@ draw_results = (top: f64):
         h = 100.0 + f64(min(g.people.len() / 2, TALLY_MOST + 1)) * 28.0
         x = box_x()
         panel(Rect(f32(x - 320.0), f32(top), 640, f32(h)))
-        text_centered("Last fight: {TEAMS[g.winner]} won ({MODE_NAMES[g.rules.mode]})", vec2(f32(x), f32(top + 40.0)), 28, COLORS[g.winner])
+        text_centered(if g.winner == GOLD: "Last fight: the golden cat got away ({MODE_NAMES[g.rules.mode]})" else: "Last fight: {TEAMS[g.winner]} won ({MODE_NAMES[g.rules.mode]})", vec2(f32(x), f32(top + 40.0)), 28, COLORS[g.winner])
         draw_tally(g, results_me, x, top + 90.0)
 
 inside = (p: vec2) -> bool:
@@ -3586,7 +3680,7 @@ side_lines = (pilots: int[]) -> int:
             if pilots[2 * k + team] < 0: bots += 1
             else: people += 1
         most = max(most, min(people, 12) + (if bots > 0: 1 else: 0))
-    most
+    most + (if pilots.len() % 2 == 1: 3 else: 0)
 
 draw_sides = (pilots: int[], you: int, names: str[], badges: int[], top: f64) -> f64:
     n = pilots.len() / 2
@@ -3621,7 +3715,21 @@ draw_sides = (pilots: int[], you: int, names: str[], badges: int[], top: f64) ->
             text(if people.len() == 0: "{bots} computer" else: "+ {bots} computer", vec2(f32(x + 34.0), f32(y + 4.0)), T_SMALL, INK_FAINT)
             row += 1
         lines = max(lines, row)
-    top + 22.0 + f64(lines) * 30.0
+    bottom = top + 22.0 + f64(lines) * 30.0
+    # (Bikes & Brooms: the golden cat's one seat, under them, across both)
+    if pilots.len() % 2 == 0: return bottom
+    y = bottom + 30.0
+    x = column() - 250.0
+    p = pilots[pilots.len() - 1]
+    text_centered(TEAMS[GOLD], vec2(f32(x + 250.0), f32(y)), 28, COLORS[GOLD])
+    y += 22.0
+    rect(x, y, 500, 26, with_alpha(COLORS[GOLD], if p >= 0 and p == you: 0.4 else: 0.14))
+    if p >= 0:
+        draw_badge(if p < badges.len(): badges[p] else: 0, vec2(f32(x + 16.0), f32(y + 13.0)), 9.0)
+        who = if p < names.len() and len(names[p]) > 0: names[p] else: "player {p + 1}"
+        text(if p == you: "{who} (you): stay free till the whistle" else: "{who}: stay free till the whistle", vec2(f32(x + 34.0), f32(y + 3.0)), T_BODY, if p == you: INK else: INK_DIM)
+    else: text("the computer flies it", vec2(f32(x + 34.0), f32(y + 4.0)), T_SMALL, INK_FAINT)
+    y + 30.0
 
 # the lobby: the sides, Switch side, and for the host Start and the fight's settings (practice:
 # the same, alone); the room's code, for friends to join
@@ -3635,7 +3743,8 @@ draw_lobby = ():
     title = if hosting and public: "Play with anybody" else: if hosting and friends.len() == 0 and len(invite.room_code()) == 0: "Practice" else: if players == 0: "Joined" else: if players == 1: "1 player" else: "{players} players"
     t0 = f64(at_edge(0, 0).y)
     x = f32(column())
-    items = if hosting: 8 else: 3
+    cat = if hosting: settings.fight == BROOMS else: lobby_pilots.len() % 2 == 1
+    items = (if hosting: 8 else: 3) + (if cat: 1 else: 0)
     if upright:
         # (upright: all of it at the bottom of the screen, the plane above it where there is room)
         n = f64(side_lines(pilots))
@@ -3662,7 +3771,12 @@ draw_lobby = ():
     ui_style.width = 400.0
     ui_begin("lobby", vec2(x, f32(at)))
     if hosting and ui_button("Start"): start_fight()
-    if ui_button("Switch side") or (ui_ready() and (key_pressed(.tab) or gamepad_pressed(.x))): switch_side()
+    if ui_button(if my_cat(): "Back to {TEAMS[settings.side]}" else: "Switch side") or (ui_ready() and (key_pressed(.tab) or gamepad_pressed(.x))): switch_side()
+    # (Bikes & Brooms: Team Cat's one seat, while no one has it)
+    if cat and not my_cat():
+        if cat_free():
+            if ui_button("Be the golden cat"): claim_cat()
+        else: ui_text("The golden cat is taken")
     # (one's name and insignia are Settings': the others see them change)
     # (only what the fight has, as the host has chosen it; none to choose when it starts on the
     # ground, where one takes what stands at the field)
@@ -3755,7 +3869,7 @@ FIGHT_ABOUT = [
     "The attackers take the defenders' flag home to their field, again and again; the defenders hold it.",
     "Each side's bombers go for the other's factory.",
     "Through their gun towers' fire, shoot the other side's targets ({TARGET_POINTS} points; they come back) and shoot down its cat ({CAT_POINTS}; it has no guns, it rams). Shoot down their cat and you'll likely win.",
-    "Knock balls through the other side's rings: great ones {BALL_POINTS[BIG_BALL]}, middling {BALL_POINTS[MID_BALL]}, small {BALL_POINTS[SMALL_BALL]}; carry a wicker one through ({BALL_POINTS[CARRY_BALL]}; hit hard, you drop it). Catch or shoot down the golden cat to win.",
+    "Knock balls through the other side's rings: great ones {BALL_POINTS[BIG_BALL]}, middling {BALL_POINTS[MID_BALL]}, small {BALL_POINTS[SMALL_BALL]}; carry a wicker one through ({BALL_POINTS[CARRY_BALL]}; hit hard, you drop it). Catch or shoot down the golden cat to win; or be the golden cat, Team Cat, and stay free till the whistle.",
 ]
 
 # the host's choices of the fight: which, who attacks, what wins it, how long, how it starts

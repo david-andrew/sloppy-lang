@@ -222,6 +222,14 @@ const GOLD_SHY = 160.0
 const GOLD_HEALTH = 8            # (two bullets, or a rocket near)
 const GOLD_FAST = 66.0           # (m/s at most, chased)
 const GOLD_CHASE = 500.0         # (the computer at the balls goes after it this near)
+# (a player may fly it, Team Cat: then first out GOLD_FIRST_PLAYER ticks in, again GOLD_AGAIN_PLAYER
+# after it crashes by itself, waiting till then in its loft, high over the field, out of reach;
+# in the air at the whistle, it has won)
+const GOLD_FIRST_PLAYER = 60 * 60
+const GOLD_AGAIN_PLAYER = 60 * 15
+const GOLD_LOFT = vec3(0, 520, 0)
+# (the person who flies the golden cat, a player's, the last of all; -1: the computer flies it)
+gold_person = (g: Game) -> int: if g.people.len() % 2 == 1: g.people.len() - 1 else: -1
 # (the cat's points, by the fight)
 cat_points = (m: int) -> int: if m == BROOMS: BROOMS_CAT else: CAT_POINTS
 # (the fights where one side attacks and the other defends)
@@ -652,7 +660,8 @@ default_minutes = (m: int) -> int:
     0
 
 # a fight: pilots says who each person is (one player number, or -1 the computer, for each;
-# person i is on side i % 2), kinds what each player flies when they start in the air
+# person i is on side i % 2), kinds what each player flies when they start in the air. Bikes &
+# Brooms: one more, last, the player who flies the golden cat (-1: the computer does)
 new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
     n = pilots.len() / 2
     let g = Game([], [], [], [], [], [], [], rules, skill = skill)
@@ -696,6 +705,10 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
         p.kind = start_kind(g, i, if pilots[i] >= 0 and pilots[i] < kinds.len(): kinds[pilots[i]] else: -1)
         p.timer = 1 + i
         g.people.push(p)
+    if m == BROOMS and pilots.len() > 2 * n and pilots[2 * n] >= 0:
+        p = Person(GOLD, player = pilots[2 * n], kind = CAT, pos = GOLD_LOFT)
+        g.people.push(p)
+        g.gold_at = GOLD_FIRST_PLAYER
     g
 
 # what person i flies, starting in the air: as chosen (want: -1 none), or as the fight has it
@@ -851,6 +864,7 @@ tick = (g: Game, pads: Pad[]) -> Game:
     loop i in 0..g.people.len():
         p = g.people[i]
         if p.player >= 0 and p.player < pads.len() and not pads[p.player].computer: each.push(pads[p.player])
+        else if p.team == GOLD: each.push(Pad(computer = true))
         else: each.push(bot_pad(g, i))
     loop i in 0..g.people.len(): person(g, i, each[i])
     loop i in 0..g.crafts.len():
@@ -863,7 +877,8 @@ tick = (g: Game, pads: Pad[]) -> Game:
             fly(g, i, bot_drone(g, i), true)
             continue
         if g.crafts[i].team == GOLD:
-            fly(g, i, gold_pad(g, i), true)
+            gp = pilot_of(g.crafts[i])
+            fly(g, i, if gp >= 0 and not each[gp].computer: each[gp] else: gold_pad(g, i), true)
             continue
         pi = pilot_of(g.crafts[i])
         fly(g, i, if pi >= 0: each[pi] else: Pad(), pi >= 0)
@@ -924,7 +939,9 @@ rules = (g: mut Game):
         if g.winner < 0 and late: g.winner = 1 - att
     if m == FLAG_RAID and late: g.winner = 1 - att
     # (the Thunderdome and Bikes & Brooms: the time up, the side ahead; level, the next points win)
-    if m == BROOMS and late and g.scores[0] != g.scores[1]: g.winner = if g.scores[0] > g.scores[1]: 0 else: 1
+    gp = gold_person(g)
+    if m == BROOMS and late and gp >= 0 and g.people[gp].state == SEATED and flying(g.crafts[g.people[gp].craft]): g.winner = GOLD
+    if m == BROOMS and late and g.winner < 0 and g.scores[0] != g.scores[1]: g.winner = if g.scores[0] > g.scores[1]: 0 else: 1
     if m == THUNDERDOME:
         targets_back(g)
         if late and g.scores[0] != g.scores[1]: g.winner = if g.scores[0] > g.scores[1]: 0 else: 1
@@ -945,6 +962,9 @@ const CHUTE_FALL = 9.0          # m/s under a parachute
 const ENTER = 8.0               # (m from a craft's seat to get in)
 
 person = (g: mut Game, i: int, pad: Pad):
+    if g.people[i].team == GOLD:
+        gold_seat(g, i)
+        return
     let p = g.people[i]
     pressed = pad.enter and p.held & 1 == 0
     out = pad.leave and p.held & 8 == 0
@@ -2475,7 +2495,7 @@ through_crew = (g: mut Game, j: int, a: vec3, b: Bullet):
     c = g.crafts[j]
     up = up_of(c)
     loop s in 0.. and pk in c.seats:
-        if pk < 0 or pk == b.by or not harms(g, b.team, g.people[pk].team): continue
+        if pk < 0 or pk == b.by or g.people[pk].team == GOLD or not harms(g, b.team, g.people[pk].team): continue
         head = point_of(c, KINDS[c.kind].seats[s].at) + up * 0.5
         if seg_near(a - head, b.pos - head, SNIPE_CREW):
             g.booms.push(Boom(head, HEADSHOT, g.tick, pk, b.by))
@@ -3172,14 +3192,17 @@ choose_targets = (g: mut Game):
 # (Bikes & Brooms' golden cat: out in its time, over the middle; crashed by itself, out again
 # in a while)
 golden_cat = (g: mut Game):
-    if g.winner >= 0: return
     gi = g.gold
-    # (never faster than GOLD_FAST: caught, by one flown well)
+    # (never faster than GOLD_FAST: caught, by one flown well; and after the fight, still)
     if gi >= 0 and gi < g.crafts.len() and g.crafts[gi].team == GOLD: g.crafts[gi].vel = cap(g.crafts[gi].vel, GOLD_FAST)
+    if g.winner >= 0: return
+    gp = gold_person(g)
     if gi >= 0 and (gi >= g.crafts.len() or g.crafts[gi].team != GOLD or g.crafts[gi].free or g.crafts[gi].down > 0):
         g.gold = -1
-        g.gold_at = g.tick + GOLD_AGAIN
+        g.gold_at = g.tick + (if gp >= 0: GOLD_AGAIN_PLAYER else: GOLD_AGAIN)
     if g.gold >= 0 or g.tick < g.gold_at: return
+    # (a player's: not out again after the whistle)
+    if gp >= 0 and g.rules.time_limit > 0 and g.tick >= g.rules.time_limit * 3600: return
     a = f64(hash(g.tick * 31 + 7) % 6283) / 1000.0
     dir = vec3(f32(cos(a)), 0, f32(sin(a)))
     c = flying_craft(CAT, GOLD, vec3(0, f32(max(ground(0.0, 0.0), 0.0) + 200.0), 0), dir)
@@ -3187,7 +3210,32 @@ golden_cat = (g: mut Game):
     c.health = GOLD_HEALTH
     g.crafts.push(c)
     g.gold = g.crafts.len() - 1
+    if gp >= 0:
+        g.crafts[g.gold].seats[0] = gp
+        g.crafts[g.gold].manned = g.tick
+        g.people[gp].state = SEATED
+        g.people[gp].craft = g.gold
+        g.people[gp].seat = 0
+        g.people[gp].pos = c.pos
     g.booms.push(Boom(c.pos, GOLD_OUT, g.tick, g.gold))
+
+# (the golden cat's player: in its seat while it is out, else in the loft, waiting; never out of it)
+gold_seat = (g: mut Game, i: int):
+    let p = g.people[i]
+    p.held = 0
+    if p.state == SEATED and g.crafts[p.craft].team == GOLD and not g.crafts[p.craft].free and g.crafts[p.craft].gone == 0:
+        c = g.crafts[p.craft]
+        p.pos = point_of(c, KINDS[c.kind].seats[0].at)
+        p.vel = c.vel
+    else:
+        if p.state == SEATED and p.craft >= 0 and p.craft < g.crafts.len() and g.crafts[p.craft].seats[0] == i: g.crafts[p.craft].seats[0] = -1
+        p.state = DEAD
+        p.craft = -1
+        p.seat = -1
+        p.pos = GOLD_LOFT
+        p.vel = vec3(0, 0, 0)
+        p.timer = max(g.gold_at - g.tick, 0)
+    g.people[i] = p
 
 # (the computer at the balls goes after the golden cat instead, near enough, carrying none)
 after_gold = (g: Game, c: Craft) -> bool:
@@ -4068,4 +4116,9 @@ version_print = () -> str:
         let g = new_game(fill(-1, 4), 0.65, r, [])
         loop k in 0..240: g = tick(g, [])
         out = out * 31 + int(hash(g) % 1000000007)
+    # (and Bikes & Brooms with a player's golden cat, out)
+    let h = new_game([-1, -1, -1, -1, 0], 0.65, Rules(mode = BROOMS, ground_start = false), [])
+    h.gold_at = 10
+    loop k in 0..240: h = tick(h, [Pad(computer = true)])
+    out = out * 31 + int(hash(h) % 1000000007)
     "v{out % 1000000007}"
