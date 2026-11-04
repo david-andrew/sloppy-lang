@@ -31,7 +31,7 @@
 #   health_pack_mesh()              a health pack in flight, 0.6 long, nose -z
 #   balloon_cannons(team)           the balloon's baskets' cannons' muzzles (each firing outward
 #                                   from the middle, level)
-#   rotor_mesh(kind, team)          the carcopter's canopy (or the galleass's middle screw), turning about y
+#   rotor_mesh(kind, team)          the carcopter's rotor's hub (or the galleass's middle screw), turning about y
 #   ROTOR_AT(kind)                  where its middle is
 #   dv_rotor_mesh(team, k), DV_ROTORS   da Vinci's galleass's three screws, turning about y; their middles
 #   dv_parts(team), dv_pose(phi, crew) the galleass's rowers, their sweeps and the drive they work, and
@@ -47,9 +47,9 @@
 #   boulder_mesh()                  a boulder, 1.3 across, its middle at the origin (BOULDER_SCALE
 #                                   times that, the galleass's)
 #   CAR_GUNS                        the carcopter's bonnet guns' muzzles (firing ahead)
-#   canopy_mesh(team, fold), canopy_pump(phase), canopy_fold(phase)   the carcopter's canopy (its
-#                                   hub at the origin), how high over ROTOR_AT it is in a stroke, and
-#                                   which fold it shows then
+#   CcRotor, cc_rotor_step(r, spin, grounded, dt), cc_rotor_draw(team, m, r, stroke, tint)   the
+#                                   carcopter's rotor: coming up to speed with its engine (its blades
+#                                   flying out flat) or slowing (hanging), drawn on the car at m
 #   DRONE_RACK, DRONE_RACK_DIR      where a drone leaves the carcopter's rack (its origin), and which way
 #   target_mesh(team), target_frame_mesh()   The Thunderdome's target (its ring's foot at the origin,
 #                                   facing along z) and its wooden frame (1 m tall: scaled to its height)
@@ -4176,10 +4176,10 @@ make_boulder = () -> Mesh:
 # wheel, two water-jacketed guns fixed on the bonnet (their muzzles at CAR_GUNS); on the tonneau a
 # raised seat and a gun post facing back; on the right an outrigger ramp the drones leave from
 # (DRONE_RACK, along DRONE_RACK_DIR: a drone on it waiting sits at DRONE_RACK - DRONE_RACK_DIR);
-# wheels 1.63 under the origin. Between the seats a braced iron sleeve up which the canopy's mast
-# pumps: the canopy is drawn apart (canopy_mesh, its hub at CC_ROTOR raised by canopy_pump, turned
-# slowly about y). Red's coachwork crimson lined in black and gold, its parasol black, white and
-# red; Blue's a navy bonnet and a varnished mahogany tonneau, its parasol navy and cream
+# wheels 1.63 under the origin. Between the seats a braced iron sleeve up which the rotor's mast
+# pumps: the rotor is drawn apart (cc_rotor_draw, its hub at CC_ROTOR). Red's coachwork crimson
+# lined in black and gold, its blades crimson and black; Blue's a navy bonnet and a varnished
+# mahogany tonneau, its blades navy and cream
 CC_ROTOR = vec3(0, 2.05, 0.12)
 CAR_GUNS = [vec3(-0.2, 0.13, -2.62), vec3(0.2, 0.13, -2.62)]
 CAR_GUNNER = vec3(0, 0.6, 1.95)
@@ -4346,7 +4346,7 @@ make_carcopter = (team: int) -> Vertex3D[]:
     loop sx in [-1.0, 1.0]: add_box(vs, head + v3(0.05 * sx, 0.02, -0.13), vec3(0.06, 0.04, 0.01), GLASS)
     add_box(vs, v3(0, 0.25, -0.44), vec3(0.26, 0.07, 0.22), if red: RED_SIDE else: BLUE_SIDE)
     beam(vs, v3(0.08, 0.25, -0.36), v3(0.16, 0.2, 0.0), 0.06, if red: RED_SIDE else: BLUE_SIDE)
-    # the sleeve the canopy's mast pumps in: a gearbox on the floor (a crank's flywheel on it, the
+    # the sleeve the rotor's mast pumps in: a gearbox on the floor (a crank's flywheel on it, the
     # shaft forward to the engine), an iron tube banded in brass, four struts braced to its collar
     pz = f64(CC_ROTOR.z)
     add_box(vs, v3(0, -0.6, pz), vec3(0.34, 0.36, 0.36), iron)
@@ -4396,77 +4396,120 @@ make_carcopter = (team: int) -> Vertex3D[]:
     add_box(vs, rb + v3(0, 0.06, 0.03), vec3(0.3, 0.1, 0.05), brass)
     vs
 
-# the carcopter's canopy, its hub at the origin: a parasol of gores in the side's colors on twelve
-# curved ribs, a valance of points round its edge and a tassel at each rib's end; stretchers up to
-# the ribs from a runner on the mast; the mast down from it into the car's sleeve, a brass finial
-# on top. fold (0 .. CANOPY_FOLDS - 1): how far its ribs droop, flat to bowed
-const CANOPY_RIBS = 12
-const CANOPY_FOLDS = 7
-const CANOPY_R = 3.1
+# the carcopter's rotor, its hub at the origin: CC_BLADES long blades of doped linen on ash spars,
+# alternating the side's two colors, each hinged to a brass hub on the mast (the mast down from it
+# into the car's sleeve). Drawn apart (cc_rotor_draw): each blade turned about y with the rotor,
+# dropped about its hinge and bent toward its tip as it slows (cc_blade_mesh, bend 0 flat ..
+# CC_BENDS - 1 hanging); spun up, a faint disc where they sweep. Red's blades crimson and black
+# tipped in white, Blue's navy and cream tipped in red
+const CC_BLADES = 10
+const CC_BLADE_R = 3.3
+const CC_HINGE = 0.26
+const CC_BENDS = 8
 const CC_PUMP = 0.3
-canopy_droop = (fold: int) -> f64: 0.3 * f64(fold) / f64(CANOPY_FOLDS - 1)
-# how high the hub is over CC_ROTOR at a stroke's phase (radians), and the fold it shows then:
-# going down its edges are blown up, going up they droop
-canopy_pump = (phase: f64) -> f64: CC_PUMP * sin(phase)
-canopy_fold = (phase: f64) -> int: clamp(int(round((0.5 + 0.5 * cos(phase)) * f64(CANOPY_FOLDS - 1))), 0, CANOPY_FOLDS - 1)
+# (how far a blade hangs at a bend: dropped at its hinge, and bent more on toward its tip)
+cc_hang = (bend: int) -> f64: 0.38 * f64(bend) / f64(CC_BENDS - 1)
+cc_sag = (bend: int) -> f64: 0.98 * f64(bend) / f64(CC_BENDS - 1)
 
-make_canopy = (team: int, droop: f64) -> Vertex3D[]:
+# a blade, its hinge at the origin, out along +x, its spar along x (what it feathers about);
+# narrow at the root, broad out to a rounded tip
+make_cc_blade = (team: int, alt: int, sag: f64) -> Vertex3D[]:
     vs: Vertex3D[]
     red = team == 0
-    gores = if red: [rgb(0.08, 0.08, 0.09), WHITE_PAINT, rgb(0.72, 0.08, 0.07)] else: [NAVY, WHITE_PAINT]
-    rib = rgb(0.3, 0.2, 0.12)
-    brass = rgb(0.72, 0.56, 0.26)
+    linen = if red: (if alt == 0: rgb(0.62, 0.08, 0.07) else: rgb(0.08, 0.08, 0.09)) else: (if alt == 0: NAVY else: rgb(0.88, 0.82, 0.66))
+    tip = if red: WHITE_PAINT else: ROUNDEL_RED
+    ash = rgb(0.5, 0.36, 0.2)
     steel = rgb(0.55, 0.55, 0.57)
     up = vec3(0, 1, 0)
-    n = CANOPY_RIBS
-    segs = 5
-    # (each rib's points out from the crown, bending down more toward its end)
-    pts: vec3[][] = []
-    loop k in 0..n:
-        a = TAU * (f64(k) + 0.5) / f64(n)
-        d = v3(cos(a), 0, sin(a))
-        p = v3(0, 0.12, 0) + d * 0.12
-        row = [p]
-        loop j in 0..segs:
-            u = (f64(j) + 0.5) / f64(segs)
-            th = 0.12 + droop * (0.3 + 1.4 * u)
-            p = p + (d * f32(cos(th)) - up * f32(sin(th))) * f32((CANOPY_R - 0.12) / f64(segs))
-            row.push(p)
-        pts.push(row)
-    loop k in 0..n:
-        q = (k + 1) % n
-        c = gores[k % gores.len()]
-        loop j in 0..segs:
-            sheet_tri(vs, pts[k][j], pts[q][j], pts[q][j + 1], up, c, shade(c, 0.7))
-            sheet_tri(vs, pts[k][j], pts[q][j + 1], pts[k][j + 1], up, c, shade(c, 0.7))
-        # (the valance: a point hanging between each two ribs' ends, in the next gore's color)
-        e0 = pts[k][segs]
-        e1 = pts[q][segs]
-        tipv = (e0 + e1) * 0.5 - up * 0.32
-        vc = gores[(k + 1) % gores.len()]
-        sheet_tri(vs, e0, e1, tipv, normalize((e0 + e1) * 0.5 * vec3(1, 0, 1)), vc, shade(vc, 0.7))
-        loop j in 0..segs: beam(vs, pts[k][j] + up * 0.02, pts[k][j + 1] + up * 0.02, 0.045, rib)
-        beam(vs, e0, e0 - up * 0.2, 0.015, brass)
-        add_sphere(vs, e0 - up * 0.24, 0.05, brass, 6, 4)
-        # (a stretcher up from the runner to the rib)
-        beam(vs, v3(0, -0.42, 0) + (pts[k][1] * vec3(1, 0, 1)) * 0.5, pts[k][2], 0.03, brass)
-    # the insignia on two gores, opposite
-    loop k in [0, n / 2]:
-        q = (k + 1) % n
-        a = (pts[k][3] + pts[q][3]) * 0.5
-        b = (pts[k][4] + pts[q][4]) * 0.5
-        v = normalize(b - a)
-        u = normalize(pts[q][3] - pts[k][3])
-        nn = normalize(cross(u, v))
-        if f64(nn.y) < 0.0: nn = nn * -1.0
-        mark(vs, if red: CROSS else: [(disc2(vec2(0, 0), 1.12, 24), WHITE_PAINT)] + ROUNDEL, (a + b) * 0.5, u, v * -1.0, nn, 0.3)
-    # the crown, the finial; the runner; the mast
-    add_cylinder(vs, v3(0, 0.08, 0), 0.2, 0.12, brass, 12, 0.12)
-    tube(vs, v3(0, 0.2, 0), v3(0, 0.55, 0), 0.05, brass, 8, 0.015)
-    add_sphere(vs, v3(0, 0.58, 0), 0.05, brass, 8, 5)
-    tube(vs, v3(0, -0.46, 0), v3(0, -0.38, 0), 0.09, brass, 10)
-    tube(vs, v3(0, -1.75, 0), v3(0, 0.1, 0), 0.06, steel, 8)
+    l = CC_BLADE_R - CC_HINGE
+    segs = 8
+    # (the spar's line, bending down toward the tip, and the chord at each station)
+    spine: vec3[] = [v3(0.16, 0, 0)]
+    loop j in 0..segs:
+        u = (f64(j) + 0.5) / f64(segs)
+        th = sag * u * u
+        spine.push(spine[j] + v3(cos(th), -sin(th), 0) * f32((l - 0.16) / f64(segs)))
+    chord = (j: int) -> f64:
+        u = f64(j) / f64(segs)
+        if j == segs: 0.2 else: 0.14 + 0.3 * min(u * 2.2, 1.0)
+    fore = (j: int) -> vec3: spine[j] + v3(0, 0, -chord(j) * 0.35)
+    aft = (j: int) -> vec3: spine[j] + v3(0, 0, chord(j) * 0.65)
+    loop j in 0..segs:
+        c = if j >= segs - 1: tip else: linen
+        sheet_tri(vs, fore(j), fore(j + 1), aft(j + 1), up, c, shade(c, 0.7))
+        sheet_tri(vs, fore(j), aft(j + 1), aft(j), up, c, shade(c, 0.7))
+        beam(vs, spine[j] + up * 0.015, spine[j + 1] + up * 0.015, 0.04, ash)
+        # (a rib across it)
+        if j > 0: beam(vs, fore(j) + up * 0.01, aft(j) + up * 0.01, 0.015, shade(ash, 0.8))
+    # (the trailing edge's wire, the root's steel fork on the hinge pin)
+    beam(vs, aft(1), aft(segs), 0.012, steel)
+    beam(vs, v3(0, 0, 0), spine[0] + v3(0.06, 0, 0), 0.07, steel)
+    tube(vs, v3(0, 0, -0.06), v3(0, 0, 0.06), 0.035, steel, 6)
     vs
+
+# the hub: a brass drum with the hinges' lugs round it, a finial; the mast below
+make_cc_hub = (team: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    brass = rgb(0.72, 0.56, 0.26)
+    steel = rgb(0.55, 0.55, 0.57)
+    add_cylinder(vs, v3(0, -0.08, 0), CC_HINGE - 0.04, 0.16, brass, 16)
+    loop k in 0..CC_BLADES:
+        a = TAU * f64(k) / f64(CC_BLADES)
+        d = v3(cos(a), 0, sin(a))
+        add_box(vs, d * f32(CC_HINGE - 0.04), vec3(0.08, 0.1, 0.08), brass)
+    tube(vs, v3(0, 0.08, 0), v3(0, 0.3, 0), 0.06, brass, 8, 0.02)
+    add_sphere(vs, v3(0, 0.34, 0), 0.05, brass, 8, 5)
+    tube(vs, v3(0, -0.2, 0), v3(0, -0.12, 0), 0.1, brass, 10)
+    tube(vs, v3(0, -1.75, 0), v3(0, -0.08, 0), 0.06, steel, 8)
+    vs
+
+# the faint disc the blades sweep when spun up: a ring of the side's color, its tips' band round
+# its edge
+make_cc_disc = (team: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    red = team == 0
+    body = if red: rgb(0.4, 0.07, 0.07) else: rgb(0.5, 0.5, 0.55)
+    tip = if red: WHITE_PAINT else: ROUNDEL_RED
+    up = vec3(0, 1, 0)
+    n = 40
+    rs = [CC_HINGE + 0.2, CC_BLADE_R - 0.55, CC_BLADE_R - 0.4, CC_BLADE_R - 0.05]
+    loop k in 0..n:
+        a0 = TAU * f64(k) / f64(n)
+        a1 = TAU * f64(k + 1) / f64(n)
+        loop i in 0..rs.len() - 1:
+            c = if i == 1: tip else: body
+            p = (a: f64, r: f64) -> vec3: v3(cos(a) * r, 0, sin(a) * r)
+            sheet_tri(vs, p(a0, rs[i]), p(a1, rs[i]), p(a1, rs[i + 1]), up, c, shade(c, 0.8))
+            sheet_tri(vs, p(a0, rs[i]), p(a1, rs[i + 1]), p(a0, rs[i + 1]), up, c, shade(c, 0.8))
+    vs
+
+# a rotor as one car's is now: how fast it turns (radians a second), how far it has turned, and
+# how far it pumps (0 on the ground .. 1 flying); stepped on by dt as its engine turns at spin
+# (the propellers' pace), on the ground or not
+struct CcRotor:
+    spin = 0.0
+    turn = 0.0
+    lift = 0.0
+cc_rotor_step = (r: CcRotor, spin: f64, grounded: bool, dt: f64) -> CcRotor:
+    want = spin * 0.3
+    s = r.spin + (want - r.spin) * min(1.0, dt * (if want > r.spin: 0.9 else: 0.5))
+    CcRotor(s, r.turn + dt * s, r.lift + ((if grounded: 0.0 else: 1.0) - r.lift) * min(1.0, dt * 2.0))
+# (how far its blades have flown out, from how fast it turns: 0 hanging .. 1 flat; flying, flat)
+cc_open = (r: CcRotor) -> f64: clamp(max(pow(r.spin / 12.0, 2.0), r.lift), 0.0, 1.0)
+
+# the rotor r drawn on car m at stroke (the pump's phase, radians); tint's alpha how solid it is.
+# Flown out flat it pumps up and down the sleeve, and a faint disc fades in where they sweep
+cc_rotor_draw = (team: int, m: mat4, r: CcRotor, stroke: f64, tint: vec4):
+    o = cc_open(r)
+    hub = m * translation(CC_ROTOR + v3(0, CC_PUMP * sin(stroke) * o * r.lift, 0))
+    draw_mesh(cc_hub_mesh(team), hub * rotation_y(-r.turn), tint, specular = 0.3)
+    bend = clamp(int(round((1.0 - o) * f64(CC_BENDS - 1))), 0, CC_BENDS - 1)
+    loop k in 0..CC_BLADES:
+        a = r.turn + TAU * f64(k) / f64(CC_BLADES)
+        bm = hub * rotation_y(-a) * translation(v3(CC_HINGE, 0, 0)) * rotation_z(-cc_hang(bend)) * rotation_x(-0.06)
+        draw_mesh(cc_blade_mesh(team, k % 2, bend), bm, tint, specular = 0.1)
+    da = (o - 0.88) / 0.12
+    if da > 0.0: draw_mesh(cc_disc_mesh(team), hub, vec4(1, 1, 1, f32(f64(tint.w) * da * 0.4)), specular = 0.0, cast_shadow = false)
 
 # The drone (kind 10): a little monoplane with nobody in it, 2.6 across: a brass box of clockwork
 # and wireless where the pilot would be, its lens ahead and its winding key at the side, an
@@ -5427,11 +5470,13 @@ streak_mesh = () -> Mesh: _once("streak", make_streak)
 witch_flame_mesh = (team: int) -> Mesh: _once("witch flame" + str(team), (): make_witch_flame(team))
 health_pack_mesh = () -> Mesh: _once("health pack", make_health_pack)
 wing_mesh = (team: int, side: int, pair: int = 0) -> Mesh: _once("orni wing" + str(team) + str(side) + str(pair), (): custom_mesh(make_orni_wing(team, if side < 0: -1.0 else: 1.0, pair)))
-rotor_mesh = (kind: int, team: int) -> Mesh: if kind == CARCOPTER: canopy_mesh(team, CANOPY_FOLDS / 2) else: if kind == SCREW: _once("rotor" + str(kind) + str(team), (): custom_mesh(make_little_rotor(team))) else: dv_rotor_mesh(team, 1)
+rotor_mesh = (kind: int, team: int) -> Mesh: if kind == CARCOPTER: cc_hub_mesh(team) else: if kind == SCREW: _once("rotor" + str(kind) + str(team), (): custom_mesh(make_little_rotor(team))) else: dv_rotor_mesh(team, 1)
 # (da Vinci's galleass's screws, tower k's; a thruster block's screw)
 dv_rotor_mesh = (team: int, k: int) -> Mesh: _once("dv rotor" + str(team) + str(k), (): custom_mesh(make_dv_rotor(team, k)))
 dv_thruster_mesh = (team: int) -> Mesh: _once("dv thruster" + str(team), (): custom_mesh(make_dv_thruster(team)))
-canopy_mesh = (team: int, fold: int) -> Mesh: _once("canopy" + str(team) + str(fold), (): custom_mesh(make_canopy(team, canopy_droop(fold))))
+cc_hub_mesh = (team: int) -> Mesh: _once("cc hub" + str(team), (): custom_mesh(make_cc_hub(team)))
+cc_blade_mesh = (team: int, alt: int, bend: int) -> Mesh: _once("cc blade" + str(team) + str(alt) + " " + str(bend), (): custom_mesh(make_cc_blade(team, alt, cc_sag(bend))))
+cc_disc_mesh = (team: int) -> Mesh: _once("cc disc" + str(team), (): custom_mesh(make_cc_disc(team)))
 ROTOR_AT = (kind: int) -> vec3: if kind == CARCOPTER: CC_ROTOR else: if kind == SCREW: SCREW_ROTOR else: DV_ROTORS[1]
 # (the ballista and the trebuchet's arm made at the first one's size, grown to da Vinci's)
 ballista_mesh = (team: int) -> Mesh: _once("ballista" + str(team), (): custom_mesh(grown(make_ballista(team), BALLISTA_SCALE)))
