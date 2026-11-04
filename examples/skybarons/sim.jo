@@ -367,16 +367,20 @@ const FLAG_RAID = 6             # the attackers take the defenders' flag home, a
 const RAIDS = 7                 # each side's bombers go for the other's factory
 const THUNDERDOME = 8           # The Thunderdome: shoot the other side's targets (they come back); the cat is worth many
 const BROOMS = 9                # the ball fight: balls through the other side's rings; the cat is worth many
-MODE_NAMES = ["Dogfight", "Classic", "Base attack", "Capture the flag", "Trench run", "Bomber escort", "Flag raid", "Bomber raids", "The Thunderdome", "Bikes & Brooms"]
+const BOSS = 10                 # The Boss: the attackers bring down the defenders' flying castle, ringed by tethered balloons
+MODE_NAMES = ["Dogfight", "Classic", "Base attack", "Capture the flag", "Trench run", "Bomber escort", "Flag raid", "Bomber raids", "The Thunderdome", "Bikes & Brooms", "The Boss"]
+# (The Boss's attackers: the small crafts, the bombers, the ornithopters, the rocketeers and the
+# carcopters; no big ones of many seats but the ultra bomber, no gun towers, no cat)
+const BOSS_CRAFTS = (1 << SCOUT) | (1 << FIGHTER) | (1 << BOMBER) | (1 << ULTRA) | (1 << ROCKETEER) | (1 << ORNITHOPTER) | (1 << CARCOPTER)
 # (each fight's kinds of craft: those it can have at all (a bit each), and those it must; the
 # lobby lists the first, the second locked on)
 NO_CAT = ALL_CRAFTS & ~(1 << CAT)
-MODE_CAN = [NO_CAT, 1 << FIGHTER, NO_CAT, NO_CAT, NO_CAT, NO_CAT, NO_CAT, NO_CAT, ALL_CRAFTS, NO_CAT]
-MODE_MUST = [0, 0, 0, 0, 0, 0, 0, 0, 1 << CAT, 0]
+MODE_CAN = [NO_CAT, 1 << FIGHTER, NO_CAT, NO_CAT, NO_CAT, NO_CAT, NO_CAT, NO_CAT, ALL_CRAFTS, NO_CAT, BOSS_CRAFTS]
+MODE_MUST = [0, 0, 0, 0, 0, 0, 0, 0, 1 << CAT, 0, 0]
 # (Bikes & Brooms unless the lobby says: witches, bikes (the ornithopters) and balloons)
 const BROOMS_CRAFTS = (1 << ROCKETEER) | (1 << BALLOON) | (1 << ORNITHOPTER)
 # (what a fight has unless its lobby says)
-mode_default = (m: int) -> int: if m == BROOMS: BROOMS_CRAFTS else: if cat_fight(m): THUNDERDOME_CRAFTS else: DEFAULT_CRAFTS
+mode_default = (m: int) -> int: if m == BROOMS: BROOMS_CRAFTS else: if cat_fight(m): THUNDERDOME_CRAFTS else: if m == BOSS: BOSS_CRAFTS else: DEFAULT_CRAFTS
 # (the fights with the cat, the rocketeers and the ornithopters: the targets', and the balls')
 cat_fight = (m: int) -> bool: m == THUNDERDOME or m == BROOMS
 # (the Thunderdome's points: a target down, the cat shot down; a target stands again TARGET_BACK
@@ -445,7 +449,7 @@ gold_person = (g: Game) -> int: if g.people.len() % 2 == 1: g.people.len() - 1 e
 # (the cat's points, by the fight)
 cat_points = (m: int) -> int: if m == BROOMS: BROOMS_CAT else: CAT_POINTS
 # (the fights where one side attacks and the other defends)
-one_sided = (m: int) -> bool: m == TRENCH or m == ESCORT or m == FLAG_RAID
+one_sided = (m: int) -> bool: m == TRENCH or m == ESCORT or m == FLAG_RAID or m == BOSS
 
 # a seat in a craft: where it is (the craft's own way: -z ahead, +x right, +y up), and for a
 # gunner the way its gun points at rest and how far it turns from that (the cosine of the angle)
@@ -662,6 +666,11 @@ struct Craft:
     alarm = 0                   # (a carrier's: the last tick the other side was near it)
     homing = false              # (one of a carrier's craft on its way back to it, the computer's)
     tether = -1                 # (a castle's screw on its cable: the pad it is tied to, of `mother`; -1 free)
+    anchor = vec3(0, 0, 0)      # (The Boss's balloons: where its cable is made fast on the castle, its frame;
+    cable = 0.0                 # how long it is;
+    tie = -1                    # the castle it is made fast to, -1 none (parted, or never);
+    slot = -1                   # its place of BOSS_TIES, -1 none: not one of the castle's;
+    twist = 0.0                 # and the castle's heading the tick before, to turn with it)
 
 # (one of the ball fight's balls)
 struct Ball:
@@ -843,6 +852,7 @@ struct Rules:
     crafts = 0                  # the kinds there are (a bit each: 1 << kind; 0 the fight's own)
     plain = false               # no one's screen marks the crafts (the skies scanned by eye; the
                                 # sim does not read it)
+    defenders = 0               # (The Boss: the defenders who play, the rest of their side out of it; 0 the fight's own)
 
 # (a craft in the air, for the computer's pilots to keep clear of: which, where, how fast, how wide)
 struct Near:
@@ -884,6 +894,8 @@ struct Game:
     balls: Ball[] = []          # (the ball fight's)
     gold = -1                   # (the golden cat: its craft, -1 none out)
     gold_at = GOLD_FIRST        # (and the tick it comes out, when none is)
+    wave = 0                    # (The Boss: the tick the attackers' wave went in, 0 none going in;
+    rally = 0                   # and the tick they began to gather for the next)
 
 # ---------------- a fight ----------------
 # the planes each side has on its field, for n people a side
@@ -963,7 +975,7 @@ default_minutes = (m: int) -> int:
     if m == TRENCH: return 5
     if m == ESCORT or m == FLAG_RAID: return 6
     if m == RAIDS or m == THUNDERDOME: return 8
-    if m == BROOMS: return 10
+    if m == BROOMS or m == BOSS: return 10
     0
 
 # a fight: pilots says who each person is (one player number, or -1 the computer, for each;
@@ -981,8 +993,18 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
     if g.rules.crafts == 0: g.rules.crafts = (DEFAULT_CRAFTS & MODE_CAN[m]) | MODE_MUST[m]
     if g.rules.time_limit <= 0: g.rules.time_limit = default_minutes(m)
     if not one_sided(m): g.rules.attackers = 0
+    # (The Boss: from the air; the defenders who play, a third of the attackers unless the lobby
+    # says, and all their players)
+    if m == BOSS:
+        g.rules.ground_start = false
+        if g.rules.defenders <= 0: g.rules.defenders = (n + BOSS_PER - 1) / BOSS_PER
+        loop i in 0..2 * n:
+            if pilots[i] >= 0 and i % 2 != g.rules.attackers: g.rules.defenders = max(g.rules.defenders, i / 2 + 1)
+        g.rules.defenders = clamp(g.rules.defenders, 1, max(n, 1))
+    else: g.rules.defenders = 0
     loop s in sites(m, g.rules.attackers):
         g.buildings.push(Building(s.kind, s.team, s.pos, s.yaw, site_health(s.kind)))
+    if m == BOSS: boss_setup(g, n)
     if m == FLAG or m == FLAG_RAID:
         # (Flag raid: the defenders' flag alone; the attackers bring it to where theirs would be)
         loop t in 0..2:
@@ -1047,6 +1069,13 @@ start_kind = (g: Game, i: int, want: int) -> int:
         b = if i / 2 == 0 and not has_cat(g, i): CAT else: if i / 2 % 2 == 0: ORNITHOPTER else: ROCKETEER
         if allowed(g, b): return b
         return fallback_kind(g)
+    # (The Boss's attackers: fighters, light bombers, and a few of the rest; the defenders fly nothing)
+    if m == BOSS:
+        if i % 2 != g.rules.attackers: return FIGHTER
+        bm = [FIGHTER, BOMBER, FIGHTER, ORNITHOPTER, BOMBER, SCOUT, CARCOPTER, FIGHTER, BOMBER, ROCKETEER, FIGHTER, SCOUT]
+        b = bm[i / 2 % bm.len()]
+        if allowed(g, b): return b
+        return fallback_kind(g)
     # (the computer's: a mix, by its number, of what the fight allows)
     mix = [FIGHTER, SCOUT, FIGHTER, FIGHTER, SCOUT, FIGHTER]
     k = mix[i / 2 % mix.len()]
@@ -1089,6 +1118,7 @@ starts_on_ground = (g: Game, team: int) -> bool:
     if m == CLASSIC: return false
     # (the raiders come by air; the defenders take off to meet them)
     if m == TRENCH or m == ESCORT: return team != g.rules.attackers
+    if m == BOSS: return false
     g.rules.ground_start
 
 # a craft standing at pos, facing yaw, with no one in it
@@ -1302,6 +1332,230 @@ rules = (g: mut Game):
         loop t in 0..2:
             if share[t] <= 0.0: g.winner = 1 - t
         if g.winner < 0 and late and share[0] != share[1]: g.winner = if share[0] > share[1]: 0 else: 1
+    # (The Boss: the castle down, the attackers have won; standing at the end, the defenders)
+    if m == BOSS:
+        if boss_castle(g) < 0: g.winner = att
+        else if late: g.winner = 1 - att
+        boss_waves(g)
+        boss_supply(g)
+
+# ---------------- The Boss ----------------
+# The defenders' flying castle on station over their half of the field, facing the attackers'
+# way, its middle BOSS_HIGH over the highest ground under it; round it a cloud of balloons, each
+# on a cable made fast to the castle (BOSS_TIES: where, on its rim and its rock, its own frame;
+# the way out its balloon keeps to, mostly ahead; and how long), going with it: each rises and
+# sinks as its pilot likes, else toward its place out along its cable, and is held to the
+# cable's length by a spring (tethered), kept off the island. Its cable parts as the balloon is
+# badly hurt (BOSS_PART), and all of them as the castle goes down: the balloon then drifts
+# free, as any balloon. One downed, a new one is let out from its place once the wreck is
+# cleared, while the castle stands. Gun towers and guns against aircraft round the station's
+# foot. Their guns with no one
+# at them fire by themselves, less well (BOSS_AUTO of the computer's skill). The defenders who
+# play (Rules.defenders, the rest of their side out of it) come back in the castle's seats, or a
+# balloon's. The attackers come by air, in waves: gathering BOSS_RALLY out from the castle, then
+# going in together; behind the gathering place their crafts are rearmed
+const BOSS_OUT = 650.0           # (the station: so far from the middle toward the defenders' field)
+const BOSS_HIGH = 300.0
+const BOSS_PER = 3               # (a defender for so many attackers, unless the lobby says)
+const BOSS_AUTO = 0.0
+const BOSS_SLOW = 45             # (and so many tenths as long to load again)
+const BOSS_RALLY = 1500.0
+const BOSS_GATHER = 450.0        # (as near the gathering place as counts as there)
+const BOSS_WAIT = 60 * 45        # (ticks a wave waits at most for the rest of it)
+const BOSS_SPENT = 60 * 80       # (ticks a wave goes on at most)
+const BOSS_SUPPLY = 150          # (ticks for a bomb or a rocket more, behind the gathering place)
+# (on the quay's rim, round its rock and its lowest band; never on top, where its screws' pads
+# are, the cables kept out of their way (below them at its sides) and clear of its great screw)
+BOSS_TIES = [(vec3(0, -13, -132), vec3(0, 0.15, -1), 420.0), (vec3(-40, -13, -115), vec3(-0.35, 0.5, -1), 360.0), (vec3(40, -13, -115), vec3(0.35, 0.5, -1), 360.0),
+             (vec3(-70, -13, -66), vec3(-0.55, 0.1, -1), 260.0), (vec3(70, -13, -66), vec3(0.55, 0.1, -1), 260.0),
+             (vec3(-80, -13, 0), vec3(-0.8, -0.9, 0.1), 160.0), (vec3(80, -13, 0), vec3(0.8, -0.9, 0.1), 160.0),
+             (vec3(-38, -13, 119), vec3(-0.6, -0.45, 1), 130.0), (vec3(38, -13, 119), vec3(0.6, -0.45, 1), 130.0),
+             (vec3(0, -36, -92), vec3(0, -0.5, -1), 380.0), (vec3(-42, -36, -64), vec3(-0.75, -0.2, -1), 400.0), (vec3(42, -36, -64), vec3(0.75, -0.2, -1), 400.0),
+             (vec3(-60, -36, 10), vec3(-1, -0.55, -0.6), 220.0), (vec3(60, -36, 10), vec3(1, -0.55, -0.6), 220.0),
+             (vec3(0, -45, -70), vec3(0, -0.45, -1), 220.0), (vec3(-46, -45, 30), vec3(-1, -0.45, 0.8), 150.0), (vec3(46, -45, 30), vec3(1, -0.45, 0.8), 150.0)]
+const BOSS_PART = 35             # (a balloon's cable parts as its health is down to so many in a hundred)
+const BOSS_SHELL = 30.0          # (no part of a balloon nearer the island than this,
+const BOSS_APART = 70.0          # nor to another on its cable, middle to middle)
+const BOSS_KITE = 6.0            # (m/s, at most, a balloon goes toward its place, against the castle)
+const TIE_PULL = 2.0             # (the cable past its length: so many m/s² a meter,
+const TIE_DAMP = 3.0             # and so many m/s² for each m/s it goes on stretching)
+const TIE_FOLLOW = 4.0           # (m/s², at most, a balloon's own way changes, level)
+# (a craft's heading: its nose's way, level, radians)
+heading = (c: Craft) -> f64:
+    f = fwd_of(c)
+    atan2(-f64(f.x), -f64(f.z))
+# (the gun towers before it and the guns against aircraft round under it: ahead, to the right)
+BOSS_NESTS = [vec2(520, -200), vec2(520, 200)]
+BOSS_AA = [vec2(240, -120), vec2(240, 120), vec2(-220, -110), vec2(-220, 110)]
+
+# (the castle's health in The Boss, n attackers: 1.35 times its own for eight, as the square
+# of how many more for more (their fire tells more, the more of them come at once))
+boss_health = (n: int) -> int: int(f64(KINDS[CASTLE].health) * clamp(1.35 * pow(f64(max(n, 1)) / 8.0, 2.0), 0.3, 3.0))
+
+# (the castle's station, and the way it faces: toward the attackers' field)
+boss_station = (g: Game) -> (vec3, vec3):
+    d = 1 - g.rules.attackers
+    sx = if f64(fields()[d].at.x) > 0.0: 1.0 else: -1.0
+    x = sx * BOSS_OUT
+    top = 0.0
+    loop a in [-160.0, 0.0, 160.0]:
+        loop b in [-110.0, 0.0, 110.0]: top = max(top, ground(x + a, b))
+    (vec3(f32(x), f32(top + BOSS_HIGH), 0), vec3(f32(-sx), 0, 0))
+# (a point so far ahead of the station and to its right, on the ground)
+boss_ground = (g: Game, ahead: f64, right: f64) -> vec3:
+    at, dir = boss_station(g)
+    side = vec3(-dir.z, 0, dir.x)
+    p = at + dir * f32(ahead) + side * f32(right)
+    vec3(p.x, f32(max(ground(f64(p.x), f64(p.z)), 0.0)), p.z)
+
+# (the castle, whole, its first: its craft; -1 none, downed)
+boss_castle = (g: Game) -> int:
+    loop j in 0..g.crafts.len():
+        if g.crafts[j].kind == CASTLE and g.crafts[j].team != g.rules.attackers and not g.crafts[j].free and g.crafts[j].gone == 0 and g.crafts[j].down == 0: return j
+    -1
+
+# (person i one of the defenders' side kept out of the fight: more of them than play)
+benched = (g: Game, i: int) -> bool: g.rules.mode == BOSS and i % 2 != g.rules.attackers and i / 2 >= g.rules.defenders
+
+# (whether one of side `team` is kept out of craft j's seats: the attackers out of the castle
+# (its docked screws' seats too), its balloons, and its screws let go)
+boss_shut = (g: Game, j: int, team: int) -> bool:
+    if g.rules.mode != BOSS or team != g.rules.attackers or g.crafts[j].team == team: return false
+    c = g.crafts[j]
+    c.kind == CASTLE or c.slot >= 0 or (c.kind == SCREW and c.mother >= 0 and c.mother < g.crafts.len() and g.crafts[c.mother].kind == CASTLE)
+
+# (balloon k of the castle ci, on its cable: out at its place, or just let out from where it is
+# made fast)
+boss_balloon = (g: Game, k: int, ci: int, fresh: bool) -> Craft:
+    q = BOSS_TIES[k]
+    cs = g.crafts[ci]
+    out = quat_rotate(cs.rot, normalize(q.1))
+    foot = point_of(cs, q.0) + out * f32(if fresh: BOSS_SHELL + 25.0 else: q.2 * 0.96)
+    c = flying_craft(BALLOON, cs.team, foot + vec3(0, f32(KINDS[BALLOON].gear), 0), fwd_of(cs))
+    c.vel = cs.vel
+    c.anchor = q.0
+    c.cable = q.2
+    c.tie = ci
+    c.slot = k
+    c.twist = heading(cs)
+    c.home = -1
+    c
+
+# (the fight set out: the castle on station, the balloons up, the guns round its foot)
+boss_setup = (g: mut Game, n: int):
+    at, dir = boss_station(g)
+    d = 1 - g.rules.attackers
+    c = flying_craft(CASTLE, d, at, dir)
+    c.vel = vec3(0, 0, 0)
+    c.throttle = 9.8 / KINDS[CASTLE].thrust
+    c.airman = true
+    c.health = boss_health(n)
+    g.crafts.push(c)
+    ci = g.crafts.len() - 1
+    loop k in 0..BOSS_TIES.len(): g.crafts.push(boss_balloon(g, k, ci, false))
+    loop q in BOSS_NESTS:
+        p = boss_ground(g, f64(q.x), f64(q.y))
+        g.buildings.push(Building(NEST, d, p, atan2(-f64(dir.x), -f64(dir.z)), site_health(NEST)))
+    loop q in BOSS_AA:
+        p = boss_ground(g, f64(q.x), f64(q.y))
+        g.buildings.push(Building(AA, d, p, 0.0, site_health(AA)))
+
+# (a defender back: in a seat of the castle (the players at its guns, the heavy ones first, the
+# computer's at its helm first), or, for every third of the computer's, a balloon's, the least
+# manned, the curtain's front first: the craft and the seat, -1 none)
+boss_post = (g: Game, i: int) -> (int, int):
+    ci = boss_castle(g)
+    if ci < 0: return (-1, -1)
+    p = g.people[i]
+    if p.player < 0 and (i / 2) % 3 == 2:
+        best = -1
+        bs = -1
+        least = 1000
+        loop j in 0..g.crafts.len():
+            b = g.crafts[j]
+            if b.kind != BALLOON or b.tie < 0 or not flying(b) or b.team == g.rules.attackers: continue
+            n = aboard(b)
+            if n >= least: continue
+            loop s in 0..b.seats.len():
+                if b.seats[s] == -1:
+                    least = n
+                    best = j
+                    bs = s
+                    break
+        if best >= 0: return (best, bs)
+    c = g.crafts[ci]
+    kind = c.kind
+    st = KINDS[kind].seats
+    if p.player < 0 and c.seats[0] == -1: return (ci, 0)
+    # (its gun seats, those of more than a machine gun first, in their order)
+    loop heavy in [true, false]:
+        loop s in 1..min(c.seats.len(), st.len()):
+            if c.seats[s] == -1 and crew_seat(kind, s) and gun_seat(kind, s) and (not heavy or st[s].weapon != GUN): return (ci, s)
+    if c.seats[0] == -1: return (ci, 0)
+    (-1, -1)
+
+# (the attackers' gathering place: BOSS_RALLY from the castle toward their side, over it)
+boss_rally = (g: Game) -> vec3:
+    at, dir = boss_station(g)
+    ci = boss_castle(g)
+    mid = if ci >= 0: g.crafts[ci].pos else: at
+    p = mid + dir * f32(BOSS_RALLY)
+    gy = max(ground(f64(p.x), f64(p.z)), 0.0)
+    vec3(p.x, f32(max(f64(mid.y) + 120.0, gy + 250.0)), p.z)
+
+# (whether craft c, of the attackers, is in the wave now going in: it is, and c is not behind
+# where they gathered (one just back, there, waits for the next))
+boss_going = (g: Game, c: Craft) -> bool:
+    if g.wave <= 0: return false
+    ci = boss_castle(g)
+    ci >= 0 and f64(length(c.pos - g.crafts[ci].pos)) < BOSS_RALLY + 380.0
+
+# (craft ci's own place where they gather: on a ring round it, turning slowly)
+boss_slot = (g: Game, ci: int) -> vec3:
+    r = boss_rally(g)
+    a = f64(ci) * 2.39996 + f64(g.tick) / 60.0 * 0.05
+    vec3(f32(f64(r.x) + cos(a) * 260.0), f32(f64(r.y) + f64(ci % 4) * 25.0), f32(f64(r.z) + sin(a) * 260.0))
+
+# (the waves: the computer's gathered (seven in ten of them there, or waited long enough), in;
+# the wave spent (few of them left near the castle, or long enough at it), gathering again)
+boss_waves = (g: mut Game):
+    ci = boss_castle(g)
+    if ci < 0: return
+    att = g.rules.attackers
+    cp = g.crafts[ci].pos
+    rp = boss_rally(g)
+    n = 0
+    there = 0
+    inside = 0
+    loop o in g.air:
+        j = o.craft
+        if j >= g.crew.len() or g.crew[j] != att: continue
+        pi = pilot_of(g.crafts[j])
+        if pi < 0 or g.people[pi].player >= 0: continue
+        n += 1
+        if f64(length(o.pos - rp)) < BOSS_GATHER: there += 1
+        if f64(length(o.pos - cp)) < BOSS_RALLY - 300.0: inside += 1
+    if g.wave == 0:
+        if g.rally == 0: g.rally = g.tick
+        if n > 0 and (there * 10 >= n * 7 or g.tick - g.rally > BOSS_WAIT):
+            g.wave = g.tick
+            g.rally = 0
+    else if g.tick - g.wave > BOSS_SPENT or (g.tick - g.wave > 60 * 25 and inside * 4 < max(n, 1)):
+        g.wave = 0
+        g.rally = g.tick
+
+# (the attackers' crafts behind the gathering place: a bomb, a rocket more, now and then)
+boss_supply = (g: mut Game):
+    if g.tick % BOSS_SUPPLY != 0: return
+    ci = boss_castle(g)
+    if ci < 0: return
+    cp = g.crafts[ci].pos
+    loop o in g.air:
+        j = o.craft
+        if j >= g.crew.len() or g.crew[j] != g.rules.attackers or f64(length(o.pos - cp)) < BOSS_RALLY - 300.0: continue
+        k = KINDS[g.crafts[j].kind]
+        if g.crafts[j].bombs < k.bombs: g.crafts[j].bombs += 1
+        if g.crafts[j].rockets < k.rockets and g.rules.rockets and k.refill == 0: g.crafts[j].rockets += 1
 
 # ---------------- decks: where one stands on a craft ----------------
 # A craft's walkable surface, in its own frame (x right, y up, z back): boxes (or upright
@@ -1680,6 +1934,7 @@ join_crew = (g: mut Game, i: int, p0: Person) -> Person:
     p.joining = -1
     p.join_seat = -1
     c = g.crafts[k]
+    if boss_shut(g, k, p.team): return p
     if want >= 0: return deck_seat(g, i, p, k, want)
     if not whole(c) or crew_at(g, k) != p.team or not (p.state == WALK or p.state == SEATED) or k == p.craft: return p
     # (one who has sat down since to fly a craft of more seats than one: theirs to fly, not left)
@@ -1748,6 +2003,7 @@ person = (g: mut Game, i: int, pad: Pad):
     if g.people[i].team == GOLD:
         gold_seat(g, i)
         return
+    if benched(g, i): return
     let p = g.people[i]
     pressed = pad.enter and p.held & 1 == 0
     out = pad.leave and p.held & 8 == 0
@@ -1757,7 +2013,7 @@ person = (g: mut Game, i: int, pad: Pad):
     loose = (pressed or (pad.bomb and p.held & 4 == 0)) and p.state == SEATED and hook_seat(g.crafts[p.craft].kind, p.seat)
     if pad.witch and p.held & 32 == 0:
         if p.state == SEATED and (g.crafts[p.craft].kind == DAVINCI or g.crafts[p.craft].kind == SCREW): g.crafts[p.craft].crew = 1 - g.crafts[p.craft].crew
-        else: p.witch = not p.witch
+        else if g.rules.mode != BOSS: p.witch = not p.witch
     p.held = (if pad.enter: 1 else: 0) | (if pad.rocket: 2 else: 0) | (if pad.bomb: 4 else: 0) | (if pad.leave: 8 else: 0) | (if pad.kick: 16 else: 0) | (if pad.witch: 32 else: 0) | (if pad.stand: 64 else: 0) | (if pad.join: 128 else: 0)
     seat_now = pad.seat
     seat_new = seat_now != p.seat_held and seat_now > 0
@@ -2029,7 +2285,7 @@ on_deck = (g: mut Game, i: int, p0: Person, pad: Pad, pressed: bool, out: bool, 
     if fl < f64(l.y) - DECK_DROP:
         g.people[i] = off_deck(g, i, p, k)
         return
-    if (pressed or seat_new) and p.joining < 0:
+    if (pressed or seat_new) and p.joining < 0 and not boss_shut(g, k, p.team):
         s = if seat_new: seat_now - 1 else: seat_near(g, k, l)
         if s >= 0 and s < c.seats.len() and (seat_new or f64(length(KINDS[c.kind].seats[s].at - l - vec3(0, 1, 0))) < DECK_REACH):
             o = c.seats[s]
@@ -2104,6 +2360,25 @@ respawn = (g: mut Game, i: int, p0: Person):
     p.vel = vec3(0, 0, 0)
     # (Escort: a bomber lost in the last half of the time does not come back; its crew flies a fighter)
     if g.rules.mode == ESCORT and (p.kind == BOMBER or p.kind == ULTRA) and g.tick > 60 * 180: p.kind = FIGHTER
+    # (The Boss's defenders: in a seat of the castle, or a balloon's; none free, again in a while)
+    if g.rules.mode == BOSS and p.team != g.rules.attackers:
+        k, s = boss_post(g, i)
+        if k < 0:
+            p.state = DEAD
+            p.timer = RESPAWN
+            g.people[i] = p
+            return
+        c = g.crafts[k]
+        g.crafts[k].seats[s] = i
+        p.state = SEATED
+        p.craft = k
+        p.seat = s
+        p.pos = point_of(c, KINDS[c.kind].seats[s].at)
+        p.vel = c.vel
+        p.yaw = atan2(-f64(fwd_of(c).x), -f64(fwd_of(c).z))
+        g.booms.push(Boom(p.pos, BOARDED, g.tick, i, k))
+        g.people[i] = p
+        return
     if starts_on_ground(g, p.team):
         p.pos = foot_spawn(p.team, (i / 2 + g.tick / 61) % 12)
         p.yaw = spawn_yaw(p.team)
@@ -2280,6 +2555,7 @@ landing_on = (g: Game, i: int, p: Person) -> int:
         k = KINDS[c.kind]
         if f64(length(c.pos - p.pos)) > f64(length(k.half)) + ABOARD_REACH: continue
         if p.player < 0 and crew_at(g, j) != p.team: continue
+        if boss_shut(g, j, p.team): continue
         l = quat_rotate(quat_inverse(c.rot), p.pos - c.pos)
         low = 1e9
         high = -1e9
@@ -2438,6 +2714,11 @@ fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
                 n.home = c.home
                 n.safe = 60
                 c = n
+            # (The Boss's balloon: a new one let out from its place, while the castle stands)
+            else if c.slot >= 0:
+                ci = boss_castle(g)
+                if ci >= 0: c = boss_balloon(g, c.slot, ci, true)
+                else: c.free = true
             else: c.free = true
         g.crafts[i] = c
         return
@@ -2932,6 +3213,10 @@ hover = (g: mut Game, i: int, c0: Craft, pd: Pad):
 # it cool; shot down, it sinks
 drift = (g: mut Game, i: int, c0: Craft, pd: Pad):
     let c = c0
+    if c.tie >= 0 and (c.down > 0 or not boss_tied(g, c)): c.tie = -1
+    if c.tie >= 0:
+        tethered(g, i, c, pd)
+        return
     w = wind(f64(c.pos.y))
     climb = clamp(f64(pd.pitch) / 100.0, -1.0, 1.0) * 3.5
     if c.down > 0: climb = -4.0 - f64(c.down) / 200.0
@@ -2954,6 +3239,97 @@ drift = (g: mut Game, i: int, c0: Craft, pd: Pad):
         if c.vel.y < 0.0: c.vel.y = 0.0
         c.landed = gy > 0.0
         if c.landed: c.vel = vec3(0, 0, 0)
+    g.crafts[i] = c
+
+# (whether balloon c's cable still holds: the castle it is made fast to whole, the balloon not
+# badly hurt)
+boss_tied = (g: Game, c: Craft) -> bool:
+    k = c.tie
+    if k < 0 or k >= g.crafts.len() or g.crafts[k].kind != CASTLE or not whole(g.crafts[k]) or g.crafts[k].landed: return false
+    c.health * 100 > KINDS[BALLOON].health * BOSS_PART
+
+# (a balloon on its cable, made fast to the castle (The Boss's): it rises and sinks as its pilot
+# (a player's) likes, else toward its place out along the cable; it goes toward that place, or
+# under the pilot at its height, no faster than BOSS_KITE against the castle. Past the cable's
+# length a spring and a damper hold it (never parted by that); and it is kept BOSS_SHELL off the
+# island, whatever the castle does)
+tethered = (g: mut Game, i: int, c0: Craft, pd: Pad):
+    let c = c0
+    q = g.crafts[c.tie]
+    gear = KINDS[BALLOON].gear
+    tie = BOSS_TIES[clamp(c.slot, 0, BOSS_TIES.len() - 1)]
+    at = point_of(q, c.anchor)
+    foot = c.pos - vec3(0, f32(gear), 0)
+    spot = at + quat_rotate(q.rot, normalize(tie.1)) * f32(c.cable * 0.96)
+    to = spot - foot
+    flat = vec3(to.x, 0, to.z) * 0.12
+    if length(flat) > BOSS_KITE: flat = normalize(flat) * f32(BOSS_KITE)
+    pk = pilot_of(c)
+    mine = pk >= 0 and g.people[pk].player >= 0
+    vy = if mine: clamp(f64(pd.pitch) / 100.0, -1.0, 1.0) * 3.5 else: clamp(f64(to.y) * 0.12, -3.5, 3.5)
+    # (going round with the castle as it turns: where it is, turned as the castle turned since the
+    # tick before)
+    hd = heading(q)
+    turn = atan2(sin(hd - c.twist), cos(hd - c.twist)) / DT
+    c.twist = hd
+    r = c.pos - q.pos
+    spin = vec3(f32(f64(r.z) * turn), 0, f32(-f64(r.x) * turn))
+    want = vec3(q.vel.x + spin.x + flat.x, f32(f64(q.vel.y) + vy), q.vel.z + spin.z + flat.z)
+    c.vel = vec3(f32(approach(f64(c.vel.x), f64(want.x), TIE_FOLLOW, DT)), f32(approach(f64(c.vel.y), f64(want.y), 1.5, DT)), f32(approach(f64(c.vel.z), f64(want.z), TIE_FOLLOW, DT)))
+    # (the cable: past its length, pulled back, the harder the more it stretches and the faster)
+    d = foot - at
+    l = f64(length(d))
+    if l > c.cable and l > 0.01:
+        n = d * f32(1.0 / l)
+        rv = f64(dot(c.vel - q.vel, n))
+        c.vel -= n * f32((TIE_PULL * (l - c.cable) + TIE_DAMP * max(rv, 0.0)) * DT)
+    # (clear of the others on their cables and the screws: apart, as they would come within
+    # BOSS_APART in the next three seconds, the nearer the harder)
+    loop o in g.air:
+        j = o.craft
+        if j == i: continue
+        # (the others on their cables, and the castle's own screws)
+        if not ((g.crafts[j].kind == BALLOON and g.crafts[j].tie >= 0) or (g.crafts[j].kind == SCREW and g.crafts[j].mother == c.tie)): continue
+        dv = c.pos - o.pos
+        if f64(dot(dv, dv)) > 250.0 * 250.0: continue
+        rel = c.vel - o.vel
+        r2 = f64(dot(rel, rel))
+        tt = if r2 > 0.01: clamp(-f64(dot(dv, rel)) / r2, 0.0, 3.0) else: 0.0
+        cl = dv + rel * f32(tt)
+        dl = f64(length(cl))
+        if dl >= BOSS_APART: continue
+        n = if dl > 0.01: cl * f32(1.0 / dl) else: normalize(dv + vec3(0.001, 0, 0))
+        rv = f64(dot(rel, n))
+        if rv < 0.0 and f64(length(dv)) < BOSS_APART: c.vel -= n * f32(rv)
+        c.vel += n * f32((BOSS_APART - dl) * 2.5 * DT)
+    # (off the island: out the way its shell is nearest, not toward it; held against it by its
+    # cable, round the island's far side, round it toward where it is made fast)
+    inv = quat_inverse(q.rot)
+    lf = quat_rotate(inv, foot - q.pos)
+    lc = quat_rotate(inv, c.pos - q.pos)
+    near = if castle_distance(lf) < castle_distance(lc): lf else: lc
+    dd = castle_distance(near)
+    if dd < BOSS_SHELL + 15.0:
+        e = 1.5
+        gr = vec3(f32(castle_distance(near + vec3(f32(e), 0, 0)) - castle_distance(near - vec3(f32(e), 0, 0))), f32(castle_distance(near + vec3(0, f32(e), 0)) - castle_distance(near - vec3(0, f32(e), 0))), f32(castle_distance(near + vec3(0, 0, f32(e))) - castle_distance(near - vec3(0, 0, f32(e)))))
+        if length(gr) < 0.001: gr = vec3(near.x, 0, near.z) + vec3(0.001, 0, 0)
+        n = quat_rotate(q.rot, normalize(gr))
+        if dd < BOSS_SHELL:
+            rv = f64(dot(c.vel - q.vel, n))
+            if rv < 0.0: c.vel -= n * f32(rv)
+            c.vel += n * f32((BOSS_SHELL - dd) * 4.0 * DT)
+        if l > c.cable * 1.01:
+            back = at - foot
+            side = back - n * dot(back, n)
+            if length(side) < 1.0: side = cross(n, vec3(0, 1, 0)) + vec3(0.001, 0, 0)
+            c.vel += normalize(side) * f32(BOSS_KITE * 2.0 * DT)
+    c.pos += c.vel * f32(DT)
+    gy = max(ground(f64(c.pos.x), f64(c.pos.z)), 0.0)
+    if f64(c.pos.y) - gear < gy + 15.0:
+        c.pos.y = f32(gy + 15.0 + gear)
+        if c.vel.y < 0.0: c.vel.y = 0.0
+    c.landed = false
+    c.rot = quat_axis_angle(vec3(0, 1, 0), f64(g.tick) * 0.0005 + f64(i))
     g.crafts[i] = c
 
 # the wind at a height: about 6 m/s, from a way that turns as one goes up
@@ -3145,8 +3521,9 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
     k = KINDS[c.kind]
     first = if gun_seat(c.kind, 0): 0 else: 1
     if not whole(c) or c.seats.len() <= first or (c.landed and not manned(c)): return
-    # (a craft its airman flies alone: its guns with no one at them, none of them firing)
-    if c.airman and not manned_at(g, i): return
+    # (a craft its airman flies alone: its guns with no one at them, none of them firing; but The
+    # Boss's castle, flying itself, whose guns fire as they would)
+    if c.airman and not manned_at(g, i) and c.kind != CASTLE: return
     crew_side = crew_team(g, c)
     loop q in 0..c.ccool.len():
         if g.crafts[i].ccool[q] > 0: g.crafts[i].ccool[q] -= 1
@@ -3168,6 +3545,8 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
         fire = false
         far = 1e9                   # (the computer's: how far its target is)
         human = pk >= 0 and g.people[pk].player >= 0 and g.people[pk].player < pads.len() and not pads[g.people[pk].player].computer
+        # (The Boss: a gun no one is at, less well aimed, slower to turn)
+        sk = if pk < 0 and g.rules.mode == BOSS: g.skill * BOSS_AUTO else: g.skill
         if human:
             pad = pads[g.people[pk].player]
             yaw = f64(pad.aim_yaw) / 1000.0
@@ -3175,7 +3554,7 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
             want = vec3(f32(-sin(yaw) * cos(pitch)), f32(sin(pitch)), f32(-cos(yaw) * cos(pitch)))
             fire = pad.fire
         else if st.weapon == BROADSIDE or st.weapon == BOMBARD:
-            hv = heavy_aim(g, i, s, st, at, base, team)
+            hv = heavy_aim(g, i, s, st, at, base, team, sk)
             want = hv.0
             fire = hv.1
         else:
@@ -3201,7 +3580,7 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
             if best >= 0:
                 o = g.crafts[best]
                 l = lead_from(at, c.vel, aim_point(o, at), o.vel, if st.weapon == BALLISTA: BOLT_SPEED else: if st.weapon == FLAME: FLAME_SPEED * 0.55 else: if st.weapon == FLAKGUN: CASTLE_FLAK_SPEED else: BULLET_SPEED)
-                w = (1.0 - g.skill) * 0.05 + 0.012
+                w = (1.0 - sk) * 0.05 + 0.012
                 t = f64(g.tick)
                 want = normalize(normalize(l) + vec3(f32(sin(t * 0.031 + f64(i + s)) * w), f32(cos(t * 0.027 + f64(s)) * w), f32(sin(t * 0.023 + 1.0) * w)))
                 fire = f64(dot(normalize(c.aims[s]), normalize(l))) > 0.996 and least < 600.0
@@ -3217,7 +3596,7 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
                 if f64(dot(want, base)) < st.arc: want = normalize(want + base * 0.5)
             fire = false
         # (a battery's guns and a bombard heavy to lay, a bombard the more)
-        rate = if st.weapon == BOMBARD: (if human: 2.5 else: 1.2) else: if st.weapon == BROADSIDE: (if human: 10.0 else: 2.5 + 2.5 * g.skill) else: if human: 30.0 else: 4.0 + 4.0 * g.skill
+        rate = if st.weapon == BOMBARD: (if human: 2.5 else: 1.2) else: if st.weapon == BROADSIDE: (if human: 10.0 else: 2.5 + 2.5 * sk) else: if human: 30.0 else: 4.0 + 4.0 * sk
         g.crafts[i].aims[s] = normalize(approach(c.aims[s], want, rate, DT))
         if g.crafts[i].gcool[s] > 0: g.crafts[i].gcool[s] -= 1
         if g.crafts[i].gheat[s] > 0: g.crafts[i].gheat[s] -= 1
@@ -3268,6 +3647,8 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
                 g.bullets.push(Bullet(at + dir * 1.5, c.vel + dir * f32(BULLET_SPEED), by, i, team, BULLET_LIFE))
                 g.crafts[i].gcool[s] = 6
                 g.crafts[i].gheat[s] += 6
+            # (The Boss: a gun no one is at, slower to load again)
+            if pk < 0 and g.rules.mode == BOSS: g.crafts[i].gcool[s] = g.crafts[i].gcool[s] * BOSS_SLOW / 10
             seen_firing(g, i)
         # (a broadside rolling: the battery's next gun)
         if st.weapon == BROADSIDE and g.crafts[i].gheat[s] > 0 and g.crafts[i].gheat[s] % RIPPLE == 0:
@@ -3339,7 +3720,7 @@ slow_and_big = (c: Craft) -> bool:
 # the computer's at a castle's battery or bombard (seat s of craft i): a battery at the nearest of
 # the others it knows of in reach; a bombard at the big and slow, else at what of theirs stands on
 # the ground in reach; led, the ball's fall allowed for, fired once laid on it
-heavy_aim = (g: mut Game, i: int, s: int, st: Seat, at: vec3, base: vec3, team: int) -> (vec3, bool):
+heavy_aim = (g: mut Game, i: int, s: int, st: Seat, at: vec3, base: vec3, team: int, sk: f64) -> (vec3, bool):
     c = g.crafts[i]
     bomb = st.weapon == BOMBARD
     reach = if bomb: BOMBARD_REACH else: 1100.0
@@ -3376,7 +3757,7 @@ heavy_aim = (g: mut Game, i: int, s: int, st: Seat, at: vec3, base: vec3, team: 
                 has = true
     if not has: return (c.aims[s], false)
     if let dir = arc_aim(at, c.vel, goal, gv, speed):
-        w = (1.0 - g.skill) * (if bomb: 0.008 else: 0.02) + (if bomb: 0.002 else: 0.006)
+        w = (1.0 - sk) * (if bomb: 0.008 else: 0.02) + (if bomb: 0.002 else: 0.006)
         t = f64(g.tick)
         want = normalize(dir + vec3(f32(sin(t * 0.013 + f64(i + s)) * w), f32(cos(t * 0.011 + f64(s)) * w), f32(sin(t * 0.017 + 1.0) * w)))
         (want, f64(dot(normalize(c.aims[s]), dir)) > (if bomb: 0.9993 else: 0.996))
@@ -3425,6 +3806,8 @@ screw_autos = (g: mut Game, i: int):
     if not whole(c) or c.landed or c.taims.len() < SCREW_AUTOS.len(): return
     team = crew_team(g, c)
     by = airman_by(g, c)
+    # (The Boss: a screw no one flies, its guns less well aimed, slower)
+    sk = if g.rules.mode == BOSS and pilot_of(c) < 0: g.skill * BOSS_AUTO else: g.skill
     loop s in 0..SCREW_AUTOS.len():
         if g.crafts[i].tcool[s] > 0: g.crafts[i].tcool[s] -= 1
         at = point_of(c, SCREW_AUTOS[s])
@@ -3452,13 +3835,13 @@ screw_autos = (g: mut Game, i: int):
             g.crafts[i].taims[s] = turn_toward(normalize(c.taims[s]), base, AUTO_TURN * 0.3 * DT)
             continue
         l = lead_from(at, c.vel, best, bv)
-        w = NEST_SPREAD + 0.01 * (1.0 - g.skill)
+        w = NEST_SPREAD + 0.01 * (1.0 - sk)
         t = f64(g.tick)
         dir = normalize(normalize(l) + vec3(f32(sin(t * 0.37 + f64(i + s)) * w), f32(cos(t * 0.29 + f64(s)) * w), f32(sin(t * 0.41 + 2.0) * w)))
         g.crafts[i].taims[s] = turn_toward(normalize(c.taims[s]), dir, AUTO_TURN * DT)
         if g.crafts[i].tcool[s] == 0 and f64(dot(g.crafts[i].taims[s], normalize(l))) > 0.99:
             twin_fire(g, i, at, g.crafts[i].taims[s], by, team)
-            g.crafts[i].tcool[s] = MG2_GAP
+            g.crafts[i].tcool[s] = if sk < g.skill: MG2_GAP * BOSS_SLOW / 10 else: MG2_GAP
             seen_firing(g, i)
 
 # a drone from craft i's rack, launched by person pk (side team): in a slot no craft is in
@@ -4830,6 +5213,10 @@ choose_targets = (g: mut Game):
             # (the ball fight: one carrying a ball, gone after first)
             if g.rules.mode == BROOMS and carrying(g, j): v *= 0.35
             if kind == CAT and ek == CAT: v *= 50.0
+            # (The Boss's attackers: the castle first; a balloon only when close ahead)
+            if g.rules.mode == BOSS and team == g.rules.attackers:
+                if ek == CASTLE: v *= 0.25
+                else if ek == BALLOON: v *= if l < 350.0: 0.6 else: 3.0
             if v < least:
                 least = v
                 best = j
@@ -5038,6 +5425,9 @@ bot_fly = (g: Game, ci: int, c: Craft) -> Pad:
     # (the ball fight: most of the computer's at the balls, each in its part; the rest fight; the
     # big ones, too slow for the balls and every gun's mark, as ever, their gunners fighting)
     if g.rules.mode == BROOMS and at_balls(g, c) and not after_gold(g, c): return bot_ball(g, ci, c, team)
+    # (The Boss's attackers: gathered till their wave goes in; a bomber with none left back to be
+    # rearmed)
+    if g.rules.mode == BOSS and team == g.rules.attackers and not c.landed and (not boss_going(g, c) or (k.bombs > 0 and c.bombs == 0)): return boss_gather(g, ci, c)
     if k.heli: return bot_heli(g, ci, c, team)
     if c.landed:
         pad = Pad()
@@ -5370,10 +5760,11 @@ bot_heli = (g: Game, ci: int, c: Craft, team: int) -> Pad:
         p.rocket = dh < 360.0 and lined and abs(f64(c.pos.y) + f64(ba.y) + drop - f64(e_at.y)) < 6.0 + BOULDER_NEAR
         return p
     l = lead(c, e)
-    goal = e.pos - away * 150.0
+    big = if e.kind == CASTLE: 300.0 else: 0.0
+    goal = e.pos - away * f32(150.0 + big)
     goal.y = f32(max(f64(e.pos.y), gy + 40.0))
     p = heli_to(c, goal, l, 25.0)
-    p.fire = f64(dot(fwd, normalize(l))) > 0.992 and f64(length(l)) < 450.0
+    p.fire = f64(dot(fwd, normalize(l))) > 0.992 and f64(length(l)) < 450.0 + big
     p
 
 # (side team's flying castle in the air: its craft, -1 none)
@@ -5405,6 +5796,13 @@ bot_castle = (g: Game, ci: int, c: Craft, team: int) -> Pad:
     low = castle_ground(c)
     fwd = fwd_of(c)
     over = f64(c.pos.y) - k.gear - low
+    # (The Boss: on station, facing the attackers' way)
+    if g.rules.mode == BOSS:
+        at, dir = boss_station(g)
+        to = vec3(at.x - c.pos.x, 0, at.z - c.pos.z)
+        dist = f64(length(to))
+        want_v = if dist > 2.0: normalize(to) * f32(min(dist * 0.04, 6.0)) else: vec3(0, 0, 0)
+        return heli_vel(c, want_v, clamp((f64(at.y) - f64(c.pos.y)) * 0.05, -3.0, 4.0), dir)
     tg = c.target
     has = tg >= 0 and tg < g.crafts.len() and flying(g.crafts[tg]) and f64(length(g.crafts[tg].pos - c.pos)) < 1800.0
     goal = c.pos
@@ -5863,7 +6261,7 @@ bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
         want = vec3(f32(river_x(tz)) - c.pos.x, f32(top + 32.0) - c.pos.y, f32(tz) - c.pos.z)
         bi = mission_target(g, crew_team(g, c))
         if bi >= 0 and f64(length(g.buildings[bi].pos - c.pos)) < 900.0: want = g.buildings[bi].pos + vec3(0, 6, 0) - c.pos
-    else if fight and f64(length(e.pos - c.pos)) < 70.0 and f64(dot(c.vel - e.vel, e.pos - c.pos)) > 0.0:
+    else if fight and (f64(length(e.pos - c.pos)) < 70.0 or (e.kind == CASTLE and craft_distance(e, c.pos) < 110.0 + speed)) and f64(dot(c.vel - e.vel, e.pos - c.pos)) > 0.0:
         # (too close and closing: break off, up and away; the fight goes on after)
         want = normalize(c.pos - e.pos) + vec3(0, 0.8, 0)
         fight = false
@@ -5923,9 +6321,11 @@ bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
         d = f64(length(aim))
         within = 0.9995 - (1.0 - skill) * 0.003
         on = f64(dot(fwd, normalize(aim)))
+        # (the flying castle: from how far its walls are, not its middle)
+        if e.kind == CASTLE: d = craft_distance(e, c.pos)
         pad.fire = d < 480.0 and on > within and c.heat < JAM_HEAT - 30
         # (a rocket at a big one, close and lined up)
-        pad.rocket = (e.kind == BOMBER or e.kind == ZEPPELIN or e.kind == ULTRA or e.kind == BALLOON) and d < 260.0 and on > 0.995 and g.tick % 30 == ci % 30
+        pad.rocket = (e.kind == BOMBER or e.kind == ZEPPELIN or e.kind == ULTRA or e.kind == BALLOON or e.kind == CASTLE) and d < 260.0 and on > 0.995 and g.tick % 30 == ci % 30
         if c.kind == ROCKETEER: pad.rocket = d < 400.0 and on > 0.99
         # (close behind it: slow down, not to fly past)
         if d < 140.0 and f64(dot(e.pos - c.pos, fwd)) > 0.0 and f64(dot(c.vel - e.vel, fwd)) > 6.0: pad.throttle = -1
@@ -5985,6 +6385,21 @@ find_target = (g: Game, team: int) -> int:
         if m == BASES and (b.kind == HQ or b.kind == TANK or b.kind == HANGAR) and best < 0: best = j
     best
 
+# (The Boss's attacker, gathering: to its own place round where they gather, round it, waiting)
+boss_gather = (g: Game, ci: int, c: Craft) -> Pad:
+    to = boss_slot(g, ci) - c.pos
+    if KINDS[c.kind].heli: return heli_to(c, c.pos + to, to, 25.0)
+    gy = ground(f64(c.pos.x), f64(c.pos.z))
+    if f64(c.pos.y) - gy < 130.0: to = vec3(to.x, f32(max(f64(to.y), 200.0)), to.z)
+    flat = f64(length(vec2(to.x, to.z)))
+    want = normalize(to)
+    # (there: round it, a wide circle)
+    if flat < 300.0: want = normalize(vec3(-to.z, 0, to.x) + to * 0.004 + vec3(0, f32(clamp(f64(to.y) / 200.0, -0.3, 0.3)), 0))
+    pad = steer(c, normalize(want) + avoid(g, ci, c))
+    pad.pitch = int(f64(pad.pitch) * 0.7)
+    pad.throttle = if flat < 400.0 and f64(length(c.vel)) > KINDS[c.kind].stall * 1.8: 0 else: 1
+    pad
+
 # a bomber or a zeppelin: to the other side's target (or field), level, high enough; bombs away
 # when they would fall on it; its gunners fight (gunners)
 bot_bomber = (g: Game, ci: int, c: Craft, team: int) -> Pad:
@@ -5993,6 +6408,21 @@ bot_bomber = (g: Game, ci: int, c: Craft, team: int) -> Pad:
     goal = if bi >= 0: g.buildings[bi].pos else: on_field(1 - team, 0.0, -STRIP_WIDE - 80.0)
     alt = if k.lighter: 520.0 else: 550.0
     if g.rules.mode == TRENCH: alt = 420.0
+    # (The Boss: over the castle, high over its towers, bombs onto its terraces)
+    ca = if g.rules.mode == BOSS and team == g.rules.attackers: boss_castle(g) else: -1
+    if ca >= 0:
+        q = g.crafts[ca]
+        goal = q.pos + vec3(0, 40, 0)
+        alt = f64(q.pos.y) + 250.0
+        gy0 = ground(f64(c.pos.x), f64(c.pos.z))
+        dir = normalize(vec3(goal.x - c.pos.x, 0, goal.z - c.pos.z) + vec3(0.0001, 0, 0)) + vec3(0, f32(clamp((max(alt, gy0 + 220.0) - f64(c.pos.y)) / 300.0, -0.25, 0.25)), 0)
+        bp = steer(c, normalize(dir) + avoid(g, ci, c))
+        bp.pitch = int(f64(bp.pitch) * 0.7)
+        bp.throttle = 1
+        t = sqrt(2.0 * max(f64(c.pos.y) - f64(goal.y), 1.0) / 9.8)
+        l = quat_rotate(quat_inverse(q.rot), c.pos + c.vel * f32(t) - q.pos - q.vel * f32(t))
+        bp.bomb = c.bombs > 0 and (f64(l.x) / 75.0) * (f64(l.x) / 75.0) + (f64(l.z) / 125.0) * (f64(l.z) / 125.0) < 1.0
+        return bp
     gy = ground(f64(c.pos.x), f64(c.pos.z))
     want_alt = max(alt, gy + 220.0)
     to = goal - c.pos
