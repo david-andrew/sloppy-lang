@@ -1687,9 +1687,12 @@ thrown_at: {int: f64} = {}
 # go on the way), then back)
 treb_angle = (i: int) -> f64:
     t = elapsed() - (thrown_at.get(i) ?? -100.0)
-    if t < 0.0 or t > 2.0: return 0.0
+    if t < 0.0 or t > TREB_RESET: return 0.0
     if t < 0.35: return smoothstep(0.0, 0.35, t) * radians(165.0)
-    radians(165.0) * (1.0 - smoothstep(0.35, 2.0, t))
+    radians(165.0) * (1.0 - smoothstep(0.35, TREB_RESET, t))
+# (the trebuchet back and cocked this long after a throw: its next boulder in the sling only then)
+const TREB_RESET = 1.0
+treb_ready = (i: int) -> bool: elapsed() - (thrown_at.get(i) ?? -100.0) > TREB_RESET
 
 # (the ball fight: when each ring last had a ball through it (elapsed()); each ball's turn, rolled
 # the way it goes, here alone)
@@ -1697,6 +1700,7 @@ ring_lit: {int: f64} = {}
 # (the galleasses' cradles on the ground, by craft: where each one stood)
 cradles: {int: mat4} = {}
 cradle_tick = 0
+landed_for: f64[]               # (and how long each craft has stood still on the ground, s)
 ball_rot: vec4[]
 # (the ring nearest p: a goal's, by where it was)
 ring_near = (p: vec3) -> int:
@@ -1860,7 +1864,11 @@ draw = ():
     loop prop_turn.len() < g.crafts.len(): prop_turn.push(0.0)
     loop i in 0.. and c in g.crafts:
         if c.free: continue
-        if c.kind == DAVINCI and c.landed and c.gone == 0 and c.down == 0: cradles[i] = translation(c.pos) * quat_to_mat4(c.rot)
+        # (a galleass come down and stopped for a second, parked: its cradle under it; not one low
+        # over the ground, digging)
+        loop landed_for.len() < g.crafts.len(): landed_for.push(0.0)
+        landed_for[i] = if c.kind == DAVINCI and c.landed and c.gone == 0 and c.down == 0 and c.vel == vec3(0, 0, 0): landed_for[i] + frame_time() else: 0.0
+        if landed_for[i] > 1.0 or (g.tick < 60 and landed_for[i] > 0.0): cradles[i] = translation(c.pos) * quat_to_mat4(c.rot)
         if c.gone > 0:
             if c.vel == vec3(0, 0, 0) and ground(f64(c.pos.x), f64(c.pos.z)) > 0.0:
                 gy = f32(ground(f64(c.pos.x), f64(c.pos.z)))
@@ -1921,13 +1929,27 @@ draw = ():
                 loop k in 0..models.DV_ROTORS.len(): draw_mesh(models.dv_rotor_mesh(c.team, k), m * translation(models.DV_ROTORS[k]) * rotation_y(-turn - f64(k) * 0.9), see(vec4(1, 1, 1, 1), view.rotor), specular = 0.1)
             if near: models.dv_draw(c.team, m, turn * models.DV_GEAR, c.crew)
             spins = dv_thrust(g, i, frame_time())
+            # (its rudder, swung the way it turns)
+            draw_mesh(models.dv_rudder_mesh(c.team), m * translation(models.DV_RUDDER) * rotation_y(-dv_turning[i] * 0.5), specular = 0.05)
             if near:
                 push = models.dv_thruster_mesh(c.team)
                 loop k in 0.. and pm in models.dv_thrusters(): draw_mesh(push, m * pm * rotation_y(spins[k]), specular = 0.1)
-            arm = m * translation(models.TREB_PIVOT) * rotation_x(treb_angle(i))
+            # (digging: its arm swung down, its sling let down on a rope to the ground and up again
+            # with the boulder, once each of DIG's ticks)
+            dp = f64(c.dig) / f64(DIG)
+            swing = if c.dig > 0: radians(82.0) * sin(PI * dp) else: treb_angle(i)
+            arm = m * translation(models.TREB_PIVOT) * rotation_x(swing)
             draw_mesh(models.treb_arm_mesh(c.team), arm, specular = 0.1)
             bs = f32(models.BOULDER_SCALE)
-            if c.boulders > 0: draw_mesh(models.boulder_mesh(), arm * translation(models.TREB_POUCH_LOCAL) * scaling(vec3(bs)), specular = 0.05)
+            pouch = (arm * vec4(models.TREB_POUCH_LOCAL, 1)).xyz
+            if c.dig > 0:
+                gyd = f32(max(ground(f64(pouch.x), f64(pouch.z)), 0.0))
+                drop = f32(sin(PI * dp))
+                low_end = vec3(pouch.x, pouch.y - (pouch.y - gyd) * drop, pouch.z)
+                d = low_end - pouch
+                if length(d) > 0.2: draw_mesh(tracer, translation((pouch + low_end) * 0.5) * facing(normalize(d)) * scaling(vec3(0.18, 0.18, length(d))), rgb(0.55, 0.45, 0.3), specular = 0.0, cast_shadow = false)
+                if dp > 0.5: draw_mesh(models.boulder_mesh(), translation(low_end) * scaling(vec3(bs)), specular = 0.05)
+            else if c.boulders > 0 and treb_ready(i): draw_mesh(models.boulder_mesh(), arm * translation(models.TREB_POUCH_LOCAL) * scaling(vec3(bs)), specular = 0.05)
             loop k in 0..min(c.boulders - 1, models.DV_PILE.len()): draw_mesh(models.boulder_mesh(), m * translation(models.DV_PILE[k]) * rotation_y(f64(k) * 1.3) * scaling(vec3(bs)), specular = 0.05)
             loop s in 1..min(c.aims.len(), KINDS[c.kind].seats.len()): draw_mesh(models.ballista_mesh(c.team), translation(point_of(c, KINDS[c.kind].seats[s].at)) * quat_to_mat4(quat_facing(c.aims[s])), specular = 0.2)
         # (the little screw: turning with the throttle, its four men rowing (or pedalling: c.crew)
@@ -2163,7 +2185,8 @@ effects = (dt: f64):
                 here = if p.state == SEATED: g.crafts[p.craft].pos else: p.pos
                 if f64(length(b.pos - here)) < 30.0: shake = max(shake, 0.6)
         else if b.kind == DUG:
-            emit(smoke, b.pos, 14, 4.0, rgba(0.45, 0.38, 0.28, 0.8), 1.5, 3.0)
+            # (the dirt where the sling scooped it, on the ground under it)
+            emit(smoke, vec3(b.pos.x, f32(max(ground(f64(b.pos.x), f64(b.pos.z)), 0.0) + 1.0), b.pos.z), 14, 4.0, rgba(0.45, 0.38, 0.28, 0.8), 1.5, 3.0)
             if in_fight and b.who == myc: say(if g.crafts[myc].boulders >= BOULDERS: "{BOULDERS} boulders aboard: a full load" else: "a boulder aboard ({g.crafts[myc].boulders} of {BOULDERS})", rgb(1, 0.9, 0.6), small = true)
         else if b.kind == SMASHED:
             emit(smoke, b.pos, 20, 6.0, rgba(0.4, 0.36, 0.3, 0.8), 2.0, 5.0)
