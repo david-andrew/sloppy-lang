@@ -2098,6 +2098,35 @@ view_of = (g: Game, i: int) -> SeatView:
     if let vs = SEAT_VIEWS.get(g.crafts[i].kind):
         if p.seat < vs.len(): return vs[p.seat]
     SeatView()
+# (the local player's cue at a carrier's window: the nearest carrier of their side with a hook
+# free (-1 none) and how they stand to it: 0 nothing, 1 near and astern of it, 2 their course
+# through its window and slow enough to be caught, 3 through it too fast)
+fk_cue = (-1, 0)
+window_cue = (g: Game) -> (int, int):
+    p = my()
+    if p.state != SEATED or p.seat != 0 or p.craft < 0 or p.craft >= g.crafts.len(): return (-1, 0)
+    if not hookable(g.crafts[p.craft].kind) or not flying(g.crafts[p.craft]): return (-1, 0)
+    cp = g.crafts[p.craft].pos
+    best = -1
+    least = 900.0
+    loop j in 0..g.crafts.len():
+        if g.crafts[j].kind != CARRIER or not flying(g.crafts[j]) or crew_at(g, j) != p.team: continue
+        if free_hook(g.crafts[j], g.crafts[p.craft].kind) < 0: continue
+        d = f64(length(point_of(g.crafts[j], WIN_AT) - cp))
+        if d < least:
+            least = d
+            best = j
+    if best < 0: return (-1, 0)
+    m = g.crafts[best]
+    inv = quat_inverse(m.rot)
+    l = quat_rotate(inv, cp - m.pos)
+    v = quat_rotate(inv, g.crafts[p.craft].vel - m.vel)
+    if l.z < WIN_AT.z - 2.0: return (-1, 0)
+    if f64(v.z) > -2.0: return (best, 1)
+    t = f64(l.z - WIN_AT.z) / -f64(v.z)
+    if t > 12.0 or not in_window(l + v * f32(t)): return (best, 1)
+    (best, if f64(length(v)) > CATCH_SPEED: 3 else: 2)
+
 # (the flying carrier's parts drawn apart: its gasbags, screws, hung craft, guns and gunners)
 draw_carrier = (g: Game, i: int, c: Craft, m: mat4, view: SeatView):
     loop b in 0..c.bags.len():
@@ -2108,11 +2137,39 @@ draw_carrier = (g: Game, i: int, c: Craft, m: mat4, view: SeatView):
     if view.rotor > 0.0:
         loop k in 0..models.FK_SCREWS.len(): draw_mesh(models.fk_screw_mesh(), m * translation(models.FK_SCREWS[k] - vec3(0, 0, 1.8)) * rotation_z(turn * (if k % 2 == 0: 1.0 else: -1.0) + f64(k)), see(vec4(1, 1, 1, 1), view.rotor), specular = 0.3)
     if f64(length(c.pos - cam_pos)) > 3500.0: return
+    # (its window's lamps: warm, amber to one of its side near and astern of it, green lined up and
+    # slow enough, red lined up too fast; its arms swung in for a moment on a catch)
+    cue = if fk_cue.0 == i: fk_cue.1 else: 0
+    lamp = [rgb(1.0, 0.86, 0.55), rgb(1.0, 0.62, 0.15), rgb(0.3, 1.0, 0.4), rgb(1.0, 0.22, 0.16)][cue]
+    loop lp in models.FK_WIN_LAMPS: draw_mesh(models.fk_lamp_mesh(), m * translation(lp) * scaling(vec3(if cue >= 2: 1.8 else: 1.3)), lamp, emissive = 1.0, specular = 0.0, cast_shadow = false)
+    last = -100000
+    loop t in c.hcaught: last = max(last, t)
+    since = f64(g.tick - last)
+    swing = if since < 20.0: since / 20.0 else: if since < 80.0: 1.0 else: max(0.0, 1.0 - (since - 80.0) / 40.0)
+    loop k in 0.. and pv in models.FK_ARMS:
+        sx = if pv.x < 0.0: 1.0 else: -1.0
+        draw_mesh(models.fk_arm_mesh(), m * translation(pv) * scaling(vec3(f32(sx), 1, 1)) * rotation_z(0.5 - swing * models.FK_ARM_IN), specular = 0.3)
+    # (its craft on their hooks; one just caught on its way up, its crane's trolley over it, its
+    # cable down to it: up from the window, along under the keel, aside onto its hook)
+    trolley_z = f64(models.FK_WIN.z) - 2.0
     loop h in 0..c.hung.len():
         kind = c.hung[h]
         if kind < 0: continue
-        draw_mesh(models.craft_mesh(kind, c.team, 0), m * translation(hung_at(h, kind)), specular = 0.25)
-        loop pr in models.props(kind, c.team): draw_mesh(prop, m * translation(hung_at(h, kind) + pr.xyz) * rotation_z(f64(h) * 0.9) * scaling(vec3(pr.w)), specular = 0.1)
+        at = hung_at(h, kind)
+        if hoisting(g, c, h):
+            u = clamp(f64(g.tick - c.hcaught[h]) / f64(HOIST), 0.0, 1.0)
+            low = WIN_AT + vec3(0, 0, -3)
+            up = vec3(0, at.y, 72)
+            along = vec3(0, at.y, at.z)
+            at = if u < 0.35: lerp(low, up, f32(smoothstep(0.0, 1.0, u / 0.35))) else: if u < 0.8: lerp(up, along, f32(smoothstep(0.0, 1.0, (u - 0.35) / 0.45))) else: lerp(along, at, f32(smoothstep(0.0, 1.0, (u - 0.8) / 0.2)))
+            trolley_z = f64(at.z)
+            top = point_of(c, at + vec3(0, 1.4, 0))
+            hook = point_of(c, vec3(0, f32(models.FK_RAIL_Y - 2.0), at.z))
+            d = top - hook
+            if f64(length(d)) > 0.2: draw_mesh(models.fk_cable_mesh(), translation((top + hook) * 0.5) * facing(normalize(d)) * scaling(vec3(0.1, 0.1, length(d))), rgb(0.25, 0.23, 0.2), specular = 0.0)
+        draw_mesh(models.craft_mesh(kind, c.team, 0), m * translation(at), specular = 0.25)
+        loop pr in models.props(kind, c.team): draw_mesh(prop, m * translation(at + pr.xyz) * rotation_z(f64(h) * 0.9) * scaling(vec3(pr.w)), specular = 0.1)
+    draw_mesh(models.fk_trolley_mesh(), m * translation(vec3(0, f32(models.FK_RAIL_Y), f32(trolley_z))), specular = 0.3)
     st = KINDS[c.kind].seats
     au = autos_of(c.kind)
     loop s in 1..c.aims.len():
@@ -2227,6 +2284,8 @@ draw = ():
     loop i, cm in cradles: draw_mesh(models.dv_cradle_mesh(), cm, specular = 0.05)
     loop i, cm in footings: draw_mesh(models.ca_footings_mesh(), cm, specular = 0.05)
     loop i, cm in moorings: draw_mesh(models.fk_stand_mesh(), cm, specular = 0.08)
+    global fk_cue
+    fk_cue = if mode == .menu: (-1, 0) else: window_cue(g)
     # the crafts: whole, falling in flames, or a wreck; their propellers turning, their guns
     loop prop_turn.len() < g.crafts.len(): prop_turn.push(0.0)
     loop i in 0.. and c in g.crafts:
@@ -2732,7 +2791,9 @@ effects = (dt: f64):
             if in_fight:
                 play_at(snd_rocket, b.pos, settings.sound * 0.2, 600.0)
                 pad = b.who >= 0 and b.who < g.crafts.len() and g.crafts[b.who].kind == CASTLE
-                if b.by == me(): say(if pad: "down on the pad: docked" else: "caught on the deck: on a hook again", gray(0.9), small = true)
+                if b.by == me(): say(if pad: "down on the pad: docked" else: "caught in the window: up to a hook", gray(0.9), small = true)
+        else if b.kind == PASSED:
+            if b.who == myc: say("too fast through the window: not caught", rgb(1.0, 0.6, 0.4), small = true)
         else if b.kind == SNAPPED:
             if in_fight:
                 play_at(snd_rocket, b.pos, settings.sound * 0.3, 900.0)
@@ -3444,6 +3505,13 @@ draw_hud = (g: Game):
         # (not with its map open: the map is the list)
         if c.seats.len() > 1 and not map_open: seats_plate(g, c)
         if not k.lighter and c.down == 0 and g.winner < 0 and not c.landed and p.seat == 0 and f64(length(c.vel)) < k.stall * 0.95: text_centered("STALL", alert_at(), 30, WARN, SHADOW)
+        # (a carrier of one's side astern of: its window, how to be caught in it)
+        if fk_cue.1 > 0 and fk_cue.0 < g.crafts.len():
+            fm = g.crafts[fk_cue.0]
+            most = int((f64(dot(fm.vel, fwd_of(fm))) + CATCH_SPEED) * 3.6)
+            nm = kind_name(g, fk_cue.0)
+            line = if fk_cue.1 == 2: "lined up, slow enough: through the window" else: if fk_cue.1 == 3: "too fast: slow to catch: {most} km/h" else: "the {nm}'s window: line up astern of it, slow to catch: {most} km/h"
+            text_centered(line, alert_at() + vec2(0, 72), 22, [INK, INK, rgb(0.45, 1.0, 0.5), WARN][fk_cue.1], SHADOW)
         if p.seat == 0 and c.down == 0 and g.winner < 0 and outside(c.pos) > 0.0 and not c.landed: text_centered("turning back to the fight", alert_at() + vec2(0, 36), 20, INK, SHADOW)
     else if p.state == POST:
         b = g.buildings[p.post]

@@ -275,11 +275,11 @@ const TWIN_GAP = 8
 # the flying carrier (kind 14), the Falknerin, after Pétin's airship of 1850: four great gasbags
 # in a row over a long open girder frame (150 m by 64, a cone at its bow to cut the air, its
 # planes out either side), driven by steam screws; under the frame sixteen trapeze hooks, a
-# craft hanging from each (CARRIER_HUNG: scouts, fighters, light bombers), and at its stern a
-# landing deck. Flown as the flying castle is (heli, a little lean, its screws' push). Each hook
+# craft hanging from each (CARRIER_HUNG: scouts, fighters, light bombers), and under its stern
+# its catching window (WIN_AT). Flown as the flying castle is (heli, a little lean, its screws' push). Each hook
 # with a craft on it is one of its seats (HOOK0 on): one sits in the craft, aboard the carrier;
-# let go (F or B), it drops and flies off, the seat gone with it (SHUT) till a craft is caught
-# on the deck and hung on a free hook again, as it was (health, rockets, bombs), mended and
+# let go (F or B), it drops and flies off, the seat gone with it (SHUT) till a craft flown through
+# the window is caught and hoisted to a free hook again, as it was (health, rockets, bombs), mended and
 # rearmed slowly there. A hook's craft with no one in it is flown off by the carrier's own airman
 # (Craft.airman), the computer's, its kills the carrier's pilot's. Each gasbag has its own
 # health (bags): one gone it lifts less, two and it settles, three and it falls (as shot down)
@@ -312,12 +312,24 @@ hung_at = (h: int, kind: int) -> vec3: hook_at(h) + vec3(0, f32(hang_y(kind)), 0
 hookable = (kind: int) -> bool: kind == SCOUT or kind == FIGHTER or kind == BOMBER
 # (a kind of craft that docks on another: on a carrier's hooks, on a castle's pads)
 docker = (mother: int, kind: int) -> bool: (mother == CARRIER and hookable(kind)) or (mother == CASTLE and kind == SCREW)
-# (the landing deck at its stern: its floor's height, its middle along it, and the box over it a
-# craft is caught in, slow enough)
-const LAND_Y = 1.5
-const LAND_Z = 97.0
-LAND_HALF = vec3(18, 6, 26)
-const CATCH_SPEED = 34.0            # (m/s against the carrier's, at most)
+# (its catching window: a ring hung under its stern, its middle there, half its width and height;
+# flown through it ahead, no faster than CATCH_SPEED against the carrier, a craft is caught by its
+# arms and nets and carried up by its crane to a free hook, HOIST ticks; faster, it goes on
+# through. CATCH_SPEED: over every hung kind's stall with the carrier stopped (the fighter's 26
+# m/s, 94 km/h), so each can make it level and under control, about half a fighter's top speed,
+# so it is a slow, deliberate pass)
+WIN_AT = vec3(0, -16, 82)
+const WIN_RX = 16.0
+const WIN_RY = 8.5
+const CATCH_SPEED = 32.0            # (m/s against the carrier's, at most)
+const HOIST = 180
+# (whether point l (the carrier's frame) is in its window's opening, roughly in its plane)
+in_window = (l: vec3) -> bool:
+    dx = f64(l.x - WIN_AT.x) / WIN_RX
+    dy = f64(l.y - WIN_AT.y) / WIN_RY
+    dx * dx + dy * dy <= 1.0
+# (craft c's hook h's craft still on its way up to it, its crane carrying it)
+hoisting = (g: Game, c: Craft, h: int) -> bool: h < c.hcaught.len() and g.tick - c.hcaught[h] < HOIST
 const LAUNCH_GAP = 50               # (ticks between two let go by the computer)
 const LAUNCH_SAFE = 150             # (ticks a craft just let go cannot touch the carrier, nor be caught)
 const CARRIER_LAST = 60 * 5         # (ticks a downed carrier's crews have to let go)
@@ -573,9 +585,9 @@ KINDS.push(Kind(0.0, 13.0, 0.25, 0.06, 0.06, 0.09, 0.0, 4500, false, 4, 0, 0, 0,
          gun(vec3(0, -4.5, 0), vec3(0, -1, 0), 80.0)]
       + [0..HOOKS).map((h): Seat(hung_at(h, CARRIER_HUNG[h]) + HUNG_SEAT[CARRIER_HUNG[h]], weapon = HOOK)),
      CARRIER_GEAR, 0.0, mass = 150.0, heli = true, tip = CARRIER_TIP, drive = CARRIER_DRIVE))
-# (its automatic guns, after its seats: either side of its landing deck, covering the way in, at
-# its bow, and at its planes' tips)
-CARRIER_AUTOS = [gun(vec3(-16, 2.5, 96), vec3(-1, 0.35, 0.25), 80.0), gun(vec3(16, 2.5, 96), vec3(1, 0.35, 0.25), 80.0),
+# (its automatic guns, after its seats: either side of its window, covering the way in, at its bow,
+# and at its planes' tips)
+CARRIER_AUTOS = [gun(vec3(-18, -12, 83), vec3(-1, -0.2, 0.5), 80.0), gun(vec3(18, -12, 83), vec3(1, -0.2, 0.5), 80.0),
                  gun(vec3(-9, -2, -86), vec3(-0.7, -0.3, -0.6), 75.0), gun(vec3(9, -2, -86), vec3(0.7, -0.3, -0.6), 75.0),
                  gun(vec3(-52, 0.4, 0), vec3(-1, -0.4, 0), 75.0), gun(vec3(52, 0.4, 0), vec3(1, -0.4, 0), 75.0)]
 # (a kind's automatic guns, after its seats)
@@ -660,6 +672,7 @@ struct Craft:
     hhealth: int[] = []         # each one's health, rockets and bombs, as they were when caught;
     hrockets: int[] = []
     hbombs: int[] = []
+    hcaught: int[] = []         # (the carrier's: the tick each hook's craft was caught, its crane hoisting it HOIST ticks)
     bags: int[] = []            # and each gasbag's health)
     mother = -1                 # (let go from a carrier: that craft; -1 none)
     airman = false              # (flown by a carrier's own airman: no one's person, the computer's)
@@ -830,7 +843,8 @@ const CALLED = 44               # craft `who`'s pilot, person `by`, calls their 
 const JOINED = 45               # person `who`, answering the call, put in a seat of craft `by`
 const BAG_BURST = 46            # a gasbag of craft `who` (a flying carrier) burst into flame, by person `by`
 const LOOSED = 47               # craft `who` let go from a hook of craft `by` (a flying carrier)
-const HOOKED = 48               # craft `who` (a flying carrier) caught a craft on its deck (person `by` in it, -1 none)
+const HOOKED = 48               # craft `who` (a flying carrier) caught a craft in its window (person `by` in it, -1 none)
+const PASSED = 49               # craft `who` flown through the window of craft `by` (a flying carrier) too fast to be caught
 const BROADSIDE_FIRED = 49      # a castle battery's gun fired (`who`: its craft * 64 + battery * 8 + gun)
 const BOMBARD_FIRED = 50        # a great bombard fired (`who`: its craft * 64 + seat), by person `by`
 const BOMBARD_HIT = 51          # a bombard's ball down on craft `who` (-1: the ground), fired by person `by`
@@ -1145,6 +1159,7 @@ parked = (kind: int, team: int, pos: vec3, yaw: f64) -> Craft:
     if hooks_of(kind) > 0:
         c.hung = hook_kinds(kind).map((x): x)
         c.hhealth = hook_kinds(kind).map((x): KINDS[x].health)
+        c.hcaught = fill(-100000, hook_kinds(kind).len())
         c.hrockets = hook_kinds(kind).map((x): KINDS[x].rockets)
         c.hbombs = hook_kinds(kind).map((x): KINDS[x].bombs)
     if kind == CARRIER: c.bags = fill(BAG_HEALTH, CARRIER_BAGS.len())
@@ -1676,7 +1691,7 @@ NO_DECKS: Deck[] = []
 
 # (the flying carrier's: its frame's top (the gasbags over it), its planes either side, its
 # landing deck at its stern)
-CARRIER_DECKS = [deck_box(-32, -3, -75, 32, 1.5, 74), deck_box(-52, -0.6, -40, -32, 0.6, 40), deck_box(32, -0.6, -40, 52, 0.6, 40), deck_box(-15, -1.5, 73, 15, 1.5, 121)]
+CARRIER_DECKS = [deck_box(-32, -3, -75, 32, 1.5, 74), deck_box(-52, -0.6, -40, -32, 0.6, 40), deck_box(32, -0.6, -40, 52, 0.6, 40)]
 decks_of = (kind: int) -> Deck[]: if kind == CASTLE: CASTLE_DECKS else: if kind == DAVINCI: DAVINCI_DECKS else: if kind == ZEPPELIN: ZEP_DECKS else: if kind == CARRIER: CARRIER_DECKS else: NO_DECKS
 has_deck = (kind: int) -> bool: kind == CASTLE or kind == DAVINCI or kind == ZEPPELIN or kind == CARRIER
 
@@ -3430,6 +3445,9 @@ collide = (g: mut Game):
             if a.kind == CAT or b.kind == CAT: continue
             # (a carrier's own side's small craft through its open frame, going or coming, a castle's
             # screws to and from their pads: no harm)
+            # (and two of one carrier's craft, its flight, keeping clear of one another on their way
+            # out and back)
+            if a.mother >= 0 and a.mother == b.mother and hookable(a.kind) and hookable(b.kind): continue
             if docker(a.kind, b.kind) or docker(b.kind, a.kind):
                 if i >= g.crew.len() or j >= g.crew.len() or g.crew[i] == g.crew[j]: continue
             # (either on the ground: no harm, the fields are crowded; one on the ground rolling
@@ -3906,7 +3924,7 @@ free_hook = (c: Craft, kind: int) -> int:
 launch_hook = (g: mut Game, i: int, h: int):
     c = g.crafts[i]
     kind = c.hung[h]
-    if kind < 0: return
+    if kind < 0 or hoisting(g, c, h): return
     f = fwd_of(c)
     flat = normalize(vec3(f.x, 0, f.z) + vec3(0, 0, 0.0001))
     pad = c.kind == CASTLE
@@ -3939,7 +3957,7 @@ launch_hook = (g: mut Game, i: int, h: int):
         g.people[pk].vel = d.vel
     g.booms.push(Boom(d.pos, LOOSED, g.tick, k, i))
 
-# craft j caught on carrier i's deck, hung on its free hook h as it is: its pilot in that hook's
+# craft j caught in carrier i's window, hung on its free hook h as it is (its crane carrying it up): its pilot in that hook's
 # seat (no one: empty, the airman's), any others in it to the carrier's free seats (not another
 # hook's), else out on parachutes; its slot free. A screw docked on a castle's pad h the same
 catch_craft = (g: mut Game, i: int, j: int, h: int):
@@ -3949,6 +3967,7 @@ catch_craft = (g: mut Game, i: int, j: int, h: int):
     g.crafts[i].hhealth[h] = d.health
     g.crafts[i].hrockets[h] = d.rockets
     g.crafts[i].hbombs[h] = d.bombs
+    if h < g.crafts[i].hcaught.len(): g.crafts[i].hcaught[h] = g.tick
     g.crafts[i].seats[s0 + h] = -1
     pk = pilot_of(d)
     g.booms.push(Boom(d.pos, HOOKED, g.tick, i, pk))
@@ -3996,7 +4015,7 @@ home_wanted = (g: Game, j: int, m: int) -> bool:
 # a flying carrier's tick (craft i): the computer's craft let go (one at a time, LAUNCH_GAP apart)
 # while the other side is near, those still whole enough, not those a player sits in; downed, the
 # computer's people in its craft let go in its last seconds (its airmen go down with it); craft
-# caught on its deck; those on its hooks mended and rearmed slowly. Its `alarm`: the last tick
+# caught in its window; those on its hooks mended and rearmed slowly. Its `alarm`: the last tick
 # the other side was near it
 carrier_tick = (g: mut Game, i: int):
     c = g.crafts[i]
@@ -4014,22 +4033,28 @@ carrier_tick = (g: mut Game, i: int):
     if can_loose(c) and c.rcool == 0 and high: loose_one(g, i)
     c = g.crafts[i]
     if not whole(c): return
-    # (caught: a craft of its crew's side come slowly onto its deck, a hook free for it)
+    # (caught: a craft of its crew's side flown ahead through its window this tick, slowly enough,
+    # a hook free for it; too fast, on through it, PASSED)
     if not c.landed:
         inv = quat_inverse(c.rot)
-        deck = point_of(c, vec3(0, f32(LAND_Y + f64(LAND_HALF.y) - 2.0), f32(LAND_Z)))
+        win = point_of(c, WIN_AT)
         loop o in g.air:
             j = o.craft
             if j == i or not hookable(g.crafts[j].kind) or not flying(g.crafts[j]) or g.tick - g.crafts[j].loosed < LAUNCH_SAFE: continue
-            if f64(length(o.pos - deck)) > 40.0 or g.crew[j] != team: continue
-            l = quat_rotate(inv, o.pos - deck)
-            if abs(f64(l.x)) > f64(LAND_HALF.x) or abs(f64(l.y)) > f64(LAND_HALF.y) or abs(f64(l.z)) > f64(LAND_HALF.z): continue
-            if f64(length(o.vel - c.vel)) > CATCH_SPEED: continue
+            if f64(length(o.pos - win)) > 60.0 or g.crew[j] != team: continue
+            l = quat_rotate(inv, o.pos - c.pos)
+            was = quat_rotate(inv, o.pos - o.vel * f32(DT) - (c.pos - c.vel * f32(DT)))
+            if not (was.z > WIN_AT.z and l.z <= WIN_AT.z): continue
+            u = f64(was.z - WIN_AT.z) / max(f64(was.z - l.z), 1e-6)
+            if not in_window(lerp(was, l, f32(u))): continue
             pk = pilot_of(g.crafts[j])
             mine = pk >= 0 and g.people[pk].player >= 0
             if not mine and home_carrier(g, j) != i: continue
             h = free_hook(g.crafts[i], g.crafts[j].kind)
             if h < 0: continue
+            if f64(length(o.vel - c.vel)) > CATCH_SPEED:
+                g.booms.push(Boom(o.pos, PASSED, g.tick, j, i))
+                continue
             catch_craft(g, i, j, h)
             break
     mend_hooks(g, i)
@@ -4049,7 +4074,7 @@ loose_one = (g: mut Game, i: int):
     c = g.crafts[i]
     loop h in 0..c.hung.len():
         kind = c.hung[h]
-        if kind < 0: continue
+        if kind < 0 or hoisting(g, c, h): continue
         pk = c.seats[hook0(c.kind) + h]
         if pk >= 0 and g.people[pk].player >= 0: continue
         go = if c.down > 0: pk >= 0 else: c.alarm > 0 and g.tick - c.alarm < 60 * 3 and c.hhealth[h] * 100 >= KINDS[kind].health * 60
@@ -4244,7 +4269,7 @@ hits_craft = (c: Craft, a: vec3, b: vec3, more: f64) -> bool:
 # gondola, the rows of hooks and their craft under the frame, the landing deck)
 CARRIER_BOXES = [(vec3(0, -0.75, -0.5), vec3(32, 2.25, 74.5)), (vec3(-42, 0, 0), vec3(10, 0.6, 40)), (vec3(42, 0, 0), vec3(10, 0.6, 40)),
                  (vec3(0, -1, -88), vec3(7, 7, 13)), (vec3(0, -8.6, -82), vec3(3, 2.5, 7)), (vec3(0, -7.5, 0), vec3(29, 4.5, 72)),
-                 (vec3(0, 0, 97), vec3(15, 1.5, 24))]
+                 (vec3(0, -6.5, 80), vec3(17, 1.0, 3.0))]
 seg_carrier = (c: Craft, a: vec3, b: vec3, more: f64) -> bool:
     m = vec3(f32(more), f32(more), f32(more))
     loop bx in CARRIER_BOXES:
@@ -5441,7 +5466,7 @@ bot_fly = (g: Game, ci: int, c: Craft) -> Pad:
     if c.down > 0: return Pad()
     # (its crew called: on the ground till they are aboard)
     if grounded(c) and call_hold(g, ci): return Pad(throttle = -1)
-    # (one of a carrier's craft, hurt or spent: back to be caught on its deck)
+    # (one of a carrier's craft, hurt or spent: back to be caught in its window)
     if not c.landed and hookable(c.kind):
         mc = home_carrier(g, ci)
         if mc >= 0: return bot_recover(g, ci, c, mc)
@@ -5884,7 +5909,7 @@ castle_ground = (c: Craft) -> f64:
 # well over the ground (its
 # craft need room to drop), and back of the fight: toward the other side's field from its own,
 # facing it; the craft it goes after held off at CARRIER_STAND; its craft coming back to it, on
-# straight and slow, its deck steady for them
+# straight and slow, its window steady for them
 const CARRIER_STAND = 650.0
 bot_carrier = (g: Game, ci: int, c: Craft, team: int) -> Pad:
     k = KINDS[c.kind]
@@ -5905,12 +5930,21 @@ bot_carrier = (g: Game, ci: int, c: Craft, team: int) -> Pad:
         if d > 1.0: goal = c.pos + normalize(flat) * f32(d - CARRIER_STAND)
         face = flat
         height = clamp(f64(e.pos.y) + 60.0, low + k.gear + 200.0, low + k.gear + 520.0)
-    # (one of its own coming back to it: on ahead, steady)
+    # (one of its own coming back to it, or a player of its side in a small craft astern of it and
+    # near: on ahead, steady, its window going away from them no faster than it flies)
     homing = false
+    win = point_of(c, WIN_AT)
+    fl = normalize(vec3(fwd.x, 0, fwd.z) + vec3(0, 0, 0.0001))
     loop a in g.air:
         if g.crafts[a.craft].mother == ci and f64(length(a.pos - c.pos)) < 2500.0 and home_carrier(g, a.craft) == ci:
             homing = true
             break
+        pk = pilot_of(g.crafts[a.craft])
+        if pk >= 0 and g.people[pk].player >= 0 and hookable(g.crafts[a.craft].kind) and g.people[pk].team == team:
+            behind = -f64(dot(a.pos - win, fl))
+            if behind > 0.0 and behind < 1200.0 and f64(length(a.pos - win)) < 1300.0:
+                homing = true
+                break
     # (never far past the middle: its own side's 55% of the way across at most)
     span = vec3(o.x - own.x, 0, o.z - own.z)
     across = f64(dot(goal - own, span)) / max(f64(dot(span, span)), 1.0)
@@ -5925,31 +5959,33 @@ bot_carrier = (g: Game, ci: int, c: Craft, team: int) -> Pad:
     if over < 70.0: vy = 5.0
     heli_vel(c, want_v, vy, face)
 
-# the computer's pilot of a carrier's craft (mi the carrier) coming back to be caught on its deck:
-# round to astern of it if ahead or wide, then in along its line, down a shallow slope to the
-# deck, slowing to come onto it a little faster than it flies
+# the computer's pilot of a carrier's craft (mi the carrier) coming back to be caught in its window:
+# round to astern of it if ahead or wide, then in along its line level with the window, the nearer
+# the more nearly on its middle, slowing to pass through it a little faster than the carrier flies
+# (well inside CATCH_SPEED); missed, on ahead and round again, under it, not through it
 bot_recover = (g: Game, ci: int, c: Craft, mi: int) -> Pad:
     m = g.crafts[mi]
     k = KINDS[c.kind]
     mf = fwd_of(m)
     fm = normalize(vec3(mf.x, 0, mf.z) + vec3(0, 0, 0.0001))
     rt = vec3(-fm.z, 0, fm.x)
-    deck = point_of(m, vec3(0, f32(LAND_Y + 2.0), f32(LAND_Z)))
-    rel = c.pos - deck
+    win = point_of(m, WIN_AT)
+    rel = c.pos - win
     behind = -f64(dot(rel, fm))
     side = f64(dot(rel, rt))
-    goal = deck
-    if behind > -25.0 and behind < 45.0 and abs(side) < 30.0: goal = deck + fm * 30.0 - vec3(0, 1, 0)
-    else if behind > 45.0 and abs(side) < behind * 0.35 + 25.0: goal = deck - fm * f32(behind * 0.45) + vec3(0, f32(behind * 0.06), 0) + rt * f32(side * 0.3)
+    up = f64(rel.y)
+    goal = win
+    if behind > -20.0 and behind < 35.0 and abs(side) < 25.0: goal = win + fm * 60.0
+    else if behind > 35.0 and abs(side) < behind * 0.3 + 25.0 and abs(up) < behind * 0.3 + 30.0: goal = win - fm * f32(behind * 0.4) + rt * f32(side * 0.15)
     else:
         sgn = if side >= 0.0: 1.0 else: -1.0
-        goal = deck - fm * 650.0 + rt * f32(sgn * (if behind < 120.0: 260.0 else: 0.0)) + vec3(0, 70, 0)
+        goal = win - fm * 650.0 + rt * f32(sgn * (if behind < 120.0: 260.0 else: 0.0)) - vec3(0, 30, 0)
     gy = ground(f64(c.pos.x), f64(c.pos.z))
     want = goal - c.pos
     if f64(c.pos.y) - gy < 60.0: want = normalize(vec3(want.x, 0, want.z) + vec3(0, 0, 0.0001)) + vec3(0, 0.8, 0)
     pad = steer(c, want)
-    closing = if behind > 300.0 or behind < -25.0: 34.0 else: clamp(behind * 0.07 + 12.0, 12.0, 34.0)
-    want_speed = max(k.stall * 1.2, f64(dot(m.vel, fm)) + closing)
+    closing = if behind > 350.0 or behind < -20.0: 30.0 else: clamp(behind * 0.04 + 14.0, 14.0, 24.0)
+    want_speed = max(k.stall * 1.15, f64(dot(m.vel, fm)) + closing)
     speed = f64(length(c.vel))
     pad.throttle = if speed < want_speed - 1.0: 1 else: if speed > want_speed + 1.0: -1 else: 0
     pad
