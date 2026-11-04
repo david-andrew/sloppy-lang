@@ -723,6 +723,7 @@ struct Person:
     joining = -1                # (answering a crew call: the craft, a seat of it had at join_at;
     join_at = 0
     join_seat = -1              # or on its deck, to this seat of it: -1 the first free)
+    hopped = -1                 # (the computer's: the big craft it last got out of, alone, not taken again)
 
 struct Bullet:
     pos: vec3
@@ -2067,7 +2068,7 @@ person = (g: mut Game, i: int, pad: Pad):
             p.pos = point_of(c, spot)
             p.vel = c.vel
         else if out:
-            if c.landed and f64(length(c.vel)) < 4.0: p = get_out(g, i, p)
+            if grounded(c) and f64(length(c.vel)) < 4.0: p = get_out(g, i, p)
             else: p = bail_out(g, i, p)
         else:
             p.pos = point_of(c, KINDS[c.kind].seats[p.seat].at)
@@ -2353,6 +2354,7 @@ respawn = (g: mut Game, i: int, p0: Person):
     p.state = WALK
     p.carry = -1
     p.goal = -1
+    p.hopped = -1
     p.torn = false
     p.craft = -1
     p.seat = -1
@@ -2636,6 +2638,7 @@ get_out = (g: mut Game, i: int, p0: Person) -> Person:
     if c.kind == DAVINCI: side = point_of(c, DV_LADDER)
     if c.kind == CASTLE: side = point_of(c, CASTLE_GATE + vec3(f32(f64(p.seat % 7) * 2.0 - 6.0), 0, f32(-2.0 - f64(p.seat / 7) * 2.0)))
     if c.kind == CARRIER: side = point_of(c, CARRIER_GATE + vec3(f32(-2.0 - f64(p.seat % 4) * 2.0), 0, f32(f64(p.seat / 4) * 2.0 - 6.0)))
+    if p.player < 0 and p.seat == 0 and crewed(c.kind): p.hopped = p.craft
     p.pos = vec3(side.x, f32(ground(f64(side.x), f64(side.z))), side.z)
     p.vel = vec3(0, 0, 0)
     p.state = WALK
@@ -5337,7 +5340,24 @@ bot_pad = (g: Game, i: int) -> Pad:
     # (going down in flames, far enough up: out, the less skilled the later)
     if c.down > 20 + int((1.0 - g.skill) * 60.0) and f64(c.pos.y) - ground(f64(c.pos.x), f64(c.pos.z)) > 60.0 and not KINDS[c.kind].lighter: return Pad(leave = g.tick % 2 == 0)
     if p.seat != 0: return Pad()
+    # (the pilot of a big one on the ground, its call over and no one come: out, and off to a
+    # small one of its side standing near, if there is one)
+    if hop_out(g, p, c): return Pad(aim_yaw = int(p.yaw * 1000.0), leave = g.tick % 10 == i % 10)
     bot_fly(g, p.craft, c)
+
+# (the computer's pilot p of craft c: alone in a big one on the ground, its crew call made and
+# over, with a small craft of its side free and standing within HOP_REACH)
+const HOP_REACH = 800.0
+hop_out = (g: Game, p: Person, c: Craft) -> bool:
+    if not crewed(c.kind) or not grounded(c) or f64(length(c.vel)) > 2.0 or c.call == 0 or calling(g, p.craft) or call_hold(g, p.craft): return false
+    # (not a bomber for a target on the ground, its work; nor in the fights where the odd ones are
+    # what there is)
+    if (g.goals[p.team] >= 0 and KINDS[c.kind].bombs > 0 and not KINDS[c.kind].lighter) or cat_fight(g.rules.mode) or g.rules.mode == BROOMS: return false
+    loop s in 1..c.seats.len():
+        if crew_seat(c.kind, s) and c.seats[s] >= 0: return false
+    loop q in g.ground:
+        if not q.flown and not crewed(q.kind) and q.team == p.team and f64(length(q.vel)) < 3.0 and f64(length(q.pos - p.pos)) < HOP_REACH: return true
+    false
 
 # on foot: to the nearest free craft of its side (the pilot's seat), and in; in the air-start
 # fights, back in the air at once
@@ -5349,13 +5369,15 @@ bot_walk = (g: Game, i: int, p: Person) -> Pad:
     want_big = role(i) == 1
     # (now and then, BIG_FANCY in a hundred of its lives, one fancies a big one all the same: the
     # bigger the likelier)
-    fancy = hash(i * 7919 + p.deaths * 131 + 17) % 100 < BIG_FANCY
+    fancy = hash(i * 7919 + p.deaths * 131 + 17) % 100 < BIG_FANCY and p.hopped < 0
     loop c in g.ground:
         if f64(length(c.vel)) > 3.0: continue
         # (a craft of its side of more seats than one on the ground, flown, a seat free: those
         # for the big ones go aboard, its gunners)
         crew = c.flown and crewed(c.kind) and c.team == p.team and want_big and g.crafts[c.craft].seats.contains(-1)
         if c.flown and not crew: continue
+        # (not the big one it has just got out of, alone, to fly again)
+        if c.craft == p.hopped and not crew: continue
         # (its own side's colors; one of the other side's only when very near)
         d = f64(length(c.pos - p.pos))
         if c.team != p.team and d > 60.0: continue
