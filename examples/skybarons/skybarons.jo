@@ -1024,6 +1024,9 @@ f_held = 0.0                    # (seconds F, or a phone's In/Out, has been held
 touch_rocket = false
 touch_bomb = false
 throttle_want = -1.0
+heli_power = 0.7                # (a helicopter's power: how fast it goes and climbs, 0.25 to 1)
+heli_hold_y = 0.0               # (and the height it holds, let go)
+heli_craft = -1
 next_seat = 0                   # (a seat asked for, till a tick takes it)
 scoped = false                  # (the ornithopter: through its scope, R; its long gun fires)
 
@@ -1095,6 +1098,15 @@ my_pad = () -> Pad:
     want = vec3(f32(pitch), f32(action_axis("Roll left", "Roll right")), f32(action_axis("Rudder left", "Rudder right")))
     heli = KINDS[k.kind].heli
     hold = Pad()
+    # (a helicopter: Shift and Ctrl up and down, as fast as the power set (the wheel, Page up and
+    # down, or - and =); let go, the height then held)
+    global heli_power, heli_hold_y, heli_craft
+    climb = if heli: (if action_down("Throttle up"): 1.0 else: 0.0) - (if action_down("Throttle down"): 1.0 else: 0.0) else: 0.0
+    if heli:
+        heli_power = clamp(heli_power + mouse_wheel() * 0.05 + (if key_down(.page_up) or key_down(.equals): 0.6 * frame_time() else: 0.0) - (if key_down(.page_down) or key_down(.minus): 0.6 * frame_time() else: 0.0), HELI_LEAST, 1.0)
+        if throttle_want >= 0.0: heli_power = clamp(throttle_want, HELI_LEAST, 1.0)
+        if heli_craft != my().craft or abs(climb) > 0.05: heli_hold_y = f64(k.pos.y)
+        heli_craft = my().craft
     if heli and aim_steering():
         # (a helicopter, the mouse looking: the keys move it as one looks, W toward where one
         # looks, A and D across it, S back; let go, it holds its place and height (Shift and Ctrl
@@ -1109,16 +1121,21 @@ my_pad = () -> Pad:
         move = fl * f32(-f64(want.x)) + across * want.y
         if length(move) > 1.0: move = normalize(move)
         face = if settings.heli_follow or c.fire or c.rocket: look else: fwd_of(k)
-        hold = heli_to(k, k.pos + move * 120.0, face, 36.0 * f64(length(move)))
+        hold = heli_player(k, move, climb, heli_power, heli_hold_y, face)
         want.x = f32(f64(hold.pitch) / 100.0)
         want.y = f32(f64(hold.roll) / 100.0)
         if abs(want.z) < 0.05: want.z = f32(f64(hold.yaw) / 100.0)
     else if heli:
-        # (a helicopter flown by keys alone: W and S lean it ahead and back, A and D aside, Q and E
+        # (a helicopter flown by keys alone: W and S ahead and back, A and D aside, as fast as the
+        # power set, Q and E
         # turn it; let go, it holds where it is, and its height, unless Shift or Ctrl)
-        hold = heli_to(k, k.pos, fwd_of(k), 0.0)
-        if abs(want.x) < 0.05: want.x = f32(f64(hold.pitch) / 100.0)
-        if abs(want.y) < 0.05: want.y = f32(f64(hold.roll) / 100.0)
+        nf = vec3(fwd_of(k).x, 0, fwd_of(k).z)
+        nf = if length(nf) > 0.05: normalize(nf) else: vec3(0, 0, -1)
+        move = nf * f32(-f64(want.x)) + vec3(-nf.z, 0, nf.x) * want.y
+        if length(move) > 1.0: move = normalize(move)
+        hold = heli_player(k, move, climb, heli_power, heli_hold_y, fwd_of(k))
+        want.x = f32(f64(hold.pitch) / 100.0)
+        want.y = f32(f64(hold.roll) / 100.0)
     else if KINDS[k.kind].lighter:
         # (a zeppelin: the keys up, down and round; the mouse turns it toward where it points)
         if aim_steering() and abs(want.y) + abs(want.z) < 0.05:
@@ -1136,8 +1153,8 @@ my_pad = () -> Pad:
         if abs(want.z) < 0.05: want.z = f32(f64(t.yaw) / 100.0)
         if abs(want.x) < 0.05 and f64(aim_dir().y) > 0.1: want.x = 1.0
     if heli: c.throttle = hold.throttle
-    if action_down("Throttle up"): c.throttle = 1
-    if action_down("Throttle down"): c.throttle = -1
+    if action_down("Throttle up") and not heli: c.throttle = 1
+    if action_down("Throttle down") and not heli: c.throttle = -1
     # (on the ground with the mouse: the wheel, or W and S, the throttle)
     if throttle_want >= 0.0 and not heli:
         if throttle_want > k.throttle + 0.01: c.throttle = 1
@@ -2880,9 +2897,11 @@ instruments = (c: Craft, k: Kind):
     top = f64(box.y) + PAD
     tall = h - 2.0 * PAD - 14.0
     rect(lx + 4.0, top, 4, tall, rgba(0, 0, 0, 0.6))
-    ly = top + tall * (1.0 - c.throttle)
+    # (a helicopter's: its power, as set)
+    hp = KINDS[c.kind].heli
+    ly = top + tall * (1.0 - (if hp: heli_power else: c.throttle))
     rect(lx - 4.0, ly - 3.0, 20, 7, BRASS)
-    text_centered("thr", vec2(f32(lx + 6.0), f32(top + tall + 10.0)), 11, INK_DIM)
+    text_centered(if hp: "pow" else: "thr", vec2(f32(lx + 6.0), f32(top + tall + 10.0)), 11, INK_DIM)
 
 # the craft's plate: what it is (in its side's colors, a stripe), its health, its guns' heat, and
 # what it carries with the key for each
@@ -3346,11 +3365,12 @@ draw_touch = (g: Game, p: Person, c: Craft):
         r = throttle_track()
         held = throttle_want >= 0.0
         panel(r, rgba(0.08, 0.065, 0.05, if held: 0.6 else: 0.4))
-        f = f32(c.throttle) * r.h
+        now = if KINDS[c.kind].heli: heli_power else: c.throttle
+        f = f32(now) * r.h
         rect(Rect(r.x + 4, r.y + r.h - f, r.w - 8, f), rgba(0.84, 0.67, 0.33, 0.25))
-        hy = r.y + r.h - f32(if held: throttle_want else: c.throttle) * r.h
+        hy = r.y + r.h - f32(if held: throttle_want else: now) * r.h
         rect(Rect(r.x - 8, hy - 5, r.w + 16, 10), if held: BRASS else: BRASS_DIM)
-        text_centered("throttle", vec2(r.x + r.w / 2, r.y + r.h + 22), T_SMALL, INK_DIM)
+        text_centered(if KINDS[c.kind].heli: "power" else: "throttle", vec2(r.x + r.w / 2, r.y + r.h + 22), T_SMALL, INK_DIM)
     # (the in-fight menu, which has Leave: not leaving at one touch)
     if hud_button(leave_box(), "Menu") and not paused:
         paused = true
@@ -3499,7 +3519,7 @@ menu_style = ():
 # how to play: the keys that matter, in a table (a phone's buttons on one)
 HOW_KEYS = [("W A S D, the mouse", "walk and look (Shift runs); a click fires a pistol"), ("F", "get in: a craft, a gun on the ground"), ("T", "get out, bail out, open the parachute; on foot, back to your field"),
             ("F held", "put your own side out of your craft (on foot: its pilot out, you in)"), ("the mouse", "flying: steer where it points (keys fly while held); a helicopter: look about, W A S D move it as you look"),
-            ("left button, Space", "fire"), ("right button, X", "rockets (a gunner: drones, cannons)"), ("B", "bombs"), ("Shift, Ctrl", "throttle"), ("1 to 8, V", "change seats"),
+            ("left button, Space", "fire"), ("right button, X", "rockets (a gunner: drones, cannons)"), ("B", "bombs"), ("Shift, Ctrl", "throttle; a helicopter: up and down"), ("the wheel, - =", "a helicopter's power: how fast it goes and climbs"), ("1 to 8, V", "change seats"),
             ("C, Tab", "look at the target, the next target"), ("Escape", "the menu")]
 HOW_TOUCH = [("drag", "look and aim, anywhere off the buttons"), ("In/Out", "get in, get out, bail out, open the parachute"), ("Fire", "shoot (on foot: walk)"),
              ("the throttle", "slide it"), ("Rocket, Bomb", "what the craft carries"), ("Look", "watch the target"), ("Menu", "the in-fight menu")]

@@ -36,6 +36,11 @@ const DEFAULT_CRAFTS = 2047 & ~((1 << 5) | (1 << 8) | (1 << 9) | (1 << 10))
 const THUNDERDOME_CRAFTS = (1 << 6) | (1 << 7) | (1 << 10)
 # (the helicopters: hover at about 0.6 throttle; the stick leans them, and they go the way they lean)
 const HELI_LEAN = 0.62          # radians at full stick
+# (a player's: W/A/S/D for so fast, Shift/Ctrl climbing and sinking so fast, at full power: less,
+# as less power is set (HELI_LEAST of it at least); let go, it holds where it is)
+const HELI_TOP = 34.0
+const HELI_CLIMB = 12.0
+const HELI_LEAST = 0.25
 # (da Vinci's trebuchet: boulders dug from the ground (DIG ticks with B held, low and slow, for
 # each: its keel within DIG_LOW of it, its trebuchet's sling let down on a rope; DIG_KEEL its keel under
 # its middle), up to BOULDERS of them piled on its deck (and
@@ -3370,11 +3375,38 @@ bot_ball = (g: Game, ci: int, c: Craft, team: int) -> Pad:
 # a helicopter's controls toward a point: leaning toward it (the faster the farther, `most` m/s at
 # most), up or down to its height, turned to face `face`
 heli_to = (c: Craft, goal: vec3, face: vec3, most: f64) -> Pad:
-    p = Pad()
     to = goal - c.pos
     flat_to = vec3(to.x, 0, to.z)
     dist = f64(length(flat_to))
     want_v = if dist > 0.5: normalize(flat_to) * f32(min(dist * 0.35, most)) else: vec3(0, 0, 0)
+    # (the throttle toward what holds it up, more to climb as fast as it would, less to sink)
+    vy = clamp(f64(to.y) * 0.4, -10.0, 6.0)
+    # (low, going somewhere not to land: up first; da Vinci's by its skids, its middle so high
+    # over them)
+    gy = max(ground(f64(c.pos.x), f64(c.pos.z)), 0.0)
+    skids = if c.kind == DAVINCI: KINDS[c.kind].gear else: 0.0
+    if f64(c.pos.y) - skids - gy < 25.0 and f64(goal.y) - skids - gy > 10.0: vy = max(vy, 4.0)
+    heli_vel(c, want_v, vy, face)
+
+# a player's helicopter: move (level, the world's way, up to 1 long) times HELI_TOP, climb (-1 to
+# 1) times HELI_CLIMB, both by the power set; climbing nought, held at hold_y; its nose toward face
+heli_player = (c: Craft, move: vec3, climb: f64, power: f64, hold_y: f64, face: vec3) -> Pad:
+    pw = clamp(power, HELI_LEAST, 1.0)
+    vy = if abs(climb) > 0.05: climb * HELI_CLIMB * pw else: clamp((hold_y - f64(c.pos.y)) * 0.6, -6.0, 6.0)
+    p = heli_vel(c, move * f32(HELI_TOP * pw), vy, face)
+    # (more lift, climbing: leaning as much would also go faster; leaning less, as much more)
+    hover = 9.8 / (KINDS[c.kind].thrust * max(f64(up_of(c).y), 0.5))
+    if c.throttle > hover:
+        f = clamp(sqrt(hover / c.throttle), 0.5, 1.0)
+        p.pitch = int(f64(p.pitch) * f)
+        p.roll = int(f64(p.roll) * f)
+    p
+
+# a helicopter's controls toward a way of going: want_v level (m/s, the world's way), climbing at vy
+# m/s, its nose turned toward face. Leaning gives the one, the throttle the other, the lift made
+# more as it leans (so neither moves the other)
+heli_vel = (c: Craft, want_v: vec3, vy: f64, face: vec3) -> Pad:
+    p = Pad()
     dv = want_v - vec3(c.vel.x, 0, c.vel.z)
     fwd = fwd_of(c)
     f = vec3(fwd.x, 0, fwd.z)
@@ -3387,13 +3419,6 @@ heli_to = (c: Craft, goal: vec3, face: vec3, most: f64) -> Pad:
     side = f64(dot(ff, r))
     back = if f64(dot(ff, f)) < 0.0: (if side >= 0.0: 1.0 else: -1.0) else: 0.0
     p.yaw = int(clamp(side * 3.0 + back, -1.0, 1.0) * 100.0)
-    # (the throttle toward what holds it up, more to climb as fast as it would, less to sink)
-    vy = clamp(f64(to.y) * 0.4, -10.0, 6.0)
-    # (low, going somewhere not to land: up first; da Vinci's by its skids, its middle so high
-    # over them)
-    gy = max(ground(f64(c.pos.x), f64(c.pos.z)), 0.0)
-    skids = if c.kind == DAVINCI: KINDS[c.kind].gear else: 0.0
-    if f64(c.pos.y) - skids - gy < 25.0 and f64(goal.y) - skids - gy > 10.0: vy = max(vy, 4.0)
     up = max(f64(up_of(c).y), 0.5)
     want_t = 9.8 / (KINDS[c.kind].thrust * up) + (vy - f64(c.vel.y)) * 0.08
     p.throttle = if want_t > c.throttle + 0.02: 1 else: if want_t < c.throttle - 0.02: -1 else: 0
