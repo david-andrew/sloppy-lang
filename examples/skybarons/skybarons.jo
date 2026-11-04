@@ -2103,6 +2103,7 @@ view_of = (g: Game, i: int) -> SeatView:
 # free (-1 none) and how they stand to it: 0 nothing, 1 near and astern of it, 2 their course
 # through its window and slow enough to be caught, 3 through it too fast)
 fk_cue = (-1, 0)
+fk_signal: vec2[] = []          # (each carrier's window signal as drawn: its semaphore's arms' angle, its disc's turn)
 window_cue = (g: Game) -> (int, int):
     p = my()
     if p.state != SEATED or p.seat != 0 or p.craft < 0 or p.craft >= g.crafts.len(): return (-1, 0)
@@ -2138,36 +2139,66 @@ draw_carrier = (g: Game, i: int, c: Craft, m: mat4, view: SeatView):
     if view.rotor > 0.0:
         loop k in 0..models.FK_SCREWS.len(): draw_mesh(models.fk_screw_mesh(), m * translation(models.FK_SCREWS[k] - vec3(0, 0, 1.8)) * rotation_z(turn * (if k % 2 == 0: 1.0 else: -1.0) + f64(k)), see(vec4(1, 1, 1, 1), view.rotor), specular = 0.3)
     if f64(length(c.pos - cam_pos)) > 3500.0: return
-    # (its window's lamps: warm, amber to one of its side near and astern of it, green lined up and
-    # slow enough, red lined up too fast; its arms swung in for a moment on a catch)
+    # (its window's signal, to one of its side near and astern of it: the semaphore's arms out level,
+    # raised when they are lined up and slow enough, lowered and the disc turned to them when too
+    # fast; hanging, and the disc edge-on, else. Swung over, not snapped)
     cue = if fk_cue.0 == i: fk_cue.1 else: 0
-    lamp = [rgb(1.0, 0.86, 0.55), rgb(1.0, 0.62, 0.15), rgb(0.3, 1.0, 0.4), rgb(1.0, 0.22, 0.16)][cue]
-    loop lp in models.FK_WIN_LAMPS: draw_mesh(models.fk_lamp_mesh(), m * translation(lp) * scaling(vec3(if cue >= 2: 1.8 else: 1.3)), lamp, emissive = 1.0, specular = 0.0, cast_shadow = false)
-    last = -100000
-    loop t in c.hcaught: last = max(last, t)
-    since = f64(g.tick - last)
-    swing = if since < 20.0: since / 20.0 else: if since < 80.0: 1.0 else: max(0.0, 1.0 - (since - 80.0) / 40.0)
-    loop k in 0.. and pv in models.FK_ARMS:
-        sx = if pv.x < 0.0: 1.0 else: -1.0
-        draw_mesh(models.fk_arm_mesh(), m * translation(pv) * scaling(vec3(f32(sx), 1, 1)) * rotation_z(0.5 - swing * models.FK_ARM_IN), specular = 0.3)
-    # (its craft on their hooks; one just caught on its way up, its crane's trolley over it, its
-    # cable down to it: up from the window, along under the keel, aside onto its hook)
-    trolley_z = f64(models.FK_WIN.z) - 2.0
+    want_arm = [-1.45, 0.0, 0.8, -0.8][cue]
+    want_disc = if cue == 3: 0.0 else: PI / 2.0
+    loop fk_signal.len() <= i: fk_signal.push(vec2(-1.45, f32(PI / 2.0)))
+    fk_signal[i] = vec2(f32(approach(f64(fk_signal[i].x), want_arm, 2.5, frame_time())), f32(approach(f64(fk_signal[i].y), want_disc, 3.0, frame_time())))
+    loop pv in models.FK_SEMA:
+        sx = if pv.x < 0.0: -1.0 else: 1.0
+        draw_mesh(models.fk_sema_mesh(), m * translation(pv) * scaling(vec3(f32(sx), 1, 1)) * rotation_z(f64(fk_signal[i].x)), specular = 0.3)
+    draw_mesh(models.fk_disc_mesh(), m * translation(models.FK_DISC) * rotation_y(f64(fk_signal[i].y)), specular = 0.2)
+    # (its catchers: at rest in their housings; on a catch closing on the craft held in the box (its
+    # outer wings, its upper wing, its wheels, its tail), holding it, opening again as the crane takes
+    # it. Then its craft on their hooks; the one caught on its way up, the trolley over it, its cable
+    # down to it: up out of the box, along under the keel, aside onto its hook)
+    wc = models.FK_WIN
+    held = -1
+    loop h in 0..c.hung.len():
+        if c.hung[h] >= 0 and h < c.hcaught.len() and g.tick - c.hcaught[h] < HOIST * 2 / 5 and (held < 0 or c.hcaught[h] > c.hcaught[held]): held = h
+    shut = 0.0
+    hk = vec3(4.4, 1.6, 3.6)
+    if held >= 0:
+        t = f64(g.tick - c.hcaught[held])
+        shut = if t < 12.0: smoothstep(0.0, 1.0, t / 12.0) else: if t < 45.0: 1.0 else: max(0.0, 1.0 - (t - 45.0) / 25.0)
+        hk = KINDS[c.hung[held]].half
+    yt = f64(wc.y) + models.FK_WIN_RY
+    yb = f64(wc.y) - models.FK_WIN_RY
+    loop sx in [-1.0, 1.0]:
+        x = lerp(f32(models.FK_WIN_RX - 0.2), hk.x * 0.92, f32(shut))
+        jm = m * translation(vec3(f32(sx) * x, wc.y, wc.z)) * scaling(vec3(f32(-sx), 1, 1))
+        draw_mesh(models.fk_jaw_mesh(), jm, specular = 0.2)
+        arm = f64(models.FK_WIN_RX) - f64(x)
+        if arm > 0.2: draw_mesh(models.fk_cable_mesh(), m * translation(vec3(f32(sx * (f64(x) + arm / 2.0)), wc.y, wc.z)) * scaling(vec3(f32(arm), 0.35, 0.35)), rgb(0.3, 0.3, 0.3), specular = 0.3)
+    ctop = lerp(f32(yt - 0.4), wc.y + hk.y * 0.95, f32(shut))
+    draw_mesh(models.fk_clamp_mesh(), m * translation(vec3(0, ctop, wc.z)) * scaling(vec3(f32(max(f64(hk.x) * 1.2, 4.0)), 1, 1)), specular = 0.2)
+    if f64(yt) - f64(ctop) > 0.3: draw_mesh(models.fk_cable_mesh(), m * translation(vec3(0, f32((yt + f64(ctop)) / 2.0), wc.z)) * scaling(vec3(0.3, f32(yt - f64(ctop)), 0.3)), rgb(0.3, 0.3, 0.3), specular = 0.3)
+    low = lerp(f32(yb + 0.4), wc.y - hk.y * 0.95, f32(shut))
+    draw_mesh(models.fk_cradle_mesh(), m * translation(vec3(0, low, wc.z)) * scaling(vec3(f32(max(f64(hk.x) * 0.6, 2.5)), 1, 1)), specular = 0.2)
+    if f64(low) - yb > 0.3: draw_mesh(models.fk_cable_mesh(), m * translation(vec3(0, f32((yb + f64(low)) / 2.0), wc.z)) * scaling(vec3(0.3, f32(f64(low) - yb), 0.3)), rgb(0.3, 0.3, 0.3), specular = 0.3)
+    tz = wc.z + hk.z * 0.85
+    drop = lerp(0.8, f32(yt - f64(wc.y) - 0.3), f32(shut))
+    draw_mesh(models.fk_tailhook_mesh(), m * translation(vec3(0, f32(yt), tz)) * scaling(vec3(1, drop, 1)), specular = 0.2)
+    draw_mesh(models.fk_hookend_mesh(), m * translation(vec3(0, f32(yt) - drop, tz + 1.2)), specular = 0.2)
+    trolley_z = f64(wc.z)
     loop h in 0..c.hung.len():
         kind = c.hung[h]
         if kind < 0: continue
         at = hung_at(h, kind)
         if hoisting(g, c, h):
             u = clamp(f64(g.tick - c.hcaught[h]) / f64(HOIST), 0.0, 1.0)
-            low = WIN_AT + vec3(0, 0, -3)
-            up = vec3(0, at.y, 72)
+            box = WIN_AT
+            up = vec3(0, at.y, WIN_AT.z)
             along = vec3(0, at.y, at.z)
-            at = if u < 0.35: lerp(low, up, f32(smoothstep(0.0, 1.0, u / 0.35))) else: if u < 0.8: lerp(up, along, f32(smoothstep(0.0, 1.0, (u - 0.35) / 0.45))) else: lerp(along, at, f32(smoothstep(0.0, 1.0, (u - 0.8) / 0.2)))
+            at = if u < 0.3: box else: if u < 0.5: lerp(box, up, f32(smoothstep(0.0, 1.0, (u - 0.3) / 0.2))) else: if u < 0.85: lerp(up, along, f32(smoothstep(0.0, 1.0, (u - 0.5) / 0.35))) else: lerp(along, at, f32(smoothstep(0.0, 1.0, (u - 0.85) / 0.15)))
             trolley_z = f64(at.z)
             top = point_of(c, at + vec3(0, 1.4, 0))
             hook = point_of(c, vec3(0, f32(models.FK_RAIL_Y - 2.0), at.z))
             d = top - hook
-            if f64(length(d)) > 0.2: draw_mesh(models.fk_cable_mesh(), translation((top + hook) * 0.5) * facing(normalize(d)) * scaling(vec3(0.1, 0.1, length(d))), rgb(0.25, 0.23, 0.2), specular = 0.0)
+            if u >= 0.3 and f64(length(d)) > 0.2: draw_mesh(models.fk_cable_mesh(), translation((top + hook) * 0.5) * facing(normalize(d)) * scaling(vec3(0.1, 0.1, length(d))), rgb(0.25, 0.23, 0.2), specular = 0.0)
         draw_mesh(models.craft_mesh(kind, c.team, 0), m * translation(at), specular = 0.25)
         loop pr in models.props(kind, c.team): draw_mesh(prop, m * translation(at + pr.xyz) * rotation_z(f64(h) * 0.9) * scaling(vec3(pr.w)), specular = 0.1)
     draw_mesh(models.fk_trolley_mesh(), m * translation(vec3(0, f32(models.FK_RAIL_Y), f32(trolley_z))), specular = 0.3)
