@@ -121,6 +121,7 @@ action("Look at the target", [.key(.c), .stick(4, 1)])
 action("Next target", [.key(.tab), .button(.x)])
 action("Witch", [.key(.k)])
 action("Stand up", [.key(.u)])
+action("Join crew", [.key(.j)])
 
 struct Settings:
     invert = false              # (pitch: W climbs, S dives)
@@ -1052,9 +1053,10 @@ leave_box = () -> Rect:
     l = at_edge(-140, 20)
     Rect(l.x, l.y, 120, 46)
 # (what a finger landing at t is on: 1 Fire (on foot: Walk), 2 the throttle, 4 Look, 5 Leave,
-# 6 Get in or out, 7 Rocket, 8 Bomb, 0 none)
+# 6 Get in or out, 7 Rocket, 8 Bomb, 10 the crew call's panel, 0 none)
 button_at = (t: vec2) -> int:
     near = (b: vec2, r: f64) -> bool: f64(length(t - b)) < r + 6.0
+    if call_rect.w > 0.0 and contains(call_rect, t): return 10
     if near(fire_at(), FIRE_R): return 1
     if x_gunner() and near(rocket_button(), BUTTON_R): return 7
     if piloting():
@@ -1073,6 +1075,8 @@ finger_on: int[]
 finger_at: vec2[]
 touch_fire = false
 touch_enter = false
+touch_join = false
+call_rect = Rect(0, 0, 0, 0)    # (the crew call's panel, as drawn last: a phone taps it to join)
 f_held = 0.0                    # (seconds F, or a phone's In/Out, has been held: held, it puts out)
 touch_rocket = false
 touch_bomb = false
@@ -1105,6 +1109,7 @@ my_pad = () -> Pad:
     p = my()
     c.witch = action_down("Witch")
     c.stand = action_down("Stand up")
+    c.join = action_down("Join crew") or touch_join
     c.enter = action_down("Get in") or (touch_enter and p.state != SEATED and p.state != POST)
     # (F held, or G: one's own side put out; a phone's In/Out held, only on foot)
     c.kick = action_down("Kick out") or (f_held > 0.8 and (not touch_input() or p.state == WALK))
@@ -1296,13 +1301,14 @@ aim_at_target = ():
 
 # (each frame: the buttons held, Look tapped, and how far the fingers on no button moved, in points)
 read_fingers = () -> vec2:
-    global finger_at, finger_ids, finger_on, scoped, throttle_want, touch_bomb, touch_enter, touch_fire, touch_rocket, tracking
+    global finger_at, finger_ids, finger_on, scoped, throttle_want, touch_bomb, touch_enter, touch_fire, touch_join, touch_rocket, tracking
     ids = touch_ids()
     ts = touches()
     on: int[]
     moved = vec2(0, 0)
     touch_fire = false
     touch_enter = false
+    touch_join = false
     touch_rocket = false
     touch_bomb = false
     throttle_want = -1.0
@@ -1315,6 +1321,7 @@ read_fingers = () -> vec2:
         if j >= 0 and b == 0: moved += ts[k] - finger_at[j]
         if b == 1: touch_fire = true
         else if b == 6: touch_enter = true
+        else if b == 10: touch_join = true
         else if b == 7: touch_rocket = true
         else if b == 8: touch_bomb = true
         else if b == 2:
@@ -2538,6 +2545,16 @@ effects = (dt: f64):
         else if b.kind == KICKED:
             if b.who == me(): say("{call(g, b.by)} put you out", gray(0.9))
             else if b.by == me(): say("you put {call(g, b.who)} out", gray(0.9), small = true)
+        else if b.kind == CALLED and b.by >= 0 and b.who < g.crafts.len() and g.people[b.by].team == my_team():
+            # (a crew call of this side: said to those who could answer it, the pilot told it is out)
+            secs = (max(g.crafts[b.who].call - g.tick, 0) + 59) / 60
+            if b.by == me(): say("your crew call is out: {secs} s for your side to join", COLORS[my_team()], small = true)
+            else if can_answer(g, g.people[me()]): say("{call(g, b.by)} is launching the {kind_name(g, b.who)}: J to join ({secs} s)", COLORS[my_team()])
+            else: say("{call(g, b.by)} is launching the {kind_name(g, b.who)}", with_alpha(COLORS[my_team()], 0.75), small = true)
+        else if b.kind == JOINED and b.by >= 0 and b.by < g.crafts.len():
+            k = g.crafts[b.by]
+            if b.who == me(): say("you joined the {kind_name(g, b.by)}'s crew: the {SEAT_NAMES[k.kind][g.people[me()].seat]}", COLORS[my_team()], small = true)
+            else if b.by == myc: say("{call(g, b.who)} joined the crew", with_alpha(COLORS[my_team()], 0.75), small = true)
         else if b.kind == SWAPPED and b.by == me(): say("you took {call(g, b.who)}'s seat", gray(0.9), small = true)
         else if b.kind == ABOARD and b.by >= 0 and b.by < g.crafts.len():
             c = g.crafts[b.by]
@@ -2890,6 +2907,8 @@ draw_hud = (g: Game):
     k = KINDS[c.kind]
     top = at_edge(0, 0)
     x = f64(mid().x)
+    fade = join_fade(g, p)
+    if fade > 0.0: rect(visible_rect(), rgba(0.02, 0.02, 0.03, f32(fade)))
     # the others: crafts flying, marked in their colors as they seem (a craft of the other side's
     # crew in this side's colors fools this side too, till it shoots at it); the target in brackets
     # (none with the markers off: this one's setting, or the fight's for everyone)
@@ -3074,6 +3093,7 @@ draw_hud = (g: Game):
         line(mid() + vec2(-6, 0), mid() + vec2(6, 0), 2, rgba(1, 1, 1, 0.6))
         line(mid() + vec2(0, -6), mid() + vec2(0, 6), 2, rgba(1, 1, 1, 0.6))
     draw_prompt(g, p)
+    call_banner(g, p)
     if hurt > 0.0:
         r = visible_rect()
         a = f32(hurt / 0.35 * 0.35)
@@ -3234,6 +3254,54 @@ seats_plate = (g: Game, c: Craft):
         text("{s + 1}", vec2(r.x + PAD, yy), T_SMALL - 2.0, if mine_: BRASS else: INK_FAINT)
         text(SEAT_NAMES[c.kind][s], vec2(r.x + PAD + 20, yy), T_SMALL - 2.0, if mine_: INK else: INK_DIM)
         text(who, vec2(f32(f64(r.x) + w - PAD - text_width(who, T_SMALL - 2.0)), yy), T_SMALL - 2.0, if mine_: INK else: INK_FAINT)
+
+# (a crew call: J, the screen fading to black, the seat, fading back; the sim's time, so the
+# same on every machine and rolled back with it)
+join_fade = (g: Game, p: Person) -> f64:
+    if p.join_at <= 0: return 0.0
+    if p.joining >= 0: return clamp(1.0 - f64(p.join_at - g.tick) / f64(CALL_FADE), 0.0, 1.0)
+    d = g.tick - p.join_at
+    if d < 0 or d > 40 or p.state != SEATED: return 0.0
+    1.0 - f64(d) / 40.0
+
+# a crew call this one could answer, or their own going out: a panel over the prompt, its time
+# running down in a bar
+call_banner = (g: Game, p: Person):
+    global call_rect
+    call_rect = Rect(0, 0, 0, 0)
+    if p.team >= GOLD or g.winner >= 0: return
+    y = if touch_input(): f64(at_edge(0, 0).y) + (if upright: 520.0 else: 230.0) else: f64(at_edge(0, -EDGE).y) - 262.0
+    x = f64(mid().x)
+    col = COLORS[p.team]
+    line1 = ""
+    line2 = ""
+    k = -1
+    if p.joining >= 0:
+        k = p.joining
+        line1 = "Joining the {kind_name(g, k)}..."
+    else if p.state == SEATED and p.seat == 0 and calling(g, p.craft):
+        k = p.craft
+        line1 = "Crew call out: {aboard(g.crafts[k])}/{g.crafts[k].seats.len()} aboard"
+        line2 = "{(g.crafts[k].call - g.tick + 59) / 60} s    lift off to go now"
+    else if can_answer(g, p):
+        k = call_for(g, me(), p)
+        if k < 0: return
+        pi = pilot_of(g.crafts[k])
+        line1 = "{if pi >= 0: call(g, pi) else: TEAMS[p.team]} is launching the {kind_name(g, k)}"
+        line2 = "{if touch_input(): "tap here" else: "J"}: join its crew    {(g.crafts[k].call - g.tick + 59) / 60} s    {aboard(g.crafts[k])}/{g.crafts[k].seats.len()} aboard"
+    if k < 0: return
+    c = g.crafts[k]
+    w = max(text_width(line1, T_HEAD - 4.0), text_width(line2, T_BODY)) + 2.0 * PAD + 30.0
+    h = if len(line2) > 0: 74.0 else: 46.0
+    r = Rect(f32(x - w / 2.0), f32(y), f32(w), f32(h))
+    call_rect = r
+    panel(r)
+    rect_outline(f64(r.x), y, w, h, 2, with_alpha(col, 0.85))
+    text_centered(line1, vec2(f32(x), f32(y + 22.0)), T_HEAD - 4.0, col, SHADOW)
+    if len(line2) > 0: text_centered(line2, vec2(f32(x), f32(y + 52.0)), T_BODY, INK)
+    pk = pilot_of(c)
+    left = f64(max(c.call - g.tick, 0)) / f64(if pk >= 0 and g.people[pk].player < 0: CALL_TIME_COMPUTER else: CALL_TIME)
+    if p.joining < 0: rect(f64(r.x) + 6.0, y + h - 6.0, (w - 12.0) * clamp(left, 0.0, 1.0), 3, col)
 
 # what F or T would do now: in a small panel low in the middle (a phone's high), said when it
 # comes and gone after a few seconds, unless it is urgent (shot down, falling)

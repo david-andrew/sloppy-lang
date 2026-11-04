@@ -434,6 +434,7 @@ struct Pad:
     computer = false            # (the computer plays it: a player who left)
     witch = false               # (one's rocketeer a witch on a broom, or back)
     stand = false               # (U: up out of one's seat, on the craft's deck)
+    join = false                # (J: answer one's side's crew call, put in a free seat of that craft)
 
 struct Craft:
     kind: int
@@ -481,6 +482,7 @@ struct Craft:
     crew = 0                    # (da Vinci's: how its crew is drawn, models.DV_ROW or DV_PEDAL)
     taims: vec3[] = []          # (the little screw's automatic guns: the way each points, the world's way,
     tcool: int[] = []           # and ticks till it fires again)
+    call = 0                    # (its crew call: the tick it ends, open till then; 0 none since its pilot sat down)
 
 # (one of the ball fight's balls)
 struct Ball:
@@ -530,6 +532,8 @@ struct Person:
     deck = vec3(0, 0, 0)        # (on foot on a craft, `craft` it: where one stands, its frame)
     step = vec3(0, 0, 0)        # (and how fast one goes on it, its frame)
     walked = false              # (falling: off a deck walking, not bailing out: on it again if it comes under)
+    joining = -1                # (answering a crew call: the craft, a seat of it had at join_at)
+    join_at = 0
 
 struct Bullet:
     pos: vec3
@@ -628,6 +632,8 @@ const GOLD_OUT = 40             # the golden cat (craft `who`) out
 const SWAPPED = 41              # person `by` took the seat of `who` (one of the computer's, of their side)
 const ABOARD = 42               # person `who`, falling, landed aboard craft `by`, in a seat
 const SCORCHED = 43             # craft `who` caught by a siphon's fire from person `by`
+const CALLED = 44               # craft `who`'s pilot, person `by`, calls their side for its crew
+const JOINED = 45               # person `who`, answering the call, put in a seat of craft `by`
 struct Boom:
     pos: vec3
     kind: int
@@ -992,6 +998,7 @@ tick = (g: Game, pads: Pad[]) -> Game:
         else if p.team == GOLD: each.push(Pad(computer = true))
         else: each.push(bot_pad(g, i))
     loop i in 0..g.people.len(): person(g, i, each[i])
+    crew_calls(g)
     loop i in 0..g.crafts.len():
         if g.crafts[i].free: continue
         # (one standing still with no one in it: nothing to do but count down its safety)
@@ -1332,6 +1339,123 @@ const SWIM_SPEED = 1.8
 const CHUTE_FALL = 9.0          # m/s under a parachute
 const ENTER = 8.0               # (m from a craft's seat to get in)
 
+# ---------------- the crew call ----------------
+# One who takes the pilot's seat of a craft of more seats than one, standing on their own field,
+# calls their side for its crew: for CALL_TIME, till its seats are full, or till it goes (lifting
+# off ends it). Any of the side near the field (on foot, or sitting in a craft standing there)
+# answers with J: a moment later (the screen fading) they are in a free seat of it. The
+# computer's answer too, as many as call_crew; their pilot waits for them, and for the players
+# who could still answer, to the end of the call
+const CALL_TIME = 60 * 15
+const CALL_TIME_COMPUTER = 60 * 30  # (the computer's pilot's call: it goes as soon as it has its crew)
+const CALL_REACH = STRIP_LONG + 240.0   # (m from the middle of one's field, to answer)
+const CALL_CREW = 6             # (the computer's who answer: so many aboard at most)
+const CALL_FADE = 30            # (ticks from J to the seat)
+
+crewed = (kind: int) -> bool: KINDS[kind].seats.len() > 1
+# (on the ground: standing, or moored, lighter than air, on its gondolas)
+grounded = (c: Craft) -> bool:
+    if c.landed: return true
+    k = KINDS[c.kind]
+    k.lighter and c.down == 0 and f64(c.pos.y) - k.gear - max(ground(f64(c.pos.x), f64(c.pos.z)), 0.0) < 0.5 and f64(length(c.vel)) < 3.0
+aboard = (c: Craft) -> int:
+    n = 0
+    loop k in c.seats:
+        if k >= 0: n += 1
+    n
+calling = (g: Game, j: int) -> bool: g.crafts[j].call > g.tick
+# (those on their way to craft j's seats, answering)
+answering = (g: Game, j: int) -> int:
+    n = 0
+    loop q in g.people:
+        if q.joining == j: n += 1
+    n
+# (the crew the computer's fill a craft of this kind to: half its side, but 2 at least, CALL_CREW at most)
+call_crew = (g: Game, kind: int) -> int: min(KINDS[kind].seats.len(), clamp(g.people.len() / 4, 2, CALL_CREW))
+# (one more of the computer's may answer craft k's call: it short of call_crew, and a third of
+# the side or fewer of the computer's at the big ones' guns, the rest flying)
+computer_answers = (g: Game, k: int) -> bool:
+    c = g.crafts[k]
+    if aboard(c) + answering(g, k) >= call_crew(g, c.kind): return false
+    team = crew_at(g, k)
+    n = 0
+    loop q in g.people:
+        if q.player < 0 and q.team == team and (q.joining >= 0 or (q.state == SEATED and q.seat > 0)): n += 1
+    n < g.people.len() / 2 / 3
+near_base = (p: Person) -> bool:
+    f = fields()[p.team]
+    f64(length(vec2(p.pos.x - f.at.x, p.pos.z - f.at.z))) < CALL_REACH
+# (p could answer a call: near its field, on foot there, or in a craft standing there)
+can_answer = (g: Game, p: Person) -> bool:
+    if p.team >= GOLD or p.joining >= 0 or not near_base(p): return false
+    if p.state == WALK: return p.craft < 0 or grounded(g.crafts[p.craft])
+    if p.state != SEATED: return false
+    c = g.crafts[p.craft]
+    grounded(c) and f64(length(c.vel)) < 8.0 and on_own_field(c, p.team) and not calling(g, p.craft)
+# (the craft calling person i's side whose seats are not all spoken for: the nearest; -1 none)
+call_for = (g: Game, i: int, p: Person) -> int:
+    best = -1
+    least = 1e18
+    loop j in 0.. and c in g.crafts:
+        if c.call <= g.tick or j == p.craft or not whole(c) or crew_at(g, j) != p.team: continue
+        if aboard(c) + answering(g, j) >= c.seats.len(): continue
+        d = f64(length(c.pos - p.pos))
+        if d < least:
+            least = d
+            best = j
+    best
+# (a player of the side who could still answer craft j's call)
+player_could = (g: Game, team: int) -> bool:
+    loop q in g.people:
+        if q.player >= 0 and q.team == team and can_answer(g, q): return true
+    false
+# (the computer's pilot of craft j, on the ground: waiting for its crew)
+call_hold = (g: Game, j: int) -> bool:
+    if answering(g, j) > 0: return true
+    if not calling(g, j): return false
+    computer_answers(g, j) or player_could(g, crew_at(g, j))
+
+# (person i, answering, into the craft's first free gunner's seat (else the pilot's): out of
+# where they were; none free, or the craft gone, nothing)
+join_crew = (g: mut Game, i: int, p0: Person) -> Person:
+    let p = p0
+    k = p.joining
+    p.joining = -1
+    c = g.crafts[k]
+    if not whole(c) or crew_at(g, k) != p.team or not (p.state == WALK or p.state == SEATED) or k == p.craft: return p
+    s = -1
+    loop j in 1..c.seats.len():
+        if s < 0 and c.seats[j] < 0: s = j
+    if s < 0 and c.seats[0] < 0: s = 0
+    if s < 0: return p
+    if p.state == SEATED: g.crafts[p.craft].seats[p.seat] = -1
+    g.crafts[k].seats[s] = i
+    p.state = SEATED
+    p.craft = k
+    p.seat = s
+    p.goal = -1
+    p.step = vec3(0, 0, 0)
+    p.pos = point_of(c, KINDS[c.kind].seats[s].at)
+    p.vel = c.vel
+    g.booms.push(Boom(p.pos, JOINED, g.tick, i, k))
+    p
+
+# (each tick: a call made, as one sits down to fly; ended, the craft going or full)
+crew_calls = (g: mut Game):
+    loop j in 0..g.crafts.len():
+        c = g.crafts[j]
+        if c.free or not crewed(c.kind): continue
+        pi = pilot_of(c)
+        if pi < 0 or not whole(c):
+            g.crafts[j].call = 0
+            continue
+        if c.call == 0:
+            team = g.people[pi].team
+            ok = grounded(c) and f64(length(c.vel)) < 4.0 and team < GOLD and team == c.team and on_own_field(c, team) and starts_on_ground(g, team) and c.seats.contains(-1)
+            g.crafts[j].call = if not ok: g.tick else: g.tick + (if g.people[pi].player >= 0: CALL_TIME else: CALL_TIME_COMPUTER)
+            if ok: g.booms.push(Boom(c.pos, CALLED, g.tick, j, pi))
+        else if c.call > g.tick and (not grounded(c) or f64(length(c.vel)) > 6.0 or aboard(c) + answering(g, j) >= c.seats.len()): g.crafts[j].call = g.tick
+
 person = (g: mut Game, i: int, pad: Pad):
     if g.people[i].team == GOLD:
         gold_seat(g, i)
@@ -1341,18 +1465,27 @@ person = (g: mut Game, i: int, pad: Pad):
     out = pad.leave and p.held & 8 == 0
     kicked = pad.kick and p.held & 16 == 0
     stood = pad.stand and p.held & 64 == 0
+    joined = pad.join and p.held & 128 == 0
     if pad.witch and p.held & 32 == 0:
         if p.state == SEATED and (g.crafts[p.craft].kind == DAVINCI or g.crafts[p.craft].kind == SCREW): g.crafts[p.craft].crew = 1 - g.crafts[p.craft].crew
         else: p.witch = not p.witch
-    p.held = (if pad.enter: 1 else: 0) | (if pad.rocket: 2 else: 0) | (if pad.bomb: 4 else: 0) | (if pad.leave: 8 else: 0) | (if pad.kick: 16 else: 0) | (if pad.witch: 32 else: 0) | (if pad.stand: 64 else: 0)
+    p.held = (if pad.enter: 1 else: 0) | (if pad.rocket: 2 else: 0) | (if pad.bomb: 4 else: 0) | (if pad.leave: 8 else: 0) | (if pad.kick: 16 else: 0) | (if pad.witch: 32 else: 0) | (if pad.stand: 64 else: 0) | (if pad.join: 128 else: 0)
     seat_now = pad.seat
     seat_new = seat_now != p.seat_held and seat_now > 0
     p.seat_held = seat_now
     if p.state == DEAD:
         p.timer -= 1
+        p.joining = -1
         if p.timer <= 0: respawn(g, i, p)
         else: g.people[i] = p
         return
+    # (the crew call: J, the screen fading, and a moment later in a seat of the craft)
+    if p.joining >= 0 and g.tick >= p.join_at: p = join_crew(g, i, p)
+    if joined and p.joining < 0 and can_answer(g, p):
+        k = call_for(g, i, p)
+        if k >= 0 and (p.player >= 0 or computer_answers(g, k)):
+            p.joining = k
+            p.join_at = g.tick + CALL_FADE
     if p.state == SEATED:
         c = g.crafts[p.craft]
         # (the pilot: their own side out of the craft, those in the air on parachutes)
@@ -3946,6 +4079,11 @@ gold_pad = (g: Game, i: int) -> Pad:
 bot_pad = (g: Game, i: int) -> Pad:
     p = g.people[i]
     if p.state == DEAD: return Pad()
+    # (near its field, on foot or in a small craft standing there, a crew call of its side, the
+    # craft short of its crew: J, a moment after it is heard)
+    if p.joining < 0 and g.tick % 15 == i % 15 and (p.state == WALK or (p.state == SEATED and not crewed(g.crafts[p.craft].kind))) and can_answer(g, p):
+        k = call_for(g, i, p)
+        if k >= 0 and computer_answers(g, k): return Pad(aim_yaw = int(p.yaw * 1000.0), join = true)
     # (on a deck (a player who left): into a seat in reach, else off it)
     if p.state == WALK and p.craft >= 0:
         near = seat_near(g, p.craft, p.deck) >= 0
@@ -3964,26 +4102,30 @@ bot_walk = (g: Game, i: int, p: Person) -> Pad:
     if not starts_on_ground(g, p.team): return Pad(leave = g.tick % 20 == 0)
     best = -1
     least = 1e18
-    # (each picks by its number: some the big ones, the rest fighters and scouts)
+    # (each picks by its number: some crew the big ones, the rest fly the small ones)
     want_big = role(i) == 1
     loop c in g.ground:
         if f64(length(c.vel)) > 3.0: continue
-        # (its side's flying castle on the ground, flown, a seat free: those for the big ones go
-        # aboard, its gunners)
-        crew = c.flown and c.kind == CASTLE and c.team == p.team and want_big and g.crafts[c.craft].seats.contains(-1)
+        # (a craft of its side of more seats than one on the ground, flown, a seat free: those
+        # for the big ones go aboard, its gunners)
+        crew = c.flown and crewed(c.kind) and c.team == p.team and want_big and g.crafts[c.craft].seats.contains(-1)
         if c.flown and not crew: continue
         # (its own side's colors; one of the other side's only when very near)
         d = f64(length(c.pos - p.pos))
         if c.team != p.team and d > 60.0: continue
-        big = c.kind == BOMBER or c.kind == ULTRA or c.kind == ZEPPELIN or c.kind == BALLOON or c.kind == CASTLE
-        if big != want_big: d += 400.0
-        if c.kind == ZEPPELIN: d += 150.0
-        # (the flying castle, far out past the rest, for those for the big ones: theirs first)
-        if c.kind == CASTLE and want_big: d -= 600.0
+        if crew: d -= 300.0
+        # (the flying castle, far out past the rest: its gunners first)
+        if c.kind == CASTLE and crew: d -= 600.0
+        # (the big ones are flown by the computer only when nothing else is free, and then the
+        # ones of fewest seats: so a crew can be had for it, its call answered. But for a target
+        # on the ground, the bombers: those for the big ones fly them, as the small ones)
+        bombing = g.goals[p.team] >= 0 and KINDS[c.kind].bombs > 0 and not KINDS[c.kind].lighter
+        if g.goals[p.team] >= 0 and not crew and bombing != want_big: d += 400.0
+        if crewed(c.kind) and not crew and not bombing: d += 20000.0 + 40.0 * f64(KINDS[c.kind].seats.len())
         # (the unusual ones are the players' to take: one only when it has stood a minute unflown,
         # or nothing else is free)
         # (in the Thunderdome and Bikes & Brooms they are what there is)
-        if c.kind != SCOUT and c.kind != FIGHTER and c.kind != BOMBER and c.idle < 3600 and not cat_fight(g.rules.mode) and not crew: d += 5000.0
+        else if c.kind != SCOUT and c.kind != FIGHTER and c.kind != BOMBER and c.idle < 3600 and not cat_fight(g.rules.mode) and not crew: d += 5000.0
         if d < least:
             least = d
             best = c.craft
@@ -4026,6 +4168,8 @@ bot_fly = (g: Game, ci: int, c: Craft) -> Pad:
     k = KINDS[c.kind]
     team = crew_team(g, c)
     if c.down > 0: return Pad()
+    # (its crew called: on the ground till they are aboard)
+    if grounded(c) and call_hold(g, ci): return Pad(throttle = -1)
     # (the ball fight: most of the computer's at the balls, each in its part; the rest fight; the
     # big ones, too slow for the balls and every gun's mark, as ever, their gunners fighting)
     if g.rules.mode == BROOMS and at_balls(g, c) and not after_gold(g, c): return bot_ball(g, ci, c, team)
@@ -4373,21 +4517,15 @@ escort_station = (g: Game, ci: int, q: Craft) -> vec3:
     y = max(f64(q.pos.y) + 25.0 + f64(ci % 3) * 15.0, gy + 60.0)
     vec3(f32(f64(q.pos.x) + cos(a) * CASTLE_STATION), f32(y), f32(f64(q.pos.z) + sin(a) * CASTLE_STATION))
 
-# the computer's flying castle: on the ground, its crew mustered first (some of its side's on
-# foot come aboard: CASTLE_MUSTER of them, or it waits CASTLE_WAIT at most); then up, slowly,
+# the computer's flying castle: on the ground, its crew mustered first (its crew call answered:
+# bot_fly); then up, slowly,
 # straight up till its plinth is well over the ground, then on at a height over the highest
 # ground under it, toward the craft it goes after (its guns' reach off it), else across the fight
-const CASTLE_MUSTER = 6
-const CASTLE_WAIT = 60 * 40
 bot_castle = (g: Game, ci: int, c: Craft, team: int) -> Pad:
     k = KINDS[c.kind]
     if c.landed:
         # (a player on foot near, a seat free: waited for, 15 s at most)
         if c.wait > 0 and c.wait < 900: return Pad(throttle = -1)
-        aboard = 0
-        loop pk in c.seats:
-            if pk >= 0: aboard += 1
-        if aboard < CASTLE_MUSTER and c.rest < CASTLE_WAIT and on_own_field(c, team): return Pad(throttle = -1)
     low = castle_ground(c)
     fwd = fwd_of(c)
     over = f64(c.pos.y) - k.gear - low
