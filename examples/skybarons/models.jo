@@ -2,7 +2,8 @@
 # Meters; a craft's nose toward -z, up +y, its right wing +x, its origin at its middle (about
 # where it balances). Kinds: 0 scout, 1 fighter, 2 bomber, 3 zeppelin, 4 ultra bomber, 5 balloon,
 # 6 rocketeer (or, as one chooses, a witch on a broom), 7 ornithopter, 8 da Vinci's galleass, 9 carcopter,
-# 10 the cat, 11 drone, 12 da Vinci's screw (the little one, da Vinci's own size). Teams: 0 Red, 1 Blue.
+# 10 the cat, 11 drone, 12 da Vinci's screw (the little one, da Vinci's own size), 13 the flying
+# castle. Teams: 0 Red, 1 Blue.
 # A badge is a player's insignia: its place in BADGES.
 #
 #   craft_mesh(kind, team, badge)   each craft, without its propellers
@@ -66,6 +67,10 @@
 #   hoop_mesh(team, lit)            a goal's ring, its hole 14 in radius (and its rim 1 thick), round
 #                                   the origin, facing along z; lit: its lamps' glass alight
 #   hoop_post_mesh(team)            its timber tower, from the ground (the origin) 1 tall: scaled to its height
+#   ca_rotor_mesh(team, k), CA_ROTORS, CA_ROTOR_R   the flying castle's screws (turning about y), their hubs, radii
+#   ca_flak_mesh(team), CA_PIVOTS   its flak gun (aimed -z), and where all its guns turn
+#   CA_STACKS                       its boilers' stacks' tops (smoke from them)
+#   ca_footings_mesh(), ca_bridge_mesh(), CA_SILL   its stone piers, parked; its drawbridge (1 long), hinged there
 
 const SCOUT = 0
 const FIGHTER = 1
@@ -80,6 +85,7 @@ const CARCOPTER = 9
 const CAT = 10
 const DRONE = 11
 const SCREW = 12
+const CASTLE = 13
 
 BADGES = ["none", "white bands", "yellow nose", "chevron", "star", "skull", "lightning", "yellow tail", "hat in the ring", "shark mouth", "Nungesser's heart", "Voss's face", "stork", "ace of spades"]
 
@@ -5385,6 +5391,351 @@ make_pot = () -> Mesh:
     custom_mesh(vs)
 
 # ---------------- what the game asks for ----------------
+# ---------------- the flying castle (kind 13): the Himmelsfeste ----------------
+# A fortress 270 m long and 140 across: a stepped plinth of masonry, banded with riveted iron, its
+# flat bottom 34 m under its middle (what it stands on); its curtain walls round the courtyard
+# (14 m under its middle), battlemented; four round corner towers and four square wall towers,
+# a gatehouse at its front (-z) and two towers at its back; the keep aft of the middle, its
+# bridge on its roof, its four turrets. Five great ducted screws lift it, each on an iron pylon
+# over a corner tower and over the keep (CA_ROTORS: their hubs; CA_ROTOR_R their radii), turned
+# by the boilers whose stacks (CA_STACKS: their tops) rise from the courtyard. Red's of dark
+# basalt and iron, its banners red with the cross; Blue's of pale limestone, its banners blue
+# with the roundel. The guns' pivots (sim.jo has the same) on pedestals: CA_PIVOTS
+CA_ROTORS = [vec3(-62, 38, -126), vec3(62, 38, -126), vec3(-62, 38, 126), vec3(62, 38, 126), vec3(0, 52, 15)]
+CA_ROTOR_R = [22.0, 22.0, 22.0, 22.0, 30.0]
+CA_STACKS = [vec3(-34, 30, -62), vec3(34, 30, -62), vec3(-30, 30, 74), vec3(30, 30, 74)]
+const CA_BOTTOM = -34.0
+const CA_COURT = -14.0
+const CA_WALK = 4.0
+# (where the drawbridge's foot is hinged: the sally port's sill in the plinth's front)
+CA_SILL = vec3(0, -33.4, -121.0)
+CA_PIVOTS = [vec3(-68, 21, -132), vec3(68, 21, -132), vec3(-68, 21, 132), vec3(68, 21, 132),
+             vec3(-14, 18.5, -134), vec3(14, 18.5, -134), vec3(-70, 14.5, -42), vec3(70, 14.5, -42), vec3(-70, 14.5, 42), vec3(70, 14.5, 42), vec3(-14, 14.5, 133), vec3(14, 14.5, 133),
+             vec3(-66.5, 6, -86), vec3(66.5, 6, -86), vec3(-66.5, 6, 86), vec3(66.5, 6, 86), vec3(-40, 6, -130.5), vec3(40, 6, -130.5), vec3(-40, 6, 130.5), vec3(40, 6, 130.5),
+             vec3(-22, 39.5, -13), vec3(22, 39.5, -13), vec3(-22, 39.5, 43), vec3(22, 39.5, 43), vec3(0, -33.0, -60), vec3(0, -33.0, 60)]
+
+ca_stone = (team: int) -> vec4: if team == 0: rgb(0.36, 0.34, 0.33) else: rgb(0.66, 0.63, 0.56)
+ca_iron = (team: int) -> vec4: if team == 0: rgb(0.17, 0.17, 0.18) else: rgb(0.27, 0.29, 0.31)
+ca_roof = (team: int) -> vec4: if team == 0: rgb(0.2, 0.19, 0.2) else: rgb(0.3, 0.45, 0.42)
+ca_cloth = (team: int) -> vec4: if team == 0: RED_SIDE else: BLUE_SIDE
+
+# (a box from lo to hi)
+ca_box = (vs: mut Vertex3D[], lo: vec3, hi: vec3, col: vec4): add_box(vs, (lo + hi) * 0.5, hi - lo, col)
+
+# (merlons along a wall's top from a to b (at their foot), on the side toward out, 2 m wide every 4)
+ca_merlons = (vs: mut Vertex3D[], a: vec3, b: vec3, out: vec3, col: vec4, tall: f64 = 2.5):
+    d = b - a
+    l = f64(length(d))
+    u = d * f32(1.0 / l)
+    n = int(l / 4.0)
+    yaw = atan2(f64(u.x), f64(u.z))
+    loop k in 0..n:
+        c = a + u * f32((f64(k) + 0.5) * l / f64(n)) + out * 0.6 + v3(0, tall / 2.0, 0)
+        add_box(vs, vec3(0, 0, 0), v3(1.2, tall, 2.0), shade(col, 0.95 + 0.06 * f64(k % 3)), translation(c) * rotation_y(yaw))
+
+# (a round tower at (x, z) from y0 to its floor at y1, radius r: its crown corbelled out to r + 1.5
+# over machicolations, merlons round it, its foot hung under in a cone when it hangs (hang))
+ca_tower = (vs: mut Vertex3D[], x: f64, z: f64, r: f64, y0: f64, y1: f64, team: int, hang: bool = false):
+    stone = ca_stone(team)
+    iron = ca_iron(team)
+    add_cylinder(vs, v3(x, y0, z), r, y1 - 4.0 - y0, stone, 20)
+    if hang: add_cylinder(vs, v3(x, y0 - 9.0, z), r * 0.3, 9.0, shade(stone, 0.85), 20, r)
+    loop k in 0..int((y1 - 4.0 - y0) / 6.0): add_cylinder(vs, v3(x, y0 + 4.0 + 6.0 * f64(k), z), r + 0.15, 0.5, shade(stone, 0.8), 20)
+    add_cylinder(vs, v3(x, y1 - 6.5, z), r, 2.5, shade(stone, 0.9), 20, r + 1.5)
+    # (the machicolations: corbels under the crown)
+    loop k in 0..20:
+        a = TAU * f64(k) / 20.0
+        add_box(vs, vec3(0, 0, 0), v3(1.0, 1.4, 1.0), shade(stone, 0.75), translation(v3(x + cos(a) * (r + 0.6), y1 - 4.6, z + sin(a) * (r + 0.6))) * rotation_y(-a))
+    add_cylinder(vs, v3(x, y1 - 4.0, z), r + 1.5, 4.0, stone, 20)
+    add_cylinder(vs, v3(x, y1 - 4.2, z), r + 1.6, 0.4, iron, 20)
+    disc(vs, v3(x, y1 + 0.02, z), r + 1.4, shade(stone, 0.7), 20)
+    loop k in 0..16:
+        a = TAU * (f64(k) + 0.5) / 16.0
+        add_box(vs, vec3(0, 0, 0), v3(1.2, 2.5, 2.4), shade(stone, 0.95 + 0.05 * f64(k % 2)), translation(v3(x + cos(a) * (r + 0.9), y1 + 1.25, z + sin(a) * (r + 0.9))) * rotation_y(-a))
+    # (arrow slits up it)
+    loop k in 0..int((y1 - y0 - 8.0) / 7.0):
+        loop j in 0..6:
+            a = TAU * (f64(j) + 0.5 * f64(k % 2)) / 6.0
+            add_box(vs, vec3(0, 0, 0), v3(0.5, 2.6, 0.5), DARK, translation(v3(x + cos(a) * (r - 0.15), y0 + 6.0 + 7.0 * f64(k), z + sin(a) * (r - 0.15))) * rotation_y(-a))
+
+# (a square tower round (x, z), half w across, from y0 to its floor at y1: corbelled under, crowned
+# with merlons)
+ca_square = (vs: mut Vertex3D[], x: f64, z: f64, w: f64, y0: f64, y1: f64, team: int):
+    stone = ca_stone(team)
+    ca_box(vs, v3(x - w, y0, z - w), v3(x + w, y1, z + w), stone)
+    add_cylinder(vs, vec3(0, 0, 0), w * 0.4, 8.0, shade(stone, 0.85), 4, w * 1.41, translation(v3(x, y0 - 8.0, z)) * rotation_y(PI / 4.0))
+    ca_box(vs, v3(x - w - 1.0, y1 - 3.0, z - w - 1.0), v3(x + w + 1.0, y1, z + w + 1.0), shade(stone, 0.92))
+    ca_box(vs, v3(x - w - 1.1, y1 - 3.3, z - w - 1.1), v3(x + w + 1.1, y1 - 2.9, z + w + 1.1), ca_iron(team))
+    loop s in [-1.0, 1.0]:
+        ca_merlons(vs, v3(x - w - 1.0, y1, z + s * (w + 0.4)), v3(x + w + 1.0, y1, z + s * (w + 0.4)), v3(0, 0, s * -0.6), stone)
+        ca_merlons(vs, v3(x + s * (w + 0.4), y1, z - w - 1.0), v3(x + s * (w + 0.4), y1, z + w + 1.0), v3(s * -0.6, 0, 0), stone)
+    loop k in 0..int((y1 - y0 - 6.0) / 6.0):
+        loop s in [-1.0, 1.0]:
+            add_box(vs, v3(x + s * (w + 0.02), y0 + 5.0 + 6.0 * f64(k), z), v3(0.1, 2.4, 0.6), DARK)
+            add_box(vs, v3(x, y0 + 5.0 + 6.0 * f64(k), z + s * (w + 0.02)), v3(0.6, 2.4, 0.1), DARK)
+
+# (a pylon of riveted iron from a tower's floor (at its middle, y0) up to a screw's hub: four legs
+# from r out, braced; its gearbox under the hub, the shaft up through it, a steam pipe down a leg)
+ca_pylon = (vs: mut Vertex3D[], foot: vec3, hub: vec3, r: f64, team: int):
+    iron = ca_iron(team)
+    brass = rgb(0.7, 0.55, 0.25)
+    top = hub - v3(0, 4.0, 0)
+    legs: vec3[] = []
+    loop k in 0..4:
+        a = PI / 2.0 * f64(k)
+        legs.push(foot + v3(cos(a) * r, 0, sin(a) * r))
+    loop k in 0..4:
+        a = PI / 2.0 * f64(k)
+        t = top + v3(cos(a) * 2.2, 0, sin(a) * 2.2)
+        beam(vs, legs[k], t, 0.9, iron, true)
+        n = legs[(k + 1) % 4]
+        tn = top + v3(cos(a + PI / 2.0) * 2.2, 0, sin(a + PI / 2.0) * 2.2)
+        loop j in 0..3:
+            f0 = f64(j) / 3.0
+            f1 = f64(j + 1) / 3.0
+            beam(vs, lerp(legs[k], t, f32(f0)), lerp(n, tn, f32(f1)), 0.35, iron)
+            beam(vs, lerp(n, tn, f32(f0)), lerp(legs[k], t, f32(f1)), 0.35, iron)
+            beam(vs, lerp(legs[k], t, f32(f1)), lerp(n, tn, f32(f1)), 0.45, iron)
+    add_cylinder(vs, top - v3(0, 1.0, 0), 3.4, 3.5, iron, 14)
+    add_cylinder(vs, top + v3(0, 2.5, 0), 3.6, 0.4, brass, 14)
+    tube(vs, top, hub + v3(0, 2.0, 0), 0.9, shade(iron, 1.3), 10)
+    tube(vs, legs[0] + v3(-0.9, 0, 0.9), top + v3(1.2, -0.5, 1.2), 0.35, brass, 6)
+
+# (a hall against a wall: walls w (x) by d (z) round c (its floor), a pitched roof along z)
+ca_hall = (vs: mut Vertex3D[], c: vec3, w: f64, d: f64, wall: f64, ridge: f64, team: int):
+    stone = shade(ca_stone(team), 0.92)
+    roof = ca_roof(team)
+    ca_box(vs, c - v3(w / 2.0, 0, d / 2.0), c + v3(w / 2.0, wall, d / 2.0), stone)
+    loop s in [-1.0, 1.0]:
+        z = s * d / 2.0
+        tri(vs, c + v3(-w / 2.0, wall, z), c + v3(w / 2.0, wall, z), c + v3(0, ridge, z), stone, c + v3(0, wall, 0))
+    loop s in [-1.0, 1.0]:
+        a = c + v3(s * (w / 2.0 + 0.8), wall - 0.6, -d / 2.0 - 0.8)
+        b = c + v3(s * (w / 2.0 + 0.8), wall - 0.6, d / 2.0 + 0.8)
+        quad(vs, a, b, c + v3(0, ridge + 0.2, d / 2.0 + 0.8), c + v3(0, ridge + 0.2, -d / 2.0 - 0.8), roof, c + v3(0, wall, 0))
+    loop k in 0..int(d / 6.0):
+        z = -d / 2.0 + 3.0 + 6.0 * f64(k)
+        loop s in [-1.0, 1.0]: add_box(vs, c + v3(s * (w / 2.0 + 0.02), wall * 0.55, z), v3(0.1, wall * 0.4, 1.6), rgb(0.15, 0.17, 0.2))
+
+# (a banner hung from a wall's face at top (its middle), facing n, w wide and h long, its insignia on it)
+ca_banner = (vs: mut Vertex3D[], top: vec3, n: vec3, w: f64, h: f64, team: int):
+    cloth = ca_cloth(team)
+    r = cross(vec3(0, 1, 0), n)
+    o = top + n * 0.3
+    pts = [o + r * f32(w / 2.0), o - r * f32(w / 2.0), o - r * f32(w / 2.0) - v3(0, h * 0.85, 0), o - v3(0, h, 0), o + r * f32(w / 2.0) - v3(0, h * 0.85, 0)]
+    sheet(vs, pts, n, cloth, shade(cloth, 0.7))
+    beam(vs, o + r * f32(w / 2.0 + 0.6), o - r * f32(w / 2.0 + 0.6), 0.4, rgb(0.7, 0.55, 0.25))
+    mark(vs, if team == 0: CROSS else: ROUNDEL, o + n * 0.03 - v3(0, h * 0.4, 0), r * -1.0, vec3(0, 1, 0), n, w * 0.32)
+    if team == 0:
+        loop k in 0..2: add_box(vs, o + n * 0.02 - v3(0, h * (0.12 + 0.68 * f64(k)), 0), v3(w * 0.9, 0.8, 0.05), BLACK_PAINT)
+    else:
+        loop k in 0..2: add_box(vs, o + n * 0.02 - v3(0, h * (0.12 + 0.68 * f64(k)), 0), v3(w * 0.9, 0.8, 0.05), WHITE_PAINT)
+
+make_castle = (team: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    stone = ca_stone(team)
+    iron = ca_iron(team)
+    brass = rgb(0.7, 0.55, 0.25)
+    # the plinth: three steps out, iron bands at each, the flat bottom plated
+    tiers = [(CA_BOTTOM, -28.0, 56.0, 120.0), (-28.0, -21.0, 61.0, 125.0), (-21.0, CA_COURT, 66.0, 130.0)]
+    loop t in tiers:
+        ca_box(vs, v3(-t.2, t.0, -t.3), v3(t.2, t.1, t.3), shade(stone, 0.86))
+        ca_box(vs, v3(-t.2 - 0.3, t.1 - 1.2, -t.3 - 0.3), v3(t.2 + 0.3, t.1 - 0.4, t.3 + 0.3), iron)
+        # (its courses, and the rivets' rows on the bands, as lines)
+        loop k in 0..int((t.1 - t.0) / 2.2):
+            y = t.0 + 1.1 + 2.2 * f64(k)
+            loop s in [-1.0, 1.0]:
+                beam(vs, v3(s * (t.2 + 0.05), y, -t.3), v3(s * (t.2 + 0.05), y, t.3), 0.15, shade(stone, 0.7))
+                beam(vs, v3(-t.2, y, s * (t.3 + 0.05)), v3(t.2, y, s * (t.3 + 0.05)), 0.15, shade(stone, 0.7))
+        # (buttresses down each side)
+        loop k in 0..9:
+            z = -t.3 + 14.0 + (2.0 * t.3 - 28.0) * f64(k) / 8.0
+            loop s in [-1.0, 1.0]: ca_box(vs, v3(s * t.2 - 1.5, t.0, z - 2.5), v3(s * t.2 + 1.5, t.1 - 1.2, z + 2.5), shade(stone, 0.8))
+    loop k in 0..12:
+        z = -114.0 + 228.0 * f64(k) / 11.0
+        ca_box(vs, v3(-55, CA_BOTTOM - 0.05, z - 0.6), v3(55, CA_BOTTOM + 0.3, z + 0.6), iron)
+    loop s in [-1.0, 1.0]: ca_box(vs, v3(s * 30.0 - 0.6, CA_BOTTOM - 0.05, -119), v3(s * 30.0 + 0.6, CA_BOTTOM + 0.3, 119), iron)
+    # (the sally port, in the plinth's front, its drawbridge drawn up against it, a winch's chains)
+    ca_box(vs, v3(-5.5, CA_BOTTOM, -120.3), v3(5.5, -25.0, -119.5), DARK)
+    ca_box(vs, v3(-6.5, -24.6, -120.6), v3(6.5, -23.6, -119.5), iron)
+    # (the belly guns' casemates)
+    loop z in [-60.0, 60.0]:
+        ca_box(vs, v3(-4, CA_BOTTOM - 0.02, z - 4.0), v3(4, CA_BOTTOM + 0.2, z + 4.0), DARK)
+        add_cylinder(vs, v3(0, CA_BOTTOM - 0.1, z), 2.0, 0.3, iron, 12)
+    # the courtyard
+    ca_box(vs, v3(-63, CA_COURT - 0.4, -126), v3(63, CA_COURT + 0.1, 126), shade(stone, 0.6))
+    # the curtain walls: walk on top, merlons outward, courses on the face, slits
+    walls = [(v3(-67, 0, -131), v3(67, 0, -126)), (v3(-67, 0, 126), v3(67, 0, 131)), (v3(-67, 0, -131), v3(-62, 0, 131)), (v3(62, 0, -131), v3(67, 0, 131))]
+    loop w in walls:
+        ca_box(vs, vec3(w.0.x, f32(CA_COURT), w.0.z), vec3(w.1.x, f32(CA_WALK), w.1.z), stone)
+        ca_box(vs, vec3(w.0.x - 0.2, f32(CA_WALK - 0.3), w.0.z - 0.2), vec3(w.1.x + 0.2, f32(CA_WALK + 0.05), w.1.z + 0.2), shade(stone, 0.75))
+    loop k in 0..5:
+        y = CA_COURT + 3.0 + 3.4 * f64(k)
+        loop s in [-1.0, 1.0]:
+            beam(vs, v3(s * 67.05, y, -131), v3(s * 67.05, y, 131), 0.14, shade(stone, 0.72))
+            beam(vs, v3(-67, y, s * 131.05), v3(67, y, s * 131.05), 0.14, shade(stone, 0.72))
+    loop s in [-1.0, 1.0]:
+        ca_merlons(vs, v3(s * 66.4, CA_WALK, -112), v3(s * 66.4, CA_WALK, 112), v3(s * 0.0, 0, 0), stone)
+        ca_merlons(vs, v3(-48, CA_WALK, s * 130.4), v3(48, CA_WALK, s * 130.4), v3(0, 0, 0), stone)
+        loop k in 0..14:
+            z = -104.0 + 208.0 * f64(k) / 13.0
+            add_box(vs, v3(s * 67.08, -4.0, z), v3(0.1, 3.0, 0.6), DARK)
+    # (the gate, between the gatehouse's towers: its arch, the portcullis's bars; a gallery over it)
+    ca_box(vs, v3(-7, CA_COURT, -131.2), v3(7, 0.0, -130.9), DARK)
+    loop k in 0..7: ca_box(vs, v3(-6.0 + 2.0 * f64(k) - 0.2, CA_COURT, -131.4), v3(-6.0 + 2.0 * f64(k) + 0.2, 0.0, -131.2), iron)
+    loop k in 0..5: ca_box(vs, v3(-7, CA_COURT + 2.0 + 3.0 * f64(k), -131.4), v3(7, CA_COURT + 2.4 + 3.0 * f64(k), -131.2), iron)
+    ca_box(vs, v3(-8, 0, -133.5), v3(8, 8, -126), shade(stone, 0.95))
+    ca_merlons(vs, v3(-8, 8, -133.1), v3(8, 8, -133.1), v3(0, 0, 0), stone)
+    ca_banner(vs, v3(0, 7.5, -133.5), v3(0, 0, -1), 9.0, 16.0, team)
+    # the towers: four at the corners, round, hung under the plinth's corners; the wall towers;
+    # the gatehouse's; the back's
+    loop sx in [-1.0, 1.0]:
+        loop sz in [-1.0, 1.0]: ca_tower(vs, sx * 62.0, sz * 126.0, 13.0, -27.0, 18.0, team, true)
+        loop sz in [-1.0, 1.0]: ca_square(vs, sx * 65.0, sz * 42.0, 7.0, -22.0, 12.0, team)
+        ca_tower(vs, sx * 14.0, -130.0, 8.0, CA_COURT, 15.0, team)
+        ca_tower(vs, sx * 14.0, 130.0, 7.0, CA_COURT, 12.0, team)
+        # (banners down the long walls, between the towers)
+        loop sz in [-1.0, 1.0]: ca_banner(vs, v3(sx * 67.0, 2.5, sz * 84.0 + 12.0), v3(sx, 0, 0), 8.0, 20.0, team)
+    # the halls along the walls, inside; the boiler houses, their stacks
+    loop sx in [-1.0, 1.0]:
+        ca_hall(vs, v3(sx * 50.0, CA_COURT, -78.0), 18.0, 60.0, 12.0, 20.0, team)
+        ca_hall(vs, v3(sx * 50.0, CA_COURT, 92.0), 18.0, 50.0, 12.0, 20.0, team)
+    loop st in CA_STACKS:
+        ca_box(vs, v3(f64(st.x) - 7.0, CA_COURT, f64(st.z) - 6.0), v3(f64(st.x) + 7.0, CA_COURT + 9.0, f64(st.z) + 6.0), shade(stone, 0.8))
+        ca_box(vs, v3(f64(st.x) - 7.5, CA_COURT + 9.0, f64(st.z) - 6.5), v3(f64(st.x) + 7.5, CA_COURT + 9.8, f64(st.z) + 6.5), iron)
+        tube(vs, v3(f64(st.x), CA_COURT + 9.0, f64(st.z)), st, 2.4, iron, 12)
+        loop k in 0..5: tube(vs, v3(f64(st.x), CA_COURT + 13.0 + 7.0 * f64(k), f64(st.z)), v3(f64(st.x), CA_COURT + 13.8 + 7.0 * f64(k), f64(st.z)), 2.6, brass, 12)
+        tube(vs, st, st + v3(0, 1.2, 0), 3.0, iron, 12)
+    # the keep: its turrets, its roof's merlons, its bridge forward on it, its windows
+    ca_box(vs, v3(-22, CA_COURT, -13), v3(22, 30, 43), stone)
+    ca_box(vs, v3(-23, 26.5, -14), v3(23, 30, 44), shade(stone, 0.92))
+    ca_box(vs, v3(-23.2, 26.2, -14.2), v3(23.2, 26.6, 44.2), iron)
+    loop s in [-1.0, 1.0]:
+        ca_merlons(vs, v3(-17, 30, s * 28.0 + 15.0 + s * 0.6), v3(17, 30, s * 28.0 + 15.0 + s * 0.6), v3(0, 0, 0), stone)
+        ca_merlons(vs, v3(s * 22.6, 30, -8), v3(s * 22.6, 30, 38), v3(0, 0, 0), stone)
+    loop k in 0..4:
+        y = CA_COURT + 8.0 + 9.0 * f64(k)
+        loop j in 0..5:
+            x = -16.0 + 8.0 * f64(j)
+            window_at(vs, v3(x, y, -13.0), v3(0, 0, -1), 2.2, 4.0, shade(stone, 0.7))
+            window_at(vs, v3(x, y, 43.0), v3(0, 0, 1), 2.2, 4.0, shade(stone, 0.7))
+        loop j in 0..6:
+            z = -5.0 + 8.0 * f64(j)
+            window_at(vs, v3(-22.0, y, z), v3(-1, 0, 0), 2.2, 4.0, shade(stone, 0.7))
+            window_at(vs, v3(22.0, y, z), v3(1, 0, 0), 2.2, 4.0, shade(stone, 0.7))
+    loop sx in [-1.0, 1.0]:
+        loop sz in [-13.0, 43.0]: ca_tower(vs, sx * 22.0, sz, 5.0, -4.0, 36.0, team)
+    ca_banner(vs, v3(0, 25.5, -13.0), v3(0, 0, -1), 14.0, 26.0, team)
+    # (the bridge: a wheelhouse of iron and glass, its roof, a voice pipe and a wheel inside)
+    ca_box(vs, v3(-6, 30, -14), v3(6, 31, -6), iron)
+    loop k in 0..7:
+        x = -6.0 + 2.0 * f64(k)
+        beam(vs, v3(x, 31, -14), v3(x, 35, -14), 0.25, iron)
+    loop s in [-1.0, 1.0]:
+        beam(vs, v3(s * 6.0, 31, -14), v3(s * 6.0, 35, -14), 0.3, iron)
+        beam(vs, v3(s * 6.0, 31, -6), v3(s * 6.0, 35, -6), 0.3, iron)
+        add_box(vs, v3(s * 6.0, 33, -10), v3(0.1, 4, 8), rgb(0.35, 0.45, 0.5))
+    add_box(vs, v3(0, 33, -14), v3(12, 4, 0.1), rgb(0.35, 0.45, 0.5))
+    add_box(vs, v3(0, 34.5, -10), v3(12, 1, 8), iron)
+    ca_box(vs, v3(-6, 31, -6.1), v3(6, 34, -5.9), shade(stone, 0.8))
+    tube(vs, v3(0, 31, -12), v3(0, 32.4, -12), 0.15, brass, 6)
+    add_cylinder(vs, vec3(0, 0, 0), 0.8, 0.12, WOOD, 10, -1.0, translation(v3(0, 32.6, -12.2)) * rotation_x(PI / 2.0))
+    # the pylons up to the screws' hubs, a flag over each corner one
+    loop k in 0..4:
+        h = CA_ROTORS[k]
+        ca_pylon(vs, v3(f64(h.x), 18.0, f64(h.z)), h, 6.0, team)
+        tube(vs, h + v3(0, 2.0, 0), h + v3(0, 16.0, 0), 0.35, iron, 6)
+        add_flag(vs, h + v3(0, 4.0, 0), 12.0, 10.0, 6.0, team)
+    ca_pylon(vs, v3(0, 30, 15), CA_ROTORS[4], 12.0, team)
+    # the guns' pedestals (the belly guns hang in their casemates)
+    loop k in 0..CA_PIVOTS.len():
+        p = CA_PIVOTS[k]
+        if f64(p.y) < 0.0: continue
+        tube(vs, p - v3(0, 2.6, 0), p - v3(0, 0.3, 0), if k < 4: 0.7 else: 0.45, iron, 8)
+        add_cylinder(vs, p - v3(0, 2.6, 0), if k < 4: 1.6 else: 1.1, 0.4, iron, 10)
+    vs
+
+# a castle's screw: six broad blades of riveted iron, pitched, its tips in the side's color, in a
+# ring of iron round them (a duct), a brass hub; turning about y, its hub at the origin, r out
+make_ca_rotor = (team: int, r: f64) -> Vertex3D[]:
+    vs: Vertex3D[]
+    iron = ca_iron(team)
+    plate = shade(iron, 1.35)
+    tip = ca_cloth(team)
+    brass = rgb(0.7, 0.55, 0.25)
+    up = vec3(0, 1, 0)
+    loop b in 0..6:
+        a = TAU * f64(b) / 6.0
+        n = 6
+        loop j in 0..n:
+            r0 = 2.6 + (r - 2.6) * f64(j) / f64(n)
+            r1 = 2.6 + (r - 2.6) * f64(j + 1) / f64(n)
+            w0 = 0.2 * (1.0 - 0.4 * f64(j) / f64(n))
+            w1 = 0.2 * (1.0 - 0.4 * f64(j + 1) / f64(n))
+            p0 = 1.2 * (1.0 - 0.5 * f64(j) / f64(n))
+            p1 = 1.2 * (1.0 - 0.5 * f64(j + 1) / f64(n))
+            q = (rr: f64, da: f64, y: f64) -> vec3: v3(cos(a + da) * rr, y, sin(a + da) * rr)
+            col = if j == n - 1: tip else: if j % 2 == 0: plate else: shade(plate, 0.9)
+            sheet_tri(vs, q(r0, -w0, p0), q(r1, -w1, p1), q(r1, w1, -p1), up, col, shade(col, 0.7))
+            sheet_tri(vs, q(r0, -w0, p0), q(r1, w1, -p1), q(r0, w0, -p0), up, col, shade(col, 0.7))
+        beam(vs, v3(cos(a) * 2.6, 0, sin(a) * 2.6), v3(cos(a) * r, 0, sin(a) * r), 0.35, iron)
+    # (the duct round the tips, braced to the hub)
+    m = 48
+    loop k in 0..m:
+        a0 = TAU * f64(k) / f64(m)
+        a1 = TAU * f64(k + 1) / f64(m)
+        rr = r + 0.4
+        p = (a: f64, y: f64) -> vec3: v3(cos(a) * rr, y, sin(a) * rr)
+        col = if k % 8 < 4: iron else: shade(iron, 0.85)
+        sheet_tri(vs, p(a0, -1.4), p(a1, -1.4), p(a1, 1.4), v3(cos(a0), 0, sin(a0)), col, shade(col, 0.6))
+        sheet_tri(vs, p(a0, -1.4), p(a1, 1.4), p(a0, 1.4), v3(cos(a0), 0, sin(a0)), col, shade(col, 0.6))
+        beam(vs, p(a0, 1.5), p(a1, 1.5), 0.3, brass)
+    add_cylinder(vs, v3(0, -1.6, 0), 2.6, 3.2, brass, 14)
+    add_cylinder(vs, v3(0, 1.6, 0), 2.6, 1.2, iron, 14, 0.8)
+    vs
+
+# the castle's flak gun: a long barrel on a cradle, its breech, recoil cylinders and a shield;
+# its trunnions at the origin, aimed -z
+make_ca_flak = (team: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    grey = if team == 0: rgb(0.32, 0.34, 0.3) else: rgb(0.36, 0.38, 0.4)
+    dark = rgb(0.1, 0.1, 0.1)
+    add_box(vs, v3(0, 0, 0.6), v3(1.5, 1.4, 2.6), grey)
+    tube(vs, v3(0, 0.15, -0.6), v3(0, 0.15, -7.2), 0.3, grey, 10, 0.24)
+    tube(vs, v3(0, 0.15, -7.2), v3(0, 0.15, -7.7), 0.33, dark, 10)
+    loop s in [-1.0, 1.0]:
+        tube(vs, v3(s * 0.38, -0.25, 0.4), v3(s * 0.38, -0.25, -2.6), 0.16, shade(grey, 0.8), 8)
+        add_box(vs, v3(s * 0.9, -0.2, 0.0), v3(0.25, 1.6, 1.0), shade(grey, 0.85))
+    add_box(vs, v3(0, 0.5, -1.4), v3(3.2, 2.4, 0.12), shade(grey, 0.9))
+    add_box(vs, v3(0, 0.15, 2.1), v3(0.9, 0.9, 0.6), dark)
+    vs
+
+# what the castle stands on, parked: stone piers under its plinth, down past any dip in the
+# ground under it (left there when it lifts off)
+make_ca_footings = () -> Mesh:
+    vs: Vertex3D[]
+    stone = rgb(0.5, 0.47, 0.42)
+    wood = rgb(0.42, 0.3, 0.18)
+    loop x in [-42.0, 0.0, 42.0]:
+        loop k in 0..5:
+            z = -100.0 + 50.0 * f64(k)
+            ca_box(vs, v3(x - 5.0, CA_BOTTOM - 34.0, z - 5.0), v3(x + 5.0, CA_BOTTOM - 0.1, z + 5.0), shade(stone, 0.9 + 0.04 * f64(k % 3)))
+            ca_box(vs, v3(x - 6.0, CA_BOTTOM - 1.4, z - 6.0), v3(x + 6.0, CA_BOTTOM - 0.1, z + 6.0), wood)
+    custom_mesh(vs)
+
+# (the drawbridge: a plank deck 1 long (along -z from its hinge at the origin), 10 wide, scaled to its length)
+make_ca_bridge = () -> Mesh:
+    vs: Vertex3D[]
+    wood = rgb(0.45, 0.32, 0.2)
+    add_box(vs, v3(0, -0.25, -0.5), v3(10, 0.5, 1), wood)
+    loop s in [-1.0, 1.0]: add_box(vs, v3(s * 5.0, 0.05, -0.5), v3(0.4, 0.4, 1), rgb(0.2, 0.2, 0.21))
+    custom_mesh(vs)
+
+ca_rotor_mesh = (team: int, k: int) -> Mesh: _once("ca rotor" + str(team) + str(k), (): custom_mesh(make_ca_rotor(team, CA_ROTOR_R[k])))
+ca_flak_mesh = (team: int) -> Mesh: _once("ca flak" + str(team), (): custom_mesh(make_ca_flak(team)))
+ca_footings_mesh = () -> Mesh: _once("ca footings", make_ca_footings)
+ca_bridge_mesh = () -> Mesh: _once("ca bridge", make_ca_bridge)
+
 craft_vertices = (kind: int, team: int, badge: int, crew: int = DV_CREW) -> Vertex3D[]:
     if kind == SCOUT: return if team == 0: make_parasol(badge) else: make_sesquiplane(badge)
     if kind == FIGHTER: return make_fighter(team, badge)
@@ -5398,6 +5749,7 @@ craft_vertices = (kind: int, team: int, badge: int, crew: int = DV_CREW) -> Vert
     if kind == CARCOPTER: return make_carcopter(team)
     if kind == DRONE: return make_drone(team)
     if kind == SCREW: return make_little_screw(team, crew)
+    if kind == CASTLE: return make_castle(team)
     make_zeppelin(team)
 
 # each craft with each insignia, made when first asked for (bombers and airships have none)
@@ -5416,7 +5768,7 @@ craft_triangles = (kind: int, team: int, badge: int) -> int: craft_vertices(kind
 
 # each propeller: where its hub is (xyz) and how long a blade is (w)
 props = (kind: int, team: int) -> vec4[]:
-    if kind == BALLOON or kind == ROCKETEER or kind == ORNITHOPTER or kind == DAVINCI or kind == CARCOPTER or kind == CAT or kind == SCREW: return []
+    if kind == BALLOON or kind == ROCKETEER or kind == ORNITHOPTER or kind == DAVINCI or kind == CARCOPTER or kind == CAT or kind == SCREW or kind == CASTLE: return []
     if kind == DRONE: return [vec4(0, 0, -0.95, 0.42)]
     if kind == SCOUT: return [vec4(0, 0, -2.75, 1.1)]
     if kind == FIGHTER: return [vec4(0, 0.05, -3.02, 1.2)]

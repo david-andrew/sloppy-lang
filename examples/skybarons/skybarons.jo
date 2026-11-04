@@ -73,7 +73,7 @@ listed_kinds = (m: int) -> int[]: [0..CHOOSABLE).filter((k): MODE_CAN[m] & (1 <<
 # what craft j is called: its kind, a rocketeer seen as a witch so called
 kind_name = (g: Game, j: int) -> str: if g.crafts[j].team == GOLD: "golden cat" else: if is_witch(g, j): "witch" else: KIND_NAMES[g.crafts[j].kind]
 # (more than one of a kind)
-kind_plural = (k: int) -> str: if ends_with(KIND_NAMES[k], "s"): KIND_NAMES[k] + "es" else: KIND_NAMES[k] + "s"
+kind_plural = (k: int) -> str: if k == CASTLE: "Himmelsfesten" else: if ends_with(KIND_NAMES[k], "s"): KIND_NAMES[k] + "es" else: KIND_NAMES[k] + "s"
 
 # (a witch's broom's flame, and its embers: her side's red or blue)
 witch_flame = (team: int) -> vec4: if team == 0: rgb(1.0, 0.25, 0.15) else: rgb(0.3, 0.55, 1.0)
@@ -90,7 +90,10 @@ is_witch = (g: Game, i: int) -> bool:
 
 SEAT_NAMES = [["pilot"], ["pilot"], ["pilot", "nose gun", "back gun"], ["pilot", "top gun, fore", "top gun, aft", "gondola gun", "tail gun"],
               ["pilot", "nose gun", "top gun, fore", "top gun, aft", "tail gun", "belly gun", "left wing gun", "right wing gun"],
-              ["left gun and burner", "right gun", "back gun"], ["rocketeer"], ["pilot"], ["pilot", "bow ballista", "port ballista", "starboard ballista", "stern ballista"], ["pilot", "tail gun and drones"], ["cat"], ["drone"], ["pilot", "swivel gun"]]
+              ["left gun and burner", "right gun", "back gun"], ["rocketeer"], ["pilot"], ["pilot", "bow ballista", "port ballista", "starboard ballista", "stern ballista"], ["pilot", "tail gun and drones"], ["cat"], ["drone"], ["pilot", "swivel gun"],
+              ["pilot", "flak, bow port", "flak, bow stbd", "flak, stern port", "flak, stern stbd",
+               "twins, gate port", "twins, gate stbd", "twins, port fore", "twins, stbd fore", "twins, port aft", "twins, stbd aft", "twins, rear port", "twins, rear stbd",
+               "mg, port fore", "mg, stbd fore", "mg, port aft", "mg, stbd aft", "mg, front port", "mg, front stbd", "mg, rear port", "mg, rear stbd"]]
 
 # ---------------- playing: with friends, or against the computer ----------------
 enum Mode: menu, online, practice
@@ -168,7 +171,7 @@ if let saved = load_data("settings"):
     if w.len() >= 17:
         settings.crafts = to_int(w[16]) ?? DEFAULT_CRAFTS
         # (saved with every kind there was then: what a fight has now unless one says)
-        if settings.crafts == 127 or settings.crafts == 255 or settings.crafts == ALL_CRAFTS: settings.crafts = DEFAULT_CRAFTS
+        if settings.crafts == 127 or settings.crafts == 255 or settings.crafts == 6143 or settings.crafts == ALL_CRAFTS: settings.crafts = DEFAULT_CRAFTS
         settings.crafts = settings.crafts & ALL_CRAFTS
     if w.len() >= 19:
         settings.markers = w[17] != "0"
@@ -1489,6 +1492,7 @@ cam_back = (kind: int) -> vec2:
     if kind == ROCKETEER: return vec2(6, 1.6)
     if kind == ORNITHOPTER: return vec2(13, 3.5)
     if kind == DAVINCI: return vec2(115, 34)
+    if kind == CASTLE: return vec2(340, 110)
     if kind == CARCOPTER: return vec2(15, 5)
     if kind == SCREW: return vec2(17, 6)
     if kind == DRONE: return vec2(8, 2)
@@ -1612,6 +1616,7 @@ gun_reach = (kind: int, seat: int) -> f64:
     if kind == DAVINCI: return 3.2
     if kind == CARCOPTER: return 2.0
     if kind == SCREW: return 1.4
+    if kind == CASTLE: return if KINDS[kind].seats[seat].weapon == FLAKGUN: 8.5 else: 3.5
     1.6
 
 # (where a rocketeer's fire comes from: its nozzles, a witch's bristles)
@@ -1782,6 +1787,7 @@ treb_ready = (i: int) -> bool: elapsed() - (thrown_at.get(i) ?? -100.0) > TREB_R
 ring_lit: {int: f64} = {}
 # (the galleasses' cradles on the ground, by craft: where each one stood)
 cradles: {int: mat4} = {}
+footings: {int: mat4} = {}      # (the flying castles' piers: where each last stood, the same)
 cradle_tick = 0
 landed_for: f64[]               # (and how long each craft has stood still on the ground, s)
 ball_rot: vec4[]
@@ -1941,10 +1947,13 @@ draw = ():
     if g.balls.len() > 0: draw_balls(g)
     # (the galleasses' cradles: where each last stood, left there when it lifted off; a new fight,
     # none yet)
-    global cradle_tick, cradles
-    if g.tick < cradle_tick: cradles = {}
+    global cradle_tick, cradles, footings
+    if g.tick < cradle_tick:
+        cradles = {}
+        footings = {}
     cradle_tick = g.tick
     loop i, cm in cradles: draw_mesh(models.dv_cradle_mesh(), cm, specular = 0.05)
+    loop i, cm in footings: draw_mesh(models.ca_footings_mesh(), cm, specular = 0.05)
     # the crafts: whole, falling in flames, or a wreck; their propellers turning, their guns
     loop prop_turn.len() < g.crafts.len(): prop_turn.push(0.0)
     loop i in 0.. and c in g.crafts:
@@ -1952,8 +1961,16 @@ draw = ():
         # (a galleass come down and stopped for a second, parked: its cradle under it; not one low
         # over the ground, digging)
         loop landed_for.len() < g.crafts.len(): landed_for.push(0.0)
-        landed_for[i] = if c.kind == DAVINCI and c.landed and c.gone == 0 and c.down == 0 and c.vel == vec3(0, 0, 0): landed_for[i] + frame_time() else: 0.0
-        if landed_for[i] > 1.0 or (g.tick < 60 and landed_for[i] > 0.0): cradles[i] = translation(c.pos) * quat_to_mat4(c.rot)
+        landed_for[i] = if (c.kind == DAVINCI or c.kind == CASTLE) and c.landed and c.gone == 0 and c.down == 0 and c.vel == vec3(0, 0, 0): landed_for[i] + frame_time() else: 0.0
+        if landed_for[i] > 1.0 or (g.tick < 60 and landed_for[i] > 0.0):
+            if c.kind == CASTLE: footings[i] = translation(c.pos) * quat_to_mat4(c.rot)
+            else: cradles[i] = translation(c.pos) * quat_to_mat4(c.rot)
+        # (a flying castle down: its ruin, broken and burnt, where it fell, its towers' stumps)
+        if c.gone > 0 and c.kind == CASTLE:
+            gy = f32(max(ground(f64(c.pos.x), f64(c.pos.z)), 0.0))
+            yaw = atan2(-f64(fwd_of(c).x), -f64(fwd_of(c).z))
+            draw_mesh(models.craft_mesh(CASTLE, c.team, 0), translation(vec3(c.pos.x, gy + 8.0, c.pos.z)) * rotation_y(yaw) * rotation_z(0.07) * rotation_x(-0.04) * scaling(vec3(1.0, 0.5, 1.0)), rgb(0.3, 0.26, 0.23), specular = 0.0)
+            continue
         if c.gone > 0:
             if c.vel == vec3(0, 0, 0) and ground(f64(c.pos.x), f64(c.pos.z)) > 0.0:
                 gy = f32(ground(f64(c.pos.x), f64(c.pos.z)))
@@ -2062,13 +2079,36 @@ draw = ():
             ro = models.cc_rotor_step(ro, spin, c.landed or c.down > 0, frame_time())
             rotors[i] = ro
             if view.rotor > 0.0: models.cc_rotor_draw(c.team, m, ro, prop_turn[i] * 0.55, see(vec4(1, 1, 1, 1), view.rotor))
+        # (the flying castle: its five screws turning, slower the bigger, with the throttle; its
+        # guns where they aim (its flak guns, its twin guns, its machine guns and its own automatic
+        # ones), one's own not drawn; parked, its drawbridge down from the sally port to the ground)
+        if c.kind == CASTLE:
+            turn = prop_turn[i] * 0.05
+            if view.rotor > 0.0:
+                loop k in 0..models.CA_ROTORS.len(): draw_mesh(models.ca_rotor_mesh(c.team, k), m * translation(models.CA_ROTORS[k]) * rotation_y(-turn * (if k == 4: 0.75 else: 1.0) * (if k % 2 == 0: 1.0 else: -1.0) - f64(k) * 0.4), see(vec4(1, 1, 1, 1), view.rotor), specular = 0.15)
+            if f64(length(c.pos - cam_pos)) < 2500.0:
+                st = KINDS[c.kind].seats
+                loop s in 1..c.aims.len():
+                    if i == my_craft() and my().seat == s and mode != .menu: continue
+                    at = if s < st.len(): st[s].at else: CASTLE_AUTOS[s - st.len()].at
+                    wp = if s < st.len(): st[s].weapon else: GUN
+                    gm = translation(point_of(c, at)) * quat_to_mat4(quat_facing(c.aims[s]))
+                    if wp == FLAKGUN: draw_mesh(models.ca_flak_mesh(c.team), gm, specular = 0.3)
+                    else: draw_mesh(models.mg_gun_mesh(), gm * scaling(vec3(if wp == TWIN: 2.2 else: 1.6)), specular = 0.3)
+                    if s < st.len() and c.seats[s] >= 0: draw_gunner(g.people[c.seats[s]].team, point_of(c, at) - vec3(0, 0.25, 0), c.aims[s], if wp == FLAKGUN: 1.6 else: 1.3)
+            if landed_for[i] > 1.0:
+                hinge = point_of(c, models.CA_SILL)
+                foot = point_of(c, CASTLE_GATE)
+                foot.y = f32(max(ground(f64(foot.x), f64(foot.z)), 0.0))
+                d = foot - hinge
+                draw_mesh(models.ca_bridge_mesh(), translation(hinge) * facing(normalize(d)) * scaling(vec3(1, 1, length(d))), specular = 0.05)
         if c.kind == BALLOON and f64(c.vel.y) > 0.3: draw_mesh(flame, m * translation(models.BURNER) * rotation_x(-PI / 2.0) * scaling(vec3(1.4, 1.4, 1.4)), emissive = 0.9, specular = 0.0, cast_shadow = false)
         loop k in 0.. and h in models.props(c.kind, c.team):
             r = f64(h.w)
             if view.props > 0.0: draw_mesh(prop, m * translation(h.xyz) * rotation_z(prop_turn[i] + f64(k) * 0.7) * scaling(vec3(f32(r), f32(r), f32(r))), see(vec4(1, 1, 1, 1), view.props), specular = 0.1)
         st = KINDS[c.kind].seats
         loop s in 1..st.len():
-            if s >= c.aims.len(): continue
+            if s >= c.aims.len() or c.kind == CASTLE: continue
             gat = point_of(c, st[s].at)
             if i == my_craft() and my().seat == s and mode != .menu: continue
             if st[s].weapon != BALLISTA and st[s].weapon != SWIVEL: draw_mesh(turret, translation(gat) * quat_to_mat4(quat_facing(c.aims[s])), specular = 0.3)
@@ -2160,6 +2200,17 @@ effects = (dt: f64):
             tail = c.pos + fwd_of(c) * f32(f64(k.half.z) * 0.6)
             # (the golden cat: frail, not smoking for it)
             share = if c.team == GOLD: f64(c.health) / f64(GOLD_HEALTH) else: f64(c.health) / f64(k.health)
+            # (the flying castle: coal smoke from its boilers' stacks, the more the more they work;
+            # hurt, smoke and fire from a tower or a hall, one after another)
+            if c.kind == CASTLE:
+                working = c.down == 0 and (pilot_of(c) >= 0 or not c.landed)
+                if working and g.tick % 2 == 0:
+                    loop st in models.CA_STACKS: emit(smoke, point_of(c, st + vec3(0, 1.5, 0)), 1, 2.5, rgba(0.16, 0.15, 0.15, 0.75), 4.0 + 3.0 * c.throttle, 4.5)
+                if share < 0.65 or c.down > 0:
+                    spot = point_of(c, models.CA_PIVOTS[(g.tick / 23 + abs(int(c.pos.x))) % models.CA_PIVOTS.len()])
+                    emit(smoke, spot, if share < 0.3 or c.down > 0: 3 else: 1, 6.0, rgba(0.22, 0.21, 0.2, 0.75), 5.0, 14.0)
+                    if share < 0.3 or c.down > 0: emit(fire, spot, 4, 4.0, rgb(1.0, 0.55, 0.15), 0.6, 6.0)
+                continue
             if share < 0.65 or c.down > 0:
                 n = if c.down > 0 or share < 0.3: 3 else: 1
                 emit(smoke, tail, n, 2.0, rgba(0.25, 0.24, 0.23, 0.7), 3.0, if c.kind == ZEPPELIN: 14.0 else: 4.0)
@@ -2578,7 +2629,7 @@ sounds = ():
             set_pan(engine_ids[v], 0.0)
         else: move_sound(engine_ids[v], c.pos, loud, if c.kind >= BOMBER: 1500.0 else: 900.0)
         if c.kind == CAT: loud *= 0.25
-        base = if c.kind == CAT: 2.4 else: if c.kind == ROCKETEER: 1.5 else: if c.kind == DRONE: 1.7 else: if c.kind == DAVINCI: 0.3 else: if c.kind == SCREW: 0.5 else: if c.kind == CARCOPTER: 0.6 else: if c.kind == ORNITHOPTER: 1.15 else: if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
+        base = if c.kind == CAT: 2.4 else: if c.kind == ROCKETEER: 1.5 else: if c.kind == DRONE: 1.7 else: if c.kind == DAVINCI: 0.3 else: if c.kind == CASTLE: 0.18 else: if c.kind == SCREW: 0.5 else: if c.kind == CARCOPTER: 0.6 else: if c.kind == ORNITHOPTER: 1.15 else: if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
         set_pitch(engine_ids[v], base + 0.45 * c.throttle + f64(length(c.vel)) / 200.0)
     # (the ornithoppers' pedals: a squeak each stroke, two to a turn of the cranks, as they turn)
     loop i in 0.. and c in g.crafts:
