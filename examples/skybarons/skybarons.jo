@@ -180,8 +180,8 @@ if let saved = load_data("settings"):
     if settings.thunderdome == 0: settings.thunderdome = THUNDERDOME_CRAFTS
     if w.len() >= 21: settings.heli_follow = w[20] == "1"
     if w.len() >= 22: settings.balls = (to_int(w[21]) ?? BROOMS_CRAFTS) & ALL_CRAFTS
-    # (the old choice, the Thunderdome's, kept as saved: now witches and balloons; and no cat to fly)
-    if settings.balls == THUNDERDOME_CRAFTS: settings.balls = BROOMS_CRAFTS
+    # (the old choice, the Thunderdome's, kept as saved: now witches, bikes and balloons; and no cat to fly)
+    if settings.balls == THUNDERDOME_CRAFTS or settings.balls == (1 << ROCKETEER) | (1 << BALLOON): settings.balls = BROOMS_CRAFTS
     settings.balls = settings.balls & MODE_CAN[BROOMS]
     if settings.balls == 0: settings.balls = BROOMS_CRAFTS
     if w.len() >= 23: settings.balls_ground = w[22] == "1"
@@ -2384,16 +2384,17 @@ effects = (dt: f64):
                 play_at(snd_boom, rg.at, settings.sound * 0.4, 3000.0)
         if not in_fight: continue
         # (said large when it is this one's doing, smaller for the rest of the fight)
-        # (the golden cat: out, and caught or shot down; nothing else said of it)
+        # (the golden cat: out, and shot down; nothing else said of it)
         if b.kind == GOLD_OUT:
             gp = gold_person(g)
-            if gp == me(): say("you're out: stay free till the whistle!", COLORS[GOLD])
-            else if gp >= 0: say("the golden cat is out, {call(g, gp)} flying it: catch it or shoot it down to win!", COLORS[GOLD])
-            else: say("the golden cat is out: catch it or shoot it down to win!", COLORS[GOLD])
+            # (the cat's own: its banner says it, while it is out)
+            if gp == me(): pass
+            else if gp >= 0: say("the golden cat is out, {call(g, gp)} flying it: shoot it down to win!", COLORS[GOLD])
+            else: say("the golden cat is out: shoot it down to win!", COLORS[GOLD])
         else if b.kind == GOLD_WON and b.by >= 0:
             side = g.people[b.by].team
             who = if b.by == me(): "you" else: call(g, b.by)
-            how = if downed_at(g, b.who, b.tick): "shot down" else: "caught"
+            how = "shot down"
             say("{who} {how} {if b.who == myc: "you" else: "the golden cat"}: {TEAMS[side]} wins!", COLORS[GOLD])
         else if b.kind == KILLED and b.who == me() and g.people[b.who].team == GOLD:
             if g.winner < 0: say("you crashed: out again in {GOLD_AGAIN_PLAYER / 60} s", COLORS[GOLD])
@@ -2408,7 +2409,7 @@ effects = (dt: f64):
             # (a ram that brought it down is said with that (SHOT_DOWN), once: here only one it lived through)
             if not downed_at(g, b.who, b.tick):
                 if b.by == me(): say("you rammed {call_craft(g, b.who)}", COLORS[1 - g.crafts[b.who].team], small = true)
-                else if b.who == myc: say("rammed by {TEAMS[1 - g.crafts[b.who].team]}'s cat!", rgb(1, 0.5, 0.4))
+                else if b.who == myc: say(if gold_ram(g, b): "rammed by the golden cat!" else: "rammed by {TEAMS[1 - g.crafts[b.who].team]}'s cat!", rgb(1, 0.5, 0.4))
         else if b.kind == GOAL and b.who >= 0 and b.who < g.balls.len() and rings().len() > 0:
             rg = rings()[ring_near(b.pos)]
             side = 1 - rg.team
@@ -2428,7 +2429,7 @@ effects = (dt: f64):
             rammed = rammed_at(g, b.who, b.tick)
             how = if rammed: "rammed down" else: if burnt_at(g, b.who, b.tick): "burnt down" else: "shot down"
             if b.by == me(): say("you {how} {call_craft(g, b.who)}", COLORS[1 - team])
-            else if b.who == myc: say("{how}{if rammed: " by " + TEAMS[1 - team] + "'s cat" else: if b.by >= 0: " by " + call(g, b.by) else: ""}: {if touch_input(): "In/Out" else: "T"} to bail out", COLORS[1 - team])
+            else if b.who == myc: say("{how}{if rammed and gold_rammed_at(g, b.who, b.tick): " by the golden cat" else: if rammed: " by " + TEAMS[1 - team] + "'s cat" else: if b.by >= 0: " by " + call(g, b.by) else: ""}: {if touch_input(): "In/Out" else: "T"} to bail out", COLORS[1 - team])
             else: say("{if b.by >= 0: call(g, b.by) else: "flak"} {how} {call_craft(g, b.who)}", with_alpha(COLORS[1 - team], 0.75), small = true)
         else if b.kind == CRASHED: say(if b.who == myc: "you crashed" else: "{call_craft(g, b.who)} crashed", with_alpha(COLORS[1 - g.crafts[b.who].team], 0.75), small = b.who != myc)
         else if b.kind == TORN:
@@ -2547,6 +2548,12 @@ rammed_at = (g: Game, j: int, t: int) -> bool:
 burnt_at = (g: Game, j: int, t: int) -> bool:
     loop b in g.booms:
         if b.tick == t and b.kind == POTTED and craft_distance(g.crafts[j], b.pos) < POT_BLAST: return true
+    false
+# (a ram the golden cat's: it is where the ram was)
+gold_ram = (g: Game, b: Boom) -> bool: g.gold >= 0 and g.gold < g.crafts.len() and g.crafts[g.gold].team == GOLD and f64(length(g.crafts[g.gold].pos - b.pos)) < 30.0
+gold_rammed_at = (g: Game, j: int, t: int) -> bool:
+    loop b in g.booms:
+        if b.tick == t and b.kind == RAMMED and b.who == j and gold_ram(g, b): return true
     false
 downed_at = (g: Game, j: int, t: int) -> bool:
     loop b in g.booms:
@@ -2949,7 +2956,7 @@ draw_hud = (g: Game):
         r = Rect(mid().x - 230, alert_at().y - 40, 460, 80)
         panel(r)
         text_centered(if late: "The whistle has gone: the balls decide it" else: "In your loft: out in {(p.timer + 59) / 60} s", vec2(mid().x, alert_at().y - 10), T_HEAD, COLORS[GOLD])
-        text_centered("then stay free till the whistle: nothing may touch you", vec2(mid().x, alert_at().y + 22), T_SMALL, INK_DIM)
+        text_centered("then stay free till the whistle: don't get shot down, and ram who comes near", vec2(mid().x, alert_at().y + 22), T_SMALL, INK_DIM)
     else if p.state == DEAD and g.winner < 0:
         r = Rect(mid().x - 130, alert_at().y - 34, 260, 68)
         panel(r)
@@ -3454,9 +3461,9 @@ goal_text = (g: Game, team: int) -> str:
         return if late and g.winner < 0: "level at the time: the next points win" else: "shoot their targets; shoot down their cat for {CAT_POINTS}. First to {g.rules.win}"
     if m == BROOMS:
         late = g.rules.time_limit > 0 and g.tick >= g.rules.time_limit * 3600
-        if team == GOLD: return if late and g.winner < 0: "the whistle has gone: the balls decide it" else: "anything that touches you or shoots you down wins it"
-        if gold_person(g) >= 0 and not late: return "balls through their rings, first to {g.rules.win}; catch the golden cat before the whistle"
-        return if late and g.winner < 0: "level at the time: the next goal wins" else: "balls through their rings, first to {g.rules.win}; the golden cat caught or shot down wins"
+        if team == GOLD: return if late and g.winner < 0: "the whistle has gone: the balls decide it" else: "whoever shoots you down wins it; ram them"
+        if gold_person(g) >= 0 and not late: return "balls through their rings, first to {g.rules.win}; shoot down the golden cat before the whistle"
+        return if late and g.winner < 0: "level at the time: the next goal wins" else: "balls through their rings, first to {g.rules.win}; the golden cat shot down wins"
     if m == FLAG: return "flags home: first to {g.rules.win} (yours must be home to score)"
     if m == FLAG_RAID: return if team == att: "take their flag to your field: {g.rules.win} to win" else: "keep your flag: {TEAMS[att]} needs {g.rules.win}"
     if m == BASES: return "destroy their hangars, fuel and command post"
@@ -3925,7 +3932,7 @@ FIGHT_ABOUT = [
     "The attackers take the defenders' flag home to their field, again and again; the defenders hold it.",
     "Each side's bombers go for the other's factory.",
     "Through their gun towers' fire, shoot the other side's targets ({TARGET_POINTS} points; they come back) and shoot down its cat ({CAT_POINTS}; it has no guns, it rams). Shoot down their cat and you'll likely win.",
-    "Knock balls through the other side's rings: great ones {BALL_POINTS[BIG_BALL]}, middling {BALL_POINTS[MID_BALL]}, small {BALL_POINTS[SMALL_BALL]}; carry a wicker one through ({BALL_POINTS[CARRY_BALL]}; hit hard, you drop it). Catch or shoot down the golden cat to win; or be the golden cat, Team Cat, and stay free till the whistle.",
+    "Knock balls through the other side's rings: great {BALL_POINTS[BIG_BALL]}, middling {BALL_POINTS[MID_BALL]}, small {BALL_POINTS[SMALL_BALL]}; carry a wicker one through ({BALL_POINTS[CARRY_BALL]}; hit hard, you drop it). Shoot down the golden cat to win, or be it and stay free.",
 ]
 
 # the host's choices of the fight: which, who attacks, what wins it, how long, how it starts
