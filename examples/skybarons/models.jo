@@ -3,7 +3,7 @@
 # where it balances). Kinds: 0 scout, 1 fighter, 2 bomber, 3 zeppelin, 4 ultra bomber, 5 balloon,
 # 6 rocketeer (or, as one chooses, a witch on a broom), 7 ornithopter, 8 da Vinci's galleass, 9 carcopter,
 # 10 the cat, 11 drone, 12 da Vinci's screw (the little one, da Vinci's own size), 13 the flying
-# castle. Teams: 0 Red, 1 Blue.
+# castle, 14 the flying carrier. Teams: 0 Red, 1 Blue.
 # A badge is a player's insignia: its place in BADGES.
 #
 #   craft_mesh(kind, team, badge)   each craft, without its propellers
@@ -88,6 +88,7 @@ const CAT = 10
 const DRONE = 11
 const SCREW = 12
 const CASTLE = 13
+const CARRIER = 14
 
 BADGES = ["none", "white bands", "yellow nose", "chevron", "star", "skull", "lightning", "yellow tail", "hat in the ring", "shark mouth", "Nungesser's heart", "Voss's face", "stork", "ace of spades"]
 
@@ -6109,6 +6110,290 @@ ca_flak_mesh = (team: int) -> Mesh: _once("ca flak" + str(team), (): custom_mesh
 ca_footings_mesh = () -> Mesh: _once("ca footings", make_ca_footings)
 ca_bridge_mesh = () -> Mesh: _once("ca bridge", make_ca_bridge)
 
+# ---------------- the flying carrier, the Falknerin (after Pétin's airship of 1850) ----------------
+# A long open frame of riveted lattice girders (as the great iron halls and towers of the day),
+# decked in lacquered teak, gilt rails and finials, two domed kiosks of green copper either side
+# midships; four gored gasbags in netting over it, painted ivory and its side's color with a gilt
+# belt and bunting; a cone at its bow, the pilot's glazed gondola under it; Pétin's planes out
+# either side, striped canvas on lattice; four steam screws on outriggers; sixteen trapezes in two
+# rows under the frame; the landing deck at its stern, its wires, catch net and crane. Its guns
+# (sim.jo's seats) drawn apart, aimed.
+const FK_LONG = 75.0                # (the frame: from its bow to its stern, and half across)
+const FK_HALF = 32.0
+const FK_TOP = 1.5
+const FK_BOT = -3.0
+FK_BAGS = [-55.0, -18.5, 18.5, 55.0]
+const FK_BAG_Y = 21.0
+const FK_BAG_R = 16.0
+FK_HOOK_X = [-17.0, 17.0]
+FK_HOOK_Z = [-63.0, -45.0, -27.0, -9.0, 9.0, 27.0, 45.0, 63.0]
+FK_SCREWS = [vec3(-38, -2, -62), vec3(38, -2, -62), vec3(-38, -2, 62), vec3(38, -2, 62)]
+const FK_SCREW_R = 6.5
+FK_STACKS = [vec3(-23, 13.5, 66), vec3(23, 13.5, 66)]
+const FK_GEAR = 30.0
+IVORY = rgb(0.88, 0.83, 0.7)
+GILT = rgb(0.9, 0.68, 0.22)
+LACQUER = rgb(0.38, 0.17, 0.1)
+TEAK = rgb(0.52, 0.34, 0.19)
+FK_IRON = rgb(0.17, 0.19, 0.17)
+VERDIGRIS = rgb(0.36, 0.58, 0.5)
+fk_accent = (team: int) -> vec4: if team == 0: rgb(0.62, 0.1, 0.12) else: rgb(0.16, 0.27, 0.62)
+
+# (a girder from a to b, its lattice: two flanges dz apart up and down, zigzag webbing between)
+fk_lattice = (vs: mut Vertex3D[], a: vec3, b: vec3, h: f64, t: f64, color: vec4, bays: int):
+    up = v3(0, h / 2.0, 0)
+    beam(vs, a + up, b + up, t, color)
+    beam(vs, a - up, b - up, t, color)
+    loop k in 0..bays:
+        p = lerp(a, b, f32(f64(k) / f64(bays)))
+        q = lerp(a, b, f32(f64(k + 1) / f64(bays)))
+        m = (p + q) * 0.5
+        beam(vs, p - up, m + up, t * 0.45, color)
+        beam(vs, m + up, q - up, t * 0.45, color)
+
+# (a row of little pennants on a line from a to b, sagging, in turn the side's color, gilt, ivory)
+fk_bunting = (vs: mut Vertex3D[], a: vec3, b: vec3, sag: f64, team: int):
+    n = max(int(f64(length(b - a)) / 2.2), 2)
+    at = (t: f64) -> vec3: lerp(a, b, f32(t)) - v3(0, sag * 4.0 * t * (1.0 - t), 0)
+    loop k in 0..n:
+        p = at(f64(k) / f64(n))
+        q = at(f64(k + 1) / f64(n))
+        beam(vs, p, q, 0.05, rgb(0.3, 0.27, 0.22))
+        col = [fk_accent(team), GILT, IVORY][k % 3]
+        sheet_tri(vs, p, q, (p + q) * 0.5 - v3(0, 1.2, 0), cross(q - p, vec3(0, 1, 0)), col, shade(col, 0.75))
+
+# (a gasbag's cell, band i up from the bottom, gore j round: plain ivory under its belt, striped
+# ivory and the side's color over it, gilt at the belt and the crown)
+fk_gore = (team: int, i: int, j: int) -> vec4:
+    if i == 6 or i == 11: return GILT
+    if i < 6: return shade(IVORY, if j % 2 == 0: 1.0 else: 0.95)
+    if j % 2 == 0: fk_accent(team) else: IVORY
+
+# a gasbag, its middle at the origin: 24 gores (fk_gore), a scalloped valance hung from its gilt
+# belt, its netting, a gilt crown; its side's arms on a medallion either flank over the belt
+make_fk_bag = (team: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    acc = fk_accent(team)
+    r = FK_BAG_R
+    globe(vs, r, 12, 24, (i: int, j: int): fk_gore(team, i, j))
+    loop k in 0..24:
+        a0 = TAU * f64(k) / 24.0
+        a1 = TAU * f64(k + 1) / 24.0
+        rr = r + 0.12
+        col = if k % 2 == 0: acc else: GILT
+        p = v3(cos(a0) * rr, 0, sin(a0) * rr)
+        q = v3(cos(a1) * rr, 0, sin(a1) * rr)
+        m = (a0 + a1) / 2.0
+        lo = v3(cos(m) * cos(0.2) * rr, -sin(0.2) * rr, sin(m) * cos(0.2) * rr)
+        sheet_tri(vs, p, q, lo, v3(cos(m), 0, sin(m)), col, shade(col, 0.7))
+    net = rgb(0.32, 0.28, 0.22)
+    loop k in 0..12:
+        a = TAU * f64(k) / 12.0
+        seam(vs, v3(cos(a), 0, sin(a)), vec3(0, 1, 0), r + 0.08, 0.09, net, 28)
+    loop y in [-0.6, -0.25, 0.55]: seam(vs, vec3(1, 0, 0), vec3(0, 0, 1), sqrt(r * r * (1.0 - y * y)) + 0.1, 0.08, net, 32)
+    tube(vs, v3(0, r - 0.4, 0), v3(0, r + 1.4, 0), 0.9, GILT, 10, 0.25)
+    add_sphere(vs, v3(0, r + 1.8, 0), 0.5, GILT, 8, 5)
+    a = 0.55
+    loop s in [-1.0, 1.0]:
+        n = v3(s * cos(a), sin(a), 0)
+        v = v3(-s * sin(a), cos(a), 0)
+        u = v3(0, 0, -s)
+        at = n * f32(r + 0.2)
+        ring: vec2[] = []
+        loop k in 0..12: ring.push(vec2(f32(cos(TAU * f64(k) / 12.0) * 4.2), f32(sin(TAU * f64(k) / 12.0) * 4.2)))
+        mark(vs, [(disc2(vec2(0, 0), 4.6, 24), GILT), (disc2(vec2(0, 0), 4.2, 24), if team == 0: acc else: IVORY)], at, u, v, n, 1.0)
+        cloth_arms(vs, ring, at + n * 0.03, u, v, n, vec2(0, 0), if team == 0: 3.6 else: 3.0, 0.2, team, false)
+    vs
+
+# (a domed kiosk at c: a round pavilion of iron and glass, its dome green copper, a gilt lantern)
+fk_kiosk = (vs: mut Vertex3D[], c: vec3, r: f64, h: f64):
+    add_cylinder(vs, c, r, 0.5, TEAK, 12)
+    loop k in 0..8:
+        a = TAU * f64(k) / 8.0
+        p = c + v3(cos(a) * r * 0.92, 0, sin(a) * r * 0.92)
+        tube(vs, p, p + v3(0, h, 0), 0.14, FK_IRON, 6)
+    add_cylinder(vs, c + v3(0, 0.5, 0), r * 0.86, h - 0.5, rgb(0.42, 0.55, 0.6), 12)
+    add_cylinder(vs, c + v3(0, h, 0), r * 1.08, 0.45, GILT, 12)
+    lathe(vs, [vec2(0, f32(r)), vec2(f32(r * 0.45), f32(r * 0.85)), vec2(f32(r * 0.8), f32(r * 0.45)), vec2(f32(r * 0.95), 0.0)], 12, VERDIGRIS, c + v3(0, h + 0.45, 0), 0.0)
+    loop k in 0..12:
+        a = TAU * f64(k) / 12.0
+        p = c + v3(0, h + 0.45, 0)
+        beam(vs, p + v3(cos(a) * r, 0, sin(a) * r), p + v3(cos(a) * r * 0.18, r * 0.92, sin(a) * r * 0.18), 0.1, GILT)
+    tube(vs, c + v3(0, h + r * 0.9, 0), c + v3(0, h + r * 1.5, 0), 0.35, GILT, 8, 0.05)
+
+make_carrier = (team: int) -> Vertex3D[]:
+    vs: Vertex3D[]
+    acc = fk_accent(team)
+    ln = FK_LONG
+    w = FK_HALF
+    # the deck: lacquered teak strakes over the frame, a gilt-capped rail round it
+    loop k in 0..16:
+        x0 = -w + 4.0 * f64(k)
+        add_box(vs, v3(x0 + 2.0, FK_TOP - 0.15, 0), v3(3.9, 0.3, 2.0 * ln), if k % 2 == 0: TEAK else: shade(TEAK, 0.9))
+    loop sx in [-1.0, 1.0]:
+        fk_lattice(vs, v3(sx * w, (FK_TOP + FK_BOT) / 2.0, -ln), v3(sx * w, (FK_TOP + FK_BOT) / 2.0, ln), FK_TOP - FK_BOT, 0.5, FK_IRON, 30)
+        beam(vs, v3(sx * w, FK_TOP + 1.1, -ln), v3(sx * w, FK_TOP + 1.1, ln), 0.16, GILT)
+        loop k in 0..76:
+            z = -ln + 2.0 * f64(k)
+            beam(vs, v3(sx * w, FK_TOP, z), v3(sx * w, FK_TOP + 1.1, z), 0.07, FK_IRON)
+        # (the rows of hooks' keel girders under the frame, and the outer bottom girders)
+        fk_lattice(vs, v3(sx * 17.0, FK_BOT - 0.6, -ln + 2.0), v3(sx * 17.0, FK_BOT - 0.6, ln - 2.0), 1.2, 0.35, FK_IRON, 24)
+    loop k in 0..17:
+        z = -ln + f64(k) * (2.0 * ln / 16.0)
+        fk_lattice(vs, v3(-w, FK_BOT + 0.6, z), v3(w, FK_BOT + 0.6, z), 1.2, 0.3, FK_IRON, 10)
+    loop e in [-1.0, 1.0]:
+        beam(vs, v3(-w, FK_TOP + 1.1, e * ln), v3(w, FK_TOP + 1.1, e * ln), 0.16, GILT)
+        loop sx in [-1.0, 1.0]:
+            # (a gilt finial and a brass lamp at each corner)
+            tube(vs, v3(sx * w, FK_TOP, e * ln), v3(sx * w, FK_TOP + 2.4, e * ln), 0.18, GILT, 8)
+            add_sphere(vs, v3(sx * w, FK_TOP + 2.7, e * ln), 0.38, rgb(1.0, 0.88, 0.55), 8, 5)
+    # (the gasbags' cradles: each its saddle of girders, and its rigging down to the rails)
+    loop z in FK_BAGS:
+        loop sx in [-1.0, 1.0]:
+            beam(vs, v3(sx * 9.0, FK_TOP, z - 6.0), v3(sx * 6.0, FK_BAG_Y - 13.5, z - 4.0), 0.3, FK_IRON)
+            beam(vs, v3(sx * 9.0, FK_TOP, z + 6.0), v3(sx * 6.0, FK_BAG_Y - 13.5, z + 4.0), 0.3, FK_IRON)
+            loop k in 0..5:
+                dz = -12.0 + 6.0 * f64(k)
+                a = asin(clamp(dz / FK_BAG_R, -1.0, 1.0))
+                p = v3(sx * cos(a) * FK_BAG_R * 0.98, FK_BAG_Y - 2.0, z + dz)
+                beam(vs, p, v3(sx * (w - 1.0), FK_TOP + 1.0, z + dz * 1.2), 0.06, rgb(0.3, 0.27, 0.22))
+    # the bow's cone (Pétin's, to cut the air): ivory banded gilt; the gondola under it
+    lathe(vs, [vec2(-101.5, 0.0), vec2(-98.0, 1.6), vec2(-92.0, 3.8), vec2(-85.0, 5.6), vec2(-78.0, 6.6), vec2(-74.0, 6.8)], 16, IVORY, v3(0, -1, 0), 0.0, [GILT, IVORY, acc, IVORY, GILT])
+    add_box(vs, v3(0, -6.4, -82), v3(4.2, 2.6, 12), LACQUER)
+    loop k in 0..5: add_box(vs, v3(0, -5.8, -86.5 + 2.2 * f64(k)), v3(4.3, 1.1, 1.5), rgb(0.42, 0.55, 0.6))
+    add_box(vs, v3(0, -4.95, -82), v3(4.6, 0.3, 12.6), GILT)
+    add_box(vs, v3(0, -7.85, -82), v3(4.6, 0.3, 12.6), GILT)
+    lathe(vs, [vec2(-88.5, 0.0), vec2(-88.0, 1.4), vec2(-87.0, 2.1)], 8, LACQUER, v3(0, -6.4, 0), PI / 8.0)
+    loop sx in [-1.0, 1.0]: beam(vs, v3(sx * 1.8, -5.1, -78), v3(sx * 3.5, -1.5, -76), 0.2, FK_IRON)
+    # Pétin's planes: striped canvas on a lattice frame out either side, a gilt edge
+    loop sx in [-1.0, 1.0]:
+        loop k in 0..8:
+            z0 = -40.0 + 10.0 * f64(k)
+            col = if k % 2 == 0: IVORY else: acc
+            sheet(vs, [v3(sx * w, 0.1, z0), v3(sx * 52.0, 0.1 + 0.8, z0), v3(sx * 52.0, 0.1 + 0.8, z0 + 10.0), v3(sx * w, 0.1, z0 + 10.0)], vec3(0, 1, 0), col, shade(col, 0.7))
+            beam(vs, v3(sx * w, 0.0, z0), v3(sx * 52.0, 0.8, z0), 0.2, FK_IRON)
+        beam(vs, v3(sx * w, 0.0, 40), v3(sx * 52.0, 0.8, 40), 0.2, FK_IRON)
+        beam(vs, v3(sx * 52.0, 0.85, -40), v3(sx * 52.0, 0.85, 40), 0.28, GILT)
+        loop k in 0..5:
+            z = -40.0 + 20.0 * f64(k)
+            beam(vs, v3(sx * 52.0, 0.8, z), v3(sx * w, FK_BOT, z), 0.18, FK_IRON)
+    # the screws' outriggers and engine housings (their screws turning, fk_screw_mesh)
+    loop p in FK_SCREWS:
+        sx = if p.x < 0.0: -1.0 else: 1.0
+        fk_lattice(vs, v3(sx * w, p.y, p.z), v3(f64(p.x), p.y, p.z), 1.4, 0.3, FK_IRON, 3)
+        lathe(vs, [vec2(f32(-1.5), 0.0), vec2(f32(-1.0), 1.1), vec2(f32(2.0), 1.3), vec2(f32(4.0), 0.9), vec2(f32(4.6), 0.0)], 10, shade(GILT, 0.8), p, 0.0, [GILT, LACQUER, LACQUER, GILT])
+    # (the boilers' funnels aft, gilt-banded)
+    loop st in FK_STACKS:
+        tube(vs, v3(st.x, FK_TOP, st.z), st, 1.4, FK_IRON, 10, 1.2)
+        tube(vs, st - v3(0, 2.0, 0), st - v3(0, 1.4, 0), 1.35, GILT, 10)
+        tube(vs, st, st + v3(0, 0.6, 0), 1.7, GILT, 10)
+    # two kiosks midships, either side of the middle bags
+    loop sx in [-1.0, 1.0]: fk_kiosk(vs, v3(sx * 24.0, FK_TOP, 0), 3.4, 3.6)
+    # the landing deck at its stern: teak, a gilt edge, painted stripes, arresting wires, the net
+    # at its forward end, a crane on its starboard side to swing the craft to their hooks
+    add_box(vs, v3(0, FK_TOP - 0.4, 97), v3(30, 0.8, 48), TEAK)
+    loop k in 0..6: add_box(vs, v3(0, FK_TOP + 0.02, 78.0 + 8.0 * f64(k)), v3(28, 0.04, 1.2), if k % 2 == 0: IVORY else: acc)
+    loop sx in [-1.0, 1.0]:
+        fk_lattice(vs, v3(sx * 15.0, FK_TOP - 1.4, 74), v3(sx * 15.0, FK_TOP - 1.4, 121), 2.4, 0.35, FK_IRON, 8)
+        beam(vs, v3(sx * 15.0, FK_TOP + 0.5, 74), v3(sx * 15.0, FK_TOP + 0.5, 121), 0.14, GILT)
+        beam(vs, v3(sx * 15.0, FK_BOT, 74), v3(sx * 9.0, FK_BOT, 60), 0.4, FK_IRON)
+    loop k in 0..5:
+        z = 100.0 + 4.0 * f64(k)
+        beam(vs, v3(-14.5, FK_TOP + 0.25, z), v3(14.5, FK_TOP + 0.25, z), 0.06, rgb(0.6, 0.6, 0.58))
+    loop sx in [-1.0, 1.0]: tube(vs, v3(sx * 14.0, FK_TOP, 75), v3(sx * 14.0, FK_TOP + 6.5, 75), 0.25, GILT, 8)
+    beam(vs, v3(-14.0, FK_TOP + 6.5, 75), v3(14.0, FK_TOP + 6.5, 75), 0.22, GILT)
+    loop k in 0..15:
+        x = -14.0 + 2.0 * f64(k)
+        beam(vs, v3(x, FK_TOP, 75), v3(x, FK_TOP + 6.5, 75), 0.04, rgb(0.55, 0.5, 0.4))
+    loop k in 0..6:
+        y = FK_TOP + 1.0 * f64(k + 1)
+        beam(vs, v3(-14.0, y, 75), v3(14.0, y, 75), 0.04, rgb(0.55, 0.5, 0.4))
+    tube(vs, v3(13.0, FK_TOP, 82), v3(13.0, FK_TOP + 9.0, 82), 0.5, FK_IRON, 8)
+    fk_lattice(vs, v3(13.0, FK_TOP + 9.0, 82), v3(2.0, FK_TOP + 10.5, 70), 1.0, 0.25, FK_IRON, 5)
+    beam(vs, v3(2.0, FK_TOP + 10.0, 70), v3(2.0, FK_TOP + 3.0, 70), 0.05, rgb(0.3, 0.27, 0.22))
+    # (the trapezes: two struts down from the keel girder to a bar, a hook on it)
+    loop h in 0..16:
+        x = FK_HOOK_X[h % 2]
+        z = FK_HOOK_Z[h / 2]
+        loop s in [-1.0, 1.0]: beam(vs, v3(x + s * 1.6, FK_BOT - 1.2, z), v3(x + s * 0.9, -5.5, z), 0.12, FK_IRON)
+        beam(vs, v3(x - 1.1, -5.5, z), v3(x + 1.1, -5.5, z), 0.16, GILT)
+    # bunting dressed over all: from the cone's point up over the bags' crowns to the crane
+    tops = [v3(0, -1, -101)] + FK_BAGS.map((z): v3(0, FK_BAG_Y + FK_BAG_R + 1.6, z)) + [v3(13.0, FK_TOP + 9.0, 82)]
+    loop k in 0..tops.len() - 1: fk_bunting(vs, tops[k], tops[k + 1], if k == 0 or k == tops.len() - 2: 2.0 else: 4.0, team)
+    loop sx in [-1.0, 1.0]: fk_bunting(vs, v3(sx * w, FK_TOP + 2.4, -ln), v3(sx * w, FK_TOP + 2.4, ln), 1.6, team)
+    # the side's flags, at the stern, from gilt staffs
+    loop sx in [-1.0, 1.0]: add_flag(vs, v3(sx * 15.0, FK_TOP, 121), 7.0, 4.2, 2.8, team)
+    vs
+
+# (a steam screw: four blades of lacquered wood, their tips gilt, a brass boss; turning about z)
+make_fk_screw = () -> Vertex3D[]:
+    vs: Vertex3D[]
+    loop b in 0..4:
+        a = TAU * f64(b) / 4.0
+        d = v3(cos(a), sin(a), 0)
+        n = v3(-sin(a), cos(a), 0)
+        loop j in 0..5:
+            r0 = 0.9 + (FK_SCREW_R - 0.9) * f64(j) / 5.0
+            r1 = 0.9 + (FK_SCREW_R - 0.9) * f64(j + 1) / 5.0
+            w0 = 0.9 - 0.08 * f64(j)
+            w1 = 0.9 - 0.08 * f64(j + 1)
+            col = if j == 4: GILT else: LACQUER
+            pts = [d * f32(r0) + n * f32(w0) + v3(0, 0, -0.3), d * f32(r1) + n * f32(w1) + v3(0, 0, -0.3), d * f32(r1) - n * f32(w1) + v3(0, 0, 0.3), d * f32(r0) - n * f32(w0) + v3(0, 0, 0.3)]
+            sheet(vs, pts, vec3(0, 0, -1), col, shade(col, 0.8))
+    lathe(vs, [vec2(-1.2, 0.0), vec2(-0.9, 0.7), vec2(0.6, 0.9), vec2(0.9, 0.0)], 10, GILT)
+    vs
+
+# what the carrier stands on, parked (left there when it lifts off): two lattice trestles under
+# its frame either side of the rows of hooks, a mooring mast at its bow (an iron tower in the
+# manner of the great one in Paris, with a lift's ladder up it to the gondola)
+make_fk_stand = () -> Mesh:
+    vs: Vertex3D[]
+    low = -FK_GEAR - 25.0
+    top = FK_BOT
+    loop z in [-50.0, 0.0, 50.0]:
+        loop sx in [-1.0, 1.0]:
+            x = sx * 29.0
+            loop dz in [-3.0, 3.0]:
+                beam(vs, v3(x - sx * 2.0, low, z + dz * 1.6), v3(x, top, z + dz), 0.55, FK_IRON)
+                beam(vs, v3(x + sx * 2.0, low, z + dz * 1.6), v3(x, top, z + dz), 0.55, FK_IRON)
+            m = int((top - low) / 5.0)
+            loop k in 0..m:
+                y = low + 5.0 * f64(k)
+                beam(vs, v3(x - sx * 2.0, y, z - 4.8), v3(x + sx * 2.0, y + 5.0, z + 4.8), 0.2, FK_IRON)
+                beam(vs, v3(x + sx * 2.0, y, z - 4.8), v3(x - sx * 2.0, y + 5.0, z + 4.8), 0.2, FK_IRON)
+            add_box(vs, v3(x, top - 0.4, z), v3(3.0, 0.8, 7.0), TEAK)
+    # (the mast: four legs splayed to a square foot, braced in lattice, gilt at its head)
+    mz = -88.0
+    head = -9.0
+    loop sx in [-1.0, 1.0]:
+        loop sz in [-1.0, 1.0]:
+            beam(vs, v3(sx * 9.0, low, mz + sz * 9.0), v3(sx * 2.4, head, mz + sz * 2.4), 0.7, FK_IRON)
+    n = int((head - low) / 4.0)
+    loop k in 0..n:
+        t0 = f64(k) / f64(n)
+        t1 = f64(k + 1) / f64(n)
+        h0 = 9.0 - 6.6 * t0
+        h1 = 9.0 - 6.6 * t1
+        y0 = low + (head - low) * t0
+        y1 = low + (head - low) * t1
+        loop s in [-1.0, 1.0]:
+            beam(vs, v3(-h0, y0, mz + s * h0), v3(h1, y1, mz + s * h1), 0.16, FK_IRON)
+            beam(vs, v3(s * h0, y0, mz - h0), v3(s * h1, y1, mz + h1), 0.16, FK_IRON)
+        if k % 3 == 0:
+            loop s in [-1.0, 1.0]:
+                beam(vs, v3(-h0, y0, mz + s * h0), v3(h0, y0, mz + s * h0), 0.24, FK_IRON)
+                beam(vs, v3(s * h0, y0, mz - h0), v3(s * h0, y0, mz + h0), 0.24, FK_IRON)
+    add_box(vs, v3(0, head, mz), v3(6.0, 0.6, 6.0), GILT)
+    tube(vs, v3(0, head, mz), v3(0, -4.5, mz + 3.0), 0.4, FK_IRON, 8)
+    # (its ladder up the port side to the gondola, the gate at its foot)
+    loop s in [-1.0, 1.0]: beam(vs, v3(-3.0, low, -84.0 + s * 0.4), v3(-3.0, -7.0, -84.0 + s * 0.4), 0.08, FK_IRON)
+    loop k in 0..int((-7.0 - low) / 0.5): beam(vs, v3(-3.0, low + 0.3 + 0.5 * f64(k), -84.4), v3(-3.0, low + 0.3 + 0.5 * f64(k), -83.6), 0.05, FK_IRON)
+    custom_mesh(vs)
+
+carrier_bag_mesh = (team: int) -> Mesh: _once("fk bag" + str(team), (): custom_mesh(make_fk_bag(team)))
+fk_screw_mesh = () -> Mesh: _once("fk screw", (): custom_mesh(make_fk_screw()))
+fk_stand_mesh = () -> Mesh: _once("fk stand", make_fk_stand)
+
 craft_vertices = (kind: int, team: int, badge: int, crew: int = DV_CREW) -> Vertex3D[]:
     if kind == SCOUT: return if team == 0: make_parasol(badge) else: make_sesquiplane(badge)
     if kind == FIGHTER: return make_fighter(team, badge)
@@ -6123,6 +6408,7 @@ craft_vertices = (kind: int, team: int, badge: int, crew: int = DV_CREW) -> Vert
     if kind == DRONE: return make_drone(team)
     if kind == SCREW: return make_little_screw(team, crew)
     if kind == CASTLE: return make_castle(team)
+    if kind == CARRIER: return make_carrier(team)
     make_zeppelin(team)
 
 # each craft with each insignia, made when first asked for (bombers and airships have none)
@@ -6141,7 +6427,7 @@ craft_triangles = (kind: int, team: int, badge: int) -> int: craft_vertices(kind
 
 # each propeller: where its hub is (xyz) and how long a blade is (w)
 props = (kind: int, team: int) -> vec4[]:
-    if kind == BALLOON or kind == ROCKETEER or kind == ORNITHOPTER or kind == DAVINCI or kind == CARCOPTER or kind == CAT or kind == SCREW or kind == CASTLE: return []
+    if kind == BALLOON or kind == ROCKETEER or kind == ORNITHOPTER or kind == DAVINCI or kind == CARCOPTER or kind == CAT or kind == SCREW or kind == CASTLE or kind == CARRIER: return []
     if kind == DRONE: return [vec4(0, 0, -0.95, 0.42)]
     if kind == SCOUT: return [vec4(0, 0, -2.75, 1.1)]
     if kind == FIGHTER: return [vec4(0, 0.05, -3.02, 1.2)]
