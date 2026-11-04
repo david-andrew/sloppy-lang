@@ -5,7 +5,7 @@
 # parked planes: walk to one (WASD, the mouse to look), F to get in, take off down the strip, T
 # to bail out under a parachute, or, landed, to get out and take another (even one of the
 # other side's, whose colors fool their side until it shoots at them). Number keys move to a
-# seat: a bomber's guns are manned by players, or by its crew.
+# seat: a bomber's guns are manned by players, or by its crew; M opens a craft's seat map.
 #
 # The fights: Dogfight (crafts shot down), Classic (Aces' own: fighters, guns, in the air), Base
 # attack (destroy the other side's hangars, fuel and command post), Capture the flag, and two
@@ -92,11 +92,14 @@ SEAT_NAMES = [["pilot"], ["pilot"], ["pilot", "nose gun", "back gun"], ["pilot",
               ["pilot", "nose gun", "top gun, fore", "top gun, aft", "tail gun", "belly gun", "left wing gun", "right wing gun"],
               ["left gun and burner", "right gun", "back gun"], ["rocketeer"], ["pilot"], ["pilot", "bow ballista", "port ballista", "starboard ballista", "stern ballista"], ["pilot", "tail gun and drones"], ["cat"], ["drone"],
               ["pilot", "bow gun", "starboard gun", "stern gun", "port gun", "bow siphon", "stern siphon"],
-              ["pilot", "flak, bow port", "flak, bow stbd", "flak, stern port", "flak, stern stbd",
+              ["pilot", "battery, port fore", "battery, stbd fore", "battery, port aft", "battery, stbd aft",
                "twins, gate port", "twins, gate stbd", "twins, port fore", "twins, stbd fore", "twins, port aft", "twins, stbd aft", "twins, rear port", "twins, rear stbd",
-               "mg, bow port", "mg, bow stbd", "mg, stern port", "mg, stern stbd", "rampart, port fore", "rampart, stbd fore", "rampart, port aft", "rampart, stbd aft"],
+               "mg, bow port", "mg, bow stbd", "mg, stern port", "mg, stern stbd", "rampart, port fore", "rampart, stbd fore", "rampart, port aft", "rampart, stbd aft",
+               "great bombard, bow", "great bombard, stern"],
               ["pilot", "bow gun", "top gun, bag 1", "top gun, bag 2", "top gun, bag 3", "top gun, bag 4", "flak, port", "flak, stbd",
                "twins, bow port", "twins, bow stbd", "twins, stern port", "twins, stern stbd", "keel gun"] + [0..HOOKS).map((h): "{if h % 2 == 0: "port" else: "stbd"} hook {h / 2 + 1}")]
+# (what a seat's gun is, for the seat map)
+WEAPON_NAMES = ["machine gun", "ballista", "gun and drones", "twin machine guns", "flak gun", "twin heavy guns", "Greek fire siphon", "hook", "broadside battery", "great bombard"]
 
 # ---------------- playing: with friends, or against the computer ----------------
 enum Mode: menu, online, practice
@@ -124,6 +127,7 @@ action("Next target", [.key(.tab), .button(.x)])
 action("Witch", [.key(.k)])
 action("Stand up", [.key(.u)])
 action("Join crew", [.key(.j)])
+action("Seat map", [.key(.m), .button(.rstick)])
 
 struct Settings:
     invert = false              # (pitch: W climbs, S dives)
@@ -1048,6 +1052,7 @@ enter_button = () -> vec2: at_edge(-120, -480)
 rocket_button = () -> vec2: at_edge(-320, -110)
 bomb_button = () -> vec2: at_edge(-320, -240)
 scope_button = () -> vec2: at_edge(-320, -370)
+map_button = () -> vec2: at_edge(-120, -610)
 throttle_track = () -> Rect:
     a = at_edge(70, -420)
     Rect(a.x, a.y, 64, 300)
@@ -1069,6 +1074,7 @@ button_at = (t: vec2) -> int:
         if near(rocket_button(), BUTTON_R): return 7
         if near(bomb_button(), BUTTON_R): return 8
         if in_ornithopter() and near(scope_button(), BUTTON_R): return 9
+    if map_craft() >= 0 and near(map_button(), BUTTON_R): return 10
     if near(look_button(), BUTTON_R): return 4
     if near(enter_button(), BUTTON_R): return 6
     if contains(leave_box(), t): return 5
@@ -1316,7 +1322,7 @@ aim_at_target = ():
 
 # (each frame: the buttons held, Look tapped, and how far the fingers on no button moved, in points)
 read_fingers = () -> vec2:
-    global finger_at, finger_ids, finger_on, scoped, throttle_want, touch_bomb, touch_enter, touch_fire, touch_join, touch_join_to, touch_rocket, tracking
+    global finger_at, finger_ids, finger_on, scoped, throttle_want, touch_bomb, touch_enter, touch_fire, touch_join, touch_join_to, touch_rocket, tracking, map_tap, map_tapped, map_toggled
     ids = touch_ids()
     ts = touches()
     on: int[]
@@ -1332,6 +1338,11 @@ read_fingers = () -> vec2:
     loop k in 0.. and id in ids:
         j = finger_ids.index_of(id)
         b = if j >= 0: finger_on[j] else: if playing: button_at(ts[k]) else: -1
+        if j < 0 and b == 10: map_toggled = true
+        else if j < 0 and map_open:
+            map_tap = ts[k]
+            map_tapped = true
+            b = -1
         if j < 0 and b == 4: tracking = not tracking
         if j < 0 and b == 9: scoped = not scoped
         if j >= 0 and b == 0: moved += ts[k] - finger_at[j]
@@ -1362,7 +1373,7 @@ was_craft = -1
 was_seat = -1
 
 update = (dt: f64):
-    global aim_pitch, aim_yaw, before, before_people, enter_in_fight, f_held, had_lock, local, mine, next_seat, paused, paused_at, relock_at, scoped, spare, keys_flying, was_craft, was_seat, was_state, deck_craft, deck_heading
+    global aim_pitch, aim_yaw, before, before_people, enter_in_fight, f_held, had_lock, local, mine, next_seat, paused, paused_at, relock_at, scoped, spare, keys_flying, was_craft, was_seat, was_state, deck_craft, deck_heading, map_toggled
     lay_out()
     # (online, hidden behind another window or tab: still playing, or the others would take
     # this one for gone)
@@ -1386,6 +1397,15 @@ update = (dt: f64):
     if mode != .menu:
         # (Escape, or Enter (let go of: pressed in the fight, not in the menu): the in-fight menu;
         # Enter, as a browser in fullscreen leaves it on Escape)
+        if map_open and (map_craft() < 0 or paused or over()): close_map()
+        if not paused and not over() and (action_pressed("Seat map") or map_toggled) and (map_open or map_craft() >= 0):
+            if map_open: close_map()
+            else: open_map()
+        map_toggled = false
+        if map_open and key_pressed(.escape):
+            close_map()
+            sounds()
+            return
         if key_pressed(.enter) and not paused and not over(): enter_in_fight = true
         by_enter = key_released(.enter) and enter_in_fight and not paused and not over()
         if key_released(.enter): enter_in_fight = false
@@ -1400,7 +1420,7 @@ update = (dt: f64):
             relock_at = -1.0
         if paused: relock_at = -1.0
         if is_mouse_locked(): had_lock = true
-        else if had_lock and not paused:
+        else if had_lock and not paused and not map_open:
             paused = true
             paused_at = elapsed()
         if not paused: paused_at = -1.0
@@ -1601,10 +1621,10 @@ place_camera = (g: Game, dt: f64):
     if gun_seat(c.kind, p.seat) and mode != .menu:
         # (at a gun: the gunner's eyes out at its muzzle, along it, clear of the craft (from the
         # seat itself, some look out from inside a gondola or a hull); their gun not drawn, its
-        # tracers and flashes in sight)
+        # tracers and flashes in sight; a castle's bombard's and battery's from behind it, over its breech)
         at = point_of(c, k.seats[p.seat].at)
         d = aim_dir()
-        cam_pos = at + d * f32(gun_reach(c.kind, p.seat)) + up_of(c) * 0.3
+        cam_pos = at + d * f32(gun_reach(c.kind, p.seat)) + up_of(c) * f32(if c.kind == CASTLE and k.seats[p.seat].weapon == BOMBARD: 4.0 else: 0.3)
         cam_at = cam_pos + d * 30.0
         cam_up = approach(cam_up, vec3(0, 1, 0), 3.0, dt)
         finish_camera()
@@ -1668,7 +1688,9 @@ gun_reach = (kind: int, seat: int) -> f64:
     if kind == ZEPPELIN and seat == 3: return 2.6
     if kind == DAVINCI: return 3.2
     if kind == CARCOPTER: return 2.0
-    if kind == CASTLE: return if KINDS[kind].seats[seat].weapon == FLAKGUN: 8.5 else: 3.5
+    if kind == CASTLE:
+        wp = KINDS[kind].seats[seat].weapon
+        return if wp == BOMBARD: -9.0 else: if wp == BROADSIDE: -3.5 else: 3.5
     if kind == CARRIER: return if KINDS[kind].seats[seat].weapon == FLAKGUN: 8.5 else: 3.5
     # (the little screw's: past its rail; at a siphon, behind it, its fire ahead)
     if kind == SCREW: return if KINDS[kind].seats[seat].weapon == FLAME: -0.5 else: 1.0
@@ -1901,6 +1923,60 @@ draw_gunner = (team: int, pivot: vec3, aim: vec3, back: f64 = 1.0):
     flat = normalize(flat)
     yaw = atan2(-f64(flat.x), -f64(flat.z))
     draw_mesh(gunner_meshes[team], translation(pivot - flat * f32(back)) * rotation_y(yaw), specular = 0.05)
+
+# (a castle's gun laid along aim, as far as its port lets it from the way out of it (out), in the
+# castle's frame: the way it points, in the world's)
+laid = (c: Craft, aim: vec3, out: vec3, most: f64) -> vec3:
+    o = quat_rotate(c.rot, out)
+    d = normalize(aim)
+    if f64(dot(d, o)) >= most: return d
+    loop _ in 0..8:
+        if f64(dot(d, o)) < most: d = normalize(d + o * 0.35)
+    d
+
+# (how far a gun is run in, t seconds after it fired: back in a blink, run out again over the
+# next few)
+recoil = (t: f64) -> f64: if t < 0.0 or t > 4.0: 0.0 else: if t < 0.06: t / 0.06 else: if t < 1.2: 1.0 else: max(0.0, 1.0 - (t - 1.2) / 2.6)
+
+# a battery's guns: each on its carriage, turned to the seat's aim as far as its port lets it,
+# recoiling as it fires; its crew at the middle one, the seat's gunner, the rest the castle's own
+draw_battery = (g: Game, i: int, c: Craft, s: int):
+    b = s - 1
+    m = craft_matrix(c)
+    inv = quat_inverse(c.rot)
+    loop n in 0..models.CA_BATTERY_GUNS:
+        gun = models.CA_GUNS[b][n]
+        d = laid(c, c.aims[s], gun.1, 0.64)
+        # (its carriage turned on the gallery's floor, the barrel laid on it)
+        lf = quat_rotate(inv, d)
+        lf = vec3(lf.x, 0, lf.z)
+        lf = if length(lf) > 0.05: normalize(lf) else: gun.1
+        ly = atan2(-f64(lf.x), -f64(lf.z))
+        back = recoil(elapsed() - (gun_fired_at.get(i * 64 + b * 8 + n) ?? -100.0)) * 1.5
+        here = gun.0 - lf * f32(back)
+        at = point_of(c, here)
+        draw_mesh(models.ca_carriage_mesh(), m * translation(here) * rotation_y(ly), specular = 0.1)
+        draw_mesh(models.ca_cannon_mesh(c.team), translation(at) * quat_to_mat4(quat_facing(d)), specular = 0.45)
+        side = vec3(-lf.z, 0, lf.x) * f32(if n % 2 == 0: 0.75 else: -0.75)
+        crew = point_of(c, here - lf * 1.9 + side + vec3(0, -1.05, 0))
+        if n == 2 and c.seats[s] >= 0 and not (i == my_craft() and my().seat == s and mode != .menu): draw_gunner(g.people[c.seats[s]].team, crew, d, 0.0)
+        else if n != 2 and c.seats[0] >= 0: draw_gunner(c.team, crew, d, 0.0)
+
+# a great bombard: its bed turned on the turntable, the barrel laid on it, recoiling as it fires;
+# its gunner beside the breech (the castle's own, with no one at it)
+draw_bombard = (g: Game, i: int, c: Craft, s: int):
+    d = normalize(c.aims[s])
+    at = KINDS[c.kind].seats[s].at
+    lf = quat_rotate(quat_inverse(c.rot), d)
+    lf = vec3(lf.x, 0, lf.z)
+    lf = if length(lf) > 0.05: normalize(lf) else: vec3(0, 0, -1)
+    ly = atan2(-f64(lf.x), -f64(lf.z))
+    back = recoil(elapsed() - (bombard_fired_at.get(i * 64 + s) ?? -100.0)) * 1.1
+    draw_mesh(models.ca_bombard_bed_mesh(c.team), craft_matrix(c) * translation(at) * rotation_y(ly), specular = 0.08)
+    draw_mesh(models.ca_bombard_mesh(c.team), translation(point_of(c, at - lf * f32(back))) * quat_to_mat4(quat_facing(d)), specular = 0.75)
+    if (c.seats[s] >= 0 or c.seats[0] >= 0) and not (i == my_craft() and my().seat == s and mode != .menu):
+        side = vec3(-lf.z, 0, lf.x)
+        draw_gunner(if c.seats[s] >= 0: g.people[c.seats[s]].team else: c.team, point_of(c, at + side * 3.0 - lf * 1.5 + vec3(0, f32(-(models.CA_BOMBARD_Y - models.CA_FLAK_FLOOR - 0.95)), 0)), d, 0.0)
 
 # (the stairs on a craft's decks its model does not have (sim.jo, decks_of: `drawn`): steps
 # half a meter up, of its stone or its timber)
@@ -2203,23 +2279,26 @@ draw = ():
             ro = models.cc_rotor_step(ro, spin, c.landed or c.down > 0, frame_time())
             rotors[i] = ro
             if view.rotor > 0.0: models.cc_rotor_draw(c.team, m, ro, prop_turn[i] * 0.55, see(vec4(1, 1, 1, 1), view.rotor))
-        # (the flying castle: its five screws under it turning, slower the bigger, with the
-        # throttle; its guns where they aim (its flak guns, its twin guns, its machine guns and its
-        # own automatic ones), one's own not drawn; parked, its gangway out from its gate to the lift)
+        # (the flying castle: its five screws under it turning, slower the bigger (the great one
+        # slowest), with the throttle; its guns where they aim (its batteries' guns each run out of
+        # its port, recoiling as it fires; its bombards on their beds; its twin guns, its machine
+        # guns and its own automatic ones), one's own not drawn but a bombard's or a battery's;
+        # parked, its gangway out from its gate to the lift)
         if c.kind == CASTLE:
             turn = prop_turn[i] * 0.05
             if view.rotor > 0.0:
-                loop k in 0..models.CA_ROTORS.len(): draw_mesh(models.ca_rotor_mesh(c.team, k), m * translation(models.CA_ROTORS[k]) * rotation_y(-turn * (if k == 4: 0.75 else: 1.0) * (if k % 2 == 0: 1.0 else: -1.0) - f64(k) * 0.4), see(vec4(1, 1, 1, 1), view.rotor), specular = 0.15)
+                loop k in 0..models.CA_ROTORS.len(): draw_mesh(models.ca_rotor_mesh(c.team, k), m * translation(models.CA_ROTORS[k]) * rotation_y(-turn * (if k == 4: 0.16 else: 1.0) * (if k % 2 == 0: 1.0 else: -1.0) - f64(k) * 0.4), see(vec4(1, 1, 1, 1), view.rotor), specular = if k == 4: 0.3 else: 0.15)
             if f64(length(c.pos - cam_pos)) < 2500.0:
                 st = KINDS[c.kind].seats
                 loop s in 1..c.aims.len():
-                    if i == my_craft() and my().seat == s and mode != .menu: continue
-                    at = if s < st.len(): st[s].at else: CASTLE_AUTOS[s - st.len()].at
                     wp = if s < st.len(): st[s].weapon else: GUN
+                    if i == my_craft() and my().seat == s and mode != .menu and wp != BOMBARD and wp != BROADSIDE: continue
+                    at = if s < st.len(): st[s].at else: CASTLE_AUTOS[s - st.len()].at
                     gm = translation(point_of(c, at)) * quat_to_mat4(quat_facing(c.aims[s]))
-                    if wp == FLAKGUN: draw_mesh(models.ca_flak_mesh(c.team), gm, specular = 0.3)
+                    if wp == BROADSIDE: draw_battery(g, i, c, s)
+                    else if wp == BOMBARD: draw_bombard(g, i, c, s)
                     else: draw_mesh(models.mg_gun_mesh(), gm * scaling(vec3(if wp == TWIN: 2.2 else: 1.6)), specular = 0.3)
-                    if s < st.len() and c.seats[s] >= 0: draw_gunner(g.people[c.seats[s]].team, point_of(c, at) - vec3(0, 0.25, 0), c.aims[s], if wp == FLAKGUN: 1.6 else: 1.3)
+                    if s < st.len() and c.seats[s] >= 0 and wp != BROADSIDE and wp != BOMBARD: draw_gunner(g.people[c.seats[s]].team, point_of(c, at) - vec3(0, 0.25, 0), c.aims[s], 1.3)
             if landed_for[i] > 1.0:
                 hinge = point_of(c, models.CA_SILL)
                 d = point_of(c, models.CA_LIFT) - hinge
@@ -2277,6 +2356,13 @@ draw = ():
         if sh.kind == CANNONBALL:
             draw_mesh(models.boulder_mesh(), translation(sh.pos) * scaling(vec3(0.22, 0.22, 0.22)), rgb(0.18, 0.18, 0.2), specular = 0.5)
             continue
+        # (a battery's iron ball, a bombard's stone one: drawn a little larger far off, to be seen)
+        if sh.kind == IRON or sh.kind == STONE:
+            far = f64(length(sh.pos - cam_pos))
+            r = if sh.kind == IRON: max(0.17, far * 0.0016) else: max(0.47, far * 0.0024)
+            if sh.kind == IRON: draw_mesh(models.stone_ball_mesh(), translation(sh.pos) * scaling(vec3(f32(r))), rgb(0.16, 0.16, 0.17), specular = 0.6)
+            else: draw_mesh(models.stone_ball_mesh(), translation(sh.pos) * rotation_x(f64(sh.life) * 0.05) * scaling(vec3(f32(r))), specular = 0.1)
+            continue
         mesh_ = if sh.kind == ROCKET: rocket else: if sh.kind == PACK: pack else: bomb
         draw_mesh(mesh_, translation(sh.pos) * quat_to_mat4(quat_facing(d)), emissive = if sh.kind == ROCKET: 0.2 else: if sh.kind == PACK: 0.3 else: 0.0, specular = 0.3)
     # the bullets: every one a tracer
@@ -2284,10 +2370,16 @@ draw = ():
         tr: Instance3D[]
         st: Instance3D[]
         fl: Instance3D[]
+        gr: Instance3D[]
         back = f32(DT * (clamp(spare / DT, 0.0, 1.0) - 1.0))
         loop b in g.bullets:
             d = normalize(b.vel)
             at = if b.life < (if b.snipe: SNIPE_LIFE else: BULLET_LIFE): b.pos + b.vel * back else: b.pos
+            # (grapeshot: little iron balls, a little larger far off)
+            if b.grape:
+                gw = max(0.05, 0.0012 * f64(length(at - cam_pos)))
+                gr.push(instance(translation(at) * scaling(vec3(f32(gw))), rgb(0.14, 0.14, 0.15)))
+                continue
             # (a ballista's bolt: the bolt itself, as big as the ballista is)
             if b.bolt:
                 draw_mesh(models.bolt_mesh(), translation(at) * facing(d) * scaling(vec3(2)), specular = 0.2)
@@ -2319,6 +2411,11 @@ draw = ():
         draw_mesh_instanced(tracer, tr, emissive = 3.0, cast_shadow = false)
         if st.len() > 0: draw_mesh_instanced(models.streak_mesh(), st, emissive = 2.2, cast_shadow = false)
         if fl.len() > 0: draw_mesh_instanced(flame, fl, emissive = 1.1, specular = 0.0, cast_shadow = false)
+        if gr.len() > 0: draw_mesh_instanced(models.stone_ball_mesh(), gr, specular = 0.5, cast_shadow = false)
+    # (a bombard's muzzle flash, for a moment)
+    loop f in flash_at:
+        t = elapsed() - f.2
+        if t < 0.2: draw_mesh(flame, translation(f.0 + f.1 * f32(3.0 + 20.0 * t)) * facing(f.1) * scaling(vec3(f32(2.2 - 6.0 * t), f32(2.2 - 6.0 * t), f32(9.0 * (1.0 - 3.0 * t)))), rgb(1.0, 0.72, 0.4), emissive = 1.4, specular = 0.0, cast_shadow = false)
     smoke.draw(glow = false)
     fire.draw()
     sparks.draw()
@@ -2326,6 +2423,7 @@ draw = ():
         draw_menu()
         return
     zone("hud", (): draw_hud(g))
+    if map_open and not paused: draw_seat_map(g)
     if paused: draw_paused()
 
 # ---------------- effects and sounds (from the game as it is: rolled back, it shows again) ----------------
@@ -2337,10 +2435,22 @@ hit_mark = 0.0                  # (seconds left: a hit by me, on the gunsight)
 hurt = 0.0                      # (seconds left: red at the edges, hit)
 scorch_heard = -1.0             # (when one's own craft's burning was last heard)
 shake = 0.0                     # (the camera's shaking, 1 at its most: the long gun fired)
+gun_fired_at: {int: f64} = {}   # (when each castle's battery gun last fired, and each bombard: their recoil)
+bombard_fired_at: {int: f64} = {}
+flash_at: (vec3, vec3, f64)[] = []   # (a bombard's muzzle flash: where, which way, when)
+grounded_said = -10000
+
+# (something that shakes the view, the nearer the more: as much as `most` close by, none past far)
+felt = (at: vec3, far: f64, most: f64):
+    global shake
+    p = game().people[me()]
+    here = if p.state == SEATED: game().crafts[p.craft].pos else: p.pos
+    d = f64(length(at - here))
+    if d < far: shake = max(shake, most * (1.0 - d / far) * (1.0 - d / far) + most * 0.25 * (1.0 - d / far))
 puffs = 0.0                     # (time since the trails were last given smoke)
 
 effects = (dt: f64):
-    global hit_mark, hurt, news, puffs, scorch_heard, seen, shake, won_at
+    global hit_mark, hurt, news, puffs, scorch_heard, seen, shake, won_at, grounded_said, flash_at
     g = game()
     myc = my_craft()
     # (the trails as many a second at any frame rate)
@@ -2385,6 +2495,8 @@ effects = (dt: f64):
         loop sh in g.shots:
             if sh.kind == ROCKET: emit(smoke, sh.pos, 1, 0.5, rgba(0.85, 0.85, 0.82, 0.6), 1.2, 1.4)
             if sh.kind == PACK: emit(sparks, sh.pos, 1, 0.5, rgb(0.5, 1.0, 0.6), 0.5, 0.35)
+            if sh.kind == IRON and (g.tick + sh.life) % 3 == 0: emit(smoke, sh.pos, 1, 0.3, rgba(0.75, 0.73, 0.7, 0.35), 0.8, 1.0)
+            if sh.kind == STONE: emit(smoke, sh.pos, 1, 0.6, rgba(0.62, 0.58, 0.52, 0.45), 2.2, 2.4)
             # (a fire pot: burning as it goes, a trail of flame and black smoke)
             if sh.kind == POT:
                 emit(fire, sh.pos, 2, 1.5, rgb(1.0, 0.55, 0.15), 0.35, 1.2)
@@ -2536,6 +2648,70 @@ effects = (dt: f64):
             if in_fight:
                 play_at(snd_rocket, b.pos, settings.sound * 0.4, 800.0)
                 if b.by == myc: say("a drone away", gray(0.9), small = true)
+        else if b.kind == BROADSIDE_FIRED:
+            # (a battery's gun: a flash at its port, a great bank of white smoke rolling out from it)
+            ci = b.who / 64
+            gun_fired_at[b.who] = elapsed()
+            out = vec3(0, 0, -1)
+            if ci < g.crafts.len():
+                gun = models.CA_GUNS[(b.who % 64) / 8][b.who % 8]
+                out = quat_rotate(g.crafts[ci].rot, gun.1)
+            emit(fire, b.pos, 12, 14.0, rgb(1.0, 0.7, 0.3), 0.14, 1.6, 0.35, out)
+            emit(smoke, b.pos + out * 2.0, 30, 12.0, rgba(0.78, 0.77, 0.74, 0.85), 8.0, 11.0, 0.6, out)
+            emit(smoke, b.pos, 10, 3.0, rgba(0.66, 0.64, 0.62, 0.75), 6.0, 6.0)
+            if in_fight:
+                play_at(snd_broadside, b.pos, settings.sound * 0.75, 3500.0, pitch = 0.85 + 0.15 * f64(b.who % 5) / 4.0)
+                felt(b.pos, 160.0, 0.45)
+        else if b.kind == BOMBARD_FIRED:
+            # (a great bombard: a sheet of flame out of its mouth, a cloud of smoke as big as a
+            # house rolling out ahead and over the tower, burning wads; the ground shakes far off)
+            ci = b.who / 64
+            bombard_fired_at[b.who] = elapsed()
+            way = vec3(0, 0, -1)
+            if ci < g.crafts.len(): way = normalize(g.crafts[ci].aims[b.who % 64])
+            emit(fire, b.pos, 90, 40.0, rgb(1.0, 0.72, 0.3), 0.35, 6.0, 0.4, way)
+            emit(fire, b.pos, 30, 12.0, rgb(1.0, 0.9, 0.6), 0.2, 9.0)
+            emit(sparks, b.pos, 50, 60.0, rgb(1.0, 0.7, 0.3), 1.6, 0.4, 0.6, way)
+            emit(smoke, b.pos + way * 6.0, 70, 22.0, rgba(0.88, 0.86, 0.82, 0.85), 11.0, 18.0, 0.55, way)
+            emit(smoke, b.pos, 40, 8.0, rgba(0.72, 0.7, 0.66, 0.8), 9.0, 12.0)
+            flash_at.push((b.pos + way * 4.0, way, elapsed()))
+            if in_fight:
+                play_at(snd_bombard, b.pos, settings.sound, 9000.0)
+                felt(b.pos, 2500.0, 1.0)
+                by = if b.by >= 0: call(g, b.by) else: "its crew"
+                if ci < g.crafts.len():
+                    t = g.crafts[ci].team
+                    if b.by == me(): say("the great bombard fires", BRASS, small = true)
+                    else if f64(length(b.pos - cam_pos)) < 3000.0: say("{TEAMS[t]}'s great bombard fires ({by})", COLORS[t], small = true)
+        else if b.kind == BOMBARD_HIT:
+            # (a bombard's ball down: what it struck shattered, a ring of dust and debris thrown out
+            # from it, the ground thrown up; felt far off)
+            emit(fire, b.pos, 140, 34.0, rgb(1.0, 0.6, 0.25), 1.1, 9.0)
+            emit(fire, b.pos, 40, 10.0, rgb(1.0, 0.85, 0.5), 0.4, 14.0)
+            flash_at.push((b.pos, vec3(0, 1, 0), elapsed()))
+            emit(sparks, b.pos, 80, 50.0, rgb(1.0, 0.75, 0.35), 2.2, 0.6)
+            emit(smoke, b.pos, 50, 16.0, rgba(0.5, 0.45, 0.38, 0.85), 7.0, 16.0)
+            loop k in 0..36:
+                a = TAU * f64(k) / 36.0
+                emit(smoke, b.pos, 1, 70.0, rgba(0.62, 0.56, 0.47, 0.7), 2.2, 9.0, 0.08, vec3(f32(cos(a)), 0.08, f32(sin(a))))
+            if b.who < 0: emit(smoke, b.pos, 40, 26.0, rgba(0.45, 0.38, 0.28, 0.9), 5.0, 12.0, 0.6, vec3(0, 1, 0))
+            if in_fight:
+                play_at(snd_bombard, b.pos, settings.sound * 0.9, 7000.0, pitch = 0.8)
+                felt(b.pos, 1600.0, 0.9)
+                if b.who >= 0 and b.who < g.crafts.len():
+                    if b.by == me(): say("your bombard's ball struck {call_craft(g, b.who)}!", BRASS)
+                    else if b.who == myc: say("struck by a bombard's ball!", WARN)
+                    else if f64(length(b.pos - cam_pos)) < 2500.0: say("a bombard's ball struck {call_craft(g, b.who)}", gray(0.9), small = true)
+                else if b.by == me(): say("your bombard's ball came down", BRASS_DIM, small = true)
+        else if b.kind == GROUNDED:
+            emit(smoke, b.pos, 24, 10.0, rgba(0.45, 0.38, 0.28, 0.85), 4.0, 12.0)
+            emit(sparks, b.pos, 12, 14.0, rgb(1.0, 0.8, 0.45), 1.0, 0.3)
+            if in_fight:
+                play_at(snd_thunk, b.pos, settings.sound * 0.8, 2500.0, pitch = 0.5)
+                felt(b.pos, 900.0, 0.7)
+                if b.who == myc and g.tick - grounded_said > 600:
+                    grounded_said = g.tick
+                    say("aground! its rock drags along the ground", WARN)
         else if b.kind == CANNON:
             emit(smoke, b.pos, 10, 3.0, rgba(0.75, 0.73, 0.7, 0.75), 2.0, 3.5)
             emit(fire, b.pos, 6, 5.0, rgb(1.0, 0.75, 0.35), 0.12, 1.2)
@@ -2674,6 +2850,7 @@ effects = (dt: f64):
     hit_mark = max(hit_mark - dt, 0.0)
     hurt = max(hurt - dt, 0.0)
     shake = max(shake - dt * 2.2, 0.0)
+    flash_at = flash_at.filter((f): elapsed() - f.2 < 0.5)
     near_misses(g, dt)
     barrage(g, dt)
     loop mut n in news: n.1 += dt
@@ -2796,6 +2973,8 @@ snd_twang = mix([tone(98.0, 0.75, .saw, 0.4, 0.001, 0.65, 0.55, 0.05), tone(196.
 snd_whoomph = mix([tone(55.0, 0.9, .noise, 0.9, 0.02, 0.85, 0.35), tone(80.0, 0.5, .sine, 0.4, 0.02, 0.45, 0.5), tone(2200.0, 0.7, .noise, 0.18, 0.05, 0.6, 0.5)])
 snd_cannon = mix([tone(500.0, 0.1, .noise, 0.6, 0.001, 0.08, 0.4), tone(60.0, 1.1, .noise, 0.9, 0.002, 1.0, 0.4), tone(38.0, 0.7, .square, 0.4, 0.002, 0.6, 0.5)])
 # (a gun tower's heavy guns: a deep hammer; a round going close by: a sharp crack)
+snd_broadside = mix([tone(420.0, 0.12, .noise, 0.7, 0.001, 0.1, 0.4), tone(48.0, 1.6, .noise, 1.0, 0.002, 1.5, 0.35), tone(31.0, 1.1, .square, 0.45, 0.002, 1.0, 0.5)])
+snd_bombard = mix([tone(900.0, 0.18, .noise, 0.8, 0.001, 0.15, 0.35), tone(34.0, 3.6, .noise, 1.0, 0.003, 3.4, 0.3), tone(22.0, 2.6, .square, 0.55, 0.003, 2.4, 0.45), tone(70.0, 1.2, .noise, 0.6, 0.002, 1.1, 0.4)])
 snd_heavy = mix([tone(120.0, 0.12, .noise, 0.7, 0.001, 0.1, 0.45), tone(55.0, 0.1, .square, 0.35, 0.001, 0.08, 0.6)])
 # (a Greek fire siphon: a rushing roar, a hiss over it)
 snd_roar = mix([tone(65.0, 0.4, .noise, 0.75, 0.03, 0.35, 0.4), tone(HISS * 0.5, 0.35, .noise, 0.2, 0.02, 0.3, 0.5), tone(140.0, 0.3, .noise, 0.3, 0.03, 0.25, 0.5)])
@@ -3145,6 +3324,8 @@ draw_hud = (g: Game):
             if c.kind == DAVINCI and c.boulders > 0 and not c.landed: draw_throw(boulder_throw(g, myc))
             if aim_steering() and not k.lighter:
                 if let m = world_to_screen(c.pos + aim_dir() * 400.0): ring(m, 7, 2, rgba(1, 1, 1, 0.5))
+        else if k.seats[p.seat].weapon == BOMBARD or k.seats[p.seat].weapon == BROADSIDE:
+            heavy_hud(g, myc, c, p.seat)
         else:
             # (at a gun: where its bullets go, 300 m out (a siphon's fire, as far as it reaches);
             # brighter as it fires, red at its limit)
@@ -3454,6 +3635,183 @@ calls_list = (g: Game, p: Person, l: int[], x: f64, y: f64):
         if k == 0: rect(f64(rr.x), ry, f64(rr.w), 28, with_alpha(col, 0.18))
         text_centered(t, vec2(f32(x), f32(ry + 14.0)), T_BODY, if k == 0: INK else: INK_DIM)
 
+# ---------------- the seat map (M): a craft's plan from above, every seat on it ----------------
+# who is in each (you, a player, its crew, no one) and what it is; hovered, what its gun is and how
+# far it turns; clicked or tapped, there (as a seat's number is: free, or the computer's of one's
+# side moving over). Aboard a craft of many seats, on its deck, or on foot by one on the ground
+map_open = false
+map_toggled = false
+map_tap = vec2(0, 0)
+map_tapped = false
+map_note = ""
+map_note_at = -10.0
+map_was_locked = false
+
+# (the craft whose seat map this one may open: -1 none)
+map_craft = () -> int:
+    if mode == .menu: return -1
+    g = game()
+    p = my()
+    k = -1
+    if p.state == SEATED: k = p.craft
+    else if p.state == WALK and p.craft >= 0: k = p.craft
+    else if p.state == WALK: k = craft_in_reach(g, p)
+    if k < 0 or k >= g.crafts.len() or not whole(g.crafts[k]) or g.crafts[k].seats.len() < 3: return -1
+    k
+open_map = ():
+    global map_open, map_was_locked, had_lock
+    map_open = true
+    map_was_locked = is_mouse_locked()
+    had_lock = false
+    mouse_lock(false)
+close_map = ():
+    global map_open, relock_at
+    map_open = false
+    if map_was_locked and settings.mouse and not touch_input(): relock_at = elapsed() + 0.15
+
+# (the map's panel, its middle (the craft's) and its scale, for a kind)
+map_layout = (kind: int) -> (Rect, vec2, f64):
+    vr = visible_rect()
+    pw = min(f64(vr.w) - 40.0, if kind == CASTLE: 620.0 else: 560.0)
+    ph = f64(vr.h) - 60.0
+    r = Rect(f32(f64(vr.x) + (f64(vr.w) - pw) / 2.0), f32(f64(vr.y) + 30.0), f32(pw), f32(ph))
+    h = KINDS[kind].half
+    sc = min((pw - 60.0) / (2.0 * f64(h.x)), (ph - 170.0) / (2.0 * f64(h.z)))
+    (r, vec2(f32(f64(r.x) + pw / 2.0), f32(f64(r.y) + 70.0 + (ph - 150.0) / 2.0)), sc)
+
+# (the map's pointer and its click: the mouse's, or a finger's tap)
+map_pointer = () -> vec2: if map_tapped: map_tap else: mouse_pos()
+map_clicked = () -> bool: mouse_pressed(.left) or map_tapped
+
+# (the plan of a craft from above: its outline; the flying castle's terraces, keep, galleries and
+# great screw)
+draw_plan = (kind: int, o: vec2, sc: f64):
+    at = (x: f64, z: f64) -> vec2: o + vec2(f32(x * sc), f32(z * sc))
+    if kind == CASTLE:
+        loop i in 0..CASTLE_TIERS.len():
+            pts = [0..72).map((k): (castle_edge(i, TAU * f64(k) / 72.0, 0.0)))
+            polygon(pts.map((q): at(f64(q.x), f64(q.z))), rgba(f32(0.2 + 0.05 * f64(i)), f32(0.19 + 0.045 * f64(i)), f32(0.17 + 0.04 * f64(i)), 0.95))
+            polyline(pts.map((q): at(f64(q.x), f64(q.z))), 1.0, rgba(0.84, 0.67, 0.33, 0.35), true)
+        ring(at(0.0, 12.0), 80.0 * sc, 1.5, rgba(0.84, 0.67, 0.33, 0.22), 64)
+        rect(at(-13.0, -27.0), vec2(f32(26.0 * sc), f32(20.0 * sc)), rgba(0.42, 0.4, 0.36, 0.95))
+        rect(at(-7.0, 6.0), vec2(f32(14.0 * sc), f32(40.0 * sc)), rgba(0.42, 0.4, 0.36, 0.9))
+        loop b in 0..4:
+            loop n in 0..BATTERY_GUNS:
+                q = castle_gun_at(b, n)
+                d = castle_out(castle_gun_a(b, n))
+                line(at(f64(q.x), f64(q.z)), at(f64(q.x + d.x * 2.6), f64(q.z + d.z * 2.6)), 3.0, rgba(0.1, 0.1, 0.1, 0.9))
+        return
+    h = KINDS[kind].half
+    pts = [0..48).map((k): at(cos(TAU * f64(k) / 48.0) * f64(h.x), sin(TAU * f64(k) / 48.0) * f64(h.z)))
+    polygon(pts, rgba(0.25, 0.23, 0.2, 0.95))
+    polyline(pts, 1.0, rgba(0.84, 0.67, 0.33, 0.4), true)
+    polygon([at(0.0, -f64(h.z) - 2.0), at(-2.5, -f64(h.z) + 3.0), at(2.5, -f64(h.z) + 3.0)], BRASS_DIM)
+
+draw_seat_map = (g: Game):
+    global map_note, map_note_at, map_tapped, next_seat
+    ci = map_craft()
+    pt = map_pointer()
+    clicked = map_clicked()
+    map_tapped = false
+    if ci < 0: return
+    c = g.crafts[ci]
+    k = KINDS[c.kind]
+    p = my()
+    r, o, sc = map_layout(c.kind)
+    pw = f64(r.w)
+    ph = f64(r.h)
+    panel(r, rgba(0.06, 0.05, 0.04, 0.9))
+    text_centered("{capitalize(KIND_NAMES[c.kind])}: its seats", vec2(f32(f64(r.x) + pw / 2.0), r.y + 26), T_HEAD - 6.0, BRASS)
+    text_centered("the bow up    click or tap a seat to go there    {if touch_input(): "Map" else: "M or Esc"}: close", vec2(f32(f64(r.x) + pw / 2.0), r.y + 52), T_SMALL - 2.0, INK_DIM)
+    at = (q: vec3) -> vec2: o + vec2(f32(f64(q.x) * sc), f32(f64(q.z) * sc))
+    draw_plan(c.kind, o, sc)
+    # (its automatic guns, no one's seats: small, grey)
+    if c.kind == CASTLE:
+        loop a in CASTLE_AUTOS:
+            q = at(a.at)
+            polygon([q + vec2(0, -5), q + vec2(5, 0), q + vec2(0, 5), q + vec2(-5, 0)], if f64(a.at.y) < -40.0: rgba(0.55, 0.55, 0.55, 0.55) else: rgba(0.7, 0.7, 0.7, 0.85))
+    # (which seat the pointer is on)
+    hover = -1
+    best = 18.0
+    loop s in 0..c.seats.len():
+        d = f64(length(at(k.seats[s].at) - pt))
+        if d < best:
+            best = d
+            hover = s
+    # (its arc, hovered: the way its gun rests and how far it turns from it, seen from above)
+    if hover >= 0 and gun_seat(c.kind, hover):
+        st = k.seats[hover]
+        q = at(st.at)
+        flat = vec2(st.dir.x, st.dir.z)
+        half = acos(clamp(st.arc, -1.0, 1.0))
+        if f64(length(flat)) > 0.35 and half < 1.5:
+            a0 = atan2(f64(flat.y), f64(flat.x))
+            rr = if st.weapon == BOMBARD: 120.0 else: 80.0
+            fan = [q]
+            loop j in 0..17: fan.push(q + vec2(f32(cos(a0 - half + 2.0 * half * f64(j) / 16.0) * rr), f32(sin(a0 - half + 2.0 * half * f64(j) / 16.0) * rr)))
+            polygon(fan, rgba(1.0, 0.82, 0.4, 0.22))
+            polyline(fan, 1.5, rgba(1.0, 0.82, 0.4, 0.7), true)
+        else: ring(q, 34.0, 2.0, rgba(1.0, 0.82, 0.4, 0.6))
+        if st.weapon == BROADSIDE:
+            loop n in 0..BATTERY_GUNS: ring(at(castle_gun_at(hover - 1, n)), 6.0, 2.0, rgba(1.0, 0.82, 0.4, 0.9))
+    # (the seats: who is in each)
+    loop s in 0..c.seats.len():
+        st = k.seats[s]
+        q = at(st.at)
+        pk = c.seats[s]
+        rad = if s == 0: 9.0 else: if st.weapon == BOMBARD: 11.0 else: if st.weapon == BROADSIDE: 8.0 else: 6.5
+        col = if pk == me(): BRASS else: if pk >= 0 and g.people[pk].team != p.team: WARN else: if pk >= 0 and g.people[pk].player >= 0: COLORS[g.people[pk].team] else: if pk >= 0: rgba(0.78, 0.74, 0.66, 0.9) else: rgba(0, 0, 0, 0)
+        if pk >= 0: circle(q, rad, col)
+        ring(q, rad, if s == hover: 3.0 else: 1.8, if pk == me(): INK else: if s == hover: rgba(1.0, 0.85, 0.45, 1.0) else: INK_DIM)
+        if st.weapon == BOMBARD: ring(q, rad + 4.0, 1.5, BRASS_DIM)
+        if s == 0: polygon([q + vec2(0, -4), q + vec2(4, 3), q + vec2(-4, 3)], if pk >= 0: rgba(0.1, 0.08, 0.05, 1) else: INK_DIM)
+        label = "{s + 1}"
+        text(label, q + vec2(f32(rad + 3.0), -9), T_SMALL - 4.0, if pk == me(): INK else: INK_FAINT)
+        if pk == me(): text_centered("you", q + vec2(0, f32(-rad - 10.0)), T_SMALL - 2.0, INK, SHADOW)
+    # (the key)
+    ly = f64(r.y) + ph - 34.0
+    lx = f64(r.x) + 24.0
+    loop j in 0..5:
+        col = [BRASS, COLORS[p.team], rgba(0.78, 0.74, 0.66, 0.9), rgba(0, 0, 0, 0), rgba(0.7, 0.7, 0.7, 0.85)][j]
+        name = ["you", "a player", "crew", "free", "its own gun"][j]
+        cp = vec2(f32(lx + 8.0), f32(ly + 8.0))
+        if j == 4: polygon([cp + vec2(0, -5), cp + vec2(5, 0), cp + vec2(0, 5), cp + vec2(-5, 0)], col)
+        else:
+            circle(cp, 6.0, col)
+            ring(cp, 6.0, 1.5, INK_DIM)
+        text(name, vec2(f32(lx + 20.0), f32(ly - 1.0)), T_SMALL - 2.0, INK_DIM)
+        lx += 30.0 + text_width(name, T_SMALL - 2.0)
+    # (the hovered seat said: its name, its gun, its arc, who is in it, its gun's loading)
+    if hover >= 0:
+        st = k.seats[hover]
+        pk = c.seats[hover]
+        lines = ["{hover + 1}  {SEAT_NAMES[c.kind][hover]}"]
+        if not gun_seat(c.kind, hover): lines.push("the helm: it flies it")
+        else:
+            lines.push("{WEAPON_NAMES[st.weapon]}{if st.weapon == BROADSIDE: ", " + str(BATTERY_GUNS) + " guns" else: ""}, turns {int(round(degrees(acos(clamp(st.arc, -1.0, 1.0)))))} degrees from its rest")
+            if st.weapon == BOMBARD or st.weapon == BROADSIDE:
+                gap = if st.weapon == BOMBARD: BOMBARD_GAP else: BROADSIDE_GAP
+                lines.push(if c.gcool[hover] == 0: "loaded" else: "loading: {int(f64(c.gcool[hover]) / 60.0) + 1} s of {gap / 60}")
+        who = if pk == me(): "you are here" else: if pk >= 0 and g.people[pk].team != p.team: "the other side's {call(g, pk)}" else: if pk >= 0 and g.people[pk].player >= 0: "{call(g, pk)}, a player" else: if pk >= 0: "its crew (they would move over)" else: "free"
+        lines.push(who)
+        free = pk < 0 or (pk != me() and can_take(g, me(), pk, ci))
+        if pk != me(): lines.push(if free: "click to go there" else: "taken")
+        w = 0.0
+        loop l in lines: w = max(w, text_width(l, T_SMALL))
+        bx = min(f64(pt.x) + 18.0, f64(r.x) + pw - w - 2.0 * PAD - 8.0)
+        by = min(f64(pt.y) + 14.0, f64(r.y) + ph - 30.0 - 22.0 * f64(lines.len()) - 10.0)
+        panel(Rect(f32(bx), f32(by), f32(w + 2.0 * PAD), f32(14.0 + 22.0 * f64(lines.len()))), rgba(0.1, 0.08, 0.06, 0.95))
+        loop j in 0.. and l in lines: text(l, vec2(f32(bx + PAD), f32(by + 8.0 + 22.0 * f64(j))), T_SMALL, if j == 0: BRASS else: INK)
+        if clicked and pk != me():
+            if free:
+                next_seat = hover + 1
+                say("to the {SEAT_NAMES[c.kind][hover]}", BRASS, small = true)
+                close_map()
+            else:
+                map_note = "that seat is taken"
+                map_note_at = elapsed()
+    if elapsed() - map_note_at < 1.5: text_centered(map_note, vec2(f32(f64(r.x) + pw / 2.0), f32(f64(r.y) + ph - 60.0)), T_BODY, BRASS, SHADOW)
+
 # what F or T would do now: in a small panel low in the middle (a phone's high), said when it
 # comes and gone after a few seconds, unless it is urgent (shot down, falling)
 prompt_said = ""
@@ -3484,7 +3842,10 @@ lead_reach = (c: Craft, seat: int) -> f64:
     if c.kind == SCREW and seat == 0: return 0.0
     if gun_seat(c.kind, seat) and KINDS[c.kind].seats[seat].weapon == FLAME: return FLAME_REACH * 2.5
     700.0
-lead_speed = (c: Craft, seat: int) -> f64: if gun_seat(c.kind, seat) and KINDS[c.kind].seats[seat].weapon == FLAME: FLAME_SPEED * 0.55 else: BULLET_SPEED
+lead_speed = (c: Craft, seat: int) -> f64:
+    if not gun_seat(c.kind, seat): return BULLET_SPEED
+    wp = KINDS[c.kind].seats[seat].weapon
+    if wp == FLAME: FLAME_SPEED * 0.55 else: if wp == BROADSIDE: IRON_SPEED else: if wp == BOMBARD: BOMBARD_SPEED else: BULLET_SPEED
 
 # the scope's view: dark round it, a cross where the long gun's shell goes (the craft's nose,
 # which turns toward the aim), and its loading
@@ -3547,8 +3908,11 @@ boulder_throw = (g: Game, ci: int) -> Throw:
     c = g.crafts[ci]
     f = fwd_of(c)
     flat = normalize(vec3(f.x, 0, f.z) + vec3(0, 0, 0.0001))
-    at = point_of(c, BOULDER_AT)
-    v = c.vel + flat * f32(BOULDER_SPEED) + vec3(0, f32(BOULDER_UP), 0)
+    arc_throw(g, ci, point_of(c, BOULDER_AT), c.vel + flat * f32(BOULDER_SPEED) + vec3(0, f32(BOULDER_UP), 0), BOULDER_NEAR, 600)
+# (a ball's flight from at at v (ticks at most), till it would meet what is within `near` of it)
+arc_throw = (g: Game, ci: int, at0: vec3, v0: vec3, near: f64, ticks: int) -> Throw:
+    at = at0
+    v = v0
     # (the others it could reach in its flight: where, which way, their turn undone, how big)
     ps: vec3[]
     vs: vec3[]
@@ -3556,13 +3920,13 @@ boulder_throw = (g: Game, ci: int) -> Throw:
     hs: vec3[]
     loop j in 0..g.crafts.len():
         if j == ci or g.crafts[j].free or g.crafts[j].gone > 0: continue
-        if f64(length(g.crafts[j].pos - at)) > 1500.0 + f64(length(g.crafts[j].vel)) * 12.0: continue
+        if f64(length(g.crafts[j].pos - at)) > f64(length(v0)) * f64(ticks) * DT + 200.0 + f64(length(g.crafts[j].vel)) * f64(ticks) * DT: continue
         ps.push(g.crafts[j].pos)
         vs.push(g.crafts[j].vel)
         qs.push(quat_inverse(g.crafts[j].rot))
-        hs.push(KINDS[g.crafts[j].kind].half + vec3(f32(BOULDER_NEAR)))
+        hs.push(KINDS[g.crafts[j].kind].half + vec3(f32(near)))
     out = Throw([at])
-    loop k in 0..600:
+    loop k in 0..ticks:
         v.y -= f32(9.8 * DT)
         at += v * f32(DT)
         out.path.push(at)
@@ -3604,6 +3968,38 @@ draw_throw = (w: Throw):
             circle(at, 5.0 + 9.0 * k, rgba(1, 0.7, 0.35, 0.1 + 0.25 * k))
             ring(at, 7.0 + 9.0 * k, 2, rgba(1, 0.7, 0.35, 0.2 + 0.5 * k))
 
+# (where a castle's battery or bombard fired now sends its ball: its arc, as boulder_throw's)
+heavy_throw = (g: Game, ci: int, s: int) -> Throw:
+    c = g.crafts[ci]
+    st = KINDS[c.kind].seats[s]
+    bomb = st.weapon == BOMBARD
+    at = point_of(c, st.at) + c.aims[s] * f32(if bomb: 5.2 else: 3.2)
+    arc_throw(g, ci, at, c.vel + c.aims[s] * f32(if bomb: BOMBARD_SPEED else: IRON_SPEED), if bomb: BOMBARD_NEAR else: IRON_NEAR, if bomb: 1500 else: 400)
+
+# at a battery or a bombard: the ball's arc (a bombard's all of it, a battery's its first few
+# seconds) and where it comes down or what it would strike, ringed; a sight where it points; how
+# long till it is loaded again, and with a target locked, how far it is
+heavy_hud = (g: Game, ci: int, c: Craft, s: int):
+    st = KINDS[c.kind].seats[s]
+    bomb = st.weapon == BOMBARD
+    w = heavy_throw(g, ci, s)
+    draw_throw(w)
+    if bomb and not w.hit and w.path.len() > 1:
+        end = w.path[w.path.len() - 1]
+        if f64(dot(end - cam_pos, cam_at - cam_pos)) > 0.0:
+            if let at = world_to_screen(end):
+                d = f64(length(end - point_of(c, st.at)))
+                text_centered("{int(d)} m", at + vec2(0, 30), T_SMALL, rgba(1, 0.9, 0.6, 0.9), SHADOW)
+    limit = f64(dot(aim_dir(), quat_rotate(c.rot, st.dir))) < st.arc + 0.02
+    sight(point_of(c, st.at) + c.aims[s] * 400.0, c.gcool[s] > (if bomb: BOMBARD_GAP - 60 else: BROADSIDE_GAP - 40), limit)
+    gap = if bomb: BOMBARD_GAP else: BROADSIDE_GAP
+    ready = 1.0 - f64(c.gcool[s]) / f64(gap)
+    m = mid()
+    r = Rect(m.x - 110, m.y - 190, 220, 8)
+    hud_bar(r, ready, if ready >= 1.0: rgba(0.6, 1.0, 0.6, 0.9) else: rgba(1, 0.8, 0.4, 0.9))
+    what = if bomb: "great bombard" else: "broadside, {BATTERY_GUNS} guns"
+    text_centered(if ready >= 1.0: "{what}: loaded" else: "{what}: loading, {int(f64(c.gcool[s]) / 60.0) + 1} s", m + vec2(0, -166), T_SMALL, INK, SHADOW)
+
 # a path on the screen: a dot each quarter second along it, and a ring at its end (if `end`)
 draw_path = (pts: vec3[], col: vec4, end: bool = true):
     loop k in 0.. and q in pts:
@@ -3634,7 +4030,7 @@ what_f_does = (g: Game, p: Person) -> str:
         c = g.crafts[p.craft]
         s = seat_near(g, p.craft, p.deck)
         off = if c.landed and f64(length(c.vel)) < 4.0: "{tk}: get down" else: "{tk}: jump off"
-        if s >= 0: return "{fk}: {if s == 0: "take the controls" else: "man the " + SEAT_NAMES[c.kind][s]}    {off}"
+        if s >= 0: return "{fk}: {if s == 0: "take the controls" else: "man the " + SEAT_NAMES[c.kind][s]}    {off}{if c.seats.len() >= 3 and not touch_input(): "    M: the seat map" else: ""}"
         return if touch_input(): "" else: "Ctrl: jump    {off}"
     if p.state == WALK:
         k = nearest_craft(g, p)
@@ -3673,6 +4069,7 @@ what_f_does = (g: Game, p: Person) -> str:
     if c.down > 0: return "{tk}: bail out!"
     if touch_input(): return "{tk} held: bail out"
     if len(put) > 0: return put.trim()
+    if c.kind == CASTLE: return "M: the seat map"
     ""
 
 # the top of the screen: what the fight is about, and how it stands
@@ -3805,6 +4202,7 @@ draw_touch = (g: Game, p: Person, c: Craft):
     # (not the little screw's pilot: its guns are its crew's)
     if not (flying_now and c.kind == SCREW): tb(fire_at(), FIRE_R, if p.state == WALK: "Walk" else: "Fire", touch_fire, T_HEAD)
     tb(look_button(), BUTTON_R, "Look", tracking)
+    if map_craft() >= 0: tb(map_button(), BUTTON_R, "Map", map_open)
     if len(what_f_does(g, p)) > 0: tb(enter_button(), BUTTON_R, "In/Out", touch_enter)
     if x_gunner(): tb(rocket_button(), BUTTON_R, if c.kind == BALLOON: "Cannon" else: "Drone", touch_rocket)
     if flying_now:
