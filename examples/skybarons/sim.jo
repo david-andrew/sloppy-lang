@@ -507,7 +507,9 @@ struct Pad:
     computer = false            # (the computer plays it: a player who left)
     witch = false               # (one's rocketeer a witch on a broom, or back)
     stand = false               # (U: up out of one's seat, on the craft's deck)
-    join = false                # (J: answer one's side's crew call, put in a free seat of that craft)
+    join = false                # (J: answer one's side's crew call, put in a free seat of that craft;
+    join_to = -1                # or this craft's, picked from the calls shown (-1 the first of them);
+                                # the pilot of a craft of more seats than one, on its field: call again)
 
 struct Craft:
     kind: int
@@ -1507,18 +1509,36 @@ can_answer = (g: Game, p: Person) -> bool:
     if p.state != SEATED: return false
     c = g.crafts[p.craft]
     grounded(c) and f64(length(c.vel)) < 8.0 and on_own_field(c, p.team) and not calling(g, p.craft)
-# (the craft calling person i's side whose seats are not all spoken for: the nearest; -1 none)
-call_for = (g: Game, i: int, p: Person) -> int:
-    best = -1
-    least = 1e18
+# (the crafts calling person i's side whose seats are not all spoken for, CALLS_SHOWN at most: the
+# least crewed of them first (aboard and answering), then the nearest: so the answers spread)
+const CALLS_SHOWN = 3
+calls_for = (g: Game, i: int, p: Person) -> int[]:
+    got: (f64, int)[]
     loop j in 0.. and c in g.crafts:
         if c.call <= g.tick or j == p.craft or not whole(c) or crew_at(g, j) != p.team: continue
         if answering(g, j) >= room(c): continue
-        d = f64(length(c.pos - p.pos))
-        if d < least:
-            least = d
-            best = j
-    best
+        got.push((f64(aboard(c) + answering(g, j)) * 100000.0 + f64(length(c.pos - p.pos)), j))
+    got.sort_with((a, b): a.0 < b.0 or (a.0 == b.0 and a.1 < b.1))
+    out: int[]
+    loop t in got:
+        if out.len() < CALLS_SHOWN: out.push(t.1)
+    out
+# (the first of them; -1 none)
+call_for = (g: Game, i: int, p: Person) -> int:
+    l = calls_for(g, i, p)
+    if l.len() > 0: l[0] else: -1
+# (the first of them the computer may still answer, for one of the computer's: so they spread)
+call_for_computer = (g: Game, i: int, p: Person) -> int:
+    loop k in calls_for(g, i, p):
+        if computer_answers(g, k): return k
+    -1
+# (person i's own craft (piloting it, or on its deck), of more seats than one, standing on its
+# field, seats free, not calling: one it can call for)
+can_call = (g: Game, i: int, p: Person) -> bool:
+    if p.craft < 0 or p.team >= GOLD: return false
+    if not (p.state == WALK or (p.state == SEATED and p.seat == 0)): return false
+    c = g.crafts[p.craft]
+    crewed(c.kind) and whole(c) and grounded(c) and f64(length(c.vel)) < 4.0 and c.team == p.team and on_own_field(c, p.team) and room(c) > 0 and not calling(g, p.craft)
 # (a player of the side who could still answer craft j's call)
 player_could = (g: Game, team: int) -> bool:
     loop q in g.people:
@@ -1539,6 +1559,8 @@ join_crew = (g: mut Game, i: int, p0: Person) -> Person:
     p.joining = -1
     c = g.crafts[k]
     if not whole(c) or crew_at(g, k) != p.team or not (p.state == WALK or p.state == SEATED) or k == p.craft: return p
+    # (one who has sat down since to fly a craft of more seats than one: theirs to fly, not left)
+    if p.state == SEATED and p.seat == 0 and crewed(g.crafts[p.craft].kind): return p
     s = -1
     loop j in 1..c.seats.len():
         if s < 0 and c.seats[j] == -1 and crew_seat(c.kind, j): s = j
@@ -1562,8 +1584,15 @@ crew_calls = (g: mut Game):
         c = g.crafts[j]
         if c.free or not crewed(c.kind): continue
         pi = pilot_of(c)
-        if pi < 0 or not whole(c):
+        if not whole(c) or (pi < 0 and c.call <= g.tick):
             g.crafts[j].call = 0
+            continue
+        if pi < 0:
+            # (no pilot: kept only while one of its side stands on its deck, who called it)
+            on_deck = false
+            loop q in g.people:
+                if q.state == WALK and q.craft == j and q.team == c.team: on_deck = true
+            if not on_deck or not grounded(c) or answering(g, j) >= room(c): g.crafts[j].call = g.tick
             continue
         if c.call == 0:
             team = g.people[pi].team
@@ -1598,8 +1627,12 @@ person = (g: mut Game, i: int, pad: Pad):
         return
     # (the crew call: J, the screen fading, and a moment later in a seat of the craft)
     if p.joining >= 0 and g.tick >= p.join_at: p = join_crew(g, i, p)
-    if joined and p.joining < 0 and can_answer(g, p):
-        k = call_for(g, i, p)
+    if joined and p.joining < 0 and p.player >= 0 and can_call(g, i, p):
+        g.crafts[p.craft].call = g.tick + CALL_TIME
+        g.booms.push(Boom(g.crafts[p.craft].pos, CALLED, g.tick, p.craft, i))
+    else if joined and p.joining < 0 and can_answer(g, p):
+        shown = calls_for(g, i, p)
+        k = if pad.join_to >= 0 and shown.contains(pad.join_to): pad.join_to else: if p.player >= 0: call_for(g, i, p) else: call_for_computer(g, i, p)
         if k >= 0 and (p.player >= 0 or computer_answers(g, k)):
             p.joining = k
             p.join_at = g.tick + CALL_FADE
@@ -4469,8 +4502,8 @@ bot_pad = (g: Game, i: int) -> Pad:
     # (near its field, on foot or in a small craft standing there, a crew call of its side, the
     # craft short of its crew: J, a moment after it is heard)
     if p.joining < 0 and g.tick % 15 == i % 15 and (p.state == WALK or (p.state == SEATED and not crewed(g.crafts[p.craft].kind))) and can_answer(g, p):
-        k = call_for(g, i, p)
-        if k >= 0 and computer_answers(g, k): return Pad(aim_yaw = int(p.yaw * 1000.0), join = true)
+        k = call_for_computer(g, i, p)
+        if k >= 0: return Pad(aim_yaw = int(p.yaw * 1000.0), join = true, join_to = k)
     # (on a deck (a player who left): into a seat in reach, else off it)
     if p.state == WALK and p.craft >= 0:
         near = seat_near(g, p.craft, p.deck) >= 0
