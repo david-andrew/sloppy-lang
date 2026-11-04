@@ -416,6 +416,7 @@ struct Person:
     cool = 0                    # (ticks until its pistol fires again)
     opened = 0                  # (falling: the timer when its parachute opened)
     witch = false               # (its rocketeer seen as a witch on a broom)
+    left = -1                   # (falling: the craft bailed out of, not landed on again at once)
 
 struct Bullet:
     pos: vec3
@@ -510,6 +511,8 @@ const BALL_BACK = 37            # ball `who` back in the middle, long left alone
 const POTTED = 38               # a fire pot burst (`who`: the craft it came from), thrown by person `by`
 const GOLD_WON = 39             # the golden cat (craft `who`) shot down or flown into by person `by`: their side has won
 const GOLD_OUT = 40             # the golden cat (craft `who`) out
+const SWAPPED = 41              # person `by` took the seat of `who` (one of the computer's, of their side)
+const ABOARD = 42               # person `who`, falling, landed aboard craft `by`, in a seat
 struct Boom:
     pos: vec3
     kind: int
@@ -972,6 +975,7 @@ person = (g: mut Game, i: int, pad: Pad):
             p = change_seat(g, i, p, 0)
             c = g.crafts[p.craft]
         if seat_new: p = change_seat(g, i, p, seat_now - 1)
+        c = g.crafts[p.craft]
         if out:
             if c.landed and f64(length(c.vel)) < 4.0: p = get_out(g, i, p)
             else: p = bail_out(g, i, p)
@@ -1022,6 +1026,12 @@ person = (g: mut Game, i: int, pad: Pad):
             p.vel = vec3(h.x, p.vel.y, h.z)
             p.yaw = yaw
         p.pos += p.vel * f32(DT)
+        # (onto a craft, a seat free near: in it)
+        k = landing_on(g, i, p)
+        if k >= 0:
+            p = land_aboard(g, i, p, k)
+            g.people[i] = p
+            return
         gy = ground(f64(p.pos.x), f64(p.pos.z))
         if f64(p.pos.y) <= gy:
             p.pos.y = f32(gy)
@@ -1072,7 +1082,23 @@ person = (g: mut Game, i: int, pad: Pad):
             put_out(g, g.crafts[k].seats[0], i)
             g.people[i] = p
             p = get_in(g, i, p, k)
-    if pressed:
+    # (a seat's number, beside a craft on the ground: that seat, one of the computer's of one's
+    # own side in it moving over)
+    if seat_new and p.state == WALK:
+        k = craft_in_reach(g, p)
+        if k >= 0 and seat_now - 1 < g.crafts[k].seats.len():
+            s = seat_now - 1
+            o = g.crafts[k].seats[s]
+            if o < 0 or can_take(g, i, o, k):
+                g.people[i] = p
+                if o >= 0: move_over(g, o, i, k, s)
+                g.crafts[k].seats[s] = i
+                p.state = SEATED
+                p.craft = k
+                p.seat = s
+                p.goal = -1
+                g.booms.push(Boom(p.pos, BOARDED, g.tick, i, k))
+    if pressed and p.state == WALK:
         k = nearest_craft(g, p)
         gi = nearest_gun(g, p)
         if gi >= 0 and (k < 0 or f64(length(g.buildings[gi].pos - p.pos)) < 3.0):
@@ -1207,13 +1233,113 @@ get_in = (g: mut Game, i: int, p0: Person, k: int) -> Person:
     g.booms.push(Boom(p.pos, BOARDED, g.tick, i, k))
     p
 
+# (a free seat, or one of the computer's of one's own side in it, on a craft its crew one's own
+# side: they move to another seat, or out)
 change_seat = (g: mut Game, i: int, p0: Person, s: int) -> Person:
     let p = p0
     c = g.crafts[p.craft]
-    if s < 0 or s >= c.seats.len() or c.seats[s] >= 0: return p
+    if s < 0 or s >= c.seats.len() or s == p.seat: return p
+    o = c.seats[s]
+    if o >= 0 and not can_take(g, i, o, p.craft): return p
     g.crafts[p.craft].seats[p.seat] = -1
+    if o >= 0: move_over(g, o, i, p.craft, s)
     g.crafts[p.craft].seats[s] = i
     p.seat = s
+    p
+
+# whether person i may have the seat person o has in craft k: o one of the computer's of i's
+# side, the craft's crew i's side (never anyone of the other side, never a player)
+can_take = (g: Game, i: int, o: int, k: int) -> bool:
+    if o == i or g.people[o].player >= 0 or g.people[o].team != g.people[i].team: return false
+    if g.people[o].state != SEATED or g.people[o].craft != k: return false
+    crew_at(g, k) == g.people[i].team
+
+# (person o, of the computer's, out of seat s of craft k for person `by`: to the pilot's seat if
+# it is free, else the first free one; none, out of the craft)
+move_over = (g: mut Game, o: int, by: int, k: int, s: int):
+    to = -1
+    loop j in 0..g.crafts[k].seats.len():
+        if to < 0 and j != s and g.crafts[k].seats[j] < 0: to = j
+    g.booms.push(Boom(g.people[o].pos, SWAPPED, g.tick, o, by))
+    if to >= 0:
+        g.crafts[k].seats[s] = -1
+        g.crafts[k].seats[to] = o
+        g.people[o].seat = to
+        return
+    q = g.people[o]
+    c = g.crafts[k]
+    q = if c.landed and f64(length(c.vel)) < 4.0: get_out(g, o, q) else: bail_out(g, o, q)
+    q.goal = -1
+    g.people[o] = q
+
+# the craft whose seat p, on foot, is within reach of (taken or not): -1 none
+craft_in_reach = (g: Game, p: Person) -> int:
+    best = -1
+    least = ENTER
+    loop j in 0.. and c in g.crafts:
+        if not whole(c) or not c.landed or f64(length(c.vel)) > 3.0: continue
+        loop s in 0.. and st in KINDS[c.kind].seats:
+            d = f64(length(point_of(c, board_at(c.kind, st.at)) - p.pos - vec3(0, 1, 0)))
+            if c.kind == ZEPPELIN: d = min(d, f64(length(point_of(c, vec3(0, -11, -24)) - p.pos)))
+            if c.kind == DAVINCI: d = f64(length(point_of(c, DV_LADDER) - p.pos - vec3(0, 1, 0)))
+            if d < least:
+                least = d
+                best = j
+    best
+
+const ABOARD_REACH = 4.0        # (m from a free seat, falling, to land in it)
+
+# the craft person i, falling or under a canopy, comes down on this tick, a seat of it free:
+# within reach of that seat, or over the craft (inside its outline from above) as low as its
+# highest seat and a little more, no lower than its lowest (a zeppelin's back, a galleass's deck,
+# a balloon's baskets, a bomber's fuselage). Whole, not one that is a person (a rocketeer, the
+# cat), nor a drone; not the one they have just bailed out of. Either side's, for a player; one
+# of the computer's, its own side's crew's alone (-1: none)
+landing_on = (g: Game, i: int, p: Person) -> int:
+    loop j in 0.. and c in g.crafts:
+        if not whole(c) or c.kind == ROCKETEER or c.kind == CAT or c.kind == DRONE or c.team == GOLD: continue
+        if j == p.left and p.timer < 120: continue
+        k = KINDS[c.kind]
+        if f64(length(c.pos - p.pos)) > f64(length(k.half)) + ABOARD_REACH: continue
+        if p.player < 0 and crew_at(g, j) != p.team: continue
+        l = quat_rotate(quat_inverse(c.rot), p.pos - c.pos)
+        low = 1e9
+        high = -1e9
+        free = false
+        near = false
+        loop s in 0.. and st in k.seats:
+            low = min(low, f64(st.at.y))
+            high = max(high, f64(st.at.y))
+            if c.seats[s] >= 0: continue
+            free = true
+            if f64(length(point_of(c, st.at) - p.pos)) < ABOARD_REACH: near = true
+        if not free: continue
+        over = (l.x / k.half.x) * (l.x / k.half.x) + (l.z / k.half.z) * (l.z / k.half.z) < 1.0
+        if near or (over and f64(l.y) > low - 1.0 and f64(l.y) < high + 3.0): return j
+    -1
+
+# landed aboard craft k: in the nearest free seat (the computer's, the pilot's if it is free)
+land_aboard = (g: mut Game, i: int, p0: Person, k: int) -> Person:
+    let p = p0
+    c = g.crafts[k]
+    s = -1
+    least = 1e9
+    loop j in 0.. and st in KINDS[c.kind].seats:
+        if c.seats[j] >= 0: continue
+        d = f64(length(point_of(c, st.at) - p.pos)) + (if j == 0 and p.player < 0: -1000.0 else: 0.0)
+        if d < least:
+            least = d
+            s = j
+    g.crafts[k].seats[s] = i
+    p.state = SEATED
+    p.craft = k
+    p.seat = s
+    p.goal = -1
+    p.left = -1
+    p.torn = false
+    p.pos = point_of(c, KINDS[c.kind].seats[s].at)
+    p.vel = c.vel
+    g.booms.push(Boom(p.pos, ABOARD, g.tick, i, k))
     p
 
 # person pk put out of their seat by person `by`: beside the craft on the ground, else bailing out
@@ -1266,6 +1392,7 @@ bail_out = (g: mut Game, i: int, p0: Person) -> Person:
     p.state = FALL
     p.timer = 0
     p.torn = false
+    p.left = k
     p.craft = -1
     p.seat = -1
     g.booms.push(Boom(p.pos, BAILED, g.tick, i, k))
@@ -1993,7 +2120,7 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
     k = KINDS[c.kind]
     first = if gun_seat(c.kind, 0): 0 else: 1
     if not whole(c) or c.seats.len() <= first or (c.landed and not manned(c)): return
-    team = crew_team(g, c)
+    crew_side = crew_team(g, c)
     loop q in 0..c.ccool.len():
         if g.crafts[i].ccool[q] > 0: g.crafts[i].ccool[q] -= 1
     if c.cgap > 0: g.crafts[i].cgap -= 1
@@ -2002,6 +2129,8 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
         base = quat_rotate(c.rot, st.dir)
         at = point_of(c, st.at)
         pk = c.seats[s]
+        # (each gunner for their own side: one aboard the other side's craft too)
+        team = if pk >= 0: g.people[pk].team else: crew_side
         want = c.aims[s]
         fire = false
         far = 1e9                   # (the computer's: how far its target is)
