@@ -403,6 +403,7 @@ struct Pad:
     aim_pitch = 0               # in thousandths of a radian, the world's way (yaw 0: -z)
     computer = false            # (the computer plays it: a player who left)
     witch = false               # (one's rocketeer a witch on a broom, or back)
+    stand = false               # (U: up out of one's seat, on the craft's deck)
 
 struct Craft:
     kind: int
@@ -496,6 +497,9 @@ struct Person:
     opened = 0                  # (falling: the timer when its parachute opened)
     witch = false               # (its rocketeer seen as a witch on a broom)
     left = -1                   # (falling: the craft bailed out of, not landed on again at once)
+    deck = vec3(0, 0, 0)        # (on foot on a craft, `craft` it: where one stands, its frame)
+    step = vec3(0, 0, 0)        # (and how fast one goes on it, its frame)
+    walked = false              # (falling: off a deck walking, not bailing out: on it again if it comes under)
 
 struct Bullet:
     pos: vec3
@@ -975,6 +979,10 @@ tick = (g: Game, pads: Pad[]) -> Game:
         fly(g, i, if pi >= 0: each[pi] else: Pad(), pi >= 0)
         gunners(g, i, pads)
         if g.crafts[i].kind == SCREW: screw_autos(g, i)
+    # (those on a deck where it is now)
+    loop i in 0..g.people.len():
+        k = g.people[i].craft
+        if g.people[i].state == WALK and k >= 0 and alive(g.crafts[k]): g.people[i].pos = point_of(g.crafts[k], g.people[i].deck)
     collide(g)
     rams(g)
     if g.balls.len() > 0: balls(g)
@@ -1046,6 +1054,201 @@ rules = (g: mut Game):
             if share[t] <= 0.0: g.winner = 1 - t
         if g.winner < 0 and late and share[0] != share[1]: g.winner = if share[0] > share[1]: 0 else: 1
 
+# ---------------- decks: where one stands on a craft ----------------
+# A craft's walkable surface, in its own frame (x right, y up, z back): boxes (or upright
+# cylinders, `round`, inside the box) stood on, their tops the floor; those taller than a step
+# where one stands stop one. A ramp's top rises from lo.y to hi.y along `up` (1 +x, 2 -x, 3 +z,
+# 4 -z). `drawn`: a stair the craft's model does not have, which the game draws. The zeppelin's
+# back is its hull (deck_curve). Each craft's decks are what follows its model: when its shape
+# changes, these change with it
+struct Deck:
+    lo: vec3
+    hi: vec3
+    up = 0
+    round = false
+    drawn = false
+const STEP = 0.6                # (m one steps up without a jump)
+const JUMP = 4.6                # (m/s up: a jump of about a meter)
+const DECK_DROP = 4.0           # (m down past which one off a ledge falls as from a craft)
+const DECK_REACH = 3.5          # (m from one's middle to a seat to get into it from its deck)
+deck_box = (x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64) -> Deck: Deck(v3s(x0, y0, z0), v3s(x1, y1, z1))
+deck_disc = (x: f64, z: f64, r: f64, y0: f64, y1: f64) -> Deck: Deck(v3s(x - r, y0, z - r), v3s(x + r, y1, z + r), round = true)
+v3s = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))
+
+# the flying castle's (models.jo, make_castle): its courtyard on the plinth, the curtain walls'
+# walks, the towers' tops (CASTLE_SEATS' guns on them), the gatehouse, the keep's roof and its
+# bridge; the halls, boiler houses and stacks in the way; and a stair up the inside of each long
+# wall from the courtyard to the walk, beside the halls
+castle_decks = () -> Deck[]:
+    d: Deck[] = []
+    d.push(deck_box(-66, -34, -130, 66, -14, 130))
+    d.push(deck_box(-67, -14, -131, 67, 4, -126))
+    d.push(deck_box(-67, -14, 126, 67, 4, 131))
+    d.push(deck_box(-67, -14, -131, -62, 4, 131))
+    d.push(deck_box(62, -14, -131, 67, 4, 131))
+    loop sx in [-1.0, 1.0]:
+        loop sz in [-1.0, 1.0]:
+            d.push(deck_disc(sx * 62.0, sz * 126.0, 14.4, -27.0, 18.0))
+            d.push(deck_box(sx * 65.0 - 8.0, -22.0, sz * 42.0 - 8.0, sx * 65.0 + 8.0, 12.0, sz * 42.0 + 8.0))
+            # (the stair: up from the courtyard toward the wall's end, a landing at the walk)
+            d.push(Deck(v3s(sx * 60.5 - 1.5, -14.0, sz * 70.0 - 18.0), v3s(sx * 60.5 + 1.5, 4.0, sz * 70.0 + 18.0), up = if sz > 0.0: 3 else: 4, drawn = true))
+            d.push(Deck(v3s(sx * 60.5 - 1.5, -14.0, if sz > 0.0: 88.0 else: -92.0), v3s(sx * 60.5 + 1.5, 4.0, if sz > 0.0: 92.0 else: -88.0), drawn = true))
+        d.push(deck_disc(sx * 14.0, -130.0, 9.4, -14.0, 15.0))
+        d.push(deck_disc(sx * 14.0, 130.0, 8.4, -14.0, 12.0))
+        # (the halls: their walls, their roofs in two steps up to the ridge)
+        loop h in [vec3(-78, 60, 0), vec3(92, 50, 0)]:
+            z0 = f64(h.x) - f64(h.y) / 2.0
+            z1 = f64(h.x) + f64(h.y) / 2.0
+            d.push(deck_box(sx * 50.0 - 9.0, -14.0, z0, sx * 50.0 + 9.0, -2.0, z1))
+            d.push(deck_box(sx * 50.0 - 6.0, -2.0, z0, sx * 50.0 + 6.0, 1.0, z1))
+            d.push(deck_box(sx * 50.0 - 3.0, 1.0, z0, sx * 50.0 + 3.0, 4.0, z1))
+    # (the merlons along the walls' outer edges: off the walk between them)
+    loop sx in [-1.0, 1.0]:
+        loop k in 0..56: d.push(deck_box(sx * 66.4 - 0.6, 4.0, -110.0 + 4.0 * f64(k) - 1.0, sx * 66.4 + 0.6, 6.5, -110.0 + 4.0 * f64(k) + 1.0))
+        loop k in 0..24: d.push(deck_box(-46.0 + 4.0 * f64(k) - 1.0, 4.0, sx * 130.4 - 0.6, -46.0 + 4.0 * f64(k) + 1.0, 6.5, sx * 130.4 + 0.6))
+    d.push(deck_box(-8, 0, -133.5, 8, 8, -126))
+    loop st in [vec3(-34, 30, -62), vec3(34, 30, -62), vec3(-30, 30, 74), vec3(30, 30, 74)]:
+        d.push(deck_box(f64(st.x) - 7.5, -14.0, f64(st.z) - 6.5, f64(st.x) + 7.5, -4.2, f64(st.z) + 6.5))
+        d.push(deck_disc(f64(st.x), f64(st.z), 3.0, -4.2, f64(st.y) + 1.2))
+    d.push(deck_box(-23, -14, -14, 23, 30, 44))
+    loop sx in [-1.0, 1.0]:
+        loop z in [-13.0, 43.0]: d.push(deck_disc(sx * 22.0, z, 6.5, -4.0, 36.0))
+    d.push(deck_box(-6, 30, -14, 6, 31, -6))
+    d
+CASTLE_DECKS = castle_decks()
+
+# da Vinci's galleass's (models.jo, make_davinci): its deck between the gunwales, the forecastle
+# and the stern deck (narrowing to the stem and the transom) and the steps up their middles, the
+# fighting top up the middle tower, the towers in the way, the gunwale along the waist (a jump
+# over it)
+davinci_decks = () -> Deck[]:
+    d: Deck[] = []
+    d.push(deck_box(-9.8, -9, -27, 9.8, -4, 22))
+    d.push(deck_box(-9.0, -9, -31, 9.0, -4, -27))
+    d.push(deck_box(-8.8, -9, 22, 8.8, -4, 29))
+    loop b in [vec3(-34, -31, 7.8), vec3(-36.5, -34, 6.0), vec3(-38.5, -36.5, 4.1), vec3(-40.5, -38.5, 1.9)]: d.push(deck_box(-f64(b.z), -9.0, f64(b.x), f64(b.z), -2.0, f64(b.y)))
+    loop b in [vec3(29, 32, 7.6), vec3(32, 35, 6.0), vec3(35, 38, 4.0)]: d.push(deck_box(-f64(b.z), -9.0, f64(b.x), f64(b.z), -1.4, f64(b.y)))
+    d.push(Deck(v3s(-0.9, -4, -31), v3s(0.9, -2, -28.9), up = 4))
+    d.push(Deck(v3s(-0.9, -4, 26.9), v3s(0.9, -1.4, 29), up = 3))
+    loop sx in [-1.0, 1.0]: d.push(deck_box(sx * 10.05 - 0.25, -4.0, -27.0, sx * 10.05 + 0.25, -3.15, 22.0))
+    d.push(deck_box(-4.8, 4.75, -2.3, 4.8, 5.0, 2.3))
+    loop r in [vec3(0, 11.35, -26), vec3(0, 14.85, 0), vec3(0, 11.35, 26)]: d.push(deck_box(-1.8, -4.0, f64(r.z) - 1.8, 1.8, f64(r.y), f64(r.z) + 1.8))
+    d
+DAVINCI_DECKS = davinci_decks()
+
+# the zeppelin's (models.jo, make_zeppelin): its gunners' platforms on its back; the rest of its
+# back its hull (deck_curve: models.jo's HULL, its radius along it)
+ZEP_DECKS = [deck_disc(0, -25, 1.3, 7.7, 8.2), deck_disc(0, 20, 1.3, 7.2, 8.2)]
+ZEP_HULL = [vec2(-45.0, 0.8), vec2(-44.0, 2.6), vec2(-42.0, 4.3), vec2(-39.0, 5.8), vec2(-35.0, 7.0), vec2(-30.0, 7.9), vec2(-24.0, 8.4), vec2(-16.0, 8.65), vec2(0.0, 8.65), vec2(10.0, 8.55), vec2(18.0, 8.0), vec2(25.0, 7.0), vec2(31.0, 5.6), vec2(36.0, 4.1), vec2(40.0, 2.8), vec2(43.0, 1.7), vec2(44.6, 0.9)]
+NO_DECKS: Deck[] = []
+
+decks_of = (kind: int) -> Deck[]: if kind == CASTLE: CASTLE_DECKS else: if kind == DAVINCI: DAVINCI_DECKS else: if kind == ZEPPELIN: ZEP_DECKS else: NO_DECKS
+has_deck = (kind: int) -> bool: kind == CASTLE or kind == DAVINCI or kind == ZEPPELIN
+
+# (a curved deck's top at x, z: the zeppelin's back, its hull's top across as far as it is not
+# too steep to stand on; -1e9 none)
+deck_curve = (kind: int, x: f64, z: f64) -> f64:
+    if kind != ZEPPELIN: return -1e9
+    r = -1.0
+    loop i in 0..ZEP_HULL.len() - 1:
+        a = ZEP_HULL[i]
+        b = ZEP_HULL[i + 1]
+        if r < 0.0 and z >= f64(a.x) and z <= f64(b.x): r = (f64(a.y) + (f64(b.y) - f64(a.y)) * (z - f64(a.x)) / f64(b.x - a.x)) * 0.98
+    if r < 0.0 or abs(x) > r * 0.7: return -1e9
+    sqrt(r * r - x * x)
+
+# (whether x, z is over deck d, and its top there)
+on_deck_box = (d: Deck, x: f64, z: f64) -> bool:
+    if x < f64(d.lo.x) or x > f64(d.hi.x) or z < f64(d.lo.z) or z > f64(d.hi.z): return false
+    if not d.round: return true
+    u = (x - f64(d.lo.x + d.hi.x) / 2.0) / f64(d.hi.x - d.lo.x) * 2.0
+    w = (z - f64(d.lo.z + d.hi.z) / 2.0) / f64(d.hi.z - d.lo.z) * 2.0
+    u * u + w * w <= 1.0
+deck_top = (d: Deck, x: f64, z: f64) -> f64:
+    if d.up == 0: return f64(d.hi.y)
+    t = if d.up <= 2: (x - f64(d.lo.x)) / f64(d.hi.x - d.lo.x) else: (z - f64(d.lo.z)) / f64(d.hi.z - d.lo.z)
+    if d.up == 2 or d.up == 4: t = 1.0 - t
+    f64(d.lo.y) + (f64(d.hi.y) - f64(d.lo.y)) * clamp(t, 0.0, 1.0)
+
+# the floor under one standing at l (a kind's frame): the highest top no more than a step over
+# their feet (-1e9: none)
+deck_floor = (kind: int, l: vec3) -> f64:
+    x = f64(l.x)
+    z = f64(l.z)
+    best = -1e9
+    top = f64(l.y) + STEP
+    c = deck_curve(kind, x, z)
+    if c <= top: best = c
+    loop d in decks_of(kind):
+        if not on_deck_box(d, x, z): continue
+        t = deck_top(d, x, z)
+        if t <= top and t > best: best = t
+    best
+
+# whether one standing at l would be in something there too tall to step onto
+deck_blocked = (kind: int, l: vec3) -> bool:
+    x = f64(l.x)
+    z = f64(l.z)
+    loop d in decks_of(kind):
+        if not on_deck_box(d, x, z): continue
+        if deck_top(d, x, z) > f64(l.y) + STEP and f64(d.lo.y) < f64(l.y) + 1.7: return true
+    false
+
+# where one in seat s of a kind stands up: a step back from its gun, else where it is, on the
+# floor under it (y -1e9: nowhere to stand)
+stand_spot = (kind: int, s: int) -> vec3:
+    st = KINDS[kind].seats[s]
+    back = vec3(st.dir.x, 0, st.dir.z)
+    tries = [st.at]
+    if length(back) > 0.1: tries = [st.at - normalize(back) * 1.2, st.at]
+    loop t in tries:
+        f = deck_floor(kind, t + vec3(0, 0.5, 0))
+        if f > f64(t.y) - 4.5 and not deck_blocked(kind, vec3(t.x, f32(f), t.z)): return vec3(t.x, f32(f), t.z)
+    vec3(0, -1e9, 0)
+
+# (person i, standing on craft k, a seat of it within reach: the nearest free one; -1 none)
+seat_near = (g: Game, k: int, l: vec3) -> int:
+    best = -1
+    least = DECK_REACH
+    loop s in 0.. and st in KINDS[g.crafts[k].kind].seats:
+        if g.crafts[k].seats[s] >= 0: continue
+        d = f64(length(st.at - l - vec3(0, 1, 0)))
+        if d < least:
+            least = d
+            best = s
+    best
+
+# (off the deck of craft k, in the air: falling, as from it; on it again when coming down on it)
+off_deck = (g: mut Game, i: int, p0: Person, k: int) -> Person:
+    let p = p0
+    c = g.crafts[k]
+    p.pos = point_of(c, p.deck)
+    p.vel = c.vel + quat_rotate(c.rot, p.step)
+    p.state = FALL
+    p.timer = 0
+    p.torn = false
+    p.left = k
+    p.walked = true
+    p.craft = -1
+    p.seat = -1
+    p
+
+# the craft whose deck person p, falling or under a canopy, comes down on this tick, and where on
+# it (its frame); not the one bailed out of just now, but the one walked off
+deck_landing = (g: Game, p: Person) -> (int, vec3):
+    loop j in 0..g.crafts.len():
+        kind = g.crafts[j].kind
+        if not has_deck(kind) or g.crafts[j].free or g.crafts[j].gone > 0 or g.crafts[j].down > 0: continue
+        if j == p.left and p.timer < 120 and not p.walked: continue
+        cp = g.crafts[j].pos
+        if f64(length(cp - p.pos)) > f64(length(KINDS[kind].half)) + 10.0: continue
+        inv = quat_inverse(g.crafts[j].rot)
+        l = quat_rotate(inv, p.pos - cp)
+        was = l - quat_rotate(inv, p.vel - g.crafts[j].vel) * f32(DT)
+        f = deck_floor(kind, vec3(l.x, was.y, l.z))
+        if f > -1e8 and f64(l.y) <= f: return (j, vec3(l.x, f32(f), l.z))
+    (-1, vec3(0, 0, 0))
+
 # ---------------- people ----------------
 const WALK_SPEED = 5.5
 const RUN_SPEED = 10.0
@@ -1061,10 +1264,11 @@ person = (g: mut Game, i: int, pad: Pad):
     pressed = pad.enter and p.held & 1 == 0
     out = pad.leave and p.held & 8 == 0
     kicked = pad.kick and p.held & 16 == 0
+    stood = pad.stand and p.held & 64 == 0
     if pad.witch and p.held & 32 == 0:
         if p.state == SEATED and (g.crafts[p.craft].kind == DAVINCI or g.crafts[p.craft].kind == SCREW): g.crafts[p.craft].crew = 1 - g.crafts[p.craft].crew
         else: p.witch = not p.witch
-    p.held = (if pad.enter: 1 else: 0) | (if pad.rocket: 2 else: 0) | (if pad.bomb: 4 else: 0) | (if pad.leave: 8 else: 0) | (if pad.kick: 16 else: 0) | (if pad.witch: 32 else: 0)
+    p.held = (if pad.enter: 1 else: 0) | (if pad.rocket: 2 else: 0) | (if pad.bomb: 4 else: 0) | (if pad.leave: 8 else: 0) | (if pad.kick: 16 else: 0) | (if pad.witch: 32 else: 0) | (if pad.stand: 64 else: 0)
     seat_now = pad.seat
     seat_new = seat_now != p.seat_held and seat_now > 0
     p.seat_held = seat_now
@@ -1088,7 +1292,17 @@ person = (g: mut Game, i: int, pad: Pad):
             c = g.crafts[p.craft]
         if seat_new: p = change_seat(g, i, p, seat_now - 1)
         c = g.crafts[p.craft]
-        if out:
+        # (U: up out of the seat, standing on the deck there)
+        spot = if stood and not out and whole(c): stand_spot(c.kind, p.seat) else: vec3(0, -1e9, 0)
+        if f64(spot.y) > -1e8:
+            g.crafts[p.craft].seats[p.seat] = -1
+            p.state = WALK
+            p.seat = -1
+            p.deck = spot
+            p.step = vec3(0, 0, 0)
+            p.pos = point_of(c, spot)
+            p.vel = c.vel
+        else if out:
             if c.landed and f64(length(c.vel)) < 4.0: p = get_out(g, i, p)
             else: p = bail_out(g, i, p)
         else:
@@ -1098,7 +1312,7 @@ person = (g: mut Game, i: int, pad: Pad):
         return
     # (on foot, falling, under a canopy: a pistol, where one looks; not swimming)
     if p.cool > 0: p.cool -= 1
-    if pad.fire and p.cool == 0 and p.state != POST and not (p.state == WALK and is_water(f64(p.pos.x), f64(p.pos.z))):
+    if pad.fire and p.cool == 0 and p.state != POST and not (p.state == WALK and p.craft < 0 and is_water(f64(p.pos.x), f64(p.pos.z))):
         p.cool = PISTOL_GAP
         yaw = f64(pad.aim_yaw) / 1000.0
         pitch = f64(pad.aim_pitch) / 1000.0
@@ -1144,6 +1358,24 @@ person = (g: mut Game, i: int, pad: Pad):
             p = land_aboard(g, i, p, k)
             g.people[i] = p
             return
+        # (a player onto a craft's deck, no seat taken: standing on it)
+        dk, at = if p.player >= 0: deck_landing(g, p) else: (-1, vec3(0, 0, 0))
+        if dk >= 0:
+            if p.state == FALL and f64(length(p.vel - g.crafts[dk].vel)) > 14.0:
+                g.people[i] = p
+                kill(g, i, -1)
+                return
+            p.state = WALK
+            p.craft = dk
+            p.deck = at
+            p.step = vec3(0, 0, 0)
+            p.left = -1
+            p.walked = false
+            p.torn = false
+            p.pos = point_of(g.crafts[dk], at)
+            p.vel = g.crafts[dk].vel
+            g.people[i] = p
+            return
         gy = ground(f64(p.pos.x), f64(p.pos.z))
         if f64(p.pos.y) <= gy:
             p.pos.y = f32(gy)
@@ -1169,6 +1401,9 @@ person = (g: mut Game, i: int, pad: Pad):
             p.yaw = f64(pad.aim_yaw) / 1000.0
             p.pos = b.pos
         g.people[i] = p
+        return
+    if p.craft >= 0:
+        on_deck(g, i, p, pad, pressed, out, seat_now, seat_new)
         return
     # on foot (or swimming): Shift runs
     p.yaw = f64(pad.aim_yaw) / 1000.0
@@ -1229,6 +1464,94 @@ person = (g: mut Game, i: int, pad: Pad):
             p.state = DEAD
             p.timer = 180
             drop_flag(g, i)
+    g.people[i] = p
+
+# on foot on craft p.craft's deck: walking it as on the ground (Shift runs, Ctrl jumps), riding
+# with it, its frame's; off its edge, or T in the air, falling; T on the ground, down beside it;
+# F, a free seat in reach, in it; a seat's number, that seat in reach (the computer's of one's
+# side moving over). Downed, or gone, falling with it
+on_deck = (g: mut Game, i: int, p0: Person, pad: Pad, pressed: bool, out: bool, seat_now: int, seat_new: bool):
+    let p = p0
+    k = p.craft
+    c = g.crafts[k]
+    if not alive(c) or c.down > 0:
+        g.people[i] = off_deck(g, i, p, k)
+        return
+    p.yaw = f64(pad.aim_yaw) / 1000.0
+    f = vec3(f32(-sin(p.yaw)), 0, f32(-cos(p.yaw)))
+    r = vec3(-f.z, 0, f.x)
+    want = f * f32(-f64(pad.pitch) / 100.0) + r * f32(f64(pad.roll) / 100.0)
+    if length(want) > 1.0: want = normalize(want)
+    speed = f64(length(want)) * (if pad.throttle > 0: RUN_SPEED else: WALK_SPEED)
+    if p.player < 0: speed *= 0.75 + f64(hash(i * 2654435761) % 1000) / 1000.0 * 0.45
+    lw = quat_rotate(quat_inverse(c.rot), want)
+    lw = vec3(lw.x, 0, lw.z)
+    if length(lw) > 0.001: lw = normalize(lw) * f32(speed)
+    grounded = p.step.y == 0.0
+    rate = if grounded: 12.0 else: 1.5
+    p.step = vec3(f32(approach(f64(p.step.x), f64(lw.x), rate, DT)), p.step.y, f32(approach(f64(p.step.z), f64(lw.z), rate, DT)))
+    l = p.deck
+    nx = vec3(l.x + p.step.x * f32(DT), l.y, l.z)
+    if deck_blocked(c.kind, nx): p.step.x = 0.0
+    else: l = nx
+    nz = vec3(l.x, l.y, l.z + p.step.z * f32(DT))
+    if deck_blocked(c.kind, nz): p.step.z = 0.0
+    else: l = nz
+    fl = deck_floor(c.kind, l)
+    hard = false
+    if grounded and fl >= f64(l.y) - STEP:
+        l.y = f32(fl)
+        if pad.throttle < 0: p.step.y = f32(JUMP)
+    else:
+        p.step.y -= f32(9.8 * DT)
+        l.y += p.step.y * f32(DT)
+        if f64(p.step.y) <= 0.0 and f64(l.y) <= fl:
+            hard = f64(p.step.y) < -14.0
+            l.y = f32(fl)
+            p.step.y = 0.0
+    p.deck = l
+    p.pos = point_of(c, l)
+    p.vel = c.vel + quat_rotate(c.rot, p.step)
+    if hard:
+        g.people[i] = p
+        kill(g, i, -1)
+        return
+    # (over its edge, or far down to what is under: falling, as from the craft)
+    if fl < f64(l.y) - DECK_DROP:
+        g.people[i] = off_deck(g, i, p, k)
+        return
+    if pressed or seat_new:
+        s = if seat_new: seat_now - 1 else: seat_near(g, k, l)
+        if s >= 0 and s < c.seats.len() and f64(length(KINDS[c.kind].seats[s].at - l - vec3(0, 1, 0))) < DECK_REACH:
+            o = c.seats[s]
+            if o < 0 or (seat_new and can_take(g, i, o, k)):
+                g.people[i] = p
+                if o >= 0: move_over(g, o, i, k, s)
+                g.crafts[k].seats[s] = i
+                p.state = SEATED
+                p.seat = s
+                p.goal = -1
+                p.pos = point_of(c, KINDS[c.kind].seats[s].at)
+                g.booms.push(Boom(p.pos, BOARDED, g.tick, i, k))
+                g.people[i] = p
+                return
+    if out:
+        if c.landed and f64(length(c.vel)) < 4.0:
+            # (down beside it: by its gate, its ladder, its gondola; else under where one stood)
+            side = p.pos
+            if c.kind == CASTLE: side = point_of(c, CASTLE_GATE + vec3(0, 0, -3))
+            if c.kind == DAVINCI: side = point_of(c, DV_LADDER)
+            if c.kind == ZEPPELIN: side = point_of(c, vec3(-4, -11, -24))
+            p.pos = vec3(side.x, f32(ground(f64(side.x), f64(side.z))), side.z)
+            p.vel = vec3(0, 0, 0)
+            p.craft = -1
+            p.step = vec3(0, 0, 0)
+        else:
+            # (a jump out over the side: falling, the parachute as from a seat)
+            p.step = p.step + vec3(0, 4, 0)
+            p = off_deck(g, i, p, k)
+            p.walked = false
+            g.booms.push(Boom(p.pos, BAILED, g.tick, i, k))
     g.people[i] = p
 
 # a gun on the ground p could man: standing, no one at it, within 4 m (either side's)
@@ -1523,6 +1846,7 @@ bail_out = (g: mut Game, i: int, p0: Person) -> Person:
     p.timer = 0
     p.torn = false
     p.left = k
+    p.walked = false
     p.craft = -1
     p.seat = -1
     g.booms.push(Boom(p.pos, BAILED, g.tick, i, k))
@@ -3493,6 +3817,10 @@ gold_pad = (g: Game, i: int) -> Pad:
 bot_pad = (g: Game, i: int) -> Pad:
     p = g.people[i]
     if p.state == DEAD: return Pad()
+    # (on a deck (a player who left): into a seat in reach, else off it)
+    if p.state == WALK and p.craft >= 0:
+        near = seat_near(g, p.craft, p.deck) >= 0
+        return Pad(aim_yaw = int(p.yaw * 1000.0), enter = near and g.tick % 10 == i % 10, leave = not near and g.tick % 60 == i % 60)
     if p.state == WALK: return bot_walk(g, i, p)
     if p.state == FALL or p.state == CHUTE: return Pad(aim_yaw = int(p.yaw * 1000.0))
     c = g.crafts[p.craft]

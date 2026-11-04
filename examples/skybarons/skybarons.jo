@@ -120,6 +120,7 @@ action("Kick out", [.key(.g), .button(.lstick)])
 action("Look at the target", [.key(.c), .stick(4, 1)])
 action("Next target", [.key(.tab), .button(.x)])
 action("Witch", [.key(.k)])
+action("Stand up", [.key(.u)])
 
 struct Settings:
     invert = false              # (pitch: W climbs, S dives)
@@ -1103,11 +1104,12 @@ my_pad = () -> Pad:
     if paused: return c
     p = my()
     c.witch = action_down("Witch")
+    c.stand = action_down("Stand up")
     c.enter = action_down("Get in") or (touch_enter and p.state != SEATED and p.state != POST)
     # (F held, or G: one's own side put out; a phone's In/Out held, only on foot)
     c.kick = action_down("Kick out") or (f_held > 0.8 and (not touch_input() or p.state == WALK))
     # (a phone's In/Out on foot: in, if there is something to get into; else back to the field)
-    c.leave = action_down("Get out") or (touch_enter and (p.state == SEATED or p.state == POST or p.state == FALL or p.state == CHUTE or p.state == WALK))
+    c.leave = action_down("Get out") or (touch_enter and (p.state == SEATED or p.state == POST or p.state == FALL or p.state == CHUTE or (p.state == WALK and p.craft < 0)))
     # (a phone: out of a craft in the air, not going down, only with In/Out held a second)
     if touch_enter and p.state == SEATED and not action_down("Get out"):
         k = game().crafts[p.craft]
@@ -1125,6 +1127,8 @@ my_pad = () -> Pad:
         # (a phone's Fire: on foot, walking; falling or under a canopy, the pistol)
         if touch_fire and p.state == WALK: c.pitch = -100
         if action_down("Throttle up") or (touch_fire and p.state == WALK): c.throttle = 1
+        # (on a craft's deck, Ctrl jumps)
+        if p.state == WALK and p.craft >= 0 and action_down("Throttle down"): c.throttle = -1
         # (a pistol, where one looks)
         c.fire = action_down("Fire") or (is_mouse_locked() and mouse_down(.left)) or (touch_fire and p.state != WALK)
         return c
@@ -1324,11 +1328,15 @@ read_fingers = () -> vec2:
 
 # (what this one was doing the frame before: a change turns the view)
 was_state = -1
+deck_craft = -1                 # (the craft stood on, and the way it headed, the frame before)
+deck_heading = 0.0
+deck_cam = vec3(0, 0, 0)        # (the view's place from it, on its deck)
+deck_cam_craft = -1
 was_craft = -1
 was_seat = -1
 
 update = (dt: f64):
-    global aim_pitch, aim_yaw, before, before_people, enter_in_fight, f_held, had_lock, local, mine, next_seat, paused, paused_at, relock_at, scoped, spare, keys_flying, was_craft, was_seat, was_state
+    global aim_pitch, aim_yaw, before, before_people, enter_in_fight, f_held, had_lock, local, mine, next_seat, paused, paused_at, relock_at, scoped, spare, keys_flying, was_craft, was_seat, was_state, deck_craft, deck_heading
     lay_out()
     # (online, hidden behind another window or tab: still playing, or the others would take
     # this one for gone)
@@ -1403,6 +1411,14 @@ update = (dt: f64):
             aim_pitch = clamp(aim_pitch - f64(look.y) * (if settings.invert and piloting(): -1.0 else: 1.0), -1.45, 1.45)
         p = my()
         clamp_aim(p)
+        # (on a craft's deck: turned with it as it turns)
+        if p.state == WALK and p.craft >= 0:
+            f = fwd_of(game().crafts[p.craft])
+            hd = atan2(-f64(f.x), -f64(f.z))
+            if deck_craft == p.craft: aim_yaw += atan2(sin(hd - deck_heading), cos(hd - deck_heading))
+            deck_craft = p.craft
+            deck_heading = hd
+        else: deck_craft = -1
         changed = p.state != was_state or p.craft != was_craft or p.seat != was_seat
         if p.state == SEATED:
             c = game().crafts[p.craft]
@@ -1502,7 +1518,7 @@ cam_back = (kind: int) -> vec2:
     vec2(15, 4.2)
 
 place_camera = (g: Game, dt: f64):
-    global cam_aim, cam_at, cam_pos, cam_q, cam_up, level_right, look_amount, look_at_pos, mouse_view, throw_view
+    global cam_aim, cam_at, cam_pos, cam_q, cam_up, level_right, look_amount, look_at_pos, mouse_view, throw_view, deck_cam, deck_cam_craft
     p = g.people[me()]
     if p.team == GOLD and p.state == DEAD:
         # (the golden cat's player, in its loft: the field below, slowly round it)
@@ -1539,7 +1555,16 @@ place_camera = (g: Game, dt: f64):
         back = if p.state == WALK: 4.5 else: 9.0
         up = if p.state == CHUTE: 2.0 else: 1.9
         want = p.pos + vec3(0, f32(up), 0) - d * f32(back) + right * 0.7
-        cam_pos = approach(cam_pos, want, 14.0, dt)
+        # (on a craft's deck: following from where it is, as it goes; the view not left behind)
+        if p.state == WALK and p.craft >= 0:
+            cp = g.crafts[p.craft].pos
+            if deck_cam_craft != p.craft: deck_cam = cam_pos - cp
+            deck_cam_craft = p.craft
+            deck_cam = approach(deck_cam, want - cp, 14.0, dt)
+            cam_pos = cp + deck_cam
+        else:
+            deck_cam_craft = -1
+            cam_pos = approach(cam_pos, want, 14.0, dt)
         cam_at = cam_pos + d * 20.0
         cam_up = vec3(0, 1, 0)
         finish_camera()
@@ -1848,11 +1873,46 @@ draw_gunner = (team: int, pivot: vec3, aim: vec3, back: f64 = 1.0):
     yaw = atan2(-f64(flat.x), -f64(flat.z))
     draw_mesh(gunner_meshes[team], translation(pivot - flat * f32(back)) * rotation_y(yaw), specular = 0.05)
 
+# (the stairs on a craft's decks its model does not have (sim.jo, decks_of: `drawn`): steps
+# half a meter up, of its stone or its timber)
+stairs_meshes: {int: Mesh} = {}
+stairs_mesh = (kind: int, team: int) -> Mesh:
+    key = kind * 2 + team
+    if let m = stairs_meshes.get(key): return m
+    vs: Vertex3D[]
+    col = if kind == CASTLE: models.shade(models.ca_stone(team), 0.82) else: rgb(0.45, 0.33, 0.2)
+    loop d in decks_of(kind):
+        if not d.drawn: continue
+        if d.up == 0:
+            add_box(vs, (d.lo + d.hi) * 0.5, d.hi - d.lo, col)
+            continue
+        n = max(int(f64(d.hi.y - d.lo.y) / 0.5), 1)
+        loop k in 0..n:
+            # (each step's tread from the low end: along x or z, the way it rises)
+            a = f64(k) / f64(n)
+            b = f64(k + 1) / f64(n)
+            if d.up == 2 or d.up == 4:
+                a = 1.0 - f64(k + 1) / f64(n)
+                b = 1.0 - f64(k) / f64(n)
+            top = f64(d.lo.y) + f64(d.hi.y - d.lo.y) * f64(k + 1) / f64(n)
+            lo = d.lo
+            hi = vec3(d.hi.x, f32(top), d.hi.z)
+            if d.up <= 2:
+                lo.x = f32(f64(d.lo.x) + f64(d.hi.x - d.lo.x) * a)
+                hi.x = f32(f64(d.lo.x) + f64(d.hi.x - d.lo.x) * b)
+            else:
+                lo.z = f32(f64(d.lo.z) + f64(d.hi.z - d.lo.z) * a)
+                hi.z = f32(f64(d.lo.z) + f64(d.hi.z - d.lo.z) * b)
+            add_box(vs, (lo + hi) * 0.5, hi - lo, models.shade(col, 0.94 + 0.06 * f64(k % 2)))
+    m = custom_mesh(vs)
+    stairs_meshes[key] = m
+    m
+
 # a person, its legs and arms swung as it walks or runs (on foot: still, none; running, past
 # about 7 m/s, longer strides, the arms pumping, leant forward a little)
 draw_person = (i: int, p: Person, at: mat4):
     loop strides.len() <= i: strides.push(0.0)
-    speed = if p.state == WALK: f64(length(vec2(p.vel.x, p.vel.z))) else: 0.0
+    speed = if p.state == WALK and p.craft >= 0: f64(length(vec2(p.step.x, p.step.z))) else: if p.state == WALK: f64(length(vec2(p.vel.x, p.vel.z))) else: 0.0
     run = smoothstep(6.0, 8.0, speed)
     strides[i] = (strides[i] + frame_time() * speed * TAU / (2.2 + 0.8 * run)) % TAU
     swing = sin(strides[i]) * clamp(speed / 2.0, 0.0, 1.0)
@@ -1989,6 +2049,7 @@ draw = ():
         # (the golden cat drawn larger than it is, aglow: seen, to be chased)
         if c.team == GOLD: draw_mesh(models.craft_mesh(CAT, GOLD, 0), m * scaling(vec3(2.5)), emissive = 0.35, specular = 0.6)
         else if view.body > 0.0: draw_mesh(if witch: models.witch_mesh(c.team) else: models.craft_mesh(c.kind, c.team, badge_of(g, i), c.crew), m, see(tint, view.body), specular = 0.25, cast_shadow = view.body >= 1.0)
+        if view.body > 0.0 and has_deck(c.kind): draw_mesh(stairs_mesh(c.kind, c.team), m, see(tint, view.body), specular = 0.05)
         spin = if c.down > 0: 3.0 else: if pilot_of(c) >= 0 or not c.landed: 25.0 + 30.0 * c.throttle else: 0.0
         prop_turn[i] += frame_time() * spin
         # (a fighter's third gun, on its top wing, outside Classic)
@@ -2128,6 +2189,11 @@ draw = ():
     loop i in 0.. and p in g.people:
         if p.state == DEAD or p.state == SEATED or p.state == POST: continue
         at = translation(p.pos) * rotation_y(p.yaw)
+        # (on a craft's deck: upright on it, as it tips)
+        if p.state == WALK and p.craft >= 0:
+            c = g.crafts[p.craft]
+            f = fwd_of(c)
+            at = translation(p.pos) * quat_to_mat4(c.rot) * rotation_y(p.yaw - atan2(-f64(f.x), -f64(f.z)))
         if p.state == FALL: at = at * rotation_x(f64(p.timer) * 0.15)
         draw_person(i, p, at)
         if p.state == CHUTE: draw_mesh(chute, translation(p.pos) * rotation_y(p.yaw), specular = 0.05)
@@ -3127,6 +3193,7 @@ craft_plate = (g: Game, c: Craft, k: Kind, p: Person, team: int):
         rows.push(("the cannon nearest your aim", "X", INK))
         if p.seat == 0: rows.push(("burner up, cool down", "Shift Ctrl", INK_DIM))
     if tracking and not touch_input() and p.seat == 0: rows.push(("looking at the target", "C", INK_DIM))
+    if c.down == 0 and f64(stand_spot(c.kind, p.seat).y) > -1e8: rows.push(("stand up on its deck", "U", INK_DIM))
     guns = at_gun or k.guns
     w = 270.0
     h = 40.0 + 34.0 + (if guns: 34.0 else: 0.0) + 22.0 * f64(rows.len()) + (if rows.len() > 0: 6.0 else: 0.0)
@@ -3348,6 +3415,12 @@ what_f_does = (g: Game, p: Person) -> str:
     if p.team == GOLD: return ""
     fk = if touch_input(): "In/Out" else: "F"
     tk = if touch_input(): "In/Out" else: "T"
+    if p.state == WALK and p.craft >= 0:
+        c = g.crafts[p.craft]
+        s = seat_near(g, p.craft, p.deck)
+        off = if c.landed and f64(length(c.vel)) < 4.0: "{tk}: get down" else: "{tk}: jump off"
+        if s >= 0: return "{fk}: {if s == 0: "take the controls" else: "man the " + SEAT_NAMES[c.kind][s]}    {off}"
+        return if touch_input(): "" else: "Ctrl: jump    {off}"
     if p.state == WALK:
         k = nearest_craft(g, p)
         gi = nearest_gun(g, p)
