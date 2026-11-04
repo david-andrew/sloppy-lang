@@ -95,7 +95,8 @@ SEAT_NAMES = [["pilot"], ["pilot"], ["pilot", "nose gun", "back gun"], ["pilot",
               ["pilot", "battery, port fore", "battery, stbd fore", "battery, port aft", "battery, stbd aft",
                "twins, gate port", "twins, gate stbd", "twins, port fore", "twins, stbd fore", "twins, port aft", "twins, stbd aft", "twins, rear port", "twins, rear stbd",
                "mg, bow port", "mg, bow stbd", "mg, stern port", "mg, stern stbd", "rampart, port fore", "rampart, stbd fore", "rampart, port aft", "rampart, stbd aft",
-               "great bombard, bow", "great bombard, stern"],
+               "great bombard, bow", "great bombard, stern", "screw, port fore", "screw, stbd fore", "screw, port aft",
+               "screw, stbd aft"],
               ["pilot", "bow gun", "top gun, bag 1", "top gun, bag 2", "top gun, bag 3", "top gun, bag 4", "flak, port", "flak, stbd",
                "twins, bow port", "twins, bow stbd", "twins, stern port", "twins, stern stbd", "keel gun"] + [0..HOOKS).map((h): "{if h % 2 == 0: "port" else: "stbd"} hook {h / 2 + 1}")]
 # (what a seat's gun is, for the seat map)
@@ -1189,6 +1190,8 @@ my_pad = () -> Pad:
         heli_power = clamp(heli_power + mouse_wheel() * 0.05 + (if key_down(.page_up) or key_down(.equals): 0.6 * frame_time() else: 0.0) - (if key_down(.page_down) or key_down(.minus): 0.6 * frame_time() else: 0.0), HELI_LEAST, 1.0)
         if throttle_want >= 0.0: heli_power = clamp(throttle_want, HELI_LEAST, 1.0)
         if heli_craft != my().craft or abs(climb) > 0.05: heli_hold_y = f64(k.pos.y)
+        # (just off a castle's pad: held a little over it, clear)
+        if heli_craft != my().craft and k.tether >= 0 and game().tick - k.loosed < 30: heli_hold_y += 15.0
         heli_craft = my().craft
     if heli and aim_steering():
         # (a helicopter, the mouse looking: the keys move it as one looks, W toward where one
@@ -2082,6 +2085,41 @@ draw_carrier = (g: Game, i: int, c: Craft, m: mat4, view: SeatView):
         else: draw_mesh(models.mg_gun_mesh(), gm * scaling(vec3(if wp == TWIN: 2.0 else: 1.4)), specular = 0.3)
         if s < st.len() and c.seats[s] >= 0: draw_gunner(g.people[c.seats[s]].team, point_of(c, at) - vec3(0, 0.25, 0), c.aims[s], if wp == FLAKGUN: 1.6 else: 1.2)
 
+# (a flying castle's screw docked on its pad h (sm: its middle there): its rotor still, its guns at
+# rest, its fire pots in their rack)
+draw_docked_screw = (c: Craft, sm: mat4, h: int):
+    if f64(length(c.pos - cam_pos)) > 2500.0: return
+    draw_mesh(models.craft_mesh(SCREW, c.team, 0), sm, specular = 0.25)
+    draw_mesh(models.rotor_mesh(SCREW, c.team), sm * translation(models.ROTOR_AT(SCREW)) * rotation_y(f64(h) * 0.8), specular = 0.1)
+    if f64(length(c.pos - cam_pos)) > 700.0: return
+    models.screw_draw(c.team, sm, 0.0, 0)
+    rest = (at: vec3, a: f64) -> mat4: sm * translation(at) * quat_to_mat4(quat_facing(screw_out(a, 0.1)))
+    loop k in 0.. and at in models.SCREW_TWIN_AT: draw_mesh(models.screw_twin_mesh(c.team), rest(at, SCREW_TWINS[k]), specular = 0.3)
+    loop k in 0.. and at in models.SCREW_SIPHON_AT: draw_mesh(models.siphon_mesh(c.team), rest(at, SCREW_SIPHONS[k]), specular = 0.35)
+    loop k in 0.. and at in models.SCREW_AUTO_AT: draw_mesh(models.auto_gun_mesh(c.team), rest(at, SCREW_AUTO_A[k]), specular = 0.3)
+    loop k in 0..min(c.hrockets[h], models.SCREW_POTS.len()): draw_mesh(models.pot_mesh(), sm * translation(models.SCREW_POTS[k]), specular = 0.1)
+
+# (a castle's screw's cable, from the eye in its pad up to under its deck: a little slack, more
+# the nearer it is; drawn thick enough to be seen far off)
+draw_tether = (g: Game, c: Craft):
+    m = c.mother
+    if m < 0 or m >= g.crafts.len() or not alive(g.crafts[m]) or g.crafts[m].kind != CASTLE: return
+    a = point_of(g.crafts[m], tether_eye(c.tether))
+    b = point_of(c, TETHER_UNDER)
+    d = f64(length(b - a))
+    if d < 0.5: return
+    sag = min(sqrt(3.0 * d * max(TETHER_LEN - d, 0.0) / 8.0), 0.05 * d + 1.5)
+    w = clamp(f64(length((a + b) * 0.5 - cam_pos)) * 0.0018, 0.14, 2.2)
+    col = rgb(0.13, 0.11, 0.09)
+    n = 14
+    last = a
+    loop k in 1..n + 1:
+        t = f64(k) / f64(n)
+        q = a + (b - a) * f32(t) - vec3(0, f32(4.0 * sag * t * (1.0 - t)), 0)
+        s = q - last
+        if length(s) > 0.01: draw_mesh(tracer, translation((q + last) * 0.5) * facing(normalize(s)) * scaling(vec3(f32(w), f32(w), length(s) + f32(w))), col, specular = 0.0, cast_shadow = false)
+        last = q
+
 # (a color made see-through by a, 1 solid)
 see = (c: vec4, a: f64) -> vec4: vec4(c.xyz, f32(f64(c.w) * a))
 
@@ -2261,6 +2299,7 @@ draw = ():
         # it round when near enough to be seen; its automatic guns where they are laid, its fire
         # pots in their rack, lit; its gun seats' guns below, with the rest)
         if c.kind == SCREW:
+            if c.tether >= 0: draw_tether(g, c)
             turn = prop_turn[i] * 0.12
             if view.rotor > 0.0: draw_mesh(models.rotor_mesh(c.kind, c.team), m * translation(models.ROTOR_AT(c.kind)) * rotation_y(-turn), see(vec4(1, 1, 1, 1), view.rotor), specular = 0.1)
             if f64(length(c.pos - cam_pos)) < 600.0: models.screw_draw(c.team, m, turn * models.SW_GEAR, c.crew)
@@ -2292,6 +2331,7 @@ draw = ():
                 st = KINDS[c.kind].seats
                 loop s in 1..c.aims.len():
                     wp = if s < st.len(): st[s].weapon else: GUN
+                    if wp == HOOK: continue
                     if i == my_craft() and my().seat == s and mode != .menu and wp != BOMBARD and wp != BROADSIDE: continue
                     at = if s < st.len(): st[s].at else: CASTLE_AUTOS[s - st.len()].at
                     gm = translation(point_of(c, at)) * quat_to_mat4(quat_facing(c.aims[s]))
@@ -2299,6 +2339,9 @@ draw = ():
                     else if wp == BOMBARD: draw_bombard(g, i, c, s)
                     else: draw_mesh(models.mg_gun_mesh(), gm * scaling(vec3(if wp == TWIN: 2.2 else: 1.6)), specular = 0.3)
                     if s < st.len() and c.seats[s] >= 0 and wp != BROADSIDE and wp != BOMBARD: draw_gunner(g.people[c.seats[s]].team, point_of(c, at) - vec3(0, 0.25, 0), c.aims[s], 1.3)
+                # (its screws docked on their pads, still)
+                loop h in 0..c.hung.len():
+                    if c.hung[h] >= 0: draw_docked_screw(c, m * translation(tether_dock(h)), h)
             if landed_for[i] > 1.0:
                 hinge = point_of(c, models.CA_SILL)
                 d = point_of(c, models.CA_LIFT) - hinge
@@ -2639,11 +2682,17 @@ effects = (dt: f64):
         else if b.kind == LOOSED:
             if in_fight:
                 play_at(snd_rocket, b.pos, settings.sound * 0.25, 600.0)
-                if b.who == myc: say("away from the hook", gray(0.9), small = true)
+                pad = b.by >= 0 and b.by < g.crafts.len() and g.crafts[b.by].kind == CASTLE
+                if b.who == myc: say(if pad: "off the pad, on its tether ({int(TETHER_LEN)} m)" else: "away from the hook", gray(0.9), small = true)
         else if b.kind == HOOKED:
             if in_fight:
                 play_at(snd_rocket, b.pos, settings.sound * 0.2, 600.0)
-                if b.by == me(): say("caught on the deck: on a hook again", gray(0.9), small = true)
+                pad = b.who >= 0 and b.who < g.crafts.len() and g.crafts[b.who].kind == CASTLE
+                if b.by == me(): say(if pad: "down on the pad: docked" else: "caught on the deck: on a hook again", gray(0.9), small = true)
+        else if b.kind == SNAPPED:
+            if in_fight:
+                play_at(snd_rocket, b.pos, settings.sound * 0.3, 900.0)
+                if b.who == myc: say("the tether snapped: flying free", rgb(1.0, 0.8, 0.5))
         else if b.kind == LAUNCHED:
             if in_fight:
                 play_at(snd_rocket, b.pos, settings.sound * 0.4, 800.0)
@@ -3495,6 +3544,17 @@ craft_plate = (g: Game, c: Craft, k: Kind, p: Person, team: int):
         if p.seat >= HOOK0 and c.hung[p.seat - HOOK0] >= 0:
             hk = c.hung[p.seat - HOOK0]
             rows.push(("{KIND_NAMES[hk]}: {c.hhealth[p.seat - HOOK0] * 100 / KINDS[hk].health}%, drop and fly", "F B", INK))
+    # (the flying castle: its screws on their pads; at one's wheel, its health, and lifting off;
+    # flying one on its cable, how much of it is out, and down onto its pad again)
+    if c.kind == CASTLE and c.hung.len() >= TETHERS:
+        on = c.hung.filter((x): x >= 0).len()
+        rows.push(("{on} of {TETHERS} screws on their pads", "", INK_DIM))
+        h = p.seat - TETHER0
+        if hook_seat(c.kind, p.seat) and c.hung[h] >= 0: rows.push(("screw: {c.hhealth[h] * 100 / KINDS[SCREW].health}%, lift off on its tether", "F B", INK))
+    if c.kind == SCREW and p.seat == 0 and c.tether >= 0 and c.mother >= 0 and c.mother < g.crafts.len():
+        out = f64(length(point_of(c, TETHER_UNDER) - point_of(g.crafts[c.mother], tether_eye(c.tether))))
+        rows.push(("tether {int(out)} of {int(TETHER_LEN)} m", "", if out > TETHER_LEN - 3.0: WARN else: INK))
+        rows.push(("down slowly on its pad to dock", "", INK_DIM))
     if tracking and not touch_input() and p.seat == 0: rows.push(("looking at the target", "C", INK_DIM))
     if c.down == 0 and f64(stand_spot(c.kind, p.seat).y) > -1e8: rows.push(("stand up on its deck", "U", INK_DIM))
     guns = at_gun or k.guns
@@ -3533,7 +3593,7 @@ seats_plate = (g: Game, c: Craft):
     loop pk in c.seats:
         if pk != SHUT: n += 1
     w = if c.kind == CARRIER: 300.0 else: 250.0
-    rh = if c.kind == CARRIER: 15.5 else: 19.0
+    rh = if c.kind == CARRIER: 15.5 else: if n > 23: 17.0 else: 19.0
     h = 16.0 + rh * f64(n)
     ih = 2.0 * 36.0 + 50.0
     y = if plates_top(): plate_y(ih) + ih + 10.0 else: max(plate_y(ih) - h - 10.0, f64(at_edge(0, EDGE).y))
@@ -3543,9 +3603,9 @@ seats_plate = (g: Game, c: Craft):
     loop s in 0.. and pk in c.seats:
         if pk == SHUT: continue
         mine_ = pk == me()
-        hook = c.kind == CARRIER and s >= HOOK0 and s - HOOK0 < c.hung.len()
+        hook = hook_seat(c.kind, s) and s - hook0(c.kind) < c.hung.len()
         who = if mine_: "you" else: if pk >= 0: call(g, pk) else: if hook: "airman" else: "crew"
-        name = if hook: "{SEAT_NAMES[c.kind][s]}: {KIND_NAMES[c.hung[s - HOOK0]]}" else: SEAT_NAMES[c.kind][s]
+        name = if hook and c.kind == CARRIER: "{SEAT_NAMES[c.kind][s]}: {KIND_NAMES[c.hung[s - HOOK0]]}" else: SEAT_NAMES[c.kind][s]
         yy = f32(f64(r.y) + 8.0 + rh * f64(row))
         row += 1
         text("{s + 1}", vec2(r.x + PAD, yy), T_SMALL - 2.0, if mine_: BRASS else: INK_FAINT)
@@ -3577,10 +3637,10 @@ call_banner = (g: Game, p: Person):
     k = -1
     if p.joining >= 0:
         k = p.joining
-        line1 = "Joining the {kind_name(g, k)}..."
+        line1 = if p.join_seat >= 0 and p.join_seat < g.crafts[k].seats.len(): "To the {SEAT_NAMES[g.crafts[k].kind][p.join_seat]}..." else: "Joining the {kind_name(g, k)}..."
     else if p.state == SEATED and p.seat == 0 and calling(g, p.craft):
         k = p.craft
-        line1 = "Crew call out: {aboard(g.crafts[k])}/{g.crafts[k].seats.len()} aboard"
+        line1 = "Crew call out: {aboard(g.crafts[k])}/{crew_seats(g.crafts[k].kind)} aboard"
         line2 = "{(g.crafts[k].call - g.tick + 59) / 60} s    lift off to go now"
     else if can_call(g, me(), p):
         # (one's own craft, its call over or none: J to call again)
@@ -3596,7 +3656,7 @@ call_banner = (g: Game, p: Person):
         calls_shown = [k]
         pi = pilot_of(g.crafts[k])
         line1 = "{if pi >= 0: call(g, pi) else: TEAMS[p.team]} is launching the {kind_name(g, k)}"
-        line2 = "{if touch_input(): "tap here" else: "J"}: join its crew    {(g.crafts[k].call - g.tick + 59) / 60} s    {aboard(g.crafts[k])}/{g.crafts[k].seats.len()} aboard"
+        line2 = "{if touch_input(): "tap here" else: "J"}: join its crew    {(g.crafts[k].call - g.tick + 59) / 60} s    {aboard(g.crafts[k])}/{crew_seats(g.crafts[k].kind)} aboard"
     if k < 0: return
     c = g.crafts[k]
     w = max(text_width(line1, T_HEAD - 4.0), text_width(line2, T_BODY)) + 2.0 * PAD + 30.0
@@ -3706,6 +3766,10 @@ draw_plan = (kind: int, o: vec2, sc: f64):
                 q = castle_gun_at(b, n)
                 d = castle_out(castle_gun_a(b, n))
                 line(at(f64(q.x), f64(q.z)), at(f64(q.x + d.x * 2.6), f64(q.z + d.z * 2.6)), 3.0, rgba(0.1, 0.1, 0.1, 0.9))
+        # (the screws' pads)
+        loop q in TETHER_PADS:
+            circle(at(f64(q.x), f64(q.z)), f32(PAD_R * sc), rgba(0.5, 0.47, 0.42, 0.9))
+            ring(at(f64(q.x), f64(q.z)), f32(PAD_R * sc), 1.5, rgba(0.84, 0.67, 0.33, 0.7))
         return
     h = KINDS[kind].half
     pts = [0..48).map((k): at(cos(TAU * f64(k) / 48.0) * f64(h.x), sin(TAU * f64(k) / 48.0) * f64(h.z)))
@@ -3768,9 +3832,24 @@ draw_seat_map = (g: Game):
         rad = if s == 0: 9.0 else: if st.weapon == BOMBARD: 11.0 else: if st.weapon == BROADSIDE: 8.0 else: 6.5
         col = if pk == me(): BRASS else: if pk >= 0 and g.people[pk].team != p.team: WARN else: if pk >= 0 and g.people[pk].player >= 0: COLORS[g.people[pk].team] else: if pk >= 0: rgba(0.78, 0.74, 0.66, 0.9) else: rgba(0, 0, 0, 0)
         if pk >= 0: circle(q, rad, col)
-        ring(q, rad, if s == hover: 3.0 else: 1.8, if pk == me(): INK else: if s == hover: rgba(1.0, 0.85, 0.45, 1.0) else: INK_DIM)
+        ring(q, rad, if s == hover: 3.0 else: 1.8, if pk == me(): INK else: if s == hover: rgba(1.0, 0.85, 0.45, 1.0) else: if pk == SHUT: INK_FAINT else: INK_DIM)
         if st.weapon == BOMBARD: ring(q, rad + 4.0, 1.5, BRASS_DIM)
         if s == 0: polygon([q + vec2(0, -4), q + vec2(4, 3), q + vec2(-4, 3)], if pk >= 0: rgba(0.1, 0.08, 0.05, 1) else: INK_DIM)
+        # (a castle's screw: docked, its screw's cross in the ring; away, its cable out to where
+        # it is, if that is on the map)
+        if c.kind == CASTLE and hook_seat(c.kind, s):
+            if pk == SHUT:
+                j = tethered_at(g, ci, s - TETHER0)
+                if j >= 0:
+                    l = quat_rotate(quat_inverse(c.rot), g.crafts[j].pos - c.pos)
+                    e = at(l)
+                    inside = f64(e.x) > f64(r.x) + 10.0 and f64(e.x) < f64(r.x) + pw - 10.0 and f64(e.y) > f64(r.y) + 70.0 and f64(e.y) < f64(r.y) + ph - 50.0
+                    if inside:
+                        line(q, e, 1.5, rgba(0.84, 0.67, 0.33, 0.55))
+                        circle(e, 4.0, COLORS[c.team])
+            else:
+                line(q + vec2(-4, -4), q + vec2(4, 4), 1.5, INK_DIM)
+                line(q + vec2(-4, 4), q + vec2(4, -4), 1.5, INK_DIM)
         label = "{s + 1}"
         text(label, q + vec2(f32(rad + 3.0), -9), T_SMALL - 4.0, if pk == me(): INK else: INK_FAINT)
         if pk == me(): text_centered("you", q + vec2(0, f32(-rad - 10.0)), T_SMALL - 2.0, INK, SHADOW)
@@ -3796,16 +3875,25 @@ draw_seat_map = (g: Game):
         st = k.seats[hover]
         pk = c.seats[hover]
         lines = ["{hover + 1}  {SEAT_NAMES[c.kind][hover]}"]
-        if not gun_seat(c.kind, hover): lines.push("the helm: it flies it")
+        if c.kind == CASTLE and hook_seat(c.kind, hover):
+            h = hover - TETHER0
+            if pk == SHUT:
+                j = tethered_at(g, ci, h)
+                lines.push(if j >= 0: "away on its tether, {int(length(g.crafts[j].pos - point_of(c, tether_eye(h))))} m out" else: "its pad empty")
+                if j >= 0:
+                    sp = pilot_of(g.crafts[j])
+                    lines.push(if sp == me(): "you are flying it" else: if sp >= 0: "flown by {call(g, sp)}" else: "flown by its airman")
+            else: lines.push("a gun-tower screw on its pad, {c.hhealth[h] * 100 / KINDS[SCREW].health}%: in it, F or B lifts off ({int(TETHER_LEN)} m of tether)")
+        else if not gun_seat(c.kind, hover): lines.push("the helm: it flies it")
         else:
             lines.push("{WEAPON_NAMES[st.weapon]}{if st.weapon == BROADSIDE: ", " + str(BATTERY_GUNS) + " guns" else: ""}, turns {int(round(degrees(acos(clamp(st.arc, -1.0, 1.0)))))} degrees from its rest")
             if st.weapon == BOMBARD or st.weapon == BROADSIDE:
                 gap = if st.weapon == BOMBARD: BOMBARD_GAP else: BROADSIDE_GAP
                 lines.push(if c.gcool[hover] == 0: "loaded" else: "loading: {int(f64(c.gcool[hover]) / 60.0) + 1} s of {gap / 60}")
         who = if pk == me(): "you are here" else: if pk >= 0 and g.people[pk].team != p.team: "the other side's {call(g, pk)}" else: if pk >= 0 and g.people[pk].player >= 0: "{call(g, pk)}, a player" else: if pk >= 0: "its crew (they would move over)" else: "free"
-        lines.push(who)
-        free = pk < 0 or (pk != me() and can_take(g, me(), pk, ci))
-        if pk != me(): lines.push(if free: "click to go there" else: "taken")
+        if pk != SHUT: lines.push(who)
+        free = pk == -1 or (pk >= 0 and pk != me() and can_take(g, me(), pk, ci))
+        if pk != me(): lines.push(if free: "click to go there" else: if pk == SHUT: "not there till it docks" else: "taken")
         w = 0.0
         loop l in lines: w = max(w, text_width(l, T_SMALL))
         bx = min(f64(pt.x) + 18.0, f64(r.x) + pw - w - 2.0 * PAD - 8.0)
@@ -3818,7 +3906,7 @@ draw_seat_map = (g: Game):
                 say("to the {SEAT_NAMES[c.kind][hover]}", BRASS, small = true)
                 close_map()
             else:
-                map_note = "that seat is taken"
+                map_note = if pk == SHUT: "that screw is away on its tether" else: "that seat is taken"
                 map_note_at = elapsed()
     if elapsed() - map_note_at < 1.5: text_centered(map_note, vec2(f32(f64(r.x) + pw / 2.0), f32(f64(r.y) + ph - 60.0)), T_BODY, BRASS, SHADOW)
 
@@ -4041,7 +4129,7 @@ what_f_does = (g: Game, p: Person) -> str:
         s = seat_near(g, p.craft, p.deck)
         off = if c.landed and f64(length(c.vel)) < 4.0: "{tk}: get down" else: "{tk}: jump off"
         if s >= 0: return "{fk}: {if s == 0: "take the controls" else: "man the " + SEAT_NAMES[c.kind][s]}    {off}{if c.seats.len() >= 3 and not touch_input(): "    M: the seat map" else: ""}"
-        return if touch_input(): "" else: "Ctrl: jump    {off}"
+        return if touch_input(): "" else: "Ctrl: jump    {off}{if c.seats.len() >= 3: "    M or 1-8: to a seat" else: ""}"
     if p.state == WALK:
         k = nearest_craft(g, p)
         gi = nearest_gun(g, p)
@@ -4075,6 +4163,7 @@ what_f_does = (g: Game, p: Person) -> str:
         else if c.seats[0] >= 0 and g.people[c.seats[0]].team == p.team: put = "    {fk} held: {call(g, c.seats[0])} out, and you the pilot"
     # (in a hook's craft on the flying carrier: let go, and fly it)
     if c.kind == CARRIER and p.seat >= HOOK0 and can_loose(c): return "{fk} or B: drop from the hook and fly" + (if c.down > 0: "!" else: "")
+    if c.kind == CASTLE and hook_seat(c.kind, p.seat) and can_loose(c): return "{fk} or B: lift off on its tether" + (if c.down > 0: "!" else: "")
     if c.landed and f64(length(c.vel)) < 4.0: return (if p.seat == 0 and c.vel == vec3(0, 0, 0) and c.throttle == 0.0 and hud_of(c.kind).throttle and not gun_seat(c.kind, 0): "{tk}: get out    Shift: throttle" else: "{tk}: get out") + put
     if c.down > 0: return "{tk}: bail out!"
     if touch_input(): return "{tk} held: bail out"

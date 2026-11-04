@@ -1,0 +1,142 @@
+# requires: sloppy
+# Sky Barons' flying castle: from anywhere one can stand on it, a seat. Every spot of its decks
+# (every terrace, the quay, the wall walks, the stairs, the towers' tops, the rock's edge), on a
+# grid: a player standing there, a seat's number (or the seat map's click) puts them in that seat
+# a moment later, the screen fading (not at once), the castle's screws' seats as well; T from it
+# out again (down beside it, parked; flying, off it falling), and T from the spot itself the same.
+# And F by each seat, standing at it, into it at once, as before
+use '../../examples/skybarons/world.jo'
+use '../../examples/skybarons/sim.jo'
+
+set_map(FARMLAND)
+const N = 27
+# (N red players, people 0, 2, 4...; the blue computer's dead for good)
+fresh = () -> Game:
+    let g = new_game([0..2 * N).map((i): if i % 2 == 0: i / 2 else: -1), 0.65, Rules(mode = DOGFIGHT), [])
+    loop i in 0..g.people.len():
+        g.people[i].state = DEAD
+        g.people[i].timer = 1 << 30
+    g
+# (the walkable spots: where the castle's floor (its terraces' and walls', or a deck's top) is under
+# one standing there, nothing too tall where they stand; each with what it is)
+struct Spot:
+    at: vec3
+    what: str
+what_at = (x: f64, y: f64, z: f64) -> str:
+    w = castle_walk_height(x, z)
+    if w < -1e8: return "past the wall's line (its towers)"
+    t = 0
+    loop k in 0..CASTLE_TIERS.len():
+        if CASTLE_TIERS[k].2 == w: t = k
+    if y == w: return if t == 0: "the quay" else: "terrace {t}"
+    if t == 0 and y <= 2.0: return "the rock's edge (the wall's walk, its merlons)"
+    if abs(y - w) < 3.0: return "a parapet"
+    "a tower, a roof"
+spots: Spot[] = []
+x = -96.0
+loop x < 97.0:
+    z = -152.0
+    loop z < 153.0:
+        tops = [(deck_curve(CASTLE, x, z), false)]
+        loop d in decks_of(CASTLE):
+            if on_deck_box(d, x, z): tops.push((deck_top(d, x, z), d.up != 0))
+        loop tp in tops:
+            y = tp.0
+            if y < -1e8: continue
+            l = vec3(f32(x), f32(y), f32(z))
+            if abs(deck_floor(CASTLE, l) - y) < 0.01 and not deck_blocked(CASTLE, l): spots.push(Spot(l, if tp.1: "a stair" else: what_at(x, y, z)))
+        z += 4.0
+    x += 4.0
+kinds: {str: int} = {}
+loop s in spots: kinds[s.what] = (kinds.get(s.what) ?? 0) + 1
+print("{spots.len()} spots to stand on")
+loop w in ["the quay", "terrace 1", "terrace 2", "terrace 3", "terrace 4", "the rock's edge (the wall's walk, its merlons)", "a parapet", "a stair", "a tower, a roof", "past the wall's line (its towers)"]: print("  {w}: {kinds.get(w) ?? 0}")
+
+# (everyone at a spot of the castle, standing; the castle parked, or flying)
+put = (g: mut Game, j: int, i: int, at: vec3):
+    g.people[i].state = WALK
+    g.people[i].craft = j
+    g.people[i].seat = -1
+    g.people[i].deck = at
+    g.people[i].step = vec3(0, 0, 0)
+    g.people[i].joining = -1
+    g.people[i].pos = point_of(g.crafts[j], at)
+    g.people[i].vel = g.crafts[j].vel
+    g.people[i].timer = 1 << 30
+idle = () -> Pad[]: fill(Pad(), N)
+each = (f: (int) -> Pad) -> Pad[]: [0..N).map(f)
+run = (flying: bool, every: int) -> (int, int, int, int, int, str[]):
+    let g = fresh()
+    c = if flying: flying_craft(CASTLE, 0, vec3(0, 700, 2000), vec3(1, 0, 0)) else: parked(CASTLE, 0, vec3(0, f32(ground(0.0, 2000.0)), 2000), 0.0)
+    g.crafts.push(c)
+    j = g.crafts.len() - 1
+    tried = 0
+    seated = 0
+    early = 0
+    off = 0
+    off_spot = 0
+    stuck: str[] = []
+    b = 0
+    loop b * N * every < spots.len():
+        batch: int[] = []
+        loop k in 0..N:
+            q = (b * N + k) * every
+            if q < spots.len(): batch.push(q)
+        # (each to its own seat by its number: the pilot's, the guns', the screws')
+        loop k in 0.. and q in batch: put(g, j, 2 * k, spots[q].at)
+        if flying: g.crafts[j].vel = vec3(4, 0, 0)
+        g = tick(g, each((k): Pad(seat = (k + b) % N + 1)))
+        loop k in 0.. and q in batch:
+            if g.people[2 * k].state == SEATED: early += 1
+        loop t in 0..CALL_FADE + 1: g = tick(g, idle())
+        loop k in 0.. and q in batch:
+            tried += 1
+            p = g.people[2 * k]
+            if p.state == SEATED and p.craft == j and p.seat == (k + b) % N: seated += 1
+            else: stuck.push("{spots[q].what} at {spots[q].at.x} {spots[q].at.y} {spots[q].at.z}: {p.state} seat {p.seat}")
+        # (T: out of the seat, off the castle)
+        g = tick(g, each((k): Pad(leave = true)))
+        g = tick(g, idle())
+        loop k in 0.. and q in batch:
+            p = g.people[2 * k]
+            if p.craft != j and (p.state == WALK or p.state == FALL or p.state == CHUTE): off += 1
+            else: stuck.push("off from a seat, {spots[q].what} at {spots[q].at.x} {spots[q].at.y} {spots[q].at.z}: {p.state} on {p.craft}")
+        # (T from the spot itself)
+        loop k in 0.. and q in batch: put(g, j, 2 * k, spots[q].at)
+        g = tick(g, idle())
+        g = tick(g, each((k): Pad(leave = true)))
+        g = tick(g, idle())
+        loop k in 0.. and q in batch:
+            p = g.people[2 * k]
+            if p.craft != j and (p.state == WALK or p.state == FALL or p.state == CHUTE): off_spot += 1
+            else: stuck.push("off from the spot, {spots[q].what} at {spots[q].at.x} {spots[q].at.y} {spots[q].at.z}: {p.state} on {p.craft}")
+        # (the castle back where it was, its seats empty)
+        g.crafts[j].pos = c.pos
+        g.crafts[j].rot = c.rot
+        g.crafts[j].vel = c.vel
+        g.crafts[j].spin = 0.0
+        loop s in 0..g.crafts[j].seats.len():
+            if g.crafts[j].seats[s] >= 0: g.crafts[j].seats[s] = -1
+        b += 1
+    (tried, seated, early, off, off_spot, stuck)
+r = run(false, 1)
+print("parked: {r.0} spots, in their seat after the fade {r.1}, at once {r.2}; off by T from the seat {r.3}, from the spot {r.4}")
+f = run(true, 7)
+print("flying: {f.0} spots, in their seat after the fade {f.1}, at once {f.2}; off by T from the seat {f.3}, from the spot {f.4}")
+loop s in r.5 + f.5: print("  stuck: {s}")
+
+# (F standing by each seat: into it at once)
+let g = fresh()
+g.crafts.push(parked(CASTLE, 0, vec3(0, f32(ground(0.0, 2000.0)), 2000), 0.0))
+j = g.crafts.len() - 1
+f_ok = 0
+f_bad: int[] = []
+loop s in 0..KINDS[CASTLE].seats.len():
+    at = stand_spot(CASTLE, s)
+    put(g, j, 0, at)
+    g = tick(g, idle())
+    g = tick(g, [Pad(enter = true)] + fill(Pad(), N - 1))
+    if g.people[0].state == SEATED and g.people[0].seat == s: f_ok += 1
+    else: f_bad.push(s + 1)
+    if g.people[0].state == SEATED: g.crafts[j].seats[g.people[0].seat] = -1
+print("F by each of its {KINDS[CASTLE].seats.len()} seats: into it at once {f_ok}, not {f_bad}")
