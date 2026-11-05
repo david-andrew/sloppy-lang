@@ -2535,7 +2535,7 @@ draw = ():
         # (a battery's iron ball, a bombard's stone one: drawn a little larger far off, to be seen)
         if sh.kind == IRON or sh.kind == STONE:
             far = f64(length(sh.pos - cam_pos))
-            r = if sh.kind == IRON: max(0.17, far * 0.0016) else: max(0.47, far * 0.0024)
+            r = if sh.kind == IRON: max(0.17, far * 0.0016) else: max(0.75, far * 0.0036)
             if sh.kind == IRON: draw_mesh(models.stone_ball_mesh(), translation(sh.pos) * scaling(vec3(f32(r))), rgb(0.16, 0.16, 0.17), specular = 0.6)
             else: draw_mesh(models.stone_ball_mesh(), translation(sh.pos) * rotation_x(f64(sh.life) * 0.05) * scaling(vec3(f32(r))), specular = 0.1)
             continue
@@ -2671,7 +2671,12 @@ effects = (dt: f64):
             if sh.kind == ROCKET: emit(smoke, sh.pos, 1, 0.5, rgba(0.85, 0.85, 0.82, 0.6), 1.2, 1.4)
             if sh.kind == PACK: emit(sparks, sh.pos, 1, 0.5, rgb(0.5, 1.0, 0.6), 0.5, 0.35)
             if sh.kind == IRON and (g.tick + sh.life) % 3 == 0: emit(smoke, sh.pos, 1, 0.3, rgba(0.75, 0.73, 0.7, 0.35), 0.8, 1.0)
-            if sh.kind == STONE: emit(smoke, sh.pos, 1, 0.6, rgba(0.62, 0.58, 0.52, 0.45), 2.2, 2.4)
+            # (a bombard's ball: a thick trail of its powder's smoke laid all along its way, a few
+            # embers in it, to be seen against the sky as against the ground)
+            if sh.kind == STONE:
+                went = sh.vel * f32(frame_time())
+                loop k in 0..3: emit(smoke, sh.pos - went * f32(f64(k) / 3.0), 1, 0.6, rgba(0.42, 0.39, 0.35, 0.6), 3.4, 3.4)
+                emit(fire, sh.pos, 1, 1.0, rgb(1.0, 0.55, 0.2), 0.35, 0.7)
             # (a fire pot: burning as it goes, a trail of flame and black smoke)
             if sh.kind == POT:
                 emit(fire, sh.pos, 2, 1.5, rgb(1.0, 0.55, 0.15), 0.35, 1.2)
@@ -2691,10 +2696,15 @@ effects = (dt: f64):
                 # (a witch's embers: more of them and larger, a trail in her side's color)
                 wi = is_witch(g, i)
                 emit(fire, at, if wi: 2 else: 1, 3.0, if wi: witch_flame(c.team) else: rgb(1.0, 0.6, 0.2), if wi: 0.32 else: 0.18, 0.3, if wi: 0.9 else: 0.6, fwd_of(c) * -1.0)
-        # (the golden cat's trail: gold sparks, seen far off)
+        # (the golden cat's trail: gold sparks, seen far off; at its speed laid all along the way it
+        # went this frame, one every 2.5 m, not one heap of them a frame some 7 m apart)
         if g.gold >= 0 and g.gold < g.crafts.len() and g.crafts[g.gold].team == GOLD and flying(g.crafts[g.gold]):
             gc = g.crafts[g.gold]
-            emit(fire, gc.pos - fwd_of(gc) * 0.6, 2, 2.0, COLORS[GOLD], 0.7, 0.35, 0.8, fwd_of(gc) * -1.0)
+            went = gc.vel * f32(frame_time())
+            steps = int(clamp(f64(length(went)) / 2.5, 1.0, 24.0))
+            loop s in 0..steps:
+                at = gc.pos - fwd_of(gc) * 0.9 - went * f32(f64(s) / f64(steps))
+                emit(fire, at, 1, 1.0, COLORS[GOLD], 1.1, 0.9, 0.8, fwd_of(gc) * -1.0)
         # (a ring a ball went through: fire running round its rim, sparks in the scorers' color, while it flashes)
         loop ri, t0 in ring_lit:
             t = elapsed() - t0
@@ -3151,6 +3161,33 @@ say = (what: str, color: vec4, small: bool = false):
 const HISS = f64(MIX_RATE) / 16.0
 engine = mix([tone(55.0, 1.0, .saw, 0.35, 0.0, 0.0), tone(110.0, 1.0, .square, 0.12, 0.0, 0.0), tone(HISS, 1.0, .noise, 0.08, 0.0, 0.0)])
 wind = tone(HISS, 2.0, .noise, 0.4, 0.0, 0.0)
+# (timber under strain, stick and slip: a run of little knocks, rate0 a second at first and rate1
+# at last, each a damped ring through the wood at about `body` Hz, swelling and dying away)
+creak_sound = (seconds: f64, rate0: f64, rate1: f64, body: f64, volume: f64) -> Sound:
+    n = int(seconds * f64(MIX_RATE))
+    s = Sound(fill(f32(0), n * 2))
+    ph = 0.0
+    loop i in 0..n:
+        u = f64(i) / f64(n)
+        ph += (rate0 + (rate1 - rate0) * u) / f64(MIX_RATE)
+        if ph < 1.0: continue
+        ph -= 1.0
+        a = volume * random(0.45, 1.0) * sin(PI * u)
+        f = body * random(0.85, 1.2)
+        m = min(int(0.014 * f64(MIX_RATE)), n - i)
+        loop k in 0..m:
+            t = f64(k) / f64(MIX_RATE)
+            x = f32(a * exp(-t * 300.0) * sin(TAU * f * t))
+            s.samples[(i + k) * 2] += x
+            s.samples[(i + k) * 2 + 1] += x
+    s
+# (the flying castle, heard as a mill: its beams creaking and groaning, an axle squealing, its
+# screws' paddles knocking as they turn, under it all the rumble of its works)
+snd_creaks = [creak_sound(0.7, 16.0, 42.0, 420.0, 0.4), creak_sound(0.9, 30.0, 14.0, 330.0, 0.4), creak_sound(0.5, 24.0, 60.0, 560.0, 0.3)]
+snd_groan = mix([creak_sound(1.4, 11.0, 20.0, 170.0, 0.5), tone(82.0, 1.4, .saw, 0.05, 0.35, 0.6, 0.85, 0.02)])
+snd_axle = mix([tone(610.0, 0.45, .triangle, 0.18, 0.06, 0.25, 1.16, 0.035), tone(1220.0, 0.4, .triangle, 0.055, 0.06, 0.25, 1.14, 0.03)])
+snd_knock = mix([tone(115.0, 0.2, .sine, 0.45, 0.002, 0.18, 0.7), tone(240.0, 0.07, .noise, 0.25, 0.001, 0.06, 0.5), creak_sound(0.08, 90.0, 90.0, 300.0, 0.25)])
+snd_works = mix([tone(46.0, 3.0, .noise, 0.32, 0.0, 0.0), tone(92.0, 3.0, .noise, 0.1, 0.0, 0.0)])
 snd_gun = mix([tone(180.0, 0.07, .noise, 0.5, 0.001, 0.06, 0.5), tone(90.0, 0.05, .square, 0.2, 0.001, 0.04, 0.6)])
 snd_hit = tone(1500.0, 0.06, .square, 0.18, 0.001, 0.05, 0.7)
 snd_hurt = mix([tone(240.0, 0.12, .noise, 0.5, 0.001, 0.1, 0.5), tone(160.0, 0.1, .square, 0.2, 0.001, 0.08, 0.7)])
@@ -3188,6 +3225,9 @@ snd_goal = mix([tone(523.25, 2.2, .sine, 0.28, 0.003, 2.0), tone(659.25, 2.0, .s
 const VOICES = 8                # (engines heard at once: the nearest)
 engine_ids: int[]
 wind_id = -1
+works_id = -1                  # (the nearest flying castle's rumble)
+mill_next: f64[]               # (each castle's next creak, by the clock)
+mill_knock: f64[]              # (and its paddles' turn, a knock each whole one)
 last_shots: int[]
 last_gcool: int[]
 last_tcool: int[]
@@ -3199,7 +3239,9 @@ sounds = ():
     global wind_id
     g = game()
     on = mode != .menu and not (paused and mode == .practice)
+    global works_id
     if wind_id < 0: wind_id = play(wind, 0.0, looping = true)
+    if works_id < 0: works_id = play(snd_works, 0.0, looping = true)
     loop engine_ids.len() < VOICES: engine_ids.push(play(engine, 0.0, looping = true))
     loop last_shots.len() < g.crafts.len(): last_shots.push(0)
     loop last_gcool.len() < g.crafts.len() * 8: last_gcool.push(0)
@@ -3211,7 +3253,7 @@ sounds = ():
     # (the engines running, nearest first: each of the voices one of them)
     near: (f64, int)[]
     loop i in 0.. and c in g.crafts:
-        if not alive(c) or (c.landed and pilot_of(c) < 0) or c.kind == BALLOON or c.kind == ORNITHOPTER or (c.kind == ROCKETEER and c.landed): continue
+        if not alive(c) or (c.landed and pilot_of(c) < 0) or c.kind == BALLOON or c.kind == ORNITHOPTER or c.kind == CASTLE or (c.kind == ROCKETEER and c.landed): continue
         near.push((if i == myc: -1.0 else: f64(length(c.pos - cam_pos)), i))
     near.sort_with((a, b): a.0 < b.0)
     loop v in 0..VOICES:
@@ -3228,6 +3270,35 @@ sounds = ():
         if c.kind == CAT: loud *= 0.25
         base = if c.kind == CAT: 2.4 else: if c.kind == ROCKETEER: 1.5 else: if c.kind == DRONE: 1.7 else: if c.kind == DAVINCI: 0.3 else: if c.kind == CASTLE: 0.18 else: if c.kind == CARRIER: 0.24 else: if c.kind == SCREW: 0.5 else: if c.kind == CARCOPTER: 0.6 else: if c.kind == ORNITHOPTER: 1.15 else: if c.kind == ZEPPELIN: 0.45 else: if c.kind == ULTRA: 0.5 else: if c.kind == BOMBER: 0.6 else: if c.kind == SCOUT: 0.95 else: 0.75
         set_pitch(engine_ids[v], base + 0.45 * c.throttle + f64(length(c.vel)) / 200.0)
+    # (the flying castles: no engine, a mill; the harder it works, the more it creaks and the
+    # faster its paddles knock)
+    loop mill_next.len() < g.crafts.len(): mill_next.push(0.0)
+    loop mill_knock.len() < g.crafts.len(): mill_knock.push(0.0)
+    works_near = 1e9
+    works_at = cam_pos
+    works_work = 0.0
+    loop i in 0.. and c in g.crafts:
+        if c.kind != CASTLE or not alive(c) or (c.landed and pilot_of(c) < 0): continue
+        far = f64(length(c.pos - cam_pos))
+        work = clamp(0.35 + 0.65 * abs(c.throttle) + f64(length(c.vel)) / 30.0, 0.35, 1.4) * (if c.down > 0: 0.3 else: 1.0)
+        if far < works_near:
+            works_near = far
+            works_at = c.pos
+            works_work = work
+        if not on or far > 1800.0: continue
+        h = KINDS[CASTLE].half
+        spot = point_of(c, vec3(f32(random(-0.8, 0.8) * f64(h.x)), f32(random(-0.6, 0.5) * f64(h.y)), f32(random(-0.8, 0.8) * f64(h.z))))
+        mill_knock[i] += frame_time() * (0.5 + 1.1 * work)
+        if mill_knock[i] >= 1.0:
+            mill_knock[i] -= floor(mill_knock[i])
+            play_at(snd_knock, point_of(c, vec3(0, f32(-0.4 * f64(h.y)), 0)), settings.sound * 0.55, 1400.0, pitch = 0.85 + 0.15 * random())
+        if elapsed() >= mill_next[i]:
+            r = random()
+            snd = if r < 0.16: snd_groan else: if r < 0.3: snd_axle else: snd_creaks[int(random() * 2.999)]
+            play_at(snd, spot, settings.sound * (0.5 + 0.3 * work), 1400.0, pitch = 0.85 + 0.3 * random())
+            mill_next[i] = elapsed() + random(0.35, 1.5) / work
+    if on and works_near < 1e8: move_sound(works_id, works_at, settings.sound * (0.25 + 0.25 * works_work), 1500.0)
+    else: set_volume(works_id, 0.0)
     # (the ornithoppers' pedals: a squeak each stroke, two to a turn of the cranks, as they turn)
     loop i in 0.. and c in g.crafts:
         if c.kind != ORNITHOPTER or i >= prop_turn.len(): continue
@@ -3386,6 +3457,11 @@ draw_hud = (g: Game):
         gat = world_to_screen(gp) ?? vec2(-9999, -9999)
         if f64(dot(gp - cam_pos, cam_at - cam_pos)) > 0.0 and inside(gat):
             gd = f64(length(gp - cam_pos))
+            # (far off, the cat itself a few pixels: a gold glow where it is, the farther the fuller)
+            far = clamp((gd - 90.0) / 120.0, 0.0, 1.0)
+            if far > 0.0:
+                circle_gradient(gat, 10.0, with_alpha(COLORS[GOLD], 0.85 * far), with_alpha(COLORS[GOLD], 0.0), 20)
+                circle(gat, 2.5, with_alpha(rgb(1.0, 0.95, 0.75), far), 10)
             q = gat + vec2(0, -26)
             triangle(q + vec2(0, -8), q + vec2(-7, 0), q + vec2(7, 0), COLORS[GOLD])
             triangle(q + vec2(0, 8), q + vec2(-7, 0), q + vec2(7, 0), COLORS[GOLD])
