@@ -331,6 +331,15 @@ const HOIST = 180
 in_window = (l: vec3) -> bool: abs(f64(l.x - WIN_AT.x)) <= WIN_RX * 0.75 and abs(f64(l.y - WIN_AT.y)) <= WIN_RY * 0.8
 # (craft c's hook h's craft still on its way up to it, its crane carrying it)
 hoisting = (g: Game, c: Craft, h: int) -> bool: h < c.hcaught.len() and g.tick - c.hcaught[h] < HOIST
+# (where hook h's craft is, in the carrier's frame, as its crane carries it: held in the window,
+# up, along the keel, onto its hook)
+hoist_at = (g: Game, c: Craft, h: int) -> vec3:
+    at = hung_at(h, c.hung[h])
+    if not hoisting(g, c, h): return at
+    u = clamp(f64(g.tick - c.hcaught[h]) / f64(HOIST), 0.0, 1.0)
+    up = vec3(0, at.y, WIN_AT.z)
+    along = vec3(0, at.y, at.z)
+    if u < 0.3: WIN_AT else: if u < 0.5: lerp(WIN_AT, up, f32(smoothstep(0.0, 1.0, (u - 0.3) / 0.2))) else: if u < 0.85: lerp(up, along, f32(smoothstep(0.0, 1.0, (u - 0.5) / 0.35))) else: lerp(along, at, f32(smoothstep(0.0, 1.0, (u - 0.85) / 0.15)))
 const LAUNCH_GAP = 50               # (ticks between two let go by the computer)
 const LAUNCH_SAFE = 150             # (ticks a craft just let go cannot touch the carrier, nor be caught)
 const CARRIER_LAST = 60 * 5         # (ticks a downed carrier's crews have to let go)
@@ -1795,6 +1804,14 @@ deck_blocked = (kind: int, l: vec3) -> bool:
 # floor under it (y -1e9: nowhere to stand)
 stand_spot = (kind: int, s: int) -> vec3:
     st = KINDS[kind].seats[s]
+    # (in a craft hung on the flying carrier's hook: up through the gallery onto its deck, over
+    # the hook, or as near as there is floor)
+    if kind == CARRIER and hook_seat(kind, s):
+        loop dz in [0.0, 4.0, -4.0, 8.0, -8.0]:
+            t = vec3(f32(clamp(f64(st.at.x), -28.0, 28.0)), 6, f32(clamp(f64(st.at.z) + dz, -70.0, 70.0)))
+            f = deck_floor(kind, t)
+            if f > -50.0 and not deck_blocked(kind, vec3(t.x, f32(f), t.z)): return vec3(t.x, f32(f), t.z)
+        return vec3(0, -1e9, 0)
     back = vec3(st.dir.x, 0, st.dir.z)
     tries = [st.at]
     if length(back) > 0.1: tries = [st.at - normalize(back) * 1.2, st.at]
@@ -2091,7 +2108,9 @@ person = (g: mut Game, i: int, pad: Pad):
             launch_hook(g, p.craft, p.seat - hook0(c.kind))
             return
         # (U: up out of the seat, standing on the deck there)
-        spot = if stood and not out and whole(c): stand_spot(c.kind, p.seat) else: vec3(0, -1e9, 0)
+        # (not while its crane is still carrying one's craft up to its hook)
+        lifting = c.kind == CARRIER and hook_seat(c.kind, p.seat) and hoisting(g, c, p.seat - hook0(c.kind))
+        spot = if stood and not out and whole(c) and not lifting: stand_spot(c.kind, p.seat) else: vec3(0, -1e9, 0)
         if f64(spot.y) > -1e8:
             g.crafts[p.craft].seats[p.seat] = -1
             p.state = WALK
