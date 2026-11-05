@@ -462,6 +462,7 @@ const GOLD = 2
 const GOLD_FIRST = 60 * 120
 const GOLD_AGAIN = 60 * 60
 const GOLD_SHY = 160.0
+const GOLD_SIZE = 1.5            # (as big as the cat, again as big by half: drawn and hit alike)
 const GOLD_CHASE = 500.0         # (the computer at the balls goes after it this near)
 # (a player may fly it, Team Cat: then first out GOLD_FIRST_PLAYER ticks in, again GOLD_AGAIN_PLAYER
 # after it crashes by itself, waiting till then in its loft, high over the field, out of reach;
@@ -1255,7 +1256,7 @@ tick = (g: Game, pads: Pad[]) -> Game:
         if g.crafts[j].landed and not g.crafts[j].free and g.crafts[j].gone == 0 and g.crafts[j].down == 0 and g.crafts[j].kind != DRONE:
             g.ground.push(Parked(j, g.crafts[j].pos, g.crafts[j].vel, g.crafts[j].kind, g.crafts[j].team, g.crafts[j].seats.len() > 0 and g.crafts[j].seats[0] >= 0, g.tick - max(g.crafts[j].since, g.crafts[j].manned)))
         if not g.crafts[j].free and g.crafts[j].gone == 0 and g.crafts[j].down == 0 and not g.crafts[j].landed:
-            h = KINDS[g.crafts[j].kind].half
+            h = half_of(g.crafts[j])
             g.air.push(Near(j, g.crafts[j].pos, g.crafts[j].vel, max(h.x, h.z)))
     choose_targets(g)
     # (each person's controls: its player's, or the computer's)
@@ -3517,7 +3518,10 @@ collide = (g: mut Game):
 
 # the cat into a craft in the air (its way this tick through it: it is fast): that one hurt, the
 # more the faster they met, the other side's (or anyone's, with friendly fire); the cat
-# unhurt, bounced off it
+# unhurt: through it, slowed, if they met CAT_THROUGH m/s or more and it is not the castle; else
+# bounced off it
+const CAT_THROUGH = 150.0
+const CAT_THROUGH_KEEP = 0.75     # (of its speed against the other's, kept going through)
 rams = (g: mut Game):
     loop i in 0..g.crafts.len():
         if g.crafts[i].kind != CAT or g.crafts[i].knock > 0 or not flying(g.crafts[i]): continue
@@ -3534,6 +3538,13 @@ rams = (g: mut Game):
             if e.kind != CAT and harms(g, team, g.crew[j]):
                 hurt_craft(g, j, pilot_of(c), team, int(clamp(25.0 + rel * 0.22, 30.0, 80.0)), c.pos)
                 g.booms.push(Boom(c.pos, RAMMED, g.tick, j, pilot_of(c)))
+            # (through it, slower, not ramming again till it is out the far side)
+            if e.kind != CASTLE and rel >= CAT_THROUGH:
+                g.crafts[i].vel = e.vel + (c.vel - e.vel) * f32(CAT_THROUGH_KEEP)
+                out = (2.0 * f64(o.reach) + 10.0) / (rel * CAT_THROUGH_KEEP)
+                g.crafts[i].knock = max(30, int(out * 60.0) + 2)
+                g.crafts[j].knock = max(g.crafts[j].knock, 30)
+                break
             # (off it, the way it came, slower)
             away = c.pos - e.pos
             away = if length(away) > 0.01: normalize(away) else: up_of(e)
@@ -4287,10 +4298,13 @@ seg_near = (a: vec3, b: vec3, r: f64) -> bool:
     q = a + d * f32(t)
     f64(dot(q, q)) < r * r
 
+# (craft c's half extent: its kind's, the golden cat's larger)
+half_of = (c: Craft) -> vec3: if c.team == GOLD: KINDS[c.kind].half * f32(GOLD_SIZE) else: KINDS[c.kind].half
+
 # whether the segment a-b (the world's) passes through craft c (its ellipsoid, where it was a tick
 # ago at the start: it moved too), grown by `more` meters
 hits_craft = (c: Craft, a: vec3, b: vec3, more: f64) -> bool:
-    h = KINDS[c.kind].half + vec3(f32(more), f32(more), f32(more))
+    h = half_of(c) + vec3(f32(more), f32(more), f32(more))
     # (first: near its sphere at all)
     if not seg_near(a - c.pos, b - c.pos, f64(max(h.x, max(h.y, h.z))) + f64(length(c.vel)) * DT): return false
     inv = quat_inverse(c.rot)
@@ -4397,7 +4411,7 @@ seg_box = (a: vec3, b: vec3, h: vec3) -> bool:
 
 # how far point p is from craft c's ellipsoid (roughly: its surface, in meters; < 0 inside)
 craft_distance = (c: Craft, p: vec3) -> f64:
-    h = KINDS[c.kind].half
+    h = half_of(c)
     l = quat_rotate(quat_inverse(c.rot), p - c.pos)
     if c.kind == CASTLE: return castle_distance(l)
     if c.kind == CARRIER: return carrier_distance(c, l)
