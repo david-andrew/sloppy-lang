@@ -442,6 +442,10 @@ BALL_DRAG = [0.2, 0.11, 0.1, 0.35]    # (its speed lost to the air, a second)
 BALL_BOUNCE = [0.5, 0.6, 0.8, 0.4]
 BALL_KICK = [2.4, 2.8, 3.0, 0.0]       # (struck: off at so many times the speed it was met at, against a craft as heavy)
 BALL_TOP = [70.0, 110.0, 130.0, 60.0]    # (m/s at most, struck)
+# (shot: off from where it was struck at BALL_SHOT m/s for each of the shot's hurt, against a
+# ball as heavy as a craft of mass 1: a bullet's 7 sends a small ball some 2 m/s, the long gun's
+# 80 some 20; a burst's, the nearer the more, from its middle)
+const BALL_SHOT = 0.3
 const KICK_AGAIN = 45           # (ticks before the craft that struck a ball can strike it again)
 BALL_POINTS = [20, 30, 50, 15]
 BALL_NAMES = ["great ball", "ball", "small ball", "carry ball"]
@@ -4570,6 +4574,11 @@ shoot = (g: mut Game):
                     hurt_person(g, j, b.by, b.team, b.damage)
                     hit = true
                     break
+        if not hit and g.balls.len() > 0 and not b.flame:
+            sb = ball_struck(g, a, b.pos)
+            if sb.0 >= 0:
+                shove_ball(g, sb.0, sb.1, f64(b.damage), b.by)
+                hit = true
         if hit: continue
         if f64(b.pos.y) < 700.0:
             gy = ground(f64(b.pos.x), f64(b.pos.z))
@@ -4696,6 +4705,11 @@ shells = (g: mut Game):
                     burst = true
                     struck = j
                     break
+        if not burst and g.balls.len() > 0:
+            sb = ball_struck(g, a, s.pos)
+            if sb.0 >= 0:
+                burst = true
+                s.pos = sb.1
         gy = ground(f64(s.pos.x), f64(s.pos.z))
         if f64(s.pos.y) <= gy or (f64(s.pos.y) < gy + (if g.rules.mode == THUNDERDOME: 80.0 else: 40.0) and building_hit(g, a, s.pos) >= 0): burst = true
         if s.kind == ROCKET and s.life <= 0: burst = true
@@ -4736,8 +4750,13 @@ shells = (g: mut Game):
             else: blast(g, s, 30.0, 170)
     g.shots = kept
 
-# what is within r of a burst: hurt the more the nearer
+# what is within r of a burst: hurt the more the nearer (a ball, not carried, knocked away)
 blast = (g: mut Game, s: Shot, r: f64, most: int):
+    loop i in 0..g.balls.len():
+        o = g.balls[i]
+        if o.carrier >= 0: continue
+        d = max(f64(length(o.pos - s.pos)) - BALL_R[o.kind], 0.0)
+        if d < r: shove_ball(g, i, s.pos, f64(most) * (1.0 - d / r), s.by)
     loop j in 0..g.crafts.len():
         c = g.crafts[j]
         if not whole(c): continue
@@ -5051,6 +5070,45 @@ cap = (v: vec3, most: f64) -> vec3:
 # those who fly through them, carried slung under their crafts; free, each floats back to its
 # height, slows, bounces off the ground, the rings' rims and posts, the fight's edge, and the
 # others; through a ring, a goal
+# (the ball, not carried, a shot from a to b meets first, and where on it: (-1, b) none)
+ball_struck = (g: Game, a: vec3, b: vec3) -> (int, vec3):
+    best = -1
+    at = b
+    dv = b - a
+    l = f64(length(dv))
+    if l < 0.000001: return (best, at)
+    w = dv * f32(1.0 / l)
+    least = 1e18
+    loop i in 0.. and o in g.balls:
+        if o.carrier >= 0: continue
+        r = BALL_R[o.kind]
+        if not seg_near(a - o.pos, b - o.pos, r): continue
+        f = a - o.pos
+        bq = f64(dot(f, w))
+        disc = bq * bq - (f64(dot(f, f)) - r * r)
+        t = if disc > 0.0: clamp(-bq - sqrt(disc), 0.0, l) else: clamp(-bq, 0.0, l)
+        if t < least:
+            least = t
+            best = i
+            at = a + w * f32(t)
+    (best, at)
+
+# (ball i struck at `at` by person `by`'s shot, `power` its hurt: off from that point, through its
+# middle, the more the stronger the shot and the lighter the ball)
+shove_ball = (g: mut Game, i: int, at: vec3, power: f64, by: int):
+    o = g.balls[i]
+    n = o.pos - at
+    n = if length(n) > 0.01: normalize(n) else: vec3(0, 1, 0)
+    dv = BALL_SHOT * power / BALL_MASS[o.kind]
+    if dv <= 0.0: return
+    g.balls[i].vel = cap(o.vel + n * f32(dv), BALL_TOP[o.kind])
+    if by >= 0: g.balls[i].by = by
+    # (long left alone no more; but not as if kicked: its shooter may still strike it at once)
+    g.balls[i].touched = g.tick - KICK_AGAIN
+    if dv > 3.0 and g.tick - o.hit_at > 12:
+        g.balls[i].hit_at = g.tick
+        g.booms.push(Boom(at, STRUCK, g.tick, i, by))
+
 balls = (g: mut Game):
     rs = rings()
     loop o in g.air:
