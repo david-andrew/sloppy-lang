@@ -1589,8 +1589,28 @@ cam_back = (kind: int) -> vec2:
     if kind == BOMBER: return vec2(38, 9)
     vec2(15, 4.2)
 
+# (the kill cam: seconds left of watching one's killer, who they were, and the tick the view began;
+# set when this one dies by another's hand, so it runs inside the wait to come back, never past it)
+const KILLCAM_SECS = 3.5
+kill_cam = 0.0
+kill_by = -1
+
+# (a key, a click or a button: the kill cam skipped)
+skip_pressed = () -> bool:
+    mouse_pressed(.left) or mouse_pressed(.right) or gamepad_pressed(.a) or gamepad_pressed(.b) or key_pressed(.space) or key_pressed(.enter) or key_pressed(.w) or key_pressed(.a) or key_pressed(.s) or key_pressed(.d) or key_pressed(.q) or key_pressed(.e) or key_pressed(.f) or key_pressed(.shift) or key_pressed(.ctrl)
+
+# (where the killer is, and the craft they are in: their craft, else themself on foot; none if gone)
+killer_view = (g: Game) -> (vec3, vec3, bool):
+    if kill_by < 0 or kill_by >= g.people.len(): return (vec3(0, 0, 0), vec3(0, 0, -1), false)
+    k = g.people[kill_by]
+    if k.state == DEAD: return (vec3(0, 0, 0), vec3(0, 0, -1), false)
+    if k.state == SEATED and k.craft >= 0 and k.craft < g.crafts.len() and g.crafts[k.craft].gone == 0:
+        c = g.crafts[k.craft]
+        return (c.pos, fwd_of(c), true)
+    (k.pos, vec3(0, 0, -1), true)
+
 place_camera = (g: Game, dt: f64):
-    global cam_aim, cam_at, cam_pos, cam_q, cam_up, level_right, look_amount, look_at_pos, mouse_view, throw_view, deck_cam, deck_cam_craft
+    global kill_cam, cam_aim, cam_at, cam_pos, cam_q, cam_up, level_right, look_amount, look_at_pos, mouse_view, throw_view, deck_cam, deck_cam_craft
     p = g.people[me()]
     if p.team == GOLD and p.state == DEAD:
         # (the golden cat's player, in its loft: the field below, slowly round it)
@@ -1600,6 +1620,19 @@ place_camera = (g: Game, dt: f64):
         cam_up = approach(cam_up, vec3(0, 1, 0), 3.0, dt)
         finish_camera()
         return
+    # (the kill cam: from just behind and above the one who did it, as they fly; skipped by a key
+    # or click, ended with the time or when they are gone)
+    if kill_cam > 0.0 and p.state != DEAD: kill_cam = 0.0
+    if kill_cam > 0.0 and p.state == DEAD and g.winner < 0:
+        kv = killer_view(g)
+        if skip_pressed() or not kv.2 or p.timer < 30: kill_cam = 0.0
+        else:
+            kill_cam -= dt
+            cam_at = approach(cam_at, kv.0, 8.0, dt)
+            cam_pos = approach(cam_pos, kv.0 - kv.1 * 22.0 + vec3(0, 7, 0), 5.0, dt)
+            cam_up = approach(cam_up, vec3(0, 1, 0), 3.0, dt)
+            finish_camera()
+            return
     if p.state == DEAD or (p.state == SEATED and g.crafts[p.craft].gone > 0):
         # (dead: watching where it happened, from above)
         cam_at = approach(cam_at, p.pos, 3.0, dt)
@@ -2626,7 +2659,7 @@ felt = (at: vec3, far: f64, most: f64):
 puffs = 0.0                     # (time since the trails were last given smoke)
 
 effects = (dt: f64):
-    global hit_mark, hurt, news, puffs, scorch_heard, seen, shake, won_at, grounded_said, flash_at
+    global kill_by, kill_cam, hit_mark, hurt, news, puffs, scorch_heard, seen, shake, won_at, grounded_said, flash_at
     g = game()
     myc = my_craft()
     # (the trails as many a second at any frame rate)
@@ -3029,7 +3062,12 @@ effects = (dt: f64):
         else if b.kind == HEADSHOT:
             if b.by == me(): say("you shot {call(g, b.who)} in their seat", COLORS[1 - g.people[b.who].team])
             else if b.who == me(): say("{if b.by >= 0: call(g, b.by) else: "someone"} shot you through your seat", rgb(1, 0.5, 0.4))
-        else if b.kind == KILLED and b.who == me(): say(if b.by >= 0 and b.by != me(): "killed by {call(g, b.by)}" else: "you died", gray(0.9))
+        else if b.kind == KILLED and b.who == me():
+            say(if b.by >= 0 and b.by != me(): "killed by {call(g, b.by)}" else: "you died", gray(0.9))
+            # (by another's hand, in a fight: their view for a few moments)
+            if b.by >= 0 and b.by != me() and b.by < g.people.len() and g.people[b.by].team != GOLD and mode != .menu and g.winner < 0:
+                kill_by = b.by
+                kill_cam = KILLCAM_SECS
         else if b.kind == TAKEN: say("{call(g, b.by)} took {TEAMS[b.who]}'s flag", COLORS[1 - b.who], small = b.by != me())
         else if b.kind == SCORED: say("{call(g, b.by)} brought {TEAMS[b.who]}'s flag home", COLORS[1 - b.who])
         else if b.kind == RETURNED: say("{TEAMS[b.who]}'s flag is back", COLORS[b.who], small = true)
@@ -3640,6 +3678,8 @@ draw_hud = (g: Game):
         r = Rect(mid().x - 130, alert_at().y - 34, 260, 68)
         panel(r)
         text_centered("back in {(p.timer + 59) / 60}", vec2(mid().x, alert_at().y), T_HEAD, INK)
+        if kill_cam > 0.0:
+            text_centered("killed by {call(g, kill_by)}: any key skips", vec2(mid().x, alert_at().y + 52), T_SMALL, INK)
     else if p.state == WALK and not seated:
         # (on foot: a small cross where this one looks)
         line(mid() + vec2(-6, 0), mid() + vec2(6, 0), 2, rgba(1, 1, 1, 0.6))
