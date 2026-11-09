@@ -504,10 +504,22 @@ const FURY_GUNS = 25
 const FURY_PULL = 0.12
 # (craft c's hull whole: its kind's, and its fury's)
 full_health = (c: Craft) -> int: KINDS[c.kind].health * (100 + c.fury * FURY_HULL) / 100
-# (a bullet's harm from craft c's guns)
-gun_harm = (c: Craft, base: int) -> int: base * (100 + c.fury * FURY_GUNS) / 100
-# (the people a side the fields have crafts for: Turncoats' each for everyone, who may all be one side's)
+# (a bullet's harm from craft i's guns, with a turncoat's edge and its fury)
+gun_harm = (g: Game, i: int, c: Craft, base: int) -> int: base * (100 + c.fury * FURY_GUNS + (if turncoat_flown(g, i): TURNCOAT_GUNS else: 0)) / 100
+# (the people a side the fields have crafts for: Turncoats' each for everyone, who may all be one
+# side's; and how many there are in Turncoats, n a side and the first turncoat's seat if a player
+# claimed it (not when it stands empty in the lobby's seats))
 field_people = (g: Game) -> int: if g.rules.mode == TURNCOATS: g.people.len() else: g.people.len() / 2
+turncoat_people = (pilots: int[], n: int) -> int: 2 * n + (if pilots.len() > 2 * n and pilots[2 * n] >= 0: 1 else: 0)
+# (a craft flown by a turncoat, any fury or none: so much more pull from its engine, so much
+# quicker at the stick, so much more harm from its guns (in a hundred))
+const TURNCOAT_PULL = 0.45
+const TURNCOAT_TURN = 0.25
+const TURNCOAT_GUNS = 25
+# (whether craft i is a turncoat's, as its crew stood this tick (g.crew))
+turncoat_flown = (g: Game, i: int) -> bool: g.rules.mode == TURNCOATS and i < g.crew.len() and g.crew[i] == TURNED_SIDE
+# (craft i's engine's pull against its kind's, with a turncoat's edge and its fury)
+pull_of = (g: Game, i: int, c: Craft) -> f64: 1.0 + FURY_PULL * f64(c.fury) + (if turncoat_flown(g, i): TURNCOAT_PULL else: 0.0)
 
 # (the health craft c starts a fight with, which its hull bar and smoke are measured against: its
 # kind's with its fury (full_health), but The Boss's castle as the fight sets it out, by the
@@ -1094,7 +1106,7 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
             g.flags.push(Flag(t, h, h, real = m == FLAG or t != g.rules.attackers))
     if m == BROOMS: g.balls = ball_set(n)
     if starts_on_ground(g, 0) or starts_on_ground(g, 1):
-        loop st in 0.. and s in stands(field_kinds(if m == TURNCOATS: pilots.len() else: n, m, g.rules.crafts)):
+        loop st in 0.. and s in stands(field_kinds(if m == TURNCOATS: turncoat_people(pilots, n) else: n, m, g.rules.crafts)):
             if not starts_on_ground(g, s.team): continue
             c = parked(s.kind, s.team, s.pos, s.yaw)
             c.home = st
@@ -2977,7 +2989,7 @@ fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
             if who < 0 or g.people[who].player < 0: way = normalize(fwd + right * f32(sx * (2.2 - g.skill)) + up * f32(sy * (2.2 - g.skill)))
             g.bullets.push(Bullet(at, c.vel + way * f32(SNIPE_SPEED), who, i, team, SNIPE_LIFE, SNIPE_DAMAGE, snipe = true))
             g.booms.push(Boom(at, SNIPED, g.tick, i, who))
-        else: g.bullets.push(Bullet(at, c.vel + dir * f32(BULLET_SPEED), who, i, team, BULLET_LIFE, gun_harm(c, DAMAGE)))
+        else: g.bullets.push(Bullet(at, c.vel + dir * f32(BULLET_SPEED), who, i, team, BULLET_LIFE, gun_harm(g, i, c, DAMAGE)))
         c.shots += 1
         c.cooldown = if snipe: SNIPE_GAP else: if three: (if which == 2: 2 else: 3) else: k.fire_gap
         fired = true
@@ -3086,7 +3098,7 @@ fly_air = (g: mut Game, i: int, c0: Craft, pd: Pad):
     let c = c0
     k = KINDS[c.kind]
     speed = f64(length(c.vel))
-    auth = clamp(speed / (k.stall * 1.45), 0.25, 1.0)
+    auth = clamp(speed / (k.stall * 1.45), 0.25, 1.0) * (if turncoat_flown(g, i): 1.0 + TURNCOAT_TURN else: 1.0)
     q = c.rot
     q = quat_mul(q, quat_axis_angle(vec3(1, 0, 0), f64(pd.pitch) / 100.0 * k.pitch_rate * auth * DT))
     q = quat_mul(q, quat_axis_angle(vec3(0, 0, 1), -f64(pd.roll) / 100.0 * k.roll_rate * auth * DT))
@@ -3128,7 +3140,7 @@ fly_air = (g: mut Game, i: int, c0: Craft, pd: Pad):
     # gravity (diving gains speed, climbing costs it)
     thin = clamp((CEILING + 300.0 - f64(c.pos.y)) / 600.0, 0.0, 1.0)
     pull = abs(f64(pd.pitch)) / 100.0 * auth
-    acc = k.thrust * (1.0 + FURY_PULL * f64(c.fury)) * c.throttle * thin - k.drag * speed * speed * (1.0 + 0.9 * pull) - 9.8 * f64(vdir.y)
+    acc = k.thrust * pull_of(g, i, c) * c.throttle * thin - k.drag * speed * speed * (1.0 + 0.9 * pull) - 9.8 * f64(vdir.y)
     speed = max(speed + acc * DT, 0.0)
     # the way it goes turns toward the nose: hardly at all when stalled
     t = min(k.grip * lift * DT, 1.0)
@@ -3838,7 +3850,7 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
                 g.crafts[i].gcool[s] = FLAME_GAP
                 g.crafts[i].gheat[s] += 2
             else:
-                g.bullets.push(Bullet(at + dir * 1.5, c.vel + dir * f32(BULLET_SPEED), by, i, team, BULLET_LIFE, gun_harm(c, DAMAGE)))
+                g.bullets.push(Bullet(at + dir * 1.5, c.vel + dir * f32(BULLET_SPEED), by, i, team, BULLET_LIFE, gun_harm(g, i, c, DAMAGE)))
                 g.crafts[i].gcool[s] = 6
                 g.crafts[i].gheat[s] += 6
             seen_firing(g, i)
