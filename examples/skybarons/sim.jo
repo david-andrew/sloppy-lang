@@ -394,15 +394,16 @@ const RAIDS = 7                 # each side's bombers go for the other's factory
 const THUNDERDOME = 8           # The Thunderdome: shoot the other side's targets (they come back); the cat is worth many
 const BROOMS = 9                # the ball fight: balls through the other side's rings; the cat is worth many
 const BOSS = 10                 # The Boss: the attackers bring down the defenders' flying castle, ringed by tethered balloons
-MODE_NAMES = ["Dogfight", "Classic", "Base attack", "Capture the flag", "Trench run", "Bomber escort", "Flag raid", "Bomber raids", "The Thunderdome", "Bikes & Brooms", "The Boss"]
+const TURNCOATS = 11            # one turncoat at first, the rest holdouts; a holdout shot down comes back a turncoat
+MODE_NAMES = ["Dogfight", "Classic", "Base attack", "Capture the flag", "Trench run", "Bomber escort", "Flag raid", "Bomber raids", "The Thunderdome", "Bikes & Brooms", "The Boss", "Turncoats"]
 # (The Boss's attackers: the small crafts, the bombers, the ornithopters, the rocketeers and the
 # carcopters; no big ones of many seats but the ultra bomber, no gun towers, no cat)
 const BOSS_CRAFTS = (1 << SCOUT) | (1 << FIGHTER) | (1 << BOMBER) | (1 << ULTRA) | (1 << ROCKETEER) | (1 << ORNITHOPTER) | (1 << CARCOPTER)
 # (each fight's kinds of craft: those it can have at all (a bit each), and those it must; the
 # lobby lists the first, the second locked on)
 NO_CAT = ALL_CRAFTS & ~(1 << CAT)
-MODE_CAN = [NO_CAT, 1 << FIGHTER, NO_CAT, NO_CAT, NO_CAT, NO_CAT, NO_CAT, NO_CAT, ALL_CRAFTS, NO_CAT, BOSS_CRAFTS]
-MODE_MUST = [0, 0, 0, 0, 0, 0, 0, 0, 1 << CAT, 0, 0]
+MODE_CAN = [NO_CAT, 1 << FIGHTER, NO_CAT, NO_CAT, NO_CAT, NO_CAT, NO_CAT, NO_CAT, ALL_CRAFTS, NO_CAT, BOSS_CRAFTS, NO_CAT]
+MODE_MUST = [0, 0, 0, 0, 0, 0, 0, 0, 1 << CAT, 0, 0, 0]
 # (Bikes & Brooms unless the lobby says: witches, bikes (the ornithopters) and balloons)
 const BROOMS_CRAFTS = (1 << ROCKETEER) | (1 << BALLOON) | (1 << ORNITHOPTER)
 # (what a fight has unless its lobby says)
@@ -475,11 +476,25 @@ const GOLD_FIRST_PLAYER = 60 * 60
 const GOLD_AGAIN_PLAYER = 60 * 15
 const GOLD_LOFT = vec3(0, 520, 0)
 # (the person who flies the golden cat, a player's, the last of all; -1: the computer flies it)
-gold_person = (g: Game) -> int: if g.people.len() % 2 == 1: g.people.len() - 1 else: -1
+gold_person = (g: Game) -> int: if g.rules.mode == BROOMS and g.people.len() % 2 == 1: g.people.len() - 1 else: -1
 # (the cat's points, by the fight)
 cat_points = (m: int) -> int: if m == BROOMS: BROOMS_CAT else: CAT_POINTS
 # (the fights where one side attacks and the other defends)
 one_sided = (m: int) -> bool: m == TRENCH or m == ESCORT or m == FLAG_RAID or m == BOSS
+
+# (Turncoats: its two sides. Everyone starts a holdout but one, the first turncoat (a player who
+# claimed it, an extra person, last, as the golden cat's; else one picked at random, Rules.zero);
+# from the air. A holdout who comes back, for whatever reason (shot down, crashed, bailed out, on
+# foot on the ground), comes back a turncoat, and stays one. The turncoats win when no holdout
+# is left in the air; the holdouts when the time is up. The last holdout is marked for the
+# turncoats (Game.last), and the computer's go for it first. Turncoats come back sooner, near
+# the holdouts, at their own end's side of them)
+const HOLDOUTS = 1
+const TURNED_SIDE = 0
+const TURNCOAT_BACK = 150      # (ticks from death to coming back, a turncoat: RESPAWN for the rest)
+const TURNCOAT_NEAR = 900.0    # (m from the holdouts' middle a turncoat comes back, at most)
+const TURNCOAT_PER = 8          # (in a big fight more than one starts a turncoat: one for each so many, about)
+first_turncoats = (people: int) -> int: max(1, (people + TURNCOAT_PER / 2) / TURNCOAT_PER)
 
 # a seat in a craft: where it is (the craft's own way: -z ahead, +x right, +y up), and for a
 # gunner the way its gun points at rest and how far it turns from that (the cosine of the angle)
@@ -757,6 +772,7 @@ struct Person:
     join_at = 0
     join_seat = -1              # or on its deck, to this seat of it: -1 the first free)
     hopped = -1                 # (the computer's: the big craft it last got out of, alone, not taken again)
+    lives = 0                   # (times come back: the first is coming in)
 
 struct Bullet:
     pos: vec3
@@ -869,6 +885,8 @@ const BOMBARD_FIRED = 50        # a great bombard fired (`who`: its craft * 64 +
 const BOMBARD_HIT = 51          # a bombard's ball down on craft `who` (-1: the ground), fired by person `by`
 const GROUNDED = 52             # flying castle `who` dragging its rock along the ground
 const SNAPPED = 53              # the cable of screw `who` (tethered to flying castle `by`) snapped: it flies free
+const TURNED = 55               # person `who` back as a turncoat (Turncoats), `by` the holdouts left
+const LAST_HOLDOUT = 56         # person `who` the last holdout (Turncoats)
 struct Boom:
     pos: vec3
     kind: int
@@ -888,6 +906,7 @@ struct Rules:
     plain = false               # no one's screen marks the crafts (the skies scanned by eye; the
                                 # sim does not read it)
     defenders = 0               # (The Boss: the defenders who play, the rest of their side out of it; 0 the fight's own)
+    zero = -1                   # (Turncoats: the person who starts a turncoat, unless a player claimed it; -1 picked here)
 
 # (a craft in the air, for the computer's pilots to keep clear of: which, where, how fast, how wide)
 struct Near:
@@ -929,6 +948,7 @@ struct Game:
     balls: Ball[] = []          # (the ball fight's)
     gold = -1                   # (the golden cat: its craft, -1 none out)
     gold_at = GOLD_FIRST        # (and the tick it comes out, when none is)
+    last = -1                   # (Turncoats: the last holdout, -1 none yet)
     wave = 0                    # (The Boss: the tick the attackers' wave went in, 0 none going in;
     rally = 0                   # and the tick they began to gather for the next)
 
@@ -1011,6 +1031,7 @@ default_minutes = (m: int) -> int:
     if m == ESCORT or m == FLAG_RAID: return 6
     if m == RAIDS or m == THUNDERDOME: return 8
     if m == BROOMS or m == BOSS: return 10
+    if m == TURNCOATS: return 6
     0
 
 # a fight: pilots says who each person is (one player number, or -1 the computer, for each;
@@ -1037,6 +1058,10 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
             if pilots[i] >= 0 and i % 2 != g.rules.attackers: g.rules.defenders = max(g.rules.defenders, i / 2 + 1)
         g.rules.defenders = clamp(g.rules.defenders, 1, max(n, 1))
     else: g.rules.defenders = 0
+    # (Turncoats: from the air, and no score to reach)
+    if m == TURNCOATS:
+        g.rules.ground_start = false
+        g.rules.win = 0
     loop s in sites(m, g.rules.attackers):
         g.buildings.push(Building(s.kind, s.team, s.pos, s.yaw, site_health(s.kind)))
     if m == BOSS: boss_setup(g, n)
@@ -1073,7 +1098,35 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
         p = Person(GOLD, player = pilots[2 * n], kind = CAT, pos = GOLD_LOFT)
         g.people.push(p)
         g.gold_at = GOLD_FIRST_PLAYER
+    if m == TURNCOATS: turncoats_setup(g, pilots, n, kinds)
     g
+
+# (Turncoats: everyone a holdout but the first turncoats: the player who claimed it (the seat after
+# the sides', an extra person), else the person Rules.zero says (-1: one picked from the fight's
+# numbers, the same on every machine); in a big fight (first_turncoats) more, spread through
+# the rest from there
+turncoats_setup = (g: mut Game, pilots: int[], n: int, kinds: int[]):
+    loop i in 0..g.people.len(): g.people[i].team = HOLDOUTS
+    all = g.people.len()
+    more = first_turncoats(all) - 1
+    z = g.rules.zero
+    if z < 0 or z >= all: z = int(hash(all * 7919 + g.rules.time_limit * 31 + int(g.skill * 100.0)) % 1000003) % all
+    if pilots.len() > 2 * n and pilots[2 * n] >= 0:
+        p = Person(TURNED_SIDE, player = pilots[2 * n])
+        p.kind = start_kind(g, 2 * n, if pilots[2 * n] < kinds.len(): kinds[pilots[2 * n]] else: -1)
+        p.timer = 1 + 2 * n
+        g.people.push(p)
+    else:
+        g.people[z].team = TURNED_SIDE
+        g.rules.zero = z
+    # (the others: evenly round from the first, the computer's rather than players')
+    loop k in 1..more + 1:
+        j = (z + k * all / (more + 1)) % all
+        loop t in 0..all:
+            c = (j + t) % all
+            if g.people[c].team == HOLDOUTS and (g.people[c].player < 0 or t == all - 1):
+                g.people[c].team = TURNED_SIDE
+                break
 
 # what person i flies, starting in the air: as chosen (want: -1 none), or as the fight has it
 start_kind = (g: Game, i: int, want: int) -> int:
@@ -1370,12 +1423,67 @@ rules = (g: mut Game):
         loop t in 0..2:
             if share[t] <= 0.0: g.winner = 1 - t
         if g.winner < 0 and late and share[0] != share[1]: g.winner = if share[0] > share[1]: 0 else: 1
+    if m == TURNCOATS: turncoat_rules(g, late)
     # (The Boss: the castle down, the attackers have won; standing at the end, the defenders)
     if m == BOSS:
         if boss_castle(g) < 0: g.winner = att
         else if late: g.winner = 1 - att
         boss_waves(g)
         boss_supply(g)
+
+# ---------------- Turncoats ----------------
+# (whether person p is still a holdout in the fight: of that side, and not yet come in, or in a
+# seat, at a gun, on a craft's deck, or fallen off one (it may land on it again); not on foot on
+# the ground, nor falling or under a parachute from a craft lost: it comes back a turncoat)
+holding_out = (p: Person) -> bool:
+    if p.team != HOLDOUTS: return false
+    p.lives == 0 or p.state == SEATED or p.state == POST or (p.state == WALK and p.craft >= 0) or (p.state == FALL and p.walked)
+holdouts_left = (g: Game) -> int:
+    n = 0
+    loop p in g.people:
+        if holding_out(p): n += 1
+    n
+
+# (each side's numbers as its score; no holdout left, the turncoats have won; the time up with
+# any, the holdouts; one left, the last holdout, said)
+turncoat_rules = (g: mut Game, late: bool):
+    left = 0
+    one = -1
+    loop i in 0..g.people.len():
+        if holding_out(g.people[i]):
+            left += 1
+            one = i
+    g.scores[HOLDOUTS] = left
+    g.scores[TURNED_SIDE] = g.people.len() - left
+    if left == 0 and g.tick > 60: g.winner = TURNED_SIDE
+    else if late: g.winner = HOLDOUTS
+    if left == 1 and g.last != one and g.people.len() > 2:
+        g.last = one
+        g.booms.push(Boom(g.people[one].pos, LAST_HOLDOUT, g.tick, one))
+
+# (where person i comes back in the air: a holdout (and anyone at first) in its side's rows, its
+# own place in them; a turncoat turned near the holdouts, at most TURNCOAT_NEAR from their middle on
+# the turncoats' own end's side of it, spread across, facing them)
+turncoat_start = (g: Game, i: int, team: int, alt: f64, first: bool) -> (vec3, vec3):
+    home, hdir = air_start(team, i, g.people.len(), alt)
+    if team != TURNED_SIDE or first: return (home, hdir)
+    mid = vec3(0, 0, 0)
+    n = 0
+    loop o in g.air:
+        if o.craft < g.crew.len() and g.crew[o.craft] == HOLDOUTS:
+            mid += o.pos
+            n += 1
+    if n == 0: return (home, hdir)
+    mid = mid * f32(1.0 / f64(n))
+    d = vec3(home.x - mid.x, 0, home.z - mid.z)
+    l = f64(length(d))
+    if l <= TURNCOAT_NEAR: return (home, hdir)
+    way = d / f32(l)
+    across = vec3(-way.z, 0, way.x)
+    at = mid + way * f32(TURNCOAT_NEAR) + across * f32((f64(i % 9) - 4.0) * 70.0)
+    y = max(f64(mid.y), alt) + f64(i % 3) * 35.0
+    at.y = f32(max(y, ground(f64(at.x), f64(at.z)) + 250.0))
+    (at, -way)
 
 # ---------------- The Boss ----------------
 # The defenders' flying castle on station over their half of the field, facing the attackers'
@@ -2070,6 +2178,10 @@ person = (g: mut Game, i: int, pad: Pad):
         if p.timer <= 0: respawn(g, i, p)
         else: g.people[i] = p
         return
+    # (Turncoats: a holdout on foot on the ground has lost: back at once, a turncoat)
+    if g.rules.mode == TURNCOATS and p.team == HOLDOUTS and p.lives > 0 and p.state == WALK and p.craft < 0:
+        respawn(g, i, p)
+        return
     # (the crew call: J, the screen fading, and a moment later in a seat of the craft)
     if p.joining >= 0 and g.tick >= p.join_at: p = join_crew(g, i, p)
     if joined and p.joining < 0 and p.player >= 0 and can_call(g, i, p):
@@ -2407,6 +2519,12 @@ respawn = (g: mut Game, i: int, p0: Person):
     p.seat = -1
     p.post = -1
     p.vel = vec3(0, 0, 0)
+    # (Turncoats: a holdout back, for whatever reason, is back a turncoat)
+    if g.rules.mode == TURNCOATS and p.team == HOLDOUTS and p.lives > 0:
+        p.team = TURNED_SIDE
+        g.people[i].team = TURNED_SIDE
+        g.booms.push(Boom(p.pos, TURNED, g.tick, i, holdouts_left(g)))
+    p.lives += 1
     # (Escort: a bomber lost in the last half of the time does not come back; its crew flies a fighter)
     if g.rules.mode == ESCORT and (p.kind == BOMBER or p.kind == ULTRA) and g.tick > 60 * 180: p.kind = FIGHTER
     # (The Boss's defenders: in a seat of the castle, or a balloon's; none free, again in a while)
@@ -2445,7 +2563,7 @@ respawn = (g: mut Game, i: int, p0: Person):
         loop j in 0..g.crafts.len():
             if k < 0 and g.crafts[j].free: k = j
     n = g.people.len() / 2
-    at, dir = air_start(p.team, i / 2, n, if p.kind == ZEPPELIN: 470.0 else: 430.0)
+    at, dir = if g.rules.mode == TURNCOATS: turncoat_start(g, i, p.team, if p.kind == ZEPPELIN: 470.0 else: 430.0, p.lives <= 1) else: air_start(p.team, i / 2, n, if p.kind == ZEPPELIN: 470.0 else: 430.0)
     # (Bikes & Brooms: the balloons where all start, the whole line of them brought forward to
     # its side's rings)
     if g.rules.mode == BROOMS and p.kind == BALLOON and rings().len() >= 6:
@@ -2719,7 +2837,7 @@ kill = (g: mut Game, i: int, by: int):
     drop_flag(g, i)
     g.booms.push(Boom(p.pos, KILLED, g.tick, i, by))
     g.people[i].state = DEAD
-    g.people[i].timer = RESPAWN
+    g.people[i].timer = if g.rules.mode == TURNCOATS and p.team == TURNED_SIDE: TURNCOAT_BACK else: RESPAWN
     g.people[i].craft = -1
     g.people[i].seat = -1
     g.people[i].post = -1
@@ -5357,6 +5475,8 @@ choose_targets = (g: mut Game):
             # (the ball fight: one carrying a ball, gone after first)
             if g.rules.mode == BROOMS and carrying(g, j): v *= 0.35
             if kind == CAT and ek == CAT: v *= 50.0
+            # (Turncoats: the last holdout first)
+            if g.rules.mode == TURNCOATS and g.last >= 0 and g.people[g.last].team == HOLDOUTS and g.people[g.last].craft == j: v *= 0.3
             # (The Boss's attackers: the castle first; a balloon only when close ahead)
             if g.rules.mode == BOSS and team == g.rules.attackers:
                 if ek == CASTLE: v *= 0.25
@@ -6610,7 +6730,7 @@ bot_bomber = (g: Game, ci: int, c: Craft, team: int) -> Pad:
 # version, a page loaded before the game was changed)
 version_print = () -> str:
     out = 0
-    loop m in [DOGFIGHT, BASES, TRENCH, ESCORT, THUNDERDOME, BROOMS]:
+    loop m in [DOGFIGHT, BASES, TRENCH, ESCORT, THUNDERDOME, BROOMS, TURNCOATS]:
         set_map(if m == TRENCH: GORGE else: FARMLAND, 0)
         r = Rules(mode = m, ground_start = m == BASES)
         if m == DOGFIGHT: r.crafts = (1 << ROCKETEER) | (1 << ORNITHOPTER)
