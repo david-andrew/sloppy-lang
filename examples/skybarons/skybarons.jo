@@ -13,8 +13,9 @@
 # end) and the Bomber escort (Red's bombers to Blue's factory); the Thunderdome (ornithopters,
 # witches on brooms and a cat each, shooting the other side's targets through its gun towers'
 # fire); and Bikes & Brooms (great leather balls knocked, wicker ones carried, through the other
-# side's rings); and Turncoats (everyone a holdout but one turncoat; a holdout shot down comes
-# back a turncoat, till none hold out or the time is up). Friendly fire is a choice.
+# side's rings); and Turncoats (everyone a holdout but one turncoat; a holdout killed, or back at
+# base with T, comes back a turncoat, till none hold out or the time is up; a turncoat who keeps
+# going down comes back in a fury, stronger). Friendly fire is a choice.
 #
 # Rooms, invites and rollback netplay as Aces has them (lib/invite.jo, lib/netplay.jo): only the
 # players' controls travel, and every machine runs the whole fight; the computer fills the sides.
@@ -285,7 +286,10 @@ minute_choices = (m: int) -> int[]:
     if m == THUNDERDOME: return [8, 5, 10, 12]
     if m == BROOMS: return [10, 6, 8, 12, 15]
     if m == BOSS: return [10, 8, 12, 15, 20]
-    if m == TURNCOATS: return [6, 4, 8, 10, 15]
+    # (Turncoats: the bigger the fight, the longer it takes for all to turn)
+    if m == TURNCOATS:
+        n = people_a_side()
+        return if n <= 8: [6, 4, 8, 10, 15] else: if n <= 16: [8, 6, 10, 15, 20] else: if n <= 32: [12, 8, 15, 20, 30] else: [15, 10, 20, 30, 40]
     []
 
 # the map of a fight
@@ -931,7 +935,7 @@ fight_said = () -> str:
         loop k in 0..CHOOSABLE:
             if r.crafts & (1 << k) != 0: kinds.push(kind_plural(k))
         out += "; {join(kinds, ", ")} only"
-    if (r.mode == DOGFIGHT or r.mode == BASES or r.mode == FLAG or cat_fight(r.mode)) and not r.ground_start: out += ", in the air"
+    if (r.mode == DOGFIGHT or r.mode == BASES or r.mode == FLAG or r.mode == TURNCOATS or cat_fight(r.mode)) and not r.ground_start: out += ", in the air"
     if r.plain: out += ", no markers"
     out
 
@@ -2694,7 +2698,7 @@ effects = (dt: f64):
             if not alive(c): continue
             k = KINDS[c.kind]
             tail = c.pos + fwd_of(c) * f32(f64(k.half.z) * 0.6)
-            share = f64(c.health) / f64(k.health)
+            share = f64(c.health) / f64(full_health(c))
             # (the flying castle: coal smoke from its boilers' stacks, the more the more they work;
             # hurt, smoke and fire from a tower or a hall, one after another)
             if c.kind == CASTLE:
@@ -3013,6 +3017,8 @@ effects = (dt: f64):
             left = if b.by == 1: "1 holdout left" else: "{b.by} holdouts left"
             if b.who == me(): say("you have turned: shoot down the holdouts ({left})", COLORS[TURNED_SIDE])
             else: say("{call(g, b.who)} has turned: {left}", COLORS[TURNED_SIDE], small = true)
+        else if b.kind == FURY and b.who == me():
+            say("your fury: {FURY_HULL * b.by}% more hull, {FURY_GUNS * b.by}% harder guns, {int(FURY_PULL * 100.0) * b.by}% more engine{if b.by >= FURY_MOST: " (the most)" else: ""}", COLORS[TURNED_SIDE])
         else if b.kind == LAST_HOLDOUT and b.who >= 0 and b.who < g.people.len():
             if b.who == me(): say("you are the last holdout: every turncoat can see where you are", COLORS[HOLDOUTS])
             else: say("{call(g, b.who)} is the last holdout{if my_team() == TURNED_SIDE: ", marked for you" else: ""}", COLORS[HOLDOUTS])
@@ -3883,8 +3889,8 @@ craft_plate = (g: Game, c: Craft, k: Kind, p: Person, team: int):
     x0 = f64(r.x) + PAD
     bw = w - 2.0 * PAD
     y = f64(r.y) + 38.0
-    f = f64(c.health) / f64(k.health)
-    plate_bar(x0, y, bw, f, "hull", health_color(f))
+    f = f64(c.health) / f64(full_health(c))
+    plate_bar(x0, y, bw, f, if c.fury > 0: "hull (fury {c.fury})" else: "hull", health_color(f))
     y += 34.0
     if guns:
         heat = if at_gun: c.gheat[p.seat] else: c.heat
@@ -4630,7 +4636,7 @@ goal_text = (g: Game, team: int) -> str:
     if m == BOSS: return if team == att: "bring down the Himmelsfeste: through the balloons, together" else: "hold the Himmelsfeste till the time is up: man its guns"
     if m == TURNCOATS:
         if team != HOLDOUTS: return "turncoats: shoot down the holdouts, every one you down turns"
-        return if g.last == me() and g.scores[HOLDOUTS] == 1: "the last holdout: every turncoat can see you. Hold out!" else: "holdouts: stay in the air till the time is up; shot down, crashed or on foot, you turn"
+        return if g.last == me() and g.scores[HOLDOUTS] == 1: "the last holdout: every turncoat can see you. Hold out!" else: "holdouts: stay alive till the time is up; killed, or back to base (T), you turn"
     if m == RAIDS: return "bomb their factory before they bomb yours"
     what = if m == TRENCH: "the depot" else: "the factory"
     goal = if team == att: "destroy {what}" else: "defend {what}"
@@ -5128,7 +5134,7 @@ FIGHT_ABOUT = [
     "Through their gun towers' fire, shoot the other side's targets ({TARGET_POINTS} points; they come back) and shoot down its cat ({CAT_POINTS}; it has no guns, it rams). Shoot down their cat and you'll likely win.",
     "Knock balls through the other side's rings: great {BALL_POINTS[BIG_BALL]}, middling {BALL_POINTS[MID_BALL]}, small {BALL_POINTS[SMALL_BALL]}; carry a wicker one through ({BALL_POINTS[CARRY_BALL]}; hit hard, you drop it). Shoot down the golden cat to win, or be it and stay free.",
     "Bring down the defenders' Himmelsfeste in its cloud of balloons on cables; the defenders, fewer, man its guns till the time is up.",
-    "Everyone starts a holdout but one turncoat (picked at random, or whoever claims it; a big fight starts with one for every {TURNCOAT_PER} or so). A holdout who is shot down, crashes or bails out comes back a turncoat. The turncoats win when every holdout has turned; the holdouts when the time is up.",
+    "One turncoat (at random, or whoever claims it) against the rest. A holdout killed, or back at base (T), turns; a turncoat who keeps going down comes back stronger.",
 ]
 
 # the host's choices of the fight: which, who attacks, what wins it, how long, how it starts
@@ -5172,7 +5178,7 @@ planes_offered = (hosting: bool) -> int[]:
     have = crafts_chosen(m) | MODE_MUST[m]
     listed_kinds(m).filter((k): have & (1 << k) != 0)
 
-ground_choice = (m: int) -> bool: m == DOGFIGHT or m == BASES or m == FLAG or m == FLAG_RAID or m == RAIDS or cat_fight(m)
+ground_choice = (m: int) -> bool: m == DOGFIGHT or m == BASES or m == FLAG or m == FLAG_RAID or m == RAIDS or m == TURNCOATS or cat_fight(m)
 
 # (the middle of the room's and the last fight's boxes: right of the menu; upright, under it)
 box_x = () -> f64: if upright: f64(mid().x) else: 920.0

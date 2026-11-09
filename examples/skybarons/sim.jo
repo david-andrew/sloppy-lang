@@ -483,18 +483,31 @@ cat_points = (m: int) -> int: if m == BROOMS: BROOMS_CAT else: CAT_POINTS
 one_sided = (m: int) -> bool: m == TRENCH or m == ESCORT or m == FLAG_RAID or m == BOSS
 
 # (Turncoats: its two sides. Everyone starts a holdout but one, the first turncoat (a player who
-# claimed it, an extra person, last, as the golden cat's; else one picked at random, Rules.zero);
-# from the air. A holdout who comes back, for whatever reason (shot down, crashed, bailed out, on
-# foot on the ground), comes back a turncoat, and stays one. The turncoats win when no holdout
-# is left in the air; the holdouts when the time is up. The last holdout is marked for the
-# turncoats (Game.last), and the computer's go for it first. Turncoats come back sooner, near
-# the holdouts, at their own end's side of them)
+# claimed it, an extra person, last, as the golden cat's; else one picked at random, Rules.zero),
+# in the air or on the ground as the lobby says. A holdout who comes back (killed, or T to go
+# back: out of a craft, under a parachute, on foot) comes back a turncoat, and stays one; on foot
+# or under a parachute they are holding out still, and may take another craft. The turncoats win
+# when no holdout is left; the holdouts when the time is up. The last holdout is marked for the
+# turncoats (Game.last), and the computer's go for it first. Turncoats come back sooner, in the
+# air near the holdouts, at their own end's side of them (starting on the ground, at their field
+# till they have their fury)
 const HOLDOUTS = 1
 const TURNED_SIDE = 0
 const TURNCOAT_BACK = 150      # (ticks from death to coming back, a turncoat: RESPAWN for the rest)
 const TURNCOAT_NEAR = 900.0    # (m from the holdouts' middle a turncoat comes back, at most)
-const TURNCOAT_PER = 8          # (in a big fight more than one starts a turncoat: one for each so many, about)
-first_turncoats = (people: int) -> int: max(1, (people + TURNCOAT_PER / 2) / TURNCOAT_PER)
+# (a turncoat's fury: one more each time they come back with no holdout shot down since the last
+# time, none again once they have, FURY_MOST at most. Their craft, as they come back, the
+# stronger: so much more hull a level (in a hundred), harm from its guns, and its engine's pull)
+const FURY_MOST = 3
+const FURY_HULL = 50
+const FURY_GUNS = 25
+const FURY_PULL = 0.12
+# (craft c's hull whole: its kind's, and its fury's)
+full_health = (c: Craft) -> int: KINDS[c.kind].health * (100 + c.fury * FURY_HULL) / 100
+# (a bullet's harm from craft c's guns)
+gun_harm = (c: Craft, base: int) -> int: base * (100 + c.fury * FURY_GUNS) / 100
+# (the people a side the fields have crafts for: Turncoats' each for everyone, who may all be one side's)
+field_people = (g: Game) -> int: if g.rules.mode == TURNCOATS: g.people.len() else: g.people.len() / 2
 
 # a seat in a craft: where it is (the craft's own way: -z ahead, +x right, +y up), and for a
 # gunner the way its gun points at rest and how far it turns from that (the cosine of the angle)
@@ -664,6 +677,7 @@ struct Craft:
     heat = 0
     jammed = false
     cooldown = 0
+    fury = 0                    # (Turncoats: its turncoat's fury as they came back in it)
     shots = 0                   # fired so far (the guns take turns)
     rockets = 0
     bombs = 0
@@ -773,6 +787,8 @@ struct Person:
     join_seat = -1              # or on its deck, to this seat of it: -1 the first free)
     hopped = -1                 # (the computer's: the big craft it last got out of, alone, not taken again)
     lives = 0                   # (times come back: the first is coming in)
+    fury = 0                    # (Turncoats: a turncoat's, FURY_MOST at most;
+    fury_kills = 0              # and its kills when it was last reckoned)
 
 struct Bullet:
     pos: vec3
@@ -887,6 +903,7 @@ const GROUNDED = 52             # flying castle `who` dragging its rock along th
 const SNAPPED = 53              # the cable of screw `who` (tethered to flying castle `by`) snapped: it flies free
 const TURNED = 55               # person `who` back as a turncoat (Turncoats), `by` the holdouts left
 const LAST_HOLDOUT = 56         # person `who` the last holdout (Turncoats)
+const FURY = 57                 # person `who` back a turncoat with a fury of `by` (Turncoats)
 struct Boom:
     pos: vec3
     kind: int
@@ -1031,7 +1048,7 @@ default_minutes = (m: int) -> int:
     if m == ESCORT or m == FLAG_RAID: return 6
     if m == RAIDS or m == THUNDERDOME: return 8
     if m == BROOMS or m == BOSS: return 10
-    if m == TURNCOATS: return 6
+    if m == TURNCOATS: return 8
     0
 
 # a fight: pilots says who each person is (one player number, or -1 the computer, for each;
@@ -1058,10 +1075,8 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
             if pilots[i] >= 0 and i % 2 != g.rules.attackers: g.rules.defenders = max(g.rules.defenders, i / 2 + 1)
         g.rules.defenders = clamp(g.rules.defenders, 1, max(n, 1))
     else: g.rules.defenders = 0
-    # (Turncoats: from the air, and no score to reach)
-    if m == TURNCOATS:
-        g.rules.ground_start = false
-        g.rules.win = 0
+    # (Turncoats: no score to reach)
+    if m == TURNCOATS: g.rules.win = 0
     loop s in sites(m, g.rules.attackers):
         g.buildings.push(Building(s.kind, s.team, s.pos, s.yaw, site_health(s.kind)))
     if m == BOSS: boss_setup(g, n)
@@ -1072,7 +1087,7 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
             g.flags.push(Flag(t, h, h, real = m == FLAG or t != g.rules.attackers))
     if m == BROOMS: g.balls = ball_set(n)
     if starts_on_ground(g, 0) or starts_on_ground(g, 1):
-        loop st in 0.. and s in stands(field_kinds(n, m, g.rules.crafts)):
+        loop st in 0.. and s in stands(field_kinds(if m == TURNCOATS: pilots.len() else: n, m, g.rules.crafts)):
             if not starts_on_ground(g, s.team): continue
             c = parked(s.kind, s.team, s.pos, s.yaw)
             c.home = st
@@ -1101,32 +1116,22 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
     if m == TURNCOATS: turncoats_setup(g, pilots, n, kinds)
     g
 
-# (Turncoats: everyone a holdout but the first turncoats: the player who claimed it (the seat after
+# (Turncoats: everyone a holdout but the first turncoat: the player who claimed it (the seat after
 # the sides', an extra person), else the person Rules.zero says (-1: one picked from the fight's
-# numbers, the same on every machine); in a big fight (first_turncoats) more, spread through
-# the rest from there
+# numbers, the same on every machine)
 turncoats_setup = (g: mut Game, pilots: int[], n: int, kinds: int[]):
     loop i in 0..g.people.len(): g.people[i].team = HOLDOUTS
-    all = g.people.len()
-    more = first_turncoats(all) - 1
-    z = g.rules.zero
-    if z < 0 or z >= all: z = int(hash(all * 7919 + g.rules.time_limit * 31 + int(g.skill * 100.0)) % 1000003) % all
     if pilots.len() > 2 * n and pilots[2 * n] >= 0:
         p = Person(TURNED_SIDE, player = pilots[2 * n])
         p.kind = start_kind(g, 2 * n, if pilots[2 * n] < kinds.len(): kinds[pilots[2 * n]] else: -1)
         p.timer = 1 + 2 * n
         g.people.push(p)
-    else:
-        g.people[z].team = TURNED_SIDE
-        g.rules.zero = z
-    # (the others: evenly round from the first, the computer's rather than players')
-    loop k in 1..more + 1:
-        j = (z + k * all / (more + 1)) % all
-        loop t in 0..all:
-            c = (j + t) % all
-            if g.people[c].team == HOLDOUTS and (g.people[c].player < 0 or t == all - 1):
-                g.people[c].team = TURNED_SIDE
-                break
+        return
+    all = g.people.len()
+    z = g.rules.zero
+    if z < 0 or z >= all: z = int(hash(all * 7919 + g.rules.time_limit * 31 + int(g.skill * 100.0)) % 1000003) % all
+    g.people[z].team = TURNED_SIDE
+    g.rules.zero = z
 
 # what person i flies, starting in the air: as chosen (want: -1 none), or as the fight has it
 start_kind = (g: Game, i: int, want: int) -> int:
@@ -1432,12 +1437,9 @@ rules = (g: mut Game):
         boss_supply(g)
 
 # ---------------- Turncoats ----------------
-# (whether person p is still a holdout in the fight: of that side, and not yet come in, or in a
-# seat, at a gun, on a craft's deck, or fallen off one (it may land on it again); not on foot on
-# the ground, nor falling or under a parachute from a craft lost: it comes back a turncoat)
-holding_out = (p: Person) -> bool:
-    if p.team != HOLDOUTS: return false
-    p.lives == 0 or p.state == SEATED or p.state == POST or (p.state == WALK and p.craft >= 0) or (p.state == FALL and p.walked)
+# (whether person p is still a holdout in the fight: of that side, and not yet come in, or not
+# dead: in a craft, falling, under a parachute or on foot alike)
+holding_out = (p: Person) -> bool: p.team == HOLDOUTS and (p.lives == 0 or p.state != DEAD)
 holdouts_left = (g: Game) -> int:
     n = 0
     loop p in g.people:
@@ -2178,10 +2180,6 @@ person = (g: mut Game, i: int, pad: Pad):
         if p.timer <= 0: respawn(g, i, p)
         else: g.people[i] = p
         return
-    # (Turncoats: a holdout on foot on the ground has lost: back at once, a turncoat)
-    if g.rules.mode == TURNCOATS and p.team == HOLDOUTS and p.lives > 0 and p.state == WALK and p.craft < 0:
-        respawn(g, i, p)
-        return
     # (the crew call: J, the screen fading, and a moment later in a seat of the craft)
     if p.joining >= 0 and g.tick >= p.join_at: p = join_crew(g, i, p)
     if joined and p.joining < 0 and p.player >= 0 and can_call(g, i, p):
@@ -2519,9 +2517,17 @@ respawn = (g: mut Game, i: int, p0: Person):
     p.seat = -1
     p.post = -1
     p.vel = vec3(0, 0, 0)
-    # (Turncoats: a holdout back, for whatever reason, is back a turncoat)
+    # (Turncoats: a holdout back, for whatever reason, is back a turncoat; a turncoat back with no
+    # holdout shot down since the last time, in a greater fury)
+    if g.rules.mode == TURNCOATS and p.team == TURNED_SIDE and p.lives > 0:
+        was = p.fury
+        p.fury = if p.kills > p.fury_kills: 0 else: min(p.fury + 1, FURY_MOST)
+        p.fury_kills = p.kills
+        if p.fury > was: g.booms.push(Boom(p.pos, FURY, g.tick, i, p.fury))
     if g.rules.mode == TURNCOATS and p.team == HOLDOUTS and p.lives > 0:
         p.team = TURNED_SIDE
+        p.fury = 0
+        p.fury_kills = p.kills
         g.people[i].team = TURNED_SIDE
         g.booms.push(Boom(p.pos, TURNED, g.tick, i, holdouts_left(g)))
     p.lives += 1
@@ -2546,7 +2552,8 @@ respawn = (g: mut Game, i: int, p0: Person):
         g.booms.push(Boom(p.pos, BOARDED, g.tick, i, k))
         g.people[i] = p
         return
-    if starts_on_ground(g, p.team):
+    # (Turncoats: a turncoat in a fury back in the air, though the fight started on the ground)
+    if starts_on_ground(g, p.team) and not (g.rules.mode == TURNCOATS and p.team == TURNED_SIDE and p.fury > 0):
         p.pos = foot_spawn(p.team, (i / 2 + g.tick / 61) % 12)
         p.yaw = spawn_yaw(p.team)
         g.people[i] = p
@@ -2573,6 +2580,9 @@ respawn = (g: mut Game, i: int, p0: Person):
     c = flying_craft(p.kind, p.team, at, dir)
     c.owner = i
     c.safe = 120
+    if g.rules.mode == TURNCOATS and p.team == TURNED_SIDE:
+        c.fury = p.fury
+        c.health = full_health(c)
     if g.rules.mode == CLASSIC or not g.rules.rockets: c.rockets = 0
     if k < 0:
         k = g.crafts.len()
@@ -2875,7 +2885,7 @@ fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
         if c.gone == 0:
             # (cleared: its stand has a new one; one of a person's own, nothing until they need it)
             if c.home >= 0:
-                s = stands(field_kinds(g.people.len() / 2, g.rules.mode, g.rules.crafts))[c.home]
+                s = stands(field_kinds(field_people(g), g.rules.mode, g.rules.crafts))[c.home]
                 n = parked(s.kind, s.team, s.pos, s.yaw)
                 n.since = g.tick
                 n.home = c.home
@@ -2960,7 +2970,7 @@ fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
             if who < 0 or g.people[who].player < 0: way = normalize(fwd + right * f32(sx * (2.2 - g.skill)) + up * f32(sy * (2.2 - g.skill)))
             g.bullets.push(Bullet(at, c.vel + way * f32(SNIPE_SPEED), who, i, team, SNIPE_LIFE, SNIPE_DAMAGE, snipe = true))
             g.booms.push(Boom(at, SNIPED, g.tick, i, who))
-        else: g.bullets.push(Bullet(at, c.vel + dir * f32(BULLET_SPEED), who, i, team, BULLET_LIFE))
+        else: g.bullets.push(Bullet(at, c.vel + dir * f32(BULLET_SPEED), who, i, team, BULLET_LIFE, gun_harm(c, DAMAGE)))
         c.shots += 1
         c.cooldown = if snipe: SNIPE_GAP else: if three: (if which == 2: 2 else: 3) else: k.fire_gap
         fired = true
@@ -3034,7 +3044,7 @@ fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
     if c.rest > 180:
         c.rockets = k.rockets
         c.bombs = k.bombs
-        c.health = min(c.health + 2, k.health)
+        c.health = min(c.health + 2, full_health(c))
     g.crafts[i] = c
 
 # (the way the little screw's fire pots are thrown, as its pilot looks with pad: any way round,
@@ -3111,7 +3121,7 @@ fly_air = (g: mut Game, i: int, c0: Craft, pd: Pad):
     # gravity (diving gains speed, climbing costs it)
     thin = clamp((CEILING + 300.0 - f64(c.pos.y)) / 600.0, 0.0, 1.0)
     pull = abs(f64(pd.pitch)) / 100.0 * auth
-    acc = k.thrust * c.throttle * thin - k.drag * speed * speed * (1.0 + 0.9 * pull) - 9.8 * f64(vdir.y)
+    acc = k.thrust * (1.0 + FURY_PULL * f64(c.fury)) * c.throttle * thin - k.drag * speed * speed * (1.0 + 0.9 * pull) - 9.8 * f64(vdir.y)
     speed = max(speed + acc * DT, 0.0)
     # the way it goes turns toward the nose: hardly at all when stalled
     t = min(k.grip * lift * DT, 1.0)
@@ -3821,7 +3831,7 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
                 g.crafts[i].gcool[s] = FLAME_GAP
                 g.crafts[i].gheat[s] += 2
             else:
-                g.bullets.push(Bullet(at + dir * 1.5, c.vel + dir * f32(BULLET_SPEED), by, i, team, BULLET_LIFE))
+                g.bullets.push(Bullet(at + dir * 1.5, c.vel + dir * f32(BULLET_SPEED), by, i, team, BULLET_LIFE, gun_harm(c, DAMAGE)))
                 g.crafts[i].gcool[s] = 6
                 g.crafts[i].gheat[s] += 6
             seen_firing(g, i)
@@ -4775,7 +4785,7 @@ shells = (g: mut Game):
                 d = turn_toward(d, want, 2.2 * DT)
                 if hits_craft(g.crafts[best], a, s.pos + d * f32(sp * DT), 2.0):
                     c = g.crafts[best]
-                    g.crafts[best].health = min(c.health + HEAL, KINDS[c.kind].health)
+                    g.crafts[best].health = min(c.health + HEAL, full_health(c))
                     g.booms.push(Boom(c.pos, HEALED, g.tick, best, s.by))
                     continue
             s.vel = d * f32(min(sp + 30.0 * DT, 110.0))
@@ -5551,6 +5561,8 @@ bot_pad = (g: Game, i: int) -> Pad:
         near = seat_near(g, p.craft, p.deck) >= 0
         return Pad(aim_yaw = int(p.yaw * 1000.0), enter = near and g.tick % 10 == i % 10, leave = not near and g.tick % 60 == i % 60)
     if p.state == WALK: return bot_walk(g, i, p)
+    # (Turncoats: a turncoat out of a craft goes back at once: T, the parachute open, T again)
+    if (p.state == FALL or p.state == CHUTE) and g.rules.mode == TURNCOATS and p.team == TURNED_SIDE and not p.walked: return Pad(aim_yaw = int(p.yaw * 1000.0), leave = g.tick % 20 == i % 20)
     if p.state == FALL or p.state == CHUTE: return Pad(aim_yaw = int(p.yaw * 1000.0))
     c = g.crafts[p.craft]
     # (in a hook's craft on a downed carrier: waiting to be let go (carrier_tick), while it can be)
@@ -5579,8 +5591,12 @@ hop_out = (g: Game, p: Person, c: Craft) -> bool:
 
 # on foot: to the nearest free craft of its side (the pilot's seat), and in; in the air-start
 # fights, back in the air at once
+const STRANDED = 1500.0
 bot_walk = (g: Game, i: int, p: Person) -> Pad:
-    if not starts_on_ground(g, p.team): return Pad(leave = g.tick % 20 == 0)
+    # (Turncoats' holdouts: going back is turning, so first any craft standing free within
+    # STRANDED of them, of either side's colors)
+    stranded = g.rules.mode == TURNCOATS and p.team == HOLDOUTS
+    if not starts_on_ground(g, p.team) and not stranded: return Pad(leave = g.tick % 20 == 0)
     best = -1
     least = 1e18
     # (each picks by its number: some crew the big ones, the rest fly the small ones)
@@ -5598,7 +5614,7 @@ bot_walk = (g: Game, i: int, p: Person) -> Pad:
         if c.craft == p.hopped and not crew: continue
         # (its own side's colors; one of the other side's only when very near)
         d = f64(length(c.pos - p.pos))
-        if c.team != p.team and d > 60.0: continue
+        if c.team != p.team and d > 60.0 and not stranded: continue
         if crew: d -= 300.0
         # (the flying castle, far out past the rest: its gunners first)
         if (c.kind == CASTLE or c.kind == CARRIER) and crew: d -= 600.0
@@ -5617,7 +5633,7 @@ bot_walk = (g: Game, i: int, p: Person) -> Pad:
             least = d
             best = c.craft
     # (nothing near, far from its field: back there)
-    if best < 0 or (least > 350.0 and far_from_field(p)): return Pad(aim_yaw = int(p.yaw * 1000.0), leave = g.tick % 30 == i % 30)
+    if best < 0 or (least > 350.0 and far_from_field(p) and not stranded) or (stranded and least > STRANDED): return Pad(aim_yaw = int(p.yaw * 1000.0), leave = g.tick % 30 == i % 30)
     c = g.crafts[best]
     to = point_of(c, board_at(c.kind, KINDS[c.kind].seats[0].at)) - p.pos
     if c.kind == ZEPPELIN: to = point_of(c, vec3(-3, -11, -24)) - p.pos
@@ -6479,6 +6495,21 @@ bot_ornithopter = (g: Game, ci: int, c: Craft, team: int) -> Pad:
     pad.throttle = 1
     pad
 
+# (Turncoats: the holdout out of a craft (falling off it, under a parachute, on foot on the
+# ground) a turncoat's craft c goes after: the nearest within PREY_REACH, one under a parachute
+# (who would land and fly again) as if nearer; -1 none)
+const PREY_REACH = 2500.0
+prey_of = (g: Game, c: Craft) -> int:
+    best = -1
+    least = PREY_REACH
+    loop j in 0.. and q in g.people:
+        if q.team != HOLDOUTS or not (q.state == FALL or q.state == CHUTE or (q.state == WALK and q.craft < 0)): continue
+        d = f64(length(q.pos - c.pos)) * (if q.state == WALK: 1.0 else: 0.6)
+        if d < least:
+            least = d
+            best = j
+    best
+
 # a fighter or a scout: Aces' pilot, and rockets for the big ones
 bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
     k = KINDS[c.kind]
@@ -6529,6 +6560,11 @@ bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
             near = f64(length(vec2(run_at.x - c.pos.x, run_at.z - c.pos.z))) < 700.0
             ah = c.pos + c.vel * 2.0
             low = alt < (if near: 2.5 else: 25.0) or f64(ah.y) < ground(f64(ah.x), f64(ah.z)) + (if near: 2.0 else: 20.0)
+    # (Turncoats: a turncoat after a holdout out of a craft, under a parachute or on foot (they hold
+    # out till they are killed), unless one of the holdouts' crafts is near)
+    prey = if fm == TURNCOATS and pi >= 0 and g.people[pi].team == TURNED_SIDE: prey_of(g, c) else: -1
+    if prey >= 0 and fight and f64(length(e.pos - c.pos)) < 600.0: prey = -1
+    if prey >= 0: fight = false
     if low:
         flat = vec3(fwd.x, 0, fwd.z)
         if length(flat) < 0.1: flat = vec3(1, 0, 0)
@@ -6570,6 +6606,16 @@ bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
         # (far off, wide of the middle, where the others fight: each side round its own way)
         side = if flat > 1100.0: normalize(vec3(-to.z, 0, to.x)) * f32(flat * 0.45) else: vec3(0, 0, 0)
         want = vec3(to.x + side.x, f32(ground(f64(run_at.x), f64(run_at.z)) + h) - c.pos.y, to.z + side.z)
+    else if prey >= 0:
+        # (an attack run: high over to them, then down at them, led and the drop allowed for; past
+        # them, or too close to line up, away and round again)
+        q = g.people[prey]
+        to = q.pos + vec3(0, 1, 0) - c.pos
+        flat = f64(length(vec2(to.x, to.z)))
+        tt = f64(length(to)) / BULLET_SPEED
+        aim = to + (q.vel - c.vel) * f32(tt) + vec3(0, f32(4.9 * tt * tt), 0)
+        want = if flat > 800.0: vec3(to.x, f32(300.0 - f64(c.pos.y) + f64(q.pos.y)), to.z) else: aim
+        if flat < 120.0 or (flat < 300.0 and f64(dot(c.vel, to)) < 0.0): want = vec3(-to.x, f32(max(f64(q.pos.y) + 250.0 - f64(c.pos.y), 0.0)), -to.z)
     else:
         bi = if goal >= 0: goal else: mission_target(g, crew_team(g, c))
         if bi >= 0:
@@ -6612,6 +6658,8 @@ bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
         if c.kind == ROCKETEER: pad.rocket = d < 400.0 and on > 0.99
         # (close behind it: slow down, not to fly past)
         if d < 140.0 and f64(dot(e.pos - c.pos, fwd)) > 0.0 and f64(dot(c.vel - e.vel, fwd)) > 6.0: pad.throttle = -1
+    else if prey >= 0 and length(aim) > 0.0:
+        pad.fire = f64(length(aim)) < 450.0 and f64(dot(fwd, normalize(aim))) > 0.996 and c.heat < JAM_HEAT - 30
     else if run_for >= 0:
         to = run_at - c.pos
         if f64(length(vec2(to.x, to.z))) < 600.0 and speed > 38.0: pad.throttle = -1
