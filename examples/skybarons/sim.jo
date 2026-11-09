@@ -516,8 +516,33 @@ turncoat_people = (pilots: int[], n: int) -> int: 2 * n + (if pilots.len() > 2 *
 const TURNCOAT_PULL = 0.45
 const TURNCOAT_TURN = 0.25
 const TURNCOAT_GUNS = 25
+# (and its guns: TURNCOAT_SHOTS bullets for one, the rest nudged about the first by up to
+# TURNCOAT_SPREAD (radians), each going TURNCOAT_LIFE ticks (twice as far) and hitting what it
+# passes within TURNCOAT_WIDE m)
+const TURNCOAT_SHOTS = 3
+const TURNCOAT_SPREAD = 0.012
+const TURNCOAT_LIFE = BULLET_LIFE * 2
+const TURNCOAT_WIDE = 1.5
 # (whether craft i is a turncoat's, as its crew stood this tick (g.crew))
 turncoat_flown = (g: Game, i: int) -> bool: g.rules.mode == TURNCOATS and i < g.crew.len() and g.crew[i] == TURNED_SIDE
+# (a gun of craft i fired from `at`, the way dir, by person `by` of side `team`, each bullet
+# doing `harm`: one bullet; a turncoat's, TURNCOAT_SHOTS, farther and wider)
+gun_bullets = (g: mut Game, i: int, at: vec3, vel: vec3, dir: vec3, by: int, team: int, harm: int):
+    if not turncoat_flown(g, i):
+        g.bullets.push(Bullet(at, vel + dir * f32(BULLET_SPEED), by, i, team, BULLET_LIFE, harm))
+        return
+    across = normalize(cross(dir, if abs(f64(dir.y)) < 0.9: vec3(0, 1, 0) else: vec3(1, 0, 0)))
+    up = cross(across, dir)
+    loop k in 0..TURNCOAT_SHOTS:
+        way = dir
+        if k > 0:
+            h = hash(g.tick * 31 + i * 7 + by * 5 + k)
+            sx = (f64(h & 1023) / 1023.0 - 0.5) * 2.0 * TURNCOAT_SPREAD
+            sy = (f64((h >> 10) & 1023) / 1023.0 - 0.5) * 2.0 * TURNCOAT_SPREAD
+            way = normalize(dir + across * f32(sx) + up * f32(sy))
+        g.bullets.push(Bullet(at, vel + way * f32(BULLET_SPEED), by, i, team, TURNCOAT_LIFE, harm, wide = TURNCOAT_WIDE))
+# (the ticks a bullet lives, fired)
+bullet_life = (b: Bullet) -> int: if b.snipe: SNIPE_LIFE else: if b.wide > 0.0: TURNCOAT_LIFE else: BULLET_LIFE
 # (craft i's engine's pull against its kind's, with a turncoat's edge and its fury)
 pull_of = (g: Game, i: int, c: Craft) -> f64: 1.0 + FURY_PULL * f64(c.fury) + (if turncoat_flown(g, i): TURNCOAT_PULL else: 0.0)
 
@@ -822,6 +847,7 @@ struct Bullet:
     heavy = false               # (a gun tower's: a long, bright tracer)
     flame = false               # (a siphon's gout of burning oil)
     grape = false               # (a castle battery's grapeshot: a small iron ball)
+    wide = 0.0                  # (m more round what it passes that it hits: a turncoat's)
 
 # a rocket, a bomb, or a shell from a gun against aircraft (it bursts at a time)
 const ROCKET = 0
@@ -2989,7 +3015,7 @@ fly = (g: mut Game, i: int, pad: Pad, piloted: bool):
             if who < 0 or g.people[who].player < 0: way = normalize(fwd + right * f32(sx * (2.2 - g.skill)) + up * f32(sy * (2.2 - g.skill)))
             g.bullets.push(Bullet(at, c.vel + way * f32(SNIPE_SPEED), who, i, team, SNIPE_LIFE, SNIPE_DAMAGE, snipe = true))
             g.booms.push(Boom(at, SNIPED, g.tick, i, who))
-        else: g.bullets.push(Bullet(at, c.vel + dir * f32(BULLET_SPEED), who, i, team, BULLET_LIFE, gun_harm(g, i, c, DAMAGE)))
+        else: gun_bullets(g, i, at, c.vel, dir, who, team, gun_harm(g, i, c, DAMAGE))
         c.shots += 1
         c.cooldown = if snipe: SNIPE_GAP else: if three: (if which == 2: 2 else: 3) else: k.fire_gap
         fired = true
@@ -3850,7 +3876,7 @@ gunners = (g: mut Game, i: int, pads: Pad[]):
                 g.crafts[i].gcool[s] = FLAME_GAP
                 g.crafts[i].gheat[s] += 2
             else:
-                g.bullets.push(Bullet(at + dir * 1.5, c.vel + dir * f32(BULLET_SPEED), by, i, team, BULLET_LIFE, gun_harm(g, i, c, DAMAGE)))
+                gun_bullets(g, i, at + dir * 1.5, c.vel, dir, by, team, gun_harm(g, i, c, DAMAGE))
                 g.crafts[i].gcool[s] = 6
                 g.crafts[i].gheat[s] += 6
             seen_firing(g, i)
@@ -4675,7 +4701,7 @@ shoot = (g: mut Game):
         loop j in 0..g.crafts.len():
             if not open[j] or j == b.craft: continue
             d = mid - at[j]
-            r = near[j] + half
+            r = near[j] + half + f32(b.wide)
             if dot(d, d) > r * r: continue
             t = g.crafts[j]
             # (through those it would not harm)
@@ -4683,7 +4709,7 @@ shoot = (g: mut Game):
             # (the long gun's shell hits what it comes near; the cat, small and quick, only what it
             # comes half as near)
             # (a siphon's fire, the wider the farther it has gone)
-            if hits_craft(t, a, b.pos, if b.snipe: (if t.kind == CAT: SNIPE_NEAR * 0.5 else: SNIPE_NEAR) else: if b.flame: FLAME_NEAR * f64(FLAME_LIFE - b.life) / f64(FLAME_LIFE) else: 0.0):
+            if hits_craft(t, a, b.pos, if b.snipe: (if t.kind == CAT: SNIPE_NEAR * 0.5 else: SNIPE_NEAR) else: if b.flame: FLAME_NEAR * f64(FLAME_LIFE - b.life) / f64(FLAME_LIFE) else: b.wide):
                 hit = true
                 if b.snipe: through_crew(g, j, a, b)
                 if t.down == 0:
@@ -4694,13 +4720,13 @@ shoot = (g: mut Game):
             loop j in 0.. and p in g.people:
                 if p.state == DEAD or p.state == SEATED or j == b.by: continue
                 # (a parachute's canopy, 3.5 m across, 6.5 m over its person: shot through, it fails)
-                if p.state == CHUTE and harms(g, b.team, p.team) and seg_near(a - p.pos - vec3(0, 6.5, 0), b.pos - p.pos - vec3(0, 6.5, 0), 3.5):
+                if p.state == CHUTE and harms(g, b.team, p.team) and seg_near(a - p.pos - vec3(0, 6.5, 0), b.pos - p.pos - vec3(0, 6.5, 0), 3.5 + b.wide):
                     g.people[j].state = FALL
                     g.people[j].torn = true
                     g.booms.push(Boom(b.pos, TORN, g.tick, j, b.by))
                     hit = true
                     break
-                if seg_near(a - p.pos - vec3(0, 0.9, 0), b.pos - p.pos - vec3(0, 0.9, 0), if b.flame: 1.5 else: 0.7) and harms(g, b.team, p.team):
+                if seg_near(a - p.pos - vec3(0, 0.9, 0), b.pos - p.pos - vec3(0, 0.9, 0), if b.flame: 1.5 else: 0.7 + b.wide) and harms(g, b.team, p.team):
                     hurt_person(g, j, b.by, b.team, b.damage)
                     hit = true
                     break
@@ -6671,14 +6697,14 @@ bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
         on = f64(dot(fwd, normalize(aim)))
         # (the flying castle: from how far its walls are, not its middle)
         if e.kind == CASTLE: d = craft_distance(e, c.pos)
-        pad.fire = d < 480.0 and on > within and c.heat < JAM_HEAT - 30
+        pad.fire = d < (if turncoat_flown(g, ci): 900.0 else: 480.0) and on > within - (if turncoat_flown(g, ci): 0.0015 else: 0.0) and c.heat < JAM_HEAT - 30
         # (a rocket at a big one, close and lined up)
         pad.rocket = (e.kind == BOMBER or e.kind == ZEPPELIN or e.kind == ULTRA or e.kind == BALLOON or e.kind == CASTLE) and d < 260.0 and on > 0.995 and g.tick % 30 == ci % 30
         if c.kind == ROCKETEER: pad.rocket = d < 400.0 and on > 0.99
         # (close behind it: slow down, not to fly past)
         if d < 140.0 and f64(dot(e.pos - c.pos, fwd)) > 0.0 and f64(dot(c.vel - e.vel, fwd)) > 6.0: pad.throttle = -1
     else if prey >= 0 and length(aim) > 0.0:
-        pad.fire = f64(length(aim)) < 450.0 and f64(dot(fwd, normalize(aim))) > 0.996 and c.heat < JAM_HEAT - 30
+        pad.fire = f64(length(aim)) < 800.0 and f64(dot(fwd, normalize(aim))) > 0.995 and c.heat < JAM_HEAT - 30
     else if run_for >= 0:
         to = run_at - c.pos
         if f64(length(vec2(to.x, to.z))) < 600.0 and speed > 38.0: pad.throttle = -1
