@@ -505,7 +505,7 @@ const FURY_PULL = 0.12
 # (craft c's hull whole: its kind's, and its fury's)
 full_health = (c: Craft) -> int: KINDS[c.kind].health * (100 + c.fury * FURY_HULL) / 100
 # (a bullet's harm from craft i's guns, with a turncoat's edge and its fury)
-gun_harm = (g: Game, i: int, c: Craft, base: int) -> int: base * (100 + (if turncoat_flown(g, i): TURNCOAT_GUNS + c.fury * FURY_GUNS else: 0)) / 100
+gun_harm = (g: Game, i: int, c: Craft, base: int) -> int: base * (100 + (if edged(g, i): TURNCOAT_GUNS + c.fury * FURY_GUNS else: 0)) / 100
 # (the people a side the fields have crafts for: Turncoats' each for everyone, who may all be one
 # side's; and how many there are in Turncoats, n a side and the first turncoat's seat if a player
 # claimed it (not when it stands empty in the lobby's seats))
@@ -525,10 +525,16 @@ const TURNCOAT_LIFE = BULLET_LIFE * 2
 const TURNCOAT_WIDE = 1.5
 # (whether craft i is a turncoat's, as its crew stood this tick (g.crew))
 turncoat_flown = (g: Game, i: int) -> bool: g.rules.mode == TURNCOATS and i < g.crew.len() and g.crew[i] == TURNED_SIDE
+# (the last holdout's last stand: the craft they are in, as a turncoat's has it, and more (LAST_FURY))
+const LAST_FURY = 4
+const LAST_GRACE = 180           # (ticks the last stand starts unharmed, the turncoats' guns no use: to break away)
+last_stand = (g: Game, i: int) -> bool: g.rules.mode == TURNCOATS and g.last >= 0 and g.last < g.people.len() and g.people[g.last].team == HOLDOUTS and g.people[g.last].state == SEATED and g.people[g.last].craft == i
+# (a craft with a turncoat's edge: flown by one, or the last holdout's)
+edged = (g: Game, i: int) -> bool: turncoat_flown(g, i) or last_stand(g, i)
 # (a gun of craft i fired from `at`, the way dir, by person `by` of side `team`, each bullet
 # doing `harm`: one bullet; a turncoat's, TURNCOAT_SHOTS, farther and wider)
 gun_bullets = (g: mut Game, i: int, at: vec3, vel: vec3, dir: vec3, by: int, team: int, harm: int):
-    if not turncoat_flown(g, i):
+    if not edged(g, i):
         g.bullets.push(Bullet(at, vel + dir * f32(BULLET_SPEED), by, i, team, BULLET_LIFE, harm))
         return
     across = normalize(cross(dir, if abs(f64(dir.y)) < 0.9: vec3(0, 1, 0) else: vec3(1, 0, 0)))
@@ -544,7 +550,7 @@ gun_bullets = (g: mut Game, i: int, at: vec3, vel: vec3, dir: vec3, by: int, tea
 # (the ticks a bullet lives, fired)
 bullet_life = (b: Bullet) -> int: if b.snipe: SNIPE_LIFE else: if b.wide > 0.0: TURNCOAT_LIFE else: BULLET_LIFE
 # (craft i's engine's pull against its kind's, with a turncoat's edge and its fury)
-pull_of = (g: Game, i: int, c: Craft) -> f64: 1.0 + (if turncoat_flown(g, i): TURNCOAT_PULL + FURY_PULL * f64(c.fury) else: 0.0)
+pull_of = (g: Game, i: int, c: Craft) -> f64: 1.0 + (if edged(g, i): TURNCOAT_PULL + FURY_PULL * f64(c.fury) else: 0.0)
 
 # (the health craft c starts a fight with, which its hull bar and smoke are measured against: its
 # kind's with its fury (full_health), but The Boss's castle as the fight sets it out, by the
@@ -1094,7 +1100,7 @@ default_minutes = (m: int) -> int:
     if m == ESCORT or m == FLAG_RAID: return 6
     if m == RAIDS or m == THUNDERDOME: return 8
     if m == BROOMS or m == BOSS: return 10
-    if m == TURNCOATS: return 8
+    if m == TURNCOATS: return 6
     0
 
 # a fight: pilots says who each person is (one player number, or -1 the computer, for each;
@@ -1526,6 +1532,15 @@ turncoat_rules = (g: mut Game, late: bool):
     if left == 1 and g.last != one and g.people.len() > 2:
         g.last = one
         g.booms.push(Boom(g.people[one].pos, LAST_HOLDOUT, g.tick, one))
+    # (the last holdout's last stand: the craft they are in (one they take after too) at LAST_FURY,
+    # its hull whole and the more, its rockets filled; a turncoat's engine, stick and guns, and more)
+    if left == 1 and g.last == one and g.people[one].state == SEATED and g.people[one].craft >= 0:
+        k = g.people[one].craft
+        if g.crafts[k].fury < LAST_FURY and g.crafts[k].down == 0:
+            g.crafts[k].fury = LAST_FURY
+            g.crafts[k].health = full_health(g.crafts[k])
+            g.crafts[k].rockets = max(g.crafts[k].rockets, KINDS[g.crafts[k].kind].rockets)
+            g.crafts[k].safe = max(g.crafts[k].safe, LAST_GRACE)
 
 # (where person i comes back in the air: a holdout (and anyone at first) in its side's rows, its
 # own place in them; a turncoat turned near the holdouts, at most TURNCOAT_NEAR from their middle
@@ -3175,7 +3190,7 @@ fly_air = (g: mut Game, i: int, c0: Craft, pd: Pad):
     let c = c0
     k = KINDS[c.kind]
     speed = f64(length(c.vel))
-    auth = clamp(speed / (k.stall * 1.45), 0.25, 1.0) * (if turncoat_flown(g, i): 1.0 + TURNCOAT_TURN else: 1.0)
+    auth = clamp(speed / (k.stall * 1.45), 0.25, 1.0) * (if edged(g, i): 1.0 + TURNCOAT_TURN else: 1.0)
     q = c.rot
     q = quat_mul(q, quat_axis_angle(vec3(1, 0, 0), f64(pd.pitch) / 100.0 * k.pitch_rate * auth * DT))
     q = quat_mul(q, quat_axis_angle(vec3(0, 0, 1), -f64(pd.roll) / 100.0 * k.roll_rate * auth * DT))
@@ -6775,7 +6790,7 @@ bot_fighter = (g: Game, ci: int, c: Craft) -> Pad:
         on = f64(dot(fwd, normalize(aim)))
         # (the flying castle: from how far its walls are, not its middle)
         if e.kind == CASTLE: d = craft_distance(e, c.pos)
-        pad.fire = d < (if turncoat_flown(g, ci): 900.0 else: 480.0) and on > within - (if turncoat_flown(g, ci): 0.0015 else: 0.0) and c.heat < JAM_HEAT - 30
+        pad.fire = d < (if edged(g, ci): 900.0 else: 480.0) and on > within - (if edged(g, ci): 0.0015 else: 0.0) and c.heat < JAM_HEAT - 30
         # (a rocket at a big one, close and lined up)
         pad.rocket = (e.kind == BOMBER or e.kind == ZEPPELIN or e.kind == ULTRA or e.kind == BALLOON or e.kind == CASTLE) and d < 260.0 and on > 0.995 and g.tick % 30 == ci % 30
         if c.kind == ROCKETEER: pad.rocket = d < 400.0 and on > 0.99
@@ -6901,7 +6916,7 @@ bot_bomber = (g: Game, ci: int, c: Craft, team: int) -> Pad:
 # version, a page loaded before the game was changed)
 # (and a number made larger by hand for a change of the rules those short fights do not show: one
 # machine on the old rules and one on the new would split the fight later)
-const RULES_REVISION = 4
+const RULES_REVISION = 5
 version_print = () -> str:
     out = RULES_REVISION
     loop m in [DOGFIGHT, BASES, TRENCH, ESCORT, THUNDERDOME, BROOMS, TURNCOATS]:
