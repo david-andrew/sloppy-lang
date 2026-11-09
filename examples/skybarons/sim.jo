@@ -833,6 +833,7 @@ struct Person:
     lives = 0                   # (times come back: the first is coming in)
     fury = 0                    # (Turncoats: a turncoat's, FURY_MOST at most;
     fury_kills = 0              # and its kills when it was last reckoned)
+    lost = false                # (Turncoats from the air: a holdout shot down or bailed out, no longer holding out)
 
 struct Bullet:
     pos: vec3
@@ -1494,8 +1495,10 @@ rules = (g: mut Game):
 
 # ---------------- Turncoats ----------------
 # (whether person p is still a holdout in the fight: of that side, and not yet come in, or not
-# dead: in a craft, falling, under a parachute or on foot alike)
-holding_out = (p: Person) -> bool: p.team == HOLDOUTS and (p.lives == 0 or p.state != DEAD)
+# dead: in a craft, falling, under a parachute or on foot alike; from the air, not once their
+# craft was shot down under them or they bailed out of one flying (lost): theirs is the turncoats'
+# point at once, and they come back a turncoat)
+holding_out = (p: Person) -> bool: p.team == HOLDOUTS and not p.lost and (p.lives == 0 or p.state != DEAD)
 holdouts_left = (g: Game) -> int:
     n = 0
     loop p in g.people:
@@ -1505,6 +1508,11 @@ holdouts_left = (g: Game) -> int:
 # (each side's numbers as its score; no holdout left, the turncoats have won; the time up with
 # any, the holdouts; one left, the last holdout, said)
 turncoat_rules = (g: mut Game, late: bool):
+    # (from the air: a holdout in a craft going down is lost to their side)
+    if not g.rules.ground_start:
+        loop i in 0..g.people.len():
+            q = g.people[i]
+            if q.team == HOLDOUTS and not q.lost and q.state == SEATED and q.craft >= 0 and g.crafts[q.craft].down > 0: g.people[i].lost = true
     left = 0
     one = -1
     loop i in 0..g.people.len():
@@ -2612,6 +2620,7 @@ respawn = (g: mut Game, i: int, p0: Person):
         if p.fury > was: g.booms.push(Boom(p.pos, FURY, g.tick, i, p.fury))
     if g.rules.mode == TURNCOATS and p.team == HOLDOUTS and p.lives > 0:
         p.team = TURNED_SIDE
+        p.lost = false
         p.fury = 0
         p.fury_kills = p.kills
         g.people[i].team = TURNED_SIDE
@@ -2921,6 +2930,7 @@ bail_out = (g: mut Game, i: int, p0: Person) -> Person:
     p.craft = -1
     p.seat = -1
     g.booms.push(Boom(p.pos, BAILED, g.tick, i, k))
+    if g.rules.mode == TURNCOATS and not g.rules.ground_start and p.team == HOLDOUTS: p.lost = true
     p
 
 # person i dies (by person `by`, -1: no one): anyone in a seat with it falls with its craft
@@ -5661,12 +5671,6 @@ bot_pad = (g: Game, i: int) -> Pad:
     if p.state == WALK: return bot_walk(g, i, p)
     # (Turncoats: a turncoat out of a craft goes back at once: T, the parachute open, T again)
     if (p.state == FALL or p.state == CHUTE) and g.rules.mode == TURNCOATS and p.team == TURNED_SIDE and not p.walked: return Pad(aim_yaw = int(p.yaw * 1000.0), leave = g.tick % 20 == i % 20)
-    # (Turncoats from the air: a holdout under a parachute, GIVE_UP in ten of them, gives up a
-    # while after it opened (from 2 to 14 s, its own each life): T, back as a turncoat, so that
-    # the end is not all parachutes)
-    if p.state == CHUTE and g.rules.mode == TURNCOATS and p.team == HOLDOUTS and not g.rules.ground_start:
-        h = hash(i * 2654435761 + p.lives * 40503 + 17)
-        if h % 10 < GIVE_UP and p.timer > p.opened + 120 + int((h / 10) % 720): return Pad(aim_yaw = int(p.yaw * 1000.0), leave = g.tick % 20 == i % 20)
     if p.state == FALL or p.state == CHUTE: return Pad(aim_yaw = int(p.yaw * 1000.0))
     c = g.crafts[p.craft]
     # (in a hook's craft on a downed carrier: waiting to be let go (carrier_tick), while it can be)
@@ -5696,11 +5700,10 @@ hop_out = (g: Game, p: Person, c: Craft) -> bool:
 # on foot: to the nearest free craft of its side (the pilot's seat), and in; in the air-start
 # fights, back in the air at once
 const STRANDED = 1500.0
-const GIVE_UP = 6
 bot_walk = (g: Game, i: int, p: Person) -> Pad:
     # (Turncoats' holdouts: going back is turning, so first any craft standing free within
     # STRANDED of them, of either side's colors)
-    stranded = g.rules.mode == TURNCOATS and p.team == HOLDOUTS
+    stranded = g.rules.mode == TURNCOATS and p.team == HOLDOUTS and not p.lost
     if not starts_on_ground(g, p.team) and not stranded: return Pad(leave = g.tick % 20 == 0)
     best = -1
     least = 1e18
@@ -6897,7 +6900,7 @@ bot_bomber = (g: Game, ci: int, c: Craft, team: int) -> Pad:
 # version, a page loaded before the game was changed)
 # (and a number made larger by hand for a change of the rules those short fights do not show: one
 # machine on the old rules and one on the new would split the fight later)
-const RULES_REVISION = 3
+const RULES_REVISION = 4
 version_print = () -> str:
     out = RULES_REVISION
     loop m in [DOGFIGHT, BASES, TRENCH, ESCORT, THUNDERDOME, BROOMS, TURNCOATS]:
