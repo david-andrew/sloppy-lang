@@ -409,9 +409,13 @@ MODE_MUST = [0, 0, 0, 0, 0, 0, 0, 0, 1 << CAT, 0, 0, 0]
 const BROOMS_CRAFTS = (1 << ROCKETEER) | (1 << BALLOON) | (1 << ORNITHOPTER)
 # (what a fight has unless its lobby says)
 mode_default = (m: int) -> int: if m == BROOMS: BROOMS_CRAFTS else: if cat_fight(m): THUNDERDOME_CRAFTS else: if m == BOSS: BOSS_CRAFTS else: DEFAULT_CRAFTS
-# (the fights in which one who has died may choose the kind of craft to come back in: by the fight,
-# and for The Boss its attackers alone, its defenders coming back in the castle's seats or a balloon's)
-switch_on_death = (m: int) -> bool: m == BOSS
+# (what each fight does by default about the craft one comes back in: The Boss and the ball fight let one choose,
+# Turncoats gives one any, the rest the same again; The Boss's defenders come back in the castle's seats or a
+# balloon's, whatever the rule)
+const CRAFT_SAME = 0            # (what one flies after coming back, in a fight that starts in the air: the craft one first flew, again)
+const CRAFT_PICK = 1            # (one chosen from those the fight allows, in the wait to come back)
+const CRAFT_RANDOM = 2          # (one of them chosen by the game, within the limits)
+respawn_default = (m: int) -> int: if m == BOSS or m == BROOMS: CRAFT_PICK else: if m == TURNCOATS: CRAFT_RANDOM else: CRAFT_SAME
 # (the fights with the cat, the rocketeers and the ornithopters: the targets', and the balls')
 cat_fight = (m: int) -> bool: m == THUNDERDOME or m == BROOMS
 # (the Thunderdome's points: a target down, the cat shot down; a target stands again TARGET_BACK
@@ -1042,6 +1046,7 @@ struct Rules:
     plain = false               # no one's screen marks the crafts (the skies scanned by eye; the
                                 # sim does not read it)
     defenders = 0               # (The Boss: the defenders who play, the rest of their side out of it; 0 the fight's own)
+    respawn = -1                # (the craft one comes back in, in a fight that starts in the air: CRAFT_SAME, CRAFT_PICK, CRAFT_RANDOM; -1 the fight's own)
     zero = -1                   # (Turncoats: the person who starts a turncoat, unless a player claimed it; -1 picked here)
 
 # (a craft in the air, for the computer's pilots to keep clear of: which, where, how fast, how wide)
@@ -1151,7 +1156,11 @@ thunderdome_kinds = (n: int, crafts: int) -> int[]:
 # (the kinds a fight has: the lobby's choice, in the fights it applies to)
 # (whether player p may choose the kind of craft they come back in, and which kinds: those the fight allows,
 # as the lobby's picker lists them)
-can_switch = (g: Game, p: Person) -> bool: p.player >= 0 and switch_on_death(g.rules.mode) and not (g.rules.mode == BOSS and p.team != g.rules.attackers)
+# (how a fight has one come back: the rule, where it starts in the air; on the ground one walks to a craft)
+respawn_mode = (g: Game, team: int) -> int: if starts_on_ground(g, team): CRAFT_SAME else: g.rules.respawn
+can_switch = (g: Game, p: Person) -> bool: p.player >= 0 and respawn_mode(g, p.team) == CRAFT_PICK and not (g.rules.mode == BOSS and p.team != g.rules.attackers)
+# (whether the game chooses player p's craft, each time they come back)
+random_craft = (g: Game, p: Person) -> bool: p.player >= 0 and respawn_mode(g, p.team) == CRAFT_RANDOM and not (g.rules.mode == BOSS and p.team != g.rules.attackers)
 pick_kinds = (g: Game) -> int[]: [0..CHOOSABLE).filter((k): MODE_CAN[g.rules.mode] & (1 << k) != 0 and allowed(g, k))
 allowed = (g: Game, kind: int) -> bool:
     m = g.rules.mode
@@ -1184,6 +1193,7 @@ new_game = (pilots: int[], skill: f64, rules: Rules, kinds: int[]) -> Game:
     # (which side attacks: Red or Blue; a lobby that offered another, once, took the host down)
     g.rules.attackers = clamp(g.rules.attackers, 0, 1)
     m = rules.mode
+    if g.rules.respawn < 0 or g.rules.respawn > CRAFT_RANDOM: g.rules.respawn = respawn_default(m)
     if g.rules.win <= 0: g.rules.win = default_win(m)
     if m == CLASSIC: g.rules.rockets = false
     if m == TRENCH or m == ESCORT or g.rules.crafts & ALL_CRAFTS == 0: g.rules.crafts = mode_default(m)
@@ -2355,8 +2365,10 @@ person = (g: mut Game, i: int, pad: Pad):
         # and none made, the wait goes on PICK_EXTRA ticks more, then as one was)
         picking = can_switch(g, p) and p.pick_wait
         if p.timer <= 0 and (not picking or pad.pick >= 0 or p.timer <= -PICK_EXTRA):
-            # (where one may choose: one's kind, as was or chosen, still within the limits, else as the game has it)
+            # (where one may choose: one's kind, as was or chosen, still within the limits, else as the game has it;
+            # where the game chooses: one of those that may be taken)
             if can_switch(g, p): p.kind = start_kind(g, i, p.kind)
+            if random_craft(g, p) and p.pick_wait: p.kind = reroll_kind(g, i, p)
             respawn(g, i, p)
         else: g.people[i] = p
         return
@@ -2434,7 +2446,9 @@ person = (g: mut Game, i: int, pad: Pad):
                 g.people[i] = p
                 drop_flag(g, i)
             else if can_switch(g, p): choose_again(g, i, p)
-            else: respawn(g, i, p)
+            else:
+                if random_craft(g, p): p.kind = reroll_kind(g, i, p)
+                respawn(g, i, p)
             return
         if p.state == FALL and not p.torn and (p.timer > 75 or (open_now and p.timer > 10)):
             p.state = CHUTE
@@ -2580,7 +2594,9 @@ person = (g: mut Game, i: int, pad: Pad):
     if out and p.state == WALK:
         if not starts_on_ground(g, p.team):
             if can_switch(g, p): choose_again(g, i, p)
-            else: respawn(g, i, p)
+            else:
+                if random_craft(g, p): p.kind = reroll_kind(g, i, p)
+                respawn(g, i, p)
             return
         if far_from_field(p):
             p.state = DEAD
@@ -3103,6 +3119,13 @@ pick_apply = (g: Game, i: int, ks: int[], sel: int, sent: int, by: int, number: 
         sure = true
     if sure and kind_open(g, i, mark): chosen = mark
     (mark, chosen)
+
+# (a craft for person i by the game: one of those the fight offers that they may take, the same on every machine)
+reroll_kind = (g: Game, i: int, p: Person) -> int:
+    ks = pick_kinds(g).filter((k): kind_open(g, i, k))
+    if ks.len() == 0: return p.kind
+    n = ks.len()
+    ks[int(hash(g.tick * 7919 + i * 131 + p.deaths * 17) % u64(n))]
 
 # (the picker's mark moved `by` places along the kinds offered, round; the first if it was not one of them)
 pick_step = (ks: int[], sel: int, by: int) -> int:
