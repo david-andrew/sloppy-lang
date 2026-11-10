@@ -503,7 +503,7 @@ const FURY_HULL = 50
 const FURY_GUNS = 25
 const FURY_PULL = 0.12
 # (craft c's hull whole: its kind's, and its fury's)
-full_health = (c: Craft) -> int: KINDS[c.kind].health * (100 + c.fury * FURY_HULL) / 100
+full_health = (c: Craft) -> int: KINDS[c.kind].health * (100 + c.fury * FURY_HULL + c.stand) / 100
 # (a bullet's harm from craft i's guns, with a turncoat's edge and its fury)
 gun_harm = (g: Game, i: int, c: Craft, base: int) -> int: base * (100 + (if edged(g, i): TURNCOAT_GUNS + c.fury * FURY_GUNS else: 0)) / 100
 # (the people a side the fields have crafts for: Turncoats' each for everyone, who may all be one
@@ -528,6 +528,20 @@ turncoat_flown = (g: Game, i: int) -> bool: g.rules.mode == TURNCOATS and i < g.
 # (the last holdout's last stand: the craft they are in, as a turncoat's has it, and more (LAST_FURY))
 const LAST_FURY = 4
 const LAST_GRACE = 180           # (ticks the last stand starts unharmed, the turncoats' guns no use: to break away)
+# (its hull, against its kind's: LAST_HULL_MOST times with LAST_HULL_TIME ticks or more of the fight
+# left and LAST_CROWD turncoats or more after it, down to its fury's alone (three times) at the
+# whistle, or with few after it (LAST_FEW or fewer), between them smoothly. However many fire on it, it loses
+# that no faster than over LAST_HOLD in a hundred of the time left, against a crowd (as few, the
+# less), LAST_HOLD_LEAST ticks at the least: a swarm cannot burst it down, its pilot's flying decides it. Unhit for LAST_CALM ticks,
+# it mends itself LAST_MEND in a thousand of its hull every fifth of a second)
+const LAST_HULL_MOST = 20
+const LAST_HULL_TIME = 60 * 60 * 3
+const LAST_FEW = 4
+const LAST_CROWD = 44
+const LAST_HOLD = 50
+const LAST_HOLD_LEAST = 60 * 10
+const LAST_CALM = 180
+const LAST_MEND = 2
 last_stand = (g: Game, i: int) -> bool: g.rules.mode == TURNCOATS and g.last >= 0 and g.last < g.people.len() and g.people[g.last].team == HOLDOUTS and g.people[g.last].state == SEATED and g.people[g.last].craft == i
 # (a craft with a turncoat's edge: flown by one, or the last holdout's)
 edged = (g: Game, i: int) -> bool: turncoat_flown(g, i) or last_stand(g, i)
@@ -727,7 +741,11 @@ struct Craft:
     heat = 0
     jammed = false
     cooldown = 0
-    fury = 0                    # (Turncoats: its turncoat's fury as they came back in it)
+    fury = 0                    # (Turncoats: its turncoat's fury as they came back in it;
+    stand = 0                   # and the last holdout's last stand: its hull's more, in a hundred;
+    stand_cap = 0               # the most it loses in a second, however many fire on it (0: no limit);
+    took = 0                    # what it has lost in the second it was last hurt, and that tick)
+    took_at = 0
     shots = 0                   # fired so far (the guns take turns)
     rockets = 0
     bombs = 0
@@ -1538,9 +1556,17 @@ turncoat_rules = (g: mut Game, late: bool):
         k = g.people[one].craft
         if g.crafts[k].fury < LAST_FURY and g.crafts[k].down == 0:
             g.crafts[k].fury = LAST_FURY
+            left_t = if g.rules.time_limit > 0: max(g.rules.time_limit * 3600 - g.tick, 0) else: LAST_HULL_TIME
+            base = 100 + LAST_FURY * FURY_HULL
+            crowd = clamp(g.people.len() - 1 - LAST_FEW, 0, LAST_CROWD - LAST_FEW)
+            g.crafts[k].stand = (LAST_HULL_MOST * 100 - base) * min(left_t, LAST_HULL_TIME) / LAST_HULL_TIME * crowd / (LAST_CROWD - LAST_FEW)
             g.crafts[k].health = full_health(g.crafts[k])
+            g.crafts[k].stand_cap = max(g.crafts[k].health * 60 / max(left_t * LAST_HOLD / 100 * crowd / (LAST_CROWD - LAST_FEW), LAST_HOLD_LEAST), 1)
             g.crafts[k].rockets = max(g.crafts[k].rockets, KINDS[g.crafts[k].kind].rockets)
             g.crafts[k].safe = max(g.crafts[k].safe, LAST_GRACE)
+        if g.tick % 12 == 0 and g.crafts[k].down == 0 and g.crafts[k].stand_cap > 0 and g.tick - g.crafts[k].took_at > LAST_CALM:
+            full = full_health(g.crafts[k])
+            g.crafts[k].health = min(g.crafts[k].health + max(full * LAST_MEND / 1000, 1), full)
 
 # (where person i comes back in the air: a holdout (and anyone at first) in its side's rows, its
 # own place in them; a turncoat turned near the holdouts, at most TURNCOAT_NEAR from their middle
@@ -4677,7 +4703,15 @@ hurt_craft = (g: mut Game, j: int, by: int, team: int, amount: int, at: vec3, ho
         g.booms.push(Boom(point_of(c, vec3(0, f32(BAG_Y), f32(CARRIER_BAGS[bag]))), BAG_BURST, g.tick, j, by))
         if bags_left(g.crafts[j]) > 1: return
         g.crafts[j].health = 0
-    g.crafts[j].health -= amount
+    # (Turncoats' last stand: no more lost in a second than its cap, however many fire on it)
+    lose = amount
+    if g.crafts[j].stand_cap > 0:
+        if g.crafts[j].took_at / 60 != g.tick / 60: g.crafts[j].took = 0
+        g.crafts[j].took_at = g.tick
+        lose = min(amount, g.crafts[j].stand_cap - g.crafts[j].took)
+        if lose <= 0: return
+        g.crafts[j].took += lose
+    g.crafts[j].health -= lose
     g.crafts[j].by = by
     if g.crafts[j].health > 0: return
     g.crafts[j].health = 0
@@ -6916,7 +6950,7 @@ bot_bomber = (g: Game, ci: int, c: Craft, team: int) -> Pad:
 # version, a page loaded before the game was changed)
 # (and a number made larger by hand for a change of the rules those short fights do not show: one
 # machine on the old rules and one on the new would split the fight later)
-const RULES_REVISION = 5
+const RULES_REVISION = 6
 version_print = () -> str:
     out = RULES_REVISION
     loop m in [DOGFIGHT, BASES, TRENCH, ESCORT, THUNDERDOME, BROOMS, TURNCOATS]:
