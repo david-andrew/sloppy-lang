@@ -2318,6 +2318,7 @@ draw = ():
     sc = make_world()
     g = view()
     place_camera(g, frame_time())
+    make_thumbs(g)
     clear(BLACK)
     sun(vec3(-0.4, 0.8, 0.45), vec3(1.0, 0.95, 0.85))
     sky(vec3(0.3, 0.5, 0.85), vec3(0.78, 0.84, 0.92), vec3(0.42, 0.45, 0.4))
@@ -3732,7 +3733,7 @@ draw_hud = (g: Game):
         r = Rect(mid().x - f32(w / 2.0), alert_at().y - 34, f32(w), 68)
         panel(r)
         # (where one may choose the craft: when the wait is over, a few seconds more to choose it in)
-        choosing = p.timer <= 0 and p.deaths > 0 and can_switch(g, p)
+        choosing = p.timer <= 0 and p.pick_wait and can_switch(g, p)
         respawn_said = "back in {(p.timer + 59) / 60}"
         if turning: respawn_said = "back in {(p.timer + 59) / 60}, a turncoat"
         if choosing: respawn_said = "choose your craft: {(p.timer + PICK_EXTRA + 59) / 60}"
@@ -4512,9 +4513,12 @@ pick_keys = (g: Game):
     if ks.index_of(pick_sel) < 0: pick_sel = if ks.index_of(p.kind) >= 0: p.kind else: ks[0]
     i = ks.index_of(pick_sel)
     n = ks.len()
-    if key_pressed(.right) or key_pressed(.down) or gamepad_pressed(.right) or gamepad_pressed(.down): i = (i + 1) % n
-    if key_pressed(.left) or key_pressed(.up) or gamepad_pressed(.left) or gamepad_pressed(.up): i = (i + n - 1) % n
-    sure = key_pressed(.enter) or gamepad_pressed(.a)
+    by = 0
+    if key_pressed(.right) or key_pressed(.down) or key_pressed(.d) or key_pressed(.s) or gamepad_pressed(.right) or gamepad_pressed(.down): by += 1
+    if key_pressed(.left) or key_pressed(.up) or key_pressed(.a) or key_pressed(.w) or gamepad_pressed(.left) or gamepad_pressed(.up): by -= 1
+    i = ks.index_of(pick_step(ks, pick_sel, by))
+    # (Space or Enter, a gamepad's A: choose the one marked; not while the kill cam is on, where they skip it)
+    sure = (key_pressed(.enter) or key_pressed(.space) or gamepad_pressed(.a)) and kill_cam <= 0.0
     loop k in 0.. and key in [Key.n1, Key.n2, Key.n3, Key.n4, Key.n5, Key.n6, Key.n7, Key.n8, Key.n9]:
         if k < n and key_pressed(key):
             i = k
@@ -4522,21 +4526,70 @@ pick_keys = (g: Game):
     pick_sel = ks[i]
     if sure: pick_sent = pick_sel
 
-# (the list drawn under the respawn count)
+# (a card's picture of a craft: its own model, seen from ahead, a little above and to one side, drawn into a
+# small render target once (before the frame's scene, which sets its own camera)
+const THUMB_W = 160
+const THUMB_H = 100
+thumbs: {int: RenderTarget} = {}
+thumb_of = (kind: int, team: int) -> RenderTarget:
+    key = kind * 3 + team
+    if let rt = thumbs.get(key): return rt
+    rt = render_target(THUMB_W, THUMB_H)
+    h = KINDS[kind].half
+    d = f64(length(h)) * 1.9 + 1.2
+    draw_to(rt)
+    clear(rgba(0.2, 0.3, 0.42, 1.0))
+    sun(vec3(-0.4, 0.8, 0.45), vec3(1.0, 0.95, 0.85))
+    camera3d(vec3(f32(d * 0.55), f32(d * 0.32), f32(-d * 0.8)), vec3(0, 0, 0), 38.0, 0.1, d * 6.0, vec3(0, 1, 0))
+    draw_mesh(models.craft_mesh(kind, team, 0), translation(vec3(0, 0, 0)), specular = 0.25)
+    # (a 2D mark in it brings the 3D out into it before the next draw)
+    rect(0.0, 0.0, 1.0, 1.0, rgba(0, 0, 0, 0.01))
+    draw_to_screen()
+    thumbs[key] = rt
+    rt
+
+# (the pictures the picker will want, made at the start of the frame)
+make_thumbs = (g: Game):
+    p = my()
+    if mode == .menu or p.state != DEAD or not can_switch(g, p): return
+    loop k in pick_kinds(g): _ = thumb_of(k, p.team)
+
+# (the cards, in rows under the respawn count: each a picture and its name, the one marked in brass; as many to a
+# row as the window holds, smaller in a small one)
 draw_pick = (g: Game, p: Person):
     ks = pick_kinds(g)
     if ks.len() == 0: return
-    w = 300.0
-    h = 58.0 + 22.0 * f64(ks.len())
-    x = f64(mid().x) - w / 2.0
-    y = f64(alert_at().y) + 84.0
-    panel(Rect(f32(x), f32(y), f32(w), f32(h)))
-    text_centered("the craft to come back in", vec2(mid().x, f32(y + 18.0)), T_SMALL, INK_DIM)
+    vr = visible_rect()
+    gap = 10.0
+    top = f64(alert_at().y) + 74.0
+    room = f64(vr.y + vr.h) - top - 8.0
+    wide = f64(vr.w) - 24.0
+    s = 1.0
+    per = 1
+    rows = 1
+    loop sc in [1.0, 0.85, 0.7, 0.58, 0.48]:
+        s = sc
+        per = max(1, min(ks.len(), int((wide - gap) / (150.0 * sc + gap))))
+        rows = (ks.len() + per - 1) / per
+        if f64(rows) * (134.0 * sc + gap) + gap + 26.0 <= room: break
+    cw = 150.0 * s
+    ch = 134.0 * s
+    pw = f64(per) * (cw + gap) + gap
+    ph = f64(rows) * (ch + gap) + gap + 26.0
+    x0 = f64(mid().x) - pw / 2.0
+    y0 = min(top, f64(vr.y + vr.h) - ph - 6.0)
+    panel(Rect(f32(x0), f32(y0), f32(pw), f32(ph)), rgba(0.05, 0.04, 0.03, 0.92))
+    fs = if s >= 0.7: T_SMALL else: T_SMALL - 3.0
     loop j in 0.. and k in ks:
+        cx = x0 + gap + f64(j % per) * (cw + gap)
+        cy = y0 + gap + f64(j / per) * (ch + gap)
         sel = k == pick_sel
-        text("{j + 1}  {PICK_NAMES[k]}{if k == p.kind: "  (next)" else: ""}", vec2(f32(x + 30.0), f32(y + 30.0 + 22.0 * f64(j))), T_SMALL, if sel: BRASS else: INK)
-        if sel: text(">", vec2(f32(x + 12.0), f32(y + 30.0 + 22.0 * f64(j))), T_SMALL, BRASS)
-    text_centered(if touch_input(): "" else: "arrows or 1-{ks.len()}, Enter: back at once (as you were, in {PICK_EXTRA / 60} s more)", vec2(mid().x, f32(y + h - 12.0)), T_SMALL, INK_DIM)
+        rect(cx, cy, cw, ch, if sel: rgba(0.34, 0.26, 0.1, 1.0) else: rgba(0.13, 0.11, 0.09, 1.0))
+        draw_target(thumb_of(k, p.team), vec2(f32(cx + 5.0), f32(cy + 5.0)), vec2(f32(cw - 10.0), f32((cw - 10.0) * f64(THUMB_H) / f64(THUMB_W))))
+        text_centered(PICK_NAMES[k], vec2(f32(cx + cw / 2.0), f32(cy + ch - 22.0 * s)), fs, if sel: BRASS else: INK)
+        if j < 9: text("{j + 1}", vec2(f32(cx + 9.0), f32(cy + 7.0)), fs, if sel: BRASS else: INK_DIM)
+        rect_outline(cx, cy, cw, ch, if sel: 4 else: 1, if sel: BRASS else: INK_DIM)
+    if not touch_input(): text_centered("WASD or arrows: move    Space or Enter: choose    1-{min(ks.len(), 9)}: choose", vec2(mid().x, f32(y0 + ph - 14.0)), T_SMALL - 2.0, INK_DIM)
 
 # what F (get in) or T (get out) would do now, said ("" nothing)
 what_f_does = (g: Game, p: Person) -> str:
