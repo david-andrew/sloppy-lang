@@ -1147,6 +1147,8 @@ heli_power = 0.7                # (a helicopter's power: how fast it goes and cl
 heli_hold_y = 0.0               # (and the height it holds, let go)
 heli_craft = -1
 next_seat = 0                   # (a seat asked for, till a tick takes it)
+pick_mouse = false              # (the picker open, the mouse freed for it)
+pick_was_locked = false
 pick_sel = -1                   # (dead where one may choose the craft to come back in: the kind marked, the last one's first)
 pick_sent = -1                  # (and the kind chosen, sent with the controls; -1 none: the same again)
 scoped = false                  # (the ornithopter: through its scope, R; its long gun fires)
@@ -1426,7 +1428,7 @@ was_craft = -1
 was_seat = -1
 
 update = (dt: f64):
-    global aim_pitch, aim_yaw, before, before_people, enter_in_fight, f_held, had_lock, local, mine, next_seat, paused, paused_at, relock_at, scoped, spare, keys_flying, was_craft, was_seat, was_state, deck_craft, deck_heading, map_toggled
+    global pick_mouse, pick_was_locked, aim_pitch, aim_yaw, before, before_people, enter_in_fight, f_held, had_lock, local, mine, next_seat, paused, paused_at, relock_at, scoped, spare, keys_flying, was_craft, was_seat, was_state, deck_craft, deck_heading, map_toggled
     lay_out()
     # (online, hidden behind another window or tab: still playing, or the others would take
     # this one for gone)
@@ -1473,7 +1475,7 @@ update = (dt: f64):
             relock_at = -1.0
         if paused: relock_at = -1.0
         if is_mouse_locked(): had_lock = true
-        else if had_lock and not paused and not map_open:
+        else if had_lock and not paused and not map_open and not pick_mouse:
             paused = true
             paused_at = elapsed()
         if not paused: paused_at = -1.0
@@ -1482,6 +1484,16 @@ update = (dt: f64):
             sounds()
             return
         pick_keys(game())
+        # (the mouse freed while the picker is open, as the seat map frees it, and taken again after)
+        want_mouse = pick_sel >= 0 and not paused and not touch_input()
+        if want_mouse and not pick_mouse:
+            pick_mouse = true
+            pick_was_locked = is_mouse_locked()
+            had_lock = false
+            mouse_lock(false)
+        else if pick_mouse and not want_mouse:
+            pick_mouse = false
+            if pick_was_locked and settings.mouse: relock_at = elapsed() + 0.15
         if action_pressed("Scope") and in_ornithopter(): scoped = not scoped
         if not in_ornithopter(): scoped = false
         if action_pressed("Next seat") and my().state == SEATED:
@@ -4524,7 +4536,8 @@ pick_keys = (g: Game):
             i = k
             sure = true
     pick_sel = ks[i]
-    if sure: pick_sent = pick_sel
+    # (a kind with none left is moved onto but not chosen)
+    if sure and kind_open(g, mine, pick_sel): pick_sent = pick_sel
 
 # (a card's picture of a craft: its own model, seen from ahead, a little above and to one side, drawn into a
 # small render target once (before the frame's scene, which sets its own camera)
@@ -4580,16 +4593,28 @@ draw_pick = (g: Game, p: Person):
     y0 = min(top, f64(vr.y + vr.h) - ph - 6.0)
     panel(Rect(f32(x0), f32(y0), f32(pw), f32(ph)), rgba(0.05, 0.04, 0.03, 0.92))
     fs = if s >= 0.7: T_SMALL else: T_SMALL - 3.0
+    global pick_sel, pick_sent
+    pt = mouse_pos()
     loop j in 0.. and k in ks:
         cx = x0 + gap + f64(j % per) * (cw + gap)
         cy = y0 + gap + f64(j / per) * (ch + gap)
         sel = k == pick_sel
-        rect(cx, cy, cw, ch, if sel: rgba(0.34, 0.26, 0.1, 1.0) else: rgba(0.13, 0.11, 0.09, 1.0))
-        draw_target(thumb_of(k, p.team), vec2(f32(cx + 5.0), f32(cy + 5.0)), vec2(f32(cw - 10.0), f32((cw - 10.0) * f64(THUMB_H) / f64(THUMB_W))))
-        text_centered(PICK_NAMES[k], vec2(f32(cx + cw / 2.0), f32(cy + ch - 22.0 * s)), fs, if sel: BRASS else: INK)
+        open = kind_open(g, me(), k)
+        cap = kind_cap(g, k)
+        hover = pick_mouse and f64(pt.x) >= cx and f64(pt.x) < cx + cw and f64(pt.y) >= cy and f64(pt.y) < cy + ch
+        # (a click on a card marks it, and chooses it if there is one left of it; a full one only marked)
+        if hover and (mouse_pressed(.left) or map_tapped):
+            pick_sel = k
+            if open: pick_sent = k
+        rect(cx, cy, cw, ch, if sel: rgba(0.34, 0.26, 0.1, 1.0) else: if hover and open: rgba(0.2, 0.17, 0.12, 1.0) else: rgba(0.13, 0.11, 0.09, 1.0))
+        draw_target(thumb_of(k, p.team), vec2(f32(cx + 5.0), f32(cy + 5.0)), vec2(f32(cw - 10.0), f32((cw - 10.0) * f64(THUMB_H) / f64(THUMB_W))), if open: vec4(1, 1, 1, 1) else: vec4(0.32, 0.32, 0.32, 1))
+        text_centered(PICK_NAMES[k], vec2(f32(cx + cw / 2.0), f32(cy + ch - 22.0 * s)), fs, if not open: INK_FAINT else: if sel: BRASS else: INK)
         if j < 9: text("{j + 1}", vec2(f32(cx + 9.0), f32(cy + 7.0)), fs, if sel: BRASS else: INK_DIM)
-        rect_outline(cx, cy, cw, ch, if sel: 4 else: 1, if sel: BRASS else: INK_DIM)
-    if not touch_input(): text_centered("WASD or arrows: move    Space or Enter: choose    1-{min(ks.len(), 9)}: choose", vec2(mid().x, f32(y0 + ph - 14.0)), T_SMALL - 2.0, INK_DIM)
+        if cap > 0:
+            left = max(cap - kind_taken(g, me(), k), 0)
+            text("{left}/{cap}", vec2(f32(cx + cw - 8.0 - text_width("{left}/{cap}", fs)), f32(cy + 7.0)), fs, if not open: WARN else: if sel: BRASS else: INK)
+        rect_outline(cx, cy, cw, ch, if sel: 4 else: if hover and open: 2 else: 1, if sel: BRASS else: if hover and open: BRASS_DIM else: INK_DIM)
+    if not touch_input(): text_centered("WASD, arrows or the mouse: move    Space, Enter or a click: choose    1-{min(ks.len(), 9)}: choose    a full one is only marked", vec2(mid().x, f32(y0 + ph - 14.0)), T_SMALL - 2.0, INK_DIM)
 
 # what F (get in) or T (get out) would do now, said ("" nothing)
 what_f_does = (g: Game, p: Person) -> str:
