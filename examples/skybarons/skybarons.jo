@@ -1147,6 +1147,8 @@ heli_power = 0.7                # (a helicopter's power: how fast it goes and cl
 heli_hold_y = 0.0               # (and the height it holds, let go)
 heli_craft = -1
 next_seat = 0                   # (a seat asked for, till a tick takes it)
+pick_sel = -1                   # (dead where one may choose the craft to come back in: the kind marked, the last one's first)
+pick_sent = -1                  # (and the kind chosen, sent with the controls; -1 none: the same again)
 scoped = false                  # (the ornithopter: through its scope, R; its long gun fires)
 
 # (at a gun whose X does something: a carcopter's drones, a balloon's cannons)
@@ -1195,6 +1197,7 @@ my_pad = () -> Pad:
     if next_seat > 0:
         c.seat = next_seat
         next_seat = 0
+    c.pick = if p.state == DEAD: pick_sent else: -1
     on_foot = p.state == WALK or p.state == FALL or p.state == CHUTE
     if on_foot:
         c.pitch = int(round(clamp(action_axis("Dive", "Climb"), -1.0, 1.0) * 100.0))
@@ -1478,6 +1481,7 @@ update = (dt: f64):
         if paused and mode == .practice:
             sounds()
             return
+        pick_keys(game())
         if action_pressed("Scope") and in_ornithopter(): scoped = not scoped
         if not in_ornithopter(): scoped = false
         if action_pressed("Next seat") and my().state == SEATED:
@@ -3729,7 +3733,8 @@ draw_hud = (g: Game):
         panel(r)
         text_centered(if turning: "back in {(p.timer + 59) / 60}, a turncoat" else: "back in {(p.timer + 59) / 60}", vec2(mid().x, alert_at().y), T_HEAD, if turning: COLORS[TURNED_SIDE] else: INK)
         if kill_cam > 0.0:
-            text_centered("killed by {call(g, kill_by)}: any key skips", vec2(mid().x, alert_at().y + 52), T_SMALL, INK)
+            text_centered("killed by {call(g, kill_by)}: any key skips", vec2(mid().x, alert_at().y + 52.0), T_SMALL, INK)
+        if can_switch(g, p): draw_pick(g, p)
     else if p.state == WALK and not seated:
         # (on foot: a small cross where this one looks)
         line(mid() + vec2(-6, 0), mid() + vec2(6, 0), 2, rgba(1, 1, 1, 0.6))
@@ -4487,6 +4492,47 @@ sight = (at3: vec3, firing: bool, limit: bool):
         circle(at, 2, col)
         loop d in [vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0, -1)]: line(at + d * 20.0, at + d * 28.0, 2, col)
 
+# (dead where the fight lets one choose the craft to come back in (The Boss's attackers): the kinds
+# listed, the last craft's marked first; the arrows (or a gamepad's pad) move the mark, a number or
+# Enter (a gamepad's A) chooses it; nothing chosen, the same kind again)
+pick_keys = (g: Game):
+    global pick_sel, pick_sent
+    p = my()
+    if mode == .menu or p.state != DEAD or not can_switch(g, p):
+        pick_sel = -1
+        pick_sent = -1
+        return
+    ks = pick_kinds(g)
+    if ks.len() == 0: return
+    if ks.index_of(pick_sel) < 0: pick_sel = if ks.index_of(p.kind) >= 0: p.kind else: ks[0]
+    i = ks.index_of(pick_sel)
+    n = ks.len()
+    if key_pressed(.right) or key_pressed(.down) or gamepad_pressed(.right) or gamepad_pressed(.down): i = (i + 1) % n
+    if key_pressed(.left) or key_pressed(.up) or gamepad_pressed(.left) or gamepad_pressed(.up): i = (i + n - 1) % n
+    sure = key_pressed(.enter) or gamepad_pressed(.a)
+    loop k in 0.. and key in [Key.n1, Key.n2, Key.n3, Key.n4, Key.n5, Key.n6, Key.n7, Key.n8, Key.n9]:
+        if k < n and key_pressed(key):
+            i = k
+            sure = true
+    pick_sel = ks[i]
+    if sure: pick_sent = pick_sel
+
+# (the list drawn under the respawn count)
+draw_pick = (g: Game, p: Person):
+    ks = pick_kinds(g)
+    if ks.len() == 0: return
+    w = 300.0
+    h = 58.0 + 22.0 * f64(ks.len())
+    x = f64(mid().x) - w / 2.0
+    y = f64(alert_at().y) + 84.0
+    panel(Rect(f32(x), f32(y), f32(w), f32(h)))
+    text_centered("the craft to come back in", vec2(mid().x, f32(y + 18.0)), T_SMALL, INK_DIM)
+    loop j in 0.. and k in ks:
+        sel = k == pick_sel
+        text("{j + 1}  {PICK_NAMES[k]}{if k == p.kind: "  (next)" else: ""}", vec2(f32(x + 30.0), f32(y + 30.0 + 22.0 * f64(j))), T_SMALL, if sel: BRASS else: INK)
+        if sel: text(">", vec2(f32(x + 12.0), f32(y + 30.0 + 22.0 * f64(j))), T_SMALL, BRASS)
+    text_centered(if touch_input(): "" else: "arrows or 1-{ks.len()}, Enter", vec2(mid().x, f32(y + h - 12.0)), T_SMALL, INK_DIM)
+
 # what F (get in) or T (get out) would do now, said ("" nothing)
 what_f_does = (g: Game, p: Person) -> str:
     if p.team == GOLD: return ""
@@ -4878,7 +4924,7 @@ menu_style = ():
 # how to play: the keys that matter, in a table (a phone's buttons on one)
 HOW_KEYS = [("W A S D, the mouse", "walk and look (Shift runs, Z jumps); a click or Space fires a pistol"), ("F", "get in: a craft, a gun on the ground"), ("T", "get out, bail out, open the parachute; on foot, back to your field"),
             ("F held", "put your own side out of your craft (on foot: its pilot out, you in)"), ("the mouse", "flying: steer where it points (keys fly while held); a helicopter: look about, W A S D move it as you look"),
-            ("left button, Space", "fire"), ("right button, X", "rockets (a gunner: drones, cannons)"), ("B", "bombs"), ("Shift, Z", "throttle; a helicopter: up and down"), ("the wheel, - =", "a helicopter's power: how fast it goes and climbs"), ("1 to 8, V", "change seats"),
+            ("left button, Space", "fire"), ("right button, X", "rockets (a gunner: drones, cannons)"), ("B", "bombs"), ("Shift, Z", "throttle; a helicopter: up and down"), ("the wheel, - =", "a helicopter's power: how fast it goes and climbs"), ("1 to 8, V", "change seats"), ("Arrows or 1 to 9, Enter", "dead, where the fight lets you: choose the craft to come back in (The Boss's attackers)"),
             ("C, Tab", "look at the target, the next target"), ("Escape", "the menu")]
 HOW_TOUCH = [("drag", "look and aim, anywhere off the buttons"), ("In/Out", "get in, get out, bail out, open the parachute"), ("Fire", "shoot (on foot: walk)"),
              ("the throttle", "slide it"), ("Rocket, Bomb", "what the craft carries"), ("Look", "watch the target"), ("Menu", "the in-fight menu")]
