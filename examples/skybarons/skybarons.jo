@@ -1653,6 +1653,74 @@ killer_view = (g: Game) -> (vec3, vec3, bool):
         return (c.pos, fwd_of(c), true)
     (k.pos, vec3(0, 0, -1), true)
 
+# (how fast the killer goes: their craft's, else their own)
+killer_vel = (g: Game) -> vec3:
+    if kill_by < 0 or kill_by >= g.people.len(): return vec3(0, 0, 0)
+    k = g.people[kill_by]
+    if k.state == SEATED and k.craft >= 0 and k.craft < g.crafts.len(): return g.crafts[k.craft].vel
+    k.vel
+
+# (the kill cam's shot, chosen as it starts, as if someone else were filming the one who did it:
+# KC_ORBIT round them, from a way round and a height of its own, slowly going round; or KC_FLYBY
+# from a point ahead of their way and off to a side, watching them come and go by, till they are
+# KC_GONE past it, then round them. The view cuts to it, not swung over from one's own)
+const KC_ORBIT = 0
+const KC_FLYBY = 1
+const KC_GONE = 260.0
+const KC_ROUND = 0.35              # (radians a second, going round)
+kc_shot = KC_ORBIT
+kc_angle = 0.0
+kc_high = 10.0
+kc_far = 45.0
+kc_turn = 1.0
+kc_point = vec3(0, 0, 0)
+kc_placed = false               # (the fly-by's point found)
+kc_cut = false
+kill_cam_start = ():
+    global kc_angle, kc_cut, kc_far, kc_high, kc_placed, kc_shot, kc_turn
+    kc_shot = if random() < 0.5: KC_ORBIT else: KC_FLYBY
+    kc_angle = random() * TAU
+    kc_high = 5.0 + random() * 22.0
+    kc_far = 25.0 + random() * 20.0
+    kc_turn = if random() < 0.5: 1.0 else: -1.0
+    kc_placed = false
+    kc_cut = false
+
+# (where the kill cam is this frame, and what it looks at; the killer at kp going kv)
+kill_cam_view = (kp: vec3, kv: vec3, dt: f64):
+    global cam_at, cam_pos, cam_up, kc_angle, kc_cut, kc_far, kc_placed, kc_point, kc_shot
+    speed = f64(length(kv))
+    if not kc_placed and kc_shot == KC_FLYBY:
+        kc_placed = true
+        # (ahead of their way, a second and a half on, off to a side and a little up; slow, or on
+        # foot: round them instead)
+        if speed < 8.0: kc_shot = KC_ORBIT
+        else:
+            way = kv * f32(1.0 / speed)
+            side = cross(way, vec3(0, 1, 0))
+            side = if length(side) > 0.1: normalize(side) else: vec3(1, 0, 0)
+            kc_point = kp + kv * 1.6 + side * f32(kc_turn * (16.0 + kc_far * 0.25)) + vec3(0, f32(3.0 + kc_high * 0.3), 0)
+    if kc_shot == KC_FLYBY:
+        off = kp - kc_point
+        # (gone well past: round them from where the view is)
+        if f64(length(off)) > KC_GONE and f64(dot(off, kv)) > 0.0:
+            kc_shot = KC_ORBIT
+            kc_angle = atan2(f64(cam_pos.z - kp.z), f64(cam_pos.x - kp.x))
+    want = kc_point
+    if kc_shot == KC_ORBIT:
+        kc_angle += kc_turn * KC_ROUND * dt
+        want = kp + vec3(f32(cos(kc_angle) * kc_far), f32(kc_high), f32(sin(kc_angle) * kc_far))
+    want.y = f32(max(f64(want.y), ground(f64(want.x), f64(want.z)) + 6.0))
+    if not kc_cut:
+        cam_pos = want
+        cam_at = kp
+        cam_up = vec3(0, 1, 0)
+        kc_cut = true
+    else:
+        cam_pos = approach(cam_pos, want, if kc_shot == KC_ORBIT: 6.0 else: 30.0, dt)
+        cam_at = approach(cam_at, kp, 14.0, dt)
+        cam_up = approach(cam_up, vec3(0, 1, 0), 3.0, dt)
+
 place_camera = (g: Game, dt: f64):
     global kill_cam, cam_aim, cam_at, cam_pos, cam_q, cam_up, level_right, look_amount, look_at_pos, mouse_view, throw_view, deck_cam, deck_cam_craft
     p = g.people[me()]
@@ -1664,7 +1732,7 @@ place_camera = (g: Game, dt: f64):
         cam_up = approach(cam_up, vec3(0, 1, 0), 3.0, dt)
         finish_camera()
         return
-    # (the kill cam: from just behind and above the one who did it, as they fly; skipped by a key
+    # (the kill cam: the one who did it, as if filmed by someone else (kill_cam_view); skipped by a key
     # or click, ended with the time or when they are gone)
     # (it goes on while one is out of it: dead, falling, under a parachute, or in one's craft as it
     # goes down; back in the fight, it ends)
@@ -1675,9 +1743,7 @@ place_camera = (g: Game, dt: f64):
         if skip_pressed() or not kv.2 or (p.state == DEAD and p.timer < 30): kill_cam = 0.0
         else:
             kill_cam -= dt
-            cam_at = approach(cam_at, kv.0, 8.0, dt)
-            cam_pos = approach(cam_pos, kv.0 - kv.1 * 22.0 + vec3(0, 7, 0), 5.0, dt)
-            cam_up = approach(cam_up, vec3(0, 1, 0), 3.0, dt)
+            kill_cam_view(kv.0, killer_vel(g), dt)
             finish_camera()
             return
     if p.state == DEAD or (p.state == SEATED and g.crafts[p.craft].gone > 0):
@@ -3036,6 +3102,7 @@ effects = (dt: f64):
         if settings.killcam and mode != .menu and g.winner < 0 and b.by >= 0 and b.by != me() and b.by < g.people.len() and g.people[b.by].team != GOLD and g.people[b.by].team != my_team() and ((b.kind == SHOT_DOWN and myc >= 0 and b.who == myc) or (b.kind == KILLED and b.who == me())) and (kill_cam <= 0.0 or kill_by != b.by):
             kill_by = b.by
             kill_cam = KILLCAM_SECS
+            kill_cam_start()
         # (said large when it is this one's doing, smaller for the rest of the fight)
         # (Turncoats: who has turned, and the last holdout)
         if b.kind == TURNED and b.who >= 0 and b.who < g.people.len():
