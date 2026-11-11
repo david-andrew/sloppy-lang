@@ -55,6 +55,8 @@ def c_lib_commands(src, name, d):
     return [[cc, "-shared", "-fPIC", "-O1", "-o", out, src]] if shutil.which(cc) else ""
 
 tmp = os.path.join(tempfile.gettempdir(), "sloppy-tests")
+# Emulated arm64 games can take longer than the native runtime deadline.
+run_timeout = 300 if target == "linux-arm64" else 20
 sloppy_bin = os.path.join(root, "bin", "sloppy.exe" if on_windows else "sloppy")
 tests = sorted(glob.glob(os.path.join(root, "tests", "t", "*.jo")))
 tests = [t for t in tests if pattern in os.path.basename(t)]
@@ -158,7 +160,7 @@ for t in tests:
                     if "-e" in run and "LANG=C.UTF-8" not in run: run[2:2] = ["-e", "LANG=C.UTF-8"]     # (é as UTF-8, not two Latin-1 letters)
         # (a test with a C library runs where it is: `@lib("./libname.so")`)
         if run_dir and run[:2] == ["podman", "exec"] and target != "windows": run[2:2] = ["-w", run_dir]
-        r = subprocess.run(run, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, input=stdin_data,
+        r = subprocess.run(run, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=run_timeout, input=stdin_data,
                            env=test_env, cwd=run_dir)
     except subprocess.TimeoutExpired as e:
         print(f"FAIL {name}: timed out")
