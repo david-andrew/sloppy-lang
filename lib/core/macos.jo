@@ -314,9 +314,43 @@ when TARGET == "macos":
         if n == 16: return -25                              # ENOTTY
         -38                                                 # ENOSYS
 
+    # Darwin's poll uses kqueue: registering the same (fd, filter) twice replaces the
+    # first entry's index with the last one's. Tasks may share a pipe or a socket, so
+    # poll each descriptor once with their combined interests, then give readiness to
+    # every matching entry. In particular, draining a helper's wake pipe must not strand
+    # another task whose completed job was waiting on the same pipe.
+    __mac_poll = (fds: int, n: int, ms: int) -> int:
+        if n < 2: return __mac_poll_distinct(fds, n, ms)
+        p = fds as *int
+        slots: {int: int} = {}
+        unique: int[]
+        indices = fill(-1, n)
+        loop k in [0..n):
+            fd = int(i32(p[k] & 0xFFFFFFFF))
+            if fd < 0: continue
+            i = slots.get(fd) ?? -1
+            if i < 0:
+                i = unique.len()
+                slots[fd] = i
+                unique.push(p[k] & 0xFFFFFFFFFFFF)
+            else: unique[i] |= p[k] & 0xFFFF00000000
+            indices[k] = i
+        r = __mac_poll_distinct(data(unique) as int, unique.len(), ms)
+        if r < 0: return r
+        got = 0
+        loop k in [0..n):
+            ev = 0
+            if indices[k] >= 0:
+                # Errors and hangups are reported even when not requested.
+                mask = ((p[k] >> 32) & 0xFFFF) | 0x38
+                ev = (unique[indices[k]] >> 48) & mask
+            p[k] = (p[k] & 0xFFFFFFFFFFFF) | (ev << 48)
+            if ev != 0: got += 1
+        got
+
     # poll(), with select() for what it leaves out: macOS's poll does not take every device (it
     # says POLLNVAL), where select waits for a terminal as for a socket
-    __mac_poll = (fds: int, n: int, ms: int) -> int:
+    __mac_poll_distinct = (fds: int, n: int, ms: int) -> int:
         r = __mac_r(int(__c_poll(fds, i32(n), i32(ms))))
         if r <= 0: return r
         p = fds as *int                                     # (struct pollfd: fd, events, revents)
