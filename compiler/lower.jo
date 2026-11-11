@@ -656,7 +656,7 @@ new_cell = (l: int):
     # (a cell holding a closure that holds the cell would never be freed: values that can hold
     # functions are not shared like this)
     if type_has_fn(int(locals[l].type)):
-        nm = name_of(int(locals[l].name))
+        nm = local_message(l)
         fatal(int(locals[l].pos), "'{nm}' is changed after a closure captured it, and it can hold functions ({type_str(int(locals[l].type))}): a closure kept in it would keep it alive forever. Make it a global, or pass it to the closure as a `mut` parameter")
     sz = tsize(int(locals[l].type))
     if sz < 1: sz = 1
@@ -1187,7 +1187,7 @@ mut_alias_check = (args: int[], mutmask: int, callee: int):
         hint = ""
         if in_arr: hint = " (pass the index instead)"
         sa = place_steps(a)
-        nm = name_of(int(nodes[r].name))
+        nm = text_or(r, "the value")
         loop j in 0.. and b in args:
             if j == i: continue
             bmut = mutmask & (1 << j) != 0
@@ -1224,7 +1224,12 @@ mut_alias_check = (args: int[], mutmask: int, callee: int):
 # what `x!` found none in, for its panic: "read_file(...) gave none: the file could not be read"
 unwrap_text = (a0: int) -> str:
     a = a0
-    loop nodes[a].kind == .conv or nodes[a].kind == .narrow: a = int(nodes[a].a)
+    loop true:
+        if nodes[a].kind == .conv or nodes[a].kind == .narrow: a = int(nodes[a].a)
+        else:
+            o = message_origin(a)
+            if o == a: break
+            a = o
     if nodes[a].kind == .call and nodes[a].sym > 0 and nodes[a].aux == 0:
         d = int(fns[int(nodes[a].sym)].decl)
         if d != 0 and nodes[d].kind == .fn_:
@@ -1237,21 +1242,19 @@ unwrap_text = (a0: int) -> str:
             return "{fnm}(...) gave none{why}"
     "{place_text(a)} is none"
 
-place_text = (n: int) -> str:
+place_text = (n0: int) -> str:
+    n = message_origin(n0)
+    if n != n0: return text_or(n, "the value")
     k = nodes[n].kind
-    if k == .ident:
-        nm = name_of(int(nodes[n].name))
-        # (a narrowed field or global: the place it stands for)
-        if starts_with(nm, "#") and nodes[n].aux == i32(int(SK.local)) and locals[int(nodes[n].sym)].alias != 0: return place_text(int(locals[int(nodes[n].sym)].alias))
-        return nm
+    if k == .ident: return message_name(int(nodes[n].name), nodes[n].pos, "the value")
     if k == .narrow or k == .conv: return place_text(int(nodes[n].a))
     if k == .field: return "{place_text(int(nodes[n].a))}.{name_of(int(nodes[n].name))}"
     if k == .unwrap: return "{place_text(int(nodes[n].a))}!"
     if k == .index:
         b = int(nodes[n].b)
         i = "..."
-        if nodes[b].kind == .ident: i = name_of(int(nodes[b].name))
-        else if nodes[b].kind == .int_lit: i = "{nodes[b].ival}"
+        if b != 0 and nodes[b].kind == .ident: i = text_or(b, "...")
+        else if b != 0 and nodes[b].kind == .int_lit: i = "{nodes[b].ival}"
         return "{place_text(int(nodes[n].a))}[{i}]"
     "..."
 
@@ -1386,7 +1389,7 @@ race_arg = (a: int, who: str):
         if param: hint = ", or mark '{name_of(int(nodes[int(fns[cur_fn].decl)].name))}' @parallel so that the functions given to it are checked"
         # (one = (i: int) -> ...; parallel_range(n, one): a variable holding a function)
         else if k == .ident and nodes[a].aux == i32(int(SK.local)):
-            vn = name_of(int(nodes[a].name))
+            vn = text_or(a, "the value")
             hint = " ('{vn}' is a variable holding a function: write the lambda in the call, or make '{vn}' a function of the file, at the top level)"
         fatal(nodes[a].pos, "{who} runs this function on many threads at once, so the compiler checks it for data races, which it can only do for a function it can see: pass a function by name or a lambda{hint}")
 
@@ -1444,6 +1447,7 @@ race_target = (t: int, f: int, who: str, captures: bool, pos: int):
             fatal(race_lib_pos, "{who} runs this function on many threads at once, which {fname} cannot do: it changes {what}, so its calls must come one at a time: call it in a plain loop")
         fatal(pos, "{who} runs this function on many threads at once, so it must not change the global '{nm}' (a data race): return values instead")
     if captures and nodes[n].aux == i32(int(SK.local)):
+        nm = text_or(n, "the value")
         l = int(nodes[n].sym)
         if int(locals[l].owner) != f or int(locals[l].flags) & LF_CAPTURE != 0:
             fatal(pos, "{who} runs this function on many threads at once, so it must not change '{nm}', a variable it captured (a data race): return values instead")

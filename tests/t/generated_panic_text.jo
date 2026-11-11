@@ -1,0 +1,34 @@
+# requires: sloppy
+# requires: native
+# requires: unix
+# Compiler bindings must not become names in panic text, even for unreachable guard arms.
+lib = env("SLOPPY_LIB") ?? "{cwd()}/lib"
+compiler = "{lib}/../bin/sloppy"
+source = "{lib}/../tests/t/mods/generated_message_probe.jo"
+scratch = "{temp_dir()}/generated-panic-{time_ns()}"
+make_dirs(scratch)
+program = "{scratch}/probe"
+bad_name = regex(r'__(is|ix|comp|index|elem|match|each|ud|uf|rv|ri|rx|si|st|sc|so|sp|try|unwrap|spread|sel|has|k|s|r|e|b)[0-9]+[^\x00\n]*(is none|no longer holds|was never given|changed)')
+loop release in [false, true]:
+    command = ["build", source, "-o", program]
+    if release: command.push("--release")
+    built, diagnostic = run_program(compiler, command)
+    assert(built == 0, diagnostic)
+    image = read_file(program)!
+    assert(not image.contains(bad_name), "a generated name in an embedded panic")
+    if not release:
+        assert(image.contains("choose(...) is none, though the test here found a value"))
+        assert(image.contains("make_union(...) no longer holds"))
+        assert(image.contains("make_fields(...) no longer holds"))
+    rc, safe = run_program(program, ["safe"])
+    assert(rc == 0 and safe == "true 1 1\n", safe)
+    loop mode, wanted in [("narrow", "x is none, though the test here found a value"),
+                         ("loop", "v is none, though the test here found a value"),
+                         ("explicit", "__user_optional is none"),
+                         ("callback", "cb.run was never given a function to call")]:
+        status, message = run_shell("\"{program}\" {mode} 2>&1")
+        assert(status == 101 and message.contains(wanted), message)
+        assert(not message.contains(bad_name), message)
+    print(if release: "release panic text ok" else: "debug panic text ok")
+delete_file(program)
+delete_dir(scratch)

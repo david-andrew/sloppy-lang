@@ -318,7 +318,7 @@ coerce = (n: int, target: int) -> int:
                     return n
                 if bop == .plus or bop == .minus or bop == .star or bop == .shl:
                     an = "x"
-                    if nodes[int(nodes[n].a)].kind == .ident: an = name_of(int(nodes[int(nodes[n].a)].name))
+                    if nodes[int(nodes[n].a)].kind == .ident: an = text_or(int(nodes[n].a), "x")
                     warn(nodes[n].pos, "this is worked out as {a_type(from)}, which wraps around past its range, before it becomes {a_type(to)}: `{type_str(to)}({an}) {tok_text(bop)} ...` works in {type_str(to)}, and `{type_str(from)}(...)` around it says the wrap is meant")
             wrap_conv(n, .int_, to)
             return n
@@ -329,7 +329,7 @@ coerce = (n: int, target: int) -> int:
             # (hits / shots * 100.0: the division drops the fraction before it becomes a float)
             a = int(nodes[n].a)
             an = "a"
-            if nodes[a].kind == .ident: an = name_of(int(nodes[a].name))
+            if nodes[a].kind == .ident: an = text_or(a, "a")
             warn(nodes[n].pos, "this divides whole numbers, dropping the fraction (7 / 2 is 3) before it becomes a float: `f64({an}) / ...` keeps the fraction")
         wrap_conv(n, .int2float, to)
         return n
@@ -371,7 +371,7 @@ coerce = (n: int, target: int) -> int:
         # (r: (int?, str?) = q: a tuple written out converts each part; a variable does not)
         each = true
         parts: str[]
-        nm = name_of(int(nodes[n].name))
+        nm = text_or(n, "value")
         loop i in [0..int(types[prune(to)].nargs)):
             if not can_coerce(0, targ(prune(from), i), targ(prune(to), i)): each = false
             parts.push("{nm}.{i}")
@@ -665,7 +665,7 @@ check_place = (n: int, for_mut: bool):
         if nodes[n].aux == i32(int(SK.local)):
             l = int(nodes[n].sym)
             f = int(locals[l].flags)
-            nm = name_of(int(locals[l].name))
+            nm = text_or(n, "the value")
             if f & LF_SOAELEM != 0: fatal(nodes[n].pos, "'{nm}' stands for an element of a soa array: assign it a whole value (in `loop mut`) or change its fields")
             # a closure modifying a variable it captured modifies the variable itself
             # (and a narrowed name stands for its variable, which a closure may have captured)
@@ -700,7 +700,7 @@ check_place = (n: int, for_mut: bool):
         if nodes[n].aux == i32(int(SK.global)):
             note_global_write(int(nodes[n].sym))
             return
-        fatal(nodes[n].pos, "cannot assign to '{name_of(int(nodes[n].name))}'")
+        fatal(nodes[n].pos, "cannot assign to '{text_or(n, "the value")}'")
     if k == .field:
         bt = prune(ntype(int(nodes[n].a)))
         if types[bt].kind == .ptr: return
@@ -715,7 +715,7 @@ check_place = (n: int, for_mut: bool):
         cp_inner -= 1
         return
     if k == .index:
-        if has_flag(n, NF_RDONLY): fatal(nodes[n].pos, "cannot modify loop variable '{name_of(int(nodes[n].name))}' (use `loop mut`)")
+        if has_flag(n, NF_RDONLY): fatal(nodes[n].pos, "cannot modify loop variable '{message_name(int(nodes[n].name), nodes[n].pos, "the element")}' (use `loop mut`)")
         bt = prune(ntype(int(nodes[n].a)))
         bk = types[bt].kind
         if bk == .ptr: return
@@ -748,7 +748,7 @@ check_place = (n: int, for_mut: bool):
         fnm = ""
         fm = -1
         cal = int(nodes[n].a)
-        if cal != 0 and (nodes[cal].kind == .ident or nodes[cal].kind == .field): fnm = name_of(int(nodes[cal].name))
+        if cal != 0 and (nodes[cal].kind == .ident or nodes[cal].kind == .field): fnm = message_name(int(nodes[cal].name), nodes[cal].pos, "")
         if nodes[n].sym > 0 and int(nodes[n].sym) < fns.len() and fns[int(nodes[n].sym)].decl != 0:
             fd = int(fns[int(nodes[n].sym)].decl)
             fnm = name_of(int(nodes[fd].name))
@@ -776,17 +776,66 @@ const_named = (n: int) -> str:
     if s == 0 or syms[s].kind != .const_: return ""
     w
 
+# A generated identifier keeps a source position, but its spelling is not in the source.
+# Preserve explicitly written __names, including declarations positioned at =, mut or loop.
+source_name_at = (src: str, off: int, nm: str) -> bool:
+    finish = off + len(nm)
+    off >= 0 and finish <= len(src) and __mem_eq(data(src) + off, data(nm), len(nm)) and (finish == len(src) or not is_ident_char(src[finish])) and (off == 0 or not is_ident_char(src[off - 1]))
+
+source_ident = (nm: str, pos: int) -> bool:
+    f = pos_file(pos)
+    if pos < 0 or f < 0 or f >= files.len(): return false
+    src = files[f].src
+    off = pos_off(pos)
+    if source_name_at(src, off, nm): return true
+    j = off
+    loop j > 0 and src[j - 1] != '\n': j -= 1
+    loop j < len(src) and src[j] != '\n' and src[j] != '#':
+        c = src[j]
+        if c == '"' or c == '\'':
+            j += 1
+            loop j < len(src) and src[j] != '\n' and src[j] != c:
+                if src[j] == '\\': j += 1
+                j += 1
+        else if source_name_at(src, j, nm): return true
+        j += 1
+    false
+
+generated_name = (name: int, pos: int) -> bool:
+    nm = name_of(name)
+    (starts_with(nm, "#") or starts_with(nm, "__")) and not source_ident(nm, pos)
+
+message_name = (name: int, pos: int, other: str) -> str:
+    if generated_name(name, pos): return other
+    name_of(name)
+
+# Follow only compiler bindings. A user's `x = f()` is still called x in a message.
+message_origin = (n0: int) -> int:
+    n = n0
+    loop n != 0 and nodes[n].kind == .ident and generated_name(int(nodes[n].name), nodes[n].pos):
+        if nodes[n].aux != i32(int(SK.local)) or nodes[n].sym <= 0: break
+        l = int(nodes[n].sym)
+        loop int(locals[l].flags) & LF_CAPTURE != 0 and locals[l].outer != 0: l = int(locals[l].outer)
+        a = int(locals[l].alias)
+        if a == 0: a = origin_value(l)
+        if a == 0 or a == n: break
+        n = a
+    n
+
+local_message = (l: int) -> str:
+    nm = message_name(int(locals[l].name), locals[l].pos, "")
+    if len(nm) > 0: return nm
+    a = int(locals[l].alias)
+    if a == 0: a = origin_value(l)
+    text_or(a, "the value")
+
 # an expression as written, for messages (n.next, xs[i].pos!, env.get(...)); "" for one longer
-expr_text = (n: int) -> str:
+expr_text = (n0: int) -> str:
+    n = message_origin(n0)
     if n == 0: return ""
     k = nodes[n].kind
     a = int(nodes[n].a)
-    if k == .ident:
-        nm = name_of(int(nodes[n].name))
-        if not starts_with(nm, "#") and not starts_with(nm, "__"): return nm
-        # (a narrowed field or global: the place it stands for)
-        if nodes[n].aux == i32(int(SK.local)) and nodes[n].sym > 0 and locals[int(nodes[n].sym)].alias != 0: return expr_text(int(locals[int(nodes[n].sym)].alias))
-        return ""
+    if k == .ident: return message_name(int(nodes[n].name), nodes[n].pos, "")
     if k == .narrow or k == .conv: return expr_text(a)
     if k == .call and a == 0 and nodes[n].sym > 0 and int(nodes[n].sym) < fns.len() and fns[int(nodes[n].sym)].decl != 0:
         # (a call checked: the function it calls, and its receiver when written before it)
@@ -799,7 +848,10 @@ expr_text = (n: int) -> str:
     # (a struct made: check_struct_call)
     if k == .call and a == 0 and nodes[n].aux == 2 and tkind(int(nodes[n].type)) == .struct_: return "{type_str(int(nodes[n].type))}(...)"
     if k == .field or k == .unwrap or k == .index or k == .call:
-        if k == .call and nodes[a].kind == .ident: return "{name_of(int(nodes[a].name))}(...)"
+        if k == .call and nodes[a].kind == .ident:
+            base = expr_text(a)
+            if len(base) == 0: return ""
+            return "{base}(...)"
         if k == .call and nodes[a].kind == .field:
             r = expr_text(int(nodes[a].a))
             if len(r) == 0: return ""
@@ -809,7 +861,9 @@ expr_text = (n: int) -> str:
         if k == .field: return "{base}.{name_of(int(nodes[n].name))}"
         if k == .unwrap: return "{base}!"
         b = int(nodes[n].b)
-        if b != 0 and nodes[b].kind == .ident: return "{base}[{name_of(int(nodes[b].name))}]"
+        if b != 0 and nodes[b].kind == .ident:
+            ix = expr_text(b)
+            if len(ix) > 0: return "{base}[{ix}]"
         if b != 0 and nodes[b].kind == .int_lit: return "{base}[{nodes[b].ival}]"
         return "{base}[...]"
     ""
@@ -3327,7 +3381,7 @@ opt_cmp_error = (n: int, a: int, b: int, ta: int, tb: int):
         x = b
         tx = tb
     if tkind(tx) == .opt and nodes[x].kind == .ident:
-        nm = name_of(int(nodes[x].name))
+        nm = text_or(x, "the value")
         et = prune(int(types[prune(tx)].elem))
         dv = "default"
         if tkind(et) == .str_: dv = "\"\""
@@ -4687,14 +4741,14 @@ check_binary = (n: int, expected: int) -> int:
             lt = "{lv}"
             if lv == floor(lv) and abs(lv) < 1e15: lt = "{i64(lv)}"
             nm = "it"
-            if nodes[a].kind == .ident: nm = name_of(int(nodes[a].name))
+            if nodes[a].kind == .ident: nm = text_or(a, "it")
             else if nodes[a].kind == .field: nm = "." + name_of(int(nodes[a].name))
             warn(nodes[n].pos, "a number with a fraction, moved a little each frame, steps past {lt} ({lv - 0.3}, then {lv + 0.2}) and is rarely exactly {lt}: `>=` (or `<=`) is true once {nm} gets there")
     # (s[0] + "!": a byte and a character's code added, which reads like text joined)
     if b_char and is_int(ta) and not is_lit(a) and is_int(tb) and not has_flag(b, NF_SQUOTE):
         ch = name_of(int(nodes[b].sval))
         if nodes[a].kind == .ident:
-            an = name_of(int(nodes[a].name))
+            an = text_or(a, "x")
             warn(nodes[n].pos, "this adds the character code of {ch} to a number, not text to text: for text, write `\"\{{an}}{ch}\"` (and when {an} is a character from s[i], `chr({an}) + \"{ch}\"`)")
         else: warn(nodes[n].pos, "this adds the character code of {ch} to a number, not text to text (s[i] is a character's code): `chr(s[i]) + \"{ch}\"` joins text")
     if a_char and is_int(tb) and not is_lit(b) and is_int(ta) and not has_flag(a, NF_SQUOTE):
@@ -5200,7 +5254,7 @@ check_match = (m: int, expected: int) -> int:
                     # (x if x < 0: as Python's `case x if ...`, which names the value)
                     pn = name_of(int(nodes[p].name))
                     what = "the value"
-                    if nodes[sc].kind == .ident: what = name_of(int(nodes[sc].name))
+                    if nodes[sc].kind == .ident: what = text_or(sc, "the value")
                     if guarded: fatal(nodes[p].pos, "unknown name '{pn}': a name in a pattern is a value to compare with, not a new variable; `_ as {pn} if ...:` names {what} for an arm with a condition on it")
                     fatal(nodes[p].pos, "unknown name '{pn}': a name in a pattern is a value to compare with, not a new variable; `_ as {pn}:` is the arm for the rest, naming {what}")
                 id = mk(.ident, nodes[p].pos)
@@ -5352,8 +5406,8 @@ untyped_param_error = (n: int):
     nm = "this"
     eg = "x"
     if nodes[n].kind == .ident:
-        eg = name_of(int(nodes[n].name))
-        nm = "'{eg}'"
+        eg = message_name(int(nodes[n].name), nodes[n].pos, "x")
+        if not generated_name(int(nodes[n].name), nodes[n].pos): nm = "'{eg}'"
     fatal(nodes[n].pos, "cannot infer the type of {nm} from how it is used here; give the parameter a type, as `({eg}: int): ...`")
 
 check_lambda = (lam: int, expected: int) -> int:
@@ -5406,7 +5460,7 @@ check_lambda = (lam: int, expected: int) -> int:
     loop i in untyped:
         if has_var(prune(zp[i])) or tkind(zp[i]) == .var:
             p = kid(lam, i)
-            fatal(nodes[p].pos, "cannot infer the type of parameter '{name_of(int(nodes[p].name))}'; add a type annotation")
+            fatal(nodes[p].pos, "cannot infer the type of parameter '{message_name(int(nodes[p].name), nodes[p].pos, "x")}'; add a type annotation")
     fns[f].ptypes = zp
     fns[f].ret = i32(zonk(int(fns[f].ret)))
     zonk_tree(int(fns[f].body))
@@ -6016,7 +6070,7 @@ check_expr = (n: int, expected: int) -> int:
                 if tkind(bt) == .fn_:
                     bn = int(nodes[n].a)
                     fnn = ""
-                    if nodes[bn].kind == .ident: fnn = name_of(int(nodes[bn].name))
+                    if nodes[bn].kind == .ident: fnn = text_or(bn, "")
                     else if nodes[bn].kind == .fnref and nodes[bn].sym > 0 and fns[int(nodes[bn].sym)].decl != 0: fnn = name_of(int(nodes[int(fns[int(nodes[bn].sym)].decl)].name))
                     if fnn == "transform": fatal(nodes[n].pos, "there are no GameObjects or transforms: where a thing is, is a field of your struct (`pos: vec3`), drawn with `draw_mesh(mesh, translation(pos))`")
                     if len(fnn) > 0: fatal(nodes[n].pos, "'{fnn}' is a function, which has no field '{name_of(fname)}': `{fnn}(...)` gives what it makes")
@@ -6301,8 +6355,8 @@ check_expr = (n: int, expected: int) -> int:
             # (text ?? "" after `if text == none: return`: known not to be none there)
             if nodes[lhs].kind == .narrow and tkind(prune(ntype(int(nodes[lhs].a)))) == .opt or nodes[lhs].kind == .ident and nodes[lhs].aux == i32(int(SK.local)) and int(locals[int(nodes[lhs].sym)].flags) & LF_ALIAS != 0 and int(locals[int(nodes[lhs].sym)].alias) != 0 and nodes[int(locals[int(nodes[lhs].sym)].alias)].kind == .unwrap:
                 vn = "it"
-                if nodes[lhs].kind == .ident: vn = name_of(int(nodes[lhs].name))
-                else if nodes[int(nodes[lhs].a)].kind == .ident: vn = name_of(int(nodes[int(nodes[lhs].a)].name))
+                if nodes[lhs].kind == .ident: vn = text_or(lhs, "it")
+                else if nodes[int(nodes[lhs].a)].kind == .ident: vn = text_or(int(nodes[lhs].a), "it")
                 fatal(nodes[n].pos, "'??' needs an optional on the left, and {vn} is {a_type(at)} here (the code above rules none out): drop the `??` and what follows it")
             fatal(nodes[n].pos, "'??' needs an optional on the left, found {type_str(at)}")
         inner = int(types[at].elem)
