@@ -672,6 +672,20 @@ __sw_raster = (sv: *f32, stride: int, idx: *i32, ntri: int, shade: (int, int, in
 # draw a mesh with a Sloppy shader (called by gpu.jo's draw / draw_instanced in software mode)
 __sw_warned_lines = false
 
+# Like the raster bins, mesh scratch lives until the synchronous draw finishes.
+__sw_mesh_flat: bool[]
+__sw_mesh_clip: f32[]
+__sw_mesh_pv: f32[]
+__sw_mesh_tris: i32[]
+__sw_mesh_scratch: f32[]
+
+# Plain float storage written before it is read: reserve and set its length without
+# resize's redundant zero fill. The clipper appends vertices, so these arrays need
+# their current draw's exact length.
+__sw_f32_scratch = (xs: mut f32[], n: int):
+    xs.reserve(n)
+    if data(xs) != null: __set_len(xs, n)
+
 # (first: the first index, or vertex, drawn; ndraw: how many vertices, without indices (-1: all
 # from first); base_vertex: added to each index; ibase: added to instance_id(): see draw_indirect)
 __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo: int, nidx: int, uni: *u8, ibuf: int, istride: int, ninst: int, ioff: int, first: int = 0, ndraw: int = -1, base_vertex: int = 0, ibase: int = 0):
@@ -690,14 +704,15 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     vs3 = __sp_vs[prog] as cfn(*u8, *u8, *u8, *u8)
     fs = __sp_fs[prog] as cfn(*u8, *u8, *u8)
     # slots holding integers are not interpolated: they come from the triangle's last vertex
-    flat = fill(false, nf)
+    if __sw_mesh_flat.len() < nf: __sw_mesh_flat.resize(nf)
+    mem_set(data(__sw_mesh_flat) as *u8, 0, nf)
     any_flat = false
     fl = __sp_flat[prog]
     loop f in [0..min(nf, len(fl))):
         if fl[f] == 'i':
-            flat[f] = true
+            __sw_mesh_flat[f] = true
             any_flat = true
-    fp = data(flat)
+    fp = data(__sw_mesh_flat)
     if __s_buffers[vbo].len() < nverts * stride: return
     vb = data(__s_buffers[vbo])
     ib: *u32 = null
@@ -733,10 +748,10 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     # pv holds x, y (pixels), z (0..1), 1/w and the varyings divided by w
     total = nverts * reps
     pstride = 4 + nf
-    clip = fill(f32(0), total * nf)
-    clp = data(clip)
-    pv = fill(f32(0), total * pstride)
-    pvp = data(pv)
+    __sw_f32_scratch(__sw_mesh_clip, total * nf)
+    clp = data(__sw_mesh_clip)
+    __sw_f32_scratch(__sw_mesh_pv, total * pstride)
+    pvp = data(__sw_mesh_pv)
     chunk = 256
     ids = __sp_ids[prog]
     tls = __sw_tls
@@ -760,7 +775,7 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     )
     __par_serial = false
     # triangles, clipped against the near plane z >= -w where needed
-    tris: i32[]
+    __sw_mesh_tris.clear()
     loop inst in [0..reps):
         base = inst * nverts
         loop t in [0..ntri):
@@ -799,21 +814,21 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             d1 = clp[i1 * nf + 2] + clp[i1 * nf + 3]
             d2 = clp[i2 * nf + 2] + clp[i2 * nf + 3]
             if d0 >= 0.0 and d1 >= 0.0 and d2 >= 0.0:
-                tris.push(i32(i0))
-                tris.push(i32(i1))
-                tris.push(i32(i2))
+                __sw_mesh_tris.push(i32(i0))
+                __sw_mesh_tris.push(i32(i1))
+                __sw_mesh_tris.push(i32(i2))
             else if d0 >= 0.0 or d1 >= 0.0 or d2 >= 0.0:
-                __sw_clip_tri(clip, pv, tris, (i0, i1, i2), (d0, d1, d2), nf, vx, vy, vw, vh, fp)
-                clp = data(clip)
-    ntris = tris.len() / 3
+                __sw_clip_tri(__sw_mesh_clip, __sw_mesh_pv, __sw_mesh_tris, (i0, i1, i2), (d0, d1, d2), nf, vx, vy, vw, vh, fp)
+                clp = data(__sw_mesh_clip)
+    ntris = __sw_mesh_tris.len() / 3
     if ntris == 0: return
-    pvp = data(pv)
-    tp = data(tris)
+    pvp = data(__sw_mesh_pv)
+    tp = data(__sw_mesh_tris)
     # per band scratch (padded to separate cache lines): varyings at the span start, their
     # change per pixel, the interpolated varyings and the fragment color
     bstride = (3 * nf + 4 + 15) / 16 * 16
-    scratch = fill(f32(0), __SW_BANDS * bstride)
-    scrp = data(scratch)
+    __sw_f32_scratch(__sw_mesh_scratch, __SW_BANDS * bstride)
+    scrp = data(__sw_mesh_scratch)
     dtest = __s_depth and dp != null
     dwrite = __s_depth_write and dp != null
     inv_scale = f32(1.0 / __s_fb_scale[__s_fb])
@@ -918,6 +933,9 @@ __sw_clip_tri = (clip: mut f32[], pv: mut f32[], tris: mut i32[], ix: (int, int,
         tris.push(i32(pp[k]))
         tris.push(i32(pp[k + 1]))
 
+__sw_2d_scr: f32[]
+__sw_2d_idx: i32[]
+
 # the 2D batch: vertices of 9 floats (x, y, u, v, r, g, b, a, mode) under a projection matrix
 __sw_draw2d = (buf: *f32, count: int, proj: mat4, tex: int):
     c, d = __sw_target()
@@ -926,9 +944,10 @@ __sw_draw2d = (buf: *f32, count: int, proj: mat4, tex: int):
     cp = __st[c].p
     vp = __s_vp
     sstride = 9
-    scr = fill(f32(0), count * sstride)
-    sp = data(scr)
-    idx = fill(i32(0), count)
+    __sw_f32_scratch(__sw_2d_scr, count * sstride)
+    sp = data(__sw_2d_scr)
+    if __sw_2d_idx.len() < count: __sw_2d_idx.resize(count)
+    ip = data(__sw_2d_idx)
     loop i in [0..count):
         q = buf + i * 9
         ndc = proj * vec4(q[0], q[1], 0, 1)
@@ -936,7 +955,7 @@ __sw_draw2d = (buf: *f32, count: int, proj: mat4, tex: int):
         o[0] = f32(f64(vp.0) + (f64(ndc.x) * 0.5 + 0.5) * f64(vp.2))
         o[1] = f32(f64(vp.1) + (f64(ndc.y) * 0.5 + 0.5) * f64(vp.3))
         loop k in [2..9): o[k] = q[k]
-        idx[i] = i32(i)
+        ip[i] = i32(i)
     tp: *f32 = null
     txw = 1
     txh = 1
@@ -944,7 +963,7 @@ __sw_draw2d = (buf: *f32, count: int, proj: mat4, tex: int):
         tp = __st[tex].p
         txw = __st[tex].w
         txh = __st[tex].h
-    __sw_raster(sp, sstride, data(idx), count / 3, (band: int, y: int, xa: int, xb: int, t: int, l0: f32, l1: f32, l2: f32, d0: f32, d1: f32, d2: f32):
+    __sw_raster(sp, sstride, ip, count / 3, (band: int, y: int, xa: int, xb: int, t: int, l0: f32, l1: f32, l2: f32, d0: f32, d1: f32, d2: f32):
         a = sp + (t * 3) * sstride
         b = a + sstride
         cc = b + sstride
