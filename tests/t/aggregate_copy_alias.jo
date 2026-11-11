@@ -1,0 +1,180 @@
+# requires: sloppy
+# Scalar replacement may move aggregate copies as integer bits. Those accesses must alias
+# ordinary float loads and stores, even across control flow and a second optimization pass.
+struct S:
+    velocity: vec3
+    time = 0.0
+step = (s: mut S, k: f64, dt: f64):
+    s.time += dt
+    v_vis = s.velocity
+    if k > 1.0001: s.velocity = vec3(v_vis.x / f32(k), v_vis.y, v_vis.z / f32(k))
+    v_true0 = s.velocity
+    force = vec3(0, 0, -7.0)
+    s.velocity += force * f32(dt)
+    if k > 1.0001: s.velocity = v_vis + (s.velocity - v_true0)
+x = S(vec3(0))
+loop i in 0..120: step(x, 3.3, 1.0 / 120.0)
+print("velocity.z = {x.velocity.z:.3}")
+
+struct V2:
+    value: vec2
+    pad = 0
+struct V4:
+    value: vec4
+    pad = 0
+struct Pair:
+    x: f32
+    y: f32
+struct Pairs:
+    value: Pair
+    pad = 0
+struct Tuple:
+    value: (f32, f32)
+    pad = 0
+struct Floats:
+    value: f32[2]
+    pad = 0
+
+# The same stale untyped snapshot in an else branch, for vec2.
+@noinline
+else_copy = (s: mut V2, c: bool):
+    first = s.value
+    if c: pass
+    else: s.value = vec2(first.x / 3.0, first.y / 3.0)
+    second = s.value
+    print(first + (s.value - second))
+
+# A loop's float writes must invalidate untyped loads before and inside the loop.
+@noinline
+loop_copy = (s: mut V4, n: int):
+    first = s.value
+    loop i in 0..n: s.value = first / 3.0
+    second = s.value
+    print(first + (s.value - second))
+
+# User structs and tuples have the same four-byte lanes as built-in vectors.
+@noinline
+struct_copy = (s: mut Pairs, c: bool):
+    first = s.value
+    if c: s.value = Pair(first.x / 3.0, first.y / 3.0)
+    second = s.value
+    print(Pair(first.x + s.value.x - second.x, first.y + s.value.y - second.y))
+g = Tuple((f32(3), f32(6)))
+global_copy = (c: bool):
+    global g
+    first = g.value
+    if c: g.value = (first.0 / 3.0, first.1 / 3.0)
+    second = g.value
+    print((first.0 + g.value.0 - second.0, first.1 + g.value.1 - second.1))
+
+# Locals can become scalarized after inlining, whereas larger enclosing structs stay in memory.
+local_copy = (c: bool):
+    s = V4(vec4(3, 6, 9, 12))
+    first = s.value
+    if c: s.value = first / 3.0
+    second = s.value
+    print(first + (s.value - second))
+
+# Fixed array fields, including a store to just one element and stores in match arms.
+@noinline
+array_copy = (s: mut Floats, mode: int):
+    first = s.value
+    if mode == 0:
+        s.value = [f32(3), f32(4)]
+    else:
+        if mode == 1: pass
+        else: s.value[0] = 9
+    second = s.value
+    print(first, second)
+@noinline
+array_loop = (s: mut Floats, n: int):
+    first = s.value
+    loop i in 0..n: s.value = [f32(3), f32(4)]
+    second = s.value
+    print(first, second)
+@noinline
+array_match = (s: mut Floats, mode: int):
+    first = s.value
+    match mode:
+        0: s.value = [f32(3), f32(4)]
+        1: s.value[1] = 9
+        _: pass
+    second = s.value
+    print(first, second)
+
+# The opposite direction: a bit-copy store must invalidate typed float loads. The loop
+# prepass must also see these writes before considering values from earlier iterations.
+@noinline
+bits_store = (s: mut Floats, c: bool):
+    before = s.value[0]
+    replacement: f32[2] = [f32(9), f32(10)]
+    if c: s.value = replacement
+    after = s.value[0]
+    print(before, after)
+@noinline
+bits_loop = (s: mut Floats):
+    before = s.value[0]
+    replacement: f32[2] = [f32(9), f32(10)]
+    sum: f32 = 0
+    loop i in 0..3:
+        sum += s.value[0]
+        s.value = replacement
+    print(before, sum, s.value[0])
+
+# Each iteration must take two distinct snapshots around a float store.
+@noinline
+snapshot_loop = (s: mut S, count: int):
+    sum: f32 = 0
+    loop i in 0..count:
+        old = s.velocity
+        s.velocity.x += 1
+        now = s.velocity
+        sum += now.x - old.x
+    print(sum, s.velocity)
+
+# Heap array elements and matrix columns exercise copies reached through other aggregates.
+@noinline
+heap_copy = (xs: mut V4[], c: bool):
+    first = xs[0].value
+    if c: xs[0].value = first / 3.0
+    second = xs[0].value
+    print(first + (xs[0].value - second))
+@noinline
+matrix_copy = (s: mut mat4, c: bool):
+    first = s[0]
+    if c: s[0] = first / 3.0
+    second = s[0]
+    print(first + (s[0] - second))
+
+v2 = V2(vec2(3, 6))
+else_copy(v2, false)
+else_copy(v2, true)
+v4 = V4(vec4(3, 6, 9, 12))
+loop_copy(v4, 2)
+loop_copy(v4, 0)
+p = Pairs(Pair(3, 6))
+struct_copy(p, true)
+struct_copy(p, false)
+global_copy(true)
+local_copy(true)
+local_copy(false)
+a = Floats([f32(1), f32(2)])
+array_copy(a, 0)
+array_copy(a, 1)
+array_copy(a, 2)
+a.value = [f32(1), f32(2)]
+array_loop(a, 2)
+a.value = [f32(1), f32(2)]
+array_match(a, 0)
+array_match(a, 1)
+a.value = [f32(1), f32(2)]
+bits_store(a, true)
+bits_store(a, false)
+a.value = [f32(1), f32(2)]
+bits_loop(a)
+v = S(vec3(1))
+snapshot_loop(v, 3)
+xs = [V4(vec4(3, 6, 9, 12))]
+heap_copy(xs, true)
+m = mat4(3)
+matrix_copy(m, true)
