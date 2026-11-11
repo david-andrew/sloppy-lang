@@ -98,6 +98,66 @@ sprite(enemy, pos)
 no_effect()
 ```
 
+## An animated glTF scene
+
+Use an uncompressed glTF 2.0 export (`.glb` is simplest), with PNG/JPEG textures. For this
+example, put the Khronos sample [Fox.glb](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Fox)
+at `assets/Fox.glb`, and a small **tone-mapped, equirectangular JPEG or PNG** panorama at
+`assets/sky.jpg`. Poly Haven offers CC0 panoramas; choose its tone-mapped JPG and reduce it to
+1024×512 for a small game. HDR/EXR files are not read. Check each model's license: Fox's model
+is CC0, but its animation and glTF conversion require CC-BY 4.0 attribution, as its README says.
+
+```gdscript
+window("Fox walk", 960, 600)
+hero = load_model(embed("assets/Fox.glb"))
+panorama = load_texture(embed("assets/sky.jpg"))
+ground = plane_mesh(40)
+hero_scale = 1.4 / max(f64(model_size(hero).y), 0.001)
+pos = vec3(0, 0, 0)
+facing = PI
+cam = follow_camera(distance = 7, height = 0.9)
+anim: Animator
+
+# Animation names belong to the asset: inspect them before choosing one.
+loop clip in hero.animations: print("{clip.name}: {clip.length} seconds")
+
+update = (dt: f64):
+    global facing
+    a = input_axis()                            # WASD/arrows, left stick and d-pad
+    move = flat_forward(cam) * -a.y + flat_right(cam) * a.x
+    if length(move) > 0.1:
+        pos += move * 3.2 * dt
+        facing = atan2(move.x, move.z)           # Fox faces +Z in its own space
+        anim.play(hero, "Walk", fade = 0.25)
+    else: anim.play(hero, "Survey", fade = 0.25)
+    anim.update(hero, dt)                        # advance once per update
+    cam.update(pos, dt)                         # RMB/mouse or right stick looks around
+
+draw = ():
+    clear()
+    sky_image(panorama, intensity = 0.7)
+    sun(vec3(-0.5, 1, -0.3), disc = 0)           # panorama supplies the visible sky
+    shadows(true)
+    camera3d(cam)
+    draw_mesh(ground, material = Material(base_color = rgb(0.2, 0.3, 0.18), roughness = 0.9))
+    draw_model(hero, transform(pos, facing, hero_scale), pose = anim.pose(hero))
+    text("WASD / left stick: walk; right mouse / right stick: look", vec2(20, 20), 20)
+```
+
+`draw_model` uses the glTF materials automatically. Assets can arrive at very different
+scales: inspect `model_size(hero)`, `hero.min` and `hero.max`; the example makes Fox 1.4 units
+tall. `Animator.play` keeps the current clip running when called again with its name, and
+crossfades when that name changes. An asset with animated morph weights uses the same
+`Animator`/`pose_at` path; [manual weights](#morph-targets) can also be set per draw.
+
+For a split export use `load_model(embed("assets/hero.gltf"), embed_dir("assets"))`: map keys
+are relative to the `.gltf` directory, including subdirectories. The loader does not read
+files beside the `.gltf` automatically. `embed` and `embed_dir` put those bytes in native and
+web builds alike. Check texture sizes before sharing: even a tiny model can contain several
+2048×2048 images. Build with `sloppy build game.jo --target wasm`; the result is one HTML file.
+See [phones](START.md#phones) for touch movement and camera controls, and
+[responsive layout](LANGUAGE.md#responsive-layout) for menus and settings.
+
 ## 3D materials
 
 `draw_mesh` keeps its sun/sky lighting and `specular` highlight unless given a `Material`.

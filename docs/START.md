@@ -105,6 +105,12 @@ sloppy new my_site server     # a web server: a JSON API kept in a file, a page,
 sloppy watch my_game/my_game.jo
 ```
 
+For imported 3D characters, materials and a sky panorama, start with the complete
+[animated glTF scene](GRAPHICS.md#an-animated-gltf-scene). It shows asset embedding, model
+scale, animation crossfades and a follow camera. Add a pause/settings screen with
+[responsive layout](LANGUAGE.md#responsive-layout); its buttons and value controls support
+mouse, touch, keyboard and gamepad navigation.
+
 ## Sharing it
 
 ```sh
@@ -1237,7 +1243,7 @@ draw = ():                              # _draw
 | coroutines, `yield` | a timer in a field, counted down each frame (`e.wait -= dt`) |
 | `OnTriggerEnter`, events | look each frame (`w.contacts()`, a distance check) and act |
 | `Time.timeScale`, pausing | the game's own clock: add `dt` only while not paused |
-| the Animator | `pose_at` for a clip at a time, `blend_poses` to mix two, the time and weights kept in the struct |
+| the Animator | `anim: Animator`, `anim.play(hero, "Walk", fade = 0.2)`, `anim.update(hero, dt)` and `draw_model(hero, pose = anim.pose(hero))`; `pose_at` and `blend_poses` for manual control |
 | the inspector | `print(x)` shows any value, and `sloppy watch` reloads the code as it changes |
 | `Time.deltaTime` | `dt`, what `update = (dt: f64):` is given |
 | `AudioSettings.dspTime`, `AudioServer.get_time_since_last_mix()` | `audio_time()`: the audio clock, smooth, the sound heard so far (see [rhythm games](#rhythm-games-and-music-sync)) |

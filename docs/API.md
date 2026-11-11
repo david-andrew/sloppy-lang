@@ -4062,7 +4062,7 @@ A .gltf names its other files: give them in `files`, relative to the .gltf's dir
   anim.play(robot, "Run")                          # in update: what it does now (again: no restart)
   anim.play(robot, "Jump", looped = false)          # once, then anim.finished
   anim.update(robot, dt)
-  if anim.passed(0.3): play_at(step_sound, pos)     # the frame it goes past 0.3 s (footsteps)
+  if anim.passed(robot, 0.3): play_at(step_sound, pos) # the frame it goes past 0.3 s (footsteps)
   draw_model(robot, transform(pos), pose = anim.pose(robot))
   ```
   ```gdscript

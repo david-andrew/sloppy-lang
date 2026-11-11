@@ -4,6 +4,8 @@
 
 - glTF external buffers and images resolve percent-escaped relative paths, including nested
   folders and UTF-8 filenames, from the supplied files map or `embed_dir`.
+- Add a complete animated glTF scene guide with model sizing, PBR, a sky image and a follow
+  camera; correct the Animator footstep example's missing model argument.
 - Keyboard and gamepad layout navigation reaches controls beyond a scroll viewport, including
   nested and horizontal lists. Tab/shoulders traverse the complete tree and wrap; arrows prefer
   the nearest row before alignment instead of skipping offset buttons.

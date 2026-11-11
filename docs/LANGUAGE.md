@@ -2352,6 +2352,9 @@ equirectangular background and ambient reflections; `sky(...)` returns to the gr
 For glTF morph targets, `rest_pose(model).weights` contains each node's target weights;
 change `p.weights[node][target]` and pass `pose = p` to `draw_model`, or use `pose_at` for
 animated weights. Morphing runs before skinning, with independent weights for each draw.
+The complete [animated glTF scene](GRAPHICS.md#an-animated-gltf-scene) puts model sizing,
+animation crossfades, a sky image, PBR and a follow camera together, with embedded assets
+that also work in a web build.
 
 ### Testing a game
 
