@@ -2337,6 +2337,18 @@ game](#testing-a-game)): `SLOPPY_SOFTWARE=1 SLOPPY_SCREENSHOT=shot.png SLOPPY_FR
 watch game.jo` takes the reloads with no window and saves frame 600, with an error or a panic over
 it as the window would show it.
 
+**3D materials.** Place the camera with `camera3d`, light the scene with `sun` and `sky`,
+and draw `cube_mesh`, `sphere_mesh`, `custom_mesh`, or an imported glTF model. Existing
+`draw_mesh` calls keep their simple lighting. `draw_mesh(ball, material = Material(metallic = 1,
+roughness = 0.25))` selects metallic-roughness PBR; `load_model(embed("ship.glb"))` and
+`draw_model(ship)` use the glTF material's factors, base/metallic-roughness/normal/occlusion/
+emissive textures, alpha mode and double-sided state. Missing tangent frames are generated;
+exported tangents and skinning are retained. Base/emissive texture RGB is sRGB; material and
+vertex color factors are linear. `Material(alpha_mode = .mask, alpha_cutoff = 0.5)` cuts out
+transparent texels, including their shadows; `.blend` draws transparent surfaces last.
+See [3D materials](GRAPHICS.md#3d-materials) for channels, UV sets, tangent conventions and
+lighting approximations.
+
 ### Testing a game
 
 A game can be run with no one at the keyboard: to look at a frame, to check that a level can be

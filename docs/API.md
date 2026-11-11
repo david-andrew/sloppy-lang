@@ -3604,6 +3604,8 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
       normal: vec3
       uv: vec2
       color: vec4
+      tangent: vec4 = vec4(0, 0, 0, 1) # xyz: along +u; w: bitangent handedness
+      uv1: vec2 = vec2(0, 0)
   ```
 - `struct SkinVertex3D`: a vertex of a skinned mesh: also the 4 joints that bend it (their places in the skin, as numbers) and how much each does
   ```gdscript
@@ -3614,12 +3616,39 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
       color: vec4
       joints: vec4
       weights: vec4
+      tangent: vec4 = vec4(0, 0, 0, 1)
+      uv1: vec2 = vec2(0, 0)
   ```
 - `struct Instance3D`
   ```gdscript
   struct Instance3D:
       model: mat4
       color: vec4
+  ```
+- `enum AlphaMode: opaque, mask, blend`: How a PBR material treats alpha.
+- `struct Material`: Metallic-roughness PBR. Color factors are linear; base/emissive textures are sRGB, the other maps linear. Packed metallic_roughness: G roughness, B metal; occlusion: R. Opaque ignores alpha; mask discards below alpha_cutoff (including shadows); blend is drawn back to front without writing depth. Maps default to TEXCOORD_0.
+  ```gdscript
+  struct Material:
+      base_color: vec4 = vec4(1, 1, 1, 1)
+      base_texture: Texture = Texture(0, 0, 0)
+      metallic: f32 = 1.0
+      roughness: f32 = 1.0
+      metallic_roughness: Texture = Texture(0, 0, 0)
+      normal_map: Texture = Texture(0, 0, 0)
+      normal_scale: f32 = 1.0
+      occlusion_map: Texture = Texture(0, 0, 0)
+      occlusion_strength: f32 = 1.0
+      emissive_color: vec3 = vec3(0, 0, 0)
+      emissive_map: Texture = Texture(0, 0, 0)
+      alpha_mode: AlphaMode = .opaque
+      alpha_cutoff: f32 = 0.5
+      double_sided: bool = false
+      unlit: bool = false         # glTF KHR_materials_unlit: base color without lighting
+      base_uv: int = 0            # maps may select TEXCOORD_0 or TEXCOORD_1
+      metallic_roughness_uv: int = 0
+      normal_uv: int = 0
+      occlusion_uv: int = 0
+      emissive_uv: int = 0
   ```
 - `struct LitParams`
   ```gdscript
@@ -3650,6 +3679,23 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
       light_colors: vec4[8]
       light_count: f32
       bones: vec4[192]            # skinned meshes: each joint's matrix, its first three rows
+      pbr: f32 = 0.0
+      metal: f32 = 1.0
+      rough: f32 = 1.0
+      mr_map: Texture = Texture(0, 0, 0)
+      normal_map: Texture = Texture(0, 0, 0)
+      ao_map: Texture = Texture(0, 0, 0)
+      em_map: Texture = Texture(0, 0, 0)
+      map_flags: vec4 = vec4(0, 0, 0, 0)
+      normal_scale: f32 = 1.0
+      ao_strength: f32 = 1.0
+      em_color: vec3 = vec3(0, 0, 0)
+      alpha_mode: f32 = 0.0
+      alpha_cutoff: f32 = 0.5
+      both_sides: f32 = 0.0
+      uv_sets: vec4 = vec4(0, 0, 0, 0) # base, MR, normal, occlusion
+      em_uv: f32 = 0.0
+      unlit: f32 = 0.0
   ```
 - `struct LitOut`
   ```gdscript
@@ -3687,6 +3733,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
       both_sides = false          # (draw_mesh's double_sided: its backs drawn too)
       kept_vbo = 0                # (instanced from an instance_buffer: its buffer, and how many)
       kept_count = 0
+      material: Material? = none
   ```
 - `camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0, up: vec3 = vec3(0, 1, 0))`: place the camera; call once per frame before drawing 3D objects. up is the way that is up on the screen (tilt it to roll the picture: a camera behind a plane, banking with it)
 - `world_to_screen = (p: vec3) -> vec2?`: where a point in 3D appears on the screen, in 2D drawing units (for a name or a health bar over someone's head); none when it is behind the camera. As the camera was last placed.
@@ -3700,7 +3747,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `post_effects = (bloom: f64 = 0.6, threshold: f64 = 0.7, vignette: f64 = 0.35, saturation: f64 = 1.0, tint: vec3 = vec3(1, 1, 1), include_hud: bool = false)`: bloom + color grading for the frame: all of a 2D game; in a 3D one, the 3D and the 2D drawn before it, while 2D drawn after the 3D (a HUD, text) stays as drawn, unless include_hud
 - `no_post_effects = ()`
 - `point_light = (pos: vec3, color: vec3, radius: f64 = 6.0, intensity: f64 = 1.0)`: a light at a point for this frame (muzzle flashes, glowing shots, lamps): it reaches radius meters, fading out on the way. Up to 8 light a frame (the ones nearest the camera); they cast no shadows.
-- `draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false)`: A color whose alpha is below 1 is see-through, drawn after the solid ones (rgba(1, 0, 0, 0.5); much emissive makes it near white, which hides that). in_front = true: drawn after everything else and over it, casting no shadow (a first-person weapon, which would otherwise poke into walls the player stands against)
+- `draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false, material: Material? = none)`: A color whose alpha is below 1 is see-through, drawn after the solid ones (rgba(1, 0, 0, 0.5); much emissive makes it near white, which hides that). in_front = true: drawn after everything else and over it, casting no shadow (a first-person weapon, which would otherwise poke into walls the player stands against). material selects metallic-roughness PBR; without it the original lighting, specular and color handling are retained. color multiplies its factor; texture is the fallback when it has no base_texture. See Material for map channels.
 - `draw_line3d = (a: vec3, b: vec3, color: vec4 = vec4(1, 1, 1, 1), width: f64 = 0.03)`: a line from a to b, `width` thick: for seeing paths, rays, normals and boxes while making a game
 - `draw_grid3d = (size: f64 = 10.0, step: f64 = 1.0, height: f64 = 0.0, color: vec4 = vec4(1, 1, 1, 0.35))`: lines on the ground (y = height), `step` apart out to `size` from the center: to see distances
 - `draw_mesh_instanced = (m: Mesh, instances: Instance3D[], color: vec4 = vec4(1, 1, 1, 1), emissive: f64 = 0.0, specular: f64 = 0.2, cast_shadow: bool = true, wind: f64 = 0.0)`: many copies of a mesh in one draw call (crowds, forests, particles...)
@@ -3760,6 +3807,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 
 #### Meshes
 
+- `tangents3d = (vertices: Vertex3D[], indices: u32[] = [], uv_set: int = 0) -> Vertex3D[]`: Generate tangent frames for missing tangents. Angle-weighted UV derivatives, orthogonalized against the vertex normal, with the glTF/MikkTSpace handedness convention (+Y normal maps). UV and normal seams must have separate vertices (as glTF exporters normally produce). Degenerate UVs get a stable perpendicular; supplied nonzero tangents are preserved.
 - `cube_mesh = (size: f64 = 1.0) -> Mesh`
 - `add_box = (vs: mut Vertex3D[], center: vec3, size: vec3, color: vec4 = vec4(1, 1, 1, 1), transform: mat4 = mat4())`: a box: center, and its size along x, y and z
 - `add_cylinder = (vs: mut Vertex3D[], base: vec3, radius: f64, height: f64, color: vec4 = vec4(1, 1, 1, 1), segments: int = 16, top_radius: f64 = -1.0, transform: mat4 = mat4())`: a cylinder standing on base (a cone when top_radius is 0)
@@ -3858,7 +3906,7 @@ draw = ():
 
 ## Models (glTF)
 
-3D models from glTF 2.0 files (.glb, or .gltf with its .bin and images), the format Blender and most tools export: meshes, with their materials' base color (a factor and a texture, PNG or JPEG), vertex colors and emissive light, placed by the scene's nodes; skins (meshes bent by a skeleton of nodes, up to 64 joints) and their animations.
+3D models from glTF 2.0 files (.glb, or .gltf with its .bin and images), the format Blender and most tools export: metallic-roughness materials (PNG/JPEG maps), vertex colors, placed by the scene's nodes; skins (meshes bent by a skeleton of nodes, up to 64 joints) and their animations.
 
 ```gdscript
 ship = load_model(embed("ship.glb"))
@@ -3874,7 +3922,7 @@ run = find_animation(hero, "Run")
 draw_model(hero, transform(pos, facing), pose = pose_at(hero, run, elapsed()))
 ```
 
-A .gltf names its other files: give them by those names, as `files` (or put them in the .gltf as data: URIs). Not read: morph targets, compressed meshes (Draco, meshopt), sparse accessors; materials beyond the base color (metal, roughness, normal maps).
+A .gltf names its other files: give them by those names, as `files` (or put them in the .gltf as data: URIs). Not read: morph targets, compressed meshes (Draco, meshopt), sparse accessors and material extensions other than KHR_materials_unlit.
 
 - `struct ModelPart`
   ```gdscript
@@ -3886,6 +3934,7 @@ A .gltf names its other files: give them by those names, as `files` (or put them
       emissive: f64               # how much it glows (from the material's emissive color)
       node: int = -1              # the node it hangs from (in Model.nodes)
       skin: int = -1              # the skin that bends it (in Model.skins; -1: none)
+      material: Material? = none
   ```
 - `struct ModelNode`: a node of the model's scene: its name, its parent (-1: none), and where it rests, from its parent: a translation, a rotation (a quaternion) and a scale
   ```gdscript
@@ -3954,6 +4003,8 @@ A .gltf names its other files: give them by those names, as `files` (or put them
       skin: int = -1
       joints: vec4[] = []         # (skinned: per vertex, 4 joints (by their place in the skin)
       weights: vec4[] = []        # and how much each bends it)
+      material: Material? = none  # CPU factors; the five maps name ModelData.images below
+      material_images: int[] = [] # base, metallic-roughness, normal, occlusion, emissive
   ```
 - `struct ModelData`
   ```gdscript

@@ -27,6 +27,11 @@
 - Script guides now show the existing set constructor, membership and set algebra beside maps.
 - Document existing buffered file/stdin line loops for scripts; reading bytes after a final
   unterminated file line now correctly returns an empty array.
+- 3D metallic-roughness PBR materials, used automatically by glTF models or selected with
+  `draw_mesh(..., material = Material(...))`: GGX highlights, sky/ground ambient reflections,
+  base/metallic-roughness/normal/occlusion/emissive maps, generated or exported tangents,
+  two UV sets, alpha masks (including shadows), blended alpha and double-sided lighting.
+  Existing draws without a material retain their lighting.
 - Netplay checks game versions before play, with clear errors for different builds on rollback
   and client-server transports. The default `PROGRAM_BUILD_ID` identifies the program's sources;
   games with separate entry points can set a shared `version` string.

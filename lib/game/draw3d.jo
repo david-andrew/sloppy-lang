@@ -13,6 +13,8 @@ struct Vertex3D:
     normal: vec3
     uv: vec2
     color: vec4
+    tangent: vec4 = vec4(0, 0, 0, 1) # xyz: along +u; w: bitangent handedness
+    uv1: vec2 = vec2(0, 0)
 
 # a vertex of a skinned mesh: also the 4 joints that bend it (their places in the skin, as
 # numbers) and how much each does
@@ -23,10 +25,41 @@ struct SkinVertex3D:
     color: vec4
     joints: vec4
     weights: vec4
+    tangent: vec4 = vec4(0, 0, 0, 1)
+    uv1: vec2 = vec2(0, 0)
 
 struct Instance3D:
     model: mat4
     color: vec4
+
+# How a PBR material treats alpha.
+enum AlphaMode: opaque, mask, blend
+
+# Metallic-roughness PBR. Color factors are linear; base/emissive textures are sRGB,
+# the other maps linear. Packed metallic_roughness: G roughness, B metal; occlusion: R.
+# Opaque ignores alpha; mask discards below alpha_cutoff (including shadows); blend is
+# drawn back to front without writing depth. Maps default to TEXCOORD_0.
+struct Material:
+    base_color: vec4 = vec4(1, 1, 1, 1)
+    base_texture: Texture = Texture(0, 0, 0)
+    metallic: f32 = 1.0
+    roughness: f32 = 1.0
+    metallic_roughness: Texture = Texture(0, 0, 0)
+    normal_map: Texture = Texture(0, 0, 0)
+    normal_scale: f32 = 1.0
+    occlusion_map: Texture = Texture(0, 0, 0)
+    occlusion_strength: f32 = 1.0
+    emissive_color: vec3 = vec3(0, 0, 0)
+    emissive_map: Texture = Texture(0, 0, 0)
+    alpha_mode: AlphaMode = .opaque
+    alpha_cutoff: f32 = 0.5
+    double_sided: bool = false
+    unlit: bool = false         # glTF KHR_materials_unlit: base color without lighting
+    base_uv: int = 0            # maps may select TEXCOORD_0 or TEXCOORD_1
+    metallic_roughness_uv: int = 0
+    normal_uv: int = 0
+    occlusion_uv: int = 0
+    emissive_uv: int = 0
 
 struct LitParams:
     view_proj: mat4
@@ -55,6 +88,23 @@ struct LitParams:
     light_colors: vec4[8]
     light_count: f32
     bones: vec4[192]            # skinned meshes: each joint's matrix, its first three rows
+    pbr: f32 = 0.0
+    metal: f32 = 1.0
+    rough: f32 = 1.0
+    mr_map: Texture = Texture(0, 0, 0)
+    normal_map: Texture = Texture(0, 0, 0)
+    ao_map: Texture = Texture(0, 0, 0)
+    em_map: Texture = Texture(0, 0, 0)
+    map_flags: vec4 = vec4(0, 0, 0, 0)
+    normal_scale: f32 = 1.0
+    ao_strength: f32 = 1.0
+    em_color: vec3 = vec3(0, 0, 0)
+    alpha_mode: f32 = 0.0
+    alpha_cutoff: f32 = 0.5
+    both_sides: f32 = 0.0
+    uv_sets: vec4 = vec4(0, 0, 0, 0) # base, MR, normal, occlusion
+    em_uv: f32 = 0.0
+    unlit: f32 = 0.0
 
 struct LitOut:
     pos: vec4
@@ -63,6 +113,31 @@ struct LitOut:
     uv: vec2
     color: vec4
     shadow_pos: vec4
+
+struct __PbrOut:
+    pos: vec4
+    world: vec3
+    normal: vec3
+    uv: vec2
+    color: vec4
+    shadow_pos: vec4
+    tangent: vec4
+    uv1: vec2
+
+# Inverse-transpose without a shader builtin; keeps PBR normals right under nonuniform
+# scale. The simple lighting path deliberately keeps its original transform.
+__pbr_normal = (m: mat4, n: vec3) -> vec3:
+    a = m[0].xyz
+    b = m[1].xyz
+    c = m[2].xyz
+    det = dot(a, cross(b, c))
+    if det == 0.0: return n
+    (cross(b, c) * n.x + cross(c, a) * n.y + cross(a, b) * n.z) / det
+
+__pbr_tangent = (m: mat4, t: vec4) -> vec4:
+    sign: f32 = 1.0
+    if dot(m[0].xyz, cross(m[1].xyz, m[2].xyz)) < 0.0: sign = -1.0
+    vec4((m * vec4(t.xyz, 0)).xyz, t.w * sign)
 
 lit_vs = (v: Vertex3D, u: LitParams) -> LitOut:
     w = u.model * vec4(v.pos, 1)
@@ -150,6 +225,157 @@ lit_fs = (i: LitOut, u: LitParams) -> vec4:
     fog_amount = 1.0 - exp(-dist * u.fog_density * exp(-max(i.world.y, 0.0) * u.fog_height))
     c = mix(c, u.fog_color, clamp(fog_amount, 0.0, 1.0))
     vec4(aces(c), base.w)
+
+__pbr_vs = (v: Vertex3D, u: LitParams) -> __PbrOut:
+    w = u.model * vec4(v.pos, 1)
+    n = (u.model * vec4(v.normal, 0)).xyz
+    t = v.tangent
+    if u.pbr > 0.5:
+        n = __pbr_normal(u.model, v.normal)
+        t = __pbr_tangent(u.model, t)
+    __PbrOut(u.view_proj * w, w.xyz, n, v.uv, v.color * u.color, u.shadow_vp * w, t, v.uv1)
+
+__pbr_skin_vs = (v: SkinVertex3D, u: LitParams) -> __PbrOut:
+    j = v.joints
+    k = v.weights
+    a = i32(j.x) * 3
+    b = i32(j.y) * 3
+    c = i32(j.z) * 3
+    d = i32(j.w) * 3
+    r0 = u.bones[a] * k.x + u.bones[b] * k.y + u.bones[c] * k.z + u.bones[d] * k.w
+    r1 = u.bones[a + 1] * k.x + u.bones[b + 1] * k.y + u.bones[c + 1] * k.z + u.bones[d + 1] * k.w
+    r2 = u.bones[a + 2] * k.x + u.bones[b + 2] * k.y + u.bones[c + 2] * k.z + u.bones[d + 2] * k.w
+    p = vec4(v.pos, 1)
+    nv = vec4(v.normal, 0)
+    w = u.model * vec4(dot(r0, p), dot(r1, p), dot(r2, p), 1)
+    n = (u.model * vec4(dot(r0, nv), dot(r1, nv), dot(r2, nv), 0)).xyz
+    t = v.tangent
+    if u.pbr > 0.5:
+        sm = mat4()
+        sm[0] = vec4(r0.x, r1.x, r2.x, 0)
+        sm[1] = vec4(r0.y, r1.y, r2.y, 0)
+        sm[2] = vec4(r0.z, r1.z, r2.z, 0)
+        n = __pbr_normal(u.model, __pbr_normal(sm, v.normal))
+        t = __pbr_tangent(u.model, __pbr_tangent(sm, t))
+    __PbrOut(u.view_proj * w, w.xyz, n, v.uv, v.color * u.color, u.shadow_vp * w, t, v.uv1)
+
+# ---------------- metallic-roughness PBR ----------------
+__srgb_channel = (x: f32) -> f32:
+    if x <= 0.04045: return x / 12.92
+    pow((x + 0.055) / 1.055, 2.4)
+__srgb_linear = (c: vec3) -> vec3: vec3(__srgb_channel(c.x), __srgb_channel(c.y), __srgb_channel(c.z))
+__display_channel = (x: f32) -> f32:
+    if x <= 0.0031308: return x * 12.92
+    1.055 * pow(x, 1.0 / 2.4) - 0.055
+__linear_display = (c: vec3) -> vec3: vec3(__display_channel(c.x), __display_channel(c.y), __display_channel(c.z))
+
+__pbr_uv = (i: __PbrOut, set: f32) -> vec2:
+    if set > 0.5: return i.uv1
+    i.uv
+
+__pbr_base = (i: __PbrOut, u: LitParams) -> vec4:
+    b = i.color
+    if u.use_tex > 0.5:
+        t = sample(u.tex, __pbr_uv(i, u.uv_sets.x))
+        b = b * vec4(__srgb_linear(t.xyz), t.w)
+    if u.alpha_mode < 0.5: b.w = 1.0
+    else if u.alpha_mode < 1.5:
+        if b.w < u.alpha_cutoff: discard()
+        b.w = 1.0
+    b
+
+__pbr_fresnel = (f0: vec3, cosine: f32) -> vec3:
+    f0 + (vec3(1, 1, 1) - f0) * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0)
+
+# Cook-Torrance: GGX distribution, exact separable Smith masking, Schlick Fresnel.
+# Perceptual roughness squared is GGX alpha. Floor it to keep tiny highlights finite.
+__pbr_light = (n: vec3, v: vec3, l: vec3, base: vec3, metal: f32, rough: f32) -> vec3:
+    nl = max(dot(n, l), 0.0)
+    nv = max(dot(n, v), 0.0001)
+    hv = l + v
+    if nl <= 0.0 or dot(hv, hv) < 0.000001: return vec3(0, 0, 0)
+    h = normalize(hv)
+    nh = max(dot(n, h), 0.0)
+    a = rough * rough
+    a2 = a * a
+    d = nh * nh * (a2 - 1.0) + 1.0
+    distribution = a2 / max(3.14159265 * d * d, 0.0000001)
+    gv = 2.0 * nv / (nv + sqrt(a2 + (1.0 - a2) * nv * nv))
+    gl = 2.0 * nl / (nl + sqrt(a2 + (1.0 - a2) * nl * nl))
+    f = __pbr_fresnel(mix(vec3(0.04, 0.04, 0.04), base, metal), max(dot(v, h), 0.0))
+    spec = f * (distribution * gv * gl / max(4.0 * nv * nl, 0.000001))
+    diffuse = (vec3(1, 1, 1) - f) * base * ((1.0 - metal) / 3.14159265)
+    (diffuse + spec) * nl
+
+__pbr_fs = (i: __PbrOut, u: LitParams) -> vec4:
+    base = __pbr_base(i, u)
+    metal = clamp(u.metal, 0.0, 1.0)
+    rough = clamp(u.rough, 0.045, 1.0)
+    if u.map_flags.x > 0.5:
+        mr = sample(u.mr_map, __pbr_uv(i, u.uv_sets.y))
+        metal = clamp(metal * mr.z, 0.0, 1.0)
+        rough = clamp(u.rough * mr.y, 0.045, 1.0)
+    v = normalize(u.cam_pos - i.world)
+    n = normalize(i.normal)
+    # Face the geometric normal toward the viewer before applying the tangent-space map.
+    face: f32 = 1.0
+    if u.both_sides > 0.5 and dot(n, v) < 0.0: face = -1.0
+    if u.map_flags.y > 0.5:
+        t = i.tangent.xyz - n * dot(n, i.tangent.xyz)
+        if dot(t, t) > 0.0:
+            t = normalize(t)
+            b = cross(n, t) * i.tangent.w
+            nm = sample(u.normal_map, __pbr_uv(i, u.uv_sets.z)).xyz * 2.0 - vec3(1, 1, 1)
+            nm = vec3(nm.x * u.normal_scale, nm.y * u.normal_scale, nm.z)
+            if dot(nm, nm) > 0.000001: n = normalize(t * nm.x + b * nm.y + n * nm.z)
+    n = n * face
+    ao: f32 = 1.0
+    if u.map_flags.z > 0.5: ao = mix(1.0, sample(u.ao_map, __pbr_uv(i, u.uv_sets.w)).x, clamp(u.ao_strength, 0.0, 1.0))
+    f0 = mix(vec3(0.04, 0.04, 0.04), base.xyz, metal)
+    nv = max(dot(n, v), 0.0)
+    f = __pbr_fresnel(f0, nv)
+    hemi = mix(u.ground_color, u.sky_color, n.y * 0.5 + 0.5)
+    reflection = n * (2.0 * dot(n, v)) - v
+    env = mix(u.ground_color, u.sky_color, reflection.y * 0.5 + 0.5)
+    env = mix(env, (u.sky_color + u.ground_color) * 0.5, rough * rough)
+    # Analytic split-sum BRDF fit (Lazarov); the gradient is our prefiltered environment.
+    rx = 1.0 - rough
+    ry = 0.0425 - 0.0275 * rough
+    rz = 1.04 - 0.572 * rough
+    rw = -0.04 + 0.022 * rough
+    a004 = min(rx * rx, exp(-6.432 * nv)) * rx + ry
+    abx = -1.04 * a004 + rz
+    aby = 1.04 * a004 + rw
+    c = ((vec3(1, 1, 1) - f) * base.xyz * ((1.0 - metal) * 0.55) * hemi + env * (f0 * abx + vec3(aby, aby, aby))) * ao
+    l = normalize(u.sun_dir)
+    sh = shadow_factor(u, i.shadow_pos, max(dot(n, l), 0.0))
+    c = c + __pbr_light(n, v, l, base.xyz, metal, rough) * u.sun_color * (3.0 * sh)
+    loop k in [0..8):
+        if f32(k) >= u.light_count: break
+        lp = u.lights[k]
+        to = lp.xyz - i.world
+        dist = length(to)
+        if dist < lp.w and dist > 0.0001:
+            falloff = 1.0 - dist / lp.w
+            c = c + __pbr_light(n, v, to / dist, base.xyz, metal, rough) * u.light_colors[k].xyz * (3.0 * falloff * falloff)
+    em = u.em_color
+    if u.map_flags.w > 0.5: em = em * __srgb_linear(sample(u.em_map, __pbr_uv(i, u.em_uv)).xyz)
+    c = c + em + base.xyz * u.emissive
+    if u.unlit > 0.5: c = base.xyz
+    dist = length(i.world - u.cam_pos)
+    fog_amount = 1.0 - exp(-dist * u.fog_density * exp(-max(i.world.y, 0.0) * u.fog_height))
+    c = mix(c, u.fog_color, clamp(fog_amount, 0.0, 1.0))
+    vec4(__linear_display(aces(c)), base.w)
+
+__pbr_shadow_vs = (v: Vertex3D, u: LitParams) -> __PbrOut:
+    o = __pbr_vs(v, u)
+    o.pos = o.shadow_pos
+    o
+__pbr_shadow_skin_vs = (v: SkinVertex3D, u: LitParams) -> __PbrOut:
+    o = __pbr_skin_vs(v, u)
+    o.pos = o.shadow_pos
+    o
+__pbr_shadow_fs = (i: __PbrOut, u: LitParams) -> vec4: __pbr_base(i, u)
 
 # ---------------- shadow pass ----------------
 struct _ShadowOut:
@@ -275,8 +501,13 @@ struct Draw3D:
     both_sides = false          # (draw_mesh's double_sided: its backs drawn too)
     kept_vbo = 0                # (instanced from an instance_buffer: its buffer, and how many)
     kept_count = 0
+    material: Material? = none
 
 __3d_ready = false
+__pbr_sh: Shader
+__pbr_skin: Shader
+__pbr_shadow: Shader
+__pbr_shadow_skin: Shader
 __lit: Shader
 __lit_inst: Shader
 __lit_skin: Shader
@@ -350,6 +581,16 @@ __3d_init = ():
     __blur_sh = make_shader(shader(_post_vs, _blur_fs))
     __comp_sh = make_shader(shader(_post_vs, _composite_fs))
     __fs_tri = mesh([_SkyVertex(vec2(-1, -1)), _SkyVertex(vec2(3, -1)), _SkyVertex(vec2(-1, 3))])
+
+__pbr_ready = false
+__pbr_init = ():
+    global __pbr_ready, __pbr_sh, __pbr_skin, __pbr_shadow, __pbr_shadow_skin
+    if __pbr_ready: return
+    __pbr_ready = true
+    __pbr_sh = make_shader(shader(__pbr_vs, __pbr_fs))
+    __pbr_skin = make_shader(shader(__pbr_skin_vs, __pbr_fs))
+    __pbr_shadow = make_shader(shader(__pbr_shadow_vs, __pbr_shadow_fs))
+    __pbr_shadow_skin = make_shader(shader(__pbr_shadow_skin_vs, __pbr_shadow_fs))
 
 # ---------------- public API ----------------
 # place the camera; call once per frame before drawing 3D objects. up is the way that is up on
@@ -468,11 +709,14 @@ __pick_lights = ():
 # A color whose alpha is below 1 is see-through, drawn after the solid ones (rgba(1, 0, 0, 0.5);
 # much emissive makes it near white, which hides that). in_front = true: drawn after everything
 # else and over it, casting no shadow (a first-person weapon, which would otherwise poke into
-# walls the player stands against)
-draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false):
-    __draws.push(Draw3D(m, transform, color, texture.id, f32(emissive), f32(specular), [], false, cast_shadow and not in_front, 0, __noop3d, false, in_front, both_sides = double_sided))
+# walls the player stands against). material selects metallic-roughness PBR; without it the
+# original lighting, specular and color handling are retained. color multiplies its factor;
+# texture is the fallback when it has no base_texture. See Material for map channels.
+draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false, material: Material? = none):
+    d = Draw3D(m, transform, color, texture.id, f32(emissive), f32(specular), [], false, cast_shadow and not in_front, 0, __noop3d, false, in_front, both_sides = double_sided, material = material)
+    __material_draw(d)
+    __draws.push(d)
 
-# a skinned mesh (of SkinVertex3D), bent by bones (3 rows per joint: see draw_model)
 __line_mesh = Mesh()
 __line_ready = false
 
@@ -508,8 +752,42 @@ draw_grid3d = (size: f64 = 10.0, step: f64 = 1.0, height: f64 = 0.0, color: vec4
         draw_line3d(vec3(k, h, -s), vec3(k, h, s), color, 0.02)
         draw_line3d(vec3(-s, h, k), vec3(s, h, k), color, 0.02)
 
-__draw_skinned = (m: Mesh, bones: vec4[], transform: mat4, color: vec4, texture: Texture, emissive: f64, specular: f64, cast_shadow: bool, in_front: bool):
-    __draws.push(Draw3D(m, transform, color, texture.id, f32(emissive), f32(specular), [], false, cast_shadow and not in_front, 0, __noop3d, false, in_front, bones))
+# a skinned mesh (of SkinVertex3D), bent by bones (3 rows per joint: see draw_model)
+__draw_skinned = (m: Mesh, bones: vec4[], transform: mat4, color: vec4, texture: Texture, emissive: f64, specular: f64, cast_shadow: bool, in_front: bool, material: Material? = none):
+    d = Draw3D(m, transform, color, texture.id, f32(emissive), f32(specular), [], false, cast_shadow and not in_front, 0, __noop3d, false, in_front, bones, material = material)
+    __material_draw(d)
+    __draws.push(d)
+
+__material_draw = (d: mut Draw3D):
+    if let m = d.material:
+        __pbr_init()
+        d.color = d.color * m.base_color
+        if m.base_texture.id != 0: d.tex = m.base_texture.id
+        d.both_sides = d.both_sides or m.double_sided
+        if m.alpha_mode == .blend: d.shadow = false
+
+__transparent3d = (d: Draw3D) -> bool:
+    if let m = d.material: return m.alpha_mode == .blend
+    d.color.w < 1.0
+
+__pbr_cull = (d: Draw3D):
+    if d.both_sides: glDisable(GL_CULL_FACE)
+    else:
+        glEnable(GL_CULL_FACE)
+        # A reflected model reverses its winding, but keeps its outward normals.
+        m = d.model
+        if dot(m[0].xyz, cross(m[1].xyz, m[2].xyz)) < 0.0: glCullFace(GL_FRONT)
+        else: glCullFace(GL_BACK)
+
+__lit_draw = (d: Draw3D, p: LitParams):
+    if d.material != none:
+        __pbr_cull(d)
+        if d.bones.len() > 0: draw(__pbr_skin, d.mesh, p)
+        else: draw(__pbr_sh, d.mesh, p)
+        glCullFace(GL_BACK)
+    else if d.instanced: __draw_inst3d(__lit_inst, d, p)
+    else if d.bones.len() > 0: draw(__lit_skin, d.mesh, p)
+    else: draw(__lit, d.mesh, p)
 
 # many copies of a mesh in one draw call (crowds, forests, particles...)
 draw_mesh_instanced = (m: Mesh, instances: Instance3D[], color: vec4 = vec4(1, 1, 1, 1), emissive: f64 = 0.0, specular: f64 = 0.2, cast_shadow: bool = true, wind: f64 = 0.0):
@@ -661,7 +939,7 @@ transform = (pos: vec3, rot_y: f64 = 0.0, scale: f64 = 1.0) -> mat4:
     translation(pos) * rotation_y(rot_y) * scaling(vec3(f32(scale), f32(scale), f32(scale)))
 
 __params = (d: Draw3D, vp: mat4) -> LitParams:
-    LitParams(view_proj = vp, model = d.model, shadow_vp = __shadow_vp, color = d.color, cam_pos = __cam_pos,
+    p = LitParams(view_proj = vp, model = d.model, shadow_vp = __shadow_vp, color = d.color, cam_pos = __cam_pos,
         sun_dir = __sun_dir, sun_color = __sun_color, sky_color = __sky_top * 0.6 + __sky_horizon * 0.4,
         ground_color = __ground_color, fog_color = __fog_color, fog_density = __fog_density, fog_height = __fog_height,
         emissive = d.emissive, specular = d.specular, use_tex = f32(int(d.tex != 0)),
@@ -669,6 +947,26 @@ __params = (d: Draw3D, vp: mat4) -> LitParams:
         shadow_taps = if __soft: 4.0 else: 9.0, time = f32(elapsed()), wind = d.wind,
         tex = Texture(d.tex, 1, 1), shadow_map = __shadow_rt.texture, lights = __light_pos,
         light_colors = __light_col, light_count = __light_n, bones = __no_bones)
+    if let m = d.material:
+        p.pbr = 1.0
+        p.metal = m.metallic
+        p.rough = m.roughness
+        p.mr_map = m.metallic_roughness
+        p.normal_map = m.normal_map
+        p.ao_map = m.occlusion_map
+        p.em_map = m.emissive_map
+        p.map_flags = vec4(f32(int(m.metallic_roughness.id != 0)), f32(int(m.normal_map.id != 0)), f32(int(m.occlusion_map.id != 0)), f32(int(m.emissive_map.id != 0)))
+        p.normal_scale = m.normal_scale
+        p.ao_strength = m.occlusion_strength
+        p.em_color = m.emissive_color
+        if m.alpha_mode == .mask: p.alpha_mode = 1.0
+        else if m.alpha_mode == .blend: p.alpha_mode = 2.0
+        p.alpha_cutoff = m.alpha_cutoff
+        p.both_sides = f32(int(d.both_sides))
+        p.uv_sets = vec4(f32(m.base_uv), f32(m.metallic_roughness_uv), f32(m.normal_uv), f32(m.occlusion_uv))
+        p.em_uv = f32(m.emissive_uv)
+        p.unlit = f32(int(m.unlit))
+    p
 
 # the params for a draw, and its shader (lit or shadow pass)
 __params_for = (d: Draw3D, vp: mat4) -> LitParams:
@@ -689,7 +987,13 @@ __cast_shadow = (d: mut Draw3D, sv: vec4[], vp: mat4):
     if not __in_view(d, sv): return
     p = __params_for(d, vp)
     p.shadow_map = Texture(0, 1, 1)          # never sample the target being rendered
-    if d.instanced: __draw_inst3d(__shadow_sh_inst, d, p)
+    if d.material != none:
+        __pbr_cull(d)
+        if d.bones.len() > 0: draw(__pbr_shadow_skin, d.mesh, p)
+        else: draw(__pbr_shadow, d.mesh, p)
+        glCullFace(GL_BACK)
+        glDisable(GL_CULL_FACE)
+    else if d.instanced: __draw_inst3d(__shadow_sh_inst, d, p)
     else if d.bones.len() > 0: draw(__shadow_sh_skin, d.mesh, p)
     else: draw(__shadow_sh, d.mesh, p)
 
@@ -755,13 +1059,11 @@ __render3d = ():
             glEnable(GL_CULL_FACE)
             glDisable(GL_BLEND)
             continue
-        if d.color.w < 1.0 or d.front or not __in_view(d, view): continue
+        if __transparent3d(d) or d.front or not __in_view(d, view): continue
         __drawn3d += 1
         p = __params_for(d, vp)
         if d.both_sides: glDisable(GL_CULL_FACE)
-        if d.instanced: __draw_inst3d(__lit_inst, d, p)
-        else if d.bones.len() > 0: draw(__lit_skin, d.mesh, p)
-        else: draw(__lit, d.mesh, p)
+        __lit_draw(d, p)
         if d.both_sides: glEnable(GL_CULL_FACE)
     if __sky_on and not again:
         glDisable(GL_CULL_FACE)
@@ -772,8 +1074,15 @@ __render3d = ():
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
     glDepthMask(0)
     glDisable(GL_CULL_FACE)
-    loop mut d in __draws:
-        if d.color.w >= 1.0 or d.front: continue
+    # Keep the simple path's ordering; sort PBR blends back to front by their bounds' center.
+    transparent: Draw3D[]
+    loop d in __draws:
+        if __transparent3d(d) and not d.front: transparent.push(d)
+    has_pbr = false
+    loop d in transparent:
+        if d.material != none: has_pbr = true
+    if has_pbr: transparent.sort_by((d: Draw3D) -> f32: -length((d.model * vec4(d.mesh.center, 1)).xyz - __cam_pos))
+    loop mut d in transparent:
         if d.has_custom:
             if d.emissive > 0.0: glBlendFunc(GL_SRC_ALPHA, GL_ONE)
             d.custom()
@@ -784,9 +1093,8 @@ __render3d = ():
             continue
         if not __in_view(d, view): continue
         p = __params_for(d, vp)
-        if d.instanced: __draw_inst3d(__lit_inst, d, p)
-        else if d.bones.len() > 0: draw(__lit_skin, d.mesh, p)
-        else: draw(__lit, d.mesh, p)
+        __lit_draw(d, p)
+        glDisable(GL_CULL_FACE)
     glDepthMask(1)
     # in front of everything: the depth so far is cleared first
     cleared = false
@@ -797,10 +1105,11 @@ __render3d = ():
             glDisable(GL_BLEND)
             glEnable(GL_CULL_FACE)
             cleared = true
-        if d.color.w < 1.0: glEnable(GL_BLEND)
+        if __transparent3d(d): glEnable(GL_BLEND)
         else: glDisable(GL_BLEND)
-        if d.bones.len() > 0: draw(__lit_skin, d.mesh, __params_for(d, vp))
-        else: draw(__lit, d.mesh, __params(d, vp))
+        if d.both_sides: glDisable(GL_CULL_FACE)
+        __lit_draw(d, __params_for(d, vp))
+        if d.both_sides: glEnable(GL_CULL_FACE)
     glDisable(GL_CULL_FACE)
     glDisable(GL_DEPTH_TEST)
     __apply_blend(__blend)
@@ -1043,9 +1352,72 @@ __post_end = ():
     zone_end()
 
 # ---------------- mesh generators ----------------
+# Generate tangent frames for missing tangents. Angle-weighted UV derivatives, orthogonalized
+# against the vertex normal, with the glTF/MikkTSpace handedness convention (+Y normal maps).
+# UV and normal seams must have separate vertices (as glTF exporters normally produce).
+# Degenerate UVs get a stable perpendicular; supplied nonzero tangents are preserved.
+tangents3d = (vertices: Vertex3D[], indices: u32[] = [], uv_set: int = 0) -> Vertex3D[]:
+    missing = false
+    loop v in vertices:
+        if dot(v.tangent.xyz, v.tangent.xyz) <= 0.000001:
+            missing = true
+            break
+    if not missing: return vertices
+    vs = vertices
+    ts = fill(vec3(0, 0, 0), vs.len())
+    bs = fill(vec3(0, 0, 0), vs.len())
+    ix = indices
+    if ix.len() == 0:
+        loop i in [0..vs.len()): ix.push(u32(i))
+    k = 0
+    loop k + 2 < ix.len():
+        a = int(ix[k])
+        b = int(ix[k + 1])
+        c = int(ix[k + 2])
+        k += 3
+        if a >= vs.len() or b >= vs.len() or c >= vs.len(): continue
+        e1 = vs[b].pos - vs[a].pos
+        e2 = vs[c].pos - vs[a].pos
+        d1 = vs[b].uv - vs[a].uv
+        d2 = vs[c].uv - vs[a].uv
+        if uv_set == 1:
+            d1 = vs[b].uv1 - vs[a].uv1
+            d2 = vs[c].uv1 - vs[a].uv1
+        det = d1.x * d2.y - d1.y * d2.x
+        if det == 0.0: continue
+        t = (e1 * d2.y - e2 * d1.y) / det
+        bt = (e2 * d1.x - e1 * d2.x) / det
+        if length(t) < 0.000001 or length(bt) < 0.000001: continue
+        t = normalize(t)
+        bt = normalize(bt)
+        corners = [a, b, c]
+        loop q in [0..3):
+            j = corners[q]
+            x = vs[corners[(q + 1) % 3]].pos - vs[j].pos
+            y = vs[corners[(q + 2) % 3]].pos - vs[j].pos
+            if length(x) < 0.000001 or length(y) < 0.000001: continue
+            angle = f32(acos(f64(clamp(dot(normalize(x), normalize(y)), -1.0, 1.0))))
+            ts[j] = ts[j] + t * angle
+            bs[j] = bs[j] + bt * angle
+    loop i in [0..vs.len()):
+        if dot(vs[i].tangent.xyz, vs[i].tangent.xyz) > 0.000001: continue
+        n = vs[i].normal
+        if length(n) < 0.000001: n = vec3(0, 1, 0)
+        n = normalize(n)
+        t = ts[i] - n * dot(n, ts[i])
+        if dot(t, t) < 0.000001:
+            axis = vec3(0, 1, 0)
+            if abs(n.y) > 0.9: axis = vec3(1, 0, 0)
+            t = cross(axis, n)
+        t = normalize(t)
+        sign: f32 = 1.0
+        if dot(cross(n, t), bs[i]) < 0.0: sign = -1.0
+        vs[i].tangent = vec4(t, sign)
+    vs
+
 # a mesh of 3D vertices, with the sphere around them (draws outside the view are left out)
 __mesh3d = (vs: Vertex3D[], idx: u32[] = []) -> Mesh:
-    m = mesh(vs, idx)
+    m = mesh(tangents3d(vs, idx), idx)
     if vs.len() == 0: return m
     lo = vs[0].pos
     hi = vs[0].pos

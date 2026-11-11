@@ -1,20 +1,21 @@
 # Graphics and the GPU
 
-A Sloppy game is written once and draws through whichever of four renderers the machine has.
+A Sloppy game is written once and draws through whichever of five renderers the machine has.
 This page explains which one runs where, how your shader code reaches each of them, what is the
 same and what differs between them, and the three ways of computing on the GPU.
 
-## The four renderers
+## The five renderers
 
 | renderer | where | used when |
 |---|---|---|
+| **Metal** 3 | macOS | the machine supports Metal 3 |
 | **Vulkan** 1.3 | Linux, Windows | the driver has Vulkan 1.3 (current drivers for NVIDIA, AMD and Intel GPUs do) |
 | **OpenGL** ES 3 | Linux, Windows | there is no usable Vulkan driver, or `SLOPPY_VULKAN=0` |
 | **WebGL** 2 | the browser | a game built with `--target wasm` |
 | **software** | everywhere | there is no GPU driver at all (a virtual machine, a server), or `SLOPPY_SOFTWARE=1` |
 
 You do not choose in your program: the library picks the best one when the window opens, and
-the same program runs on all four. The frame statistics overlay (`show_stats()`, or
+the same program runs on all five. The frame statistics overlay (`show_stats()`, or
 `SLOPPY_STATS=1`) shows which is in use, e.g. `vulkan (NVIDIA GeForce GTX 1070)`, and
 `soft_rendering()` tells the program when it is the software renderer (to draw fewer particles,
 say).
@@ -58,9 +59,10 @@ draw = ():
     draw(sh, m, U(mat4(), vec4(1, 0.5, 0.2, 1)))
 ```
 
-The compiler translates `shader(vs, fs)` three ways at compile time: to **SPIR-V** for Vulkan
+The compiler translates `shader(vs, fs)` at compile time: to **SPIR-V** for Vulkan
 (the compiler writes it itself, so no shader compiler or SDK is needed), to **GLSL ES 3.00** for
-OpenGL and WebGL, and to native code, which the software renderer calls for each vertex and
+OpenGL and WebGL, to **Metal Shading Language** for Metal, and to native code, which the
+software renderer calls for each vertex and
 pixel. Helper functions the shader calls are translated with it. A shader cannot allocate:
 strings, growable arrays, maps and closures are compile errors in shader code; numbers, bools,
 vectors, `mat4`, structs, fixed-size arrays (`f32[4]`, also `f32[4][4]`) and `Texture` are
@@ -95,6 +97,61 @@ use_effect(gray, f32(1.0))
 sprite(enemy, pos)
 no_effect()
 ```
+
+## 3D materials
+
+`draw_mesh` keeps its sun/sky lighting and `specular` highlight unless given a `Material`.
+Imported glTF models use metallic-roughness PBR, including the glTF default (metallic 1,
+roughness 1). Games can use the same path:
+
+```gdscript
+copper = Material(base_color = vec4(0.95, 0.64, 0.54, 1), metallic = 1, roughness = 0.25)
+draw_mesh(ball, transform(pos), material = copper)
+```
+
+`Material` holds `base_color`, `base_texture`, `metallic`, `roughness`,
+`metallic_roughness`, `normal_map`, `normal_scale`, `occlusion_map`, `occlusion_strength`,
+`emissive_color`, `emissive_map`, `alpha_mode`, `alpha_cutoff`, `double_sided` and `unlit`.
+The glTF `KHR_materials_unlit` extension selects `unlit`. Its maps
+use UV set 0 by default; `base_uv`, `metallic_roughness_uv`, `normal_uv`, `occlusion_uv` and
+`emissive_uv` can select set 1. glTF's corresponding fields are loaded automatically.
+Metallic-roughness textures use **G for roughness, B for metal**; occlusion uses **R**.
+Normal maps use tangent space, with +Y green. `normal_scale` scales their X/Y components.
+Occlusion affects ambient light, leaving direct light and emission intact.
+
+Color factors and vertex colors are linear; base-color and emissive texture RGB are decoded
+from sRGB. Other maps contain linear data. PBR shading is in linear light, followed by the
+existing ACES tone map and sRGB encoding. The simple path retains its previous color handling.
+`draw_mesh`'s color multiplies the material factor; its texture is used if the material has no
+base texture. Its scalar `emissive` still adds base-colored light; `specular` belongs to the
+simple path. Imported parts retain `color`/`texture` for inspection and use `material` for
+PBR settings and their colored emission.
+
+The BRDF is Cook-Torrance with GGX, Schlick Fresnel (dielectric F0 0.04), separable Smith
+masking and Lambert diffuse reduced by Fresnel and metalness. Perceptual roughness is squared
+for GGX and floored at 0.045 to keep highlights finite. The sun and up to eight point lights
+use this same BRDF, with the existing point-light range fade and sun shadow map. Ambient
+light uses the sky/ground colors: hemisphere diffuse, a reflected sky gradient blurred toward
+its average as roughness grows, and an analytic split-sum BRDF fit. This is an inexpensive
+environment approximation; it has no scene reflections or baked irradiance probes. Fog and
+post effects work as before.
+
+`AlphaMode.opaque` ignores alpha, `.mask` discards alpha below `alpha_cutoff` in both the
+color and shadow passes, and `.blend` uses alpha blending without depth writes or shadows.
+PBR blends sort by their bounds' distance from the camera; intersecting transparent surfaces
+still need to be split by the asset author. `double_sided` renders both faces and reverses
+the back face's lighting normal. Reflected transforms reverse culling; nonuniform scale uses
+inverse-transpose normals.
+
+`Vertex3D` and `SkinVertex3D` have optional `tangent` (`vec4`, XYZ along +U, W handedness)
+and `uv1` fields. glTF tangents are retained and skinned with the mesh. Missing tangents are
+generated using angle-weighted triangle UV derivatives, orthogonalized against the normal,
+with glTF/MikkTSpace handedness; degenerate UVs get a stable perpendicular. UV/normal seams
+must use distinct vertices, as exporters normally produce. This is an approximation to
+MikkTSpace, not a replacement for an exporter's exact bake basis. Mesh generators and
+`custom_mesh` generate frames automatically; raw `mesh(vertices, indices)` callers can use
+`tangents3d(vertices, indices, uv_set = 0)` first. No shader compiler extensions are needed:
+the same shader functions run through Vulkan, OpenGL, WebGL, Metal and the software renderer.
 
 ## Computing on the GPU
 

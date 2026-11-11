@@ -1,7 +1,7 @@
 # 3D models from glTF 2.0 files (.glb, or .gltf with its .bin and images), the format Blender
-# and most tools export: meshes, with their materials' base color (a factor and a texture, PNG
-# or JPEG), vertex colors and emissive light, placed by the scene's nodes; skins (meshes bent
-# by a skeleton of nodes, up to 64 joints) and their animations.
+# and most tools export: metallic-roughness materials (PNG/JPEG maps), vertex colors,
+# placed by the scene's nodes; skins (meshes bent by a skeleton of nodes, up to 64 joints)
+# and their animations.
 #
 #   ship = load_model(embed("ship.glb"))
 #   draw = ():
@@ -15,7 +15,7 @@
 #
 # A .gltf names its other files: give them by those names, as `files` (or put them in the .gltf
 # as data: URIs). Not read: morph targets, compressed meshes (Draco, meshopt), sparse
-# accessors; materials beyond the base color (metal, roughness, normal maps).
+# accessors and material extensions other than KHR_materials_unlit.
 
 struct ModelPart:
     mesh: Mesh
@@ -25,6 +25,7 @@ struct ModelPart:
     emissive: f64               # how much it glows (from the material's emissive color)
     node: int = -1              # the node it hangs from (in Model.nodes)
     skin: int = -1              # the skin that bends it (in Model.skins; -1: none)
+    material: Material? = none
 
 # a node of the model's scene: its name, its parent (-1: none), and where it rests, from its
 # parent: a translation, a rotation (a quaternion) and a scale
@@ -86,6 +87,8 @@ struct MeshData:
     skin: int = -1
     joints: vec4[] = []         # (skinned: per vertex, 4 joints (by their place in the skin)
     weights: vec4[] = []        # and how much each bends it)
+    material: Material? = none  # CPU factors; the five maps name ModelData.images below
+    material_images: int[] = [] # base, metallic-roughness, normal, occlusion, emissive
 
 struct ModelData:
     meshes: MeshData[]
@@ -111,11 +114,23 @@ model = (d: ModelData) -> Model:
     loop md in d.meshes:
         tex = Texture(0, 0, 0)
         if md.image >= 0: tex = texs[md.image]
+        mat = md.material
+        if mat != none:
+            pm = mat!
+            if md.material_images.len() == 5:
+                ids = md.material_images
+                if ids[0] >= 0: pm.base_texture = texs[ids[0]]
+                if ids[1] >= 0: pm.metallic_roughness = texs[ids[1]]
+                if ids[2] >= 0: pm.normal_map = texs[ids[2]]
+                if ids[3] >= 0: pm.occlusion_map = texs[ids[3]]
+                if ids[4] >= 0: pm.emissive_map = texs[ids[4]]
+            pm.base_color = vec4(1, 1, 1, 1) # ModelPart.color already carries this factor
+            mat = pm
         if md.skin < 0:
-            m.parts.push(ModelPart(__mesh3d(md.vertices, md.indices), md.transform, md.color, tex, md.emissive, md.node))
+            m.parts.push(ModelPart(__mesh3d(md.vertices, md.indices), md.transform, md.color, tex, md.emissive, md.node, material = mat))
             continue
         vs: SkinVertex3D[]
-        loop i in 0.. and v in md.vertices: vs.push(SkinVertex3D(v.pos, v.normal, v.uv, v.color, md.joints[i], md.weights[i]))
+        loop i in 0.. and v in md.vertices: vs.push(SkinVertex3D(v.pos, v.normal, v.uv, v.color, md.joints[i], md.weights[i], v.tangent, v.uv1))
         sm = mesh(vs, md.indices)
         # (the sphere around it, as it rests, a little larger for limbs that swing out)
         ps = __gt_skin_points(md, d.skins[md.skin], rest)
@@ -128,14 +143,14 @@ model = (d: ModelData) -> Model:
         r = 0.0
         loop p in ps: r = max(r, f64(length(p - sm.center)))
         sm.radius = f32(r * 1.3)
-        m.parts.push(ModelPart(sm, mat4(), md.color, tex, md.emissive, md.node, md.skin))
+        m.parts.push(ModelPart(sm, mat4(), md.color, tex, md.emissive, md.node, md.skin, mat))
     m
 
 # Draw each part (see draw_mesh), the model placed by transform and its colors times tint. An
 # animated model is drawn in the pose given (pose_at, blend_poses), or as it rests.
 draw_model = (m: Model, transform: mat4 = mat4(), tint: vec4 = vec4(1, 1, 1, 1), cast_shadow: bool = true, pose: Pose = Pose([], [], []), in_front: bool = false):
     if m.skins.len() == 0 and pose.t.len() == 0:
-        loop p in m.parts: draw_mesh(p.mesh, transform * p.transform, p.color * tint, p.texture, p.emissive, 0.3, cast_shadow, in_front)
+        loop p in m.parts: draw_mesh(p.mesh, transform * p.transform, p.color * tint, p.texture, if p.material == none: p.emissive else: 0.0, 0.3, cast_shadow, in_front, material = p.material)
         return
     ps = pose
     if ps.t.len() != m.nodes.len(): ps = rest_pose(m)
@@ -143,9 +158,9 @@ draw_model = (m: Model, transform: mat4 = mat4(), tint: vec4 = vec4(1, 1, 1, 1),
     bones: vec4[][]
     loop s in m.skins: bones.push(__gt_bones(s, g))
     loop p in m.parts:
-        if p.skin >= 0: __draw_skinned(p.mesh, bones[p.skin], transform, p.color * tint, p.texture, p.emissive, 0.3, cast_shadow, in_front)
-        else if p.node >= 0: draw_mesh(p.mesh, transform * g[p.node], p.color * tint, p.texture, p.emissive, 0.3, cast_shadow, in_front)
-        else: draw_mesh(p.mesh, transform * p.transform, p.color * tint, p.texture, p.emissive, 0.3, cast_shadow, in_front)
+        if p.skin >= 0: __draw_skinned(p.mesh, bones[p.skin], transform, p.color * tint, p.texture, if p.material == none: p.emissive else: 0.0, 0.3, cast_shadow, in_front, material = p.material)
+        else if p.node >= 0: draw_mesh(p.mesh, transform * g[p.node], p.color * tint, p.texture, if p.material == none: p.emissive else: 0.0, 0.3, cast_shadow, in_front, material = p.material)
+        else: draw_mesh(p.mesh, transform * p.transform, p.color * tint, p.texture, if p.material == none: p.emissive else: 0.0, 0.3, cast_shadow, in_front, material = p.material)
 
 # ---------------- poses ----------------
 # every node as it rests
@@ -709,6 +724,10 @@ __gt_primitive = (doc: Json?, prim0: Json, bufs: u8[][], files: {str: u8[]}, tex
     if let na = as_int(get(attrs, "NORMAL")): nrm = __gt_floats(doc, bufs, na, 3) ?? []
     uv: f32[]
     if let ua = as_int(get(attrs, "TEXCOORD_0")): uv = __gt_floats(doc, bufs, ua, 2) ?? []
+    uv1: f32[]
+    if let ua = as_int(get(attrs, "TEXCOORD_1")): uv1 = __gt_floats(doc, bufs, ua, 2) ?? []
+    tang: f32[]
+    if let ta = as_int(get(attrs, "TANGENT")): tang = __gt_floats(doc, bufs, ta, 4) ?? []
     col: f32[]
     cn = 4
     if let ca = as_int(get(attrs, "COLOR_0")):
@@ -759,7 +778,11 @@ __gt_primitive = (doc: Json?, prim0: Json, bufs: u8[][], files: {str: u8[]}, tex
             al = f32(1)
             if cn == 4: al = col[cn * i + 3]
             c = vec4(col[cn * i], col[cn * i + 1], col[cn * i + 2], al)
-        vs.push(Vertex3D(p, n, t, c))
+        tangent = vec4(0, 0, 0, 1)
+        if tang.len() == nv * 4: tangent = vec4(tang[4 * i], tang[4 * i + 1], tang[4 * i + 2], tang[4 * i + 3])
+        t1 = vec2(0, 0)
+        if uv1.len() == nv * 2: t1 = vec2(uv1[2 * i], uv1[2 * i + 1])
+        vs.push(Vertex3D(p, n, t, c, tangent, t1))
         if skin < 0:
             wp = (xf * vec4(p, 1)).xyz
             m.min = min(m.min, wp)
@@ -800,24 +823,47 @@ __gt_primitive = (doc: Json?, prim0: Json, bufs: u8[][], files: {str: u8[]}, tex
         js = fj
         ws = fw
         idx = []
-    # the material
-    color = vec4(1, 1, 1, 1)
-    image = -1
-    emissive = 0.0
-    if let mi = as_int(get(prim, "material")):
-        mat: Json? = at(get(doc, "materials"), mi)
-        pbr = get(mat, "pbrMetallicRoughness")
-        bc = as_list(get(pbr, "baseColorFactor"))
-        if bc.len() == 4: color = vec4(__gt_f(bc[0]), __gt_f(bc[1]), __gt_f(bc[2]), __gt_f(bc[3]))
-        ef = as_list(get(mat, "emissiveFactor"))
-        if ef.len() == 3: emissive = f64(max(__gt_f(ef[0]), max(__gt_f(ef[1]), __gt_f(ef[2]))))
-        if let ti = as_int(get(get(pbr, "baseColorTexture"), "index")):
-            if ti >= 0 and ti < textures.len():
-                if textures[ti] < 0:
-                    if let e = __gt_image(doc, ti, bufs, files, m): return e
-                    textures[ti] = m.images.len() - 1
-                image = textures[ti]
-    m.meshes.push(MeshData(vs, idx, xf, color, image, emissive, node, skin, js, ws))
+    # Every glTF primitive uses metallic-roughness, including the default material.
+    mat: Json? = none
+    if let mi = as_int(get(prim, "material")): mat = at(get(doc, "materials"), mi)
+    pbr = get(mat, "pbrMetallicRoughness")
+    pm = Material()
+    bc = as_list(get(pbr, "baseColorFactor"))
+    if bc.len() == 4: pm.base_color = vec4(__gt_f(bc[0]), __gt_f(bc[1]), __gt_f(bc[2]), __gt_f(bc[3]))
+    pm.metallic = f32(as_num(get(pbr, "metallicFactor")) ?? 1.0)
+    pm.roughness = f32(as_num(get(pbr, "roughnessFactor")) ?? 1.0)
+    ef = as_list(get(mat, "emissiveFactor"))
+    if ef.len() == 3: pm.emissive_color = vec3(__gt_f(ef[0]), __gt_f(ef[1]), __gt_f(ef[2]))
+    pm.normal_scale = f32(as_num(get(get(mat, "normalTexture"), "scale")) ?? 1.0)
+    pm.occlusion_strength = f32(as_num(get(get(mat, "occlusionTexture"), "strength")) ?? 1.0)
+    pm.double_sided = as_bool(get(mat, "doubleSided")) ?? false
+    pm.unlit = get(get(mat, "extensions"), "KHR_materials_unlit") != none
+    alpha = as_str(get(mat, "alphaMode")) ?? "OPAQUE"
+    if alpha == "MASK": pm.alpha_mode = .mask
+    else if alpha == "BLEND": pm.alpha_mode = .blend
+    pm.alpha_cutoff = f32(as_num(get(mat, "alphaCutoff")) ?? 0.5)
+    maps = [get(pbr, "baseColorTexture"), get(pbr, "metallicRoughnessTexture"), get(mat, "normalTexture"), get(mat, "occlusionTexture"), get(mat, "emissiveTexture")]
+    images = fill(-1, 5)
+    loop k in [0..5):
+        if let ti = as_int(get(maps[k], "index")):
+            if ti < 0 or ti >= textures.len(): return ModelError("a material names texture {ti}, which is not there")
+            if textures[ti] < 0:
+                if let e = __gt_image(doc, ti, bufs, files, m): return e
+                textures[ti] = m.images.len() - 1
+            images[k] = textures[ti]
+    sets: int[]
+    loop mp in maps:
+        uv_set = as_int(get(mp, "texCoord")) ?? 0
+        if uv_set < 0 or uv_set > 1: return ModelError("a material needs TEXCOORD_{uv_set}; only 0 and 1 are read")
+        sets.push(uv_set)
+    pm.base_uv = sets[0]
+    pm.metallic_roughness_uv = sets[1]
+    pm.normal_uv = sets[2]
+    pm.occlusion_uv = sets[3]
+    pm.emissive_uv = sets[4]
+    vs = tangents3d(vs, idx, pm.normal_uv)
+    em = f64(max(pm.emissive_color.x, max(pm.emissive_color.y, pm.emissive_color.z)))
+    m.meshes.push(MeshData(vs, idx, xf, pm.base_color, images[0], em, node, skin, js, ws, pm, images))
     none
 
 # texture ti's image (PNG or JPEG: in a buffer view, a data: URI or a file given), added to m

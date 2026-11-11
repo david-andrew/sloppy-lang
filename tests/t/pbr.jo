@@ -1,0 +1,71 @@
+# requires: sloppy
+# Material decoding and tangent conventions, with no window or GPU. The numerical checks
+# exercise grazing-angle stability, metallic diffuse removal, linear/sRGB round trips and
+# inverse-transpose normals; render scenes check the shader versions on each backend.
+r = read_gltf(embed("../render/pbr_materials.gltf"))
+if r is ModelError: panic(r.message)
+d = r as ModelData
+assert(d.meshes.len() == 1)
+m = d.meshes[0].material!
+assert(abs(m.metallic - 0.35) < 0.0001 and abs(m.roughness - 0.42) < 0.0001)
+assert(abs(m.normal_scale - 0.7) < 0.0001)
+assert(d.meshes[0].material_images == [-1, -1, 0, -1, -1])
+t = d.meshes[0].vertices[0].tangent
+assert(length(t.xyz - vec3(1, 0, 0)) < 0.0001 and t.w == -1.0)
+# Scene selects another primitive: packed MR, AO, colored emissive, authored tangents, UV1.
+src = str_from_bytes(embed("../render/pbr_materials.gltf"))
+r2 = read_gltf(bytes(replace(src, "\"mesh\":0", "\"mesh\":2")))
+if r2 is ModelError: panic(r2.message)
+e = r2 as ModelData
+p = e.meshes[0].material!
+assert(p.normal_uv == 1 and p.occlusion_uv == 0)
+assert(length(p.emissive_color - vec3(0.1, 0.3, 0.8)) < 0.0001)
+assert(abs(p.occlusion_strength - 0.7) < 0.0001)
+assert(e.images.len() == 4 and e.meshes[0].material_images == [-1, 0, 1, 2, 3])
+assert(e.meshes[0].vertices[0].tangent == vec4(1, 0, 0, -1))
+r3 = read_gltf(bytes(replace(src, "\"mesh\":0", "\"mesh\":1")))
+if r3 is ModelError: panic(r3.message)
+f = r3 as ModelData
+assert(f.meshes[0].material!.alpha_mode == .mask and f.meshes[0].material!.double_sided)
+assert(abs(f.meshes[0].material!.alpha_cutoff - 0.6) < 0.0001)
+print("glTF material maps, factors, alpha and UV sets ok")
+# The default glTF material is rough metal, including a primitive with no material property.
+tri = str_from_bytes(embed("data/tri.gltf"))
+r4 = read_gltf(bytes(replace(tri, "\"material\": 0", "\"unused\": 0")))
+if r4 is ModelError: panic(r4.message)
+g = r4 as ModelData
+assert(g.meshes[0].material!.metallic == 1.0 and g.meshes[0].material!.roughness == 1.0)
+print("glTF default material ok")
+# Degenerate UVs have a finite perpendicular; zero-area triangles and empty meshes are safe.
+vs = [Vertex3D(vec3(0, 0, 0), vec3(0, 0, 1), vec2(0, 0), vec4(1, 1, 1, 1)),
+      Vertex3D(vec3(1, 0, 0), vec3(0, 0, 1), vec2(0, 0), vec4(1, 1, 1, 1)),
+      Vertex3D(vec3(0, 1, 0), vec3(0, 0, 1), vec2(0, 0), vec4(1, 1, 1, 1))]
+loop v in tangents3d(vs):
+    assert(abs(length(v.tangent.xyz) - 1.0) < 0.0001)
+    assert(abs(dot(v.normal, v.tangent.xyz)) < 0.0001)
+assert(tangents3d([]).len() == 0)
+normal = normalize(vec3(1, 1, 0))
+xf = scaling(vec3(2, 1, 0.5))
+assert(length(normalize(__pbr_normal(xf, normal)) - normalize(vec3(0.5, 1, 0))) < 0.0001)
+assert(__pbr_tangent(scaling(vec3(-1, 1, 1)), vec4(1, 0, 0, -1)).w == 1.0)
+small = rotation_y(0.7) * scaling(vec3(0.001, 0.002, 0.003))
+expected = normalize((rotation_y(0.7) * vec4(vec3(1, 0.5, 0), 0)).xyz)
+assert(length(normalize(__pbr_normal(small, normal)) - expected) < 0.0001)
+# A small UV island in a large texture atlas still has its original derivative directions.
+vs[0].uv = vec2(0, 0)
+vs[1].uv = vec2(0, 0.0001)
+vs[2].uv = vec2(0.0001, 0)
+assert(length(tangents3d(vs)[0].tangent.xyz - vec3(0, 1, 0)) < 0.0001)
+print("tangents and nonuniform/reflected transforms ok")
+loop x in [0.0, 0.002, 0.04, 0.2, 0.8, 1.0]:
+    assert(abs(__display_channel(__srgb_channel(f32(x))) - x) < 0.00001)
+n = vec3(0, 0, 1)
+loop metal in [f32(0), f32(1)]:
+    loop rough in [f32(0.045), f32(0.5), f32(1)]:
+        loop v in [n, normalize(vec3(1, 0, 0.0001)), -n]:
+            c = __pbr_light(n, v, n, vec3(0.8, 0.2, 0.1), metal, rough)
+            assert(c.x >= 0.0 and c.y >= 0.0 and c.z >= 0.0 and c.x < 100000.0)
+# Black metal has neither dielectric Fresnel nor diffuse light at normal incidence.
+assert(length(__pbr_light(n, n, n, vec3(0, 0, 0), 1.0, 0.5)) < 0.0001)
+assert(__pbr_light(n, n, -n, vec3(1, 1, 1), 0.0, 0.5) == vec3(0, 0, 0))
+print("linear color and finite GGX shading ok")

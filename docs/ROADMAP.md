@@ -139,8 +139,8 @@ game picks from (and an example of each):
 ### 8. Game library gaps (in pieces, as games need them)
 
 - 2D: slopes and one-way platforms in tilemaps, tweening, camera follow and shake: done.
-- 3D: PBR materials (metal, roughness, normal maps), skyboxes, morph targets, culling instances
-  one by one.
+- 3D: PBR materials (metal, roughness, normal maps): done (glTF and `Material`, all backends).
+  Next: skyboxes, morph targets, culling instances one by one.
 - Physics: 2D rigid bodies with joints, as `import physics` (done: circles, boxes, convex
   polygons, pins, rods, ropes, springs, sensors, raycasts; next as games need them: several
   shapes per body (done, with concave polygons cut into convex parts), sleeping, motors and limits on pins, continuous collision for fast bullets (done: swept), welds, sliders and wheels (done),
