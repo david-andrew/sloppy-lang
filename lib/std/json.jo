@@ -358,6 +358,121 @@ is_null = (j: Json?) -> bool:
             _: pass
     false
 
+# ---------------- changing ----------------
+# Mutations are strict: wrong kinds, missing intermediate fields and bad indices stop with a
+# message. get/at remain optional reads. Json values are copied until changed, like arrays.
+__json_required = (j: Json, key: str) -> Json:
+    match j:
+        .object(ks, vs):
+            loop i in [0..ks.len()):
+                if ks[i] == key: return vs[i]
+            panic("Json has no field {key}")
+        _: panic("Json field {key}: expected an object")
+    Json.null_
+
+__json_required = (j: Json, i: int) -> Json:
+    match j:
+        .list(xs):
+            if i < 0 or i >= xs.len(): panic("Json index {i}: outside a list of {xs.len()} elements")
+            return xs[i]
+        _: panic("Json index {i}: expected a list")
+    Json.null_
+
+# set or add an object's field (a primitive value is made a Json where a Json goes)
+set = (j: mut Json, key: str, value: Json):
+    match j:
+        .object(ks, vs):
+            loop i in [0..ks.len()):
+                if ks[i] == key:
+                    vs[i] = value
+                    j = Json.object(ks, vs)
+                    return
+            ks.push(key)
+            vs.push(value)
+            j = Json.object(ks, vs)
+        _: panic("Json field {key}: expected an object")
+
+# replace an existing list element
+set = (j: mut Json, i: int, value: Json):
+    match j:
+        .list(xs):
+            if i < 0 or i >= xs.len(): panic("Json index {i}: outside a list of {xs.len()} elements")
+            xs[i] = value
+            j = Json.list(xs)
+        _: panic("Json index {i}: expected a list")
+
+# append to a Json list
+push = (j: mut Json, value: Json):
+    match j:
+        .list(xs):
+            xs.push(value)
+            j = Json.list(xs)
+        _: panic("Json.push: expected a list")
+
+# remove an object's field; false when it was absent (wrong kind: an error)
+remove = (j: mut Json, key: str) -> bool:
+    match j:
+        .object(ks, vs):
+            found = false
+            i = 0
+            loop i < ks.len():
+                if ks[i] == key:
+                    ks.remove_at(i)
+                    vs.remove_at(i)
+                    found = true
+                else: i += 1
+            j = Json.object(ks, vs)
+            return found
+        _: panic("Json.remove: expected an object")
+    false
+
+# change a nested field/element: each path part is a string (object key) or integer (list index).
+# Intermediate containers must exist; the last object field may be new. No indexing syntax is
+# needed: j.set_path(["user", "age"], 32), j.push_path(["user", "tags"], "new"). An empty path means j itself.
+set_path = (j: mut Json, path: Json, value: Json):
+    __json_change(j, __json_path(path), 0, value, 0)
+
+# append to a list at a nested path
+push_path = (j: mut Json, path: Json, value: Json):
+    __json_change(j, __json_path(path), 0, value, 1)
+
+# remove an object field at a nested path (an empty path is an error)
+remove_path = (j: mut Json, path: Json) -> bool:
+    parts = __json_path(path)
+    if parts.len() == 0: panic("Json.remove: a path must name a field")
+    __json_change(j, parts, 0, Json.null_, 2)
+
+__json_path = (path: Json) -> Json[]:
+    match path:
+        .list(parts): return parts
+        _: panic("Json path: expected a list of string keys and integer indices")
+    []
+
+__json_change = (j: mut Json, path: Json[], at: int, value: Json, op: int) -> bool:
+    if at == path.len():
+        if op == 0: j = value
+        else: j.push(value)
+        return true
+    match path[at]:
+        .text(key):
+            if at + 1 == path.len():
+                if op == 0:
+                    j.set(key, value)
+                    return true
+                if op == 2: return j.remove(key)
+            child = __json_required(j, key)
+            changed = __json_change(child, path, at + 1, value, op)
+            j.set(key, child)
+            return changed
+        .integer(i):
+            if op == 2 and at + 1 == path.len(): panic("Json.remove: the last path part must be an object key")
+            child = __json_required(j, i)
+            changed = __json_change(child, path, at + 1, value, op)
+            j.set(i, child)
+            return changed
+        _: panic("Json path: expected a string key or integer index")
+    false
+
 # ---------------- writing ----------------
 # JSON text for a value (indent > 0: on several lines, indented by that many spaces)
 to_json = (j: Json, indent: int = 0) -> str:

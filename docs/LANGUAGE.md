@@ -751,6 +751,28 @@ JSON whose names are keywords (`when`, `in`, `if`, `match`) reads into a struct.
 not names at all (`"content-type"`, `"first name"`) go in a map field (`{str: str}`) or through
 `parse_json`.
 
+**JSON of any shape.** `j = parse_json(text)` gives a `Json` or `JsonError`; after checking the
+error, read with `j.get("name").as_str()`, `j.at(0).as_int()` and `j.as_list()`. Those reads
+give `none` for absent fields, out-of-range elements or wrong kinds. Change a value with
+`j.set("name", "ann")` (add or replace an object field), `j.set(0, 3)` (replace a list element),
+`j.push(value)` (append to a list), and `j.remove("name")` (true if removed).
+
+For nested changes, a path is a JSON list of string keys and integer indices:
+
+```gdscript
+j: Json = {"a": {"b": 1}, "list": [{"tags": []}]}
+j.set_path(["a", "b"], 3)
+j.push_path(["list", 0, "tags"], "new")
+j.remove_path(["a", "b"])
+print(to_json(j))
+```
+
+These methods mutate `j`; copies of it keep their old values. Each intermediate container must
+exist. The last object key may be new; an array index must already exist. Wrong kinds, missing
+intermediate fields and bad indices stop with an explanatory message. `set_path([], value)`
+replaces the root, and `push_path([], value)` appends to the root list. `remove_path` must end in
+an object key. Json indexing assignment (`j["a"]["b"] = 3`) is not supported; use `set_path`.
+
 Structs compare with `==` field by field (and so work as map keys), unless a field holds a
 function: functions cannot be compared, so neither can such a struct (the compiler names the
 field; compare the fields that can be, `a.name == b.name`).

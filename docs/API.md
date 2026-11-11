@@ -1167,6 +1167,16 @@ For JSON straight into your own structs and back, from_json[Config](text) and to
 - `keys = (j: Json?) -> str[]`: an object's field names, in order
 - `is_null = (j: Json?) -> bool`
 
+#### Changing
+
+- `set = (j: mut Json, key: str, value: Json)`: set or add an object's field (a primitive value is made a Json where a Json goes)
+- `set = (j: mut Json, i: int, value: Json)`: replace an existing list element
+- `push = (j: mut Json, value: Json)`: append to a Json list
+- `remove = (j: mut Json, key: str) -> bool`: remove an object's field; false when it was absent (wrong kind: an error)
+- `set_path = (j: mut Json, path: Json, value: Json)`: change a nested field/element: each path part is a string (object key) or integer (list index). Intermediate containers must exist; the last object field may be new. No indexing syntax is needed: j.set_path(["user", "age"], 32), j.push_path(["user", "tags"], "new"). An empty path means j itself.
+- `push_path = (j: mut Json, path: Json, value: Json)`: append to a list at a nested path
+- `remove_path = (j: mut Json, path: Json) -> bool`: remove an object field at a nested path (an empty path is an error)
+
 #### Writing
 
 - `to_json = (j: Json, indent: int = 0) -> str`: JSON text for a value (indent > 0: on several lines, indented by that many spaces)
