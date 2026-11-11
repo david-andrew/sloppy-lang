@@ -1,0 +1,94 @@
+# requires: sloppy
+# Known callbacks in release must preserve capture identity and every return path.
+apply[T, U] = (x: T, f: (T) -> U) -> U: f(x)
+through[T, U] = (x: T, f: (T) -> U) -> U: apply(x, f)
+edit_with = (xs: mut int[], f: (mut int[]) -> void): f(xs)
+both = (x: int, f: (int) -> int, g: (int) -> int) -> int: f(x) + g(x)
+plus_one = (x: int) -> int: x + 1
+
+saved: ((int) -> int)[]
+save_and_apply = (x: int, f: (int) -> int) -> int:
+    saved.push(f)
+    f(x)
+
+struct Pair:
+    a: int
+    b: int
+
+@noinline
+capture_scope = ():
+    n = 0
+    [1, 2, 3].each((x): n += x)
+    assert(n == 6)
+
+main = ():
+    loop _ in [0..4):
+        n = 1
+        add = (x: int) -> int:
+            n += x
+            n
+        print([2, 3, 4].map(add), n)
+        n = 20
+        print(through(5, add), add(1), n)
+        print(save_and_apply(2, add), saved.last()(3), n)
+        saved.clear()
+    saved.clear()
+    # Closure captures made in different iterations must stay distinct.
+    fs: (() -> int)[]
+    loop i in [0..4):
+        n = i
+        fs.push(():
+            n += 10
+            n)
+        [1, 2].each((x): n += x)
+        print(n)
+    loop f in fs: print(f(), f())
+    fs.clear()
+    # Named functions, inferred generics and callbacks with early returns.
+    print([1, 2, 3].map(plus_one))
+    print(through("hi", (s): s + "!"))
+    print([1, 2, 3, 4].map((x):
+        if x % 2 == 0: return x * 10
+        x + 1))
+    # Self-recursion stays a real call; it must not trigger recursive expansion.
+    fact = (x: int) -> int:
+        if x <= 1: return 1
+        x * fact(x - 1)
+    print([1, 2, 3, 4, 5].map(fact))
+    # Captures contain values with copy-on-write ownership, including a shared cell.
+    xs = [1, 2]
+    bump = (x: int) -> int:
+        xs.push(x)
+        xs.sum()
+    print([3, 4].map(bump), xs)
+    # Changing the selected function must not be mistaken for a known constant.
+    f: (int) -> int = plus_one
+    print(apply(2, f))
+    f = (x): x * 10
+    print(apply(2, f))
+
+    # Aggregate arguments/results, independent copied values and mut callback arguments.
+    print(["a", "bb"].map((s): [s, s + "!"]))
+    print([1, 2, 3].reduce([0], (a, x):
+        out = a
+        out.push(x)
+        out))
+    value = [1]
+    edit = (xs: mut int[]): xs.push(2)
+    edit_with(value, edit)
+    print(value)
+
+    print(both(3, (x): x * 2, (x): x + 10))
+    # Callback execution can mutate the same shared cell on successive loop iterations.
+    n = 0
+    loop i in [0..4):
+        [1, 2].each((x): n += i * x)
+    print(n)
+
+    print(apply(3, if len(args()) > 0: (x): x * 2 else: (x): x + 1))
+
+    print(through(7, (x): Pair(x, x * 2)))
+    before = alloc_count()
+    loop _ in [0..30): capture_scope()
+    leaked = alloc_count() - before
+    print("leaked", leaked)

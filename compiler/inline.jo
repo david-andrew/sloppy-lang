@@ -122,14 +122,19 @@ inline_call = (call: Ins, callee: IrFn, out: mut Ins[]):
         p = vm[k]
         out.push(Ins(.mov, i32(vtype(p)), i32(p), ir.args[int(call.a) + k], 0, 0, 0))
     if callee.raw_mem: ir.raw_mem = true
-    out.push(Ins(.block, 0, 0, 0, 0, 0, 0))
+    # A single tail return needs no exit block. Besides avoiding dead branches, this lets
+    # loop passes see a callback's arithmetic directly in the loop body.
+    tail = callee.code.len() > 0 and callee.code[callee.code.len() - 1].op == .ret
+    loop k in [0..callee.code.len() - 1):
+        if callee.code[k].op == .ret: tail = false
+    if not tail: out.push(Ins(.block, 0, 0, 0, 0, 0, 0))
     depth = 0
     loop ci in callee.code:
         op = ci.op
         if op == .ret:
             if ci.a >= 0 and call.dst >= 0:
                 out.push(Ins(.mov, i32(vtype(int(call.dst))), call.dst, i32(vm[int(ci.a)]), 0, 0, 0))
-            out.push(Ins(.br, 0, 0, 0, 0, 0, depth))
+            if not tail: out.push(Ins(.br, 0, 0, 0, 0, 0, depth))
             continue
         ni = remap(ci, callee, vm, sm)
         # (the calls of a callee inlined on a rarely taken path are on it too)
@@ -139,7 +144,7 @@ inline_call = (call: Ins, callee: IrFn, out: mut Ins[]):
         out.push(ni)
         if op == .block or op == .loop or op == .if_: depth += 1
         else if op == .end: depth -= 1
-    out.push(Ins(.end, 0, 0, 0, 0, 0, 0))
+    if not tail: out.push(Ins(.end, 0, 0, 0, 0, 0, 0))
 
 # the callee to inline for a call in a loop nest `depth` deep (-1: none)
 inline_target = (ins: Ins, depth: int, self_pos: int, snap: IrFn[], can: int[]) -> int:
@@ -160,7 +165,7 @@ inline_callee = (ins: Ins, self_pos: int, snap: IrFn[]) -> int:
     j
 
 # inline small callees into the current function (ir); returns true if anything changed
-inline_into = (self_pos: int, snap: IrFn[], can: int[]) -> bool:
+inline_small_into = (self_pos: int, snap: IrFn[], can: int[]) -> bool:
     global inl_calls
     # (the calls that stay: not inlined by size, not on a rarely taken path)
     inl_calls = 0
@@ -200,3 +205,212 @@ inline_into = (self_pos: int, snap: IrFn[], can: int[]) -> bool:
             if kinds.pop() == .loop: depth -= 1
     ir.code = out
     true
+
+# Function values passed to small higher-order helpers. Keep this separate from the ordinary
+# inliner: most functions have no known function value, and pay only the initial scan.
+const INLINE_VALUE_MAX = 200
+const INLINE_VALUE_BUDGET = 800
+const INLINE_VALUE_ROUNDS = 3
+
+# A parameter's address may only be read, or forwarded to another read-only parameter.
+# No copies, stores, returns or unknown calls: in particular a mut function parameter and a
+# closure saved by a helper fail this test. Bound forwarding (and recursive call graphs).
+inl_read_param = (f: IrFn, p: int, snap: IrFn[], fuel: int) -> bool:
+    if fuel == 0: return false
+    saved = ir.args
+    loop ins in f.code:
+        if ins.op == .load and int(ins.a) == p and int(ins.c) & M_INDEX == 0:
+            if int(ins.c) != 8 or (ins.imm != 0 and ins.imm != 8): return false
+            continue
+        if ins.op == .call:
+            loop k in [0..int(ins.b)):
+                if int(f.args[int(ins.a) + k]) != p: continue
+                if ins.imm < 0 or ins.imm >= rel_by_index.len(): return false
+                j = rel_by_index[int(ins.imm)]
+                if j < 0 or not inl_read_param(snap[j], k, snap, fuel - 1): return false
+            continue
+        # o_operands uses the current function's argument table.
+        ir.args = f.args
+        o_operands(ins)
+        ir.args = saved
+        loop u in o_buf:
+            if u == p: return false
+    true
+
+# Conditional temporary initialization also defines registers (before their branch runs).
+inl_value_defs = () -> int[]:
+    defs = fill(0, ir.vtypes.len())
+    loop p in [0..ir.nparams): defs[p] = 1
+    loop ins in ir.code:
+        if ins.dst >= 0 and defines_value(ins.op): defs[int(ins.dst)] += 1
+        if ins.op == .zeroslots:
+            loop k in [0..int(ins.b)):
+                item = int(ir.args[int(ins.a) + k])
+                if item & 1 == 1: defs[item >> 1] += 1
+    defs
+
+# The address of a closure is a single-definition slot address; both words have exactly one
+# store. All uses stay in the initialization's structured scope, and no address escapes.
+# Values in the environment are deliberately NOT treated as constants: shared captured cells
+# still go through their original loads and stores, even when the callback is inlined.
+inl_values = (self_pos: int, snap: IrFn[]) -> bool:
+    nv = ir.vtypes.len()
+    ns = ir.slot_size.len()
+    if ns == 0: return false
+    defs = inl_value_defs()
+    sl = fill(-1, nv)
+    fp = fill(-1, nv)
+    loop ins in ir.code:
+        d = int(ins.dst)
+        if d < 0 or defs[d] != 1: continue
+        if ins.op == .slot and ir.slot_size[int(ins.a)] == 16: sl[d] = int(ins.a)
+        else if ins.op == .mov and sl[int(ins.a)] >= 0: sl[d] = sl[int(ins.a)]
+        else if ins.op == .faddr: fp[d] = int(ins.imm)
+    fun = fill(-1, ns)
+    envv = fill(-1, ns)
+    level = fill(-1, ns)
+    ok = fill(true, ns)
+    # C aggregate results write their slot through ABI metadata, not ordinary operands.
+    loop cc in ir.ccalls:
+        if cc.slot >= 0: ok[cc.slot] = false
+    depth = 0
+    loop ins in ir.code:
+        if ins.op == .end or ins.op == .else_:
+            loop s in [0..ns):
+                if level[s] >= depth: level[s] = -1
+        if ins.op == .end: depth -= 1
+        a = int(ins.a)
+        b = int(ins.b)
+        if ins.op == .store and a >= 0 and sl[a] >= 0:
+            s = sl[a]
+            if int(ins.c) != 8: ok[s] = false
+            else if ins.imm == 0 and fun[s] == -1 and fp[b] >= 0:
+                fun[s] = fp[b]
+                level[s] = depth
+            else if ins.imm == 8 and envv[s] == -1 and fun[s] >= 0 and level[s] == depth and (defs[b] == 1 or is_kv(b)):
+                envv[s] = b
+            else: ok[s] = false
+            if sl[b] >= 0: ok[sl[b]] = false
+        else if ins.op == .load and a >= 0 and sl[a] >= 0:
+            s = sl[a]
+            if int(ins.c) != 8 or (ins.imm != 0 and ins.imm != 8) or level[s] < 0 or fun[s] < 0 or envv[s] < 0: ok[s] = false
+        else if ins.op == .call:
+            loop k in [0..b):
+                u = int(ir.args[a + k])
+                s = sl[u]
+                if s < 0: continue
+                j = inline_callee(ins, self_pos, snap)
+                if level[s] < 0 or fun[s] < 0 or envv[s] < 0 or j < 0:
+                    ok[s] = false
+                else if snap[j].noinline or snap[j].cabi or snap[j].code.len() > INLINE_VALUE_MAX or not inl_read_param(snap[j], k, snap, 3): ok[s] = false
+        else if ins.op == .zeroslots:
+            loop k in [0..b):
+                item = int(ir.args[a + k])
+                if item & 1 == 0: ok[item >> 1] = false
+                else if sl[item >> 1] >= 0: ok[sl[item >> 1]] = false
+        else if ins.op == .mov and ins.dst >= 0 and sl[int(ins.dst)] >= 0: pass
+        else if ins.op != .slot:
+            o_operands(ins)
+            loop u in o_buf:
+                if sl[u] >= 0: ok[sl[u]] = false
+        if ins.op == .block or ins.op == .loop or ins.op == .if_: depth += 1
+    any = false
+    loop s in [0..ns):
+        if ok[s] and fun[s] >= 0 and envv[s] >= 0: any = true
+    if not any: return false
+    # Limit expansion per caller (no persistent clones, so also no unbounded clone cache).
+    budget = INLINE_VALUE_BUDGET
+    expand = fill(false, ns)
+    loop ins in ir.code:
+        if ins.op != .call: continue
+        j = inline_callee(ins, self_pos, snap)
+        take = false
+        loop k in [0..int(ins.b)):
+            s = sl[int(ir.args[int(ins.a) + k])]
+            if s >= 0 and ok[s]:
+                expand[s] = true
+                take = true
+        if take and j >= 0: budget -= snap[j].code.len()
+    if budget < 0: return false
+    out: Ins[]
+    loop ins in ir.code:
+        a = int(ins.a)
+        if ins.op == .load and sl[a] >= 0 and ok[sl[a]]:
+            s = sl[a]
+            ni = ins
+            if ins.imm == 0:
+                ni.op = .faddr
+                ni.a = 0
+                ni.imm = fun[s]
+            else:
+                ni.op = .mov
+                ni.a = i32(envv[s])
+                ni.imm = 0
+            ni.b = 0
+            ni.c = 0
+            out.push(ni)
+        else if ins.op == .store and sl[a] >= 0 and ok[sl[a]]:
+            if expand[sl[a]]: out.push(ins)
+        else if ins.op == .call:
+            take = false
+            loop k in [0..int(ins.b)):
+                s = sl[int(ir.args[a + k])]
+                if s >= 0 and ok[s]: take = true
+            if take: inline_call(ins, snap[inline_callee(ins, self_pos, snap)], out)
+            else: out.push(ins)
+        else: out.push(ins)
+    ir.code = out
+    loop s in [0..ns):
+        if ok[s] and fun[s] >= 0 and envv[s] >= 0 and not expand[s]:
+            # All reads and stores were removed; unused address instructions die in optimize.
+            ir.slot_size[s] = 0
+    true
+
+# After a helper has been expanded, propagation exposes its callback's faddr. Resolve only
+# single-definition registers; a variable assigned different function values stays indirect.
+inl_direct_values = () -> bool:
+    nv = ir.vtypes.len()
+    defs = inl_value_defs()
+    fp = fill(-1, nv)
+    loop ins in ir.code:
+        if ins.op == .faddr and defs[int(ins.dst)] == 1: fp[int(ins.dst)] = int(ins.imm)
+    any = false
+    loop i in [0..ir.code.len()):
+        ins = ir.code[i]
+        if ins.op == .calli and fp[int(ins.c)] >= 0:
+            ins.op = .call
+            ins.imm = fp[int(ins.c)]
+            ins.c = 0
+            any = true
+        else if (ins.op == .eq or ins.op == .ne) and fp[int(ins.a)] >= 0 and is_kv(int(ins.b)) and kv_of(int(ins.b)) == 0:
+            ins.op = .iconst
+            ins.imm = if ir.code[i].op == .ne: 1 else: 0
+            ins.a = 0
+            ins.b = 0
+            any = true
+        ir.code[i] = ins
+    any
+
+inline_into = (self_pos: int, snap: IrFn[], can: int[]) -> bool:
+    changed = inline_small_into(self_pos, snap, can)
+    has_value = false
+    loop ins in ir.code:
+        if ins.op == .faddr:
+            has_value = true
+            break
+    if not has_value: return changed
+    loop _ in [0..INLINE_VALUE_ROUNDS):
+        if not inl_values(self_pos, snap): break
+        # Expand first, then replace loads from the now local closure slots. In the next round
+        # those slots have no calls using them, and their two words disappear altogether.
+        changed = true
+        optimize()
+        inl_values(self_pos, snap)
+        optimize()
+        if inl_direct_values():
+            inline_small_into(self_pos, snap, can)
+            optimize()
+            # A named function's thunk may not have been visited in callee order yet (faddr
+            # is not a call-graph edge). Inline its now exposed direct call as well.
+            if inline_small_into(self_pos, snap, can): optimize()
+    changed

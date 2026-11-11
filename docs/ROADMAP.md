@@ -226,7 +226,11 @@ safety net for changes here.
   loops; pointer induction and carrying matrix accumulators remain opportunities. See
   `bench/headers/README.md` for raw counts, overflow limits and correctness/compile-speed gates.
   vec4/mat4 math is scalar (2-2.8x C); packed SSE for vec4 would close it.
-  Function values are not inlined (reduce, count, a lambda: 2-3x a plain loop).
+  Known nonescaping function values now inline through small helpers in release builds:
+  reduce, all, map and mapped sums are about level with loops; count/any/filter retain
+  1.2-1.6x instruction gaps. Captured-state each improves 63% but shared cells still prevent
+  vectorization (4.9x a plain reduction). Stored/escaping callbacks, parallel worker closures
+  and large helpers such as sort_by remain opportunities. See `bench/fnvalues/README.md`.
 - Debug builds stay the default; compile speed comes first (item 2 tracks it). What they lose
   to release builds, measured October 2026: the out-of-line uniqueness and refcount calls were
   most of it (done: the code generator tests the common case and skips the call, through a
