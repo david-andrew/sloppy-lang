@@ -218,6 +218,18 @@ safety net for changes here.
 
 - Measure the finished games first: allocation churn and frame-time spikes matter more than
   synthetic benchmarks.
+- Finished-game profiling now has a reproducible headless harness in
+  [bench/games](../bench/games/README.md): scripted play, per-frame instruction distributions,
+  allocation/free and refcount-helper counts, debug/release, software and lavapipe. Stack
+  near-plane polygons and reusable software raster/vertex workspaces cut median allocations
+  per debug software frame from 255 to 150 in Rebound, 1546 to 433 in Breakwater, 1985 to 396
+  in Aces, and 3372.5 to 655.5 in Dunes (frames 60–359, 320x180 output). The 40 before/after
+  captures are byte-identical and all 35 software render tests pass. Scratch storage keeps its
+  high-water capacity; these counts measure churn, not a reduction in live memory or a
+  full-resolution frame-rate claim. Plain rich-text lines and word wrapping also avoid
+  temporary character strings: the story template falls from 132 to 26 allocations per Vulkan
+  frame, with unchanged output and UTF-8/style-boundary tests. Software shader/projection work
+  and game-side mesh/HUD rebuilding remain visible in the profiles.
 - Then the remaining gap to C -O2 in release builds (fannkuch 1.5x, spectral 1.4x, nbody 1.3x).
 - Affine loop versioning now removes scaled-counter checks such as `b[k * n + j]`,
   using overflow-guarded endpoint tests and the original checked fallback. On `bench/headers`,
