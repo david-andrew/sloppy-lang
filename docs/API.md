@@ -4611,7 +4611,7 @@ Menus and hud_ boxes are drawn in the units of the 2D transform drawing has (cam
       text_size: f64 = 20.0
   ```
 - `hud_layout_box = (r: Rect, cover: bool = false) -> Rect`: Layout's bridge to the HUD: register a solved box (including the current transform and clip) without drawing it. This also makes layout boxes count toward hud_hovered().
-- `hud_layout_transform = (r: Rect) -> Rect`: A box through the transform, before clipping (for drag distances in transformed scrolls).
+- `hud_layout_inverse = () -> mat4`: The inverse of the current 2D transform, saved with layout's previous-frame boxes.
 - `hud_layout_visible = () -> Rect`: The visible area in the units of the current 2D transform.
 - `hud_layout_press_origin = () -> vec2`: Where the press began, even when it moved or was released before this frame was drawn.
 - `hud_layout_tap = (active: bool = false) -> bool`: Whether this press can still click (a claimed press or a finger dragged away cannot).

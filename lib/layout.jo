@@ -122,9 +122,7 @@ struct _Box:
     key = ""
     rect: Rect
     hit: Rect
-    screen: Rect
     view: Rect
-    view_size = 0.0
     clip: Rect
     focusable = false
     scrolling = false
@@ -135,6 +133,7 @@ struct _Box:
     state: State
 
 struct _Root:
+    inverse: mat4 = mat4()
     boxes: _Box[]
     spare: _Box[]
     index: {int: int}
@@ -199,6 +198,10 @@ _intersection = (a: Rect, b: Rect) -> Rect:
     y = max(a.y, b.y)
     Rect(x, y, max(min(a.x + a.w, b.x + b.w) - x, 0), max(min(a.y + a.h, b.y + b.h) - y, 0))
 
+_local = (inverse: mat4, p: vec2) -> vec2:
+    q = inverse * vec4(p, 0, 1)
+    vec2(q.x, q.y)
+
 _live_input = () -> Input:
     v = Input(pointer = mouse_pos(), origin = hud_layout_press_origin(), down = mouse_down(.left), pressed = mouse_pressed(.left), released = mouse_released(.left), tap = hud_layout_tap(), claimed = not hud_layout_can_scroll(), touch = touch_input(), wheel = mouse_wheel(), dt = frame_time())
     stick = vec2(gamepad_axis(0), gamepad_axis(1))
@@ -228,19 +231,23 @@ _read_input = ():
     _hover_chain.clear()
     _press_chain.clear()
     # The boxes are in draw order: the last hit and its ancestors own the pointer.
+    local_pointer = _local(_root.inverse, _events.pointer)
     loop b in _root.boxes:
-        if contains(b.hit, _events.pointer): _hit = b.id
+        if contains(b.hit, _events.pointer) and contains(b.rect, local_pointer): _hit = b.id
     press_at = _events.origin ?? _events.pointer
+    local_press = _local(_root.inverse, press_at)
     press_hit = 0
     if _events.pressed:
         loop b in _root.boxes:
-            if contains(b.hit, press_at): press_hit = b.id
+            if contains(b.hit, press_at) and contains(b.rect, local_press): press_hit = b.id
     if _render:
         loop rt in _roots.values():
             if rt.frame < frame_number() - 1 or rt.order <= _root.order: continue
+            lp = _local(rt.inverse, _events.pointer)
+            pp = _local(rt.inverse, press_at)
             loop b in rt.boxes:
-                if contains(b.hit, _events.pointer): _hit = 0
-                if _events.pressed and contains(b.hit, press_at): press_hit = 0
+                if contains(b.hit, _events.pointer) and contains(b.rect, lp): _hit = 0
+                if _events.pressed and contains(b.hit, press_at) and contains(b.rect, pp): press_hit = 0
                 if b.focusable and b.hit.w > 0 and b.hit.h > 0:
                     _events.nav = vec2()
                     _events.activate = false
@@ -262,18 +269,17 @@ _read_input = ():
                 _root.scroll_capture = k
                 _root.scroll_origin = b.scroll
                 horizontal = b.axis == .horizontal
-                end = if horizontal: f64(b.screen.y + b.screen.h) else: f64(b.screen.x + b.screen.w)
-                point = if horizontal: f64(press_at.y) else: f64(press_at.x)
-                view = b.view_size
-                screen_view = if horizontal: f64(b.view.w) else: f64(b.view.h)
+                end = if horizontal: f64(b.rect.y + b.rect.h) else: f64(b.rect.x + b.rect.w)
+                point = if horizontal: f64(local_press.y) else: f64(local_press.x)
+                view = if horizontal: f64(b.view.w) else: f64(b.view.h)
                 origin = if horizontal: f64(b.view.x) else: f64(b.view.y)
                 if b.content > view and point >= end - 12.0:
                     _root.thumb_drag = true
                     _root.dragging = true
                     thumb = max(view * view / b.content, min(24.0, view))
                     pos = (view - thumb) * b.scroll / (b.content - view)
-                    at = (if horizontal: f64(press_at.x) else: f64(press_at.y)) - origin
-                    grab = at * view / max(screen_view, 1.0) - pos
+                    at = (if horizontal: f64(local_press.x) else: f64(local_press.y)) - origin
+                    grab = at - pos
                     _root.thumb_grab = if grab >= 0.0 and grab <= thumb: grab else: thumb / 2.0
                     if _render: claim_press()
                 break
@@ -397,6 +403,7 @@ at = (r: Rect, children: () -> void, pad: Padding = 0, gap: f64 = 0.0, align: Ma
     result = _nodes[0].state
     _root.spare.clear()
     _root.spare_index.clear()
+    _root.inverse = if render: hud_layout_inverse() else: mat4()
     if render: _root.panel_first = hud_layout_layer()
     _draw_tree(0)
     # Floating subtrees (including nested floating subtrees) come after the normal tree.
@@ -458,8 +465,9 @@ hovered = () -> bool:
     p = mouse_pos()
     loop rt in _roots.values():
         if rt.frame < frame_number() - 1: continue
+        lp = _local(rt.inverse, p)
         loop b in rt.boxes:
-            if contains(b.hit, p): return true
+            if contains(b.hit, p) and contains(b.rect, lp): return true
     false
 
 # Forget cached roots and release their buffers (for a UI that is closed permanently).
@@ -698,22 +706,16 @@ _position = (i: int):
             off -= _events.wheel * 44.0
             speed = 0.0
         if _root.scroll_capture == n.id and _root.dragging and _events.down:
-            d = _events.pointer - _root.press_at
-            # A transformed UI's screen delta is converted using last frame's box ratio.
-            scale = 1.0
-            if let pi = _root.index.get(n.id):
-                b = _root.boxes[pi]
-                local = if along_w: f64(b.rect.w) else: f64(b.rect.h)
-                screen_size = if along_w: f64(b.screen.w) else: f64(b.screen.h)
-                if screen_size > 0.0: scale = local / screen_size
-            delta = (if along_w: f64(d.x) else: f64(d.y)) * scale
+            pointer = _local(_root.inverse, _events.pointer)
+            d = pointer - _local(_root.inverse, _root.press_at)
+            delta = if along_w: f64(d.x) else: f64(d.y)
             was = off
             if _root.thumb_drag:
                 b = _root.boxes[_root.index[n.id]]
                 start = if along_w: f64(b.view.x) else: f64(b.view.y)
-                point = if along_w: f64(_events.pointer.x) else: f64(_events.pointer.y)
+                point = if along_w: f64(pointer.x) else: f64(pointer.y)
                 thumb = max(room * room / max(content, 1.0), min(24.0, room))
-                off = clamp(((point - start) * scale - _root.thumb_grab) / max(room - thumb, 1.0) * limit, 0.0, limit)
+                off = clamp((point - start - _root.thumb_grab) / max(room - thumb, 1.0) * limit, 0.0, limit)
             else: off = clamp(_root.scroll_origin - delta, 0.0, limit)
             if dt > 0.0: speed = mix(speed, (off - was) / dt, 0.5)
         else if not _events.down:
@@ -767,21 +769,15 @@ _draw_tree = (i: int) -> void:
     local_clip = n.clip.w < 1e20
     if _render and local_clip: saved = hud_layout_clip(n.clip)
     hit = _intersection(r, n.clip)
-    screen_rect = r
-    if _render:
-        screen_rect = hud_layout_transform(r)
-        if n.parent >= 0 and n.kind != .space: hit = hud_layout_box(r, true)
+    if _render and n.parent >= 0 and n.kind != .space: hit = hud_layout_box(r, true)
     # The root is a coordinate space, not a box that captures the entire game screen.
     if n.parent < 0 or n.kind == .space: hit = Rect()
     view = Rect()
-    view_size = 0.0
     if n.scrolling:
         view = Rect(f64(r.x) + n.pad.left, f64(r.y) + n.pad.top, max(n.w - n.pad.left - n.pad.right, 0.0), max(n.h - n.pad.top - n.pad.bottom, 0.0))
-        view_size = if n.axis == .horizontal: f64(view.w) else: f64(view.h)
-        if _render: view = hud_layout_transform(view)
     parent = if n.parent >= 0: _nodes[n.parent].id else: 0
     _root.spare_index[n.id] = _root.spare.len()
-    _root.spare.push(_Box(id = n.id, parent = parent, key = n.key, rect = r, hit = hit, screen = screen_rect, view = view, view_size = view_size, clip = n.clip, focusable = n.focusable and n.enabled, scrolling = n.scrolling, axis = n.axis, scroll = n.scroll, speed = n.speed, content = n.content, state = n.state))
+    _root.spare.push(_Box(id = n.id, parent = parent, key = n.key, rect = r, hit = hit, view = view, clip = n.clip, focusable = n.focusable and n.enabled, scrolling = n.scrolling, axis = n.axis, scroll = n.scroll, speed = n.speed, content = n.content, state = n.state))
     if _render and r.w > 0 and r.h > 0:
         if n.color.w > 0:
             if n.radius > 0.0: rect_rounded(f64(r.x), f64(r.y), f64(r.w), f64(r.h), n.radius, n.color)
