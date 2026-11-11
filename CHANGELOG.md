@@ -27,6 +27,9 @@
 - Script guides now show the existing set constructor, membership and set algebra beside maps.
 - Document existing buffered file/stdin line loops for scripts; reading bytes after a final
   unterminated file line now correctly returns an empty array.
+- `sky_image(texture, intensity, rotation)` draws an equirectangular sky behind the 3D
+  scene and supplies PBR ambient light, with cached GGX prefiltered rough reflections.
+  `sky(...)` returns to the original gradient; `hide_sky()` retains the environment's light.
 - 3D metallic-roughness PBR materials, used automatically by glTF models or selected with
   `draw_mesh(..., material = Material(...))`: GGX highlights, sky/ground ambient reflections,
   base/metallic-roughness/normal/occlusion/emissive maps, generated or exported tangents,

@@ -153,6 +153,26 @@ MikkTSpace, not a replacement for an exporter's exact bake basis. Mesh generator
 `tangents3d(vertices, indices, uv_set = 0)` first. No shader compiler extensions are needed:
 the same shader functions run through Vulkan, OpenGL, WebGL, Metal and the software renderer.
 
+### Sky images
+
+`sky_image(texture, intensity = 1.0, rotation = 0.0)` selects an equirectangular panorama
+for the background of a 3D scene and for PBR ambient light. A 2:1 PNG or JPEG is usual;
+its RGB is sRGB. +Y is at the top, -Y at the bottom, +X at the horizontal center and +Z
+three quarters across. `rotation` turns the environment about +Y in radians; `intensity`
+scales its linear light before tone mapping. The image stays at infinity as the camera moves.
+Keep its texture alive while selected. `sky(...)` selects the original gradient again;
+`hide_sky()` hides the background while retaining the selected environment's light.
+
+Two 128×64 linear maps are cached on the first 3D pass after selecting an image: GGX
+importance-sampled convolutions at roughness 0.5 and 1, with 64 directions per texel.
+Reflections interpolate these and the sharp original by squared roughness. The broad map
+also approximates diffuse irradiance. This gives smooth rough-metal reflections at modest
+cost, without a full cubemap mip chain, BRDF lookup texture or HDR image loader. The original
+sun/sky gradient remains the ambient source when no image is selected. Updating a selected
+texture's pixels requires `sky_image(texture, refresh = true)` to rebuild its cached maps;
+changes to rotation or intensity reuse the maps. The same render-target passes run on the
+CPU renderer, Vulkan, GLES/WebGL and Metal.
+
 ## Computing on the GPU
 
 There are three levels, from the simplest to the most control. All three also run without a

@@ -3696,6 +3696,12 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
       uv_sets: vec4 = vec4(0, 0, 0, 0) # base, MR, normal, occlusion
       em_uv: f32 = 0.0
       unlit: f32 = 0.0
+      environment: Texture = Texture(0, 0, 0)
+      environment_rough: Texture = Texture(0, 0, 0)
+      environment_diffuse: Texture = Texture(0, 0, 0)
+      environment_on: f32 = 0.0
+      environment_intensity: f32 = 1.0
+      environment_rotation: f32 = 0.0
   ```
 - `struct LitOut`
   ```gdscript
@@ -3740,6 +3746,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `screen_ray = (p: vec2) -> (vec3, vec3)`: the ray from the camera through a point on the screen (2D units, as mouse_pos): where it starts and its direction (length 1), for picking what the mouse is on (with a physics3d raycast)
 - `sun = (direction: vec3, color: vec3 = vec3(1, 0.95, 0.85), disc: f64 = 1.0)`: the sunlight: direction points toward the sun (y > 0: above the horizon), color is its light; disc is how bright the sun's disc and its glow are in the sky (0: none, as for light from a moon or a sky with no sun, the light the same)
 - `sky = (top: vec3, horizon: vec3, ground: vec3 = vec3(0.3, 0.27, 0.24))`
+- `sky_image = (texture: Texture, intensity: f64 = 1.0, rotation: f64 = 0.0, refresh: bool = false)`: An equirectangular sky (usually a 2:1 PNG/JPEG, sRGB), at infinity behind the 3D scene. intensity scales its linear light; rotation turns it about +Y, in radians. PBR materials also sample it for ambient light and reflections. sky(...) returns to the gradient. Keep the texture alive while selected. refresh rebuilds its light maps after update_texture. hide_sky hides the backdrop, retaining its light.
 - `hide_sky = ()`
 - `night_stars = (amount: f64)`
 - `fog = (color: vec3, density: f64 = 0.01, height_falloff: f64 = 0.05)`

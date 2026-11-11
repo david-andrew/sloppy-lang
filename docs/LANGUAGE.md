@@ -2347,7 +2347,8 @@ exported tangents and skinning are retained. Base/emissive texture RGB is sRGB; 
 vertex color factors are linear. `Material(alpha_mode = .mask, alpha_cutoff = 0.5)` cuts out
 transparent texels, including their shadows; `.blend` draws transparent surfaces last.
 See [3D materials](GRAPHICS.md#3d-materials) for channels, UV sets, tangent conventions and
-lighting approximations.
+lighting approximations. `sky_image(load_texture(embed("sky.png")))` selects an
+equirectangular background and ambient reflections; `sky(...)` returns to the gradient.
 
 ### Testing a game
 

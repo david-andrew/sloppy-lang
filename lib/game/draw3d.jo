@@ -105,6 +105,12 @@ struct LitParams:
     uv_sets: vec4 = vec4(0, 0, 0, 0) # base, MR, normal, occlusion
     em_uv: f32 = 0.0
     unlit: f32 = 0.0
+    environment: Texture = Texture(0, 0, 0)
+    environment_rough: Texture = Texture(0, 0, 0)
+    environment_diffuse: Texture = Texture(0, 0, 0)
+    environment_on: f32 = 0.0
+    environment_intensity: f32 = 1.0
+    environment_rotation: f32 = 0.0
 
 struct LitOut:
     pos: vec4
@@ -269,6 +275,41 @@ __display_channel = (x: f32) -> f32:
     1.055 * pow(x, 1.0 / 2.4) - 0.055
 __linear_display = (c: vec3) -> vec3: vec3(__display_channel(c.x), __display_channel(c.y), __display_channel(c.z))
 
+# Equirectangular: +Y at the top, -Y at the bottom; +X at u=.5, +Z at u=.75.
+# Clamp to the pole texels even for a repeating sampler. Horizontal edges of a panorama
+# meet; wrapping u explicitly also works with an ordinary clamp-to-edge texture.
+__sky_uv = (dir: vec3, rotation: f32) -> vec2:
+    u: f32 = 0.5
+    if abs(dir.x) + abs(dir.z) > 0.000001: u = atan2(dir.z, dir.x) / 6.28318531 + 0.5
+    u = fract(u + rotation / 6.28318531)
+    vec2(u, acos(clamp(dir.y, -1.0, 1.0)) / 3.14159265)
+
+# Wrap the horizontal bilinear footprint explicitly, without changing the texture's
+# sampler (it may also be used for sprites). Clamp the poles, even on repeating textures.
+__sky_lookup = (tex: Texture, dir: vec3, rotation: f32) -> vec3:
+    uv = __sky_uv(dir, rotation)
+    size = texture_size(tex)
+    width = max(f32(size.x), 1.0)
+    hx = 0.5 / width
+    hy = 0.5 / max(f32(size.y), 1.0)
+    uv.y = clamp(uv.y, hy, 1.0 - hy)
+    if uv.x < hx:
+        a = sample(tex, vec2(1.0 - hx, uv.y)).xyz
+        b = sample(tex, vec2(hx, uv.y)).xyz
+        return mix(a, b, uv.x * width + 0.5)
+    if uv.x > 1.0 - hx:
+        a = sample(tex, vec2(1.0 - hx, uv.y)).xyz
+        b = sample(tex, vec2(hx, uv.y)).xyz
+        return mix(a, b, (uv.x - (1.0 - hx)) * width)
+    sample(tex, uv).xyz
+
+__sky_sample = (tex: Texture, dir: vec3, intensity: f32, rotation: f32) -> vec3:
+    __srgb_linear(__sky_lookup(tex, dir, rotation)) * intensity
+
+# Cached maps contain linear radiance (the panorama itself is sRGB).
+__sky_filtered = (tex: Texture, dir: vec3, intensity: f32, rotation: f32) -> vec3:
+    __sky_lookup(tex, dir, rotation) * intensity
+
 __pbr_uv = (i: __PbrOut, set: f32) -> vec2:
     if set > 0.5: return i.uv1
     i.uv
@@ -338,6 +379,15 @@ __pbr_fs = (i: __PbrOut, u: LitParams) -> vec4:
     reflection = n * (2.0 * dot(n, v)) - v
     env = mix(u.ground_color, u.sky_color, reflection.y * 0.5 + 0.5)
     env = mix(env, (u.sky_color + u.ground_color) * 0.5, rough * rough)
+    if u.environment_on > 0.5:
+        hemi = __sky_filtered(u.environment_diffuse, n, u.environment_intensity, u.environment_rotation)
+        blurred = __sky_filtered(u.environment_rough, reflection, u.environment_intensity, u.environment_rotation)
+        if rough <= 0.5:
+            sharp = __sky_sample(u.environment, reflection, u.environment_intensity, u.environment_rotation)
+            env = mix(sharp, blurred, rough * rough * 4.0)
+        else:
+            broad = __sky_filtered(u.environment_diffuse, reflection, u.environment_intensity, u.environment_rotation)
+            env = mix(blurred, broad, (rough * rough - 0.25) / 0.75)
     # Analytic split-sum BRDF fit (Lazarov); the gradient is our prefiltered environment.
     rx = 1.0 - rough
     ry = 0.0425 - 0.0275 * rough
@@ -411,6 +461,10 @@ struct _SkyParams:
     time: f32
     stars: f32
     sun_disc: f32
+    image: Texture = Texture(0, 0, 0)
+    image_on: f32 = 0.0
+    intensity: f32 = 1.0
+    rotation: f32 = 0.0
 
 struct _SkyOut:
     pos: vec4
@@ -432,6 +486,8 @@ _sky_fs = (i: _SkyOut, u: _SkyParams) -> vec4:
     a = u.inv_view_proj * vec4(i.ndc, 1, 1)
     b = u.inv_view_proj * vec4(i.ndc, -1, 1)
     dir = normalize(a.xyz / a.w - b.xyz / b.w)
+    if u.image_on > 0.5:
+        return vec4(__linear_display(aces(__sky_sample(u.image, dir, u.intensity, u.rotation))), 1)
     y = dir.y
     c = mix(u.sky_horizon, u.sky_top, pow(clamp(y, 0.0, 1.0), 0.45))
     if y < 0.0: c = mix(u.sky_horizon, u.ground, clamp(-y * 4.0, 0.0, 1.0))
@@ -442,6 +498,40 @@ _sky_fs = (i: _SkyOut, u: _SkyParams) -> vec4:
         s = hash21(g)
         if s > 0.997: c = c + vec3(1, 1, 1) * (u.stars * (s - 0.997) * 250.0 * (0.6 + 0.4 * sin(u.time * 3.0 + s * 100.0)))
     vec4(aces(c), 1)
+
+# Small equirectangular maps convolved once per sky image, at roughness .5 and 1.
+# GGX importance sampling with V=N, weighted by N.L. At roughness 1 this also approximates
+# cosine-weighted diffuse irradiance. Golden-angle samples avoid axis-aligned ghost images.
+struct __SkyFilterParams:
+    src: Texture
+    rough: f32
+
+__sky_filter_vs = (v: _SkyVertex, u: __SkyFilterParams) -> _SkyOut: _SkyOut(vec4(v.pos, 0, 1), v.pos)
+__sky_filter_fs = (i: _SkyOut, u: __SkyFilterParams) -> vec4:
+    uv = i.ndc * 0.5 + vec2(0.5, 0.5)
+    phi = (uv.x - 0.5) * 6.28318531
+    theta = uv.y * 3.14159265
+    n = vec3(sin(theta) * cos(phi), cos(theta), sin(theta) * sin(phi))
+    axis = vec3(0, 1, 0)
+    if abs(n.y) > 0.95: axis = vec3(1, 0, 0)
+    t = normalize(cross(axis, n))
+    b = cross(n, t)
+    alpha = u.rough * u.rough
+    a2 = alpha * alpha
+    c = vec3(0, 0, 0)
+    weight: f32 = 0.0
+    loop k in [0..64):
+        q = (f32(k) + 0.5) / 64.0
+        z = sqrt((1.0 - q) / (1.0 + (a2 - 1.0) * q))
+        radius = sqrt(max(1.0 - z * z, 0.0))
+        angle = f32(k) * 2.39996323
+        h = t * (cos(angle) * radius) + b * (sin(angle) * radius) + n * z
+        l = normalize(h * (2.0 * dot(n, h)) - n)
+        nl = max(dot(n, l), 0.0)
+        if nl > 0.0:
+            c = c + __sky_sample(u.src, l, 1.0, 0.0) * nl
+            weight += nl
+    vec4(c / max(weight, 0.0001), 1)
 
 # ---------------- post effects (bloom) ----------------
 struct _PostParams:
@@ -542,6 +632,14 @@ __fog_color = vec3(0.75, 0.85, 0.95)
 __fog_density = 0.004
 __fog_height = 0.05
 __sky_on = true
+__sky_image = Texture(0, 0, 0)
+__sky_intensity = 1.0
+__sky_rotation = 0.0
+__sky_cached = Texture(0, 0, 0)
+__sky_rough = RenderTarget(Texture(0, 0, 0), 0, 0)
+__sky_diffuse = RenderTarget(Texture(0, 0, 0), 0, 0)
+__sky_filter_sh = Shader()
+__sky_filter_ready = false
 __stars = 0.0
 __shadows = true
 __shadow_strength = 0.8
@@ -591,6 +689,31 @@ __pbr_init = ():
     __pbr_skin = make_shader(shader(__pbr_skin_vs, __pbr_fs))
     __pbr_shadow = make_shader(shader(__pbr_shadow_vs, __pbr_shadow_fs))
     __pbr_shadow_skin = make_shader(shader(__pbr_shadow_skin_vs, __pbr_shadow_fs))
+
+# Called at the start of the 3D pass, before recording any shadow or lit draws. Uses
+# existing render targets and shaders on every backend; no CPU readback or new builtins.
+__sky_prepare = ():
+    global __sky_cached, __sky_rough, __sky_diffuse, __sky_filter_sh, __sky_filter_ready
+    tex = __sky_image
+    if tex.id == 0: return
+    if __sky_cached.id == tex.id and __sky_cached.width == tex.width and __sky_cached.height == tex.height: return
+    if not __sky_filter_ready:
+        __sky_filter_sh = make_shader(shader(__sky_filter_vs, __sky_filter_fs))
+        __sky_rough = render_target(128, 64)
+        __sky_diffuse = render_target(128, 64)
+        __sky_filter_ready = true
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_CULL_FACE)
+    glDisable(GL_BLEND)
+    glDepthMask(0)
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(__sky_rough.fbo))
+    glViewport(0, 0, 128, 64)
+    draw(__sky_filter_sh, __fs_tri, __SkyFilterParams(tex, 0.5))
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(__sky_diffuse.fbo))
+    draw(__sky_filter_sh, __fs_tri, __SkyFilterParams(tex, 1.0))
+    __rebind_target()
+    glDepthMask(1)
+    __sky_cached = tex
 
 # ---------------- public API ----------------
 # place the camera; call once per frame before drawing 3D objects. up is the way that is up on
@@ -645,10 +768,24 @@ sun = (direction: vec3, color: vec3 = vec3(1, 0.95, 0.85), disc: f64 = 1.0):
     __sun_disc = disc
 
 sky = (top: vec3, horizon: vec3, ground: vec3 = vec3(0.3, 0.27, 0.24)):
-    global __ground_color, __sky_horizon, __sky_on, __sky_top
+    global __ground_color, __sky_horizon, __sky_on, __sky_top, __sky_image
+    __sky_image = Texture(0, 0, 0)
     __sky_top = top
     __sky_horizon = horizon
     __ground_color = ground
+    __sky_on = true
+
+# An equirectangular sky (usually a 2:1 PNG/JPEG, sRGB), at infinity behind the 3D scene.
+# intensity scales its linear light; rotation turns it about +Y, in radians. PBR materials
+# also sample it for ambient light and reflections. sky(...) returns to the gradient.
+# Keep the texture alive while selected. refresh rebuilds its light maps after update_texture.
+# hide_sky hides the backdrop, retaining its light.
+sky_image = (texture: Texture, intensity: f64 = 1.0, rotation: f64 = 0.0, refresh: bool = false):
+    global __sky_image, __sky_intensity, __sky_rotation, __sky_on, __sky_cached
+    if refresh: __sky_cached = Texture(0, 0, 0)
+    __sky_image = texture
+    __sky_intensity = max(intensity, 0.0)
+    __sky_rotation = rotation
     __sky_on = true
 
 hide_sky = ():
@@ -946,7 +1083,9 @@ __params = (d: Draw3D, vp: mat4) -> LitParams:
         shadow_strength = f32(__shadow_strength) * f32(int(__shadows)), shadow_texel = f32(1.0 / f64(max(__shadow_rt.texture.width, 1))),
         shadow_taps = if __soft: 4.0 else: 9.0, time = f32(elapsed()), wind = d.wind,
         tex = Texture(d.tex, 1, 1), shadow_map = __shadow_rt.texture, lights = __light_pos,
-        light_colors = __light_col, light_count = __light_n, bones = __no_bones)
+        light_colors = __light_col, light_count = __light_n, bones = __no_bones,
+        environment = __sky_image, environment_rough = __sky_rough.texture, environment_diffuse = __sky_diffuse.texture, environment_on = f32(int(__sky_image.id != 0)),
+        environment_intensity = f32(__sky_intensity), environment_rotation = f32(__sky_rotation))
     if let m = d.material:
         p.pbr = 1.0
         p.metal = m.metallic
@@ -1007,6 +1146,7 @@ __render3d = ():
     flush()
     __clip_off()
     zone("3d")
+    __sky_prepare()
     again = __pass_frame == __frame_count and __pass_target == __cur_target
     if not again: __casters.clear()
     __pass_frame = __frame_count
@@ -1067,7 +1207,7 @@ __render3d = ():
         if d.both_sides: glEnable(GL_CULL_FACE)
     if __sky_on and not again:
         glDisable(GL_CULL_FACE)
-        sp = _SkyParams(inverse(vp), __sky_top, __sky_horizon, __ground_color, __sun_dir, __sun_color, f32(elapsed()), f32(__stars), f32(__sun_disc))
+        sp = _SkyParams(inverse(vp), __sky_top, __sky_horizon, __ground_color, __sun_dir, __sun_color, f32(elapsed()), f32(__stars), f32(__sun_disc), __sky_image, f32(int(__sky_image.id != 0)), f32(__sky_intensity), f32(__sky_rotation))
         draw(__sky_sh, __fs_tri, sp)
     # transparent objects last, blended
     glEnable(GL_BLEND)
