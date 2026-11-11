@@ -2059,10 +2059,14 @@ inside its callback gives focus and activation for custom controls. `row`, `colu
 navigation, lights up under the pointer, and Enter or A clicks it. A layout text field keeps
 Up/Down and Tab/shoulder navigation while typing; an external HUD/menu text field pauses layout
 navigation. Rebinding controls pauses navigation too. Focus moved by keys or a gamepad onto
-a box inside a scroll container scrolls it into view, leaving the next box partly shown, so
-a list longer than its box can be gone through with the d-pad. The focused control has a ring
-around it once keys or a gamepad have been used, until the next press of the mouse or a
-finger.
+a box inside a scroll container scrolls it into view, including through nested scrolls.
+Arrows can reach controls clipped out by their shared scroll container, even with long headers
+between controls. Along a scrolling axis, arrows finish the innermost list before leaving it;
+the nearest row or column wins before alignment. Tab/Shift+Tab and RB/LB visit
+all enabled focusable controls in tree order and wrap, scrolling the target into view. Disabled
+controls and content omitted from a closed floating panel stay out of navigation. The focused
+control has a ring around it once keys or a gamepad have been used, until the next press of
+the mouse or a finger.
 
 All five containers take `width`, `height`, `pad`, `gap`, `align`, `cross`, `color`, `radius`,
 `border` and `key`. `pad = 12` applies to every side; `ui.insets(left, top, right, bottom)`

@@ -130,6 +130,8 @@ struct _Node:
     state: State
 
 struct _Box:
+    gap = 0.0              # navigation reveal margin
+    order = 0              # description/tree order; floating subtrees draw later
     kind: _Kind = .box
     id = 0
     parent = 0
@@ -256,6 +258,87 @@ _chain = (id: int, chain: mut {int: bool}):
         if let i = _root.index.get(k): k = _root.boxes[i].parent
         else: break
 
+# The rectangle a scroll would reveal, in the same solved coordinate space. Project through
+# inner scrolls before an outer scroll follows focus: their offscreen content is not a position
+# the outer scroll can expose on its own.
+_nav_offset = (r: Rect, c: _Box, off: f64, room: f64, margin: f64) -> f64:
+    horizontal = c.axis == .horizontal
+    start = c.scroll + (if horizontal: f64(r.x - c.view.x) else: f64(r.y - c.view.y))
+    size = if horizontal: f64(r.w) else: f64(r.h)
+    if start - margin < off: return start - margin
+    if start + size + margin > off + room: return min(start + size + margin - room, start - margin)
+    off
+
+_nav_reveal = (r: Rect, c: _Box) -> Rect:
+    room = if c.axis == .horizontal: f64(c.view.w) else: f64(c.view.h)
+    margin = min(room * 0.25, c.gap + 24.0)
+    off = clamp(_nav_offset(r, c, c.scroll, room, margin), 0.0, max(c.content - room, 0.0))
+    out = r
+    if c.axis == .horizontal: out.x -= f32(off - c.scroll)
+    else: out.y -= f32(off - c.scroll)
+    out
+
+_nav_screen = (r: Rect) -> Rect:
+    m = inverse(_root.inverse)
+    a = _local(m, vec2(r.x, r.y))
+    b = _local(m, vec2(r.x + r.w, r.y))
+    c = _local(m, vec2(r.x, r.y + r.h))
+    d = _local(m, vec2(r.x + r.w, r.y + r.h))
+    lo = min(min(a, b), min(c, d))
+    hi = max(max(a, b), max(c, d))
+    Rect(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
+
+# Pointer hits stay clipped. Navigation may reveal a clipped control only through its scroll
+# ancestors, with a nonempty viewport and overlap on each non-scrolling axis. An omitted over,
+# a disabled/zero-size control, or a scroll outside an external clip contributes no target.
+_nav_available = (b: _Box) -> bool:
+    if not b.focusable or b.rect.w <= 0 or b.rect.h <= 0: return false
+    point = center(b.hit)
+    if b.hit.w <= 0 or b.hit.h <= 0:
+        if b.clip.w >= 1e20: return false
+        r = b.rect
+        k = b.parent
+        visible = false
+        screen_clip = Rect()
+        loop k != 0:
+            c = _root.boxes[_root.index[k]]
+            if c.scrolling:
+                r = _intersection(_nav_reveal(r, c), c.view)
+                if r.w <= 0 or r.h <= 0: return false
+                if c.hit.w > 0 and c.hit.h > 0:
+                    screen_clip = c.hit
+                    visible = true
+            k = c.parent
+        if not visible: return false
+        # Only after projecting through every scroll: an inner viewport may itself be
+        # partly hidden by an outer scroll, which can reveal the rest of it.
+        hit = _intersection(_nav_screen(r), screen_clip)
+        if hit.w <= 0 or hit.h <= 0: return false
+        point = center(hit)
+    not _render or not hud_layout_covered(point, _root.panel_first, _root.panel_count)
+
+# On a scroll's own axis, finish the innermost list before leaving it. Content positions
+# inside an inner list can be much farther apart than its viewport's outside siblings.
+# The sentinel level keeps ordinary spatial scoring when no scrolling axis is shared.
+_nav_scroll = (a: _Box, b: _Box, direction: vec2) -> int:
+    tolerance = length(direction) * 0.001
+    level = 0
+    shared = false
+    k = a.parent
+    loop k != 0:
+        c = _root.boxes[_root.index[k]]
+        if c.scrolling:
+            j = b.parent
+            loop j != 0:
+                if j == k:
+                    shared = true
+                    if (c.axis == .horizontal and abs(direction.x) > tolerance) or (c.axis == .vertical and abs(direction.y) > tolerance): return level
+                    break
+                j = _root.boxes[_root.index[j]].parent
+            level += 1
+        k = c.parent
+    if shared: _root.boxes.len() else: -1
+
 _read_input = ():
     global _hit, _root, _focus_shown, _nav_follow, _side, _side_owner
     _hit = 0
@@ -347,11 +430,11 @@ _read_input = ():
         _root.dragging = false
     if _render and _events.down and _press_chain.len() > 0: hud_layout_tap(true)
     if not _root.index.contains(_root.focus): _root.focus = 0
-    else if not _root.boxes[_root.index[_root.focus]].focusable: _root.focus = 0
+    else if not _nav_available(_root.boxes[_root.index[_root.focus]]): _root.focus = 0
     else if _root.boxes[_root.index[_root.focus]].hit.w <= 0 or _root.boxes[_root.index[_root.focus]].hit.h <= 0: _root.focus = 0
     if _root.focus == 0:
         loop b in _root.boxes:
-            if b.focusable and b.hit.w > 0 and b.hit.h > 0:
+            if b.hit.w > 0 and b.hit.h > 0 and _nav_available(b):
                 _root.focus = b.id
                 break
     if _root.focus != 0:
@@ -363,23 +446,43 @@ _read_input = ():
     if _events.next != 0:
         _scratch.clear()
         loop b in _root.boxes:
-            if b.focusable and b.hit.w > 0 and b.hit.h > 0: _scratch.push(b.id)
+            if _nav_available(b): _scratch.push(b.id)
         if _scratch.len() > 0:
-            j = max(_scratch.index_of(_root.focus), 0)
+            _scratch.sort_by((id: int) -> int: _root.boxes[_root.index[id]].order)
+            j = _scratch.index_of(_root.focus)
+            if j < 0: j = if _events.next < 0: 0 else: -1
             _root.focus = _scratch[(j + (if _events.next < 0: _scratch.len() - 1 else: 1)) % _scratch.len()]
             _nav_follow = true
     if _events.nav != vec2(0, 0) and _root.focus != 0:
-        p = center(_root.boxes[_root.index[_root.focus]].hit)
+        from = _root.boxes[_root.index[_root.focus]]
+        to_screen = inverse(_root.inverse)
+        from_point = _local(to_screen, center(from.rect))
+        direction = _local(_root.inverse, _events.nav) - _local(_root.inverse, vec2())
         best = 1e30
+        nearest = 1e30
+        best_level = _root.boxes.len() + 1
         chosen = _root.focus
         loop b in _root.boxes:
-            if not b.focusable or b.hit.w <= 0 or b.hit.h <= 0: continue
-            d = center(b.hit) - p
+            if not _nav_available(b): continue
+            level = _nav_scroll(from, b, direction)
+            shared = level >= 0
+            if level < 0: level = _root.boxes.len()
+            if not shared and (b.hit.w <= 0 or b.hit.h <= 0): continue
+            # Scroll siblings use their full solved boxes, including clipped-away content.
+            # Their common scroll offset cancels; transform the centers to keep arrows in screen
+            # directions when the root is scaled or rotated.
+            d = if shared: _local(to_screen, center(b.rect)) - from_point else: center(b.hit) - center(from.hit)
             forward = f64(dot(d, _events.nav))
             if forward <= 0.0: continue
             side = abs(f64(d.x * _events.nav.y - d.y * _events.nav.x))
             score = forward + side * 3.0 + side * side / forward
-            if score < best:
+            # Reach the nearest row/column first; use alignment within that band. Otherwise
+            # a well-aligned control two rows away can win over every button in the next row.
+            nearer = forward < nearest - 0.5
+            aligned = abs(forward - nearest) <= 0.5 and score < best
+            if level < best_level or (level == best_level and (nearer or aligned)):
+                best_level = level
+                nearest = forward
                 best = score
                 chosen = b.id
         _nav_follow = chosen != _root.focus
@@ -745,25 +848,22 @@ _corner = (c: Corner) -> vec2:
         bottom_right: vec2(1, 1)
 
 # Focus moved by keys or a gamepad onto a box inside this scroll container: the offset that
-# brings it into view with a margin, so that the next box shows in part and can be reached.
+# brings it into view with a margin, also through nested scroll viewports.
 _follow_focus = (n: _Node, off: f64, room: f64) -> f64:
     pi = _root.index.get(n.id) ?? -1
     fi = _root.index.get(_root.focus) ?? -1
     if pi < 0 or fi < 0: return off
+    r = _root.boxes[fi].rect
     k = _root.boxes[fi].parent
     loop k != n.id:
         if k == 0: return off
-        if let j = _root.index.get(k): k = _root.boxes[j].parent
+        if let j = _root.index.get(k):
+            c = _root.boxes[j]
+            if c.scrolling: r = _intersection(_nav_reveal(r, c), c.view)
+            k = c.parent
         else: return off
     c = _root.boxes[pi]
-    f = _root.boxes[fi]
-    horizontal = n.axis == .horizontal
-    start = c.scroll + (if horizontal: f64(f.rect.x - c.view.x) else: f64(f.rect.y - c.view.y))
-    size = if horizontal: f64(f.rect.w) else: f64(f.rect.h)
-    margin = min(room * 0.25, n.gap + 24.0)
-    if start - margin < off: return start - margin
-    if start + size + margin > off + room: return min(start + size + margin - room, start - margin)
-    off
+    _nav_offset(r, c, off, room, min(room * 0.25, n.gap + 24.0))
 
 _position = (i: int):
     n = _geometry[i]
@@ -875,7 +975,7 @@ _draw_tree = (i: int) -> void:
         idle = _scroll_idle(n)
     parent = if n.parent >= 0: _nodes[n.parent].id else: 0
     _root.spare_index[n.id] = _root.spare.len()
-    _root.spare.push(_Box(kind = n.kind, id = n.id, parent = parent, key = n.key, rect = r, hit = hit, view = view, clip = n.clip, focusable = n.focusable and n.enabled, scrolling = n.scrolling, axis = n.axis, scroll = n.scroll, speed = n.speed, content = n.content, idle = idle, text = n.hint, value = n.value, code = n.code, state = n.state))
+    _root.spare.push(_Box(gap = n.gap, order = i, kind = n.kind, id = n.id, parent = parent, key = n.key, rect = r, hit = hit, view = view, clip = n.clip, focusable = n.focusable and n.enabled, scrolling = n.scrolling, axis = n.axis, scroll = n.scroll, speed = n.speed, content = n.content, idle = idle, text = n.hint, value = n.value, code = n.code, state = n.state))
     if _render and r.w > 0 and r.h > 0:
         x = f64(r.x)
         y = f64(r.y)
