@@ -421,6 +421,34 @@ line without a newline, and give `none` at EOF. `lines(text)` splits text alread
 it takes text, rather than a filename. Native file streams work on Linux, macOS and Windows;
 a page's `File` reads files already supplied to the page.
 
+Dates use `Date` (whole seconds, including an offset in seconds east of UTC). `date(t, utc = true)`
+converts Unix seconds to UTC, `date(t)` to the computer's local zone; `unix_time(d)` converts
+back. `parse_date("2024-02-29T12:30:00+02:00")` reads ISO 8601 directly. A format is the
+second argument for strptime-style parsing, and `date_text(d, format)` formats it:
+
+```gdscript
+d = parse_date("29/02/2024 12:30", "%d/%m/%Y %H:%M", utc = true)!
+print(date_text(d, "%A, %d %B %Y %T %z"))
+later = date_add(d, 5400.0)
+print(duration_text(date_diff(later, d)))       # 1h 30m
+```
+
+Parsing gives `none` for invalid text or an unsupported directive. Both forms use the local
+zone when the text has no offset, or UTC with `utc = true`. Supported directives: `%Y` (four
+digit year), `%y` (00–68 mean 2000–2068, 69–99 mean 1969–1999), `%m`, `%d`, `%e` (space-padded
+day), `%H`, `%I` with `%p` (12-hour clock, AM/PM), `%M`, `%S`, `%b`/`%B` (English month),
+`%a`/`%A` (English weekday), `%j` (day of year), `%u`/`%w` (weekday, Monday=1/Sunday=0), `%z`
+(`Z`, `+0530`, `+05:30`), `%Z` (`UTC`/`GMT` when parsing; UTC or numeric offset when formatting),
+`%%`, and `%F`/`%T`/`%R` (`%Y-%m-%d`, `%H:%M:%S`, `%H:%M`). Numeric fields are fixed width;
+unspecified fields start at 1900-01-01 00:00:00. Names do not depend on the machine's locale.
+ISO fractions are accepted and discarded. Arbitrary named zones are not parsed.
+
+Durations are elapsed seconds (`f64`): `date_add(d, seconds)` keeps the date's fixed offset;
+`date_add(d, seconds, local = true)` converts the resulting instant to the local zone, including
+its daylight saving rules. `date_diff(a, b)` is seconds from `b` to `a`, respecting offsets.
+`duration_text(seconds)` writes days, hours, minutes and seconds, truncating fractional seconds
+(`-65.0` is `"-1m 5s"`). Dates have whole-second precision, so `date_add` floors the instant.
+
 ## 5. Functions
 
 ```gdscript

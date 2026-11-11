@@ -283,6 +283,10 @@ a value, the last list field gets the other arguments, and `--help` lists them a
 its field's comment (`-w, --words   count words too`: the comment need not name the option); a
 mistake (`--top many`) is said with that help, and exit code 2.
 
+- `parse_date(text)` reads ISO 8601; `parse_date(text, "%d/%m/%Y", utc = true)` reads a format
+  (none for invalid text). `date_text(d, "%F %T %z")` formats a date. `date_add(d, 5400.0)`
+  adds elapsed seconds; `date_diff(a, b)` measures them, and `duration_text(5400.0)` is `"1h 30m"`.
+  Dates use UTC or the local zone; [date formats and durations](LANGUAGE.md#4-types) lists formats.
 - `set(xs)` keeps each value of an array once (`Set[T]`); `x in s`, `s.add(x)`, `s.remove(x)`,
   `s.union(t)`, `s.intersection(t)`, `s.difference(t)` and `s.is_subset(t)` cover Python's set
   operations. The results keep insertion order; operations returning sets leave their inputs alone.

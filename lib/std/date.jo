@@ -24,6 +24,10 @@ else when TARGET == "windows":
     extern GetSystemTimeAsFileTime = (ft: *int)
     @lib("kernel32.dll")
     extern GetTimeZoneInformation = (tzi: *u8) -> u32
+    @lib("kernel32.dll")
+    extern SystemTimeToTzSpecificLocalTime = (zone: *u8, utc: *u16, local: *u16) -> i32
+    @lib("kernel32.dll")
+    extern GetModuleHandleA = (name: *u8) -> *u8
 
 # seconds since 1970-01-01 00:00 UTC, now (the wall clock: it can jump when it is set)
 unix_time = () -> f64:
@@ -83,7 +87,9 @@ parse_date = (text: str, utc: bool = false) -> Date?:
             # (a fraction of a second: left out)
             if i < n and (s[i] == '.' or s[i] == ','):
                 i += 1
+                start = i
                 loop i < n and s[i] >= '0' and s[i] <= '9': i += 1
+                if i == start: return none
         if h < 0 or h > 23 or mi < 0 or mi > 59 or sec < 0 or sec > 60: return none
     off = 0
     zoned = false
@@ -97,7 +103,9 @@ parse_date = (text: str, utc: bool = false) -> Date?:
         oh = __date_num(s, i + 1, 2)
         om = 0
         i += 3
-        if i < n and s[i] == ':': i += 1
+        if i < n and s[i] == ':':
+            i += 1
+            if i + 2 > n: return none
         if i + 2 <= n:
             om = __date_num(s, i, 2)
             i += 2
@@ -143,7 +151,23 @@ utc_offset = (t: int) -> int:
     when TARGET == "wasm":
         return int(__wasm_tz(f64(t) * 1000.0))
     else when TARGET == "windows":
-        # (as it is now: Windows keeps the rules, not a table of when they changed)
+        # Windows applies the local zone's rules to this instant, rather than today's offset.
+        d = __date_of(t, 0)
+        if d.year >= 1601 and d.year <= 30827:
+            u: u16[] = [u16(d.year), u16(d.month), 0, u16(d.day), u16(d.hour), u16(d.minute), u16(d.second), 0]
+            l = fill(u16(0), 8)
+            # The dynamic API is optional (older Windows/Wine may only have the original).
+            h = GetModuleHandleA(data(__zstr("kernel32.dll")))
+            p = GetProcAddress(h, data(__zstr("SystemTimeToTzSpecificLocalTimeEx")))
+            ok = 0
+            if p != null:
+                convert = p as cfn(*u8, *u16, *u16) -> i32
+                ok = int(convert(null, data(u), data(l)))
+            else: ok = int(SystemTimeToTzSpecificLocalTime(null, data(u), data(l)))
+            if ok != 0:
+                local = __days_from_civil(int(l[0]), int(l[1]), int(l[3])) * 86400 + int(l[4]) * 3600 + int(l[5]) * 60 + int(l[6])
+                return local - t
+        # Outside Windows' calendar range, fall back to its current offset.
         tzi = fill(u8(0), 172)
         r = GetTimeZoneInformation(data(tzi))
         bias = __le32(tzi, 0)
@@ -370,3 +394,219 @@ __tz_change = (spec: str, y: int) -> int:
         if leap and n >= 60: day += 1
     else: day = __days_from_civil(y, 1, 1) + (to_int(s) ?? 0)
     day * 86400 + at
+
+# a date read with a strptime-style format. Supported: %Y %y %m %d %e %H %I %M %S %p,
+# %b/%B (English month), %a/%A (English weekday), %j (day of year), %u/%w (weekday),
+# %z (Z or +/-HHMM, +/-HH:MM), %Z (UTC/GMT), %% and
+# %F/%T/%R (date, time, hours:minutes). Unspecified fields start at 1900-01-01 00:00:00.
+# No zone in the text: local, or UTC with utc = true. Invalid text/format gives none.
+parse_date = (text: str, format: str, utc: bool = false) -> Date?:
+    s = trim(text)
+    fmt = __date_pattern(format)
+    y = 1900
+    mo = 1
+    day = 1
+    h = 0
+    mi = 0
+    sec = 0
+    off = 0
+    zoned = false
+    hour12 = false
+    pm = -1
+    wd = -1
+    ordinal = -1
+    at = 0
+    i = 0
+    loop i < len(fmt):
+        c = fmt[i]
+        i += 1
+        if c != '%':
+            if at >= len(s) or s[at] != c: return none
+            at += 1
+            continue
+        if i == len(fmt): return none
+        c = fmt[i]
+        i += 1
+        if c == '%':
+            if at >= len(s) or s[at] != '%': return none
+            at += 1
+        else if c == 'b' or c == 'B' or c == 'a' or c == 'A':
+            names = __MONTHS
+            if c == 'a' or c == 'A': names = __WEEKDAYS
+            found = -1
+            loop k in [0..names.len()):
+                name = names[k]
+                if c == 'b' or c == 'a': name = name[..3)
+                if at + len(name) <= len(s) and s[at..at + len(name)).lower() == name.lower():
+                    found = k
+                    at += len(name)
+                    break
+            if found < 0: return none
+            if c == 'b' or c == 'B': mo = found + 1
+            else: wd = found
+        else if c == 'p':
+            if at + 2 > len(s): return none
+            word = s[at..at + 2).lower()
+            if word != "am" and word != "pm": return none
+            pm = if word == "pm": 1 else: 0
+            at += 2
+        else if c == 'Z':
+            if at + 3 > len(s) or (s[at..at + 3) != "UTC" and s[at..at + 3) != "GMT"): return none
+            at += 3
+            off = 0
+            zoned = true
+        else if c == 'z':
+            if at >= len(s): return none
+            if s[at] == 'Z' or s[at] == 'z':
+                off = 0
+                at += 1
+            else:
+                if s[at] != '+' and s[at] != '-': return none
+                sign = if s[at] == '-': -1 else: 1
+                oh = __date_num(s, at + 1, 2)
+                at += 3
+                if at < len(s) and s[at] == ':': at += 1
+                om = __date_num(s, at, 2)
+                at += 2
+                if oh < 0 or oh > 23 or om < 0 or om > 59: return none
+                off = sign * (oh * 3600 + om * 60)
+            zoned = true
+        else:
+            digits = 2
+            if c == 'Y': digits = 4
+            else if c == 'j': digits = 3
+            else if c == 'u' or c == 'w': digits = 1
+            if c == 'e' and at < len(s) and s[at] == ' ':
+                at += 1
+                digits = 1
+            v = __date_num(s, at, digits)
+            if v < 0: return none
+            at += digits
+            if c == 'Y': y = v
+            else if c == 'y': y = if v >= 69: 1900 + v else: 2000 + v
+            else if c == 'j': ordinal = v
+            else if c == 'u':
+                if v < 1 or v > 7: return none
+                wd = v - 1
+            else if c == 'w':
+                if v > 6: return none
+                wd = (v + 6) % 7
+            else if c == 'm': mo = v
+            else if c == 'd' or c == 'e': day = v
+            else if c == 'H': h = v
+            else if c == 'I':
+                h = v
+                hour12 = true
+            else if c == 'M': mi = v
+            else if c == 'S': sec = v
+            else: return none
+    if at != len(s): return none
+    if hour12:
+        if h < 1 or h > 12 or pm < 0: return none
+        h = h % 12 + pm * 12
+    else if pm >= 0: return none
+    if ordinal != -1:
+        days = __days_from_civil(y + 1, 1, 1) - __days_from_civil(y, 1, 1)
+        if ordinal < 1 or ordinal > days: return none
+        od = __date_of((__days_from_civil(y, 1, 1) + ordinal - 1) * 86400, 0)
+        mo = od.month
+        day = od.day
+    if mo < 1 or mo > 12 or day < 1 or day > __days_in(y, mo) or h < 0 or h > 23 or mi < 0 or mi > 59 or sec < 0 or sec > 59: return none
+    local = __days_from_civil(y, mo, day) * 86400 + h * 3600 + mi * 60 + sec
+    if not zoned and not utc:
+        off = utc_offset(local)
+        off = utc_offset(local - off)
+    d = __date_of(local, off)
+    if wd >= 0 and wd != d.weekday: return none
+    d
+
+# format a date with the directives of parse_date(text, format). %Z writes UTC or the
+# numeric offset (no abbreviations for local zones); %u: Monday=1, %w: Sunday=0. Unknown directives
+# are an error. Text and English names are independent of the computer's locale.
+date_text = (d: Date, format: str) -> str:
+    fmt = __date_pattern(format)
+    b: u8[]
+    i = 0
+    loop i < len(fmt):
+        c = fmt[i]
+        i += 1
+        if c != '%':
+            b.push(c)
+            continue
+        if i == len(fmt): panic("date_text: a format ends with %")
+        c = fmt[i]
+        i += 1
+        part = ""
+        if c == '%': part = "%"
+        else if c == 'Y': part = "{d.year:04}"
+        else if c == 'y': part = "{__floor_mod(d.year, 100):02}"
+        else if c == 'm': part = "{d.month:02}"
+        else if c == 'd': part = "{d.day:02}"
+        else if c == 'e': part = "{d.day:>2}"
+        else if c == 'H': part = "{d.hour:02}"
+        else if c == 'I': part = "{(d.hour + 11) % 12 + 1:02}"
+        else if c == 'M': part = "{d.minute:02}"
+        else if c == 'S': part = "{d.second:02}"
+        else if c == 'p': part = if d.hour >= 12: "PM" else: "AM"
+        else if c == 'b': part = month_name(d)[..3)
+        else if c == 'B': part = month_name(d)
+        else if c == 'a': part = weekday_name(d)[..3)
+        else if c == 'A': part = weekday_name(d)
+        else if c == 'j': part = "{__days_from_civil(d.year, d.month, d.day) - __days_from_civil(d.year, 1, 1) + 1:03}"
+        else if c == 'u': part = "{d.weekday + 1}"
+        else if c == 'w': part = "{(d.weekday + 1) % 7}"
+        else if c == 'z' or c == 'Z':
+            sign = if d.offset < 0: "-" else: "+"
+            n = abs(d.offset)
+            part = "{sign}{n / 3600:02}{n % 3600 / 60:02}"
+            if c == 'Z' and d.offset == 0: part = "UTC"
+        else: panic("date_text: unsupported directive %{fmt[i - 1..i)}")
+        __buf_append_str(b, part)
+    str_from_bytes(b)
+
+__date_pattern = (format: str) -> str:
+    b: u8[]
+    i = 0
+    loop i < len(format):
+        c = format[i]
+        i += 1
+        if c != '%' or i == len(format):
+            b.push(c)
+            continue
+        c = format[i]
+        i += 1
+        if c == 'F': __buf_append_str(b, "%Y-%m-%d")
+        else if c == 'T': __buf_append_str(b, "%H:%M:%S")
+        else if c == 'R': __buf_append_str(b, "%H:%M")
+        else:
+            b.push('%')
+            b.push(c)
+    str_from_bytes(b)
+
+# add (or subtract, when negative) elapsed seconds. Keeps d's fixed offset; local = true
+# converts the result to the computer's local zone, including any daylight saving change.
+# Dates have whole-second precision; fractional results are rounded down, as date(t) does.
+date_add = (d: Date, seconds: f64, local: bool = false) -> Date:
+    t = unix_time(d) + seconds
+    if local: return date(t)
+    __date_of(int(floor(t)) + d.offset, d.offset)
+
+# elapsed seconds from b to a (positive when a is later), respecting both UTC offsets
+date_diff = (a: Date, b: Date) -> f64: unix_time(a) - unix_time(b)
+
+# elapsed seconds as "1h 30m", "2d 3s", "-1m 5s"; whole seconds, rounded toward zero
+# (for subsecond measurements, format the seconds directly: "{seconds:.3} s")
+duration_text = (seconds: f64) -> str:
+    if not is_finite(seconds): panic("duration_text: expected finite seconds")
+    # Avoid integer overflow converting an unbounded measurement to seconds.
+    if seconds >= 9223372036854775808.0 or seconds <= -9223372036854775808.0: panic("duration_text: seconds are outside the int range")
+    n = int(seconds)
+    sign = if n < 0: "-" else: ""
+    n = abs(n)
+    parts: str[]
+    loop unit, name in [(86400, "d"), (3600, "h"), (60, "m"), (1, "s")]:
+        count = n / unit
+        if count > 0: parts.push("{count}{name}")
+        n %= unit
+    if parts.len() == 0: return "0s"
+    sign + join(parts, " ")

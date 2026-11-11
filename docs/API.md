@@ -906,6 +906,14 @@ started = unix_time()  ...  print("took {unix_time() - started:.1} s")
 - `weekday_name = (d: Date) -> str`
 - `utc_offset = (t: int) -> int`: how many seconds east of UTC the computer's clock is at moment t (unix seconds): its time zone and daylight saving time then (the TZ variable, or the system's zone)
 
+#### Time zones on Linux and macOS: the TZif file of the zone (zic's format)
+
+- `parse_date = (text: str, format: str, utc: bool = false) -> Date?`: a date read with a strptime-style format. Supported: %Y %y %m %d %e %H %I %M %S %p, %b/%B (English month), %a/%A (English weekday), %j (day of year), %u/%w (weekday), %z (Z or +/-HHMM, +/-HH:MM), %Z (UTC/GMT), %% and %F/%T/%R (date, time, hours:minutes). Unspecified fields start at 1900-01-01 00:00:00. No zone in the text: local, or UTC with utc = true. Invalid text/format gives none.
+- `date_text = (d: Date, format: str) -> str`: format a date with the directives of parse_date(text, format). %Z writes UTC or the numeric offset (no abbreviations for local zones); %u: Monday=1, %w: Sunday=0. Unknown directives are an error. Text and English names are independent of the computer's locale.
+- `date_add = (d: Date, seconds: f64, local: bool = false) -> Date`: add (or subtract, when negative) elapsed seconds. Keeps d's fixed offset; local = true converts the result to the computer's local zone, including any daylight saving change. Dates have whole-second precision; fractional results are rounded down, as date(t) does.
+- `date_diff = (a: Date, b: Date) -> f64`: elapsed seconds from b to a (positive when a is later), respecting both UTC offsets
+- `duration_text = (seconds: f64) -> str`: elapsed seconds as "1h 30m", "2d 3s", "-1m 5s"; whole seconds, rounded toward zero (for subsecond measurements, format the seconds directly: "{seconds:.3} s")
+
 ### cli.jo
 
 A command line's options, read into a struct: its fields are the options, their defaults what an option left out keeps.
