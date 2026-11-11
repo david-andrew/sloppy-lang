@@ -257,6 +257,16 @@ Measured October 2026 on bench/big.jo (50k lines, debug, 8 cores, a busy machine
   first (the instances are known after checking; globals given places up front), with each
   worker's string constants and source positions renumbered when joined. Days of work; worth it
   when programs this large exist.
+  A November 2026 user-instruction model bounds the extra gain over an ideal four-worker
+  emitter at 15% on debug big.jo and 19–21% on the debug games, before discovery/join costs;
+  release big.jo is under 10%. A discovery probe reused semantic lowering to freeze the exact
+  function/helper, global and FFI order, then replayed bodies. It preserved output, but cost
+  about 15% more user instructions on debug big.jo and 17–19% on the games, exceeding the 2%
+  discovery gate; the prototype was withdrawn. The next attempt needs dependency discovery
+  without constructing full IR twice.
+  `tools/parbench.py` measures whole-build instructions including workers, unlike speedcheck's
+  serial regression gate; `tools/parcheck.py --reference-compiler path` also checks identity
+  against the earlier compiler, on native, Linux arm64 and macOS targets.
 - The optimizer's first pass in parallel (release builds: about 20% of building the compiler),
   its results returned through shared memory.
 - No caching of the library between builds: it is a small part of a large program, and caching

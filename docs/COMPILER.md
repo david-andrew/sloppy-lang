@@ -73,6 +73,8 @@ the copy back.
 | `python3 tools/gpufuzz.py 100 [--shaders]` | random compute functions on the CPU, the GPU and lavapipe (or fragment shaders: software, OpenGL, Vulkan) must agree; `--reduce` shrinks a failure |
 | `python3 tools/fuzz_errors.py 2000` | real programs broken at random: the compiler must give an error, never crash |
 | `python3 tools/speedcheck.py [--base REV] [--release]` | compile speed against an earlier commit (default the one before): the instructions compiling bench/big.jo, the compiler and the games takes; fails above 1% (CI runs it on every push) |
+| `python3 tools/parcheck.py --workers 4 [--reference-compiler path]` | serial/parallel byte identity for native, Linux arm64 and macOS, default/release with and without `-g`; optionally also compare serial bytes with an earlier compiler |
+| `python3 tools/parbench.py [--base-compiler path] [--release] --json results.json` | compile work with one and four workers, including child instructions, actual worker counts, and raw phase diagnostics; builds one program at a time and honors the normal fork threshold |
 
 Adding a test:
 - a program: `tests/t/name.jo` and its expected output `tests/t/name.out` (output after a
@@ -94,6 +96,12 @@ it under qemu (each night in CI).
 
 - `sloppy build file.jo --ir`: the IR of each function as it is emitted.
 - `sloppy build file.jo --time`: time per phase.
+- `SLOPPY_PAR_TIME=1`: release optimization and worker fork/emit/pack/read/join diagnostics.
+- `tools/parbench.py`: record those diagnostics and whole-build user instruction counts with
+  one and four workers. `--env NAME=VALUE` applies an experimental setting to the new compiler
+  only. `--json` also preserves `PHASE` instruction readings when using an instrumented compiler.
+  Phase milliseconds depend on scheduling; use instruction counts on a shared machine.
+  `tools/speedcheck.py` deliberately forces one worker and checks serial cost instead.
 - `SLOPPY_STOP=lex|parse sloppy check file.jo`: stop early.
 - `SLOPPY_RASTAT=1` / `SLOPPY_RADUMP=<function>`: register allocation statistics / decisions.
 - `sloppy lsp --dump file.jo`: the lines a check writes for the language server.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Compare serial and forced parallel arm64 output, including debug information.
-Usage: tools/parcheck.py [--compiler bin/sloppy] [--target linux-arm64|macos]
+"""Compare serial and forced parallel output, including debug information.
+Usage: tools/parcheck.py [--compiler bin/sloppy] [--target native|linux-arm64|macos]
+                        [--reference-compiler path/to/earlier/compiler]
                         [--workers 2|3|4] [source.jo ...]
 Builds only; it does not run the output. Use TMPDIR to choose scratch storage.
 """
@@ -19,7 +20,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--compiler', default=str(root / 'bin/sloppy'),
                     help='compiler command (for example "qemu-aarch64 /path/to/sloppy")')
-    ap.add_argument('--target', action='append', choices=['linux-arm64', 'macos'])
+    ap.add_argument('--reference-compiler',
+                    help='also require serial output to match this earlier compiler command')
+    ap.add_argument('--target', action='append', choices=['native', 'linux-arm64', 'macos'])
     ap.add_argument('--workers', type=int, choices=[2, 3, 4], default=4)
     ap.add_argument('sources', nargs='*')
     args = ap.parse_args()
@@ -37,11 +40,21 @@ def main():
         # Keep the output path fixed too (Mach-O has an ad hoc signature identifier).
         out = Path(tmp) / 'program'
         serial = Path(tmp) / 'serial'
-        for target in args.target or ['linux-arm64', 'macos']:
+        for target in args.target or ['native', 'linux-arm64', 'macos']:
             for flags in [[], ['--release'], ['-g'], ['--release', '-g']]:
                 for src in sources:
                     cmd = shlex.split(args.compiler) + ['build', src, '--target', target, '-o', str(out)] + flags
                     outputs = []
+                    reference = None
+                    if args.reference_compiler:
+                        ref_cmd = shlex.split(args.reference_compiler) + cmd[len(shlex.split(args.compiler)):]
+                        out.unlink(missing_ok=True)
+                        result = subprocess.run(ref_cmd, cwd=root,
+                                                env=dict(env, SLOPPY_EMIT_WORKERS='1'),
+                                                capture_output=True, text=True, timeout=600)
+                        if result.returncode or not out.exists():
+                            raise SystemExit(f'FAIL reference {target} {src} {flags}:\n{result.stderr}')
+                        reference = out.read_bytes()
                     for workers in [1, args.workers]:
                         run_env = dict(env, SLOPPY_EMIT_WORKERS=str(workers))
                         if workers != 1:
@@ -62,6 +75,11 @@ def main():
                                 raise SystemExit(f'FAIL {label}: workers did not all emit (fallback?)\n{result.stderr}')
                         outputs.append(out.read_bytes())
                         if workers == 1:
+                            if reference is not None and reference != outputs[0]:
+                                offset = next((i for i, (a, b) in enumerate(zip(reference, outputs[0]))
+                                               if a != b), min(len(reference), len(outputs[0])))
+                                raise SystemExit(f'FAIL {label}: serial differs from reference at {offset}, '
+                                                 f'lengths {len(reference)}, {len(outputs[0])}')
                             serial.write_bytes(outputs[0])
                     if subprocess.run(['cmp', '-s', str(serial), str(out)]).returncode:
                         offset = next((i for i, (a, b) in enumerate(zip(*outputs)) if a != b),
