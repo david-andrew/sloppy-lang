@@ -272,10 +272,12 @@ Measured October 2026 on bench/big.jo (50k lines, debug, 8 cores, a busy machine
   complete short interned names. With one emitter, retired user instructions fell from 207M to
   192M for hello (7%), 792M to 755M for the small game (5%), 929M to 885M for Rebound (5%), and
   1543M to 1458M for big.jo (6%). The compiler's debug build fell from 3113M to 2973M (4%).
-  Checking itself is 7–9% cheaper; the 10% whole-build target remains unmet. Deferring library
-  function bodies inside top-level `when` blocks gave a larger gain, but changed generated AST
-  node numbers in embedded panic strings (and generated local names in debugger information),
-  so it was withdrawn to preserve byte-identical output.
+  Checking itself is 7–9% cheaper. Deferring library function bodies inside declaration-level
+  `when`/`else` blocks saves another 17% on hello and 1–2% on the game, Rebound and big.jo; used
+  bodies are re-lexed when needed. Panics and diagnostic hints describe the source expression
+  instead of exposing generated temporary names. Generated IDs in debugger information can
+  change between compiler versions; repeated builds and serial/parallel output remain identical.
+  The 10% whole-build target is met for hello, but remains unmet for the games.
 - Allocation in the compiler: about 5% of the time, the allocator already doubling arrays and
   remapping large blocks in place; nothing big there.
 - Lowering in parallel (the next lever, about 1.4x on big.jo with code generation in the same
