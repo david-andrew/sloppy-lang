@@ -88,6 +88,7 @@ struct _Node:
     radius = 0.0
     border: Border
     floating = false
+    contained = false
     anchor: Corner = .top_left
     attach: Corner = .top_left
     offset: vec2
@@ -95,6 +96,7 @@ struct _Node:
     scroll = 0.0
     speed = 0.0
     content = 0.0
+    idle = 0.0
     enabled = true
     selected = false
     focusable = false
@@ -130,6 +132,7 @@ struct _Box:
     scroll = 0.0
     speed = 0.0
     content = 0.0
+    idle = 0.0
     state: State
 
 struct _Root:
@@ -170,6 +173,10 @@ _scratch: int[]
 _floats: int[]
 _last_frame = -10
 _root_number = 0
+# Keys or a gamepad chose the focus since the last press: show its ring (a mouse or finger hides it).
+_focus_shown = false
+# Keys or a gamepad moved the focus this frame: a scroll container holding it brings it into view.
+_nav_follow = false
 
 _sizing = (s: Size) -> Sizing:
     if s is int: return fixed(f64(s))
@@ -226,8 +233,9 @@ _chain = (id: int, chain: mut {int: bool}):
         else: break
 
 _read_input = ():
-    global _hit, _root
+    global _hit, _root, _focus_shown, _nav_follow
     _hit = 0
+    _nav_follow = false
     _hover_chain.clear()
     _press_chain.clear()
     # The boxes are in draw order: the last hit and its ancestors own the pointer.
@@ -321,7 +329,10 @@ _read_input = ():
             if score < best:
                 best = score
                 chosen = b.id
+        _nav_follow = chosen != _root.focus
         _root.focus = chosen
+    if _events.nav != vec2(0, 0) or _events.activate: _focus_shown = true
+    else if _events.pressed or (_events.touch and _events.down): _focus_shown = false
 
 _previous = (id: int, enabled: bool = true) -> State:
     if let i = _root.index.get(id):
@@ -673,6 +684,27 @@ _corner = (c: Corner) -> vec2:
         bottom: vec2(0.5, 1)
         bottom_right: vec2(1, 1)
 
+# Focus moved by keys or a gamepad onto a box inside this scroll container: the offset that
+# brings it into view with a margin, so that the next box shows in part and can be reached.
+_follow_focus = (n: _Node, off: f64, room: f64) -> f64:
+    pi = _root.index.get(n.id) ?? -1
+    fi = _root.index.get(_root.focus) ?? -1
+    if pi < 0 or fi < 0: return off
+    k = _root.boxes[fi].parent
+    loop k != n.id:
+        if k == 0: return off
+        if let j = _root.index.get(k): k = _root.boxes[j].parent
+        else: return off
+    c = _root.boxes[pi]
+    f = _root.boxes[fi]
+    horizontal = n.axis == .horizontal
+    start = c.scroll + (if horizontal: f64(f.rect.x - c.view.x) else: f64(f.rect.y - c.view.y))
+    size = if horizontal: f64(f.rect.w) else: f64(f.rect.h)
+    margin = min(room * 0.25, n.gap + 24.0)
+    if start - margin < off: return start - margin
+    if start + size + margin > off + room: return min(start + size + margin - room, start - margin)
+    off
+
 _position = (i: int):
     n = _geometry[i]
     along_w = n.axis == .horizontal
@@ -723,6 +755,10 @@ _position = (i: int):
             speed *= exp(-4.0 * dt)
             if abs(speed) < 20.0 or off <= 0.0 or off >= limit: speed = 0.0
             else if _render: request_redraw()
+        if _nav_follow and _root.focus != 0:
+            was = off
+            off = _follow_focus(n, off, room)
+            if off != was: speed = 0.0
         off = clamp(off, 0.0, limit)
         _geometry[i].scroll = off
         _geometry[i].speed = speed
@@ -735,6 +771,8 @@ _position = (i: int):
     else if n.align == .end: cursor = free
     else if n.align == .space_between and count > 1: gap += free / f64(count - 1)
     if n.scrolling: cursor -= n.scroll
+    inner = n.clip
+    if n.scrolling: inner = _intersection(inner, Rect(x = n.rect.x + f32(n.pad.left), y = n.rect.y + f32(n.pad.top), w = f32(max(n.w - n.pad.left - n.pad.right, 0.0)), h = f32(max(n.h - n.pad.top - n.pad.bottom, 0.0))))
     c = n.first
     loop c >= 0:
         cn = _geometry[c]
@@ -745,8 +783,8 @@ _position = (i: int):
             b = _corner(cn.attach)
             x = f64(n.rect.x) + f64(a.x) * n.w - f64(b.x) * cn.w + f64(cn.offset.x)
             y = f64(n.rect.y) + f64(a.y) * n.h - f64(b.y) * cn.h + f64(cn.offset.y)
-            # Floating boxes escape scroll clips, as tooltips and dropdowns do.
-            _geometry[c].clip = Rect(-1e20, -1e20, 2e20, 2e20)
+            # Floating boxes escape scroll clips, as tooltips and dropdowns do, unless kept in them.
+            _geometry[c].clip = if cn.contained: inner else: Rect(-1e20, -1e20, 2e20, 2e20)
         else:
             cross_room = max(_dimension(i, not along_w) - _pad_total(n, not along_w), 0.0)
             extra = max(cross_room - _dimension(c, not along_w), 0.0)
@@ -756,9 +794,7 @@ _position = (i: int):
             if along_w: x += cursor; y += side
             else: y += cursor; x += side
             cursor += _dimension(c, along_w) + gap
-            cp = n.clip
-            if n.scrolling: cp = _intersection(cp, Rect(x = n.rect.x + f32(n.pad.left), y = n.rect.y + f32(n.pad.top), w = f32(max(n.w - n.pad.left - n.pad.right, 0.0)), h = f32(max(n.h - n.pad.top - n.pad.bottom, 0.0))))
-            _geometry[c].clip = cp
+            _geometry[c].clip = inner
         _geometry[c].rect = Rect(x, y, cn.w, cn.h)
         c = cn.next
 
@@ -773,31 +809,42 @@ _draw_tree = (i: int) -> void:
     # The root is a coordinate space, not a box that captures the entire game screen.
     if n.parent < 0 or n.kind == .space: hit = Rect()
     view = Rect()
+    idle = 0.0
     if n.scrolling:
         view = Rect(f64(r.x) + n.pad.left, f64(r.y) + n.pad.top, max(n.w - n.pad.left - n.pad.right, 0.0), max(n.h - n.pad.top - n.pad.bottom, 0.0))
+        idle = _scroll_idle(n)
     parent = if n.parent >= 0: _nodes[n.parent].id else: 0
     _root.spare_index[n.id] = _root.spare.len()
-    _root.spare.push(_Box(id = n.id, parent = parent, key = n.key, rect = r, hit = hit, view = view, clip = n.clip, focusable = n.focusable and n.enabled, scrolling = n.scrolling, axis = n.axis, scroll = n.scroll, speed = n.speed, content = n.content, state = n.state))
+    _root.spare.push(_Box(id = n.id, parent = parent, key = n.key, rect = r, hit = hit, view = view, clip = n.clip, focusable = n.focusable and n.enabled, scrolling = n.scrolling, axis = n.axis, scroll = n.scroll, speed = n.speed, content = n.content, idle = idle, state = n.state))
     if _render and r.w > 0 and r.h > 0:
+        x = f64(r.x)
+        y = f64(r.y)
+        w = f64(r.w)
+        h = f64(r.h)
+        rad = min(n.radius, min(w, h) / 2.0)
         if n.color.w > 0:
-            if n.radius > 0.0: rect_rounded(f64(r.x), f64(r.y), f64(r.w), f64(r.h), n.radius, n.color)
+            if rad > 0.0: rect_rounded(x, y, w, h, rad, n.color)
             else: rect(r, n.color)
+        # A focusable container is a control (a card): it lights up under the pointer.
+        if n.focusable and n.enabled and n.kind == .box and _lit(n.state):
+            shade = if n.state.pressed: vec4(0, 0, 0, 0.16) else: with_alpha(n.style.text, n.style.text.w * 0.06)
+            if rad > 0.0: rect_rounded(x, y, w, h, rad, shade)
+            else: rect(r, shade)
         if n.border.color.w > 0 and n.border.thickness > 0.0:
-            if n.radius > 0.0: rect_rounded_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), n.radius, n.border.thickness, n.border.color)
-            else: rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), n.border.thickness, n.border.color)
+            if rad > 0.0: rect_rounded_outline(x, y, w, h, rad, n.border.thickness, n.border.color)
+            else: rect_outline(x, y, w, h, n.border.thickness, n.border.color)
         match n.kind:
             .label:
-                if n.wrap: text_wrapped(n.text, vec2(r.x, r.y), f64(r.w), n.size, n.style.text, n.text_align)
+                if n.wrap: text_wrapped(n.text, vec2(r.x, r.y), w, n.size, n.style.text, n.text_align)
                 else:
-                    x = f64(r.x)
-                    if n.text_align == .center: x += (f64(r.w) - text_width(n.text, n.size)) / 2.0
-                    else if n.text_align == .right: x += f64(r.w) - text_width(n.text, n.size)
-                    text(n.text, vec2(x, f64(r.y)), n.size, n.style.text)
+                    tx = x
+                    if n.text_align == .center: tx += (w - text_width(n.text, n.size)) / 2.0
+                    else if n.text_align == .right: tx += w - text_width(n.text, n.size)
+                    text(n.text, vec2(tx, y), n.size, n.style.text)
             .button: _draw_button(n)
-            .bar: hud_bar(r, n.amount, n.style.accent, n.style.panel)
+            .bar: _draw_bar(n)
             .image: sprite(n.texture, vec2(r.x, r.y), vec2(r.w, r.h), n.style.text)
             _: pass
-        if debug: rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, vec4(1, 0, 1, 0.7))
     if n.kind == .slot:
         if let draw = n.draw: draw(r)
     if _render and local_clip: hud_layout_restore_clip(saved)
@@ -806,52 +853,163 @@ _draw_tree = (i: int) -> void:
         if _nodes[c].floating: _floats.push(c)
         else: _draw_tree(c)
         c = _nodes[c].next
-    if _render and n.scrolling and n.content > 0.0:
+    # Over the children: the scrollbar, outlines, and the focus ring of a button, a card or a
+    # custom control (allowed into a scroll container's padding, so the first row shows its ring).
+    bar = n.scrolling and n.content > 0.0
+    if _render and (bar or debug) and r.w > 0 and r.h > 0:
         if local_clip: saved = hud_layout_clip(n.clip)
-        horizontal = n.axis == .horizontal
-        room = (if horizontal: n.w else: n.h) - _pad_total(n, horizontal)
-        if n.content > room:
-            thumb = max(room * room / n.content, min(24.0, room))
-            pos = (room - thumb) * n.scroll / max(n.content - room, 1.0)
-            if horizontal: rect(f64(r.x) + n.pad.left + pos, f64(r.y + r.h) - 6.0, thumb, 4.0, n.style.border)
-            else: rect(f64(r.x + r.w) - 6.0, f64(r.y) + n.pad.top + pos, 4.0, thumb, n.style.border)
+        if bar: _draw_scrollbar(n, idle)
+        if debug: _draw_outline(n)
         if local_clip: hud_layout_restore_clip(saved)
+    if _render and n.focusable and n.enabled and n.state.focused and _focus_shown and r.w > 0 and r.h > 0:
+        g = _RING_OUT + 2.0
+        if local_clip: saved = hud_layout_clip(Rect(f64(n.clip.x) - g, f64(n.clip.y) - g, f64(n.clip.w) + 2.0 * g, f64(n.clip.h) + 2.0 * g))
+        radius = if n.kind == .slot or n.kind == .button: n.style.radius else: n.radius
+        _draw_ring(r, radius, n.style)
+        if local_clip: hud_layout_restore_clip(saved)
+
+# Hovered as the pointer shows it: not under a finger that has lifted, nor one that dragged away.
+_lit = (s: State) -> bool: s.hovered and (not _events.touch or (_events.down and _events.tap))
+
+# Seconds since a scroll container last moved or had the pointer over it (its bar fades after).
+_scroll_idle = (n: _Node) -> f64:
+    i = _root.index.get(n.id) ?? -1
+    if i < 0: return 0.0
+    b = _root.boxes[i]
+    moving = abs(n.scroll - b.scroll) > 0.01 or n.speed != 0.0 or (_root.scroll_capture == n.id and _root.dragging)
+    if moving or (n.state.hovered and not _events.touch): return 0.0
+    b.idle + clamp(_events.dt, 0.0, 0.1)
+
+# A rounded ring just outside r: what keys or a gamepad have chosen.
+_RING_OUT = 3.0
+_draw_ring = (r: Rect, radius: f64, st: HudStyle):
+    g = _RING_OUT
+    x = f64(r.x)
+    y = f64(r.y)
+    w = f64(r.w)
+    h = f64(r.h)
+    rect_rounded_outline(x - g, y - g, w + 2.0 * g, h + 2.0 * g, min(radius, min(w, h) / 2.0) + g, 2.0, st.focus)
 
 _draw_button = (n: _Node):
     r = n.rect
-    c = n.style.button
+    st = n.style
     s = n.state
-    if n.selected or s.focused: c = n.style.hover
-    lit = s.hovered and (not _events.touch or (_events.down and _events.tap))
-    if n.enabled and lit:
-        c = n.style.hover
-        if s.pressed: c = n.style.pressed
-    rect(r, c)
-    edge = if n.selected or s.focused: n.style.accent else: n.style.border
-    rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, edge)
-    tc = if n.enabled: n.style.text else: n.style.disabled
-    size = min(n.style.text_size, f64(r.h) * 0.6)
-    text_centered(fit_text(n.text, max(f64(r.w) - 8.0, 0.0), size), center(r), size, tc)
+    lit = n.enabled and _lit(s)
+    down = lit and s.pressed
+    fill = st.button
+    edge = st.border
+    if n.selected:
+        fill = mix(st.button, st.accent, 0.2)
+        edge = st.accent
+    if lit:
+        fill = if n.selected: mix(st.hover, st.accent, 0.24) else: st.hover
+        if not n.selected: edge = with_alpha(st.border, min(st.border.w * 1.8, 1.0))
+    if down: fill = if n.selected: mix(st.pressed, st.accent, 0.16) else: st.pressed
+    if not n.enabled:
+        fill = with_alpha(fill, fill.w * 0.45)
+        edge = with_alpha(edge, edge.w * 0.5)
+    x = f64(r.x)
+    y = f64(r.y)
+    w = f64(r.w)
+    h = f64(r.h)
+    rad = min(st.radius, min(w, h) / 2.0)
+    if rad > 0.0:
+        rect_rounded(x, y, w, h, rad, fill)
+        rect_rounded_outline(x, y, w, h, rad, 1.0, edge)
+    else:
+        rect(r, fill)
+        rect_outline(x, y, w, h, 1.0, edge)
+    tc = if n.enabled: st.text else: st.disabled
+    size = min(st.text_size, h * 0.6)
+    # (a pressed button's label sinks a unit, as the button is pushed in)
+    at = center(r)
+    if down: at.y += 1
+    text_centered(fit_text(n.text, max(w - 2.0 * max(8.0, rad), 0.0), size), at, size, tc)
 
-# Children from left to right.
-row = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "") -> State:
-    _children(_Node(axis = .horizontal, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style), children)
+# A track with the amount filled over it, both rounded as the button corners are.
+_draw_bar = (n: _Node):
+    r = n.rect
+    x = f64(r.x)
+    y = f64(r.y)
+    w = f64(r.w)
+    h = f64(r.h)
+    rad = min(n.style.radius, h / 2.0)
+    fw = w * clamp(n.amount, 0.0, 1.0)
+    if rad > 0.0:
+        rect_rounded(x, y, w, h, rad, n.style.panel)
+        if fw > 0.0: rect_rounded(x, y, fw, h, min(rad, fw / 2.0), n.style.accent)
+    else:
+        rect(r, n.style.panel)
+        rect(x, y, fw, h, n.style.accent)
 
-# Children from top to bottom.
-column = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "") -> State:
-    _children(_Node(axis = .vertical, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style), children)
+# A scroll container's thumb at its far edge: faint at rest, clear while it moves or the pointer
+# is over the container, wider with a track while the pointer is on it or drags it.
+_draw_scrollbar = (n: _Node, idle: f64):
+    horizontal = n.axis == .horizontal
+    room = (if horizontal: n.w else: n.h) - _pad_total(n, horizontal)
+    if n.content <= room + 0.5 or room <= 0.0: return
+    st = n.style
+    r = n.rect
+    fade = 1.0 - smoothstep(0.8, 1.3, idle)
+    if idle > 0.0 and idle < 1.3: request_redraw()
+    thumb = max(room * room / n.content, min(24.0, room))
+    pos = (room - thumb) * n.scroll / max(n.content - room, 1.0)
+    dragging = _root.thumb_drag and _root.scroll_capture == n.id
+    p = _local(_root.inverse, _events.pointer)
+    edge = if horizontal: f64(r.y + r.h) - f64(p.y) else: f64(r.x + r.w) - f64(p.x)
+    near = n.state.hovered and not _events.touch and edge >= 0.0 and edge <= 12.0
+    bw = st.scrollbar
+    if near or dragging: bw += 2.0
+    inset = 3.0
+    alpha = if dragging: 0.75 else if near: 0.55 else: 0.2 + 0.2 * fade
+    col = with_alpha(st.text, f32(f64(st.text.w) * alpha))
+    start = (if horizontal: f64(r.x) + n.pad.left else: f64(r.y) + n.pad.top) + 2.0
+    long = room - 4.0
+    if horizontal:
+        cy = f64(r.y + r.h) - inset - bw
+        if near or dragging: rect_rounded(start, cy, long, bw, bw / 2.0, st.track)
+        rect_rounded(start + pos * long / room, cy, thumb * long / room, bw, bw / 2.0, col)
+    else:
+        cx = f64(r.x + r.w) - inset - bw
+        if near or dragging: rect_rounded(cx, start, bw, long, bw / 2.0, st.track)
+        rect_rounded(cx, start + pos * long / room, bw, thumb * long / room, bw / 2.0, col)
 
-# A column with padding and the current HUD panel background.
-panel = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 16, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = hud_style.panel, radius: f64 = 0.0, border: Border = Border(), key: str = "") -> State:
-    _children(_Node(axis = .vertical, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style), children)
+# ui.debug: each box's edge, by kind (containers blue, scroll green, floating orange, leaves
+# pink), and a container's padding as a fainter inner edge.
+_draw_outline = (n: _Node):
+    r = n.rect
+    col = vec4(1, 0.35, 0.85, 0.85)
+    if n.first >= 0 or n.kind == .box: col = vec4(0.35, 0.7, 1, 0.8)
+    if n.scrolling: col = vec4(0.4, 1, 0.55, 0.9)
+    if n.floating: col = vec4(1, 0.65, 0.2, 0.95)
+    if n.kind == .space: col = vec4(1, 1, 1, 0.3)
+    rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, col)
+    pw = n.pad.left + n.pad.right
+    ph = n.pad.top + n.pad.bottom
+    if n.first >= 0 and pw + ph > 0.0 and f64(r.w) > pw and f64(r.h) > ph:
+        rect_outline(f64(r.x) + n.pad.left, f64(r.y) + n.pad.top, f64(r.w) - pw, f64(r.h) - ph, 1.0, with_alpha(col, col.w * 0.35))
+
+# Children from left to right. focusable: the whole row is a control (keys and a gamepad reach it;
+# it lights up under the pointer), for a card whose State.clicked is used.
+row = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", focusable: bool = false) -> State:
+    _children(_Node(axis = .horizontal, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style, focusable = focusable), children)
+
+# Children from top to bottom (focusable: as row's).
+column = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", focusable: bool = false) -> State:
+    _children(_Node(axis = .vertical, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style, focusable = focusable), children)
+
+# A column with padding and the current HUD panel's background, corners and edge (focusable: as row's).
+panel = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 16, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = hud_style.panel, radius: f64 = hud_style.panel_radius, border: Border = Border(hud_style.panel_edge), key: str = "", focusable: bool = false) -> State:
+    _children(_Node(axis = .vertical, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style, focusable = focusable), children)
 
 # A clipped container with wheel, drag and gliding, on its axis. Offset is kept by id.
 scroll = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", axis: Axis = .vertical) -> State:
     _children(_Node(axis = axis, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style, scrolling = true), children)
 
 # Floating children attached to the parent: anchor is its point, at is this box's point. Drawn last, outside scroll clips.
-over = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", anchor: Corner = .top_left, at: Corner = .top_left, offset: vec2 = vec2()) -> State:
-    _children(_Node(axis = .vertical, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style, floating = true, anchor = anchor, attach = at, offset = offset), children)
+# clip = true keeps it inside the scroll containers around it, as a badge on a list's row is.
+over = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", anchor: Corner = .top_left, at: Corner = .top_left, offset: vec2 = vec2(), clip: bool = false) -> State:
+    _children(_Node(axis = .vertical, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style, floating = true, contained = clip, anchor = anchor, attach = at, offset = offset), children)
 
 # Text at its measured size; wrap breaks words at the final width, then determines height.
 # A wrapping label's minimum width is its longest unbreakable word (CJK characters may break).
@@ -877,8 +1035,8 @@ button = (text: str, width: Size = fit(), height: Size = fit(), enabled: bool = 
 space = (width: Size = fit(), height: Size = fit(), key: str = "") -> void:
     _add(_Node(kind = .space, width = _sizing(width), height = _sizing(height), key = key))
 
-# Filled from zero to one, with the HUD panel color behind it.
-bar = (amount: f64, color: vec4 = hud_style.accent, width: Size = grow(), height: Size = 12, back: vec4 = hud_style.panel, key: str = "") -> void:
+# Filled from zero to one, over the HUD style's track color.
+bar = (amount: f64, color: vec4 = hud_style.accent, width: Size = grow(), height: Size = 12, back: vec4 = hud_style.track, key: str = "") -> void:
     st = hud_style
     st.accent = color
     st.panel = back
@@ -893,5 +1051,5 @@ image = (t: Texture, width: Size = fit(), height: Size = fit(), tint: vec4 = vec
 # Run draw at draw time with the solved Rect. Captured variables can be changed by hud_ widgets
 # inside it. focusable includes it in direction navigation; get(key) exposes its focus/click.
 slot = (draw: (Rect) -> void, width: Size = fit(), height: Size = fit(), focusable: bool = false, key: str = "") -> State:
-    i = _add(_Node(kind = .slot, width = _sizing(width), height = _sizing(height), focusable = focusable, key = key, draw = draw))
+    i = _add(_Node(kind = .slot, width = _sizing(width), height = _sizing(height), focusable = focusable, key = key, draw = draw, style = hud_style))
     _nodes[i].state
