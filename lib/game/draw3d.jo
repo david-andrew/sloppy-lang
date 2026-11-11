@@ -425,7 +425,13 @@ __pbr_shadow_skin_vs = (v: SkinVertex3D, u: LitParams) -> __PbrOut:
     o = __pbr_skin_vs(v, u)
     o.pos = o.shadow_pos
     o
-__pbr_shadow_fs = (i: __PbrOut, u: LitParams) -> vec4: __pbr_base(i, u)
+__pbr_shadow_fs = (i: __PbrOut, u: LitParams) -> vec4:
+    # Only opacity affects the depth pass; RGB conversion is wasted at shadow-map resolution.
+    if u.alpha_mode >= 0.5 and u.alpha_mode < 1.5:
+        alpha = i.color.w
+        if u.use_tex > 0.5: alpha = alpha * sample(u.tex, __pbr_uv(i, u.uv_sets.x)).w
+        if alpha < u.alpha_cutoff: discard()
+    vec4(1, 1, 1, 1)
 
 # ---------------- shadow pass ----------------
 struct _ShadowOut:
@@ -596,6 +602,7 @@ struct Draw3D:
     morph_skin: SkinVertex3D[] = []
 
 __3d_ready = false
+__3d_software_limits = false
 __pbr_sh: Shader
 __pbr_skin: Shader
 __pbr_shadow: Shader
@@ -673,10 +680,11 @@ __skin_pbr_program = () -> Shader: make_shader(shader(__pbr_skin_vs, __pbr_fs))
 __skin_pbr_shadow_program = () -> Shader: make_shader(shader(__pbr_shadow_skin_vs, __pbr_shadow_fs))
 
 __3d_init = ():
-    global __3d_ready, __blur_sh, __bright_sh, __comp_sh, __fs_tri, __lit, __lit_inst, __lit_skin, __shadow_sh, __shadow_sh_inst, __shadow_sh_skin, __sky_sh
+    global __3d_ready, __3d_software_limits, __blur_sh, __bright_sh, __comp_sh, __fs_tri, __lit, __lit_inst, __lit_skin, __shadow_sh, __shadow_sh_inst, __shadow_sh_skin, __sky_sh
     if __3d_ready: return
     __3d_ready = true
     __lit = make_shader(shader(lit_vs, lit_fs))
+    __3d_software_limits = gl_software_limits()
     __lit_inst = make_shader(shader(lit_vs_inst, lit_fs))
     when TARGET != "wasm":
         if __vk:
@@ -1127,7 +1135,7 @@ __params = (d: Draw3D, vp: mat4) -> LitParams:
         ground_color = __ground_color, fog_color = __fog_color, fog_density = __fog_density, fog_height = __fog_height,
         emissive = d.emissive, specular = d.specular, use_tex = f32(int(d.tex != 0)),
         shadow_strength = f32(__shadow_strength) * f32(int(__shadows)), shadow_texel = f32(1.0 / f64(max(__shadow_rt.texture.width, 1))),
-        shadow_taps = if __soft: 4.0 else: 9.0, time = f32(elapsed()), wind = d.wind,
+        shadow_taps = if __3d_software_limits: 4.0 else: 9.0, time = f32(elapsed()), wind = d.wind,
         tex = Texture(d.tex, 1, 1), shadow_map = __shadow_rt.texture, lights = __light_pos,
         light_colors = __light_col, light_count = __light_n, bones = __no_bones,
         environment = __sky_image, environment_rough = __sky_rough.texture, environment_diffuse = __sky_diffuse.texture, environment_on = f32(int(__sky_image.id != 0)),
@@ -1210,7 +1218,7 @@ __render3d = ():
         zone("shadows")
         if __shadow_rt.fbo == 0:
             res = 2048
-            if __soft: res = 512
+            if __3d_software_limits: res = 512
             __shadow_rt = __depth_target(res)
         center = __cam_target
         lpos = center + __sun_dir * f32(__shadow_size * 2.0)
