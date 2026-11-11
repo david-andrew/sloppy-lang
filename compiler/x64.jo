@@ -1585,8 +1585,50 @@ fcmp_flags = (ins: Ins) -> int:
     if op == .feq: return 100
     101
 
+# Fuse only three adjacent instructions with dead intermediate values. No memory
+# operation or safety check moves: the read and write keep the same address and
+# width. This also leaves aliasing and copy-on-write handling before the load intact.
+x_mem_add = (pos: int) -> bool:
+    global update_skip, cur_index
+    ins = ir.code[pos]
+    mode = int(ins.c)
+    d = int(ins.dst)
+    if mode & 15 != 8 or mode & M_FLOAT != 0 or pos + 2 >= ir.code.len(): return false
+    if v_ndef[d] != 1 or v_nuse[d] != 1: return false
+    ar = ir.code[pos + 1]
+    st = ir.code[pos + 2]
+    ad = int(ar.dst)
+    if ar.op != .add or int(ar.ty) != VI or int(ar.a) != d or not is_kv(int(ar.b)): return false
+    k = kv_of(int(ar.b))
+    if k < -2147483648 or k > 2147483647 or v_ndef[ad] != 1 or v_nuse[ad] != 1: return false
+    if st.op != .store or st.a != ins.a or st.b != ar.dst or st.c != ins.c or st.imm != ins.imm: return false
+    if mode & M_INDEX != 0 and st.dst != ins.b: return false
+    if int(ins.a) == d or int(ins.a) == ad: return false
+    if mode & M_INDEX != 0 and (int(ins.b) == d or int(ins.b) == ad): return false
+    base, disp = addr_of(int(ins.a), RCX)
+    disp += int(ins.imm)
+    # An immediate follows ModRM, so use a real base for RIP-relative globals.
+    base, disp = indexed_base(base, disp, int(ins.imm))
+    ix = -1
+    if mode & M_INDEX != 0:
+        ix = reg_of(int(ins.b), RDX)
+    use_index(ix, mem_scale(ins))
+    rex(true, 0, 0, base, false)
+    if k >= -128 and k <= 127:
+        b(0x83)
+        mem(0, base, disp)
+        b(k & 255)
+    else:
+        b(0x81)
+        mem(0, base, disp)
+        b32(k)
+    cur_index = -1
+    update_skip = pos + 2
+    true
+
 is_falu = (op: Op) -> bool: op == .fadd or op == .fsub or op == .fmul or op == .fdiv or op == .fmin or op == .fmax
 
+update_skip = -1           # last instruction of a fused integer load/add/store
 fold_load = -1             # a load the next instruction reads from memory (see load)
 
 falu = (opc: int, ins: Ins):
@@ -1659,7 +1701,7 @@ emit_ins = (pos: int, ins: Ins):
     d = int(ins.dst)
     a = int(ins.a)
     bb = int(ins.b)
-    if pos == fuse_skip: return
+    if pos == fuse_skip or pos <= update_skip: return
     if is_icmp(op) or is_fcmp(op):
         # fuse with a following if/brif that is the only user
         if pos + 1 < ir.code.len() and v_nuse[d] == 1:
@@ -1962,6 +2004,9 @@ emit_ins = (pos: int, ins: Ins):
             if vloc[d] == LOC_NONE: return
             mode = int(ins.c)
             size = mode & 15
+            # Avoid a struct-argument helper call on every load: most are not updates.
+            if opt_release and not dbg_on and size == 8 and mode & M_FLOAT == 0 and pos + 2 < ir.code.len() and ir.code[pos + 1].op == .add:
+                if x_mem_add(pos): return
             if mode & M_FLOAT != 0 and v_nuse[d] == 1 and pos + 1 < ir.code.len():
                 # a float load used only as the second operand of the next arithmetic: that
                 # instruction reads the memory itself
@@ -2461,7 +2506,7 @@ dbg_cfi: int[]
 dbg_epis: int[]         # (while a function is emitted: where its epilogues pop rbp)
 
 x64_function = ():
-    global dbg_pos, fold_load, fuse_skip, fused_cc, ra_fn_base, row_line, row_pos, save_next, sel_fused, xctl
+    global dbg_pos, fold_load, update_skip, fuse_skip, fused_cc, ra_fn_base, row_line, row_pos, save_next, sel_fused, xctl
     loop fn_addr.len() <= ir.fn_index: fn_addr.push(-1)
     loop fn_len.len() <= ir.fn_index: fn_len.push(0)
     loop code.len() % 16 != 0: b(0xCC)
@@ -2476,6 +2521,7 @@ x64_function = ():
     fuse_skip = -1
     sel_fused = -1
     fold_load = -1
+    update_skip = -1
     # (the prologue is the declaration's line, the body's first line comes after it: where
     # debuggers put a breakpoint on the function)
     row_pos = -1

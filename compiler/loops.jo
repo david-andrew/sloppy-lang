@@ -18,9 +18,10 @@ struct CLoop:
     pe: int             # its end
     ctr: int            # counter vreg
     endv: int           # the bound it stays below
-    inc: int            # position of `ctr = ctr + 1` (or - 1)
+    inc: int            # position of `ctr = ctr + step`
     signed: bool        # (counter and bound compare signed)
-    down: bool          # counting down: ctr - 1 while ctr >= endv (from its start down to endv)
+    down: bool          # counting down: ctr + step while ctr >= endv
+    step: int           # nonzero constant induction step
 
 # where each construct starting at a position ends (-1 elsewhere)
 lx_ends = (code: Ins[]) -> int[]:
@@ -67,9 +68,9 @@ lx_counting = (code: Ins[], ends: int[]) -> CLoop[]:
         down = cmp.op == .ges
         ctr = int(cmp.a)
         endv = int(cmp.b)
-        step = 1
-        if down: step = -1
-        if inc.op != .add or int(inc.dst) != ctr or int(inc.a) != ctr or not lx_is_const(int(inc.b), step): continue
+        if inc.op != .add or int(inc.dst) != ctr or int(inc.a) != ctr or not is_kv(int(inc.b)): continue
+        step = kv_of(int(inc.b))
+        if step == 0 or step < -(1 << 30) or step > (1 << 30) or (step < 0) != down: continue
         # (nothing else changes the counter or the bound)
         ok = true
         loop p in [i + 1..e - 3):
@@ -77,7 +78,7 @@ lx_counting = (code: Ins[], ends: int[]) -> CLoop[]:
             if o_defines(ins2.op) and (int(ins2.dst) == ctr or int(ins2.dst) == endv): ok = false
             if ins2.op == .zeroslots: ok = false
         if lx_defined_in(code, endv, i + 1, e - 3): ok = false
-        if ok: out.push(CLoop(i, e, ctr, endv, e - 3, cmp.op != .ltu, down))
+        if ok: out.push(CLoop(i, e, ctr, endv, e - 3, cmp.op != .ltu, down, step))
     out
 
 # the position of the definition of v in [s, e) when there is exactly one there (-1 otherwise)
@@ -97,20 +98,24 @@ struct LCheck:
     pc: int             # the comparison it tests (gone with it in the copy, when used only there)
     kind: int           # 0: index x + k against len (x the counter), 1: invariant index x, 2: null arr,
                         # 3: index x + terms + k, 4: index terms + k (the terms: what the loop does not
-                        # change, or makes from that: i * w for an outer loop's i)
+                        # change, or makes from that: i * w for an outer loop's i),
+                        # 5: counter * scale + terms + k (x: signed scale vreg + 1)
     x: int
     k: int
     len: int
     terms: int[]        # (v + 1, or -(v + 1) where subtracted)
 
-# x as the counter times lx_tc, plus the terms, plus lx_tk: from additions and subtractions the loop
+# x as the counter times lx_tc (or the single scale lx_ts), plus terms and lx_tk: the loop
 # makes before position p of what it does not change; false when it is something else
 lx_terms: int[]
 lx_tk = 0
 lx_tc = 0
+lx_ts = 0                  # signed (scale vreg + 1), at most one scaled counter term
 
 lx_decomp = (code: Ins[], L: CLoop, x: int, sgn: int, p: int, depth: int) -> bool:
+    global lx_ts
     if x == L.ctr:
+        if lx_ts != 0: return false
         lx_tc += sgn
         return true
     if is_kv(x):
@@ -127,6 +132,20 @@ lx_decomp = (code: Ins[], L: CLoop, x: int, sgn: int, p: int, depth: int) -> boo
     xi = code[q]
     if xi.op == .add: return lx_decomp(code, L, int(xi.a), sgn, q, depth + 1) and lx_decomp(code, L, int(xi.b), sgn, q, depth + 1)
     if xi.op == .sub: return lx_decomp(code, L, int(xi.a), sgn, q, depth + 1) and lx_decomp(code, L, int(xi.b), -sgn, q, depth + 1)
+    if xi.op == .neg: return lx_decomp(code, L, int(xi.a), -sgn, q, depth + 1)
+    if (xi.op == .mul or xi.op == .shl) and lx_tc == 0 and lx_ts == 0:
+        a = int(xi.a)
+        b = int(xi.b)
+        if xi.op == .mul and b == L.ctr:
+            b = a
+            a = L.ctr
+        if a == L.ctr:
+            if xi.op == .shl:
+                if not is_kv(b) or kv_of(b) < 0 or kv_of(b) > 30: return false
+                b = k_vreg(1 << kv_of(b))
+            if lx_inv_made(code, L, b, q, depth + 1):
+                lx_ts = sgn * (b + 1)
+                return true
     if xi.op == .mov: return lx_decomp(code, L, int(xi.a), sgn, q, depth + 1)
     if lx_inv_made(code, L, x, p, depth):
         lx_terms.push(sgn * (x + 1))
@@ -161,8 +180,11 @@ lx_sum = (code: Ins[], L: CLoop, terms: int[], k: int, out: mut Ins[]) -> int:
         else: acc = lx_bin(out, .sub, acc, lx_mat(code, L, -t - 1, out))
     acc
 
+lx_nbounds = 0             # all bounds checks, including those that must stay
+
 lx_checks = (code: Ins[], ends: int[], L: CLoop) -> LCheck[]:
-    global lx_tc, lx_terms, lx_tk
+    global lx_tc, lx_terms, lx_tk, lx_ts, lx_nbounds
+    lx_nbounds = 0
     out: LCheck[]
     loop p in [L.pl + 1..L.inc):
         ins = code[p]
@@ -181,6 +203,7 @@ lx_checks = (code: Ins[], ends: int[], L: CLoop) -> LCheck[]:
         if d < 0: continue
         cd = code[d]
         if cd.op == .geu:
+            lx_nbounds += 1
             x = int(cd.a)
             len = int(cd.b)
             if lx_defined_in(code, len, L.pl + 1, L.pe): continue
@@ -194,9 +217,15 @@ lx_checks = (code: Ins[], ends: int[], L: CLoop) -> LCheck[]:
             lx_terms = []
             lx_tk = 0
             lx_tc = 0
+            lx_ts = 0
             if not lx_decomp(code, L, x, 1, p, 0): continue
             if lx_tk <= -(1 << 40) or lx_tk >= (1 << 40) or lx_terms.len() > 4: continue
-            if lx_tc == 1 and lx_terms.len() == 0:
+            if lx_ts != 0:
+                out.push(LCheck(p, q, d, 5, lx_ts, lx_tk, len, lx_terms))
+            else if lx_tc == -1:
+                # Multiplication by -1 is folded to negation before this pass.
+                out.push(LCheck(p, q, d, 5, k_vreg(-1) + 1, lx_tk, len, lx_terms))
+            else if lx_tc == 1 and lx_terms.len() == 0:
                 # (small offsets: a range of them is tested at its ends)
                 if lx_tk > -1000000 and lx_tk < 1000000: out.push(LCheck(p, q, d, 0, L.ctr, lx_tk, len, []))
             else if lx_tc == 1: out.push(LCheck(p, q, d, 3, L.ctr, lx_tk, len, lx_terms))
@@ -237,6 +266,16 @@ lx_bin = (out: mut Ins[], op: Op, a: int, b: int) -> int:
     d = vreg(VI)
     out.push(Ins(op, VI, i32(d), i32(a), i32(b), 0, 0))
     d
+
+# Fail unless v is in [-limit, limit]. Explicit constants avoid sign-extended
+# immediate compares on x86. All guards branch to the existing checked fallback.
+lx_magnitude = (out: mut Ins[], v: int, limit: int):
+    lo = vreg(VI)
+    hi = vreg(VI)
+    out.push(Ins(.iconst, VI, i32(lo), 0, 0, 0, -limit))
+    out.push(Ins(.iconst, VI, i32(hi), 0, 0, 0, limit))
+    lx_fail(out, lx_bin(out, .lts, v, lo))
+    lx_fail(out, lx_bin(out, .gts, v, hi))
 
 # the instructions of loop [s, e] with branches leaving it pointing one construct further out
 # (`wrap` more: it is about to be wrapped in constructs); the checks are left out, `ren` renames vregs
@@ -857,9 +896,14 @@ loop_versioning = ():
         if L.pe - L.pl > 400: continue
         checks = lx_checks(code, ends, L)
         plan = VPlan(false, 0, false, [], [], [], [], [])
-        if lx_vec_on and not L.down: plan = lx_vec_plan(code, L, checks, first, last)
-        # (one check costs about as much as testing for it in front: not worth a copy)
-        if not plan.ok and checks.len() < 2: continue
+        if lx_vec_on and L.step == 1: plan = lx_vec_plan(code, L, checks, first, last)
+        # Keep scalar code growth bounded: a lone ordinary check is not worth a
+        # copy unless another bounds check must stay (histogram's indirect bucket).
+        # Scaled and invariant (zero-scale) indexes warrant a copy even alone;
+        # vector loops already amortize it.
+        if not plan.ok:
+            if checks.len() == 0: continue
+            if checks.len() == 1 and checks[0].kind != 5 and checks[0].kind != 1 and lx_nbounds < 2: continue
         loop p in [at..L.pl): out.push(code[p])
         wrap = 0
         if checks.len() > 0:
@@ -868,6 +912,16 @@ loop_versioning = ():
             out.push(Ins(.block, 0, 0, 0, 0, 0, 0))
             out.push(Ins(.block, 0, 0, 0, 0, 0, 0))
             wrap = 2
+        # Nonunit steps can overshoot the end: keep the final induction addition away
+        # from overflow too. Unusual magnitudes use the original checked loop.
+        if L.step != 1 and L.step != -1:
+            lx_magnitude(out, L.ctr, 1 << 30)
+            lx_magnitude(out, L.endv, 1 << 30)
+        # Unsigned counters spanning the signed boundary are not a signed affine
+        # interval. The checked loop handles those (and high unsigned counters).
+        if not L.signed and checks.len() > 0:
+            lx_fail(out, lx_bin(out, .lts, L.ctr, k_vreg(0)))
+            lx_fail(out, lx_bin(out, .lts, L.endv, k_vreg(0)))
         start_nonneg = lx_starts_nonneg(code, L)
         done_len: int[]
         # (the tests below take the loop to run from the counter's value here: so it does,
@@ -875,7 +929,7 @@ loop_versioning = ():
         if L.down: lx_fail(out, lx_bin(out, .lts, L.ctr, L.endv))
         else:
             loop ch in checks:
-                if ch.kind == 3:
+                if ch.kind == 3 or ch.kind == 5:
                     ge = Op.geu
                     if L.signed: ge = .ges
                     lx_fail(out, lx_bin(out, ge, L.ctr, L.endv))
@@ -891,6 +945,11 @@ loop_versioning = ():
                     if c2.kind == 0 and c2.len == ch.len:
                         kmin = min(kmin, c2.k)
                         kmax = max(kmax, c2.k)
+                # Small offsets must not wrap even when a single eligible check
+                # is versioned. Extreme counters retain their original semantics.
+                if kmin != 0 or kmax != 0:
+                    lx_magnitude(out, L.ctr, 1 << 40)
+                    lx_magnitude(out, L.endv, 1 << 40)
                 if L.down:
                     # (the counter goes from its value here down to endv)
                     lx_fail(out, lx_bin(out, .lts, lx_bin(out, .add, L.endv, k_vreg(kmin)), k_vreg(0)))
@@ -902,7 +961,7 @@ loop_versioning = ():
                     lx_fail(out, lx_bin(out, .lts, lo, k_vreg(0)))
                 hi = L.endv
                 if kmax != 0: hi = lx_bin(out, .add, L.endv, k_vreg(kmax))
-                lx_fail(out, lx_bin(out, .gts, hi, ch.len))
+                lx_fail(out, lx_bin(out, .gtu, hi, ch.len))
             else if ch.kind == 3:
                 # the counter's smallest and largest values, and the offset, all within 2^40 of
                 # 0 (no sum below wraps around), then the smallest and largest index in bounds
@@ -922,6 +981,27 @@ loop_versioning = ():
                     lx_fail(out, lx_bin(out, .gts, w, lim))
                 lx_fail(out, lx_bin(out, .lts, lx_bin(out, .add, slo, ov), k_vreg(0)))
                 lx_fail(out, lx_bin(out, .ges, lx_bin(out, .add, shi, ov), ch.len))
+            else if ch.kind == 5:
+                # Every visited counter lies between these endpoints, even for nonunit
+                # steps. Bound BEFORE multiplying: |iv|, |scale| <= 2^30 and |c| <=
+                # 2^40 imply |iv*scale+c| < 2^61. Thus wrapped products cannot pass.
+                lo = L.ctr
+                hi = lx_bin(out, .sub, L.endv, k_vreg(1))
+                if L.down:
+                    lo = L.endv
+                    hi = L.ctr
+                scale = lx_mat(code, L, abs(ch.x) - 1, out)
+                if ch.x < 0: scale = lx_bin(out, .sub, k_vreg(0), scale)
+                off = lx_sum(code, L, ch.terms, ch.k, out)
+                lx_magnitude(out, lo, 1 << 30)
+                lx_magnitude(out, hi, 1 << 30)
+                lx_magnitude(out, scale, 1 << 30)
+                lx_magnitude(out, off, 1 << 40)
+                # Testing both endpoints handles positive, zero and negative scales
+                # without another branch or an absolute value (INT64_MIN included).
+                loop bound in [lo, hi]:
+                    ix = lx_bin(out, .add, lx_bin(out, .mul, bound, scale), off)
+                    lx_fail(out, lx_bin(out, .geu, ix, ch.len))
             else if ch.kind == 1: lx_fail(out, lx_bin(out, .geu, ch.x, ch.len))
             else if ch.kind == 4: lx_fail(out, lx_bin(out, .geu, lx_sum(code, L, ch.terms, ch.k, out), ch.len))
             else: lx_fail(out, lx_bin(out, .eq, ch.x, k_vreg(0)))

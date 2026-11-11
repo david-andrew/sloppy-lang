@@ -216,13 +216,15 @@ safety net for changes here.
 - Measure the finished games first: allocation churn and frame-time spikes matter more than
   synthetic benchmarks.
 - Then the remaining gap to C -O2 in release builds (fannkuch 1.5x, spectral 1.4x, nbody 1.3x).
-- Rechecked array-header hoisting with `bench/headers`: release lowering already reads the
-  stable array pointers and lengths before the hot inner loops, including `mut` parameters.
-  Matrix multiplication still takes 2.18-2.45x C -O2's instructions: versioning drops the
-  `c[i * n + j]` and `a[i * n + k]` checks, but keeps `b[k * n + j]` (a scaled counter).
-  Stencil takes 1.27x with all inner checks removed; histogram takes 2.50x (a data-dependent
-  index and the one-check versioning cutoff). More header motion cannot save 10% on these
-  kernels; see the benchmark report for the bounds and instruction counts.
+- Affine loop versioning now removes scaled-counter checks such as `b[k * n + j]`,
+  using overflow-guarded endpoint tests and the original checked fallback. On `bench/headers`,
+  matrix multiplication falls from 2.18-2.45x to 2.00-2.25x C -O2's instructions.
+  Histogram falls from 2.50x to 1.80x: versioning removes the input-array check and x86-64
+  folds the bucket load/add/store into a memory add. Its data-dependent bucket check stays;
+  the scan is seven instructions per element versus C's five, with growing input construction
+  accounting for the rest. Stencil remains 1.27x. Stable headers were already outside these
+  loops; pointer induction and carrying matrix accumulators remain opportunities. See
+  `bench/headers/README.md` for raw counts, overflow limits and correctness/compile-speed gates.
   vec4/mat4 math is scalar (2-2.8x C); packed SSE for vec4 would close it.
   Function values are not inlined (reduce, count, a lambda: 2-3x a plain loop).
 - Debug builds stay the default; compile speed comes first (item 2 tracks it). What they lose

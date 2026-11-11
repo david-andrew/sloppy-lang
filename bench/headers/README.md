@@ -1,170 +1,171 @@
-# Array header hoisting: measurement and stop decision
+# Affine loop versioning and histogram instruction counts
 
-Measured at `b16c61999561bd009c231fd5b248139e7eeb3e7f`, 2026-11-11,
-Intel Core i7-6700 desktop (host name `redfox`), x86-64 Linux, GCC
-16.2.1 20261029 with `cc -O2`. Sloppy was bootstrapped from this checkout,
-then used with `--release` and `SLOPPY_EMIT_WORKERS=1`.
+Measured 2026-11-11 on the shared Intel Core i7-6700 desktop (configured host name
+`redfox`), x86-64 Linux, GCC 16.2.1 20261029, `cc -O2`. Comparison starts at
+`65573fe4464c2a339544fe4dcf4f2672e0ffb47f`; both compilers were built from their
+sources. Sloppy uses `--release` and `SLOPPY_EMIT_WORKERS=1`. All numbers are
+whole-process user instructions, median of three hardware-counter runs. No
+wall-clock benchmarking was performed.
 
-**Stop decision: further array-header motion does not meet the requested 10%
-instruction reduction on these kernels. No compiler change was made.** The
-ROADMAP's claim that lengths are reloaded in the hot matrix inner loop is stale.
-This is a bound for these kernels at this revision, not a claim about every
-program or about elapsed-time speedups.
+## Workloads and results
 
-## Workloads and instruction counts
+`headers.jo` and `headers.c` implement identical kernels with parameter, local,
+and global arrays. C pointers have no `restrict`; Sloppy destinations are `mut`
+arrays. Initialization and printed results are included in the counts:
 
-`headers.jo` and `headers.c` contain the same three kernels, each with parameter,
-local, and global array storage. Parameters are ordinary C pointers without
-`restrict`; Sloppy's destinations are `mut` arrays. Each program prints an
-observable result. Inputs and iteration counts match:
-
-- Matrix: 64 x 64, eight repetitions, i/j/k order, exactly
-  `c[i * n + j] += a[i * n + k] * b[k * n + j]`.
+- Matrix: 64 x 64, eight repetitions, i/j/k order,
+  `c[i*n+j] += a[i*n+k] * b[k*n+j]`.
 - Stencil: 65,536 elements, 32 in-place sweeps,
-  `c[i] = (c[i - 1] + c[i] + c[i + 1]) * 0.25`.
+  `c[i] = (c[i-1] + c[i] + c[i+1]) * 0.25`.
 - Histogram: 262,144 indices cycling through 256 buckets, eight repetitions,
   `h[x[i]] += 1`.
 
-Whole-process user instruction counts, including initialization and output;
-median of three hardware-counter runs. No wall-clock measurements were used.
-The counter was `tools/icount.c` with only its output precision changed in a
-scratch copy. Raw samples and Callgrind bounds are in `measurements.json`.
+| Kernel | Storage | Sloppy before | Sloppy after | C -O2 | After / C | Change |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Matrix | mut parameter | 41,787,325 | 38,576,020 | 17,321,800 | 2.227 | -7.68% |
+| Matrix | local | 37,855,320 | 34,775,090 | 17,356,697 | 2.004 | -8.14% |
+| Matrix | global | 42,345,770 | 39,036,169 | 17,321,804 | 2.254 | -7.82% |
+| Stencil | mut parameter | 21,679,915 | 21,680,297 | 17,090,015 | 1.269 | 0.00% |
+| Stencil | local | 21,679,995 | 21,680,346 | 17,090,645 | 1.269 | 0.00% |
+| Stencil | global | 21,680,070 | 21,680,419 | 17,090,055 | 1.269 | 0.00% |
+| Histogram | mut parameter | 29,902,067 | 21,513,443 | 11,945,230 | 1.801 | -28.05% |
+| Histogram | local | 29,902,228 | 21,513,601 | 11,945,971 | 1.801 | -28.05% |
+| Histogram | global | 29,901,971 | 21,513,344 | 11,945,231 | 1.801 | -28.05% |
 
-| Kernel | Storage | Sloppy instructions | C -O2 instructions | Sloppy / C |
-| --- | --- | ---: | ---: | ---: |
-| Matrix | mut parameter | 41,785,792 | 17,319,984 | 2.413 |
-| Matrix | local | 37,853,790 | 17,354,896 | 2.181 |
-| Matrix | global | 42,344,243 | 17,319,977 | 2.445 |
-| Stencil | mut parameter | 21,678,388 | 17,088,184 | 1.269 |
-| Stencil | local | 21,678,467 | 17,088,823 | 1.269 |
-| Stencil | global | 21,678,541 | 17,088,216 | 1.269 |
-| Histogram | mut parameter | 29,900,539 | 11,943,394 | 2.504 |
-| Histogram | local | 29,900,698 | 11,944,143 | 2.503 |
-| Histogram | global | 29,900,442 | 11,943,391 | 2.504 |
+All nine outputs match C (relative tolerance 1e-10). Repeated counts differ
+slightly with startup and input paths. `measurements.json` retains the earlier
+header-hoisting measurements and adds this comparison's raw samples. Both
+comparison runs use the same environment. Stencil's hot loop is unchanged;
+extra overflow guards add about 350-380 instructions per complete run
+(less than 0.002%).
 
-There is no before/after compiler comparison: implementation stopped at the
-measurement gate. Rebuilding the unchanged compiler would measure the same
-behavior. Small differences between reproductions include process startup,
-argument lengths, and the compiler input path; ratios rounded to two decimal
-places are stable.
+## Affine range guards
 
-## Why hoisting more headers cannot close the gap
+Release lowering's `fp_begin` already caches stable array pointers and guarded
+lengths before range loops and handles uniqueness for destinations. There are
+no header reads in these hot inner loops. Additional header motion was bounded
+below 10% by the earlier experiment; the original samples and Callgrind bounds
+are retained in `measurements.json`.
 
-Release lowering already calls `fp_begin` (`compiler/lower.jo`) before range
-loops. It caches stable array pointers and guarded lengths, handles uniqueness
-for written arrays, and respects changes, escapes, captures, and calls. This is
-separate from `lx_hoist` in `compiler/loops.jo`. Inspection of `--release --ir`
-and `objdump -d` confirms **zero header loads in the hot inner loop of all nine
-kernels**, including their checked fallback copies. Histogram's input-building
-comprehension does have header accesses and allocation calls; those are
-initialization, and cannot be treated as an unchanging-header loop.
+The versioner now recognizes `iv * s + c`, including commuted multiplication,
+subtraction, and constant scales reduced to shifts. The scale and offset may be
+parameters or expressions the loop does not change. An enclosing loop's counter
+is invariant in the inner loop, covering both `a[i*n+k]` and `b[k*n+j]`.
+Constant positive and negative induction steps are supported; vectorization
+still requires step one. Runtime-unknown steps retain the checked loop.
 
-For example, matrix_param's three `load ... c=72 imm=8` lengths are before the
-k loop. The fast k loop uses the cached pointers, drops the c and a checks, and
-keeps only the b check. In the measured binary:
+Before selecting the unchecked copy, guards constrain counter endpoints and
+scale to [-2^30, 2^30] and the computed offset to [-2^40, 2^40]. Only then are
+both endpoint products and sums checked with unsigned comparisons against the
+array length. Their magnitudes stay below 2^61, so signed overflow cannot turn
+an invalid range into a valid one. Checking both endpoints handles positive,
+negative and zero scales. For nonunit steps, the endpoints conservatively enclose
+all visited counters, and extra induction guards prevent wrap on the final
+step. Extreme values and inconclusive ranges run the original checked copy,
+including valid programs whose index arithmetic wraps. Small constant offsets
+also guard against counter overflow before adding the offset.
+
+The original pre-loop trip test remains in place. A failed precheck does not
+panic: the fallback preserves the first failing iteration, index and source
+message. Resized or replaced arrays cannot supply an invariant pointer/length.
+Decomposition has fixed depth and term limits and uses the existing 400-IR-
+instruction loop limit; no new whole-function search is performed per access.
+
+The matrix fast loop now has no per-element bounds checks. Multiplication,
+address arithmetic, repeated accumulator loads/stores, and register pressure
+remain. This change does not implement pointer induction or floating-point
+reassociation.
+
+## Histogram: instruction-by-instruction explanation
+
+`objdump -d` of the baseline and changed binaries shows the following executed
+instructions on each successful iteration (panic-only paths are excluded):
+
+| Work per element | Sloppy before | Sloppy after | C -O2 |
+| --- | ---: | ---: | ---: |
+| Input-array bounds compare + branch | 2 | 0 | 0 |
+| Load `x[i]` | 1 | 1 | 1 |
+| Bucket bounds compare + branch | 2 | 2 | 0 |
+| Bucket load, add, store | 3 | 1 | 1 |
+| Induction increment, compare, back branch | 3 | 3 | 3 |
+| **Total** | **11** | **7** | **5** |
+
+The hot loop has no uniqueness/refcount operations, header reloads, second
+bucket check, or redundant index reload. Both languages use 64-bit integers.
+C uses pointer induction and Sloppy a scaled counter, but each loop's control
+costs three instructions.
+
+Two changes remove four instructions per scan element:
+
+1. Scalar versioning can remove one eligible range check when another bounds
+   check must remain, as with the data-dependent bucket index. A lone scaled
+   affine or invariant (zero-scale) check can also be versioned. The general
+   one-check scalar cutoff is retained to limit code growth and compile cost.
+2. The x86-64 emitter folds an adjacent full-width integer load/add-constant/store
+   into `addq $constant, [address]` when both intermediate registers have exactly
+   one definition and one use and the load/store addresses and widths match.
+   No check or other memory operation is crossed. Aliasing, copy-on-write, and
+   wrapping integer behavior are preserved. Arm64 retains load/add/store.
+
+The changed histogram scan is:
 
 ```asm
-# Before k: length reads, outside the backward branch span
-4054fb: mov  0x8(%r8),%rax
-40551a: mov  0x8(%rcx),%r15
-405534: mov  0x8(%rcx),%rsi
-
-# Inside k: b[k*n+j], checked against that cached length
-405606: mov  %rbx,%r10
-405609: imul %rdi,%r10
-40560d: add  %r14,%r10
-405610: cmp  %rsi,%r10
-405613: jb   405628
-# ... panic on the other path ...
-405642: cmp  %rdi,%rbx
-405645: jl   4055e0
+mov    0x18(input,counter,8), index
+cmp    bucket_length, index
+jb     valid_bucket
+# original bounds panic path
+valid_bucket:
+addq   $1, 0x18(buckets,index,8)
+add    $1, counter
+cmp    count, counter
+jl     scan
 ```
 
-`lx_decomp` handles addition/subtraction of the counter and invariant terms,
-not multiplication of the counter by an invariant n. Hoisting lengths cannot
-make `b[k * n + j]` eligible. C also strength-reduces addresses to pointer
-increments and keeps the c accumulator in a register. Sloppy still performs
-inner-loop multiplication, reloads, and address arithmetic.
+For 2,097,152 scanned elements this saves 8,388,608 inner-loop instructions;
+version guards add a few dozen instructions. The two remaining safety
+instructions explain 4,194,304 instructions of the gap against C. About 6.83M
+Sloppy instructions versus 1.46M C instructions lie outside the scan, mainly
+input construction: Sloppy's growing comprehension has capacity/uniqueness
+paths and signed remainder handling, while C allocates once and fills a known
+size. Those initialization costs remain. Thus the complete program is 1.80x C,
+while the scan itself is 1.40x with the required bucket check intact.
 
-Stencil already versions away every inner bounds check. Its Sloppy fast loop
-has ten instructions per element, versus eight in C: C carries previous values
-between iterations and increments a pointer. More header motion does not
-provide either transformation.
+## Validation
 
-Histogram's lengths are also invariant before the scan. `x[i]` can be checked
-over the range, but `h[x[i]]` is data-dependent. The current versioner declines
-scalar versioning with fewer than two eligible checks (`checks.len() < 2`),
-leaving both checks here. The remaining gap includes explicit load/add/store
-for the bucket versus C's memory increment, and more expensive input
-construction. Changing the one-check cutoff or proving a data-dependent
-index range is a separate optimization.
-
-### Conservative bound, independently counted with Callgrind
-
-With `--dump-instr=yes --collect-jumps=yes`, sum instruction costs inside the
-fast inner backward branch span and subtract from the entire process. This
-counts **all** work outside that loop as removable, including initialization,
-printing, version guards, and unrelated arithmetic, so it greatly overestimates
-what header motion could save:
-
-| Kernel | Parameter | Local | Global |
-| --- | ---: | ---: | ---: |
-| Matrix: all instructions outside fast k loop | 4.64% | 5.82% | 5.90% |
-| Stencil: all instructions outside fast element loop | 3.26% | 3.26% | 3.27% |
-
-Since headers already do not obstruct inner check elimination, further header
-motion leaves these inner loops unchanged. Even this impossible best case
-misses 10%. The spans and exact costs are recorded in `measurements.json`.
-
-Histogram initialization includes allocation calls, so deleting all work
-outside the scan would not be a useful bound. Instead, sum the enclosing
-repeat-loop span and subtract the scan span. Its entire repeated setup,
-including lengths, pointers, and repeat-counter work, costs just **128 / 120 /
-184 instructions** for parameter/local/global storage: each under **0.001%**
-of the complete run. Moving those headers cannot change the eligibility of
-either inner check.
-
-Callgrind and hardware totals are kept separate. They account for REP
-instructions differently (notably histogram construction), and instrumentation
-changes startup slightly. Bounds use only Callgrind costs and totals.
+- `tools/bootstrap.sh`: `bootstrap ok`, self-compilation fixed point. Its hardcoded
+  `/tmp/sloppy*` paths were redirected in the executed script to
+  `~/dev/tmp/affine/tmp/sloppy*`; the repository script is unchanged.
+- `python3 tools/runtests.py`: 27 passed, 0 failed.
+- `python3 tools/runtests.py --compiler sloppy`: 1197 passed, 0 failed.
+- `python3 tools/runtests.py --compiler sloppy --release`: 1191 passed, 0 failed.
+  This includes all 14 `value_copy_*.jo` tests and `aggregate_copy_alias.jo`.
+- New `affine_versioning.jo` and `histogram_versioning.jo`: exact debug/release
+  output agreement, including caught panic messages, and 2 passed, 0 failed
+  with `--target linux-arm64 --release`, `SLOPPY_ARM64_RUN=qemu-aarch64`.
+  Cases cover parameter/computed/negative/zero scales, shifts, nonunit and
+  descending steps, nested 2D indexes, zero trips, overflowing endpoints,
+  unsigned counters, changed arrays, aliasing and wrapping memory updates.
+- Release IR inspection confirms distinct unchecked/checked copies for `scan`,
+  `unsigned_scan`, `local_scale`, `negative_one`, `zero_scale`, `shifted`,
+  `subtracted`, `strided`, and `descending`: zero bounds-panic calls in each fast
+  loop, one retained in each fallback.
+- Compile-instruction speedcheck against the start commit passes the 1% gate
+  (worst increase 0.92%); detailed counts are retained in `measurements.json`. Suites ran sequentially
+  under a shared test-worker lock, with one emit worker.
 
 ## Reproduce
 
-From the repository root:
-
 ```sh
-mkdir -p ~/dev/tmp/hoist/tmp
-export TMPDIR=~/dev/tmp/hoist/tmp
-python3 bench/headers/measure.py
+mkdir -p ~/dev/tmp/affine/tmp
+export TMPDIR=~/dev/tmp/affine/tmp
+export SLOPPY_EMIT_WORKERS=1
+python3 bench/headers/measure.py --scratch ~/dev/tmp/affine/after
+python3 tools/speedcheck.py --base 65573fe4464c2a339544fe4dcf4f2672e0ffb47f --release
 ```
 
-The script builds both programs, writes release IR and both disassemblies to
-scratch, measures the nine variants three times, checks their numerical outputs
-against C (relative tolerance 1e-10), and saves `counts.json`. It uses the
-project's hardware counter, falling back to Callgrind if counters are denied.
-`--compiler` selects a saved compiler; `--scratch` selects the artifact directory.
-It neither measures elapsed time nor launches windows/audio.
-
-For per-instruction costs, run the scratch Sloppy binary with a mode such as
-`matrix_param`, `stencil_local`, or `histogram_global`:
-
-```sh
-valgrind --tool=callgrind --dump-instr=yes --collect-jumps=yes \
-  --callgrind-out-file="$TMPDIR/matrix.callgrind" \
-  ~/dev/tmp/hoist/headers-sloppy matrix_param
-```
-
-## Validation and scope
-
-- Baseline bootstrap reached `bootstrap ok`, a self-compile fixed point. The
-  existing bootstrap script's hardcoded `/tmp/sloppy*` paths were substituted
-  with `~/dev/tmp/hoist/tmp/sloppy*` only in the executed script, without editing
-  the repository script.
-- All nine benchmark outputs match C; the retained measurement script was also
-  run successfully, verifying all nine outputs with three samples per variant.
-- Compiler files, including M_BITS alias handling, are unchanged. No correctness
-  tests were added because no optimization was implemented.
-- Full debug/release suites, arm64 correctness gates, speedcheck, and the
-  standard `bench/rt` runtime measurements were not run: the task explicitly
-  stops at measurement when the proposed optimization is below 10%. No
-  performance improvement or correctness-gate pass is claimed.
+The measurement script builds both programs, writes release IR and both
+disassemblies to scratch, checks all nine numerical outputs, and saves exact
+samples in `counts.json`. It uses `tools/icount.c` (a scratch copy with integer
+precision) and falls back to Callgrind if hardware counters are denied. Use
+`--compiler` to select a saved compiler and `--scratch` for separate before/after
+artifacts. It opens no windows and plays no audio.
