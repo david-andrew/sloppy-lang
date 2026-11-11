@@ -1,4 +1,5 @@
 import net
+import crypto
 
 # Rollback netplay: two or more players on different machines play one game as if it ran on
 # each of them alone. Every machine runs the whole game; only the players' inputs travel. A
@@ -49,6 +50,7 @@ struct Session[S, I]:
     step: (S, I[]) -> S
     players: int
     me: int
+    version = PROGRAM_BUILD_ID      # set before play: a shared release name for separate entry points
     delay = 2
     max_ahead = 10                  # (no more than __NP_HIST / 2)
     tick = 0                        # the tick state is at
@@ -60,6 +62,8 @@ struct Session[S, I]:
     problem = ""                    # what is wrong, said once on stderr too: packets that cannot be
                                     # read (another build?), two players with one number, a
                                     # player not heard from for 5 s, the games differing
+    __versions: str?[]              # builds verified directly, or vouched for by an input forwarder
+    __incompatible = false         # a build mismatch is fatal for this session
     __states: S[]
     __inputs: I[]                   # [tick % HIST * players + player]
     __known: bool[]
@@ -134,6 +138,8 @@ struct __NpPacket[I]:
     echo = -1.0
     held = 0.0
     desync = -1                    # a mismatch found here, passed on to the rest of the game
+    version = ""
+    builds: str?[]
 
 # a session of `players` players, this machine's being player `me` (from 0)
 @deterministic
@@ -141,6 +147,7 @@ session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: in
     s = Session[S, I](step = step, players = players, me = me, delay = delay, state = start)
     zero: I
     __default_init(zero)
+    s.__versions = fill(none, players)
     s.__states = fill(start, __NP_HIST)
     s.__inputs = fill(zero, __NP_HIST * players)
     s.__known = fill(false, __NP_HIST * players)
@@ -244,7 +251,7 @@ play[S, I] = (s: mut Session[S, I], input: I):
     if s.__wrong >= 0 and s.__wrong < s.tick: __np_replay(s, s.__wrong)
     s.__wrong = -1
     # wait when too far ahead of someone's inputs, or a tick at times when ahead of their clock
-    s.waiting = false
+    s.waiting = not __np_ready(s) or s.__incompatible
     loop p in [0..s.players):
         if p == s.me or s.__stand[p]: continue
         if s.tick - s.__recv[p] >= s.max_ahead: s.waiting = true
@@ -285,14 +292,30 @@ outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]:
 
 # bytes that arrived from another player (the packet says which)
 receive[S, I] = (s: mut Session[S, I], data: u8[]):
+    # The build envelope has no game types: even an incompatible input schema can say why.
+    envelope = __np_envelope(data)
+    if envelope == none:
+        __np_problem(s, "a packet from another player could not be read (another build of the game or version of netplay?)")
+        return
+    e = envelope!
+    p = e.0
+    if p == s.me and e.1 != s.me: __np_problem(s, "two players are both player {p}: give each machine its own number (`me`)")
+    if p < 0 or p >= s.players or p == s.me or e.1 != s.me or s.__stand[p]: return
+    if s.__versions[p] == none or e.2 != s.version: s.__versions[p] = e.2
+    if e.2 != s.version: __np_different(s, p, e.2)
+    if e.3.len() == s.players:
+        loop q in [0..s.players):
+            if q == s.me or e.3[q] == none: continue
+            # Verified identities also travel with forwarded/stand-in inputs in a mesh.
+            # Never erase a mismatch with an older, compatible identity from another peer.
+            if s.__versions[q] == none or e.3[q]! != s.version: s.__versions[q] = e.3[q]
+            if e.3[q]! != s.version: __np_different(s, q, e.3[q]!)
+    if s.__incompatible: return
     got = __np_decode[I](data)
     if got == none:
-        __np_problem(s, "a packet from another player could not be read as this game's input: does the other player run another build of the game?")
+        __np_problem(s, "a packet from another player could not be read as this game's input (another build of the game?)")
         return
     pk = got!
-    p = pk.from
-    if p == s.me and pk.to != s.me: __np_problem(s, "two players are both player {p}: give each machine its own number (`me`)")
-    if p < 0 or p >= s.players or p == s.me or pk.to != s.me or s.__stand[p]: return
     # (another session on these peers may still be running: it cannot have inputs I never made)
     if pk.has.len() != s.players:
         __np_problem(s, "a packet's receipt count does not match this game's player count")
@@ -342,7 +365,7 @@ __np_encode[I] = (pk: __NpPacket[I]) -> u8[]:
 # Input text and the receipt vector are shared across this frame's recipients. In particular,
 # forwarding a large input serializes it once, instead of once for every peer.
 __np_encode_cached[I] = (pk: __NpPacket[I], cache: mut {int: str}, receipts: str) -> u8[]:
-    out = bytes("NP4 {pk.from} {pk.to} {pk.tick} {pk.adv} {pk.hub} {pk.check} {pk.hash >> 32} {pk.hash & 0xFFFFFFFF} {pk.sent:.4} {pk.echo:.4} {pk.held:.4} {receipts} {pk.desync}")
+    out = bytes("NP5 {pk.from} {pk.to} {pk.tick} {pk.adv} {pk.hub} {pk.check} {pk.hash >> 32} {pk.hash & 0xFFFFFFFF} {pk.sent:.4} {pk.echo:.4} {pk.held:.4} {receipts} {pk.desync}\n{to_text((pk.version, pk.builds))}")
     body = ""
     loop r in pk.ranges:
         if r.player == pk.from:
@@ -370,7 +393,10 @@ __np_decode[I] = (data: u8[]) -> __NpPacket[I]?:
     nl = 0
     loop nl < data.len() and data[nl] != '\n': nl += 1
     w = split(str_from_bytes(data[..nl)), " ")
-    if w.len() != 14 or w[0] != "NP4": return none
+    if w.len() != 14 or w[0] != "NP5": return none
+    envelope = __np_envelope(data) ?? return none
+    nl += 1
+    loop nl < data.len() and data[nl] != '\n': nl += 1
     desync = to_int(w[13]) ?? return none
     n: int[]
     loop k in [1..9):
@@ -426,7 +452,34 @@ __np_decode[I] = (data: u8[]) -> __NpPacket[I]?:
                 if r is TextError: return none
                 ins.push(r)
         ranges.push(__NpRange[I](ns[0], ns[1], ns[2], ns[3], ins, quiet, rtt))
-    __NpPacket[I](n[0], n[1], n[2], n[3], n[4], n[5], (u64(n[6]) << 32) | u64(n[7]), has, ranges, f[0], f[1], f[2], desync)
+    __NpPacket[I](n[0], n[1], n[2], n[3], n[4], n[5], (u64(n[6]) << 32) | u64(n[7]), has, ranges, f[0], f[1], f[2], desync, envelope.2, envelope.3)
+
+# Read identity before touching compressed data or the game's input type.
+type __NpBuildList = str?[]
+
+__np_envelope = (data: u8[]) -> (int, int, str, str?[])?:
+    nl = 0
+    loop nl < data.len() and data[nl] != '\n': nl += 1
+    h = split(str_from_bytes(data[..nl)), " ")
+    if h.len() != 14 or h[0] != "NP5" or nl == data.len(): return none
+    from = to_int(h[1]) ?? return none
+    to = to_int(h[2]) ?? return none
+    stop = nl + 1
+    loop stop < data.len() and data[stop] != '\n': stop += 1
+    r = from_text[(str, __NpBuildList)](str_from_bytes(data[nl + 1..stop)))
+    if r is TextError: return none
+    (from, to, r.0, r.1)
+
+__np_different[S, I] = (s: mut Session[S, I], p: int, theirs: str):
+    if s.__incompatible: return
+    s.__incompatible = true
+    s.problem = ""
+    __np_problem(s, "player {p} runs a different build of this game (theirs: {theirs}, this one: {s.version})")
+
+__np_ready[S, I] = (s: Session[S, I]) -> bool:
+    loop p in [0..s.players):
+        if p != s.me and not s.__stand[p] and s.__versions[p] != s.version: return false
+    true
 
 __np_problem[S, I] = (s: mut Session[S, I], what: str):
     if len(s.problem) > 0: return
@@ -531,6 +584,10 @@ __np_send[S, I] = (s: mut Session[S, I]):
     if s.__check >= 0: h = s.__hashes.get(s.__check) ?? 0
     cache: {int: str}
     receipts = join(s.__recv.map((r): "{r}"), ",")
+    s.__versions[s.me] = s.version
+    if not s.__incompatible:
+        loop q in [0..s.players):
+            if s.__stand[q]: s.__versions[q] = s.version
     loop p in [0..s.players):
         if p == s.me or s.__stand[p]: continue
         if s.__hub >= 0 and p != s.__hub and not __np_direct(s, p): continue
@@ -555,7 +612,10 @@ __np_send[S, I] = (s: mut Session[S, I]):
                 adv += s.__their_adv[q]
             # (even an empty range carries the source's clock and silence, for pacing)
             ranges.push(__NpRange[I](q, tick, adv, first, ins, quiet, rtt))
-        pk = __NpPacket[I](s.me, p, s.tick, s.tick - s.__their_tick[p], s.__hub, s.__check, h, s.__recv, ranges, now, s.__stamp[p], max(0.0, now - s.__heard[p] * 1000.0), s.desync)
+        # Input forwarders and stand-in owners report their sources' builds. Repeat a fatal
+        # mismatch even before forwarding requests arrive; ordinary mesh packets stay small.
+        builds = if s.__forward[p] or s.__incompatible or s.__stand.contains(true): s.__versions else: []
+        pk = __NpPacket[I](s.me, p, s.tick, s.tick - s.__their_tick[p], s.__hub, s.__check, h, s.__recv, ranges, now, s.__stamp[p], max(0.0, now - s.__heard[p] * 1000.0), s.desync, s.version, builds)
         __np_out(s, p, __np_encode_cached(pk, cache, receipts))
 
 # this machine plays for player p from now on, with this input every tick (a game's "the
@@ -906,7 +966,7 @@ relay = (port: int):
         else if let room = __np_rooms.get(e.peer):
             # (route from the first three header words, without decoding the game's input
             # type or scanning every player for every packet)
-            if starts_with(e.text, "NP4 "):
+            if starts_with(e.text, "NP5 "):
                 nl = 0
                 loop nl < e.data.len() and e.data[nl] != '\n': nl += 1
                 head = split(str_from_bytes(e.data[..nl)), " ")
@@ -1006,12 +1066,23 @@ struct Server[W, I]:
     apply: (W, int, I, W) -> W
     step: (W) -> W
     tick = 0
+    version = PROGRAM_BUILD_ID      # set before joining: a shared release name for separate entry points
+    rejoin_grace = 0.0              # seconds to keep a dropped player (0: leave immediately)
+    dropped: int[]                  # connections lost; player and world retained during the grace period
+    rejoined: int[]                 # retained players who returned in the last update
+    errors: (int, str)[]            # rejected connections: transport peer and reason, in the last update
     send_every = 2                  # (30 worlds a second)
     ticks_per_second = 60.0         # how often update is called (run sets it): its clients learn it
     joined: int[]                   # the players who came, and went, in the last update
     left: int[]
     messages: (int, str)[]          # the game's own messages that came in the last update, and who sent each (say)
     compress = true                 # the worlds deflated (false: as text, cheaper to make, bigger)
+    __dropped: int[]
+    __rejoined: int[]
+    __errors: (int, str)[]
+    __pending: {int: f64}           # transport peers awaiting a build/token handshake
+    __routes: {int: int}            # transport peer -> stable player number
+    __next_player = 1
     __came: int[]
     __went: int[]
     __said: (int, str)[]
@@ -1029,6 +1100,10 @@ struct Server[W, I]:
 const __CS_HIST = 64
 
 struct __CsClient[I]:
+    peer = 0                       # current transport peer (the player number survives a new connection)
+    online = true
+    token = ""                     # 256 random bits, issued by this server; never chosen by a client
+    dropped_at = -1.0
     queue: (int, int, I)[]          # inputs not applied yet: sequence number, the tick seen, input
     acked = 0                       # the last applied
     credit = 0                      # inputs it may have applied now: one more each tick, a few kept
@@ -1066,6 +1141,21 @@ __cs_lag_due = (l: mut __CsLag) -> (int, u8[])[]:
     if k > 0: l.held = l.held[k..]
     out
 
+# Tag 6 is deliberately independent of W and I: checked before either game type is decoded.
+# A challenge has accepted=false; the reply carries the client's version, saved token and hello;
+# the acceptance carries the stable player number and token. Tag 7 is a rejection's reason.
+struct __CsHello:
+    version: str
+    token = ""
+    hello = ""
+    you = -1
+    accepted = false
+
+__cs_hello_bytes = (h: __CsHello) -> u8[]:
+    b: u8[] = [6]
+    b.extend(bytes(to_text(h)))
+    b
+
 struct __CsInput[I]:
     seq: int
     seen: int
@@ -1102,36 +1192,130 @@ encoding[W, I] = (s: mut Server[W, I], encode: (W, int, W?) -> u8[]):
     s.__encode = encode
     s.__encoding = true
 
-# a player connected (as the player number, any int); a player left. On a server that listens, a
-# player of a number below 0 is the host's own, fed by hand: srv.join(-1), srv.receive(-1, data)
-# with what its client sends, and what srv.outgoing() has for -1 given to that client's receive
+# A transport peer connected, or disconnected. join starts the build/token handshake; joined
+# reports a new player only after acceptance. leave retains an accepted player for rejoin_grace
+# seconds (dropped), then left reports its final departure. The parameter named player is
+# a transport peer ID (as before). Feed outgoing's transport peer IDs
+# back through receive/leave; after a rejoin they can differ from the game's player numbers.
 join[W, I] = (s: mut Server[W, I], player: int):
-    s.__clients[player] = __CsClient[I](since = elapsed(), since_tick = s.tick)
-    s.__sent.remove(player)
-    s.__came.push(player)
-leave[W, I] = (s: mut Server[W, I], player: int):
-    s.__clients.remove(player)
-    s.__sent.remove(player)
-    s.__went.push(player)
+    peer = player
+    if s.__pending.has(peer) or s.__routes.has(peer): return
+    s.__pending[peer] = elapsed()
+    __cs_server_send(s, peer, __cs_hello_bytes(__CsHello(s.version)))
 
-# bytes from a player
-receive[W, I] = (s: mut Server[W, I], player: int, data: u8[]):
-    if not s.__clients.has(player): return
-    # (what the client gave connect: its name, a token)
-    if data.len() > 0 and data[0] == 1:
-        s.__clients[player].hello = str_from_bytes(data[1..])
+# rejoin=false makes a departure final immediately and revokes its token (a kick or logout).
+leave[W, I] = (s: mut Server[W, I], player: int, rejoin: bool = true):
+    peer = player
+    s.__pending.remove(peer)
+    # No packet queued for an old connection may reach a later connection with its ID.
+    s.__out = [loop m in s.__out: if m.0 != peer: m]
+    s.__lag.held = [loop m in s.__lag.held: if m.1 != peer: m]
+    p = s.__routes.get(peer) ?? return
+    s.__routes.remove(peer)
+    s.__sent.remove(p)
+    if rejoin and s.rejoin_grace > 0.0 and len(s.__clients[p].token) > 0:
+        s.__clients[p].online = false
+        s.__clients[p].dropped_at = elapsed()
+        s.__clients[p].queue.clear()
+        s.__clients[p].have = -1
+        s.__dropped.push(p)
+    else:
+        s.__clients.remove(p)
+        s.__went.push(p)
+
+# The connection currently serving player p, or none while dropped. Use this with net.close
+# and other transport APIs, whose IDs can change on a rejoin; say takes the stable player.
+peer[W, I] = (s: Server[W, I], p: int) -> int?:
+    if let c = s.__clients.get(p):
+        if c.online: return c.peer
+    none
+
+__cs_reject[W, I] = (s: mut Server[W, I], peer: int, why: str):
+    s.__pending.remove(peer)
+    s.__errors.push((peer, why))
+    b: u8[] = [7]
+    b.extend(bytes(why))
+    # A fatal error must not wait behind simulated lag and an eventual close.
+    __cs_server_put(s, peer, b)
+    if s.__port >= 0 and peer >= 0: net.close(peer, 4002, "netplay handshake rejected")
+
+__cs_accept[W, I] = (s: mut Server[W, I], peer: int, h: __CsHello):
+    if h.version != s.version:
+        __cs_reject(s, peer, "player {peer} runs a different build of this game (theirs: {h.version}, this one: {s.version})")
         return
-    # (the game's own message: srv.messages in the next update)
+    p = peer
+    returning = false
+    if len(h.token) > 0:
+        found = false
+        loop q, c in s.__clients:
+            if len(c.token) > 0 and crypto.constant_time_equal(c.token, h.token):
+                p = q
+                found = true
+        if not found:
+            __cs_reject(s, peer, "rejoin token is invalid or expired; clear rejoin_token to join as a new player")
+            return
+        c = s.__clients[p]
+        if s.rejoin_grace <= 0.0 or (not c.online and elapsed() - c.dropped_at >= s.rejoin_grace):
+            __cs_reject(s, peer, "rejoin token is invalid or expired; clear rejoin_token to join as a new player")
+            return
+        if c.online:
+            # A restart may arrive before the old TCP connection is detected as gone. The
+            # private token proves ownership: retire the old route before accepting inputs.
+            s.leave(c.peer)
+            b: u8[] = [7]
+            b.extend(bytes("this player rejoined from another connection"))
+            __cs_server_put(s, c.peer, b)
+            if s.__port >= 0 and c.peer >= 0: net.close(c.peer, 4003, "this player rejoined from another connection")
+        returning = true
+    else:
+        # A detached player can still own this connection's number. New peers cannot claim it.
+        if s.__clients.has(p):
+            if peer < 0:
+                p = -1
+                loop s.__clients.has(p): p -= 1
+            else:
+                p = s.__next_player
+                loop s.__clients.has(p): p += 1
+        s.__next_player = max(s.__next_player, p + 1)
+    token = ""
+    if returning: token = s.__clients[p].token
+    else if s.rejoin_grace > 0.0: token = crypto.hex_text(crypto.random_bytes(32))
+    # Start a fresh input sequence and delta history; the authoritative world stays as it is.
+    s.__clients[p] = __CsClient[I](peer = peer, token = token, hello = h.hello, since = elapsed(), since_tick = s.tick)
+    s.__sent.remove(p)
+    s.__routes[peer] = p
+    s.__pending.remove(peer)
+    if returning: s.__rejoined.push(p)
+    else: s.__came.push(p)
+    __cs_server_send(s, peer, __cs_hello_bytes(__CsHello(s.version, token, you = p, accepted = true)))
+
+# bytes from a transport peer (not necessarily the player's stable number after a rejoin)
+receive[W, I] = (s: mut Server[W, I], player: int, data: u8[]):
+    peer = player
+    if s.__pending.has(peer):
+        if data.len() == 0 or data[0] != 6:
+            __cs_reject(s, peer, "a build handshake was expected before game data (another version of netplay?)")
+            return
+        h = from_text[__CsHello](str_from_bytes(data[1..]))
+        if h is TextError:
+            __cs_reject(s, peer, "the game's build handshake could not be read")
+            return
+        __cs_accept(s, peer, h)
+        return
+    number = s.__routes.get(peer) ?? return
+    if data.len() > 0 and data[0] == 1:
+        s.__clients[number].hello = str_from_bytes(data[1..])
+        return
     if data.len() > 0 and data[0] == 3:
-        s.__said.push((player, str_from_bytes(data[1..])))
+        s.__said.push((number, str_from_bytes(data[1..])))
         return
     r = from_text[__CsInput[I]](str_from_bytes(data))
     if r is TextError:
-        if not s.__clients[player].warned: eprint("netplay: an input from player {player} could not be read: does it run another build of the game? ({r.message})")
-        s.__clients[player].warned = true
+        if not s.__clients[number].warned: eprint("netplay: an input from player {number} could not be read: does it run another build of the game? ({r.message})")
+        s.__clients[number].warned = true
         return
-    s.__clients[player].queue.push((r.seq, r.seen, r.input))
-    if r.have > s.__clients[player].have: s.__clients[player].have = r.have
+    s.__clients[number].queue.push((r.seq, r.seen, r.input))
+    if r.have > s.__clients[number].have: s.__clients[number].have = r.have
 
 # The game's own messages beside the worlds, on the same connection: a chat line, "round over", a
 # score; text, in order, never lost (as the worlds are not either). The server says to one player
@@ -1140,12 +1324,12 @@ receive[W, I] = (s: mut Server[W, I], player: int, data: u8[]):
 say[W, I] = (s: mut Server[W, I], player: int, text: str):
     b: u8[] = [3]
     b.extend(bytes(text))
-    __cs_server_send(s, player, b)
+    if let to = s.peer(player): __cs_server_send(s, to, b)
 say_all[W, I] = (s: mut Server[W, I], text: str):
     loop p, _ in s.__clients: s.say(p, text)
 
-# what player p's client gave connect (its name, a token to know it again by): "" until it has
-# come, which is soon after p joined
+# what player p's client gave connect as hello (its name or other game metadata), available
+# when joined reports the player; the rejoin token is separate
 hello[W, I] = (s: Server[W, I], p: int) -> str:
     if let c = s.__clients.get(p): return c.hello
     ""
@@ -1193,6 +1377,24 @@ update[W, I] = (s: mut Server[W, I]):
             if e.kind == .joined: s.join(e.peer)
             else if e.kind == .left: s.leave(e.peer)
             else: s.receive(e.peer, e.data)
+    # Expire by elapsed seconds, independent of tick rate or how often update is called.
+    expired: int[]
+    loop p, c in s.__clients:
+        if not c.online and elapsed() - c.dropped_at >= s.rejoin_grace: expired.push(p)
+    loop p in expired:
+        s.__clients.remove(p)
+        s.__sent.remove(p)
+        s.__went.push(p)
+    timed_out: int[]
+    loop peer, since in s.__pending:
+        if elapsed() - since >= 5.0: timed_out.push(peer)
+    loop peer in timed_out: __cs_reject(s, peer, "the game's build handshake timed out")
+    s.dropped = s.__dropped
+    s.rejoined = s.__rejoined
+    s.errors = s.__errors
+    s.__dropped.clear()
+    s.__rejoined.clear()
+    s.__errors.clear()
     s.joined = s.__came
     s.left = s.__went
     s.messages = s.__said
@@ -1200,6 +1402,7 @@ update[W, I] = (s: mut Server[W, I]):
     s.__went.clear()
     s.__said.clear()
     loop p, c in s.__clients:
+        if not c.online: continue
         # (one input a tick, as they are made; a few more after a pause, to catch up, but never
         # more than one a tick over time: a client sending two a tick moves no faster)
         cr = min(c.credit + 1, 4)
@@ -1225,7 +1428,7 @@ update[W, I] = (s: mut Server[W, I]):
     s.world = s.step(s.world)
     s.tick += 1
     s.__hist[s.tick % __CS_HIST] = s.world
-    if s.tick % s.send_every == 0 and s.__clients.len() > 0:
+    if s.tick % s.send_every == 0 and s.__routes.len() > 0:
         # (the world as text, compressed once for everyone, or each player's own: who, tick, ack and
         # the tick rate before it)
         z: u8[]
@@ -1233,9 +1436,10 @@ update[W, I] = (s: mut Server[W, I]):
             z = bytes(to_text(s.world))
             if s.compress: z = deflate(z)
         loop p, c in s.__clients:
+            if not c.online: continue
             # (a client still behind on the worlds before, as one on a slow link: this one is not
             # queued behind them, the next replaces it, and the server's memory stays as it is)
-            if s.__port >= 0 and p >= 0 and net.backlog(p) > max(z.len() * 2, 16384): continue
+            if s.__port >= 0 and c.peer >= 0 and net.backlog(c.peer) > max(z.len() * 2, 16384): continue
             if s.__encoding:
                 __cs_send_encoded(s, p, c.have, c.acked)
                 continue
@@ -1246,7 +1450,7 @@ update[W, I] = (s: mut Server[W, I]):
                 if s.compress: v = deflate(v)
                 b.extend(v)
             else: b.extend(z)
-            __cs_server_send(s, p, b)
+            __cs_server_send(s, c.peer, b)
     if s.__lag.held.len() > 0:
         loop m in __cs_lag_due(s.__lag): __cs_server_put(s, m.0, m.1)
 
@@ -1270,7 +1474,7 @@ __cs_send_encoded[W, I] = (s: mut Server[W, I], p: int, have: int, acked: int):
     sent.push((s.tick, w))
     if sent.len() > 32: sent = sent[sent.len() - 32..]
     s.__sent[p] = sent
-    __cs_server_send(s, p, b)
+    __cs_server_send(s, s.__clients[p].peer, b)
 
 __cs_server_send[W, I] = (s: mut Server[W, I], p: int, b: u8[]):
     if s.__lag.ms > 0.0 or s.__lag.jitter > 0.0: __cs_lag_hold(s.__lag, p, b)
@@ -1290,6 +1494,11 @@ struct Client[W, I]:
     state: W                        # the latest world from the server, with this player's newer inputs applied
     server: W                       # the latest world from the server, as it sent it
     me = -1                         # this player's number (once the server has said: connected())
+    version = PROGRAM_BUILD_ID      # set before connecting; defaults to this program's source identity
+    rejoin_token = ""               # save per server/room, restore before connect after a program restart
+    __ready = false
+    __greeted = false
+    __saying: str[]                 # game messages made before the handshake is accepted
     server_tick = -1                # the tick of server
     interpolation = 0.1             # how far in the past others are drawn (view), in seconds: two
                                     # worlds' time apart or more (send_every ticks), more on a network
@@ -1332,10 +1541,10 @@ decoding[W, I] = (c: mut Client[W, I], decode: (u8[], W?) -> W):
     c.__decode = decode
     c.__decoding = true
 
-# connect to the server; hello: text the server gets as srv.hello(player) (a name, a token to
-# know a player again by after a reconnect). A client that lost its connection, or called
-# disconnect, connects again the same way (or by itself, with c.reconnect = true: the server
-# sees a new player then, whose hello is the same)
+# connect to the server; hello is game metadata, available as srv.hello(player) at joined.
+# A saved rejoin_token is offered during the build handshake: within the server's rejoin_grace,
+# the player keeps their number and world entry. Clear rejoin_token to join as a new player.
+# With c.reconnect=true a lost connection is retried automatically.
 connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = ""):
     global __pace_real_time
     if c.__peer >= 0: disconnect(c)
@@ -1346,6 +1555,13 @@ connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = ""):
     c.server_tick = -1
     c.problem = ""
     c.__heard = -1.0
+    c.__ready = false
+    c.__greeted = false
+    c.__seq = 0
+    c.__saying.clear()
+    c.__out.clear()
+    c.__lag.held.clear()
+    c.__lag.last = 0.0
     c.__pending.clear()
     c.__sent.clear()
     c.__worlds.clear()
@@ -1362,6 +1578,18 @@ disconnect[W, I] = (c: mut Client[W, I]):
     c.__peer = -1
     c.me = -1
     c.server_tick = -1
+    c.__ready = false
+    c.__greeted = false
+    c.__saying.clear()
+    c.__out.clear()
+    c.__lag.held.clear()
+    c.__lag.last = 0.0
+    c.__seq = 0
+    c.__pending.clear()
+    c.__sent.clear()
+    c.__worlds.clear()
+    c.__synced = false
+    c.__view_floor = -1.0e18
     c.__retry_at = -1.0
 
 # (reconnect's: the next try, a while after a connection lost)
@@ -1386,15 +1614,18 @@ __cs_client_send[W, I] = (c: mut Client[W, I], b: u8[]):
     else: c.__out.push(b)
 
 # connected, and the server has sent a world (and is still heard from)
-connected[W, I] = (c: Client[W, I]) -> bool: c.server_tick >= 0 and len(c.problem) == 0
+connected[W, I] = (c: Client[W, I]) -> bool: c.__ready and c.server_tick >= 0 and len(c.problem) == 0
 
 __cs_problem[W, I] = (c: mut Client[W, I], what: str):
     if len(c.problem) > 0: return
     c.problem = what
     eprint("netplay: {what}")
 
-# a message of the game's own to the server (srv.messages): sent at once, connected or not yet
+# a message of the game's own to the server (srv.messages), held until the build is accepted
 say[W, I] = (c: mut Client[W, I], text: str):
+    if not c.__ready:
+        c.__saying.push(text)
+        return
     b: u8[] = [3]
     b.extend(bytes(text))
     __cs_client_send(c, b)
@@ -1430,6 +1661,8 @@ play[W, I] = (c: mut Client[W, I], input: I):
                 else: __cs_problem(c, "the server closed the connection{said} ({e.code}){then}")
                 # (gone: not a connection to hear from, nor to send on)
                 c.__peer = -1
+                c.__ready = false
+                c.__greeted = false
                 c.me = -1
                 c.server_tick = -1
     if c.server_tick >= 0 and c.__heard >= 0.0 and elapsed() - c.__heard > 5.0:
@@ -1437,7 +1670,7 @@ play[W, I] = (c: mut Client[W, I], input: I):
         if c.reconnect:
             c.disconnect()
             __cs_retry_later(c)
-    if c.server_tick < 0: return
+    if not c.connected(): return
     c.__seq += 1
     c.__pending.push((c.__seq, input))
     c.__sent.push((c.__seq, elapsed()))
@@ -1447,6 +1680,32 @@ play[W, I] = (c: mut Client[W, I], input: I):
 
 # bytes from the server
 receive[W, I] = (c: mut Client[W, I], data: u8[]):
+    if data.len() > 0 and data[0] == 7:
+        __cs_problem(c, str_from_bytes(data[1..]))
+        c.__retry_at = -1.0
+        c.__ready = false
+        return
+    if data.len() > 0 and data[0] == 6:
+        h = from_text[__CsHello](str_from_bytes(data[1..]))
+        if h is TextError:
+            __cs_problem(c, "the server's build handshake could not be read")
+            return
+        if not h.accepted and not c.__greeted:
+            c.__greeted = true
+            __cs_client_send(c, __cs_hello_bytes(__CsHello(c.version, c.rejoin_token, c.__hello)))
+        if h.version != c.version:
+            __cs_problem(c, "the server runs a different build of this game (theirs: {h.version}, this one: {c.version})")
+            return
+        if h.accepted and len(c.problem) == 0:
+            c.rejoin_token = h.token
+            c.me = h.you
+            c.__ready = true
+            loop text in c.__saying: c.say(text)
+            c.__saying.clear()
+        return
+    if not c.__ready or len(c.problem) > 0:
+        if len(c.problem) == 0: __cs_problem(c, "the server sent game data before accepting the build handshake (another version of netplay?)")
+        return
     if data.len() > 0 and data[0] == 3:
         c.messages.push(str_from_bytes(data[1..]))
         return
@@ -1456,11 +1715,6 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
         return
     c.__heard = elapsed()
     if r.tick <= c.server_tick: return
-    # (the hello, once the server knows this client: with its first world)
-    if c.server_tick < 0 and len(c.__hello) > 0:
-        h: u8[] = [1]
-        loop x in bytes(c.__hello): h.push(x)
-        __cs_client_send(c, h)
     c.me = r.you
     c.__retry_wait = 1.0
     c.server_tick = r.tick

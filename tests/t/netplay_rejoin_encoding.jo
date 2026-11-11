@@ -1,0 +1,64 @@
+# requires: sloppy
+# Rejoining starts per-player encoded deltas at base=none, then uses the new acked view.
+import netplay
+struct Pad:
+    dx = 0
+struct World:
+    pos: {int: int}
+apply = (w: World, p: int, pad: Pad, seen: World) -> World:
+    out = w
+    out.pos[p] += pad.dx
+    out
+step = (w: World) -> World: w
+encode = (w: World, p: int, base: World?) -> u8[]:
+    old = if let b = base: b.pos[p] else: 0
+    # A flag tells decode whether it needs a base, so stale bases produce the wrong state.
+    bytes("{base != none} {w.pos[p] - old}")
+decode = (data: u8[], base: World?) -> World:
+    parts = split(str_from_bytes(data), " ")
+    w = base ?? World()
+    if parts[0] == "false": assert(base == none)
+    else: assert(base != none)
+    # This fixture's stable player is 1.
+    w.pos[1] = (if parts[0] == "true": w.pos.get(1) ?? 0 else: 0) + to_int(parts[1])!
+    w
+
+loop mode in [0..3):
+    s = netplay.server(World(), apply, step)
+    s.send_every = 1
+    s.rejoin_grace = 30.0
+    s.compress = mode == 0
+    s.per_player((w: World, p: int) -> World: World(pos = {p: w.pos.get(p) ?? 0}))
+    if mode == 2: s.encoding(encode)
+    a = netplay.client(World(), apply)
+    if mode == 2: a.decoding(decode)
+    s.join(1)
+    s.world.pos[1] = 10
+    s.world.pos[2] = 999
+    loop _ in [0..10):
+        s.update()
+        loop o in s.outgoing(): a.receive(o.1)
+        a.play(Pad(1))
+        loop b in a.outgoing(): s.receive(1, b)
+    saved = a.rejoin_token
+    before = s.world.pos[1]
+    s.leave(1)
+    # A fresh client has none of the old interpolation/delta history, only its saved token.
+    b = netplay.client(World(), apply)
+    b.rejoin_token = saved
+    if mode == 2: b.decoding(decode)
+    s.join(7)
+    full = false
+    delta = false
+    loop _ in [0..10):
+        s.update()
+        loop o in s.outgoing():
+            assert(o.0 == 7)
+            if mode == 2 and o.1[0] == 5:
+                text = str_from_bytes(o.1)
+                full = full or contains(text, " -1 false ")
+                delta = delta or contains(text, " true ")
+            b.receive(o.1)
+        b.play(Pad(2))
+        loop data in b.outgoing(): s.receive(7, data)
+    print("mode", mode, "restored", b.connected() and b.me == 1 and b.server.pos[1] >= before, "private view", b.server.pos.len() == 1, "history reset", mode != 2 or (full and delta), "no error", b.problem == "")

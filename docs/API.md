@@ -6053,6 +6053,7 @@ draw = ():
       step: (S, I[]) -> S
       players: int
       me: int
+      version = PROGRAM_BUILD_ID      # set before play: a shared release name for separate entry points
       delay = 2
       max_ahead = 10                  # (no more than __NP_HIST / 2)
       tick = 0                        # the tick state is at
@@ -6143,6 +6144,11 @@ draw = ():
       apply: (W, int, I, W) -> W
       step: (W) -> W
       tick = 0
+      version = PROGRAM_BUILD_ID      # set before joining: a shared release name for separate entry points
+      rejoin_grace = 0.0              # seconds to keep a dropped player (0: leave immediately)
+      dropped: int[]                  # connections lost; player and world retained during the grace period
+      rejoined: int[]                 # retained players who returned in the last update
+      errors: (int, str)[]            # rejected connections: transport peer and reason, in the last update
       send_every = 2                  # (30 worlds a second)
       ticks_per_second = 60.0         # how often update is called (run sets it): its clients learn it
       joined: int[]                   # the players who came, and went, in the last update
@@ -6153,12 +6159,13 @@ draw = ():
 - `server[W, I] = (world: W, apply: (W, int, I, W) -> W, step: (W) -> W) -> Server[W, I]`
 - `per_player[W, I] = (s: mut Server[W, I], view: (W, int) -> W)`: what each player is sent: view(world, player) for the whole world, as what that player can see (the others near them, their side's), so that a big world goes out to each a part of it. The client's state and view are then that part
 - `encoding[W, I] = (s: mut Server[W, I], encode: (W, int, W?) -> u8[])`: The worlds in the game's own bytes, made against what each client already has: encode(world, player, base) gives the bytes for player, where base is the world that player's client last got (none at first, or when it is too far behind), and the client's decode(bytes, base) makes the world again from them and the same base. Only what changed since base need go: a delta, as small as the game can make it (varints, the soldiers that moved). With per_player, world is what view gave for the player. The bytes go as they are (not deflated). The client says c.decoding(decode).
-- `join[W, I] = (s: mut Server[W, I], player: int)`: a player connected (as the player number, any int); a player left. On a server that listens, a player of a number below 0 is the host's own, fed by hand: srv.join(-1), srv.receive(-1, data) with what its client sends, and what srv.outgoing() has for -1 given to that client's receive
-- `leave[W, I] = (s: mut Server[W, I], player: int)`
-- `receive[W, I] = (s: mut Server[W, I], player: int, data: u8[])`: bytes from a player
+- `join[W, I] = (s: mut Server[W, I], player: int)`: A transport peer connected, or disconnected. join starts the build/token handshake; joined reports a new player only after acceptance. leave retains an accepted player for rejoin_grace seconds (dropped), then left reports its final departure. The parameter named player is a transport peer ID (as before). Feed outgoing's transport peer IDs back through receive/leave; after a rejoin they can differ from the game's player numbers.
+- `leave[W, I] = (s: mut Server[W, I], player: int, rejoin: bool = true)`: rejoin=false makes a departure final immediately and revokes its token (a kick or logout).
+- `peer[W, I] = (s: Server[W, I], p: int) -> int?`: The connection currently serving player p, or none while dropped. Use this with net.close and other transport APIs, whose IDs can change on a rejoin; say takes the stable player.
+- `receive[W, I] = (s: mut Server[W, I], player: int, data: u8[])`: bytes from a transport peer (not necessarily the player's stable number after a rejoin)
 - `say[W, I] = (s: mut Server[W, I], player: int, text: str)`: The game's own messages beside the worlds, on the same connection: a chat line, "round over", a score; text, in order, never lost (as the worlds are not either). The server says to one player or to all, and gets the clients' in srv.messages (who, text) after each update; a client says to the server, and gets the server's in c.messages after each play.
 - `say_all[W, I] = (s: mut Server[W, I], text: str)`
-- `hello[W, I] = (s: Server[W, I], p: int) -> str`: what player p's client gave connect (its name, a token to know it again by): "" until it has come, which is soon after p joined
+- `hello[W, I] = (s: Server[W, I], p: int) -> str`: what player p's client gave connect as hello (its name or other game metadata), available when joined reports the player; the rejoin token is separate
 - `waiting[W, I] = (s: Server[W, I], p: int) -> int`: how many of player p's inputs are waiting to be applied (1 or 2 normally; more: they come faster than the server ticks, which shows as lag)
 - `lag[W, I] = (s: mut Server[W, I], ms: f64, jitter_ms: f64 = 0)`: simulate a slow network on what the server sends: ms more latency, up to jitter_ms more at random (kept in order, as over TCP); the client's lag does the same both ways
 - `run[W, I] = (s: mut Server[W, I], ticks_per_second: f64 = 60.0)`: run the server: update 60 times a second, on time (each tick's start set from the first, so a slow sleep does not make it fall behind), until the program ends
@@ -6173,6 +6180,8 @@ draw = ():
       state: W                        # the latest world from the server, with this player's newer inputs applied
       server: W                       # the latest world from the server, as it sent it
       me = -1                         # this player's number (once the server has said: connected())
+      version = PROGRAM_BUILD_ID      # set before connecting; defaults to this program's source identity
+      rejoin_token = ""               # save per server/room, restore before connect after a program restart
       server_tick = -1                # the tick of server
       interpolation = 0.1             # how far in the past others are drawn (view), in seconds: two
                                       # worlds' time apart or more (send_every ticks), more on a network
@@ -6188,11 +6197,11 @@ draw = ():
   ```
 - `client[W, I] = (start: W, apply: (W, int, I, W) -> W) -> Client[W, I]`
 - `decoding[W, I] = (c: mut Client[W, I], decode: (u8[], W?) -> W)`: the worlds from a server with encoding: decode(bytes, base) makes the world from the server's encode bytes and the world base this client already had (none when it had none)
-- `connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = "")`: connect to the server; hello: text the server gets as srv.hello(player) (a name, a token to know a player again by after a reconnect). A client that lost its connection, or called disconnect, connects again the same way (or by itself, with c.reconnect = true: the server sees a new player then, whose hello is the same)
+- `connect[W, I] = (c: mut Client[W, I], host: str, port: int, hello: str = "")`: connect to the server; hello is game metadata, available as srv.hello(player) at joined. A saved rejoin_token is offered during the build handshake: within the server's rejoin_grace, the player keeps their number and world entry. Clear rejoin_token to join as a new player. With c.reconnect=true a lost connection is retried automatically.
 - `disconnect[W, I] = (c: mut Client[W, I])`: close the connection (connect again later, to the same server or another)
 - `lag[W, I] = (c: mut Client[W, I], ms: f64, jitter_ms: f64 = 0)`: simulate a slow network on what the client sends and gets: ms more latency each way, up to jitter_ms more at random (kept in order, as over TCP)
 - `connected[W, I] = (c: Client[W, I]) -> bool`: connected, and the server has sent a world (and is still heard from)
-- `say[W, I] = (c: mut Client[W, I], text: str)`: a message of the game's own to the server (srv.messages): sent at once, connected or not yet
+- `say[W, I] = (c: mut Client[W, I], text: str)`: a message of the game's own to the server (srv.messages), held until the build is accepted
 - `play[W, I] = (c: mut Client[W, I], input: I)`: this tick's input: applied here at once (prediction) and sent
 - `receive[W, I] = (c: mut Client[W, I], data: u8[])`: bytes from the server
 - `outgoing[W, I] = (c: mut Client[W, I]) -> u8[][]`: what to send since the last call (without connect)

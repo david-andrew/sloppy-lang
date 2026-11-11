@@ -168,6 +168,38 @@ alone, `tools/netpong_relay.py` (Python, no Sloppy needed) serves Netpong's page
 on the network and passes messages between two pages, the first of which hosts: a pattern for
 any game's own relay.
 
+## Matching game builds
+
+Rollback sessions, clients and servers have a `version: str` field. Before play starts they
+exchange it, independently of the game's input and world types. A mismatch stops rollback at
+tick zero, with `s.problem` such as `player 2 runs a different build of this game (theirs: 1.3,
+this one: 1.4)`. A client sets `c.problem` and stays disconnected; a server rejects the connection
+and reports `(peer, reason)` in `srv.errors` after its next update, without adding a player.
+A rollback input forwarder reports the incompatible build to its other clients too; a machine
+supplying `stand_in` inputs vouches for their build, including at startup. The checks
+apply over manual transports, UDP, net peers, relay fallback and direct WebRTC alike.
+
+The default is `PROGRAM_BUILD_ID`, a compiler-provided source identity. It hashes the sources
+read for the program, including imports and the standard library, with their logical module
+paths (independent of checkout and cache directories). The same sources give the same identity in native and web builds, debug and release; changing even a
+comment changes it. It is a quick mismatch detector, not a signature. External assets and foreign
+code are outside it. Different entry files, or target-specific imports, can give different IDs
+even for compatible programs.
+
+Set an explicit shared release name before the first `play`, `join`, `listen` or `connect` when
+client and server have different entry files, or when managing compatibility deliberately:
+
+```gdscript
+s.version = "1.4"                # rollback, on every player's session
+srv.version = "1.4"              # client-server: both programs use the same name
+c.version = "1.4"
+```
+
+An explicit version replaces the automatic identity: bump it when incompatible code, assets or
+wire formats change. Keep it fixed for the lifetime of a session/server/client connection. This
+protocol requires both games to use the updated library; older protocols are rejected with a
+handshake/packet error.
+
 ## Rollback
 
 Every machine runs the whole game from the same start, and only the inputs travel. A remote
@@ -237,8 +269,9 @@ reading the results, or back in the lobby, plays no more ticks and sends nothing
 
 The session's packets on those peers are its own (marked, so the game's `net.receive()` leaves
 them); the game sends and reads its own messages on the same peers as ever (a chat, "again?"),
-and their `.joined` and `.left` are the game's, to say "connected" or "your friend left". Until the other player connects,
-the session runs `max_ahead` ticks and waits.
+and their `.joined` and `.left` are the game's, to say "connected" or "your friend left". Until
+the other players' build handshakes match, the session holds at tick zero
+(`s.waiting`); inputs made while waiting are kept for when play starts.
 
 **The tick must come out the same on every machine.** Sloppy's math is its own (no system
 math library, no fused multiply-add), so the same code gives the same numbers on Linux, Windows,
@@ -342,6 +375,37 @@ of the game, or ticks skipped.
 actions of their own, declared for their number: `action("p2 punch", [.key(.k), .button(.x)],
 player = 1)` is the K key, and gamepad 1's X.
 
+### Rollback players who restart
+
+A brief connection interruption is covered by rollback's resend history. A program restart
+loses that history and the game's current state; automatic rollback rejoining is not yet
+implemented. `stand_in` continues playing for a departed player until the session ends. A
+spectator's `feed(-1)` is a confirmed snapshot and input feed, but does not transfer ownership
+of a rollback player's inputs.
+
+A complete host-authoritative rejoin needs these steps:
+
+1. Authenticate the returning player with a saved, unguessable host-issued token and check the
+   build before decoding a snapshot. The host continues supplying their stand-in inputs.
+2. Finish any pending rollback, take the state at `K = min(confirmed(), tick)`, and transfer it
+   with every player's confirmed input ranges from K. The rejoiner replays those inputs; no
+   predicted state or inputs made while away replace the history already confirmed.
+3. Agree on a future handover tick H, after the rejoiner has caught up, with every surviving
+   peer. The host supplies stand-in inputs below H; the returner's new inputs begin at H.
+   Tag that ownership with an epoch, so delayed packets from the old process or stand-in
+   cannot overwrite the new player's input stream. Reset receipt vectors and hash history
+   around the imported snapshot and acknowledge the handover before releasing `stand_in`.
+4. Bound snapshot size and transfer time, pin the snapshot/input tail until acknowledged, and
+   retry or restart transfer when the moving input tail outruns retained history.
+
+Two viable transfer policies have different costs: a bounded, compressed snapshot on a reliable
+side channel (simple, but games must choose a size limit and the host must keep enough history),
+or a streamed/chunked snapshot with flow control (supports large worlds and UDP-only sessions,
+but needs fragmentation, acknowledgements and memory limits). The current 128-tick history and
+single UDP packets cannot safely cover arbitrary game states or long transfers. Those limits
+and whether to pause survivors while transferring need a game-facing policy before providing
+an automatic handover API.
+
 ## Client and server
 
 The server runs the game; clients send their inputs and draw the worlds it sends back. Three
@@ -368,6 +432,10 @@ c = netplay.client(World(), apply)
 c.connect("game.example.com", 4600)             # once a tick: c.play(pad); draw c.state and c.view()
 ```
 
+If the server and client are built from different entry files, set `srv.version = "1.4"` and
+`c.version = "1.4"` before listening/connecting. The automatic source identities otherwise
+differ; see [matching game builds](#matching-game-builds).
+
 The server's world is the truth: a client cannot move its player anywhere its inputs would not
 take it there, and the server applies at most one input of each player a tick (a few more after
 a pause, to catch up), so sending more moves no faster. The game need not be deterministic.
@@ -380,8 +448,9 @@ player to the world when `srv.joined` names them, and take them out on `srv.left
 server closes the connection (with its reason: `net.close(p, 4001, "the room is full")` on the
 server), or nothing comes from it for 5 seconds. With `c.reconnect = true` a client connects
 again by itself when the connection is lost or the server goes away or restarts (after 1, 2,
-4... up to 30 seconds), not when the server closed it on purpose; the server sees a new player
-then, with the same hello. A server without a window calls `srv.run()`: `srv.update()` 60 times
+4... up to 30 seconds), not when the server closed it on purpose. With the default
+`srv.rejoin_grace = 0.0`, that joins a new player with the same hello; with a grace period it
+restores the previous player, as below. A server without a window calls `srv.run()`: `srv.update()` 60 times
 a second, on time (a loop of `update` and `sleep(1.0 / 60.0)` ticks a little slower than the
 clients, and their inputs wait in a queue: lag).
 
@@ -391,10 +460,10 @@ srv.listen(4600)
 srv.run()                       # (or each tick in a game's own update: srv.update())
 ```
 
-What a player is called, or a token to know them by when they come back, goes with the
-connection: `c.connect(host, 4600, hello = "{name} {token}")`, and the server reads
-`srv.hello(p)` (empty for a moment after `p` joins: it comes with the first world).
-`c.disconnect()` leaves; `c.connect(...)` again joins again with the same client.
+What a player is called goes with the connection:
+`c.connect(host, 4600, hello = name)`, and the server reads `srv.hello(p)`, available when
+`srv.joined` reports the accepted player. Hello is game metadata; rejoining uses a separate
+server-issued token. `c.disconnect()` closes the connection; `c.connect(...)` opens another.
 
 The game's own messages (a chat line, "round over", the scores) go on the same connection, as
 text, in order: `srv.say(p, text)` to one player, `srv.say_all(text)` to everyone, read by the
@@ -426,6 +495,77 @@ Bullets and other things moved in `step` are not predicted: the client sees them
 server's world shows them, half a round trip and the interpolation later. For a shot that
 must show at once, draw its flash in the client when the button is pressed, and let the
 server's world bring the bullet.
+
+### Rejoining after a drop or restart
+
+Set `srv.rejoin_grace` before the first join to the seconds a disconnected player may return
+(0 by default, which keeps immediate departures). With grace, `srv.dropped` reports that a player lost its connection;
+their number and the game's `srv.world` entry stay in place. `srv.rejoined` reports their return.
+`srv.left` reports the final departure when the grace period expires, once. All four event lists
+are for the latest `srv.update()`; only fresh, accepted players appear in `srv.joined`.
+
+```gdscript
+srv.rejoin_grace = 30.0
+# after each srv.update():
+loop p in srv.joined: srv.world.pos[p] = 0
+loop p in srv.dropped: print("player {p} disconnected; holding their place")
+loop p in srv.rejoined: print("player {p} is back")
+loop p in srv.left: srv.world.pos.remove(p)
+```
+
+The world keeps ticking during the absence. No queued or new inputs are applied for the dropped
+player: the game decides whether to leave them still, run an AI, pause a round, or show them as
+a ghost. Only remove their state on `left`, and do not reset it on `rejoined`. Grace is measured
+in elapsed seconds, independently of server tick rate. `srv.errors` contains `(transport_peer,
+reason)` for rejected joins (bad build, bad/expired token, or a handshake not completed within
+five seconds).
+
+The server issues a 256-bit random token with the first accepted join when grace is enabled.
+`c.rejoin_token: str` exposes it; the same Client keeps and offers it automatically on reconnect,
+including with `c.reconnect = true`. For a program restart, save it and restore it before
+connecting:
+
+```gdscript
+c.rejoin_token = load_data("room-token") ?? ""    # save separately for each server and room
+c.connect(host, 4600, hello = name)
+# after connecting, when c.rejoin_token changes:
+save_data("room-token", c.rejoin_token)
+```
+
+`load_data`/`save_data` use the program's save folder on native and browser storage in a web
+page. A token is a bearer credential: keep it private, use `wss://` across untrusted
+networks, and never send it through chat/hello or log it. A wrong, expired or unknown token is
+rejected, never silently turned into a new player. Clear `c.rejoin_token = ""` before connecting
+to start fresh, use a different room/server, or after the server itself restarts and loses its
+in-memory players. A valid token can also replace a stale connection before the server detects
+its loss: the old connection receives a reason and closes (4003), and its inputs no longer
+apply. That handover reports both `dropped` and `rejoined`. Otherwise grace starts when the
+transport reports the old connection gone (loss detection can take a few seconds). Explicit
+`disconnect` also retains the place for the grace period. For an immediate final departure,
+call `srv.leave(peer, rejoin = false)`: it revokes the token and reports `left`. A listening game
+also closes that transport itself, for example:
+
+```gdscript
+if let peer = srv.peer(p):
+    srv.leave(peer, rejoin = false)
+    net.close(peer, 4001, "left the game")
+```
+
+A returning connection keeps the same `c.me` and server world entry. Prediction queues, input
+sequence numbers, interpolation history and delta bases start fresh; the first encoded world
+uses `base = none`. Unapplied inputs queued before disconnection and inputs made while away
+are discarded; previously applied inputs remain part of the authoritative world. Per-player
+views, compression and custom encoding apply as before. Transient game messages are not replayed
+across a rejoin.
+
+Player numbers and transport peers can differ after rejoining. `srv.say(p, ...)`, `hello(p)`,
+`waiting(p)`, views, encoders, inputs and events use the stable player number. `srv.peer(p) ->
+int?` returns its current transport connection, or none while dropped: close it with
+`if let peer = srv.peer(p): net.close(peer, 4001, "bye")`. For servers fed by hand, `join(peer)`,
+`receive(peer, bytes)`, `leave(peer)` and `outgoing()` continue to use transport peer IDs. Forward
+every handshake packet in both directions, even before `c.connected()` is true. A server fed by
+hand emits a terminal tag `7` for a rejected/displaced connection; forward it and close that
+transport yourself. A listening server closes it automatically.
 
 ### Other tick rates
 
@@ -503,8 +643,11 @@ loop not stopping():
             rooms[name].update()
             loop p in rooms[name].joined: rooms[name].world.pos[p] = 0
             loop p in rooms[name].left: rooms[name].world.pos.remove(p)
-            loop o in rooms[name].outgoing(): net.send(o.0, o.1)
-            if rooms[name].world.pos.len() == 0 and rooms[name].tick > 60: rooms.remove(name)
+            loop o in rooms[name].outgoing():
+                net.send(o.0, o.1)
+                if o.1.len() > 0 and o.1[0] == 7: net.close(o.0, 4002, "netplay connection closed")
+            peers = [loop _, room in room_of: if room == name: room].len()
+            if peers == 0 and rooms[name].world.pos.len() == 0 and rooms[name].tick > 60: rooms.remove(name)
     net.wait(max(next - time(), 0.0))
 ```
 
@@ -526,7 +669,15 @@ byte that says what it is.
 - From the server, `5` then `you tick ack rate base ` (base: the tick of the world the bytes were
   made against, -1 for none), then the game's own bytes (`srv.encoding`).
 - From the server, `3` then UTF-8 text: `srv.say`.
-- From the client, `1` then UTF-8 text: its hello, once its first world has come.
+- Before worlds/inputs, tag `6` then Sloppy text for `(version="1.4", token="", hello="",
+  you=-1, accepted=false)`. The server first sends a challenge (its version); the client replies
+  with its version, saved token and hello; the server accepts with `accepted=true`, the stable
+  `you` and issued `token`. Parse this without the game's types. Neither side sends game data
+  until acceptance. A rejected server handshake sends tag `7` and a UTF-8 reason, then a
+  listening server closes the WebSocket with 4002. A displaced connection gets tag `7` and
+  closes with 4003. Servers fed by hand emit the same packets; the caller closes the transport.
+- From the client, `1` then UTF-8 text updates its hello after acceptance (the normal hello
+  already goes with tag `6`).
 - From the client, `3` then UTF-8 text: `c.say`.
 - From the client, an input: `(seq=12, seen=340, input=Pad(dx=1, fire=false))` as text (no
   leading byte; a struct's name may be left out, `(dx=1, fire=false)`). `seq` counts the

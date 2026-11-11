@@ -1,0 +1,121 @@
+# requires: sloppy
+# requires: native
+# A restarted client restores its token, player and state; wire peers can change independently.
+import netplay
+
+struct Pad:
+    dx = 0
+struct World:
+    pos: {int: int}
+apply = (w: World, p: int, pad: Pad, seen: World) -> World:
+    out = w
+    out.pos[p] += pad.dx
+    out
+step = (w: World) -> World: w
+
+# Pump a manual connection through the complete handshake and a few worlds.
+pump = (s: mut netplay.Server[World, Pad], c: mut netplay.Client[World, Pad], peer: int, dx: int = 0):
+    loop _ in [0..6):
+        s.update()
+        loop p in s.joined: s.world.pos[p] = 10
+        loop o in s.outgoing():
+            if o.0 == peer: c.receive(o.1)
+        c.play(Pad(dx))
+        loop b in c.outgoing(): s.receive(peer, b)
+
+s = netplay.server(World(), apply, step)
+s.rejoin_grace = 30.0
+c = netplay.client(World(), apply)
+s.join(7)
+c.say("waiting for the handshake")
+pump(s, c, 7, 3)
+saved = c.rejoin_token
+before = s.world.pos[7]
+print("issued", c.connected(), c.me == 7, len(saved) == 64, before > 10)
+# An input not yet applied is discarded at drop (never applied on the returning connection).
+c.play(Pad(999))
+loop b in c.outgoing(): s.receive(7, b)
+s.leave(7)
+s.update()
+print("dropped", s.dropped == [7], s.left.len() == 0, s.peer(7) == none, s.waiting(7) == 0, s.world.pos[7] == before)
+
+stranger = netplay.client(World(), apply)
+stranger.rejoin_token = saved[..63] + (if saved[63] == '0': "1" else: "0")
+s.join(8)
+pump(s, stranger, 8)
+print("stranger rejected", not stranger.connected(), contains(stranger.problem, "invalid or expired"), s.world.pos.len() == 1, s.world.pos[7] == before)
+
+back = netplay.client(World(), apply)
+back.rejoin_token = saved
+s.join(9)
+rejoined = false
+new_join = false
+loop _ in [0..8):
+    s.update()
+    rejoined = rejoined or s.rejoined == [7]
+    new_join = new_join or s.joined.len() > 0
+    loop o in s.outgoing():
+        if o.0 == 9: back.receive(o.1)
+    back.play(Pad())
+    loop b in back.outgoing(): s.receive(9, b)
+print("returned", back.connected(), back.me == 7, rejoined, not new_join, s.peer(7) == 9, back.server.pos[7] == before, back.rejoin_token == saved)
+back.play(Pad(2))
+loop b in back.outgoing(): s.receive(9, b)
+s.update()
+print("new sequence applied", s.world.pos[7] == before + 2)
+s.say(7, "welcome back")
+loop o in s.outgoing(): back.receive(o.1)
+back.say("thanks")
+loop b in back.outgoing(): s.receive(9, b)
+s.update()
+print("stable message numbers", contains(back.messages, "welcome back"), s.messages == [(7, "thanks")])
+
+# A valid token can retire a stale connection before its loss is detected. Its old route
+# cannot apply inputs afterwards. A fresh peer cannot claim a retained player number.
+copy = netplay.client(World(), apply)
+copy.rejoin_token = saved
+s.join(10)
+pump(s, copy, 10)
+at_handover = s.world.pos[7]
+s.receive(9, bytes("(seq=123, seen=-1, input=(dx=999))"))
+s.update()
+print("stale connection replaced", copy.connected(), copy.me == 7, s.peer(7) == 10, s.world.pos[7] == at_handover)
+s.leave(10)
+fresh = netplay.client(World(), apply)
+s.join(7)
+pump(s, fresh, 7)
+print("reserved number protected", fresh.connected(), fresh.me != 7, s.peer(7) == none, fresh.rejoin_token != saved)
+
+# Grace is in seconds and its final departure fires once. No private clocks are changed.
+s.rejoin_grace = 0.001
+sleep(0.003)
+s.update()
+print("expired", s.left == [7], s.hello(7) == "")
+s.update()
+print("left once", s.left.len() == 0)
+late = netplay.client(World(), apply)
+late.rejoin_token = saved
+s.join(11)
+pump(s, late, 11)
+print("expired token rejected", not late.connected(), contains(late.problem, "invalid or expired"))
+
+# The game can make a departure final immediately, including revoking the saved token.
+s.rejoin_grace = 30.0
+fresh_token = fresh.rejoin_token
+s.leave(s.peer(fresh.me)!, rejoin = false)
+s.update()
+print("final leave", s.left == [fresh.me], s.peer(fresh.me) == none)
+revoked = netplay.client(World(), apply)
+revoked.rejoin_token = fresh_token
+s.join(12)
+pump(s, revoked, 12)
+print("revoked token rejected", not revoked.connected(), contains(revoked.problem, "invalid or expired"))
+
+# Opt-in: without grace, a departure keeps the existing immediate-left behavior.
+plain = netplay.server(World(), apply, step)
+p = netplay.client(World(), apply)
+plain.join(1)
+pump(plain, p, 1)
+plain.leave(1)
+plain.update()
+print("default leaves", plain.left == [1], plain.dropped.len() == 0, p.rejoin_token == "")

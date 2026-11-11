@@ -1,0 +1,83 @@
+# requires: sloppy
+# requires: native
+# Rejoin over a real WebSocket, including the client's automatic reconnect path.
+import net
+import netplay
+struct Pad:
+    dx = 0
+struct World:
+    pos: {int: int}
+apply = (w: World, p: int, pad: Pad, seen: World) -> World:
+    out = w
+    out.pos[p] += pad.dx
+    out
+step = (w: World) -> World: w
+const PORT = 9556
+main = ():
+    srv = netplay.server(World(), apply, step)
+    srv.rejoin_grace = 8.0
+    srv.listen(PORT)
+    c = netplay.client(World(), apply)
+    c.reconnect = true
+    c.connect("127.0.0.1", PORT, hello = "ann")
+    who = -1
+    token = ""
+    before = 0
+    joins = 0
+    dropped = false
+    returned = false
+    new_peer = false
+    old_peer = -1
+    until = elapsed() + 6.0
+    loop elapsed() < until and not returned:
+        srv.update()
+        loop p in srv.joined:
+            joins += 1
+            who = p
+            srv.world.pos[p] = 0
+        dropped = dropped or srv.dropped == [who]
+        if srv.rejoined == [who]:
+            returned = true
+            new_peer = srv.peer(who) != old_peer
+        c.play(Pad(1))
+        if token == "" and c.connected() and srv.world.pos[who] >= 4:
+            token = c.rejoin_token
+            before = srv.world.pos[who]
+            old_peer = srv.peer(who)!
+            net.close(old_peer, 1012, "restarting connection")
+        sleep(0.002)
+    # Wait for the new acceptance/world too, then verify stable identity and retained state.
+    until = elapsed() + 2.0
+    loop elapsed() < until and (not c.connected() or c.server.pos.get(who) ?? -1 < before):
+        srv.update()
+        c.play(Pad())
+        sleep(0.002)
+    print("automatic", returned, dropped, joins == 1, new_peer, c.connected(), c.me == who, c.rejoin_token == token, c.server.pos.get(who) ?? -1 >= before, srv.hello(who) == "ann")
+    # Simulate a program restart: a fresh Client restores only the token, not prediction state.
+    c.disconnect()
+    until = elapsed() + 2.0
+    quiet = false
+    loop elapsed() < until and not quiet:
+        srv.update()
+        quiet = srv.dropped == [who]
+        sleep(0.001)
+    fresh = netplay.client(World(), apply)
+    fresh.rejoin_token = token
+    fresh.connect("127.0.0.1", PORT)
+    until = elapsed() + 2.0
+    loop elapsed() < until and not fresh.connected():
+        srv.update()
+        fresh.play(Pad())
+        sleep(0.001)
+    print("restart", fresh.connected(), fresh.me == who, fresh.server.pos.get(who) ?? -1 >= before)
+    # A restart can establish a new socket before the old transport reports its loss.
+    replacement = netplay.client(World(), apply)
+    replacement.rejoin_token = token
+    replacement.connect("127.0.0.1", PORT)
+    until = elapsed() + 2.0
+    loop elapsed() < until and (not replacement.connected() or fresh.problem == ""):
+        srv.update()
+        fresh.play(Pad(99))
+        replacement.play(Pad())
+        sleep(0.001)
+    print("stale socket", replacement.connected() and replacement.me == who, not fresh.connected(), contains(fresh.problem, "rejoined from another connection"))

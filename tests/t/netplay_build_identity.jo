@@ -1,0 +1,54 @@
+# requires: sloppy
+# requires: native
+# requires: unix
+# The default build identity includes imported source, ignores paths and build mode.
+lib = env("SLOPPY_LIB") ?? "{cwd()}/lib"
+compiler = "{lib}/../bin/sloppy"
+scratch = "{temp_dir()}/netplay-build-identity"
+make_dirs("{scratch}/a")
+make_dirs("{scratch}/b")
+source = "use 'dep.jo'\nprint(PROGRAM_BUILD_ID)\nprint(value)\n"
+loop d in ["a", "b"]:
+    assert(write_file("{scratch}/{d}/main.jo", source))
+    assert(write_file("{scratch}/{d}/dep.jo", "const value = 1\n"))
+code, log = run_program(compiler, ["build", "{scratch}/a/main.jo", "-o", "{scratch}/one"])
+assert(code == 0, log)
+code2, log2 = run_program(compiler, ["build", "{scratch}/b/main.jo", "--release", "-o", "{scratch}/two"])
+assert(code2 == 0, log2)
+_, a = run_program("{scratch}/one")
+_, b = run_program("{scratch}/two")
+print("path and debug/release independent", a == b, len(lines(a)[0]) > 0)
+assert(write_file("{scratch}/b/dep.jo", "const value = 2\n"))
+code3, log3 = run_program(compiler, ["build", "{scratch}/b/main.jo", "-o", "{scratch}/two"])
+assert(code3 == 0, log3)
+_, changed = run_program("{scratch}/two")
+print("import changes identity", lines(a)[0] != lines(changed)[0])
+# A renamed entry file with identical contents does not change the identity either.
+assert(write_file("{scratch}/a/renamed.jo", source))
+code4, log4 = run_program(compiler, ["build", "{scratch}/a/renamed.jo", "-o", "{scratch}/two"])
+assert(code4 == 0, log4)
+_, renamed = run_program("{scratch}/two")
+print("entry filename independent", renamed == a)
+# Swapping source files preserves their content multiset but changes which import does what.
+assert(write_file("{scratch}/a/first.jo", "const value = 1\n"))
+assert(write_file("{scratch}/a/second.jo", "const value = 2\n"))
+assert(write_file("{scratch}/a/swap.jo", "import first\nimport second\nprint(PROGRAM_BUILD_ID)\nprint(first.value - second.value)\n"))
+rc, log5 = run_program(compiler, ["build", "{scratch}/a/swap.jo", "-o", "{scratch}/one"])
+assert(rc == 0, log5)
+_, before = run_program("{scratch}/one")
+assert(write_file("{scratch}/a/first.jo", "const value = 2\n"))
+assert(write_file("{scratch}/a/second.jo", "const value = 1\n"))
+rc2, log6 = run_program(compiler, ["build", "{scratch}/a/swap.jo", "-o", "{scratch}/two"])
+assert(rc2 == 0, log6)
+_, after = run_program("{scratch}/two")
+print("module bindings included", lines(before)[0] != lines(after)[0])
+loop f in ["first.jo", "second.jo", "swap.jo"]: delete_file("{scratch}/a/{f}")
+loop d in ["a", "b"]:
+    delete_file("{scratch}/{d}/main.jo")
+    delete_file("{scratch}/{d}/dep.jo")
+delete_file("{scratch}/a/renamed.jo")
+delete_file("{scratch}/one")
+delete_file("{scratch}/two")
+
+loop d in ["a", "b"]: delete_dir("{scratch}/{d}")
+delete_dir(scratch)

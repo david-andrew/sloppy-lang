@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Netplay checks game versions before play, with clear errors for different builds on rollback
+  and client-server transports. The default `PROGRAM_BUILD_ID` identifies the program's sources;
+  games with separate entry points can set a shared `version` string.
+- Client-server games can retain disconnected players with `srv.rejoin_grace` and restore their
+  number and state using `c.rejoin_token`, including after restarting the client. `srv.dropped`,
+  `srv.rejoined` and final `srv.left` events track the lifecycle; `srv.peer(p)` resolves a stable
+  player to its current connection. Bad or expired tokens are rejected; valid tokens can retire
+  a stale connection before its loss is detected. Rejoining starts prediction and delta history
+  afresh.
+
 ## 0.30.0
 
 - Release builds: a local copied from a struct or vector field (`v = s.velocity`) no longer

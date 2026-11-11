@@ -1,0 +1,99 @@
+# requires: sloppy
+# Build identity is checked without decoding the game's input or world schema.
+import netplay
+
+struct Pad:
+    dx = 0
+struct OtherPad:
+    words = "a different schema"
+struct Game:
+    x = 0
+step = (g: Game, pads: Pad[]) -> Game: Game(g.x + 1)
+other_step = (g: Game, pads: OtherPad[]) -> Game: Game(g.x + 1)
+apply = (g: Game, p: int, pad: Pad, seen: Game) -> Game: Game(g.x + pad.dx)
+
+a = netplay.session(Game(), step, 2, 0)
+b = netplay.session(Game(), other_step, 2, 1)
+a.version = "new 1.4\nrelease"
+b.version = "old 1.3"
+loop _ in [0..8):
+    a.play(Pad(1))
+    b.play(OtherPad())
+    loop o in a.outgoing(): b.receive(o.1)
+    loop o in b.outgoing(): a.receive(o.1)
+print("rollback: before play", a.tick == 0 and b.tick == 0, "both told", contains(a.problem, "theirs: old 1.3"), contains(b.problem, "this one: old 1.3"), "schema not decoded", not contains(a.problem, "could not be read"))
+
+# A host relays incompatible identities to healthy clients that never hear each other.
+ss: netplay.Session[Game, Pad][]
+loop p in [0..3):
+    s = netplay.session(Game(), step, 3, p)
+    s.version = if p == 2: "old" else: "new"
+    if p != 0: s.__hub = 0
+    ss.push(s)
+loop _ in [0..10):
+    packets: (int, u8[])[]
+    loop p in [0..3):
+        ss[p].play(Pad())
+        packets.extend(ss[p].outgoing())
+    loop o in packets: ss[o.0].receive(o.1)
+print("host: all stopped", [loop s in ss if s.tick == 0 and contains(s.problem, "different build"): s.me].len() == 3)
+
+srv = netplay.server(Game(), apply, (g: Game): g)
+c = netplay.client(Game(), apply)
+srv.version = "1.4"
+c.version = "1.3"
+srv.join(2)
+joined = false
+errors = false
+loop _ in [0..8):
+    srv.update()
+    joined = joined or srv.joined.len() > 0
+    errors = errors or (srv.errors.len() == 1 and contains(srv.errors[0].1, "player 2 runs a different build"))
+    loop o in srv.outgoing(): c.receive(o.1)
+    c.play(Pad(1))
+    loop b in c.outgoing(): srv.receive(2, b)
+print("client-server: refused", not c.connected(), "before join", not joined, "both told", contains(c.problem, "the server runs a different build"), errors, "state kept", srv.world == Game() and c.state == Game())
+
+# A local build identity exists without a release name and is shared by default.
+x = netplay.session(Game(), step, 2, 0)
+y = netplay.session(Game(), step, 2, 1)
+print("default", len(PROGRAM_BUILD_ID) > 0, x.version == PROGRAM_BUILD_ID, srv.version != c.version)
+loop _ in [0..8):
+    x.play(Pad())
+    y.play(Pad())
+    loop o in x.outgoing(): y.receive(o.1)
+    loop o in y.outgoing(): x.receive(o.1)
+print("same build plays", x.tick > 0 and y.tick > 0, x.problem == "" and y.problem == "")
+
+# An explicit empty label still requires a packet: unknown and a verified empty string differ.
+u = netplay.session(Game(), step, 2, 0)
+v = netplay.session(Game(), step, 2, 1)
+u.version = ""
+v.version = ""
+u.play(Pad())
+v.play(Pad())
+cold = u.tick == 0 and v.tick == 0
+loop _ in [0..8):
+    loop o in u.outgoing(): v.receive(o.1)
+    loop o in v.outgoing(): u.receive(o.1)
+    u.play(Pad())
+    v.play(Pad())
+print("empty labels still handshake", cold, u.tick > 0 and v.tick > 0)
+
+# An absent player supplied by a stand-in has the supplying machine's build identity.
+loop star in [false, true]:
+    host = netplay.session(Game(), step, 3, 0)
+    guest = netplay.session(Game(), step, 3, 1)
+    if star: guest.__hub = 0
+    host.stand_in(2, Pad())
+    # Version may be configured any time before the first play, including after stand_in.
+    host.version = "stand-in build"
+    guest.version = "stand-in build"
+    loop _ in [0..40):
+        host.play(Pad())
+        guest.play(Pad())
+        loop o in host.outgoing():
+            if o.0 == 1: guest.receive(o.1)
+        loop o in guest.outgoing():
+            if o.0 == 0: host.receive(o.1)
+    print("initial stand-in", star, host.tick > 30 and guest.tick > 30, host.problem == "" and guest.problem == "")

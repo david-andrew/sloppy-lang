@@ -1,0 +1,83 @@
+# requires: sloppy
+# requires: native
+# Real loopback UDP, net peers and relay fallback all reject builds before tick zero.
+import net
+import netplay
+struct Pad:
+    x = 0
+struct Game:
+    x = 0
+step = (g: Game, pads: Pad[]) -> Game: Game(g.x + 1)
+apply = (g: Game, p: int, pad: Pad, seen: Game) -> Game: Game(g.x + pad.x)
+
+const PORT = 9552
+main = ():
+    a = netplay.session(Game(), step, 2, 0)
+    b = netplay.session(Game(), step, 2, 1)
+    a.version = "new"
+    b.version = "old"
+    addrs = [("127.0.0.1", 9553), ("127.0.0.1", 9554)]
+    a.udp(9553, addrs)
+    b.udp(9554, addrs)
+    until = elapsed() + 3.0
+    loop elapsed() < until and (a.problem == "" or b.problem == ""):
+        a.play(Pad())
+        b.play(Pad())
+        sleep(0.001)
+    print("UDP mismatch", contains(a.problem, "different build"), contains(b.problem, "different build"), a.tick == 0 and b.tick == 0)
+
+    if not net.listen(PORT): panic("cannot listen on {PORT}")
+    conn = net.connect("127.0.0.1", PORT)
+    peer = -1
+    until = elapsed() + 3.0
+    loop peer < 0 and elapsed() < until:
+        loop e in net.receive_server():
+            if e.kind == .joined: peer = e.peer
+        loop _ in net.receive([conn]): pass
+        sleep(0.001)
+    x = netplay.session(Game(), step, 2, 0)
+    y = netplay.session(Game(), step, 2, 1)
+    x.version = "new"
+    y.version = "old"
+    x.over([-1, peer])
+    y.over([conn, -1])
+    until = elapsed() + 3.0
+    loop elapsed() < until and (x.problem == "" or y.problem == ""):
+        x.play(Pad())
+        y.play(Pad())
+        sleep(0.001)
+    print("peers mismatch", contains(x.problem, "different build"), contains(y.problem, "different build"), x.tick == 0 and y.tick == 0)
+    net.close(conn)
+    net.close(peer)
+
+    r = netplay.session(Game(), step, 2, 0)
+    q = netplay.session(Game(), step, 2, 1)
+    r.version = "new"
+    q.version = "old"
+    r.join_relay("127.0.0.1", PORT, "version", stun = "")
+    q.join_relay("127.0.0.1", PORT, "version", stun = "")
+    until = elapsed() + 3.0
+    loop elapsed() < until and (r.problem == "" or q.problem == ""):
+        netplay.relay(PORT)
+        r.play(Pad())
+        q.play(Pad())
+        sleep(0.001)
+    print("relay mismatch", contains(r.problem, "different build"), contains(q.problem, "different build"), r.tick == 0 and q.tick == 0)
+    net.stop_listening()
+
+    srv = netplay.server(Game(), apply, (g: Game): g)
+    srv.version = "1.4"
+    srv.listen(9555)
+    c = netplay.client(Game(), apply)
+    c.version = "1.3"
+    c.connect("127.0.0.1", 9555)
+    joined = false
+    error = false
+    until = elapsed() + 3.0
+    loop elapsed() < until and not error:
+        srv.update()
+        joined = joined or srv.joined.len() > 0
+        if srv.errors.len() > 0: error = contains(srv.errors[0].1, "different build")
+        c.play(Pad())
+        sleep(0.001)
+    print("WebSocket mismatch", error, contains(c.problem, "different build"), not joined and not c.connected())

@@ -4210,6 +4210,8 @@ build_options = "name = \"Star Garden\", icon = \"icon.png\", js = \"glue.js\", 
 # ---------------- program ----------------
 want_cpu_flag = false           # (release builds for x86-64: the vectorizer may use __cpu_avx2)
 want_loop_watch = false         # (debug web builds: loops count down to __loop_watchdog)
+program_build_node = 0          # PROGRAM_BUILD_ID: computed once, only if the program uses it
+program_build_ready = false
 watch_build = false             # (built for `sloppy watch`: WATCH is true in the program)
 runtime_names = ["__alloc", "__free", "__panic", "__panic_bounds", "__panic_unwrap", "__panic_unwrap_in", "__free_obj", "__arr_clone", "__arr_push_slot",
     "__arr_reserve", "__arr_insert_slot", "__arr_remove_slot", "__arr_slice", "__arr_concat", "__str_concat", "__str_eq",
@@ -4229,7 +4231,8 @@ runtime_fn = (name: str) -> int:
     f
 
 add_universe = ():
-    global icon_node
+    global icon_node, program_build_node, program_build_ready
+    program_build_ready = false
     tys = [("int", T_INT), ("i8", T_I8), ("i16", T_I16), ("i32", T_I32), ("i64", T_INT), ("u8", T_U8), ("byte", T_U8),
         ("u16", T_U16), ("u32", T_U32), ("u64", T_U64), ("f64", T_FLOAT), ("f32", T_F32),
         ("bool", T_BOOL), ("str", T_STR), ("void", T_VOID), ("vec2", T_VEC2), ("vec3", T_VEC3), ("vec4", T_VEC4),
@@ -4256,11 +4259,13 @@ add_universe = ():
     if watch_build: nodes[wv].ival = 1
     pn = mk(.str_lit, 0)
     nodes[pn].sval = i32(intern(program_name))
+    program_build_node = mk(.str_lit, 0)
+    nodes[program_build_node].sval = i32(intern(""))
     # (the icon's bytes: set by check_build_block)
     icon_node = mk(.str_lit, 0)
     nodes[icon_node].sval = i32(intern(""))
     consts = [("TARGET", tv, T_STR), ("ARCH", av, T_STR), ("DEBUG", tr, T_BOOL), ("BOOTSTRAP", fl, T_BOOL), ("WATCH", wv, T_BOOL), ("PROGRAM_NAME", pn, T_STR),
-        ("PROGRAM_ICON", icon_node, T_STR)]
+        ("PROGRAM_ICON", icon_node, T_STR), ("PROGRAM_BUILD_ID", program_build_node, T_STR)]
     loop c in consts:
         nm = intern(c.0)
         globals.push(Global(name = i32(nm), is_const = true, init = i32(c.1), state = 2, type = i32(c.2)))
@@ -4344,10 +4349,53 @@ synth_str = (s: str, pos: int) -> int:
     nodes[n].sval = i32(intern(s))
     n
 
+# A source's path relative to its package, without machine-specific prefixes.
+program_relative = (path: str, root: str, base: str) -> str:
+    p = os_path(path)
+    r = os_path(root)
+    if not is_abs_path(p): p = "{base}/{p}"
+    if not is_abs_path(r): r = "{base}/{r}"
+    ps = split(pkg_norm(p), "/")
+    rs = split(pkg_norm(r), "/")
+    common = 0
+    loop common < ps.len() and common < rs.len() and ps[common] == rs[common]: common += 1
+    out = ""
+    loop _ in [common..rs.len()): out += "../"
+    out + join(ps[common..], "/")
+
+# Unused programs pay no source-hashing cost. Clone the literal only after filling it.
+program_set_build_id = (pos: int):
+    if nodes[program_build_node].sval != 0: return
+    if not program_build_ready: fatal(pos, "PROGRAM_BUILD_ID is available after the program's imports; it cannot choose which files to import")
+    # Bind source hashes to logical module paths: swapping two modules must change the ID.
+    # Checkout/library/package cache directories and the main file's name do not belong to it.
+    source_ids: str[]
+    base = os_path(cwd())
+    root = "."
+    loop m in modules:
+        if m.is_main: root = files[int(m.file)].dir
+    loop m in modules:
+        source = files[int(m.file)]
+        key = "main"
+        if not m.is_main:
+            dir = root
+            space = "game"
+            if m.pkg < 0:
+                dir = lib_dir
+                space = "lib"
+            else if m.pkg > 0:
+                dir = pkgs[int(m.pkg)].dir
+                space = "pkg/{pkgs[int(m.pkg)].path}"
+            key = "{space}/{program_relative(source.path, dir, base)}"
+        source_ids.push("{len(key)}:{key}:{hash_bytes(data(source.src), len(source.src))}")
+    source_ids.sort()
+    identity = join(source_ids, "\n")
+    nodes[program_build_node].sval = i32(intern("{hash_bytes(data(identity), len(identity))}"))
+
 program_named = false         # (the build block gave the name)
 
 check_program = (main_path: str):
-    global cx, dfs_state, draw_fn, ide_force, init_fns, main_fn, module_ctx, program_name, program_named, skip_main, update_fn
+    global cx, dfs_state, draw_fn, ide_force, init_fns, main_fn, module_ctx, program_build_ready, program_name, program_named, skip_main, update_fn
     if len(program_name) > 0: program_named = true
     if len(program_name) == 0:
         program_name = main_path
@@ -4365,6 +4413,7 @@ check_program = (main_path: str):
         i += 1
         # (all of them read: then the library files they call for, which are registered here too)
         if i == modules.len(): load_on_demand()
+    program_build_ready = true
     bind_from_imports()
     check_build_block()
     # (native programs report crashes as they do panics: lib/std/backtrace.jo)
