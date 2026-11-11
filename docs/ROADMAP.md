@@ -228,7 +228,11 @@ safety net for changes here.
   accounting for the rest. Stencil remains 1.27x. Stable headers were already outside these
   loops; pointer induction and carrying matrix accumulators remain opportunities. See
   `bench/headers/README.md` for raw counts, overflow limits and correctness/compile-speed gates.
-  vec4/mat4 math is scalar (2-2.8x C); packed SSE for vec4 would close it.
+  Whole-vector SSE2 now recovers vec4/mat4 trees after scalar replacement and inlining:
+  add/mul/lerp use 37-39% fewer instructions, matrix math 32-35% fewer, particles 49% fewer.
+  The cube vertex shader plus software projection drops 11%; dot keeps debug's addition
+  order and vec3 keeps its 12-byte ABI. Remaining copies, addressing and matrix helper calls
+  leave a gap to C. See `bench/vmath/README.md` for counts, limits and validation.
   Known nonescaping function values now inline through small helpers in release builds:
   reduce, all, map and mapped sums are about level with loops; count/any/filter retain
   1.2-1.6x instruction gaps. Captured-state each improves 63% but shared cells still prevent

@@ -1,0 +1,174 @@
+# requires: sloppy
+# Packed f32 trees must preserve scalar IEEE operations and aggregate-copy aliasing.
+struct Padded3:
+    v: vec3
+    sentinel: f32
+
+struct Cell:
+    tag: int
+    v: vec4
+    tail: vec3
+
+@noinline
+add = (a: vec4[], b: vec4[], out: mut vec4[], k: f32):
+    loop i in [0..a.len()): out[i] = a[i] + b[i]
+
+@noinline
+sub = (a: vec4[], b: vec4[], out: mut vec4[], k: f32):
+    loop i in [0..a.len()): out[i] = a[i] - b[i]
+
+@noinline
+mul = (a: vec4[], b: vec4[], out: mut vec4[], k: f32):
+    loop i in [0..a.len()): out[i] = a[i] * b[i]
+
+@noinline
+div = (a: vec4[], b: vec4[], out: mut vec4[], k: f32):
+    loop i in [0..a.len()): out[i] = a[i] / b[i]
+
+@noinline
+splat = (a: vec4[], b: vec4[], out: mut vec4[], k: f32):
+    loop i in [0..a.len()): out[i] = k - a[i] / k
+
+@noinline
+lerp = (a: vec4[], b: vec4[], out: mut vec4[], k: f32):
+    loop i in [0..a.len()): out[i] = lerp(a[i], b[i], k)
+
+@noinline
+minimum = (a: vec4[], b: vec4[], out: mut vec4[], k: f32):
+    loop i in [0..a.len()): out[i] = min(a[i], b[i])
+
+@noinline
+maximum = (a: vec4[], b: vec4[], out: mut vec4[], k: f32):
+    loop i in [0..a.len()): out[i] = max(a[i], b[i])
+
+@noinline
+absolute = (a: vec4[], b: vec4[], out: mut vec4[], k: f32):
+    loop i in [0..a.len()): out[i] = abs(a[i])
+
+@noinline
+roots = (a: vec4[], b: vec4[], out: mut vec4[], k: f32):
+    loop i in [0..a.len()): out[i] = vec4(sqrt(a[i].x), sqrt(a[i].y), sqrt(a[i].z), sqrt(a[i].w))
+
+# Print classification plus the bits of signed zeros; NaN payload choice is not an IEEE
+# arithmetic guarantee. Ordinary values are printed to round-trip f32 precision.
+show = (name: str, vs: vec4[]):
+    print(name)
+    loop v in vs:
+        loop x in [v.x, v.y, v.z, v.w]:
+            if is_nan(f64(x)): print("nan")
+            else if x == 0.0: print("zero", f32_bits(x) == 0x80000000)
+            else: print(x)
+
+@noinline
+ordered_dot = (a: vec4, b: vec4) -> f32: dot(a, b)
+@noinline
+ordered_dot3 = (a: vec3, b: vec3) -> f32: dot(a, b)
+@noinline
+dot3_chain = (a: vec3, b: vec3, c: vec3) -> f32:
+    dot((a + b) * (a - b) + a * b, c)
+@noinline
+packed3 = (a: vec3[], b: vec3[], out: mut vec3[]):
+    loop i in [0..a.len()): out[i] = (a[i] + b[i]) * (a[i] - b[i]) + a[i] * b[i]
+@noinline
+packed3_field = (out: mut Padded3, a: vec3, b: vec3):
+    out.v = (a + b) * (a - b) + a * b
+@noinline
+unaligned = (p: *vec4, q: *vec4):
+    loop i in [0..2): p[i] = (p[i] + q[i]) * f32(0.5) - q[i] / f32(2)
+@noinline
+alias_lanes = (p: *f32, out: *f32):
+    a = p[0]
+    b = p[1]
+    c = p[2]
+    d = p[3]
+    out[0] = a + 10
+    out[1] = b + 2
+    out[2] = c + 3
+    out[3] = d + 4
+    # Must observe the store through the other pointer.
+    print("alias", p[1])
+@noinline
+cache_branch = (p: *vec4, q: *vec4, take: bool):
+    a = p[0]
+    b = q[0]
+    if take: p[1] = a + b
+    p[2] = a + b
+
+main = ():
+    nz = f32_from_bits(0x80000000)
+    inf = f32_from_bits(0x7f800000)
+    nan = f32_from_bits(0x7fc12345)
+    a = [vec4(1, -2, 3, -4), vec4(nz, 0, inf, nan), vec4(0, nz, -inf, 9), vec4(-nan, nz, -4, 16)]
+    b = [vec4(3, 4, -6, 2), vec4(0, nz, 2, 1), vec4(nz, 0, inf, nan), vec4(1, 0, 2, 4)]
+    out = fill(vec4(), a.len())
+    add(a, b, out, 0.375)
+    show("add", out)
+    sub(a, b, out, 0.375)
+    show("sub", out)
+    mul(a, b, out, 0.375)
+    show("mul", out)
+    div(a, b, out, 0.375)
+    show("div", out)
+    splat(a, b, out, 0.375)
+    show("splat", out)
+    lerp(a, b, out, 0.375)
+    show("lerp", out)
+    minimum(a, b, out, 0.375)
+    show("minimum", out)
+    maximum(a, b, out, 0.375)
+    show("maximum", out)
+    absolute(a, b, out, 0.375)
+    show("absolute", out)
+    print("abs signs", f32_bits(out[3].x) == f32_bits(a[3].x), f32_bits(out[3].y) == 0x80000000)
+    roots(a, b, out, 0.375)
+    show("roots", out)
+    print("dot order", ordered_dot(vec4(1e20, -1e20, 3, 4), vec4(1)))
+    a3 = [vec3(1e20, -1e20, 3), vec3(nan)]
+    b3 = [vec3(1), vec3(inf)]
+    print("dot3 padding", ordered_dot3(a3[0], b3[0]))
+    show("dot-special", [vec4(ordered_dot(a[1], b[1])), vec4(ordered_dot(vec4(nz), vec4(1))), vec4(ordered_dot(vec4(inf), vec4(1)))])
+    show("normalize-special", [normalize(a[1]), normalize(vec4(nz)), normalize(vec4(inf, 1, 0, -1))])
+    show("cross-special", [vec4(cross(vec3(inf, 1, 0), vec3(0, 1, 0)), nz), vec4(cross(vec3(nz), vec3(1)), nz)])
+    print("normalize", normalize(vec4(3, 0, 4, 0)), normalize(vec3(0, 3, 4)), normalize(vec3()))
+    print("cross", cross(vec3(1, 2, 3), vec3(3, 1, 2)))
+    c3 = [vec3(1, 2, 3), vec3(4, 5, 6), vec3(7, 8, 9)]
+    d3 = [vec3(3, 2, 1), vec3(6, 5, 4), vec3(9, 8, 7)]
+    o3 = fill(vec3(), 3)
+    packed3(c3, d3, o3)
+    print("packed3", o3, c3, d3)
+    print("dot3 chain", dot3_chain(c3[0], d3[0], vec3(1)))
+    pa = Padded3(c3[0], nan)
+    pb = Padded3(d3[0], inf)
+    pout = Padded3(vec3(), 123)
+    print("padding sentinel", dot3_chain(pa.v, pb.v, vec3(1)), is_nan(f64(pa.sentinel)))
+    packed3_field(pout, pa.v, pb.v)
+    print("field store", pout.v, pout.sentinel)
+    bytes = fill(u8(0x5a), 2 * 16 + 2)
+    bytes2 = fill(u8(0x6b), 2 * 16 + 2)
+    p = (data(bytes) + 1) as *vec4
+    q = (data(bytes2) + 1) as *vec4
+    p[0] = vec4(2, 4, 6, 8)
+    p[1] = vec4(1, 3, 5, 7)
+    q[0] = vec4(4, 8, 12, 16)
+    q[1] = vec4(2, 6, 10, 14)
+    unaligned(p, q)
+    print("unaligned", p[0], p[1], bytes[0], bytes[33], bytes2[0], bytes2[33])
+    vals = [f32(1), 2, 3, 4, 5]
+    alias_lanes(data(vals), data(vals) + 1)
+    print(vals)
+    ps = [vec4(1), vec4(2), vec4(3)]
+    qs = [vec4(4)]
+    cache_branch(data(ps), data(qs), false)
+    print("branch", ps)
+    cache_branch(data(ps), data(qs), true)
+    print("branch", ps)
+    cells = [Cell(11, vec4(1, 2, 3, 4), vec3(5, 6, 7)), Cell(22, vec4(2, 3, 4, 5), vec3(6, 7, 8))]
+    loop mut cell in cells: cell.v = (cell.v + vec4(1)) * f32(2)
+    print("struct", cells[0].tag, cells[0].v, cells[0].tail, cells[1].tag, cells[1].v, cells[1].tail)
+    m = mat4(vec4(2, 0, 0, 0), vec4(0, 4, 0, 0), vec4(0, 0, 8, 0), vec4(4, 8, 16, 1))
+    print("matrix", m * vec4(1, 2, 3, 1), (m * inverse(m)) * vec4(1, 2, 3, 1))
+    print("transpose", transpose(transpose(m)) == m, inverse(inverse(m)) == m)
+    mz = mat4(vec4(nz), vec4(nz), vec4(nz), vec4(nz))
+    show("matrix-special", [mz * vec4(1), m * vec4(inf, 0, nz, 1)])
+
+main()
