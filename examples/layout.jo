@@ -5,7 +5,9 @@
 # Narrower: the tabs go above the list. A phone held upright: the list alone, and an item's
 # details in its place once it is chosen. Arrows, the d-pad or the left stick move between
 # controls; Enter or A chooses; Q and E (LB and RB) change the tab; Escape or B goes back.
-# The pictures are drawn by the program (no image files).
+# Settings (Escape or Start) has sliders, switches, choices and a text field: Left and Right
+# change the one chosen, Tab (LB and RB) goes to the next. The pictures are drawn by the
+# program (no image files).
 import layout as ui
 
 window("Inventory", 1280, 720)
@@ -13,9 +15,10 @@ screen_fit(.native)         # one unit per point: a phone's screen is about 390 
 redraw_on_input()           # a menu: a frame only when something changes
 sideways_hint(false)        # (laid out for a phone either way up)
 
-enum Icon: sword, axe, bow, staff, knives, shield, helmet, boots, ring, potion, gem, ore, herb, map, coin, all
+enum Icon: sword, axe, bow, staff, knives, shield, helmet, boots, ring, potion, gem, ore, herb, map, coin, all, gear
 enum Slot: none, hand, offhand, head, feet, finger
 enum Sort: name, rarity, value
+enum Page: items, settings
 
 struct Item:
     name: str
@@ -63,6 +66,7 @@ RARITY = ["Common", "Uncommon", "Rare", "Epic"]
 CAPACITY = 60.0
 
 struct State:
+    page: Page = .items
     tab = 0
     chosen = 2              # an index into items
     sort: Sort = .name
@@ -73,6 +77,26 @@ struct State:
     weight_hover = false
 
 st = State()
+
+SIZES = ["Small", "Medium", "Large"]
+SIZE_ZOOM = [0.875, 1.0, 1.15]
+HINT_KEYS = ["Automatic", "Keyboard", "Gamepad"]
+
+# what the settings page changes
+struct Options:
+    volume = 0.8
+    music = 0.6
+    effects = 1.0
+    background_mute = true  # no sound while the window is behind others
+    size = 1                # SIZES
+    wear = true             # wear bars on the cards
+    marks = true            # a dot on items not looked at yet
+    hint_keys = 0           # HINT_KEYS
+    stick = 5.0             # how fast the stick scrolls the list
+    vibration = true
+    name = "Rowan"
+
+opt = Options()
 
 rarity_color = (r: int) -> vec4:
     match r:
@@ -247,6 +271,12 @@ icon = (kind: Icon, r: Rect, c: vec4):
             circle(p(0.5, 0.5), 0.42 * s, rgb(0.93, 0.72, 0.25))
             circle(p(0.5, 0.5), 0.3 * s, rgb(1, 0.84, 0.4))
             rect(p(0.44, 0.32), vec2(0.12 * s, 0.36 * s), rgb(0.93, 0.72, 0.25))
+        gear:
+            loop k in 0..8:
+                a = PI * f64(k) / 4.0
+                line(p(0.5 + 0.22 * cos(a), 0.5 + 0.22 * sin(a)), p(0.5 + 0.42 * cos(a), 0.5 + 0.42 * sin(a)), 0.14 * s, c)
+            circle(p(0.5, 0.5), 0.3 * s, c)
+            circle(p(0.5, 0.5), 0.12 * s, dark)
         all:
             loop k in 0..4:
                 rect_rounded(f64(p(0.14 + 0.38 * f64(k % 2), 0.0).x), f64(p(0.0, 0.14 + 0.38 * f64(k / 2)).y), 0.34 * s, 0.34 * s, 0.08 * s, c)
@@ -260,10 +290,15 @@ backdrop = (v: Rect):
 # ---------------- the screen ----------------
 
 update = (dt: f64):
-    narrow = st.open
+    # (keys typed into the name are not commands; Escape there stops typing)
+    if ui_typing(): return
+    if st.page == .settings:
+        if key_pressed(.escape) or gamepad_pressed(.b) or gamepad_pressed(.start): st.page = .items
+        return
     if key_pressed(.q) or gamepad_pressed(.lb): choose_tab(st.tab - 1)
     if key_pressed(.e) or gamepad_pressed(.rb): choose_tab(st.tab + 1)
-    if (key_pressed(.escape) or gamepad_pressed(.b)) and narrow: st.open = false
+    if (key_pressed(.escape) or gamepad_pressed(.b)) and st.open: st.open = false
+    else if key_pressed(.escape) or gamepad_pressed(.start): st.page = .settings
 
 draw = ():
     v = visible_rect()
@@ -272,6 +307,7 @@ draw = ():
     # smaller, so that it all fits)
     zoom = clamp(min(f64(v.w) / 1280.0, f64(v.h) / 720.0), 1.0, 2.0)
     if f64(v.h) < 560.0 and not touch_device(): zoom = max(f64(v.h) / 560.0, 0.6)
+    zoom *= SIZE_ZOOM[opt.size]
     w = f64(v.w) / zoom
     h = f64(v.h) / zoom
     push_transform()
@@ -281,6 +317,10 @@ draw = ():
     compact = phone or h < 500.0            # (a phone either way up)
     if not phone: st.open = false
     gap = if compact: 10.0 else: 16.0
+    if st.page == .settings:
+        ui.screen(key = "settings", pad = if compact: 12 else: 24, gap = gap, (): settings_page(w, h, compact))
+        pop_transform()
+        return
     ui.screen(key = "inventory", pad = if compact: 12 else: 24, gap = gap, ():
         header(phone, compact)
         if not wide: tab_strip()
@@ -301,10 +341,12 @@ draw = ():
 header = (phone: bool, compact: bool):
     ui.row(width = ui.grow(), gap = 12, cross = .center, ():
         ui.label("Inventory", size = if compact: 26 else: 32)
+        if not phone: ui.label(opt.name, size = 18, color = hud_style.muted)
         ui.space(width = ui.grow())
         # gold: a coin and the amount
         ui.row(pad = ui.insets(10, 6, 12, 6), radius = 16, color = rgba(1, 1, 1, 0.06), (): price(st.gold, 18))
         if not phone: weight_meter(ui.fit(), ui.fixed(120))
+        settings_button(phone)
     )
     if phone: weight_meter(ui.grow(), ui.grow())
 
@@ -382,11 +424,11 @@ card = (i: int, phone: bool):
                 if it.equipped: badge("Equipped", hud_style.accent)
             )
             ui.label(kind_text(it), size = 14, color = with_alpha(rc, 0.9))
-            if it.durability >= 0.0: ui.bar(it.durability, color = wear_color(it.durability), width = ui.grow(max = 220), height = 5)
+            if it.durability >= 0.0 and opt.wear: ui.bar(it.durability, color = wear_color(it.durability), width = ui.grow(max = 220), height = 5)
         )
         if not it.quest: price(it.value, 17)
         # (not looked at yet: a dot at the card's corner)
-        if it.new: ui.over(anchor = .top_right, at = .center, offset = vec2(-8, 8), width = 8, height = 8, radius = 4, color = hud_style.accent, clip = true, (): pass)
+        if it.new and opt.marks: ui.over(anchor = .top_right, at = .center, offset = vec2(-8, 8), width = 8, height = 8, radius = 4, color = hud_style.accent, clip = true, (): pass)
     )
     # (keys and a gamepad show the details of the card they move to; a click or Enter opens it)
     if got.focused: st.chosen = i
@@ -492,13 +534,16 @@ stat = (name: str, value: f64, worn_value: f64, top: f64, more_is_better: bool):
         ui.label(diff, size = 14, color = if good: rgb(0.5, 0.86, 0.5) else: rgb(1, 0.5, 0.45), width = 40)
     )
 
-# what the keys and a gamepad's buttons do
+# what the keys and a gamepad's buttons do (as the settings say: the ones in use, or one kind)
+pad_hints = () -> bool: if opt.hint_keys == 0: gamepad_connected() else: opt.hint_keys == 2
+
 hints = ():
-    pad = gamepad_connected()
+    pad = pad_hints()
     ui.row(gap = 18, cross = .center, ():
         hint(if pad: "D-pad" else: "Arrows", "Move")
         hint(if pad: "A" else: "Enter", "Choose")
         hint(if pad: "LB RB" else: "Q E", "Tabs")
+        hint(if pad: "Start" else: "Esc", "Settings")
     )
 
 hint = (keys: str, what: str):
@@ -517,4 +562,94 @@ toast = ():
     a = f32(clamp((2.0 - t) / 0.3, 0.0, 1.0))
     ui.over(anchor = .bottom, at = .bottom, offset = vec2(0, -8), pad = ui.insets(16, 9, 16, 10), radius = 18, color = rgba(0.1, 0.11, 0.14, 0.96 * a), border = ui.Border(with_alpha(hud_style.accent, 0.6 * a)), ():
         ui.label(st.note, size = 16, color = with_alpha(hud_style.text, a))
+    )
+
+# ---------------- settings ----------------
+
+# a gear button in the header (with its name when there is room)
+settings_button = (phone: bool):
+    if ui.row(height = 36, pad = ui.insets(9, 0, if phone: 9 else: 14, 0), gap = 8, cross = .center, radius = hud_style.radius, color = hud_style.button, border = ui.Border(hud_style.border), focusable = true, key = "settings", ():
+        ui.slot(width = 18, height = 18, (r: Rect): icon(.gear, r, hud_style.text))
+        if not phone: ui.label("Settings", size = 16)
+    ).clicked: st.page = .settings
+
+# the page: two columns of groups when it is wide enough, one on a phone; it scrolls
+settings_page = (w: f64, h: f64, compact: bool):
+    two = w >= 760.0
+    gap = if compact: 10.0 else: 16.0
+    ui.row(width = ui.grow(), gap = 12, cross = .center, ():
+        if ui.button("Back", height = 36, key = "back"): st.page = .items
+        ui.label("Settings", size = if compact: 26 else: 32)
+        ui.space(width = ui.grow())
+        if ui.button(if compact: "Reset" else: "Restore defaults", height = 36, key = "defaults"): restore_defaults()
+    )
+    ui.scroll(width = ui.grow(), height = ui.grow(), pad = ui.insets(4, 4, 16, 4), gap = gap, key = "groups", ():
+        if two:
+            ui.row(width = ui.grow(), gap = gap, ():
+                ui.column(width = ui.grow(), gap = gap, ():
+                    sound_group()
+                    controls_group()
+                )
+                ui.column(width = ui.grow(), gap = gap, ():
+                    display_group()
+                    character_group()
+                )
+            )
+        else:
+            # (the controls a gamepad enables last: keys and a gamepad reach what is partly shown)
+            sound_group()
+            display_group()
+            character_group()
+            controls_group()
+    )
+    if not compact and h >= 520 and not touch_input():
+        pad = pad_hints()
+        ui.row(gap = 18, cross = .center, ():
+            hint(if pad: "D-pad" else: "Arrows", "Move")
+            hint("← →", "Change")
+            hint(if pad: "LB RB" else: "Tab", "Next")
+            hint(if pad: "B" else: "Esc", "Back")
+        )
+    toast()
+
+restore_defaults = ():
+    global opt
+    opt = Options()
+    say("Settings restored")
+
+group = (title: str, key: str, children: () -> void):
+    ui.panel(width = ui.grow(), pad = 14, gap = 8, key = key, ():
+        ui.label(title, size = 17)
+        children()
+    )
+
+sound_group = ():
+    group("Sound", "sound", ():
+        opt.volume = ui.slider(opt.volume, 0.0, 1.0, 0.05, "Volume", height = 44, key = "volume")
+        opt.music = ui.slider(opt.music, 0.0, 1.0, 0.05, "Music", height = 44, key = "music")
+        opt.effects = ui.slider(opt.effects, 0.0, 1.0, 0.05, "Effects", height = 44, key = "effects")
+        opt.background_mute = ui.switch(opt.background_mute, "Mute in background", height = 44, key = "mute")
+    )
+
+display_group = ():
+    group("Display", "display", ():
+        opt.size = ui.choice(SIZES, opt.size, "Interface size", height = 44, key = "size")
+        opt.wear = ui.switch(opt.wear, "Wear bars", height = 44, key = "wear")
+        opt.marks = ui.switch(opt.marks, "Mark new items", height = 44, key = "marks")
+    )
+
+controls_group = ():
+    pad = gamepad_connected()
+    group("Controls", "controls", ():
+        opt.hint_keys = ui.choice(HINT_KEYS, opt.hint_keys, "Button hints", height = 44, key = "hints")
+        opt.stick = ui.slider(opt.stick, 1.0, 10.0, 1.0, "Stick speed", height = 44, enabled = pad, key = "stick")
+        opt.vibration = ui.switch(opt.vibration, "Vibration", height = 44, enabled = pad, key = "vibration")
+        if not pad: ui.label("Connect a gamepad to change these two.", size = 14, color = hud_style.muted, wrap = true, width = ui.grow())
+    )
+
+character_group = ():
+    group("Character", "character", ():
+        ui.label("Name", size = 14, color = hud_style.muted)
+        opt.name = ui.text_field(opt.name, "Your character's name", max_chars = 20, height = 44, key = "name")
+        ui.label("Shown beside the inventory's title.", size = 14, color = hud_style.muted, wrap = true, width = ui.grow())
     )

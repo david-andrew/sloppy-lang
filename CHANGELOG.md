@@ -5,6 +5,10 @@
 - Layout has native sliders, switches, choices and text fields, with immediate value returns,
   keyed pointer capture and text editing, keyboard/gamepad adjustment, and Tab/shoulder focus
   navigation. Left/Right adjust the focused value control without moving to a neighboring box.
+- Layout's value controls have a designed look: quiet rows whose labels and values line up,
+  sliders that show their value (a percentage from 0 to 1), drawn chevrons and option dots on
+  choices, rounded switches, and text fields as wells edged with the accent while typed in.
+  `hud_style.field` and `hud_style.well` color them. `examples/layout.jo` has a Settings page.
 
 - Netplay checks game versions before play, with clear errors for different builds on rollback
   and client-server transports. The default `PROGRAM_BUILD_ID` identifies the program's sources;

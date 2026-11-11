@@ -1903,7 +1903,9 @@ is faded, skipped by navigation and does not respond to input.
 
 Drag a slider with the mouse or a finger: it follows the pointer in that frame, even outside
 its box, and owns the gesture inside a scrolling panel. A positive `step` snaps from `low`;
-zero allows continuous dragging and uses 1% of the range per key press. Choices wrap through
+zero allows continuous dragging and uses 1% of the range per key press. Its value is shown at
+the right when the row has room: with the step's decimal places (a range's own for zero),
+and as a percentage for a range from 0 to 1. Choices wrap through
 the options (an empty list returns zero); clicking or tapping the left/right half of their
 value goes back/forward. Enter, Space or A advances a choice or toggles a switch.
 
@@ -1978,10 +1980,17 @@ background and edge.
 
 The look follows `hud_style` (set its fields before describing the boxes; a change holds for
 the boxes described after it). Besides the colors the `hud_` widgets use, layout reads
-`muted` (secondary text, for a label's `color`), `track` (behind a bar and a scrollbar's
-thumb), `focus` (the focus ring), `radius` (buttons, value controls and bars' corners), `panel_radius`,
-`panel_edge` and `scrollbar` (the thumb's width). A selected button is tinted with `accent`
-and edged with it; a pressed one is darker, its label a unit lower; a disabled one is faded.
+`muted` (secondary text, for a label's `color`), `track` (behind a bar, a slider's fill, an
+off switch and a scrollbar's thumb), `focus` (the focus ring), `radius` (buttons, value
+controls and bars' corners; a switch is rounded twice as much), `panel_radius`, `panel_edge`,
+`scrollbar` (the thumb's width), `field` (behind a slider's, switch's or choice's row) and
+`well` (inside a text field). A selected button is tinted with `accent` and edged with it; a
+pressed one is darker, its label a unit lower; a disabled one is faded. A value control's
+label is at the left of its row, and its value in a column that starts at the same share of
+each row, so sliders and choices in a column line up. The value carries the accent: a slider's
+fill (its thumb haloed while it is pointed at, held or chosen with keys), an on switch, the dot
+of a choice's option under it (for 2 to 7 options), and a text field's edge while it is typed
+in, when its focus ring makes way for the caret.
 
 `scroll` is a column by default; `axis = .horizontal` makes a row. Give its scrolling axis a
 bounded size. It clips children to the inner box, lets their content overflow on that axis,

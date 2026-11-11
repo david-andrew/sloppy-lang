@@ -4616,6 +4616,8 @@ Menus and hud_ boxes are drawn in the units of the 2D transform drawing has (cam
       panel_radius: f64 = 10.0                # a panel's corners
       panel_edge: vec4 = vec4(1, 1, 1, 0.08)  # a panel's border
       scrollbar: f64 = 6.0                    # a scrollbar thumb's width
+      field: vec4 = vec4(1, 1, 1, 0.04)       # behind a slider's, a switch's or a choice's row
+      well: vec4 = vec4(0, 0, 0, 0.24)        # inside a text field, darker than the panel around it
   ```
 - `hud_layout_box = (r: Rect, cover: bool = false) -> Rect`: Layout's bridge to the HUD: register a solved box (including the current transform and clip) without drawing it. This also makes layout boxes count toward hud_hovered().
 - `hud_layout_inverse = () -> mat4`: The inverse of the current 2D transform, saved with layout's previous-frame boxes.
@@ -4752,7 +4754,7 @@ Responsive immediate-mode boxes. Import explicitly: `import layout as ui`. Descr
 - `bar = (amount: f64, color: vec4 = hud_style.accent, width: Size = grow(), height: Size = 12, back: vec4 = hud_style.track, key: str = "") -> void`: Filled from zero to one, over the HUD style's track color.
 - `image = (t: Texture, width: Size = fit(), height: Size = fit(), tint: vec4 = vec4(1, 1, 1, 1), key: str = "") -> void`: A texture stretched into its solved box. Fits to the texture's pixel dimensions by default.
 - `slot = (draw: (Rect) -> void, width: Size = fit(), height: Size = fit(), focusable: bool = false, key: str = "") -> State`: Run draw at draw time with the solved Rect. Captured variables can be changed by hud_ widgets inside it. focusable includes it in direction navigation (with the focus ring drawn around it); get(key) exposes its focus/click.
-- `slider = (value: f64, low: f64, high: f64, step: f64 = 0.0, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> f64`: A value in low..high. Left/Right adjust by step (0: continuous pointer, 1% with keys). The focused value control reserves Left/Right even at an endpoint; Tab/LB/RB leave a row.
+- `slider = (value: f64, low: f64, high: f64, step: f64 = 0.0, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> f64`: A value in low..high. Left/Right adjust by step (0: continuous pointer, 1% with keys). The focused value control reserves Left/Right even at an endpoint; Tab/LB/RB leave a row. The value is shown at the right: with step's decimals, or as a percentage from 0 to 1.
 - `switch = (on: bool, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> bool`: On or off, toggled by a click/tap, Enter, Space or A. Left/Right stay on this control.
 - `choice = (options: str[], index: int, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> int`: One option, wrapping at either end. Left/Right or the left/right half of its value changes it; Enter/Space/A chooses the next. Empty options return zero.
 - `text_field = (value: str, hint: str = "", max_chars: int = 64, width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> str`: A single line using the HUD editor (selection, undo, clipboard, touch keyboard and Paste). Click/tap or Enter/A starts typing; Enter/A submits, Escape/B cancels typing, Up/Down or Tab/LB/RB leave it. get(key).editing/submitted describe this frame after the field call.

@@ -113,6 +113,9 @@ struct _Node:
     amount = 0.0
     hint = ""
     editor = ""
+    value = 0.0             # a slider's value, which hint shows; a choice's option count is code
+    code = 0
+    aside = 0.0             # the width a slider keeps at its right for its value
     texture: Texture
     draw: ((Rect) -> void)?
     style: HudStyle
@@ -142,6 +145,9 @@ struct _Box:
     speed = 0.0
     content = 0.0
     idle = 0.0
+    text = ""               # a slider's value as shown, kept while the value stays the same
+    value = 0.0
+    code = -1
     state: State
 
 struct _Root:
@@ -869,7 +875,7 @@ _draw_tree = (i: int) -> void:
         idle = _scroll_idle(n)
     parent = if n.parent >= 0: _nodes[n.parent].id else: 0
     _root.spare_index[n.id] = _root.spare.len()
-    _root.spare.push(_Box(kind = n.kind, id = n.id, parent = parent, key = n.key, rect = r, hit = hit, view = view, clip = n.clip, focusable = n.focusable and n.enabled, scrolling = n.scrolling, axis = n.axis, scroll = n.scroll, speed = n.speed, content = n.content, idle = idle, state = n.state))
+    _root.spare.push(_Box(kind = n.kind, id = n.id, parent = parent, key = n.key, rect = r, hit = hit, view = view, clip = n.clip, focusable = n.focusable and n.enabled, scrolling = n.scrolling, axis = n.axis, scroll = n.scroll, speed = n.speed, content = n.content, idle = idle, text = n.hint, value = n.value, code = n.code, state = n.state))
     if _render and r.w > 0 and r.h > 0:
         x = f64(r.x)
         y = f64(r.y)
@@ -917,7 +923,8 @@ _draw_tree = (i: int) -> void:
         if bar: _draw_scrollbar(n, idle)
         if debug: _draw_outline(n)
         if local_clip: hud_layout_restore_clip(saved)
-    if _render and n.focusable and n.enabled and n.state.focused and _focus_shown and r.w > 0 and r.h > 0:
+    # (a field being typed in shows that with its accent edge and caret instead)
+    if _render and n.focusable and n.enabled and n.state.focused and _focus_shown and not n.state.editing and r.w > 0 and r.h > 0:
         g = _RING_OUT + 2.0
         if local_clip: saved = hud_layout_clip(Rect(f64(n.clip.x) - g, f64(n.clip.y) - g, f64(n.clip.w) + 2.0 * g, f64(n.clip.h) + 2.0 * g))
         radius = if n.kind == .box: n.radius else: n.style.radius
@@ -946,7 +953,7 @@ _draw_ring = (r: Rect, radius: f64, st: HudStyle):
     h = f64(r.h)
     rect_rounded_outline(x - g, y - g, w + 2.0 * g, h + 2.0 * g, min(radius, min(w, h) / 2.0) + g, 2.0, st.focus)
 
-# Shared rounded button surface for every native control; value details are below it.
+# A button's rounded surface: tinted and edged with the accent when selected.
 _draw_control_frame = (n: _Node):
     r = n.rect
     st = n.style
@@ -962,9 +969,6 @@ _draw_control_frame = (n: _Node):
         fill = if n.selected: mix(st.hover, st.accent, 0.24) else: st.hover
         if not n.selected: edge = with_alpha(st.border, min(st.border.w * 1.8, 1.0))
     if down: fill = if n.selected: mix(st.pressed, st.accent, 0.16) else: st.pressed
-    if n.state.editing:
-        fill = st.hover
-        edge = st.accent
     if not n.enabled:
         fill = with_alpha(fill, fill.w * 0.45)
         edge = with_alpha(edge, edge.w * 0.5)
@@ -1127,20 +1131,63 @@ slot = (draw: (Rect) -> void, width: Size = fit(), height: Size = fit(), focusab
 
 # A value in low..high. Left/Right adjust by step (0: continuous pointer, 1% with keys).
 # The focused value control reserves Left/Right even at an endpoint; Tab/LB/RB leave a row.
+# The value is shown at the right: with step's decimals, or as a percentage from 0 to 1.
 slider = (value: f64, low: f64, high: f64, step: f64 = 0.0, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> f64:
-    i = _control(.slider, label, width, height, enabled, key, 160.0)
+    percent = low == 0.0 and high == 1.0
+    places = _places(if percent: step * 100.0 else: step, if percent: 100.0 else: abs(high - low))
+    aside = _number_width(if percent: 100.0 else: max(abs(low), abs(high)), places, min(low, high) < 0.0, percent, hud_style.text_size)
+    i = _control(.slider, label, width, height, enabled, key, 160.0 + aside)
     n = _nodes[i]
     v = clamp(value, min(low, high), max(low, high))
     if enabled and n.state.focused and _side_owner == n.id:
         delta = if step > 0.0: step else: abs(high - low) / 100.0
         v = hud_layout_step(v + _side * delta, step, low, high)
     if enabled and _root.value_drag == n.id and (_events.down or _events.released):
-        track = _value_rect(n.state.rect, label, n.style)
+        track = _slider_track(n.state.rect, label, n.style, aside)
         p = _local(_root.inverse, _events.pointer)
         v = hud_layout_step(low + (high - low) * clamp(f64(p.x - track.x) / max(f64(track.w), 1.0), 0.0, 1.0), step, low, high)
         _nodes[i].state.pressed = _events.down
     _nodes[i].amount = if high == low: 0.0 else: (v - low) / (high - low)
+    _nodes[i].aside = aside
+    # (the text of the value: formatted again only when it changes)
+    code = places * 2 + (if percent: 1 else: 0)
+    shown = ""
+    if let b = _root.index.get(n.id):
+        if _root.boxes[b].code == code and _root.boxes[b].value == v: shown = _root.boxes[b].text
+    if len(shown) == 0: shown = _number_text(if percent: v * 100.0 else: v, places, percent)
+    _nodes[i].hint = shown
+    _nodes[i].value = v
+    _nodes[i].code = code
     v
+
+# Decimal places for a slider's value: a step's own, or for continuous ones what its range needs.
+_places = (step: f64, range: f64) -> int:
+    if step <= 0.0: return if range >= 100.0: 0 else if range >= 10.0: 1 else: 2
+    k = 0
+    loop k < 3 and abs(step * pow(10.0, f64(k)) - round(step * pow(10.0, f64(k)))) > 1e-6: k += 1
+    k
+
+_number_text = (v: f64, places: int, percent: bool) -> str:
+    t = match places:
+        0: "{v:.0f}"
+        1: "{v:.1f}"
+        2: "{v:.2f}"
+        _: "{v:.3f}"
+    if t == "-0": t = "0"
+    if percent: "{t}%" else: t
+
+# The widest a slider's value can be, from digit widths (so the track does not move as it changes).
+_number_width = (big: f64, places: int, negative: bool, percent: bool, size: f64) -> f64:
+    digits = 1
+    m = 10.0
+    loop m <= big + 0.5 and digits < 12:
+        digits += 1
+        m *= 10.0
+    w = f64(digits + places) * text_width("0", size)
+    if places > 0: w += text_width(".", size)
+    if negative: w += text_width("-", size)
+    if percent: w += text_width("%", size)
+    ceil(w)
 
 # On or off, toggled by a click/tap, Enter, Space or A. Left/Right stay on this control.
 switch = (on: bool, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> bool:
@@ -1153,20 +1200,23 @@ switch = (on: bool, label: str = "", width: Size = grow(), height: Size = fit(),
 # Enter/Space/A chooses the next. Empty options return zero.
 choice = (options: str[], index: int, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> int:
     widest = 40.0
-    loop o in options: widest = max(widest, text_width(o, hud_style.text_size) + 48.0)
+    loop o in options: widest = max(widest, text_width(o, hud_style.text_size) + 56.0)
     i = _control(.choice, label, width, height, enabled, key, widest)
+    _nodes[i].aside = widest
     n = _nodes[i]
     v = index
     if enabled and n.state.focused and _side_owner == n.id: v += int(_side)
     if n.state.clicked:
         if n.state.focused and _events.activate: v += 1
         else:
-            r = _value_rect(n.state.rect, label, n.style)
+            r = _value_rect(n.state.rect, label, n.style, widest)
             p = _local(_root.inverse, _events.pointer)
             v += if p.x < r.x + r.w / 2: -1 else: 1
     count = max(options.len(), 1)
     v = ((v % count) + count) % count
     _nodes[i].hint = if options.len() > 0: options[v] else: ""
+    _nodes[i].code = options.len()
+    _nodes[i].amount = f64(v)
     v
 
 # A single line using the HUD editor (selection, undo, clipboard, touch keyboard and Paste).
@@ -1204,50 +1254,151 @@ _control = (kind: _Kind, label: str, width: Size, height: Size, enabled: bool, k
     lw = if len(label) > 0: text_width(label, sz) + 24.0 else: 0.0
     _add(_Node(kind = kind, text = label, width = _sizing(width), height = _sizing(height), enabled = enabled, key = key, focusable = true, natural_w = lw + value_width + 24.0, natural_h = sz * 2.0, min_w = 48.0, min_h = sz, style = hud_style))
 
-# Value at the right, optional label at the left (never more than half the box).
-# Used for BOTH pointer input from the previous box and drawing in the new one.
-_value_rect = (r: Rect, label: str, st: HudStyle) -> Rect:
-    size = min(st.text_size, f64(r.h) * 0.6)
-    lw = if len(label) > 0: min(text_width(label, size) + 20.0, max(f64(r.w) / 2.0, 0.0)) else: 0.0
-    Rect(f64(r.x) + lw + 12.0, r.y, max(f64(r.w) - lw - 24.0, 0.0), r.h)
+# Value at the right, optional label at the left. The label's column is the same share of each
+# row (a column of sliders and choices lines up), wider for a long label: up to half the row, or
+# more while the value keeps the room it needs. Used for BOTH pointer input from the previous
+# box and drawing in the new one.
+_value_rect = (r: Rect, label: str, st: HudStyle, need: f64) -> Rect:
+    w = f64(r.w)
+    if len(label) == 0: return Rect(f64(r.x) + 12.0, r.y, max(w - 24.0, 0.0), r.h)
+    lw = clamp(text_width(label, _control_size(r, st)) + 24.0, w * 0.36, max(w * 0.5, w - need - 12.0))
+    Rect(f64(r.x) + lw, r.y, max(w - lw - 12.0, 0.0), r.h)
 
-# All value-control drawing lives here; the surface and outside focus ring match buttons.
-_draw_control = (n: _Node):
-    _draw_control_frame(n)
+_control_size = (r: Rect, st: HudStyle) -> f64: min(st.text_size, f64(r.h) * 0.6)
+
+# A slider's track inside its value's place, ending before the value's own column when there is
+# room for both (the thumb's middle runs from end to end).
+_slider_track = (r: Rect, label: str, st: HudStyle, aside: f64) -> Rect:
+    v = _value_rect(r, label, st, aside + 120.0)
+    keep = if aside > 0.0 and f64(v.w) - aside - 16.0 >= 72.0: aside + 16.0 else: 0.0
+    Rect(f64(v.x) + 8.0, r.y, max(f64(v.w) - keep - 16.0, 0.0), r.h)
+
+# A value control's row: a quiet surface (hud_style.field), lighter under the pointer, darker
+# held down, as the example's cards; the value itself carries the accent.
+_draw_row_frame = (n: _Node, lit: bool, down: bool):
     r = n.rect
     st = n.style
-    tc = if n.enabled: st.text else: st.disabled
-    ac = if n.enabled: st.accent else: with_alpha(st.accent, st.accent.w * 0.35)
-    size = min(st.text_size, f64(r.h) * 0.6)
-    v = _value_rect(r, if n.kind == .text_field: "" else: n.text, st)
-    x = f64(v.x)
+    x = f64(r.x)
     y = f64(r.y)
-    w = f64(v.w)
+    w = f64(r.w)
+    h = f64(r.h)
+    rad = min(st.radius, min(w, h) / 2.0)
+    fade = if n.enabled: 1.0 else: 0.5
+    fill = st.field
+    edge = st.panel_edge
+    if n.kind == .text_field:
+        # (a field is a well: darker than the panel, with a clearer edge; the accent while typing)
+        fill = st.well
+        edge = st.border
+        if lit: edge = with_alpha(st.border, min(st.border.w * 1.8, 1.0))
+        if n.state.editing: edge = st.accent
+    rect_rounded(x, y, w, h, rad, with_alpha(fill, fill.w * fade))
+    if lit: rect_rounded(x, y, w, h, rad, if down: vec4(0, 0, 0, 0.16) else: with_alpha(st.text, st.text.w * 0.05))
+    rect_rounded_outline(x, y, w, h, rad, if n.state.editing: 1.5 else: 1.0, with_alpha(edge, edge.w * fade))
+
+# A box rounded by rad. An opaque one rounded at half its height ends in circles, smooth on every
+# renderer (see-through circles would darken where they overlap its middle).
+_round_box = (x: f64, y: f64, w: f64, h: f64, rad: f64, col: vec4):
+    if w <= 0.0 or h <= 0.0: return
+    if rad < h / 2.0 - 0.01 or w < h or col.w < 0.999:
+        rect_rounded(x, y, w, h, min(rad, w / 2.0), col)
+        return
+    r = h / 2.0
+    if w > h: rect(x + r, y, w - h, h, col)
+    circle(vec2(x + r, y + r), r, col)
+    if w > h: circle(vec2(x + w - r, y + r), r, col)
+
+# A chevron pointing left (dir -1) or right (1) around c, half as wide as it is tall.
+_chevron = (c: vec2, dir: f64, tall: f64, thick: f64, col: vec4):
+    tip = vec2(f64(c.x) + dir * tall / 4.0, c.y)
+    back = f64(c.x) - dir * tall / 4.0
+    line(vec2(back, f64(c.y) - tall / 2.0), tip, thick, col)
+    line(vec2(back, f64(c.y) + tall / 2.0), tip, thick, col)
+    circle(tip, thick / 2.0, col)
+
+# All value-control drawing lives here; the focus ring outside them matches buttons'.
+_draw_control = (n: _Node):
+    r = n.rect
+    st = n.style
+    s = n.state
+    lit = n.enabled and _lit(s)
+    down = n.enabled and s.pressed
+    _draw_row_frame(n, lit, down and n.kind != .slider)
+    tc = if n.enabled: st.text else: st.disabled
+    ac = if n.enabled: st.accent else: with_alpha(st.disabled, st.disabled.w * 0.8)
+    size = _control_size(r, st)
+    x = f64(r.x)
+    y = f64(r.y)
+    w = f64(r.w)
     h = f64(r.h)
     cy = y + h / 2.0
+    v = _value_rect(r, if n.kind == .text_field: "" else: n.text, st, if n.kind == .choice: n.aside else: 0.0)
     if n.kind != .text_field and len(n.text) > 0:
-        text(fit_text(n.text, max(x - f64(r.x) - 20.0, 0.0), size), vec2(f64(r.x) + 10.0, cy - size / 2.0), size, tc)
+        room = if n.kind == .switch: w - 80.0 else: f64(v.x) - x - 18.0
+        text(fit_text(n.text, max(room, 0.0), size), vec2(x + 12.0, cy - size / 2.0), size, tc)
     match n.kind:
         .slider:
-            th = min(6.0, h / 4.0)
+            t = _slider_track(r, n.text, st, n.aside)
+            tx = f64(t.x)
+            tw = f64(t.w)
+            th = 6.0
             rad = min(st.radius, th / 2.0)
-            rect_rounded(x, cy - th / 2.0, w, th, rad, st.track)
-            fw = w * clamp(n.amount, 0.0, 1.0)
-            if fw > 0.0: rect_rounded(x, cy - th / 2.0, fw, th, min(rad, fw / 2.0), ac)
-            circle(vec2(x + fw, cy), min(9.0, h * 0.25), ac)
+            _round_box(tx - th / 2.0, cy - th / 2.0, tw + th, th, rad, st.track)
+            fw = tw * clamp(n.amount, 0.0, 1.0)
+            _round_box(tx - th / 2.0, cy - th / 2.0, fw + th, th, rad, ac)
+            # (the thumb: a halo while it is pointed at, held, or chosen with keys)
+            at = vec2(tx + fw, cy)
+            held = down and _root.value_drag == n.id
+            if n.enabled and (lit or held or (s.focused and _focus_shown)):
+                circle(at, if held: 17.0 else: 14.0, if held: with_alpha(st.accent, st.accent.w * 0.25) else: with_alpha(st.text, st.text.w * 0.12))
+            knob = if held: 10.0 else: 8.0
+            circle(vec2(at.x, at.y + 1), knob + 1.0, vec4(0, 0, 0, 0.35))
+            circle(at, knob, if n.enabled: st.text else: st.disabled)
+            if f64(t.x + t.w) + 24.0 <= f64(v.x + v.w) - n.aside + 8.0:
+                text(n.hint, vec2(f64(v.x + v.w) - text_width(n.hint, size), cy - size / 2.0), size, if n.enabled: st.text else: st.disabled)
         .switch:
-            sw = min(40.0, w)
-            sh = min(22.0, h * 0.6)
-            sx = x + w - sw
-            col = if n.selected: ac else: st.track
-            rect_rounded(sx, cy - sh / 2.0, sw, sh, min(st.radius, sh / 2.0), col)
-            knob = max(min(sh - 6.0, sw / 2.0), 0.0)
-            kx = if n.selected: sx + sw - knob - 3.0 else: sx + 3.0
-            rect_rounded(kx, cy - knob / 2.0, knob, knob, min(st.radius, knob / 2.0), tc)
+            sh = min(24.0, h - 12.0)
+            sw = min(sh * 1.8, w - 24.0)
+            sx = x + w - 12.0 - sw
+            sy = cy - sh / 2.0
+            rad = min(st.radius * 2.0, sh / 2.0)
+            if n.selected: _round_box(sx, sy, sw, sh, rad, ac)
+            else:
+                _round_box(sx, sy, sw, sh, rad, if lit: with_alpha(st.track, min(st.track.w * 1.8, 1.0)) else: st.track)
+                rect_rounded_outline(sx, sy, sw, sh, rad, 1.0, with_alpha(st.border, st.border.w * (if n.enabled: 1.0 else: 0.5)))
+            # (the knob, stretched toward the middle while it is held)
+            k = max(sh - 6.0, 0.0)
+            kw = if down: k + 6.0 else: k
+            kx = if n.selected: sx + sw - 3.0 - kw else: sx + 3.0
+            krad = min(rad - 3.0, k / 2.0)
+            knob = if not n.enabled: st.disabled else if n.selected: with_alpha(st.text, 1.0) else: with_alpha(st.text, st.text.w * 0.7)
+            _round_box(kx, sy + 4.0, kw, k, max(krad, 0.0), vec4(0, 0, 0, 0.3))
+            _round_box(kx, sy + 3.0, kw, k, max(krad, 0.0), knob)
         .choice:
-            text_centered("<", vec2(x + 5.0, cy), size, tc)
-            text_centered(">", vec2(x + w - 5.0, cy), size, tc)
-            text_centered(fit_text(n.hint, max(w - 36.0, 0.0), size), center(v), size, tc)
+            # (a chevron at each end of the value, its half lit under the pointer)
+            vx = f64(v.x)
+            vw = f64(v.w)
+            cw = min(h - 14.0, 26.0)
+            p = _local(_root.inverse, _events.pointer)
+            left = f64(p.x) < vx + vw / 2.0
+            if lit:
+                zx = if left: vx else: vx + vw - cw
+                rect_rounded(zx, cy - cw / 2.0, cw, cw, min(st.radius, cw / 2.0), if down: vec4(0, 0, 0, 0.2) else: with_alpha(st.text, st.text.w * 0.08))
+            _chevron(vec2(vx + cw / 2.0, cy), -1.0, 11.0, 2.0, tc)
+            _chevron(vec2(vx + vw - cw / 2.0, cy), 1.0, 11.0, 2.0, tc)
+            # (dots under the option for a short list: how many there are, and which this is)
+            dots = n.code >= 2 and n.code <= 7 and h >= 36.0
+            ty = if dots: cy - 3.0 else: cy
+            text_centered(fit_text(n.hint, max(vw - 2.0 * cw - 4.0, 0.0), size), vec2(vx + vw / 2.0, ty), size, tc)
+            if dots:
+                gap = 9.0
+                dx = vx + vw / 2.0 - gap * f64(n.code - 1) / 2.0
+                loop k in [0..n.code):
+                    on = k == int(n.amount)
+                    circle(vec2(dx + gap * f64(k), cy + size * 0.5 + 6.0), 2.0, if on: ac else: with_alpha(tc, tc.w * 0.3))
         .text_field:
-            hud_layout_text_draw(r, n.text, n.hint, n.editor, n.state.editing, n.enabled, st)
+            # (an empty field's hint fainter than a caption; the typed text in full)
+            fs = st
+            if n.enabled: fs.disabled = with_alpha(st.muted, st.muted.w * 0.75)
+            hud_layout_text_draw(r, n.text, n.hint, n.editor, n.state.editing, n.enabled, fs)
         _: pass
