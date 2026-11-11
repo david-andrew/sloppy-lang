@@ -72,8 +72,8 @@ when TARGET == "macos":
 
     __ns_app: *u8 = null
     __ns_gl: *u8 = null
-    __ns_gl_w = 0
-    __ns_gl_h = 0
+    __ns_draw_w = 0            # actual drawable pixels, even when a capture renders offscreen
+    __ns_draw_h = 0
     __ns_scale = 1.0              # pixels per point: 2 on a Retina screen, when OpenGL draws at its resolution
     __ns_hidpi = false
     __ns_win: *u8 = null
@@ -138,8 +138,7 @@ when TARGET == "macos":
         __oc_i(__ns_app, __sel("activateIgnoringOtherApps:"), 1)
         __ns_mode = __nsstr("kCFRunLoopDefaultMode")
         __ns_cs = CGColorSpaceCreateDeviceRGB()
-        # (screenshot runs keep the size asked for)
-        if env("SLOPPY_SCREENSHOT") == none: __ns_size()
+        __ns_size()
         if not __soft and __vk_wanted():
             why = __ns_metal_open()
             if len(why) > 0: __vk_note("{why}; using OpenGL")
@@ -148,7 +147,11 @@ when TARGET == "macos":
             if len(why) > 0:
                 eprint("note: {why}; using the software renderer")
                 __soft = true
-            else if env("SLOPPY_SCREENSHOT") == none: __ns_size()
+            else:
+                __ns_size()
+                # A deterministic capture can be larger than the screen. Never read beyond the
+                # default framebuffer: render into a real, requested-size framebuffer instead.
+                if env("SLOPPY_SCREENSHOT") != none: __gl_screen_resize(__win_w, __win_h)
         if __soft:
             __oc_i(__ns_view, __sel("setWantsLayer:"), 1)
             __sw_init_window(__win_w, __win_h)
@@ -160,12 +163,9 @@ when TARGET == "macos":
         why = __vk_open("window", () -> int: 0)
         if len(why) > 0: return why
         l = __mg_make_layer()
-        # (all the pixels of a Retina screen; not in screenshot runs, which keep the size asked for)
-        if env("SLOPPY_SCREENSHOT") == none:
-            __ns_hidpi = true
-            __ns_scale = max(__oc_f(__ns_win, __sel("backingScaleFactor")), 1.0)
-            __mo_d(l, __sel("setContentsScale:"), __ns_scale)
-            __ns_size()
+        __ns_hidpi = true
+        __ns_size()
+        __mo_d(l, __sel("setContentsScale:"), __ns_scale)
         __oc_p(__ns_view, __sel("setLayer:"), l)
         __oc_i(__ns_view, __sel("setWantsLayer:"), 1)
         __vk = true
@@ -173,7 +173,7 @@ when TARGET == "macos":
 
     # an OpenGL 4.1 core context drawing into the view, with vsync; "" or why not
     __ns_gl_open = () -> str:
-        global __ns_gl, __ns_gl_h, __ns_gl_w, __ns_hidpi
+        global __ns_gl, __ns_hidpi
         if dl_open("libGLESv2.so.2") == null: return "OpenGL is missing"
         # core profile 4.1, double buffered, 24-bit color, 8-bit alpha, 24-bit depth, 8-bit stencil,
         # accelerated (SLOPPY_GL_SOFTWARE=1: Apple's software renderer instead, as on machines with no GPU)
@@ -195,19 +195,28 @@ when TARGET == "macos":
         one: i32[] = [1]
         __oc_pi(ctx, __sel("setValues:forParameter:"), data(one) as *u8, 222)        # swap interval
         __ns_gl = ctx
-        __ns_gl_w = -1
-        __ns_gl_h = -1
+        __oc(__ns_gl, __sel("update"))
         ""
 
     # the view's size in pixels (in points, unless OpenGL draws at the screen's resolution: the
     # window may move to a screen of another scale)
     __ns_size = ():
-        global __ns_scale, __win_h, __win_w
+        global __ns_draw_h, __ns_draw_w, __ns_scale, __win_h, __win_w
         if __ns_hidpi: __ns_scale = max(__oc_f(__ns_win, __sel("backingScaleFactor")), 1.0)
-        __ns_struct(__ns_view, "frame", 32)
+        __ns_struct(__ns_view, "bounds", 32)
         w = int(__ns_val[2] * __ns_scale)
         h = int(__ns_val[3] * __ns_scale)
-        if w > 0 and h > 0:
+        if w <= 0 or h <= 0: return
+        if w != __ns_draw_w or h != __ns_draw_h:
+            __ns_draw_w = w
+            __ns_draw_h = h
+            # Update before drawing/readback, including the first frame after a resize.
+            if __ns_gl != null: __oc(__ns_gl, __sel("update"))
+        if __mg_layer != null: __mo_d(__mg_layer, __sel("setContentsScale:"), __ns_scale)
+        # Captures have a fixed render size, independent of the view they are presented in.
+        # Ordinary windows render/read back exactly their drawable pixels; screen.jo maps
+        # the unchanged design size into them.
+        if env("SLOPPY_SCREENSHOT") == none:
             __win_w = w
             __win_h = h
 
@@ -231,7 +240,7 @@ when TARGET == "macos":
         __win_focused = __oc_int(__ns_win, __sel("isKeyWindow")) & 255 != 0
         # (closed with its button; a window in the Dock is still the game's)
         if __oc_int(__ns_win, __sel("isVisible")) & 255 == 0 and __oc_int(__ns_win, __sel("isMiniaturized")) & 255 == 0: __win_close = true
-        if env("SLOPPY_SCREENSHOT") == none: __ns_size()
+        __ns_size()
         # the pointer, from the bottom left of the view in points
         __ns_struct(__ns_win, "mouseLocationOutsideOfEventStream", 16)
         x = __ns_val[0] * __ns_scale
@@ -395,18 +404,14 @@ when TARGET == "macos":
 
     # the software renderer's frame, as the view layer's contents (CGImage of BGRA pixels)
     __platform_present = ():
-        global __ns_gl_h, __ns_gl_w, __ns_pixels
+        global __ns_pixels
         if __ns_view == null: return
         if __vk:
             __vk_present()
             return
         if not __soft:
+            if __screen_fbo != 0: __gl_screen_present(__ns_draw_w, __ns_draw_h)
             __oc(__ns_gl, __sel("flushBuffer"))
-            # (the drawable follows the view's size)
-            if __win_w != __ns_gl_w or __win_h != __ns_gl_h:
-                __oc(__ns_gl, __sel("update"))
-                __ns_gl_w = __win_w
-                __ns_gl_h = __win_h
             return
         w = __win_w
         h = __win_h
