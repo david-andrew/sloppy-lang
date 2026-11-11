@@ -155,7 +155,7 @@ game picks from (and an example of each):
 - Linux window icons on Wayland (KDE's xdg-toplevel-icon; GNOME needs a .desktop file).
 - Scripts (from a Python programmer's pass): an HTTP client (done for native programs:
   `net.fetch`, http and https; a web page's still to come), dates done (ISO and format-based `parse_date`, `date_text`, elapsed seconds and `duration_text`), sets done (`Set[T]`, `set(xs)`, union/intersection/difference/subset),
-  Json mutation done (`set`, `push`, `remove` and nested paths); buffered file/stdin lines done (`open_file`, `loop let line = f.read_line():`, `read_line()`).
+  Json mutation done (`put`, `push`, `remove` and nested paths); buffered file/stdin lines done (`open_file`, `loop let line = f.read_line():`, `read_line()`).
 - A serializer (structs to text and back) for saves and settings: done (`save_value`,
   `load_value`, `to_text`, `from_text`).
 

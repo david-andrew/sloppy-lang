@@ -782,7 +782,7 @@ not names at all (`"content-type"`, `"first name"`) go in a map field (`{str: st
 **JSON of any shape.** `j = parse_json(text)` gives a `Json` or `JsonError`; after checking the
 error, read with `j.get("name").as_str()`, `j.at(0).as_int()` and `j.as_list()`. Those reads
 give `none` for absent fields, out-of-range elements or wrong kinds. Change a value with
-`j.set("name", "ann")` (add or replace an object field), `j.set(0, 3)` (replace a list element),
+`j.put("name", "ann")` (add or replace an object field), `j.put(0, 3)` (replace a list element),
 `j.push(value)` (append to a list), and `j.remove("name")` (true if removed).
 
 For nested changes, a path is a JSON list of string keys and integer indices:
