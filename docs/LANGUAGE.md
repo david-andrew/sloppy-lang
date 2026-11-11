@@ -107,7 +107,9 @@ piped in (`sloppy < script.txt`).
 Keywords: `struct enum type if else loop in break continue return match import use as const true
 false none null and or xor not is let mut when defer extern test build pass` (and `from` and
 `error` before `import` and `struct`/`enum`) (`loop let xor is` and
-`type` may still be used as field and variant names).
+`type` may still be used as field and variant names). `build` is a keyword only as `build:`
+alone on its line (spaces, tabs and a trailing comment are allowed). Elsewhere it is an ordinary
+name: `build = 1`, `hall.build`, `(build: int)` and `build: f64`.
 
 ## 3. Variables and constants
 
@@ -1595,6 +1597,85 @@ closure does, and one made in a loop has that turn's.
   wait = ...)` wait there too in a program with tasks (not in a game's `update`). A panic in a
   task ends the program there, in a group too. A switch between tasks costs some microseconds
   there (about 0.1 natively).
+
+### Fetching from the web
+
+`import net`, then `net.fetch(url)` gives an `HttpReply`: `status`, `text`, `data`, `headers`
+(names in small letters), `all_headers` (each header separately), `size` and `why`. Status 0
+means no answer; redirects are followed up to five times (`follow = false` gives the redirect
+itself). `net.fetch_start` starts the same request without waiting; `net.fetch_result(id)` gives
+its answer once, or `none` while it is on its way. `net.fetch_all(urls)` fetches many at once.
+See [fetching from the web](START.md#fetching-from-the-web) for methods, bodies, files and retries.
+
+Native requests can share cookies by passing `cookies = jar` to any of those three functions:
+
+```gdscript
+import net
+
+jar = net.cookie_jar()
+login = net.fetch("http://127.0.0.1:8080/login", method = "POST", body = "user=ann", cookies = jar)
+page = net.fetch("http://127.0.0.1:8080/account", cookies = jar)
+pages = net.fetch_all(["http://127.0.0.1:8080/account", "http://127.0.0.1:8080/settings"], cookies = jar)
+net.clear_cookies(jar)
+```
+
+`cookie_jar() -> CookieJar` makes an empty jar; copies share it, including fetches still on their
+way. `clear_cookies(jar)` forgets its cookies and allows reuse. Without the option, requests keep
+no cookies. Each answer's Set-Cookie headers update the jar before its redirect is followed, and
+each hop selects cookies for its own host, path and scheme. Cookies without Domain go to that
+host only; Domain cookies also go to its subdomains, and never an unrelated host or an IP's
+suffix. Paths match at a slash boundary, longer paths first. Ports do not separate cookies.
+Secure cookies go over https only (and are accepted over https only). Max-Age takes precedence
+over Expires; expired cookies are removed. A name, domain and path identify a cookie for
+replacement or deletion. Wire values keep their quotes and percent escapes. An explicit Cookie
+header overrides the jar for that request; the answer still updates it. A jar holds at most 300
+cookies, each Set-Cookie at most 4096 bytes, dropping the oldest when full. Jars stay in memory.
+In web builds the browser manages cookies; an explicit jar gives status 0 with an explanation.
+
+### Writing a server
+
+`import http`, register `http.get(path, handler)` or `http.post(path, handler)`, then
+`http.serve(port)`. A handler takes `http.Request` and returns `http.Response`: `http.text`,
+`http.html`, `http.json` or `http.redirect`. Cookies are set with `http.set_cookie(res, name,
+value)` and read from `r.cookies`; `http.set_signed_cookie(res, name, value, secret)` and
+`http.signed_cookie(r, name, secret)` authenticate a cookie's value. The secret is at least 16
+bytes, kept outside the code. Set `http.secure_cookies = true` behind https. See
+[writing a server](START.md#writing-a-server) for routing, forms, middleware and deployment.
+
+A message for the next page goes on a redirect with `http.flash(res, message, secret,
+kind = "info") -> bool`. Several calls add messages in order. On the next request,
+`http.flashes(r, res, secret) -> http.Flash[]` reads them and clears their cookie on `res`:
+return that same response to the client. Each `Flash` has `message` and `kind`.
+
+```gdscript
+import http
+
+secret = unwrap(env("SESSION_SECRET"))
+http.post("/save", (r: http.Request) -> http.Response:
+    res = http.redirect("/", 303)
+    http.flash(res, "Saved", secret, kind = "success")
+    res)
+http.get("/", (r: http.Request) -> http.Response:
+    res = http.html("")
+    messages = http.flashes(r, res, secret)
+    res.body = bytes(join([loop f in messages: "<p>{html_escape(f.message)}</p>"], ""))
+    res)
+```
+
+Messages accept arbitrary text, carried in one signed, HttpOnly, SameSite=Lax cookie, good for
+five minutes. `flash` returns false without changing the response when their JSON would exceed
+2048 bytes. `flashes` gives `[]` for absent, forged, expired or malformed messages; a cookie
+that was present is cleared even when invalid. Read before adding new flashes to that response.
+Signing authenticates the messages; their text can still be read by the client.
+
+`http.stream()` and `http.events()` keep `r.conn` open for `send_chunk` or `send_event`;
+`end_stream` ends it, and `stream_open` reports whether it is still open. At most
+`http.most_streams` (1000) are open in all, with 503 for another. Each address may hold at most
+`http.most_streams_per_address` (16), with 429 for another; ordinary requests and HEAD still
+work. Ending a stream or losing its client frees the slot. As with `http.allow(r.address,
+per_minute)`, the address is the direct client's unless its proxy is in `http.trust_proxy`:
+then X-Forwarded-For's last address outside that list is used. For Caddy on the same machine,
+set `http.trust_proxy = ["127.0.0.1"]`. Untrusted forwarded headers cannot bypass the limit.
 
 ## 12. Programs and the game loop
 

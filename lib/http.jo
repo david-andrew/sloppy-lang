@@ -69,6 +69,7 @@ struct Response:
     stream = false          # the body is sent later, by send_chunk or send_event (stream(), events())
     upgrade = false         # (websocket(): the connection becomes a net peer ...)
     __largest = 0           # (... taking messages up to this big)
+    __flashes: Flash[]      # (messages accumulated by flash on this response)
 
 # ---------------- routes ----------------
 # A pattern is a path whose parts may be :names (any one part: /todos/:id) and whose last part may
@@ -416,6 +417,39 @@ __http_b64 = (b: u8[]) -> str:
     loop ends_with(t, "="): t = t[..len(t) - 1)
     t
 
+# a message for the next page (flash sets it, flashes reads it)
+struct Flash:
+    message: str
+    kind = "info"
+
+# add a one-time message to an answer, usually redirect(...). secret is set_signed_cookie's
+# secret (16 bytes or more). Messages on this answer share a signed, HttpOnly cookie, good for
+# five minutes; false if their JSON would exceed 2048 bytes (the answer is unchanged).
+#   res = http.redirect("/", 303)
+#   http.flash(res, "Saved", SECRET, kind = "success")
+flash = (res: mut Response, message: str, secret: str, kind: str = "info") -> bool:
+    messages = res.__flashes
+    messages.push(Flash(message, kind))
+    value = to_json(messages)
+    if len(value) > 2048: return false
+    res.__flashes = messages
+    res.cookies = res.cookies.filter((c: str): not starts_with(c, "__sloppy_flash="))
+    set_signed_cookie(res, "__sloppy_flash", value, secret, max_age = 300)
+    true
+
+# read the messages on this request, clearing their cookie on res (return that response to the
+# client). [] for none, expired or forged messages. Read before adding new flashes to res.
+#   res = http.html(page)
+#   loop f in http.flashes(r, res, SECRET): ...       # f.message, f.kind
+flashes = (r: Request, res: mut Response, secret: str) -> Flash[]:
+    if not r.cookies.has("__sloppy_flash"): return []
+    clear_cookie(res, "__sloppy_flash")
+    if len(r.cookies["__sloppy_flash"]) > 4096: return []
+    if let value = signed_cookie(r, "__sloppy_flash", secret):
+        messages = from_json[Flash[]](value)
+        if messages is not TextError: return messages
+    []
+
 # every value a name has in the request's query, in order: ?tag=a&tag=b gives ["a", "b"] (r.query
 # has the last); [] when it has none
 query_all = (r: Request, name: str) -> str[]:
@@ -627,6 +661,10 @@ heartbeat = 15.0
 # the most streams (stream(), events()) open at once; one more is answered 503 (on_error's). Each
 # holds a connection open, and the connections a program may have are shared by all
 most_streams = 1000
+
+# the most open streams from one client address; one more is answered 429. As allow(r.address,
+# ...), uses the client's forwarded address only when its proxy is in trust_proxy
+most_streams_per_address = 16
 
 # whether a stream (the r.conn of a stream() or events() answer) is open: false once its client has
 # gone, end_stream ended it, or the server stopped
@@ -1248,6 +1286,7 @@ struct __Conn:
     file = File()           # (a file being sent, a piece at a time)
     sending = false
     streaming = false       # (a stream's: its body comes from send_chunk)
+    stream_address = ""     # (the request's address, after trust_proxy)
     events = false          # (an events() stream's: a comment goes as a heartbeat)
     chunked = false
     keep = true             # (the connection stays open after the answer being sent)
@@ -1460,17 +1499,36 @@ __http_respond = (req: Request) -> Response:
         __http_cors_headers(req, res, true)
         return res
     if not __http_call(__http_handler, req, res): res = __http_own(req, 500, "")
-    # (a stream past the most: refused, and its connection closed)
-    if res.stream and req.method != "HEAD" and __http_streams() >= most_streams:
-        res = __http_own(req, 503, "{most_streams} streams are open, the most taken")
-        res.headers["Connection"] = "close"
-    __http_finish(req, res)
+    res = __http_stream_limit(req, res)
+    res = __http_finish(req, res)
+    # (callbacks may wait or turn an answer into a stream: count again, without running after's
+    # twice. No wait between an accepted stream's last count and opening it)
+    __http_stream_limit(req, res)
+
+__http_stream_limit = (req: Request, res0: Response) -> Response:
+    res = res0
+    if res.stream and req.method != "HEAD":
+        code = 0
+        why = ""
+        if __http_streams(req.address) >= most_streams_per_address:
+            code = 429
+            why = "{most_streams_per_address} streams from this address are open, the most taken"
+        else if __http_streams() >= most_streams:
+            code = 503
+            why = "{most_streams} streams are open, the most taken"
+        if code != 0:
+            res = __http_own(req, code, why)
+            __http_cors_headers(req, res, false)
+            res.stream = false
+            res.upgrade = false
+            res.headers["Connection"] = "close"
+    res
 
 # (the streams open)
-__http_streams = () -> int:
+__http_streams = (address: str = "") -> int:
     n = 0
     loop _, c in __http_conns:
-        if c.streaming: n += 1
+        if c.streaming and (len(address) == 0 or c.stream_address == address): n += 1
     n
 
 # (an answer made: CORS's headers on it, then through the after's; a panic in one is a 500)
@@ -1557,6 +1615,7 @@ __http_send = (id: int, req: Request, res0: Response, keep0: bool):
     if req.method != "HEAD" and has_body:
         if res.stream:
             __http_conns[id].streaming = true
+            __http_conns[id].stream_address = req.address
             __http_conns[id].chunked = chunked
             __http_conns[id].events = starts_with((res.headers.get("Content-Type") ?? "").lower(), "text/event-stream")
         else if len(res.file) > 0:

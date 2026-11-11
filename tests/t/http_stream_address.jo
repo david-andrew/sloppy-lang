@@ -1,0 +1,110 @@
+# requires: sloppy
+# requires: native
+# Per-address stream caps, released slots, and trusted forwarding over real connections.
+import http
+import net
+
+const PORT = 9665
+
+streams: int[]
+afters = 0
+http.after("/events", (r: http.Request, res: http.Response) -> http.Response:
+    afters += 1
+    sleep(0.001)
+    res)
+http.get("/events", (r: http.Request) -> http.Response:
+    streams = streams.filter((c: int): http.stream_open(c))
+    streams.push(r.conn)
+    print("a stream: last-event-id {r.headers.get("last-event-id") ?? "-"}, {streams.len()} open")
+    http.events())
+http.heartbeat = 0.0
+if not http.listen(PORT, host = "127.0.0.1"): panic("cannot listen on {PORT}")
+
+# (what has come on c, the server answering meanwhile, until `until` is in it or it is closed)
+got: {int: str}
+read_until = (c: int, until: str) -> str:
+    end = time() + 10.0
+    loop time() < end and find(got[c], until) < 0 and not net.tcp_closed(c):
+        http.answer()
+        got[c] += str_from_bytes(net.tcp_receive(c, 0.02))
+    got[c]
+
+open_stream = (extra: str = "") -> int:
+    c = net.tcp_connect("127.0.0.1", PORT)
+    got[c] = ""
+    net.tcp_send(c, "GET /events HTTP/1.1\r\nHost: x\r\n{extra}\r\n")
+    read_until(c, "\r\n\r\n")
+    c
+
+# A forged forwarded address does not evade the default (untrusted) address rule.
+assert(http.most_streams_per_address == 16)
+http.most_streams_per_address = 2
+a = open_stream("X-Forwarded-For: 198.51.100.1\r\n")
+b = open_stream("X-Forwarded-For: 198.51.100.2\r\n")
+c = open_stream("X-Forwarded-For: 198.51.100.3\r\n")
+assert(starts_with(got[a], "HTTP/1.1 200") and starts_with(got[b], "HTTP/1.1 200"))
+assert(starts_with(got[c], "HTTP/1.1 429"))
+assert(afters == 3)
+print("untrusted forwarded addresses share the cap")
+
+# A normal request and HEAD still work at the cap; ending a stream frees its slot.
+http.get("/ok", (r: http.Request) -> http.Response: http.text("ok"))
+f = net.fetch_start("http://127.0.0.1:{PORT}/ok")
+loop true:
+    http.answer()
+    if let r = net.fetch_result(f):
+        assert(r.status == 200 and r.text == "ok")
+        break
+    net.wait(0.01)
+bconn = streams[1]
+http.get("/head", (r: http.Request) -> http.Response: http.events())
+f = net.fetch_start("http://127.0.0.1:{PORT}/head", method = "HEAD")
+loop true:
+    http.answer()
+    if let r = net.fetch_result(f):
+        assert(r.status == 200)
+        break
+    net.wait(0.01)
+http.end_stream(streams[0])
+d = open_stream()
+assert(starts_with(got[d], "HTTP/1.1 200"))
+net.tcp_close(b, 0.0)
+end = time() + 5.0
+loop time() < end and http.stream_open(bconn):
+    http.answer()
+    net.wait(0.01)
+e = open_stream()
+assert(starts_with(got[e], "HTTP/1.1 200"))
+print("normal requests, end_stream and disconnect release slots")
+
+# The actual client's address is used behind a trusted proxy, including a trusted proxy chain.
+loop conn in streams: http.end_stream(conn)
+http.trust_proxy = ["127.0.0.1", "192.0.2.1"]
+http.most_streams_per_address = 1
+a = open_stream("X-Forwarded-For: 198.51.100.1, 192.0.2.1\r\n")
+b = open_stream("X-Forwarded-For: 198.51.100.2, 192.0.2.1\r\n")
+c = open_stream("X-Forwarded-For: 198.51.100.1, 192.0.2.1\r\n")
+assert(starts_with(got[a], "HTTP/1.1 200") and starts_with(got[b], "HTTP/1.1 200"))
+assert(starts_with(got[c], "HTTP/1.1 429"))
+print("trusted proxy chains use the client address")
+
+# Two handlers finish together after waiting: the last count must be after the callbacks.
+loop conn in streams: http.end_stream(conn)
+http.trust_proxy = []
+http.get("/race", (r: http.Request) -> http.Response: http.events())
+race_afters = 0
+http.after("/race", (r: http.Request, res: http.Response) -> http.Response:
+    race_afters += 1
+    sleep(0.02)
+    res)
+x = net.tcp_connect("127.0.0.1", PORT)
+y = net.tcp_connect("127.0.0.1", PORT)
+got[x] = ""
+got[y] = ""
+loop c in [x, y]: net.tcp_send(c, "GET /race HTTP/1.1\r\nHost: x\r\n\r\n")
+rx = read_until(x, "\r\n\r\n")
+ry = read_until(y, "\r\n\r\n")
+assert((starts_with(rx, "HTTP/1.1 200") and starts_with(ry, "HTTP/1.1 429")) or (starts_with(ry, "HTTP/1.1 200") and starts_with(rx, "HTTP/1.1 429")))
+assert(race_afters == 2)
+print("concurrent streams respect the cap after waiting callbacks")
+http.shutdown(0.0)

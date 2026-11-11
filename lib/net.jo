@@ -1678,6 +1678,185 @@ header_values = (r: HttpReply, name: str) -> str[]:
     n = name.lower()
     [loop h in r.all_headers: if h.0 == n: h.1]
 
+# a shared cookie jar for native fetches: make with cookie_jar(), then pass cookies = jar to
+# fetch, fetch_start or fetch_all. Copies share the cookies (including answers still on their
+# way); CookieJar() means no jar. A web page's browser manages its own cookies instead
+struct CookieJar:
+    __id = 0
+
+# a new, empty cookie jar (independent of every other jar)
+cookie_jar = () -> CookieJar:
+    j = CookieJar(__cookie_next)
+    __cookie_next += 1
+    j
+
+# forget all cookies in a jar; the jar can be used again
+clear_cookies = (jar: CookieJar): __cookie_jars.remove(jar.__id)
+
+struct __Cookie:
+    name: str
+    value: str
+    domain: str
+    path: str
+    host_only = true
+    secure = false
+    until = -1.0            # (session cookie; otherwise unix seconds)
+
+__cookie_jars: {int: __Cookie[]}
+__cookie_next = 1
+
+__cookie_domain = (host: str, domain: str) -> bool:
+    host == domain or (__n_ip4(host) < 0 and ends_with(host, "." + domain))
+
+__cookie_path = (path: str) -> str:
+    q = find_byte(path, '?')
+    if q >= 0: return path[..q)
+    path
+
+# (longer paths first, then creation order, so a server sees the most specific value first)
+__cookie_header = (jar: CookieJar, host0: str, path0: str, secure: bool) -> str:
+    if jar.__id == 0: return ""
+    host = host0.lower()
+    path = __cookie_path(path0)
+    now = unix_time()
+    kept: __Cookie[]
+    matches: __Cookie[]
+    loop c in __cookie_jars.get(jar.__id) ?? []:
+        if c.until >= 0.0 and c.until <= now: continue
+        kept.push(c)
+        if c.secure and not secure: continue
+        if c.domain != host and (c.host_only or not __cookie_domain(host, c.domain)): continue
+        if path != c.path and not (starts_with(path, c.path) and (ends_with(c.path, "/") or path[len(c.path)] == '/')): continue
+        at = matches.len()
+        loop at > 0 and len(matches[at - 1].path) < len(c.path): at -= 1
+        matches.insert(at, c)
+    if kept.len() > 0: __cookie_jars[jar.__id] = kept
+    else: __cookie_jars.remove(jar.__id)
+    join([loop c in matches: "{c.name}={c.value}"], "; ")
+
+# (a digit prefix as cookie dates allow: followed by non-digits, or the token's end)
+__cookie_number = (s: str, least: int, most: int) -> int:
+    n = 0
+    loop n < len(s) and s[n] >= '0' and s[n] <= '9': n += 1
+    if n < least or n > most: return -1
+    to_int(s[..n)) ?? -1
+
+# (RFC 6265's cookie-date tokens: modern HTTP dates and older RFC 850/asctime dates)
+__cookie_date = (s: str) -> f64?:
+    tokens: str[]
+    start = 0
+    loop i in [0..len(s) + 1):
+        delim = i == len(s)
+        if not delim:
+            c = s[i]
+            delim = c == 9 or c >= 32 and c <= 47 or c >= 59 and c <= 64 or c >= 91 and c <= 96 or c >= 123 and c <= 126
+        if delim:
+            if i > start: tokens.push(s[start..i))
+            start = i + 1
+    day = -1
+    month = -1
+    year = -1
+    h = -1
+    mi = -1
+    sec = -1
+    months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+    loop token in tokens:
+        if h < 0:
+            t = split(token, ":")
+            if t.len() == 3:
+                hh = __cookie_number(t[0], 1, 2)
+                mm = __cookie_number(t[1], 1, 2)
+                ss = __cookie_number(t[2], 1, 2)
+                if hh >= 0 and mm >= 0 and ss >= 0:
+                    h = hh
+                    mi = mm
+                    sec = ss
+                    continue
+        if day < 0:
+            d = __cookie_number(token, 1, 2)
+            if d >= 0:
+                day = d
+                continue
+        if month < 0 and len(token) >= 3:
+            loop i in [0..12):
+                if token[..3).lower() == months[i] and (len(token) == 3 or not is_digit(token[3])): month = i + 1
+            if month > 0: continue
+        if year < 0: year = __cookie_number(token, 2, 4)
+    if year >= 70 and year <= 99: year += 1900
+    else if year >= 0 and year <= 69: year += 2000
+    if year < 1601 or month < 1 or day < 1 or day > 31 or h < 0 or h > 23 or mi > 59 or sec > 59: return none
+    t = unix_time(Date(year = year, month = month, day = day, hour = h, minute = mi, second = sec))
+    d = date(t, utc = true)
+    if d.month != month or d.day != day: return none
+    t
+
+__cookie_age = (s: str) -> f64?:
+    i = if starts_with(s, "-"): 1 else: 0
+    if i == len(s): return none
+    n = 0.0
+    loop c in s[i..]:
+        if c < '0' or c > '9': return none
+        n = min(n * 10.0 + f64(c - '0'), 1e12)
+    if i == 1: -n else: n
+
+# (one Set-Cookie, without splitting at commas: Expires has a comma of its own)
+__cookie_store = (jar: CookieJar, host0: str, path0: str, secure: bool, line: str):
+    if jar.__id == 0 or len(line) > 4096: return
+    parts = split(line, ";")
+    k = find_byte(parts[0], '=')
+    if k < 1: return
+    name = trim(parts[0][..k))
+    value = trim(parts[0][k + 1..])
+    if not __http_token(name): return
+    # (keep the wire value, including quotes and percent escapes, exactly as supplied)
+    v = value
+    if len(v) >= 2 and v[0] == '"' and v[len(v) - 1] == '"': v = v[1..len(v) - 1)
+    loop c in v:
+        if c < 33 or c >= 127 or c == '"' or c == ',' or c == ';' or c == '\\': return
+    host = host0.lower()
+    path = __cookie_path(path0)
+    slash = rfind(path, "/")
+    default_path = if slash <= 0: "/" else: path[..slash)
+    c = __Cookie(name = name, value = value, domain = host, path = default_path)
+    age: f64? = none
+    expires: f64? = none
+    loop part in parts[1..]:
+        eq = find_byte(part, '=')
+        attr = trim(if eq < 0: part else: part[..eq)).lower()
+        val = if eq < 0: "" else: trim(part[eq + 1..])
+        if attr == "domain" and len(val) > 0:
+            dom = val.lower()
+            if starts_with(dom, "."): dom = dom[1..]
+            if len(dom) == 0 or ends_with(dom, ".") or not __cookie_domain(host, dom): return
+            c.domain = dom
+            c.host_only = false
+        else if attr == "path":
+            c.path = if starts_with(val, "/"): val else: default_path
+        else if attr == "secure": c.secure = true
+        else if attr == "max-age":
+            if let a = __cookie_age(val): age = a
+        else if attr == "expires":
+            if let t = __cookie_date(val): expires = t
+    # (an insecure site cannot set Secure cookies or overwrite a Secure cookie)
+    if c.secure and not secure: return
+    now = unix_time()
+    if age != none: c.until = if age! <= 0.0: 0.0 else: now + age!
+    else if expires != none: c.until = max(expires!, 0.0)
+    kept: __Cookie[]
+    at = -1
+    loop old in __cookie_jars.get(jar.__id) ?? []:
+        if old.until >= 0.0 and old.until <= now: continue
+        if not secure and old.secure and old.name == c.name and __cookie_domain(c.domain, old.domain) and starts_with(c.path, old.path): return
+        if old.name == c.name and old.domain == c.domain and old.path == c.path: at = kept.len()
+        else: kept.push(old)
+    if c.until < 0.0 or c.until > now:
+        if at >= 0: kept.insert(at, c)
+        else: kept.push(c)
+    # (bounded memory even for a server that sets a different cookie with each answer)
+    if kept.len() > 300: kept.remove_at(0)
+    if kept.len() > 0: __cookie_jars[jar.__id] = kept
+    else: __cookie_jars.remove(jar.__id)
+
 # a request to an http:// or https:// address, and its answer (following where it redirects, five
 # times at most), waiting up to `wait` seconds in all; https is checked as a browser checks it
 # (tls_connect). A GET unless method says otherwise; headers are sent besides the usual ones (as
@@ -1686,17 +1865,20 @@ header_values = (r: HttpReply, name: str) -> str[]:
 # comes, not into data; progress(bytes so far, all of them or -1 when not said) is called as
 # they come. follow = false: a redirect is the answer, its Location and Set-Cookie to look at (a
 # test of a server's sign-in; native programs: a web page's browser follows them)
+# cookies: an opt-in cookie_jar(), shared by requests and updated at every redirect. Matching
+# host/domain, path, Secure and expiry decide what goes back; an explicit Cookie header wins.
+# Without it no cookies are kept. Native programs only (a web page's browser keeps its own)
 #   r = net.fetch("https://api.example.com/items", method = "POST", body = to_json(item),
 #                 headers = {"Authorization": "Bearer {token}"})
 #   net.fetch(url, save_to = "big.zip", progress = (got: int, all: int): print("{got} of {all}"))
 @no_web("gives status 0 in a web page without tasks, which cannot wait for an answer: fetch in a task (spawn((): net.fetch(url))), or net.fetch_start, then net.fetch_result each frame")
 @no_parallel("for many at once, net.fetch_all(urls, at_once = 8), or net.fetch_start for each and net.fetch_result as they come (net.wait waits for them)")
-fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true) -> HttpReply:
+fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true, cookies: CookieJar = CookieJar()) -> HttpReply:
     when TARGET == "wasm":
         # (a web page waits in a task, as the browser answers; not in a game's frame, or a program
         # without tasks)
         if not __net_can_wait(): return HttpReply(0, [], why = "a web page cannot wait for an answer outside a task: net.fetch_start, then net.fetch_result each frame (or fetch in a task, spawn((): net.fetch(url)))")
-        f = fetch_start(url, wait, method, headers, body, save_to, progress, follow)
+        f = fetch_start(url, wait, method, headers, body, save_to, progress, follow, cookies)
         end = time() + wait
         loop true:
             if let r = fetch_result(f): return r
@@ -1706,7 +1888,7 @@ fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = 
             __n_wait([-1], [1], __net_ms(end))
         HttpReply(0, [])
     else:
-        f = fetch_start(url, wait, method, headers, body, save_to, progress, follow)
+        f = fetch_start(url, wait, method, headers, body, save_to, progress, follow, cookies)
         loop true:
             if let r = fetch_result(f): return r
             if __task_cancelling:
@@ -1724,16 +1906,20 @@ fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = 
 # Nothing waits for it meanwhile (in a web page, the browser asks; its server must allow the
 # page's site, CORS)
 @no_parallel("for many at once, net.fetch_all(urls, at_once = 8), or net.fetch_start for each and net.fetch_result as they come (net.wait waits for them)")
-fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true) -> int:
+fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true, cookies: CookieJar = CookieJar()) -> int:
     global __pace_real_time
     __pace_real_time = true
-    f = __Fetch(id = __fetch_next, url = url, method = method.upper(), headers = headers, body = body, save_to = save_to, progress = progress, end = time() + wait, follow = follow)
+    f = __Fetch(id = __fetch_next, url = url, method = method.upper(), headers = headers, body = body, save_to = save_to, progress = progress, end = time() + wait, follow = follow, cookies = cookies)
     __fetch_next += 1
     when TARGET == "wasm":
-        h: str[]
-        loop k, v in headers: h.push("{k}: {v}")
-        ht = join(h, "\n")
-        f.web = __wasm_fetch_start(data(url), len(url), data(f.method), len(f.method), data(ht), len(ht), data(body), len(body))
+        if cookies.__id != 0:
+            f.done = true
+            f.reply = HttpReply(0, [], why = "CookieJar is for native fetches: a web page's browser manages its cookies")
+        else:
+            h: str[]
+            loop k, v in headers: h.push("{k}: {v}")
+            ht = join(h, "\n")
+            f.web = __wasm_fetch_start(data(url), len(url), data(f.method), len(f.method), data(ht), len(ht), data(body), len(body))
     __fetches.push(f)
     when TARGET != "wasm":
         __fetch_go(__fetches.len() - 1, url)
@@ -1758,7 +1944,7 @@ fetch_cancel = (f: int):
     i = __fetch_index(f)
     if i < 0: return
     when TARGET == "wasm":
-        __wasm_fetch_cancel(__fetches[i].web)
+        if __fetches[i].web >= 0: __wasm_fetch_cancel(__fetches[i].web)
     else:
         __fetch_close(i)
     __fetches.remove_at(i)
@@ -1779,7 +1965,7 @@ fetch_cancel = (f: int):
 # fetch_start and fetch_result itself, as this does)
 @no_web("gives status 0 in a web page, which cannot wait for answers: net.fetch_start, then net.fetch_result each frame")
 @no_parallel("it fetches many at once itself: call it once, with all of them")
-fetch_all = (urls: str[], at_once: int = 8, retries: int = 2, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", done: (int, HttpReply) -> void = (i: int, r: HttpReply): pass) -> HttpReply[]:
+fetch_all = (urls: str[], at_once: int = 8, retries: int = 2, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", done: (int, HttpReply) -> void = (i: int, r: HttpReply): pass, cookies: CookieJar = CookieJar()) -> HttpReply[]:
     out = fill(HttpReply(0, []), urls.len())
     when TARGET == "wasm":
         loop mut r in out: r.why = "a web page cannot wait for answers: net.fetch_start, then net.fetch_result each frame"
@@ -1814,7 +2000,7 @@ fetch_all = (urls: str[], at_once: int = 8, retries: int = 2, wait: f64 = 30.0, 
                     k = next
                     next += 1
                 if k < 0: break
-                ids.push(fetch_start(urls[k], wait, method, headers, body))
+                ids.push(fetch_start(urls[k], wait, method, headers, body, cookies = cookies))
                 whose.push(k)
             got = false
             j = 0
@@ -1858,6 +2044,7 @@ struct __Fetch:
     web = -1                # (a web page's: the browser's fetch)
     hops = 0                # (redirects followed)
     follow = true           # (redirects are: false, a redirect is the answer)
+    cookies = CookieJar()
     stage = 0               # (0 finding the host, 1 connecting, 2 the request and its answer)
     secure = false
     host = ""
@@ -2076,6 +2263,9 @@ __fetch_request = (i: int):
     loop k, v in f.headers:
         given[k.lower()] = true
         req += "{k}: {v}\r\n"
+    if not given.has("cookie"):
+        ck = __cookie_header(f.cookies, f.host, f.path, f.secure)
+        if len(ck) > 0: req += "Cookie: {ck}\r\n"
     if not given.has("user-agent"): req += "User-Agent: Sloppy\r\n"
     if not given.has("accept"): req += "Accept: */*\r\n"
     if len(f.body) > 0 or f.method == "POST" or f.method == "PUT" or f.method == "PATCH":
@@ -2117,6 +2307,8 @@ __fetch_take = (i: int, piece: u8[], closed: bool):
             __fetch_end(i, r)
             return
         __fetches[i].reply = r
+        loop ck in header_values(r, "set-cookie"):
+            __cookie_store(__fetches[i].cookies, __fetches[i].host, __fetches[i].path, __fetches[i].secure, ck)
         __fetches[i].st.chunked = (r.headers.get("transfer-encoding") ?? "").lower() == "chunked"
         __fetches[i].st.length = to_int(r.headers.get("content-length") ?? "") ?? -1
         # (a redirect: its body is not wanted)

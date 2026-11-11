@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- HTTP: `flash` and `flashes` carry signed, one-time messages across a redirect; `flashes`
+  clears the cookie on the response passed to it.
+- Fetch: opt-in `CookieJar` values keep cookies across requests and every redirect, matching
+  domains, paths, Secure and expiry. `cookies = jar` works with fetch, fetch_start and fetch_all.
+- HTTP: at most 16 streams per client address by default (`most_streams_per_address`); another
+  gets 429. Trusted proxies use the forwarded client address, as rate limits do.
+- Editors and website highlighting recognise `build` as a keyword only on a `build:` line.
+  The language server allows it as a name in rename, completion and document symbols.
+
 - Rollback netplay through a host sends one packet per peer per tick, combining unacknowledged
   inputs and stand-ins. Full mesh connections, including relay fallback, stay per pair.
   Receipt vectors and hashes are sent once per packet, and input text is shared across

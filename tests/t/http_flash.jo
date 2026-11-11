@@ -1,0 +1,69 @@
+# requires: sloppy
+# requires: native
+# Signed, bounded flash messages, carried through a redirect and consumed on its answer.
+import http
+import net
+
+const SECRET = "a test secret of at least sixteen bytes"
+const MESSAGE = "Saved; café \"quoted\" \\ % +\r\n\t\x00 😀"
+http.post("/save", (r: http.Request) -> http.Response:
+    res = http.redirect("/", 303)
+    assert(http.flash(res, MESSAGE, SECRET, kind = "success"))
+    assert(http.flash(res, "Another", SECRET))
+    assert(res.cookies.len() == 1 and len(res.cookies[0]) < 4096)
+    res)
+http.get("/", (r: http.Request) -> http.Response:
+    res = http.html("")
+    messages = http.flashes(r, res, SECRET)
+    res.body = bytes(to_json(messages))
+    res)
+
+saved = http.handle("POST", "/save")
+assert(saved.status == 303)
+cookie = split(saved.cookies[0], ";")[0]
+r = http.request("GET", "/", headers = {"Cookie": cookie})
+res = http.handle(r)
+expected = [http.Flash(MESSAGE, "success"), http.Flash("Another")]
+assert(str_from_bytes(res.body) == to_json(expected))
+assert(res.cookies.len() == 1 and find(res.cookies[0], "Max-Age=0") >= 0)
+forgotten = split(res.cookies[0], ";")[0]
+assert(str_from_bytes(http.handle("GET", "/", headers = {"Cookie": forgotten}).body) == "[]")
+assert(str_from_bytes(http.handle("GET", "/").body) == "[]")
+print("flash redirect, arbitrary text, multiple messages, cleared")
+
+# forged, expired, malformed and wrong-secret cookies yield no messages, and are cleared
+bad = http.Response()
+assert(http.flashes(http.request("GET", "/", headers = {"Cookie": cookie + "x"}), bad, SECRET).len() == 0)
+assert(bad.cookies.len() == 1)
+bad = http.Response()
+assert(http.flashes(r, bad, "a different secret entirely").len() == 0)
+loop value in ["not json", to_json(expected)]:
+    res = http.Response()
+    http.set_signed_cookie(res, "__sloppy_flash", value, SECRET, max_age = if value == "not json": 300 else: 0)
+    rr = http.request("GET", "/", headers = {"Cookie": split(res.cookies[0], ";")[0]})
+    out = http.Response()
+    assert(http.flashes(rr, out, SECRET).len() == 0 and out.cookies.len() == 1)
+print("flash forged, expired, malformed, wrong secret")
+
+res = http.redirect("/")
+assert(http.flash(res, "kept", SECRET))
+was = res
+assert(not http.flash(res, "x".repeat(2100), SECRET))
+assert(res == was)
+http.secure_cookies = true
+res = http.Response()
+assert(http.flash(res, "secure", SECRET))
+assert(find(res.cookies[0], "; Secure") >= 0 and find(res.cookies[0], "; HttpOnly") >= 0)
+print("flash size bound and secure cookies")
+
+# Follow the redirect on the wire with a jar: its next response really deletes the cookie.
+http.secure_cookies = false
+http.listen(9666, host = "127.0.0.1")
+spawn((): http.serve(9666), background = true)
+main = ():
+    jar = net.cookie_jar()
+    r = net.fetch("http://127.0.0.1:9666/save", method = "POST", cookies = jar)
+    assert(r.status == 200 and r.text == to_json(expected))
+    assert(net.fetch("http://127.0.0.1:9666/", cookies = jar).text == "[]")
+    http.shutdown(0.0)
+    print("flash redirect consumed once over loopback")

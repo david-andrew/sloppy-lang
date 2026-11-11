@@ -1,0 +1,116 @@
+# requires: sloppy
+# requires: native
+# Cookie selection and expiry use synthetic hosts, no network; then all fetch APIs over loopback.
+import net
+import http
+
+jar = net.cookie_jar()
+put = (s: str, host: str = "www.example.test", path: str = "/a/login", secure: bool = true):
+    net.__cookie_store(jar, host, path, secure, s)
+get = (host: str = "www.example.test", path: str = "/a/page", secure: bool = true) -> str:
+    net.__cookie_header(jar, host, path, secure)
+put("host=one")
+put("domain=two; dOmAiN=.EXAMPLE.TEST; Path=/")
+put("host=deep; Path=/a/deep")
+assert(get() == "host=one; domain=two")
+assert(get(path = "/a/deep/x") == "host=deep; host=one; domain=two")
+assert(get(path = "/ab") == "domain=two")
+assert(get(path = "/a?x=1") == "host=one; domain=two")
+assert(get("other.example.test") == "domain=two")
+assert(get("badexample.test") == "")
+assert(get("example.test.evil") == "")
+put("wrong=x; Domain=evil.test")
+put("wrong=x; Domain=example.test.")
+put("wrong=x; Domain=0.0.1", host = "127.0.0.1")
+assert(get() == "host=one; domain=two" and get("127.0.0.1") == "")
+put("host=new; Path=/a")
+assert(get() == "host=new; domain=two")
+put("host=gone; Path=/a; Max-Age=0")
+assert(get() == "domain=two")
+print("jar domains, host-only, paths, ordering, replacement, deletion")
+
+net.clear_cookies(jar)
+put("secret=yes; Secure; Path=/")
+assert(get(secure = false) == "" and get() == "secret=yes")
+put("secret=evil; Path=/", secure = false)
+put("insecure=no; Secure", secure = false)
+assert(get() == "secret=yes")
+put("live=yes; Path=/; Expires=Wed, 09 Jun 2038 10:18:14 GMT")
+put("old=no; Expires=Sun, 06 Nov 1994 08:49:37 GMT")
+put("old2=no; Expires=Sunday, 06-Nov-94 08:49:37 GMT")
+put("old3=no; Expires=Sun Nov  6 08:49:37 1994")
+put("live2=yes; Path=/; Expires=Sun, 06 Nov 1994 08:49:37 GMT; Max-Age=60")
+put("gone=no; Max-Age=-1; Expires=Wed, 09 Jun 2038 10:18:14 GMT")
+put("invalid=yes; Path=/; Max-Age=wat; Expires=not a date")
+assert(get(secure = false) == "live=yes; live2=yes; invalid=yes")
+put("live=gone; Path=/; Max-Age=000; Expires=Wed, 09 Jun 2038 10:18:14 GMT")
+put("live2=gone; Path=/; Max-Age=-9999999999999999999999999")
+put("quoted=\"a%3Bb\"; Path=/")
+assert(get(secure = false) == "invalid=yes; quoted=\"a%3Bb\"")
+put("brief=yes; Path=/; Max-Age=1")
+sleep(1.05)
+assert(get(secure = false) == "invalid=yes; quoted=\"a%3Bb\"")
+copy = jar
+net.clear_cookies(copy)
+assert(get() == "")
+put("fallback=yes; Path=/wrong; Path=relative")
+assert(get() == "fallback=yes" and get(path = "/wrong") == "")
+net.clear_cookies(jar)
+loop i in [0..301): put("c{i}=v; Path=/")
+assert(split(get(), "; ").len() == 300 and starts_with(get(), "c1=v; "))
+put("large=" + "x".repeat(4096))
+assert(split(get(), "; ").len() == 300)
+net.clear_cookies(jar)
+print("jar secure, date formats, expiry, max-age precedence, wire values, shared clear")
+
+# no test uses these ports (9663 and 9664); the second host is localhost, so no outside lookup
+const PORT = 9663
+http.get("/login", (r: http.Request) -> http.Response:
+    res = http.redirect("/private/page", 303)
+    http.set_cookie(res, "sid", "one; café", path = "/private")
+    http.set_cookie(res, "other", "root")
+    res)
+http.get("/private/page", (r: http.Request) -> http.Response:
+    res = http.text("{r.cookies.get("sid") ?? "-"}/{r.cookies.get("other") ?? "-"}")
+    http.set_cookie(res, "sid", "two", path = "/private")
+    res)
+http.get("/read", (r: http.Request) -> http.Response: http.text(r.headers.get("cookie") ?? "-"))
+http.get("/cross", (r: http.Request) -> http.Response:
+    res = http.redirect("http://localhost:{PORT}/read")
+    http.set_cookie(res, "private", "yes")
+    res)
+http.get("/port", (r: http.Request) -> http.Response: http.redirect("http://127.0.0.1:{PORT + 1}/read"))
+http.get("/set", (r: http.Request) -> http.Response:
+    res = http.text("set")
+    http.set_cookie(res, "set", "yes")
+    res)
+http.listen(PORT, host = "127.0.0.1")
+http.listen(PORT + 1, host = "127.0.0.1")
+spawn((): http.serve(PORT), background = true)
+at = "http://127.0.0.1:{PORT}"
+main = ():
+    j = net.cookie_jar()
+    assert(net.fetch(at + "/login", cookies = j).text == "one; café/root")
+    assert(net.fetch(at + "/private/page", cookies = j).text == "two/root")
+    assert(net.fetch(at + "/read", cookies = j).text == "other=root")
+    assert(net.fetch(at + "/read").text == "-")
+    assert(net.fetch(at + "/read", cookies = net.cookie_jar()).text == "-")
+    assert(net.fetch(at + "/cross", cookies = j).text == "-")
+    assert(net.fetch(at + "/port", cookies = j).text == "other=root; private=yes")
+    assert(net.fetch(at + "/read", cookies = j, headers = {"cOoKiE": "manual=yes"}).text == "manual=yes")
+    print("jar fetch redirects, each hop, host isolation, ports, opt-in, manual override")
+    net.clear_cookies(j)
+    f = net.fetch_start(at + "/login", cookies = j, follow = false)
+    loop true:
+        if let r = net.fetch_result(f):
+            assert(r.status == 303 and net.header_values(r, "Set-Cookie").len() == 2)
+            break
+        net.wait(0.01)
+    assert(net.fetch(at + "/private/page", cookies = j).text == "one; café/root")
+    net.clear_cookies(j)
+    rs = net.fetch_all([at + "/set", at + "/read"], at_once = 1, cookies = j)
+    assert(rs[0].status == 200 and rs[1].text == "set=yes")
+    rs = net.fetch_all([at + "/read", at + "/read"], cookies = j)
+    assert(rs[0].text == "set=yes" and rs[1].text == "set=yes")
+    print("jar fetch_start, follow=false, fetch_all sequential and concurrent")
+    http.shutdown(0.0)

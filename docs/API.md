@@ -5465,16 +5465,19 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
       all_headers: (str, str)[] = []  # every header as it came, in order (each Set-Cookie)
   ```
 - `header_values = (r: HttpReply, name: str) -> str[]`: every value of a header the answer has (as each Set-Cookie), in order; name in any letters
-- `fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true) -> HttpReply`: a request to an http:// or https:// address, and its answer (following where it redirects, five times at most), waiting up to `wait` seconds in all; https is checked as a browser checks it (tls_connect). A GET unless method says otherwise; headers are sent besides the usual ones (as "Authorization": "Bearer ..."), and body after them (its Content-Type, unless given: JSON when it starts with { or [, else text). With save_to, a successful answer (2xx) goes to that file as it comes, not into data; progress(bytes so far, all of them or -1 when not said) is called as they come. follow = false: a redirect is the answer, its Location and Set-Cookie to look at (a test of a server's sign-in; native programs: a web page's browser follows them)
+- `struct CookieJar`: a shared cookie jar for native fetches: make with cookie_jar(), then pass cookies = jar to fetch, fetch_start or fetch_all. Copies share the cookies (including answers still on their way); CookieJar() means no jar. A web page's browser manages its own cookies instead
+- `cookie_jar = () -> CookieJar`: a new, empty cookie jar (independent of every other jar)
+- `clear_cookies = (jar: CookieJar)`: forget all cookies in a jar; the jar can be used again
+- `fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true, cookies: CookieJar = CookieJar()) -> HttpReply`: a request to an http:// or https:// address, and its answer (following where it redirects, five times at most), waiting up to `wait` seconds in all; https is checked as a browser checks it (tls_connect). A GET unless method says otherwise; headers are sent besides the usual ones (as "Authorization": "Bearer ..."), and body after them (its Content-Type, unless given: JSON when it starts with { or [, else text). With save_to, a successful answer (2xx) goes to that file as it comes, not into data; progress(bytes so far, all of them or -1 when not said) is called as they come. follow = false: a redirect is the answer, its Location and Set-Cookie to look at (a test of a server's sign-in; native programs: a web page's browser follows them) cookies: an opt-in cookie_jar(), shared by requests and updated at every redirect. Matching host/domain, path, Secure and expiry decide what goes back; an explicit Cookie header wins. Without it no cookies are kept. Native programs only (a web page's browser keeps its own)
   ```gdscript
   r = net.fetch("https://api.example.com/items", method = "POST", body = to_json(item),
                 headers = {"Authorization": "Bearer {token}"})
   net.fetch(url, save_to = "big.zip", progress = (got: int, all: int): print("{got} of {all}"))
   ```
-- `fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true) -> int`: the same request, started: an id for fetch_result, which gives the answer once it has come. Nothing waits for it meanwhile (in a web page, the browser asks; its server must allow the page's site, CORS)
+- `fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true, cookies: CookieJar = CookieJar()) -> int`: the same request, started: an id for fetch_result, which gives the answer once it has come. Nothing waits for it meanwhile (in a web page, the browser asks; its server must allow the page's site, CORS)
 - `fetch_result = (f: int) -> HttpReply?`: a fetch's answer (fetch_start's id), once it has come (status 0 when it failed: why says why); none while it is on its way. Given once: the fetch is done with after that, and asking again stops the program (a mistake: keep the answer when it comes)
 - `fetch_cancel = (f: int)`: stop a fetch on its way (its answer is not given)
-- `fetch_all = (urls: str[], at_once: int = 8, retries: int = 2, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", done: (int, HttpReply) -> void = (i: int, r: HttpReply): pass) -> HttpReply[]`: many requests, at most at_once of them on their way at a time (Go's worker pool around http.Get, an errgroup with SetLimit): their answers, in the order of urls. One that fails (status 0: no answer, or none in `wait` seconds) or whose server is busy or broken (429, 500, 502, 503, 504) is asked again, `retries` more times at most, after half a second, then 1, 2, 4... (or after the Retry-After the server asks for, a minute at most), unless it is a POST or a PATCH (which may have been done: those are not asked again); the other options are fetch's, for each one. done(i, r) is called as each answer comes (r is that of urls[i]): for a program that shows how far it is, or goes on with each answer at once. A program that asks stopping() and is asked to stop (ctrl-c) gets the answers that came, the rest with status 0. (A program with more to do as they come, a game's frames or a server's requests, uses fetch_start and fetch_result itself, as this does)
+- `fetch_all = (urls: str[], at_once: int = 8, retries: int = 2, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", done: (int, HttpReply) -> void = (i: int, r: HttpReply): pass, cookies: CookieJar = CookieJar()) -> HttpReply[]`: many requests, at most at_once of them on their way at a time (Go's worker pool around http.Get, an errgroup with SetLimit): their answers, in the order of urls. One that fails (status 0: no answer, or none in `wait` seconds) or whose server is busy or broken (429, 500, 502, 503, 504) is asked again, `retries` more times at most, after half a second, then 1, 2, 4... (or after the Retry-After the server asks for, a minute at most), unless it is a POST or a PATCH (which may have been done: those are not asked again); the other options are fetch's, for each one. done(i, r) is called as each answer comes (r is that of urls[i]): for a program that shows how far it is, or goes on with each answer at once. A program that asks stopping() and is asked to stop (ctrl-c) gets the answers that came, the rest with status 0. (A program with more to do as they come, a game's frames or a server's requests, uses fetch_start and fetch_result itself, as this does)
   ```gdscript
   rs = net.fetch_all(urls, at_once = 16)
   loop i in 0.. and r in rs:
@@ -5626,6 +5629,22 @@ assert(net.fetch("http://127.0.0.1:{http.port()}/todos/1").status == 200)
   if let user = http.signed_cookie(r, "user", SECRET): ...
   ```
 - `signed_cookie = (r: Request, name: str, secret: str) -> str?`: the value of a cookie set_signed_cookie set; none when the request has none, or one whose signature is not secret's (changed, made up, another cookie's moved), or one past its max_age
+- `struct Flash`: a message for the next page (flash sets it, flashes reads it)
+  ```gdscript
+  struct Flash:
+      message: str
+      kind = "info"
+  ```
+- `flash = (res: mut Response, message: str, secret: str, kind: str = "info") -> bool`: add a one-time message to an answer, usually redirect(...). secret is set_signed_cookie's secret (16 bytes or more). Messages on this answer share a signed, HttpOnly cookie, good for five minutes; false if their JSON would exceed 2048 bytes (the answer is unchanged).
+  ```gdscript
+  res = http.redirect("/", 303)
+  http.flash(res, "Saved", SECRET, kind = "success")
+  ```
+- `flashes = (r: Request, res: mut Response, secret: str) -> Flash[]`: read the messages on this request, clearing their cookie on res (return that response to the client). [] for none, expired or forged messages. Read before adding new flashes to res.
+  ```gdscript
+  res = http.html(page)
+  loop f in http.flashes(r, res, SECRET): ...       # f.message, f.kind
+  ```
 - `query_all = (r: Request, name: str) -> str[]`: every value a name has in the request's query, in order: ?tag=a&tag=b gives ["a", "b"] (r.query has the last); [] when it has none
 
 #### Forms
@@ -5655,6 +5674,7 @@ assert(net.fetch("http://127.0.0.1:{http.port()}/todos/1").status == 200)
 
 - `heartbeat = 15.0`: seconds an events() stream may be sent nothing before a comment goes to it (0: none go)
 - `most_streams = 1000`: the most streams (stream(), events()) open at once; one more is answered 503 (on_error's). Each holds a connection open, and the connections a program may have are shared by all
+- `most_streams_per_address = 16`: the most open streams from one client address; one more is answered 429. As allow(r.address, ...), uses the client's forwarded address only when its proxy is in trust_proxy
 - `stream_open = (conn: int) -> bool`: whether a stream (the r.conn of a stream() or events() answer) is open: false once its client has gone, end_stream ended it, or the server stopped
 - `stream = (type: str = "text/plain; charset=utf-8") -> Response`: an answer whose body is sent later, a chunk at a time (send_chunk, then end_stream)
 - `events = () -> Response`: a stream of server-sent events, what a web page's EventSource reads (send_event)

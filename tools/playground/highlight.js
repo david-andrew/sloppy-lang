@@ -2,7 +2,7 @@
 // sloppyHighlight(text, errLine) -> HTML with <span class="c|k|s|n|t|f|d|v|o"> around tokens
 // (errLine: a line to mark with class "errline", or 0).
 "use strict";
-const KW = new Set("if else loop in break continue return match when defer pass struct enum type const extern use import as and or not xor is mut let soa test build".split(" "));
+const KW = new Set("if else loop in break continue return match when defer pass struct enum type const extern use import as and or not xor is mut let soa test".split(" "));
 const CONSTS = new Set(["true", "false", "none", "null", "TARGET", "DEBUG"]);
 const TYPES = new Set("int i8 i16 i32 i64 u8 u16 u32 u64 byte f32 f64 bool str void never vec2 vec3 vec4 ivec2 mat4 cfn".split(" "));
 const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -24,7 +24,9 @@ function sloppyHighlight(text, errLine) {
     else if (m[5]) cls = "n";
     else if (m[6]) {
       const after = text.slice(TOKEN.lastIndex);
-      if (KW.has(t)) cls = "k";
+      const buildLine = t === "build" && /^[ \t]*$/.test(lineText) &&
+        /^[ \t]*:[ \t]*(?:#.*)?\r?$/.test(lines[line - 1].slice(lineText.length + t.length));
+      if (KW.has(t) || buildLine) cls = "k";
       else if (t === "from" && firstIdent && /^\s+\S+\s+import\b/.test(after)) cls = "k";     // from m import x
       else if (CONSTS.has(t)) cls = "v";
       else if (TYPES.has(t)) cls = "t";
