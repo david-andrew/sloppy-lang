@@ -1829,7 +1829,8 @@ space. It is read only when imported; its short names are separate from the game
 Describe the tree each frame in `draw`. `ui.screen` covers the visible area in the current
 2D transform's units; `ui.at(r, ...)` uses any `Rect` in those same units. When the root returns,
 it has solved the boxes and drawn them. A container's background draws before its children;
-floating boxes draw after the normal tree.
+floating boxes draw after the normal tree. `examples/layout.jo` is an inventory screen made this
+way, from a wide window down to a phone held upright.
 
 ```gdscript
 import layout as ui
@@ -1885,8 +1886,14 @@ be on the box where its press began; a scroll drag or `claim_press()` cancels th
 Buttons use `hud_style`, including disabled and selected states. Direction keys, the d-pad and
 left stick move focus by the previous boxes' directions; Enter, Space or gamepad A activate.
 `ui.slot(focusable = true, ...)` joins that navigation; its returned state or `ui.get(key)`
-inside its callback gives focus and activation for custom controls. Navigation pauses while
-a text field is typing or controls are being rebound.
+inside its callback gives focus and activation for custom controls. `row`, `column` and
+`panel` take `focusable = true` too, for a card that is a control as a whole: it joins the
+navigation, lights up under the pointer, and Enter or A clicks it. Navigation pauses while
+a text field is typing or controls are being rebound. Focus moved by keys or a gamepad onto
+a box inside a scroll container scrolls it into view, leaving the next box partly shown, so
+a list longer than its box can be gone through with the d-pad. The focused control has a ring
+around it once keys or a gamepad have been used, until the next press of the mouse or a
+finger.
 
 All five containers take `width`, `height`, `pad`, `gap`, `align`, `cross`, `color`, `radius`,
 `border` and `key`. `pad = 12` applies to every side; `ui.insets(left, top, right, bottom)`
@@ -1894,13 +1901,24 @@ sets them separately. `align` is along the row or column: `.start`, `.center`, `
 `.space_between` (extra space between children, in addition to `gap`). `cross` is `.start`,
 `.center`, `.end`, or `.stretch`; stretch expands fit/grow children within their bounds and
 leaves fixed/percent sizes alone. Colors default to transparent, except a panel's
-`hud_style.panel`; panels also default to 16 units of padding. `ui.Border(color, thickness)`
-draws an edge; radius rounds the background and edge.
+`hud_style.panel`; panels also default to 16 units of padding, `hud_style.panel_radius` and an
+edge of `hud_style.panel_edge`. `ui.Border(color, thickness)` draws an edge; radius rounds the
+background and edge.
+
+The look follows `hud_style` (set its fields before describing the boxes; a change holds for
+the boxes described after it). Besides the colors the `hud_` widgets use, layout reads
+`muted` (secondary text, for a label's `color`), `track` (behind a bar and a scrollbar's
+thumb), `focus` (the focus ring), `radius` (a button's and a bar's corners), `panel_radius`,
+`panel_edge` and `scrollbar` (the thumb's width). A selected button is tinted with `accent`
+and edged with it; a pressed one is darker, its label a unit lower; a disabled one is faded.
 
 `scroll` is a column by default; `axis = .horizontal` makes a row. Give its scrolling axis a
 bounded size. It clips children to the inner box, lets their content overflow on that axis,
 and keeps its offset by id. The innermost scroll under the pointer takes the wheel. Dragging
-the content or its scrollbar moves it; letting go of a moving drag glides with damping.
+the content or its scrollbar moves it; letting go of a moving drag glides with damping. The
+thumb is drawn inside the container's far edge, faint at rest, clearer while the list moves or
+the pointer is over it, wider over its last 12 units, where it can be dragged: give the
+content padding on that side (`pad = ui.insets(0, 0, 14, 0)`) to keep it clear of the thumb.
 `ui.scroll_to(key, offset, root = "root 0")`, called before the root, sets its offset, which
 the next solve clamps to the content.
 
@@ -1910,14 +1928,17 @@ added to its position. Both points default to `.top_left`; the other points are 
 `.top_right`, `.left`, `.center`, `.right`, `.bottom_left`, `.bottom`, and `.bottom_right`.
 For a badge at the parent's upper right use `anchor = .top_right, at = .top_right`.
 Floating elements are drawn and hit-tested after the normal tree, including elements
-described after them. An outer clip installed by the game still applies.
+described after them. An outer clip installed by the game still applies. `clip = true` keeps
+the floating box inside the scroll containers around it, as a count on a list row's picture
+should be, where a tooltip or a menu would escape them.
 
 Leaves are `label(s, size, color, wrap, align, width, height, key)`,
 `button(text, width, height, enabled, selected, key)`, `space(width, height, key)`,
 `bar(amount, color, width, height, back, key)`, `image(texture, width, height, tint, key)` and
 `slot(draw, width, height, focusable, key)`. A grow spacer pushes the following children to
 the end; a slot with fit sizes has no intrinsic content size. Images stretch to their boxes
-and fit their pixel dimensions by default. Labels use `.left`, `.center` or `.right` text
+and fit their pixel dimensions by default. A bar is filled over `hud_style.track` unless
+`back` is given. Labels use `.left`, `.center` or `.right` text
 alignment, independently of the container's alignment.
 
 Identity is the parent's id plus the child's index. Give moving list rows `key = item.id`
@@ -1931,7 +1952,8 @@ For queries use a key unique within the root, since separate parents can use the
 
 `ui.hovered()` tests the last boxes at the current pointer. Drawn layout boxes also count in
 `hud_hovered()`. The root coordinate space and empty spacers do not capture pointer input.
-`ui.debug = true` outlines every box. `ui.reset()` releases cached roots when the UI closes
+`ui.debug = true` outlines every box over the drawing: containers blue (their padding a fainter
+inner edge), scroll containers green, floating boxes orange, leaves pink. `ui.reset()` releases cached roots when the UI closes
 permanently. `ui.at(r, render = false, input = ui.Input(...), ...)` solves without a window,
 still runs slots, and accepts scripted pointer/navigation input; `ui.clip_bounds(key, root)`
 exposes the inherited clip for headless tests. Omit `input` when using live game input.

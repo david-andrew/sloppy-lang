@@ -4609,6 +4609,13 @@ Menus and hud_ boxes are drawn in the units of the 2D transform drawing has (cam
       disabled: vec4 = vec4(1, 1, 1, 0.35)
       selection: vec4 = vec4(1, 0.82, 0.4, 0.35)     # behind text selected in a field (left as it is: the accent's)
       text_size: f64 = 20.0
+      muted: vec4 = vec4(1, 1, 1, 0.62)       # secondary text: a caption, a hint, a value's unit
+      track: vec4 = vec4(1, 1, 1, 0.1)        # behind a bar's fill and a scrollbar's thumb
+      focus: vec4 = vec4(1, 1, 1, 0.9)        # the ring around what keys or a gamepad have chosen
+      radius: f64 = 6.0                       # a button's corners
+      panel_radius: f64 = 10.0                # a panel's corners
+      panel_edge: vec4 = vec4(1, 1, 1, 0.08)  # a panel's border
+      scrollbar: f64 = 6.0                    # a scrollbar thumb's width
   ```
 - `hud_layout_box = (r: Rect, cover: bool = false) -> Rect`: Layout's bridge to the HUD: register a solved box (including the current transform and clip) without drawing it. This also makes layout boxes count toward hud_hovered().
 - `hud_layout_inverse = () -> mat4`: The inverse of the current 2D transform, saved with layout's previous-frame boxes.
@@ -4727,15 +4734,15 @@ Responsive immediate-mode boxes. Import explicitly: `import layout as ui`. Descr
 - `hovered = () -> bool`: True over any layout box from the last description. Rendered boxes also count in hud_hovered.
 - `reset = ()`: Forget cached roots and release their buffers (for a UI that is closed permanently).
 - `scroll_to = (key: str, offset: f64, root: str = "root 0")`: Programmatically scroll a keyed container, clamped against its current content on solving.
-- `row = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "") -> State`: Children from left to right.
-- `column = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "") -> State`: Children from top to bottom.
-- `panel = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 16, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = hud_style.panel, radius: f64 = 0.0, border: Border = Border(), key: str = "") -> State`: A column with padding and the current HUD panel background.
+- `row = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", focusable: bool = false) -> State`: Children from left to right. focusable: the whole row is a control (keys and a gamepad reach it; it lights up under the pointer), for a card whose State.clicked is used.
+- `column = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", focusable: bool = false) -> State`: Children from top to bottom (focusable: as row's).
+- `panel = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 16, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = hud_style.panel, radius: f64 = hud_style.panel_radius, border: Border = Border(hud_style.panel_edge), key: str = "", focusable: bool = false) -> State`: A column with padding and the current HUD panel's background, corners and edge (focusable: as row's).
 - `scroll = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", axis: Axis = .vertical) -> State`: A clipped container with wheel, drag and gliding, on its axis. Offset is kept by id.
-- `over = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", anchor: Corner = .top_left, at: Corner = .top_left, offset: vec2 = vec2()) -> State`: Floating children attached to the parent: anchor is its point, at is this box's point. Drawn last, outside scroll clips.
+- `over = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", anchor: Corner = .top_left, at: Corner = .top_left, offset: vec2 = vec2(), clip: bool = false) -> State`: Floating children attached to the parent: anchor is its point, at is this box's point. Drawn last, outside scroll clips. clip = true keeps it inside the scroll containers around it, as a badge on a list's row is.
 - `label = (s: str, size: f64 = hud_style.text_size, color: vec4 = hud_style.text, wrap: bool = false, align: Align = .left, width: Size = fit(), height: Size = fit(), key: str = "") -> void`: Text at its measured size; wrap breaks words at the final width, then determines height. A wrapping label's minimum width is its longest unbreakable word (CJK characters may break).
 - `button = (text: str, width: Size = fit(), height: Size = fit(), enabled: bool = true, selected: bool = false, key: str = "") -> bool`: A HUD-styled button. Answers from the preceding frame; false the first time it exists.
 - `space = (width: Size = fit(), height: Size = fit(), key: str = "") -> void`: An empty box. A grow spacer takes the room left between its siblings.
-- `bar = (amount: f64, color: vec4 = hud_style.accent, width: Size = grow(), height: Size = 12, back: vec4 = hud_style.panel, key: str = "") -> void`: Filled from zero to one, with the HUD panel color behind it.
+- `bar = (amount: f64, color: vec4 = hud_style.accent, width: Size = grow(), height: Size = 12, back: vec4 = hud_style.track, key: str = "") -> void`: Filled from zero to one, over the HUD style's track color.
 - `image = (t: Texture, width: Size = fit(), height: Size = fit(), tint: vec4 = vec4(1, 1, 1, 1), key: str = "") -> void`: A texture stretched into its solved box. Fits to the texture's pixel dimensions by default.
 - `slot = (draw: (Rect) -> void, width: Size = fit(), height: Size = fit(), focusable: bool = false, key: str = "") -> State`: Run draw at draw time with the solved Rect. Captured variables can be changed by hud_ widgets inside it. focusable includes it in direction navigation; get(key) exposes its focus/click.
 

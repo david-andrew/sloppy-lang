@@ -7,6 +7,12 @@
   Scroll containers clip, drag and glide; floating boxes attach to a parent's corners and draw
   last. Stable keys keep input and scroll state when rows move; buttons and focusable slots
   support direction navigation with keys and a gamepad. Solved boxes can be inspected headlessly.
+- Layout's look: rounded buttons with hover, pressed, selected and disabled states, rounded
+  panels with an edge, rounded bars over a track, a scrollbar that fades at rest and widens under
+  the pointer, a focus ring shown once keys or a gamepad are used, and colored `ui.debug`
+  outlines, all from new `hud_style` fields. Containers take `focusable = true` (cards), focus
+  moved by keys scrolls into view, and `over(clip = true)` keeps a badge inside a scrolling list.
+  New example: `examples/layout.jo`, an inventory screen from a wide window down to a phone.
 - HTTP: `flash` and `flashes` carry signed, one-time messages across a redirect; `flashes`
   clears the cookie on the response passed to it.
 - Fetch: opt-in `CookieJar` values keep cookies across requests and every redirect, matching
