@@ -4744,7 +4744,7 @@ Responsive immediate-mode boxes. Import explicitly: `import layout as ui`. Descr
 - `space = (width: Size = fit(), height: Size = fit(), key: str = "") -> void`: An empty box. A grow spacer takes the room left between its siblings.
 - `bar = (amount: f64, color: vec4 = hud_style.accent, width: Size = grow(), height: Size = 12, back: vec4 = hud_style.track, key: str = "") -> void`: Filled from zero to one, over the HUD style's track color.
 - `image = (t: Texture, width: Size = fit(), height: Size = fit(), tint: vec4 = vec4(1, 1, 1, 1), key: str = "") -> void`: A texture stretched into its solved box. Fits to the texture's pixel dimensions by default.
-- `slot = (draw: (Rect) -> void, width: Size = fit(), height: Size = fit(), focusable: bool = false, key: str = "") -> State`: Run draw at draw time with the solved Rect. Captured variables can be changed by hud_ widgets inside it. focusable includes it in direction navigation; get(key) exposes its focus/click.
+- `slot = (draw: (Rect) -> void, width: Size = fit(), height: Size = fit(), focusable: bool = false, key: str = "") -> State`: Run draw at draw time with the solved Rect. Captured variables can be changed by hud_ widgets inside it. focusable includes it in direction navigation (with the focus ring drawn around it); get(key) exposes its focus/click.
 
 ## Paths
 
