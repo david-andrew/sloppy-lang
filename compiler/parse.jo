@@ -5,6 +5,7 @@ use 'lex.jo'
 use 'ast.jo'
 
 toks: Token[]
+p_toks: *Token = null       # fixed token buffer; saved with toks across interpolations/lazy bodies
 ti = 0
 p_file = 0
 p_src = ""
@@ -17,18 +18,19 @@ p_base = 0               # where p_src starts in the file (an interpolation's so
 p_lazy = false           # (parsing a library file, outside the editor)
 p_top_decl = false       # (the function being parsed is a top-level one)
 
-pk = () -> Tok: toks[ti].kind
+# advance keeps ti on or before eof; lexing is complete before parsing starts.
+pk = () -> Tok: p_toks[ti].kind
 pkn = (k: int) -> Tok:
     j = ti + k
     if j >= toks.len(): j = toks.len() - 1
-    toks[j].kind
-cur_pos = () -> int: toks[ti].pos
+    p_toks[j].kind
+cur_pos = () -> int: p_toks[ti].pos
 advance = () -> int:
     i = ti
     if ti < toks.len() - 1: ti += 1
     i
 accept = (k: Tok) -> bool:
-    if toks[ti].kind == k:
+    if p_toks[ti].kind == k:
         advance()
         return true
     false
@@ -269,21 +271,21 @@ habit = (i: int, want: Tok):
         fatal(toks[i].pos, "a ',' is missing before this")
 
 expect = (k: Tok, what: str) -> int:
-    if toks[ti].kind != k:
+    if p_toks[ti].kind != k:
         habit(ti, k)
         w = what
         if len(w) == 0: w = tok_name(k)
-        tk = toks[ti].kind
+        tk = p_toks[ti].kind
         if tk == .newline or tk == .indent or tk == .dedent or tk == .eof: fatal(prev_end(), "expected {w} at the end of this line")
         if tk == .ident or tk == .int_lit: fatal(cur_pos(), "expected {w}, found '{tok_src(ti)}'")
         fatal(cur_pos(), "expected {w}, found {tok_name(tk)}")
     advance()
 # identifier tokens carry their interned name in ival
 expect_ident = (what: str) -> int:
-    if toks[ti].kind != .ident and is_keyword_tok(toks[ti].kind) and toks[ti].kind != .kw_mut: keyword_name_error(ti)
+    if p_toks[ti].kind != .ident and is_keyword_tok(p_toks[ti].kind) and p_toks[ti].kind != .kw_mut: keyword_name_error(ti)
     # (let [a, b] = pair, const {kind, x} = g: JavaScript's destructuring)
-    if toks[ti].kind == .lbrack and (what == "variable name" or what == "constant name"): fatal(toks[ti].pos, "an array is unpacked without brackets: `a, b = xs` (it must have exactly that many elements); a tuple the same way")
-    if toks[ti].kind == .lbrace and (what == "variable name" or what == "constant name"): fatal(toks[ti].pos, "a struct's fields are read one by one: `kind, x = g.kind, g.x`, or used as they are, `g.kind`")
+    if p_toks[ti].kind == .lbrack and (what == "variable name" or what == "constant name"): fatal(p_toks[ti].pos, "an array is unpacked without brackets: `a, b = xs` (it must have exactly that many elements); a tuple the same way")
+    if p_toks[ti].kind == .lbrace and (what == "variable name" or what == "constant name"): fatal(p_toks[ti].pos, "a struct's fields are read one by one: `kind, x = g.kind, g.x`, or used as they are, `g.kind`")
     int(toks[expect(.ident, what)].ival)
 
 is_keyword_tok = (k: Tok) -> bool: int(k) < kw_kinds.len() and kw_kinds[int(k)]
@@ -332,7 +334,7 @@ partner = (i: int) -> int:
             depth -= 1
             if depth == 0: break
         j += 1
-    toks[i].ival = j
+    p_toks[i].ival = j
     j
 
 # keywords that are also fine as names after '.', in enum variants and in match patterns
@@ -350,7 +352,7 @@ skip_newlines = ():
 parse_type_primary = () -> int:
     pos = cur_pos()
     k = pk()
-    if k == .ident and toks[ti].ival == id_cfn and pkn(1) == .lparen:
+    if k == .ident and p_toks[ti].ival == id_cfn and pkn(1) == .lparen:
         # C function pointer type: cfn(int, *u8) -> int
         advance()
         n = mk(.tfn, pos)
@@ -364,7 +366,7 @@ parse_type_primary = () -> int:
         set_list(n, ps)
         if accept(.arrow): nodes[n].a = i32(parse_type())
         return n
-    if k == .ident and toks[ti].ival == id_soa and (pkn(1) == .ident or pkn(1) == .lparen):
+    if k == .ident and p_toks[ti].ival == id_soa and (pkn(1) == .ident or pkn(1) == .lparen):
         # soa T[]: an array of structs kept as one array per field
         advance()
         t = parse_type()
@@ -420,7 +422,7 @@ parse_type_primary = () -> int:
             n = mk(.tfn, pos)
             set_list(n, elems)
             expect(.arrow, "")
-            if pk() == .ident and toks[ti].ival == id_void: advance()
+            if pk() == .ident and p_toks[ti].ival == id_void: advance()
             else: nodes[n].a = i32(parse_type())
             return n
         if elems.len() == 1: return elems[0]
@@ -467,7 +469,7 @@ parse_type_postfix = (t0: int) -> int:
             advance()
             if pk() == .int_lit:
                 nodes[a].b = i32(mk(.int_lit, cur_pos()))
-                nodes[int(nodes[a].b)].ival = toks[ti].ival
+                nodes[int(nodes[a].b)].ival = p_toks[ti].ival
                 advance()
             else:
                 nodes[a].b = i32(mk(.ident, cur_pos()))
@@ -652,10 +654,10 @@ __utf8_len1 = (t: str) -> bool:
     (b >= 0xc0 and b < 0xe0 and n == 2) or (b >= 0xe0 and b < 0xf0 and n == 3) or (b >= 0xf0 and n == 4)
 
 parse_string_token = (t: int) -> int:
-    global lx_base, p_base, p_file, p_src, ti, toks
-    pos = toks[t].pos
+    global lx_base, lx_toks, p_toks, p_base, p_file, p_src, ti, toks
+    pos = p_toks[t].pos
     s = tok_src(t)
-    flags = int(toks[t].flags)
+    flags = int(p_toks[t].flags)
     raw = flags & STRF_RAW != 0
     if flags & STRF_TRIPLE != 0: s = dedent_triple(s)
     n = mk(.str_lit, pos)
@@ -719,6 +721,7 @@ parse_string_token = (t: int) -> int:
                 fatal(pos, "'{{' in a string starts an interpolation like \"{{x}}\"; write {{{{ and }}}} for literal braces")
             # lex and parse the embedded expression; its tokens keep their places in the file
             saved_toks = toks
+            saved_ptr = p_toks
             saved_ti = ti
             saved_src = p_src
             saved_file = p_file
@@ -732,9 +735,11 @@ parse_string_token = (t: int) -> int:
             # spaces before the value are not an indented line)
             ws = len(expr_src) - len(trim_start(expr_src))
             expr_src = expr_src[ws..]
-            p_base = p_base + int(toks[t].start) + i + 1 + ws
+            p_base = p_base + int(p_toks[t].start) + i + 1 + ws
             lx_base = p_base
             toks = lex(p_file, expr_src)
+            lx_toks = []
+            p_toks = data(toks)
             lx_base = 0
             ti = 0
             p_src = expr_src
@@ -748,6 +753,7 @@ parse_string_token = (t: int) -> int:
                 # ('{"a": 1}' is the text "a", formatted " 1")
                 fatal(pos, "`{{{trim(s[i + 1..j))}}}` in a string puts in the value of what is inside the braces; for braces in the text, write {{{{ and }}}}, or make it a raw string, r'...' (JSON: r'{{\"a\": 1}}', or to_json(value))")
             toks = saved_toks
+            p_toks = saved_ptr
             ti = saved_ti
             p_src = saved_src
             p_file = saved_file
@@ -838,20 +844,20 @@ parse_primary = () -> int:
     if p_id_async == 0:
         p_id_async = intern("async")
         p_id_await = intern("await")
-    if k == .ident and (toks[t].ival == p_id_async and toks[t + 1].kind == .lparen and partner(t + 1) > t and (toks[partner(t + 1) + 1].kind == .colon or toks[partner(t + 1) + 1].kind == .arrow) or toks[t].ival == p_id_await and toks[t + 1].kind == .ident):
+    if k == .ident and (p_toks[t].ival == p_id_async and toks[t + 1].kind == .lparen and partner(t + 1) > t and (toks[partner(t + 1) + 1].kind == .colon or toks[partner(t + 1) + 1].kind == .arrow) or p_toks[t].ival == p_id_await and toks[t + 1].kind == .ident):
         fatal(pos, "there is no async or await: any function can wait. `t = spawn((): f(x))` runs f alongside the rest of the program and `t.wait()` is its result; in a game, a state changed a little in update each frame, or steps in `Actions` (`steps.then(0.3, (): drop())`), does something over time")
     if k == .int_lit:
         advance()
         n = mk(.int_lit, pos)
-        nodes[n].ival = toks[t].ival
+        nodes[n].ival = p_toks[t].ival
         add_flag(n, NF_LITERAL)
-        if toks[t].ival < 0: add_flag(n, NF_U64)
-        if int(toks[t].flags) & INTF_CHAR != 0: add_flag(n, NF_SQUOTE)
+        if p_toks[t].ival < 0: add_flag(n, NF_U64)
+        if int(p_toks[t].flags) & INTF_CHAR != 0: add_flag(n, NF_SQUOTE)
         return n
     if k == .float_lit:
         advance()
         n = mk(.float_lit, pos)
-        nodes[n].fval = toks[t].fval
+        nodes[n].fval = p_toks[t].fval
         add_flag(n, NF_LITERAL)
         return n
     if k == .str_lit:
@@ -870,15 +876,15 @@ parse_primary = () -> int:
         return mk(.null_lit, pos)
     if k == .ident:
         advance()
-        if toks[t].len == 1 and p_src[int(toks[t].start)] == '_': return mk(.hole, pos)
-        if toks[t].ival == id_end and p_index.len() > 0: return index_end(pos)
+        if p_toks[t].len == 1 and p_src[int(p_toks[t].start)] == '_': return mk(.hole, pos)
+        if p_toks[t].ival == id_end and p_index.len() > 0: return index_end(pos)
         n = mk(.ident, pos)
-        nodes[n].name = i32(toks[t].ival)
+        nodes[n].name = i32(p_toks[t].ival)
         return n
     if k == .dot:
         advance()
         # (key_pressed(.1): the number keys are .n0 to .n9)
-        if pk() == .int_lit and toks[ti].ival >= 0 and toks[ti].ival <= 9: fatal(cur_pos(), "the key {toks[ti].ival} is `.n{toks[ti].ival}` (a name cannot start with a digit)")
+        if pk() == .int_lit and p_toks[ti].ival >= 0 and p_toks[ti].ival <= 9: fatal(cur_pos(), "the key {p_toks[ti].ival} is `.n{p_toks[ti].ival}` (a name cannot start with a digit)")
         n = mk(.dotname, pos)
         nodes[n].name = i32(expect_name("name after '.'"))
         return n
@@ -1272,7 +1278,7 @@ parse_postfix = (e0: int) -> int:
                 t = advance()
                 nodes[f].name = i32(intern(tok_src(t)))
                 nodes[f].aux = -2
-                nodes[f].ival = toks[t].ival
+                nodes[f].ival = p_toks[t].ival
             else if pk() == .float_lit:
                 # x.0.1 lexes as a float "0.1"
                 t = advance()
@@ -1281,7 +1287,7 @@ parse_postfix = (e0: int) -> int:
                 ok = d > 0 and d < len(txt) - 1
                 loop i in [0..len(txt)):
                     if i != d and (txt[i] < '0' or txt[i] > '9'): ok = false
-                if not ok: fatal(toks[t].pos, "expected a field name or a tuple index after '.', found '{txt}'")
+                if not ok: fatal(p_toks[t].pos, "expected a field name or a tuple index after '.', found '{txt}'")
                 nodes[f].name = i32(intern(txt[..d)))
                 nodes[f].aux = -2
                 nodes[f].ival = to_int(txt[..d)) ?? 0
@@ -1826,7 +1832,7 @@ parse_pattern = () -> int:
         expect(.rparen, "")
         set_list(tp, parts)
         return tp
-    if pk() == .ident and toks[ti].len == 1 and p_src[int(toks[ti].start)] == '_':
+    if pk() == .ident and p_toks[ti].len == 1 and p_src[int(p_toks[ti].start)] == '_':
         advance()
         return mk(.pwild, pos)
     if pk() == .dot or ((pk() == .ident or is_soft_kw(pk())) and (pkn(1) == .lparen or pkn(1) == .colon or pkn(1) == .comma or pkn(1) == .kw_if or (p_pattern and pkn(1) == .kw_as))):
@@ -2059,7 +2065,7 @@ parse_fn_literal = (kind: NK, name: int, pos: int) -> int:
         body = arg_src(arrow + 1)
         fatal(toks[arrow].pos, "a function value is written `{ps}: {body}`, its body after a colon (`->` names the type of its result: `(x) -> int: x * 2`)")
     if accept(.arrow):
-        if pk() == .ident and toks[ti].ival == id_void and pkn(1) != .pipe:
+        if pk() == .ident and p_toks[ti].ival == id_void and pkn(1) != .pipe:
             advance()
             add_flag(f, NF_VOID)
         else: nodes[f].a = i32(parse_type())
@@ -2201,7 +2207,7 @@ parse_simple_stmt = () -> int:
             names: int[]
             loop true:
                 v = mk(.ident, cur_pos())
-                if pk() == .ident and toks[ti].len == 1 and p_src[int(toks[ti].start)] == '_':
+                if pk() == .ident and p_toks[ti].len == 1 and p_src[int(p_toks[ti].start)] == '_':
                     advance()
                     nodes[v].kind = .hole
                 else: nodes[v].name = i32(expect_ident("variable name"))
@@ -2348,7 +2354,7 @@ parse_when = () -> int:
     if pk() == .kw_else:
         advance()
         if pk() == .kw_when or pk() == .kw_if:
-            if pk() == .kw_if: toks[ti].kind = .kw_when
+            if pk() == .kw_if: p_toks[ti].kind = .kw_when
             b = mk(.block, cur_pos())
             set_list(b, [parse_when()])
             add_flag(b, NF_TERMINATED)
@@ -2378,7 +2384,7 @@ parse_loop_head = () -> int:
                     loop k <= j:
                         nm.push(tok_src(k))
                         k += 2
-                    fatal(toks[ti].pos, "the names before `in` are written without brackets: `loop {join(nm, ", ")} in ...:`")
+                    fatal(p_toks[ti].pos, "the names before `in` are written without brackets: `loop {join(nm, ", ")} in ...:`")
                 break
             j += 2
     if pk() == .colon:
@@ -3207,7 +3213,7 @@ parse_type_alias = () -> int:
 parse_module_spec = (d: int):
     if pk() == .str_lit:
         t = advance()
-        path = decode_str(tok_src(t), toks[t].pos, false)
+        path = decode_str(tok_src(t), p_toks[t].pos, false)
         nodes[d].sval = i32(intern(path))
         base = path
         sl = rfind(path, "/")
@@ -3247,7 +3253,7 @@ parse_toplevel = () -> int:
         skip_newlines()
     k = pk()
     d = 0
-    if k == .ident and toks[ti].ival == id_type and pkn(1) == .ident and (pkn(2) == .assign or pkn(2) == .lbrack): d = parse_type_alias()
+    if k == .ident and p_toks[ti].ival == id_type and pkn(1) == .ident and (pkn(2) == .assign or pkn(2) == .lbrack): d = parse_type_alias()
     else if (k == .lparen or (k == .ident and (pkn(1) == .assign or pkn(1) == .lbrack))) and fn_decl_ahead():
         p_top_decl = true
         d = parse_fn_decl(false)
@@ -3257,13 +3263,13 @@ parse_toplevel = () -> int:
         d = parse_fn_decl(true)
     else if k == .kw_struct: d = parse_struct()
     else if k == .kw_enum: d = parse_enum()
-    else if k == .ident and toks[ti].ival == id_error and (pkn(1) == .kw_struct or pkn(1) == .kw_enum):
+    else if k == .ident and p_toks[ti].ival == id_error and (pkn(1) == .kw_struct or pkn(1) == .kw_enum):
         # error struct ParseError: a failure, which `?` passes on
         advance()
         if pk() == .kw_struct: d = parse_struct()
         else: d = parse_enum()
         add_flag(d, NF_ERROR)
-    else if k == .ident and toks[ti].ival == id_from and (pkn(1) == .str_lit or pkn(1) == .ident):
+    else if k == .ident and p_toks[ti].ival == id_from and (pkn(1) == .str_lit or pkn(1) == .ident):
         # from physics import step, Body as B: those names (aux 2; each an ident whose aux is
         # its new name, or 0)
         advance()
@@ -3329,7 +3335,7 @@ parse_toplevel = () -> int:
 stop_after = ""
 
 parse_file = (file: int) -> int[]:
-    global id_cfn, id_end, id_error, id_from, id_soa, id_type, id_void, lx_lazy, p_file, p_src, ti, toks
+    global lx_toks, p_toks, id_cfn, id_end, id_error, id_from, id_soa, id_type, id_void, lx_lazy, p_file, p_src, ti, toks
     if id_void == 0:
         id_void = intern("void")
         id_cfn = intern("cfn")
@@ -3340,6 +3346,8 @@ parse_file = (file: int) -> int[]:
         id_error = intern("error")
     lx_lazy = p_lazy
     toks = lex(file, files[file].src)
+    lx_toks = []
+    p_toks = data(toks)
     lx_lazy = false
     if stop_after == "lex":
         toks = []
@@ -3358,10 +3366,11 @@ parse_file = (file: int) -> int[]:
 
 # the body of function declaration d, parsed now if it was left for later
 ensure_body = (d: int):
-    global p_base, p_file, p_header, p_lazy, p_matrix, p_no_tuple, p_src, p_top_decl, ti, toks
+    global lx_toks, p_toks, p_base, p_file, p_header, p_lazy, p_matrix, p_no_tuple, p_src, p_top_decl, ti, toks
     b = int(nodes[d].b)
     if b == 0 or not has_flag(b, NF_LAZY): return
     saved_toks = toks
+    saved_ptr = p_toks
     saved_ti = ti
     saved_file = p_file
     saved_src = p_src
@@ -3376,6 +3385,8 @@ ensure_body = (d: int):
     start = int(nodes[b].ival)
     p_src = files[p_file].src
     toks = lex(p_file, p_src, start, start + int(nodes[b].aux))
+    lx_toks = []
+    p_toks = data(toks)
     ti = 0
     p_base = 0
     p_no_tuple = false
@@ -3386,6 +3397,7 @@ ensure_body = (d: int):
     body = parse_indented_block(mk(.block, cur_pos()))
     nodes[d].b = i32(body)
     toks = saved_toks
+    p_toks = saved_ptr
     ti = saved_ti
     p_file = saved_file
     p_src = saved_src
