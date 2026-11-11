@@ -110,6 +110,9 @@ TOPICS = [
      "(`compute`, `dispatch`) and draws the GPU decides (`draw_indirect`). Through Vulkan these run on the GPU; "
      "elsewhere on the CPU, so programs work everywhere."),
     ("Games", "menus", "Menus", ["game/ui"], "menus", ""),
+    ("Games", "layout", "Responsive layout", ["layout"], None,
+     "An explicit module (`import layout as ui`): rows and columns, content and weighted grow sizes, "
+     "wrapping text, scroll containers and floating boxes. See [responsive layout](LANGUAGE.md#responsive-layout)."),
     ("Games", "paths", "Paths", ["game/paths"], "paths", ""),
     ("Games", "helpers", "Particles, noise, easing, collisions and smooth paths", ["game/gameutil", "game/curves"], "helpers", ""),
     ("Games", "physics", "2D physics", ["physics"], "physics",

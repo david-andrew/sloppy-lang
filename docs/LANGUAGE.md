@@ -1822,6 +1822,121 @@ claimed press clicks no button. Labels too long for a `hud_button` or a `hud_che
 rectangle as wide as box and label) end in …, as `fit_text(s, width, size)` cuts any text;
 `hud_button(r, label, align = .left)` puts the label at the left, for a list's rows.
 
+### Responsive layout
+
+`import layout as ui` adds boxes whose positions follow their contents and the available
+space. It is read only when imported; its short names are separate from the game library.
+Describe the tree each frame in `draw`. `ui.screen` covers the visible area in the current
+2D transform's units; `ui.at(r, ...)` uses any `Rect` in those same units. When the root returns,
+it has solved the boxes and drawn them. A container's background draws before its children;
+floating boxes draw after the normal tree.
+
+```gdscript
+import layout as ui
+
+volume = 0.5
+draw = ():
+    global volume
+    ui.screen(pad = 24, ():
+        ui.column(gap = 12, cross = .center, width = ui.grow(), height = ui.grow(), ():
+            ui.label("Settings", size = 40)
+            ui.panel(pad = 16, gap = 8, width = ui.fit(max = 480), ():
+                ui.label("The menu fits its contents and wraps this help when the screen narrows.", wrap = true)
+                ui.row(gap = 8, width = ui.grow(), ():
+                    if ui.button("Play", width = ui.grow()): print("play")
+                    if ui.button("Quit", width = ui.grow()): quit()
+                )
+                ui.slot(width = ui.grow(), height = 32, (r: Rect):
+                    volume = hud_slider(r, volume, 0.0, 1.0)
+                )
+            )
+        )
+    )
+```
+
+The required closure is declared first (after `r` in `at`); named options can precede it at
+the call site as above. `slot` calls its closure at draw time with its **current** solved box,
+so existing `hud_` widgets and custom drawing use the final size that frame. Captured locals
+can be changed in that closure; a named function changing a global still declares `global`.
+Slots cannot add more layout elements: describe the entire tree before drawing starts.
+
+Each element accepts `width` and `height`. A number means fixed units; the other sizes are:
+
+| Size | Meaning |
+| --- | --- |
+| `ui.fit(min = 0, max = 1e30)` | Contents, bounded by min/max; the default. |
+| `ui.grow(weight = 1, min = 0, max = 1e30)` | Share remaining space by weight, bounded by min/max and the contents' minimum. |
+| `ui.fixed(n)` | Exactly n units. |
+| `ui.percent(p)` | A fraction from 0 to 1 of the parent's inner size, before gaps. |
+
+Widths are measured from the leaves up, then assigned from the root down. Text wraps at its
+final width, then heights are solved the same way. Fit and grow boxes that overflow shrink
+largest first toward their minimums. Padding, gaps, fixed boxes and unbreakable text do not
+shrink; content can still overflow when those cannot fit. A wrapping label's minimum width is
+its longest unbreakable word (or CJK unit). Percent children contribute zero to a parent's fit
+size, avoiding a circular size calculation. Grow on a container's cross axis fills that axis.
+When bounded grow sizes compete, space freed by a maximum is shared by the remaining grows.
+
+`row`, `column`, `panel`, `scroll` and `over` return `ui.State`: `rect`, `hovered`, `pressed`,
+`clicked` and `focused`. Buttons return a bool. These answers use the preceding frame's boxes,
+and are false with a zero rectangle the first time an element exists. A pointer event belongs
+to the topmost box and its ancestors, so a card may use `ui.panel(...).clicked`. A release must
+be on the box where its press began; a scroll drag or `claim_press()` cancels the click.
+Buttons use `hud_style`, including disabled and selected states. Direction keys, the d-pad and
+left stick move focus by the previous boxes' directions; Enter, Space or gamepad A activate.
+`ui.slot(focusable = true, ...)` joins that navigation; its returned state or `ui.get(key)`
+inside its callback gives focus and activation for custom controls. Navigation pauses while
+a text field is typing or controls are being rebound.
+
+All five containers take `width`, `height`, `pad`, `gap`, `align`, `cross`, `color`, `radius`,
+`border` and `key`. `pad = 12` applies to every side; `ui.insets(left, top, right, bottom)`
+sets them separately. `align` is along the row or column: `.start`, `.center`, `.end`, or
+`.space_between` (extra space between children, in addition to `gap`). `cross` is `.start`,
+`.center`, `.end`, or `.stretch`; stretch expands fit/grow children within their bounds and
+leaves fixed/percent sizes alone. Colors default to transparent, except a panel's
+`hud_style.panel`; panels also default to 16 units of padding. `ui.Border(color, thickness)`
+draws an edge; radius rounds the background and edge.
+
+`scroll` is a column by default; `axis = .horizontal` makes a row. Give its scrolling axis a
+bounded size. It clips children to the inner box, lets their content overflow on that axis,
+and keeps its offset by id. The innermost scroll under the pointer takes the wheel. Dragging
+the content or its scrollbar moves it; letting go of a moving drag glides with damping.
+`ui.scroll_to(key, offset, root = "root 0")`, called before the root, sets its offset, which
+the next solve clamps to the content.
+
+`over` is a floating column attached to its parent's box, outside the normal flow and scroll
+clips. `anchor` names the parent's point, `at` names the floating box's point, and `offset` is
+added to its position. Both points default to `.top_left`; the other points are `.top`,
+`.top_right`, `.left`, `.center`, `.right`, `.bottom_left`, `.bottom`, and `.bottom_right`.
+For a badge at the parent's upper right use `anchor = .top_right, at = .top_right`.
+Floating elements are drawn and hit-tested after the normal tree, including elements
+described after them. An outer clip installed by the game still applies.
+
+Leaves are `label(s, size, color, wrap, align, width, height, key)`,
+`button(text, width, height, enabled, selected, key)`, `space(width, height, key)`,
+`bar(amount, color, width, height, back, key)`, `image(texture, width, height, tint, key)` and
+`slot(draw, width, height, focusable, key)`. A grow spacer pushes the following children to
+the end; a slot with fit sizes has no intrinsic content size. Images stretch to their boxes
+and fit their pixel dimensions by default. Labels use `.left`, `.center` or `.right` text
+alignment, independently of the container's alignment.
+
+Identity is the parent's id plus the child's index. Give moving list rows `key = item.id`
+(a string) so their input, focus and scroll offsets follow the item. Explicit keys are local
+to their parent and must be distinct there. Give separate roots distinct keys and describe
+each once per frame. Unnamed roots are `"root 0"`, `"root 1"`, and so on in call order.
+`ui.bounds(key, root = "root 0") -> Rect?` returns the last solved box;
+`ui.get(key, root) -> ui.State?` also gives its event state. During description or a slot
+callback these query the preceding frame; after the root they query the just-solved boxes.
+For queries use a key unique within the root, since separate parents can use the same key.
+
+`ui.hovered()` tests the last boxes at the current pointer. Drawn layout boxes also count in
+`hud_hovered()`. The root coordinate space and empty spacers do not capture pointer input.
+`ui.debug = true` outlines every box. `ui.reset()` releases cached roots when the UI closes
+permanently. `ui.at(r, render = false, input = ui.Input(...), ...)` solves without a window,
+still runs slots, and accepts scripted pointer/navigation input; `ui.clip_bounds(key, root)`
+exposes the inherited clip for headless tests. Omit `input` when using live game input.
+`ui.profile = true` measures each solve in `ui.solve_seconds`, excluding description and drawing.
+
 **A user's files.** `dropped_files()` is the paths of the files dropped onto the window, in
 the frame they arrive ([] in the others): Windows, X11, Wayland and web pages. A dialog is
 started, and its answer comes later, as a fetch's does: `open_file_dialog(types, multiple,

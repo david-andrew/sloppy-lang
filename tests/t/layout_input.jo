@@ -1,0 +1,177 @@
+# requires: sloppy
+# Scripted headless input: stable ids, draw order, capture, focus and scroll clips.
+import layout as ui
+
+hits: str[]
+order = ["a", "b"]
+build = (input: ui.Input):
+    ui.at(Rect(0, 0, 300, 200), render = false, input = input, ():
+        ui.row(gap = 10, ():
+            loop key in order:
+                if ui.button(key, width = 80, height = 30, key = key): hits.push(key)
+        )
+    )
+
+# The first description never clicks, even if a release is already pending.
+build(ui.Input(pointer = vec2(20, 15), released = true, activate = true))
+assert(hits.len() == 0)
+build(ui.Input(pointer = vec2(20, 15), pressed = true, down = true))
+# Reorder between press and release: the event belongs to a, though a is now on the right.
+order = ["b", "a"]
+build(ui.Input(pointer = vec2(20, 15), released = true))
+assert(hits == ["a"])
+assert(ui.bounds("a")!.x == 90)
+# Releasing on another box does not click it; a claimed press never clicks.
+build(ui.Input(pointer = vec2(20, 15), pressed = true, down = true))
+build(ui.Input(pointer = vec2(110, 15), released = true))
+assert(hits == ["a"])
+build(ui.Input(pointer = vec2(110, 15), pressed = true, down = true))
+build(ui.Input(pointer = vec2(110, 15), released = true, tap = false))
+assert(hits == ["a"])
+# Arrow navigation uses the old boxes, then activates Enter/A on the next frame.
+build(ui.Input(pointer = vec2(20, 15), origin = vec2(110, 15), pressed = true, released = true))
+assert(hits == ["a"])
+build(ui.Input(nav = vec2(-1, 0)))
+build(ui.Input(activate = true))
+assert(hits == ["a", "b"])
+
+# A whole card receives the descendant's event; disabled buttons do not activate.
+card_clicks = 0
+disabled_clicks = 0
+cards = (input: ui.Input):
+    ui.at(Rect(0, 0, 300, 200), render = false, input = input, ():
+        if ui.panel(width = 100, height = 100, pad = 0, key = "card", ():
+            if ui.button("disabled", width = 100, height = 30, enabled = false): disabled_clicks += 1
+        ).clicked: card_clicks += 1
+    )
+cards(ui.Input())
+cards(ui.Input(pointer = vec2(20, 15), pressed = true, down = true))
+cards(ui.Input(pointer = vec2(20, 15), released = true))
+assert(card_clicks == 1 and disabled_clicks == 0)
+
+# Floating boxes draw and hit last, even if a normal sibling is described afterwards.
+ui.reset()
+under = 0
+above = 0
+draw_order: str[]
+overlay = (input: ui.Input):
+    ui.at(Rect(0, 0, 200, 100), render = false, input = input, ():
+        ui.over(width = 80, height = 30, key = "over", ():
+            ui.slot(width = 80, height = 30, (r: Rect): draw_order.push("float"))
+            if ui.button("above", width = 80, height = 30): above += 1
+        )
+        ui.slot(width = 80, height = 30, (r: Rect): draw_order.push("normal"))
+        if ui.button("under", width = 80, height = 30): under += 1
+    )
+overlay(ui.Input())
+assert(draw_order == ["normal", "float"])
+overlay(ui.Input(pointer = vec2(20, 45), pressed = true, down = true))
+overlay(ui.Input(pointer = vec2(20, 45), released = true))
+assert(above == 1 and under == 0)
+
+# Each anchor's normalized coordinate, with the same point on the floating box at it.
+loop i in [0..9):
+    corners = [ui.Corner.top_left, .top, .top_right, .left, .center, .right, .bottom_left, .bottom, .bottom_right]
+    c = corners[i]
+    ui.at(Rect(10, 20, 200, 100), render = false, ():
+        ui.over(width = 40, height = 20, anchor = c, at = c, offset = vec2(3, 4), key = "float", (): pass)
+    )
+    r = ui.bounds("float")!
+    assert(r.x == f32(13 + (i % 3) * 80))
+    assert(r.y == f32(24 + (i / 3) * 40))
+
+ui.reset()
+scroll_clicks = 0
+listing = (input: ui.Input):
+    ui.at(Rect(0, 0, 200, 100), render = false, input = input, ():
+        ui.scroll(width = 100, height = 60, key = "list", ():
+            loop i in [0..5):
+                if ui.button("{i}", width = 100, height = 30, key = "item{i}"): scroll_clicks += 1
+            ui.over(width = 10, height = 10, anchor = .bottom_right, key = "badge", (): pass)
+        )
+    )
+listing(ui.Input())
+assert(ui.bounds("item4")!.y == 120)
+assert(ui.clip_bounds("item4")!.h == 60)
+listing(ui.Input(pointer = vec2(20, 20), wheel = -1))
+assert(ui.bounds("item0")!.y == -44)
+assert(ui.bounds("item4")!.y == 76)
+# A clipped-away row cannot click, even if it has a box there.
+listing(ui.Input(pointer = vec2(20, 85), pressed = true, down = true))
+listing(ui.Input(pointer = vec2(20, 85), released = true))
+assert(scroll_clicks == 0)
+ui.scroll_to("list", 90)
+listing(ui.Input())
+assert(ui.bounds("item0")!.y == -90)
+# Drag cancels the child's click before event answers, and moves the list.
+ui.scroll_to("list", 0)
+listing(ui.Input())
+listing(ui.Input(pointer = vec2(20, 40), pressed = true, down = true))
+listing(ui.Input(pointer = vec2(20, 20), down = true))
+assert(ui.bounds("item0")!.y == -20)
+listing(ui.Input(pointer = vec2(20, 20), released = true))
+assert(scroll_clicks == 0)
+# Horizontal scroll uses the same solver and keeps its content unshrunk.
+ui.reset()
+ui.at(Rect(0, 0, 100, 100), render = false, ():
+    ui.scroll(width = 60, height = 50, axis = .horizontal, key = "list", ():
+        ui.space(width = 100, height = 20, key = "wide")
+    )
+)
+ui.scroll_to("list", 40)
+ui.at(Rect(0, 0, 100, 100), render = false, ():
+    ui.scroll(width = 60, height = 50, axis = .horizontal, key = "list", ():
+        ui.space(width = 100, height = 20, key = "wide")
+    )
+)
+assert(ui.bounds("wide")!.x == -40)
+
+# A padded scrollbar uses its inner track, and grabbing the thumb does not jump.
+ui.reset()
+padded = (input: ui.Input):
+    ui.at(Rect(0, 0, 100, 100), render = false, input = input, ():
+        ui.scroll(width = 100, height = 100, pad = 10, key = "list", ():
+            loop i in [0..4): ui.button("{i}", width = 80, height = 50, key = "p{i}")
+        )
+    )
+padded(ui.Input())
+ui.scroll_to("list", 60)
+padded(ui.Input())
+padded(ui.Input(pointer = vec2(95, 50), pressed = true, down = true))
+assert(ui.bounds("p0")!.y == -50)
+padded(ui.Input(pointer = vec2(95, 74), down = true))
+assert(ui.bounds("p0")!.y == -110)
+
+# Scrolling a focused button completely out of view moves focus to a visible button.
+ui.reset()
+focus_hits: int[]
+focus_list = (input: ui.Input):
+    ui.at(Rect(0, 0, 100, 60), render = false, input = input, ():
+        ui.scroll(width = 100, height = 60, key = "list", ():
+            loop i in [0..5):
+                if ui.button("{i}", width = 100, height = 30): focus_hits.push(i)
+        )
+    )
+focus_list(ui.Input())
+ui.scroll_to("list", 90)
+focus_list(ui.Input())
+focus_list(ui.Input(activate = true))
+assert(focus_hits == [3])
+
+# Slots take direction focus and expose activation inside the draw-time callback.
+ui.reset()
+activated = false
+focus_slots = (input: ui.Input):
+    global activated
+    ui.at(Rect(0, 0, 100, 100), render = false, input = input, ():
+        ui.button("button", width = 80, height = 30)
+        ui.slot(width = 80, height = 30, focusable = true, key = "custom", (r: Rect):
+            if let st = ui.get("custom"):
+                if st.clicked: activated = true
+        )
+    )
+focus_slots(ui.Input())
+focus_slots(ui.Input(nav = vec2(0, 1)))
+focus_slots(ui.Input(activate = true))
+assert(activated)
+print("layout input ok")

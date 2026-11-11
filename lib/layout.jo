@@ -1,0 +1,901 @@
+# Responsive immediate-mode boxes. Import explicitly: `import layout as ui`.
+# Describe children in a closure; the root solves widths, wraps text, solves heights, then
+# positions and draws. Events use the preceding description's boxes. Keys are local to a
+# parent; changing a keyed row's position does not change its identity.
+
+enum SizingKind: fit, grow, fixed, percent
+struct Sizing:
+    kind: SizingKind = .fit
+    min = 0.0
+    max = 1e30
+    value = 1.0
+type Size = Sizing | int | f64
+
+# Content size, bounded by min/max. A number passed for width or height means fixed(number).
+fit = (min: f64 = 0.0, max: f64 = 1e30) -> Sizing: Sizing(.fit, min, max)
+# Share the available space by weight, respecting min/max and the contents' minimum size.
+grow = (weight: f64 = 1.0, min: f64 = 0.0, max: f64 = 1e30) -> Sizing: Sizing(.grow, min, max, weight)
+fixed = (n: f64) -> Sizing: Sizing(.fixed, n, n, n)
+# Fraction of the parent's inner size, before gaps. Percent children contribute zero to fit.
+percent = (p: f64) -> Sizing: Sizing(.percent, value = clamp(p, 0.0, 1.0))
+
+struct Insets:
+    left = 0.0
+    top = 0.0
+    right = 0.0
+    bottom = 0.0
+type Padding = Insets | int | f64
+# Per-side padding; one number for pad applies to all four sides.
+insets = (left: f64 = 0.0, top: f64 = 0.0, right: f64 = 0.0, bottom: f64 = 0.0) -> Insets: Insets(left, top, right, bottom)
+struct Border:
+    color: vec4 = vec4(0, 0, 0, 0)
+    thickness = 1.0
+enum MainAlign: start, center, end, space_between
+enum CrossAlign: start, center, end, stretch
+enum Axis: vertical, horizontal
+enum Corner: top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right
+
+# A container/slot's state from its previous solved box. clicked includes keyboard activation;
+# pressed is a pointer press held on the box. rect is zero the first time the element exists.
+struct State:
+    rect: Rect
+    hovered = false
+    pressed = false
+    clicked = false
+    focused = false
+
+# Optional scripted input for headless layout tests. Pointer coordinates are screen units
+# when rendering, and the units of at() otherwise. nav is a direction, activate is Enter/A.
+struct Input:
+    pointer: vec2 = vec2(-1e20, -1e20)
+    origin: vec2?
+    down = false
+    pressed = false
+    released = false
+    tap = true
+    claimed = false
+    touch = false
+    wheel = 0.0
+    dt = 1.0 / 60.0
+    nav: vec2
+    activate = false
+
+# Outline every solved box while drawing.
+debug = false
+# Opt-in solver timing, in seconds, excluding tree description, drawing and box recording.
+profile = false
+# Last solve's duration when profile is enabled.
+solve_seconds = 0.0
+
+enum _Kind: box, label, button, space, bar, slot, image
+struct _Node:
+    kind: _Kind = .box
+    id = 0
+    key = ""
+    parent = -1
+    first = -1
+    last = -1
+    next = -1
+    count = 0
+    axis: Axis = .vertical
+    width: Sizing
+    height: Sizing
+    pad: Insets
+    gap = 0.0
+    align: MainAlign = .start
+    cross: CrossAlign = .start
+    color: vec4
+    radius = 0.0
+    border: Border
+    floating = false
+    anchor: Corner = .top_left
+    attach: Corner = .top_left
+    offset: vec2
+    scrolling = false
+    scroll = 0.0
+    speed = 0.0
+    content = 0.0
+    enabled = true
+    selected = false
+    focusable = false
+    text = ""
+    size = 20.0
+    wrap = false
+    text_align: Align = .left
+    amount = 0.0
+    texture: Texture
+    draw: ((Rect) -> void)?
+    style: HudStyle
+    natural_w = 0.0
+    natural_h = 0.0
+    min_w = 0.0
+    min_h = 0.0
+    w = 0.0
+    h = 0.0
+    rect: Rect
+    clip: Rect = Rect(-1e20, -1e20, 2e20, 2e20)
+    state: State
+
+struct _Box:
+    id = 0
+    parent = 0
+    key = ""
+    rect: Rect
+    hit: Rect
+    screen: Rect
+    view: Rect
+    view_size = 0.0
+    clip: Rect
+    focusable = false
+    scrolling = false
+    axis: Axis = .vertical
+    scroll = 0.0
+    speed = 0.0
+    content = 0.0
+    state: State
+
+struct _Root:
+    boxes: _Box[]
+    spare: _Box[]
+    index: {int: int}
+    spare_index: {int: int}
+    focus = 0
+    capture = 0
+    scroll_capture = 0
+    scroll_origin = 0.0
+    press_at: vec2
+    dragging = false
+    frame = -10
+    order = -1
+    panel_first = 0
+    panel_count = 0
+    thumb_drag = false
+    thumb_grab = 0.0
+    stick: vec2
+
+_roots: {str: _Root}
+_root: _Root
+_root_key = ""
+_nodes: _Node[]
+_geometry: *_Node = null
+_parent = -1
+_open = false
+_drawing = false
+_render = true
+_events: Input
+_hit = 0
+_hover_chain: {int: bool}
+_press_chain: {int: bool}
+_seen: {int: bool}
+_scratch: int[]
+_floats: int[]
+_last_frame = -10
+_root_number = 0
+
+_sizing = (s: Size) -> Sizing:
+    if s is int: return fixed(f64(s))
+    if s is f64: return fixed(s)
+    out = s
+    out.min = max(s.min, 0.0)
+    out.max = max(out.min, s.max)
+    out.value = max(s.value, 0.0)
+    out
+_padding = (p: Padding) -> Insets:
+    if p is Insets: return Insets(max(p.left, 0.0), max(p.top, 0.0), max(p.right, 0.0), max(p.bottom, 0.0))
+    n = if p is int: f64(p) else: p
+    n = max(n, 0.0)
+    Insets(n, n, n, n)
+_hash = (parent: int, key: str, index: int) -> int:
+    h = parent * 0x100000001B3
+    if len(key) > 0:
+        h = (h xor 0x4B4559) * 0x100000001B3
+        loop b in bytes(key): h = (h xor int(b)) * 0x100000001B3
+    else: h = (h xor index) * 0x100000001B3
+    # zero is the absent-id sentinel
+    if h == 0: return 1
+    h
+_intersection = (a: Rect, b: Rect) -> Rect:
+    x = max(a.x, b.x)
+    y = max(a.y, b.y)
+    Rect(x, y, max(min(a.x + a.w, b.x + b.w) - x, 0), max(min(a.y + a.h, b.y + b.h) - y, 0))
+
+_live_input = () -> Input:
+    v = Input(pointer = mouse_pos(), origin = hud_layout_press_origin(), down = mouse_down(.left), pressed = mouse_pressed(.left), released = mouse_released(.left), tap = hud_layout_tap(), claimed = not hud_layout_can_scroll(), touch = touch_input(), wheel = mouse_wheel(), dt = frame_time())
+    stick = vec2(gamepad_axis(0), gamepad_axis(1))
+    if not ui_typing() and not rebinding():
+        if key_typed(.left) or gamepad_pressed(.left): v.nav.x = -1
+        if key_typed(.right) or gamepad_pressed(.right): v.nav.x = 1
+        if key_typed(.up) or gamepad_pressed(.up): v.nav.y = -1
+        if key_typed(.down) or gamepad_pressed(.down): v.nav.y = 1
+        if stick.x < -0.6 and _root.stick.x >= -0.6: v.nav.x = -1
+        if stick.x > 0.6 and _root.stick.x <= 0.6: v.nav.x = 1
+        if stick.y < -0.6 and _root.stick.y >= -0.6: v.nav.y = -1
+        if stick.y > 0.6 and _root.stick.y <= 0.6: v.nav.y = 1
+        v.activate = key_pressed(.enter) or key_pressed(.space) or gamepad_pressed(.a)
+    _root.stick = stick
+    v
+
+_chain = (id: int, chain: mut {int: bool}):
+    k = id
+    loop k != 0:
+        chain[k] = true
+        if let i = _root.index.get(k): k = _root.boxes[i].parent
+        else: break
+
+_read_input = ():
+    global _hit, _root
+    _hit = 0
+    _hover_chain.clear()
+    _press_chain.clear()
+    # The boxes are in draw order: the last hit and its ancestors own the pointer.
+    loop b in _root.boxes:
+        if contains(b.hit, _events.pointer): _hit = b.id
+    press_at = _events.origin ?? _events.pointer
+    press_hit = 0
+    if _events.pressed:
+        loop b in _root.boxes:
+            if contains(b.hit, press_at): press_hit = b.id
+    if _render:
+        loop rt in _roots.values():
+            if rt.frame < frame_number() - 1 or rt.order <= _root.order: continue
+            loop b in rt.boxes:
+                if contains(b.hit, _events.pointer): _hit = 0
+                if _events.pressed and contains(b.hit, press_at): press_hit = 0
+                if b.focusable and b.hit.w > 0 and b.hit.h > 0:
+                    _events.nav = vec2()
+                    _events.activate = false
+    if _render and hud_layout_covered(_events.pointer, _root.panel_first, _root.panel_count): _hit = 0
+    if _render and _events.pressed and hud_layout_covered(press_at, _root.panel_first, _root.panel_count): press_hit = 0
+    if _events.pressed:
+        _root.capture = press_hit
+        _root.press_at = press_at
+        _root.dragging = false
+        _root.scroll_capture = 0
+        _root.thumb_drag = false
+        k = press_hit
+        loop k != 0:
+            i = _root.index[k]
+            b = _root.boxes[i]
+            if _root.focus == 0 and b.focusable: _root.focus = k
+            if b.focusable: _root.focus = k
+            if b.scrolling:
+                _root.scroll_capture = k
+                _root.scroll_origin = b.scroll
+                horizontal = b.axis == .horizontal
+                end = if horizontal: f64(b.screen.y + b.screen.h) else: f64(b.screen.x + b.screen.w)
+                point = if horizontal: f64(press_at.y) else: f64(press_at.x)
+                view = b.view_size
+                screen_view = if horizontal: f64(b.view.w) else: f64(b.view.h)
+                origin = if horizontal: f64(b.view.x) else: f64(b.view.y)
+                if b.content > view and point >= end - 12.0:
+                    _root.thumb_drag = true
+                    _root.dragging = true
+                    thumb = max(view * view / b.content, min(24.0, view))
+                    pos = (view - thumb) * b.scroll / (b.content - view)
+                    at = (if horizontal: f64(press_at.x) else: f64(press_at.y)) - origin
+                    grab = at * view / max(screen_view, 1.0) - pos
+                    _root.thumb_grab = if grab >= 0.0 and grab <= thumb: grab else: thumb / 2.0
+                    if _render: claim_press()
+                break
+            k = b.parent
+    if _hit != 0: _chain(_hit, _hover_chain)
+    if _root.capture != 0: _chain(_root.capture, _press_chain)
+    if not _events.tap or _events.claimed: _press_chain.clear()
+    if _root.thumb_drag: _press_chain.clear()
+    # Claim scrolling before returning any button events, including on the release frame.
+    d = _events.pointer - _root.press_at
+    if _root.scroll_capture != 0 and (_events.down or _events.released) and length(d) > 6.0 and (not _events.claimed or _root.dragging):
+        _root.dragging = true
+        _press_chain.clear()
+        if _render: claim_press()
+    if not _events.down and not _events.released:
+        _root.capture = 0
+        _root.scroll_capture = 0
+        _root.dragging = false
+    if _render and _events.down and _press_chain.len() > 0: hud_layout_tap(true)
+    if not _root.index.contains(_root.focus): _root.focus = 0
+    else if not _root.boxes[_root.index[_root.focus]].focusable: _root.focus = 0
+    else if _root.boxes[_root.index[_root.focus]].hit.w <= 0 or _root.boxes[_root.index[_root.focus]].hit.h <= 0: _root.focus = 0
+    if _root.focus == 0:
+        loop b in _root.boxes:
+            if b.focusable and b.hit.w > 0 and b.hit.h > 0:
+                _root.focus = b.id
+                break
+    if _events.nav != vec2(0, 0) and _root.focus != 0:
+        p = center(_root.boxes[_root.index[_root.focus]].hit)
+        best = 1e30
+        chosen = _root.focus
+        loop b in _root.boxes:
+            if not b.focusable or b.hit.w <= 0 or b.hit.h <= 0: continue
+            d = center(b.hit) - p
+            forward = f64(dot(d, _events.nav))
+            if forward <= 0.0: continue
+            side = abs(f64(d.x * _events.nav.y - d.y * _events.nav.x))
+            score = forward + side * 3.0 + side * side / forward
+            if score < best:
+                best = score
+                chosen = b.id
+        _root.focus = chosen
+
+_previous = (id: int, enabled: bool = true) -> State:
+    if let i = _root.index.get(id):
+        over = _hover_chain.contains(id)
+        held = enabled and _press_chain.contains(id) and (_events.down or _events.released)
+        focus = enabled and _root.focus == id
+        return State(_root.boxes[i].rect, over, held and _events.down, enabled and ((held and over and _events.released) or (focus and _events.activate)), focus)
+    State()
+
+_add = (node: _Node) -> int:
+    global _nodes
+    if not _open: panic("layout elements belong inside screen() or at()")
+    if _drawing: panic("a slot draws into its solved box; it cannot add layout elements")
+    n = node
+    n.parent = _parent
+    i = _nodes.len()
+    if _parent >= 0:
+        n.id = _hash(_nodes[_parent].id, n.key, _nodes[_parent].count)
+        _nodes[_parent].count += 1
+        last = _nodes[_parent].last
+        if last >= 0: _nodes[last].next = i
+        else: _nodes[_parent].first = i
+        _nodes[_parent].last = i
+    else: n.id = _hash(0x4C41594F5554, _root_key, 0)
+    if _seen.contains(n.id): panic("duplicate layout key '{n.key}' within a parent")
+    _seen[n.id] = true
+    n.state = _previous(n.id, n.enabled)
+    _nodes.push(n)
+    i
+
+_children = (node: _Node, children: () -> void) -> State:
+    global _parent
+    i = _add(node)
+    was = _parent
+    _parent = i
+    children()
+    _parent = was
+    _nodes[i].state
+
+# Root in any Rect. render=false solves without a window and still runs slot callbacks.
+# Give different roots distinct keys. Rebuild each root once per frame; keys inside it are
+# scoped to their parent. input overrides live input for headless tests.
+at = (r: Rect, children: () -> void, pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, key: str = "", render: bool = true, input: Input? = none) -> State:
+    global _open, _drawing, _render, _root, _root_key, _events, _parent, _last_frame, _root_number, solve_seconds
+    if _open: panic("layout roots cannot nest; use row/column inside a root")
+    if _last_frame != frame_number():
+        _last_frame = frame_number()
+        _root_number = 0
+    _root_key = key
+    ordinal = _root_number
+    if render: _root_number += 1
+    if len(key) == 0:
+        _root_key = "root {ordinal}"
+    _root = _roots.get(_root_key) ?? _Root()
+    _roots.remove(_root_key)
+    # A root hidden for a frame opens without stale pointer/focus events.
+    if render and _root.frame < frame_number() - 1:
+        _root.boxes.clear()
+        _root.index.clear()
+        _root.capture = 0
+        _root.focus = 0
+    _render = render
+    _events = input ?? (if render: _live_input() else: Input())
+    _read_input()
+    _nodes.clear()
+    _seen.clear()
+    _floats.clear()
+    _parent = -1
+    _open = true
+    i = _add(_Node(width = fixed(f64(r.w)), height = fixed(f64(r.h)), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross))
+    _nodes[i].rect = r
+    _parent = i
+    children()
+    _parent = -1
+    t = if profile: time() else: 0.0
+    _solve()
+    if profile: solve_seconds = time() - t
+    _drawing = true
+    result = _nodes[0].state
+    _root.spare.clear()
+    _root.spare_index.clear()
+    if render: _root.panel_first = hud_layout_layer()
+    _draw_tree(0)
+    # Floating subtrees (including nested floating subtrees) come after the normal tree.
+    j = 0
+    loop j < _floats.len():
+        _draw_tree(_floats[j])
+        j += 1
+    if render: _root.panel_count = hud_layout_layer() - _root.panel_first
+    boxes = _root.boxes
+    _root.boxes = _root.spare
+    _root.spare = boxes
+    index = _root.index
+    _root.index = _root.spare_index
+    _root.spare_index = index
+    _root.frame = frame_number()
+    _root.order = ordinal
+    _roots[_root_key] = _root
+    _root = _Root()
+    _drawing = false
+    _open = false
+    # Release captured locals now; retaining callbacks until next frame can retain a world.
+    _nodes.clear()
+    result
+
+# Root covering the visible area in the current drawing transform's units.
+screen = (children: () -> void, pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, key: str = "") -> State:
+    at(hud_layout_visible(), children, pad = pad, gap = gap, align = align, cross = cross, key = key)
+
+# Last solved state for a key, or none if absent. Keys may repeat under different parents:
+# use a unique key for queries (identity itself always includes the parent).
+get = (key: str, root: str = "root 0") -> State?:
+    if _open:
+        loop b in _root.boxes:
+            if b.key == key: return _previous(b.id)
+        return none
+    if let rt = _roots.get(root):
+        loop b in rt.boxes:
+            if b.key == key:
+                st = b.state
+                st.rect = b.rect
+                return st
+    none
+
+# Last solved rectangle by key. During description this is the previous frame's rectangle.
+bounds = (key: str, root: str = "root 0") -> Rect?:
+    if let s = get(key, root): return s.rect
+    none
+
+# Last solved clipping rectangle by key (for headless inspection of scroll containers).
+clip_bounds = (key: str, root: str = "root 0") -> Rect?:
+    if let rt = _roots.get(root):
+        loop b in rt.boxes:
+            if b.key == key: return b.clip
+    none
+
+# True over any layout box from the last description. Rendered boxes also count in hud_hovered.
+hovered = () -> bool:
+    if _open: return _hit != 0
+    p = mouse_pos()
+    loop rt in _roots.values():
+        if rt.frame < frame_number() - 1: continue
+        loop b in rt.boxes:
+            if contains(b.hit, p): return true
+    false
+
+# Forget cached roots and release their buffers (for a UI that is closed permanently).
+reset = ():
+    if _open: panic("layout reset() belongs outside a root")
+    _roots.clear()
+
+# Programmatically scroll a keyed container, clamped against its current content on solving.
+scroll_to = (key: str, offset: f64, root: str = "root 0"):
+    if _open: panic("call scroll_to() before describing the root")
+    if let rt = _roots.get(root):
+        loop i in [0..rt.boxes.len()):
+            if rt.boxes[i].key == key:
+                rt.boxes[i].scroll = max(offset, 0.0)
+                rt.boxes[i].speed = 0.0
+        _roots[root] = rt
+
+_dimension = (i: int, x: bool) -> f64: if x: _geometry[i].w else: _geometry[i].h
+_minimum = (i: int, x: bool) -> f64: if x: _geometry[i].min_w else: _geometry[i].min_h
+_spec = (i: int, x: bool) -> Sizing: if x: _geometry[i].width else: _geometry[i].height
+_set_dimension = (i: int, x: bool, v: f64):
+    if x: _geometry[i].w = v
+    else: _geometry[i].h = v
+_pad_total = (n: _Node, x: bool) -> f64: if x: n.pad.left + n.pad.right else: n.pad.top + n.pad.bottom
+_along = (n: _Node, x: bool) -> bool: (n.axis == .horizontal) == x
+
+_intrinsic = (x: bool):
+    i = _nodes.len() - 1
+    loop i >= 0:
+        s = _spec(i, x)
+        # Fixed and percent dimensions do not depend on contents. In particular, do not
+        # aggregate a fixed-height row's children only to replace that height afterwards.
+        if s.kind == .fixed or s.kind == .percent:
+            v = if s.kind == .fixed: s.value else: 0.0
+            if x: _geometry[i].min_w = v
+            else: _geometry[i].min_h = v
+            _set_dimension(i, x, v)
+            i -= 1
+            continue
+        want = if x: _geometry[i].natural_w else: _geometry[i].natural_h
+        small = if x: _geometry[i].min_w else: _geometry[i].min_h
+        if _geometry[i].first < 0:
+            padding = if x: _geometry[i].pad.left + _geometry[i].pad.right else: _geometry[i].pad.top + _geometry[i].pad.bottom
+            want += padding
+            small += padding
+        else:
+            n = _geometry[i]
+            along = _along(n, x)
+            count = 0
+            c = n.first
+            loop c >= 0:
+                if not _geometry[c].floating:
+                    dim = _dimension(c, x)
+                    mn = _minimum(c, x)
+                    if _spec(c, x).kind == .percent: dim = 0.0
+                    if along:
+                        want += dim
+                        small += mn
+                    else:
+                        want = max(want, dim)
+                        small = max(small, mn)
+                    count += 1
+                c = _geometry[c].next
+            gaps = if along: f64(max(count - 1, 0)) * n.gap else: 0.0
+            padding = _pad_total(n, x)
+            want += padding + gaps
+            small += padding + gaps
+            if n.scrolling and along: small = padding
+        small = clamp(small, s.min, s.max)
+        want = clamp(want, small, s.max)
+        if x: _geometry[i].min_w = small
+        else: _geometry[i].min_h = small
+        _set_dimension(i, x, want)
+        i -= 1
+
+_distribute = (p: int, x: bool):
+    if _geometry[p].first < 0: return
+    n = _geometry[p]
+    room = max(_dimension(p, x) - _pad_total(n, x), 0.0)
+    along = _along(n, x)
+    c = n.first
+    count = 0
+    used = 0.0
+    weight = 0.0
+    _scratch.clear()
+    loop c >= 0:
+        s = _spec(c, x)
+        v = _dimension(c, x)
+        mn = _minimum(c, x)
+        if s.kind == .percent: v = room * s.value
+        if _geometry[c].floating:
+            if s.kind == .grow: v = clamp(room, mn, s.max)
+        else if not along:
+            if s.kind == .grow or (n.cross == .stretch and s.kind == .fit): v = clamp(room, mn, s.max)
+            else if s.kind == .fit: v = max(mn, min(v, room))
+        else:
+            count += 1
+            if s.kind == .grow and s.value > 0.0:
+                _scratch.push(c)
+                weight += s.value
+                v = mn
+            else: used += v
+        _set_dimension(c, x, v)
+        c = _geometry[c].next
+    if not along: return
+    budget = room - used - f64(max(count - 1, 0)) * n.gap
+    if _scratch.len() == 0 and budget >= 0.0: return
+    # Weighted water filling. Choose the bound to fix from the total clamped share;
+    # clamping a minimum before a competing maximum can otherwise leave room unused.
+    loop _scratch.len() > 0 and weight > 0.0:
+        clamped = 0.0
+        loop ci in _scratch:
+            s = _spec(ci, x)
+            v = clamp(budget * s.value / weight, _minimum(ci, x), s.max)
+            _set_dimension(ci, x, v)
+            clamped += v
+        # The usual case: all shares fit their bounds. The available room is exhausted,
+        # so neither another allocation pass nor an overflow scan is needed.
+        if abs(clamped - budget) < 0.000001: return
+        found = false
+        loop j in [0.._scratch.len()):
+            c = _scratch[j]
+            s = _spec(c, x)
+            v = budget * s.value / weight
+            mn = _minimum(c, x)
+            if (clamped > budget and v < mn) or (clamped < budget and v > s.max):
+                v = clamp(v, mn, s.max)
+                _set_dimension(c, x, v)
+                budget -= v
+                weight -= s.value
+                _scratch[j] = _scratch[_scratch.len() - 1]
+                _scratch.pop()
+                found = true
+                break
+        if not found: break
+    # A scroll container lets its contents overflow on its main axis.
+    if n.scrolling: return
+    total = f64(max(count - 1, 0)) * n.gap
+    reducible = 0.0
+    largest = 0.0
+    _scratch.clear()
+    c = n.first
+    loop c >= 0:
+        if not _geometry[c].floating:
+            v = _dimension(c, x)
+            total += v
+            s = _spec(c, x)
+            if s.kind == .fit or s.kind == .grow:
+                _scratch.push(c)
+                reducible += v - _minimum(c, x)
+                largest = max(largest, v)
+        c = _geometry[c].next
+    overflow = total - room
+    if overflow <= 0.00001 or reducible <= 0.0: return
+    # Find a common ceiling for shrinkable sizes: the largest shrink first, down to minima.
+    # Bisection is bounded independently of the number of children (no quadratic sort).
+    lo = 0.0
+    hi = largest
+    target = min(overflow, reducible)
+    loop k in [0..32):
+        ceiling = (lo + hi) / 2.0
+        removed = 0.0
+        loop ci in _scratch: removed += max(_dimension(ci, x) - max(ceiling, _minimum(ci, x)), 0.0)
+        if removed > target: lo = ceiling
+        else: hi = ceiling
+    loop ci in _scratch: _set_dimension(ci, x, max(_minimum(ci, x), min(_dimension(ci, x), hi)))
+
+_solve = ():
+    global _geometry
+    # The private tree buffer is unique and never resized during these passes. Borrow it
+    # for numeric field access, avoiding repeated array ownership checks on every dimension.
+    # No managed fields are changed through this view; callbacks run after it is released.
+    _geometry = data(_nodes)
+    _intrinsic(true)
+    loop i in [0.._nodes.len()):
+        if _geometry[i].first >= 0: _distribute(i, true)
+    # Text is measured only after widths settle. Drawing uses the same wrap_text routine.
+    loop i in [0.._nodes.len()):
+        if _geometry[i].kind == .label and _geometry[i].wrap:
+            n = _geometry[i]
+            lines = wrap_text(n.text, n.w, n.size)
+            step = text_height("\n", n.size) - text_height("", n.size)
+            h = text_height("", n.size) + f64(max(lines.len() - 1, 0)) * step
+            _geometry[i].natural_h = h
+            _geometry[i].min_h = h
+    _intrinsic(false)
+    loop i in [0.._nodes.len()):
+        if _geometry[i].first >= 0: _distribute(i, false)
+    # A parent assigns each child's complete Rect. Leaves need no position pass of their own.
+    loop i in [0.._nodes.len()):
+        if _geometry[i].first >= 0 or _geometry[i].scrolling: _position(i)
+    _geometry = null
+
+_corner = (c: Corner) -> vec2:
+    match c:
+        top_left: vec2(0, 0)
+        top: vec2(0.5, 0)
+        top_right: vec2(1, 0)
+        left: vec2(0, 0.5)
+        center: vec2(0.5, 0.5)
+        right: vec2(1, 0.5)
+        bottom_left: vec2(0, 1)
+        bottom: vec2(0.5, 1)
+        bottom_right: vec2(1, 1)
+
+_position = (i: int):
+    n = _geometry[i]
+    along_w = n.axis == .horizontal
+    content = 0.0
+    count = 0
+    c = n.first
+    loop c >= 0:
+        if not _geometry[c].floating:
+            content += _dimension(c, along_w)
+            count += 1
+        c = _geometry[c].next
+    content += f64(max(count - 1, 0)) * n.gap
+    room = max(_dimension(i, along_w) - _pad_total(n, along_w), 0.0)
+    if n.scrolling:
+        off = 0.0
+        speed = 0.0
+        if let pi = _root.index.get(n.id):
+            off = _root.boxes[pi].scroll
+            speed = _root.boxes[pi].speed
+        dt = clamp(_events.dt, 0.0, 0.1)
+        if _events.pressed and _root.scroll_capture == n.id: speed = 0.0
+        limit = max(content - room, 0.0)
+        # Only the innermost scroll container under the pointer receives the wheel.
+        wheel_owner = 0
+        k = _hit
+        loop k != 0:
+            b = _root.boxes[_root.index[k]]
+            if b.scrolling: wheel_owner = k; break
+            k = b.parent
+        if wheel_owner == n.id and _events.wheel != 0.0:
+            off -= _events.wheel * 44.0
+            speed = 0.0
+        if _root.scroll_capture == n.id and _root.dragging and _events.down:
+            d = _events.pointer - _root.press_at
+            # A transformed UI's screen delta is converted using last frame's box ratio.
+            scale = 1.0
+            if let pi = _root.index.get(n.id):
+                b = _root.boxes[pi]
+                local = if along_w: f64(b.rect.w) else: f64(b.rect.h)
+                screen_size = if along_w: f64(b.screen.w) else: f64(b.screen.h)
+                if screen_size > 0.0: scale = local / screen_size
+            delta = (if along_w: f64(d.x) else: f64(d.y)) * scale
+            was = off
+            if _root.thumb_drag:
+                b = _root.boxes[_root.index[n.id]]
+                start = if along_w: f64(b.view.x) else: f64(b.view.y)
+                point = if along_w: f64(_events.pointer.x) else: f64(_events.pointer.y)
+                thumb = max(room * room / max(content, 1.0), min(24.0, room))
+                off = clamp(((point - start) * scale - _root.thumb_grab) / max(room - thumb, 1.0) * limit, 0.0, limit)
+            else: off = clamp(_root.scroll_origin - delta, 0.0, limit)
+            if dt > 0.0: speed = mix(speed, (off - was) / dt, 0.5)
+        else if not _events.down:
+            off += speed * dt
+            speed *= exp(-4.0 * dt)
+            if abs(speed) < 20.0 or off <= 0.0 or off >= limit: speed = 0.0
+            else if _render: request_redraw()
+        off = clamp(off, 0.0, limit)
+        _geometry[i].scroll = off
+        _geometry[i].speed = speed
+        _geometry[i].content = content
+        n = _geometry[i]
+    free = max(room - content, 0.0)
+    cursor = 0.0
+    gap = n.gap
+    if n.align == .center: cursor = free / 2.0
+    else if n.align == .end: cursor = free
+    else if n.align == .space_between and count > 1: gap += free / f64(count - 1)
+    if n.scrolling: cursor -= n.scroll
+    c = n.first
+    loop c >= 0:
+        cn = _geometry[c]
+        x = f64(n.rect.x) + n.pad.left
+        y = f64(n.rect.y) + n.pad.top
+        if cn.floating:
+            a = _corner(cn.anchor)
+            b = _corner(cn.attach)
+            x = f64(n.rect.x) + f64(a.x) * n.w - f64(b.x) * cn.w + f64(cn.offset.x)
+            y = f64(n.rect.y) + f64(a.y) * n.h - f64(b.y) * cn.h + f64(cn.offset.y)
+            # Floating boxes escape scroll clips, as tooltips and dropdowns do.
+            _geometry[c].clip = Rect(-1e20, -1e20, 2e20, 2e20)
+        else:
+            cross_room = max(_dimension(i, not along_w) - _pad_total(n, not along_w), 0.0)
+            extra = max(cross_room - _dimension(c, not along_w), 0.0)
+            side = 0.0
+            if n.cross == .center: side = extra / 2.0
+            else if n.cross == .end: side = extra
+            if along_w: x += cursor; y += side
+            else: y += cursor; x += side
+            cursor += _dimension(c, along_w) + gap
+            cp = n.clip
+            if n.scrolling: cp = _intersection(cp, Rect(x = n.rect.x + f32(n.pad.left), y = n.rect.y + f32(n.pad.top), w = f32(max(n.w - n.pad.left - n.pad.right, 0.0)), h = f32(max(n.h - n.pad.top - n.pad.bottom, 0.0))))
+            _geometry[c].clip = cp
+        _geometry[c].rect = Rect(x, y, cn.w, cn.h)
+        c = cn.next
+
+_draw_tree = (i: int) -> void:
+    n = _nodes[i]
+    r = n.rect
+    saved: (bool, vec4) = (false, vec4())
+    local_clip = n.clip.w < 1e20
+    if _render and local_clip: saved = hud_layout_clip(n.clip)
+    hit = _intersection(r, n.clip)
+    screen_rect = r
+    if _render:
+        screen_rect = hud_layout_transform(r)
+        if n.parent >= 0 and n.kind != .space: hit = hud_layout_box(r, true)
+    # The root is a coordinate space, not a box that captures the entire game screen.
+    if n.parent < 0 or n.kind == .space: hit = Rect()
+    view = Rect()
+    view_size = 0.0
+    if n.scrolling:
+        view = Rect(f64(r.x) + n.pad.left, f64(r.y) + n.pad.top, max(n.w - n.pad.left - n.pad.right, 0.0), max(n.h - n.pad.top - n.pad.bottom, 0.0))
+        view_size = if n.axis == .horizontal: f64(view.w) else: f64(view.h)
+        if _render: view = hud_layout_transform(view)
+    parent = if n.parent >= 0: _nodes[n.parent].id else: 0
+    _root.spare_index[n.id] = _root.spare.len()
+    _root.spare.push(_Box(id = n.id, parent = parent, key = n.key, rect = r, hit = hit, screen = screen_rect, view = view, view_size = view_size, clip = n.clip, focusable = n.focusable and n.enabled, scrolling = n.scrolling, axis = n.axis, scroll = n.scroll, speed = n.speed, content = n.content, state = n.state))
+    if _render and r.w > 0 and r.h > 0:
+        if n.color.w > 0:
+            if n.radius > 0.0: rect_rounded(f64(r.x), f64(r.y), f64(r.w), f64(r.h), n.radius, n.color)
+            else: rect(r, n.color)
+        if n.border.color.w > 0 and n.border.thickness > 0.0:
+            if n.radius > 0.0: rect_rounded_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), n.radius, n.border.thickness, n.border.color)
+            else: rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), n.border.thickness, n.border.color)
+        match n.kind:
+            .label:
+                if n.wrap: text_wrapped(n.text, vec2(r.x, r.y), f64(r.w), n.size, n.style.text, n.text_align)
+                else:
+                    x = f64(r.x)
+                    if n.text_align == .center: x += (f64(r.w) - text_width(n.text, n.size)) / 2.0
+                    else if n.text_align == .right: x += f64(r.w) - text_width(n.text, n.size)
+                    text(n.text, vec2(x, f64(r.y)), n.size, n.style.text)
+            .button: _draw_button(n)
+            .bar: hud_bar(r, n.amount, n.style.accent, n.style.panel)
+            .image: sprite(n.texture, vec2(r.x, r.y), vec2(r.w, r.h), n.style.text)
+            _: pass
+        if debug: rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, vec4(1, 0, 1, 0.7))
+    if n.kind == .slot:
+        if let draw = n.draw: draw(r)
+    if _render and local_clip: hud_layout_restore_clip(saved)
+    c = n.first
+    loop c >= 0:
+        if _nodes[c].floating: _floats.push(c)
+        else: _draw_tree(c)
+        c = _nodes[c].next
+    if _render and n.scrolling and n.content > 0.0:
+        if local_clip: saved = hud_layout_clip(n.clip)
+        horizontal = n.axis == .horizontal
+        room = (if horizontal: n.w else: n.h) - _pad_total(n, horizontal)
+        if n.content > room:
+            thumb = max(room * room / n.content, min(24.0, room))
+            pos = (room - thumb) * n.scroll / max(n.content - room, 1.0)
+            if horizontal: rect(f64(r.x) + n.pad.left + pos, f64(r.y + r.h) - 6.0, thumb, 4.0, n.style.border)
+            else: rect(f64(r.x + r.w) - 6.0, f64(r.y) + n.pad.top + pos, 4.0, thumb, n.style.border)
+        if local_clip: hud_layout_restore_clip(saved)
+
+_draw_button = (n: _Node):
+    r = n.rect
+    c = n.style.button
+    s = n.state
+    if n.selected or s.focused: c = n.style.hover
+    lit = s.hovered and (not _events.touch or (_events.down and _events.tap))
+    if n.enabled and lit:
+        c = n.style.hover
+        if s.pressed: c = n.style.pressed
+    rect(r, c)
+    edge = if n.selected or s.focused: n.style.accent else: n.style.border
+    rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, edge)
+    tc = if n.enabled: n.style.text else: n.style.disabled
+    size = min(n.style.text_size, f64(r.h) * 0.6)
+    text_centered(fit_text(n.text, max(f64(r.w) - 8.0, 0.0), size), center(r), size, tc)
+
+# Children from left to right.
+row = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "") -> State:
+    _children(_Node(axis = .horizontal, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style), children)
+
+# Children from top to bottom.
+column = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "") -> State:
+    _children(_Node(axis = .vertical, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style), children)
+
+# A column with padding and the current HUD panel background.
+panel = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 16, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = hud_style.panel, radius: f64 = 0.0, border: Border = Border(), key: str = "") -> State:
+    _children(_Node(axis = .vertical, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style), children)
+
+# A clipped container with wheel, drag and gliding, on its axis. Offset is kept by id.
+scroll = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", axis: Axis = .vertical) -> State:
+    _children(_Node(axis = axis, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style, scrolling = true), children)
+
+# Floating children attached to the parent: anchor is its point, at is this box's point. Drawn last, outside scroll clips.
+over = (children: () -> void, width: Size = fit(), height: Size = fit(), pad: Padding = 0, gap: f64 = 0.0, align: MainAlign = .start, cross: CrossAlign = .start, color: vec4 = vec4(), radius: f64 = 0.0, border: Border = Border(), key: str = "", anchor: Corner = .top_left, at: Corner = .top_left, offset: vec2 = vec2()) -> State:
+    _children(_Node(axis = .vertical, width = _sizing(width), height = _sizing(height), pad = _padding(pad), gap = max(gap, 0.0), align = align, cross = cross, color = color, radius = max(radius, 0.0), border = border, key = key, style = hud_style, floating = true, anchor = anchor, attach = at, offset = offset), children)
+
+# Text at its measured size; wrap breaks words at the final width, then determines height.
+# A wrapping label's minimum width is its longest unbreakable word (CJK characters may break).
+label = (s: str, size: f64 = hud_style.text_size, color: vec4 = hud_style.text, wrap: bool = false, align: Align = .left, width: Size = fit(), height: Size = fit(), key: str = "") -> void:
+    sz = max(size, 0.0)
+    w = text_width(s, sz)
+    mw = w
+    if wrap:
+        mw = 0.0
+        loop line in wrap_text(s, 0.0, sz): mw = max(mw, text_width(line, sz))
+    h = text_height(s, sz)
+    st = hud_style
+    st.text = color
+    _add(_Node(kind = .label, text = s, size = sz, wrap = wrap, text_align = align, width = _sizing(width), height = _sizing(height), key = key, natural_w = w, natural_h = h, min_w = mw, min_h = h, style = st))
+
+# A HUD-styled button. Answers from the preceding frame; false the first time it exists.
+button = (text: str, width: Size = fit(), height: Size = fit(), enabled: bool = true, selected: bool = false, key: str = "") -> bool:
+    sz = hud_style.text_size
+    i = _add(_Node(kind = .button, text = text, width = _sizing(width), height = _sizing(height), enabled = enabled, selected = selected, key = key, focusable = true, natural_w = text_width(text, sz) + 24.0, natural_h = sz * 2.0, min_w = 24.0, min_h = sz, style = hud_style))
+    _nodes[i].state.clicked
+
+# An empty box. A grow spacer takes the room left between its siblings.
+space = (width: Size = fit(), height: Size = fit(), key: str = "") -> void:
+    _add(_Node(kind = .space, width = _sizing(width), height = _sizing(height), key = key))
+
+# Filled from zero to one, with the HUD panel color behind it.
+bar = (amount: f64, color: vec4 = hud_style.accent, width: Size = grow(), height: Size = 12, back: vec4 = hud_style.panel, key: str = "") -> void:
+    st = hud_style
+    st.accent = color
+    st.panel = back
+    _add(_Node(kind = .bar, amount = amount, width = _sizing(width), height = _sizing(height), key = key, style = st))
+
+# A texture stretched into its solved box. Fits to the texture's pixel dimensions by default.
+image = (t: Texture, width: Size = fit(), height: Size = fit(), tint: vec4 = vec4(1, 1, 1, 1), key: str = "") -> void:
+    st = hud_style
+    st.text = tint
+    _add(_Node(kind = .image, texture = t, width = _sizing(width), height = _sizing(height), natural_w = f64(t.width), natural_h = f64(t.height), key = key, style = st))
+
+# Run draw at draw time with the solved Rect. Captured variables can be changed by hud_ widgets
+# inside it. focusable includes it in direction navigation; get(key) exposes its focus/click.
+slot = (draw: (Rect) -> void, width: Size = fit(), height: Size = fit(), focusable: bool = false, key: str = "") -> State:
+    i = _add(_Node(kind = .slot, width = _sizing(width), height = _sizing(height), focusable = focusable, key = key, draw = draw))
+    _nodes[i].state

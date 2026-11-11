@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `import layout as ui`: responsive rows, columns and panels, fit/grow/fixed/percent sizes,
+  wrapping labels, HUD-styled buttons, bars, images and draw-time slots for existing widgets.
+  Scroll containers clip, drag and glide; floating boxes attach to a parent's corners and draw
+  last. Stable keys keep input and scroll state when rows move; buttons and focusable slots
+  support direction navigation with keys and a gamepad. Solved boxes can be inspected headlessly.
 - HTTP: `flash` and `flashes` carry signed, one-time messages across a redirect; `flashes`
   clears the cookie on the response passed to it.
 - Fetch: opt-in `CookieJar` values keep cookies across requests and every redirect, matching
@@ -10,7 +15,6 @@
   gets 429. Trusted proxies use the forwarded client address, as rate limits do.
 - Editors and website highlighting recognise `build` as a keyword only on a `build:` line.
   The language server allows it as a name in rename, completion and document symbols.
-
 - Rollback netplay through a host sends one packet per peer per tick, combining unacknowledged
   inputs and stand-ins. Full mesh connections, including relay fallback, stay per pair.
   Receipt vectors and hashes are sent once per packet, and input text is shared across
