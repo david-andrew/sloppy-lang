@@ -5,6 +5,9 @@
 - Keyboard and gamepad layout navigation reaches controls beyond a scroll viewport, including
   nested and horizontal lists. Tab/shoulders traverse the complete tree and wrap; arrows prefer
   the nearest row before alignment instead of skipping offset buttons.
+- Network tests use OS-assigned ports so concurrent suites can share a machine. `net.port()`
+  and `net.tcp_port(server)` report bound listener ports; `http.port(listener = 0)` can report
+  each of several HTTP listeners, and a netplay session reports its UDP port with `s.port()`.
 - Layout has native sliders, switches, choices and text fields, with immediate value returns,
   keyed pointer capture and text editing, keyboard/gamepad adjustment, and Tab/shoulder focus
   navigation. Left/Right adjust the focused value control without moving to a neighboring box.

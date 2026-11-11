@@ -2,12 +2,24 @@
 """Networking (lib/net.jo): a server and a client built from tests/net, talking over this machine's
 loopback; with a browser at hand (Playwright's Chromium), also a web page's client.
 usage: tools/nettest.py [path/to/sloppy]"""
-import os, random, shutil, subprocess, sys, tempfile, time
+import os, shutil, socket, subprocess, sys, tempfile, time
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sloppy = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(root, "bin", "sloppy.exe" if os.name == "nt" else "sloppy")
 tmp = tempfile.mkdtemp(prefix="sloppy-nettest-")
-port = random.randrange(20000, 30000)        # (below the ports the system gives out for connections: 32768 up)
+# External programs without a port-reporting API (OpenSSL, the matchmaking/Netpong tools)
+# receive an available port at runtime. Our own fixtures keep listen(0) bound and report it.
+selected_ports = {8765}
+def free_port():
+    while True:
+        with socket.socket() as listener:
+            listener.bind(("0.0.0.0", 0))
+            chosen = listener.getsockname()[1]
+        if chosen not in selected_ports:
+            selected_ports.add(chosen)
+            return chosen
+
+port = free_port()
 env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"), NET_PORT=str(port))
 exe = ".exe" if os.name == "nt" else ""
 failed = 0
@@ -16,6 +28,29 @@ def build(name, *flags):
     out = os.path.join(tmp, name)
     subprocess.run([sloppy, "build", os.path.join(root, "tests", "net", name + ".jo"), "-o", out, *flags], check=True, env=env)
     return out
+
+def start_server(executable, run_env=None):
+    port_file = os.path.join(tmp, f"port-{start_server.number}")
+    start_server.number += 1
+    server_env = dict(env if run_env is None else run_env, NET_PORT="0", NET_PORT_FILE=port_file)
+    process = subprocess.Popen([executable], stdout=subprocess.PIPE, text=True, env=server_env)
+    end = time.monotonic() + 15.0
+    while time.monotonic() < end:
+        try:
+            with open(port_file) as f: chosen = int(f.read())
+            if chosen == 8765:
+                process.kill()
+                process.communicate()
+                return start_server(executable, run_env)
+            selected_ports.add(chosen)
+            return process, chosen
+        except (OSError, ValueError):
+            if process.poll() is not None:
+                raise RuntimeError(f"{executable} exited before publishing its port: {process.communicate()[0]}")
+            time.sleep(0.01)
+    process.kill()
+    raise RuntimeError(f"{executable} did not publish its listening port: {process.communicate()[0]}")
+start_server.number = 0
 
 WANT_SERVER = ["listening", "server: joined", "server: got msg 1", "server: got msg 2", "server: got msg 3", "server: left"]
 WANT_CLIENT = ["client: joined 1", "client: echo msg 1", "client: echo msg 2", "client: echo msg 3", "client: big 300000 7 7", "client: left"]
@@ -41,17 +76,17 @@ def check(name, got, want):
 server = build("server") + exe
 client = build("client") + exe
 for host in ["localhost", "127.0.0.1"]:
-    s = subprocess.Popen([server], stdout=subprocess.PIPE, text=True, env=env)
-    time.sleep(0.5)
+    s, port = start_server(server)
+    env["NET_PORT"] = str(port)
     c = subprocess.run([client], capture_output=True, text=True, env=dict(env, NET_HOST=host), timeout=60)
     s_out = s.communicate(timeout=60)[0]
     check(f"native client ({host})", c.stdout, WANT_CLIENT)
     check(f"native server ({host})", s_out, WANT_SERVER)
-    port += 1
+    port = free_port()
     env["NET_PORT"] = str(port)
 
 # tools/netpong_relay.py (Python): the first player hosts, the second is the guest, messages pass
-port += 1
+port = free_port()
 env["NET_PORT"] = str(port)
 player = build("relay_player") + exe
 dummy = os.path.join(tmp, "page.html")
@@ -136,7 +171,7 @@ check("invite screens: the friend", b.stdout, ["join: connected, inviter false, 
 # back; and the server out of reach
 rv_bin = os.path.join(tmp, "rendezvous")
 subprocess.run([sloppy, "build", os.path.join(root, "tools", "rendezvous.jo"), "-o", rv_bin], check=True, env=env)
-port += 1
+port = free_port()
 rv_port = port
 def rendezvous(at):
     r = subprocess.Popen([rv_bin + exe], stdout=subprocess.DEVNULL, env=dict(env, PORT=str(at), ROOMS=os.path.join(tmp, f"rooms{at}.txt")))
@@ -173,7 +208,7 @@ time.sleep(2)
 h = room_game(rd, "host", ROLE="host")
 check("a room whose host has gone: the friend is told, and joins when it is back", output(a), ["amy: told wait host", "amy got: hello from host"])
 output(h)
-l = room_game(rd, "look", ROLE="look", SLOPPY_SERVER=f"ws://127.0.0.1:{rv_port + 1}")
+l = room_game(rd, "look", ROLE="look", SLOPPY_SERVER=f"ws://127.0.0.1:{free_port()}")
 check("a room with the server out of reach says so", output(l), ["look: true, said it cannot be reached"])
 # play with anybody: the first to ask hosts a public room and the next two are put in it; one who
 # asks while a public room is busy hosts another; and the server's side of it, spoken to directly
@@ -201,7 +236,7 @@ rp = build("rv_public") + exe
 check("play with anybody: the server's public rooms", subprocess.run([rp], capture_output=True, text=True, env=dict(env, SLOPPY_SERVER=f"ws://127.0.0.1:{rv_port}"), timeout=60).stdout,
       ["a: public host", "b: true asking", "a: guest", "c: public host true", "b: true asking", "c: guest", "d: true"])
 rv.kill()
-port += 2
+port = free_port()
 env["NET_PORT"] = str(port)
 
 # TLS (lib/tls.jo) against OpenSSL's own server: a test authority made here (P-256, with an
@@ -266,7 +301,7 @@ if openssl:
     tenv = dict(env, SLOPPY_CA_FILE=os.path.join(td, "trusted.pem"))
     def s_server(leaf, *more, chain=None):
         global port
-        port += 1
+        port = free_port()
         args = [openssl, "s_server", "-accept", f"127.0.0.1:{port}", "-cert", leaf + ".pem", "-key", leaf + ".key", "-www", "-quiet", *more]
         if chain: args += ["-cert_chain", chain + ".pem"]
         s = subprocess.Popen(args, cwd=td, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -344,21 +379,18 @@ if openssl:
                 threading.Thread(target=pump, args=(b, tc), daemon=True).start()
         threading.Thread(target=serve, daemon=True).start()
         return ls
-    port += 1
-    ws_port = port
-    port += 1
-    proxy = tls_proxy(port, ws_port)
-    s = subprocess.Popen([server], stdout=subprocess.PIPE, text=True, env=dict(env, NET_PORT=str(ws_port)))
-    time.sleep(0.5)
+    s, ws_port = start_server(server)
+    proxy = tls_proxy(0, ws_port)
+    port = proxy.getsockname()[1]
     c = subprocess.run([client], capture_output=True, text=True, env=dict(tenv, NET_HOST=f"wss://localhost:{port}"), timeout=60)
     s_out = s.communicate(timeout=60)[0]
     proxy.close()
     check("wss://, through a TLS proxy: the client", c.stdout, WANT_CLIENT)
     check("wss://, through a TLS proxy: the server", s_out, WANT_SERVER)
-    port += 1
+    port = free_port()
     rvs_port = port
-    port += 1
-    proxy = tls_proxy(port, rvs_port)
+    proxy = tls_proxy(0, rvs_port)
+    port = proxy.getsockname()[1]
     rv = rendezvous(rvs_port)
     rd = os.path.join(tmp, "room_wss")
     os.makedirs(os.path.join(rd, "host", "room_game"))
@@ -369,7 +401,7 @@ if openssl:
     check("a room through a matchmaking server at wss://: a friend", output(a), ["amy got: hello from host"])
     rv.kill()
     proxy.close()
-    port += 1
+    port = free_port()
     env["NET_PORT"] = str(port)
 else: print("(no openssl with TLS 1.3: TLS is not tried against it)")
 # net.fetch over plain HTTP, against a server here (Python's): methods, headers and a body, chunks,
@@ -407,8 +439,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200, b"slow answer")
         else: self.reply(404, b"no such page")
     do_GET = do_POST = do_PUT = do_HEAD = answer
-port += 1
-httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+port = free_port()
+httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+port = httpd.server_port
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 fetcher = build("http_fetch") + exe
 r = subprocess.run([fetcher], capture_output=True, text=True, env=dict(env, NET_PORT=str(port), NET_DIR=tmp), timeout=60)
@@ -428,7 +461,7 @@ check("net.fetch over HTTP", r.stdout, [
     "frames while it came: true",
     "fetch_result: 200 slow answer",
     "two at once: 200 one two three, 200 slow answer"])
-port += 1
+port = free_port()
 env["NET_PORT"] = str(port)
 # net.fetch_all: many at once, at most at_once at a time (the server counts them), a 503 and a
 # 429 with Retry-After asked again, a refused connection given up after its retries; and what a
@@ -467,8 +500,9 @@ class ManyHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/loop": self.reply(302, b"", [("Location", "/loop")])
         elif self.path == "/huge": self.reply(200, b"", [("X-Big", "y" * 200000)])
         else: self.reply(404, b"no such page")
-port += 1
-httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), ManyHandler)
+port = free_port()
+httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ManyHandler)
+port = httpd.server_port
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 r = subprocess.run([build("http_fetch_all") + exe], capture_output=True, text=True, env=dict(env, NET_PORT=str(port)), timeout=60)
 httpd.shutdown()
@@ -482,7 +516,7 @@ check("net.fetch_all, and a redirect loop's and too large headers' messages", r.
     "at once: 3",
     "loop: 302 too many redirects (a loop?): 5 followed, and this one to /loop",
     "huge: 0 the server's headers are too large: over 64 KB, the most net.fetch takes"])
-port += 1
+port = free_port()
 env["NET_PORT"] = str(port)
 
 # an HTTP server of lib/http.jo (tests/net/http_server.jo), spoken to as browsers and curl do:
@@ -502,9 +536,7 @@ def http_server_test(hs_exe, hport, upstream_port):
     with open(os.path.join(site, "site", ".secret"), "w", newline="") as f: f.write("no\n")
     with open(os.path.join(site, "site", "sub", "index.html"), "w", newline="") as f: f.write("<p>sub</p>\n")
     with open(os.path.join(site, "site", "big.bin"), "wb") as f: f.write(bytes(20 << 20))
-    srv = subprocess.Popen([hs_exe], stdout=subprocess.PIPE, text=True,
-                           env=dict(env, NET_PORT=str(hport), NET_DIR=site, NET_UPSTREAM=f"http://127.0.0.1:{upstream_port}/slow"))
-    wait_port(hport)
+    srv, hport = start_server(hs_exe, dict(env, NET_DIR=site, NET_UPSTREAM=f"http://127.0.0.1:{upstream_port}/slow"))
     def ok(what, cond, detail=""):
         global failed
         if cond: print(f"ok   http server: {what}")
@@ -719,15 +751,15 @@ class Upstream(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-port += 1
-up_port = port
-up = http.server.ThreadingHTTPServer(("127.0.0.1", up_port), Upstream)
+port = free_port()
+up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+up_port = up.server_port
 threading.Thread(target=up.serve_forever, daemon=True).start()
-port += 1
+port = free_port()
 http_server = build("http_server") + exe
 http_server_test(http_server, port, up_port)
 up.shutdown()
-port += 1
+port = free_port()
 env["NET_PORT"] = str(port)
 
 # the real thing, where SLOPPY_TEST_LIVE=1 (it needs the internet): https://sloppy-lang.org, and the
@@ -752,8 +784,8 @@ if os.path.isdir(pw):
                 if os.path.exists(p): shell = p
 if shell:
     page = build("web_client", "--target", "wasm") + ".html"
-    s = subprocess.Popen([server], stdout=subprocess.PIPE, text=True, env=env)
-    time.sleep(0.5)
+    s, port = start_server(server)
+    env["NET_PORT"] = str(port)
     # (the page reads NET_PORT from its address)
     b = subprocess.Popen([shell, "--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0",
                           "file://" + page + f"?NET_PORT={port}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -764,12 +796,12 @@ if shell:
     b.kill()
     check("web client (in Chromium)", s_out, WANT_SERVER[:5] + ["server: got big ok", "server: left"])
     # rollback netplay through a relay: a native player and a web page's
-    port += 1
+    port = free_port()
     env["NET_PORT"] = str(port)
     host = build("np_host") + exe
     page = build("np_page", "--target", "wasm") + ".html"
-    h = subprocess.Popen([host], stdout=subprocess.PIPE, text=True, env=env)
-    time.sleep(0.5)
+    h, port = start_server(host)
+    env["NET_PORT"] = str(port)
     b = subprocess.Popen([shell, "--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0",
                           "file://" + page + f"?NET_PORT={port}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try: h_out = h.communicate(timeout=60)[0]
@@ -779,12 +811,12 @@ if shell:
     b.kill()
     check("netplay with a web page (in Chromium)", h_out, ["host: played true", "host: compared true, desync -1"])
     # a client-server game: a native server, a web page's client
-    port += 1
+    port = free_port()
     env["NET_PORT"] = str(port)
     srv = build("cs_server") + exe
     page = build("cs_page", "--target", "wasm") + ".html"
-    h = subprocess.Popen([srv], stdout=subprocess.PIPE, text=True, env=env)
-    time.sleep(0.5)
+    h, port = start_server(srv)
+    env["NET_PORT"] = str(port)
     b = subprocess.Popen([shell, "--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0",
                           "file://" + page + f"?net_port={port}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try: h_out = h.communicate(timeout=60)[0]
@@ -794,12 +826,12 @@ if shell:
     b.kill()
     check("client and server with a web page (in Chromium)", h_out, ["server: hello page", "server: walked true"])
     # net.close's code and reason, to a web page and from it
-    port += 1
+    port = free_port()
     env["NET_PORT"] = str(port)
     srv = build("close_server") + exe
     page = build("close_page", "--target", "wasm") + ".html"
-    h = subprocess.Popen([srv], stdout=subprocess.PIPE, text=True, env=env)
-    wait_port(port)
+    h, port = start_server(srv)
+    env["NET_PORT"] = str(port)
     b = subprocess.Popen([shell, "--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0",
                           "file://" + page + f"?net_port={port}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try: h_out = h.communicate(timeout=40)[0]
@@ -810,10 +842,9 @@ if shell:
     check("a close's code and reason, to a web page and from it (in Chromium)", h_out, ["listening",
         "server: page was told 4001 'the room is full', why 'the room is full'", "server: the page left with 4002 'bye from the page'"])
     # a web page's fetch (the browser's), from an HTTP server of lib/http.jo
-    port += 1
+    port = free_port()
     page = build("web_fetch", "--target", "wasm") + ".html"
-    h = subprocess.Popen([http_server], stdout=subprocess.PIPE, text=True, env=dict(env, NET_PORT=str(port), NET_DIR=tmp))
-    wait_port(port)
+    h, port = start_server(http_server, dict(env, NET_DIR=tmp))
     b = subprocess.Popen([shell, "--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0",
                           "file://" + page + f"?NET_PORT={port}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # (its lines as they come, for up to 30 seconds)
@@ -834,12 +865,12 @@ if shell:
     except (OSError, subprocess.TimeoutExpired): h.kill()
     check("a web page's fetch_start (in Chromium)", "\n".join(seen), ["listening", "server: page fetched 200 from the server"])
     # two web pages, straight to each other (WebRTC): the relay passes on only how they connect
-    port += 1
+    port = free_port()
     env["NET_PORT"] = str(port)
     relay = build("rtc_relay") + exe
     page = build("rtc_page", "--target", "wasm") + ".html"
-    r = subprocess.Popen([relay], stdout=subprocess.PIPE, text=True, env=env)
-    time.sleep(0.5)
+    r, port = start_server(relay)
+    env["NET_PORT"] = str(port)
     pages = [subprocess.Popen([shell, "--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0",
                                f"--user-data-dir={tmp}/browser{p}", "file://" + page + f"?NET_PORT={port}&PLAYER={p}"],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for p in range(2)]
@@ -861,7 +892,7 @@ if shell:
     # reload, a page joining by it, the host's page gone and back, a native program joining a
     # page's room, the server out of reach
     if shutil.which("node"):
-        port += 1
+        port = free_port()
         env["NET_PORT"] = str(port)
         rv = rendezvous(port)
         ui = os.path.join(tmp, "invite_ui")

@@ -5502,7 +5502,8 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `code_kind = (code: str) -> str`: what a code is: "invite" (from net.invite: for join_invite), "reply" (from join_invite: for accept_reply), or "" (not a code: cut short, or something else pasted); a link to an invite is one
 - `accept_reply = (peer: int, reply: str) -> bool`: the other player's reply to this side's invite; false when it is not a reply code
 - `turn_server = (url: str, user: str, password: str)`: a TURN server ("turn:host:port", or "host:port") with the user name and password it gives: the invites made after this also offer a path through it, a relay, for players whose networks allow none straight to each other (some mobile data, schools, offices). Your own (coturn), or a service's (some have a free tier); its password goes into every copy of the game. UDP only
-- `listen = (port: int, largest: int = 16 << 20, host: str = "") -> bool`: start a server on port (native programs); false if the port cannot be had. largest: the biggest message taken from the peers that connect (one bigger ends its connection, with code 1009: a public server's guard), and a peer that has not finished connecting in 10 seconds is let go. host: the address it is reached at, "" every one this machine has ("127.0.0.1": from this machine only). handshake(peer) tells how each peer asked to connect (its path, cookies, the web page's site); an http server (import http) takes WebSockets on its own port too
+- `listen = (port: int, largest: int = 16 << 20, host: str = "") -> bool`: start a server on port (0: one the system picks; port() reads it); false if the port cannot be had. largest: the biggest message taken from the peers that connect (one bigger ends its connection, with code 1009: a public server's guard), and a peer that has not finished connecting in 10 seconds is let go. host: the address it is reached at, "" every one this machine has ("127.0.0.1": from this machine only). handshake(peer) tells how each peer asked to connect (its path, cookies, the web page's site); an http server (import http) takes WebSockets on its own port too
+- `port = () -> int`: the server's port, including the one the system chose for listen(0); -1 when not listening
 - `stop_listening = ()`: stop taking new connections (the peers connected stay); listen starts again
 - `connect = (host: str, port: int = 0) -> int`: connect to a server: a peer, connecting in the background (joined or left arrive by receive); host is a name or address and port its port, or host is a ws:// or wss:// URL (port then unused)
 - `send = (peer: int, msg: u8[])`: send a message to a peer (nothing if it is not connected, or has gone): text goes as a text message (a string to a page's WebSocket), bytes as a binary one
@@ -5573,6 +5574,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 - `tcp_why = () -> str`: why the last tcp_connect or tls_connect gave -1
 - `trust_certificate = (pem: str) -> int`: a certificate authority to trust from now on, besides those the system trusts: its certificate as PEM text (what a .pem or .crt file holds, -----BEGIN CERTIFICATE----- ...), for servers whose certificates it signed (a test server's, a private network's); how many certificates were taken. The SLOPPY_CA_FILE environment variable names such a file for any program
 - `tcp_listen = (port: int, host: str = "", backlog: int = 511) -> int`: a server on port: connections come from tcp_accept; -1 if the port cannot be had. host: the address it is reached at, "" every one this machine has ("127.0.0.1": from this machine only); backlog: how many connections may wait to be accepted
+- `tcp_port = (server: int) -> int`: the port of a tcp_listen server (0 asks the system to choose), or -1 if closed/not a server
 - `tcp_accept = (server: int, wait: f64 = 0.0) -> int`: a connection made to the server (waiting up to `wait` seconds for one), or -1 if none came (or the server was closed meanwhile)
 - `tcp_address = (c: int) -> str`: the address a connection accepted by tcp_accept came from ("1.2.3.4"; "" for others)
 - `tcp_send = (c: int, data: u8[], wait: f64 = 30.0) -> bool`: all of data sent, waiting while the other side is slow to take it (up to `wait` seconds while it takes none); false if the connection has failed or closed, or nothing went for that long
@@ -5877,7 +5879,7 @@ assert(net.fetch("http://127.0.0.1:{http.port()}/todos/1").status == 200)
 - `handle = (r: Request) -> Response`: the answer the server gives a request
 - `handle = (method: str, target: str, body: str = "", headers: {str: str} = {}) -> Response`: the answer the server gives a request of that method, target, body and headers
 - `request = (method: str, target: str, body: str = "", headers: {str: str} = {}) -> Request`: a request as the server reads one a client sent: method, target ("/todos?done=true"), body and headers (as written: "Content-Type"), from 127.0.0.1
-- `port = () -> int`: the port the server listens on: listen's, or the one the system chose for listen(0) (a test's server, on a port no other program has); -1 when it does not listen
+- `port = (listener: int = 0) -> int`: the port the server listens on: listen's, or the one the system chose for listen(0) (a test's server, on a port no other program has). listener selects a listen() call, starting at 0; -1 when that listener does not exist
 
 ## SQLite databases
 
@@ -6126,6 +6128,7 @@ draw = ():
 #### Over UDP (native programs)
 
 - `udp[S, I] = (s: mut Session[S, I], port: int, addrs: (str, int)[])`: play over UDP: this machine listens on port, and each player p is at addrs[p] (this one's own entry is not used)
+- `port[S, I] = (s: Session[S, I]) -> int`: this session's UDP port, including one chosen by udp(0); -1 when it has no UDP socket
 
 #### Through a relay (web pages too)
 

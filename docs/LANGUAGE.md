@@ -1743,6 +1743,15 @@ value)` and read from `r.cookies`; `http.set_signed_cookie(res, name, value, sec
 bytes, kept outside the code. Set `http.secure_cookies = true` behind https. See
 [writing a server](START.md#writing-a-server) for routing, forms, middleware and deployment.
 
+For a local server without a fixed port, call `http.listen(0, host = "127.0.0.1")` and
+read `http.port()` while it stays open. Several `listen` calls create separate listeners;
+`http.port(1)` reads the second one. WebSocket servers have the same pattern with
+`net.listen(0)` and `net.port()`; raw TCP uses `s = net.tcp_listen(0)` and `net.tcp_port(s)`.
+UDP uses `net.udp(0)` and `net.udp_port(socket)`; a netplay session bound with `s.udp(0, addrs)`
+reports its port with `s.port()`. Each accessor returns -1 when its listener/socket does not
+exist. The OS chooses a free port while binding the socket, so callers need no
+probe-and-rebind step.
+
 A message for the next page goes on a redirect with `http.flash(res, message, secret,
 kind = "info") -> bool`. Several calls add messages in order. On the next request,
 `http.flashes(r, res, secret) -> http.Flash[]` reads them and clears their cookie on `res`:
