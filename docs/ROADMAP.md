@@ -246,7 +246,11 @@ safety net for changes here.
   add/mul/lerp use 37-39% fewer instructions, matrix math 32-35% fewer, particles 49% fewer.
   The cube vertex shader plus software projection drops 11%; dot keeps debug's addition
   order and vec3 keeps its 12-byte ABI. Remaining copies, addressing and matrix helper calls
-  leave a gap to C. See `bench/vmath/README.md` for counts, limits and validation.
+  leave a gap to C. ARM64 NEON now recovers the same expressions: vec4 add/mul/lerp
+  use 62-63% fewer guest instructions, matrix math 49-51% fewer, particles 69% fewer,
+  and the vertex shader plus projection 12.51% fewer under QEMU. It keeps ordered
+  sums, separate mul/add rounding, the vec3 ABI, and full 128-bit spills across calls.
+  See `bench/vmath/README.md` for counts, limits and validation.
   Known nonescaping function values now inline through small helpers in release builds:
   reduce, all, map and mapped sums are about level with loops; count/any/filter retain
   1.2-1.6x instruction gaps. Captured-state each improves 63% but shared cells still prevent

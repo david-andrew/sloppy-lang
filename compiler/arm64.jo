@@ -1,4 +1,4 @@
-# arm64 (AArch64) code generator: Linux on 64-bit ARM (`--target linux-arm64`).
+# arm64 (AArch64) code generator: Linux ARM64 and Apple Silicon macOS.
 #
 # The same IR as x64.jo and the same analysis (analyze: lifetimes, loops, calls); registers are
 # given by linear scan (a_allocate), a value without one lives in the frame and is loaded into a
@@ -8,13 +8,14 @@
 # The frame, addressed from sp (which does not move inside a function):
 #   [sp, sp + out)        arguments of calls that do not fit in registers
 #   [sp + out, + 16)      scratch (ppoll's timespec)
-#   then spilled values (8 bytes each), the slots, and the callee-saved registers this function
-#   uses; x29/x30 are saved above, x29 points at them.
+#   then spilled values (8 bytes for scalars, 16-byte aligned for VX), the slots, and
+#   the callee-saved registers this function uses; x29/x30 are saved above, x29 points at them.
 # Scratch registers: x9-x12 and x16/x17 (addresses, large offsets, indirect calls), d16-d18.
 # Float constants are read from after the function's code (ldr literal), or are fmov immediates.
 
 use 'util.jo'
 use 'ir.jo'
+use 'opt.jo'
 use 'lower.jo'
 use 'types.jo'
 use 'check.jo'
@@ -186,9 +187,63 @@ a_fmov_to = (ty: int, rd: int, fr: int):
     if ty == VS: w32(0x1E260000 | (fr << 5) | rd)
     else: w32(0x9E660000 | (fr << 5) | rd)
 
+# Whole-value f32 packing uses NEON .4s, with v16-v18 reserved as scratch just as
+# for scalar FP. No fused multiply/add or horizontal reassociation: debug rounds each
+# mul/add separately, and the packer extracts dot lanes in their original order.
+a_qmov = (rd: int, rn: int):
+    if rd != rn: a_rrr(0x4EA01C00, rd, rn, rn) # mov vD.16b, vN.16b (orr)
+a_dup = (rd: int, rn: int, lane: int): w32(0x4E040400 | (lane << 19) | (rn << 5) | rd)
+
+a_vbin = (ins: Ins):
+    d = int(ins.dst)
+    k = int(ins.c)
+    ty = int(ins.ty)
+    sty = VX
+    if ty == VS and k == VP_CABS: sty = VS
+    fa = a_fsrc(int(ins.a), 16, sty)
+    fd = a_fdst(d, 18)
+    if k < VP_SHUFFLE:
+        fb = a_fsrc(int(ins.b), 17, VX)
+        if k == 4 or k == 5:
+            # Library min/max select b on equality or unordered. NEON fmin/fmax have
+            # different NaN/zero rules, so use ordered comparison and bit selection.
+            if k == 4: a_rrr(0x6EA0E400, 18, fb, fa) # fcmgt b,a: a < b
+            else: a_rrr(0x6EA0E400, 18, fa, fb)
+            a_rrr(0x6E601C00, 18, fa, fb)            # bsl mask,a,b
+            a_qmov(fd, 18)
+        else:
+            base = [0x4E20D400, 0x4EA0D400, 0x6E20DC00, 0x6E20FC00, 0, 0, 0x4E201C00, 0x4EA01C00, 0x6E201C00][k]
+            a_rrr(base, fd, fa, fb)
+    else if k == VP_EXTRACT: a_dup(fd, fa, int(ins.imm))
+    else if k == VP_SHUFFLE:
+        # Build in scratch so arbitrary permutations also work when src == dst.
+        mask = int(ins.imm)
+        a_dup(18, fa, mask & 3)
+        loop lane in [1..4):
+            src = (mask >> (lane * 2)) & 3
+            w32(0x6E040400 | (lane << 19) | (src << 13) | (fa << 5) | 18) # ins .s
+        a_qmov(fd, 18)
+    else if k == VP_CABS:
+        if ty == VS:
+            a_fmov_from(VS, 17, A_ZR)
+            a_fcmp(VS, fa, 17)
+            a_fun(AF_NEG, VS, 17, fa)
+            a_fcsel(VS, fd, 17, fa, AC_MI)
+        else:
+            w32(0x4EA0E800 | (fa << 5) | 17)         # fcmlt v17.4s,a,#0
+            w32(0x4F3F5400 | (17 << 5) | 17)        # shl v17.4s,#31
+            a_rrr(0x6E201C00, fd, fa, 17)           # eor sign only if negative
+    else:
+        base = 0x6EA1F800                          # fsqrt .4s
+        if k == VP_ABS: base = 0x4EA0F800           # fabs .4s
+        if k == VP_NEG: base = 0x6EA0F800           # fneg .4s
+        w32(base | (fa << 5) | fd)
+    a_sts(d, fd, ty)
+
 # ---------------- registers ----------------
 # A value in a register has vloc x0-x30 as themselves, v0-v31 as A_V + n. Values living across
-# a call get the callee-saved registers (x19-x28, d8-d15; those used are saved in the prologue)
+# a call get the callee-saved registers (x19-x28, d8-d15; saved in the prologue).
+# VX values across ordinary calls always spill: AAPCS64 does not preserve q8-q15.
 # or stay in the frame; the others take x8, x13-x15 and v19-v31, or x0-x7 and v0-v7 when no
 # call is anywhere in their lifetime (calls put their arguments there) and they are not
 # parameters (which arrive there). Linear scan over the intervals analyze makes (as x64.jo's
@@ -295,12 +350,13 @@ a_allocate = ():
             reg = -1
             if v < ir.nparams and w == 1 and arrive[v] >= 0 and free[arrive[v]] and not a_call_in(s, v_last[v]): reg = arrive[v]
             loop r in pool:
+                if vtype(v) == VX and w == 2: break # AAPCS64 preserves only d8-d15, never q
                 if reg >= 0: break
                 k = a_kind(base + r)
                 if free[base + r] and (w == 0 or (w == 1 and k != 1) or k == 2):
                     reg = base + r
                     break
-            if reg < 0:
+            if reg < 0 and not (vtype(v) == VX and w == 2):
                 # take the register of the active value cheapest to spill, if it is cheaper than v
                 best = -1
                 loop u in active:
@@ -357,14 +413,16 @@ a_dst = (v: int, r: int) -> int:
     if l >= 0 and l < A_V: return l
     r
 
-# float vreg v into fp register f
+# float or VX vreg v into fp/SIMD register f
 a_lds = (f: int, v: int, ty: int):
     l = vloc[v]
     sz = 8
     if ty == VS: sz = 4
+    if ty == VX: sz = 16
     if l == LOC_SPILL: a_mem(true, f, A_SP, vspill[v], sz, false, true)
     else if l >= A_V:
-        if l - A_V != f: a_fun(AF_MOV, ty, f, l - A_V)
+        if ty == VX: a_qmov(f, l - A_V)
+        else if l - A_V != f: a_fun(AF_MOV, ty, f, l - A_V)
     else if l == LOC_FCONST and vcval[v] == 0: a_fmov_from(ty, f, A_ZR)
     else if l == LOC_FCONST and a_fimm8(vcval[v], ty) >= 0: w32(0x1E201000 | (fty(ty) << 22) | (a_fimm8(vcval[v], ty) << 13) | f)
     else if l == LOC_FCONST:
@@ -380,9 +438,11 @@ a_sts = (v: int, f: int, ty: int):
     l = vloc[v]
     sz = 8
     if ty == VS: sz = 4
+    if ty == VX: sz = 16
     if l == LOC_SPILL: a_mem(false, f, A_SP, vspill[v], sz, false, true)
     else if l >= A_V:
-        if l - A_V != f: a_fun(AF_MOV, ty, l - A_V, f)
+        if ty == VX: a_qmov(l - A_V, f)
+        else if l - A_V != f: a_fun(AF_MOV, ty, l - A_V, f)
     else if l >= 0: a_fmov_to(ty, l, f)
 
 a_fsrc = (v: int, f: int, ty: int) -> int:
@@ -448,6 +508,7 @@ a_layout = ():
         nxt[v] = head[s]
         head[s] = v
     free: int[]
+    free_q: int[]
     active: int[]
     loop s in [0..n + 1):
         v = head[s]
@@ -456,12 +517,19 @@ a_layout = ():
         loop k < active.len():
             u = active[k]
             if v_last[u] < s - 1:
-                free.push(vspill[u])
+                if vtype(u) == VX: free_q.push(vspill[u])
+                else: free.push(vspill[u])
                 active[k] = active[active.len() - 1]
                 active.pop()
             else: k += 1
         loop v >= 0:
-            if free.len() > 0: vspill[v] = free.pop()
+            if vtype(v) == VX:
+                if free_q.len() > 0: vspill[v] = free_q.pop()
+                else:
+                    off = align_up(off, 16)
+                    vspill[v] = off
+                    off += 16
+            else if free.len() > 0: vspill[v] = free.pop()
             else:
                 vspill[v] = off
                 off += 8
@@ -848,6 +916,27 @@ a_mem_op = (load: bool, rt: int, ins: Ins, idx_v: int, size: int, signed: bool, 
         base = 9
     a_mem(load, rt, base, off, size, signed, fp)
 
+# Packed memory reads/writes exactly 8/12/16 bytes, even at unaligned addresses.
+# A vec3's fourth lane is zero and its ABI stays 12 bytes; no overread/overwrite.
+a_qmem = (load: bool, f: int, ins: Ins, idx: int, size: int):
+    let size = if size == 0: 16 else: size
+    if size != 12:
+        a_mem_op(load, f, ins, idx, size, false, true)
+        return
+    base, off = a_addr(int(ins.a), 9)
+    off += int(ins.imm)
+    if int(ins.c) & M_INDEX != 0:
+        ri = a_src(idx, 10)
+        if base == A_SP:
+            a_add_imm(9, A_SP, 0)
+            base = 9
+        a_add_lsl(9, base, ri, mem_scale(ins))
+        base = 9
+    a_mem(load, f, base, off, 8, false, true)
+    a_add_imm(16, base, off + 8)
+    if load: w32(0x4D408000 | (16 << 5) | f) # ld1 {vF.s}[2],[x16]
+    else: w32(0x4D008000 | (16 << 5) | f)   # st1 {vF.s}[2],[x16]
+
 # A comparison whose result only the next instruction uses, as an if's or a branch's condition
 # (or compared with 0 again), leaves it in the flags: a_pend is that value, a_pend_cc the
 # condition (cmp; b.lt rather than cmp; cset; cbnz)
@@ -1099,7 +1188,10 @@ arm64_ins = (pos: int, ins: Ins):
             if vloc[d] == LOC_NONE: return
             mode = int(ins.c)
             size = mode & 15
-            if mode & M_FLOAT != 0:
+            if vtype(d) == VX:
+                a_qmem(true, a_fdst(d, 18), ins, bb, size)
+                a_sts(d, a_fdst(d, 18), VX)
+            else if mode & M_FLOAT != 0:
                 fd = a_fdst(d, 16)
                 a_mem_op(true, fd, ins, bb, size, false, true)
                 a_sts(d, fd, vtype(d))
@@ -1109,7 +1201,8 @@ arm64_ins = (pos: int, ins: Ins):
                 a_st(d, rd)
         store:
             size = int(ins.c) & 15
-            if vtype(bb) != VI: a_mem_op(false, a_fsrc(bb, 16, vtype(bb)), ins, d, size, false, true)
+            if vtype(bb) == VX: a_qmem(false, a_fsrc(bb, 18, VX), ins, d, size)
+            else if vtype(bb) != VI: a_mem_op(false, a_fsrc(bb, 16, vtype(bb)), ins, d, size, false, true)
             else if vloc[bb] == LOC_CONST and vcval[bb] == 0: a_mem_op(false, A_ZR, ins, d, size, false, false)
             else: a_mem_op(false, a_src(bb, 11), ins, d, size, false, false)
         slot:
@@ -1159,6 +1252,14 @@ arm64_ins = (pos: int, ins: Ins):
                     loop j < size:
                         a_str(A_ZR, A_SP, slot_off[s] + j)
                         j += 8
+        vbin:
+            if vloc[d] != LOC_NONE: a_vbin(ins)
+        vsplat:
+            if vloc[d] == LOC_NONE: return
+            fa = a_fsrc(a, 16, VS)
+            fd = a_fdst(d, 18)
+            a_dup(fd, fa, 0)
+            a_sts(d, fd, VX)
         vop:
             # float vector arithmetic, one lane at a time: dst[i] = b[i] op c[i]
             k = int(ins.imm)
@@ -1261,6 +1362,7 @@ arm64_function = ():
     if code.len() % 8 != 0: w32(0)
     fn_addr[ir.fn_index] = code.len()
     fn_start = code.len()
+    if opt_release and not dbg_on: o_pack_f32()
     analyze()
     a_allocate()
     a_layout()

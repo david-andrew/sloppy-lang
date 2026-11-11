@@ -1,0 +1,119 @@
+# Backend regression fixture. Builds a standalone ARM64 executable; run via check_neon.py.
+# Synthetic VX lifetimes cover cases the final packing pass does not usually produce yet.
+use '../compiler/arm64.jo'
+use '../compiler/x64.jo'
+use '../compiler/ir.jo'
+use '../compiler/check.jo'
+use '../compiler/elf.jo'
+
+pressure = (calls: bool):
+    ir_begin("pressure", 0)
+    p = vreg(VI)
+    ir.nparams = 1
+    vs: int[]
+    loop i in [0..40):
+        v = vreg(VX)
+        vs.push(v)
+        ir.code.push(Ins(.load, VX, i32(v), i32(p), 0, M_FLOAT, i * 16))
+    if calls: ir.code.push(Ins(.call, VI, -1, 0, 0, 0, 1))
+    acc = vs[0]
+    loop i in [1..40):
+        v = vreg(VX)
+        ir.code.push(Ins(.vbin, VX, i32(v), i32(acc), i32(vs[i]), 0, 0))
+        acc = v
+    ir.code.push(Ins(.store, VX, -1, i32(p), i32(acc), M_FLOAT, 0))
+    ir.code.push(Ins(.ret, VI, -1, -1, 0, 0, 0))
+    arm64_function()
+    spilled = 0
+    loop v in vs:
+        if vloc[v] == LOC_SPILL:
+            assert(vspill[v] % 16 == 0)
+            loop u in vs:
+                if u != v and vloc[u] == LOC_SPILL: assert(vspill[u] != vspill[v])
+            spilled += 1
+        if calls: assert(vloc[v] == LOC_SPILL)
+    assert(spilled > 0)
+    # An AAPCS64 callee may destroy all caller-saved vectors and the upper d of
+    # v8-v15. Deliberately do so: a scalar-width save would lose lanes 2 and 3.
+    clobber = code.len()
+    loop r in [0..32):
+        if r >= 8 and r <= 15: w32(0x4E181C00 | (31 << 5) | r) # ins vR.d[1],xzr
+        else: a_rrr(0x6E201C00, r, r, r)                      # eor vR.16b,vR,vR
+    a_ret()
+    loop fix in a_call_fix: wr32(fix.0, 0x94000000 | ((clobber - fix.0) / 4))
+
+shapes = () -> int:
+    ir_begin("shapes", 0)
+    p = vreg(VI)
+    ir.nparams = 1
+    q = vreg(VX)
+    ir.code.push(Ins(.load, VX, i32(q), i32(p), 0, M_FLOAT, 0))
+    ir.code.push(Ins(.store, VX, -1, i32(p), i32(q), M_FLOAT | 12, 16))
+    short3 = vreg(VX)
+    ir.code.push(Ins(.load, VX, i32(short3), i32(p), 0, M_FLOAT | 12, 0))
+    reverse = vreg(VX)
+    ir.code.push(Ins(.vbin, VX, i32(reverse), i32(short3), 0, VP_SHUFFLE, 0x1b))
+    ir.code.push(Ins(.store, VX, -1, i32(p), i32(reverse), M_FLOAT, 32))
+    short2 = vreg(VX)
+    ir.code.push(Ins(.load, VX, i32(short2), i32(p), 0, M_FLOAT | 8, 0))
+    ir.code.push(Ins(.store, VX, -1, i32(p), i32(short2), M_FLOAT, 48))
+    permuted = vreg(VX)
+    ir.code.push(Ins(.vbin, VX, i32(permuted), i32(q), 0, VP_SHUFFLE, 0xb3))
+    ir.code.push(Ins(.store, VX, -1, i32(p), i32(permuted), M_FLOAT, 64))
+    ir.code.push(Ins(.store, VX, -1, i32(p), i32(q), M_FLOAT | 8, 80))
+    ir.code.push(Ins(.ret, VI, -1, -1, 0, 0, 0))
+    arm64_function()
+    fn_addr[0]
+
+main = ():
+    global code, a_call_fix, elf_machine, elf_page, target_arm64
+    target_arm64 = true
+    elf_machine = 183
+    elf_page = 65536
+    entries: int[]
+    loop calls in [false, true]:
+        # Each generated function has its own allocation/layout and call fixups.
+        a_call_fix = []
+        pressure(calls)
+        entries.push(fn_addr[0])
+    shape_entry = shapes()
+    start = code.len()
+    a_sub_imm(A_SP, A_SP, 640)
+    failures: int[]
+    loop entry in entries:
+        loop i in [0..160):
+            a_mov_imm(9, f32_bits(f32(i + 1)))
+            a_mem(false, 9, A_SP, i * 4, 4, false, false)
+        a_add_imm(0, A_SP, 0)
+        w32(0x94000000 | (((entry - code.len()) / 4) & 0x3FFFFFF))
+        loop lane in [0..4):
+            a_mem(true, 9, A_SP, lane * 4, 4, false, false)
+            a_mov_imm(10, f32_bits(f32(3160 + lane * 40)))
+            a_cmp(9, 10)
+            failures.push(code.len())
+            w32(0x54000000 | AC_NE)
+    loop i in [0..24):
+        value = if i < 4: i + 1 else: 99
+        a_mov_imm(9, f32_bits(f32(value)))
+        a_mem(false, 9, A_SP, i * 4, 4, false, false)
+    a_add_imm(0, A_SP, 0)
+    w32(0x94000000 | (((shape_entry - code.len()) / 4) & 0x3FFFFFF))
+    expected = [1, 2, 3, 4, 1, 2, 3, 99, 0, 3, 2, 1, 1, 2, 0, 0, 4, 1, 4, 3, 1, 2, 99, 99]
+    loop lane in [0..expected.len()):
+        a_mem(true, 9, A_SP, lane * 4, 4, false, false)
+        a_mov_imm(10, f32_bits(f32(expected[lane])))
+        a_cmp(9, 10)
+        failures.push(code.len())
+        w32(0x54000000 | AC_NE)
+    a_movz(0, 0, 0)
+    a_mov_imm(8, 93)
+    a_svc()
+    fail = code.len()
+    a_movz(0, 1, 0)
+    a_mov_imm(8, 93)
+    a_svc()
+    loop pos in failures: wr32(pos, 0x54000000 | (((fail - pos) / 4) << 5) | AC_NE)
+    assert(write_elf(args()[1], code, start, [], 0))
+    print("NEON pressure, call-preservation and partial-memory fixture built")
+
+main()
