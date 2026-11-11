@@ -1,0 +1,150 @@
+# requires: sloppy (batched rollback through a host, including loss, a late peer and stand-ins)
+import netplay
+
+struct Pad:
+    dx = 0
+struct Game:
+    pos: int[] = fill(0, 8)
+
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..pads.len()): g.pos[p] += pads[p].dx
+    g
+pad = (p: int, t: int) -> Pad: Pad(int(hash(t * 3 + p) % 3) - 1)
+
+ss: netplay.Session[Game, Pad][]
+loop p in [0..8):
+    s = netplay.session(Game(), step, players = 8, me = p)
+    # The same star as over([-1, a, b, ...]) / over([host, -1, ...]), without sockets.
+    if p != 0: s.__hub = 0
+    ss.push(s)
+link = netplay.Link(latency = 0.025, jitter = 0.01, loss = 0.12)
+packets = true
+window = true
+waits = 0
+stood_from = -1
+loop f in [0..1200):
+    now = f64(f) / 60.0
+    if f == 360:
+        stood_from = ss[0].__recv[7]
+        ss[0].stand_in(7, Pad(7))
+    loop p in [0..8):
+        if p == 7 and f >= 360: continue
+        # A late peer, then a slow one, then at the same speed as everyone else.
+        if p == 6 and (f < 60 or (f < 300 and f % 8 == 0)): continue
+        ss[p].play(pad(p, ss[p].tick + ss[p].delay))
+        if ss[p].waiting: waits += 1
+        out = ss[p].outgoing()
+        packets = packets and out.len() == (if p == 0: (if f < 360: 7 else: 6) else: 1)
+        loop o in out:
+            pk = netplay.__np_decode[Pad](o.1)!
+            loop r in pk.ranges: window = window and r.inputs.len() <= 64
+            link.send(o.0, o.1, now)
+    loop d in link.deliver(now): ss[d.0].receive(d.1)
+c = ss[0].tick - 1
+loop p in [0..7): c = min(c, min(ss[p].confirmed(), ss[p].tick) - 1)
+ref = Game()
+loop t in [0..c):
+    pads: Pad[]
+    loop p in [0..8):
+        pads.push(if t < 2: Pad() else if p == 7 and t >= stood_from: Pad(7) else: pad(p, t))
+    ref = step(ref, pads)
+same = true
+healthy = true
+rolled = false
+loop p in [0..7):
+    same = same and ss[p].__states[c % 128] == ref
+    healthy = healthy and ss[p].desync == -1 and ss[p].problem == "" and ss[p].tick > 900
+    rolled = rolled or ss[p].rollbacks > 10
+print("star: same", same, "healthy", healthy, "rolled", rolled, "waited", waits > 50)
+print("packets: one per connected peer", packets, "window", window, "stand-in", ref.pos[7] > 2000)
+
+# A client that computes a different game is caught at the host, then compares with the
+# host's hash itself too; no per-source hash needs to be repeated in every forwarded range.
+bad = (g: Game, pads: Pad[]) -> Game:
+    let g = step(g, pads)
+    g.pos[0] += 1
+    g
+ds: netplay.Session[Game, Pad][]
+loop p in [0..6):
+    s = netplay.session(Game(), if p == 5: bad else: step, players = 6, me = p)
+    if p != 0: s.__hub = 0
+    ds.push(s)
+loop _ in [0..180):
+    messages: (int, u8[])[]
+    loop p in [0..6):
+        ds[p].play(Pad())
+        messages.extend(ds[p].outgoing())
+    loop m in messages: ds[m.0].receive(m.1)
+print("star desync:", ds[0].desync > 0, ds[5].desync > 0, [loop s in ds if s.desync > 0: s.me].len() == 6)
+loop s in ds:
+    if s.desync >= 0: delete_file("netplay-desync-{s.desync}-p{s.me}.json")
+
+# Broken batches and the old wire format still report a problem, rather than being ignored.
+broken = netplay.session(Game(), step, players = 8, me = 0)
+broken.receive(bytes("NP3 1 0"))
+print("unreadable:", contains(broken.problem, "could not be read"))
+
+# Per-pair manual mesh still works, and a stand-in travels in the surviving player's batch.
+mesh: netplay.Session[Game, Pad][]
+loop p in [0..4): mesh.push(netplay.session(Game(), step, players = 4, me = p))
+single = true
+loop f in [0..240):
+    if f == 100: mesh[0].stand_in(3, Pad(9))
+    messages: (int, u8[])[]
+    loop p in [0..4):
+        if p == 3 and f >= 100: continue
+        mesh[p].play(Pad(p + 1))
+        out = mesh[p].outgoing()
+        if f < 100:
+            single = single and out.len() == 3
+            loop o in out: single = single and netplay.__np_decode[Pad](o.1)!.ranges.len() == 1
+        messages.extend(out)
+    loop m in messages: mesh[m.0].receive(m.1)
+cmesh = min(mesh[0].confirmed(), mesh[0].tick) - 1
+good = true
+loop p in [0..3):
+    good = good and mesh[p].__states[cmesh % 128] == mesh[0].__states[cmesh % 128] and mesh[p].desync < 0 and mesh[p].tick > 220
+print("mesh:", single, good)
+
+# Invalid counts, missing inputs, repeats without a predecessor, duplicate source ranges,
+# and malformed compressed bodies are all rejected without touching a session's input ring.
+head = "NP4 1 0 1 0 -1 -1 0 0 0 -1 0 2,2 -1"
+invalid = [
+    head + "\n2 65",
+    head + "\n2 1",
+    head + "\n2 1\n=",
+    head + "\n2 0\n2 0",
+    head + "\n3 1 0 2 0 0 0",
+    head + "\nzbroken"
+]
+reject = true
+loop b in invalid: reject = reject and netplay.__np_decode[Pad](bytes(b)) == none
+print("broken batches rejected:", reject)
+
+# A healthy peer's later hash must not erase a bad hash that arrived before the host had
+# hashed that tick itself. The receipt vector is still one per packet.
+early = netplay.session(Game(), step, players = 8, me = 0)
+loop p in [1..3):
+    sender = netplay.session(Game(), step, players = 8, me = p)
+    sender.play(Pad())
+    loop o in sender.outgoing():
+        if o.0 != 0: continue
+        pk = netplay.__np_decode[Pad](o.1)!
+        pk.check = 30
+        pk.hash = if p == 1: 0 else: 1
+        early.receive(netplay.__np_encode(pk))
+early.__hashes[30] = 1
+netplay.__np_compare(early, 30)
+print("early bad hash kept:", early.desync == 30)
+
+# A peer whose receipt is older than the resend window gets at most 64 recent inputs;
+# once it acknowledges more, only the remainder is sent.
+windowed = netplay.session(Game(), step, players = 2, me = 0)
+loop t in [2..202): netplay.__np_set(windowed, 0, t, Pad(t))
+netplay.__np_send(windowed)
+wpk = netplay.__np_decode[Pad](windowed.outgoing()[0].1)!
+windowed.__has[2] = 150
+netplay.__np_send(windowed)
+apk = netplay.__np_decode[Pad](windowed.outgoing()[0].1)!
+print("64-input window:", wpk.ranges[0].first == 138 and wpk.ranges[0].inputs.len() == 64 and wpk.ranges[0].inputs[0] == Pad(138), apk.ranges[0].first == 150 and apk.ranges[0].inputs.len() == 52)

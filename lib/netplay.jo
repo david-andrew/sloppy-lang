@@ -66,7 +66,6 @@ struct Session[S, I]:
     __last: I[]                     # each player's latest input (what is predicted for them)
     __pend: I[]                     # my inputs not yet given a tick (made while play waited), each change once
     __recv: int[]                   # each player's inputs below this tick have arrived (mine: are made)
-    __acked: int[]                  # each player has my inputs below this tick
     __their_tick: int[]             # the tick each said it was at
     __their_adv: int[]              # how far ahead of me each said it was
     __lead: f64[]                   # how far ahead of each I am, smoothed over a second or so
@@ -75,7 +74,7 @@ struct Session[S, I]:
     __stamp: f64[]                  # the clock each sent with its latest packet (its `sent`)
     __wrong = -1                    # the first tick played with a prediction that was wrong
     __hashes: {int: u64}            # my game's hash at some confirmed ticks
-    __their_hashes: {int: u64}
+    __their_hashes: {int: u64}       # [tick * players + source]: pending hashes from each peer
     __check = -1                    # the latest tick hashed
     __out: (int, u8[])[]
     __frames = 0
@@ -100,26 +99,41 @@ struct Session[S, I]:
     __stand: bool[]
     __stand_in: I[]
     __has: int[]                    # [q * players + p]: player q has p's inputs below this
+    __hub = -1                     # missing peers go through this player (-1: full mesh)
+    __forward: bool[]              # each peer asks this machine to forward the others' inputs
+    __floor = 0                    # cached minimum of __recv, and how many entries equal it
+    __at_floor = 0
     # (since the last stats_line)
     __log_tick = 0
     __log_waits = 0
     __log_rollbacks = 0
     __log_longest = 0
 
+# A forwarding host sends all the ranges a peer lacks together, with one receipt vector
+# and one clock/hash header for the whole packet. Each range holds at most 64 inputs.
+struct __NpRange[I]:
+    player: int
+    tick: int
+    adv: int
+    first: int
+    inputs: I[]
+    quiet = 0.0                    # ms since this source was heard from at the forwarding host
+    rtt = 0.0                      # the host's round trip to this source
+
 struct __NpPacket[I]:
     from: int
     to: int
-    tick: int                       # the sender's tick
-    adv: int                        # how far ahead of the receiver it is, as it sees it
-    ack: int                        # the receiver's inputs below this have arrived
-    first: int                      # the tick of inputs[0]
-    inputs: I[]                     # the sender's inputs from first on
-    check: int                      # a tick of the sender's game, and its hash (-1: none)
+    tick: int
+    adv: int
+    hub: int                       # forward other players' inputs to me through this player
+    check: int
     hash: u64
-    has: int[]                      # the sender has each player's inputs below this
-    sent = 0.0                      # the sender's clock (ms)
-    echo = -1.0                     # the receiver's clock in the latest packet from it, and how
-    held = 0.0                      # long ago that came (ms): the round trip is now - echo - held
+    has: int[]                     # one receipt per source, never one vector per range
+    ranges: __NpRange[I][]
+    sent = 0.0
+    echo = -1.0
+    held = 0.0
+    desync = -1                    # a mismatch found here, passed on to the rest of the game
 
 # a session of `players` players, this machine's being player `me` (from 0)
 @deterministic
@@ -132,7 +146,6 @@ session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: in
     s.__known = fill(false, __NP_HIST * players)
     s.__last = fill(zero, players)
     s.__recv = fill(delay, players)
-    s.__acked = fill(delay, players)
     s.__their_tick = fill(0, players)
     s.__their_adv = fill(0, players)
     s.__lead = fill(0.0, players)
@@ -142,6 +155,9 @@ session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: in
     s.__stand = fill(false, players)
     s.__stand_in = fill(zero, players)
     s.__has = fill(delay, players * players)
+    s.__forward = fill(false, players)
+    s.__floor = delay
+    s.__at_floor = players
     # (the first ticks, before anyone's input can take effect: no input)
     loop t in [0..delay):
         loop p in [0..players): s.__known[t * players + p] = true
@@ -150,9 +166,7 @@ session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: in
 # ticks below this have every player's input: they will not change again (some may not have
 # been played here yet: those from s.tick on)
 confirmed[S, I] = (s: Session[S, I]) -> int:
-    c = s.__recv[0]
-    loop r in s.__recv: c = min(c, r)
-    c
+    s.__floor
 
 # everyone's inputs at tick t, one of those confirmed (below s.confirmed(), and not more than 100
 # ticks before it): a replay keeps them as they come, to play the game again from its start
@@ -249,12 +263,7 @@ play[S, I] = (s: mut Session[S, I], input: I):
     if s.__peers.len() > 0:
         loop o in s.outgoing():
             if o.0 >= s.__peers.len(): continue
-            # (a player with no peer here: through the one this machine has, the host, who passes
-            # it on)
             to = s.__peers[o.0]
-            if to < 0 and o.0 != s.me:
-                loop q in s.__peers:
-                    if q >= 0 and to < 0: to = q
             if to < 0: continue
             # (a path that holds what was sent, sending slower than this: this one is left out,
             # as the next has its inputs too; sent anyway, they would wait longer and longer)
@@ -265,7 +274,7 @@ play[S, I] = (s: mut Session[S, I], input: I):
             net.send(to, b)
     if s.__relay >= 0:
         loop o in s.outgoing():
-            if not __np_rtc_send(s, o.0, o.1): net.send(s.__relay, o.1)
+            if not __np_rtc_send(s, o.0, o.1) and net.backlog(s.__relay) <= __NP_BACKLOG: net.send(s.__relay, o.1)
 
 # what to send to whom since the last call: (player, bytes) (without s.udp)
 outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]:
@@ -283,51 +292,72 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
     pk = got!
     p = pk.from
     if p == s.me and pk.to != s.me: __np_problem(s, "two players are both player {p}: give each machine its own number (`me`)")
-    # (over net's peers, for another player: from one who has no peer to them, passed on (this is the host))
-    if pk.to != s.me and pk.to >= 0 and pk.to < s.__peers.len() and s.__peers[pk.to] >= 0 and p != s.me:
-        # (not from or to one this machine plays for now: what it sends is all of theirs)
-        if s.__stand[pk.to] or (p >= 0 and p < s.players and s.__stand[p]): return
-        b: u8[] = [u8(net.__NET_MARK)]
-        b.extend(data)
-        if net.backlog(s.__peers[pk.to]) <= __NP_BACKLOG: net.send(s.__peers[pk.to], b)
-        # (its inputs are taken here too: all that reaches anyone from p has reached the host,
-        # who can play for p, should p leave, from where the others are)
-        if p >= 0 and p < s.players:
-            loop k in 0.. and inp in pk.inputs: __np_take(s, p, pk.first + k, inp)
-        return
     if p < 0 or p >= s.players or p == s.me or pk.to != s.me or s.__stand[p]: return
-    # (one that has inputs of this machine's it never made comes from an earlier session on the
-    # same peers, still running there a moment after this one started: not this game's)
-    if pk.ack > s.__recv[s.me]: return
-    s.__heard[p] = elapsed()
-    # (a player gone quiet is back: that problem is over)
+    # (another session on these peers may still be running: it cannot have inputs I never made)
+    if pk.has.len() != s.players:
+        __np_problem(s, "a packet's receipt count does not match this game's player count")
+        return
+    if pk.has[s.me] > s.__recv[s.me]: return
+    loop r in pk.ranges:
+        if r.player < 0 or r.player >= s.players:
+            __np_problem(s, "a packet has an input range for a player outside this game")
+            return
+    now = elapsed()
+    s.__heard[p] = now
     if starts_with(s.problem, "player {p} has not been heard from"): s.problem = ""
     s.__stamp[p] = pk.sent
-    if pk.echo >= 0.0: s.__rtt[p] = __np_smooth(s.__rtt[p], elapsed() * 1000.0 - pk.echo - pk.held)
-    s.__acked[p] = max(s.__acked[p], pk.ack)
+    if pk.echo >= 0.0: s.__rtt[p] = __np_smooth(s.__rtt[p], now * 1000.0 - pk.echo - pk.held)
     s.__their_tick[p] = max(s.__their_tick[p], pk.tick)
     s.__their_adv[p] = pk.adv
-    if pk.has.len() == s.players:
-        loop q in [0..s.players): s.__has[p * s.players + q] = max(s.__has[p * s.players + q], pk.has[q])
-    loop k in 0.. and inp in pk.inputs:
-        if not __np_take(s, p, pk.first + k, inp): break
+    s.__forward[p] = pk.hub == s.me
+    loop q in [0..s.players):
+        # (a receipt never advances beyond inputs this machine actually has)
+        k = p * s.players + q
+        s.__has[k] = max(s.__has[k], min(pk.has[q], s.__recv[q]))
+    loop r in pk.ranges:
+        q = r.player
+        if q == s.me or s.__stand[q]: continue
+        if q != p:
+            # (forwarded clocks belong to their source. Quiet sources stay quiet even while
+            # the host sends, and a stand-in has the host's live clock)
+            s.__heard[q] = max(s.__heard[q], now - r.quiet / 1000.0)
+            if r.tick >= s.__their_tick[q]:
+                s.__their_tick[q] = r.tick
+                s.__their_adv[q] = r.adv
+            if not __np_direct(s, q): s.__rtt[q] = s.__rtt[p] + r.rtt
+            if r.quiet < 5000.0 and starts_with(s.problem, "player {q} has not been heard from"): s.problem = ""
+        loop k in 0.. and inp in r.inputs:
+            if not __np_take(s, q, r.first + k, inp): break
+    if pk.desync >= 0: __np_desync(s, pk.desync)
     if pk.check >= 0:
-        s.__their_hashes[pk.check] = pk.hash
-        __np_compare(s, pk.check)
+        s.__their_hashes[pk.check * s.players + p] = pk.hash
+        __np_compare_one(s, pk.check, pk.hash)
 
-# A packet as text, short: its numbers in a row, then an input a line, `=` for one the same as
-# the one before it (most are: what a player holds stays so a while). As to_text wrote the whole
-# packet, it was some 70 bytes an input, and 600 a packet, 60 a second to each player.
+# Write the scalar header and receipt vector once; each body's range header is followed by
+# its inputs (= repeats within that range). Deflate the whole body, sharing the dictionary.
 __np_encode[I] = (pk: __NpPacket[I]) -> u8[]:
-    out = bytes("NP3 {pk.from} {pk.to} {pk.tick} {pk.adv} {pk.ack} {pk.first} {pk.check} {pk.hash >> 32} {pk.hash & 0xFFFFFFFF} {pk.sent:.4} {pk.echo:.4} {pk.held:.4} {join(pk.has.map((h): "{h}"), ",")}")
+    cache: {int: str}
+    __np_encode_cached(pk, cache, join(pk.has.map((h): "{h}"), ","))
+
+# Input text and the receipt vector are shared across this frame's recipients. In particular,
+# forwarding a large input serializes it once, instead of once for every peer.
+__np_encode_cached[I] = (pk: __NpPacket[I], cache: mut {int: str}, receipts: str) -> u8[]:
+    out = bytes("NP4 {pk.from} {pk.to} {pk.tick} {pk.adv} {pk.hub} {pk.check} {pk.hash >> 32} {pk.hash & 0xFFFFFFFF} {pk.sent:.4} {pk.echo:.4} {pk.held:.4} {receipts} {pk.desync}")
     body = ""
-    prev = ""
-    loop inp in pk.inputs:
-        t = to_text(inp)
-        body += if t == prev: "\n=" else: "\n" + t
-        prev = t
-    # (more than a few inputs deflated, after a z: an input's text repeats its fields' names, and
-    # its values change little from one to the next, so it is a third as long)
+    loop r in pk.ranges:
+        if r.player == pk.from:
+            body += "\n{r.first} {r.inputs.len()}"
+        else: body += "\n{r.player} {r.tick} {r.adv} {r.first} {r.inputs.len()} {int(r.quiet)} {int(r.rtt)}"
+        prev = ""
+        loop k in 0.. and inp in r.inputs:
+            key = (r.first + k) * pk.has.len() + r.player
+            text = cache.get(key)
+            if text == none:
+                text = to_text(inp)
+                cache[key] = text!
+            t = text!
+            body += if t == prev: "\n=" else: "\n" + t
+            prev = t
     if len(body) > 48:
         out.push('\n')
         out.push('z')
@@ -340,35 +370,63 @@ __np_decode[I] = (data: u8[]) -> __NpPacket[I]?:
     nl = 0
     loop nl < data.len() and data[nl] != '\n': nl += 1
     w = split(str_from_bytes(data[..nl)), " ")
-    if w.len() != 14 or w[0] != "NP3": return none
+    if w.len() != 14 or w[0] != "NP4": return none
+    desync = to_int(w[13]) ?? return none
     n: int[]
-    loop k in [1..10):
+    loop k in [1..9):
         v = to_int(w[k]) ?? return none
         n.push(v)
     f: f64[]
-    loop k in [10..13):
+    loop k in [9..12):
         v = to_float(w[k]) ?? return none
         f.push(v)
     has: int[]
-    if len(w[13]) > 0:
-        loop x in split(w[13], ","):
-            v = to_int(x) ?? return none
-            has.push(v)
+    loop x in split(w[12], ","):
+        v = to_int(x) ?? return none
+        if v < 0: return none
+        has.push(v)
     ls: str[]
     if nl + 1 < data.len() and data[nl + 1] == 'z':
         raw = inflate(data, nl + 2) ?? return none
         ls = lines(str_from_bytes(raw))
     else if nl + 1 < data.len(): ls = lines(str_from_bytes(data[nl + 1..]))
-    ins: I[]
-    loop l in ls:
-        if l == "=":
-            if ins.len() == 0: return none
-            ins.push(ins[ins.len() - 1])
+    ranges: __NpRange[I][]
+    at = 0
+    seen: {int: bool}
+    loop at < ls.len():
+        h = split(ls[at], " ")
+        ns: int[]
+        quiet = 0.0
+        rtt = 0.0
+        if h.len() == 2:
+            first = to_int(h[0]) ?? return none
+            count = to_int(h[1]) ?? return none
+            ns = [n[0], n[2], n[3], first, count]
         else:
-            r = from_text[I](l)
-            if r is TextError: return none
-            ins.push(r)
-    __NpPacket[I](n[0], n[1], n[2], n[3], n[4], n[5], ins, n[6], (u64(n[7]) << 32) | u64(n[8]), has, f[0], f[1], f[2])
+            if h.len() != 7: return none
+            loop k in [0..5):
+                v = to_int(h[k]) ?? return none
+                ns.push(v)
+            quiet = to_float(h[5]) ?? return none
+            rtt = to_float(h[6]) ?? return none
+        if ns[0] < 0 or ns[0] >= has.len() or ns[1] < 0 or ns[3] < 0 or ns[4] < 0 or ns[4] > 64 or quiet < 0.0 or rtt < 0.0: return none
+        if seen.has(ns[0]): return none
+        seen[ns[0]] = true
+        at += 1
+        if ns[4] > ls.len() - at: return none
+        ins: I[]
+        loop _ in [0..ns[4]):
+            l = ls[at]
+            at += 1
+            if l == "=":
+                if ins.len() == 0: return none
+                ins.push(ins[ins.len() - 1])
+            else:
+                r = from_text[I](l)
+                if r is TextError: return none
+                ins.push(r)
+        ranges.push(__NpRange[I](ns[0], ns[1], ns[2], ns[3], ins, quiet, rtt))
+    __NpPacket[I](n[0], n[1], n[2], n[3], n[4], n[5], (u64(n[6]) << 32) | u64(n[7]), has, ranges, f[0], f[1], f[2], desync)
 
 __np_problem[S, I] = (s: mut Session[S, I], what: str):
     if len(s.problem) > 0: return
@@ -389,7 +447,16 @@ __np_set[S, I] = (s: mut Session[S, I], p: int, t: int, inp: I):
     s.__inputs[k] = inp
     s.__known[k] = true
     s.__last[p] = inp
+    old = s.__recv[p]
     s.__recv[p] = t + 1
+    if old == s.__floor:
+        s.__at_floor -= 1
+        if s.__at_floor == 0:
+            floor = s.__recv[0]
+            loop r in s.__recv: floor = min(floor, r)
+            s.__floor = floor
+            loop r in s.__recv:
+                if r == floor: s.__at_floor += 1
 
 # one tick: everyone's input (or a prediction), the state kept, the game moved on
 __np_advance[S, I] = (s: mut Session[S, I]):
@@ -430,40 +497,66 @@ __np_hash_confirmed[S, I] = (s: mut Session[S, I]):
     __np_compare(s, c)
     # (only recent ones are kept)
     if s.__hashes.len() > 8: s.__hashes.remove(s.__hashes.keys()[0])
-    if s.__their_hashes.len() > 8: s.__their_hashes.remove(s.__their_hashes.keys()[0])
+    loop s.__their_hashes.len() > 8 * s.players: s.__their_hashes.remove(s.__their_hashes.keys()[0])
 
 __np_compare[S, I] = (s: mut Session[S, I], c: int):
+    loop p in [0..s.players):
+        if let theirs = s.__their_hashes.get(c * s.players + p): __np_compare_one(s, c, theirs)
+
+__np_compare_one[S, I] = (s: mut Session[S, I], c: int, theirs: u64):
     if let mine = s.__hashes.get(c):
-        if let theirs = s.__their_hashes.get(c):
-            if mine != theirs and (s.desync < 0 or c < s.desync):
-                if s.desync < 0:
-                    # (a debug build writes its game at that tick, to compare with the other's)
-                    kept = ""
-                    if DEBUG and TARGET != "wasm" and s.tick - c < __NP_HIST:
-                        path = "netplay-desync-{c}-p{s.me}.json"
-                        if write_file(path, to_json(s.__states[c % __NP_HIST], 1) + "\n"): kept = "; this machine's game at that tick is in {path}, to compare with the other machine's"
-                    __np_problem(s, "the games differ from tick {c} on: tick must give the same game for the same inputs on every machine (no random() without a seed in the game, no clock, no dt, no globals it changes, none it reads that can differ between machines: a setting, env(); a replay kept with s.inputs_at shows where){kept}")
-                s.desync = c
+        if mine != theirs: __np_desync(s, c)
+
+# In a star, healthy clients compare with the host. A mismatch found by the host (or by
+# another client) must reach them too, even when their own hashes agree with the host's.
+__np_desync[S, I] = (s: mut Session[S, I], c: int):
+    if s.desync >= 0 and c >= s.desync: return
+    if s.desync < 0:
+        kept = ""
+        if DEBUG and TARGET != "wasm" and c <= s.tick and s.tick - c < __NP_HIST:
+            path = "netplay-desync-{c}-p{s.me}.json"
+            if write_file(path, to_json(s.__states[c % __NP_HIST], 1) + "\n"): kept = "; this machine's game at that tick is in {path}, to compare with the other machine's"
+        __np_problem(s, "the games differ from tick {c} on: tick must give the same game for the same inputs on every machine (no random() without a seed in the game, no clock, no dt, no globals it changes, none it reads that can differ between machines: a setting, env(); a replay kept with s.inputs_at shows where){kept}")
+    s.desync = c
+
+# whether this source has a direct transport here (manual outgoing/receive is full mesh)
+__np_direct[S, I] = (s: Session[S, I], p: int) -> bool:
+    if s.__peers.len() > 0: return s.__peers[p] >= 0
+    if s.__relay >= 0: return direct(s, p)
+    s.__hub < 0
 
 __np_send[S, I] = (s: mut Session[S, I]):
+    now = elapsed() * 1000.0
+    h: u64 = 0
+    if s.__check >= 0: h = s.__hashes.get(s.__check) ?? 0
+    cache: {int: str}
+    receipts = join(s.__recv.map((r): "{r}"), ",")
     loop p in [0..s.players):
         if p == s.me or s.__stand[p]: continue
-        first = max(s.__acked[p], s.__recv[s.me] - 64)
-        ins: I[]
-        loop t in [first..s.__recv[s.me]): ins.push(s.__inputs[t % __NP_HIST * s.players + s.me])
-        h: u64 = 0
-        if s.__check >= 0: h = s.__hashes.get(s.__check) ?? 0
-        now = elapsed() * 1000.0
-        pk = __NpPacket[I](s.me, p, s.tick, s.tick - s.__their_tick[p], s.__recv[p], first, ins, s.__check, h, s.__recv, now, s.__stamp[p], now - s.__heard[p] * 1000.0)
-        __np_out(s, p, __np_encode(pk))
-        # (and the inputs of those this machine plays for, as theirs)
+        if s.__hub >= 0 and p != s.__hub and not __np_direct(s, p): continue
+        ranges: __NpRange[I][]
         loop q in [0..s.players):
-            if not s.__stand[q] or q == p: continue
-            from = max(s.__has[p * s.players + q], s.__recv[q] - 64)
-            qs: I[]
-            loop t in [from..s.__recv[q]): qs.push(s.__inputs[t % __NP_HIST * s.players + q])
-            pq = __NpPacket[I](q, p, s.tick, s.tick - s.__their_tick[p], s.__recv[p], from, qs, -1, 0, s.__recv, now)
-            __np_out(s, p, __np_encode(pq))
+            if q == p: continue
+            if q != s.me and not s.__stand[q] and not s.__forward[p]: continue
+            first = max(s.__has[p * s.players + q], s.__recv[q] - 64)
+            ins: I[]
+            loop t in [first..s.__recv[q]): ins.push(s.__inputs[t % __NP_HIST * s.players + q])
+            tick = s.tick
+            quiet = 0.0
+            rtt = 0.0
+            adv = s.tick - s.__their_tick[p]
+            if q != s.me and not s.__stand[q]:
+                tick = s.__their_tick[q]
+                quiet = max(0.0, now - s.__heard[q] * 1000.0)
+                rtt = s.__rtt[q]
+                # (advantages add along the path: q's view of this host, then the host's
+                # view of p. Just subtracting the two old source ticks loses one hop's
+                # latency and makes a healthy forwarded peer look permanently behind.)
+                adv += s.__their_adv[q]
+            # (even an empty range carries the source's clock and silence, for pacing)
+            ranges.push(__NpRange[I](q, tick, adv, first, ins, quiet, rtt))
+        pk = __NpPacket[I](s.me, p, s.tick, s.tick - s.__their_tick[p], s.__hub, s.__check, h, s.__recv, ranges, now, s.__stamp[p], max(0.0, now - s.__heard[p] * 1000.0), s.desync)
+        __np_out(s, p, __np_encode_cached(pk, cache, receipts))
 
 # this machine plays for player p from now on, with this input every tick (a game's "the
 # computer flies it": the game's tick makes it so): for one who has left. Their inputs that
@@ -516,13 +609,22 @@ __np_due[S, I] = (s: mut Session[S, I]):
 # are not resent: newer ones carry the same inputs, and nothing waits for an old one):
 #   player 0: friend = net.invite(reliable = false) ... s.over([-1, friend])
 #   player 1: host = net.join_invite(code) ...          s.over([host, -1])
-# For three or four, one hosts: it invites each of the others (each an invite and a reply), tells
+# For more players, one hosts: it invites each of the others (each an invite and a reply), tells
 # each its number (a message of the game's), and plays over all of them; the others play over the
-# host alone (the rest -1), who passes their packets on: [-1, a, b] for the host, [host, -1, -1]
+# host alone (the rest -1), who batches the inputs each still lacks: [-1, a, b] for the host, [host, -1, -1]
 # for player 1.
 over[S, I] = (s: mut Session[S, I], peers: int[]):
     if peers.len() != s.players: panic("netplay: over takes one peer for each player, -1 for this machine's own: [-1, friend] when this is player 1 of 2, [host, -1] for player 2 (it was given {peers.len()} for {s.players} players)")
     s.__peers = peers
+    s.__hub = -1
+    first = -1
+    missing = false
+    loop p in [0..s.players):
+        if p == s.me: continue
+        if peers[p] >= 0:
+            if first < 0: first = p
+        else: missing = true
+    if missing: s.__hub = first
     loop p in peers:
         if p >= 0: net.__net_mark(p)
 
@@ -546,7 +648,8 @@ __np_udp_send[S, I] = (s: mut Session[S, I]):
 
 # ---------------- through a relay (web pages too) ----------------
 # A web page cannot use UDP or wait for others to connect, so players meet at a relay: a native
-# program (netplay.relay) that passes each packet on to the other players in the same room.
+# program (netplay.relay) that routes addressed packets within a room. Player 0's session
+# batches the inputs for peers that cannot connect straight to each other.
 # (Its WebSockets go over TCP: a lost packet holds up those after it, unlike UDP.)
 
 # Web pages in a room also connect to each other straight, with WebRTC: once they have, their
@@ -559,6 +662,8 @@ __np_udp_send[S, I] = (s: mut Session[S, I]):
 # the same room
 join_relay[S, I] = (s: mut Session[S, I], host: str, port: int, room: str, stun: str = "stun:stun.l.google.com:19302"):
     s.__relay = net.connect(host, port)
+    # (fallback connections form a star through player 0; direct WebRTC pairs still bypass it)
+    if s.me != 0: s.__hub = 0
     s.__room = room
     s.__stun = stun
     s.__rtc = fill(-1, s.players)
@@ -783,16 +888,49 @@ update[S, I] = (w: mut Watch[S, I], dt: f64):
         w.__at = 0
 
 __np_rooms: {int: str}
+__np_relay_players: {int: int}
+__np_relay_dest: {(str, int): int}
 
 # a relay on port: call it every frame (in a game that hosts others), or relay_forever
 relay = (port: int):
     if not net.listen(port): panic("netplay.relay: cannot listen on port {port} (another program has it?)")
     loop e in net.receive_server():
-        if e.kind == .left: __np_rooms.remove(e.peer)
+        if e.kind == .left:
+            if let room = __np_rooms.get(e.peer):
+                if let player = __np_relay_players.get(e.peer):
+                    key = (room, player)
+                    if __np_relay_dest.get(key) == e.peer: __np_relay_dest.remove(key)
+            __np_rooms.remove(e.peer)
+            __np_relay_players.remove(e.peer)
         else if e.kind != .message: continue
-        else if let r = __np_rooms.get(e.peer):
+        else if let room = __np_rooms.get(e.peer):
+            # (route from the first three header words, without decoding the game's input
+            # type or scanning every player for every packet)
+            if starts_with(e.text, "NP4 "):
+                nl = 0
+                loop nl < e.data.len() and e.data[nl] != '\n': nl += 1
+                head = split(str_from_bytes(e.data[..nl)), " ")
+                if head.len() >= 3:
+                    from = to_int(head[1])
+                    to = to_int(head[2])
+                    if from != none and to != none:
+                        key = (room, from!)
+                        __np_relay_players[e.peer] = from!
+                        if let old = __np_relay_dest.get(key):
+                            if old != e.peer:
+                                # (each duplicate sees its own number addressed to another
+                                # player, which the session reports as duplicate numbers)
+                                net.send(old, e.data)
+                                net.send(e.peer, e.data)
+                                continue
+                        __np_relay_dest[key] = e.peer
+                        if let dest = __np_relay_dest.get((room, to!)):
+                            if dest != e.peer and net.backlog(dest) <= __NP_BACKLOG: net.send(dest, e.data)
+                        # (an unregistered destination is covered by the next tick's packet)
+                        continue
+            # (WebRTC signaling, and unreadable packets so sessions can report a problem)
             loop k, v in __np_rooms:
-                if v == r and k != e.peer: net.send(k, e.data)
+                if v == room and k != e.peer and net.backlog(k) <= __NP_BACKLOG: net.send(k, e.data)
         else if starts_with(e.text, "join "): __np_rooms[e.peer] = e.text[5..]
 
 # a program that is only a relay

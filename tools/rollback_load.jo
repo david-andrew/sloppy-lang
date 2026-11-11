@@ -1,0 +1,45 @@
+# Measure rollback packet/byte scaling without a game, sockets, display or audio.
+# bin/sloppy build --release tools/rollback_load.jo -o <scratch>/rollback-load
+# <scratch>/rollback-load [players=16] [frames=600]
+# Each frame represents one tick at each peer. Report the last half, after startup.
+import netplay
+struct Pad:
+    dx = 0
+struct Game:
+    sum = 0
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in pads: g.sum += p.dx
+    g
+
+n = to_int(args().get(1) ?? "16") ?? 16
+frames = to_int(args().get(2) ?? "600") ?? 600
+if n < 2 or frames < 2: panic("players and frames must be at least 2")
+ss: netplay.Session[Game, Pad][]
+loop p in [0..n):
+    s = netplay.session(Game(), step, players = n, me = p)
+    if p != 0: s.__hub = 0
+    ss.push(s)
+hp = 0
+hb = 0
+cp = 0
+cb = 0
+measured = 0
+loop f in [0..frames):
+    messages: (int, u8[])[]
+    loop p in [0..n):
+        ss[p].play(Pad((ss[p].tick + p) % 7))
+        out = ss[p].outgoing()
+        if f >= frames / 2:
+            if p == 0:
+                hp += out.len()
+                loop o in out: hb += o.1.len()
+            if p == 1:
+                cp += out.len()
+                loop o in out: cb += o.1.len()
+        messages.extend(out)
+    loop m in messages: ss[m.0].receive(m.1)
+    if f >= frames / 2: measured += 1
+healthy = true
+loop s in ss: healthy = healthy and s.tick == frames and s.desync < 0 and s.problem == ""
+print("players {n} host packets/tick {f64(hp) / f64(measured):.2f} bytes/tick {f64(hb) / f64(measured):.2f} | client packets/tick {f64(cp) / f64(measured):.2f} bytes/tick {f64(cb) / f64(measured):.2f} | kept up {healthy}")

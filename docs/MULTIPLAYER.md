@@ -207,8 +207,24 @@ s.over([-1, friend])
 For more players, one hosts: it invites each of the others (an invite and a reply
 each), tells each its number in a message of the game's ("you are 2"), and plays over all of
 them, `s.over([-1, a, b])`; the others play over the host alone, `s.over([host, -1, -1])`, and the
-host passes on what goes between them (tests/net/np_three.jo does this; Aces does it for up to
-twelve, in examples/aces).
+host combines what goes between them (tests/net/np_three.jo does this; Aces does it for up to
+twelve, in examples/aces). Each client sends one packet to the host per play call, with its
+own inputs and one receipt per player. The host sends one packet to each connected peer,
+combining the input ranges that peer has not acknowledged, including any stand-ins. Each
+range resends up to 64 recent inputs, so a lost packet is covered by the next; a slow peer
+does not increase anyone else's input range. A peer whose transport backlog exceeds 16,000
+bytes skips a packet until it can take more.
+
+The host's packet count grows with the number of peers. Each packet has one receipt vector
+and one timing/hash header, with timing and inputs for the players it forwards. Input text
+is serialized once per source and tick, shared across recipients. The host still has to
+deliver each player's inputs to every other player: total input bytes can grow quadratically
+with the player count, even though packets grow linearly and each packet's metadata grows
+only linearly. Full mesh connections, including UDP, continue to send directly per pair.
+
+For a reproducible transport-only measurement without a game or sockets, build and run
+`tools/rollback_load.jo` with the player count and frame count as arguments. It reports host
+and client packets and payload bytes per tick after warming up.
 
 **When a player leaves**, the session would wait for their inputs. `s.stand_in(p, input)` has
 this machine play for them from then on: their inputs that reached it are kept, and `input` is
@@ -560,4 +576,8 @@ never held up), not through the relay (`s.direct(p)` says whether player p's do)
 server tells each page its address as others see it: `join_relay` uses Google's public one,
 and takes `stun = "stun:..."` for another or `""` for none (then only pages on the same
 network reach each other). Pages that cannot reach each other (some company and phone
-networks) keep playing through the relay; so does a native player with a page.
+networks) keep playing through the relay; so does a native player with a page. Player 0's
+session must stay in the room: it combines inputs for the peers using relay fallback, using
+the same batches as an invite-code host. Clients send one fallback packet to player 0, and it
+sends one combined packet per client; the relay routes each to its addressed player. Direct
+WebRTC pairs keep exchanging their inputs directly. Player 0 may be native or a web page.

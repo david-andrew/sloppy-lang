@@ -1,0 +1,55 @@
+# requires: sloppy
+# requires: native (six rollback players through an addressed WebSocket relay)
+import netplay
+
+struct Pad:
+    dx = 0
+struct Game:
+    pos: int[] = fill(0, 6)
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..pads.len()): g.pos[p] += pads[p].dx
+    g
+
+const PORT = 28484
+netplay.relay(PORT)
+ss: netplay.Session[Game, Pad][]
+loop p in [0..6):
+    s = netplay.session(Game(), step, players = 6, me = p)
+    s.join_relay("127.0.0.1", PORT, "six", stun = "")
+    s.lag(2, 2, 0.1)
+    ss.push(s)
+from = -1
+loop f in [0..650):
+    netplay.relay(PORT)
+    if f == 220:
+        from = ss[0].__recv[5]
+        ss[0].stand_in(5, Pad(9))
+    loop p in [0..6):
+        if p == 5 and f >= 220: continue
+        if p == 4 and (f < 40 or (f < 180 and f % 8 == 0)): continue
+        ss[p].play(Pad(p + 1))
+    sleep(1.0 / 240.0)
+c = ss[0].tick - 1
+loop p in [0..5): c = min(c, min(ss[p].confirmed(), ss[p].tick) - 1)
+ref = Game()
+loop p in [0..5): ref.pos[p] = (c - 2) * (p + 1)
+ref.pos[5] = (from - 2) * 6 + (c - from) * 9
+same = true
+healthy = true
+loop p in [0..5):
+    same = same and ss[p].__states[c % 128] == ref
+    healthy = healthy and ss[p].problem == "" and ss[p].desync < 0 and ss[p].tick > 450
+print("relay with lag/loss: same", same, "healthy", healthy, "forwarded", ss[0].__forward[4])
+
+# Registration still reports duplicate player numbers, including before a host has joined.
+a = netplay.session(Game(), step, players = 6, me = 1)
+b = netplay.session(Game(), step, players = 6, me = 1)
+a.join_relay("127.0.0.1", PORT, "duplicate", stun = "")
+b.join_relay("127.0.0.1", PORT, "duplicate", stun = "")
+loop _ in [0..60):
+    netplay.relay(PORT)
+    a.play(Pad())
+    b.play(Pad())
+    sleep(0.002)
+print("duplicate players:", contains(a.problem, "both player 1"), contains(b.problem, "both player 1"))

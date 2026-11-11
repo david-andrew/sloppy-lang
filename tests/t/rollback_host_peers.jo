@@ -1,0 +1,72 @@
+# requires: sloppy
+# requires: native (eight sessions over loopback peers, with s.lag and a late/slow peer)
+import netplay
+import net
+
+struct Pad:
+    dx = 0
+struct Game:
+    pos: int[] = fill(0, 8)
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..pads.len()): g.pos[p] += pads[p].dx
+    g
+
+const PORT = 28483
+main = ():
+    if not net.listen(PORT): panic("cannot listen on {PORT}")
+    conns = [loop _ in [1..8): net.connect("127.0.0.1", PORT)]
+    peers = fill(-1, 8)
+    assigned = fill(-1, 7)
+    next = 1
+    end = elapsed() + 5.0
+    loop next < 8 or (-1 in assigned):
+        if elapsed() > end: panic("peers did not connect")
+        loop e in net.receive_server():
+            if e.kind == .joined:
+                peers[next] = e.peer
+                net.send(e.peer, "{next}")
+                next += 1
+        loop e in net.receive(conns):
+            if e.kind == .message: assigned[conns.index_of(e.peer)] = to_int(e.text)!
+        sleep(0.001)
+    ss: netplay.Session[Game, Pad][]
+    host = netplay.session(Game(), step, players = 8, me = 0)
+    host.over(peers)
+    host.lag(2, 2, 0.1)
+    ss.push(host)
+    loop p in [1..8):
+        j = assigned.index_of(p)
+        s = netplay.session(Game(), step, players = 8, me = p)
+        ps = fill(-1, 8)
+        ps[0] = conns[j]
+        s.over(ps)
+        s.lag(2, 2, 0.1)
+        ss.push(s)
+    from = -1
+    loop f in [0..1100):
+        if f == 350:
+            from = ss[0].__recv[7]
+            ss[0].stand_in(7, Pad(9))
+        loop p in [0..8):
+            if p == 7 and f >= 350: continue
+            if p == 6 and (f < 60 or (f < 250 and f % 8 == 0)): continue
+            ss[p].play(Pad(p + 1))
+        sleep(0.002)
+    c = ss[0].tick - 1
+    loop p in [0..7): c = min(c, min(ss[p].confirmed(), ss[p].tick) - 1)
+    ref = Game()
+    loop p in [0..7): ref.pos[p] = (c - 2) * (p + 1)
+    ref.pos[7] = (from - 2) * 8 + (c - from) * 9
+    same = true
+    healthy = true
+    timed = true
+    loop p in [0..7):
+        same = same and ss[p].__states[c % 128] == ref
+        healthy = healthy and ss[p].problem == "" and ss[p].desync < 0 and ss[p].tick > 800
+        if p != 0: timed = timed and ss[p].ping(0) > 0.0 and ss[p].ping(if p != 1: 1 else: 2) > 0.0
+    print("over with lag/loss: same", same, "healthy", healthy, "timing", timed)
+    print("host forwards:", [loop p in [1..7) if ss[0].__forward[p]: p].len() == 6)
+    loop p in conns: net.close(p)
+    loop p in peers:
+        if p >= 0: net.close(p)
