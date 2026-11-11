@@ -506,6 +506,14 @@ __sw_inside = (w0: f64, w1: f64, w2: f64, tl0: bool, tl1: bool, tl2: bool) -> bo
     if w0 < 0.0 or w1 < 0.0 or w2 < 0.0: return false
     not ((w0 == 0.0 and not tl0) or (w1 == 0.0 and not tl1) or (w2 == 0.0 and not tl2))
 
+# The raster jobs finish before the next draw starts, so their setup and binning
+# storage can be reused. Every entry read below is written for the current draw.
+__sw_setup: f64[]
+__sw_bounds: int[]
+__sw_counts: int[]
+__sw_cursor: int[]
+__sw_list: int[]
+
 # Rasterize triangles: vertex positions (pixels, y up) are the first two floats of each
 # stride-sized vertex in sv, idx holds 3 vertex indices per triangle. For every run of covered
 # pixel centers on a row, shade(band, y, x0, x1, tri, l0, l1, l2, d0, d1, d2) is called with the
@@ -522,11 +530,13 @@ __sw_raster = (sv: *f32, stride: int, idx: *i32, ntri: int, shade: (int, int, in
     cull = __s_cull
     cull_back = __s_cull_back
     # triangle setup: counter-clockwise corners, 1/area, original order flag, pixel bounds
-    setup = fill(0.0, ntri * 8)
-    sp = data(setup)
-    bounds = fill(0, ntri * 4)
-    bp = data(bounds)
-    counts = fill(0, bands + 1)
+    if __sw_setup.len() < ntri * 8: __sw_setup.resize(ntri * 8)
+    sp = data(__sw_setup)
+    if __sw_bounds.len() < ntri * 4: __sw_bounds.resize(ntri * 4)
+    bp = data(__sw_bounds)
+    if __sw_counts.len() < bands + 1: __sw_counts.resize(bands + 1)
+    cp = data(__sw_counts)
+    mem_set(cp as *u8, 0, (bands + 1) * 8)
     # (each triangle's setup on its own: in parallel, in chunks)
     chunk = 2048
     __par_serial = ntri < chunk
@@ -585,20 +595,21 @@ __sw_raster = (sv: *f32, stride: int, idx: *i32, ntri: int, shade: (int, int, in
         miny = bp[t * 4 + 2]
         maxy = bp[t * 4 + 3]
         if miny > maxy: continue
-        loop k in [(miny - y0c) / band_h..(maxy - y0c) / band_h + 1): counts[k + 1] += 1
-    loop k in [0..bands): counts[k + 1] += counts[k]
+        loop k in [(miny - y0c) / band_h..(maxy - y0c) / band_h + 1): cp[k + 1] += 1
+    loop k in [0..bands): cp[k + 1] += cp[k]
     # bin the triangles by band (a counting sort keeps submission order)
-    fill = counts
-    list = fill(0, counts[bands])
+    if __sw_cursor.len() < bands + 1: __sw_cursor.resize(bands + 1)
+    cursor = data(__sw_cursor)
+    mem_copy(cursor as *u8, cp as *u8, (bands + 1) * 8)
+    if __sw_list.len() < cp[bands]: __sw_list.resize(cp[bands])
+    lp = data(__sw_list)
     loop t in [0..ntri):
         miny = bp[t * 4 + 2]
         maxy = bp[t * 4 + 3]
         if miny > maxy: continue
         loop k in [(miny - y0c) / band_h..(maxy - y0c) / band_h + 1):
-            list[fill[k]] = t
-            fill[k] += 1
-    lp = data(list)
-    cp = data(counts)
+            lp[cursor[k]] = t
+            cursor[k] += 1
     __par_serial = pixels < 32768
     parallel_range(bands, (band: int):
         by0 = y0c + band * band_h
