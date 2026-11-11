@@ -4627,6 +4627,9 @@ Menus and hud_ boxes are drawn in the units of the 2D transform drawing has (cam
 - `hud_layout_restore_clip = (saved: (bool, vec4))`
 - `hud_layout_layer = () -> int`: HUD panel range belonging to a layout root. Later external HUD panels cover it; its own panels are resolved by layout's tree, so they are excluded from this check.
 - `hud_layout_covered = (p: vec2, first: int, count: int) -> bool`
+- `hud_layout_step = (value: f64, step: f64, low: f64, high: f64) -> f64`: Shared step rounding for native layout sliders and HUD/menu sliders.
+- `hud_layout_text_edit = (r: Rect, value: str, id: str, max_chars: int, active: bool, begin: bool, submit: bool, pointer_owned: bool, pointer: vec2, style: HudStyle) -> str`: Layout edits against its previous box, then draws in the newly solved one. It owns focus, navigation and hit testing; this bridge shares the HUD editor's caret, selection and undo.
+- `hud_layout_text_draw = (r: Rect, value: str, hint: str, id: str, active: bool, enabled: bool, style: HudStyle)`: Draw only: typing already returned its value while layout was described. Its rounded surface and focus ring are layout's; the shared editor draws text, selection and caret.
 - `hud_hovered = () -> bool`: whether the mouse (or a finger) is over the interface now: over a hud_ box drawn in the last frame or this one, where it is now (a tap on the world just after one on a button is the world's; a tap landing on a button is the button's from that frame on)
 - `hud_panel = (r: Rect, color: vec4 = vec4(0, 0, 0, 0))`: a box behind other parts (it also keeps clicks on it from the world, and from the hud_ boxes drawn before it, under it)
 - `hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false, align: Align = .center) -> bool`: a button with a label: true in the frame it is clicked (or tapped): let go on it, having gone down on it (a finger that slides away is no tap, and a press that scrolls a list is the list's); selected: drawn as the one chosen of several (a tool, a tab). A label wider than the button is cut short with …; align = .left puts it at the left, as a list's rows have it
@@ -4698,7 +4701,7 @@ Responsive immediate-mode boxes. Import explicitly: `import layout as ui`. Descr
 - `enum CrossAlign: start, center, end, stretch`
 - `enum Axis: vertical, horizontal`
 - `enum Corner: top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right`
-- `struct State`: A container/slot's state from its previous solved box. clicked includes keyboard activation; pressed is a pointer press held on the box. rect is zero the first time the element exists.
+- `struct State`: A container/slot's state from its previous solved box. clicked includes keyboard activation; pressed is a pointer press held on the box. rect is zero the first time the element exists. A text field also reports editing, and submitted for the frame Enter/A submits it.
   ```gdscript
   struct State:
       rect: Rect
@@ -4706,6 +4709,8 @@ Responsive immediate-mode boxes. Import explicitly: `import layout as ui`. Descr
       pressed = false
       clicked = false
       focused = false
+      editing = false
+      submitted = false
   ```
 - `struct Input`: Optional scripted input for headless layout tests. Pointer coordinates are screen units when rendering, and the units of at() otherwise. nav is a direction, activate is Enter/A.
   ```gdscript
@@ -4722,6 +4727,8 @@ Responsive immediate-mode boxes. Import explicitly: `import layout as ui`. Descr
       dt = 1.0 / 60.0
       nav: vec2
       activate = false
+      next = 0
+      cancel = false
   ```
 - `debug = false`: Outline every solved box while drawing.
 - `profile = false`: Opt-in solver timing, in seconds, excluding tree description, drawing and box recording.
@@ -4745,6 +4752,10 @@ Responsive immediate-mode boxes. Import explicitly: `import layout as ui`. Descr
 - `bar = (amount: f64, color: vec4 = hud_style.accent, width: Size = grow(), height: Size = 12, back: vec4 = hud_style.track, key: str = "") -> void`: Filled from zero to one, over the HUD style's track color.
 - `image = (t: Texture, width: Size = fit(), height: Size = fit(), tint: vec4 = vec4(1, 1, 1, 1), key: str = "") -> void`: A texture stretched into its solved box. Fits to the texture's pixel dimensions by default.
 - `slot = (draw: (Rect) -> void, width: Size = fit(), height: Size = fit(), focusable: bool = false, key: str = "") -> State`: Run draw at draw time with the solved Rect. Captured variables can be changed by hud_ widgets inside it. focusable includes it in direction navigation (with the focus ring drawn around it); get(key) exposes its focus/click.
+- `slider = (value: f64, low: f64, high: f64, step: f64 = 0.0, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> f64`: A value in low..high. Left/Right adjust by step (0: continuous pointer, 1% with keys). The focused value control reserves Left/Right even at an endpoint; Tab/LB/RB leave a row.
+- `switch = (on: bool, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> bool`: On or off, toggled by a click/tap, Enter, Space or A. Left/Right stay on this control.
+- `choice = (options: str[], index: int, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> int`: One option, wrapping at either end. Left/Right or the left/right half of its value changes it; Enter/Space/A chooses the next. Empty options return zero.
+- `text_field = (value: str, hint: str = "", max_chars: int = 64, width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> str`: A single line using the HUD editor (selection, undo, clipboard, touch keyboard and Paste). Click/tap or Enter/A starts typing; Enter/A submits, Escape/B cancels typing, Up/Down or Tab/LB/RB leave it. get(key).editing/submitted describe this frame after the field call.
 
 ## Paths
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Layout has native sliders, switches, choices and text fields, with immediate value returns,
+  keyed pointer capture and text editing, keyboard/gamepad adjustment, and Tab/shoulder focus
+  navigation. Left/Right adjust the focused value control without moving to a neighboring box.
+
 - Netplay checks game versions before play, with clear errors for different builds on rollback
   and client-server transports. The default `PROGRAM_BUILD_ID` identifies the program's sources;
   games with separate entry points can set a shared `version` string.

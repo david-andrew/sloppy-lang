@@ -1868,44 +1868,68 @@ import layout as ui
 
 volume = 0.5
 hints = true
+difficulty = 1
+name = ""
 draw = ():
-    global volume, hints
+    global volume, hints, difficulty, name
     ui.screen(pad = 24, ():
         ui.column(gap = 12, cross = .center, width = ui.grow(), height = ui.grow(), ():
             ui.label("Settings", size = 40)
-            ui.panel(pad = 16, gap = 8, width = ui.fit(max = 480), ():
+            ui.panel(pad = 16, gap = 12, width = ui.fit(max = 480), ():
                 ui.label("The menu fits its contents and wraps this help when the screen narrows.", wrap = true)
-                ui.column(gap = 8, width = ui.grow(), ():
+                ui.label("Sound and play", size = 24)
+                volume = ui.slider(volume, 0.0, 1.0, step = 0.05, label = "Volume", key = "volume")
+                hints = ui.switch(hints, "Show hints", key = "hints")
+                difficulty = ui.choice(["Easy", "Normal", "Hard"], difficulty, "Difficulty", key = "difficulty")
+                ui.label("Player name", size = 16, color = hud_style.muted)
+                name = ui.text_field(name, hint = "Your name", max_chars = 24, key = "name")
+                if ui.get("name")!.submitted: print("hello {name}")
+                ui.row(gap = 8, width = ui.grow(), ():
                     if ui.button("Play", width = ui.grow()): print("play")
                     if ui.button("Quit", width = ui.grow()): quit()
-                )
-                ui.slot(width = ui.grow(), height = 32, focusable = true, key = "volume", (r: Rect):
-                    st = ui.get("volume") ?? ui.State()
-                    if st.focused:
-                        if key_repeat(.left) or gamepad_repeat(.left): volume = max(0.0, volume - 0.05)
-                        if key_repeat(.right) or gamepad_repeat(.right): volume = min(1.0, volume + 0.05)
-                    volume = hud_slider(r, volume, 0.0, 1.0)
-                )
-                ui.slot(width = ui.grow(), height = 32, focusable = true, key = "hints", (r: Rect):
-                    st = ui.get("hints") ?? ui.State()
-                    if st.focused and (key_pressed(.enter) or key_pressed(.space) or gamepad_pressed(.a)):
-                        hints = not hints
-                    hints = hud_checkbox(r, "Show hints", hints)
                 )
             )
         )
     )
 ```
 
+`slider(value, low, high, step = 0, label = "")`, `switch(on, label = "")`,
+`choice(options, index, label = "")` and `text_field(value, hint = "", max_chars = 64)`
+return their new values immediately, using the preceding frame's box for input, like buttons.
+They all accept `width`, `height`, `enabled` and `key`; width defaults to `grow()`, height to
+`fit()`. The caller keeps the value, while keyed identity keeps focus, slider capture and the
+text editor's caret, selection and undo with the control when rows reorder. A disabled control
+is faded, skipped by navigation and does not respond to input.
+
+Drag a slider with the mouse or a finger: it follows the pointer in that frame, even outside
+its box, and owns the gesture inside a scrolling panel. A positive `step` snaps from `low`;
+zero allows continuous dragging and uses 1% of the range per key press. Choices wrap through
+the options (an empty list returns zero); clicking or tapping the left/right half of their
+value goes back/forward. Enter, Space or A advances a choice or toggles a switch.
+
+**Left/Right belong to the focused value control**, including at a slider's endpoints and in
+a horizontal row: they adjust sliders and choices, and stay put on switches and text fields.
+The d-pad and left stick follow the same rule. This keeps adjustment predictable, as in the
+`ui_` menus: reaching an endpoint never unexpectedly selects a neighbor. Up/Down navigate
+between boxes; Tab/Shift+Tab or gamepad RB/LB move forward/backward through visible, enabled
+controls in draw order, wrapping at either end, so every control in a horizontal row is
+reachable. Buttons, cards and custom slots still use Left/Right for directional navigation.
+
+Click/tap a text field or press Enter/A while it is focused to start typing. Enter/A again
+submits and stops typing; Escape/B stops typing while keeping the text. Up/Down, Tab/Shift+Tab
+or RB/LB leave the field. While typing, keyboard Left/Right edit the caret and Space types a space.
+The HUD editor supplies selection, undo, clipboard shortcuts, the touch keyboard and its
+Paste button. After calling the field, `ui.get(key)!.editing` says whether it is typing and
+`.submitted` is true for the frame it submits (`hud_submitted()` also works immediately
+after the field call). For several lines of text, a custom slot can host `hud_text_area`.
+
 The required closure is declared first (after `r` in `at`); named options can precede it at
-the call site as above. `slot` calls its closure at draw time with its **current** solved box,
-so existing `hud_` widgets and custom drawing use the final size that frame. Captured locals
-can be changed in that closure; a named function changing a global still declares `global`.
-Slots cannot add more layout elements: describe the entire tree before drawing starts.
-`focusable = true` lets keys and a gamepad reach a slot; `hud_slider` and `hud_checkbox`
-still handle pointer input only. The example uses the slot's focus for Left/Right (or the d-pad)
-to adjust volume, and Enter, Space or A to toggle hints. This column keeps Up/Down for
-moving between controls; a multi-column layout also uses Left/Right to move focus.
+the call site as above. `slot` still hosts custom widgets and drawing: it calls its closure at
+draw time with its **current** solved box. Captured locals can be changed in that closure; a
+named function changing a global still declares `global`. Slots cannot add more layout
+elements: describe the entire tree before drawing starts. `focusable = true` lets keys and a
+gamepad reach a custom slot; its returned state or `ui.get(key)` supplies focus and activation,
+and the custom widget supplies its value-changing input.
 
 Each element accepts `width` and `height`. A number means fixed units; the other sizes are:
 
@@ -1934,8 +1958,9 @@ left stick move focus by the previous boxes' directions; Enter, Space or gamepad
 `ui.slot(focusable = true, ...)` joins that navigation; its returned state or `ui.get(key)`
 inside its callback gives focus and activation for custom controls. `row`, `column` and
 `panel` take `focusable = true` too, for a card that is a control as a whole: it joins the
-navigation, lights up under the pointer, and Enter or A clicks it. Navigation pauses while
-a text field is typing or controls are being rebound. Focus moved by keys or a gamepad onto
+navigation, lights up under the pointer, and Enter or A clicks it. A layout text field keeps
+Up/Down and Tab/shoulder navigation while typing; an external HUD/menu text field pauses layout
+navigation. Rebinding controls pauses navigation too. Focus moved by keys or a gamepad onto
 a box inside a scroll container scrolls it into view, leaving the next box partly shown, so
 a list longer than its box can be gone through with the d-pad. The focused control has a ring
 around it once keys or a gamepad have been used, until the next press of the mouse or a
@@ -1954,7 +1979,7 @@ background and edge.
 The look follows `hud_style` (set its fields before describing the boxes; a change holds for
 the boxes described after it). Besides the colors the `hud_` widgets use, layout reads
 `muted` (secondary text, for a label's `color`), `track` (behind a bar and a scrollbar's
-thumb), `focus` (the focus ring), `radius` (a button's and a bar's corners), `panel_radius`,
+thumb), `focus` (the focus ring), `radius` (buttons, value controls and bars' corners), `panel_radius`,
 `panel_edge` and `scrollbar` (the thumb's width). A selected button is tinted with `accent`
 and edged with it; a pressed one is darker, its label a unit lower; a disabled one is faded.
 

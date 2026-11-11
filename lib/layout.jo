@@ -37,12 +37,15 @@ enum Corner: top_left, top, top_right, left, center, right, bottom_left, bottom,
 
 # A container/slot's state from its previous solved box. clicked includes keyboard activation;
 # pressed is a pointer press held on the box. rect is zero the first time the element exists.
+# A text field also reports editing, and submitted for the frame Enter/A submits it.
 struct State:
     rect: Rect
     hovered = false
     pressed = false
     clicked = false
     focused = false
+    editing = false
+    submitted = false
 
 # Optional scripted input for headless layout tests. Pointer coordinates are screen units
 # when rendering, and the units of at() otherwise. nav is a direction, activate is Enter/A.
@@ -59,6 +62,9 @@ struct Input:
     dt = 1.0 / 60.0
     nav: vec2
     activate = false
+    # Tab/Shift+Tab or shoulder buttons: next/previous in draw order.
+    next = 0
+    cancel = false
 
 # Outline every solved box while drawing.
 debug = false
@@ -67,7 +73,7 @@ profile = false
 # Last solve's duration when profile is enabled.
 solve_seconds = 0.0
 
-enum _Kind: box, label, button, space, bar, slot, image
+enum _Kind: box, label, button, space, bar, slot, image, slider, switch, choice, text_field
 struct _Node:
     kind: _Kind = .box
     id = 0
@@ -105,6 +111,8 @@ struct _Node:
     wrap = false
     text_align: Align = .left
     amount = 0.0
+    hint = ""
+    editor = ""
     texture: Texture
     draw: ((Rect) -> void)?
     style: HudStyle
@@ -119,6 +127,7 @@ struct _Node:
     state: State
 
 struct _Box:
+    kind: _Kind = .box
     id = 0
     parent = 0
     key = ""
@@ -143,6 +152,9 @@ struct _Root:
     spare_index: {int: int}
     focus = 0
     capture = 0
+    value_drag = 0
+    edit = 0
+    text_frame = -10
     scroll_capture = 0
     scroll_origin = 0.0
     press_at: vec2
@@ -166,6 +178,8 @@ _drawing = false
 _render = true
 _events: Input
 _hit = 0
+_side = 0.0
+_side_owner = 0
 _hover_chain: {int: bool}
 _press_chain: {int: bool}
 _seen: {int: bool}
@@ -212,7 +226,7 @@ _local = (inverse: mat4, p: vec2) -> vec2:
 _live_input = () -> Input:
     v = Input(pointer = mouse_pos(), origin = hud_layout_press_origin(), down = mouse_down(.left), pressed = mouse_pressed(.left), released = mouse_released(.left), tap = hud_layout_tap(), claimed = not hud_layout_can_scroll(), touch = touch_input(), wheel = mouse_wheel(), dt = frame_time())
     stick = vec2(gamepad_axis(0), gamepad_axis(1))
-    if not ui_typing() and not rebinding():
+    if (not ui_typing() or _root.text_frame >= frame_number() - 1) and not rebinding():
         if key_typed(.left) or gamepad_pressed(.left): v.nav.x = -1
         if key_typed(.right) or gamepad_pressed(.right): v.nav.x = 1
         if key_typed(.up) or gamepad_pressed(.up): v.nav.y = -1
@@ -221,7 +235,11 @@ _live_input = () -> Input:
         if stick.x > 0.6 and _root.stick.x <= 0.6: v.nav.x = 1
         if stick.y < -0.6 and _root.stick.y >= -0.6: v.nav.y = -1
         if stick.y > 0.6 and _root.stick.y <= 0.6: v.nav.y = 1
-        v.activate = key_pressed(.enter) or key_pressed(.space) or gamepad_pressed(.a)
+        v.activate = key_pressed(.enter) or (_root.edit == 0 and key_pressed(.space)) or gamepad_pressed(.a)
+        if key_typed(.tab): v.next = if key_down(.shift): -1 else: 1
+        if gamepad_pressed(.lb): v.next = -1
+        if gamepad_pressed(.rb): v.next = 1
+        v.cancel = key_pressed(.escape) or gamepad_pressed(.b)
     _root.stick = stick
     v
 
@@ -233,8 +251,10 @@ _chain = (id: int, chain: mut {int: bool}):
         else: break
 
 _read_input = ():
-    global _hit, _root, _focus_shown, _nav_follow
+    global _hit, _root, _focus_shown, _nav_follow, _side, _side_owner
     _hit = 0
+    _side = 0.0
+    _side_owner = 0
     _nav_follow = false
     _hover_chain.clear()
     _press_chain.clear()
@@ -259,10 +279,13 @@ _read_input = ():
                 if b.focusable and b.hit.w > 0 and b.hit.h > 0:
                     _events.nav = vec2()
                     _events.activate = false
+                    _events.next = 0
+                    _events.cancel = false
     if _render and hud_layout_covered(_events.pointer, _root.panel_first, _root.panel_count): _hit = 0
     if _render and _events.pressed and hud_layout_covered(press_at, _root.panel_first, _root.panel_count): press_hit = 0
     if _events.pressed:
         _root.capture = press_hit
+        _root.value_drag = 0
         _root.press_at = press_at
         _root.dragging = false
         _root.scroll_capture = 0
@@ -292,6 +315,15 @@ _read_input = ():
                     if _render: claim_press()
                 break
             k = b.parent
+    # A slider owns its whole gesture, even outside its box or inside a scroll container.
+    # Other controls remain taps, so dragging the list still cancels their clicks.
+    if _events.pressed and press_hit != 0:
+        b = _root.boxes[_root.index[press_hit]]
+        if (b.kind == .slider or (b.kind == .text_field and not _events.touch)) and b.focusable and not _events.claimed:
+            if b.kind == .slider: _root.value_drag = press_hit
+            _root.scroll_capture = 0
+            if _render: claim_press()
+    if _root.value_drag != 0 and _render and (_events.down or _events.released): claim_press()
     if _hit != 0: _chain(_hit, _hover_chain)
     if _root.capture != 0: _chain(_root.capture, _press_chain)
     if not _events.tap or _events.claimed: _press_chain.clear()
@@ -304,6 +336,7 @@ _read_input = ():
         if _render: claim_press()
     if not _events.down and not _events.released:
         _root.capture = 0
+        _root.value_drag = 0
         _root.scroll_capture = 0
         _root.dragging = false
     if _render and _events.down and _press_chain.len() > 0: hud_layout_tap(true)
@@ -315,6 +348,20 @@ _read_input = ():
             if b.focusable and b.hit.w > 0 and b.hit.h > 0:
                 _root.focus = b.id
                 break
+    if _root.focus != 0:
+        b = _root.boxes[_root.index[_root.focus]]
+        if b.kind == .slider or b.kind == .switch or b.kind == .choice or b.kind == .text_field:
+            _side = f64(_events.nav.x)
+            _side_owner = b.id
+            _events.nav.x = 0
+    if _events.next != 0:
+        _scratch.clear()
+        loop b in _root.boxes:
+            if b.focusable and b.hit.w > 0 and b.hit.h > 0: _scratch.push(b.id)
+        if _scratch.len() > 0:
+            j = max(_scratch.index_of(_root.focus), 0)
+            _root.focus = _scratch[(j + (if _events.next < 0: _scratch.len() - 1 else: 1)) % _scratch.len()]
+            _nav_follow = true
     if _events.nav != vec2(0, 0) and _root.focus != 0:
         p = center(_root.boxes[_root.index[_root.focus]].hit)
         best = 1e30
@@ -331,7 +378,9 @@ _read_input = ():
                 chosen = b.id
         _nav_follow = chosen != _root.focus
         _root.focus = chosen
-    if _events.nav != vec2(0, 0) or _events.activate: _focus_shown = true
+    if _root.edit != 0 and (_root.focus != _root.edit or (_events.pressed and press_hit != _root.edit)):
+        _root.edit = 0
+    if _events.nav != vec2(0, 0) or _side != 0.0 or _events.next != 0 or _events.activate: _focus_shown = true
     else if _events.pressed or (_events.touch and _events.down): _focus_shown = false
 
 _previous = (id: int, enabled: bool = true) -> State:
@@ -394,6 +443,8 @@ at = (r: Rect, children: () -> void, pad: Padding = 0, gap: f64 = 0.0, align: Ma
         _root.index.clear()
         _root.capture = 0
         _root.focus = 0
+        _root.edit = 0
+        _root.value_drag = 0
     _render = render
     _events = input ?? (if render: _live_input() else: Input())
     _read_input()
@@ -447,6 +498,8 @@ screen = (children: () -> void, pad: Padding = 0, gap: f64 = 0.0, align: MainAli
 # use a unique key for queries (identity itself always includes the parent).
 get = (key: str, root: str = "root 0") -> State?:
     if _open:
+        loop n in _nodes:
+            if n.key == key: return n.state
         loop b in _root.boxes:
             if b.key == key: return _previous(b.id)
         return none
@@ -816,7 +869,7 @@ _draw_tree = (i: int) -> void:
         idle = _scroll_idle(n)
     parent = if n.parent >= 0: _nodes[n.parent].id else: 0
     _root.spare_index[n.id] = _root.spare.len()
-    _root.spare.push(_Box(id = n.id, parent = parent, key = n.key, rect = r, hit = hit, view = view, clip = n.clip, focusable = n.focusable and n.enabled, scrolling = n.scrolling, axis = n.axis, scroll = n.scroll, speed = n.speed, content = n.content, idle = idle, state = n.state))
+    _root.spare.push(_Box(kind = n.kind, id = n.id, parent = parent, key = n.key, rect = r, hit = hit, view = view, clip = n.clip, focusable = n.focusable and n.enabled, scrolling = n.scrolling, axis = n.axis, scroll = n.scroll, speed = n.speed, content = n.content, idle = idle, state = n.state))
     if _render and r.w > 0 and r.h > 0:
         x = f64(r.x)
         y = f64(r.y)
@@ -845,6 +898,7 @@ _draw_tree = (i: int) -> void:
                     text(n.text, vec2(tx, y), n.size, n.style.text)
             .button: _draw_button(n)
             .bar: _draw_bar(n)
+            .slider, .switch, .choice, .text_field: _draw_control(n)
             .image: sprite(n.texture, vec2(r.x, r.y), vec2(r.w, r.h), n.style.text)
             _: pass
     if n.kind == .slot:
@@ -866,7 +920,7 @@ _draw_tree = (i: int) -> void:
     if _render and n.focusable and n.enabled and n.state.focused and _focus_shown and r.w > 0 and r.h > 0:
         g = _RING_OUT + 2.0
         if local_clip: saved = hud_layout_clip(Rect(f64(n.clip.x) - g, f64(n.clip.y) - g, f64(n.clip.w) + 2.0 * g, f64(n.clip.h) + 2.0 * g))
-        radius = if n.kind == .slot or n.kind == .button: n.style.radius else: n.radius
+        radius = if n.kind == .box: n.radius else: n.style.radius
         _draw_ring(r, radius, n.style)
         if local_clip: hud_layout_restore_clip(saved)
 
@@ -892,7 +946,8 @@ _draw_ring = (r: Rect, radius: f64, st: HudStyle):
     h = f64(r.h)
     rect_rounded_outline(x - g, y - g, w + 2.0 * g, h + 2.0 * g, min(radius, min(w, h) / 2.0) + g, 2.0, st.focus)
 
-_draw_button = (n: _Node):
+# Shared rounded button surface for every native control; value details are below it.
+_draw_control_frame = (n: _Node):
     r = n.rect
     st = n.style
     s = n.state
@@ -907,6 +962,9 @@ _draw_button = (n: _Node):
         fill = if n.selected: mix(st.hover, st.accent, 0.24) else: st.hover
         if not n.selected: edge = with_alpha(st.border, min(st.border.w * 1.8, 1.0))
     if down: fill = if n.selected: mix(st.pressed, st.accent, 0.16) else: st.pressed
+    if n.state.editing:
+        fill = st.hover
+        edge = st.accent
     if not n.enabled:
         fill = with_alpha(fill, fill.w * 0.45)
         edge = with_alpha(edge, edge.w * 0.5)
@@ -921,6 +979,16 @@ _draw_button = (n: _Node):
     else:
         rect(r, fill)
         rect_outline(x, y, w, h, 1.0, edge)
+
+_draw_button = (n: _Node):
+    r = n.rect
+    st = n.style
+    s = n.state
+    _draw_control_frame(n)
+    h = f64(r.h)
+    w = f64(r.w)
+    rad = min(st.radius, min(w, h) / 2.0)
+    down = n.enabled and _lit(s) and s.pressed
     tc = if n.enabled: st.text else: st.disabled
     size = min(st.text_size, h * 0.6)
     # (a pressed button's label sinks a unit, as the button is pushed in)
@@ -1056,3 +1124,130 @@ image = (t: Texture, width: Size = fit(), height: Size = fit(), tint: vec4 = vec
 slot = (draw: (Rect) -> void, width: Size = fit(), height: Size = fit(), focusable: bool = false, key: str = "") -> State:
     i = _add(_Node(kind = .slot, width = _sizing(width), height = _sizing(height), focusable = focusable, key = key, draw = draw, style = hud_style))
     _nodes[i].state
+
+# A value in low..high. Left/Right adjust by step (0: continuous pointer, 1% with keys).
+# The focused value control reserves Left/Right even at an endpoint; Tab/LB/RB leave a row.
+slider = (value: f64, low: f64, high: f64, step: f64 = 0.0, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> f64:
+    i = _control(.slider, label, width, height, enabled, key, 160.0)
+    n = _nodes[i]
+    v = clamp(value, min(low, high), max(low, high))
+    if enabled and n.state.focused and _side_owner == n.id:
+        delta = if step > 0.0: step else: abs(high - low) / 100.0
+        v = hud_layout_step(v + _side * delta, step, low, high)
+    if enabled and _root.value_drag == n.id and (_events.down or _events.released):
+        track = _value_rect(n.state.rect, label, n.style)
+        p = _local(_root.inverse, _events.pointer)
+        v = hud_layout_step(low + (high - low) * clamp(f64(p.x - track.x) / max(f64(track.w), 1.0), 0.0, 1.0), step, low, high)
+        _nodes[i].state.pressed = _events.down
+    _nodes[i].amount = if high == low: 0.0 else: (v - low) / (high - low)
+    v
+
+# On or off, toggled by a click/tap, Enter, Space or A. Left/Right stay on this control.
+switch = (on: bool, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> bool:
+    i = _control(.switch, label, width, height, enabled, key, 52.0)
+    v = if _nodes[i].state.clicked: not on else: on
+    _nodes[i].selected = v
+    v
+
+# One option, wrapping at either end. Left/Right or the left/right half of its value changes it;
+# Enter/Space/A chooses the next. Empty options return zero.
+choice = (options: str[], index: int, label: str = "", width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> int:
+    widest = 40.0
+    loop o in options: widest = max(widest, text_width(o, hud_style.text_size) + 48.0)
+    i = _control(.choice, label, width, height, enabled, key, widest)
+    n = _nodes[i]
+    v = index
+    if enabled and n.state.focused and _side_owner == n.id: v += int(_side)
+    if n.state.clicked:
+        if n.state.focused and _events.activate: v += 1
+        else:
+            r = _value_rect(n.state.rect, label, n.style)
+            p = _local(_root.inverse, _events.pointer)
+            v += if p.x < r.x + r.w / 2: -1 else: 1
+    count = max(options.len(), 1)
+    v = ((v % count) + count) % count
+    _nodes[i].hint = if options.len() > 0: options[v] else: ""
+    v
+
+# A single line using the HUD editor (selection, undo, clipboard, touch keyboard and Paste).
+# Click/tap or Enter/A starts typing; Enter/A submits, Escape/B cancels typing, Up/Down or
+# Tab/LB/RB leave it. get(key).editing/submitted describe this frame after the field call.
+text_field = (value: str, hint: str = "", max_chars: int = 64, width: Size = grow(), height: Size = fit(), enabled: bool = true, key: str = "") -> str:
+    global _root
+    i = _control(.text_field, "", width, height, enabled, key, 200.0)
+    n = _nodes[i]
+    was = _root.edit == n.id
+    if not enabled and was: _root.edit = 0
+    submit = enabled and was and n.state.focused and _events.activate
+    begin = false
+    if enabled and n.state.rect.w > 0:
+        pointer = if _events.touch: n.state.clicked and not _events.activate else: _events.pressed and n.state.hovered and _root.capture == n.id and not _events.claimed
+        if (n.state.focused and _events.activate and not was) or pointer:
+            _root.edit = n.id
+            begin = not was
+        if submit or _events.cancel: _root.edit = 0
+    active = enabled and _root.edit == n.id
+    v = value
+    editor = "layout {_root_key}/{n.id}"
+    if _render:
+        if active: _root.text_frame = frame_number()
+        v = hud_layout_text_edit(n.state.rect, value, editor, max(max_chars, 0), active, begin, submit, n.state.hovered and _root.capture == n.id, _local(_root.inverse, _events.pointer), n.style)
+    _nodes[i].editor = editor
+    _nodes[i].text = v
+    _nodes[i].hint = hint
+    _nodes[i].state.editing = active
+    _nodes[i].state.submitted = submit
+    v
+
+_control = (kind: _Kind, label: str, width: Size, height: Size, enabled: bool, key: str, value_width: f64) -> int:
+    sz = hud_style.text_size
+    lw = if len(label) > 0: text_width(label, sz) + 24.0 else: 0.0
+    _add(_Node(kind = kind, text = label, width = _sizing(width), height = _sizing(height), enabled = enabled, key = key, focusable = true, natural_w = lw + value_width + 24.0, natural_h = sz * 2.0, min_w = 48.0, min_h = sz, style = hud_style))
+
+# Value at the right, optional label at the left (never more than half the box).
+# Used for BOTH pointer input from the previous box and drawing in the new one.
+_value_rect = (r: Rect, label: str, st: HudStyle) -> Rect:
+    size = min(st.text_size, f64(r.h) * 0.6)
+    lw = if len(label) > 0: min(text_width(label, size) + 20.0, max(f64(r.w) / 2.0, 0.0)) else: 0.0
+    Rect(f64(r.x) + lw + 12.0, r.y, max(f64(r.w) - lw - 24.0, 0.0), r.h)
+
+# All value-control drawing lives here; the surface and outside focus ring match buttons.
+_draw_control = (n: _Node):
+    _draw_control_frame(n)
+    r = n.rect
+    st = n.style
+    tc = if n.enabled: st.text else: st.disabled
+    ac = if n.enabled: st.accent else: with_alpha(st.accent, st.accent.w * 0.35)
+    size = min(st.text_size, f64(r.h) * 0.6)
+    v = _value_rect(r, if n.kind == .text_field: "" else: n.text, st)
+    x = f64(v.x)
+    y = f64(r.y)
+    w = f64(v.w)
+    h = f64(r.h)
+    cy = y + h / 2.0
+    if n.kind != .text_field and len(n.text) > 0:
+        text(fit_text(n.text, max(x - f64(r.x) - 20.0, 0.0), size), vec2(f64(r.x) + 10.0, cy - size / 2.0), size, tc)
+    match n.kind:
+        .slider:
+            th = min(6.0, h / 4.0)
+            rad = min(st.radius, th / 2.0)
+            rect_rounded(x, cy - th / 2.0, w, th, rad, st.track)
+            fw = w * clamp(n.amount, 0.0, 1.0)
+            if fw > 0.0: rect_rounded(x, cy - th / 2.0, fw, th, min(rad, fw / 2.0), ac)
+            circle(vec2(x + fw, cy), min(9.0, h * 0.25), ac)
+        .switch:
+            sw = min(40.0, w)
+            sh = min(22.0, h * 0.6)
+            sx = x + w - sw
+            col = if n.selected: ac else: st.track
+            rect_rounded(sx, cy - sh / 2.0, sw, sh, min(st.radius, sh / 2.0), col)
+            knob = max(min(sh - 6.0, sw / 2.0), 0.0)
+            kx = if n.selected: sx + sw - knob - 3.0 else: sx + 3.0
+            rect_rounded(kx, cy - knob / 2.0, knob, knob, min(st.radius, knob / 2.0), tc)
+        .choice:
+            text_centered("<", vec2(x + 5.0, cy), size, tc)
+            text_centered(">", vec2(x + w - 5.0, cy), size, tc)
+            text_centered(fit_text(n.hint, max(w - 36.0, 0.0), size), center(v), size, tc)
+        .text_field:
+            hud_layout_text_draw(r, n.text, n.hint, n.editor, n.state.editing, n.enabled, st)
+        _: pass

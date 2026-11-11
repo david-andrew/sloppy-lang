@@ -534,6 +534,63 @@ hud_layout_covered = (p: vec2, first: int, count: int) -> bool:
         if contains(__hud_panels_last[k].0, p): return true
     false
 
+# Shared step rounding for native layout sliders and HUD/menu sliders.
+hud_layout_step = (value: f64, step: f64, low: f64, high: f64) -> f64: __step_to(value, step, low, high)
+
+# Layout edits against its previous box, then draws in the newly solved one. It owns focus,
+# navigation and hit testing; this bridge shares the HUD editor's caret, selection and undo.
+hud_layout_text_edit = (r: Rect, value: str, id: str, max_chars: int, active: bool, begin: bool, submit: bool, pointer_owned: bool, pointer: vec2, style: HudStyle) -> str:
+    global __typing_frame, __hud_last_field, __hud_submit_frame, __hud_submit_key, __cursor_auto
+    __hud_last_field = id
+    if submit:
+        __hud_submit_frame = frame_number()
+        __hud_submit_key = id
+    st = __text_edits.get(id) ?? __TextEdit()
+    v = __te_sync(st, value)
+    size = min(style.text_size, f64(r.h) * 0.6)
+    __te_layout(st, v, -1.0, size)
+    if active:
+        __typing_frame = frame_number()
+        __ui_typing_at(f64(r.y + r.h))
+        __cursor_auto = .ibeam
+        ox = f64(r.x) + 8.0 - st.scroll
+        oy = f64(r.y) + (f64(r.h) - size) / 2.0
+        if begin:
+            st.anchor = 0
+            st.caret = len(v)
+            st.follow = true
+        if pointer_owned and ((not touch_input() and mouse_pressed(.left)) or (touch_input() and mouse_released(.left))):
+            __te_press(st, v, __te_at(st, v, pointer, ox, oy, size * 1.25))
+        __te_drag(st, v, ox, oy, size * 1.25, pointer)
+        if not begin and not rebinding(): v = __te_keys(st, v, max_chars, false, false, -1.0, size, 1)
+    else: st.drag = false
+    st.text = v
+    __text_edits[id] = st
+    v
+
+# Draw only: typing already returned its value while layout was described. Its rounded
+# surface and focus ring are layout's; the shared editor draws text, selection and caret.
+hud_layout_text_draw = (r: Rect, value: str, hint: str, id: str, active: bool, enabled: bool, style: HudStyle):
+    global hud_style
+    st = __text_edits.get(id) ?? __TextEdit()
+    size = min(style.text_size, f64(r.h) * 0.6)
+    __te_layout(st, value, -1.0, size)
+    paste_w = if active and touch_input(): text_width("Paste", size) + 16.0 else: 0.0
+    iw = max(f64(r.w) - paste_w - 16.0, 0.0)
+    __te_follow_x(st, active, iw)
+    ty = f64(r.y) + (f64(r.h) - size) / 2.0
+    if active: __caret_blink()
+    saved_style = hud_style
+    hud_style = style
+    saved = __hud_clip_in(Rect(f64(r.x) + 4.0, r.y, max(f64(r.w) - paste_w - 8.0, 0.0), r.h))
+    if len(value) == 0 and len(hint) > 0: text(hint, vec2(f64(r.x) + 8.0, ty), size, style.disabled)
+    __te_draw(st, value, f64(r.x) + 8.0 - st.scroll, ty, size * 1.25, size, if enabled: style.text else: style.disabled, active, 0, 0)
+    __hud_clip_out(saved)
+    if paste_w > 0.0:
+        if hud_button(Rect(f64(r.x + r.w) - paste_w - 3.0, f64(r.y) + 3.0, paste_w, f64(r.h) - 6.0), "Paste"): __platform_paste()
+    hud_style = saved_style
+    __text_edits[id] = st
+
 __hud_boxes: Rect[]             # the boxes drawn this frame (as much of each as is not clipped away)
 __hud_boxes_last: Rect[]        # ... and in the last frame
 __hud_frame = -1
@@ -1202,12 +1259,12 @@ __te_press = (st: mut __TextEdit, v: str, at: int):
     st.follow = true
 
 # (the mouse held down after a press in it: the selection goes to where it is)
-__te_drag = (st: mut __TextEdit, v: str, ox: f64, oy: f64, lh: f64):
+__te_drag = (st: mut __TextEdit, v: str, ox: f64, oy: f64, lh: f64, pointer: vec2 = __ui_ptr()):
     if not st.drag: return
     if not mouse_down(.left):
         st.drag = false
         return
-    at = __te_at(st, v, __ui_ptr(), ox, oy, lh)
+    at = __te_at(st, v, pointer, ox, oy, lh)
     if at != st.caret:
         st.caret = at
         st.follow = true
