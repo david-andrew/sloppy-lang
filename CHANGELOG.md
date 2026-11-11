@@ -9,6 +9,10 @@
   sliders that show their value (a percentage from 0 to 1), drawn chevrons and option dots on
   choices, rounded switches, and text fields as wells edged with the accent while typed in.
   `hud_style.field` and `hud_style.well` color them. `examples/layout.jo` has a Settings page.
+- Browser fetches stream progress, abort on timeout/cancellation, honor redirect policy and
+  default body types, and reject disk paths and explicit cookie jars. `net.fetch_all` waits
+  through JSPI tasks; frame loops use `fetch_start`/`fetch_result`. Focused Chromium checks cover
+  task waits, polling, methods, headers, bodies, CORS, redirects, retries and concurrency.
 - Dates support strptime-style `parse_date(text, format)` and `date_text(d, format)`, with
   UTC/local zones and explicit offsets; `date_add`, `date_diff` and `duration_text` handle
   elapsed seconds. ISO parsing rejects empty fractions and incomplete offsets.

@@ -385,6 +385,12 @@ print("{repo.full_name}: {repo.stargazers_count} stars, {repo.description ?? "-"
   goes on; `net.fetch_result(f)` gives the `HttpReply` once it has come (none before): a game asks
   each frame, a server each time round its loop. Several can be on their way at once, and in a web
   page this is the browser's own fetch (the server must allow the page's site: CORS).
+- In a page, `spawn((): net.fetch(url))` or `spawn((): net.fetch_all(urls))` can wait through
+  JSPI while the browser keeps running. Without tasks, poll `fetch_start`/`fetch_result` each
+  frame. Timeouts and cancellation abort the browser request; progress follows streamed bytes.
+  Browsers enforce CORS and their own header/cookie policies. `save_to` and explicit cookie jars
+  give an error in a page; `follow = false` gives an explanatory error for a redirect because
+  browsers hide its details. See [page fetch behavior](LANGUAGE.md#fetching-from-the-web).
 - A header sent more than once (`Set-Cookie`): `net.header_values(r, "set-cookie")` has each.
 - To stay signed in across native requests, create `jar = net.cookie_jar()` and pass
   `cookies = jar` to each `net.fetch`, `net.fetch_start` or `net.fetch_all`. The jar keeps

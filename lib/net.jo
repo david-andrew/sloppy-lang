@@ -1904,7 +1904,8 @@ fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = 
 
 # the same request, started: an id for fetch_result, which gives the answer once it has come.
 # Nothing waits for it meanwhile (in a web page, the browser asks; its server must allow the
-# page's site, CORS)
+# page's site, CORS). save_to and CookieJar give status 0 in a page; the browser manages
+# cookies itself. follow = false gives status 0 for a redirect, whose details browsers hide.
 @no_parallel("for many at once, net.fetch_all(urls, at_once = 8), or net.fetch_start for each and net.fetch_result as they come (net.wait waits for them)")
 fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true, cookies: CookieJar = CookieJar()) -> int:
     global __pace_real_time
@@ -1912,14 +1913,15 @@ fetch_start = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: s
     f = __Fetch(id = __fetch_next, url = url, method = method.upper(), headers = headers, body = body, save_to = save_to, progress = progress, end = time() + wait, follow = follow, cookies = cookies)
     __fetch_next += 1
     when TARGET == "wasm":
-        if cookies.__id != 0:
+        if len(save_to) > 0:
+            f.done = true
+            f.reply = HttpReply(0, [], why = "save_to is for native fetches: a web page cannot save downloads to a file path")
+        else if cookies.__id != 0:
             f.done = true
             f.reply = HttpReply(0, [], why = "CookieJar is for native fetches: a web page's browser manages its cookies")
         else:
-            h: str[]
-            loop k, v in headers: h.push("{k}: {v}")
-            ht = join(h, "\n")
-            f.web = __wasm_fetch_start(data(url), len(url), data(f.method), len(f.method), data(ht), len(ht), data(body), len(body))
+            ht = to_json(headers)
+            f.web = __wasm_fetch_start(data(url), len(url), data(f.method), len(f.method), data(ht), len(ht), data(body), len(body), int(max(wait, 0.0) * 1000.0), if follow: 1 else: 0)
     __fetches.push(f)
     when TARGET != "wasm":
         __fetch_go(__fetches.len() - 1, url)
@@ -1961,76 +1963,79 @@ fetch_cancel = (f: int):
 #   rs = net.fetch_all(urls, at_once = 16)
 #   loop i in 0.. and r in rs:
 #       if r.status != 200: eprint("{urls[i]}: {r.status} {r.why}")
+# In a page this waits in a task through JSPI; outside tasks use fetch_start/fetch_result.
 # (A program with more to do as they come, a game's frames or a server's requests, uses
 # fetch_start and fetch_result itself, as this does)
-@no_web("gives status 0 in a web page, which cannot wait for answers: net.fetch_start, then net.fetch_result each frame")
 @no_parallel("it fetches many at once itself: call it once, with all of them")
 fetch_all = (urls: str[], at_once: int = 8, retries: int = 2, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", done: (int, HttpReply) -> void = (i: int, r: HttpReply): pass, cookies: CookieJar = CookieJar()) -> HttpReply[]:
     out = fill(HttpReply(0, []), urls.len())
     when TARGET == "wasm":
-        loop mut r in out: r.why = "a web page cannot wait for answers: net.fetch_start, then net.fetch_result each frame"
-        return out
-    else:
-        tries = fill(0, urls.len())
-        m = method.upper()
-        if m == "POST" or m == "PATCH": tries = fill(retries, urls.len())
-        ready = fill(0.0, urls.len())           # (when one asked again may start)
-        came = fill(false, urls.len())
-        next = 0                                # (the first not started yet)
-        later: int[]                            # (those to ask again, once their time comes)
-        ids: int[]                              # (the fetches on their way, and whose they are)
-        whose: int[]
-        left = urls.len()
-        loop left > 0:
-            if __stop_asked or __task_cancelling:
-                loop f in ids: fetch_cancel(f)
-                loop k in [0..urls.len()):
-                    if not came[k]: out[k].why = if __task_cancelling: "not fetched: the task was cancelled" else: "not fetched: the program was asked to stop"
-                break
-            # (those asked again first, once their time has come, then the next ones)
-            now = time()
-            loop ids.len() < max(at_once, 1):
-                k = -1
-                loop j in [0..later.len()):
-                    if ready[later[j]] <= now:
-                        k = later[j]
-                        later.remove_at(j)
-                        break
-                if k < 0 and next < urls.len():
-                    k = next
-                    next += 1
-                if k < 0: break
-                ids.push(fetch_start(urls[k], wait, method, headers, body, cookies = cookies))
-                whose.push(k)
-            got = false
-            j = 0
-            loop j < ids.len():
-                if let r = fetch_result(ids[j]):
-                    k = whose[j]
-                    ids.remove_at(j)
-                    whose.remove_at(j)
-                    got = true
-                    if tries[k] < retries and (r.status == 0 or r.status == 429 or r.status == 500 or r.status >= 502 and r.status <= 504):
-                        pause = 0.5 * f64(1 << tries[k])
-                        if let ra = r.headers.get("retry-after"): pause = max(pause, f64(min(to_int(ra) ?? 0, 60)))
-                        tries[k] += 1
-                        ready[k] = time() + pause
-                        later.push(k)
-                    else:
-                        out[k] = r
-                        came[k] = true
-                        left -= 1
-                        done(k, r)
-                else: j += 1
-            if not got:
-                # (until an answer comes, or the time of one to ask again)
-                t = 1.0
-                if ids.len() < max(at_once, 1):
-                    loop k in later: t = min(t, ready[k] - time())
-                __fetch_all_wait(max(t, 0.0))
-        out
+        if not __net_can_wait():
+            loop mut r in out: r.why = "a web page cannot wait for answers outside a task: spawn((): net.fetch_all(urls)), or fetch_start and fetch_result each frame"
+            return out
+    tries = fill(0, urls.len())
+    m = method.upper()
+    if m == "POST" or m == "PATCH": tries = fill(retries, urls.len())
+    ready = fill(0.0, urls.len())           # (when one asked again may start)
+    came = fill(false, urls.len())
+    next = 0                                # (the first not started yet)
+    later: int[]                            # (those to ask again, once their time comes)
+    ids: int[]                              # (the fetches on their way, and whose they are)
+    whose: int[]
+    left = urls.len()
+    loop left > 0:
+        if __stop_asked or __task_cancelling:
+            loop f in ids: fetch_cancel(f)
+            loop k in [0..urls.len()):
+                if not came[k]: out[k].why = if __task_cancelling: "not fetched: the task was cancelled" else: "not fetched: the program was asked to stop"
+            break
+        # (those asked again first, once their time has come, then the next ones)
+        now = time()
+        loop ids.len() < max(at_once, 1):
+            k = -1
+            loop j in [0..later.len()):
+                if ready[later[j]] <= now:
+                    k = later[j]
+                    later.remove_at(j)
+                    break
+            if k < 0 and next < urls.len():
+                k = next
+                next += 1
+            if k < 0: break
+            ids.push(fetch_start(urls[k], wait, method, headers, body, cookies = cookies))
+            whose.push(k)
+        got = false
+        j = 0
+        loop j < ids.len():
+            if let r = fetch_result(ids[j]):
+                k = whose[j]
+                ids.remove_at(j)
+                whose.remove_at(j)
+                got = true
+                if tries[k] < retries and (r.status == 0 or r.status == 429 or r.status == 500 or r.status >= 502 and r.status <= 504):
+                    pause = 0.5 * f64(1 << tries[k])
+                    if let ra = r.headers.get("retry-after"): pause = max(pause, f64(min(to_int(ra) ?? 0, 60)))
+                    tries[k] += 1
+                    ready[k] = time() + pause
+                    later.push(k)
+                else:
+                    out[k] = r
+                    came[k] = true
+                    left -= 1
+                    done(k, r)
+            else: j += 1
+        if not got:
+            # (until an answer comes, or the time of one to ask again)
+            t = 1.0
+            if ids.len() < max(at_once, 1):
+                loop k in later: t = min(t, ready[k] - time())
+            __fetch_all_wait(max(t, 0.0))
+    out
 
-__fetch_all_wait = (seconds: f64): wait(seconds)
+__fetch_all_wait = (seconds: f64):
+    when TARGET == "wasm":
+        __n_wait([-1], [1], __net_ms(time() + seconds))
+    else: wait(seconds)
 
 struct __Fetch:
     id: int
@@ -2041,6 +2046,7 @@ struct __Fetch:
     save_to: str
     progress: (int, int) -> void
     end: f64
+    web_got = -1            # (the last streamed progress delivered to Sloppy)
     web = -1                # (a web page's: the browser's fetch)
     hops = 0                # (redirects followed)
     follow = true           # (redirects are: false, a redirect is the answer)
@@ -2172,6 +2178,12 @@ __fetch_ask = (i: int):
 __fetch_step = (i: int):
     if __fetches[i].done: return
     when TARGET == "wasm":
+        # (callbacks run here, when Sloppy polls, never re-entered from a browser promise)
+        got = __wasm_fetch_progress(__fetches[i].web, 0)
+        if got >= 0 and got != __fetches[i].web_got:
+            __fetches[i].web_got = got
+            progress = __fetches[i].progress
+            progress(got, __wasm_fetch_progress(__fetches[i].web, 1))
         # (its size first, then the answer into room for it)
         probe = [u8(0)]
         n = __wasm_fetch_poll(__fetches[i].web, data(probe), 0)
@@ -2406,12 +2418,7 @@ __fetch_web_reply = (i: int, b: u8[]) -> HttpReply:
     r = __http_head("HTTP/1.1 " + str_from_bytes(b[..e)))
     r.data = b[e + 4..]
     r.size = r.data.len()
-    if len(__fetches[i].save_to) > 0 and r.status >= 200 and r.status < 300:
-        write_file(__fetches[i].save_to, str_from_bytes(r.data))
-        r.data = []
-    else: r.text = str_from_bytes(r.data)
-    progress = __fetches[i].progress
-    progress(r.size, r.size)
+    r.text = str_from_bytes(r.data)
     r
 
 # (text with its line breaks shown as \\r and \\n)
@@ -3254,7 +3261,8 @@ when TARGET == "wasm":
     extern __wasm_rtcp_close = (id: int)
     extern __wasm_rtcp_buffered = (id: int) -> int
     extern __wasm_rtcp_route = (id: int) -> int
-    extern __wasm_fetch_start = (url: *u8, un: int, method: *u8, mn: int, headers: *u8, hn: int, body: *u8, bn: int) -> int
+    extern __wasm_fetch_start = (url: *u8, un: int, method: *u8, mn: int, headers: *u8, hn: int, body: *u8, bn: int, wait_ms: int, follow: int) -> int
+    extern __wasm_fetch_progress = (id: int, total: int) -> int
     extern __wasm_fetch_poll = (id: int, out: *u8, cap: int) -> int
     extern __wasm_fetch_cancel = (id: int)
 

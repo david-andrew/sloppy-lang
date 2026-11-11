@@ -1677,6 +1677,32 @@ itself). `net.fetch_start` starts the same request without waiting; `net.fetch_r
 its answer once, or `none` while it is on its way. `net.fetch_all(urls)` fetches many at once.
 See [fetching from the web](START.md#fetching-from-the-web) for methods, bodies, files and retries.
 
+In a page, `fetch_start`/`fetch_result` work in any browser with WebAssembly: start a request,
+then check once per frame (each reply is given once). `fetch` and `fetch_all` can wait in tasks,
+using JSPI to give the browser its event loop back; for example:
+
+```gdscript
+import net
+worker = spawn((): net.fetch_all(["/api/a", "/api/b"], at_once = 2))
+replies = worker.wait()
+```
+
+Without tasks, or in a game's `update`/`draw`, waiting fetches return status 0 with an error
+pointing to `fetch_start`/`fetch_result`. Browser tasks need JSPI support (see Tasks above).
+Relative URLs resolve against the page. Methods, headers and bodies use the browser's Fetch
+API; a nonempty body defaults to JSON or text as natively. Browsers forbid GET/HEAD bodies
+(an error), control some headers themselves, enforce CORS, and expose only allowed response
+headers (`Set-Cookie` is hidden). The browser manages cookies according to its normal policy.
+`save_to` and an explicit `CookieJar` return status 0 with a clear error in a page.
+
+`wait` is a timeout for the whole response, including its streamed body: an AbortController
+stops it even if the program has not polled recently. `fetch_cancel(id)` aborts and discards a
+request. Streamed progress is delivered when Sloppy polls or resumes its waiting task; `got` is
+the bytes decoded by the browser, and `all` is the visible Content-Length, or -1 if unknown
+(compression can make that length differ from decoded bytes). Redirects normally follow the
+browser's policy. With `follow = false`, a redirect gives status 0 and explains that browsers
+hide its status, headers and body; a native program can inspect those details.
+
 Native requests can share cookies by passing `cookies = jar` to any of those three functions:
 
 ```gdscript

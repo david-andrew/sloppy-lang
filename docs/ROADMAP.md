@@ -153,9 +153,11 @@ game picks from (and an example of each):
   tilesets (done), OpenType fonts with CFF outlines and kerning.
 - Input: non-XInput gamepads on Windows, actions bound per player.
 - Linux window icons on Wayland (KDE's xdg-toplevel-icon; GNOME needs a .desktop file).
-- Scripts (from a Python programmer's pass): an HTTP client (done for native programs:
-  `net.fetch`, http and https; a web page's still to come), dates done (ISO and format-based `parse_date`, `date_text`, elapsed seconds and `duration_text`), sets done (`Set[T]`, `set(xs)`, union/intersection/difference/subset),
-  Json mutation done (`put`, `push`, `remove` and nested paths); buffered file/stdin lines done (`open_file`, `loop let line = f.read_line():`, `read_line()`).
+- Scripts (from a Python programmer's pass): done. Buffered file/stdin line loops (`open_file`,
+  `read_line`); sets and algebra (`Set[T]`, `set(xs)`); Json mutation (`put`, `push`, `remove`
+  and nested paths); ISO/format-based dates and elapsed durations; HTTP/HTTPS fetch natively
+  and browser fetch (`fetch_start`/`fetch_result`, or `fetch`/`fetch_all` in JSPI tasks).
+  Page restrictions (CORS, redirects, disk paths and cookie jars) are documented.
 - A serializer (structs to text and back) for saves and settings: done (`save_value`,
   `load_value`, `to_text`, `from_text`).
 

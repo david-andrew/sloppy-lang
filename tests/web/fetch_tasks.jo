@@ -1,0 +1,71 @@
+# tools/web_fetch.mjs: a real HTTP server, with task waits through JSPI.
+import net
+
+main = ():
+    worker = spawn(():
+        r = net.fetch("/hello")
+        assert(r.status == 200 and r.text == "hello" and r.size == 5)
+        assert(r.headers["x-reply"] == "yes")
+        r = net.fetch("/echo", method = "POST", body = r'{"ok":true}', headers = {"X-Test": "sent"})
+        assert(r.status == 200 and r.text == r'POST|sent|application/json|{"ok":true}')
+        r = net.fetch("/echo", method = "PUT", body = "hi", headers = {"Content-Type": "custom/type"})
+        assert(r.text == "PUT||custom/type|hi")
+        r = net.fetch("/echo", method = "POST")
+        assert(r.text == "POST||text/plain; charset=utf-8|")
+        r = net.fetch("/hello", headers = {"X-Test": "injected\nX-Other: no"})
+        assert(r.status == 0 and contains(r.why, "browser would not fetch"))
+        r = net.fetch("/hello", method = "HEAD")
+        assert(r.status == 200 and r.data.len() == 0)
+        r = net.fetch("/binary")
+        assert(r.data == [u8(0), u8(255), u8(1), u8(128)] and r.size == 4)
+        r = net.fetch("/redirect")
+        assert(r.status == 200 and r.text == "hello")
+        r = net.fetch("/redirect", follow = false)
+        assert(r.status == 0 and contains(r.why, "browser hides redirect"))
+        r = net.fetch("/missing")
+        assert(r.status == 404 and r.text == "missing")
+        r = net.fetch("/hello", body = "forbidden")
+        assert(r.status == 0 and contains(r.why, "forbids a body"))
+        partial = false
+        last = -1
+        calls = 0
+        r = net.fetch("/stream", progress = (got: int, all: int):
+            assert(got >= last and all == 12)
+            last = got
+            calls += 1
+            if got > 0 and got < all: partial = true
+        )
+        assert(r.text == "abcdefghijkl" and partial and last == 12 and calls >= 2)
+        unknown = false
+        r = net.fetch("/chunked", progress = (got: int, all: int):
+            if all == -1: unknown = true
+        )
+        assert(r.text == "abcdef" and unknown)
+        r = net.fetch("/hang", wait = 0.1)
+        assert(r.status == 0 and contains(r.why, "seconds"))
+        r = net.fetch("/hang_body", wait = 0.1)
+        assert(r.status == 0 and contains(r.why, "seconds"))
+        c = spawn((): net.fetch("/hang", wait = 10.0))
+        sleep(0.1)
+        c.cancel()
+        r = c.wait()
+        assert(r.status == 0 and contains(r.why, "cancelled"))
+        done = 0
+        rs = net.fetch_all(["/pool/0", "/pool/1", "/retry", "/missing"], at_once = 2, retries = 1,
+            done = (i: int, r: net.HttpReply): done += 1)
+        assert(done == 4 and rs.len() == 4)
+        assert(rs[0].text == "0" and rs[1].text == "1" and rs[2].text == "retried" and rs[3].status == 404)
+        jar = net.cookie_jar()
+        rs = net.fetch_all(["/hello"], cookies = jar, retries = 0)
+        assert(rs[0].status == 0 and contains(rs[0].why, "CookieJar"))
+        # CORS success/failure on another origin (same local test server, another hostname).
+        port = env("PORT")!
+        r = net.fetch("http://localhost:{port}/allow")
+        assert(r.status == 200 and r.text == "cors")
+        r = net.fetch("http://localhost:{port}/allow_noheaders")
+        assert(r.status == 200 and r.text == "no headers" and r.headers.len() == 0)
+        r = net.fetch("http://localhost:{port}/denied")
+        assert(r.status == 0 and contains(r.why, "CORS"))
+        print("PASS page tasks")
+    )
+    worker.wait()
