@@ -1,7 +1,7 @@
 # 3D models from glTF 2.0 files (.glb, or .gltf with its .bin and images), the format Blender
 # and most tools export: metallic-roughness materials (PNG/JPEG maps), vertex colors,
 # placed by the scene's nodes; skins (meshes bent by a skeleton of nodes, up to 64 joints)
-# and their animations.
+# and their animations, plus weighted morph targets.
 #
 #   ship = load_model(embed("ship.glb"))
 #   draw = ():
@@ -14,8 +14,8 @@
 #   draw_model(hero, transform(pos, facing), pose = pose_at(hero, run, elapsed()))
 #
 # A .gltf names its other files: give them by those names, as `files` (or put them in the .gltf
-# as data: URIs). Not read: morph targets, compressed meshes (Draco, meshopt), sparse
-# accessors and material extensions other than KHR_materials_unlit.
+# as data: URIs). Not read: compressed meshes (Draco, meshopt), sparse base/animation
+# accessors (float morph deltas can be sparse), and material extensions other than KHR_materials_unlit.
 
 struct ModelPart:
     mesh: Mesh
@@ -26,6 +26,7 @@ struct ModelPart:
     node: int = -1              # the node it hangs from (in Model.nodes)
     skin: int = -1              # the skin that bends it (in Model.skins; -1: none)
     material: Material? = none
+    morph: MeshData? = none     # CPU source retained only for a part with morph targets
 
 # a node of the model's scene: its name, its parent (-1: none), and where it rests, from its
 # parent: a translation, a rotation (a quaternion) and a scale
@@ -35,6 +36,7 @@ struct ModelNode:
     t: vec3
     r: vec4
     s: vec3
+    weights: f32[] = []         # this node's default morph weights (node, mesh, then zeros)
 
 # the joints (nodes) that bend a skin's vertices, and the inverse of where each was when the
 # mesh was bound to them
@@ -42,25 +44,28 @@ struct Skin:
     joints: int[]
     inverse_bind: mat4[]
 
-# keys moving one node: its translation (path 0), rotation (1) or scale (2) at the times given
-# (3 values a key, 4 for rotations), in steps or blended between keys
+# keys moving one node: translation (path 0), rotation (1), scale (2), morph weights (3).
+# 3 values a key, 4 for rotations, components for weights; steps or interpolated keys
 struct AnimChannel:
     node: int
     path: int
     step: bool
     times: f32[]
     values: f32[]
+    components: int = 0         # path 3: morph weights, this many scalars per key
+    tangents: f32[] = []        # cubic weights: incoming then outgoing derivatives per key
 
 struct ModelAnimation:
     name: str
     length: f64                 # (seconds)
     channels: AnimChannel[]
 
-# every node's translation, rotation and scale (by node, as in Model.nodes)
+# every node's translation, rotation, scale and morph weights (by node, as in Model.nodes)
 struct Pose:
     t: vec3[]
     r: vec4[]
     s: vec3[]
+    weights: f32[][] = []       # morph weights by node; weights need not sum to one
 
 struct Model:
     parts: ModelPart[]
@@ -73,6 +78,13 @@ struct Model:
 
 error struct ModelError:
     message: str
+
+# Per-vertex deltas from one glTF morph target. Empty attributes keep their base values.
+# Tangent deltas are XYZ only: handedness stays the base vertex's W.
+struct MorphTarget:
+    positions: vec3[] = []
+    normals: vec3[] = []
+    tangents: vec3[] = []
 
 # A model's data before it goes to the GPU (read_gltf): the vertices (in each part's own space)
 # for collision, or to change them, and the images of its textures.
@@ -89,6 +101,9 @@ struct MeshData:
     weights: vec4[] = []        # and how much each bends it)
     material: Material? = none  # CPU factors; the five maps name ModelData.images below
     material_images: int[] = [] # base, metallic-roughness, normal, occlusion, emissive
+    targets: MorphTarget[] = []
+    flat_normals: bool = false  # the base asset had no normals
+    generated_tangents: bool = false # the base tangents were absent or ignored
 
 struct ModelData:
     meshes: MeshData[]
@@ -112,6 +127,13 @@ model = (d: ModelData) -> Model:
     rest: mat4[]
     if d.skins.len() > 0: rest = __gt_globals(d.nodes, d.order, __gt_rest(d.nodes))
     loop md in d.meshes:
+        vertices = md.vertices
+        source: MeshData? = none
+        if md.targets.len() > 0:
+            source = md
+            weights: f32[]
+            if md.node >= 0 and md.node < d.nodes.len(): weights = d.nodes[md.node].weights
+            vertices = morph_vertices(md, weights)
         tex = Texture(0, 0, 0)
         if md.image >= 0: tex = texs[md.image]
         mat = md.material
@@ -127,13 +149,15 @@ model = (d: ModelData) -> Model:
             pm.base_color = vec4(1, 1, 1, 1) # ModelPart.color already carries this factor
             mat = pm
         if md.skin < 0:
-            m.parts.push(ModelPart(__mesh3d(md.vertices, md.indices), md.transform, md.color, tex, md.emissive, md.node, material = mat))
+            m.parts.push(ModelPart(__mesh3d(vertices, md.indices), md.transform, md.color, tex, md.emissive, md.node, material = mat, morph = source))
             continue
         vs: SkinVertex3D[]
-        loop i in 0.. and v in md.vertices: vs.push(SkinVertex3D(v.pos, v.normal, v.uv, v.color, md.joints[i], md.weights[i], v.tangent, v.uv1))
+        loop i in 0.. and v in vertices: vs.push(SkinVertex3D(v.pos, v.normal, v.uv, v.color, md.joints[i], md.weights[i], v.tangent, v.uv1))
         sm = mesh(vs, md.indices)
         # (the sphere around it, as it rests, a little larger for limbs that swing out)
-        ps = __gt_skin_points(md, d.skins[md.skin], rest)
+        posed = md
+        posed.vertices = vertices
+        ps = __gt_skin_points(posed, d.skins[md.skin], rest)
         lo = ps[0]
         hi = ps[0]
         loop p in ps:
@@ -143,24 +167,117 @@ model = (d: ModelData) -> Model:
         r = 0.0
         loop p in ps: r = max(r, f64(length(p - sm.center)))
         sm.radius = f32(r * 1.3)
-        m.parts.push(ModelPart(sm, mat4(), md.color, tex, md.emissive, md.node, md.skin, mat))
+        m.parts.push(ModelPart(sm, mat4(), md.color, tex, md.emissive, md.node, md.skin, mat, source))
     m
 
 # Draw each part (see draw_mesh), the model placed by transform and its colors times tint. An
 # animated model is drawn in the pose given (pose_at, blend_poses), or as it rests.
 draw_model = (m: Model, transform: mat4 = mat4(), tint: vec4 = vec4(1, 1, 1, 1), cast_shadow: bool = true, pose: Pose = Pose([], [], []), in_front: bool = false):
-    if m.skins.len() == 0 and pose.t.len() == 0:
-        loop p in m.parts: draw_mesh(p.mesh, transform * p.transform, p.color * tint, p.texture, if p.material == none: p.emissive else: 0.0, 0.3, cast_shadow, in_front, material = p.material)
+    if m.skins.len() == 0 and pose.t.len() == 0 and pose.weights.len() == 0:
+        loop p in m.parts:
+            weights: f32[]
+            if p.node >= 0 and p.node < m.nodes.len(): weights = m.nodes[p.node].weights
+            __gt_draw_part(p, transform * p.transform, tint, [], weights, cast_shadow, in_front)
         return
     ps = pose
-    if ps.t.len() != m.nodes.len(): ps = rest_pose(m)
+    if ps.t.len() != m.nodes.len():
+        ps = rest_pose(m)
+        loop i in [0..min(pose.weights.len(), ps.weights.len())): ps.weights[i] = pose.weights[i]
     g = __gt_globals(m.nodes, m.order, ps)
     bones: vec4[][]
     loop s in m.skins: bones.push(__gt_bones(s, g))
     loop p in m.parts:
-        if p.skin >= 0: __draw_skinned(p.mesh, bones[p.skin], transform, p.color * tint, p.texture, if p.material == none: p.emissive else: 0.0, 0.3, cast_shadow, in_front, material = p.material)
-        else if p.node >= 0: draw_mesh(p.mesh, transform * g[p.node], p.color * tint, p.texture, if p.material == none: p.emissive else: 0.0, 0.3, cast_shadow, in_front, material = p.material)
-        else: draw_mesh(p.mesh, transform * p.transform, p.color * tint, p.texture, if p.material == none: p.emissive else: 0.0, 0.3, cast_shadow, in_front, material = p.material)
+        weights: f32[]
+        if p.node >= 0 and p.node < m.nodes.len():
+            weights = m.nodes[p.node].weights
+            if p.node < ps.weights.len(): weights = ps.weights[p.node]
+        if p.skin >= 0: __gt_draw_part(p, transform, tint, bones[p.skin], weights, cast_shadow, in_front)
+        else if p.node >= 0: __gt_draw_part(p, transform * g[p.node], tint, [], weights, cast_shadow, in_front)
+        else: __gt_draw_part(p, transform * p.transform, tint, [], weights, cast_shadow, in_front)
+
+# Blend CPU vertices before skinning. Missing weights are zero; extra ones are ignored.
+# Authored normals/tangents are normalized after blending. If absent in the asset, flat
+# normals and tangent frames are rebuilt for the deformed geometry, using its normal UV set.
+morph_vertices = (m: MeshData, weights: f32[], uv_set: int = -1) -> Vertex3D[]:
+    vs = m.vertices
+    changed = false
+    loop k in [0..min(weights.len(), m.targets.len())):
+        w = weights[k]
+        if w == 0.0: continue
+        changed = true
+        target = m.targets[k]
+        loop i in [0..vs.len()):
+            if i < target.positions.len(): vs[i].pos = vs[i].pos + target.positions[i] * w
+            if not m.flat_normals and i < target.normals.len(): vs[i].normal = vs[i].normal + target.normals[i] * w
+            if not m.generated_tangents and i < target.tangents.len():
+                t = vs[i].tangent
+                vs[i].tangent = vec4(t.xyz + target.tangents[i] * w, t.w)
+    if not changed: return vs
+    if m.flat_normals:
+        # (the loader expanded these into independent triangles)
+        i = 0
+        loop i + 2 < vs.len():
+            n = cross(vs[i + 1].pos - vs[i].pos, vs[i + 2].pos - vs[i].pos)
+            if length(n) > 0.0: n = normalize(n)
+            loop j in [0..3): vs[i + j].normal = n
+            i += 3
+    else:
+        loop i in [0..vs.len()):
+            if length(vs[i].normal) > 0.0: vs[i].normal = normalize(vs[i].normal)
+            else: vs[i].normal = m.vertices[i].normal
+            t = vs[i].tangent
+            if length(t.xyz) > 0.0: vs[i].tangent = vec4(normalize(t.xyz), t.w)
+            else: vs[i].tangent = m.vertices[i].tangent
+    if m.generated_tangents:
+        loop mut v in vs: v.tangent = vec4(0, 0, 0, 1)
+        uv = uv_set
+        if uv < 0:
+            uv = 0
+            if let mat = m.material: uv = mat.normal_uv
+        vs = tangents3d(vs, m.indices, uv)
+    vs
+
+__gt_draw_part = (p: ModelPart, xf: mat4, tint: vec4, bones: vec4[], weights: f32[], cast_shadow: bool, in_front: bool):
+    em = if p.material == none: p.emissive else: 0.0
+    if p.morph == none:
+        if p.skin >= 0: __draw_skinned(p.mesh, bones, xf, p.color * tint, p.texture, em, 0.3, cast_shadow, in_front, material = p.material)
+        else: draw_mesh(p.mesh, xf, p.color * tint, p.texture, em, 0.3, cast_shadow, in_front, material = p.material)
+        return
+    source = p.morph!
+    uv = 0
+    if let mat = p.material: uv = mat.normal_uv
+    vs = morph_vertices(source, weights, uv)
+    d = Draw3D(p.mesh, xf, p.color * tint, p.texture.id, f32(em), 0.3, [], false, cast_shadow and not in_front, 0, __noop3d, false, in_front, bones, material = p.material)
+    lo = vec3(1e30, 1e30, 1e30)
+    hi = vec3(-1e30, -1e30, -1e30)
+    if p.skin >= 0:
+        sk: SkinVertex3D[]
+        loop i in 0.. and v in vs:
+            sv = SkinVertex3D(v.pos, v.normal, v.uv, v.color, source.joints[i], source.weights[i], v.tangent, v.uv1)
+            sk.push(sv)
+            point = __gt_bent_point(sv, bones)
+            lo = min(lo, point)
+            hi = max(hi, point)
+        d.morph_skin = sk
+    else:
+        d.morph_vertices = vs
+        loop v in vs:
+            lo = min(lo, v.pos)
+            hi = max(hi, v.pos)
+    # Bounds follow this draw's deformed (and skinned) vertices, not the base pose.
+    if vs.len() > 0:
+        d.mesh.center = (lo + hi) * 0.5
+        d.mesh.radius = length(hi - lo) * 0.5
+    __material_draw(d)
+    __draws.push(d)
+
+__gt_bent_point = (v: SkinVertex3D, bones: vec4[]) -> vec3:
+    out = vec3(0, 0, 0)
+    p = vec4(v.pos, 1)
+    loop k in [0..4):
+        j = int(v.joints[k]) * 3
+        out += vec3(dot(bones[j], p), dot(bones[j + 1], p), dot(bones[j + 2], p)) * v.weights[k]
+    out
 
 # ---------------- poses ----------------
 # every node as it rests
@@ -198,7 +315,19 @@ pose_at = (m: Model, anim: int, time: f64, looped: bool = true) -> Pose:
         j = k.1
         f = k.2
         v = c.values
-        if c.path == 1:
+        if c.path == 3:
+            n = c.components
+            loop q in [0..min(n, p.weights[c.node].len())):
+                value = lerp(v[n * i + q], v[n * j + q], f)
+                if c.tangents.len() == c.times.len() * n * 2:
+                    f2 = f * f
+                    f3 = f2 * f
+                    span = c.times[j] - c.times[i]
+                    t0 = c.tangents[(i * 2 + 1) * n + q] * span
+                    t1 = c.tangents[j * 2 * n + q] * span
+                    value = (2.0 * f3 - 3.0 * f2 + 1.0) * v[n * i + q] + (f3 - 2.0 * f2 + f) * t0 + (-2.0 * f3 + 3.0 * f2) * v[n * j + q] + (f3 - f2) * t1
+                p.weights[c.node][q] = value
+        else if c.path == 1:
             q0 = vec4(v[4 * i], v[4 * i + 1], v[4 * i + 2], v[4 * i + 3])
             q1 = vec4(v[4 * j], v[4 * j + 1], v[4 * j + 2], v[4 * j + 3])
             p.r[c.node] = __gt_nlerp(q0, q1, f)
@@ -285,6 +414,19 @@ blend_poses = (a: Pose, b: Pose, k: f64) -> Pose:
         p.t[i] = lerp(a.t[i], b.t[i], f)
         p.r[i] = __gt_nlerp(a.r[i], b.r[i], f)
         p.s[i] = lerp(a.s[i], b.s[i], f)
+    loop i in [0..max(a.weights.len(), b.weights.len())):
+        aw: f32[]
+        bw: f32[]
+        if i < a.weights.len(): aw = a.weights[i]
+        if i < b.weights.len(): bw = b.weights[i]
+        ws = fill(f32(0), max(aw.len(), bw.len()))
+        loop j in [0..ws.len()):
+            av = f32(0)
+            bv = f32(0)
+            if j < aw.len(): av = aw[j]
+            if j < bw.len(): bv = bw[j]
+            ws[j] = lerp(av, bv, f)
+        p.weights.push(ws)
     p
 
 # the node with this name (or whose name ends ":name", as Mixamo's "mixamorig:Head"); -1: none
@@ -320,6 +462,7 @@ __gt_rest = (nodes: ModelNode[]) -> Pose:
         p.t.push(n.t)
         p.r.push(n.r)
         p.s.push(n.s)
+        p.weights.push(n.weights)
     p
 
 __gt_trs = (t: vec3, r: vec4, s: vec3) -> mat4:
@@ -437,7 +580,23 @@ read_gltf = (file: u8[], files: {str: u8[]} = {}) -> ModelData | ModelError:
     # every node, and its parent
     loop n in as_list(get(doc, "nodes")):
         nj: Json? = n
-        m.nodes.push(__gt_node(nj))
+        nd = __gt_node(nj)
+        if let mi = as_int(get(nj, "mesh")):
+            mj: Json? = at(get(doc, "meshes"), mi)
+            nt = -1
+            loop pr in as_list(get(mj, "primitives")):
+                pj: Json? = pr
+                count = as_list(get(pj, "targets")).len()
+                if nt >= 0 and count != nt: return ModelError("a mesh's primitives have different numbers of morph targets")
+                nt = count
+            nt = max(nt, 0)
+            raw = get(nj, "weights")
+            if raw == none: raw = get(mj, "weights")
+            values = as_list(raw)
+            if raw != none and values.len() != nt: return ModelError("a node or mesh's morph weights do not match its targets")
+            nd.weights = fill(f32(0), nt)
+            loop k in [0..values.len()): nd.weights[k] = __gt_f(values[k])
+        m.nodes.push(nd)
     loop i in 0.. and n in as_list(get(doc, "nodes")):
         nj: Json? = n
         loop c in as_list(get(nj, "children")):
@@ -514,22 +673,38 @@ read_gltf = (file: u8[], files: {str: u8[]} = {}) -> ModelData | ModelError:
             if path == "translation": pk = 0
             else if path == "rotation": pk = 1
             else if path == "scale": pk = 2
+            else if path == "weights": pk = 3
             if pk < 0 or target < 0 or target >= m.nodes.len(): continue
             n = 3
             if pk == 1: n = 4
+            if pk == 3:
+                n = m.nodes[target].weights.len()
+                if n == 0: continue
             sm: Json? = at(get(aj, "samplers"), as_int(get(cj, "sampler")) ?? -1)
             times = __gt_floats(doc, bufs, as_int(get(sm, "input")) ?? -1, 1) ?? []
-            vals = __gt_floats(doc, bufs, as_int(get(sm, "output")) ?? -1, n) ?? []
+            output = as_int(get(sm, "output")) ?? -1
             how = as_str(get(sm, "interpolation")) ?? "LINEAR"
+            read_n = n
+            if pk == 3:
+                read_n = 1
+                count = times.len() * n
+                if how == "CUBICSPLINE": count = count * 3
+                oa: Json? = at(get(doc, "accessors"), output)
+                if (as_str(get(oa, "type")) ?? "") != "SCALAR" or (as_int(get(oa, "count")) ?? -1) != count: continue
+            vals = __gt_floats(doc, bufs, output, read_n) ?? []
+            tangents: f32[]
             if how == "CUBICSPLINE":
-                # (the keys' values, between their tangents; blended in straight lines)
+                # (TRS keeps the existing linear approximation; weights retain Hermite slopes)
                 v: f32[]
                 loop i in [0..vals.len() / (3 * n)):
                     loop c in [0..n): v.push(vals[(3 * i + 1) * n + c])
+                    if pk == 3:
+                        loop c in [0..n): tangents.push(vals[3 * i * n + c])
+                        loop c in [0..n): tangents.push(vals[(3 * i + 2) * n + c])
                 vals = v
             if times.len() == 0 or vals.len() < times.len() * n: continue
             a.length = max(a.length, f64(times[times.len() - 1]))
-            a.channels.push(AnimChannel(target, pk, how == "STEP", times, vals))
+            a.channels.push(AnimChannel(target, pk, how == "STEP", times, vals, if pk == 3: n else: 0, tangents))
         m.animations.push(a)
     # skinned meshes: their joints, and the box round them as they rest
     if m.skins.len() > 0:
@@ -541,7 +716,26 @@ read_gltf = (file: u8[], files: {str: u8[]} = {}) -> ModelData | ModelError:
             loop p in __gt_skin_points(md, m.skins[md.skin], g):
                 m.min = min(m.min, p)
                 m.max = max(m.max, p)
-    if m.meshes.len() == 0:
+    has_morph = false
+    loop md in m.meshes:
+        if md.targets.len() > 0: has_morph = true
+    if has_morph:
+        m.min = vec3(1e30, 1e30, 1e30)
+        m.max = vec3(-1e30, -1e30, -1e30)
+        g = __gt_globals(m.nodes, m.order, __gt_rest(m.nodes))
+        loop md in m.meshes:
+            weights: f32[]
+            if md.node >= 0: weights = m.nodes[md.node].weights
+            posed = md
+            posed.vertices = morph_vertices(md, weights)
+            points: vec3[]
+            if md.skin >= 0: points = __gt_skin_points(posed, m.skins[md.skin], g)
+            else:
+                loop v in posed.vertices: points.push((md.transform * vec4(v.pos, 1)).xyz)
+            loop point in points:
+                m.min = min(m.min, point)
+                m.max = max(m.max, point)
+    if m.meshes.len() == 0 or m.min.x > m.max.x:
         m.min = vec3(0, 0, 0)
         m.max = vec3(0, 0, 0)
     m
@@ -621,9 +815,9 @@ __gt_uri = (uri: str, files: {str: u8[]}) -> u8[]?:
 
 # accessor a's values as floats, n per element (normalized integers in [0, 1] or [-1, 1]); none if
 # it is not there, or does not fit its buffer
-__gt_floats = (doc: Json?, bufs: u8[][], a: int, n: int) -> f32[]?:
+__gt_floats = (doc: Json?, bufs: u8[][], a: int, n: int, ignore_sparse: bool = false) -> f32[]?:
     acc: Json? = at(get(doc, "accessors"), a)
-    if acc == none or get(acc, "sparse") != none: return none
+    if acc == none or (get(acc, "sparse") != none and not ignore_sparse): return none
     ct = as_int(get(acc, "componentType")) ?? 0
     count = as_int(get(acc, "count")) ?? 0
     norm = as_bool(get(acc, "normalized")) ?? false
@@ -797,6 +991,7 @@ __gt_primitive = (doc: Json?, prim0: Json, bufs: u8[][], files: {str: u8[]}, tex
             if sum > 0.0: w = w * (1.0 / sum)
             else: w = vec4(1, 0, 0, 0)
             ws.push(w)
+    flat_ids: int[]
     if nrm.len() != nv * 3:
         # (no normals: each triangle's own, as glTF says)
         flat: Vertex3D[]
@@ -814,6 +1009,7 @@ __gt_primitive = (doc: Json?, prim0: Json, bufs: u8[][], files: {str: u8[]}, tex
             flat.push(a)
             flat.push(b)
             flat.push(c)
+            loop q in [0..3): flat_ids.push(int(idx[k + q]))
             if skin >= 0:
                 loop q in [0..3):
                     fj.push(js[int(idx[k + q])])
@@ -861,10 +1057,79 @@ __gt_primitive = (doc: Json?, prim0: Json, bufs: u8[][], files: {str: u8[]}, tex
     pm.normal_uv = sets[2]
     pm.occlusion_uv = sets[3]
     pm.emissive_uv = sets[4]
+    flat_normals = nrm.len() != nv * 3
+    generated_tangents = tang.len() != nv * 4 or flat_normals
+    if generated_tangents:
+        loop mut v in vs: v.tangent = vec4(0, 0, 0, 1)
     vs = tangents3d(vs, idx, pm.normal_uv)
+    targets: MorphTarget[]
+    loop target in as_list(get(prim, "targets")):
+        tj: Json? = target
+        mt = MorphTarget()
+        loop name in ["POSITION", "NORMAL", "TANGENT"]:
+            if get(tj, name) == none: continue
+            if get(attrs, name) == none: return ModelError("a morph target's {name} has no base attribute")
+            ai = as_int(get(tj, name)) ?? -1
+            delta = __gt_morph_delta(doc, bufs, ai, nv, flat_ids)
+            if delta == none: return ModelError("a morph target's {name} accessor is unsupported, malformed or does not fit its vertices")
+            if name == "POSITION": mt.positions = delta!
+            else if name == "NORMAL": mt.normals = delta!
+            else: mt.tangents = delta!
+        targets.push(mt)
     em = f64(max(pm.emissive_color.x, max(pm.emissive_color.y, pm.emissive_color.z)))
-    m.meshes.push(MeshData(vs, idx, xf, pm.base_color, images[0], em, node, skin, js, ws, pm, images))
+    m.meshes.push(MeshData(vs, idx, xf, pm.base_color, images[0], em, node, skin, js, ws, pm, images, targets, flat_normals, generated_tangents))
     none
+
+# Morph attributes keep the original accessor's vertex count, even when the loader
+# expands indexed geometry to flat-normal triangles. Validate count before allocating.
+__gt_morph_delta = (doc: Json?, bufs: u8[][], ai: int, count: int, flat_ids: int[]) -> vec3[]?:
+    acc: Json? = at(get(doc, "accessors"), ai)
+    if acc == none or (as_int(get(acc, "count")) ?? -1) != count or (as_str(get(acc, "type")) ?? "") != "VEC3": return none
+    sparse = get(acc, "sparse")
+    if sparse != none and (as_int(get(acc, "componentType")) ?? 0) != 5126: return none
+    values = __gt_floats(doc, bufs, ai, 3, ignore_sparse = true)
+    if values == none: return none
+    f = values!
+    if sparse != none:
+        n = as_int(get(sparse, "count")) ?? -1
+        ij = get(sparse, "indices")
+        vj = get(sparse, "values")
+        ct = as_int(get(ij, "componentType")) ?? 0
+        if n <= 0 or n > count or (ct != 5121 and ct != 5123 and ct != 5125): return none
+        size = __gt_csize(ct)
+        ir = __gt_span(doc, bufs, as_int(get(ij, "bufferView")) ?? -1, as_int(get(ij, "byteOffset")) ?? 0, n * size)
+        vr = __gt_span(doc, bufs, as_int(get(vj, "bufferView")) ?? -1, as_int(get(vj, "byteOffset")) ?? 0, n * 12)
+        if ir == none or vr == none: return none
+        indices = ir!
+        vals = vr!
+        last = -1
+        loop k in [0..n):
+            index = int(indices[k * size])
+            if ct == 5123: index = int(indices[k * size]) | (int(indices[k * size + 1]) << 8)
+            else if ct == 5125: index = __gt_u32(indices, k * size)
+            if index <= last or index >= count: return none
+            last = index
+            v = (data(vals) + k * 12) as *f32
+            loop q in [0..3): f[3 * index + q] = v[q]
+    out: vec3[]
+    if flat_ids.len() == 0:
+        loop i in [0..count): out.push(vec3(f[3 * i], f[3 * i + 1], f[3 * i + 2]))
+    else:
+        loop i in flat_ids: out.push(vec3(f[3 * i], f[3 * i + 1], f[3 * i + 2]))
+    out
+
+# A tightly packed span of a buffer view. Bounds use subtraction to avoid overflow on
+# damaged JSON lengths; used for sparse morph indices/values before reading their pointers.
+__gt_span = (doc: Json?, bufs: u8[][], vi: int, offset: int, size: int) -> u8[]?:
+    view: Json? = at(get(doc, "bufferViews"), vi)
+    bi = as_int(get(view, "buffer")) ?? -1
+    start = as_int(get(view, "byteOffset")) ?? 0
+    view_len = as_int(get(view, "byteLength")) ?? -1
+    if view == none or bi < 0 or bi >= bufs.len(): return none
+    buf = bufs[bi]
+    if start < 0 or start > buf.len() or view_len < 0 or view_len > buf.len() - start: return none
+    if offset < 0 or offset > view_len or size < 0 or size > view_len - offset: return none
+    buf[start + offset..start + offset + size)
 
 # texture ti's image (PNG or JPEG: in a buffer view, a data: URI or a file given), added to m
 __gt_image = (doc: Json?, ti: int, bufs: u8[][], files: {str: u8[]}, m: mut ModelData) -> ModelError?:

@@ -2349,6 +2349,9 @@ transparent texels, including their shadows; `.blend` draws transparent surfaces
 See [3D materials](GRAPHICS.md#3d-materials) for channels, UV sets, tangent conventions and
 lighting approximations. `sky_image(load_texture(embed("sky.png")))` selects an
 equirectangular background and ambient reflections; `sky(...)` returns to the gradient.
+For glTF morph targets, `rest_pose(model).weights` contains each node's target weights;
+change `p.weights[node][target]` and pass `pose = p` to `draw_model`, or use `pose_at` for
+animated weights. Morphing runs before skinning, with independent weights for each draw.
 
 ### Testing a game
 

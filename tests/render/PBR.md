@@ -5,6 +5,9 @@ scene; tests select its other meshes by changing the node's mesh index before lo
 
 - `sky_image`: procedural panorama, shared backdrop/reflection orientation and cached
   GGX prefiltering; sharp chrome, rough metal and dielectric surfaces.
+- `pbr_morph`: three weight sets of one model, plus three animated/skinned poses, with
+  independent color/shadow vertex uploads and bounds. Dense/sparse/default/cubic cases are
+  also covered by tests/t/morph.jo.
 - `pbr_grid`: metallic 0, 0.5, 1 (top to bottom), roughness 0.08 to 1 (left to right).
 - `pbr_normal`: generated versus authored tangent frames, nonuniform scale and UV set 1.
 - `pbr_skin`: a normal-mapped glTF mesh at rest and animated, including skinned tangents.

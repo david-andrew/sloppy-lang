@@ -1,0 +1,99 @@
+# requires: sloppy
+# glTF morph weights/defaults/animations and CPU deltas, without a window. Original CC0 data.
+read = (file: u8[]) -> ModelData:
+    r = read_gltf(file)
+    if r is ModelError: panic(r.message)
+    r as ModelData
+near3 = (a: vec3, b: vec3): assert(length(a - b) < 0.00002)
+near_weights = (a: f32[], x: f32, y: f32):
+    assert(a.len() == 2 and abs(a[0] - x) < 0.00001 and abs(a[1] - y) < 0.00001)
+d = read(embed("../render/pbr_morph.gltf"))
+md = d.meshes[0]
+assert(md.targets.len() == 2 and not md.flat_normals and not md.generated_tangents)
+near_weights(d.nodes[0].weights, 0.25, 0)
+near3(d.min, vec3(-1, -0.8848076, -0.15))
+near3(d.max, vec3(1, 1.1348076, 0.15))
+v = morph_vertices(md, [f32(1), f32(0.5)])[2]
+near3(v.pos, vec3(1.175, 1.5392305, 0.6))
+near3(v.normal, vec3(0, -0.5, 0.8660254))
+assert(v.tangent == vec4(1, 0, 0, -1))
+near3(morph_vertices(md, [f32(-0.5), f32(1.5)])[2].pos, vec3(1.525, 0.7303848, -0.3))
+near3(md.vertices[2].pos, vec3(1, 1, 0)) # source data is immutable across weight sets
+cancel = md
+cancel.targets[0].normals = fill(vec3(0,0,-1),4)
+cancel.targets[0].tangents = fill(vec3(-1,0,0),4)
+cv = morph_vertices(cancel,[f32(1),f32(0)])
+near3(cv[0].normal,vec3(0,0,1))
+assert(cv[0].tangent == vec4(1,0,0,-1))
+print("morph attributes, extrapolation, source isolation and default bounds ok")
+# A node overrides its mesh's default weights; malformed counts are rejected.
+src = str_from_bytes(embed("../render/pbr_morph.gltf"))
+over = read(bytes(replace(src, "\"mesh\":0", "\"mesh\":0,\"weights\":[0.75,0.5]")))
+near_weights(over.nodes[0].weights, 0.75, 0.5)
+bad = read_gltf(bytes(replace(src, "\"weights\":[0.25,0]", "\"weights\":[0.25]")))
+assert(bad is ModelError)
+# A model with no GPU parts is enough for pose sampling and crossfades.
+m = Model([], d.min, d.max, d.nodes, d.order, d.skins, d.animations)
+near_weights(rest_pose(m).weights[0], 0.25, 0)
+near_weights(pose_at(m, 0, 0.5).weights[0], 0.5, 0.25)
+near_weights(pose_at(m, 0, 1.5).weights[0], 0.5, 0.25)
+near_weights(pose_at(m, 0, 9.0, false).weights[0], 1, 0.5)
+near_weights(pose_at(m, 1, 0.9).weights[0], 0, 0)
+near_weights(pose_at(m, 2, 0.5).weights[0], 0.75, 0.25) # outgoing Hermite slope, not linear
+near_weights(pose_at(m, 3, 1.0).weights[0], 1.0, 0.25) # slopes scale by the two-second interval
+near_weights(blend_poses(rest_pose(m), pose_at(m, 0, 1, false), 0.5).weights[0], 0.625, 0.25)
+p = rest_pose(m)
+p.weights[0][0] = 0.9
+near_weights(m.nodes[0].weights, 0.25, 0)
+only_a = Pose([],[],[],[[f32(0.2),f32(0.3)]])
+only_b = Pose([],[],[],[[f32(0.8),f32(0.7)]])
+near_weights(blend_poses(only_a,only_b,0.5).weights[0],0.5,0.5)
+print("node overrides, linear/step/cubic animations, looping and pose blends ok")
+f = read(embed("../render/pbr_morph_flat.gltf"))
+fm = f.meshes[0]
+assert(fm.vertices.len() == 6 and fm.indices.len() == 0 and fm.targets[0].positions.len() == 6)
+assert(fm.flat_normals and fm.generated_tangents)
+fv = morph_vertices(fm, [f32(0.25), f32(0)])
+near3(fv[2].pos, vec3(1, 1.1348076, 0.15))
+near3(fv[0].normal, normalize(vec3(0, -0.15, 1.0098076)))
+near3(fv[0].tangent.xyz, vec3(1, 0, 0))
+assert(fv[0].tangent.w == -1.0)
+print("flat-normal target remapping and regenerated frames ok")
+s = read(embed("../render/pbr_morph_skin.gltf"))
+sm = Model([], s.min, s.max, s.nodes, s.order, s.skins, s.animations)
+sp = pose_at(sm, 0, 0.5)
+sv = morph_vertices(s.meshes[0], sp.weights[0])[2]
+bones = __gt_bones(s.skins[0], __gt_globals(s.nodes, s.order, sp))
+bent = __gt_bent_point(SkinVertex3D(sv.pos, sv.normal, sv.uv, sv.color, vec4(0,0,0,0), vec4(1,0,0,0), sv.tangent), bones)
+near3(bent, vec3(1.12452177, 1.2696152, -0.09003912))
+print("morphing precedes skinning ok")
+# Draw bounds follow this instance, including weights that extend beyond the base mesh.
+part = ModelPart(Mesh(), mat4(), vec4(1,1,1,1), Texture(0,0,0), 0, morph = md)
+__gt_draw_part(part, mat4(), vec4(1,1,1,1), [], [f32(1), f32(0.5)], false, false)
+queued = __draws[__draws.len() - 1]
+near3(queued.mesh.center, vec3(0,0.5,0))
+assert(queued.mesh.radius > 1.67 and queued.morph_vertices.len() == 4)
+__draws.clear()
+# Weight-only poses can omit non-mesh node rows. Legacy TRS-only poses keep defaults.
+part.node = 0
+plain = Model([part],s.min,s.max,s.nodes,s.order,[],[])
+draw_model(plain,pose = Pose([],[],[],[[f32(1),f32(0)]]))
+near3(__draws[0].morph_vertices[2].pos,vec3(1,1.5392305,0.6))
+__draws.clear()
+legacy = Pose(sp.t,sp.r,sp.s)
+assert(blend_poses(legacy,legacy,0.5).weights.len() == 0)
+draw_model(plain,pose = blend_poses(legacy,legacy,0.5))
+near3(__draws[0].morph_vertices[2].pos,vec3(1,1.1348076,0.15))
+__draws.clear()
+print("deformed draw bounds and queued vertices ok")
+sparse_src = str_from_bytes(embed("../render/pbr_morph_sparse.gltf"))
+sparse = read(bytes(sparse_src))
+sparse_v = morph_vertices(sparse.meshes[0],[f32(1),f32(0)])
+near3(sparse_v[0].pos,vec3(-1,-1,0))
+near3(sparse_v[2].pos,vec3(1,1.5392305,0.6))
+assert(sparse.meshes[0].targets[0].positions.len() == 6)
+bad_count = read_gltf(bytes(replace(sparse_src, r'"sparse":{"count":2', r'"sparse":{"count":9')))
+assert(bad_count is ModelError)
+bad_type = read_gltf(bytes(replace(sparse_src,"\"componentType\":5121", "\"componentType\":5126")))
+assert(bad_type is ModelError)
+print("sparse float deltas and damaged sparse metadata ok")

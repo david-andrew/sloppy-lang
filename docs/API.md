@@ -3740,6 +3740,8 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
       kept_vbo = 0                # (instanced from an instance_buffer: its buffer, and how many)
       kept_count = 0
       material: Material? = none
+      morph_vertices: Vertex3D[] = []
+      morph_skin: SkinVertex3D[] = []
   ```
 - `camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0, up: vec3 = vec3(0, 1, 0))`: place the camera; call once per frame before drawing 3D objects. up is the way that is up on the screen (tilt it to roll the picture: a camera behind a plane, banking with it)
 - `world_to_screen = (p: vec3) -> vec2?`: where a point in 3D appears on the screen, in 2D drawing units (for a name or a health bar over someone's head); none when it is behind the camera. As the camera was last placed.
@@ -3913,7 +3915,7 @@ draw = ():
 
 ## Models (glTF)
 
-3D models from glTF 2.0 files (.glb, or .gltf with its .bin and images), the format Blender and most tools export: metallic-roughness materials (PNG/JPEG maps), vertex colors, placed by the scene's nodes; skins (meshes bent by a skeleton of nodes, up to 64 joints) and their animations.
+3D models from glTF 2.0 files (.glb, or .gltf with its .bin and images), the format Blender and most tools export: metallic-roughness materials (PNG/JPEG maps), vertex colors, placed by the scene's nodes; skins (meshes bent by a skeleton of nodes, up to 64 joints) and their animations, plus weighted morph targets.
 
 ```gdscript
 ship = load_model(embed("ship.glb"))
@@ -3929,7 +3931,7 @@ run = find_animation(hero, "Run")
 draw_model(hero, transform(pos, facing), pose = pose_at(hero, run, elapsed()))
 ```
 
-A .gltf names its other files: give them by those names, as `files` (or put them in the .gltf as data: URIs). Not read: morph targets, compressed meshes (Draco, meshopt), sparse accessors and material extensions other than KHR_materials_unlit.
+A .gltf names its other files: give them by those names, as `files` (or put them in the .gltf as data: URIs). Not read: compressed meshes (Draco, meshopt), sparse base/animation accessors (float morph deltas can be sparse), and material extensions other than KHR_materials_unlit.
 
 - `struct ModelPart`
   ```gdscript
@@ -3942,6 +3944,7 @@ A .gltf names its other files: give them by those names, as `files` (or put them
       node: int = -1              # the node it hangs from (in Model.nodes)
       skin: int = -1              # the skin that bends it (in Model.skins; -1: none)
       material: Material? = none
+      morph: MeshData? = none     # CPU source retained only for a part with morph targets
   ```
 - `struct ModelNode`: a node of the model's scene: its name, its parent (-1: none), and where it rests, from its parent: a translation, a rotation (a quaternion) and a scale
   ```gdscript
@@ -3951,6 +3954,7 @@ A .gltf names its other files: give them by those names, as `files` (or put them
       t: vec3
       r: vec4
       s: vec3
+      weights: f32[] = []         # this node's default morph weights (node, mesh, then zeros)
   ```
 - `struct Skin`: the joints (nodes) that bend a skin's vertices, and the inverse of where each was when the mesh was bound to them
   ```gdscript
@@ -3958,7 +3962,7 @@ A .gltf names its other files: give them by those names, as `files` (or put them
       joints: int[]
       inverse_bind: mat4[]
   ```
-- `struct AnimChannel`: keys moving one node: its translation (path 0), rotation (1) or scale (2) at the times given (3 values a key, 4 for rotations), in steps or blended between keys
+- `struct AnimChannel`: keys moving one node: translation (path 0), rotation (1), scale (2), morph weights (3). 3 values a key, 4 for rotations, components for weights; steps or interpolated keys
   ```gdscript
   struct AnimChannel:
       node: int
@@ -3966,6 +3970,8 @@ A .gltf names its other files: give them by those names, as `files` (or put them
       step: bool
       times: f32[]
       values: f32[]
+      components: int = 0         # path 3: morph weights, this many scalars per key
+      tangents: f32[] = []        # cubic weights: incoming then outgoing derivatives per key
   ```
 - `struct ModelAnimation`
   ```gdscript
@@ -3974,12 +3980,13 @@ A .gltf names its other files: give them by those names, as `files` (or put them
       length: f64                 # (seconds)
       channels: AnimChannel[]
   ```
-- `struct Pose`: every node's translation, rotation and scale (by node, as in Model.nodes)
+- `struct Pose`: every node's translation, rotation, scale and morph weights (by node, as in Model.nodes)
   ```gdscript
   struct Pose:
       t: vec3[]
       r: vec4[]
       s: vec3[]
+      weights: f32[][] = []       # morph weights by node; weights need not sum to one
   ```
 - `struct Model`
   ```gdscript
@@ -3997,6 +4004,13 @@ A .gltf names its other files: give them by those names, as `files` (or put them
   error struct ModelError:
       message: str
   ```
+- `struct MorphTarget`: Per-vertex deltas from one glTF morph target. Empty attributes keep their base values. Tangent deltas are XYZ only: handedness stays the base vertex's W.
+  ```gdscript
+  struct MorphTarget:
+      positions: vec3[] = []
+      normals: vec3[] = []
+      tangents: vec3[] = []
+  ```
 - `struct MeshData`: A model's data before it goes to the GPU (read_gltf): the vertices (in each part's own space) for collision, or to change them, and the images of its textures.
   ```gdscript
   struct MeshData:
@@ -4012,6 +4026,9 @@ A .gltf names its other files: give them by those names, as `files` (or put them
       weights: vec4[] = []        # and how much each bends it)
       material: Material? = none  # CPU factors; the five maps name ModelData.images below
       material_images: int[] = [] # base, metallic-roughness, normal, occlusion, emissive
+      targets: MorphTarget[] = []
+      flat_normals: bool = false  # the base asset had no normals
+      generated_tangents: bool = false # the base tangents were absent or ignored
   ```
 - `struct ModelData`
   ```gdscript
@@ -4028,6 +4045,7 @@ A .gltf names its other files: give them by those names, as `files` (or put them
   ```
 - `model = (d: ModelData) -> Model`: the model on the GPU: a mesh and a texture for each part
 - `draw_model = (m: Model, transform: mat4 = mat4(), tint: vec4 = vec4(1, 1, 1, 1), cast_shadow: bool = true, pose: Pose = Pose([], [], []), in_front: bool = false)`: Draw each part (see draw_mesh), the model placed by transform and its colors times tint. An animated model is drawn in the pose given (pose_at, blend_poses), or as it rests.
+- `morph_vertices = (m: MeshData, weights: f32[], uv_set: int = -1) -> Vertex3D[]`: Blend CPU vertices before skinning. Missing weights are zero; extra ones are ignored. Authored normals/tangents are normalized after blending. If absent in the asset, flat normals and tangent frames are rebuilt for the deformed geometry, using its normal UV set.
 
 #### Poses
 

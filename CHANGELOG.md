@@ -27,6 +27,10 @@
 - Script guides now show the existing set constructor, membership and set algebra beside maps.
 - Document existing buffered file/stdin line loops for scripts; reading bytes after a final
   unterminated file line now correctly returns an empty array.
+- glTF morph targets: CPU blending of position/normal/tangent deltas (including sparse float
+  data), node/mesh default weights, `Pose.weights`, animated and crossfaded weights, and cubic
+  weight curves. Blending precedes skinning; each draw retains its own vertices and bounds
+  for both color and shadows, including multiple poses of the same model in one frame.
 - `sky_image(texture, intensity, rotation)` draws an equirectangular sky behind the 3D
   scene and supplies PBR ambient light, with cached GGX prefiltered rough reflections.
   `sky(...)` returns to the original gradient; `hide_sky()` retains the environment's light.

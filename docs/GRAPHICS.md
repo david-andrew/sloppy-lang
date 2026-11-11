@@ -173,6 +173,40 @@ texture's pixels requires `sky_image(texture, refresh = true)` to rebuild its ca
 changes to rotation or intensity reuse the maps. The same render-target passes run on the
 CPU renderer, Vulkan, GLES/WebGL and Metal.
 
+### Morph targets
+
+Imported glTF meshes support weighted `POSITION`, `NORMAL` and `TANGENT` deltas, including
+sparse float deltas. Weights default to the node's `weights`, then the mesh's, then zeros.
+They are neither clamped nor normalized. The deltas are blended before skinning and node
+transforms, following the [glTF specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html).
+Tangent W (handedness) stays fixed. Missing base normals are rebuilt as flat normals after
+blending; missing tangents are regenerated from the deformed geometry and its normal-map UV
+set. Authored normal/tangent directions are normalized, with a base-frame fallback if a blend
+cancels them to zero. UV/color morph deltas and sparse base/animation accessors are not read.
+
+`Pose.weights[node][target]` controls a mesh node's morphs. For a node named `Face` with a
+morph target:
+
+```gdscript
+p = rest_pose(hero)
+p.weights[find_node(hero, "Face")][0] = 0.7
+draw_model(hero, pose = p)
+```
+
+`pose_at`, `blend_poses` and `Animator` also blend the weights. Morph-weight animations support
+STEP, LINEAR and CUBICSPLINE, including Hermite slopes scaled by the key interval. Existing
+TRS cubic channels retain the loader's linear-key approximation. `read_gltf` exposes each
+`MeshData.targets`; `morph_vertices(mesh_data, weights)` returns blended CPU vertices without
+changing the source, for collision or other tools.
+
+Blending is on the CPU, with source data retained only for parts that have targets
+(`ModelPart.morph`). Its cost scales with mesh size and active targets. Each queued draw
+keeps its own vertices and bounds, including the current skin. Vertex data is streamed just
+before each shadow or color draw, so several instances of the same model can have different
+weights in one frame. The GPU backends retain each streamed address until its frame finishes;
+the software renderer consumes each draw immediately. This uses the same shaders and buffer
+API on all five renderers.
+
 ## Computing on the GPU
 
 There are three levels, from the simplest to the most control. All three also run without a

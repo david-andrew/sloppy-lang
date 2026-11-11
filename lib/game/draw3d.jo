@@ -592,6 +592,8 @@ struct Draw3D:
     kept_vbo = 0                # (instanced from an instance_buffer: its buffer, and how many)
     kept_count = 0
     material: Material? = none
+    morph_vertices: Vertex3D[] = []
+    morph_skin: SkinVertex3D[] = []
 
 __3d_ready = false
 __pbr_sh: Shader
@@ -916,7 +918,19 @@ __pbr_cull = (d: Draw3D):
         if dot(m[0].xyz, cross(m[1].xyz, m[2].xyz)) < 0.0: glCullFace(GL_FRONT)
         else: glCullFace(GL_BACK)
 
+# Each queued pose uploads just before its actual draw, including shadow replays. Stream
+# storage gives Vulkan/Metal a fresh address per draw; shared model VBOs never make earlier
+# poses read the last pose's vertices. OpenGL/WebGL orphan the buffer; CPU draws are immediate.
+__morph_upload = (d: Draw3D):
+    if d.morph_vertices.len() > 0:
+        glBindBuffer(GL_ARRAY_BUFFER, u32(d.mesh.vbo))
+        glBufferData(GL_ARRAY_BUFFER, d.morph_vertices.len() * size_of(Vertex3D), data(d.morph_vertices) as *u8, GL_STREAM_DRAW)
+    else if d.morph_skin.len() > 0:
+        glBindBuffer(GL_ARRAY_BUFFER, u32(d.mesh.vbo))
+        glBufferData(GL_ARRAY_BUFFER, d.morph_skin.len() * size_of(SkinVertex3D), data(d.morph_skin) as *u8, GL_STREAM_DRAW)
+
 __lit_draw = (d: Draw3D, p: LitParams):
+    __morph_upload(d)
     if d.material != none:
         __pbr_cull(d)
         if d.bones.len() > 0: draw(__pbr_skin, d.mesh, p)
@@ -1124,6 +1138,7 @@ __casters: Draw3D[]
 __cast_shadow = (d: mut Draw3D, sv: vec4[], vp: mat4):
     if not d.shadow or d.has_custom: return
     if not __in_view(d, sv): return
+    __morph_upload(d)
     p = __params_for(d, vp)
     p.shadow_map = Texture(0, 1, 1)          # never sample the target being rendered
     if d.material != none:
