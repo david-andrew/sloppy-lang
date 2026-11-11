@@ -241,3 +241,205 @@ library was modified. SQLite tests are skipped on this cross target.
 The NEON implementation changes `arm64.jo`; `ir.jo` and `opt.jo` only gain
 comments describing the shared backend hook. x64, lowering, library sources and
 examples are unchanged. Mach-O and ELF require no alignment changes.
+## Default debug helper lowering (2026-11-11)
+
+Measured against `e7ebe913eb4dd13e79ed016a91e3f60f64271902` on the shared i7-6700 desktop (hostname `redfox`), using
+instruction counts throughout. Raw samples, compiler hashes, source hashes, sizes
+and validation results are in [debug-measurements.json](debug-measurements.json).
+This change targets x86-64 default debug builds. `-g` keeps the original helper
+bodies and locals; ARM64 and WebAssembly keep their previous lowering.
+
+### What changed
+
+Debug vector arithmetic was already packed SSE2: `a + b * 2.0` used two
+memory-to-memory `vop`s, temporary stack values and copies. It did not call an
+arithmetic helper. `v.x` was a scalar load; multi-lane swizzle values used scalar
+loads/stores (contiguous swizzles used as places could instead address a subvector).
+Plain vector/matrix values have no refcounts; array ownership and bounds checks
+are separate costs and remain in callers.
+
+The remaining library math used ordinary calls. Normalize called length, and vec4
+length called dot. Vector min/max/abs/clamp called scalar helpers per lane. Lerp
+used three vector temporaries. The matrix-vector helper had seven 16-byte stack
+temporaries, constant-index multiplication/address work and 75 executed
+instructions (323 bytes of code).
+
+Lowering now emits compact register IR once per standard math helper: packed
+arithmetic, ordered dot products, length/normalize, mix/lerp, min/max/abs, cross,
+clamp and matrix products. Call sites retain their ABI and function values work
+unchanged. The x86 allocator also reuses a dead first operand for vector arithmetic
+and splats. Matrix-vector multiplication becomes 28 instructions, 93 code bytes
+and zero stack temporaries; matrix-matrix helper code shrinks from 427 to 324 bytes.
+No debug optimizer pass or call-site expansion was added.
+
+Products and left-associated sums retain their f32 rounding order, with no FMA,
+reciprocal approximation or reassociation. Normalize returns its input unchanged
+when length is zero. Abs uses conditional negation, preserving negative zero and
+NaN signs. Min/max retain the second operand on equality or unordered comparison.
+Clamp keeps its original two comparisons and early lower-bound return, including
+inverted bounds and NaNs. Vec3 loads/stores exactly 12 bytes; reductions consume
+three lanes. All clamp inputs are read before its result is stored. Matrix-matrix
+multiplication retains column-at-a-time behavior even for overlapping raw pointers.
+
+The specialization checks prelude identity, signature, declaration range and cached
+fingerprints of the relevant library prefixes and dependencies. An edited custom
+`SLOPPY_LIB` uses ordinary lowering. Changing those standard definitions or their
+prefix bytes requires updating the fingerprints after checking semantics; otherwise
+the safe fallback remains available. Source strings are pinned while cached so a
+watch rebuild cannot reuse an old source address.
+
+### Debug kernels
+
+Same kernels, inputs and C validation as above; 1,024 elements × 256 repetitions.
+Three hardware `instructions:u` samples per executable, including initialization
+and output. All printed values match C after rounding to f32.
+
+| Kernel | Before | After | Instructions reduced |
+| --- | --- | --- | --- |
+| vec4 add | 12,582,715 | 12,582,706 | unchanged |
+| vec4 multiply | 12,603,443 | 12,603,434 | unchanged |
+| vec4 dot | 20,226,798 | 19,964,646 | 1.30% |
+| vec4 lerp | 21,261,717 | 18,902,412 | 11.10% |
+| vec4 normalize | 25,727,965 | 17,601,491 | 31.59% |
+| mat4 × vec4 | 29,394,754 | 17,073,976 | 41.91% |
+| mat4 × mat4 | 95,899,846 | 36,917,427 | 61.50% |
+| vec3 cross | 23,075,428 | 21,240,411 | 7.95% |
+| vec3 normalize | 24,631,999 | 18,602,676 | 24.48% |
+| Particles | 26,771,419 | 26,771,411 | unchanged |
+| Vertex shader + projection | 151,578,690 | 126,937,139 | 16.26% |
+
+Add, multiply and particle loops retain their existing `vop` path. Their debug
+array checks and expression temporaries remain; this change accelerates helper
+internals rather than enabling whole-expression packing in every debug function.
+
+### Complete software frames
+
+Fixed scripted input and seed, 320×180 window / 160×90 internal target, no display
+or audio, one software thread. The hardware samples measure frame 120 and capture
+frame 121, so PNG compression is outside the measured frame. Each row is the median
+of three repetitions of that same frame, not a whole-session average or an FPS
+measurement. All five before/after PNGs are byte-identical.
+
+| Game | Before instructions | After instructions | Reduced |
+| --- | --- | --- | --- |
+| Rebound | 28,688,811 | 27,608,020 | 3.77% |
+| Breakwater | 250,192,725 | 238,488,124 | 4.68% |
+| Aces | 501,029,812 | 433,113,599 | 13.56% |
+| Dunes | 236,289,701 | 222,057,026 | 6.02% |
+| 3D template | 102,649,364 | 98,466,445 | 4.07% |
+
+![Default debug frame instruction reductions](debug-frames.svg)
+
+The Callgrind cross-check uses its own instruction accounting (including REP
+iterations) and includes the final frame's capture. Compare before/after within
+one counter:
+
+| Game | Before Callgrind Ir | After Callgrind Ir | Reduced |
+| --- | --- | --- | --- |
+| Rebound | 29,619,884 | 28,539,091 | 3.65% |
+| Breakwater | 256,049,122 | 244,344,519 | 4.57% |
+| Aces | 507,138,574 | 439,222,368 | 13.39% |
+| Dunes | 243,450,995 | 229,218,306 | 5.85% |
+| 3D template | 109,296,496 | 105,113,571 | 3.83% |
+
+In Aces, the old matrix-vector helper alone executed 104,263,050 instructions,
+20.6% of the baseline Callgrind frame. Its 47-instruction saving per call explains
+most of the frame gain. The other games retain substantial renderer, shader,
+array-access and application work.
+
+Selected math helper text was small despite its dynamic cost. These sizes include
+the named specialized library helpers, identified by source declaration; vector
+code inside callers is excluded. Percentages use the instrumented executable's
+whole `.text` before the change.
+
+| Game | Helper bytes before | Helper bytes after | Before / whole .text |
+| --- | --- | --- | --- |
+| Rebound | 2,113 | 1,333 | 0.178% |
+| Breakwater | 2,783 | 1,688 | 0.174% |
+| Aces | 2,872 | 1,697 | 0.122% |
+| Dunes | 2,275 | 1,370 | 0.211% |
+| 3D template | 2,711 | 1,702 | 0.230% |
+
+### Compile cost and size
+
+Exact hardware compile instruction counts, one emission worker, same source and
+library for both compilers. All six requested inputs stay below the 1% limit.
+The last column is the default-debug output's `.text` size in bytes. The compiler
+input's own build options select debug, including when `--release` is supplied.
+
+| Input | Debug compile instructions | Debug change | Release change | Debug .text bytes |
+| --- | --- | --- | --- | --- |
+| big.jo | 1,458,334,128 → 1,461,982,286 | +0.250% | +0.139% | 1,964,358 → 1,964,358 |
+| main.jo | 8,607,689,044 → 8,619,164,904 | +0.133% | +0.133% | 5,954,907 → 5,954,907 |
+| rebound.jo | 885,637,878 → 887,392,110 | +0.198% | +0.126% | 1,185,862 → 1,185,078 |
+| breakwater.jo | 1,153,722,429 → 1,155,775,125 | +0.178% | +0.122% | 1,596,198 → 1,595,094 |
+| hello.jo | 192,368,185 → 192,551,498 | +0.095% | +0.083% | 99,942 → 99,942 |
+| game.jo | 755,531,964 → 756,985,769 | +0.192% | +0.124% | 984,790 → 984,102 |
+
+Maximum exact compile increase: 0.250%.
+`speedcheck --base e7ebe913eb4dd13e79ed016a91e3f60f64271902` passes with a maximum rounded
+regression of 0.27%; `--release` also passes
+(0.27% maximum including its debug rows).
+The compiler executable itself grows from 7,426,560
+to 7,451,624 bytes to contain the implementation.
+
+A baseline debug compile of Rebound collected 944,365,211 Callgrind
+instructions. Dedicated vector paths account for the following costs:
+
+| Compiler routine | Self instructions | Inclusive call instructions | Inclusive / compile |
+| --- | --- | --- | --- |
+| gen_vec_binary | 55,943 | 2,734,297 | 0.290% |
+| gen_vec_ctor | 113,230 | 1,793,655 | 0.190% |
+| gen_swizzle | 59,439 | 469,207 | 0.050% |
+| vop_operand | 36,734 | 294,451 | 0.031% |
+
+Inclusive figures include nested expression/IR work and overlap; they are not
+additive. Shared register allocation and generic emission are not fully partitioned
+by source operation. These measurements describe the dedicated vector paths, not
+a claim that all vector-related compile work fits in those routines.
+
+### Validation
+
+- Bootstrap: `bootstrap ok`, fixed point.
+- `tools/runtests.py`: 27 passed, 0 failed.
+- `--compiler sloppy`: 1257 passed, 0 failed.
+- `--compiler sloppy --release`: 1251 passed, 0 failed.
+- `tools/rendertest.py --no-gpu`: 35 passed, 0 failed, references unchanged.
+- `tools/parcheck.py --workers 4`: 84 serial/parallel comparisons passed
+  for native, linux-arm64 and macOS, including debug/release with and without `-g`.
+  Run on the idle i5-8350U laptop in an isolated scratch copy; the compiler's SHA-256
+  matches the desktop's binary.
+- New fixture on ARM64 debug under qemu: 1 passed, 0 failed.
+- Stock `-g` fixture: 1,250 output lines identical to baseline.
+- Six custom-library checks pass in debug, `-g` and release.
+- Both required speedchecks pass below 1%.
+
+`debug_vmath.jo` covers arithmetic, reductions, zero-length normalization, mix/lerp,
+comparisons, conditional abs, cross, matrix products, fields/swizzles, function
+values, cancellation, subnormals, maximum finite values, NaNs, infinities, signed
+zero, vec3 sentinels, arrays/structs and overlapping matrix pointers. Its expected
+output comes from the baseline debug compiler. Full suites include `simd_values`,
+all `value_copy_*` tests and `aggregate_copy_alias`.
+
+Suites ran sequentially with shared worker tokens, headless and silent. Native
+network tests use private user/network namespaces with loopback enabled, the normal
+UID preserved and setup capabilities dropped before the tests. An initial
+loopback-setup failure was corrected before the final complete passing runs.
+
+Reproduce an after sample from the repository root (use a saved baseline compiler
+and different labels/tags for the before sample):
+
+```sh
+mkdir -p ~/dev/tmp/debug-vec/tmp
+export TMPDIR=~/dev/tmp/debug-vec/tmp
+python3 bench/vmath/measure.py --debug --compiler bin/sloppy \
+    --label debug-after --scratch ~/dev/tmp/debug-vec
+python3 bench/games/profile.py --perf --prepare --modes debug --renderers soft \
+    --output ~/dev/tmp/debug-vec/games --tag perf-after \
+    --games rebound breakwater aces dunes new_3d --frames 122 --warmup 120
+python3 tests/debug_math_library.py --compiler bin/sloppy
+```
+
+Use `--reuse` for repeated frame samples of the same executable and retain each
+`frames.csv`. The custom-library check edits a temporary copy, not the real library.
+Respect the shared worker budget when reproducing the measurements.

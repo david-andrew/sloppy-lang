@@ -263,6 +263,13 @@ safety net for changes here.
   1.2x, no compile time). The rest (nbody 2.7x, swarm 2.5x slower than release) is the
   optimizer and inlining; release's register allocator alone gains nothing there. Inlining the
   fast paths as IR instead cost 12-19% more compile time.
+  Default-debug f32 math helpers now lower directly to packed register operations on
+  x86-64, retaining the normal call ABI and the original `-g` path. Matrix/vector
+  kernels use 42-62% fewer instructions and normalization 24-32% fewer. Aces'
+  software frame 120 improves 13.6%; four other game frames improve 3.8-6.0%.
+  Exact compile instruction cost rises at most 0.26% across the six gated inputs;
+  both speedchecks remain below 1%. Existing vector operator temporaries and debug
+  array checks remain. See `bench/vmath/README.md` for scope, counts and validation.
 
 ## Compile speed for large programs
 

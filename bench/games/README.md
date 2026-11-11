@@ -45,6 +45,23 @@ Callgrind counts each REP string-operation iteration, so `__sw_fill`'s doubling 
 have an inflated instruction share relative to hardware time. Driver JIT code may
 have unresolved names.
 
+On Linux, `--perf` instead reads retired user instructions around each software frame
+with `perf_event_open`. It uses the software renderer's single main thread
+(`SLOPPY_THREADS=1`), so Vulkan worker traffic cannot be measured with this mode.
+The last frame, which writes the screenshot, is excluded. Use a fresh tag and at
+least two frames after warmup; this measures frame 120 and captures frame 121:
+
+```sh
+python3 bench/games/profile.py --perf --tag debug-perf --modes debug \
+    --renderers soft --games rebound breakwater aces dunes new_3d \
+    --frames 122 --warmup 120
+```
+
+`frames.csv` and `summary.json` contain hardware counts in this mode. Run three
+samples with `--reuse` to keep the same executable, retaining each sample before
+the next run overwrites the per-game results. This mode needs access to user-space
+hardware counters; it does not use wall-clock timing or allocation instrumentation.
+
 `--churn` instead runs natively with allocation/free and refcount-helper counters.
 Its CSV also records cumulative counts after update, draw and frame submission.
 `alloc_count()` is the number of live allocations, not total allocation traffic.

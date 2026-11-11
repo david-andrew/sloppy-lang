@@ -33,12 +33,28 @@ C = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <valgrind/callgrind.h>
+#include <linux/perf_event.h>
+#include <sys/syscall.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 static int vg, warmup, frames;
+static int perf_fd = -1;
 static long phase[12];
 __attribute__((constructor)) static void init(void) {
  vg=RUNNING_ON_VALGRIND; if(vg) { CALLGRIND_STOP_INSTRUMENTATION; } warmup=atoi(getenv("GP_WARMUP")?:"60"); frames=atoi(getenv("SLOPPY_FRAMES")?:"360");
+ if(atoi(getenv("GP_PERF")?:"0")) {
+  struct perf_event_attr pe = {0};
+  pe.type=PERF_TYPE_HARDWARE; pe.size=sizeof(pe); pe.config=PERF_COUNT_HW_INSTRUCTIONS;
+  pe.disabled=1; pe.exclude_kernel=1; pe.exclude_hv=1; pe.inherit=1;
+  perf_fd=syscall(SYS_perf_event_open,&pe,0,-1,-1,0);
+  if(perf_fd<0) { perror("perf_event_open"); exit(2); }
+ }
 }
 void gp_begin(long f) {
+ // Leave the final screenshot/PNG frame outside the hardware sample.
+ if(perf_fd>=0 && f>=warmup && f<frames-1) {
+  ioctl(perf_fd,PERF_EVENT_IOC_RESET,0); ioctl(perf_fd,PERF_EVENT_IOC_ENABLE,0);
+ }
  if(vg && f==warmup) { CALLGRIND_START_INSTRUMENTATION; }
  if(vg && f>=warmup && f<frames) { VALGRIND_MONITOR_COMMAND("zero"); }
 }
@@ -46,6 +62,12 @@ void gp_phase(long p,long a,long b,long c,long d) {
  phase[p*4]=a;phase[p*4+1]=b;phase[p*4+2]=c;phase[p*4+3]=d;
 }
 void gp_end(long f,long a,long b,long c,long d,long live) {
+ if(perf_fd>=0 && f>=warmup && f<frames-1) {
+  unsigned long long instructions=0;
+  ioctl(perf_fd,PERF_EVENT_IOC_DISABLE,0);
+  if(read(perf_fd,&instructions,sizeof(instructions))!=sizeof(instructions)) { perror("perf read"); exit(2); }
+  printf("GI,%ld,%llu\n",f,instructions); fflush(stdout);
+ }
  if(vg && f>=warmup && f<frames) { VALGRIND_MONITOR_COMMAND("dump"); }
  if(!vg && f<frames) {
   printf("GP,%ld,%ld,%ld,%ld,%ld,%ld",f,a,b,c,d,live);
@@ -219,6 +241,7 @@ def main():
     p.add_argument("--warmup", type=int, default=60)
     p.add_argument("--window", default="320x180")
     p.add_argument("--churn", action="store_true")
+    p.add_argument("--perf", action="store_true", help="Linux instructions:u per software frame; excludes the final capture frame")
     p.add_argument("--prepare", action="store_true")
     p.add_argument("--build-only", action="store_true")
     p.add_argument("--reuse", action="store_true")
@@ -231,6 +254,8 @@ def main():
     os.environ["TMPDIR"] = str(ROOT / "tmp")
     if a.frames <= a.warmup or a.warmup < 0:
         p.error("frames must exceed warmup >= 0")
+    if a.perf and (a.churn or a.renderers != ["soft"] or a.frames <= a.warmup + 1):
+        p.error("--perf needs --renderers soft, frames > warmup + 1, and no --churn")
     if pathlib.Path(a.tag).name != a.tag or a.tag in (".", ".."):
         p.error("tag must be a directory name")
     compiler = a.compiler.expanduser().resolve() if a.compiler else REPO / "bin/sloppy"
@@ -257,6 +282,7 @@ def main():
         SLOPPY_SEED="12345",
         SLOPPY_FRAMES=str(a.frames),
         GP_WARMUP=str(a.warmup),
+        GP_PERF="1" if a.perf else "0",
         VK_ICD_FILENAMES="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",
     )
     failed = []
@@ -310,7 +336,7 @@ def main():
                     runenv["SLOPPY_VULKAN"] = "1"
                 cmd = (
                     [str(exe)]
-                    if a.churn
+                    if a.churn or a.perf
                     else [
                         "valgrind",
                         "--tool=callgrind",
@@ -378,6 +404,25 @@ def main():
                             ["frame", "alloc", "free", "inc", "dec", "live"]
                         )
                         if i > 0
+                    }
+                elif a.perf:
+                    frames = [
+                        list(map(int, line.split(",")[1:]))
+                        for line in log_text.splitlines() if line.startswith("GI,")
+                    ]
+                    if len(frames) != a.frames - a.warmup - 1 or any(row[1] <= 0 for row in frames):
+                        raise RuntimeError(f"incomplete hardware samples: {d}")
+                    with (d / "frames.csv").open("w") as f:
+                        w = csv.writer(f)
+                        w.writerow(["frame", "Ir"])
+                        w.writerows(frames)
+                    summary = {
+                        "counter": "perf_event_open instructions:u, software main thread",
+                        "frames": len(frames),
+                        "median_Ir": statistics.median(r[1] for r in frames),
+                        "mean_Ir": statistics.mean(r[1] for r in frames),
+                        "total_Ir": sum(r[1] for r in frames),
+                        "worst_Ir": max(frames, key=lambda r: r[1])[::-1],
                     }
                 else:
                     costs = collections.Counter()

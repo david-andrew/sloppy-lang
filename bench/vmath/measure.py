@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ap = argparse.ArgumentParser(description=__doc__)
 ap.add_argument('--compiler', type=Path, default=ROOT / 'bin/sloppy')
 ap.add_argument('--label', default='after')
+ap.add_argument('--debug', action='store_true', help='measure default debug code generation')
 ap.add_argument('--scratch', type=Path, default=Path.home() / 'dev/tmp/simd')
 args = ap.parse_args()
 scratch = args.scratch.expanduser().resolve()
@@ -46,10 +47,10 @@ run(['cc', '-O2', scratch / 'icount.c', '-o', scratch / 'icount'])
 run(['cc', '-O2', '-ffp-contract=off', ROOT / 'bench/vmath/vmath.c',
      '-lm', '-o', scratch / 'vmath-c'])
 r = run([args.compiler.resolve(), 'build', ROOT / 'bench/vmath/vmath.jo',
-         '--release', '--ir', '-o', scratch / args.label])
+         *([] if args.debug else ['--release']), '--ir', '-o', scratch / args.label])
 (scratch / (args.label + '.ir')).write_text(r.stdout)
 results = {
-    'label': args.label, 'compiler': str(args.compiler.resolve()),
+    'label': args.label, 'compiler': str(args.compiler.resolve()), 'debug': args.debug,
     'compiler_binary_sha256': hashlib.sha256(args.compiler.read_bytes()).hexdigest(),
     'revision': run(['git', 'rev-parse', 'HEAD']).stdout.strip(),
     'cc': run(['cc', '--version']).stdout.splitlines()[0],

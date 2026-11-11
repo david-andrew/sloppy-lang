@@ -5140,6 +5140,198 @@ begin_fn = (name: str, idx: int):
     sret_v = -1
     env_v = -1
 
+# Debug math helpers stay out of line, but use register values inside the helper instead
+# of lowering their aggregate expression temporaries and calls to other math helpers.
+# The normal path is retained for -g (including helper locals), release and other targets.
+enum DebugMath: skip, dot, length, length_sq, normalize, cross, mix, min, max, abs, clamp, distance, matvec, matmul
+
+debug_math_kind = (f: int) -> DebugMath:
+    if opt_release or dbg_on or target_arm64 or target_wasm: return .skip
+    d = int(fns[f].decl)
+    if d == 0 or fns[f].cabi or fns[f].has_env or not modules[int(fns[f].mod)].is_prelude: return .skip
+    fi = pos_file(nodes[d].pos)
+    if fi < 0: return .skip
+    path = files[fi].path
+    if not ends_with(path, "/game/vmath.jo") and not ends_with(path, "/core/math.jo"): return .skip
+    nm = name_of(int(nodes[d].name))
+    if nm == "__mat4_mul_vec4": return .matvec
+    if nm == "__mat4_mul": return .matmul
+    ps = fns[f].ptypes
+    if ps.len() == 0: return .skip
+    t = prune(ps[0])
+    vec = t == T_VEC2 or t == T_VEC3 or t == T_VEC4
+    if not vec and t != T_F32: return .skip
+    if vec and nm == "abs" and ps.len() == 1: return .abs
+    if nm == "min" and ps.len() == 2 and prune(ps[1]) == t: return .min
+    if nm == "max" and ps.len() == 2 and prune(ps[1]) == t: return .max
+    if vec and nm == "clamp" and ps.len() == 3 and prune(ps[1]) == prune(ps[2]) and (prune(ps[1]) == t or prune(ps[1]) == T_F32): return .clamp
+    if (nm == "mix" or nm == "lerp") and ps.len() == 3 and prune(ps[1]) == t and (prune(ps[2]) == t or prune(ps[2]) == T_F32): return .mix
+    if not vec: return .skip
+    if nm == "dot" and ps.len() == 2 and prune(ps[1]) == t: return .dot
+    if nm == "length" and ps.len() == 1: return .length
+    if nm == "length_sq" and ps.len() == 1: return .length_sq
+    if nm == "normalize" and ps.len() == 1: return .normalize
+    if nm == "cross" and ps.len() == 2 and prune(ps[1]) == t and t != T_VEC4: return .cross
+    if nm == "distance" and ps.len() == 2 and prune(ps[1]) == t: return .distance
+    .skip
+
+# A custom SLOPPY_LIB must still mean what its source says. These prefixes contain
+# all specialized definitions and their math dependencies. Unrelated definitions
+# below them may change freely; any change above them conservatively uses normal
+# lowering. Pin the immutable source strings so a rebuilt watch cannot reuse an
+# old pointer. Hash each prefix only once per source, not once per helper or call.
+dm_sources: str[] = ["", ""]
+dm_valid: bool[] = [false, false]
+dm_core_file = -1
+const DM_CORE_BYTES = 1397       # through clamp(f32), before the narrow integer overloads
+const DM_VECTOR_BYTES = 6092     # through mix(vec4, vec4, vec4), before scalar smoothstep
+
+dm_stock_file = (fi: int) -> bool:
+    global dm_sources, dm_valid
+    k = if ends_with(files[fi].path, "/core/math.jo"): 0 else: 1
+    src = files[fi].src
+    if data(src) == data(dm_sources[k]): return dm_valid[k]
+    dm_sources[k] = src
+    n = if k == 0: DM_CORE_BYTES else: DM_VECTOR_BYTES
+    h = if k == 0: 203852081796667929 else: 4951305461596583560
+    dm_valid[k] = len(src) >= n and hash_bytes(data(src), n) == h
+    dm_valid[k]
+
+debug_math_stock = (f: int) -> bool:
+    global dm_core_file
+    pos = nodes[int(fns[f].decl)].pos
+    fi = pos_file(pos)
+    core = ends_with(files[fi].path, "/core/math.jo")
+    if pos_off(pos) >= (if core: DM_CORE_BYTES else: DM_VECTOR_BYTES): return false
+    if not dm_stock_file(fi): return false
+    if core: return true
+    core_path = lib_dir + "/core/math.jo"
+    if dm_core_file < 0 or dm_core_file >= files.len() or files[dm_core_file].path != core_path:
+        dm_core_file = -1
+        loop i in 0.. and src in files:
+            if src.path == core_path:
+                dm_core_file = i
+                break
+    dm_core_file >= 0 and dm_stock_file(dm_core_file)
+
+dm_bin = (kind: int, a: int, b: int) -> int:
+    d = vreg(VX)
+    emit(.vbin, VX, d, a, b, kind, 0)
+    d
+
+dm_un = (kind: int, a: int, imm: int = 0) -> int:
+    ty = VX
+    if kind == VP_EXTRACT: ty = VS
+    d = vreg(ty)
+    emit(.vbin, ty, d, a, 0, kind, imm)
+    d
+
+dm_splat = (a: int) -> int:
+    d = vreg(VX)
+    emit(.vsplat, VX, d, a, 0, 0, 0)
+    d
+
+dm_mode = (n: int) -> int: M_FLOAT | (if n == 4: 0 else: n * 4)
+
+dm_dot = (a: int, b: int, n: int) -> int:
+    p = dm_bin(2, a, b)
+    r = dm_un(VP_EXTRACT, p)
+    loop i in [1..n): r = e_bin(.fadd, VS, r, dm_un(VP_EXTRACT, p, i))
+    r
+
+dm_clamp = (x: int, lo: int, hi: int) -> int:
+    r = vreg(VS)
+    e_mov(r, x)
+    iff(e_bin(.flt, VS, x, lo))
+    e_mov(r, lo)
+    els()
+    iff(e_bin(.fgt, VS, x, hi))
+    e_mov(r, hi)
+    endc()
+    endc()
+    r
+
+lower_debug_math = (f: int, kind: DebugMath):
+    ps: int[]
+    loop l in fns[f].params: ps.push(int(locals[l].vreg))
+    if kind == .matvec or kind == .matmul:
+        # Load each column before writing it, as the pointer helper does even with aliases.
+        cols = if kind == .matmul: 4 else: 1
+        loop c in [0..cols):
+            r = -1
+            loop j in [0..4):
+                a = e_load(VX, ps[1], j * 16, M_FLOAT)
+                b = dm_splat(e_load(VS, ps[2], c * 16 + j * 4, M_FLOAT | 4))
+                p = dm_bin(2, a, b)
+                if j == 0: r = p
+                else: r = dm_bin(0, r, p)
+            e_store(ps[0], c * 16, r, M_FLOAT)
+        e_ret(-1)
+        return
+    t = prune(fns[f].ptypes[0])
+    if t == T_F32:
+        r = -1
+        if kind == .min: r = e_bin(.fmin, VS, ps[0], ps[1])
+        else if kind == .max: r = e_bin(.fmax, VS, ps[0], ps[1])
+        else: r = e_bin(.fadd, VS, ps[0], e_bin(.fmul, VS, e_bin(.fsub, VS, ps[1], ps[0]), ps[2]))
+        e_ret(r)
+        return
+    n = vec_comps(t)
+    mode = dm_mode(n)
+    # Clamp retains both comparisons, including the early low bound for inverted bounds,
+    # unordered inputs and signed zeros. min(max(x, lo), hi) is not equivalent.
+    if kind == .clamp:
+        scalar = prune(fns[f].ptypes[1]) == T_F32
+        values: int[]
+        loop i in [0..n):
+            lo = ps[1]
+            hi = ps[2]
+            if not scalar:
+                lo = e_load(VS, lo, 4 * i, M_FLOAT | 4)
+                hi = e_load(VS, hi, 4 * i, M_FLOAT | 4)
+            x = e_load(VS, ps[0], 4 * i, M_FLOAT | 4)
+            values.push(dm_clamp(x, lo, hi))
+        # Read every input before writing the aggregate result, as a constructor does.
+        loop i in [0..n): e_store(sret_v, 4 * i, values[i], M_FLOAT | 4)
+        e_ret(sret_v)
+        return
+    a = e_load(VX, ps[0], 0, mode)
+    b = a
+    if fns[f].ptypes.len() > 1: b = e_load(VX, ps[1], 0, mode)
+    r = -1
+    if kind == .dot or kind == .length or kind == .length_sq or kind == .normalize or kind == .distance:
+        if kind == .distance:
+            a = dm_bin(1, a, b)
+            b = a
+        r = dm_dot(a, b, n)
+        if kind == .length or kind == .normalize or kind == .distance: r = e_un(.fsqrt, VS, r)
+        if kind != .normalize:
+            e_ret(r)
+            return
+        iff(e_bin(.feq, VS, r, e_fconst(0.0, VS)))
+        e_store(sret_v, 0, a, mode)
+        e_ret(sret_v)
+        endc()
+        r = dm_bin(3, a, dm_splat(r))
+    else if kind == .cross:
+        if n == 2:
+            p = dm_bin(2, a, dm_un(VP_SHUFFLE, b, 0xE1))
+            e_ret(e_bin(.fsub, VS, dm_un(VP_EXTRACT, p), dm_un(VP_EXTRACT, p, 1)))
+            return
+        p = dm_bin(2, dm_un(VP_SHUFFLE, a, 0xC9), dm_un(VP_SHUFFLE, b, 0xD2))
+        q = dm_bin(2, dm_un(VP_SHUFFLE, a, 0xD2), dm_un(VP_SHUFFLE, b, 0xC9))
+        r = dm_bin(1, p, q)
+    else if kind == .mix:
+        k = ps[2]
+        if prune(fns[f].ptypes[2]) == T_F32: k = dm_splat(k)
+        else: k = e_load(VX, k, 0, mode)
+        r = dm_bin(0, a, dm_bin(2, dm_bin(1, b, a), k))
+    else if kind == .min: r = dm_bin(4, a, b)
+    else if kind == .max: r = dm_bin(5, a, b)
+    else if kind == .abs: r = dm_un(VP_CABS, a)
+    e_store(sret_v, 0, r, mode)
+    e_ret(sret_v)
+
 lower_inst = (lf: int, f: int):
     global cur_closed, cur_fn, cur_ret, env_v, sret_v
     begin_fn(fns[f].sym, lf)
@@ -5166,6 +5358,10 @@ lower_inst = (lf: int, f: int):
         locals[l].offset = -1
     ir.nparams = ir.vtypes.len()
     ir.ret = ret_vt(cur_ret)
+    math_kind = debug_math_kind(f)
+    if math_kind != .skip and debug_math_stock(f):
+        lower_debug_math(f, math_kind)
+        return
     # (called from C, whose callers leave the upper bits of narrow integers undefined: made
     # what Sloppy code expects of them)
     if fns[f].cabi:
