@@ -401,6 +401,22 @@ A set (`Set[T]`, values without repeats) is written with braces and no colons, `
 expected (`seen: Set[int] = {}`), and an empty map otherwise. `x in s`, `s.add(x)` and
 `s.remove(x)`; more in [API.md](API.md#sets-and-deques).
 
+For large text files, `open_file(path)` gives an optional buffered `File`; it reads 64 KB at a
+time, keeping only the unread bytes and the current line. Close it even when leaving early:
+
+```gdscript
+if let f = open_file("big.log"):
+    defer f.close()
+    loop let line = f.read_line(): print(line)
+else: eprint(file_error())
+```
+
+For stdin, `loop let line = read_line(): print(line)` uses the same buffered approach.
+Both strip `\n` and Windows `\r\n`, return an empty string for an empty line, keep a final
+line without a newline, and give `none` at EOF. `lines(text)` splits text already in memory;
+it takes text, rather than a filename. Native file streams work on Linux, macOS and Windows;
+a page's `File` reads files already supplied to the page.
+
 ## 5. Functions
 
 ```gdscript

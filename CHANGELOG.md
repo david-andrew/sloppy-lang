@@ -9,6 +9,8 @@
   sliders that show their value (a percentage from 0 to 1), drawn chevrons and option dots on
   choices, rounded switches, and text fields as wells edged with the accent while typed in.
   `hud_style.field` and `hud_style.well` color them. `examples/layout.jo` has a Settings page.
+- Document existing buffered file/stdin line loops for scripts; reading bytes after a final
+  unterminated file line now correctly returns an empty array.
 
 - Netplay checks game versions before play, with clear errors for different builds on rollback
   and client-server transports. The default `PROGRAM_BUILD_ID` identifies the program's sources;

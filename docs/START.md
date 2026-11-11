@@ -283,6 +283,10 @@ a value, the last list field gets the other arguments, and `--help` lists them a
 its field's comment (`-w, --words   count words too`: the comment need not name the option); a
 mistake (`--top many`) is said with that help, and exit code 2.
 
+- `open_file(path)` and `loop let line = f.read_line():` read a file with a 64 KB buffer;
+  use `defer f.close()` to close it on every exit. For piped or typed input, use
+  `loop let line = read_line():`. Both strip Windows line endings and keep a final line with
+  no newline. `lines(text)` splits text already in memory, rather than opening a path.
 - `run_program("make", ["-j8"], show = true)` shows a program's output as it runs;
   without `show`, it is returned as text. `cwd = "build"` runs it in another directory.
 - A file function that fails gives `none` or `false`, and `file_error()` says why ("permission
