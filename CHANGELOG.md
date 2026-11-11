@@ -16,13 +16,11 @@
 - Dates support strptime-style `parse_date(text, format)` and `date_text(d, format)`, with
   UTC/local zones and explicit offsets; `date_add`, `date_diff` and `duration_text` handle
   elapsed seconds. ISO parsing rejects empty fractions and incomplete offsets.
-- Json values can be changed in place with `set`, `push`, `remove` and nested
 - Json values can be changed in place with `put`, `push`, `remove` and nested
   `set_path`/`push_path`/`remove_path`; wrong kinds and invalid paths give clear errors.
 - Script guides now show the existing set constructor, membership and set algebra beside maps.
 - Document existing buffered file/stdin line loops for scripts; reading bytes after a final
   unterminated file line now correctly returns an empty array.
-
 - Netplay checks game versions before play, with clear errors for different builds on rollback
   and client-server transports. The default `PROGRAM_BUILD_ID` identifies the program's sources;
   games with separate entry points can set a shared `version` string.
