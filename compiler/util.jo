@@ -13,6 +13,20 @@ names: str[]
 name_hash: int[]
 name_tab: i32[]          # open addressing over name ids (+1; 0 = empty)
 
+# Most identifiers fit in eight bytes. A small cache compares all of those bytes
+# directly before hashing them again. Misses use the ordinary table and preserve ids.
+struct ShortName:
+    bits: u64
+    len: i32
+    id: i32
+short_names: ShortName[]
+short_name_data: *ShortName
+
+short_name_bits = (p: *u8, n: int) -> u64:
+    if n >= 4: return u64((p as *u32)[0]) | (u64(((p + n - 4) as *u32)[0]) << 32)
+    if n >= 2: return u64((p as *u16)[0]) | (u64(p[n - 1]) << 32)
+    u64(p[0])
+
 hash_bytes = (p: *u8, n: int) -> int:
     h = -3750763034362895579                 # FNV-1a
     loop i in [0..n): h = ((h xor int(p[i]))) * 1099511628211
@@ -22,11 +36,21 @@ intern = (s: str) -> int: intern_sub(s, 0, len(s))
 
 # intern s[start..start + n] without allocating unless the name is new
 intern_sub = (s: str, start: int, n: int) -> int:
-    global name_tab
+    global name_tab, short_names, short_name_data
     if name_tab.len() == 0:
         name_tab = fill(0, 1 << 14)
+        short_names = fill(ShortName(), 4096)
+        short_name_data = data(short_names)
         intern_sub("", 0, 0)             # (name 0 is "": 0 stands for no name)
     p = data(s) + start
+    slot = -1
+    bits: u64 = 0
+    if n > 0 and n <= 8:
+        bits = short_name_bits(p, n)
+        mix = (bits xor (bits >> 33)) * 0xFF51AFD7ED558CCD
+        slot = int(mix xor (mix >> 29)) & 4095
+        hit = short_name_data[slot]
+        if hit.len == i32(n) and hit.bits == bits: return int(hit.id)
     h = hash_bytes(p, n)
     mask = name_tab.len() - 1
     i = h & mask
@@ -34,13 +58,16 @@ intern_sub = (s: str, start: int, n: int) -> int:
         e = int(name_tab[i])
         if e == 0: break
         id = e - 1
-        if name_hash[id] == h and len(names[id]) == n and __mem_eq(data(names[id]), p, n): return id
+        if name_hash[id] == h and len(names[id]) == n and __mem_eq(data(names[id]), p, n):
+            if slot >= 0: short_name_data[slot] = ShortName(bits, i32(n), i32(id))
+            return id
         i = (i + 1) & mask
     id = names.len()
     if start == 0 and n == len(s): names.push(s)
     else: names.push(s[start..start + n))
     name_hash.push(h)
     name_tab[i] = i32(id + 1)
+    if slot >= 0: short_name_data[slot] = ShortName(bits, i32(n), i32(id))
     if names.len() * 2 > name_tab.len():
         # grow and rehash
         name_tab = fill(0, name_tab.len() * 2)
