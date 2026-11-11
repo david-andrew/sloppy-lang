@@ -1,0 +1,72 @@
+# requires: sloppy
+# requires: native (six rollback players over per-pair WebSocket relay fallback)
+import netplay
+
+struct Pad:
+    dx = 0
+struct Game:
+    pos: int[] = fill(0, 6)
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..pads.len()): g.pos[p] += pads[p].dx
+    g
+
+const PORT = 28484
+netplay.relay(PORT)
+ss: netplay.Session[Game, Pad][]
+per_pair = true
+loop p in [0..6):
+    s = netplay.session(Game(), step, players = 6, me = p)
+    s.join_relay("127.0.0.1", PORT, "six", stun = "")
+    # Inspect the actual relay packet builder before transport dispatch consumes its output.
+    netplay.__np_send(s)
+    out = s.outgoing()
+    per_pair = per_pair and out.len() == 5
+    loop o in out:
+        pk = netplay.__np_decode[Pad](o.1)!
+        per_pair = per_pair and pk.to == o.0 and pk.to != p and pk.hub == -1 and pk.ranges.len() == 1 and pk.ranges[0].player == p
+    s.lag(2, 2, 0.1)
+    ss.push(s)
+loop f in [0..650):
+    netplay.relay(PORT)
+    loop p in [0..6):
+        if p == 4 and (f < 40 or (f < 180 and f % 8 == 0)): continue
+        ss[p].play(Pad(p + 1))
+    sleep(1.0 / 240.0)
+c = ss[0].tick - 1
+loop p in [0..6): c = min(c, min(ss[p].confirmed(), ss[p].tick) - 1)
+ref = Game()
+loop p in [0..6): ref.pos[p] = (c - 2) * (p + 1)
+same = true
+healthy = true
+loop p in [0..6):
+    same = same and ss[p].__states[c % 128] == ref
+    healthy = healthy and ss[p].problem == "" and ss[p].desync < 0 and ss[p].tick > 450
+    per_pair = per_pair and ss[p].__hub == -1
+    loop forwarded in ss[p].__forward: per_pair = per_pair and not forwarded
+print("relay with lag/loss: same", same, "healthy", healthy, "per pair", per_pair)
+
+# Fallback packets between players 1 and 2 arrive without player 0 joining the room.
+# Play eventually waits for 0's game input, but the other pair's link remains independent.
+x = netplay.session(Game(), step, players = 3, me = 1)
+y = netplay.session(Game(), step, players = 3, me = 2)
+x.join_relay("127.0.0.1", PORT, "without zero", stun = "")
+y.join_relay("127.0.0.1", PORT, "without zero", stun = "")
+loop _ in [0..80):
+    netplay.relay(PORT)
+    x.play(Pad(11))
+    y.play(Pad(22))
+    sleep(0.002)
+print("relay without player 0:", x.__recv[2] > 2, y.__recv[1] > 2)
+
+# Registration still reports duplicate player numbers without player 0 in the room.
+a = netplay.session(Game(), step, players = 6, me = 1)
+b = netplay.session(Game(), step, players = 6, me = 1)
+a.join_relay("127.0.0.1", PORT, "duplicate", stun = "")
+b.join_relay("127.0.0.1", PORT, "duplicate", stun = "")
+loop _ in [0..60):
+    netplay.relay(PORT)
+    a.play(Pad())
+    b.play(Pad())
+    sleep(0.002)
+print("duplicate players:", contains(a.problem, "both player 1"), contains(b.problem, "both player 1"))

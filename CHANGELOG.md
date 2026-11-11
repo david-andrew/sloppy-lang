@@ -3,9 +3,9 @@
 ## Unreleased
 
 - Rollback netplay through a host sends one packet per peer per tick, combining unacknowledged
-  inputs and stand-ins. Relay fallback routes through player 0; direct mesh connections stay
-  per pair. Receipt vectors and hashes are sent once per packet, and input text is shared
-  across recipients.
+  inputs and stand-ins. Full mesh connections, including relay fallback, stay per pair.
+  Receipt vectors and hashes are sent once per packet, and input text is shared across
+  recipients.
 
 ## 0.29.2
 

@@ -576,8 +576,7 @@ never held up), not through the relay (`s.direct(p)` says whether player p's do)
 server tells each page its address as others see it: `join_relay` uses Google's public one,
 and takes `stun = "stun:..."` for another or `""` for none (then only pages on the same
 network reach each other). Pages that cannot reach each other (some company and phone
-networks) keep playing through the relay; so does a native player with a page. Player 0's
-session must stay in the room: it combines inputs for the peers using relay fallback, using
-the same batches as an invite-code host. Clients send one fallback packet to player 0, and it
-sends one combined packet per client; the relay routes each to its addressed player. Direct
-WebRTC pairs keep exchanging their inputs directly. Player 0 may be native or a web page.
+networks) keep playing through the relay; so does a native player with a page. Relay fallback
+stays per pair: each packet goes from its sender through the relay server straight to the
+addressed player. No other player's session forwards it. Direct WebRTC pairs keep exchanging
+their inputs directly.
