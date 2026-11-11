@@ -1597,8 +1597,8 @@ o_retargetable = (op: Op) -> bool:
 # Searches have a fixed depth/node budget. Loads move only within a straight-line, store-free
 # region; a definition of a multiply-defined register also ends that region. Thus raw pointer
 # aliases, calls, branches and the M_BITS aggregate-copy accesses remain conservative barriers.
-vp_def: int[]
-vp_ndef: int[]
+vp_def: i32[]
+vp_ndef: i32[]
 vp_pending: Ins[]
 vp_keys: int[][]
 vp_regs: int[]
@@ -1640,7 +1640,8 @@ vp_build = (xs: int[], depth: int) -> int:
     else:
         p = vp_def[xs[0]]
         if p < vp_start: return -1
-        e = ir.code[p]
+        cp = data(ir.code) as *Ins
+        e = cp + p
         op = e.op
         loop x in xs:
             q = vp_def[x]
@@ -1651,7 +1652,7 @@ vp_build = (xs: int[], depth: int) -> int:
             lo = e.imm
             hi = lo
             loop x in xs:
-                f = ir.code[vp_def[x]]
+                f = cp + vp_def[x]
                 if f.a != e.a or f.b != e.b or f.c != e.c or int(f.c) & 15 != 4: return -1
                 if f.imm < lo: lo = f.imm
                 if f.imm > hi: hi = f.imm
@@ -1667,11 +1668,12 @@ vp_build = (xs: int[], depth: int) -> int:
                 mask = mask | (lane << (i * 2))
                 if lane != i: ordered = false
             v = vreg(VX)
-            e.dst = i32(v)
-            e.ty = VX
-            e.c = i32((int(e.c) & ~15) | M_FLOAT | ((lanes * 4) & 15))
-            e.imm = lo
-            vp_pending.push(e)
+            ld = e[0]
+            ld.dst = i32(v)
+            ld.ty = VX
+            ld.c = i32((int(e.c) & ~15) | M_FLOAT | ((lanes * 4) & 15))
+            ld.imm = lo
+            vp_pending.push(ld)
             vp_gain += n - (if lanes == 3: 3 else: 1)
             if not ordered:
                 sh = vreg(VX)
@@ -1681,14 +1683,14 @@ vp_build = (xs: int[], depth: int) -> int:
         else if vp_bin(op) >= 0 or op == .fsqrt or op == .fabs or op == .fneg or op == .mov or op == .f2bits or op == .bits2f or (op == .vbin and int(e.c) == VP_CABS):
             aa: int[]
             bb: int[]
+            k = vp_bin(op)
             loop x in xs:
-                f = ir.code[vp_def[x]]
+                f = cp + vp_def[x]
                 if int(f.ty) != VS or (op == .vbin and f.c != e.c): return -1
                 aa.push(int(f.a))
-                bb.push(int(f.b))
+                if k >= 0: bb.push(int(f.b))
             av = vp_build(aa, depth + 1)
             if av < 0: return -1
-            k = vp_bin(op)
             if k >= 0:
                 bv = vp_build(bb, depth + 1)
                 if bv < 0: return -1
@@ -1712,7 +1714,7 @@ vp_build = (xs: int[], depth: int) -> int:
     vp_regs.push(v)
     v
 
-vp_store = (e: Ins, f: Ins, lane: int) -> bool:
+vp_store = (e: *Ins, f: *Ins, lane: int) -> bool:
     if f.op != .store or int(f.c) & 15 != 4 or f.a != e.a or f.c != e.c: return false
     if int(e.c) & M_INDEX != 0 and f.dst != e.dst: return false
     f.imm == e.imm + lane * 4
@@ -1721,10 +1723,11 @@ vp_store = (e: Ins, f: Ins, lane: int) -> bool:
 # Multiply lanes together, then extract and add in that same order; never haddps/dpps or FMA.
 vp_products = (v: int) -> int[]:
     rev: int[]
+    cp = data(ir.code) as *Ins
     x = v
     loop rev.len() < 3:
         if x < 0 or x >= vp_def.len() or vp_ndef[x] != 1 or vp_def[x] < vp_start: return []
-        e = ir.code[vp_def[x]]
+        e = cp + vp_def[x]
         if e.op != .fadd or e.ty != VS: break
         y = int(e.b)
         if vp_ndef[y] != 1 or vp_def[y] < vp_start or ir.code[vp_def[y]].op != .fmul: return []
@@ -1744,6 +1747,7 @@ vp_products = (v: int) -> int[]:
 vp_idioms = ():
     code = ir.code
     out: Ins[]
+    copied = 0
     i = 0
     loop i < code.len():
         if code[i].op == .block and i + 9 < code.len() and code[i + 1].op == .block:
@@ -1767,14 +1771,18 @@ vp_idioms = ():
                         loop p in [i + 2..j - 2):
                             if code[p].op == .fconst and code[p].dst == cmp.b and code[p].ty == VS and code[p].imm == 0: conditional_abs = true
                     if k != .nop or conditional_abs:
+                        if copied == 0: out.reserve(code.len())
+                        loop p in [copied..i): out.push(code[p])
                         loop p in [i + 2..j - 2): out.push(code[p])
                         if conditional_abs: out.push(Ins(.vbin, VS, yes.dst, cmp.a, 0, VP_CABS, 0, yes.pos))
                         else: out.push(Ins(k, VS, yes.dst, cmp.a, cmp.b, 0, 0, yes.pos))
                         i = j + 6
+                        copied = i
                         continue
-        out.push(code[i])
         i += 1
-    ir.code = out
+    if copied > 0:
+        loop p in [copied..code.len()): out.push(code[p])
+        ir.code = out
 
 # A bounds/panic guard that cannot return on the taken path does not change the continuing
 # path's memory. Retain its exact position and diagnostic, but let a later pack use the f32
@@ -1792,62 +1800,83 @@ o_pack_f32 = ():
     # enough math to pay for scanning them. Matrix/vector helpers and vertex shaders fit.
     # This limit keeps release compilation within its 1% instruction-count budget.
     if ir.code.len() > 2048: return
-    # Most compiler/runtime functions do not even compute an f32. Scan their compact
-    # type bytes before walking instructions or allocating analysis tables.
-    has_f32 = false
-    loop ty in ir.vtypes:
-        if int(ty) == VS:
-            has_f32 = true
-            break
-    if not has_f32: return
+    # vreg records this while lowering/inlining/SRA already visit the values. Avoid
+    # rescanning all type bytes of the many functions that never compute an f32.
+    if not ir.has_f32: return
     candidate = false
     has_cmp = false
     last_store = -2
     nmul = 0
-    loop pos in 0.. and e in ir.code:
-        if (e.op == .flt or e.op == .fgt) and e.ty == VS: has_cmp = true
+    cp = data(ir.code) as *Ins
+    loop pos in [0..ir.code.len()):
+        e = cp + pos
+        op = e.op
+        if (op == .flt or op == .fgt) and e.ty == VS: has_cmp = true
         if not candidate:
-            if e.op == .fmul and e.ty == VS: nmul += 1
-            if e.op == .fadd and e.ty == VS and nmul >= 2: candidate = true
-            if e.op == .store and int(e.c) & 15 == 4:
-                if pos == last_store + 1 and vp_store(ir.code[last_store], e, 1): candidate = true
+            if op == .fmul and e.ty == VS: nmul += 1
+            if op == .fadd and e.ty == VS and nmul >= 2: candidate = true
+            if op == .store and int(e.c) & 15 == 4:
+                if pos == last_store + 1 and vp_store(cp + last_store, cp + pos, 1): candidate = true
                 last_store = pos
+        if candidate and has_cmp: break
     if not candidate: return
     if has_cmp: vp_idioms()
     code = ir.code
+    # The instruction buffer stays alive and unchanged until the final assignment.
+    # Read it in place: copying 40-byte instructions in every analysis walk is costly
+    # in the bootstrapped compiler. Only emitted/modified instructions need a copy.
+    cp = data(ir.code) as *Ins
     nv = ir.vtypes.len()
-    vp_def = fill(-1, nv)
-    vp_ndef = fill(0, nv)
-    loop pos in 0.. and e in code:
+    # Scratch belongs to this emission worker. Reuse its capacity between functions.
+    vp_def.resize(nv)
+    vp_ndef.resize(nv)
+    mem_set(data(vp_ndef) as *u8, 0, nv * 4)
+    # A definition position is read only when its count is one. Explicit definitions
+    # set it below; parameters and implicit zeros have no instruction position.
+    loop p in [0..ir.nparams):
+        vp_ndef[p] = 1
+        vp_def[p] = -1
+    loop pos in [0..code.len()):
+        e = cp + pos
         if o_defines(e.op) and e.dst >= 0:
-            vp_def[int(e.dst)] = pos
-            vp_ndef[int(e.dst)] += 1
+            d = int(e.dst)
+            vp_def[d] = i32(pos)
+            vp_ndef[d] += 1
         if e.op == .zeroslots:
             loop k in [0..int(e.b)):
                 z = int(ir.args[int(e.a) + k])
-                if z & 1 != 0: vp_ndef[z >> 1] += 1
-    loop p in [0..ir.nparams): vp_ndef[p] += 1
+                if z & 1 != 0:
+                    d = z >> 1
+                    vp_def[d] = -1
+                    vp_ndef[d] += 1
     vp_start = 0
-    vp_keys = []
-    vp_regs = []
+    vp_keys.clear()
+    vp_regs.clear()
     out: Ins[]
-    out.reserve(code.len())
+    copied = 0
     kinds: Op[]
     skip_to = 0
     changed = false
     guard_end = -1
-    loop i in 0.. and original in code:
+    loop i in [0..code.len()):
         if i < skip_to: continue
-        e = original
+        e = cp + i
         op = e.op
+        # nop through load precede store in Op: scalar value instructions neither
+        # write memory nor change control flow. Only fadd can root a reduction.
+        if int(op) < int(Op.store) and op != .fadd:
+            if op != .nop and e.dst >= 0 and vp_ndef[int(e.dst)] > 1: vp_start = i + 1
+            continue
         if op == .if_ and i > guard_end: guard_end = vp_panic_guard(i)
         vp_at = i
         # Most instructions cannot root a tree. Allocate/rollback state only for roots.
         xs: int[]
         n = 1
-        if op == .store and int(e.c) & 15 == 4 and i + 1 < code.len() and vp_store(e, code[i + 1], 1):
+        if op == .store and int(e.c) & 15 == 4 and i + 1 < code.len() and vp_store(e, cp + i + 1, 1):
             xs.push(int(e.b))
-            loop n < 4 and i + n < code.len() and vp_store(e, code[i + n], n):
+            xs.push(int(code[i + 1].b))
+            n = 2
+            loop n < 4 and i + n < code.len() and vp_store(e, cp + i + n, n):
                 xs.push(int(code[i + n].b))
                 n += 1
         else if op == .fadd and e.ty == VS: xs = vp_products(int(e.dst))
@@ -1857,21 +1886,27 @@ o_pack_f32 = ():
                 vp_regs.clear()
             nk = vp_keys.len()
             nvt = ir.vtypes.len()
-            vp_pending = []
+            vp_pending.clear()
             vp_budget = 96
             vp_gain = 0
             v = vp_build(xs, 0)
             profitable = vp_gain > xs.len()
             if op == .store: profitable = vp_gain + n - (if n == 3: 3 else: 1) > 0
             if v >= 0 and profitable:
+                # Most candidate functions recover no profitable tree. Copy their IR
+                # only after the first successful root, and only the untouched ranges.
+                if not changed: out.reserve(code.len())
+                loop p in [copied..i): out.push(code[p])
                 loop ins in vp_pending: out.push(ins)
                 if op == .store:
-                    e.ty = VX
-                    e.b = i32(v)
-                    e.c = i32((int(e.c) & ~15) | M_FLOAT | ((n * 4) & 15))
-                    out.push(e)
+                    st = e[0]
+                    st.ty = VX
+                    st.b = i32(v)
+                    st.c = i32((int(e.c) & ~15) | M_FLOAT | ((n * 4) & 15))
+                    out.push(st)
                     skip_to = i + n
                     vp_start = skip_to
+                    copied = skip_to
                 else:
                     acc = vreg(VS)
                     out.push(Ins(.vbin, VS, i32(acc), i32(v), 0, VP_EXTRACT, 0))
@@ -1882,6 +1917,7 @@ o_pack_f32 = ():
                         if j + 1 < xs.len(): dst = vreg(VS)
                         out.push(Ins(.fadd, VS, i32(dst), i32(acc), i32(lane), 0, 0))
                         acc = dst
+                    copied = i + 1
                 changed = true
                 continue
             # Roll back just the state a failed tree actually changed.
@@ -1889,7 +1925,10 @@ o_pack_f32 = ():
                 vp_keys.resize(nk)
                 vp_regs.resize(nk)
             if ir.vtypes.len() != nvt: ir.vtypes.resize(nvt)
-        out.push(e)
+        # A failed fadd root is also a scalar value instruction.
+        if int(op) < int(Op.store):
+            if op != .nop and e.dst >= 0 and vp_ndef[int(e.dst)] > 1: vp_start = i + 1
+            continue
         guarded = i <= guard_end
         reset = false
         memory = false
@@ -1915,27 +1954,27 @@ o_pack_f32 = ():
         # Test the cheap, usually-false redefinition count before classifying the opcode.
         if reset or (memory and not guarded) or (e.dst >= 0 and vp_ndef[int(e.dst)] > 1 and o_defines(op)): vp_start = i + 1
     if changed:
+        loop p in [copied..code.len()): out.push(code[p])
         # Retain all scalar work still used individually; discard just the recovered trees.
         uses = fill(0, ir.vtypes.len())
-        loop e in out:
-            o_operands(e)
+        optr = data(out) as *Ins
+        loop p in [0..out.len()):
+            o_operands(optr[p])
             loop u in o_buf: uses[u] += 1
         keep = fill(true, out.len())
         j = out.len() - 1
         loop j >= 0:
-            e = out[j]
+            e = optr + j
             if o_pure(e.op) and e.dst >= 0 and uses[int(e.dst)] == 0:
                 keep[j] = false
-                o_operands(e)
+                o_operands(e[0])
                 loop u in o_buf: uses[u] -= 1
             j -= 1
         packed: Ins[]
         packed.reserve(out.len())
-        loop j2 in 0.. and e in out:
-            if keep[j2]: packed.push(e)
+        loop j2 in [0..out.len()):
+            if keep[j2]: packed.push(out[j2])
         ir.code = packed
-    vp_def = []
-    vp_ndef = []
-    vp_pending = []
-    vp_keys = []
-    vp_regs = []
+    vp_pending.clear()
+    vp_keys.clear()
+    vp_regs.clear()
