@@ -1,0 +1,100 @@
+# requires: sloppy
+# Focused review probes: selects, recursive returns, raw-memory invalidation after
+# inlining, overlapping self-copies, vector destination forwarding and header hoisting.
+struct Lanes:
+    x: i32
+    y: f32
+    z: i32
+struct Holder:
+    v: vec3
+    pad = 0
+
+# o_selects may replace the integer lanes' branches after scalar replacement.
+@noinline
+choices = (n: int):
+    a = Lanes(3, 6, 9)
+    b = Lanes(12, 15, 18)
+    total = 0.0
+    loop i in 0..n:
+        old = a
+        if i % 2 == 0: a = b
+        else: a = Lanes(i32(i), f32(i + 1), i32(i + 2))
+        total += f64(old.x) + f64(old.y) + f64(old.z)
+    print("choices", total, a, b)
+
+# o_ret_sink only sinks a register move immediately before a return branch.
+# The aggregate snapshot's lanes must already hold values from before the store.
+@noinline
+recursive = (s: mut Holder, n: int) -> f32:
+    old = s.v
+    s.v.x += 1
+    if n == 0: old.x
+    else: old.x + recursive(s, n - 1)
+
+@inline
+raw_inline = (p: *f32):
+    q = p as *i32
+    q[0] = 1091567616
+@noinline
+raw_out = (p: *f32):
+    q = p as *i32
+    q[0] = 1094713344
+@noinline
+raw_caller = (s: mut Holder):
+    copy = s.v
+    a = s.v.x
+    raw_inline(&s.v.x)
+    b = s.v.x
+    raw_out(&s.v.x)
+    c = s.v.x
+    print("raw", copy, a, b, c)
+
+# Dead temporary removal and o_cleanup's vop destination forwarding must leave
+# old operands intact, including when a destination is also an operand.
+@noinline
+destinations = (s: mut Holder):
+    old = s.v
+    s.v = s.v + vec3(2, 3, 4)
+    mid = s.v
+    s.v += old
+    s.v = s.v
+    print("destinations", old, mid, s.v)
+
+# Globals may be hoisted only if the loop cannot write them; a mut argument may
+# point at the global itself. Heap stores may leave globals alone, but changing
+# array lengths must invalidate header loads as well as the element snapshots.
+global_holder = Holder(vec3(3, 6, 9))
+global_array = [Lanes(3, 6, 9), Lanes(12, 15, 18)]
+@noinline
+mut_global = (s: mut Holder, n: int):
+    total: f32 = 0
+    loop i in 0..n:
+        old = global_holder.v
+        s.v.x += 1
+        total += old.x
+    print("global alias", total, global_holder.v)
+@noinline
+headers = (n: int):
+    global global_array
+    total = 0.0
+    old_array = global_array
+    loop i in 0..n:
+        before = global_array.len()
+        old = global_array[0]
+        global_array[0].y += 1
+        global_array.push(Lanes(i32(i), f32(i), i32(i)))
+        after = global_array.len()
+        total += f64(before + after) + f64(old.y)
+    print("headers", total, old_array, global_array)
+
+choices(0)
+choices(6)
+s = Holder(vec3(3, 6, 9))
+print("recursive", recursive(s, 3), s.v)
+s.v = vec3(3, 6, 9)
+raw_caller(s)
+s.v = vec3(3, 6, 9)
+destinations(s)
+mut_global(global_holder, 4)
+headers(0)
+headers(4)
