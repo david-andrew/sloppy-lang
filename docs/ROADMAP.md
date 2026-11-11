@@ -216,11 +216,14 @@ safety net for changes here.
 - Measure the finished games first: allocation churn and frame-time spikes matter more than
   synthetic benchmarks.
 - Then the remaining gap to C -O2 in release builds (fannkuch 1.5x, spectral 1.4x, nbody 1.3x).
-- From a C programmer's benchmarks: `c[i * n + j] += ...` on a `mut` array keeps its bounds
-  checks (3x C) because the array's length is loaded again in each pass of the loop; moving
-  loads that nothing in the loop can change out of it (array headers, with no calls or header
-  stores in the loop, and only where the loop surely reaches them) would let loop versioning
-  drop the checks. vec4/mat4 math is scalar (2-2.8x C); packed SSE for vec4 would close it.
+- Rechecked array-header hoisting with `bench/headers`: release lowering already reads the
+  stable array pointers and lengths before the hot inner loops, including `mut` parameters.
+  Matrix multiplication still takes 2.18-2.45x C -O2's instructions: versioning drops the
+  `c[i * n + j]` and `a[i * n + k]` checks, but keeps `b[k * n + j]` (a scaled counter).
+  Stencil takes 1.27x with all inner checks removed; histogram takes 2.50x (a data-dependent
+  index and the one-check versioning cutoff). More header motion cannot save 10% on these
+  kernels; see the benchmark report for the bounds and instruction counts.
+  vec4/mat4 math is scalar (2-2.8x C); packed SSE for vec4 would close it.
   Function values are not inlined (reduce, count, a lambda: 2-3x a plain loop).
 - Debug builds stay the default; compile speed comes first (item 2 tracks it). What they lose
   to release builds, measured October 2026: the out-of-line uniqueness and refcount calls were
