@@ -254,6 +254,14 @@ Measured October 2026 on bench/big.jo (50k lines, debug, 8 cores, a busy machine
   forked workers, the same bytes as one processor makes): about 10% off x86-64 here, more on an idle
   machine. Arm64 workers keep function-local literal pools and join calls, addresses and debug
   information before the final ELF or Mach-O layout; cross-builds use the same workers.
+- Serial checking (November 2026): cache parser token buffers, type metadata addresses and
+  complete short interned names. With one emitter, retired user instructions fell from 207M to
+  192M for hello (7%), 792M to 755M for the small game (5%), 929M to 885M for Rebound (5%), and
+  1543M to 1458M for big.jo (6%). The compiler's debug build fell from 3113M to 2973M (4%).
+  Checking itself is 7–9% cheaper; the 10% whole-build target remains unmet. Deferring library
+  function bodies inside top-level `when` blocks gave a larger gain, but changed generated AST
+  node numbers in embedded panic strings (and generated local names in debugger information),
+  so it was withdrawn to preserve byte-identical output.
 - Allocation in the compiler: about 5% of the time, the allocator already doubling arrays and
   remapping large blocks in place; nothing big there.
 - Lowering in parallel (the next lever, about 1.4x on big.jo with code generation in the same
@@ -273,8 +281,8 @@ Measured October 2026 on bench/big.jo (50k lines, debug, 8 cores, a busy machine
   against the earlier compiler, on native, Linux arm64 and macOS targets.
 - The optimizer's first pass in parallel (release builds: about 20% of building the compiler),
   its results returned through shared memory.
-- No caching of the library between builds: it is a small part of a large program, and caching
-  it would add complexity for small programs only.
+- Library bodies are loaded and checked lazily within each build; no persistent library cache
+  is shared between builds.
 
 ## Community (S, ongoing)
 
