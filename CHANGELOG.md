@@ -1,7 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.30.0
 
+- Release builds: a local copied from a struct or vector field (`v = s.velocity`) no longer
+  follows later changes to that field made under an `if`. Aggregate copies were split into
+  integer-typed moves that common-subexpression elimination took to be independent of float
+  stores. A generated matrix of copies (13 kinds, 5 origins, 10 ways of changing them) now runs
+  in debug and release.
+- Release builds: an index that is the loop counter times an unchanging value plus another
+  (`b[k * n + j]`) is range-checked once before the loop instead of each time, with overflow
+  guarded; `h[x] += 1` on x86-64 is one add to memory. Matrix kernels 8% fewer instructions,
+  histograms 28%.
+- macOS: a window the screen makes smaller than asked keeps drawing at its real size and
+  backing scale (screenshots render offscreen at the size asked); two tasks waiting on one
+  pipe or socket are both woken (a password prompt off the main thread and a fetch from a
+  program's own server no longer hang); backtraces after `sloppy watch` reloads a function go
+  on through its callers.
 - `import layout as ui`: responsive rows, columns and panels, fit/grow/fixed/percent sizes,
   wrapping labels, HUD-styled buttons, bars, images and draw-time slots for existing widgets.
   Scroll containers clip, drag and glide; floating boxes attach to a parent's corners and draw
