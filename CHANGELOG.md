@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- glTF external buffers and images resolve percent-escaped relative paths, including nested
+  folders and UTF-8 filenames, from the supplied files map or `embed_dir`.
 - Keyboard and gamepad layout navigation reaches controls beyond a scroll viewport, including
   nested and horizontal lists. Tab/shoulders traverse the complete tree and wrap; arrows prefer
   the nearest row before alignment instead of skipping offset buttons.

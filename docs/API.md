@@ -3931,7 +3931,7 @@ run = find_animation(hero, "Run")
 draw_model(hero, transform(pos, facing), pose = pose_at(hero, run, elapsed()))
 ```
 
-A .gltf names its other files: give them by those names, as `files` (or put them in the .gltf as data: URIs). Not read: compressed meshes (Draco, meshopt), sparse base/animation accessors (float morph deltas can be sparse), and material extensions other than KHR_materials_unlit.
+A .gltf names its other files: give them in `files`, relative to the .gltf's directory (`load_model(embed("assets/hero.gltf"), embed_dir("assets"))`). This works in web builds too; the loader does not read neighboring files from disk. URI escapes are decoded while keeping subdirectories, so `textures/fox%20fur.png` finds `textures/fox fur.png` in the map. Exact URI keys take precedence; a basename-only map also works. A .glb usually contains its own buffers and images, and needs no files map. Not read: compressed meshes (Draco, meshopt), sparse base/animation accessors (float morph deltas can be sparse), and material extensions other than KHR_materials_unlit.
 
 - `struct ModelPart`
   ```gdscript
