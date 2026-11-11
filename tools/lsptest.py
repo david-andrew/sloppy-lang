@@ -591,6 +591,26 @@ lu, _ = doc("generic.jo", lsrc)
 lh = c.request("textDocument/inlayHint", {"textDocument": {"uri": lu}, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 99, "character": 0}}})
 check("generic hints", sorted((h["position"]["line"], h["label"]) for h in lh), [(3, "-> int"), (4, ": int")])
 
+# ---- generic errors retain both ends of long call trails in the editor too ----
+for name in ["generic_trail_long", "generic_trail_deferred", "generic_trail_library", "generic_trail_short", "generic_trail_ordinary"]:
+    text = open(os.path.join(root, "tests", "errors", name + ".jo"), encoding="utf-8").read()
+    _, ds = doc(name + ".jo", text)
+    errors = [d for d in ds if d.get("severity") == 1]
+    check(name + ": one error", len(errors), 1)
+    message = errors[0]["message"] if errors else ""
+    if name == "generic_trail_library":
+        wanted = ["in this call to sum", "... 4 more instantiation calls", "in g(xs: P[])", "in entry(xs: P[])"]
+        check(name + ": user call location", errors[0]["range"]["start"]["line"] if errors else -1, 11)
+    elif name == "generic_trail_short":
+        wanted = ["in leaf(x: str)", "in middle(x: str)", "in outer(x: str)"]
+        check(name + ": no duplicate or omitted calls", (message.count("called at"), "more instantiation calls" in message), (3, False))
+    elif name == "generic_trail_ordinary":
+        wanted = ["type mismatch: expected int, found str"]
+        check(name + ": no generic caller trail", "called at" in message, False)
+    else:
+        wanted = ["operator * is not defined for str and str", "... 37 more instantiation calls", "in leaf(x: str)", "in g39(x: str)"]
+    check(name + ": complete trail summary", [s in message for s in wanted], [True] * len(wanted))
+
 # ---- keywords and hover docs past attributes ----
 check("keyword completion", all(k in complete("le|") for k in ["let", "from", "soa", "type", "loop"]), True)
 nsrc = "# adds one\n@cabi\ninc = (x: int) -> int: x + 1\nprint(inc(1))\n"

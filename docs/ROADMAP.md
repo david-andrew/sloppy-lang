@@ -171,8 +171,9 @@ knows is kept anywhere the code does not show.
 ## Language (ongoing, kept small)
 
 Fill the gaps real programs hit, nothing speculative:
-- Constraints for generic code (today errors appear only where a generic is used), and
-  fixed-size array lengths as generic parameters (`T[N]`).
+- Generic errors now retain inner and outer calls with explicit trail omissions;
+  constraints and generic fixed-array lengths wait for a real program that needs
+  them (the audit found no per-length duplication; see [the design decision](design/generics.md#decision-2026-11-11)).
 - Sugar for passing errors on (a `try`), if code shows the two-line pattern is too much.
 - What a function may change, worked out once and carried on function values (from the audit):
   it would replace several special cases in the checks for `mut` elements and borrowed

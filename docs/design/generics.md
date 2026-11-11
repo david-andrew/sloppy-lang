@@ -1,7 +1,28 @@
 # Generic requirements and fixed-array length parameters
 
-Design proposal, 2026-11-11. Baseline: `33e925b`. No compiler change is proposed
-as already approved. Syntax marked **proposed** is not accepted today.
+## Decision (2026-11-11)
+
+Stage 1 is done: generic diagnostics retain the inner and outer calls, show an
+explicit omission count for long trails, and explain unsupported generic array
+lengths. The original investigation below is retained as the design record.
+
+Constraints and length parameters (`T[N]` / `[N: int]`) are deferred until a real
+program needs them. The 34 probes and repository audit found 32 fixed-array
+function signatures but **zero confirmed functions duplicated solely for
+different lengths**. There are 26 useful operation-contract candidates and 40
+numeric overloads, but neither establishes a need for a new constraint system;
+overload/coercion behavior also prevents mechanical consolidation.
+
+Reopen this decision with a concrete program that needs reusable fixed-shape
+storage or named dimensions, or a generic API whose intended operation contract
+cannot be adequately expressed and diagnosed today. Bring the program, its
+current workaround, and the measurable source/diagnostic benefit; reconsider the
+smallest applicable option below rather than treating the staged proposal as an
+approved implementation roadmap.
+
+Original design proposal, 2026-11-11. Baseline: `33e925b`. The decision above
+supersedes its implementation recommendation. Syntax marked **proposed** is not
+accepted today.
 
 ## Decision in brief
 

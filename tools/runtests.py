@@ -330,14 +330,15 @@ if compiler != "sloppy0" and target == "native":
     for t in sorted(glob.glob(os.path.join(root, "tests", "errors", "*.jo"))):
         name = "errors/" + os.path.basename(t)[:-3]
         if pattern not in name: continue
-        want = open(t, encoding="utf-8").readline().split("# error:", 1)[-1].strip()
+        # Several expectations can check the primary location and its generic call notes.
+        wants = [line.split("# error:", 1)[1].strip() for line in open(t, encoding="utf-8") if line.startswith("# error:")]
         r = subprocess.run([sloppy, "build", t, "-o", os.path.join(tmp, "error_case")], capture_output=True, text=True, encoding="utf-8", errors="replace",
                            env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")), timeout=60)
         # (a diagnostic: exit status 1 with an error at a place, never the compiler crashing)
         crashed = r.returncode != 1 or "panic:" in r.stderr or "internal compiler error" in r.stderr
-        if not crashed and want in r.stderr: passed += 1
+        if not crashed and wants and all(want in r.stderr for want in wants): passed += 1
         else:
-            print(f"FAIL {name}: expected an error containing {want!r}\n{r.stderr}")
+            print(f"FAIL {name}: expected an error containing each of {wants!r}\n{r.stderr}")
             failed += 1
     # code made on several processors is the same as code made on one (compiler/par.jo)
     if pattern in "parallel/emit" and os.name != "nt" and target == "native" and not release:
