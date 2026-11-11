@@ -67,6 +67,16 @@ const GL_COMPILE_STATUS = 0x8B81
 const GL_LINK_STATUS = 0x8B82
 const GL_INFO_LOG_LENGTH = 0x8B84
 
+# gpu.jo retains its descriptor lookup convention on all backends. GLSL's descriptors
+# carry a complete independent leaf name; remove just that convention's outer wrapper.
+__gl_uniform_name = (name: str) -> str:
+    if not starts_with(name, "u.sl_u_"): return name
+    n = find(name, "_.")
+    if n >= 0: return name[2..n] + name[n + 1..]
+    n = find(name, "_[")
+    if n >= 0: return name[2..n] + name[n + 1..]
+    name[2..name.len() - 1]
+
 when TARGET == "wasm":
     # implemented by lib/web/runtime.js on top of WebGL2
     extern glClearColor = (r: f32, g: f32, b: f32, a: f32)
@@ -146,7 +156,9 @@ when TARGET == "wasm":
     gl_create_renderbuffer = () -> int: int(glCreateRenderbuffer())
     gl_delete_renderbuffer = (r: int): glDeleteRenderbuffer(u32(r))
     gl_create_program = (vs: str, fs: str) -> int: int(glCreateProgramFrom(data(vs), i32(len(vs)), data(fs), i32(len(fs))))
-    gl_uniform_location = (p: int, name: str) -> int: int(glGetUniformLocationStr(u32(p), data(name), i32(len(name))))
+    gl_uniform_location = (p: int, name: str) -> int:
+        nm = __gl_uniform_name(name)
+        int(glGetUniformLocationStr(u32(p), data(nm), i32(len(nm))))
     gl_tex_image = (w: int, h: int, internal: int, format: int, ty: int, pixels: *u8, size: int):
         glTexImage2D(GL_TEXTURE_2D, 0, i32(internal), i32(w), i32(h), 0, u32(format), u32(ty), pixels, i32(size))
     gl_tex_sub_image = (x: int, y: int, w: int, h: int, format: int, ty: int, pixels: *u8, size: int):
@@ -807,15 +819,45 @@ else:
         n = i32(len(src))
         __glShaderSource(s, 1, &p, &n)
         __glCompileShader(s)
-        ok: i32 = 0
-        __glGetShaderiv(s, GL_COMPILE_STATUS, &ok)
-        if ok == 0:
-            buf = __alloc(4096)
-            ln: i32 = 0
-            __glGetShaderInfoLog(s, 4095, &ln, buf)
-            eprint("shader compile error:\n{__cstr(buf)}\n--- source ---\n{src}")
-            panic("shader compilation failed")
         int(s)
+
+    __gl_log = (id: u32, shader_: bool) -> str:
+        n: i32 = 0
+        if shader_: __glGetShaderiv(id, GL_INFO_LOG_LENGTH, &n)
+        else: __glGetProgramiv(id, GL_INFO_LOG_LENGTH, &n)
+        if n <= 1: return "(empty driver log)"
+        buf = __alloc(int(n) + 1)
+        ln: i32 = 0
+        if shader_: __glGetShaderInfoLog(id, n, &ln, buf)
+        else: __glGetProgramInfoLog(id, n, &ln, buf)
+        if ln <= 0: return "(empty driver log)"
+        buf[int(ln)] = 0
+        __cstr(buf)
+
+    __gl_source_summary = (src: str) -> str:
+        out = ""
+        rows = 0
+        samplers = 0
+        varyings = 0
+        attribs = 0
+        vertex = find(src, "gl_Position") >= 0
+        loop raw in split(src, "\n"):
+            line = trim(raw)
+            if starts_with(line, "// sloppy "): out += line + "\n"
+            # Generated shaders carry recursively counted metadata. The handwritten 2D
+            # sources have primitive uniforms and interfaces, counted here on failure only.
+            if starts_with(line, "centroid "): line = line[9..]
+            words = split(line, " ")
+            if words.len() < 3: continue
+            if words[0] == "uniform":
+                c = 1
+                if words[1] == "mat4": c = 4
+                rows += c
+                if find(words[1], "sampler") >= 0: samplers += 1
+            if vertex and words[0] == "out" or not vertex and words[0] == "in": varyings += 1
+            if starts_with(line, "layout(location="): attribs += 1
+        if out != "": return out
+        "handwritten GLSL: uniforms={rows} samplers={samplers} varyings={varyings} attributes={attribs}\n"
 
     gl_create_program = (vs: str, fs: str) -> int:
         if __vk: return 0
@@ -826,14 +868,28 @@ else:
         __glAttachShader(p, u32(v))
         __glAttachShader(p, u32(f))
         __glLinkProgram(p)
+        vok: i32 = 0
+        fok: i32 = 0
         ok: i32 = 0
+        __glGetShaderiv(u32(v), GL_COMPILE_STATUS, &vok)
+        __glGetShaderiv(u32(f), GL_COMPILE_STATUS, &fok)
         __glGetProgramiv(p, GL_LINK_STATUS, &ok)
-        if ok == 0:
-            buf = __alloc(4096)
-            ln: i32 = 0
-            __glGetProgramInfoLog(p, 4095, &ln, buf)
-            eprint("shader link error:\n{__cstr(buf)}")
-            panic("shader linking failed")
+        if vok == 0 or fok == 0 or ok == 0:
+            kind = if vok == 0 or fok == 0: "shader compile" else: "link"
+            eprint("{kind} error")
+            caps = [0x8DFB, 0x8DFD, 0x8DFC, 0x8B4C, 0x8872, 0x8B4D, 0x8869]
+            names = ["MAX_VERTEX_UNIFORM_VECTORS", "MAX_FRAGMENT_UNIFORM_VECTORS", "MAX_VARYING_VECTORS", "MAX_VERTEX_TEXTURE_IMAGE_UNITS", "MAX_TEXTURE_IMAGE_UNITS", "MAX_COMBINED_TEXTURE_IMAGE_UNITS", "MAX_VERTEX_ATTRIBS"]
+            loop i in [0..caps.len()):
+                limit: i32 = 0
+                glGetIntegerv(u32(caps[i]), &limit)
+                eprint("{names[i]}={limit}")
+            eprint("--- vertex ---\n{__gl_source_summary(vs)}{__gl_log(u32(v), true)}")
+            eprint("--- fragment ---\n{__gl_source_summary(fs)}{__gl_log(u32(f), true)}")
+            eprint("--- program ---\n{__gl_log(p, false)}\n--- vertex source ---\n{vs}\n--- fragment source ---\n{fs}")
+            __glDeleteShader(u32(v))
+            __glDeleteShader(u32(f))
+            __glDeleteProgram(p)
+            panic("shader compilation or linking failed")
         __glDeleteShader(u32(v))
         __glDeleteShader(u32(f))
         int(p)
@@ -841,7 +897,7 @@ else:
     gl_uniform_location = (p: int, name: str) -> int:
         if __vk: return 0
         if __soft: return -1
-        int(__glGetUniformLocation(u32(p), data(__zstr(name))))
+        int(__glGetUniformLocation(u32(p), data(__zstr(__gl_uniform_name(name)))))
     gl_tex_image = (w: int, h: int, internal: int, format: int, ty: int, pixels: *u8, size: int):
         if __vk:
             vgl_tex_image(w, h, internal, format, ty, pixels)

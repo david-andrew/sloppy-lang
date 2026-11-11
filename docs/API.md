@@ -3743,6 +3743,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
       morph_vertices: Vertex3D[] = []
       morph_skin: SkinVertex3D[] = []
   ```
+- `mesh = (vertices: SkinVertex3D[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh`: Upload skinned vertices, preparing skeletal GL/WebGL programs on the first load.
 - `camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0, up: vec3 = vec3(0, 1, 0))`: place the camera; call once per frame before drawing 3D objects. up is the way that is up on the screen (tilt it to roll the picture: a camera behind a plane, banking with it)
 - `world_to_screen = (p: vec3) -> vec2?`: where a point in 3D appears on the screen, in 2D drawing units (for a name or a health bar over someone's head); none when it is behind the camera. As the camera was last placed.
 - `screen_ray = (p: vec2) -> (vec3, vec3)`: the ray from the camera through a point on the screen (2D units, as mouse_pos): where it starts and its direction (length 1), for picking what the mouse is on (with a physics3d raycast)

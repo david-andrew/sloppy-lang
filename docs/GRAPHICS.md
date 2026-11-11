@@ -4,6 +4,23 @@ A Sloppy game is written once and draws through whichever of five renderers the 
 This page explains which one runs where, how your shader code reaches each of them, what is the
 same and what differs between them, and the three ways of computing on the GPU.
 
+## Portable WebGL2 shader limits
+
+WebGL2 guarantees 256 vertex and 224 fragment uniform vectors, 15 varying vectors,
+16 vertex attributes, and 16 texture units per stage (32 combined). A desktop GPU may
+allow much more. Uniform packing follows GLSL ES Appendix A, not uniform-buffer
+`std140` layout. `python3 tools/webglbudget.py` compiles library and example shaders
+for the web and checks a conservative bound: each scalar/vector takes a whole row,
+arrays include every element, and matrices take one row per column. The Linux CI test
+job runs this audit.
+
+GLSL uniforms are independent fields, declared only in stages that read them.
+Read-only struct arguments to shader helpers are specialized to those fields;
+copying an entire struct still reads every field. The native byte layout and the
+64-joint skin palette are unchanged. GL/WebGL creates skeletal programs when the
+first skinned mesh is loaded. Compile/link errors include both entry points and
+sources, stage and program logs, conservative resource counts, and GPU limits.
+
 ## The five renderers
 
 | renderer | where | used when |

@@ -9,7 +9,7 @@ const [chrome, page, dir] = process.argv.slice(2);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0;
 
-const b = spawn(chrome, ["--no-sandbox", "--enable-unsafe-swiftshader", "--remote-debugging-port=0", `--user-data-dir=${dir}/audio`, "--window-size=400,300", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+const b = spawn(chrome, ["--no-sandbox", "--mute-audio", "--enable-unsafe-swiftshader", "--remote-debugging-port=0", `--user-data-dir=${dir}/audio`, "--window-size=400,300", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
 let err = "";
 b.stderr.on("data", (d) => { err += d; });
 const t0 = Date.now();

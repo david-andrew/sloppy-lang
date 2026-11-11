@@ -666,14 +666,22 @@ __light_pos: vec4[8]            # the (at most 8) that light the frame
 __light_col: vec4[8]
 __light_n: f32 = 0.0
 
+# Shared constructors keep each shader translation in one place across backend paths.
+__skin_lit_program = () -> Shader: make_shader(shader(lit_vs_skin, lit_fs))
+__skin_shadow_program = () -> Shader: make_shader(shader(_shadow_vs_skin, _shadow_fs))
+__skin_pbr_program = () -> Shader: make_shader(shader(__pbr_skin_vs, __pbr_fs))
+__skin_pbr_shadow_program = () -> Shader: make_shader(shader(__pbr_shadow_skin_vs, __pbr_shadow_fs))
+
 __3d_init = ():
     global __3d_ready, __blur_sh, __bright_sh, __comp_sh, __fs_tri, __lit, __lit_inst, __lit_skin, __shadow_sh, __shadow_sh_inst, __shadow_sh_skin, __sky_sh
     if __3d_ready: return
     __3d_ready = true
     __lit = make_shader(shader(lit_vs, lit_fs))
     __lit_inst = make_shader(shader(lit_vs_inst, lit_fs))
-    __lit_skin = make_shader(shader(lit_vs_skin, lit_fs))
-    __shadow_sh_skin = make_shader(shader(_shadow_vs_skin, _shadow_fs))
+    when TARGET != "wasm":
+        if __vk:
+            __lit_skin = __skin_lit_program()
+            __shadow_sh_skin = __skin_shadow_program()
     __shadow_sh = make_shader(shader(_shadow_vs, _shadow_fs))
     __shadow_sh_inst = make_shader(shader(_shadow_vs_inst, _shadow_fs))
     __sky_sh = make_shader(shader(_sky_vs, _sky_fs))
@@ -688,9 +696,32 @@ __pbr_init = ():
     if __pbr_ready: return
     __pbr_ready = true
     __pbr_sh = make_shader(shader(__pbr_vs, __pbr_fs))
-    __pbr_skin = make_shader(shader(__pbr_skin_vs, __pbr_fs))
     __pbr_shadow = make_shader(shader(__pbr_shadow_vs, __pbr_shadow_fs))
-    __pbr_shadow_skin = make_shader(shader(__pbr_shadow_skin_vs, __pbr_shadow_fs))
+    when TARGET != "wasm":
+        if __vk:
+            __pbr_skin = __skin_pbr_program()
+            __pbr_shadow_skin = __skin_pbr_shadow_program()
+
+# GL/WebGL link skeletal programs only after a skinned mesh is loaded. Vulkan/Metal
+# keep their own program/pipeline warm-up path. Field-specialized GLSL keeps bones out
+# of every unskinned stage without changing the 64-joint CPU or GPU palette layout.
+__skin_gl_ready = false
+__skin_gl_init = ():
+    global __skin_gl_ready, __lit_skin, __shadow_sh_skin, __pbr_skin, __pbr_shadow_skin
+    when TARGET != "wasm":
+        if __vk: return
+    if __skin_gl_ready: return
+    __skin_gl_ready = true
+    __lit_skin = __skin_lit_program()
+    __shadow_sh_skin = __skin_shadow_program()
+    __pbr_skin = __skin_pbr_program()
+    __pbr_shadow_skin = __skin_pbr_shadow_program()
+
+# Upload skinned vertices, preparing skeletal GL/WebGL programs on the first load.
+mesh = (vertices: SkinVertex3D[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh:
+    __gfx_init_gl_only()
+    __skin_gl_init()
+    mesh[SkinVertex3D](vertices, indices, mode)
 
 # Called at the start of the 3D pass, before recording any shadow or lit draws. Uses
 # existing render targets and shaders on every backend; no CPU readback or new builtins.
@@ -893,6 +924,7 @@ draw_grid3d = (size: f64 = 10.0, step: f64 = 1.0, height: f64 = 0.0, color: vec4
 
 # a skinned mesh (of SkinVertex3D), bent by bones (3 rows per joint: see draw_model)
 __draw_skinned = (m: Mesh, bones: vec4[], transform: mat4, color: vec4, texture: Texture, emissive: f64, specular: f64, cast_shadow: bool, in_front: bool, material: Material? = none):
+    __skin_gl_init()
     d = Draw3D(m, transform, color, texture.id, f32(emissive), f32(specular), [], false, cast_shadow and not in_front, 0, __noop3d, false, in_front, bones, material = material)
     __material_draw(d)
     __draws.push(d)

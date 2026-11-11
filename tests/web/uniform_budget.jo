@@ -1,0 +1,63 @@
+# A read-only uniform aggregate must not activate its unused 240-row palette.
+struct BudgetVertex:
+    pos: vec3
+struct BudgetUniforms:
+    color: vec4
+    unused: vec4[240]
+struct BudgetOut:
+    pos: vec4
+budget_color = (u: BudgetUniforms) -> vec4: u.color
+budget_vs = (v: BudgetVertex, u: BudgetUniforms) -> BudgetOut: BudgetOut(vec4(v.pos, 1))
+budget_fs = (i: BudgetOut, u: BudgetUniforms) -> vec4: budget_color(u)
+# The same helper receives two uniform substructures and ordinary/mutated value copies.
+struct BudgetPart:
+    color: vec4
+    gains: f32[2]
+struct BudgetNested:
+    left: BudgetPart
+    right: BudgetPart
+    matrix: mat4
+budget_part = (p: BudgetPart) -> vec4: p.color * p.gains[1]
+budget_copy = (p: BudgetPart) -> vec4:
+    c = p
+    c.color *= 0.5
+    budget_part(c)
+budget_mutate = (p: mut BudgetPart): p.color *= 0.5
+nested_budget_vs = (v: BudgetVertex, u: BudgetNested) -> BudgetOut: BudgetOut(u.matrix * vec4(v.pos, 1))
+nested_budget_fs = (i: BudgetOut, u: BudgetNested) -> vec4:
+    local = BudgetPart(vec4(0, 1, 0, 1), [0.0, 1.0])
+    budget_mutate(local)
+    if budget_part(u.left) != vec4(0.5, 0, 0, 0.5): return vec4(1, 0, 0, 1)
+    if budget_part(u.right) != vec4(0, 0, 0.25, 0.25): return vec4(1, 0, 0, 1)
+    if budget_part(local) != vec4(0, 0.5, 0, 0.5): return vec4(1, 0, 0, 1)
+    if budget_copy(u.left) != vec4(0.25, 0, 0, 0.25): return vec4(1, 0, 0, 1)
+    vec4(0, 1, 0, 1)
+window("uniform budget", 64, 64)
+sh = make_shader(shader(budget_vs, budget_fs))
+nested_sh = make_shader(shader(nested_budget_vs, nested_budget_fs))
+m = mesh([BudgetVertex(vec3(-1, -1, 0)), BudgetVertex(vec3(3, -1, 0)), BudgetVertex(vec3(-1, 3, 0))])
+# Force the ordinary library programs; skeletal programs must still be absent at startup.
+__3d_init()
+__pbr_init()
+draw_mesh(cube_mesh())
+__draws.clear()
+filter_shader = make_shader(shader(__sky_filter_vs, __sky_filter_fs))
+particles = Particles3D()
+emit(particles, vec3(0, 0, 0), 1, 0.0, WHITE)
+draw(particles)
+palette_reset()
+palette_shader = make_shader(shader(effect_vs, __palette_fs))
+print("shader startup ready")
+load_skin_once = false
+# Keep the page rendering green, then load a skin when the browser test presses S.
+draw = ():
+    global load_skin_once
+    clear(RED)
+    draw(sh, m, BudgetUniforms(color = vec4(0, 1, 0, 1)))
+    clear(RED)
+    draw(nested_sh, m, BudgetNested(BudgetPart(vec4(1, 0, 0, 1), [0.0, 0.5]), BudgetPart(vec4(0, 0, 1, 1), [0.0, 0.25]), mat4()))
+    if key_pressed(.s) and not load_skin_once:
+        load_skin_once = true
+        skin: SkinVertex3D[] = []
+        assert(mesh(skin).count == 0)
+        print("shader skin ready")

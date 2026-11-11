@@ -17,10 +17,19 @@ use 'check.jo'
 use 'expr.jo'
 
 gl_out: str[]
-gl_done_fns: {int: bool} = {}
+gl_done_fns: {str: str} = {}
 gl_done_structs: {int: bool} = {}
 gl_done: {str: bool} = {}   # helper declarations already made (by name)
 gl_decls: str[]          # struct and function definitions, in dependency order
+
+# Bind only read-only aggregate parameters to a path in the program's uniform layout.
+# A helper can have several specializations (u.left, u.right, and an ordinary value).
+# Leaf declarations are collected during expression emission, separately for each stage.
+gl_uniform_bindings: {int: str} = {}
+gl_uniforms: str[]
+gl_specializations = 0
+gl_uniform_rows = 0
+gl_uniform_samplers = 0
 
 gl_stage = ""            # "vertex" or "fragment": the stage being translated
 
@@ -113,21 +122,80 @@ builtin_map: {str: str} = {
 
 gl_fn_name = (f: int) -> str: "f_{gl_name(name_of(int(nodes[int(fns[f].decl)].name)))}_{f}"
 
-# translate a function and everything it calls
-gl_function = (f: int):
-    global gl_out
-    if gl_done_fns.get(f) != none: return
-    gl_done_fns[f] = true
+gl_uniform_struct = (t: int) -> bool:
+    types[prune(t)].kind == .struct_ and not is_lib_texture(int(types[prune(t)].st)) and not is_gpu_buffer(t)
+
+# A path is made of field indexes, so nested names cannot collide, and it agrees with gl_udesc.
+gl_uniform_path = (e: int) -> str:
+    if nodes[e].kind == .ident and nodes[e].aux == i32(int(SK.local)):
+        l = int(nodes[e].sym)
+        if int(locals[l].flags) & LF_ALIAS != 0: return gl_uniform_path(int(locals[l].alias))
+        return gl_uniform_bindings.get(l) ?? ""
+    if nodes[e].kind == .field and nodes[e].aux >= 0 and gl_uniform_struct(ntype(int(nodes[e].a))):
+        root = gl_uniform_path(int(nodes[e].a))
+        if root != "": return "{root}_{nodes[e].aux}"
+    ""
+
+# Conservative Appendix A bound: no scalar sharing, all array elements, matrix columns.
+gl_resource_cost = (t0: int) -> (int, int):
+    t = prune(t0)
+    if types[t].kind == .fixed:
+        c = gl_resource_cost(int(types[t].elem))
+        return (c.0 * fixed_len(t), c.1 * fixed_len(t))
+    if is_gpu_buffer(t): return (2, 1)
+    if types[t].kind == .struct_:
+        if is_lib_texture(int(types[t].st)): return (1, 1)
+        rows = 0
+        samplers = 0
+        loop f in gl_struct_fields(t):
+            c = gl_resource_cost(f.1)
+            rows += c.0
+            samplers += c.1
+        return (rows, samplers)
+    if t == T_MAT4: return (4, 0)
+    (1, 0)
+
+# A whole-value read remains a value copy. Only this case needs all its leaves; field reads
+# and read-only helper arguments never construct the containing uniform struct.
+gl_uniform_value = (t: int, path: str, pos: int) -> str:
+    global gl_uniform_rows, gl_uniform_samplers
+    if gl_uniform_struct(t):
+        parts: str[]
+        loop i in 0.. and f in gl_struct_fields(t): parts.push(gl_uniform_value(f.1, "{path}_{i}", pos))
+        return "{gl_type(t, pos)}({join(parts, ", ")})"
+    if gl_first("uniform_{path}"):
+        gl_uniforms.push("uniform {gl_type(t, pos)} {path};\n")
+        c = gl_resource_cost(t)
+        gl_uniform_rows += c.0
+        gl_uniform_samplers += c.1
+    path
+
+# Translate a function in a uniform-binding context, and everything it calls. Omitted
+# read-only struct arguments become global leaf references; other calls keep value semantics.
+gl_function = (f: int, bindings: str[] = []) -> str:
+    global gl_out, gl_uniform_bindings, gl_specializations
+    key = "{f}|{join(bindings, "|")}"
+    if let done = gl_done_fns.get(key): return done
+    nm = gl_fn_name(f)
+    if bindings.len() > 0:
+        gl_specializations += 1
+        nm += "_u{gl_specializations}"
+    gl_done_fns[key] = nm
+    saved_bindings = gl_uniform_bindings
+    gl_uniform_bindings = {}
     decl = int(fns[f].decl)
     if decl == 0 or (nodes[decl].kind != .fn_ and nodes[decl].kind != .lambda): gl_err(0, "only named functions can be used in shaders")
     if fns[f].caps.len() > 0: gl_err(nodes[decl].pos, "a function that captures variables cannot run on the GPU")
     ret = gl_type(int(fns[f].ret), nodes[decl].pos)
-    sig = "{ret} {gl_fn_name(f)}("
+    params: str[]
     loop i in 0.. and l in fns[f].params:
-        if i > 0: sig += ", "
-        if int(locals[l].flags) & LF_MUTPARAM != 0: sig += "inout "
-        sig += "{gl_type(int(locals[l].type), locals[l].pos)} {gl_local(l)}"
-    sig += ")"
+        if i < bindings.len() and bindings[i] != "":
+            gl_uniform_bindings[l] = bindings[i]
+            continue
+        q = ""
+        if int(locals[l].flags) & LF_MUTPARAM != 0: q = "inout "
+        params.push("{q}{gl_type(int(locals[l].type), locals[l].pos)} {gl_local(l)}")
+    sig = "{ret} {nm}({join(params, ", ")})"
     saved = gl_out
     gl_out = []
     body = int(fns[f].body)
@@ -135,7 +203,9 @@ gl_function = (f: int):
     gl_block(body, 1, want)
     lines_ = gl_out
     gl_out = saved
+    gl_uniform_bindings = saved_bindings
     gl_decls.push("{sig} \{\n{join(lines_, "")}}\n")
+    nm
 
 ind = (n: int) -> str: repeat("    ", n)
 
@@ -315,6 +385,8 @@ gl_binop = (op: Tok) -> str:
 gl_expr = (e: int) -> str:
     k = nodes[e].kind
     t = prune(ntype(e))
+    path = gl_uniform_path(e)
+    if path != "": return gl_uniform_value(t, path, nodes[e].pos)
     if k == .int_lit:
         if types[t].kind == .float_: return gl_float(f64(nodes[e].ival))
         if nodes[e].ival < -2147483648 or nodes[e].ival > 4294967295: gl_err(nodes[e].pos, "shader integers are 32 bits, and this number does not fit in one (a hash written for 64 bits gives other values here)")
@@ -418,8 +490,9 @@ gl_expr = (e: int) -> str:
         decl = int(fns[f].decl)
         nm = name_of(int(nodes[decl].name))
         args: str[]
-        loop i in [0..nkids(e)): args.push(gl_expr(kid(e, i)))
         if modules[int(nodes[decl].mod)].is_prelude:
+            if builtin_map.get(nm) != none or nm == "texel" or nm == "texture_size" or (nkids(e) > 0 and is_gpu_buffer(ntype(kid(e, 0)))):
+                loop i in [0..nkids(e)): args.push(gl_expr(kid(e, i)))
             if let g = builtin_map.get(nm):
                 # (abs of the smallest integer is itself, as on the CPU: GLSL's is undefined)
                 if nm == "abs" and (types[t].kind == .int_ or (is_vec(t) and types[t].sign)):
@@ -451,8 +524,22 @@ gl_expr = (e: int) -> str:
                 if nm == "[]": return "{gl_gbuf_reader(gpu_buffer_elem(ntype(kid(e, 0))), nodes[e].pos)}({args[0]}, {args[1]})"
                 if nm == "[]=" or starts_with(nm, "atomic_"): gl_err(nodes[e].pos, "GPU buffers are written by compute programs only")
             # prelude helpers written in Sloppy (e.g. vector math) are translated like user code
-        gl_function(f)
-        return "{gl_fn_name(f)}({join(args, ", ")})"
+        args = []
+        bindings: str[]
+        specialized = false
+        loop i in [0..nkids(e)):
+            a = kid(e, i)
+            path = gl_uniform_path(a)
+            l = fns[f].params[i]
+            if path != "" and gl_uniform_struct(ntype(a)) and int(locals[l].flags) & LF_MUTPARAM == 0:
+                bindings.push(path)
+                specialized = true
+            else:
+                bindings.push("")
+                args.push(gl_expr(a))
+        if not specialized: bindings = []
+        called = gl_function(f, bindings)
+        return "{called}({join(args, ", ")})"
     if k == .array and types[t].kind == .fixed:
         # [a, b, c], [] or fill(v, N): an array constructor
         parts: str[]
@@ -675,7 +762,7 @@ uniform_kind = (t0: int, pos: int) -> str:
     ""
 
 # the uniforms' layout entries for struct type t at byte offset base: ";name,kind,offset" (an
-# array: ",count,stride" more); a struct inside them by its fields, named "field_.inner"
+# array: ",count,stride" more). Independent GLSL leaf names use field-index paths.
 gl_udesc = (t: int, prefix: str, base: int, pos: int) -> str:
     out = ""
     si = int(types[prune(t)].st)
@@ -687,15 +774,15 @@ gl_udesc = (t: int, prefix: str, base: int, pos: int) -> str:
             # an array: its element kind, then the count and the bytes per element
             et = int(types[ft].elem)
             if is_gpu_buffer(et): gl_err(pos, "uniforms cannot hold arrays of GPU buffers")
-            out += ";{prefix}{f.0},{uniform_kind(et, pos)},{fo},{fixed_len(ft)},{tsize(et)}"
+            out += ";{prefix}_{i},{uniform_kind(et, pos)},{fo},{fixed_len(ft)},{tsize(et)}"
         else if types[ft].kind == .struct_ and not is_lib_texture(int(types[ft].st)) and not is_gpu_buffer(ft):
-            out += gl_udesc(ft, "{prefix}{f.0}_.", fo, pos)
-        else: out += ";{prefix}{f.0},{uniform_kind(f.1, pos)},{fo}"
+            out += gl_udesc(ft, "{prefix}_{i}", fo, pos)
+        else: out += ";{prefix}_{i},{uniform_kind(f.1, pos)},{fo}"
     out
 
 # returns (vertex source, fragment source, layout description)
 glsl_build = (vsf: int, fsf: int) -> (str, str, str):
-    global gl_decls, gl_done, gl_done_fns, gl_done_structs, gl_stage
+    global gl_decls, gl_done, gl_done_fns, gl_done_structs, gl_stage, gl_uniform_bindings, gl_uniforms, gl_specializations, gl_uniform_rows, gl_uniform_samplers
     gl_decls = []
     gl_done_fns = {}
     gl_done_structs = {}
@@ -707,29 +794,60 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str):
     if np == 3: itype = int(fns[vsf].ptypes[1])
     utype = int(fns[vsf].ptypes[np - 1])
     otype = int(fns[vsf].ret)
+    gl_uniform_bindings = {}
+    gl_uniforms = []
+    gl_uniform_rows = 0
+    gl_uniform_samplers = 0
+    gl_specializations = 0
+    vb = fill("", np)
+    vmut = int(locals[fns[vsf].params[np - 1]].flags) & LF_MUTPARAM != 0
+    if not vmut: vb[np - 1] = "sl_u"
     gl_stage = "vertex"
-    gl_function(vsf)
+    vname = gl_function(vsf, vb)
+    vinit = ""
+    varg = ""
+    if vmut:
+        vinit = "    {gl_type(utype, vpos)} u = {gl_uniform_value(utype, "sl_u", vpos)};\n"
+        varg = ", u"
+    vuniforms = join(gl_uniforms, "")
+    vrows = gl_uniform_rows + 1
+    vsamplers = gl_uniform_samplers
     vdecls = gl_decls
     gl_decls = []
     gl_done_fns = {}
     gl_done_structs = {}
     gl_done = {}
+    gl_uniform_bindings = {}
+    gl_uniforms = []
+    gl_uniform_rows = 0
+    gl_uniform_samplers = 0
+    gl_specializations = 0
     gl_stage = "fragment"
-    gl_function(fsf)
+    fmut = int(locals[fns[fsf].params[1]].flags) & LF_MUTPARAM != 0
+    fb = ["", if fmut: "" else: "sl_u"]
+    fname = gl_function(fsf, fb)
+    finit = ""
+    farg = ""
+    if fmut:
+        finit = "    {gl_type(utype, vpos)} u = {gl_uniform_value(utype, "sl_u", vpos)};\n"
+        farg = ", u"
+    funiforms = join(gl_uniforms, "")
+    frows = gl_uniform_rows
+    fsamplers = gl_uniform_samplers
     fdecls = gl_decls
     head = "#version 300 es\nprecision highp float;\nprecision highp int;\n"
     # uniforms
     gl_struct_fields(utype)
     layout(utype)
     udesc = "U{tsize(utype)}"
-    ustruct = gl_type(utype, vpos)
-    udesc += gl_udesc(utype, "", 0, vpos)
+    udesc += gl_udesc(utype, "sl_u", 0, vpos)
     # vertex attributes
     vfields = gl_struct_fields(vtype_)
     vsi = int(types[prune(vtype_)].st)
     layout(vtype_)
     adesc = "A{tsize(vtype_)}"
-    vs = head
+    vs = head + "// sloppy shader: {gl_fn_name(vsf)} at {pos_str(vpos)}\n"
+    attribs = vfields.len()
     loop i in 0.. and f in vfields:
         c = gl_attrib_comps(f.1, vpos)
         ty = "float"
@@ -757,9 +875,14 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str):
                 vs += "layout(location={loc}) in {ty} i_{f.0};\n"
                 idesc += ";{f.0},{c},{off}"
                 loc += 1
+        attribs = loc
     ofields = gl_struct_fields(otype)
     if ofields.len() == 0 or prune(ofields[0].1) != T_VEC4: gl_err(vpos, "the vertex shader must return a struct whose first field is the clip position (vec4)")
-    vs += "uniform {ustruct} u;\nuniform int sl_ibase;\n"
+    varying_rows = 0
+    loop i in 0.. and f in ofields:
+        if i > 0: varying_rows += gl_resource_cost(f.1).0
+    vs += "// sloppy resources: uniforms={vrows} samplers={vsamplers} varyings={varying_rows} attributes={attribs}\n"
+    vs += vuniforms + "uniform int sl_ibase;\n"
     loop i in 0.. and f in ofields:
         if i == 0: continue
         q = ""
@@ -769,17 +892,18 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str):
     vin: str[]
     loop f in vfields: vin.push("a_{f.0}")
     vs += "void main() \{\n    {gl_type(vtype_, vpos)} vin = {gl_type(vtype_, vpos)}({join(vin, ", ")});\n"
+    vs += vinit
     if itype != 0:
         iin: str[]
         loop f in ifields: iin.push("i_{f.0}")
         vs += "    {gl_type(itype, vpos)} iin = {gl_type(itype, vpos)}({join(iin, ", ")});\n"
-        vs += "    {gl_type(otype, vpos)} o = {gl_fn_name(vsf)}(vin, iin, u);\n    gl_Position = o.{ofields[0].0}_;\n"
+        vs += "    {gl_type(otype, vpos)} o = {vname}(vin, iin{varg});\n    gl_Position = o.{ofields[0].0}_;\n"
     else:
-        vs += "    {gl_type(otype, vpos)} o = {gl_fn_name(vsf)}(vin, u);\n    gl_Position = o.{ofields[0].0}_;\n"
+        vs += "    {gl_type(otype, vpos)} o = {vname}(vin{varg});\n    gl_Position = o.{ofields[0].0}_;\n"
     loop i in 0.. and f in ofields:
         if i > 0: vs += "    v_{f.0} = o.{f.0}_;\n"
     vs += "}\n"
-    fs = head + "uniform {ustruct} u;\n"
+    fs = head + "// sloppy shader: {gl_fn_name(fsf)} at {pos_str(nodes[int(fns[fsf].decl)].pos)}\n// sloppy resources: uniforms={frows} samplers={fsamplers} varyings={varying_rows} attributes=0\n" + funiforms
     loop i in 0.. and f in ofields:
         if i == 0: continue
         q = ""
@@ -790,10 +914,10 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str):
     fin: str[] = ["gl_FragCoord"]
     loop i in 0.. and f in ofields:
         if i > 0: fin.push("v_{f.0}")
-    fs += "void main() \{\n    {gl_type(otype, vpos)} i = {gl_type(otype, vpos)}({join(fin, ", ")});\n    frag_color = {gl_fn_name(fsf)}(i, u);\n}\n"
-    # the uniform struct definition must precede `uniform S u;` in both stages
-    vs = __hoist_struct(vs, ustruct)
-    fs = __hoist_struct(fs, ustruct)
+    fs += "void main() \{\n{finit}    {gl_type(otype, vpos)} i = {gl_type(otype, vpos)}({join(fin, ", ")});\n    frag_color = {fname}(i{farg});\n}\n"
+    # Struct-valued leaves (GPU buffers) and stage interfaces precede global declarations.
+    vs = __hoist_struct(vs)
+    fs = __hoist_struct(fs)
     (vs, fs, "{adesc}|{udesc}{idesc}")
 
 # the fragment program of a dotted expression on GPU arrays (see check_dotted): kernel f takes the
@@ -803,11 +927,16 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str):
 # each array's element through that array's steps (st0, st1...; 0 where it is stretched).
 # (see __gpu_run in lib/game/gpuarray.jo)
 glsl_kernel = (f: int, desc: str) -> str:
-    global gl_decls, gl_done, gl_done_fns, gl_done_structs, gl_stage
+    global gl_decls, gl_done, gl_done_fns, gl_done_structs, gl_stage, gl_uniform_bindings, gl_uniforms, gl_specializations, gl_uniform_rows, gl_uniform_samplers
     gl_decls = []
     gl_done_fns = {}
     gl_done_structs = {}
     gl_done = {}
+    gl_uniform_bindings = {}
+    gl_uniforms = []
+    gl_uniform_rows = 0
+    gl_uniform_samplers = 0
+    gl_specializations = 0
     gl_stage = "kernel"
     gl_function(f)
     pos = nodes[int(fns[f].decl)].pos
@@ -856,7 +985,7 @@ glsl_kernel = (f: int, desc: str) -> str:
     src + fetch + "        r[c] = {val};\n    }\n    o_ = r;\n}\n"
 
 # move every struct definition above the first `uniform` declaration
-__hoist_struct = (src: str, ustruct: str) -> str:
+__hoist_struct = (src: str) -> str:
     parts = split(src, "\n")
     structs_: str[]
     rest: str[]
