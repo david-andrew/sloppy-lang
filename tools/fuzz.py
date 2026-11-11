@@ -11,7 +11,7 @@ usage: tools/fuzz.py [count] [--seed N] [--no-wasm] [--arm64] [--keep]
 SLOPPY_ARM64_RUN).
 Failing programs are saved to build/fuzz/fail_<seed>.jo.
 """
-import os, random, subprocess, sys
+import os, random, re, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SLOPPY = os.environ.get("SLOPPY_FUZZ_COMPILER") or os.path.join(ROOT, "bin", "sloppy")
@@ -19,6 +19,15 @@ SLOPPY0 = os.path.join(ROOT, "stage0", "sloppy0")      # the C bootstrap compile
 ENV = dict(os.environ, SLOPPY_LIB=os.path.join(ROOT, "lib"))
 OUT = os.path.join(ROOT, "build", "fuzz")
 os.makedirs(OUT, exist_ok=True)
+
+
+# As in gpufuzz: only these words can occur in a constant expression. Checking each
+# subtree keeps compile-time arithmetic in int64 even inside a larger runtime expression.
+CONST_WORDS = {"abs", "min", "int", "true", "false", "if", "else", "xor", "not", "and", "or"}
+
+
+def is_const(s):
+    return all(w in CONST_WORDS for w in re.findall(r"[A-Za-z_][A-Za-z_0-9]*", s))
 
 
 class Gen:
@@ -80,6 +89,9 @@ class Gen:
         op = r.choice(["+", "-", "*", "/", "%", "&", "|", "xor", "<<", ">>", "call", "neg", "if", "min", "cmpsel", "float", "match"])
         a = self.iexpr(d + 1)
         b = self.iexpr(d + 1)
+        # Constant arithmetic is checked, whereas runtime arithmetic wraps. Use a bitwise
+        # operation when both operands are constant, before a parent can overflow int64.
+        if op in ("+", "-", "*", "<<") and is_const(a) and is_const(b): op = "|"
         if op in ("+", "-", "*", "&", "|", "xor"): return f"({a} {op} {b})"
         if op in ("/", "%"): return f"({a} {op} (abs({b}) % 9 + 1))"
         if op in ("<<", ">>"): return f"({a} {op} (abs({b}) % 13))"
