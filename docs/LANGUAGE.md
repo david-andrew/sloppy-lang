@@ -399,7 +399,11 @@ cannot be read or printed.
 A set (`Set[T]`, values without repeats) is written with braces and no colons, `{"a", "e",
 "i"}`, or made by a loop, `{loop w in words: w.lower()}`; `{}` is an empty one where a `Set` is
 expected (`seen: Set[int] = {}`), and an empty map otherwise. `x in s`, `s.add(x)` and
-`s.remove(x)`; more in [API.md](API.md#sets-and-deques).
+`s.remove(x)`. `set(xs)` makes one from an array; membership is `x in s` or `s.has(x)`.
+`s.union(t)`, `s.intersection(t)` and `s.difference(t)` return new sets; `s.is_subset(t)`
+asks whether every value in `s` is in `t`. They keep insertion order, and leave their inputs
+unchanged. `s.items()` gives an array; `loop x in s:` visits each value once. Equality compares
+membership regardless of order. More in [API.md](API.md#sets-and-deques).
 
 For large text files, `open_file(path)` gives an optional buffered `File`; it reads 64 KB at a
 time, keeping only the unread bytes and the current line. Close it even when leaving early:

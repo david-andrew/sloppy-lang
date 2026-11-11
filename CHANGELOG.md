@@ -9,6 +9,7 @@
   sliders that show their value (a percentage from 0 to 1), drawn chevrons and option dots on
   choices, rounded switches, and text fields as wells edged with the accent while typed in.
   `hud_style.field` and `hud_style.well` color them. `examples/layout.jo` has a Settings page.
+- Script guides now show the existing set constructor, membership and set algebra beside maps.
 - Document existing buffered file/stdin line loops for scripts; reading bytes after a final
   unterminated file line now correctly returns an empty array.
 

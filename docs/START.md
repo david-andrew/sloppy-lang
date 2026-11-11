@@ -283,6 +283,9 @@ a value, the last list field gets the other arguments, and `--help` lists them a
 its field's comment (`-w, --words   count words too`: the comment need not name the option); a
 mistake (`--top many`) is said with that help, and exit code 2.
 
+- `set(xs)` keeps each value of an array once (`Set[T]`); `x in s`, `s.add(x)`, `s.remove(x)`,
+  `s.union(t)`, `s.intersection(t)`, `s.difference(t)` and `s.is_subset(t)` cover Python's set
+  operations. The results keep insertion order; operations returning sets leave their inputs alone.
 - `open_file(path)` and `loop let line = f.read_line():` read a file with a 64 KB buffer;
   use `defer f.close()` to close it on every exit. For piped or typed input, use
   `loop let line = read_line():`. Both strip Windows line endings and keep a final line with
