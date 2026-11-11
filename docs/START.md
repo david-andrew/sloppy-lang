@@ -371,6 +371,11 @@ print("{repo.full_name}: {repo.stargazers_count} stars, {repo.description ?? "-"
   each frame, a server each time round its loop. Several can be on their way at once, and in a web
   page this is the browser's own fetch (the server must allow the page's site: CORS).
 - A header sent more than once (`Set-Cookie`): `net.header_values(r, "set-cookie")` has each.
+- To stay signed in across native requests, create `jar = net.cookie_jar()` and pass
+  `cookies = jar` to each `net.fetch`, `net.fetch_start` or `net.fetch_all`. The jar keeps
+  cookies from redirects too: a POST to a sign-in route can redirect to a page that needs
+  its new session cookie. `net.clear_cookies(jar)` forgets this client's cookies. See
+  [cookie jars](LANGUAGE.md#fetching-from-the-web) for matching and expiry.
 
 ### Writing a server
 

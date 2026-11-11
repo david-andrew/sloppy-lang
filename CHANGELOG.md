@@ -11,6 +11,10 @@
   player to its current connection. Bad or expired tokens are rejected; valid tokens can retire
   a stale connection before its loss is detected. Rejoining starts prediction and delta history
   afresh.
+- Guides include a complete loopback rollback game and headless two-player commands,
+  a raw HTTP stream produced by a task, and keyboard/gamepad handling for layout slots.
+  Native form-login requests show the required Content-Type and encoded fields; the
+  getting-started fetch guide links to cookie jars.
 
 ## 0.30.0
 

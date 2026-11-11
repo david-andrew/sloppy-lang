@@ -1,0 +1,39 @@
+# requires: sloppy
+# requires: native
+# The guide's native form login: encoded fields, a signed cookie and a one-time flash
+# survive a POST/303/GET through the cookie jar, then the flash is cleared on the wire.
+import http
+import net
+
+const SECRET = "a local test secret of at least sixteen bytes"
+const USER = "Zoë & + parcels"
+http.post("/login", (r: http.Request) -> http.Response:
+    name = http.form(r).get("user") ?? ""
+    if len(name) == 0: return http.text("missing user", 400)
+    res = http.redirect("/account", 303)
+    http.set_signed_cookie(res, "user", name, SECRET)
+    assert(http.flash(res, "Welcome, {name}", SECRET))
+    res)
+http.get("/account", (r: http.Request) -> http.Response:
+    name = http.signed_cookie(r, "user", SECRET)
+    if name == none: return http.status(403)
+    res = http.json({"user": name})
+    messages = http.flashes(r, res, SECRET)
+    res.body = bytes(to_json((name, messages)))
+    res)
+assert(http.listen(0, host = "127.0.0.1"))
+spawn((): http.serve(http.port()), background = true)
+main = ():
+    base = "http://127.0.0.1:{http.port()}"
+    jar = net.cookie_jar()
+    login = net.fetch(base + "/login", method = "POST",
+        headers = {"Content-Type": "application/x-www-form-urlencoded"},
+        body = url_query({"user": USER}), cookies = jar)
+    assert(login.status == 200)
+    assert(login.text == to_json((USER, [http.Flash("Welcome, {USER}")])))
+    no_messages: http.Flash[]
+    assert(net.fetch(base + "/account", cookies = jar).text == to_json((USER, no_messages)))
+    net.clear_cookies(jar)
+    assert(net.fetch(base + "/account", cookies = jar).status == 403)
+    http.shutdown(0.0)
+    print("form login, signed cookie, redirect, one-time flash, cleared jar")

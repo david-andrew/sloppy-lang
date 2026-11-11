@@ -710,6 +710,58 @@ examples/duel takes `LAG=100`. For tests, `netplay.Link` is a network
 simulated in one program, with its own clock: two sessions over it play the same way every
 time (tests/t/rollback.jo, tests/t/clientserver.jo).
 
+Here is a complete two-player rollback program for loopback. Save it as `local_duel.jo`.
+Each player's dot moves left and right; both machines run the same tick. The copy at the
+start of `tick` makes its read-only parameter a local value to change and return.
+
+```gdscript
+import netplay
+
+window("Local duel", 640, 360)
+struct Pad:
+    x = 0
+struct Game:
+    x: int[] = [160, 480]
+
+tick = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in 0..2: g.x[p] = clamp(g.x[p] + pads[p].x * 2, 20, 620)
+    g
+
+s = netplay.session(Game(), tick, players = 2, me = to_int(env("PLAYER") ?? "0") ?? 0)
+s.udp(9640 + s.me, [("127.0.0.1", 9640), ("127.0.0.1", 9641)])
+spare = 0.0
+update = (dt: f64):
+    global spare
+    spare = min(spare + dt, 0.1)
+    loop spare >= 1.0 / 60.0:
+        spare -= 1.0 / 60.0
+        s.play(Pad(int(key_down(.right)) - int(key_down(.left))))
+draw = ():
+    clear()
+    circle(vec2(s.state.x[0], 140), 18, CYAN)
+    circle(vec2(s.state.x[1], 220), 18, ORANGE)
+```
+
+Run `PLAYER=0 sloppy local_duel.jo` and `PLAYER=1 sloppy local_duel.jo` in separate
+terminals. For a headless check, build once with `sloppy build local_duel.jo`, then run
+both copies concurrently:
+
+```sh
+env -u DISPLAY -u WAYLAND_DISPLAY PLAYER=0 SLOPPY_SOFTWARE=1 SLOPPY_NO_AUDIO=1 SLOPPY_FRAMES=300 SLOPPY_INPUT="10:right+ 80:right-" ./local_duel >p0.log 2>&1 &
+p0=$!
+env -u DISPLAY -u WAYLAND_DISPLAY PLAYER=1 SLOPPY_SOFTWARE=1 SLOPPY_NO_AUDIO=1 SLOPPY_FRAMES=300 SLOPPY_INPUT="10:left+ 80:left-" ./local_duel >p1.log 2>&1 &
+p1=$!
+wait "$p0"; wait "$p1"
+```
+
+Use different `SLOPPY_SEED` values for a stronger determinism check, and try `s.lag(100,
+20, 0.05)`. To compare the games, save confirmed inputs as they arrive (the replay example
+above), then replay the saved inputs from `Game()` to the same tick on both sides. Their
+current `s.state` values may be at different ticks when each program exits; comparing
+those can report a false desync. Keep both copies playing until each has confirmed the
+tick being compared.
+
 ## Web pages
 
 A web page cannot use UDP or wait for others to connect. It connects over WebSockets to a

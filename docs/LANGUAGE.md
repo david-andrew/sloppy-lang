@@ -1613,11 +1613,16 @@ Native requests can share cookies by passing `cookies = jar` to any of those thr
 import net
 
 jar = net.cookie_jar()
-login = net.fetch("http://127.0.0.1:8080/login", method = "POST", body = "user=ann", cookies = jar)
+login = net.fetch("http://127.0.0.1:8080/login", method = "POST",
+    headers = {"Content-Type": "application/x-www-form-urlencoded"},
+    body = url_query({"user": "ann"}), cookies = jar)
 page = net.fetch("http://127.0.0.1:8080/account", cookies = jar)
 pages = net.fetch_all(["http://127.0.0.1:8080/account", "http://127.0.0.1:8080/settings"], cookies = jar)
 net.clear_cookies(jar)
 ```
+
+HTML forms send that Content-Type automatically; a `net.fetch` form request must set it.
+`url_query` encodes field names and values, including spaces, `&` and non-ASCII text.
 
 `cookie_jar() -> CookieJar` makes an empty jar; copies share it, including fetches still on their
 way. `clear_cookies(jar)` forgets its cookies and allows reuse. Without the option, requests keep
@@ -1667,6 +1672,32 @@ five minutes. `flash` returns false without changing the response when their JSO
 2048 bytes. `flashes` gives `[]` for absent, forged, expired or malformed messages; a cookie
 that was present is cleared even when invalid. Read before adding new flashes to that response.
 Signing authenticates the messages; their text can still be read by the client.
+
+For a response produced a piece at a time, return `http.stream(type)` and send chunks from
+a task. The handler must return before the first chunk is sent; do not wait for the task
+inside the handler. Tasks take turns, so the task below starts after the handler returns:
+
+```gdscript
+import http
+
+http.get("/count", (r: http.Request) -> http.Response:
+    conn = r.conn
+    spawn(():
+        loop i in [1..3]:
+            if not http.send_chunk(conn, "{i}\n"): return
+            sleep(1.0)
+        http.end_stream(conn)
+    , background = true)
+    http.stream())
+http.serve(8080, host = "127.0.0.1")
+```
+
+`curl -N http://127.0.0.1:8080/count` shows each number as it comes. `net.fetch` collects
+the complete body, so it returns after `end_stream`; it cannot read an endless stream a
+chunk at a time. A live web page usually uses `http.events()` and `EventSource` instead
+([example](START.md#writing-a-server)). If an `http.after` callback waits, it can let the
+task run before the stream is open: keep stream response callbacks free of waits, or send
+from the program's own loop after `http.stream_open(conn)` becomes true.
 
 `http.stream()` and `http.events()` keep `r.conn` open for `send_chunk` or `send_event`;
 `end_stream` ends it, and `stream_open` reports whether it is still open. At most
@@ -1836,19 +1867,30 @@ way, from a wide window down to a phone held upright.
 import layout as ui
 
 volume = 0.5
+hints = true
 draw = ():
-    global volume
+    global volume, hints
     ui.screen(pad = 24, ():
         ui.column(gap = 12, cross = .center, width = ui.grow(), height = ui.grow(), ():
             ui.label("Settings", size = 40)
             ui.panel(pad = 16, gap = 8, width = ui.fit(max = 480), ():
                 ui.label("The menu fits its contents and wraps this help when the screen narrows.", wrap = true)
-                ui.row(gap = 8, width = ui.grow(), ():
+                ui.column(gap = 8, width = ui.grow(), ():
                     if ui.button("Play", width = ui.grow()): print("play")
                     if ui.button("Quit", width = ui.grow()): quit()
                 )
-                ui.slot(width = ui.grow(), height = 32, (r: Rect):
+                ui.slot(width = ui.grow(), height = 32, focusable = true, key = "volume", (r: Rect):
+                    st = ui.get("volume") ?? ui.State()
+                    if st.focused:
+                        if key_repeat(.left) or gamepad_repeat(.left): volume = max(0.0, volume - 0.05)
+                        if key_repeat(.right) or gamepad_repeat(.right): volume = min(1.0, volume + 0.05)
                     volume = hud_slider(r, volume, 0.0, 1.0)
+                )
+                ui.slot(width = ui.grow(), height = 32, focusable = true, key = "hints", (r: Rect):
+                    st = ui.get("hints") ?? ui.State()
+                    if st.focused and (key_pressed(.enter) or key_pressed(.space) or gamepad_pressed(.a)):
+                        hints = not hints
+                    hints = hud_checkbox(r, "Show hints", hints)
                 )
             )
         )
@@ -1860,6 +1902,10 @@ the call site as above. `slot` calls its closure at draw time with its **current
 so existing `hud_` widgets and custom drawing use the final size that frame. Captured locals
 can be changed in that closure; a named function changing a global still declares `global`.
 Slots cannot add more layout elements: describe the entire tree before drawing starts.
+`focusable = true` lets keys and a gamepad reach a slot; `hud_slider` and `hud_checkbox`
+still handle pointer input only. The example uses the slot's focus for Left/Right (or the d-pad)
+to adjust volume, and Enter, Space or A to toggle hints. This column keeps Up/Down for
+moving between controls; a multi-column layout also uses Left/Right to move focus.
 
 Each element accepts `width` and `height`. A number means fixed units; the other sizes are:
 
@@ -2166,7 +2212,8 @@ finished, or in a test of your own. Environment variables say what happens:
   `12:mouse=400x300` moves the mouse there and `3:wheel=1` turns the wheel a notch (in the
   screen's units), `7:text=hi there` types (to the next comma), `5:touch1=400x300` puts finger 1 down there (or moves it)
   and `9:touch1-` lifts it (the first finger down is the mouse too, as on a phone),
-  `5:pad_a+`/`9:pad_a-` press and let go a gamepad's button (pad 0; PadButton's names),
+  `5:pad_a+`/`9:pad_a-` press and let go a gamepad's button (pad 0; PadButton's names:
+  `a`, `b`, `x`, `y`, `up`, `down`, `left`, `right`, `start`...); `5:pad_down+` is d-pad down,
   `6:lstick=1x0` and `rstick=` set its sticks, `lt=1` and `rt=` its triggers (another gamepad
   by its number: `5:pad1_a+`, `6:pad1_lstick=1x0`). An item it
   cannot read is reported. A web build takes it in the page's address,
