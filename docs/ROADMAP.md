@@ -244,9 +244,10 @@ safety net for changes here.
 
 Measured October 2026 on bench/big.jo (50k lines, debug, 8 cores, a busy machine): checking 46%
 (parsing included), lowering 20%, code generation 30%; about 0.19 s in all.
-- Code generation in parallel (done for x86-64 on Linux and macOS hosts: compiler/par.jo,
-  forked workers, the same bytes as one processor makes): about 10% off here, more on an idle
-  machine. Next: the same for arm64 code (native builds on Macs).
+- Code generation in parallel (done for x86-64 and arm64 on Linux and macOS hosts: compiler/par.jo,
+  forked workers, the same bytes as one processor makes): about 10% off x86-64 here, more on an idle
+  machine. Arm64 workers keep function-local literal pools and join calls, addresses and debug
+  information before the final ELF or Mach-O layout; cross-builds use the same workers.
 - Allocation in the compiler: about 5% of the time, the allocator already doubling arrays and
   remapping large blocks in place; nothing big there.
 - Lowering in parallel (the next lever, about 1.4x on big.jo with code generation in the same

@@ -1,16 +1,17 @@
-# Machine code made on several processors (x86-64): after every function is lowered, worker
+# Machine code made on several processors (x86-64 and arm64): after every function is lowered, worker
 # processes (fork: each starts as a copy of the compiler, the checked program and its IR
 # included) each emit the code of a run of consecutive functions, and send back the code and
 # what the tables need of it (calls and data to fix up, symbols, line rows, unwind and debugger
 # information, new constants). The compiler joins them in order, moving each run's offsets to
 # where its code lands: the same bytes as emitting the functions one after another here (each
-# function starts at a multiple of 16, as it would anyway; constants get their places in the
+# function starts at its usual alignment; constants get their places in the
 # order they are first used, as they would anyway). A worker that fails has its run emitted here.
 
 use 'main.jo'
 use 'util.jo'
 use 'ir.jo'
 use 'x64.jo'
+use 'arm64.jo'
 use 'elf.jo'
 use 'pe.jo'
 use 'check.jo'
@@ -33,7 +34,7 @@ emit_parallel = (q: IrFn[], fin: bool[]) -> bool:
     when TARGET == "windows" or TARGET == "wasm":
         return false
     else:
-        if target_wasm or target_arm64 or ra_stat or watch_build or repl_image or len(ra_dump) > 0: return false
+        if target_wasm or ra_stat or watch_build or repl_image or len(ra_dump) > 0: return false
         total = 0
         loop f in q: total += f.code.len()
         n = emit_workers()
@@ -115,7 +116,7 @@ par_read = (fd: int) -> u8[]:
 
 # ---- a worker: emit q[a..b), write what came of it to fd, end ----
 par_worker = (q: IrFn[], fin: bool[], a: int, b: int, r0: int, fd: int):
-    global __olen, cabi_adapter, cabi_fix, call_fix, call_sites, code, data_fix, dbg_cfi, dbg_raw, elf_syms, ir, line_rows, ro_new, stub_fix, unwind_fns, uw_data
+    global __olen, a_call_fix, a_data_fix, a_faddr_fix, a_stub_fix, cabi_adapter, cabi_fix, call_fix, call_sites, code, data_fix, dbg_cfi, dbg_raw, elf_syms, ir, line_rows, ro_new, stub_fix, unwind_fns, uw_data
     code = []
     call_fix = []
     data_fix = []
@@ -130,6 +131,11 @@ par_worker = (q: IrFn[], fin: bool[], a: int, b: int, r0: int, fd: int):
     dbg_raw = []
     dbg_cfi = []
     ro_new = []
+    if target_arm64:
+        a_call_fix = []
+        a_stub_fix = []
+        a_faddr_fix = []
+        a_data_fix = []
     tw0 = time()
     out: u8[]
     pw(out, b - a)
@@ -166,6 +172,19 @@ par_worker = (q: IrFn[], fin: bool[], a: int, b: int, r0: int, fd: int):
     loop k2, v in cabi_adapter:
         pw(out, k2)
         pw(out, v)
+    if target_arm64:
+        # Local branches and ldr literals are already resolved within each function. These
+        # references wait for the final layout, just as in a serial build (arm64_resolve).
+        loop fs in [a_call_fix, a_stub_fix, a_faddr_fix]:
+            pw(out, fs.len())
+            loop f in fs:
+                pw(out, f.0)
+                pw(out, f.1)
+        pw(out, a_data_fix.len())
+        loop f in a_data_fix:
+            pw(out, f.0)
+            pw(out, f.1)
+            pw(out, f.2)
     pw(out, elf_syms.len())
     loop s in elf_syms:
         pw(out, len(s.0))
@@ -224,7 +243,11 @@ pr_ints = (r: mut ParIn) -> int[]:
 
 par_join = (bytes_: u8[], r0: int):
     r = ParIn(bytes_)
-    loop code.len() % 16 != 0: code.push(0xCC)
+    if target_arm64:
+        # Match arm64_function, including the literal pool's eight-byte alignment.
+        if code.len() % 8 != 0: w32(0)
+    else:
+        loop code.len() % 16 != 0: code.push(0xCC)
     base = code.len()
     nf = pr(r)
     loop _ in [0..nf):
@@ -259,6 +282,21 @@ par_join = (bytes_: u8[], r0: int):
     loop _ in [0..pr(r)):
         f = pr(r)
         cabi_adapter[f] = base + pr(r)
+    if target_arm64:
+        loop _ in [0..pr(r)):
+            p = pr(r)
+            a_call_fix.push((base + p, pr(r)))
+        loop _ in [0..pr(r)):
+            p = pr(r)
+            a_stub_fix.push((base + p, pr(r)))
+        loop _ in [0..pr(r)):
+            p = pr(r)
+            a_faddr_fix.push((base + p, pr(r)))
+        loop _ in [0..pr(r)):
+            p = pr(r)
+            kind = pr(r)
+            off = pr(r)
+            fixes.push((base + p, kind, off))
     e0 = elf_syms.len()
     loop _ in [0..pr(r)):
         n = pr(r)
@@ -339,4 +377,5 @@ par_join = (bytes_: u8[], r0: int):
             j = starts.len() - 1
             loop j > 0 and starts[j] > off: j -= 1
             if j >= 0 and starts.len() > 0 and starts[j] <= off: off = to[j] + (off - starts[j])
-        data_fix.push((f.0, f.1, off))
+        if target_arm64: a_data_fix.push((f.0, f.1, off))
+        else: data_fix.push((f.0, f.1, off))
