@@ -358,72 +358,6 @@ programs (SPIR-V, made by the compiler). With OpenGL, WebGL or the software rend
 are CPU memory and compute functions run on all CPU cores; shaders still read the buffers.
 `gpu_compute()` tells which.
 
-## Preparing Vulkan pipelines during loading
-
-Vulkan prepares pipelines as shaders and compatible assets load. Ordinary and GPU-buffer 3D
-meshes prepare regular lit/shadow and sky passes. Instance buffers prepare instancing; a game that uses the
-instanced drawing API also prepares raw-array instancing when its first compatible mesh loads.
-Only loading a skinned vertex layout prepares skinned and shadow-skinned pipelines. Declaring
-the library's unused `Shader` handles does not create driver shader modules or pipelines.
-Postprocessing and particle programs are prepared only for games that declare those uses.
-Each layout group is prepared once; repeated mesh loads reuse it.
-
-`make_shader(shader(vs, fs))` prepares a custom shader's usual triangle pipelines at load time:
-opaque, alpha, additive, multiply and premultiplied blending, for the screen and ordinary
-render targets. Create shaders and load meshes while loading assets, before the frame that
-uses them. Assets or shaders created inside `draw()` still pay their loading cost in that frame.
-The screen has a fixed RGBA8 format and is copied to the swapchain, so resizing or a different
-swapchain format does not require new drawing pipelines. Both screen MSAA and single-sample
-target states are prepared. Compute dispatch caching is unchanged.
-
-Call `warm_up()` during a loading screen after declaring the shaders and loading the assets.
-It prepares only declared shaders and loaded layout groups; it does not force unused skinning,
-instancing or other optional programs into the driver. No list of pipelines is needed.
-This hook is Vulkan-only: it does no graphics work on OpenGL, Metal, software or WebGL paths.
-
-For an unusual primitive class, attachment format, depth function/write mode or color mask,
-`warm_up(sh, mode)` prepares that shader with the target and render state selected now,
-without changing that state or drawing into the game target. For example:
-
-```jo
-line_shader = make_shader(shader(line_vs, line_fs))
-draw_to(target)
-blend(.add)
-warm_up(line_shader, GL_LINES)
-draw_to_screen()
-blend(.alpha)
-```
-
-Preparation is synchronous on the rendering thread. Vulkan submits a vertex to private
-1×1 attachments to trigger drivers that defer shader JIT until a draw. Built-ins retain their
-original shader binaries and read zero-filled scratch inputs; one vertex cannot form a
-triangle. A custom vertex wrapper clips the warm-up vertex without invoking the game vertex
-function. Neither path invokes a fragment function or a game callback. The explicit shader
-overload also prepares the depth state selected by the caller.
-
-Warm-up is optional. If the driver rejects a module, pipeline or warm-up operation, a note
-identifies the program and error; the game continues and the normal first-use path retries.
-A failed custom wrapper is replaced by the original vertex shader for that retry. No failed
-pipeline is cached as a usable handle. A shader that fails when actually drawn still uses
-the renderer's normal error handling.
-
-Vulkan's driver cache is still saved between runs in `~/.cache/sloppy`
-(`%LOCALAPPDATA%\sloppy` on Windows). It reduces compilation work but does not replace creating
-live pipeline objects for the current device. `tests/profile_pipelines.py` measures cold
-startup and initial frames with isolated caches; it uses a scratch library and never edits
-the game sources. For example, run this once for each library snapshot, one benchmark at a
-time and within the machine's test-worker limit:
-
-```sh
-python3 tests/profile_pipelines.py --tag after --frames 180 breakwater aces dunes rebound new_3d
-```
-
-The output under `~/dev/tmp/pipelines/after` includes startup instructions, every frame's
-instructions and pipeline count, and the worst frame's Callgrind trace. Use the same window,
-MSAA, input and overlay setting for both snapshots. This measures compilation moved into
-loading as well as frame spikes; cold startup and assets loaded inside frame zero can take
-longer when their pipelines are prepared there.
-
 ## Switches and troubleshooting
 
 | setting | effect |
@@ -440,9 +374,8 @@ longer when their pipelines are prepared there.
   device chosen; a game that falls back to OpenGL prints why Vulkan could not be used (no
   Vulkan 1.3 driver, a missing feature) when `SLOPPY_VULKAN=1` asks for it.
 - **The first run of a game starts slower than later ones.** With Vulkan, the driver builds a
-  pipeline for each needed shader and state during loading. The library keeps driver cache
-  data in `~/.cache/sloppy` (`%LOCALAPPDATA%\sloppy` on Windows), making later loads cheaper.
-  Unusual states need `warm_up(sh, mode)` during loading to avoid first-use compilation.
+  pipeline for each shader and state the first time they are drawn; the library keeps them in
+  `~/.cache/sloppy` (`%LOCALAPPDATA%\sloppy` on Windows), so later runs start drawing at once.
 - **A shader compiles but draws differently on one renderer.** That is a bug in Sloppy: please
   report it with the program. `SLOPPY_VULKAN=0` and `SLOPPY_SOFTWARE=1` let you compare the
   three on one machine.

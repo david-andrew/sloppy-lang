@@ -63,104 +63,6 @@ struct Mesh:
     gbuf: int                   # the vertices are a GPU buffer's (gpu_mesh): its number
     keep: u8[]                  # (and what keeps that buffer alive)
 
-# A source key includes stage boundaries; declarations reuse registered built-ins.
-__warm_source_key = (vs: str, fs: str) -> str: "{len(vs)}:{vs}{fs}"
-
-# Library globals initialize only when compiled code refers to them. An instanced API call
-# marks that the game can use raw instance arrays, before its first regular mesh loads.
-# This does no graphics work and never marks skinning: skins require actual mesh loading.
-__warm_inst_needed = false
-__warm_mark_inst = () -> bool:
-    global __warm_inst_needed
-    __warm_inst_needed = true
-    true
-__warm_inst_marker = __warm_mark_inst()
-__warm_particles_needed = false
-__warm_mark_particles = () -> bool:
-    global __warm_particles_needed
-    __warm_particles_needed = true
-    true
-__warm_particles_marker = __warm_mark_particles()
-__warm_particle_use = ():
-    if __warm_particles_marker: __warm_3d(16)
-__warm_post_needed = false
-__warm_mark_post = () -> bool:
-    global __warm_post_needed
-    __warm_post_needed = true
-    true
-__warm_post_marker = __warm_mark_post()
-__warm_post_use = ():
-    if __warm_post_marker: __warm_post()
-
-
-__warm_instance_use = ():
-    if __warm_inst_marker: __warm_3d(2)
-
-when TARGET != "wasm" and TARGET != "macos":
-    __warm_builtin_sources = (load: (ShaderSource, int) -> void):
-        src = shader(__vs2d, __fs2d)
-        src.fs_spirv = __spirv_centroid(src.fs_spirv, 0)
-        load(src, 1)
-        load(shader(lit_vs, lit_fs), 2)
-        load(shader(lit_vs_inst, lit_fs), 8)
-        load(shader(lit_vs_skin, lit_fs), 10)
-        load(shader(_shadow_vs, _shadow_fs), 3)
-        load(shader(_shadow_vs_inst, _shadow_fs), 9)
-        load(shader(_shadow_vs_skin, _shadow_fs), 11)
-        load(shader(_sky_vs, _sky_fs), 7)
-        load(shader(_post_vs, _bright_fs), 5)
-        load(shader(_post_vs, _blur_fs), 5)
-        load(shader(_post_vs, _composite_fs), 4)
-        load(shader(_pt_vs, _pt_fs), 6)
-
-# Prepare only declared shaders and the layouts/assets already loaded by the game.
-# Vulkan only; OpenGL, Metal and WebGL retain their own program lifecycle.
-warm_up = ():
-    when TARGET != "wasm" and TARGET != "macos":
-        if __vk and not __soft:
-            __warm_context()
-            __vg_warm_loaded()
-
-__warm_context = ():
-    when TARGET != "wasm" and TARGET != "macos":
-        if __vk and not __soft: __vg_warm_builtins()
-
-__warm_3d_layouts = 0
-
-# Regular 1, instanced 2, skinned 4, postprocessing 8, particles 16. Batch drawing is the core group (0).
-__warm_layout_kind = (kind: int) -> int:
-    if kind == 8 or kind == 9: return 2
-    if kind == 10 or kind == 11: return 4
-    if kind == 4 or kind == 5: return 8
-    if kind == 6: return 16
-    if kind == 2 or kind == 3 or kind == 7: return 1
-    0
-
-__warm_3d = (layouts: int = 1):
-    when TARGET != "wasm" and TARGET != "macos":
-        global __warm_3d_layouts
-        if __soft or not __vk or __warm_3d_layouts & layouts == layouts: return
-        __warm_3d_layouts = __warm_3d_layouts | layouts
-        __vg_warm_3d(layouts)
-
-__warm_post = (): __warm_3d(8)
-
-# No allocations or graphics work on other backends. A layout group warms only once.
-__warm_mesh_layout = (stride: int, instances: bool):
-    when TARGET != "wasm" and TARGET != "macos":
-        if __soft or not __vk: return
-        regular = if __warm_inst_needed: 3 else: 1
-        if __warm_particles_needed: regular = regular | 16
-        if instances:
-            if stride == size_of(Instance3D): __warm_3d(3)
-        else if stride == size_of(SkinVertex3D): __warm_3d(regular | 4)
-        else if stride == size_of(Vertex3D): __warm_3d(regular)
-
-# Prepare one selected target/primitive/depth/blend state, without drawing into the game.
-warm_up = (sh: Shader, mode: int = GL_TRIANGLES):
-    when TARGET != "wasm" and TARGET != "macos":
-        if __vk and not __soft: __vg_warm_selected(sh.prog, __vg_topology(mode))
-
 make_shader = (src: ShaderSource) -> Shader:
     __gfx_init_gl_only()
     prog = 0
@@ -203,7 +105,6 @@ make_shader = (src: ShaderSource) -> Shader:
 # upload vertices (any struct type matching the shader's vertex input) and optional indices
 mesh[V] = (vertices: V[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh:
     __gfx_init_gl_only()
-    __warm_mesh_layout(size_of(V), false)
     m = Mesh(mode = mode)
     m.vao = gl_create_vertex_array()
     glBindVertexArray(u32(m.vao))
@@ -340,7 +241,6 @@ struct InstanceBuffer[I]:
 
 instance_buffer[I] = (instances: I[]) -> InstanceBuffer[I]:
     __gfx_init_gl_only()
-    __warm_mesh_layout(size_of(I), true)
     b = InstanceBuffer[I](vbo = gl_create_buffer())
     set_instances(b, instances)
     b
