@@ -19,76 +19,98 @@ o_da: i32[]
 o_db: i32[]
 o_dva: i32[]        # operand versions when the defining op was emitted
 o_dvb: i32[]
-o_buf: int[]
+# Operand collection owns a reusable buffer. Its size only grows for calls with
+# many arguments; ordinary instructions write at most three entries directly.
+o_buf_store: int[]
+o_buf: *int = null
+o_buf_n = 0
 
-# fills o_buf with the vregs used by ins; returns the defined vreg or -1
+# fills o_buf[0..o_buf_n) with used vregs; returns the defined vreg or -1
+# Consumers finish reading it before calling o_operands again.
 o_operands = (ins: Ins) -> int:
-    o_buf.clear()
+    global o_buf, o_buf_n
+    if o_buf == null:
+        o_buf_store.resize(4)
+        o_buf = data(o_buf_store)
+    o_buf_n = 0
     a = int(ins.a)
     bb = int(ins.b)
     d = int(ins.dst)
     match ins.op:
-        nop, block, loop, end, else_, br, trap, zeroslots: return -1
+        nop, block, loop, end, else_, br, trap, zeroslots, vzu: return -1
         iconst, fconst, slot, gaddr, daddr, faddr: return d
-        intr, call, syscall:
-            loop k in [0..bb): o_buf.push(int(ir.args[a + k]))
+        intr, call, syscall, calli, callc:
+            n = bb
+            indirect = ins.op == .calli or ins.op == .callc
+            if indirect: n += 1
+            if n > o_buf_store.len():
+                o_buf_store.resize(max(n, o_buf_store.len() * 2))
+                o_buf = data(o_buf_store)
+            loop k in [0..bb): o_buf[k] = int(ir.args[a + k])
+            if indirect: o_buf[bb] = int(ins.c)
+            o_buf_n = n
             return d
-        calli, callc:
-            loop k in [0..bb): o_buf.push(int(ir.args[a + k]))
-            o_buf.push(int(ins.c))
-            return d
-        if_, brif, brtable, assume:
-            o_buf.push(a)
+        if_, brif, brtable, assume, zero:
+            o_buf[0] = a
+            o_buf_n = 1
             return -1
         ret:
-            if a >= 0: o_buf.push(a)
+            if a >= 0:
+                o_buf[0] = a
+                o_buf_n = 1
             return -1
         store:
-            o_buf.push(a)
-            o_buf.push(bb)
-            if int(ins.c) & M_INDEX != 0: o_buf.push(d)
+            o_buf[0] = a
+            o_buf[1] = bb
+            o_buf_n = 2
+            if int(ins.c) & M_INDEX != 0:
+                o_buf[2] = d
+                o_buf_n = 3
             return -1
         vst:
-            o_buf.push(a)
-            o_buf.push(bb)
-            o_buf.push(d)
+            o_buf[0] = a
+            o_buf[1] = bb
+            o_buf[2] = d
+            o_buf_n = 3
             return -1
         vbin:
-            o_buf.push(a)
-            if int(ins.c) < VP_SHUFFLE: o_buf.push(bb)
+            o_buf[0] = a
+            o_buf[1] = bb
+            o_buf_n = 1
+            if int(ins.c) < VP_SHUFFLE: o_buf_n = 2
             return d
-        vsplat:
-            o_buf.push(a)
-            return d
-        vzu: return -1
         copy:
-            o_buf.push(a)
-            o_buf.push(bb)
+            o_buf[0] = a
+            o_buf[1] = bb
+            o_buf_n = 2
             return -1
-        zero:
-            o_buf.push(a)
+        memcpy, memset, vop, select:
+            o_buf[0] = a
+            o_buf[1] = bb
+            o_buf[2] = int(ins.c)
+            o_buf_n = 3
+            if ins.op == .select: return d
             return -1
-        memcpy, memset, vop:
-            o_buf.push(a)
-            o_buf.push(bb)
-            o_buf.push(int(ins.c))
-            return -1
-        select:
-            o_buf.push(a)
-            o_buf.push(bb)
-            o_buf.push(int(ins.c))
-            return d
         load:
-            o_buf.push(a)
-            if int(ins.c) & M_INDEX != 0: o_buf.push(bb)
+            o_buf[0] = a
+            o_buf[1] = bb
+            o_buf_n = 1
+            if int(ins.c) & M_INDEX != 0: o_buf_n = 2
             return d
-        mov, neg, not_, fneg, fsqrt, fabs, ffloor, fceil, ftrunc, sext8, sext16, sext32, zext8, zext16, zext32, i2f, u2f, f2i, f2f, bits2f, f2bits:
-            o_buf.push(a)
+        mov, neg, not_, fneg, fsqrt, fabs, ffloor, fceil, ftrunc, sext8, sext16, sext32, zext8, zext16, zext32, i2f, u2f, f2i, f2f, bits2f, f2bits, vsplat:
+            o_buf[0] = a
+            o_buf_n = 1
             return d
         _:
-            o_buf.push(a)
-            o_buf.push(bb)
+            o_buf[0] = a
+            o_buf[1] = bb
+            o_buf_n = 2
             return d
+
+o_buf_has = (v: int) -> bool:
+    loop k in [0..o_buf_n):
+        if o_buf[k] == v: return true
+    false
 
 # rewrite the used vregs of ins through o_repl
 o_rewrite = (ins: mut Ins):
@@ -519,8 +541,8 @@ o_emit = (ins0: Ins):
             o_operands(ins)
             va = 0
             vb = 0
-            if o_buf.len() > 0: va = int(o_ver[o_buf[0]])
-            if o_buf.len() > 1: vb = int(o_ver[o_buf[1]])
+            if o_buf_n > 0: va = int(o_ver[o_buf[0]])
+            if o_buf_n > 1: vb = int(o_ver[o_buf[1]])
             k1 = int(op) | (int(ins.ty) << 8) | ((int(ins.c) & 4095) << 12) | (int(ins.a) << 24)
             k2 = int(ins.b)
             k3 = ins.imm
@@ -898,7 +920,8 @@ o_sra = ():
         if op == .slot: continue
         if op == .zeroslots: continue
         o_operands(ins)
-        loop u in o_buf:
+        loop oi in [0..o_buf_n):
+            u = o_buf[oi]
             if sl[u] >= 0: ok[sl[u]] = false
     # a register per lane
     lane = fill(-1, ns * 4)
@@ -1083,7 +1106,8 @@ optimize = ():
         o_depth[pos] = i32(depth)
         if ins.op == .block or ins.op == .loop or ins.op == .if_: depth += 1
         d = o_operands(ins)
-        loop u in o_buf:
+        loop oi in [0..o_buf_n):
+            u = o_buf[oi]
             if o_first[u] > pos: o_first[u] = i32(pos)
             o_lastuse[u] = i32(pos)
         if d >= 0:
@@ -1203,7 +1227,9 @@ optimize = ():
     loop v in [0..nv): o_nuse[v] = 0
     loop ins in o_out:
         o_operands(ins)
-        loop u in o_buf: o_nuse[u] += 1
+        loop oi in [0..o_buf_n):
+            u = o_buf[oi]
+            o_nuse[u] += 1
     keep = fill(true, o_out.len())
     i = o_out.len() - 1
     loop i >= 0:
@@ -1213,7 +1239,9 @@ optimize = ():
             if o_nuse[d] == 0:
                 keep[i] = false
                 o_operands(ins)
-                loop u in o_buf: o_nuse[u] -= 1
+                loop oi in [0..o_buf_n):
+                    u = o_buf[oi]
+                    o_nuse[u] -= 1
         i -= 1
     code: Ins[]
     code.reserve(o_out.len())
@@ -1303,7 +1331,8 @@ o_licm = (code: Ins[]) -> Ins[]:
         target = -1
         loop L in loops_open:
             ok = true
-            loop u in o_buf:
+            loop oi in [0..o_buf_n):
+                u = o_buf[oi]
                 if o_def_within(dpos, first[u], first[u + 1], 2 * L, 2 * lp_end[L]):
                     ok = false
                     break
@@ -1542,7 +1571,7 @@ o_cleanup = (code: Ins[]) -> Ins[]:
                         break
                     if eo == .block or eo == .loop or eo == .if_ or eo == .else_ or eo == .end or eo == .br or eo == .brif or eo == .brtable or eo == .zeroslots: break
                     ed = o_operands(e)
-                    if ed == d or o_buf.contains(d) or ed == t: break
+                    if ed == d or o_buf_has(d) or ed == t: break
                     j -= 1
                 if done: continue
         if op == .copy and out.len() > 0:
@@ -1960,7 +1989,9 @@ o_pack_f32 = ():
         optr = data(out) as *Ins
         loop p in [0..out.len()):
             o_operands(optr[p])
-            loop u in o_buf: uses[u] += 1
+            loop oi in [0..o_buf_n):
+                u = o_buf[oi]
+                uses[u] += 1
         keep = fill(true, out.len())
         j = out.len() - 1
         loop j >= 0:
@@ -1968,7 +1999,9 @@ o_pack_f32 = ():
             if o_pure(e.op) and e.dst >= 0 and uses[int(e.dst)] == 0:
                 keep[j] = false
                 o_operands(e[0])
-                loop u in o_buf: uses[u] -= 1
+                loop oi in [0..o_buf_n):
+                    u = o_buf[oi]
+                    uses[u] -= 1
             j -= 1
         packed: Ins[]
         packed.reserve(out.len())
