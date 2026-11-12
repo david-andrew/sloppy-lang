@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: `regex(pattern)` returns `Regex | RegexError`; handle the error or use `.unwrap()` for trusted patterns. `regex_error` is removed.
+
 - `trim(text, chars)` matches whole Unicode code points, preserving valid UTF-8.
 
 - Windows gamepad backends start on the first pad reader, including action and menu

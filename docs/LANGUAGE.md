@@ -282,7 +282,7 @@ text, since a character's bytes never look like another's. For text from players
 characters with `char_count`, and to step through them, `loop c in chars(s)` (`loop c in s` gives
 bytes, which print as numbers: `str(c)` of an `a` is `"97"`). `find(s, sub)`, `rfind(s, sub)` and
 `find_byte(s, c)` give a byte index, and -1 when it is not there (not none: `if find(s, "@") >=
-0:`, or `sub in s` for whether it is); `s.find(regex(...))` gives a `Match?`, none when there is
+0:`, or `sub in s` for whether it is); `s.find(regex(...).unwrap())` gives a `Match?`, none when there is
 no match.
 
 `print(x)` and `"{x}"` show any value: a struct as `Big(m=1.5, e=300)`. A type of the program's

@@ -997,7 +997,7 @@ draw = ():
 | `urllib.parse.quote(s)`, `urlencode(d)`, `html.unescape(s)` | `url_encode(s)`, `url_query(d)`, `html_unescape(s)` |
 | `urljoin(base, link)`, `urlsplit(url)` | `url_join(base, link)`, `parse_url(url)` (`u.host`, `u.port`, `u.path`...) |
 | `s[:4]`, `f"{s:.4}"` | `first(s, 4)` or `"{s:.4}"` (characters; `s[..4]` counts bytes, and can cut an `é` in two) |
-| `re.search(r"\d+", s)` | `s.find(regex(r"\d+"))` (a `Match?`: `m.text`, `m.groups`) |
+| `re.search(r"\d+", s)` | `s.find(regex(r"\d+").unwrap())` (a `Match?`: `m.text`, `m.groups`) |
 | `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero when changed (`counts[w] += 1`, `groups[k].push(x)`); reading one, `m[k]`, is an error: `m.get(k) ?? 0` |
 | `set()`, `{1, 2}`, `x in s` | `seen: Set[int]` (`{}` where a Set is expected), `{1, 2}`, `s.add(x)`, `x in s`; `unique(xs)` for an array without repeats |
 | `collections.deque`, `heapq.heappush(pq, (d, v))` | `q: Deque[int]` with `q.push(x)` and `q.pop_front()`; `pq.heap_push((d, v))` and `pq.heap_pop()` on an array |
@@ -1060,7 +1060,7 @@ waits (a channel, a fetch, a connection, `sleep`) lets the others run. For the p
 | `flag.Bool("words", false, "count words")` | a struct of the options, `opts = parse_args[Options]("what it does")`, the comments as the help |
 | `encoding/json`, struct tags | `from_json[Item](s)` (fields by name), `to_json(x)`, `parse_json(s)` for any shape; a JSON name that is a keyword is a field with `_` after it (`when_` is `"when"`) |
 | `bufio.Scanner` over a file | `if let f = open_file(p):` then `loop let line = f.read_line():` |
-| `regexp.MustCompile(expr)` | `regex(r"...")`, made once and used for every text |
+| `regexp.MustCompile(expr)` | `regex(r"...").unwrap()`, made once and used for every text |
 | `url.Parse`, `base.ResolveReference(ref)` | `parse_url(s)` (`u.host`, `u.port`, `u.path`), `url_join(base, link)` |
 | `http.HandleFunc`, `http.ListenAndServe` | `import http`, `http.get("/todos/:id", handler)`, `http.serve(8080)` ([writing a server](#writing-a-server)) |
 | middleware, `rs/cors`, `gziphandler` | `http.before(f)` (may answer early) and `http.after(f)`, `http.cors(["https://example.com"])`; gzip is on (`http.gzip = false`) |
