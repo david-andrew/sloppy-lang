@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: JSON list lookup is `get(index)`, replacing `at(index)`; object lookup stays `get(key)`. Use `as_float()` instead of `as_num()`. Optional-safe chaining and forgiving `as_list()`/`keys()` on noncontainers keep their existing behavior.
+
 - Reversed random bounds (`hi < lo`) now panic for `random`, `random_int` and `Rng.next_int`. Equal bounds return `lo` without drawing a random number; valid intervals remain half-open.
 
 - Breaking: redundant aliases are removed: Set `has` → `contains` (or `in`), `bisect_left/right` → `lower_bound/upper_bound`, `sort_by`/`sorted_by` → `sort(key = ...)`/`sorted(key = ...)`, `min_by`/`max_by` → `min(key = ...)`/`max(key = ...)`, string `words()` → `split()`, separator-first `join(sep, parts)` → `join(parts, sep)`, and `sinf`/`cosf` → `sin`/`cos` with f32 input. GPU `words(buffer)` and shader `mix` remain distinct supported spellings. Map `has` awaits game-team coordination.

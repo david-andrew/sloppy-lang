@@ -363,7 +363,7 @@ print("{repo.full_name}: {repo.stargazers_count} stars, {repo.description ?? "-"
 - `net.fetch(url, save_to = "big.zip", progress = (got: int, all: int): print("{got} of {all}"))`
   downloads into a file as it comes.
 - JSON of any shape: `j = parse_json(r.text)`, then `if j is JsonError: ...`, and
-  `j.get("items").at(0).get("name").as_str() ?? ""` (each step gives none when that part is not
+  `j.get("items").get(0).get("name").as_str() ?? ""` (each step gives none when that part is not
   there); `j.as_list()` and `j.keys()` to loop over it. `print(j)` shows it as JSON.
 - Change parsed JSON with `j.put("name", "ann")`, `j.put(0, 3)`, `j.push(value)` and
   `j.remove("name")`. Nested changes use `j.set_path(["a", "b"], 3)` and

@@ -790,7 +790,7 @@ not names at all (`"content-type"`, `"first name"`) go in a map field (`{str: st
 `parse_json`.
 
 **JSON of any shape.** `j = parse_json(text)` gives a `Json` or `JsonError`; after checking the
-error, read with `j.get("name").as_str()`, `j.at(0).as_int()` and `j.as_list()`. Those reads
+error, read with `j.get("name").as_str()`, `j.get(0).as_int()` and `j.as_list()`. Those reads
 give `none` for absent fields, out-of-range elements or wrong kinds. Change a value with
 `j.put("name", "ann")` (add or replace an object field), `j.put(0, 3)` (replace a list element),
 `j.push(value)` (append to a list), and `j.remove("name")` (true if removed).

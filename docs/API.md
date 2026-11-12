@@ -496,14 +496,14 @@ Math basics.
 - `next_u64 = (r: mut Rng) -> u64`
 - `next_float = (r: mut Rng) -> f64`: uniform f64 in [0, 1)
 - `next_normal = (r: mut Rng, mean: f64 = 0.0, sd: f64 = 1.0) -> f64`: normally distributed, from r: mean 0 and standard deviation 1 (as randn), or the ones given
-- `next_int = (r: mut Rng, lo: int, hi: int) -> int`: uniform int in [lo, hi)
+- `next_int = (r: mut Rng, lo: int, hi: int) -> int`: uniform int in [lo, hi); equal bounds return lo without drawing, hi < lo panics
 - `next_item[T] = (r: mut Rng, xs: T[]) -> T`: an element of xs (not empty), from r
 - `shuffle[T] = (r: mut Rng, xs: mut T[])`: put xs in a random order from r
 - `seed_random = (seed: int)`
 - `random = () -> f64`: random f64 in [0, 1)
-- `random = (lo: f64, hi: f64) -> f64`: random f64 in [lo, hi)
+- `random = (lo: f64, hi: f64) -> f64`: random f64 in [lo, hi); equal bounds return lo without drawing, hi < lo panics
 - `random_normal = (mean: f64 = 0.0, sd: f64 = 1.0) -> f64`: a random number from a bell curve around mean: about two in three within sd of it (p5's randomGaussian; Rng's next_normal for a seeded one)
-- `random_int = (lo: int, hi: int) -> int`: a random whole number from lo up to hi, hi left out (as in lo..hi): random_int(0, xs.len()) picks a position, and a die is random_int(1, 7)
+- `random_int = (lo: int, hi: int) -> int`: a random whole number from lo up to hi, hi left out (as in lo..hi): random_int(0, xs.len()) picks a position, and a die is random_int(1, 7). Equal bounds return lo; hi < lo panics.
 - `random_item[T] = (xs: T[]) -> T`: a random element of xs (which must not be empty)
 - `shuffle[T] = (xs: mut T[])`: put xs in a random order
 
@@ -1104,7 +1104,7 @@ if back is Monster: print(back.name, back.hp)
 r = parse_json(r'{"name": "bat", "drops": ["wing"]}')
 if r is Json:
     j: Json? = r
-    print(j.get("name").as_str() ?? "?", j.get("drops").at(0).as_str() ?? "?")
+    print(j.get("name").as_str() ?? "?", j.get("drops").get(0).as_str() ?? "?")
 
 # CSV: rows of fields
 rows = csv_rows("name,hp\nslime,12\n\"big, bad bat\",40\n")
@@ -1122,19 +1122,19 @@ print(sha256("hello"))                   # a fingerprint, as sha256sum gives
 
 ### json.jo
 
-JSON: parse_json reads text into a Json value (or a JsonError saying where it is wrong), and to_json writes one. Reading: get (a field), at (an element) and the as_* functions all take a Json? and give an optional, so they chain, and a missing piece anywhere gives none:
+JSON: parse_json reads text into a Json value (or a JsonError saying where it is wrong), and to_json writes one. Reading: get (a field or list element) and the as_* functions all take a Json? and give an optional, so they chain, and a missing piece anywhere gives none:
 
 ```gdscript
 j = parse_json(text)
 if j is JsonError: return j
 width = j.get("width").as_int() ?? 0
-name = j.get("layers").at(0).get("name").as_str() ?? "?"
+name = j.get("layers").get(0).get("name").as_str() ?? "?"
 loop l in j.get("layers").as_list(): print(l.get("name").as_str() ?? "")
 ```
 
 For JSON straight into your own structs and back, from_json[Config](text) and to_json(value) are in "Saving, and values as text" (they give a TextError, with the same message, line, column). JSON has no infinity or NaN: to_json writes them as null, as JavaScript's JSON.stringify does (from_json reads null into a float as NaN), and the words Infinity, -Infinity and NaN that Python's json writes are read too. Its text is UTF-8: a byte in a string that is not is a mistake where it is, and to_json writes such bytes as U+FFFD, so what it writes always is.
 
-- `enum Json: null_, boolean(b: bool), integer(i: int), number(n: f64), text(s: str), list(items: Json[]), object(keys: str[], values: Json[])`: a whole number in the text is an integer, kept exactly as written while it fits in an int; any other is a number (as_num and as_int read both). print shows a Json as JSON text
+- `enum Json: null_, boolean(b: bool), integer(i: int), number(n: f64), text(s: str), list(items: Json[]), object(keys: str[], values: Json[])`: a whole number in the text is an integer, kept exactly as written while it fits in an int; any other is a number (as_float and as_int read both). print shows a Json as JSON text
 - `error struct JsonError`
   ```gdscript
   error struct JsonError:
@@ -1147,13 +1147,13 @@ For JSON straight into your own structs and back, from_json[Config](text) and to
 #### Reading
 
 - `get = (j: Json?, key: str) -> Json?`: an object's field
-- `at = (j: Json?, i: int) -> Json?`: a list's element
-- `as_num = (j: Json?) -> f64?`
+- `get = (j: Json?, i: int) -> Json?`: a list's zero-based element, or none for a negative/out-of-range index or non-list
+- `as_float = (j: Json?) -> f64?`: a floating number (integer variants convert to f64 too), or none for a non-number
 - `as_int = (j: Json?) -> int?`: the whole part of a finite number in the int range, or none. Fractions truncate toward zero; typed from_json[int] instead rejects fractional numbers. Integer variants stay exact.
 - `as_str = (j: Json?) -> str?`
 - `as_bool = (j: Json?) -> bool?`
-- `as_list = (j: Json?) -> Json[]`: a list's elements (none: an empty array)
-- `keys = (j: Json?) -> str[]`: an object's field names, in order
+- `as_list = (j: Json?) -> Json[]`: a list's zero-based element, or none for a negative/out-of-range index or non-lists (none: an empty array) list items, or [] for a non-list; inspect the Json variant to distinguish empty from missing
+- `keys = (j: Json?) -> str[]`: an object's field names, in order object keys, or [] for a non-object; inspect the variant if empty versus missing matters
 - `is_null = (j: Json?) -> bool`
 
 #### Changing
