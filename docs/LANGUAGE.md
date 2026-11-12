@@ -2273,7 +2273,7 @@ Text drawn at 320 x 180 is a few pixels tall, and blurs into blocks. For a HUD t
 call `full_resolution()` in draw after the world: what follows is drawn at the window's
 resolution, in the same units, over the pixel art (`text("Score {score}", vec2(4, 4), 8)` is 8
 units tall, 32 pixels in a window four times larger). A pixel font is a TTF like any other,
-`set_font(load_font(embed("pixel.ttf")))`; give it sizes the window's scale turns into whole
+`set_font(load_font(embed("pixel.ttf")).unwrap())`; give it sizes the window's scale turns into whole
 pixels.
 
 Menus (`ui_begin`, `ui_button`...) keep their sizes in step with the design size: at 480 x 270
@@ -2392,7 +2392,7 @@ change to how something moves or looks shows at once.
   the game keeps (a lambda that captures other variables than before is a new one: closures made
   earlier keep running the old code).
 - A global is set again from its declaration when that declaration changes (`speed = 300.0`
-  after `speed = 200.0`), when a file it names changes (`player = load_texture(embed("player.png"))`
+  after `speed = 200.0`), when a file it names changes (`player = load_texture(embed("player.png")).unwrap()`
   after the image is saved), or when the functions of a GPU program it makes do
   (`sky = make_shader(shader(sky_vs, sky_fs))`). New globals are set when they appear.
   Top-level statements and `main` do not run again.
@@ -2425,14 +2425,14 @@ Skip the update entirely to freeze the camera. See [3D cameras](GRAPHICS.md#3d-c
 **3D materials.** Place the camera with `camera3d`, light the scene with `sun` and `sky`,
 and draw `cube_mesh`, `sphere_mesh`, `custom_mesh`, or an imported glTF model. Existing
 `draw_mesh` calls keep their simple lighting. `draw_mesh(ball, material = Material(metallic = 1,
-roughness = 0.25))` selects metallic-roughness PBR; `load_model(embed("ship.glb"))` and
+roughness = 0.25))` selects metallic-roughness PBR; `load_model(embed("ship.glb")).unwrap()` and
 `draw_model(ship)` use the glTF material's factors, base/metallic-roughness/normal/occlusion/
 emissive textures, alpha mode and double-sided state. Missing tangent frames are generated;
 exported tangents and skinning are retained. Base/emissive texture RGB is sRGB; material and
 vertex color factors are linear. `Material(alpha_mode = .mask, alpha_cutoff = 0.5)` cuts out
 transparent texels, including their shadows; `.blend` draws transparent surfaces last.
 See [3D materials](GRAPHICS.md#3d-materials) for channels, UV sets, tangent conventions and
-lighting approximations. `sky_image(load_texture(embed("sky.png")))` selects an
+lighting approximations. `sky_image(load_texture(embed("sky.png")).unwrap())` selects an
 equirectangular background and ambient reflections; `sky(...)` returns to the gradient.
 For glTF morph targets, `rest_pose(model).weights` contains each node's target weights;
 change `p.weights[node][target]` and pass `pose = p` to `draw_model`, or use `pose_at` for

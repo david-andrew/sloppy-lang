@@ -8,6 +8,10 @@
 # right in turn, at MIX_RATE a second, from -1 to 1). The mix: each voice's samples times its
 # volume, its pan taken from the other side (pan 1: the left channel silent, the right as
 # loud as at 0), times master_volume; what goes past 0.75 is bent smoothly toward 1.
+# A sound/music file could not be decoded; message describes the input failure.
+error struct AudioError:
+    message: str
+
 struct Sound:
     samples: f32[]      # interleaved stereo
 
@@ -585,10 +589,10 @@ melody_loop = (notes: str, bpm: f64 = 120.0, wave: Wave = .triangle, volume: f64
 # a WAV file's sound: integer samples of 8, 16, 24 or 32 bits or floats of 32 or 64, any number of
 # channels (the first two are used; mono plays on both), any rate (resampled to MIX_RATE). Other
 # files are an error that says what they are.
-load_wav = (file: u8[]) -> Sound:
-    if file.len() == 0: panic("load_wav: the file is empty (0 bytes)")
-    if file.len() >= 4 and file[0] == 'O' and file[1] == 'g' and file[2] == 'g' and file[3] == 'S': panic("load_wav: this is an Ogg Vorbis file: load_ogg(file) for a sound, load_music(file) for music played as it goes")
-    if file.len() < 12 or file[0] != 'R' or file[1] != 'I' or file[2] != 'F' or file[3] != 'F' or file[8] != 'W': panic("load_wav: not a WAV file (no RIFF/WAVE header)")
+load_wav = (file: u8[]) -> Sound | AudioError:
+    if file.len() == 0: return AudioError("load_wav: the file is empty (0 bytes)")
+    if file.len() >= 4 and file[0] == 'O' and file[1] == 'g' and file[2] == 'g' and file[3] == 'S': return AudioError("load_wav: this is an Ogg Vorbis file: load_ogg(file) for a sound, load_music(file) for music played as it goes")
+    if file.len() < 12 or file[0] != 'R' or file[1] != 'I' or file[2] != 'F' or file[3] != 'F' or file[8] != 'W': return AudioError("load_wav: not a WAV file (no RIFF/WAVE header)")
     u16_at = (o: int) -> int: int(file[o]) | (int(file[o + 1]) << 8)
     u32_at = (o: int) -> int: u16_at(o) | (u16_at(o + 2) << 16)
     pos = 12
@@ -600,20 +604,21 @@ load_wav = (file: u8[]) -> Sound:
         id = str_from_bytes(file[pos..pos + 4))
         n = u32_at(pos + 4)
         b = pos + 8
+        if n > file.len() - b: return AudioError("load_wav: a chunk is cut short")
         if id == "fmt ":
-            if n < 16 or b + 16 > file.len(): panic("load_wav: the format chunk is too short")
+            if n < 16 or b + 16 > file.len(): return AudioError("load_wav: the format chunk is too short")
             fmt_ = u16_at(b)
             channels = u16_at(b + 2)
             rate = u32_at(b + 4)
             bits = u16_at(b + 14)
             # (WAVE_FORMAT_EXTENSIBLE: the real format is the first two bytes of the sub-format)
             if fmt_ == 0xFFFE and n >= 26 and b + 26 <= file.len(): fmt_ = u16_at(b + 24)
-            if fmt_ != 1 and fmt_ != 3: panic("load_wav: compressed WAV files (format {fmt_}) are not supported: save it as PCM")
-            if fmt_ == 1 and bits != 8 and bits != 16 and bits != 24 and bits != 32: panic("load_wav: {bits}-bit samples are not supported (8, 16, 24 or 32)")
-            if fmt_ == 3 and bits != 32 and bits != 64: panic("load_wav: {bits}-bit float samples are not supported (32 or 64)")
-            if channels < 1 or rate < 1: panic("load_wav: the format chunk says {channels} channels at {rate} Hz")
+            if fmt_ != 1 and fmt_ != 3: return AudioError("load_wav: compressed WAV files (format {fmt_}) are not supported: save it as PCM")
+            if fmt_ == 1 and bits != 8 and bits != 16 and bits != 24 and bits != 32: return AudioError("load_wav: {bits}-bit samples are not supported (8, 16, 24 or 32)")
+            if fmt_ == 3 and bits != 32 and bits != 64: return AudioError("load_wav: {bits}-bit float samples are not supported (32 or 64)")
+            if channels < 1 or rate < 1: return AudioError("load_wav: the format chunk says {channels} channels at {rate} Hz")
         else if id == "data":
-            if fmt_ < 0: panic("load_wav: the data comes before the format chunk")
+            if fmt_ < 0: return AudioError("load_wav: the data comes before the format chunk")
             bps = bits / 8
             nframes = min(n, file.len() - b) / (bps * channels)
             src: f32[]
@@ -642,8 +647,7 @@ load_wav = (file: u8[]) -> Sound:
                     src.push(v)
             return __resample(src, rate)
         pos = b + n + (n & 1)
-    panic("load_wav: the file has no data chunk")
-    Sound([])
+    return AudioError("load_wav: the file has no data chunk")
 
 # a sound as a WAV file's bytes: 16-bit stereo at MIX_RATE (what load_wav reads back), to keep
 # or to listen to a sound made in code

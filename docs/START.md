@@ -748,7 +748,7 @@ time, and in a screenshot run exactly 1/60 s a frame, so tests come out the same
 ```gdscript
 # four lanes: notes fall to a line, hit as they cross it
 window("Lanes", 800, 600)
-song = load_music(embed("song.ogg"))
+song = load_music(embed("song.ogg")).unwrap()
 chart = [(0, 1.0), (1, 1.5), (2, 2.0), (3, 2.25), (0, 2.5)]   # (lane, seconds into the song)
 keys = [Key.d, Key.f, Key.j, Key.k]
 hit = fill(false, chart.len())
@@ -833,7 +833,7 @@ from.
 | when green flag clicked | the lines at the top of the file run first, once |
 | forever | `update = (dt: f64):`, which the game runs every frame (dt: the seconds since the last) |
 | a sprite, its x and y | a variable for where it is, `cat = vec2(240, 300)`, and `draw` drawing it there: `sprite(cat_picture, cat)` |
-| costumes | a few pictures, `load_texture(embed("cat1.png"))`, and which one is drawn |
+| costumes | a few pictures, `load_texture(embed("cat1.png")).unwrap()`, and which one is drawn |
 | backdrops | a picture drawn first in `draw`, before the sprites |
 | when key pressed, key pressed? | `if key_pressed(.space):` (just pressed) or `if key_down(.right):` (held), in `update` |
 | change x by 10 | `cat.x += 10` (each frame: `cat.x += 300 * dt` moves 300 a second) |
@@ -849,7 +849,7 @@ from.
 | pick random 1 to 10 | `random_int(1, 11)` (the top is left out), `random(0.0, 1.0)` for a fraction |
 | variables, lists | `score = 0` at the top; `names: str[] = []`, `names.push("Ada")` |
 | pen | a picture drawn into and never cleared: `pen = render_target(1280, 720)` at the top; in `draw`, `draw_to(pen)`, the line or dot, `draw_to_screen()`, then after `clear`, `draw_target(pen)` |
-| sounds | `meow = load_wav(embed("meow.wav"))` at the top, `play(meow)` when it should sound |
+| sounds | `meow = load_wav(embed("meow.wav")).unwrap()` at the top, `play(meow)` when it should sound |
 
 ## Coming from p5.js, Processing or Shadertoy
 
@@ -1147,7 +1147,7 @@ draw = ():
 | `KEYDOWN`, `key.get_pressed()[K_LEFT]` | `key_pressed(.space)` (pressed this frame), `key_down(.left)` (held); `K_RETURN` is `.enter`, `K_ESCAPE` `.escape`, `K_a` `.a` |
 | `mouse.get_pos()`, `mouse.get_pressed()`, `mouse.set_visible(False)` | `mouse_pos()`, `mouse_down(.left)` (`mouse_pressed`: this frame), `show_cursor(false)` |
 | `display.set_caption(s)` | `set_title(s)` |
-| `image.load(p).convert_alpha()` | `load_texture(embed("p.png"), false)` at the top of the file (false: sharp pixels, for pixel art) |
+| `image.load(p).convert_alpha()` | `load_texture(embed("p.png"), false).unwrap()` at the top of the file (false: sharp pixels, for pixel art) |
 | `screen.blit(img, (x, y))` | `sprite(img, vec2(x, y))` in draw |
 | `blit(sheet, pos, area)`, `subsurface` | `sheet = sprite_sheet(img, 16, 16)` and `draw_frame(sheet, i, center)`, or `sprite_region(img, src, center, size)` |
 | `transform.flip`, `scale`, `rotate` | `draw_frame(..., flip_x = true)` (or a negative width in sprite's size), sprite's size argument, `angle =` (radians) |
@@ -1159,8 +1159,8 @@ draw = ():
 | `r.right`, `r.bottom`, `move`, `inflate`, `clamp`, `union`, `collidelist` | `right(r)`, `bottom(r)`, `r.move(v)`, `r.grow(2)` (each side out by 2), `r.clamp(bounds)`, `union(a, b)`, `first_overlap(r, rects)`; a Rect's fields are `x`, `y`, `w`, `h` |
 | `sprite.Group`, `spritecollide(..., dokill=True)` | an array of structs, changed in a `loop mut e in enemies:`, then `enemies.retain((e): not e.dead)` |
 | `math.Vector2` | `vec2`, `length(v)`, `normalize(v)`, `distance(a, b)`, `rotate(v, a)` (radians: `rotate(v, 90deg)`) |
-| `mixer.Sound(p).play()`, `mixer.music.load(p)` | `jump = load_wav(embed("jump.wav"))` at the top, `play(jump)`; `play_music(load_music(embed("song.ogg")))`, or `play(snd, looping = true)` |
-| `font.SysFont(None, 24).render(s)` and a blit | `text(s, pos, 24, color)` with the built-in font; `set_font(load_font(embed("font.ttf")))` for another |
+| `mixer.Sound(p).play()`, `mixer.music.load(p)` | `jump = load_wav(embed("jump.wav")).unwrap()` at the top, `play(jump)`; `play_music(load_music(embed("song.ogg")).unwrap())`, or `play(snd, looping = true)` |
+| `font.SysFont(None, 24).render(s)` and a blit | `text(s, pos, 24, color)` with the built-in font; `set_font(load_font(embed("font.ttf")).unwrap())` for another |
 | `time.get_ticks()`, `time.set_timer` | `elapsed()` (seconds), `if every(1, 2.0):` in update (true once each 2 s) |
 | `random.randint(1, 6)`, `random.choice(xs)` | `random_int(1, 7)` (the top is left out), `random_item(xs)` |
 | `open("level.txt").read()` | `str_from_bytes(embed("level.txt"))`: built into the game, so it works in a web page too; `read_file(path).unwrap()` reads the disk (native builds) |
@@ -1212,15 +1212,15 @@ draw = ():                              # _draw
 | `pset(x, y, c)`, `pget(x, y)` | `rect(x, y, 1, 1, PAL[c])`; the screen is not read back: keep what you need in variables, or an `Image` (`img.get(x, y)`) |
 | `rectfill(x0, y0, x1, y1, c)`, `rect(...)` | `rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, PAL[c])` (a size, not the far corner), `rect_outline(x, y, w, h, 1, PAL[c])` |
 | `circfill(x, y, r, c)`, `circ`, `line(x0, y0, x1, y1, c)` | `circle(vec2(x, y), r, PAL[c])`, `ring(vec2(x, y), r, 1, PAL[c])`, `line(vec2(x0, y0), vec2(x1, y1), 1, PAL[c])`: under `pixel_art()` whole pixels, a 1 wide line Bresenham's as PICO-8's; `ellipse`, `arc`, `polyline` too |
-| `spr(n, x, y, 1, 1, flip_x)`, `sspr` | `gfx = sprite_sheet(load_texture(embed("sheet.png")), 8, 8)` at the top, then `draw_frame(gfx, n, vec2(x, y), origin = vec2(0, 0), flip_x = true)` (origin: its top left at the point; without, its middle); `sprite_region` for sspr |
+| `spr(n, x, y, 1, 1, flip_x)`, `sspr` | `gfx = sprite_sheet(load_texture(embed("sheet.png")).unwrap(), 8, 8)` at the top, then `draw_frame(gfx, n, vec2(x, y), origin = vec2(0, 0), flip_x = true)` (origin: its top left at the point; without, its middle); `sprite_region` for sspr |
 | the sprite editor | a PNG from any editor (Aseprite: `load_aseprite`), or a sprite written in the code: `texture(pixel_image("...77...\n..7cc7..", PAL))`, a character a pixel, its color's number, `.` clear |
-| `map(...)`, `mget(x, y)`, `mset` | `level = tilemap(tileset(load_texture(embed("sheet.png")), 8, 8), [tile_layer("ground", ROWS, "#=")])`, `draw_tilemap(level)`, `tile_at(level, 0, x, y)`, `set_tile(level, 0, x, y, id)`; tiles count from 1 (0 is none): tile n is sprite n - 1; `load_tiled` reads a Tiled map |
+| `map(...)`, `mget(x, y)`, `mset` | `level = tilemap(tileset(load_texture(embed("sheet.png")).unwrap(), 8, 8), [tile_layer("ground", ROWS, "#=")])`, `draw_tilemap(level)`, `tile_at(level, 0, x, y)`, `set_tile(level, 0, x, y, id)`; tiles count from 1 (0 is none): tile n is sprite n - 1; `load_tiled` reads a Tiled map |
 | `pal(c0, c1)`, `pal()`, `pal(c0, c1, 1)` | `palette_swap(PAL[c0], PAL[c1])`, `palette_reset()`, `palette_swap(PAL[c0], PAL[c1], screen = true)` |
 | `palt(c, true)` | a PNG's transparent pixels, or `.` in `pixel_image` |
 | `print(s, x, y, c)` | `text(s, vec2(x, y), 6, PAL[c])`: under `pixel_art()` in `pixel_font()`, 3 x 5 like PICO-8's (size 12 is twice as big); `text_width(s, 6)` is 4 a character |
 | `btn(⬅️)`, `btnp(❎)` | `key_down(.left)` (or `input_axis()`: arrows, WASD and a pad's stick), `key_pressed(.x)` (just pressed); btnp's repeat while held: `key_repeat(.down)` |
 | a gamepad, `btn(i, p)` | `gamepad_down(.a)`, `gamepad_pressed`, `gamepad_repeat`; `gamepad_down(p, .a)` for player p; `action("fire", [.key(.x), .button(.a)])` and `action_pressed("fire")` (`action_repeat`) for keys the player can change |
-| `sfx(n)`, `music(n)` | `play(snd)` of a sound made at the top: `tone(440.0, 0.1, .square)`, `sfx_coin()`, `sfx_explosion()`..., `load_wav(embed("hit.wav"))`; music: `melody_loop("C5 E5 G5 E5", 150.0, .square)` played with `play(song, looping = true)`, `mix([...])` for channels |
+| `sfx(n)`, `music(n)` | `play(snd)` of a sound made at the top: `tone(440.0, 0.1, .square)`, `sfx_coin()`, `sfx_explosion()`..., `load_wav(embed("hit.wav")).unwrap()`; music: `melody_loop("C5 E5 G5 E5", 150.0, .square)` played with `play(song, looping = true)`, `mix([...])` for channels |
 | `rnd(10)`, `flr(x)`, `ceil`, `mid(lo, x, hi)`, `abs`, `sgn` | `random(0.0, 10.0)` (`random_int(0, 10)`: 0 to 9), `floor(x)` (`int(x)` for an int), `ceil`, `clamp(x, lo, hi)`, `abs`, `sign` |
 | `sin(t)`, `cos(t)`, `atan2(dx, dy)` (turns, y up) | radians, y down: PICO-8's `sin(t)` is `-sin(t * TAU)`, `cos(t)` is `cos(t * TAU)`; `atan2(dy, dx)` |
 | `t()`, `time()` | `elapsed()` (seconds); `frame_number()` |

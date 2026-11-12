@@ -54,7 +54,7 @@ write `7.0 / 2` for 3.5), and a number with a decimal point becomes a whole one 
 ask: `int(x)`.
 
 A picture can stand in for the circle: put `firefly.png` next to the program, write
-`hero = load_texture(embed("firefly.png"))` at the top (`embed` builds the file into the
+`hero = load_texture(embed("firefly.png")).unwrap()` at the top (`embed` builds the file into the
 program), and `sprite(hero, pos)` in `draw`, which puts the picture's top left corner at `pos`.
 
 ## 3. Gravity and jumping
@@ -642,7 +642,7 @@ is one `rect_gradient`.
 Shapes can be swapped for pictures. Put `firefly.png` next to the program, then:
 
 ```gdscript
-hero = load_texture(embed("firefly.png"))      # at the top: embed builds the file into the program
+hero = load_texture(embed("firefly.png")).unwrap()      # at the top: embed builds the file into the program
 
 # in draw, instead of the circle (sprite draws with its top left corner at the position):
     sprite(hero, pos - vec2(SIZE, SIZE), vec2(SIZE * 2.0, SIZE * 2.0))

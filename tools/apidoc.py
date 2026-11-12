@@ -364,7 +364,7 @@ INTRO = ("Core, standard and game functions are available without imports. Named
 ESSENTIALS = [
     ("Shapes", "`clear(color)`, `circle(center, radius, color)`, `rect(x, y, w, h, color)`, `line(a, b, width, color)`; colors are `rgb(r, g, b)` from 0 to 1"),
     ("Text", "`text(s, pos, size, color)`, `text_centered(s, center, size)`; `shadow = rgba(0, 0, 0, 0.7)` to read over a busy scene"),
-    ("Pictures", "`hero = load_texture(embed(\"hero.png\"))` once, then `sprite(hero, pos)` in draw"),
+    ("Pictures", "`hero = load_texture(embed(\"hero.png\")).unwrap()` once, then `sprite(hero, pos)` in draw"),
     ("Input", "`input_axis()` (arrows, WASD, a stick), `key_pressed(.space)` (this frame), `key_down(.left)` (held), `mouse_pos()`, `mouse_pressed(.left)`"),
     ("Random", "`random()` (0 to 1), `random(lo, hi)`, `random_int(lo, hi)` (hi left out), `random_item(xs)`"),
     ("Sound", "`s = sfx_coin()` (also `sfx_jump`, `sfx_hit`, `sfx_chime`...) once, then `play(s)`; `melody(\"C4 E4 G4\", 120.0)` for music"),

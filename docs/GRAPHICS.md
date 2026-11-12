@@ -149,8 +149,8 @@ is CC0, but its animation and glTF conversion require CC-BY 4.0 attribution, as 
 
 ```gdscript
 window("Fox walk", 960, 600)
-hero = load_model(embed("assets/Fox.glb"))
-panorama = load_texture(embed("assets/sky.jpg"))
+hero = load_model(embed("assets/Fox.glb")).unwrap()
+panorama = load_texture(embed("assets/sky.jpg")).unwrap()
 ground = plane_mesh(40)
 hero_scale = 1.4 / max(f64(model_size(hero).y), 0.001)
 pos = vec3(0, 0, 0)
@@ -190,7 +190,7 @@ tall. `Animator.play` keeps the current clip running when called again with its 
 crossfades when that name changes. An asset with animated morph weights uses the same
 `Animator`/`pose_at` path; [manual weights](#morph-targets) can also be set per draw.
 
-For a split export use `load_model(embed("assets/hero.gltf"), embed_dir("assets"))`: map keys
+For a split export use `load_model(embed("assets/hero.gltf"), embed_dir("assets")).unwrap()`: map keys
 are relative to the `.gltf` directory, including subdirectories. The loader does not read
 files beside the `.gltf` automatically. `embed` and `embed_dir` put those bytes in native and
 web builds alike. Check texture sizes before sharing: even a tiny model can contain several

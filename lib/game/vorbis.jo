@@ -1,15 +1,14 @@
 # OGG Vorbis: load_ogg decodes a whole .ogg file into a Sound. Vorbis is the usual format for
 # game music: about a tenth of the size of a WAV. (Written from the Vorbis I specification.)
 #
-#   music = load_ogg(embed("music.ogg"))
+#   music = load_ogg(embed("music.ogg")).unwrap()
 #   play(music, 0.6, looping = true)
 
 # a whole Ogg Vorbis file, at the mixer's rate, in stereo (mono is copied to both sides; files
-# with more channels give their front left and right). A file it cannot read stops the program
-# with a message saying why.
-load_ogg = (file: u8[]) -> Sound:
+# with more channels give their front left and right). AudioError describes decode failures.
+load_ogg = (file: u8[]) -> Sound | AudioError:
     d = __ogg_decode(file)
-    if d.error != "": panic("load_ogg: {d.error}")
+    if d.error != "": return AudioError(d.error)
     frames = d.samples.len() / max(d.channels, 1)
     st = fill(f32(0), frames * 2)
     right = 0
@@ -24,7 +23,7 @@ load_ogg = (file: u8[]) -> Sound:
 # A long piece of music played as it is decoded, a little ahead of where it is playing: no wait
 # when it loads and little memory (a three-minute song decoded whole is about 70 MB).
 #
-#   song = load_music(embed("song.ogg"))
+#   song = load_music(embed("song.ogg")).unwrap()
 #   id = play_music(song, 0.6)          # looping; stop(id), set_volume(id, v) as for sounds
 struct Music:
     file: u8[]
@@ -32,9 +31,9 @@ struct Music:
     rate: int
     seconds: f64                # how long it is (0: unknown)
 
-load_music = (file: u8[]) -> Music:
+load_music = (file: u8[]) -> Music | AudioError:
     d = __vdec_open(file)
-    if d.error != "": panic("load_music: {d.error}")
+    if d.error != "": return AudioError(d.error)
     Music(file, d.ch, d.v.rate, f64(d.granule) / f64(max(d.v.rate, 1)))
 
 # play music from its start; returns a voice id for stop(), set_volume(), is_playing(), pause(),
@@ -71,6 +70,15 @@ struct __Stream:
     length = 0                  # (the music's, in the mixer's frames; 0: not known)
 
 __streams: __Stream[]
+__music_errors: {int: AudioError}
+
+# take a streaming decode error for this play_music voice, once (none: none recorded). Errors
+# survive the voice ending; accepted samples before the damaged packet may have played.
+# Opening errors come from load_music instead. Query after is_playing(id) becomes false.
+music_error = (id: int) -> AudioError?:
+    e = __music_errors.get(id)
+    __music_errors.remove(id)
+    e
 
 # (music voice id's place in its music, at the mixer's next samples, in seconds)
 __stream_time = (v: Voice) -> f64:
@@ -141,6 +149,7 @@ __mix_stream = (vi: int, out: *f32, f0: int, n: int) -> bool:
     if k < 0: return false
     v = __voices[vi]
     __stream_fill(__streams[k], int(f64(n - f0) * v.pitch) + 2)
+    if __streams[k].dec.error != "": __music_errors[v.id] = AudioError(__streams[k].dec.error)
     src = data(__streams[k].buf)
     total = __streams[k].buf.len() / 2
     gl_ = v.volume * f32(__master) * (1.0 - max(v.pan, 0.0))
@@ -948,6 +957,7 @@ __vdec_packet = (d: mut __VDec) -> bool:
     before = d.out.len()
     __vdec_one(d, v, ch)
     d.next += 1
+    if d.error != "": return false
     # (the last page says how long it really is)
     made = (d.out.len() - before) / max(ch, 1)
     if d.granule > 0 and d.made + made > d.granule:
@@ -959,9 +969,13 @@ __vdec_packet = (d: mut __VDec) -> bool:
 
 __vdec_one = (d: mut __VDec, v: __VState, ch: int):
     b = __vbits_of(d.packets[d.next])
-    if d.packets[d.next].len() == 0 or __vget(b, 1) != 0: return
+    if d.packets[d.next].len() == 0 or __vget(b, 1) != 0:
+        d.error = "a Vorbis audio packet is damaged (no audio header)"
+        return
     mi = __vget(b, d.mode_bits)
-    if mi >= v.modes.len(): return
+    if b.eop or mi >= v.modes.len():
+        d.error = "a Vorbis audio packet is damaged (invalid mode)"
+        return
     mode = v.modes[mi]
     n = v.bs0
     if mode.long: n = v.bs1
@@ -977,6 +991,9 @@ __vdec_one = (d: mut __VDec, v: __VState, ch: int):
     loop c in [0..ch):
         f = v.floors[map.sfloor[map.mux[c]]]
         silent[c] = not __vfloor_curve(b, v, f, d.floors[c], n2)
+    if b.eop:
+        d.error = "a Vorbis audio packet is cut short (floor)"
+        return
     # (a channel coupled with one that is not silent is decoded too)
     loop s in [0..map.mags.len()):
         if not silent[map.mags[s]] or not silent[map.angs[s]]:
@@ -1066,4 +1083,5 @@ __ogg_decode = (file: u8[]) -> OggAudio:
     if d.granule > 0 and d.granule < (1 << 31): d.out.reserve(d.granule * d.ch + d.v.bs1 * d.ch)
     loop __vdec_packet(d): pass
     out.samples = d.out
+    out.error = d.error
     out
