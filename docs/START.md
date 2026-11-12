@@ -868,7 +868,7 @@ from.
 | `random(a, b)`, `randomGaussian()`, `noise(x, y, z)` | `random(a, b)`, `random_normal(mean, sd)`, `noise(x)`, `noise(x, y)`, `noise(x, y, z)` (each 0 to 1), `fbm(x, y)` |
 | `TWO_PI`, `radians(45)` | `TAU`, `45deg` |
 | `background(0, 10)` for trails | each frame starts black: draw into a picture that is kept, `canvas = render_target(1280, 720)` with `draw_to(canvas)`, a see-through `rect` over it, then `draw_to_screen()` and `draw_target(canvas)` |
-| `saveCanvas()` | `save_png(screenshot(), "art.png")`, then `download_file("art.png")`: a web page's browser downloads it |
+| `saveCanvas()` | `save_png("art.png", screenshot())`, then `download_file("art.png")`: a web page's browser downloads it |
 | a Shadertoy shader | a fragment function over a full-screen rect, as below: its `iTime`, `iResolution` and `iMouse` are fields you give it each frame |
 
 ```gdscript
@@ -1244,7 +1244,7 @@ draw = ():                              # _draw
 | `.dropna()`, `.fillna(0)`, `~mask` | `xs[not is_nan.(xs)]`, `x ?? 0.0` for an optional, `not mask` |
 | `np.mean`, `np.median`, `np.std`, `np.percentile` | `mean`, `median`, `std_dev`, `percentile(xs, 90.0)`, `histogram`, `correlation`, `cumsum` |
 | `np.linalg.solve(A, b)`, `A @ B` | `solve(A, b)`, `A * B` (on `f64[,]` matrices) |
-| `plt.plot(...)`, `plt.savefig("c.png")` | `img = render_image(800, 500, (): ...lines, rects, text...)`, then `save_png(img, "c.png")` (no window needed) |
+| `plt.plot(...)`, `plt.savefig("c.png")` | `img = render_image(800, 500, (): ...lines, rects, text...)`, then `save_png("c.png", img)` (no window needed) |
 | `df.to_csv(...)`, `json.dump(...)` | `to_csv(rows)`, `to_json(value)` |
 
 ## Coming from Unity or Godot

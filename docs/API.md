@@ -1766,7 +1766,7 @@ Line charts, scatter plots, bars and histograms with axes and a legend: drawn in
 
 ```gdscript
 # example: charts
-# a line chart and a histogram, made into pictures (save_png(img, "sales.png") keeps one)
+# a line chart and a histogram, made into pictures (save_png("sales.png", img) keeps one)
 r = rng(1)
 days = [loop i in 0..60: f64(i)]
 sales = [loop d in days: 100.0 + 2.0 * d + 10.0 * r.next_normal()]
@@ -1788,7 +1788,7 @@ c = Chart(title = "Daily sales", x_label = "day", y_label = "revenue")
 c.line(days, revenue, "revenue")
 c.line(days, weekly_mean, "7-day mean")
 c.points(xs, ys, "orders")
-save_png(chart_image(c, 800, 500), "sales.png")
+save_png("sales.png", chart_image(c, 800, 500))
 
 c2 = Chart(title = "Units by region")
 c2.bars(["north", "south", "east"], [120.0, 95.0, 143.0], "2026")
@@ -2793,7 +2793,7 @@ draw = ():
   img = render_image(600, 400, ():
       clear(WHITE)
       line(vec2(40, 360), vec2(560, 40), 2, BLUE))
-  save_png(img, "chart.png")
+  save_png("chart.png", img)
   ```
 - `free_render_target = (rt: RenderTarget)`: give back a render target's memory (it may not be used after)
 - `draw_to = (rt: RenderTarget)`: draw into a render target until draw_to_screen() is called
@@ -3066,7 +3066,7 @@ Images: RGBA8 pixel buffers, PNG decoding (with a built-in inflate; JPEG: jpeg.j
 #### PNG writing
 
 - `encode_png = (img: Image) -> u8[]`
-- `save_png = (img: Image, path: str) -> bool`
+- `save_png = (path: str, img: Image) -> bool`: write a PNG to path (false: file_error describes write failure), destination first as write_bytes
 - `screenshot = () -> Image`: read what has been drawn into an image: the window's pixels (on a scaled display more than the size asked for in window(): resized(img, w, h) makes it smaller), or the render target being drawn to (draw_to)
 
 ### jpeg.jo
@@ -4180,7 +4180,7 @@ Audio: a software mixer written in Sloppy. Sounds are float sample buffers (ster
 
 - `load_wav = (file: u8[]) -> Sound \| AudioError`: a WAV file's sound: integer samples of 8, 16, 24 or 32 bits or floats of 32 or 64, any number of channels (the first two are used; mono plays on both), any rate (resampled to MIX_RATE). Other files are an error that says what they are.
 - `encode_wav = (s: Sound) -> u8[]`: a sound as a WAV file's bytes: 16-bit stereo at MIX_RATE (what load_wav reads back), to keep or to listen to a sound made in code
-- `save_wav = (s: Sound, path: str) -> bool`: write a sound to a WAV file (false: it could not be written)
+- `save_wav = (path: str, s: Sound) -> bool`: write a WAV to path (false: file_error describes write failure), destination first as write_bytes
 
 ### vorbis.jo
 

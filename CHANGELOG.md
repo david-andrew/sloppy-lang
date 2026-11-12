@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: media writers take the destination first: `save_png(path, image)` and `save_wav(path, sound)`, matching `write_file`/`write_bytes`. Use `encode_png(image)`/`encode_wav(sound)` for bytes. No text/path same-type order changes.
+
 - Breaking: `net.tcp_connect`/`net.tls_connect` return `int | net.NetError`, with host/port and failure details attached. Handle or propagate the error, or unwrap trusted connections. `tcp_why()` is removed; read the returned error's `message`. Connect/handshake timeouts remain 5/10 seconds; send/receive deadlines stay independent.
 
 - Breaking: HTTP date reading is `http.parse_http_date(text)`, replacing `from_http_date`. `utc_offset(t)` additionally accepts fractional Unix seconds and floors them, matching `date(t)`; calendar precision and timezone semantics stay unchanged.

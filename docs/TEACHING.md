@@ -212,7 +212,7 @@ class, and the place to see why: its pendulum swings higher each time.
 `hud_slider(rect, value, low, high, step, label)` puts a slider anywhere. The built-in font has
 Greek letters, subscripts and superscripts, arrows and the common mathematical signs (θ ω Δ
 v₀ x² → ≈ ≤ √). A chart for a worksheet is a picture without a window:
-`save_png(chart_image(c, 800, 500), "path.png")`.
+`save_png("path.png", chart_image(c, 800, 500))`.
 
 To give students the link:
 - **From the playground:** *Link to play* copies a link that runs the program on the whole page,
