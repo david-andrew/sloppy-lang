@@ -310,6 +310,14 @@ Measured October 2026 on bench/big.jo (50k lines, debug, 8 cores, a busy machine
   normal release self-build falls from about 8.75G to 8.22G. All six improve by at least
   5% in both debug and release. These are retired instructions on the same sources, not
   wall-clock comparisons. Allocation decisions, diagnostics and output order are unchanged.
+- Further serial checking (November 2026): defer rejected-overload diagnostic text until
+  no candidate fits, index intrinsic names, scan comments and indentation in words, cache
+  token properties, and reuse node metadata during type finalization. Paired one-emitter
+  debug builds fall from 156M to 147M instructions for hello (5.28%), 615M to 581M for the
+  small game (5.53%), 798M to 753M for Rebound (5.64%), and 1218M to 1150M for Breakwater
+  (5.58%). Checking/parsing itself is 7–12% cheaper; the compiler's debug build falls from
+  2834M to 2700M and its normal release self-build from 8.22G to 8.09G. Existing diagnostics
+  remain byte-identical, and the editor retains its original diagnostic traversal.
 - Allocation in the compiler: about 5% of the time, the allocator already doubling arrays and
   remapping large blocks in place; nothing big there.
 - Lowering in parallel (the next lever, about 1.4x on big.jo with code generation in the same

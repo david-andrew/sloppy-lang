@@ -114,7 +114,17 @@ it under qemu (each night in CI).
 - Lazy-body scanning in `lex.jo` skips eight ordinary bytes at once, bounded by the current
   source window. The first matching newline, comment marker or quote is handled by the
   existing byte scanner; word subtraction can mark later bytes too, so only the first match
-  is used. String/interpolation handling and body boundaries are unchanged.
+  is used. Comments use bounded newline search, and indentation skips complete groups of
+  four spaces before handling tabs, CR and remaining spaces. Fixed token properties are
+  indexed by token kind. String/interpolation handling and body boundaries are unchanged.
+- Overload selection in `expr.jo` scores candidates without formatting rejection messages.
+  If every candidate fails, it repeats the candidate walk with the original diagnostics.
+  Untyped arguments are checked once, before either walk. The editor keeps one eager walk
+  so declaration/reference records are produced once. Intrinsic recognition indexes the
+  interned name IDs registered in the universe; it does not replace symbol resolution.
+- Type finalization in `check.jo` takes an unshared node buffer at each `zonk_tree` root.
+  Recursive calls reuse it, leaving concrete type IDs unchanged. Zonking an open type can
+  resolve fields and grow the AST, so the pointer must be refreshed immediately afterward.
 - `SLOPPY_STOP=lex|parse sloppy check file.jo`: stop early.
 - `SLOPPY_RASTAT=1` / `SLOPPY_RADUMP=<function>`: register allocation statistics / decisions.
 - `sloppy lsp --dump file.jo`: the lines a check writes for the language server.
