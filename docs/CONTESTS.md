@@ -10,7 +10,7 @@ Read it all at once, then take it apart:
 
 ```gdscript
 text = read_stdin()                     # all of standard input (or read_file("input.txt") ?? "")
-nums = ints(text)                       # every whole number in it, in order
+nums = ints(text).unwrap()                       # every whole number in it, in order
 grid = text.lines()                     # the lines, without their ends ("\r\n" too)
 loop line in grid:
     parts = line.split(" ")
@@ -121,7 +121,7 @@ A day in one file, with the puzzle's example as a test:
 ```gdscript
 # the elves' calories, most first
 totals = (text: str) -> int[]:
-    sums = text.split("\n\n").map((block): ints(block).sum())
+    sums = text.split("\n\n").map((block): ints(block).unwrap().sum())
     sums.sort(descending = true)
     sums
 

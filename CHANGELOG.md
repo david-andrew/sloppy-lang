@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: `ints(text)` returns `int[] | ParseError` on overflow; handle the error or write `ints(text).unwrap()` for trusted text.
+
 - Breaking: `regex(pattern)` returns `Regex | RegexError`; handle the error or use `.unwrap()` for trusted patterns. `regex_error` is removed.
 
 - `trim(text, chars)` matches whole Unicode code points, preserving valid UTF-8.
