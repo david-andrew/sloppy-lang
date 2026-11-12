@@ -440,10 +440,17 @@ op_or_assign = (c1: u8, plain: Tok, with_eq: Tok) -> Tok:
 
 # character classes for the lexer's hot loops: 1 = starts an identifier, 2 = continues one
 lx_cls: *u8 = null
+# Bits by token kind: 1 = two-byte operator, 2 = opening bracket, 4 = closing bracket.
+lx_token_flags: *u8 = null
 
 lx_init_classes = ():
-    global lx_cls
+    global lx_cls, lx_token_flags
     lx_cls = __alloc(256)
+    lx_token_flags = __alloc(256)
+    loop i in [0..256): lx_token_flags[i] = 0
+    loop k in [Tok.pluseq, Tok.stareq, Tok.slasheq, Tok.percenteq, Tok.ampeq, Tok.pipeeq, Tok.careteq, Tok.eq, Tok.ne]: lx_token_flags[int(k)] = 1
+    loop k in [Tok.lparen, Tok.lbrack, Tok.lbrace]: lx_token_flags[int(k)] = 2
+    loop k in [Tok.rparen, Tok.rbrack, Tok.rbrace]: lx_token_flags[int(k)] = 4
     loop c in [0..256):
         k = 0
         if (c >= c'a' and c <= c'z') or (c >= c'A' and c <= c'Z') or c == c'_' or c >= 0x80: k = 3
@@ -887,18 +894,19 @@ lex = (file: int, src: str, from: int = 0, to: int = -1) -> Token[]:
                 # ($"Score: {s}": C#'s interpolated text)
                 if c == '$' and lx_i + 1 < len(lx_src) and lx_src[lx_i + 1] == '"': lx_err(lx_i, "every string can hold values: drop the `$` (`\"Score: \{s}\"`)")
                 lx_err(lx_i, "unexpected character '{byte_str(int(c))}'")
-        if k == .pluseq or k == .stareq or k == .slasheq or k == .percenteq or k == .ampeq or k == .pipeeq or k == .careteq or k == .eq or k == .ne: n = 2
+        props = lx_token_flags[int(k)]
+        if props & 1 != 0: n = 2
         # (a lambda's indented body inside brackets ends at a comma whose line goes on to close the
         # bracket: f(():\n    a(), 5) gives f a lambda and 5; a, b = b, a alone on a line is a tuple)
         if k == .comma and lx_ctx.len() > 1 and lx_top_block() and lx_line_closes(lx_i + 1): lx_close_block_ctx(lx_i)
-        if k == .rparen or k == .rbrack or k == .rbrace:
+        if props & 4 != 0:
             lx_close_block_ctx(lx_i)
             if lx_ctx.len() <= 1: lx_err(lx_i, "unmatched '{byte_str(int(c))}'")
             lx_ctx.pop()
         lx_emit(k, lx_i, n)
         if k == .dotop: lx_toks[lx_toks.len() - 1].ival = int(c1)
         lx_i += n
-        if k == .lparen or k == .lbrack or k == .lbrace:
+        if props & 2 != 0:
             lx_ctx.push((lx_i - n) << 24)
         if k == .colon and not lx_top_block():
             q = lx_i
