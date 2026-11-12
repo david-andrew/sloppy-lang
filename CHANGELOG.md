@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `trim(text, chars)` matches whole Unicode code points, preserving valid UTF-8.
+
 - Windows gamepad backends start on the first pad reader, including action and menu
   navigation reads. Drawing and keyboard/mouse-only programs leave both HID and XInput
   out of their build; first-use input edges remain available inside fixed updates.
