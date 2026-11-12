@@ -389,6 +389,11 @@ call_w: int[]              # per call: its weight by loop depth
 loop_s: int[]
 loop_e: int[]
 use_buf: int[]
+# Fixed function metadata, refreshed by analyze before allocation/emission.
+vloc_data: *int
+v_first_data: *int
+v_last_data: *int
+v_weight_data: *int
 
 # struct copies/clears up to this size are emitted inline
 const INLINE_COPY = 256
@@ -496,7 +501,7 @@ vop_operand = (x: int, v: int, splat: bool, n: int, scratch: int):
             sse_rr(0, 0x16, x, 15)                                       # movlhps x, xmm15
 
 analyze = ():
-    global call_pos, call_w, dbg_keep, loop_e, loop_s, v_first, v_last, v_ndef, v_nuse, v_weight, vcval, vgkind, vgoff, vloc, vslot, vsoff
+    global call_pos, call_w, dbg_keep, loop_e, loop_s, v_first, v_last, v_ndef, v_nuse, v_weight, vcval, vgkind, vgoff, vloc, vslot, vsoff, vloc_data, v_first_data, v_last_data, v_weight_data
     nv = ir.vtypes.len()
     v_first = fill(INF_POS, nv)
     v_last = fill(-1, nv)
@@ -511,6 +516,10 @@ analyze = ():
     vgoff = fill(0, nv)
     # These arrays have their final size for this function; keep their unique buffers
     # while collecting uses/definitions (none of the callees resize them).
+    vloc_data = data(vloc)
+    v_first_data = data(v_first)
+    v_last_data = data(v_last)
+    v_weight_data = data(v_weight)
     p_v_first = data(v_first)
     p_v_last = data(v_last)
     p_v_ndef = data(v_ndef)
@@ -649,14 +658,14 @@ hint_operand = (v: int, pos: int) -> int:
     ins = ir.code[pos]
     if int(ins.dst) != v or not hint_op(ins.op): return -1
     a = int(ins.a)
-    if a < 0 or a == v or vloc[a] < 0 or v_last[a] != pos: return -1
-    if (vloc[a] >= XMM) != (vtype(v) != VI): return -1
+    if a < 0 or a == v or vloc_data[a] < 0 or v_last_data[a] != pos: return -1
+    if (vloc_data[a] >= XMM) != (vtype(v) != VI): return -1
     a
 
 # params are live on entry, before the first instruction
 live_start = (v: int) -> int:
     if v < ir.nparams: return -1
-    v_first[v]
+    v_first_data[v]
 
 crosses_call = (s: int, e: int) -> bool:
     lo = 0
@@ -669,11 +678,11 @@ crosses_call = (s: int, e: int) -> bool:
 
 # is a cheaper to spill than b: fewer weighted uses per instruction it lives (ties: lives longer)
 spills_before = (a: int, b: int) -> bool:
-    la = v_last[a] - live_start(a) + 1
-    lb = v_last[b] - live_start(b) + 1
-    x = v_weight[a] * lb
-    y = v_weight[b] * la
-    x < y or (x == y and v_last[a] > v_last[b])
+    la = v_last_data[a] - live_start(a) + 1
+    lb = v_last_data[b] - live_start(b) + 1
+    x = v_weight_data[a] * lb
+    y = v_weight_data[b] * la
+    x < y or (x == y and v_last_data[a] > v_last_data[b])
 
 allocate = ():
     global callee_off, vsave
@@ -1065,11 +1074,11 @@ layout_frame = ():
     vspill = fill(0, nv)
     save_list = []
     loop v in [0..nv):
-        if vloc[v] == LOC_SPILL or (vsave[v] and vloc[v] >= 0):
+        if vloc_data[v] == LOC_SPILL or (vsave[v] and vloc_data[v] >= 0):
             off += 8
             if is_vreg_vec(vtype(v)): off += 24      # (vectors take 32 bytes)
             vspill[v] = -off
-            if vloc[v] >= 0: save_list.push(v)
+            if vloc_data[v] >= 0: save_list.push(v)
     slot_off = fill(0, ir.slot_size.len())
     loop s in [0..ir.slot_size.len()):
         sz = int(ir.slot_size[s])
@@ -1084,7 +1093,7 @@ slot_disp = (v: int) -> int: slot_off[vslot[v]] + vsoff[v]
 
 # value of int vreg v into register r
 ld = (r: int, v: int):
-    l = vloc[v]
+    l = vloc_data[v]
     if l >= 0:
         if l != r: mov_rr(r, l)
     else if l == LOC_SPILL: mov_rm(r, RBP, vspill[v])
@@ -1095,21 +1104,21 @@ ld = (r: int, v: int):
 
 # register holding int vreg v (loads into scratch if needed)
 reg_of = (v: int, scratch: int) -> int:
-    l = vloc[v]
+    l = vloc_data[v]
     if l >= 0 and l < XMM: return l
     ld(scratch, v)
     scratch
 
 # store register r into vreg v
 st = (v: int, r: int):
-    l = vloc[v]
+    l = vloc_data[v]
     if l >= 0:
         if l != r: mov_rr(l, r)
     else if l == LOC_SPILL: mov_mr(RBP, vspill[v], r)
 
 # destination register for v (its own register, or scratch)
 dreg = (v: int, scratch: int) -> int:
-    l = vloc[v]
+    l = vloc_data[v]
     if l >= 0 and l < XMM: return l
     scratch
 
@@ -1126,7 +1135,7 @@ xzero = (x: int): sse_rr(0, 0x57, x, x)          # xorps x, x
 
 lds = (x: int, v: int, ty: int):
     global rip_kind
-    l = vloc[v]
+    l = vloc_data[v]
     if l >= XMM: movsd_rr(x, l - XMM, ty)
     else if l == LOC_SPILL and is_vreg_vec(ty): vmov_rm(x, RBP, vspill[v], ty)
     else if l == LOC_SPILL:
@@ -1144,19 +1153,19 @@ lds = (x: int, v: int, ty: int):
         ld(RAX, v)
         movq_xr(x, RAX)
 sts = (v: int, x: int, ty: int):
-    l = vloc[v]
+    l = vloc_data[v]
     if l >= XMM: movsd_rr(l - XMM, x, ty)
     else if l == LOC_SPILL and is_vreg_vec(ty): vmov_mr(RBP, vspill[v], x, ty)
     else if l == LOC_SPILL:
         if ty == VS: sse_rm(0xF3, 0x11, x, RBP, vspill[v])
         else: sse_rm(0xF2, 0x11, x, RBP, vspill[v])
 xreg_of = (v: int, scratch: int, ty: int) -> int:
-    l = vloc[v]
+    l = vloc_data[v]
     if l >= XMM: return l - XMM
     lds(scratch, v, ty)
     scratch
 xdreg = (v: int, scratch: int) -> int:
-    l = vloc[v]
+    l = vloc_data[v]
     if l >= XMM: return l - XMM
     scratch
 
@@ -1176,7 +1185,7 @@ movq_rx = (r: int, x: int):
 # ALU r, operand(v): register / memory / imm32 forms
 # opc_rr: "op r/m64, r64" opcode (e.g. 0x01 add); ext: /digit for 0x81 imm form
 alu_v = (opc_rr: int, ext: int, r: int, v: int):
-    l = vloc[v]
+    l = vloc_data[v]
     if l >= 0 and l < XMM: op_rr(opc_rr, true, l, r)
     else if l == LOC_CONST:
         c = vcval[v]
@@ -1197,15 +1206,15 @@ alu_v = (opc_rr: int, ext: int, r: int, v: int):
 # memory base for an address vreg: returns (base register, displacement)
 addr_of = (v: int, scratch: int) -> (int, int):
     global rip_kind
-    if vloc[v] == LOC_SLOT: return (RBP, slot_disp(v))
-    if vloc[v] == LOC_GLOBAL:
+    if vloc_data[v] == LOC_SLOT: return (RBP, slot_disp(v))
+    if vloc_data[v] == LOC_GLOBAL:
         rip_kind = vgkind[v]
         return (RIPREL, vgoff[v])
     (reg_of(v, scratch), 0)
 
 # like addr_of, but never rip-relative (for instructions with two memory operands)
 addr_reg = (v: int, scratch: int) -> (int, int):
-    if vloc[v] == LOC_SLOT: return (RBP, slot_disp(v))
+    if vloc_data[v] == LOC_SLOT: return (RBP, slot_disp(v))
     (reg_of(v, scratch), 0)
 
 # ---------------- parallel moves ----------------
@@ -1215,7 +1224,7 @@ struct PMove:
     v: int
 
 src_reg = (v: int) -> int:
-    l = vloc[v]
+    l = vloc_data[v]
     if l >= 0: return l
     -1
 
@@ -1321,7 +1330,7 @@ uw_fo = 0                   # (Windows: the function's rbp is rsp + 16 uw_fo, it
 uw_at = 0
 
 emit_prologue = ():
-    global uw_at, uw_fo, vloc
+    global uw_at, uw_fo, vloc, vloc_data
     b(0x55)                        # push rbp
     nsave = 0
     loop r in [0..16):
@@ -1394,7 +1403,7 @@ emit_prologue = ():
             stack_params.push((p, 16 + 8 * stack_k))
             stack_k += 1
             continue
-        l = vloc[p]
+        l = vloc_data[p]
         if l == LOC_NONE: continue
         if l == LOC_SPILL: reg_spills.push((p, src))
         else: moves.push(PMove(l, p))
@@ -1409,14 +1418,16 @@ emit_prologue = ():
     # register moves: sources are the incoming registers
     saved = vloc
     loop ps in pin_src: vloc[ps.0] = ps.1
+    vloc_data = data(vloc)
     real: PMove[]
     loop m in moves: real.push(m)
     emit_parallel(real)
     vloc = saved
+    vloc_data = data(vloc)
     pin_src.clear()
     loop sp in stack_params:
         p = sp.0
-        l = vloc[p]
+        l = vloc_data[p]
         if l == LOC_NONE: continue
         if vtype(p) == VI:
             mov_rm(RAX, RBP, sp.1)
@@ -1545,7 +1556,7 @@ pop_call_stack = ():
 
 store_result = (ins: Ins):
     d = int(ins.dst)
-    if d < 0 or vloc[d] == LOC_NONE: return
+    if d < 0 or vloc_data[d] == LOC_NONE: return
     ty = vtype(d)
     if ty == VI: st(d, RAX)
     else: sts(d, 0, ty)
@@ -1593,9 +1604,9 @@ branch_target_jcc = (depth: int, cc: int):
 # lea d, [a + b]
 lea_add = (d: int, a: int, bb: int, sign: int) -> bool:
     global cur_index
-    rd = vloc[d]
-    ra = vloc[a]
-    rb = vloc[bb]
+    rd = vloc_data[d]
+    ra = vloc_data[a]
+    rb = vloc_data[bb]
     if rd < 0 or rd >= XMM or ra < 0 or ra >= XMM or ra == rd: return false
     if rb == LOC_CONST:
         k = vcval[bb] * sign
@@ -1610,11 +1621,11 @@ lea_add = (d: int, a: int, bb: int, sign: int) -> bool:
 
 int_bin = (opc_rr: int, ext: int, ins: Ins):
     d = int(ins.dst)
-    if vloc[d] == LOC_NONE: return
+    if vloc_data[d] == LOC_NONE: return
     a = int(ins.a)
     bb = int(ins.b)
     r = dreg(d, RAX)
-    if vloc[bb] == r and r != vloc[a]: r = RAX
+    if vloc_data[bb] == r and r != vloc_data[a]: r = RAX
     ld(r, a)
     alu_v(opc_rr, ext, r, bb)
     st(d, r)
@@ -1731,7 +1742,7 @@ falu = (opc: int, ins: Ins):
         sts(d, x, ty)
         return
     bv = int(ins.b)
-    if vloc[bv] == LOC_FCONST and vcval[bv] != 0:
+    if vloc_data[bv] == LOC_FCONST and vcval[bv] != 0:
         # op x, [constant]
         x = xdreg(d, 0)
         lds(x, int(ins.a), ty)
@@ -1799,7 +1810,7 @@ emit_ins = (pos: int, ins: Ins):
                 else: fused_cc = fcmp_flags(ins)
                 return
             # a float comparison tested for false (c == 0): branch on the opposite flags
-            if is_fcmp(op) and nx.op == .eq and int(nx.a) == d and vloc[int(nx.b)] == LOC_CONST and vcval[int(nx.b)] == 0 and pos + 2 < ir.code.len():
+            if is_fcmp(op) and nx.op == .eq and int(nx.a) == d and vloc_data[int(nx.b)] == LOC_CONST and vcval[int(nx.b)] == 0 and pos + 2 < ir.code.len():
                 t = int(nx.dst)
                 n2 = ir.code[pos + 2]
                 if v_nuse[t] == 1 and (n2.op == .if_ or n2.op == .brif) and int(n2.a) == t:
@@ -1813,14 +1824,14 @@ emit_ins = (pos: int, ins: Ins):
     match op:
         nop, assume: pass
         iconst:
-            if vloc[d] == LOC_CONST or vloc[d] == LOC_NONE: return
+            if vloc_data[d] == LOC_CONST or vloc_data[d] == LOC_NONE: return
             r = dreg(d, RAX)
             mov_imm(r, ins.imm)
             st(d, r)
         fconst:
-            if vloc[d] == LOC_NONE or vloc[d] == LOC_FCONST: return
-            if vloc[d] >= XMM:
-                x = vloc[d] - XMM
+            if vloc_data[d] == LOC_NONE or vloc_data[d] == LOC_FCONST: return
+            if vloc_data[d] >= XMM:
+                x = vloc_data[d] - XMM
                 if ins.imm == 0: xzero(x)
                 else:
                     # float constants live in read-only data: one load, no integer register
@@ -1830,7 +1841,7 @@ emit_ins = (pos: int, ins: Ins):
             mov_imm(RAX, ins.imm)
             st(d, RAX)
         mov:
-            if vloc[d] == LOC_NONE: return
+            if vloc_data[d] == LOC_NONE: return
             if vtype(d) == VI:
                 r = dreg(d, RAX)
                 ld(r, a)
@@ -1840,21 +1851,21 @@ emit_ins = (pos: int, ins: Ins):
                 lds(x, a, vtype(d))
                 sts(d, x, vtype(d))
         add:
-            if vloc[d] == LOC_NONE or vloc[d] == LOC_SLOT: return
+            if vloc_data[d] == LOC_NONE or vloc_data[d] == LOC_SLOT: return
             if lea_add(d, a, bb, 1): return
             int_bin(0x01, 0, ins)
         sub:
-            if vloc[bb] == LOC_CONST and lea_add(d, a, bb, -1): return
+            if vloc_data[bb] == LOC_CONST and lea_add(d, a, bb, -1): return
             int_bin(0x29, 5, ins)
         and_: int_bin(0x21, 4, ins)
         or_: int_bin(0x09, 1, ins)
         xor: int_bin(0x31, 6, ins)
         mul:
-            if vloc[d] == LOC_NONE: return
+            if vloc_data[d] == LOC_NONE: return
             r = dreg(d, RAX)
-            if vloc[bb] == r and r != vloc[a]: r = RAX
+            if vloc_data[bb] == r and r != vloc_data[a]: r = RAX
             ld(r, a)
-            l = vloc[bb]
+            l = vloc_data[bb]
             if l == LOC_CONST:
                 c = vcval[bb]
                 rex(true, r, 0, r, false)
@@ -1899,11 +1910,11 @@ emit_ins = (pos: int, ins: Ins):
             if op == .rems or op == .remu: st(d, RDX)
             else: st(d, RAX)
         shl, shrs, shru:
-            if vloc[d] == LOC_NONE: return
+            if vloc_data[d] == LOC_NONE: return
             ext = 7
             if op == .shl: ext = 4
             else if op == .shru: ext = 5
-            if vloc[bb] == LOC_CONST:
+            if vloc_data[bb] == LOC_CONST:
                 r = dreg(d, RAX)
                 ld(r, a)
                 rex(true, 0, 0, r, false)
@@ -2080,7 +2091,7 @@ emit_ins = (pos: int, ins: Ins):
             if ty == VS: op_rr(0x8B, false, r, r)          # zero upper half
             st(d, r)
         load:
-            if vloc[d] == LOC_NONE: return
+            if vloc_data[d] == LOC_NONE: return
             mode = int(ins.c)
             size = mode & 15
             # Avoid a struct-argument helper call on every load: most are not updates.
@@ -2140,7 +2151,7 @@ emit_ins = (pos: int, ins: Ins):
                             sse_rm(0xF3, 0x11, 15, base, disp + 8)
                 else if size == 4: sse_rm(0xF3, 0x11, xb, base, disp)
                 else: sse_rm(0xF2, 0x11, xb, base, disp)
-            else if vloc[bb] == LOC_CONST and size >= 4 and base != RIPREL:
+            else if vloc_data[bb] == LOC_CONST and size >= 4 and base != RIPREL:
                 use_index(ix, mem_scale(ins))
                 rex(size == 8, 0, 0, base, false)
                 b(0xC7)
@@ -2152,12 +2163,12 @@ emit_ins = (pos: int, ins: Ins):
                 store_sized(base, disp, rb, size)
             cur_index = -1
         slot:
-            if vloc[d] == LOC_SLOT or vloc[d] == LOC_NONE: return
+            if vloc_data[d] == LOC_SLOT or vloc_data[d] == LOC_NONE: return
             r = dreg(d, RAX)
             lea(r, RBP, slot_off[a])
             st(d, r)
         gaddr, daddr:
-            if vloc[d] == LOC_GLOBAL or vloc[d] == LOC_NONE: return
+            if vloc_data[d] == LOC_GLOBAL or vloc_data[d] == LOC_NONE: return
             r = dreg(d, RAX)
             kind = 1
             if op == .daddr: kind = 0
@@ -2211,7 +2222,7 @@ emit_ins = (pos: int, ins: Ins):
                 b(0x31); b(0xC0)
                 b(0xF3); b(0xAA)          # rep stosb
         vld:
-            if vloc[d] == LOC_NONE: return
+            if vloc_data[d] == LOC_NONE: return
             ty = int(ins.ty)
             base, disp = addr_of(a, RCX)
             disp += int(ins.imm)
@@ -2237,7 +2248,7 @@ emit_ins = (pos: int, ins: Ins):
             vmov_mr(base, disp, x, ty)
             cur_index = -1
         vbin:
-            if vloc[d] == LOC_NONE: return
+            if vloc_data[d] == LOC_NONE: return
             if int(ins.c) >= VP_SHUFFLE:
                 vp_emit_unary(ins)
                 return
@@ -2259,7 +2270,7 @@ emit_ins = (pos: int, ins: Ins):
                 vop2(vo, vk, x, xb)
             sts(d, x, ty)
         vsplat:
-            if vloc[d] == LOC_NONE: return
+            if vloc_data[d] == LOC_NONE: return
             ty = int(ins.ty)
             vk = int(ins.imm)
             x = xdreg(d, 0)
@@ -2330,7 +2341,7 @@ emit_ins = (pos: int, ins: Ins):
                 item = int(ir.args[a + k])
                 if item & 1 == 1:
                     v = item >> 1
-                    if vloc[v] != LOC_NONE: st(v, RAX)
+                    if vloc_data[v] != LOC_NONE: st(v, RAX)
                 else:
                     s = item >> 1
                     size = int(ir.slot_size[s])
@@ -2451,7 +2462,7 @@ emit_ins = (pos: int, ins: Ins):
                 b32(0)
                 stub_fix.push((code.len() - 4, int(ins.imm)))
                 pop_call_stack()
-                if d >= 0 and vloc[d] != LOC_NONE: st(d, RAX)
+                if d >= 0 and vloc_data[d] != LOC_NONE: st(d, RAX)
         block: xctl.push(XCtl(0, code.len(), [], []))
         loop:
             # (loop tops on 16-byte boundaries, like C compilers do: when that takes few bytes)
@@ -2526,7 +2537,7 @@ emit_ins = (pos: int, ins: Ins):
             if sel_fused == pos:
                 # (its compare first: what follows only moves, which keep the flags)
                 sel_fused = -1
-                if vloc[d] == LOC_NONE: return
+                if vloc_data[d] == LOC_NONE: return
                 cmp_ops(sel_ca, sel_cb)
                 cc = sel_cc
                 rb = reg_of(bb, RDX)
@@ -2534,7 +2545,7 @@ emit_ins = (pos: int, ins: Ins):
                 if r == rb: r = RAX
                 ld(r, int(ins.c))
             else:
-                if vloc[d] == LOC_NONE: return
+                if vloc_data[d] == LOC_NONE: return
                 rb = reg_of(bb, RDX)
                 rc = reg_of(a, RCX)
                 r = dreg(d, RAX)
@@ -2647,7 +2658,7 @@ x64_function = ():
                 save_next += 1
             k = 0
             loop k < save_active.len():
-                if v_last[save_active[k]] <= pos:
+                if v_last_data[save_active[k]] <= pos:
                     save_active[k] = save_active[save_active.len() - 1]
                     save_active.pop()
                 else: k += 1
@@ -2658,7 +2669,7 @@ x64_function = ():
             save_around_call(pos, false, d)
             if ra_stat:
                 loop v in save_active:
-                    if vloc[v] >= XMM: ra_save_x += 2 * call_w[ci]
+                    if vloc_data[v] >= XMM: ra_save_x += 2 * call_w[ci]
                     else: ra_save_cost += 2 * call_w[ci]
         else: emit_ins(pos, ins)
         if ci < call_pos.len() and call_pos[ci] == pos: ci += 1
@@ -2692,12 +2703,12 @@ x64_function = ():
         if ra_verbose:
             sp = 0
             loop v in [0..ir.vtypes.len()):
-                if vloc[v] == LOC_SPILL: sp += v_weight[v]
+                if vloc_data[v] == LOC_SPILL: sp += v_weight_data[v]
             eprint("  {ir.name}: spill {sp}, save {ra_save_cost + ra_save_x - ra_fn_base}\n")
             ra_fn_base = ra_save_cost + ra_save_x
         loop v in [0..ir.vtypes.len()):
-            if vloc[v] == LOC_SPILL: ra_spill_cost += v_weight[v]
-            if vloc[v] == LOC_SPILL or vloc[v] >= 0: ra_total += v_weight[v]
+            if vloc_data[v] == LOC_SPILL: ra_spill_cost += v_weight_data[v]
+            if vloc_data[v] == LOC_SPILL or vloc_data[v] >= 0: ra_total += v_weight_data[v]
 
 # x86-64 registers by encoding, as DWARF numbers them
 X64_DWREG = [0, 2, 1, 3, 7, 6, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -2735,10 +2746,10 @@ dbg_function = (start: int, body: int, dwreg: int[], fp_base: int, fp_dw: int, f
                 # (the vreg holds the variable's address: by reference, a mut parameter, a struct parameter)
                 at = fl & LF_BYREF != 0 or fl & LF_PARAM != 0 and (fl & LF_MUTPARAM != 0 or vc(int(locals[l].type)) == VC_AGG)
                 s0 = live_start(v)
-                e = v_last[v]
+                e = v_last_data[v]
                 if s0 >= 0 and s0 < n: lo = dbg_pos[s0]
                 if e >= 0 and e + 1 <= n: hi = dbg_pos[e + 1]
-                loc = vloc[v]
+                loc = vloc_data[v]
                 if loc >= fp_base:
                     kind = DL_REG
                     r = fp_dw + loc - fp_base
@@ -2780,7 +2791,7 @@ save_active: int[]
 save_around_call = (pos: int, before: bool, dst: int):
     loop v in save_active:
         if v != dst:
-            r = vloc[v]
+            r = vloc_data[v]
             if r >= XMM and is_vreg_vec(vtype(v)):
                 if before: vmov_mr(RBP, vspill[v], r - XMM, vtype(v))
                 else: vmov_rm(r - XMM, RBP, vspill[v], vtype(v))
