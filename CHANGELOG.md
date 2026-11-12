@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Dynamic JSON `as_int()` returns `none` for nonfinite or out-of-range numbers instead of saturating. Fractional values still truncate toward zero.
+
 - Breaking: use `text.reversed()` for a new string; string `reverse()` is removed. Array `reverse()` still mutates and `reversed()` returns a copy.
 
 - Breaking: `input`, `input_int` and `input_float` return optionals, with `none` at EOF or browser cancellation; handle `none` or unwrap expected input.
