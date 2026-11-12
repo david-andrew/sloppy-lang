@@ -51,18 +51,19 @@ def box(center, size, joint, color):
         indices.extend([[first + i] for i in [0, 1, 2, 0, 2, 3]])
 
 
-blue = [0.12, 0.43, 0.66, 1]
-light = [0.75, 0.82, 0.84, 1]
-dark = [0.035, 0.07, 0.11, 1]
+shirt = [0.72, 0.2, 0.07, 1]
+skin = [0.78, 0.52, 0.36, 1]
+blue = [0.06, 0.2, 0.42, 1]
+dark = [0.035, 0.03, 0.03, 1]
 # Root, torso, head, left/right shoulders, left/right hips.
 bind = [[0, 0, 0], [0, 1.1, 0], [0, 1.63, 0], [-0.4, 1.43, 0],
         [0.4, 1.43, 0], [-0.18, 0.85, 0], [0.18, 0.85, 0]]
-box([0, 1.19, 0], [0.62, 0.63, 0.34], 1, blue)
-box([0, 1.69, 0], [0.43, 0.42, 0.4], 2, light)
+box([0, 1.19, 0], [0.62, 0.63, 0.34], 1, shirt)
+box([0, 1.69, 0], [0.43, 0.42, 0.4], 2, skin)
 for x in [-0.11, 0.11]:
     box([x, 1.73, 0.205], [0.07, 0.065, 0.025], 2, dark)
 for x, arm, leg in [(-1, 3, 5), (1, 4, 6)]:
-    box([x * 0.43, 1.17, 0], [0.2, 0.57, 0.23], arm, light)
+    box([x * 0.43, 1.17, 0], [0.2, 0.57, 0.23], arm, skin)
     box([x * 0.18, 0.48, 0], [0.24, 0.73, 0.27], leg, blue)
     box([x * 0.18, 0.09, 0.07], [0.27, 0.18, 0.42], leg, dark)
 attrs = {'POSITION': accessor(positions, 3, bounds=True), 'NORMAL': accessor(normals, 3),

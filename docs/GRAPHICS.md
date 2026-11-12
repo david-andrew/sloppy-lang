@@ -132,8 +132,9 @@ no_effect()
 ## An animated glTF scene
 
 `sloppy new mygame character` creates a complete starter with an embedded CC0 skinned
-character (24 KB), Idle/Walk/Run crossfades, a follow camera, gradient sky, PBR ground,
-keyboard/gamepad/touch movement and a responsive `layout` pause menu. It needs no
+character (24 KB), Idle/Walk/Run crossfades, a follow camera, a small valley built with
+`terrain_mesh`, `add_box`, `add_cylinder` and `custom_mesh` (two static meshes, one draw each),
+sun, fog and shadows, keyboard/gamepad/touch movement and a responsive `layout` pause menu. It needs no
 downloads and builds with `sloppy build --target wasm mygame/mygame.jo`. The generated
 `character-LICENSE.txt` records the asset license; `tools/makecharacter.py` rebuilds
 the model, rig and animations. Replace `character.glb` and the clip names to use your

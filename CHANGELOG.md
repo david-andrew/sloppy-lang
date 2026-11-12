@@ -3,8 +3,10 @@
 ## Unreleased
 
 - `sloppy new mygame character` starts an animated 3D character with Idle/Walk/Run
-  crossfades, a follow camera, sky, PBR ground, keyboard/gamepad/touch movement and a
-  layout pause menu. Its 24 KB CC0 skinned glTF is included; web builds need no downloads.
+  crossfades and a follow camera, in a small valley (a tiled plaza in a ring of pillars, a path
+  to a gate, trees and rocks on hills, warm sun, fog and shadows) built from a few lines of mesh
+  helpers, with keyboard/gamepad/touch movement, a layout HUD and a pause menu. Its 24 KB CC0
+  skinned glTF is included; web builds need no downloads.
 
 - Calls with too few arguments point out a supplied value that fits a later parameter,
   naming the expected type before it and retaining the full function signature.
