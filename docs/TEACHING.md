@@ -21,12 +21,14 @@ queues and heaps.
 ## Programs that ask questions
 
 ```gdscript
-name = input("What is your name? ")
-age = input_int("How old are you? ")         # asks again until it is a whole number
+name = input("What is your name? ").unwrap()
+age = input_int("How old are you? ").unwrap()         # asks again until it is a whole number
 print("Hello {name}! Next year you will be {age + 1}.")
 ```
 
-`input(prompt)` gives back the line typed (text); `input_int` and `input_float` give a number,
+`input(prompt)` gives back the line typed (text); `input_int` and `input_float` give a number.
+All three return `none` at EOF or browser cancellation; the examples unwrap expected input.
+Numeric input retries malformed lines,
 and ask again when what was typed is not one. Text is not a number even when it holds digits:
 `"12" + 1` is an error, and `to_int(s)` turns text into a number (`none` when it is not one).
 

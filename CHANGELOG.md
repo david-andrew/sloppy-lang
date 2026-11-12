@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: `input`, `input_int` and `input_float` return optionals, with `none` at EOF or browser cancellation; handle `none` or unwrap expected input.
+
 - Breaking: `ints(text)` returns `int[] | ParseError` on overflow; handle the error or write `ints(text).unwrap()` for trusted text.
 
 - Breaking: `regex(pattern)` returns `Regex | RegexError`; handle the error or use `.unwrap()` for trusted patterns. `regex_error` is removed.
