@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: use `text.reversed()` for a new string; string `reverse()` is removed. Array `reverse()` still mutates and `reversed()` returns a copy.
+
 - Breaking: `input`, `input_int` and `input_float` return optionals, with `none` at EOF or browser cancellation; handle `none` or unwrap expected input.
 
 - Breaking: `ints(text)` returns `int[] | ParseError` on overflow; handle the error or write `ints(text).unwrap()` for trusted text.
