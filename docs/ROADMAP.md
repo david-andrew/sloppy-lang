@@ -154,7 +154,8 @@ game picks from (and an example of each):
 - Assets: a whole directory embedded at once (done: `embed_dir`), Tiled's XML maps and external
   tilesets (done), OpenType fonts with CFF outlines and kerning (done: legacy kern pairs and
   GPOS pairs/classes, including extension lookups).
-- Input: non-XInput gamepads on Windows, actions bound per player.
+- Input: actions bound per player are done (`action(..., player = ...)`); non-XInput
+  gamepads on Windows remain.
 - Linux window icons on Wayland: done via xdg-toplevel-icon where offered (including KDE);
   GNOME uses an installed .desktop file matching the app id (documented in LANGUAGE.md).
 - Scripts (from a Python programmer's pass): done. Buffered file/stdin line loops (`open_file`,

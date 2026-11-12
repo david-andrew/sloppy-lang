@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The roadmap marks per-player action bindings as done; non-XInput Windows gamepads remain.
+
 - Wayland window icons use the optional xdg-toplevel-icon protocol, through libwayland or
   the wire transport, including libdecor windows. GNOME desktop-entry/app-id setup is documented.
 
