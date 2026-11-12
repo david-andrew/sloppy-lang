@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: client/server lag simulation is `lag_ms(ms, jitter_ms)`, and client round-trip time is `ping_ms`. Values stay in milliseconds. Session `lag`/`ping` await game-team coordination.
+
 - Breaking: netplay `udp`, server `listen`, `relay` and `relay_forever` return `void | net.NetError` on bind failure. Handle the result or use `.unwrap()`; sessions and servers also set `problem`.
 
 - Breaking: WebSocket `net.listen` takes `(port, host = "", largest = 16 << 20)`, matching TCP/HTTP. Use named `largest` for message limits.

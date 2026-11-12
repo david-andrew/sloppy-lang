@@ -295,7 +295,7 @@ compute the game: a sound or particles started in it would start again. Start th
 from what changed in `s.state` since the last frame.
 
 `s.ping(p)` is the round trip to player p and back, in milliseconds, to show players (a
-client's is `c.ping`). It is from an input made to the answer's arrival, so it includes the
+client's is `c.ping_ms`). It is from an input made to the answer's arrival, so it includes the
 frame each side waits before it plays and sends: two machines on one computer show about 16 ms.
 
 When it does break, the session finds out: each machine sends a hash of its game at ticks that
@@ -470,7 +470,7 @@ text, in order: `srv.say(p, text)` to one player, `srv.say_all(text)` to everyon
 client in `c.messages` after each `c.play`; `c.say(text)` to the server, read in `srv.messages`
 (who sent each, and what) after each `srv.update()`.
 
-To try a slow network on one machine, `srv.lag(100, 20)` and `c.lag(100, 20)` hold what each
+To try a slow network on one machine, `srv.lag_ms(100, 20)` and `c.lag_ms(100, 20)` hold what each
 side sends 100 ms, and up to 20 ms more at random (in order, as TCP keeps it).
 `srv.waiting(p)` says how many of p's inputs wait to be applied: 1 or 2 is right; more is lag.
 
