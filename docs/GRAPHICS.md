@@ -441,3 +441,27 @@ these hooks: `python3 tools/speedcheck.py --base <revision>` (library rows withi
 - **A shader compiles but draws differently on one renderer.** That is a bug in Sloppy: please
   report it with the program. `SLOPPY_VULKAN=0` and `SLOPPY_SOFTWARE=1` let you compare the
   three on one machine.
+
+## Placement and angle conventions
+
+`camera3d` takes its vertical `fov_degrees` in degrees, default 60.0. This is a deliberate
+exception to radians elsewhere: `camera3d(cam, fov_degrees = 60)` uses the same field of view
+as `perspective(60deg, aspect, near, far)`. A `60deg` literal is already radians; do not pass
+it as `fov_degrees`.
+
+Sprite placement keeps the existing conventions:
+
+| Draw operation | Default point at the supplied position |
+| --- | --- |
+| `sprite` | Top left (`origin = vec2(0, 0)`) |
+| `sprite_region`, `draw_frame`, `draw_anim`, `AnimPlayer.draw`, `draw_tile` | Center (`origin = vec2(0.5, 0.5)`) |
+| `sprite_tiled` | Fills its Rect; x/y are its top left |
+| `draw_target` | Top left |
+
+`origin` is a normalized placement anchor before rotation. With draw point P and final
+size S, the actual center is `P + (vec2(0.5, 0.5) - origin) * abs(S)`; the corners rotate
+about that center. It is **not a fixed rotation pivot**: a feet anchor `vec2(0.5, 1)` places
+the feet at P only before turning. Mirroring changes the picture, not that anchor offset.
+To turn about a fixed point, rotate the offset yourself and use a centered origin: pass
+`P + rotate((vec2(0.5, 0.5) - anchor) * abs(S), angle)` as the position with
+`origin = vec2(0.5, 0.5)`. The same formula applies to sheet frames using their scaled size.

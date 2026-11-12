@@ -2836,8 +2836,8 @@ draw = ():
 
 #### Sprites
 
-- `sprite = (t: Texture, pos: vec2, size: vec2 = vec2(0, 0), tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, origin: vec2 = vec2(0, 0))`: (where each puts a picture, and origin: the table in sprites.jo) draw a texture with its top left corner at `pos` (origin: another point of it), optionally scaled (size: in the screen's units; vec2(0, 0): its own), turned and tinted
-- `sprite_region = (t: Texture, src: vec4, center: vec2, size: vec2, tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, origin: vec2 = vec2(0.5, 0.5))`: draw part of a texture (src = x, y, w, h in its pixels) with its middle at `center` (origin: another point of it), size big. A src past the texture's edges shows the edge pixels stretched, unless set_repeat(t, true) (the texture again); sprite_tiled repeats a part of one.
+- `sprite = (t: Texture, pos: vec2, size: vec2 = vec2(0, 0), tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, origin: vec2 = vec2(0, 0))`: (where each puts a picture, and origin: the table in sprites.jo) draw a texture with its top left corner at `pos` (origin: another point of it), optionally scaled (size: in the screen's units; vec2(0, 0): its own), turned and tinted. origin is a normalized placement anchor before rotation, not its pivot; rotation is about the offset center.
+- `sprite_region = (t: Texture, src: vec4, center: vec2, size: vec2, tint: vec4 = vec4(1, 1, 1, 1), angle: f64 = 0.0, origin: vec2 = vec2(0.5, 0.5))`: draw part of a texture (src = x, y, w, h in its pixels) with its middle at `center` (origin: another point of it), size big. A src past the texture's edges shows the edge pixels stretched, unless set_repeat(t, true) (the texture again); sprite_tiled repeats a part of one. center means the draw point: actual center = center + (0.5 - origin) * abs(size). Angle turns around that actual center; origin does not stay at the draw point during rotation.
 - `sprite_tiled = (t: Texture, area: Rect, offset: vec2 = vec2(0, 0), scale: f64 = 1.0, tint: vec4 = vec4(1, 1, 1, 1), src: vec4 = vec4(0, 0, 0, 0))`: fill `area` with copies of a texture side by side (or of a part of it, src: x, y, w, h in its pixels), each `scale` times its size, the copies shifted by `offset`; those at area's edges are cut. A background that scrolls and repeats (Godot's motion_mirroring), drawn without a camera, here a third as fast as the camera: A strip repeats one way when area is as tall (or wide) as a copy. Any texture, any part of one: no set_repeat needed.
   ```gdscript
   sprite_tiled(hills, Rect(0, 90, 480, 180), vec2(-cam.x / 3.0, 0))
@@ -3088,7 +3088,7 @@ JPEG images: load_jpeg (and load_image, which tells PNG and JPEG apart). Baselin
 
 Sprite sheets and animations. A sheet is a texture cut into frames: a grid of equal frames (sprite_sheet), or the frames and animations Aseprite exports (load_aseprite: File > Export Sprite Sheet with "JSON Data" on; each tag becomes an animation). Pixel art wants its texture loaded unsmoothed: load_texture(file, false).unwrap(), as every texture is after pixel_art().
 
-Where each puts a picture: the point given is its top left corner or its middle, and `origin` (vec2(0, 0): the top left corner, vec2(0.5, 0.5): the middle, vec2(0.5, 1): the middle of the bottom edge, a character's feet) puts another point of the picture there. An angle turns it around its middle.
+Where each puts a picture: the point given is its top left corner or its middle, and `origin` (vec2(0, 0): the top left corner, vec2(0.5, 0.5): the middle, vec2(0.5, 1): the middle of the bottom edge, a character's feet) puts another point of the picture there. An angle turns it around its middle, after the origin offset; origin is an unrotated placement anchor, not a fixed rotation pivot. For a draw point P and drawn size S, the center is P + (vec2(0.5, 0.5) - origin) * abs(S), and the corners rotate about that center. A bottom-center origin therefore does not keep the feet at P when angle is nonzero. Negative size / flip_x / flip_y mirror the image without mirroring this anchor offset.
 
 ```gdscript
 sprite(t, pos)                        pos: its top left corner (origin = vec2(0, 0))
@@ -3732,7 +3732,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `lit_fs = (i: LitOut, u: LitParams) -> vec4`
 - `warm_up = (material: Material)`: Prepare shared material programs explicitly from a custom loading path.
 - `mesh = (vertices: SkinVertex3D[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh`: Upload skinned vertices, preparing skeletal GL/WebGL programs on the first load.
-- `camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0, up: vec3 = vec3(0, 1, 0))`: place the camera; call once per frame before drawing 3D objects. up is the way that is up on the screen (tilt it to roll the picture: a camera behind a plane, banking with it)
+- `camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0, up: vec3 = vec3(0, 1, 0))`: place the camera; call once per frame before drawing 3D objects. up is the way that is up on the screen (tilt it to roll the picture: a camera behind a plane, banking with it). fov_degrees is the vertical field of view in degrees (60, not 60deg); perspective uses radians.
 - `world_to_screen = (p: vec3) -> vec2?`: where a point in 3D appears on the screen, in 2D drawing units (for a name or a health bar over someone's head); none when it is behind the camera. As the camera was last placed.
 - `screen_ray = (p: vec2) -> (vec3, vec3)`: the ray from the camera through a point on the screen (2D units, as mouse_pos): where it starts and its direction (length 1), for picking what the mouse is on (with a physics3d raycast)
 - `sun = (direction: vec3, color: vec3 = vec3(1, 0.95, 0.85), disc: f64 = 1.0)`: the sunlight: direction points toward the sun (y > 0: above the horizon), color is its light; disc is how bright the sun's disc and its glow are in the sky (0: none, as for light from a moon or a sky with no sun, the light the same)
@@ -3852,7 +3852,7 @@ draw = ():
 - `orbit_camera = (target: vec3 = vec3(0, 0, 0), distance: f64 = 10.0, yaw: f64 = 0.0, pitch: f64 = 0.4) -> OrbitCamera`
 - `update = (c: mut OrbitCamera, dt: f64, input: bool = true)`: input = false follows/smooths the camera without reading mouse, sticks or wheel.
 - `position = (c: OrbitCamera) -> vec3`: where the camera is
-- `camera3d = (c: OrbitCamera, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`
+- `camera3d = (c: OrbitCamera, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`: vertical fov_degrees is in degrees (60, not 60deg); unlike perspective, which takes radians
 - `struct FollowCamera`: Behind a target the game moves (a third-person camera): the mouse while it is locked (mouse_lock()) or the right button is held, or the right stick, turns it around the target, and the wheel brings it closer. Walk the player along flat_forward and flat_right, so that ahead is where the camera looks: Its yaw is the other cameras': 0 looks along -z, more turns it left. Behind a vehicle (a chase camera), give update the way it faces, in the same terms: it swings round behind it, smoothly (chase: how quickly), `update(cam, kart.pos, dt, heading = kart.yaw)`.
   ```gdscript
   cam = follow_camera(distance = 6.0)
@@ -3891,7 +3891,7 @@ draw = ():
 - `position = (c: FollowCamera) -> vec3`
 - `flat_forward = (c: FollowCamera) -> vec3`: the way it looks along the ground, and its right (for walking where it looks)
 - `flat_right = (c: FollowCamera) -> vec3`
-- `camera3d = (c: FollowCamera, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`
+- `camera3d = (c: FollowCamera, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`: vertical fov_degrees is in degrees (60, not 60deg); unlike perspective, which takes radians
 - `struct FlyCamera`: Through the scene: W A S D (or the arrows, or the left stick) move, Space and Q go up and down, Shift is faster; the mouse looks around while the right button is held, or always when the mouse is locked (mouse_lock()), as does the right stick.
   ```gdscript
   struct FlyCamera:
@@ -3905,7 +3905,7 @@ draw = ():
 - `forward = (c: FlyCamera) -> vec3`: the way it looks (a unit vector), and its right
 - `right = (c: FlyCamera) -> vec3`
 - `update = (c: mut FlyCamera, dt: f64)`
-- `camera3d = (c: FlyCamera, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`
+- `camera3d = (c: FlyCamera, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`: vertical fov_degrees is in degrees (60, not 60deg); unlike perspective, which takes radians
 
 ## Models (glTF)
 

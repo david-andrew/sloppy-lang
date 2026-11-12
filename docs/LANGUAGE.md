@@ -234,6 +234,9 @@ precedence, so `flags & MASK == 0` is `(flags & MASK) == 0`. `x in xs` tests mem
 - `a..b` leaves `b` out, as Python's `range(a, b)` does; `[a..b]` keeps it.
 - `round(5.7)` is `6.0`, an f64 (as `floor` and `ceil`); `int(round(x))` is the whole number.
 - Angles are in radians: `rotate(v, PI / 2)`, or `rotate(v, 90deg)` (a literal over 2π warns).
+  Deliberate exception: every `camera3d` overload takes `fov_degrees = 60.0` in degrees,
+  following common game-camera conventions. Write `camera3d(cam, fov_degrees = 60)`,
+  not `60deg` (that literal already evaluates to radians). `perspective(fov_y, ...)` takes radians.
 - `'a'` and `"a"` are both text, as in Python; `c'a'` is the character's code (97). `s[i]` is
   a byte, which compares with `"a"` (or `c'a'`).
 - `load()?.name` is not optional chaining: `?` returns from the function when `load()` fails.
