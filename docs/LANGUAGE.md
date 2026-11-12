@@ -412,7 +412,13 @@ time, keeping only the unread bytes and the current line. Close it even when lea
 ```gdscript
 if let f = open_file("big.log"):
     defer f.close()
-    loop let line = f.read_line(): print(line)
+    loop:
+        line = f.read_line()
+        if line is FileError:
+            eprint(line.message)
+            break
+        if line == none: break
+        print(line!)
 else: eprint(file_error())
 ```
 
@@ -1008,8 +1014,8 @@ total = (text: str) -> int | ParseError:
         sum += parse_num(l, i + 1)?         # a ParseError is returned from total as it is
     sum
 
-load_score = (path: str) -> int?:
-    text = read_file(path)?             # none: no file
+load_score = (path: str) -> int? | FileError:
+    text = read_file(path)?                      # propagate FileError
     to_int(text)?                       # none: not a number
 ```
 
@@ -1216,7 +1222,7 @@ the rest under Arrays):
 | `np.percentile(a, 90)`, `np.median(a)`, `a.argmax()`, `np.cumsum(a)` | `percentile(a, 90.0)`, `median(a)`, `argmax(a)`, `cumsum(a)` |
 | `np.concatenate([a, b])`, `np.vstack([a, b])`, `np.dot(a, b)` | `a + b`, `[a; b]`, `dot(a, b)` |
 | `np.concatenate([a, b], axis=1)`, `np.hstack([a, b])` | `concat(a, b, 1)`, `hstack([a, b])` |
-| `np.loadtxt(path, delimiter=",")`, `a.tolist()` (JSON) | `csv_array(read_file(path) ?? "")`, `to_json(a)` |
+| `np.loadtxt(path, delimiter=",")`, `a.tolist()` (JSON) | `csv_array(read_file(path).unwrap())`, `to_json(a)` |
 | `np.linalg.solve(m, v)`, `np.linalg.inv(m)`, `np.linalg.det(m)` | `solve(m, v)`, `inverse(m)`, `det(m)` |
 
 Three differences catch NumPy hands: `+` on 1-D arrays joins them (`.+` adds); a whole
@@ -2210,7 +2216,7 @@ update = (dt: f64):
         if let paths = file_dialog_result(asked):
             asked = -1
             if paths.len() > 0: open_doc(paths[0])
-open_doc = (p: str): text = read_file(p) ?? ""
+open_doc = (p: str): text = read_file(p).unwrap()
 ```
 
 **Tools: frames on demand.** A game draws 60 frames a second; a notes app or an editor that

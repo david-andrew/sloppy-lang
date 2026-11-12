@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: `read_file`, `read_bytes` and `list_dir` return their value or `FileError`; handle it or unwrap trusted reads. `read_line(file)` returns a line, `none` only at EOF, or `FileError`. Streaming byte reads return empty at EOF and `FileError` on failure. Errors never become truncated successful reads. `file_error()` remains for bool/optional file operations such as writes and opens.
+
 - Breaking: string `find`/`find_byte` become `index_of`, and `rfind` becomes `last_index_of`, all returning `int?`; handle `none` instead of `-1`. Regex `find` uses `start` instead of `from`; all starts outside `0..len(text)` give absence.
 - Breaking: predicate `find_index` and rectangle `first_overlap` return `int?`; handle `none` instead of `-1`. Array `index_of` remains unchanged pending game-team coordination.
 

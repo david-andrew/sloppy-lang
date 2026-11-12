@@ -268,7 +268,13 @@ main = () -> int:
         if let f = open_file(path):               # line by line: any size of file
             n_lines = 0
             n_words = 0
-            loop let line = f.read_line():
+            loop:
+                got = f.read_line()
+                if got is FileError:
+                    eprint("count.jo: cannot read {path}: {got.message}")
+                    return 1
+                if got == none: break
+                line = got!
                 n_lines += 1
                 if opts.words: n_words += words(line).len()
             f.close()
@@ -297,15 +303,16 @@ mistake (`--top many`) is said with that help, and exit code 2.
 - `set(xs)` keeps each value of an array once (`Set[T]`); `x in s`, `s.add(x)`, `s.remove(x)`,
   `s.union(t)`, `s.intersection(t)`, `s.difference(t)` and `s.is_subset(t)` cover Python's set
   operations. The results keep insertion order; operations returning sets leave their inputs alone.
-- `open_file(path)` and `loop let line = f.read_line():` read a file with a 64 KB buffer;
+- `open_file(path)` and `read_line(f) -> str? | FileError` read a file with a 64 KB buffer;
   use `defer f.close()` to close it on every exit. For piped or typed input, use
   `loop let line = read_line():`. Both strip Windows line endings and keep a final line with
   no newline. `lines(text)` splits text already in memory, rather than opening a path.
 - `run_program("make", ["-j8"], show = true)` shows a program's output as it runs;
   without `show`, it is returned as text. `cwd = "build"` runs it in another directory.
-- A file function that fails gives `none` or `false`, and `file_error()` says why ("permission
-  denied", "no such file or directory"): `if not write_file(p, s): eprint("{p}: {file_error()}")`.
-- `sha256(read_bytes(path) ?? [])` fingerprints a file; `glob("**/*.log")` finds files (hidden
+- File reads and `list_dir` return `FileError` with their reason, path and operation. Streaming
+  `read_line(f)` uses `none` only for EOF. Writes and opens still use `false`/`none` with
+  `file_error()`: `if not write_file(p, s): eprint("{p}: {file_error()}")`.
+- `sha256(read_bytes(path).unwrap())` fingerprints a file; `glob("**/*.log")` finds files (hidden
   ones, .git's, only with a pattern that names them).
 - Text widths in `"{name:<12}"` and `pad_end` count characters, so "Zürich" lines up with "Paris";
   `upper` and `lower` know accented Latin, Greek and Cyrillic letters. `r"""..."""` is text over
@@ -635,7 +642,7 @@ MemoryMax=512M
 WantedBy=multi-user.target
 ```
 
-`WorkingDirectory` matters: `http.files("/", "public")`, `read_file("todos.json")` and the like
+`WorkingDirectory` matters: `http.files("/", "public")`, `read_file("todos.json").unwrap()` and the like
 are relative to it (without it, to `/`). `MemoryMax` has systemd stop a program that grows past
 it (and `Restart` start it again), rather than the machine running out. `systemctl stop` sends SIGTERM, which `http.serve` answers by
 finishing what it is answering (up to `drain` seconds) and returning.
@@ -674,10 +681,17 @@ add = (b: Booking) -> bool:
 # does not read, and is left out), and the whole file written again, the log emptied
 load = ():
     global db
-    if let text = read_file("data.json"):
+    text = read_file("data.json")
+    if text is str:
         got = from_json[Db](text)
         if got is Db: db = got
-    loop line in split(read_file("changes.log") ?? "", "\n"):
+    changes = ""
+    log = read_file("changes.log")
+    if log is str: changes = log
+    else if file_exists("changes.log"):
+        eprint("cannot read changes.log: {log.message}")
+        exit(1)
+    loop line in split(changes, "\n"):
         c = from_json[Change](line)
         if c is Change and c.seq > db.seq:
             db.seq = c.seq
@@ -968,7 +982,7 @@ draw = ():
 | `cursor: pointer` | `set_cursor(.hand)` (text fields show an I-beam themselves) |
 | keyboard shortcuts | `if shortcut(.s): save()` (Ctrl+S, Cmd+S on a Mac) |
 | `dialog.showOpenDialog`, a file `<input>`, drop events | `d = open_file_dialog(["csv"])`, then `file_dialog_result(d)` each frame; `dropped_files()` |
-| `fs.readFile`, `fs.writeFile` | `read_file(path)`, `write_file(path, s)`; in a page, `download_file(path)` to hand a file over |
+| `fs.readFile`, `fs.writeFile` | `read_file(path).unwrap()`, `write_file(path, s)`; in a page, `download_file(path)` to hand a file over |
 | `localStorage`, electron-store | `save_value("notes", notes)`, `load_value("notes", default)` (a file natively, the browser's storage in a page) |
 | `navigator.clipboard` | `clipboard()`, `set_clipboard(s)` (text fields do Ctrl+C/X/V themselves) |
 | `window.onbeforeunload` | `on_quit = (): ...` |
@@ -984,12 +998,12 @@ draw = ():
 | `[w.upper() for w in ws if w]` | `[loop w in ws: if w != "": w.upper()]` |
 | `f"{x:.2f}"`, `"{:.2f}".format(x)` | `"{x:.2f}"`: every string puts values in; `r"..."` does not (a regular expression's `{4}`) |
 | `7 // 2`, `7 / 2` | `7 / 2` is 3 with whole numbers (`-7 / 2` is -3, and `-7 % 3` is -1, as in C); `7.0 / 2` is 3.5 |
-| `with open(p) as f: f.read()` | `read_file(p)` (a `str?`: none when it cannot be read), `write_file`, `append_file`, `read_bytes` |
+| `with open(p) as f: f.read()` | `read_file(p)` (`str | FileError`), `write_file`, `append_file`, `read_bytes` |
 | `sys.argv`, `sys.exit(1)` | `args()`, `exit(1)` |
 | `argparse` | a struct of the options, `opts = parse_args[Options]("what it does")` |
 | `os.path.join`, `os.listdir`, `os.walk`, `glob.glob` | `join_path`, `list_dir`, `walk_dir`, `glob("src/**/*.jo")`; `make_dirs`, `rename_file`, `copy_file`, `delete_file`, `file_time` |
 | `subprocess.run(["ls", "-l"])`, `os.system("ls *.jo")` | `run_program("ls", ["-l"])`, `run_shell("ls *.jo")` (each gives its exit code and output; `show = true`: the output shows as it runs) |
-| `for line in open(p):` | `if let f = open_file(p):` then `loop let line = f.read_line():` (a file of any size) |
+| `for line in open(p):` | `if let f = open_file(p):` then `read_line(f) -> str? | FileError` (a file of any size) |
 | `hashlib.sha256(b).hexdigest()` | `sha256(b)` (bytes or text) |
 | `json.loads(s)`, `json.dumps(x)` | `parse_json(s)` (a Json), `from_json[Config](s)` (into a struct), `to_json(x)` |
 | `requests.get(url)`, `urllib.request.urlopen(url)` | `import net`, then `r = net.fetch(url)`: `r.status`, `r.text`, and `from_json[T](r.text)` ([fetching from the web](#fetching-from-the-web)) |
@@ -1059,7 +1073,7 @@ waits (a channel, a fetch, a connection, `sleep`) lets the others run. For the p
 | `fmt.Printf("%-10s %5.2f\n", s, x)` | `print("{s:<10} {x:5.2f}")` |
 | `flag.Bool("words", false, "count words")` | a struct of the options, `opts = parse_args[Options]("what it does")`, the comments as the help |
 | `encoding/json`, struct tags | `from_json[Item](s)` (fields by name), `to_json(x)`, `parse_json(s)` for any shape; a JSON name that is a keyword is a field with `_` after it (`when_` is `"when"`) |
-| `bufio.Scanner` over a file | `if let f = open_file(p):` then `loop let line = f.read_line():` |
+| `bufio.Scanner` over a file | `if let f = open_file(p):` then `read_line(f) -> str? | FileError` |
 | `regexp.MustCompile(expr)` | `regex(r"...").unwrap()`, made once and used for every text |
 | `url.Parse`, `base.ResolveReference(ref)` | `parse_url(s)` (`u.host`, `u.port`, `u.path`), `url_join(base, link)` |
 | `http.HandleFunc`, `http.ListenAndServe` | `import http`, `http.get("/todos/:id", handler)`, `http.serve(8080)` ([writing a server](#writing-a-server)) |
@@ -1149,7 +1163,7 @@ draw = ():
 | `font.SysFont(None, 24).render(s)` and a blit | `text(s, pos, 24, color)` with the built-in font; `set_font(load_font(embed("font.ttf")))` for another |
 | `time.get_ticks()`, `time.set_timer` | `elapsed()` (seconds), `if every(1, 2.0):` in update (true once each 2 s) |
 | `random.randint(1, 6)`, `random.choice(xs)` | `random_int(1, 7)` (the top is left out), `random_item(xs)` |
-| `open("level.txt").read()` | `str_from_bytes(embed("level.txt"))`: built into the game, so it works in a web page too; `read_file(path)` reads the disk (native builds) |
+| `open("level.txt").read()` | `str_from_bytes(embed("level.txt"))`: built into the game, so it works in a web page too; `read_file(path).unwrap()` reads the disk (native builds) |
 | a high score in a file | `save_value("best", best)` and `best = load_value("best", 0)` (or `save_data` / `load_data` for text): a file natively, the browser's storage on the web |
 | a small Surface scaled up | `window("Title", 320, 180)` and `pixel_art()`; `full_resolution()` in draw before the HUD keeps its text sharp |
 | `RESIZABLE`, `VIDEORESIZE`, `toggle_fullscreen()` | windows are resizable, and the game keeps its 2D units (`visible_rect()` is what shows); `toggle_fullscreen()` |
@@ -1224,7 +1238,7 @@ draw = ():                              # _draw
 
 | pandas / NumPy / matplotlib | Sloppy |
 |---|---|
-| `pd.read_csv("sales.csv")` | `sales = from_csv[Sale](read_file("sales.csv") ?? "")`: a struct per row, its fields by the header's names (or `csv_rows(text)`: rows of text) |
+| `pd.read_csv("sales.csv")` | `sales = from_csv[Sale](read_file("sales.csv").unwrap())`: a struct per row, its fields by the header's names (or `csv_rows(text)`: rows of text) |
 | `df["price"]`, `df[df.price > 10]` | `[loop s in sales: s.price]`, `sales.filter((s): s.price > 10.0)`; a `soa Sale[]` keeps each field as an array: `t.price`, `t[t.price .> 10.0]` |
 | `df.groupby("region").price.mean()` | `group_by(sales, (s): s.region)`, then `mean(...)` of each group's prices; or a map: `totals[s.region] += s.price` |
 | `.dropna()`, `.fillna(0)`, `~mask` | `xs[not is_nan.(xs)]`, `x ?? 0.0` for an optional, `not mask` |

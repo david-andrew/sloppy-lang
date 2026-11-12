@@ -9,7 +9,7 @@ orderings. Everything here is in the library that every program has; nothing is 
 Read it all at once, then take it apart:
 
 ```gdscript
-text = read_stdin()                     # all of standard input (or read_file("input.txt") ?? "")
+text = read_stdin()                     # all of standard input (or read_file("input.txt").unwrap())
 nums = ints(text).unwrap()                       # every whole number in it, in order
 grid = text.lines()                     # the lines, without their ends ("\r\n" too)
 loop line in grid:
@@ -128,7 +128,7 @@ totals = (text: str) -> int[]:
 test "the example":
     assert(totals("1000\n2000\n\n3000\n\n4000") == [4000, 3000, 3000])
 
-t = totals(read_file("input.txt") ?? "")
+t = totals(read_file("input.txt").unwrap())
 print(t.first(), t.first(3).sum())
 ```
 

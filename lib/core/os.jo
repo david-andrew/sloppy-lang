@@ -116,7 +116,8 @@ __zstr = (s: str) -> str:
     s
 
 # why the last file operation that failed did, in words: "no such file or directory",
-# "permission denied", "it is a directory", "the disk is full"... ("" when none has failed):
+# "permission denied", "it is a directory", "the disk is full"... ("" when none has failed).
+# Checked read_file/read_bytes/read_line(File)/list_dir carry FileError in their own results:
 #   if not write_file(p, text): eprint("cannot write {p}: {file_error()}")
 file_error = () -> str: __file_err
 
@@ -148,7 +149,7 @@ __ferr = (r: int) -> bool:
     if r >= 0: return true
     e = -r
     m = "error {e}"
-    if e == 2: m = "no such file or directory"
+    if e == 2: m = if TARGET == "wasm": "file or directory is missing or could not be read" else: "no such file or directory"
     else if e == 13: m = "permission denied"
     else if e == 1: m = "not permitted"
     else if e == 17: m = "it is already there"
@@ -173,10 +174,11 @@ __ferr_none = (r: int) -> str?:
     __ferr(r)
     none
 
-# read a whole file; none if it cannot be read (or is a directory: file_error() says why). A
+# (core read primitive: none on failure, with __file_err set; the checked standard wrapper
+# attaches that error to the result.) A
 # UTF-8 byte order mark at its start (Notepad's "UTF-8 with BOM") is left out; read_bytes keeps
 # every byte
-read_file = (path: str) -> str?:
+__read_text_file = (path: str) -> str?:
     t = __read_file_raw(path)
     if t == none: return none
     s = t!
@@ -185,22 +187,52 @@ read_file = (path: str) -> str?:
 
 __read_file_raw = (path: str) -> str?:
     when TARGET == "wasm":
-        if not __wasm_has(path): return __ferr_none(-2)
-        return str_from_bytes(__wasm_bytes((p: *u8, cap: int): __wasm_read_file(data(path), len(path), p, cap)))
+        buf = fill(u8(0), 4096)
+        loop true:
+            n = __wasm_read_file(data(path), len(path), data(buf), buf.len())
+            if n < 0:
+                if __wasm_list_dir(data(path), len(path), data(buf), 0) >= 0: return __ferr_none(-21)
+                return __ferr_none(-2)
+            if n <= buf.len():
+                buf.truncate(n)
+                return str_from_bytes(buf)
+            buf.resize(n)
+        return none
     else when TARGET == "windows":
-        return __w32_read_file(path)
+        h = __w32_open_file(path, false)
+        if h == null: return none
+        defer CloseHandle(h)
+        size = [0]
+        if GetFileSizeEx(h, data(size)) == 0:
+            __w32_ferr()
+            return none
+        p = __str_new(size[0])
+        got = 0
+        r: u32[] = [0]
+        loop got < size[0]:
+            if ReadFile(h, p + 24 + got, u32(min(size[0] - got, 1 << 30)), data(r), null) == 0:
+                __w32_ferr()
+                __rc_dec(p)
+                return none
+            if r[0] == 0: break
+            got += int(r[0])
+        (p as *int)[1] = got
+        p[24 + got] = 0
+        return p as str
     else:
-        fd = syscall(2, data(__zstr(path)), 0, 0)
+        fd = -4
+        loop fd == -4: fd = syscall(2, data(__zstr(path)), 0, 0)
         if fd < 0: return __ferr_none(fd)
         defer syscall(3, fd)
         size = syscall(8, fd, 0, 2)
-        if size < 0:
-            # (no size: a pipe, /dev/stdin: read until it ends)
+        if size <= 0:
+            # (no usable size: a pipe, /dev/stdin, a procfs file, or an empty file)
             out: u8[]
             chunk = fill(u8(0), 65536)
             loop:
                 r = syscall(0, fd, data(chunk), chunk.len())
-                if r == -21: return __ferr_none(r)
+                if r == -4: continue
+                if r < 0: return __ferr_none(r)
                 if r <= 0: break
                 loop i in [0..r): out.push(chunk[i])      # (not extend: the C bootstrap compiles this)
             return str_from_bytes(out)
@@ -212,10 +244,14 @@ __read_file_raw = (path: str) -> str?:
         got = 0
         loop got < size:
             r = syscall(0, fd, p + 24 + got, size - got)
-            if r == -21: return __ferr_none(r)        # (EISDIR: a directory)
+            if r == -4: continue
+            if r < 0:
+                __rc_dec(p)
+                return __ferr_none(r)
             if r <= 0: break
             got += r
         (p as *int)[1] = got
+        p[24 + got] = 0
         p as str
 
 __stdin_buf: u8[]               # (read, not given out yet: [__stdin_pos..__stdin_end))
@@ -275,14 +311,15 @@ __stdin_more = () -> bool:
 # A file open for reading a piece at a time (a log too big to load whole, the start of a file
 # to hash):
 #   if let f = open_file("big.log"):
-#       loop let line = f.read_line(): ...
+#       # read_line(f) returns a line, none at EOF, or FileError
 #       f.close()
 struct File:
     handle = -1
     buf: u8[]
     pos = 0
     done = false
-    path = ""                   # (made by create_file, in a web page: where its pieces go)
+    path = ""                   # the file path; in a web page, where writes go
+    __read_error = ""            # a failed read, retained independently of ambient write errors
 
 # A file made (or emptied) for writing a piece at a time (a download, a log written as it goes):
 #   if let f = create_file("out.bin"):
@@ -295,18 +332,18 @@ create_file = (path: str) -> File?:
     else when TARGET == "windows":
         h = __w32_open_file(path, true)
         if h == null: return none
-        return File(handle = h as int)
+        return File(handle = h as int, path = path)
     else:
         fd = syscall(2, data(__zstr(path)), 0x241, 0x1A4)
         if fd < 0:
             __ferr(fd)
             return none
-        File(handle = fd)
+        File(handle = fd, path = path)
 
 # add to a file made by create_file (false when it could not: file_error says why)
 write = (f: mut File, b: u8[]) -> bool:
     when TARGET == "wasm":
-        return write_file(f.path, (read_file(f.path) ?? "") + str_from_bytes(b))
+        return write_file(f.path, (__read_text_file(f.path) ?? "") + str_from_bytes(b))
     else when TARGET == "windows":
         off = 0
         w: u32[] = [0]
@@ -325,8 +362,8 @@ write = (f: mut File, s: str) -> bool: write(f, bytes(s))
 
 open_file = (path: str) -> File?:
     when TARGET == "wasm":
-        if let s = read_file(path):
-            f = File(handle = 0)
+        if let s = __read_file_raw(path):
+            f = File(handle = 0, path = path)
             f.buf = bytes(s)
             f.done = true
             return f
@@ -334,7 +371,7 @@ open_file = (path: str) -> File?:
     else when TARGET == "windows":
         h = __w32_open_file(path, false)
         if h == null: return none
-        return File(handle = h as int)
+        return File(handle = h as int, path = path)
     else:
         fd = syscall(2, data(__zstr(path)), 0, 0)
         if fd < 0:
@@ -346,12 +383,13 @@ open_file = (path: str) -> File?:
             syscall(3, fd)
             __ferr(-21)
             return none
-        File(handle = fd)
+        File(handle = fd, path = path)
 
 # the next line of the file, without its end (none past the last)
-read_line = (f: mut File) -> str?:
+__file_read_line = (f: mut File) -> str?:
     from = f.pos
     loop true:
+        if len(f.__read_error) > 0: return none
         n = f.buf.len()
         i = -1
         if from < n: i = __memchr(data(f.buf), from, n, '\n')
@@ -369,8 +407,10 @@ read_line = (f: mut File) -> str?:
         __file_fill(f)
 
 # up to n more bytes of the file (fewer at its end; none left: empty)
-read_bytes = (f: mut File, n: int) -> u8[]:
+__read_bytes = (f: mut File, n: int) -> u8[]:
+    if n < 0: panic("read_bytes count must not be negative")
     loop f.buf.len() - f.pos < n and not f.done: __file_fill(f)
+    if len(f.__read_error) > 0: return []
     k = min(n, f.buf.len() - f.pos)
     out = f.buf[f.pos..f.pos + k)
     f.pos += k
@@ -388,9 +428,7 @@ close = (f: mut File):
 
 # (what was read moved to the start, and up to 64 KB more after it)
 __file_fill = (f: mut File):
-    if f.handle == -1 and not f.done:
-        f.done = true
-        return
+    if f.handle == -1: panic("cannot read a closed file")
     if f.pos > 0:
         f.buf = f.buf[f.pos..]
         f.pos = 0
@@ -400,8 +438,17 @@ __file_fill = (f: mut File):
     when TARGET == "windows":
         r: u32[] = [0]
         if ReadFile(f.handle as *u8, data(f.buf) + old, u32(65536), data(r), null) != 0: got = int(r[0])
+        else:
+            __w32_ferr()
+            f.__read_error = __file_err
+            got = -1
     else when TARGET != "wasm":
-        got = syscall(0, f.handle, data(f.buf) + old, 65536)
+        loop true:
+            got = syscall(0, f.handle, data(f.buf) + old, 65536)
+            if got != -4: break
+        if got < 0:
+            __ferr(got)
+            f.__read_error = __file_err
     if got <= 0:
         got = 0
         f.done = true
@@ -454,8 +501,8 @@ read_stdin = () -> str:
         (q as *int)[1] = n + r
     str_from_bytes(out)
 
-read_bytes = (path: str) -> u8[]?:
-    if let s = read_file(path): return bytes(s)
+__read_bytes = (path: str) -> u8[]?:
+    if let s = __read_file_raw(path): return bytes(s)
     none
 
 # a web page's own address, without its ?query (to make a link to it: page_url() + "?invite=" +
@@ -558,11 +605,11 @@ is_symlink = (path: str) -> bool:
 # a file's size in bytes; none if it cannot be opened (or is a directory)
 file_size = (path: str) -> int?:
     when TARGET == "wasm":
-        if let s = read_file(path): return len(s)
+        if let s = __read_text_file(path): return len(s)
         return none
     else when TARGET == "windows":
         if __w32_is_dir(path): return none
-        if let s = read_file(path): return len(s)
+        if let s = __read_text_file(path): return len(s)
         return none
     else:
         if is_dir(path): return none
@@ -673,25 +720,70 @@ __wasm_has = (path: str) -> bool:
 
 # names of the entries in a directory (excluding . and ..); [] for a file or a path that is not
 # there too (is_dir tells them apart)
-list_dir = (path: str) -> str[]:
+__list_dir_error = ""
+
+__list_dir = (path: str) -> str[]:
+    global __file_err, __file_errno, __list_dir_error
+    prior = __file_err
+    prior_errno = __file_errno
+    __file_err = ""
+    __file_errno = 0
+    __list_dir_error = ""
+    defer:
+        if len(__file_err) > 0: __list_dir_error = __file_err
+        else:
+            __file_err = prior
+            __file_errno = prior_errno
     out: str[]
     when TARGET == "wasm":
-        b = __wasm_bytes((p: *u8, cap: int): __wasm_list_dir(data(path), len(path), p, cap))
+        b = fill(u8(0), 4096)
+        loop true:
+            n = __wasm_list_dir(data(path), len(path), data(b), b.len())
+            if n < 0:
+                if __wasm_read_file(data(path), len(path), data(b), 0) >= 0: __ferr(-20)
+                else: __ferr(-2)
+                return out
+            if n <= b.len():
+                b.truncate(n)
+                break
+            b.resize(n)
         if b.len() > 0:
-            loop n in split(str_from_bytes(b), "\n"): out.push(n)
+            loop name in split(str_from_bytes(b), "\n"): out.push(name)
     else when TARGET == "windows":
-        return __w32_list_dir(path)
+        wp = __wide(path + "\\*")
+        found = fill(u8(0), 600)
+        h = FindFirstFileW(data(wp), data(found))
+        if (h as int) == -1:
+            # ERROR_FILE_NOT_FOUND can mean an existing empty directory.
+            if GetLastError() == u32(2) and is_dir(path): return out
+            __w32_ferr()
+            return out
+        defer FindClose(h)
+        loop true:
+            name = __narrow((data(found) + 44) as *u16, -1)
+            if name != "." and name != "..": out.push(name)
+            if FindNextFileW(h, data(found)) == 0:
+                if GetLastError() != u32(18):
+                    __w32_ferr()
+                    out.clear()
+                break
     else when TARGET == "macos":
         return __mac_list_dir(path)
     else:
-        fd = syscall(2, data(__zstr(path)), 0x10000, 0)
+        fd = -4
+        loop fd == -4: fd = syscall(2, data(__zstr(path)), 0x10000, 0)
         if fd < 0:
             __ferr(fd)
             return out
         buf = __alloc(8192)
         loop true:
             n = syscall(217, fd, buf, 8192)
-            if n <= 0: break
+            if n == -4: continue
+            if n < 0:
+                __ferr(n)
+                out.clear()
+                break
+            if n == 0: break
             off = 0
             loop off < n:
                 reclen = int(((buf + off + 16) as *u16)[0])
@@ -984,7 +1076,7 @@ rename_file = (from: str, to: str, replace: bool = true) -> bool:
 
 # copy a file's contents to another (made, or replaced)
 copy_file = (from: str, to: str) -> bool:
-    if let s = read_file(from): return write_file(to, s)
+    if let s = __read_text_file(from): return write_file(to, s)
     false
 
 # add to the end of a file (made if it is not there): a log. sync = true: on the disk itself when
@@ -992,7 +1084,7 @@ copy_file = (from: str, to: str) -> bool:
 # short a line written as it happened, never one before it)
 append_file = (path: str, contents: str, sync: bool = false) -> bool:
     when TARGET == "wasm":
-        old = read_file(path) ?? ""
+        old = __read_text_file(path) ?? ""
         return write_file(path, old + contents)
     else when TARGET == "windows":
         return __w32_append_file(path, contents, sync)
@@ -1037,7 +1129,7 @@ walk_dir = (path: str) -> str[]:
 __walk = (base: str, rel: str, out: mut str[]):
     dir = base
     if len(rel) > 0: dir = base + "/" + rel
-    loop name in list_dir(dir):
+    loop name in __list_dir(dir):
         r = name
         if len(rel) > 0: r = rel + "/" + name
         full = dir + "/" + name
@@ -1068,7 +1160,7 @@ glob = (pattern: str) -> str[]:
     # (no / in the rest: the names in that directory alone, not all below it)
     files: str[]
     if (index_of(rest, "/") ?? -1) < 0 and (index_of(rest, "**") ?? -1) < 0:
-        loop f in list_dir(base):
+        loop f in __list_dir(base):
             if not is_dir(base + "/" + f): files.push(f)
         files.sort()
     else: files = walk_dir(base)
@@ -1120,7 +1212,7 @@ memory_in_use = () -> int:
     when TARGET == "wasm":
         return __wasm_grow(0) * 65536
     else when TARGET == "linux":
-        t = read_file("/proc/self/statm") ?? ""
+        t = __read_text_file("/proc/self/statm") ?? ""
         parts = split(t, " ")
         if parts.len() < 2: return 0
         return (to_int(parts[1]) ?? 0) * 4096
