@@ -443,6 +443,13 @@ later = date_add(d, 5400.0)
 print(duration_text(date_diff(later, d)))       # 1h 30m
 ```
 
+`Date` stores whole seconds and an explicit offset. `date_text(d)` is display text and
+omits the zone; use `date_text(d, "%Y-%m-%dT%H:%M:%S%z")` for a zoned form that
+`parse_date` can read back (fractional input is not retained). `utc_offset(t)` takes Unix
+seconds as f64 and floors fractions, matching `date(t)`. HTTP dates use
+`http.parse_http_date(text)`; they are always GMT.
+
+
 Parsing gives `none` for invalid text or an unsupported directive. Both forms use the local
 zone when the text has no offset, or UTC with `utc = true`. Supported directives: `%Y` (four
 digit year), `%y` (00–68 mean 2000–2068, 69–99 mean 1969–1999), `%m`, `%d`, `%e` (space-padded

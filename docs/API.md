@@ -885,7 +885,7 @@ started = unix_time()  ...  print("took {unix_time() - started:.1} s")
 - `date_text = (d: Date) -> str`: "2026-10-14 08:15:03"
 - `month_name = (d: Date) -> str`: the names of a date's month and weekday, in English ("October", "Wednesday")
 - `weekday_name = (d: Date) -> str`
-- `utc_offset = (t: int) -> int`: how many seconds east of UTC the computer's clock is at moment t (unix seconds): its time zone and daylight saving time then (the TZ variable, or the system's zone)
+- `utc_offset = (t: f64) -> int`: how many seconds east of UTC the computer's clock is at moment t (unix seconds): its time zone and daylight saving time then (the TZ variable, or the system's zone). Fractional timestamps are floored to whole seconds, as date does, including before the Unix epoch.
 
 #### Time zones on Linux and macOS: the TZif file of the zone (zic's format)
 
@@ -5895,7 +5895,7 @@ assert(net.fetch("http://127.0.0.1:{http.port()}/todos/1").status == 200)
   http.trust_proxy = ["127.0.0.1"]
   ```
 - `http_date = (t: f64) -> str`: a time (unix_time's seconds) as HTTP writes one: "Sun, 06 Nov 1994 08:49:37 GMT"
-- `from_http_date = (s: str) -> f64?`: an HTTP date ("Sun, 06 Nov 1994 08:49:37 GMT") as unix_time's seconds; none when it is not one
+- `parse_http_date = (s: str) -> f64?`: an HTTP date ("Sun, 06 Nov 1994 08:49:37 GMT") as unix_time's seconds; none when it is not one
 - `reason = (code: int) -> str`: a status's reason: 404 "Not Found"
 - `mime_type = (path: str) -> str`: the type of a file by its extension, as a Content-Type ("text/html; charset=utf-8" for .html); application/octet-stream for one not known
 

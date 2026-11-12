@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: HTTP date reading is `http.parse_http_date(text)`, replacing `from_http_date`. `utc_offset(t)` additionally accepts fractional Unix seconds and floors them, matching `date(t)`; calendar precision and timezone semantics stay unchanged.
+
 - Breaking: JSON list lookup is `get(index)`, replacing `at(index)`; object lookup stays `get(key)`. Use `as_float()` instead of `as_num()`. Optional-safe chaining and forgiving `as_list()`/`keys()` on noncontainers keep their existing behavior.
 
 - Reversed random bounds (`hi < lo`) now panic for `random`, `random_int` and `Rng.next_int`. Equal bounds return `lo` without drawing a random number; valid intervals remain half-open.
