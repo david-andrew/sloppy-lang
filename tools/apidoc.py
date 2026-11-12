@@ -20,7 +20,7 @@ TOPICS = [
      "`str` is text, in UTF-8. `\"{x}\"` puts a value in a string; `\"{x:.2}\"` rounds it to two decimals "
      "(more ways: [the language](LANGUAGE.md#2-lexical-structure)). Strings are values, like arrays."),
     ("Basics", "regex", "Regular expressions", ["std/regex"], "regex",
-     "`regex(r\"...\")` makes a pattern once; `s.find(r)`, `s.find_all(r)`, `s.matches(r)`, `s.replace(r, \"$1\")` "
+     "`regex(r\"...\")` returns a compiled pattern or RegexError; `s.find(r)`, `s.find_all(r)`, `s.matches(r)`, `s.replace(r, \"$1\")` "
      "and `s.split(r)` use it. Raw strings (`r\"\\d+\"`) keep the backslashes as they are."),
     ("Basics", "maps", "Maps", ["core/map"], "maps",
      "`{K: V}` maps keys to values, in the order they were added."),
@@ -33,7 +33,7 @@ TOPICS = [
      "`BigInt` is a whole number of any size, every digit kept, as Python's `int`: `bigint(2) ^ 1000`, "
      "`bigint(\"123456789012345678901234567890\")`. The operators, comparisons and printing work as on ints, "
      "ints mixed in; it can be a map key or in a set. Nothing is imported (the compiler reads it for the programs that use it)."),
-    ("Basics", "system", "Files, time and the system", ["core/os", "std/path", "std/date", "std/cli", "std/stop"], "system",
+    ("Basics", "system", "Files, time and the system", ["core/os", "std/file", "std/path", "std/date", "std/cli", "std/stop"], "system",
      "In a web page, files are the ones the page was given, and `env` reads its address's parameters. "
      "What is at a web address: `net.fetch(url)`, after `import net` ([fetching from the web](START.md#fetching-from-the-web))."),
     ("Basics", "term", "Terminal programs", ["term"], "term",
@@ -150,6 +150,17 @@ TOPICS = [
 INTERNAL = {"core/rt", "core/fmt", "core/windows", "core/macos", "game/dl", "game/cocoa", "game/x11", "game/wayland", "game/wlclient", "game/dmabuf", "game/vk", "game/vkgl", "game/metal",
             "game/gl", "game/softgl", "std/backtrace", "std/snapshot", "std/repl", "std/watch", "rtc", "tls"}
 
+# Supported-surface manifest. These representations remain callable across library/compiler
+# files; documenting them would make implementation storage appear to be a supported API.
+HIDDEN_TYPES = {"game/audio": {"Voice"}, "game/draw3d": {"Draw3D"}}
+PUBLIC_FIELDS = {
+    ("core/map", "Map"): set(),
+    ("core/os", "File"): set(),
+    ("std/regex", "Regex"): {"pattern", "groups"},
+    ("physics", "World"): {"gravity", "iterations", "sleep", "substep"},
+    ("physics3d", "World"): {"gravity", "iterations", "sleep", "substep"},
+}
+
 # what the compiler itself provides: (topic, section, name, signatures, what it does)
 BUILTINS = [
     ("builtins", "", "print", ["print(values...)"], "prints the values, separated by spaces, and a line break"),
@@ -162,7 +173,8 @@ BUILTINS = [
     ("builtins", "", "embed", ["embed(path: str) -> u8[]"], "a file's contents, read when the program is compiled and kept in it (the path is relative to the source file)"),
     ("builtins", "", "bytes", ["bytes(s: str) -> u8[]"], "a string's bytes (UTF-8)"),
     ("builtins", "", "str_from_bytes", ["str_from_bytes(b: u8[]) -> str"], "a string of these bytes"),
-    ("builtins", "", "size_of", ["size_of(T) -> int", "align_of(T) -> int"], "how many bytes a value of type T takes, and its alignment"),
+    ("builtins", "", "size_of", ["size_of(T) -> int"], "how many bytes a value of type T takes"),
+    ("builtins", "", "align_of", ["align_of(T) -> int"], "the alignment in bytes of a value of type T"),
     ("builtins", "", "int", ["int(x)", "i32(x)", "u8(x)"], "a number as a whole number of that type (a float is cut toward zero: int(3.7) is 3); "
      "text is read with `to_int(s)`, and `c'A'` is a character's code (65)"),
     ("builtins", "", "f64", ["f64(x)", "f32(x)"], "a number as a float of that size (f32 and f64 also mix by themselves)"),
@@ -220,6 +232,8 @@ def header_of(lines):
 def entries_of(path, only=None):
     """[(section, name, signature, what it does)] of a module's public declarations"""
     lines = open(path, encoding="utf-8").read().splitlines()
+    module = os.path.relpath(path, os.path.join(ROOT, "lib"))[:-3].replace(os.sep, "/")
+    body_fields = None
     out, comment, seen = [], [], set()
     section = ""
     in_when = False        # (declarations one level into a top-level `when` count too)
@@ -230,7 +244,8 @@ def entries_of(path, only=None):
         if body is not None:
             if s.startswith("    ") and not s.startswith("     "):
                 t = s[4:]
-                body_skipped = t.startswith(("#", "_"))
+                field = re.match(r"([A-Za-z_]\w*)", t)
+                body_skipped = t.startswith(("#", "_")) or (body_fields is not None and (not field or field.group(1) not in body_fields))
                 if not body_skipped: body.append(t)
                 continue
             # (a field's comment, continued on the lines under it: a private field's left out too)
@@ -265,7 +280,7 @@ def entries_of(path, only=None):
         if g and not g.group(2) and not g.group(3): g = None
         if not s.startswith(" ") and (m or f or g):
             name = m.group(2) if m else f.group(1) if f else g.group(1)
-            if not name.startswith("_") and (only is None or name in only):      # (private, and the runtime's __ names)
+            if not name.startswith("_") and name not in HIDDEN_TYPES.get(module, set()) and (only is None or name in only):      # (private, and the runtime's __ names)
                 sig = s
                 # (a setting's default when it is the library's own function: left out)
                 if g: sig = g.group(1) + (g.group(2) or "") + ("" if not g.group(3) or g.group(3).strip(" =").startswith("_") else g.group(3))
@@ -277,7 +292,9 @@ def entries_of(path, only=None):
                     prose = " ".join(c for c in comment if c and not c.startswith("\0"))
                     code = [c[1:] for c in comment if c.startswith("\0")]
                     out.append((section, name, sig.strip(), prose, [], code))
-                    if m and m.group(1) in ("struct", "enum") and s.endswith(":"): body = out[-1][4]
+                    if m and m.group(1) in ("struct", "enum") and s.endswith(":"):
+                        body = out[-1][4]
+                        body_fields = PUBLIC_FIELDS.get((module, name))
         if not s.startswith("#"):
             comment = []
     return out
@@ -316,12 +333,9 @@ def collect():
                 title_ = section_title(sec)
                 if not sections or sections[-1][0] != title_: sections.append((title_, []))
                 items = sections[-1][1]
-                # overloads: one entry (the same name next to each other, one description or the same)
-                if items and items[-1]["name"] == name and (not doc or not items[-1]["doc"] or doc == items[-1]["doc"]):
-                    items[-1]["sigs"].append(sig)
-                    items[-1]["doc"] = items[-1]["doc"] or doc
-                else:
-                    items.append({"name": name, "sigs": [sig], "doc": doc, "body": body, "code": code})
+                # Each overload owns only its adjacent source comment. Missing documentation
+                # must not inherit a sibling's contract (especially different failure policies).
+                items.append({"name": name, "sigs": [sig], "doc": doc, "body": body, "code": code})
             # (sections of the same name further on join the first)
             merged = []
             for st, items in sections:
@@ -340,7 +354,10 @@ def collect():
                 raise SystemExit(f"tools/apidoc.py: lib/{m}.jo is in no topic (TOPICS) and not INTERNAL")
     return topics
 
-INTRO = ("Everything here is there in every program, without imports. Functions can be called as `f(x, y)` or "
+INTRO = ("Core, standard and game functions are available without imports. Named modules such as `layout`, "
+         "`physics`, `physics3d`, `net`, `netplay`, `http` and `term` require an explicit import, as their sections show. "
+         "The reference excludes implementation storage and internal bridge functions; shader/backend plumbing and "
+         "responsive layout remain experimental. Functions can be called as `f(x, y)` or "
          "`x.f(y)`. Each topic starts with a whole program to try.")
 
 # (the few a first game needs, before the whole list)
@@ -361,7 +378,12 @@ ESSENTIALS = [
 
 def markdown(topics):
     out = ["# The library", "", "Generated by `tools/apidoc.py` from the library's sources (`lib/`). " + INTRO, ""]
-    out += ["**For a first game:**", ""]
+    out += ["| Convention | Contract |", "| --- | --- |",
+            "| Durations and angles | Seconds and radians unless a name explicitly says otherwise (such as `ping_ms`). Session netplay `ping`/`lag` still use milliseconds. |",
+            "| Absence and errors | Safe lookup gives `none`; checked parsing and file reads return errors with details. Array `index_of` still uses -1 pending migration. |",
+            "| Mutation | `mut` parameters change the caller; `reverse` mutates arrays and `reversed` returns a new array/string. |",
+            "| Text indexes | Byte offsets, with `start` in `0..len(text)` inclusive; character operations keep whole Unicode code points. |",
+            "", "**For a first game:**", ""]
     out += [f"- {what}: {how}" for what, how in ESSENTIALS]
     out += [""]
     group = None

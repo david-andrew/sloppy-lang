@@ -948,7 +948,9 @@ Err, d: T) -> T` called with an `int | str | Err` has `T = int | str`. With two 
 stands for the rest; when nothing does (`expect(r, "msg")`), the call gives them:
 `expect[int, ParseError](r, "msg")`. A union value prints as the value it holds. `T | none` is
 `T?`, so a `T??` is a `T?` too: a map of optionals' `m.get(k)` is `none` for a missing key and for
-a `none` kept alike (`m.has(k)` tells them apart). A `T[]` passes where a `T?[]` is expected as
+a `none` kept alike (`m.contains(k)` tells them apart). Array `get` has the same limit;
+check bounds to distinguish a stored none. Channels reject optional element types: send a struct
+with an optional field instead. A `T[]` passes where a `T?[]` is expected as
 a copy, its elements as optionals (`count(xs)` for `count = (xs: int?[]) -> int`).
 
 A union does the work of a base class. Passing one where a function has an overload for each
@@ -1519,8 +1521,10 @@ parallel_update(particles, (p): step(p, dt))          # xs[i] = f(xs[i]) in plac
 rows = parallel_range(height, (y): render_row(y))     # [loop i in 0..n: f(i)]
 ```
 
-The function runs on many threads at once: it may read anything, but it must not change
-globals or the variables it captured (that would be a data race). Return results instead.
+The function runs on many threads at once: read immutable/copy-safe inputs and return results
+instead of changing globals or captured variables. Use documented atomics/shared primitives for
+communication; arbitrary library calls are not necessarily thread-safe. Parallel callback safety
+remains experimental beyond the compiler's documented checks.
 A call costs a few microseconds beyond its work (the threads wait for jobs and take parts of
 one as they are free), so work of a few tenths of a millisecond or more is worth sharing; each
 part should do more than a handful of operations.
@@ -1585,7 +1589,9 @@ Tasks take turns on the program's one thread: one runs until it waits (to send o
 channel, for `t.wait()`, `sleep`, the network, a line of input, a program it runs), then the next
 ready one runs. So between two waits nothing else changes the program's variables, and they need
 no locks; and a task that computes for long without waiting holds up the others (for the
-processor's cores: `parallel_map`, above). So do file reads and writes, C functions, and
+processor's cores: `parallel_map`, above). Parallel callbacks must read immutable/copy-safe
+inputs and use documented shared primitives; arbitrary library calls are not necessarily thread-safe.
+So do file reads and writes, C functions, and
 `run_program` on Windows: they wait without letting the others run. A send or receive that need
 not wait goes on at once, and lets the others ready take their turns every 64th time, so a loop of
 them never holds the rest up for long. A task's closure sees the variables around it, as any

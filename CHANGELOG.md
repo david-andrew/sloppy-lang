@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: `hud_layout_*` bridges are private `__hud_layout_*` library implementation details; applications should use `layout` or the public `hud_*` widgets. Map/physics storage and render/audio queue types are excluded from the supported API reference.
+
 - Breaking: `read_file`, `read_bytes` and `list_dir` return their value or `FileError`; handle it or unwrap trusted reads. `read_line(file)` returns a line, `none` only at EOF, or `FileError`. Streaming byte reads return empty at EOF and `FileError` on failure. Errors never become truncated successful reads. `file_error()` remains for bool/optional file operations such as writes and opens.
 
 - Breaking: string `find`/`find_byte` become `index_of`, and `rfind` becomes `last_index_of`, all returning `int?`; handle `none` instead of `-1`. Regex `find` uses `start` instead of `from`; all starts outside `0..len(text)` give absence.
