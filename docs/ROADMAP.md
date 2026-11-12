@@ -194,7 +194,8 @@ Fill the gaps real programs hit, nothing speculative:
 
 ## GPU (after item 1)
 
-- Pipelines made before they are first drawn with (they are kept on disk between runs already).
+- Pipelines made before they are first drawn with (done for Vulkan: feature/asset loading
+  prepares declared shaders and primes deferred driver JIT; the driver cache stays on disk).
 - Barriers by hand, for independent dispatches; textures by index in buffers; writes and atomics
   from fragment shaders.
 - Workgroup shared memory with barriers: on the CPU (and the web), a workgroup's invocations

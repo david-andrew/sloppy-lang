@@ -358,6 +358,65 @@ programs (SPIR-V, made by the compiler). With OpenGL, WebGL or the software rend
 are CPU memory and compute functions run on all CPU cores; shaders still read the buffers.
 `gpu_compute()` tells which.
 
+## Preparing Vulkan pipelines during loading
+
+Vulkan prepares builtin pipelines as the game loads its graphics features and assets.
+Each feature registers its own shaders at the declaration that already creates them.
+A 2D game does not compile the 3D renderer, PBR or sky filters; 2D postprocessing loads
+only its post passes. Classic 3D, PBR materials, skinning, particles and image skies opt
+in separately. There is no global list of shader functions that every game compiles.
+
+Load meshes, instance buffers, models and shaders before gameplay. Repeated loads of a
+layout reuse its preparation. Skinned and shadow-skinned pipelines are prepared only
+once a skinned mesh loads. PBR material draws declare the PBR feature; glTF model uploads
+prepare it when their materials load. `read_gltf` remains CPU-only. `sky_image` prepares
+its filter pipeline and light maps when a panorama is selected; repeating the same
+texture reuses them, while `refresh = true` bakes them again. Sky preparation preserves
+the selected target, viewport, clipping, buffer bindings and draw state.
+
+Call `warm_up()` during a loading screen after declaring shaders and loading assets.
+It revisits only declared programs and loaded layouts. `warm_up(mat)` prepares shared
+PBR programs from a custom material-loading path. No list of pipelines is needed.
+These hooks do no GPU work on OpenGL, Metal, software or WebGL; GL/WebGL still create
+skinned programs at skinned-mesh loading. Assets or shaders created inside `draw()`
+still pay their loading cost there. Games that load assets in frame zero may spend
+more time in that initial loading frame, rather than in a later gameplay frame.
+
+`make_shader(shader(vs, fs))` prepares a custom shader's usual triangle states: opaque,
+alpha, additive, multiply and premultiplied blending, with screen MSAA and ordinary
+single-sample targets. For an unusual primitive class, attachment format, color mask
+or depth state, `warm_up(sh, mode)` prepares the state selected now. For example:
+
+```jo
+line_shader = make_shader(shader(line_vs, line_fs))
+draw_to(target)
+blend(.add)
+warm_up(line_shader, GL_LINES)
+draw_to_screen()
+blend(.alpha)
+```
+
+Preparation is synchronous on the render thread. Private 1×1 attachments and a vertex
+trigger drivers that defer shader JIT until a draw. Builtins retain their original
+binaries and read zeroed scratch inputs; one vertex cannot form a triangle. Custom
+shaders get a wrapper that clips this vertex before invoking user code. No game draw
+callback or custom vertex/fragment function runs during preparation. A driver failure
+is reported and falls back to normal creation at first use; failed handles are not
+cached as usable pipelines. Actual draw errors retain normal renderer error handling.
+
+The existing device/driver-validated `VkPipelineCache` is still saved between runs in
+`~/.cache/sloppy` (`%LOCALAPPDATA%\sloppy` on Windows). It reduces later loading work,
+but live pipeline objects must still be created for each process. The screen is RGBA8
+and copied to the swapchain, so resizing does not add another drawing-pipeline format.
+Compute dispatch caching is unchanged.
+
+`tests/profile_pipelines.py` measures cold startup and the initial frames using isolated
+caches and a scratch library, without editing game sources. Keep size, MSAA, input and
+overlay identical between runs. Compile-cost checks are also required when changing
+these hooks: `python3 tools/speedcheck.py --base <revision>` (library rows within 1%) and
+`python3 tests/check_graphics_reachability.py` check that unused features stay unused.
+
+
 ## Switches and troubleshooting
 
 | setting | effect |

@@ -215,13 +215,18 @@ __fs2d = (i: __Out2D, u: __Params2D) -> vec4:
 __b_vk_prog = 0
 
 when TARGET != "wasm":
+    __vk_batch_init = ():
+        global __b_vk_prog
+        if __b_vk_prog != 0: return
+        src = shader(__vs2d, __fs2d)
+        src.fs_spirv = __spirv_centroid(src.fs_spirv, 0)
+        when TARGET != "macos": __b_vk_prog = __vk_program(src, 1)
+        else: __b_vk_prog = __vk_program(src)
+
     # the batch drawn through Vulkan: its vertices into this frame's upload memory
     __vk_draw2d = ():
         global __b_count, __b_vk_prog
-        if __b_vk_prog == 0:
-            src = shader(__vs2d, __fs2d)
-            src.fs_spirv = __spirv_centroid(src.fs_spirv, 0)
-            __b_vk_prog = __vk_program(src)
+        __vk_batch_init()
         n = __b_count * __VFLOATS * 4
         blk, off = __vk_upload(__b_buf as *u8, n)
         p = __Params2D(__proj, Texture(__b_tex, 1, 1))
@@ -304,6 +309,14 @@ __font_init = ():
     __default_font = f
     if same: __font = f
 
+# Optional renderers install their hooks from their own API. Keeping the frame loop
+# independent means a 2D program does not compile the 3D renderer or its shaders.
+__scene_flush: () -> void = __no_draw
+__scene_before_2d: () -> void = __no_draw
+__post_start: () -> void = __no_draw
+__post_finish: () -> void = __no_draw
+__mesh_layout_load: (int, bool) -> void = (stride: int, instances: bool): pass
+
 __gfx_begin_frame = ():
     global __cur_target, __fx_on, __pal_fx, __xform, __xform_set
     __gfx_init()
@@ -320,7 +333,7 @@ __gfx_begin_frame = ():
     __apply_blend(.alpha)
     glDisable(GL_DEPTH_TEST)
     glDisable(GL_CULL_FACE)
-    __post_begin()
+    __post_start()
     # (a frame starts black, as a web page's does: a draw with no clear() leaves no trail of the
     # frames before; a picture kept from frame to frame is a render target. With post_effects,
     # the picture that stands for the screen, on the web too)
@@ -335,11 +348,11 @@ __gfx_begin_frame = ():
 
 __gfx_end_frame = ():
     global __clip_on
-    __render3d()
+    __scene_flush()
     flush()
     __clip_off()
     __clip_on = false
-    __post_end()
+    __post_finish()
     __canvas_end()
 
 # a render target: 2D units are its pixels
@@ -418,6 +431,15 @@ __gfx_init_gl_only = ():
     if not __win_open:
         if __is_game: window(__win_title, __win_w, __win_h)
         else: __open_offscreen()
+    __gfx_warm_context()
+
+__gfx_warm_context = ():
+    when TARGET != "wasm" and TARGET != "macos":
+        global __gfx_loaded
+        if __gfx_loaded or not __vk or __soft: return
+        __gfx_loaded = true
+        __vk_batch_init()
+        loop load in __gfx_loaders: load()
 
 # a texture that repeats past its edges, for sprite_region (and a shader's sample) beyond them: a
 # source rectangle wider than the texture shows it again and again. Off (the default), what is past
@@ -748,10 +770,7 @@ __outside_draw = ():
 __use_tex = (id: int, nverts: int):
     global __b_tex
     if __b_buf == null: __outside_draw()
-    if __draws.len() > 0:
-        __render3d()
-        # (2D after the 3D: a HUD, which the post effects leave as drawn)
-        if __post_active and not __post_hud: __post_end()
+    __scene_before_2d()
     if id != __b_tex or __b_count + nverts > __BATCH_MAX:
         flush()
         __b_tex = id

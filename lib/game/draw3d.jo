@@ -492,8 +492,6 @@ _sky_fs = (i: _SkyOut, u: _SkyParams) -> vec4:
     a = u.inv_view_proj * vec4(i.ndc, 1, 1)
     b = u.inv_view_proj * vec4(i.ndc, -1, 1)
     dir = normalize(a.xyz / a.w - b.xyz / b.w)
-    if u.image_on > 0.5:
-        return vec4(__linear_display(aces(__sky_sample(u.image, dir, u.intensity, u.rotation))), 1)
     y = dir.y
     c = mix(u.sky_horizon, u.sky_top, pow(clamp(y, 0.0, 1.0), 0.45))
     if y < 0.0: c = mix(u.sky_horizon, u.ground, clamp(-y * 4.0, 0.0, 1.0))
@@ -504,6 +502,12 @@ _sky_fs = (i: _SkyOut, u: _SkyParams) -> vec4:
         s = hash21(g)
         if s > 0.997: c = c + vec3(1, 1, 1) * (u.stars * (s - 0.997) * 250.0 * (0.6 + 0.4 * sin(u.time * 3.0 + s * 100.0)))
     vec4(aces(c), 1)
+
+__sky_image_fs = (i: _SkyOut, u: _SkyParams) -> vec4:
+    a = u.inv_view_proj * vec4(i.ndc, 1, 1)
+    b = u.inv_view_proj * vec4(i.ndc, -1, 1)
+    dir = normalize(a.xyz / a.w - b.xyz / b.w)
+    vec4(__linear_display(aces(__sky_sample(u.image, dir, u.intensity, u.rotation))), 1)
 
 # Small equirectangular maps convolved once per sky image, at roughness .5 and 1.
 # GGX importance sampling with V=N, weighted by N.L. At roughness 1 this also approximates
@@ -619,6 +623,118 @@ __blur_sh: Shader
 __comp_sh: Shader
 __fs_tri: Mesh
 __draws: Draw3D[]
+
+__3d_enable = ():
+    if __3d_registered: pass
+
+__3d_register = () -> bool:
+    global __scene_flush, __scene_before_2d, __mesh_layout_load
+    __scene_flush = __render3d
+    __scene_before_2d = __3d_before_2d
+    __mesh_layout_load = __3d_mesh_loaded
+    __gfx_on_load(__3d_load)
+    true
+__3d_registered = __3d_register()
+
+__warm_3d = (layouts: int = 1):
+    when TARGET != "wasm" and TARGET != "macos":
+        if __vk and not __soft: __vg_warm_layouts(layouts)
+
+__inst_needed = false
+__inst_register = () -> bool:
+    global __inst_needed
+    __inst_needed = true
+    true
+__inst_registered = __inst_register()
+__inst_use = ():
+    if __inst_registered: pass
+
+__3d_load = ():
+    when TARGET != "wasm" and TARGET != "macos":
+        if __vk and not __soft:
+            __warm_3d(if __inst_needed: 3 else: 1)
+            __3d_init()
+
+__3d_mesh_loaded = (stride: int, instances: bool):
+    when TARGET != "wasm" and TARGET != "macos":
+        if not __vk or __soft: return
+        if instances:
+            if stride == size_of(Instance3D): __warm_3d(3)
+        else if stride == size_of(SkinVertex3D): __warm_3d(4)
+
+__3d_before_2d = ():
+    if __draws.len() == 0: return
+    __render3d()
+    if __post_active and not __post_hud: __post_finish()
+
+__queue3d = (d: Draw3D):
+    __3d_enable()
+    __draws.push(d)
+
+__material_apply: (mut Draw3D) -> void = (d: mut Draw3D): pass
+__material_params: (Draw3D, mut LitParams) -> void = (d: Draw3D, p: mut LitParams): pass
+__material_lit: (Draw3D, LitParams) -> void = (d: Draw3D, p: LitParams): pass
+__material_shadow: (Draw3D, LitParams) -> void = (d: Draw3D, p: LitParams): pass
+__material_skin_load: () -> void = __no_draw
+
+__pbr_register = () -> bool:
+    global __material_apply, __material_params, __material_lit, __material_shadow, __material_skin_load
+    __material_apply = __pbr_material_draw
+    __material_params = __pbr_params
+    __material_lit = __pbr_lit_draw
+    __material_shadow = __pbr_shadow_draw
+    __material_skin_load = __pbr_skin_load
+    true
+__pbr_registered = __pbr_register()
+__pbr_loaded = false
+__pbr_material_load = ():
+    global __pbr_loaded
+    if __pbr_registered and not __pbr_loaded:
+        __pbr_loaded = true
+        __gfx_on_load(__pbr_load)
+
+__pbr_declare = () -> bool:
+    __pbr_material_load()
+    true
+__pbr_declared = __pbr_declare()
+__pbr_use = ():
+    if __pbr_declared: pass
+
+__pbr_load = ():
+    when TARGET != "wasm" and TARGET != "macos":
+        if __vk and not __soft:
+            __warm_3d(32)
+            __pbr_init()
+
+# Prepare shared material programs explicitly from a custom loading path.
+warm_up = (material: Material): __pbr_material_load()
+
+__pbr_skin_load = ():
+    if not __pbr_loaded: return
+    __pbr_init()
+    __pbr_skin_init()
+
+__sky_load: () -> void = __no_draw
+__sky_draw: (_SkyParams) -> void = __gradient_sky_draw
+__gradient_sky_draw = (p: _SkyParams): draw(__sky_sh, __fs_tri, p)
+__sky_image_sh = Shader()
+__image_sky_draw = (p: _SkyParams):
+    global __sky_image_sh
+    if p.image_on < 0.5:
+        __gradient_sky_draw(p)
+        return
+    __image_sky_init()
+    draw(__sky_image_sh, __fs_tri, p)
+
+__image_sky_init = ():
+    global __sky_image_sh
+    if __sky_image_sh.prog != 0: return
+    __warm_3d(128)
+    __sky_image_sh = __make_shader(shader(_sky_vs, __sky_image_fs), 17)
+
+__sky_filter_program = ():
+    global __sky_filter_sh
+    if __sky_filter_sh.prog == 0: __sky_filter_sh = __make_shader(shader(__sky_filter_vs, __sky_filter_fs), 16)
 # (3D particles: their shader, and the quad each is drawn as)
 __pt_sh = Shader()
 __pt_ready = false
@@ -674,56 +790,81 @@ __light_col: vec4[8]
 __light_n: f32 = 0.0
 
 # Shared constructors keep each shader translation in one place across backend paths.
-__skin_lit_program = () -> Shader: make_shader(shader(lit_vs_skin, lit_fs))
-__skin_shadow_program = () -> Shader: make_shader(shader(_shadow_vs_skin, _shadow_fs))
-__skin_pbr_program = () -> Shader: make_shader(shader(__pbr_skin_vs, __pbr_fs))
-__skin_pbr_shadow_program = () -> Shader: make_shader(shader(__pbr_shadow_skin_vs, __pbr_shadow_fs))
+__skin_lit_program = () -> Shader: __make_shader(shader(lit_vs_skin, lit_fs), 10)
+__skin_shadow_program = () -> Shader: __make_shader(shader(_shadow_vs_skin, _shadow_fs), 11)
+__skin_pbr_program = () -> Shader: __make_shader(shader(__pbr_skin_vs, __pbr_fs), 14)
+__skin_pbr_shadow_program = () -> Shader: __make_shader(shader(__pbr_shadow_skin_vs, __pbr_shadow_fs), 15)
 
 __3d_init = ():
-    global __3d_ready, __3d_software_limits, __blur_sh, __bright_sh, __comp_sh, __fs_tri, __lit, __lit_inst, __lit_skin, __shadow_sh, __shadow_sh_inst, __shadow_sh_skin, __sky_sh
+    global __3d_ready, __3d_software_limits, __lit, __lit_inst, __shadow_sh, __shadow_sh_inst, __sky_sh
     if __3d_ready: return
     __3d_ready = true
-    __lit = make_shader(shader(lit_vs, lit_fs))
+    __lit = __make_shader(shader(lit_vs, lit_fs), 2)
     __3d_software_limits = gl_software_limits()
-    __lit_inst = make_shader(shader(lit_vs_inst, lit_fs))
-    when TARGET != "wasm":
-        if __vk:
-            __lit_skin = __skin_lit_program()
-            __shadow_sh_skin = __skin_shadow_program()
-    __shadow_sh = make_shader(shader(_shadow_vs, _shadow_fs))
-    __shadow_sh_inst = make_shader(shader(_shadow_vs_inst, _shadow_fs))
-    __sky_sh = make_shader(shader(_sky_vs, _sky_fs))
-    __bright_sh = make_shader(shader(_post_vs, _bright_fs))
-    __blur_sh = make_shader(shader(_post_vs, _blur_fs))
-    __comp_sh = make_shader(shader(_post_vs, _composite_fs))
+    __lit_inst = __make_shader(shader(lit_vs_inst, lit_fs), 8)
+    __shadow_sh = __make_shader(shader(_shadow_vs, _shadow_fs), 3)
+    __shadow_sh_inst = __make_shader(shader(_shadow_vs_inst, _shadow_fs), 9)
+    __sky_sh = __make_shader(shader(_sky_vs, _sky_fs), 7)
+    __fullscreen_init()
+
+__fullscreen_init = ():
+    global __fs_tri
+    if __fs_tri.count != 0: return
     __fs_tri = mesh([_SkyVertex(vec2(-1, -1)), _SkyVertex(vec2(3, -1)), _SkyVertex(vec2(-1, 3))])
+
+__post_register = () -> bool:
+    global __post_start, __post_finish
+    __post_start = __post_begin
+    __post_finish = __post_end
+    __gfx_on_load(__post_load)
+    true
+__post_registered = __post_register()
+__post_load = ():
+    when TARGET != "wasm" and TARGET != "macos":
+        if __vk and not __soft:
+            __warm_3d(8)
+            __post_init()
+
+__post_ready = false
+__post_init = ():
+    global __post_ready, __bright_sh, __blur_sh, __comp_sh
+    if __post_ready: return
+    __post_ready = true
+    __bright_sh = __make_shader(shader(_post_vs, _bright_fs), 5)
+    __blur_sh = __make_shader(shader(_post_vs, _blur_fs), 5)
+    __comp_sh = __make_shader(shader(_post_vs, _composite_fs), 4)
+    __fullscreen_init()
 
 __pbr_ready = false
 __pbr_init = ():
     global __pbr_ready, __pbr_sh, __pbr_skin, __pbr_shadow, __pbr_shadow_skin
     if __pbr_ready: return
     __pbr_ready = true
-    __pbr_sh = make_shader(shader(__pbr_vs, __pbr_fs))
-    __pbr_shadow = make_shader(shader(__pbr_shadow_vs, __pbr_shadow_fs))
-    when TARGET != "wasm":
-        if __vk:
-            __pbr_skin = __skin_pbr_program()
-            __pbr_shadow_skin = __skin_pbr_shadow_program()
+    __pbr_sh = __make_shader(shader(__pbr_vs, __pbr_fs), 12)
+    __pbr_shadow = __make_shader(shader(__pbr_shadow_vs, __pbr_shadow_fs), 13)
+    if __skin_gl_ready: __pbr_skin_init()
 
-# GL/WebGL link skeletal programs only after a skinned mesh is loaded. Vulkan/Metal
-# keep their own program/pipeline warm-up path. Field-specialized GLSL keeps bones out
-# of every unskinned stage without changing the 64-joint CPU or GPU palette layout.
-__skin_gl_ready = false
-__skin_gl_init = ():
-    global __skin_gl_ready, __lit_skin, __shadow_sh_skin, __pbr_skin, __pbr_shadow_skin
-    when TARGET != "wasm":
-        if __vk: return
-    if __skin_gl_ready: return
-    __skin_gl_ready = true
-    __lit_skin = __skin_lit_program()
-    __shadow_sh_skin = __skin_shadow_program()
+__pbr_skin_ready = false
+__pbr_skin_init = ():
+    global __pbr_skin_ready, __pbr_skin, __pbr_shadow_skin
+    if __pbr_skin_ready: return
+    __pbr_skin_ready = true
+    __warm_3d(64)
     __pbr_skin = __skin_pbr_program()
     __pbr_shadow_skin = __skin_pbr_shadow_program()
+
+# Skeletal programs are declared only after a skinned mesh loads. Vulkan prepares
+# their pipelines here; GL/WebGL link them here. PBR skin programs also require material
+# use. Field-specialized GLSL keeps bones out of every unskinned stage.
+__skin_gl_ready = false
+__skin_gl_init = ():
+    global __skin_gl_ready, __lit_skin, __shadow_sh_skin
+    if __skin_gl_ready: return
+    __skin_gl_ready = true
+    __warm_3d(4)
+    __lit_skin = __skin_lit_program()
+    __shadow_sh_skin = __skin_shadow_program()
+    __material_skin_load()
 
 # Upload skinned vertices, preparing skeletal GL/WebGL programs on the first load.
 mesh = (vertices: SkinVertex3D[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh:
@@ -739,7 +880,7 @@ __sky_prepare = ():
     if tex.id == 0: return
     if __sky_cached.id == tex.id and __sky_cached.width == tex.width and __sky_cached.height == tex.height: return
     if not __sky_filter_ready:
-        __sky_filter_sh = make_shader(shader(__sky_filter_vs, __sky_filter_fs))
+        __sky_filter_program()
         __sky_rough = render_target(128, 64)
         __sky_diffuse = render_target(128, 64)
         __sky_filter_ready = true
@@ -809,7 +950,8 @@ sun = (direction: vec3, color: vec3 = vec3(1, 0.95, 0.85), disc: f64 = 1.0):
     __sun_disc = disc
 
 sky = (top: vec3, horizon: vec3, ground: vec3 = vec3(0.3, 0.27, 0.24)):
-    global __ground_color, __sky_horizon, __sky_on, __sky_top, __sky_image
+    global __ground_color, __sky_horizon, __sky_on, __sky_top, __sky_image, __sky_draw
+    __sky_draw = __gradient_sky_draw
     __sky_image = Texture(0, 0, 0)
     __sky_top = top
     __sky_horizon = horizon
@@ -822,12 +964,20 @@ sky = (top: vec3, horizon: vec3, ground: vec3 = vec3(0.3, 0.27, 0.24)):
 # Keep the texture alive while selected. refresh rebuilds its light maps after update_texture.
 # hide_sky hides the backdrop, retaining its light.
 sky_image = (texture: Texture, intensity: f64 = 1.0, rotation: f64 = 0.0, refresh: bool = false):
-    global __sky_image, __sky_intensity, __sky_rotation, __sky_on, __sky_cached
+    global __sky_image, __sky_intensity, __sky_rotation, __sky_on, __sky_cached, __sky_draw, __sky_load
+    __sky_draw = __image_sky_draw
+    __sky_load = __sky_prepare
     if refresh: __sky_cached = Texture(0, 0, 0)
     __sky_image = texture
     __sky_intensity = max(intensity, 0.0)
     __sky_rotation = rotation
     __sky_on = true
+    when TARGET != "wasm" and TARGET != "macos":
+        if __vk and not __soft and texture.id != 0:
+            __image_sky_init()
+            __sky_filter_program()
+            __vg_prepare_sky()
+
 
 hide_sky = ():
     global __sky_on
@@ -849,6 +999,7 @@ shadows = (on: bool, strength: f64 = 0.8, area: f64 = 30.0):
 # before it, while 2D drawn after the 3D (a HUD, text) stays as drawn, unless include_hud
 post_effects = (bloom: f64 = 0.6, threshold: f64 = 0.7, vignette: f64 = 0.35, saturation: f64 = 1.0, tint: vec3 = vec3(1, 1, 1), include_hud: bool = false):
     global __bloom_on, __bloom_strength, __bloom_threshold, __post_hud, __saturation, __tint, __vignette
+    if __post_registered: pass
     __bloom_on = true
     __post_hud = include_hud
     __bloom_strength = bloom
@@ -864,6 +1015,7 @@ no_post_effects = ():
 # meters, fading out on the way. Up to 8 light a frame (the ones nearest the camera); they cast
 # no shadows.
 point_light = (pos: vec3, color: vec3, radius: f64 = 6.0, intensity: f64 = 1.0):
+    __3d_enable()
     __point_lights.push(vec4(pos, f32(radius)))
     __point_colors.push(vec4(color * f32(intensity), 1))
 
@@ -890,10 +1042,18 @@ __pick_lights = ():
 # walls the player stands against). material selects metallic-roughness PBR; without it the
 # original lighting, specular and color handling are retained. color multiplies its factor;
 # texture is the fallback when it has no base_texture. See Material for map channels.
-draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false, material: Material? = none):
+draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false):
+    __draw_mesh_material(m, transform, color, texture, emissive, specular, cast_shadow, in_front, double_sided, none)
+
+# Select PBR with a Material (or optional Material); omitted material keeps classic lighting.
+draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false, material: Material?):
+    __pbr_use()
+    __draw_mesh_material(m, transform, color, texture, emissive, specular, cast_shadow, in_front, double_sided, material)
+
+__draw_mesh_material = (m: Mesh, transform: mat4, color: vec4, texture: Texture, emissive: f64, specular: f64, cast_shadow: bool, in_front: bool, double_sided: bool, material: Material?):
     d = Draw3D(m, transform, color, texture.id, f32(emissive), f32(specular), [], false, cast_shadow and not in_front, 0, __noop3d, false, in_front, both_sides = double_sided, material = material)
     __material_draw(d)
-    __draws.push(d)
+    __queue3d(d)
 
 __line_mesh = Mesh()
 __line_ready = false
@@ -935,9 +1095,12 @@ __draw_skinned = (m: Mesh, bones: vec4[], transform: mat4, color: vec4, texture:
     __skin_gl_init()
     d = Draw3D(m, transform, color, texture.id, f32(emissive), f32(specular), [], false, cast_shadow and not in_front, 0, __noop3d, false, in_front, bones, material = material)
     __material_draw(d)
-    __draws.push(d)
+    __queue3d(d)
 
 __material_draw = (d: mut Draw3D):
+    if d.material != none: __material_apply(d)
+
+__pbr_material_draw = (d: mut Draw3D):
     if let m = d.material:
         __pbr_init()
         d.color = d.color * m.base_color
@@ -946,7 +1109,7 @@ __material_draw = (d: mut Draw3D):
         if m.alpha_mode == .blend: d.shadow = false
 
 __transparent3d = (d: Draw3D) -> bool:
-    if let m = d.material: return m.alpha_mode == .blend
+    if d.material != none: return d.material!.alpha_mode == .blend
     d.color.w < 1.0
 
 __pbr_cull = (d: Draw3D):
@@ -972,25 +1135,30 @@ __morph_upload = (d: Draw3D):
 __lit_draw = (d: Draw3D, p: LitParams):
     __morph_upload(d)
     if d.material != none:
-        __pbr_cull(d)
-        if d.bones.len() > 0: draw(__pbr_skin, d.mesh, p)
-        else: draw(__pbr_sh, d.mesh, p)
-        glCullFace(GL_BACK)
+        __material_lit(d, p)
     else if d.instanced: __draw_inst3d(__lit_inst, d, p)
     else if d.bones.len() > 0: draw(__lit_skin, d.mesh, p)
     else: draw(__lit, d.mesh, p)
 
+__pbr_lit_draw = (d: Draw3D, p: LitParams):
+    __pbr_cull(d)
+    if d.bones.len() > 0: draw(__pbr_skin, d.mesh, p)
+    else: draw(__pbr_sh, d.mesh, p)
+    glCullFace(GL_BACK)
+
 # many copies of a mesh in one draw call (crowds, forests, particles...)
 draw_mesh_instanced = (m: Mesh, instances: Instance3D[], color: vec4 = vec4(1, 1, 1, 1), emissive: f64 = 0.0, specular: f64 = 0.2, cast_shadow: bool = true, wind: f64 = 0.0):
-    __draws.push(Draw3D(m, mat4(), color, 0, f32(emissive), f32(specular), instances, true, cast_shadow, f32(wind), __noop3d, false))
+    __inst_use()
+    __queue3d(Draw3D(m, mat4(), color, 0, f32(emissive), f32(specular), instances, true, cast_shadow, f32(wind), __noop3d, false))
 
 # the same, of instances kept on the GPU: for copies that do not move (a forest, a town), made
 # once with instance_buffer(instances) (an array is sent to the GPU again every frame)
 #   trees = instance_buffer(tree_list)                 # once
 #   draw_mesh_instanced(tree_mesh, trees)              # in draw
 draw_mesh_instanced = (m: Mesh, instances: InstanceBuffer[Instance3D], color: vec4 = vec4(1, 1, 1, 1), emissive: f64 = 0.0, specular: f64 = 0.2, cast_shadow: bool = true, wind: f64 = 0.0):
+    __inst_use()
     if instances.count == 0: return
-    __draws.push(Draw3D(m, mat4(), color, 0, f32(emissive), f32(specular), [], true, cast_shadow, f32(wind), __noop3d, false, kept_vbo = instances.vbo, kept_count = instances.count))
+    __queue3d(Draw3D(m, mat4(), color, 0, f32(emissive), f32(specular), [], true, cast_shadow, f32(wind), __noop3d, false, kept_vbo = instances.vbo, kept_count = instances.count))
 
 # (an instanced draw: of its array, or of the instance buffer it was given)
 __draw_inst3d = (sh: Shader, d: Draw3D, p: LitParams):
@@ -1006,7 +1174,7 @@ draw_custom = (render: () -> void, transparent: bool = false, additive: bool = f
     if transparent or additive: a = 0.5
     em: f32 = 0.0
     if additive: em = 1.0
-    __draws.push(Draw3D(__dummy_mesh(), mat4(), vec4(1, 1, 1, a), 0, em, 0, [], false, false, 0, render, true))
+    __queue3d(Draw3D(__dummy_mesh(), mat4(), vec4(1, 1, 1, a), 0, em, 0, [], false, false, 0, render, true))
 
 __noop3d = (): pass
 
@@ -1066,13 +1234,8 @@ update = (ps: mut Particles3D, dt: f64):
 draw = (ps: Particles3D, glow: bool = true):
     global __pt_quad, __pt_ready, __pt_sh
     if ps.items.len() == 0: return
-    if not __pt_ready:
-        __pt_sh = make_shader(shader(_pt_vs, _pt_fs))
-        n0 = vec3(0, 0, 1)
-        c = vec4(1, 1, 1, 1)
-        __pt_quad = mesh([Vertex3D(vec3(0, 0, 0), n0, vec2(0, 0), c), Vertex3D(vec3(0, 0, 0), n0, vec2(1, 0), c), Vertex3D(vec3(0, 0, 0), n0, vec2(1, 1), c),
-                          Vertex3D(vec3(0, 0, 0), n0, vec2(0, 0), c), Vertex3D(vec3(0, 0, 0), n0, vec2(1, 1), c), Vertex3D(vec3(0, 0, 0), n0, vec2(0, 1), c)])
-        __pt_ready = true
+    if __pt_registered: pass
+    __pt_init()
     fwd = normalize(__cam_target - __cam_pos)
     up0 = __cam_up
     if abs(dot(fwd, normalize(up0))) > 0.99: up0 = vec3(0, 0, 1)
@@ -1088,6 +1251,25 @@ draw = (ps: Particles3D, glow: bool = true):
         c.w = c.w * t
         insts.push(_PtInst(p.pos, p.size * (0.5 + 0.5 * t) * 0.5, c))
     draw_custom((): draw_instanced(__pt_sh, __pt_quad, insts, _PtParams(scene_view_proj(), right, up)), transparent = not glow, additive = glow)
+
+__pt_register = () -> bool:
+    __gfx_on_load(__pt_load)
+    true
+__pt_registered = __pt_register()
+__pt_load = ():
+    when TARGET != "wasm" and TARGET != "macos":
+        if __vk and not __soft:
+            __warm_3d(16)
+            __pt_init()
+__pt_init = ():
+    global __pt_ready, __pt_sh, __pt_quad
+    if not __pt_ready:
+        __pt_sh = __make_shader(shader(_pt_vs, _pt_fs), 6)
+        n0 = vec3(0, 0, 1)
+        c = vec4(1, 1, 1, 1)
+        __pt_quad = mesh([Vertex3D(vec3(0, 0, 0), n0, vec2(0, 0), c), Vertex3D(vec3(0, 0, 0), n0, vec2(1, 0), c), Vertex3D(vec3(0, 0, 0), n0, vec2(1, 1), c),
+                          Vertex3D(vec3(0, 0, 0), n0, vec2(0, 0), c), Vertex3D(vec3(0, 0, 0), n0, vec2(1, 1), c), Vertex3D(vec3(0, 0, 0), n0, vec2(0, 1), c)])
+        __pt_ready = true
 
 struct _PtInst:
     pos: vec3
@@ -1140,6 +1322,10 @@ __params = (d: Draw3D, vp: mat4) -> LitParams:
         light_colors = __light_col, light_count = __light_n, bones = __no_bones,
         environment = __sky_image, environment_rough = __sky_rough.texture, environment_diffuse = __sky_diffuse.texture, environment_on = f32(int(__sky_image.id != 0)),
         environment_intensity = f32(__sky_intensity), environment_rotation = f32(__sky_rotation))
+    if d.material != none: __material_params(d, p)
+    p
+
+__pbr_params = (d: Draw3D, p: mut LitParams):
     if let m = d.material:
         p.pbr = 1.0
         p.metal = m.metallic
@@ -1159,7 +1345,6 @@ __params = (d: Draw3D, vp: mat4) -> LitParams:
         p.uv_sets = vec4(f32(m.base_uv), f32(m.metallic_roughness_uv), f32(m.normal_uv), f32(m.occlusion_uv))
         p.em_uv = f32(m.emissive_uv)
         p.unlit = f32(int(m.unlit))
-    p
 
 # the params for a draw, and its shader (lit or shadow pass)
 __params_for = (d: Draw3D, vp: mat4) -> LitParams:
@@ -1182,14 +1367,17 @@ __cast_shadow = (d: mut Draw3D, sv: vec4[], vp: mat4):
     p = __params_for(d, vp)
     p.shadow_map = Texture(0, 1, 1)          # never sample the target being rendered
     if d.material != none:
-        __pbr_cull(d)
-        if d.bones.len() > 0: draw(__pbr_shadow_skin, d.mesh, p)
-        else: draw(__pbr_shadow, d.mesh, p)
-        glCullFace(GL_BACK)
-        glDisable(GL_CULL_FACE)
+        __material_shadow(d, p)
     else if d.instanced: __draw_inst3d(__shadow_sh_inst, d, p)
     else if d.bones.len() > 0: draw(__shadow_sh_skin, d.mesh, p)
     else: draw(__shadow_sh, d.mesh, p)
+
+__pbr_shadow_draw = (d: Draw3D, p: LitParams):
+    __pbr_cull(d)
+    if d.bones.len() > 0: draw(__pbr_shadow_skin, d.mesh, p)
+    else: draw(__pbr_shadow, d.mesh, p)
+    glCullFace(GL_BACK)
+    glDisable(GL_CULL_FACE)
 
 __render3d = ():
     global __drawn3d, __pass_frame, __pass_target, __proj3, __shadow_rt, __shadow_vp, __view
@@ -1201,7 +1389,7 @@ __render3d = ():
     flush()
     __clip_off()
     zone("3d")
-    __sky_prepare()
+    __sky_load()
     again = __pass_frame == __frame_count and __pass_target == __cur_target
     if not again: __casters.clear()
     __pass_frame = __frame_count
@@ -1263,7 +1451,7 @@ __render3d = ():
     if __sky_on and not again:
         glDisable(GL_CULL_FACE)
         sp = _SkyParams(inverse(vp), __sky_top, __sky_horizon, __ground_color, __sun_dir, __sun_color, f32(elapsed()), f32(__stars), f32(__sun_disc), __sky_image, f32(int(__sky_image.id != 0)), f32(__sky_intensity), f32(__sky_rotation))
-        draw(__sky_sh, __fs_tri, sp)
+        __sky_draw(sp)
     # transparent objects last, blended
     glEnable(GL_BLEND)
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
@@ -1360,7 +1548,7 @@ __post_begin = ():
     if not __bloom_on:
         __post_active = false
         return
-    __3d_init()
+    __post_init()
     w = __screen_px_w()
     h = __screen_px_h()
     if __scene_rt.texture.width != w or __scene_rt.texture.height != h:
@@ -1515,7 +1703,7 @@ when TARGET != "wasm":
 __post_end = ():
     global __post_active
     if not __post_active: return
-    __render3d()
+    __scene_flush()
     flush()
     zone("post")
     glDisable(GL_BLEND)

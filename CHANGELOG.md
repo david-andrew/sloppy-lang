@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 2D games compile only their own rendering code; postprocessing no longer pulls in 3D,
+  and classic 3D does not pull in PBR, skinning or sky-image filters. Vulkan prepares
+  the shaders a game declares while its features and assets load, including deferred
+  driver JIT. Unused skinning stays out of the driver; warm-up failures retry at first use.
+  `warm_up()` also prepares declared shaders explicitly during a loading screen.
+
 - Breaking: `hud_layout_*` bridges are private `__hud_layout_*` library implementation details; applications should use `layout` or the public `hud_*` widgets. Map/physics storage and render/audio queue types are excluded from the supported API reference.
 
 - Breaking: `read_file`, `read_bytes` and `list_dir` return their value or `FileError`; handle it or unwrap trusted reads. `read_line(file)` returns a line, `none` only at EOF, or `FileError`. Streaming byte reads return empty at EOF and `FileError` on failure. Errors never become truncated successful reads. `file_error()` remains for bool/optional file operations such as writes and opens.

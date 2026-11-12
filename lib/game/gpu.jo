@@ -63,11 +63,50 @@ struct Mesh:
     gbuf: int                   # the vertices are a GPU buffer's (gpu_mesh): its number
     keep: u8[]                  # (and what keeps that buffer alive)
 
+# Feature loading callbacks contain no central list of shader functions. Only a feature
+# the program uses registers a callback, and each shader is translated at one call site.
+__gfx_loaders: (() -> void)[]
+__gfx_loaded = false
+__gfx_on_load = (load: () -> void):
+    when TARGET != "wasm" and TARGET != "macos":
+        __gfx_loaders.push(load)
+        if __gfx_loaded: load()
+
+__warm_layout_kind = (kind: int) -> int:
+    if kind == 12 or kind == 13: return 32
+    if kind == 14 or kind == 15: return 64
+    if kind == 16 or kind == 17: return 128
+    if kind == 8 or kind == 9: return 2
+    if kind == 10 or kind == 11: return 4
+    if kind == 4 or kind == 5: return 8
+    if kind == 6: return 16
+    if kind == 2 or kind == 3 or kind == 7: return 1
+    0
+
+# Vulkan only. Other backends retain their existing shader/program lifecycle.
+warm_up = ():
+    when TARGET != "wasm" and TARGET != "macos":
+        if __vk and not __soft:
+            __gfx_warm_context()
+            __vg_warm_loaded()
+
+warm_up = (sh: Shader, mode: int = GL_TRIANGLES):
+    when TARGET != "wasm" and TARGET != "macos":
+        if __vk and not __soft: __vg_warm_selected(sh.prog, __vg_topology(mode))
+
 make_shader = (src: ShaderSource) -> Shader:
+    sh = __make_shader(src, 0)
+    when TARGET != "wasm" and TARGET != "macos":
+        if __vk and not __soft: __vg_custom_prepare(sh.prog, sh.stride)
+    sh
+
+__make_shader = (src: ShaderSource, warm_kind: int) -> Shader:
     __gfx_init_gl_only()
     prog = 0
     when TARGET != "wasm":
-        if __vk: prog = __vk_program(src)
+        if __vk:
+            when TARGET != "macos": prog = __vk_program(src, warm_kind, warm_kind != 0)
+            else: prog = __vk_program(src)
         else: prog = gl_create_program(src.vs, src.fs)
     else: prog = gl_create_program(src.vs, src.fs)
     sh = Shader(prog = prog)
@@ -119,6 +158,7 @@ mesh[V] = (vertices: V[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.len() * 4, data(indices) as *u8, GL_STATIC_DRAW)
         m.index_count = indices.len()
     glBindVertexArray(0)
+    __mesh_layout_load(size_of(V), false)
     m
 
 update_mesh[V] = (m: mut Mesh, vertices: V[]):
@@ -243,6 +283,7 @@ instance_buffer[I] = (instances: I[]) -> InstanceBuffer[I]:
     __gfx_init_gl_only()
     b = InstanceBuffer[I](vbo = gl_create_buffer())
     set_instances(b, instances)
+    __mesh_layout_load(size_of(I), true)
     b
 
 # replace what an instance buffer holds
