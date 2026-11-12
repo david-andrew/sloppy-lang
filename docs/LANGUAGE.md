@@ -3,6 +3,10 @@
 Sloppy is a small, statically typed, compiled language that feels like a scripting
 language. `sloppy game.jo` compiles the whole program (in milliseconds) and runs it.
 
+The [API stability declaration](STABLE.md) identifies the supported contracts, remaining
+pre-stability decisions and experimental areas. Stable contracts require a major version
+for a breaking change.
+
 Design goals, in priority order:
 
 1. **Instant compiles.** Whole-program compilation every time, no incremental builds,

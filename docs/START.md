@@ -1279,6 +1279,7 @@ draw = ():                              # _draw
 
 - [Make a game](TUTORIAL.md): a small platformer, built step by step. Then
   [an arcade game](TUTORIAL_REBOUND.md) and [a 3D shooter](TUTORIAL_BREAKWATER.md).
+- [API stability](STABLE.md): stable contracts, remaining decisions and experimental areas.
 - [The language](LANGUAGE.md): everything Sloppy has, with examples.
 - [Teaching with Sloppy](TEACHING.md): for a class, an order to teach things in, and grading.
 - [Contests and Advent of Code](CONTESTS.md): reading the input, integers, containers, binary

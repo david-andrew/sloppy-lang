@@ -4108,12 +4108,12 @@ draw = ():
 
 Audio: a software mixer written in Sloppy. Sounds are float sample buffers (stereo, interleaved, at the mixer rate). Each frame the mixer renders just enough samples to keep the output device fed: on Linux through ALSA, on Windows waveOut, on macOS AudioQueue, in a web page Web Audio (silent where there is none, or with SLOPPY_NO_AUDIO=1). Web: WebAudio.
 
-- `error struct AudioError`: A Sound is its samples: make one from your own, `Sound(samples)`, for synthesis (left and right in turn, at MIX_RATE a second, from -1 to 1). The mix: each voice's samples times its volume, its pan taken from the other side (pan 1: the left channel silent, the right as loud as at 0), times master_volume; what goes past 0.75 is bent smoothly toward 1. A sound/music file could not be decoded; message describes the input failure.
+- `error struct AudioError`: A sound/music file could not be decoded; message describes the input failure.
   ```gdscript
   error struct AudioError:
       message: str
   ```
-- `struct Sound`
+- `struct Sound`: A Sound is its samples: make one from your own, `Sound(samples)`, for synthesis (left and right in turn, at MIX_RATE a second, from -1 to 1). The mix: each voice's samples times its volume, its pan taken from the other side (pan 1: the left channel silent, the right as loud as at 0), times master_volume; what goes past 0.75 is bent smoothly toward 1.
   ```gdscript
   struct Sound:
       samples: f32[]      # interleaved stereo
