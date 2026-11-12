@@ -240,6 +240,9 @@ pasted_text = () -> str:
 fixed_update = (dt: f64, step: (f64) -> void, rate: f64 = 60.0) -> f64:
     global __fx_acc, __fx_h, __fx_in, __fx_steps
     __input_init()
+    when TARGET == "windows":
+        global __w32_pad_first_poll
+        __w32_pad_first_poll = __fx_collect
     h = 1.0 / max(rate, 1.0)
     __fx_collect()
     __fx_acc += dt
@@ -286,7 +289,18 @@ __fx_collect = ():
         loop a in [0..6):
             loop w in [0..2):
                 d = 2 * w - 1
-                if __ctl_stick(p, a, d, false) >= 0.5 and __ctl_stick(p, a, d, true) < 0.5: __fx_sticks[(p * 6 + a) * 2 + w] = true
+                when TARGET == "windows":
+                    # Passive frame bookkeeping must not start the pad backend. The .25
+                    # dead zone rescaled by .75 in __ctl_stick crosses .5 at .625.
+                    if __pad_on[p]:
+                        now = __pad_axes[p * 6 + a]
+                        before = __pad_prev_axes[p * 6 + a]
+                        if a < 4:
+                            now *= f64(d)
+                            before *= f64(d)
+                        if now >= 0.625 and before < 0.625: __fx_sticks[(p * 6 + a) * 2 + w] = true
+                else:
+                    if __ctl_stick(p, a, d, false) >= 0.5 and __ctl_stick(p, a, d, true) < 0.5: __fx_sticks[(p * 6 + a) * 2 + w] = true
 
 __fx_clear = ():
     global __fx_btns, __fx_keys, __fx_pad, __fx_sticks
@@ -1132,6 +1146,12 @@ else when TARGET == "windows":
     @lib("gdi32.dll")
     extern SwapBuffers = (dc: *u8) -> i32
 
+    # Installed by the first gamepad reader; a window and mouse input alone need no pad backend.
+    __w32_pad_first_poll: () -> void = (): pass
+    __w32_pad_open: () -> void = (): pass
+    __w32_pad_device: (int, int) -> void = (kind: int, handle: int): pass
+    __w32_pad_input: (u8[]) -> void = (buf: u8[]): pass
+
     __w32_hwnd: *u8 = null
     __w32_dc: *u8 = null
     __w32_gl: *u8 = null
@@ -1182,7 +1202,7 @@ else when TARGET == "windows":
         cw = i32(0x80000000 as int)                             # CW_USEDEFAULT
         __w32_hwnd = CreateWindowExW(0, data(cls), data(title), u32(__WS_OVERLAPPEDWINDOW | __WS_VISIBLE), cw, cw, r[2] - r[0], r[3] - r[1], null, null, inst, null)
         __need(__w32_hwnd != null, "CreateWindowExW failed")
-        __w32_pad_init(__w32_hwnd)
+        __w32_pad_open()
         DragAcceptFiles(__w32_hwnd, 1)                         # (files dropped on it: WM_DROPFILES)
         ShowWindow(__w32_hwnd, 1)
         __w32_dc = GetDC(__w32_hwnd)
@@ -1348,12 +1368,7 @@ else when TARGET == "windows":
             __mouse_wheel += f64(__w32_hi(wp)) / 120.0
             return 0
         if m == 0xFE:                                           # WM_INPUT_DEVICE_CHANGE
-            if wp == 1:                                       # GIDC_ARRIVAL
-                __w32_hid_add(lp)
-                # The new interface may be XInput's IG_ interface. The frame this wakes
-                # must retry XInput now, even if its empty-slot timer has not expired.
-                loop i in [0..4): __xi_retry[i] = 0.0
-            else if wp == 2: __w32_hid_remove(lp)                # GIDC_REMOVAL
+            __w32_pad_device(wp, lp)
             __lazy_poke = true
             return 0
         if m == 0xFF:                                           # WM_INPUT: mouse and HID pads
@@ -1364,7 +1379,7 @@ else when TARGET == "windows":
                 if got != u32(0xFFFFFFFF) and got >= 24 and int(got) <= buf.len():
                     buf = buf[..int(got))
                     if (data(buf) as *u32)[0] == 2:
-                        __w32_hid_input(buf)
+                        __w32_pad_input(buf)
                     else if __w32_locked and got >= 48 and (data(buf) as *u32)[0] == 0 and (data(buf) + 24)[0] & 1 == 0:
                         __mouse_dx += f64(((data(buf) + 36) as *i32)[0])
                         __mouse_dy += f64(((data(buf) + 40) as *i32)[0])

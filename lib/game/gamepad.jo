@@ -33,13 +33,16 @@ __pad_names: str[] = ["", "", "", "", "", "", "", ""]
 
 # the numbers of the gamepads connected
 gamepads = () -> int[]:
+    when TARGET == "windows": __w32_pad_start()
     out: int[]
     loop p in [0..MAX_GAMEPADS):
         if __pad_on[p]: out.push(p)
     out
 
 gamepad_connected = () -> bool: gamepads().len() > 0
-gamepad_connected = (pad: int) -> bool: pad >= 0 and pad < MAX_GAMEPADS and __pad_on[pad]
+gamepad_connected = (pad: int) -> bool:
+    when TARGET == "windows": __w32_pad_start()
+    pad >= 0 and pad < MAX_GAMEPADS and __pad_on[pad]
 # what the device calls itself ("" if it does not say)
 gamepad_name = (pad: int) -> str:
     if not gamepad_connected(pad): return ""
@@ -90,6 +93,7 @@ left_stick = () -> vec2: __pad_furthest(0)
 right_stick = () -> vec2: __pad_furthest(2)
 
 __pad_furthest = (axis: int) -> vec2:
+    when TARGET == "windows": __w32_pad_start()
     best = vec2(0, 0)
     loop p in [0..MAX_GAMEPADS):
         if not __pad_on[p]: continue
@@ -471,6 +475,33 @@ else when TARGET == "windows":
     __w32_hid: __HidPad[]
     __w32_hid_retry = 0.0
 
+    # The frame loop sees only the no-op poller until a gamepad reader is used. Keeping
+    # the backend behind function values also keeps HID and XInput out of pad-free builds.
+    __pad_poll: () -> void = (): pass
+    __w32_pad_started = false
+
+    __w32_pad_start = ():
+        global __w32_pad_started, __pad_poll, __w32_pad_open, __w32_pad_device, __w32_pad_input
+        if __w32_pad_started or __fixed_step: return
+        if env("SLOPPY_SCREENSHOT") != none: return
+        __w32_pad_started = true
+        __pad_poll = __w32_pad_poll
+        __w32_pad_open = (): __w32_pad_init(__w32_hwnd)
+        __w32_pad_device = __w32_pad_change
+        __w32_pad_input = __w32_hid_input
+        # Readers can be used before window(), or in the first update/draw after it.
+        if __w32_hwnd != null: __w32_pad_open()
+        __pad_poll()
+        # A first reader inside a fixed step must see this poll's presses in that step.
+        __w32_pad_first_poll()
+
+    __w32_pad_change = (kind: int, handle: int):
+        if kind == 1:
+            __w32_hid_add(handle)
+            # IG_ interfaces belong to XInput: retry its empty slots in the frame this wakes.
+            loop i in [0..4): __xi_retry[i] = 0.0
+        else if kind == 2: __w32_hid_remove(handle)
+
     __w32_pad_init = (hwnd: *u8):
         # Foreground input only; notifications also wake redraw_on_input on plug/unplug.
         dev = fill(u8(0), 32)
@@ -670,7 +701,12 @@ else when TARGET == "windows":
         else if h.setup == 5:
             __w32_hid_close(h)
 
-    __pad_poll = ():
+    __w32_switch_frame = (h: mut __HidPad):
+        # Readers can run while assets load, before window(). Wait for its Raw Input
+        # registration before sending commands whose acknowledgements arrive there.
+        if __w32_hwnd != null: __w32_switch_poll(h)
+
+    __w32_pad_poll = ():
         global __w32_hid_retry
         if __fixed_step: return
         # Disconnects and reports are staged until after __pad_save_prev (pressed/released).
@@ -723,7 +759,7 @@ else when TARGET == "windows":
                 if p < 0: continue
                 h.slot = p
                 __w32_pad_claim(p, h.name)
-            __w32_switch_poll(h)
+            __w32_switch_frame(h)
             __hid_apply(h, h.slot)
 
     __w32_pad_claim = (p: int, name: str):

@@ -41,3 +41,8 @@ ACKs to check the Switch USB handshake state machine without a controller.
 Still requiring hardware verification: actual USB/Bluetooth transport and hot-plug delivery,
 Switch Pro's overlapped USB startup sequence and factory stick calibration. Sony Bluetooth
 extended reports (DS4 11 / DualSense 31), rumble, sensors, and touchpads are unsupported.
+
+`python3 tests/gamepad_reachability.py` checks compiled Windows executables: drawing,
+mouse input and a pad-free fixed update omit HID/XInput lookup symbols; each reader,
+action, and UI/layout navigation includes them. It does not execute or open a window.
+`gamepad_lazy.jo` checks first-use activation and input edges inside a fixed step.

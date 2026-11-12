@@ -10,7 +10,14 @@ run_windows = ():
     when TARGET == "windows":
         global __w32_hid, __w32_hid_retry, __xi_retry, __xi_slot
         assert(pad_hid_abi() == 1)
-        __w32_pad_init(null)                       # no window or physical gamepad required
+        # Opening/polling a window and mouse input must not start either gamepad backend.
+        __pad_frame()
+        __pad_moved()
+        __w32_wndproc(null, 0xFE, 1, 0)
+        assert(not __w32_pad_started)
+        gamepad_connected()                       # first reader installs callbacks, no device needed
+        assert(__w32_pad_started)
+        __w32_pad_open()                           # reader-before-window deferred registration
         __pad_frame()
         # Exercise the real overlapped write API against a local file, with controller ACKs
         # injected separately. This verifies startup commands without a HID device or sleeps.
@@ -18,6 +25,10 @@ run_windows = ():
         output = CreateFileW(data(path), u32(0x40000000), 7, null, 2, u32(0x40000000), null)
         assert(output != null and (output as int) != -1)
         setup = __HidPad(output = output, write_buf = fill(u8(0), 64), overlap = fill(u8(0), 32))
+        # A reader before window() must leave USB startup untouched until ACKs can arrive.
+        assert(__w32_hwnd == null)
+        __w32_switch_frame(setup)
+        assert(setup.output == output and setup.setup == 0 and not setup.writing)
         got: u32[] = [0]
         loop command in [2, 3, 2]:
             __w32_switch_poll(setup)
@@ -64,7 +75,7 @@ run_windows = ():
             buf[32 + i] = r[i]
             buf[96 + i] = r[i]
         buf[96 + 3] = 0xC8                        # second packet holds B, releases A
-        __w32_hid_input(buf)
+        __w32_pad_input(buf)
         assert(not gamepad_down(0, .b))            # not published before the frame's poll
         __pad_frame()
         assert(gamepad_pressed(0, .b) and not gamepad_down(0, .a))
@@ -73,21 +84,21 @@ run_windows = ():
         assert(not gamepad_pressed(0, .b))
         # Bad count/length/handle must not touch the controller.
         ((p + 28) as *u32)[0] = 3
-        __w32_hid_input(buf)
-        __w32_hid_input(buf[..31))
+        __w32_pad_input(buf)
+        __w32_pad_input(buf[..31))
         ((p + 28) as *u32)[0] = 1
         ((p + 8) as *int)[0] = 9876
-        __w32_hid_input(buf)
+        __w32_pad_input(buf)
         __pad_frame()
         assert(gamepad_down(0, .b))
         # Idle polling keeps both standard and raw button edges for the coming frame.
         ((p + 8) as *int)[0] = 1234
-        __w32_hid_input(buf)
+        __w32_pad_input(buf)
         assert(__pad_moved())
         __pad_frame()
         assert(gamepad_pressed(0, .a) and gamepad_released(0, .b) and joystick_pressed(0, 0))
         buf[32 + 4] |= 0x20                  # capture: a raw button, no PadButton binding
-        __w32_hid_input(buf)
+        __w32_pad_input(buf)
         assert(__pad_moved())
         __pad_frame()
         assert(joystick_pressed(0, 13))

@@ -1910,6 +1910,11 @@ button usages (usage 1 is button 0); raw axes follow the descriptor's capability
 | macOS | Apple's GameController framework: controllers for which it supplies an extended gamepad profile (Xbox, PlayStation, Switch Pro and MFi). |
 | Web | The browser's Gamepad API; standard layout and controller availability depend on the browser/OS. |
 
+On Windows the first gamepad/joystick reader enables XInput polling and Raw Input HID.
+Actions using pad inputs and UI/layout pad navigation enable them through those same readers.
+Programs that only draw or read keyboard/mouse input do not link or start either backend.
+A reader used before the window opens defers Raw Input registration until it opens.
+
 Windows' generic HID fallback maps buttons in order, a hat to the d-pad, X/Y to the left
 stick, Rx/Ry to the right stick, Z/Rz to triggers. Four-axis X/Y/Z/Rz devices use Z/Rz for the
 right stick instead. Known layouts override these assignments; 8BitDo D-input and Switch

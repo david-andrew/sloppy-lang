@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Windows gamepad backends start on the first pad reader, including action and menu
+  navigation reads. Drawing and keyboard/mouse-only programs leave both HID and XInput
+  out of their build; first-use input edges remain available inside fixed updates.
+
 - Windows gamepads support Raw Input HID alongside XInput: USB DualShock 4/DualSense,
   Switch Pro, common 8BitDo D-input layouts and generic joysticks/gamepads. Devices keep
   stable player slots across hot-plug, hats map to the d-pad, and raw controls remain
