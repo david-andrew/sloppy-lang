@@ -2012,6 +2012,27 @@ claimed press clicks no button. Labels too long for a `hud_button` or a `hud_che
 rectangle as wide as box and label) end in …, as `fit_text(s, width, size)` cuts any text;
 `hud_button(r, label, align = .left)` puts the label at the left, for a list's rows.
 
+### Choosing widgets and moving values between them
+
+| System | Placement and identity | Slider arguments after placement |
+| --- | --- | --- |
+| `ui_` menu | Automatic column; label first | `label, value, step = 0.1, low = 0, high = 1` |
+| `hud_` | Explicit Rect; text field identity is `id` | `rect, value, low, high, step = 0, label = ""` |
+| `layout` (often imported as `ui`) | Responsive tree; retained identity is `key` | `value, low, high, step = 0, label = ""` |
+
+Keep the existing positional conventions: when moving a slider between systems, pass
+`low`, `high` and `step` by name. Menu step defaults to 0.1; HUD/layout step 0 permits
+continuous pointer values (layout keyboard steps are 1% of the range). Labels stay first
+in a menu because the menu chooses placement by row.
+
+Single-line text fields all default to **64 Unicode code points**. The tails still differ:
+`ui_text_field(label, value, max_chars = 64)`,
+`hud_text_field(rect, value, id = "", max_chars = 64, hint = "")`, and
+`layout.text_field(value, hint = "", max_chars = 64, ..., key = "")`.
+Pass `max_chars = 24` to retain the former menu limit. The limit constrains inserted text;
+it does not truncate a longer value supplied by the program. Layout remains experimental
+because its prior-frame hit testing, key retention and focus lifecycle may evolve.
+
 ### Responsive layout
 
 `import layout as ui` adds boxes whose positions follow their contents and the available

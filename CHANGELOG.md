@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Menu `ui_text_field` now accepts up to 64 code points by default, matching HUD/layout. Pass `max_chars = 24` to keep the former limit. Widget argument orders stay unchanged and are documented together.
+
 - Breaking: 2D physics `pin` is `hinge`, matching 3D. Write `w.hinge(a, b, at)`. 2D `set_motor` names its last argument `limit` instead of `max_torque`: force for sliders, torque for hinges/wheels. Argument order and units stay unchanged.
 
 - Breaking: `play_music(m, volume, pan, looping, delay, at)` puts pan before looping, matching Sound's shared-option order; use named `looping` when migrating old positional tails. Sound still plays once by default and Music loops. Model `pose_at`/`Animator.play` and Animator fields use `looping`/`prev_looping` instead of `looped`/`prev_looped`.
