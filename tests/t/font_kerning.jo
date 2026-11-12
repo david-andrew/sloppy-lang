@@ -1,0 +1,88 @@
+# requires: sloppy
+# requires: native
+# Original CC0 fixtures; all advances 600 units, space 300, at 1000 units/em.
+check_pair = (t: __Ttf, a: int, b: int, expected: int):
+    v = __ttf_pair(t, __ttf_glyph_index(t, a), __ttf_glyph_index(t, b))
+    if v.1 != expected: print("pair {a} {b}: {v.1}, expected {expected}")
+    assert(v.1 == expected)
+
+main = ():
+    legacy = __ttf_open(embed("data/kern.ttf"))
+    check_pair(legacy, c'A', c'V', -100)
+    check_pair(legacy, c'T', c'o', -70)
+    check_pair(legacy, c'V', c'A', 0)
+    print("kern pairs ok")
+    loop file in [embed("data/gpos-pairs.ttf"), embed("data/gpos-extension.ttf")]:
+        t = __ttf_open(file)
+        check_pair(t, c'A', c'V', -120)
+        check_pair(t, c'T', c'o', -80)
+        check_pair(t, c'T', c'a', -60)
+        check_pair(t, c'V', c'A', 0)
+        assert(t.kern_lookups.len() == 1)
+    print("GPOS pairs and extension ok")
+    t = __ttf_open(embed("data/gpos-classes.ttf"))
+    check_pair(t, c'A', c'V', -100)  # two lookups accumulate; alternate subtables do not
+    check_pair(t, c'A', c'W', -90)
+    check_pair(t, c'T', c'V', -90)
+    check_pair(t, c'T', c'o', -70)
+    check_pair(t, c'V', c'A', 0)
+    t = __ttf_open(embed("data/gpos-extension-classes.ttf"))
+    check_pair(t, c'A', c'V', -90)
+    check_pair(t, c'T', c'W', -90)
+    # Both binary encodings of coverage and classes, including default class zero.
+    ranges: u8[] = [0, 2, 0, 2, 0, 2, 0, 4, 0, 0, 0, 8, 0, 9, 0, 3]
+    assert(__ttf_coverage(ranges, 0, 3) == 1 and __ttf_coverage(ranges, 0, 9) == 4)
+    assert(__ttf_coverage(ranges, 0, 5) == -1)
+    assert(__ttf_class(ranges, 0, 3) == 0 and __ttf_class(ranges, 0, 9) == 3)
+    classes: u8[] = [0, 1, 0, 2, 0, 2, 0, 7, 0, 8]
+    assert(__ttf_class(classes, 0, 2) == 7 and __ttf_class(classes, 0, 3) == 8)
+    assert(__ttf_class(classes, 0, 1) == 0)
+    print("GPOS classes ok")
+    # load_font also works before opening a window (the atlas is a software texture).
+    f = load_font(embed("data/gpos-pairs.ttf"))
+    set_font(f)
+    assert(abs(text_width("AV To Ta", 100.0) - 394.0) < 0.0001)
+    assert(abs(text_width("AV\nTo", 100.0) - 112.0) < 0.0001)
+    assert(abs(text_width("AV", 100.0) - 108.0) < 0.0001)
+    assert(text_width("AV", 100.0, mono = true) == text_width("AA", 100.0, mono = true))
+    xs = __char_xs("AV", 100.0)
+    assert(abs(xs[1] - 48.0) < 0.0001 and abs(xs[2] - 108.0) < 0.0001)
+    # UTF-8 continuations have their character's position, and fallback does not kern.
+    xs = __char_xs("éV", 100.0)
+    assert(xs[0] == xs[1] and abs(xs[2] - 56.0) < 0.0001)
+    assert(text_width("AZV", 100.0) == text_width("A", 100.0) + text_width("Z", 100.0) + text_width("V", 100.0))
+    # Cache hits include zero pairs; copied Font values share a bounded cache.
+    loop _ in [0..10):
+        assert(__font_pair(f, c'A', c'V').1 == -120)
+        assert(__font_pair(f, c'V', c'A').1 == 0)
+    assert(f.kerning[0].cache.len() == 1536)
+    print("advances, Unicode, fallback and cache ok")
+    assert(wrap_text("AV To Ta", 255.0, 100.0) == ["AV To", "Ta"])
+    assert(fit_text("AV To", text_width("AV…", 100.0) + 1.0, 100.0) == "AV…")
+    st = __TextEdit()
+    __te_layout(st, "AVA", 110.0, 100.0)
+    assert(st.lines == [(0, 2), (2, 3)])
+    assert(abs(st.xs[1] - 48.0) < 0.0001)
+    assert(abs(st.xs[2] - 108.0) < 0.0001)
+    assert(abs(st.xs[3] - st.xs[2] - 60.0) < 0.0001)
+    assert(__te_hit(st, "AVA", 0, 20.0) == 0)
+    assert(__te_hit(st, "AVA", 0, 30.0) == 1)
+    assert(__te_hit(st, "AVA", 1, 40.0) == 3)
+    # A break *inside* a kerned pair removes the pair from the second line too.
+    __te_layout(st, "AV", 50.0, 100.0)
+    assert(st.lines == [(0, 1), (1, 2)])
+    assert(abs(st.xs[1] - 60.0) < 0.0001 and abs(st.xs[2] - 120.0) < 0.0001)
+    print("wrapping, fitting and caret positions ok")
+    values = load_font(embed("data/gpos-values.ttf"))
+    set_font(values)
+    assert(abs(text_width("AV", 100.0) - 107.0) < 0.0001)
+    assert(__char_kern(values, -1, c'A', c'V', 100.0) == (1.0, -10.0))
+    assert(__char_kern(values, c'A', c'V', -1, 100.0) == (2.0, -3.0))
+    # ValueFormat2 consumes V for this lookup; it cannot start the overlapping VA pair.
+    assert(abs(text_width("AVA", 100.0) - 167.0) < 0.0001)
+    assert(abs(text_width("AVAV", 100.0) - 214.0) < 0.0001)
+    xs = __char_xs("AVAV", 100.0)
+    loop i in [0..xs.len()): assert(abs(xs[i] - [0.0, 50.0, 107.0, 157.0, 214.0][i]) < 0.0001)
+    assert(abs(text_width("VAV", 100.0) - 155.0) < 0.0001)
+    print("value records ok")
+    set_font()

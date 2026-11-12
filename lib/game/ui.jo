@@ -1136,6 +1136,7 @@ struct __TextEdit:
     laid_of = ""                # (the text, width and size they are for)
     laid_w = -2.0
     laid_size = 0.0
+    laid_pairs = 0              # pair-cache identity: changing the font changes the layout
 struct __TextSnap:
     text = ""
     caret = 0
@@ -1159,17 +1160,28 @@ __te_sync = (st: mut __TextEdit, value: str, multi: bool = false) -> str:
 
 # (its lines, wrapped at w (-1: one line), and where each character is, when the text changed)
 __te_layout = (st: mut __TextEdit, v: str, w: f64, size: f64):
-    if v == st.laid_of and w == st.laid_w and size == st.laid_size and st.xs.len() == len(v) + 1: return
+    f = __text_font()
+    pairs = if f.kerning.len() > 0: data(f.kerning[0].cache) as int else: 0
+    if v == st.laid_of and w == st.laid_w and size == st.laid_size and pairs == st.laid_pairs and st.xs.len() == len(v) + 1: return
+    st.laid_pairs = pairs
     st.laid_of = v
     st.laid_w = w
     st.laid_size = size
     st.xs = __char_xs(v, size)
     if w < 0.0: st.lines = [(0, len(v))]
-    else: st.lines = __te_wrap(v, st.xs, w)
+    else: st.lines = __te_wrap(v, st.xs, w, size)
+    if f.kerning.len() > 0:
+        # Each visual line is drawn separately: no pair may reach across a wrap. Keep
+        # the cumulative offsets expected by selection, caret movement and hit testing.
+        base = 0.0
+        loop l in st.lines:
+            local_xs = __char_xs(v[l.0..l.1), size)
+            loop j in [0..local_xs.len()): st.xs[l.0 + j] = base + local_xs[j]
+            base += local_xs[local_xs.len() - 1]
 
 # (lines no wider than w: each one's start, and its end, before its line break or where the next
 # starts (after the spaces it broke at); a word wider than w broken where it reaches it)
-__te_wrap = (s: str, xs: f64[], w: f64) -> (int, int)[]:
+__te_wrap = (s: str, xs: f64[], w: f64, size: f64 = 20.0) -> (int, int)[]:
     out: (int, int)[]
     start = 0
     brk = -1                    # (where the line may break: after a space, or at a CJK character)
@@ -1187,7 +1199,7 @@ __te_wrap = (s: str, xs: f64[], w: f64) -> (int, int)[]:
             i = r.1
             continue
         if __cjk(r.0) and i > start: brk = i
-        if xs[r.1] - xs[start] > w and i > start:
+        if __text_span_width(s, xs, start, r.1, size) > w and i > start:
             at = i
             if brk > start: at = brk
             out.push((start, at))

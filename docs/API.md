@@ -2896,11 +2896,12 @@ Japanese, Chinese or Korean text needs a font with them (Noto Sans CJK, which mo
       base: f64                   # the baseline's height in a cell
       spread: f64                 # distance (in atlas pixels) the field fades over
       bitmap = false              # (pixel_font: hard pixels at whole-number scales, not distances)
+      kerning: __FontKern[]       # optional shared pair tables/cache; empty for built-in/bitmap fonts
   ```
 
 #### Making the atlas
 
-- `load_font = (file: u8[], extra: str = "") -> Font`: a font from a TrueType file (it stops the program with a message if it cannot read it)
+- `load_font = (file: u8[], extra: str = "") -> Font`: a font from a TrueType or OpenType file (it stops with a message if it cannot read it). Horizontal kerning comes from GPOS's kern feature (pairs, classes and extension lookups), or the legacy kern table. Drawing, measuring, wrapping and text-field carets use the same advances. mono = true and the built-in/pixel fonts keep their fixed metrics. This is pair positioning, not script shaping: contextual substitutions, mark attachment and variable font/device adjustments are not applied.
 
 ### screen.jo
 

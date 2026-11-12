@@ -152,7 +152,8 @@ game picks from (and an example of each):
   bodies at rest, with all they touch, are left out until something touches them).
 - Audio: sounds placed in 2D/3D (panning and distance): done (`play_at`, `move_sound`).
 - Assets: a whole directory embedded at once (done: `embed_dir`), Tiled's XML maps and external
-  tilesets (done), OpenType fonts with CFF outlines and kerning.
+  tilesets (done), OpenType fonts with CFF outlines and kerning (done: legacy kern pairs and
+  GPOS pairs/classes, including extension lookups).
 - Input: non-XInput gamepads on Windows, actions bound per player.
 - Linux window icons on Wayland (KDE's xdg-toplevel-icon; GNOME needs a .desktop file).
 - Scripts (from a Python programmer's pass): done. Buffered file/stdin line loops (`open_file`,

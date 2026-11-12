@@ -1293,6 +1293,51 @@ __glyph = (f: Font, c: int) -> int:
     if c < 128: return f.ascii[c]
     f.slots.get(c, -1)
 
+# The horizontal adjustment for a character from its two neighboring pairs. Its placement
+# moves the ink; its advance moves the pen (caret positions use the same advances).
+__char_kern = (f: Font, prev: int, c: int, next: int, size: f64) -> (f64, f64):
+    if f.kerning.len() == 0 or c < 32: return (0.0, 0.0)
+    a = __font_pair(f, prev, c)
+    b = __font_pair(f, c, next)
+    k = size / f64(f.kerning[0].upem)
+    (f64(a.2 + b.0) * k, f64(a.3 + b.1) * k)
+
+# ValueFormat2 consumes both glyphs for that lookup. Most kerning fonts leave it zero:
+# they use the allocation-free neighboring-pair path. The uncommon case tracks each
+# lookup independently, including zero-valued records and alternate subtables.
+__kern_state = (f: Font) -> int[]:
+    if f.kerning.len() == 0 or not f.kerning[0].complex: return []
+    fill(0, f.kerning[0].lookups * 3)
+
+__char_adjust = (f: Font, prev: int, c: int, next: int, size: f64, state: mut int[]) -> (f64, f64):
+    if state.len() == 0: return __char_kern(f, prev, c, next, size)
+    x = 0
+    advance = 0
+    loop i in [0..state.len() / 3):
+        at = i * 3
+        if c >= 32:
+            x += state[at]
+            advance += state[at + 1]
+        skip = state[at + 2] != 0
+        state[at] = 0
+        state[at + 1] = 0
+        state[at + 2] = 0
+        if skip or c < 32: continue
+        v = __font_cached_pair(f, c, next, i)
+        x += v.0
+        advance += v.1
+        state[at] = v.2
+        state[at + 1] = v.3
+        if v.4 == 2: state[at + 2] = 1
+    k = size / f64(f.kerning[0].upem)
+    (f64(x) * k, f64(advance) * k)
+
+# Joining two runs adds this much to their combined advance.
+__join_kern = (f: Font, left: int, right: int, size: f64) -> f64:
+    if f.kerning.len() == 0: return 0.0
+    p = __font_pair(f, left, right)
+    f64(p.1 + p.3) * size / f64(f.kerning[0].upem)
+
 # how wide text is drawn (the widest of its lines)
 text_width = (s: str, size: f64 = 20.0, mono: bool = false) -> f64:
     __font_init()
@@ -1311,14 +1356,20 @@ text_width = (s: str, size: f64 = 20.0, mono: bool = false) -> f64:
     w = 0.0
     widest = 0.0
     i = 0
+    prev = -1
+    state = __kern_state(f)
     loop i < len(s):
         r = __next_char(s, i)
         i = r.1
         if r.0 == c'\n':
             widest = max(widest, w)
             w = 0.0
+            prev = -1
+            state = __kern_state(f)
             continue
-        w += __char_adv(f, r.0, size, k)
+        next = if i < len(s): __next_char(s, i).0 else: -1
+        w += __char_adv(f, r.0, size, k) + __char_adjust(f, prev, r.0, next, size, state).1
+        prev = r.0
     max(widest, w)
 
 # (how far one character of font f moves the pen: k is __font_k's)
@@ -1343,27 +1394,58 @@ __char_xs = (s: str, size: f64) -> f64[]:
     xs = fill(0.0, len(s) + 1)
     w = 0.0
     i = 0
+    prev = -1
+    state = __kern_state(f)
     loop i < len(s):
         r = __next_char(s, i)
         loop j in [i..r.1): xs[j] = w
-        w += __char_adv(f, r.0, size, k)
+        next = if r.1 < len(s): __next_char(s, r.1).0 else: -1
+        w += __char_adv(f, r.0, size, k) + __char_adjust(f, prev, r.0, next, size, state).1
+        prev = r.0
         i = r.1
     xs[len(s)] = w
     xs
+
+# Width of a substring from a complete string's caret positions. Remove adjustments
+# contributed by pairs across its two boundaries (not part of the substring).
+__text_span_width = (s: str, xs: f64[], start: int, stop: int, size: f64) -> f64:
+    w = xs[stop] - xs[start]
+    f = __text_font()
+    if f.kerning.len() == 0 or start == stop: return w
+    if f.kerning[0].complex: return text_width(s[start..stop), size)
+    k = size / f64(f.kerning[0].upem)
+    if start > 0:
+        p = start - 1
+        loop p > 0 and int(s[p]) & 0xC0 == 0x80: p -= 1
+        pair = __font_pair(f, __next_char(s, p).0, __next_char(s, start).0)
+        w -= f64(pair.3) * k
+    if stop < len(s):
+        p = stop - 1
+        loop p > start and int(s[p]) & 0xC0 == 0x80: p -= 1
+        pair = __font_pair(f, __next_char(s, p).0, __next_char(s, stop).0)
+        w -= f64(pair.1) * k
+    w
 
 # s as it fits in a line `width` wide: cut short, ending in …, when it is wider (a long name on a
 # button, a table's cell)
 fit_text = (s: str, width: f64, size: f64 = 20.0) -> str:
     if text_width(s, size) <= width: return s
-    room = width - text_width("…", size)
-    xs = __char_xs(s, size)
+    f = __text_font()
+    k = __font_k(f, size)
+    tail = text_width("…", size)
+    w = 0.0
+    prev = -1
     n = 0
     i = 0
     loop i < len(s):
-        j = __next_char(s, i).1
-        if xs[j] > room: break
+        c, j = __next_char(s, i)
+        w += __char_adv(f, c, size, k) + __join_kern(f, prev, c, size)
+        candidate = w + tail + __join_kern(f, c, c'…', size)
+        if f.kerning.len() > 0 and f.kerning[0].complex: candidate = text_width(s[..j) + "…", size)
+        if candidate > width: break
         n = j
         i = j
+        prev = c
     trim_end(s[..n)) + "…"
 
 # how tall text is drawn: its lines, each size * 1.25 below the one before (pixel_font's: its
@@ -1390,21 +1472,33 @@ enum Align:
 wrap_text = (s: str, width: f64, size: f64 = 20.0) -> str[]:
     out: str[]
     space = text_width(" ", size)
+    f = __text_font()
     loop para in s.split("\n"):
         line = ""
         w = 0.0
+        last = -1
         loop u in __wrap_units(para):
             uw = text_width(u.0, size)
             gap = 0.0
-            if len(line) > 0 and u.1: gap = space
-            if len(line) > 0 and w + gap + uw > width and not __cjk_closing(u.0):
+            first = __next_char(u.0, 0).0
+            if len(line) > 0:
+                if u.1: gap = space + __join_kern(f, last, c' ', size) + __join_kern(f, c' ', first, size)
+                else: gap = __join_kern(f, last, first, size)
+            combined = w + (gap + uw)
+            if f.kerning.len() > 0 and f.kerning[0].complex:
+                combined = text_width(line + (if len(line) > 0 and u.1: " " else: "") + u.0, size)
+            if len(line) > 0 and combined > width and not __cjk_closing(u.0):
                 out.push(line)
                 line = ""
                 w = 0.0
                 gap = 0.0
+                combined = uw
             if len(line) > 0 and u.1: line += " "
             line += u.0
-            w += gap + uw
+            w = combined
+            j = 0
+            loop j < len(u.0):
+                last, j = __next_char(u.0, j)
         out.push(line)
     out
 
@@ -1498,6 +1592,8 @@ text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), sha
     madv = f32(__mono_adv(f)) * k
     i = 0
     left = chars
+    prev = -1
+    state = __kern_state(f)
     loop i < len(s):
         r = __next_char(s, i)
         i = r.1
@@ -1506,9 +1602,14 @@ text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), sha
         if left > 0: left -= 1
         if c == c'\n':
             x = pos.x
+            prev = -1
+            state = __kern_state(f)
             top += f32(size * 1.25)
             continue
-        if c < 32: continue
+        if c < 32:
+            prev = -1
+            state = __kern_state(f)
+            continue
         gf = f
         g = __glyph(f, c)
         if g < 0 and fill_in:
@@ -1528,8 +1629,11 @@ text = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1), sha
             if c != c' ': __text_glyph(gf, g, x + (madv - gw * sx) / 2.0, top, size, sx, color)
             x += madv
             continue
-        if c != c' ': __text_glyph(gf, g, x, top, size, 1.0, color)
-        x += gw
+        next = if i < len(s): __next_char(s, i).0 else: -1
+        kp = __char_adjust(f, prev, c, next, size, state)
+        if c != c' ': __text_glyph(gf, g, x + f32(kp.0), top, size, 1.0, color)
+        x += gw + f32(kp.1)
+        prev = c
 
 # (glyph g of font f, its advance starting at x, the line's top at top; sx narrows it; slant
 # leans it, the top that much of its height to the right: italic)
@@ -1572,6 +1676,8 @@ text_rich = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1)
         loop line in lines:
             x = pos.x + f32(off)
             li = 0
+            prev = -1
+            state = __kern_state(__text_font())
             loop li < len(line) and left != 0:
                 r = __next_char(line, li)
                 li = r.1
@@ -1587,7 +1693,10 @@ text_rich = (s: str, pos: vec2, size: f64 = 20.0, color: vec4 = vec4(1, 1, 1, 1)
                 if left > 0: left -= 1
                 c = st.color
                 if pass_ == 0 and passes == 2: c = shadow
-                x += __rich_char(r.0, x, top, size, c, st.bold, st.italic)
+                next = if li < len(line): __next_char(line, li).0 else: -1
+                kp = __char_adjust(__text_font(), prev, r.0, next, size, state)
+                x += __rich_char(r.0, x + f32(kp.0), top, size, c, st.bold, st.italic) + f32(kp.1)
+                prev = r.0
             top += f32(size * 1.25)
     f64(lines.len()) * size * 1.25
 

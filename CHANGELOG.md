@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Loaded fonts apply horizontal pair kerning from legacy `kern` and GPOS pairs/classes,
+  including extension lookups, with a bounded per-font cache. Drawing, rich text, widths,
+  wrapping and text-field caret/hit positions agree; built-in and monospaced metrics stay fixed.
+
+- Release helper specialization preserves the inliner's frame-intrinsic and export exclusions,
+  including helpers with known callbacks and `@inline`.
+
 - `sloppy new mygame character` starts an animated 3D character with Idle/Walk/Run
   crossfades and a follow camera, in a small valley (a tiled plaza in a ring of pillars, a path
   to a gate, trees and rocks on hills, warm sun, fog and shadows) built from a few lines of mesh
