@@ -219,7 +219,7 @@ tick = (g: Game, pads: Pad[]) -> Game:  # one tick of play (the same for the sam
     ...
 
 s = netplay.session(Game(), tick, players = 2, me = to_int(env("PLAYER") ?? "0") ?? 0)
-s.udp(4400 + s.me, [("192.168.1.20", 4400), ("192.168.1.21", 4401)])
+s.udp(4400 + s.me, [("192.168.1.20", 4400), ("192.168.1.21", 4401)]).unwrap()
 ```
 
 Then once a tick, `s.play(pad)` with this machine's input, and draw `s.state`.
@@ -426,7 +426,7 @@ apply = (w: World, player: int, input: Pad, seen: World) -> World: ...    # one 
 step = (w: World) -> World: ...                                          # the rest of a tick
 
 srv = netplay.server(World(), apply, step)      # (a native program)
-srv.listen(4600)                                # once a tick: srv.update(); srv.joined, srv.left
+srv.listen(4600).unwrap()                                # once a tick: srv.update(); srv.joined, srv.left
 
 c = netplay.client(World(), apply)
 c.connect("game.example.com", 4600)             # once a tick: c.play(pad); draw c.state and c.view()
@@ -456,7 +456,7 @@ clients, and their inputs wait in a queue: lag).
 
 ```gdscript
 srv = netplay.server(World(), apply, step)
-srv.listen(4600)
+srv.listen(4600).unwrap()
 srv.run()                       # (or each tick in a game's own update: srv.update())
 ```
 
@@ -586,7 +586,7 @@ and up), joined and fed by hand while the server listens for the others.
 
 ```gdscript
 srv = netplay.server(World(), apply, step)
-srv.listen(4600)
+srv.listen(4600).unwrap()
 srv.join(-1)                            # the host's own player
 me = netplay.client(World(), apply)     # (not connected: fed by hand)
 
@@ -729,7 +729,7 @@ tick = (g: Game, pads: Pad[]) -> Game:
     g
 
 s = netplay.session(Game(), tick, players = 2, me = to_int(env("PLAYER") ?? "0") ?? 0)
-s.udp(9640 + s.me, [("127.0.0.1", 9640), ("127.0.0.1", 9641)])
+s.udp(9640 + s.me, [("127.0.0.1", 9640), ("127.0.0.1", 9641)]).unwrap()
 spare = 0.0
 update = (dt: f64):
     global spare
@@ -766,7 +766,7 @@ tick being compared.
 
 A web page cannot use UDP or wait for others to connect. It connects over WebSockets to a
 native program: a client-server game's server, or for rollback, a relay
-(`netplay.relay(port)`, which a native player can run while playing) that passes packets
+(`netplay.relay(port).unwrap()`, which a native player can run while playing) that passes packets
 between the players in a room (`s.join_relay(host, port, room)`; each still gives its own
 `me`: the relay does not hand out numbers, and two with the same one are told so). A page served over https
 can only reach `wss://` servers: put a proxy with a certificate (Caddy, for one) in front of

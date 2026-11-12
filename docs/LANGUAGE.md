@@ -1747,7 +1747,7 @@ For a local server without a fixed port, call `http.listen(0, host = "127.0.0.1"
 read `http.port()` while it stays open. Several `listen` calls create separate listeners;
 `http.port(1)` reads the second one. WebSocket servers have the same pattern with
 `net.listen(0)` and `net.port()`; raw TCP uses `s = net.tcp_listen(0)` and `net.tcp_port(s)`.
-UDP uses `net.udp(0)` and `net.udp_port(socket)`; a netplay session bound with `s.udp(0, addrs)`
+UDP uses `net.udp(0)` and `net.udp_port(socket)`; a netplay session bound with `s.udp(0, addrs).unwrap()`
 reports its port with `s.port()`. Each accessor returns -1 when its listener/socket does not
 exist. The OS chooses a free port while binding the socket, so callers need no
 probe-and-rebind step.

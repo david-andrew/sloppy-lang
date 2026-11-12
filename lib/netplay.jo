@@ -16,7 +16,7 @@ import crypto
 #
 #   s = netplay.session(Game(), tick, players = 2, me = 0)
 #   s.over([-1, friend])               # the other player: a peer from net.invite (a code to send)
-#   s.udp(4000, [("192.168.1.20", 4000), ("192.168.1.21", 4000)])   # (or: each one's address)
+#   s.udp(4000, [("192.168.1.20", 4000), ("192.168.1.21", 4000)]).unwrap()   # (or: each one's address)
 #   update = (dt: f64): s.play(Pad(x = int(input_axis().x), jump = action_pressed("Jump")))
 #   draw = (): ... s.state ...
 #
@@ -692,11 +692,15 @@ over[S, I] = (s: mut Session[S, I], peers: int[]):
 # play over UDP: this machine listens on port, and each player p is at addrs[p] (this one's own
 # entry is not used)
 @no_web("does not work in a web page, which has no UDP: s.join_relay(host, port, room) plays through a relay (pages then connect straight to each other)")
-udp[S, I] = (s: mut Session[S, I], port: int, addrs: (str, int)[]):
+udp[S, I] = (s: mut Session[S, I], port: int, addrs: (str, int)[]) -> void | net.NetError:
     when TARGET == "wasm":
         panic("netplay: a web page has no UDP: s.join_relay(host, port, room) plays through a relay")
-    s.__sock = net.udp(port)
-    if s.__sock < 0: panic("cannot use UDP port {port} (another program has it? each player on one machine needs its own)")
+    sock = net.udp(port)
+    if sock < 0:
+        s.problem = "cannot use UDP port {port} (another program has it? each player on one machine needs its own)"
+        return net.NetError(s.problem)
+    s.problem = ""
+    s.__sock = sock
     s.__addrs = addrs
 
 # this session's UDP port, including one chosen by udp(0); -1 when it has no UDP socket
@@ -955,8 +959,8 @@ __np_relay_players: {int: int}
 __np_relay_dest: {(str, int): int}
 
 # a relay on port: call it every frame (in a game that hosts others), or relay_forever
-relay = (port: int):
-    if not net.listen(port): panic("netplay.relay: cannot listen on port {port} (another program has it?)")
+relay = (port: int) -> void | net.NetError:
+    if not net.listen(port): return net.NetError("netplay.relay: cannot listen on port {port} (another program has it?)")
     loop e in net.receive_server():
         if e.kind == .left:
             if let room = __np_rooms.get(e.peer):
@@ -997,11 +1001,11 @@ relay = (port: int):
         else if starts_with(e.text, "join "): __np_rooms[e.peer] = e.text[5..]
 
 # a program that is only a relay
-relay_forever = (port: int):
-    if not net.listen(port): panic("cannot listen on port {port}")
+relay_forever = (port: int) -> void | net.NetError:
+    if not net.listen(port): return net.NetError("cannot listen on port {port} (another program has it?)")
     print("netplay relay on port {port}")
     loop:
-        relay(port)
+        relay(port)?
         sleep(0.001)
 
 # ---------------- a simulated network, for trying netplay in one program ----------------
@@ -1051,7 +1055,7 @@ deliver = (l: mut Link, now: f64) -> (int, u8[])[]:
 #   step = (w: World) -> World: ...                                          # the rest of a tick
 #
 #   srv = netplay.server(World(), apply, step)          # (a native program)
-#   srv.listen(4600)
+#   srv.listen(4600).unwrap()
 #   every tick: srv.update()      (srv.joined, srv.left: the players who came and went: add and
 #                                  remove what they play in srv.world)
 #
@@ -1099,6 +1103,7 @@ struct Server[W, I]:
     __encode: (W, int, W?) -> u8[]
     __encoding = false
     __sent: {int: (int, W)[]}       # (each player's last worlds sent, by tick: the base of the next)
+    problem = ""                    # why listening could not start; cleared on a successful retry
 
 const __CS_HIST = 64
 
@@ -1369,8 +1374,11 @@ outgoing[W, I] = (s: mut Server[W, I]) -> (int, u8[])[]:
     o
 
 # serve over WebSockets on port: native and web clients connect (players are net's peers)
-listen[W, I] = (s: mut Server[W, I], port: int):
-    if not net.listen(port): panic("cannot listen on port {port}")
+listen[W, I] = (s: mut Server[W, I], port: int) -> void | net.NetError:
+    if not net.listen(port):
+        s.problem = "cannot listen on port {port} (another program has it?)"
+        return net.NetError(s.problem)
+    s.problem = ""
     s.__port = port
 
 # one tick: each player's next input applied, the rest of the tick, and the world sent out

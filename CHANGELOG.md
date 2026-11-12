@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: netplay `udp`, server `listen`, `relay` and `relay_forever` return `void | net.NetError` on bind failure. Handle the result or use `.unwrap()`; sessions and servers also set `problem`.
+
 - Breaking: WebSocket `net.listen` takes `(port, host = "", largest = 16 << 20)`, matching TCP/HTTP. Use named `largest` for message limits.
 - Breaking: `http.binary` takes `(bytes, status = 200, type = "application/octet-stream")`, matching `http.text`; pass `type` by name for a custom content type.
 
