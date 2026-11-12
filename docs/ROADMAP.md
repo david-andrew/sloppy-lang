@@ -237,6 +237,15 @@ safety net for changes here.
   temporary character strings: the story template falls from 132 to 26 allocations per Vulkan
   frame, with unchanged output and UTF-8/style-boundary tests. Software shader/projection work
   and game-side mesh/HUD rebuilding remain visible in the profiles.
+- The [software renderer follow-up](../bench/games/SOFTWARE.md) packs projection and
+  interpolation, culls bounded instances only for the library's own pure shaders,
+  specializes texture sampling, and hoists repeated post-effect coordinates. Across
+  300 scripted frames, retired instructions fall 44.2%/42.7% in Aces and 19.0%/17.5%
+  in Dunes (debug/release); all eight profiled scenes improve in both modes. One- and
+  three-thread Callgrind runs agree on the gains. All 107 primary before/after PNG
+  pairs are byte-identical, the 43 render tests pass with unchanged references, and
+  the library compile-cost increase is at most 0.27%. Custom vertex functions still
+  run for every vertex; wind and unknown bounds retain the original path.
 - Then the remaining gap to C -O2 in release builds (fannkuch 1.5x, spectral 1.4x, nbody 1.3x).
 - Affine loop versioning now removes scaled-counter checks such as `b[k * n + j]`,
   using overflow-guarded endpoint tests and the original checked fallback. On `bench/headers`,
