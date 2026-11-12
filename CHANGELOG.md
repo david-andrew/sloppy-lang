@@ -2,7 +2,12 @@
 
 ## Unreleased
 
-- The roadmap marks per-player action bindings as done; non-XInput Windows gamepads remain.
+- Windows gamepads support Raw Input HID alongside XInput: USB DualShock 4/DualSense,
+  Switch Pro, common 8BitDo D-input layouts and generic joysticks/gamepads. Devices keep
+  stable player slots across hot-plug, hats map to the d-pad, and raw controls remain
+  available. Switch Pro USB startup is asynchronous. Descriptor/report fixtures cover
+  mapping and input edges on Linux; Windows tests cover ABI layouts and packet staging.
+  Sony Bluetooth extended reports and rumble are not supported.
 
 - Wayland window icons use the optional xdg-toplevel-icon protocol, through libwayland or
   the wire transport, including libdecor windows. GNOME desktop-entry/app-id setup is documented.

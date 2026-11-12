@@ -9,7 +9,7 @@
 # A controller keeps its number while it is plugged in (players stay who they are); one plugged
 # in later takes a free number. input_axis() also follows the sticks and d-pads, so keyboard
 # games work with a pad. Linux builds read the joystick devices (/dev/input/js0..7), Windows
-# builds XInput (four controllers: what Windows maps to the Xbox layout), web builds the
+# builds XInput and Raw Input HID (PlayStation, Switch Pro, D-input and generic pads), web builds the
 # browser's Gamepad API, macOS builds Apple's GameController framework.
 
 enum PadButton: a, b, x, y, lb, rb, back, start, home, lstick, rstick, up, down, left, right
@@ -137,7 +137,7 @@ __pad_frame = ():
             __pad_early = false
             loop i in [0..8 * 15): __pad_prev[i] = __pad_snap[i]
             loop i in [0..8 * 6): __pad_prev_axes[i] = __pad_snap_axes[i]
-            loop i in [0..8 * 32): __pad_raw_prev[i] = __pad_raw_down[i]
+            loop i in [0..8 * 32): __pad_raw_prev[i] = __pad_snap_raw[i]
         else: __pad_save_prev()
         __pad_poll()
 
@@ -146,6 +146,7 @@ __pad_frame = ():
 __pad_early = false
 __pad_snap: bool[] = fill(false, 8 * 15)
 __pad_snap_axes: f64[] = fill(0.0, 8 * 6)
+__pad_snap_raw: bool[] = fill(false, 8 * 32)
 __pad_moved = () -> bool:
     global __pad_early
     when TARGET == "wasm":
@@ -159,12 +160,279 @@ __pad_moved = () -> bool:
             __pad_early = true
             loop i in [0..8 * 15): __pad_snap[i] = __pad_down[i]
             loop i in [0..8 * 6): __pad_snap_axes[i] = __pad_axes[i]
+            loop i in [0..8 * 32): __pad_snap_raw[i] = __pad_raw_down[i]
         __pad_poll()
         loop i in [0..8 * 15):
             if __pad_down[i] != __pad_snap[i]: return true
         loop i in [0..8 * 6):
             if abs(__pad_axes[i] - __pad_snap_axes[i]) > 0.05: return true
+        loop i in [0..8 * 32):
+            if __pad_raw_down[i] != __pad_snap_raw[i]: return true
         false
+
+# HID's descriptor capabilities and layout mapping are independent of Windows. The Windows
+# adapter supplies HidP's button usages and unsigned values; fixture readers do the same in
+# tests/t/gamepad_hid.jo. Report IDs and link collections are kept, including split reports.
+struct __HidButtons:
+    page: int
+    report: int
+    link: int
+    first: int
+    last: int
+    down = 0
+
+struct __HidValue:
+    page: int
+    report: int
+    link: int
+    usage: int
+    bits: int
+    low: int
+    high: int
+    value = 0.0                       # -1..1, device axes
+    unit = 0.0                        # 0..1, triggers
+    hat = -1                          # clockwise from up; -1 at rest
+
+struct __HidPad:
+    vendor = 0
+    product = 0
+    name = "HID controller"
+    buttons: __HidButtons[]
+    values: __HidValue[]
+    report_bytes = 0
+    preparsed: u8[]
+    handle = 0
+    slot = -1
+    live = true
+    # Switch Pro USB startup: an overlapped write, followed by its Raw Input acknowledgement.
+    output: *u8 = null
+    output_bytes = 0
+    write_buf: u8[]
+    overlap: u8[]
+    writing = false
+    setup = 0
+    deadline = 0.0
+    write_deadline = 0.0
+    switch_native = false
+
+# HIDP_BUTTON_CAPS and HIDP_VALUE_CAPS are both 72 bytes, with their usage union at 56.
+# Decode explicitly: Sloppy structs have a different ABI. Ignore aliases, relative axes,
+# vendor data, and value arrays (sensors/touch); keep individual/ranged absolute controls.
+__hid_caps = (h: mut __HidPad, caps: u8[], values: bool):
+    loop i in [0..caps.len() / 72):
+        q = data(caps) + i * 72
+        page = int((q as *u16)[0])
+        if q[3] != 0 or (page != 1 and page != 9): continue
+        report = int(q[2])
+        link = int(((q + 6) as *u16)[0])
+        first = int(((q + 56) as *u16)[0])
+        last = first
+        if q[12] != 0: last = int(((q + 58) as *u16)[0])
+        if values:
+            if page != 1 or q[15] == 0: continue
+            bits = int(((q + 18) as *u16)[0])
+            count = int(((q + 20) as *u16)[0])
+            if bits < 1 or bits > 32 or (q[12] == 0 and count != 1): continue
+            lo = int(((q + 40) as *i32)[0])
+            hi = int(((q + 44) as *i32)[0])
+            # HID's logical maximum is unsigned when its minimum is nonnegative.
+            if lo >= 0: hi = int(((q + 44) as *u32)[0])
+            loop u in [max(first, 0x30)..min(last + 1, 0x3A)):
+                if h.values.len() < __PAD_RAW_AXES: h.values.push(__HidValue(page, report, link, u, bits, lo, hi))
+        else:
+            if page == 9 and first <= 32 and last >= 1 and last >= first:
+                h.buttons.push(__HidButtons(page, report, link, max(first, 1), min(last, 32)))
+
+__hid_signed = (raw: int, bits: int, low: int) -> int:
+    if bits < 1 or bits > 32: return 0
+    n = raw & ((1 << bits) - 1)
+    if low < 0 and n & (1 << (bits - 1)) != 0: n -= 1 << bits
+    n
+
+__hid_value = (c: mut __HidValue, raw: int):
+    n = __hid_signed(raw, c.bits, c.low)
+    if c.usage == 0x39:
+        c.hat = -1
+        # Hats can start at zero or one. Null (usually 8 or 15) means centered.
+        if n >= c.low and n <= c.high and n - c.low < 8: c.hat = n - c.low
+        c.value = if c.hat >= 0: f64(c.hat) * 2.0 / 7.0 - 1.0 else: 0.0
+        return
+    if c.high <= c.low: return
+    c.unit = clamp(f64(n - c.low) / f64(c.high - c.low), 0.0, 1.0)
+    c.value = c.unit * 2.0 - 1.0
+
+# The report reader is injected: HidP on Windows, descriptor fixtures on any platform. A
+# failed read leaves that control alone; controls in other report IDs must stay held.
+__hid_report = (h: mut __HidPad, report: u8[], buttons: (__HidButtons, u8[]) -> u16[]?, value: (__HidValue, u8[]) -> int?) -> bool:
+    if report.len() == 0 or (h.report_bytes > 0 and report.len() != h.report_bytes): return false
+    if __hid_switch(h): return __hid_switch_report(h, report)
+    changed = false
+    loop mut c in h.buttons:
+        if c.report != int(report[0]): continue
+        if let usages = buttons(c, report):
+            c.down = 0
+            loop u in usages:
+                n = int(u)
+                if n >= c.first and n <= c.last: c.down |= 1 << (n - 1)
+            changed = true
+    loop mut c in h.values:
+        if c.report != int(report[0]): continue
+        if let raw = value(c, report):
+            __hid_value(c, raw)
+            changed = true
+    changed
+
+__hid_sony = (h: __HidPad) -> bool:
+    h.vendor == 0x054C and (h.product == 0x05C4 or h.product == 0x09CC or h.product == 0x0BA0 or h.product == 0x0CE6 or h.product == 0x0DF2)
+__hid_switch = (h: __HidPad) -> bool: h.vendor == 0x057E and h.product == 0x2009
+# Nintendo's USB descriptor labels report 30 as ordinary axes, but the wire packet is
+# Nintendo's packed 12-bit format. Decode that format explicitly (and Bluetooth's simple 3f).
+# Both go through the same layout table; no sensor, vibration or LED output is exposed.
+__hid_switch_report = (h: mut __HidPad, r: u8[]) -> bool:
+    simple = r[0] == 0x3F
+    if simple:
+        if r.len() < 12: return false
+    else:
+        if (r[0] != 0x30 and r[0] != 0x21) or r.len() < 13: return false
+    if not h.switch_native:
+        h.switch_native = true
+        h.buttons = [__HidButtons(9, 0, 0, 1, 14)]
+        h.values = [__HidValue(1, 0, 0, 0x30, 16, 0, 65535), __HidValue(1, 0, 0, 0x31, 16, 0, 65535),
+            __HidValue(1, 0, 0, 0x32, 16, 0, 65535), __HidValue(1, 0, 0, 0x35, 16, 0, 65535), __HidValue(1, 0, 0, 0x39, 4, 0, 7)]
+    if simple:
+        h.buttons[0].down = int(r[1]) | ((int(r[2]) & 0x3F) << 8)
+        # Some third-party simple reports repeat ZR in bit 15.
+        if r[2] & 0x80 != 0: h.buttons[0].down |= 0x80
+        __hid_value(h.values[4], int(r[3]))
+        loop i in [0..4):
+            h.values[i].bits = 16
+            h.values[i].high = 65535
+            __hid_value(h.values[i], int(r[4 + i * 2]) | (int(r[5 + i * 2]) << 8))
+    else:
+        # right buttons, shared buttons, left buttons; standard HID button ordering
+        bytes_at = [3, 3, 3, 3, 5, 3, 5, 3, 4, 4, 4, 4, 4, 4]
+        bits_at = [2, 3, 0, 1, 6, 6, 7, 7, 0, 1, 3, 2, 4, 5]
+        mask = 0
+        loop i in [0..14):
+            if int(r[bytes_at[i]]) & (1 << bits_at[i]) != 0: mask |= 1 << i
+        h.buttons[0].down = mask
+        # The full report's d-pad is four bits. Contradictory directions cancel.
+        x = int(r[5] & 4 != 0) - int(r[5] & 8 != 0)
+        y = int(r[5] & 1 != 0) - int(r[5] & 2 != 0)
+        hat = -1
+        if y < 0: hat = if x < 0: 7 else if x > 0: 1 else: 0
+        else if y > 0: hat = if x < 0: 5 else if x > 0: 3 else: 4
+        else if x != 0: hat = if x > 0: 2 else: 6
+        __hid_value(h.values[4], if hat >= 0: hat else: 8)
+        loop stick in [0..2):
+            o = 6 + stick * 3
+            xraw = int(r[o]) | ((int(r[o + 1]) & 15) << 8)
+            yraw = (int(r[o + 1]) >> 4) | (int(r[o + 2]) << 4)
+            loop axis in [0..2):
+                i = stick * 2 + axis
+                h.values[i].bits = 12
+                h.values[i].high = 4095
+                __hid_value(h.values[i], if axis == 0: xraw else: yraw)
+                if axis == 1: h.values[i].value = -h.values[i].value
+    true
+
+__hid_8bitdo = (h: __HidPad) -> bool:
+    # SN30/SF30 Pro, SN30 Pro+, Pro 2, Ultimate D-input. Other 8BitDo products (M30,
+    # arcade sticks, adapters) have different layouts: retain their generic/raw controls.
+    h.vendor == 0x2DC8 and (h.product == 0x6000 or h.product == 0x6100 or h.product == 0x6001 or h.product == 0x6101 or h.product == 0x6002 or h.product == 0x6102 or h.product == 0x6006 or h.product == 0x6103 or h.product == 0x3012)
+
+__hid_axis = (h: __HidPad, usage: int, unit: bool = false) -> f64:
+    loop c in h.values:
+        if c.usage == usage:
+            if unit: return c.unit
+            return c.value
+    0.0
+__hid_has_axis = (h: __HidPad, usage: int) -> bool:
+    loop c in h.values:
+        if c.usage == usage: return true
+    false
+
+# Standard buttons use positions: south/east/west/north, even on Nintendo's B/A/Y/X.
+# The small tables use HID button usages minus one (as SDL's Windows mappings do).
+__hid_apply = (h: __HidPad, p: int):
+    mask = 0
+    loop c in h.buttons: mask |= c.down
+    loop i in [0..32): __pad_raw_down[p * 32 + i] = mask & (1 << i) != 0
+    __pad_nbuttons[p] = 0
+    loop c in h.buttons: __pad_nbuttons[p] = max(__pad_nbuttons[p], c.last)
+    __pad_naxes[p] = h.values.len()
+    loop i in [0..16):
+        v = 0.0
+        if i < h.values.len(): v = h.values[i].value
+        __pad_raw_axes[p * 16 + i] = v
+    bm = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    rx = 0x33
+    ry = 0x34
+    lt = 0x32
+    rt = 0x35
+    lb = -1
+    rb = -1
+    if __hid_sony(h):
+        bm = [1, 2, 0, 3, 4, 5, 8, 9, 12, 10, 11]
+        rx = 0x32
+        ry = 0x35
+        lt = 0x33
+        rt = 0x34
+    else if __hid_switch(h):
+        bm = [0, 1, 2, 3, 4, 5, 8, 9, 12, 10, 11]
+        rx = 0x32
+        ry = 0x35
+        lt = -1
+        rt = -1
+        lb = 6
+        rb = 7
+    else if __hid_8bitdo(h):
+        bm = [1, 0, 4, 3, 6, 7, 10, 11, 12, 13, 14]
+        if h.product == 0x6000 or h.product == 0x6100 or h.product == 0x6001 or h.product == 0x6101 or h.product == 0x6002 or h.product == 0x6102:
+            rx = 0x32
+            ry = 0x33
+            bm[8] = 2
+            if h.product == 0x6000: bm[8] = -1
+        if h.product == 0x3012:
+            bm[0] = 0
+            bm[1] = 1
+            bm[2] = 3
+            bm[3] = 4
+        lt = -1
+        rt = -1
+        lb = 8
+        rb = 9
+    else if not __hid_has_axis(h, 0x33) or not __hid_has_axis(h, 0x34):
+        # Common four-axis D-input pads: X/Y/Z/Rz; six-axis generic: X/Y/Rx/Ry, Z/Rz triggers.
+        rx = 0x32
+        ry = 0x35
+        lt = -1
+        rt = -1
+    loop i in [0..11): __pad_down[p * 15 + i] = bm[i] >= 0 and mask & (1 << bm[i]) != 0
+    hat = -1
+    loop c in h.values:
+        if c.usage == 0x39: hat = c.hat
+    __pad_down[p * 15 + 11] = hat == 0 or hat == 1 or hat == 7
+    __pad_down[p * 15 + 12] = hat == 3 or hat == 4 or hat == 5
+    __pad_down[p * 15 + 13] = hat == 5 or hat == 6 or hat == 7
+    __pad_down[p * 15 + 14] = hat == 1 or hat == 2 or hat == 3
+    a = p * 6
+    __pad_axes[a] = __hid_axis(h, 0x30)
+    __pad_axes[a + 1] = __hid_axis(h, 0x31)
+    __pad_axes[a + 2] = __hid_axis(h, rx)
+    __pad_axes[a + 3] = __hid_axis(h, ry)
+    __pad_axes[a + 4] = __hid_axis(h, lt, true)
+    __pad_axes[a + 5] = __hid_axis(h, rt, true)
+    if lb >= 0: __pad_axes[a + 4] = f64(int(mask & (1 << lb) != 0))
+    if rb >= 0: __pad_axes[a + 5] = f64(int(mask & (1 << rb) != 0))
+
+__pad_free = () -> int:
+    loop p in [0..MAX_GAMEPADS):
+        if not __pad_on[p]: return p
+    -1
+
+# (case-insensitive: the Raw Input path's IG_ interfaces already belong to XInput)
+__hid_xinput = (path: str) -> bool: find(lower(path), "ig_") >= 0
 
 when TARGET == "wasm":
     # (the page calls __pad_begin once a frame, then for each pad __pad_present and its state)
@@ -193,44 +461,283 @@ when TARGET == "wasm":
     __web_pad_raw_button = (p: i32, i: i32, down: i32):
         if p >= 0 and p < 8 and i >= 0 and i < 32: __pad_raw_down[int(p) * 32 + int(i)] = down != 0
 else when TARGET == "windows":
-    # XInput: four controller slots (pads 0 to 3), looked at again every two seconds while empty
     @lib("xinput1_4.dll")
     extern XInputGetState = (user: u32, state: *u8) -> u32
 
     __xi_state: u8[] = fill(u8(0), 16)
     __xi_retry: f64[] = fill(0.0, 4)
+    __xi_slot: int[] = fill(-1, 4)
     __xi_bits = [0x1000, 0x2000, 0x4000, 0x8000, 0x0100, 0x0200, 0x0020, 0x0010, 0x0400, 0x0040, 0x0080, 0x0001, 0x0002, 0x0004, 0x0008]
+    __w32_hid: __HidPad[]
+    __w32_hid_retry = 0.0
+
+    __w32_pad_init = (hwnd: *u8):
+        # Foreground input only; notifications also wake redraw_on_input on plug/unplug.
+        dev = fill(u8(0), 32)
+        loop i in [0..2):
+            q = data(dev) + i * 16
+            (q as *u16)[0] = 1
+            ((q + 2) as *u16)[0] = u16(4 + i)              # joystick, gamepad
+            ((q + 4) as *u32)[0] = 0x2000                 # RIDEV_DEVNOTIFY
+            ((q + 8) as **u8)[0] = hwnd
+        RegisterRawInputDevices(data(dev), 2, 16)
+        __w32_hid_scan()
+
+    __w32_hid_find = (handle: int) -> int:
+        loop i in 0.. and h in __w32_hid:
+            if h.live and h.handle == handle: return i
+        -1
+
+    __w32_hid_add = (handle: int):
+        if handle == 0 or __w32_hid_find(handle) >= 0 or __w32_hid.len() >= MAX_GAMEPADS: return
+        info = fill(u8(0), 32)
+        (data(info) as *u32)[0] = 32
+        n: u32[] = [32]
+        if GetRawInputDeviceInfoW(handle as *u8, u32(0x2000000B), data(info), data(n)) == u32(0xFFFFFFFF): return
+        q = data(info)
+        if ((q + 4) as *u32)[0] != 2: return             # RIM_TYPEHID
+        if ((q + 20) as *u16)[0] != 1: return
+        usage = int(((q + 22) as *u16)[0])
+        if usage != 4 and usage != 5: return
+        n[0] = 0
+        if GetRawInputDeviceInfoW(handle as *u8, u32(0x20000007), null, data(n)) == u32(0xFFFFFFFF) or n[0] == 0 or n[0] > 32768: return
+        path = fill(u16(0), int(n[0]) + 1)
+        if GetRawInputDeviceInfoW(handle as *u8, u32(0x20000007), data(path) as *u8, data(n)) == u32(0xFFFFFFFF): return
+        if __hid_xinput(__narrow(data(path), -1)): return
+        n[0] = 0
+        if GetRawInputDeviceInfoW(handle as *u8, u32(0x20000005), null, data(n)) == u32(0xFFFFFFFF) or n[0] == 0 or n[0] > 1048576: return
+        pp = fill(u8(0), int(n[0]))
+        if GetRawInputDeviceInfoW(handle as *u8, u32(0x20000005), data(pp), data(n)) == u32(0xFFFFFFFF): return
+        caps = fill(u8(0), 64)
+        if HidP_GetCaps(data(pp), data(caps)) != 0x110000: return
+        c = data(caps) as *u16
+        h = __HidPad(vendor = int(((q + 8) as *u32)[0]), product = int(((q + 12) as *u32)[0]), handle = handle, preparsed = pp, report_bytes = int(c[2]), output_bytes = int(c[3]))
+        # Bounded allocations even for a broken descriptor. Each capability is 72 bytes.
+        if c[23] > 256 or c[24] > 256: return
+        bc = fill(u8(0), int(c[23]) * 72)
+        vc = fill(u8(0), int(c[24]) * 72)
+        count: u16[] = [c[23]]
+        if count[0] > 0:
+            if HidP_GetButtonCaps(0, data(bc), data(count), data(pp)) != 0x110000: return
+            __hid_caps(h, bc[..int(count[0]) * 72), false)
+        count[0] = c[24]
+        if count[0] > 0:
+            if HidP_GetValueCaps(0, data(vc), data(count), data(pp)) != 0x110000: return
+            __hid_caps(h, vc[..int(count[0]) * 72), true)
+        if h.buttons.len() == 0 and h.values.len() == 0: return
+        # Product string is optional; opening with no requested access works for shared pads.
+        dev = CreateFileW(data(path), 0, 7, null, 3, 0, null)
+        if dev != null and (dev as int) != -1:
+            nm = fill(u16(0), 128)
+            if HidD_GetProductString(dev, data(nm) as *u8, 256) != 0: h.name = __narrow(data(nm), -1)
+            CloseHandle(dev)
+        # Genuine Switch Pro USB pads need a handshake to start reports. Bluetooth's output
+        # report is 49 bytes; only USB's 64-byte interface receives these commands.
+        if __hid_switch(h) and h.output_bytes == 64:
+            dev = CreateFileW(data(path), u32(0xC0000000), 3, null, 3, u32(0x40000000), null)
+            if dev != null and (dev as int) != -1:
+                h.output = dev
+                h.write_buf = fill(u8(0), 64)
+                h.overlap = fill(u8(0), 32)
+        __w32_hid.push(h)
+
+    __w32_hid_close = (h: mut __HidPad):
+        if h.output != null:
+            # CancelIoEx may finish asynchronously; wait for just this cancelled write before
+            # freeing its buffer/OVERLAPPED. No controller reads or worker threads are used.
+            if h.writing:
+                CancelIoEx(h.output, data(h.overlap))
+                got: u32[] = [0]
+                GetOverlappedResult(h.output, data(h.overlap), data(got), 1)
+            CloseHandle(h.output)
+        h.output = null
+        h.writing = false
+
+    __w32_hid_remove = (handle: int):
+        k = __w32_hid_find(handle)
+        if k >= 0:
+            __w32_hid[k].live = false
+            __w32_hid_close(__w32_hid[k])
+
+    __w32_hid_scan = ():
+        n: u32[] = [0]
+        if GetRawInputDeviceList(null, data(n), 16) == u32(0xFFFFFFFF) or n[0] > 4096: return
+        if n[0] == 0:
+            loop mut h in __w32_hid:
+                h.live = false
+                __w32_hid_close(h)
+            return
+        devices = fill(u8(0), int(n[0]) * 16)
+        got = GetRawInputDeviceList(data(devices), data(n), 16)
+        if got == u32(0xFFFFFFFF) or int(got) * 16 > devices.len(): return
+        handles: int[]
+        loop i in [0..int(got)):
+            q = data(devices) + i * 16
+            handle = (q as *int)[0]
+            handles.push(handle)
+            if ((q + 8) as *u32)[0] == 2: __w32_hid_add(handle)
+        loop mut h in __w32_hid:
+            if not contains(handles, h.handle):
+                h.live = false
+                __w32_hid_close(h)
+
+    __w32_hid_buttons = (c: __HidButtons, report: u8[], pp: u8[]) -> u16[]?:
+        usages = fill(u16(0), 32)
+        n: u32[] = [32]
+        status = HidP_GetUsages(0, u16(c.page), u16(c.link), data(usages), data(n), data(pp), data(report), u32(report.len()))
+        if status != 0x110000 and n[0] > 32 and n[0] <= 4096:
+            # A joystick can have more than our 32 exposed buttons. HidP lists the whole
+            # usage page; read it all, then __hid_report retains just the supported usages.
+            usages = fill(u16(0), int(n[0]))
+            status = HidP_GetUsages(0, u16(c.page), u16(c.link), data(usages), data(n), data(pp), data(report), u32(report.len()))
+        if status != 0x110000 or int(n[0]) > usages.len(): return none
+        usages[..int(n[0]))
+
+    __w32_hid_value = (c: __HidValue, report: u8[], pp: u8[]) -> int?:
+        v: u32[] = [0]
+        if HidP_GetUsageValue(0, u16(c.page), u16(c.link), u16(c.usage), data(v), data(pp), data(report), u32(report.len())) != 0x110000: return none
+        int(v[0])
+
+    # RAWINPUTHEADER (24), RAWHID's report size/count (8), then count consecutive reports.
+    __w32_hid_input = (buf: u8[]):
+        if __fixed_step or buf.len() < 32: return
+        q = data(buf)
+        if (q as *u32)[0] != 2: return
+        total = int(((q + 4) as *u32)[0])
+        if total < 32 or total > buf.len(): return
+        size = int(((q + 24) as *u32)[0])
+        count = int(((q + 28) as *u32)[0])
+        if size < 1 or count < 1 or count > (total - 32) / size: return
+        k = __w32_hid_find(((q + 8) as *int)[0])
+        if k < 0: return
+        pp = __w32_hid[k].preparsed
+        loop i in [0..count):
+            report = buf[32 + i * size..32 + (i + 1) * size)
+            __w32_switch_ack(__w32_hid[k], report)
+            __hid_report(__w32_hid[k], report, (c: __HidButtons, r: u8[]) -> u16[]?: __w32_hid_buttons(c, r, pp), (c: __HidValue, r: u8[]) -> int?: __w32_hid_value(c, r, pp))
+
+    # Startup advances on acknowledgements (0x81), never sleeps in the game loop. The last
+    # command requests standard packed reports (0x30).
+    __w32_switch_ack = (h: mut __HidPad, report: u8[]):
+        if h.output == null or report.len() < 2 or report[0] != 0x81: return
+        commands = [2, 3, 2, 4]
+        if h.setup < 3 and int(report[1]) == commands[h.setup]:
+            h.setup += 1
+            h.deadline = 0.0
+
+    __w32_switch_poll = (h: mut __HidPad):
+        if h.output == null: return
+        if h.writing:
+            got: u32[] = [0]
+            if GetOverlappedResult(h.output, data(h.overlap), data(got), 0) == 0:
+                if GetLastError() == 996 and elapsed() < h.write_deadline: return    # ERROR_IO_INCOMPLETE
+                __w32_hid_close(h)
+                return
+            h.writing = false
+        if h.deadline > 0.0:
+            if elapsed() < h.deadline: return
+            __w32_hid_close(h)                                # no ACK: stop trying
+            return
+        loop mut b in h.write_buf: b = 0
+        loop mut b in h.overlap: b = 0
+        if h.setup < 4:
+            h.write_buf[0] = 0x80
+            h.write_buf[1] = u8([2, 3, 2, 4][h.setup])
+        else:
+            h.write_buf[0] = 1
+            # neutral rumble for each motor; subcommand 03 selects standard report 30
+            h.write_buf[3] = 1
+            h.write_buf[4] = 0x40
+            h.write_buf[5] = 0x40
+            h.write_buf[7] = 1
+            h.write_buf[8] = 0x40
+            h.write_buf[9] = 0x40
+            h.write_buf[10] = 3
+            h.write_buf[11] = 0x30
+        got: u32[] = [0]
+        h.writing = WriteFile(h.output, data(h.write_buf), 64, data(got), data(h.overlap)) == 0
+        if h.writing and GetLastError() != 997:             # ERROR_IO_PENDING
+            h.writing = false
+            __w32_hid_close(h)
+            return
+        h.deadline = elapsed() + 0.5
+        h.write_deadline = h.deadline
+        if h.setup == 3:
+            h.setup = 4                                    # ForceUSB has no ACK
+            h.deadline = 0.0
+        else if h.setup == 4:
+            h.setup = 5
+        else if h.setup == 5:
+            __w32_hid_close(h)
 
     __pad_poll = ():
+        global __w32_hid_retry
         if __fixed_step: return
-        if not lib_available("xinput1_4.dll"): return
-        loop u in [0..4):
-            if not __pad_on[u]:
-                if elapsed() < __xi_retry[u]: continue
-                __xi_retry[u] = elapsed() + 2.0
-            if XInputGetState(u32(u), data(__xi_state)) != 0:
-                if __pad_on[u]: __pad_clear(u)
-                continue
-            if not __pad_on[u]:
-                __pad_on[u] = true
-                __pad_names[u] = "XInput controller"
-                __pad_naxes[u] = 6
-                __pad_nbuttons[u] = 15
-            p = data(__xi_state) + 4
-            bt = int((p as *u16)[0])
-            stick = (o: int) -> f64: f64(((p + o) as *i16)[0]) / 32767.0
-            a = u * 6
-            __pad_axes[a] = clamp(stick(4), -1.0, 1.0)
-            __pad_axes[a + 1] = clamp(-stick(6), -1.0, 1.0)               # (y down, as on Linux)
-            __pad_axes[a + 2] = clamp(stick(8), -1.0, 1.0)
-            __pad_axes[a + 3] = clamp(-stick(10), -1.0, 1.0)
-            __pad_axes[a + 4] = f64(p[2]) / 255.0
-            __pad_axes[a + 5] = f64(p[3]) / 255.0
-            # XINPUT_GAMEPAD buttons -> a b x y lb rb back start home ls rs up down left right
-            loop i in 0.. and m in __xi_bits:
-                __pad_down[u * 15 + i] = bt & m != 0
-                __pad_raw_down[u * 32 + i] = bt & m != 0
-            loop i in [0..6): __pad_raw_axes[u * 16 + i] = __pad_axes[a + i]
+        # Disconnects and reports are staged until after __pad_save_prev (pressed/released).
+        k = __w32_hid.len() - 1
+        loop k >= 0:
+            if not __w32_hid[k].live:
+                if __w32_hid[k].slot >= 0: __pad_clear(__w32_hid[k].slot)
+                __w32_hid.remove_at(k)
+            k -= 1
+        if lib_available("xinput1_4.dll"):
+            loop u in [0..4):
+                p = __xi_slot[u]
+                if p < 0:
+                    if elapsed() < __xi_retry[u]: continue
+                    __xi_retry[u] = elapsed() + 2.0
+                if XInputGetState(u32(u), data(__xi_state)) != 0:
+                    if p >= 0: __pad_clear(p)
+                    __xi_slot[u] = -1
+                    continue
+                if p < 0:
+                    # Prefer the old XInput user number, but never move an existing HID pad.
+                    p = u
+                    if __pad_on[p]: p = __pad_free()
+                    if p < 0: continue
+                    __xi_slot[u] = p
+                    __w32_pad_claim(p, "XInput controller")
+                    __pad_naxes[p] = 6
+                    __pad_nbuttons[p] = 15
+                q = data(__xi_state) + 4
+                bt = int((q as *u16)[0])
+                stick = (o: int) -> f64: f64(((q + o) as *i16)[0]) / 32767.0
+                a = p * 6
+                __pad_axes[a] = clamp(stick(4), -1.0, 1.0)
+                __pad_axes[a + 1] = clamp(-stick(6), -1.0, 1.0)
+                __pad_axes[a + 2] = clamp(stick(8), -1.0, 1.0)
+                __pad_axes[a + 3] = clamp(-stick(10), -1.0, 1.0)
+                __pad_axes[a + 4] = f64(q[2]) / 255.0
+                __pad_axes[a + 5] = f64(q[3]) / 255.0
+                loop i in 0.. and m in __xi_bits:
+                    __pad_down[p * 15 + i] = bt & m != 0
+                    __pad_raw_down[p * 32 + i] = bt & m != 0
+                loop i in [0..6): __pad_raw_axes[p * 16 + i] = __pad_axes[a + i]
+        if elapsed() >= __w32_hid_retry:
+            __w32_hid_retry = elapsed() + 2.0
+            __w32_hid_scan()
+        loop mut h in __w32_hid:
+            if not h.live: continue
+            if h.slot < 0:
+                p = __pad_free()
+                if p < 0: continue
+                h.slot = p
+                __w32_pad_claim(p, h.name)
+            __w32_switch_poll(h)
+            __hid_apply(h, h.slot)
+
+    __w32_pad_claim = (p: int, name: str):
+        __pad_clear(p)
+        # Reusing a slot must not inherit its previous controller's held buttons.
+        loop i in [0..15): __pad_prev[p * 15 + i] = false
+        loop i in [0..32): __pad_raw_prev[p * 32 + i] = false
+        loop i in [0..6): __pad_prev_axes[p * 6 + i] = 0.0
+        if __pad_early:
+            loop i in [0..15): __pad_snap[p * 15 + i] = false
+            loop i in [0..32): __pad_snap_raw[p * 32 + i] = false
+            loop i in [0..6): __pad_snap_axes[p * 6 + i] = 0.0
+        __pad_on[p] = true
+        __pad_names[p] = name
 else when TARGET == "macos":
     # Apple's GameController framework (Xbox, PlayStation, Switch Pro and MFi controllers):
     # GCController.controllers each frame, each one keeping the pad number it was first given

@@ -1886,6 +1886,39 @@ Korean) and what the system's emoji panel inserts, once committed; natively, Win
 too, while on Linux it is the keys' characters (X11's XIM and Wayland's text-input are not
 used yet).
 
+**Gamepads and joysticks.** `gamepads()` gives the connected pad numbers (0–7), and
+`gamepad_connected(pad)` / `gamepad_name(pad)` describe one. A connected controller keeps its
+number; a newly connected one takes a free slot. On Windows, four XInput users and HID
+controllers share these eight slots; XInput interfaces are filtered out of HID enumeration.
+`gamepad_down(pad, .a)`, `gamepad_pressed` and `gamepad_released` read one pad; without `pad`,
+they read any pad. There are no separate connection callbacks: compare `gamepads()` between
+frames. `PadButton` uses Xbox-style positions: `a`, `b`, `x`, `y` are south, east, west, north
+(PlayStation Cross/Circle/Square/Triangle; Nintendo B/A/Y/X), plus `lb`, `rb`, `back`, `start`,
+`home`, `lstick`, `rstick`, `up`, `down`, `left`, `right`.
+
+`gamepad_axis(pad, i)` reads left X/Y, right X/Y, left/right trigger (indices 0–5). Sticks are
+−1..1, Y down, triggers 0..1. `left_stick(pad)` / `right_stick(pad)` add a radial dead zone;
+without `pad`, the stick pushed furthest wins. `joystick_buttons`, `joystick_button`,
+`joystick_pressed`, `joystick_axes` and `joystick_axis` expose up to 32 raw buttons and 16 raw
+axes for devices whose standard mapping is approximate. Windows HID raw buttons follow HID
+button usages (usage 1 is button 0); raw axes follow the descriptor's capability order.
+
+| Platform | Controller input |
+| --- | --- |
+| Windows | XInput (Xbox-compatible); Raw Input HID for USB DualShock 4 and DualSense/Edge, Switch Pro, common 8BitDo SN30/SF30 Pro, Pro+, Pro 2 and Ultimate D-input layouts, plus generic HID joysticks/gamepads. Hot-plug is supported. |
+| Linux | `/dev/input/js0`–`js7`, with the Linux Xbox-style axis/button ordering; other layouts may need raw joystick controls or Steam Input. Access to the device nodes is required. |
+| macOS | Apple's GameController framework: controllers for which it supplies an extended gamepad profile (Xbox, PlayStation, Switch Pro and MFi). |
+| Web | The browser's Gamepad API; standard layout and controller availability depend on the browser/OS. |
+
+Windows' generic HID fallback maps buttons in order, a hat to the d-pad, X/Y to the left
+stick, Rx/Ry to the right stick, Z/Rz to triggers. Four-axis X/Y/Z/Rz devices use Z/Rz for the
+right stick instead. Known layouts override these assignments; 8BitDo D-input and Switch
+triggers are digital. Other 8BitDo models use generic mappings; firmware differences may need raw controls. Switch
+Pro USB starts the Nintendo report protocol asynchronously; its sticks use nominal ranges
+rather than factory calibration. Its simple Bluetooth report is also decoded. Sony's
+Bluetooth extended reports (DS4 report 0x11, DualSense 0x31) are not supported: use USB or an
+XInput translation layer. Rumble, motion sensors, touchpads, and player LEDs are not exposed.
+
 `set_cursor(c)` gives the mouse pointer a shape over the window: `.arrow`, `.ibeam`, `.hand`,
 `.crosshair`, `.move`, `.resize_ew`, `.resize_ns`, `.resize_nwse`, `.resize_nesw`,
 `.not_allowed`, `.wait`, or `.hidden` (as `show_cursor(false)`); while it is `.arrow`, a text

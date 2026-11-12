@@ -1,0 +1,182 @@
+# requires: sloppy
+# Descriptors and packets drive the actual capability decoder, report dispatcher and mapper.
+import "../fixtures/gamepad_hid/reader.jo"
+
+check = (ok: bool): assert(ok)
+near = (v: f64, want: f64): assert(abs(v - want) < 0.001)
+
+sony = (desc: u8[], report: u8[], product: int, dualsense: bool):
+    parsed = reader.parse(desc, 0x054C, product)
+    h = parsed.0
+    fs = parsed.1
+    check(h.report_bytes == 64 and h.values.len() == 7)
+    check(reader.feed(h, report, fs))
+    __pad_clear(0)
+    __pad_on[0] = true
+    __hid_apply(h, 0)
+    check(gamepad_down(0, .a) and not gamepad_down(0, .b))
+    if dualsense:
+        check(gamepad_down(0, .y) and gamepad_down(0, .home) and gamepad_down(0, .rstick))
+        check(gamepad_down(0, .left) and gamepad_down(0, .up))
+        near(gamepad_axis(0, 0), 1.0)
+        near(gamepad_axis(0, 1), -1.0)
+        near(gamepad_axis(0, 2), -1.0)
+        near(gamepad_axis(0, 3), 1.0)
+        near(gamepad_axis(0, 4), 0.0)
+        near(gamepad_axis(0, 5), 1.0)
+    else:
+        check(gamepad_down(0, .lb) and gamepad_down(0, .back) and gamepad_down(0, .lstick) and gamepad_down(0, .home))
+        check(gamepad_down(0, .up) and gamepad_down(0, .right) and not gamepad_down(0, .down))
+        near(gamepad_axis(0, 0), -1.0)
+        near(gamepad_axis(0, 1), 1.0)
+        near(gamepad_axis(0, 2), 1.0)
+        near(gamepad_axis(0, 3), -1.0)
+        near(gamepad_axis(0, 4), 1.0)
+        near(gamepad_axis(0, 5), 0.0)
+    check(joystick_button(0, 1))
+    check(gamepad_pressed(0, .a))
+    __pad_save_prev()
+    check(not gamepad_pressed(0, .a))
+    # Wrong IDs and malformed reports must leave held controls alone.
+    wrong = fill(u8(0), 64)
+    wrong[0] = 0x31
+    check(not reader.feed(h, wrong, fs))
+    check(not reader.feed(h, report[..5), fs))
+    __hid_apply(h, 0)
+    check(gamepad_down(0, .a))
+    # A neutral packet releases the buttons; hats' null value is centered.
+    rest = fill(u8(0), 64)
+    rest[0] = 1
+    if dualsense: rest[8] = 8
+    else: rest[5] = 8
+    check(reader.feed(h, rest, fs))
+    __hid_apply(h, 0)
+    check(gamepad_released(0, .a) and not gamepad_down(0, .up))
+    __pad_clear(0)
+    __pad_save_prev()
+
+sony(embed("../fixtures/gamepad_hid/ds4.rdesc"), embed("../fixtures/gamepad_hid/ds4.report"), 0x05C4, false)
+sony(embed("../fixtures/gamepad_hid/dualsense.rdesc"), embed("../fixtures/gamepad_hid/dualsense.report"), 0x0CE6, true)
+print("Sony USB layouts and edges ok")
+
+sw = reader.parse(embed("../fixtures/gamepad_hid/switch_usb.rdesc"), 0x057E, 0x2009)
+h = sw.0
+check(reader.feed(h, embed("../fixtures/gamepad_hid/switch_usb.report"), sw.1))
+__pad_on[2] = true
+__hid_apply(h, 2)
+check(gamepad_down(2, .a) and gamepad_down(2, .lb) and gamepad_down(2, .rb))
+check(gamepad_down(2, .start) and gamepad_down(2, .lstick) and gamepad_down(2, .home))
+check(gamepad_down(2, .up) and gamepad_down(2, .right))
+near(gamepad_axis(2, 0), -1.0)
+near(gamepad_axis(2, 1), -1.0)
+near(gamepad_axis(2, 2), 1.0)
+near(gamepad_axis(2, 3), 1.0)
+near(gamepad_axis(2, 4), 1.0)
+near(gamepad_axis(2, 5), 1.0)
+# Simple Bluetooth reports, padded to the maximum input length by Windows.
+simple = fill(u8(0), 64)
+simple[0] = 0x3F
+simple[1] = 0x42
+simple[2] = 0x10
+simple[3] = 8
+loop i in [0..4): simple[5 + i * 2] = 0x80
+check(reader.feed(h, simple, sw.1))
+__hid_apply(h, 2)
+check(gamepad_down(2, .b) and not gamepad_down(2, .a) and gamepad_down(2, .home))
+check(not gamepad_down(2, .up))
+near(gamepad_axis(2, 0), 0.0)
+near(gamepad_axis(2, 4), 1.0)
+near(gamepad_axis(2, 5), 0.0)
+print("Switch packed and simple reports ok")
+
+pro = reader.parse(embed("../fixtures/gamepad_hid/8bitdo.rdesc"), 0x2DC8, 0x6006)
+h = pro.0
+check(reader.feed(h, embed("../fixtures/gamepad_hid/8bitdo.report"), pro.1))
+__pad_on[3] = true
+__hid_apply(h, 3)
+check(gamepad_down(3, .a) and gamepad_down(3, .x) and gamepad_down(3, .lb) and gamepad_down(3, .start) and gamepad_down(3, .lstick))
+near(gamepad_axis(3, 2), 1.0)
+near(gamepad_axis(3, 3), -1.0)
+near(gamepad_axis(3, 4), 1.0)
+near(gamepad_axis(3, 5), 0.0)
+print("8BitDo D-input layout ok")
+
+generic = reader.parse(embed("../fixtures/gamepad_hid/generic.rdesc"))
+h = generic.0
+check(h.report_bytes == 15 and h.values.len() == 7)
+check(reader.feed(h, embed("../fixtures/gamepad_hid/generic.report"), generic.1))
+__pad_on[4] = true
+__hid_apply(h, 4)
+check(gamepad_down(4, .a) and gamepad_down(4, .y) and gamepad_down(4, .up) and not gamepad_down(4, .right))
+near(gamepad_axis(4, 0), -1.0)
+near(gamepad_axis(4, 1), 1.0)
+near(gamepad_axis(4, 2), 1.0)
+near(gamepad_axis(4, 3), -1.0)
+near(gamepad_axis(4, 4), 0.0)
+near(gamepad_axis(4, 5), 1.0)
+print("Generic signed axes and one-based hat ok")
+
+# The older Pro family and Ultimate have distinct face/guide/right-axis bindings.
+loop pid in [0x6000, 0x6100, 0x6001, 0x6101, 0x6002, 0x6102, 0x3012]:
+    legacy = reader.parse(embed("../fixtures/gamepad_hid/8bitdo.rdesc"), 0x2DC8, pid)
+    old = legacy.0
+    packet: u8[] = [1, 0x16, 0, 8, 0, 0, 255, 0, 255, 0]
+    if pid == 0x3012: packet[1] = 0x19
+    check(reader.feed(old, packet, legacy.1))
+    __hid_apply(old, 3)
+    check(gamepad_down(3, .a) and gamepad_down(3, .x))
+    if pid == 0x3012:
+        near(gamepad_axis(3, 2), -1.0)
+        near(gamepad_axis(3, 3), 1.0)
+    else:
+        near(gamepad_axis(3, 2), 1.0)
+        near(gamepad_axis(3, 3), -1.0)
+        check(gamepad_down(3, .home) == (pid != 0x6000))
+
+# Range caps, unsigned logical maxima, aliases, vendor data, relative axes, value arrays.
+cap = reader.cap(1, 2, 3, 0x30, 16, 0, 65535)
+cap[12] = 1
+((data(cap) + 58) as *u16)[0] = 0x31
+((data(cap) + 20) as *u16)[0] = 2
+h = __HidPad()
+__hid_caps(h, cap, true)
+check(h.values.len() == 2 and h.values[1].link == 3 and h.values[1].report == 2)
+__hid_value(h.values[0], 65535)
+near(h.values[0].value, 1.0)
+cap[3] = 1
+__hid_caps(h, cap, true)
+check(h.values.len() == 2)
+cap[3] = 0
+cap[15] = 0
+__hid_caps(h, cap, true)
+check(h.values.len() == 2)
+cap = reader.cap(1, 0, 0, 0x30, 8, 0, 255)
+((data(cap) + 20) as *u16)[0] = 2          # non-range value array: not a scalar axis
+__hid_caps(h, cap, true)
+check(h.values.len() == 2)
+cap = reader.cap(0xFF00, 0, 0, 0x30, 8, 0, 255)
+__hid_caps(h, cap, true)
+check(h.values.len() == 2)
+cap = reader.cap(9, 3, 2, 1, 1, 0, 1)
+cap[12] = 1
+((data(cap) + 58) as *u16)[0] = 128
+__hid_caps(h, cap, false)
+check(h.buttons.len() == 1 and h.buttons[0].last == 32)
+check(not __hid_sony(__HidPad(vendor = 0x054C, product = 0x0268)))
+# Buttons from two report IDs/collections remain independent, including releases.
+h = __HidPad(buttons = [__HidButtons(9, 1, 0, 1, 3), __HidButtons(9, 2, 4, 4, 5)])
+read_buttons = (c: __HidButtons, r: u8[]) -> u16[]?:
+    if r[1] == 0: return []
+    if c.link == 4: return [u16(4)]
+    [u16(1), u16(3), u16(32)]             # unrelated usages are ignored
+no_value = (c: __HidValue, r: u8[]) -> int?: none
+check(__hid_report(h, [u8(1), 1], read_buttons, no_value))
+check(__hid_report(h, [u8(2), 1], read_buttons, no_value))
+__hid_apply(h, 4)
+check(joystick_button(4, 0) and joystick_button(4, 2) and joystick_button(4, 3) and not joystick_button(4, 31))
+check(__hid_report(h, [u8(2), 0], read_buttons, no_value))
+__hid_apply(h, 4)
+check(joystick_button(4, 0) and not joystick_button(4, 3))
+check(__hid_signed(0x800, 12, -2048) == -2048 and __hid_signed(0xFFFF, 16, -32768) == -1)
+check(__hid_xinput("\\\\?\\HID#VID_045E&PID_028E&IG_00") and __hid_xinput("hid#ig_01") and not __hid_xinput("HID#VID_054C&PID_05C4"))
+print("Capabilities, report isolation and XInput filtering ok")

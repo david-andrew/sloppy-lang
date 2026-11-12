@@ -1,0 +1,117 @@
+# requires: sloppy
+# env: SLOPPY_HID_TEST_FILE=$TMP/switch-setup.bin
+# Windows SDK ABI, real no-device initialization, and staged/batched Raw Input packets.
+import "../fixtures/gamepad_hid/reader.jo"
+when TARGET == "windows":
+    @lib("gamepad_windows.dll")
+    extern pad_hid_abi = () -> i32
+
+run_windows = ():
+    when TARGET == "windows":
+        global __w32_hid, __w32_hid_retry, __xi_retry, __xi_slot
+        assert(pad_hid_abi() == 1)
+        __w32_pad_init(null)                       # no window or physical gamepad required
+        __pad_frame()
+        # Exercise the real overlapped write API against a local file, with controller ACKs
+        # injected separately. This verifies startup commands without a HID device or sleeps.
+        path = __wide(env("SLOPPY_HID_TEST_FILE") ?? "switch-setup.bin")
+        output = CreateFileW(data(path), u32(0x40000000), 7, null, 2, u32(0x40000000), null)
+        assert(output != null and (output as int) != -1)
+        setup = __HidPad(output = output, write_buf = fill(u8(0), 64), overlap = fill(u8(0), 32))
+        got: u32[] = [0]
+        loop command in [2, 3, 2]:
+            __w32_switch_poll(setup)
+            if setup.writing: assert(GetOverlappedResult(output, data(setup.overlap), data(got), 1) != 0)
+            assert(setup.output != null and setup.write_buf[0] == 0x80 and int(setup.write_buf[1]) == command)
+            before = setup.setup
+            __w32_switch_ack(setup, [u8(0x81), 99])
+            assert(setup.setup == before)
+            __w32_switch_ack(setup, [u8(0x81), u8(command)])
+            assert(setup.setup == before + 1)
+        __w32_switch_poll(setup)
+        assert(setup.write_buf[0] == 0x80 and setup.write_buf[1] == 4 and setup.setup == 4)
+        if setup.writing: assert(GetOverlappedResult(output, data(setup.overlap), data(got), 1) != 0)
+        __w32_switch_poll(setup)
+        assert(setup.write_buf[0] == 1 and setup.write_buf[10] == 3 and setup.write_buf[11] == 0x30)
+        assert(setup.write_buf[3] == 1 and setup.write_buf[4] == 0x40 and setup.write_buf[7] == 1)
+        __w32_hid_close(setup)
+        assert(setup.output == null and not setup.writing)
+        DeleteFileW(data(path))
+        # Isolate synthetic handles from the real machine's devices after the smoke check.
+        loop mut h in __w32_hid: __w32_hid_close(h)
+        __w32_hid = []
+        __xi_retry = fill(elapsed() + 60.0, 4)
+        __xi_slot = fill(-1, 4)
+        loop p in [0..8): __pad_clear(p)
+        __pad_save_prev()
+        __w32_hid_retry = elapsed() + 60.0
+        parsed = reader.parse(embed("../fixtures/gamepad_hid/switch_usb.rdesc"), 0x057E, 0x2009)
+        h = parsed.0
+        h.handle = 1234
+        h.name = "Synthetic Switch Pro"
+        __w32_hid.push(h)
+        __pad_frame()
+        assert(gamepads() == [0] and gamepad_name(0) == "Synthetic Switch Pro")
+        r = embed("../fixtures/gamepad_hid/switch_usb.report")
+        buf = fill(u8(0), 32 + 64 * 2)
+        p = data(buf)
+        (p as *u32)[0] = 2
+        ((p + 4) as *u32)[0] = u32(buf.len())
+        ((p + 8) as *int)[0] = 1234
+        ((p + 24) as *u32)[0] = 64
+        ((p + 28) as *u32)[0] = 2
+        loop i in [0..64):
+            buf[32 + i] = r[i]
+            buf[96 + i] = r[i]
+        buf[96 + 3] = 0xC8                        # second packet holds B, releases A
+        __w32_hid_input(buf)
+        assert(not gamepad_down(0, .b))            # not published before the frame's poll
+        __pad_frame()
+        assert(gamepad_pressed(0, .b) and not gamepad_down(0, .a))
+        assert(joystick_pressed(0, 1))
+        __pad_frame()
+        assert(not gamepad_pressed(0, .b))
+        # Bad count/length/handle must not touch the controller.
+        ((p + 28) as *u32)[0] = 3
+        __w32_hid_input(buf)
+        __w32_hid_input(buf[..31))
+        ((p + 28) as *u32)[0] = 1
+        ((p + 8) as *int)[0] = 9876
+        __w32_hid_input(buf)
+        __pad_frame()
+        assert(gamepad_down(0, .b))
+        # Idle polling keeps both standard and raw button edges for the coming frame.
+        ((p + 8) as *int)[0] = 1234
+        __w32_hid_input(buf)
+        assert(__pad_moved())
+        __pad_frame()
+        assert(gamepad_pressed(0, .a) and gamepad_released(0, .b) and joystick_pressed(0, 0))
+        buf[32 + 4] |= 0x20                  # capture: a raw button, no PadButton binding
+        __w32_hid_input(buf)
+        assert(__pad_moved())
+        __pad_frame()
+        assert(joystick_pressed(0, 13))
+        __w32_wndproc(null, 0xFE, 1, 0)       # arrival also cancels XInput's retry delay
+        loop retry in __xi_retry: assert(retry == 0.0)
+        __xi_retry = fill(elapsed() + 60.0, 4)
+        # Removal is staged, other devices keep their number, and a replacement reuses a slot.
+        other = h
+        other.handle = 5678
+        other.name = "Second pad"
+        __w32_hid.push(other)
+        __pad_frame()
+        assert(gamepads() == [0, 1])
+        __w32_wndproc(null, 0xFE, 2, 1234)          # WM_INPUT_DEVICE_CHANGE, GIDC_REMOVAL
+        assert(gamepad_connected(0))
+        __pad_frame()
+        assert(gamepads() == [1] and not gamepad_down(0, .a) and joystick_axis(0, 0) == 0.0)
+        h.handle = 6789
+        __w32_hid.push(h)
+        __pad_frame()
+        assert(gamepads() == [0, 1] and gamepad_name(1) == "Second pad")
+        __w32_hid_remove(5678)
+        __w32_hid_remove(6789)
+        __pad_frame()
+        assert(gamepads() == [])
+run_windows()
+print("Windows HID ABI, lifecycle and report staging ok")

@@ -1097,10 +1097,6 @@ else when TARGET == "windows":
     @lib("shell32.dll")
     extern DragFinish = (drop: *u8)
     @lib("user32.dll")
-    extern RegisterRawInputDevices = (devs: *u8, n: u32, size: u32) -> i32
-    @lib("user32.dll")
-    extern GetRawInputData = (h: *u8, cmd: u32, data: *u8, size: *u32, header: u32) -> u32
-    @lib("user32.dll")
     extern OpenClipboard = (hwnd: *u8) -> i32
     @lib("user32.dll")
     extern CloseClipboard = () -> i32
@@ -1186,6 +1182,7 @@ else when TARGET == "windows":
         cw = i32(0x80000000 as int)                             # CW_USEDEFAULT
         __w32_hwnd = CreateWindowExW(0, data(cls), data(title), u32(__WS_OVERLAPPEDWINDOW | __WS_VISIBLE), cw, cw, r[2] - r[0], r[3] - r[1], null, null, inst, null)
         __need(__w32_hwnd != null, "CreateWindowExW failed")
+        __w32_pad_init(__w32_hwnd)
         DragAcceptFiles(__w32_hwnd, 1)                         # (files dropped on it: WM_DROPFILES)
         ShowWindow(__w32_hwnd, 1)
         __w32_dc = GetDC(__w32_hwnd)
@@ -1285,7 +1282,7 @@ else when TARGET == "windows":
 
     @cabi
     __w32_wndproc = (hwnd: *u8, msg: u32, wp: int, lp: int) -> int:
-        global __mouse_x, __mouse_y, __w32_in_client, __w32_surrogate, __win_close, __win_focused, __win_h, __win_w
+        global __mouse_x, __mouse_y, __w32_in_client, __w32_surrogate, __win_close, __win_focused, __win_h, __win_w, __lazy_poke
         m = int(msg)
         if m == 0x10:                                           # WM_CLOSE
             __win_close = true
@@ -1350,14 +1347,28 @@ else when TARGET == "windows":
         if m == 0x20A:                                          # WM_MOUSEWHEEL
             __mouse_wheel += f64(__w32_hi(wp)) / 120.0
             return 0
-        if m == 0xFF:                                           # WM_INPUT: raw mouse motion
-            if __w32_locked:
-                buf = fill(u8(0), 64)
-                size: u32[] = [64]
-                if int(GetRawInputData(lp as *u8, u32(0x10000003), data(buf), data(size), 24)) > 0:
-                    if (data(buf) as *u32)[0] == 0 and (data(buf) + 24)[0] & 1 == 0:    # a mouse, relative
+        if m == 0xFE:                                           # WM_INPUT_DEVICE_CHANGE
+            if wp == 1:                                       # GIDC_ARRIVAL
+                __w32_hid_add(lp)
+                # The new interface may be XInput's IG_ interface. The frame this wakes
+                # must retry XInput now, even if its empty-slot timer has not expired.
+                loop i in [0..4): __xi_retry[i] = 0.0
+            else if wp == 2: __w32_hid_remove(lp)                # GIDC_REMOVAL
+            __lazy_poke = true
+            return 0
+        if m == 0xFF:                                           # WM_INPUT: mouse and HID pads
+            size: u32[] = [0]
+            if GetRawInputData(lp as *u8, u32(0x10000003), null, data(size), 24) == 0 and size[0] >= 24 and size[0] <= 1048576:
+                buf = fill(u8(0), int(size[0]))
+                got = GetRawInputData(lp as *u8, u32(0x10000003), data(buf), data(size), 24)
+                if got != u32(0xFFFFFFFF) and got >= 24 and int(got) <= buf.len():
+                    buf = buf[..int(got))
+                    if (data(buf) as *u32)[0] == 2:
+                        __w32_hid_input(buf)
+                    else if __w32_locked and got >= 48 and (data(buf) as *u32)[0] == 0 and (data(buf) + 24)[0] & 1 == 0:
                         __mouse_dx += f64(((data(buf) + 36) as *i32)[0])
                         __mouse_dy += f64(((data(buf) + 40) as *i32)[0])
+            # Foreground raw input must reach DefWindowProc for Windows' buffer cleanup.
             return DefWindowProcW(hwnd, msg, wp, lp)
         if m == 0x8:                                            # WM_KILLFOCUS
             __win_focused = false
