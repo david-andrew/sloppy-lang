@@ -1619,6 +1619,11 @@ when TARGET != "wasm":
         __par_serial = w * h < 4096
         parallel_range(h, (y: int):
             row = dp + y * w * 4
+            # Vertical tap rows are shared by every pixel of this row.
+            rows = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            rp = &rows.0
+            if not horiz:
+                loop t in [0..n): rp[t] = clamp(y + op[t], 0, h - 1) * w * 4
             loop x in [0..w):
                 r: f32 = 0
                 g: f32 = 0
@@ -1626,7 +1631,7 @@ when TARGET != "wasm":
                 loop t in [0..n):
                     q = sp
                     if horiz: q = sp + (y * w + clamp(x + op[t], 0, w - 1)) * 4
-                    else: q = sp + (clamp(y + op[t], 0, h - 1) * w + x) * 4
+                    else: q = sp + rp[t] + x * 4
                     r += q[0] * wp[t]
                     g += q[1] * wp[t]
                     b += q[2] * wp[t]
@@ -1638,6 +1643,15 @@ when TARGET != "wasm":
         )
         __par_serial = false
         true
+
+    struct __SwPostX:
+        u: f32
+        fx: f32
+        gx: f32
+        dx2: f32
+        xa: int
+        xb: int
+    __sw_post_x: __SwPostX[]
 
     __sw_post_composite = (p: _PostParams) -> bool:
         global __par_serial
@@ -1660,6 +1674,17 @@ when TARGET != "wasm":
         bp = bl.p
         bw = bl.w
         bh = bl.h
+        # Horizontal sampling and vignette terms repeat on every row. Keep their
+        # original f32 operations, computing each once at its exact pixel center.
+        __sw_post_x.resize(x1 - x0)
+        xp = data(__sw_post_x)
+        loop x in [x0..x1):
+            u = (f32(x - vp.0) + 0.5) / vw
+            bx = u * f32(bw) - 0.5
+            bxi = __floor_i(bx)
+            fx = bx - f32(bxi)
+            dx = u - 0.5
+            xp[x - x0] = __SwPostX(u, fx, 1.0 - fx, dx * dx, clamp(bxi, 0, bw - 1) * 4, clamp(bxi + 1, 0, bw - 1) * 4)
         __par_serial = (x1 - x0) * (y1 - y0) < 4096
         parallel_range(y1 - y0, (k: int):
             y = y0 + k
@@ -1667,31 +1692,31 @@ when TARGET != "wasm":
             by = v * f32(bh) - 0.5
             byi = __floor_i(by)
             fy = by - f32(byi)
+            gy = 1.0 - fy
+            dy = v - 0.5
+            dy2 = dy * dy
             ra = bp + clamp(byi, 0, bh - 1) * bw * 4
             rb = bp + clamp(byi + 1, 0, bh - 1) * bw * 4
             row = tp + y * tw * 4
             loop x in [x0..x1):
-                u = (f32(x - vp.0) + 0.5) / vw
+                sx = xp + (x - x0)
+                u = sx[0].u
                 sc = vec3(0, 0, 0)
                 if exact:
                     q = sp + ((y - vp.1) * s.w + (x - vp.0)) * 4
                     sc = vec3(q[0], q[1], q[2])
                 else: sc = __sw_sample(p.src.id, vec2(u, v)).xyz
-                bx = u * f32(bw) - 0.5
-                bxi = __floor_i(bx)
-                fx = bx - f32(bxi)
-                xa = clamp(bxi, 0, bw - 1) * 4
-                xb = clamp(bxi + 1, 0, bw - 1) * 4
-                gx = 1.0 - fx
-                gy = 1.0 - fy
+                fx = sx[0].fx
+                xa = sx[0].xa
+                xb = sx[0].xb
+                gx = sx[0].gx
                 bc = vec3(ra[xa] * gx * gy + ra[xb] * fx * gy + rb[xa] * gx * fy + rb[xb] * fx * fy,
                           ra[xa + 1] * gx * gy + ra[xb + 1] * fx * gy + rb[xa + 1] * gx * fy + rb[xb + 1] * fx * fy,
                           ra[xa + 2] * gx * gy + ra[xb + 2] * fx * gy + rb[xa + 2] * gx * fy + rb[xb + 2] * fx * fy)
                 col = sc + bc * p.strength
                 gray = dot(col, vec3(0.299, 0.587, 0.114))
                 col = mix(vec3(gray, gray, gray), col, p.saturation) * p.tint
-                qv = vec2(u, v) - vec2(0.5, 0.5)
-                col = col * (1.0 - p.vignette * dot(qv, qv) * 1.6)
+                col = col * (1.0 - p.vignette * (sx[0].dx2 + dy2) * 1.6)
                 o = row + x * 4
                 o[0] = col.x
                 o[1] = col.y
