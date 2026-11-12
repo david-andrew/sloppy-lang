@@ -2337,6 +2337,14 @@ game](#testing-a-game)): `SLOPPY_SOFTWARE=1 SLOPPY_SCREENSHOT=shot.png SLOPPY_FR
 watch game.jo` takes the reloads with no window and saves frame 600, with an error or a panic over
 it as the window would show it.
 
+**3D cameras.** `orbit_camera(target, distance)` turns around a point;
+`follow_camera(distance = 6)` follows a moving character. Set `cam.invert_y = true`
+(or `invert_x`) to reverse mouse and right-stick look; both default to false.
+`update(cam, player_pos, dt, input = false)` keeps following and smoothing without
+reading look or zoom input, useful while a menu is open. For an orbit camera, use
+`update(cam, dt, input = false)`. A supplied follow-camera `heading` still applies.
+Skip the update entirely to freeze the camera. See [3D cameras](GRAPHICS.md#3d-cameras).
+
 **3D materials.** Place the camera with `camera3d`, light the scene with `sun` and `sky`,
 and draw `cube_mesh`, `sphere_mesh`, `custom_mesh`, or an imported glTF model. Existing
 `draw_mesh` calls keep their simple lighting. `draw_mesh(ball, material = Material(metallic = 1,

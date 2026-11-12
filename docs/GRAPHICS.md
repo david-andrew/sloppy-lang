@@ -52,6 +52,20 @@ Vulkan path draw the same frames: the render tests compare them pixel by pixel.
 acceleration. It draws at half resolution by default (`SLOPPY_SOFT_SCALE=1` for full) and runs
 your shader functions natively on the CPU.
 
+## 3D cameras
+
+`orbit_camera(target, distance)` orbits a point with a mouse drag or the right stick;
+`follow_camera(distance = 6, height = 1.5)` follows a character with
+`update(cam, player_pos, dt)`. Call `camera3d(cam)` before drawing the scene.
+Both cameras have `invert_y` and `invert_x` fields (false by default), which reverse
+vertical or horizontal mouse and right-stick look. Zoom keeps its usual direction.
+
+While a menu is open, `update(cam, player_pos, dt, input = false)` continues target
+smoothing, any supplied chase `heading`, and recovery after `pull_in`, without
+reading mouse, sticks or wheel. For an orbit camera,
+`update(cam, dt, input = false)` continues smoothing toward its yaw, pitch and
+distance. These values can still be set by code. Skip updating to freeze everything.
+
 ## Shaders are Sloppy functions
 
 A shader is a pair of ordinary functions: a vertex function and a fragment function.

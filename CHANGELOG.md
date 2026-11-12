@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- FollowCamera and OrbitCamera have invert-X/Y look options and `update(..., input = false)`
+  to continue following and smoothing while menus ignore camera input.
+
 ## 0.31.0
 
 - Faster programs. Release builds: a function value passed to a small helper (`reduce`, `map`,

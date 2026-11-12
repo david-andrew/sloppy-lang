@@ -3857,9 +3857,11 @@ draw = ():
       shown_yaw: f64 = 0.0           # (where it is now, on its way to yaw, pitch and distance)
       shown_pitch: f64 = 0.4
       shown_distance: f64 = 10.0
+      invert_x = false              # reverse horizontal mouse and right-stick look
+      invert_y = false              # reverse vertical mouse and right-stick look
   ```
 - `orbit_camera = (target: vec3 = vec3(0, 0, 0), distance: f64 = 10.0, yaw: f64 = 0.0, pitch: f64 = 0.4) -> OrbitCamera`
-- `update = (c: mut OrbitCamera, dt: f64)`
+- `update = (c: mut OrbitCamera, dt: f64, input: bool = true)`: input = false follows/smooths the camera without reading mouse, sticks or wheel.
 - `position = (c: OrbitCamera) -> vec3`: where the camera is
 - `camera3d = (c: OrbitCamera, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0)`
 - `struct FollowCamera`: Behind a target the game moves (a third-person camera): the mouse while it is locked (mouse_lock()) or the right button is held, or the right stick, turns it around the target, and the wheel brings it closer. Walk the player along flat_forward and flat_right, so that ahead is where the camera looks: Its yaw is the other cameras': 0 looks along -z, more turns it left. Behind a vehicle (a chase camera), give update the way it faces, in the same terms: it swings round behind it, smoothly (chase: how quickly), `update(cam, kart.pos, dt, heading = kart.yaw)`.
@@ -3890,9 +3892,11 @@ draw = ():
       shown_target: vec3
       shown_reach: f64 = 1.0
       placed = false
+      invert_x = false              # reverse horizontal mouse and right-stick look
+      invert_y = false              # reverse vertical mouse and right-stick look
   ```
 - `follow_camera = (distance: f64 = 6.0, yaw: f64 = 0.0, pitch: f64 = 0.35, height: f64 = 1.5) -> FollowCamera`
-- `update = (c: mut FollowCamera, target: vec3, dt: f64, heading: f64? = none)`
+- `update = (c: mut FollowCamera, target: vec3, dt: f64, heading: f64? = none, input: bool = true)`: input = false still follows the target/heading and recovers from walls, without look or zoom.
 - `pull_in = (c: mut FollowCamera, fraction: f64)`: a wall between aim(c) and position(c): only this share of the way out (a cast's fraction)
 - `aim = (c: FollowCamera) -> vec3`: the point it looks at (above the target), and where it is
 - `position = (c: FollowCamera) -> vec3`
