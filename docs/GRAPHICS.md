@@ -362,6 +362,7 @@ are CPU memory and compute functions run on all CPU cores; shaders still read th
 
 Vulkan prepares builtin pipelines as the game loads its graphics features and assets.
 Each feature registers its own shaders at the declaration that already creates them.
+Graphics helpers use block bodies so the compiler can also defer parsing unused bodies.
 A 2D game does not compile the 3D renderer, PBR or sky filters; 2D postprocessing loads
 only its post passes. Classic 3D, PBR materials, skinning, particles and image skies opt
 in separately. There is no global list of shader functions that every game compiles.
