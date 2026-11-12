@@ -5,6 +5,9 @@
 use 'ir.jo'
 
 const MIN_INT = -9223372036854775807 - 1
+const M_CELL = 2048       # unaddressed scalar capture-cell payload
+# Above CSE's mode bits: provenance only, not a different memory operation.
+const M_RAW_READ = 4096   # read from a function with raw dereferences; retained through inlining
 
 o_ndef: i32[]       # static definitions per vreg (params count as one)
 o_defpos: i32[]     # position of the (last) definition
@@ -1079,6 +1082,88 @@ enter_loop = ():
     if k & 1 != 0 or ir.raw_mem: o_gen += 1
     if k & 2 != 0 or ir.raw_mem: o_genf += 1
     if k & 4 != 0 or ir.raw_mem: o_genh += 1
+
+# Cache one private scalar capture cell through a call-free loop. The heap cell remains the
+# authority outside the loop (including for stored closures). Unaddressed cells are private
+# unless raw reads inspect their storage: reject those, including inlined pointer helpers.
+# Reject other
+# cell addresses too: two captures may refer to the same variable. Every branch must stay in
+# the loop or be its backedge, so one writeback after the end covers every returning path.
+o_promote_cells = () -> bool:
+    has = false
+    loop ins in ir.code:
+        if ins.op == .store and int(ins.c) & M_CELL != 0:
+            has = true
+            break
+    if not has: return false
+    code = ir.code
+    out: Ins[]
+    changed = false
+    p = 0
+    loop p < code.len():
+        if code[p].op != .loop:
+            out.push(code[p])
+            p += 1
+            continue
+        depth = 1
+        q = p + 1
+        ok = true
+        sample = -1
+        loop q < code.len() and depth > 0:
+            ins = code[q]
+            op = ins.op
+            if op == .store and int(ins.c) & M_CELL != 0: sample = q
+            if op == .load and int(ins.c) & (M_RAW_READ | M_BITS) != 0: ok = false
+            if op == .loop: ok = false
+            if op == .br or op == .brif:
+                if ins.imm >= depth: ok = false
+            if op == .ret or op == .brtable or op == .zeroslots or kills_memory(op):
+                if op != .store: ok = false
+            if op == .block or op == .if_ or op == .loop: depth += 1
+            else if op == .end: depth -= 1
+            q += 1
+        if sample < 0: ok = false
+        cell = code[if sample < 0: p else: sample]
+        base = int(cell.a)
+        mode = int(cell.c)
+        pointer = -1
+        # Full-width primitives need no narrowing between stores and subsequent loads.
+        if mode & M_INDEX != 0 or (mode & 15 != 8 and mode & M_FLOAT == 0): ok = false
+        if ok:
+            loop j in [p + 1..q):
+                ins = code[j]
+                if o_defines(ins.op) and int(ins.dst) == base:
+                    # The cell pointer itself can still be loaded from its immutable
+                    # capture field inside the inlined body. Hoist that load too.
+                    if pointer >= 0 or ins.op != .load or int(ins.c) != 8 | M_HDR or ins.imm < 16: ok = false
+                    pointer = j
+                if ins.op == .load or ins.op == .store:
+                    if ins.op == .store or int(ins.c) & M_CELL != 0:
+                        if ins.a != cell.a or ins.imm != cell.imm or ins.c != cell.c: ok = false
+            if pointer >= 0:
+                env = int(code[pointer].a)
+                loop j in [p + 1..q):
+                    if o_defines(code[j].op) and int(code[j].dst) == env: ok = false
+        if not ok:
+            out.push(code[p])
+            p += 1
+            continue
+        value = vreg(int(cell.ty))
+        if pointer >= 0: out.push(code[pointer])
+        out.push(Ins(.load, cell.ty, i32(value), cell.a, 0, cell.c, cell.imm))
+        loop j in [p..q):
+            if j == pointer: continue
+            ins = code[j]
+            if (ins.op == .load or ins.op == .store) and int(ins.c) & M_CELL != 0:
+                if ins.op == .load: ins = Ins(.mov, ins.ty, ins.dst, i32(value), 0, 0, 0)
+                else: ins = Ins(.mov, cell.ty, i32(value), ins.b, 0, 0, 0)
+            out.push(ins)
+        cell.b = i32(value)
+        out.push(cell)
+        changed = true
+        p = q
+    if changed: ir.code = out
+    changed
 
 optimize = ():
     global o_cse, o_out

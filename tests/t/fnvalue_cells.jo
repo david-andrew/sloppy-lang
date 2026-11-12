@@ -1,0 +1,92 @@
+# requires: sloppy
+# requires: native
+# Promoted capture cells must be synchronized before a stored closure can observe them.
+@noinline
+sum_each = (xs: int[]) -> int:
+    total = 7
+    xs.each((x): total += x)
+    total
+
+@noinline
+with_saved = ():
+    n = 0
+    saved = (): n
+    [1, 2, 3].each((x): n += x)
+    assert(n == 6 and saved() == 6)
+    n = 20
+    [4, 5].each((x): n += x)
+    assert(saved() == 29)
+
+# Addressed cells cannot be cached: a plain pointer load can alias the capture's store.
+@noinline
+with_pointer = ():
+    n = 1
+    p = &n
+    [1, 2, 3].each((x):
+        n += x
+        n += p[0])
+    assert(n == 30)
+
+# Raw inspection can reach a cell through a closure without taking the cell's own address.
+@noinline
+with_environment_alias = ():
+    n = 1
+    reader = (): n
+    words = (&reader) as *int
+    env = words[1] as *int
+    cell = env[2] as *int
+    [1, 2, 3].each((x):
+        n += x + cell[3])
+    assert(n == 19)
+
+cell_of = (f: () -> int) -> *int:
+    words = (&f) as *int
+    env = words[1] as *int
+    env[2] as *int
+
+read_cell = (p: *int) -> int: p[3]
+
+@noinline
+with_helper_alias = ():
+    n = 1
+    reader = (): n
+    cell = cell_of(reader)
+    [1, 2, 3].each((x): n += x + read_cell(cell))
+    assert(n == 19)
+
+@noinline
+nested = ():
+    n = 0
+    [1, 2, 3].each((x):
+        [x, x + 1].each((y): n += y))
+    assert(n == 15)
+
+main = ():
+    assert(sum_each([]) == 7)
+    assert(sum_each([1]) == 8)
+    assert(sum_each([1, 2, 3, 4]) == 17)
+    with_saved()
+    with_pointer()
+    with_environment_alias()
+    with_helper_alias()
+    nested()
+    fs: (() -> int)[]
+    loop i in [0..5):
+        n = i
+        fs.push((): n)
+        [1, 2].each((x): n += x)
+    loop i in 0.. and f in fs: assert(f() == i + 3)
+    # An internal return from the callback can skip a store in some iterations.
+    n = 0
+    [1, 2, 3, 4].each((x):
+        if x == 2: return
+        n += x)
+    assert(n == 8)
+    # Narrow cells retain their store/load conversions; float cells preserve rounding.
+    small: i8 = 120
+    [10, 10].each((x): small += i8(x))
+    assert(small == -116)
+    f: f64 = 1.5
+    [1, 2, 3].each((x): f += f64(x))
+    assert(f == 7.5)
+    print("capture cells ok")

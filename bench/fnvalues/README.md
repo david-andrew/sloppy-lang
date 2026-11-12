@@ -1,5 +1,29 @@
 # Function-value inlining
 
+## Follow-up: capture cells (2026-11-12)
+
+Starting at `9125f9c`, the same instruction-count workload reproduces `each` at
+13,474,486 instructions versus 2,762,439 for the plain loop (4.878×). Promoting
+its scalar cell through the inlined loop reduces it to 2,830,064 (1.024×,
+-79.00%). Raw follow-up counts are in `measurements2.json`.
+
+Scalar, unmanaged capture accesses carry a private-cell memory marker only when
+neither the variable nor any of its captures has its address taken or is passed
+as a mut argument. Captured cell pointers use the environment's header memory
+class. A bounded loop pass hoists an immutable capture-pointer load and keeps one
+cell payload in a register until loop exit. It accepts call-free loops with one
+cell address, no other stores and no exits beyond the loop. The resulting integer
+reduction vectorizes. Narrow integers, managed/aggregate cells, opaque calls and
+aliasing or escaping addresses retain their original memory accesses. Heap cells
+and environments remain allocated outside the loop; writeback preserves mutations
+observed after the helper and through stored closures. This is loop scalar
+replacement, not general allocation elimination.
+
+`fnvalue_cells` adds empty/single/multiple iteration cases, stored readers,
+per-iteration captures, nested lambdas, internal callback returns, addressed-cell
+aliases, narrow overflow and floating-point cells. All five fnvalue tests pass in
+native debug and release.
+
 Measured 2026-11-11 on the shared x86-64 Intel Core i7-6700 desktop (host name
 `redfox`), against `3c5ab28dbcd7674390d4de9f00ca2ff191257df9`. Both compilers
 were built to a self-compilation fixed point. Counts are whole-process retired

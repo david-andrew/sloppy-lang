@@ -10,6 +10,7 @@ use 'types.jo'
 use 'check.jo'
 use 'expr.jo'
 use 'ir.jo'
+use 'opt.jo'
 use 'glsl.jo'
 use 'spirv.jo'
 use 'msl.jo'
@@ -190,6 +191,7 @@ struct Val:
 struct Place:
     mem: bool
     v: int
+    cell: bool = false
 
 struct TempItem:
     is_slot: bool
@@ -486,11 +488,15 @@ scope_pop = ():
 # ---------------- places ----------------
 read_place = (p: Place, t: int) -> int:
     if not p.mem: return p.v
+    if p.cell: return e_load(vt_of(t), p.v, 0, mem_mode(t) | M_CELL)
     load_val(t, p.v, 0)
 
 write_place = (p: Place, t: int, v: int):
     if not p.mem:
         e_mov(p.v, v)
+        return
+    if p.cell:
+        e_store(p.v, 0, v, mem_mode(t) | M_CELL)
         return
     store_val(t, p.v, 0, v)
 
@@ -641,6 +647,18 @@ share_root = (l: int) -> int:
 
 is_shared = (l: int) -> bool: int(locals[share_root(l)].flags) & LF_SHARED != 0
 
+# A cell handed out as a pointer or mut argument may also be read through an ordinary load.
+# Cache this per root: checking has finished, and a cell can have many reads in nested lambdas.
+cell_private: {int: bool}
+private_cell = (l: int) -> bool:
+    r = share_root(l)
+    if let p = cell_private.get(r): return p
+    p = true
+    loop k in [1..locals.len()):
+        if int(locals[k].flags) & (LF_ADDR | LF_MUTARG) != 0 and share_root(k) == r: p = false
+    cell_private[r] = p
+    p
+
 # the type of what the variable's storage holds: the value, or the cell
 store_type = (l: int) -> int:
     t = int(locals[l].type)
@@ -665,7 +683,12 @@ new_cell = (l: int):
 local_place = (l: int, write: bool) -> Place:
     f = int(locals[l].flags)
     if f & LF_ALIAS != 0: return gen_place(int(locals[l].alias), write)
-    if is_shared(l): return Place(true, e_addi(read_place(cell_place(l), store_type(l)), 24))
+    if is_shared(l):
+        # A captured cell pointer is an immutable environment field, like its header.
+        # Sharing the header memory class lets inlined calls forward it across data stores.
+        cp = if f & LF_CAPTURE != 0: e_load(VI, env_v, int(locals[l].env_off), ptr_size | M_HDR) else: read_place(cell_place(l), store_type(l))
+        t = int(locals[l].type)
+        return Place(true, e_addi(cp, 24), opt_release and vc(t) != VC_AGG and not is_managed(t) and private_cell(l))
     if f & LF_CAPTURE != 0: return Place(true, e_addi(env_v, int(locals[l].env_off)))
     if f & LF_BYREF != 0: return Place(true, int(locals[l].vreg))
     if f & LF_PARAM != 0:
@@ -1686,7 +1709,7 @@ gen_lambda = (e: int) -> Val:
             st = store_type(outer)
             c = read_place(cell_place(outer), st)
             retain(c, st)
-            store_val(st, env, int(locals[inn].env_off), c)
+            e_store(env, int(locals[inn].env_off), c, ptr_size | M_HDR)
             continue
         t = int(locals[outer].type)
         id = mk_ident_local(outer, nodes[e].pos)
@@ -5447,6 +5470,12 @@ lower_function = (lf: int):
             ir.code[k] = ins
             k += 1
     ir.code.truncate(k)
+    # Keep raw-read provenance when the ordinary inliner brings a pointer helper into a
+    # callback. The caller's coarse raw_mem flag also includes harmless allocator bodies;
+    # it cannot by itself tell whether a particular loop might read an aliased capture cell.
+    if opt_release and ir.raw_mem:
+        loop i in [0..ir.code.len()):
+            if ir.code[i].op == .load: ir.code[i].c = i32(int(ir.code[i].c) | M_RAW_READ)
 
 # ---------------- generated helper functions ----------------
 lower_partial_thunk = (lf: int, th: int):

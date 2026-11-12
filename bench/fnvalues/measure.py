@@ -11,8 +11,9 @@ p.add_argument('--scratch', type=Path, default=Path.home() / 'dev/tmp/fnvalues/a
 a = p.parse_args()
 s = a.scratch.expanduser().resolve()
 s.mkdir(parents=True, exist_ok=True)
-env = dict(os.environ, TMPDIR=str(Path.home() / 'dev/tmp/fnvalues/tmp'),
+env = dict(os.environ, TMPDIR=os.environ.get('TMPDIR', str(s / 'tmp')),
            SLOPPY_LIB=str(ROOT / 'lib'), SLOPPY_EMIT_WORKERS='1', SLOPPY_THREADS='1', DISPLAY='', WAYLAND_DISPLAY='')
+Path(env['TMPDIR']).mkdir(parents=True, exist_ok=True)
 def run(cmd):
     return subprocess.run([str(x) for x in cmd], cwd=ROOT, env=env,
                           capture_output=True, text=True, check=True)
