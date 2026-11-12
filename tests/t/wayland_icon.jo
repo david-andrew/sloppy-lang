@@ -1,0 +1,78 @@
+# requires: sloppy
+# requires: native
+# Wire messages, fd order, immutable shm pixels, and the libwayland signatures, headlessly.
+main = ():
+    when TARGET == "linux":
+        global __wl_icon_mgr, __wl_shm, __wl_out, __wl_out_fds, __wl_kind, __wl_next_id, __wl_registry
+        __wl_out = []
+        __wl_out_fds = []
+        __wl_kind = [WLK_NONE, WLK_DISPLAY]
+        __wl_next_id = 2
+        mgr = __wl_new(WLK_ICON_MGR)
+        shm = __wl_new(WLK_SHM)
+        top = __wl_new(WLK_TOPLEVEL)
+        __wl_icon_mgr = mgr
+        __wl_shm = shm
+        # A translucent red 1x1 and a 2x2 green icon: headers are not pixel bytes.
+        icons = [1, 1, 0x80FF0000, 2, 2, 0xFF00FF00, 0xFF00FF00, 0xFF00FF00, 0xFF00FF00]
+        pixels = __wl_icon_pixels(icons)
+        assert(pixels.len() == 20)
+        assert(__wl_u32(pixels, 0) == 0x80800000)
+        assert(__wl_u32(pixels, 4) == 0xFF00FF00)
+        __wl_queue_icon(top, icons, 42, pixels.len())
+        assert(__wl_out_fds == [42])
+        # Decode exactly as a compositor would. Buffer offsets are packed pixel bytes.
+        messages: (int, int, int[])[]
+        at = 0
+        loop at < __wl_out.len():
+            header = __wl_u32(__wl_out, at + 4)
+            n = header >> 16
+            args: int[]
+            p = at + 8
+            loop p < at + n:
+                args.push(__wl_u32(__wl_out, p))
+                p += 4
+            messages.push((__wl_u32(__wl_out, at), header & 65535, args))
+            at += n
+        pool = 5
+        icon = 6
+        b1 = 7
+        b2 = 8
+        assert(messages == [
+            (shm, 0, [pool, 20]), (mgr, 1, [icon]),
+            (pool, 0, [b1, 0, 1, 1, 4, 0]), (icon, 2, [b1, 1]),
+            (pool, 0, [b2, 4, 2, 2, 8, 0]), (icon, 2, [b2, 1]),
+            (mgr, 2, [top, icon]), (icon, 0, []), (b1, 0, []), (b2, 0, []), (pool, 1, [])])
+        __wl_out.clear()
+        __wl_out_fds.clear()
+        __wl_icon_mgr = 0
+        __wl_queue_icon(top, icons, 42, 20)
+        assert(__wl_out.len() == 0 and __wl_out_fds.len() == 0)
+        if lib_available("libwayland-client.so.0"):
+            assert(__lw_make_ifaces())
+            assert(__lw_ifaces.len() == 36)
+            assert(__cstr((__lw_ifaces[WLK_ICON_MGR] as **u8)[0]) == "xdg_toplevel_icon_manager_v1")
+            assert(__cstr((__lw_ifaces[WLK_ICON] as **u8)[0]) == "xdg_toplevel_icon_v1")
+        # Announcing a newer manager still binds version 1, on either transport.
+        __wl_registry = __wl_new(WLK_REGISTRY)
+        __wl_begin(1, 0)
+        __wl_u(77)
+        __wl_s("xdg_toplevel_icon_manager_v1")
+        __wl_u(3)
+        announcement = __wl_msg[8..]
+        __wl_event(__wl_registry, 0, announcement)
+        assert(__wl_icon_mgr != 0 and __wl_kind[__wl_icon_mgr] == WLK_ICON_MGR)
+        assert(__wl_u32(__wl_out, 0) == __wl_registry and __wl_u32(__wl_out, 8) == 77)
+        iface, after = __wl_str(__wl_out, 12)
+        assert(iface == "xdg_toplevel_icon_manager_v1")
+        assert(__wl_u32(__wl_out, after) == 1 and __wl_u32(__wl_out, after + 4) == __wl_icon_mgr)
+        __wl_out.clear()
+        defs = __lw_parse()
+        loop d in defs:
+            if d.name == "xdg_toplevel_icon_manager_v1":
+                assert(d.reqs[1].sig == "n" and d.reqs[2].sig == "o?o")
+                assert(d.reqs[2].types == ["xdg_toplevel", "xdg_toplevel_icon_v1"])
+                assert(d.evs[0].sig == "i" and d.evs[1].sig == "")
+            if d.name == "xdg_toplevel_icon_v1":
+                assert(d.reqs[2].sig == "oi" and d.reqs[2].types[0] == "wl_buffer")
+    print("Wayland icon pixels, requests, lifetime and optional protocol ok")

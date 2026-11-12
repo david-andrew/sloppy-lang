@@ -50,7 +50,10 @@ const WLK_CONSTRAINTS = 30     # zwp_pointer_constraints_v1 (pointer lock, for m
 const WLK_LOCKED = 31
 const WLK_RELMGR = 32          # zwp_relative_pointer_manager_v1
 const WLK_RELPTR = 33
+const WLK_ICON_MGR = 34        # xdg_toplevel_icon_manager_v1
+const WLK_ICON = 35
 
+__wl_icon_mgr = 0
 __wl_registry = 0
 __wl_compositor = 0
 __wl_shm = 0
@@ -281,7 +284,7 @@ __wl_take_fd = () -> int:
     f
 
 __wl_event = (obj: int, op: int, a: u8[]):
-    global __fullscreen, __win_close, __wl_compositor, __wl_compositor_ver, __wl_configured, __wl_constraints, __wl_csd, __wl_cursor_dev, __wl_cursor_mgr, __wl_ddm, __wl_ddm_ver, __wl_deco_mgr, __wl_dmabuf, __wl_failed, __wl_frac_mgr, __wl_frame_pending, __wl_fullscreen, __wl_keyboard, __wl_lh, __wl_lw, __wl_maximized, __wl_params_result, __wl_pending_h, __wl_pending_w, __wl_pointer, __wl_relmgr, __wl_seat, __wl_shm, __wl_source, __wl_sync_done, __wl_viewporter, __wl_wm_base
+    global __wl_icon_mgr, __fullscreen, __win_close, __wl_compositor, __wl_compositor_ver, __wl_configured, __wl_constraints, __wl_csd, __wl_cursor_dev, __wl_cursor_mgr, __wl_ddm, __wl_ddm_ver, __wl_deco_mgr, __wl_dmabuf, __wl_failed, __wl_frac_mgr, __wl_frame_pending, __wl_fullscreen, __wl_keyboard, __wl_lh, __wl_lw, __wl_maximized, __wl_params_result, __wl_pending_h, __wl_pending_w, __wl_pointer, __wl_relmgr, __wl_seat, __wl_shm, __wl_source, __wl_sync_done, __wl_viewporter, __wl_wm_base
     kind = WLK_NONE
     if obj >= 0xff000000:
         if obj - 0xff000000 < __wl_srv_kind.len(): kind = __wl_srv_kind[obj - 0xff000000]
@@ -302,6 +305,7 @@ __wl_event = (obj: int, op: int, a: u8[]):
         if iface == "wl_compositor":
             __wl_compositor_ver = min(ver, 6)
             __wl_compositor = __wl_bind(name, iface, __wl_compositor_ver, WLK_COMPOSITOR)
+        else if iface == "xdg_toplevel_icon_manager_v1": __wl_icon_mgr = __wl_bind(name, iface, 1, WLK_ICON_MGR)
         else if iface == "wl_shm": __wl_shm = __wl_bind(name, iface, 1, WLK_SHM)
         else if iface == "xdg_wm_base": __wl_wm_base = __wl_bind(name, iface, 1, WLK_WM_BASE)
         else if iface == "wl_seat" and __wl_seat == 0: __wl_seat = __wl_bind(name, iface, min(ver, 5), WLK_SEAT)
@@ -957,6 +961,7 @@ __wl_open = (title: str, w: int, h: int) -> str:
     __wl_begin(__wl_toplevel, 3)
     __wl_s(__program_name())
     __wl_end()
+    __wl_set_icon(__wl_toplevel)
     if __wl_deco_mgr != 0:
         deco = __wl_new(WLK_DECORATION)
         __wl_begin(__wl_deco_mgr, 1)
@@ -978,6 +983,94 @@ __wl_open = (title: str, w: int, h: int) -> str:
     __wl_apply_size()
     __wl_flush()
     ""
+
+# The build icon, in the same sizes as X11's, through xdg-toplevel-icon-v1. The backing
+# storage is immutable. Destroy the icon BEFORE its buffers; set_icon retains its contents.
+# Request construction is separate so the protocol can be checked without a compositor.
+__wl_icon_pixels = (icons: int[]) -> u8[]:
+    out: u8[]
+    p = 0
+    loop p + 2 <= icons.len():
+        n = icons[p] * icons[p + 1]
+        if n <= 0 or p + 2 + n > icons.len(): break
+        loop i in [0..n):
+            v = icons[p + 2 + i]
+            a = (v >> 24) & 255
+            r = ((v >> 16) & 255) * a / 255
+            g = ((v >> 8) & 255) * a / 255
+            b = (v & 255) * a / 255
+            __put32(out, (a << 24) | (r << 16) | (g << 8) | b)  # premultiplied ARGB8888
+        p += 2 + n
+    out
+
+__wl_queue_icon = (toplevel: int, icons: int[], fd: int, size: int):
+    if __wl_icon_mgr == 0 or toplevel == 0 or size <= 0: return
+    pool = __wl_new(WLK_POOL)
+    __wl_begin(__wl_shm, 0)                    # create_pool(new_id, fd, size)
+    __wl_u(pool)
+    __wl_u(size)
+    __wl_end()
+    __wl_out_fds.push(fd)
+    icon = __wl_new(WLK_ICON)
+    __wl_begin(__wl_icon_mgr, 1)               # create_icon
+    __wl_u(icon)
+    __wl_end()
+    buffers: int[]
+    p = 0
+    offset = 0
+    loop p + 2 <= icons.len():
+        w = icons[p]
+        h = icons[p + 1]
+        n = w * h
+        if w <= 0 or w != h or n <= 0 or p + 2 + n > icons.len() or offset + n * 4 > size: break
+        buf = __wl_new(WLK_BUFFER)
+        buffers.push(buf)
+        __wl_begin(pool, 0)                   # create_buffer(new_id, offset, w, h, stride, format)
+        __wl_u(buf)
+        __wl_u(offset)
+        __wl_u(w)
+        __wl_u(h)
+        __wl_u(w * 4)
+        __wl_u(0)                            # WL_SHM_FORMAT_ARGB8888
+        __wl_end()
+        __wl_begin(icon, 2)                   # add_buffer(buffer, scale)
+        __wl_u(buf)
+        __wl_u(1)
+        __wl_end()
+        offset += n * 4
+        p += n + 2
+    __wl_begin(__wl_icon_mgr, 2)               # set_icon(toplevel, icon)
+    __wl_u(toplevel)
+    __wl_u(icon)
+    __wl_end()
+    __wl_begin(icon, 0)                       # icon.destroy: its buffers may now be destroyed
+    __wl_end()
+    loop buf in buffers:
+        __wl_begin(buf, 0)
+        __wl_end()
+    __wl_begin(pool, 1)                       # pool.destroy
+    __wl_end()
+
+__wl_set_icon = (toplevel: int):
+    when PROGRAM_ICON != "":
+        if __wl_icon_mgr == 0 or toplevel == 0: return
+        icons = __icon_argb(1 << 20)
+        pixels = __wl_icon_pixels(icons)
+        if pixels.len() == 0: return
+        fd = syscall(319, data("sloppy-icon\0"), 1)          # memfd_create(MFD_CLOEXEC)
+        if fd < 0: return
+        if syscall(77, fd, pixels.len()) < 0:               # ftruncate
+            syscall(3, fd)
+            return
+        mem = __mmap(null, pixels.len(), 3, 1, fd, 0)
+        if mem as int < 0 and mem as int >= -4095:
+            syscall(3, fd)
+            return
+        mem_copy(mem, data(pixels), pixels.len())
+        __wl_queue_icon(toplevel, icons, fd, pixels.len())
+        __wl_flush()                              # SCM_RIGHTS (or libwayland's fd copy) before close
+        syscall(11, mem, pixels.len())             # munmap; the compositor retains the memfd storage
+        syscall(3, fd)
 
 # the window's pixel size from its logical size and the scale
 __wl_px = (v: int) -> int: int(f64(v) * __wl_scale + 0.5)

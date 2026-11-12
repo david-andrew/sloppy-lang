@@ -1425,8 +1425,8 @@ build:                          # build options live in the source
     name = "My Game"            # PROGRAM_NAME: window title, and where save_data keeps data
                                 # (a folder's name, as Windows allows them: no / \ : * ? " < > |)
     icon = "icon.png"           # a square PNG (up to 256 px): the .exe's icon, the window's (on
-                                # Windows and X11), the Dock's on macOS, the web page's;
-                                # PROGRAM_ICON has its bytes
+                                # Windows, X11 and supporting Wayland desktops), the Dock's
+                                # on macOS, the web page's; PROGRAM_ICON has its bytes
     js = "glue.js"              # web builds: JavaScript put in the page; it gives `extern`s
 
 when TARGET == "wasm":          # compile-time conditional; the dead branch is not compiled
@@ -2255,6 +2255,32 @@ renderer, which runs your shader functions (see `make_shader`) on the CPU; `soft
 tells the program which is in use, e.g. to draw fewer particles. Frames are rendered at half
 resolution (`SLOPPY_SOFT_SCALE=1` for full resolution: lines one pixel wide can drop out at
 half) and paced to 60 per second.
+
+**Linux window icons.** `build: icon = "icon.png"` supplies the window icon on X11 and
+on Wayland compositors offering `xdg_toplevel_icon_manager_v1` (including KDE). Sloppy sends
+immutable shared-memory buffers at several sizes, with premultiplied alpha; this also works
+when libdecor manages the window. The protocol is optional, and a compositor decides where
+it displays the icon. See the [Wayland icon protocol](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml).
+
+GNOME uses the application's desktop entry for its launcher/window icon. Install a
+`.desktop` file whose basename matches the window's app id, which is `PROGRAM_NAME` (the
+build block's `name`, else the source filename without `.jo`). For example, with
+`name = "org.example.MyGame"`, install `~/.local/share/applications/org.example.MyGame.desktop`:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=My Game
+Exec=/absolute/path/to/mygame
+Icon=/absolute/path/to/icon.png
+Terminal=false
+Categories=Game;
+```
+
+Use `window("My Game")` to give the window a friendly title while keeping that stable app id. Package/install the desktop entry
+with the game; the library does not write launcher files into the user's account. The
+[app-id request](https://wayland.app/protocols/xdg-shell#xdg_toplevel:request:set_app_id)
+describes the desktop-entry naming convention.
 
 **Pictures without a game.** `render_image(w, h, ():` with drawing below it`)` gives an `Image`
 of exactly w x h pixels, drawn with the same functions as `draw` (pixels from its top left

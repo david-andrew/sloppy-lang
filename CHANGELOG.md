@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Wayland window icons use the optional xdg-toplevel-icon protocol, through libwayland or
+  the wire transport, including libdecor windows. GNOME desktop-entry/app-id setup is documented.
+
 - Loaded fonts apply horizontal pair kerning from legacy `kern` and GPOS pairs/classes,
   including extension lookups, with a bounded per-font cache. Drawing, rich text, widths,
   wrapping and text-field caret/hit positions agree; built-in and monospaced metrics stay fixed.

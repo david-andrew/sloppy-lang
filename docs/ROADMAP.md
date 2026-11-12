@@ -155,7 +155,8 @@ game picks from (and an example of each):
   tilesets (done), OpenType fonts with CFF outlines and kerning (done: legacy kern pairs and
   GPOS pairs/classes, including extension lookups).
 - Input: non-XInput gamepads on Windows, actions bound per player.
-- Linux window icons on Wayland (KDE's xdg-toplevel-icon; GNOME needs a .desktop file).
+- Linux window icons on Wayland: done via xdg-toplevel-icon where offered (including KDE);
+  GNOME uses an installed .desktop file matching the app id (documented in LANGUAGE.md).
 - Scripts (from a Python programmer's pass): done. Buffered file/stdin line loops (`open_file`,
   `read_line`); sets and algebra (`Set[T]`, `set(xs)`); Json mutation (`put`, `push`, `remove`
   and nested paths); ISO/format-based dates and elapsed durations; HTTP/HTTPS fetch natively
