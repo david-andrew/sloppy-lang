@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Calls with too few arguments point out a supplied value that fits a later parameter,
+  naming the expected type before it and retaining the full function signature.
+
 - FollowCamera and OrbitCamera have invert-X/Y look options and `update(..., input = false)`
   to continue following and smoothing while menus ignore camera input.
 

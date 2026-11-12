@@ -1279,6 +1279,44 @@ arg_cost = (a: int, pat: int, binds: mut int[]) -> int:
     if r < 0 and is_json_type(fp) and json_convertible(prune(ntype(a))): return 4
     r
 
+# Too few arguments can mean an earlier one was omitted, rather than the last one.
+# Give a typed hint only for a known mismatch that fits a later, unnamed slot. This
+# runs only after overload selection has failed; it never rearranges arguments.
+# The full signature is printed with the call error. Context-dependent values and
+# unresolved types cannot support this hint.
+missing_arg_hint = (d: int, args: int[], fallback: str) -> str:
+    sg = fn_sig(d)
+    pnames: int[]
+    hasdef: bool[]
+    loop i in [0..nkids(d)):
+        pnames.push(int(nodes[kid(d, i)].name))
+        hasdef.push(nodes[kid(d, i)].b != 0)
+    mapped: int[]
+    if not starts_with(map_args(pnames, hasdef, args, mapped), "missing argument"): return fallback
+    binds = fill(0, int(sg.ntp))
+    loop i in 0.. and a in mapped:
+        if a == 0: continue
+        if nodes[a].type == 0 or ctx_dependent(a) or has_var(prune(ntype(a))): return fallback
+        trial = binds
+        if arg_cost(a, sg.params[i], trial) >= 0:
+            binds = trial
+            continue
+        loop raw in args:
+            if nodes[raw].kind == .namedarg and int(nodes[raw].a) == a: return fallback
+        loop j in [i + 1..mapped.len()):
+            # (positional values may have shifted too; explicitly named ones cannot)
+            named = false
+            loop raw in args:
+                if nodes[raw].kind == .namedarg and int(nodes[raw].name) == int(nodes[kid(d, j)].name): named = true
+            if named: continue
+            later = binds
+            if arg_cost(a, sg.params[j], later) >= 0:
+                pn = name_of(int(nodes[kid(d, i)].name))
+                ln = name_of(int(nodes[kid(d, j)].name))
+                return "argument '{pn}' expects {param_type_text(d, i)}, found {type_str(ntype(a))} (matches later parameter '{ln}': {param_type_text(d, j)}; an earlier argument may be missing)"
+        return fallback
+    fallback
+
 # (a value of this type can be made a Json where one goes)
 json_convertible = (t: int) -> bool:
     k = types[t].kind
@@ -1700,10 +1738,13 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 others_call = n
                 resolve_fn_call(n, name, own, args, expected)
                 others_call = 0
-        if recv_d != 0 and decls.len() > 1 and last_err_arg <= 1: fatal(nodes[n].pos, "in call to {call_text(recv_d)}: {recv_err}")
+        if recv_d != 0 and decls.len() > 1 and last_err_arg <= 1:
+            if starts_with(recv_err, "missing argument"): recv_err = missing_arg_hint(recv_d, args, recv_err)
+            fatal(nodes[n].pos, "in call to {call_text(recv_d)}: {recv_err}")
         # (spawn(worker, 3), spawn(worker(3)): a task runs a function given no arguments)
         if name_of(name) == "spawn" and args.len() >= 1 and decls.len() > 0 and decl_in_prelude(decls[0]): spawn_args_check(n, args)
         if decls.len() == 1:
+            if starts_with(last_err, "missing argument"): last_err = missing_arg_hint(decls[0], args, last_err)
             if len(last_err) == 0: last_err = "arguments do not match"
             # (netplay.session(..., max_ahead = 6): a field of what it makes, set after)
             if starts_with(last_err, "no parameter named '") and find(last_err, "' (") < 0:
@@ -1738,6 +1779,11 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
         sep = ""
         if len(last_err) > 0: sep = ": "
         ot = overloads_text(decls, last_err)
+        # (the last candidate may be shorter, even though an earlier one is missing a value)
+        if starts_with(last_err, "missing argument") or starts_with(last_err, "too many"):
+            loop d in decls:
+                hint = missing_arg_hint(d, args, "")
+                if len(hint) > 0: fatal(nodes[n].pos, "in call to {call_text(d)}: {hint}{ot}")
         # (exp(X), clip(X, 0, 1) on an array: NumPy's, which apply to each element)
         eh = elementwise_hint(name_of(name), args)
         if len(eh) > 0: fatal(nodes[n].pos, "no version of '{name_of(name)}' takes {eh}")
