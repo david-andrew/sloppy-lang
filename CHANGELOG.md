@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.32.0
+
+The first release from the API consistency review: lines starting "Breaking:" say what to
+write instead, and each one is a compile error at the old use, never a silent change.
+docs/STABLE.md now says which parts of the library are stable. Also: Vulkan pipelines are made
+while assets load (no stutter the first time an effect appears), 2D programs no longer compile
+3D code (a small game compiles 17% faster), Windows gamepads beyond XInput, font kerning, and a
+`sloppy new` animated-character starter.
 
 - Breaking: media writers take the destination first: `save_png(path, image)` and `save_wav(path, sound)`, matching `write_file`/`write_bytes`. Use `encode_png(image)`/`encode_wav(sound)` for bytes. No text/path same-type order changes.
 
