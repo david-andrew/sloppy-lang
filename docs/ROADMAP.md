@@ -267,9 +267,15 @@ safety net for changes here.
   See `bench/vmath/README.md` for counts, limits and validation.
   Known nonescaping function values now inline through small helpers in release builds:
   reduce, all, map and mapped sums are about level with loops; count/any/filter retain
-  1.2-1.6x instruction gaps. Captured-state each improves 63% but shared cells still prevent
-  vectorization (4.9x a plain reduction). Stored/escaping callbacks, parallel worker closures
-  and large helpers such as sort remain opportunities. See `bench/fnvalues/README.md`.
+  1.2-1.6x instruction gaps. Inlined scalar capture reductions now keep their accumulator
+  in a register and vectorize: each is within 2.5% of a plain loop (79% fewer instructions
+  than the previous release). Heap cells remain outside the loop, with writeback for stored
+  closures; addressed, narrow and managed cells retain their memory semantics. Keyed sort
+  splits out its key traversal, removing the remaining 2% callback cost. Bounded per-body
+  parallel_range worker variants make the per-index callback direct/inlined (73% fewer
+  instructions in the one-thread count, preserving the pool and captured environments).
+  General stored/escaping callback specialization and allocation elimination remain
+  opportunities. See `bench/fnvalues/README.md` for limits, counts and validation.
 - Debug builds stay the default; compile speed comes first (item 2 tracks it). What they lose
   to release builds, measured October 2026: the out-of-line uniqueness and refcount calls were
   most of it (done: the code generator tests the common case and skips the call, through a
