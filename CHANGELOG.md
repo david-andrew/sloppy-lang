@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Breaking: WebSocket `net.listen` takes `(port, host = "", largest = 16 << 20)`, matching TCP/HTTP. Use named `largest` for message limits.
+- Breaking: `http.binary` takes `(bytes, status = 200, type = "application/octet-stream")`, matching `http.text`; pass `type` by name for a custom content type.
+
 - Breaking: use `task.wait_for(seconds)` for a timed completion flag; `task.wait()` returns the task result and no longer accepts a timeout.
 
 - Breaking: `hex(text)` returns `vec4?`; handle invalid CSS colors with `if let` or an explicit fallback, or unwrap trusted literals. `hex(int)` stays 24-bit RGB.

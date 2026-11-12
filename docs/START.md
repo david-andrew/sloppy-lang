@@ -445,7 +445,7 @@ on_quit = (): write_file("todos.json", to_json(todos))
 - A `Request` has `method`, `path`, `params` (the route's `:names`), `query` (`?done=true`; a
   name given twice, `?tag=a&tag=b`, has its last there and each in `http.query_all(r, "tag")`),
   `headers` (names in small letters), `cookies`, `body` and `text`, and `address`. Answers are
-  `http.text(s)`, `http.html(s)`, `http.json(value)`, `http.binary(bytes, type)`,
+  `http.text(s)`, `http.html(s)`, `http.json(value)`, `http.binary(bytes, type = "image/png")`,
   `http.status(404)`, `http.redirect("/login")` and `http.file(r, path)`, with `status`, `headers`
   and `http.set_cookie(res, name, value)` to change. A route of `"/files/*path"` takes the rest of
   the path; a path no route has is answered 404, and one routes have for other methods 405
