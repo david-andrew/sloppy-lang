@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Measure cold startup and every initial frame through headless lavapipe.
 
+Supports Callgrind attribution or inherited hardware instruction counters.
 Uses the finished-game profiler's scripted input and scratch-library hooks, with instruction
 collection enabled from process entry. No game source is edited. Each game has isolated
 empty driver/save caches. See docs/GRAPHICS.md for the loading API.
@@ -23,6 +24,47 @@ gp.GAMES.update(pbr_gltf="tests/bench/pipeline_pbr_gltf.jo", sky_image="tests/be
 gp.INPUT.update(pbr_gltf="", sky_image="")
 
 
+# Start before exec, rather than in a shared-library constructor, so startup includes the
+# loader. Inheritance accounts for driver workers while they are still alive. Do not reset
+# a parent's counter between frames: inherited children would retain their old counts.
+PERF_LAUNCHER = r"""
+#define _GNU_SOURCE
+#include <linux/perf_event.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+int main(int argc,char **argv) {
+ struct perf_event_attr p={0}; p.type=PERF_TYPE_HARDWARE; p.size=sizeof p;
+ p.config=PERF_COUNT_HW_INSTRUCTIONS; p.disabled=1; p.enable_on_exec=1;
+ p.exclude_kernel=1; p.exclude_hv=1; p.inherit=1;
+ int fd=syscall(SYS_perf_event_open,&p,0,-1,-1,0);
+ if(fd<0) {perror("perf_event_open");return 2;}
+ char number[32];snprintf(number,sizeof number,"%d",fd);setenv("GP_COUNTER_FD",number,1);
+ execvp(argv[1],argv+1);perror("execvp");return 2;
+}
+"""
+PERF_HELPER = r"""
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+static unsigned long long begin;
+static unsigned long long count(void) {
+ unsigned long long n;int fd=atoi(getenv("GP_COUNTER_FD"));
+ if(read(fd,&n,sizeof n)!=sizeof n) {perror("perf read");exit(2);}return n;
+}
+void gp_begin(long f,long pipelines) {
+ begin=count();if(!f)printf("STARTUP,%llu\n",begin);
+ printf("PIPELINES,%ld,%ld\n",f,pipelines);
+}
+void gp_phase(long p,long a,long b,long c,long d) {}
+void gp_end(long f,long a,long b,long c,long d,long live,long pipelines) {
+ unsigned long long n=count()-begin;
+ printf("GI,%ld,%llu\nPIPELINES_END,%ld,%ld\n",f,n,f,pipelines);fflush(stdout);
+}
+"""
+
+
 def instruction_count(path):
     # The per-frame totals are at the end. Avoid building every function/call graph just
     # to read a counter; retain the full worst-frame dump for later attribution.
@@ -42,6 +84,7 @@ def main():
     parser.add_argument("--tag", required=True)
     parser.add_argument("--frames", type=int, default=180)
     parser.add_argument("--window", default="160x90")
+    parser.add_argument("--counter", choices=["callgrind", "hardware"], default="callgrind")
     parser.add_argument("--stats-overlay", action="store_true", help="include the game statistics overlay in both matched runs")
     parser.add_argument("--icd", default="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json")
     parser.add_argument("games", nargs="*", default=["breakwater", "aces", "dunes", "rebound", "new_3d", "pbr_gltf", "sky_image"])
@@ -73,6 +116,12 @@ def main():
               " if(!vg && f<frames)")
     dest = output / args.tag
     dest.mkdir(exist_ok=True)
+    if args.counter == "hardware":
+        gp.C = PERF_HELPER
+        launcher = dest / "count-exec"
+        source = dest / "count-exec.c"
+        source.write_text(PERF_LAUNCHER)
+        subprocess.run(["cc", "-O2", str(source), "-o", str(launcher)], check=True)
     lib = gp.setup(args.tag, False, args.library.expanduser().resolve())
     rt = lib / "core/rt.jo"
     rt.write_text(rt.read_text() + "\n__gp_pipelines = 0\n")
@@ -113,32 +162,40 @@ def main():
         (run / "build.log").write_text(build.stdout + build.stderr)
         build.check_returncode()
         print("RUN", game, flush=True)
+        command = [str(launcher), str(exe)] if args.counter == "hardware" else [
+            "valgrind", "--tool=callgrind", "--vgdb-prefix=" + str(output / "tmp/vgdb-pipe"),
+            "--collect-atstart=yes", "--instr-atstart=yes",
+            "--callgrind-out-file=" + str(run / "callgrind.%p"), str(exe),
+        ]
         with (run / "run.log").open("w") as log:
-            subprocess.run([
-                "valgrind", "--tool=callgrind", "--vgdb-prefix=" + str(output / "tmp/vgdb-pipe"),
-                "--collect-atstart=yes", "--instr-atstart=yes",
-                "--callgrind-out-file=" + str(run / "callgrind.%p"), str(exe),
-            ], env=runenv, cwd=REPO / gp.GAMES[game].rsplit("/", 1)[0],
-               stdout=log, stderr=log, check=True, timeout=7200)
+            subprocess.run(command, env=runenv, cwd=REPO / gp.GAMES[game].rsplit("/", 1)[0],
+                           stdout=log, stderr=log, check=True, timeout=7200)
         log = (run / "run.log").read_text()
         if "vulkan (" not in log:
             raise RuntimeError("requested Vulkan backend was not used: " + str(run))
-        dumps = sorted(run.glob("callgrind.*.*"), key=lambda p: int(p.name.rsplit(".", 1)[1]))
-        counts = [instruction_count(path) for path in dumps]
-        if len(counts) != args.frames + 1:
-            raise RuntimeError("incomplete startup/frame dumps: " + str(run))
-        startup, frames = counts[0], counts[1:]
+        if args.counter == "hardware":
+            startup = next(int(line.split(",")[1]) for line in log.splitlines() if line.startswith("STARTUP,"))
+            samples = [list(map(int, line.split(",")[1:])) for line in log.splitlines() if line.startswith("GI,")]
+            assert [x[0] for x in samples] == list(range(args.frames)), "incomplete hardware frames"
+            frames = [x[1] for x in samples]
+        else:
+            dumps = sorted(run.glob("callgrind.*.*"), key=lambda p: int(p.name.rsplit(".", 1)[1]))
+            counts = [instruction_count(path) for path in dumps]
+            if len(counts) != args.frames + 1:
+                raise RuntimeError("incomplete startup/frame dumps: " + str(run))
+            startup, frames = counts[0], counts[1:]
+            shutil.copyfile(dumps[frames.index(max(frames)) + 1], run / "worst.callgrind")
         worst = frames.index(max(frames))
-        shutil.copyfile(dumps[worst + 1], run / "worst.callgrind")
         pipelines = [list(map(int, line.split(",")[1:])) for line in log.splitlines() if line.startswith("PIPELINES,")]
         ends = [list(map(int, line.split(",")[1:])) for line in log.splitlines() if line.startswith("PIPELINES_END,")]
-        if len(ends) != args.frames:
-            raise RuntimeError("incomplete pipeline end counters: " + str(run))
+        expected = list(range(args.frames))
+        if [x[0] for x in pipelines[:args.frames]] != expected or [x[0] for x in ends] != expected:
+            raise RuntimeError("incomplete pipeline counters: " + str(run))
         with (run / "frames.csv").open("w") as f:
             writer = csv.writer(f)
             writer.writerow(["frame", "Ir", "pipelines_before_frame", "pipelines_after_frame"])
             writer.writerows((i, count, pipelines[i][1], ends[i][1]) for i, count in enumerate(frames))
-        summary = dict(startup_Ir=startup, frames=len(frames), median_Ir=statistics.median(frames),
+        summary = dict(counter=args.counter, startup_Ir=startup, frames=len(frames), median_Ir=statistics.median(frames),
                        worst_Ir=max(frames), worst_frame=worst,
                        pipelines_at_first_frame=pipelines[0][1], pipelines_at_last_frame=pipelines[-1][1],
                        pipeline_creations_after_frame_zero=ends[-1][1] - ends[0][1])

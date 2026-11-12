@@ -412,7 +412,9 @@ Compute dispatch caching is unchanged.
 
 `tests/profile_pipelines.py` measures cold startup and the initial frames using isolated
 caches and a scratch library, without editing game sources. Keep size, MSAA, input and
-overlay identical between runs. Compile-cost checks are also required when changing
+overlay identical between runs. `--counter hardware` uses inherited CPU instruction
+counters for a faster run, including live driver threads; the default Callgrind mode
+also retains an attribution dump. Compile-cost checks are also required when changing
 these hooks: `python3 tools/speedcheck.py --base <revision>` (library rows within 1%) and
 `python3 tests/check_graphics_reachability.py` check that unused features stay unused.
 
