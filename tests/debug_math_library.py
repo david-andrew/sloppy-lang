@@ -7,6 +7,7 @@ Only a temporary library copy is changed.
 import argparse
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -14,8 +15,11 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 ap = argparse.ArgumentParser(description=__doc__)
 ap.add_argument('--compiler', type=Path, default=ROOT / 'bin/sloppy')
+ap.add_argument('--target', choices=['native', 'linux-arm64'], default='native')
 a = ap.parse_args()
 compiler = a.compiler.resolve()
+runner = (shlex.split(os.environ.get('SLOPPY_ARM64_RUN', 'qemu-aarch64'))
+          if a.target == 'linux-arm64' else [])
 with tempfile.TemporaryDirectory(prefix='debug-math-library-') as tmp:
     tmp = Path(tmp)
     lib = tmp / 'lib'
@@ -41,10 +45,11 @@ print("core ok")
         for flags in [[], ['-g'], ['--release']]:
             exe = tmp / 'probe'
             r = subprocess.run([str(compiler), 'build', str(src), *flags,
+                                '--target', a.target,
                                 '-o', str(exe)], env=env, capture_output=True, text=True)
             if r.returncode:
                 raise RuntimeError(r.stderr)
-            r = subprocess.run([str(exe)], env=env, capture_output=True, text=True)
+            r = subprocess.run([*runner, str(exe)], env=env, capture_output=True, text=True)
             if r.returncode or r.stdout != expected:
                 raise RuntimeError(f'{flags}: {r.stdout}{r.stderr}')
             print(f'PASS {expected.strip()} {flags}', flush=True)

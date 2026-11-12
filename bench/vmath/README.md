@@ -246,8 +246,8 @@ examples are unchanged. Mach-O and ELF require no alignment changes.
 Measured against `e7ebe913eb4dd13e79ed016a91e3f60f64271902` on the shared i7-6700 desktop (hostname `redfox`), using
 instruction counts throughout. Raw samples, compiler hashes, source hashes, sizes
 and validation results are in [debug-measurements.json](debug-measurements.json).
-This change targets x86-64 default debug builds. `-g` keeps the original helper
-bodies and locals; ARM64 and WebAssembly keep their previous lowering.
+This original change targeted x86-64 default debug builds. `-g` keeps the original helper
+bodies and locals; see the ARM64 follow-up below. WebAssembly retains its previous lowering.
 
 ### What changed
 
@@ -443,3 +443,148 @@ python3 tests/debug_math_library.py --compiler bin/sloppy
 Use `--reuse` for repeated frame samples of the same executable and retain each
 `frames.csv`. The custom-library check edits a temporary copy, not the real library.
 Respect the shared worker budget when reproducing the measurements.
+
+
+## ARM64 default debug helper lowering (2026-11-12)
+
+Baseline: `cc41b8f17247ad93bf186893f7be87e68de26164` (v0.32.0), on the shared
+i7-6700 desktop (`redfox`). These are executed ARM64 guest instructions under
+QEMU 11.0.3, not host instructions or Apple Silicon timings. Raw kernel, frame,
+compile samples and validation are in `arm64-debug-measurements.json`.
+
+Default ARM64 debug previously expanded vector operators to scalar lane loads,
+arithmetic and stores through aggregate stack temporaries. Math helpers retained
+nested calls: normalize called length, vec4 length called dot, and vector
+min/max/abs/clamp called scalar helpers. Matrix-vector multiplication used a
+128-byte frame, seven vector temporaries and constant-index address arithmetic.
+Its 712-byte body executes 182 instructions, including its small aggregate-copy
+loop. The shared debug helper lowering now uses the existing NEON register IR:
+26 instructions, 104 bytes and no vector stack temporaries (a 16-byte backend
+frame allocation remains). Matrix-matrix helper code shrinks from 776 to 344
+bytes. Ordinary vector operators and caller-side checks are unchanged.
+
+Only the ARM64 exclusion in `debug_math_kind` changes. The shared helper lowering
+and NEON emitter already implement ordered scalar reductions, separate rounded
+multiply/add, comparison/select min/max, conditional abs, exact 8/12/16-byte
+accesses and column-at-a-time alias behavior. No FMA, reciprocal approximation,
+reassociation, new optimizer pass or call-site expansion is introduced. `-g`
+retains helper bodies and locals; release and WebAssembly keep their previous
+paths. Custom `SLOPPY_LIB` math still bypasses specialization through the existing
+stock-source checks.
+
+The same filename, source, library, inputs and output path are used before and
+after. All eleven kernel outputs match exactly. Kernels run 1,024 elements × 256
+repeats; whole-process counts include initialization and output.
+
+| Kernel | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| vec4 add | 20,827,370 | 20,827,370 | +0.00% |
+| vec4 multiply | 20,848,733 | 20,848,733 | +0.00% |
+| vec4 dot | 25,849,374 | 24,276,510 | -6.08% |
+| vec4 lerp | 39,206,151 | 22,428,935 | -42.79% |
+| vec4 normalize | 39,216,863 | 21,391,071 | -45.45% |
+| mat4 × vec4 | 61,758,717 | 20,864,253 | -66.22% |
+| mat4 × mat4 | 222,958,176 | 48,894,560 | -78.07% |
+| vec3 cross | 38,687,780 | 32,396,324 | -16.26% |
+| vec3 normalize | 41,293,179 | 25,564,539 | -38.09% |
+| Particles | 48,390,578 | 48,390,578 | +0.00% |
+| Vertex shader + projection | 275,655,477 | 193,866,549 | -29.67% |
+
+Add, multiply and particles do not call the specialized helpers and stay
+unchanged. The two matrix-vector calls per vertex save 312 guest instructions,
+exactly 81,788,928 instructions across the vertex kernel.
+
+### ARM64 software game frames
+
+Frame 120, 320×180 window, software scale 0.5, one guest thread, the scripted
+inputs from `bench/games/profile.py`, fixed timestep and seed clock. Only a
+scratch library is instrumented. QEMU counts between two marker entries in
+`__run_frame`: input/update/draw/software submission through cursor handling;
+platform presentation, frame-tail input cleanup and the final PNG capture are
+outside this interval. Each marker is reached exactly once. Every before/after
+final PNG has an identical SHA-256. Aces' baseline count was reproduced exactly
+in a second independent run.
+
+| Game | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Aces | 780,153,229 | 556,473,372 | -28.67% |
+| Dunes | 297,276,451 | 251,913,532 | -15.26% |
+| Breakwater | 312,347,327 | 270,623,480 | -13.36% |
+| Rebound | 32,671,467 | 28,929,803 | -11.45% |
+
+### ARM64 compile cost
+
+Three alternating samples per compiler, exact host `instructions:u` from
+`tools/icount.c`, one emission worker, same source/library/output path. Counts
+below are medians. Every program remains below the 1% regression limit.
+
+| Target | Input | Before | After | Change |
+| --- | --- | ---: | ---: | ---: |
+| linux-arm64 | bench/big.jo | 1,416,960,127 | 1,417,064,066 | +0.007% |
+| linux-arm64 | compiler/main.jo | 8,412,205,050 | 8,412,205,598 | +0.000% |
+| linux-arm64 | examples/rebound/rebound.jo | 824,768,976 | 824,903,003 | +0.016% |
+| linux-arm64 | examples/breakwater/breakwater.jo | 1,249,705,123 | 1,249,716,953 | +0.001% |
+| linux-arm64 | examples/aces/aces.jo | 1,583,309,479 | 1,583,359,304 | +0.003% |
+| linux-arm64 | examples/dunes/dunes.jo | 826,002,329 | 826,014,621 | +0.001% |
+| macos | bench/big.jo | 2,138,172,562 | 2,138,278,130 | +0.005% |
+| macos | compiler/main.jo | 10,321,709,699 | 10,321,709,948 | +0.000% |
+| macos | examples/rebound/rebound.jo | 1,055,903,901 | 1,053,299,492 | -0.247% |
+| macos | examples/breakwater/breakwater.jo | 2,030,759,762 | 2,030,316,693 | -0.022% |
+| macos | examples/aces/aces.jo | 2,249,321,772 | 2,248,876,143 | -0.020% |
+| macos | examples/dunes/dunes.jo | 1,029,642,575 | 1,029,301,090 | -0.033% |
+
+`tools/speedcheck.py --base cc41b8f --release` also passes (all debug, release
+and library rows report 0.00% at its printed precision).
+
+### ARM64 debug validation
+
+- `tools/bootstrap.sh`: `bootstrap ok`, fixed point; a final self-compile also
+  matches the measured compiler byte for byte.
+- `python3 tools/runtests.py`: 28 passed, 0 failed.
+- `--compiler sloppy`: 1,350 passed, 0 failed.
+- `--compiler sloppy --release`: 1,344 passed, 0 failed.
+- `--compiler sloppy --target linux-arm64` under QEMU: 566 passed, 0 failed;
+  two SQLite tests skipped. C interop runs with the installed ARM64 loader
+  exposed in a private filesystem namespace and its libraries set only in the
+  guest environment; no system libraries are changed.
+- Three additional ARM64 debug rounds of both `simd_` fixtures, all fourteen
+  `value_copy_*` fixtures, `aggregate_copy_alias` and `debug_vmath`: 54 fixture
+  runs passed, 0 failed.
+- Six custom-library checks on each of native and ARM64: 12 passed. The test
+  script now accepts `--target linux-arm64` and `SLOPPY_ARM64_RUN`.
+- `tests/check_neon.py`: forced vector spills, full-width preservation across
+  calls, shuffles and partial memory accesses pass under QEMU.
+- `tools/parcheck.py --workers 4` with its seven default inputs plus `debug_vmath`
+  and `simd_values`: 108 byte-identical serial/parallel comparisons across native,
+  Linux ARM64 and macOS, in default, release, `-g` and release with `-g` modes.
+- Twenty full executable comparisons against baseline pass: both the benchmark
+  and `debug_vmath` are byte-identical in all four native modes, and in ARM64 ELF
+  and Apple Silicon Mach-O with `-g`, release, and release with `-g`.
+
+Suites run one at a time, headless and silent. Native and ARM64 network tests use
+private network namespaces with loopback enabled. All scratch is below
+`~/dev/tmp/arm64-dbgvec`. No examples or library sources are edited. Real Apple
+Silicon execution/timing is left to macOS CI; Mach-O builds and byte comparisons
+here do not constitute an on-device timing result.
+
+### Reproduction
+
+Save the baseline compiler before changing sources. Use the QEMU plugin header
+matching the installed executable and native GLib/PCRE2 pkg-config paths.
+
+```sh
+mkdir -p ~/dev/tmp/arm64-dbgvec/tmp
+export TMPDIR=~/dev/tmp/arm64-dbgvec/tmp
+python3 bench/vmath/measure_arm64.py --debug \
+    --before ~/dev/tmp/arm64-dbgvec/sloppy-before --after bin/sloppy \
+    --plugin-include ~/.pixi/envs/cross/include/qemu-aarch64 \
+    --scratch ~/dev/tmp/arm64-dbgvec
+python3 bench/vmath/measure_games_arm64.py \
+    --before ~/dev/tmp/arm64-dbgvec/sloppy-before --after bin/sloppy \
+    --plugin ~/dev/tmp/arm64-dbgvec/insn.so \
+    --scratch ~/dev/tmp/arm64-dbgvec/games
+python3 bench/vmath/measure_compile_arm64.py \
+    --before ~/dev/tmp/arm64-dbgvec/sloppy-before --after bin/sloppy \
+    --scratch ~/dev/tmp/arm64-dbgvec/compile
+SLOPPY_ARM64_RUN=qemu-aarch64 python3 tests/debug_math_library.py --target linux-arm64
+```

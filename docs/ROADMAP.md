@@ -274,7 +274,14 @@ safety net for changes here.
   software frame 120 improves 13.6%; four other game frames improve 3.8-6.0%.
   Exact compile instruction cost rises at most 0.26% across the six gated inputs;
   both speedchecks remain below 1%. Existing vector operator temporaries and debug
-  array checks remain. See `bench/vmath/README.md` for scope, counts and validation.
+  array checks remain. ARM64 default debug now uses the same helper lowering through
+  the existing NEON backend: matrix-vector/matrix-matrix kernels use 66.2%/78.1%
+  fewer guest instructions under QEMU, and the vertex workload uses 29.7% fewer.
+  Software frame 120 improves 28.7% in Aces, 15.3% in Dunes, 13.4% in Breakwater
+  and 11.5% in Rebound, with byte-identical rendered PNGs. ARM64 cross-compile
+  instruction cost rises at most 0.017% across six programs on Linux ARM64 and
+  macOS; `-g` and release output remain byte-identical to baseline. See
+  `bench/vmath/README.md` for scope, counts and validation.
 
 ## Compile speed for large programs
 

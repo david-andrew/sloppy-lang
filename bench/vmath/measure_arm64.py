@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare ARM64 release guest instruction counts using QEMU's plugin API.
+"""Compare ARM64 guest instruction counts using QEMU's plugin API.
 
 Example: --before ~/dev/tmp/neon/sloppy-before --after bin/sloppy
          --plugin-include ~/.pixi/envs/cross/include/qemu-aarch64
@@ -22,6 +22,7 @@ ap.add_argument('--plugin-include', type=Path, required=True)
 ap.add_argument('--qemu', default=os.environ.get('SLOPPY_ARM64_RUN', 'qemu-aarch64'))
 ap.add_argument('--scratch', type=Path, default=Path.home() / 'dev/tmp/neon')
 ap.add_argument('--output', type=Path)
+ap.add_argument('--debug', action='store_true', help='measure default debug helper lowering')
 args = ap.parse_args()
 scratch = args.scratch.expanduser().resolve()
 scratch.mkdir(parents=True, exist_ok=True)
@@ -43,12 +44,12 @@ run(['cc', '-shared', '-fPIC', '-O2', *glib_flags, '-I', args.plugin_include,
 qemu = shlex.split(args.qemu)
 results = {'host': os.uname().nodename, 'qemu': run(qemu + ['--version']).stdout.splitlines()[0],
            'counter': 'QEMU plugin: sum executed translated-block guest instruction counts',
-           'N': 1024, 'R': 256, 'compilers': {}, 'kernels': {}}
+           'debug': args.debug, 'N': 1024, 'R': 256, 'compilers': {}, 'kernels': {}}
 executables = {}
 for label, compiler in [('before', args.before), ('after', args.after)]:
     compiler = compiler.expanduser().resolve()
     exe = scratch / ('vmath-arm64-' + label)
-    run([compiler, 'build', ROOT / 'bench/vmath/vmath.jo', '--release',
+    run([compiler, 'build', ROOT / 'bench/vmath/vmath.jo', *([] if args.debug else ['--release']),
          '--target', 'linux-arm64', '-o', exe])
     executables[label] = exe
     results['compilers'][label] = {'path': str(compiler),
