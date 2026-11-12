@@ -43,6 +43,37 @@ instructions (-2.05%), versus 1,565,784,261 for its equivalent loop (1.000×).
 Two new native debug/release tests cover stable ascending/descending ties across
 merge runs, key-call counts, copy-on-write, managed keys and a panicking key.
 
+## Follow-up: parallel worker bodies
+
+Release lowering specializes `parallel_range` for a directly supplied lambda or
+named function. It keys variants by the original helper, callback parameter root
+and known code address. Its worker lambda gets the same specialization through
+that parameter's capture chain and up to three immutable local copies (`g = f`).
+The actual function value is still passed and captured normally; only its code
+identity is constant. Each call uses its own runtime environment, so repeated
+calls with different captures remain distinct. Immutable scalar worker captures,
+including the output pointer, are borrowed into registers at worker entry.
+
+The existing pool, worker-job closure ABI, atomic refcounts, per-chunk copy of the
+callback, cleanup and race checking remain in use. Inside the chunk, a known
+callback becomes a direct call, which the ordinary inliner can expand. Its null
+check is unnecessary. Recursive and noinline callbacks remain real calls, and
+intrinsic/frame exclusions still apply to the ordinary inliner. The budget is
+32 generated variants per compilation (normally two per body); exhaustion uses
+the original helper/worker. This is specific to the library's `parallel_range`,
+not general specialization of arbitrary stored/escaping function values.
+
+`parallel_range` falls from 38,211,329 to 10,357,294 instructions (-72.90%),
+versus 13,519,282 for the serial reference (0.766×). Its final worker loop is
+shift/store/increment/compare/backedge, with no per-index callback machinery.
+The reference uses checked array indexing while the library already uses a raw
+output pointer; beating that reference does not imply parallel speedup. Both
+measurements use one runtime thread. New tests additionally use four threads,
+read-only captures, different environments for the same body, unique mut-array
+per-index writes, named/noinline and recursive bodies, nested jobs/lambdas,
+managed outputs, allocation balance, clone-budget fallback and a callback panic.
+All ten fnvalue tests pass in native release.
+
 ## Workloads and counts
 
 Each program initializes 8,192 integers cycling through 0..16, then runs its

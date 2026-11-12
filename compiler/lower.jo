@@ -32,10 +32,56 @@ struct LFunc:
     hkind: HK
     htype: int
     name: str
+    value_root: int = 0       # specialized borrowed callback parameter (and its captures)
+    value_target: int = -1    # known code; the actual closure/environment is still passed
 
 lfuncs: LFunc[]
 inst_lf: {int: int} = {}
 helper_lf: {str: int} = {}
+value_lf: {str: int}
+value_root = 0
+value_target = -1
+value_captures: {int: int}
+const VALUE_CLONE_MAX = 32
+
+# The worker's environment layout and ownership stay exactly the same. Only its code pointer
+# is specialized; each invocation continues to use the actual callback's captured environment.
+lf_value_inst = (f: int, root: int, target: int) -> int:
+    key = "{f}:{root}:{target}"
+    if let x = value_lf.get(key): return x
+    if value_lf.len() >= VALUE_CLONE_MAX: return lf_of_inst(f)
+    x = lfuncs.len()
+    lfuncs.push(LFunc(LK_INST, f, .drop, 0, "{fns[f].sym}_value{x}", root, target))
+    value_lf[key] = x
+    x
+
+# Follow immutable local copies (the worker takes g = f once per chunk). Reassignments,
+# addresses, mut arguments and deep chains fall back to the ordinary indirect call.
+known_value_local = (l0: int, fuel: int) -> int:
+    if value_root == 0 or fuel == 0: return -1
+    l = share_root(l0)
+    if l == value_root: return value_target
+    if int(locals[l].flags) & (LF_ASSIGNED | LF_ADDR | LF_MUTARG | LF_MUTPARAM) != 0: return -1
+    n = origin_value(l)
+    if n > 0 and nodes[n].kind == .ident and nodes[n].aux == i32(int(SK.local)):
+        return known_value_local(int(nodes[n].sym), fuel - 1)
+    -1
+
+lf_value_lambda = (f: int) -> int:
+    if value_root != 0:
+        loop cap in fns[f].caps:
+            if known_value_local(int(cap.outer), 3) >= 0: return lf_value_inst(f, value_root, value_target)
+    lf_of_inst(f)
+
+range_value_target = (f: int, args: int[]) -> int:
+    # Watch's stable function keys do not yet describe callback variants.
+    if not opt_release or watch_build or args.len() != 2 or not fns[f].parallel or fns[f].decl == 0: return -1
+    d = int(fns[f].decl)
+    if not in_lib(nodes[d].pos) or name_of(int(nodes[d].name)) != "parallel_range": return -1
+    n = unconv(args[1])
+    if nodes[n].kind == .lambda: return lf_value_lambda(int(nodes[n].sym))
+    if nodes[n].kind == .fnref and nodes[n].aux != 1: return lf_helper(.thunk, 0, int(nodes[n].sym))
+    -1
 
 # data segments
 rodata: u8[]
@@ -689,6 +735,8 @@ local_place = (l: int, write: bool) -> Place:
         cp = if f & LF_CAPTURE != 0: e_load(VI, env_v, int(locals[l].env_off), ptr_size | M_HDR) else: read_place(cell_place(l), store_type(l))
         t = int(locals[l].type)
         return Place(true, e_addi(cp, 24), opt_release and vc(t) != VC_AGG and not is_managed(t) and private_cell(l))
+    if f & LF_CAPTURE != 0 and value_root != 0:
+        if let v = value_captures.get(l): return Place(false, v)
     if f & LF_CAPTURE != 0: return Place(true, e_addi(env_v, int(locals[l].env_off)))
     if f & LF_BYREF != 0: return Place(true, int(locals[l].vreg))
     if f & LF_PARAM != 0:
@@ -1604,7 +1652,9 @@ gen_direct_call = (f: int, args: int[]) -> Val:
         e_call_nr(lf_of_inst(f), argv, -1)
         e_trap()
         return V(-1, false)
-    rv = e_call(lf_of_inst(f), argv, ret_vt(ret))
+    target = range_value_target(f, args)
+    lf = if target >= 0: lf_value_inst(f, fns[f].params[1], target) else: lf_of_inst(f)
+    rv = e_call(lf, argv, ret_vt(ret))
     copy_back(mark)
     finish_call(ret, rv, rslot)
 
@@ -1617,11 +1667,16 @@ gen_closure_call = (callee: int, args: int[]) -> Val:
         cval = own(cval, ft)
         borrow(cval, ft)
     cv = cval.v
-    fp = e_load(VI, cv, 0, ptr_size)
-    # (a field or variable of a function type never given one: none, said as that)
-    iff(e_bin(.eq, VI, fp, e_iconst(0)))
-    e_call_nr(rt("__panic_nofn"), [e_daddr(loc_data(nodes[callee].pos)), e_daddr(str_data(place_text(callee)))], -1)
-    endc()
+    target = -1
+    if nodes[callee].kind == .ident and nodes[callee].aux == i32(int(SK.local)):
+        target = known_value_local(int(nodes[callee].sym), 3)
+    fp = -1
+    if target < 0:
+        fp = e_load(VI, cv, 0, ptr_size)
+        # (a field or variable of a function type never given one: none, said as that)
+        iff(e_bin(.eq, VI, fp, e_iconst(0)))
+        e_call_nr(rt("__panic_nofn"), [e_daddr(loc_data(nodes[callee].pos)), e_daddr(str_data(place_text(callee)))], -1)
+        endc()
     env = e_load(VI, cv, ptr_size, ptr_size)
     rslot = -1
     argv: int[]
@@ -1633,7 +1688,7 @@ gen_closure_call = (callee: int, args: int[]) -> Val:
     loop i in [0..int(types[ft].nargs)): pts.push(targ(ft, i))
     mark = copy_backs.len()
     call_args(args, pts, int(types[ft].mutmask), argv)
-    rv = e_calli(fp, argv, ret_vt(ret), false)
+    rv = if target >= 0: e_call(target, argv, ret_vt(ret)) else: e_calli(fp, argv, ret_vt(ret), false)
     copy_back(mark)
     finish_call(ret, rv, rslot)
 
@@ -1693,7 +1748,7 @@ gen_lambda = (e: int) -> Val:
     env_layout(f)
     s = new_slot(closure_size(), ptr_size)
     a = e_slot(s)
-    e_store(a, 0, e_faddr(lf_of_inst(f)), ptr_size)
+    e_store(a, 0, e_faddr(lf_value_lambda(f)), ptr_size)
     if fns[f].caps.len() == 0:
         e_store(a, ptr_size, e_iconst(0), ptr_size)
         return Val(a, true, s)
@@ -5357,7 +5412,7 @@ lower_debug_math = (f: int, kind: DebugMath):
 
 lower_inst = (lf: int, f: int):
     global cur_closed, cur_fn, cur_ret, env_v, sret_v
-    begin_fn(fns[f].sym, lf)
+    begin_fn(lfuncs[lf].name, lf)
     if fns[f].decl != 0:
         ir_set_pos(nodes[int(fns[f].decl)].pos)
         ir.decl_pos = ir_pos
@@ -5381,6 +5436,15 @@ lower_inst = (lf: int, f: int):
         locals[l].offset = -1
     ir.nparams = ir.vtypes.len()
     ir.ret = ret_vt(cur_ret)
+    # A specialized worker's immutable scalar captures (notably its output pointer) are
+    # borrowed for the whole call. Load them once before its loop, even when raw output
+    # writes conservatively invalidate the ordinary optimizer's memory knowledge.
+    if value_root != 0:
+        loop cap in fns[f].caps:
+            l = int(cap.inner)
+            t = int(locals[l].type)
+            if not is_shared(l) and vc(t) != VC_AGG:
+                value_captures[l] = load_val(t, env_v, int(locals[l].env_off))
     math_kind = debug_math_kind(f)
     if math_kind != .skip and debug_math_stock(f):
         lower_debug_math(f, math_kind)
@@ -5448,8 +5512,11 @@ lower_inst = (lf: int, f: int):
 lop_watch = false       # (loops in this function count down to the web page's watchdog)
 
 lower_function = (lf: int):
-    global ir_pos, lop_watch
+    global ir_pos, lop_watch, value_root, value_target, value_captures
     f = lfuncs[lf]
+    value_root = f.value_root
+    value_target = f.value_target
+    value_captures = {}
     lop_watch = false
     if want_loop_watch and f.kind == LK_INST and prelude.get(intern("__loop_budget")) != none:
         fi0 = f.inst
