@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Breaking: string `find`/`find_byte` become `index_of`, and `rfind` becomes `last_index_of`, all returning `int?`; handle `none` instead of `-1`. Regex `find` uses `start` instead of `from`; all starts outside `0..len(text)` give absence.
+- Breaking: predicate `find_index` and rectangle `first_overlap` return `int?`; handle `none` instead of `-1`. Array `index_of` remains unchanged pending game-team coordination.
+
 - Breaking: client/server lag simulation is `lag_ms(ms, jitter_ms)`, and client round-trip time is `ping_ms`. Values stay in milliseconds. Session `lag`/`ping` await game-team coordination.
 
 - Breaking: netplay `udp`, server `listen`, `relay` and `relay_forever` return `void | net.NetError` on bind failure. Handle the result or use `.unwrap()`; sessions and servers also set `problem`.

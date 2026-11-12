@@ -948,7 +948,7 @@ draw = ():
     query = hud_text_field(Rect(10, 10, 220, 30), query, id = "search", hint = "Search")
     y = 50.0
     loop i in 0.. and n in notes:
-        if len(query) > 0 and find(lower(n.title), lower(query)) < 0: continue
+        if len(query) > 0 and not lower(n.title).contains(lower(query)): continue
         if hud_button(Rect(10, y, 220, 32), n.title, selected = i == at, align = .left): at = i
         y += 36.0
     notes[at].title = hud_text_field(Rect(240, 10, v.w - 250, 30), notes[at].title, id = "title")

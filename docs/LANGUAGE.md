@@ -280,9 +280,10 @@ four for others (`é`, `ж`, `中`, `😀`). Its bytes are what the basic operat
 `find`, `replace`, `split`, `trim`, `starts_with` and the other functions on text work on any
 text, since a character's bytes never look like another's. For text from players or files, count
 characters with `char_count`, and to step through them, `loop c in chars(s)` (`loop c in s` gives
-bytes, which print as numbers: `str(c)` of an `a` is `"97"`). `find(s, sub)`, `rfind(s, sub)` and
-`find_byte(s, c)` give a byte index, and -1 when it is not there (not none: `if find(s, "@") >=
-0:`, or `sub in s` for whether it is); `s.find(regex(...).unwrap())` gives a `Match?`, none when there is
+bytes, which print as numbers: `str(c)` of an `a` is `"97"`). `index_of(s, sub)`, `last_index_of(s, sub)` and
+`index_of(s, byte)` give an optional byte index: `none` when absent. The `start` offset of
+`index_of` and regex `find` must be in `0..len(s)` inclusive; otherwise they give `none`.
+Use `if let i = s.index_of("@"):` or `sub in s` for membership; `s.find(regex(...).unwrap())` gives a `Match?`, none when there is
 no match.
 
 `print(x)` and `"{x}"` show any value: a struct as `Big(m=1.5, e=300)`. A type of the program's
