@@ -335,12 +335,12 @@ is:
 
 | File | Count | Definitions at this baseline |
 |---|---:|---|
-| `lib/core/array.jo` | 14 | `sum` 94; `min` 99/122; `max` 106/123; `min_by` 127; `max_by` 137; tuple `<` 328/332; `__less` 339; `__more` 340; `__merge_sort_lt` 343; `__merge_pass_lt` 369; `sort_by` 415. |
+| `lib/core/array.jo` | 14 | `sum` 94; `min` 99/122; `max` 106/123; `min` 127; `max` 137; tuple `<` 328/332; `__less` 339; `__more` 340; `__merge_sort_lt` 343; `__merge_pass_lt` 369; `sort` 415. |
 | `lib/std/algo.jo` | 4 | `lower_bound` 16, `upper_bound` 28, `next_permutation` 70, `prev_permutation` 85. |
 | `lib/std/nd.jo` | 8 | `__nd_reduce` 593, `__nd_arg` 638, `argmax` 731, `argmin` 737, `argsort` 744, matrix `*` 908, `__mm_rows` 933, matrix/vector `*` 964. |
 
 Most require `<`; `sum` needs addition/zero initialization, matrix multiplication
-needs multiplication/addition/zero construction. `sort_by` constrains its key
+needs multiplication/addition/zero construction. `sort` constrains its key
 type **K**, not the element type T. `argsort` forwards that requirement. These
 26 bodies would acquire clearer contracts, not disappear. `__nd_reduce` uses a
 runtime operation selector, so all its branches are checked for a concrete T;
@@ -463,7 +463,7 @@ square[T] = (x: T) -> T where (*)(T, T) -> T:
     x * x
 
 sort_keys[T, K] = (xs: T[], key: (T) -> K) -> T[] where (<)(K, K) -> bool:
-    xs.sorted_by(key)
+    xs.sorted(key)
 ```
 
 Use a small `where` signature list, not arbitrary expressions, in this option.

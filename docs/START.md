@@ -276,11 +276,11 @@ main = () -> int:
                 if got == none: break
                 line = got!
                 n_lines += 1
-                if opts.words: n_words += words(line).len()
+                if opts.words: n_words += split(line).len()
             f.close()
             rows.push((path, n_lines, n_words))
         else: eprint("count.jo: cannot read {path}")
-    rows.sort_by((r): r.1, descending = true)
+    rows.sort((r): r.1, descending = true)
     if opts.top > 0 and rows.len() > opts.top: rows.resize(opts.top)
     loop r in rows:
         if opts.words: print("{r.0:<30} {r.1:>8} {r.2:>8}")
@@ -1015,7 +1015,7 @@ draw = ():
 | `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero when changed (`counts[w] += 1`, `groups[k].push(x)`); reading one, `m[k]`, is an error: `m.get(k) ?? 0` |
 | `set()`, `{1, 2}`, `x in s` | `seen: Set[int]` (`{}` where a Set is expected), `{1, 2}`, `s.add(x)`, `x in s`; `unique(xs)` for an array without repeats |
 | `collections.deque`, `heapq.heappush(pq, (d, v))` | `q: Deque[int]` with `q.push(x)` and `q.pop_front()`; `pq.heap_push((d, v))` and `pq.heap_pop()` on an array |
-| `bisect.bisect_left(xs, x)`, `itertools.permutations(xs)`, `combinations(xs, k)` | `lower_bound(xs, x)` (or `bisect_left`), `permutations(xs)`, `combinations(xs, k)` |
+| `bisect.lower_bound(xs, x)`, `itertools.permutations(xs)`, `combinations(xs, k)` | `lower_bound(xs, x)` (or `lower_bound`), `permutations(xs)`, `combinations(xs, k)` |
 | `math.gcd`, `math.isqrt`, `pow(b, e, m)` | `gcd(a, b)`, `isqrt(n)`, `pow_mod(b, e, m)`, `inv_mod(a, m)` |
 | `" ".join(map(str, xs))`, `print(x, file=sys.stderr)` | `xs.join(" ")`, `eprint(x)` |
 | `None`, `if x is None:` | `none`, `if x == none:`; `if let v = x:` gets what is inside |

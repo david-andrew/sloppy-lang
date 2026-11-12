@@ -79,7 +79,7 @@ print(pow_mod(bigint(3), bigint(10) ^ 30, bigint(2) ^ 127 - 1))
 | a priority queue of values with priorities | `h: Heap[str]`, `h.push(x, priority)` (an int priority keeps its order exactly), `h.pop()`, `h.pop_with_int_priority()` |
 | `sort(v.begin(), v.end())`, `sorted(xs, key=len, reverse=True)` | `v.sort()`, `sorted(xs, key = len, descending = true)`, `xs.sort(key = (p): p.1)`; stable |
 | `max(xs, key=len)` | `max(xs, key = len)`, `xs.max()`, `xs.max(default = 0)` for one that may be empty |
-| `lower_bound`, `upper_bound`, `bisect_left`, `bisect_right` | `lower_bound(xs, x)`, `upper_bound(xs, x)` (also as `bisect_left`, `bisect_right`): indexes in a sorted array |
+| `lower_bound`, `upper_bound`, `lower_bound`, `upper_bound` | `lower_bound(xs, x)`, `upper_bound(xs, x)` (also as `lower_bound`, `upper_bound`): indexes in a sorted array |
 | `partition_point` | `partition_point(xs, (x): x < 10)`: the first index where the condition is false |
 | `next_permutation`, `prev_permutation` | `next_permutation(xs)`, `prev_permutation(xs)` (in place, true until it wraps around) |
 | `itertools.permutations(xs)`, `combinations(xs, k)` | `permutations(xs)`, `permutations(xs, k)`, `combinations(xs, k)`: arrays of arrays, all of them at once (10! is 3.6 million arrays: for more, loop on `next_permutation`) |

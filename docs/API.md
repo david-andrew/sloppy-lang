@@ -134,10 +134,8 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `max[T] = (xs: T[], default: T) -> T`
 - `min[T] = (a: T, b: T) -> T`: the smaller and the larger of two values of a type with its own `<` (a big number, a version)
 - `max[T] = (a: T, b: T) -> T`
-- `min_by[T, K] = (xs: T[], key: (T) -> K) -> T`: the element with the smallest key, or the largest (the first of equal ones): the cheapest item, the nearest enemy (min_by(enemies, (e): distance(e.pos, me)))
-- `max_by[T, K] = (xs: T[], key: (T) -> K) -> T`
-- `min[T, K] = (xs: T[], key: (T) -> K) -> T`: the element with the smallest key, as Python's `min(words, key = len)` (min_by)
-- `max[T, K] = (xs: T[], key: (T) -> K) -> T`: the element with the largest key, as Python's `max(words, key = len)` (max_by)
+- `min[T, K] = (xs: T[], key: (T) -> K) -> T`: the element with the smallest key, or the largest (the first of equal ones): the cheapest item, the nearest enemy (min(enemies, (e): distance(e.pos, me)))
+- `max[T, K] = (xs: T[], key: (T) -> K) -> T`
 - `unique[T] = (xs: T[]) -> T[]`: each different element once, in the order they first come
 - `group_by[T, K] = (xs: T[], key: (T) -> K) -> {K: T[]}`: the elements by a key: each key with the elements that have it, in order (keys in the order they first come)
 - `reverse[T] = (xs: mut T[])`
@@ -154,11 +152,9 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `(<)[A, B, C] = (a: (A, B, C), b: (A, B, C)) -> bool`
 - `sort[T] = (xs: mut T[], descending: bool = false)`: sort in place, smallest first (using <), or largest first; equal elements keep their order
 - `sort_with[T] = (xs: mut T[], less: (T, T) -> bool)`: sort in place with a custom "less than" function (equal elements keep their order)
-- `sort_by[T, K] = (xs: mut T[], key: (T) -> K, descending: bool = false)`: sort in place by a key, smallest first or largest first (equal keys keep their order: sort by name, then by score, for the scores in order of name)
+- `sort[T, K] = (xs: mut T[], key: (T) -> K, descending: bool = false)`: sort in place by a key, smallest first or largest first (equal keys keep their order: sort by name, then by score, for the scores in order of name)
 - `sorted[T] = (xs: T[], descending: bool = false) -> T[]`: a sorted copy of xs
-- `sorted_by[T, K] = (xs: T[], key: (T) -> K, descending: bool = false) -> T[]`: a copy of xs sorted by a key
-- `sorted[T, K] = (xs: T[], key: (T) -> K, descending: bool = false) -> T[]`: a copy of xs sorted by a key, as Python's `sorted(words, key = len)` (sorted_by)
-- `sort[T, K] = (xs: mut T[], key: (T) -> K, descending: bool = false)`: sort in place by a key, as Python's `xs.sort(key = (p): p.age)` (sort_by)
+- `sorted[T, K] = (xs: T[], key: (T) -> K, descending: bool = false) -> T[]`: a copy of xs sorted by a key
 
 ### algo.jo
 
@@ -175,10 +171,8 @@ combinations(xs, 2)          # every choice of 2, as arrays
 
 The binary searches take time in proportion to the log of the length; the array must be sorted (as by sort()) for their answers to mean anything.
 
-- `lower_bound[T] = (xs: T[], x: T) -> int`: the first index i where xs[i] is not less than x (xs.len() when there is none): where x would go in the sorted array before the ones equal to it (C++'s lower_bound; Python's bisect_left)
-- `upper_bound[T] = (xs: T[], x: T) -> int`: the first index i where x is less than xs[i] (xs.len() when there is none): where x would go after the ones equal to it; upper_bound - lower_bound is how many equal x (C++'s upper_bound; Python's bisect_right)
-- `bisect_left[T] = (xs: T[], x: T) -> int`: Python's name for lower_bound
-- `bisect_right[T] = (xs: T[], x: T) -> int`: Python's name for upper_bound
+- `lower_bound[T] = (xs: T[], x: T) -> int`: the first index i where xs[i] is not less than x (xs.len() when there is none): where x would go in the sorted array before the ones equal to it (C++'s lower_bound; Python's lower_bound)
+- `upper_bound[T] = (xs: T[], x: T) -> int`: the first index i where x is less than xs[i] (xs.len() when there is none): where x would go after the ones equal to it; upper_bound - lower_bound is how many equal x (C++'s upper_bound; Python's upper_bound)
 - `partition_point[T] = (xs: T[], f: (T) -> bool) -> int`: the first index where f is false, for an f that is true for the first elements and false for the rest (xs.len() when it is true for all): partition_point(xs, (p): p.age < 30) in people sorted by age (Rust's partition_point; C++'s with a condition)
 - `reverse[T] = (xs: mut T[], start: int, end: int)`: the elements from index start up to (not including) end reversed in place: xs[start..end] backwards (reverse(xs) turns the whole array)
 - `next_permutation[T] = (xs: mut T[]) -> bool`: the next ordering of xs in sorted order (by <), in place, and true; for the last one (largest first) xs goes back to the first (sorted) and it gives false. Starting from a sorted array, `loop next_permutation(p):` after a first look at p goes through each ordering once, equal elements not repeating any (C++'s next_permutation)
@@ -233,15 +227,13 @@ String utilities. Strings are immutable UTF-8 byte sequences; indexing gives byt
 - `trim_end = (s: str) -> str`
 - `split = (s: str, sep: str) -> str[]`: the parts of s between the separators (split("a,b", ",") is ["a", "b"]; with "", the characters). For a text's lines, `lines(s)`: split(s, "\n") keeps the "\r" of Windows line ends ("\r\n")
 - `split = (s: str, sep: str, max: int) -> str[]`: split at the first `max` separators only: the rest stays in the last part (split("k=v=w", "=", 1) is ["k", "v=w"])
-- `split = (s: str) -> str[]`: split on runs of whitespace (the same as words(s))
 - `count = (s: str, sub: str) -> int`: how many times sub is in s, not overlapping ("banana".count("an") is 2)
 - `pad_start = (s: str, width: int, fill: str = " ") -> str`: s made `width` characters long with `fill` before it (pad_start("7", 3, "0") is "007"), or after it; a longer s stays as it is ("{s:>10}" and "{s:<10}" in a string do the same with spaces)
 - `pad_end = (s: str, width: int, fill: str = " ") -> str`
 - `capitalize = (s: str) -> str`: the first letter in upper case ("hello world" -> "Hello world")
-- `words = (s: str) -> str[]`: split on runs of whitespace
+- `split = (s: str) -> str[]`: split on runs of whitespace
 - `lines = (s: str) -> str[]`: the lines of s, without their line ends ("\n", or Windows' "\r\n")
 - `join = (parts: str[], sep: str = "") -> str`
-- `join = (sep: str, parts: str[]) -> str`: sep.join(parts), as in Python
 - `replace = (s: str, old: str, new: str) -> str`
 - `repeat = (s: str, n: int) -> str`
 - `(*) = (s: str, n: int) -> str`
@@ -363,7 +355,7 @@ Maps {K: V} keep insertion order and copy as values. Use get/contains for lookup
 - `is_empty[K, V] = (m: Map[K, V]) -> bool`
 - `keys[K, V] = (m: Map[K, V]) -> K[]`
 - `values[K, V] = (m: Map[K, V]) -> V[]`
-- `items[K, V] = (m: Map[K, V]) -> (K, V)[]`: (the (key, value) pairs, in the order added: for sorting them, `m.items().sort_by(...)`)
+- `items[K, V] = (m: Map[K, V]) -> (K, V)[]`: (the (key, value) pairs, in the order added: for sorting them, `m.items().sort(...)`)
 - `clear[K, V] = (m: mut Map[K, V])`
 - `remove[K, V] = (m: mut Map[K, V], k: K) -> bool`: remove a key; returns true if it was present. The others keep their order.
 - `(==)[K, V] = (a: Map[K, V], b: Map[K, V]) -> bool`: the same keys with equal values (in any order) (not for sloppy0: it would take the generic (==) for all structs)
@@ -1546,7 +1538,7 @@ A set: values without repeats, kept in the order they were first added, asked ab
 seen: Set[int]                      # (or seen: Set[int] = {}, empty)
 seen.add(start)
 vowels = {"a", "e", "i", "o", "u"}  # the values written; {loop w in ws: w.lower()} too
-if next in seen: continue           # x in s, or s.has(x)
+if next in seen: continue           # x in s, or s.contains(x)
 words = set(split(text, " "))       # the different words
 loop w in words: print(w)
 both = a.intersection(b)            # also union, difference, is_subset
@@ -1558,7 +1550,6 @@ Sets compare with `==` by what they hold, in any order, and print as {1, 2, 3}.
 - `set[T] = (xs: T[]) -> Set[T]`: a set of the values in xs (each once)
 - `add[T] = (s: mut Set[T], x: T) -> bool`: put x in; true when it was not there yet (`if seen.add(v): queue.push(v)`)
 - `remove[T] = (s: mut Set[T], x: T) -> bool`: take x out; true when it was there
-- `has[T] = (s: Set[T], x: T) -> bool`
 - `contains[T] = (s: Set[T], x: T) -> bool`: (x in s)
 - `len[T] = (s: Set[T]) -> int`
 - `is_empty[T] = (s: Set[T]) -> bool`
@@ -1730,7 +1721,7 @@ step = st.next()            # (again when the player clicks: the next line, choi
 match step.kind:
     .line: draw step.speaker and step.text (step.who: the character's id, for a portrait)
     .choice: draw step.choices; on a click, st.choose(i) and step = st.next()
-    .command: do step.words ("show", "mira", "happy"), then step = st.next()
+    .command: do step.split("show", "mira", "happy"), then step = st.next()
     .end: the end
 ```
 
@@ -3506,8 +3497,6 @@ Vector and matrix math for the built-in vec2/vec3/vec4/mat4 types (f32 component
 - `move_toward = (a: vec2, b: vec2, step: f32) -> vec2`: a moved toward b by at most step (reaching it, not passing it): a steady speed, where approach eases in
 - `move_toward = (a: vec3, b: vec3, step: f64) -> vec3`
 - `move_toward = (a: f64, b: f64, step: f64) -> f64`
-- `sinf = (x: f32) -> f32`
-- `cosf = (x: f32) -> f32`
 
 #### Random points, directions and colors
 
@@ -4250,7 +4239,7 @@ vs = (v: Vertex, u: Params) -> Out: Out(vec4(v.pos, 0, 1), v.pos * 0.5 + 0.5)
 fs = (i: Out, u: Params) -> vec4:        # runs for every pixel, on the GPU
     p = (i.uv - 0.5) * vec2(u.size.x / u.size.y, 1.0)
     d = length(p)
-    rgb(0.5 + 0.5 * sinf(d * 30.0 - u.time * 4.0), 0.3, 0.6 + 0.4 * cosf(u.time + p.x * 3.0))
+    rgb(0.5 + 0.5 * sin(d * 30.0 - u.time * 4.0), 0.3, 0.6 + 0.4 * cos(u.time + p.x * 3.0))
 
 prog = make_shader(shader(vs, fs))
 quad = mesh([Vertex(vec2(-1, -1)), Vertex(vec2(1, -1)), Vertex(vec2(1, 1)),
@@ -4439,8 +4428,8 @@ struct Step:
 step = (id: int, u: Step):
     b = u.bugs[id]
     a = id * 0.000314 + u.time * 0.3
-    r = 0.45 + 0.3 * sinf(a * 5.0 + u.time)
-    goal = vec2(cosf(a) * r * 0.5625, sinf(a) * r)
+    r = 0.45 + 0.3 * sin(a * 5.0 + u.time)
+    goal = vec2(cos(a) * r * 0.5625, sin(a) * r)
     b.vel = b.vel * 0.94 + (goal - b.pos) * u.dt * 12.0
     b.pos += b.vel * u.dt
     u.bugs[id] = b
@@ -4458,7 +4447,7 @@ vs = (c: Corner, u: Look) -> Out:
     Out(vec4(b.pos + c.at * vec2(0.004, 0.007), 0, 1), vec4(0.3 + length(b.vel) * 3.0, 0.7, 1.0 - length(b.vel) * 2.0, 1))
 fs = (i: Out, u: Look) -> vec4: i.color
 
-bugs = gpu_buffer([loop i in 0..20000: Bug(vec2(sinf(i), cosf(i * 1.7)) * 0.9, vec2(0, 0))])
+bugs = gpu_buffer([loop i in 0..20000: Bug(vec2(sin(f32(i)), cos(f32(i * 1.7))) * 0.9, vec2(0, 0))])
 stepper = compute(step)
 prog = make_shader(shader(vs, fs))
 quad = mesh([Corner(vec2(-1, -1)), Corner(vec2(1, -1)), Corner(vec2(0, 1))])
@@ -6065,7 +6054,7 @@ draw = ():
 - `room_link = (web_page: str = "") -> str`: a link to the open room: this page's address (or web_page) with ?room= ("" with neither, or no room)
 - `open_room = (reliable: bool = true, players: int = 0)`: open this computer's room, as start does, but with no screen: for a game that shows its code (room_code, room_link) and how it is going (room_status) in a lobby of its own. Friends come by arrivals(). Nothing without a matchmaking server (has_server); room_status says why when it cannot open
 - `room_public = () -> bool`: the open room is a public one, which Play with anybody (anybody) found or made
-- `room_status = () -> str`: what the room is doing, in words ("" when it is not open; why not, when open_room could not open it)
+- `room_status = () -> str`: what the room is doing, in split("" when it is not open; why not, when open_room could not open it)
 - `arrivals = () -> Invited[]`: friends who have connected through the open room since the last call (the first, while the screen is up, comes from screen): each a peer, as screen's. Call it every frame while hosting
 - `room_busy = (on: bool)`: while on, friends who come to the room wait (told so) until it is off (to a public room: they are sent to another): for a game whose fight has started (call it every frame, with whether that is so)
 - `close_room = ()`: close the room: friends can no longer join with its code (until start opens it again)

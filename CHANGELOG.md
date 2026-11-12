@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: redundant aliases are removed: Set `has` → `contains` (or `in`), `bisect_left/right` → `lower_bound/upper_bound`, `sort_by`/`sorted_by` → `sort(key = ...)`/`sorted(key = ...)`, `min_by`/`max_by` → `min(key = ...)`/`max(key = ...)`, string `words()` → `split()`, separator-first `join(sep, parts)` → `join(parts, sep)`, and `sinf`/`cosf` → `sin`/`cos` with f32 input. GPU `words(buffer)` and shader `mix` remain distinct supported spellings. Map `has` awaits game-team coordination.
+
 - Menu `ui_text_field` now accepts up to 64 code points by default, matching HUD/layout. Pass `max_chars = 24` to keep the former limit. Widget argument orders stay unchanged and are documented together.
 
 - Breaking: 2D physics `pin` is `hinge`, matching 3D. Write `w.hinge(a, b, at)`. 2D `set_motor` names its last argument `limit` instead of `max_torque`: force for sliders, torque for hinges/wheels. Argument order and units stay unchanged.

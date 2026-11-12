@@ -260,7 +260,7 @@ safety net for changes here.
   reduce, all, map and mapped sums are about level with loops; count/any/filter retain
   1.2-1.6x instruction gaps. Captured-state each improves 63% but shared cells still prevent
   vectorization (4.9x a plain reduction). Stored/escaping callbacks, parallel worker closures
-  and large helpers such as sort_by remain opportunities. See `bench/fnvalues/README.md`.
+  and large helpers such as sort remain opportunities. See `bench/fnvalues/README.md`.
 - Debug builds stay the default; compile speed comes first (item 2 tracks it). What they lose
   to release builds, measured October 2026: the out-of-line uniqueness and refcount calls were
   most of it (done: the code generator tests the common case and skips the call, through a

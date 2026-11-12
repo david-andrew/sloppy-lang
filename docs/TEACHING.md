@@ -47,7 +47,7 @@ and ask again when what was typed is not one. Text is not a number even when it 
 
 ## What students get wrong
 
-The compiler explains most mistakes in plain words (`=` where `==` was meant, Python's `def`,
+The compiler explains most mistakes in plain split(`=` where `==` was meant, Python's `def`,
 `for`, `elif`, a misspelled name, a missing `:`). A few things work differently from what they
 may expect:
 

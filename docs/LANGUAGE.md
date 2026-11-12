@@ -398,12 +398,12 @@ An empty `{}` with no type written takes its key and value types from the first 
 `m[k] += v`, or `m.get(k, default)`) after it, as an empty `[]` does from a push; until then it
 cannot be read or printed.
 
-`m.has(k)`, `m.remove(k)`, `m.keys()`, `m.values()` and `m.len()` do what they say; `m.items()` is the (key, value) pairs, to sort them (`m.items().sorted_by((p): -p.1)`).
+`m.has(k)`, `m.remove(k)`, `m.keys()`, `m.values()` and `m.len()` do what they say; `m.items()` is the (key, value) pairs, to sort them (`m.items().sorted((p): -p.1)`).
 
 A set (`Set[T]`, values without repeats) is written with braces and no colons, `{"a", "e",
 "i"}`, or made by a loop, `{loop w in words: w.lower()}`; `{}` is an empty one where a `Set` is
 expected (`seen: Set[int] = {}`), and an empty map otherwise. `x in s`, `s.add(x)` and
-`s.remove(x)`. `set(xs)` makes one from an array; membership is `x in s` or `s.has(x)`.
+`s.remove(x)`. `set(xs)` makes one from an array; membership is `x in s` or `s.contains(x)`.
 `s.union(t)`, `s.intersection(t)` and `s.difference(t)` return new sets; `s.is_subset(t)`
 asks whether every value in `s` is in `t`. They keep insertion order, and leave their inputs
 unchanged. `s.items()` gives an array; `loop x in s:` visits each value once. Equality compares
@@ -2740,7 +2740,7 @@ Indexes the compiler cannot follow (`c[idx[j]]`) keep their check on each access
 arrays the library does this already: `a * b` of two `f64[,]` is a matrix product in blocks that
 stay in the cache, vectorized and shared among the cores when large, and a dotted expression
 over `f64[,]` arrays of one shape is one vectorized loop, as over `f64[]`. Calls through function
-values (`reduce`, `sort_by`, a lambda) are not inlined: in a hot loop, write the loop.
+values (`reduce`, `sort`, a lambda) are not inlined: in a hot loop, write the loop.
 `soa T[]` keeps each field together, which is what loops over one or two fields want.
 
 **Functions.** Release builds copy small functions into their callers; `@inline` on a function
