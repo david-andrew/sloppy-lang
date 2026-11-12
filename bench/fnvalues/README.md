@@ -153,8 +153,8 @@ disabled:
   with/without debug information).
 - Both speedchecks against `9125f9c` pass the 1% limit, including release compile
   instructions. The worst increase is **0.48%**. Raw output is in `measurements2.json`.
-- A wasm32 build-only IR check preserves 4-byte environment cell pointers
-  (`M_HDR | 4`); no wasm program was run.
+- The initial round checked wasm32 environment pointers (`M_HDR | 4`) by build/IR
+  only. The follow-up below adds both full Node wasm suites.
 
 Rounded compile G-instruction counts from the release speedcheck:
 
@@ -194,3 +194,34 @@ python3 tools/speedcheck.py --base 9125f9c --release
 honors `TMPDIR` and forces one emission worker and one runtime thread. It requires
 Linux hardware instruction counters and fails if they are unavailable. No wasm
 program is run by this measurement.
+
+## Wasm entry repair and full wasm validation
+
+The worker specialization is restored after its revert at `d83dea4`. The new
+parallel-panic test exposed a separate entry-adapter bug, also reproducible with
+the reverted compiler: an inferred `main` returning an array leaves its pointer
+on wasm `__start`'s void stack. The adapter now drops a non-exit-code result
+according to the lowered function's return signature. New tests cover array,
+f64 and f32 main results; the existing integer-main test still checks exit codes.
+The parallel worker code and its bounded specialization are unchanged.
+
+Node wasm game simulations receive a 90-second correctness deadline (native
+remains 20 seconds). `skybarons_pick` produces byte-identical wasm with the
+reverted and fixed compilers and matches its expected output with the longer
+deadline. The filesystem fixtures used by `glob_backslash` and `http_forms` are
+initialized by their native tests before the wasm suites: wasm `mkdir` is a stub,
+whereas Node file I/O uses real directories. Both failures reproduce on the
+reverted compiler with fresh scratch. No example or game source is changed.
+
+Validation on the restored compiler:
+
+- Self-compilation is a byte-identical fixed point.
+- Full wasm debug: **433 passed, 0 failed**.
+- Full wasm release: **433 passed, 0 failed**.
+- Native fnvalue and main-return regressions: **13 passed in each mode**.
+- **32 Windows builds passed**: all fnvalue/main-return cases, integer main,
+  the benchmark and the compiler, with default/release flags.
+- `python3 tools/parcheck.py --workers 4`: **84 comparisons passed**.
+- The original parallel-panic repro validates and reaches its expected panic.
+
+Raw follow-up results and baseline checks are in `measurements2.json`.

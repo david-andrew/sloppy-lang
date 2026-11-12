@@ -55,8 +55,8 @@ def c_lib_commands(src, name, d):
     return [[cc, "-shared", "-fPIC", "-O1", "-o", out, src]] if shutil.which(cc) else ""
 
 tmp = os.path.join(tempfile.gettempdir(), "sloppy-tests")
-# Emulated arm64 games can take longer than the native runtime deadline.
-run_timeout = 300 if target == "linux-arm64" else 20
+# Emulated arm64 and Node wasm game simulations can exceed the native deadline.
+run_timeout = 300 if target == "linux-arm64" else 90 if target == "wasm" else 20
 sloppy_bin = os.path.join(root, "bin", "sloppy.exe" if on_windows else "sloppy")
 tests = sorted(glob.glob(os.path.join(root, "tests", "t", "*.jo")))
 tests = [t for t in tests if pattern in os.path.basename(t)]
