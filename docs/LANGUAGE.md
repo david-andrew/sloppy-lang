@@ -1621,7 +1621,7 @@ closure does, and one made in a loop has that turn's.
               else: b = none
   ```
 - `wait_all(tasks)` gives their results in order; `t.done()` says whether one has ended, and
-  `t.wait(wait = 5.0)` waits at most 5 seconds for it (true once it has); `yield_now()` lets the
+  `t.wait_for(5.0)` waits at most 5 seconds for it (true once it has); `yield_now()` lets the
   others take their turns in a task that computes for long.
 - `t.cancel()` asks a task to stop: its waits end at once from then on, the one it is in too,
   giving nothing (`receive` none, `sleep` returns, a `send` gives up, `select` takes its `after` or

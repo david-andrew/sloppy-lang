@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: use `task.wait_for(seconds)` for a timed completion flag; `task.wait()` returns the task result and no longer accepts a timeout.
+
 - Breaking: `hex(text)` returns `vec4?`; handle invalid CSS colors with `if let` or an explicit fallback, or unwrap trusted literals. `hex(int)` stays 24-bit RGB.
 
 - Dynamic JSON `as_int()` returns `none` for nonfinite or out-of-range numbers instead of saturating. Fractional values still truncate toward zero.
