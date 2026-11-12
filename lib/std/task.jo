@@ -39,6 +39,7 @@ struct __TaskCell[T]:
     id = 0                  # (its record, the scheduler's, while it runs)
     failed = ""             # (a group's task that panicked: the panic's message)
 
+# Copying a Task copies its handle to the same completion/result cell; cancel affects that task.
 struct Task[T]:
     __cell: __TaskCell[T][]
     __p: *__TaskCell[T]
@@ -243,7 +244,7 @@ struct __ChanCell[T]:
 # Values sent from one task to another, in order. send waits until a receiver takes the value
 # (capacity 0), or while capacity values wait to be taken; receive waits until one comes, and
 # gives none once the channel is closed and every value has been taken. Copies of a Channel are
-# the same channel. Optional element types are rejected: receive uses none for closed/empty.
+# the same channel; send/close mutate that shared resource without mut. Optional element types are rejected: receive uses none for closed/empty.
 # To send an optional, wrap it in a struct with an optional field (optionals flatten).
 struct Channel[T]:
     __cell: __ChanCell[T][]
@@ -261,9 +262,13 @@ channel[T] = (capacity: int = 0) -> Channel[T]:
 __chan_check = (n: int):
     if n == 0: __panic("this Channel was not made: a Channel comes from channel[T]() (channel[int](), channel[str](10) ...)")
 
-# send v: it waits until a receiver takes it (or while the channel is full). In a task that has
-# been cancelled it waits for nothing: v is sent if there is room, else dropped (or left in the
-# channel, when the send was waiting already)
+# send v: normally waits until a receiver takes it (capacity 0), or a buffer slot is available.
+# Cancellation ends the wait, not the send's side effect: if v was enqueued, it remains queued
+# for a later receiver, even on an unbuffered channel. If already cancelled before enqueueing,
+# v is enqueued only when a buffer slot or waiting receiver is available, otherwise not sent.
+# This void form cannot report which happened; use timed/try_send to observe local acceptance.
+# Accepted means enqueued, not processed. Send after close panics. Void-send cancellation is
+# experimental; cancellation never promises to retract an enqueued value.
 send[T] = (c: Channel[T], v: T):
     __chan_check(c.__cell.len())
     __task_fair()
@@ -278,7 +283,8 @@ send[T] = (c: Channel[T], v: T):
         __task_wait_on(p[0].senders, "to send on a channel (nothing receives from it)")
 
 # send v if it can go within `wait` seconds (a receiver takes it, or there is room); false: it
-# was not sent
+# was never enqueued (including cancellation). True means local acceptance, not processing.
+# An accepted item is not retracted by later cancellation; send after close panics.
 send[T] = (c: Channel[T], v: T, wait: f64) -> bool:
     __chan_check(c.__cell.len())
     __task_fair()

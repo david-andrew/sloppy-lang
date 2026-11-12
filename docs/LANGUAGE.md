@@ -306,9 +306,24 @@ print(Big(1.5, 300))          # 1.50e300
 
 Every type in Sloppy is a *value*: assignment copies. Arrays, strings and maps are
 reference counted with copy-on-write, so copies are O(1) and a real copy only
-happens when you mutate something that is shared. There are no reference types,
-so reference cycles (and leaks) do not happen, and there is no garbage collector (raw pointers
-are the way around that).
+happens when you mutate something that is shared. Ordinary values have no reference identity
+and need no garbage collector; raw pointers are an explicit escape from these rules.
+
+**Shared/resource handles are an exception to independent copied state.** Assignment copies
+the handle, not the resource it identifies. Copies of `Channel`, `Task`, `TaskGroup`, `Atomic`
+and `net.CookieJar` share their channel, completion/group, atomic cell or cookie storage.
+`send`, `close`, `cancel`, Atomic `set`/`add`, and `clear_cookies` change that shared state
+without a `mut` receiver. Absence of `mut` therefore does not promise an operation has no
+observable effects. Construct a new channel/atomic/jar for independent state. Arrays, maps,
+sets and physics `World` remain copied values.
+
+Native resource handles have ownership rules too: copying `File`, a network connection id,
+`Texture`, `Mesh`, `Shader` or other GPU handle does not duplicate the open file/socket/GPU
+resource. Close/free it once after its users are finished, and do not use aliases afterward;
+a copied handle does not grant a separate lifetime. Follow each API's close/free rules.
+Synchronization handles retain their shared cells; they are not interchangeable with manually
+freed graphics/file resources. Shared handles and raw pointers can form shared ownership
+patterns; the ordinary-value rule is not a blanket leak/cycle guarantee for those resources.
 
 ```gdscript
 a = [1, 2, 3]
@@ -1614,6 +1629,16 @@ closure does, and one made in a loop has that turn's.
   from a closed channel), and `ch.send(v, wait = 2.0)` is false when `v` could not go in that
   time. `ch.try_send(v)` and `ch.try_receive()` do not wait; `ch.len()` is how many wait in it. A
   time that has passed (below 0) is no wait at all; NaN is an error.
+- Cancellation does not retract channel items. Untimed `send(v)` normally waits for a buffer
+  slot or rendezvous. If cancelled after enqueueing, it may return while v remains queued,
+  even on an unbuffered channel; a later receiver can still take it. If already cancelled
+  before enqueueing, it sends only if a buffer slot or waiting receiver is available and
+  otherwise returns without sending. Its void result cannot distinguish these cases.
+  Timed `send(v, wait = seconds)` and `try_send(v)` return true only after enqueueing, false
+  only if never enqueued. Acceptance is local, not a promise that a receiver processed it;
+  later cancellation leaves accepted values queued. Send after close panics in every form.
+  The void-send cancellation contract stays experimental; use a bool form when cleanup needs
+  to know whether a final message was accepted.
 - A channel's values cannot be optionals (`channel[int?]` is an error): `receive`'s none means
   the channel is closed.
 - `select` takes the first of several operations that can go on, waiting until one can (one that
@@ -1647,7 +1672,7 @@ closure does, and one made in a loop has that turn's.
   `t.wait_for(5.0)` waits at most 5 seconds for it (true once it has); `yield_now()` lets the
   others take their turns in a task that computes for long.
 - `t.cancel()` asks a task to stop: its waits end at once from then on, the one it is in too,
-  giving nothing (`receive` none, `sleep` returns, a `send` gives up, `select` takes its `after` or
+  giving nothing (`receive` none, `sleep` returns, a `send` stops waiting (queued values stay), `select` takes its `after` or
   `else` arm, `net.fetch` status 0, `tcp_receive` nothing), and `cancelled()` is true in it, for
   it to clean up and end. A task that never waits or looks is not stopped. `t.wait()` still waits
   for the result.

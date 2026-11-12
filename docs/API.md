@@ -2067,7 +2067,7 @@ t.cancel() asks a task to stop: from then on its waits end at once, giving nothi
 
 #### Tasks
 
-- `struct Task[T]`
+- `struct Task[T]`: Copying a Task copies its handle to the same completion/result cell; cancel affects that task.
 - `spawn[T] = (f: () -> T, background: bool = false) -> Task[T]`: run f alongside the rest of the program; its result is the Task's wait(). background: the program's end does not wait for it (a server's loop, a task that watches something)
 - `wait[T] = (t: Task[T]) -> T`: its result, once it has ended (until then the caller waits, and the others take their turns; also in a task that has been cancelled, as the result is needed: wait_for(seconds) is a wait that cancel ends)
 - `wait_for[T] = (t: Task[T], seconds: f64) -> bool`: wait at most `seconds` for it to end: true once it has (wait() then gives its result at once), false if it has not (or the task waiting has been cancelled)
@@ -2092,10 +2092,10 @@ t.cancel() asks a task to stop: from then on its waits end at once, giving nothi
 
 #### Channels
 
-- `struct Channel[T]`: Values sent from one task to another, in order. send waits until a receiver takes the value (capacity 0), or while capacity values wait to be taken; receive waits until one comes, and gives none once the channel is closed and every value has been taken. Copies of a Channel are the same channel. Optional element types are rejected: receive uses none for closed/empty. To send an optional, wrap it in a struct with an optional field (optionals flatten).
+- `struct Channel[T]`: Values sent from one task to another, in order. send waits until a receiver takes the value (capacity 0), or while capacity values wait to be taken; receive waits until one comes, and gives none once the channel is closed and every value has been taken. Copies of a Channel are the same channel; send/close mutate that shared resource without mut. Optional element types are rejected: receive uses none for closed/empty. To send an optional, wrap it in a struct with an optional field (optionals flatten).
 - `channel[T] = (capacity: int = 0) -> Channel[T]`: a channel of T: channel[str](), or channel[int](100) for one that holds up to 100 values before send waits
-- `send[T] = (c: Channel[T], v: T)`: send v: it waits until a receiver takes it (or while the channel is full). In a task that has been cancelled it waits for nothing: v is sent if there is room, else dropped (or left in the channel, when the send was waiting already)
-- `send[T] = (c: Channel[T], v: T, wait: f64) -> bool`: send v if it can go within `wait` seconds (a receiver takes it, or there is room); false: it was not sent
+- `send[T] = (c: Channel[T], v: T)`: send v: normally waits until a receiver takes it (capacity 0), or a buffer slot is available. Cancellation ends the wait, not the send's side effect: if v was enqueued, it remains queued for a later receiver, even on an unbuffered channel. If already cancelled before enqueueing, v is enqueued only when a buffer slot or waiting receiver is available, otherwise not sent. This void form cannot report which happened; use timed/try_send to observe local acceptance. Accepted means enqueued, not processed. Send after close panics. Void-send cancellation is experimental; cancellation never promises to retract an enqueued value.
+- `send[T] = (c: Channel[T], v: T, wait: f64) -> bool`: send v if it can go within `wait` seconds (a receiver takes it, or there is room); false: it was never enqueued (including cancellation). True means local acceptance, not processing. An accepted item is not retracted by later cancellation; send after close panics.
 - `try_send[T] = (c: Channel[T], v: T) -> bool`: send v if that needs no wait (a receiver waits for it, or there is room); false: not sent. When it is full and other tasks are ready (a receiver just woken), they take their turns first
 - `receive[T] = (c: Channel[T]) -> T?`: the next value; none once the channel is closed and every value sent has been taken (or the task has been cancelled)
 - `receive[T] = (c: Channel[T], wait: f64) -> T?`: the next value, waiting at most `wait` seconds for it; none when none came (or the channel is closed and empty: closed() tells which)
@@ -2143,7 +2143,7 @@ The function runs on several threads at once: read immutable/copy-safe inputs, a
 
 #### Atomics
 
-- `struct Atomic`: A whole number threads change together: parallel code may change it (and no other variable), as a count of work done or a flag that tells the other threads to stop. Copies of an Atomic are the same number.
+- `struct Atomic`: A whole number threads change together: parallel code may change it (and no other variable), as a count of work done or a flag that tells the other threads to stop. Copies of an Atomic are the same number: set/add mutate the shared cell without a mut receiver; assignment of the handle does not make an independent counter. Use atomic(v) for an independent cell.
   ```gdscript
   found = atomic(-1)
   parallel_range(n, (i: int) -> int:
@@ -5627,7 +5627,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
       all_headers: (str, str)[] = []  # every header as it came, in order (each Set-Cookie)
   ```
 - `header_values = (r: HttpReply, name: str) -> str[]`: every value of a header the answer has (as each Set-Cookie), in order; name in any letters
-- `struct CookieJar`: a shared cookie jar for native fetches: make with cookie_jar(), then pass cookies = jar to fetch, fetch_start or fetch_all. Copies share the cookies (including answers still on their way); CookieJar() means no jar. A web page's browser manages its own cookies instead
+- `struct CookieJar`: a shared cookie jar for native fetches: make with cookie_jar(), then pass cookies = jar to fetch, fetch_start or fetch_all. Copies share the cookies (including answers still on their way); clear_cookies changes that shared jar without mut. CookieJar() means no jar. A web page's browser manages its own cookies instead
 - `cookie_jar = () -> CookieJar`: a new, empty cookie jar (independent of every other jar)
 - `clear_cookies = (jar: CookieJar)`: forget all cookies in a jar; the jar can be used again
 - `fetch = (url: str, wait: f64 = 30.0, method: str = "GET", headers: {str: str} = {}, body: str = "", save_to: str = "", progress: (int, int) -> void = (got: int, all: int): pass, follow: bool = true, cookies: CookieJar = CookieJar()) -> HttpReply`: a request to an http:// or https:// address, and its answer (following where it redirects, five times at most), waiting up to `wait` seconds in all; https is checked as a browser checks it (tls_connect). A GET unless method says otherwise; headers are sent besides the usual ones (as "Authorization": "Bearer ..."), and body after them (its Content-Type, unless given: JSON when it starts with { or [, else text). With save_to, a successful answer (2xx) goes to that file as it comes, not into data; progress(bytes so far, all of them or -1 when not said) is called as they come. follow = false: a redirect is the answer, its Location and Set-Cookie to look at (a test of a server's sign-in; native programs: a web page's browser follows them) cookies: an opt-in cookie_jar(), shared by requests and updated at every redirect. Matching host/domain, path, Secure and expiry decide what goes back; an explicit Cookie header wins. Without it no cookies are kept. Native programs only (a web page's browser keeps its own)
