@@ -296,7 +296,7 @@ if compiler != "sloppy0" and target == "native":
             print(f"FAIL fmt/repository: not laid out by sloppy fmt (run it on these):\n{r.stdout}{r.stderr}")
             failed += 1
     # `sloppy new`: each template, made into a project, must build (and the program's tests pass)
-    for kind in ["game", "arcade", "pico", "platformer", "3d", "story", "online", "program", "tui", "server"]:
+    for kind in ["game", "arcade", "pico", "platformer", "3d", "character", "story", "online", "program", "tui", "server"]:
         name = "new/" + kind
         if pattern not in name: continue
         d = os.path.join(tmp, "new_" + kind)
@@ -307,6 +307,9 @@ if compiler != "sloppy0" and target == "native":
         if r.returncode == 0:
             cmd = [sloppy, "test", src] if kind in ("program", "tui", "server") else [sloppy, "build", src, "-o", os.path.join(tmp, "new_project")]
             r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=60)
+        if r.returncode == 0 and kind == "character":
+            r = subprocess.run([sloppy, "build", src, "--target", "wasm", "-o", os.path.join(tmp, "new_character_web")],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=120)
         if r.returncode == 0: passed += 1
         else:
             print(f"FAIL {name}\n{r.stdout}{r.stderr}")

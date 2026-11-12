@@ -550,6 +550,7 @@ GALLERY = [
     ("arcade", "lib/new/arcade.jo", "sloppy new: arcade", "arcade", ""),
     ("platformer", "lib/new/platformer.jo", "sloppy new: platformer", "platformer", ""),
     ("firstperson", "lib/new/3d.jo", "sloppy new: 3d", "firstperson", ""),
+    ("character", "lib/new/character.jo", "sloppy new: character", "character", ""),
     ("physics", "examples/physics.jo", "2D physics", "physics", ""),
     ("physics3d", "examples/physics3d.jo", "3D physics", "physics3d", ""),
     ("tiles", "examples/tiles.jo", "Tiles and sprites", "tiles", ""),
@@ -603,6 +604,9 @@ def build_gallery():
             src = src.replace("__TITLE__", name.title()).replace("__NAME__", name)
             full = os.path.join(d, name + ".jo")
             open(full, "w").write(src)
+            if name == "character":
+                for asset in ("character.glb", "character-LICENSE.txt"):
+                    shutil.copy(os.path.join(root, "lib/new", asset), d)
         if not play:
             os.makedirs(os.path.join(d, name), exist_ok=True)
             # (optimized: the players are who wait for it, and a second's building is nothing)

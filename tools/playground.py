@@ -39,10 +39,13 @@ for name, path in [("rebound (2D game)", "examples/rebound/rebound.jo"), ("break
                    ("shapes (2D)", "examples/shapes.jo"), ("tiles (2D)", "examples/tiles.jo"), ("layout (2D interface)", "examples/layout.jo"), ("physics (2D)", "examples/physics.jo"), ("physics3d (3D)", "examples/physics3d.jo"),
                    ("cube (3D)", "examples/cube.jo"), ("scene (3D)", "examples/scene3d.jo"), ("dunes (3D game)", "examples/dunes/dunes.jo"),
                    ("netpong (network game)", "examples/netpong/netpong.jo"), ("duel (network game)", "examples/duel/duel.jo"), ("aces (network game)", "examples/aces/aces.jo"),
-                   ("arcade (sloppy new template)", "lib/new/arcade.jo"), ("platformer (sloppy new template)", "lib/new/platformer.jo"), ("firstperson (sloppy new template)", "lib/new/3d.jo")]:
+                   ("arcade (sloppy new template)", "lib/new/arcade.jo"), ("platformer (sloppy new template)", "lib/new/platformer.jo"), ("firstperson (sloppy new template)", "lib/new/3d.jo"), ("character (sloppy new template)", "lib/new/character.jo")]:
     full = os.path.join(root, path)
     if not os.path.exists(full): continue
     examples[name] = open(full).read().replace("__TITLE__", name.split(" ")[0].title()).replace("__NAME__", name.split(" ")[0])
+    if path == "lib/new/character.jo":
+        game_files[name] = {"inline": {n: base64.b64encode(open(os.path.join(root, "lib/new", n), "rb").read()).decode()
+                                      for n in ("character.glb", "character-LICENSE.txt")}}
     if path.startswith("lib/"): continue
     d = os.path.dirname(full)
     if d == os.path.join(root, "examples"): continue

@@ -131,6 +131,14 @@ no_effect()
 
 ## An animated glTF scene
 
+`sloppy new mygame character` creates a complete starter with an embedded CC0 skinned
+character (24 KB), Idle/Walk/Run crossfades, a follow camera, gradient sky, PBR ground,
+keyboard/gamepad/touch movement and a responsive `layout` pause menu. It needs no
+downloads and builds with `sloppy build --target wasm mygame/mygame.jo`. The generated
+`character-LICENSE.txt` records the asset license; `tools/makecharacter.py` rebuilds
+the model, rig and animations. Replace `character.glb` and the clip names to use your
+own character.
+
 Use an uncompressed glTF 2.0 export (`.glb` is simplest), with PNG/JPEG textures. For this
 example, put the Khronos sample [Fox.glb](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Fox)
 at `assets/Fox.glb`, and a small **tone-mapped, equirectangular JPEG or PNG** panorama at
