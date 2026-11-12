@@ -171,8 +171,8 @@ combinations(xs, 2)          # every choice of 2, as arrays
 
 The binary searches take time in proportion to the log of the length; the array must be sorted (as by sort()) for their answers to mean anything.
 
-- `lower_bound[T] = (xs: T[], x: T) -> int`: the first index i where xs[i] is not less than x (xs.len() when there is none): where x would go in the sorted array before the ones equal to it (C++'s lower_bound; Python's lower_bound)
-- `upper_bound[T] = (xs: T[], x: T) -> int`: the first index i where x is less than xs[i] (xs.len() when there is none): where x would go after the ones equal to it; upper_bound - lower_bound is how many equal x (C++'s upper_bound; Python's upper_bound)
+- `lower_bound[T] = (xs: T[], x: T) -> int`: the first index i where xs[i] is not less than x (xs.len() when there is none): where x would go in the sorted array before the ones equal to it (C++'s lower_bound; Python's bisect_left)
+- `upper_bound[T] = (xs: T[], x: T) -> int`: the first index i where x is less than xs[i] (xs.len() when there is none): where x would go after the ones equal to it; upper_bound - lower_bound is how many equal x (C++'s upper_bound; Python's bisect_right)
 - `partition_point[T] = (xs: T[], f: (T) -> bool) -> int`: the first index where f is false, for an f that is true for the first elements and false for the rest (xs.len() when it is true for all): partition_point(xs, (p): p.age < 30) in people sorted by age (Rust's partition_point; C++'s with a condition)
 - `reverse[T] = (xs: mut T[], start: int, end: int)`: the elements from index start up to (not including) end reversed in place: xs[start..end] backwards (reverse(xs) turns the whole array)
 - `next_permutation[T] = (xs: mut T[]) -> bool`: the next ordering of xs in sorted order (by <), in place, and true; for the last one (largest first) xs goes back to the first (sorted) and it gives false. Starting from a sorted array, `loop next_permutation(p):` after a first look at p goes through each ordering once, equal elements not repeating any (C++'s next_permutation)
@@ -1152,7 +1152,7 @@ For JSON straight into your own structs and back, from_json[Config](text) and to
 - `as_int = (j: Json?) -> int?`: the whole part of a finite number in the int range, or none. Fractions truncate toward zero; typed from_json[int] instead rejects fractional numbers. Integer variants stay exact.
 - `as_str = (j: Json?) -> str?`
 - `as_bool = (j: Json?) -> bool?`
-- `as_list = (j: Json?) -> Json[]`: a list's zero-based element, or none for a negative/out-of-range index or non-lists (none: an empty array) list items, or [] for a non-list; inspect the Json variant to distinguish empty from missing
+- `as_list = (j: Json?) -> Json[]`: list items, or [] for a non-list; inspect the Json variant to distinguish empty from missing
 - `keys = (j: Json?) -> str[]`: an object's field names, in order object keys, or [] for a non-object; inspect the variant if empty versus missing matters
 - `is_null = (j: Json?) -> bool`
 
@@ -1721,7 +1721,7 @@ step = st.next()            # (again when the player clicks: the next line, choi
 match step.kind:
     .line: draw step.speaker and step.text (step.who: the character's id, for a portrait)
     .choice: draw step.choices; on a click, st.choose(i) and step = st.next()
-    .command: do step.split("show", "mira", "happy"), then step = st.next()
+    .command: do step.words ("show", "mira", "happy"), then step = st.next()
     .end: the end
 ```
 
@@ -6053,7 +6053,7 @@ draw = ():
 - `room_link = (web_page: str = "") -> str`: a link to the open room: this page's address (or web_page) with ?room= ("" with neither, or no room)
 - `open_room = (reliable: bool = true, players: int = 0)`: open this computer's room, as start does, but with no screen: for a game that shows its code (room_code, room_link) and how it is going (room_status) in a lobby of its own. Friends come by arrivals(). Nothing without a matchmaking server (has_server); room_status says why when it cannot open
 - `room_public = () -> bool`: the open room is a public one, which Play with anybody (anybody) found or made
-- `room_status = () -> str`: what the room is doing, in split("" when it is not open; why not, when open_room could not open it)
+- `room_status = () -> str`: what the room is doing, in words ("" when it is not open; why not, when open_room could not open it)
 - `arrivals = () -> Invited[]`: friends who have connected through the open room since the last call (the first, while the screen is up, comes from screen): each a peer, as screen's. Call it every frame while hosting
 - `room_busy = (on: bool)`: while on, friends who come to the room wait (told so) until it is off (to a public room: they are sent to another): for a game whose fight has started (call it every frame, with whether that is so)
 - `close_room = ()`: close the room: friends can no longer join with its code (until start opens it again)

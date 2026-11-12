@@ -1015,7 +1015,7 @@ draw = ():
 | `Counter(ws)`, `defaultdict(list)` | a map: a missing key starts at zero when changed (`counts[w] += 1`, `groups[k].push(x)`); reading one, `m[k]`, is an error: `m.get(k) ?? 0` |
 | `set()`, `{1, 2}`, `x in s` | `seen: Set[int]` (`{}` where a Set is expected), `{1, 2}`, `s.add(x)`, `x in s`; `unique(xs)` for an array without repeats |
 | `collections.deque`, `heapq.heappush(pq, (d, v))` | `q: Deque[int]` with `q.push(x)` and `q.pop_front()`; `pq.heap_push((d, v))` and `pq.heap_pop()` on an array |
-| `bisect.lower_bound(xs, x)`, `itertools.permutations(xs)`, `combinations(xs, k)` | `lower_bound(xs, x)` (or `lower_bound`), `permutations(xs)`, `combinations(xs, k)` |
+| `bisect.bisect_left(xs, x)`, `itertools.permutations(xs)`, `combinations(xs, k)` | `lower_bound(xs, x)`, `permutations(xs)`, `combinations(xs, k)` |
 | `math.gcd`, `math.isqrt`, `pow(b, e, m)` | `gcd(a, b)`, `isqrt(n)`, `pow_mod(b, e, m)`, `inv_mod(a, m)` |
 | `" ".join(map(str, xs))`, `print(x, file=sys.stderr)` | `xs.join(" ")`, `eprint(x)` |
 | `None`, `if x is None:` | `none`, `if x == none:`; `if let v = x:` gets what is inside |

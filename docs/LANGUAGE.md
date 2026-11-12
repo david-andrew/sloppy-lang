@@ -1453,6 +1453,16 @@ git reaches it as it would for `git clone` (a private one with the credentials g
 - `test` blocks, which `sloppy test` runs (`sloppy test .` runs those of every file in a
   directory).
 
+### File-writing argument order
+
+File writers put the destination first: `write_file(path, contents, sync = false)`,
+`write_bytes(path, bytes, sync = false)`, `save_png(path, image)` and `save_wav(path, sound)`.
+`save_data(name, contents)` and `save_value(name, value)` use the same destination-first
+convention. Text/path are both strings in `write_file`, so their established positional
+order is unchanged. `encode_png(image)` and `encode_wav(sound)` return bytes without writing.
+Writes return bool; on false, `file_error()` describes the failure. This differs from checked
+reads, whose returned `FileError` owns its message.
+
 ## 10. Compile-time features
 
 ```gdscript
@@ -2795,13 +2805,3 @@ row: their math is scalar, the same as a struct of floats in C.
 times, long frames and the time of each `zone("physics") ... zone_end()`, on the CPU and the GPU.
 For any program, `sloppy build -g` keeps names for gdb and `perf` (Linux), lldb (macOS) and
 Windows' debuggers; `sloppy build --ir` writes the code the compiler made before machine code.
-
-### File-writing argument order
-
-File writers put the destination first: `write_file(path, contents, sync = false)`,
-`write_bytes(path, bytes, sync = false)`, `save_png(path, image)` and `save_wav(path, sound)`.
-`save_data(name, contents)` and `save_value(name, value)` use the same destination-first
-convention. Text/path are both strings in `write_file`, so their established positional
-order is unchanged. `encode_png(image)` and `encode_wav(sound)` return bytes without writing.
-Writes return bool; on false, `file_error()` describes the failure. This differs from checked
-reads, whose returned `FileError` owns its message.

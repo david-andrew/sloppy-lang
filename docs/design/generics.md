@@ -335,7 +335,7 @@ is:
 
 | File | Count | Definitions at this baseline |
 |---|---:|---|
-| `lib/core/array.jo` | 14 | `sum` 94; `min` 99/122; `max` 106/123; `min` 127; `max` 137; tuple `<` 328/332; `__less` 339; `__more` 340; `__merge_sort_lt` 343; `__merge_pass_lt` 369; `sort` 415. |
+| `lib/core/array.jo` | 14 | `sum` 94; `min` 99/122; `max` 106/123; `min_by` 127; `max_by` 137; tuple `<` 328/332; `__less` 339; `__more` 340; `__merge_sort_lt` 343; `__merge_pass_lt` 369; `sort_by` 415. |
 | `lib/std/algo.jo` | 4 | `lower_bound` 16, `upper_bound` 28, `next_permutation` 70, `prev_permutation` 85. |
 | `lib/std/nd.jo` | 8 | `__nd_reduce` 593, `__nd_arg` 638, `argmax` 731, `argmin` 737, `argsort` 744, matrix `*` 908, `__mm_rows` 933, matrix/vector `*` 964. |
 
