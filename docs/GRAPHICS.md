@@ -424,18 +424,6 @@ MSAA, input and overlay setting for both snapshots. This measures compilation mo
 loading as well as frame spikes; cold startup and assets loaded inside frame zero can take
 longer when their pipelines are prepared there.
 
-PBR programs follow material use too. The material form of `draw_mesh` declares that the game
-needs regular PBR programs; glTF `model`/`load_model` prepares them while uploading its
-materials. Skinned PBR and shadow programs stay deferred until a skinned mesh loads. For
-CPU-authored materials passed through optional values or custom loading code, `warm_up(mat)`
-prepares the shared PBR programs explicitly. This does not eagerly link GL/WebGL skin programs.
-
-On Vulkan, `sky_image` prepares its filtering pipeline and filtered textures when the panorama
-is selected. Repeating the same texture reuses them; `refresh = true` rebuilds them during that
-call. Preparation preserves the selected target, viewport, clipping and draw state. Selecting
-or refreshing a panorama inside `draw` still pays its texture filtering work in that frame.
-
-
 ## Switches and troubleshooting
 
 | setting | effect |

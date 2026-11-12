@@ -27,10 +27,8 @@
   to continue following and smoothing while menus ignore camera input.
 - Vulkan prepares graphics pipelines as compatible meshes, instance buffers and shaders load,
   and primes deferred driver JIT without drawing into the game. Unused skinned programs stay
-  out of the driver. PBR programs prepare when materials/models load, and selecting a sky
-  image prepares its filtering pipeline and light maps. `warm_up()` prepares declared
-  shaders and loaded layouts; the shader overload prepares a selected render state.
-  Warm-up errors are reported and retried on
+  out of the driver. `warm_up()` prepares declared shaders and loaded layouts; the shader
+  overload prepares a selected render state. Warm-up errors are reported and retried on
   first use instead of terminating startup.
 
 ## 0.31.0
