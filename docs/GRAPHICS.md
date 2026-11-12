@@ -129,6 +129,33 @@ sprite(enemy, pos)
 no_effect()
 ```
 
+## Asset loading and failure
+
+`load_image`, `load_png`, `load_jpeg` and `load_texture` take bytes and return an asset or
+`ImageError`. `load_font` returns `Font | FontError`, audio `load_wav`/`load_ogg`/`load_music`
+return the sound/music or `AudioError`, and `load_model` returns `Model | ModelError`.
+Use `read_gltf` for CPU-only model data. Path access is a separate checked `read_bytes`:
+
+```gdscript
+read_picture = (path: str) -> Image | FileError | ImageError:
+    file = read_bytes(path)?
+    load_image(file)?
+
+result = read_picture("portrait.png")
+if result is Image: print(result.width, result.height)
+else: eprint(result.message)
+```
+
+`embed` checks that the named file exists at compile time; decoding still happens at runtime,
+so an invalid embedded image/font/sound/model returns the same error as other bytes.
+Use `.unwrap()` to assert a trusted asset, as the examples below do. Error messages travel
+with each result; a later load cannot overwrite a previous error.
+
+Music validates its container and headers when opened and decodes audio packets during
+playback. A detected corrupt packet stops the voice after already accepted samples;
+once `is_playing(voice)` is false, `music_error(voice)` takes its recorded `AudioError`, once.
+None means no decode failure was recorded; manually stopping a voice is not a decode error.
+
 ## An animated glTF scene
 
 `sloppy new mygame character` creates a complete starter with an embedded CC0 skinned
