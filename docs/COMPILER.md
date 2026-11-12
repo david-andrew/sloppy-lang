@@ -102,6 +102,19 @@ it under qemu (each night in CI).
   only. `--json` also preserves `PHASE` instruction readings when using an instrumented compiler.
   Phase milliseconds depend on scheduling; use instruction counts on a shared machine.
   `tools/speedcheck.py` deliberately forces one worker and checks serial cost instead.
+- Function metadata in `x64.jo`: analysis fixes the virtual-register array sizes before
+  allocation and emission. Hot passes retain unique buffer addresses until the next function;
+  none of their callees resize those arrays. The prologue deliberately copies the location
+  table while shuffling incoming arguments: its writes still go through the array's
+  copy-on-write path, and the cached pointer is refreshed before the shuffle and after restore.
+- Optimizer operands in `opt.jo`: `o_buf_store` owns a reusable buffer, `o_buf` points into it,
+  and `o_buf_n` is the number of valid entries. Calls grow the owner when necessary; ordinary
+  instructions write at most three entries. Finish consuming the entries before collecting
+  operands again, and refresh the pointer whenever the owner grows.
+- Lazy-body scanning in `lex.jo` skips eight ordinary bytes at once, bounded by the current
+  source window. The first matching newline, comment marker or quote is handled by the
+  existing byte scanner; word subtraction can mark later bytes too, so only the first match
+  is used. String/interpolation handling and body boundaries are unchanged.
 - `SLOPPY_STOP=lex|parse sloppy check file.jo`: stop early.
 - `SLOPPY_RASTAT=1` / `SLOPPY_RADUMP=<function>`: register allocation statistics / decisions.
 - `sloppy lsp --dump file.jo`: the lines a check writes for the language server.

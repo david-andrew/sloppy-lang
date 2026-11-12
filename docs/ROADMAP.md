@@ -294,6 +294,15 @@ Measured October 2026 on bench/big.jo (50k lines, debug, 8 cores, a busy machine
   instead of exposing generated temporary names. Generated IDs in debugger information can
   change between compiler versions; repeated builds and serial/parallel output remain identical.
   The 10% whole-build target is met for hello, but remains unmet for the games.
+- Serial backend and scanner work (November 2026, v0.32.0 baseline): fixed-size analysis
+  and allocation buffers, cached metadata during instruction selection, batched immediate
+  stores, inlined byte writes, word scanning of lazy bodies, and reusable optimizer operand
+  storage. One-emitter debug builds fall from 165M to 156M instructions for hello, 652M to
+  615M for the small game, 846M to 798M for Rebound, 1283M to 1218M for Breakwater, and
+  1444M to 1352M for big.jo. A true-debug compiler build falls from 3011M to 2835M; its
+  normal release self-build falls from about 8.75G to 8.22G. All six improve by at least
+  5% in both debug and release. These are retired instructions on the same sources, not
+  wall-clock comparisons. Allocation decisions, diagnostics and output order are unchanged.
 - Allocation in the compiler: about 5% of the time, the allocator already doubling arrays and
   remapping large blocks in place; nothing big there.
 - Lowering in parallel (the next lever, about 1.4x on big.jo with code generation in the same
