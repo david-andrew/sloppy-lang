@@ -90,6 +90,7 @@ import invite
 friend = -1
 invite.from_link()                      # opened from an invite link: Join a friend, at once
 draw = ():
+    global friend
     if invite.active():
         if let c = invite.screen("My Game", "https://example.com/mygame/"):
             friend = c.peer             # connected; c.inviter: this side invited
@@ -214,9 +215,9 @@ struct Pad:                             # one player's input for one tick
     x = 0
     fire = false
 struct Game:                            # everything play depends on
-    ...
+    score = 0
 tick = (g: Game, pads: Pad[]) -> Game:  # one tick of play (the same for the same inputs)
-    ...
+    g
 
 s = netplay.session(Game(), tick, players = 2, me = to_int(env("PLAYER") ?? "0") ?? 0)
 s.udp(4400 + s.me, [("192.168.1.20", 4400), ("192.168.1.21", 4401)]).unwrap()
@@ -355,16 +356,21 @@ there.
 # a player's machine
 sent = -1
 update = (dt: f64):
+    global sent
     s.play(read_pad())
     net.send(viewer, s.feed(sent))
     sent = s.confirmed()
 
-# the spectator's
+```
+
+On the spectator's machine, use its own game-loop callbacks:
+
+```gdscript
 w = netplay.watch(Game(), tick)
 update = (dt: f64):
     loop m in net.receive(): w.receive(m.data)
     w.update(dt)
-draw = (): ... w.state ...
+draw = (): text("{w.state}", vec2(20, 20))   # replace with drawing the spectator's world
 ```
 
 `w.waiting` is true while the feed has not caught up (the game holds still until `w.behind`
@@ -422,8 +428,8 @@ things hide the latency:
 ```gdscript
 import netplay
 
-apply = (w: World, player: int, input: Pad, seen: World) -> World: ...    # one player's input
-step = (w: World) -> World: ...                                          # the rest of a tick
+apply = (w: World, player: int, input: Pad, seen: World) -> World: w    # one player's input
+step = (w: World) -> World: w                                          # the rest of a tick
 
 srv = netplay.server(World(), apply, step)      # (a native program)
 srv.listen(4600).unwrap()                                # once a tick: srv.update(); srv.joined, srv.left

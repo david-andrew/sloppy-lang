@@ -110,9 +110,9 @@ ways = (n: int) -> int:
     r
 ```
 
-In a function, `x = ...` changes a global named `x` if there is one above it (`let x = ...` makes
-a local of that name): a name such as `n` or `seen` at the top level and in a helper is the same
-variable.
+In a function, `x = ...` makes a local variable. Use `global x` before assigning a global
+with `=`; changing one of its entries, as `memo[n] = r` does here, changes the global map
+without a `global` declaration.
 
 ## Advent of Code
 

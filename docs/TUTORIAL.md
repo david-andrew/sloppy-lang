@@ -645,6 +645,7 @@ Shapes can be swapped for pictures. Put `firefly.png` next to the program, then:
 hero = load_texture(embed("firefly.png")).unwrap()      # at the top: embed builds the file into the program
 
 # in draw, instead of the circle (sprite draws with its top left corner at the position):
+draw = ():
     sprite(hero, pos - vec2(SIZE, SIZE), vec2(SIZE * 2.0, SIZE * 2.0))
 ```
 

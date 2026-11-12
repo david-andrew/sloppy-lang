@@ -165,7 +165,7 @@ xs = [1 3 3 5 8]
 lower_bound(xs, 3)           # 1: the first index whose element is not less than 3
 upper_bound(xs, 3)           # 3: the first index whose element is more than 3
 partition_point(xs, (x): x < 4)   # 3: the first index where the condition stops holding
-loop next_permutation(p):    # each ordering of p after the one it has, in sorted order
+loop next_permutation(p): pass    # each ordering of p after the one it has, in sorted order
 combinations(xs, 2)          # every choice of 2, as arrays
 ```
 
@@ -839,8 +839,11 @@ Checked file reads. Failures travel with their results; streaming none/empty mea
 Paths as text: their parts, and joining them (nothing is looked up on the disk). Both / and \ separate (Windows takes either).
 
 ```gdscript
-file_name("art/hero.png") is "hero.png", dir_name(...) "art", extension(...) ".png",
-without_extension(...) "art/hero", join_path("art", "hero.png") "art/hero.png"
+print(file_name("art/hero.png"))           # hero.png
+print(dir_name("art/hero.png"))            # art
+print(extension("art/hero.png"))           # .png
+print(without_extension("art/hero.png"))   # art/hero
+print(join_path("art", "hero.png"))        # art/hero.png
 ```
 
 - `file_name = (path: str) -> str`: the last part: the file's name ("" for a path ending in a separator)
@@ -860,7 +863,9 @@ Dates and the wall clock: what time it is (unix_time), and the calendar date and
 d = now()
 print("{d.year}-{d.month:02}-{d.day:02} {d.hour:02}:{d.minute:02}")   # 2026-10-14 08:15
 print(date_text(now()))                                               # 2026-10-14 08:15:03
-started = unix_time()  ...  print("took {unix_time() - started:.1} s")
+started = unix_time()
+# ... do the work here
+print("took {unix_time() - started:.1} s")
 ```
 
 (time() is the clock to measure with in a game: it never jumps, as the wall clock may)
@@ -1540,7 +1545,7 @@ A set: values without repeats, kept in the order they were first added, asked ab
 seen: Set[int]                      # (or seen: Set[int] = {}, empty)
 seen.add(start)
 vowels = {"a", "e", "i", "o", "u"}  # the values written; {loop w in ws: w.lower()} too
-if next in seen: continue           # x in s, or s.contains(x)
+if next in seen: print("already visited")   # x in s, or s.contains(x)
 words = set(split(text, " "))       # the different words
 loop w in words: print(w)
 both = a.intersection(b)            # also union, difference, is_subset
@@ -1573,9 +1578,9 @@ q: Deque[int]
 q.push(start)                       # at the back
 loop q.len() > 0:
     v = q.pop_front()               # the oldest
-    ...q.push(next)
+    q.push(next)
 q.push_front(x)                     # at the front; q.pop() takes from the back
-q.first(), q.last(), q[i]           # (i from the front)
+print(q.first(), q.last(), q[i])           # (i from the front)
 ```
 
 A loop over a deque goes from front to back; it prints as an array does.
@@ -1633,7 +1638,7 @@ open: Heap[int]
 open.push(start, 0.0)
 loop open.len() > 0:
     c, d = open.pop_with_priority()    # the one with the least priority, and that priority
-    ...open.push(next, d + cost)
+    open.push(next, d + cost)
 ```
 
 Priorities are f64s, or ints: an int priority keeps its order exactly, past 2^53 too, where f64s of neighboring ints are equal (pop_with_int_priority gives one back exactly). (largest first: push with -priority.) Values that order themselves, as Python's heapq keeps them, need no Heap: `pq.heap_push((dist, node))` and `pq.heap_pop()` on an array keep the smallest at pq[0], tuples compared by their first element, then the next.
@@ -1699,6 +1704,7 @@ print(st.vars)
 Stories: a script of dialogue, choices and what happens on screen, written as Ren'Py writes one, read into a Story that the game steps through. The game draws each line and choice its own way (a dialogue box, text_rich, portraits) and does each command (show, scene, play...).
 
 ```gdscript
+# doccheck: illustrative story script, parsed by story() rather than the Sloppy compiler
 character m "Mira" #f4a6c6
 
 label start:
@@ -1716,15 +1722,21 @@ label start:
         m "Then stay a while."
     else:
         jump goodbye
+```
 
+Reading and displaying that script from Sloppy:
+
+```gdscript
 st = story(str_from_bytes(embed("story.txt")))
 if len(st.error) > 0: print(st.error)
 step = st.next()            # (again when the player clicks: the next line, choice or command)
 match step.kind:
-    .line: draw step.speaker and step.text (step.who: the character's id, for a portrait)
-    .choice: draw step.choices; on a click, st.choose(i) and step = st.next()
-    .command: do step.words ("show", "mira", "happy"), then step = st.next()
-    .end: the end
+    .line: text("{step.speaker}: {step.text}", vec2(20, 20)) # step.who: portrait id
+    .choice:
+        loop i in 0.. and choice in step.choices:
+            if ui_button(choice): st.choose(i); step = st.next()
+    .command: print(step.words)      # handle show, scene, play, etc. here
+    .end: pass                      # the story has ended
 ```
 
 Lines: `label name:` (the story starts at `start`, else at the top), `character id "Name" #color`, "narration", `id "dialogue"`, `menu:` with "options": (and `if` conditions), `if`, `elif`, `else`, `jump label`, `call label` and `return`, `$ name = value` (and += -=), `end`. Anything else is a command for the game. Variables are whole numbers (true is 1, false 0), and "[name]" in a line puts one in. A Story is a value: save_value("story", st.save()) and later st.load(load_value("story", st.save())) take up where it was, even after the script changed in other labels.
@@ -1858,7 +1870,7 @@ A module (`import crypto`): SHA-1, SHA-256, SHA-384 and SHA-512, HMAC, HKDF, TLS
 Cryptography: hashes (SHA-1, SHA-256, SHA-384, SHA-512), HMAC, HKDF, TLS 1.2's PRF, AES-128-GCM, the P-256 curve (ECDH keys and ECDSA signatures), X25519 keys, P-384 and RSA signatures checked, a self-signed certificate, and random bytes from the operating system. It is what the library's WebRTC (lib/rtc.jo) and TLS (lib/tls.jo) are made of, and a program may use it too: `import crypto`.
 
 ```gdscript
-key = crypto.random_bytes(16)
+key = crypto.aes_key(crypto.random_bytes(16))
 sealed = crypto.aes_gcm_seal(key, nonce12, aad, message)        # the message and a 16-byte tag
 opened = crypto.aes_gcm_open(key, nonce12, aad, sealed)         # none when it was changed
 pk = crypto.p256_key()                                          # a private key and its public point
@@ -2907,33 +2919,20 @@ How a game's picture fits windows of any size and shape.
 
 A game is drawn in 2D units: the size given to window() (its design size; design_size changes it while the game runs), so the same coordinates work in any window. Two settings decide how that maps to the window's pixels:
 
-```gdscript
-screen_fit(mode): what a window of another shape shows
-    .expand     the design area, scaled to fit, and more around it (the default: no bars,
-                nothing cut; visible_rect() says what is shown)
-    .letterbox  just the design area, scaled to fit, with bars (letterbox_color) around it
-    .crop       the design area scaled to fill the window: what does not fit is cut off
-    .stretch    the design area stretched to the window (shapes distort)
-    .native     no scaling: one 2D unit is one pixel as the desktop counts them (on a screen
-                at 200%, or a phone's, two of the screen's own; screen_size() is the
-                window's size in them): a desktop tool's layout
+screen_fit chooses what another window shape shows: .expand keeps the design area and adds space around it (the default; visible_rect says what is shown); .letterbox keeps just the design area with bars (letterbox_color); .crop fills the window and cuts off the edges; .stretch fills it by stretching shapes; .native makes one unit one desktop point (on a screen at 200%, two screen pixels). screen_size gives the window's size in these units.
 
-render_resolution(w, h): draw at a fixed resolution, scaled up to the window, by default
-    with sharp pixels (nearest) and in whole steps (2x, 3x...); 2D units stay the design size
-    (give both the same shape). The picture letterboxes (or crops/stretches with those
-    fits). render_resolution(0, 0) goes back to the window's resolution.
-pixel_art(): render_resolution at the design size: for a game designed at 320 x 180, one
-    2D unit is one sharp pixel. (A window for a design that small opens a whole number of
-    times larger.) Textures loaded after it are sharp too (smooth_textures); lines, circles,
-    rings and rects are whole pixels in exactly their colors, with no smoothed edges (a fixed
-    palette has no shades between them); text is in pixel_font(), unless set_font says.
-render_scale(s): draw at a fraction of the window's pixels (0.5: a quarter of them), scaled
-    up smoothly: faster where pixels cost (3D, the software renderer).
-full_resolution(): in draw, the rest of the frame at the window's own resolution, in the same
-    2D units: a HUD over pixel art whose text stays sharp.
+```gdscript
+screen_fit(.letterbox)
+render_resolution(320, 180)   # sharp pixels, whole steps (2x, 3x...), letterboxed by default
+render_resolution(0, 0)       # return to the window's resolution
+pixel_art()                  # render at the design size; also choose pixel_font and sharp shapes
+render_scale(0.5)            # half each dimension: a quarter as many pixels, scaled smoothly
+full_resolution()            # in draw: finish the frame at full resolution, e.g. a sharp HUD
 ```
 
-Drawing that needs it goes to an offscreen canvas, put on the window when the frame ends; the mouse is mapped back the same way (mouse_pos() is in 2D units).
+render_resolution keeps 2D units at the design size; give both resolutions the same shape. The picture uses the screen fit chosen above. pixel_art also makes later textures sharp (smooth_textures changes that), and draws lines, circles, rings and rects without smoothed edges, so a palette has no shades between its colors. set_font overrides its pixel_font. A window designed small opens a whole number of times larger.
+
+Drawing that needs it goes to an offscreen canvas, put on the window when the frame ends; the mouse is mapped back the same way (mouse_pos is in 2D units).
 
 - `enum Fit: expand, letterbox, crop, stretch, native`
 - `screen_fit = (mode: Fit)`
@@ -3084,15 +3083,15 @@ Sprite sheets and animations. A sheet is a texture cut into frames: a grid of eq
 Where each puts a picture: the point given is its top left corner or its middle, and `origin` (vec2(0, 0): the top left corner, vec2(0.5, 0.5): the middle, vec2(0.5, 1): the middle of the bottom edge, a character's feet) puts another point of the picture there. An angle turns it around its middle, after the origin offset; origin is an unrotated placement anchor, not a fixed rotation pivot. For a draw point P and drawn size S, the center is P + (vec2(0.5, 0.5) - origin) * abs(S), and the corners rotate about that center. A bottom-center origin therefore does not keep the feet at P when angle is nonzero. Negative size / flip_x / flip_y mirror the image without mirroring this anchor offset.
 
 ```gdscript
-sprite(t, pos)                        pos: its top left corner (origin = vec2(0, 0))
-sprite_region(t, src, center, size)   center: its middle (origin = vec2(0.5, 0.5))
-draw_frame(sheet, i, center)          its middle
-draw_anim(sheet, anim, t, center)     its middle
-anim.draw(center)                     its middle (an AnimPlayer)
-draw_tile(map, id, center)            its middle
-sprite_tiled(t, area)                 fills area (x, y: its top left corner)
-draw_target(rt, pos)                  its top left corner
-text(s, pos)                          the top left corner; text_centered(s, center): the middle
+sprite(t, pos)   # pos: its top left corner (origin = vec2(0, 0))
+sprite_region(t, src, center, size)   # center: its middle (origin = vec2(0.5, 0.5))
+draw_frame(sheet, i, center)   # its middle
+draw_anim(sheet, clip, elapsed(), center)   # its middle
+anim.draw(center)   # its middle (an AnimPlayer)
+draw_tile(map, id, center)   # its middle
+sprite_tiled(t, area)   # fills area (x, y: its top left corner)
+draw_target(rt, pos)   # its top left corner
+text(s, pos)   # the top left corner; text_centered(s, center): the middle
 
 hero = sprite_sheet(load_texture(embed("hero.png"), false).unwrap(), 32, 32)
 walk = animation(4, 7, 10.0)                    # frames 4 to 7, ten a second
@@ -3106,8 +3105,10 @@ An AnimPlayer plays the sheet's animations by name, each from its start when it 
 hero.anims["idle"] = animation(0, 1, 2.0)
 hero.anims["run"] = animation(2, 5, 12.0)
 anim = anim_player(hero)
-...in update: anim.play(if moving: "run" else: "idle")   # (the same one again goes on)
-...in draw:   anim.draw(feet, origin = vec2(0.5, 1), flip_x = facing < 0.0)
+# in update:
+anim.play(if moving: "run" else: "idle")   # (the same one again goes on)
+# in draw:
+anim.draw(feet, origin = vec2(0.5, 1), flip_x = facing < 0.0)
 ```
 
 - `struct Animation`
@@ -3156,6 +3157,7 @@ Tilemaps: layers of tiles drawn from a tileset image. Make one from text (tile_l
 tiles = tileset(load_texture(embed("tiles.png"), false).unwrap(), 16, 16)
 level = tilemap(tiles, [tile_layer("walls", WALLS, "#=")])     # '#': tile 1, '=': tile 2
 update = (dt: f64):
+    global box
     m = tilemap_move(level, 0, box, vel * f32(dt))
     box = m.rect
     if m.hit_y: vel.y = 0.0
@@ -3819,7 +3821,7 @@ cam = orbit_camera(vec3(0, 1, 0), 12.0)
 update = (dt: f64): update(cam, dt)
 draw = ():
     camera3d(cam)
-    draw_mesh(...)
+    draw_mesh(cube_mesh())
 ```
 
 - `struct OrbitCamera`: Around target, at distance: dragging with the left or right mouse button (or the right stick) turns it, the wheel (or the left stick up and down) brings it closer or further.
@@ -3905,7 +3907,7 @@ draw = ():
 ```gdscript
 ship = load_model(embed("ship.glb")).unwrap()
 draw = ():
-    camera3d(...)
+    camera3d(vec3(0, 1, 5), vec3(0, 0, 0))
     draw_model(ship, translation(pos) * rotation_y(angle))
 ```
 
@@ -4254,9 +4256,9 @@ draw = (): draw(prog, quad, Params(t, vec2(960, 540)))
 GPU programs written in Sloppy: meshes, shaders and uniform binding.
 
 ```gdscript
-struct Vertex: pos: vec3; color: vec4          -> vertex attributes
-struct Params: mvp: mat4                        -> uniforms
-struct Out:    pos: vec4; color: vec4           -> first field is the clip position
+struct Vertex: pos: vec3; color: vec4          # vertex attributes
+struct Params: mvp: mat4                        # uniforms
+struct Out:    pos: vec4; color: vec4           # first field is the clip position
 vs = (v: Vertex, u: Params) -> Out: Out(u.mvp * vec4(v.pos, 1), v.color)
 fs = (i: Out, u: Params) -> vec4: i.color
 prog = make_shader(shader(vs, fs))
@@ -4620,6 +4622,7 @@ Menus: a column of buttons, sliders, switches and choices, worked with the keybo
 
 ```gdscript
 draw = ():
+    global music, fullscreen, level
     ...
     ui_begin("title", vec2(640, 320))
     if ui_button("Play"): start()
@@ -5065,7 +5068,7 @@ Common game helpers: noise, collision shapes, easing, timers and 2D particles.
   turn.then(0.2, (): start_player_turn())
   update = (dt: f64):
       turn.update(dt)
-      if not turn.busy(): (the player's input)
+      if not turn.busy(): pass
   ```
 - `then = (a: mut Actions, wait: f64, f: () -> void)`: do f, `wait` seconds after the step before it (or after now, when there is none)
 - `update = (a: mut Actions, dt: f64)`: the steps whose time has come, run in order (a step may add more)
@@ -5888,6 +5891,7 @@ assert(net.fetch("http://127.0.0.1:{http.port()}/todos/1").status == 200)
 - `answer = () -> int`: answer the requests that have come, and send what waits to go out; how many were answered. It does not wait: net.wait does (until there is something to answer)
 - `log_line = (r: Request, res: Response, seconds: f64) -> str`: the line a request makes in a log: when (the machine's time), who, what, the answer's status and size, how long it took
   ```gdscript
+  # doccheck: illustrative HTTP log output, not Sloppy source
   2026-10-20 16:15:38 127.0.0.1 "GET /todos?done=true HTTP/1.1" 200 312 0.4ms
   ```
 - `log_requests = false`: write each request's log_line to standard error
@@ -6145,11 +6149,7 @@ draw = ():
 
 #### Over net's peers (invite codes: web pages and native programs)
 
-- `over[S, I] = (s: mut Session[S, I], peers: int[])`: play with the other players over peers from net: peers[p] is player p's (this machine's own entry is not used), from net.invite or net.join_invite (with no server: a page and a native program alike), or net.connect. The session's packets on them are its own (marked: the game's net.receive() leaves them); the game's own messages (a chat, "again?") and their joining and leaving are the game's, through net.send and net.receive as ever. For two, invited with net.invite(reliable = false) (packets lost are not resent: newer ones carry the same inputs, and nothing waits for an old one): For more players, one hosts: it invites each of the others (each an invite and a reply), tells each its number (a message of the game's), and plays over all of them; the others play over the host alone (the rest -1), who batches the inputs each still lacks: [-1, a, b] for the host, [host, -1, -1] for player 1.
-  ```gdscript
-  player 0: friend = net.invite(reliable = false) ... s.over([-1, friend])
-  player 1: host = net.join_invite(code) ...          s.over([host, -1])
-  ```
+- `over[S, I] = (s: mut Session[S, I], peers: int[])`: play with the other players over peers from net: peers[p] is player p's (this machine's own entry is not used), from net.invite or net.join_invite (with no server: a page and a native program alike), or net.connect. The session's packets on them are its own (marked: the game's net.receive() leaves them); the game's own messages (a chat, "again?") and their joining and leaving are the game's, through net.send and net.receive as ever. For two, invited with net.invite(reliable = false) (packets lost are not resent: newer ones carry the same inputs, and nothing waits for an old one): Player 0: `friend = net.invite(reliable = false)`, then `s.over([-1, friend])`. Player 1: `host = net.join_invite(code)`, then `s.over([host, -1])`. For more players, one hosts: it invites each of the others (each an invite and a reply), tells each its number (a message of the game's), and plays over all of them; the others play over the host alone (the rest -1), who batches the inputs each still lacks: [-1, a, b] for the host, [host, -1, -1] for player 1.
 
 #### Over UDP (native programs)
 

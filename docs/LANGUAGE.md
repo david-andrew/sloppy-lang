@@ -120,11 +120,13 @@ name: `build = 1`, `hall.build`, `(build: int)` and `build: f64`.
 ```gdscript
 x = 10               # declares x (there is no x yet), type inferred (int)
 x = x + 1            # assigns (x exists)
-let x = "text"       # always a new variable (shadows the outer x)
+if true:
+    let x = "text"   # a new variable in this block (shadows the outer x)
+    print(x)
 y: f32 = 2           # explicit type (always declares)
 z: str[]             # zero value: empty array
 w = []               # an empty array whose type comes from what is pushed into it later
-                     # (w.push("hi"): a str[]), at the top level too
+w.push("hi")         # now a str[], at the top level too
 x += 1               # compound assignment (also -= *= /= %= ^= <<= >>= and= or= xor=)
 a, b = 1, 2          # several at once (from a tuple, or an array of exactly that many:
 k, v = line.split("=", 1)   # another length panics)
@@ -587,18 +589,20 @@ if a > b: print("a") else if a == b: print("eq") else: print("b")
 m = if a > b: a else: b                # if is an expression
 if let v = lookup(key): print(v)       # bind the value of an optional when present
 
-loop: ...                              # forever (until break / return)
+loop: pass                              # forever (until break / return)
 loop x > 0: x -= 1                     # while
-loop i in 0..10: ...                   # 0 to 9, as Python's range(10)
-loop i in [1..10]: ...                 # 1 to 10: ] keeps the end
-loop i in 0, 2..10: ...                # 0 2 4 6 8
-loop i in 10, 9..0: ...                # counting down, 10 to 1
-loop x in xs: ...
-loop k, v in table: ...                # unpacks: map entries, or an array of pairs
+loop i in 0..10: pass                   # 0 to 9, as Python's range(10)
+loop i in [1..10]: pass                 # 1 to 10: ] keeps the end
+loop i in 0, 2..10: pass                # 0 2 4 6 8
+loop i in 10, 9..0: pass                # counting down, 10 to 1
+loop x in xs: pass
+loop k, v in table: pass                # unpacks: map entries, or an array of pairs
 loop mut x in xs: x *= 2               # x is the element itself
-loop let job = queue.next(): ...       # while the optional has a value
-loop let .cons(x, rest) = list: ...    # while an enum value is that variant (section 7)
-break / continue / return
+loop let job = queue.next(): pass       # while the optional has a value
+loop let .cons(x, rest) = list: pass    # while an enum value is that variant (section 7)
+loop: break
+loop: continue
+main = (): return
 defer close(f)                         # runs when the enclosing block exits
 ```
 
@@ -956,10 +960,11 @@ describe = (v: int | str) -> str:
         int: "the number {v + 1}"
         str: "the text {v}"
 
-parse_int = (s: str) -> int | ParseError: ...
-r = parse_int(text)
-if r is ParseError: return r            # (`?` says this in one step: see Errors below)
-print(r + 1)                            # r is an int
+parse_int = (s: str) -> int | ParseError: if let n = to_int(s): n else: ParseError("not a number")
+print_next = (text: str) -> void | ParseError:
+    r = parse_int(text)
+    if r is ParseError: return r            # (`?` says this in one step: see Errors below)
+    print(r + 1)                            # r is an int
 ```
 
 `x is not T` is `not (x is T)`. A branch that cannot go on (it returns, breaks, continues,
@@ -1385,6 +1390,7 @@ the game/graphics/audio API) is always available without importing.
 block:
 
 ```gdscript
+# doccheck: illustrative package URLs and local paths are placeholders, not dependencies to download
 build:
     physics = package("https://github.com/ann/sloppy-physics")
     tween = package("https://github.com/bob/tween", "v1.2.0")   # a tag, a branch or a commit
@@ -2006,6 +2012,7 @@ world; for a turned or scaled card, test `rotate(mouse_pos() - card.pos, -card.a
 dragged = -1
 grab = vec2(0, 0)
 update = (dt: f64):
+    global dragged, grab
     m = mouse_pos()
     if mouse_pressed(.left):
         loop i in 0.. and c in cards:

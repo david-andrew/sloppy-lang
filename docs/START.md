@@ -216,6 +216,7 @@ update = (dt: f64):
         cell = screen_to_world(mouse_pos()) / 64.0          # (the board: cells of 64)
         place(tool, int(cell.x), int(cell.y))
 draw = ():
+    global tool
     clear()
     v = visible_rect()
     upright = v.h > v.w
