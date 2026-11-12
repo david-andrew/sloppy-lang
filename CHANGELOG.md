@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.33.0
+
+Speed. Compiling: the checker, lowering, code generation and optimizer do 5-6% less work for
+every program in two more rounds (hello.jo about 29% fewer instructions than in 0.31.0).
+Running: arm64 debug builds keep vector math in NEON registers (game frames 11-29% fewer
+instructions on Apple Silicon); release builds inline `each` with changed captured variables
+(79% fewer), specialize `parallel_range` bodies (73% fewer) and keyed sorts; the software
+renderer culls off-screen instances of the library's shaders and interpolates four values at a
+time (Aces 19-24% fewer, frames byte-identical). Every code example in the docs, the site, the
+playground and doc comments is now compiled in CI against the current API.
 
 - Script examples report open failures with their OS reason and exit status, close streams on early returns, and preserve unreadable or invalid saved snapshots. The getting-started guide now shows checked regex input, `?` propagation, and EOF handling. The CSV reference example now reports conversion errors with defined functions.
 - Errors for optional-only `if let` and `!` now explain how to handle, propagate, or unwrap checked results.
