@@ -1,7 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.31.0
 
+- Faster programs. Release builds: a function value passed to a small helper (`reduce`, `map`,
+  `all`, `count`, a lambda) is inlined, level with a hand-written loop for most; whole vec4/mat4
+  expressions use packed SSE on x86-64 and NEON on arm64 (vector math 32-63% fewer instructions,
+  particles 49-69%), with results identical to debug builds. Debug builds: vector and matrix
+  helpers run in registers (game frames 4-14% fewer instructions). The software renderer reuses
+  its buffers (80% fewer allocations a frame in 3D games) and rich text builds no string per
+  character.
+- Faster compiling: the checker caches parser tokens, type metadata and short names, and
+  library bodies inside `when` blocks are read only when used (hello.jo 23% fewer instructions,
+  games about 5%). arm64 and macOS code is generated on several processors, as x86-64's was.
+- Generic error trails keep the call in your own code and the innermost failure, with
+  "... N more" between; panics describe the source expression instead of generated names.
+- macOS: Apple's software OpenGL uses the software renderer's shadow limits.
 - glTF external buffers and images resolve percent-escaped relative paths, including nested
   folders and UTF-8 filenames, from the supplied files map or `embed_dir`.
 - Add a complete animated glTF scene guide with model sizing, PBR, a sky image and a follow
