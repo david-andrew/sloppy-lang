@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: `hex(text)` returns `vec4?`; handle invalid CSS colors with `if let` or an explicit fallback, or unwrap trusted literals. `hex(int)` stays 24-bit RGB.
+
 - Dynamic JSON `as_int()` returns `none` for nonfinite or out-of-range numbers instead of saturating. Fractional values still truncate toward zero.
 
 - Breaking: use `text.reversed()` for a new string; string `reverse()` is removed. Array `reverse()` still mutates and `reversed()` returns a copy.
