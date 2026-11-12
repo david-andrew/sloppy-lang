@@ -18,9 +18,10 @@ GAMES = {n: f"examples/{n}/{n}.jo" for n in ["rebound", "breakwater", "aces", "d
 GAMES.update(
     {
         f"new_{n}": f"lib/new/{n}.jo"
-        for n in ["game", "3d", "arcade", "platformer", "pico", "story"]
+        for n in ["game", "3d", "character", "arcade", "platformer", "pico", "story"]
     }
 )
+GAMES.update({n: f"tests/render/{n}.jo" for n in ["pbr_grid", "sky_image"]})
 INPUT = {
     "rebound": "5:enter+ 7:enter- 30:right+ 105:right- 106:left+ 180:left- 181:right+ 270:right- 271:left+ 355:left-",
     "breakwater": "5:enter+ 7:enter- 20:w+ 100:w- 101:d+ 180:d- 181:s+ 260:s- 261:a+ 350:a- 20:mouse_left+ 350:mouse_left-",
@@ -28,6 +29,9 @@ INPUT = {
     "dunes": "5:w+ 150:space+ 200:space- 240:w- 241:d+ 350:d- 60:q+ 90:q-",
     "new_game": "5:right+ 90:right- 91:down+ 180:down- 181:left+ 270:left- 271:up+ 360:up-",
     "new_3d": "5:mouse_left+ 7:mouse_left- 10:w+ 100:w- 105:d+ 180:d- 190:s+ 270:s- 280:a+ 360:a- 40:space+ 42:space- 60:mouse_left+ 62:mouse_left- 180:mouse_left+ 182:mouse_left-",
+    "new_character": "5:w+ 80:shift+ 100:shift- 120:w- 121:d+ 180:d- 181:s+ 240:s- 241:a+ 300:a-",
+    "pbr_grid": "",
+    "sky_image": "",
 }
 C = r"""
 #include <stdio.h>
@@ -240,6 +244,7 @@ def main():
     p.add_argument("--frames", type=int, default=360)
     p.add_argument("--warmup", type=int, default=60)
     p.add_argument("--window", default="320x180")
+    p.add_argument("--threads", type=int, default=1, help="software worker limit (use a distinct tag for each count)")
     p.add_argument("--churn", action="store_true")
     p.add_argument("--perf", action="store_true", help="Linux instructions:u per software frame; excludes the final capture frame")
     p.add_argument("--prepare", action="store_true")
@@ -254,6 +259,10 @@ def main():
     os.environ["TMPDIR"] = str(ROOT / "tmp")
     if a.frames <= a.warmup or a.warmup < 0:
         p.error("frames must exceed warmup >= 0")
+    if a.threads < 1:
+        p.error("threads must be positive")
+    if a.perf and a.threads != 1:
+        p.error("--perf measures only the main thread; use Callgrind for multiple threads")
     if a.perf and (a.churn or a.renderers != ["soft"] or a.frames <= a.warmup + 1):
         p.error("--perf needs --renderers soft, frames > warmup + 1, and no --churn")
     if pathlib.Path(a.tag).name != a.tag or a.tag in (".", ".."):
@@ -272,7 +281,8 @@ def main():
         SLOPPY_LIB=str(lib),
         SLOPPY_NO_AUDIO="1",
         SDL_AUDIODRIVER="dummy",
-        SLOPPY_THREADS="1",
+        SLOPPY_THREADS=str(a.threads),
+        SLOPPY_EMIT_WORKERS="2",
         LP_NUM_THREADS="1",
         SLOPPY_WINDOW=a.window,
         SLOPPY_SCALE="1",
@@ -285,6 +295,13 @@ def main():
         GP_PERF="1" if a.perf else "0",
         VK_ICD_FILENAMES="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",
     )
+    (ROOT / a.tag / "run.json").write_text(json.dumps({
+        "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
+        "compiler": str(compiler), "library": str(a.library or REPO / "lib"),
+        "games": a.games, "modes": a.modes, "renderers": a.renderers,
+        "threads": a.threads, "window": a.window, "warmup": a.warmup,
+        "frames": a.frames, "perf": a.perf, "churn": a.churn,
+    }, indent=2) + "\n")
     failed = []
     for game in a.games:
         for mode in a.modes:

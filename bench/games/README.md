@@ -72,3 +72,26 @@ instrumentation is absent from instruction runs. Compare the saved PNGs and run
 `python3 tools/rendertest.py --no-gpu` after a rendering change.
 
 The initial report is `~/dev/tmp/game-prof/REPORT.md`; raw run directories are alongside it.
+
+The software follow-up also covers `new_character` (`lib/new/character.jo`), `pbr_grid`
+and `sky_image` (`tests/render`). `--threads N` caps the software workers; use a separate
+tag for every thread count. Callgrind's monitor dumps include all workers. The native
+`--perf` mode requires one thread. `run.json` records the source commit and run settings.
+For a short, active-play comparison after the Aces menus have closed:
+
+```sh
+export TMPDIR=~/dev/tmp/softgl2/tmp
+mkdir -p "$TMPDIR"
+python3 bench/games/profile.py --output ~/dev/tmp/softgl2 --tag before-t1 \
+    --prepare --renderers soft --threads 1 --warmup 120 --frames 125 \
+    --games rebound breakwater aces dunes new_3d new_character pbr_grid sky_image
+# Repeat with the changed library as after-t1, then compare instructions and exact PNGs:
+python3 bench/games/compare.py --output ~/dev/tmp/softgl2 before-t1 after-t1
+```
+
+Repeat with `--threads 3` and distinct tags for the multi-worker comparison. Keep the
+total machine-wide worker count at four or fewer, including other suites. For longer
+native instruction samples, use `--perf --threads 1 --warmup 120 --frames 140` (19 samples;
+the final screenshot frame is excluded). The last PNG is compared as complete file bytes,
+with SHA-256 digests in `compare.py --json PATH` output. These short profiles describe
+this opening-play interval, not the worst frame across a full game.
