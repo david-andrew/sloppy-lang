@@ -41,8 +41,7 @@ The following contracts include the decisions implemented in consistency batches
   geometric length/distance, matrices, 0–1 colors, full-size Rect x/y/w/h and zero-based
   half-open ranges keep their documented conventions. Float-to-int conversion truncates and
   saturates as documented. Angles use radians, except every `camera3d.fov_degrees` uses degrees.
-  Random intervals are half-open; reversed bounds panic and equal bounds return the bound
-  without drawing. Seeded Rng and the global generator remain distinct; shuffle mutates.
+  Random intervals are half-open; reversed bounds panic and equal bounds return the bound. Seeded Rng and the global generator remain distinct; shuffle mutates.
 - **Data and dates.** Typed text/JSON structure rules, error positions, JSON UTF-8 policy and
   strict typed parsing are stable. Dynamic JSON `get(key)`/`get(index)` chain safely through
   none; `as_float` reads floating/integer variants, while `as_int` truncates finite fractions

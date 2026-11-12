@@ -501,7 +501,7 @@ Math basics.
 - `shuffle[T] = (r: mut Rng, xs: mut T[])`: put xs in a random order from r
 - `seed_random = (seed: int)`
 - `random = () -> f64`: random f64 in [0, 1)
-- `random = (lo: f64, hi: f64) -> f64`: random f64 in [lo, hi); equal bounds return lo without drawing, hi < lo panics
+- `random = (lo: f64, hi: f64) -> f64`: random f64 in [lo, hi); equal bounds return lo, hi < lo panics. This form always draws, including equal bounds, preserving seeded sequences used by existing games.
 - `random_normal = (mean: f64 = 0.0, sd: f64 = 1.0) -> f64`: a random number from a bell curve around mean: about two in three within sd of it (p5's randomGaussian; Rng's next_normal for a seeded one)
 - `random_int = (lo: int, hi: int) -> int`: a random whole number from lo up to hi, hi left out (as in lo..hi): random_int(0, xs.len()) picks a position, and a die is random_int(1, 7). Equal bounds return lo; hi < lo panics.
 - `random_item[T] = (xs: T[]) -> T`: a random element of xs (which must not be empty)
