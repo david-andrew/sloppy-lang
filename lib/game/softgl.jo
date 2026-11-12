@@ -686,6 +686,62 @@ __sw_f32_scratch = (xs: mut f32[], n: int):
     xs.reserve(n)
     if data(xs) != null: __set_len(xs, n)
 
+# Bounds for a four-term f32 matrix/vector product. Carry intervals in f64 and
+# widen each row for the separate f32 multiplies/adds (including underflow).
+# Applying the two matrices separately also bounds their intermediate rounding.
+__sw_box_transform = (m: mat4, box: *f64, out: *f64):
+    loop row in [0..4):
+        lo = 0.0
+        hi = 0.0
+        magnitude = 0.0
+        loop col in [0..4):
+            a = f64(m[col][row]) * box[col]
+            b = f64(m[col][row]) * box[4 + col]
+            lo += min(a, b)
+            hi += max(a, b)
+            magnitude += max(abs(a), abs(b))
+        error = magnitude * 0.000001 + 1.0e-30
+        out[row] = lo - error
+        out[4 + row] = hi + error
+
+__sw_instance_visible = (m: mat4, vp: mat4, center: vec3, radius: f32) -> bool:
+    # Mesh spheres enclose the source positions. Pad their f32 construction too.
+    r = f64(radius) * 1.00001 + 0.000001
+    box = (f64(center.x) - r, f64(center.y) - r, f64(center.z) - r, 1.0,
+           f64(center.x) + r, f64(center.y) + r, f64(center.z) + r, 1.0)
+    world = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    clip = world
+    __sw_box_transform(m, &box.0, &world.0)
+    __sw_box_transform(vp, &world.0, &clip.0)
+    # Near clipping already removes these triangles. With positive w, a box wholly
+    # beyond a viewport side cannot cover a pixel, including after near clipping.
+    if clip.6 + clip.7 < 0.0: return false
+    if clip.3 <= 0.0: return true
+    not (clip.4 + clip.7 < 0.0 or clip.0 - clip.7 > 0.0 or
+         clip.5 + clip.7 < 0.0 or clip.1 - clip.7 > 0.0)
+
+__sw_visible_instances: Instance3D[]
+
+# Only draw3d's own, pure vertex shaders opt in. Generic draw_instanced still
+# executes every custom vertex function. Wind changes the source bounds: fall back.
+__sw_draw_inst3d = (sh: Shader, d: Draw3D, p: LitParams) -> bool:
+    if (sh.prog != __lit_inst.prog and sh.prog != __shadow_sh_inst.prog) or p.wind > 0.0 or not (d.mesh.radius >= 0.0): return false
+    vp = p.view_proj
+    if sh.prog == __shadow_sh_inst.prog: vp = p.shadow_vp
+    n = d.instances.len()
+    src = data(d.instances)
+    if d.kept_vbo != 0:
+        n = d.kept_count
+        if d.kept_vbo < 0 or d.kept_vbo >= __s_buffers.len(): return false
+        if __s_buffers[d.kept_vbo].len() < n * size_of(Instance3D): return false
+        src = data(__s_buffers[d.kept_vbo]) as *Instance3D
+    __sw_visible_instances.clear()
+    loop i in [0..n):
+        if __sw_instance_visible(src[i].model, vp, d.mesh.center, d.mesh.radius):
+            __sw_visible_instances.push(src[i])
+    draw_instanced(sh, d.mesh, __sw_visible_instances, p)
+    true
+
 # (first: the first index, or vertex, drawn; ndraw: how many vertices, without indices (-1: all
 # from first); base_vertex: added to each index; ibase: added to instance_id(): see draw_indirect)
 __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo: int, nidx: int, uni: *u8, ibuf: int, istride: int, ninst: int, ioff: int, first: int = 0, ndraw: int = -1, base_vertex: int = 0, ibase: int = 0):
