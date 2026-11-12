@@ -986,7 +986,7 @@ exact_args = (cd: Cand) -> int:
     k
 
 # map call args to parameter slots; returns error message ("" on success)
-map_args = (pnames: int[], has_default: bool[], args: int[], out: mut int[]) -> str:
+map_args = (pnames: int[], has_default: bool[], args: int[], out: mut int[], diagnose: bool = true) -> str:
     np = pnames.len()
     out.clear()
     out.resize(np)
@@ -997,17 +997,21 @@ map_args = (pnames: int[], has_default: bool[], args: int[], out: mut int[]) -> 
             loop j in [0..np):
                 if pnames[j] == int(nodes[a].name): k = j
             if k < 0:
+                if not diagnose: return "mismatch"
                 an = name_of(int(nodes[a].name))
                 if an == "reverse": return "no parameter named 'reverse' (`descending = true` sorts largest first)"
                 if an == "key": return "no parameter named 'key' (sort, sorted, max and min take one: `sorted(xs, key = len)`)"
                 return "no parameter named '{an}'{suggestion(an, pnames)}"
+            if out[k] != 0 and not diagnose: return "mismatch"
             if out[k] != 0: return "parameter '{name_of(int(nodes[a].name))}' given twice"
             out[k] = int(nodes[a].a)
         else:
+            if pos >= np and not diagnose: return "mismatch"
             if pos >= np: return "too many arguments (expected {np})"
             out[pos] = a
             pos += 1
     loop i in [0..np):
+        if out[i] == 0 and not has_default[i] and not diagnose: return "mismatch"
         if out[i] == 0 and not has_default[i]: return "missing argument '{name_of(pnames[i])}'"
     ""
 
@@ -1490,153 +1494,161 @@ resolve_fn_call = (n: int, name: int, decls: int[], args: int[], expected: int) 
                 a0t = prune(ntype(a))
                 a0i = i
             break
-    loop d in decls:
-        di = decl_info(d)
-        if not decl_infos[di].sig.done: fn_sig(d)
-        if a0t != 0 and not decl_infos[di].sig.generic and decl_infos[di].sig.params.len() > a0i:
-            p0 = prune(decl_infos[di].sig.params[a0i])
-            pk0 = tkind(p0)
-            # (last_err is for a name with one function only; sin(v) with v: vec3 looks at
-            # sin(vec3) alone)
-            if p0 != a0t and (pk0 == .vec or pk0 == .int_ or pk0 == .float_) and not can_coerce(0, a0t, p0): continue
-        cd = Cand(decl = d, sig = decl_infos[di].sig)
-        np = nkids(d)
-        pnames: int[]
-        hasdef: bool[]
-        loop i in [0..np):
-            pnames.push(int(nodes[kid(d, i)].name))
-            hasdef.push(nodes[kid(d, i)].b != 0)
-        err = map_args(pnames, hasdef, args, cd.args)
-        if len(err) > 0:
-            if last_err_arg == 0: last_err = err
-            # (s.play(a, b) with s a Session: of the versions, the one taking s says what is wrong)
-            if recv_d == 0 and np > 0 and args.len() > 0 and nodes[args[0]].kind != .namedarg and nodes[args[0]].type != 0 and tkind(ntype(args[0])) == .struct_:
-                rb = fill(0, int(cd.sig.ntp))
-                if match_type(cd.sig.params[0], ntype(args[0]), rb, 0) >= 0:
-                    recv_d = d
-                    recv_err = err
-            continue
-        cd.binds = fill(0, int(cd.sig.ntp))
-        if targs_here.len() > 0:
-            # f[T](...): the declared type parameters, given
-            if nkids2(d) != targs_here.len():
-                if last_err_arg == 0: last_err = "'{name_of(name)}' takes {nkids2(d)} type argument(s), given {targs_here.len()}"
-                continue
-            loop i in 0.. and t in targs_here: cd.binds[i] = t
-        cost = 0
-        ok = true
-        loop phase in [0..3):
-            if not ok: break
+    # Most rejected overloads belong to successful calls. Only render their errors
+    # if every candidate failed; the second pass keeps the existing diagnostic order.
+    # The editor uses one eager pass so reference records are produced only once.
+    loop diagnose in [ide_on, true]:
+        loop d in decls:
+            di = decl_info(d)
+            if not decl_infos[di].sig.done: fn_sig(d)
+            if a0t != 0 and not decl_infos[di].sig.generic and decl_infos[di].sig.params.len() > a0i:
+                p0 = prune(decl_infos[di].sig.params[a0i])
+                pk0 = tkind(p0)
+                # (last_err is for a name with one function only; sin(v) with v: vec3 looks at
+                # sin(vec3) alone)
+                if p0 != a0t and (pk0 == .vec or pk0 == .int_ or pk0 == .float_) and not can_coerce(0, a0t, p0): continue
+            cd = Cand(decl = d, sig = decl_infos[di].sig)
+            np = nkids(d)
+            pnames: int[]
+            hasdef: bool[]
             loop i in [0..np):
-                a = cd.args[i]
-                if a == 0: continue
-                cls = 0
-                if ctx_dependent(a): cls = 2
-                else if is_lit(a): cls = 1
-                if cls != phase: continue
-                pt = cd.sig.params[i]
-                if int(cd.sig.mutmask) & (1 << i) != 0 and not ctx_dependent(a):
-                    at = ntype(a)
-                    # (a T[N] for a `mut T[]`: passed as a T[] copied back after the call)
-                    fixmut = tkind(at) == .fixed and tkind(pt) == .array
-                    if fixmut: at = mk_array(int(types[prune(at)].elem))
-                    r = match_type(pt, at, cd.binds, 0)
-                    ok2 = r >= 0
-                    if ok2:
-                        ptx = subst(pt, cd.binds)
-                        if not has_var(prune(ptx)) and not has_var(prune(at)) and not type_eq(ptx, at): ok2 = false
-                    if ok2 and fixmut: r += 1000       # (a function taking the T[N] itself goes first)
-                    if not ok2:
+                pnames.push(int(nodes[kid(d, i)].name))
+                hasdef.push(nodes[kid(d, i)].b != 0)
+            err = map_args(pnames, hasdef, args, cd.args, diagnose)
+            if len(err) > 0:
+                if not diagnose: continue
+                if last_err_arg == 0: last_err = err
+                # (s.play(a, b) with s a Session: of the versions, the one taking s says what is wrong)
+                if recv_d == 0 and np > 0 and args.len() > 0 and nodes[args[0]].kind != .namedarg and nodes[args[0]].type != 0 and tkind(ntype(args[0])) == .struct_:
+                    rb = fill(0, int(cd.sig.ntp))
+                    if match_type(cd.sig.params[0], ntype(args[0]), rb, 0) >= 0:
+                        recv_d = d
+                        recv_err = err
+                continue
+            cd.binds = fill(0, int(cd.sig.ntp))
+            if targs_here.len() > 0:
+                # f[T](...): the declared type parameters, given
+                if nkids2(d) != targs_here.len():
+                    if diagnose and last_err_arg == 0: last_err = "'{name_of(name)}' takes {nkids2(d)} type argument(s), given {targs_here.len()}"
+                    continue
+                loop i in 0.. and t in targs_here: cd.binds[i] = t
+            cost = 0
+            ok = true
+            loop phase in [0..3):
+                if not ok: break
+                loop i in [0..np):
+                    a = cd.args[i]
+                    if a == 0: continue
+                    cls = 0
+                    if ctx_dependent(a): cls = 2
+                    else if is_lit(a): cls = 1
+                    if cls != phase: continue
+                    pt = cd.sig.params[i]
+                    if int(cd.sig.mutmask) & (1 << i) != 0 and not ctx_dependent(a):
+                        at = ntype(a)
+                        # (a T[N] for a `mut T[]`: passed as a T[] copied back after the call)
+                        fixmut = tkind(at) == .fixed and tkind(pt) == .array
+                        if fixmut: at = mk_array(int(types[prune(at)].elem))
+                        r = match_type(pt, at, cd.binds, 0)
+                        ok2 = r >= 0
+                        if ok2:
+                            ptx = subst(pt, cd.binds)
+                            if not has_var(prune(ptx)) and not has_var(prune(at)) and not type_eq(ptx, at): ok2 = false
+                        if ok2 and fixmut: r += 1000       # (a function taking the T[N] itself goes first)
+                        if not ok2:
+                            ok = false
+                            if not diagnose: break
+                            # (clear(7): the version taking a colour there says more than clear(a: mut Actions))
+                            if i + 1 < last_err_arg or (i + 1 == last_err_arg and len(last_err) > 0): break
+                            last_err_arg = i + 1
+                            last_err = "argument {i + 1} must have type {type_str(subst(pt, cd.binds))} (mut parameters need an exact match)"
+                            break
+                        cost += r
+                        continue
+                    r = arg_cost(a, pt, cd.binds)
+                    if r < 0:
                         ok = false
-                        # (clear(7): the version taking a colour there says more than clear(a: mut Actions))
-                        if i + 1 < last_err_arg or (i + 1 == last_err_arg and len(last_err) > 0): break
+                        if not diagnose: break
+                        # (of the overloads, the one that got furthest is the one meant: m[k] = v
+                        # with the wrong v is about the map's, not a GPU buffer's)
+                        if i + 1 < last_err_arg: break
+                        # (literals are tried after the rest: a literal written before this argument
+                        # that does not fit either is the first mistake, as 100 in circle(100, 100, 20, RED))
+                        fi = i
+                        if not cd.sig.generic:
+                            loop j in [0..i):
+                                aj = cd.args[j]
+                                if aj == 0 or not is_lit(aj) or ctx_dependent(aj): continue
+                                if arg_cost(aj, cd.sig.params[j], cd.binds) < 0:
+                                    fi = j
+                                    break
+                        a = cd.args[fi]
+                        if i + 1 > last_err_arg or fi != tie_arg: tie_types = []
+                        tie_arg = fi
+                        ptt = param_type_text(int(cd.decl), fi)
+                        if not tie_types.contains(ptt): tie_types.push(ptt)
                         last_err_arg = i + 1
-                        last_err = "argument {i + 1} must have type {type_str(subst(pt, cd.binds))} (mut parameters need an exact match)"
+                        ptx = subst(cd.sig.params[fi], cd.binds)
+                        # (T[] as written, not $0[], where T is not known yet)
+                        ptxs = type_str(ptx)
+                        if has_var(prune(ptx)): ptxs = param_type_text(int(cd.decl), fi)
+                        if nodes[a].type != 0: last_err = "argument '{name_of(pnames[fi])}' expects {ptxs}, found {type_str(ntype(a))}{variant_hint(a, ptx)}"
+                        else if nodes[a].kind == .dotname and tkind(ptx) == .enum_:
+                            vn = int(nodes[a].name)
+                            last_err = "{type_str(ptx)} has no variant '{name_of(vn)}'{variant_hint_for(ptx, name_of(vn))}"
+                        else: last_err = "argument '{name_of(pnames[fi])}' has the wrong type (expects {type_str(ptx)})"
+                        last_err += uncalled_hint(a, ptx) + text_char_hint(a, ptx) + color_num_hint(a, ptx)
+                        # (window(900, 300): the title, which may be left out, comes first)
+                        if nodes[a].type != 0 and not cd.sig.generic and fi < args.len() and nodes[args[fi]].kind != .namedarg and nodes[kid(int(cd.decl), fi)].b != 0:
+                            loop j in [fi + 1..cd.sig.params.len()):
+                                if nodes[kid(int(cd.decl), j)].b != 0 and arg_cost(a, cd.sig.params[j], cd.binds) >= 0:
+                                    last_err += " ({name_of(pnames[fi])} comes first: to give {name_of(pnames[j])} and leave {name_of(pnames[fi])} out, name it, `{name_of(pnames[j])} = ...`)"
+                                    break
+                        # (map(int, words): Python's, the function first and a type as it)
+                        if nodes[a].type != 0 and tkind(ntype(a)) == .typeval and name_of(name) == "map" and fi == 0: last_err += " (the array comes first, then a function: `words.map((s): to_int(s)!)` reads numbers from text)"
+                        last_err_plain = last_err
+                        fnm = name_of(int(nodes[int(cd.decl)].name))
+                        # (text("Score:", score, pos): Scratch's join, or Python's print, pieces in a row)
+                        if (fnm == "text" or fnm == "text_centered") and fi == 1 and nodes[cd.args[0]].kind == .str_lit and nodes[a].type != 0 and tkind(ntype(a)) != .vec and tkind(ntype(a)) != .tuple:
+                            last_err = "text takes one piece of text, then where it goes: put the value inside it, `\"Score: \{score}\"`"
+                        # (enumerate(row) with row a str: Python's, for its characters)
+                        if fnm == "enumerate" and nodes[a].type != 0 and tkind(ntype(a)) == .str_:
+                            last_err = "enumerate takes an array; a str's characters with their places are `loop i in 0.. and c in s:` (c is a character's code, a u8), or `loop i in 0..s.len():` and `s[i]`"
+                        # (play("meow.wav"): a sound's file, not loaded)
+                        if (fnm == "play" or fnm == "play_music") and nodes[a].kind == .str_lit:
+                            last_err = "load the sound first, at the top of the file (`meow = load_wav(embed(\"meow.wav\")).unwrap()`, or load_ogg), then `play(meow)`"
+                        # (load_texture("cat.png"): a file's name where its bytes go)
+                        if starts_with(fnm, "load_") and nodes[a].type != 0 and tkind(ntype(a)) == .str_ and tkind(ptx) == .array:
+                            fln = "name.png"
+                            if nodes[a].kind == .str_lit and nodes[a].aux == 0: fln = name_of(int(nodes[a].sval))
+                            last_err = "{fnm} takes the file's contents: `{fnm}(embed(\"{fln}\"))` builds the file into the program (read_bytes(path) reads one at run time)"
+                        # (xs.map((x, i): ...): JavaScript's map, which passes the position too)
+                        if (fnm == "map" or fnm == "filter" or fnm == "each" or fnm == "any" or fnm == "all") and nodes[a].kind == .lambda and nkids(a) == 2:
+                            last_err = "{fnm} gives the function each element alone; with its position too: `[loop i in 0.. and x in xs: ...]`, or `loop i in 0.. and x in xs:`"
+                        # (xs.reduce((a, b): a + b, 0): JavaScript's order)
+                        if fnm == "reduce" and cd.args.len() == 3 and cd.args[1] != 0 and nodes[unnamed(cd.args[1])].kind == .lambda:
+                            last_err = "reduce takes the start value first, then the function: `xs.reduce(0, (a, b): a + b)` (or `sum(xs)`)"
+                        # (overlaps(apple, cat_picture): a picture or a thing where a box goes)
+                        if nodes[a].type != 0 and tkind(ptx) == .struct_ and type_str(ptx) == "Rect" and not pos_in_lib(nodes[a].pos):
+                            at = prune(ntype(a))
+                            if type_str(at) == "Texture": last_err += " (a picture has no place of its own: the box where it is drawn is `Rect(pos.x, pos.y, f64(pic.width), f64(pic.height))`)"
+                            else if tkind(at) == .struct_:
+                                sn = type_str(at)
+                                art = "a"
+                                if len(sn) > 0 and (index_of("AEIOU", sn[..1)) ?? -1) >= 0: art = "an"
+                                last_err += " ({art} {sn} is not a box: `Rect(x, y, width, height)` makes the box around it)"
+                        # (xs.sort((a, b): ...): a comparison, as JavaScript sorts)
+                        if nodes[a].kind == .lambda and nkids(a) == 2 and name_of(int(nodes[int(cd.decl)].name)) == "sort": last_err += " (`sort_with(xs, (a, b): a.hp > b.hp)` sorts by a comparison, `sort(xs, (x): x.hp)` by a key)"
+                        if tkind(ptx) == .cfn and (nodes[a].kind == .lambda or (nodes[a].type != 0 and tkind(ntype(a)) == .fn_)):
+                            last_err = "argument '{name_of(pnames[fi])}' is called from C: give it a top-level function marked @cabi (a function value made in the program cannot be)"
+                        last_err_pos = nodes[a].pos
                         break
                     cost += r
-                    continue
-                r = arg_cost(a, pt, cd.binds)
-                if r < 0:
-                    ok = false
-                    # (of the overloads, the one that got furthest is the one meant: m[k] = v
-                    # with the wrong v is about the map's, not a GPU buffer's)
-                    if i + 1 < last_err_arg: break
-                    # (literals are tried after the rest: a literal written before this argument
-                    # that does not fit either is the first mistake, as 100 in circle(100, 100, 20, RED))
-                    fi = i
-                    if not cd.sig.generic:
-                        loop j in [0..i):
-                            aj = cd.args[j]
-                            if aj == 0 or not is_lit(aj) or ctx_dependent(aj): continue
-                            if arg_cost(aj, cd.sig.params[j], cd.binds) < 0:
-                                fi = j
-                                break
-                    a = cd.args[fi]
-                    if i + 1 > last_err_arg or fi != tie_arg: tie_types = []
-                    tie_arg = fi
-                    ptt = param_type_text(int(cd.decl), fi)
-                    if not tie_types.contains(ptt): tie_types.push(ptt)
-                    last_err_arg = i + 1
-                    ptx = subst(cd.sig.params[fi], cd.binds)
-                    # (T[] as written, not $0[], where T is not known yet)
-                    ptxs = type_str(ptx)
-                    if has_var(prune(ptx)): ptxs = param_type_text(int(cd.decl), fi)
-                    if nodes[a].type != 0: last_err = "argument '{name_of(pnames[fi])}' expects {ptxs}, found {type_str(ntype(a))}{variant_hint(a, ptx)}"
-                    else if nodes[a].kind == .dotname and tkind(ptx) == .enum_:
-                        vn = int(nodes[a].name)
-                        last_err = "{type_str(ptx)} has no variant '{name_of(vn)}'{variant_hint_for(ptx, name_of(vn))}"
-                    else: last_err = "argument '{name_of(pnames[fi])}' has the wrong type (expects {type_str(ptx)})"
-                    last_err += uncalled_hint(a, ptx) + text_char_hint(a, ptx) + color_num_hint(a, ptx)
-                    # (window(900, 300): the title, which may be left out, comes first)
-                    if nodes[a].type != 0 and not cd.sig.generic and fi < args.len() and nodes[args[fi]].kind != .namedarg and nodes[kid(int(cd.decl), fi)].b != 0:
-                        loop j in [fi + 1..cd.sig.params.len()):
-                            if nodes[kid(int(cd.decl), j)].b != 0 and arg_cost(a, cd.sig.params[j], cd.binds) >= 0:
-                                last_err += " ({name_of(pnames[fi])} comes first: to give {name_of(pnames[j])} and leave {name_of(pnames[fi])} out, name it, `{name_of(pnames[j])} = ...`)"
-                                break
-                    # (map(int, words): Python's, the function first and a type as it)
-                    if nodes[a].type != 0 and tkind(ntype(a)) == .typeval and name_of(name) == "map" and fi == 0: last_err += " (the array comes first, then a function: `words.map((s): to_int(s)!)` reads numbers from text)"
-                    last_err_plain = last_err
-                    fnm = name_of(int(nodes[int(cd.decl)].name))
-                    # (text("Score:", score, pos): Scratch's join, or Python's print, pieces in a row)
-                    if (fnm == "text" or fnm == "text_centered") and fi == 1 and nodes[cd.args[0]].kind == .str_lit and nodes[a].type != 0 and tkind(ntype(a)) != .vec and tkind(ntype(a)) != .tuple:
-                        last_err = "text takes one piece of text, then where it goes: put the value inside it, `\"Score: \{score}\"`"
-                    # (enumerate(row) with row a str: Python's, for its characters)
-                    if fnm == "enumerate" and nodes[a].type != 0 and tkind(ntype(a)) == .str_:
-                        last_err = "enumerate takes an array; a str's characters with their places are `loop i in 0.. and c in s:` (c is a character's code, a u8), or `loop i in 0..s.len():` and `s[i]`"
-                    # (play("meow.wav"): a sound's file, not loaded)
-                    if (fnm == "play" or fnm == "play_music") and nodes[a].kind == .str_lit:
-                        last_err = "load the sound first, at the top of the file (`meow = load_wav(embed(\"meow.wav\")).unwrap()`, or load_ogg), then `play(meow)`"
-                    # (load_texture("cat.png"): a file's name where its bytes go)
-                    if starts_with(fnm, "load_") and nodes[a].type != 0 and tkind(ntype(a)) == .str_ and tkind(ptx) == .array:
-                        fln = "name.png"
-                        if nodes[a].kind == .str_lit and nodes[a].aux == 0: fln = name_of(int(nodes[a].sval))
-                        last_err = "{fnm} takes the file's contents: `{fnm}(embed(\"{fln}\"))` builds the file into the program (read_bytes(path) reads one at run time)"
-                    # (xs.map((x, i): ...): JavaScript's map, which passes the position too)
-                    if (fnm == "map" or fnm == "filter" or fnm == "each" or fnm == "any" or fnm == "all") and nodes[a].kind == .lambda and nkids(a) == 2:
-                        last_err = "{fnm} gives the function each element alone; with its position too: `[loop i in 0.. and x in xs: ...]`, or `loop i in 0.. and x in xs:`"
-                    # (xs.reduce((a, b): a + b, 0): JavaScript's order)
-                    if fnm == "reduce" and cd.args.len() == 3 and cd.args[1] != 0 and nodes[unnamed(cd.args[1])].kind == .lambda:
-                        last_err = "reduce takes the start value first, then the function: `xs.reduce(0, (a, b): a + b)` (or `sum(xs)`)"
-                    # (overlaps(apple, cat_picture): a picture or a thing where a box goes)
-                    if nodes[a].type != 0 and tkind(ptx) == .struct_ and type_str(ptx) == "Rect" and not pos_in_lib(nodes[a].pos):
-                        at = prune(ntype(a))
-                        if type_str(at) == "Texture": last_err += " (a picture has no place of its own: the box where it is drawn is `Rect(pos.x, pos.y, f64(pic.width), f64(pic.height))`)"
-                        else if tkind(at) == .struct_:
-                            sn = type_str(at)
-                            art = "a"
-                            if len(sn) > 0 and (index_of("AEIOU", sn[..1)) ?? -1) >= 0: art = "an"
-                            last_err += " ({art} {sn} is not a box: `Rect(x, y, width, height)` makes the box around it)"
-                    # (xs.sort((a, b): ...): a comparison, as JavaScript sorts)
-                    if nodes[a].kind == .lambda and nkids(a) == 2 and name_of(int(nodes[int(cd.decl)].name)) == "sort": last_err += " (`sort_with(xs, (a, b): a.hp > b.hp)` sorts by a comparison, `sort(xs, (x): x.hp)` by a key)"
-                    if tkind(ptx) == .cfn and (nodes[a].kind == .lambda or (nodes[a].type != 0 and tkind(ntype(a)) == .fn_)):
-                        last_err = "argument '{name_of(pnames[fi])}' is called from C: give it a top-level function marked @cabi (a function value made in the program cannot be)"
-                    last_err_pos = nodes[a].pos
-                    break
-                cost += r
-        if not ok: continue
-        cd.ok = true
-        cd.cost = cost
-        cands.push(cd)
+            if not ok: continue
+            cd.ok = true
+            cd.cost = cost
+            cands.push(cd)
+        if diagnose or cands.len() > 0: break
     # pick the cheapest candidate; prefer non-generic ones, then the program's own definitions
     # over the standard library's; report real ties (the library's are settled by how many
     # arguments have exactly a parameter's type, then which comes first: min(x, 5) with x: i32
