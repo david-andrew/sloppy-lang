@@ -1192,7 +1192,9 @@ struct Sale:
     units = 0
     discount: f64? = none   # (empty or NA: none)
 sales = from_csv[Sale](read_file("sales.csv").unwrap())
-if sales is TextError: fail(sales.message)
+if sales is TextError:
+    eprint(sales.message)
+    exit(1)
 ```
 
 - `csv_rows = (text: str, sep: u8 = ',') -> str[][]`: the rows of a CSV text, each the list of its fields (a header is the first row, like the others)

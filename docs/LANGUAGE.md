@@ -444,6 +444,11 @@ if let f = open_file("big.log"):
 else: eprint(file_error())
 ```
 
+Check the error before EOF: `read_line(f)?` would pass on both `FileError` and `none`,
+returning from the helper at EOF instead of reaching any report or other work after the loop.
+Use the explicit checks above when EOF should end only the loop. `?` requires every failure
+it can pass on in the helper's return type ([errors](#7-structs-unions-enums-optionals-tuples)).
+
 For stdin, `loop let line = read_line(): print(line)` uses the same buffered approach.
 Both strip `\n` and Windows `\r\n`, return an empty string for an empty line, keep a final
 line without a newline, and give `none` at EOF. `lines(text)` splits text already in memory;

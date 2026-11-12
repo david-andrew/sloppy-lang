@@ -264,8 +264,10 @@ main = () -> int:
         eprint("count.jo: which files? (count.jo --help)")
         return 2                                  # main's int is the exit code
     rows: (str, int, int)[]
+    failed = false
     loop path in opts.files:
         if let f = open_file(path):               # line by line: any size of file
+            defer f.close()
             n_lines = 0
             n_words = 0
             loop:
@@ -277,15 +279,16 @@ main = () -> int:
                 line = got!
                 n_lines += 1
                 if opts.words: n_words += split(line).len()
-            f.close()
             rows.push((path, n_lines, n_words))
-        else: eprint("count.jo: cannot read {path}")
+        else:
+            eprint("count.jo: cannot open {path}: {file_error()}")
+            failed = true
     rows.sort((r): r.1, descending = true)
     if opts.top > 0 and rows.len() > opts.top: rows.resize(opts.top)
     loop r in rows:
         if opts.words: print("{r.0:<30} {r.1:>8} {r.2:>8}")
         else: print("{r.0:<30} {r.1:>8}")
-    0
+    if failed: 1 else: 0
 ```
 
 With the first line `#!/usr/bin/env sloppy` and `chmod +x count.jo`, it runs as
@@ -319,6 +322,44 @@ mistake (`--top many`) is said with that help, and exit code 2.
   several lines with no `{}` interpolation and no `\` escapes (help text with `{name}` in it).
 - `sloppy test count.jo` runs its `test` blocks; `sloppy test count.jo sort` only those with
   "sort" in their names.
+
+### Handling errors in scripts
+
+Reads, `regex(pattern)` and `ints(text)` return a value or an error. Test the error with `is`;
+after an early return, the value has its successful type. `if let` and `!` handle optionals
+(`none`), so they do not replace this check. Use `.unwrap()` for input you trust: it stops the
+program if the operation fails.
+
+```gdscript
+# A user-supplied pattern: report it without a panic.
+main = () -> int:
+    argv = args()
+    if argv.len() != 2:
+        eprint("usage: search.jo PATTERN")
+        return 2
+    pattern = regex(argv[1])
+    if pattern is RegexError:
+        eprint("pattern character {pattern.position}: {pattern.message}")
+        return 2
+    loop let line = read_line():
+        if line.find(pattern) != none: print(line)
+    0
+```
+
+In a helper, `?` passes an error back to the caller. Write that error in the helper's return
+type, then handle it once in `main`:
+
+```gdscript
+read_numbers = (path: str) -> int[] | FileError | ParseError:
+    text = read_file(path)?
+    ints(text)?
+```
+
+`?` also passes on `none`. For `read_line(file)`, check `FileError`, then `none` for EOF,
+then use the line, as in `count.jo` above; `read_line(file)?` would return on EOF too.
+For an interactive prompt, `loop let line = input("next> "): print(line)` ends at EOF
+(or browser cancellation); an empty line is still a value. See [errors and
+propagation](LANGUAGE.md#7-structs-unions-enums-optionals-tuples) for the full rules.
 
 A program can also take the whole terminal, as a screen of characters it draws on (a file
 browser, an editor, a game in the terminal): `import term`, `term.start()`, then `term.put(x, y,
@@ -684,7 +725,13 @@ load = ():
     text = read_file("data.json")
     if text is str:
         got = from_json[Db](text)
-        if got is Db: db = got
+        if got is TextError:
+            eprint("cannot parse data.json: {got.message}")
+            exit(1)
+        db = got
+    else if file_exists("data.json"):
+        eprint("cannot read data.json: {text.message}")
+        exit(1)
     changes = ""
     log = read_file("changes.log")
     if log is str: changes = log

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Script examples report open failures with their OS reason and exit status, close streams on early returns, and preserve unreadable or invalid saved snapshots. The getting-started guide now shows checked regex input, `?` propagation, and EOF handling. The CSV reference example now reports conversion errors with defined functions.
+- Errors for optional-only `if let` and `!` now explain how to handle, propagate, or unwrap checked results.
+
 ## 0.32.0
 
 The first release from the API consistency review: lines starting "Breaking:" say what to
