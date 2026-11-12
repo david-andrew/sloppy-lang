@@ -4046,7 +4046,7 @@ A .gltf names its other files: give them in `files`, relative to the .gltf's dir
 - `rest_pose = (m: Model) -> Pose`: every node as it rests
 - `find_animation = (m: Model, name: str) -> int`: the animation with this name (or whose name ends "|name", as Blender's "Armature|Run"); -1: none
 - `animation_length = (m: Model, anim: int) -> f64`
-- `pose_at = (m: Model, anim: int, time: f64, looped: bool = true) -> Pose`: ModelAnimation anim at a time (seconds): looped, or held at its end. Nodes it does not move rest.
+- `pose_at = (m: Model, anim: int, time: f64, looping: bool = true) -> Pose`: ModelAnimation anim at a time (seconds): looping, or held at its end. Nodes it does not move rest.
 
 #### An animation player
 
@@ -4054,7 +4054,7 @@ A .gltf names its other files: give them in `files`, relative to the .gltf's dir
   ```gdscript
   anim: Animator
   anim.play(robot, "Run")                          # in update: what it does now (again: no restart)
-  anim.play(robot, "Jump", looped = false)          # once, then anim.finished
+  anim.play(robot, "Jump", looping = false)          # once, then anim.finished
   anim.update(robot, dt)
   if anim.passed(robot, 0.3): play_at(step_sound, pos) # the frame it goes past 0.3 s (footsteps)
   draw_model(robot, transform(pos), pose = anim.pose(robot))
@@ -4063,19 +4063,19 @@ A .gltf names its other files: give them in `files`, relative to the .gltf's dir
   struct Animator:
       current = -1            # the animation playing (find_animation's number; -1: none)
       time = 0.0              # how far into it, in seconds
-      looped = true
+      looping = true
       speed = 1.0
       finished = false        # one played once has come to its end (it holds its last pose)
       last_time = 0.0         # (time before the last update)
       prev = -1               # (the one fading out, where it was, and how far the fade has come)
       prev_time = 0.0
-      prev_looped = true
+      prev_looping = true
       fade = 0.0
       faded = 0.0
   ```
-- `play = (a: mut Animator, m: Model, name: str, looped: bool = true, fade: f64 = 0.2, speed: f64 = 1.0, restart: bool = false)`: play the animation named `name` (already playing: it goes on; restart = true starts it over), fading in over `fade` seconds
+- `play = (a: mut Animator, m: Model, name: str, looping: bool = true, fade: f64 = 0.2, speed: f64 = 1.0, restart: bool = false)`: play the animation named `name` (already playing: it goes on; restart = true starts it over), fading in over `fade` seconds
 - `update = (a: mut Animator, m: Model, dt: f64)`
-- `passed = (a: Animator, m: Model, t: f64) -> bool`: the last update went past time t of the animation (once per loop, for a looped one)
+- `passed = (a: Animator, m: Model, t: f64) -> bool`: the last update went past time t of the animation (once per loop, for a looping one)
 - `pose = (a: Animator, m: Model) -> Pose`: the pose to draw (the fade from the one before, while it lasts)
 - `blend_poses = (a: Pose, b: Pose, k: f64) -> Pose`: between two poses of the same model: k = 0 is a, 1 is b (to fade from one animation to the next)
 - `find_node = (m: Model, name: str) -> int`: the node with this name (or whose name ends ":name", as Mixamo's "mixamorig:Head"); -1: none
@@ -4219,7 +4219,7 @@ play(music, 0.6, looping = true)
       seconds: f64                # how long it is (0: unknown)
   ```
 - `load_music = (file: u8[]) -> Music \| AudioError`
-- `play_music = (m: Music, volume: f64 = 1.0, looping: bool = true, pan: f64 = 0.0, delay: f64 = 0.0, at: f64? = none) -> int`: play music from its start; returns a voice id for stop(), set_volume(), is_playing(), pause(), seek() and voice_time(). delay and at as for play(), to the sample: `at = audio_time() + 1.0` starts it a second from now on the audio clock, a negative delay that far into it
+- `play_music = (m: Music, volume: f64 = 1.0, pan: f64 = 0.0, looping: bool = true, delay: f64 = 0.0, at: f64? = none) -> int`: play music from its start; returns a voice id for stop(), set_volume(), is_playing(), pause(), seek() and voice_time(). delay and at as for play(), to the sample: `at = audio_time() + 1.0` starts it a second from now on the audio clock, a negative delay that far into it. Shared options follow Sound play: volume, pan, then looping (Music has no pitch option). Music loops by default; Sound play defaults to a single play.
 - `crossfade = (old: int, m: Music, seconds: f64 = 1.0, volume: f64 = 1.0, looping: bool = true) -> int`: fade out the voice `old` while music m starts silent and fades in to `volume` (returns the music's voice; old may be 0 or already stopped)
 - `music_error = (id: int) -> AudioError?`: take a streaming decode error for this play_music voice, once (none: none recorded). Errors survive the voice ending; accepted samples before the damaged packet may have played. Opening errors come from load_music instead. Query after is_playing(id) becomes false.
 - `struct OggAudio`: the samples as the file has them (interleaved, d.channels of them, at d.rate)

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: `play_music(m, volume, pan, looping, delay, at)` puts pan before looping, matching Sound's shared-option order; use named `looping` when migrating old positional tails. Sound still plays once by default and Music loops. Model `pose_at`/`Animator.play` and Animator fields use `looping`/`prev_looping` instead of `looped`/`prev_looped`.
+
 - Instanced mesh draws now use the same default specular 0.3 as ordinary draws. Pass `specular = 0.2` explicitly to keep the previous instancing-only material.
 
 - Breaking: byte asset loaders return checked errors: `load_image`/`load_png`/`load_jpeg`/`load_texture` return `ImageError`, `load_wav`/`load_ogg`/`load_music` return `AudioError`, and `load_font` returns `FontError` alongside the asset. Handle the error or use `.unwrap()` for trusted content, including embedded files. `load_model` returns `Model | ModelError`; `load_gltf` is removed, use `load_model`. `read_gltf` stays CPU-only. WAV truncation is an error; streaming music stops on detected corrupt packets, with `music_error(voice)` taking the error after playback.
