@@ -31,6 +31,18 @@ user instructions, median of three runs with the hardware counters from
 `tools/icount.c`; no wall-clock measurements. Raw samples are in
 `measurements.json`.
 
+## Follow-up: keyed sort
+
+Splitting the existing key-building traversal into `__sort_keys` and the stable
+index-sort/reorder into `__sort_key_order` puts the callback traversal below the
+existing helper limit. Known keys now inline through the small sort wrapper and
+key traversal; the merge algorithm remains out of line. Keys still run once per
+element in input order, and not at all for fewer than two elements. No extra
+arrays are built. The benchmark goes from 1,598,559,163 to 1,565,806,308
+instructions (-2.05%), versus 1,565,784,261 for its equivalent loop (1.000×).
+Two new native debug/release tests cover stable ascending/descending ties across
+merge runs, key-call counts, copy-on-write, managed keys and a panicking key.
+
 ## Workloads and counts
 
 Each program initializes 8,192 integers cycling through 0..16, then runs its
