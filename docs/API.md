@@ -5594,9 +5594,8 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
 
 #### TCP: a stream of bytes to one other program
 
-- `tcp_connect = (host: str, port: int, timeout: f64 = 5.0) -> int`: a connection to host's port, waiting up to `timeout` seconds for it; -1 if it cannot be made (tcp_why says why)
-- `tls_connect = (host: str, port: int = 443, timeout: f64 = 10.0) -> int`: a connection to host's port over TLS (443: https's), waiting up to `timeout` seconds for it; -1 if it cannot be made, or the server's certificate is not one this computer trusts for host (tcp_why says why). What it sends and receives goes through tcp_send, tcp_receive, tcp_close
-- `tcp_why = () -> str`: why the last tcp_connect or tls_connect gave -1
+- `tcp_connect = (host: str, port: int, timeout: f64 = 5.0) -> int \| NetError`: a connection to host's port, waiting up to timeout seconds; NetError carries failure details. This deadline covers connecting only; tcp_receive/tcp_send have independent wait deadlines.
+- `tls_connect = (host: str, port: int = 443, timeout: f64 = 10.0) -> int \| NetError`: a connection to host's port over TLS (443: https's); NetError carries connect, handshake or certificate failure details. timeout covers connecting plus the TLS handshake; send/receive wait deadlines are independent. Successful handles use tcp_send, tcp_receive and tcp_close.
 - `trust_certificate = (pem: str) -> int`: a certificate authority to trust from now on, besides those the system trusts: its certificate as PEM text (what a .pem or .crt file holds, -----BEGIN CERTIFICATE----- ...), for servers whose certificates it signed (a test server's, a private network's); how many certificates were taken. The SLOPPY_CA_FILE environment variable names such a file for any program
 - `tcp_listen = (port: int, host: str = "", backlog: int = 511) -> int`: a server on port: connections come from tcp_accept; -1 if the port cannot be had. host: the address it is reached at, "" every one this machine has ("127.0.0.1": from this machine only); backlog: how many connections may wait to be accepted
 - `tcp_port = (server: int) -> int`: the port of a tcp_listen server (0 asks the system to choose), or -1 if closed/not a server

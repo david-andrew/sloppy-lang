@@ -1368,7 +1368,7 @@ udp_close = (sock: int):
 # ---------------- TCP: a stream of bytes to one other program ----------------
 # For a tool or a server of your own speaking someone else's protocol (HTTP, a game server's);
 # between your own programs, the messages above are simpler. Native programs only.
-#   c = net.tcp_connect("example.com", 80)                 # -1 if it cannot be reached (tcp_why says why)
+#   c = net.tcp_connect("example.com", 80).unwrap()        # handle NetError for runtime failures
 #   net.tcp_send(c, "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
 #   reply: u8[]
 #   loop not net.tcp_closed(c): reply.extend(net.tcp_receive(c, wait = 5.0))
@@ -1405,7 +1405,6 @@ struct __Tcp:
 __tcps: {int: __Tcp}
 __tcp_servers: {int: int}   # (a server's handle: its socket)
 __tcp_next = 1
-__tcp_why = ""
 
 __tcp_new = (fd: int, from: str) -> int:
     global __tcp_next
@@ -1414,72 +1413,62 @@ __tcp_new = (fd: int, from: str) -> int:
     __tcps[c] = __Tcp(fd = fd, from = from)
     c
 
-# a connection to host's port, waiting up to `timeout` seconds for it; -1 if it cannot be made
-# (tcp_why says why)
-@no_web("gives -1 in a web page: browsers have no TCP sockets (net.connect, over WebSockets, works there)")
-tcp_connect = (host: str, port: int, timeout: f64 = 5.0) -> int:
-    global __tcp_why
-    __tcp_why = ""
+# a connection to host's port, waiting up to timeout seconds; NetError carries failure details.
+# This deadline covers connecting only; tcp_receive/tcp_send have independent wait deadlines.
+@no_web("returns NetError in a web page: browsers have no TCP sockets (net.connect, over WebSockets, works there)")
+tcp_connect = (host: str, port: int, timeout: f64 = 5.0) -> int | NetError:
     ip = __n_resolve(host)
-    if ip < 0:
-        __tcp_why = "no machine named '{host}' was found"
-        return -1
+    if ip < 0: return NetError("TCP {host}:{port}: no machine named '{host}' was found")
     fd = __n_connect(ip, port)
-    if fd < 0:
-        __tcp_why = "the connection could not be started"
-        return -1
+    if fd < 0: return NetError("TCP {host}:{port}: the connection could not be started")
     end = time() + timeout
     loop true:
         st = __n_connected(fd)
         if st > 0: return __tcp_new(fd, "")
         if st < 0 or time() > end or __task_cancelling:
-            __tcp_why = if st < 0: __n_why(-st, port) else: if __task_cancelling: "the task was cancelled" else: "no answer in {timeout} seconds"
+            why = if st < 0: __n_why(-st, port) else: if __task_cancelling: "the task was cancelled" else: "no answer in {timeout} seconds"
             __n_close(fd)
-            return -1
+            return NetError("TCP {host}:{port}: {why}")
         __n_wait([fd], [2], __net_ms(end))
-    -1
+    NetError("TCP {host}:{port}: the connection ended")
 
-# a connection to host's port over TLS (443: https's), waiting up to `timeout` seconds for it;
-# -1 if it cannot be made, or the server's certificate is not one this computer trusts for host
-# (tcp_why says why). What it sends and receives goes through tcp_send, tcp_receive, tcp_close
-@no_web("gives -1 in a web page: browsers have no TCP sockets (net.connect, over WebSockets, works there)")
-tls_connect = (host: str, port: int = 443, timeout: f64 = 10.0) -> int:
-    global __tcp_why
+# a connection to host's port over TLS (443: https's); NetError carries connect, handshake or
+# certificate failure details. timeout covers connecting plus the TLS handshake; send/receive
+# wait deadlines are independent. Successful handles use tcp_send, tcp_receive and tcp_close.
+@no_web("returns NetError in a web page: browsers have no TCP sockets (net.connect, over WebSockets, works there)")
+tls_connect = (host: str, port: int = 443, timeout: f64 = 10.0) -> int | NetError:
     end = time() + timeout
-    c = tcp_connect(host, port, timeout)
-    if c < 0: return -1
+    c = tcp_connect(host, port, timeout)?
     fd = __tcps[c].fd
     t = tls.__tls_open(host, "")
     __net_rbuf_ready()
+    why = ""
     loop true:
         if not __tcp_raw_send(fd, tls.__tls_output(t), end):
-            __tcp_why = "the connection failed in TLS's handshake"
+            why = if __task_cancelling: "the task was cancelled" else: "the connection failed in TLS's handshake"
             break
         st = tls.__tls_status(t)
         if st == 1:
             __tcps[c].tls = t
             return c
         if st >= 2:
-            __tcp_why = "the secure connection failed: {tls.__tls_why(t)}"
+            why = "the secure connection failed: {tls.__tls_why(t)}"
             break
         n = __n_recv(fd, data(__net_rbuf), __net_rbuf.len())
         if n > 0:
             tls.__tls_feed(t, __net_rbuf[..n))
             continue
         if n == 0 or n == -2:
-            __tcp_why = "the server closed the connection in TLS's handshake (is it a TLS server, on that port?)"
+            why = "the server closed the connection in TLS's handshake (is it a TLS server, on that port?)"
             break
         if time() > end or __task_cancelling:
-            __tcp_why = if __task_cancelling: "the task was cancelled" else: "no answer to TLS's handshake in {timeout} seconds"
+            why = if __task_cancelling: "the task was cancelled" else: "no answer to TLS's handshake in {timeout} seconds"
             break
         __n_wait([fd], [1], __net_ms(end))
     tls.__tls_free(t)
     __n_close(fd)
     __tcps.remove(c)
-    -1
-
-# why the last tcp_connect or tls_connect gave -1
-tcp_why = () -> str: __tcp_why
+    NetError("TLS {host}:{port}: {why}")
 
 # a certificate authority to trust from now on, besides those the system trusts: its certificate
 # as PEM text (what a .pem or .crt file holds, -----BEGIN CERTIFICATE----- ...), for servers whose
