@@ -1,0 +1,129 @@
+# requires: sloppy
+# requires: native
+# env: SLOPPY_VULKAN=1
+# env: SLOPPY_SCREENSHOT=$TMP/pipeline_warmup.png
+# env: SLOPPY_FRAMES=12
+# env: SLOPPY_WINDOW=160x90
+# env: SLOPPY_VK_PIPELINE_CACHE=0
+# env: SLOPPY_NO_AUDIO=1
+# Loading uses no game draw calls. Delayed blends, effects, particles, shadows and post passes
+# must all reuse the pipelines created during loading, even with no persistent cache.
+window("Pipeline warm-up", 160, 90)
+# Loading a layout prepares only its group. Repeating it does no more pipeline work.
+regular_vertices: Vertex3D[]
+skinned_vertices: SkinVertex3D[]
+empty_instances: Instance3D[]
+regular = mesh(regular_vertices)
+when TARGET != "wasm" and TARGET != "macos":
+    if __vk:
+        assert(__warm_3d_layouts == 19)
+        n = __vg_pipeline_creations
+        mesh(regular_vertices)
+        assert(__vg_pipeline_creations == n)
+instanced = instance_buffer(empty_instances)
+when TARGET != "wasm" and TARGET != "macos":
+    if __vk:
+        assert(__warm_3d_layouts == 19)
+        n = __vg_pipeline_creations
+        instance_buffer(empty_instances)
+        assert(__vg_pipeline_creations == n)
+skin_fx_fs = (i: LitOut, u: LitParams) -> vec4: i.color
+skin_fx = make_shader(shader(lit_vs_skin, skin_fx_fs))
+when TARGET != "wasm" and TARGET != "macos":
+    if __vk: assert(__vgp[skin_fx.prog].vs == 0 and __vgp[skin_fx.prog].pipelines.len() == 0)
+skinned = mesh(skinned_vertices)
+when TARGET != "wasm" and TARGET != "macos":
+    if __vk:
+        assert(__warm_3d_layouts == 23)
+        assert(__vgp[skin_fx.prog].vs != 0 and __vgp[skin_fx.prog].pipelines.len() > 0)
+        n = __vg_pipeline_creations
+        mesh(skinned_vertices)
+        warm_up()
+        assert(__vg_pipeline_creations == n)
+    else: assert(__warm_3d_layouts == 0)
+warm_up()
+ball = sphere_mesh(0.4)
+floor = plane_mesh(5)
+rt = render_target(64, 64)
+fx_fs = (i: Pixel2D, u: Effect2D[f32]) -> vec4: base_color(i, u) * vec4(1, u.params, 1, 1)
+fx = make_shader(shader(effect_vs, fx_fs))
+struct LineVertex: pos: vec3
+struct LineParams: vp: mat4
+struct LineOut: pos: vec4
+line_vs = (v: LineVertex, u: LineParams) -> LineOut:
+    # A dummy zero vertex must never invoke this user function during preparation.
+    loop v.pos.x == 0.0: pass
+    LineOut(u.vp * vec4(v.pos, 1))
+line_fs = (i: LineOut, u: LineParams) -> vec4: vec4(1, 0, 0, 1)
+when TARGET != "wasm" and TARGET != "macos":
+    if __vk:
+        # An unfamiliar push layout must never run the user's vertex function to prime JIT.
+        src = shader(line_vs, line_fs).vs_spirv
+        words: u32[]
+        loop j in [0..len(src) / 4): words.push((data(src) as *u32)[j])
+        i = 5
+        changed = false
+        loop i < words.len():
+            count = int(words[i] >> 16)
+            if words[i] & u32(65535) == u32(72) and count == 5 and words[i + 2] == u32(3) and words[i + 3] == u32(35) and words[i + 4] == u32(24):
+                words[i + 4] = u32(28)
+                changed = true
+            i += count
+        unknown = str_from_bytes(bytes_from(data(words) as *u8, words.len() * 4))
+        assert(changed and __vg_warm_vertex(unknown) == unknown)
+line_sh = make_shader(shader(line_vs, line_fs))
+line = mesh([LineVertex(vec3(-1, 1, 0)), LineVertex(vec3(1, 1, 0))], mode = GL_LINES)
+# A primitive class outside the normal triangle recipes, in both the screen and post target.
+glDisable(GL_BLEND)
+glEnable(GL_DEPTH_TEST)
+glDepthFunc(GL_LEQUAL)
+warm_up(line_sh, GL_LINES)
+draw_to(rt)
+glDisable(GL_BLEND)
+glEnable(GL_DEPTH_TEST)
+glDepthFunc(GL_LEQUAL)
+warm_up(line_sh, GL_LINES)
+draw_to_screen()
+blend(.alpha)
+instances = [Instance3D(transform(vec3(1, 0, 0)), WHITE)]
+ps: Particles3D
+emit(ps, vec3(0, 0.5, 0), 4, 0.5, WHITE, life = 10.0)
+post_effects()
+loaded = 0
+when TARGET != "wasm" and TARGET != "macos":
+    if __vk:
+        loaded = __vg_pipeline_creations
+        assert(loaded > 0)
+        # Repeated preparation, including duplicate source declarations, makes no pipelines.
+        warm_up()
+        again = make_shader(shader(line_vs, line_fs))
+        assert(again.prog == line_sh.prog)
+        assert(__vg_pipeline_creations == loaded)
+update = (dt: f64): pass
+draw = ():
+    f = frame_number()
+    draw_to(rt)
+    clear(BLACK)
+    if f >= 3: blend(.add)
+    if f >= 5: blend(.multiply)
+    if f >= 7: blend(.premultiplied)
+    circle(vec2(20, 20), 12, WHITE)
+    if f >= 4:
+        use_effect(fx, f32(0.5))
+        rect(30, 10, 20, 20, WHITE)
+        no_effect()
+    draw_to_screen()
+    blend(.alpha)
+    camera3d(vec3(3, 3, 6), vec3(0, 0, 0))
+    sky(vec3(0.1, 0.2, 0.4), vec3(0.4, 0.5, 0.6))
+    draw_mesh(floor, color = GRAY)
+    if f >= 8: draw_mesh_instanced(ball, instances)
+    draw_mesh(ball, color = rgba(1, 1, 1, if f < 5: 1.0 else: 0.5))
+    draw_custom((): draw(line_sh, line, LineParams(scene_view_proj())))
+    if f >= 6: ps.draw(glow = f < 9)
+    sprite(rt.texture, vec2(0, 0))
+    text("ready", vec2(2, 70), 12, WHITE)
+on_quit = ():
+    when TARGET != "wasm" and TARGET != "macos":
+        if __vk: assert(__vg_pipeline_creations == loaded)
+    print("pipeline warm-up ok")

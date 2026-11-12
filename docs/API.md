@@ -4359,6 +4359,8 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       gbuf: int                   # the vertices are a GPU buffer's (gpu_mesh): its number
       keep: u8[]                  # (and what keeps that buffer alive)
   ```
+- `warm_up = ()`: Prepare only declared shaders and the layouts/assets already loaded by the game. Vulkan only; OpenGL, Metal and WebGL retain their own program lifecycle.
+- `warm_up = (sh: Shader, mode: int = GL_TRIANGLES)`: Prepare one selected target/primitive/depth/blend state, without drawing into the game.
 - `make_shader = (src: ShaderSource) -> Shader`
 - `mesh[V] = (vertices: V[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh`: upload vertices (any struct type matching the shader's vertex input) and optional indices
 - `update_mesh[V] = (m: mut Mesh, vertices: V[])`

@@ -460,8 +460,22 @@ when TARGET != "wasm" and TARGET != "macos":
         fs: int
         pipelines: {int: int}      # state key -> pipeline
         tex_offs: int[]            # where its uniforms hold a Texture's id (GL name)
+        warm_kind: int
+        vertex: str
+        original_vertex: str
+        fragment: str
+        guarded: bool
+        warm_failed: bool
+        warm_done: bool
+        warm_bytes: int = 256
+        warm_layout: int          # custom skinned sources wait for a matching mesh too
 
     __vgp: __VgProg[] = [__VgProg()]
+    __vg_programs: {str: int}
+    __vg_pipeline_creations = 0
+    __vg_3d_warm = 0
+    __vg_registry_ready = false
+    __vg_context_ready = false
 
     # uniforms uploaded to address p for program prog, its textures' GL names made their slots
     __vg_tex_slots = (prog: int, p: *u8):
@@ -470,7 +484,9 @@ when TARGET != "wasm" and TARGET != "macos":
             q[0] = __vg_slot_of(q[0])
 
     # a program from a ShaderSource's SPIR-V (its GL name)
-    __vk_program = (src: ShaderSource) -> int:
+    __vk_program = (src: ShaderSource, warm_kind: int = 0, eager: bool = true) -> int:
+        key = __warm_source_key(src.vs_spirv, src.fs_spirv)
+        if let p = __vg_programs.get(key): return p
         offs: int[]
         halves = split(src.layout, "|")
         if halves.len() > 1:
@@ -484,8 +500,23 @@ when TARGET != "wasm" and TARGET != "macos":
                     n = to_int(f[3]) ?? 0
                     stride = to_int(f[4]) ?? 0
                 loop i in [0..n): offs.push(o + i * stride)
-        __vgp.push(__VgProg(__vk_module(src.vs_spirv), __vk_module(src.fs_spirv), {}, offs))
-        __vgp.len() - 1
+        space = 256
+        loop half in halves:
+            loop part in split(half, ";"):
+                if starts_with(part, "A") or starts_with(part, "U") or starts_with(part, "I"):
+                    space = max(space, to_int(part[1..]) ?? 0)
+        group = __warm_layout_kind(warm_kind)
+        if warm_kind == 0:
+            # This also covers newly added built-in shader families (such as PBR) that
+            # declare skinned handles before they have any skinned meshes to draw.
+            loop part in split(halves[0], ";"):
+                if starts_with(part, "A") and (to_int(part[1..]) ?? 0) == size_of(SkinVertex3D): group = 4
+        vertex = if warm_kind == 0: __vg_warm_vertex(src.vs_spirv) else: src.vs_spirv
+        __vgp.push(__VgProg(tex_offs = offs, warm_kind = warm_kind, vertex = vertex, original_vertex = src.vs_spirv, fragment = src.fs_spirv, guarded = warm_kind == 0 and vertex != src.vs_spirv, warm_bytes = space, warm_layout = group))
+        p = __vgp.len() - 1
+        __vg_programs[key] = p
+        if eager and (group == 0 or __vg_3d_warm & group != 0): __vg_warm_program(p, warm_kind)
+        p
 
     # GL blend factors as Vulkan's
     __vg_factor = (f: int) -> u32:
@@ -524,20 +555,134 @@ when TARGET != "wasm" and TARGET != "macos":
         if f == 9: return 5
         6
 
-    # the pipeline for program p as the state is now (made the first time it is needed)
+    # The same lookup for loading and drawing. No command buffer or GL state is changed.
     __vg_pipeline_for = (p: int, topo: u32) -> int:
-        cf, df = __vg_fb_formats(__vg_fb)
-        blend_on = __vg_blend and cf != 0
-        samples = if __vg_fb == 0: __vk_samples else: 1
-        key = __vg_class(topo) | (__vg_format_code(cf) << 2) | (int(df != 0) << 5) | (__vg_cmask << 6) | (int(samples > 1) << 60)
-        if blend_on: key = key | (1 << 10) | (__vg_bf.0 << 11) | (__vg_bf.1 << 23) | (__vg_bf.2 << 35) | (__vg_bf.3 << 47)
+        __vg_warm_draw(p, __vg_fb, topo)
+
+    __vg_warm_draw = (p: int, fb: int, topo: u32) -> int:
+        cf, df = __vg_fb_formats(fb)
+        samples = if fb == 0: __vk_samples else: 1
+        __vg_cached_pipeline(p, topo, cf, df, __vg_blend and cf != 0, samples, __vg_cmask, __vg_bf)
+
+    __vg_cached_pipeline = (p: int, topo: u32, cf: u32, df: u32, blend_on: bool, samples: int, mask: int, bf: (int, int, int, int), warming: bool = false) -> int:
+        key = __vg_class(topo) | (__vg_format_code(cf) << 2) | (int(df != 0) << 5) | (mask << 6) | (int(samples > 1) << 60)
+        if blend_on: key = key | (1 << 10) | (bf.0 << 11) | (bf.1 << 23) | (bf.2 << 35) | (bf.3 << 47)
         if let pl = __vgp[p].pipelines.get(key): return pl
-        pl = __vg_make_pipeline(p, topo, cf, df, blend_on, samples)
+        if warming and __vgp[p].warm_failed: return 0
+        if __vgp[p].vs == 0: __vgp[p].vs = __vk_module(__vgp[p].vertex)
+        if __vgp[p].fs == 0: __vgp[p].fs = __vk_module(__vgp[p].fragment)
+        pl = __vg_make_pipeline(p, topo, cf, df, blend_on, samples, mask, bf)
         __vgp[p].pipelines[key] = pl
         pl
 
-    __vg_make_pipeline = (p: int, topo: u32, cf: u32, df: u32, blend_on: bool, samples: int) -> int:
-        global __vk_pcache_dirty
+    __vg_warm_selected = (p: int, topo: u32):
+        __vg_try_warm(p, ():
+            cf, df = __vg_fb_formats(__vg_fb)
+            samples = if __vg_fb == 0: __vk_samples else: 1
+            pl = __vg_cached_pipeline(p, topo, cf, df, __vg_blend and cf != 0, samples, __vg_cmask, __vg_bf, true)
+            if pl != 0: __vg_prime_pipeline(p, pl, topo, cf, df, samples, __vg_depth, __vg_depth and __vg_depth_write, u32(__vg_depth_func - 0x200)))
+
+    # Vulkan errors during optional work return here rather than terminating the game.
+    # Draw-time creation is outside this boundary and retains the normal error handling.
+    __vg_try_warm = (p: int, work: () -> void) -> bool:
+        global __vk_warm_jmp, __vk_warm_error, __vg_prime_disabled, __vg_priming
+        if __vgp[p].warm_failed: return false
+        jb = __alloc(256)
+        keep = __vk_warm_jmp
+        if __setjmp(jb) == 0:
+            __vk_warm_jmp = jb
+            work()
+            __vk_warm_jmp = keep
+            __free(jb)
+            return true
+        __vk_warm_jmp = keep
+        __free(jb)
+        __vgp[p].warm_failed = true
+        if __vgp[p].guarded:
+            if __vgp[p].vs != 0: vkDestroyShaderModule(__vk_dev, __vgp[p].vs, null)
+            __vgp[p].vs = 0
+            __vgp[p].vertex = __vgp[p].original_vertex
+            __vgp[p].guarded = false
+        if __vg_priming: __vg_prime_disabled = true
+        __vg_priming = false
+        eprint("note: graphics warm-up skipped program {p}: {__vk_warm_error}; retrying on first use")
+        false
+
+    __vg_warm_variant = (p: int, topo: u32, cf: u32, df: u32, blend_on: bool, samples: int, mask: int, bf: (int, int, int, int)):
+        pl = __vg_cached_pipeline(p, topo, cf, df, blend_on, samples, mask, bf, true)
+        if pl == 0: return
+        kind = __vgp[p].warm_kind
+        depth = __warm_layout_kind(kind) != 0 and kind != 4 and kind != 5
+        if kind == 0:
+            __vg_prime_pipeline(p, pl, topo, cf, df, samples, false, false, 3)
+            depth = true
+        __vg_prime_pipeline(p, pl, topo, cf, df, samples, depth, depth and not blend_on, 3)
+
+    # Built-ins have bounded recipes (see draw2d.jo), rather than every combination of
+    # topology, format and blending. Custom shaders get the library's usual triangle states.
+    __vg_warm_program = (p: int, kind: int):
+        if __vgp[p].warm_done: return
+        if kind == 7 and not __sky_on: return
+        if (kind == 3 or kind == 9 or kind == 11) and not __shadows: return
+        if __vg_try_warm(p, (): __vg_warm_recipe(p, kind)): __vgp[p].warm_done = true
+
+    __vg_warm_recipe = (p: int, kind: int):
+        if kind == 3 or kind == 9 or kind == 11:
+            __vg_warm_variant(p, 3, 0, u32(VK_FORMAT_D32_SFLOAT), false, 1, 0, (1, 0, 1, 0))
+            return
+        samples: int[] = [1]
+        if kind != 5 and __vk_samples > 1: samples.push(__vk_samples)
+        loop n in samples:
+            if kind != 1 and kind != 6:
+                __vg_warm_variant(p, 3, u32(VK_FORMAT_R8G8B8A8_UNORM), u32(VK_FORMAT_D32_SFLOAT), false, n, 15, (1, 0, 1, 0))
+            if kind == 4 or kind == 5 or kind == 7: continue
+            __vg_warm_variant(p, 3, u32(VK_FORMAT_R8G8B8A8_UNORM), u32(VK_FORMAT_D32_SFLOAT), true, n, 15, (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA))
+            if kind == 2 or kind == 8 or kind == 10: continue
+            __vg_warm_variant(p, 3, u32(VK_FORMAT_R8G8B8A8_UNORM), u32(VK_FORMAT_D32_SFLOAT), true, n, 15, (GL_SRC_ALPHA, GL_ONE, GL_SRC_ALPHA, GL_ONE))
+            if kind == 6: continue
+            __vg_warm_variant(p, 3, u32(VK_FORMAT_R8G8B8A8_UNORM), u32(VK_FORMAT_D32_SFLOAT), true, n, 15, (GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA, GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA))
+            __vg_warm_variant(p, 3, u32(VK_FORMAT_R8G8B8A8_UNORM), u32(VK_FORMAT_D32_SFLOAT), true, n, 15, (GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA))
+
+    __vg_warm_3d = (layouts: int):
+        global __vg_3d_warm
+        old = __vg_3d_warm
+        if old & layouts == layouts: return
+        __vg_3d_warm = old | layouts
+        loop p in [1..__vgp.len()):
+            kind = __vgp[p].warm_kind
+            group = __vgp[p].warm_layout
+            if group & layouts != 0 and group & old == 0: __vg_warm_program(p, kind)
+
+    __vg_warm_loaded = ():
+        if __bloom_on or __warm_post_needed: __warm_post()
+        if __warm_particles_needed: __warm_3d(16)
+        loop p in [1..__vgp.len()):
+            kind = __vgp[p].warm_kind
+            group = __vgp[p].warm_layout
+            if group == 0 or group & __vg_3d_warm != 0: __vg_warm_program(p, kind)
+
+    __vg_register_builtins = ():
+        global __vg_registry_ready
+        if __vg_registry_ready: return
+        __vg_registry_ready = true
+        __warm_builtin_sources((src: ShaderSource, kind: int):
+            global __b_vk_prog
+            p = __vk_program(src, kind, false)
+            if kind == 1: __b_vk_prog = p)
+
+    __vg_warm_builtins = ():
+        global __vg_context_ready
+        if __vg_context_ready: return
+        __vg_register_builtins()
+        __vg_context_ready = true
+        __vg_warm_program(__b_vk_prog, 1)
+        if __bloom_on or __warm_post_needed: __vg_warm_3d(8)
+        # A particles-only scene first loads its shared Vertex3D quad when it emits.
+        # Prepare that layout and its default sky before the first emission as well.
+        if __warm_particles_needed: __vg_warm_3d(17)
+
+    __vg_make_pipeline = (p: int, topo: u32, cf: u32, df: u32, blend_on: bool, samples: int, mask: int, bf: (int, int, int, int)) -> int:
+        global __vk_pcache_dirty, __vg_pipeline_creations
         name = "main"
         stages: VkPipelineShaderStageCreateInfo[] = [
             VkPipelineShaderStageCreateInfo(stype = 18, stage = 1, module = __vgp[p].vs, name = data(name)),
@@ -550,13 +695,13 @@ when TARGET != "wasm" and TARGET != "macos":
         if __vk_provoking_last: rs.next = data(pv) as *u8
         ms = VkPipelineMultisampleStateCreateInfo(stype = 24, samples = u32(samples))
         ds = VkPipelineDepthStencilStateCreateInfo(stype = 25, max_bounds = 1.0)
-        att = VkPipelineColorBlendAttachmentState(mask = u32(__vg_cmask))
+        att = VkPipelineColorBlendAttachmentState(mask = u32(mask))
         if blend_on:
             att.on = 1
-            att.src = __vg_factor(__vg_bf.0)
-            att.dst = __vg_factor(__vg_bf.1)
-            att.src_a = __vg_factor(__vg_bf.2)
-            att.dst_a = __vg_factor(__vg_bf.3)
+            att.src = __vg_factor(bf.0)
+            att.dst = __vg_factor(bf.1)
+            att.src_a = __vg_factor(bf.2)
+            att.dst_a = __vg_factor(bf.3)
         cb = VkPipelineColorBlendStateCreateInfo(stype = 26)
         if cf != 0:
             cb.natts = 1
@@ -574,6 +719,7 @@ when TARGET != "wasm" and TARGET != "macos":
         pl = 0
         __vk_check(vkCreateGraphicsPipelines(__vk_dev, __vk_pcache, 1, (&gi) as *u8, null, &pl), "vkCreateGraphicsPipelines")
         __vk_pcache_dirty = true
+        __vg_pipeline_creations += 1
         pl
 
     # ---------------- draws ----------------
@@ -695,3 +841,184 @@ when TARGET != "wasm" and TARGET != "macos":
     __vg_end_frame = ():
         __vg_end_pass()
         __vg_frame_no += 1
+
+    # A private command buffer and tiny attachments: never part of a game frame.
+    struct __VgWarmTarget:
+        color: __VkImage
+        depth: __VkImage
+    __vg_warm_targets: {int: __VgWarmTarget}
+    __vg_warm_pool = 0
+    __vg_warm_cb: *u8 = null
+    __vg_warm_fence = 0
+    __vg_warm_data = __VkBuffer()
+    __vg_primed: {str: bool}
+    __vg_prime_disabled = false
+    __vg_priming = false
+
+    __vg_prime_pipeline = (p: int, pl: int, topo: u32, cf: u32, df: u32, samples: int, depth: bool, write: bool, compare: u32):
+        global __vg_warm_pool, __vg_warm_cb, __vg_warm_fence, __vg_warm_data, __vg_priming
+        if __vg_prime_disabled: return
+        guarded = __vgp[p].guarded
+        if __vgp[p].warm_kind == 0 and not guarded:
+            __vgp[p].warm_failed = true
+            eprint("note: graphics warm-up cannot guard program {p}; using the normal first-use path")
+            return
+        # Built-ins are triangle shaders: one vertex cannot form a primitive. Their known
+        # pure vertex functions can read zeroed scratch inputs, with no branch in real draws.
+        # A custom vertex function is never called: its wrapper clips the warm-up vertex.
+        if not guarded and topo == u32(0): return
+        __vg_priming = true
+        if __vg_warm_pool == 0:
+            pi = VkCommandPoolCreateInfo(stype = 39, flags = 1, family = __vk_family)
+            __vk_check(vkCreateCommandPool(__vk_dev, (&pi) as *u8, null, &__vg_warm_pool), "warm pool")
+            ai = VkCommandBufferAllocateInfo(stype = 40, pool = __vg_warm_pool, count = 1)
+            __vk_check(vkAllocateCommandBuffers(__vk_dev, (&ai) as *u8, &__vg_warm_cb), "warm buffer")
+            fi = VkFenceCreateInfo(stype = 8)
+            __vk_check(vkCreateFence(__vk_dev, (&fi) as *u8, null, &__vg_warm_fence), "warm fence")
+        ready_key = "{pl}:{topo}:{int(depth)}:{int(write)}:{compare}"
+        if __vg_primed.has(ready_key):
+            __vg_priming = false
+            return
+        key = int(cf) | (int(df) << 16) | (samples << 32)
+        t = __vg_warm_targets.get(key) ?? __VgWarmTarget()
+        if cf != 0 and t.color.image == 0: t.color = __vk_image(1, 1, cf, u32(VK_USAGE_COLOR), 1, samples)
+        if df != 0 and t.depth.image == 0: t.depth = __vk_image(1, 1, df, u32(VK_USAGE_DEPTH), 2, samples)
+        __vk_check(vkResetCommandPool(__vk_dev, __vg_warm_pool, 0), "warm reset")
+        bi = VkCommandBufferBeginInfo(stype = 42, flags = 1)
+        cb = __vg_warm_cb
+        __vk_check(vkBeginCommandBuffer(cb, (&bi) as *u8), "warm begin")
+        if cf != 0: __vk_barrier(cb, t.color, u32(VK_LAYOUT_COLOR), VK_STAGE_ALL, VK_ACCESS_MEMORY_WRITE, VK_STAGE_COLOR_OUT, VK_ACCESS_COLOR_WRITE)
+        if df != 0: __vk_barrier(cb, t.depth, u32(VK_LAYOUT_DEPTH), VK_STAGE_ALL, VK_ACCESS_MEMORY_WRITE, VK_STAGE_EARLY_TESTS | VK_STAGE_LATE_TESTS, VK_ACCESS_DEPTH_WRITE)
+        ca = VkRenderingAttachmentInfo(stype = 1000044001, view = t.color.view, layout = u32(VK_LAYOUT_COLOR), load_op = 2, store_op = 1)
+        da = VkRenderingAttachmentInfo(stype = 1000044001, view = t.depth.view, layout = u32(VK_LAYOUT_DEPTH), load_op = 2, store_op = 1)
+        ri = VkRenderingInfo(stype = 1000044000, width = 1, height = 1, layers = 1)
+        if cf != 0:
+            ri.ncolors = 1
+            ri.colors = (&ca) as *u8
+        if df != 0: ri.depth = (&da) as *u8
+        vkCmdBeginRendering(cb, (&ri) as *u8)
+        vkCmdBindPipeline(cb, 0, pl)
+        vkCmdBindDescriptorSets(cb, 0, __vk_layout, 0, 1, &__vk_set, 0, null)
+        vp = VkViewport(width = 1, height = 1, max_depth = 1)
+        sc = VkRect2D(width = 1, height = 1)
+        vkCmdSetViewport(cb, 0, 1, (&vp) as *u8)
+        vkCmdSetScissor(cb, 0, 1, (&sc) as *u8)
+        vkCmdSetCullMode(cb, 0)
+        vkCmdSetFrontFace(cb, 1)
+        vkCmdSetPrimitiveTopology(cb, topo)
+        vkCmdSetDepthTestEnable(cb, u32(int(depth)))
+        vkCmdSetDepthWriteEnable(cb, u32(int(write)))
+        vkCmdSetDepthCompareOp(cb, compare)
+        pc = __VgPush(vstride = -1)
+        if not guarded:
+            if __vg_warm_data.size < __vgp[p].warm_bytes:
+                __vk_free_buffer(__vg_warm_data)
+                __vg_warm_data = __VkBuffer()
+                size = __vgp[p].warm_bytes
+                __vg_warm_data = __vk_buffer(size, u32(0x20 | 0x20000), u32(VK_MEM_HOST_VISIBLE | VK_MEM_HOST_COHERENT), 0)
+                zeroes = fill(u8(0), size)
+                mem_copy(__vg_warm_data.ptr, data(zeroes), size)
+            pc = __VgPush(params = __vg_warm_data.addr, verts = __vg_warm_data.addr, insts = __vg_warm_data.addr)
+        vkCmdPushConstants(cb, __vk_layout, 0x7FFFFFFF, 0, u32(__VK_PUSH_SIZE), (&pc) as *u8)
+        vkCmdDraw(cb, 1, 1, 0, 0)
+        vkCmdEndRendering(cb)
+        __vk_check(vkEndCommandBuffer(cb), "warm end")
+        cbi = VkCommandBufferSubmitInfo(stype = 1000314006, cb = cb)
+        si = VkSubmitInfo2(stype = 1000314004, ncbs = 1, cbs = (&cbi) as *u8)
+        __vk_check(vkResetFences(__vk_dev, 1, &__vg_warm_fence), "warm reset fence")
+        __vk_check(vkQueueSubmit2(__vk_queue, 1, (&si) as *u8, __vg_warm_fence), "warm submit")
+        __vk_check(vkWaitForFences(__vk_dev, 1, &__vg_warm_fence, 1, u64(0) - u64(1)), "warm wait")
+        __vg_warm_targets[key] = t
+        __vg_primed[ready_key] = true
+        __vg_priming = false
+
+    # A warm-up vertex skips all user code and is clipped. Normal draws retain the original
+    # wrapper, selected by their nonnegative vertex stride. No uniforms or buffers are read.
+    __vg_warm_vertex = (code: str) -> str:
+        w = data(code) as *u32
+        n = len(code) / 4
+        if n < 5 or len(code) % 4 != 0 or w[0] != u32(0x07230203): return code
+        main = 0
+        pos = 0
+        ints = 0
+        floats = 0
+        bools = 0
+        vector = 0
+        pushptr = 0
+        push = 0
+        push_type = 0
+        i = 5
+        loop i < n:
+            op = int(w[i] & u32(65535))
+            count = int(w[i] >> 16)
+            if count <= 0 or i + count > n: return code
+            if op == 15 and w[i + 1] == u32(0): main = int(w[i + 2])
+            if op == 71 and count == 4 and w[i + 2] == u32(11) and w[i + 3] == u32(0): pos = int(w[i + 1])
+            if op == 21 and w[i + 2] == u32(32) and w[i + 3] == u32(1): ints = int(w[i + 1])
+            if op == 22 and w[i + 2] == u32(32): floats = int(w[i + 1])
+            if op == 20: bools = int(w[i + 1])
+            if op == 23 and int(w[i + 2]) == floats and w[i + 3] == u32(4): vector = int(w[i + 1])
+            if op == 32 and w[i + 2] == u32(9) and int(w[i + 3]) == ints: pushptr = int(w[i + 1])
+            if op == 59 and w[i + 3] == u32(9):
+                push = int(w[i + 2])
+                push_type = int(w[i + 1])
+            i += count
+        if main == 0 or pos == 0 or ints == 0 or floats == 0 or bools == 0 or vector == 0 or pushptr == 0 or push == 0: return code
+        # Only the compiler's push layout is safe: member 3 is the signed stride at byte 24.
+        # An unknown wrapper must retain first-use creation, without running its vertex code.
+        push_struct = 0
+        i = 5
+        loop i < n:
+            count = int(w[i] >> 16)
+            if w[i] & u32(65535) == u32(32) and int(w[i + 1]) == push_type: push_struct = int(w[i + 3])
+            i += count
+        stride_type = false
+        stride_offset = false
+        i = 5
+        loop i < n:
+            op = int(w[i] & u32(65535))
+            count = int(w[i] >> 16)
+            if op == 30 and count > 5 and int(w[i + 1]) == push_struct: stride_type = int(w[i + 5]) == ints
+            if op == 72 and count == 5 and int(w[i + 1]) == push_struct and w[i + 2] == u32(3) and w[i + 3] == u32(35): stride_offset = w[i + 4] == u32(24)
+            i += count
+        if not stride_type or not stride_offset: return code
+        id = int(w[3])
+        # constants: stride member, sentinel, clip coordinate and w; then the clipped position.
+        globals: int[] = [0x4002B, ints, id, 3, 0x4002B, ints, id + 1, -1,
+            0x4002B, floats, id + 2, 0x40000000, 0x4002B, floats, id + 3, 0x3F800000,
+            0x7002C, vector, id + 4, id + 2, id + 2, id + 2, id + 3]
+        guard: int[] = [0x50041, pushptr, id + 5, push, id, 0x4003D, ints, id + 6, id + 5,
+            0x500AA, bools, id + 7, id + 6, id + 1, 0x300F7, id + 10, 0,
+            0x400FA, id + 7, id + 8, id + 9, 0x200F8, id + 8,
+            0x3003E, pos, id + 4, 0x100FD, 0x200F8, id + 9]
+        out: u32[]
+        loop j in [0..5): out.push(w[j])
+        out[3] = u32(id + 11)
+        in_main = false
+        inserted_globals = false
+        inserted_guard = false
+        i = 5
+        loop i < n:
+            op = int(w[i] & u32(65535))
+            count = int(w[i] >> 16)
+            if op == 54:
+                if not inserted_globals:
+                    loop x in globals: out.push(u32(x))
+                    inserted_globals = true
+                in_main = int(w[i + 2]) == main
+            if in_main and op == 56:
+                out.push(u32(0x200F8))
+                out.push(u32(id + 10))
+                out.push(u32(0x100FF))
+                in_main = false
+            loop j in [0..count): out.push(w[i + j])
+            i += count
+            if in_main and op == 248 and not inserted_guard:
+                # Function variables must remain at the start of the entry block.
+                loop i < n and w[i] & u32(65535) == u32(59):
+                    count = int(w[i] >> 16)
+                    loop j in [0..count): out.push(w[i + j])
+                    i += count
+                loop x in guard: out.push(u32(x))
+                inserted_guard = true
+        str_from_bytes(bytes_from(data(out) as *u8, out.len() * 4))
