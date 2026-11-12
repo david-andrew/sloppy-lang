@@ -1,0 +1,81 @@
+# requires: sloppy
+# requires: native
+# The helper specialization has its own size limit, but must preserve all the ordinary
+# inliner's semantic exclusions. Test the IR guard as well as actual callbacks below.
+use '../../compiler/inline.jo'
+use '../../compiler/ir.jo'
+
+@inline
+forced_frame = (f: () -> int) -> int:
+    sp = __stack_ptr()
+    if sp == null: return -1
+    f()
+
+# A stack-pointer intrinsic must observe the helper's frame, even under @inline. Copying
+# this helper into frame_probe makes both pointers refer to the same frame (wrong code).
+@inline
+own_frame = (f: (*u8) -> bool) -> bool: f(__stack_ptr())
+
+@noinline
+frame_probe = () -> bool:
+    caller = __stack_ptr()
+    own_frame((callee): callee != caller)
+
+@noinline
+kept = (f: () -> int) -> int: f()
+
+@inline
+forced = (f: () -> int) -> int: f()
+
+@cabi
+c_plus = (n: int) -> int: n + 5
+
+when TARGET == "windows": const LIB = "fnvalue_intrinsics.dll"
+else: const LIB = "./libfnvalue_intrinsics.so"
+@lib(LIB)
+extern c_apply = (f: cfn(int) -> int, n: int) -> int
+
+# Construct the precise specialization trigger: a local, initialized two-word closure
+# passed to a helper that reads it. The frame intrinsic does not itself use the closure.
+blocked_specialization = (code: int):
+    global rel_by_index
+    ir_begin("caller", 1)
+    closure = e_slot(new_slot(16, 8))
+    fp = vreg(VI)
+    emit(.faddr, VI, fp, 0, 0, 0, 2)
+    e_store(closure, 0, fp, 8)
+    e_store(closure, 8, e_iconst(0), 8)
+    e_call(0, [closure], -1)
+    helper = IrFn(name = "helper", nparams = 1, ret = -1, fn_index = 0,
+        vtypes = [i8(VI), i8(VI), i8(VI)],
+        code = [Ins(.load, VI, 1, 0, 0, 8, 0), Ins(.intr, VI, 2, 0, 0, 0, code)])
+    rel_by_index = [0]
+    assert(not inl_values(-1, [helper]))
+
+main = ():
+    f = IrFn(name = "helper", ret = -1, fn_index = 0)
+    assert(inl_value_helper(f))
+    loop code in [2..11]:
+        blocked_specialization(code)
+        f.code = [Ins(.intr, VI, -1, 0, 0, 0, code)]
+        assert(not inl_value_helper(f))
+        f.always_inline = true
+        assert(not inl_value_helper(f))
+    f.code = []
+    f.noinline = true
+    assert(not inl_value_helper(f))
+    f.noinline = false
+    f.cabi = true
+    assert(not inl_value_helper(f))
+    f.cabi = false
+    f.export_name = "exported"
+    assert(not inl_value_helper(f))
+    assert(frame_probe())
+    print("frame and ABI exclusions ok")
+    n = 17
+    print(forced_frame((): n + 2), kept((): n + 3), forced((): n + 4))
+    print(c_apply(c_plus, 7))
+    print(parallel_range(4, (i): i + n))
+    xs = [3, 1, 2]
+    xs.sort_with((a, b): a + n < b + n)
+    print(xs)
