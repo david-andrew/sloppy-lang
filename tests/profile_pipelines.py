@@ -19,6 +19,19 @@ REPO = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("game_profile", REPO / "bench/games/profile.py")
 gp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gp)
+gp.GAMES.update(pbr_gltf="tests/bench/pipeline_pbr_gltf.jo", sky_image="tests/bench/pipeline_sky_image.jo")
+gp.INPUT.update(pbr_gltf="", sky_image="")
+
+
+def instruction_count(path):
+    # The per-frame totals are at the end. Avoid building every function/call graph just
+    # to read a counter; retain the full worst-frame dump for later attribution.
+    with path.open("rb") as f:
+        f.seek(max(0, path.stat().st_size - 4096))
+        for line in f.read().splitlines():
+            if line.startswith(b"totals:"):
+                return int(line.split()[1])
+    return gp.parse(path)[0]
 
 
 def main():
@@ -31,7 +44,7 @@ def main():
     parser.add_argument("--window", default="160x90")
     parser.add_argument("--stats-overlay", action="store_true", help="include the game statistics overlay in both matched runs")
     parser.add_argument("--icd", default="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json")
-    parser.add_argument("games", nargs="*", default=["breakwater", "aces", "dunes", "rebound", "new_3d"])
+    parser.add_argument("games", nargs="*", default=["breakwater", "aces", "dunes", "rebound", "new_3d", "pbr_gltf", "sky_image"])
     args = parser.parse_args()
     if args.frames < 1 or Path(args.tag).name != args.tag or args.tag in (".", ".."):
         parser.error("use a positive frame count and a simple tag")
@@ -52,6 +65,12 @@ def main():
         ' if(vg && f==0) { VALGRIND_MONITOR_COMMAND("dump"); }\n'
         " if(vg && f==warmup)",
     )
+    gp.C = gp.C.replace(
+        "void gp_end(long f,long a,long b,long c,long d,long live)",
+        "void gp_end(long f,long a,long b,long c,long d,long live,long pipelines)",
+    ).replace(" if(!vg && f<frames)",
+              ' if(f>=0 && f<frames) { printf("PIPELINES_END,%ld,%ld\\n",f,pipelines); fflush(stdout); }\n'
+              " if(!vg && f<frames)")
     dest = output / args.tag
     dest.mkdir(exist_ok=True)
     lib = gp.setup(args.tag, False, args.library.expanduser().resolve())
@@ -66,7 +85,9 @@ def main():
     window = lib / "game/window.jo"
     window.write_text(window.read_text().replace(
         "extern gp_begin = (f: int)", "extern gp_begin = (f: int, pipelines: int)"
-    ).replace("gp_begin(__frame_count)", "gp_begin(__frame_count, __gp_pipelines)"))
+    ).replace("gp_begin(__frame_count)", "gp_begin(__frame_count, __gp_pipelines)")
+      .replace("d: int, live: int)", "d: int, live: int, pipelines: int)")
+      .replace("__gp_d, alloc_count())", "__gp_d, alloc_count(), __gp_pipelines)"))
     env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY", "SLOPPY_SOFTWARE")}
     env.update(
         SLOPPY_LIB=str(lib), SLOPPY_NO_AUDIO="1", SDL_AUDIODRIVER="dummy",
@@ -103,20 +124,24 @@ def main():
         if "vulkan (" not in log:
             raise RuntimeError("requested Vulkan backend was not used: " + str(run))
         dumps = sorted(run.glob("callgrind.*.*"), key=lambda p: int(p.name.rsplit(".", 1)[1]))
-        counts = [gp.parse(path)[0] for path in dumps]
+        counts = [instruction_count(path) for path in dumps]
         if len(counts) != args.frames + 1:
             raise RuntimeError("incomplete startup/frame dumps: " + str(run))
         startup, frames = counts[0], counts[1:]
         worst = frames.index(max(frames))
         shutil.copyfile(dumps[worst + 1], run / "worst.callgrind")
         pipelines = [list(map(int, line.split(",")[1:])) for line in log.splitlines() if line.startswith("PIPELINES,")]
+        ends = [list(map(int, line.split(",")[1:])) for line in log.splitlines() if line.startswith("PIPELINES_END,")]
+        if len(ends) != args.frames:
+            raise RuntimeError("incomplete pipeline end counters: " + str(run))
         with (run / "frames.csv").open("w") as f:
             writer = csv.writer(f)
-            writer.writerow(["frame", "Ir", "pipelines_before_frame"])
-            writer.writerows((i, count, pipelines[i][1]) for i, count in enumerate(frames))
+            writer.writerow(["frame", "Ir", "pipelines_before_frame", "pipelines_after_frame"])
+            writer.writerows((i, count, pipelines[i][1], ends[i][1]) for i, count in enumerate(frames))
         summary = dict(startup_Ir=startup, frames=len(frames), median_Ir=statistics.median(frames),
                        worst_Ir=max(frames), worst_frame=worst,
-                       pipelines_at_first_frame=pipelines[0][1], pipelines_at_last_frame=pipelines[-1][1])
+                       pipelines_at_first_frame=pipelines[0][1], pipelines_at_last_frame=pipelines[-1][1],
+                       pipeline_creations_after_frame_zero=ends[-1][1] - ends[0][1])
         (run / "summary.json").write_text(json.dumps(summary, indent=2))
         for path in run.glob("callgrind.*"):
             path.unlink()

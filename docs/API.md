@@ -3759,6 +3759,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `no_post_effects = ()`
 - `point_light = (pos: vec3, color: vec3, radius: f64 = 6.0, intensity: f64 = 1.0)`: a light at a point for this frame (muzzle flashes, glowing shots, lamps): it reaches radius meters, fading out on the way. Up to 8 light a frame (the ones nearest the camera); they cast no shadows.
 - `draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false, material: Material? = none)`: A color whose alpha is below 1 is see-through, drawn after the solid ones (rgba(1, 0, 0, 0.5); much emissive makes it near white, which hides that). in_front = true: drawn after everything else and over it, casting no shadow (a first-person weapon, which would otherwise poke into walls the player stands against). material selects metallic-roughness PBR; without it the original lighting, specular and color handling are retained. color multiplies its factor; texture is the fallback when it has no base_texture. See Material for map channels.
+- `draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false, material: Material)`
 - `draw_line3d = (a: vec3, b: vec3, color: vec4 = vec4(1, 1, 1, 1), width: f64 = 0.03)`: a line from a to b, `width` thick: for seeing paths, rays, normals and boxes while making a game
 - `draw_grid3d = (size: f64 = 10.0, step: f64 = 1.0, height: f64 = 0.0, color: vec4 = vec4(1, 1, 1, 0.35))`: lines on the ground (y = height), `step` apart out to `size` from the center: to see distances
 - `draw_mesh_instanced = (m: Mesh, instances: Instance3D[], color: vec4 = vec4(1, 1, 1, 1), emissive: f64 = 0.0, specular: f64 = 0.2, cast_shadow: bool = true, wind: f64 = 0.0)`: many copies of a mesh in one draw call (crowds, forests, particles...)
@@ -4359,6 +4360,7 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       gbuf: int                   # the vertices are a GPU buffer's (gpu_mesh): its number
       keep: u8[]                  # (and what keeps that buffer alive)
   ```
+- `warm_up = (material: Material)`: CPU-authored materials can also be explicitly prepared while loading.
 - `warm_up = ()`: Prepare only declared shaders and the layouts/assets already loaded by the game. Vulkan only; OpenGL, Metal and WebGL retain their own program lifecycle.
 - `warm_up = (sh: Shader, mode: int = GL_TRIANGLES)`: Prepare one selected target/primitive/depth/blend state, without drawing into the game.
 - `make_shader = (src: ShaderSource) -> Shader`

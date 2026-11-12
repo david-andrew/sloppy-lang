@@ -96,6 +96,40 @@ __warm_post_use = ():
 __warm_instance_use = ():
     if __warm_inst_marker: __warm_3d(2)
 
+__warm_pbr_needed = false
+__warm_mark_pbr = () -> bool:
+    global __warm_pbr_needed
+    __warm_pbr_needed = true
+    true
+__warm_pbr_marker = __warm_mark_pbr()
+__warm_pbr_use = ():
+    if __warm_pbr_marker: __warm_material_load()
+__warm_sky_needed = false
+__warm_mark_sky = () -> bool:
+    global __warm_sky_needed
+    __warm_sky_needed = true
+    true
+__warm_sky_marker = __warm_mark_sky()
+
+# A material/model upload opts into PBR; skinning still requires a loaded skin layout.
+__warm_material_load = ():
+    when TARGET != "wasm" and TARGET != "macos":
+        global __warm_pbr_needed
+        __warm_pbr_needed = true
+        if __vk and not __soft and __win_open:
+            __warm_3d(32 | (if __warm_3d_layouts & 4 != 0: 64 else: 0))
+            __pbr_init()
+
+# CPU-authored materials can also be explicitly prepared while loading.
+warm_up = (material: Material): __warm_material_load()
+
+__warm_sky_load = ():
+    if __warm_sky_marker:
+        when TARGET != "wasm" and TARGET != "macos":
+            if __vk and not __soft and __sky_image.id != 0:
+                __warm_3d(1 | 128)
+                __vg_prepare_sky()
+
 when TARGET != "wasm" and TARGET != "macos":
     __warm_builtin_sources = (load: (ShaderSource, int) -> void):
         src = shader(__vs2d, __fs2d)
@@ -112,6 +146,11 @@ when TARGET != "wasm" and TARGET != "macos":
         load(shader(_post_vs, _blur_fs), 5)
         load(shader(_post_vs, _composite_fs), 4)
         load(shader(_pt_vs, _pt_fs), 6)
+        load(shader(__pbr_vs, __pbr_fs), 12)
+        load(shader(__pbr_shadow_vs, __pbr_shadow_fs), 13)
+        load(shader(__pbr_skin_vs, __pbr_fs), 14)
+        load(shader(__pbr_shadow_skin_vs, __pbr_shadow_fs), 15)
+        load(shader(__sky_filter_vs, __sky_filter_fs), 16)
 
 # Prepare only declared shaders and the layouts/assets already loaded by the game.
 # Vulkan only; OpenGL, Metal and WebGL retain their own program lifecycle.
@@ -123,12 +162,17 @@ warm_up = ():
 
 __warm_context = ():
     when TARGET != "wasm" and TARGET != "macos":
-        if __vk and not __soft: __vg_warm_builtins()
+        if __vk and not __soft:
+            __vg_warm_builtins()
+            if __warm_pbr_needed: __warm_material_load()
 
 __warm_3d_layouts = 0
 
 # Regular 1, instanced 2, skinned 4, postprocessing 8, particles 16. Batch drawing is the core group (0).
 __warm_layout_kind = (kind: int) -> int:
+    if kind == 12 or kind == 13: return 32
+    if kind == 14 or kind == 15: return 64
+    if kind == 16: return 128
     if kind == 8 or kind == 9: return 2
     if kind == 10 or kind == 11: return 4
     if kind == 4 or kind == 5: return 8
@@ -153,7 +197,7 @@ __warm_mesh_layout = (stride: int, instances: bool):
         if __warm_particles_needed: regular = regular | 16
         if instances:
             if stride == size_of(Instance3D): __warm_3d(3)
-        else if stride == size_of(SkinVertex3D): __warm_3d(regular | 4)
+        else if stride == size_of(SkinVertex3D): __warm_3d(regular | 4 | (if __warm_pbr_needed: 64 else: 0))
         else if stride == size_of(Vertex3D): __warm_3d(regular)
 
 # Prepare one selected target/primitive/depth/blend state, without drawing into the game.
