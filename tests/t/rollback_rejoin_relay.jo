@@ -1,0 +1,69 @@
+# requires: sloppy
+# requires: native (three players through a relay, in one program: two of them restart and come back)
+import netplay
+import net
+
+struct Pad:
+    dx = 0
+struct Game:
+    pos: int[] = [0, 0, 0]
+
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..3): g.pos[p] += pads[p].dx
+    g
+pad = (p: int, t: int) -> Pad: Pad(int(hash(t * 3 + p) % 3) - 1)
+
+netplay.relay(0).unwrap()
+port = net.port()
+make = (p: int, token: str) -> netplay.Session[Game, Pad]:
+    s = netplay.session(Game(), step, players = 3, me = p)
+    s.join_relay("127.0.0.1", port, "room", stun = "")
+    s.allow_rejoin(token)
+    s
+ss = [loop p in [0..3): make(p, "")]
+running = [true, true, true]
+came: int[]                             # (players back, as their hosts said)
+stale = -1
+f = 0
+back = 0
+last_tick = 0                           # (the host's tick when the last came back)
+last_f = 0
+loop f < 5000 and (back < 2 or f < last_f + 400):
+    netplay.relay(0).unwrap()
+    if f == 200:
+        # (player 0's program ends: in a mesh, player 1 keeps its place)
+        running[0] = false
+        net.close(ss[0].__relay)
+    if f == 230: ss[1].stand_in(0, Pad())
+    if f == 300:
+        ss[0] = make(0, ss[0].rejoin_token)
+        running[0] = true
+    if back == 1 and stale < 0:
+        # (then player 2's stops without its connection closing, and starts again beside it)
+        stale = f
+        running[2] = false
+    if stale >= 0 and f == stale + 30: ss[0].stand_in(2, Pad())
+    if stale >= 0 and f == stale + 60:
+        ss[2] = make(2, ss[2].rejoin_token)
+        running[2] = true
+    loop p in [0..3):
+        if not running[p]: continue
+        ss[p].play(pad(p, ss[p].tick + ss[p].delay))
+        came.extend(ss[p].rejoined)
+        back += ss[p].rejoined.len()
+        if ss[p].rejoined.len() > 0:
+            last_tick = ss[p].tick
+            last_f = f
+    sleep(1.0 / 240.0)
+    f += 1
+c = ss[0].tick - 1
+loop p in [0..3): c = min(c, min(ss[p].confirmed(), ss[p].tick) - 1)
+same = true
+healthy = true
+loop p in [0..3):
+    same = same and ss[p].__states[c % 128] == ss[0].__states[c % 128]
+    healthy = healthy and ss[p].problem == "" and ss[p].desync < 0
+own = true
+loop t in [c - 20..c): own = own and ss[1].inputs_at(t)[0] == pad(0, t) and ss[1].inputs_at(t)[2] == pad(2, t)
+print("came back through the relay:", came == [0, 2], "same game:", same, "healthy:", healthy, "their own inputs:", own, "played on:", c > last_tick + 150)

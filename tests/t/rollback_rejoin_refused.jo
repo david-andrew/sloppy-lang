@@ -1,0 +1,105 @@
+# requires: native (a session over UDP asks to come back)
+# requires: sloppy (rollback rejoining refused: a wrong or expired token, a game too large, UDP; the host's kept inputs bounded)
+import netplay
+
+struct Pad:
+    dx = 0
+struct Game:
+    pos: int[] = [0, 0]
+    noise: u64[]                        # (what does not compress: a large game)
+
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..2): g.pos[p] += pads[p].dx
+    if g.noise.len() > 0: g.noise[g.pos[0] & 1023] += 1
+    g
+pad = (p: int, t: int) -> Pad: Pad(int(hash(t * 3 + p) % 3) - 1)
+
+small = Game()
+large = Game(noise = [loop k in [0..20000): hash(k * 31 + 7)])
+
+make = (start: Game, p: int, token: str, grace: f64 = 30.0) -> netplay.Session[Game, Pad]:
+    s = netplay.session(start, step, players = 2, me = p)
+    s.allow_rejoin(token, grace)
+    s
+
+# two players, each packet there at once; `on` says which of them play
+frames = (a: mut netplay.Session[Game, Pad], b: mut netplay.Session[Game, Pad], n: int, on: bool[]):
+    loop _ in [0..n):
+        if on[0]: a.play(pad(0, a.tick + a.delay))
+        if on[1]: b.play(pad(1, b.tick + b.delay))
+        ao = a.outgoing()
+        bo = b.outgoing()
+        if on[1]:
+            loop o in ao: b.receive(o.1)
+        if on[0]:
+            loop o in bo: a.receive(o.1)
+        sleep(1.0 / 600.0)
+
+# a token that is not the one given
+a = make(small, 0, "")
+b = make(small, 1, "")
+frames(a, b, 90, [true, true])
+given = b.rejoin_token
+b = make(small, 1, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+frames(a, b, 60, [true, true])
+print("a token given:", len(given) == 64, "a wrong one refused:", contains(b.problem, "invalid or expired"), not b.rejoining, not a.stands_in(1))
+
+# an expired one: gone longer than the host's grace period
+a = make(small, 0, "", grace = 0.3)
+b = make(small, 1, "")
+frames(a, b, 90, [true, true])
+given = b.rejoin_token
+a.stand_in(1, Pad())
+frames(a, b, 300, [true, false])
+b = make(small, 1, given)
+frames(a, b, 60, [true, true])
+print("an expired one refused:", len(given) == 64, contains(b.problem, "invalid or expired"))
+
+# a game larger than the host sends, or than the returning player takes
+a = make(large, 0, "")
+a.rejoin_limit = 50000
+b = make(large, 1, "")
+frames(a, b, 90, [true, true])
+given = b.rejoin_token
+b = make(large, 1, given)
+frames(a, b, 120, [true, true])
+print("too large for the host:", contains(b.problem, "bytes compressed, over the host's limit of 50000 bytes"))
+a.rejoin_limit = 4 << 20
+b = make(large, 1, given)
+b.rejoin_limit = 1000
+frames(a, b, 120, [true, true])
+print("too large for it:", contains(b.problem, "over this player's limit of 1000 bytes"))
+
+# over UDP: refused before it asks
+u = make(small, 1, given)
+u.udp(0, [("127.0.0.1", 9), ("127.0.0.1", 9)]).unwrap()
+u.play(Pad())
+print("over UDP:", contains(u.problem, "UDP"), u.waiting, not u.rejoining)
+
+# the host keeps a returning player's inputs only so long: one that stops answering is sent a
+# newer game, and comes back with it when it goes on
+a = make(small, 0, "")
+b = make(small, 1, "")
+frames(a, b, 90, [true, true])
+given = b.rejoin_token
+a.__rj.most = 150
+b = make(small, 1, given)
+loop k in [0..400):
+    if b.__rj.phase == 3: break
+    frames(a, b, 1, [true, true])
+paused_in = b.__rj.phase
+most = 0
+tries = 0
+loop _ in [0..400):
+    frames(a, b, 1, [true, false])
+    if let x = a.__rj.xfers.get(1):
+        loop t in x.tails: most = max(most, t.len())
+        tries = max(tries, x.tries)
+came = false
+loop k in [0..2000):
+    frames(a, b, 1, [true, true])
+    came = came or a.rejoined == [1]
+    if came and k > 300: break
+c = min(min(a.confirmed(), b.confirmed()), min(a.tick, b.tick)) - 1
+print("kept inputs bounded:", paused_in == 3, most <= 160, tries >= 2, "came back after:", came, a.__states[c % 128] == b.__states[c % 128], a.desync, b.desync, b.problem == "")

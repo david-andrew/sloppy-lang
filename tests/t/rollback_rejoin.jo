@@ -1,0 +1,90 @@
+# requires: sloppy (rollback rejoining over a simulated lossy network: a player whose program restarts comes back)
+import netplay
+
+struct Pad:
+    dx = 0
+    fire = false
+struct Game:
+    pos: int[] = [0, 0, 0, 0]
+    speed: f64[] = [0.0, 0.1, 0.2, 0.3]
+    shots = 0
+    land: int[]                         # (big enough to go in several pieces)
+
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..pads.len()):
+        g.pos[p] += pads[p].dx
+        g.speed[p] = g.speed[p] * 0.93 + f64(pads[p].dx) * 0.37
+        if pads[p].fire:
+            g.shots += 1
+            g.land[(g.shots * 7919) % g.land.len()] += p + 1
+    g
+pad = (p: int, t: int) -> Pad: Pad(int(hash(t * 3 + p) % 3) - 1, hash(t * 5 + p) % 7 == 0)
+
+start = Game(land = [loop k in [0..30000): int(hash(k) % 1000000)])
+make = (p: int, token: str) -> netplay.Session[Game, Pad]:
+    s = netplay.session(start, step, players = 4, me = p)
+    # (the same star as over([-1, a, b, c]) / over([host, -1, -1, -1]), without sockets)
+    if p != 0: s.__hub = 0
+    s.allow_rejoin(token)
+    s
+
+ss = [loop p in [0..4): make(p, "")]
+link = netplay.Link(latency = 0.03, jitter = 0.02, loss = 0.1)
+running = [true, true, true, true]
+token = ""
+tries = 0                               # (the returning player's processes)
+first_got = 0                           # (pieces of the game the first one took before it went)
+came: int[]
+rejoined_at = -1
+waits = [0, 0, 0, 0]                    # (frames waited in a row, and the most, by the others meanwhile)
+longest = 0
+f = 0
+loop f < 6000 and (rejoined_at < 0 or f < rejoined_at + 600):
+    now = f64(f) / 60.0
+    if f == 240:
+        token = ss[2].rejoin_token
+        running[2] = false              # (player 2's program stops, with no goodbye)
+    if f == 300 and not ss[0].stands_in(2): ss[0].stand_in(2, Pad())
+    if f == 360:
+        ss[2] = make(2, token)          # (and starts again, with the token it saved)
+        running[2] = true
+        tries = 1
+    # (the first comes back as far as taking some of the game, and stops again)
+    if tries == 1 and ss[2].__rj.have >= 2:
+        first_got = ss[2].__rj.have
+        running[2] = false
+        tries = 2
+    if tries == 2 and f > 900 and not running[2]:
+        ss[2] = make(2, token)
+        running[2] = true
+    loop p in [0..4):
+        if not running[p]: continue
+        ss[p].play(pad(p, ss[p].tick + ss[p].delay))
+        loop o in ss[p].outgoing(): link.send(o.0, o.1, now)
+    came.extend(ss[0].rejoined)
+    loop p in [0..4):
+        if p == 2 or not running[p]: continue
+        waits[p] = if ss[p].waiting: waits[p] + 1 else: 0
+        if f > 360 and (rejoined_at < 0 or f < rejoined_at + 60): longest = max(longest, waits[p])
+    if ss[0].rejoined.len() > 0: rejoined_at = f
+    loop d in link.deliver(now):
+        if running[d.0]: ss[d.0].receive(d.1)
+    sleep(1.0 / 400.0)
+    f += 1
+# (a rollback for inputs that came last is played at the next play)
+loop p in [0..4): ss[p].play(pad(p, ss[p].tick + ss[p].delay))
+c = ss[0].tick - 1
+loop p in [0..4): c = min(c, min(ss[p].confirmed(), ss[p].tick) - 1)
+same = true
+healthy = true
+loop p in [0..4):
+    same = same and ss[p].__states[c % 128] == ss[0].__states[c % 128]
+    healthy = healthy and ss[p].problem == "" and ss[p].desync < 0
+print("tokens:", ss[0].rejoin_token == "", len(ss[1].rejoin_token) == 64, ss[1].rejoin_token != ss[3].rejoin_token, ss[2].rejoin_token == token)
+print("came back:", came == [2], "after a second restart", tries == 2 and first_got >= 2, "playing", not ss[2].rejoining and not ss[0].stands_in(2))
+print("same game:", same, "healthy:", healthy, "played on:", c > rejoined_at - 360 and ss[2].tick > c)
+# (its own inputs count again: those after the handover are its own, everywhere)
+own = true
+loop t in [c - 30..c): own = own and ss[0].inputs_at(t)[2] == pad(2, t) and ss[1].inputs_at(t)[2] == pad(2, t)
+print("its own inputs again:", own, "game sent in pieces:", ss[2].__rj.chunks > 2, "the others never paused:", longest <= 4)

@@ -1,0 +1,93 @@
+# requires: sloppy
+# requires: native (four sessions over loopback peers with heavy lag and loss; one restarts and comes back over a new connection)
+import netplay
+import net
+
+struct Pad:
+    dx = 0
+struct Game:
+    pos: int[] = fill(0, 4)
+    hits = 0
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..pads.len()):
+        g.pos[p] += pads[p].dx
+        if pads[p].dx != 0 and g.pos[p] == g.pos[(p + 1) % 4]: g.hits += 1
+    g
+pad = (p: int, t: int) -> Pad: Pad(int(hash(t * 3 + p) % 3) - 1)
+
+if not net.listen(0): panic("cannot listen")
+conns = [loop _ in [1..4): net.connect("127.0.0.1", net.port())]
+peers = fill(-1, 4)
+next = 1
+end = elapsed() + 5.0
+loop next < 4:
+    if elapsed() > end: panic("peers did not connect")
+    loop e in net.receive_server():
+        if e.kind == .joined:
+            peers[next] = e.peer
+            next += 1
+    sleep(0.001)
+# (the client at conns[k] is player k + 1, in the order they were accepted)
+loop _ in [0..50):
+    net.receive()
+    sleep(0.002)
+ss: netplay.Session[Game, Pad][]
+loop p in [0..4):
+    s = netplay.session(Game(), step, players = 4, me = p)
+    if p == 0: s.over(peers)
+    else:
+        ps = fill(-1, 4)
+        ps[0] = conns[p - 1]
+        s.over(ps)
+    s.lag_ms(30, 20, 0.15)
+    s.allow_rejoin()
+    ss.push(s)
+running = [true, true, true, true]
+token = ""
+came: int[]
+back_at = -1
+back_tick = 0
+f = 0
+loop f < 4000 and (back_at < 0 or f < back_at + 400):
+    if f == 300:
+        # (player 2's program ends: its connection goes, and its session with it)
+        token = ss[2].rejoin_token
+        running[2] = false
+        net.close(conns[1])
+    if f == 420:
+        # (and starts again, connecting anew with the token it saved)
+        conns[1] = net.connect("127.0.0.1", net.port())
+        ps = fill(-1, 4)
+        ps[0] = conns[1]
+        s = netplay.session(Game(), step, players = 4, me = 2)
+        s.over(ps)
+        s.lag_ms(30, 20, 0.15)
+        s.allow_rejoin(token)
+        ss[2] = s
+        running[2] = true
+    # (the host's game: a connection gone is a player gone, a new one may be one coming back)
+    loop e in net.receive_server():
+        if e.kind == .left:
+            if let p = peers.index_of(e.peer): ss[0].stand_in(p, Pad())
+        else if e.kind == .joined: ss[0].admit(e.peer)
+    loop p in [0..4):
+        if running[p]: ss[p].play(pad(p, ss[p].tick + ss[p].delay))
+    came.extend(ss[0].rejoined)
+    if ss[0].rejoined.len() > 0:
+        back_at = f
+        back_tick = ss[0].tick
+    sleep(0.002)
+    f += 1
+c = ss[0].tick - 1
+loop p in [0..4): c = min(c, min(ss[p].confirmed(), ss[p].tick) - 1)
+same = true
+healthy = true
+loop p in [0..4):
+    same = same and ss[p].__states[c % 128] == ss[0].__states[c % 128]
+    healthy = healthy and ss[p].problem == "" and ss[p].desync < 0
+own = true
+loop t in [c - 20..c): own = own and ss[1].inputs_at(t)[2] == pad(2, t)
+print("came back over a new connection:", came == [2], "same game:", same, "healthy:", healthy, "its own inputs:", own)
+print("rolled back meanwhile:", ss[0].rollbacks > 20 and ss[2].rollbacks > 5, "played on:", ss[2].tick > c and c > back_tick + 150)
+loop p in conns: net.close(p)
