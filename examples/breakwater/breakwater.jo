@@ -18,6 +18,11 @@ build:
     name = "Breakwater"
     icon = "icon.png"
 
+import layout as ui
+
+# (2D in points, as the desktop and a phone count them: the HUD and menus scale themselves)
+screen_fit(.native)
+
 # ---------------- tuning ----------------
 const STEP = 1.0 / 120.0        # the simulation's fixed step (seconds)
 const PELLETS = 16              # in a shotgun's shot
@@ -1818,7 +1823,168 @@ const DECK = vec4(0.3, 0.35, 0.43, 1)
 const TEAL = vec4(0.25, 0.95, 0.9, 1)
 const AMBER = vec4(1.0, 0.55, 0.2, 1)
 
+# ---------------- the sky and the sea ----------------
+# Late afternoon: the sun over the sea at the left of where a run starts looking.
+# The sky is a picture made at the start (a gradient, the sun's glow, clouds): the backdrop, and
+# what the robots' and the platform's materials reflect. The sea is a shader of its own.
+const SUN_DIR = vec3(-0.6, 0.62, 0.3)
+const SUN_LIGHT = vec3(1.9, 1.55, 1.15)
+const SKY_TOP = vec3(0.13, 0.33, 0.66)       # (the picture's colors, as on a screen)
+const SKY_HAZE = vec3(0.68, 0.79, 0.88)        # the horizon away from the sun,
+const SKY_GLOW = vec3(0.98, 0.86, 0.68)        # and toward it
+const SEA_FAR = vec3(0.2, 0.36, 0.43)         # the sea in the picture, under the horizon
+
+sky_tex = Texture(0, 0, 0)
+sky_ready = false
+
+sm = (e0: f64, e1: f64, x: f64) -> f64:
+    t = clamp((x - e0) / (e1 - e0), 0.0, 1.0)
+    t * t * (3.0 - 2.0 * t)
+
+# the sky's color looking along d (as on a screen)
+sky_color = (d: vec3) -> vec3:
+    sun = normalize(SUN_DIR)
+    y = f64(d.y)
+    toward = f64(dot(normalize(vec3(d.x, 0, d.z)), normalize(vec3(sun.x, 0, sun.z)))) * 0.5 + 0.5
+    horizon = mix(SKY_HAZE, SKY_GLOW, f32(pow(toward, 5.0)))
+    sd = max(f64(dot(d, sun)), 0.0)
+    if y < 0.0:
+        # (below the horizon: the sea, far off, hazy at the horizon)
+        return mix(horizon, SEA_FAR, f32(sm(0.0, 0.06, -y)))
+    c = mix(horizon, SKY_TOP, f32(pow(sm(0.0, 1.0, y), 0.55)))
+    # the sun's glow, and the sun
+    c = c + SKY_GLOW * f32(pow(sd, 6.0) * 0.28 + pow(sd, 60.0) * 0.3)
+    # clouds: a layer overhead, seen in perspective (thinning out toward the horizon)
+    t = 1.0 / (y + 0.09)
+    px = f64(d.x) * t * 1.3 + 4.0
+    pz = f64(d.z) * t * 1.3
+    n = fbm(px, pz, 5)
+    cover = sm(0.5, 0.78, n) * sm(0.01, 0.16, y)
+    if cover > 0.0:
+        # (lit on the side toward the sun: the density a little that way)
+        n2 = fbm(px + f64(sun.x) * 0.12, pz + f64(sun.z) * 0.12, 5)
+        lit = clamp(0.6 + (n - n2) * 5.0, 0.0, 1.0)
+        shade = mix(vec3(0.58, 0.63, 0.72), vec3(1.0, 0.95, 0.88), f32(lit))
+        shade = shade + SKY_GLOW * f32(pow(sd, 4.0) * 0.35)
+        c = mix(c, shade, f32(cover * 0.92))
+    if sd > 0.99995: c = vec3(1, 1, 1)
+    clamp(c, vec3(0, 0, 0), vec3(1, 1, 1))
+
+make_sky = ():
+    global sky_ready, sky_tex
+    sky_ready = true
+    w = 1024
+    h = 512
+    img = image(w, h)
+    # (each row on a thread)
+    rows = parallel_range(h, (y: int) -> vec3[]:
+        th = PI * (f64(y) + 0.5) / f64(h)
+        row: vec3[]
+        loop x in 0..w:
+            ph = (f64(x) + 0.5) / f64(w) * TAU - PI
+            row.push(sky_color(v3(cos(ph) * sin(th), cos(th), sin(ph) * sin(th))))
+        row
+    )
+    loop y in 0..h:
+        loop x in 0..w: img.set(x, y, vec4(rows[y][x], 1))
+    sky_tex = texture(img)
+
+# the sea: waves (only in how the light falls), the sky in them, the sun's glitter, foam round
+# the platform's legs; fogged as the materials are, in linear light
+struct SeaParams:
+    view_proj: mat4
+    cam: vec3
+    sun_dir: vec3
+    sun_color: vec3
+    fog_color: vec3
+    fog: vec2
+    time: f32
+    sky: Texture
+    legs: vec4[8]               # (x, z, radius)
+
+struct SeaOut:
+    pos: vec4
+    world: vec3
+
+const SEA_Y = -4.0
+
+sea_vs = (v: Vertex3D, u: SeaParams) -> SeaOut:
+    w = vec3(v.pos.x, f32(SEA_Y), v.pos.z) + vec3(u.cam.x, 0, u.cam.z)
+    SeaOut(u.view_proj * vec4(w, 1), w)
+
+# (in shaders: to and from linear light, near enough, and cheap for the software renderer)
+lin = (c: vec3) -> vec3: c * c
+shown = (c: vec3) -> vec3: vec3(sqrt(c.x), sqrt(c.y), sqrt(c.z))
+
+# the sky picture's light along d
+sky_at = (tex: Texture, d: vec3) -> vec3:
+    u = atan2(d.z, d.x) / 6.28318531 + 0.5
+    v = acos(clamp(d.y, -1.0, 1.0)) / 3.14159265
+    lin(sample(tex, vec2(u, clamp(v, 0.002, 0.998))).xyz)
+
+swell = (p: vec2, dir: vec2, k: f32, amp: f32, t: f32) -> vec2:
+    dir * (cos(dot(p, dir) * k + t) * amp * k)
+
+sea_fs = (i: SeaOut, u: SeaParams) -> vec4:
+    p = vec2(i.world.x, i.world.z)
+    t = u.time
+    to_cam = u.cam - i.world
+    dist = length(to_cam)
+    v = to_cam / dist
+    # the surface's slope: long swells and shorter chop, the chop fading with distance
+    far = 1.0 / (1.0 + dist / 90.0)
+    g = swell(p, vec2(0.8, 0.6), 0.16, 0.2, t * 1.1) + swell(p, vec2(-0.45, 0.89), 0.23, 0.12, t * 1.4) + swell(p, vec2(0.31, -0.95), 0.37, 0.05, t * 1.9)
+    near = clamp(1.0 - dist / 200.0, 0.0, 1.0)
+    g = g * far + (swell(p, vec2(0.96, -0.28), 0.9, 0.03, t * 2.6) + swell(p, vec2(-0.7, -0.71), 1.3, 0.02, t * 3.1) + swell(p, vec2(0.2, 0.98), 2.1, 0.008, t * 4.0)) * near
+    n = normalize(vec3(-g.x, 1.0, -g.y))
+    nv = max(dot(n, v), 0.0)
+    r = n * (2.0 * dot(n, v)) - v
+    r.y = abs(r.y)
+    sky = sky_at(u.sky, r)
+    grazing = (1.0 - nv) * (1.0 - nv)
+    fres = 0.02 + 0.6 * grazing * grazing
+    l = normalize(u.sun_dir)
+    # the water's own color: deep blue-green, lighter where a wave faces the sun
+    body = vec3(0.012, 0.07, 0.1) + vec3(0.02, 0.1, 0.09) * max(dot(n, l), 0.0)
+    c = body * (1.0 - fres) + sky * fres
+    # the sun's glitter
+    hv = normalize(l + v)
+    c = c + u.sun_color * (pow(max(dot(n, hv), 0.0), 380.0) * 6.0)
+    # foam round the legs
+    foam: f32 = 0.0
+    if abs(p.x) < 25.0 and abs(p.y) < 23.0:
+        loop k in [0..8):
+            lg = u.legs[k]
+            d = length(p - vec2(lg.x, lg.y)) - lg.z
+            if d < 2.0 and d > -0.5:
+                ripple = 0.5 + 0.5 * sin(d * 7.0 - t * 3.0 + p.x * 0.7)
+                foam = max(foam, (1.0 - d / 2.0) * (0.45 + 0.55 * ripple))
+    c = mix(c, vec3(0.75, 0.8, 0.82), foam * 0.8)
+    fog_amount = 1.0 - exp(-dist * u.fog.x)
+    c = mix(c, u.fog_color, clamp(fog_amount, 0.0, 1.0))
+    vec4(shown(aces(c)), 1)
+
+sea_sh = make_shader(shader(sea_vs, sea_fs))
+
+draw_sea = ():
+    legs: vec4[8]
+    k = 0
+    loop s in [-1.0, 1.0]:
+        loop j in 0..4:
+            legs[k] = vec4(f32(-21.0 + f64(j) * 14.0), f32((HALF_Z - 3.0) * s), 1.6, 0)
+            k += 1
+    draw_custom(():
+        draw(sea_sh, sea_mesh, SeaParams(scene_view_proj(), scene_camera(), scene_sun(), scene_sun_color(), scene_fog_color(), scene_fog(), f32(elapsed()), sky_tex, legs))
+    )
+
+# (colors come from the vertices)
+const CONCRETE = Material(metallic = 0.0, roughness = 0.88)
+const STEEL = Material(metallic = 0.65, roughness = 0.38)
+const GLOW = Material(metallic = 0.0, roughness = 0.5)
+const ROCK = Material(metallic = 0.0, roughness = 0.95)
+
 world_mesh = Mesh()
+metal_mesh = Mesh()
 glow_mesh = Mesh()
 amber_mesh = Mesh()
 sea_mesh = Mesh()
@@ -1871,12 +2037,13 @@ rig = (m0: Model, colors: (vec4, vec4)[]) -> Rig:
         find_animation(m, "Attack"), find_animation(m, "Death"), [loop n in ["Head", "Eye", "Gun"]: find_node(m, n)], rest_pose(m))
 
 make_meshes = ():
-    global amber_mesh, arm_models, ball, beam_mesh, cube, disc, far_mesh, fp_arms, fp_left, fp_left_arm, fp_right, glow_mesh, meshes_made, nade_mesh, rigs, rocket_mesh, sea_mesh, shield_mesh, world_mesh
+    global amber_mesh, arm_models, ball, beam_mesh, cube, disc, far_mesh, fp_arms, fp_left, fp_left_arm, fp_right, glow_mesh, meshes_made, metal_mesh, nade_mesh, rigs, rocket_mesh, sea_mesh, shield_mesh, world_mesh
     meshes_made = true
     cube = cube_mesh(1.0)
     ball = sphere_mesh(0.5, 10, 6)
     disc = cylinder_mesh(1.0, 0.04, 32)
     vs: Vertex3D[]
+    mt: Vertex3D[]              # (metal: railings, masts, consoles, racks)
     gl: Vertex3D[]
     am: Vertex3D[]
     # the deck: a slab, and tiles on it with dark seams between
@@ -1890,17 +2057,21 @@ make_meshes = ():
             add_box(vs, v3(x, -0.03, z), v3(3.92, 0.06, 3.92), DECK + vec4(shade, shade, shade, 0))
     # the railing round the edge, and the legs down into the sea
     loop s in [-1.0, 1.0]:
-        add_box(vs, v3(0, 1.05, (HALF_Z + 0.3) * s), v3(HALF_X * 2.0 + 0.6, 0.1, 0.1), SLATE)
-        add_box(vs, v3((HALF_X + 0.3) * s, 1.05, 0), v3(0.1, 0.1, HALF_Z * 2.0 + 0.6), SLATE)
+        add_box(mt, v3(0, 1.05, (HALF_Z + 0.3) * s), v3(HALF_X * 2.0 + 0.6, 0.1, 0.1), SLATE)
+        add_box(mt, v3((HALF_X + 0.3) * s, 1.05, 0), v3(0.1, 0.1, HALF_Z * 2.0 + 0.6), SLATE)
+        add_box(mt, v3(0, 0.55, (HALF_Z + 0.3) * s), v3(HALF_X * 2.0 + 0.6, 0.06, 0.06), SLATE)
+        add_box(mt, v3((HALF_X + 0.3) * s, 0.55, 0), v3(0.06, 0.06, HALF_Z * 2.0 + 0.6), SLATE)
         loop k in 0..15:
             x = -HALF_X + f64(k) * 4.0
-            add_box(vs, v3(x, 0.55, (HALF_Z + 0.3) * s), v3(0.12, 1.1, 0.12), SLATE)
+            add_box(mt, v3(x, 0.55, (HALF_Z + 0.3) * s), v3(0.12, 1.1, 0.12), SLATE)
         loop k in 0..12:
             z = -HALF_Z + f64(k) * 4.0
-            add_box(vs, v3((HALF_X + 0.3) * s, 0.55, z), v3(0.12, 1.1, 0.12), SLATE)
+            add_box(mt, v3((HALF_X + 0.3) * s, 0.55, z), v3(0.12, 1.1, 0.12), SLATE)
         loop k in 0..4:
             x = (-21.0 + f64(k) * 14.0)
             add_cylinder(vs, v3(x, -6, (HALF_Z - 3.0) * s), 1.6, 5.0, vec4(0.62, 0.62, 0.6, 1), 12)
+            # (a band where the sea meets them)
+            add_cylinder(vs, v3(x, -4.6, (HALF_Z - 3.0) * s), 1.66, 1.0, vec4(0.32, 0.36, 0.34, 1), 12)
     # the blocks
     loop b in blocks:
         c = (b.lo + b.hi) * 0.5
@@ -1912,7 +2083,8 @@ make_meshes = ():
         if b.look == 1: col = vec4(0.7, 0.68, 0.63, 1)
         if b.look == 4: col = vec4(0.62, 0.62, 0.6, 1)
         if b.look == 5: col = SLATE
-        add_box(vs, c, size, col)
+        if b.look == 5: add_box(mt, c, size, col)
+        else: add_box(vs, c, size, col)
         if b.look == 5:
             # a console: screens on its long sides
             add_box(gl, c + vec3(0, 0.2, 0), vec3(size.x + 0.02, 0.35, size.z - 0.3), TEAL)
@@ -1931,15 +2103,15 @@ make_meshes = ():
             add_box(vs, c + vec3(0, size.y * 0.5, 0), vec3(size.x + 0.12, 0.12, size.z + 0.12), lighten(col, 0.08))
         if b.look == 4: add_box(am, c + vec3(0, size.y * 0.5 - 0.25, 0), vec3(size.x + 0.02, 0.1, size.z + 0.02), AMBER)
     # the relay tower: a mast, a dish and a beacon
-    add_box(vs, v3(0, 9.4, 0), v3(1.6, 0.8, 1.6), SLATE)
-    add_cylinder(vs, v3(0, 9.8, 0), 0.25, 4.0, IVORY, 10)
-    add_cylinder(vs, v3(0, 11.5, 0), 0.4, 0.9, IVORY, 20, 1.9)
+    add_box(mt, v3(0, 9.4, 0), v3(1.6, 0.8, 1.6), SLATE)
+    add_cylinder(mt, v3(0, 9.8, 0), 0.25, 4.0, IVORY, 10)
+    add_cylinder(mt, v3(0, 11.5, 0), 0.4, 0.9, IVORY, 20, 1.9)
     add_sphere(gl, v3(0, 14.0, 0), 0.32, TEAL, 10, 6)
     loop k in 0..4:
         add_box(gl, v3(0, 3.0 + f64(k) * 1.6, 0), v3(2.44, 0.08, 2.44), TEAL)
     # buttresses at the tower's corners
     loop sx in [-1.0, 1.0]:
-        loop sz in [-1.0, 1.0]: add_box(vs, vec3(0, 0, 0), vec3(1, 1, 1), SLATE, beam(v3(1.55 * sx, 2, 1.55 * sz), v3(1.1 * sx, 5.5, 1.1 * sz), 0.3))
+        loop sz in [-1.0, 1.0]: add_box(mt, vec3(0, 0, 0), vec3(1, 1, 1), SLATE, beam(v3(1.55 * sx, 2, 1.55 * sz), v3(1.1 * sx, 5.5, 1.1 * sz), 0.3))
     # the bays' floors: amber rings where raiders arrive
     loop gp in gates:
         loop k in 0..16:
@@ -1953,12 +2125,13 @@ make_meshes = ():
             add_box(vs, vec3(0, 0, 0), v3(0.3, 0.03, 1.3), vec4(0.85, 0.55, 0.15, 1), translation(mouth + across * f32(f64(k) * 0.6)) * rotation_y(yaw_of(inward) + 0.785))
     # the weapon racks: a pedestal with a glowing top
     loop r in racks:
-        add_box(vs, vec3(0, 0.35, 0), vec3(0.5, 0.7, 1.0), SLATE, translation(r.pos) * rotation_y(r.yaw))
+        add_box(mt, vec3(0, 0.35, 0), vec3(0.5, 0.7, 1.0), SLATE, translation(r.pos) * rotation_y(r.yaw))
         add_box(gl, vec3(0, 0.71, 0), vec3(0.4, 0.03, 0.9), TEAL, translation(r.pos) * rotation_y(r.yaw))
-    world_mesh = custom_mesh(vs)
-    glow_mesh = custom_mesh(gl)
-    amber_mesh = custom_mesh(am)
-    sea_mesh = plane_mesh(3000.0)
+    world_mesh = custom_mesh(to_linear(vs))
+    metal_mesh = custom_mesh(to_linear(mt))
+    glow_mesh = custom_mesh(to_linear(gl))
+    amber_mesh = custom_mesh(to_linear(am))
+    sea_mesh = plane_mesh(2400.0)
     # far off: islands of rock, and a tall spire with a beam of light into the sky
     fr: Vertex3D[]
     seed_random(11)
@@ -1972,7 +2145,7 @@ make_meshes = ():
     loop k in 0..6:
         w = 26.0 - f64(k) * 4.0
         add_box(fr, spire + v3(0, 20.0 + f64(k) * 28.0, 0), v3(w, 28, w * 0.8), vec4(0.62, 0.64, 0.66, 1), rotation_y(0.3))
-    far_mesh = custom_mesh(fr)
+    far_mesh = custom_mesh(to_linear(fr))
     bm: Vertex3D[]
     add_box(bm, spire + v3(0, 600, 0), v3(3, 1000, 3), vec4(0.6, 1.0, 1.0, 1))
     beam_mesh = custom_mesh(bm)
@@ -2007,6 +2180,14 @@ make_meshes = ():
     add_sphere(nv, vec3(0, 0, 0), 0.11, vec4(0.3, 0.35, 0.3, 1), 8, 5)
     add_box(nv, vec3(0, 0.1, 0), vec3(0.06, 0.06, 0.06), SLATE)
     nade_mesh = custom_mesh(nv)
+
+# the vertices' colors in linear light, as materials take them
+to_linear = (vs: Vertex3D[]) -> Vertex3D[]:
+    out = vs
+    loop i in 0.. and v in vs:
+        c = v.color
+        out[i].color = vec4(f32(pow(f64(c.x), 2.2)), f32(pow(f64(c.y), 2.2)), f32(pow(f64(c.z), 2.2)), c.w)
+    out
 
 # a triangle facing away from `inside`
 add_tri = (vs: mut Vertex3D[], a: vec3, b: vec3, c: vec3, inside: vec3, col: vec4):
@@ -2067,21 +2248,25 @@ fov_y = () -> f64:
 
 draw_world = ():
     if not meshes_made: make_meshes()
-    sky(vec3(0.16, 0.42, 0.82), vec3(0.72, 0.86, 0.95), vec3(0.5, 0.48, 0.44))
-    sun(vec3(0.6, 0.42, 0.4), vec3(1.25, 1.05, 0.82))
-    fog(vec3(0.7, 0.83, 0.92), 0.0016, 0.012)
-    shadows(true, 0.55, 26.0)
-    post_effects(0.55, 0.8, 0.25, 1.12)
+    if not sky_ready: make_sky()
+    # (the gradient: the light of the effects drawn without materials)
+    sky(vec3(0.2, 0.4, 0.7), SKY_HAZE, vec3(0.2, 0.3, 0.34))
+    sky_image(sky_tex, 1.0)
+    sun(SUN_DIR, SUN_LIGHT, 0.0)
+    fog(vec3(0.5, 0.58, 0.64), 0.0018, 0.02)
+    shadows(true, 0.75, 28.0)
+    post_effects(0.5, 0.82, 0.3, 1.08, vec3(1.02, 1.0, 0.97))
     # (zoomed in: the view narrows by the weapon's zoom)
     zf = 1.0 + (arm_info(guns[held]).zoom - 1.0) * zoom_k
     if not you.alive: zf = 1.0
     camera3d(cam_pos, cam_look, degrees(2.0 * atan(tan(radians(fov_y()) / 2.0) / zf)), 0.05, 1200.0)
-    draw_mesh(sea_mesh, translation(vec3(0, -4, 0)), vec4(0.1, 0.27, 0.34, 1), specular = 0.9, cast_shadow = false)
-    draw_mesh(far_mesh, cast_shadow = false)
+    draw_sea()
+    draw_mesh(far_mesh, cast_shadow = false, material = ROCK)
     draw_mesh(beam_mesh, color = vec4(0.6, 1.0, 1.0, 0.35), emissive = 2.0, cast_shadow = false)
-    draw_mesh(world_mesh, specular = 0.25)
-    draw_mesh(glow_mesh, emissive = 1.8, cast_shadow = false)
-    draw_mesh(amber_mesh, emissive = 1.2 + 0.5 * sin(elapsed() * 3.0), cast_shadow = false)
+    draw_mesh(world_mesh, material = CONCRETE)
+    draw_mesh(metal_mesh, material = STEEL)
+    draw_mesh(glow_mesh, emissive = 2.2, cast_shadow = false, material = GLOW)
+    draw_mesh(amber_mesh, emissive = 1.4 + 0.6 * sin(elapsed() * 3.0), cast_shadow = false, material = GLOW)
     point_light(v3(0, 14, 0), vec3(0.3, 1.0, 0.95), 7.0, 1.0)
     loop f in foes: draw_foe(f)
     draw_pickups()
@@ -2271,67 +2456,134 @@ place_camera = ():
 
 # ---------------- heads-up display ----------------
 const HUD = vec4(0.55, 0.95, 1.0, 1)
+const HUD_BACK = vec4(0.0, 0.05, 0.08, 0.42)
+const ALERT = vec4(1.0, 0.33, 0.27, 1)
 
+# The heads-up display: boxes at the screen's edges, laid out as the menus are (at a 1280 x 720
+# screen's size, larger on a phone), and what is drawn at its middle (the reticle, hit marks,
+# prompts and news)
 draw_hud = ():
-    # the shield, and health in segments under it
-    sx = 440.0
-    sw = 400.0
+    # shield down: the edges of the view go red
+    if you.shield <= 0.0 and you.alive:
+        al = f32(0.25 + 0.15 * sin(elapsed() * 8.0))
+        v = visible_rect()
+        rect_gradient(f64(v.x), f64(v.y), f64(v.w), 90.0, with_alpha(ALERT, al), with_alpha(ALERT, 0))
+        rect_gradient(f64(v.x), f64(v.y + v.h) - 90.0, f64(v.w), 90.0, with_alpha(ALERT, 0), with_alpha(ALERT, al))
+    in_menu_units((w: f64, h: f64):
+        hud_edges(w, h)
+        hud_middle(w, h)
+    )
+
+hud_edges = (w: f64, h: f64):
+    g = guns[held]
+    other = guns[1 - held]
+    left = pending.len() + count_alive()
+    loop wp in warps: left += wp.group.len()
+    pad = if h < 600.0: 14.0 else: 22.0
+    touch = using_touch()
+    # (a display: it takes no input)
+    ui.at(Rect(0, 0, f32(w), f32(h)), key = "hud", pad = pad, input = ui.Input(), ():
+        ui.row(width = ui.grow(), cross = .start, ():
+            ui.column(width = 230, gap = 12, ():
+                ui.row(gap = 8, cross = .center, ():
+                    # (on a touch screen: the pause button first)
+                    if touch: ui.space(width = 52, height = 40)
+                    ui.slot(width = 100, height = 30, (r: Rect): draw_grenades(r))
+                )
+                if touch: ui.slot(width = 124, height = 124, (r: Rect): draw_tracker(r))
+            )
+            ui.space(width = ui.grow())
+            ui.slot(width = 400, height = 36, (r: Rect): draw_shield(r))
+            ui.space(width = ui.grow())
+            ui.column(width = 230, gap = 10, cross = .end, ():
+                ui.column(width = ui.grow(), pad = ui.insets(14, 6, 14, 8), cross = .end, radius = 8, color = HUD_BACK, ():
+                    ui.label("{score}", size = 38)
+                    ui.row(gap = 10, cross = .center, ():
+                        if wave == 0: ui.label("GET READY", size = 18, color = HUD)
+                        else if between > 0.0: ui.label("NEXT WAVE IN {int(ceil(between))}", size = 18, color = HUD)
+                        else:
+                            ui.label("WAVE {wave}", size = 18, color = HUD)
+                            ui.label("{left} LEFT", size = 18, color = hud_style.muted)
+                    )
+                )
+                if touch: weapon_box(g, other)
+            )
+        )
+        ui.space(height = ui.grow())
+        if not touch:
+            ui.row(width = ui.grow(), cross = .end, ():
+                ui.slot(width = 150, height = 150, (r: Rect): draw_tracker(r))
+                ui.space(width = ui.grow())
+                weapon_box(g, other)
+            )
+    )
+    draw_touch(w, h)
+
+# the weapon in hand: its name (and the other one's), its rounds and what is in reserve, or a
+# caster's charge and heat (on a touch screen, a tap swaps weapons)
+weapon_box = (g: Gun, other: Gun):
+    if g.arm < 0: return
+    ai = arm_info(g)
+    ui.column(width = 230, pad = ui.insets(14, 6, 14, 8), cross = .end, radius = 8, color = HUD_BACK, key = "weapon", ():
+        if other.arm >= 0: ui.label(arms[other.arm].name, size = 14, color = rgba(1, 1, 1, 0.42))
+        ui.label(ai.name, size = 22, color = HUD)
+        if g.arm == int(Arm.caster):
+            ui.label("{g.ammo}%", size = 40)
+            ui.bar(g.heat, color = mix(HUD, ALERT, f32(g.heat)), width = 170, height = 8, back = rgba(1, 1, 1, 0.15))
+        else:
+            ui.row(gap = 8, cross = .end, ():
+                ui.label("{g.ammo}", size = 44, color = if g.ammo == 0: ALERT else: WHITE)
+                ui.label("/ {g.reserve}", size = 20, color = rgba(1, 1, 1, 0.6))
+            )
+            rows = (ai.mag + 17) / 18
+            ui.slot(width = 172, height = f64(rows) * 12.0, (r: Rect): draw_rounds(r, g, ai))
+    )
+
+# grenades: a diamond each
+draw_grenades = (r: Rect):
+    loop i in 0..4:
+        c = with_alpha(HUD, 0.85)
+        if i >= grenades: c = rgba(1, 1, 1, 0.15)
+        x = r.x + 9.0 + f32(i) * 22.0
+        y = r.y + r.h / 2.0
+        triangle(vec2(x, y - 12.0), vec2(x - 8.0, y), vec2(x, y + 12.0), c)
+        triangle(vec2(x, y - 12.0), vec2(x + 8.0, y), vec2(x, y + 12.0), c)
+
+# the shield, and health in segments under it
+draw_shield = (r: Rect):
+    sx = f64(r.x)
+    sy = f64(r.y)
+    sw = f64(r.w)
     k = you.shield / SHIELD
     col = HUD
-    if k < 0.25 and you.shield < SHIELD: col = mix(vec4(1, 0.25, 0.2, 1), HUD, f32(0.5 + 0.5 * sin(elapsed() * 12.0)))
-    rect(sx - 3.0, 23.0, sw + 6.0, 20.0, rgba(0, 0.1, 0.15, 0.45))
-    rect_outline(sx - 3.0, 23.0, sw + 6.0, 20.0, 1.5, with_alpha(HUD, 0.6))
-    rect(sx, 26.0, sw * k, 14.0, with_alpha(col, 0.85))
-    if you.calm >= RECHARGE_WAIT and you.shield < SHIELD: rect(sx + sw * k - 6.0, 26.0, 6.0, 14.0, WHITE)
+    if k < 0.25 and you.shield < SHIELD: col = mix(ALERT, HUD, f32(0.5 + 0.5 * sin(elapsed() * 12.0)))
+    rect_rounded(sx - 3.0, sy + 1.0, sw + 6.0, 20.0, 4.0, rgba(0, 0.1, 0.15, 0.45))
+    rect_outline(sx - 3.0, sy + 1.0, sw + 6.0, 20.0, 1.5, with_alpha(HUD, 0.6))
+    rect(sx, sy + 4.0, sw * k, 14.0, with_alpha(col, 0.85))
+    if you.calm >= RECHARGE_WAIT and you.shield < SHIELD: rect(sx + sw * k - 6.0, sy + 4.0, 6.0, 14.0, WHITE)
     loop i in 0..8:
         full = you.health >= HEALTH * f64(i + 1) / 8.0 - 0.5
         c = rgba(0.6, 1.0, 0.7, 0.85)
         if you.health < HEALTH * 0.34: c = rgba(1.0, 0.35, 0.3, 0.9)
         if not full: c = rgba(1, 1, 1, 0.15)
-        rect(sx + f64(i) * (sw / 8.0) + 2.0, 48.0, sw / 8.0 - 4.0, 6.0, c)
-    # score, wave, raiders left
-    rect(1040.0, 12.0, 228.0, 80.0, rgba(0, 0.05, 0.08, 0.35))
-    text("{score}", vec2(f32(1250.0 - text_width("{score}", 38.0)), 18), 38, WHITE)
-    left = pending.len() + count_alive()
-    loop w in warps: left += w.group.len()
-    for_wave = "WAVE {wave}"
-    if between > 0.0 and wave > 0: for_wave = "NEXT WAVE IN {int(ceil(between))}"
-    else if wave > 0: for_wave = "{for_wave}   {left} LEFT"
-    if wave == 0: for_wave = "GET READY"
-    text(for_wave, vec2(f32(1250.0 - text_width(for_wave, 20.0)), 62), 20, with_alpha(HUD, 0.85))
-    # grenades
-    loop i in 0..4:
+        rect(sx + f64(i) * (sw / 8.0) + 2.0, sy + 26.0, sw / 8.0 - 4.0, 6.0, c)
+
+# the rounds in the magazine, right to left, 18 a row
+draw_rounds = (r: Rect, g: Gun, ai: ArmInfo):
+    n = ai.mag
+    w = min(6.0, 170.0 / f64(n) - 2.0)
+    right = f64(r.x + r.w)
+    loop i in 0..n:
         c = with_alpha(HUD, 0.85)
-        if i >= grenades: c = rgba(1, 1, 1, 0.15)
-        x = 40.0 + f64(i) * 22.0
-        triangle(vec2(f32(x), 22), vec2(f32(x - 8.0), 34), vec2(f32(x), 46), c)
-        triangle(vec2(f32(x), 22), vec2(f32(x + 8.0), 34), vec2(f32(x), 46), c)
-    # the weapon: its rounds (and what is in reserve), or a caster's charge and heat
+        if i >= g.ammo: c = rgba(1, 1, 1, 0.12)
+        rect(right - f64(i % 18 + 1) * (w + 2.0), f64(r.y) + 2.0 + f64(i / 18) * 12.0, w, 9.0, c)
+
+# the middle: the reticle (red over a raider in range), hit marks, where hits come from, what
+# the weapon needs, a weapon in reach, a word of advice, and news
+hud_middle = (w: f64, h: f64):
+    global pick_box
     g = guns[held]
-    other = guns[1 - held]
-    if g.arm >= 0:
-        ai = arm_info(g)
-        text(ai.name, vec2(f32(1250.0 - text_width(ai.name, 24.0)), 600), 24, with_alpha(HUD, 0.9))
-        if g.arm == int(Arm.caster):
-            t = "{g.ammo}%"
-            text(t, vec2(f32(1250.0 - text_width(t, 40.0)), 630), 40, WHITE)
-            rect(1080.0, 680.0, 170.0, 10.0, rgba(1, 1, 1, 0.15))
-            rect(1080.0, 680.0, 170.0 * g.heat, 10.0, mix(HUD, vec4(1, 0.35, 0.25, 1), f32(g.heat)))
-        else:
-            t = "{g.ammo}"
-            text(t, vec2(f32(1160.0 - text_width(t, 46.0)), 628), 46, WHITE)
-            text("/ {g.reserve}", vec2(1170, 650), 22, rgba(1, 1, 1, 0.6))
-            n = ai.mag
-            loop i in 0..n:
-                c = with_alpha(HUD, 0.85)
-                if i >= g.ammo: c = rgba(1, 1, 1, 0.12)
-                w = min(6.0, 170.0 / f64(n) - 2.0)
-                rect(1250.0 - f64(i % 18 + 1) * (w + 2.0), 684.0 + f64(i / 18) * 12.0, w, 9.0, c)
-    if other.arm >= 0:
-        o = arms[other.arm].name
-        text(o, vec2(f32(1250.0 - text_width(o, 16.0)), 578), 16, rgba(1, 1, 1, 0.4))
-    # the reticle: red over a raider in range; a hit marker on hits
-    mid = vec2(640, 360)
+    mid = vec2(f32(w / 2.0), f32(h / 2.0))
     over_foe = false
     if you.alive:
         look_hit = ray_foes(eye(), aim(), ray_world(eye(), aim(), 90), 0.05)
@@ -2340,7 +2592,7 @@ draw_hud = ():
     if over_foe: rc = rgba(1.0, 0.3, 0.25, 0.95)
     if g.arm == int(Arm.shotgun):
         # (a ring as wide as the pellets spread)
-        r = tan(arm_info(g).spread) / tan(radians(fov_y()) / 2.0) * 360.0
+        r = tan(arm_info(g).spread) / tan(radians(fov_y()) / 2.0) * h / 2.0
         ring(mid, r, 1.5, rc)
         loop i in 0..4:
             a = PI / 4.0 + f64(i) * PI / 2.0
@@ -2370,53 +2622,55 @@ draw_hud = ():
         loop i in 0..4:
             a = PI / 4.0 + f64(i) * PI / 2.0
             line(mid + from_angle(a) * f32(s), mid + from_angle(a) * f32(s + 8.0), 2.5, mc)
+    # where hits come from: red arcs around the middle
+    loop hf in hurt_from:
+        d = flat(hf.0 - you.body.pos)
+        a = wrap(yaw_of(d) - you.yaw)
+        sa = -PI / 2.0 - a
+        arc(mid, 90.0, 9.0, sa - 0.3, sa + 0.3, rgba(1, 0.25, 0.2, f32(0.8 * (1.0 - hf.1 / 1.2))))
+    below = mid.y + 60.0
     if g.arm >= 0:
-        if g.reload > 0.0: text_centered("RELOADING", vec2(640, 420), 18, with_alpha(HUD, 0.8))
-        else if g.ammo == 0 and g.reserve > 0: text_centered("RELOAD", vec2(640, 420), 18, rgba(1, 0.4, 0.3, 0.9))
-        else if g.ammo == 0: text_centered("NO ROUNDS", vec2(640, 420), 18, rgba(1, 0.4, 0.3, 0.9))
-        if g.arm == int(Arm.caster) and g.vent > 0.0: text_centered("OVERHEATED", vec2(640, 420), 18, rgba(1, 0.45, 0.3, 0.9))
+        say = ""
+        sc = rgba(1, 0.4, 0.3, 0.95)
+        if g.reload > 0.0:
+            say = "RELOADING"
+            sc = with_alpha(HUD, 0.85)
+        else if g.ammo == 0 and g.reserve > 0: say = "RELOAD"
+        else if g.ammo == 0: say = "NO ROUNDS"
+        if g.arm == int(Arm.caster) and g.vent > 0.0: say = "OVERHEATED"
+        if len(say) > 0: text_centered(say, vec2(mid.x, below), 18, sc)
     # a weapon in reach: what it is, and holding the key to take it
     if near_pick >= 0 and near_pick < pickups.len():
         pk = pickups[near_pick]
         what = arms[pk.gun.arm].name
-        if guns[1 - held].arm >= 0 and guns[held].arm >= 0: what = "{what}  (for the {arm_info(guns[held]).name})"
-        t = "HOLD {key_of("Pick up")}: {what}"
-        w = text_width(t, 20.0)
-        rect(640.0 - w / 2.0 - 14.0, 500.0, w + 28.0, 34.0, rgba(0, 0.05, 0.08, 0.6))
-        text_centered(t, vec2(640, 517), 20, WHITE)
-        if pick_time > 0.0: rect(640.0 - w / 2.0 - 14.0, 532.0, (w + 28.0) * min(pick_time / HOLD, 1.0), 3.0, HUD)
-    # where hits come from: red arcs around the middle
-    loop h in hurt_from:
-        d = flat(h.0 - you.body.pos)
-        a = wrap(yaw_of(d) - you.yaw)
-        sa = -PI / 2.0 - a
-        arc(mid, 90.0, 9.0, sa - 0.3, sa + 0.3, rgba(1, 0.25, 0.2, f32(0.8 * (1.0 - h.1 / 1.2))))
-    draw_tracker()
-    # popups: wave news in the middle, the rest over the tracker
-    y = 500.0
-    loop p in popups:
-        al = f32(clamp(2.5 - p.age, 0.0, 1.0))
-        if p.big: text_centered(p.text, vec2(640, f32(220.0 - min(p.age, 0.3) * 30.0)), 40, with_alpha(HUD, al))
-        else:
-            rect(32.0, y - 3.0, text_width(p.text, 20.0) + 16.0, 28.0, rgba(0, 0.05, 0.08, 0.45 * f64(al)))
-            text(p.text, vec2(40, f32(y)), 20, rgba(1, 0.9, 0.6, al))
-            y -= 32.0
+        if guns[1 - held].arm >= 0 and guns[held].arm >= 0: what = "{what} FOR THE {arm_info(guns[held]).name}"
+        t = if using_touch(): "HOLD HERE  {what}" else: "HOLD {key_of("Pick up")}  {what}"
+        tw = text_width(t, 20.0)
+        y = f64(mid.y) + 140.0
+        pick_box = Rect(f32(f64(mid.x) - tw / 2.0 - 14.0), f32(y - 17.0), f32(tw + 28.0), 34)
+        rect_rounded(f64(mid.x) - tw / 2.0 - 14.0, y - 17.0, tw + 28.0, 34.0, 6.0, rgba(0, 0.05, 0.08, 0.6))
+        text_centered(t, vec2(mid.x, f32(y)), 20, WHITE)
+        if pick_time > 0.0: rect(f64(mid.x) - tw / 2.0 - 14.0, y + 15.0, (tw + 28.0) * min(pick_time / HOLD, 1.0), 3.0, HUD)
     if hint_time > 0.0:
         al = f32(clamp(hint_time, 0.0, 1.0))
-        w = text_width(hint_text, 20.0)
-        rect(640.0 - w / 2.0 - 14.0, 452.0, w + 28.0, 34.0, rgba(0, 0.05, 0.08, 0.6 * f64(al)))
-        text_centered(hint_text, vec2(640, 469), 20, with_alpha(WHITE, al))
-    # shield down: the edges of the view go red
-    if you.shield <= 0.0 and you.alive:
-        al = f32(0.25 + 0.15 * sin(elapsed() * 8.0))
-        v = visible_rect()
-        rect_gradient(f64(v.x), f64(v.y), f64(v.w), 90.0, rgba(0.8, 0.05, 0.05, al), rgba(0.8, 0.05, 0.05, 0))
-        rect_gradient(f64(v.x), f64(v.y + v.h) - 90.0, f64(v.w), 90.0, rgba(0.8, 0.05, 0.05, 0), rgba(0.8, 0.05, 0.05, al))
+        tw = text_width(hint_text, 20.0)
+        y = f64(mid.y) + 96.0
+        rect_rounded(f64(mid.x) - tw / 2.0 - 14.0, y - 17.0, tw + 28.0, 34.0, 6.0, rgba(0, 0.05, 0.08, 0.6 * f64(al)))
+        text_centered(hint_text, vec2(mid.x, f32(y)), 20, with_alpha(WHITE, al))
+    # news: a wave's in the middle, the rest at the left over the tracker
+    y = h - 210.0
+    loop p in popups:
+        al = f32(clamp(2.5 - p.age, 0.0, 1.0))
+        if p.big: text_centered(p.text, vec2(mid.x, f32(f64(mid.y) - 140.0 - min(p.age, 0.3) * 30.0)), 40, with_alpha(HUD, al))
+        else:
+            rect_rounded(22.0, y - 3.0, text_width(p.text, 20.0) + 16.0, 28.0, 5.0, rgba(0, 0.05, 0.08, 0.45 * f64(al)))
+            text(p.text, vec2(30, f32(y)), 20, rgba(1, 0.9, 0.6, al))
+            y -= 32.0
 
 # The motion tracker: raiders within 25 m that move fast or fire, as seen from above, ahead up.
-draw_tracker = ():
-    c = vec2(110, 610)
-    r = 75.0
+draw_tracker = (box: Rect):
+    c = vec2(box.x + box.w / 2.0, box.y + box.h / 2.0)
+    r = f64(box.w) / 2.0
     circle(c, r, rgba(0, 0.12, 0.16, 0.45))
     ring(c, r, 1.5, with_alpha(HUD, 0.5))
     ring(c, r * 0.5, 1, with_alpha(HUD, 0.2))
@@ -2436,6 +2690,127 @@ draw_tracker = ():
         size = 5.0
         if f.kind == .lobber: size = 7.0
         circle(p, size, rgba(1.0, 0.3, 0.25, a))
+
+# ---------------- a touch screen ----------------
+# On a phone or a tablet: a finger at the left moves (a stick where it lands), one at the right
+# looks, and buttons at the lower right fire, jump, zoom, throw, strike and reload. The weapon's
+# box swaps weapons, the prompt over a weapon in reach takes it (held), the top left button pauses.
+TOUCH_BUTTONS = ["FIRE", "JUMP", "ZOOM", "NADE", "MELEE", "RELOAD"]
+
+struct Finger:
+    id: int
+    role: int                   # -1 moving, -2 looking, -3 swapping, -4 picking up, -5 pausing; else a button
+    at: vec2                    # (in the HUD's units)
+    from: vec2
+
+fingers: Finger[]
+touch_down: bool[6]             # each button: held,
+touch_hit: bool[6]              # and pressed since the last step
+touch_swap = false
+touch_pause = false
+touch_move = vec2(0, 0)
+pick_box = Rect(0, 0, 0, 0)     # (the prompt over a weapon in reach, last drawn)
+const STICK = 60.0              # how far the moving finger goes for full speed
+
+using_touch = () -> bool: touch_device() and not settings.keys_only
+
+# the buttons' middles and sizes (w by h: the HUD's size)
+touch_spots = (w: f64, h: f64) -> (vec2, f64)[]:
+    at = (x: f64, y: f64) -> vec2: vec2(f32(w - x), f32(h - y))
+    [(at(118, 124), 56.0), (at(250, 70), 40.0), (at(258, 178), 34.0), (at(178, 238), 32.0), (at(70, 262), 32.0), (at(36, 176), 26.0)]
+
+pause_spot = (w: f64, h: f64) -> (vec2, f64): (vec2(42, 42), 24.0)
+
+# the fingers on the screen, read each frame in play
+read_touch = (dt: f64):
+    global fingers, touch_move, touch_pause, touch_swap
+    if not using_touch(): return
+    z = menu_zoom()
+    v = visible_rect()
+    w = f64(v.w) / z
+    h = f64(v.h) / z
+    ids = touch_ids()
+    pts = touches()
+    fingers = [loop f in fingers if ids.contains(f.id): f]
+    loop i in 0..6: touch_down[i] = false
+    touch_move = vec2(0, 0)
+    spots = touch_spots(w, h)
+    zf = 1.0 + (arm_info(guns[held]).zoom - 1.0) * zoom_k
+    loop k in 0.. and id in ids:
+        p = (pts[k] - vec2(v.x, v.y)) * f32(1.0 / z)
+        j = -1
+        loop i in 0.. and f in fingers:
+            if f.id == id: j = i
+        if j < 0:
+            # a finger landing: on what
+            role = if f64(p.x) < w * 0.45: -1 else: -2
+            loop i in 0.. and s in spots:
+                if f64(length(p - s.0)) < s.1 * 1.2: role = i
+            ps = pause_spot(w, h)
+            if f64(length(p - ps.0)) < ps.1 * 1.4: role = -5
+            if let b = ui.bounds("weapon", root = "hud"):
+                if contains(b, p): role = -3
+            if near_pick >= 0 and contains(pick_box, p): role = -4
+            if role >= 0: touch_hit[role] = true
+            if role == -3: touch_swap = true
+            if role == -5: touch_pause = true
+            fingers.push(Finger(id, role, p, p))
+            continue
+        f = fingers[j]
+        if f.role == -2:
+            # looking: as far as the finger moved
+            d = p - f.at
+            s = 0.0065 * pow(3.0, sensitivity * 2.0 - 1.0) / zf
+            you.yaw -= f64(d.x) * s
+            if invert: you.pitch += f64(d.y) * s * 0.8
+            else: you.pitch -= f64(d.y) * s * 0.8
+            you.pitch = clamp(you.pitch, -1.45, 1.45)
+        if f.role == -1:
+            m = (p - f.from) * f32(1.0 / STICK)
+            if length(m) > 1.0:
+                # (the stick follows a finger that goes past its edge)
+                m = normalize(m)
+                fingers[j].from = p - m * f32(STICK)
+            touch_move = vec2(m.x, -m.y)
+        if f.role >= 0: touch_down[f.role] = true
+        fingers[j].at = p
+
+# what the fingers do in a step, into the controls
+touch_controls = (c: mut Controls):
+    global touch_swap
+    if not using_touch(): return
+    if length(touch_move) > 0.0: c.move = touch_move
+    c.fire = touch_down[0]
+    c.fire_pressed = c.fire_pressed or touch_hit[0]
+    c.jump = c.jump or touch_hit[1]
+    c.zoom = c.zoom or touch_hit[2]
+    c.grenade = c.grenade or touch_hit[3]
+    c.melee = c.melee or touch_hit[4]
+    c.reload = c.reload or touch_hit[5]
+    c.swap = c.swap or touch_swap
+    loop f in fingers:
+        if f.role == -4: c.pick = true
+    loop i in 0..6: touch_hit[i] = false
+    touch_swap = false
+
+# the buttons and the stick, drawn
+draw_touch = (w: f64, h: f64):
+    if not using_touch(): return
+    loop i in 0.. and s in touch_spots(w, h):
+        held = touch_down[i]
+        circle(s.0, s.1, rgba(0.02, 0.08, 0.12, if held: 0.55 else: 0.32))
+        ring(s.0, s.1, 1.5, with_alpha(HUD, if held: 0.9 else: 0.45))
+        size = if i == 0: 18.0 else: 13.0
+        text_centered(TOUCH_BUTTONS[i], s.0, size, with_alpha(WHITE, if held: 1.0 else: 0.75))
+    ps = pause_spot(w, h)
+    circle(ps.0, ps.1, rgba(0.02, 0.08, 0.12, 0.35))
+    ring(ps.0, ps.1, 1.5, with_alpha(HUD, 0.45))
+    rect(f64(ps.0.x) - 7.0, f64(ps.0.y) - 8.0, 4.0, 16.0, with_alpha(WHITE, 0.8))
+    rect(f64(ps.0.x) + 3.0, f64(ps.0.y) - 8.0, 4.0, 16.0, with_alpha(WHITE, 0.8))
+    loop f in fingers:
+        if f.role == -1:
+            ring(f.from, STICK, 2, with_alpha(HUD, 0.4))
+            circle(f.at, 22, with_alpha(HUD, 0.45))
 
 # ---------------- a balance run, without a window ----------------
 # BREAKWATER_TEST="runs react error": each run fought by the autopilot until it falls (or wave
@@ -2568,8 +2943,10 @@ read_input = (dt: f64):
     c = pending_controls
     c.move = vec2(f32(action_axis("Left", "Right")), f32(action_axis("Back", "Forward")))
     if length(c.move) > 1.0: c.move = normalize(c.move)
-    c.fire = action_down("Fire")
-    c.fire_pressed = c.fire_pressed or action_pressed("Fire")
+    # (on a touch screen, the first finger is also the mouse: the fire button fires instead)
+    if not using_touch():
+        c.fire = action_down("Fire")
+        c.fire_pressed = c.fire_pressed or action_pressed("Fire")
     c.zoom = c.zoom or action_pressed("Zoom")
     c.jump = c.jump or action_pressed("Jump")
     c.grenade = c.grenade or action_pressed("Grenade")
@@ -2584,6 +2961,8 @@ read_input = (dt: f64):
         reload_later = false
         c.reload = true
     if reload_later and near_pick < 0: reload_later = false
+    read_touch(dt)
+    touch_controls(c)
     pending_controls = c
 
 simulate = (dt: f64, auto: bool):
@@ -2603,7 +2982,7 @@ start = ():
     new_run()
     acc = 0
     pending_controls = Controls(vec2(0, 0))
-    screen = .play
+    go(.play)
     had_lock = false
     mouse_lock(not settings.keys_only)
 
@@ -2614,7 +2993,7 @@ finish = ():
     if new_best: best = score
     best_wave = max(best_wave, wave)
     save_records()
-    screen = .over
+    go(.over)
     mouse_lock(false)
 
 # behind the title: raiders wandering the platform, the camera going round it
@@ -2631,7 +3010,7 @@ title_scene = ():
     over = true
 
 update = (dt: f64):
-    global cam_look, cam_pos, had_lock, music_id, screen
+    global cam_look, cam_pos, had_lock, music_id, screen, touch_pause
     if music_id < 0 and not quiet: music_id = play(theme, settings.music, looping = true)
     m = settings.music
     if screen == .play and between <= 0.0: m *= 0.45
@@ -2640,11 +3019,12 @@ update = (dt: f64):
         # (a browser lets go of the mouse on Escape: that pauses)
         if is_mouse_locked(): had_lock = true
         else if had_lock:
-            screen = .paused
+            go(.paused)
             return
         if demo or settings.keys_only: had_lock = false
-        if action_pressed("Pause"):
-            screen = .paused
+        if action_pressed("Pause") or touch_pause:
+            touch_pause = false
+            go(.paused)
             mouse_lock(false)
             return
         if not is_mouse_locked() and not settings.keys_only: mouse_lock(true)
@@ -2667,118 +3047,305 @@ draw = ():
     if screen == .play or screen == .paused or screen == .over:
         draw_weapon()
         if screen == .play: draw_hud()
-    if screen == .title: draw_title()
-    else if screen == .paused: draw_pause()
-    else if screen == .over: draw_over()
-    else if screen == .settings: draw_settings()
-    else if screen == .controls: draw_controls()
-
-dim = (a: f32):
+    if screen == .play: return
     v = visible_rect()
-    rect(v, rgba(0.02, 0.04, 0.08, a))
+    # (behind a menu: the scene darkened, at the left over the title's camera flight)
+    if screen == .title or ((screen == .settings or screen == .controls) and settings_back == .title): side_shade(v)
+    else: rect(v, rgba(0.01, 0.03, 0.05, 0.62))
+    in_menu_units((w: f64, h: f64):
+        if screen == .title: title_menu(w, h)
+        else if screen == .paused: pause_menu(w, h)
+        else if screen == .over: over_menu(w, h)
+        else if screen == .settings: settings_menu(w, h)
+        else if screen == .controls: controls_menu(w, h)
+    )
 
-side_panel = ():
+# ---------------- menus ----------------
+# The menus are boxes laid out by `layout` (import layout as ui): at the size they would be on a
+# 1280 x 720 screen, larger on a phone or a short window so their text stays readable.
+menu_zoom = () -> f64:
     v = visible_rect()
-    c = rgba(0.02, 0.05, 0.08, 0.75)
-    rect(f64(v.x), f64(v.y), 520.0 - f64(v.x), f64(v.h), c)
-    quad_gradient(vec2(520, v.y), vec2(760, v.y), vec2(760, v.y + v.h), vec2(520, v.y + v.h), c, with_alpha(c, 0), with_alpha(c, 0), c)
+    z = clamp(min(f64(v.w) / 1280.0, f64(v.h) / 720.0), 0.5, 2.5)
+    if touch_device() or f64(v.h) < 560.0: z = max(z, min(f64(v.h) / 480.0, f64(v.w) / 860.0))
+    z
 
-draw_title = ():
-    global screen, settings_back
-    side_panel()
-    text_centered("B R E A K W A T E R", vec2(300, 190), 54, WHITE)
-    ui_begin("title", vec2(300, 330))
-    if ui_button("Play"): start()
-    if ui_button("Settings"):
-        settings_back = .title
-        screen = .settings
-    when TARGET != "wasm":
-        if ui_button("Quit"): quit()
-    ui_end()
-    if best > 0: text_centered("best {best}   (wave {best_wave})", vec2(300, 590), 22, with_alpha(HUD, 0.9))
-    look = "mouse"
-    if settings.keys_only: look = "I J K L"
-    text_centered("move: W A S D    look: {look}    fire: {key_of("Fire")}    jump: {key_of("Jump")}", vec2(300, 640), 17, rgba(1, 1, 1, 0.55))
-    text_centered("zoom: {key_of("Zoom")}    pick up: {key_of("Pick up")}    grenade: {key_of("Grenade")}    melee: {key_of("Melee")}", vec2(300, 666), 17, rgba(1, 1, 1, 0.55))
+# drawing in the menus' units (w by h of them on the screen)
+in_menu_units = (draw_it: (f64, f64) -> void):
+    z = menu_zoom()
+    v = visible_rect()
+    push_transform()
+    translate(f64(v.x), f64(v.y))
+    scale(z, z)
+    draw_it(f64(v.w) / z, f64(v.h) / z)
+    pop_transform()
 
-draw_pause = ():
-    global had_lock, screen, settings_back
-    dim(0.55)
-    text_centered("Paused", vec2(640, 200), 60, WHITE)
-    ui_begin("pause", vec2(640, 310))
-    if ui_button("Resume") or ui_back() or (action_pressed("Pause") and ui_ready()):
-        screen = .play
+menu_frame = -1                 # (the frame the screen changed: the press that changed it is used up)
+
+go = (s: Screen):
+    global menu_frame, screen
+    screen = s
+    menu_frame = frame_number()
+
+# a root of boxes over the whole w by h (keys, buttons and taps ignored in the frame a screen opens)
+menu_root = (key: str, w: f64, h: f64, children: () -> void, pad: f64 = 24.0, align: ui.MainAlign = .center, cross: ui.CrossAlign = .center):
+    r = Rect(0, 0, f32(w), f32(h))
+    if frame_number() == menu_frame or rebinding_now:
+        ui.at(r, children, pad = pad, align = align, cross = cross, key = key, input = ui.Input())
+    else: ui.at(r, children, pad = pad, align = align, cross = cross, key = key)
+
+back_pressed = () -> bool: frame_number() != menu_frame and not rebinding_now and (key_pressed(.escape) or gamepad_pressed(.b))
+
+side_shade = (v: Rect):
+    c = rgba(0.01, 0.04, 0.07, 0.8)
+    edge = f64(v.x) + min(f64(v.w) * 0.42, 560.0 * menu_zoom())
+    fade = 260.0 * menu_zoom()
+    rect(f64(v.x), f64(v.y), edge - f64(v.x), f64(v.h), c)
+    quad_gradient(vec2(f32(edge), v.y), vec2(f32(edge + fade), v.y), vec2(f32(edge + fade), v.y + v.h), vec2(f32(edge), v.y + v.h), c, with_alpha(c, 0), with_alpha(c, 0), c)
+
+style_menus = ():
+    hud_style.accent = HUD
+    hud_style.panel = rgba(0.02, 0.06, 0.09, 0.86)
+    hud_style.button = rgba(0.09, 0.16, 0.2, 0.95)
+    hud_style.hover = rgba(0.13, 0.25, 0.3, 1)
+    hud_style.pressed = rgba(0.05, 0.1, 0.13, 1)
+    hud_style.border = rgba(0.55, 0.95, 1.0, 0.22)
+    hud_style.panel_edge = rgba(0.55, 0.95, 1.0, 0.14)
+    hud_style.focus = rgba(0.75, 1.0, 1.0, 0.95)
+    hud_style.field = rgba(1, 1, 1, 0.035)
+    hud_style.track = rgba(1, 1, 1, 0.12)
+    hud_style.radius = 6
+    hud_style.panel_radius = 10
+
+# a word in widely spaced capitals (the title)
+spaced = (s: str, size: f64, gap: f64, color: vec4):
+    w = 0.0
+    loop i in 0..len(s): w += text_width(s[i..i + 1], size) + gap
+    w -= gap
+    ui.slot(width = w, height = size * 1.15, (r: Rect):
+        x = f64(r.x)
+        loop i in 0..len(s):
+            ch = s[i..i + 1]
+            text(ch, vec2(f32(x), r.y), size, color)
+            x += text_width(ch, size) + gap
+    )
+
+# a key and what it does
+key_hint = (keys: str, what: str):
+    ui.row(gap = 7, cross = .center, ():
+        ui.row(pad = ui.insets(7, 2, 7, 3), radius = 5, border = ui.Border(hud_style.border), color = rgba(1, 1, 1, 0.06), ():
+            ui.label(keys, size = 13)
+        )
+        ui.label(what, size = 14, color = hud_style.muted)
+    )
+
+look_keys = () -> str: if settings.keys_only: "I J K L" else: "Mouse"
+
+title_menu = (w: f64, h: f64):
+    global settings_back
+    short = h < 600.0
+    menu_root("title", w, h, pad = if short: 20.0 else: 48.0, align = .center, cross = .start, ():
+        ui.column(width = min(w * 0.42, 500.0), gap = if short: 10.0 else: 16.0, cross = .center, ():
+            spaced("BREAKWATER", if short: 40.0 else: 54.0, if short: 10.0 else: 14.0, WHITE)
+            ui.space(height = if short: 4.0 else: 16.0)
+            ui.column(width = 300, gap = 10, ():
+                if ui.button("Play", width = ui.grow(), height = 48, key = "play"): start()
+                if ui.button("Settings", width = ui.grow(), height = 48, key = "settings"):
+                    settings_back = .title
+                    go(.settings)
+                when TARGET != "wasm":
+                    if ui.button("Quit", width = ui.grow(), height = 48, key = "quit"): quit()
+            )
+            if best > 0: ui.label("Best {best}   Wave {best_wave}", size = 18, color = HUD)
+            if not touch_device() and not short:
+                ui.space(height = 8)
+                ui.row(gap = 16, cross = .center, ():
+                    key_hint("W A S D", "Move")
+                    key_hint(look_keys(), "Look")
+                    key_hint(key_of("Fire"), "Fire")
+                    key_hint(key_of("Jump"), "Jump")
+                )
+                ui.row(gap = 16, cross = .center, ():
+                    key_hint(key_of("Zoom"), "Zoom")
+                    key_hint(key_of("Pick up"), "Pick up")
+                    key_hint(key_of("Grenade"), "Grenade")
+                    key_hint(key_of("Melee"), "Melee")
+                )
+        )
+    )
+
+pause_menu = (w: f64, h: f64):
+    global had_lock, settings_back
+    resume = back_pressed() or (frame_number() != menu_frame and action_pressed("Pause") and not key_pressed(.escape))
+    menu_root("pause", w, h, ():
+        ui.panel(width = 340, pad = 22, gap = 10, cross = .stretch, ():
+            ui.label("Paused", size = 34, align = .center, width = ui.grow())
+            ui.label("Wave {wave}   Score {score}", size = 16, color = hud_style.muted, align = .center, width = ui.grow())
+            ui.space(height = 6)
+            if ui.button("Resume", width = ui.grow(), height = 46, key = "resume"): resume = true
+            if ui.button("Restart", width = ui.grow(), height = 46, key = "restart"): start()
+            if ui.button("Settings", width = ui.grow(), height = 46, key = "settings"):
+                settings_back = .paused
+                go(.settings)
+            if ui.button("Leave to the title", width = ui.grow(), height = 46, key = "leave"):
+                title_scene()
+                go(.title)
+        )
+    )
+    if resume and screen == .paused:
+        go(.play)
         had_lock = false
         mouse_lock(not settings.keys_only)
-    if ui_button("Restart"): start()
-    if ui_button("Settings"):
-        settings_back = .paused
-        screen = .settings
-    if ui_button("Leave to the title"):
-        title_scene()
-        screen = .title
-    ui_end()
 
 clock = (t: f64) -> str:
     sec = int(t) % 60
     if sec < 10: return "{int(t) / 60}:0{sec}"
     "{int(t) / 60}:{sec}"
 
-draw_over = ():
-    global screen
-    dim(0.5)
-    text_centered("{score}", vec2(640, 160), 90, WHITE)
-    if new_best: text_centered("a new best!", vec2(640, 232), 30, HUD)
-    else: text_centered("best {best}", vec2(640, 232), 26, rgba(1, 1, 1, 0.6))
+# a number over what it counts
+figure = (value: str, what: str):
+    ui.column(width = ui.grow(), cross = .center, gap = 2, ():
+        ui.label(value, size = 26)
+        ui.label(what, size = 13, color = hud_style.muted)
+    )
+
+over_menu = (w: f64, h: f64):
     a = 0
     if shots > 0: a = hits * 100 / shots
-    text_centered("held to wave {wave}     {kills} raiders     {a}% accuracy     {clock(run_time)}", vec2(640, 285), 24, rgba(1, 1, 1, 0.8))
-    text_centered("taken down by {cause}", vec2(640, 320), 20, rgba(1, 1, 1, 0.45))
-    ui_begin("over", vec2(640, 400))
-    if ui_button("Again"): start()
-    if ui_button("Title") or ui_back():
-        title_scene()
-        screen = .title
-    ui_end()
+    menu_root("over", w, h, ():
+        ui.panel(width = ui.fit(max = 520), pad = 24, gap = 12, cross = .center, ():
+            ui.label("{score}", size = 72)
+            if new_best: ui.label("New best", size = 22, color = HUD)
+            else: ui.label("Best {best}", size = 18, color = hud_style.muted)
+            ui.row(width = 440, gap = 8, pad = ui.insets(0, 8, 0, 8), ():
+                figure("{wave}", "Wave")
+                figure("{kills}", "Raiders")
+                figure("{a}%", "Accuracy")
+                figure(clock(run_time), "Time")
+            )
+            ui.label("Taken down by {cause}", size = 16, color = hud_style.muted)
+            ui.row(width = ui.grow(), gap = 10, ():
+                if ui.button("Again", width = ui.grow(), height = 46, key = "again"): start()
+                if ui.button("Title", width = ui.grow(), height = 46, key = "title") or back_pressed():
+                    title_scene()
+                    go(.title)
+            )
+        )
+    )
 
-draw_settings = ():
-    global screen
-    if settings_back == .title: side_panel()
-    else: dim(0.7)
-    x = 300.0
-    if settings_back != .title: x = 640.0
-    text_centered("Settings", vec2(f32(x), 110), 60, WHITE)
-    ui_begin("settings", vec2(f32(x), 200))
+# a group of settings under its name
+group = (name: str, children: () -> void):
+    ui.column(width = ui.grow(), gap = 6, ():
+        ui.label(name, size = 14, color = HUD)
+        children()
+    )
+
+settings_menu = (w: f64, h: f64):
     was = settings
-    settings.music = ui_slider("Music", settings.music)
-    settings.sound = ui_slider("Sounds", settings.sound)
-    settings.sensitivity = ui_slider("Look speed", settings.sensitivity, 0.05)
-    settings.fov = ui_slider("Field of view", settings.fov, 0.05)
-    settings.invert = ui_switch("Invert look", settings.invert)
-    settings.keys_only = ui_switch("Keyboard only", settings.keys_only)
-    when TARGET != "wasm":
-        settings.fullscreen = ui_switch("Fullscreen", settings.fullscreen)
-    if ui_button("Controls"): screen = .controls
-    back = ui_button("Back") or ui_back()
-    ui_end()
+    leave = back_pressed()
+    wide_left = settings_back == .title and w >= 900.0
+    menu_root("settings", w, h, pad = if h < 600.0: 14.0 else: 32.0, align = .center, cross = if wide_left: ui.CrossAlign.start else: ui.CrossAlign.center, ():
+        ui.panel(width = ui.fit(min = 420, max = 520), height = ui.fit(max = h - 28.0), pad = 18, gap = 12, ():
+            ui.label("Settings", size = 30)
+            ui.scroll(width = ui.grow(), height = ui.grow(), pad = ui.insets(0, 2, 14, 2), gap = 14, key = "list", ():
+                group("Sound", ():
+                    settings.music = ui.slider(settings.music, 0.0, 1.0, 0.05, "Music", height = 40, key = "music")
+                    settings.sound = ui.slider(settings.sound, 0.0, 1.0, 0.05, "Sounds", height = 40, key = "sound")
+                )
+                group("Looking", ():
+                    settings.sensitivity = ui.slider(settings.sensitivity, 0.0, 1.0, 0.05, "Look speed", height = 40, key = "look")
+                    # (in degrees across the view)
+                    settings.fov = (ui.slider(75.0 + 35.0 * settings.fov, 75.0, 110.0, 1.0, "Field of view", height = 40, key = "fov") - 75.0) / 35.0
+                    settings.invert = ui.switch(settings.invert, "Invert look", height = 40, key = "invert")
+                )
+                group("Playing", ():
+                    settings.keys_only = ui.switch(settings.keys_only, "Keyboard only", height = 40, key = "keys")
+                    if can_fullscreen(): settings.fullscreen = ui.switch(settings.fullscreen, "Fullscreen", height = 40, key = "full")
+                )
+            )
+            ui.row(width = ui.grow(), gap = 10, ():
+                if ui.button("Controls", width = ui.grow(), height = 42, key = "controls"): go(.controls)
+                if ui.button("Back", width = ui.grow(), height = 42, key = "back"): leave = true
+            )
+        )
+    )
     apply_settings()
     if settings.sound != was.sound: sfx(snd_click, 1.0)
     if settings.fullscreen != was.fullscreen: set_fullscreen(settings.fullscreen)
     if settings.keys_only != was.keys_only: keys_only_bindings()
-    if back:
+    if leave and screen == .settings:
         save_settings()
-        screen = settings_back
+        go(settings_back)
 
-draw_controls = ():
-    global screen
-    dim(0.8)
-    text_centered("Controls", vec2(640, 100), 60, WHITE)
-    ui_begin("controls", vec2(640, 190))
-    ui_controls()
-    back = ui_button("Back") or ui_back()
-    ui_end()
-    if back: screen = .settings
+# ---------------- controls ----------------
+# Each action and its inputs: choosing one waits for a new key or button, which takes the place
+# of its first of that kind (a key or the mouse; a gamepad's button or stick)
+CONTROLS = ["Forward", "Back", "Left", "Right", "Look up", "Look down", "Look left", "Look right", "Jump", "Fire", "Zoom",
+            "Grenade", "Melee", "Reload", "Pick up", "Swap weapons", "Pause"]
+rebind_at = -1                  # (the action waiting for its new input)
+rebinding_now = false           # (waiting, or took one this frame: the menus ignore that press)
 
+is_pad = (x: Input) -> bool:
+    match x:
+        .button(b): return true
+        .stick(a, d): return true
+        _: pass
+    false
+
+rebind = (name: str, x: Input):
+    b = bindings(name)
+    loop k in 0..b.len():
+        if is_pad(b[k]) == is_pad(x):
+            b[k] = x
+            set_bindings(name, b)
+            return
+    b.push(x)
+    set_bindings(name, b)
+
+controls_menu = (w: f64, h: f64):
+    global rebind_at, rebinding_now
+    # (waiting: the first key or button pressed, Escape to cancel; a finger's tap is not one,
+    # and taps still reach the Cancel button)
+    rebinding_now = rebind_at >= 0 and not touch_input()
+    if rebind_at >= 0 and frame_number() > menu_frame:
+        if key_pressed(.escape):
+            rebind_at = -1
+            rebinding_now = true
+        else if let x = input_pressed():
+            if not (touch_input() and x == Input.mouse(.left)):
+                rebind(CONTROLS[rebind_at], x)
+                rebind_at = -1
+                rebinding_now = true
+    leave = back_pressed()
+    menu_root("controls", w, h, pad = if h < 600.0: 14.0 else: 32.0, ():
+        ui.panel(width = ui.fit(min = 460, max = 600), height = ui.fit(max = h - 28.0), pad = 18, gap = 12, ():
+            ui.label("Controls", size = 30)
+            if rebind_at >= 0:
+                ui.row(width = ui.grow(), pad = 12, gap = 10, cross = .center, radius = 8, color = with_alpha(HUD, 0.12), border = ui.Border(with_alpha(HUD, 0.5)), ():
+                    ui.label(if touch_input(): "{CONTROLS[rebind_at]}: press a key or button" else: "{CONTROLS[rebind_at]}: press a key or button (Escape: cancel)", size = 17, wrap = true, width = ui.grow())
+                    if touch_input() and ui.button("Cancel", height = 36, key = "cancel"): rebind_at = -1
+                )
+            ui.scroll(width = ui.grow(), height = ui.grow(), pad = ui.insets(0, 0, 14, 0), gap = 4, key = "list", ():
+                loop i in 0.. and name in CONTROLS:
+                    parts: str[]
+                    loop x in bindings(name): parts.push(input_name(x))
+                    on = i == rebind_at
+                    got = ui.row(width = ui.grow(), height = 38, pad = ui.insets(12, 0, 12, 0), gap = 12, cross = .center, radius = 6, color = if on: with_alpha(HUD, 0.16) else: rgba(1, 1, 1, 0.035), focusable = true, key = name, ():
+                        ui.label(name, size = 16, width = 140)
+                        ui.label(if on: "..." else: join(parts, ", "), size = 15, color = if on: HUD else: hud_style.muted, align = .right, width = ui.grow())
+                    )
+                    if got.clicked and rebind_at < 0:
+                        rebind_at = i
+                        go(.controls)
+            )
+            ui.row(width = ui.grow(), gap = 10, ():
+                if ui.button("Defaults", width = ui.grow(), height = 42, enabled = rebind_at < 0, key = "defaults"): reset_controls()
+                if ui.button("Back", width = ui.grow(), height = 42, enabled = rebind_at < 0, key = "back"): leave = true
+            )
+        )
+    )
+    if leave and screen == .controls and rebind_at < 0: go(.settings)
+
+style_menus()
 load_saved()
 apply_settings()
 if settings.keys_only: keys_only_bindings()

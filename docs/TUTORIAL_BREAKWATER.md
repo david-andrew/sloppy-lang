@@ -2674,8 +2674,12 @@ sun's shadows, and `fog` fades what is far into the horizon.
   (lib/game/paths.jo: `path_grid`, `path_step`), with cover to hide behind, and ramps.
 - **Three kinds of robot** (skitters that rush, shielded wardens, lobbers that arc shells over
   cover), five weapons on racks and in the robots' hands, grenades and melee.
-- **Controls the player can change** (`action`, and a Controls screen from `ui_controls()`),
-  keyboard-only play, and gamepads.
+- **Controls the player can change** (`action`, and a Controls screen that rebinds them with
+  `input_pressed` and `set_bindings`), keyboard-only play, gamepads, and buttons and sticks on a
+  touch screen.
+- **Menus and a HUD laid out by `import layout as ui`**, which fit a wide window and a phone.
+- **A sky it paints at the start** (`sky_image`), materials (`Material`) that reflect it, and a
+  sea drawn by a shader of its own (`draw_custom`).
 - An autopilot that plays it, which is how its difficulty was tested.
 
 The collision and rays here are written by hand, so you can see how they work. A bigger game can
