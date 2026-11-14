@@ -1,0 +1,203 @@
+// Web pages: what they keep after starting and what the runtime allocates each frame, in headless
+// Chromium (Playwright's, or Chrome on the PATH; none: only the checks without a browser).
+//  1. a big module (a 16 MB file embedded): the single page starts and keeps neither its base64
+//     text nor the bytes (a 20 MB module once left ~70 MB of JavaScript heap behind); built with
+//     --wasm-file, the page and module.wasm beside it start over http (compiled while they
+//     download), and a page opened from disk says what to do instead
+//  2. tests/web/busy.jo, a frame of a game (shapes, text, sound playing): the runtime makes no
+//     typed array, view, copy, TextDecoder or TextEncoder, media query or gamepad list per frame
+//     (a view of wasm memory per call, a copy per chunk of sound, ... once were), and its sampled
+//     JavaScript allocations stay small
+// usage: node tools/webperfcheck.mjs [path/to/sloppy]
+import { spawn, spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdtempSync, rmSync, statSync, mkdirSync } from "node:fs";
+import { createServer } from "node:http";
+import { join, dirname, extname, basename } from "node:path";
+import { tmpdir, homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const sloppy = process.argv[2] || join(root, "bin", process.platform === "win32" ? "sloppy.exe" : "sloppy");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let failed = 0;
+const expect = (what, ok, got) => {
+  if (ok) console.log(`ok   ${what} (${got})`);
+  else { failed++; console.log(`FAIL ${what}: ${got}`); }
+};
+
+// the browser
+let chrome = null, shell = true;
+const pw = join(homedir(), ".cache", "ms-playwright");
+if (existsSync(pw)) for (const d of readdirSync(pw).sort()) if (d.startsWith("chromium_headless_shell")) {
+  for (const sub of readdirSync(join(pw, d))) { const p = join(pw, d, sub, "chrome-headless-shell"); if (existsSync(p)) chrome = p; }
+}
+if (!chrome) for (const n of ["google-chrome", "chromium", "chromium-browser"]) {
+  const r = spawnSync("which", [n], { encoding: "utf8" });
+  if (r.status === 0 && r.stdout.trim()) { chrome = r.stdout.trim(); shell = false; break; }
+}
+
+const tmp = mkdtempSync(join(tmpdir(), "sloppy-webperf-"));
+const env = { ...process.env, SLOPPY_LIB: join(root, "lib") };
+const build = (src, out, ...more) => {
+  const r = spawnSync(sloppy, ["build", src, "--target", "wasm", "-o", out, ...more], { env, encoding: "utf8" });
+  if (r.status !== 0) { console.log(r.stdout + r.stderr); throw new Error("could not build " + src); }
+};
+
+// ---- the pages ----
+// (a big module: a 16 MB file of noise embedded, as a game's assets are)
+const bigDir = join(tmp, "bigsrc");
+mkdirSync(bigDir);
+const pad = Buffer.alloc(16 << 20);
+let x = 2463534242;
+for (let i = 0; i < pad.length; i += 4) { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; pad.writeUInt32LE(x, i); }
+writeFileSync(join(bigDir, "pad.bin"), pad);
+writeFileSync(join(bigDir, "big.jo"), `window("big", 320, 200)
+pad = embed("pad.bin")
+t = 0.0
+update = (dt: f64):
+    global t
+    t += dt
+draw = ():
+    clear(rgb(0.1, 0.1, 0.2))
+    circle(vec2(160.0 + 100.0 * cos(t), 100.0), 10.0, WHITE)
+if pad.len() == 7: print("odd")
+`);
+build(join(bigDir, "big.jo"), join(tmp, "big.html"));
+mkdirSync(join(tmp, "split"));
+build(join(bigDir, "big.jo"), join(tmp, "split", "big.html"), "--wasm-file");
+build(join(root, "tests", "web", "busy.jo"), join(tmp, "busy.html"));
+
+// ---- without a browser: the pages' form ----
+const single = readFileSync(join(tmp, "big.html"), "utf8");
+const m = /<script type="([^"]*)" id="sloppy-wasm">([^<]*)<\/script>/.exec(single);
+expect("the single page holds its module as text in a script element that is not run", m && m[1] !== "text/javascript" && !/SLOPPY_WASM =/.test(single), m ? `type ${m[1]}, ${(m[2].length / 1e6).toFixed(1)} MB of base64` : "no such element");
+const splitPage = readFileSync(join(tmp, "split", "big.html"), "utf8");
+const s = /id="sloppy-wasm" data-src="big\.wasm\?v=([0-9a-f]+)"><\/script>/.exec(splitPage);
+const wasmFile = existsSync(join(tmp, "split", "big.wasm")) ? readFileSync(join(tmp, "split", "big.wasm")) : null;
+expect("--wasm-file: a small page that names big.wasm beside it, with the module's hash", s && wasmFile && splitPage.length < 400000, s ? `page ${(splitPage.length / 1e3).toFixed(0)} KB, v=${s[1]}` : "no data-src");
+expect("--wasm-file: the same module as in the single page", m && wasmFile && Buffer.from(m[2], "base64").equals(wasmFile), wasmFile ? `${(wasmFile.length / 1e6).toFixed(1)} MB` : "no big.wasm");
+
+if (!chrome) {
+  console.log("(no browser: the pages were not run)");
+  rmSync(tmp, { recursive: true, force: true });
+  console.log(failed ? `${failed} failed` : "web performance: all checks passed");
+  process.exit(failed ? 1 : 0);
+}
+
+// ---- in the browser ----
+const server = createServer((q, r) => {
+  const f = join(tmp, decodeURIComponent(new URL(q.url, "http://x").pathname));
+  if (!f.startsWith(tmp) || !existsSync(f) || statSync(f).isDirectory()) { r.writeHead(404); r.end(); return; }
+  r.writeHead(200, { "content-type": { ".html": "text/html", ".wasm": "application/wasm" }[extname(f)] || "application/octet-stream" });
+  r.end(readFileSync(f));
+});
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const http = `http://127.0.0.1:${server.address().port}`;
+
+// what the page's runtime makes, counted (a hook run before the page's own scripts); frames
+// counted at each animation frame, and the first one's time once "loading…" is gone
+const hook = `(() => {
+  const n = window.__made = {};
+  const count = (k) => { n[k] = (n[k] || 0) + 1; };
+  for (const k of ["ArrayBuffer", "DataView", "Uint8Array", "Int8Array", "Uint16Array", "Int16Array", "Uint32Array", "Int32Array", "Float32Array", "Float64Array", "TextDecoder", "TextEncoder"]) {
+    const C = window[k];
+    window[k] = new Proxy(C, { construct(t, a, nt) { count(k); return Reflect.construct(t, a, nt === window[k] ? t : nt); } });
+  }
+  const TA = Object.getPrototypeOf(Uint8Array.prototype);
+  for (const k of ["slice", "subarray"]) { const f = TA[k]; TA[k] = function (...a) { count(k); return f.apply(this, a); }; }
+  const mm = window.matchMedia; window.matchMedia = function (q) { count("matchMedia"); return mm.call(this, q); };
+  if (navigator.getGamepads) { const g = navigator.getGamepads; navigator.getGamepads = function () { count("getGamepads"); return g.call(this); }; }
+  const pm = MessagePort.prototype.postMessage; MessagePort.prototype.postMessage = function (...a) { count("audio chunks"); return pm.apply(this, a); };
+  const cs = WebAssembly.compileStreaming; if (cs) WebAssembly.compileStreaming = function (...a) { count("compileStreaming"); return cs.apply(this, a); };
+  window.__frames = 0; window.__ttf = 0;
+  const raf = window.requestAnimationFrame.bind(window);
+  const tick = () => { window.__frames++; if (!window.__ttf && !document.getElementById("sloppy-loading")) window.__ttf = performance.now(); };
+  window.requestAnimationFrame = (f) => raf((t) => { f(t); tick(); });
+})();`;
+
+async function browse(url, work) {
+  const dir = mkdtempSync(join(tmp, "profile-"));
+  const flags = ["--no-sandbox", "--mute-audio", "--enable-unsafe-swiftshader", "--enable-precise-memory-info", "--autoplay-policy=no-user-gesture-required",
+    "--remote-debugging-port=0", `--user-data-dir=${dir}`, "--window-size=400,300"];
+  if (!shell) flags.unshift("--headless=new");
+  const b = spawn(chrome, [...flags, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+  let err = "";
+  b.stderr.on("data", (d) => { err += d; });
+  try {
+    const t0 = Date.now();
+    while (!/DevTools listening on (ws:\S+)/.test(err)) { if (Date.now() - t0 > 20000) throw new Error("the browser did not start"); await sleep(50); }
+    const port = new URL(err.match(/DevTools listening on (ws:\S+)/)[1]).port;
+    const target = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((t) => t.type === "page");
+    const ws = new WebSocket(target.webSocketDebuggerUrl);
+    await new Promise((r) => ws.addEventListener("open", r));
+    let id = 0;
+    const waits = {};
+    ws.addEventListener("message", (e) => { const msg = JSON.parse(e.data); if (msg.id && waits[msg.id]) waits[msg.id](msg.result || msg.error); });
+    const send = (method, params = {}) => new Promise((r) => { const i = ++id; waits[i] = r; ws.send(JSON.stringify({ id: i, method, params })); });
+    const ev = async (e) => { const r = await send("Runtime.evaluate", { expression: e, returnByValue: true }); return r.result ? r.result.value : undefined; };
+    await send("Page.enable");
+    await send("Page.addScriptToEvaluateOnNewDocument", { source: hook });
+    await send("Page.navigate", { url });
+    // (until the first frame, or the page's log shows an error)
+    const t1 = Date.now();
+    let first = null;
+    while (Date.now() - t1 < 60000) {
+      first = await ev("[window.__ttf, (document.getElementById('log') || {}).textContent || '']");
+      if (first && (first[0] || /error/.test(first[1]))) break;
+      await sleep(50);
+    }
+    const r = await work({ send, ev, ttf: first ? first[0] : 0, log: first ? first[1] : "" });
+    ws.close();
+    return r;
+  } finally {
+    b.kill();
+    await sleep(300);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// (what is kept, not garbage waiting to be collected: collected first)
+const heapAfter = async (c) => { await sleep(500); await c.send("HeapProfiler.collectGarbage"); return (await c.ev("performance.memory.usedJSHeapSize")) / 1e6; };
+const text = (m[2].length / 1e6).toFixed(0);
+await browse("file://" + join(tmp, "big.html"), async (c) => {
+  expect("the single page with a 16 MB file in it starts", c.ttf > 0, c.ttf ? `first frame at ${c.ttf.toFixed(0)} ms` : "no frame: " + c.log.slice(0, 300));
+  const heap = await heapAfter(c);
+  expect(`it keeps neither its ${text} MB of text nor the module's bytes`, c.ttf > 0 && heap < 8, `JavaScript heap ${heap.toFixed(1)} MB after its first frame, garbage collected`);
+  expect("the text's element is gone from the page", !(await c.ev("!!document.getElementById('sloppy-wasm')")), "");
+});
+await browse(http + "/split/big.html", async (c) => {
+  const made = await c.ev("window.__made");
+  expect("--wasm-file: the page starts over http, compiling the module while it downloads", c.ttf > 0 && made.compileStreaming === 1, c.ttf ? `first frame at ${c.ttf.toFixed(0)} ms` : "no frame: " + c.log.slice(0, 300));
+  const heap = await heapAfter(c);
+  expect("--wasm-file: and keeps little", c.ttf > 0 && heap < 8, `JavaScript heap ${heap.toFixed(1)} MB after its first frame, garbage collected`);
+});
+await browse("file://" + join(tmp, "split", "big.html"), async (c) => {
+  expect("--wasm-file: a page opened from disk says what to do instead", /without --wasm-file/.test(c.log), c.log.slice(0, 120));
+});
+await browse("file://" + join(tmp, "busy.html"), async (c) => {
+  expect("the busy page starts", c.ttf > 0, c.ttf ? `first frame at ${c.ttf.toFixed(0)} ms` : "no frame: " + c.log.slice(0, 300));
+  await sleep(2000);
+  const m0 = await c.ev("window.__made"), f0 = await c.ev("window.__frames");
+  await c.send("HeapProfiler.enable");
+  await c.send("HeapProfiler.startSampling", { samplingInterval: 256, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+  await sleep(4000);
+  const prof = (await c.send("HeapProfiler.stopSampling")).profile;
+  const m1 = await c.ev("window.__made"), frames = (await c.ev("window.__frames")) - f0;
+  const per = {};
+  // (what is made once a second, as the frame pacing's figures are sorted, is not per frame)
+  for (const k of Object.keys(m1)) if (k !== "audio chunks" && (m1[k] - (m0[k] || 0)) > 0.2 * frames) per[k] = (m1[k] - (m0[k] || 0)) / Math.max(frames, 1);
+  const chunks = (m1["audio chunks"] || 0) - (m0["audio chunks"] || 0);
+  expect(`no typed array, copy, coder, media query or gamepad list made per frame (${frames} frames, ${chunks} chunks of sound)`, frames > 20 && Object.keys(per).length === 0,
+    Object.keys(per).length ? Object.entries(per).map(([k, v]) => `${k} ${v.toFixed(2)} a frame`).join(", ") : "none");
+  // (the page's own functions' allocations: not the module's numbers handed to JavaScript, made
+  // in the wasm-to-JavaScript wrappers)
+  let bytes = 0;
+  const walk = (n) => { if (n.callFrame.url.endsWith("busy.html")) bytes += n.selfSize; for (const k of n.children) walk(k); };
+  walk(prof.head);
+  const kb = bytes / Math.max(frames, 1) / 1e3;
+  expect("the runtime's own JavaScript allocations each frame are small", frames > 20 && kb < 2, `${kb.toFixed(2)} KB a frame, sampled`);
+});
+server.close();
+rmSync(tmp, { recursive: true, force: true });
+console.log(failed ? `${failed} failed` : "web performance: all checks passed");
+process.exit(failed ? 1 : 0);

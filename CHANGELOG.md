@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+- Web pages hold the program as base64 text in a script element that is not run, which the page
+  decodes, compiles off the main thread and lets go as it loads; before, the text was a string
+  in the page's script, which the browser parsed as code and kept, and the decoded bytes stayed
+  too. A page with a 19 MB program is parsed in about 0.7 s instead of 1.4 s, holds 1.8 MB of
+  JavaScript heap at its first frame instead of 72 MB, and its renderer's peak memory is 257 MB
+  instead of 317 MB. Tools that read the page take the module from `id="sloppy-wasm"` (there
+  is no `SLOPPY_WASM` variable any more).
+- `sloppy build --target wasm --wasm-file` writes the program in `game.wasm` beside `game.html`
+  (`-o game.zip`: both in the zip), for big games on a web site: the page fetches it and
+  compiles it while it downloads (WebAssembly.compileStreaming; a server that does not say
+  `application/wasm` gets the whole file first), and its name carries the module's hash
+  (`game.wasm?v=...`), so a browser does not run one it kept from an older build. With a 19 MB
+  program the page is parsed in 0.15-0.25 s. A page opened from disk cannot fetch the file and
+  says what to do instead; without the option the page is one file, as before. The site's games
+  are built this way.
+- The web runtime makes less garbage per call and per frame: one view of wasm memory, made
+  again only when the memory grows, instead of one per text, file or network call; one
+  TextDecoder and TextEncoder; sound chunks go to the audio thread in buffers it gives back to
+  be filled again, instead of a new 8 KB copy for each (about 385 KB a second); the pointer
+  query, the canvas's size, the frame callback and the frame-pacing figures no longer make
+  objects each frame; gamepads are read each frame only once one has been used. In 60 s of
+  Aces the page's JavaScript heap grows 323 KB a second instead of 347, with 29 collections a
+  minute instead of 32, and the audio thread has no major collections (2 a minute before); in a
+  busy test page 39 KB a second instead of 59. Most of what remains in Aces is the module's
+  numbers handed to WebGL calls (f32 uniform values become heap numbers in JavaScript).
+  `tools/webperfcheck.mjs` (in CI) builds pages in headless Chromium and checks what they keep
+  after starting and that the runtime makes no typed arrays, copies, coders, media queries or
+  gamepad lists per frame.
+
 ## 0.34.1
 
 - Web pages decode the embedded program without an intermediate array of characters
