@@ -153,6 +153,29 @@ f1_out = f1.communicate(timeout=60)[0]
 check("netplay for three through the host: the host", h_out, ["player 0: played true, desync -1, stood in true"])
 check("netplay for three through the host: player 1", f1_out, ["player 1: played true, desync -1, stood in true"])
 check("netplay for three through the host: player 2", f2.stdout, ["player 2: played true, desync -1"])
+# rollback for three over WebSockets, where player 2's program is killed partway and started again:
+# it comes back with the token it saved, and every machine's game is the same afterwards
+npr = build("np_rejoin") + exe
+nrd = os.path.join(tmp, "rejoin")
+os.makedirs(nrd, exist_ok=True)
+h = subprocess.Popen([npr], stdout=subprocess.PIPE, text=True, env=dict(env, DIR=nrd, ROLE="host"))
+f1 = subprocess.Popen([npr], stdout=subprocess.PIPE, text=True, env=dict(env, DIR=nrd, ROLE="friend"))
+time.sleep(0.5)
+f2 = subprocess.Popen([npr], stdout=subprocess.DEVNULL, env=dict(env, DIR=nrd, ROLE="friend"))
+t0 = time.time()
+while time.time() - t0 < 60 and not (os.path.exists(os.path.join(nrd, "played2")) and os.path.exists(os.path.join(nrd, "token2"))): time.sleep(0.05)
+f2.kill()
+f2.wait()
+time.sleep(1.0)
+f2 = subprocess.Popen([npr], stdout=subprocess.PIPE, text=True, env=dict(env, DIR=nrd, ROLE="friend", REJOIN="1"))
+outs = [p.communicate(timeout=120)[0] for p in (h, f1, f2)]
+lines = [[l for l in o.splitlines() if l.strip()] for o in outs]
+hashes = [l[0].split(": ", 1)[1] if l and l[0].startswith(f"player {k}: ") else None for k, l in enumerate(lines)]
+if None not in hashes and len(set(hashes)) == 1 and hashes[0].endswith("desync -1 problem ''") and lines[0][1:] == ["came back: [2]"]:
+    print("ok   netplay: a player whose program restarts comes back into the game")
+else:
+    failed += 1
+    print(f"FAIL netplay: a player whose program restarts comes back into the game: {lines}")
 # two games through lib/invite.jo's screens (run with no window: the software renderer, no display)
 ig = build("invite_game") + exe
 igd = os.path.join(tmp, "invite_codes")
@@ -880,6 +903,15 @@ if shell:
         r_out = r.communicate()[0]
     for b in pages: b.kill()
     check("two web pages over WebRTC (in Chromium)", r_out, [f"player {p}: played true, direct true, desync -1" for p in range(2)])
+    # a web page reloaded in a relay room comes back into the game with the token it saved, and
+    # the two pages connect straight to each other again (driven by node)
+    if shutil.which("node"):
+        relay = build("rejoin_relay") + exe
+        page = build("rejoin_page", "--target", "wasm") + ".html"
+        r = subprocess.run(["node", os.path.join(root, "tools", "web_rejoin.mjs"), shell, page, relay, os.path.join(tmp, "webrejoin")],
+                           capture_output=True, text=True, timeout=240)
+        print(r.stdout.strip())
+        if r.returncode != 0: failed += 1
     # WebRTC between a web page and a native program, each inviting in turn (driven by node)
     if shutil.which("node"):
         page = build("invite_page", "--target", "wasm") + ".html"

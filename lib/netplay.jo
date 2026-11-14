@@ -119,7 +119,7 @@ struct Session[S, I]:
     rejoined: int[]                 # (the host) players who came back, in the latest play
     __rjh: (mut Session[S, I], int) -> bool
     __rjm: (mut Session[S, I], int, u8[]) -> void
-    __rj: __NpRj[I]
+    __rj: __NpRj
     __epochs: int[]                 # each player's newest process (its packets' epoch); empty without rejoining
     __only = -1                     # (a returning player until the host has handed over: send to it alone)
 
@@ -400,8 +400,8 @@ __np_encode[I] = (pk: __NpPacket[I]) -> u8[]:
 # Input text and the receipt vector are shared across this frame's recipients. In particular,
 # forwarding a large input serializes it once, instead of once for every peer.
 __np_encode_cached[I] = (pk: __NpPacket[I], cache: mut {int: str}, receipts: str) -> u8[]:
-    hub = if pk.epoch > 0: "{pk.hub}/{pk.epoch}" else: "{pk.hub}"
-    out = bytes("NP5 {pk.from} {pk.to} {pk.tick} {pk.adv} {hub} {pk.check} {pk.hash >> 32} {pk.hash & 0xFFFFFFFF} {pk.sent:.4} {pk.echo:.4} {pk.held:.4} {receipts} {pk.desync}\n{to_text((pk.version, pk.builds))}")
+    # (the hub, and from a rejoin on the sender's process: hub + epoch * 2^20)
+    out = bytes("NP5 {pk.from} {pk.to} {pk.tick} {pk.adv} {pk.hub + (pk.epoch << 20)} {pk.check} {pk.hash >> 32} {pk.hash & 0xFFFFFFFF} {pk.sent:.4} {pk.echo:.4} {pk.held:.4} {receipts} {pk.desync}\n{to_text((pk.version, pk.builds))}")
     body = ""
     loop r in pk.ranges:
         if r.player == pk.from:
@@ -435,18 +435,10 @@ __np_decode[I] = (data: u8[]) -> __NpPacket[I]?:
     loop nl < data.len() and data[nl] != '\n': nl += 1
     desync = to_int(w[13]) ?? return none
     n: int[]
-    epoch = 0
     loop k in [1..9):
-        word = w[k]
-        # (the hub, and the sender's process after a rejoin: "hub/epoch")
-        if k == 5 and contains(word, "/"):
-            hw = split(word, "/")
-            if hw.len() != 2: return none
-            word = hw[0]
-            epoch = to_int(hw[1]) ?? return none
-            if epoch < 0: return none
-        v = to_int(word) ?? return none
+        v = to_int(w[k]) ?? return none
         n.push(v)
+    if n[4] < -1: return none
     f: f64[]
     loop k in [9..12):
         v = to_float(w[k]) ?? return none
@@ -497,7 +489,7 @@ __np_decode[I] = (data: u8[]) -> __NpPacket[I]?:
                 if r is TextError: return none
                 ins.push(r)
         ranges.push(__NpRange[I](ns[0], ns[1], ns[2], ns[3], ins, quiet, rtt))
-    __NpPacket[I](n[0], n[1], n[2], n[3], n[4], n[5], (u64(n[6]) << 32) | u64(n[7]), has, ranges, f[0], f[1], f[2], desync, envelope.2, envelope.3, epoch)
+    __NpPacket[I](n[0], n[1], n[2], n[3], ((n[4] + 1) & 0xFFFFF) - 1, n[5], (u64(n[6]) << 32) | u64(n[7]), has, ranges, f[0], f[1], f[2], desync, envelope.2, envelope.3, (n[4] + 1) >> 20)
 
 # Read identity before touching compressed data or the game's input type.
 type __NpBuildList = str?[]
@@ -813,11 +805,12 @@ __np_rtc_message[S, I] = (s: mut Session[S, I], m: str):
         at = len(parts[0]) + len(parts[1]) + len(parts[2]) + len(parts[3]) + 4
         if at < len(m): rest = m[at..]
         if what == "hello":
-            if s.__rtc_open[from]: return
-            if s.me < from:
-                # (a fresh offer: the other page may have come back)
-                if s.__rtc[from] >= 0: __wasm_rtc_close(s.__rtc[from])
-                s.__rtc[from] = __wasm_rtc_new(1, data(s.__stun), len(s.__stun))
+            # (the other page has no connection to this one: it has just come, or come back, as
+            # a page reloaded. One this page still has is to the page before: a fresh offer)
+            if s.__rtc[from] >= 0: __wasm_rtc_close(s.__rtc[from])
+            s.__rtc[from] = -1
+            s.__rtc_open[from] = false
+            if s.me < from: s.__rtc[from] = __wasm_rtc_new(1, data(s.__stun), len(s.__stun))
             else: __np_rtc_say(s, from, "hello", "")
         else if what == "signal":
             if s.__rtc[from] < 0:
@@ -893,7 +886,7 @@ struct __NpRjMeta:
     versions: str?[]
 
 # (the host's side of one returning player)
-struct __NpXfer[I]:
+struct __NpXfer:
     peer = -1                       # its connection (s.over; -1: through the relay, or outgoing)
     nonce = ""                      # (its process: the same one asking again is not a new one)
     id = 0                          # (a newer transfer's is higher: the returning player drops an older one)
@@ -907,7 +900,7 @@ struct __NpXfer[I]:
     next = 0                        # the next piece to send
     moved = 0.0                     # when it last acknowledged something new (or sending went back)
     base: int[]                     # [q]: the tick of tails[q][0]
-    tails: I[][]                    # each player's inputs from base[q] on, kept for it
+    tails: str[][]                  # each player's inputs from base[q] on, kept for it (as text)
     has: int[]                      # each player's inputs it has, below this tick
     sent: int[]                     # (each player's inputs sent to it, below this tick)
     sent_has: int[]                 # (and has, then)
@@ -916,12 +909,12 @@ struct __NpXfer[I]:
     hand = -1                       # the tick its own inputs take over from (this machine's below)
     hand_at = -1.0
 
-struct __NpRj[I]:
+struct __NpRj:
     # (the host)
     tokens: str[]
     told: bool[]                    # each player has its token (acknowledged), or it is revoked
     told_at: f64[]
-    xfers: {int: __NpXfer[I]}
+    xfers: {int: __NpXfer}
     admitted: int[]                 # (s.admit: connections that may be returning players')
     done: {int: int}                # player -> the process handed over to (to answer its ready again)
     next_id = 1
@@ -1124,7 +1117,7 @@ __np_rj_message[S, I] = (s: mut Session[S, I], peer: int, d: u8[]):
     __np_rj_player(s, from, w, body)
 
 # (the host: what a returning player has)
-__np_rj_acked[S, I] = (s: Session[S, I], x: mut __NpXfer[I], w: str[]):
+__np_rj_acked[S, I] = (s: Session[S, I], x: mut __NpXfer, w: str[]):
     if w.len() < 7: return
     have = to_int(w[5]) ?? return
     tick = to_int(w[6]) ?? return
@@ -1143,7 +1136,7 @@ __np_rj_acked[S, I] = (s: Session[S, I], x: mut __NpXfer[I], w: str[]):
     x.tick = max(x.tick, tick)
 
 # (the host: a returning player has everything below its handover, and plays from it on)
-__np_rj_handed[S, I] = (s: mut Session[S, I], p: int, x: __NpXfer[I], recvs: str):
+__np_rj_handed[S, I] = (s: mut Session[S, I], p: int, x: __NpXfer, recvs: str):
     if s.__stand[p]: __np_rj_release(s, p, x)
     if s.__stand[p]: return
     rs = split(recvs, ",")
@@ -1155,11 +1148,6 @@ __np_rj_handed[S, I] = (s: mut Session[S, I], p: int, x: __NpXfer[I], recvs: str
     s.__rj.came.push(p)
     s.__rj.told[p] = true
     __np_rj_say(s, p, "go {x.id} {x.epoch}", [])
-    # (web pages in a relay room connect to its new page straight again)
-    if s.__relay >= 0:
-        loop q in [0..s.players):
-            if q != s.me and q != p: __np_rj_say(s, q, "back {p}", [])
-        __np_rj_rtc_reset(s, p)
 
 # (the host: a returning player asks for its place)
 __np_rj_request[S, I] = (s: mut Session[S, I], peer: int, p: int, body: u8[]):
@@ -1203,7 +1191,7 @@ __np_rj_request[S, I] = (s: mut Session[S, I], peer: int, p: int, body: u8[]):
         s.__peers[p] = peer
         net.__net_mark(peer)
         s.__rj.admitted = [loop c in s.__rj.admitted: if c != peer: c]
-    s.__rj.xfers[p] = __NpXfer[I](peer = pr, nonce = r.2, id = s.__rj.next_id, epoch = s.__epochs[p] + 1, heard = now)
+    s.__rj.xfers[p] = __NpXfer(peer = pr, nonce = r.2, id = s.__rj.next_id, epoch = s.__epochs[p] + 1, heard = now)
     s.__rj.next_id += 1
     s.__rj.done.remove(p)
 
@@ -1287,7 +1275,7 @@ __np_rj_end[S, I] = (s: mut Session[S, I], p: int):
 
 # (the host: its inputs up to the handover played for it, and from there on its own are waited for,
 # from its new process only)
-__np_rj_release[S, I] = (s: mut Session[S, I], p: int, x: __NpXfer[I]):
+__np_rj_release[S, I] = (s: mut Session[S, I], p: int, x: __NpXfer):
     loop s.__recv[p] < x.hand:
         if not __np_take(s, p, s.__recv[p], s.__stand_in[p]): break
     if s.__recv[p] != x.hand: return
@@ -1303,7 +1291,7 @@ __np_rj_release[S, I] = (s: mut Session[S, I], p: int, x: __NpXfer[I]):
 
 # (the host: the game at the latest tick it is sure of, for a returning player: "" when made,
 # "-" to try again at the next play, else why it cannot be)
-__np_rj_make[S, I] = (s: mut Session[S, I], x: mut __NpXfer[I]) -> str:
+__np_rj_make[S, I] = (s: mut Session[S, I], x: mut __NpXfer) -> str:
     n = s.players
     k = min(confirmed(s), s.tick)
     if s.tick - k >= __NP_HIST - 16: return "-"
@@ -1318,11 +1306,11 @@ __np_rj_make[S, I] = (s: mut Session[S, I], x: mut __NpXfer[I]) -> str:
         x.chunks.push(z[at..min(at + __NP_CHUNK, z.len())))
         at += __NP_CHUNK
     x.meta = to_text(__NpRjMeta(s.version, k, x.epoch, z.len(), x.chunks.len(), s.__versions))
-    none_yet: I[]
+    none_yet: str[]
     x.base = fill(k, n)
     x.tails = fill(none_yet, n)
     loop q in [0..n):
-        loop t in [k..s.__recv[q]): x.tails[q].push(s.__inputs[t % __NP_HIST * n + q])
+        loop t in [k..s.__recv[q]): x.tails[q].push(to_text(s.__inputs[t % __NP_HIST * n + q]))
     x.has = fill(k, n)
     x.sent = fill(k, n)
     x.sent_has = fill(-1, n)
@@ -1337,19 +1325,19 @@ __np_rj_make[S, I] = (s: mut Session[S, I], x: mut __NpXfer[I]) -> str:
     ""
 
 # (the host: every input since the game sent, kept until the returning player has it)
-__np_rj_keep[S, I] = (s: Session[S, I], x: mut __NpXfer[I]):
+__np_rj_keep[S, I] = (s: Session[S, I], x: mut __NpXfer):
     n = s.players
     loop q in [0..n):
         drop = min(x.has[q], x.base[q] + x.tails[q].len()) - x.base[q]
         if drop > 0:
             x.tails[q] = x.tails[q][drop..]
             x.base[q] += drop
-        loop t in [x.base[q] + x.tails[q].len()..s.__recv[q]): x.tails[q].push(s.__inputs[t % __NP_HIST * n + q])
+        loop t in [x.base[q] + x.tails[q].len()..s.__recv[q]): x.tails[q].push(to_text(s.__inputs[t % __NP_HIST * n + q]))
 
 # (the host: the inputs a returning player lacks, as far as it can keep them: "tail id tick hand
 # epoch", then
 # for each player "q first count" and its inputs, deflated when long)
-__np_rj_tail[S, I] = (s: mut Session[S, I], p: int, x: mut __NpXfer[I]):
+__np_rj_tail[S, I] = (s: mut Session[S, I], p: int, x: mut __NpXfer):
     # (when there are more, when it says it has more, or after a while in case what was sent was
     # lost: each time from what it has, as far as its ring of ticks takes)
     now = elapsed()
@@ -1368,7 +1356,7 @@ __np_rj_tail[S, I] = (s: mut Session[S, I], p: int, x: mut __NpXfer[I]):
         body += "\n{q} {from} {to - from}"
         prev = ""
         loop t in [from..to):
-            text = to_text(x.tails[q][t - x.base[q]])
+            text = x.tails[q][t - x.base[q]]
             body += if text == prev: "\n=" else: "\n" + text
             prev = text
     if len(body) == 0: return
@@ -1390,9 +1378,6 @@ __np_rj_player[S, I] = (s: mut Session[S, I], from: int, w: str[], body: u8[]):
         if from != auth or w.len() < 5: return
         if ph == 0 or ph == 5: s.rejoin_token = w[4]
         __np_rj_say(s, from, "tokack", [])
-        return
-    if kind == "back":
-        if w.len() >= 5: __np_rj_rtc_reset(s, to_int(w[4]) ?? -1)
         return
     if from != auth or ph < 1 or ph > 4: return
     s.__heard[from] = elapsed()
@@ -1533,15 +1518,6 @@ __np_rj_take[S, I] = (s: mut Session[S, I], body: u8[]):
             if q == s.me and s.__rj.hand >= 0 and t >= s.__rj.hand: break
             __np_set(s, q, t, ins[k])
 
-# (web pages in a relay room: the connection to player p's page made again, as it is a new page)
-__np_rj_rtc_reset[S, I] = (s: mut Session[S, I], p: int):
-    when TARGET == "wasm":
-        if p < 0 or p >= s.__rtc.len() or p == s.me: return
-        if s.__rtc[p] >= 0: __wasm_rtc_close(s.__rtc[p])
-        s.__rtc[p] = -1
-        s.__rtc_open[p] = false
-        __np_rtc_say(s, p, "hello", "")
-
 # ---------------- spectators ----------------
 # A spectator plays the game from the confirmed inputs a player's machine sends it, a little
 # behind the players. The game sends them itself, over any transport (net.send to the
@@ -1679,7 +1655,6 @@ update[S, I] = (w: mut Watch[S, I], dt: f64):
 __np_rooms: {int: str}
 __np_relay_players: {int: int}
 __np_relay_dest: {(str, int): int}
-__np_relay_alt: {(str, int): int}       # a returning player's new connection, while the old one is still there
 __np_relay_retired: {int: bool}         # old connections of players who came back: what they send is left
 
 # a relay on port: call it every frame (in a game that hosts others), or relay_forever
@@ -1691,18 +1666,17 @@ relay = (port: int) -> void | net.NetError:
                 if let player = __np_relay_players.get(e.peer):
                     key = (room, player)
                     if __np_relay_dest.get(key) == e.peer: __np_relay_dest.remove(key)
-                    if __np_relay_alt.get(key) == e.peer: __np_relay_alt.remove(key)
             __np_rooms.remove(e.peer)
             __np_relay_players.remove(e.peer)
             __np_relay_retired.remove(e.peer)
         else if e.kind != .message: continue
         else if let room = __np_rooms.get(e.peer):
-            if starts_with(e.text, "NPR1 "):
-                __np_relay_rejoin(room, e.peer, e.data)
-                continue
             # (route from the first three header words, without decoding the game's input
-            # type or scanning every player for every packet)
-            if starts_with(e.text, "NP5 "):
+            # type or scanning every player for every packet. Rejoining's messages, "NPR1", are
+            # never left out for a backlog, each side pacing its own; one from a new connection
+            # is a returning player's, which takes the place over from the old connection)
+            rj = starts_with(e.text, "NPR1 ")
+            if starts_with(e.text, "NP5 ") or rj:
                 if __np_relay_retired.contains(e.peer): continue
                 nl = 0
                 loop nl < e.data.len() and e.data[nl] != '\n': nl += 1
@@ -1712,10 +1686,9 @@ relay = (port: int) -> void | net.NetError:
                     to = to_int(head[2])
                     if from != none and to != none:
                         key = (room, from!)
-                        if __np_relay_alt.get(key) == e.peer:
-                            # (a returning player before the handover: routed, not registered)
-                            if let dest = __np_relay_dest.get((room, to!)): net.send(dest, e.data)
-                            continue
+                        if rj and __np_relay_dest.get(key) != e.peer:
+                            if let old = __np_relay_dest.get(key): __np_relay_retired[old] = true
+                            __np_relay_dest[key] = e.peer
                         __np_relay_players[e.peer] = from!
                         if let old = __np_relay_dest.get(key):
                             if old != e.peer:
@@ -1726,47 +1699,13 @@ relay = (port: int) -> void | net.NetError:
                                 continue
                         __np_relay_dest[key] = e.peer
                         if let dest = __np_relay_dest.get((room, to!)):
-                            if dest != e.peer and net.backlog(dest) <= __NP_BACKLOG: net.send(dest, e.data)
+                            if dest != e.peer and (rj or net.backlog(dest) <= __NP_BACKLOG): net.send(dest, e.data)
                         # (an unregistered destination is covered by the next tick's packet)
                         continue
             # (WebRTC signaling, and unreadable packets so sessions can report a problem)
             loop k, v in __np_rooms:
                 if v == room and k != e.peer and net.backlog(k) <= __NP_BACKLOG: net.send(k, e.data)
         else if starts_with(e.text, "join "): __np_rooms[e.peer] = e.text[5..]
-
-# Rejoining's messages ("NPR1 from to kind ..."): sent on, never left out for a backlog (each
-# side paces them). A returning player's request registers its new connection; while the old one
-# is still connected, the new one is an alternate that the host's answers go to, until the host
-# hands its place over ("go"), when the old connection is retired.
-__np_relay_rejoin = (room: str, peer: int, data: u8[]):
-    nl = 0
-    loop nl < data.len() and data[nl] != '\n': nl += 1
-    head = split(str_from_bytes(data[..nl)), " ")
-    if head.len() < 4: return
-    from = to_int(head[1]) ?? return
-    to = to_int(head[2]) ?? return
-    kind = head[3]
-    key = (room, from)
-    if __np_relay_retired.contains(peer): return
-    old = __np_relay_dest.get(key)
-    if old == none or old == peer:
-        __np_relay_dest[key] = peer
-        __np_relay_players[peer] = from
-    else if kind == "req" and __np_relay_alt.get(key) != peer:
-        __np_relay_alt[key] = peer
-    else if kind == "req" or __np_relay_alt.get(key) == peer: pass
-    else: return
-    tk = (room, to)
-    dest = __np_relay_alt.get(tk) ?? __np_relay_dest.get(tk) ?? return
-    net.send(dest, data)
-    if let alt = __np_relay_alt.get(tk):
-        if kind == "go":
-            # (the place is the new connection's: the old one's packets are left from now on)
-            if let gone = __np_relay_dest.get(tk): __np_relay_retired[gone] = true
-            __np_relay_dest[tk] = alt
-            __np_relay_players[alt] = to
-            __np_relay_alt.remove(tk)
-        else if kind == "refuse": __np_relay_alt.remove(tk)
 
 # a program that is only a relay
 relay_forever = (port: int) -> void | net.NetError:

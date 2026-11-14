@@ -1,0 +1,74 @@
+# tools/nettest.py: rollback netplay for three, over WebSockets, where one player's program is
+# killed partway and started again, and comes back into the game with the token it saved. The
+# host (ROLE host) listens (its port in DIR/port), tells each friend its number, and keeps a
+# returning player's place (s.admit); a friend (ROLE friend) connects, and with REJOIN set, comes
+# back as player 2 with DIR/token2. Each says its game's hash at tick 1500.
+import net
+import netplay
+
+struct Pad:
+    dx = 0
+struct Game:
+    pos: int[] = [0, 0, 0]
+    turns = 0
+
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..3):
+        g.pos[p] += pads[p].dx
+        if pads[p].dx > 0: g.turns += p + 1
+    g
+pad = (p: int, t: int) -> Pad: Pad(int(hash(t * 3 + p) % 3) - 1)
+
+dir = env("DIR") ?? "."
+role = env("ROLE") ?? "host"
+back = len(env("REJOIN") ?? "") > 0
+me = 0
+peers = [-1, -1, -1]
+if role == "host":
+    if not net.listen(0): panic("cannot listen")
+    write_file("{dir}/port.tmp", "{net.port()}")
+    rename_file("{dir}/port.tmp", "{dir}/port")
+    k = 1
+    loop k < 3:
+        loop e in net.receive_server():
+            if e.kind == .joined:
+                peers[k] = e.peer
+                net.send(e.peer, "you are {k}")
+                k += 1
+        sleep(0.01)
+else:
+    loop not file_exists("{dir}/port"): sleep(0.02)
+    host = net.connect("127.0.0.1", to_int(read_file("{dir}/port").unwrap()) ?? 0)
+    peers[0] = host
+    if back: me = 2
+    loop me == 0:
+        loop e in net.receive():
+            if e.kind == .message and starts_with(e.text, "you are "): me = to_int(e.text[8..]) ?? 0
+        sleep(0.01)
+s = netplay.session(Game(), step, players = 3, me = me)
+s.over(peers)
+s.allow_rejoin(if back: read_file("{dir}/token2").unwrap() else: "")
+saved = ""
+said = ""
+came: int[]
+start = time()
+loop time() - start < 90.0 and len(said) == 0:
+    if role == "host":
+        loop e in net.receive_server():
+            if e.kind == .left:
+                if let p = peers.index_of(e.peer): s.stand_in(p, Pad())
+            else if e.kind == .joined: s.admit(e.peer)
+    s.play(pad(me, s.tick + s.delay))
+    came.extend(s.rejoined)
+    if me == 2 and s.rejoin_token != saved:
+        saved = s.rejoin_token
+        write_file("{dir}/token2.tmp", saved)
+        rename_file("{dir}/token2.tmp", "{dir}/token2")
+    if me == 2 and not back and s.tick >= 400: write_file("{dir}/played2", "")
+    if s.confirmed() > 1500 and s.tick > 1500 and s.tick < 1600:
+        said = "player {me}: {hash(s.__states[1500 % 128])} desync {s.desync} problem '{s.problem}'"
+    sleep(1.0 / 240.0)
+print(said)
+if role == "host": print("came back: {came}")
+sleep(1.0)
