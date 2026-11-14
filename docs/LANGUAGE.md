@@ -2429,6 +2429,10 @@ seconds, and each long frame as it happens. In a web page, `env(name)` reads the
 parameters, in any letters (`?join=` is `env("JOIN")`'s), so `?SLOPPY_STATS=1` and `?stats` are the same. Files in a web page (`read_file`,
 `write_file`, `list_dir`) are the page's own, in memory (`sloppy.files` in JavaScript); a web build
 run under node (`tools/runwasm.js page.html args...`) uses the real ones and gets the arguments.
+A web page holds its program as base64 text, which it decodes and compiles as it loads and then
+lets go; `sloppy build --target wasm --wasm-file` puts the program in `game.wasm` beside
+`game.html` instead, which the page compiles while it downloads (served over http: a page opened
+from disk may not fetch a file, and says so), for big games on a web site.
 Screenshots, pressing keys at given frames and the other environment variables for running a
 game with no one at the keyboard are in [Testing a game](#testing-a-game) below.
 
@@ -2437,7 +2441,8 @@ sloppy file.jo [args]     compile and run (wasm target: opens the browser)
 sloppy watch file.jo      run it, and reload it while its files change
 sloppy --web file.jo      compile for the web and open it in the browser
 sloppy build file.jo      write the executable / .html (-o game.zip: the page as index.html in a
-                          zip, ready to upload to itch.io; on Windows the .exe in one)
+                          zip, ready to upload to itch.io; on Windows the .exe in one; --wasm-file:
+                          the page's program in a .wasm file beside it, for a web server)
 sloppy test file.jo       run `test` blocks (sloppy test file.jo save: those with "save" in their names;
                           sloppy test dir, or sloppy test alone for .: those of each .jo file in it)
 sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, pico, platformer, 3d, character, story, online, program, tui, server)

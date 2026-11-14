@@ -131,6 +131,14 @@ require, and stops while the tab is hidden (the game gets no frames then). A fil
 reads is built in with `embed("x.png")` or `embed_dir("assets")`: a page has no disk. Debug
 builds are the smaller ones; `--release` makes the code faster and larger.
 
+A big game (many megabytes of assets) for a web site: `sloppy build game.jo --target wasm
+--wasm-file` writes `game.html` and `game.wasm` beside it. The page is small and the browser
+compiles the program while it downloads, so the game starts sooner and the page holds less
+memory (a 19 MB program: its page is parsed in 0.15 s instead of 0.7 s). Put both files on the
+server (`-o game.zip --wasm-file` zips both, for itch.io). Browsers do not let a page opened
+from disk load a file beside it, so that page needs a web server (`python3 -m http.server` in its
+folder, to try it); without `--wasm-file` the page is one file that works anywhere.
+
 Pause when `window_focused()` is false: the player clicked outside the page's frame (`sloppy
 new` makes games that do). The page takes the keyboard as it loads.
 

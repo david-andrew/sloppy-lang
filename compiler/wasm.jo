@@ -1064,13 +1064,43 @@ base64 = (b: u8[]) -> str:
         out.push('=')
     str_from_bytes(out)
 
-write_html = (path: str, wasm: u8[], title: str, icon: u8[]) -> bool:
-    page = html_page(wasm, title, icon)
-    # (game.zip: the page as index.html in a zip, for sites like itch.io)
-    if ends_with(path, ".zip"): return write_zip(path, [("index.html", bytes(page))])
-    write_file(path, page)
+wasm_file = false               # (sloppy build --wasm-file: the module in a file beside the page)
 
-html_page = (wasm: u8[], title: str, icon: u8[]) -> str:
+write_html = (path: str, wasm: u8[], title: str, icon: u8[]) -> bool:
+    # (game.zip: the page as index.html in a zip, for sites like itch.io)
+    zip = ends_with(path, ".zip")
+    if not wasm_file:
+        page = html_page(wasm, title, icon, "")
+        if zip: return write_zip(path, [("index.html", bytes(page))])
+        return write_file(path, page)
+    # --wasm-file: game.html and game.wasm beside it, which the page fetches and compiles as it
+    # downloads (served over http: a page opened from disk may not fetch); the file's name has
+    # the module's hash after it, so that a browser does not run one it kept from an older build
+    name = "index"
+    if not zip:
+        name = strip_ext(path)
+        sl = (last_index_of(name, "/") ?? -1)
+        if sl >= 0: name = name[sl + 1..]
+    h = hash_bytes(data(wasm), wasm.len()) & 0xFFFFFFFFFFFF
+    page = html_page(wasm, title, icon, "{url_escape(name)}.wasm?v={h:x}")
+    if zip: return write_zip(path, [("index.html", bytes(page)), ("{name}.wasm", wasm)])
+    write_bytes(strip_ext(path) + ".wasm", wasm) and write_file(path, page)
+
+# (a file's name in a URL: other characters than letters, digits and . _ - as %xx)
+url_escape = (s: str) -> str:
+    hexd = "0123456789ABCDEF"
+    out: u8[]
+    loop c in s:
+        if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '.' or c == '_' or c == '-': out.push(c)
+        else:
+            out.push('%')
+            out.push(hexd[int(c) >> 4])
+            out.push(hexd[int(c) & 15])
+    str_from_bytes(out)
+
+# the page: the runtime (lib/web) and the module, in a script element that is not run (base64
+# text, read and let go as the page loads) or, from src, a file beside it
+html_page = (wasm: u8[], title: str, icon: u8[], src: str) -> str:
     link = ""
     if icon.len() > 0: link = "<link rel=\"icon\" href=\"data:image/png;base64,{base64(icon)}\">\n"
     else: link = "<link rel=\"icon\" href=\"data:,\">\n"      # (no icon: no request for /favicon.ico)
@@ -1078,8 +1108,11 @@ html_page = (wasm: u8[], title: str, icon: u8[]) -> str:
     loop part in ["runtime.js", "gfx.js", "audio.js", "boot.js"]:
         # (the program's own JavaScript, from the build block's js: before it starts)
         if part == "boot.js" and len(program_js) > 0: js += program_js + "\n"
-        src = compiler_read_file("{lib_dir}/web/{part}") ?? ""
-        if len(src) == 0 and part != "audio.js": ice("missing {lib_dir}/web/{part}")
-        js += src + "\n"
-    html = "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{title}</title>\n{link}<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,viewport-fit=cover\">\n<style>html,body\{margin:0;height:100%;background:#111;color:#ddd;font:14px monospace}canvas\{display:block;margin:auto;outline:none}#log\{white-space:pre-wrap;margin:8px;max-height:40vh;overflow:auto}</style>\n</head><body><canvas id=\"sloppy-canvas\" tabindex=\"1\" width=\"0\" height=\"0\"></canvas><div id=\"log\"></div>\n<div id=\"sloppy-loading\" style=\"position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);color:#888\">loading…</div>\n<script>\nvar SLOPPY_WASM = \"{base64(wasm)}\";\n{js}\n</script></body></html>\n"
+        text = compiler_read_file("{lib_dir}/web/{part}") ?? ""
+        if len(text) == 0 and part != "audio.js": ice("missing {lib_dir}/web/{part}")
+        js += text + "\n"
+    module = ""
+    if len(src) > 0: module = "<script type=\"application/wasm\" id=\"sloppy-wasm\" data-src=\"{src}\"></script>\n"
+    else: module = "<script type=\"application/octet-stream\" id=\"sloppy-wasm\">{base64(wasm)}</script>\n"
+    html = "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{title}</title>\n{link}<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,viewport-fit=cover\">\n<style>html,body\{margin:0;height:100%;background:#111;color:#ddd;font:14px monospace}canvas\{display:block;margin:auto;outline:none}#log\{white-space:pre-wrap;margin:8px;max-height:40vh;overflow:auto}</style>\n</head><body><canvas id=\"sloppy-canvas\" tabindex=\"1\" width=\"0\" height=\"0\"></canvas><div id=\"log\"></div>\n<div id=\"sloppy-loading\" style=\"position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);color:#888\">loading…</div>\n{module}<script>\n{js}\n</script></body></html>\n"
     html

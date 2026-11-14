@@ -612,7 +612,7 @@ def build_gallery():
         if not play:
             os.makedirs(os.path.join(d, name), exist_ok=True)
             # (optimized: the players are who wait for it, and a second's building is nothing)
-            subprocess.run([sloppy, "build", full, "--target", "wasm", "--release", "-o", os.path.join(d, name, "index.html")], check=True, env=env)
+            subprocess.run([sloppy, "build", full, "--target", "wasm", "--release", "--wasm-file", "-o", os.path.join(d, name, "index.html")], check=True, env=env)
             play = f"{name}/"
         # the picture: frame 150, by the software renderer (no GPU, no display)
         exe = os.path.join(d, name + ".bin")
@@ -667,13 +667,14 @@ def main():
     t = t.replace('<title>Sloppy playground</title>', '<title>Sloppy playground</title><link rel="icon" href="../icon-32.png">'
                   + preview_meta("Sloppy playground", "Write and run Sloppy programs and games in your browser: the compiler itself runs here, as WebAssembly.", "playground/"), 1)
     open(pg, "w").write(t)
-    # Rebound, to play (sloppy-lang.org/rebound/)
+    # Rebound, to play (sloppy-lang.org/rebound/; the program in index.wasm beside the page,
+    # compiled while it downloads)
     os.makedirs(os.path.join(out, "rebound"))
-    subprocess.run([os.path.join(root, "bin", "sloppy"), "build", os.path.join(root, "examples", "rebound", "rebound.jo"), "--target", "wasm",
+    subprocess.run([os.path.join(root, "bin", "sloppy"), "build", os.path.join(root, "examples", "rebound", "rebound.jo"), "--target", "wasm", "--wasm-file",
                     "-o", os.path.join(out, "rebound", "index.html")], check=True, env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")))
     # Breakwater (sloppy-lang.org/breakwater/)
     os.makedirs(os.path.join(out, "breakwater"))
-    subprocess.run([os.path.join(root, "bin", "sloppy"), "build", os.path.join(root, "examples", "breakwater", "breakwater.jo"), "--target", "wasm",
+    subprocess.run([os.path.join(root, "bin", "sloppy"), "build", os.path.join(root, "examples", "breakwater", "breakwater.jo"), "--target", "wasm", "--wasm-file",
                     "-o", os.path.join(out, "breakwater", "index.html")], check=True, env=dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib")))
     build_gallery()
     # curl -fsSL .../install | bash

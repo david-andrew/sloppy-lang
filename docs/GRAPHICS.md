@@ -221,7 +221,9 @@ For a split export use `load_model(embed("assets/hero.gltf"), embed_dir("assets"
 are relative to the `.gltf` directory, including subdirectories. The loader does not read
 files beside the `.gltf` automatically. `embed` and `embed_dir` put those bytes in native and
 web builds alike. Check texture sizes before sharing: even a tiny model can contain several
-2048×2048 images. Build with `sloppy build game.jo --target wasm`; the result is one HTML file.
+2048×2048 images. Build with `sloppy build game.jo --target wasm`; the result is one HTML file
+(with `--wasm-file`, an HTML page and the program's `.wasm` beside it, which a web server gives
+faster: see [Sharing it](START.md#sharing-it)).
 See [phones](START.md#phones) for touch movement and camera controls, and
 [responsive layout](LANGUAGE.md#responsive-layout) for menus and settings.
 

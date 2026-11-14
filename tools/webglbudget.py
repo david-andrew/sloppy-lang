@@ -182,7 +182,7 @@ def main():
                 failed += 1
                 continue
             html = out.with_suffix(".html").read_text()
-            embedded = re.search(r'(?:const|var) SLOPPY_WASM = "([^"]+)"', html)
+            embedded = re.search(r'id="sloppy-wasm">([^<]+)</script>', html)
             if not embedded:
                 raise ValueError(f"{name}: no embedded Wasm")
             wasm = base64.b64decode(embedded[1])
