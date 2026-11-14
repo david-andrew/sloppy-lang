@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Breaking: array `index_of(x)` returns `int?` (none when x is absent), matching strings; write
+  `xs.index_of(x) ?? -1` for the old value, or `if let i = xs.index_of(x)`.
+- Breaking: Map `has` is removed; use `m.contains(k)` or `k in m`.
+- Breaking: rollback `Session.lag` and `Session.ping` are `lag_ms` and `ping_ms`, as on clients
+  and servers (the same milliseconds).
+
 ## 0.33.0
 
 Speed. Compiling: the checker, lowering, code generation and optimizer do 5-6% less work for

@@ -29,7 +29,7 @@ The following contracts include the decisions implemented in consistency batches
   documented contracts. Strict empty/index operations panic; safe lookups provide absence.
   `lower_bound`/`upper_bound` return insertion positions. Maps/sets preserve insertion order,
   membership is `contains`/`in`, removal returns bool, and equality/hash remain consistent.
-  Ordinary map `get` is stable; array `index_of` is excluded below.
+  Ordinary map `get` is stable, and array `index_of` returns an optional index like strings.
 - **Text and parsing.** Raw byte length/index/slices and byte search offsets coexist with
   code-point `chars`, `char_count`, `first`, `last`, padding and `trim(chars)`. Whitespace trim
   and whitespace `split()` retain their documented ASCII rules. Use `join(parts, sep)`.
@@ -84,10 +84,6 @@ The following contracts include the decisions implemented in consistency batches
 These specific areas are **not frozen yet**. Their existing behavior stays documented until a
 coordinated change; a deferred proposal is not permission to silently change it.
 
-- **Protected game callers:** array `index_of` still returns int/-1, Map `has` still exists,
-  and Session `lag`/`ping` still use milliseconds under the old names. They need Sky Barons
-  team coordination before completing C5/C7/N3. Client/Server use explicit `lag_ms` and
-  Client uses `ping_ms` already; no units have silently changed.
 - **Animation (G7):** settle inclusive numeric frame endpoints, checked animation-name failure,
   and 2D/3D completion policy. Batch 2 aligned `looping` spelling only; it did not change
   endpoint or absent-name behavior.

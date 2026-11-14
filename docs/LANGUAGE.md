@@ -419,7 +419,7 @@ An empty `{}` with no type written takes its key and value types from the first 
 `m[k] += v`, or `m.get(k, default)`) after it, as an empty `[]` does from a push; until then it
 cannot be read or printed.
 
-`m.has(k)`, `m.remove(k)`, `m.keys()`, `m.values()` and `m.len()` do what they say; `m.items()` is the (key, value) pairs, to sort them (`m.items().sorted((p): -p.1)`).
+`m.contains(k)`, `m.remove(k)`, `m.keys()`, `m.values()` and `m.len()` do what they say; `m.items()` is the (key, value) pairs, to sort them (`m.items().sorted((p): -p.1)`).
 
 A set (`Set[T]`, values without repeats) is written with braces and no colons, `{"a", "e",
 "i"}`, or made by a loop, `{loop w in words: w.lower()}`; `{}` is an empty one where a `Set` is

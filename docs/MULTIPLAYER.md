@@ -295,7 +295,7 @@ A tick may be played several times (each rollback plays it again), so it must do
 compute the game: a sound or particles started in it would start again. Start them in `update`
 from what changed in `s.state` since the last frame.
 
-`s.ping(p)` is the round trip to player p and back, in milliseconds, to show players (a
+`s.ping_ms(p)` is the round trip to player p and back, in milliseconds, to show players (a
 client's is `c.ping_ms`). It is from an input made to the answer's arrival, so it includes the
 frame each side waits before it plays and sends: two machines on one computer show about 16 ms.
 
@@ -312,7 +312,7 @@ mistakes.
 **Input delay.** An input takes effect `delay` ticks after it is made (2 by default, about
 33 ms), which hides that much latency with no rollback at all. More delay means fewer and
 shorter rollbacks; fighting games use 2 or 3, and more for a far player: about half the ping in
-ticks, `s.delay = clamp(int(s.ping(other) / 2.0 / 16.7), 2, 6)`. `s.delay` may be changed at
+ticks, `s.delay = clamp(int(s.ping_ms(other) / 2.0 / 16.7), 2, 6)`. `s.delay` may be changed at
 any time (from the ping once it is known, or a setting): a longer delay gives the ticks between
 the same input, a shorter one plays the inputs made meanwhile in turn.
 
@@ -631,7 +631,7 @@ loop not stopping():
     loop e in net.receive_server():
         if e.kind == .joined:
             name = net.handshake(e.peer).path[len("/play/")..]
-            if not rooms.has(name): rooms[name] = netplay.server(World(), apply, step)
+            if not rooms.contains(name): rooms[name] = netplay.server(World(), apply, step)
             if [loop _, r in room_of: if r == name: r].len() >= 8:
                 net.close(e.peer, 4001, "the room is full")
                 continue
@@ -710,7 +710,7 @@ update = (dt: f64):
 ## Trying it on one machine
 
 Run the game twice (two windows), as two players on this machine's addresses: examples/duel
-takes `PLAYER=0` and `PLAYER=1`. A real network is slower and loses things: `s.lag(100, 20,
+takes `PLAYER=0` and `PLAYER=1`. A real network is slower and loses things: `s.lag_ms(100, 20,
 0.05)` adds 100 ms (and up to 20 more) to what this session sends and drops 5% of it, and
 examples/duel takes `LAG=100`. For tests, `netplay.Link` is a network
 simulated in one program, with its own clock: two sessions over it play the same way every
@@ -761,7 +761,7 @@ p1=$!
 wait "$p0"; wait "$p1"
 ```
 
-Use different `SLOPPY_SEED` values for a stronger determinism check, and try `s.lag(100,
+Use different `SLOPPY_SEED` values for a stronger determinism check, and try `s.lag_ms(100,
 20, 0.05)`. To compare the games, save confirmed inputs as they arrive (the replay example
 above), then replay the saved inputs from `Game()` to the same tick on both sides. Their
 current `s.state` values may be at different ticks when each program exits; comparing

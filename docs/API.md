@@ -115,7 +115,7 @@ Generic array utilities. Arrays are values with copy-on-write storage.
 - `last[T] = (xs: T[], n: int) -> T[]`: the last n elements (all of them when there are fewer)
 - `get[T] = (xs: T[], i: int) -> T?`: element i, or none past either end (xs[i] stops the program there): xs.get(i) ?? fallback. Optionals flatten: for optional elements, check bounds to distinguish stored none from absence.
 - `contains[T] = (xs: T[], x: T) -> bool`
-- `index_of[T] = (xs: T[], x: T) -> int`
+- `index_of[T] = (xs: T[], x: T) -> int?`
 - `map[T, U] = (xs: T[], f: (T) -> U) -> U[]`
 - `filter[T] = (xs: T[], f: (T) -> bool) -> T[]`
 - `retain[T] = (xs: mut T[], keep: (T) -> bool)`: keep only the elements for which keep is true, in their order (in place: bullets.retain((b): b.alive))
@@ -325,7 +325,7 @@ Patterns: . (any character but a line break) [abc] [a-z] [^0-9] \d \w \s (and \D
 # example: maps
 ages = {"ada": 36, "alan": 41}
 ages["grace"] = 85                       # add or change
-print(ages["ada"], ages.len(), ages.has("bob"))
+print(ages["ada"], ages.len(), ages.contains("bob"))
 print(ages.get("bob") ?? 0)              # none for a missing key: 0 instead
 
 counts: {str: int} = {}
@@ -350,7 +350,6 @@ Maps {K: V} keep insertion order and copy as values. Use get/contains for lookup
 - `get[K, V] = (m: Map[K, V], k: K) -> V?`: Optionals flatten: when V is optional, contains(m, k) distinguishes a stored none from absence.
 - `get[K, V] = (m: Map[K, V], k: K, default: V) -> V`
 - `contains[K, V] = (m: Map[K, V], k: K) -> bool`
-- `has[K, V] = (m: Map[K, V], k: K) -> bool`
 - `len[K, V] = (m: Map[K, V]) -> int`
 - `is_empty[K, V] = (m: Map[K, V]) -> bool`
 - `keys[K, V] = (m: Map[K, V]) -> K[]`
@@ -1626,7 +1625,7 @@ loop open.len() > 0:
         ny = y + d.1
         if nx < 0 or ny < 0 or nx >= w or ny >= map.len() or map[ny][nx] == '#': continue
         n = ny * w + nx
-        if cost.has(n) and cost[n] <= cost[c] + 1.0: continue
+        if cost.contains(n) and cost[n] <= cost[c] + 1.0: continue
         cost[n] = cost[c] + 1.0
         open.push(n, cost[n])
 ```
@@ -6139,13 +6138,13 @@ draw = ():
   ```
 - `silent[S, I] = (s: Session[S, I], p: int) -> f64`: player p has not been heard from for this many seconds
 - `stats_line[S, I] = (s: mut Session[S, I]) -> str`: one line on how play has gone since the last call, for a log (the game writes it where it likes, once a second, say): ticks played, frames spent waiting for someone's inputs, rollbacks and the longest, and for each other player the round trip, how long since heard from, and over net's peers how they are reached and what waits to go to them
-- `ping[S, I] = (s: Session[S, I], p: int) -> f64`: the round trip to player p and back, in milliseconds (smoothed; 0 before it is known)
+- `ping_ms[S, I] = (s: Session[S, I], p: int) -> f64`: the round trip to player p and back, in milliseconds (smoothed; 0 before it is known)
 - `play[S, I] = (s: mut Session[S, I], input: I)`: this frame's input from this machine's player; the game moves on a tick (unless waiting)
 - `outgoing[S, I] = (s: mut Session[S, I]) -> (int, u8[])[]`: what to send to whom since the last call: (player, bytes) (without s.udp)
 - `receive[S, I] = (s: mut Session[S, I], data: u8[])`: bytes that arrived from another player (the packet says which)
 - `stand_in[S, I] = (s: mut Session[S, I], p: int, input: I)`: this machine plays for player p from now on, with this input every tick (a game's "the computer flies it": the game's tick makes it so): for one who has left. Their inputs that reached this machine are kept, and the rest are this, so the others must have had none of theirs that this one did not: over net's peers, the host, who passes on all of them, can (or either of two players).
 - `stands_in[S, I] = (s: Session[S, I], p: int) -> bool`: this machine plays for player p (s.stand_in)
-- `lag[S, I] = (s: mut Session[S, I], ms: f64, jitter_ms: f64 = 0, loss: f64 = 0)`: simulate a slow network on what this session sends: ms more latency, up to jitter_ms more at random, and a share of packets lost (0 to 1)
+- `lag_ms[S, I] = (s: mut Session[S, I], ms: f64, jitter_ms: f64 = 0, loss: f64 = 0)`: simulate a slow network on what this session sends: ms more latency, up to jitter_ms more at random, and a share of packets lost (0 to 1)
 
 #### Over net's peers (invite codes: web pages and native programs)
 
