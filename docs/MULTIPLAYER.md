@@ -383,34 +383,75 @@ player = 1)` is the K key, and gamepad 1's X.
 
 ### Rollback players who restart
 
-A brief connection interruption is covered by rollback's resend history. A program restart
-loses that history and the game's current state; automatic rollback rejoining is not yet
-implemented. `stand_in` continues playing for a departed player until the session ends. A
-spectator's `feed(-1)` is a confirmed snapshot and input feed, but does not transfer ownership
-of a rollback player's inputs.
+A player whose program restarts (a page reloaded, a crash) can come back into a running game.
+Every player's session takes part, before its first play:
 
-A complete host-authoritative rejoin needs these steps:
+```gdscript
+s = netplay.session(Game(), tick, players = 3, me = me)
+s.over(peers)                                   # (or s.join_relay(...))
+s.allow_rejoin(load_data("rejoin") ?? "")       # "" for a player new to the game
+# after each s.play(...): the token this player was given, kept for a restart
+if s.rejoin_token != saved:
+    saved = s.rejoin_token
+    save_data("rejoin", saved)
+```
 
-1. Authenticate the returning player with a saved, unguessable host-issued token and check the
-   build before decoding a snapshot. The host continues supplying their stand-in inputs.
-2. Finish any pending rollback, take the state at `K = min(confirmed(), tick)`, and transfer it
-   with every player's confirmed input ranges from K. The rejoiner replays those inputs; no
-   predicted state or inputs made while away replace the history already confirmed.
-3. Agree on a future handover tick H, after the rejoiner has caught up, with every surviving
-   peer. The host supplies stand-in inputs below H; the returner's new inputs begin at H.
-   Tag that ownership with an epoch, so delayed packets from the old process or stand-in
-   cannot overwrite the new player's input stream. Reset receipt vectors and hash history
-   around the imported snapshot and acknowledge the handover before releasing `stand_in`.
-4. Bound snapshot size and transfer time, pin the snapshot/input tail until acknowledged, and
-   retry or restart transfer when the moving input tail outruns retained history.
+One machine keeps each player's place: the host the others play over, or in a mesh (a relay
+room, two players over invite codes) player 0, and player 1 for player 0. It gives each player a
+256-bit random token, `s.rejoin_token`, sent again until it arrives. A program that starts again
+makes its session as before (the same `players` and `me`: save `me` beside the token, and the
+room) and passes the saved token to `allow_rejoin`. Then:
 
-Two viable transfer policies have different costs: a bounded, compressed snapshot on a reliable
-side channel (simple, but games must choose a size limit and the host must keep enough history),
-or a streamed/chunked snapshot with flow control (supports large worlds and UDP-only sessions,
-but needs fragmentation, acknowledgements and memory limits). The current 128-tick history and
-single UDP packets cannot safely cover arbitrary game states or long transfers. Those limits
-and whether to pause survivors while transferring need a game-facing policy before providing
-an automatic handover API.
+1. It asks the host (`s.rejoining` and `s.waiting` are true until it plays again: draw
+   "coming back..."). The host checks the build, then the token, before anything of the game is
+   sent; if it was not already playing for that player (`stand_in`), it starts now, with no
+   input.
+2. The host sends the game at the latest tick every input is in for, `K = min(s.confirmed(),
+   s.tick)`, as its text (`to_text`), deflated, in pieces, then every player's inputs from K on.
+   The returning machine plays them as fast as a few milliseconds a frame allow.
+3. Once it has caught up, the host chooses a tick about half a second on and tells it. Below
+   that tick the host's stand-in inputs are the player's, everywhere; from it on, the returning
+   machine's own. The new process's packets carry a newer epoch, so anything late from its old
+   process is left; its connection replaces the old one (a relay retires the old one).
+4. When the returning machine has everything below that tick it says so, and plays. On the
+   host, `s.rejoined` lists the player for that play, and `s.stands_in(p)` is false again.
+
+The others never wait for it: meanwhile the host plays for the absent player, and keeps every
+input since K for the returning one (for up to a minute of play; one that falls further behind,
+or stops answering, is sent a newer game, and after four tries is refused). One that stops again
+during all of this is played for as before, and may ask again with the same token.
+
+Over net's peers (`s.over`), the returning program connects to the host again in whatever way
+the game connects (listen and connect, or a new invite code), and the host gives the new
+connection to the session: `s.admit(peer)`, for example on each `.joined` of a game that
+listens. Its token says which player it is, and the session plays over it in that player's
+place from then on. Through a relay, the returning program joins the same room as before, and
+nothing more is needed; web pages connect straight to it again (WebRTC). Without a transport of
+the session's own (`s.outgoing()`/`s.receive()`), deliver its messages to that player as any
+others. Rejoining's messages go on the session's connections, never UDP: each is sent again
+until it is acknowledged, so a lost one only delays it. A session over `s.udp` cannot come back
+(its `problem` says so), and its host refuses one that asks.
+
+A refused player's session holds still, with `s.problem` saying why: a token that is wrong or
+has expired, another build, a game too large, one that could not catch up. Its game decides
+what next (a new session, back to the menu). Settings, before play:
+
+- `s.rejoin_grace` (the host; `allow_rejoin(token, grace = 30.0)`): the seconds a player the host
+  plays for may come back in after it was last heard from; then its token is revoked. With 0,
+  no tokens are given.
+- `s.rejoin_limit` (the host and the returning player; 4 MB): the most the game may be,
+  deflated. Over it the rejoin is refused, saying how large the game was. Keep what need not
+  travel (effects, caches) out of the game's struct.
+- A token is a bearer credential: keep it private (the browser's storage and the save folder
+  are the program's own) and never send it in a chat, a hello or a log. A host that restarts
+  gives new tokens: save the token whenever it changes. A valid token also takes a player's
+  place over from a process of it that is still running.
+
+The returning session starts at tick K, not 0: `s.inputs_at` has the ticks from K on (a replay
+kept from the start begins again after a return), and its game must come back the same from its
+text, as it does for a spectator's `feed(-1)`: plain data, with nothing the tick reads kept
+elsewhere. The host's own restart, in a game that plays over a host, is not one it can come back
+from: the others have no one to play over.
 
 ## Client and server
 

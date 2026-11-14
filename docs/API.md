@@ -5565,7 +5565,7 @@ Messages arrive whole and in order (WebSockets over TCP). A web page can only co
       if p >= 0: spawn((): talk(p))
   ```
 - `gone = (peer: int) -> bool`: the peer has gone (or never was), and its events have all been received, its .left last: a task looping `not net.gone(p)` sees every one
-- `receive_server = () -> NetEvent[]`: the same, for the peers that connected to this program's server (listen) only
+- `receive_server = () -> NetEvent[]`: the same, for the peers that connected to this program's server (listen) only (netplay's packets on the peers a session plays over stay the session's)
 - `wait = (seconds: f64) -> bool`: wait until something comes for the program, or `seconds` pass: a message or a peer (receive), a connection's bytes or one to accept (the tcp_ functions), a fetch's answer (fetch_result), a request for its http server; true when something came (false: the time passed, or the program was asked to stop, as stopping() then says, or the task was cancelled). Meanwhile what waits to go out is sent as the connections take it. For a program with no window, which has nothing else to do: a game's frames come anyway
 - `unsent = (peer: int) -> int`: how many bytes sent to a peer still wait to go out to it (a peer that reads slowly, or has stopped: one with more than 8 MB waiting is let go, so that it does not hold the server's memory)
 - `handshake = (peer: int) -> Handshake`: how a peer asked to connect to this program's server (an empty Handshake for others)
@@ -6127,6 +6127,11 @@ draw = ():
       problem = ""                    # what is wrong, said once on stderr too: packets that cannot be
                                       # read (another build?), two players with one number, a
                                       # player not heard from for 5 s, the games differing
+      rejoin_token = ""               # this player's token from the host, to come back with after a restart (save it)
+      rejoin_grace = 0.0              # (the host) seconds a player it plays for may come back in, once last heard from
+      rejoin_limit = 4 << 20          # the most a returning player is sent: the game, compressed, in bytes
+      rejoining = false               # this machine is coming back into a game: asking, then catching up
+      rejoined: int[]                 # (the host) players who came back, in the latest play
   ```
 - `session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: int = 2) -> Session[S, I]`: a session of `players` players, this machine's being player `me` (from 0)
 - `confirmed[S, I] = (s: Session[S, I]) -> int`: ticks below this have every player's input: they will not change again (some may not have been played here yet: those from s.tick on)
@@ -6159,6 +6164,11 @@ draw = ():
 
 - `join_relay[S, I] = (s: mut Session[S, I], host: str, port: int, room: str, stun: str = "stun:stun.l.google.com:19302")`: play through the relay at host and port (or a ws:// or wss:// URL), with the players who name the same room
 - `direct[S, I] = (s: Session[S, I], p: int) -> bool`: player p's packets come and go straight (WebRTC between web pages), not through the relay
+
+#### Rejoining: a player whose program restarts comes back
+
+- `allow_rejoin[S, I] = (s: mut Session[S, I], token: str = "", grace: f64 = 30.0)`: This session takes part in rejoining: every player's, before play. token: the one this player was given before its program restarted (s.rejoin_token, saved by the game), to come back into the game with; "" for a player new to it. grace: on the host, how many seconds a player who has gone quiet may come back in. The host gives each player a token (s.rejoin_token, once it comes: save it), and plays for a returning player until it has caught up (s.rejoining while it does).
+- `admit[S, I] = (s: mut Session[S, I], peer: int)`: On the host, over net's peers (s.over): a new connection that may be a returning player's. Its rejoin request is read, and with the token that player was given, the session plays over it as that player from then on (in their place in the peers given to s.over).
 
 #### Spectators
 

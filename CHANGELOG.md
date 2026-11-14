@@ -30,6 +30,24 @@
   `tools/webperfcheck.mjs` (in CI) builds pages in headless Chromium and checks what they keep
   after starting and that the runtime makes no typed arrays, copies, coders, media queries or
   gamepad lists per frame.
+- Rollback players who restart come back into a running game. `s.allow_rejoin(saved_token)` on
+  every player's session: the host (the player the others play over, or in a mesh player 0, and
+  1 for 0) gives each player a 256-bit token, `s.rejoin_token`, for the game to save. A program
+  that starts again passes it back; the host checks the build and the token, plays for the
+  player meanwhile (`stand_in`), and sends the game at its latest confirmed tick (its text,
+  deflated, in pieces, at most `s.rejoin_limit`, 4 MB) and every input since. The returning
+  machine plays them to catch up (`s.rejoining`), and from a tick the host chooses about half a
+  second on, its own inputs replace the stand-in's, with a newer epoch in its packets so its old
+  process's are left; the host's `s.rejoined` lists it. The others never pause. Over net's peers
+  the host hands the new connection to the session with `s.admit(peer)`; through a relay nothing
+  more is needed (a reloaded web page connects straight to the others again). Each message is
+  sent again until acknowledged; a player that falls behind is sent a newer game; a wrong or
+  expired token (`s.rejoin_grace`, 30 s after the host began playing for it), another build, a
+  game over the limit, and sessions over UDP are refused, saying why in `s.problem`.
+- Web pages in a relay room: a page that says hello (it has just come, or come back) gets a fresh
+  WebRTC connection, in place of one still kept to its page before a reload.
+- `net.receive_server()` leaves netplay's packets on the peers a session plays over, as
+  `net.receive()` does.
 
 ## 0.34.1
 
