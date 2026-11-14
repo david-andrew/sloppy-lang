@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.34.1
 
 - Web pages decode the embedded program without an intermediate array of characters
   (`Uint8Array.fromBase64` where the browser has it, else a plain loop over `atob`): a 20 MB
