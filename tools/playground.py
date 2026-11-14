@@ -15,7 +15,7 @@ env = dict(os.environ, SLOPPY_LIB=os.path.join(root, "lib"))
 tmp = os.path.join(root, "build", "playground-compiler")
 subprocess.run([sloppy, "build", os.path.join(root, "compiler", "main.jo"), "--target", "wasm", "-o", tmp], check=True, env=env)
 page = open(tmp + ".html").read()
-wasm = base64.b64decode(re.search(r'const SLOPPY_WASM = "([^"]*)"', page).group(1))
+wasm = base64.b64decode(re.search(r'(?:const|var) SLOPPY_WASM = "([^"]*)"', page).group(1))
 os.remove(tmp + ".html")
 gz = lambda b: base64.b64encode(gzip.compress(b, 9)).decode()
 

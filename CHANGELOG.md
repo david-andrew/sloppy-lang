@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Web pages decode the embedded program without an intermediate array of characters
+  (`Uint8Array.fromBase64` where the browser has it, else a plain loop over `atob`): a 20 MB
+  module decodes in about 0.1 s instead of 2-4 s and leaves 20 MB of garbage instead of about
+  490 MB, which the browser later collected in a 50-60 ms pause during play. The base64 text
+  is released after decoding; saved data and the playground decode the same way.
+
 ## 0.34.0
 
 The three API cleanups held for Sky Barons, landed with its call sites in the same change and

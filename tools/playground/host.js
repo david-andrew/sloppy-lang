@@ -9,7 +9,7 @@ const sloppyHost = (() => {
   let lib = null;               // path -> Uint8Array
   const enc = new TextEncoder(), dec = new TextDecoder();
 
-  const fromB64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  const fromB64 = (s) => { if (Uint8Array.fromBase64) return Uint8Array.fromBase64(s); const t = atob(s), b = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) b[i] = t.charCodeAt(i); return b; };
   async function gunzip(bytes) {
     const ds = new DecompressionStream("gzip");
     const out = new Response(new Blob([bytes]).stream().pipeThrough(ds));
