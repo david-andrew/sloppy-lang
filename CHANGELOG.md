@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.34.0
+
+The three API cleanups held for Sky Barons, landed with its call sites in the same change and
+checked by its team (the same fight result as before). In a Sloppy checkout, run
+`tools/bootstrap.sh` once after pulling, so `bin/sloppy` knows what the library now uses.
 
 - Breaking: array `index_of(x)` returns `int?` (none when x is absent), matching strings; write
   `xs.index_of(x) ?? -1` for the old value, or `if let i = xs.index_of(x)`.

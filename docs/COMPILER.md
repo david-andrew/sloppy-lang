@@ -11,6 +11,10 @@ tools/bootstrap.sh       # stage0 (C) -> sloppy1 -> sloppy2 -> sloppy3; sloppy2 
 bin/sloppy build compiler/main.jo -o bin/sloppy.new && mv bin/sloppy.new bin/sloppy   # after a change
 ```
 
+In a checkout, `bin/sloppy` must be at least as new as `lib/`: after pulling, a library that uses
+something newer than an old `bin/sloppy` provides (an unknown name such as `PROGRAM_BUILD_ID`)
+is fixed by running `tools/bootstrap.sh` once. Released builds always ship the two together.
+
 Rebuild `bin/sloppy` after changing the compiler (the tests use it), and run the bootstrap
 before committing: the compiler's own code must stay within what `stage0` understands (for
 example, a closure may not change a variable it captured, and some newer library functions
