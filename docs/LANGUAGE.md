@@ -2445,7 +2445,7 @@ sloppy build file.jo      write the executable / .html (-o game.zip: the page as
                           the page's program in a .wasm file beside it, for a web server)
 sloppy test file.jo       run `test` blocks (sloppy test file.jo save: those with "save" in their names;
                           sloppy test dir, or sloppy test alone for .: those of each .jo file in it)
-sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, pico, platformer, 3d, character, story, online, program, tui, server)
+sloppy new dir [kind]     a project to start from: dir/dir.jo (kind: game, arcade, pico, platformer, 3d, character, story, online, room, program, tui, server)
 sloppy check file.jo      type check only
 sloppy add <git URL>      a package, in the build block (and sloppy.lock); sloppy update: the newest
                           commits of its branches

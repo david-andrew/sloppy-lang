@@ -176,6 +176,54 @@ if None not in hashes and len(set(hashes)) == 1 and hashes[0].endswith("desync -
 else:
     failed += 1
     print(f"FAIL netplay: a player whose program restarts comes back into the game: {lines}")
+# The room starter itself: four players, one process restarted with its saved token. Rename
+# only its callback so the harness can automate its lobby and observe the normal update.
+room_src = os.path.join(tmp, "room_template.jo")
+with open(os.path.join(root, "lib", "new", "room.jo")) as f:
+    source = f.read().replace("__TITLE__", "Room test").replace("__NAME__", "room_template")
+source = source.replace("update = (dt: f64):", "room_update = (dt: f64):")
+with open(os.path.join(root, "tests", "net", "room_template.jo")) as f:
+    source += "\n" + f.read()
+with open(room_src, "w") as f: f.write(source)
+room_exe = os.path.join(tmp, "room_template")
+subprocess.run([sloppy, "build", room_src, "-o", room_exe], check=True, env=env)
+room_dir = os.path.join(tmp, "room_template_players")
+os.makedirs(room_dir)
+room_env = dict(env, DIR=room_dir, SLOPPY_NO_DRAW="1", SLOPPY_NO_AUDIO="1", SLOPPY_FIXED_STEP="1",
+                SLOPPY_FRAMES="1800", SLOPPY_SERVER="none", SLOPPY_INPUT="20:right+ 300:right- 310:up+ 550:up-")
+def room_player(name, **kw):
+    return subprocess.Popen([room_exe + exe], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            env=dict(room_env, SLOPPY_SAVE_DIR=os.path.join(room_dir, name), **kw))
+room_players = [room_player("host", ROLE="host")]
+# A short gap fixes guest 1's identity before the other two arrive.
+room_players.append(room_player("guest1", ROLE="guest"))
+time.sleep(0.2)
+room_players.extend(room_player("guest" + str(i), ROLE="guest") for i in (2, 3))
+try:
+    deadline = time.monotonic() + 30
+    while not os.path.exists(os.path.join(room_dir, "restart")) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not os.path.exists(os.path.join(room_dir, "restart")): raise RuntimeError("guest did not save its rejoin token")
+    room_players[1].kill()
+    room_players[1].communicate()
+    time.sleep(0.5)
+    room_players[1] = room_player("guest1", ROLE="guest", REJOIN="1")
+    room_outs = [p.communicate(timeout=40) for p in room_players]
+    room_lines = [[l for l in o.splitlines() if l.strip()] for o, err in room_outs]
+    room_hashes = [l[0].split(": ", 1)[1] if l and l[0].startswith(f"player {i}: ") else None for i, l in enumerate(room_lines)]
+    if None not in room_hashes and len(set(room_hashes)) == 1 and room_hashes[0].endswith("desync -1 problem ''") and room_lines[0][1:] == ["came back: [1]"] and all(p.returncode == 0 for p in room_players):
+        print("ok   room starter: four players, saved token and reload, no drawing")
+    else:
+        failed += 1
+        print(f"FAIL room starter: {room_outs}")
+except (RuntimeError, subprocess.TimeoutExpired) as e:
+    failed += 1
+    print(f"FAIL room starter: {e}")
+finally:
+    for p in room_players:
+        if p.poll() is None: p.kill()
+        p.communicate()
+
 # two games through lib/invite.jo's screens (run with no window: the software renderer, no display)
 ig = build("invite_game") + exe
 igd = os.path.join(tmp, "invite_codes")

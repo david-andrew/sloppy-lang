@@ -10,6 +10,10 @@
   then differed by a pixel or so (more on slow machines, as CI's arm64 runner). They hold it
   from a function with `global __fixed_step` now; tests/t/soft_wind_repeat draws a wind scene
   five times with four threads and checks the bytes are the same.
+- `sloppy new mygame room`: a small two-to-four-player coin race joined by a room link,
+  with rollback, a host-controlled lobby, saved guest tokens and rejoining after reload.
+  Builds natively and for the web; `WEB_PAGE` supplies native hosts' web links and
+  `SLOPPY_SERVER` selects a matchmaking server.
 - `ui.text_field(..., label = "Name")`: an optional label at the left, with the editable value
   at the right, laid out like sliders, switches and choices. Existing positional calls keep
   their meaning; hints, selection, undo, touch and keyboard editing use the value's space.

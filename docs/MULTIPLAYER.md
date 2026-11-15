@@ -471,6 +471,12 @@ also have a deadline. Your own player is always heard.
 
 ### A room for up to four, joined by a link
 
+`sloppy new mygame room` makes a small coin race using this pattern: two to four players,
+room links, rollback and guests rejoining after a reload.
+`sloppy build mygame/mygame.jo --target wasm` builds its web page; set `WEB_PAGE` in the
+source for native hosts' links.
+It uses the public matchmaking server by default; `SLOPPY_SERVER` selects your own.
+
 A matchmaking server's room (`invite.open_room`, [above](#messages)) gives the host a link to
 send; each friend who opens it is connected straight to the host, and the host numbers them and
 starts the session over them. A friend whose page reloads opens the same link again and comes

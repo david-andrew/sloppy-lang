@@ -1,0 +1,190 @@
+# __TITLE__: 2-4 players race for ten coins. Host a room, send its link, then Start.
+# Arrows, W A S D or a gamepad move you. A guest can reload the page and come back.
+# `sloppy build __NAME__.jo --target wasm` makes the page; put its address in WEB_PAGE
+# for native hosts' links. The public matchmaking server exchanges invites; play goes
+# straight between players. SLOPPY_SERVER=ws://localhost:7700 uses your own server.
+
+build:
+    name = "__TITLE__"
+
+import net
+import netplay
+import invite
+
+const WEB_PAGE = ""                  # "https://you.itch.io/__NAME__/"
+const WIN = 10
+COLORS = [CYAN, ORANGE, GREEN, MAGENTA]
+window("__TITLE__", 1280, 720)
+invite.server("wss://matchmaking.sloppy-lang.org")
+
+# Everything a tick depends on lives in Game: no clock, random() or live input here.
+struct Pad:
+    x = 0
+    y = 0
+struct Player:
+    pos: vec2
+    score = 0
+struct Game:
+    players: Player[]
+    coin = vec2(640, 300)
+    taken = 0
+    winner = -1
+
+new_game = (n: int) -> Game:
+    Game(players = [loop i in [0..n): Player(vec2(280 + i * 240, 480))])
+tick = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    if g.winner >= 0: return g
+    loop i in [0..g.players.len()):
+        p = g.players[i].pos + vec2(pads[i].x, pads[i].y) * 5.0
+        g.players[i].pos = clamp(p, vec2(24, 100), vec2(1256, 640))
+        if length(g.players[i].pos - g.coin) < 34.0:
+            g.players[i].score += 1
+            g.taken += 1
+            g.coin = vec2(100 + int(hash(g.taken * 2) % 1080), 140 + int(hash(g.taken * 2 + 1) % 440))
+            if g.players[i].score >= WIN:
+                g.winner = i
+                return g
+    g
+
+# The host numbers guests in the lobby; every machine then simulates the same game.
+hosting = false
+playing = false
+guests: int[]
+host = -1
+room = upper(trim(env("ROOM") ?? ""))
+status = ""
+spare = 0.0
+s = netplay.session(new_game(2), tick, players = 2, me = 0)
+token = ""
+struct ReturnToRoom:
+    room = ""
+    me = 0
+    players = 2
+    token = ""
+
+play_as = (me: int, players: int, saved: str):
+    global playing, s, spare, token
+    s = netplay.session(new_game(players), tick, players = players, me = me)
+    peers = fill(-1, players)
+    if hosting:
+        loop i in 0.. and p in guests: peers[i + 1] = p
+    else: peers[0] = host
+    s.over(peers)
+    s.allow_rejoin(saved)
+    token = saved
+    spare = 0.0
+    playing = true
+
+host_room = ():
+    global hosting, status
+    delete_data("rejoin")
+    hosting = true
+    status = ""
+    # Keep the room open during play: a reloading guest needs to connect anew.
+    # players = 4 would close it when full; room_busy(true) would hold returners outside.
+    invite.open_room(reliable = false)
+
+start_game = ():
+    n = 1 + guests.len()
+    loop i in 0.. and p in guests: net.send(p, "start {i + 1} {n}")
+    play_as(0, n, "")
+
+connected = (c: invite.Invited):
+    global host, status
+    host = c.peer
+    saved = load_value("rejoin", ReturnToRoom())
+    if saved.room == room and len(saved.token) > 0 and saved.me > 0 and saved.me < saved.players and saved.players <= 4:
+        play_as(saved.me, saved.players, saved.token)
+    else: status = "Connected. Waiting for the host to start..."
+
+leave = ():
+    global hosting, playing, guests, host
+    invite.cancel()
+    invite.close_room()
+    loop p in net.peers(): net.close(p)
+    hosting = false
+    playing = false
+    guests = []
+    host = -1
+    delete_data("rejoin")
+
+invite.from_link()                    # ?room= in the page's address (ROOM for a native guest)
+update = (dt: f64):
+    global guests, status, token, spare
+    if hosting:
+        loop c in invite.arrivals():
+            if playing: s.admit(c.peer)
+            else if guests.len() < 3: guests.push(c.peer)
+            else: net.close(c.peer, 4001, "the room is full")
+    loop e in net.receive():
+        if e.kind == .left:
+            if not playing and hosting: guests = [loop p in guests: if p != e.peer: p]
+            else if e.peer == host:
+                leave()
+                status = "The host left."
+        else if e.kind == .message and e.peer == host and not playing:
+            w = split(e.text, " ")
+            if w.len() == 3 and w[0] == "start":
+                me = to_int(w[1]) ?? -1
+                n = to_int(w[2]) ?? 0
+                if n >= 2 and n <= 4 and me > 0 and me < n: play_as(me, n, "")
+    if not playing: return
+    if key_pressed(.escape):
+        leave()
+        return
+    a = input_axis()
+    pad = Pad(int(round(f64(a.x))), int(round(f64(a.y))))
+    spare = min(spare + dt, 0.1)
+    loop spare >= 1.0 / 60.0:
+        spare -= 1.0 / 60.0
+        s.play(pad)
+        if s.rejoined.len() > 0: status = "Player {s.rejoined[0] + 1} came back."
+        if s.admit_expired.len() > 0: status = "That connection was not a returning player."
+    if s.rejoin_token != token:
+        token = s.rejoin_token
+        save_value("rejoin", ReturnToRoom(room, s.me, s.players, token))
+    if hosting:
+        loop p in [1..s.players):
+            if s.heard(p) and s.silent(p) > 3.0 and not s.stands_in(p): s.stand_in(p, Pad())
+
+draw = ():
+    global room
+    clear(rgb(0.07, 0.08, 0.11))
+    if invite.active():
+        if let c = invite.screen("__TITLE__", WEB_PAGE): connected(c)
+        return
+    if playing:
+        circle(s.state.coin, 14, YELLOW)
+        loop i in 0.. and p in s.state.players:
+            circle(p.pos, 20, COLORS[i])
+            if i == s.me: ring(p.pos, 26, 2, WHITE)
+            text("P{i + 1}: {p.score}/{WIN}", vec2(30 + i * 300, 28), 28, COLORS[i])
+        if s.rejoining: text_centered("Coming back...", vec2(640, 350), 32)
+        else if s.waiting: text_centered("Waiting for the others...", vec2(640, 350), 32)
+        if s.state.winner >= 0: text_centered("Player {s.state.winner + 1} won!", vec2(640, 280), 56)
+        text("Move: arrows / W A S D / gamepad    Esc: leave", vec2(30, 670), 22, gray(0.7))
+        if len(s.problem) > 0: text(s.problem, vec2(30, 620), 18, ORANGE)
+        if hud_button(Rect(1120, 660, 130, 44), "Leave"): leave()
+    else if hosting:
+        text_centered("Your room: {invite.room_code()}", vec2(640, 160), 48, CYAN)
+        text_centered(invite.room_link(WEB_PAGE), vec2(640, 225), 18)
+        text_centered(invite.room_status(), vec2(640, 275), 20, gray(0.7))
+        text_centered("{1 + guests.len()} / 4 players", vec2(640, 340), 32)
+        ui_begin("lobby", vec2(640, 420))
+        if guests.len() > 0 and ui_button("Start"): start_game()
+        if ui_button("Copy room link"): set_clipboard(invite.room_link(WEB_PAGE))
+        if ui_button("Back"): leave()
+        ui_end()
+    else if host < 0:
+        text_centered("__TITLE__", vec2(640, 170), 72, CYAN)
+        text_centered("Race your friends for ten coins", vec2(640, 245), 26, gray(0.7))
+        ui_begin("menu", vec2(640, 330))
+        if ui_button("Host a room"): host_room()
+        room = upper(trim(ui_text_field("Room code", room, 12)))
+        if ui_button("Join") and len(room) > 0: invite.join(room)
+        ui_end()
+    else:
+        text_centered("Waiting for the host...", vec2(640, 300), 32)
+        if hud_button(Rect(540, 400, 200, 44), "Leave"): leave()
+    if len(status) > 0: text_centered(status, vec2(640, 590), 20, gray(0.7))

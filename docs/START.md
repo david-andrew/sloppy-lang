@@ -100,6 +100,7 @@ sloppy new my_game 3d         # a first-person 3D game: mouse look, walking, jum
 sloppy new my_game character  # an animated glTF character, follow camera and pause menu (no downloads)
 sloppy new my_tale story      # a story in lines and choices (a visual novel), its script as Ren'Py's
 sloppy new my_duel online     # two players anywhere, no server: invite a friend by a link (rollback)
+sloppy new my_room room       # 2-4 players by a room link, rollback, rejoin on reload
 sloppy new my_tool program    # a program for the terminal, with a test
 sloppy new my_list tui        # a program for the whole terminal: a list of things to do (keys, the mouse)
 sloppy new my_site server     # a web server: a JSON API kept in a file, a page, live updates, a test
