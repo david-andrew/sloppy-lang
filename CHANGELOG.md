@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.37.0
+
+Input: `hud_nav(on)` lets the arrow keys, d-pad and stick work the `hud_` boxes (focus ring in
+`hud_style.focus`, Enter or A to choose, sliders stepped, lists scrolled to the focus), with
+`hud_nav_active()`; `gamepad_standard(pad)` tells a standard gamepad from a flight stick, wheel or
+pedals; `SLOPPY_INPUT` scripts raw joystick axes, buttons and names. Web pages skip WebGL binds of
+what is already bound.
+
 - Web pages skip WebGL calls that bind what is already bound: the program, the vertex array, the
   texture unit and each unit's texture (on a phone in Chrome these were about 1.5% of a game's CPU
   after 0.36.2's draw changes).
