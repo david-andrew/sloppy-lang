@@ -4313,6 +4313,8 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       istride: int
       iattribs: ShaderAttrib[]
       ibase_loc: int = -1   # (OpenGL) where instance_id() starts: see draw_indirect
+      lid: int              # (OpenGL) this shader's number (0: one made by hand, never matched)
+      ucache: *u8 = null    # (OpenGL) the uniform bytes last uploaded to its program
   ```
 - `struct Mesh`
   ```gdscript

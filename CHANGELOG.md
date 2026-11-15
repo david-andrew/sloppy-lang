@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- OpenGL and WebGL draws set much less GL state. A mesh's vertex array object remembers the
+  shader, buffers and offsets it was last set up for, so drawing it again with the same ones only
+  binds it (each draw re-specified every attribute: enable, pointer and divisor, and after an
+  instanced draw reset the instance attributes); and a shader's uniforms whose bytes are those
+  last uploaded to its program are not uploaded again (most draws share the frame's and camera's).
+  On a phone (Adreno 650, Chrome) these calls were about a seventh of a CPU-bound game's frame.
+  Textures and GPU buffers are still bound on every draw.
 - Metal shaders (macOS) can keep a `GpuBuffer` in a variable too (`b = u.colors`), as GLSL and
   SPIR-V do since 0.36.1.
 
