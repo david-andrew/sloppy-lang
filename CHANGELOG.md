@@ -9,6 +9,9 @@
 - `plane_mesh(size, tile = 4)`: a texture repeats every 4 meters across it (with
   `set_repeat(t, true)`), for a ground that runs to the horizon and shows its mipmaps; without
   `tile` it covers the plane once, as before.
+- A game started with no display (neither `DISPLAY` nor `WAYLAND_DISPLAY`) says that
+  `SLOPPY_SOFTWARE=1` runs it with no window, instead of asking whether DISPLAY is set.
+  `frame_count()` suggests `frame_number()`.
 
 
 Rollback players who restart (a crash, a reloaded page) come back into a running game
