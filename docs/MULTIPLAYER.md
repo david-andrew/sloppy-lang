@@ -545,6 +545,9 @@ draw = ():
             play_as(0, guests.len() + 1, "")
 ```
 
+The room stays open through the game, for those who come back: `open_room(players = n)` would
+close it once n are in, and `room_busy(true)` would make them wait until it is off. So the game
+keeps the count of players itself (the lobby turns away a fifth: `net.close`).
 A friend who comes while the game is on and is not coming back is admitted too, and nothing
 comes of it (no token, no place): the connection stays open, unused, until the game closes it
 (`net.close`). A game that wants newcomers to watch, or to wait for the next round, tells them
