@@ -17,6 +17,8 @@ struct __SwTex:
     h: int
     linear: bool
     rep: bool
+    levels: int = 1            # mipmaps: level 0, then each half the size of the one before,
+    mip: bool = false          # after it in p; mip: the min filter uses them
 
 __st_data: f32[][] = [[]]
 __st: __SwTex[] = [__SwTex(null, 0, 0, false, false)]
@@ -33,6 +35,7 @@ __st_alloc = (id: int, w: int, h: int):
     __st[id].p = data(__st_data[id])
     __st[id].w = w
     __st[id].h = h
+    __st[id].levels = 1
 
 # texture lookup used by shader functions running on the CPU
 __sw_sample = (id: int, uv: vec2) -> vec4:
@@ -42,6 +45,7 @@ __sw_sample = (id: int, uv: vec2) -> vec4:
     w = t.w
     h = t.h
     if p == null or w == 0: return vec4(0, 0, 0, 1)
+    if t.levels > 1 and __sw_mip_live and t.mip: return __sw_mip_sample(id, uv)
     if w == 1 and h == 1: return vec4(p[0], p[1], p[2], p[3])
     u = uv.x * f32(w) - 0.5
     v = uv.y * f32(h) - 0.5
@@ -85,6 +89,155 @@ __sw_sample = (id: int, uv: vec2) -> vec4:
     wc = gx * fy
     wd = fx * fy
     (a as *vec4)[0] * wa + (b as *vec4)[0] * wb + (c as *vec4)[0] * wc + (d as *vec4)[0] * wd
+
+# ---------------- mipmaps ----------------
+# What a GPU does with a 2x2 block of pixels, done for one: the derivatives of the texture
+# coordinates across the screen choose the level. A draw that may sample mipmaps keeps, for
+# each thread, where the pixel being shaded is in its span (the varyings at the span start,
+# their change per pixel along the row and to the next row, and the same of 1/w). The
+# coordinates a shader samples with are found among the varyings (the usual i.uv, passed as
+# it is); coordinates computed in the shader find none, and sample the full-size level.
+__sw_any_mips = false          # (some texture has mipmaps: draws keep what the sampler needs)
+__sw_mip_live = false          # (a mesh draw is shading, with that kept)
+__sw_dctx: *int = null         # per thread, 8 slots: the band scratch (s0), varyings (nf)
+__sw_dctx_f: *f32 = null       # per thread, 8 floats: k, w0, dw, wy
+
+# (set by the first glGenerateMipmap: a program that makes no mipmaps does not compile them)
+__sw_mip_sample: (int, vec2) -> vec4 = __sw_level0
+__sw_level0 = (id: int, uv: vec2) -> vec4:
+    __sw_level(__st[id], 0, uv)
+__sw_auto_lod = (id: int, uv: vec2) -> vec4:
+    t = __st[id]
+    lod = __sw_lod(uv, t.w, t.h)
+    if lod > 0.0: return __sw_sample_mip(t, uv, lod)
+    if not t.linear:
+        # (magnified: the mag filter, nearest)
+        x = __wrap(__floor_i(uv.x * f32(t.w)), t.w, t.rep)
+        y = __wrap(__floor_i(uv.y * f32(t.h)), t.h, t.rep)
+        q = t.p + (x + y * t.w) * 4
+        return vec4(q[0], q[1], q[2], q[3])
+    __sw_level(t, 0, uv)
+
+__sw_dctx_init = ():
+    global __sw_dctx, __sw_dctx_f
+    if __sw_dctx != null: return
+    __sw_dctx = __alloc((__MAX_THREADS + 1) * 64) as *int
+    __sw_dctx_f = __alloc((__MAX_THREADS + 1) * 32) as *f32
+
+# the level of detail (log2 of texels per pixel) for coordinates uv in a w x h texture
+__sw_lod = (uv: vec2, w: int, h: int) -> f32:
+    tid = __tid()
+    ci = __sw_dctx + tid * 8
+    cf = __sw_dctx_f + tid * 8
+    s0 = ci[0] as *f32
+    nf = ci[1]
+    if s0 == null: return 0.0
+    sd = s0 + nf
+    vin = sd + nf
+    sy = vin + nf + 4
+    f = 4
+    loop f + 1 < nf and not (vin[f] == uv.x and vin[f + 1] == uv.y): f += 1
+    if f + 1 >= nf: return 0.0
+    k = cf[0]
+    wx = cf[1] + cf[2] * (k + 1.0)
+    wy = cf[1] + cf[2] * k + cf[3]
+    if wx == 0.0 or wy == 0.0: return 0.0
+    ax = s0[f] + sd[f] * k
+    ay = s0[f + 1] + sd[f + 1] * k
+    ux = ((ax + sd[f]) / wx - uv.x) * f32(w)
+    vx = ((ay + sd[f + 1]) / wx - uv.y) * f32(h)
+    uy = ((ax + sy[f]) / wy - uv.x) * f32(w)
+    vy = ((ay + sy[f + 1]) / wy - uv.y) * f32(h)
+    rho = max(ux * ux + vx * vx, uy * uy + vy * vy)
+    if not (rho > 1.0): return 0.0
+    log(rho) * 0.72134752          # (0.5 / ln 2: log2 of the square root)
+
+# sample_lod on the CPU
+__sw_sample_lod = (id: int, uv: vec2, lod: f32) -> vec4:
+    if id > 0 and id < __st.len():
+        t = __st[id]
+        if t.levels > 1 and t.mip and t.p != null and (lod > 0.0 or t.linear):
+            if lod > 0.0: return __sw_sample_mip(t, uv, lod)
+            return __sw_level(t, 0, uv)
+    __sw_sample(id, uv)
+
+# trilinear: bilinear in the two levels around lod, mixed
+__sw_sample_mip = (t: __SwTex, uv: vec2, lod: f32) -> vec4:
+    top = t.levels - 1
+    l = min(__floor_i(lod), top)
+    a = __sw_level(t, l, uv)
+    if l >= top: return a
+    f = lod - f32(l)
+    if f <= 0.0: return a
+    b = __sw_level(t, l + 1, uv)
+    a + (b - a) * f
+
+# bilinear in level l
+__sw_level = (t: __SwTex, l: int, uv: vec2) -> vec4:
+    p = t.p
+    w = t.w
+    h = t.h
+    loop i in [0..l):
+        p = p + w * h * 4
+        w = max(w / 2, 1)
+        h = max(h / 2, 1)
+    u = uv.x * f32(w) - 0.5
+    v = uv.y * f32(h) - 0.5
+    x0 = __floor_i(u)
+    y0 = __floor_i(v)
+    fx = u - f32(x0)
+    fy = v - f32(y0)
+    rep = t.rep
+    xa = __wrap(x0, w, rep)
+    xb = __wrap(x0 + 1, w, rep)
+    ya = __wrap(y0, h, rep)
+    yb = __wrap(y0 + 1, h, rep)
+    q = p as *vec4
+    gx = 1.0 - fx
+    gy = 1.0 - fy
+    q[ya * w + xa] * (gx * gy) + q[ya * w + xb] * (fx * gy) + q[yb * w + xa] * (gx * fy) + q[yb * w + xb] * (fx * fy)
+
+# glGenerateMipmap: each level the average of 2x2 texels of the one before (an odd last row or
+# column of a level is left out of the next, as GPUs commonly do)
+sgl_generate_mipmap = ():
+    global __sw_any_mips, __sw_mip_sample
+    __sw_mip_sample = __sw_auto_lod
+    id = __s_bound[__s_unit]
+    if id <= 0 or id >= __st.len(): return
+    t = __st[id]
+    if t.p == null or t.w == 0 or t.h == 0: return
+    n = 1
+    total = t.w * t.h
+    lw = t.w
+    lh = t.h
+    loop lw > 1 or lh > 1:
+        lw = max(lw / 2, 1)
+        lh = max(lh / 2, 1)
+        total += lw * lh
+        n += 1
+    d = fill(f32(0), total * 4)
+    mem_copy(data(d) as *u8, t.p as *u8, t.w * t.h * 16)
+    src = data(d) as *vec4
+    sw = t.w
+    sh = t.h
+    loop _ in [1..n):
+        dw = max(sw / 2, 1)
+        dh = max(sh / 2, 1)
+        dst = src + sw * sh
+        loop y in [0..dh):
+            r0 = src + min(y * 2, sh - 1) * sw
+            r1 = src + min(y * 2 + 1, sh - 1) * sw
+            loop x in [0..dw):
+                x0 = min(x * 2, sw - 1)
+                x1 = min(x * 2 + 1, sw - 1)
+                dst[y * dw + x] = (r0[x0] + r0[x1] + r1[x0] + r1[x1]) * 0.25
+        src = dst
+        sw = dw
+        sh = dh
+    __st_data[id] = d
+    __st[id].p = data(__st_data[id])
+    __st[id].levels = n
+    __sw_any_mips = true
 
 # texelFetch on the CPU (outside the texture: the nearest edge texel)
 __sw_texel = (id: int, x: int, y: int) -> vec4:
@@ -298,6 +451,7 @@ sgl_tex_parameter = (pname: u32, v: i32):
     if id <= 0 or id >= __st.len(): return
     pn = int(pname)
     if pn == GL_TEXTURE_MAG_FILTER: __st[id].linear = int(v) != GL_NEAREST
+    else if pn == GL_TEXTURE_MIN_FILTER: __st[id].mip = int(v) >= 0x2700 and int(v) <= 0x2703
     else if pn == GL_TEXTURE_WRAP_S: __st[id].rep = int(v) == GL_REPEAT
 
 sgl_create_framebuffer = () -> int:
@@ -751,7 +905,7 @@ __sw_draw_inst3d = (sh: Shader, d: Draw3D, p: LitParams) -> bool:
 # (first: the first index, or vertex, drawn; ndraw: how many vertices, without indices (-1: all
 # from first); base_vertex: added to each index; ibase: added to instance_id(): see draw_indirect)
 __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo: int, nidx: int, uni: *u8, ibuf: int, istride: int, ninst: int, ioff: int, first: int = 0, ndraw: int = -1, base_vertex: int = 0, ibase: int = 0):
-    global __par_serial, __sw_warned_lines
+    global __par_serial, __sw_warned_lines, __sw_mip_live
     if mode != GL_TRIANGLES and mode != GL_TRIANGLE_STRIP and mode != GL_TRIANGLE_FAN:
         if not __sw_warned_lines:
             __sw_warned_lines = true
@@ -889,7 +1043,7 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     tp = data(__sw_mesh_tris)
     # per band scratch (padded to separate cache lines): varyings at the span start, their
     # change per pixel, the interpolated varyings and the fragment color
-    bstride = (3 * nf + 4 + 15) / 16 * 16
+    bstride = (4 * nf + 4 + 15) / 16 * 16
     __sw_f32_scratch(__sw_mesh_scratch, __SW_BANDS * bstride)
     scrp = data(__sw_mesh_scratch)
     dtest = __s_depth and dp != null
@@ -900,6 +1054,12 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     disc = __sp_discard[prog]
     shade = color or disc
     tls = __sw_tls
+    # (with mipmaps about: what the sampler needs to choose a level, kept per thread)
+    mips = __sw_any_mips and shade
+    if mips: __sw_dctx_init()
+    dci = __sw_dctx
+    dcf = __sw_dctx_f
+    __sw_mip_live = mips
     __sw_raster(pvp, pstride, tp, ntris, (band: int, y: int, xa: int, xb: int, t: int, l0: f32, l1: f32, l2: f32, d0: f32, d1: f32, d2: f32):
         a = pvp + int(tp[t * 3]) * pstride
         b = pvp + int(tp[t * 3 + 1]) * pstride
@@ -928,6 +1088,29 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
                 f += 1
         mine = tls
         if disc: mine = tls + __tid() * 8
+        dk = dcf
+        if mips:
+            # the change of the barycentric weights to the next row, of 1/w, of the varyings
+            ex = b[0] - a[0]
+            ey = b[1] - a[1]
+            fx = c2[0] - a[0]
+            fy = c2[1] - a[1]
+            area = ex * fy - fx * ey
+            sy = col + 4
+            tid = __tid()
+            ci = dci + tid * 8
+            dk = dcf + tid * 8
+            ci[0] = 0
+            if area != 0.0:
+                q0 = (c2[0] - b[0]) / area
+                q1 = (a[0] - c2[0]) / area
+                q2 = (b[0] - a[0]) / area
+                loop f in [4..nf): sy[f] = q0 * a[4 + f] + q1 * b[4 + f] + q2 * c2[4 + f]
+                ci[0] = s0 as int
+                ci[1] = nf
+                dk[1] = w0
+                dk[2] = dw
+                dk[3] = q0 * a[3] + q1 * b[3] + q2 * c2[3]
         row = y * tw
         loop x in [xa..xb + 1):
             k = f32(x - xa)
@@ -955,6 +1138,7 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             vin[2] = z
             vin[3] = iw
             if disc: mine[2] = 0
+            if mips: dk[0] = k
             when TARGET == "windows":
                 __call_raw(fsp, col as *u8, vin as *u8, uni)
             else:
@@ -965,6 +1149,7 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
                 if not color: continue
             __sw_put(cp + pix * 4, vec4(col[0], col[1], col[2], col[3]))
     )
+    __sw_mip_live = false
 
 # clip-space vertex (position first) -> screen position, depth, 1/w and varyings / w
 __sw_project = (q: *f32, o: *f32, nf: int, vx: f64, vy: f64, vw: f64, vh: f64, flat: *bool):

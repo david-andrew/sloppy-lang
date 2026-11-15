@@ -3722,8 +3722,6 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `shadow_factor = (u: LitParams, sp: vec4, ndl: f32) -> f32`
 - `aces = (c: vec3) -> vec3`
 - `lit_fs = (i: LitOut, u: LitParams) -> vec4`
-- `warm_up = (material: Material)`: Prepare shared material programs explicitly from a custom loading path.
-- `mesh = (vertices: SkinVertex3D[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh`: Upload skinned vertices, preparing skeletal GL/WebGL programs on the first load.
 - `camera3d = (pos: vec3, target: vec3, fov_degrees: f64 = 60.0, near: f64 = 0.1, far: f64 = 500.0, up: vec3 = vec3(0, 1, 0))`: place the camera; call once per frame before drawing 3D objects. up is the way that is up on the screen (tilt it to roll the picture: a camera behind a plane, banking with it). fov_degrees is the vertical field of view in degrees (60, not 60deg); perspective uses radians.
 - `world_to_screen = (p: vec3) -> vec2?`: where a point in 3D appears on the screen, in 2D drawing units (for a name or a health bar over someone's head); none when it is behind the camera. As the camera was last placed.
 - `screen_ray = (p: vec2) -> (vec3, vec3)`: the ray from the camera through a point on the screen (2D units, as mouse_pos): where it starts and its direction (length 1), for picking what the mouse is on (with a physics3d raycast)
@@ -3752,6 +3750,13 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 #### For shaders
 
 - `hash21 = (p: vec2) -> f32`: a number in [0, 1) that looks random, made from the cell a 2D point is in (its whole parts: noise, stars, sparkle in a shader). Integers, so every GPU and the CPU give the same one
+
+#### Mipmaps
+
+- `auto_mipmaps = true`: Textures drawn on 3D meshes (draw_mesh's texture, a material's maps, a model's) get mipmaps the first time they are drawn: smaller copies, each half the size of the one before, which the GPU blends between (trilinear filtering) for what is far away or seen at a slant, so it does not shimmer. A third more memory for those textures. Textures made with smooth = false (pixel art: pixel_art() makes them so), 2D sprites and render targets are left as they are. false before drawing: no automatic mipmaps (set_mipmaps still makes them)
+- `set_mipmaps = (t: Texture, on: bool)`: make t's mipmaps now and sample it trilinearly (a texture for your own 3D shader, or one to prepare while loading rather than at its first 3D draw), or, on = false, no mipmaps for it, also on 3D meshes: sharp but shimmering far away. After update_texture, a 3D draw makes them again (or call this again). A render target's texture has none.
+- `warm_up = (material: Material)`: Prepare shared material programs explicitly from a custom loading path.
+- `mesh = (vertices: SkinVertex3D[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh`: Upload skinned vertices, preparing skeletal GL/WebGL programs on the first load.
 
 #### 3D particles
 
@@ -4342,7 +4347,7 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
 - `set_instances[I] = (b: mut InstanceBuffer[I], instances: I[])`: replace what an instance buffer holds
 - `draw_instanced[U, I] = (sh: Shader, m: Mesh, b: InstanceBuffer[I], params: U, first: int = 0, count: int = -1)`: draw instances first .. first + count of a buffer (count -1: to the end)
 - `sample = (t: Texture, uv: vec2) -> vec4`: texture lookup inside shader functions (maps to GLSL texture()); outside the software renderer, calling it on the CPU returns white
-- `sample_lod = (t: Texture, uv: vec2, lod: f32) -> vec4`: texture lookup at a given mipmap level (maps to GLSL textureLod; the software renderer has no mipmaps and samples the full-size image)
+- `sample_lod = (t: Texture, uv: vec2, lod: f32) -> vec4`: texture lookup at a given mipmap level (maps to GLSL textureLod; a texture without mipmaps: the full-size image. See set_mipmaps)
 - `texel = (t: Texture, p: ivec2) -> vec4`: the texel at integer coordinates p (0 to size - 1; y = 0 is the first row of the image data): no filtering or wrapping (maps to GLSL texelFetch)
 - `texture_size = (t: Texture) -> ivec2`: a texture's size in texels (maps to GLSL textureSize)
 - `discard = ()`: in a fragment shader: drop this fragment (no color, no depth), e.g. for alpha-tested leaves: `if c.a < 0.5: discard()`. The rest of the function still runs on the CPU; its result is unused.

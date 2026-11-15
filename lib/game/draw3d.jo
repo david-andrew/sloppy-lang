@@ -683,7 +683,45 @@ __3d_before_2d = ():
 
 __queue3d = (d: Draw3D):
     if __3d_registered: pass
+    if d.tex != 0: __mips_use(d.tex)
     __draws.push(d)
+
+# ---------------- mipmaps ----------------
+# Textures drawn on 3D meshes (draw_mesh's texture, a material's maps, a model's) get mipmaps
+# the first time they are drawn: smaller copies, each half the size of the one before, which
+# the GPU blends between (trilinear filtering) for what is far away or seen at a slant, so it
+# does not shimmer. A third more memory for those textures. Textures made with smooth = false
+# (pixel art: pixel_art() makes them so), 2D sprites and render targets are left as they are.
+# false before drawing: no automatic mipmaps (set_mipmaps still makes them)
+auto_mipmaps = true
+
+# make t's mipmaps now and sample it trilinearly (a texture for your own 3D shader, or one to
+# prepare while loading rather than at its first 3D draw), or, on = false, no mipmaps for it,
+# also on 3D meshes: sharp but shimmering far away. After update_texture, a 3D draw makes them
+# again (or call this again). A render target's texture has none.
+set_mipmaps = (t: Texture, on: bool):
+    if t.id <= 0 or t.id >= __tex_mips.len() or __tex_mips[t.id] == u8(4): return
+    if on:
+        __mips_make(t.id)
+        return
+    if __tex_mips[t.id] == u8(1) or __tex_mips[t.id] == u8(2):
+        flush()
+        glBindTexture(GL_TEXTURE_2D, u32(t.id))
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, i32(if __tex_nearest[t.id]: GL_NEAREST else: GL_LINEAR))
+    __tex_mips[t.id] = u8(3)
+
+# (a texture a 3D draw uses: its mipmaps, unless it has them, has none or they are off)
+__mips_use = (id: int):
+    if id <= 0 or id >= __tex_mips.len(): return
+    m = __tex_mips[id]
+    if m == u8(2) or (m == u8(0) and auto_mipmaps): __mips_make(id)
+
+__mips_make = (id: int):
+    flush()             # (2D drawn so far with this texture, as it was)
+    glBindTexture(GL_TEXTURE_2D, u32(id))
+    glGenerateMipmap(GL_TEXTURE_2D)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, i32(GL_LINEAR_MIPMAP_LINEAR))
+    __tex_mips[id] = u8(1)
 
 __material_apply: (mut Draw3D) -> void = (d: mut Draw3D): pass
 __material_params: (Draw3D, mut LitParams) -> void = (d: Draw3D, p: mut LitParams): pass
@@ -974,6 +1012,8 @@ sky_image = (texture: Texture, intensity: f64 = 1.0, rotation: f64 = 0.0, refres
     __sky_load = __sky_prepare
     if refresh: __sky_cached = Texture(0, 0, 0)
     __sky_image = texture
+    # (sampled across its seam, where mipmaps would draw a line: none, unless asked for)
+    if texture.id > 0 and texture.id < __tex_mips.len() and __tex_mips[texture.id] == u8(0): __tex_mips[texture.id] = u8(3)
     __sky_intensity = max(intensity, 0.0)
     __sky_rotation = rotation
     __sky_on = true
@@ -1115,6 +1155,10 @@ __pbr_material_draw = (d: mut Draw3D):
         if m.base_texture.id != 0: d.tex = m.base_texture.id
         d.both_sides = d.both_sides or m.double_sided
         if m.alpha_mode == .blend: d.shadow = false
+        __mips_use(m.metallic_roughness.id)
+        __mips_use(m.normal_map.id)
+        __mips_use(m.occlusion_map.id)
+        __mips_use(m.emissive_map.id)
 
 __transparent3d = (d: Draw3D) -> bool:
     if let m = d.material: return m.alpha_mode == .blend

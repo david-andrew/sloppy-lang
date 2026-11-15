@@ -20,6 +20,7 @@ when TARGET != "wasm" and TARGET != "macos":
         repeat: bool
         slot: int                  # in the bindless array
         drawn: bool                # (a draw was given the slot)
+        mip: bool = false          # (the min filter uses mipmaps, when the image has them)
 
     __vgt: __VgTex[]               # by GL name (0: white, 1x1, in slot 0)
     __vgt_free: int[]
@@ -311,7 +312,7 @@ when TARGET != "wasm" and TARGET != "macos":
             __vgt[t].slot = __vk_slot_new()
             __vgt[t].drawn = false
         depth = __vgt[t].img.aspect != 1
-        __vk_set_texture(__vgt[t].slot, __vgt[t].img.view, __vgt[t].linear and not depth, __vgt[t].repeat)
+        __vk_set_texture(__vgt[t].slot, __vgt[t].img.view, __vgt[t].linear and not depth, __vgt[t].repeat, __vgt[t].img.levels > 1 and not __vgt[t].mip)
 
     # the slot a draw samples texture t from (white for no texture)
     __vg_slot_of = (t: int) -> int:
@@ -407,8 +408,55 @@ when TARGET != "wasm" and TARGET != "macos":
         p = int(pname)
         if p == GL_TEXTURE_MAG_FILTER: __vgt[t].linear = int(v) != GL_NEAREST
         else if p == GL_TEXTURE_WRAP_S or p == GL_TEXTURE_WRAP_T: __vgt[t].repeat = int(v) == GL_REPEAT or int(v) == GL_MIRRORED_REPEAT
+        else if p == GL_TEXTURE_MIN_FILTER: __vgt[t].mip = int(v) >= 0x2700 and int(v) <= 0x2703
         else: return
         if __vgt[t].img.image != 0: __vg_tex_slot(t)
+
+    # glGenerateMipmap: an RGBA8 texture's image made again with all its levels (its picture
+    # copied into level 0), each level blitted, filtered, from the one before
+    vgl_generate_mipmap = ():
+        t = __vg_bound[__vg_unit]
+        if t <= 0 or t >= __vgt.len() or __vgt[t].img.image == 0: return
+        old = __vgt[t].img
+        if old.format != u32(VK_FORMAT_R8G8B8A8_UNORM) or old.aspect != 1: return
+        w = old.width
+        h = old.height
+        n = 1
+        loop (w >> n) > 0 or (h >> n) > 0: n += 1
+        __vk_begin_frame()
+        __vg_end_pass()
+        cb = __vk_cb()
+        img = old
+        if old.levels != n:
+            usage = u32(VK_USAGE_SAMPLED | VK_USAGE_TRANSFER_DST | VK_USAGE_TRANSFER_SRC | VK_USAGE_COLOR)
+            img = __vk_image(w, h, old.format, usage, 1, 1, n)
+            __vk_barrier(cb, old, u32(VK_LAYOUT_TRANSFER_SRC), VK_STAGE_ALL, VK_ACCESS_SHADER_READ | VK_ACCESS_MEMORY_WRITE, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_READ)
+            __vk_barrier_levels(cb, img.image, 0, n, u32(VK_LAYOUT_UNDEFINED), u32(VK_LAYOUT_TRANSFER_DST), VK_STAGE_TRANSFER, 0, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_WRITE)
+            __vg_blit_level(cb, old.image, 0, w, h, img.image, 0, w, h, 0)
+            __vk_barrier_levels(cb, img.image, 0, 1, u32(VK_LAYOUT_TRANSFER_DST), u32(VK_LAYOUT_TRANSFER_SRC), VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_WRITE, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_READ)
+            __vk_defer_image(old)
+        else:
+            __vk_barrier_levels(cb, img.image, 0, 1, u32(VK_LAYOUT_SHADER_READ), u32(VK_LAYOUT_TRANSFER_SRC), VK_STAGE_ALL, VK_ACCESS_SHADER_READ | VK_ACCESS_MEMORY_WRITE, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_READ)
+            __vk_barrier_levels(cb, img.image, 1, n - 1, u32(VK_LAYOUT_SHADER_READ), u32(VK_LAYOUT_TRANSFER_DST), VK_STAGE_ALL, VK_ACCESS_SHADER_READ, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_WRITE)
+        loop l in [1..n):
+            __vg_blit_level(cb, img.image, l - 1, max(w >> (l - 1), 1), max(h >> (l - 1), 1), img.image, l, max(w >> l, 1), max(h >> l, 1), 1)
+            __vk_barrier_levels(cb, img.image, l, 1, u32(VK_LAYOUT_TRANSFER_DST), u32(VK_LAYOUT_TRANSFER_SRC), VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_WRITE, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_READ)
+        __vk_barrier_levels(cb, img.image, 0, n, u32(VK_LAYOUT_TRANSFER_SRC), u32(VK_LAYOUT_SHADER_READ), VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_READ | VK_ACCESS_TRANSFER_WRITE, VK_STAGE_ALL, VK_ACCESS_SHADER_READ)
+        img.layout = u32(VK_LAYOUT_SHADER_READ)
+        __vgt[t].img = img
+        __vg_tex_slot(t)
+
+    # one blit, of all of a level into all of another (filter: 0 nearest, 1 linear)
+    __vg_blit_level = (cb: *u8, src: int, sl: int, sw: int, sh: int, dst: int, dl: int, dw: int, dh: int, filter: int):
+        reg = VkImageBlit2(stype = 1000337008, src_aspect = 1, src_mip = u32(sl), src_layers = 1, dst_aspect = 1, dst_mip = u32(dl), dst_layers = 1)
+        reg.src1[0] = i32(sw)
+        reg.src1[1] = i32(sh)
+        reg.src1[2] = 1
+        reg.dst1[0] = i32(dw)
+        reg.dst1[1] = i32(dh)
+        reg.dst1[2] = 1
+        bi = VkBlitImageInfo2(stype = 1000337004, src = src, src_layout = u32(VK_LAYOUT_TRANSFER_SRC), dst = dst, dst_layout = u32(VK_LAYOUT_TRANSFER_DST), nregions = 1, regions = (&reg) as *u8, filter = u32(filter))
+        vkCmdBlitImage2(cb, (&bi) as *u8)
 
     # framebuffers
     vgl_create_framebuffer = () -> int:

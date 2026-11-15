@@ -53,6 +53,10 @@ when TARGET == "macos":
     @lib("/usr/lib/libobjc.A.dylib")
     @symbol("objc_msgSend")
     extern __mo_buf_to_tex = (o: *u8, s: *u8, buf: *u8, off: int, row: int, img: int, size: *u8, tex: *u8, slice: int, level: int, origin: *u8) -> *u8
+    # (copyFromTexture:sourceSlice:sourceLevel:toTexture:destinationSlice:destinationLevel:sliceCount:levelCount:)
+    @lib("/usr/lib/libobjc.A.dylib")
+    @symbol("objc_msgSend")
+    extern __mo_tex_levels = (o: *u8, s: *u8, src: *u8, sslice: int, slevel: int, dst: *u8, dslice: int, dlevel: int, slices: int, levels: int) -> *u8
     # (copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:)
     @lib("/usr/lib/libobjc.A.dylib")
     @symbol("objc_msgSend")
@@ -315,6 +319,8 @@ when TARGET == "macos":
         width: int
         height: int
         format: int                # MTLPixelFormat
+        levels: int = 1            # mipmaps
+        mip: bool = false          # (the min filter uses them)
 
     __vgt: __MgTex[]               # by GL name (0: white, 1x1, in slot 0)
     __vgt_free: int[]
@@ -322,7 +328,7 @@ when TARGET == "macos":
     __vg_unit = 0
     __mg_args: *u8 = null          # the argument buffer (an MTLBuffer)
     __mg_args_p: *u8 = null
-    __mg_samplers: *u8[]           # nearest clamp, nearest repeat, linear clamp, linear repeat
+    __mg_samplers: *u8[]           # nearest clamp, nearest repeat, linear clamp, linear repeat; the same with mipmaps
     __vk_slot_free: int[]
     __vk_slot_next = 1
 
@@ -331,18 +337,20 @@ when TARGET == "macos":
         __mg_args = __mg_buffer(__VK_MAX_TEXTURES * 16)
         __mg_args_p = __oc(__mg_args, __sel("contents"))
         pool = objc_autoreleasePoolPush()
-        loop linear in [0, 1]:
-            loop rep in [0, 1]:
-                d = __oc(__oc(__cls("MTLSamplerDescriptor"), __sel("alloc")), __sel("init"))
-                __oc_i(d, __sel("setMinFilter:"), linear)
-                __oc_i(d, __sel("setMagFilter:"), linear)
-                mode = 0                                    # clamp to edge
-                if rep == 1: mode = 2                       # repeat
-                __oc_i(d, __sel("setSAddressMode:"), mode)
-                __oc_i(d, __sel("setTAddressMode:"), mode)
-                __oc_i(d, __sel("setSupportArgumentBuffers:"), 1)
-                __mg_samplers.push(__oc_p(__mg_dev, __sel("newSamplerStateWithDescriptor:"), d))
-                __mg_release(d)
+        loop mips in [0, 1]:
+            loop linear in [0, 1]:
+                loop rep in [0, 1]:
+                    d = __oc(__oc(__cls("MTLSamplerDescriptor"), __sel("alloc")), __sel("init"))
+                    __oc_i(d, __sel("setMinFilter:"), linear)
+                    __oc_i(d, __sel("setMagFilter:"), linear)
+                    if mips == 1: __oc_i(d, __sel("setMipFilter:"), 2)     # linear between levels
+                    mode = 0                                    # clamp to edge
+                    if rep == 1: mode = 2                       # repeat
+                    __oc_i(d, __sel("setSAddressMode:"), mode)
+                    __oc_i(d, __sel("setTAddressMode:"), mode)
+                    __oc_i(d, __sel("setSupportArgumentBuffers:"), 1)
+                    __mg_samplers.push(__oc_p(__mg_dev, __sel("newSamplerStateWithDescriptor:"), d))
+                    __mg_release(d)
         objc_autoreleasePoolPop(pool)
         __vg_init()
 
@@ -361,10 +369,11 @@ when TARGET == "macos":
         __vk_slot_next - 1
 
     # point slot `slot` at texture t (sampled with the given filter and wrapping)
-    __mg_set_slot = (slot: int, t: *u8, linear: bool, repeat: bool):
+    __mg_set_slot = (slot: int, t: *u8, linear: bool, repeat: bool, mips: bool = false):
         k = 0
         if linear: k += 2
         if repeat: k += 1
+        if mips: k += 4
         q = (__mg_args_p + slot * 16) as *int
         q[0] = __oc_int(t, __sel("gpuResourceID"))
         q[1] = __oc_int(__mg_samplers[k], __sel("gpuResourceID"))
@@ -383,7 +392,7 @@ when TARGET == "macos":
             __vgt[t].slot = __vk_slot_new()
             __vgt[t].drawn = false
         depth = __vgt[t].format == 252
-        __mg_set_slot(__vgt[t].slot, __vgt[t].tex, __vgt[t].linear and not depth, __vgt[t].repeat)
+        __mg_set_slot(__vgt[t].slot, __vgt[t].tex, __vgt[t].linear and not depth, __vgt[t].repeat, __vgt[t].levels > 1 and __vgt[t].mip)
 
     # the slot a draw samples texture t from (white for no texture)
     __vg_slot_of = (t: int) -> int:
@@ -402,6 +411,7 @@ when TARGET == "macos":
         objc_autoreleasePoolPop(pool)
         __vgt[t].tex = tex
         __vgt[t].live = true
+        __vgt[t].levels = 1
         __vgt[t].width = max(w, 1)
         __vgt[t].height = max(h, 1)
         __vgt[t].format = format
@@ -748,8 +758,35 @@ when TARGET == "macos":
         p = int(pname)
         if p == GL_TEXTURE_MAG_FILTER: __vgt[t].linear = int(v) != GL_NEAREST
         else if p == GL_TEXTURE_WRAP_S or p == GL_TEXTURE_WRAP_T: __vgt[t].repeat = int(v) == GL_REPEAT or int(v) == GL_MIRRORED_REPEAT
+        else if p == GL_TEXTURE_MIN_FILTER: __vgt[t].mip = int(v) >= 0x2700 and int(v) <= 0x2703
         else: return
         if __vgt[t].tex != null: __vg_tex_slot(t)
+
+    # glGenerateMipmap: an RGBA8 texture made again with all its levels (its picture copied
+    # into level 0, on the GPU), the others filled by the blit encoder
+    vgl_generate_mipmap = ():
+        t = __vg_bound[__vg_unit]
+        if t <= 0 or t >= __vgt.len() or __vgt[t].tex == null or __vgt[t].format != 70: return
+        w = __vgt[t].width
+        h = __vgt[t].height
+        n = 1
+        loop (w >> n) > 0 or (h >> n) > 0: n += 1
+        enc = __mg_blit()
+        if __vgt[t].levels != n:
+            pool = objc_autoreleasePoolPush()
+            d = __mo_iiii(__cls("MTLTextureDescriptor"), __sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 70, w, h, 1)
+            __oc_i(d, __sel("setStorageMode:"), 2)
+            __oc_i(d, __sel("setUsage:"), 1 | 4)                    # shader read, render target
+            tex = __mg_texture_of(d)
+            objc_autoreleasePoolPop(pool)
+            old = __vgt[t].tex
+            __mo_tex_levels(enc, __sel("copyFromTexture:sourceSlice:sourceLevel:toTexture:destinationSlice:destinationLevel:sliceCount:levelCount:"), old, 0, 0, tex, 0, 0, 1, 1)
+            __mg_defer(old)
+            __vgt[t].tex = tex
+            __vgt[t].levels = n
+        __oc_p(enc, __sel("generateMipmapsForTexture:"), __vgt[t].tex)
+        __mg_end_blit(enc)
+        __vg_tex_slot(t)
 
     # ---------------- framebuffers (GL) ----------------
     vgl_create_framebuffer = () -> int:

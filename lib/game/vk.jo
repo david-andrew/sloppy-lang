@@ -898,6 +898,7 @@ when TARGET != "wasm" and TARGET != "macos":
         format: u32
         layout: u32
         aspect: u32
+        levels: int = 1            # (mipmaps: a sampled texture's, see vgl_generate_mipmap)
 
     __vk_screen = __VkImage()
     __vk_screen_depth = __VkImage()
@@ -1546,19 +1547,19 @@ when TARGET != "wasm" and TARGET != "macos":
         vkCmdPipelineBarrier2(cb, (&dep) as *u8)
 
     # ---------------- images ----------------
-    __vk_image = (w: int, h: int, format: u32, usage: u32, aspect: u32, samples: int = 1) -> __VkImage:
-        info = VkImageCreateInfo(stype = 14, image_type = 1, format = format, width = u32(w), height = u32(h), depth = 1, mips = 1, layers = 1, samples = u32(samples), usage = usage)
-        img = __VkImage(width = w, height = h, format = format, layout = u32(VK_LAYOUT_UNDEFINED), aspect = aspect)
+    __vk_image = (w: int, h: int, format: u32, usage: u32, aspect: u32, samples: int = 1, levels: int = 1) -> __VkImage:
+        info = VkImageCreateInfo(stype = 14, image_type = 1, format = format, width = u32(w), height = u32(h), depth = 1, mips = u32(levels), layers = 1, samples = u32(samples), usage = usage)
+        img = __VkImage(width = w, height = h, format = format, layout = u32(VK_LAYOUT_UNDEFINED), aspect = aspect, levels = levels)
         __vk_check(vkCreateImage(__vk_dev, (&info) as *u8, null, &img.image), "vkCreateImage")
         req = VkMemoryRequirements()
         vkGetImageMemoryRequirements(__vk_dev, img.image, (&req) as *u8)
         img.mem = __vk_alloc(req, u32(VK_MEM_DEVICE_LOCAL), 0, 1)
         __vk_check(vkBindImageMemory(__vk_dev, img.image, __vk_range_mem(img.mem), u64(__vk_range_off(img.mem))), "vkBindImageMemory")
-        img.view = __vk_view(img.image, format, aspect)
+        img.view = __vk_view(img.image, format, aspect, levels)
         img
 
-    __vk_view = (image: int, format: u32, aspect: u32) -> int:
-        info = VkImageViewCreateInfo(stype = 15, image = image, view_type = 1, format = format, aspect = aspect, mips = 1, layers = 1)
+    __vk_view = (image: int, format: u32, aspect: u32, levels: int = 1) -> int:
+        info = VkImageViewCreateInfo(stype = 15, image = image, view_type = 1, format = format, aspect = aspect, mips = u32(levels), layers = 1)
         v = 0
         __vk_check(vkCreateImageView(__vk_dev, (&info) as *u8, null, &v), "vkCreateImageView")
         v
@@ -1577,6 +1578,13 @@ when TARGET != "wasm" and TARGET != "macos":
     __vk_barrier_raw = (cb: *u8, image: int, aspect: u32, old: u32, new: u32, src_stages: int, src_access: int, dst_stages: int, dst_access: int):
         b = VkImageMemoryBarrier2(stype = 1000314002, src_stages = src_stages, src_access = src_access, dst_stages = dst_stages, dst_access = dst_access,
             old_layout = old, new_layout = new, src_family = 0xFFFFFFFF, dst_family = 0xFFFFFFFF, image = image, aspect = aspect, mips = 1, layers = 1)
+        dep = VkDependencyInfo(stype = 1000314003, nimg = 1, img = (&b) as *u8)
+        vkCmdPipelineBarrier2(cb, (&dep) as *u8)
+
+    # the same for `count` mipmap levels of a color image from level `base`
+    __vk_barrier_levels = (cb: *u8, image: int, base: int, count: int, old: u32, new: u32, src_stages: int, src_access: int, dst_stages: int, dst_access: int):
+        b = VkImageMemoryBarrier2(stype = 1000314002, src_stages = src_stages, src_access = src_access, dst_stages = dst_stages, dst_access = dst_access,
+            old_layout = old, new_layout = new, src_family = 0xFFFFFFFF, dst_family = 0xFFFFFFFF, image = image, aspect = 1, base_mip = u32(base), mips = u32(count), layers = 1)
         dep = VkDependencyInfo(stype = 1000314003, nimg = 1, img = (&b) as *u8)
         vkCmdPipelineBarrier2(cb, (&dep) as *u8)
 
@@ -1881,7 +1889,8 @@ when TARGET != "wasm" and TARGET != "macos":
     __vk_set_layout = 0
     __vk_set = 0
     __vk_layout = 0
-    __vk_samplers: int[]           # [linear?][repeat?]: nearest clamp, nearest repeat, linear clamp, linear repeat
+    __vk_samplers: int[]           # [base only?][linear?][repeat?]: nearest clamp, nearest repeat, linear clamp, linear repeat;
+                                   # then those reading only level 0 (a mipmapped texture whose filter has no mipmaps)
 
     __vk_make_bindless = ():
         b = VkDescriptorSetLayoutBinding(binding = 0, ty = 1, count = u32(__VK_MAX_TEXTURES), stages = 0x7FFFFFFF)
@@ -1898,14 +1907,15 @@ when TARGET != "wasm" and TARGET != "macos":
         range = VkPushConstantRange(stages = 0x7FFFFFFF, offset = 0, size = u32(__VK_PUSH_SIZE))
         pli = VkPipelineLayoutCreateInfo(stype = 30, nsets = 1, sets = &__vk_set_layout, nranges = 1, ranges = (&range) as *u8)
         __vk_check(vkCreatePipelineLayout(__vk_dev, (&pli) as *u8, null, &__vk_layout), "vkCreatePipelineLayout")
-        loop linear in [0, 1]:
-            loop rep in [0, 1]:
-                wrap = u32(2)
-                if rep == 1: wrap = 0
-                si = VkSamplerCreateInfo(stype = 31, mag = u32(linear), min = u32(linear), mip_mode = u32(linear), wrap_u = wrap, wrap_v = wrap, wrap_w = wrap, max_lod = 1000.0)
-                smp = 0
-                __vk_check(vkCreateSampler(__vk_dev, (&si) as *u8, null, &smp), "vkCreateSampler")
-                __vk_samplers.push(smp)
+        loop base in [0, 1]:
+            loop linear in [0, 1]:
+                loop rep in [0, 1]:
+                    wrap = u32(2)
+                    if rep == 1: wrap = 0
+                    si = VkSamplerCreateInfo(stype = 31, mag = u32(linear), min = u32(linear), mip_mode = u32(linear), wrap_u = wrap, wrap_v = wrap, wrap_w = wrap, max_lod = if base == 1: f32(0.25) else: f32(1000.0))
+                    smp = 0
+                    __vk_check(vkCreateSampler(__vk_dev, (&si) as *u8, null, &smp), "vkCreateSampler")
+                    __vk_samplers.push(smp)
 
     # slots of the bindless array: 0 is the white texture's; a texture takes a new one whenever
     # its image or sampling changes, and the old one is free again once the GPU is done with
@@ -1919,10 +1929,11 @@ when TARGET != "wasm" and TARGET != "macos":
         __vk_slot_next - 1
 
     # point texture slot `slot` at an image view (sampled with the given filter and wrapping)
-    __vk_set_texture = (slot: int, view: int, linear: bool, repeat: bool):
+    __vk_set_texture = (slot: int, view: int, linear: bool, repeat: bool, base_only: bool = false):
         k = 0
         if linear: k += 2
         if repeat: k += 1
+        if base_only: k += 4
         ii = VkDescriptorImageInfo(sampler = __vk_samplers[k], view = view, layout = u32(VK_LAYOUT_SHADER_READ))
         w = VkWriteDescriptorSet(stype = 35, set = __vk_set, binding = 0, element = u32(slot), count = 1, ty = 1, images = (&ii) as *u8)
         vkUpdateDescriptorSets(__vk_dev, 1, (&w) as *u8, 0, null)

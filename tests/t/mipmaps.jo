@@ -1,0 +1,62 @@
+# requires: sloppy
+# requires: native
+# requires: unix
+# env: SLOPPY_SOFTWARE=1
+# Mipmaps in the software renderer: made at a texture's first 3D draw (smooth ones only),
+# levels that average the one before, a level chosen per pixel, opting out, made again after
+# update_texture, none for render targets.
+checks = (n: int, a: vec4, b: vec4) -> Image:
+    img = image(n, n)
+    loop y in [0..n):
+        loop x in [0..n): set(img, x, y, if (x + y) % 2 == 0: a else: b)
+    img
+gray = (c: vec4) -> bool: abs(c.x - 0.5) < 0.01 and abs(c.y - 0.5) < 0.01
+fine = texture(checks(8, WHITE, BLACK))
+set_repeat(fine, true)
+sharp = texture(checks(8, WHITE, BLACK), smooth = false)
+kept = texture(checks(8, WHITE, BLACK))
+set_repeat(kept, true)
+set_mipmaps(kept, false)
+rt = render_target(8, 8)
+set_mipmaps(rt.texture, true)
+assert(__tex_mips[fine.id] == u8(0) and __tex_mips[sharp.id] == u8(3) and __tex_mips[kept.id] == u8(3) and __tex_mips[rt.texture.id] == u8(4))
+# a floor whose texture repeats every meter
+n = vec3(0, 1, 0)
+plane = mesh([Vertex3D(vec3(-50, 0, 2), n, vec2(-50, 0), WHITE), Vertex3D(vec3(50, 0, 2), n, vec2(50, 0), WHITE),
+              Vertex3D(vec3(50, 0, -100), n, vec2(50, 102), WHITE), Vertex3D(vec3(-50, 0, -100), n, vec2(-50, 102), WHITE)],
+             [u32(0), u32(1), u32(2), u32(0), u32(2), u32(3)])
+scene = (t: Texture) -> Image:
+    render_image(64, 48, ():
+        camera3d(vec3(0, 1, 0), vec3(0, 0.6, -10), 60)
+        sun(vec3(0, 1, 0), disc = 0)
+        fog(vec3(0, 0, 0), 0)
+        shadows(false)
+        draw_mesh(plane, texture = t, specular = 0)
+        rect(Rect(0, 0, 1, 1), rgba(0, 0, 0, 0)))      # (2D after the 3D: the 3D is drawn first)
+# how much a row's pixels differ from their neighbours
+busy = (img: Image, y: int) -> int:
+    n = 0
+    loop x in [1..img.width):
+        n += abs(int(img.pixels[(y * img.width + x) * 4]) - int(img.pixels[(y * img.width + x - 1) * 4]))
+    n
+far = scene(fine)
+assert(__tex_mips[fine.id] == u8(1) and __st[fine.id].levels == 4)
+assert(__tex_mips[sharp.id] == u8(3) and __tex_mips[kept.id] == u8(3) and __st[kept.id].levels == 1)
+plain = scene(kept)
+# toward the horizon the mipmapped floor is an even gray; without mipmaps it flickers
+loop y in [25..35): assert(busy(far, y) * 20 < busy(plain, y))
+# each level averages the one before: the 1x1 level of a checkerboard is gray
+assert(gray(sample_lod(fine, vec2(0.3, 0.6), 3.0)))
+assert(sample_lod(fine, vec2(0.0625, 0.0625), 0.0) == WHITE)
+assert(sample_lod(sharp, vec2(0.0625, 0.0625), 3.0) == WHITE)  # (no mipmaps: the full-size image)
+# a changed picture: its mipmaps are made again at the next 3D draw
+update_texture(fine, image(8, 8, vec4(1, 0, 0, 1)))
+assert(__tex_mips[fine.id] == u8(2))
+again = scene(fine)
+assert(__tex_mips[fine.id] == u8(1))
+red = sample_lod(fine, vec2(0.5, 0.5), 3.0)
+assert(red.x > 0.99 and red.y < 0.01)
+# opting out after: the full-size image again
+set_mipmaps(fine, false)
+assert(not __st[fine.id].mip)
+print("mipmaps ok")

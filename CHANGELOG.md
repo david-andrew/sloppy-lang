@@ -10,6 +10,26 @@ compiled while it downloads; Breakwater has a new look, layout menus and touch c
 The page no longer has a `SLOPPY_WASM` variable: the module text is a non-running script
 element (`#sloppy-wasm`), read once and let go.
 
+- Mipmaps: a texture drawn on a 3D mesh gets them the first time it is drawn, with trilinear
+  filtering, so floors and walls far away turn to their average color instead of shimmering, on
+  all five renderers (OpenGL and WebGL `glGenerateMipmap`, a Vulkan blit chain, Metal's blit
+  encoder, and the software renderer, which chooses a level per pixel from the texture
+  coordinates' change across the screen). Pixel-art textures (`smooth = false`, as after
+  `pixel_art()`), 2D sprites, render targets and sky panoramas keep none. `set_mipmaps(t, on)`
+  makes them now (for your own shaders, or while loading) or keeps a texture without them;
+  `auto_mipmaps = false` turns the automatic ones off; `update_texture` has them made again at
+  the next 3D draw; `sample_lod` reads a level in the software renderer too. A third more memory
+  for those textures; 5.6 ms to make them for a 1024×1024 texture in the software renderer.
+- PBR materials cost much less in the software renderer: opaque materials cast shadows with the
+  plain depth programs, so no shadow-map pixel runs a fragment function (only alpha-masked
+  materials need one). Frames are byte-identical. `bench/games/pbr_cost.jo`, a scene drawn with
+  materials or with the simple lighting: 92.7 million instructions a frame with materials before,
+  57.1 after, against 40.5 with the simple lighting (+129% for materials before, +41% after);
+  the character starter 120.7 million before, 108.2 after. GPUs skip that work too.
+- tools/web_shaders.mjs: its page opts into PBR materials and post effects, which a program
+  prepares only when it uses them since 0.34.0 (the check expected them anyway: 13 startup
+  programs instead of 14, 2 skeletal instead of 4).
+
 - One `fog()` now fogs PBR materials as it fogs the simple lighting. Before, the PBR shader
   mixed the fog color into its linear light, as if it were linear, and then tone-mapped and
   sRGB-encoded it, so PBR surfaces faded toward a lighter, washed-out color than the sky's

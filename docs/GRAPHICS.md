@@ -341,6 +341,36 @@ weights in one frame. The GPU backends retain each streamed address until its fr
 the software renderer consumes each draw immediately. This uses the same shaders and buffer
 API on all five renderers.
 
+### Mipmaps
+
+A texture drawn on a 3D mesh (`draw_mesh`'s `texture`, a material's maps, a model's) gets
+mipmaps the first time it is drawn: smaller copies, each half the size of the one before, made
+by averaging 2×2 texels, and trilinear filtering between them. A floor or a wall running into
+the distance turns to its average color instead of shimmering and showing moiré. They take a
+third more memory, for those textures only. What stays as it was:
+
+- textures made with `smooth = false`, which `pixel_art()` makes the default: sharp texels,
+  no mipmaps, near or far;
+- 2D sprites, text and anything else never drawn on a 3D mesh;
+- render targets (`render_target`), whose picture changes as they are drawn into;
+- a `sky_image` panorama (sampled across its seam, where mipmaps would draw a line).
+
+`set_mipmaps(t, true)` makes them now: for a texture a custom shader samples (`sample` then
+chooses the level; `sample_lod` picks one), or to pay their cost while loading instead of at
+the first 3D draw. `set_mipmaps(t, false)` keeps a texture without them, also on 3D meshes.
+`auto_mipmaps = false` turns the automatic ones off. After `update_texture` the next 3D draw
+makes them again. A render target's texture has none: `set_mipmaps` leaves it alone.
+
+How each renderer makes them: OpenGL and WebGL call `glGenerateMipmap`; Vulkan makes the
+texture's image again with its levels and blits each level from the one before, filtered;
+Metal does the same with a blit encoder's `generateMipmapsForTexture`. The software renderer
+averages the levels itself and chooses a level for each pixel as a GPU does, from how fast
+the texture coordinates change from one pixel to the next and to the next row (the coordinates
+must be one of the shader's inputs as it receives them, such as `i.uv`; coordinates computed in
+the shader sample the full-size image). Making them takes 0.9 ms for a 256×256 texture, 5.6 ms
+for 1024×1024 and 24 ms for 2048×2048 in the software renderer (one core); on a GPU it is a few
+commands. `tests/render/mipmaps.jo` and `tests/t/mipmaps.jo` check them.
+
 ## Computing on the GPU
 
 There are three levels, from the simplest to the most control. All three also run without a
