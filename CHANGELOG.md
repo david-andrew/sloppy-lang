@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Web pages skip WebGL calls that bind what is already bound: the program, the vertex array, the
+  texture unit and each unit's texture (on a phone in Chrome these were about 1.5% of a game's CPU
+  after 0.36.2's draw changes).
 ## 0.36.2
 
 OpenGL and WebGL draws set much less GL state (a seventh of a phone game's frame went to it), and
