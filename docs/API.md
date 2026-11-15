@@ -4705,6 +4705,12 @@ Menus and hud_ boxes are drawn in the units of the 2D transform drawing has (cam
       if hud_button(Rect(r.x, r.y + i * 44 - off, r.w - 10, 40), it.name): buy(i)
   no_clip()
   ```
+- `hud_scroll_to = (id: str, offset: f64)`: move the hud_scroll list drawn with this id to offset (as hud_scroll gives it: how far its content is scrolled up), stopping any gliding; held within its content when it is next drawn. For a list worked with keys or a gamepad, hud_scroll_reveal is usually what is wanted
+- `hud_scroll_reveal = (id: str, top: f64, bottom: f64)`: scroll the hud_scroll list drawn with this id just enough that its content from top to bottom (in the content's own units, as the rows are placed: row i of 44 is i * 44 to i * 44 + 44) is in view, and not at all when it is already: the focused row of a list worked with keys
+  ```gdscript
+  sel = 12                                    # (the focused row)
+  hud_scroll_reveal("shop", f64(sel) * 44.0, f64(sel) * 44.0 + 44.0)
+  ```
 - `hud_tooltip = (s: str)`: a box of text beside the mouse, kept on the screen: what the thing under the mouse is or does. Draw it after the rest of the interface, so nothing covers it (`if hovered: tip = "..."`, then at the end of draw, `if len(tip) > 0: hud_tooltip(tip)`); lines break at "\n"
 - `hud_slider = (r: Rect, value: f64, low: f64, high: f64, step: f64 = 0.0, label: str = "") -> f64`: a value from low to high, set by dragging along the box (a finger too: the slider pressed on keeps the drag until let go), in steps of `step` (0: any value); the label, if any, is drawn over the box's left part, so give it room: `g = hud_slider(Rect(20, 80, 300, 36), g, 1, 20, 0.1, "g {g:.1f} m/s²")`
 - `hud_checkbox = (r: Rect, label: str, on: bool) -> bool`: a box ticked or not, with its label to the right: the new state (flipped in the frame it is clicked or tapped, on the box or its label). The box is as tall as r; an r wider than that holds the label too, cut short with … to fit it

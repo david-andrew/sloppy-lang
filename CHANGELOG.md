@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `hud_scroll_to(id, offset)` and `hud_scroll_reveal(id, top, bottom)` move a `hud_scroll` list by its
+  id (stopping its gliding), the second just enough to bring a span of its content into view: a
+  list worked with keys keeps its focused row showing without reaching into the library's state.
 - Warn when a bare top-level assignment makes a new variable with the same name as a
   library or directly imported module's global, leaving that global unchanged. The warning
   explains how to change the intended state or explicitly declare a separate variable.

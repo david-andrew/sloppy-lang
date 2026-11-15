@@ -2081,7 +2081,9 @@ A `hud_panel` covers what was drawn before it: a dialog drawn last takes the cli
 from the buttons under it, and `hud_panel(visible_rect(), rgba(0, 0, 0, 0.5))` drawn first makes
 it modal. In a `hud_scroll` list, a row dragged somewhere (a card to another column) calls
 `claim_press()` as the press goes down, and the list does not move with it; letting go of a
-claimed press clicks no button. Labels too long for a `hud_button` or a `hud_checkbox` (given a
+claimed press clicks no button. `hud_scroll_to(id, offset)` moves a list drawn with that id (and
+stops its gliding); `hud_scroll_reveal(id, top, bottom)` scrolls it just enough to show that span of
+its content, the focused row of a list worked with keys or a gamepad. Labels too long for a `hud_button` or a `hud_checkbox` (given a
 rectangle as wide as box and label) end in …, as `fit_text(s, width, size)` cuts any text;
 `hud_button(r, label, align = .left)` puts the label at the left, for a list's rows.
 
