@@ -208,7 +208,7 @@ try:
     room_players[1].communicate()
     time.sleep(0.5)
     room_players[1] = room_player("guest1", ROLE="guest", REJOIN="1")
-    room_outs = [p.communicate(timeout=40) for p in room_players]
+    room_outs = [p.communicate(timeout=120) for p in room_players]           # (1800 frames paced at 60 a second: 30 s at best)
     room_lines = [[l for l in o.splitlines() if l.strip()] for o, err in room_outs]
     room_hashes = [l[0].split(": ", 1)[1] if l and l[0].startswith(f"player {i}: ") else None for i, l in enumerate(room_lines)]
     if None not in room_hashes and len(set(room_hashes)) == 1 and room_hashes[0].endswith("desync -1 problem ''") and room_lines[0][1:] == ["came back: [1]"] and all(p.returncode == 0 for p in room_players):
