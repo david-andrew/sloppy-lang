@@ -347,7 +347,19 @@ A texture drawn on a 3D mesh (`draw_mesh`'s `texture`, a material's maps, a mode
 mipmaps the first time it is drawn: smaller copies, each half the size of the one before, made
 by averaging 2×2 texels, and trilinear filtering between them. A floor or a wall running into
 the distance turns to its average color instead of shimmering and showing moiré. They take a
-third more memory, for those textures only. What stays as it was:
+third more memory, for those textures only. A ground that shows it, its texture repeating every
+4 meters out to the horizon:
+
+```gdscript
+ground = plane_mesh(400, tile = 4)
+stones = texture(load_image(embed("stones.png")).unwrap())
+set_repeat(stones, true)
+draw = ():
+    camera3d(vec3(0, 3, 8), vec3(0, 0, 0))
+    draw_mesh(ground, texture = stones)
+```
+
+What stays as it was:
 
 - textures made with `smooth = false`, which `pixel_art()` makes the default: sharp texels,
   no mipmaps, near or far;

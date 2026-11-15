@@ -6,6 +6,9 @@
   (`net.receive()`: a lobby's messages, the invite screens) never heard that it had connected,
   so it never joined its room and every player waited at tick 0, silently. The relay
   connection's events are the session's now, as its packets on `s.over`'s peers already were.
+- `plane_mesh(size, tile = 4)`: a texture repeats every 4 meters across it (with
+  `set_repeat(t, true)`), for a ground that runs to the horizon and shows its mipmaps; without
+  `tile` it covers the plane once, as before.
 
 
 Rollback players who restart (a crash, a reloaded page) come back into a running game
