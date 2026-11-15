@@ -1383,6 +1383,21 @@ A variable brought in by `use` (or the library's, like `ui_style`) is changed by
 it, at the top level as in a function: `volume = 0.5` after `use 'audio_settings.jo'` sets that
 module's `volume`, not a new one.
 
+A bare top-level assignment that instead makes a new variable with the exact name of a
+library global, or of a global in a directly imported or `use`d module, warns that it leaves
+that other global unchanged. This includes private `_` names left out by `use`, and public
+names kept under an `import`'s module name. To change a public global under a module's name,
+assign through that name (`physics.gravity = 9.8`); for a variable of this file's own, choose
+another name, or declare it explicitly with `let` or a type (`gravity: f64 = 9.8`).
+
+The library shares its own private names between its files. Its `__` names are also reachable
+by programs for testing internals: a function can write `global __fixed_step` and then
+`__fixed_step = true` to change the library's clock. A bare top-level `__fixed_step = true`
+makes a separate variable of the program's own and warns. This access to library internals is
+outside the [supported API boundary](STABLE.md) and may change without compatibility promises;
+programs should use documented operations. It does not grant access to another program
+module's private names, or to the library's single-underscore names.
+
 The core standard library (strings, arrays, maps, math, vectors, files, numeric arrays, and
 the game/graphics/audio API) is always available without importing.
 

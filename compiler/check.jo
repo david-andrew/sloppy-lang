@@ -24,6 +24,7 @@ struct Module:
     dir: str
     names: {int: int}
     uses: int[]
+    imports: int[]      # direct dependencies, including private names left out by `use`
     decls: int[]
     is_prelude: bool
     is_main: bool
@@ -1050,6 +1051,36 @@ type_qualify = (d: int):
     if len(v) > 0: type_qual_end[d] = " ({v})"
     else: type_qual_end[d] = ""
 
+top_assign_names: int[]       # identifiers made into globals by a top-level `=` (not `let` or `: T`)
+
+# Only newly declared names need this check, after every import has its globals registered.
+# A normal assignment to an existing variable pays nothing here. Imports are not transitive.
+top_assign_warnings = ():
+    loop id in top_assign_names:
+        m = int(nodes[id].mod)
+        nm = int(nodes[id].name)
+        hidden = prelude.get(nm) ?? 0
+        if hidden == 0 or syms[hidden].kind != .global:
+            hidden = 0
+            loop im in modules[m].imports:
+                hs = modules[im].names.get(nm) ?? 0
+                if hs != 0 and syms[hs].kind == .global and int(globals[int(syms[hs].ref)].mod) != m:
+                    hidden = hs
+                    break
+        if hidden == 0: continue
+        hg = int(syms[hidden].ref)
+        hm = int(globals[hg].mod)
+        if hm == m: continue
+        n = name_of(nm)
+        owner = module_shown(m, hm)
+        if modules[hm].is_prelude: owner = "the library"
+        how = "to change it, import the module and assign through its name; for a variable of this file's own, use another name (or `let {n} = ...` to declare it explicitly)"
+        if modules[hm].is_prelude and starts_with(n, "__"):
+            how = "to change the library's, write `global {n}` in a function and assign it there (library internals are unsupported); for a variable of this file's own, use another name (or `let {n} = ...`)"
+        else if is_private(nm):
+            how = "this name is private to its file: use a public operation to change its state; for a variable of this file's own, use another name (or `let {n} = ...`)"
+        warn(nodes[id].pos, "'{n}' is a global of {owner} (at {pos_str(nodes[int(globals[hg].decl)].pos)}): this top-level assignment makes a new variable of this file's own and leaves that global unchanged; {how}")
+
 # (a module `use`d by another is registered first, so that a top-level `x = ...` there sees the
 # used module's x: name_assignable)
 registered: bool[]
@@ -1063,7 +1094,18 @@ register_decls = (m: int, decls: int[]):
     global build_node
     loop d in decls:
         nodes[d].mod = i32(m)
-        if nodes[d].kind == .assign and assign_declares(d, m): assign_to_decl(d)
+        if nodes[d].kind == .assign and assign_declares(d, m):
+            if not modules[m].is_prelude:
+                lhs = int(nodes[d].a)
+                if nodes[lhs].kind == .ident:
+                    nodes[lhs].mod = i32(m)
+                    top_assign_names.push(lhs)
+                else:
+                    loop id in kids(lhs):
+                        if nodes[id].kind == .ident:
+                            nodes[id].mod = i32(m)
+                            top_assign_names.push(id)
+            assign_to_decl(d)
         k = nodes[d].kind
         nm = int(nodes[d].name)
         # (on_hit = (n: int): ... after `on_hit: (int) -> void = ...`: a new value for that variable)
@@ -1179,6 +1221,7 @@ register_decls = (m: int, decls: int[]):
             im = load_module(path, false, nodes[d].pos)
             if im >= n0: modules[im].pkg = i32(ipk)
             nodes[d].sym = i32(im)
+            if not modules[m].is_prelude: modules[m].imports.push(im)
             if nodes[d].aux == 1:
                 modules[m].uses.push(im)
                 register_module(im)
@@ -4456,6 +4499,7 @@ check_program = (main_path: str):
         if i == modules.len(): load_on_demand()
     program_build_ready = true
     bind_from_imports()
+    top_assign_warnings()
     check_build_block()
     # (native programs report crashes as they do panics: lib/std/backtrace.jo)
     if not target_wasm and prelude.get(intern("__crash_install")) != none: modules[mainm].inits.insert(0, synth_call("__crash_install", [], 0))

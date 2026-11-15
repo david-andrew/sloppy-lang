@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Warn when a bare top-level assignment makes a new variable with the same name as a
+  library or directly imported module's global, leaving that global unchanged. The warning
+  explains how to change the intended state or explicitly declare a separate variable.
+  Audio mixer tests now set the library's state from a function with `global __audio_state`,
+  keeping their manually mixed samples independent of the machine's sound device.
 - Wind (`draw_mesh_instanced(..., wind = w)`) and the sky read the clock once per 3D pass, so the
   shadow pass sways the leaves exactly as the lit pass does (on the software renderer the shadow
   pass can take milliseconds, and the shadows trailed the swaying leaves by that much). The
