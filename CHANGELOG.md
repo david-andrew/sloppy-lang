@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.35.0
+
+Rollback players who restart (a crash, a reloaded page) come back into a running game
+(`s.allow_rejoin`, `s.admit`); web builds start faster and lighter and make far less garbage
+during play (a 19 MB module's first frame 4.1 s -> 3.3 s and 72 MB -> 2 MB of JS heap; Aces'
+garbage during play 310 -> 60 KB/s), with `--wasm-file` to ship the module as a separate file
+compiled while it downloads; Breakwater has a new look, layout menus and touch controls.
+The page no longer has a `SLOPPY_WASM` variable: the module text is a non-running script
+element (`#sloppy-wasm`), read once and let go.
 
 - Web pages hold the program as base64 text in a script element that is not run, which the page
   decodes, compiles off the main thread and lets go as it loads; before, the text was a string
