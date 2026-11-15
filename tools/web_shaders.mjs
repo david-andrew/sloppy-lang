@@ -80,7 +80,9 @@ try {
   await until("shader startup ready");
   await sleep(300);
   const startup = await ev("shaderLinks");
-  expect("ordinary lighting, PBR, sky, post, particles and palette link", startup.length >= 14 && startup.every((p) => p.ok), `${startup.length} programs`);
+  // (2 page programs, the default 2D one, 5 lit/shadow/sky, 2 PBR, 3 post, sky filter, particles
+  // and palette: the page opts into PBR and post effects, which a program prepares only if used)
+  expect("ordinary lighting, PBR, sky, post, particles and palette link", startup.length >= 16 && startup.every((p) => p.ok), `${startup.length} programs`);
   expect("skeletal programs are lazy", !startup.some((p) => p.sources.some((s) => /uniform[^;]*\[192\]/.test(s))));
   expect("unused 240-row field is absent", startup.some((p) => p.sources.some((s) => /f_budget_fs_/.test(s))) && !startup.some((p) => p.sources.some((s) => /\[240\]/.test(s))));
   expect("independent color uniform uploads and draws green", JSON.stringify(await ev("budgetPixel")) === "[0,255,0,255]", JSON.stringify(await ev("budgetPixel")));
