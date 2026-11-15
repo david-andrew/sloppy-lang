@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Wind (`draw_mesh_instanced(..., wind = w)`) and the sky read the clock once per 3D pass, so the
+  shadow pass sways the leaves exactly as the lit pass does (on the software renderer the shadow
+  pass can take milliseconds, and the shadows trailed the swaying leaves by that much). The
+  render_image tests held the clock with a top-level `__fixed_step = true`, which makes the
+  program's own variable and leaves the library's clock running: two captures of a wind scene
+  then differed by a pixel or so (more on slow machines, as CI's arm64 runner). They hold it
+  from a function with `global __fixed_step` now; tests/t/soft_wind_repeat draws a wind scene
+  five times with four threads and checks the bytes are the same.
 - Mipmaps: a texture drawn on a 3D mesh gets them the first time it is drawn, with trilinear
   filtering, so floors and walls far away turn to their average color instead of shimmering, on
   all five renderers (OpenGL and WebGL `glGenerateMipmap`, a Vulkan blit chain, Metal's blit
