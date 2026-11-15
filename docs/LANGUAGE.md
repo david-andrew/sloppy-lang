@@ -2119,8 +2119,7 @@ draw = ():
                 volume = ui.slider(volume, 0.0, 1.0, step = 0.05, label = "Volume", key = "volume")
                 hints = ui.switch(hints, "Show hints", key = "hints")
                 difficulty = ui.choice(["Easy", "Normal", "Hard"], difficulty, "Difficulty", key = "difficulty")
-                ui.label("Player name", size = 16, color = hud_style.muted)
-                name = ui.text_field(name, hint = "Your name", max_chars = 24, key = "name")
+                name = ui.text_field(name, hint = "Your name", max_chars = 24, key = "name", label = "Player name")
                 if ui.get("name")!.submitted: print("hello {name}")
                 ui.row(gap = 8, width = ui.grow(), ():
                     if ui.button("Play", width = ui.grow()): print("play")
@@ -2132,7 +2131,7 @@ draw = ():
 ```
 
 `slider(value, low, high, step = 0, label = "")`, `switch(on, label = "")`,
-`choice(options, index, label = "")` and `text_field(value, hint = "", max_chars = 64)`
+`choice(options, index, label = "")` and `text_field(value, hint = "", max_chars = 64, label = "")`
 return their new values immediately, using the preceding frame's box for input, like buttons.
 They all accept `width`, `height`, `enabled` and `key`; width defaults to `grow()`, height to
 `fit()`. The caller keeps the value, while keyed identity keeps focus, slider capture and the

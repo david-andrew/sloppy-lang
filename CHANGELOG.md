@@ -10,6 +10,9 @@
   then differed by a pixel or so (more on slow machines, as CI's arm64 runner). They hold it
   from a function with `global __fixed_step` now; tests/t/soft_wind_repeat draws a wind scene
   five times with four threads and checks the bytes are the same.
+- `ui.text_field(..., label = "Name")`: an optional label at the left, with the editable value
+  at the right, laid out like sliders, switches and choices. Existing positional calls keep
+  their meaning; hints, selection, undo, touch and keyboard editing use the value's space.
 - `s.admit(peer, timeout = 10.0)` closes rollback connections that send no valid rejoin
   request before the deadline. `s.admit_expired` lists those peers in the latest `s.play`;
   accepted returning players continue under the normal transfer timeout.
