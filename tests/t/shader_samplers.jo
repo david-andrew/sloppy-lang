@@ -1,0 +1,57 @@
+# requires: sloppy
+# Generated GLSL never puts a sampler in a struct (Adreno 650 under ANGLE then misresolves
+# identifiers, depending on their hashes): a GpuBuffer is two uniforms or parameters, X_t and
+# X_n, and a struct holding a Texture or a GpuBuffer is passed to a function as its leaves.
+struct SampVertex:
+    pos: vec3
+struct SampOut:
+    pos: vec4
+    uv: vec2
+struct SampPlain:
+    tint: vec4
+    gain: f32
+struct SampMat:
+    tex: Texture
+    data: GpuBuffer[f32]
+    k: f32
+    inner: SampPlain
+struct SampU:
+    colors: GpuBuffer[vec4]
+    mat: SampMat
+    other: Texture
+    more: GpuBuffer[f32]
+    mvp: mat4
+samp_read = (b: GpuBuffer[vec4], i: int) -> vec4: b[i] * f32(len(b))
+samp_plain = (p: SampPlain) -> vec4: p.tint * p.gain
+samp_deep = (m: SampMat, uv: vec2) -> vec4: sample(m.tex, uv) * m.data[0] * m.k + samp_plain(m.inner)
+samp_shade = (m: SampMat, uv: vec2) -> vec4:
+    d = m.data
+    x = m
+    samp_deep(x, uv) + vec4(d[1]) + vec4(f32(len(x.data)))
+samp_tex = (t: Texture, uv: vec2) -> vec4:
+    t2 = t
+    sample(t2, uv)
+samp_vs = (v: SampVertex, u: SampU) -> SampOut:
+    c = u.colors[instance_id()]
+    SampOut(u.mvp * vec4(v.pos + c.xyz, 1), v.pos.xy)
+samp_fs = (i: SampOut, u: SampU) -> vec4:
+    m = u.mat
+    b = u.colors
+    a = samp_read(b, 0) + samp_shade(m, i.uv) + samp_tex(u.other, i.uv)
+    a += samp_shade(SampMat(u.other, u.more, 2.0, SampPlain(vec4(1), 0.5)), i.uv)
+    a + vec4(f32(len(u.more)))
+s = shader(samp_vs, samp_fs)
+has = (src: str, part: str) -> bool: (index_of(src, part) ?? -1) >= 0
+# (no struct of the generated code holds a sampler)
+loop src in [s.vs, s.fs]:
+    loop part in split(src, "struct ")[1..]:
+        assert(not has(part[..(index_of(part, "};") ?? part.len())], "sampler"))
+assert(has(s.vs, "uniform highp isampler2D sl_u_0_t;\nuniform int sl_u_0_n;\n"))
+assert(has(s.fs, "uniform sampler2D sl_u_1_0;\nuniform highp isampler2D sl_u_1_1_t;\nuniform int sl_u_1_1_n;\n"))
+assert(has(s.fs, "(highp isampler2D b_t, int b_n, int i)"))
+assert(has(s.fs, "(highp isampler2D l_b_"))
+assert(has(s.fs, "(sampler2D lp"))
+assert(has(s.fs, "float(sl_u_3_n)"))
+assert(not has(s.fs, "S_SampMat") and not has(s.fs, "S_GB"))
+assert(has(s.layout, ";sl_u_0,B,0;sl_u_1_0,t,"))
+print("shader samplers ok")

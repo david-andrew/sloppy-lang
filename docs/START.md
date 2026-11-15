@@ -140,6 +140,11 @@ server (`-o game.zip --wasm-file` zips both, for itch.io). Browsers do not let a
 from disk load a file beside it, so that page needs a web server (`python3 -m http.server` in its
 folder, to try it); without `--wasm-file` the page is one file that works anywhere.
 
+A panic or a load error is written to the page's `#log` element. A page with its own overlay
+over the game (a loading screen, say) can hear of it too:
+`window.addEventListener("sloppy:error", (e) => show(e.detail))`, the event's `detail` being the
+error's text.
+
 Pause when `window_focused()` is false: the player clicked outside the page's frame (`sloppy
 new` makes games that do). The page takes the keyboard as it loads.
 

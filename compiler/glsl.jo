@@ -8,6 +8,11 @@
 # uniforms, Varying fields (after the first) are interpolated between the stages. A GpuBuffer
 # among the uniforms is an integer texture (RGBA32I) holding its bytes (four words to a texel, 1024 texels to
 # a row; see lib/game/gpubuffer.jo) and its length; shaders read its elements from there.
+#
+# No sampler is ever a member of a GLSL struct: some drivers (Adreno 650 under ANGLE) then
+# misresolve renamed identifiers, depending on their hashes. A GpuBuffer is two names, `X_t`
+# (the texture) and `X_n` (the length), as uniforms and as parameters; a struct holding a
+# Texture or a GpuBuffer is passed to a function as its leaves, one parameter each.
 
 use 'util.jo'
 use 'lex.jo'
@@ -71,9 +76,7 @@ gl_type = (t0: int, pos: int) -> str:
     if k == .struct_:
         si = int(types[t].st)
         if is_lib_texture(si): return "sampler2D"
-        if is_gpu_buffer(t):
-            gl_gbuf_decls()
-            return "S_GB"
+        if is_gpu_buffer(t): gl_err(pos, "a GpuBuffer can only be read where it is in shaders (u.particles[i], len(u.particles)) or passed to a function")
         gl_struct(t, pos)
         return "S_{gl_name(structs[si].name)}_{si}"
     if k == .void_: return "void"
@@ -86,6 +89,7 @@ gl_struct = (t: int, pos: int):
     if gl_done_structs.get(si) != none: return
     gl_done_structs[si] = true
     check_struct_fields(si)
+    if gl_opaque(t): gl_err(pos, "a {structs[si].name} holds a Texture or a GpuBuffer, so shaders can only read it where it is: a field of the uniforms, a parameter, or a variable given it once (it cannot be changed, returned, put in an array or chosen with `if`)")
     s = "struct S_{gl_name(structs[si].name)}_{si} \{\n"
     loop i in [0..int(structs[si].nfields)):
         f = int(structs[si].fields) + i
@@ -125,6 +129,94 @@ gl_fn_name = (f: int) -> str: "f_{gl_name(name_of(int(nodes[int(fns[f].decl)].na
 gl_uniform_struct = (t: int) -> bool:
     types[prune(t)].kind == .struct_ and not is_lib_texture(int(types[prune(t)].st)) and not is_gpu_buffer(t)
 
+# does a value of type t hold a sampler (a Texture or a GpuBuffer, maybe in a struct or an array)?
+gl_opaque = (t0: int) -> bool:
+    t = prune(t0)
+    k = types[t].kind
+    if k == .fixed: return gl_opaque(int(types[t].elem))
+    if k != .struct_: return false
+    if is_lib_texture(int(types[t].st)) or is_gpu_buffer(t): return true
+    si = int(types[t].st)
+    check_struct_fields(si)
+    loop i in [0..int(structs[si].nfields)):
+        if gl_opaque(int(fields[int(structs[si].fields) + i].type)): return true
+    false
+
+# the leaves of a value of type t named path: (name, type), a struct's by its field indexes
+gl_leaves = (t: int, path: str, out: mut (str, int)[]):
+    if not gl_uniform_struct(t):
+        out.push((path, t))
+        return
+    loop i in 0.. and f in gl_struct_fields(t): gl_leaves(f.1, "{path}_{i}", out)
+
+# a parameter (a GpuBuffer's two)
+gl_param_decl = (t: int, name: str, pos: int) -> str:
+    if is_gpu_buffer(t): return "highp isampler2D {name}_t, int {name}_n"
+    "{gl_type(t, pos)} {name}"
+
+# a GpuBuffer as the base of its two names (base_t, base_n): a field of the uniforms, a parameter
+# or a variable bound to one of them
+gl_gbuf = (e: int) -> str:
+    path = gl_uniform_path(e)
+    if path != "": return gl_uniform_value(ntype(e), path, nodes[e].pos)
+    if nodes[e].kind == .ident and nodes[e].aux == i32(int(SK.local)):
+        l = int(nodes[e].sym)
+        if int(locals[l].flags) & LF_ALIAS != 0: return gl_gbuf(int(locals[l].alias))
+        if int(locals[l].flags) & LF_PARAM != 0: return gl_local(l)
+    gl_err(nodes[e].pos, "a GpuBuffer in a shader must be a field of the uniforms or a parameter (u.particles), not made or chosen here")
+    ""
+
+# a struct holding a Texture or a GpuBuffer, as the arguments of its leaves (see gl_function)
+gl_leaf_args = (e: int, out: mut str[]):
+    t = prune(ntype(e))
+    pos = nodes[e].pos
+    if is_gpu_buffer(t):
+        b = gl_gbuf(e)
+        out.push("{b}_t")
+        out.push("{b}_n")
+        return
+    if not gl_uniform_struct(t):
+        out.push(gl_expr(e))
+        return
+    path = gl_uniform_path(e)
+    if path != "":
+        leaves: (str, int)[]
+        gl_leaves(t, path, leaves)
+        loop lf in leaves:
+            v = gl_uniform_value(lf.1, lf.0, pos)
+            if is_gpu_buffer(lf.1):
+                out.push("{v}_t")
+                out.push("{v}_n")
+            else: out.push(v)
+        return
+    if nodes[e].kind == .ident and nodes[e].aux == i32(int(SK.local)) and int(locals[int(nodes[e].sym)].flags) & LF_ALIAS != 0:
+        gl_leaf_args(int(locals[int(nodes[e].sym)].alias), out)
+        return
+    if nodes[e].kind == .call and nodes[e].aux == 2:
+        # (a struct built in the call: each field's leaves)
+        loop i in 0.. and f in gl_struct_fields(t):
+            a = kid(e, i)
+            if a != 0:
+                gl_leaf_args(a, out)
+                continue
+            if gl_opaque(f.1): gl_err(pos, "give the field {f.0} here: a Texture or a GpuBuffer has no default in shaders")
+            leaves: (str, int)[]
+            gl_leaves(f.1, "", leaves)
+            loop lf in leaves: out.push(gl_zero(lf.1, pos))
+        return
+    if not gl_opaque(t):
+        # (an ordinary struct value inside one: its fields one by one)
+        x = gl_expr(e)
+        loop f in gl_struct_fields(t): gl_value_leaves("{x}.{f.0}_", f.1, out)
+        return
+    gl_err(pos, "a struct holding a Texture or a GpuBuffer is passed in shaders as it is: a field of the uniforms, a parameter, or one built in the call")
+
+gl_value_leaves = (x: str, t: int, out: mut str[]):
+    if not gl_uniform_struct(t):
+        out.push(x)
+        return
+    loop f in gl_struct_fields(t): gl_value_leaves("{x}.{f.0}_", f.1, out)
+
 # A path is made of field indexes, so nested names cannot collide, and it agrees with gl_udesc.
 gl_uniform_path = (e: int) -> str:
     if nodes[e].kind == .ident and nodes[e].aux == i32(int(SK.local)):
@@ -163,8 +255,10 @@ gl_uniform_value = (t: int, path: str, pos: int) -> str:
         parts: str[]
         loop i in 0.. and f in gl_struct_fields(t): parts.push(gl_uniform_value(f.1, "{path}_{i}", pos))
         return "{gl_type(t, pos)}({join(parts, ", ")})"
-    if gl_first("uniform_{path}"):
-        gl_uniforms.push("uniform {gl_type(t, pos)} {path};\n")
+    # (a path from a parameter's leaves, lp..., names that parameter: no uniform)
+    if starts_with(path, "sl_u") and gl_first("uniform_{path}"):
+        if is_gpu_buffer(t): gl_uniforms.push("uniform highp isampler2D {path}_t;\nuniform int {path}_n;\n")
+        else: gl_uniforms.push("uniform {gl_type(t, pos)} {path};\n")
         c = gl_resource_cost(t)
         gl_uniform_rows += c.0
         gl_uniform_samplers += c.1
@@ -192,9 +286,20 @@ gl_function = (f: int, bindings: str[] = []) -> str:
         if i < bindings.len() and bindings[i] != "":
             gl_uniform_bindings[l] = bindings[i]
             continue
+        lt = int(locals[l].type)
         q = ""
-        if int(locals[l].flags) & LF_MUTPARAM != 0: q = "inout "
-        params.push("{q}{gl_type(int(locals[l].type), locals[l].pos)} {gl_local(l)}")
+        if int(locals[l].flags) & LF_MUTPARAM != 0:
+            if gl_opaque(lt): gl_err(locals[l].pos, "a parameter holding a Texture or a GpuBuffer cannot be `mut` in shaders")
+            q = "inout "
+        if gl_opaque(lt) and gl_uniform_struct(lt):
+            # (a struct holding a sampler: a parameter for each leaf, lp<local>_<name>_<field>...)
+            root = "lp{l}_{gl_name(name_of(int(locals[l].name)))}"
+            gl_uniform_bindings[l] = root
+            leaves: (str, int)[]
+            gl_leaves(lt, root, leaves)
+            loop lf in leaves: params.push(gl_param_decl(lf.1, lf.0, locals[l].pos))
+            continue
+        params.push("{q}{gl_param_decl(lt, gl_local(l), locals[l].pos)}")
     sig = "{ret} {nm}({join(params, ", ")})"
     saved = gl_out
     gl_out = []
@@ -267,7 +372,17 @@ gl_stmt = (s: int, depth: int):
     if k == .vardecl:
         if nodes[s].nlist > 0: gl_err(nodes[s].pos, "tuple destructuring is not supported in shaders")
         l = int(nodes[s].sym)
-        if is_gpu_buffer(int(locals[l].type)): gl_err(nodes[s].pos, "a GpuBuffer cannot be kept in a variable in shaders (use it where it is, e.g. u.particles[i])")
+        if gl_opaque(int(locals[l].type)):
+            # (a Texture, a GpuBuffer or a struct holding one, given once: a name for its place)
+            path = ""
+            init = int(nodes[s].b)
+            if init != 0 and int(locals[l].flags) & (LF_ASSIGNED | LF_MUTARG | LF_ADDR) == 0:
+                path = gl_uniform_path(init)
+                # (a Texture or GpuBuffer parameter itself: its name)
+                if path == "" and nodes[init].kind == .ident and nodes[init].aux == i32(int(SK.local)) and int(locals[int(nodes[init].sym)].flags) & LF_PARAM != 0 and not gl_uniform_struct(ntype(init)): path = gl_local(int(nodes[init].sym))
+            if path == "": gl_err(nodes[s].pos, "a variable holding a Texture or a GpuBuffer in shaders must be given a field of the uniforms (or of a parameter holding one) once, and not changed")
+            gl_uniform_bindings[l] = path
+            return
         t = gl_type(int(locals[l].type), nodes[s].pos)
         if nodes[s].b != 0: gl_out.push("{pre}{t} {gl_local(l)} = {gl_expr(int(nodes[s].b))};\n")
         else: gl_out.push("{pre}{t} {gl_local(l)} = {gl_zero(int(locals[l].type), nodes[s].pos)};\n")
@@ -387,6 +502,7 @@ gl_expr = (e: int) -> str:
     t = prune(ntype(e))
     path = gl_uniform_path(e)
     if path != "": return gl_uniform_value(t, path, nodes[e].pos)
+    if is_gpu_buffer(t): return gl_gbuf(e)
     if k == .int_lit:
         if types[t].kind == .float_: return gl_float(f64(nodes[e].ival))
         if nodes[e].ival < -2147483648 or nodes[e].ival > 4294967295: gl_err(nodes[e].pos, "shader integers are 32 bits, and this number does not fit in one (a hash written for 64 bits gives other values here)")
@@ -520,8 +636,8 @@ gl_expr = (e: int) -> str:
             if nm == "texel": return "texelFetch({args[0]}, {args[1]}, 0)"
             if nm == "texture_size": return "textureSize({args[0]}, 0)"
             if nkids(e) > 0 and is_gpu_buffer(ntype(kid(e, 0))):
-                if nm == "len": return "{args[0]}.n_"
-                if nm == "[]": return "{gl_gbuf_reader(gpu_buffer_elem(ntype(kid(e, 0))), nodes[e].pos)}({args[0]}, {args[1]})"
+                if nm == "len": return "{args[0]}_n"
+                if nm == "[]": return "{gl_gbuf_reader(gpu_buffer_elem(ntype(kid(e, 0))), nodes[e].pos)}({args[0]}_t, {args[0]}_n, {args[1]})"
                 if nm == "[]=" or starts_with(nm, "atomic_"): gl_err(nodes[e].pos, "GPU buffers are written by compute programs only")
             # prelude helpers written in Sloppy (e.g. vector math) are translated like user code
         args = []
@@ -531,12 +647,16 @@ gl_expr = (e: int) -> str:
             a = kid(e, i)
             path = gl_uniform_path(a)
             l = fns[f].params[i]
-            if path != "" and gl_uniform_struct(ntype(a)) and int(locals[l].flags) & LF_MUTPARAM == 0:
+            if starts_with(path, "sl_u") and gl_uniform_struct(ntype(a)) and int(locals[l].flags) & LF_MUTPARAM == 0:
                 bindings.push(path)
                 specialized = true
             else:
                 bindings.push("")
-                args.push(gl_expr(a))
+                if gl_opaque(ntype(a)) and types[prune(ntype(a))].kind == .struct_:
+                    leaves: str[]
+                    gl_leaf_args(a, leaves)
+                    args.push(join(leaves, ", "))
+                else: args.push(gl_expr(a))
         if not specialized: bindings = []
         called = gl_function(f, bindings)
         return "{called}({join(args, ", ")})"
@@ -668,7 +788,6 @@ gl_float_to_int = (x: str, t0: int) -> str:
 # ---------------- GPU buffers ----------------
 gl_gbuf_decls = ():
     if not gl_first("gbuf"): return
-    gl_decls.push("struct S_GB \{\n    highp isampler2D t_;\n    int n_;\n};\n")
     gl_decls.push("uint gb_w(highp isampler2D t, int i) \{\n    return uint(texelFetch(t, ivec2((i >> 2) & 1023, i >> 12), 0)[i & 3]);\n}\n")
     # (bits of the word holding byte a, from bit 8 * (a & 3); sign-extended if sgn)
     gl_decls.push("int gb_sub(highp isampler2D t, int a, int bits, bool sgn) \{\n    uint w = gb_w(t, a >> 2) >> uint((a & 3) * 8);\n    int sh = 32 - bits;\n    if (sgn) return int(w << uint(sh)) >> sh;\n    return int((w << uint(sh)) >> uint(sh));\n}\n")
@@ -680,9 +799,10 @@ gl_gbuf_decls = ():
 gl_gbuf_reader = (t: int, pos: int) -> str:
     nm = "gbr_{prune(t)}"
     if not gl_first(nm): return nm
+    gl_gbuf_decls()
     layout(t)
     ty = gl_type(t, pos)
-    gl_decls.push("{ty} {nm}(S_GB b, int i) \{\n    int o = clamp(i, 0, max(b.n_ - 1, 0)) * {tsize(t)};\n    return {gl_read(t, "o", 0, pos)};\n}\n")
+    gl_decls.push("{ty} {nm}(highp isampler2D b_t, int b_n, int i) \{\n    int o = clamp(i, 0, max(b_n - 1, 0)) * {tsize(t)};\n    return {gl_read(t, "o", 0, pos)};\n}\n")
     nm
 
 # a value of type t at byte o + c of buffer b (laid out as the CPU lays it out)
@@ -690,24 +810,24 @@ gl_read = (t0: int, o: str, c: int, pos: int) -> str:
     t = prune(t0)
     k = types[t].kind
     a = "{o} + {c}"
-    w = "gb_w(b.t_, ({a}) >> 2)"
+    w = "gb_w(b_t, ({a}) >> 2)"
     if k == .float_:
-        if int(types[t].bits) == 64: return "gb_f64({w}, gb_w(b.t_, ({o} + {c + 4}) >> 2))"
+        if int(types[t].bits) == 64: return "gb_f64({w}, gb_w(b_t, ({o} + {c + 4}) >> 2))"
         return "uintBitsToFloat({w})"
     if k == .int_:
         bits = int(types[t].bits)
         if bits >= 32: return "int({w})"
         sg = "false"
         if types[t].sign: sg = "true"
-        return "gb_sub(b.t_, {a}, {bits}, {sg})"
-    if k == .bool_: return "(gb_sub(b.t_, {a}, 8, false) != 0)"
+        return "gb_sub(b_t, {a}, {bits}, {sg})"
+    if k == .bool_: return "(gb_sub(b_t, {a}, 8, false) != 0)"
     parts: str[]
     if k == .vec:
         if t == T_MAT4:
             loop col in [0..4): parts.push(gl_read(T_VEC4, o, c + 16 * col, pos))
         else:
             loop i in [0..int(types[t].bits)):
-                wi = "gb_w(b.t_, ({o} + {c + 4 * i}) >> 2)"
+                wi = "gb_w(b_t, ({o} + {c + 4 * i}) >> 2)"
                 if types[t].sign: parts.push("int({wi})")
                 else: parts.push("uintBitsToFloat({wi})")
         return "{gl_type(t, pos)}({join(parts, ", ")})"

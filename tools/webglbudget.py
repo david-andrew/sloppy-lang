@@ -5,6 +5,7 @@ Build library shaders, examples, render scenes, API examples and shader tests as
 Count declarations conservatively: one vec4 row per scalar/vector, matrix column or
 array element (including nested structs). This bounds Appendix A packing; it is not
 std140, and deliberately does not rely on a driver's dead-uniform elimination.
+Also fail on any struct holding a sampler (Adreno 650 under ANGLE misresolves them).
 Usage: tools/webglbudget.py [--compiler PATH] [--json PATH] [source.jo ...]
 """
 import argparse
@@ -27,6 +28,10 @@ def audit(source):
     original = source
     source = re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.S)
     structs = dict(re.findall(r"struct\s+(\w+)\s*\{([^}]+)\}\s*;", source))
+    # A sampler inside a struct (even one only passed by value) makes Adreno's driver misresolve
+    # ANGLE's renamed identifiers on some names: generated GLSL keeps every sampler a plain
+    # uniform or parameter.
+    nested = sorted(name for name, body in structs.items() if re.search(r"\b[iu]?sampler\w*\b", body))
 
     def cost(ty, count=1):
         if ty in structs:
@@ -75,6 +80,8 @@ def audit(source):
     # At most 16 samplers per stage also bounds the two-stage combined total by 32.
     limits = dict(uniforms=256 if vertex else 224, samplers=16, varyings=15, attributes=16)
     errors = [f"{key}: {counts[key]} > {limit}" for key, limit in limits.items() if counts[key] > limit]
+    if nested:
+        errors.append(f"struct holding a sampler: {', '.join(nested)}")
     metadata = re.search(r"// sloppy resources: uniforms=(\d+) samplers=(\d+) varyings=(\d+) attributes=(\d+)", original)
     if metadata and tuple(map(int, metadata.groups())) != tuple(counts.values()):
         errors.append(f"compiler resource metadata disagrees with declarations: {metadata.groups()} != {counts}")
@@ -126,6 +133,12 @@ void main() { gl_Position = vec4(0); }
 """
     counts = audit(source)
     assert [counts[k] for k in ("uniforms", "samplers", "varyings", "attributes")] == [17, 4, 2, 6], counts
+    assert counts["errors"] == ["struct holding a sampler: Inner"], counts["errors"]
+    # (the GPU buffer struct of 0.36.0 and before, also when only passed by value)
+    old = audit("struct S_GB {\n    highp isampler2D t_;\n    int n_;\n};\nint f(S_GB b) { return b.n_; }\nvoid main() {}")
+    assert old["errors"] == ["struct holding a sampler: S_GB"], old
+    flat = audit("uniform highp isampler2D sl_u_0_t;\nuniform int sl_u_0_n;\nint f(highp isampler2D b_t, int b_n) { return b_n; }\nvoid main() {}")
+    assert not flat["errors"] and flat["samplers"] == 1 and flat["uniforms"] == 2, flat
     for declaration, key in (("uniform vec4 big[225];", "uniforms"),
                              ("uniform sampler2D t[17];", "samplers"),
                              ("in vec4 v[16];", "varyings")):

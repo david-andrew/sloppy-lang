@@ -21,6 +21,15 @@ copying an entire struct still reads every field. The native byte layout and the
 first skinned mesh is loaded. Compile/link errors include both entry points and
 sources, stage and program logs, conservative resource counts, and GPU limits.
 
+No sampler is ever inside a GLSL struct: some phone drivers (Adreno under Chrome's ANGLE)
+then fail to compile a shader or not depending on the names ANGLE gives its identifiers. A
+`GpuBuffer` is two uniforms (its texture and its length), and a struct holding a `Texture` or
+a `GpuBuffer` reaches a helper function as one parameter per field. In shader code such a
+struct can be passed, read, and named once (`m = u.material`), but not changed or copied
+into another (a compile error says so); webglbudget.py fails on any struct holding a sampler.
+On a page, errors are also sent as a `sloppy:error` event on `window` (its `detail` the text)
+for a page whose own overlay hides the `#log` element.
+
 ## The five renderers
 
 | renderer | where | used when |

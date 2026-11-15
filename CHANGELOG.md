@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Generated GLSL never puts a sampler in a struct. A `GpuBuffer` was a `struct { isampler2D t_;
+  int n_; }` uniform passed by value to its readers, and on Adreno 650 (Chrome's ANGLE, Android)
+  a shader then compiled or not depending on the names ANGLE hashes its identifiers to ("no
+  matching overloaded function found" on an ordinary call, or an undeclared uniform). A buffer is
+  now two uniforms, `X_t` (its texture) and `X_n` (its length), and its readers, and any shader
+  function taking one, take both. A struct holding a `Texture` or a `GpuBuffer` is passed to a
+  helper function as one parameter per field (a struct built in the call too), and a variable
+  can name one (`m = u.material`); changing or copying such a struct, which GLSL ES never
+  allowed, is a compile error that says so. `tools/webglbudget.py` fails on any generated struct
+  holding a sampler; tests/web/uniform_budget draws with buffers and such a struct in both stages.
+- A web page's errors are also sent as a `sloppy:error` event on `window`, its `detail` the
+  text: a page whose own overlay covers the `#log` element can show them.
+
 ## 0.36.0
 
 Rendering: one fog for simple lighting and PBR materials, mipmaps for textures drawn in 3D on

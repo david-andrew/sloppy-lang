@@ -66,6 +66,7 @@ try {
       const sources = shaderPrograms.get(this.getParameter(this.CURRENT_PROGRAM)) || "";
       if (/f_budget_fs_/.test(sources)) window.budgetPixel = Array.from(pixel);
       if (/f_nested_budget_fs_/.test(sources)) window.nestedBudgetPixel = Array.from(pixel);
+      if (/f_sampler_fs_/.test(sources)) window.samplerPixel = Array.from(pixel);
     };
   ` });
   await send("Page.navigate", { url: "file://" + page });
@@ -87,6 +88,9 @@ try {
   expect("unused 240-row field is absent", startup.some((p) => p.sources.some((s) => /f_budget_fs_/.test(s))) && !startup.some((p) => p.sources.some((s) => /\[240\]/.test(s))));
   expect("independent color uniform uploads and draws green", JSON.stringify(await ev("budgetPixel")) === "[0,255,0,255]", JSON.stringify(await ev("budgetPixel")));
   expect("nested paths, uniform arrays, ordinary copies and mutable helpers draw green", JSON.stringify(await ev("nestedBudgetPixel")) === "[0,255,0,255]", JSON.stringify(await ev("nestedBudgetPixel")));
+  expect("GPU buffers and a struct holding a texture and a buffer draw green", JSON.stringify(await ev("samplerPixel")) === "[0,255,0,255]", JSON.stringify(await ev("samplerPixel")));
+  expect("no linked program has a struct holding a sampler", startup.some((p) => p.sources.some((s) => /f_sampler_fs_/.test(s))) &&
+    !startup.some((p) => p.sources.some((s) => /struct\s+\w+\s*\{[^}]*sampler/.test(s))));
   console.log("ANGLE limits: " + JSON.stringify(await ev(`(() => {
     const g = shaderGL; return Object.fromEntries(["MAX_VERTEX_UNIFORM_VECTORS", "MAX_FRAGMENT_UNIFORM_VECTORS", "MAX_VARYING_VECTORS", "MAX_TEXTURE_IMAGE_UNITS", "MAX_VERTEX_ATTRIBS"].map(k => [k,g.getParameter(g[k])]));
   })()`)));
