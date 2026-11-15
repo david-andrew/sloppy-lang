@@ -45,8 +45,31 @@ gamepad_connected = (pad: int) -> bool:
     pad >= 0 and pad < MAX_GAMEPADS and __pad_on[pad]
 # what the device calls itself ("" if it does not say)
 gamepad_name = (pad: int) -> str:
+    __pad_raw_start()
     if not gamepad_connected(pad): return ""
     __pad_names[pad]
+
+# whether pad is a standard-layout gamepad (two sticks, two triggers, the face buttons and a
+# d-pad, as gamepad_down and gamepad_axis read them), and not a flight stick, wheel or pedals,
+# whose own controls only joystick_axis and joystick_button read as they are (their throttle
+# can look like a trigger to gamepad_axis); false if it is not connected.
+# Web: the browser's "standard" mapping. Windows: XInput, the HID pads whose layout is known
+# (PlayStation, Switch Pro, 8BitDo) and any HID device that says it is a gamepad (not a
+# joystick). macOS: every pad (GameController's extended gamepad). Linux: the kernel's gamepad
+# class (its buttons are BTN_SOUTH..., a joystick's BTN_TRIGGER...). SLOPPY_INPUT's pads: true
+# unless the script sets their own axes or buttons or names them (or pad1_standard=0/1 says)
+gamepad_standard = (pad: int) -> bool:
+    __pad_raw_start()
+    if not gamepad_connected(pad): return false
+    if __sr_pads.len() > 0 and __sr_pads[pad].scripted: return __sr_pads[pad].std
+    when TARGET == "wasm":
+        return __web_pad_std[pad]
+    else when TARGET == "windows":
+        return __w32_pad_standard(pad)
+    else when TARGET == "macos":
+        return true
+    else:
+        return __js_standard(pad)
 
 # a button of pad, or (without a pad) of any gamepad
 gamepad_down = (pad: int, b: PadButton) -> bool: gamepad_connected(pad) and __pad_down[pad * 15 + int(b)]
@@ -102,18 +125,158 @@ __pad_furthest = (axis: int) -> vec2:
     best
 
 # any device's own buttons and axes, as it numbers them (a flight stick's hat and throttle, a
-# wheel's pedals): how many it has, and their state
+# wheel's pedals): how many it has, and their state. In tests SLOPPY_INPUT sets them
+# (5:pad1_axis3=-0.4, 5:pad1_button7+ and -, 1:pad1_name=T.16000M), and a scripted standard
+# pad's mirror its sticks, triggers and buttons as Linux's xpad numbers them
 joystick_buttons = (pad: int) -> int:
+    __pad_raw_start()
     if not gamepad_connected(pad): return 0
     __pad_nbuttons[pad]
 joystick_axes = (pad: int) -> int:
+    __pad_raw_start()
     if not gamepad_connected(pad): return 0
     __pad_naxes[pad]
-joystick_button = (pad: int, i: int) -> bool: gamepad_connected(pad) and i >= 0 and i < __PAD_RAW_BUTTONS and __pad_raw_down[pad * 32 + i]
+joystick_button = (pad: int, i: int) -> bool:
+    __pad_raw_start()
+    gamepad_connected(pad) and i >= 0 and i < __PAD_RAW_BUTTONS and __pad_raw_down[pad * 32 + i]
 joystick_pressed = (pad: int, i: int) -> bool: joystick_button(pad, i) and not __pad_raw_prev[pad * 32 + i]
 joystick_axis = (pad: int, i: int) -> f64:
+    __pad_raw_start()
     if not gamepad_connected(pad) or i < 0 or i >= __PAD_RAW_AXES: return 0.0
     __pad_raw_axes[pad * 16 + i]
+
+# SLOPPY_INPUT's pads as a device's own controls show them (__script_raw: the padN_axisI=V,
+# padN_buttonI+/-, padN_name= and padN_standard= items). Only the readers above start this:
+# programs that use none of them compile none of it. A standard pad's raw controls mirror its
+# sticks, triggers and buttons as Linux's xpad numbers them (axes lx ly lt rx ry rt dpad-x
+# dpad-y, triggers -1 at rest; buttons a b x y lb rb back start home ls rs); a raw item sets
+# its axis or button from then on. Which pads are standard, and how many axes and buttons each
+# has, is the whole script's: a device does not change what it is.
+struct __ScriptPad:
+    scripted = false
+    std = true
+    naxes = 0
+    nbuttons = 0
+    axes_set = 0                     # (bits: the raw axes and buttons a raw item has set)
+    buttons_set = 0
+
+__pad_script_raw: () -> void = (): pass
+__sr_pads: __ScriptPad[]
+__sr_items: (int, int, int, int, f64, str)[]     # (frame, pad, kind: 0 axis, 1 button, 2 name; index, value, name), by frame
+__sr_on = false
+
+__pad_raw_start = ():
+    global __pad_script_raw, __sr_on
+    if __sr_on: return
+    __sr_on = true
+    __pad_script_raw = __sr_frame
+    # (started inside a frame, after its script was played: caught up now)
+    if __script_loaded: __sr_setup()
+
+__sr_frame = ():
+    if __sr_pads.len() == 0: __sr_setup()
+    else:
+        __sr_apply(__frame_count, __frame_count)
+        __sr_mirror(false)
+
+__sr_setup = ():
+    std: int[] = fill(-1, 8)
+    raw: bool[] = fill(false, 8)
+    loop p in [0..8): __sr_pads.push(__ScriptPad())
+    loop e in __script:
+        pad = -1
+        if e.1 <= -300 and e.1 > -500: pad = 0
+        else if e.1 <= -1000: pad = (-e.1) / 1000
+        if pad >= 0 and pad < 8: __sr_pads[pad].scripted = true
+    loop e in __script_raw:
+        p = e.1
+        s = e.2
+        kind = -1
+        i = 0
+        v = 0.0
+        nm = ""
+        eq = (index_of(s, "=") ?? -1)
+        if starts_with(s, "axis") and eq > 4:
+            if let n = to_int(s[4..eq)):
+                if let f = to_float(s[eq + 1..]):
+                    if n >= 0 and n < __PAD_RAW_AXES:
+                        kind = 0
+                        i = n
+                        v = f
+        else if starts_with(s, "button") and len(s) > 7 and (ends_with(s, "+") or ends_with(s, "-")):
+            if let n = to_int(s[6..len(s) - 1)):
+                if n >= 0 and n < __PAD_RAW_BUTTONS:
+                    kind = 1
+                    i = n
+                    v = if ends_with(s, "+"): 1.0 else: 0.0
+        else if starts_with(s, "name="):
+            kind = 2
+            nm = s[5..]
+        else if s == "standard=0" or s == "standard=1":
+            std[p] = int(s[9]) - 48
+            __sr_pads[p].scripted = true
+            continue
+        if kind < 0:
+            eprint("SLOPPY_INPUT: '{e.0}:pad{p}_{s}' is not padN_axisI=V (I 0 to 15, V -1 to 1), padN_buttonI+ or - (I 0 to 31), padN_name=NAME nor padN_standard=0 or 1")
+            continue
+        __sr_pads[p].scripted = true
+        raw[p] = true
+        if kind == 0: __sr_pads[p].naxes = max(__sr_pads[p].naxes, i + 1)
+        if kind == 1: __sr_pads[p].nbuttons = max(__sr_pads[p].nbuttons, i + 1)
+        # (kept in frame order, as given within a frame)
+        at = __sr_items.len()
+        loop at > 0 and __sr_items[at - 1].0 > e.0: at -= 1
+        __sr_items.insert(at, (e.0, p, kind, i, v, nm))
+    loop p in [0..8):
+        sp = __sr_pads[p]
+        sp.std = if std[p] >= 0: std[p] == 1 else: not raw[p]
+        if sp.std:
+            sp.naxes = max(sp.naxes, 8)
+            sp.nbuttons = max(sp.nbuttons, 11)
+        __sr_pads[p] = sp
+    # the frames before this one (pressed and released see the last of them as the frame
+    # before), then this one's
+    n = __frame_count
+    __sr_apply(-1000000000, n - 1)
+    __sr_mirror(true)
+    loop p in [0..8):
+        if __sr_pads[p].scripted:
+            loop i in [0..32): __pad_raw_prev[p * 32 + i] = __pad_raw_down[p * 32 + i]
+    __sr_apply(n, n)
+    __sr_mirror(false)
+
+__sr_apply = (first: int, last: int):
+    loop e in __sr_items:
+        if e.0 < first or e.0 > last: continue
+        p = e.1
+        if e.2 == 0:
+            __pad_raw_axes[p * 16 + e.3] = e.4
+            __sr_pads[p].axes_set |= 1 << e.3
+        else if e.2 == 1:
+            __pad_raw_down[p * 32 + e.3] = e.4 > 0.5
+            __sr_pads[p].buttons_set |= 1 << e.3
+        else: __pad_names[p] = e.5
+
+# (a standard scripted pad's raw controls, from its standard ones: those of the frame before
+# with `prev`)
+__sr_mirror = (prev: bool):
+    loop p in [0..8):
+        sp = __sr_pads[p]
+        if not sp.scripted: continue
+        __pad_naxes[p] = sp.naxes
+        __pad_nbuttons[p] = sp.nbuttons
+        if not sp.std: continue
+        ax = if prev: __pad_prev_axes else: __pad_axes
+        bt = if prev: __pad_prev else: __pad_down
+        a = p * 6
+        b = p * 15
+        dx = f64(int(bt[b + int(PadButton.right)])) - f64(int(bt[b + int(PadButton.left)]))
+        dy = f64(int(bt[b + int(PadButton.down)])) - f64(int(bt[b + int(PadButton.up)]))
+        vals = [ax[a], ax[a + 1], ax[a + 4] * 2.0 - 1.0, ax[a + 2], ax[a + 3], ax[a + 5] * 2.0 - 1.0, dx, dy]
+        loop i in [0..8):
+            if sp.axes_set & (1 << i) == 0: __pad_raw_axes[p * 16 + i] = vals[i]
+        loop i in [0..11):
+            if sp.buttons_set & (1 << i) == 0: __pad_raw_down[p * 32 + i] = bt[b + i]
 
 # (a pad gone: all at rest)
 __pad_clear = (p: int):
@@ -218,6 +381,7 @@ struct __HidPad:
     deadline = 0.0
     write_deadline = 0.0
     switch_native = false
+    gamepad = false                   # (Generic Desktop's Gamepad usage; a joystick's is Joystick)
 
 # HIDP_BUTTON_CAPS and HIDP_VALUE_CAPS are both 72 bytes, with their usage union at 56.
 # Decode explicitly: Sloppy structs have a different ABI. Ignore aliases, relative axes,
@@ -442,14 +606,16 @@ when TARGET == "wasm":
     # (the page calls __pad_begin once a frame, then for each pad __pad_present and its state)
     @export("__pad_begin")
     __web_pad_begin = (): __pad_save_prev()
+    __web_pad_std: bool[] = fill(false, 8)          # (Gamepad.mapping is "standard")
     @export("__pad_present")
-    __web_pad_present = (p: i32, on: i32, naxes: i32, nbuttons: i32):
+    __web_pad_present = (p: i32, on: i32, naxes: i32, nbuttons: i32, standard: i32):
         pad = int(p)
         if pad < 0 or pad >= MAX_GAMEPADS: return
         if on == 0:
             __pad_clear(pad)
             return
         __pad_on[pad] = true
+        __web_pad_std[pad] = standard != 0
         __pad_naxes[pad] = min(int(naxes), __PAD_RAW_AXES)
         __pad_nbuttons[pad] = min(int(nbuttons), __PAD_RAW_BUTTONS)
     @export("__pad_axis")
@@ -542,7 +708,7 @@ else when TARGET == "windows":
         caps = fill(u8(0), 64)
         if HidP_GetCaps(data(pp), data(caps)) != 0x110000: return
         c = data(caps) as *u16
-        h = __HidPad(vendor = int(((q + 8) as *u32)[0]), product = int(((q + 12) as *u32)[0]), handle = handle, preparsed = pp, report_bytes = int(c[2]), output_bytes = int(c[3]))
+        h = __HidPad(vendor = int(((q + 8) as *u32)[0]), product = int(((q + 12) as *u32)[0]), handle = handle, preparsed = pp, report_bytes = int(c[2]), output_bytes = int(c[3]), gamepad = usage == 5)
         # Bounded allocations even for a broken descriptor. Each capability is 72 bytes.
         if c[23] > 256 or c[24] > 256: return
         bc = fill(u8(0), int(c[23]) * 72)
@@ -762,6 +928,14 @@ else when TARGET == "windows":
             __w32_switch_frame(h)
             __hid_apply(h, h.slot)
 
+    # (XInput's pads, the HID ones whose layout is known, and HID gamepads, not joysticks)
+    __w32_pad_standard = (p: int) -> bool:
+        loop u in [0..4):
+            if __xi_slot[u] == p: return true
+        loop h in __w32_hid:
+            if h.live and h.slot == p: return h.gamepad or __hid_sony(h) or __hid_switch(h) or __hid_8bitdo(h)
+        false
+
     __w32_pad_claim = (p: int, name: str):
         __pad_clear(p)
         # Reusing a slot must not inherit its previous controller's held buttons.
@@ -893,6 +1067,17 @@ else:
             __pad_down[p * 15 + int(PadButton.down)] = __pad_raw_axes[r + 7] > 0.5
             __pad_down[p * 15 + int(PadButton.left)] = __pad_raw_axes[r + 6] < -0.5
             __pad_down[p * 15 + int(PadButton.right)] = __pad_raw_axes[r + 6] > 0.5
+
+    # (the kernel's gamepad class: a button in BTN_GAMEPAD's range, 0x130 to 0x13f, BTN_SOUTH and
+    # on; a joystick's are BTN_TRIGGER, 0x120, and on. JSIOCGBTNMAP: each button's key code.
+    # A device that cannot say is read as the xpad layout, as gamepad_down reads it.)
+    __js_standard = (p: int) -> bool:
+        if __js_fd[p] < 0: return false
+        codes = fill(u16(0), 512)
+        if syscall(16, __js_fd[p], (2 << 30) | (1024 << 16) | (0x6A << 8) | 0x34, data(codes)) < 0: return true
+        loop i in [0..min(__pad_nbuttons[p], 512)):
+            if codes[i] >= 0x130 and codes[i] <= 0x13F: return true
+        false
 
     # the events waiting on pad p's device; false if it is gone
     __js_read = (p: int) -> bool:

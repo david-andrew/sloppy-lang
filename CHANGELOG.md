@@ -5,6 +5,21 @@
 - Web pages skip WebGL calls that bind what is already bound: the program, the vertex array, the
   texture unit and each unit's texture (on a phone in Chrome these were about 1.5% of a game's CPU
   after 0.36.2's draw changes).
+- `SLOPPY_INPUT` scripts a raw joystick (a flight stick, HOTAS, pedals): `5:pad1_axis3=-0.4`
+  sets a device's own axis, `5:pad1_button7+` / `-` presses and releases its own button, and
+  `1:pad1_name=T.16000M` names it (`gamepad_name`). `joystick_axes` / `joystick_buttons` count
+  up to the highest index used. A scripted standard pad's raw axes and buttons now mirror its
+  sticks, triggers and buttons as Linux's xpad numbers them (lx ly lt rx ry rt dpad-x dpad-y;
+  a b x y lb rb back start home ls rs), so code reading `joystick_axis` sees what real hardware
+  gives (it saw 0 before); a raw item overrides the mirror for its axis or button. Programs
+  that read no raw controls compile none of this.
+- `gamepad_standard(pad)`: whether a pad is a standard-layout gamepad rather than a flight
+  stick, wheel or pedals, to choose a control profile without guessing from `gamepad_name`.
+  Web: the Gamepad API's `"standard"` mapping; Windows: XInput, known HID layouts and HID
+  Gamepad-usage devices; Linux: the kernel's gamepad class (`BTN_SOUTH`..., where joysticks have
+  `BTN_TRIGGER`...); macOS: every pad (GameController's extended gamepads). Scripted pads are
+  standard unless the script gives them raw items or a name; `pad1_standard=0` / `=1` says so
+  explicitly.
 ## 0.36.2
 
 OpenGL and WebGL draws set much less GL state (a seventh of a phone game's frame went to it), and

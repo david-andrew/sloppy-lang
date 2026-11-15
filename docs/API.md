@@ -2661,6 +2661,7 @@ A controller keeps its number while it is plugged in (players stay who they are)
 - `gamepad_connected = () -> bool`
 - `gamepad_connected = (pad: int) -> bool`
 - `gamepad_name = (pad: int) -> str`: what the device calls itself ("" if it does not say)
+- `gamepad_standard = (pad: int) -> bool`: whether pad is a standard-layout gamepad (two sticks, two triggers, the face buttons and a d-pad, as gamepad_down and gamepad_axis read them), and not a flight stick, wheel or pedals, whose own controls only joystick_axis and joystick_button read as they are (their throttle can look like a trigger to gamepad_axis); false if it is not connected. Web: the browser's "standard" mapping. Windows: XInput, the HID pads whose layout is known (PlayStation, Switch Pro, 8BitDo) and any HID device that says it is a gamepad (not a joystick). macOS: every pad (GameController's extended gamepad). Linux: the kernel's gamepad class (its buttons are BTN_SOUTH..., a joystick's BTN_TRIGGER...). SLOPPY_INPUT's pads: true unless the script sets their own axes or buttons or names them (or pad1_standard=0/1 says)
 - `gamepad_down = (pad: int, b: PadButton) -> bool`: a button of pad, or (without a pad) of any gamepad
 - `gamepad_pressed = (pad: int, b: PadButton) -> bool`
 - `gamepad_released = (pad: int, b: PadButton) -> bool`
@@ -2673,7 +2674,7 @@ A controller keeps its number while it is plugged in (players stay who they are)
 - `right_stick = (pad: int) -> vec2`
 - `left_stick = () -> vec2`: (without a pad: the one pushed furthest)
 - `right_stick = () -> vec2`
-- `joystick_buttons = (pad: int) -> int`: any device's own buttons and axes, as it numbers them (a flight stick's hat and throttle, a wheel's pedals): how many it has, and their state
+- `joystick_buttons = (pad: int) -> int`: any device's own buttons and axes, as it numbers them (a flight stick's hat and throttle, a wheel's pedals): how many it has, and their state. In tests SLOPPY_INPUT sets them (5:pad1_axis3=-0.4, 5:pad1_button7+ and -, 1:pad1_name=T.16000M), and a scripted standard pad's mirror its sticks, triggers and buttons as Linux's xpad numbers them
 - `joystick_axes = (pad: int) -> int`
 - `joystick_button = (pad: int, i: int) -> bool`
 - `joystick_pressed = (pad: int, i: int) -> bool`

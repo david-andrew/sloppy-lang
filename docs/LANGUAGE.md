@@ -1990,6 +1990,14 @@ without `pad`, the stick pushed furthest wins. `joystick_buttons`, `joystick_but
 `joystick_pressed`, `joystick_axes` and `joystick_axis` expose up to 32 raw buttons and 16 raw
 axes for devices whose standard mapping is approximate. Windows HID raw buttons follow HID
 button usages (usage 1 is button 0); raw axes follow the descriptor's capability order.
+`gamepad_standard(pad)` says whether a pad is a standard-layout gamepad, so a game can choose a
+control profile without guessing from `gamepad_name`: on a flight stick, wheel or pedals the
+standard readers are meaningless (Linux reads a flight stick's throttle as the left trigger),
+and only the raw controls are. It is the browser's `"standard"` mapping on the web; on Windows
+XInput controllers, the HID pads whose layout is known (PlayStation, Switch Pro, 8BitDo) and any
+HID device that reports the Gamepad usage rather than Joystick; on Linux the kernel's gamepad
+class (buttons from `BTN_SOUTH`, where a joystick's start at `BTN_TRIGGER`); on macOS every pad
+(GameController lists only extended gamepads). A disconnected pad is not standard.
 
 | Platform | Controller input |
 | --- | --- |
@@ -2574,8 +2582,17 @@ finished, or in a test of your own. Environment variables say what happens:
   `5:pad_a+`/`9:pad_a-` press and let go a gamepad's button (pad 0; PadButton's names:
   `a`, `b`, `x`, `y`, `up`, `down`, `left`, `right`, `start`...); `5:pad_down+` is d-pad down,
   `6:lstick=1x0` and `rstick=` set its sticks, `lt=1` and `rt=` its triggers (another gamepad
-  by its number: `5:pad1_a+`, `6:pad1_lstick=1x0`). An item it
-  cannot read is reported. A web build takes it in the page's address,
+  by its number: `5:pad1_a+`, `6:pad1_lstick=1x0`). A device's own controls, as
+  `joystick_axis` and `joystick_button` read them (a flight stick, pedals): `5:pad1_axis3=-0.4`
+  sets raw axis 3, `5:pad1_button7+`/`9:pad1_button7-` press and release raw button 7, and
+  `1:pad1_name=T.16000M` names the device (`gamepad_name`; the name runs to the next comma or
+  item). `joystick_axes` and `joystick_buttons` count up to the highest index the script uses. A
+  scripted pad is standard (`gamepad_standard`) unless its script uses raw axes or buttons or
+  names it; `pad1_standard=0` or `=1` says which. A standard pad's raw controls mirror its
+  sticks, triggers and buttons as Linux's xpad driver numbers them (axes: left x, left y, left
+  trigger, right x, right y, right trigger, d-pad x, d-pad y, triggers -1 at rest; buttons: a b x
+  y lb rb back start home lstick rstick), and a raw item sets its axis or button over that. An
+  item it cannot read is reported. A web build takes it in the page's address,
   `page.html?SLOPPY_INPUT=5:space%2B`, with `+` written `%2B`.
 - `SLOPPY_SEED=n` makes `random()` the same each run; `SLOPPY_WINDOW=800x600` opens the window
   at that size; `SLOPPY_NO_AUDIO=1` plays no sound (for tests and machines without a sound card).
