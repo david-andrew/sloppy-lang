@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Metal shaders (macOS) can keep a `GpuBuffer` in a variable too (`b = u.colors`), as GLSL and
+  SPIR-V do since 0.36.1.
+
 ## 0.36.1
 
 Shaders using GPU buffers or textures in structs compile on Adreno phones (Chrome on Android), and
