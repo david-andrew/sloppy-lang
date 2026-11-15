@@ -10,6 +10,9 @@
   then differed by a pixel or so (more on slow machines, as CI's arm64 runner). They hold it
   from a function with `global __fixed_step` now; tests/t/soft_wind_repeat draws a wind scene
   five times with four threads and checks the bytes are the same.
+- `SLOPPY_NO_DRAW=1`: native game tests run update and scripted input without opening a
+  window, calling draw or presenting frames. Timing stays the same; `SLOPPY_FIXED_STEP=1`
+  also allows deterministic 1/60 s steps without saving a screenshot. Screenshots still render.
 - Mipmaps: a texture drawn on a 3D mesh gets them the first time it is drawn, with trilinear
   filtering, so floors and walls far away turn to their average color instead of shimmering, on
   all five renderers (OpenGL and WebGL `glGenerateMipmap`, a Vulkan blit chain, Metal's blit

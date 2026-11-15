@@ -2541,6 +2541,14 @@ finished, or in a test of your own. Environment variables say what happens:
   renders at twice it). With `SLOPPY_SOFTWARE=1` no display is needed at all, and without it
   and no display (unset `WAYLAND_DISPLAY` and `DISPLAY`) the frames are drawn through Vulkan
   with no window; where there is a display, the window opens on it.
+- `SLOPPY_NO_DRAW=1` runs a native game's update and scripted input with no window, draw
+  callbacks or frame presentation. Use it for fast logic and multiplayer tests, especially 3D
+  games that would otherwise render in software. Keep simulation and network handling in
+  `update`: code in `draw` (including clickable menus and `invite.screen`) is skipped.
+  Timing is unchanged: normal runs stay paced to 60 frames/s; `SLOPPY_FIXED_STEP=1` advances
+  exactly 1/60 s per frame as fast as possible (network sessions still pace in real time).
+  Fixed-step runs work with or without drawing. `SLOPPY_FRAMES=n` ends the run; a
+  `SLOPPY_SCREENSHOT` request takes precedence over `SLOPPY_NO_DRAW` and renders as usual.
 - `SLOPPY_INPUT="5:space+,9:space-"` presses and releases keys at given frames (commas or
   spaces between items). Keys are as `Key` names them: `a`, `n1`, `space`, `enter`, `escape`,
   `left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons,

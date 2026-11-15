@@ -904,12 +904,18 @@ terminals. For a headless check, build once with `sloppy build local_duel.jo`, t
 both copies concurrently:
 
 ```sh
-env -u DISPLAY -u WAYLAND_DISPLAY PLAYER=0 SLOPPY_SOFTWARE=1 SLOPPY_NO_AUDIO=1 SLOPPY_FRAMES=300 SLOPPY_INPUT="10:right+ 80:right-" ./local_duel >p0.log 2>&1 &
+env -u DISPLAY -u WAYLAND_DISPLAY PLAYER=0 SLOPPY_NO_DRAW=1 SLOPPY_NO_AUDIO=1 SLOPPY_FRAMES=300 SLOPPY_INPUT="10:right+ 80:right-" ./local_duel >p0.log 2>&1 &
 p0=$!
-env -u DISPLAY -u WAYLAND_DISPLAY PLAYER=1 SLOPPY_SOFTWARE=1 SLOPPY_NO_AUDIO=1 SLOPPY_FRAMES=300 SLOPPY_INPUT="10:left+ 80:left-" ./local_duel >p1.log 2>&1 &
+env -u DISPLAY -u WAYLAND_DISPLAY PLAYER=1 SLOPPY_NO_DRAW=1 SLOPPY_NO_AUDIO=1 SLOPPY_FRAMES=300 SLOPPY_INPUT="10:left+ 80:left-" ./local_duel >p1.log 2>&1 &
 p1=$!
 wait "$p0"; wait "$p1"
 ```
+
+`SLOPPY_NO_DRAW=1` skips draw callbacks and frame presentation in native builds, with no
+window needed. Update, scripted input and the normal frame timing continue; keep networking
+and simulation in update. For menus that handle clicks in draw, use `SLOPPY_SOFTWARE=1`
+instead. `SLOPPY_FIXED_STEP=1` gives exactly 1/60 s per frame with either mode (network
+sessions still pace in real time); a screenshot request renders even with no-draw set.
 
 Use different `SLOPPY_SEED` values for a stronger determinism check, and try `s.lag_ms(100,
 20, 0.05)`. To compare the games, save confirmed inputs as they arrive (the replay example

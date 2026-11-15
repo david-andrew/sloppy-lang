@@ -38,7 +38,8 @@ __kept_keys: bool[]
 __kept_btns: bool[]
 __kept_mouse = vec2(0, 0)
 __time0 = time()              # (from the start; from the window opening, once it has)
-__fixed_step = false          # screenshot runs advance exactly 1/60 s per frame
+__fixed_step = false          # screenshot / SLOPPY_FIXED_STEP runs advance exactly 1/60 s per frame
+__skip_draw = false           # native SLOPPY_NO_DRAW: update and input only, no window or presentation
 __pace_real_time = false      # (and at 60 frames a second, not faster: a networked game's)
 # (SLOPPY_INPUT's punctuation keys: each name, then the character it types and shifted)
 const __SCRIPT_PUNCT = " minus -_ equals =+ comma ,< period .> slash /? semicolon ;: quote '\" lbracket [{{ rbracket ]}} backslash \\| grave `~ "
@@ -485,7 +486,7 @@ set_fullscreen = (on: bool = true):
     global __fullscreen
     if not __win_open or on == __fullscreen: return
     __fullscreen = on
-    __platform_fullscreen(on)
+    if not __skip_draw: __platform_fullscreen(on)
 toggle_fullscreen = (): set_fullscreen(not __fullscreen)
 is_fullscreen = () -> bool: __fullscreen
 # whether set_fullscreen can fill the screen: false in an iPhone's Safari, which has no fullscreen
@@ -529,7 +530,7 @@ __upright_on = true
 mouse_lock = (on: bool = true) -> bool:
     global __mouse_lock_want
     __mouse_lock_want = on
-    if not __win_open: return true
+    if not __win_open or __skip_draw: return true
     __platform_mouse_lock(on)
 
 # keep running while the window is hidden (a web page in a tab not shown, or in a window covered
@@ -545,7 +546,7 @@ __run_hidden_on = false
 
 # (in a screenshot run, what the game asked for: the desktop's focus coming and going would make
 # the run differ from one time to the next)
-is_mouse_locked = () -> bool: __mouse_lock_want and (__fixed_step or __platform_mouse_locked())
+is_mouse_locked = () -> bool: __mouse_lock_want and (__fixed_step or __skip_draw or __platform_mouse_locked())
 
 # the window (or the web page) has the keyboard's focus: false while the player is in another
 # window or tab, as after a click outside an itch.io frame (a game may pause then)
@@ -701,7 +702,7 @@ design_size = (w: int, h: int):
     # (the frame being drawn straight to the window takes it too)
     if __win_open and __cur_target < 0 and not __canvas_active:
         __screen_layout()
-        if not __canvas_on:
+        if not __canvas_on and not __skip_draw:
             flush()
             __set_screen_target()
 
@@ -733,7 +734,7 @@ __cursor_hidden = false
 show_cursor = (on: bool):
     global __cursor_hidden
     __cursor_hidden = not on
-    if __win_open: __platform_show_cursor(on)
+    if __win_open and not __skip_draw: __platform_show_cursor(on)
 
 # the mouse pointer's shape over the window, from the end of this frame on: .arrow (the usual),
 # .ibeam over text to type in, .hand over a link, .crosshair, .move over what drags, .resize_ew,
@@ -823,7 +824,7 @@ __fit_native = ():
     __win_upscaled = false
     __win_w = __design_w
     __win_h = __design_h
-    if __win_open and not __offscreen and not __testing: __platform_resize(__win_w, __win_h)
+    if __win_open and not __offscreen and not __testing and not __skip_draw: __platform_resize(__win_w, __win_h)
 
 # (the window the game runs in: the one opened already, or one of the size given or the default)
 __window_default = ():
@@ -831,7 +832,7 @@ __window_default = ():
 
 # Open the game window (called automatically when the program defines update/draw).
 window = (title: str = "", width: int = 1280, height: int = 720):
-    global __design_h, __design_w, __offscreen, __pixel_ratio_env, __soft_kept, __time0, __touch_env, __touch_last, __win_h, __win_open, __win_title, __win_upscaled, __win_w
+    global __design_h, __design_w, __offscreen, __pixel_ratio_env, __skip_draw, __soft, __soft_kept, __time0, __touch_env, __touch_last, __win_h, __win_open, __win_title, __win_upscaled, __win_w
     __input_init()
     name = title
     if len(name) == 0: name = __program_name()
@@ -840,7 +841,7 @@ window = (title: str = "", width: int = 1280, height: int = 720):
         # the new size as the design size (design_size: the window keeps its own)
         if name != __win_title:
             __win_title = name
-            __platform_title()
+            if not __skip_draw: __platform_title()
         if width != __design_w or height != __design_h: design_size(width, height)
         return
     # (pictures drawn before it, with no window: the software renderer, which has their textures)
@@ -876,13 +877,18 @@ window = (title: str = "", width: int = 1280, height: int = 720):
     if let pr = to_float(env("SLOPPY_PIXEL_RATIO") ?? ""): __pixel_ratio_env = pr
     # (sloppy test: the tests run with no window, and no display needed)
     if __testing: return
-    __platform_open()
+    when TARGET != "wasm":
+        # Screenshots always render, even when a test runner inherited SLOPPY_NO_DRAW.
+        __skip_draw = env("SLOPPY_NO_DRAW") == "1" and env("SLOPPY_SCREENSHOT") == none
+    if __skip_draw: __soft = true
+    else: __platform_open()
     __win_open = true
     # (on a phone, the pointer is a finger from the start: no keyboard focus marks in menus)
     __touch_last = touch_device()
     __time0 = time()
-    if __mouse_lock_want: __platform_mouse_lock(true)
-    if __cursor_hidden: __platform_show_cursor(false)
+    if not __skip_draw:
+        if __mouse_lock_want: __platform_mouse_lock(true)
+        if __cursor_hidden: __platform_show_cursor(false)
 
 # change the window's title while the game runs (a level's name, the score); in a web page, the
 # page's title
@@ -890,7 +896,7 @@ set_title = (title: str):
     global __win_title
     if title == __win_title: return
     __win_title = title
-    if __win_open and not __offscreen and not __testing: __platform_title()
+    if __win_open and not __offscreen and not __testing and not __skip_draw: __platform_title()
 
 when TARGET == "wasm":
     extern __web_canvas_open = (title: *u8, title_len: i32, w: i32, h: i32)
@@ -1594,23 +1600,23 @@ else when TARGET == "windows":
     __game_run = (update: (f64) -> void, draw: () -> void):
         global __fixed_step, __last_present
         __window_default()
-        __fixed_step = env("SLOPPY_SCREENSHOT") != none
+        __fixed_step = env("SLOPPY_SCREENSHOT") != none or env("SLOPPY_FIXED_STEP") == "1"
         when WATCH:
             __watch_init()
         last = time()
         loop not __win_close and not __stop_asked:
             when WATCH:
                 __watch_frame()
-            __platform_poll()
-            __lazy_wait()                   # (redraw_on_input: until a frame is due)
+            if not __skip_draw: __platform_poll()
+            if not __skip_draw: __lazy_wait()                   # (redraw_on_input: until a frame is due)
             now = time()
             dt = clamp(now - last, 0.0, 0.1)
             last = now
             if __fixed_step: dt = 1.0 / 60.0
-            if __soft: __sw_init_window(__win_w, __win_h)
+            if __soft and not __skip_draw: __sw_init_window(__win_w, __win_h)
             __run_frame(dt, update, draw)
             t0 = time()
-            __platform_present()
+            if not __skip_draw: __platform_present()
             __last_present = time() - t0
             __frame_present += __last_present
             # (without vsync, software frames are paced to 60 per second)
@@ -2328,24 +2334,24 @@ else when TARGET == "linux":
     __game_run = (update: (f64) -> void, draw: () -> void):
         global __fixed_step, __last_present
         __window_default()
-        __fixed_step = env("SLOPPY_SCREENSHOT") != none
+        __fixed_step = env("SLOPPY_SCREENSHOT") != none or env("SLOPPY_FIXED_STEP") == "1"
         when WATCH:
             __watch_init()
         last = time()
         loop not __win_close and not __stop_asked:
             when WATCH:
                 __watch_frame()
-            __platform_poll()
-            __lazy_wait()                   # (redraw_on_input: until a frame is due)
+            if not __skip_draw: __platform_poll()
+            if not __skip_draw: __lazy_wait()                   # (redraw_on_input: until a frame is due)
             now = time()
             dt = clamp(now - last, 0.0, 0.1)
             last = now
             if __fixed_step: dt = 1.0 / 60.0
-            if __soft: __sw_init_window(__win_w, __win_h)
-            else if __wayland and not __vk: __gl_screen_resize(__win_w, __win_h)
+            if __soft and not __skip_draw: __sw_init_window(__win_w, __win_h)
+            else if not __skip_draw and __wayland and not __vk: __gl_screen_resize(__win_w, __win_h)
             __run_frame(dt, update, draw)
             t0 = time()
-            __platform_present()
+            if not __skip_draw: __platform_present()
             __last_present = time() - t0
             __frame_present += __last_present
             # without vsync, software frames are paced to 60 per second
@@ -2641,27 +2647,29 @@ __run_frame = (dt: f64, update: (f64) -> void, draw: () -> void):
     # (the tasks take their turns, those waiting for this frame too: lib/std/task.jo)
     if __tasks_on: __task_frame_fn()
     t0 = time()
-    __gfx_begin_frame()
+    if not __skip_draw: __gfx_begin_frame()
     when WATCH:
         zone("update and draw")
-        __watch_update_draw(sdt, update, draw)
+        __watch_update_draw(sdt, update, if __skip_draw: __no_draw else: draw)
         zone_end()
     else:
         zone("update")
         update(sdt)
         zone_end()
         zone("draw")
-        draw()
+        if not __skip_draw: draw()
         zone_end()
-    __hud_frame_end()
-    __sideways_draw()
-    __gfx_end_frame()
+    if not __skip_draw:
+        __hud_frame_end()
+        __sideways_draw()
+        __gfx_end_frame()
     __audio_update()
     t1 = time()
     __frame_cpu += t1 - t0
     __stats_record(t1 - t0, t1)
-    __stats_draw()
-    __cursor_frame_end()
+    if not __skip_draw:
+        __stats_draw()
+        __cursor_frame_end()
     __maybe_screenshot()
     __input_end_frame()
     __frame_count += 1
