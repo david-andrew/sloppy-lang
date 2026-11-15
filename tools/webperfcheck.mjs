@@ -7,7 +7,9 @@
 //  2. tests/web/busy.jo, a frame of a game (shapes, text, sound playing): the runtime makes no
 //     typed array, view, copy, TextDecoder or TextEncoder, media query or gamepad list per frame
 //     (a view of wasm memory per call, a copy per chunk of sound, ... once were), and its sampled
-//     JavaScript allocations stay small
+//     JavaScript allocations stay small; and few numbers cross from the module to JavaScript as
+//     objects made each call: a 64-bit int arrives as a BigInt and a float as a heap number (a
+//     GL offset and the uniforms' floats once did, ~560 a frame in examples/aces)
 // usage: node tools/webperfcheck.mjs [path/to/sloppy]
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdtempSync, rmSync, statSync, mkdirSync } from "node:fs";
@@ -115,7 +117,41 @@ const hook = `(() => {
   window.requestAnimationFrame = (f) => raf((t) => { f(t); tick(); });
 })();`;
 
-async function browse(url, work) {
+// (a module's function imports: each one's parameter and result types, from its type and import
+// sections)
+const importSigs = (b) => {
+  let p = 8;
+  const uleb = () => { let r = 0, s = 0, x; do { x = b[p++]; r += (x & 0x7f) * 2 ** s; s += 7; } while (x & 0x80); return r; };
+  const name = () => { const n = uleb(); const t = b.subarray(p, p + n).toString(); p += n; return t; };
+  const types = [], sigs = {};
+  while (p < b.length) {
+    const id = b[p++], size = uleb(), end = p + size;
+    if (id === 1) for (let n = uleb(); n > 0; n--) {
+      p++;
+      const ps = []; for (let k = uleb(); k > 0; k--) ps.push(b[p++]);
+      const rs = []; for (let k = uleb(); k > 0; k--) rs.push(b[p++]);
+      types.push({ ps, rs });
+    }
+    else if (id === 2) for (let n = uleb(); n > 0; n--) { name(); const f = name(); if (b[p++] !== 0) break; sigs[f] = types[uleb()]; }
+    if (id >= 2) break;
+    p = end;
+  }
+  return sigs;
+};
+// (the calls of each import, counted: a hook of its own, as the counting allocates)
+const countHook = `(() => {
+  const c = window.__calls = {};
+  const wrap = (imp) => {
+    const env = {};
+    for (const k in imp.env) { const f = imp.env[k]; env[k] = typeof f !== "function" ? f : function () { c[k] = (c[k] || 0) + 1; return f.apply(this, arguments); }; }
+    return { ...imp, env };
+  };
+  const I = WebAssembly.instantiate, C = WebAssembly.Instance;
+  WebAssembly.instantiate = (b, imp) => I(b, wrap(imp));
+  WebAssembly.Instance = function (m, imp) { return new C(m, wrap(imp)); };
+})();`;
+
+async function browse(url, work, more = "") {
   const dir = mkdtempSync(join(tmp, "profile-"));
   const flags = ["--no-sandbox", "--mute-audio", "--enable-unsafe-swiftshader", "--enable-precise-memory-info", "--autoplay-policy=no-user-gesture-required",
     "--remote-debugging-port=0", `--user-data-dir=${dir}`, "--window-size=400,300"];
@@ -137,6 +173,7 @@ async function browse(url, work) {
     const ev = async (e) => { const r = await send("Runtime.evaluate", { expression: e, returnByValue: true }); return r.result ? r.result.value : undefined; };
     await send("Page.enable");
     await send("Page.addScriptToEvaluateOnNewDocument", { source: hook });
+    if (more) await send("Page.addScriptToEvaluateOnNewDocument", { source: more });
     await send("Page.navigate", { url });
     // (until the first frame, or the page's log shows an error)
     const t1 = Date.now();
@@ -197,6 +234,28 @@ await browse("file://" + join(tmp, "busy.html"), async (c) => {
   const kb = bytes / Math.max(frames, 1) / 1e3;
   expect("the runtime's own JavaScript allocations each frame are small", frames > 20 && kb < 2, `${kb.toFixed(2)} KB a frame, sampled`);
 });
+// (the module's numbers handed to JavaScript each frame that arrive as objects made for the call:
+// i64 a BigInt, f32 and f64 a heap number unless a small integer)
+const busyPage = readFileSync(join(tmp, "busy.html"), "utf8");
+const busySigs = importSigs(Buffer.from(/id="sloppy-wasm">([^<]*)</.exec(busyPage)[1], "base64"));
+await browse("file://" + join(tmp, "busy.html"), async (c) => {
+  await sleep(1500);
+  const c0 = await c.ev("window.__calls"), f0 = await c.ev("window.__frames");
+  await sleep(2000);
+  const c1 = await c.ev("window.__calls"), frames = (await c.ev("window.__frames")) - f0;
+  const boxed = [];
+  let total = 0;
+  for (const k of Object.keys(c1)) {
+    const sig = busySigs[k];
+    if (!sig) continue;
+    const n = sig.ps.filter((t) => t === 0x7e || t === 0x7d || t === 0x7c).length;
+    const per = n * (c1[k] - (c0[k] || 0)) / Math.max(frames, 1);
+    if (per > 0) { boxed.push([k, per]); total += per; }
+  }
+  boxed.sort((a, b) => b[1] - a[1]);
+  expect(`few 64-bit ints and floats handed to JavaScript each frame (BigInts and heap numbers; ${frames} frames)`, frames > 20 && total <= 6,
+    `${total.toFixed(1)} a frame` + (boxed.length ? ": " + boxed.slice(0, 4).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(", ") : ""));
+}, countHook);
 server.close();
 rmSync(tmp, { recursive: true, force: true });
 console.log(failed ? `${failed} failed` : "web performance: all checks passed");

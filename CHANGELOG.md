@@ -25,11 +25,21 @@
   objects each frame; gamepads are read each frame only once one has been used. In 60 s of
   Aces the page's JavaScript heap grows 323 KB a second instead of 347, with 29 collections a
   minute instead of 32, and the audio thread has no major collections (2 a minute before); in a
-  busy test page 39 KB a second instead of 59. Most of what remains in Aces is the module's
-  numbers handed to WebGL calls (f32 uniform values become heap numbers in JavaScript).
+  busy test page 39 KB a second instead of 59. What remained in Aces was mostly the module's
+  numbers handed to WebGL calls: the next item.
   `tools/webperfcheck.mjs` (in CI) builds pages in headless Chromium and checks what they keep
   after starting and that the runtime makes no typed arrays, copies, coders, media queries or
   gamepad lists per frame.
+- Web pages no longer make garbage for each WebGL call's numbers: a uniform's floats
+  (`glUniform1f` to `glUniform4f`, ~450 a frame in Aces) are written to wasm memory and read
+  there by the page, instead of each becoming a new heap number in JavaScript, and buffer and
+  attribute offsets and sizes (`glVertexAttribPointer`, `glDrawElements`, `glBufferSubData`...)
+  are 32-bit ints instead of a BigInt each call. In 60 s of Aces the page's JavaScript heap grows
+  60-63 KB a second instead of 303-320, with 6-7 collections a minute instead of 28-29 (two
+  runs); in the busy test page, which now also draws a shader of its own, 37 instead of 87.
+  Native GL and Vulkan are unchanged. `tools/webperfcheck.mjs` counts the 64-bit ints and floats a busy page's
+  module hands JavaScript each frame (its shader takes uniforms of each kind and draws an indexed
+  mesh): 4 a frame (`clear`'s colour), 83 before.
 - Rollback players who restart come back into a running game. `s.allow_rejoin(saved_token)` on
   every player's session: the host (the player the others play over, or in a mesh player 0, and
   1 for 0) gives each player a 256-bit token, `s.rejoin_token`, for the game to save. A program
