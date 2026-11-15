@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.35.0
+## Unreleased
+
+- netplay: a relay session (`s.join_relay`) in a game that reads its own events every frame
+  (`net.receive()`: a lobby's messages, the invite screens) never heard that it had connected,
+  so it never joined its room and every player waited at tick 0, silently. The relay
+  connection's events are the session's now, as its packets on `s.over`'s peers already were.
+
 
 Rollback players who restart (a crash, a reloaded page) come back into a running game
 (`s.allow_rejoin`, `s.admit`); web builds start faster and lighter and make far less garbage

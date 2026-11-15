@@ -1,0 +1,40 @@
+# requires: sloppy
+# requires: native (two rollback players through a WebSocket relay in this program)
+# A game that reads its own events every frame (net.receive(): a lobby's messages, an invite's)
+# must leave the relay connection's to the session: otherwise the session never hears that it is
+# connected, never joins its room, and both players wait forever.
+import netplay
+import net
+
+struct Pad:
+    dx = 0
+struct Game:
+    pos: int[] = [0, 0]
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..2): g.pos[p] += pads[p].dx
+    g
+
+netplay.relay(0).unwrap()
+netplay.clock(0.0)
+ss: netplay.Session[Game, Pad][]
+loop p in [0..2):
+    s = netplay.session(Game(), step, players = 2, me = p)
+    s.join_relay("127.0.0.1", net.port(), "room", stun = "")
+    ss.push(s)
+taken = false
+loop f in [0..400):
+    netplay.clock(f64(f) / 60.0)
+    netplay.relay(0).unwrap()
+    # (the game's own read: anything of the sessions' relay connections in it is taken from them;
+    # the relay server's events in it are put back, the relay being in this same program)
+    got = net.receive()
+    keep: net.NetEvent[]
+    loop e in got:
+        if e.peer == ss[0].__relay or e.peer == ss[1].__relay: taken = true
+        else: keep.push(e)
+    net.__net_events = keep + net.__net_events
+    loop p in [0..2): ss[p].play(Pad(p + 1))
+    sleep(0.001)
+print("taken", taken, "played", ss[0].confirmed() > 200 and ss[1].confirmed() > 200, "problems '{ss[0].problem}' '{ss[1].problem}'")
+netplay.clock(-1.0)
