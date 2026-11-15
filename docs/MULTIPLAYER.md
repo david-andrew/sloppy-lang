@@ -455,6 +455,107 @@ text, as it does for a spectator's `feed(-1)`: plain data, with nothing the tick
 elsewhere. The host's own restart, in a game that plays over a host, is not one it can come back
 from: the others have no one to play over.
 
+`s.rejoined` is for one play: a frame that plays several ticks (as [below](#ticks-not-frames))
+reads it after each `s.play`, or misses it.
+
+### A room for up to four, joined by a link
+
+A matchmaking server's room (`invite.open_room`, [above](#messages)) gives the host a link to
+send; each friend who opens it is connected straight to the host, and the host numbers them and
+starts the session over them. A friend whose page reloads opens the same link again and comes
+back into the game: the host admits the new connection, and the friend's session takes its saved
+token. The whole of it, in a program (examples/aces does the same for twelve):
+
+```gdscript
+import net
+import netplay
+import invite
+
+struct Pad:
+    x = 0
+struct Game:
+    pos: int[]
+tick = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop i in 0.. and p in pads: g.pos[i] += p.x
+    g
+
+invite.server("wss://match.example.org")
+invite.from_link()                              # (a friend opened the room's link: ?room=KX7P4)
+room = env("ROOM") ?? ""                        # (that link's room: a page's ?room=)
+hosting = false
+guests: int[]                                   # (the host's: players 1, 2 and 3)
+host = -1                                       # (a friend's: the host's peer)
+s = netplay.session(Game(), tick, players = 2, me = 0)
+playing = false
+token = ""
+
+play_as = (me: int, players: int, saved: str):
+    global s, playing, token
+    s = netplay.session(Game(pos = fill(0, players)), tick, players = players, me = me)
+    peers = fill(-1, players)
+    if hosting:
+        loop i in 0.. and p in guests: peers[i + 1] = p
+    else: peers[0] = host
+    s.over(peers)
+    s.allow_rejoin(saved)
+    token = saved
+    playing = true
+
+update = (dt: f64):
+    global token
+    if hosting:
+        loop c in invite.arrivals():
+            if playing: s.admit(c.peer)         # (a friend coming back after a reload)
+            else: guests.push(c.peer)
+    loop e in net.receive():
+        if e.kind == .message and starts_with(e.text, "start "):
+            w = split(e.text, " ")
+            play_as(to_int(w[1]) ?? 1, to_int(w[2]) ?? 2, "")
+    if not playing: return
+    s.play(Pad(int(input_axis().x)))            # (once a tick: see Ticks, not frames)
+    if s.rejoin_token != token:                 # (kept with the room and the player's number)
+        token = s.rejoin_token
+        save_data("rejoin", "{room} {s.me} {s.players} {token}")
+    if s.me == 0:                               # (the host plays for a friend gone quiet)
+        loop p in [1..s.players):
+            if not s.stands_in(p) and s.silent(p) > 3.0: s.stand_in(p, Pad())
+
+draw = ():
+    global hosting, host
+    clear()
+    if invite.active():                         # a friend, connecting to the host
+        if let c = invite.screen("My Game"):
+            host = c.peer
+            w = split(load_data("rejoin") ?? "", " ")
+            if w.len() == 4 and w[0] == room:   # (this page was reloaded during a game)
+                play_as(to_int(w[1]) ?? 1, to_int(w[2]) ?? 2, w[3])
+        return
+    if playing:
+        loop i in 0.. and x in s.state.pos: circle(vec2(640 + x, 200 + i * 80), 20, WHITE)
+        if s.rejoining: text("coming back...", vec2(20, 20), 24)
+    else if not hosting:
+        if hud_button(Rect(40, 40, 200, 44), "Host a room"):
+            hosting = true
+            invite.open_room(reliable = false)
+    else:
+        text("Room {invite.room_code()}: {invite.room_link()}", vec2(40, 40), 20)
+        if guests.len() > 0 and hud_button(Rect(40, 100, 200, 44), "Start"):
+            loop i in 0.. and p in guests: net.send(p, "start {i + 1} {guests.len() + 1}")
+            play_as(0, guests.len() + 1, "")
+```
+
+A friend who comes while the game is on and is not coming back is admitted too, and nothing
+comes of it (no token, no place): the connection stays open, unused, until the game closes it
+(`net.close`). A game that wants newcomers to watch, or to wait for the next round, tells them
+apart itself (by a message of its own from a friend who has nothing saved). Forget the saved token when the game ends (`delete_data`), so a
+later visit to the link joins the lobby as new.
+
+Rooms are on the matchmaking server (tools/rendezvous.jo), which passes only the codes that
+connect the games: the games' packets go straight between them. A relay (`netplay.relay`, `s.join_relay`,
+[below](#web-pages)) is another way, which passes every packet; it needs no
+matchmaking server, but players there choose their own numbers.
+
 ## Client and server
 
 The server runs the game; clients send their inputs and draw the worlds it sends back. Three

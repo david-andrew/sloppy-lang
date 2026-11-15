@@ -12,6 +12,10 @@
 - A game started with no display (neither `DISPLAY` nor `WAYLAND_DISPLAY`) says that
   `SLOPPY_SOFTWARE=1` runs it with no window, instead of asking whether DISPLAY is set.
   `frame_count()` suggests `frame_number()`.
+- docs/MULTIPLAYER.md: "A room for up to four, joined by a link", a whole program: a
+  matchmaking room's link, the host numbering its friends and starting a rollback session over
+  them, and a friend whose page reloads coming back into the game (`s.admit`, the saved token);
+  how rooms differ from a relay; `s.rejoined` is read after each `s.play`.
 
 
 Rollback players who restart (a crash, a reloaded page) come back into a running game
