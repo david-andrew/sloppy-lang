@@ -183,9 +183,10 @@ Fill the gaps real programs hit, nothing speculative:
   constraints and generic fixed-array lengths wait for a real program that needs
   them (the audit found no per-length duplication; see [the design decision](design/generics.md#decision-2026-11-11)).
 - Sugar for passing errors on (a `try`), if code shows the two-line pattern is too much.
-- What a function may change, worked out once and carried on function values (from the audit):
-  it would replace several special cases in the checks for `mut` elements and borrowed
-  arguments, and let release builds leave out more reference counting and bounds checks.
+- What a function may change, worked out once (measured 2026-11-15, docs/design/effects.md): the
+  refcount/uniqueness/bounds traffic it could remove is at most 1.6-4.5% of a game frame, and a
+  bounded prototype saved 0.16% of the compiler's own work while costing release compiles up to
+  0.7%; not built. Reopen if a profile shows that traffic above 5% of a real program.
 - Lints: a local variable that has a global's name and type (it changes the global); results
   left unused (done for the library's functions that give a new value: `s.trim()`).
 - Text: bytes vs code points vs what is displayed, made clear in the API (done: LANGUAGE.md's
