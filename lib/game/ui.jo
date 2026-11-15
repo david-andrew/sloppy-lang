@@ -464,9 +464,9 @@ ui_text = (s: str, size: f64 = 24.0 * ui_scale(), color: vec4 = vec4(1, 1, 1, 0.
 
 # ---------------- a game's own interface: boxes placed anywhere ----------------
 # Buttons, panels and bars where the game puts them (an RTS's command panel, a toolbar), worked
-# with the mouse or a finger. Call them in draw, each frame, in screen units (after
-# reset_transform() if a camera is set), or under a transform of their own (camera2d_fit of a
-# phone's column: they take the pointer where they show):
+# with the mouse or a finger (and with the keys and a gamepad after hud_nav(true)). Call them in
+# draw, each frame, in screen units (after reset_transform() if a camera is set), or under a
+# transform of their own (camera2d_fit of a phone's column: they take the pointer where they show):
 #
 #   hud_panel(Rect(0, 600, 1280, 120))
 #   if hud_button(Rect(20, 620, 160, 44), "Train worker", enabled = food >= 50): train()
@@ -497,7 +497,7 @@ struct HudStyle:
     # (these are for the layout module's boxes: import layout)
     muted: vec4 = vec4(1, 1, 1, 0.62)       # secondary text: a caption, a hint, a value's unit
     track: vec4 = vec4(1, 1, 1, 0.1)        # behind a bar's fill and a scrollbar's thumb
-    focus: vec4 = vec4(1, 1, 1, 0.9)        # the ring around what keys or a gamepad have chosen
+    focus: vec4 = vec4(1, 1, 1, 0.9)        # the ring around what keys or a gamepad have chosen (hud_nav's too)
     radius: f64 = 6.0                       # a button's corners
     panel_radius: f64 = 10.0                # a panel's corners
     panel_edge: vec4 = vec4(1, 1, 1, 0.08)  # a panel's border
@@ -506,6 +506,12 @@ struct HudStyle:
     well: vec4 = vec4(0, 0, 0, 0.24)        # inside a text field, darker than the panel around it
 
 hud_style = HudStyle()
+
+# (hud_nav: the frame it is on in, and what each box asks it, set by hud_nav; a program that never
+# calls it compiles none of it)
+__hud_nav_frame = -10
+__hud_nav_fn: (Rect, int) -> int = (r: Rect, kind: int) -> int: 0
+__hud_nav_list_fn: (str, Rect, f64, f64) -> void = (key: str, r: Rect, off: f64, content: f64): pass
 
 # Layout's bridge to the HUD: register a solved box (including the current transform and
 # clip) without drawing it. This also makes layout boxes count toward hud_hovered().
@@ -696,12 +702,13 @@ hud_panel = (r: Rect, color: vec4 = vec4(0, 0, 0, 0)):
 # button is cut short with …; align = .left puts it at the left, as a list's rows have it
 hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false, align: Align = .center) -> bool:
     over = __hud_touch(r)
+    nav = if __hud_nav_frame == __frame_count: __hud_nav_fn(r, 0) else: 0
     on = enabled and __hud_press_on(r)
     c = hud_style.button
     if selected: c = hud_style.hover
-    if enabled and __hud_lit(over):
+    if enabled and (__hud_lit(over) or (nav & 16) != 0):
         c = hud_style.hover
-        if on and mouse_down(.left): c = hud_style.pressed
+        if (on and mouse_down(.left)) or (nav & 64) != 0: c = hud_style.pressed
     rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), c)
     edge = hud_style.border
     if selected: edge = hud_style.accent
@@ -717,7 +724,8 @@ hud_button = (r: Rect, label: str, enabled: bool = true, selected: bool = false,
         center: text_centered(shown, center(r), size, tc)
         left: text(shown, vec2(f32(f64(r.x) + pad), f32(ty)), size, tc)
         right: text(shown, vec2(f32(f64(r.x + r.w) - pad - text_width(shown, size)), f32(ty)), size, tc)
-    on and over and mouse_released(.left)
+    if (nav & 48) != 0: __hud_nav_fn(r, -((nav >> 4) & 3))
+    (on and over and mouse_released(.left)) or (enabled and (nav & 2) != 0)
 
 # a bar filled to `amount` (0 to 1): health, progress, a cooldown
 hud_bar = (r: Rect, amount: f64, color: vec4, back: vec4 = vec4(0, 0, 0, 0.5)):
@@ -802,6 +810,7 @@ hud_scroll = (r: Rect, content_height: f64, id: str = "") -> f64:
         c = hud_style.button
         if __hud_drag == key or (__hud_panning and __hud_pan == key) or (__hud_lit(over) and f64(m.x) >= bx - 4.0): c = hud_style.hover
         __hud_bars.push(__HudBar(Rect(bx, f64(r.y), bw, f64(r.h)), Rect(bx, f64(r.y) + track * off / room, bw, th), hud_style.pressed, c, __xform))
+    if __hud_nav_frame == __frame_count: __hud_nav_list_fn(key, r, off, content_height)
     off
 struct __HudScroll:
     off = 0.0
@@ -885,8 +894,11 @@ hud_tooltip = (s: str):
 hud_slider = (r: Rect, value: f64, low: f64, high: f64, step: f64 = 0.0, label: str = "") -> f64:
     global __slider_drag
     over = __hud_touch(r)
+    nav = if __hud_nav_frame == __frame_count: __hud_nav_fn(r, 2) else: 0
     key = "hud {r.x},{r.y},{r.w},{r.h}"
     v = clamp(value, min(low, high), max(low, high))
+    # (left and right with keys or a gamepad: a step, or a twentieth of the way with none)
+    if (nav & 12) != 0: v = __step_to(v + (if (nav & 4) != 0: -1.0 else: 1.0) * (if step > 0.0: step else: (high - low) / 20.0), step, low, high)
     if over and mouse_pressed(.left): __slider_drag = key
     lw = 0.0
     size = min(hud_style.text_size, f64(r.h) * 0.6)
@@ -897,7 +909,7 @@ hud_slider = (r: Rect, value: f64, low: f64, high: f64, step: f64 = 0.0, label: 
         if mouse_down(.left): v = __step_to(low + (high - low) * clamp((f64(__ui_ptr().x) - tx) / tw, 0.0, 1.0), step, low, high)
         else: __slider_drag = ""
     c = hud_style.button
-    if __hud_lit(over) or __slider_drag == key: c = hud_style.hover
+    if __hud_lit(over) or __slider_drag == key or (nav & 16) != 0: c = hud_style.hover
     rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), c)
     rect_outline(f64(r.x), f64(r.y), f64(r.w), f64(r.h), 1.0, hud_style.border)
     if lw > 0.0: text(label, vec2(f32(f64(r.x) + 8.0), f32(f64(r.y) + (f64(r.h) - size) / 2.0)), size, hud_style.text)
@@ -906,6 +918,7 @@ hud_slider = (r: Rect, value: f64, low: f64, high: f64, step: f64 = 0.0, label: 
     rect(tx, cy - 3.0, tw, 6, hud_style.pressed)
     rect(tx, cy - 3.0, tw * a, 6, hud_style.accent)
     circle(vec2(f32(tx + tw * a), f32(cy)), min(f64(r.h) * 0.3, 10.0), hud_style.accent)
+    if (nav & 48) != 0: __hud_nav_fn(r, -((nav >> 4) & 3))
     v
 
 # a box ticked or not, with its label to the right: the new state (flipped in the frame it is
@@ -913,11 +926,12 @@ hud_slider = (r: Rect, value: f64, low: f64, high: f64, step: f64 = 0.0, label: 
 # holds the label too, cut short with … to fit it
 hud_checkbox = (r: Rect, label: str, on: bool) -> bool:
     over = __hud_touch(r)
+    nav = if __hud_nav_frame == __frame_count: __hud_nav_fn(r, 1) else: 0
     v = on
-    if over and __hud_press_on(r) and mouse_released(.left): v = not v
+    if (over and __hud_press_on(r) and mouse_released(.left)) or (nav & 2) != 0: v = not v
     b = f64(r.h)
     c = hud_style.button
-    if __hud_lit(over): c = hud_style.hover
+    if __hud_lit(over) or (nav & 16) != 0: c = hud_style.hover
     rect(f64(r.x), f64(r.y), b, b, c)
     rect_outline(f64(r.x), f64(r.y), b, b, 1.0, hud_style.border)
     if v: rect(f64(r.x) + b * 0.25, f64(r.y) + b * 0.25, b * 0.5, b * 0.5, hud_style.accent)
@@ -926,6 +940,8 @@ hud_checkbox = (r: Rect, label: str, on: bool) -> bool:
     shown = label
     if f64(r.w) > b * 1.3: shown = fit_text(label, f64(r.x + r.w) - lx, size)
     text(shown, vec2(f32(lx), f32(f64(r.y) + (b - size) / 2.0)), size, hud_style.text)
+    # (its ring around the box and its label)
+    if (nav & 48) != 0: __hud_nav_fn(Rect(r.x, r.y, f32(min(f64(r.w), lx - f64(r.x) + text_width(shown, size) + b * 0.3)), r.h), -((nav >> 4) & 3))
     v
 
 # ---- text fields ----
@@ -945,6 +961,9 @@ hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: 
     over = __hud_touch(r)
     if over: __cursor_auto = .ibeam
     key = __hud_field_key(r, id)
+    # (chosen with keys or a gamepad: the keyboard, as a click gives it)
+    nav = if __hud_nav_frame == __frame_count: __hud_nav_fn(r, 3) else: 0
+    if (nav & 2) != 0 and __hud_focus != key: hud_focus(key)
     size = min(hud_style.text_size, f64(r.h) * 0.6)
     pad = 6.0
     st = __text_edits.get(key) ?? __TextEdit()
@@ -953,8 +972,10 @@ hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: 
     ty = f64(r.y) + (f64(r.h) - size) / 2.0
     v = __hud_edit(st, key, v, r, over, f64(r.x) + pad - st.scroll, ty, size * 1.25, max_chars, -1.0, size, 1)
     focused = __hud_focus == key
+    # (typed in: its accent edge and caret say so, not the ring)
+    if focused: nav = nav & 32
     c = hud_style.button
-    if __hud_lit(over) or focused: c = hud_style.hover
+    if __hud_lit(over) or focused or (nav & 16) != 0: c = hud_style.hover
     rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), c)
     edge = hud_style.border
     if focused: edge = hud_style.accent
@@ -973,6 +994,7 @@ hud_text_field = (r: Rect, value: str, id: str = "", max_chars: int = 64, hint: 
     if paste_w > 0.0:
         pr = Rect(r.x + r.w - f32(paste_w) - 3, r.y + 3, f32(paste_w), r.h - 6)
         if hud_button(pr, "Paste"): __platform_paste()
+    if (nav & 48) != 0: __hud_nav_fn(r, -((nav >> 4) & 3))
     st.text = v
     __text_edits[key] = st
     v
@@ -987,6 +1009,8 @@ hud_text_area = (r: Rect, value: str, id: str = "", max_chars: int = 1000000, hi
     over = __hud_touch(r)
     if over: __cursor_auto = .ibeam
     key = __hud_field_key(r, id)
+    nav = if __hud_nav_frame == __frame_count: __hud_nav_fn(r, 3) else: 0
+    if (nav & 2) != 0 and __hud_focus != key: hud_focus(key)
     size = hud_style.text_size
     lh = size * 1.25
     pad = 6.0
@@ -1000,6 +1024,7 @@ hud_text_area = (r: Rect, value: str, id: str = "", max_chars: int = 1000000, hi
     v = __hud_edit(st, key, v, r, over, f64(r.x) + pad, f64(r.y) + pad - st.scroll, lh, max_chars, ww, size, max(int(ih / lh) - 1, 1))
     __te_layout(st, v, ww, size)
     focused = __hud_focus == key
+    if focused: nav = nav & 32
     # (the caret moved: the lines scroll to show it)
     content = f64(st.lines.len()) * lh
     if st.follow:
@@ -1009,7 +1034,7 @@ hud_text_area = (r: Rect, value: str, id: str = "", max_chars: int = 1000000, hi
         st.follow = false
     st.scroll = clamp(st.scroll, 0.0, max(content - ih, 0.0))
     c = hud_style.button
-    if focused: c = hud_style.hover
+    if focused or (nav & 16) != 0: c = hud_style.hover
     rect(f64(r.x), f64(r.y), f64(r.w), f64(r.h), c)
     edge = hud_style.border
     if focused: edge = hud_style.accent
@@ -1027,6 +1052,7 @@ hud_text_area = (r: Rect, value: str, id: str = "", max_chars: int = 1000000, hi
         th = max(ih * ih / content, 16.0)
         y = f64(r.y) + pad + (ih - th) * st.scroll / (content - ih)
         rect(f64(r.x + r.w) - bar - 2.0, y, bar - 2.0, th, hud_style.border)
+    if (nav & 48) != 0: __hud_nav_fn(r, -((nav >> 4) & 3))
     st.text = v
     __text_edits[key] = st
     v
@@ -1054,6 +1080,30 @@ __hud_order_last: str[]
 __hud_last_field = ""
 __hud_submit_key = ""
 __hud_submit_frame = -10
+
+# (which came last in a frame, hud_nav's boxes or a layout root with controls: the count of boxes so
+# far as each box was drawn and as each root was done, in this frame and the one before)
+__hud_nav_seq = 0
+__hud_nav_mark = (-10, 0)
+__hud_nav_mark_was = (-10, 0)
+__hud_layout_mark = (-10, 0)
+__hud_layout_mark_was = (-10, 0)
+__hud_mark_at = (now: (int, int), was: (int, int), f: int) -> (int, int):
+    if now.0 == f: return now
+    if was.0 == f: return was
+    (-10, 0)
+# A layout root with controls the keys can reach is done.
+__hud_layout_root_done = ():
+    global __hud_layout_mark, __hud_layout_mark_was
+    if __hud_layout_mark.0 != __frame_count: __hud_layout_mark_was = __hud_layout_mark
+    __hud_layout_mark = (__frame_count, __hud_nav_seq)
+# Whether hud_nav had the keys in the last frame (its boxes drawn after every layout root with
+# controls): layout leaves them to it then.
+__hud_layout_nav_yield = () -> bool:
+    f = __frame_count - 1
+    h = __hud_mark_at(__hud_nav_mark, __hud_nav_mark_was, f)
+    l = __hud_mark_at(__hud_layout_mark, __hud_layout_mark_was, f)
+    h.0 == f and (l.0 != f or h.1 > l.1)
 
 __hud_field_key = (r: Rect, id: str) -> str:
     if len(id) > 0: return id

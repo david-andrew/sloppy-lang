@@ -109,7 +109,7 @@ TOPICS = [
      "For programs that keep their data on the GPU: buffers of any struct, functions run once per element "
      "(`compute`, `dispatch`) and draws the GPU decides (`draw_indirect`). Through Vulkan these run on the GPU; "
      "elsewhere on the CPU, so programs work everywhere."),
-    ("Games", "menus", "Menus", ["game/ui"], "menus", ""),
+    ("Games", "menus", "Menus", ["game/ui", "std/hudnav"], "menus", ""),
     ("Games", "layout", "Responsive layout", ["layout"], None,
      "An explicit module (`import layout as ui`): rows and columns, content and weighted grow sizes, "
      "wrapping text, scroll containers and floating boxes. See [responsive layout](LANGUAGE.md#responsive-layout)."),

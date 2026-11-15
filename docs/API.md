@@ -4625,6 +4625,8 @@ draw = ():
     if fullscreen != is_fullscreen(): set_fullscreen(fullscreen)
 ```
 
+### ui.jo
+
 Menus: a column of buttons, sliders, switches and choices, worked with the keyboard, a gamepad or the mouse. Immediate mode: describe the menu every frame (in draw), and each item says what was done to it then.
 
 ```gdscript
@@ -4688,7 +4690,7 @@ Menus and hud_ boxes are drawn in the units of the 2D transform drawing has (cam
       text_size: f64 = 20.0
       muted: vec4 = vec4(1, 1, 1, 0.62)       # secondary text: a caption, a hint, a value's unit
       track: vec4 = vec4(1, 1, 1, 0.1)        # behind a bar's fill and a scrollbar's thumb
-      focus: vec4 = vec4(1, 1, 1, 0.9)        # the ring around what keys or a gamepad have chosen
+      focus: vec4 = vec4(1, 1, 1, 0.9)        # the ring around what keys or a gamepad have chosen (hud_nav's too)
       radius: f64 = 6.0                       # a button's corners
       panel_radius: f64 = 10.0                # a panel's corners
       panel_edge: vec4 = vec4(1, 1, 1, 0.08)  # a panel's border
@@ -4732,6 +4734,24 @@ Menus and hud_ boxes are drawn in the units of the 2D transform drawing has (cam
   path = hud_text_field(r, path, id = "path")
   if hud_submitted(): open_file(path)
   ```
+
+### hudnav.jo
+
+Keys and a gamepad on the hud_ boxes: hud_nav, hud_nav_active.
+
+- `hud_nav = (on: bool, name: str = "")`: hud_nav(true), each frame before the boxes: the arrow keys, the d-pad and the left stick move a focus among the hud_button, hud_checkbox, hud_slider, hud_text_field and hud_text_area boxes drawn after it, to the nearest box that way; Enter, space or the gamepad's A chooses the focused one (a button returns true, a checkbox flips, a text field takes the keyboard), and left and right move a focused slider by its step (a twentieth of the way with a step of 0). Held, the d-pad and the stick go on a box at a time, as gamepad_repeat does. The focus shows as a ring of hud_style.focus around the box while the keys or a gamepad are what is used (hud_nav_active()); moving the mouse hides it, and the mouse moved onto a box takes the focus there, as in a ui_ menu. A row of a hud_scroll list scrolls into view as the focus reaches it. The focus starts on the first box drawn, or on the one it was on when the same boxes come back. A box under a hud_panel drawn after it (a dialog's) cannot have it, and it goes back to the box it was on when the dialog goes. `name` tells screens apart (`hud_nav(true, "settings")`): each keeps its own focus, and one shown again starts on the box it was left on. hud_nav(false) later in the frame leaves the boxes after it out (a game's own HUD, drawn after its menu). While a text field has the keyboard, the arrow keys move its caret and the d-pad leaves it. A layout root (import layout) with controls has its own navigation: the keys go to whichever was drawn last, its controls or the hud_ boxes after it
+  ```gdscript
+  paused = false
+  draw = ():
+      global paused
+      if key_pressed(.escape) or gamepad_pressed(.start): paused = not paused
+      hud_nav(paused)
+      if paused:
+          hud_panel(visible_rect(), rgba(0, 0, 0, 0.5))
+          if hud_button(Rect(540, 280, 200, 44), "Resume"): paused = false
+          if hud_button(Rect(540, 340, 200, 44), "Quit"): quit()
+  ```
+- `hud_nav_active = () -> bool`: whether hud_nav's focus shows: the keys or a gamepad moved it (or chose with it) since the mouse moved or a finger touched; false without hud_nav. For a game's own hints ("A: choose")
 
 ## Responsive layout
 

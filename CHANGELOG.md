@@ -20,6 +20,21 @@
   `BTN_TRIGGER`...); macOS: every pad (GameController's extended gamepads). Scripted pads are
   standard unless the script gives them raw items or a name; `pad1_standard=0` / `=1` says so
   explicitly.
+- `hud_nav(true)` works the `hud_` boxes with the keys and a gamepad: called each frame before
+  them, the arrows, the d-pad and the left stick move a focus to the nearest box that way (as
+  Android's focus finder picks: boxes in line first, the distance to the side weighted less;
+  held, the d-pad and the stick repeat as `gamepad_repeat` does), Enter, space or A chooses (a
+  `hud_button` returns true, a `hud_checkbox` flips, a `hud_text_field` or `hud_text_area` takes
+  the keyboard), left and right step a focused `hud_slider` (a twentieth of the range with a step
+  of 0), and a row of a `hud_scroll` list scrolls into view as the focus reaches it. The focus
+  shows as a ring of `hud_style.focus` while keys or a gamepad are in use, `hud_nav_active()`;
+  moving the mouse hides it and takes the focus to the box it moves onto, as a `ui_` menu does.
+  It starts on the first box, stays on its box as boxes come and go or a menu slides, leaves
+  boxes under a later `hud_panel` (a dialog) and comes back to its box as the dialog goes.
+  `hud_nav(true, "settings")` gives each screen its own focus; `hud_nav(false)` later in a frame
+  leaves the boxes after it out. With a layout root, the keys go to whichever was drawn last.
+  It is in lib/std/hudnav.jo, read only by a program that names it; the boxes of one that does
+  not only compare a frame number (Aegean Skies' request).
 ## 0.36.2
 
 OpenGL and WebGL draws set much less GL state (a seventh of a phone game's frame went to it), and

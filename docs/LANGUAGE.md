@@ -2095,6 +2095,35 @@ its content, the focused row of a list worked with keys or a gamepad. Labels too
 rectangle as wide as box and label) end in …, as `fit_text(s, width, size)` cuts any text;
 `hud_button(r, label, align = .left)` puts the label at the left, for a list's rows.
 
+`hud_nav(true)`, called each frame before the boxes, lets the keys and a gamepad work them too:
+the arrows, the d-pad and the left stick move a focus to the nearest box that way (held, the d-pad
+and the stick go on a box at a time, as `gamepad_repeat` does), Enter, space or A chooses it (a
+button clicks, a checkbox flips, a text field takes the keyboard, then its arrows move the caret
+and the d-pad leaves it), left and right step a focused slider (by a twentieth of its range with
+a step of 0), and the rows of a `hud_scroll` list scroll into view as the focus reaches them. The
+focus starts on the first box drawn and shows as a ring of `hud_style.focus` while the keys or a
+gamepad are in use (`hud_nav_active()`); moving the mouse hides it, and the box the mouse moves
+onto takes the focus, as in a `ui_` menu. Boxes under a `hud_panel` drawn after them (a dialog's)
+are out of reach, and the focus goes back to its box when the dialog goes. `hud_nav(true,
+"settings")` names a screen, which keeps its own focus; `hud_nav(false)` later in the frame leaves
+the boxes after it out (the game's own HUD under a menu). A program that never calls it compiles
+none of it.
+
+```gdscript
+paused = false
+volume = 0.5
+draw = ():
+    global paused, volume
+    clear()
+    if key_pressed(.escape) or gamepad_pressed(.start): paused = not paused
+    hud_nav(paused, "pause")
+    if paused:
+        hud_panel(visible_rect(), rgba(0, 0, 0, 0.5))
+        if hud_button(Rect(540, 250, 200, 44), "Resume"): paused = false
+        volume = hud_slider(Rect(540, 304, 200, 40), volume, 0, 1, 0.1, "Volume")
+        if hud_button(Rect(540, 354, 200, 44), "Quit"): quit()
+```
+
 ### Choosing widgets and moving values between them
 
 | System | Placement and identity | Slider arguments after placement |
@@ -2232,7 +2261,9 @@ the nearest row or column wins before alignment. Tab/Shift+Tab and RB/LB visit
 all enabled focusable controls in tree order and wrap, scrolling the target into view. Disabled
 controls and content omitted from a closed floating panel stay out of navigation. The focused
 control has a ring around it once keys or a gamepad have been used, until the next press of
-the mouse or a finger.
+the mouse or a finger. With `hud_nav` on as well, the keys go to whichever was drawn last: a root
+after the `hud_` boxes keeps them, and a `hud_` dialog drawn over a root takes them (its first box
+focused, the root's ring hidden) until it goes.
 
 All five containers take `width`, `height`, `pad`, `gap`, `align`, `cross`, `color`, `radius`,
 `border` and `key`. `pad = 12` applies to every side; `ui.insets(left, top, right, bottom)`
