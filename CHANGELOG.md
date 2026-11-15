@@ -23,9 +23,10 @@ element (`#sloppy-wasm`), read once and let go.
 - PBR materials cost much less in the software renderer: opaque materials cast shadows with the
   plain depth programs, so no shadow-map pixel runs a fragment function (only alpha-masked
   materials need one). Frames are byte-identical. `bench/games/pbr_cost.jo`, a scene drawn with
-  materials or with the simple lighting: 92.7 million instructions a frame with materials before,
-  57.1 after, against 40.5 with the simple lighting (+129% for materials before, +41% after);
-  the character starter 120.7 million before, 108.2 after. GPUs skip that work too.
+  materials or with the simple lighting (release, one thread, instructions a frame): 90.7
+  million with materials before, 57.3 after, against 40.8 with the simple lighting (materials
+  cost +124% before, +41% after); debug 165.6 million before, 94.3 after. The character starter
+  116.5 million before, 108.8 after (with the new fog). GPUs skip that work too.
 - tools/web_shaders.mjs: its page opts into PBR materials and post effects, which a program
   prepares only when it uses them since 0.34.0 (the check expected them anyway: 13 startup
   programs instead of 14, 2 skeletal instead of 4).

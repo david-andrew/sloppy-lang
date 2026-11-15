@@ -17,15 +17,20 @@ struct __SwTex:
     h: int
     linear: bool
     rep: bool
-    levels: int = 1            # mipmaps: level 0, then each half the size of the one before,
-    mip: bool = false          # after it in p; mip: the min filter uses them
 
 __st_data: f32[][] = [[]]
 __st: __SwTex[] = [__SwTex(null, 0, 0, false, false)]
+# by texture, its mipmaps (kept apart: the sampler's usual path copies __SwTex): how many
+# levels p holds (level 0, then each half the size of the one before), and whether the min
+# filter uses them
+__st_lv: int[] = [1]
+__st_mf: bool[] = [false]
 
 __st_new = () -> int:
     __st_data.push([])
     __st.push(__SwTex(null, 0, 0, true, false))
+    __st_lv.push(1)
+    __st_mf.push(false)
     __st_data.len() - 1
 
 __st_alloc = (id: int, w: int, h: int):
@@ -35,17 +40,17 @@ __st_alloc = (id: int, w: int, h: int):
     __st[id].p = data(__st_data[id])
     __st[id].w = w
     __st[id].h = h
-    __st[id].levels = 1
+    __st_lv[id] = 1
 
 # texture lookup used by shader functions running on the CPU
 __sw_sample = (id: int, uv: vec2) -> vec4:
     if id <= 0 or id >= __st.len(): return vec4(1, 1, 1, 1)
+    if __sw_mip_live and __st_lv[id] > 1 and __st_mf[id]: return __sw_mip_sample(id, uv)
     t = __st[id]
     p = t.p
     w = t.w
     h = t.h
     if p == null or w == 0: return vec4(0, 0, 0, 1)
-    if t.levels > 1 and __sw_mip_live and t.mip: return __sw_mip_sample(id, uv)
     if w == 1 and h == 1: return vec4(p[0], p[1], p[2], p[3])
     u = uv.x * f32(w) - 0.5
     v = uv.y * f32(h) - 0.5
@@ -99,8 +104,8 @@ __sw_sample = (id: int, uv: vec2) -> vec4:
 # it is); coordinates computed in the shader find none, and sample the full-size level.
 __sw_any_mips = false          # (some texture has mipmaps: draws keep what the sampler needs)
 __sw_mip_live = false          # (a mesh draw is shading, with that kept)
-__sw_dctx: *int = null         # per thread, 8 slots: the band scratch (s0), varyings (nf)
-__sw_dctx_f: *f32 = null       # per thread, 8 floats: k, w0, dw, wy
+__sw_dctx: *int = null         # per thread, 8 slots: the band scratch (s0), varyings (nf), span start (xa)
+__sw_dctx_f: *f32 = null       # per thread, 8 floats: FragCoord's scale, w0, dw, wy
 
 # (set by the first glGenerateMipmap: a program that makes no mipmaps does not compile them)
 # (no texture has levels before then)
@@ -109,7 +114,7 @@ __sw_no_mips = (id: int, uv: vec2) -> vec4: vec4(1, 1, 1, 1)
 __sw_auto_lod = (id: int, uv: vec2) -> vec4:
     t = __st[id]
     lod = __sw_lod(uv, t.w, t.h)
-    if lod > 0.0: return __sw_sample_mip(t, uv, lod)
+    if lod > 0.0: return __sw_sample_mip(t, __st_lv[id], uv, lod)
     if not t.linear:
         # (magnified: the mag filter, nearest)
         x = __wrap(__floor_i(uv.x * f32(t.w)), t.w, t.rep)
@@ -138,7 +143,8 @@ __sw_lod = (uv: vec2, w: int, h: int) -> f32:
     f = 4
     loop f + 1 < nf and not (vin[f] == uv.x and vin[f + 1] == uv.y): f += 1
     if f + 1 >= nf: return 0.0
-    k = cf[0]
+    # (the pixel in its span, from FragCoord: no per-pixel bookkeeping in the raster loop)
+    k = f32(__floor_i(vin[0] / cf[0]) - ci[2])
     wx = cf[1] + cf[2] * (k + 1.0)
     wy = cf[1] + cf[2] * k + cf[3]
     if wx == 0.0 or wy == 0.0: return 0.0
@@ -156,14 +162,14 @@ __sw_lod = (uv: vec2, w: int, h: int) -> f32:
 __sw_sample_lod = (id: int, uv: vec2, lod: f32) -> vec4:
     if id > 0 and id < __st.len():
         t = __st[id]
-        if t.levels > 1 and t.mip and t.p != null and (lod > 0.0 or t.linear):
-            if lod > 0.0: return __sw_sample_mip(t, uv, lod)
+        if __st_lv[id] > 1 and __st_mf[id] and t.p != null and (lod > 0.0 or t.linear):
+            if lod > 0.0: return __sw_sample_mip(t, __st_lv[id], uv, lod)
             return __sw_level(t, 0, uv)
     __sw_sample(id, uv)
 
 # trilinear: bilinear in the two levels around lod, mixed
-__sw_sample_mip = (t: __SwTex, uv: vec2, lod: f32) -> vec4:
-    top = t.levels - 1
+__sw_sample_mip = (t: __SwTex, levels: int, uv: vec2, lod: f32) -> vec4:
+    top = levels - 1
     l = min(__floor_i(lod), top)
     a = __sw_level(t, l, uv)
     if l >= top: return a
@@ -236,7 +242,7 @@ sgl_generate_mipmap = ():
         sh = dh
     __st_data[id] = d
     __st[id].p = data(__st_data[id])
-    __st[id].levels = n
+    __st_lv[id] = n
     __sw_any_mips = true
 
 # texelFetch on the CPU (outside the texture: the nearest edge texel)
@@ -451,7 +457,7 @@ sgl_tex_parameter = (pname: u32, v: i32):
     if id <= 0 or id >= __st.len(): return
     pn = int(pname)
     if pn == GL_TEXTURE_MAG_FILTER: __st[id].linear = int(v) != GL_NEAREST
-    else if pn == GL_TEXTURE_MIN_FILTER: __st[id].mip = int(v) >= 0x2700 and int(v) <= 0x2703
+    else if pn == GL_TEXTURE_MIN_FILTER: __st_mf[id] = int(v) >= 0x2700 and int(v) <= 0x2703
     else if pn == GL_TEXTURE_WRAP_S: __st[id].rep = int(v) == GL_REPEAT
 
 sgl_create_framebuffer = () -> int:
@@ -1041,21 +1047,22 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     if ntris == 0: return
     pvp = data(__sw_mesh_pv)
     tp = data(__sw_mesh_tris)
+    # a shader that may discard runs before the depth write, also when no color is written
+    # (alpha-tested leaves in a shadow map)
+    disc = __sp_discard[prog]
+    shade = color or disc
+    # (with mipmaps about: what the sampler needs to choose a level, kept per thread)
+    mips = __sw_any_mips and shade
     # per band scratch (padded to separate cache lines): varyings at the span start, their
-    # change per pixel, the interpolated varyings and the fragment color
-    bstride = (4 * nf + 4 + 15) / 16 * 16
+    # change per pixel, the interpolated varyings and the fragment color (with mipmaps, also
+    # the varyings' change to the next row)
+    bstride = ((if mips: 4 else: 3) * nf + 4 + 15) / 16 * 16
     __sw_f32_scratch(__sw_mesh_scratch, __SW_BANDS * bstride)
     scrp = data(__sw_mesh_scratch)
     dtest = __s_depth and dp != null
     dwrite = __s_depth_write and dp != null
     inv_scale = f32(1.0 / __s_fb_scale[__s_fb])
-    # a shader that may discard runs before the depth write, also when no color is written
-    # (alpha-tested leaves in a shadow map)
-    disc = __sp_discard[prog]
-    shade = color or disc
     tls = __sw_tls
-    # (with mipmaps about: what the sampler needs to choose a level, kept per thread)
-    mips = __sw_any_mips and shade
     if mips: __sw_dctx_init()
     dci = __sw_dctx
     dcf = __sw_dctx_f
@@ -1108,6 +1115,8 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
                 loop f in [4..nf): sy[f] = q0 * a[4 + f] + q1 * b[4 + f] + q2 * c2[4 + f]
                 ci[0] = s0 as int
                 ci[1] = nf
+                ci[2] = xa
+                dk[0] = inv_scale
                 dk[1] = w0
                 dk[2] = dw
                 dk[3] = q0 * a[3] + q1 * b[3] + q2 * c2[3]
@@ -1138,7 +1147,6 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             vin[2] = z
             vin[3] = iw
             if disc: mine[2] = 0
-            if mips: dk[0] = k
             when TARGET == "windows":
                 __call_raw(fsp, col as *u8, vin as *u8, uni)
             else:
