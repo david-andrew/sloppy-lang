@@ -80,7 +80,7 @@ const sloppyHost = (() => {
       __wasm_ws_close: (id, code, p, n) => { const s = sockets[Number(id)]; if (s) s.ws.close(); },
       __wasm_ws_why: (id, out, cap) => 0n,
       __wasm_exit: (code) => { throw new Exit(Number(code)); },
-      __wasm_now: () => performance.now(),
+      __wasm_now_at: (p) => { new Float64Array(mem.buffer)[p >> 3] = performance.now(); },
       __wasm_grow: (n) => BigInt(mem.grow(Number(n))),
       __wasm_env: (np, nn, op, cap) => {
         const v = envVars[str(np, nn)];

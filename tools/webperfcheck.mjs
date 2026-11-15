@@ -9,7 +9,11 @@
 //     (a view of wasm memory per call, a copy per chunk of sound, ... once were), and its sampled
 //     JavaScript allocations stay small; and few numbers cross from the module to JavaScript as
 //     objects made each call: a 64-bit int arrives as a BigInt and a float as a heap number (a
-//     GL offset and the uniforms' floats once did, ~560 a frame in examples/aces)
+//     GL offset and the uniforms' floats once did, ~560 a frame in examples/aces; time() once
+//     returned a float, ~24 a frame there)
+//  3. a page playing a tone: served cross-origin isolated, its sound goes to the audio thread
+//     through a shared ring, with no message per chunk; served as GitHub Pages serves it (no
+//     SharedArrayBuffer), a message per chunk and none back; both reach the output
 // usage: node tools/webperfcheck.mjs [path/to/sloppy]
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdtempSync, rmSync, statSync, mkdirSync } from "node:fs";
@@ -68,6 +72,15 @@ build(join(bigDir, "big.jo"), join(tmp, "big.html"));
 mkdirSync(join(tmp, "split"));
 build(join(bigDir, "big.jo"), join(tmp, "split", "big.html"), "--wasm-file");
 build(join(root, "tests", "web", "busy.jo"), join(tmp, "busy.html"));
+writeFileSync(join(tmp, "tone.jo"), `window("tone", 160, 100)
+beep = tone(440.0, 0.5, volume = 0.5)
+id = -1
+update = (dt: f64):
+    global id
+    if id < 0: id = play(beep, looping = true)
+draw = (): clear(rgb(0.1, 0.1, 0.2))
+`);
+build(join(tmp, "tone.jo"), join(tmp, "tone.html"));
 
 // ---- without a browser: the pages' form ----
 const single = readFileSync(join(tmp, "big.html"), "utf8");
@@ -87,10 +100,16 @@ if (!chrome) {
 }
 
 // ---- in the browser ----
+// (under /iso/: the same files with the headers that make a page cross-origin isolated, so that
+// it may have SharedArrayBuffer)
 const server = createServer((q, r) => {
-  const f = join(tmp, decodeURIComponent(new URL(q.url, "http://x").pathname));
+  let path = decodeURIComponent(new URL(q.url, "http://x").pathname);
+  const iso = path.startsWith("/iso/");
+  if (iso) path = path.slice(4);
+  const f = join(tmp, path);
   if (!f.startsWith(tmp) || !existsSync(f) || statSync(f).isDirectory()) { r.writeHead(404); r.end(); return; }
-  r.writeHead(200, { "content-type": { ".html": "text/html", ".wasm": "application/wasm" }[extname(f)] || "application/octet-stream" });
+  r.writeHead(200, { "content-type": { ".html": "text/html", ".wasm": "application/wasm" }[extname(f)] || "application/octet-stream",
+    ...(iso ? { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "require-corp" } : {}) });
   r.end(readFileSync(f));
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -256,6 +275,30 @@ await browse("file://" + join(tmp, "busy.html"), async (c) => {
   expect(`few 64-bit ints and floats handed to JavaScript each frame (BigInts and heap numbers; ${frames} frames)`, frames > 20 && total <= 6,
     `${total.toFixed(1)} a frame` + (boxed.length ? ": " + boxed.slice(0, 4).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(", ") : ""));
 }, countHook);
+// (the sound going out: an analyser fed what the page's worklet gives the speakers)
+const tapHook = `(() => {
+  const c = AudioNode.prototype.connect;
+  AudioNode.prototype.connect = function (d, ...a) {
+    if (typeof AudioWorkletNode !== "undefined" && this instanceof AudioWorkletNode && d instanceof AudioDestinationNode) {
+      const an = this.context.createAnalyser(); an.fftSize = 2048; c.call(this, an); window.__tap = an;
+    }
+    return c.call(this, d, ...a);
+  };
+})();`;
+const level = "(() => { const a = window.__tap; if (!a) return 0; const d = new Float32Array(a.fftSize); a.getFloatTimeDomainData(d); let m = 0; for (const x of d) m = Math.max(m, Math.abs(x)); return m; })()";
+for (const [where, path, want] of [["cross-origin isolated", "/iso/tone.html", "ring"], ["not isolated (as on GitHub Pages)", "/tone.html", "messages"]]) {
+  await browse(http + path, async (c) => {
+    await sleep(1500);
+    const how = await c.ev("sloppy.audioPath()");
+    const m0 = await c.ev("window.__made"), t0 = Date.now();
+    await sleep(2000);
+    const m1 = await c.ev("window.__made"), secs = (Date.now() - t0) / 1000;
+    const per = ((m1["audio chunks"] || 0) - (m0["audio chunks"] || 0)) / secs;
+    const loud = await c.ev(level);
+    if (want === "ring") expect(`${where}: sound through a shared ring, no message per chunk`, how === "ring" && per === 0 && loud > 0.1, `${how}, ${per.toFixed(1)} messages a second, level ${loud.toFixed(2)}`);
+    else expect(`${where}: sound by messages, one a chunk`, how === "messages" && per > 10 && per < 60 && loud > 0.1, `${how}, ${per.toFixed(1)} messages a second, level ${loud.toFixed(2)}`);
+  }, tapHook);
+}
 server.close();
 rmSync(tmp, { recursive: true, force: true });
 console.log(failed ? `${failed} failed` : "web performance: all checks passed");

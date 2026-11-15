@@ -26,6 +26,16 @@
   (`soft_instance_cull`, `mesh_material_defaults`) compared black ones; they now check that
   the scene shows, and `soft_instance_cull` holds the game's clock still (the wind sways with
   `elapsed()`).
+- Web pages make less garbage each frame: `time()` and `elapsed()` have the page write the clock
+  into the module's memory instead of returning a float (a float handed back was an object made
+  for each of Aces' ~24 calls a frame); the sound goes to the audio thread through a shared ring
+  with no messages where the page is cross-origin isolated, and elsewhere (GitHub Pages) as a
+  copy per chunk with no buffers sent back; the chunk's address, the sound held and the frame's
+  wait cross as small integers, and the frame pacing and audio scheduling keep their fractions
+  in typed arrays. Aces in headless Chromium, JavaScript heap growth during play: 60 KB/s before,
+  26 KB/s after (more than half of the rest is the promise that each frame of a program with
+  tasks makes, for JSPI). tools/webperfcheck.mjs checks both ways the sound goes out.
+
 ## 0.35.0
 
 Rollback players who restart (a crash, a reloaded page) come back into a running game
