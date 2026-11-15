@@ -6193,6 +6193,7 @@ draw = ():
 
 #### A simulated network, for trying netplay in one program
 
+- `clock = (now: f64)`: netplay's own timing in one program (sending again what was lost, how long a player has been quiet, a returning player's grace; sessions', clients' and servers') on the caller's clock too, when it is given here each frame: the `now` given to a Link, so a test runs the same every time, as fast as it can, with no sleep. A negative one: elapsed() again (the default).
 - `struct Link`: packets between numbered ends, each arriving after latency (plus up to jitter at random), some lost; time is the caller's (seconds), so a test runs the same every time
   ```gdscript
   struct Link:

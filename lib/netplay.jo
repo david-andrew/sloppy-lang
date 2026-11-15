@@ -43,6 +43,10 @@ import crypto
 # s.allow_rejoin(saved token) on every player's session, a player whose program restarts comes
 # back: the host sends it the game and the inputs since, and it plays them to catch up.
 
+# (sessions' own clock: netplay.clock)
+__np_clock = -1.0
+__np_now = () -> f64: if __np_clock >= 0.0: __np_clock else: elapsed()
+
 const __NP_HIST = 128               # ticks kept: states and inputs
 const __NP_BACKLOG = 16000          # bytes waiting for a peer past which a packet is left out
 const __NP_PEND = 8                 # my inputs kept while play waits (past it, the latest replaces the last)
@@ -169,7 +173,7 @@ session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: in
     s.__their_tick = fill(0, players)
     s.__their_adv = fill(0, players)
     s.__lead = fill(0.0, players)
-    s.__heard = fill(elapsed(), players)
+    s.__heard = fill(__np_now(), players)
     s.__rtt = fill(0.0, players)
     s.__stamp = fill(-1.0, players)
     s.__stand = fill(false, players)
@@ -205,7 +209,7 @@ inputs_at[S, I] = (s: Session[S, I], t: int) -> I[]:
     out
 
 # player p has not been heard from for this many seconds
-silent[S, I] = (s: Session[S, I], p: int) -> f64: elapsed() - s.__heard[p]
+silent[S, I] = (s: Session[S, I], p: int) -> f64: __np_now() - s.__heard[p]
 
 # one line on how play has gone since the last call, for a log (the game writes it where it likes,
 # once a second, say): ticks played, frames spent waiting for someone's inputs, rollbacks and the
@@ -362,7 +366,7 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
         if r.player < 0 or r.player >= s.players:
             __np_problem(s, "a packet has an input range for a player outside this game")
             return
-    now = elapsed()
+    now = __np_now()
     s.__heard[p] = now
     if starts_with(s.problem, "player {p} has not been heard from"): s.problem = ""
     s.__stamp[p] = pk.sent
@@ -618,7 +622,7 @@ __np_direct[S, I] = (s: Session[S, I], p: int) -> bool:
     s.__hub < 0
 
 __np_send[S, I] = (s: mut Session[S, I]):
-    now = elapsed() * 1000.0
+    now = __np_now() * 1000.0
     h: u64 = 0
     if s.__check >= 0: h = s.__hashes.get(s.__check) ?? 0
     cache: {int: str}
@@ -678,7 +682,7 @@ __np_out[S, I] = (s: mut Session[S, I], p: int, b: u8[]):
         s.__out.push((p, b))
         return
     if __np_rand(s) < s.__loss: return
-    s.__held.push((elapsed() + s.__lag + s.__jitter * __np_rand(s), p, b))
+    s.__held.push((__np_now() + s.__lag + s.__jitter * __np_rand(s), p, b))
 
 __np_rand[S, I] = (s: mut Session[S, I]) -> f64:
     s.__rand = s.__rand * 6364136223846793005 + 1442695040888963407
@@ -693,7 +697,7 @@ lag_ms[S, I] = (s: mut Session[S, I], ms: f64, jitter_ms: f64 = 0, loss: f64 = 0
 
 # held packets whose time has come
 __np_due[S, I] = (s: mut Session[S, I]):
-    now = elapsed()
+    now = __np_now()
     keep: (f64, int, u8[])[]
     loop h in s.__held:
         if h.0 <= now: s.__out.push((h.1, h.2))
@@ -957,7 +961,7 @@ allow_rejoin[S, I] = (s: mut Session[S, I], token: str = "", grace: f64 = 30.0):
     s.__rjm = (x: mut Session[S, I], peer: int, d: u8[]): __np_rj_message(x, peer, d)
     if len(token) > 0:
         s.__rj.phase = 1
-        s.__rj.since = elapsed()
+        s.__rj.since = __np_now()
         s.__rj.nonce = crypto.hex_text(crypto.random_bytes(8))
         s.rejoining = true
         s.waiting = true
@@ -986,7 +990,7 @@ __np_rj_play[S, I] = (s: mut Session[S, I], k: int) -> bool:
             x = s.__rj.xfers[p]
             if x.hand >= 0 and s.__stand[p] and t >= x.hand - 1: __np_rj_release(s, p, x)
     ph = s.__rj.phase
-    if ph == 4 and elapsed() - s.__rj.said >= 0.5: __np_rj_ready(s)
+    if ph == 4 and __np_now() - s.__rj.said >= 0.5: __np_rj_ready(s)
     if ph == 9:
         s.waiting = true
         return true
@@ -1039,7 +1043,7 @@ __np_rj_fail[S, I] = (s: mut Session[S, I], why: str):
 
 # (a returning player, until it plays: ask, take the game, catch up)
 __np_rj_back[S, I] = (s: mut Session[S, I]) -> bool:
-    now = elapsed()
+    now = __np_now()
     s.waiting = true
     s.rejoining = true
     if s.__sock >= 0:
@@ -1054,10 +1058,18 @@ __np_rj_back[S, I] = (s: mut Session[S, I]) -> bool:
             __np_rj_say(s, auth, "req", bytes(to_text((s.version, s.rejoin_token, s.__rj.nonce))))
         if now - s.__rj.since > 10.0: __np_problem(s, "player {auth} has not answered this player's rejoin request (is it still playing, with s.allow_rejoin?)")
         return true
+    if now - s.__heard[auth] > 5.0:
+        # (the host has sent nothing for a while: it gave up on this machine, quiet itself for as
+        # long (a page in the background, say). Asked again, as a new process, for a newer game)
+        s.__rj.phase = 1
+        s.__rj.since = now
+        s.__rj.asked = -10.0
+        s.__rj.nonce = crypto.hex_text(crypto.random_bytes(8))
+        return true
     if ph == 3:
         # (catching up: every tick whose inputs are all in, as many as a few milliseconds take)
-        start = elapsed()
-        loop s.tick < confirmed(s) and elapsed() - start < 0.008: __np_advance(s)
+        start = time()
+        loop s.tick < confirmed(s) and time() - start < 0.008: __np_advance(s)
         if s.__rj.hand >= 0 and s.__recv[s.me] >= s.__rj.hand and s.tick + 2 >= confirmed(s):
             # (all of it below the handover is in: from there on, this player's own inputs)
             s.__rj.phase = 4
@@ -1065,7 +1077,7 @@ __np_rj_back[S, I] = (s: mut Session[S, I]) -> bool:
             s.waiting = false
             s.__only = auth
             s.__epochs[s.me] = s.__rj.epoch
-            s.__heard = fill(elapsed(), s.players)
+            s.__heard = fill(__np_now(), s.players)
             __np_rj_ready(s)
             return false
     # (what it has: pieces of the game, then its tick and each player's inputs)
@@ -1078,7 +1090,7 @@ __np_rj_back[S, I] = (s: mut Session[S, I]) -> bool:
     true
 
 __np_rj_ready[S, I] = (s: mut Session[S, I]):
-    s.__rj.said = elapsed()
+    s.__rj.said = __np_now()
     __np_rj_say(s, __np_rj_auth(s), "ready {s.__rj.id} {s.__rj.epoch} {join(s.__recv.map((r): "{r}"), ",")}", [])
 
 # a rejoining message from player `from` (peer: the connection it came on, -1 when not known)
@@ -1105,7 +1117,9 @@ __np_rj_message[S, I] = (s: mut Session[S, I], peer: int, d: u8[]):
         if let x0 = s.__rj.xfers.get(from):
             if id != x0.id or (peer >= 0 and x0.peer >= 0 and peer != x0.peer): return
             x = x0
-            x.heard = elapsed()
+            x.heard = __np_now()
+            # (not gone: its grace counts from when it stops asking)
+            s.__heard[from] = x.heard
             if kind == "ack": __np_rj_acked(s, x, w)
             else if x.hand >= 0 and w.len() >= 7 and (to_int(w[5]) ?? -1) == x.epoch:
                 __np_rj_handed(s, from, x, w[6])
@@ -1125,16 +1139,16 @@ __np_rj_acked[S, I] = (s: Session[S, I], x: mut __NpXfer, w: str[]):
     tick = to_int(w[6]) ?? return
     if have > x.acked and have <= x.chunks.len():
         x.acked = have
-        x.moved = elapsed()
+        x.moved = __np_now()
     if tick < 0 or w.len() < 8 or not x.made: return
     rs = split(w[7], ",")
     if rs.len() != s.players: return
-    if x.tick < 0: x.moved = elapsed()
+    if x.tick < 0: x.moved = __np_now()
     loop q in [0..s.players):
         r = to_int(rs[q]) ?? continue
         if r > x.has[q] and r <= x.base[q] + x.tails[q].len():
             x.has[q] = r
-            x.moved = elapsed()
+            x.moved = __np_now()
     x.tick = max(x.tick, tick)
 
 # (the host: a returning player has everything below its handover, and plays from it on)
@@ -1170,7 +1184,7 @@ __np_rj_request[S, I] = (s: mut Session[S, I], peer: int, p: int, body: u8[]):
     if len(t) == 0 or not crypto.constant_time_equal(t, r.1):
         __np_rj_refuse(s, p, pr, "rejoin token is invalid or expired: this game keeps no place for it")
         return
-    now = elapsed()
+    now = __np_now()
     handed = false
     if let x0 = s.__rj.xfers.get(p):
         if x0.nonce == r.2:
@@ -1199,7 +1213,7 @@ __np_rj_request[S, I] = (s: mut Session[S, I], peer: int, p: int, body: u8[]):
 
 # (the host, once a play: tokens to give, and each returning player's game, inputs and handover)
 __np_rj_host[S, I] = (s: mut Session[S, I]):
-    now = elapsed()
+    now = __np_now()
     n = s.players
     if s.rejoin_grace > 0.0 and s.__sock < 0:
         loop p in [0..n):
@@ -1284,7 +1298,7 @@ __np_rj_release[S, I] = (s: mut Session[S, I], p: int, x: __NpXfer):
     n = s.players
     s.__stand[p] = false
     s.__epochs[p] = x.epoch
-    s.__heard[p] = elapsed()
+    s.__heard[p] = __np_now()
     s.__their_tick[p] = max(x.tick, s.__their_tick[p])
     s.__their_adv[p] = 0
     s.__lead[p] = 0.0
@@ -1320,7 +1334,7 @@ __np_rj_make[S, I] = (s: mut Session[S, I], x: mut __NpXfer) -> str:
     x.tick = -1
     x.acked = 0
     x.next = 0
-    x.moved = elapsed()
+    x.moved = __np_now()
     x.hand = -1
     x.hand_at = -1.0
     x.made = true
@@ -1342,7 +1356,7 @@ __np_rj_keep[S, I] = (s: Session[S, I], x: mut __NpXfer):
 __np_rj_tail[S, I] = (s: mut Session[S, I], p: int, x: mut __NpXfer):
     # (when there are more, when it says it has more, or after a while in case what was sent was
     # lost: each time from what it has, as far as its ring of ticks takes)
-    now = elapsed()
+    now = __np_now()
     more = x.sent_has != x.has or now - x.sent_at >= 0.25
     loop q in [0..s.players):
         if min(x.base[q] + x.tails[q].len(), x.tick + __NP_HIST - 16) > x.sent[q]: more = true
@@ -1382,7 +1396,7 @@ __np_rj_player[S, I] = (s: mut Session[S, I], from: int, w: str[], body: u8[]):
         __np_rj_say(s, from, "tokack", [])
         return
     if from != auth or ph < 1 or ph > 4: return
-    s.__heard[from] = elapsed()
+    s.__heard[from] = __np_now()
     if kind == "refuse":
         __np_rj_fail(s, str_from_bytes(body))
         return
@@ -1471,7 +1485,7 @@ __np_rj_import[S, I] = (s: mut Session[S, I]):
     s.__their_tick = fill(k, n)
     s.__their_adv = fill(0, n)
     s.__lead = fill(0.0, n)
-    s.__heard = fill(elapsed(), n)
+    s.__heard = fill(__np_now(), n)
     s.__stamp = fill(-1.0, n)
     s.__versions = s.__rj.versions
     s.__stand = fill(false, n)
@@ -1718,6 +1732,14 @@ relay_forever = (port: int) -> void | net.NetError:
         sleep(0.001)
 
 # ---------------- a simulated network, for trying netplay in one program ----------------
+# netplay's own timing in one program (sending again what was lost, how long a player has been
+# quiet, a returning player's grace; sessions', clients' and servers') on the caller's clock too,
+# when it is given here each frame: the `now` given to a Link, so a test runs the same every time,
+# as fast as it can, with no sleep. A negative one: elapsed() again (the default).
+clock = (now: f64):
+    global __np_clock
+    __np_clock = now
+
 # packets between numbered ends, each arriving after latency (plus up to jitter at random),
 # some lost; time is the caller's (seconds), so a test runs the same every time
 struct Link:
@@ -1826,7 +1848,7 @@ struct __CsClient[I]:
                                     # (no faster than one a tick: sending two a tick moves no faster)
     warned = false
     hello = ""                      # what it gave connect
-    since = 0.0                     # when it joined (elapsed())
+    since = 0.0                     # when it joined (__np_now())
     since_tick = 0                  # (and the server's tick then)
     applied = 0                     # its inputs applied since
     have = -1                       # the latest world it has (by tick)
@@ -1841,7 +1863,7 @@ struct __CsLag:
 
 __cs_lag_hold = (l: mut __CsLag, to: int, b: u8[]):
     l.seed = (l.seed * 1103515245 + 12345) & 0x7FFFFFFF
-    at = elapsed() + (l.ms + l.jitter * f64(l.seed % 1000) / 1000.0) / 1000.0
+    at = __np_now() + (l.ms + l.jitter * f64(l.seed % 1000) / 1000.0) / 1000.0
     at = max(at, l.last)
     l.last = at
     l.held.push((at, to, b))
@@ -1849,7 +1871,7 @@ __cs_lag_hold = (l: mut __CsLag, to: int, b: u8[]):
 # (the held messages whose time has come)
 __cs_lag_due = (l: mut __CsLag) -> (int, u8[])[]:
     out: (int, u8[])[]
-    now = elapsed()
+    now = __np_now()
     k = 0
     loop k < l.held.len() and l.held[k].0 <= now:
         out.push((l.held[k].1, l.held[k].2))
@@ -1916,7 +1938,7 @@ encoding[W, I] = (s: mut Server[W, I], encode: (W, int, W?) -> u8[]):
 join[W, I] = (s: mut Server[W, I], player: int):
     peer = player
     if s.__pending.contains(peer) or s.__routes.contains(peer): return
-    s.__pending[peer] = elapsed()
+    s.__pending[peer] = __np_now()
     __cs_server_send(s, peer, __cs_hello_bytes(__CsHello(s.version)))
 
 # rejoin=false makes a departure final immediately and revokes its token (a kick or logout).
@@ -1931,7 +1953,7 @@ leave[W, I] = (s: mut Server[W, I], player: int, rejoin: bool = true):
     s.__sent.remove(p)
     if rejoin and s.rejoin_grace > 0.0 and len(s.__clients[p].token) > 0:
         s.__clients[p].online = false
-        s.__clients[p].dropped_at = elapsed()
+        s.__clients[p].dropped_at = __np_now()
         s.__clients[p].queue.clear()
         s.__clients[p].have = -1
         s.__dropped.push(p)
@@ -1971,7 +1993,7 @@ __cs_accept[W, I] = (s: mut Server[W, I], peer: int, h: __CsHello):
             __cs_reject(s, peer, "rejoin token is invalid or expired; clear rejoin_token to join as a new player")
             return
         c = s.__clients[p]
-        if s.rejoin_grace <= 0.0 or (not c.online and elapsed() - c.dropped_at >= s.rejoin_grace):
+        if s.rejoin_grace <= 0.0 or (not c.online and __np_now() - c.dropped_at >= s.rejoin_grace):
             __cs_reject(s, peer, "rejoin token is invalid or expired; clear rejoin_token to join as a new player")
             return
         if c.online:
@@ -1997,7 +2019,7 @@ __cs_accept[W, I] = (s: mut Server[W, I], peer: int, h: __CsHello):
     if returning: token = s.__clients[p].token
     else if s.rejoin_grace > 0.0: token = crypto.hex_text(crypto.random_bytes(32))
     # Start a fresh input sequence and delta history; the authoritative world stays as it is.
-    s.__clients[p] = __CsClient[I](peer = peer, token = token, hello = h.hello, since = elapsed(), since_tick = s.tick)
+    s.__clients[p] = __CsClient[I](peer = peer, token = token, hello = h.hello, since = __np_now(), since_tick = s.tick)
     s.__sent.remove(p)
     s.__routes[peer] = p
     s.__pending.remove(peer)
@@ -2099,14 +2121,14 @@ update[W, I] = (s: mut Server[W, I]):
     # Expire by elapsed seconds, independent of tick rate or how often update is called.
     expired: int[]
     loop p, c in s.__clients:
-        if not c.online and elapsed() - c.dropped_at >= s.rejoin_grace: expired.push(p)
+        if not c.online and __np_now() - c.dropped_at >= s.rejoin_grace: expired.push(p)
     loop p in expired:
         s.__clients.remove(p)
         s.__sent.remove(p)
         s.__went.push(p)
     timed_out: int[]
     loop peer, since in s.__pending:
-        if elapsed() - since >= 5.0: timed_out.push(peer)
+        if __np_now() - since >= 5.0: timed_out.push(peer)
     loop peer in timed_out: __cs_reject(s, peer, "the game's build handshake timed out")
     s.dropped = s.__dropped
     s.rejoined = s.__rejoined
@@ -2129,7 +2151,7 @@ update[W, I] = (s: mut Server[W, I]):
         # then, so their inputs do not pile up and lag; at most 1 in 32, and only while it has had
         # fewer than 60 a second since it joined: a client sending more gains nothing by it. A
         # server driven by hand, as a test is, counts its own ticks for the time: one in 59 more)
-        due = if s.__port >= 0: (elapsed() - c.since) * s.ticks_per_second else: f64(s.tick - c.since_tick) * 60.0 / 59.0
+        due = if s.__port >= 0: (__np_now() - c.since) * s.ticks_per_second else: f64(s.tick - c.since_tick) * 60.0 / 59.0
         if s.tick % 32 == 0 and c.queue.len() > 2 and f64(c.applied + cr) < due: cr += 1
         n = min(c.queue.len(), cr)
         s.__clients[p].credit = cr - n
@@ -2314,7 +2336,7 @@ disconnect[W, I] = (c: mut Client[W, I]):
 # (reconnect's: the next try, a while after a connection lost)
 __cs_retry_later[W, I] = (c: mut Client[W, I]):
     if not c.reconnect or c.__retry_at >= 0.0: return
-    c.__retry_at = elapsed() + c.__retry_wait
+    c.__retry_at = __np_now() + c.__retry_wait
     c.__retry_wait = min(c.__retry_wait * 2.0, 30.0)
 
 # (a close code a reconnect may mend: the connection lost, or the server going away, restarting or
@@ -2355,7 +2377,7 @@ play[W, I] = (c: mut Client[W, I], input: I):
     c.__view_floor = view_tick(c)
     # (this tick's: a world that comes now is the server's of now, the view its interpolation behind)
     c.__clock += 1
-    c.__played_at = elapsed()
+    c.__played_at = __np_now()
     # (with lag: what is held, sent when its time comes; worlds from the server held as long)
     if c.__lag.held.len() > 0:
         loop m in __cs_lag_due(c.__lag):
@@ -2363,7 +2385,7 @@ play[W, I] = (c: mut Client[W, I], input: I):
                 if c.__peer >= 0: net.send(c.__peer, m.1)
                 else: c.__out.push(m.1)
             else: c.receive(m.1)
-    if c.__retry_at >= 0.0 and elapsed() >= c.__retry_at: c.connect(c.__host, c.__port, c.__hello)
+    if c.__retry_at >= 0.0 and __np_now() >= c.__retry_at: c.connect(c.__host, c.__port, c.__hello)
     if c.__peer >= 0:
         loop e in net.receive([c.__peer]):
             if e.kind == .message:
@@ -2374,7 +2396,7 @@ play[W, I] = (c: mut Client[W, I], input: I):
                 then = ""
                 if __cs_retries(e.code) and c.reconnect:
                     __cs_retry_later(c)
-                    then = "; connecting again in {c.__retry_at - elapsed():.0} s"
+                    then = "; connecting again in {c.__retry_at - __np_now():.0} s"
                 if c.server_tick < 0 and e.code == 1006: __cs_problem(c, "could not connect to the server{said}{then}")
                 else if e.code == 1006: __cs_problem(c, "the connection to the server was lost{said}{then}")
                 else: __cs_problem(c, "the server closed the connection{said} ({e.code}){then}")
@@ -2384,7 +2406,7 @@ play[W, I] = (c: mut Client[W, I], input: I):
                 c.__greeted = false
                 c.me = -1
                 c.server_tick = -1
-    if c.server_tick >= 0 and c.__heard >= 0.0 and elapsed() - c.__heard > 5.0:
+    if c.server_tick >= 0 and c.__heard >= 0.0 and __np_now() - c.__heard > 5.0:
         __cs_problem(c, "the server has not been heard from for 5 seconds (gone?)")
         if c.reconnect:
             c.disconnect()
@@ -2392,7 +2414,7 @@ play[W, I] = (c: mut Client[W, I], input: I):
     if not c.connected(): return
     c.__seq += 1
     c.__pending.push((c.__seq, input))
-    c.__sent.push((c.__seq, elapsed()))
+    c.__sent.push((c.__seq, __np_now()))
     seen = int(floor(view_tick(c)))
     __cs_client_send(c, bytes(to_text(__CsInput[I](c.__seq, seen, input, c.server_tick))))
     c.state = c.apply(c.state, c.me, input, c.state)
@@ -2432,7 +2454,7 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
     if r is TextError:
         __cs_problem(c, "a world from the server could not be read: does it run another build of the game? ({r.message})")
         return
-    c.__heard = elapsed()
+    c.__heard = __np_now()
     if r.tick <= c.server_tick: return
     c.me = r.you
     c.__retry_wait = 1.0
@@ -2458,7 +2480,7 @@ receive[W, I] = (c: mut Client[W, I], data: u8[]):
     k = 0
     loop k < c.__sent.len() and c.__sent[k].0 <= r.ack: k += 1
     if k > 0:
-        c.ping_ms = __np_smooth(c.ping_ms, (elapsed() - c.__sent[k - 1].1) * 1000.0)
+        c.ping_ms = __np_smooth(c.ping_ms, (__np_now() - c.__sent[k - 1].1) * 1000.0)
         c.__sent = c.__sent[k..]
     c.state = r.world
     loop p in c.__pending: c.state = c.apply(c.state, c.me, p.1, c.state)
@@ -2517,7 +2539,7 @@ outgoing[W, I] = (c: mut Client[W, I]) -> u8[][]:
 # the server's tick being drawn for the others: interpolation seconds in the past (fractional,
 # going on by the time between plays too, so a view drawn each frame moves each frame)
 view_tick[W, I] = (c: Client[W, I]) -> f64:
-    between = clamp((elapsed() - c.__played_at) * c.ticks_per_second, 0.0, 1.0)
+    between = clamp((__np_now() - c.__played_at) * c.ticks_per_second, 0.0, 1.0)
     max(f64(c.__clock) + between + c.__ahead - c.interpolation * c.ticks_per_second, c.__view_floor)
 
 # the two worlds around view_tick and how far between them (0 to 1): draw the others at

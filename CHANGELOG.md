@@ -43,7 +43,15 @@
   more is needed (a reloaded web page connects straight to the others again). Each message is
   sent again until acknowledged; a player that falls behind is sent a newer game; a wrong or
   expired token (`s.rejoin_grace`, 30 s after the host began playing for it), another build, a
-  game over the limit, and sessions over UDP are refused, saying why in `s.problem`.
+  game over the limit, and sessions over UDP are refused, saying why in `s.problem`. A returning
+  player that hears nothing from the host for 5 s (which gave up on it, quiet as long: a page in
+  the background) asks again.
+- `netplay.clock(now)`: netplay's own timing (sending again what was lost, how long a player has
+  been quiet, a returning player's grace) on a test's clock, the `now` its `netplay.Link` runs
+  on, so a test over a simulated network plays the same every time with no sleep. The rejoining
+  tests use it: a returning player's messages lost on a Link were sent again after 0.25 s of
+  real time, which in a test compiled to WebAssembly under Node (where sleep does nothing, and
+  a frame takes 0.4 ms) was 600 frames of the Link's time, so it rarely caught up.
 - Web pages in a relay room: a page that says hello (it has just come, or come back) gets a fresh
   WebRTC connection, in place of one still kept to its page before a reload.
 - `net.receive_server()` leaves netplay's packets on the peers a session plays over, as

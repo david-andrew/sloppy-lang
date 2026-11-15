@@ -419,7 +419,9 @@ room) and passes the saved token to `allow_rejoin`. Then:
 The others never wait for it: meanwhile the host plays for the absent player, and keeps every
 input since K for the returning one (for up to a minute of play; one that falls further behind,
 or stops answering, is sent a newer game, and after four tries is refused). One that stops again
-during all of this is played for as before, and may ask again with the same token.
+during all of this is played for as before, and may ask again with the same token. A host that
+hears nothing from it for 5 seconds gives up on it (a page in the background, say); a returning
+machine that hears nothing from the host for as long asks again, for a newer game.
 
 Over net's peers (`s.over`), the returning program connects to the host again in whatever way
 the game connects (listen and connect, or a new invite code), and the host gives the new
@@ -755,7 +757,10 @@ takes `PLAYER=0` and `PLAYER=1`. A real network is slower and loses things: `s.l
 0.05)` adds 100 ms (and up to 20 more) to what this session sends and drops 5% of it, and
 examples/duel takes `LAG=100`. For tests, `netplay.Link` is a network
 simulated in one program, with its own clock: two sessions over it play the same way every
-time (tests/t/rollback.jo, tests/t/clientserver.jo).
+time (tests/t/rollback.jo, tests/t/clientserver.jo). Give netplay the same clock each frame,
+`netplay.clock(now)`, and its own timing (sending again what was lost, how long a player has been
+quiet, a returning player's grace) goes by it too, so a test needs no sleep and runs as fast as
+it can (tests/t/rollback_rejoin.jo); without it, that timing is real time (`elapsed()`).
 
 Here is a complete two-player rollback program for loopback. Save it as `local_duel.jo`.
 Each player's dot moves left and right; both machines run the same tick. The copy at the
