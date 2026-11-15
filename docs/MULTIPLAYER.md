@@ -458,6 +458,12 @@ from: the others have no one to play over.
 `s.rejoined` is for one play: a frame that plays several ticks (as [below](#ticks-not-frames))
 reads it after each `s.play`, or misses it.
 
+`s.heard(p)` says whether a player has sent a packet yet (directly or through the host).
+Before using silence to stand in, check `s.heard(p) and s.silent(p) > 3.0`: a friend's page
+may still be loading. `s.silent(p)` keeps its original clock, from session start until the
+first packet, then from the last packet. Use it alone when the initial connection should
+also have a deadline. Your own player is always heard.
+
 ### A room for up to four, joined by a link
 
 A matchmaking server's room (`invite.open_room`, [above](#messages)) gives the host a link to
@@ -519,7 +525,7 @@ update = (dt: f64):
         save_data("rejoin", "{room} {s.me} {s.players} {token}")
     if s.me == 0:                               # (the host plays for a friend gone quiet)
         loop p in [1..s.players):
-            if not s.stands_in(p) and s.silent(p) > 3.0: s.stand_in(p, Pad())
+            if not s.stands_in(p) and s.heard(p) and s.silent(p) > 3.0: s.stand_in(p, Pad())
 
 draw = ():
     global hosting, host

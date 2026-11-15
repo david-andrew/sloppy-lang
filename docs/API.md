@@ -6146,7 +6146,8 @@ draw = ():
       replay.push(s.inputs_at(saved))
       saved += 1
   ```
-- `silent[S, I] = (s: Session[S, I], p: int) -> f64`: player p has not been heard from for this many seconds
+- `heard[S, I] = (s: Session[S, I], p: int) -> bool`: Whether player p has been heard from at least once (directly or through the host). Use s.heard(p) and s.silent(p) > seconds before standing in for a silent player: a page still loading has not spoken yet. This machine's own player is always heard.
+- `silent[S, I] = (s: Session[S, I], p: int) -> f64`: player p has not been heard from for this many seconds (from session start before its first packet; check s.heard(p) first when a loading player should keep its place)
 - `stats_line[S, I] = (s: mut Session[S, I]) -> str`: one line on how play has gone since the last call, for a log (the game writes it where it likes, once a second, say): ticks played, frames spent waiting for someone's inputs, rollbacks and the longest, and for each other player the round trip, how long since heard from, and over net's peers how they are reached and what waits to go to them
 - `ping_ms[S, I] = (s: Session[S, I], p: int) -> f64`: the round trip to player p and back, in milliseconds (smoothed; 0 before it is known)
 - `play[S, I] = (s: mut Session[S, I], input: I)`: this frame's input from this machine's player; the game moves on a tick (unless waiting)

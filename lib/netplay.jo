@@ -79,6 +79,7 @@ struct Session[S, I]:
     __their_adv: int[]              # how far ahead of me each said it was
     __lead: f64[]                   # how far ahead of each I am, smoothed over a second or so
     __heard: f64[]                  # when each was last heard from
+    __seen: bool[]                  # a real packet/input source, rather than the session-start clock
     __rtt: f64[]                    # each one's round trip, in ms (smoothed)
     __stamp: f64[]                  # the clock each sent with its latest packet (its `sent`)
     __wrong = -1                    # the first tick played with a prediction that was wrong
@@ -174,6 +175,7 @@ session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: in
     s.__their_adv = fill(0, players)
     s.__lead = fill(0.0, players)
     s.__heard = fill(__np_now(), players)
+    s.__seen = fill(false, players)
     s.__rtt = fill(0.0, players)
     s.__stamp = fill(-1.0, players)
     s.__stand = fill(false, players)
@@ -208,7 +210,14 @@ inputs_at[S, I] = (s: Session[S, I], t: int) -> I[]:
     loop p in [0..s.players): out.push(s.__inputs[t % __NP_HIST * s.players + p])
     out
 
-# player p has not been heard from for this many seconds
+# Whether player p has been heard from at least once (directly or through the host).
+# Use s.heard(p) and s.silent(p) > seconds before standing in for a silent player: a page
+# still loading has not spoken yet. This machine's own player is always heard.
+heard[S, I] = (s: Session[S, I], p: int) -> bool:
+    p >= 0 and p < s.players and (p == s.me or s.__seen[p])
+
+# player p has not been heard from for this many seconds (from session start before its first
+# packet; check s.heard(p) first when a loading player should keep its place)
 silent[S, I] = (s: Session[S, I], p: int) -> f64: __np_now() - s.__heard[p]
 
 # one line on how play has gone since the last call, for a log (the game writes it where it likes,
@@ -368,6 +377,7 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
             return
     now = __np_now()
     s.__heard[p] = now
+    s.__seen[p] = true
     if starts_with(s.problem, "player {p} has not been heard from"): s.problem = ""
     s.__stamp[p] = pk.sent
     if pk.echo >= 0.0: s.__rtt[p] = __np_smooth(s.__rtt[p], now * 1000.0 - pk.echo - pk.held)
@@ -385,6 +395,9 @@ receive[S, I] = (s: mut Session[S, I], data: u8[]):
             # (forwarded clocks belong to their source. Quiet sources stay quiet even while
             # the host sends, and a stand-in has the host's live clock)
             s.__heard[q] = max(s.__heard[q], now - r.quiet / 1000.0)
+            # A forwarding packet also describes sources still loading. Only a verified
+            # source identity proves it has actually spoken (or the host plays for it).
+            if pk.builds.len() == s.players and pk.builds[q] != none: s.__seen[q] = true
             if r.tick >= s.__their_tick[q]:
                 s.__their_tick[q] = r.tick
                 s.__their_adv[q] = r.adv
@@ -1122,6 +1135,7 @@ __np_rj_message[S, I] = (s: mut Session[S, I], peer: int, d: u8[]):
             x.heard = __np_now()
             # (not gone: its grace counts from when it stops asking)
             s.__heard[from] = x.heard
+            s.__seen[from] = true
             if kind == "ack": __np_rj_acked(s, x, w)
             else if x.hand >= 0 and w.len() >= 7 and (to_int(w[5]) ?? -1) == x.epoch:
                 __np_rj_handed(s, from, x, w[6])
@@ -1187,6 +1201,7 @@ __np_rj_request[S, I] = (s: mut Session[S, I], peer: int, p: int, body: u8[]):
         __np_rj_refuse(s, p, pr, "rejoin token is invalid or expired: this game keeps no place for it")
         return
     now = __np_now()
+    s.__seen[p] = true
     handed = false
     if let x0 = s.__rj.xfers.get(p):
         if x0.nonce == r.2:
@@ -1301,6 +1316,7 @@ __np_rj_release[S, I] = (s: mut Session[S, I], p: int, x: __NpXfer):
     s.__stand[p] = false
     s.__epochs[p] = x.epoch
     s.__heard[p] = __np_now()
+    s.__seen[p] = true
     s.__their_tick[p] = max(x.tick, s.__their_tick[p])
     s.__their_adv[p] = 0
     s.__lead[p] = 0.0
@@ -1394,11 +1410,13 @@ __np_rj_player[S, I] = (s: mut Session[S, I], from: int, w: str[], body: u8[]):
     kind = w[3]
     if kind == "tok":
         if from != auth or w.len() < 5: return
+        s.__seen[from] = true
         if ph == 0 or ph == 5: s.rejoin_token = w[4]
         __np_rj_say(s, from, "tokack", [])
         return
     if from != auth or ph < 1 or ph > 4: return
     s.__heard[from] = __np_now()
+    s.__seen[from] = true
     if kind == "refuse":
         __np_rj_fail(s, str_from_bytes(body))
         return
