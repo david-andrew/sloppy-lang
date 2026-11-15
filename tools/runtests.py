@@ -160,7 +160,10 @@ for t in tests:
                     if "-e" in run and "LANG=C.UTF-8" not in run: run[2:2] = ["-e", "LANG=C.UTF-8"]     # (é as UTF-8, not two Latin-1 letters)
         # (a test with a C library runs where it is: `@lib("./libname.so")`)
         if run_dir and run[:2] == ["podman", "exec"] and target != "windows": run[2:2] = ["-w", run_dir]
-        r = subprocess.run(run, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=run_timeout, input=stdin_data,
+        # (`# timeout: N` in a test's head: a slow test's own limit in seconds, at least the target's)
+        tm = re.search(r"^# timeout: (\d+)", head, re.M)
+        limit = max(run_timeout, int(tm.group(1))) if tm else run_timeout
+        r = subprocess.run(run, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=limit, input=stdin_data,
                            env=test_env, cwd=run_dir)
     except subprocess.TimeoutExpired as e:
         print(f"FAIL {name}: timed out")
