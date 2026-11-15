@@ -22,6 +22,9 @@ GAMES.update(
     }
 )
 GAMES.update({n: f"tests/render/{n}.jo" for n in ["pbr_grid", "sky_image"]})
+# (one scene with PBR materials and with the simple lighting: what materials cost)
+GAMES.update({"pbr_cost": "bench/games/pbr_cost.jo", "pbr_cost_simple": "bench/games/pbr_cost.jo"})
+GAME_ENV = {"pbr_cost_simple": {"SLOPPY_BENCH_PBR": "0"}}
 INPUT = {
     "rebound": "5:enter+ 7:enter- 30:right+ 105:right- 106:left+ 180:left- 181:right+ 270:right- 271:left+ 355:left-",
     "breakwater": "5:enter+ 7:enter- 20:w+ 100:w- 101:d+ 180:d- 181:s+ 260:s- 261:a+ 350:a- 20:mouse_left+ 350:mouse_left-",
@@ -32,6 +35,8 @@ INPUT = {
     "new_character": "5:w+ 80:shift+ 100:shift- 120:w- 121:d+ 180:d- 181:s+ 240:s- 241:a+ 300:a-",
     "pbr_grid": "",
     "sky_image": "",
+    "pbr_cost": "",
+    "pbr_cost_simple": "",
 }
 C = r"""
 #include <stdio.h>
@@ -341,6 +346,7 @@ def main():
                     old_dump.unlink()
                 runenv = dict(
                     env,
+                    **GAME_ENV.get(game, {}),
                     SLOPPY_INPUT=INPUT.get(game, INPUT["new_game"]),
                     SLOPPY_SAVE_DIR=str(d / "saves"),
                     XDG_CACHE_HOME=str(d / "cache"),
