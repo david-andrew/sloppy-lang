@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.36.0
+
+Rendering: one fog for simple lighting and PBR materials, mipmaps for textures drawn in 3D on
+every backend, PBR in the software renderer costing much less, and `render_image` /
+`screenshot` drawing queued 3D. Multiplayer: a relay game that reads its own events no longer
+hangs at tick 0, `sloppy new mygame room` (2-4 players by a room link, rejoining on reload),
+`s.heard(p)`, admissions that expire, and `SLOPPY_NO_DRAW=1` for fast headless game tests. Web
+pages make less garbage each frame. A top-level assignment that makes a new variable named like
+an imported global now warns. `hud_scroll_to` / `hud_scroll_reveal` and `ui.text_field(label =)`.
+
 - `hud_scroll_to(id, offset)` and `hud_scroll_reveal(id, top, bottom)` move a `hud_scroll` list by its
   id (stopping its gliding), the second just enough to bring a span of its content into view: a
   list worked with keys keeps its focused row showing without reaching into the library's state.
