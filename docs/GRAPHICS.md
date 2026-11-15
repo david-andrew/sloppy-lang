@@ -262,8 +262,13 @@ for GGX and floored at 0.045 to keep highlights finite. The sun and up to eight 
 use this same BRDF, with the existing point-light range fade and sun shadow map. Ambient
 light uses the sky/ground colors: hemisphere diffuse, a reflected sky gradient blurred toward
 its average as roughness grows, and an analytic split-sum BRDF fit. This is an inexpensive
-environment approximation; it has no scene reflections or baked irradiance probes. Fog and
-post effects work as before.
+environment approximation; it has no scene reflections or baked irradiance probes. Post
+effects work as before. Fog is applied as the simple path applies it, toward `fog()`'s color
+before ACES, in the simple path's (display-referred) space: the PBR result, tone-mapped and
+sRGB-encoded, is taken back through the inverse of ACES, fogged and tone-mapped again. So a
+PBR and a simple-lit surface that look alike fog alike at the same depth, and in thick fog both
+become the color the gradient sky shows for that horizon color. Without fog (density 0) the PBR
+result is unchanged. Sky and ground colors still light PBR surfaces as linear values.
 
 `AlphaMode.opaque` ignores alpha, `.mask` discards alpha below `alpha_cutoff` in both the
 color and shadow passes, and `.blend` uses alpha blending without depth writes or shadows.

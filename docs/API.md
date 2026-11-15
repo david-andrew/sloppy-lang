@@ -3732,7 +3732,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `sky_image = (texture: Texture, intensity: f64 = 1.0, rotation: f64 = 0.0, refresh: bool = false)`: An equirectangular sky (usually a 2:1 PNG/JPEG, sRGB), at infinity behind the 3D scene. intensity scales its linear light; rotation turns it about +Y, in radians. PBR materials also sample it for ambient light and reflections. sky(...) returns to the gradient. Keep the texture alive while selected. refresh rebuilds its light maps after update_texture. hide_sky hides the backdrop, retaining its light.
 - `hide_sky = ()`
 - `night_stars = (amount: f64)`
-- `fog = (color: vec3, density: f64 = 0.01, height_falloff: f64 = 0.05)`
+- `fog = (color: vec3, density: f64 = 0.01, height_falloff: f64 = 0.05)`: fog: thicker with distance (density per meter), thinner with height (height_falloff); far away everything becomes color, shown as the sky's horizon color is (give it that to fade things into the sky). The simple lighting and PBR materials are fogged alike.
 - `shadows = (on: bool, strength: f64 = 0.8, area: f64 = 30.0)`
 - `post_effects = (bloom: f64 = 0.6, threshold: f64 = 0.7, vignette: f64 = 0.35, saturation: f64 = 1.0, tint: vec3 = vec3(1, 1, 1), include_hud: bool = false)`: bloom + color grading for the frame: all of a 2D game; in a 3D one, the 3D and the 2D drawn before it, while 2D drawn after the 3D (a HUD, text) stays as drawn, unless include_hud
 - `no_post_effects = ()`

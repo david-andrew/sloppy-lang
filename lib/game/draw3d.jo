@@ -203,6 +203,18 @@ aces = (c: vec3) -> vec3:
     b = c * (c * 2.43 + vec3(0.59, 0.59, 0.59)) + vec3(0.14, 0.14, 0.14)
     clamp(a / b, 0.0, 1.0)
 
+# The c that aces(c) maps to y, for y in [0, 1] (1: where the tone map's curve reaches 1).
+# A quadratic per channel: (2.51 - 2.43y)c^2 + (0.03 - 0.59y)c - 0.14y = 0, its root >= 0.
+__aces_inverse_channel = (y: f32) -> f32:
+    a = 2.51 - 2.43 * y
+    b = 0.03 - 0.59 * y
+    k = 0.14 * y
+    r = sqrt(b * b + 4.0 * a * k)
+    if b >= 0.0: return (2.0 * k) / max(b + r, 0.0000001)
+    (r - b) / (2.0 * a)
+__aces_inverse = (c: vec3) -> vec3:
+    vec3(__aces_inverse_channel(c.x), __aces_inverse_channel(c.y), __aces_inverse_channel(c.z))
+
 lit_fs = (i: LitOut, u: LitParams) -> vec4:
     base = i.color
     if u.use_tex > 0.5: base = base * sample(u.tex, i.uv)
@@ -414,10 +426,15 @@ __pbr_fs = (i: __PbrOut, u: LitParams) -> vec4:
     if u.map_flags.w > 0.5: em = em * __srgb_linear(sample(u.em_map, __pbr_uv(i, u.em_uv)).xyz)
     c = c + em + base.xyz * u.emissive
     if u.unlit > 0.5: c = base.xyz
+    shown = __linear_display(aces(c))
+    # Fog as the simple path applies it: toward fog_color before its tone map, in the space
+    # where lit_fs computes (sky and fog colors as given). The PBR color is taken back to that
+    # space first, so a surface that looks the same fogs the same in both, and far away
+    # everything meets the sky's horizon color. (No fog: the color as it was.)
     dist = length(i.world - u.cam_pos)
-    fog_amount = 1.0 - exp(-dist * u.fog_density * exp(-max(i.world.y, 0.0) * u.fog_height))
-    c = mix(c, u.fog_color, clamp(fog_amount, 0.0, 1.0))
-    vec4(__linear_display(aces(c)), base.w)
+    fog_amount = clamp(1.0 - exp(-dist * u.fog_density * exp(-max(i.world.y, 0.0) * u.fog_height)), 0.0, 1.0)
+    if fog_amount > 0.0: shown = aces(mix(__aces_inverse(shown), u.fog_color, fog_amount))
+    vec4(shown, base.w)
 
 __pbr_shadow_vs = (v: Vertex3D, u: LitParams) -> __PbrOut:
     o = __pbr_vs(v, u)
@@ -973,6 +990,9 @@ hide_sky = ():
 night_stars = (amount: f64):
     global __stars
     __stars = amount
+# fog: thicker with distance (density per meter), thinner with height (height_falloff); far
+# away everything becomes color, shown as the sky's horizon color is (give it that to fade
+# things into the sky). The simple lighting and PBR materials are fogged alike.
 fog = (color: vec3, density: f64 = 0.01, height_falloff: f64 = 0.05):
     global __fog_color, __fog_density, __fog_height
     __fog_color = color

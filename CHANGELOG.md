@@ -10,6 +10,16 @@ compiled while it downloads; Breakwater has a new look, layout menus and touch c
 The page no longer has a `SLOPPY_WASM` variable: the module text is a non-running script
 element (`#sloppy-wasm`), read once and let go.
 
+- One `fog()` now fogs PBR materials as it fogs the simple lighting. Before, the PBR shader
+  mixed the fog color into its linear light, as if it were linear, and then tone-mapped and
+  sRGB-encoded it, so PBR surfaces faded toward a lighter, washed-out color than the sky's
+  horizon and the simple-lit things beside them. Now the PBR color is taken back to the simple
+  path's space (the inverse of ACES), fogged there and tone-mapped again: a PBR and a simple-lit
+  surface that look alike fog alike at the same depth, and in thick fog both become the sky's
+  horizon color (tests/t/fog_match.jo). Scenes without fog, or without materials, are
+  unchanged; the character starter's reference frame (`new_character`, the only reference with
+  materials and fog) changed for this.
+
 - Web pages hold the program as base64 text in a script element that is not run, which the page
   decodes, compiles off the main thread and lets go as it loads; before, the text was a string
   in the page's script, which the browser parsed as code and kept, and the decoded bytes stayed
