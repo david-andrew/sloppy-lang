@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- Mipmaps: a texture drawn on a 3D mesh gets them the first time it is drawn, with trilinear
+  filtering, so floors and walls far away turn to their average color instead of shimmering, on
+  all five renderers (OpenGL and WebGL `glGenerateMipmap`, a Vulkan blit chain, Metal's blit
+  encoder, and the software renderer, which chooses a level per pixel from the texture
+  coordinates' change across the screen). Pixel-art textures (`smooth = false`, as after
+  `pixel_art()`), 2D sprites, render targets and sky panoramas keep none. `set_mipmaps(t, on)`
+  makes them now (for your own shaders, or while loading) or keeps a texture without them;
+  `auto_mipmaps = false` turns the automatic ones off; `update_texture` has them made again at
+  the next 3D draw; `sample_lod` reads a level in the software renderer too. A third more memory
+  for those textures; 5.6 ms to make them for a 1024×1024 texture in the software renderer.
+- PBR materials cost much less in the software renderer: opaque materials cast shadows with the
+  plain depth programs, so no shadow-map pixel runs a fragment function (only alpha-masked
+  materials need one). Frames are byte-identical. `bench/games/pbr_cost.jo`, a scene drawn with
+  materials or with the simple lighting (release, one thread, instructions a frame): 90.7
+  million with materials before, 57.3 after, against 40.8 with the simple lighting (materials
+  cost +124% before, +41% after); debug 165.6 million before, 94.3 after. The character starter
+  116.5 million before, 108.8 after (with the new fog). GPUs skip that work too.
+- tools/web_shaders.mjs: its page opts into PBR materials and post effects, which a program
+  prepares only when it uses them since 0.34.0 (the check expected them anyway: 13 startup
+  programs instead of 14, 2 skeletal instead of 4).
+- One `fog()` now fogs PBR materials as it fogs the simple lighting. Before, the PBR shader
+  mixed the fog color into its linear light, as if it were linear, and then tone-mapped and
+  sRGB-encoded it, so PBR surfaces faded toward a lighter, washed-out color than the sky's
+  horizon and the simple-lit things beside them. Now the PBR color is taken back to the simple
+  path's space (the inverse of ACES), fogged there and tone-mapped again: a PBR and a simple-lit
+  surface that look alike fog alike at the same depth, and in thick fog both become the sky's
+  horizon color (tests/t/fog_match.jo). Scenes without fog, or without materials, are
+  unchanged; the character starter's reference frame (`new_character`, the only reference with
+  materials and fog) changed for this.
 - netplay: a relay session (`s.join_relay`) in a game that reads its own events every frame
   (`net.receive()`: a lobby's messages, the invite screens) never heard that it had connected,
   so it never joined its room and every player waited at tick 0, silently. The relay
@@ -45,37 +74,6 @@ garbage during play 310 -> 60 KB/s), with `--wasm-file` to ship the module as a 
 compiled while it downloads; Breakwater has a new look, layout menus and touch controls.
 The page no longer has a `SLOPPY_WASM` variable: the module text is a non-running script
 element (`#sloppy-wasm`), read once and let go.
-
-- Mipmaps: a texture drawn on a 3D mesh gets them the first time it is drawn, with trilinear
-  filtering, so floors and walls far away turn to their average color instead of shimmering, on
-  all five renderers (OpenGL and WebGL `glGenerateMipmap`, a Vulkan blit chain, Metal's blit
-  encoder, and the software renderer, which chooses a level per pixel from the texture
-  coordinates' change across the screen). Pixel-art textures (`smooth = false`, as after
-  `pixel_art()`), 2D sprites, render targets and sky panoramas keep none. `set_mipmaps(t, on)`
-  makes them now (for your own shaders, or while loading) or keeps a texture without them;
-  `auto_mipmaps = false` turns the automatic ones off; `update_texture` has them made again at
-  the next 3D draw; `sample_lod` reads a level in the software renderer too. A third more memory
-  for those textures; 5.6 ms to make them for a 1024×1024 texture in the software renderer.
-- PBR materials cost much less in the software renderer: opaque materials cast shadows with the
-  plain depth programs, so no shadow-map pixel runs a fragment function (only alpha-masked
-  materials need one). Frames are byte-identical. `bench/games/pbr_cost.jo`, a scene drawn with
-  materials or with the simple lighting (release, one thread, instructions a frame): 90.7
-  million with materials before, 57.3 after, against 40.8 with the simple lighting (materials
-  cost +124% before, +41% after); debug 165.6 million before, 94.3 after. The character starter
-  116.5 million before, 108.8 after (with the new fog). GPUs skip that work too.
-- tools/web_shaders.mjs: its page opts into PBR materials and post effects, which a program
-  prepares only when it uses them since 0.34.0 (the check expected them anyway: 13 startup
-  programs instead of 14, 2 skeletal instead of 4).
-
-- One `fog()` now fogs PBR materials as it fogs the simple lighting. Before, the PBR shader
-  mixed the fog color into its linear light, as if it were linear, and then tone-mapped and
-  sRGB-encoded it, so PBR surfaces faded toward a lighter, washed-out color than the sky's
-  horizon and the simple-lit things beside them. Now the PBR color is taken back to the simple
-  path's space (the inverse of ACES), fogged there and tone-mapped again: a PBR and a simple-lit
-  surface that look alike fog alike at the same depth, and in thick fog both become the sky's
-  horizon color (tests/t/fog_match.jo). Scenes without fog, or without materials, are
-  unchanged; the character starter's reference frame (`new_character`, the only reference with
-  materials and fog) changed for this.
 
 - Web pages hold the program as base64 text in a script element that is not run, which the page
   decodes, compiles off the main thread and lets go as it loads; before, the text was a string
