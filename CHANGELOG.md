@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.36.1
+
+Shaders using GPU buffers or textures in structs compile on Adreno phones (Chrome on Android), and
+web errors are also sent as a `sloppy:error` event.
+
 - Generated GLSL never puts a sampler in a struct. A `GpuBuffer` was a `struct { isampler2D t_;
   int n_; }` uniform passed by value to its readers, and on Adreno 650 (Chrome's ANGLE, Android)
   a shader then compiled or not depending on the names ANGLE hashes its identifiers to ("no
