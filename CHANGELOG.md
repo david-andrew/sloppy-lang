@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.36.2
+
+OpenGL and WebGL draws set much less GL state (a seventh of a phone game's frame went to it), and
+Metal shaders can keep a GPU buffer in a variable.
+
 - OpenGL and WebGL draws set much less GL state. A mesh's vertex array object remembers the
   shader, buffers and offsets it was last set up for, so drawing it again with the same ones only
   binds it (each draw re-specified every attribute: enable, pointer and divisor, and after an
