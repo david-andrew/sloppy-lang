@@ -2417,7 +2417,8 @@ describes the desktop-entry naming convention.
 
 **Pictures without a game.** `render_image(w, h, ():` with drawing below it`)` gives an `Image`
 of exactly w x h pixels, drawn with the same functions as `draw` (pixels from its top left
-corner): a chart a script saves with `save_png("chart.png", img)`, a texture made at the start.
+corner): a chart a script saves with `save_png("chart.png", img)`, a texture made at the start,
+a 3D scene's thumbnail (`camera3d` and `draw_mesh` inside it are drawn into the picture).
 Called before any window is open, it opens none (the software renderer draws it, at full
 resolution), so it works in a script and on a machine without a display.
 

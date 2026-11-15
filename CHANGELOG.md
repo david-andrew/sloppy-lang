@@ -17,6 +17,16 @@
   them, and a friend whose page reloads coming back into the game (`s.admit`, the saved token);
   how rooms differ from a relay; `s.rejoined` is read after each `s.play`.
 
+- `render_image` draws the 3D queued inside it: a picture made of `camera3d` and `draw_mesh`
+  alone was empty (the 3D was drawn only when some 2D came after it). `screenshot()` draws the
+  queued 3D before reading the pixels, and `draw_to` / `draw_to_screen` draw it into the
+  picture it was queued for before switching (it went into the next one that 2D was drawn in).
+  Two pictures in a row are alike: the second gets its own sky, depth and shadow casters though
+  its render target may have the first one's number. Tests that compared pictures of 3D
+  (`soft_instance_cull`, `mesh_material_defaults`) compared black ones; they now check that
+  the scene shows, and `soft_instance_cull` holds the game's clock still (the wind sways with
+  `elapsed()`).
+## 0.35.0
 
 Rollback players who restart (a crash, a reloaded page) come back into a running game
 (`s.allow_rejoin`, `s.admit`); web builds start faster and lighter and make far less garbage

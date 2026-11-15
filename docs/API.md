@@ -2801,7 +2801,7 @@ draw = ():
 #### Render targets
 
 - `render_target = (w: int, h: int, smooth: bool = true) -> RenderTarget`
-- `render_image = (w: int, h: int, draw: () -> void) -> Image`: a picture of w x h pixels drawn by draw (with what `draw = ():` uses, in pixels from its top left corner), at any time: a chart a script saves, a texture made at the start. Before any window is open it needs none: the software renderer draws it.
+- `render_image = (w: int, h: int, draw: () -> void) -> Image`: a picture of w x h pixels drawn by draw (with what `draw = ():` uses, in pixels from its top left corner), at any time: a chart a script saves, a texture made at the start, a 3D scene's thumbnail (camera3d and draw_mesh inside draw are drawn into it). Before any window is open it needs none: the software renderer draws it.
   ```gdscript
   img = render_image(600, 400, ():
       clear(WHITE)

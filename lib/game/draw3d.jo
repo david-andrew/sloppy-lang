@@ -650,9 +650,10 @@ __fs_tri: Mesh
 __draws: Draw3D[]
 
 __3d_register = () -> bool:
-    global __scene_flush, __scene_before_2d, __mesh_layout_load
+    global __scene_flush, __scene_before_2d, __scene_before_target, __mesh_layout_load
     __scene_flush = __render3d
     __scene_before_2d = __3d_before_2d
+    __scene_before_target = __3d_before_target
     __mesh_layout_load = __3d_mesh_loaded
     __gfx_on_load(__3d_init)
     true
@@ -677,9 +678,20 @@ __3d_mesh_loaded = (stride: int, instances: bool):
         else if stride == size_of(SkinVertex3D): __warm_3d(4)
 
 __3d_before_2d = ():
+    if __draws.len() == 0 and not __post_owed: return
+    if __draws.len() > 0: __render3d()
+    # (the 2D after the screen's 3D: the post effects end under it, unless include_hud; 3D drawn
+    # into a render target of the game's own meanwhile does not end them)
+    if __post_active and not __post_hud and __cur_target == __scene_rt.fbo: __post_finish()
+
+# (the 3D queued so far, drawn into the target it was queued for before drawing moves to another
+# or the target is read; nothing queued: nothing done, as the frame's point lights stay)
+__3d_before_target = ():
+    global __post_owed
     if __draws.len() == 0: return
+    if __post_active and not __post_hud and __cur_target == __scene_rt.fbo: __post_owed = true
     __render3d()
-    if __post_active and not __post_hud: __post_finish()
+__post_owed = false             # (the screen's 3D was drawn, and the next 2D on it ends the post effects)
 
 __queue3d = (d: Draw3D):
     if __3d_registered: pass
@@ -1420,8 +1432,7 @@ __no_bones: vec4[192]
 
 # (3D drawn after 2D in the same frame goes over it: a second pass into the same target keeps
 # the depth of the first, draws no sky, and the first pass's objects still cast shadows)
-__pass_frame = -1
-__pass_target = -2
+# (__pass_frame and __pass_target are in draw2d.jo: free_render_target forgets its target)
 __casters: Draw3D[]
 
 __cast_shadow = (d: mut Draw3D, sv: vec4[], vp: mat4):
@@ -1613,7 +1624,8 @@ __depth_target = (size: int) -> RenderTarget:
 
 # ---------------- frame post-processing ----------------
 __post_begin = ():
-    global __bloom_a, __bloom_b, __post_active, __scene_rt
+    global __bloom_a, __bloom_b, __post_active, __post_owed, __scene_rt
+    __post_owed = false
     if not __bloom_on:
         __post_active = false
         return
@@ -1795,7 +1807,8 @@ when TARGET != "wasm":
         true
 
 __post_end = ():
-    global __post_active
+    global __post_active, __post_owed
+    __post_owed = false
     if not __post_active: return
     __scene_flush()
     flush()
