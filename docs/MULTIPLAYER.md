@@ -427,7 +427,12 @@ Over net's peers (`s.over`), the returning program connects to the host again in
 the game connects (listen and connect, or a new invite code), and the host gives the new
 connection to the session: `s.admit(peer)`, for example on each `.joined` of a game that
 listens. Its token says which player it is, and the session plays over it in that player's
-place from then on. Through a relay, the returning program joins the same room as before, and
+place from then on. Call after `allow_rejoin`. An admitted peer that sends no valid rejoin
+request within ten seconds is closed; `s.admit(peer, timeout = 20.0)` changes that deadline.
+`s.admit_expired` lists the peer IDs closed for this reason in the latest `s.play` (read it
+after each call, as with `s.rejoined`). Re-admitting a pending peer does not extend its time;
+0 expires on the next play. Peers already accepted as returning players use the normal
+transfer timeout instead. Through a relay, the returning program joins the same room as before, and
 nothing more is needed; web pages connect straight to it again (WebRTC). Without a transport of
 the session's own (`s.outgoing()`/`s.receive()`), deliver its messages to that player as any
 others. Rejoining's messages go on the session's connections, never UDP: each is sent again
@@ -554,9 +559,9 @@ draw = ():
 The room stays open through the game, for those who come back: `open_room(players = n)` would
 close it once n are in, and `room_busy(true)` would make them wait until it is off. So the game
 keeps the count of players itself (the lobby turns away a fifth: `net.close`).
-A friend who comes while the game is on and is not coming back is admitted too, and nothing
-comes of it (no token, no place): the connection stays open, unused, until the game closes it
-(`net.close`). A game that wants newcomers to watch, or to wait for the next round, tells them
+A friend who comes while the game is on and is not coming back is admitted too, but has no
+token or place. The session closes the connection after the admission timeout (ten seconds by
+default) and lists it in `s.admit_expired`. A game that wants newcomers to watch, or to wait for the next round, tells them
 apart itself (by a message of its own from a friend who has nothing saved). Forget the saved token when the game ends (`delete_data`), so a
 later visit to the link joins the lobby as new.
 

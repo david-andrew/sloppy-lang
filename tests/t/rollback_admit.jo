@@ -1,0 +1,53 @@
+# requires: sloppy
+# requires: native
+# Admission deadlines use the session clock, not wall time, and cannot be extended by repeats.
+import net
+import netplay
+struct Game: x = 0
+struct Pad: x = 0
+step = (g: Game, pads: Pad[]) -> Game: g
+assert(net.listen(0))
+clients = [loop _ in [0..4): net.connect("127.0.0.1", net.port())]
+peers: int[]
+end = time() + 5.0
+loop peers.len() < 4:
+    assert(time() < end)
+    loop e in net.receive_server(): if e.kind == .joined: peers.push(e.peer)
+    net.receive(clients)
+    sleep(0.001)
+netplay.clock(0.0)
+s = netplay.session(Game(), step, players = 2, me = 0)
+s.over([-1, -1])
+s.allow_rejoin()
+s.admit(-1)
+s.admit(peers[0])
+s.admit(peers[1], timeout = 2.0)
+s.admit(peers[2], timeout = 20.0)
+s.admit(peers[3], timeout = 0.0)
+s.play(Pad())
+print("zero deadline", s.admit_expired == [peers[3]])
+netplay.clock(1.0)
+s.admit(peers[1], timeout = 100.0)
+s.play(Pad())
+print("before deadline", s.admit_expired.len() == 0, s.__rj.admitted.len() == 3)
+netplay.clock(2.0)
+s.play(Pad())
+print("custom deadline", s.admit_expired == [peers[1]])
+s.play(Pad())
+print("event clears next play", s.admit_expired.len() == 0)
+netplay.clock(9.9)
+s.play(Pad())
+print("default still waiting", s.__rj.admitted.contains(peers[0]))
+netplay.clock(10.0)
+s.play(Pad())
+print("default deadline", s.admit_expired == [peers[0]])
+# An invalid marked packet is not a valid request and must not extend the deadline.
+loop c in clients:
+    b: u8[] = [u8(net.__NET_MARK)]
+    b.extend(bytes("NPR1 1 0 req\ninvalid"))
+    net.send(c, b)
+netplay.clock(20.0)
+s.play(Pad())
+print("invalid request expires", s.admit_expired == [peers[2]], s.__rj.admitted.len() == 0)
+print("no session error", s.problem == "")
+loop p in clients: net.close(p)

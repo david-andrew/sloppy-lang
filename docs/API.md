@@ -6137,6 +6137,7 @@ draw = ():
       rejoin_limit = 4 << 20          # the most a returning player is sent: the game, compressed, in bytes
       rejoining = false               # this machine is coming back into a game: asking, then catching up
       rejoined: int[]                 # (the host) players who came back, in the latest play
+      admit_expired: int[]            # (the host) peers closed without a valid rejoin request, in the latest play
   ```
 - `session[S, I] = (start: S, step: (S, I[]) -> S, players: int, me: int, delay: int = 2) -> Session[S, I]`: a session of `players` players, this machine's being player `me` (from 0)
 - `confirmed[S, I] = (s: Session[S, I]) -> int`: ticks below this have every player's input: they will not change again (some may not have been played here yet: those from s.tick on)
@@ -6174,7 +6175,7 @@ draw = ():
 #### Rejoining: a player whose program restarts comes back
 
 - `allow_rejoin[S, I] = (s: mut Session[S, I], token: str = "", grace: f64 = 30.0)`: This session takes part in rejoining: every player's, before play. token: the one this player was given before its program restarted (s.rejoin_token, saved by the game), to come back into the game with; "" for a player new to it. grace: on the host, how many seconds a player who has gone quiet may come back in. The host gives each player a token (s.rejoin_token, once it comes: save it), and plays for a returning player until it has caught up (s.rejoining while it does).
-- `admit[S, I] = (s: mut Session[S, I], peer: int)`: On the host, over net's peers (s.over): a new connection that may be a returning player's. Its rejoin request is read, and with the token that player was given, the session plays over it as that player from then on (in their place in the peers given to s.over).
+- `admit[S, I] = (s: mut Session[S, I], peer: int, timeout: f64 = 10.0)`: On the host, over net's peers (s.over): a new connection that may be a returning player's. Its rejoin request is read, and with the token that player was given, the session plays over it as that player from then on (in their place in the peers given to s.over). After timeout seconds without a valid request it is closed, and listed in s.admit_expired for that play. Call after allow_rejoin; admitting the same peer again does not extend its deadline. 0 expires next play.
 
 #### Spectators
 

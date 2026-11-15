@@ -124,6 +124,7 @@ struct Session[S, I]:
     rejoin_limit = 4 << 20          # the most a returning player is sent: the game, compressed, in bytes
     rejoining = false               # this machine is coming back into a game: asking, then catching up
     rejoined: int[]                 # (the host) players who came back, in the latest play
+    admit_expired: int[]            # (the host) peers closed without a valid rejoin request, in the latest play
     __rjh: (mut Session[S, I], int) -> bool
     __rjm: (mut Session[S, I], int, u8[]) -> void
     __rj: __NpRj
@@ -936,7 +937,7 @@ struct __NpRj:
     told: bool[]                    # each player has its token (acknowledged), or it is revoked
     told_at: f64[]
     xfers: {int: __NpXfer}
-    admitted: int[]                 # (s.admit: connections that may be returning players')
+    admitted: {int: f64}            # (s.admit: peer -> deadline for a valid rejoin request)
     done: {int: int}                # player -> the process handed over to (to answer its ready again)
     next_id = 1
     most = __NP_TAIL
@@ -983,10 +984,12 @@ allow_rejoin[S, I] = (s: mut Session[S, I], token: str = "", grace: f64 = 30.0):
 
 # On the host, over net's peers (s.over): a new connection that may be a returning player's. Its
 # rejoin request is read, and with the token that player was given, the session plays over it as
-# that player from then on (in their place in the peers given to s.over).
-admit[S, I] = (s: mut Session[S, I], peer: int):
-    if peer < 0 or peer in s.__rj.admitted or peer in s.__peers: return
-    s.__rj.admitted.push(peer)
+# that player from then on (in their place in the peers given to s.over). After timeout seconds
+# without a valid request it is closed, and listed in s.admit_expired for that play. Call after
+# allow_rejoin; admitting the same peer again does not extend its deadline. 0 expires next play.
+admit[S, I] = (s: mut Session[S, I], peer: int, timeout: f64 = 10.0):
+    if peer < 0 or s.__rj.admitted.contains(peer) or peer in s.__peers: return
+    s.__rj.admitted[peer] = __np_now() + max(timeout, 0.0)
     net.__net_mark(peer)
 
 # (play's: k 0 before the tick, true when this machine is a returning player not playing yet;
@@ -995,6 +998,7 @@ __np_rj_play[S, I] = (s: mut Session[S, I], k: int) -> bool:
     if k == 1:
         __np_rj_host(s)
         return false
+    s.admit_expired.clear()
     s.rejoined = s.__rj.came
     s.__rj.came = []
     if s.__rj.admitted.len() > 0: __np_rj_admitted(s)
@@ -1041,12 +1045,18 @@ __np_rj_refuse[S, I] = (s: mut Session[S, I], p: int, peer: int, why: str):
     else: __np_out(s, p, b)
 
 __np_rj_admitted[S, I] = (s: mut Session[S, I]):
-    keep: int[]
-    loop c in s.__rj.admitted:
-        if not net.gone(c): keep.push(c)
-    s.__rj.admitted = keep
-    loop c in keep:
+    loop c in s.__rj.admitted.keys():
+        if net.gone(c):
+            s.__rj.admitted.remove(c)
+            continue
+        # Give a request already received its chance before applying the deadline. Successful
+        # requests move this peer into __peers and remove it from the admission list.
         loop d in net.__net_take_marked([c]): __np_rj_message(s, c, d)
+        if let deadline = s.__rj.admitted.get(c):
+            if __np_now() >= deadline:
+                net.close(c, reason = "no valid rejoin request before the admission timeout")
+                s.__rj.admitted.remove(c)
+                s.admit_expired.push(c)
 
 __np_rj_fail[S, I] = (s: mut Session[S, I], why: str):
     s.__rj.phase = 9
@@ -1223,7 +1233,7 @@ __np_rj_request[S, I] = (s: mut Session[S, I], peer: int, p: int, body: u8[]):
     if peer >= 0 and s.__peers.len() == s.players:
         s.__peers[p] = peer
         net.__net_mark(peer)
-        s.__rj.admitted = [loop c in s.__rj.admitted: if c != peer: c]
+        s.__rj.admitted.remove(peer)
     s.__rj.xfers[p] = __NpXfer(peer = pr, nonce = r.2, id = s.__rj.next_id, epoch = s.__epochs[p] + 1, heard = now)
     s.__rj.next_id += 1
     s.__rj.done.remove(p)
