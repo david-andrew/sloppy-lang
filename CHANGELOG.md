@@ -25,6 +25,23 @@ in a web page is the browser's `Gamepad.id`, and wasm programs run by node make 
 - A wasm program run by node makes directories: `mkdir` / `make_dirs` did nothing there and said
   they had (a file written into one then failed), and `is_dir` was always false; in a page,
   `is_dir` is true for a directory made or holding a file.
+- `hud_nav_box(r, ring = true)`: a box the game draws itself (a page, a card, a counter) that
+  hud_nav's focus reaches as it does a `hud_button`. Called after the game draws it, it is true in
+  the frame it is clicked or tapped, or chosen with the focus on it (Enter, space, A), and counts
+  in `hud_hovered()`; hud_nav draws its ring around it, or with `ring = false` leaves the look to
+  the game, which asks `hud_nav_focused(r)`: whether the focus is on the box at `r` and showing.
+  No more invisible `hud_button` overlays with their clicks filtered.
+- `hud_nav_focus(r)` moves hud_nav's focus once: to the box at `r`, else the first box inside `r`
+  (a page's first line rather than the tab row above it), else the nearest. It lands among the
+  boxes drawn in the frame it is called in, from the next frame on, with no focus for the rest of
+  that frame; called as a screen opens (its name changes), the screen starts there.
+- `hud_nav_input(dx, dy, choose)` gives hud_nav another device's controls each frame (a flight
+  stick's hat and button, read with `joystick_axis` and `joystick_button`): held, the way repeats
+  as the d-pad does, `choose` chooses as it goes down (held, once), and either shows the focus.
+- hud_nav reads only standard gamepads (`gamepad_standard`) now. What `gamepad_axis` and
+  `gamepad_down` make of a flight stick, wheel or pedals (Linux reads their stick and throttle as
+  sticks and triggers, a hat as the d-pad, the trigger as A; pedals at rest can hold a stick to
+  one side) no longer moves the focus or chooses; such devices go through `hud_nav_input`.
 
 ## 0.37.0
 

@@ -2109,6 +2109,39 @@ are out of reach, and the focus goes back to its box when the dialog goes. `hud_
 the boxes after it out (the game's own HUD under a menu). A program that never calls it compiles
 none of it.
 
+`hud_nav_box(r)` is a box the game draws itself (a newspaper page, a card, a workshop desk): called
+after drawing it, it is true when it is clicked or tapped, or chosen with the focus on it, and
+`hud_nav(true)` draws the focus ring around it; with `ring = false` the game draws its own look,
+asking `hud_nav_focused(r)` whether the focus is on it and showing. `hud_nav_focus(r)` moves the
+focus once, as a screen opens or a page turns: to the box at `r`, or the first box inside `r` (the
+page's first line, not the tab row above it), or else the nearest; it lands among the boxes drawn
+in the frame it is called in, from the next frame on. hud_nav reads only standard gamepads
+(`gamepad_standard`), so what `gamepad_axis` makes of a flight stick, a wheel or pedals (a
+throttle as a trigger, pedals as a stick) moves nothing; `hud_nav_input(dx, dy, choose)`, called
+each frame before `hud_nav`, gives it such a device's hat and button, read with `joystick_axis`
+and `joystick_button`: held, the way repeats as the d-pad does, `choose` chooses as it goes down,
+and either shows the focus.
+
+```gdscript
+page = 0
+lines = ["Storm over Delos", "Grain prices up", "Regatta on Sunday"]
+draw = ():
+    global page
+    clear()
+    if gamepad_connected(1) and not gamepad_standard(1):
+        hud_nav_input(int(round(joystick_axis(1, 4))), int(round(joystick_axis(1, 5))), joystick_button(1, 0))
+    hud_nav(true, "paper")
+    if hud_button(Rect(100, 40, 160, 40), "Next page"):
+        page += 1
+        hud_nav_focus(Rect(100, 120, 600, 400))
+    loop k in 0.. and s in lines:
+        r = Rect(120, 140 + 80 * f32(k), 560, 60)
+        lit = hud_nav_focused(r)
+        rect(r, if lit: rgb(1, 0.95, 0.8) else: rgb(0.9, 0.88, 0.82))
+        text("{s} (page {page})", vec2(r.x + 12, r.y + 18), 24, rgb(0.1, 0.1, 0.1))
+        if hud_nav_box(r, ring = false): print("read: {s}")
+```
+
 ```gdscript
 paused = false
 volume = 0.5
