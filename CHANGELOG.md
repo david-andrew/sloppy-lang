@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.37.3
+
+Programs no longer ask Linux for transparent huge pages.
+
+- A program's big memory regions (2 MB and more, fresh or grown) are no longer advised as
+  transparent huge pages on Linux. Where the kernel defragments for them on demand (defrag
+  "madvise", Fedora's default), the first touch of a new 2 MB could stall in direct compaction:
+  200-400 ms frames on an 8 GB laptop (Aegean Skies arriving in a town). The compiler, a batch job
+  about 15% faster with them, still asks.
+
 ## 0.37.2
 
 hud_nav for boxes a game draws itself (`hud_nav_box`, `hud_nav_focused`), a chosen starting focus
