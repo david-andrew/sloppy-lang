@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- OpenGL and WebGL link a shader at its first draw instead of when it is made: `make_shader` and
+  the library's own shaders (lit, shadow, sky, PBR, post effects, particles) return at once.
+  Linking took a phone (Adreno 650, Chrome) about 60 ms a program, 3.2 s of the 9 s before Aegean
+  Skies' title screen, and half of those programs were not needed there. The 3D starter links 4
+  programs before its first frame instead of 6 (its instanced lit and shadow programs wait until
+  something is drawn instanced). Errors are reported at the first draw or warm-up. Vulkan, Metal
+  and the software renderer are unchanged.
+- `shaders_pending() -> int` and `warm_up_shaders(max_count = -1, max_ms = -1.0) -> int`: link
+  the waiting shaders a few at a time (oldest first) during frames that hide it, or all at once
+  before gameplay; `warm_up()` links them all too, `warm_up(sh)` one (docs/GRAPHICS.md, "Linking
+  shaders on OpenGL and WebGL").
+- With `KHR_parallel_shader_compile` (WebGL) or `GL_KHR_parallel_shader_compile` /
+  `GL_ARB_parallel_shader_compile` (native OpenGL), every program starts compiling and linking
+  when it is made, on the driver's threads; a limited `warm_up_shaders` finishes only those the
+  driver reports done (`COMPLETION_STATUS_KHR`) and never waits for one.
+
 ## 0.37.5
 
 `deflate` 3.3-3.7x faster with output no larger, `deflater` to spread one over frames, and faster

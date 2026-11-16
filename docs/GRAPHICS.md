@@ -443,6 +443,42 @@ programs (SPIR-V, made by the compiler). With OpenGL, WebGL or the software rend
 are CPU memory and compute functions run on all CPU cores; shaders still read the buffers.
 `gpu_compute()` tells which.
 
+## Linking shaders on OpenGL and WebGL
+
+On OpenGL and WebGL a shader is compiled and linked at its first draw, not when it is made:
+`make_shader` and the library's own shaders (lit, shadow, sky, PBR, post effects, particles)
+return at once. Linking costs tens of milliseconds a program on a phone (about 60 ms each on an
+Adreno 650 under Chrome), and a 3D game makes dozens before its first frame, most of them not
+needed for its title screen. Vulkan, Metal and the software renderer make their programs at once,
+as before; there these calls do nothing.
+
+- `shaders_pending() -> int`: how many shaders are made but not linked yet.
+- `warm_up_shaders(max_count = -1, max_ms = -1.0) -> int`: link waiting shaders, oldest first:
+  at most `max_count`, starting no new one after `max_ms` milliseconds (at least one is linked).
+  With neither limit it links them all. Returns how many still wait.
+- `warm_up()` links them all too (and prepares Vulkan's pipelines); `warm_up(sh)` links one.
+
+The pattern: let the title screen's own shaders link at their first draw; while the screen is
+dark or a fade hides the frame, feed the rest a few at a time; link whatever is left before
+gameplay starts, so no gameplay frame waits for a link:
+
+```jo
+draw = ():
+    if fading_in: warm_up_shaders(max_ms = 8.0)     # a frame nobody watches closely
+    ...
+start_game = ():
+    warm_up_shaders()                               # all of them, during the loading screen
+```
+
+Where the browser or driver has `KHR_parallel_shader_compile` (newer desktop Chrome and many
+Android phones; `GL_KHR_parallel_shader_compile` in native drivers such as Mesa's), each program
+starts compiling and linking when it is made, on the driver's own threads, and nothing waits for
+it. `warm_up_shaders` with a limit then only finishes the programs the driver says are done
+(asking costs nothing); a first draw or `warm_up_shaders()` waits for the rest. Errors are
+reported as before (the logs, sources and GPU limits, then the panic "shader compilation or
+linking failed"), but at the first draw or warm-up instead of at `make_shader`: call
+`warm_up_shaders()` after making a new shader to see its errors at once.
+
 ## Preparing Vulkan pipelines during loading
 
 Vulkan prepares builtin pipelines as the game loads its graphics features and assets.
@@ -463,8 +499,8 @@ the selected target, viewport, clipping, buffer bindings and draw state.
 Call `warm_up()` during a loading screen after declaring shaders and loading assets.
 It revisits only declared programs and loaded layouts. `warm_up(mat)` prepares shared
 PBR programs from a custom material-loading path. No list of pipelines is needed.
-These hooks do no GPU work on OpenGL, Metal, software or WebGL; GL/WebGL still create
-skinned programs at skinned-mesh loading. Assets or shaders created inside `draw()`
+These hooks do no pipeline work on OpenGL, Metal, software or WebGL; on GL/WebGL
+`warm_up()` links the shaders still waiting (see the previous section). Assets or shaders created inside `draw()`
 still pay their loading cost there. Games that load assets in frame zero may spend
 more time in that initial loading frame, rather than in a later gameplay frame.
 

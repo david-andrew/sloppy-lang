@@ -193,6 +193,24 @@ when TARGET == "wasm":
     gl_create_renderbuffer = () -> int: int(glCreateRenderbuffer())
     gl_delete_renderbuffer = (r: int): glDeleteRenderbuffer(u32(r))
     gl_create_program = (vs: str, fs: str) -> int: int(glCreateProgramFrom(data(vs), i32(len(vs)), data(fs), i32(len(fs))))
+    # (a program made now, compiled and linked later: gpu.jo's __glp_link. The page keeps the
+    # shader objects and sources between start and finish)
+    extern glProgramNew = () -> u32
+    extern glProgramStart = (p: u32, vs: *u8, vs_len: i32, fs: *u8, fs_len: i32)
+    extern glProgramDone = (p: u32) -> i32
+    extern glProgramFinish = (p: u32)
+    extern glParallelCompile = () -> i32
+    __gl_program_new = () -> int: int(glProgramNew())
+    __gl_program_start = (p: int, vs: str, fs: str) -> int:
+        glProgramStart(u32(p), data(vs), i32(len(vs)), data(fs), i32(len(fs)))
+        0
+    __gl_program_done = (p: int) -> bool: glProgramDone(u32(p)) != 0
+    __gl_program_finish = (p: int, stages: int, vs: str, fs: str): glProgramFinish(u32(p))
+    __gl_par = 0                      # (0: not asked yet, 1: no, 2: KHR_parallel_shader_compile)
+    __gl_parallel = () -> bool:
+        global __gl_par
+        if __gl_par == 0: __gl_par = 1 + int(glParallelCompile())
+        __gl_par == 2
     gl_uniform_location = (p: int, name: str) -> int:
         nm = __gl_uniform_name(name)
         int(glGetUniformLocationStr(u32(p), data(nm), i32(len(nm))))
@@ -909,12 +927,44 @@ else:
     gl_create_program = (vs: str, fs: str) -> int:
         if __vk: return 0
         if __soft: return sgl_create_program()
+        p = __gl_program_new()
+        __gl_program_finish(p, __gl_program_start(p, vs, fs), vs, fs)
+        p
+
+    # A program in steps: made (cheap), its stages compiled and linked (started: with
+    # KHR_parallel_shader_compile the driver does that on threads of its own), then finished
+    # (its status asked, which waits for the link; errors reported). gpu.jo's __glp_link.
+    __gl_program_new = () -> int: int(__glCreateProgram())
+    # (the stages' shader objects: the vertex one's in the high 32 bits)
+    __gl_program_start = (p: int, vs: str, fs: str) -> int:
         v = __gl_shader(GL_VERTEX_SHADER, vs)
         f = __gl_shader(GL_FRAGMENT_SHADER, fs)
-        p = __glCreateProgram()
-        __glAttachShader(p, u32(v))
-        __glAttachShader(p, u32(f))
-        __glLinkProgram(p)
+        __glAttachShader(u32(p), u32(v))
+        __glAttachShader(u32(p), u32(f))
+        __glLinkProgram(u32(p))
+        v * 4294967296 + f
+    # (true once a started program's link is done: asking its status then does not wait)
+    __gl_program_done = (p: int) -> bool:
+        if not __gl_parallel(): return true
+        st: i32 = 0
+        __glGetProgramiv(u32(p), 0x91B1, &st)                                      # COMPLETION_STATUS_KHR
+        st != 0
+    __gl_par = 0                      # (0: not asked yet, 1: no, 2: yes)
+    # GL_KHR_parallel_shader_compile (or ARB): a link started goes on while the game runs
+    __gl_parallel = () -> bool:
+        global __gl_par
+        if __gl_par == 0:
+            __gl_par = 1
+            when TARGET != "macos":
+                if not __vk and not __soft:
+                    e = __glGetString(0x1F03)                                       # GL_EXTENSIONS
+                    if e != null and (index_of(__cstr(e), "_parallel_shader_compile") ?? -1) >= 0: __gl_par = 2
+        __gl_par == 2
+
+    __gl_program_finish = (pi: int, stages: int, vs: str, fs: str):
+        p = u32(pi)
+        v = stages / 4294967296
+        f = stages % 4294967296
         vok: i32 = 0
         fok: i32 = 0
         ok: i32 = 0
@@ -939,7 +989,6 @@ else:
             panic("shader compilation or linking failed")
         __glDeleteShader(u32(v))
         __glDeleteShader(u32(f))
-        int(p)
 
     gl_uniform_location = (p: int, name: str) -> int:
         if __vk: return 0

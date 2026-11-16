@@ -11,7 +11,12 @@
 //     objects made each call: a 64-bit int arrives as a BigInt and a float as a heap number (a
 //     GL offset and the uniforms' floats once did, ~560 a frame in examples/aces; time() once
 //     returned a float, ~24 a frame there)
-//  3. a page playing a tone: served cross-origin isolated, its sound goes to the audio thread
+//  3. tests/web/lazy_shaders.jo: a shader is linked at its first draw, or by warm_up_shaders
+//     (oldest first), not when made (linking took a phone ~60 ms a program, ~50 of them before a
+//     game's first frame); with KHR_parallel_shader_compile (here a stand-in for it: headless
+//     Chromium's SwiftShader has none) every program starts linking when made, and no status that
+//     waits for a link is asked before the browser says it is done, except at a first draw
+//  4. a page playing a tone: served cross-origin isolated, its sound goes to the audio thread
 //     through a shared ring, with no message per chunk; served as GitHub Pages serves it (no
 //     SharedArrayBuffer), a message per chunk and none back; both reach the output
 // usage: node tools/webperfcheck.mjs [path/to/sloppy]
@@ -72,6 +77,7 @@ build(join(bigDir, "big.jo"), join(tmp, "big.html"));
 mkdirSync(join(tmp, "split"));
 build(join(bigDir, "big.jo"), join(tmp, "split", "big.html"), "--wasm-file");
 build(join(root, "tests", "web", "busy.jo"), join(tmp, "busy.html"));
+build(join(root, "tests", "web", "lazy_shaders.jo"), join(tmp, "lazy_shaders.html"));
 writeFileSync(join(tmp, "tone.jo"), `window("tone", 160, 100)
 beep = tone(440.0, 0.5, volume = 0.5)
 id = -1
@@ -275,6 +281,54 @@ await browse("file://" + join(tmp, "busy.html"), async (c) => {
   expect(`few 64-bit ints and floats handed to JavaScript each frame (BigInts and heap numbers; ${frames} frames)`, frames > 20 && total <= 6,
     `${total.toFixed(1)} a frame` + (boxed.length ? ": " + boxed.slice(0, 4).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(", ") : ""));
 }, countHook);
+// (the page's programs, by the shader functions in them: their links, statuses asked and completion
+// asked, in order with the page's lines. `fake`: a stand-in KHR_parallel_shader_compile whose links
+// are not done the first time asked)
+const lazyHook = (fake) => `(() => {
+  const ev = window.__lz = [];
+  const P = WebGL2RenderingContext.prototype;
+  const tagOf = new Map(), progOf = new Map(), asked = new Map();
+  const tag = (o) => tagOf.get(o) || "";
+  const ss = P.shaderSource; P.shaderSource = function (s, src) { const m = /lz_(first|second|third)_fs/.exec(src); if (m) tagOf.set(s, m[1]); return ss.call(this, s, src); };
+  const at = P.attachShader; P.attachShader = function (p, s) { if (tag(s)) { tagOf.set(p, tag(s)); progOf.set(s, p); } return at.call(this, p, s); };
+  const lp = P.linkProgram; P.linkProgram = function (p) { if (tag(p)) ev.push(["link", tag(p)]); return lp.call(this, p); };
+  const gp = P.getProgramParameter; P.getProgramParameter = function (p, k) {
+    if (k === 0x91B1 && ${fake}) { const n = (asked.get(p) || 0) + 1; asked.set(p, n); if (tag(p)) ev.push(["done?", tag(p), n > 1]); return n > 1; }
+    if (k === 0x91B1 && tag(p)) ev.push(["done?", tag(p), null]);
+    if (k === this.LINK_STATUS && tag(p)) ev.push(["status", tag(p)]);
+    return gp.call(this, p, k);
+  };
+  const gs = P.getShaderParameter; P.getShaderParameter = function (s, k) { if (k === this.COMPILE_STATUS && tag(s)) ev.push(["status", tag(s)]); return gs.call(this, s, k); };
+  if (${fake}) { const ge = P.getExtension; P.getExtension = function (n) { return n === "KHR_parallel_shader_compile" ? { COMPLETION_STATUS_KHR: 0x91B1 } : ge.call(this, n); }; }
+  const log = console.log; console.log = function (...a) { const t = a.join(" "); if (/^lazy /.test(t)) ev.push(["log", t]); return log.apply(this, a); };
+})();`;
+for (const fake of [false, true]) {
+  const how = fake ? "with parallel compiling" : "without parallel compiling";
+  await browse("file://" + join(tmp, "lazy_shaders.html"), async (c) => {
+    let ev = [];
+    for (let t = Date.now(); Date.now() - t < 20000; await sleep(50)) {
+      ev = (await c.ev("window.__lz")) || [];
+      if (ev.some((e) => e[0] === "log" && /^lazy drawn second/.test(e[1]))) break;
+    }
+    const at = (line) => ev.findIndex((e) => e[0] === "log" && e[1].startsWith(line));
+    const lines = ev.filter((e) => e[0] === "log").map((e) => e[1]);
+    const links = (before) => ev.slice(0, before < 0 ? 0 : before).filter((e) => e[0] === "link").map((e) => e[1]).join(",");
+    const made = at("lazy made"), first = at("lazy drawn first"), one = at("lazy warm one"), all = at("lazy warm all"), last = at("lazy drawn second");
+    const ok = made >= 0 && first > made && one > first && all > one && last > all;
+    expect(`${how}: the page's shaders are made, drawn, warmed up and drawn`, ok && lines.join("|") ===
+      ["lazy made 3", "lazy drawn first 255,0,0 pending 2", `lazy warm one ${fake ? 2 : 1}`, "lazy warm all 0", "lazy drawn second 0,255,0 third 0,0,255 pending 0"].join("|"), lines.join(" | ") || c.log.slice(0, 300));
+    if (!fake) {
+      expect("a shader is linked at its first draw, not when made", ok && links(made) === "" && links(first) === "first", `made: [${links(made)}], first drawn: [${links(first)}]`);
+      expect("warm_up_shaders links the oldest waiting first, then all", ok && links(one) === "first,second" && links(all) === "first,second,third", `one: [${links(one)}], all: [${links(all)}]`);
+    } else {
+      const early = ev.slice(0, one).filter((e) => e[0] === "status" && e[1] !== "first");
+      const polled = ev.slice(0, one).filter((e) => e[0] === "done?").map((e) => e[1]);
+      expect("with parallel compiling: every program starts linking when made", ok && links(made) === "first,second,third", `made: [${links(made)}]`);
+      expect("a limited warm-up asks no status before the link is done", ok && early.length === 0 && polled.includes("second") && polled.includes("third"),
+        early.length ? `asked early: ${early.map((e) => e[1]).join(",")}` : `completion asked of ${[...new Set(polled)].join(",")}`);
+    }
+  }, lazyHook(fake));
+}
 // (the sound going out: an analyser fed what the page's worklet gives the speakers)
 const tapHook = `(() => {
   const c = AudioNode.prototype.connect;

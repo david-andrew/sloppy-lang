@@ -4306,7 +4306,7 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
 - `struct ShaderUniform`
   ```gdscript
   struct ShaderUniform:
-      loc: int
+      loc: int              # (OpenGL; from make_shader: where the library keeps its location)
       kind: u8
       offset: int
       count: int            # an array (T[N] field): N, and the bytes per element
@@ -4323,8 +4323,9 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       usize: int
       istride: int
       iattribs: ShaderAttrib[]
-      ibase_loc: int = -1   # (OpenGL) where instance_id() starts: see draw_indirect
-      lid: int              # (OpenGL) this shader's number (0: one made by hand, never matched)
+      ibase_loc: int = -1   # (OpenGL) where instance_id() starts: see draw_indirect (as loc)
+      lid: int              # (OpenGL) this shader's number (0: one made by hand, never matched;
+                            # its locations are OpenGL's own)
       ucache: *u8 = null    # (OpenGL) the uniform bytes last uploaded to its program
   ```
 - `struct Mesh`
@@ -4343,9 +4344,11 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       gbuf: int                   # the vertices are a GPU buffer's (gpu_mesh): its number
       keep: u8[]                  # (and what keeps that buffer alive)
   ```
-- `warm_up = ()`: Vulkan only. Other backends retain their existing shader/program lifecycle.
-- `warm_up = (sh: Shader, mode: int = GL_TRIANGLES)`
-- `make_shader = (src: ShaderSource) -> Shader`
+- `warm_up = ()`: Prepare what is loaded, during a loading screen: OpenGL and WebGL link every shader not linked yet (warm_up_shaders()); Vulkan prepares the pipelines of the programs and layouts loaded.
+- `warm_up = (sh: Shader, mode: int = GL_TRIANGLES)`: Prepare one shader now: OpenGL and WebGL link it; Vulkan prepares its pipeline for the drawing state selected now (blending, target) and primitive `mode`.
+- `shaders_pending = () -> int`: how many shaders are waiting to be linked (0 on Vulkan, Metal and the software renderer)
+- `warm_up_shaders = (max_count: int = -1, max_ms: f64 = -1.0) -> int`: Link waiting shaders, oldest first: at most max_count of them (-1: no limit), starting no new one after max_ms milliseconds (-1: no limit; at least one is linked). With no limit, all of them (warm_up() does that too). Returns how many are still waiting. With parallel compiling, a limited call finishes only the programs whose linking is done, never waiting for one.
+- `make_shader = (src: ShaderSource) -> Shader`: a shader from shader(vs, fs); on OpenGL and WebGL its program is linked at its first draw (or by warm_up_shaders), and compile or link errors are reported there
 - `mesh[V] = (vertices: V[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh`: upload vertices (any struct type matching the shader's vertex input) and optional indices
 - `update_mesh[V] = (m: mut Mesh, vertices: V[])`
 - `draw[U] = (sh: Shader, m0: Mesh, params: U)`: draw a mesh with a shader; `params` is the uniforms struct the shader functions take
