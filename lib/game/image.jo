@@ -392,20 +392,39 @@ load_image = (file: u8[]) -> Image | ImageError:
     ImageError("not an image this can read, or a damaged one (PNG and JPEG are read)")
 
 # ---------------- deflate (RFC 1951) ----------------
-# LZ77 over a 32 KB window (hash chains), written as blocks with their own Huffman codes
+# LZ77 over a 32 KB window (hash chains, with zlib's lazy matching), written as blocks with their
+# own Huffman codes
 
 struct __Bits:
-    out: u8[]
-    buf: int
+    out: u8[]           # (longer than what is written, which is its first n bytes)
+    n: int
+    buf: int            # the bits not written yet, the first at bit 0
     cnt: int
 
-__put = (w: mut __Bits, v: int, n: int):
+# (room for `more` bytes after those written)
+__bits_room = (w: mut __Bits, more: int):
+    need = w.n + more + 16
+    if need > w.out.len(): w.out.resize(max(need, w.out.len() + w.out.len() / 2))
+
+# the low n bits of v (n at most 32), in room made already
+__bits_put = (w: mut __Bits, v: int, n: int):
     w.buf |= v << w.cnt
     w.cnt += n
-    loop w.cnt >= 8:
-        w.out.push(u8(w.buf & 255))
+    if w.cnt >= 32:
+        ((data(w.out) + w.n) as *u32)[0] = u32(w.buf & 0xFFFFFFFF)
+        w.n += 4
+        w.buf = w.buf >> 32
+        w.cnt -= 32
+
+# the bits waiting, out to a whole byte
+__bits_align = (w: mut __Bits):
+    loop w.cnt > 0:
+        w.out[w.n] = u8(w.buf & 255)
+        w.n += 1
         w.buf = w.buf >> 8
         w.cnt -= 8
+    w.buf = 0
+    w.cnt = 0
 
 # code lengths (at most `limit` bits) for symbol frequencies: Huffman's, with the frequencies
 # flattened until the longest code fits
@@ -505,23 +524,25 @@ __dist_code = (d: int) -> int:
     if d <= 256: return __dist_lo[d - 1]
     __dist_hi[(d - 1) >> 7]
 
-# one block of src[from..to): lits holds literals (0..255) and lengths (256 + length), dists
-# the distance of each length (0 for a literal). Written the shortest way: with codes made for
-# it, with the fixed codes, or stored as it is.
-__deflate_block = (w: mut __Bits, lits: int[], dists: int[], last: bool, src: u8[], from: int, to: int):
+# one block of src[from..to), as symbols: a literal byte (0..255), or a match: its length - 3 +
+# 256 in the low 9 bits and its distance above them. Written the shortest way: with codes made
+# for it, with the fixed codes, or stored as it is.
+__deflate_block = (w: mut __Bits, syms: i32[], last: bool, src: u8[], from: int, to: int):
+    __bits_room(w, 6 * syms.len() + (to - from) + 5 * ((to - from) / 65535) + 400)
     # (a short block: the fixed codes, as a table of its own would take more than it saves)
-    if lits.len() < 100:
-        __deflate_codes(w, lits, dists, last, 1, __fixed_lit_lengths(), fill(5, 30))
+    if syms.len() < 100:
+        __deflate_codes(w, syms, last, 1, __fixed_lit_lengths(), fill(5, 30))
         return
-    lf = fill(0, 286)
+    # (the symbols' low 9 bits counted first: a literal, or a length at 253 + length)
+    sc = fill(0, 512)
     df = fill(0, 30)
-    loop i in 0.. and v in lits:
-        if v < 256: lf[v] += 1
-        else:
-            lf[257 + __len_code[v - 256]] += 1
-            df[__dist_code(dists[i])] += 1
+    __deflate_count(syms, data(sc), data(df), data(__dist_lo), data(__dist_hi))
+    lf = fill(0, 286)
+    loop v in [0..256): lf[v] = sc[v]
+    loop l in [3..259): lf[257 + __len_code[l]] += sc[253 + l]
     lf[256] = 1
     # (two distance codes at least, as some inflaters expect)
+    unused = [df[0] == 0, df[1] == 0]
     if df[0] == 0: df[0] = 1
     if df[1] == 0: df[1] = 1
     ll = __huff_lengths(lf, 15)
@@ -582,13 +603,9 @@ __deflate_block = (w: mut __Bits, lits: int[], dists: int[], last: bool, src: u8
         extra += df[c] * __dist_extra[c]
     # (the two distance codes counted above may be unused)
     loop c in [0..2):
-        if df[c] == 1 and dl[c] > 0:
-            used = false
-            loop d in dists:
-                if d > 0 and __dist_code(d) == c: used = true
-            if not used:
-                dyn -= dl[c]
-                fix -= 5
+        if unused[c]:
+            dyn -= dl[c]
+            fix -= 5
     loop k in 0.. and c in cl:
         dyn += clens[c]
         if c == 16: dyn += 2
@@ -601,20 +618,29 @@ __deflate_block = (w: mut __Bits, lits: int[], dists: int[], last: bool, src: u8
         __deflate_stored(w, src, from, to, last)
         return
     if fix <= dyn:
-        __deflate_codes(w, lits, dists, last, 1, fl, fill(5, 30))
+        __deflate_codes(w, syms, last, 1, fl, fill(5, 30))
         return
-    __put(w, int(last), 1)
-    __put(w, 2, 2)
-    __put(w, nlit - 257, 5)
-    __put(w, ndist - 1, 5)
-    __put(w, ncl - 4, 4)
-    loop k in [0..ncl): __put(w, clens[order[k]], 3)
+    __bits_put(w, int(last), 1)
+    __bits_put(w, 2, 2)
+    __bits_put(w, nlit - 257, 5)
+    __bits_put(w, ndist - 1, 5)
+    __bits_put(w, ncl - 4, 4)
+    loop k in [0..ncl): __bits_put(w, clens[order[k]], 3)
     loop k in 0.. and c in cl:
-        __put(w, ccodes[c], clens[c])
-        if c == 16: __put(w, cx[k], 2)
-        else if c == 17: __put(w, cx[k], 3)
-        else if c == 18: __put(w, cx[k], 7)
-    __deflate_codes(w, lits, dists, last, 2, ll, dl)
+        __bits_put(w, ccodes[c], clens[c])
+        if c == 16: __bits_put(w, cx[k], 2)
+        else if c == 17: __bits_put(w, cx[k], 3)
+        else if c == 18: __bits_put(w, cx[k], 7)
+    __deflate_codes(w, syms, last, 2, ll, dl)
+
+__deflate_count = (syms: i32[], sc: *int, df: *int, lo: *int, hi: *int):
+    loop s in syms:
+        v = int(s)
+        sc[v & 511] += 1
+        if v >= 256:
+            d = v >> 9
+            e = if d <= 256: lo[d - 1] else: hi[(d - 1) >> 7]
+            df[e] += 1
 
 __fixed_lit_lengths = () -> int[]:
     l = fill(8, 288)
@@ -623,112 +649,265 @@ __fixed_lit_lengths = () -> int[]:
     l
 
 # the symbols of a block with these code lengths (kind 1: the fixed codes, which need a header;
-# kind 2: the header with the codes is written already)
-__deflate_codes = (w: mut __Bits, lits: int[], dists: int[], last: bool, kind: int, ll: int[], dl: int[]):
+# kind 2: the header with the codes is written already), in room made already
+__deflate_codes = (w: mut __Bits, syms: i32[], last: bool, kind: int, ll: int[], dl: int[]):
     if kind == 1:
-        __put(w, int(last), 1)
-        __put(w, 1, 2)
+        __bits_put(w, int(last), 1)
+        __bits_put(w, 1, 2)
     lc = __huff_codes(ll)
     dc = __huff_codes(dl)
-    loop k in 0.. and v in lits:
-        if v < 256: __put(w, lc[v], ll[v])
+    # each length's code and extra bits as one, and how many bits that is; each distance code's
+    # code, base and bits
+    lv = fill(0, 259)
+    ln = fill(0, 259)
+    loop l in [3..259):
+        c = __len_code[l]
+        lv[l] = lc[257 + c] | ((l - __len_base[c]) << ll[257 + c])
+        ln[l] = ll[257 + c] + __len_extra[c]
+    dv = fill(0, 30)
+    dn = fill(0, 30)
+    loop e in [0..30):
+        dv[e] = dc[e] - (__dist_base[e] << dl[e])
+        dn[e] = dl[e] + __dist_extra[e]
+    lcp = data(lc)
+    llp = data(ll)
+    lvp = data(lv)
+    lnp = data(ln)
+    dvp = data(dv)
+    dlp = data(dl)
+    dnp = data(dn)
+    lo = data(__dist_lo)
+    hi = data(__dist_hi)
+    o = data(w.out)
+    n = w.n
+    buf = w.buf
+    cnt = w.cnt
+    loop s in syms:
+        v = int(s)
+        if v < 256:
+            buf |= lcp[v] << cnt
+            cnt += llp[v]
         else:
-            n = v - 256
-            c = __len_code[n]
-            __put(w, lc[257 + c], ll[257 + c])
-            if __len_extra[c] > 0: __put(w, n - __len_base[c], __len_extra[c])
-            d = dists[k]
-            e = __dist_code(d)
-            __put(w, dc[e], dl[e])
-            if __dist_extra[e] > 0: __put(w, d - __dist_base[e], __dist_extra[e])
-    __put(w, lc[256], ll[256])
+            l = (v & 511) - 253
+            buf |= lvp[l] << cnt
+            cnt += lnp[l]
+            if cnt >= 32:
+                ((o + n) as *u32)[0] = u32(buf & 0xFFFFFFFF)
+                n += 4
+                buf = buf >> 32
+                cnt -= 32
+            d = v >> 9
+            e = if d <= 256: lo[d - 1] else: hi[(d - 1) >> 7]
+            # (the code, and the distance less its base above it)
+            buf |= (dvp[e] + (d << dlp[e])) << cnt
+            cnt += dnp[e]
+        if cnt >= 32:
+            ((o + n) as *u32)[0] = u32(buf & 0xFFFFFFFF)
+            n += 4
+            buf = buf >> 32
+            cnt -= 32
+    w.n = n
+    w.buf = buf
+    w.cnt = cnt
+    __bits_put(w, lc[256], ll[256])
 
-# stored blocks: the bytes as they are
+# stored blocks: the bytes as they are, in room made already
 __deflate_stored = (w: mut __Bits, src: u8[], from: int, to: int, last: bool):
     p = from
     loop true:
         n = min(65535, to - p)
         fin = last and p + n >= to
-        __put(w, int(fin), 1)
-        __put(w, 0, 2)
-        if w.cnt > 0: __put(w, 0, 8 - w.cnt)
-        __put(w, n, 16)
-        __put(w, (~n) & 65535, 16)
-        loop i in [p..p + n): w.out.push(src[i])
+        __bits_put(w, int(fin), 1)
+        __bits_put(w, 0, 2)
+        __bits_align(w)
+        __bits_put(w, n | (((~n) & 65535) << 16), 32)
+        if n > 0: mem_copy(data(w.out) + w.n, data(src) + p, n)
+        w.n += n
         p += n
         if p >= to: break
 
-# the longest earlier match for the bytes at i (length, distance): through the chain of earlier
-# positions with the same hash of 3 bytes
-__lz_match = (src: u8[], i: int, head: int[], prev: int[]) -> (int, int):
-    n = src.len()
-    if i + 2 >= n: return (0, 0)
-    best = 0
-    bdist = 0
-    mask = head.len() - 1
-    h = ((int(src[i]) << 10) xor (int(src[i + 1]) << 5) xor int(src[i + 2])) & mask
-    c = head[h]
-    chain = 48
-    most = min(258, n - i)
-    loop c >= 0 and i - c <= 32768 and chain > 0:
-        if src[c + best] == src[i + best]:
-            l = 0
-            loop l < most and src[c + l] == src[i + l]: l += 1
-            if l > best:
-                best = l
-                bdist = i - c
-                if l == most: break
-        c = prev[c & mask]
-        chain -= 1
-    (best, bdist)
-
 # compress bytes into a raw deflate stream (inflate reads it back)
 deflate = (src: u8[]) -> u8[]:
+    d = deflater(src)
+    __deflate_run(d, src, -1.0)
+    d.result()
+
+# deflate a few milliseconds at a time: a big one (a game's save, megabytes) in the frames while
+# the game goes on, giving the same bytes as deflate. Start it when saving, step it each frame,
+# and write when it says it is done:
+#   saving = deflater(bytes(to_text(world)))          # when saving
+#   if saving.step(0.003):                            # in update: 3 ms a frame
+#       save_data("world", str_from_bytes(saving.result()))
+struct Deflater:
+    __src: u8[]
+    __w: __Bits
+    __head: i32[]               # the hash of 4 bytes -> the latest position with it
+    __prev: i32[]               # a position (in the window) -> the one before it with its hash
+    __syms: i32[]               # the block being gathered (as __deflate_block takes them)
+    __pos: int                  # the next position to look at
+    __bstart: int               # where that block starts
+    __plen: int                 # the match found at pos - 1 (length, 2 for none), and its distance
+    __pdist: int
+    __pend: bool                # (the byte at pos - 1 is not written yet)
+    __done: bool
+
+# a Deflater for these bytes, to step until it is done
+deflater = (src: u8[]) -> Deflater:
     __deflate_tables()
-    w = __Bits([], 0, 0)
-    w.out.reserve(src.len() / 2 + 64)
     n = src.len()
     # (the tables as big as the window, 32 KB, or the input if smaller: a short one, a packet's,
     # is not slowed by filling them)
-    hsize = 64
-    loop hsize < n and hsize < 32768: hsize *= 2
-    head = fill(-1, hsize)
-    prev = fill(-1, hsize)
-    lits: int[]
-    dists: int[]
-    bstart = 0
-    i = 0
-    loop i < n:
-        best, bdist = __lz_match(src, i, head, prev)
-        if i + 2 < n:
-            h = ((int(src[i]) << 10) xor (int(src[i + 1]) << 5) xor int(src[i + 2])) & (hsize - 1)
-            prev[i & (hsize - 1)] = head[h]
-            head[h] = i
-        # (lazily: a longer match one byte on is better than this one)
-        if best >= 3 and best < 32 and i + 1 < n:
-            nb, nd = __lz_match(src, i + 1, head, prev)
-            if nb > best: best = 0
-        if best >= 3:
-            lits.push(256 + best)
-            dists.push(bdist)
-            # (the positions inside the match are in the chains too)
-            loop j in [i + 1..min(i + best, n - 2)):
-                h = ((int(src[j]) << 10) xor (int(src[j + 1]) << 5) xor int(src[j + 2])) & (hsize - 1)
-                prev[j & (hsize - 1)] = head[h]
-                head[h] = j
-            i += best
+    wsize = 64
+    loop wsize < n and wsize < 32768: wsize *= 2
+    w = __Bits([], 0, 0, 0)
+    w.out.resize(min(n / 3, 1 << 20) + 64)
+    Deflater(src, w, fill(i32(-1), wsize), fill(i32(-1), wsize), [], 0, 0, 2, 0, false, false)
+
+# go on for about this many seconds (it looks at the clock after each 4 KB of the input); true
+# when it is done
+step = (d: mut Deflater, seconds: f64) -> bool:
+    if not d.__done: __deflate_run(d, d.__src, time() + seconds)
+    d.__done
+
+# how much of the input it has been through, 0 to 1
+progress = (d: Deflater) -> f64:
+    if d.__done or d.__src.len() == 0: return 1.0
+    f64(d.__pos) / f64(d.__src.len())
+
+# the deflated bytes (if step has not said done yet, this does the rest of the work first)
+result = (d: mut Deflater) -> u8[]:
+    if not d.__done: __deflate_run(d, d.__src, -1.0)
+    d.__w.out
+
+# (until the deadline, a time(); negative: to the end. Each time round is one piece of work, 4 KB
+# of the input or a block written, and then a look at the clock.)
+__deflate_run = (d: mut Deflater, src: u8[], deadline: f64):
+    n = src.len()
+    loop not d.__done:
+        if d.__syms.len() >= 32768:
+            to = d.__pos - int(d.__pend)
+            __deflate_block(d.__w, d.__syms, false, src, d.__bstart, to)
+            d.__syms.clear()
+            d.__bstart = to
+        else if d.__pos < n:
+            __lz_chunk(d, src, min(n, d.__pos + 4096))
         else:
-            lits.push(int(src[i]))
-            dists.push(0)
-            i += 1
-        if lits.len() >= 32768:
-            __deflate_block(w, lits, dists, false, src, bstart, i)
-            lits.clear()
-            dists.clear()
-            bstart = i
-    __deflate_block(w, lits, dists, true, src, bstart, n)
-    if w.cnt > 0: w.out.push(u8(w.buf & 255))
-    w.out
+            if d.__pend:
+                d.__syms.push(i32(src[n - 1]))
+                d.__pend = false
+            __deflate_block(d.__w, d.__syms, true, src, d.__bstart, n)
+            __bits_align(d.__w)
+            d.__w.out.resize(d.__w.n)
+            d.__done = true
+            d.__src = []
+            d.__syms = []
+            d.__head = []
+            d.__prev = []
+        if deadline >= 0.0 and time() >= deadline: return
+
+# the input up to stop (or a full block) as symbols, zlib's way: the longest match at each
+# position, kept back a byte to see whether the next position has a longer one
+__lz_chunk = (d: mut Deflater, src: u8[], stop: int):
+    n = src.len()
+    p = data(src)
+    head = data(d.__head)
+    prev = data(d.__prev)
+    wmask = d.__prev.len() - 1
+    hbits = 0
+    loop (1 << hbits) < d.__head.len(): hbits += 1
+    hshift = u32(32 - hbits)
+    pos = d.__pos
+    pend = d.__pend
+    clen = d.__plen
+    cdist = d.__pdist
+    syms = d.__syms
+    d.__syms = []
+    loop pos < stop and syms.len() < 32768:
+        # the position into its hash chain, which gives the latest earlier one with its 4 bytes
+        hc = -1
+        if pos + 4 <= n:
+            h = int((((p + pos) as *u32)[0] * u32(0x9E3779B1)) >> hshift)
+            hc = int(head[h])
+            prev[pos & wmask] = i32(hc)
+            head[h] = i32(pos)
+        plen = clen
+        pdist = cdist
+        clen = 2
+        # (zlib's level 5, nearly: no looking for a longer one after a match of 16, and a
+        # shorter look after one of 8)
+        if hc >= 0 and plen < 16 and pos - hc < 32768:
+            clen, cdist = __lz_longest(p, n, pos, hc, prev, wmask, if plen >= 8: 6 else: 24, plen)
+        if plen >= 3 and clen <= plen:
+            # (the match at pos - 1, as the one here is no longer; its positions into the chains)
+            syms.push(i32((pdist << 9) | (plen + 253)))
+            end = pos - 1 + plen
+            j = pos + 1
+            last = min(end - 1, n - 4)
+            loop j <= last:
+                h = int((((p + j) as *u32)[0] * u32(0x9E3779B1)) >> hshift)
+                prev[j & wmask] = head[h]
+                head[h] = i32(j)
+                j += 1
+            pos = end
+            pend = false
+            clen = 2
+        else if pend:
+            syms.push(i32(p[pos - 1]))
+            pos += 1
+        else:
+            pend = true
+            pos += 1
+    d.__syms = syms
+    d.__pos = pos
+    d.__plen = clen
+    d.__pdist = cdist
+    d.__pend = pend
+
+# the longest match for the bytes at pos (more than best, else best), through the chain from c:
+# (length, distance)
+__lz_longest = (p: *u8, n: int, pos: int, c0: int, prev: *i32, wmask: int, chain0: int, best0: int) -> (int, int):
+    best = best0
+    bdist = 0
+    most = min(258, n - pos)
+    if best >= most: return (best, bdist)
+    lim = pos - 32768
+    s = p + pos
+    first = (s as *u32)[0]
+    end2 = ((s + best - 1) as *u16)[0]
+    c = c0
+    chain = chain0
+    loop true:
+        m = p + c
+        # (the byte past the best so far first: most candidates are no longer)
+        if ((m + best - 1) as *u16)[0] == end2 and (m as *u32)[0] == first:
+            l = 4
+            loop l < most:
+                if l + 8 <= most:
+                    x = ((m + l) as *int)[0] xor ((s + l) as *int)[0]
+                    if x != 0:
+                        # (the first byte that differs: the lowest nonzero one)
+                        if x & 0xFFFFFFFF == 0:
+                            l += 4
+                            x = x >> 32
+                        if x & 0xFFFF == 0:
+                            l += 2
+                            x = x >> 16
+                        if x & 0xFF == 0: l += 1
+                        break
+                    l += 8
+                else:
+                    if m[l] != s[l]: break
+                    l += 1
+            if l > best:
+                best = l
+                bdist = pos - c
+                if best >= 128 or best >= most: break
+                end2 = ((s + best - 1) as *u16)[0]
+        chain -= 1
+        nc = int(prev[c & wmask])
+        if nc <= lim or nc >= c or chain <= 0: break
+        c = nc
+    (best, bdist)
 
 # ---------------- PNG writing ----------------
 __crc_table: u32[]

@@ -3,29 +3,32 @@
 __B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 base64_encode = (b: u8[]) -> str:
-    out: u8[]
-    i = 0
-    loop i + 2 < b.len():
-        v = (int(b[i]) << 16) | (int(b[i + 1]) << 8) | int(b[i + 2])
-        out.push(__B64[v >> 18])
-        out.push(__B64[(v >> 12) & 63])
-        out.push(__B64[(v >> 6) & 63])
-        out.push(__B64[v & 63])
-        i += 3
-    rest = b.len() - i
-    if rest == 1:
-        v = int(b[i]) << 16
-        out.push(__B64[v >> 18])
-        out.push(__B64[(v >> 12) & 63])
-        out.push('=')
-        out.push('=')
-    else if rest == 2:
-        v = (int(b[i]) << 16) | (int(b[i + 1]) << 8)
-        out.push(__B64[v >> 18])
-        out.push(__B64[(v >> 12) & 63])
-        out.push(__B64[(v >> 6) & 63])
-        out.push('=')
+    n = b.len()
+    m = (n + 2) / 3 * 4
+    # (a byte more than the text: room for the zero after it, so that str_from_bytes need not copy)
+    out = fill(u8(c'='), m + 1)
+    out.resize(m)
+    __b64_encode(data(b), n, data(out), data(__B64))
     str_from_bytes(out)
+
+__b64_encode = (b: *u8, n: int, o: *u8, t: *u8):
+    i = 0
+    k = 0
+    loop i + 2 < n:
+        v = (int(b[i]) << 16) | (int(b[i + 1]) << 8) | int(b[i + 2])
+        o[k] = t[v >> 18]
+        o[k + 1] = t[(v >> 12) & 63]
+        o[k + 2] = t[(v >> 6) & 63]
+        o[k + 3] = t[v & 63]
+        i += 3
+        k += 4
+    # (one or two bytes left: two or three characters, and the = already there)
+    if i < n:
+        v = int(b[i]) << 16
+        if i + 1 < n: v |= int(b[i + 1]) << 8
+        o[k] = t[v >> 18]
+        o[k + 1] = t[(v >> 12) & 63]
+        if i + 1 < n: o[k + 2] = t[(v >> 6) & 63]
 
 __b64_value = (c: u8) -> int:
     if c >= 'A' and c <= 'Z': return int(c) - int('A')
@@ -37,18 +40,38 @@ __b64_value = (c: u8) -> int:
 
 # the bytes, or none if s is not base64 (spaces and line breaks in it are skipped)
 base64_decode = (s: str) -> u8[]?:
-    out: u8[]
+    global __b64_values
+    if __b64_values.len() == 0:
+        # (each byte's value: 64 for a space, 65 for =, 66 for one not in base64)
+        __b64_values = fill(u8(66), 256)
+        loop c in [0..256):
+            v = __b64_value(u8(c))
+            if v >= 0: __b64_values[c] = u8(v)
+            else if is_space(u8(c)): __b64_values[c] = u8(64)
+        __b64_values[c'='] = u8(65)
+    out = fill(u8(0), len(s) / 4 * 3 + 3)
+    n = __b64_decode(data(s), len(s), data(out), data(__b64_values))
+    if n < 0: return none
+    out.resize(n)
+    out
+
+__b64_values: u8[]
+
+# (the bytes into o, how many; -1 for a character that is not base64)
+__b64_decode = (s: *u8, len: int, o: *u8, values: *u8) -> int:
+    n = 0
     acc = 0
     bits = 0
-    loop k in [0..len(s)):
-        c = s[k]
-        if c == '=': break
-        if is_space(c): continue
-        v = __b64_value(c)
-        if v < 0: return none
-        acc = (acc << 6) | v
+    loop k in [0..len):
+        v = int(values[s[k]])
+        if v >= 64:
+            if v == 64: continue
+            if v == 65: break
+            return -1
+        acc = ((acc << 6) | v) & 0xFFFFFF
         bits += 6
         if bits >= 8:
             bits -= 8
-            out.push(u8((acc >> bits) & 255))
-    out
+            o[n] = u8((acc >> bits) & 255)
+            n += 1
+    n

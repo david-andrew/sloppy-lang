@@ -72,6 +72,7 @@ the copy back.
 | `python3 tools/runtests.py` | the same programs through the C bootstrap compiler |
 | `python3 tools/lsptest.py` | the language server, driven as an editor does |
 | `python3 tools/rendertest.py --no-gpu` | games rendered by the software renderer against reference frames |
+| `python3 tools/deflatecheck.py` | `deflate`'s output read back by Python's zlib (native and wasm), on inputs of each kind; a stepped `Deflater` gives the same bytes |
 | `python3 tools/watchtest.py` | hot reloading |
 | `python3 tools/fuzz.py 100` | random valid programs, built four ways, must agree |
 | `python3 tools/gpufuzz.py 100 [--shaders]` | random compute functions on the CPU, the GPU and lavapipe (or fragment shaders: software, OpenGL, Vulkan) must agree; `--reduce` shrinks a failure |

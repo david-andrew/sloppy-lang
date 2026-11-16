@@ -3063,6 +3063,16 @@ Images: RGBA8 pixel buffers, PNG decoding (with a built-in inflate; JPEG: jpeg.j
 #### Deflate (RFC 1951)
 
 - `deflate = (src: u8[]) -> u8[]`: compress bytes into a raw deflate stream (inflate reads it back)
+- `struct Deflater`: deflate a few milliseconds at a time: a big one (a game's save, megabytes) in the frames while the game goes on, giving the same bytes as deflate. Start it when saving, step it each frame, and write when it says it is done:
+  ```gdscript
+  saving = deflater(bytes(to_text(world)))          # when saving
+  if saving.step(0.003):                            # in update: 3 ms a frame
+      save_data("world", str_from_bytes(saving.result()))
+  ```
+- `deflater = (src: u8[]) -> Deflater`: a Deflater for these bytes, to step until it is done
+- `step = (d: mut Deflater, seconds: f64) -> bool`: go on for about this many seconds (it looks at the clock after each 4 KB of the input); true when it is done
+- `progress = (d: Deflater) -> f64`: how much of the input it has been through, 0 to 1
+- `result = (d: mut Deflater) -> u8[]`: the deflated bytes (if step has not said done yet, this does the rest of the work first)
 
 #### PNG writing
 

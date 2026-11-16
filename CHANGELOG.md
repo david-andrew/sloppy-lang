@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `deflate` is 3.3-3.7x faster, in a web page as natively, and its output no larger on text: a
+  23 MB saved world took 1.9 s to deflate in a laptop's browser and takes 0.51 s (2.07 MB, was
+  2.08 MB). It finds matches as zlib's level 5 does (the bytes compared 8 at a time, a hash of
+  4 bytes, a chain of 24 positions or 6 after a match of 8, no search after a match of 16, none
+  past 128), and writes 32 bits at a time. Its output is a raw deflate stream, as before:
+  `tools/deflatecheck.py` has Python's zlib read it back, on inputs of each kind.
+- `deflater(bytes)` deflates a little at a time, for a big save in the frames while the game
+  goes on: `d.step(0.003)` works about 3 ms (4 KB of the input, or a block written, between
+  looks at the clock) and says when it is done, `d.progress()` is how far it is (0 to 1), and
+  `d.result()` gives the bytes, the same as `deflate`'s.
+- `base64_encode` is about twice as fast and `base64_decode` 1.5-4x (no array grown a byte at a
+  time; a table of the characters' values).
+
 ## 0.37.4
 
 OpenGL and WebGL draws set no vertex attributes again for a mesh drawn by several shaders or in
