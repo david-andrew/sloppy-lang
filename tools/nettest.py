@@ -210,8 +210,11 @@ try:
     room_players[1] = room_player("guest1", ROLE="guest", REJOIN="1")
     room_outs = [p.communicate(timeout=120) for p in room_players]           # (1800 frames paced at 60 a second: 30 s at best)
     room_lines = [[l for l in o.splitlines() if l.strip()] for o, err in room_outs]
-    room_hashes = [l[0].split(": ", 1)[1] if l and l[0].startswith(f"player {i}: ") else None for i, l in enumerate(room_lines)]
-    if None not in room_hashes and len(set(room_hashes)) == 1 and room_hashes[0].endswith("desync -1 problem ''") and room_lines[0][1:] == ["came back: [1]"] and all(p.returncode == 0 for p in room_players):
+    # (guests 2 and 3 arrive together: either may be player 2; the host is 0 and guest 1 is 1)
+    room_seen = [l[0].split(": ", 1) if l and l[0].startswith("player ") else None for l in room_lines]
+    room_hashes = [x[1] if x else None for x in room_seen]
+    room_ids = sorted(x[0] for x in room_seen if x)
+    if None not in room_hashes and room_ids == ["player 0", "player 1", "player 2", "player 3"] and room_seen[0][0] == "player 0" and room_seen[1][0] == "player 1" and len(set(room_hashes)) == 1 and room_hashes[0].endswith("desync -1 problem ''") and room_lines[0][1:] == ["came back: [1]"] and all(p.returncode == 0 for p in room_players):
         print("ok   room starter: four players, saved token and reload, no drawing")
     else:
         failed += 1

@@ -258,12 +258,16 @@ class Run:
 
     def same_screen(self, what):
         """the terminal shows what the program drew"""
-        self.read(0.2)
-        try:
-            want = open(self.screen, encoding="utf-8").read()
-        except OSError:
-            want = ""
-        got = self.term.text()
+        # (a program that keeps drawing, a task's, rewrites its file as it goes: read again until
+        # the file is whole and the terminal has caught up, for a second at most)
+        for _ in range(10):
+            self.read(0.1)
+            try:
+                want = open(self.screen, encoding="utf-8").read()
+            except OSError:
+                want = ""
+            got = self.term.text()
+            if want and got == want: break
         check(got == want, f"{what}: the terminal shows what was drawn", f"terminal:\n{got}\nprogram:\n{want}")
         return got
 
