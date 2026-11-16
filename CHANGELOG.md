@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- `to_bytes(value)` and `from_bytes[T](bytes)`: any value to_text writes, in a binary form, and
+  back with from_text's tolerance. Fields go by name through a schema at the start of the bytes:
+  a field added keeps its default, one removed is skipped, and one whose kind changed is a
+  `TextError` naming it (`pets[3].age: saved as int, but Pet.age is str now`). Enum variants go
+  by name too. The same value gives the same bytes. Aegean Skies' 22.9 MB saved world is
+  10.1 MB as bytes (1.61 MB deflated, against the text's 2.07 MB). Natively to_bytes takes
+  65 ms against to_text's 435 ms, and from_bytes 115 ms against from_text's 620 ms. In wasm
+  (node) the figures are 64 ms against 612 ms, and 129 ms against 911 ms.
+- `byte_writer(value)` and `byte_reader[T](bytes)` do the same a few milliseconds at a time, as
+  `deflater` does: `w.step(0.003)` until it is true, `w.progress()`, then `w.result()`, which
+  is the same as to_bytes's (or from_bytes's). They stop between struct fields, array elements
+  and map entries. The format is in [docs/design/binary-values.md](docs/design/binary-values.md).
+- The plain memory-image functions that had these names are now `plain_bytes(x)` (a plain
+  struct, an array of plain values, an n-dimensional array) and `plain_from_bytes[T](b)`.
+  Breaking: code that called `to_bytes(cpu)` for a memory image now gets the binary form
+  (nothing in the repository or Aegean Skies did).
+
 ## 0.37.7
 
 OpenGL and WebGL: a mesh drawn from another instance buffer re-points only its instance
@@ -35,20 +52,6 @@ chooses, and drivers that compile in parallel get every program at once.
   `GL_ARB_parallel_shader_compile` (native OpenGL), every program starts compiling and linking
   when it is made, on the driver's threads; a limited `warm_up_shaders` finishes only those the
   driver reports done (`COMPLETION_STATUS_KHR`) and never waits for one.
-- `to_bytes(value)` and `from_bytes[T](bytes)`: any value to_text writes, in a binary form, and
-  back with from_text's tolerance. Fields go by name through a schema at the start of the bytes:
-  a field added keeps its default, one removed is skipped, and one whose kind changed is a
-  `TextError` naming it (`pets[3].age: saved as int, but Pet.age is str now`). Enum variants go
-  by name too. The same value gives the same bytes. Aegean Skies' 22.9 MB saved world is
-  10.1 MB as bytes (1.61 MB deflated, against the text's 2.07 MB). Natively to_bytes takes
-  65 ms against to_text's 435 ms, and from_bytes 115 ms against from_text's 620 ms. In wasm
-  (node) the figures are 64 ms against 612 ms, and 129 ms against 911 ms.
-- `byte_writer(value)` and `byte_reader[T](bytes)` do the same a few milliseconds at a time, as
-  `deflater` does: `w.step(0.003)` until it is true, `w.progress()`, then `w.result()`, which
-  is the same as to_bytes's (or from_bytes's). They stop between struct fields, array elements
-  and map entries. The format is in [docs/design/binary-values.md](docs/design/binary-values.md).
-- The plain memory-image functions that had these names are now `plain_bytes(x)` (a plain
-  struct, an array of plain values, an n-dimensional array) and `plain_from_bytes[T](b)`.
 
 ## 0.37.5
 
