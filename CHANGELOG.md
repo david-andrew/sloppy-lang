@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.37.4
+
+OpenGL and WebGL draws set no vertex attributes again for a mesh drawn by several shaders or in
+batches.
+
 - OpenGL/WebGL: a mesh keeps up to four vertex arrays, each set up for one shader and buffers, and
   a draw whose instances (or vertices) start elsewhere re-points only those attributes. 0.36.2's
   cache missed whenever a mesh was drawn by two shaders in turn (the shadow pass's and the lit
