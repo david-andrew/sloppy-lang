@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.38.2
+
+OpenGL and WebGL warm up only the shaders a game will draw (`make_shader(src, warm = false)`,
+`warm_up_later`), and a shader made again from the same source is linked once.
+
 - `make_shader(src, warm = false)`: a shader the warm-ups leave alone, linked at its first draw or
   by `warm_up(sh)`; `warm_up_later(sh)` queues it (with parallel compiling, its link starts).
   `warm_up_shaders` linked every program made: 77 for Aegean Skies, about 35 of them drawn in a
