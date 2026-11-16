@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.38.4
+
 A shader's GLSL is the same text from build to build while its own code is, so browsers' program
 caches (keyed by the source text) still hold it after a deploy.
 
