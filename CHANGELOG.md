@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.37.6
+
+OpenGL and WebGL link each shader at its first draw, `warm_up_shaders` links the rest when a game
+chooses, and drivers that compile in parallel get every program at once.
+
 - OpenGL and WebGL link a shader at its first draw instead of when it is made: `make_shader` and
   the library's own shaders (lit, shadow, sky, PBR, post effects, particles) return at once.
   Linking took a phone (Adreno 650, Chrome) about 60 ms a program, 3.2 s of the 9 s before Aegean
