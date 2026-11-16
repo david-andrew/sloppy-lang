@@ -1,0 +1,75 @@
+# requires: sloppy (rollback rejoining: a returning player sent the game at a tick the games are compared at)
+# A returning player takes the game at the tick the host is sure of. Until it makes a newer hash
+# of its own, its packets say that tick's: when that tick was one the games are compared at (each
+# 30th), and the returning player went back to playing before the next one (here player 1 pauses
+# while it catches up, so the others' inputs it needs come late), it said 0 for it, and the host
+# found the games different there, as did every machine after it (a macOS run of nettest: "the
+# games differ from tick 450 on", the game sent at tick 450). Player 2 restarts at each of 20
+# frames in turn, so that the game it is sent is at ticks of every kind.
+import netplay
+
+struct Pad:
+    dx = 0
+struct Game:
+    pos: int[] = [0, 0, 0]
+
+step = (g: Game, pads: Pad[]) -> Game:
+    let g = g
+    loop p in [0..3): g.pos[p] += pads[p].dx
+    g
+pad = (p: int, t: int) -> Pad: Pad(int(hash(t * 3 + p) % 3) - 1)
+
+make = (p: int, token: str) -> netplay.Session[Game, Pad]:
+    s = netplay.session(Game(), step, players = 3, me = p)
+    # (the same star as over([-1, a, b]) / over([host, -1, -1]), without sockets)
+    if p != 0: s.__hub = 0
+    s.allow_rejoin(token)
+    s
+
+# (player 2's program restarts at frame `back` - 60 and comes back at `back`: the tick of the game
+# it was sent, the tick of its first hash, and whether every machine is healthy after)
+run = (back: int) -> (int, int, bool):
+    netplay.clock(0.0)
+    ss = [loop p in [0..3): make(p, "")]
+    link = netplay.Link(latency = 0.0)
+    running = [true, true, true]
+    token = ""
+    sent_at = -1
+    first_check = -1
+    pause = -1
+    came = -1
+    f = 0
+    loop f < 2000 and (came < 0 or f < came + 200):
+        now = f64(f) / 60.0
+        netplay.clock(now)
+        if f == back - 60:
+            token = ss[2].rejoin_token
+            running[2] = false
+            ss[0].stand_in(2, Pad())
+        if f == back:
+            ss[2] = make(2, token)
+            running[2] = true
+        loop p in [0..3):
+            if not running[p] or (p == 1 and pause >= 0 and f < pause + 20): continue
+            ss[p].play(pad(p, ss[p].tick + ss[p].delay))
+            loop o in ss[p].outgoing(): link.send(o.0, o.1, now)
+        if sent_at < 0 and ss[2].__rj.phase >= 3:
+            sent_at = ss[2].__rj.tick
+            pause = f
+        if first_check < 0 and ss[2].__rj.phase >= 4: first_check = ss[2].__check
+        if ss[0].rejoined.len() > 0: came = f
+        loop d in link.deliver(now):
+            if running[d.0]: ss[d.0].receive(d.1)
+        f += 1
+    healthy = came >= 0
+    loop p in [0..3): healthy = healthy and ss[p].problem == "" and ss[p].desync < 0
+    (sent_at, first_check, healthy)
+
+# (the case: sent at a compared tick, and playing again before it made the next hash)
+seen = false
+sick: int[]
+loop back in [320..340):
+    r = run(back)
+    if r.0 % 30 == 0 and r.1 == r.0: seen = true
+    if not r.2: sick.push(r.0)
+print("sent at a compared tick, and played from it:", seen, "every machine healthy:", sick.len() == 0, sick)

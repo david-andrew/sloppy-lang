@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Rollback netplay: a returning player whose game was sent at a tick the games are compared at
+  (each 30th) no longer makes every machine report a desync there. Until it hashed a later tick
+  of its own, its packets gave 0 as that tick's hash, and the host compared it with its own when
+  the returning player went back to playing before reaching the next compared tick (another
+  player late with its inputs while it caught up). Seen on a macOS runner as "the games differ
+  from tick 450 on" on all three machines of nettest's restarted-player game, whose games were
+  the same.
+
 ## 0.37.1
 
 Texture reads in generated shaders are highp (Adreno read them at half precision), `gamepad_name`
@@ -17,6 +25,7 @@ in a web page is the browser's `Gamepad.id`, and wasm programs run by node make 
 - A wasm program run by node makes directories: `mkdir` / `make_dirs` did nothing there and said
   they had (a file written into one then failed), and `is_dir` was always false; in a page,
   `is_dir` is true for a directory made or holding a file.
+
 ## 0.37.0
 
 Input: `hud_nav(on)` lets the arrow keys, d-pad and stick work the `hud_` boxes (focus ring in
