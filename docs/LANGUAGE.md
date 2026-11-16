@@ -2640,9 +2640,14 @@ finished, or in a test of your own. Environment variables say what happens:
 - `SLOPPY_INPUT="5:space+,9:space-"` presses and releases keys at given frames (commas or
   spaces between items). Keys are as `Key` names them: `a`, `n1`, `space`, `enter`, `escape`,
   `left`, `shift`...; `mouse_left`, `mouse_right` and `mouse_middle` are the mouse's buttons,
-  `12:mouse=400x300` moves the mouse there and `3:wheel=1` turns the wheel a notch (in the
-  screen's units), `7:text=hi there` types (to the next comma), `5:touch1=400x300` puts finger 1 down there (or moves it)
-  and `9:touch1-` lifts it (the first finger down is the mouse too, as on a phone),
+  `12:mouse=400x300` moves the mouse there and `3:wheel=1` turns the wheel a notch,
+  `7:text=hi there` types (to the next comma), `5:touch1=400x300` puts finger 1 down there (or moves it)
+  and `9:touch1-` lifts it (the first finger down is the mouse too, as on a phone). Positions are
+  in the screen's units, as `mouse_pos()` gives them and the program draws in (the size it gave
+  `window()`, 1280 x 720 by default), whatever size the window really is: with
+  `SLOPPY_WINDOW=844x390` a script still says `touch1=1043x258` for a button the program drew at
+  (1043, 258). A screenshot is in the window's own pixels, so a point read off one is scaled by
+  the screen's units over the window's size (and less any letterboxing) first.
   `5:pad_a+`/`9:pad_a-` press and let go a gamepad's button (pad 0; PadButton's names:
   `a`, `b`, `x`, `y`, `up`, `down`, `left`, `right`, `start`...); `5:pad_down+` is d-pad down,
   `6:lstick=1x0` and `rstick=` set its sticks, `lt=1` and `rt=` its triggers (another gamepad
