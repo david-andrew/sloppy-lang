@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `set_wheel_scale(s)` (and `wheel_scale()`): how much a notch of the mouse wheel counts in
+  `mouse_wheel`, and so in everything that scrolls by it (hud_scroll lists, text boxes, ui_ and
+  layout lists, a game's own zoom): a setting for players who find the wheel too fast.
+- In a web page the wheel counts in notches whatever the browser reports: lines (Firefox, 3 a
+  notch), pixels (Chrome and Safari, 100 a notch) or pages. Each wheel event counted a whole
+  notch, so a trackpad's stream of small ones scrolled many times too fast; now they glide.
+
 ## 0.38.0
 
 Values in a binary form: `to_bytes` / `from_bytes` (any value to_text writes, with from_text's

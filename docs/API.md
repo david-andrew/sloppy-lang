@@ -2451,6 +2451,8 @@ Windows, the frame loop and input. Linux: Wayland (or X11), drawn with Vulkan (o
 - `mouse_pos = () -> vec2`: (in the 2D units of the screen: see screen_size and screen.jo)
 - `mouse_delta = () -> vec2`
 - `mouse_wheel = () -> f64`
+- `set_wheel_scale = (s: f64)`: how much a notch of the mouse wheel counts in mouse_wheel (1.0, the default: one; less, slower), for everything that reads it: hud_scroll lists, text boxes, ui_ and layout lists, a game's own zoom. A setting for players who find the wheel too fast: set_wheel_scale(settings.wheel)
+- `wheel_scale = () -> f64`: (set_wheel_scale's)
 - `mouse_down = (b: Mouse) -> bool`
 - `mouse_pressed = (b: Mouse) -> bool`
 - `mouse_released = (b: Mouse) -> bool`
