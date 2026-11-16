@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.38.1
+
+`set_wheel_scale` for a slower mouse wheel, and the wheel in web pages counted in notches.
+
 - `set_wheel_scale(s)` (and `wheel_scale()`): how much a notch of the mouse wheel counts in
   `mouse_wheel`, and so in everything that scrolls by it (hud_scroll lists, text boxes, ui_ and
   layout lists, a game's own zoom): a setting for players who find the wheel too fast.
