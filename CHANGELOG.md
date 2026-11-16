@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.37.2
+
+hud_nav for boxes a game draws itself (`hud_nav_box`, `hud_nav_focused`), a chosen starting focus
+(`hud_nav_focus`) and other devices' controls (`hud_nav_input`); hud_nav reads only standard
+gamepads. A rejoining rollback player no longer causes a false desync report.
+
 - Rollback netplay: a returning player whose game was sent at a tick the games are compared at
   (each 30th) no longer makes every machine report a desync there. Until it hashed a later tick
   of its own, its packets gave 0 as that tick's hash, and the host compared it with its own when
