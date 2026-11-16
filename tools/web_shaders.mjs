@@ -67,6 +67,7 @@ try {
       if (/f_budget_fs_/.test(sources)) window.budgetPixel = Array.from(pixel);
       if (/f_nested_budget_fs_/.test(sources)) window.nestedBudgetPixel = Array.from(pixel);
       if (/f_sampler_fs_/.test(sources)) window.samplerPixel = Array.from(pixel);
+      if (/f_unset_fs_/.test(sources)) window.unsetPixel = Array.from(pixel);
     };
   ` });
   await send("Page.navigate", { url: "file://" + page });
@@ -89,6 +90,7 @@ try {
   expect("independent color uniform uploads and draws green", JSON.stringify(await ev("budgetPixel")) === "[0,255,0,255]", JSON.stringify(await ev("budgetPixel")));
   expect("nested paths, uniform arrays, ordinary copies and mutable helpers draw green", JSON.stringify(await ev("nestedBudgetPixel")) === "[0,255,0,255]", JSON.stringify(await ev("nestedBudgetPixel")));
   expect("GPU buffers and a struct holding a texture and a buffer draw green", JSON.stringify(await ev("samplerPixel")) === "[0,255,0,255]", JSON.stringify(await ev("samplerPixel")));
+  expect("an unset GpuBuffer and Texture draw (each sampler a unit and a texture of its type)", JSON.stringify(await ev("unsetPixel")) === "[0,255,0,255]", JSON.stringify(await ev("unsetPixel")));
   expect("no linked program has a struct holding a sampler", startup.some((p) => p.sources.some((s) => /f_sampler_fs_/.test(s))) &&
     !startup.some((p) => p.sources.some((s) => /struct\s+\w+\s*\{[^}]*sampler/.test(s))));
   console.log("ANGLE limits: " + JSON.stringify(await ev(`(() => {

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.37.7
+
+OpenGL and WebGL: a mesh drawn from another instance buffer re-points only its instance
+attributes, and an unset GpuBuffer draws.
+
+- A mesh's vertex array no longer depends on which instance buffer a draw uses: another buffer
+  (or another place in one) re-points only the instance attributes, where 0.37.4 set the whole
+  array up again (on a phone, a game's title made 376 enables, pointers and divisors a frame). Ten
+  instance buffers drawn from one mesh: 10 pointer calls a frame instead of 20 of each.
+- A GpuBuffer left unset in a shader's uniforms gets a texture unit of its own with a texel of
+  zeros (its length is 0): on unit 0 beside a Texture, WebGL refused the draw ("two textures of
+  different types use the same sampler location").
+
 ## 0.37.6
 
 OpenGL and WebGL link each shader at its first draw, `warm_up_shaders` links the rest when a game
