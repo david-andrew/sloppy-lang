@@ -200,7 +200,8 @@ room_players.append(room_player("guest1", ROLE="guest"))
 time.sleep(0.2)
 room_players.extend(room_player("guest" + str(i), ROLE="guest") for i in (2, 3))
 try:
-    deadline = time.monotonic() + 30
+    # (90 s: four players starting at once on a slow macOS runner took more than 30 s to get there)
+    deadline = time.monotonic() + 90
     while not os.path.exists(os.path.join(room_dir, "restart")) and time.monotonic() < deadline:
         time.sleep(0.05)
     if not os.path.exists(os.path.join(room_dir, "restart")): raise RuntimeError("guest did not save its rejoin token")
