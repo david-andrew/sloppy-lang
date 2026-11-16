@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- With no display (`DISPLAY` and `WAYLAND_DISPLAY` unset), a run with `SLOPPY_FRAMES=n` and no
+  screenshot draws headless on the GPU through Vulkan, as a `SLOPPY_SCREENSHOT` run does; it
+  stopped with "cannot open a window" (only the software renderer ran with no display then).
+
 ## 0.38.2
 
 OpenGL and WebGL warm up only the shaders a game will draw (`make_shader(src, warm = false)`,

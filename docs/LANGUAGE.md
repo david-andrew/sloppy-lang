@@ -2638,7 +2638,8 @@ finished, or in a test of your own. Environment variables say what happens:
   has the window's pixels, the size asked for (on a scaled Wayland display too: `SLOPPY_SCALE=2`
   renders at twice it). With `SLOPPY_SOFTWARE=1` no display is needed at all, and without it
   and no display (unset `WAYLAND_DISPLAY` and `DISPLAY`) the frames are drawn through Vulkan
-  with no window; where there is a display, the window opens on it.
+  with no window, on the GPU (a `SLOPPY_FRAMES=n` run without a screenshot too: a headless GPU
+  timing or capture run); where there is a display, the window opens on it.
 - `SLOPPY_NO_DRAW=1` runs a native game's update and scripted input with no window, draw
   callbacks or frame presentation. Use it for fast logic and multiplayer tests, especially 3D
   games that would otherwise render in software. Keep simulation and network handling in
