@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.38.0
+
+Values in a binary form: `to_bytes` / `from_bytes` (any value to_text writes, with from_text's
+tolerance of changed structs; Aegean Skies' saved world is 10.1 MB instead of 22.9 MB, and reads
+back in a sixth of the time) and stepped `byte_writer` / `byte_reader`. The plain memory-image
+functions that had these names are now `plain_bytes` / `plain_from_bytes`.
+
 - `to_bytes(value)` and `from_bytes[T](bytes)`: any value to_text writes, in a binary form, and
   back with from_text's tolerance. Fields go by name through a schema at the start of the bytes:
   a field added keeps its default, one removed is skipped, and one whose kind changed is a
