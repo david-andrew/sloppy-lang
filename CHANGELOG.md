@@ -9,22 +9,6 @@
   player late with its inputs while it caught up). Seen on a macOS runner as "the games differ
   from tick 450 on" on all three machines of nettest's restarted-player game, whose games were
   the same.
-
-## 0.37.1
-
-Texture reads in generated shaders are highp (Adreno read them at half precision), `gamepad_name`
-in a web page is the browser's `Gamepad.id`, and wasm programs run by node make directories.
-
-- Generated GLSL declares `precision highp sampler2D;`. GLSL ES gives a sampler2D lowp by default
-  and texture() returns its sampler's precision, so on Adreno (lowp and mediump are half floats)
-  every texture read was at fp16: a 24-bit depth encoding saturated at 65504. The library's 2D
-  sprite shader says `mediump` (8-bit colors), and tools/webglbudget.py fails any stage with a
-  sampler2D left at lowp.
-- In a web page, `gamepad_name(pad)` is the browser's `Gamepad.id` (it was ""), so a game's
-  controls page can name the device.
-- A wasm program run by node makes directories: `mkdir` / `make_dirs` did nothing there and said
-  they had (a file written into one then failed), and `is_dir` was always false; in a page,
-  `is_dir` is true for a directory made or holding a file.
 - `hud_nav_box(r, ring = true)`: a box the game draws itself (a page, a card, a counter) that
   hud_nav's focus reaches as it does a `hud_button`. Called after the game draws it, it is true in
   the frame it is clicked or tapped, or chosen with the focus on it (Enter, space, A), and counts
@@ -42,6 +26,22 @@ in a web page is the browser's `Gamepad.id`, and wasm programs run by node make 
   `gamepad_down` make of a flight stick, wheel or pedals (Linux reads their stick and throttle as
   sticks and triggers, a hat as the d-pad, the trigger as A; pedals at rest can hold a stick to
   one side) no longer moves the focus or chooses; such devices go through `hud_nav_input`.
+
+## 0.37.1
+
+Texture reads in generated shaders are highp (Adreno read them at half precision), `gamepad_name`
+in a web page is the browser's `Gamepad.id`, and wasm programs run by node make directories.
+
+- Generated GLSL declares `precision highp sampler2D;`. GLSL ES gives a sampler2D lowp by default
+  and texture() returns its sampler's precision, so on Adreno (lowp and mediump are half floats)
+  every texture read was at fp16: a 24-bit depth encoding saturated at 65504. The library's 2D
+  sprite shader says `mediump` (8-bit colors), and tools/webglbudget.py fails any stage with a
+  sampler2D left at lowp.
+- In a web page, `gamepad_name(pad)` is the browser's `Gamepad.id` (it was ""), so a game's
+  controls page can name the device.
+- A wasm program run by node makes directories: `mkdir` / `make_dirs` did nothing there and said
+  they had (a file written into one then failed), and `is_dir` was always false; in a page,
+  `is_dir` is true for a directory made or holding a file.
 
 ## 0.37.0
 

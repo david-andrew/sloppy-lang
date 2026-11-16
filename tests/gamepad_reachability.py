@@ -25,6 +25,7 @@ CASES += [
     ("ui", DRAW + '    ui_begin("menu", vec2(160, 20))\n    ui_button("Go")\n    ui_end()\n', True),
     ("hud mouse button", DRAW + '    hud_button(Rect(10, 10, 80, 30), "Go")\n', False),
     ("hud_nav", DRAW + '    hud_nav(true)\n    hud_button(Rect(10, 10, 80, 30), "Go")\n', True),
+    ("hud_nav_box without hud_nav", DRAW + '    if hud_nav_box(Rect(10, 10, 80, 30)): print("go")\n', False),
     ("layout", 'import layout as ui\n' + DRAW + '    ui.at(Rect(0, 0, 300, 200), ():\n        ui.button("Go")\n    )\n', True),
 ]
 MARKERS = (b"HidP_GetCaps", b"GetRawInputDeviceList", b"XInputGetState", b"xinput1_4.dll")
