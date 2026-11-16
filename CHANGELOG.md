@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.37.1
+
+Texture reads in generated shaders are highp (Adreno read them at half precision), `gamepad_name`
+in a web page is the browser's `Gamepad.id`, and wasm programs run by node make directories.
+
+- Generated GLSL declares `precision highp sampler2D;`. GLSL ES gives a sampler2D lowp by default
+  and texture() returns its sampler's precision, so on Adreno (lowp and mediump are half floats)
+  every texture read was at fp16: a 24-bit depth encoding saturated at 65504. The library's 2D
+  sprite shader says `mediump` (8-bit colors), and tools/webglbudget.py fails any stage with a
+  sampler2D left at lowp.
 - In a web page, `gamepad_name(pad)` is the browser's `Gamepad.id` (it was ""), so a game's
   controls page can name the device.
 - A wasm program run by node makes directories: `mkdir` / `make_dirs` did nothing there and said

@@ -5,7 +5,8 @@ Build library shaders, examples, render scenes, API examples and shader tests as
 Count declarations conservatively: one vec4 row per scalar/vector, matrix column or
 array element (including nested structs). This bounds Appendix A packing; it is not
 std140, and deliberately does not rely on a driver's dead-uniform elimination.
-Also fail on any struct holding a sampler (Adreno 650 under ANGLE misresolves them).
+Also fail on any struct holding a sampler (Adreno 650 under ANGLE misresolves them), and on a
+sampler2D left at GLSL ES's default lowp (Adreno reads its texture() at fp16: a depth copy saturated).
 Usage: tools/webglbudget.py [--compiler PATH] [--json PATH] [source.jo ...]
 """
 import argparse
@@ -82,6 +83,10 @@ def audit(source):
     errors = [f"{key}: {counts[key]} > {limit}" for key, limit in limits.items() if counts[key] > limit]
     if nested:
         errors.append(f"struct holding a sampler: {', '.join(nested)}")
+    # (a sampler2D's default precision is lowp in both stages, and texture() returns its sampler's
+    # precision: on Adreno fp16, so 24-bit depth read as at most 65504)
+    if re.search(r"(?<!highp )(?<!mediump )\bsampler2D\b", source) and not re.search(r"precision\s+highp\s+sampler2D\s*;", source):
+        errors.append("sampler2D at the default lowp precision")
     metadata = re.search(r"// sloppy resources: uniforms=(\d+) samplers=(\d+) varyings=(\d+) attributes=(\d+)", original)
     if metadata and tuple(map(int, metadata.groups())) != tuple(counts.values()):
         errors.append(f"compiler resource metadata disagrees with declarations: {metadata.groups()} != {counts}")
@@ -123,6 +128,7 @@ def check_counter():
     # Independent packing fixtures: both legal array spellings, nested aggregates,
     # non-square matrices, samplers, centroid/flat varyings and matrix attributes.
     source = """#version 300 es
+precision highp sampler2D;
 struct Inner { vec4[3] a; mat3x2 m; sampler2D t[2]; };
 struct Outer { Inner[2] children; float scalar; };
 uniform Outer u;
@@ -139,8 +145,11 @@ void main() { gl_Position = vec4(0); }
     assert old["errors"] == ["struct holding a sampler: S_GB"], old
     flat = audit("uniform highp isampler2D sl_u_0_t;\nuniform int sl_u_0_n;\nint f(highp isampler2D b_t, int b_n) { return b_n; }\nvoid main() {}")
     assert not flat["errors"] and flat["samplers"] == 1 and flat["uniforms"] == 2, flat
+    low = audit("uniform sampler2D t;\nvoid main() {}")
+    assert low["errors"] == ["sampler2D at the default lowp precision"], low
+    assert not audit("uniform highp sampler2D t;\nvoid main() {}")["errors"]
     for declaration, key in (("uniform vec4 big[225];", "uniforms"),
-                             ("uniform sampler2D t[17];", "samplers"),
+                             ("precision highp sampler2D;\nuniform sampler2D t[17];", "samplers"),
                              ("in vec4 v[16];", "varyings")):
         result = audit(declaration + "\nvoid main() {}")
         assert any(e.startswith(key + ":") for e in result["errors"]), result
