@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.37.5
+
+`deflate` 3.3-3.7x faster with output no larger, `deflater` to spread one over frames, and faster
+base64.
+
 - `deflate` is 3.3-3.7x faster, in a web page as natively, and its output no larger on text: a
   23 MB saved world took 1.9 s to deflate in a laptop's browser and takes 0.51 s (2.07 MB, was
   2.08 MB). It finds matches as zlib's level 5 does (the bytes compared 8 at a time, a hash of
