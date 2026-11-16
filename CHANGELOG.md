@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- In a web page, `gamepad_name(pad)` is the browser's `Gamepad.id` (it was ""), so a game's
+  controls page can name the device.
+- A wasm program run by node makes directories: `mkdir` / `make_dirs` did nothing there and said
+  they had (a file written into one then failed), and `is_dir` was always false; in a page,
+  `is_dir` is true for a directory made or holding a file.
 ## 0.37.0
 
 Input: `hud_nav(on)` lets the arrow keys, d-pad and stick work the `hud_` boxes (focus ring in

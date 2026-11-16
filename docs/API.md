@@ -2660,7 +2660,7 @@ A controller keeps its number while it is plugged in (players stay who they are)
 - `gamepads = () -> int[]`: the numbers of the gamepads connected
 - `gamepad_connected = () -> bool`
 - `gamepad_connected = (pad: int) -> bool`
-- `gamepad_name = (pad: int) -> str`: what the device calls itself ("" if it does not say)
+- `gamepad_name = (pad: int) -> str`: what the device calls itself ("" if it does not say; in a web page, the browser's Gamepad.id, which names the device and often its vendor and product numbers)
 - `gamepad_standard = (pad: int) -> bool`: whether pad is a standard-layout gamepad (two sticks, two triggers, the face buttons and a d-pad, as gamepad_down and gamepad_axis read them), and not a flight stick, wheel or pedals, whose own controls only joystick_axis and joystick_button read as they are (their throttle can look like a trigger to gamepad_axis); false if it is not connected. Web: the browser's "standard" mapping. Windows: XInput, the HID pads whose layout is known (PlayStation, Switch Pro, 8BitDo) and any HID device that says it is a gamepad (not a joystick). macOS: every pad (GameController's extended gamepad). Linux: the kernel's gamepad class (its buttons are BTN_SOUTH..., a joystick's BTN_TRIGGER...). SLOPPY_INPUT's pads: true unless the script sets their own axes or buttons or names them (or pad1_standard=0/1 says)
 - `gamepad_down = (pad: int, b: PadButton) -> bool`: a button of pad, or (without a pad) of any gamepad
 - `gamepad_pressed = (pad: int, b: PadButton) -> bool`
