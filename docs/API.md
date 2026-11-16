@@ -4391,11 +4391,12 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       gbuf: int                   # the vertices are a GPU buffer's (gpu_mesh): its number
       keep: u8[]                  # (and what keeps that buffer alive)
   ```
-- `warm_up = ()`: Prepare what is loaded, during a loading screen: OpenGL and WebGL link every shader not linked yet (warm_up_shaders()); Vulkan prepares the pipelines of the programs and layouts loaded.
-- `warm_up = (sh: Shader, mode: int = GL_TRIANGLES)`: Prepare one shader now: OpenGL and WebGL link it; Vulkan prepares its pipeline for the drawing state selected now (blending, target) and primitive `mode`.
-- `shaders_pending = () -> int`: how many shaders are waiting to be linked (0 on Vulkan, Metal and the software renderer)
-- `warm_up_shaders = (max_count: int = -1, max_ms: f64 = -1.0) -> int`: Link waiting shaders, oldest first: at most max_count of them (-1: no limit), starting no new one after max_ms milliseconds (-1: no limit; at least one is linked). With no limit, all of them (warm_up() does that too). Returns how many are still waiting. With parallel compiling, a limited call finishes only the programs whose linking is done, never waiting for one.
-- `make_shader = (src: ShaderSource) -> Shader`: a shader from shader(vs, fs); on OpenGL and WebGL its program is linked at its first draw (or by warm_up_shaders), and compile or link errors are reported there
+- `warm_up = ()`: Prepare what is loaded, during a loading screen: OpenGL and WebGL link every shader queued and not linked yet (warm_up_shaders()); Vulkan prepares the pipelines of the programs and layouts loaded.
+- `warm_up = (sh: Shader, mode: int = GL_TRIANGLES)`: Prepare one shader now: OpenGL and WebGL link it (one made with warm = false too); Vulkan prepares its pipeline for the drawing state selected now (blending, target) and primitive `mode`.
+- `shaders_pending = () -> int`: how many shaders are queued for warm-up and not linked yet (0 on Vulkan, Metal and the software renderer)
+- `warm_up_later = (sh: Shader)`: Queue a shader made with warm = false for warm_up_shaders (with parallel compiling, its linking starts now); one queued or linked already stays as it is.
+- `warm_up_shaders = (max_count: int = -1, max_ms: f64 = -1.0) -> int`: Link queued shaders, oldest first: at most max_count of them (-1: no limit), starting no new one after max_ms milliseconds (-1: no limit; at least one is linked). With no limit, all of them (warm_up() does that too). Returns how many are still waiting. With parallel compiling, a limited call finishes only the programs whose linking is done, never waiting for one.
+- `make_shader = (src: ShaderSource, warm: bool = true) -> Shader`: a shader from shader(vs, fs); on OpenGL and WebGL its program is linked at its first draw (or by warm_up_shaders, unless warm is false), and compile or link errors are reported there. Made again from the same source, it is the program made before.
 - `mesh[V] = (vertices: V[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh`: upload vertices (any struct type matching the shader's vertex input) and optional indices
 - `update_mesh[V] = (m: mut Mesh, vertices: V[])`
 - `draw[U] = (sh: Shader, m0: Mesh, params: U)`: draw a mesh with a shader; `params` is the uniforms struct the shader functions take

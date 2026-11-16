@@ -452,11 +452,40 @@ Adreno 650 under Chrome), and a 3D game makes dozens before its first frame, mos
 needed for its title screen. Vulkan, Metal and the software renderer make their programs at once,
 as before; there these calls do nothing.
 
-- `shaders_pending() -> int`: how many shaders are made but not linked yet.
-- `warm_up_shaders(max_count = -1, max_ms = -1.0) -> int`: link waiting shaders, oldest first:
+- `shaders_pending() -> int`: how many shaders are queued for warm-up and not linked yet.
+- `warm_up_shaders(max_count = -1, max_ms = -1.0) -> int`: link queued shaders, oldest first:
   at most `max_count`, starting no new one after `max_ms` milliseconds (at least one is linked).
   With neither limit it links them all. Returns how many still wait.
-- `warm_up()` links them all too (and prepares Vulkan's pipelines); `warm_up(sh)` links one.
+- `warm_up()` links them all too (and prepares Vulkan's pipelines); `warm_up(sh)` links one,
+  queued or not.
+- `make_shader(src, warm = false)`: a shader the warm-up leaves alone. It is linked at its first
+  draw or by `warm_up(sh)`; `warm_up_later(sh)` queues it (and, with parallel compiling, starts
+  its link).
+
+Only what is queued is linked by a warm-up, so a game that makes all its shaders at start but draws
+some of them only in one mode, one level or one kind of weather makes those with `warm = false`
+and links them when that part comes near: a shader linked and never drawn costs as much as one
+drawn (seconds, on a phone with a cold shader cache), and a browser keeps only so many programs
+in its cache, so unused ones can push out the ones a later visit needs.
+
+```jo
+storm_sh = make_shader(shader(storm_vs, storm_fs), warm = false)   # most games see no storm
+...
+if storm_coming: warm_up_later(storm_sh)            # the next warm_up_shaders links it
+```
+
+The library queues its own 3D shaders only while their feature is on, at each warm-up: the lit
+shader once 3D is drawn; the shadow ones while `shadows(true)`; the gradient sky's while the sky
+shows and is not `sky_image`; the instanced ones when `draw_mesh_instanced` is used; the skinned
+and PBR ones once a skinned mesh or a material is loaded. Post effects, particles and the image
+sky make theirs at their first use. A warm-up first makes the library's 3D shaders if the game
+draws 3D, so `warm_up()` on a loading screen covers its first 3D frame too.
+
+Making a shader again from the same source (the same stages and layout: a view rebuilt for a new
+game, a helper that makes its shader each call) gives the program made before, linked once; the
+two `Shader` values share it. The program does not depend on the meshes or instance buffers it
+is drawn with: a mesh's vertex array is set up for each shader it is drawn with (at most four
+kept per mesh), which links nothing, so there is no per-layout variant to warm up.
 
 The pattern: let the title screen's own shaders link at their first draw; while the screen is
 dark or a fade hides the frame, feed the rest a few at a time; link whatever is left before

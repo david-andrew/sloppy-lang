@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- `make_shader(src, warm = false)`: a shader the warm-ups leave alone, linked at its first draw or
+  by `warm_up(sh)`; `warm_up_later(sh)` queues it (with parallel compiling, its link starts).
+  `warm_up_shaders` linked every program made: 77 for Aegean Skies, about 35 of them drawn in a
+  title and a minute of play, on a phone where one cold link took 2.8 s and the browser's program
+  cache seemed too small for all of them.
+- The library's 3D shaders are queued for a warm-up only while their feature is on: the lit
+  shader once 3D is drawn, the shadow ones while shadows are on, the gradient sky's while it
+  shows, the instanced ones when `draw_mesh_instanced` is used, skinned and PBR ones once loaded;
+  one the game replaced is not linked. With shadows off and no instanced draw, a warm-up links 2
+  library programs instead of 5. A warm-up makes the library's 3D shaders first if the game draws
+  3D, so `warm_up()` on a loading screen covers the first 3D frame.
+- Making a shader again from the same source gives the program made before (as Vulkan already
+  did), linked once: Aegean Skies rebuilt its ship view for a new game and linked its two ship
+  programs again during play (7 to 41 ms each on the phone, warm). These were not per-layout
+  variants: an OpenGL program does not depend on the meshes or instance buffers drawn with it.
+
 ## 0.38.1
 
 `set_wheel_scale` for a slower mouse wheel, and the wheel in web pages counted in notches.

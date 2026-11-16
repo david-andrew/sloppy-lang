@@ -85,8 +85,8 @@ __warm_layout_kind = (kind: int) -> int:
     if kind == 2 or kind == 3 or kind == 7: return 1
     0
 
-# Prepare what is loaded, during a loading screen: OpenGL and WebGL link every shader not linked
-# yet (warm_up_shaders()); Vulkan prepares the pipelines of the programs and layouts loaded.
+# Prepare what is loaded, during a loading screen: OpenGL and WebGL link every shader queued and not
+# linked yet (warm_up_shaders()); Vulkan prepares the pipelines of the programs and layouts loaded.
 warm_up = ():
     warm_up_shaders()
     when TARGET != "wasm" and TARGET != "macos":
@@ -94,8 +94,8 @@ warm_up = ():
             __gfx_warm_context()
             __vg_warm_loaded()
 
-# Prepare one shader now: OpenGL and WebGL link it; Vulkan prepares its pipeline for the drawing
-# state selected now (blending, target) and primitive `mode`.
+# Prepare one shader now: OpenGL and WebGL link it (one made with warm = false too); Vulkan
+# prepares its pipeline for the drawing state selected now (blending, target) and primitive `mode`.
 warm_up = (sh: Shader, mode: int = GL_TRIANGLES):
     if sh.lid > 0 and sh.lid < __glp_state.len() and __glp_state[sh.lid] != 0: __glp_link(sh.lid)
     when TARGET != "wasm" and TARGET != "macos":
@@ -110,16 +110,30 @@ warm_up = (sh: Shader, mode: int = GL_TRIANGLES):
 # linking starts when it is made and goes on beside the game; warm_up_shaders then only finishes
 # the programs it says are done. Vulkan, Metal and the software renderer make their programs at
 # once: nothing waits there.
+# A shader made with make_shader(src, warm = false) waits for no warm-up: it is linked at its first
+# draw or by warm_up(sh), or queued later with warm_up_later(sh). The library's own 3D shaders are
+# queued only while their feature is on (shadows, the gradient sky, instanced or skinned meshes,
+# PBR materials), and one the game replaced is not queued. Making a shader from the same source
+# again gives the program made before, linked once.
 
-# how many shaders are waiting to be linked (0 on Vulkan, Metal and the software renderer)
-shaders_pending = () -> int: __glp_waiting
+# how many shaders are queued for warm-up and not linked yet (0 on Vulkan, Metal and the software
+# renderer)
+shaders_pending = () -> int:
+    __warm_hook_run()
+    __glp_waiting
 
-# Link waiting shaders, oldest first: at most max_count of them (-1: no limit), starting no new
+# Queue a shader made with warm = false for warm_up_shaders (with parallel compiling, its linking
+# starts now); one queued or linked already stays as it is.
+warm_up_later = (sh: Shader):
+    if sh.lid > 0 and sh.lid < __glp_state.len(): __glp_queue(sh.lid)
+
+# Link queued shaders, oldest first: at most max_count of them (-1: no limit), starting no new
 # one after max_ms milliseconds (-1: no limit; at least one is linked). With no limit, all of
 # them (warm_up() does that too). Returns how many are still waiting. With parallel compiling, a
 # limited call finishes only the programs whose linking is done, never waiting for one.
 warm_up_shaders = (max_count: int = -1, max_ms: f64 = -1.0) -> int:
     global __glp_first
+    __warm_hook_run()
     if __glp_waiting == 0 or max_count == 0: return __glp_waiting
     drain = max_count < 0 and max_ms < 0.0
     t0 = time()
@@ -127,7 +141,7 @@ warm_up_shaders = (max_count: int = -1, max_ms: f64 = -1.0) -> int:
     i = __glp_first
     loop i < __glp_state.len() and __glp_waiting > 0 and (max_count < 0 or done < max_count):
         st = __glp_state[i]
-        if st == 0:
+        if st == 0 or st == 3:
             if i == __glp_first: __glp_first = i + 1
             i += 1
             continue
@@ -150,22 +164,54 @@ struct __GlProg:
     names: str[]          # its uniforms' names, by location from `slot` in __gl_loc
     slot: int
 __glp: __GlProg[]         # by Shader.lid (entry 0: none)
-__glp_state: u8[]         # by Shader.lid: 0 linked (or not OpenGL), 1 waiting, 2 started (parallel)
+__glp_state: u8[]         # by Shader.lid: 0 linked (or not OpenGL), 1 waiting, 2 started (parallel),
+                          # 3 not queued (warm = false: linked at its first draw or by warm_up(sh))
 __glp_first = 1           # (none waits before this one)
-__glp_waiting = 0
+__glp_waiting = 0         # (in states 1 and 2)
 __gl_loc: int[]           # the shaders' uniform locations (-1 until linked, or not used)
+__glp_key: u64[]          # by Shader.lid: its source's hash (__shader_key), and the shader made
+__glp_sh: Shader[]
+
+# (__warm_hook, draw2d.jo: what queues the library's shaders whose feature is on)
+__warm_hook_run = ():
+    if __win_open and __gl_lazy(): __warm_hook()
+
+# OpenGL or WebGL: shaders are linked when drawn or warmed up
+__gl_lazy = () -> bool:
+    when TARGET == "wasm": return true
+    else: return not __vk and not __soft
 
 # compile and link the program of shader `id` (waiting for it if started), and find its uniforms
 __glp_link = (id: int):
     global __glp_waiting
     g = __glp[id]
     stages = g.stages
-    if __glp_state[id] == 1: stages = __gl_program_start(g.prog, g.vs, g.fs)
+    st = __glp_state[id]
+    if st != 2: stages = __gl_program_start(g.prog, g.vs, g.fs)
     __gl_program_finish(g.prog, stages, g.vs, g.fs)
     loop i in 0.. and n in g.names: __gl_loc[g.slot + i] = gl_uniform_location(g.prog, n)
     __glp_state[id] = 0
     __glp[id] = __GlProg(prog = g.prog)
-    __glp_waiting -= 1
+    if st != 3: __glp_waiting -= 1
+
+# put shader `id`, made with warm = false, on the warm-up queue (with parallel compiling: started)
+__glp_queue = (id: int):
+    global __glp_first, __glp_waiting
+    if __glp_state[id] != 3: return
+    st = u8(1)
+    if __gl_parallel():
+        __glp[id].stages = __gl_program_start(__glp[id].prog, __glp[id].vs, __glp[id].fs)
+        st = 2
+    __glp_state[id] = st
+    __glp_waiting += 1
+    if id < __glp_first: __glp_first = id
+
+# a shader's source as a number: the same source (stages and layout) gives the same program
+__shader_key = (src: ShaderSource) -> u64:
+    h = hash(src.vs)
+    h = (h xor hash(src.fs)) * 1099511628211
+    h = (h xor hash(src.layout)) * 1099511628211
+    h xor u64(len(src.vs) * 65599 + len(src.fs))
 
 # a uniform of a shader being made: its location now, or (lazy) where __gl_loc will hold it
 __shader_loc = (prog: int, lazy: bool, names: mut str[], name: str) -> int:
@@ -174,14 +220,16 @@ __shader_loc = (prog: int, lazy: bool, names: mut str[], name: str) -> int:
     __gl_loc.len() + names.len() - 1
 
 # a shader from shader(vs, fs); on OpenGL and WebGL its program is linked at its first draw (or by
-# warm_up_shaders), and compile or link errors are reported there
-make_shader = (src: ShaderSource) -> Shader:
-    sh = __make_shader(src, 0)
+# warm_up_shaders, unless warm is false), and compile or link errors are reported there. Made
+# again from the same source, it is the program made before.
+make_shader = (src: ShaderSource, warm: bool = true) -> Shader:
+    sh = __make_shader(src, 0, warm)
     when TARGET != "wasm" and TARGET != "macos":
         if __vk and not __soft: __vg_custom_prepare(sh.prog, sh.stride)
     sh
 
-__make_shader = (src: ShaderSource, warm_kind: int) -> Shader:
+# (warm false: not queued for warm_up_shaders; the library's 3D shaders are queued by their feature)
+__make_shader = (src: ShaderSource, warm_kind: int, warm: bool = true) -> Shader:
     global __glp_waiting
     __gfx_init_gl_only()
     prog = 0
@@ -193,6 +241,14 @@ __make_shader = (src: ShaderSource, warm_kind: int) -> Shader:
         else if __soft: prog = gl_create_program(src.vs, src.fs)
         else: lazy = true
     else: lazy = true
+    key: u64 = 0
+    if lazy:
+        # (the same source made before: its program, linked once)
+        key = __shader_key(src)
+        loop i in [1..__glp_key.len()):
+            if __glp_key[i] == key:
+                if warm: __glp_queue(i)
+                return __glp_sh[i]
     # (OpenGL: the program made now, linked at its first draw or by warm_up_shaders)
     if lazy: prog = __gl_program_new()
     sh = Shader(prog = prog)
@@ -231,6 +287,8 @@ __make_shader = (src: ShaderSource, warm_kind: int) -> Shader:
         if __glp.len() == 0:
             __glp.push(__GlProg())
             __glp_state.push(0)
+            __glp_key.push(0)
+            __glp_sh.push(Shader())
         sh.lid = __glp.len()
         # (a program's uniforms start at zero: so does what we remember of them)
         n = 0
@@ -239,16 +297,20 @@ __make_shader = (src: ShaderSource, warm_kind: int) -> Shader:
         if lazy:
             g = __GlProg(prog = prog, vs = src.vs, fs = src.fs, names = names, slot = __gl_loc.len())
             loop _ in names: __gl_loc.push(-1)
-            st = u8(1)
-            if __gl_parallel():
-                g.stages = __gl_program_start(prog, src.vs, src.fs)
-                st = 2
+            st = u8(3)
+            if warm:
+                st = 1
+                if __gl_parallel():
+                    g.stages = __gl_program_start(prog, src.vs, src.fs)
+                    st = 2
+                __glp_waiting += 1
             __glp.push(g)
             __glp_state.push(st)
-            __glp_waiting += 1
         else:
             __glp.push(__GlProg())
             __glp_state.push(0)
+        __glp_key.push(key)
+        __glp_sh.push(sh)
     sh
 
 # the bytes of the uniforms struct a uniform is set from
