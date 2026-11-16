@@ -187,29 +187,63 @@ update_mesh[V] = (m: mut Mesh, vertices: V[]):
     glBufferData(GL_ARRAY_BUFFER, vertices.len() * m.stride, data(vertices) as *u8, GL_DYNAMIC_DRAW)
     m.count = vertices.len()
 
-# What a mesh's vertex array object was last set up for. Its attributes (and index buffer) are its
-# own state, so a draw with the same shader, buffers and offsets binds it and sets nothing again:
-# on phones the calls setting them were a seventh of a game's frame.
+# A mesh's vertex arrays: up to four, each set up for one shader and buffers (the first is the
+# mesh's own). Their attributes (and index buffer) are their own state, so a draw with a shader and
+# buffers one was set up for binds it and sets nothing again, or re-points only the attributes
+# whose offset moved (the vertices' base, the instances' first): a mesh drawn by the shadow pass's
+# shader and then the lit one, or a batch at a time from one instance buffer, sets up nothing per
+# draw. (On a phone these calls were a seventh of a game's frame.)
 struct __VaoState:
+    gl: int               # the vertex array (0: not made yet)
     epoch: int
     lid: int
     vbo: int
     stride: int
-    base: int
     ivbo: int
-    ioff: int
     ibo: int
+    base: int
+    ioff: int
     on: int               # attribute arrays enabled (0 ..< on)
+    used: int             # (when it was last bound: the least recent is set up again)
 __vaos: __VaoState[] = []
+__vao_clock = 0
 
 # bind mesh m's vertex array for shader sh: its vertices from vertex `base`, and the instance
 # attributes from buffer ivbo at byte ioff (ivbo 0: none)
 __bind_attribs = (sh: Shader, m: Mesh, base: int = 0, ivbo: int = 0, ioff: int = 0):
-    v = m.vao
-    glBindVertexArray(u32(v))
-    loop __vaos.len() <= v: __vaos.push(__VaoState())
-    st = __vaos[v]
-    if sh.lid != 0 and st.epoch == __gl_epoch and st.lid == sh.lid and st.vbo == m.vbo and st.stride == m.stride and st.base == base and st.ivbo == ivbo and st.ioff == ioff and st.ibo == m.ibo: return
+    global __vao_clock
+    __vao_clock += 1
+    v = m.vao * 4
+    loop __vaos.len() < v + 4: __vaos.push(__VaoState())
+    k = -1
+    if sh.lid != 0:
+        j = 0
+        loop k < 0 and j < 4:
+            st = __vaos[v + j]
+            if st.gl != 0 and st.epoch == __gl_epoch and st.lid == sh.lid and st.vbo == m.vbo and st.stride == m.stride and st.ivbo == ivbo and st.ibo == m.ibo: k = j
+            j += 1
+    if k >= 0:
+        st = __vaos[v + k]
+        glBindVertexArray(u32(st.gl))
+        if st.base != base:
+            glBindBuffer(GL_ARRAY_BUFFER, u32(m.vbo))
+            loop i in 0.. and a in sh.attribs: glVertexAttribPointer(u32(i), i32(a.comps), GL_FLOAT, 0, i32(m.stride), a.offset + base * m.stride)
+            st.base = base
+        if st.ioff != ioff and ivbo > 0:
+            glBindBuffer(GL_ARRAY_BUFFER, u32(ivbo))
+            n = sh.attribs.len()
+            loop i in 0.. and a in sh.iattribs: glVertexAttribPointer(u32(n + i), i32(a.comps), GL_FLOAT, 0, i32(sh.istride), a.offset + ioff)
+            st.ioff = ioff
+        st.used = __vao_clock
+        __vaos[v + k] = st
+        return
+    # (set one up: one not made yet, else the least recently bound)
+    k = 0
+    loop j in [1..4):
+        if __vaos[v + k].gl != 0 and (__vaos[v + j].gl == 0 or __vaos[v + j].used < __vaos[v + k].used): k = j
+    st = __vaos[v + k]
+    if st.gl == 0: st.gl = if k == 0: m.vao else: gl_create_vertex_array()
+    glBindVertexArray(u32(st.gl))
     glBindBuffer(GL_ARRAY_BUFFER, u32(m.vbo))
     loop i in 0.. and a in sh.attribs:
         glEnableVertexAttribArray(u32(i))
@@ -228,7 +262,7 @@ __bind_attribs = (sh: Shader, m: Mesh, base: int = 0, ivbo: int = 0, ioff: int =
         glVertexAttribDivisor(u32(j), 0)
         glDisableVertexAttribArray(u32(j))
     if m.ibo > 0: glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, u32(m.ibo))
-    __vaos[v] = __VaoState(__gl_epoch, sh.lid, m.vbo, m.stride, base, ivbo, ioff, m.ibo, on)
+    __vaos[v + k] = __VaoState(st.gl, __gl_epoch, sh.lid, m.vbo, m.stride, ivbo, m.ibo, base, ioff, on, __vao_clock)
 
 # (a uniform whose bytes are those last uploaded to the program is not uploaded again: most draws
 # share their frame's and camera's. Textures and buffers are bound each time: units are shared.)

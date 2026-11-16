@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- OpenGL/WebGL: a mesh keeps up to four vertex arrays, each set up for one shader and buffers, and
+  a draw whose instances (or vertices) start elsewhere re-points only those attributes. 0.36.2's
+  cache missed whenever a mesh was drawn by two shaders in turn (the shadow pass's and the lit
+  one, each frame) or a batch at a time from one instance buffer: a phone counted 10.6 attribute
+  calls per draw. The 3D starter now makes none per frame (it made 48 of each).
 ## 0.37.3
 
 Programs no longer ask Linux for transparent huge pages.
