@@ -47,9 +47,10 @@ TOPICS = [
     ("Data", "bytes", "Bytes and bits", ["std/bytes"], "bytes",
      "Whole numbers in byte arrays in either byte order (file formats, network messages), counting and "
      "turning bits, and bytes from C. A float's bits: `f64_bits` and `f64_from_bits` (math)."),
-    ("Data", "saving", "Saving, and values as text", ["std/save", "std/text"], "saving",
+    ("Data", "saving", "Saving, and values as text", ["std/save", "std/text", "std/binary"], "saving",
      "`save_value` and `load_value` keep any value (settings, a saved game) as text that reads back even "
-     "after its structs gain or lose fields."),
+     "after its structs gain or lose fields. `to_bytes` and `from_bytes` do the same in a smaller, quicker "
+     "binary form, and `byte_writer` / `byte_reader` a few milliseconds at a time."),
     ("Data", "pool", "Pools and handles", ["std/pool"], "pool",
      "`Pool[T]` holds things that come and go (enemies, bullets), each found again by its `Handle`, which stays its own "
      "while others are removed (an array's index does not) and says so once its thing is gone."),

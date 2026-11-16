@@ -1230,7 +1230,7 @@ Printed, `to_text` and `save_value` write an array as it is written in code, `[1
 (a single row ends with `;`, `[1.0 2.0;]`, and one with no elements says its shape), and
 `from_text`, `load_value` read it back the same; `to_json` writes lists of lists, which
 `from_json[f64[,]](text)` reads. `csv_array(text)` reads the numbers of a CSV file into a 2-D
-array (a header row is left out), and `to_bytes(m)` / `ndarray_from_bytes[f64](b)` keep one as
+array (a header row is left out), and `plain_bytes(m)` / `ndarray_from_bytes[f64](b)` keep one as
 its bytes.
 
 `zeros`, `ones`, `rand` (uniform in [0, 1)) and `randn` (normal) take 1 to 4 dimensions (with
@@ -1956,6 +1956,16 @@ keep = ():
     save_value("save", state)
 on_quit = (): keep()
 ```
+
+`save_value` keeps text (`to_text`, read back by `from_text`). For a big save, `to_bytes(value)`
+is the same value in a binary form, a third of the text's size or less and several times quicker
+to write and read; `from_bytes[Save](b)` gives it back, or a `TextError` saying where it is not
+one. Fields go by name as `from_text`'s do (one added keeps its default, one removed is skipped,
+one whose kind changed is an error naming it), and the same value always gives the same bytes. A
+save too big for one frame is written and read a few milliseconds a frame: `w = byte_writer(world)`
+kept in a global, `w.step(0.003)` each frame until it is true, then `w.result()` (the same bytes);
+`byte_reader[World](b)` the same way, its `result()` a `World | TextError`. The format is in
+[docs/design/binary-values.md](design/binary-values.md).
 
 **Input.** `key_down(k)` is true while a key is held, `key_pressed(k)` / `key_released(k)` in
 the frame it goes down or up, and `key_typed(k)` when pressed and again as it repeats while held

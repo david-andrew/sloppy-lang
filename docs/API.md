@@ -1295,7 +1295,7 @@ rate = get_be(packet, 0, 2)
 rate_f = f32_from_bits(u32(get_le(file, 8, 4)))   # a float's bytes
 ```
 
-Sizes are 1 to 8 bytes (3 for a 24-bit field); get_le and get_be give the bytes as an unsigned number (8 bytes: its bits as an int), get_le_signed and get_be_signed with their sign. A float's bits are a u64 (f64_bits) and these take an int: `append_le(b, int(f64_bits(x)), 8)`, and back `f64_from_bits(u64(get_le(b, at, 8)))`; to_bytes(xs) and array_from_bytes[f64](b) do a whole array.
+Sizes are 1 to 8 bytes (3 for a 24-bit field); get_le and get_be give the bytes as an unsigned number (8 bytes: its bits as an int), get_le_signed and get_be_signed with their sign. A float's bits are a u64 (f64_bits) and these take an int: `append_le(b, int(f64_bits(x)), 8)`, and back `f64_from_bits(u64(get_le(b, at, 8)))`; plain_bytes(xs) and array_from_bytes[f64](b) do a whole array.
 
 - `get_le = (b: u8[], at: int, size: int) -> int`: the size-byte number at b[at..], least significant byte first
 - `get_be = (b: u8[], at: int, size: int) -> int`: the size-byte number at b[at..], most significant byte first (network order)
@@ -1352,10 +1352,10 @@ Sizes are 1 to 8 bytes (3 for a 24-bit field); get_le and get_be give the bytes 
 
 #### Plain values
 
-- `to_bytes[T] = (x: T) -> u8[]`: a plain value's bytes as it is in memory (numbers, bools, vectors, fixed-size arrays and structs of them; no str or T[]): a machine's state saved in one go, `write_bytes(path, to_bytes(cpu))`. They are this program's layout of the type, on a little-endian machine (every one Sloppy runs on): for reading back with from_bytes, not a file format for other programs
-- `from_bytes[T] = (b: u8[]) -> T?`: the plain value whose bytes are b (from to_bytes): `from_bytes[Cpu](read_bytes(path).unwrap())`; none when b is not the size of a T
-- `to_bytes[T] = (xs: T[]) -> u8[]`: an array of plain values: its elements' bytes one after another (n f64s are 8n bytes, as in a C array and NumPy's tobytes): `write_bytes(path, to_bytes(weights))`
-- `array_from_bytes[T] = (b: u8[]) -> T[]?`: the array whose elements' bytes are b (from to_bytes): `array_from_bytes[f64](read_bytes(path).unwrap())`; none when b is not a whole number of them
+- `plain_bytes[T] = (x: T) -> u8[]`: a plain value's bytes as it is in memory (numbers, bools, vectors, fixed-size arrays and structs of them; no str or T[]): a machine's state saved in one go, `write_bytes(path, plain_bytes(cpu))`. They are this program's layout of the type, on a little-endian machine (every one Sloppy runs on): for reading back with plain_from_bytes, not a file format for other programs
+- `plain_from_bytes[T] = (b: u8[]) -> T?`: the plain value whose bytes are b (from plain_bytes): `plain_from_bytes[Cpu](read_bytes(path).unwrap())`; none when b is not the size of a T
+- `plain_bytes[T] = (xs: T[]) -> u8[]`: an array of plain values: its elements' bytes one after another (n f64s are 8n bytes, as in a C array and NumPy's tobytes): `write_bytes(path, plain_bytes(weights))`
+- `array_from_bytes[T] = (b: u8[]) -> T[]?`: the array whose elements' bytes are b (from plain_bytes): `array_from_bytes[f64](read_bytes(path).unwrap())`; none when b is not a whole number of them
 
 #### From C
 
@@ -1364,7 +1364,7 @@ Sizes are 1 to 8 bytes (3 for a 24-bit field); get_le and get_be give the bytes 
 
 ## Saving, and values as text
 
-`save_value` and `load_value` keep any value (settings, a saved game) as text that reads back even after its structs gain or lose fields.
+`save_value` and `load_value` keep any value (settings, a saved game) as text that reads back even after its structs gain or lose fields. `to_bytes` and `from_bytes` do the same in a smaller, quicker binary form, and `byte_writer` / `byte_reader` a few milliseconds at a time.
 
 ```gdscript
 # example: saving
@@ -1441,6 +1441,51 @@ Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs, enu
       end: int
   ```
 - `ints = (text: str) -> int[] \| ParseError`: every whole number in the text, in order: each run of digits, negative when a `-` is right before it (ints("x=3,y=-4") is [3, -4], ints("1-3 a") is [1, -3]); in one pass, without splitting. A number too big for an int returns ParseError, including its byte span
+
+### binary.jo
+
+Values as bytes and back: what to_text and from_text do, in a compact binary form that is quicker to write and read (a saved game, a message):
+
+```gdscript
+b = to_bytes(world)                      # u8[]
+w = from_bytes[World](b)                 # World | TextError
+```
+
+The bytes start with a schema: each struct and enum type the value's type uses, once, with its fields' names and kinds. Then the value, field after field in that order: so fields go by name, as from_text's do. A field the bytes have that the struct no longer has is skipped, one the struct has that the bytes lack keeps its default, and a field whose kind changed (a str that is an int now) is a TextError naming it; an enum's variants go by name too. The same value gives the same bytes (a map's entries in its own order), to hash or compare.
+
+A big value can be written or read a few milliseconds at a time (a frame's spare time):
+
+```gdscript
+w = byte_writer(world)                   # (kept in a mut place: a global, a field)
+loop not w.step(0.003): next_frame()     # true when done; w.progress() is 0 to 1
+b = w.result()                           # the same bytes as to_bytes(world)
+
+r = byte_reader[World](b)
+loop not r.step(0.003): next_frame()
+loaded = r.result()                      # World | TextError, as from_bytes
+```
+
+A step stops between array elements, map entries and struct fields; one string, packed array of numbers or flat struct (no arrays or maps inside) is done whole, as are a tuple's elements, an enum variant's fields, a map's keys and (reading) a field skipped. Function values and pointers cannot be written. Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs, enums (with fields too), unions and vectors can (from_bytes's T is not an optional itself, as from_text's is not: an optional inside a struct or an array is).
+
+The format: "SLPB", 1 (the version), the schema, then the value. Whole numbers are varints (zigzag for signed ones; i8, u8 and u64 as they are), floats their 4 or 8 bytes, a str and an array their length and then their contents (an array of fixed-size numbers, bools or vectors packed: its elements' bytes as they are in memory, little-endian), a T[N] its N elements, an optional 0 or 1 and then its value, an enum its variant's number and then its fields, a union its member's number and then its value, a map its count and its keys and values in turn.
+
+#### Writing
+
+- `struct ByteWriter`: a value being written a step at a time (byte_writer)
+- `to_bytes[T] = (x: T) -> u8[]`: the value's bytes, read back with from_bytes
+- `byte_writer[T] = (x: T) -> ByteWriter`: a ByteWriter for x: step it until it is done, then its result is to_bytes(x). It keeps a copy of x (arrays and maps are shared, not copied): x may change meanwhile
+- `step = (w: mut ByteWriter, seconds: f64) -> bool`: go on for about this many seconds; true when done
+- `progress = (w: ByteWriter) -> f64`: how far it is, 0 to 1 (by the elements of the arrays and maps being written)
+- `result = (w: mut ByteWriter) -> u8[]`: the bytes (to_bytes's); if step has not said done yet, the rest of the work is done first
+
+#### Reading
+
+- `from_bytes[T] = (b: u8[]) -> T \| TextError`: the value of type T in b (to_bytes's), or where it is not one
+- `struct ByteReader[T]`: a value being read a step at a time (byte_reader)
+- `byte_reader[T] = (b: u8[]) -> ByteReader[T]`: a ByteReader for the bytes b: step it until it is done, then its result is from_bytes[T](b)
+- `step[T] = (br: mut ByteReader[T], seconds: f64) -> bool`: go on for about this many seconds; true when done
+- `progress[T] = (br: ByteReader[T]) -> f64`: how far it is, 0 to 1 (by the bytes read)
+- `result[T] = (br: mut ByteReader[T]) -> T \| TextError`: the value (from_bytes's); if step has not said done yet, the rest of the work is done first
 
 ## Pools and handles
 
@@ -2341,8 +2386,8 @@ The dotted operators work element by element on arrays of any shape, and broadca
 
 #### As bytes
 
-- `to_bytes[T] = (m: T[,]) -> u8[]`: an n-dimensional array of plain values as bytes: how many dimensions it has and each of them (8 bytes each, little-endian), then its elements' (as to_bytes of its data): read back with ndarray_from_bytes
-- `ndarray_from_bytes[T] = (b: u8[]) -> T[,]?`: the array whose bytes are b (from to_bytes): `ndarray_from_bytes[f64](read_bytes(path).unwrap())`; none when b is not one
+- `plain_bytes[T] = (m: T[,]) -> u8[]`: an n-dimensional array of plain values as bytes: how many dimensions it has and each of them (8 bytes each, little-endian), then its elements' (as plain_bytes of its data): read back with ndarray_from_bytes
+- `ndarray_from_bytes[T] = (b: u8[]) -> T[,]?`: the array whose bytes are b (from plain_bytes): `ndarray_from_bytes[f64](read_bytes(path).unwrap())`; none when b is not one
 
 #### From CSV
 

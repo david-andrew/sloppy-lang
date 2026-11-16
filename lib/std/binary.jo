@@ -19,13 +19,14 @@
 #
 #   r = byte_reader[World](b)
 #   loop not r.step(0.003): next_frame()
-#   world = r.result()                       # World | TextError, as from_bytes
+#   loaded = r.result()                      # World | TextError, as from_bytes
 #
 # A step stops between array elements, map entries and struct fields; one string, packed array
 # of numbers or flat struct (no arrays or maps inside) is done whole, as are a tuple's elements, an
 # enum variant's fields, a map's keys and (reading) a field skipped. Function values and pointers
 # cannot be written. Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs,
-# enums (with fields too), unions and vectors can.
+# enums (with fields too), unions and vectors can (from_bytes's T is not an optional itself, as
+# from_text's is not: an optional inside a struct or an array is).
 #
 # The format: "SLPB", 1 (the version), the schema, then the value. Whole numbers are varints
 # (zigzag for signed ones; i8, u8 and u64 as they are), floats their 4 or 8 bytes, a str and an
@@ -1084,33 +1085,34 @@ __br_arr[T] = (r: mut __BR, xs: mut T[], c: int):
     n = __br_count(r, each)
     if r.__fail: return
     xs.clear()
-    xs.resize(n)
     if n == 0: return
     if r.pl[c + 2] != 0:
         # (packed as this program keeps them: copied as they are)
         if not __br_need(r, n * sz): return
+        xs.resize(n)
         mem_copy(data(xs) as *u8, data(r.b) + r.at, n * sz)
         r.at += n * sz
         return
-    e: T
-    __default_init(e)
-    if __bin_info(e) & 1024 != 0:
-        loop i in [0..n): xs[i] = e
+    # (room for them all, so that where each is does not move; each is added as it is read: a
+    # step is not spent making a big array at once)
+    xs.reserve(n)
     ep = __br_child(r, c + 1)
     if r.__stepped:
         p = &xs
-        __br_push(r, (r2: mut __BR, i: int) -> int: __br_elems(r2, p[0], ep, i), n)
+        __br_push(r, (r2: mut __BR, i: int) -> int: __br_elems(r2, p[0], ep, n, i), n)
         return
-    __br_elems(r, xs, ep, 0)
+    __br_elems(r, xs, ep, n, 0)
 
-__br_elems[T] = (r: mut __BR, xs: mut T[], ep: int, i0: int) -> int:
+__br_elems[T] = (r: mut __BR, xs: mut T[], ep: int, n: int, i0: int) -> int:
     if i0 < 0:
         __br_at_i(r, -i0 - 1)
         return 0
+    e: T
+    __default_init(e)
     i = i0
-    n = xs.len()
-    q = data(xs)
     loop i < n:
+        xs.push(e)
+        q = data(xs)
         __br_val(r, q[i], ep)
         i += 1
         if r.__fail:
