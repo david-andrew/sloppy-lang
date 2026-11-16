@@ -1,0 +1,1298 @@
+# Values as bytes and back: what to_text and from_text do, in a compact binary form that is
+# quicker to write and read (a saved game, a message):
+#
+#   b = to_bytes(world)                      # u8[]
+#   w = from_bytes[World](b)                 # World | TextError
+#
+# The bytes start with a schema: each struct and enum type the value's type uses, once, with its
+# fields' names and kinds. Then the value, field after field in that order: so fields go by
+# name, as from_text's do. A field the bytes have that the struct no longer has is skipped, one
+# the struct has that the bytes lack keeps its default, and a field whose kind changed (a str
+# that is an int now) is a TextError naming it; an enum's variants go by name too. The same value
+# gives the same bytes (a map's entries in its own order), to hash or compare.
+#
+# A big value can be written or read a few milliseconds at a time (a frame's spare time):
+#
+#   w = byte_writer(world)                   # (kept in a mut place: a global, a field)
+#   loop not w.step(0.003): next_frame()     # true when done; w.progress() is 0 to 1
+#   b = w.result()                           # the same bytes as to_bytes(world)
+#
+#   r = byte_reader[World](b)
+#   loop not r.step(0.003): next_frame()
+#   world = r.result()                       # World | TextError, as from_bytes
+#
+# A step stops between array elements, map entries and struct fields; one string, packed array
+# of numbers or flat struct (no arrays or maps inside) is done whole, as are a tuple's elements, an
+# enum variant's fields, a map's keys and (reading) a field skipped. Function values and pointers
+# cannot be written. Numbers, bool, str, arrays (T[] and T[N]), maps, optionals, tuples, structs,
+# enums (with fields too), unions and vectors can.
+#
+# The format: "SLPB", 1 (the version), the schema, then the value. Whole numbers are varints
+# (zigzag for signed ones; i8, u8 and u64 as they are), floats their 4 or 8 bytes, a str and an
+# array their length and then their contents (an array of fixed-size numbers, bools or vectors
+# packed: its elements' bytes as they are in memory, little-endian), a T[N] its N elements, an
+# optional 0 or 1 and then its value, an enum its variant's number and then its fields, a union
+# its member's number and then its value, a map its count and its keys and values in turn.
+
+const __BIN_MAGIC = "SLPB"
+const __BIN_CHUNK = 4096           # (bytes written or read between looks at the clock, at most)
+
+# ---------------- writing ----------------
+struct __BwFrame:
+    f: (mut ByteWriter, int) -> int
+    i: int
+    n: int
+
+# a value being written a step at a time (byte_writer)
+struct ByteWriter:
+    __out: u8[]
+    __frames: __BwFrame[]
+    __stepped = false
+    __push = false          # (a frame was started: what started it goes on after it)
+    __check = 0             # (where to look at the clock next)
+    __done = false
+
+# the value's bytes, read back with from_bytes
+to_bytes[T] = (x: T) -> u8[]:
+    w = ByteWriter(__check = 1 << 62)
+    __bw_head(w, __bin_schema(x))
+    __bw_val(w, x)
+    w.__out
+
+# a ByteWriter for x: step it until it is done, then its result is to_bytes(x). It keeps a copy of
+# x (arrays and maps are shared, not copied): x may change meanwhile
+byte_writer[T] = (x: T) -> ByteWriter:
+    w = ByteWriter(__stepped = true, __check = 1 << 62)
+    __bw_head(w, __bin_schema(x))
+    __bw_val(w, x)
+    w.__push = false
+    w.__done = w.__frames.len() == 0
+    w
+
+# go on for about this many seconds; true when done
+step = (w: mut ByteWriter, seconds: f64) -> bool:
+    if not w.__done: w.__done = __bw_run(w, time() + seconds)
+    w.__done
+
+# how far it is, 0 to 1 (by the elements of the arrays and maps being written)
+progress = (w: ByteWriter) -> f64:
+    if w.__done: return 1.0
+    p = 0.0
+    scale = 1.0
+    loop k in [0..w.__frames.len()):
+        fr = w.__frames[k]
+        if fr.n <= 0: continue
+        at = fr.i
+        if k + 1 < w.__frames.len(): at -= 1
+        p += scale * f64(clamp(at, 0, fr.n)) / f64(fr.n)
+        scale /= f64(fr.n)
+    clamp(p, 0.0, 1.0)
+
+# the bytes (to_bytes's); if step has not said done yet, the rest of the work is done first
+result = (w: mut ByteWriter) -> u8[]:
+    if not w.__done: w.__done = __bw_run(w, -1.0)
+    w.__out
+
+__bw_run = (w: mut ByteWriter, deadline: f64) -> bool:
+    steps = 0
+    w.__check = w.__out.len() + __BIN_CHUNK
+    if deadline < 0.0: w.__check = 1 << 62
+    loop w.__frames.len() > 0:
+        t = w.__frames.len() - 1
+        f = w.__frames[t].f
+        w.__push = false
+        ni = f(w, w.__frames[t].i)
+        if ni < 0: w.__frames.remove_at(t)
+        else: w.__frames[t].i = ni
+        steps += 1
+        if deadline >= 0.0 and (w.__out.len() >= w.__check or steps >= 16):
+            if time() >= deadline: return w.__frames.len() == 0
+            w.__check = w.__out.len() + __BIN_CHUNK
+            steps = 0
+    w.__push = false
+    true
+
+__bw_push = (w: mut ByteWriter, f: (mut ByteWriter, int) -> int, n: int):
+    w.__frames.push(__BwFrame(f, 0, n))
+    w.__push = true
+
+__bw_head = (w: mut ByteWriter, schema: str):
+    __buf_append_str(w.__out, __BIN_MAGIC)
+    __buf_byte(w.__out, 1)
+    __buf_append_str(w.__out, schema)
+
+__bw_byte = (w: mut ByteWriter, b: int): __buf_byte(w.__out, b)
+
+# v's bits as an unsigned varint
+__bw_uint = (w: mut ByteWriter, v: int):
+    n = len(w.__out)
+    p = __buf_reserve(w.__out, 10)
+    q = p + 24 + n
+    x = v as u64
+    k = 0
+    loop x >= 128:
+        q[k] = u8((x & 127) | 128)
+        x = x >> 7
+        k += 1
+    q[k] = u8(x)
+    (p as *int)[1] = n + k + 1
+
+__bw_sint = (w: mut ByteWriter, v: int): __bw_uint(w, (v << 1) xor (v >> 63))
+
+# x's bytes as they are in memory (a number, bool or vector)
+__bw_raw[T] = (w: mut ByteWriter, x: T):
+    v = x
+    __buf_append_raw(w.__out, &v as *u8, size_of(T))
+
+__bw_val = (w: mut ByteWriter, x: bool): __buf_byte(w.__out, int(x))
+__bw_val = (w: mut ByteWriter, x: i8): __buf_byte(w.__out, int(x) & 255)
+__bw_val = (w: mut ByteWriter, x: u8): __buf_byte(w.__out, int(x))
+__bw_val = (w: mut ByteWriter, x: i16): __bw_sint(w, int(x))
+__bw_val = (w: mut ByteWriter, x: i32): __bw_sint(w, int(x))
+__bw_val = (w: mut ByteWriter, x: int): __bw_sint(w, x)
+__bw_val = (w: mut ByteWriter, x: u16): __bw_uint(w, int(x))
+__bw_val = (w: mut ByteWriter, x: u32): __bw_uint(w, int(x))
+__bw_val = (w: mut ByteWriter, x: u64): __bw_raw(w, x)
+__bw_val = (w: mut ByteWriter, x: f32): __bw_raw(w, x)
+__bw_val = (w: mut ByteWriter, x: f64): __bw_raw(w, x)
+__bw_val = (w: mut ByteWriter, x: vec2): __bw_raw(w, x)
+__bw_val = (w: mut ByteWriter, x: vec3): __bw_raw(w, x)
+__bw_val = (w: mut ByteWriter, x: vec4): __bw_raw(w, x)
+__bw_val = (w: mut ByteWriter, x: ivec2): __bw_raw(w, x)
+__bw_val = (w: mut ByteWriter, x: ivec3): __bw_raw(w, x)
+__bw_val = (w: mut ByteWriter, x: ivec4): __bw_raw(w, x)
+__bw_val = (w: mut ByteWriter, x: str):
+    __bw_uint(w, len(x))
+    __buf_append_raw(w.__out, data(x), len(x))
+
+__bw_arr[T] = (w: mut ByteWriter, xs: T[]):
+    n = xs.len()
+    __bw_uint(w, n)
+    if __bin_info(xs) & 512 != 0:
+        if n > 0: __buf_append_raw(w.__out, data(xs) as *u8, n * size_of(T))
+        return
+    if w.__stepped:
+        __bw_push(w, (w2: mut ByteWriter, i: int) -> int: __bw_elems(w2, xs, i), n)
+        return
+    __bw_elems(w, xs, 0)
+
+__bw_elems[T] = (w: mut ByteWriter, xs: T[], i0: int) -> int:
+    i = i0
+    n = xs.len()
+    loop i < n:
+        __bw_val(w, xs[i])
+        i += 1
+        if w.__push or w.__out.len() >= w.__check: return i
+    -1
+
+__bw_soa[T] = (w: mut ByteWriter, xs: soa T[]):
+    __bw_uint(w, xs.len())
+    loop i in [0..xs.len()): __bw_val(w, xs[i])
+
+__bw_map[K, V] = (w: mut ByteWriter, m: Map[K, V]):
+    __bw_uint(w, m.len())
+    if w.__stepped:
+        __bw_push(w, (w2: mut ByteWriter, i: int) -> int: __bw_entries(w2, m, i), m.keys.len())
+        return
+    __bw_entries(w, m, 0)
+
+__bw_entries[K, V] = (w: mut ByteWriter, m: Map[K, V], i0: int) -> int:
+    i = i0
+    ng = m.gone.len()
+    n = m.keys.len()
+    loop i < n:
+        if i < ng and m.gone[i]:
+            i += 1
+            continue
+        __bw_val_direct(w, m.keys[i])
+        __bw_val(w, m.vals[i])
+        i += 1
+        if w.__push or w.__out.len() >= w.__check: return i
+    -1
+
+__bw_opt[T] = (w: mut ByteWriter, x: T?):
+    if let v = x:
+        __buf_byte(w.__out, 1)
+        __bw_val(w, v)
+    else: __buf_byte(w.__out, 0)
+
+# all but numbers, bool, str and vectors (the compiler writes the code for each type, and calls
+# __bw_arr, __bw_map, __bw_opt for those)
+__bw_val[T] = (w: mut ByteWriter, x: T):
+    info = __bin_info(x)
+    k = info & 255
+    if w.__stepped and info & 256 == 0 and (k == 38 or k == 36):
+        __bw_push(w, (w2: mut ByteWriter, i: int) -> int: __bw_fields(w2, x, i), info >> 16)
+        return
+    __bw_fields(w, x, 0)
+
+__bw_fields[T] = (w: mut ByteWriter, x: T, i: int) -> int:
+    __bin_write(w, x, i)
+    -1
+
+# (x written whole, here: an enum variant's fields, a map's key)
+__bw_val_direct[T] = (w: mut ByteWriter, x: T):
+    s = w.__stepped
+    w.__stepped = false
+    __bw_val(w, x)
+    w.__stepped = s
+
+# ---------------- reading ----------------
+struct __BrFrame:
+    f: (mut __BR, int) -> int
+    i: int
+    n: int
+
+# a schema: its types (each struct's fields, each enum's variants and their fields) and kinds,
+# by where they are in b
+struct __BinSchema:
+    b: u8[]
+    root = 0
+    tname: str[]
+    tenum: bool[]
+    tfirst: int[]
+    tn: int[]
+    fname: str[]        # (a struct's fields)
+    fkind: int[]
+    vname: str[]        # (an enum's variants)
+    vn: int[]
+    vfirst: int[]
+    vkind: int[]
+
+struct __BR:
+    b: u8[]
+    at = 0
+    pl: int[]               # the plan: how to read each kind of the bytes as the program's
+    names: str[]            # (saved fields' names, and messages)
+    memo: {int: int}
+    leaves: int[]           # (the plans of leaves, by kind)
+    ss: __BinSchema         # the schema the bytes have
+    cs: __BinSchema         # the program's
+    root = 0
+    frames: __BrFrame[]
+    __stepped = false
+    __push = false
+    __fail = false
+    __check = 0
+    __vo = 0
+    __depth = 0
+    err = ""
+    err_at = 0
+    err_path = ""
+
+# the value of type T in b (to_bytes's), or where it is not one
+from_bytes[T] = (b: u8[]) -> T | TextError:
+    r = __BR(b = b, __check = 1 << 62)
+    x: T
+    __default_init(x)
+    __br_begin(r, __bin_schema(x))
+    if not r.__fail:
+        __br_val(r, x, r.root)
+        __br_end(r)
+    if r.__fail: return __br_error(r)
+    x
+
+# a value being read a step at a time (byte_reader)
+struct ByteReader[T]:
+    __r: __BR
+    __out: T[]
+    __done = false
+
+# a ByteReader for the bytes b: step it until it is done, then its result is from_bytes[T](b)
+byte_reader[T] = (b: u8[]) -> ByteReader[T]:
+    br = ByteReader[T](__BR(b = b, __stepped = true, __check = 1 << 62), [])
+    x: T
+    __default_init(x)
+    br.__out.push(x)
+    __br_begin(br.__r, __bin_schema(x))
+    if not br.__r.__fail:
+        p = data(br.__out)
+        __br_val(br.__r, p[0], br.__r.root)
+        br.__r.__push = false
+    if br.__r.frames.len() == 0:
+        __br_end(br.__r)
+        br.__done = true
+    br
+
+# go on for about this many seconds; true when done
+step[T] = (br: mut ByteReader[T], seconds: f64) -> bool:
+    if not br.__done and __br_run(br.__r, time() + seconds):
+        __br_end(br.__r)
+        br.__done = true
+    br.__done
+
+# how far it is, 0 to 1 (by the bytes read)
+progress[T] = (br: ByteReader[T]) -> f64:
+    if br.__done or br.__r.b.len() == 0: return 1.0
+    clamp(f64(br.__r.at) / f64(br.__r.b.len()), 0.0, 1.0)
+
+# the value (from_bytes's); if step has not said done yet, the rest of the work is done first
+result[T] = (br: mut ByteReader[T]) -> T | TextError:
+    if not br.__done:
+        __br_run(br.__r, -1.0)
+        __br_end(br.__r)
+        br.__done = true
+    if br.__r.__fail: return __br_error(br.__r)
+    br.__out[0]
+
+__br_run = (r: mut __BR, deadline: f64) -> bool:
+    steps = 0
+    r.__check = r.at + __BIN_CHUNK
+    if deadline < 0.0: r.__check = 1 << 62
+    loop r.frames.len() > 0:
+        t = r.frames.len() - 1
+        f = r.frames[t].f
+        r.__push = false
+        ni = f(r, r.frames[t].i)
+        if r.__fail:
+            # (each frame below names the part it was reading, for the path)
+            k = t - 1
+            loop k >= 0:
+                g = r.frames[k].f
+                g(r, -r.frames[k].i)
+                k -= 1
+            r.frames.clear()
+            break
+        if ni < 0: r.frames.remove_at(t)
+        else: r.frames[t].i = ni
+        steps += 1
+        if deadline >= 0.0 and (r.at >= r.__check or steps >= 16):
+            if time() >= deadline: return r.frames.len() == 0
+            r.__check = r.at + __BIN_CHUNK
+            steps = 0
+    r.__push = false
+    true
+
+__br_push = (r: mut __BR, f: (mut __BR, int) -> int, n: int):
+    r.frames.push(__BrFrame(f, 0, n))
+    r.__push = true
+
+__br_end = (r: mut __BR):
+    if not r.__fail and r.at < r.b.len(): __br_fail(r, "more bytes after the value ({r.b.len() - r.at})")
+
+__br_error = (r: __BR) -> TextError:
+    msg = r.err
+    if len(r.err_path) > 0: msg = "{r.err_path}: {r.err}"
+    TextError(msg, 0, r.err_at, r.err_path)
+
+# (the first mistake is the one reported; reading stops there)
+__br_fail = (r: mut __BR, msg: str):
+    if r.__fail: return
+    r.__fail = true
+    r.err = msg
+    r.err_at = r.at
+    r.at = r.b.len()
+
+# (after reading the field or element `part`: a mistake in it is in that part)
+__br_at = (r: mut __BR, part: str):
+    if len(r.err_path) > 0 and r.err_path[0] != '[': r.err_path = part + "." + r.err_path
+    else: r.err_path = part + r.err_path
+__br_at_i = (r: mut __BR, i: int): __br_at(r, "[{i}]")
+
+__br_need = (r: mut __BR, n: int) -> bool:
+    if n >= 0 and r.at + n <= r.b.len(): return true
+    __br_fail(r, "the bytes end too soon (cut short?)")
+    false
+
+__br_byte = (r: mut __BR) -> int:
+    if r.at >= r.b.len():
+        __br_fail(r, "the bytes end too soon (cut short?)")
+        return 0
+    v = int(data(r.b)[r.at])
+    r.at += 1
+    v
+
+__br_uvar = (r: mut __BR) -> int:
+    p = data(r.b)
+    n = r.b.len()
+    v: u64 = 0
+    sh = 0
+    loop r.at < n:
+        c = p[r.at]
+        r.at += 1
+        if sh == 63 and c > 1 or sh > 63:
+            r.at -= 1
+            __br_fail(r, "a number with too many bytes")
+            return 0
+        v = v | (u64(c & 127) << sh)
+        if c < 128: return v as int
+        sh += 7
+    __br_fail(r, "the bytes end too soon (cut short?)")
+    0
+
+__br_raw = (r: mut __BR, size: int) -> int:
+    if not __br_need(r, size): return 0
+    v = get_le(r.b, r.at, size)
+    r.at += size
+    v
+
+# a count of things each at least a byte long (a corrupt count is not trusted)
+__br_count = (r: mut __BR, each: int) -> int:
+    n = __br_uvar(r)
+    if r.__fail: return 0
+    if n < 0 or each > 0 and n > (r.b.len() - r.at) / each or n > 1 << 40:
+        r.at -= 1
+        __br_fail(r, "a count of {n}, more than the bytes left hold (cut short?)")
+        return 0
+    n
+
+# ---- the plan ----
+const __P_ERR = 1
+const __P_SKIP = 2
+const __L_BOOL = 10
+const __L_ZZ = 11
+const __L_UV = 12
+const __L_RI = 13
+const __L_RU = 14
+const __L_F32 = 15
+const __L_F64 = 16
+const __L_STR = 17
+const __L_VEC = 18
+const __L_IVEC = 19
+const __P_ARR = 32
+const __P_FIXED = 33
+const __P_MAP = 34
+const __P_OPT = 35
+const __P_TUP = 36
+const __P_UNION = 37
+const __P_STRUCT = 38
+const __P_ENUM = 39
+const __P_VAR = 40
+const __P_OPTV = 41
+const __P_LAZY = 42
+const __P_FWD = 43
+
+# (the size of a leaf kind kept in a fixed number of bytes; 0 for str and others)
+__bin_size = (code: int) -> int:
+    if code == 1 or code == 2 or code == 6: return 1
+    if code == 3 or code == 7: return 2
+    if code == 4 or code == 8 or code == 10: return 4
+    if code == 5 or code == 9 or code == 11 or code == 13 or code == 16: return 8
+    if code == 14 or code == 17: return 12
+    if code == 15 or code == 18: return 16
+    0
+
+__bin_kind_name = (code: int) -> str:
+    names = ["", "bool", "i8", "i16", "i32", "int", "u8", "u16", "u32", "u64", "f32", "f64", "str", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4"]
+    if code > 0 and code < names.len(): return names[code]
+    "?"
+
+# the header: the magic, the version, the schema (the bytes' own, and the program's: the plan)
+__br_begin = (r: mut __BR, schema: str):
+    if r.b.len() < 5 or r.b[0..4) != bytes(__BIN_MAGIC):
+        __br_fail(r, "these are not to_bytes's bytes (they start otherwise)")
+        r.err_at = 0
+        return
+    if r.b[4] != 1:
+        r.at = 4
+        __br_fail(r, "bytes of version {r.b[4]} of to_bytes's form, this program reads version 1")
+        return
+    r.at = 5
+    ss = __BinSchema()
+    __bs_parse(r, ss)
+    r.ss = ss
+    if r.__fail: return
+    # (the program's schema: most often the same as the bytes')
+    if r.at - 5 == len(schema) and __mem_eq(data(r.b) + 5, data(schema), len(schema)): r.cs = ss
+    else:
+        c = __BR(b = bytes(schema))
+        cs = __BinSchema()
+        __bs_parse(c, cs)
+        r.cs = cs
+    r.root = __bp_build(r, r.ss.root, r.cs.root, "the value", -1, -1)
+
+__bs_name = (r: mut __BR) -> str:
+    n = __br_uvar(r)
+    if not __br_need(r, n): return ""
+    s = __str_from(data(r.b) + r.at, n)
+    r.at += n
+    s
+
+__bs_parse = (r: mut __BR, s: mut __BinSchema):
+    s.b = r.b
+    nt = __br_count(r, 3)
+    loop t in [0..nt):
+        if r.__fail: return
+        tag = __br_byte(r)
+        s.tname.push(__bs_name(r))
+        s.tenum.push(tag == 1)
+        if tag == 0:
+            nf = __br_count(r, 2)
+            s.tfirst.push(s.fname.len())
+            s.tn.push(nf)
+            loop i in [0..nf):
+                s.fname.push(__bs_name(r))
+                s.fkind.push(r.at)
+                __bs_kind_skip(r, nt)
+        else if tag == 1:
+            nv = __br_count(r, 2)
+            s.tfirst.push(s.vname.len())
+            s.tn.push(nv)
+            loop i in [0..nv):
+                s.vname.push(__bs_name(r))
+                nf = __br_count(r, 1)
+                s.vn.push(nf)
+                s.vfirst.push(s.vkind.len())
+                loop j in [0..nf):
+                    s.vkind.push(r.at)
+                    __bs_kind_skip(r, nt)
+        else: __br_fail(r, "a schema's type that is neither a struct nor an enum")
+    s.root = r.at
+    __bs_kind_skip(r, nt)
+
+# past a kind (nt: how many types there are)
+__bs_kind_skip = (r: mut __BR, nt: int):
+    c = __br_byte(r)
+    if r.__fail: return
+    if c > 0 and c <= 18: return
+    if c == 32 or c == 35: __bs_kind_skip(r, nt)
+    else if c == 33:
+        __br_uvar(r)
+        __bs_kind_skip(r, nt)
+    else if c == 34:
+        __bs_kind_skip(r, nt)
+        __bs_kind_skip(r, nt)
+    else if c == 36 or c == 37:
+        n = __br_count(r, 1)
+        loop i in [0..n): __bs_kind_skip(r, nt)
+    else if c == 38 or c == 39:
+        if __br_uvar(r) >= nt: __br_fail(r, "a schema's kind names a type it does not have")
+    else:
+        r.at -= 1
+        __br_fail(r, "a schema's kind that is not one ({c})")
+
+# (where the kind at k ends: one __bs_parse has been through)
+__bs_kind_end = (s: __BinSchema, k: int) -> int: __bs_end(s.b, k)
+
+__bs_end = (b: u8[], k: int) -> int:
+    c = int(b[k])
+    if c < 32: return k + 1
+    if c == 32 or c == 35: return __bs_end(b, k + 1)
+    if c == 33: return __bs_end(b, __bs_var(b, k + 1).1)
+    if c == 34: return __bs_end(b, __bs_end(b, k + 1))
+    if c == 36 or c == 37:
+        n = __bs_var(b, k + 1)
+        at = n.1
+        loop _ in [0..n.0): at = __bs_end(b, at)
+        return at
+    __bs_var(b, k + 1).1
+
+# (the varint at k in b, and where it ends)
+__bs_var = (b: u8[], k: int) -> (int, int):
+    v = 0
+    sh = 0
+    i = k
+    loop i < b.len():
+        c = int(b[i])
+        i += 1
+        v |= (c & 127) << sh
+        if c < 128: break
+        sh += 7
+    (v, i)
+
+# the kind at k, as the program writes types: int, str[], Order, {str: int}, ...
+__bs_text = (s: __BinSchema, k: int) -> str:
+    c = int(s.b[k])
+    if c < 32: return __bin_kind_name(c)
+    if c == 32: return __bs_text(s, k + 1) + "[]"
+    if c == 33:
+        n = __bs_var(s.b, k + 1)
+        return __bs_text(s, n.1) + "[{n.0}]"
+    if c == 34: return "\{{__bs_text(s, k + 1)}: {__bs_text(s, __bs_kind_end(s, k + 1))}}"
+    if c == 35: return __bs_text(s, k + 1) + "?"
+    if c == 36 or c == 37:
+        n = __bs_var(s.b, k + 1)
+        at = n.1
+        parts: str[]
+        loop i in [0..n.0):
+            parts.push(__bs_text(s, at))
+            at = __bs_kind_end(s, at)
+        if c == 36: return "(" + join(parts, ", ") + ")"
+        return join(parts, " | ")
+    t = __bs_var(s.b, k + 1).0
+    if t < s.tname.len(): return s.tname[t]
+    "?"
+
+__bs_type = (s: __BinSchema, k: int) -> int: __bs_var(s.b, k + 1).0
+
+# (whether a whole number or float saved as one kind reads as another: in range, it does)
+__bin_compat = (sc: int, cc: int) -> bool:
+    if sc == cc: return true
+    if sc >= 2 and sc <= 9 and cc >= 2 and cc <= 9: return true
+    (sc == 10 or sc == 11) and (cc == 10 or cc == 11)
+
+# how a leaf saved as kind sc is read (packed: its bytes as they are in memory)
+__bp_leaf = (r: mut __BR, sc: int, packed: bool) -> int:
+    key = sc * 2 + int(packed)
+    if r.leaves.len() == 0: r.leaves = fill(-1, 64)
+    if r.leaves[key] >= 0: return r.leaves[key]
+    op = 0
+    x = 0
+    if sc == 1: op = __L_BOOL
+    else if sc == 2:
+        op = __L_RI
+        x = 1
+    else if sc == 6:
+        op = __L_RU
+        x = 1
+    else if sc >= 3 and sc <= 5:
+        op = __L_ZZ
+        if packed:
+            op = __L_RI
+            x = __bin_size(sc)
+    else if sc == 7 or sc == 8:
+        op = __L_UV
+        if packed:
+            op = __L_RU
+            x = __bin_size(sc)
+    else if sc == 9:
+        op = __L_RU
+        x = 8
+    else if sc == 10: op = __L_F32
+    else if sc == 11: op = __L_F64
+    else if sc == 12: op = __L_STR
+    else if sc <= 15:
+        op = __L_VEC
+        x = sc - 11
+    else:
+        op = __L_IVEC
+        x = sc - 14
+    p = r.pl.len()
+    r.pl.push(op)
+    r.pl.push(x)
+    r.leaves[key] = p
+    p
+
+__bp_err = (r: mut __BR, msg: str) -> int:
+    p = r.pl.len()
+    r.pl.push(__P_ERR)
+    r.pl.push(r.names.len())
+    r.names.push(msg)
+    p
+
+__bp_skip = (r: mut __BR, so: int, packed: bool) -> int:
+    p = r.pl.len()
+    r.pl.push(__P_SKIP)
+    r.pl.push(so)
+    r.pl.push(int(packed))
+    p
+
+# (an element's plan: a fixed-size leaf's array is packed)
+__bp_elem = (r: mut __BR, so: int, co: int, what: str) -> int:
+    sc = int(r.ss.b[so])
+    if sc < 32 and __bin_size(sc) > 0:
+        cc = int(r.cs.b[co])
+        if cc < 32 and __bin_compat(sc, cc): return __bp_leaf(r, sc, true)
+        return __bp_err(r, "saved as {__bs_text(r.ss, so)}, but {what} is {__bs_text(r.cs, co)} now")
+    __bp(r, so, co, what)
+
+# (a kind's plan made when it is first read: a reader's start does not plan every type at once)
+__bp = (r: mut __BR, so: int, co: int, what: str, wt: int = -1, wf: int = -1) -> int:
+    sc = int(r.ss.b[so])
+    cc = int(r.cs.b[co])
+    # (most fields are leaves of the same kind: as quick as can be)
+    if sc < 32 and cc < 32 and __bin_compat(sc, cc): return __bp_leaf(r, sc, false)
+    key = so * 4294967296 + co
+    if let p = r.memo.get(key): return p
+    p = r.pl.len()
+    r.pl.push(__P_LAZY)
+    r.pl.push(so)
+    r.pl.push(co)
+    r.pl.push(wt)
+    r.pl.push(wf)
+    r.pl.push(r.names.len())
+    r.names.push(what)
+    r.memo[key] = p
+    p
+
+# the plan in slot k of the plan (made now if it was not yet)
+__br_child = (r: mut __BR, k: int) -> int:
+    c = r.pl[k]
+    if r.pl[c] == __P_LAZY:
+        q = __bp_build(r, r.pl[c + 1], r.pl[c + 2], r.names[r.pl[c + 5]], r.pl[c + 3], r.pl[c + 4])
+        r.pl[c] = __P_FWD
+        r.pl[c + 1] = q
+        r.pl[k] = q
+        return q
+    if r.pl[c] == __P_FWD:
+        r.pl[k] = r.pl[c + 1]
+        return r.pl[c + 1]
+    c
+
+# how to read the bytes' kind at so (in the bytes' schema) as the program's kind at co
+# (what: what it is, for a message; or a struct's field, wt and wf: the program's type and the
+# bytes' field, made into a message only if one is needed)
+__bp_build = (r: mut __BR, so: int, co: int, what0: str, wt: int, wf: int) -> int:
+    sc = int(r.ss.b[so])
+    cc = int(r.cs.b[co])
+    if sc < 32 and cc < 32 and __bin_compat(sc, cc): return __bp_leaf(r, sc, false)
+    key = so * 4294967296 + co
+    ss = r.ss
+    cs = r.cs
+    what = what0
+    if wt >= 0: what = cs.tname[wt] + "." + ss.fname[wf]
+    if cc == 35 and sc != 35:
+        # (a value where the program has an optional now: it reads as one)
+        p = r.pl.len()
+        r.pl.push(__P_OPTV)
+        r.pl.push(0)
+        r.memo[key] = p
+        e = __bp(r, so, co + 1, what)
+        r.pl[p + 1] = e
+        return p
+    if sc != cc:
+        p = __bp_err(r, "saved as {__bs_text(ss, so)}, but {what} is {__bs_text(cs, co)} now")
+        r.memo[key] = p
+        return p
+    p = r.pl.len()
+    r.memo[key] = p
+    if sc == 32:
+        se = so + 1
+        ce = co + 1
+        r.pl.push(__P_ARR)
+        loop _ in [0..4): r.pl.push(0)
+        e = __bp_elem(r, se, ce, "{what}'s element")
+        sz = __bin_size(int(ss.b[se]))
+        r.pl[p + 1] = e
+        r.pl[p + 2] = int(sz > 0 and ss.b[se] == cs.b[ce])
+        r.pl[p + 3] = sz
+        r.pl[p + 4] = int(__bs_min(ss, se, 0) > 0)
+    else if sc == 33:
+        sn = __bs_var(ss.b, so + 1)
+        cn = __bs_var(cs.b, co + 1)
+        r.pl.push(__P_FIXED)
+        r.pl.push(sn.0)
+        r.pl.push(0)
+        r.pl.push(0)
+        e = __bp_elem(r, sn.1, cn.1, "{what}'s element")
+        s = __bp_skip(r, sn.1, __bin_size(int(ss.b[sn.1])) > 0)
+        r.pl[p + 2] = e
+        r.pl[p + 3] = s
+    else if sc == 34:
+        r.pl.push(__P_MAP)
+        r.pl.push(0)
+        r.pl.push(0)
+        k = __bp(r, so + 1, co + 1, "{what}'s key")
+        v = __bp(r, __bs_kind_end(ss, so + 1), __bs_kind_end(cs, co + 1), "{what}'s value")
+        r.pl[p + 1] = k
+        r.pl[p + 2] = v
+    else if sc == 35:
+        r.pl.push(__P_OPT)
+        r.pl.push(0)
+        e = __bp(r, so + 1, co + 1, what)
+        r.pl[p + 1] = e
+    else if sc == 36:
+        sn = __bs_var(ss.b, so + 1)
+        cn = __bs_var(cs.b, co + 1)
+        r.pl.push(__P_TUP)
+        r.pl.push(sn.0)
+        loop _ in [0..sn.0): r.pl.push(0)
+        sa = sn.1
+        ca = cn.1
+        loop i in [0..sn.0):
+            e = 0
+            if i < cn.0:
+                e = __bp(r, sa, ca, "{what}'s element {i}")
+                ca = __bs_kind_end(cs, ca)
+            else: e = __bp_skip(r, sa, false)
+            r.pl[p + 2 + i] = e
+            sa = __bs_kind_end(ss, sa)
+    else if sc == 37:
+        sn = __bs_var(ss.b, so + 1)
+        cn = __bs_var(cs.b, co + 1)
+        r.pl.push(__P_UNION)
+        r.pl.push(sn.0)
+        loop _ in [0..3 * sn.0): r.pl.push(0)
+        cms: int[]
+        ctexts: str[]
+        ca = cn.1
+        loop _ in [0..cn.0):
+            cms.push(ca)
+            ctexts.push(__bs_text(cs, ca))
+            ca = __bs_kind_end(cs, ca)
+        sa = sn.1
+        loop i in [0..sn.0):
+            st = __bs_text(ss, sa)
+            # (a member by its kind, as written: Order, int[]; else a number for a number)
+            m = ctexts.index_of(st) ?? -1
+            if m < 0:
+                sk = int(ss.b[sa])
+                loop j in [0..cms.len()):
+                    ck = int(cs.b[cms[j]])
+                    if m < 0 and sk < 32 and ck < 32 and __bin_compat(sk, ck): m = j
+            r.pl[p + 2 + 3 * i] = m
+            r.pl[p + 4 + 3 * i] = r.names.len()
+            r.names.push("{what} was saved as {st}, which it cannot be now ({join(ctexts, " | ")})")
+            if m >= 0: r.pl[p + 3 + 3 * i] = __bp(r, sa, cms[m], what)
+            sa = __bs_kind_end(ss, sa)
+    else if sc == 38:
+        st = __bs_type(ss, so)
+        ct = __bs_type(cs, co)
+        ns = ss.tn[st]
+        r.pl.push(__P_STRUCT)
+        r.pl.push(ns)
+        loop _ in [0..3 * ns): r.pl.push(0)
+        loop i in [0..ns):
+            fs = ss.tfirst[st] + i
+            name = ss.fname[fs]
+            # (the same place first: most often the struct has not changed)
+            k = -1
+            if i < cs.tn[ct] and cs.fname[cs.tfirst[ct] + i] == name: k = i
+            else:
+                loop j in [0..cs.tn[ct]):
+                    if cs.fname[cs.tfirst[ct] + j] == name:
+                        k = j
+                        break
+            e = 0
+            if k >= 0: e = __bp(r, ss.fkind[fs], cs.fkind[cs.tfirst[ct] + k], "", ct, fs)
+            else: e = __bp_skip(r, ss.fkind[fs], false)
+            r.pl[p + 2 + 3 * i] = k
+            r.pl[p + 3 + 3 * i] = e
+            r.pl[p + 4 + 3 * i] = fs
+    else:
+        st = __bs_type(ss, so)
+        ct = __bs_type(cs, co)
+        nv = ss.tn[st]
+        r.pl.push(__P_ENUM)
+        r.pl.push(nv)
+        loop _ in [0..nv): r.pl.push(0)
+        loop v in [0..nv):
+            vs = ss.tfirst[st] + v
+            name = ss.vname[vs]
+            k = -1
+            if v < cs.tn[ct] and cs.vname[cs.tfirst[ct] + v] == name: k = v
+            else:
+                loop j in [0..cs.tn[ct]):
+                    if cs.vname[cs.tfirst[ct] + j] == name:
+                        k = j
+                        break
+            q = r.pl.len()
+            r.pl[p + 2 + v] = q
+            nf = ss.vn[vs]
+            r.pl.push(__P_VAR)
+            r.pl.push(k)
+            r.pl.push(nf)
+            r.pl.push(r.names.len())
+            r.names.push("{name} is not a variant of {cs.tname[ct]} now")
+            loop _ in [0..nf): r.pl.push(0)
+            cnf = 0
+            if k >= 0: cnf = cs.vn[cs.tfirst[ct] + k]
+            loop j in [0..nf):
+                sk = ss.vkind[ss.vfirst[vs] + j]
+                e = 0
+                if j < cnf: e = __bp(r, sk, cs.vkind[cs.vfirst[cs.tfirst[ct] + k] + j], "{cs.tname[ct]}.{name}'s field {j}")
+                else: e = __bp_skip(r, sk, false)
+                r.pl[q + 4 + j] = e
+    p
+
+# the fewest bytes a value of the kind at k takes
+__bs_min = (s: __BinSchema, k: int, depth: int) -> int:
+    c = int(s.b[k])
+    if depth > 32: return 0
+    if c < 32: return max(__bin_size(c), 1)
+    if c == 33:
+        n = __bs_var(s.b, k + 1)
+        return n.0 * __bs_min(s, n.1, depth + 1)
+    if c == 36:
+        n = __bs_var(s.b, k + 1)
+        at = n.1
+        m = 0
+        loop _ in [0..n.0):
+            m += __bs_min(s, at, depth + 1)
+            at = __bs_kind_end(s, at)
+        return m
+    if c == 38:
+        t = __bs_type(s, k)
+        m = 0
+        loop i in [0..s.tn[t]):
+            if m == 0: m = __bs_min(s, s.fkind[s.tfirst[t] + i], depth + 1)
+        return m
+    1
+
+# ---- reading by the plan ----
+# (a plan that is not the one expected: its mistake said)
+__br_bad = (r: mut __BR, c: int):
+    if r.pl[c] == __P_ERR: __br_fail(r, r.names[r.pl[c + 1]])
+    else: __br_fail(r, "the bytes' kind is not the program's here")
+
+__br_skip = (r: mut __BR, c: int): __br_skip_kind(r, r.pl[c + 1], r.pl[c + 2] != 0)
+
+# past a value of the bytes' kind at k
+__br_skip_kind = (r: mut __BR, k: int, packed: bool):
+    if r.__fail: return
+    if r.__depth > 1000:
+        __br_fail(r, "values nested too deeply to skip (a schema that holds itself?)")
+        return
+    r.__depth += 1
+    __br_skip_in(r, k, packed)
+    r.__depth -= 1
+
+__br_skip_in = (r: mut __BR, k: int, packed: bool):
+    s = r.ss
+    c = int(s.b[k])
+    if c < 32:
+        sz = __bin_size(c)
+        if c == 12:
+            n = __br_uvar(r)
+            if __br_need(r, n): r.at += n
+        else if (c >= 3 and c <= 5 or c == 7 or c == 8) and not packed: __br_uvar(r)
+        else if __br_need(r, sz): r.at += sz
+        return
+    if c == 32 or c == 33:
+        n = 0
+        e = k + 1
+        if c == 32: n = __br_count(r, 0)
+        else:
+            v = __bs_var(s.b, k + 1)
+            n = v.0
+            e = v.1
+        sz = __bin_size(int(s.b[e]))
+        if sz > 0 and int(s.b[e]) < 32:
+            if __br_need(r, n * sz): r.at += n * sz
+            return
+        loop _ in [0..n):
+            if r.__fail: return
+            __br_skip_kind(r, e, false)
+    else if c == 34:
+        n = __br_count(r, 2)
+        v = __bs_kind_end(s, k + 1)
+        loop _ in [0..n):
+            if r.__fail: return
+            __br_skip_kind(r, k + 1, false)
+            __br_skip_kind(r, v, false)
+    else if c == 35:
+        if __br_byte(r) == 1: __br_skip_kind(r, k + 1, false)
+    else if c == 36 or c == 37:
+        n = __bs_var(s.b, k + 1)
+        at = n.1
+        if c == 36:
+            loop _ in [0..n.0):
+                __br_skip_kind(r, at, false)
+                at = __bs_kind_end(s, at)
+            return
+        m = __br_uvar(r)
+        if m >= n.0:
+            __br_fail(r, "a union's member {m} that its schema does not have")
+            return
+        loop _ in [0..m): at = __bs_kind_end(s, at)
+        __br_skip_kind(r, at, false)
+    else if c == 38:
+        t = __bs_type(s, k)
+        loop i in [0..s.tn[t]): __br_skip_kind(r, s.fkind[s.tfirst[t] + i], false)
+    else:
+        t = __bs_type(s, k)
+        v = __br_uvar(r)
+        if v >= s.tn[t]:
+            __br_fail(r, "variant {v} of {s.tname[t]}, which its schema does not have")
+            return
+        vs = s.tfirst[t] + v
+        loop j in [0..s.vn[vs]): __br_skip_kind(r, s.vkind[s.vfirst[vs] + j], false)
+
+# a whole number, however it was saved
+__br_int = (r: mut __BR, c: int) -> int:
+    op = r.pl[c]
+    if op == __L_ZZ:
+        v = __br_uvar(r)
+        return (v >> 1 & 0x7FFFFFFFFFFFFFFF) xor -(v & 1)
+    if op == __L_UV: return __br_uvar(r)
+    if op == __L_RU:
+        if r.pl[c + 1] == 8: return __br_raw(r, 8)
+        return __br_raw(r, r.pl[c + 1])
+    if op == __L_RI:
+        n = r.pl[c + 1]
+        v = __br_raw(r, n)
+        if n < 8: v = (v << (64 - 8 * n)) >> (64 - 8 * n)
+        return v
+    __br_bad(r, c)
+    0
+
+__br_range = (r: mut __BR, c: int, lo: int, hi: int, t: str) -> int:
+    at = r.at
+    v = __br_int(r, c)
+    if (v < lo or v > hi or r.pl[c] == __L_RU and r.pl[c + 1] == 8 and v < 0) and not r.__fail:
+        r.at = at
+        shown = "{v}"
+        if v < 0 and r.pl[c] == __L_RU: shown = "{v as u64}"
+        __br_fail(r, "{shown} is out of range for {t} ({lo} to {hi})")
+    v
+
+__br_float = (r: mut __BR, c: int) -> f64:
+    op = r.pl[c]
+    if op == __L_F64: return f64_from_bits(u64(__br_raw(r, 8)))
+    if op == __L_F32: return f64(f32_from_bits(u32(__br_raw(r, 4))))
+    __br_bad(r, c)
+    0.0
+
+__br_val = (r: mut __BR, x: mut int, c: int): x = __br_range(r, c, -0x7FFFFFFFFFFFFFFF - 1, 0x7FFFFFFFFFFFFFFF, "an int")
+__br_val = (r: mut __BR, x: mut i32, c: int): x = i32(__br_range(r, c, -0x80000000, 0x7FFFFFFF, "an i32"))
+__br_val = (r: mut __BR, x: mut i16, c: int): x = i16(__br_range(r, c, -0x8000, 0x7FFF, "an i16"))
+__br_val = (r: mut __BR, x: mut i8, c: int): x = i8(__br_range(r, c, -0x80, 0x7F, "an i8"))
+__br_val = (r: mut __BR, x: mut u32, c: int): x = u32(__br_range(r, c, 0, 0xFFFFFFFF, "a u32"))
+__br_val = (r: mut __BR, x: mut u16, c: int): x = u16(__br_range(r, c, 0, 0xFFFF, "a u16"))
+__br_val = (r: mut __BR, x: mut u8, c: int): x = u8(__br_range(r, c, 0, 0xFF, "a u8"))
+__br_val = (r: mut __BR, x: mut u64, c: int):
+    if r.pl[c] == __L_RU and r.pl[c + 1] == 8:
+        x = __br_raw(r, 8) as u64
+        return
+    at = r.at
+    v = __br_int(r, c)
+    if v < 0 and not r.__fail:
+        r.at = at
+        __br_fail(r, "{v} is out of range for a u64")
+    x = v as u64
+__br_val = (r: mut __BR, x: mut f64, c: int): x = __br_float(r, c)
+__br_val = (r: mut __BR, x: mut f32, c: int): x = f32(__br_float(r, c))
+__br_val = (r: mut __BR, x: mut bool, c: int):
+    if r.pl[c] != __L_BOOL:
+        __br_bad(r, c)
+        return
+    v = __br_byte(r)
+    if v > 1:
+        r.at -= 1
+        __br_fail(r, "expected a bool (0 or 1), found {v}")
+    x = v == 1
+__br_val = (r: mut __BR, x: mut str, c: int):
+    if r.pl[c] != __L_STR:
+        __br_bad(r, c)
+        return
+    n = __br_uvar(r)
+    if not __br_need(r, n): return
+    x = __str_from(data(r.b) + r.at, n)
+    r.at += n
+__br_val = (r: mut __BR, x: mut vec2, c: int): __br_vec(r, &x as *u8, 2, __L_VEC, c)
+__br_val = (r: mut __BR, x: mut vec3, c: int): __br_vec(r, &x as *u8, 3, __L_VEC, c)
+__br_val = (r: mut __BR, x: mut vec4, c: int): __br_vec(r, &x as *u8, 4, __L_VEC, c)
+__br_val = (r: mut __BR, x: mut ivec2, c: int): __br_vec(r, &x as *u8, 2, __L_IVEC, c)
+__br_val = (r: mut __BR, x: mut ivec3, c: int): __br_vec(r, &x as *u8, 3, __L_IVEC, c)
+__br_val = (r: mut __BR, x: mut ivec4, c: int): __br_vec(r, &x as *u8, 4, __L_IVEC, c)
+
+__br_vec = (r: mut __BR, p: *u8, n: int, op: int, c: int):
+    if r.pl[c] != op or r.pl[c + 1] != n:
+        __br_bad(r, c)
+        return
+    if not __br_need(r, 4 * n): return
+    mem_copy(p, data(r.b) + r.at, 4 * n)
+    r.at += 4 * n
+
+__br_arr[T] = (r: mut __BR, xs: mut T[], c: int):
+    if r.pl[c] != __P_ARR:
+        __br_bad(r, c)
+        return
+    sz = r.pl[c + 3]
+    each = sz
+    if each == 0: each = r.pl[c + 4]
+    n = __br_count(r, each)
+    if r.__fail: return
+    xs.clear()
+    xs.resize(n)
+    if n == 0: return
+    if r.pl[c + 2] != 0:
+        # (packed as this program keeps them: copied as they are)
+        if not __br_need(r, n * sz): return
+        mem_copy(data(xs) as *u8, data(r.b) + r.at, n * sz)
+        r.at += n * sz
+        return
+    e: T
+    __default_init(e)
+    if __bin_info(e) & 1024 != 0:
+        loop i in [0..n): xs[i] = e
+    ep = __br_child(r, c + 1)
+    if r.__stepped:
+        p = &xs
+        __br_push(r, (r2: mut __BR, i: int) -> int: __br_elems(r2, p[0], ep, i), n)
+        return
+    __br_elems(r, xs, ep, 0)
+
+__br_elems[T] = (r: mut __BR, xs: mut T[], ep: int, i0: int) -> int:
+    if i0 < 0:
+        __br_at_i(r, -i0 - 1)
+        return 0
+    i = i0
+    n = xs.len()
+    q = data(xs)
+    loop i < n:
+        __br_val(r, q[i], ep)
+        i += 1
+        if r.__fail:
+            __br_at_i(r, i - 1)
+            return -1
+        if r.__push or r.at >= r.__check: return i
+    -1
+
+__br_soa[T] = (r: mut __BR, xs: mut soa T[], c: int):
+    ys: T[]
+    __br_val_direct(r, ys, c)
+    xs.clear()
+    loop y in ys: xs.push(y)
+
+__br_map[K, V] = (r: mut __BR, m: mut Map[K, V], c: int):
+    if r.pl[c] != __P_MAP:
+        __br_bad(r, c)
+        return
+    n = __br_count(r, 1)
+    if r.__fail: return
+    m.clear()
+    reserve(m, n)
+    kp = __br_child(r, c + 1)
+    vp = __br_child(r, c + 2)
+    if r.__stepped:
+        p = &m
+        __br_push(r, (r2: mut __BR, i: int) -> int: __br_entries(r2, p[0], kp, vp, n, i), n)
+        return
+    __br_entries(r, m, kp, vp, n, 0)
+
+__br_entries[K, V] = (r: mut __BR, m: mut Map[K, V], kp: int, vp: int, n: int, i0: int) -> int:
+    if i0 < 0:
+        if m.keys.len() > 0: __br_at(r, "[{m.keys[m.keys.len() - 1]}]")
+        return 0
+    d: V
+    __default_init(d)
+    i = i0
+    loop i < n:
+        k: K
+        __default_init(k)
+        __br_val_direct(r, k, kp)
+        if r.__fail: return -1
+        e = __map_entry(m, k, d)
+        pv = data(m.vals)
+        __br_val(r, pv[e], vp)
+        i += 1
+        if r.__fail:
+            __br_at(r, "[{k}]")
+            return -1
+        if r.__push or r.at >= r.__check: return i
+    -1
+
+__br_opt[T] = (r: mut __BR, x: mut T?, c: int):
+    op = r.pl[c]
+    if op == __P_OPT:
+        t = __br_byte(r)
+        if r.__fail: return
+        if t == 0:
+            x = none
+            return
+        if t != 1:
+            r.at -= 1
+            __br_fail(r, "expected 0 or 1 (none, or a value), found {t}")
+            return
+    else if op != __P_OPTV:
+        __br_bad(r, c)
+        return
+    v: T
+    __default_init(v)
+    ec = __br_child(r, c + 1)
+    if r.__stepped and __bin_info(v) & 256 == 0:
+        __br_cell(r, &x, v, ec)
+        return
+    __br_val(r, v, ec)
+    x = v
+
+# a union's member: read whole, or (one with arrays or maps, a step at a time) into a cell of its
+# own that is put in x when it is done
+__br_member_into[T, D] = (r: mut __BR, x: mut D, v: T, c: int):
+    if r.__stepped and __bin_info(v) & 256 == 0:
+        __br_cell(r, &x, v, c)
+        return
+    u = v
+    __br_val(r, u, c)
+    x = u
+
+__br_cell[T, D] = (r: mut __BR, dst: *D, v: T, c: int):
+    cell = [v]
+    pc = data(cell)
+    __br_push(r, (r2: mut __BR, i: int) -> int:
+        if i < 0: return 0
+        if i == 0:
+            __br_val(r2, pc[0], c)
+            return 1
+        dst[0] = pc[0]
+        if cell.len() == 0: return -1       # (the cell is kept until then)
+        -1, 0)
+
+# all but numbers, bool, str and vectors: read as the plan says (the compiler writes the code for
+# each type, and calls __br_arr, __br_map, __br_opt for those)
+__br_val[T] = (r: mut __BR, x: mut T, c: int):
+    info = __bin_info(x)
+    if r.__stepped and info & 256 == 0 and info & 255 == 38:
+        p = &x
+        __br_push(r, (r2: mut __BR, j: int) -> int: __br_fields_f(r2, p[0], c, j), 0)
+        return
+    __br_fields(r, x, c, 0)
+
+__br_fields[T] = (r: mut __BR, x: mut T, c: int, j: int) -> int:
+    __bin_read(r, x, c, j)
+    -1
+
+__br_fields_f[T] = (r: mut __BR, x: mut T, c: int, j: int) -> int:
+    if j < 0:
+        __br_at(r, r.ss.fname[r.pl[c + 4 + 3 * (-j - 1)]])
+        return 0
+    __br_fields(r, x, c, j)
+
+__br_val_direct[T] = (r: mut __BR, x: mut T, c: int):
+    s = r.__stepped
+    r.__stepped = false
+    __br_val(r, x, c)
+    r.__stepped = s
+
+# (a struct's, tuple's or fixed-size array's count of saved fields or elements)
+__br_nf = (r: mut __BR, c: int) -> int:
+    op = r.pl[c]
+    if op != __P_STRUCT and op != __P_TUP and op != __P_FIXED:
+        __br_bad(r, c)
+        return 0
+    r.pl[c + 1]
+__br_ft = (r: __BR, c: int, j: int) -> int: r.pl[c + 2 + 3 * j]
+__br_fc = (r: mut __BR, c: int, j: int) -> int: __br_child(r, c + 3 + 3 * j)
+__br_tc = (r: mut __BR, c: int, i: int) -> int: __br_child(r, c + 2 + i)
+
+# past the saved elements (or variant fields) from n on
+__br_tskip = (r: mut __BR, c: int, n: int):
+    op = r.pl[c]
+    if op == __P_TUP:
+        loop j in [n..r.pl[c + 1]): __br_skip(r, r.pl[c + 2 + j])
+    else if op == __P_FIXED:
+        loop j in [n..r.pl[c + 1]): __br_skip(r, r.pl[c + 3])
+    else if op == __P_VAR:
+        loop j in [n..r.pl[c + 2]): __br_skip(r, r.pl[c + 4 + j])
+
+__br_variant = (r: mut __BR, c: int) -> int:
+    if r.pl[c] != __P_ENUM:
+        __br_bad(r, c)
+        return -1
+    at = r.at
+    s = __br_uvar(r)
+    if r.__fail: return -1
+    if s >= r.pl[c + 1]:
+        r.at = at
+        __br_fail(r, "variant {s}, which the bytes' schema does not have")
+        return -1
+    vo = r.pl[c + 2 + s]
+    if r.pl[vo + 1] < 0:
+        r.at = at
+        __br_fail(r, r.names[r.pl[vo + 3]])
+        return -1
+    r.__vo = vo
+    r.pl[vo + 1]
+
+__br_vfield[T] = (r: mut __BR, x: mut T, vo: int, j: int):
+    if j < r.pl[vo + 2] and not r.__fail: __br_val_direct(r, x, __br_child(r, vo + 4 + j))
+
+__br_member = (r: mut __BR, c: int) -> int:
+    if r.pl[c] != __P_UNION:
+        __br_bad(r, c)
+        return -1
+    at = r.at
+    s = __br_uvar(r)
+    if r.__fail: return -1
+    if s >= r.pl[c + 1]:
+        r.at = at
+        __br_fail(r, "a union's member {s}, which the bytes' schema does not have")
+        return -1
+    if r.pl[c + 2 + 3 * s] < 0:
+        r.at = at
+        __br_fail(r, r.names[r.pl[c + 4 + 3 * s]])
+        return -1
+    s
+__br_mtarget = (r: __BR, c: int, s: int) -> int: r.pl[c + 2 + 3 * s]
+__br_mplan = (r: mut __BR, c: int, s: int) -> int: __br_child(r, c + 3 + 3 * s)

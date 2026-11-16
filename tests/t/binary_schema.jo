@@ -1,0 +1,109 @@
+# requires: sloppy
+# from_bytes reads bytes an older (or newer) program wrote: fields by name, a field gone skipped, a
+# new one at its default, a kind changed a TextError naming it; enum variants by name. Bytes cut
+# short or spoiled are a TextError, never a crash.
+enum Mood: calm, angry, sleepy
+enum Mood2: sleepy, angry, happy
+enum Act:
+    wait
+    go(to: str, speed: f64)
+    say(words: str[])
+enum Act2:
+    say(words: str[], loud: bool)
+    go(to: str)
+    wait
+struct Pet:
+    name: str
+    age: int
+    mood: Mood
+    toys: str[]
+    owner: Person?
+struct Person:
+    name: str
+    born: int
+# (Pet as a later program has it: fields reordered, `age` gone, `color` and `legs` new, Person grown)
+struct Pet2:
+    toys: str[]
+    color = "brown"
+    name: str
+    owner: Person2?
+    mood: Mood2
+    legs: int = 4
+struct Person2:
+    born: i32
+    nick = "?"
+    name: str
+struct Herd:
+    pets: Pet[]
+    acts: Act[]
+    note: str
+# (the same with kinds changed)
+struct Herd2:
+    pets: Pet2[]
+    acts: Act2[]
+    note: str
+struct HerdBad:
+    pets: Pet2[]
+    note: int
+struct PetBadAge:
+    name: str
+    age: str
+struct HerdBadPet:
+    pets: PetBadAge[]
+struct PetU8:
+    name: str
+    age: u8
+
+show[T] = (b: u8[]):
+    v = from_bytes[T](b)
+    if v is TextError: print("TextError: {v.message} (path {v.path}, byte {v.column}, line {v.line})")
+    else: print(to_text(v))
+
+stepped_error[T] = (b: u8[]) -> str:
+    r = byte_reader[T](b)
+    loop not r.step(0.0): pass
+    v = r.result()
+    if v is TextError: return "{v.message} | {v.path}"
+    "no error"
+
+main = ():
+    h = Herd([Pet("rex", 3, .angry, ["ball"], Person("ann", 1990)), Pet("tom", 5, .sleepy, [], none)], [.wait, .go("park", 2.5), .say(["hi", "there"])], "two")
+    b = to_bytes(h)
+    show[Herd](b)
+    show[Herd2](b)
+    show[HerdBad](b)
+    show[HerdBadPet](b)
+    # (a variant the program no longer has)
+    show[Herd2](to_bytes(Herd([Pet("x", 1, .calm, [], none)], [], "")))
+    # (a number too big for the field's kind now, and a kind changed, deep in a big value read a
+    # step at a time: the path says where)
+    many: Pet[] = []
+    loop i in 0..400: many.push(Pet("p{i}", i % 200, .calm, ["t"], none))
+    many[321].age = 1000
+    print(stepped_error[PetU8[]](to_bytes(many)))
+    print(stepped_error[PetBadAge[]](to_bytes(many)))
+    hs = [h, h, h]
+    hs[2].pets[1].mood = .calm
+    print(stepped_error[Herd2[]](to_bytes(hs)))
+    # (cut short anywhere, or a byte spoiled: a TextError, and reading goes on no further)
+    errors = 0
+    loop n in 0..b.len():
+        v = from_bytes[Herd](b[0..n))
+        if v is TextError: errors += 1
+    print("cut short: {errors} of {b.len()} lengths are errors")
+    print(from_bytes[Herd](b[0..b.len() - 1)))
+    print(from_bytes[Herd](b + [0]))
+    print(from_bytes[Herd]([1, 2, 3]))
+    seed = 12345
+    oks = 0
+    loop k in 0..2000:
+        c = b
+        loop j in 0..1 + k % 3:
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            at = seed % c.len()
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            c[at] = u8(seed % 256)
+        v = from_bytes[Herd](c)
+        if v is Herd: oks += 1
+        stepped_error[Herd](c)
+    print("spoiled: read without a crash ({oks} still read as a Herd)")

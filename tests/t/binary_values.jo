@@ -1,0 +1,151 @@
+# requires: sloppy
+# to_bytes / from_bytes: every kind to_text writes, back as it was (to_text of both compared), the
+# same bytes for the same value, and byte_writer / byte_reader stepped give what the one-shot do
+enum Kind: small, big
+enum Shape:
+    dot
+    rect(w: f32, h: f32)
+    named(s: str, k: Kind)
+    nested(inner: Shape[], tag: int?)
+struct Item:
+    name: str
+    count: int
+    tags: str[]
+    w: f64 = 1.5
+struct Node:
+    v: int
+    kids: Node[]
+    next: Node?
+struct Everything:
+    b: bool
+    i8_: i8
+    i16_: i16
+    i32_: i32
+    n: int
+    u8_: u8
+    u16_: u16
+    u32_: u32
+    u64_: u64
+    f: f32
+    d: f64
+    s: str
+    v2: vec2
+    v3: vec3
+    v4: vec4
+    iv: ivec3
+    items: Item[]
+    by: {str: int}
+    keyed: {(int, str): Item[]}
+    best: Item?
+    none_: Item?
+    shape: Shape
+    shapes: Shape[]
+    u: int | str
+    us: (int | str | Item)[]
+    pair: (int, str, f64)
+    grid: i32[4]
+    names: str[3]
+    nums: i32[]
+    bytes_: u8[]
+    flags: bool[]
+    pts: vec2[]
+    ks: Kind[]
+    maybe: int?[]
+    tree: Node
+    k: Kind = .big
+    callback: (int) -> int = (x): x
+
+same[T] = (what: str, x: T):
+    b = to_bytes(x)
+    v = from_bytes[T](b)
+    if v is TextError: print("{what}: error {v.message}")
+    else: print("{what}: {to_text(v) == to_text(x)} {b == to_bytes(x)} {b.len()} bytes")
+
+stepped[T] = (what: str, x: T):
+    b = to_bytes(x)
+    w = byte_writer(x)
+    steps = 0
+    p = 0.0
+    up = true
+    loop not w.step(0.0):
+        steps += 1
+        q = w.progress()
+        if q < p - 0.25: up = false
+        p = q
+    print("{what}: writer {w.result() == b} {steps > 3} {up} {w.progress()}")
+    r = byte_reader[T](b)
+    steps = 0
+    loop not r.step(0.0): steps += 1
+    v = r.result()
+    if v is TextError: print("{what}: reader error {v.message}")
+    else: print("{what}: reader {to_text(v) == to_text(x)} {steps > 3} {r.progress()}")
+
+main = ():
+    e = Everything(b = true, i8_ = -128, i16_ = -32768, i32_ = 2147483647, n = -9223372036854775807 - 1, u8_ = 255, u16_ = 65535,
+        u32_ = 4294967295, u64_ = 18446744073709551615, f = -0.0, d = 0.0 / 0.0, s = "nul\0in é 😀 \x01", v2 = vec2(1, -2),
+        v3 = vec3(0.5, 1.0 / 0.0, -1.0 / 0.0), v4 = vec4(1, 2, 3, 4), iv = ivec3(-1, 0, 7))
+    e.items = [Item("a", 1, ["x", "y"]), Item("", -5, [])]
+    e.by = {"q": 1, "r": -2, "": 0}
+    e.keyed[(1, "one")] = [Item("k", 2, [])]
+    e.keyed[(2, "")] = []
+    e.best = Item("z", 9, ["t"], 2.5)
+    e.shape = .nested([.dot, .rect(1, 2), .named("n", .small)], 4)
+    e.shapes = [.dot, .nested([], none)]
+    e.u = "text"
+    e.us = [5, "five", Item("five", 5, [])]
+    e.pair = (-1, "minus", 1e300)
+    e.grid = [1, -2, 3, 2147483647]
+    e.names = ["a", "", "c"]
+    e.nums = [0, -1, 1 << 30]
+    e.bytes_ = [0, 255, 7]
+    e.flags = [true, false, true]
+    e.pts = [vec2(1, 2), vec2(-0.0, 3)]
+    e.ks = [.big, .small]
+    e.maybe = [1, none, -3]
+    e.tree = Node(1, [Node(2, [], none), Node(3, [Node(4, [], none)], none)], Node(5, [], Node(6, [], none)))
+    same("everything", e)
+    same("empty", Everything())
+    v = from_bytes[Everything](to_bytes(e))
+    if v is Everything:
+        print(v.d != v.d, f64_bits(f64(v.f)) == f64_bits(f64(f32(-0.0))), v.v3.y, v.u64_, v.n, v.s == e.s, v.callback(3))
+    # (leaves and containers alone)
+    same("int", -12345)
+    same("big int", 9223372036854775807)
+    same("str", "h\0i")
+    same("empty str", "")
+    same("floats", [1.5, -0.0, 1.0 / 0.0, 5e-324])
+    no_items: Item[] = []
+    same("empty array", no_items)
+    same("map", {1: "a", -1: "b"})
+    opts: Item?[] = [none, Item("o", 0, [])]
+    same("optionals", opts)
+    same("tuple", (1, "x", [true]))
+    same("nested arrays", [[1, 2], [], [3]])
+    two: Item[2] = [Item("a", 1, []), Item("b", 2, ["c"])]
+    same("fixed of structs", two)
+    # (the same value twice, and an equal map made in the same order: the same bytes; a map with
+    # its entries in another order has other bytes, though it is ==)
+    m1 = {"a": 1, "b": 2}
+    m2: {str: int} = {}
+    m2["a"] = 1
+    m2["b"] = 2
+    m3: {str: int} = {}
+    m3["b"] = 2
+    m3["a"] = 1
+    print(to_bytes(m1) == to_bytes(m2), m1 == m3, to_bytes(m1) == to_bytes(m3))
+    # (written and read a step at a time: the same as at once)
+    big = Everything()
+    loop i in 0..3000:
+        big.items.push(Item("item {i}", i, fill("t{i}", i % 3)))
+        big.by["k{i}"] = i
+        big.us.push(Item("u{i}", i, []))
+        big.shapes.push(.named("s{i}", .small))
+    big.tree = e.tree
+    stepped("big", big)
+    stepped("items", big.items)
+    stepped("small", 5)
+    bw = byte_writer(big)
+    print(bw.result() == to_bytes(big))
+    br = byte_reader[Everything](to_bytes(big))
+    rr = br.result()
+    if rr is Everything: print(to_text(rr) == to_text(big))

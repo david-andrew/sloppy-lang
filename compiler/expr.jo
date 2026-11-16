@@ -10,10 +10,10 @@ use 'ide.jo'
 
 enum IN:
     none_, len, push, pop, insert, remove, clear, reserve, slice, syscall, memcpy, memset, sizeof,
-    arrdata, panic, assert, print, embed, from_bytes, to_bytes, argv, setlen, truncate, resize,
+    arrdata, panic, assert, print, embed, str_of_bytes, bytes_of_str, argv, setlen, truncate, resize,
     hash, alignof, unreachable, arrcap, fmt_struct, sqrt, vec_ctor, cfn_cast, wasm_call, callc, floor_,
     ceil_, fabs, fmin, fmax, setjmp, longjmp, jump, shader, extend, clone_thread, atomic_add, atomic_cas, stack_ptr, fill, fmt_elem, gpu_kernel, cpu_features, code_sync, compute, compute_spirv, compute_textures,
-    read_fields, default_init, embed_dir, field_notes, unwrap, expect, mul_high
+    read_fields, default_init, embed_dir, field_notes, unwrap, expect, mul_high, bin_schema, bin_info, bin_write, bin_read
 
 # (fixed2arr: T[N] -> T[], a new array holding a copy of the elements; arr2fixed: T[] -> T[N],
 # the elements copied in, a comprehension's, checked to be N when it runs)
@@ -33,7 +33,7 @@ intrinsics = [
     Intrinsic("fill", .fill, false), Intrinsic("syscall", .syscall, false), Intrinsic("mem_copy", .memcpy, false), Intrinsic("mem_set", .memset, false),
     Intrinsic("size_of", .sizeof, false), Intrinsic("align_of", .alignof, false), Intrinsic("panic", .panic, false),
     Intrinsic("assert", .assert, false), Intrinsic("print", .print, false), Intrinsic("embed", .embed, false), Intrinsic("embed_dir", .embed_dir, false),
-    Intrinsic("str_from_bytes", .from_bytes, false), Intrinsic("bytes", .to_bytes, false), Intrinsic("__argv", .argv, false),
+    Intrinsic("str_from_bytes", .str_of_bytes, false), Intrinsic("bytes", .bytes_of_str, false), Intrinsic("__argv", .argv, false),
     Intrinsic("unreachable", .unreachable, false), Intrinsic("sqrt", .sqrt, false), Intrinsic("__fmt_fields", .fmt_struct, false), Intrinsic("__fmt_elem_value", .fmt_elem, false), Intrinsic("__gpu_kernel", .gpu_kernel, false),
     Intrinsic("__hash_value", .hash, false), Intrinsic("__set_len", .setlen, false), Intrinsic("__call_raw", .callc, false),
     Intrinsic("shader", .shader, false), Intrinsic("__setjmp", .setjmp, false), Intrinsic("__longjmp", .longjmp, false), Intrinsic("__jump", .jump, false),
@@ -43,6 +43,8 @@ intrinsics = [
     Intrinsic("__read_fields", .read_fields, false), Intrinsic("__default_init", .default_init, false),
     Intrinsic("__field_notes", .field_notes, false), Intrinsic("unwrap", .unwrap, false), Intrinsic("expect", .expect, false),
     Intrinsic("__mul_high", .mul_high, false),
+    Intrinsic("__bin_schema", .bin_schema, false), Intrinsic("__bin_info", .bin_info, false), Intrinsic("__bin_write", .bin_write, false),
+    Intrinsic("__bin_read", .bin_read, false),
 ]
 
 last_checked = 0
@@ -3280,6 +3282,402 @@ bc_logic = (k: NK, a: int, b: int, pos: int) -> int:
     n
 kind_is = (c: int, pos: int) -> int: bc_bin(.eq, bc_ident("__k", pos), bc_int(c, pos), pos)
 
+# ---------------- values as bytes (lib/std/binary.jo) ----------------
+# A kind is written as a code: 1 bool, 2 i8, 3 i16, 4 i32, 5 int, 6 u8, 7 u16, 8 u32, 9 u64,
+# 10 f32, 11 f64, 12 str, 13-15 vec2-vec4, 16-18 ivec2-ivec4; then those with more after them:
+# 32 T[] (T), 33 T[N] (N, T), 34 map (K, V), 35 T? (T), 36 tuple (n, each), 37 union (n, each
+# member), 38 struct (its type's place in the schema), 39 enum (the same)
+bin_kind_code = (t0: int) -> int:
+    t = prune(t0)
+    k = types[t].kind
+    if k == .bool_: return 1
+    if k == .int_:
+        b = int(types[t].bits)
+        c = 2
+        if b == 16: c = 3
+        else if b == 32: c = 4
+        else if b == 64: c = 5
+        if not types[t].sign: c += 4
+        return c
+    if k == .float_:
+        if t == T_F32: return 10
+        return 11
+    if k == .str_: return 12
+    if k == .vec and t != T_MAT4:
+        if types[t].sign: return 14 + int(types[t].bits)
+        return 11 + int(types[t].bits)
+    if k == .array or is_soa(t): return 32
+    if k == .fixed: return 33
+    if is_map_type(t): return 34
+    if k == .opt: return 35
+    if k == .tuple: return 36
+    if is_union(t): return 37
+    if k == .struct_: return 38
+    if k == .enum_: return 39
+    0
+
+# (a leaf kept in a fixed number of bytes: an array of them is packed, its elements' bytes as
+# they are in memory)
+bin_fixed_leaf = (t: int) -> bool:
+    c = bin_kind_code(t)
+    c > 0 and c < 32 and c != 12
+
+bin_packed_elem = (t0: int) -> bool:
+    t = prune(t0)
+    k = types[t].kind
+    (k == .array or k == .fixed) and bin_fixed_leaf(int(types[t].elem))
+
+# a struct's fields that are written: not function values or pointers (as from_text skips them)
+bin_field_ok = (f: int) -> bool:
+    fk = tkind(int(fields[f].type))
+    not (fk == .fn_ or fk == .cfn or fk == .ptr)
+
+# flat: no array (but a packed one), map or recursion inside: written and read in one go, its
+# work bounded by its type (but for its strings' lengths)
+bin_flat_memo: {int: int} = {}
+bin_flat = (t0: int) -> bool:
+    t = prune(t0)
+    c = bin_kind_code(t)
+    if c > 0 and c < 32: return true
+    if c == 32: return not is_soa(t) and bin_packed_elem(t)
+    if c == 33 or c == 35: return bin_flat(int(types[t].elem))
+    if c == 34: return false
+    if let m = bin_flat_memo.get(t): return m == 2
+    bin_flat_memo[t] = 1
+    r = true
+    if c == 36:
+        loop i in [0..int(types[t].nargs)):
+            if not bin_flat(targ(t, i)): r = false
+    else if c == 37:
+        loop m in union_members(t):
+            if not bin_flat(m): r = false
+    else if c == 38 or c == 39:
+        si = int(types[t].st)
+        check_struct_fields(si)
+        decide_boxes(si)
+        loop i in [0..int(structs[si].nfields)):
+            f = int(structs[si].fields) + i
+            if bin_field_ok(f) and (fields[f].boxed or not bin_flat(int(fields[f].type))): r = false
+        loop v in [0..int(structs[si].nvariants)):
+            vi = int(structs[si].variants) + v
+            loop i in [0..int(variants[vi].nfields)):
+                f = int(variants[vi].fields) + i
+                if fields[f].boxed or not bin_flat(int(fields[f].type)): r = false
+    else: r = false
+    bin_flat_memo[t] = 3
+    if r: bin_flat_memo[t] = 2
+    r
+
+bin_varint = (out: mut u8[], v: int):
+    x = v
+    loop x >= 128:
+        out.push(u8((x & 127) | 128))
+        x = x >> 7
+    out.push(u8(x))
+
+bin_name = (out: mut u8[], s: str):
+    bin_varint(out, len(s))
+    loop b in s: out.push(b)
+
+# x's kind (types: the struct and enum types met, in order: their places)
+bin_kind = (t0: int, out: mut u8[], tys: mut int[], pos: int):
+    t = prune(t0)
+    c = bin_kind_code(t)
+    if c == 0: fatal(pos, "a value of type {type_str(t)} cannot be written as bytes (function values and pointers cannot)")
+    out.push(u8(c))
+    if c < 32: return
+    if c == 32:
+        if is_soa(t): bin_kind(soa_elem(t), out, tys, pos)
+        else: bin_kind(int(types[t].elem), out, tys, pos)
+    else if c == 33:
+        bin_varint(out, fixed_len(t))
+        bin_kind(int(types[t].elem), out, tys, pos)
+    else if c == 34:
+        si = int(types[t].st)
+        bin_kind(struct_targ(si, 0), out, tys, pos)
+        bin_kind(struct_targ(si, 1), out, tys, pos)
+    else if c == 35: bin_kind(int(types[t].elem), out, tys, pos)
+    else if c == 36:
+        bin_varint(out, int(types[t].nargs))
+        loop i in [0..int(types[t].nargs)): bin_kind(targ(t, i), out, tys, pos)
+    else if c == 37:
+        ms = union_members(t)
+        bin_varint(out, ms.len())
+        loop m in ms:
+            if tkind(m) == .void_: fatal(pos, "a value of type {type_str(t)} cannot be written as bytes (void cannot)")
+            bin_kind(m, out, tys, pos)
+    else:
+        at = -1
+        loop i in 0.. and x in tys:
+            if type_eq(x, t):
+                at = i
+                break
+        if at < 0:
+            at = tys.len()
+            tys.push(t)
+        bin_varint(out, at)
+
+# the schema: how many types, each (0 and a struct's name, its fields' names and kinds; or 1 and
+# an enum's name, its variants' names and how many fields each has, and their kinds), the kind
+bin_schema = (t: int, pos: int) -> str:
+    tys: int[]
+    root: u8[]
+    bin_kind(t, root, tys, pos)
+    body: u8[]
+    i = 0
+    loop i < tys.len():
+        ty = tys[i]
+        i += 1
+        si = int(types[ty].st)
+        check_struct_fields(si)
+        if types[ty].kind == .struct_:
+            body.push(0)
+            bin_name(body, type_str(ty))
+            n = 0
+            loop j in [0..int(structs[si].nfields)):
+                if bin_field_ok(int(structs[si].fields) + j): n += 1
+            bin_varint(body, n)
+            loop j in [0..int(structs[si].nfields)):
+                f = int(structs[si].fields) + j
+                if not bin_field_ok(f): continue
+                bin_name(body, name_of(int(fields[f].name)))
+                bin_kind(int(fields[f].type), body, tys, pos)
+        else:
+            body.push(1)
+            bin_name(body, type_str(ty))
+            bin_varint(body, int(structs[si].nvariants))
+            loop v in [0..int(structs[si].nvariants)):
+                vi = int(structs[si].variants) + v
+                bin_name(body, name_of(int(variants[vi].name)))
+                bin_varint(body, int(variants[vi].nfields))
+                loop j in [0..int(variants[vi].nfields)): bin_kind(int(fields[int(variants[vi].fields) + j].type), body, tys, pos)
+    out: u8[]
+    bin_varint(out, tys.len())
+    out.extend(body)
+    out.extend(root)
+    str_from_bytes(out)
+
+bc_return = (v: int, pos: int) -> int:
+    r = mk(.return_, pos)
+    nodes[r].a = i32(v)
+    r
+
+# `if c: return v`
+bc_ret_if = (c: int, v: int, pos: int) -> int: bc_if(c, [bc_return(v, pos)], [], pos)
+
+# x.i of a tuple
+bc_elem = (xn: str, i: int, pos: int) -> int:
+    el = mk(.field, pos)
+    nodes[el].a = i32(bc_ident(xn, pos))
+    nodes[el].aux = -2
+    nodes[el].ival = i
+    el
+
+bc_is_type = (xn: str, t: int, pos: int) -> int:
+    it = mk(.istype, pos)
+    nodes[it].a = i32(bc_ident(xn, pos))
+    nodes[it].b = i32(type_node_of(t, pos))
+    it
+
+# f(a, b...) as a statement, its arguments named
+bc_callst = (f: str, args: int[], pos: int) -> int: bc_stmt(bc_call(f, args, pos), pos)
+
+# the statements for value lo + k of ident vn: a tree of ifs over leaves[k]
+bc_pick = (vn: str, lo: int, leaves: int[][], pos: int) -> int[]:
+    if leaves.len() == 1: return leaves[0]
+    h = leaves.len() / 2
+    [bc_if(bc_bin(.lt, bc_ident(vn, pos), bc_int(lo + h, pos), pos), bc_pick(vn, lo, leaves[0..h), pos), bc_pick(vn, lo + h, leaves[h..], pos), pos)]
+
+# __bin_write(w, x, i): x's fields (or elements, variant, member) written from the i-th on
+bin_write_code = (t: int, wn: str, xn: str, inn: str, pos: int) -> int[]:
+    c = bin_kind_code(t)
+    st: int[]
+    if c == 38 or c == 36:
+        vals: int[]
+        fts: int[]
+        if c == 38:
+            si = int(types[t].st)
+            check_struct_fields(si)
+            loop j in [0..int(structs[si].nfields)):
+                f = int(structs[si].fields) + j
+                if not bin_field_ok(f): continue
+                vals.push(bc_field(bc_ident(xn, pos), name_of(int(fields[f].name)), pos))
+                fts.push(int(fields[f].type))
+        else:
+            loop j in [0..int(types[t].nargs)):
+                vals.push(bc_elem(xn, j, pos))
+                fts.push(targ(t, j))
+        # (from the start of each run of fields: one that may start work of its own ends a run)
+        seg: int[]
+        start = 0
+        loop m in [0..vals.len()):
+            seg.push(bc_callst("__bw_val", [bc_ident(wn, pos), vals[m]], pos))
+            if not bin_flat(fts[m]):
+                seg.push(bc_ret_if(bc_field(bc_ident(wn, pos), "__push", pos), bc_int(m + 1, pos), pos))
+                st.push(bc_if(bc_bin(.le, bc_ident(inn, pos), bc_int(start, pos), pos), seg, [], pos))
+                seg = []
+                start = m + 1
+        if seg.len() > 0: st.push(bc_if(bc_bin(.le, bc_ident(inn, pos), bc_int(start, pos), pos), seg, [], pos))
+    else if c == 32 or c == 34 or c == 35:
+        # (in the library: here so that a T[N] is not taken for a T[])
+        f = "__bw_arr"
+        if is_soa(t): f = "__bw_soa"
+        else if c == 34: f = "__bw_map"
+        else if c == 35: f = "__bw_opt"
+        st.push(bc_callst(f, [bc_ident(wn, pos), bc_ident(xn, pos)], pos))
+    else if c == 33:
+        el = mk(.index, pos)
+        nodes[el].a = i32(bc_ident(xn, pos))
+        nodes[el].b = i32(bc_ident("__i", pos))
+        f = "__bw_val_direct"
+        if bin_packed_elem(t): f = "__bw_raw"
+        st.push(bc_loop("__i", bc_int(fixed_len(t), pos), [bc_callst(f, [bc_ident(wn, pos), el], pos)], pos))
+    else if c == 37:
+        loop i in 0.. and m in union_members(t):
+            body = [bc_callst("__bw_uint", [bc_ident(wn, pos), bc_int(i, pos)], pos), bc_callst("__bw_val", [bc_ident(wn, pos), bc_ident(xn, pos)], pos)]
+            st.push(bc_if(bc_is_type(xn, m, pos), body, [], pos))
+    else if c == 39:
+        si = int(types[t].st)
+        check_struct_fields(si)
+        nv = int(structs[si].nvariants)
+        plain = simple_enum(t)
+        loop v in [0..nv):
+            if variants[int(structs[si].variants) + v].value != v: plain = false
+        if plain:
+            st.push(bc_callst("__bw_uint", [bc_ident(wn, pos), bc_call("int", [bc_ident(xn, pos)], pos)], pos))
+            return st
+        m = mk(.match_, pos)
+        nodes[m].a = i32(bc_ident(xn, pos))
+        arms: int[]
+        loop v in [0..nv):
+            vi = int(structs[si].variants) + v
+            arm = mk(.arm, pos)
+            pv = mk(.pvariant, pos)
+            nodes[pv].name = variants[vi].name
+            nodes[pv].aux2 = 1
+            body = [bc_callst("__bw_uint", [bc_ident(wn, pos), bc_int(v, pos)], pos)]
+            nf = int(variants[vi].nfields)
+            if nf > 0:
+                binds: int[]
+                loop j in [0..nf):
+                    binds.push(bc_ident("__a{j}", pos))
+                    body.push(bc_callst("__bw_val_direct", [bc_ident(wn, pos), bc_ident("__a{j}", pos)], pos))
+                set_list(pv, binds)
+                nodes[pv].aux = 1
+            set_list(arm, [pv])
+            nodes[arm].b = i32(bc_block(body, pos))
+            arms.push(arm)
+        set_list(m, arms)
+        add_flag(m, NF_TERMINATED)
+        add_flag(m, NF_STMT)
+        ms = bc_stmt(m, pos)
+        add_flag(ms, NF_TERMINATED)
+        st.push(ms)
+    else: fatal(pos, "a value of type {type_str(t)} cannot be written as bytes")
+    st
+
+# __bin_read(r, x, c, j): x read as plan c says (a struct: from its j-th saved field on, giving
+# where to go on after a field that started work of its own, r.__push; -1 at the end)
+bin_read_code = (t: int, rn: str, xn: str, cn: str, jn: str, pos: int) -> int[]:
+    c = bin_kind_code(t)
+    st: int[]
+    if c == 38:
+        si = int(types[t].st)
+        check_struct_fields(si)
+        decide_boxes(si)
+        st.push(bc_let("__j", bc_ident(jn, pos), pos))
+        st.push(bc_let("__n", bc_call("__br_nf", [bc_ident(rn, pos), bc_ident(cn, pos)], pos), pos))
+        leaves: int[][]
+        loop j in [0..int(structs[si].nfields)):
+            f = int(structs[si].fields) + j
+            if not bin_field_ok(f): continue
+            fname = name_of(int(fields[f].name))
+            ft = int(fields[f].type)
+            fn_ = "__br_val"
+            if fields[f].boxed: fn_ = "__br_val_direct"
+            lf = [bc_callst(fn_, [bc_ident(rn, pos), bc_field(bc_ident(xn, pos), fname, pos), bc_ident("__cc", pos)], pos),
+                bc_if(bc_field(bc_ident(rn, pos), "__fail", pos), [bc_callst("__br_at", [bc_ident(rn, pos), bc_str(fname, pos)], pos), bc_return(bc_int(-1, pos), pos)], [], pos)]
+            if not fields[f].boxed and not bin_flat(ft): lf.push(bc_ret_if(bc_field(bc_ident(rn, pos), "__push", pos), bc_ident("__j", pos), pos))
+            leaves.push(lf)
+        body = [bc_let("__t", bc_call("__br_ft", [bc_ident(rn, pos), bc_ident(cn, pos), bc_ident("__j", pos)], pos), pos),
+            bc_let("__cc", bc_call("__br_fc", [bc_ident(rn, pos), bc_ident(cn, pos), bc_ident("__j", pos)], pos), pos),
+            bc_assign(bc_ident("__j", pos), bc_bin(.plus, bc_ident("__j", pos), bc_int(1, pos), pos), pos)]
+        skip = [bc_callst("__br_skip", [bc_ident(rn, pos), bc_ident("__cc", pos)], pos)]
+        if leaves.len() > 0: body.push(bc_if(bc_bin(.lt, bc_ident("__t", pos), bc_int(0, pos), pos), skip, bc_pick("__t", 0, leaves, pos), pos))
+        else: body.push(skip[0])
+        body.push(bc_ret_if(bc_field(bc_ident(rn, pos), "__fail", pos), bc_int(-1, pos), pos))
+        w = mk(.while_, pos)
+        nodes[w].a = i32(bc_bin(.lt, bc_ident("__j", pos), bc_ident("__n", pos), pos))
+        nodes[w].b = i32(bc_block(body, pos))
+        st.push(w)
+    else if c == 32 or c == 34 or c == 35:
+        f = "__br_arr"
+        if is_soa(t): f = "__br_soa"
+        else if c == 34: f = "__br_map"
+        else if c == 35: f = "__br_opt"
+        st.push(bc_callst(f, [bc_ident(rn, pos), bc_ident(xn, pos), bc_ident(cn, pos)], pos))
+    else if c == 36:
+        st.push(bc_let("__n", bc_call("__br_nf", [bc_ident(rn, pos), bc_ident(cn, pos)], pos), pos))
+        nt = int(types[t].nargs)
+        loop i in [0..nt):
+            rd = bc_callst("__br_val_direct", [bc_ident(rn, pos), bc_elem(xn, i, pos), bc_call("__br_tc", [bc_ident(rn, pos), bc_ident(cn, pos), bc_int(i, pos)], pos)], pos)
+            st.push(bc_if(bc_bin(.gt, bc_ident("__n", pos), bc_int(i, pos), pos), [rd], [], pos))
+        st.push(bc_callst("__br_tskip", [bc_ident(rn, pos), bc_ident(cn, pos), bc_int(nt, pos)], pos))
+    else if c == 33:
+        st.push(bc_let("__n", bc_call("__br_nf", [bc_ident(rn, pos), bc_ident(cn, pos)], pos), pos))
+        st.push(bc_let("__ec", bc_call("__br_tc", [bc_ident(rn, pos), bc_ident(cn, pos), bc_int(0, pos)], pos), pos))
+        el = mk(.index, pos)
+        nodes[el].a = i32(bc_ident(xn, pos))
+        nodes[el].b = i32(bc_ident("__i", pos))
+        rd = bc_callst("__br_val_direct", [bc_ident(rn, pos), el, bc_ident("__ec", pos)], pos)
+        chk = bc_if(bc_field(bc_ident(rn, pos), "__fail", pos), [bc_callst("__br_at_i", [bc_ident(rn, pos), bc_ident("__i", pos)], pos), bc_return(bc_int(-1, pos), pos)], [], pos)
+        st.push(bc_loop("__i", bc_int(fixed_len(t), pos), [bc_if(bc_bin(.lt, bc_ident("__i", pos), bc_ident("__n", pos), pos), [rd, chk], [], pos)], pos))
+        st.push(bc_callst("__br_tskip", [bc_ident(rn, pos), bc_ident(cn, pos), bc_int(fixed_len(t), pos)], pos))
+    else if c == 37:
+        st.push(bc_let("__s", bc_call("__br_member", [bc_ident(rn, pos), bc_ident(cn, pos)], pos), pos))
+        st.push(bc_ret_if(bc_bin(.lt, bc_ident("__s", pos), bc_int(0, pos), pos), bc_int(-1, pos), pos))
+        st.push(bc_let("__k", bc_call("__br_mtarget", [bc_ident(rn, pos), bc_ident(cn, pos), bc_ident("__s", pos)], pos), pos))
+        st.push(bc_let("__mc", bc_call("__br_mplan", [bc_ident(rn, pos), bc_ident(cn, pos), bc_ident("__s", pos)], pos), pos))
+        leaves: int[][]
+        loop i in 0.. and m in union_members(t):
+            v = "__u{i}"
+            leaves.push([bc_decl(v, m, pos), bc_callst("__default_init", [bc_ident(v, pos)], pos),
+                bc_callst("__br_member_into", [bc_ident(rn, pos), bc_ident(xn, pos), bc_ident(v, pos), bc_ident("__mc", pos)], pos)])
+        st.extend(bc_pick("__k", 0, leaves, pos))
+    else if c == 39:
+        si = int(types[t].st)
+        check_struct_fields(si)
+        st.push(bc_let("__v", bc_call("__br_variant", [bc_ident(rn, pos), bc_ident(cn, pos)], pos), pos))
+        st.push(bc_ret_if(bc_bin(.lt, bc_ident("__v", pos), bc_int(0, pos), pos), bc_int(-1, pos), pos))
+        st.push(bc_let("__vo", bc_field(bc_ident(rn, pos), "__vo", pos), pos))
+        leaves: int[][]
+        loop v in [0..int(structs[si].nvariants)):
+            vi = int(structs[si].variants) + v
+            dn = mk(.dotname, pos)
+            nodes[dn].name = variants[vi].name
+            nf = int(variants[vi].nfields)
+            body: int[]
+            if nf == 0:
+                body.push(bc_callst("__br_tskip", [bc_ident(rn, pos), bc_ident("__vo", pos), bc_int(0, pos)], pos))
+                body.push(bc_assign(bc_ident(xn, pos), dn, pos))
+            else:
+                vargs: int[]
+                loop j in [0..nf):
+                    a = "__a{j}"
+                    body.push(bc_decl(a, int(fields[int(variants[vi].fields) + j].type), pos))
+                    body.push(bc_callst("__default_init", [bc_ident(a, pos)], pos))
+                    body.push(bc_callst("__br_vfield", [bc_ident(rn, pos), bc_ident(a, pos), bc_ident("__vo", pos), bc_int(j, pos)], pos))
+                    vargs.push(bc_ident(a, pos))
+                body.push(bc_callst("__br_tskip", [bc_ident(rn, pos), bc_ident("__vo", pos), bc_int(nf, pos)], pos))
+                cl = mk(.call, pos)
+                nodes[cl].a = i32(dn)
+                set_list(cl, vargs)
+                body.push(bc_assign(bc_ident(xn, pos), cl, pos))
+            leaves.push(body)
+        st.extend(bc_pick("__v", 0, leaves, pos))
+    else: fatal(pos, "a value of type {type_str(t)} cannot be read from bytes")
+    st
+
 # for an enum's missing variant: the one with the name other places use (Key.esc: escape), the
 # nearest spelling, or (keys) how they are named
 KEY_NAMES = ["esc", "escape", "return", "enter", "spacebar", "space", "del", "delete", "ins", "insert", "pgup", "page_up",
@@ -4024,7 +4422,7 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         set_list(m, pairs)
         nodes[n] = nodes[m]
         return check_expr(n, expected)
-    else if id == .from_bytes:
+    else if id == .str_of_bytes:
         nargs_check(n, nargs, 1, 1, "str_from_bytes")
         arg_type(args, 0, mk_array(T_U8))
         nodes[n].kind = .call
@@ -4032,7 +4430,7 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         nodes[n].sym = i32(runtime_fn("__str_from_bytes"))
         nodes[n].type = i32(T_STR)
         return T_STR
-    else if id == .to_bytes:
+    else if id == .bytes_of_str:
         nargs_check(n, nargs, 1, 1, "bytes")
         arg_type(args, 0, T_STR)
         r = mk_array(T_U8)
@@ -4245,6 +4643,44 @@ check_intrinsic = (n: int, id: IN, args: int[], expected: int) -> int:
         set_list(arr, notes)
         nodes[n] = nodes[arr]
         return check_expr(n, mk_array(T_STR))
+    else if id == .bin_schema or id == .bin_info:
+        # __bin_schema(x): the schema of x's type as lib/std/binary.jo writes it (its struct and
+        # enum types, then its kind); __bin_info(x): its kind's code, and whether it is flat
+        nargs_check(n, nargs, 1, 1, "__bin_schema")
+        t = prune(arg_type(args, 0, 0))
+        pos = nodes[n].pos
+        if id == .bin_info:
+            v = bin_kind_code(t)
+            if bin_flat(t): v |= 256
+            if bin_packed_elem(t): v |= 512
+            if v & 255 == 38:
+                si = int(types[t].st)
+                check_struct_fields(si)
+                nf = 0
+                loop i in [0..int(structs[si].nfields)):
+                    if fields[int(structs[si].fields) + i].defval != 0: v |= 1024
+                    if bin_field_ok(int(structs[si].fields) + i): nf += 1
+                v |= nf << 16
+            else if v & 255 == 36: v |= int(types[t].nargs) << 16
+            nodes[n] = nodes[bc_int(v, pos)]
+            return check_expr(n, T_INT)
+        nodes[n] = nodes[bc_str(bin_schema(t, pos), pos)]
+        return check_expr(n, T_STR)
+    else if id == .bin_write or id == .bin_read:
+        # __bin_write(w, x, i): writes x's fields from the i-th on (a struct or tuple returns where
+        # to go on after one that started work of its own: w.__push); __bin_read(r, x, c, j) reads
+        # them as plan c says, from the j-th saved field on (lib/std/binary.jo)
+        nargs_check(n, nargs, 3, 4, "__bin_write")
+        loop i in [0..nargs): arg_type(args, i, 0)
+        t = prune(ntype(args[1]))
+        pos = nodes[n].pos
+        an: str[]
+        loop a in args: an.push(name_of(int(nodes[a].name)))
+        stmts: int[]
+        if id == .bin_write: stmts = bin_write_code(t, an[0], an[1], an[2], pos)
+        else: stmts = bin_read_code(t, an[0], an[1], an[2], an[3], pos)
+        nodes[n] = nodes[bc_block(stmts, pos)]
+        return check_expr(n, expected)
     else if id == .read_fields:
         # __read_fields(r, x): the code that reads a struct, tuple, enum, union, vector or fixed-size
         # array from text, field by field (lib/std/text.jo)
