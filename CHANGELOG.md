@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.38.3
+
+Headless GPU runs with `SLOPPY_FRAMES` alone (no display, no screenshot).
+
 - With no display (`DISPLAY` and `WAYLAND_DISPLAY` unset), a run with `SLOPPY_FRAMES=n` and no
   screenshot draws headless on the GPU through Vulkan, as a `SLOPPY_SCREENSHOT` run does; it
   stopped with "cannot open a window" (only the software renderer ran with no display then).
