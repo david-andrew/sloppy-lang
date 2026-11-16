@@ -40,10 +40,11 @@ const sloppyHost = (() => {
       u8().set(b.subarray(0, Math.min(b.length, Number(cap))), Number(op));
       return BigInt(b.length);
     }
+    const dirs = new Set();         // (directories made with no file in them yet)
     function listDir(path) {
       const seen = new Set();
       for (const f of Object.keys(files)) if (f.startsWith(path + "/")) seen.add(f.slice(path.length + 1).split("/")[0]);
-      return seen.size > 0 ? [...seen] : null;
+      return seen.size > 0 || dirs.has(path) ? [...seen] : null;
     }
     const sockets = [];
     const env = {
@@ -94,6 +95,7 @@ const sloppyHost = (() => {
         files[str(pp, pn)] = u8().slice(Number(dp), Number(dp) + Number(dn));
         return 1n;
       },
+      __wasm_mkdir: (pp, pn) => { dirs.add(str(pp, pn).replace(/\/+$/, "")); return 1n; },
       __wasm_list_dir: (pp, pn, op, cap) => {
         const names = listDir(str(pp, pn).replace(/\/+$/, ""));
         return names === null ? -1n : give(enc.encode(names.join("\n")), op, cap);
