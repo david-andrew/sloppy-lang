@@ -346,7 +346,7 @@ for (const fake of [false, true]) {
 const linkHook = `(() => {
   const ev = window.__lk = [];
   const P = WebGL2RenderingContext.prototype, fn = new Map(), stages = new Map();
-  const ss = P.shaderSource; P.shaderSource = function (s, src) { const m = /sloppy shader: f_(\\w+?)_\\d+ at/.exec(src); if (m) fn.set(s, m[1]); return ss.call(this, s, src); };
+  const ss = P.shaderSource; P.shaderSource = function (s, src) { const m = /sloppy shader: (\\w+)/.exec(src); if (m) fn.set(s, m[1]); return ss.call(this, s, src); };
   const at = P.attachShader; P.attachShader = function (p, s) { const l = stages.get(p) || []; l.push(fn.get(s) || "?"); stages.set(p, l); return at.call(this, p, s); };
   const lp = P.linkProgram; P.linkProgram = function (p) { ev.push(["link", (stages.get(p) || []).join("+")]); return lp.call(this, p); };
   const log = console.log; console.log = function (...a) { const t = a.join(" "); if (/^lazy3d /.test(t)) ev.push(["log", t]); return log.apply(this, a); };

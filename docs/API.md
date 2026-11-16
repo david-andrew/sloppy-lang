@@ -4343,6 +4343,9 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       flat: str             # per 4 bytes of that result: 'f' interpolated, 'i' passed on unchanged
       vs_spirv: str         # the stages as SPIR-V, for Vulkan (compiler/spirv.jo; "" on the web)
       fs_spirv: str
+      where: str            # the stages' functions and where they are in the source, for error
+                            # reports ("vertex: vs at src/main.jo:12:1\nfragment: ..."; the GLSL
+                            # text leaves them out, so that it stays the same when code moves)
   ```
 - `struct ShaderAttrib`
   ```gdscript

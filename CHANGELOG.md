@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+A shader's GLSL is the same text from build to build while its own code is, so browsers' program
+caches (keyed by the source text) still hold it after a deploy.
+
+- Generated names come from the shader's own code, not from the program's global numbering:
+  functions are numbered per stage in the order the shader reaches them (`f_volume_vs_0`),
+  locals and temporaries per function (`l_k_3`), structs and the other generated types per
+  program (`S_VolumeOut_2`, shared by both stages). Before, any change anywhere in a program
+  renumbered every shader's names (`f_volume_vs_3317` became `f_volume_vs_3324`), and the header
+  named the file and line, so after each deploy a browser compiled and linked every program cold
+  again: Aegean Skies' title took about 18 s on a phone instead of 11.
+- The GLSL header names the shader's functions without their place (`// sloppy shader:
+  volume_vs`); where they are in the source is in `ShaderSource.where` instead, and a failed
+  compile or link reports it (`--- sloppy source ---`, natively and on the web).
+- Metal sources are named the same way (SPIR-V never had names or line information).
+- `tools/shaderstable.py` (in CI) builds a program and variants of it (unrelated code and a
+  shader added before, code moved, a change inside one shader) and checks that the unchanged
+  shaders' GLSL, SPIR-V and Metal stay byte-identical and the changed one does not.
+  `SLOPPY_GLSL_DUMP=dir` writes each program's GLSL stages there.
+
 ## 0.38.3
 
 Headless GPU runs with `SLOPPY_FRAMES` alone (no display, no screenshot).

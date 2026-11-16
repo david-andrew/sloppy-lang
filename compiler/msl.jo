@@ -33,6 +33,12 @@ ml_stage = ""                # "vertex", "fragment", "compute" or "kernel"
 ml_utype = 0                 # the uniforms' type: its values are addresses
 ml_lref: {int: str} = {}     # locals holding the uniforms (or a part): their address
 ml_temps = 0
+# (names from the shader's own code, as in glsl.jo: functions and structs numbered per stage,
+# locals per function, in the order the translation reaches them)
+ml_ids: {int: int} = {}      # 2 * function, 2 * struct + 1: its number
+ml_count = 0
+ml_local_ids: {int: int} = {}
+ml_local_count = 0
 
 ml_err = (pos: int, msg: str): fatal(pos, "in shader code: {msg}")
 
@@ -64,15 +70,26 @@ ml_type = (t0: int, pos: int) -> str:
         if is_lib_texture(si): return "uint"
         if is_gpu_buffer(t): return "SlGB"
         ml_struct(t, pos)
-        return "S_{gl_name(structs[si].name)}_{si}"
+        return ml_struct_name(si)
     if k == .void_: return "void"
     if k == .fixed: return "array<{ml_type(int(types[t].elem), pos)}, {fixed_len(t)}>"
     ml_err(pos, "type {type_str(t)} cannot be used in shaders (use numbers, bools, vectors, matrices, structs and Texture)")
     ""
 
+# k's number in this stage (see ml_ids)
+ml_id = (k: int) -> int:
+    global ml_count
+    if let n = ml_ids.get(k): return n
+    n = ml_count
+    ml_count += 1
+    ml_ids[k] = n
+    n
+
+ml_struct_name = (si: int) -> str: "S_{gl_name(structs[si].name)}_{ml_id(2 * si + 1)}"
+
 ml_struct = (t: int, pos: int):
     si = int(types[t].st)
-    nm = "S_{gl_name(structs[si].name)}_{si}"
+    nm = ml_struct_name(si)
     if not ml_first(nm): return
     check_struct_fields(si)
     s = "struct {nm} \{\n"
@@ -95,8 +112,15 @@ ml_int = (v: int) -> str:
     if w == -2147483648: return "int(0x80000000u)"
     "{w}"
 
-ml_local = (l: int) -> str: "l_{gl_name(name_of(int(locals[l].name)))}_{l}"
-ml_fn_name = (f: int) -> str: "f_{gl_name(name_of(int(nodes[int(fns[f].decl)].name)))}_{f}"
+ml_local = (l: int) -> str:
+    global ml_local_count
+    n = ml_local_ids.get(l) ?? -1
+    if n < 0:
+        n = ml_local_count
+        ml_local_count += 1
+        ml_local_ids[l] = n
+    "l_{gl_name(name_of(int(locals[l].name)))}_{n}"
+ml_fn_name = (f: int) -> str: "f_{gl_name(name_of(int(nodes[int(fns[f].decl)].name)))}_{ml_id(2 * f)}"
 
 # ---------------- memory (uniforms, vertices, GPU buffers) ----------------
 # where a value is: the address of a buffer of words, plus a byte offset (c a constant, d an
@@ -226,7 +250,9 @@ ml_param = (l: int) -> str:
 
 # translate a function (its declaration first: callers may come before it in the text)
 ml_function = (f: int):
-    global ml_out
+    global ml_out, ml_local_ids, ml_local_count
+    ml_local_ids = {}
+    ml_local_count = 0
     decl = int(fns[f].decl)
     if decl == 0 or (nodes[decl].kind != .fn_ and nodes[decl].kind != .lambda): ml_err(0, "only named functions can be used in shaders")
     if fns[f].caps.len() > 0: ml_err(nodes[decl].pos, "a function that captures variables cannot run on the GPU")
@@ -987,7 +1013,9 @@ ml_subgroup = (e: int, nm: str) -> str:
 
 # ---------------- the stages ----------------
 ml_reset = (stage: str):
-    global ml_bodies, ml_decls, ml_done, ml_done_fns, ml_lref, ml_out, ml_pending, ml_protos, ml_stage, ml_temps
+    global ml_bodies, ml_decls, ml_done, ml_done_fns, ml_lref, ml_out, ml_pending, ml_protos, ml_stage, ml_temps, ml_ids, ml_count
+    ml_ids = {}
+    ml_count = 0
     ml_out = []
     ml_decls = []
     ml_done = {}
