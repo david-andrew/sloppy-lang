@@ -61,6 +61,62 @@ gl_fc_read = false       # a read became gl_FragCoord
 gl_fc_changed = false    # (unused: kept for the passes' bookkeeping)
 gl_fc_written = false    # a value of that type is made with another position, or written (mode 3)
 gl_fc_target_now = false # (emitting an assignment's target: never rewritten)
+# The vertex function writes its outputs where they go (gl_Position, v_world), not into a struct
+# main then copies from: it is void, a `return O(a, b, ...)` a write of each field, and the
+# variable it builds its output in (`r = O(...)`, `r.f = x`, then `r` returned) those outputs
+# themselves. A helper whose result is the output (`return h(v, u)`, `r = h(v, u)` then changed
+# and returned) is translated so too, a void one of its own (at any depth). Anything else done
+# with such a value (passed on, copied) translates the stage as before (gl_vo_failed).
+gl_vo_next = false       # (the function gl_function translates next writes the outputs)
+gl_vo_call = false       # (the call gl_expr translates next is one whose result is the output)
+gl_vo_on = false         # (translating the body of one that writes the outputs now)
+gl_vo_type = 0           # the vertex function's output type (0: not translating it so)
+gl_vo_local = -1         # the variable standing for the output, -1 for none yet
+gl_vo_failed = false
+
+# (whether n calls a function of the program returning the output type: its result can be the
+# output, written by a void one of its own)
+gl_vo_helper = (n: int) -> bool: n != 0 and nodes[n].kind == .call and int(nodes[n].aux) == 0 and prune(ntype(n)) == gl_vo_type and nodes[int(fns[int(nodes[n].sym)].decl)].kind == .fn_
+
+# a call whose result is the output: that function's own, writing it
+gl_vo_through = (n: int, pre: str):
+    global gl_vo_call
+    gl_vo_call = true
+    gl_out.push("{pre}{gl_expr(n)};\n")
+
+# the output field i's name in the vertex stage: gl_Position or its varying
+gl_vo_name = (i: int) -> str:
+    if i == 0: return "gl_Position"
+    "v_{gl_struct_fields(gl_vo_type)[i].0}"
+
+# (whether n is a constructor of the vertex function's output type)
+gl_vo_ctor = (n: int) -> bool: n != 0 and nodes[n].kind == .call and int(nodes[n].aux) == 2 and prune(ntype(n)) == gl_vo_type
+
+# the outputs written from a constructor of them, each field from its value (or its default)
+gl_vo_write = (n: int, pre: str):
+    si = int(types[gl_vo_type].st)
+    loop i in [0..int(structs[si].nfields)):
+        a = kid(n, i)
+        x = if a == 0: gl_zero(int(fields[int(structs[si].fields) + i].type), nodes[n].pos) else: gl_expr(a)
+        gl_out.push("{pre}{gl_vo_name(i)} = {x};\n")
+
+# a return of x from the vertex function written so
+gl_vo_return = (x: int, pre: str):
+    global gl_vo_failed
+    if gl_vo_ctor(x): gl_vo_write(x, pre)
+    else if gl_vo_helper(x): gl_vo_through(x, pre)
+    else if not (nodes[x].kind == .ident and int(nodes[x].sym) == gl_vo_local and gl_vo_local >= 0):
+        gl_vo_failed = true
+        # (what it reads counts, for the translation again, gl_in_read; this one is not kept)
+        gl_out.push("{pre}{gl_expr(x)};\n")
+    gl_out.push("{pre}return;\n")
+
+# (whether n is a field of the variable standing for the outputs: its index, else -1)
+gl_vo_field = (n: int) -> int:
+    if not gl_vo_on or gl_vo_local < 0 or nodes[n].kind != .field or nodes[n].aux < 0: return -1
+    b = int(nodes[n].a)
+    if nodes[b].kind != .ident or int(nodes[b].sym) != gl_vo_local: return -1
+    int(nodes[n].aux)
 
 # Generated names come from the shader's own code, never from the program's global numbering
 # (function, local and type indexes), so a shader's text is the same from build to build while
@@ -367,8 +423,11 @@ gl_uniform_value = (t: int, path: str, pos: int) -> str:
 # Translate a function in a uniform-binding context, and everything it calls. Omitted
 # read-only struct arguments become global leaf references; other calls keep value semantics.
 gl_function = (f: int, bindings: str[] = []) -> str:
-    global gl_out, gl_uniform_bindings, gl_specializations, gl_local_ids, gl_local_count, gl_temps
+    global gl_out, gl_uniform_bindings, gl_specializations, gl_local_ids, gl_local_count, gl_temps, gl_vo_on, gl_vo_next, gl_vo_local
+    vo = gl_vo_next
+    gl_vo_next = false
     key = "{f}|{join(bindings, "|")}"
+    if vo: key += "|vo"
     if let done = gl_done_fns.get(key): return done
     saved_ids = gl_local_ids
     saved_count = gl_local_count
@@ -377,7 +436,7 @@ gl_function = (f: int, bindings: str[] = []) -> str:
     gl_local_count = 0
     gl_temps = 0
     nm = gl_fn_name(f)
-    if bindings.len() > 0:
+    if bindings.len() > 0 or vo:
         gl_specializations += 1
         nm += "_u{gl_specializations}"
     gl_done_fns[key] = nm
@@ -387,6 +446,12 @@ gl_function = (f: int, bindings: str[] = []) -> str:
     if decl == 0 or (nodes[decl].kind != .fn_ and nodes[decl].kind != .lambda): gl_err(0, "only named functions can be used in shaders")
     if fns[f].caps.len() > 0: gl_err(nodes[decl].pos, "a function that captures variables cannot run on the GPU")
     ret = gl_type(int(fns[f].ret), nodes[decl].pos)
+    # (the vertex function writing its outputs itself: void; a helper translated meanwhile is not)
+    vo_saved = gl_vo_on
+    vl_saved = gl_vo_local
+    gl_vo_on = vo
+    gl_vo_local = -1
+    if vo: ret = "void"
     params: str[]
     loop i in 0.. and l in fns[f].params:
         if i < bindings.len() and bindings[i] != "":
@@ -412,6 +477,8 @@ gl_function = (f: int, bindings: str[] = []) -> str:
     body = int(fns[f].body)
     want = tkind(int(fns[f].ret)) != .void_
     gl_block(body, 1, want)
+    gl_vo_on = vo_saved
+    gl_vo_local = vl_saved
     lines_ = gl_out
     gl_out = saved
     gl_uniform_bindings = saved_bindings
@@ -428,7 +495,8 @@ gl_block = (b: int, depth: int, ret_value: bool):
     loop i in [0..n):
         s = kid(b, i)
         if i == n - 1 and ret_value and nodes[b].aux != 0:
-            gl_out.push("{ind(depth)}return {gl_expr(int(nodes[s].a))};\n")
+            if gl_vo_on: gl_vo_return(int(nodes[s].a), ind(depth))
+            else: gl_out.push("{ind(depth)}return {gl_expr(int(nodes[s].a))};\n")
             continue
         gl_stmt(s, depth)
 
@@ -490,11 +558,14 @@ gl_target = (n: int, pre: str) -> str:
         gl_out.push("{pre}int sl_t{t} = {x};\n")
         return "{base}[sl_t{t}]{v}"
     if k == .field and nodes[n].aux == -4: return "{gl_target(int(nodes[n].a), pre)}.{name_of(int(nodes[n].name))}"
-    if k == .field and nodes[n].aux >= 0: return "{gl_target(int(nodes[n].a), pre)}.{name_of(int(nodes[n].name))}_"
+    if k == .field and nodes[n].aux >= 0:
+        vf = gl_vo_field(n)
+        if vf >= 0: return gl_vo_name(vf)
+        return "{gl_target(int(nodes[n].a), pre)}.{name_of(int(nodes[n].name))}_"
     gl_expr(n)
 
 gl_stmt = (s: int, depth: int):
-    global gl_fc_target_now
+    global gl_fc_target_now, gl_vo_local, gl_vo_failed
     k = nodes[s].kind
     pre = ind(depth)
     if k == .vardecl:
@@ -511,6 +582,14 @@ gl_stmt = (s: int, depth: int):
             if path == "": gl_err(nodes[s].pos, "a variable holding a Texture or a GpuBuffer in shaders must be given a field of the uniforms (or of a parameter holding one) once, and not changed")
             gl_uniform_bindings[l] = path
             return
+        # (the vertex function's output built in a variable: the outputs themselves)
+        if gl_vo_on and gl_vo_local < 0 and prune(int(locals[l].type)) == gl_vo_type and int(locals[l].flags) & (LF_MUTARG | LF_ADDR) == 0 and (nodes[s].b == 0 or gl_vo_ctor(int(nodes[s].b)) or gl_vo_helper(int(nodes[s].b))):
+            gl_vo_local = l
+            if gl_vo_helper(int(nodes[s].b)): gl_vo_through(int(nodes[s].b), pre)
+            else if nodes[s].b != 0: gl_vo_write(int(nodes[s].b), pre)
+            else:
+                loop i in 0.. and f in gl_struct_fields(gl_vo_type): gl_out.push("{pre}{gl_vo_name(i)} = {gl_zero(f.1, nodes[s].pos)};\n")
+            return
         # (a variable given the input, or a part of it, and never changed: that part itself)
         if nodes[s].b != 0 and int(locals[l].flags) & (LF_ASSIGNED | LF_MUTARG | LF_ADDR) == 0 and gl_uniform_struct(int(locals[l].type)):
             ip = gl_uniform_path(int(nodes[s].b))
@@ -523,6 +602,11 @@ gl_stmt = (s: int, depth: int):
     else if k == .assign:
         if nodes[s].aux != 0: gl_err(nodes[s].pos, "unsupported assignment in shader")
         a = int(nodes[s].a)
+        if gl_vo_on and gl_vo_local >= 0 and nodes[a].kind == .ident and int(nodes[a].sym) == gl_vo_local:
+            if int(nodes[s].op) == int(Tok.assign) and gl_vo_ctor(int(nodes[s].b)): gl_vo_write(int(nodes[s].b), pre)
+            else if int(nodes[s].op) == int(Tok.assign) and gl_vo_helper(int(nodes[s].b)): gl_vo_through(int(nodes[s].b), pre)
+            else: gl_vo_failed = true
+            return
         pt = gl_fc_target(a)
         op = int(nodes[s].op)
         # (mode 3: a value whose position is written is no longer the input; one written in part
@@ -554,7 +638,8 @@ gl_stmt = (s: int, depth: int):
         gl_out.push("{pre}{gl_expr(e)};\n")
     else if k == .if_: gl_stmt_if(s, depth)
     else if k == .return_:
-        if nodes[s].a != 0: gl_out.push("{pre}return {gl_expr(int(nodes[s].a))};\n")
+        if gl_vo_on and nodes[s].a != 0: gl_vo_return(int(nodes[s].a), pre)
+        else if nodes[s].a != 0: gl_out.push("{pre}return {gl_expr(int(nodes[s].a))};\n")
         else: gl_out.push("{pre}return;\n")
     else if k == .while_:
         gl_out.push("{pre}while ({gl_expr(int(nodes[s].a))}) \{\n")
@@ -650,7 +735,7 @@ gl_binop = (op: Tok) -> str:
         _: "?"
 
 gl_expr = (e: int) -> str:
-    global gl_depth_used, gl_fc_read, gl_fc_changed, gl_fc_written
+    global gl_depth_used, gl_fc_read, gl_fc_changed, gl_fc_written, gl_vo_failed, gl_vo_call, gl_vo_next
     k = nodes[e].kind
     t = prune(ntype(e))
     path = gl_uniform_path(e)
@@ -668,11 +753,14 @@ gl_expr = (e: int) -> str:
         if nodes[e].aux != i32(int(SK.local)): gl_err(nodes[e].pos, "shaders can only use local variables, parameters and constants (a value of the program's: `const SPEED = 2.0` at the top, or a field of the uniforms struct, given at each draw)")
         l = int(nodes[e].sym)
         if int(locals[l].flags) & LF_ALIAS != 0: return gl_expr(int(locals[l].alias))
+        if gl_vo_on and l == gl_vo_local: gl_vo_failed = true
         return gl_local(l)
     if k == .field:
         a = int(nodes[e].a)
         if nodes[e].aux == -4: return "{gl_expr(a)}.{name_of(int(nodes[e].name))}"
         if nodes[e].aux < 0: gl_err(nodes[e].pos, "unsupported field access in shader")
+        vf = gl_vo_field(e)
+        if vf >= 0: return gl_vo_name(vf)
         fname = name_of(int(nodes[e].name))
         if gl_fc_mode != 0 and not gl_fc_target_now and prune(ntype(a)) == gl_fc_type:
             if fname == gl_fc_field:
@@ -769,6 +857,8 @@ gl_expr = (e: int) -> str:
             if gl_fc_mode == 3 and t == gl_fc_type: parts.push("false")
             return "{gl_type(t, nodes[e].pos)}({join(parts, ", ")})"
         if aux != 0: gl_err(nodes[e].pos, "function values cannot be called in shaders")
+        vo_call = gl_vo_call
+        gl_vo_call = false
         f = int(nodes[e].sym)
         decl = int(fns[f].decl)
         nm = name_of(int(nodes[decl].name))
@@ -829,6 +919,7 @@ gl_expr = (e: int) -> str:
                     args.push(join(leaves, ", "))
                 else: args.push(gl_expr(a))
         if not specialized: bindings = []
+        gl_vo_next = vo_call
         called = gl_function(f, bindings)
         return "{called}({join(args, ", ")})"
     if k == .array and types[t].kind == .fixed:
@@ -1103,7 +1194,7 @@ gl_where = (f: int) -> str: "{name_of(int(nodes[int(fns[f].decl)].name))} at {po
 # Sloppy source). With SLOPPY_GLSL_DUMP=dir, the stages are also written to dir/<n>.vert and
 # dir/<n>.frag (tools/shaderstable.py)
 glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
-    global gl_fc_type, gl_fc_field, gl_fc_mode, gl_fc_read, gl_fc_changed, gl_fc_written, gl_in_types, gl_in_read
+    global gl_fc_type, gl_fc_field, gl_fc_mode, gl_fc_read, gl_fc_changed, gl_fc_written, gl_in_types, gl_in_read, gl_vo_type, gl_vo_next, gl_vo_local, gl_vo_failed
     gl_reset("vertex", true)
     vpos = nodes[int(fns[vsf].decl)].pos
     vtype_ = int(fns[vsf].ptypes[0])
@@ -1120,12 +1211,21 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
     vbind = vb
     if int(locals[fns[vsf].params[0]].flags) & LF_MUTPARAM == 0: vbind[0] = "sl_va"
     if np == 3 and int(locals[fns[vsf].params[1]].flags) & LF_MUTPARAM == 0: vbind[1] = "sl_vi"
+    # (and its outputs written where they go, gl_vo_next; a vertex function reading none of its
+    # input, or doing what that cannot take, translated again)
+    gl_vo_type = prune(otype)
+    gl_vo_local = -1
+    gl_vo_failed = false
     gl_in_read = false
+    gl_vo_next = true
     vname = gl_function(vsf, vbind)
+    vo = gl_in_read and not gl_vo_failed
     if gl_in_read: vb = vbind
-    else:
+    if not vo:
+        gl_vo_type = 0
         gl_reset("vertex", true)
         vname = gl_function(vsf, vb)
+    gl_vo_type = 0
     vinit = ""
     if vmut: vinit = "    {gl_type(utype, vpos)} u = {gl_uniform_value(utype, "sl_u", vpos)};\n"
     vuniforms = join(gl_uniforms, "")
@@ -1237,9 +1337,12 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
         vs += "    {gl_type(itype, vpos)} iin = {gl_type(itype, vpos)}({join(iin, ", ")});\n"
         vargs.push("iin")
     if vmut: vargs.push("u")
-    vs += "    {vout} o = {vname}({join(vargs, ", ")});\n    gl_Position = o.{ofields[0].0}_;\n"
-    loop i in 0.. and f in ofields:
-        if i > 0: vs += "    v_{f.0} = o.{f.0}_;\n"
+    # (written by the vertex function itself, or copied from what it returns)
+    if vo: vs += "    {vname}({join(vargs, ", ")});\n"
+    else:
+        vs += "    {vout} o = {vname}({join(vargs, ", ")});\n    gl_Position = o.{ofields[0].0}_;\n"
+        loop i in 0.. and f in ofields:
+            if i > 0: vs += "    v_{f.0} = o.{f.0}_;\n"
     vs += "}\n"
     fs = head + "// sloppy shader: {name_of(int(nodes[int(fns[fsf].decl)].name))}\n// sloppy resources: uniforms={frows} samplers={fsamplers} varyings={varying_rows} attributes=0\n" + funiforms
     loop i in 0.. and f in ofields:

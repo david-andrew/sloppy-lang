@@ -52,6 +52,17 @@ frame with Apple's OpenGL, Apple's software OpenGL and Metal.
     flag instead. gl_FragCoord is never copied into a struct that is read.
   - Almost every shader's GLSL changes once, so browsers link them again after a deploy. A stage
     that reads none of its input is unchanged, and so are SPIR-V and Metal.
+- GLSL: a vertex function writes its outputs where they go (gl_Position, its varyings), not into a
+  struct that main then copies from. Near the camera on Adreno 650, values Aegean Skies' terrain
+  vertex shader computed (an orchard share, a texture-fetched field share) came out wrong.
+  - The function is void. A returned constructor writes each field, and a variable the output
+    is built in (`r = O(...)`, `r.f = x`, then `r`) is the outputs themselves, read back from
+    them too.
+  - A helper whose result is returned, or given to that variable and then changed
+    (`o = lit_vs(v, u)`, `o.pos = ...`), writes them through a void version of its own, at any
+    depth.
+  - Only passing that value on whole (to another function, or copied) keeps the old struct and
+    copy. None of Aegean's 170 vertex shaders does.
 
 ## 0.41.0
 
