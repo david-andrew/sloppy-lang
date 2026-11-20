@@ -439,6 +439,23 @@ when TARGET == "macos":
     struct __MgFb:
         color: int                 # texture names (0: none)
         depth: int
+        c1: int                    # (its other colors: render_target(..., colors = n))
+        c2: int
+        c3: int
+
+    # how many colors framebuffer f has (the screen: one), and its color i's texture
+    __vg_ncolors = (f: int) -> int:
+        if f == 0: return 1
+        if __vgf[f].c3 > 0: return 4
+        if __vgf[f].c2 > 0: return 3
+        if __vgf[f].c1 > 0: return 2
+        if __vgf[f].color > 0: return 1
+        0
+    __vg_color_at = (f: int, i: int) -> int:
+        if i == 0: return __vgf[f].color
+        if i == 1: return __vgf[f].c1
+        if i == 2: return __vgf[f].c2
+        __vgf[f].c3
 
     __vgf: __MgFb[]                # by GL name (0: the screen)
     __vg_fb = 0
@@ -522,13 +539,15 @@ when TARGET == "macos":
         rp = __oc(__cls("MTLRenderPassDescriptor"), __sel("renderPassDescriptor"))
         clearing = __mg_clear_fb == f
         if ct != null:
-            a = __oc_i(__oc(rp, __sel("colorAttachments")), __sel("objectAtIndexedSubscript:"), 0)
-            __oc_p(a, __sel("setTexture:"), ct)
-            __oc_i(a, __sel("setStoreAction:"), 1)
-            if clearing and __mg_clear_color:
-                __oc_i(a, __sel("setLoadAction:"), 2)
-                __mo_4d(a, __sel("setClearColor:"), f64(__vg_clear.x), f64(__vg_clear.y), f64(__vg_clear.z), f64(__vg_clear.w))
-            else: __oc_i(a, __sel("setLoadAction:"), 1)
+            # (a render target's other colors after the first: cleared with it)
+            loop i in [0..max(__vg_ncolors(f), 1)):
+                a = __oc_i(__oc(rp, __sel("colorAttachments")), __sel("objectAtIndexedSubscript:"), i)
+                __oc_p(a, __sel("setTexture:"), if i == 0: ct else: __vgt[__vg_color_at(f, i)].tex)
+                __oc_i(a, __sel("setStoreAction:"), 1)
+                if clearing and __mg_clear_color:
+                    __oc_i(a, __sel("setLoadAction:"), 2)
+                    __mo_4d(a, __sel("setClearColor:"), f64(__vg_clear.x), f64(__vg_clear.y), f64(__vg_clear.z), f64(__vg_clear.w))
+                else: __oc_i(a, __sel("setLoadAction:"), 1)
         if dt != null:
             a = __oc(rp, __sel("depthAttachment"))
             __oc_p(a, __sel("setTexture:"), dt)
@@ -815,7 +834,11 @@ when TARGET == "macos":
     vgl_framebuffer_texture = (attachment: u32, tex: u32):
         if __vg_fb <= 0: return
         if __vg_pass == __vg_fb: __vg_end_pass()
-        if int(attachment) == GL_DEPTH_ATTACHMENT: __vgf[__vg_fb].depth = int(tex)
+        a = int(attachment)
+        if a == GL_DEPTH_ATTACHMENT: __vgf[__vg_fb].depth = int(tex)
+        else if a == int(GL_COLOR_ATTACHMENT0) + 1: __vgf[__vg_fb].c1 = int(tex)
+        else if a == int(GL_COLOR_ATTACHMENT0) + 2: __vgf[__vg_fb].c2 = int(tex)
+        else if a == int(GL_COLOR_ATTACHMENT0) + 3: __vgf[__vg_fb].c3 = int(tex)
         else: __vgf[__vg_fb].color = int(tex)
 
     vgl_create_renderbuffer = () -> int: vgl_create_texture()
@@ -861,6 +884,7 @@ when TARGET == "macos":
         fs: *u8
         pipelines: {int: *u8}      # state key -> MTLRenderPipelineState
         tex_offs: int[]            # where its uniforms hold a Texture's id (GL name)
+        outputs: int = 1           # the colors its fragment function writes
 
     __vgp: __VgProg[] = [__VgProg()]
     __mg_depth_states: {int: *u8}
@@ -897,7 +921,7 @@ when TARGET == "macos":
                     n = to_int(f[3]) ?? 0
                     stride = to_int(f[4]) ?? 0
                 loop i in [0..n): offs.push(o + i * stride)
-        __vgp.push(__VgProg(__mg_function(src.vs_spirv, "sl_vs"), __mg_function(src.fs_spirv, "sl_fs"), {}, offs))
+        __vgp.push(__VgProg(__mg_function(src.vs_spirv, "sl_vs"), __mg_function(src.fs_spirv, "sl_fs"), {}, offs, max(src.outputs, 1)))
         __vgp.len() - 1
 
     __vg_tex_slots = (prog: int, p: *u8):
@@ -923,20 +947,23 @@ when TARGET == "macos":
     __vg_pipeline_for = (p: int, cls: int) -> *u8:
         cf, df = __vg_fb_formats(__vg_fb)
         blend_on = __vg_blend and cf != 0
-        key = cls | (cf << 2) | (df << 12) | (__vg_cmask << 22)
+        ncolors = max(__vg_ncolors(__vg_fb), 1)
+        key = cls | (cf << 2) | (df << 12) | (__vg_cmask << 22) | ((ncolors - 1) << 44)
         if blend_on: key = key | (1 << 26) | (__vg_factor(__vg_bf.0) << 27) | (__vg_factor(__vg_bf.1) << 31) | (__vg_factor(__vg_bf.2) << 35) | (__vg_factor(__vg_bf.3) << 39)
         if let pl = __vgp[p].pipelines.get(key): return pl
         pool = objc_autoreleasePoolPush()
         d = __oc(__oc(__cls("MTLRenderPipelineDescriptor"), __sel("alloc")), __sel("init"))
         __oc_p(d, __sel("setVertexFunction:"), __vgp[p].vs)
         __oc_p(d, __sel("setFragmentFunction:"), __vgp[p].fs)
-        if cf != 0:
-            a = __oc_i(__oc(d, __sel("colorAttachments")), __sel("objectAtIndexedSubscript:"), 0)
+        # (a render target's colors: as the first where the program writes them, else not written)
+        loop ci in [0..if cf != 0: ncolors else: 0):
+            a = __oc_i(__oc(d, __sel("colorAttachments")), __sel("objectAtIndexedSubscript:"), ci)
             __oc_i(a, __sel("setPixelFormat:"), cf)
             # (Metal's write mask: red 8, green 4, blue 2, alpha 1)
             m = ((__vg_cmask & 1) << 3) | ((__vg_cmask & 2) << 1) | ((__vg_cmask & 4) >> 1) | ((__vg_cmask & 8) >> 3)
+            if ci >= __vgp[p].outputs: m = 0
             __oc_i(a, __sel("setWriteMask:"), m)
-            if blend_on:
+            if blend_on and ci < __vgp[p].outputs:
                 __oc_i(a, __sel("setBlendingEnabled:"), 1)
                 __oc_i(a, __sel("setSourceRGBBlendFactor:"), __vg_factor(__vg_bf.0))
                 __oc_i(a, __sel("setDestinationRGBBlendFactor:"), __vg_factor(__vg_bf.1))

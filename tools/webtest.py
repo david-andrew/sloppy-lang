@@ -37,11 +37,11 @@ shader_page = os.path.join(tmp, "uniform_budget")
 subprocess.run([sloppy, "build", os.path.join(root, "tests", "web", "uniform_budget.jo"), "-o", shader_page, "--target", "wasm"], check=True, env=env)
 r6 = subprocess.run(["node", os.path.join(root, "tools", "web_shaders.mjs"), shell, shader_page + ".html", tmp], timeout=120)
 # render scenes drawn with WebGL against their references (tests/render: the draw state, depth
-# targets, set_depth and reversed depth; a feedback loop the browser reports fails too)
+# targets, set_depth and reversed depth, several colors; a feedback loop the browser reports fails too)
 sys.path.insert(0, os.path.join(root, "tools"))
 from pngutil import downsample, png_rows
 r7 = 0
-for sc in ["draw_state", "depth_texture", "copy_depth", "scene_depth", "set_depth", "reversed_depth", "reversed_scene"]:
+for sc in ["draw_state", "depth_texture", "copy_depth", "scene_depth", "set_depth", "reversed_depth", "reversed_scene", "colors_two", "colors_partial", "colors_four"]:
     pg = os.path.join(tmp, sc)
     subprocess.run([sloppy, "build", os.path.join(root, "tests", "render", sc + ".jo"), "-o", pg, "--target", "wasm"], check=True, env=env)
     shot = os.path.join(tmp, sc + "_web.png")

@@ -139,7 +139,7 @@ __sw_lod = (uv: vec2, w: int, h: int) -> f32:
     if s0 == null: return 0.0
     sd = s0 + nf
     vin = sd + nf
-    sy = vin + nf + 4
+    sy = vin + nf + ci[3]               # (after the colors: 4 floats each)
     f = 4
     loop f + 1 < nf and not (vin[f] == uv.x and vin[f + 1] == uv.y): f += 1
     if f + 1 >= nf: return 0.0
@@ -276,6 +276,7 @@ __s_unit = 0
 __s_bound: int[] = fill(0, 8)
 __s_fb = 0                        # current framebuffer (0 = the window)
 __s_fb_color: int[] = [0]          # per framebuffer: color texture
+__s_fb_more: int[] = [0, 0, 0]     # (and its other colors, three to a framebuffer: colors = n)
 __s_fb_depth: int[] = [0]          # per framebuffer: depth texture
 __s_fb_scale: f64[] = [0.5]      # per framebuffer: storage size / size the program asked for
 __s_rb_tex: int[] = [0]            # renderbuffer id -> texture holding its data
@@ -299,6 +300,7 @@ __sp_args: int[] = [0]
 __sp_flat: str[] = [""]
 __sp_discard: bool[] = [false]       # the fragment shader may discard()
 __sp_fdepth: bool[] = [false]        # the fragment shader may set_depth()
+__sp_outputs: int[] = [1]            # the colors it writes (a struct of vec4s: several)
 __sp_ids: bool[] = [false]           # the vertex shader asks for vertex_id() / instance_id()
 
 # per thread (by __tid()): the vertex and instance being shaded, whether the fragment being
@@ -347,6 +349,11 @@ sgl_clear = (mask: u32):
     if mask & u32(GL_COLOR_BUFFER_BIT) != 0 and c > 0:
         cc = __s_clear
         __sw_fill(__st[c].p, __st[c].w * __st[c].h, cc)
+        # (a render target's other colors too)
+        if __s_fb > 0:
+            loop i in [0..3):
+                t = __s_fb_more[__s_fb * 3 + i]
+                if t > 0: __sw_fill(__st[t].p, __st[t].w * __st[t].h, cc)
     if mask & u32(GL_DEPTH_BUFFER_BIT) != 0 and d > 0:
         # (as a GPU's depth texture samples: (depth, 0, 0, 1); 0 is far under reversed depth)
         __sw_fill(__st[d].p, __st[d].w * __st[d].h, vec4(if __depth_reversed: 0.0 else: 1.0, 0, 0, 1))
@@ -465,6 +472,7 @@ sgl_tex_parameter = (pname: u32, v: i32):
 
 sgl_create_framebuffer = () -> int:
     __s_fb_color.push(0)
+    loop _ in [0..3): __s_fb_more.push(0)
     __s_fb_depth.push(0)
     __s_fb_scale.push(1.0)
     __s_fb_color.len() - 1
@@ -475,7 +483,9 @@ sgl_bind_framebuffer = (f: u32):
 
 sgl_framebuffer_texture = (attachment: u32, tex: u32):
     if __s_fb <= 0: return
+    a = int(attachment) - int(GL_COLOR_ATTACHMENT0)
     if int(attachment) == GL_DEPTH_ATTACHMENT: __s_fb_depth[__s_fb] = int(tex)
+    else if a >= 1 and a <= 3: __s_fb_more[__s_fb * 3 + a - 1] = int(tex)
     else: __s_fb_color[__s_fb] = int(tex)
 
 sgl_create_renderbuffer = () -> int:
@@ -505,6 +515,8 @@ __sw_scale_target = (fbo: int, w: int, h: int):
     ih = max(int(f64(h) * s), 1)
     if __s_fb_color[fbo] > 0: __st_alloc(__s_fb_color[fbo], iw, ih)
     if __s_fb_depth[fbo] > 0: __st_alloc(__s_fb_depth[fbo], iw, ih)
+    loop i in [0..3):
+        if __s_fb_more[fbo * 3 + i] > 0: __st_alloc(__s_fb_more[fbo * 3 + i], iw, ih)
     __s_fb_scale[fbo] = s
 
 # a render target of exactly w x h pixels (a fixed resolution is not scaled down)
@@ -512,6 +524,8 @@ __sw_exact_target = (fbo: int, w: int, h: int):
     if fbo <= 0 or fbo >= __s_fb_color.len(): return
     if __s_fb_color[fbo] > 0: __st_alloc(__s_fb_color[fbo], w, h)
     if __s_fb_depth[fbo] > 0: __st_alloc(__s_fb_depth[fbo], w, h)
+    loop i in [0..3):
+        if __s_fb_more[fbo * 3 + i] > 0: __st_alloc(__s_fb_more[fbo * 3 + i], w, h)
     __s_fb_scale[fbo] = 1.0
 
 sgl_create_program = () -> int:
@@ -522,6 +536,7 @@ sgl_create_program = () -> int:
     __sp_flat.push("")
     __sp_discard.push(false)
     __sp_fdepth.push(false)
+    __sp_outputs.push(1)
     __sp_ids.push(false)
     __sp_vs.len() - 1
 
@@ -536,6 +551,7 @@ __sw_program_info = (prog: int, src: ShaderSource):
     # (the GLSL is the compiler's: these are only there when the shader functions use them)
     __sp_discard[prog] = (index_of(src.fs, "discard;") ?? -1) >= 0
     __sp_fdepth[prog] = (index_of(src.fs, "gl_FragDepth") ?? -1) >= 0
+    __sp_outputs[prog] = max(src.outputs, 1)
     __sp_ids[prog] = (index_of(src.vs, "gl_VertexID") ?? -1) >= 0 or (index_of(src.vs, "gl_InstanceID") ?? -1) >= 0
     __sw_tls_init()
 
@@ -982,6 +998,18 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     if cp == null and dp == null: return
     m = __s_cmask
     color = cp != null and (m.0 or m.1 or m.2 or m.3)
+    # (a shader of several colors into a target of several: colors 1, 2, 3 too, blended alike)
+    nout = __sp_outputs[prog]
+    xp = (null as *f32, null as *f32, null as *f32)
+    nx = 0
+    if __s_fb > 0 and nout > 1:
+        loop i in [0..nout - 1):
+            t = __s_fb_more[__s_fb * 3 + i]
+            if t > 0 and __st[t].w == tw and __st[t].h == th:
+                if i == 0: xp.0 = __st[t].p
+                else if i == 1: xp.1 = __st[t].p
+                else: xp.2 = __st[t].p
+                nx = i + 1
     vp = __s_vp
     vx = f64(vp.0)
     vy = f64(vp.1)
@@ -1079,7 +1107,7 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     # per band scratch (padded to separate cache lines): varyings at the span start, their
     # change per pixel, the interpolated varyings and the fragment color (with mipmaps, also
     # the varyings' change to the next row)
-    bstride = ((if mips: 4 else: 3) * nf + 4 + 15) / 16 * 16
+    bstride = ((if mips: 4 else: 3) * nf + 4 * nout + 15) / 16 * 16
     __sw_f32_scratch(__sw_mesh_scratch, __SW_BANDS * bstride)
     scrp = data(__sw_mesh_scratch)
     dtest = __s_depth and dp != null
@@ -1126,7 +1154,7 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             fx = c2[0] - a[0]
             fy = c2[1] - a[1]
             area = ex * fy - fx * ey
-            sy = col + 4
+            sy = col + 4 * nout
             tid = __tid()
             ci = dci + tid * 8
             dk = dcf + tid * 8
@@ -1139,6 +1167,7 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
                 ci[0] = s0 as int
                 ci[1] = nf
                 ci[2] = xa
+                ci[3] = 4 * nout
                 dk[0] = inv_scale
                 dk[1] = w0
                 dk[2] = dw
@@ -1183,6 +1212,10 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
                 if dwrite: dp[pix * 4] = z
                 if not color: continue
             __sw_put(cp + pix * 4, vec4(col[0], col[1], col[2], col[3]))
+            if nx > 0:
+                if xp.0 != null: __sw_put(xp.0 + pix * 4, vec4(col[4], col[5], col[6], col[7]))
+                if nx > 1 and xp.1 != null: __sw_put(xp.1 + pix * 4, vec4(col[8], col[9], col[10], col[11]))
+                if nx > 2 and xp.2 != null: __sw_put(xp.2 + pix * 4, vec4(col[12], col[13], col[14], col[15]))
     )
     __sw_mip_live = false
 

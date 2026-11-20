@@ -215,6 +215,58 @@ reads it while drawing into another target (`draw_to(rt)` first: that also draws
 so far), not while drawing on the screen, which under post effects is that picture;
 `copy_depth(scene_depth(), rt)` gives such a pass a copy to test against.
 
+## Several colors from one draw
+
+A fragment function may return a struct of 1 to 4 `vec4` fields instead of one `vec4`: field i
+is the color written to color i of the render target drawn into. Such a target is made with
+`render_target(w, h, colors = n)` (1 to 4); its textures are `rt.colors[i]`, and `rt.texture`
+is `rt.colors[0]`. `draw_target(rt, pos, size, color = i)` shows color i (0 by default). A
+deferred renderer's G-buffer, or a picture and its glow, in one pass:
+
+```gdscript
+struct V:
+    pos: vec2
+    color: vec4
+struct U:
+    glow: f32
+struct O:
+    pos: vec4
+    color: vec4
+struct Out:                       # color 0 and color 1
+    picture: vec4
+    bright: vec4
+vs = (v: V, u: U) -> O: O(vec4(v.pos, 0, 1), v.color)
+fs = (i: O, u: U) -> Out: Out(i.color, vec4(i.color.xyz * u.glow, 1))
+sh = make_shader(shader(vs, fs))
+tri = mesh([V(vec2(-0.8, -0.8), vec4(1, 0.3, 0.2, 1)), V(vec2(0.8, -0.8), vec4(0.2, 1, 0.3, 1)), V(vec2(0, 0.8), vec4(0.3, 0.2, 1, 1))])
+rt = render_target(256, 256, colors = 2)
+draw = ():
+    draw_to(rt)
+    clear()
+    draw(sh, tri, U(0.5))
+    draw_to_screen()
+    clear()
+    draw_target(rt, vec2(20, 20))                 # the picture
+    draw_target(rt, vec2(300, 20), color = 1)     # its bright part
+```
+
+- The struct's fields are all `vec4` and there are at most 4 of them (WebGL2 guarantees 4); the
+  same struct cannot also be the vertex function's output. Both are compile errors.
+- A shader of fewer colors than the target writes its colors and leaves the others as they
+  are: a one-color shader, and all 2D drawing and the library's 3D, write `rt.colors[0]` only.
+  A shader of more colors than the target (or the screen, which has one) panics at its draw.
+- `blend`, `color_write` and the rest of the draw state apply to every color alike.
+  `clear()` clears all of a target's colors.
+- A draw may not sample any of the colors of the target it draws into (it panics, as for one
+  color); `screenshot()` and `render_image` read color 0.
+- Underneath: GLSL `layout(location = i) out vec4` with `glDrawBuffers` (WebGL: `drawBuffers`),
+  SPIR-V outputs at locations 0 to 3 with as many color attachments in the Vulkan pipeline
+  (pipelines are kept by the number of colors; a color the shader does not write has a write mask
+  of 0, which needs the device's `independentBlend`, as every desktop GPU and most phones have),
+  Metal `[[color(i)]]` fields and as many color attachments, and in the software renderer one
+  image per color.
+- A shader whose fragment function returns a `vec4` is translated exactly as before.
+
 ## Asset loading and failure
 
 `load_image`, `load_png`, `load_jpeg` and `load_texture` take bytes and return an asset or

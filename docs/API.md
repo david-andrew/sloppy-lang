@@ -2783,6 +2783,8 @@ draw = ():
       fbo: int
       depth: int                                  # (its depth renderbuffer; 0 with depth_texture)
       depth_texture: Texture = Texture(0, 0, 0)   # render_target(..., depth_texture = true): its depth
+      colors: Texture[] = []                      # its colors, 1 to 4 (render_target(..., colors = n)):
+                                                  # colors[0] is texture
   ```
 - `enum Blend: alpha, add, multiply, premultiplied, screen, none`: Draw state: how a draw's colors go into the picture (blend), whether it is drawn only where it is nearer than what is there (depth_test) and leaves its own depth (depth_write), which faces are left out (cull), whether colors are written at all (color_write). See docs/GRAPHICS.md.
 - `enum DepthTest: off, nearer, nearer_or_equal, farther, farther_or_equal, equal, always`
@@ -2856,7 +2858,7 @@ draw = ():
 
 #### Render targets
 
-- `render_target = (w: int, h: int, smooth: bool = true, depth_texture: bool = false) -> RenderTarget`: A picture to draw into (draw_to) and then draw (draw_target) or sample in a shader (rt.texture). depth_texture = true: its depth is a texture too, rt.depth_texture, 32-bit float, sampled as any other (`sample(t, uv).x`, 0 near .. 1 far) by a later pass; a draw into the target may not sample its own color or depth (it panics: copy_depth the depth into another target first).
+- `render_target = (w: int, h: int, smooth: bool = true, depth_texture: bool = false, colors: int = 1) -> RenderTarget`: A picture to draw into (draw_to) and then draw (draw_target) or sample in a shader (rt.texture). depth_texture = true: its depth is a texture too, rt.depth_texture, 32-bit float, sampled as any other (`sample(t, uv).x`, 0 near .. 1 far) by a later pass; a draw into the target may not sample its own color or depth (it panics: copy_depth the depth into another target first). colors = 2 to 4: that many color textures, rt.colors[i] (rt.texture is rt.colors[0]), for a fragment function returning a struct of as many vec4s (one per color); a shader of one color drawn into it (2D drawing too) writes rt.colors[0] and leaves the others as they are.
 - `copy_depth = (from: RenderTarget, to: RenderTarget)`: Copy the depth of one render target into another of the same size (both made with depth_texture = true): for a pass that tests against a scene's depth while sampling it, drawn into `to` and sampling from.depth_texture. A blit on OpenGL and WebGL, an image copy on Vulkan and Metal, a copy in the software renderer.
 - `copy_depth = (from: Texture, to: RenderTarget)`: the same, from a depth texture of a render target: rt.depth_texture, or scene_depth()
 - `render_image = (w: int, h: int, draw: () -> void) -> Image`: a picture of w x h pixels drawn by draw (with what `draw = ():` uses, in pixels from its top left corner), at any time: a chart a script saves, a texture made at the start, a 3D scene's thumbnail (camera3d and draw_mesh inside draw are drawn into it). Before any window is open it needs none: the software renderer draws it.
@@ -2904,7 +2906,7 @@ draw = ():
   ```gdscript
   sprite_tiled(hills, Rect(0, 90, 480, 180), vec2(-cam.x / 3.0, 0))
   ```
-- `draw_target = (rt: RenderTarget, pos: vec2 = vec2(0, 0), size: vec2 = vec2(0, 0), tint: vec4 = vec4(1, 1, 1, 1))`: draw a render target's texture (flipped: render targets are stored bottom-up)
+- `draw_target = (rt: RenderTarget, pos: vec2 = vec2(0, 0), size: vec2 = vec2(0, 0), tint: vec4 = vec4(1, 1, 1, 1), color: int = 0)`: draw a render target's texture (flipped: render targets are stored bottom-up); color: which of a target of several colors (render_target(..., colors = n)), rt.colors[color]
 
 #### Text
 
@@ -4358,6 +4360,8 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       where: str            # the stages' functions and where they are in the source, for error
                             # reports ("vertex: vs at src/main.jo:12:1\nfragment: ..."; the GLSL
                             # text leaves them out, so that it stays the same when code moves)
+      outputs: int          # the fragment function's colors: 0 for a vec4, else a struct's fields
+                            # (1 to 4), one for each color of a render target (colors = n)
   ```
 - `struct ShaderAttrib`
   ```gdscript
@@ -4389,6 +4393,7 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       lid: int              # (OpenGL) this shader's number (0: one made by hand, never matched;
                             # its locations are OpenGL's own)
       ucache: *u8 = null    # (OpenGL) the uniform bytes last uploaded to its program
+      outputs: int = 1      # the colors its fragment function writes (render_target's colors)
   ```
 - `struct Mesh`
   ```gdscript

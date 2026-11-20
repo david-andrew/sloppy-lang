@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+Several colors from one draw.
+
+- A fragment function may return a struct of 1 to 4 `vec4` fields: field i is written to color
+  i of the render target. `render_target(w, h, colors = n)` makes a target of 1 to 4 colors,
+  `rt.colors[i]` (`rt.texture` is `rt.colors[0]`); `draw_target(..., color = i)` shows one.
+  GLSL `layout(location = i)` outputs and `glDrawBuffers`, SPIR-V output locations with Vulkan
+  pipelines kept by the number of colors, Metal `[[color(i)]]`, and one image per color in the
+  software renderer; `blend` and `color_write` apply to each.
+- A shader of fewer colors than the target (2D drawing and the library's 3D too) leaves the
+  others unchanged; one of more colors than the target panics, saying so. Sampling any color of
+  the target drawn into panics, as for one. `clear()` clears every color.
+- Compile errors: a field that is not a `vec4`, more than 4 fields, or the same struct as the
+  vertex function's output.
+- Shaders returning a `vec4` are translated byte for byte as before.
+- Vulkan: `independentBlend` is turned on where the device has it.
+
 ## 0.40.0
 
 Shader-written depth and reversed depth, for views of hundreds of kilometres without patching
