@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.39.0
+
 Draw state in the API, and depth targets a later pass can sample (docs/GRAPHICS.md, "Draw state"
 and "Depth targets that can be sampled"), on all five renderers.
 
