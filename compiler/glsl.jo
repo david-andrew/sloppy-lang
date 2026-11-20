@@ -38,6 +38,14 @@ gl_uniform_samplers = 0
 
 gl_stage = ""            # "vertex" or "fragment": the stage being translated
 gl_depth_used = false    # the fragment stage writes its depth (set_depth): gl_FragDepth
+# The fragment stage reads its input's position field (the first) as gl_FragCoord itself, never
+# through a struct holding a copy of it: Adreno 650 under ANGLE got its w wrong from the copy (log
+# depth from i.pos.w). Sound while the stage only copies the input, so a stage that makes a value
+# of that type or writes its position is translated again without it.
+gl_fc_type = 0           # (the fragment stage) the input's type, 0 for none
+gl_fc_field = ""         # its position field's name
+gl_fc_read = false       # a read of it became gl_FragCoord
+gl_fc_written = false    # the stage makes a value of that type or writes its position
 
 # Generated names come from the shader's own code, never from the program's global numbering
 # (function, local and type indexes), so a shader's text is the same from build to build while
@@ -398,6 +406,14 @@ gl_compound_op = (op: Tok) -> Tok:
 # an assignment's target as GLSL, its indexes computed once beforehand (into temporaries
 # declared at pre) when they are more than a name or a number
 gl_temps = 0
+# (an assignment to target n: whether it changes the fragment input's position, see gl_fc_type)
+gl_fc_target = (n0: int):
+    global gl_fc_written
+    n = n0
+    loop gl_fc_type != 0 and (nodes[n].kind == .field or nodes[n].kind == .index):
+        if nodes[n].kind == .field and prune(ntype(int(nodes[n].a))) == gl_fc_type and name_of(int(nodes[n].name)) == gl_fc_field: gl_fc_written = true
+        n = int(nodes[n].a)
+
 gl_target = (n: int, pre: str) -> str:
     k = nodes[n].kind
     if k == .index:
@@ -439,6 +455,7 @@ gl_stmt = (s: int, depth: int):
     else if k == .assign:
         if nodes[s].aux != 0: gl_err(nodes[s].pos, "unsupported assignment in shader")
         a = int(nodes[s].a)
+        gl_fc_target(a)
         op = int(nodes[s].op)
         ta = prune(ntype(a))
         bop = gl_compound_op(op as Tok)
@@ -506,7 +523,9 @@ gl_stmt_if = (e: int, depth: int):
     gl_out.push("{pre}}\n")
 
 gl_zero = (t0: int, pos: int) -> str:
+    global gl_fc_written
     t = prune(t0)
+    if gl_fc_type != 0 and t == gl_fc_type: gl_fc_written = true
     k = types[t].kind
     if k == .float_: return "0.0"
     if k == .int_: return "0"
@@ -548,7 +567,7 @@ gl_binop = (op: Tok) -> str:
         _: "?"
 
 gl_expr = (e: int) -> str:
-    global gl_depth_used
+    global gl_depth_used, gl_fc_read, gl_fc_written
     k = nodes[e].kind
     t = prune(ntype(e))
     path = gl_uniform_path(e)
@@ -571,6 +590,9 @@ gl_expr = (e: int) -> str:
         a = int(nodes[e].a)
         if nodes[e].aux == -4: return "{gl_expr(a)}.{name_of(int(nodes[e].name))}"
         if nodes[e].aux < 0: gl_err(nodes[e].pos, "unsupported field access in shader")
+        if gl_fc_type != 0 and prune(ntype(a)) == gl_fc_type and name_of(int(nodes[e].name)) == gl_fc_field:
+            gl_fc_read = true
+            return "gl_FragCoord"
         return "{gl_expr(a)}.{name_of(int(nodes[e].name))}_"
     if k == .index:
         bt = prune(ntype(int(nodes[e].a)))
@@ -645,6 +667,7 @@ gl_expr = (e: int) -> str:
     if k == .call:
         aux = int(nodes[e].aux)
         if aux == 2:
+            if gl_fc_type != 0 and t == gl_fc_type: gl_fc_written = true
             si = int(types[t].st)
             parts: str[]
             loop i in [0..int(structs[si].nfields)):
@@ -987,6 +1010,7 @@ gl_where = (f: int) -> str: "{name_of(int(nodes[int(fns[f].decl)].name))} at {po
 # Sloppy source). With SLOPPY_GLSL_DUMP=dir, the stages are also written to dir/<n>.vert and
 # dir/<n>.frag (tools/shaderstable.py)
 glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
+    global gl_fc_type, gl_fc_field, gl_fc_read, gl_fc_written
     gl_reset("vertex", true)
     vpos = nodes[int(fns[vsf].decl)].pos
     vtype_ = int(fns[vsf].ptypes[0])
@@ -1011,7 +1035,17 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
     gl_reset("fragment", false)
     fmut = int(locals[fns[fsf].params[1]].flags) & LF_MUTPARAM != 0
     fb = ["", if fmut: "" else: "sl_u"]
+    gl_fc_type = prune(int(fns[fsf].ptypes[0]))
+    gl_fc_field = gl_struct_fields(otype)[0].0
+    gl_fc_read = false
+    gl_fc_written = false
     fname = gl_function(fsf, fb)
+    if gl_fc_written:
+        gl_reset("fragment", false)
+        gl_fc_type = 0
+        gl_fc_read = false
+        fname = gl_function(fsf, fb)
+    gl_fc_type = 0
     finit = ""
     farg = ""
     if fmut:
@@ -1103,7 +1137,7 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
         ofs = gl_struct_fields(int(fns[fsf].ret))
         loop k in [0..nout): fs += "layout(location = {k}) out vec4 frag_color_{k};\n"
     fs += join(fdecls, "")
-    fin: str[] = ["gl_FragCoord"]
+    fin: str[] = [if gl_fc_read: "vec4(0.0)" else: "gl_FragCoord"]
     loop i in 0.. and f in ofields:
         if i > 0: fin.push("v_{f.0}")
     # (a shader that writes its depth starts from the interpolated one, so a path that does not

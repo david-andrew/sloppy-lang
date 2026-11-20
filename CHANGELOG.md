@@ -18,6 +18,14 @@ Several colors from one draw.
 - Shaders returning a `vec4` are translated byte for byte as before.
 - Vulkan: `independentBlend` is turned on where the device has it.
 
+Fixes:
+
+- GLSL: a fragment function's position field (`i.pos`, also read in a helper given `i`) is read
+  as `gl_FragCoord` itself, not through a struct holding a copy of it. Adreno 650 under ANGLE got
+  `w` wrong from the copy, so logarithmic depth from `i.pos.w` hid what was near. Only fragment
+  shaders that read the position change; a stage that makes a value of the input's type or
+  writes its position keeps the copy.
+
 ## 0.40.0
 
 Shader-written depth and reversed depth, for views of hundreds of kilometres without patching
