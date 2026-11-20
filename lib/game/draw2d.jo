@@ -13,8 +13,8 @@ struct RenderTarget:
     fbo: int
     depth: int                                  # (its depth renderbuffer; 0 with depth_texture)
     depth_texture: Texture = Texture(0, 0, 0)   # render_target(..., depth_texture = true): its depth
-    colors: Texture[] = []                      # its colors, 1 to 4 (render_target(..., colors = n)):
-                                                # colors[0] is texture
+    colors: Texture[4]                          # its colors: render_target(..., colors = n) fills 0 to
+                                                # n - 1, the rest are empty; colors[0] is texture
 
 # Draw state: how a draw's colors go into the picture (blend), whether it is drawn only where it
 # is nearer than what is there (depth_test) and leaves its own depth (depth_write), which faces
@@ -522,16 +522,22 @@ __targets: RenderTarget[]
 render_target = (w: int, h: int, smooth: bool = true, depth_texture: bool = false, colors: int = 1) -> RenderTarget:
     if colors < 1 or colors > 4: panic("render_target: colors = {colors}: a render target has 1 to 4 colors")
     __gfx_init_gl_only()
-    tex = texture(image(w, h), smooth)
-    __tex_mips[tex.id] = u8(4)
-    all: Texture[] = [tex]
-    loop _ in [1..colors):
+    fbo = gl_create_framebuffer()
+    loop __rt_color.len() <= fbo:
+        __rt_color.push(0)
+        __rt_depth.push(0)
+        __rt_ncolors.push(1)
+        __rt_bufs.push(1)
+        loop _ in [0..3): __rt_extra.push(0)
+    all: Texture[4]
+    loop i in [0..colors):
         t = texture(image(w, h), smooth)
         __tex_mips[t.id] = u8(4)
-        all.push(t)
-    fbo = gl_create_framebuffer()
-    glBindFramebuffer(GL_FRAMEBUFFER, u32(fbo))
-    loop i in 0.. and t in all: glFramebufferTexture2D(GL_FRAMEBUFFER, u32(int(GL_COLOR_ATTACHMENT0) + i), GL_TEXTURE_2D, u32(t.id), 0)
+        all[i] = t
+        glBindFramebuffer(GL_FRAMEBUFFER, u32(fbo))
+        glFramebufferTexture2D(GL_FRAMEBUFFER, u32(int(GL_COLOR_ATTACHMENT0) + i), GL_TEXTURE_2D, u32(t.id), 0)
+        if i > 0: __rt_extra[fbo * 3 + i - 1] = t.id
+    tex = all[0]
     if colors > 1: gl_draw_buffers(colors, colors)
     rb = 0
     dt = Texture(0, 0, 0)
@@ -548,17 +554,10 @@ render_target = (w: int, h: int, smooth: bool = true, depth_texture: bool = fals
         if __soft: __sw_scale_target(fbo, w, h)
     if __g_init: __bind_current()
     else: glBindFramebuffer(GL_FRAMEBUFFER, 0)
-    loop __rt_color.len() <= fbo:
-        __rt_color.push(0)
-        __rt_depth.push(0)
-        __rt_ncolors.push(1)
-        __rt_bufs.push(1)
-        loop _ in [0..3): __rt_extra.push(0)
     __rt_color[fbo] = tex.id
     __rt_depth[fbo] = dt.id
     __rt_ncolors[fbo] = colors
     __rt_bufs[fbo] = colors
-    loop i in [1..colors): __rt_extra[fbo * 3 + i - 1] = all[i].id
     RenderTarget(tex, fbo, rb, dt, all)
 
 # (a w x h float depth texture, sampled nearest: float depth is not filtered on WebGL)
@@ -653,7 +652,8 @@ free_render_target = (rt: RenderTarget):
     global __pass_target
     if rt.fbo == __pass_target: __pass_target = -2
     if rt.texture.id != 0: gl_delete_texture(rt.texture.id)
-    loop i in [1..rt.colors.len()): gl_delete_texture(rt.colors[i].id)
+    loop i in [1..4):
+        if rt.colors[i].id != 0: gl_delete_texture(rt.colors[i].id)
     if rt.fbo != 0: gl_delete_framebuffer(rt.fbo)
     if rt.depth != 0: gl_delete_renderbuffer(rt.depth)
     if rt.depth_texture.id != 0: gl_delete_texture(rt.depth_texture.id)
@@ -703,7 +703,7 @@ clear = (c: vec4 = vec4(0, 0, 0, 1)):
     if masked:
         glColorMask(1, 1, 1, 1)
         glDepthMask(1)
-    __clear_outputs()
+    if __gl_fbo > 0: __draw_outputs(0)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     if masked: __apply_draw_state()
     if __clip_on: __apply_clip()
@@ -844,38 +844,28 @@ __select_draw_state = (st: (Blend, DepthTest, bool, Cull, bool)):
 __draw_state_reset = ():
     __set_draw_state((Blend.alpha, DepthTest.off, true, Cull.none, true))
 
-# a draw of a shader writing k colors into the bound framebuffer: more than it has panics; fewer
-# leave the others as they are (OpenGL and WebGL: draw buffers NONE for those; Vulkan, Metal and
-# the software renderer: no writes past the shader's colors)
-__draw_outputs = (k: int):
+# a draw of a shader writing k colors into the bound framebuffer (0: a clear, of all its colors):
+# more than it has panics; fewer leave the others as they are (OpenGL and WebGL: draw buffers
+# NONE for those; Vulkan, Metal and the software renderer: no writes past the shader's colors)
+__draw_outputs = (k0: int):
     f = __gl_fbo
     n = 1
     if f > 0 and f < __rt_ncolors.len(): n = __rt_ncolors[f]
-    if k > n:
-        where = "the screen, which has one color"
-        if f > 0 and f < __rt_ncolors.len() and __rt_color[f] != 0:
-            where = "a render target with 1 color"
-            if n > 1: where = "a render target with {n} colors"
-        panic("a shader writing {k} colors (its fragment function returns a struct of {k} vec4s) is drawn into {where}: draw it into a render target made with render_target(w, h, colors = {k})")
+    k = if k0 == 0: n else: k0
+    if k > n: panic("a shader writing {k} colors (its fragment function returns a struct of {k} vec4s) is drawn where there are {n} (the screen has 1, a render target its colors = n): draw it into a render target made with render_target(w, h, colors = {k})")
     if n > 1 and __rt_bufs[f] != k:
         __rt_bufs[f] = k
         gl_draw_buffers(k, n)
-
-# (a clear of a render target's colors: all of them, whatever the last draw wrote)
-__clear_outputs = ():
-    f = __gl_fbo
-    if f > 0 and f < __rt_ncolors.len() and __rt_ncolors[f] > 1 and __rt_bufs[f] != __rt_ncolors[f]:
-        __rt_bufs[f] = __rt_ncolors[f]
-        gl_draw_buffers(__rt_bufs[f], __rt_bufs[f])
 
 # a draw sampling texture id while the bound framebuffer is a render target whose color or depth
 # that is: WebGL refuses it, elsewhere what it draws is undefined
 __feedback = (id: int):
     f = __gl_fbo
     if id == 0 or f <= 0 or f >= __rt_color.len(): return
-    if id == __rt_color[f]: panic("a draw samples the color texture of the render target it draws into (WebGL forbids it; elsewhere what it shows is undefined): draw it into another target")
+    c = id == __rt_color[f]
     loop i in [0..3):
-        if id == __rt_extra[f * 3 + i]: panic("a draw samples color {i + 1} (rt.colors[{i + 1}]) of the render target it draws into (WebGL forbids it; elsewhere what it shows is undefined): draw it into another target")
+        if id == __rt_extra[f * 3 + i]: c = true
+    if c: panic("a draw samples the color texture of the render target it draws into (WebGL forbids it; elsewhere what it shows is undefined): draw it into another target")
     if id == __rt_depth[f]: panic("a draw samples the depth texture of the render target it draws into (WebGL forbids it; elsewhere what it shows is undefined): copy_depth it into another target and sample that one, or draw_to another target")
 
 # 2D drawing after this shows only inside the rectangle, until no_clip(), the next frame or
@@ -1567,7 +1557,7 @@ draw_target = (rt: RenderTarget, pos: vec2 = vec2(0, 0), size: vec2 = vec2(0, 0)
     t = rt.texture
     # (color i of a target of several: render_target(..., colors = n))
     if color != 0:
-        if color < 0 or color >= rt.colors.len(): panic("draw_target: color {color} of a render target with {max(rt.colors.len(), 1)} color(s)")
+        if color < 0 or color > 3 or rt.colors[color].id == 0: panic("draw_target: color {color} of a render target that has no such color (render_target(..., colors = n): 0 to n - 1)")
         t = rt.colors[color]
     sz = size
     if sz.x == 0.0: sz = vec2(f32(t.width), f32(t.height))

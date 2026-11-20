@@ -219,8 +219,8 @@ so far), not while drawing on the screen, which under post effects is that pictu
 
 A fragment function may return a struct of 1 to 4 `vec4` fields instead of one `vec4`: field i
 is the color written to color i of the render target drawn into. Such a target is made with
-`render_target(w, h, colors = n)` (1 to 4); its textures are `rt.colors[i]`, and `rt.texture`
-is `rt.colors[0]`. `draw_target(rt, pos, size, color = i)` shows color i (0 by default). A
+`render_target(w, h, colors = n)` (1 to 4); its textures are `rt.colors[0]` to
+`rt.colors[n - 1]` (the others are empty), and `rt.texture` is `rt.colors[0]`. `draw_target(rt, pos, size, color = i)` shows color i (0 by default). A
 deferred renderer's G-buffer, or a picture and its glow, in one pass:
 
 ```gdscript

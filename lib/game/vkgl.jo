@@ -31,23 +31,12 @@ when TARGET != "wasm" and TARGET != "macos":
     struct __VgFb:
         color: int                 # texture names (0: none)
         depth: int
-        c1: int                    # (its other colors: render_target(..., colors = n))
-        c2: int
-        c3: int
+        more: int[3]               # (its colors after the first: render_target(..., colors = n))
+        n: int                     # (how many of those)
 
     # how many colors framebuffer f has (the screen: one), and its color i's texture
-    __vg_ncolors = (f: int) -> int:
-        if f == 0: return 1
-        if __vgf[f].c3 > 0: return 4
-        if __vgf[f].c2 > 0: return 3
-        if __vgf[f].c1 > 0: return 2
-        if __vgf[f].color > 0: return 1
-        0
-    __vg_color_at = (f: int, i: int) -> int:
-        if i == 0: return __vgf[f].color
-        if i == 1: return __vgf[f].c1
-        if i == 2: return __vgf[f].c2
-        __vgf[f].c3
+    __vg_ncolors = (f: int) -> int: if f == 0: 1 else: 1 + __vgf[f].n
+    __vg_color_at = (f: int, i: int) -> int: if i == 0: __vgf[f].color else: __vgf[f].more[i - 1]
 
     __vgf: __VgFb[]                # by GL name (0: the screen, whose images are vk.jo's)
     __vg_fb = 0                    # bound
@@ -151,9 +140,6 @@ when TARGET != "wasm" and TARGET != "macos":
             if c > 0:
                 __vk_barrier(cb, __vgt[c].img, u32(VK_LAYOUT_COLOR), src_stages, src_access, VK_STAGE_COLOR_OUT, VK_ACCESS_COLOR_WRITE | VK_ACCESS_COLOR_READ)
                 color_view = __vgt[c].img.view
-            loop i in [1..__vg_ncolors(f)):
-                ci = __vg_color_at(f, i)
-                __vk_barrier(cb, __vgt[ci].img, u32(VK_LAYOUT_COLOR), src_stages, src_access, VK_STAGE_COLOR_OUT, VK_ACCESS_COLOR_WRITE | VK_ACCESS_COLOR_READ)
             d = __vgf[f].depth
             if d > 0:
                 __vk_barrier(cb, __vgt[d].img, u32(VK_LAYOUT_DEPTH), src_stages, src_access, VK_STAGE_EARLY_TESTS | VK_STAGE_LATE_TESTS, VK_ACCESS_DEPTH_WRITE | VK_ACCESS_DEPTH_READ)
@@ -166,12 +152,17 @@ when TARGET != "wasm" and TARGET != "macos":
         datt = VkRenderingAttachmentInfo(stype = 1000044001, view = depth_view, layout = u32(VK_LAYOUT_DEPTH), load_op = 0, store_op = 0)
         ri = VkRenderingInfo(stype = 1000044000, width = u32(w), height = u32(h), layers = 1)
         # (a render target's other colors, after the first)
-        catts: VkRenderingAttachmentInfo[] = [catt]
-        if f != 0:
-            loop i in [1..__vg_ncolors(f)): catts.push(VkRenderingAttachmentInfo(stype = 1000044001, view = __vgt[__vg_color_at(f, i)].img.view, layout = u32(VK_LAYOUT_COLOR), load_op = 0, store_op = 0))
+        catts: VkRenderingAttachmentInfo[4]
+        catts[0] = catt
+        nc = __vg_ncolors(f)
+        loop i in [1..nc):
+            ci = __vgf[f].more[i - 1]
+            __vk_barrier(cb, __vgt[ci].img, u32(VK_LAYOUT_COLOR), src_stages, src_access, VK_STAGE_COLOR_OUT, VK_ACCESS_COLOR_WRITE | VK_ACCESS_COLOR_READ)
+            catts[i] = catt
+            catts[i].view = __vgt[ci].img.view
         if color_view != 0:
-            ri.ncolors = u32(catts.len())
-            ri.colors = data(catts) as *u8
+            ri.ncolors = u32(nc)
+            ri.colors = (&catts) as *u8
         if depth_view != 0: ri.depth = (&datt) as *u8
         vkCmdBeginRendering(cb, (&ri) as *u8)
         __vg_pass = f
@@ -518,11 +509,11 @@ when TARGET != "wasm" and TARGET != "macos":
     vgl_framebuffer_texture = (attachment: u32, tex: u32):
         if __vg_fb <= 0: return
         if __vg_pass == __vg_fb: __vg_end_pass()
-        a = int(attachment)
-        if a == GL_DEPTH_ATTACHMENT: __vgf[__vg_fb].depth = int(tex)
-        else if a == int(GL_COLOR_ATTACHMENT0) + 1: __vgf[__vg_fb].c1 = int(tex)
-        else if a == int(GL_COLOR_ATTACHMENT0) + 2: __vgf[__vg_fb].c2 = int(tex)
-        else if a == int(GL_COLOR_ATTACHMENT0) + 3: __vgf[__vg_fb].c3 = int(tex)
+        a = int(attachment) - int(GL_COLOR_ATTACHMENT0)
+        if int(attachment) == GL_DEPTH_ATTACHMENT: __vgf[__vg_fb].depth = int(tex)
+        else if a >= 1 and a <= 3:
+            __vgf[__vg_fb].more[a - 1] = int(tex)
+            __vgf[__vg_fb].n = max(__vgf[__vg_fb].n, a)
         else: __vgf[__vg_fb].color = int(tex)
 
     vgl_create_renderbuffer = () -> int:
@@ -794,22 +785,22 @@ when TARGET != "wasm" and TARGET != "macos":
             att.dst_a = __vg_factor(bf.3)
         cb = VkPipelineColorBlendStateCreateInfo(stype = 26)
         # (a render target's colors: as the first where the program writes them, else not written)
-        atts: VkPipelineColorBlendAttachmentState[] = [att]
-        fmts: u32[] = [cf]
-        loop i in [1..ncolors):
+        atts: VkPipelineColorBlendAttachmentState[4]
+        fmts: u32[4]
+        loop i in [0..ncolors):
             # (without independentBlend every color's state is the first's: a shader of fewer
             # colors leaves the others undefined there, and none do in practice)
-            atts.push(if i < __vgp[p].outputs or not __vk_independent_blend: att else: VkPipelineColorBlendAttachmentState())
-            fmts.push(cf)
+            if i < __vgp[p].outputs or not __vk_independent_blend: atts[i] = att
+            fmts[i] = cf
         if cf != 0:
             cb.natts = u32(ncolors)
-            cb.atts = data(atts) as *u8
+            cb.atts = (&atts) as *u8
         dyn: u32[] = [0, 1, 1000267000, 1000267001, 1000267002, 1000267006, 1000267007, 1000267008]
         dy = VkPipelineDynamicStateCreateInfo(stype = 27, nstates = u32(dyn.len()), states = data(dyn))
         rinfo = VkPipelineRenderingCreateInfo(stype = 1000044002, depth = df)
         if cf != 0:
             rinfo.ncolors = u32(ncolors)
-            rinfo.colors = data(fmts)
+            rinfo.colors = &fmts[0]
         gi = VkGraphicsPipelineCreateInfo(stype = 28, next = (&rinfo) as *u8, nstages = 2, stages = data(stages) as *u8, vertex_input = (&vin) as *u8,
             input_assembly = (&ia) as *u8, viewport = (&vp) as *u8, raster = (&rs) as *u8, multisample = (&ms) as *u8, depth = (&ds) as *u8,
             blend = (&cb) as *u8, dynamic = (&dy) as *u8, layout = __vk_layout, base_index = -1)

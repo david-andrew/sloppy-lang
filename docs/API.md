@@ -2783,8 +2783,8 @@ draw = ():
       fbo: int
       depth: int                                  # (its depth renderbuffer; 0 with depth_texture)
       depth_texture: Texture = Texture(0, 0, 0)   # render_target(..., depth_texture = true): its depth
-      colors: Texture[] = []                      # its colors, 1 to 4 (render_target(..., colors = n)):
-                                                  # colors[0] is texture
+      colors: Texture[4]                          # its colors: render_target(..., colors = n) fills 0 to
+                                                  # n - 1, the rest are empty; colors[0] is texture
   ```
 - `enum Blend: alpha, add, multiply, premultiplied, screen, none`: Draw state: how a draw's colors go into the picture (blend), whether it is drawn only where it is nearer than what is there (depth_test) and leaves its own depth (depth_write), which faces are left out (cull), whether colors are written at all (color_write). See docs/GRAPHICS.md.
 - `enum DepthTest: off, nearer, nearer_or_equal, farther, farther_or_equal, equal, always`
@@ -4393,7 +4393,8 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       lid: int              # (OpenGL) this shader's number (0: one made by hand, never matched;
                             # its locations are OpenGL's own)
       ucache: *u8 = null    # (OpenGL) the uniform bytes last uploaded to its program
-      outputs: int = 1      # the colors its fragment function writes (render_target's colors)
+      outputs: int          # the colors its fragment function writes past one (0: a vec4; else a
+                            # struct's fields: render_target's colors)
   ```
 - `struct Mesh`
   ```gdscript
