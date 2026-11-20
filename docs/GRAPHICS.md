@@ -183,7 +183,7 @@ two leaves either unsure of the other.
 
 `render_target(w, h, depth_texture = true)` makes a target whose depth is a texture,
 `rt.depth_texture`, sampled like any other: `sample(rt.depth_texture, uv).x` is the depth, 0
-near to 1 far. Its depth is 32-bit float everywhere (sampled nearest: WebGL does not filter
+near to 1 far (1 near to 0 far under reversed depth: see Depth, below). Its depth is 32-bit float everywhere (sampled nearest: WebGL does not filter
 float depth). A target made without it keeps its depth in a renderbuffer, and
 `rt.depth_texture` is an empty `Texture`.
 
@@ -552,11 +552,9 @@ sh = make_shader(shader(vs, fs))
 far_away = mesh([V(vec3(-9e5, -9e5, -6e5)), V(vec3(9e5, -9e5, -6e5)), V(vec3(0, 9e5, -6e5))])
 draw = ():
     clear()
-    glEnable(GL_DEPTH_TEST)
-    glClear(GL_DEPTH_BUFFER_BIT)
+    depth_test(.nearer)
     p = perspective(1.0, f64(screen_width()) / f64(screen_height()), 0.1, 2000000.0)
     draw(sh, far_away, U(p, vec4(0.4, 0.6, 1, 1)))
-    glDisable(GL_DEPTH_TEST)
 ```
 
 A path through the function that does not call `set_depth` keeps the interpolated depth. The
@@ -576,9 +574,12 @@ start; it returns whether this renderer has it, and when it says false nothing c
 | OpenGL | with `glClipControl` (GL 4.5, `ARB_clip_control`, OpenGL ES `EXT_clip_control`); render targets' depth (and the window's, on Wayland) becomes 32-bit float; on X11 and Windows the window's own depth buffer stays what the system gives (usually 24-bit) |
 | WebGL | where the browser has `EXT_clip_control`; render targets' depth becomes float, the canvas's stays 24-bit |
 
-With it on: depth clears to 0, and `glDepthFunc(GL_LESS)` (and the library's own nearer-or-equal
-tests) mean nearer, as before: they become GREATER and GEQUAL underneath, so drawing code does
-not change. `camera3d` becomes an infinite reversed perspective (`perspective_reversed(fov, aspect,
+With it on: `clear()` and `clear_depth()` clear the depth to 0, and `depth_test(.nearer)` and
+`.nearer_or_equal` (and `.farther`, `.farther_or_equal`) keep their meaning, so drawing code does
+not change. The flip is in one place, the lowest one: the renderers' `glDepthFunc` turns LESS into
+GREATER and LEQUAL into GEQUAL (and back) while reversed depth is on, so a raw
+`glDepthFunc(GL_LESS)` means nearer too, and `DepthTest` maps to GL's functions as usual. A depth
+texture (`depth_texture = true`, `scene_depth()`) holds the reversed values: 1 near, 0 far. `camera3d` becomes an infinite reversed perspective (`perspective_reversed(fov, aspect,
 near)`: clip z is `near` and w the distance, nothing is cut off far away), so `draw_mesh`, models,
 particles, the sky and `scene_view_proj()` follow. The library's shadow maps keep the usual
 depth. For your own shaders the clip-space convention changes: the vertex function's clip z
