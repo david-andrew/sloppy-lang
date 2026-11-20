@@ -34,9 +34,9 @@ for a page whose own overlay hides the `#log` element.
 
 | renderer | where | used when |
 |---|---|---|
-| **Metal** 3 | macOS | the machine supports Metal 3 |
+| **Metal** 3 | macOS | opt-in while it is new: `SLOPPY_METAL=1`, on a machine with Metal 3 (else OpenGL) |
 | **Vulkan** 1.3 | Linux, Windows | the driver has Vulkan 1.3 (current drivers for NVIDIA, AMD and Intel GPUs do) |
-| **OpenGL** ES 3 | Linux, Windows | there is no usable Vulkan driver, or `SLOPPY_VULKAN=0` |
+| **OpenGL** ES 3 (macOS: 4.1) | Linux, Windows, macOS | macOS: by default; Linux and Windows: there is no usable Vulkan driver, or `SLOPPY_VULKAN=0` |
 | **WebGL** 2 | the browser | a game built with `--target wasm` |
 | **software** | everywhere | there is no GPU driver at all (a virtual machine, a server), or `SLOPPY_SOFTWARE=1` |
 
@@ -45,6 +45,12 @@ the same program runs on all five. The frame statistics overlay (`show_stats()`,
 `SLOPPY_STATS=1`) shows which is in use, e.g. `vulkan (NVIDIA GeForce GTX 1070)`, and
 `soft_rendering()` tells the program when it is the software renderer (to draw fewer particles,
 say).
+
+**Metal and macOS.** CI's macOS runners are virtual machines without Metal 3 or a GPU: there the
+library falls back to Apple's software OpenGL, which is what CI's render tests check. Metal and
+Apple's hardware OpenGL are checked on a real Mac with `tools/macrender.py` (docs/COMPILER.md,
+Tests), which draws every game and render scene there with each of the three. Metal stays
+opt-in until it has been used on more Macs than one.
 
 **Why Vulkan first.** Vulkan lets the library work the way current GPUs work best, after Mason
 Remaley's mr_gpu: every texture is in one bindless array, buffers are read by their address,
@@ -623,7 +629,7 @@ start; it returns whether this renderer has it, and when it says false nothing c
 | renderer | reversed depth |
 |---|---|
 | Vulkan, Metal, software | always (their depth is already 32-bit float) |
-| OpenGL | with `glClipControl` (GL 4.5, `ARB_clip_control`, OpenGL ES `EXT_clip_control`); render targets' depth (and the window's, on Wayland) becomes 32-bit float; on X11 and Windows the window's own depth buffer stays what the system gives (usually 24-bit) |
+| OpenGL | with `glClipControl` (GL 4.5, `ARB_clip_control`, OpenGL ES `EXT_clip_control`); render targets' depth (and the window's, on Wayland) becomes 32-bit float; on X11 and Windows the window's own depth buffer stays what the system gives (usually 24-bit). Never on macOS (its OpenGL 4.1 has no clip control) |
 | WebGL | where the browser has `EXT_clip_control`; render targets' depth becomes float, the canvas's stays 24-bit |
 
 With it on: `clear()` and `clear_depth()` clear the depth to 0, and `depth_test(.nearer)` and

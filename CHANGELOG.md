@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+First runs on a real Mac (Apple M5 Pro): every game and render scene now draws its reference
+frame with Apple's OpenGL, Apple's software OpenGL and Metal.
+
+- macOS (arm64): a C function's fixed arguments past the eight registers go on the stack at their
+  own size, each aligned to it, as Apple's ABI has them; they took 8-byte slots, as on Linux. A C
+  call with more than eight integer (or float) arguments read the later ones wrongly:
+  `glBlitFramebuffer`'s filter came through as 0, so `copy_depth` did nothing on OpenGL (macOS
+  CI's failure), nor did presenting a fixed-size capture. Variadic arguments keep their 8-byte
+  slots.
+- Metal: integer (flat) shader outputs come from a triangle's last vertex, as on OpenGL and
+  Vulkan: a program with flat outputs draws through indices that put each primitive's last vertex
+  first (Metal has no provoking-vertex setting); indirect draws of such programs still take the
+  first vertex.
+- Metal: blits, compute functions and draws run in the order they were recorded (a fence between
+  each pair of encoders). Shaders reach buffers by address, so Metal's own tracking let a draw read
+  a compute function's writes (an indirect draw's instance count) before they were done, and a
+  compute function's atomics run before an `upload` into the same buffer had landed.
+- Metal: `ivec2(v)` of a float vector computes `v` once (it was computed per component, so a call
+  in it ran twice); an entry function's `mut` uniforms parameter is a private copy, as on GLSL
+  (the generated MSL did not compile).
+- tests/render/reversed_scene.jo: the ground in 10 m squares. Apple's software OpenGL, which macOS
+  CI draws with, loses most of a single 400 m triangle reaching far off the screen (with or
+  without reversed depth, shadows or post effects); there `reversed_depth()` rightly returns false.
+- `tools/macrender.py --host user@mac [--renderer gl|glsoft|metal] [name...]`: the render test on
+  a real Mac over ssh (cross-built here, run there, frames fetched and compared with
+  rendertest.py's GPU limit). docs/GRAPHICS.md's table says what is true: Metal is opt-in with
+  `SLOPPY_METAL=1`; OpenGL 4.1 is macOS's default and never has reversed depth.
+
 ## 0.41.0
 
 Several colors from one draw.

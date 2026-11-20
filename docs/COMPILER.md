@@ -76,6 +76,7 @@ the copy back.
 | `python3 tools/runtests.py` | the same programs through the C bootstrap compiler |
 | `python3 tools/lsptest.py` | the language server, driven as an editor does |
 | `python3 tools/rendertest.py --no-gpu` | games rendered by the software renderer against reference frames |
+| `python3 tools/macrender.py --host user@mac [--renderer gl\|glsoft\|metal] [name...]` | the same games and render scenes cross-built for macOS, run on a real Mac over ssh (OpenGL, Apple's software OpenGL, Metal), their frames fetched and compared as rendertest.py compares GPU frames. The Mac needs nothing installed. The one it has run on is the user's own MacBook (Apple M5 Pro): use it only with their OK for that task |
 | `python3 tools/deflatecheck.py` | `deflate`'s output read back by Python's zlib (native and wasm), on inputs of each kind; a stepped `Deflater` gives the same bytes |
 | `python3 tools/watchtest.py` | hot reloading |
 | `python3 tools/fuzz.py 100` | random valid programs, built four ways, must agree |
