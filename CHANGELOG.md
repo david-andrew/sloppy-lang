@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.41.0
+
 Several colors from one draw.
 
 - A fragment function may return a struct of 1 to 4 `vec4` fields: field i is written to color
