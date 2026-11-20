@@ -38,14 +38,24 @@ gl_uniform_samplers = 0
 
 gl_stage = ""            # "vertex" or "fragment": the stage being translated
 gl_depth_used = false    # the fragment stage writes its depth (set_depth): gl_FragDepth
-# The fragment stage reads its input's position field (the first) as gl_FragCoord itself, never
-# through a struct holding a copy of it: Adreno 650 under ANGLE got its w wrong from the copy (log
-# depth from i.pos.w). Sound while the stage only copies the input, so a stage that makes a value
-# of that type or writes its position is translated again without it.
+# The fragment stage never reads its input through a struct holding a copy of it: Adreno 650 under
+# ANGLE got gl_FragCoord.w wrong read that way (log depth from i.pos.w). Values of the input's type
+# there are the input itself, or ones the stage makes; which way it reads them (gl_fc_mode), from
+# what the stage does with that type (the stage is translated again when it does more):
+#   1  it never makes or changes one: every one is the input, each field read from its varying
+#      (v_world), the position from gl_FragCoord
+#   2  it makes some, each with the position of one it has (`O(i.pos, i.world * 2.0)`): every one's
+#      position is gl_FragCoord, read as that; the other fields through the struct
+#   3  anything else (another position, a write to one): the struct holds a flag, true for the
+#      input, whose position is then gl_FragCoord: (x.fc_ ? gl_FragCoord : x.pos_)
+# The input struct main builds holds vec4(0.0) for the position: gl_FragCoord is never copied.
 gl_fc_type = 0           # (the fragment stage) the input's type, 0 for none
 gl_fc_field = ""         # its position field's name
-gl_fc_read = false       # a read of it became gl_FragCoord
-gl_fc_written = false    # the stage makes a value of that type or writes its position
+gl_fc_mode = 0
+gl_fc_read = false       # a read became gl_FragCoord or a varying
+gl_fc_changed = false    # the stage makes a value of that type or changes one (not mode 1)
+gl_fc_written = false    # ... other than with a position it has (not mode 2 either)
+gl_fc_target_now = false # (emitting an assignment's target: never rewritten)
 
 # Generated names come from the shader's own code, never from the program's global numbering
 # (function, local and type indexes), so a shader's text is the same from build to build while
@@ -115,7 +125,11 @@ gl_type = (t0: int, pos: int) -> str:
     gl_err(pos, "type {type_str(t)} cannot be used in shaders (use numbers, bools, vectors, matrices, structs and Texture)")
     ""
 
-gl_struct_name = (si: int) -> str: gl_type_name(3 * si, "S_{gl_name(structs[si].name)}")
+gl_struct_name = (si: int) -> str:
+    nm = gl_type_name(3 * si, "S_{gl_name(structs[si].name)}")
+    # (the fragment input's type with its flag, mode 3: a type of its own, the vertex stage's apart)
+    if gl_fc_mode == 3 and si == int(types[gl_fc_type].st): return nm + "F"
+    nm
 
 gl_struct = (t: int, pos: int):
     si = int(types[t].st)
@@ -127,6 +141,7 @@ gl_struct = (t: int, pos: int):
     loop i in [0..int(structs[si].nfields)):
         f = int(structs[si].fields) + i
         s += "    {gl_type(int(fields[f].type), pos)} {name_of(int(fields[f].name))}_;\n"
+    if gl_fc_mode == 3 and t == gl_fc_type: s += "    bool fc_;\n"
     gl_decls.push(s + "};\n")
 
 # a name GLSL accepts as part of an identifier: no "__" anywhere (reserved in GLSL ES), and none
@@ -406,13 +421,23 @@ gl_compound_op = (op: Tok) -> Tok:
 # an assignment's target as GLSL, its indexes computed once beforehand (into temporaries
 # declared at pre) when they are more than a name or a number
 gl_temps = 0
-# (an assignment to target n: whether it changes the fragment input's position, see gl_fc_type)
-gl_fc_target = (n0: int):
-    global gl_fc_written
+# (an assignment to target n: whether it changes a value of the fragment input's type, or its
+# position, see gl_fc_mode; the position's field node, or 0)
+gl_fc_target = (n0: int) -> int:
+    global gl_fc_changed, gl_fc_written
     n = n0
+    at = 0
     loop gl_fc_type != 0 and (nodes[n].kind == .field or nodes[n].kind == .index):
-        if nodes[n].kind == .field and prune(ntype(int(nodes[n].a))) == gl_fc_type and name_of(int(nodes[n].name)) == gl_fc_field: gl_fc_written = true
+        if nodes[n].kind == .field and prune(ntype(int(nodes[n].a))) == gl_fc_type:
+            gl_fc_changed = true
+            if name_of(int(nodes[n].name)) == gl_fc_field:
+                gl_fc_written = true
+                at = n
         n = int(nodes[n].a)
+    at
+
+# (whether n reads the position of a value of the fragment input's type)
+gl_fc_pos_read = (n: int) -> bool: n != 0 and nodes[n].kind == .field and nodes[n].aux >= 0 and prune(ntype(int(nodes[n].a))) == gl_fc_type and name_of(int(nodes[n].name)) == gl_fc_field
 
 gl_target = (n: int, pre: str) -> str:
     k = nodes[n].kind
@@ -433,6 +458,7 @@ gl_target = (n: int, pre: str) -> str:
     gl_expr(n)
 
 gl_stmt = (s: int, depth: int):
+    global gl_fc_target_now
     k = nodes[s].kind
     pre = ind(depth)
     if k == .vardecl:
@@ -455,8 +481,16 @@ gl_stmt = (s: int, depth: int):
     else if k == .assign:
         if nodes[s].aux != 0: gl_err(nodes[s].pos, "unsupported assignment in shader")
         a = int(nodes[s].a)
-        gl_fc_target(a)
+        pt = gl_fc_target(a)
         op = int(nodes[s].op)
+        # (mode 3: a value whose position is written is no longer the input; one written in part
+        # keeps the rest of gl_FragCoord, a value of the stage's own from then on)
+        if gl_fc_mode == 3 and pt != 0:
+            gl_fc_target_now = true
+            b = gl_target(int(nodes[pt].a), pre)
+            gl_fc_target_now = false
+            if pt == a and op == int(Tok.assign): gl_out.push("{pre}{b}.fc_ = false;\n")
+            else: gl_out.push("{pre}if ({b}.fc_) \{ {b}.{gl_fc_field}_ = gl_FragCoord; {b}.fc_ = false; }\n")
         ta = prune(ntype(a))
         bop = gl_compound_op(op as Tok)
         # (integers through gl_arith: their + - * wrap through unsigned numbers)
@@ -465,7 +499,11 @@ gl_stmt = (s: int, depth: int):
             # (x op= y as x = x op y, x's indexes computed once: the operators the CPU's way)
             x = gl_target(a, pre)
             gl_out.push("{pre}{x} = {gl_arith(bop, x, gl_expr(int(nodes[s].b)), ta, ta, ntype(int(nodes[s].b)))};\n")
-        else: gl_out.push("{pre}{gl_expr(a)} {gl_assign_op(op)} {gl_expr(int(nodes[s].b))};\n")
+        else:
+            gl_fc_target_now = true
+            x = gl_expr(a)
+            gl_fc_target_now = false
+            gl_out.push("{pre}{x} {gl_assign_op(op)} {gl_expr(int(nodes[s].b))};\n")
     else if k == .exprstmt:
         e = int(nodes[s].a)
         if nodes[e].kind == .if_ or nodes[e].kind == .match_:
@@ -523,9 +561,11 @@ gl_stmt_if = (e: int, depth: int):
     gl_out.push("{pre}}\n")
 
 gl_zero = (t0: int, pos: int) -> str:
-    global gl_fc_written
+    global gl_fc_changed, gl_fc_written
     t = prune(t0)
-    if gl_fc_type != 0 and t == gl_fc_type: gl_fc_written = true
+    if gl_fc_type != 0 and t == gl_fc_type:
+        gl_fc_changed = true
+        gl_fc_written = true
     k = types[t].kind
     if k == .float_: return "0.0"
     if k == .int_: return "0"
@@ -537,6 +577,7 @@ gl_zero = (t0: int, pos: int) -> str:
         si = int(types[t].st)
         parts: str[]
         loop i in [0..int(structs[si].nfields)): parts.push(gl_zero(int(fields[int(structs[si].fields) + i].type), pos))
+        if gl_fc_mode == 3 and t == gl_fc_type: parts.push("false")
         return "{gl_type(t, pos)}({join(parts, ", ")})"
     if k == .fixed:
         z = gl_wrap(gl_zero(int(types[t].elem), pos), int(types[t].elem), pos)
@@ -567,7 +608,7 @@ gl_binop = (op: Tok) -> str:
         _: "?"
 
 gl_expr = (e: int) -> str:
-    global gl_depth_used, gl_fc_read, gl_fc_written
+    global gl_depth_used, gl_fc_read, gl_fc_changed, gl_fc_written
     k = nodes[e].kind
     t = prune(ntype(e))
     path = gl_uniform_path(e)
@@ -590,10 +631,18 @@ gl_expr = (e: int) -> str:
         a = int(nodes[e].a)
         if nodes[e].aux == -4: return "{gl_expr(a)}.{name_of(int(nodes[e].name))}"
         if nodes[e].aux < 0: gl_err(nodes[e].pos, "unsupported field access in shader")
-        if gl_fc_type != 0 and prune(ntype(a)) == gl_fc_type and name_of(int(nodes[e].name)) == gl_fc_field:
-            gl_fc_read = true
-            return "gl_FragCoord"
-        return "{gl_expr(a)}.{name_of(int(nodes[e].name))}_"
+        fname = name_of(int(nodes[e].name))
+        if gl_fc_mode != 0 and not gl_fc_target_now and prune(ntype(a)) == gl_fc_type:
+            if fname == gl_fc_field:
+                gl_fc_read = true
+                if gl_fc_mode == 3:
+                    b = gl_expr(a)
+                    return "({b}.fc_ ? gl_FragCoord : {b}.{fname}_)"
+                return "gl_FragCoord"
+            if gl_fc_mode == 1:
+                gl_fc_read = true
+                return "v_{fname}"
+        return "{gl_expr(a)}.{fname}_"
     if k == .index:
         bt = prune(ntype(int(nodes[e].a)))
         if types[bt].kind != .vec and types[bt].kind != .fixed: gl_err(nodes[e].pos, "only vectors, matrices and fixed-size arrays (T[N]) can be indexed in shaders")
@@ -667,13 +716,18 @@ gl_expr = (e: int) -> str:
     if k == .call:
         aux = int(nodes[e].aux)
         if aux == 2:
-            if gl_fc_type != 0 and t == gl_fc_type: gl_fc_written = true
+            if gl_fc_type != 0 and t == gl_fc_type:
+                gl_fc_changed = true
+                if not gl_fc_pos_read(kid(e, 0)): gl_fc_written = true
             si = int(types[t].st)
             parts: str[]
             loop i in [0..int(structs[si].nfields)):
                 a = kid(e, i)
                 if a == 0: parts.push(gl_zero(int(fields[int(structs[si].fields) + i].type), nodes[e].pos))
                 else: parts.push(gl_expr(a))
+            # (mode 2: its position, gl_FragCoord, is never read from it: not copied in)
+            if gl_fc_mode == 2 and t == gl_fc_type: parts[0] = "vec4(0.0)"
+            if gl_fc_mode == 3 and t == gl_fc_type: parts.push("false")
             return "{gl_type(t, nodes[e].pos)}({join(parts, ", ")})"
         if aux != 0: gl_err(nodes[e].pos, "function values cannot be called in shaders")
         f = int(nodes[e].sym)
@@ -1010,7 +1064,7 @@ gl_where = (f: int) -> str: "{name_of(int(nodes[int(fns[f].decl)].name))} at {po
 # Sloppy source). With SLOPPY_GLSL_DUMP=dir, the stages are also written to dir/<n>.vert and
 # dir/<n>.frag (tools/shaderstable.py)
 glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
-    global gl_fc_type, gl_fc_field, gl_fc_read, gl_fc_written
+    global gl_fc_type, gl_fc_field, gl_fc_mode, gl_fc_read, gl_fc_changed, gl_fc_written
     gl_reset("vertex", true)
     vpos = nodes[int(fns[vsf].decl)].pos
     vtype_ = int(fns[vsf].ptypes[0])
@@ -1032,20 +1086,23 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
     vrows = gl_uniform_rows + 1
     vsamplers = gl_uniform_samplers
     vdecls = gl_decls
+    vout = gl_type(otype, vpos)      # (its name in the vertex stage: see gl_struct_name)
     gl_reset("fragment", false)
     fmut = int(locals[fns[fsf].params[1]].flags) & LF_MUTPARAM != 0
     fb = ["", if fmut: "" else: "sl_u"]
     gl_fc_type = prune(int(fns[fsf].ptypes[0]))
     gl_fc_field = gl_struct_fields(otype)[0].0
+    # (see gl_fc_mode: 1 if the stage only reads its input, else 2 or 3, translated again)
+    gl_fc_mode = 1
     gl_fc_read = false
+    gl_fc_changed = false
     gl_fc_written = false
     fname = gl_function(fsf, fb)
-    if gl_fc_written:
+    if gl_fc_changed:
+        gl_fc_mode = if gl_fc_written: 3 else: 2
         gl_reset("fragment", false)
-        gl_fc_type = 0
         gl_fc_read = false
         fname = gl_function(fsf, fb)
-    gl_fc_type = 0
     finit = ""
     farg = ""
     if fmut:
@@ -1117,9 +1174,9 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
         iin: str[]
         loop f in ifields: iin.push("i_{f.0}")
         vs += "    {gl_type(itype, vpos)} iin = {gl_type(itype, vpos)}({join(iin, ", ")});\n"
-        vs += "    {gl_type(otype, vpos)} o = {vname}(vin, iin{varg});\n    gl_Position = o.{ofields[0].0}_;\n"
+        vs += "    {vout} o = {vname}(vin, iin{varg});\n    gl_Position = o.{ofields[0].0}_;\n"
     else:
-        vs += "    {gl_type(otype, vpos)} o = {vname}(vin{varg});\n    gl_Position = o.{ofields[0].0}_;\n"
+        vs += "    {vout} o = {vname}(vin{varg});\n    gl_Position = o.{ofields[0].0}_;\n"
     loop i in 0.. and f in ofields:
         if i > 0: vs += "    v_{f.0} = o.{f.0}_;\n"
     vs += "}\n"
@@ -1137,9 +1194,10 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
         ofs = gl_struct_fields(int(fns[fsf].ret))
         loop k in [0..nout): fs += "layout(location = {k}) out vec4 frag_color_{k};\n"
     fs += join(fdecls, "")
-    fin: str[] = [if gl_fc_read: "vec4(0.0)" else: "gl_FragCoord"]
+    fin: str[] = [if gl_fc_read or gl_fc_mode == 3: "vec4(0.0)" else: "gl_FragCoord"]
     loop i in 0.. and f in ofields:
         if i > 0: fin.push("v_{f.0}")
+    if gl_fc_mode == 3: fin.push("true")                 # (the input: its position gl_FragCoord)
     # (a shader that writes its depth starts from the interpolated one, so a path that does not
     # write it keeps it; only such a shader mentions gl_FragDepth, which turns early depth tests off)
     if gl_depth_used: finit = "    gl_FragDepth = gl_FragCoord.z;\n" + finit
@@ -1155,6 +1213,8 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
         write_file("{dir}/{gl_dumped}.vert", vs)
         write_file("{dir}/{gl_dumped}.frag", fs)
         gl_dumped += 1
+    gl_fc_type = 0
+    gl_fc_mode = 0
     (vs, fs, "{adesc}|{udesc}{idesc}", "vertex: {gl_where(vsf)}\nfragment: {gl_where(fsf)}\n")
 
 gl_dumped = 0

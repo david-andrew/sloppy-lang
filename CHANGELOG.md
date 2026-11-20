@@ -37,6 +37,18 @@ frame with Apple's OpenGL, Apple's software OpenGL and Metal.
   rendertest.py's GPU limit). docs/GRAPHICS.md's table says what is true: Metal is opt-in with
   `SLOPPY_METAL=1`; OpenGL 4.1 is macOS's default and never has reversed depth.
 
+- GLSL: no fragment shader reads its position through a struct holding a copy of gl_FragCoord,
+  also when it makes values of its input's type (Aegean Skies' wildlife and smoke shaders: on
+  Adreno 650 a gull was drawn in front of a nearer lamp post). 0.41.0 fell back to the copy for a
+  whole stage that made one. Now a stage that only reads its input reads every field straight from
+  its varying (`v_world`, not `i.world`) and the position as gl_FragCoord. One that makes copies
+  keeping the position (`O(i.pos, ...)`) reads every position as gl_FragCoord and the other fields
+  through the struct. Anything else (another position, a write to one) gives the struct a flag
+  that is true for the input, whose position is then gl_FragCoord. The input struct holds
+  `vec4(0.0)` for the position. Most fragment shaders' GLSL changes once (browsers link them again
+  after a deploy); vertex shaders, SPIR-V and Metal do not, nor fragment shaders that never read
+  their input.
+
 ## 0.41.0
 
 Several colors from one draw.

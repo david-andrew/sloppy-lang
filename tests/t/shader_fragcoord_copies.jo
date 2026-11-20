@@ -1,0 +1,52 @@
+# requires: sloppy
+# The fragment position is never read through a struct holding a copy of gl_FragCoord, also when
+# the stage makes values of its input's type (Aegean Skies' wildlife and smoke shaders, on Adreno
+# 650: a gull drawn in front of a nearer lamp post). A log-depth wrapper passes the input on to a
+# material function, which makes a copy keeping its position (`O(i.pos, ...)`, under another
+# parameter name too) and gives that to a light function reading the position again: every read
+# is gl_FragCoord, the other fields through the struct. A stage that only reads its input reads
+# each field from its varying. One that makes another position keeps a flag in the struct: the
+# input's position is still gl_FragCoord, never a copy of it.
+struct CpV:
+    pos: vec3
+struct CpU:
+    k: f32
+struct CpO:
+    pos: vec4
+    world: vec3
+    color: vec4
+    surface: vec3 = vec3(0, 0, 0)
+cp_vs = (v: CpV, u: CpU) -> CpO: CpO(vec4(v.pos, 1), v.pos, vec4(1, 1, 1, 1))
+cp_depth = (w: f32) -> f32: log2(1.0 + w) * 0.05
+cp_light = (o: CpO, u: CpU) -> vec4: o.color * (1.0 / o.pos.w) + vec4(o.world, 0) * u.k
+# (wildlife: the copy named o, in the function given the input)
+cp_wild = (i: CpO, u: CpU) -> vec4:
+    if i.world.y < i.color.w: discard()
+    o = CpO(i.pos, i.world, vec4(i.color.xyz, 1.0))
+    cp_light(o, u)
+cp_wild_log = (i: CpO, u: CpU) -> vec4:
+    set_depth(cp_depth(1.0 / i.pos.w))
+    cp_wild(i, u)
+# (smoke: the input named v, the copy solid)
+cp_smoke = (v: CpO, u: CpU) -> vec4:
+    solid = CpO(v.pos, v.world, vec4(v.color.xyz, 1))
+    vec4(cp_light(solid, u).xyz, v.color.w)
+cp_smoke_log = (v: CpO, u: CpU) -> vec4:
+    set_depth(cp_depth(1.0 / v.pos.w))
+    cp_smoke(v, u)
+# (only reading its input)
+cp_plain = (i: CpO, u: CpU) -> vec4: cp_light(i, u)
+# (another position: flagged)
+cp_other = (i: CpO, u: CpU) -> vec4:
+    j = CpO(vec4(1, 2, 3, 4), i.world, i.color)
+    cp_light(j, u) + cp_light(i, u)
+# the lines that read a position or a field, and main's
+cp_lines = (fs: str) -> str[]:
+    out: str[]
+    loop l in split(fs, "\n"):
+        t = trim(l)
+        if "gl_FragCoord" in t or "pos_" in t or "world" in t or " i = " in t or "fc_" in t: out.push(t)
+    out
+loop src in [shader(cp_vs, cp_wild_log), shader(cp_vs, cp_smoke_log), shader(cp_vs, cp_plain), shader(cp_vs, cp_other)]:
+    loop l in cp_lines(src.fs): print(l)
+    print("--")
