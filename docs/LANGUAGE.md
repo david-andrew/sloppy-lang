@@ -2639,7 +2639,11 @@ finished, or in a test of your own. Environment variables say what happens:
   renders at twice it). With `SLOPPY_SOFTWARE=1` no display is needed at all, and without it
   and no display (unset `WAYLAND_DISPLAY` and `DISPLAY`) the frames are drawn through Vulkan
   with no window, on the GPU (a `SLOPPY_FRAMES=n` run without a screenshot too: a headless GPU
-  timing or capture run); where there is a display, the window opens on it.
+  timing or capture run); where there is a display, the window opens on it. On macOS a
+  screenshot run (or any run with `SLOPPY_HEADLESS=1`) opens no window: Metal, OpenGL (a
+  context with no view, drawing into a framebuffer of its own) or the software renderer draw
+  offscreen, with no Dock icon and no events (`SLOPPY_HEADLESS=0`: a window all the same). On
+  Windows, `SLOPPY_HEADLESS=1` does the same for a Vulkan screenshot run.
 - `SLOPPY_NO_DRAW=1` runs a native game's update and scripted input with no window, draw
   callbacks or frame presentation. Use it for fast logic and multiplayer tests, especially 3D
   games that would otherwise render in software. Keep simulation and network handling in

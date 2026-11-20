@@ -25,6 +25,13 @@ frame with Apple's OpenGL, Apple's software OpenGL and Metal.
 - tests/render/reversed_scene.jo: the ground in 10 m squares. Apple's software OpenGL, which macOS
   CI draws with, loses most of a single 400 m triangle reaching far off the screen (with or
   without reversed depth, shadows or post effects); there `reversed_depth()` rightly returns false.
+- macOS: a screenshot run (`SLOPPY_SCREENSHOT`), or any run with `SLOPPY_HEADLESS=1`, opens no
+  window: Metal draws into its own screen texture, OpenGL into a framebuffer of a context with
+  no view, the software renderer into memory; no Dock icon, no events (`SLOPPY_HEADLESS=0` keeps
+  the window).
+- OpenGL: a shader's `Texture` with nothing in it samples a white texel, as on Vulkan, Metal and
+  the software renderer (it was GL's incomplete texture 0: black, and on macOS a driver warning,
+  "unit 0 GLD_TEXTURE_INDEX_2D is unloadable", from every 3D program).
 - `tools/macrender.py --host user@mac [--renderer gl|glsoft|metal] [name...]`: the render test on
   a real Mac over ssh (cross-built here, run there, frames fetched and compared with
   rendertest.py's GPU limit). docs/GRAPHICS.md's table says what is true: Metal is opt-in with

@@ -9,7 +9,8 @@ usage: macrender.py --host user@mac [--renderer gl|glsoft|metal]... [--keep] [--
 (all three without --renderer). The Mac needs nothing installed: the programs run as built, with
 perl's alarm as the time limit (no Xcode tools there). Files go to ~/dev/tmp/sloppy-macrender on
 the Mac and $TMPDIR/sloppy-macrender here; the frames are kept there (--keep: the Mac's too).
-Programs open a window for a moment and run with SLOPPY_NO_AUDIO=1. The Macs this has run on
+They run with no window (screenshot runs are headless on macOS; --env SLOPPY_HEADLESS=0 for a
+window) and with SLOPPY_NO_AUDIO=1. The Macs this has run on
 are people's own machines: use one only with its owner's OK."""
 import argparse, concurrent.futures, multiprocessing, os, shlex, shutil, subprocess, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
