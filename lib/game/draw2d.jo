@@ -11,9 +11,15 @@ struct Texture:
 struct RenderTarget:
     texture: Texture
     fbo: int
-    depth: int
+    depth: int                                  # (its depth renderbuffer; 0 with depth_texture)
+    depth_texture: Texture = Texture(0, 0, 0)   # render_target(..., depth_texture = true): its depth
 
-enum Blend: alpha, add, multiply, premultiplied
+# Draw state: how a draw's colors go into the picture (blend), whether it is drawn only where it
+# is nearer than what is there (depth_test) and leaves its own depth (depth_write), which faces
+# are left out (cull), whether colors are written at all (color_write). See docs/GRAPHICS.md.
+enum Blend: alpha, add, multiply, premultiplied, screen, none
+enum DepthTest: off, nearer, nearer_or_equal, farther, farther_or_equal, equal, always
+enum Cull: none, back, front
 
 const __VFLOATS = 9          # x, y, u, v, r, g, b, a, mode (0 color/texture, 1 sdf text)
 const __BATCH_MAX = 16384
@@ -41,6 +47,14 @@ __view_x = 0.0          # (and where its top-left corner is in them)
 __view_y = 0.0
 __cur_target = -1
 __blend = Blend.alpha
+__depth_test = DepthTest.off
+__depth_write = true
+__cull = Cull.none
+__color_write = true
+# (by framebuffer: the textures of a render_target's color and depth, which a draw into it may not
+# sample)
+__rt_color: int[]
+__rt_depth: int[]
 
 # (v_uv is centroid: with antialiasing, a pixel on a quad's edge is shaded where the quad
 # covers it, not at its center outside the quad: there the texture coordinate runs past the
@@ -341,9 +355,7 @@ __gfx_begin_frame = ():
     __xform = mat4()
     __xform_set = false
     __xform_stack.clear()
-    __apply_blend(.alpha)
-    glDisable(GL_DEPTH_TEST)
-    glDisable(GL_CULL_FACE)
+    __draw_state_reset()
     __post_start()
     # (a frame starts black, as a web page's does: a draw with no clear() leaves no trail of the
     # frames before; a picture kept from frame to frame is a render target. With post_effects,
@@ -361,6 +373,7 @@ __gfx_end_frame = ():
     global __clip_on
     __scene_flush()
     flush()
+    __draw_state_reset()                 # (post effects and the canvas are drawn as a frame starts)
     __clip_off()
     __clip_on = false
     __post_finish()
@@ -492,22 +505,73 @@ free_texture = (t: Texture):
 # ---------------- render targets ----------------
 __targets: RenderTarget[]
 
-render_target = (w: int, h: int, smooth: bool = true) -> RenderTarget:
+# A picture to draw into (draw_to) and then draw (draw_target) or sample in a shader (rt.texture).
+# depth_texture = true: its depth is a texture too, rt.depth_texture, 32-bit float, sampled as
+# any other (`sample(t, uv).x`, 0 near .. 1 far) by a later pass; a draw into the target may not
+# sample its own color or depth (it panics: copy_depth the depth into another target first).
+render_target = (w: int, h: int, smooth: bool = true, depth_texture: bool = false) -> RenderTarget:
     __gfx_init_gl_only()
     tex = texture(image(w, h), smooth)
     __tex_mips[tex.id] = u8(4)
     fbo = gl_create_framebuffer()
     glBindFramebuffer(GL_FRAMEBUFFER, u32(fbo))
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(tex.id), 0)
-    rb = gl_create_renderbuffer()
-    glBindRenderbuffer(GL_RENDERBUFFER, u32(rb))
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, i32(w), i32(h))
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, u32(rb))
+    rb = 0
+    dt = Texture(0, 0, 0)
+    if depth_texture:
+        dt = __depth_texture(w, h)
+        glBindFramebuffer(GL_FRAMEBUFFER, u32(fbo))
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, u32(dt.id), 0)
+    else:
+        rb = gl_create_renderbuffer()
+        glBindRenderbuffer(GL_RENDERBUFFER, u32(rb))
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, i32(w), i32(h))
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, u32(rb))
     when TARGET != "wasm":
         if __soft: __sw_scale_target(fbo, w, h)
     if __g_init: __bind_current()
     else: glBindFramebuffer(GL_FRAMEBUFFER, 0)
-    RenderTarget(tex, fbo, rb)
+    loop __rt_color.len() <= fbo:
+        __rt_color.push(0)
+        __rt_depth.push(0)
+    __rt_color[fbo] = tex.id
+    __rt_depth[fbo] = dt.id
+    RenderTarget(tex, fbo, rb, dt)
+
+# (a w x h float depth texture, sampled nearest: float depth is not filtered on WebGL)
+__depth_texture = (w: int, h: int) -> Texture:
+    id = gl_create_texture()
+    glBindTexture(GL_TEXTURE_2D, u32(id))
+    gl_tex_image(w, h, 0x8CAC, GL_DEPTH_COMPONENT, GL_FLOAT, null, 0)              # DEPTH_COMPONENT32F
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, i32(GL_NEAREST))
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, i32(GL_NEAREST))
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, i32(GL_CLAMP_TO_EDGE))
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, i32(GL_CLAMP_TO_EDGE))
+    loop __tex_mips.len() <= id: __tex_mips.push(u8(0))
+    __tex_mips[id] = u8(4)
+    Texture(id, w, h)
+
+# Copy the depth of one render target into another of the same size (both made with
+# depth_texture = true): for a pass that tests against a scene's depth while sampling it, drawn
+# into `to` and sampling from.depth_texture. A blit on OpenGL and WebGL, an image copy on Vulkan
+# and Metal, a copy in the software renderer.
+copy_depth = (from: RenderTarget, to: RenderTarget):
+    __copy_depth(from.fbo, from.depth_texture, to.fbo, to.depth_texture)
+
+# the same, from a depth texture of a render target: rt.depth_texture, or scene_depth()
+copy_depth = (from: Texture, to: RenderTarget):
+    f = 0
+    loop i in [1..__rt_depth.len()):
+        if from.id != 0 and __rt_depth[i] == from.id: f = i
+    if f == 0: panic("copy_depth: the texture copied from is not the depth of a render target (render_target(w, h, depth_texture = true), or scene_depth())")
+    __copy_depth(f, from, to.fbo, to.depth_texture)
+
+__copy_depth = (from_fbo: int, from: Texture, to_fbo: int, to: Texture):
+    if from.id == 0 or to.id == 0: panic("copy_depth: both render targets need depth_texture = true")
+    if from.width != to.width or from.height != to.height: panic("copy_depth: a {from.width}x{from.height} depth into a {to.width}x{to.height} one: they must be the same size")
+    __scene_before_target()
+    flush()
+    gl_copy_depth(from_fbo, from.id, to_fbo, to.id, from.width, from.height)
 
 # a picture of w x h pixels drawn by draw (with what `draw = ():` uses, in pixels from its top
 # left corner), at any time: a chart a script saves, a texture made at the start, a 3D scene's
@@ -537,15 +601,14 @@ render_image = (w: int, h: int, draw: () -> void) -> Image:
         if __soft: __sw_exact_target(rt.fbo, w, h)
     draw_to(rt)
     __xform = mat4()
-    # (as a frame begins: blending, no depth test)
-    __apply_blend(.alpha)
-    glDisable(GL_DEPTH_TEST)
-    glDisable(GL_CULL_FACE)
+    # (as a frame begins: the default draw state; the game's selection back after)
+    saved = __draw_state()
+    __draw_state_reset()
     clear(vec4(0, 0, 0, 0))
     draw()
     img = screenshot()          # (the 3D queued by draw too: screenshot draws it first)
     flush()
-    __apply_blend(__blend)
+    __set_draw_state(saved)
     __xform = pxf
     if prev < 0: draw_to_screen()
     else:
@@ -569,6 +632,10 @@ free_render_target = (rt: RenderTarget):
     if rt.texture.id != 0: gl_delete_texture(rt.texture.id)
     if rt.fbo != 0: gl_delete_framebuffer(rt.fbo)
     if rt.depth != 0: gl_delete_renderbuffer(rt.depth)
+    if rt.depth_texture.id != 0: gl_delete_texture(rt.depth_texture.id)
+    if rt.fbo > 0 and rt.fbo < __rt_color.len():
+        __rt_color[rt.fbo] = 0
+        __rt_depth[rt.fbo] = 0
 
 # draw into a render target until draw_to_screen() is called
 draw_to = (rt: RenderTarget):
@@ -604,7 +671,13 @@ clear = (c: vec4 = vec4(0, 0, 0, 1)):
     flush()
     __clip_off()
     glClearColor(c.x, c.y, c.z, c.w)
+    # (all of the picture, whatever color_write and depth_write say)
+    masked = not __color_write or not __depth_write
+    if masked:
+        glColorMask(1, 1, 1, 1)
+        glDepthMask(1)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    if masked: __apply_draw_state()
     if __clip_on: __apply_clip()
     # (a page's background is the screen's color: what shows around the canvas as a phone turns)
     when TARGET == "wasm":
@@ -613,20 +686,143 @@ clear = (c: vec4 = vec4(0, 0, 0, 1)):
             __web_page_color(c.x, c.y, c.z)
 __page_color = vec4(-1, -1, -1, -1)
 
+# only the depth of what is drawn into is cleared (to far); its colors stay
+clear_depth = ():
+    flush()
+    __clip_off()
+    if not __depth_write: glDepthMask(1)
+    glClear(GL_DEPTH_BUFFER_BIT)
+    if not __depth_write: glDepthMask(0)
+    if __clip_on: __apply_clip()
+
 __apply_blend = (b: Blend):
     global __blend
-    glEnable(GL_BLEND)
-    match b:
-        alpha: glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
-        add: glBlendFunc(GL_SRC_ALPHA, GL_ONE)
-        multiply: glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA)
-        premultiplied: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+    if b == .none: glDisable(GL_BLEND)
+    else:
+        glEnable(GL_BLEND)
+        match b:
+            alpha: glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+            add: glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+            multiply: glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA)
+            premultiplied: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+            screen: glBlendFunc(GL_ONE, 0x301)                                   # ONE_MINUS_SRC_COLOR
+            none: pass
     __blend = b
 
+# how what is drawn next goes over what is there, for 2D drawing and draw/draw_instanced alike:
+# .alpha (the default), .add (glows), .multiply (shadows, tints), .premultiplied (colors already
+# multiplied by their alpha), .screen (1 - (1 - a)(1 - b): lightens, never past white), .none (no
+# blending: the colors and alpha replace what is there)
 blend = (b: Blend):
     if b == __blend: return
     flush()
     __apply_blend(b)
+
+# The other draw state, for draw and draw_instanced (2D shapes are drawn with no depth test and
+# no culling whatever these say). Each frame starts from the defaults: depth_test(.off),
+# depth_write(true), cull(.none), color_write(true), blend(.alpha). Inside draw_custom (3D) the
+# 3D pass's state is selected instead (see docs/GRAPHICS.md). Raw gl* calls are not seen by these.
+
+# which fragments are drawn by their depth against the depth already there: .off (all of them,
+# and none leaves its depth), .nearer, .nearer_or_equal, .farther, .farther_or_equal, .equal,
+# .always (all, each leaving its depth when depth_write is on)
+depth_test = (t: DepthTest):
+    global __depth_test
+    if t == __depth_test: return
+    flush()
+    __depth_test = t
+    __apply_depth()
+
+# whether a draw leaves its depth (where depth_test is not .off)
+depth_write = (on: bool):
+    global __depth_write
+    if on == __depth_write: return
+    flush()
+    __depth_write = on
+    glDepthMask(u32(int(on)))
+
+# which triangles are left out: .none, .back (those whose corners go clockwise on the screen),
+# .front (counter-clockwise)
+cull = (c: Cull):
+    global __cull
+    if c == __cull: return
+    flush()
+    __cull = c
+    __apply_cull()
+
+# whether colors are written (false: a depth-only pass)
+color_write = (on: bool):
+    global __color_write
+    if on == __color_write: return
+    flush()
+    __color_write = on
+    v = u32(int(on))
+    glColorMask(v, v, v, v)
+
+# (the one place a DepthTest becomes a GL depth function)
+__depth_func = (t: DepthTest) -> u32:
+    match t:
+        nearer: u32(GL_LESS)
+        nearer_or_equal: u32(GL_LEQUAL)
+        farther: u32(0x204)                                                         # GREATER
+        farther_or_equal: u32(0x206)                                                # GEQUAL
+        equal: u32(0x202)
+        always: u32(0x207)
+        off: u32(0x207)
+
+__apply_depth = ():
+    if __depth_test == .off: glDisable(GL_DEPTH_TEST)
+    else:
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(__depth_func(__depth_test))
+
+__apply_cull = ():
+    match __cull:
+        none: glDisable(GL_CULL_FACE)
+        back:
+            glEnable(GL_CULL_FACE)
+            glCullFace(GL_BACK)
+        front:
+            glEnable(GL_CULL_FACE)
+            glCullFace(GL_FRONT)
+
+# the selected draw state, all of it, to the GPU (after a library pass changed it)
+__apply_draw_state = ():
+    __apply_blend(__blend)
+    __apply_depth()
+    glDepthMask(u32(int(__depth_write)))
+    __apply_cull()
+    v = u32(int(__color_write))
+    glColorMask(v, v, v, v)
+
+__draw_state = () -> (Blend, DepthTest, bool, Cull, bool):
+    (__blend, __depth_test, __depth_write, __cull, __color_write)
+
+# select a draw state and apply it
+__set_draw_state = (st: (Blend, DepthTest, bool, Cull, bool)):
+    __select_draw_state(st)
+    __apply_draw_state()
+
+# (only selected: what the GPU has is set by whoever calls this)
+__select_draw_state = (st: (Blend, DepthTest, bool, Cull, bool)):
+    global __blend, __color_write, __cull, __depth_test, __depth_write
+    __blend = st.0
+    __depth_test = st.1
+    __depth_write = st.2
+    __cull = st.3
+    __color_write = st.4
+
+# the defaults, as each frame starts
+__draw_state_reset = ():
+    __set_draw_state((Blend.alpha, DepthTest.off, true, Cull.none, true))
+
+# a draw sampling texture id while the bound framebuffer is a render target whose color or depth
+# that is: WebGL refuses it, elsewhere what it draws is undefined
+__feedback = (id: int):
+    f = __gl_fbo
+    if id == 0 or f <= 0 or f >= __rt_color.len(): return
+    if id == __rt_color[f]: panic("a draw samples the color texture of the render target it draws into (WebGL forbids it; elsewhere what it shows is undefined): draw it into another target")
+    if id == __rt_depth[f]: panic("a draw samples the depth texture of the render target it draws into (WebGL forbids it; elsewhere what it shows is undefined): copy_depth it into another target and sample that one, or draw_to another target")
 
 # 2D drawing after this shows only inside the rectangle, until no_clip(), the next frame or
 # another target (draw_to); for a scrolling list, a panel, a minimap. The rectangle is in the
@@ -765,8 +961,20 @@ world_to_screen = (p: vec2) -> vec2:
 
 # ---------------- batching ----------------
 flush = ():
-    global __b_count
     if __b_count == 0: return
+    if __gl_fbo > 0: __feedback(__b_tex)
+    # (2D shapes are flat: no depth test, no culling, whatever is selected for draw)
+    flat = __depth_test != .off or __cull != .none
+    if flat:
+        glDisable(GL_DEPTH_TEST)
+        glDisable(GL_CULL_FACE)
+    __flush_batch()
+    if flat:
+        __apply_depth()
+        __apply_cull()
+
+__flush_batch = ():
+    global __b_count
     if __fx_on:
         __fx_draw()
         __b_count = 0

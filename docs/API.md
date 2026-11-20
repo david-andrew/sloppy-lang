@@ -2781,11 +2781,19 @@ draw = ():
   struct RenderTarget:
       texture: Texture
       fbo: int
-      depth: int
+      depth: int                                  # (its depth renderbuffer; 0 with depth_texture)
+      depth_texture: Texture = Texture(0, 0, 0)   # render_target(..., depth_texture = true): its depth
   ```
-- `enum Blend: alpha, add, multiply, premultiplied`
+- `enum Blend: alpha, add, multiply, premultiplied, screen, none`: Draw state: how a draw's colors go into the picture (blend), whether it is drawn only where it is nearer than what is there (depth_test) and leaves its own depth (depth_write), which faces are left out (cull), whether colors are written at all (color_write). See docs/GRAPHICS.md.
+- `enum DepthTest: off, nearer, nearer_or_equal, farther, farther_or_equal, equal, always`
+- `enum Cull: none, back, front`
 - `clear = (c: vec4 = vec4(0, 0, 0, 1))`
-- `blend = (b: Blend)`
+- `clear_depth = ()`: only the depth of what is drawn into is cleared (to far); its colors stay
+- `blend = (b: Blend)`: how what is drawn next goes over what is there, for 2D drawing and draw/draw_instanced alike: .alpha (the default), .add (glows), .multiply (shadows, tints), .premultiplied (colors already multiplied by their alpha), .screen (1 - (1 - a)(1 - b): lightens, never past white), .none (no blending: the colors and alpha replace what is there)
+- `depth_test = (t: DepthTest)`: which fragments are drawn by their depth against the depth already there: .off (all of them, and none leaves its depth), .nearer, .nearer_or_equal, .farther, .farther_or_equal, .equal, .always (all, each leaving its depth when depth_write is on)
+- `depth_write = (on: bool)`: whether a draw leaves its depth (where depth_test is not .off)
+- `cull = (c: Cull)`: which triangles are left out: .none, .back (those whose corners go clockwise on the screen), .front (counter-clockwise)
+- `color_write = (on: bool)`: whether colors are written (false: a depth-only pass)
 - `clip = (pos: vec2, size: vec2)`: 2D drawing after this shows only inside the rectangle, until no_clip(), the next frame or another target (draw_to); for a scrolling list, a panel, a minimap. The rectangle is in the units of the 2D transform, as what is drawn is (under translate, scale or camera2d_fit it is where a rect() of it shows; turned, the box around that); the clip is then kept where it is on the screen, whatever transform comes after
 - `clip = (r: Rect)`: the same, with a Rect: clip(r) around a scrolling list's box
 - `no_clip = ()`: drawing shows everywhere again (and a hud_scroll list's bar, drawn over its rows, is drawn now, as they are done)
@@ -2848,7 +2856,9 @@ draw = ():
 
 #### Render targets
 
-- `render_target = (w: int, h: int, smooth: bool = true) -> RenderTarget`
+- `render_target = (w: int, h: int, smooth: bool = true, depth_texture: bool = false) -> RenderTarget`: A picture to draw into (draw_to) and then draw (draw_target) or sample in a shader (rt.texture). depth_texture = true: its depth is a texture too, rt.depth_texture, 32-bit float, sampled as any other (`sample(t, uv).x`, 0 near .. 1 far) by a later pass; a draw into the target may not sample its own color or depth (it panics: copy_depth the depth into another target first).
+- `copy_depth = (from: RenderTarget, to: RenderTarget)`: Copy the depth of one render target into another of the same size (both made with depth_texture = true): for a pass that tests against a scene's depth while sampling it, drawn into `to` and sampling from.depth_texture. A blit on OpenGL and WebGL, an image copy on Vulkan and Metal, a copy in the software renderer.
+- `copy_depth = (from: Texture, to: RenderTarget)`: the same, from a depth texture of a render target: rt.depth_texture, or scene_depth()
 - `render_image = (w: int, h: int, draw: () -> void) -> Image`: a picture of w x h pixels drawn by draw (with what `draw = ():` uses, in pixels from its top left corner), at any time: a chart a script saves, a texture made at the start, a 3D scene's thumbnail (camera3d and draw_mesh inside draw are drawn into it). Before any window is open it needs none: the software renderer draws it.
   ```gdscript
   img = render_image(600, 400, ():
@@ -3790,7 +3800,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `night_stars = (amount: f64)`
 - `fog = (color: vec3, density: f64 = 0.01, height_falloff: f64 = 0.05)`: fog: thicker with distance (density per meter), thinner with height (height_falloff); far away everything becomes color, shown as the sky's horizon color is (give it that to fade things into the sky). The simple lighting and PBR materials are fogged alike.
 - `shadows = (on: bool, strength: f64 = 0.8, area: f64 = 30.0)`
-- `post_effects = (bloom: f64 = 0.6, threshold: f64 = 0.7, vignette: f64 = 0.35, saturation: f64 = 1.0, tint: vec3 = vec3(1, 1, 1), include_hud: bool = false)`: bloom + color grading for the frame: all of a 2D game; in a 3D one, the 3D and the 2D drawn before it, while 2D drawn after the 3D (a HUD, text) stays as drawn, unless include_hud
+- `post_effects = (bloom: f64 = 0.6, threshold: f64 = 0.7, vignette: f64 = 0.35, saturation: f64 = 1.0, tint: vec3 = vec3(1, 1, 1), include_hud: bool = false, scene_depth: bool = false)`: bloom + color grading for the frame: all of a 2D game; in a 3D one, the 3D and the 2D drawn before it, while 2D drawn after the 3D (a HUD, text) stays as drawn, unless include_hud scene_depth = true: the picture the 3D is drawn into keeps its depth in a texture, scene_depth(), for a later pass of the game's own (fog, clouds, soft particles) drawn into another target
 - `no_post_effects = ()`
 - `point_light = (pos: vec3, color: vec3, radius: f64 = 6.0, intensity: f64 = 1.0)`: a light at a point for this frame (muzzle flashes, glowing shots, lamps): it reaches radius meters, fading out on the way. Up to 8 light a frame (the ones nearest the camera); they cast no shadows.
 - `draw_mesh = (m: Mesh, transform: mat4 = mat4(), color: vec4 = vec4(1, 1, 1, 1), texture: Texture = Texture(0, 0, 0), emissive: f64 = 0.0, specular: f64 = 0.3, cast_shadow: bool = true, in_front: bool = false, double_sided: bool = false)`: A color whose alpha is below 1 is see-through, drawn after the solid ones (rgba(1, 0, 0, 0.5); much emissive makes it near white, which hides that). in_front = true: drawn after everything else and over it, casting no shadow (a first-person weapon, which would otherwise poke into walls the player stands against). material selects metallic-roughness PBR; without it the original lighting, specular and color handling are retained. color multiplies its factor; texture is the fallback when it has no base_texture. See Material for map channels.
@@ -3855,6 +3865,7 @@ Directions: y is up, in meters. A turn by `a` about y (`transform(pos, a)`, `rot
 - `scene_fog = () -> vec2`
 - `scene_shadow_vp = () -> mat4`
 - `scene_shadow_map = () -> Texture`
+- `scene_depth = () -> Texture`: The depth of the 3D scene drawn this frame (0 near .. 1 far, in .x), with post_effects(..., scene_depth = true); an empty texture otherwise. Sample it in a pass drawn into a target of your own (not while drawing into the scene, the screen under post effects: copy_depth(scene_depth(), rt) gives a pass there a copy to test against).
 - `scene_shadow_strength = () -> f32`
 - `instance = (transform: mat4, color: vec4 = vec4(1, 1, 1, 1)) -> Instance3D`
 - `transform = (pos: vec3, rot_y: f64 = 0.0, scale: f64 = 1.0) -> mat4`: transform helpers
@@ -4395,7 +4406,7 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
       keep: u8[]                  # (and what keeps that buffer alive)
   ```
 - `warm_up = ()`: Prepare what is loaded, during a loading screen: OpenGL and WebGL link every shader queued and not linked yet (warm_up_shaders()); Vulkan prepares the pipelines of the programs and layouts loaded.
-- `warm_up = (sh: Shader, mode: int = GL_TRIANGLES)`: Prepare one shader now: OpenGL and WebGL link it (one made with warm = false too); Vulkan prepares its pipeline for the drawing state selected now (blending, target) and primitive `mode`.
+- `warm_up = (sh: Shader, mode: int = GL_TRIANGLES)`: Prepare one shader now: OpenGL and WebGL link it (one made with warm = false too); Vulkan prepares its pipeline for the drawing state selected now (blend, color_write, depth_test, depth_write, the target) and primitive `mode`.
 - `shaders_pending = () -> int`: how many shaders are queued for warm-up and not linked yet (0 on Vulkan, Metal and the software renderer)
 - `warm_up_later = (sh: Shader)`: Queue a shader made with warm = false for warm_up_shaders (with parallel compiling, its linking starts now); one queued or linked already stays as it is.
 - `warm_up_shaders = (max_count: int = -1, max_ms: f64 = -1.0) -> int`: Link queued shaders, oldest first: at most max_count of them (-1: no limit), starting no new one after max_ms milliseconds (-1: no limit; at least one is linked). With no limit, all of them (warm_up() does that too). Returns how many are still waiting. With parallel compiling, a limited call finishes only the programs whose linking is done, never waiting for one.

@@ -36,6 +36,29 @@ r4 = subprocess.run(["node", os.path.join(root, "tools", "web_audio.mjs"), shell
 shader_page = os.path.join(tmp, "uniform_budget")
 subprocess.run([sloppy, "build", os.path.join(root, "tests", "web", "uniform_budget.jo"), "-o", shader_page, "--target", "wasm"], check=True, env=env)
 r6 = subprocess.run(["node", os.path.join(root, "tools", "web_shaders.mjs"), shell, shader_page + ".html", tmp], timeout=120)
+# render scenes drawn with WebGL against their references (tests/render: the draw state and
+# depth targets; a feedback loop the browser reports fails too)
+sys.path.insert(0, os.path.join(root, "tools"))
+from pngutil import downsample, png_rows
+r7 = 0
+for sc in ["draw_state", "depth_texture", "copy_depth", "scene_depth"]:
+    pg = os.path.join(tmp, sc)
+    subprocess.run([sloppy, "build", os.path.join(root, "tests", "render", sc + ".jo"), "-o", pg, "--target", "wasm"], check=True, env=env)
+    shot = os.path.join(tmp, sc + "_web.png")
+    rr = subprocess.run(["node", os.path.join(root, "tools", "web_render.mjs"), shell, pg + ".html", shot, "800", "450", tmp], timeout=120)
+    if rr.returncode != 0 or not os.path.exists(shot):
+        r7 = 1
+        continue
+    w, h, got = downsample(shot, 4)
+    rw, rh, _, rows = png_rows(os.path.join(root, "tests", "render", sc + ".png"))
+    want = b"".join(rows)
+    if (w, h) != (rw, rh):
+        print(f"FAIL {sc} (WebGL): size {w}x{h}, reference {rw}x{rh}")
+        r7 = 1
+        continue
+    d = sum(abs(a - b) for a, b in zip(got, want)) / len(want)
+    print(f"{'ok  ' if d <= 4.0 else 'FAIL'} {sc} (WebGL): mean abs difference {d:.3f}")
+    if d > 4.0: r7 = 1
 shutil.rmtree(tmp, ignore_errors=True)
 r5 = subprocess.run([sys.executable, os.path.join(root, "tools", "webfetchcheck.py"), sloppy], env=env, timeout=120)
-sys.exit(r.returncode or r2.returncode or r3.returncode or r4.returncode or r5.returncode or r6.returncode)
+sys.exit(r.returncode or r2.returncode or r3.returncode or r4.returncode or r5.returncode or r6.returncode or r7)

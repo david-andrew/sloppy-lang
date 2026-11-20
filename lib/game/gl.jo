@@ -76,6 +76,10 @@ __gl_uniform_name = (name: str) -> str:
     if n >= 0: return name[2..n] + name[n + 1..]
     name[2..name.len() - 1]
 
+# (the framebuffer glBindFramebuffer bound last: a draw sampling its textures is a feedback loop,
+# draw2d.jo's __rt_color and __rt_depth)
+__gl_fbo = 0
+
 # (counts buffer and vertex array deletions: a name made again is a new object, so what gpu.jo
 # remembers about vertex arrays set up with the old one no longer holds)
 __gl_epoch = 1
@@ -166,7 +170,12 @@ when TARGET == "wasm":
     extern glPixelStorei = (pname: u32, v: i32)
     extern glCreateFramebuffer = () -> u32
     extern glDeleteFramebuffer = (f: u32)
-    extern glBindFramebuffer = (target: u32, f: u32)
+    extern __glBindFramebuffer = (target: u32, f: u32)
+    glBindFramebuffer = (target: u32, f: u32):
+        global __gl_fbo
+        __gl_fbo = int(f)
+        __glBindFramebuffer(target, f)
+    extern glBlitFramebuffer = (sx0: i32, sy0: i32, sx1: i32, sy1: i32, dx0: i32, dy0: i32, dx1: i32, dy1: i32, mask: u32, filter: u32)
     extern glFramebufferTexture2D = (target: u32, attachment: u32, textarget: u32, tex: u32, level: i32)
     extern glCreateRenderbuffer = () -> u32
     extern glDeleteRenderbuffer = (r: u32)
@@ -717,6 +726,8 @@ else:
         if __soft: return
         __glPixelStorei(pname, v)
     glBindFramebuffer = (target: u32, f: u32):
+        global __gl_fbo
+        __gl_fbo = int(f)
         if __vk:
             vgl_bind_framebuffer(f)
             return
@@ -756,11 +767,10 @@ else:
 
     # Present a fixed-size capture in the actual Cocoa drawable. Restore the offscreen
     # binding so screenshots (including the last frame, before present) read its full size.
+    @lib("libGLESv2.so.2")
+    @symbol("glBlitFramebuffer")
+    extern __glBlitFramebuffer = (sx0: i32, sy0: i32, sx1: i32, sy1: i32, dx0: i32, dy0: i32, dx1: i32, dy1: i32, mask: u32, filter: u32)
     when TARGET == "macos":
-        @lib("libGLESv2.so.2")
-        @symbol("glBlitFramebuffer")
-        extern __glBlitFramebuffer = (sx0: i32, sy0: i32, sx1: i32, sy1: i32, dx0: i32, dy0: i32, dx1: i32, dy1: i32, mask: u32, filter: u32)
-
         __gl_screen_present = (w: int, h: int):
             __glBindFramebuffer(u32(0x8CA8), u32(__screen_fbo))     # GL_READ_FRAMEBUFFER
             __glBindFramebuffer(u32(0x8CA9), 0)                    # GL_DRAW_FRAMEBUFFER
@@ -1055,3 +1065,24 @@ gl_software_limits = () -> bool:
                 renderer = __glGetString(0x1F01)   # GL_RENDERER
                 if renderer != null: return (index_of(__cstr(renderer), "Apple Software") ?? -1) >= 0
         false
+
+# Copy the depth of framebuffer `from` (its depth texture from_tex) into framebuffer `to` (to_tex),
+# both w x h with float depth: a blit on OpenGL and WebGL, an image copy on Vulkan and Metal, a
+# copy in the software renderer. The framebuffer bound before is bound again after.
+gl_copy_depth = (from: int, from_tex: int, to: int, to_tex: int, w: int, h: int):
+    bound = __gl_fbo
+    when TARGET != "wasm":
+        if __vk:
+            vgl_copy_depth(from_tex, to_tex)
+            return
+        if __soft:
+            sgl_copy_texture(from_tex, to_tex)
+            return
+        __glBindFramebuffer(u32(0x8CA8), u32(from))                              # GL_READ_FRAMEBUFFER
+        __glBindFramebuffer(u32(0x8CA9), u32(to))                                # GL_DRAW_FRAMEBUFFER
+        __glBlitFramebuffer(0, 0, i32(w), i32(h), 0, 0, i32(w), i32(h), GL_DEPTH_BUFFER_BIT, GL_NEAREST)
+    else:
+        glBindFramebuffer(u32(0x8CA8), u32(from))
+        glBindFramebuffer(u32(0x8CA9), u32(to))
+        glBlitFramebuffer(0, 0, i32(w), i32(h), 0, 0, i32(w), i32(h), GL_DEPTH_BUFFER_BIT, GL_NEAREST)
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(bound))

@@ -98,11 +98,14 @@ warm_up = ():
             __vg_warm_loaded()
 
 # Prepare one shader now: OpenGL and WebGL link it (one made with warm = false too); Vulkan
-# prepares its pipeline for the drawing state selected now (blending, target) and primitive `mode`.
+# prepares its pipeline for the drawing state selected now (blend, color_write, depth_test,
+# depth_write, the target) and primitive `mode`.
 warm_up = (sh: Shader, mode: int = GL_TRIANGLES):
     if sh.lid > 0 and sh.lid < __glp_state.len() and __glp_state[sh.lid] != 0: __glp_link(sh.lid)
     when TARGET != "wasm" and TARGET != "macos":
-        if __vk and not __soft: __vg_warm_selected(sh.prog, __vg_topology(mode))
+        if __vk and not __soft:
+            __apply_draw_state()            # (the selected state, also before the first frame applies it)
+            __vg_warm_selected(sh.prog, __vg_topology(mode))
 
 # Linking shaders when they are first drawn (OpenGL, WebGL): make_shader (and the library's own
 # shaders) return at once; the program is compiled and linked at its first draw, which waits for
@@ -507,6 +510,7 @@ __bind_uniform_array = (u: ShaderUniform, loc: i32, q: *u8, unit0: int) -> int:
 draw[U] = (sh: Shader, m0: Mesh, params: U):
     flush()
     p = params
+    if __gl_fbo > 0: __feedback_uniforms(sh, (&p) as *u8)
     when TARGET != "wasm":
         if __vk:
             __vk_draw_at(sh.prog, m0.mode, __mesh_addr(m0), m0.stride, m0.count, m0.ibo, m0.index_count, (&p) as *u8, size_of(U), 0, 0, 0)
@@ -524,6 +528,12 @@ draw[U] = (sh: Shader, m0: Mesh, params: U):
         glDrawElements(u32(m.mode), i32(m.index_count), GL_UNSIGNED_INT, 0)
     else: glDrawArrays(u32(m.mode), 0, i32(m.count))
     glBindVertexArray(0)
+
+# (a draw into a render target may not sample its textures: draw2d.jo's __feedback)
+__feedback_uniforms = (sh: Shader, p: *u8):
+    loop u in sh.uniforms:
+        if u.kind != 't': continue
+        loop j in [0..max(u.count, 1)): __feedback(((p + u.offset + j * u.stride) as *int)[0])
 
 __bind_uniforms_sized = (sh: Shader, p: *u8):
     __bind_uniforms(sh, p)
@@ -580,6 +590,7 @@ __draw_inst = (sh: Shader, m: Mesh, vbo: int, istride: int, first: int, n: int, 
 # from + count) (count -1: to the end) with base added to each index, and instance_id() counting
 # from ibase. (Through Vulkan only whole meshes: draw_indirect draws parts there.)
 __draw_full = (sh: Shader, m0: Mesh, vbo: int, istride: int, first: int, n: int, p: *u8, usize: int, igbuf: int, from: int, count: int, base: int, ibase: int):
+    if __gl_fbo > 0: __feedback_uniforms(sh, p)
     when TARGET != "wasm":
         if __vk:
             insts = 0

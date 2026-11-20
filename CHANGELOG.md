@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+Draw state in the API, and depth targets a later pass can sample (docs/GRAPHICS.md, "Draw state"
+and "Depth targets that can be sampled"), on all five renderers.
+
+- `depth_test(t)` (`enum DepthTest: off, nearer, nearer_or_equal, farther, farther_or_equal,
+  equal, always`), `depth_write(on)`, `cull(c)` (`enum Cull: none, back, front`) and
+  `color_write(on)` for `draw` and `draw_instanced`, in the style of `blend()`; `Blend` has
+  `.screen` (1, 1 − source color) and `.none` (no blending). Each frame starts from the defaults
+  (no depth test, depth writes on, no culling, colors written, alpha blending: what a draw saw
+  before). Inside `draw_custom`'s `render`, the 3D pass's state is selected, and setters there
+  last until it returns; the 3D pass, shadows, the sky, post effects and `render_image` set what
+  they need and give the game's selection back. 2D shapes stay flat (no depth test, no culling).
+  `clear()` clears everything whatever the masks; `clear_depth()` clears only the depth.
+- `render_target(w, h, smooth, depth_texture = true)`: its depth is a 32-bit float texture,
+  `rt.depth_texture`, sampled as any other (`.x`, 0 near .. 1 far). `RenderTarget` has the new
+  field with a default, so one put together by hand still builds.
+- A draw (or a 2D sprite) sampling the color or depth of the target it draws into panics, saying
+  so, on every renderer (WebGL refuses it; elsewhere it was undefined).
+- `copy_depth(from, to)`: one target's depth into another of the same size (a blit on OpenGL and
+  WebGL, an image copy on Vulkan and Metal, a copy in the software renderer), also from
+  `scene_depth()`.
+- `post_effects(..., scene_depth = true)` keeps the 3D scene's depth in a texture, `scene_depth()`,
+  for a pass of the game's own drawn into another target.
+- The software renderer has the other depth functions (greater, equal, always...), the other blend
+  factors (source color, destination alpha...), and writes no depth with the depth test off, as
+  OpenGL. On Vulkan, `warm_up(sh)` applies the selected state first, also before the first frame.
+- `tools/webtest.py` draws the new render scenes with WebGL in headless Chromium and compares them
+  with their references (`tools/web_render.mjs`).
+
 ## 0.38.4
 
 A shader's GLSL is the same text from build to build while its own code is, so browsers' program

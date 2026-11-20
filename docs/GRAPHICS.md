@@ -138,6 +138,83 @@ sprite(enemy, pos)
 no_effect()
 ```
 
+## Draw state
+
+How a `draw` or `draw_instanced` goes into the picture is chosen by five setters, in the style of
+`blend()`. Each holds until it is changed; each frame starts from the defaults. A setter draws
+the 2D shapes queued before it first, so they keep the state they were drawn under.
+
+| setter | values | default |
+| --- | --- | --- |
+| `blend(b)` | `.alpha`, `.add`, `.multiply`, `.premultiplied`, `.screen` (1, 1 − source color: lightens, never past white), `.none` (no blending: color and alpha replace what is there) | `.alpha` |
+| `depth_test(t)` | `.off`, `.nearer`, `.nearer_or_equal`, `.farther`, `.farther_or_equal`, `.equal`, `.always` | `.off` |
+| `depth_write(on)` | whether a draw leaves its depth (only where `depth_test` is not `.off`) | `true` |
+| `cull(c)` | `.none`, `.back` (triangles whose corners go clockwise on the screen), `.front` | `.none` |
+| `color_write(on)` | whether colors are written (`false`: a depth-only pass) | `true` |
+
+```gdscript
+depth_test(.nearer_or_equal)
+depth_write(false)
+draw(water, sea, params)          # tested against the depth there, leaving none
+color_write(false)
+depth_write(true)
+draw(occluder, walls, params)     # depth only
+color_write(true)
+```
+
+`DepthTest` names the meaning, not a GL function: `.nearer` stays right whatever the depth
+range. `blend` applies to 2D shapes too; 2D shapes are always drawn with no depth test and no
+culling. `clear()` clears all of the picture whatever `color_write` and `depth_write` say;
+`clear_depth()` clears only its depth. On Vulkan, `warm_up(sh)` prepares the pipeline for the
+state selected when it is called.
+
+**What a draw sees.** In `draw` (2D, and a custom draw after `camera3d`, which is drawn at once,
+not in the 3D pass): the defaults above. Inside `draw_custom`'s `render`, the 3D pass's state:
+`blend(.none)`, `depth_test(.nearer_or_equal)`, `depth_write(true)`, `cull(.back)`,
+`color_write(true)`; with `transparent = true`, `blend(.alpha)`, `depth_write(false)` and
+`cull(.none)`; with `additive = true`, the same with `blend(.add)`. Setters called in `render`
+change it until `render` returns; the pass then sets its own again, and the game's selection
+from before the 3D is back after the pass. `render_image` draws from the defaults and gives the
+selection back. The library's own passes (meshes, shadows, the sky, post effects, 2D batches)
+set what they need. The setters do not see raw `glEnable`/`glDepthFunc`/... calls: mixing the
+two leaves either unsure of the other.
+
+## Depth targets that can be sampled
+
+`render_target(w, h, depth_texture = true)` makes a target whose depth is a texture,
+`rt.depth_texture`, sampled like any other: `sample(rt.depth_texture, uv).x` is the depth, 0
+near to 1 far. Its depth is 32-bit float everywhere (sampled nearest: WebGL does not filter
+float depth). A target made without it keeps its depth in a renderbuffer, and
+`rt.depth_texture` is an empty `Texture`.
+
+**No feedback.** A draw may not sample the color or the depth of the target it is drawing into:
+WebGL refuses it, and elsewhere what it shows is undefined. Such a draw (a `draw`, a
+`draw_instanced`, or a 2D sprite of the target's own texture) panics, on every renderer,
+saying which. To test against a scene's depth while sampling it, copy it:
+`copy_depth(from, to)` copies one target's depth into another of the same size (both made with
+`depth_texture = true`): a blit on OpenGL and WebGL, an image copy on Vulkan and Metal, a copy in
+the software renderer.
+
+```gdscript
+scene = render_target(w, h, depth_texture = true)
+fog = render_target(w, h, depth_texture = true)
+...
+draw_to(scene)
+...                                # the scene, depth tested
+draw_to(fog)
+clear()
+copy_depth(scene, fog)             # tested against the scene's depth ...
+depth_test(.nearer)
+draw(fog_sh, quad, FogParams(scene.depth_texture))     # ... while sampling it
+```
+
+**The 3D scene's depth.** With post effects on, the library draws the 3D into a picture of its
+own. `post_effects(..., scene_depth = true)` keeps that picture's depth in a texture, and
+`scene_depth()` returns it (an empty `Texture` with post effects off). A pass of the game's own
+reads it while drawing into another target (`draw_to(rt)` first: that also draws the 3D queued
+so far), not while drawing on the screen, which under post effects is that picture;
+`copy_depth(scene_depth(), rt)` gives such a pass a copy to test against.
+
 ## Asset loading and failure
 
 `load_image`, `load_png`, `load_jpeg` and `load_texture` take bytes and return an asset or

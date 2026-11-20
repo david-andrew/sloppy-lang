@@ -825,6 +825,7 @@ __shadow_size = 30.0
 __shadow_rt = RenderTarget(Texture(0, 0, 0), 0, 0)
 __shadow_vp = mat4()
 __bloom_on = false
+__scene_depth_on = false
 __post_hud = false              # (post effects on the 2D drawn after the 3D too)
 __bloom_strength = 0.6
 __bloom_threshold = 0.7
@@ -965,6 +966,7 @@ __sky_prepare = ():
     glDisable(GL_CULL_FACE)
     glDisable(GL_BLEND)
     glDepthMask(0)
+    glColorMask(1, 1, 1, 1)
     glBindFramebuffer(GL_FRAMEBUFFER, u32(__sky_rough.fbo))
     glViewport(0, 0, 128, 64)
     draw(__sky_filter_sh, __fs_tri, __SkyFilterParams(tex, 0.5))
@@ -1080,10 +1082,13 @@ shadows = (on: bool, strength: f64 = 0.8, area: f64 = 30.0):
     __shadow_size = area
 # bloom + color grading for the frame: all of a 2D game; in a 3D one, the 3D and the 2D drawn
 # before it, while 2D drawn after the 3D (a HUD, text) stays as drawn, unless include_hud
-post_effects = (bloom: f64 = 0.6, threshold: f64 = 0.7, vignette: f64 = 0.35, saturation: f64 = 1.0, tint: vec3 = vec3(1, 1, 1), include_hud: bool = false):
-    global __bloom_on, __bloom_strength, __bloom_threshold, __post_hud, __saturation, __tint, __vignette
+# scene_depth = true: the picture the 3D is drawn into keeps its depth in a texture, scene_depth(),
+# for a later pass of the game's own (fog, clouds, soft particles) drawn into another target
+post_effects = (bloom: f64 = 0.6, threshold: f64 = 0.7, vignette: f64 = 0.35, saturation: f64 = 1.0, tint: vec3 = vec3(1, 1, 1), include_hud: bool = false, scene_depth: bool = false):
+    global __bloom_on, __bloom_strength, __bloom_threshold, __post_hud, __saturation, __scene_depth_on, __tint, __vignette
     if __post_registered: pass
     __bloom_on = true
+    __scene_depth_on = scene_depth
     __post_hud = include_hud
     __bloom_strength = bloom
     __bloom_threshold = threshold
@@ -1400,6 +1405,14 @@ scene_shadow_vp = () -> mat4:
     __shadow_vp
 scene_shadow_map = () -> Texture:
     __shadow_rt.texture
+# The depth of the 3D scene drawn this frame (0 near .. 1 far, in .x), with post_effects(...,
+# scene_depth = true); an empty texture otherwise. Sample it in a pass drawn into a target of your
+# own (not while drawing into the scene, the screen under post effects: copy_depth(scene_depth(),
+# rt) gives a pass there a copy to test against).
+scene_depth = () -> Texture:
+    if not __bloom_on or not __scene_depth_on: return Texture(0, 0, 0)
+    __scene_rt.depth_texture
+
 scene_shadow_strength = () -> f32:
     f32(__shadow_strength) * f32(int(__shadows))
 
@@ -1494,6 +1507,9 @@ __render3d = ():
     flush()
     __clip_off()
     zone("3d")
+    # (the 3D pass sets all of the draw state it needs; the game's selection is applied again at
+    # its end)
+    glColorMask(1, 1, 1, 1)
     __sky_load()
     again = __pass_frame == __frame_count and __pass_target == __cur_target
     if not again: __casters.clear()
@@ -1520,10 +1536,12 @@ __render3d = ():
         __shadow_vp = orthographic(-s, s, -s, s, 0.1, s * 5.0) * look_at(lpos, center, vec3(0, 1, 0))
         glBindFramebuffer(GL_FRAMEBUFFER, u32(__shadow_rt.fbo))
         glViewport(0, 0, i32(__shadow_rt.texture.width), i32(__shadow_rt.texture.height))
+        glDepthMask(1)
         glClear(GL_DEPTH_BUFFER_BIT)
         glEnable(GL_DEPTH_TEST)
-        glDepthFunc(GL_LEQUAL)
+        glDepthFunc(__depth_func(.nearer_or_equal))
         glDisable(GL_BLEND)
+        glDisable(GL_CULL_FACE)
         glColorMask(0, 0, 0, 0)
         sv = __frustum(__shadow_vp)
         loop mut d in __casters: __cast_shadow(d, sv, vp)
@@ -1532,7 +1550,7 @@ __render3d = ():
         __rebind_target()
         zone_end()
     glEnable(GL_DEPTH_TEST)
-    glDepthFunc(GL_LEQUAL)
+    glDepthFunc(__depth_func(.nearer_or_equal))
     glDepthMask(1)
     if not again: glClear(GL_DEPTH_BUFFER_BIT)
     glEnable(GL_CULL_FACE)
@@ -1543,10 +1561,7 @@ __render3d = ():
     loop mut d in __draws:
         if d.has_custom:
             if d.color.w < 1.0: continue
-            d.custom()
-            glEnable(GL_DEPTH_TEST)
-            glEnable(GL_CULL_FACE)
-            glDisable(GL_BLEND)
+            __custom3d(d, (Blend.none, DepthTest.nearer_or_equal, true, Cull.back, true))
             continue
         if __transparent3d(d) or d.front or not __in_view(d, view): continue
         __drawn3d += 1
@@ -1573,12 +1588,8 @@ __render3d = ():
     if has_pbr: transparent.sort((d: Draw3D) -> f32: -length((d.model * vec4(d.mesh.center, 1)).xyz - __cam_pos))
     loop mut d in transparent:
         if d.has_custom:
-            if d.emissive > 0.0: glBlendFunc(GL_SRC_ALPHA, GL_ONE)
-            d.custom()
-            glEnable(GL_BLEND)
+            __custom3d(d, (if d.emissive > 0.0: Blend.add else: Blend.alpha, DepthTest.nearer_or_equal, false, Cull.none, true))
             glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
-            glDepthMask(0)
-            glDisable(GL_CULL_FACE)
             continue
         if not __in_view(d, view): continue
         p = __params_for(d, vp)
@@ -1599,9 +1610,7 @@ __render3d = ():
         if d.both_sides: glDisable(GL_CULL_FACE)
         __lit_draw(d, __params_for(d, vp))
         if d.both_sides: glEnable(GL_CULL_FACE)
-    glDisable(GL_CULL_FACE)
-    glDisable(GL_DEPTH_TEST)
-    __apply_blend(__blend)
+    __apply_draw_state()
     loop d in __draws:
         if d.shadow and not d.has_custom: __casters.push(d)
     __draws.clear()
@@ -1610,6 +1619,16 @@ __render3d = ():
 
 __rebind_target = ():
     __bind_current()
+
+# A draw_custom's render, with the draw state of its place in the 3D pass selected (what setters
+# called there see and change); after it, that state again for the pass, the game's selection kept.
+__custom3d = (d: Draw3D, st: (Blend, DepthTest, bool, Cull, bool)):
+    game = __draw_state()
+    __set_draw_state(st)
+    d.custom()
+    flush()
+    __set_draw_state(st)
+    __select_draw_state(game)
 
 # the six planes of what m (a view-projection) shows: (normal, distance) as vec4, inside >= 0
 __frustum = (m: mat4) -> vec4[]:
@@ -1659,12 +1678,12 @@ __post_begin = ():
     __post_init()
     w = __screen_px_w()
     h = __screen_px_h()
-    if __scene_rt.texture.width != w or __scene_rt.texture.height != h:
+    if __scene_rt.texture.width != w or __scene_rt.texture.height != h or (__scene_rt.depth_texture.id != 0) != __scene_depth_on:
         if __scene_rt.fbo != 0:
             free_render_target(__scene_rt)
             free_render_target(__bloom_a)
             free_render_target(__bloom_b)
-        __scene_rt = render_target(w, h)
+        __scene_rt = render_target(w, h, depth_texture = __scene_depth_on)
         __bloom_a = render_target(max(w / 4, 1), max(h / 4, 1))
         __bloom_b = render_target(max(w / 4, 1), max(h / 4, 1))
     draw_to(__scene_rt)
@@ -1842,6 +1861,8 @@ __post_end = ():
     zone("post")
     glDisable(GL_BLEND)
     glDisable(GL_DEPTH_TEST)
+    glDisable(GL_CULL_FACE)
+    glColorMask(1, 1, 1, 1)
     bw = __bloom_a.texture.width
     bh = __bloom_a.texture.height
     texel = vec2(1.0 / f32(bw), 1.0 / f32(bh))
@@ -1864,7 +1885,7 @@ __post_end = ():
     when TARGET != "wasm":
         if __soft: done = __sw_post_composite(p)
     if not done: __post_draw(__comp_sh, _composite_fs, p)
-    __apply_blend(__blend)
+    __apply_draw_state()
     __post_active = false
     zone_end()
 
