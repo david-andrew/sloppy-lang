@@ -26,7 +26,7 @@ and "Depth targets that can be sampled"), on all five renderers.
   for a pass of the game's own drawn into another target.
 - The software renderer has the other depth functions (greater, equal, always...), the other blend
   factors (source color, destination alpha...), and writes no depth with the depth test off, as
-  OpenGL. On Vulkan, `warm_up(sh)` applies the selected state first, also before the first frame.
+  OpenGL.
 - `tools/webtest.py` draws the new render scenes with WebGL in headless Chromium and compares them
   with their references (`tools/web_render.mjs`).
 
