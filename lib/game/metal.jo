@@ -193,6 +193,26 @@ when TARGET == "macos":
     __mg_use_heaps = (enc: *u8):
         loop h in __mg_heaps: __oc_p(enc, __sel("useHeap:"), h.heap)
 
+    # Encoders run one after another, as recorded: each waits for a fence the one before it
+    # updated. Shaders reach buffers by address, and useHeap counts as reading them, so Metal's
+    # own tracking would let a draw read a buffer a compute function before it is still writing,
+    # or a compute function's atomics start before a copy into the same buffer has finished.
+    # (two fences, taken in turn: an encoder does not wait for the one it updates)
+    __mg_fences: *u8[]
+    __mg_fence_k = 0
+    __mg_fence_wait = (enc: *u8, render: bool):
+        if __mg_fences.len() == 0:
+            loop i in [0..2): __mg_fences.push(__oc(__mg_dev, __sel("newFence")))
+        f = __mg_fences[__mg_fence_k]
+        if render: __mo_pi(enc, __sel("waitForFence:beforeStages:"), f, 3)          # vertex | fragment
+        else: __oc_p(enc, __sel("waitForFence:"), f)
+    __mg_fence_update = (enc: *u8, render: bool):
+        global __mg_fence_k
+        __mg_fence_k = 1 - __mg_fence_k
+        f = __mg_fences[__mg_fence_k]
+        if render: __mo_pi(enc, __sel("updateFence:afterStages:"), f, 3)
+        else: __oc_p(enc, __sel("updateFence:"), f)
+
     # ---------------- buffers (as vk.jo's) ----------------
     struct __VkBuffer:
         buffer: int                # the MTLBuffer
@@ -523,6 +543,7 @@ when TARGET == "macos":
     __vg_end_pass = ():
         global __mg_enc, __vg_pass
         if __vg_pass < 0: return
+        __mg_fence_update(__mg_enc, true)
         __oc(__mg_enc, __sel("endEncoding"))
         __mg_release(__mg_enc)
         __mg_enc = null
@@ -563,6 +584,7 @@ when TARGET == "macos":
         __vg_pipeline = null
         __mg_depth_state = null
         __mg_use_heaps(__mg_enc)
+        __mg_fence_wait(__mg_enc, true)
         __mo_pii(__mg_enc, __sel("setVertexBuffer:offset:atIndex:"), __mg_args, 0, 1)
         __mo_pii(__mg_enc, __sel("setFragmentBuffer:offset:atIndex:"), __mg_args, 0, 1)
 
@@ -573,8 +595,10 @@ when TARGET == "macos":
         pool = objc_autoreleasePoolPush()
         enc = __mg_keep(__oc(__vk_cb(), __sel("blitCommandEncoder")))
         objc_autoreleasePoolPop(pool)
+        __mg_fence_wait(enc, false)
         enc
     __mg_end_blit = (enc: *u8):
+        __mg_fence_update(enc, false)
         __oc(enc, __sel("endEncoding"))
         __mg_release(enc)
 
@@ -885,6 +909,7 @@ when TARGET == "macos":
         pipelines: {int: *u8}      # state key -> MTLRenderPipelineState
         tex_offs: int[]            # where its uniforms hold a Texture's id (GL name)
         outputs: int = 1           # the colors its fragment function writes
+        flat: bool = false         # it has flat outputs (drawn with __mg_reorder's indices)
 
     __vgp: __VgProg[] = [__VgProg()]
     __mg_depth_states: {int: *u8}
@@ -921,7 +946,8 @@ when TARGET == "macos":
                     n = to_int(f[3]) ?? 0
                     stride = to_int(f[4]) ?? 0
                 loop i in [0..n): offs.push(o + i * stride)
-        __vgp.push(__VgProg(__mg_function(src.vs_spirv, "sl_vs"), __mg_function(src.fs_spirv, "sl_fs"), {}, offs, max(src.outputs, 1)))
+        flat = (index_of(src.vs_spirv, ", flat]]") ?? -1) >= 0
+        __vgp.push(__VgProg(__mg_function(src.vs_spirv, "sl_vs"), __mg_function(src.fs_spirv, "sl_fs"), {}, offs, max(src.outputs, 1), flat))
         __vgp.len() - 1
 
     __vg_tex_slots = (prog: int, p: *u8):
@@ -1083,13 +1109,13 @@ when TARGET == "macos":
         __mg_set_constants(pc)
         prim = __mg_prim(mode)
         n = max(ninst, 1)
-        # (a fan: its triangles through indices of their own)
-        if mode == GL_TRIANGLE_FAN and ind == 0:
+        # (a fan, or any primitives of a program with flat outputs: through indices of their own)
+        if ind == 0 and (mode == GL_TRIANGLE_FAN or (__vgp[prog].flat and prim != 0)):
             count = nverts
             if indexed: count = nidx
-            fb, fo = __mg_fan(ibo, indexed, count)
+            fb, fo, fn = __mg_reorder(mode, ibo, indexed, count)
             if fb == null: return
-            __mo_iiipii(__mg_enc, __sel("drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:"), 3, max(count - 2, 0) * 3, 1, fb, fo, n)
+            __mo_iiipii(__mg_enc, __sel("drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:"), if __mg_class(prim) == 1: 1 else: 3, fn, 1, fb, fo, n)
             return
         if ind != 0:
             if ndraws <= 0: return
@@ -1106,25 +1132,44 @@ when TARGET == "macos":
             __mo_iiipii(__mg_enc, __sel("drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:"), prim, nidx, 1, ib, io, n)
         else: __mo_iiii(__mg_enc, __sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), prim, 0, nverts, n)
 
-    # the indices of a fan's triangles, in this frame's upload memory: (buffer, offset)
-    __mg_fan = (ibo: int, indexed: bool, count: int) -> (*u8, int):
-        if count < 3: return (null, 0)
+    # The indices of a draw's lines or triangles as a list, each primitive's last vertex first, in
+    # this frame's upload memory: (buffer, offset, count). Metal takes flat outputs from a
+    # primitive's first vertex, GL (and Vulkan with VK_EXT_provoking_vertex) from its last; the
+    # vertices turned round keep a triangle's winding. Fans become lists here too.
+    __mg_reorder = (mode: int, ibo: int, indexed: bool, count: int) -> (*u8, int, int):
         src: *u32 = null
         if indexed:
             if __vgb[ibo].frame >= 0: src = (__vk_blocks[__vgb[ibo].block].ptr + __vgb[ibo].off) as *u32
             else: src = __vgb[ibo].buf.ptr as *u32
+        at = (i: int) -> u32: if src != null: src[i] else: u32(i)
         idx: u32[]
-        loop i in [1..count - 1):
-            if src != null:
-                idx.push(src[0])
-                idx.push(src[i])
-                idx.push(src[i + 1])
-            else:
-                idx.push(0)
-                idx.push(u32(i))
-                idx.push(u32(i + 1))
+        if mode == GL_TRIANGLE_FAN:
+            loop i in [1..count - 1):
+                idx.push(at(i + 1))
+                idx.push(at(0))
+                idx.push(at(i))
+        else if mode == GL_TRIANGLE_STRIP:
+            # (GL's odd triangles are i + 1, i, i + 2)
+            loop i in [0..count - 2):
+                idx.push(at(i + 2))
+                idx.push(at(i + (i & 1)))
+                idx.push(at(i + 1 - (i & 1)))
+        else if mode == GL_LINES:
+            loop i in [0..count / 2):
+                idx.push(at(2 * i + 1))
+                idx.push(at(2 * i))
+        else if mode == GL_LINE_STRIP:
+            loop i in [0..count - 1):
+                idx.push(at(i + 1))
+                idx.push(at(i))
+        else:
+            loop i in [0..count / 3):
+                idx.push(at(3 * i + 2))
+                idx.push(at(3 * i))
+                idx.push(at(3 * i + 1))
+        if idx.len() == 0: return (null, 0, 0)
         blk, off = __vk_upload(data(idx) as *u8, idx.len() * 4)
-        (__vk_blocks[blk].buffer as *u8, off)
+        (__vk_blocks[blk].buffer as *u8, off, idx.len())
 
     # indices 0, 1, 2... (at least n), for indirect draws of meshes without indices
     __vg_seq = __VkBuffer()
@@ -1147,6 +1192,10 @@ when TARGET == "macos":
         pc = __VgPush(params = __vk_addr(blk, off), verts = verts, vstride = i32(stride), depth = i32(int(__depth_reversed)))
         if not __vg_prepare(prog, GL_TRIANGLES): return
         __mg_set_constants(pc)
+        if __vgp[prog].flat:
+            fb, fo, fn = __mg_reorder(GL_TRIANGLES, 0, false, nverts)
+            if fb != null: __mo_iiipii(__mg_enc, __sel("drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:"), 3, fn, 1, fb, fo, 1)
+            return
         __mo_iiii(__mg_enc, __sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), 3, 0, nverts, 1)
 
     # ---------------- compute ----------------
@@ -1169,6 +1218,7 @@ when TARGET == "macos":
         enc = __mg_keep(__oc(__vk_cb(), __sel("computeCommandEncoder")))
         objc_autoreleasePoolPop(pool)
         __mg_use_heaps(enc)
+        __mg_fence_wait(enc, false)
         __oc_p(enc, __sel("setComputePipelineState:"), pl as *u8)
         pc = __VgPush(params = __vk_addr(blk, off), vstride = i32(count), istride = i32(count2))
         # (a 3D grid's depth after the flip, as compiler/msl.jo's SlPC has it)
@@ -1186,6 +1236,7 @@ when TARGET == "macos":
             threads = [count, count2, 1]
             group = [8, 8, 1]
         __oc_pp(enc, __sel("dispatchThreads:threadsPerThreadgroup:"), data(threads) as *u8, data(group) as *u8)
+        __mg_fence_update(enc, false)
         __oc(enc, __sel("endEncoding"))
         __mg_release(enc)
 
