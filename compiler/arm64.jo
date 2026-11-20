@@ -601,6 +601,12 @@ a_on_stack = (ins: Ins, k: int) -> bool:
     ci = ccall_of(ins)
     ci >= 0 and ir.ccalls[ci].stack & (1 << k) != 0
 
+# (bytes argument k of a C call takes on the stack: 8, or its size where Apple packs them)
+a_stack_size = (ins: Ins, k: int) -> int:
+    ci = ccall_of(ins)
+    if ci < 0 or k >= ir.ccalls[ci].ssz.len() or ir.ccalls[ci].ssz[k] == 0: return 8
+    ir.ccalls[ci].ssz[k]
+
 a_call_args = (ins: Ins):
     start = int(ins.a)
     n = int(ins.b)
@@ -611,28 +617,39 @@ a_call_args = (ins: Ins):
         v = int(ir.args[start + k])
         ty = vtype(v)
         if a_on_stack(ins, k):
+            sz = a_stack_size(ins, k)
+            ns = align_up(ns, sz)
+            if sz < 8:
+                if ty == VI:
+                    a_ld(9, v)
+                    a_mem(false, 9, A_SP, ns, sz, false, false)
+                else:
+                    a_lds(16, v, ty)
+                    a_mem(false, 16, A_SP, ns, sz, false, true)
+                ns += sz
+                continue
             if ty == VI: a_ld(9, v)
             else:
                 a_lds(16, v, ty)
                 w32(0x9E660209)                                 # fmov x9, d16
-            a_str(9, A_SP, 8 * ns)
-            ns += 1
+            a_str(9, A_SP, ns)
+            ns += 8
         else if ty == VI:
             if ni < 8:
                 a_ld(ni, v)
                 ni += 1
             else:
                 a_ld(9, v)
-                a_str(9, A_SP, 8 * ns)
-                ns += 1
+                a_str(9, A_SP, ns)
+                ns += 8
         else:
             if nf < 8:
                 a_lds(nf, v, ty)
                 nf += 1
             else:
                 a_lds(16, v, ty)
-                a_mem(false, 16, A_SP, 8 * ns, 8, false, true)
-                ns += 1
+                a_mem(false, 16, A_SP, ns, 8, false, true)
+                ns += 8
 
 # a struct C gave back in registers (x0, x1 or v0-v3), into its slot
 a_struct_result = (cc: CCall):
