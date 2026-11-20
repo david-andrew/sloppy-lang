@@ -25,6 +25,12 @@ Fixes:
   `w` wrong from the copy, so logarithmic depth from `i.pos.w` hid what was near. Only fragment
   shaders that read the position change; a stage that makes a value of the input's type or
   writes its position keeps the copy.
+- The compiler refuses a standard library of another version than its own, saying what to do
+  (rebuild with `tools/bootstrap.sh`, or point `SLOPPY_LIB` at the matching library): a 0.38.4
+  compiler reading 0.40.0's library built programs that came out quietly wrong. `lib/VERSION`
+  holds the library's version; `tools/bumpversion.py X.Y.Z` sets it and `SLOPPY_VERSION` together
+  (docs/RELEASING.md), and `tools/versioncheck.py` (in CI and the release) checks they agree.
+  `sloppy --version` and `sloppy upgrade` still work with a mismatched library.
 
 ## 0.40.0
 

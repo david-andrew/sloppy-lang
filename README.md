@@ -156,7 +156,8 @@ bin/sloppy check file.jo        # type check only
 bin/sloppy fmt compiler lib     # lay out the code (the tests check these are laid out so)
 ```
 
-`bin/sloppy` finds the standard library in `lib/` next to its own directory (or `$SLOPPY_LIB`).
+`bin/sloppy` finds the standard library in `lib/` next to its own directory (or `$SLOPPY_LIB`),
+and refuses one of another version than its own (`lib/VERSION`): rebuild with `tools/bootstrap.sh`.
 Working on the compiler itself: [docs/COMPILER.md](docs/COMPILER.md).
 
 **In the browser:** `tools/playground.py` builds `build/playground.html`, one self-contained

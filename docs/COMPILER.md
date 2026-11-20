@@ -11,9 +11,13 @@ tools/bootstrap.sh       # stage0 (C) -> sloppy1 -> sloppy2 -> sloppy3; sloppy2 
 bin/sloppy build compiler/main.jo -o bin/sloppy.new && mv bin/sloppy.new bin/sloppy   # after a change
 ```
 
-In a checkout, `bin/sloppy` must be at least as new as `lib/`: after pulling, a library that uses
-something newer than an old `bin/sloppy` provides (an unknown name such as `PROGRAM_BUILD_ID`)
-is fixed by running `tools/bootstrap.sh` once. Released builds always ship the two together.
+The compiler and its library are one version: `lib/VERSION` holds the library's, and the compiler
+refuses a library whose version is not its own `SLOPPY_VERSION` (a compiler of another version
+reading it builds programs that come out quietly wrong). In a checkout, after a pull that changed
+the version, run `tools/bootstrap.sh` once; between versions `bin/sloppy` must still be at least
+as new as `lib/` (a library using something newer than an old `bin/sloppy` provides, such as
+`PROGRAM_BUILD_ID`, is fixed the same way). Released builds always ship the two together.
+`tools/bumpversion.py` changes both versions (docs/RELEASING.md).
 
 Rebuild `bin/sloppy` after changing the compiler (the tests use it), and run the bootstrap
 before committing: the compiler's own code must stay within what `stage0` understands (for

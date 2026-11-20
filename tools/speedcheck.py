@@ -112,6 +112,8 @@ with open(os.path.join(tmp, "game.jo"), "w") as f: f.write('window("t", 320, 200
 # and what they hold was not in it)
 cmp_lib = os.path.join(tmp, "base-lib-cmp")
 shutil.copytree(old_lib, cmp_lib)
+# (this compiler refuses a library of another version: the earlier one measured as if it were its own)
+shutil.copy(os.path.join(root, "lib", "VERSION"), os.path.join(cmp_lib, "VERSION"))
 for d, _, fs in os.walk(os.path.join(root, "lib")):
     for fn in fs:
         rel = os.path.relpath(os.path.join(d, fn), os.path.join(root, "lib"))

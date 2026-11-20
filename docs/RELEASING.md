@@ -1,8 +1,11 @@
 # Releasing
 
-1. Bump `SLOPPY_VERSION` in `compiler/main.jo` (and `version` in `editors/vscode/package.json`
-   when the extension changed: the stores skip a version they already have), add the version's
-   section to `CHANGELOG.md` (it becomes the release notes), commit, push.
+1. `tools/bumpversion.py X.Y.Z`: it sets `SLOPPY_VERSION` in `compiler/main.jo` and `lib/VERSION`
+   together (a compiler refuses a library of another version; `tools/versioncheck.py`, in CI,
+   checks they agree) and puts `CHANGELOG.md`'s Unreleased entries under the version's heading
+   (they become the release notes). Bump `version` in `editors/vscode/package.json` too when the
+   extension changed (the stores skip a version they already have). Rebuild with
+   `tools/bootstrap.sh`, commit, push.
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 `.github/workflows/release.yml` then builds and tests everything, makes the GitHub release

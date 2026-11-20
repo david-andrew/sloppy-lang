@@ -14,6 +14,11 @@ root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 out = os.path.join(root, "build", "release")
 sloppy = os.path.join(root, "bin", "sloppy")
 version = subprocess.run([sloppy, "--version"], capture_output=True, text=True, check=True).stdout.split()[-1]
+# (the library packaged with it must be its own: the compiler refuses another's)
+sys.path.insert(0, os.path.join(root, "tools"))
+from versioncheck import versions
+if versions() != (version, version):
+    sys.exit(f"bin/sloppy is {version}; compiler/main.jo and lib/VERSION say {versions()}: run tools/versioncheck.py, rebuild with tools/bootstrap.sh")
 if "--tag" in sys.argv:
     tag = sys.argv[sys.argv.index("--tag") + 1]
     if tag != "v" + version:
