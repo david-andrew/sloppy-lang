@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.42.1
+
 - A draw (`draw`, `draw_instanced`, `draw_indirect`) with a `Shader` that was never made panics,
   saying so. That is an empty `Shader`: a variable of that type not yet given `make_shader`'s
   result. Every renderer used to draw nothing, so what showed was whatever lay under it.
