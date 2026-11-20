@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A draw (`draw`, `draw_instanced`, `draw_indirect`) with a `Shader` that was never made panics,
+  saying so. That is an empty `Shader`: a variable of that type not yet given `make_shader`'s
+  result. Every renderer used to draw nothing, so what showed was whatever lay under it.
+  Aegean Skies' island came out white and flat at sea level with Surf and the wind study both
+  on. Its ground's shader was made only on another path, so the ground was never drawn, on the
+  software renderer, OpenGL and Vulkan alike.
+
 ## 0.42.0
 
 First runs on a real Mac (Apple M5 Pro): every game and render scene now draws its reference
