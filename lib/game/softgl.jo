@@ -298,10 +298,12 @@ __sp_out: int[] = [0]
 __sp_args: int[] = [0]
 __sp_flat: str[] = [""]
 __sp_discard: bool[] = [false]       # the fragment shader may discard()
+__sp_fdepth: bool[] = [false]        # the fragment shader may set_depth()
 __sp_ids: bool[] = [false]           # the vertex shader asks for vertex_id() / instance_id()
 
-# per thread (by __tid()): the vertex and instance being shaded, and whether the fragment being
-# shaded was discarded (what vertex_id(), instance_id() and discard() read and write on the CPU)
+# per thread (by __tid()): the vertex and instance being shaded, whether the fragment being
+# shaded was discarded and its depth (an f32: what vertex_id(), instance_id(), discard() and
+# set_depth() read and write on the CPU)
 __sw_tls: *int = null
 
 __sw_tls_init = ():
@@ -346,7 +348,7 @@ sgl_clear = (mask: u32):
         cc = __s_clear
         __sw_fill(__st[c].p, __st[c].w * __st[c].h, cc)
     if mask & u32(GL_DEPTH_BUFFER_BIT) != 0 and d > 0:
-        __sw_fill(__st[d].p, __st[d].w * __st[d].h, vec4(1, 0, 0, 0))
+        __sw_fill(__st[d].p, __st[d].w * __st[d].h, vec4(if __depth_reversed: 0.0 else: 1.0, 0, 0, 0))
 
 # n pixels at p set to c (the first one, then copies of what is set, doubling)
 __sw_fill = (p: *f32, n: int, c: vec4):
@@ -518,6 +520,7 @@ sgl_create_program = () -> int:
     __sp_args.push(0)
     __sp_flat.push("")
     __sp_discard.push(false)
+    __sp_fdepth.push(false)
     __sp_ids.push(false)
     __sp_vs.len() - 1
 
@@ -531,6 +534,7 @@ __sw_program_info = (prog: int, src: ShaderSource):
     __sp_flat[prog] = src.flat
     # (the GLSL is the compiler's: these are only there when the shader functions use them)
     __sp_discard[prog] = (index_of(src.fs, "discard;") ?? -1) >= 0
+    __sp_fdepth[prog] = (index_of(src.fs, "gl_FragDepth") ?? -1) >= 0
     __sp_ids[prog] = (index_of(src.vs, "gl_VertexID") ?? -1) >= 0 or (index_of(src.vs, "gl_InstanceID") ?? -1) >= 0
     __sw_tls_init()
 
@@ -1012,8 +1016,9 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             __sw_project(o, pvp + g * pstride, nf, vx, vy, vw, vh, fp)
     )
     __par_serial = false
-    # triangles, clipped against the near plane z >= -w where needed
+    # triangles, clipped against the near plane z >= -w where needed (reversed depth: z <= w)
     __sw_mesh_tris.clear()
+    zs: f32 = if __depth_reversed: -1.0 else: 1.0
     loop inst in [0..reps):
         base = inst * nverts
         loop t in [0..ntri):
@@ -1048,9 +1053,9 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             i0 += base
             i1 += base
             i2 += base
-            d0 = clp[i0 * nf + 2] + clp[i0 * nf + 3]
-            d1 = clp[i1 * nf + 2] + clp[i1 * nf + 3]
-            d2 = clp[i2 * nf + 2] + clp[i2 * nf + 3]
+            d0 = clp[i0 * nf + 3] + clp[i0 * nf + 2] * zs
+            d1 = clp[i1 * nf + 3] + clp[i1 * nf + 2] * zs
+            d2 = clp[i2 * nf + 3] + clp[i2 * nf + 2] * zs
             if d0 >= 0.0 and d1 >= 0.0 and d2 >= 0.0:
                 __sw_mesh_tris.push(i32(i0))
                 __sw_mesh_tris.push(i32(i1))
@@ -1065,7 +1070,9 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     # a shader that may discard runs before the depth write, also when no color is written
     # (alpha-tested leaves in a shadow map)
     disc = __sp_discard[prog]
-    shade = color or disc
+    # (one that writes its depth: shaded first, then tested and written with what it wrote)
+    late = __sp_fdepth[prog]
+    shade = color or disc or late
     # (with mipmaps about: what the sampler needs to choose a level, kept per thread)
     mips = __sw_any_mips and shade
     # per band scratch (padded to separate cache lines): varyings at the span start, their
@@ -1109,7 +1116,7 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
                 sd[f] = d0 * a[4 + f] + d1 * b[4 + f] + d2 * c2[4 + f]
                 f += 1
         mine = tls
-        if disc: mine = tls + __tid() * 8
+        if disc or late: mine = tls + __tid() * 8
         dk = dcf
         if mips:
             # the change of the barycentric weights to the next row, of 1/w, of the varyings
@@ -1140,8 +1147,8 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             k = f32(x - xa)
             z = z0 + dz * k
             pix = row + x
-            if dtest and not __depth_ok(z, dp[pix * 4]): continue
-            if not disc:
+            if dtest and not late and not __depth_ok(z, dp[pix * 4]): continue
+            if not disc and not late:
                 if dwrite: dp[pix * 4] = z
                 if not color: continue
             iw = w0 + dw * k
@@ -1162,12 +1169,16 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             vin[2] = z
             vin[3] = iw
             if disc: mine[2] = 0
+            if late: ((mine + 3) as *f32)[0] = z
             when TARGET == "windows":
                 __call_raw(fsp, col as *u8, vin as *u8, uni)
             else:
                 fs(col as *u8, vin as *u8, uni)
-            if disc:
-                if mine[2] != 0: continue
+            if disc or late:
+                if disc and mine[2] != 0: continue
+                if late:
+                    z = clamp(((mine + 3) as *f32)[0], 0.0, 1.0)
+                    if dtest and not __depth_ok(z, dp[pix * 4]): continue
                 if dwrite: dp[pix * 4] = z
                 if not color: continue
             __sw_put(cp + pix * 4, vec4(col[0], col[1], col[2], col[3]))
@@ -1181,7 +1192,7 @@ __sw_project = (q: *f32, o: *f32, nf: int, vx: f64, vy: f64, vw: f64, vh: f64, f
     if w != 0.0: iw = 1.0 / w
     o[0] = f32(vx + (f64(q[0] * iw) * 0.5 + 0.5) * vw)
     o[1] = f32(vy + (f64(q[1] * iw) * 0.5 + 0.5) * vh)
-    o[2] = q[2] * iw * 0.5 + 0.5
+    o[2] = if __depth_reversed: q[2] * iw else: q[2] * iw * 0.5 + 0.5
     o[3] = iw
     # The first vec4 is supplied as FragCoord, never as a perspective varying.
     if flat == null:

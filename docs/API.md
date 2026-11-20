@@ -3613,6 +3613,7 @@ Vector and matrix math for the built-in vec2/vec3/vec4/mat4 types (f32 component
 - `rotation_z = (a: f64) -> mat4`
 - `facing = (dir: vec3, up: vec3 = vec3(0, 1, 0)) -> mat4`: the turn that points a model's front (-z, the way a camera looks) along dir, its top toward up: a turret aimed at its target, a beam from a to b (`translation(a) * facing(b - a)`)
 - `perspective = (fov_y: f64, aspect: f64, near: f64, far: f64) -> mat4`
+- `perspective_reversed = (fov_y: f64, aspect: f64, near: f64) -> mat4`: an infinite reversed perspective, for reversed depth (reversed_depth): clip z is near and w the distance along the view, so the depth (z / w) is near / distance: 1 at the near plane, going to 0 far away, and exact at any distance (no far plane: nothing is cut off behind)
 - `orthographic = (left: f64, right: f64, bottom: f64, top: f64, near: f64, far: f64) -> mat4`
 - `look_at = (eye: vec3, target: vec3, up: vec3) -> mat4`
 - `transpose = (m: mat4) -> mat4`
@@ -4339,7 +4340,7 @@ m = mesh(vertices)
 draw(prog, m, Params(mvp))
 ```
 
-Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of them (`bones: mat4[64]`, `lights: vec4[8]`), and GPU buffers (gpubuffer.jo: `u.particles[i]`). Shader code can use fixed-size arrays, `loop` over them, and sample(), sample_lod(), texel(), texture_size(), discard() (fragment) and vertex_id(), instance_id() (vertex).
+Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of them (`bones: mat4[64]`, `lights: vec4[8]`), and GPU buffers (gpubuffer.jo: `u.particles[i]`). Shader code can use fixed-size arrays, `loop` over them, and sample(), sample_lod(), texel(), texture_size(), discard() and set_depth() (fragment) and vertex_id(), instance_id() (vertex).
 
 - `struct ShaderSource`: produced by the compiler from shader(vs, fs)
   ```gdscript
@@ -4429,6 +4430,9 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
 - `texel = (t: Texture, p: ivec2) -> vec4`: the texel at integer coordinates p (0 to size - 1; y = 0 is the first row of the image data): no filtering or wrapping (maps to GLSL texelFetch)
 - `texture_size = (t: Texture) -> ivec2`: a texture's size in texels (maps to GLSL textureSize)
 - `discard = ()`: in a fragment shader: drop this fragment (no color, no depth), e.g. for alpha-tested leaves: `if c.a < 0.5: discard()`. The rest of the function still runs on the CPU; its result is unused.
+- `set_depth = (d: f32)`: in a fragment shader: write this fragment's depth (0 to 1; under reversed_depth, 1 is near) instead of the interpolated one, e.g. logarithmic depth for a view of hundreds of kilometres: `set_depth(log2(1.0 + 1.0 / i.pos.w) * k)` (i.pos.w is 1/w: 1 over the distance along the view). A path that does not call it keeps the interpolated depth (i.pos.z). A shader that calls it loses the GPU's early depth test: its fragments are all shaded before being tested.
+- `reversed_depth = (on: bool = true) -> bool`: Reversed depth: depth 1 near and 0 at an infinitely far plane, in float, so that a kilometre and a millimetre are told apart at a million metres (with the usual depth everything past a few kilometres is one depth). Returns whether it is on: false where this renderer has no way to do it (OpenGL without glClipControl, a browser without EXT_clip_control), and then nothing changed. Turn it on once, before the first frame (it opens the window if none is open yet). With it: depth is cleared to 0; the depth test's "nearer" is GL's GREATER (glDepthFunc(GL_LESS) gives GREATER, GL_LEQUAL GEQUAL); 3D's camera is an infinite reversed perspective (perspective_reversed: clip z is near, always, and w the distance); a vertex shader's clip z goes to the depth unit as it is, from 0 (far) to w (near), not -w to w. Shadow maps keep the usual depth. A sky or backdrop at the far plane: clip z far_depth() * w.
+- `far_depth = () -> f32`: the clip z / w of the far plane with the depth drawn with now: 0.9999 (just inside it), or 0 with reversed depth (the infinitely far plane). For a sky or backdrop behind everything, drawn with the depth test nearer-or-equal (GL_LEQUAL): pass it in the uniforms and write `vec4(p.xy, u.far, 1)` as the clip position.
 - `vertex_id = () -> int`: in a vertex shader: the index of the vertex being shaded (GLSL gl_VertexID) and of the instance (gl_InstanceID: 0 for draw, the index into the instances for draw_instanced)
 - `instance_id = () -> int`
 - `fwidth = (x: f32) -> f32`: in a fragment shader: how much x changes from one pixel to the next (GLSL fwidth), e.g. for edges that stay sharp at any size; 0 on the CPU

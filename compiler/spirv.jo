@@ -3,13 +3,14 @@
 #
 # What a module expects (lib/game/vk.jo provides it):
 #   push constants   params, vertices, instances: buffer addresses; vertex and instance strides;
-#                    flip: 0, or the height of the window when drawing to it (y is turned over)
+#                    flip: 0, or the height of the window when drawing to it (y is turned over);
+#                    depth: not 0 under reversed depth (z is then 0 to 1 already: see sv_vertex)
 #   set 0 binding 0  every texture (combined image samplers); a Texture is its index (Texture.id)
 # There is no vertex input state: the vertex function's input is read from the vertex buffer at
 # vertex_id() (and the instance's at instance_id()). The uniforms are read in place from the bytes
 # of the CPU's struct, so a value of the uniforms' type is an address, not a copy: a large array
 # (bones: vec4[192]) is read an element at a time. Clip space is OpenGL's: z goes from -1 to 1 (made
-# 0 to 1 here), and a frame drawn to a texture has row 0 at y = -1. A GpuBuffer is its address and
+# 0 to 1 here; under reversed depth from 0 to 1, passed on), and a frame drawn to a texture has row 0 at y = -1. A GpuBuffer is its address and
 # length; its elements are laid out as the CPU lays them out, read and written a word at a time.
 
 use 'util.jo'
@@ -27,7 +28,8 @@ const SV_PC_INSTS = 2
 const SV_PC_VSTRIDE = 3
 const SV_PC_ISTRIDE = 4
 const SV_PC_FLIP = 5
-const SV_PC_DEPTH = 6        # (compute programs over a 3D grid: its depth, in the padding)
+const SV_PC_DEPTH = 6        # (compute programs over a 3D grid: its depth, in the padding; draws:
+                             # not 0 for reversed depth, z then passed on as it is)
 
 sv_group = [64, 1, 1]        # the workgroup's size (x, y, z) of the compute program being made
 
@@ -64,6 +66,7 @@ sv_pc = 0                      # global variables, made when first used
 sv_textures = 0
 sv_vid = 0
 sv_iid = 0
+sv_fdepth = 0                  # the fragment's depth (FragDepth), when set_depth writes it
 
 # the function being translated
 sv_body: int[]
@@ -1200,7 +1203,7 @@ sv_std_ops: {str: (int, int)} = {
 }
 
 sv_call = (e: int) -> int:
-    global sv_dead
+    global sv_dead, sv_fdepth
     t = prune(ntype(e))
     pos = nodes[e].pos
     aux = int(nodes[e].aux)
@@ -1223,6 +1226,12 @@ sv_call = (e: int) -> int:
             if sv_stage != "fragment": sv_err(pos, "discard() can only be used in the fragment shader")
             sv_code(252, [])
             sv_dead = true
+            return 0
+        if nm == "set_depth":
+            if sv_stage != "fragment": sv_err(pos, "set_depth() can only be used in the fragment shader")
+            d = sv_expr(kid(e, 0))
+            if sv_fdepth == 0: sv_fdepth = sv_builtin_var(sv_f32(), SC_OUTPUT, 22)
+            sv_store(sv_fdepth, d)
             return 0
         if nm == "vertex_id" or nm == "instance_id":
             if sv_stage != "vertex": sv_err(pos, "{nm}() can only be used in the vertex shader")
@@ -1560,7 +1569,8 @@ sv_subgroup = (e: int, nm: str) -> int:
 
 # ---------------- the stages ----------------
 sv_reset = (stage: str):
-    global sv_bound, sv_cache, sv_caps, sv_dec, sv_fn_ids, sv_fns, sv_glob, sv_group, sv_iface, sv_iid, sv_pc, sv_pending, sv_stage, sv_std, sv_textures, sv_vid
+    global sv_bound, sv_cache, sv_caps, sv_dec, sv_fdepth, sv_fn_ids, sv_fns, sv_glob, sv_group, sv_iface, sv_iid, sv_pc, sv_pending, sv_stage, sv_std, sv_textures, sv_vid
+    sv_fdepth = 0
     sv_bound = 0
     sv_caps = []
     sv_dec = []
@@ -1603,6 +1613,8 @@ sv_module = (model: int, main: int) -> str:
     loop v in sv_iface: ep.push(v)
     sv_ins(w, 15, ep)
     if model == 4: sv_ins(w, 16, [main, 7])
+    # (DepthReplacing: the shader writes its depth, set_depth)
+    if model == 4 and sv_fdepth != 0: sv_ins(w, 16, [main, 12])
     if model == 5: sv_ins(w, 16, [main, 17, sv_group[0], sv_group[1], sv_group[2]])
     loop x in sv_dec: w.push(x)
     loop x in sv_glob: w.push(x)
@@ -1713,7 +1725,10 @@ sv_vertex = (vsf: int) -> str:
     w = sv_val(81, f, [p, 3])
     flip = sv_val(186, sv_bool(), [sv_pc_get(SV_PC_FLIP), sv_cf(0.0)])
     y = sv_val(169, f, [flip, sv_val(127, f, [y]), y])
-    z = sv_val(133, f, [sv_val(129, f, [z, w]), sv_cf(0.5)])
+    # (reversed depth, the push constants' depth word not 0: z is already 0..1, passed on as it
+    # is: no (z + w) / 2, which loses everything near w at a million metres)
+    rev = sv_val(171, sv_bool(), [sv_pc_get(SV_PC_DEPTH), sv_ci(0)])
+    z = sv_val(169, f, [rev, z, sv_val(133, f, [sv_val(129, f, [z, w]), sv_cf(0.5)])])
     sv_store(out_pos, sv_val(80, sv_vecf(4), [x, y, z, w]))
     loop i in 0.. and lf in leaves:
         ex: int[] = [sv_type(lf.1, pos), sv_new(), o]
@@ -1758,6 +1773,8 @@ sv_fragment = (fsf: int) -> str:
     parts: int[] = [fc]
     loop i in [1..int(structs[si].nfields)): parts.push(sv_rebuild(int(fields[int(structs[si].fields) + i].type), [i], leaves, vals, pos))
     inv = sv_val(80, sv_type(itype, pos), parts)
+    # (a shader that writes its depth starts from the interpolated one, as glsl.jo's does)
+    if sv_fdepth != 0: sv_store(sv_fdepth, sv_val(81, f, [fc, 2]))
     color = sv_val(57, sv_vecf(4), [sv_fn_id(fsf), inv, sv_pc_get(SV_PC_PARAMS)])
     sv_store(out, color)
     sv_code(253, [])

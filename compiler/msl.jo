@@ -31,6 +31,9 @@ ml_done_fns: {int: bool} = {}
 ml_pending: int[]
 ml_stage = ""                # "vertex", "fragment", "compute" or "kernel"
 ml_utype = 0                 # the uniforms' type: its values are addresses
+ml_depth_ctx = false         # the fragment stage writes its depth (set_depth): every function is
+                             # given it (sl_depth), and the entry point returns it
+ml_depth_used = false
 ml_lref: {int: str} = {}     # locals holding the uniforms (or a part): their address
 ml_temps = 0
 # (names from the shader's own code, as in glsl.jo: functions and structs numbered per stage,
@@ -739,6 +742,7 @@ ml_math_names: {str: str} = {
 }
 
 ml_call = (e: int) -> str:
+    global ml_depth_used
     t = prune(ntype(e))
     pos = nodes[e].pos
     aux = int(nodes[e].aux)
@@ -759,6 +763,10 @@ ml_call = (e: int) -> str:
         if nm == "discard":
             if ml_stage != "fragment": ml_err(pos, "discard() can only be used in the fragment shader")
             return "discard_fragment()"
+        if nm == "set_depth":
+            if ml_stage != "fragment": ml_err(pos, "set_depth() can only be used in the fragment shader")
+            ml_depth_used = true
+            return "(sl_depth = {ml_expr(kid(e, 0))})"
         if nm == "vertex_id" or nm == "instance_id":
             if ml_stage != "vertex": ml_err(pos, "{nm}() can only be used in the vertex shader")
             if nm == "vertex_id": return "int(sl_vid)"
@@ -801,10 +809,12 @@ ml_call = (e: int) -> str:
 ml_ctx_params = () -> str:
     if ml_stage == "vertex": return "constant SlTex* tx, uint sl_vid, uint sl_iid"
     if ml_stage == "compute": return "constant SlTex* tx, uint sl_sg_size, uint sl_sg_id"
+    if ml_depth_ctx: return "constant SlTex* tx, thread float& sl_depth"
     "constant SlTex* tx"
 ml_ctx_args = () -> str:
     if ml_stage == "vertex": return "tx, sl_vid, sl_iid"
     if ml_stage == "compute": return "tx, sl_sg_size, sl_sg_id"
+    if ml_depth_ctx: return "tx, sl_depth"
     "tx"
 ml_with_ctx = (ctx: str, rest: str[]) -> str:
     if rest.len() == 0: return ctx
@@ -1067,7 +1077,7 @@ ml_varyings = (otype: int, pos: int) -> ((str, int)[], str):
 
 # returns (the vertex stage's source, the fragment stage's): entry points sl_vs and sl_fs
 msl_build = (vsf: int, fsf: int) -> (str, str):
-    global ml_utype
+    global ml_utype, ml_depth_ctx, ml_depth_used
     pos = nodes[int(fns[vsf].decl)].pos
     np = fns[vsf].ptypes.len()
     vtype_ = int(fns[vsf].ptypes[0])
@@ -1087,27 +1097,42 @@ msl_build = (vsf: int, fsf: int) -> (str, str):
     args.push("pc.params")
     ofs = gl_struct_fields(otype)
     m += "    {ml_type(otype, pos)} o = {vname}(tx, sl_vid, sl_iid, {join(args, ", ")});\n"
-    # (y turned over when drawing to a texture: see the top; z from -1..1 to 0..1)
-    m += "    float4 p = o.{ofs[0].0}_;\n    SlV r;\n    r.pos = float4(p.x, pc.flip > 0.0f ? p.y : -p.y, (p.z + p.w) * 0.5f, p.w);\n"
+    # (y turned over when drawing to a texture: see the top; z from -1..1 to 0..1, or under
+    # reversed depth (pc.depth not 0) 0..1 already, passed on as it is)
+    m += "    float4 p = o.{ofs[0].0}_;\n    SlV r;\n    r.pos = float4(p.x, pc.flip > 0.0f ? p.y : -p.y, pc.depth != 0 ? p.z : (p.z + p.w) * 0.5f, p.w);\n"
     loop i in 0.. and lf in leaves: m += "    r.v{i} = o{lf.0};\n"
     m += "    return r;\n}\n"
     vs = ml_source(m)
-    # fragment
+    # fragment (translated again, every function given the depth, when it writes its depth)
+    ml_depth_ctx = false
+    ml_depth_used = false
     ml_reset("fragment")
     fnp = fns[fsf].ptypes.len()
     ml_utype = prune(int(fns[fsf].ptypes[fnp - 1]))
     ml_mem_decls()
     fname = ml_fn(fsf)
     ml_drain()
+    depth = ml_depth_used
+    if depth:
+        ml_depth_ctx = true
+        ml_reset("fragment")
+        ml_utype = prune(int(fns[fsf].ptypes[fnp - 1]))
+        ml_mem_decls()
+        fname = ml_fn(fsf)
+        ml_drain()
     itype2 = int(fns[fsf].ptypes[0])
     leaves2, vstruct2 = ml_varyings(itype2, pos)
     ifs = gl_struct_fields(itype2)
-    m = vstruct2 + "fragment float4 sl_fs(SlV in [[stage_in]], constant SlPC& pc [[buffer(0)]], constant SlTex* tx [[buffer(1)]]) \{\n"
+    if depth: m = vstruct2 + "struct SlFD \{ float4 color [[color(0)]]; float depth [[depth(any)]]; };\nfragment SlFD sl_fs(SlV in [[stage_in]], constant SlPC& pc [[buffer(0)]], constant SlTex* tx [[buffer(1)]]) \{\n"
+    else: m = vstruct2 + "fragment float4 sl_fs(SlV in [[stage_in]], constant SlPC& pc [[buffer(0)]], constant SlTex* tx [[buffer(1)]]) \{\n"
     # (OpenGL counts the window's rows from the bottom)
     m += "    float4 fc = in.pos;\n    if (pc.flip > 0.0f) fc.y = pc.flip - fc.y;\n"
     m += "    {ml_type(itype2, pos)} i = {ml_type(itype2, pos)}\{};\n    i.{ifs[0].0}_ = fc;\n"
     loop j in 0.. and lf in leaves2: m += "    i{lf.0} = in.v{j};\n"
-    m += "    return {fname}(tx, i, pc.params);\n}\n"
+    # (starting from the interpolated depth, as glsl.jo's does)
+    if depth: m += "    float sl_depth = in.pos.z;\n    SlFD sl_r;\n    sl_r.color = {fname}(tx, sl_depth, i, pc.params);\n    sl_r.depth = sl_depth;\n    return sl_r;\n}\n"
+    else: m += "    return {fname}(tx, i, pc.params);\n}\n"
+    ml_depth_ctx = false
     fs = ml_source(m)
     if let dir = env("SLOPPY_MSL_DUMP"):
         write_file("{dir}/{ml_dumped}.vs.metal", vs)

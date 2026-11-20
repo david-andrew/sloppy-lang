@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+Shader-written depth and reversed depth, for views of hundreds of kilometres without patching
+generated shaders.
+
+- `set_depth(d)` in a fragment function writes the fragment's depth (GLSL `gl_FragDepth`,
+  SPIR-V `FragDepth` with `DepthReplacing`, Metal `[[depth(any)]]`; the software renderer tests
+  and stores the value written). Only shaders that call it have a depth output, so the others
+  keep early depth tests. A path that does not call it keeps the interpolated depth. In a vertex
+  function it is a compile error. Logarithmic depth is `set_depth(log2(1.0 + 1.0 / i.pos.w) * k)`
+  (`i.pos.w` is 1/w on every renderer).
+- `reversed_depth()`: float depth cleared to 0, 1 at the near plane, `GL_LESS`/`GL_LEQUAL` made
+  GREATER/GEQUAL underneath (so the library's and the game's depth tests keep meaning nearer),
+  and clip z passed to the depth unit as it is, without the `(z + w) / 2` that lost everything at
+  a million metres. `camera3d` becomes an infinite reversed perspective
+  (`perspective_reversed(fov, aspect, near)`); shadow maps keep the usual depth; `far_depth()`
+  gives the far plane's clip z for a sky or backdrop of your own. Vulkan, Metal and the software
+  renderer have it; OpenGL where `glClipControl` exists (GL 4.5, `ARB_clip_control`,
+  `EXT_clip_control`), WebGL where the browser has `EXT_clip_control`; elsewhere it returns
+  false and changes nothing.
+- Vulkan and Metal vertex stages choose between the two z conventions with a word of the push
+  constants (a compare and a select per vertex; no extra pipelines), so their SPIR-V and Metal
+  text changed once for every shader. The GLSL of shaders that do not call `set_depth` is
+  unchanged, except the library's sky, whose far-plane depth is now a uniform.
+- docs/GRAPHICS.md: a Depth section, and why there is no `noinline` for shader functions (one
+  call site in a loop over a small array keeps one copy in the driver's program).
+
 ## 0.39.0
 
 Draw state in the API, and depth targets a later pass can sample (docs/GRAPHICS.md, "Draw state"

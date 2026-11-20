@@ -84,7 +84,40 @@ __gl_fbo = 0
 # remembers about vertex arrays set up with the old one no longer holds)
 __gl_epoch = 1
 
+# ---------------- reversed depth (reversed_depth, in gpu.jo) ----------------
+# Reversed depth: float depth, cleared to 0, 1 near; GL's LESS is then GREATER and LEQUAL GEQUAL,
+# and clip z goes from 0 (far) to w (near), straight to the depth (glClipControl's ZERO_TO_ONE;
+# Vulkan and Metal: the push constants' depth word, compiler/spirv.jo). The game turns it on
+# (__depth_reversed_on); __depth_reversed says whether the draws now use it (the library's
+# shadow maps keep the usual depth: __depth_mode around their pass). Every glDepthFunc and
+# depth clear goes through here, so the library's code and the game's follow it unchanged.
+__depth_reversed_on = false
+__depth_reversed = false
+__depth_func_gl: u32 = 0x201       # (the function last asked for, before flipping)
+
+__depth_flip = (f: u32) -> u32:
+    if not __depth_reversed: return f
+    if f == 0x201: return u32(0x204)          # LESS <-> GREATER
+    if f == 0x204: return u32(0x201)
+    if f == 0x203: return u32(0x206)          # LEQUAL <-> GEQUAL
+    if f == 0x206: return u32(0x203)
+    f
+
+# draws from now on with reversed depth (on) or the usual one: the depth function asked for is
+# applied again, flipped or not, and so is what a depth clear clears to
+__depth_mode = (on: bool):
+    global __depth_reversed
+    if on == __depth_reversed: return
+    __depth_reversed = on
+    when TARGET == "wasm": __web_depth_reversed(u32(int(on)))
+    else:
+        if not __vk and not __soft: __gl_depth_mode(on)
+        glDepthFunc(__depth_func_gl)
+
 when TARGET == "wasm":
+    # (WebGL with EXT_clip_control: lib/web/gfx.js flips the depth function and clears to 0
+    # itself; 0 when the browser does not have it)
+    extern __web_depth_reversed = (on: u32) -> u32
     # implemented by lib/web/runtime.js on top of WebGL2
     # (a uniform's floats, written here for the page to read: glUniform4f below)
     __gl_floats: f32[] = fill(f32(0), 4)
@@ -535,7 +568,10 @@ else:
             sgl_blend_func(s, d, sa, da)
             return
         __glBlendFuncSeparate(s, d, sa, da)
-    glDepthFunc = (f: u32):
+    glDepthFunc = (f0: u32):
+        global __depth_func_gl
+        __depth_func_gl = f0
+        f = __depth_flip(f0)
         if __vk:
             vgl_depth_func(f)
             return
@@ -758,7 +794,7 @@ else:
         __glBindRenderbuffer(GL_RENDERBUFFER, __screen_rb[0])
         __glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, i32(w), i32(h))
         __glBindRenderbuffer(GL_RENDERBUFFER, __screen_rb[1])
-        __glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, i32(w), i32(h))
+        __glRenderbufferStorage(GL_RENDERBUFFER, if __depth_reversed_on: u32(0x8CAC) else: GL_DEPTH_COMPONENT24, i32(w), i32(h))
         __glBindFramebuffer(GL_FRAMEBUFFER, u32(__screen_fbo))
         __glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, __screen_rb[0])
         __glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, __screen_rb[1])
@@ -817,6 +853,10 @@ else:
             return
         if __soft:
             sgl_renderbuffer_storage(w, h)
+            return
+        # (reversed depth: float depth, GL_DEPTH_COMPONENT32F)
+        if __depth_reversed_on and format == GL_DEPTH_COMPONENT24:
+            __glRenderbufferStorage(target, u32(0x8CAC), w, h)
             return
         __glRenderbufferStorage(target, format, w, h)
     glFramebufferRenderbuffer = (target: u32, attachment: u32, rbtarget: u32, rb: u32):
@@ -1013,6 +1053,9 @@ else:
         if __soft:
             sgl_tex_image(w, h, format, ty, pixels)
             return
+        if __depth_reversed_on and internal == GL_DEPTH_COMPONENT24:
+            __glTexImage2D(GL_TEXTURE_2D, 0, i32(0x8CAC), i32(w), i32(h), 0, u32(format), GL_FLOAT, pixels)
+            return
         __glTexImage2D(GL_TEXTURE_2D, 0, i32(internal), i32(w), i32(h), 0, u32(format), u32(ty), pixels)
     gl_tex_sub_image = (x: int, y: int, w: int, h: int, format: int, ty: int, pixels: *u8, size: int):
         if __vk:
@@ -1053,6 +1096,49 @@ else:
     gl_uniform4i = (loc: int, x: int, y: int, z: int, w: int):
         if __vk: return
         if not __soft: __glUniform4i(i32(loc), i32(x), i32(y), i32(z), i32(w))
+
+    # OpenGL's reversed depth: glClipControl (GL 4.5, ARB_clip_control; OpenGL ES:
+    # EXT_clip_control), null where there is none
+    @lib("libGLESv2.so.2")
+    @symbol("glClearDepthf")
+    extern __glClearDepthf = (d: f32)
+    __gl_clip_fn: cfn(u32, u32) = null
+    __gl_clip_asked = false
+    __gl_clip_control = () -> bool:
+        global __gl_clip_asked, __gl_clip_fn
+        if __gl_clip_asked: return __gl_clip_fn != null
+        __gl_clip_asked = true
+        when TARGET == "linux" or TARGET == "windows":
+            e = __glGetString(0x1F03)                                               # GL_EXTENSIONS
+            if e == null: return false
+            ext = __cstr(e)
+            p: *u8 = null
+            when TARGET == "linux":
+                if (index_of(ext, "GL_EXT_clip_control") ?? -1) >= 0: p = eglGetProcAddress(data("glClipControlEXT"))
+                else if (index_of(ext, "GL_ARB_clip_control") ?? -1) >= 0: p = eglGetProcAddress(data("glClipControl"))
+            else:
+                if (index_of(ext, "_clip_control") ?? -1) >= 0: p = __w32_gl_proc("glClipControl")
+            if p != null: __gl_clip_fn = p as cfn(u32, u32)
+        __gl_clip_fn != null
+    # (OpenGL's offscreen stand-in for the window, if there is one: made again, its depth float
+    # under reversed depth; whether it was)
+    __gl_screen_depth_again = () -> bool:
+        global __screen_w
+        if __vk or __soft or __screen_fbo == 0: return false
+        w = __screen_w
+        __screen_w = 0
+        __gl_screen_resize(w, __screen_h)
+        true
+    # (clip z from 0 to w, cleared to 0; or OpenGL's -w to w, cleared to 1)
+    __gl_depth_mode = (on: bool):
+        if not __gl_clip_control(): return
+        f = __gl_clip_fn
+        if on:
+            f(u32(0x8CA1), u32(0x935F))                     # LOWER_LEFT, ZERO_TO_ONE
+            __glClearDepthf(0.0)
+        else:
+            f(u32(0x8CA1), u32(0x935E))                     # NEGATIVE_ONE_TO_ONE
+            __glClearDepthf(1.0)
 
 # Query after opening a context. Apple's generic float GL driver needs the same
 # bounded shadow workload as our CPU renderer; accelerated GL and Metal keep theirs.

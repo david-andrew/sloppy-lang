@@ -493,13 +493,14 @@ struct _SkyParams:
     image_on: f32 = 0.0
     intensity: f32 = 1.0
     rotation: f32 = 0.0
+    far: f32 = 0.9999         # (far_depth(): the sky is at the far plane)
 
 struct _SkyOut:
     pos: vec4
     ndc: vec2
 
 _sky_vs = (v: _SkyVertex, u: _SkyParams) -> _SkyOut:
-    _SkyOut(vec4(v.pos, 0.9999, 1), v.pos)
+    _SkyOut(vec4(v.pos, u.far, 1), v.pos)
 
 # ---------------- for shaders ----------------
 # a number in [0, 1) that looks random, made from the cell a 2D point is in (its whole parts:
@@ -1520,7 +1521,7 @@ __render3d = ():
     h = __target_h
     aspect = f64(w) / f64(max(h, 1))
     __view = look_at(__cam_pos, __cam_target, __cam_up)
-    __proj3 = perspective(__fov, aspect, __near, __far)
+    __proj3 = if __depth_reversed_on: perspective_reversed(__fov, aspect, __near) else: perspective(__fov, aspect, __near, __far)
     vp = __proj3 * __view
     __pick_lights()
     # shadow pass: orthographic projection around the camera target
@@ -1534,6 +1535,7 @@ __render3d = ():
         lpos = center + __sun_dir * f32(__shadow_size * 2.0)
         s = __shadow_size
         __shadow_vp = orthographic(-s, s, -s, s, 0.1, s * 5.0) * look_at(lpos, center, vec3(0, 1, 0))
+        __depth_mode(false)                 # (the shadow map has the usual depth)
         glBindFramebuffer(GL_FRAMEBUFFER, u32(__shadow_rt.fbo))
         glViewport(0, 0, i32(__shadow_rt.texture.width), i32(__shadow_rt.texture.height))
         glDepthMask(1)
@@ -1548,6 +1550,7 @@ __render3d = ():
         loop mut d in __draws: __cast_shadow(d, sv, vp)
         glColorMask(1, 1, 1, 1)
         __rebind_target()
+        __depth_mode(__depth_reversed_on)
         zone_end()
     glEnable(GL_DEPTH_TEST)
     glDepthFunc(__depth_func(.nearer_or_equal))
@@ -1571,7 +1574,9 @@ __render3d = ():
         if d.both_sides: glEnable(GL_CULL_FACE)
     if __sky_on and not again:
         glDisable(GL_CULL_FACE)
-        sp = _SkyParams(inverse(vp), __sky_top, __sky_horizon, __ground_color, __sun_dir, __sun_color, __pass_time, f32(__stars), f32(__sun_disc), __sky_image, f32(int(__sky_image.id != 0)), f32(__sky_intensity), f32(__sky_rotation))
+        # (the sky's directions from an ordinary projection: the reversed one has no far plane)
+        sky_vp = if __depth_reversed_on: perspective(__fov, aspect, __near, __far) * __view else: vp
+        sp = _SkyParams(inverse(sky_vp), __sky_top, __sky_horizon, __ground_color, __sun_dir, __sun_color, __pass_time, f32(__stars), f32(__sun_disc), __sky_image, f32(int(__sky_image.id != 0)), f32(__sky_intensity), f32(__sky_rotation), far_depth())
         __sky_draw(sp)
     # transparent objects last, blended
     glEnable(GL_BLEND)

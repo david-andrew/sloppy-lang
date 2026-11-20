@@ -11,7 +11,7 @@
 # Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of them
 # (`bones: mat4[64]`, `lights: vec4[8]`), and GPU buffers (gpubuffer.jo: `u.particles[i]`).
 # Shader code can use fixed-size arrays, `loop` over them, and sample(), sample_lod(), texel(),
-# texture_size(), discard() (fragment) and vertex_id(), instance_id() (vertex).
+# texture_size(), discard() and set_depth() (fragment) and vertex_id(), instance_id() (vertex).
 
 # produced by the compiler from shader(vs, fs)
 struct ShaderSource:
@@ -653,6 +653,51 @@ texture_size = (t: Texture) -> ivec2:
 discard = ():
     when TARGET != "wasm":
         if __sw_tls != null: __sw_tls[__tid() * 8 + 2] = 1
+
+# in a fragment shader: write this fragment's depth (0 to 1; under reversed_depth, 1 is near)
+# instead of the interpolated one, e.g. logarithmic depth for a view of hundreds of kilometres:
+# `set_depth(log2(1.0 + 1.0 / i.pos.w) * k)` (i.pos.w is 1/w: 1 over the distance along the view).
+# A path that does not call it keeps the interpolated depth (i.pos.z). A shader that calls it
+# loses the GPU's early depth test: its fragments are all shaded before being tested.
+set_depth = (d: f32):
+    when TARGET != "wasm":
+        if __sw_tls != null: ((__sw_tls + (__tid() * 8 + 3)) as *f32)[0] = d
+
+# Reversed depth: depth 1 near and 0 at an infinitely far plane, in float, so that a kilometre
+# and a millimetre are told apart at a million metres (with the usual depth everything past a few
+# kilometres is one depth). Returns whether it is on: false where this renderer has no way to do it
+# (OpenGL without glClipControl, a browser without EXT_clip_control), and then nothing changed.
+# Turn it on once, before the first frame (it opens the window if none is open yet). With it:
+# depth is cleared to 0; the depth test's "nearer" is GL's GREATER (glDepthFunc(GL_LESS) gives
+# GREATER, GL_LEQUAL GEQUAL); 3D's camera is an infinite reversed perspective
+# (perspective_reversed: clip z is near, always, and w the distance); a vertex shader's clip z
+# goes to the depth unit as it is, from 0 (far) to w (near), not -w to w. Shadow maps keep the
+# usual depth. A sky or backdrop at the far plane: clip z far_depth() * w.
+reversed_depth = (on: bool = true) -> bool:
+    global __depth_reversed_on
+    __gfx_init_gl_only()
+    if on == __depth_reversed_on: return on
+    if on and not __depth_reversed_available(): return false
+    flush()
+    __depth_reversed_on = on
+    __depth_mode(on)
+    when TARGET != "wasm":
+        if __gl_screen_depth_again(): __bind_current()
+    on
+
+__depth_reversed_available = () -> bool:
+    when TARGET == "wasm": return __web_depth_reversed(1) != 0
+    else:
+        if __vk or __soft: return true
+        __gl_clip_control()
+
+# the clip z / w of the far plane with the depth drawn with now: 0.9999 (just inside it), or 0
+# with reversed depth (the infinitely far plane). For a sky or backdrop behind everything, drawn
+# with the depth test nearer-or-equal (GL_LEQUAL): pass it in the uniforms and write
+# `vec4(p.xy, u.far, 1)` as the clip position.
+far_depth = () -> f32:
+    if __depth_reversed: return 0.0
+    0.9999
 
 # in a vertex shader: the index of the vertex being shaded (GLSL gl_VertexID) and of the
 # instance (gl_InstanceID: 0 for draw, the index into the instances for draw_instanced)

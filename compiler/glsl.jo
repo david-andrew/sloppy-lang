@@ -37,6 +37,7 @@ gl_uniform_rows = 0
 gl_uniform_samplers = 0
 
 gl_stage = ""            # "vertex" or "fragment": the stage being translated
+gl_depth_used = false    # the fragment stage writes its depth (set_depth): gl_FragDepth
 
 # Generated names come from the shader's own code, never from the program's global numbering
 # (function, local and type indexes), so a shader's text is the same from build to build while
@@ -547,6 +548,7 @@ gl_binop = (op: Tok) -> str:
         _: "?"
 
 gl_expr = (e: int) -> str:
+    global gl_depth_used
     k = nodes[e].kind
     t = prune(ntype(e))
     path = gl_uniform_path(e)
@@ -656,7 +658,7 @@ gl_expr = (e: int) -> str:
         nm = name_of(int(nodes[decl].name))
         args: str[]
         if modules[int(nodes[decl].mod)].is_prelude:
-            if builtin_map.get(nm) != none or nm == "texel" or nm == "texture_size" or (nkids(e) > 0 and is_gpu_buffer(ntype(kid(e, 0)))):
+            if builtin_map.get(nm) != none or nm == "texel" or nm == "texture_size" or nm == "set_depth" or (nkids(e) > 0 and is_gpu_buffer(ntype(kid(e, 0)))):
                 loop i in [0..nkids(e)): args.push(gl_expr(kid(e, i)))
             if let g = builtin_map.get(nm):
                 # (abs of the smallest integer is itself, as on the CPU: GLSL's is undefined)
@@ -676,6 +678,10 @@ gl_expr = (e: int) -> str:
             if nm == "discard":
                 if gl_stage != "fragment": gl_err(nodes[e].pos, "discard() can only be used in the fragment shader")
                 return "discard"
+            if nm == "set_depth":
+                if gl_stage != "fragment": gl_err(nodes[e].pos, "set_depth() can only be used in the fragment shader")
+                gl_depth_used = true
+                return "(gl_FragDepth = {args[0]})"
             if nm == "instance_id" or nm == "vertex_id":
                 if gl_stage != "vertex": gl_err(nodes[e].pos, "{nm}() can only be used in the vertex shader")
                 # (sl_ibase: the first instance of an indirect draw, as Vulkan counts them)
@@ -952,8 +958,9 @@ gl_udesc = (t: int, prefix: str, base: int, pos: int) -> str:
 # the translation's state, for a stage (and for a new program: its type names too)
 gl_reset = (stage: str, program: bool):
     global gl_decls, gl_done, gl_done_fns, gl_done_structs, gl_stage, gl_uniform_bindings, gl_uniforms, gl_specializations, gl_uniform_rows, gl_uniform_samplers
-    global gl_type_names, gl_type_count, gl_fn_ids, gl_fn_count, gl_local_ids, gl_local_count, gl_temps
+    global gl_type_names, gl_type_count, gl_fn_ids, gl_fn_count, gl_local_ids, gl_local_count, gl_temps, gl_depth_used
     gl_decls = []
+    gl_depth_used = false
     gl_done_fns = {}
     gl_done_structs = {}
     gl_done = {}
@@ -1093,6 +1100,9 @@ glsl_build = (vsf: int, fsf: int) -> (str, str, str, str):
     fin: str[] = ["gl_FragCoord"]
     loop i in 0.. and f in ofields:
         if i > 0: fin.push("v_{f.0}")
+    # (a shader that writes its depth starts from the interpolated one, so a path that does not
+    # write it keeps it; only such a shader mentions gl_FragDepth, which turns early depth tests off)
+    if gl_depth_used: finit = "    gl_FragDepth = gl_FragCoord.z;\n" + finit
     fs += "void main() \{\n{finit}    {gl_type(otype, vpos)} i = {gl_type(otype, vpos)}({join(fin, ", ")});\n    frag_color = {fname}(i{farg});\n}\n"
     # Struct-valued leaves (GPU buffers) and stage interfaces precede global declarations.
     vs = __hoist_struct(vs)

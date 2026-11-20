@@ -520,6 +520,85 @@ programs (SPIR-V, made by the compiler). With OpenGL, WebGL or the software rend
 are CPU memory and compute functions run on all CPU cores; shaders still read the buffers.
 `gpu_compute()` tells which.
 
+## Depth
+
+The depth buffer holds, for each pixel, how far away what was drawn there is, from 0 to 1, so a
+nearer object hides a farther one whatever order they are drawn in. With the usual depth (what
+`perspective` and `camera3d` give), 0 is the near plane and 1 the far plane, and almost all of
+the precision is close to the camera: past a few kilometres everything is one depth and
+surfaces flicker through each other (z-fighting). Two ways out, for a view of hundreds of
+kilometres:
+
+**Writing the depth yourself: `set_depth(d)`.** In a fragment function, `set_depth(d)` writes the
+fragment's depth instead of the interpolated one, on every renderer (GLSL `gl_FragDepth`, SPIR-V
+`FragDepth`, Metal `[[depth(any)]]`, and the software renderer tests and stores what you wrote).
+The position field of the fragment's input is the window position: `i.pos.z` is the depth the
+GPU interpolated and `i.pos.w` is 1/w, one over the distance along the view, the same on all
+five renderers. So logarithmic depth is one line, with `k` = 1 / log2(1 + the farthest distance):
+
+```gdscript
+struct V:
+    pos: vec3
+struct U:
+    mvp: mat4
+    color: vec4
+struct O:
+    pos: vec4
+vs = (v: V, u: U) -> O: O(u.mvp * vec4(v.pos, 1))
+fs = (i: O, u: U) -> vec4:
+    set_depth(log2(1.0 + 1.0 / i.pos.w) * 0.05)      # 0.05: about 1 at 1,000 km
+    u.color
+sh = make_shader(shader(vs, fs))
+far_away = mesh([V(vec3(-9e5, -9e5, -6e5)), V(vec3(9e5, -9e5, -6e5)), V(vec3(0, 9e5, -6e5))])
+draw = ():
+    clear()
+    glEnable(GL_DEPTH_TEST)
+    glClear(GL_DEPTH_BUFFER_BIT)
+    p = perspective(1.0, f64(screen_width()) / f64(screen_height()), 0.1, 2000000.0)
+    draw(sh, far_away, U(p, vec4(0.4, 0.6, 1, 1)))
+    glDisable(GL_DEPTH_TEST)
+```
+
+A path through the function that does not call `set_depth` keeps the interpolated depth. The
+cost: a shader that writes its depth turns off the GPU's early depth test, which rejects hidden
+fragments before their fragment function runs; every fragment of every draw with it is shaded,
+then tested. Shaders that never call it keep early depth tests (the compiler emits the depth
+output only for them). Use it for the far scenery, not for everything.
+
+**Reversed depth: `reversed_depth()`.** Depth 1 at the near plane, going to 0 infinitely far
+away, in float: a float has as much relative precision near 0 as anywhere, so a kilometre is told
+apart from the next at a million metres, and a millimetre at one metre. Call it once at the
+start; it returns whether this renderer has it, and when it says false nothing changed:
+
+| renderer | reversed depth |
+|---|---|
+| Vulkan, Metal, software | always (their depth is already 32-bit float) |
+| OpenGL | with `glClipControl` (GL 4.5, `ARB_clip_control`, OpenGL ES `EXT_clip_control`); render targets' depth (and the window's, on Wayland) becomes 32-bit float; on X11 and Windows the window's own depth buffer stays what the system gives (usually 24-bit) |
+| WebGL | where the browser has `EXT_clip_control`; render targets' depth becomes float, the canvas's stays 24-bit |
+
+With it on: depth clears to 0, and `glDepthFunc(GL_LESS)` (and the library's own nearer-or-equal
+tests) mean nearer, as before: they become GREATER and GEQUAL underneath, so drawing code does
+not change. `camera3d` becomes an infinite reversed perspective (`perspective_reversed(fov, aspect,
+near)`: clip z is `near` and w the distance, nothing is cut off far away), so `draw_mesh`, models,
+particles, the sky and `scene_view_proj()` follow. The library's shadow maps keep the usual
+depth. For your own shaders the clip-space convention changes: the vertex function's clip z
+goes to the depth unit as it is, z / w from 0 (far) to 1 (near), instead of -1 to 1. A projection
+of your own uses `perspective_reversed`; a sky or backdrop at the far plane writes
+`far_depth()` (0.9999 with the usual depth, 0 with reversed depth) as its clip z with w = 1,
+passed in its uniforms. Where `reversed_depth()` says false, use `set_depth` with logarithmic
+depth (above) for the same picture: `tests/render/reversed_depth.jo` does exactly that.
+
+## Shader functions and call sites
+
+Sloppy's shader backends never inline or copy a function: a helper called from three places is
+one function in the GLSL, SPIR-V and Metal. GPU drivers do the opposite: they inline every
+call, so each call site is another copy of the helper in the final program. On desktops that is
+free, but on phones the driver's link time grows with the number of copies (a big material
+function called from four light loops is four materials to optimize). There is no `noinline`,
+deliberately: GLSL has no way to ask for it and drivers ignore SPIR-V's `DontInline`. What works
+is fewer call sites: put the inputs in a small fixed-size array and call the helper once, in a
+`loop` over it, rather than once per input.
+
 ## Linking shaders on OpenGL and WebGL
 
 On OpenGL and WebGL a shader is compiled and linked at its first draw, not when it is made:
