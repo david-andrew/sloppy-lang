@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.42.0
+
 First runs on a real Mac (Apple M5 Pro): every game and render scene now draws its reference
 frame with Apple's OpenGL, Apple's software OpenGL and Metal.
 
