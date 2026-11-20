@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.40.0
+
 Shader-written depth and reversed depth, for views of hundreds of kilometres without patching
 generated shaders.
 
