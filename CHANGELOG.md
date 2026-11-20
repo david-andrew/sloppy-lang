@@ -37,17 +37,21 @@ frame with Apple's OpenGL, Apple's software OpenGL and Metal.
   rendertest.py's GPU limit). docs/GRAPHICS.md's table says what is true: Metal is opt-in with
   `SLOPPY_METAL=1`; OpenGL 4.1 is macOS's default and never has reversed depth.
 
-- GLSL: no fragment shader reads its position through a struct holding a copy of gl_FragCoord,
-  also when it makes values of its input's type (Aegean Skies' wildlife and smoke shaders: on
-  Adreno 650 a gull was drawn in front of a nearer lamp post). 0.41.0 fell back to the copy for a
-  whole stage that made one. Now a stage that only reads its input reads every field straight from
-  its varying (`v_world`, not `i.world`) and the position as gl_FragCoord. One that makes copies
-  keeping the position (`O(i.pos, ...)`) reads every position as gl_FragCoord and the other fields
-  through the struct. Anything else (another position, a write to one) gives the struct a flag
-  that is true for the input, whose position is then gl_FragCoord. The input struct holds
-  `vec4(0.0)` for the position. Most fragment shaders' GLSL changes once (browsers link them again
-  after a deploy); vertex shaders, SPIR-V and Metal do not, nor fragment shaders that never read
-  their input.
+- GLSL: a shader reads its input where it is, never through a struct holding a copy of it. On
+  Adreno 650 (Chrome, ANGLE) such copies read wrong: Aegean Skies' terrain noise came out as a
+  radial fan, its woods vanished, and with log depth a gull drew in front of a nearer lamp post.
+  - A fragment function's fields come from their varyings (`v_world`), and its position is
+    gl_FragCoord.
+  - A vertex function's vertex comes from its attributes (`a_pos`), and its instance from
+    theirs (`i_model`).
+  - The same holds in helpers given the input, at any depth (they are specialized, as for
+    uniforms), and through a variable given the input and never changed.
+  - A struct is made only where a value is needed whole (returned, changed, a `mut` argument).
+  - A value the shader makes of the fragment input's type with the input's own position
+    (`O(i.pos, ...)`) reads its position as gl_FragCoord. One with another position carries a
+    flag instead. gl_FragCoord is never copied into a struct that is read.
+  - Almost every shader's GLSL changes once, so browsers link them again after a deploy. A stage
+    that reads none of its input is unchanged, and so are SPIR-V and Metal.
 
 ## 0.41.0
 
