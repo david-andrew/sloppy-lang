@@ -1129,16 +1129,30 @@ field_kinds = (n: int, mode: int, crafts: int) -> int[]:
             k.push(SCREW)
         loop i in 0..min(n / 12, 4): k.push(ZEPPELIN)
     k = k.filter((x): crafts & (1 << x) != 0)
-    # (a craft to fly for everyone on the side, and one more: what is allowed, more of it, the
-    # small ones first; rocketeers only when nothing else is)
-    # (the ornithopter late: not a field of them)
-    more = [FIGHTER, SCOUT, BOMBER, CARCOPTER, SCREW, DAVINCI, ORNITHOPTER, BALLOON, ULTRA, ZEPPELIN].filter((x): crafts & (1 << x) != 0)
-    if more.len() == 0: more = [ROCKETEER]
-    i = 0
-    loop k.len() < n + 1:
-        k.push(more[i % more.len()])
-        i += 1
+    # (a craft to fly for everyone on the side, and more besides: only what is allowed, more of
+    # it, the small ones first, till the seats cover the side and some to spare; never a kind
+    # that was not asked for, and the one-a-side kinds as many as it takes when they are all
+    # there is)
+    pad_field(k, n, [FIGHTER, SCOUT, BOMBER, CARCOPTER, SCREW, DAVINCI, ORNITHOPTER, BALLOON, ULTRA, ZEPPELIN, ROCKETEER, PROPPACK, CAT, CASTLE, CARRIER], crafts)
     k
+
+# (the seats a craft of this kind puts on a field: the pilot's and the guns', the castle's with its own screws)
+field_seats = (kind: int) -> int: if kind == CASTLE: seats_of(kind) else: crew_seats(kind)
+
+# (more of the kinds allowed, in turn, onto a side's field: till the seats cover its n people and a few over, and a craft
+# for each too where the kind is a small one)
+pad_field = (k: mut int[], n: int, order: int[], crafts: int):
+    more = order.filter((x): crafts & (1 << x) != 0)
+    if more.len() == 0: more = [FIGHTER]
+    seats = 0
+    loop x in k: seats += field_seats(x)
+    need = n + 1 + n / 5
+    i = 0
+    loop seats < need or (k.len() < n + 1 and field_seats(more[i % more.len()]) <= 3):
+        x = more[i % more.len()]
+        k.push(x)
+        seats += field_seats(x)
+        i += 1
 
 # (the Thunderdome's fields: the cat, rocketeers and ornithopters about half and half, and a few of
 # anything else the lobby has added; a craft for everyone and one more)
@@ -1152,12 +1166,7 @@ thunderdome_kinds = (n: int, crafts: int) -> int[]:
     k.push(CASTLE)
     k.push(CARRIER)
     k = k.filter((x): crafts & (1 << x) != 0)
-    more = [ROCKETEER, ORNITHOPTER, FIGHTER, SCOUT, CARCOPTER, SCREW, DAVINCI].filter((x): crafts & (1 << x) != 0)
-    if more.len() == 0: more = [CAT]
-    i = 0
-    loop k.len() < n + 1:
-        k.push(more[i % more.len()])
-        i += 1
+    pad_field(k, n, [ROCKETEER, ORNITHOPTER, FIGHTER, SCOUT, CARCOPTER, SCREW, DAVINCI, BOMBER, BALLOON, ULTRA, ZEPPELIN, PROPPACK, CAT, CASTLE, CARRIER], crafts)
     k
 
 # (the kinds a fight has: the lobby's choice, in the fights it applies to)
@@ -1290,9 +1299,10 @@ start_kind = (g: Game, i: int, want: int) -> int:
         if big(want) and (m == TRENCH or m == ESCORT): return FIGHTER
         # (one cat a side; one rocketeer a side, when there is anything else to fly, but in
         # the Thunderdome)
-        if want == CAT and has_cat(g, i): return fallback_kind(g)
-        if want == CASTLE and has_castle(g, i): return fallback_kind(g, CASTLE)
-        if want == CARRIER and has_kind(g, i, CARRIER): return fallback_kind(g, CARRIER)
+        # (the one-a-side kinds only where there is anything else to fly: when they are all there is, as many as the side has)
+        if want == CAT and has_cat(g, i) and others_allowed(g): return fallback_kind(g)
+        if want == CASTLE and has_castle(g, i) and others_allowed(g): return fallback_kind(g, CASTLE)
+        if want == CARRIER and has_kind(g, i, CARRIER) and others_allowed(g): return fallback_kind(g, CARRIER)
         if want == ROCKETEER and others_allowed(g) and not cat_fight(m):
             loop j in 0.. and o in g.people:
                 if j != i and o.team == i % 2 and o.kind == ROCKETEER: return fallback_kind(g)
@@ -1324,8 +1334,11 @@ start_kind = (g: Game, i: int, want: int) -> int:
 # (the first allowed of these: what one flies who chose nothing, or what is not to be had; not
 # skip)
 fallback_kind = (g: Game, skip: int = -1) -> int:
+    # (the ones a side has few of last, where there is any other)
     loop k in [FIGHTER, SCOUT, ORNITHOPTER, CARCOPTER, SCREW, DAVINCI, BOMBER, ULTRA, ZEPPELIN, BALLOON, ROCKETEER, PROPPACK, CASTLE, CARRIER, CAT]:
         if k != skip and allowed(g, k): return k
+    # (only the skipped one is allowed: that one)
+    if skip >= 0 and allowed(g, skip): return skip
     FIGHTER
 
 # (another of person i's side flies the flying castle)
@@ -1346,10 +1359,11 @@ has_cat = (g: Game, i: int) -> bool:
         if j != i and o.team == i % 2 and o.kind == CAT: return true
     false
 
-# (any kind allowed but the rocketeer)
+# (any kind allowed but the ones a side has only one of: the rocketeer, the cat, the castle and the carrier; where
+# there is none, those are what everyone flies, and there is no limit)
 others_allowed = (g: Game) -> bool:
     loop k in 0..KINDS.len():
-        if k != ROCKETEER and allowed(g, k): return true
+        if k != ROCKETEER and k != CAT and k != CASTLE and k != CARRIER and allowed(g, k): return true
     false
 
 starts_on_ground = (g: Game, team: int) -> bool:
@@ -3100,7 +3114,7 @@ choose_again = (g: mut Game, i: int, p0: Person):
 # carrier one each; the rocketeer one, where there is anything else to fly and it is not the Thunderdome's or the
 # ball fight's; every other kind none: 0 for no limit)
 kind_cap = (g: Game, k: int) -> int:
-    if k == CAT or k == CASTLE or k == CARRIER: return 1
+    if (k == CAT or k == CASTLE or k == CARRIER) and others_allowed(g): return 1
     if k == ROCKETEER and others_allowed(g) and not cat_fight(g.rules.mode): return 1
     0
 # (how many of the others of person i's side are to fly kind k: those the cap counts)
