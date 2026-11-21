@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `deflate` (and so `save_png`, screenshots and saves) could write a stream other decoders reject ("invalid distance too far back"): in the first 32 KB, the end of a hash chain was taken for a match at the byte before the input, which is 0, so data with long zero runs (dark frames after PNG filtering, about 4% of them) sometimes got a distance one past the start. Sloppy's own `inflate` refused those streams too. `tools/deflatecheck.py` now also checks 48 dark PNG-like frames with Python's zlib.
+
 ## 0.43.1
 
 - GLSL: a logical shift right is masked after it (`(uint(x) >> c) & (0xFFFFFFFFu >> c)`), also in GPU buffer reads: Adreno 650 under ANGLE shifts a uint made from a negative int arithmetically, so integer hashes (noise) of negative cells came out wrong on the phone in both stages. Division, remainder, comparison and conversion of such uints were checked right there.
