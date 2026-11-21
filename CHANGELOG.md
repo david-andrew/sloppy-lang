@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.43.1
+
 - GLSL: a logical shift right is masked after it (`(uint(x) >> c) & (0xFFFFFFFFu >> c)`), also in GPU buffer reads: Adreno 650 under ANGLE shifts a uint made from a negative int arithmetically, so integer hashes (noise) of negative cells came out wrong on the phone in both stages. Division, remainder, comparison and conversion of such uints were checked right there.
 - GLSL: an integer literal above 2147483647 is written `int(NNNu)`, not a decimal int literal too large for int.
 
