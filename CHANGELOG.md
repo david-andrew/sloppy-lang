@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.43.2
+
 - `deflate` (and so `save_png`, screenshots and saves) could write a stream other decoders reject ("invalid distance too far back"): in the first 32 KB, the end of a hash chain was taken for a match at the byte before the input, which is 0, so data with long zero runs (dark frames after PNG filtering, about 4% of them) sometimes got a distance one past the start. Sloppy's own `inflate` refused those streams too. `tools/deflatecheck.py` now also checks 48 dark PNG-like frames with Python's zlib.
 
 ## 0.43.1
