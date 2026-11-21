@@ -3091,23 +3091,17 @@ Images: RGBA8 pixel buffers, PNG decoding (with a built-in inflate; JPEG: jpeg.j
 
 #### Inflate (RFC 1951)
 
-- `struct Inflate`
+- `inflate = (src: u8[], start: int = 0) -> u8[]?`: read a raw deflate stream (as deflate writes, or zlib's after its 2-byte header: start = 2); none if it is damaged or cut short
+- `struct Inflater`: inflate a few milliseconds at a time, as a Deflater deflates: a big one (a level, a song) in the frames while the game goes on. Start it, step it each frame, and take the bytes when done:
   ```gdscript
-  struct Inflate:
-      src: u8[]
-      pos: int
-      bitbuf: int
-      bitcnt: int
-      out: u8[]
-      err: bool
+  loading = inflater(packed)                        # when loading
+  if loading.step(0.003):                           # in update: 3 ms a frame
+      song = loading.result() ?? []                 # none: the stream was damaged
   ```
-- `struct Huff`
-  ```gdscript
-  struct Huff:
-      count: int[]      # codes of each length (0..15)
-      symbol: int[]     # symbols ordered by code
-  ```
-- `inflate = (src: u8[], start: int = 0) -> u8[]?`
+- `inflater = (src: u8[], start: int = 0) -> Inflater`: an Inflater for this stream, to step until it is done
+- `step = (s: mut Inflater, seconds: f64) -> bool`: go on for about this many seconds (it looks at the clock after each 64 KB it writes); true when it is done (or has found the stream damaged)
+- `progress = (s: Inflater) -> f64`: how much of the stream it has been through, 0 to 1
+- `result = (s: mut Inflater) -> u8[]?`: the inflated bytes, none if the stream is damaged or cut short (if step has not said done yet, this does the rest of the work first)
 
 #### PNG
 

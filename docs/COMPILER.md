@@ -78,6 +78,7 @@ the copy back.
 | `python3 tools/rendertest.py --no-gpu` | games rendered by the software renderer against reference frames |
 | `python3 tools/macrender.py --host user@mac [--renderer gl\|glsoft\|metal] [name...]` | the same games and render scenes cross-built for macOS, run on a real Mac over ssh (OpenGL, Apple's software OpenGL, Metal), their frames fetched and compared as rendertest.py compares GPU frames. The Mac needs nothing installed. The one it has run on is the user's own MacBook (Apple M5 Pro): use it only with their OK for that task |
 | `python3 tools/deflatecheck.py` | `deflate`'s output read back by Python's zlib (native and wasm), on inputs of each kind; a stepped `Deflater` gives the same bytes |
+| `python3 tools/inflatecheck.py` | `inflate` on Python zlib's streams (native and wasm): levels 0-9, each strategy, matches 32768 back, zlib's wrapper; cut short (none) and with bytes changed (none where zlib finds damage, its bytes where it reads them); a stepped `Inflater` agrees |
 | `python3 tools/watchtest.py` | hot reloading |
 | `python3 tools/fuzz.py 100` | random valid programs, built four ways, must agree |
 | `python3 tools/gpufuzz.py 100 [--shaders]` | random compute functions on the CPU, the GPU and lavapipe (or fragment shaders: software, OpenGL, Vulkan) must agree; `--reduce` shrinks a failure |

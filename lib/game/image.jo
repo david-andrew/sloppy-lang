@@ -94,148 +94,342 @@ resized = (img: Image, w: int, h: int) -> Image:
     out
 
 # ---------------- inflate (RFC 1951) ----------------
-struct Inflate:
-    src: u8[]
-    pos: int
-    bitbuf: int
-    bitcnt: int
-    out: u8[]
-    err: bool
+# read a raw deflate stream (as deflate writes, or zlib's after its 2-byte header: start = 2);
+# none if it is damaged or cut short
+inflate = (src: u8[], start: int = 0) -> u8[]?:
+    s = inflater(src, start)
+    s.result()
 
-struct Huff:
-    count: int[]      # codes of each length (0..15)
-    symbol: int[]     # symbols ordered by code
+# inflate a few milliseconds at a time, as a Deflater deflates: a big one (a level, a song) in
+# the frames while the game goes on. Start it, step it each frame, and take the bytes when done:
+#   loading = inflater(packed)                        # when loading
+#   if loading.step(0.003):                           # in update: 3 ms a frame
+#       song = loading.result() ?? []                 # none: the stream was damaged
+struct Inflater:
+    __src: u8[]
+    __tail: u8[]                # (its last 8 bytes and zeros: bits are read 8 bytes at a time)
+    __bp: int                   # the next bit to read
+    __out: u8[]                 # the bytes so far, the first __n of it (the rest is room)
+    __n: int
+    __tab: i32[]                # the block's codes, as __inf_table makes them
+    __left: int                 # a stored block's bytes still to copy; a match's length waiting
+    __mode: int                 # 0 a block's header next, 1 in a stored block, 2 in a coded one, 3 done, 4 damaged
+    __last: bool                # (the block being read is the last)
 
-__bits = (s: mut Inflate, need: int) -> int:
-    v = s.bitbuf
-    loop s.bitcnt < need:
-        if s.pos >= s.src.len():
-            s.err = true
-            return 0
-        v |= int(s.src[s.pos]) << s.bitcnt
-        s.pos += 1
-        s.bitcnt += 8
-    s.bitbuf = v >> need
-    s.bitcnt -= need
-    v & ((1 << need) - 1)
+# an Inflater for this stream, to step until it is done
+inflater = (src: u8[], start: int = 0) -> Inflater:
+    n = src.len()
+    tail = fill(u8(0), 24)
+    mem_copy(data(tail) + max(8 - n, 0), data(src) + max(n - 8, 0), min(n, 8))
+    # (room for 3 times the stream: fresh memory, zeros already)
+    Inflater(src, tail, max(start, 0) * 8, fill(u8(0), min(n, 1 << 22) * 3 + 300), 0, [], 0, 0, false)
 
-__huff = (lengths: int[], n: int) -> Huff:
-    h = Huff(fill(0, 16), fill(0, n))
-    loop i in [0..n): h.count[lengths[i]] += 1
-    offs = fill(0, 17)
-    loop l in [1..16): offs[l + 1] = offs[l] + h.count[l]
-    loop i in [0..n):
-        if lengths[i] != 0:
-            h.symbol[offs[lengths[i]]] = i
-            offs[lengths[i]] += 1
-    h.count[0] = 0
-    h
+# go on for about this many seconds (it looks at the clock after each 64 KB it writes); true when
+# it is done (or has found the stream damaged)
+step = (s: mut Inflater, seconds: f64) -> bool:
+    if s.__mode < 3: __inf_run(s, time() + seconds)
+    s.__mode >= 3
 
-__decode = (s: mut Inflate, h: Huff) -> int:
-    code = 0
-    first = 0
-    index = 0
-    loop len_ in [1..16):
-        code |= __bits(s, 1)
-        cnt = h.count[len_]
-        if code - cnt < first:
-            # (a set of lengths that is not a code, from data that is not deflate: none of its symbols)
-            k = index + (code - first)
-            if k < 0 or k >= h.symbol.len(): break
-            return h.symbol[k]
-        index += cnt
-        first += cnt
-        first = first << 1
-        code = code << 1
-    s.err = true
-    -1
+# how much of the stream it has been through, 0 to 1
+progress = (s: Inflater) -> f64:
+    if s.__mode >= 3 or s.__src.len() == 0: return 1.0
+    min(f64(s.__bp / 8) / f64(s.__src.len()), 1.0)
+
+# the inflated bytes, none if the stream is damaged or cut short (if step has not said done yet,
+# this does the rest of the work first)
+result = (s: mut Inflater) -> u8[]?:
+    if s.__mode < 3: __inf_run(s, -1.0)
+    if s.__mode == 4: return none
+    s.__out
 
 __len_base = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
 __len_extra = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
 __dist_base = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
 __dist_extra = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
 
-__codes = (s: mut Inflate, lit: Huff, dist: Huff):
-    loop not s.err:
-        sym = __decode(s, lit)
-        if sym < 0: return
-        if sym < 256: s.out.push(u8(sym))
-        else if sym == 256: return
+# (until the deadline, a time(); negative: to the end)
+__inf_run = (s: mut Inflater, deadline: f64):
+    loop s.__mode < 3:
+        if s.__mode == 0: __inf_header(s)
+        else if s.__mode == 1:
+            k = min(s.__left, 65536)
+            __inf_room(s, k)
+            mem_copy(data(s.__out) + s.__n, data(s.__src) + s.__bp / 8, k)
+            s.__n += k
+            s.__bp += k * 8
+            s.__left -= k
+            if s.__left == 0: s.__mode = 0
         else:
-            sym -= 257
-            if sym >= 29:
-                s.err = true
-                return
-            n = __len_base[sym] + __bits(s, __len_extra[sym])
-            ds = __decode(s, dist)
-            if ds < 0 or ds >= 30:
-                s.err = true
-                return
-            d = __dist_base[ds] + __bits(s, __dist_extra[ds])
-            start = s.out.len() - d
-            if start < 0:
-                s.err = true
-                return
-            loop i in [0..n): s.out.push(s.out[start + i])
+            stop = if deadline < 0.0: 1 << 62 else: s.__n + 65536
+            # (a fast loop while that is safe, and the rest a symbol at a time)
+            loop s.__mode == 2 and s.__n < stop and s.__bp <= s.__src.len() * 8 + 64:
+                __inf_room(s, 65536)
+                __inf_fast(s, min(stop, s.__out.len() - 267))
+                if s.__n < stop: __inf_one(s)
+        # (bits from past the stream's end were read: it is cut short)
+        if s.__bp > s.__src.len() * 8: s.__mode = 4
+        if s.__mode == 0 and s.__last: s.__mode = 3
+        if deadline >= 0.0 and s.__mode < 3 and time() >= deadline: return
+    s.__src = []
+    s.__tab = []
+    s.__out.resize(s.__n)
 
-inflate = (src: u8[], start: int = 0) -> u8[]?:
-    s = Inflate(src, start, 0, 0, [], false)
-    s.out.reserve(src.len() * 4)
-    loop true:
-        last = __bits(s, 1)
-        kind = __bits(s, 2)
-        if kind == 0:
-            s.bitbuf = 0
-            s.bitcnt = 0
-            if s.pos + 4 > src.len(): return none
-            n = int(src[s.pos]) | (int(src[s.pos + 1]) << 8)
-            s.pos += 4
-            if s.pos + n > src.len(): return none
-            loop i in [0..n): s.out.push(src[s.pos + i])
-            s.pos += n
+# (room for k more bytes after the first __n, and 8 more for a match's 8-byte copies)
+__inf_room = (s: mut Inflater, k: int):
+    if s.__n + k + 8 > s.__out.len(): s.__out.resize(max(s.__out.len() * 2, s.__n + k + 300))
+
+# (the next 57 bits at least; past the end, zeros)
+__inf_peek = (s: Inflater) -> u64:
+    i = s.__bp >> 3
+    n = s.__src.len()
+    w = u64(0)
+    if i + 8 <= n: w = ((data(s.__src) + i) as *u64)[0]
+    else if i < n + 8: w = ((data(s.__tail) + (i - n + 8)) as *u64)[0]
+    w >> u64(s.__bp & 7)
+
+__inf_bits = (s: mut Inflater, k: int) -> int:
+    v = int(__inf_peek(s) & ((u64(1) << u64(k)) - u64(1)))
+    s.__bp += k
+    v
+
+# (a block's codes, in one table: of the literals and lengths' code from 0, as the entries of its
+# first 11 bits (reversed, as they come), and the distances' from 2048, of their first 10:
+# value << 8 | extra bits << 4 | the code's length (with the extra bits when they fit: value +
+# them, none, and the length of both). Where a longer code starts, 1022 << 8, or 0 for a distance
+# (as one past the codes): __inf_fast leaves those to __inf_sym. For it, from 3072 and 3408: how many
+# codes of each length, the first of each length, where its entries start, and the entries in the
+# codes' order.)
+
+# (the code of these n lengths into t at fb (its first `bits` bits) and sb (the rest); false if they are
+# too many codes. Kind 0: literals and lengths, a literal its byte, the end 1021, a length 256 +
+# its base, one past the codes 1023; 1: distances, its base, one past them 0; 2: the symbol.)
+__inf_table = (t: mut i32[], fb: int, sb: int, bits: int, lens: *int, n: int, kind: int) -> bool:
+    tp = data(t)
+    c = tp + sb
+    mem_set((c as *u8), 0, 192)
+    loop i in [0..n): c[lens[i]] += i32(1)
+    c[0] = i32(0)
+    # (the first code of each length, where its entries start, and the code reversed: then the
+    # next of each)
+    next = fill(0, 50)
+    np = data(next)
+    left = 1
+    loop l in [1..16):
+        left = left * 2 - int(c[l])
+        if left < 0: return false
+        c[16 + l] = i32(np[l])
+        c[32 + l] = i32(np[16 + l])
+        np[33 + l] = __inf_rev(np[l], l)
+        np[l + 1] = (np[l] + int(c[l])) << 1
+        np[l + 17] = np[l + 16] + int(c[l])
+    # (codes that leave some bit strings out: as zlib, only none at all or one of 1 bit, for
+    # literals and distances)
+    if left > 0 and (kind == 2 or (left != 32768 and (left != 16384 or c[1] != i32(1)))): return false
+    if left > 0: mem_set((tp + fb) as *u8, 0, 4 << bits)
+    loop i in [0..n):
+        l = lens[i]
+        if l == 0: continue
+        v = i
+        x = 0
+        if kind == 0 and i >= 256:
+            v = if i == 256: 1021 else if i < 286: 256 + __len_base[i - 257] else: 1023
+            if i > 256 and i < 286: x = __len_extra[i - 257]
         else if kind == 1:
-            l = fill(0, 288)
-            loop i in [0..144): l[i] = 8
-            loop i in [144..256): l[i] = 9
-            loop i in [256..280): l[i] = 7
-            loop i in [280..288): l[i] = 8
-            d = fill(5, 30)
-            __codes(s, __huff(l, 288), __huff(d, 30))
-        else if kind == 2:
-            nlen = __bits(s, 5) + 257
-            ndist = __bits(s, 5) + 1
-            ncode = __bits(s, 4) + 4
-            order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
-            lens = fill(0, 19)
-            loop i in [0..ncode): lens[order[i]] = __bits(s, 3)
-            lencode = __huff(lens, 19)
-            all = fill(0, 320)
-            i = 0
-            loop i < nlen + ndist and not s.err:
-                sym = __decode(s, lencode)
-                if sym < 0: return none
-                if sym < 16:
-                    all[i] = sym
-                    i += 1
-                else:
-                    rep = 0
-                    val = 0
-                    if sym == 16:
-                        if i == 0: return none
-                        val = all[i - 1]
-                        rep = 3 + __bits(s, 2)
-                    else if sym == 17: rep = 3 + __bits(s, 3)
-                    else: rep = 11 + __bits(s, 7)
-                    if i + rep > nlen + ndist: return none
-                    loop k in [0..rep):
-                        all[i] = val
-                        i += 1
-            if s.err: return none
-            __codes(s, __huff(all[..nlen), nlen), __huff(all[nlen..nlen + ndist), ndist))
-        else: return none
-        if s.err: return none
-        if last == 1: break
-    s.out
+            v = if i < 30: __dist_base[i] else: 0
+            if i < 30: x = __dist_extra[i]
+        c[48 + np[16 + l]] = i32((v << 8) | (x << 4) | l)
+        np[16 + l] += 1
+        rv = np[33 + l]
+        end = int(tp + fb + (1 << bits))
+        # (where a longer code starts: for __inf_sym)
+        if l > bits: tp[fb + (rv & ((1 << bits) - 1))] = i32(if kind == 0: 1022 << 8 else: 0)
+        if l <= bits:
+            # (with its extra bits too when they fit: an entry for each value of them)
+            w = if l + x <= bits: x else: 0
+            r = tp + fb + rv
+            step = 1 << (l + w)
+            loop ev in [0..1 << w):
+                e = i32(((v + ev) << 8) | ((x - w) << 4) | (l + w))
+                p = r + (ev << l)
+                loop int(p) < end:
+                    p[0] = e
+                    p += step
+        # (the next code reversed: 1 added from the top bit down)
+        b = 1 << (l - 1)
+        loop rv & b != 0:
+            rv = rv xor b
+            b = b >> 1
+        np[33 + l] = rv | b
+    # (bit strings a code leaves out: none)
+    if kind == 0 and left > 0:
+        loop k in [0..1 << bits):
+            if tp[fb + k] == i32(0): tp[fb + k] = i32(1022 << 8)
+    true
+
+# (the low l bits of c, reversed)
+__inf_rev = (c: int, l: int) -> int:
+    r = ((c & 0x5555) << 1) | ((c >> 1) & 0x5555)
+    r = ((r & 0x3333) << 2) | ((r >> 2) & 0x3333)
+    r = ((r & 0x0F0F) << 4) | ((r >> 4) & 0x0F0F)
+    (((r & 0xFF) << 8) | (r >> 8)) >> (16 - l)
+
+# (the entry of the next code in t, its bits used; -1 if they are not one)
+__inf_sym = (s: mut Inflater, t: i32[], fb: int, sb: int, bits: int) -> int:
+    b = __inf_peek(s)
+    tp = data(t)
+    e = int(tp[fb + int(b & ((u64(1) << u64(bits)) - u64(1)))])
+    if e & 15 == 0:
+        # (a longer code: those bits as a code, and then a bit at a time)
+        e = -1
+        code = __inf_rev(int(b & ((u64(1) << u64(bits)) - u64(1))), bits)
+        c = tp + sb
+        loop l in [bits + 1..16):
+            code = (code << 1) | int((b >> u64(l - 1)) & u64(1))
+            k = code - int(c[16 + l])
+            if k >= 0 and k < int(c[l]):
+                e = int(c[48 + int(c[32 + l]) + k])
+                break
+        if e < 0: return -1
+    s.__bp += e & 15
+    e
+
+__inf_header = (s: mut Inflater):
+    s.__last = __inf_bits(s, 1) == 1
+    kind = __inf_bits(s, 2)
+    s.__mode = 4
+    if kind == 0:
+        # (from the next byte: the length, and its complement)
+        s.__bp = (s.__bp + 7) / 8 * 8
+        n = __inf_bits(s, 16)
+        if __inf_bits(s, 16) != 65535 - n or s.__bp / 8 + n > s.__src.len(): return
+        s.__left = n
+        s.__mode = int(n > 0)
+        return
+    if kind == 3: return
+    all = fill(5, 320)
+    ap = data(all)
+    nlen = 288
+    ndist = 32
+    if kind == 1:
+        loop i in [0..288): ap[i] = 8 + int(i >= 144 and i < 256) - int(i >= 256 and i < 280)
+    else:
+        nlen = __inf_bits(s, 5) + 257
+        ndist = __inf_bits(s, 5) + 1
+        ncode = __inf_bits(s, 4) + 4
+        if nlen > 286 or ndist > 30: return
+        lens = fill(0, 19)
+        lp = data(lens)
+        loop i in [0..ncode): lp[__inf_order[i]] = __inf_bits(s, 3)
+        lc = fill(i32(0), 128 + 48 + 19)
+        if not __inf_table(lc, 0, 128, 7, lp, 19, 2): return
+        i = 0
+        loop i < nlen + ndist:
+            sym = __inf_sym(s, lc, 0, 128, 7) >> 8
+            if sym < 0 or (sym == 16 and i == 0): return
+            rep = 1
+            val = sym
+            if sym >= 16:
+                rep = if sym == 18: 11 + __inf_bits(s, 7) else: 3 + __inf_bits(s, sym - 14)
+                val = if sym == 16: ap[i - 1] else: 0
+            if i + rep > nlen + ndist: return
+            loop k in [i..i + rep): ap[k] = val
+            i += rep
+        if ap[256] == 0: return
+    # (the last block's table, written over)
+    t = s.__tab
+    s.__tab = []
+    if t.len() != 3488: t = fill(i32(0), 3488)
+    if not __inf_table(t, 0, 3072, 11, ap, nlen, 0) or not __inf_table(t, 2048, 3408, 10, ap + nlen, ndist, 1): return
+    s.__tab = t
+    s.__mode = 2
+
+__inf_order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+
+# (one symbol, and its match, as __inf_fast but with each bit read with care: the block's end
+# gives mode 0, damage 4)
+__inf_one = (s: mut Inflater):
+    __inf_room(s, 258)
+    o = data(s.__out)
+    n = s.__n
+    k = s.__left
+    s.__left = 0
+    if k == 0:
+        e = __inf_sym(s, s.__tab, 0, 3072, 11)
+        v = e >> 8
+        if e < 0 or v == 1023 or v == 1021:
+            s.__mode = if v == 1021: 0 else: 4
+            return
+        if v < 256:
+            o[n] = u8(v)
+            s.__n = n + 1
+            return
+        k = v - 256 + __inf_bits(s, (e >> 4) & 15)
+    e = __inf_sym(s, s.__tab, 2048, 3408, 10)
+    d = (e >> 8) + __inf_bits(s, (e >> 4) & 15)
+    if e < 0 or d == 0 or d > n:
+        s.__mode = 4
+        return
+    loop i in [n..n + k): o[i] = o[i - d]
+    s.__n = n + k
+
+# (the fast loop, until the output reaches lim or a symbol needs __inf_one. It reads the input
+# where it is, by bit: each time round the next 57 bits at least (8 bytes from that bit's byte),
+# enough for two literals, or a literal and a length and distance (11 + 16 + 23 bits at most:
+# longer codes are not in the tables); it writes at most 259 (and 8 past them, copying).)
+__inf_fast = (s: mut Inflater, lim: int):
+    src = data(s.__src)
+    bp = s.__bp
+    bend = (s.__src.len() - 8) * 8
+    o = data(s.__out)
+    op = o + s.__n
+    oend = o + lim
+    t = data(s.__tab)
+    loop bp <= bend and int(op) < int(oend):
+        bb = ((src + (bp >> 3)) as *u64)[0] >> u64(bp & 7)
+        e = int(t[int(bb & u64(2047))])
+        if e < 65536:
+            # (a literal, and the next if it is one too; or a match, which the 46 bits left hold)
+            l = e & 15
+            bb = bb >> u64(l)
+            bp += l
+            op[0] = u8(e >> 8)
+            op += 1
+            e = int(t[int(bb & u64(2047))])
+            if e < 65536:
+                bp += e & 15
+                op[0] = u8(e >> 8)
+                op += 1
+                continue
+        if e >= (1021 << 8): break
+        # (a match: its length, then its distance; if that needs __inf_one, the length waits in
+        # __left)
+        # (extra bits are mostly in the entry already: x is 0)
+        l = e & 15
+        x = (e >> 4) & 15
+        k = (e >> 8) - 256
+        if x != 0: k += int((bb >> u64(l)) & ((u64(1) << u64(x)) - u64(1)))
+        bb = bb >> u64(l + x)
+        bp += l + x
+        e = int(t[2048 + int(bb & u64(1023))])
+        l = e & 15
+        x = (e >> 4) & 15
+        q = op - (e >> 8)
+        if x != 0: q = q - int((bb >> u64(l)) & ((u64(1) << u64(x)) - u64(1)))
+        if int(q) >= int(op) or int(q) < int(o):
+            s.__left = k
+            break
+        bp += l + x
+        if int(op) - int(q) >= 8:
+            (op as *u64)[0] = (q as *u64)[0]
+            i = 8
+            loop i < k:
+                ((op + i) as *u64)[0] = ((q + i) as *u64)[0]
+                i += 8
+        else:
+            loop i in [0..k): op[i] = q[i]
+        op += k
+    s.__n = int(op) - int(o)
+    s.__bp = bp
 
 # ---------------- PNG ----------------
 __be32 = (b: u8[], o: int) -> int: (int(b[o]) << 24) | (int(b[o + 1]) << 16) | (int(b[o + 2]) << 8) | int(b[o + 3])

@@ -120,11 +120,15 @@ for d, _, fs in os.walk(os.path.join(root, "lib")):
         if fn.endswith(".jo") and not os.path.exists(os.path.join(cmp_lib, rel)):
             os.makedirs(os.path.dirname(os.path.join(cmp_lib, rel)), exist_ok=True)
             open(os.path.join(cmp_lib, rel), "w").close()
+# (this library copied beside it, at a path of the same length: the compiler compares each file's
+# path with the library's, and a longer one costs more)
+cur_lib = os.path.join(tmp, "this-lib-cmp")
+shutil.copytree(os.path.join(root, "lib"), cur_lib)
 print(f"library: {base}'s -> the working tree's, compiled by this compiler")
 for src in [os.path.join(tmp, "hello.jo"), os.path.join(tmp, "game.jo"), "examples/rebound/rebound.jo", "examples/breakwater/breakwater.jo"]:
     cmd = [os.path.join(root, "tools", "icount"), new, "build", src, "-o", os.path.join(tmp, "out")]
     got = []
-    for lib in [cmp_lib, os.path.join(root, "lib")]:
+    for lib in [cmp_lib, cur_lib]:
         if counter == "valgrind": break
         r = subprocess.run(cmd, cwd=root, env=dict(env, SLOPPY_LIB=lib), capture_output=True, text=True)
         line = (r.stderr.strip().splitlines() or [""])[-1]

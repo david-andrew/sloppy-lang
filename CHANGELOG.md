@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- `inflate` is more than ten times faster. It decodes with tables of each code's first 11 bits
+  (10 for distances), whose entries hold extra bits too where they fit; longer codes go a bit
+  at a time. It reads the input 8 bytes at a time from the bit it is at, copies matches 8 bytes
+  at a time, and writes into room made ahead, doubled when it runs out. Aegean Skies' music (a
+  241 KB raw deflate stream, 553 KB out) took 114M instructions, 206 per byte out, and now
+  takes 9.2M, 16.6 per byte (release, x86-64, counted by valgrind). In wasm under node it went
+  from 30 ms to 3.1 ms. PNG loading gains the same way: breakwater.png (1280×720) spent 260M
+  instructions inflating and now spends 26M, and the whole `load_png` went from 639M to 405M
+  (the rest is undoing PNG's filters).
+- `inflater(src, start)` inflates a few milliseconds at a time, as `deflater` deflates: `step(s,
+  seconds)` (true when done), `progress` and `result` (none for a damaged stream). It runs the
+  same code as `inflate`.
+- `inflate` rejects damage that zlib rejects and it let through: a stored block whose length's
+  complement is wrong, codes that leave bit strings unused (zlib allows only none at all, or a
+  single 1-bit code), and more than 286 literal/length or 30 distance codes.
+- The `Inflate` and `Huff` structs are gone; they were inflate's workings.
+- `tools/inflatecheck.py` (in CI) runs `inflate` and a stepped `Inflater` on Python zlib's
+  streams, native and wasm: every level and strategy, matches 32768 back, zlib's wrapper. It
+  also tries them cut short and with bytes changed, against what zlib makes of them.
+
 ## 0.42.1
 
 - A draw (`draw`, `draw_instanced`, `draw_indirect`) with a `Shader` that was never made panics,
