@@ -36,6 +36,17 @@ def inputs():
     # (sizes around 64 KB: the window, a stored block's most)
     for n in (32767, 32768, 32769, 65535, 65536, 65537):
         yield f"random_{n}", bytes(r.getrandbits(8) for _ in range(n))
+    # (dark frames as a PNG's rows: a filter byte, then nearly all zeros with a faint grain. The
+    # end of a hash chain was taken for a match at position -1 in the first 32 KB: the byte before
+    # the input is 0 here, so some of these got a distance past the start)
+    d = random.Random(5)
+    for k in range(48):
+        w = d.choice([320, 640, 1280]); f = d.choice([1, 2, 4]); grain = d.choice([0.002, 0.01, 0.03])
+        out = bytearray()
+        while len(out) < 40000:
+            out.append(f)
+            out += bytes(d.choice([1, 255]) if d.random() < grain else 0 for _ in range(w * 4))
+        yield f"dark_frame_{k}", bytes(out)
     # (random bytes then text: stored blocks next to coded ones)
     yield "mixed", bytes(r.getrandbits(8) for _ in range(100000)) + text.encode()[:100000] + bytes(r.getrandbits(8) for _ in range(70000))
 
