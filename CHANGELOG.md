@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.43.0
+
 - `inflate` is more than ten times faster. It decodes with tables of each code's first 11 bits
   (10 for distances), whose entries hold extra bits too where they fit; longer codes go a bit
   at a time. It reads the input 8 bytes at a time from the bit it is at, copies matches 8 bytes
