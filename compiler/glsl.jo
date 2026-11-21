@@ -744,6 +744,9 @@ gl_expr = (e: int) -> str:
     if k == .int_lit:
         if types[t].kind == .float_: return gl_float(f64(nodes[e].ival))
         if nodes[e].ival < -2147483648 or nodes[e].ival > 4294967295: gl_err(nodes[e].pos, "shader integers are 32 bits, and this number does not fit in one (a hash written for 64 bits gives other values here)")
+        # (a decimal int literal above 2147483647 is the same 32 bits in GLSL, but not every
+        # compiler reads it so: written as the uint it is, turned to an int)
+        if nodes[e].ival > 2147483647: return "int({nodes[e].ival}u)"
         return "{nodes[e].ival}"
     if k == .float_lit: return gl_float(nodes[e].fval)
     if k == .bool_lit:
@@ -1018,7 +1021,9 @@ gl_shift_decls = ():
     if not gl_first("shift"): return
     gl_decls.push("int sl_shl(int x, int c) \{\n    c &= 63;\n    return c >= 32 ? 0 : x << c;\n}\n")
     gl_decls.push("int sl_shr(int x, int c) \{\n    c &= 63;\n    return c >= 32 ? x >> 31 : x >> c;\n}\n")
-    gl_decls.push("int sl_shru(int x, int c) \{\n    c &= 63;\n    return c >= 32 ? 0 : int(uint(x) >> uint(c));\n}\n")
+    # (a logical shift masked after it: Adreno 650 under ANGLE shifts a uint made from a negative
+    # int arithmetically, bringing its sign bit in; every hash of a negative cell came out wrong)
+    gl_decls.push("int sl_shru(int x, int c) \{\n    c &= 63;\n    return c >= 32 ? 0 : int((uint(x) >> uint(c)) & (0xFFFFFFFFu >> uint(c)));\n}\n")
 
 # x (32 bits) wrapped to the range of a narrower integer type t
 gl_narrow = (x: str, t0: int) -> str:
@@ -1055,7 +1060,7 @@ gl_gbuf_decls = ():
     if not gl_first("gbuf"): return
     gl_decls.push("uint gb_w(highp isampler2D t, int i) \{\n    return uint(texelFetch(t, ivec2((i >> 2) & 1023, i >> 12), 0)[i & 3]);\n}\n")
     # (bits of the word holding byte a, from bit 8 * (a & 3); sign-extended if sgn)
-    gl_decls.push("int gb_sub(highp isampler2D t, int a, int bits, bool sgn) \{\n    uint w = gb_w(t, a >> 2) >> uint((a & 3) * 8);\n    int sh = 32 - bits;\n    if (sgn) return int(w << uint(sh)) >> sh;\n    return int((w << uint(sh)) >> uint(sh));\n}\n")
+    gl_decls.push("int gb_sub(highp isampler2D t, int a, int bits, bool sgn) \{\n    uint w = (gb_w(t, a >> 2) >> uint((a & 3) * 8)) & (0xFFFFFFFFu >> uint((a & 3) * 8));\n    int sh = 32 - bits;\n    if (sgn) return int(w << uint(sh)) >> sh;\n    return int(((w << uint(sh)) >> uint(sh)) & (0xFFFFFFFFu >> uint(sh)));\n}\n")
     # (an f64 from its two words, rounded to an f32 as compiler/spirv.jo does)
     gl_decls.push("float gb_f64(uint lo, uint hi) \{\n    uint e = (hi >> 20) & 0x7FFu;\n    uint m = ((hi & 0xFFFFFu) << 3) | (lo >> 29);\n    uint bits = (((e - 896u) << 23) | m) + ((lo >> 28) & 1u);\n    if (e >= 1151u || bits >= 0x7F800000u) bits = 0x7F800000u;\n    if (e <= 896u) bits = 0u;\n    if (e == 0x7FFu && (m | lo) != 0u) bits = 0x7FC00000u;\n    return uintBitsToFloat(bits | (hi & 0x80000000u));\n}\n")
 

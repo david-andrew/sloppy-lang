@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- GLSL: a logical shift right is masked after it (`(uint(x) >> c) & (0xFFFFFFFFu >> c)`), also in GPU buffer reads: Adreno 650 under ANGLE shifts a uint made from a negative int arithmetically, so integer hashes (noise) of negative cells came out wrong on the phone in both stages. Division, remainder, comparison and conversion of such uints were checked right there.
+- GLSL: an integer literal above 2147483647 is written `int(NNNu)`, not a decimal int literal too large for int.
+
 - GLSL: `sample()` outside the fragment stage is `textureLod(t, uv, 0.0)`, the full-size image said outright as the SPIR-V does (an implicit level in a vertex shader is left to the driver; on an Adreno phone a vertex shader's texture values came out wrong near the camera). Fragment shaders are unchanged.
 
 - Web: when the browser takes the WebGL context away (a GPU reset, a phone short of memory), the page says so once (in #log and as a `sloppy:error` event) instead of the errors that follow from a lost context; the largest texture size is kept from the live context (a lost one read 0, so a one-row GPU buffer panicked as "too large for OpenGL here").
