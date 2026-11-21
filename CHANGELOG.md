@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- GLSL: `sample()` outside the fragment stage is `textureLod(t, uv, 0.0)`, the full-size image said outright as the SPIR-V does (an implicit level in a vertex shader is left to the driver; on an Adreno phone a vertex shader's texture values came out wrong near the camera). Fragment shaders are unchanged.
+
 - Web: when the browser takes the WebGL context away (a GPU reset, a phone short of memory), the page says so once (in #log and as a `sloppy:error` event) instead of the errors that follow from a lost context; the largest texture size is kept from the live context (a lost one read 0, so a one-row GPU buffer panicked as "too large for OpenGL here").
 
 ## 0.43.0
