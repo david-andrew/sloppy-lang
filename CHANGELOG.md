@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Web: when the browser takes the WebGL context away (a GPU reset, a phone short of memory), the page says so once (in #log and as a `sloppy:error` event) instead of the errors that follow from a lost context; the largest texture size is kept from the live context (a lost one read 0, so a one-row GPU buffer panicked as "too large for OpenGL here").
+
 ## 0.43.0
 
 - `inflate` is more than ten times faster. It decodes with tables of each code's first 11 bits
