@@ -71,6 +71,7 @@ struct Mesh:
     radius: f32 = -1.0          # leaving out what the camera cannot see (draw3d.jo)
     gbuf: int                   # the vertices are a GPU buffer's (gpu_mesh): its number
     keep: u8[]                  # (and what keeps that buffer alive)
+    __life: u8[]                # (shared by its copies: when none is left, its buffers are deleted)
 
 # Feature loading callbacks contain no central list of shader functions. Only a feature
 # the program uses registers a callback, and each shader is translated at one call site.
@@ -333,7 +334,8 @@ __uniform_bytes = (u: ShaderUniform) -> int:
     if k == 'm': return 64
     8
 
-# upload vertices (any struct type matching the shader's vertex input) and optional indices
+# upload vertices (any struct type matching the shader's vertex input) and optional indices. Its
+# GPU memory is given back once the program holds no copy of it (looked at as a frame starts)
 mesh[V] = (vertices: V[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh:
     __gfx_init_gl_only()
     m = Mesh(mode = mode)
@@ -351,7 +353,60 @@ mesh[V] = (vertices: V[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh
         m.index_count = indices.len()
     glBindVertexArray(0)
     __mesh_layout_load(size_of(V), false)
+    m.__life = __gl_own(m.vao, m.vbo, m.ibo)
     m
+
+# Meshes and instance buffers no value holds any more are deleted, their buffers and vertex arrays.
+# Each one made has a token shared by all its copies, as a GPU buffer has: when only this list holds
+# it, the program has let go of it. They are looked at as a frame starts (what the last frame drew
+# is done with, or its renderer keeps it until it is), once there are twice as many as after the
+# last look, so a program making and dropping one a frame keeps at most twice what it holds.
+__gl_life: u8[][] = []
+__gl_owned: int[] = []          # (three each: vertex array, vertex buffer, index buffer; 0: none)
+__gl_look_at = 256
+
+__gl_own = (vao: int, vbo: int, ibo: int) -> u8[]:
+    t = fill(u8(0), 1)
+    __gl_life.push(t)
+    __gl_owned.push(vao)
+    __gl_owned.push(vbo)
+    __gl_owned.push(ibo)
+    t
+
+__gl_reclaim = ():
+    global __gl_life, __gl_owned, __gl_look_at
+    if __gl_life.len() < __gl_look_at: return
+    life: u8[][] = []
+    owned: int[] = []
+    loop i in [0..__gl_life.len()):
+        vao = __gl_owned[3 * i]
+        vbo = __gl_owned[3 * i + 1]
+        ibo = __gl_owned[3 * i + 2]
+        # (read in place: passing the token on would count once more)
+        if (__gl_life[i] as *int)[0] == 1:
+            if vbo != 0: gl_delete_buffer(vbo)
+            if ibo != 0: gl_delete_buffer(ibo)
+            if vao != 0: __gl_delete_vaos(vao)
+        else:
+            life.push(__gl_life[i])
+            owned.push(vao)
+            owned.push(vbo)
+            owned.push(ibo)
+    __gl_life = life
+    __gl_owned = owned
+    __gl_look_at = max(256, 2 * life.len())
+
+# a mesh's vertex array, and those __bind_attribs made for it (OpenGL and WebGL: Vulkan, Metal and
+# the software renderer have none)
+__gl_delete_vaos = (vao: int):
+    when TARGET != "wasm":
+        if __vk or __soft: return
+    v = vao * 4
+    if v + 4 <= __vaos.len():
+        loop j in [1..4):
+            if __vaos[v + j].gl != 0: gl_delete_vertex_array(__vaos[v + j].gl)
+        loop j in [0..4): __vaos[v + j] = __VaoState()
+    gl_delete_vertex_array(vao)
 
 update_mesh[V] = (m: mut Mesh, vertices: V[]):
     glBindBuffer(GL_ARRAY_BUFFER, u32(m.vbo))
@@ -583,14 +638,17 @@ draw_instanced[U, I] = (sh: Shader, m: Mesh, instances: I[], params: U):
 __inst_stream = 0
 
 # per-instance shader input kept on the GPU: uploaded once (and again by set_instances),
-# drawn any number of times with draw_instanced
+# drawn any number of times with draw_instanced; given back, as a mesh is, once the program holds
+# no copy of it
 struct InstanceBuffer[I]:
     vbo: int
     count: int
+    __life: u8[]                # (shared by its copies: when none is left, its buffer is deleted)
 
 instance_buffer[I] = (instances: I[]) -> InstanceBuffer[I]:
     __gfx_init_gl_only()
     b = InstanceBuffer[I](vbo = gl_create_buffer())
+    b.__life = __gl_own(0, b.vbo, 0)
     set_instances(b, instances)
     __mesh_layout_load(size_of(I), true)
     b

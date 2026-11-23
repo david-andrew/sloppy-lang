@@ -4412,11 +4412,11 @@ Uniform fields are numbers, vectors, mat4 and Texture, or fixed-size arrays of t
 - `warm_up_later = (sh: Shader)`: Queue a shader made with warm = false for warm_up_shaders (with parallel compiling, its linking starts now); one queued or linked already stays as it is.
 - `warm_up_shaders = (max_count: int = -1, max_ms: f64 = -1.0) -> int`: Link queued shaders, oldest first: at most max_count of them (-1: no limit), starting no new one after max_ms milliseconds (-1: no limit; at least one is linked). With no limit, all of them (warm_up() does that too). Returns how many are still waiting. With parallel compiling, a limited call finishes only the programs whose linking is done, never waiting for one.
 - `make_shader = (src: ShaderSource, warm: bool = true) -> Shader`: a shader from shader(vs, fs); on OpenGL and WebGL its program is linked at its first draw (or by warm_up_shaders, unless warm is false), and compile or link errors are reported there. Made again from the same source, it is the program made before.
-- `mesh[V] = (vertices: V[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh`: upload vertices (any struct type matching the shader's vertex input) and optional indices
+- `mesh[V] = (vertices: V[], indices: u32[] = [], mode: int = GL_TRIANGLES) -> Mesh`: upload vertices (any struct type matching the shader's vertex input) and optional indices. Its GPU memory is given back once the program holds no copy of it (looked at as a frame starts)
 - `update_mesh[V] = (m: mut Mesh, vertices: V[])`
 - `draw[U] = (sh: Shader, m0: Mesh, params: U)`: draw a mesh with a shader; `params` is the uniforms struct the shader functions take
 - `draw_instanced[U, I] = (sh: Shader, m: Mesh, instances: I[], params: U)`: draw many copies of a mesh in one call; `instances` holds the per-instance shader input (uploaded on every call: for instances that change rarely, keep them on the GPU with instance_buffer)
-- `struct InstanceBuffer[I]`: per-instance shader input kept on the GPU: uploaded once (and again by set_instances), drawn any number of times with draw_instanced
+- `struct InstanceBuffer[I]`: per-instance shader input kept on the GPU: uploaded once (and again by set_instances), drawn any number of times with draw_instanced; given back, as a mesh is, once the program holds no copy of it
   ```gdscript
   struct InstanceBuffer[I]:
       vbo: int

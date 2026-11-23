@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A mesh (`mesh`, `cube_mesh` and the other shapes, a loaded model's) and an `instance_buffer` are deleted once the program holds no copy of them: their buffers and vertex arrays, on every renderer. Before, each one made stayed until the program ended; Aegean Skies counted about 6,400 buffers made and none deleted in three minutes on a phone. As GPU buffers are, each has a token its copies share; when only the library's list holds it, it is gone. The list is looked at as a frame starts, once it has twice as many as after the last look, so a program making and dropping one a frame holds at most about twice what it keeps. Keep a mesh in a variable (or in anything kept) for as long as it is drawn; `update_mesh` and `set_instances` still reuse one in place.
+
 ## 0.43.2
 
 - `deflate` (and so `save_png`, screenshots and saves) could write a stream other decoders reject ("invalid distance too far back"): in the first 32 KB, the end of a hash chain was taken for a match at the byte before the input, which is 0, so data with long zero runs (dark frames after PNG filtering, about 4% of them) sometimes got a distance one past the start. Sloppy's own `inflate` refused those streams too. `tools/deflatecheck.py` now also checks 48 dark PNG-like frames with Python's zlib.
