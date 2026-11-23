@@ -7,7 +7,9 @@ end into buffers, which the program prints.
 
 What may differ is left out: `int`, `i64`, `u64` and `f64` (32 bits on the GPU), float division
 and functions the GPU computes approximately. Floats are compared with a tolerance (a GPU may fuse
-a * b + c).
+a * b + c). Such a difference grows to a whole step through floor, fract, trunc, ceil, sign, step
+and integers made from floats, and past the tolerance when large matrix products are taken from
+one another: a program that differs is inexact, not failed, when it agrees with those given 0.
 
 usage: tools/gpufuzz.py [count] [--seed N] [--keep] [--no-lavapipe] [--shaders]
        tools/gpufuzz.py --reduce build/gpufuzz/fail_<seed>.jo
@@ -235,18 +237,28 @@ class Gen:
     def fexpr(self, d):
         r = self.r
         op = r.choice(["+", "-", "*", "neg", "conv", "abs", "floor", "min", "max", "if", "trunc", "ceil", "fract", "sign", "step", "mix", "mat"])
-        if op in ("ceil", "fract", "sign"): return f"{op}({self.expr('f32', d + 1)})"
-        if op == "step": return f"step({self.expr('f32', d + 1)}, {self.expr('f32', d + 1)})"
+        # (a step in the result for a float's last bit, which a GPU may round otherwise when it
+        # fuses a * b + c: through fi, as integers made from floats are, so that a program
+        # differing only through them is inexact, not failed)
+        if op in ("ceil", "fract", "sign", "floor", "trunc"):
+            self.f2i = True
+            return f"{op}(fi({self.expr('f32', d + 1)}))"
+        if op == "step":
+            self.f2i = True
+            return f"step(fi({self.expr('f32', d + 1)}), fi({self.expr('f32', d + 1)}))"
         if op == "mix": return f"mix({self.expr('f32', d + 1)}, {self.expr('f32', d + 1)}, f32({r.choice(['0.0', '0.5', '1.0', '0.25'])}))"
         if op == "mat" and d <= 1:
             cols = ", ".join(f"vec4({', '.join(self.lit('f32') for _ in range(4))})" for _ in range(4))
-            return f"(mat4({cols}) * {self.expr('vec4', d + 1)}).{r.choice('xyzw')}"
+            # (four products summed, which a GPU may fuse: large ones, less one another, can differ
+            # by more than the tolerance, so through fi too)
+            self.f2i = True
+            return f"fi((mat4({cols}) * {self.expr('vec4', d + 1)}).{r.choice('xyzw')})"
         a = lambda: self.expr("f32", d + 1)
         if op == "*": return f"({a()} * {self.lit('f32')})"
         if op in ("+", "-"): return f"({a()} {op} {a()})"
         if op == "neg": return f"(-{a()})"
         if op == "conv": return f"f32({self.expr(r.choice(['i8', 'u8', 'i16', 'u16']), d + 1)})"
-        if op in ("abs", "floor", "trunc"): return f"{op}({a()})"
+        if op == "abs": return f"abs({a()})"
         if op in ("min", "max"): return f"{op}({a()}, {a()})"
         return f"(if {self.expr('bool', d + 1)}: {a()} else: {a()})"
 
@@ -643,8 +655,8 @@ def reduce(path, lvp):
 
 
 def compare(prog, runs, f2i):
-    """runs prog on each of runs; (agree, what differs, whether integers made from floats differ
-    by more than one, so that it is worth trying the program without them)"""
+    """runs prog on each of runs; (agree, what differs, whether integers made from floats or
+    float steps (floor, fract, ...) may be why, so that it is worth trying the program without them)"""
     outs = [(name, *run(prog, env)) for name, env in runs]
     c0, o0 = outs[0][1], outs[0][2]
     if c0 != 0: return False, f"cpu run failed ({c0}):\n{o0[-2000:]}", False
@@ -663,7 +675,7 @@ def compare(prog, runs, f2i):
             return False, f"{name}: integer result {j} differs: cpu {i0[j] if j >= 0 else len(i0)} vs {i1[j] if j >= 0 else len(i1)}", f2i
         sf, j = same_floats(f0, f1)
         if not sf:
-            return False, f"{name}: float result {j} differs: cpu {f0[j] if 0 <= j < len(f0) else len(f0)} vs {f1[j] if 0 <= j < len(f1) else len(f1)}", False
+            return False, f"{name}: float result {j} differs: cpu {f0[j] if 0 <= j < len(f0) else len(f0)} vs {f1[j] if 0 <= j < len(f1) else len(f1)}", f2i
     return True, "", False
 
 
@@ -694,7 +706,7 @@ def main():
                 with open(prog, "w") as f: f.write(src.replace("\n".join(FI), "\n".join(FI0)))
                 frames0, err0 = shader_frames(prog)
                 if frames0 is not None and not shader_diff(frames0):
-                    print(f"(inexact {s}: {msg}; the same without integers made from floats agrees)")
+                    print(f"(inexact {s}: {msg}; the same without integers made from floats, floor, fract and the like agrees)")
                     msg = ""
                 with open(prog, "w") as f: f.write(src)
             if not msg:
@@ -718,7 +730,7 @@ def main():
             with open(prog, "w") as f: f.write(src.replace("\n".join(FI), "\n".join(FI0)))
             ok0, msg0, _ = compare(prog, runs, False)
             if ok0:
-                print(f"(inexact {s}: {msg[:160]}...; the same without integers made from floats agrees)")
+                print(f"(inexact {s}: {msg[:160]}...; the same without integers made from floats, floor, fract and the like agrees)")
                 ok = True
             with open(prog, "w") as f: f.write(src)
         if ok:
