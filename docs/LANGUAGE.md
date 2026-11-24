@@ -1502,6 +1502,9 @@ build:                          # build options live in the source
                                 # Windows, X11 and supporting Wayland desktops), the Dock's
                                 # on macOS, the web page's; PROGRAM_ICON has its bytes
     js = "glue.js"              # web builds: JavaScript put in the page; it gives `extern`s
+    head = "head.html"          # web builds: tags for the page's <head> (a description, link
+                                # previews, icons, a manifest); its own icon or viewport replaces the page's
+    page_files = "web"          # web builds: this directory's files go beside the page (or in its zip)
 
 when TARGET == "wasm":          # compile-time conditional; the dead branch is not compiled
     ...
@@ -1537,6 +1540,31 @@ else:
 ```js
 // glue.js
 sloppy.env.js_report = (p, n, score) => console.log(sloppy.text(p, n), Number(score));
+```
+
+**A web page's head and files.** The build block's `head` file goes into the page's `<head>`,
+after the title (the build block's `name`), as it is written: a description, the tags link
+previews read (Open Graph, Twitter), icons, a manifest, a theme color. A head with its own icon
+link (`rel="icon"`) has it in place of the page's (the build block's `icon`, or none), and one
+with its own viewport meta has it in place of the page's. Every file under the `page_files`
+directory (but hidden ones) is written beside the page, in the same sub-directories, or into the
+zip (`-o game.zip`), so the head can name them by relative paths. A page file may not be named
+as the page or its module. Other targets leave both out.
+
+```gdscript
+build:
+    name = "Sky Game"
+    head = "head.html"
+    page_files = "web"              # web/icons/icon-192.png, web/site.webmanifest, web/preview.png
+```
+
+```html
+<!-- head.html -->
+<meta name="description" content="Seaplanes over the islands">
+<meta property="og:image" content="https://example.org/sky/preview.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="manifest" href="site.webmanifest">
+<meta name="theme-color" content="#1c3d5a">
 ```
 
 `sloppy test file.jo` runs the file's top-level code, then each `test` block in order,

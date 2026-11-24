@@ -1069,10 +1069,11 @@ wasm_file = false               # (sloppy build --wasm-file: the module in a fil
 write_html = (path: str, wasm: u8[], title: str, icon: u8[]) -> bool:
     # (game.zip: the page as index.html in a zip, for sites like itch.io)
     zip = ends_with(path, ".zip")
+    if not page_files_fit(path, zip): return false
     if not wasm_file:
         page = html_page(wasm, title, icon, "")
-        if zip: return write_zip(path, [("index.html", bytes(page))])
-        return write_file(path, page)
+        if zip: return write_zip(path, [("index.html", bytes(page))] + program_page_files)
+        return write_file(path, page) and write_page_files(path)
     # --wasm-file: game.html and game.wasm beside it, which the page fetches and compiles as it
     # downloads (served over http: a page opened from disk may not fetch); the file's name has
     # the module's hash after it, so that a browser does not run one it kept from an older build
@@ -1083,8 +1084,56 @@ write_html = (path: str, wasm: u8[], title: str, icon: u8[]) -> bool:
         if sl >= 0: name = name[sl + 1..]
     h = hash_bytes(data(wasm), wasm.len()) & 0xFFFFFFFFFFFF
     page = html_page(wasm, title, icon, "{url_escape(name)}.wasm?v={h:x}")
-    if zip: return write_zip(path, [("index.html", bytes(page)), ("{name}.wasm", wasm)])
-    write_bytes(strip_ext(path) + ".wasm", wasm) and write_file(path, page)
+    if zip: return write_zip(path, [("index.html", bytes(page)), ("{name}.wasm", wasm)] + program_page_files)
+    write_bytes(strip_ext(path) + ".wasm", wasm) and write_file(path, page) and write_page_files(path)
+
+# (the build block's page_files may not be the page, or its module, by name)
+page_files_fit = (path: str, zip: bool) -> bool:
+    page = "index.html"
+    if not zip:
+        page = path
+        sl = (last_index_of(page, "/") ?? -1)
+        if sl >= 0: page = page[sl + 1..]
+    module = strip_ext(page) + ".wasm"
+    loop f in program_page_files:
+        if f.0 == page or (wasm_file and f.0 == module):
+            eprint("sloppy: page_files has '{f.0}', which is the page's own name or its module's: rename it")
+            return false
+    true
+
+page_mkdirs = (d: str):
+    if is_dir(d): return
+    s = (last_index_of(d, "/") ?? -1)
+    if s > 0: page_mkdirs(d[..s))
+    mkdir(d)
+
+# the build block's page_files beside the page, in their directories there
+write_page_files = (path: str) -> bool:
+    dir = "."
+    sl = (last_index_of(path, "/") ?? -1)
+    if sl >= 0: dir = path[..sl)
+    loop f in program_page_files:
+        to = "{dir}/{f.0}"
+        s = (last_index_of(to, "/") ?? -1)
+        if s > 0: page_mkdirs(to[..s))
+        if not write_bytes(to, f.1):
+            eprint("sloppy: cannot write '{to}'")
+            return false
+    true
+
+# (does lower-case HTML have attr="value", 'value' or value?)
+html_has_attr = (low: str, attr: str, value: str) -> bool:
+    loop q in ["\"", "'"]:
+        if (index_of(low, "{attr}={q}{value}{q}") ?? -1) >= 0: return true
+    if (index_of(value, " ") ?? -1) >= 0: return false
+    loop end in [" ", ">", "/"]:
+        if (index_of(low, "{attr}={value}{end}") ?? -1) >= 0: return true
+    false
+
+ascii_lower = (s: str) -> str:
+    out: u8[]
+    loop c in s: out.push(if c >= 'A' and c <= 'Z': c + 32 else: c)
+    str_from_bytes(out)
 
 # (a file's name in a URL: other characters than letters, digits and . _ - as %xx)
 url_escape = (s: str) -> str:
@@ -1101,9 +1150,17 @@ url_escape = (s: str) -> str:
 # the page: the runtime (lib/web) and the module, in a script element that is not run (base64
 # text, read and let go as the page loads) or, from src, a file beside it
 html_page = (wasm: u8[], title: str, icon: u8[], src: str) -> str:
+    # (the build block's head after the title; one with its own icon or viewport has those in
+    # place of the page's)
+    head = program_head
+    if len(head) > 0 and head[len(head) - 1] != '\n': head += "\n"
+    low = ascii_lower(head)
     link = ""
-    if icon.len() > 0: link = "<link rel=\"icon\" href=\"data:image/png;base64,{base64(icon)}\">\n"
+    if html_has_attr(low, "rel", "icon") or html_has_attr(low, "rel", "shortcut icon"): link = ""
+    else if icon.len() > 0: link = "<link rel=\"icon\" href=\"data:image/png;base64,{base64(icon)}\">\n"
     else: link = "<link rel=\"icon\" href=\"data:,\">\n"      # (no icon: no request for /favicon.ico)
+    viewport = "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,viewport-fit=cover\">\n"
+    if html_has_attr(low, "name", "viewport"): viewport = ""
     js = ""
     loop part in ["runtime.js", "gfx.js", "audio.js", "boot.js"]:
         # (the program's own JavaScript, from the build block's js: before it starts)
@@ -1114,5 +1171,5 @@ html_page = (wasm: u8[], title: str, icon: u8[], src: str) -> str:
     module = ""
     if len(src) > 0: module = "<script type=\"application/wasm\" id=\"sloppy-wasm\" data-src=\"{src}\"></script>\n"
     else: module = "<script type=\"application/octet-stream\" id=\"sloppy-wasm\">{base64(wasm)}</script>\n"
-    html = "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{title}</title>\n{link}<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,viewport-fit=cover\">\n<style>html,body\{margin:0;height:100%;background:#111;color:#ddd;font:14px monospace}canvas\{display:block;margin:auto;outline:none}#log\{white-space:pre-wrap;margin:8px;max-height:40vh;overflow:auto}</style>\n</head><body><canvas id=\"sloppy-canvas\" tabindex=\"1\" width=\"0\" height=\"0\"></canvas><div id=\"log\"></div>\n<div id=\"sloppy-loading\" style=\"position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);color:#888\">loading…</div>\n{module}<script>\n{js}\n</script></body></html>\n"
+    html = "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{title}</title>\n{link}{viewport}{head}<style>html,body\{margin:0;height:100%;background:#111;color:#ddd;font:14px monospace}canvas\{display:block;margin:auto;outline:none}#log\{white-space:pre-wrap;margin:8px;max-height:40vh;overflow:auto}</style>\n</head><body><canvas id=\"sloppy-canvas\" tabindex=\"1\" width=\"0\" height=\"0\"></canvas><div id=\"log\"></div>\n<div id=\"sloppy-loading\" style=\"position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);color:#888\">loading…</div>\n{module}<script>\n{js}\n</script></body></html>\n"
     html

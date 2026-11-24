@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Web builds: the build block's `head = "head.html"` puts that file's tags in the page's `<head>` after the title (a description, Open Graph and Twitter link previews, icons, a manifest, a theme color); a head with its own icon link or viewport meta has it in place of the page's. `page_files = "web"` writes every file under that directory beside the page, in the same sub-directories (or into the zip), for the head to name. With `--wasm-file` too; a page file named as the page or its module is an error. `tools/webpagecheck.py` checks all three outputs and the mistakes.
+
 ## 0.44.0
 
 - A mesh (`mesh`, `cube_mesh` and the other shapes, a loaded model's) and an `instance_buffer` are deleted once the program holds no copy of them: their buffers and vertex arrays, on every renderer. Before, each one made stayed until the program ended; Aegean Skies counted about 6,400 buffers made and none deleted in three minutes on a phone. As GPU buffers are, each has a token its copies share; when only the library's list holds it, it is gone. The list is looked at as a frame starts, once it has twice as many as after the last look, so a program making and dropping one a frame holds at most about twice what it keeps. Keep a mesh in a variable (or in anything kept) for as long as it is drawn; `update_mesh` and `set_instances` still reuse one in place.
