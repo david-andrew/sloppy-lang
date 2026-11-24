@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.45.0
+
 - Web builds: the build block's `head = "head.html"` puts that file's tags in the page's `<head>` after the title (a description, Open Graph and Twitter link previews, icons, a manifest, a theme color); a head with its own icon link or viewport meta has it in place of the page's. `page_files = "web"` writes every file under that directory beside the page, in the same sub-directories (or into the zip), for the head to name. With `--wasm-file` too; a page file named as the page or its module is an error. `tools/webpagecheck.py` checks all three outputs and the mistakes.
 
 ## 0.44.0
