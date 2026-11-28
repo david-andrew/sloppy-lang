@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.45.1
+
 - Software renderer: triangles are clipped to a guard band (|x| and |y| at most 8 w) as well as the near plane, as GPUs do. A corner with w near 0 (a point nearly beside the eye, or one at infinity, `vec4(dir, 0)`, nearly at right angles to the view) went to the rasterizer millions of pixels out, past what f32 edge functions and perspective interpolation hold: Aegean Skies' dusk sky band drew as hard wedges of saturated red and cyan over the sun. A render scene (`sky_band`: a band at infinity all round the eye) and unit test cases check it.
 
 ## 0.45.0
