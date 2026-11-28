@@ -1052,7 +1052,8 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             __sw_project(o, pvp + g * pstride, nf, vx, vy, vw, vh, fp)
     )
     __par_serial = false
-    # triangles, clipped against the near plane z >= -w where needed (reversed depth: z <= w)
+    # triangles, clipped where needed against the near plane z >= -w (reversed depth: z <= w)
+    # and the guard band (__sw_inside)
     __sw_mesh_tris.clear()
     zs: f32 = if __depth_reversed: -1.0 else: 1.0
     loop inst in [0..reps):
@@ -1089,15 +1090,12 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             i0 += base
             i1 += base
             i2 += base
-            d0 = clp[i0 * nf + 3] + clp[i0 * nf + 2] * zs
-            d1 = clp[i1 * nf + 3] + clp[i1 * nf + 2] * zs
-            d2 = clp[i2 * nf + 3] + clp[i2 * nf + 2] * zs
-            if d0 >= 0.0 and d1 >= 0.0 and d2 >= 0.0:
+            if __sw_inside(clp, i0, nf, zs) and __sw_inside(clp, i1, nf, zs) and __sw_inside(clp, i2, nf, zs):
                 __sw_mesh_tris.push(i32(i0))
                 __sw_mesh_tris.push(i32(i1))
                 __sw_mesh_tris.push(i32(i2))
-            else if d0 >= 0.0 or d1 >= 0.0 or d2 >= 0.0:
-                __sw_clip_tri(__sw_mesh_clip, __sw_mesh_pv, __sw_mesh_tris, (i0, i1, i2), (d0, d1, d2), nf, vx, vy, vw, vh, fp)
+            else:
+                __sw_clip_tri(__sw_mesh_clip, __sw_mesh_pv, __sw_mesh_tris, (i0, i1, i2), zs, nf, vx, vy, vw, vh, fp)
                 clp = data(__sw_mesh_clip)
     ntris = __sw_mesh_tris.len() / 3
     if ntris == 0: return
@@ -1244,38 +1242,75 @@ __sw_project = (q: *f32, o: *f32, nf: int, vx: f64, vy: f64, vw: f64, vh: f64, f
         if flat[f]: o[4 + f] = q[f]
         else: o[4 + f] = q[f] * iw
 
-# Sutherland-Hodgman against the near plane for a triangle with 1 or 2 corners behind it;
-# new vertices are appended to clip and pv, the resulting triangles to tris
-__sw_clip_tri = (clip: mut f32[], pv: mut f32[], tris: mut i32[], ix: (int, int, int), ds: (f32, f32, f32), nf: int, vx: f64, vy: f64, vw: f64, vh: f64, flat: *bool):
-    # A triangle cut by one plane has at most four corners. Keep these on the stack,
+# A corner the rasterizer can take as it is: in front of the near plane, and within the guard
+# band, |x| and |y| at most __SW_GUARD times w. Past it (w near 0: a point nearly beside the eye,
+# or one at infinity, vec4(dir, 0), nearly at right angles to the view) the window position is
+# millions of pixels out, past what the edge functions and the 1/w of each attribute hold in
+# f32: a sky's band at the horizon drew as wedges of saturated color. GPUs clip so too.
+__SW_GUARD: f32 = 8.0
+__sw_inside = (clp: *f32, i: int, nf: int, zs: f32) -> bool:
+    q = clp + i * nf
+    w = q[3]
+    g = w * __SW_GUARD
+    w + q[2] * zs >= 0.0 and q[0] <= g and q[0] >= -g and q[1] <= g and q[1] >= -g
+
+# a corner's distance inside clipping plane k (0: the near plane, 1 to 4: the guard band's sides)
+__sw_plane = (clip: f32[], i: int, nf: int, k: int, zs: f32) -> f32:
+    a = i * nf
+    w = clip[a + 3]
+    if k == 0: return w + clip[a + 2] * zs
+    if k == 1: return w * __SW_GUARD - clip[a]
+    if k == 2: return w * __SW_GUARD + clip[a]
+    if k == 3: return w * __SW_GUARD - clip[a + 1]
+    w * __SW_GUARD + clip[a + 1]
+
+# Sutherland-Hodgman against the near plane and the guard band, for a triangle with a corner
+# outside one of them; new vertices are appended to clip and pv, the resulting triangles to tris
+# (one wholly outside a plane gives none)
+__sw_clip_tri = (clip: mut f32[], pv: mut f32[], tris: mut i32[], ix: (int, int, int), zs: f32, nf: int, vx: f64, vy: f64, vw: f64, vh: f64, flat: *bool):
+    # A triangle cut by five planes has at most eight corners. Keep these on the stack,
     # including the input corners: clipping a mesh must not allocate per triangle.
-    poly = (0, 0, 0, 0)
-    pp = &poly.0
-    count = 0
-    loop i in [0..3):
-        ia = if i == 0: ix.0 else: if i == 1: ix.1 else: ix.2
-        ib = if i == 0: ix.1 else: if i == 1: ix.2 else: ix.0
-        da = if i == 0: ds.0 else: if i == 1: ds.1 else: ds.2
-        db = if i == 0: ds.1 else: if i == 1: ds.2 else: ds.0
-        if da >= 0.0:
-            pp[count] = ia
-            count += 1
-        if (da >= 0.0) != (db >= 0.0):
-            t = da / (da - db)
-            n = clip.len() / nf
-            a = ia * nf
-            b = ib * nf
-            loop f in [0..nf):
-                if flat != null and flat[f]: clip.push(clip[ix.2 * nf + f])
-                else: clip.push(clip[a + f] + (clip[b + f] - clip[a + f]) * t)
-            pv.resize(pv.len() + 4 + nf)
-            __sw_project(data(clip) + n * nf, data(pv) + n * (4 + nf), nf, vx, vy, vw, vh, flat)
-            pp[count] = n
-            count += 1
+    pa = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    pb = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    cur = &pa.0
+    nxt = &pb.0
+    cur[0] = ix.0
+    cur[1] = ix.1
+    cur[2] = ix.2
+    count = 3
+    loop k in [0..5):
+        if count < 3: return
+        out = 0
+        da = __sw_plane(clip, cur[count - 1], nf, k, zs)
+        ia = cur[count - 1]
+        loop i in [0..count):
+            ib = cur[i]
+            db = __sw_plane(clip, ib, nf, k, zs)
+            if (da >= 0.0) != (db >= 0.0):
+                t = da / (da - db)
+                n = clip.len() / nf
+                a = ia * nf
+                b = ib * nf
+                loop f in [0..nf):
+                    if flat != null and flat[f]: clip.push(clip[ix.2 * nf + f])
+                    else: clip.push(clip[a + f] + (clip[b + f] - clip[a + f]) * t)
+                pv.resize(pv.len() + 4 + nf)
+                __sw_project(data(clip) + n * nf, data(pv) + n * (4 + nf), nf, vx, vy, vw, vh, flat)
+                nxt[out] = n
+                out += 1
+            if db >= 0.0:
+                nxt[out] = ib
+                out += 1
+            ia = ib
+            da = db
+        tmp = cur
+        cur = nxt
+        nxt = tmp
+        count = out
     loop k in [1..count - 1):
-        tris.push(i32(pp[0]))
-        tris.push(i32(pp[k]))
-        tris.push(i32(pp[k + 1]))
+        tris.push(i32(cur[0]))
+        tris.push(i32(cur[k]))
+        tris.push(i32(cur[k + 1]))
 
 __sw_2d_scr: f32[]
 __sw_2d_idx: i32[]

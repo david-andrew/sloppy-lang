@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Software renderer: triangles are clipped to a guard band (|x| and |y| at most 8 w) as well as the near plane, as GPUs do. A corner with w near 0 (a point nearly beside the eye, or one at infinity, `vec4(dir, 0)`, nearly at right angles to the view) went to the rasterizer millions of pixels out, past what f32 edge functions and perspective interpolation hold: Aegean Skies' dusk sky band drew as hard wedges of saturated red and cyan over the sun. A render scene (`sky_band`: a band at infinity all round the eye) and unit test cases check it.
+
 ## 0.45.0
 
 - Web builds: the build block's `head = "head.html"` puts that file's tags in the page's `<head>` after the title (a description, Open Graph and Twitter link previews, icons, a manifest, a theme color); a head with its own icon link or viewport meta has it in place of the page's. `page_files = "web"` writes every file under that directory beside the page, in the same sub-directories (or into the zip), for the head to name. With `--wasm-file` too; a page file named as the page or its module is an error. `tools/webpagecheck.py` checks all three outputs and the mistakes.
